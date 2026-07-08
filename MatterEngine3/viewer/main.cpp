@@ -177,20 +177,16 @@ int main() {
         // root count: each placed part recursively pulls in its baked children
         // (e.g. a Tree expands to hundreds of Leaf instances). Mirrors the depth
         // cap and empty-LOD skip in WorldComposer::compose.
-        std::function<size_t(uint64_t, int)> expanded_count =
-            [&](uint64_t h, int depth) -> size_t {
-                if (depth > 8) return 0;
-                const LoadedPart* lp = store->get_or_load(h);
-                if (!lp) return 0;
-                // A geometry-less assembly part contributes no instance of its own
-                // but still expands its children -- mirror WorldComposer::compose.
-                size_t n = lp->lod_blas.empty() ? 0 : 1;
-                for (const auto& c : lp->children)
-                    n += expanded_count(c.child_resolved_hash, depth + 1);
-                return n;
-            };
         size_t cap = 16;
-        for (const auto& e : manifest.instances) cap += expanded_count(e.part_hash, 0);
+        for (const auto& e : manifest.instances) {
+            walk_part_tree(e.part_hash,
+                [&](uint64_t h) -> const LoadedPart* { return store->get_or_load(h); },
+                [&](const LoadedPart* lp, uint64_t /*hash*/, const float /*rel*/[16], int /*depth*/) {
+                    // A geometry-less assembly part contributes no instance of its own
+                    // but its children are still visited -- mirror WorldComposer::compose.
+                    if (!lp->lod_blas.empty()) ++cap;
+                });
+        }
         composer = std::make_unique<WorldComposer>(*store, cap);
         // Recreate RasterComposer on each (re)connect so stale GL mesh caches drop.
         // Release stale probe textures before creating new ones (GL context must be live).
@@ -475,9 +471,16 @@ int main() {
         if (screenshot_path) {
             // Settle count of 3 is RT-derived (waits for raytrace to stabilize);
             // harmless in raster mode where the image is stable on frame 1.
+            // Use LoadImageFromScreen + ExportImage so absolute paths work verbatim
+            // (raylib's TakeScreenshot silently prepends GetWorkingDirectory()).
             if (++frames_drawn >= 3) {
-                TakeScreenshot(screenshot_path);
-                printf("screenshot written to %s\n", screenshot_path);
+                Image screen = LoadImageFromScreen();
+                if (!ExportImage(screen, screenshot_path)) {
+                    printf("screenshot FAILED %s\n", screenshot_path);
+                } else {
+                    printf("screenshot written to %s\n", screenshot_path);
+                }
+                UnloadImage(screen);
                 break;
             }
         }

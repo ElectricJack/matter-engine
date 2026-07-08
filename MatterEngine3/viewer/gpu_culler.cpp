@@ -10,7 +10,6 @@
 
 #include "gpu_culler.h"
 #include "raster_cull.h"    // mul16, inst_scale
-#include "raster_mesh.h"    // row_major_to_matrix
 
 // Raylib must come before glad to avoid double-definition of GL types.
 #include "raylib.h"
@@ -717,92 +716,6 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
 }
 
 // ---------------------------------------------------------------------------
-// readback_batches — read back cmds + xforms; rebuild RasterBatch list.
-//
-// Matrix conversion note:
-//   GL ssbo_xforms_ stores mat4 column-major (column c at floats [c*4..c*4+3]).
-//   raylib Matrix memory is ROW-major (declaration order m0,m4,m8,m12 = first row),
-//   and engine float[16] is also row-major, so row_major_to_matrix is a straight copy.
-//   A direct memcpy of GL data into Matrix would therefore yield the TRANSPOSE;
-//   we first transpose back to engine layout (transpose_to_gl is self-inverse),
-//   then convert via row_major_to_matrix.
-// ---------------------------------------------------------------------------
-std::vector<RasterBatch> GpuCuller::readback_batches(PartStore& store) {
-    std::vector<RasterBatch> out;
-
-    if (cmd_template_.empty() || !ssbo_cmds_ || !ssbo_xforms_) return out;
-
-    // Read back the executed command buffer.
-    size_t cmds_bytes = cmd_template_.size() * sizeof(DrawArraysCmd);
-    std::vector<DrawArraysCmd> cmds_gpu(cmd_template_.size());
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_cmds_);
-    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, (GLsizeiptr)cmds_bytes, cmds_gpu.data());
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
-    // Read back all xform slots that might be populated.
-    size_t xforms_bytes = xforms_cap_bytes_;
-    std::vector<float> xforms_gpu;
-    if (xforms_bytes > 0 && total_xform_slots_ > 0) {
-        xforms_gpu.resize(total_xform_slots_ * 16);
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_xforms_);
-        glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
-                           (GLsizeiptr)(total_xform_slots_ * 16 * sizeof(float)),
-                           xforms_gpu.data());
-        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-    }
-
-    // Read back stats.
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_stats_);
-    uint32_t stats[3] = {0, 0, 0};
-    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(stats), stats);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-    stat_culled_     = stats[0];
-    stat_culled_hiz_ = stats[1];
-    stat_emitted_    = stats[2];
-
-    // Walk every bucket; emit a RasterBatch for each with instance_count > 0.
-    for (int ps = 0; ps < (int)parts_.size(); ++ps) {
-        const PartGpu& pg = parts_[ps];
-        for (uint32_t ci = 0; ci < pg.cluster_count; ++ci) {
-            uint32_t global_ci = pg.cluster_start + ci;
-            for (int lv = 0; lv < kMaxLod; ++lv) {
-                uint32_t bucket = global_ci * (uint32_t)kMaxLod + (uint32_t)lv;
-                if (bucket >= (uint32_t)cmds_gpu.size()) continue;
-                const DrawArraysCmd& cmd = cmds_gpu[bucket];
-                if (cmd.instance_count == 0) continue;
-
-                RasterBatch b;
-                b.part_hash     = pg.part_hash;
-                // cluster_index: UINT32_MAX for synthetic whole-part, else LOCAL cluster
-                // index within the part (ci). ensure_mesh uses this to index into
-                // lp->clusters[ci].lod_mesh[level], so it must be per-part-local, NOT global.
-                b.cluster_index = (pg.cluster_count == 1 &&
-                                   cluster_staging_[global_ci].cluster_index == 0xFFFFFFFFu)
-                                  ? UINT32_MAX : ci;
-                b.level = lv;
-
-                uint32_t base = cmd.base_instance;
-                uint32_t n    = cmd.instance_count;
-                b.transforms.reserve(n);
-                for (uint32_t i = 0; i < n; ++i) {
-                    uint32_t xf_slot = base + i;
-                    if (xf_slot >= total_xform_slots_) break;
-                    // GL column-major → engine row-major (transpose_to_gl is its
-                    // own inverse as a memory op) → raylib Matrix.
-                    float engine_t[16];
-                    transpose_to_gl(xforms_gpu.data() + xf_slot * 16, engine_t);
-                    b.transforms.push_back(row_major_to_matrix(engine_t));
-                }
-                if (!b.transforms.empty())
-                    out.push_back(std::move(b));
-            }
-        }
-    }
-
-    return out;
-}
-
-// ---------------------------------------------------------------------------
 // draw_indirect — Stage-2: issue glMultiDrawArraysIndirect for every registered
 // part, reading commands + transforms directly from the GPU SSBOs written by the
 // most recent cull() call.  Caller must have:
@@ -1135,6 +1048,22 @@ void GpuCuller::downsample_pyramid() {
 
     glBindTexture(GL_TEXTURE_2D, 0);
     glUseProgram(0);
+}
+
+// ---------------------------------------------------------------------------
+// test_readback_stats — TEST-ONLY: read the stats SSBO and update the private
+// stat counters (culled / culled_hiz / emitted).  Call after cull() to get
+// current-frame values without issuing a full draw_indirect().
+// ---------------------------------------------------------------------------
+void GpuCuller::test_readback_stats() {
+    if (!ssbo_stats_) return;
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_stats_);
+    uint32_t stats[3] = {0, 0, 0};
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(stats), stats);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    stat_culled_     = stats[0];
+    stat_culled_hiz_ = stats[1];
+    stat_emitted_    = stats[2];
 }
 
 } // namespace viewer

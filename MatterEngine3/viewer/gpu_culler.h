@@ -10,10 +10,9 @@
 //   culler.init(err);                            // compile cull.comp, allocate fixed buffers
 //   culler.ensure_part(hash, store);             // register per-part GPU state lazily
 //   culler.cull(resolved, store, eye, planes, vp, budget);  // upload + dispatch
-//   auto batches = culler.readback_batches(store);       // bridge to RasterBatch list
+//   culler.draw_indirect();                      // issue glMultiDrawArraysIndirect
 
 #include "gpu_cull_types.h"    // GpuClusterMeta, GpuInstanceRec, DrawArraysCmd, kMaxLod
-#include "raster_composer.h"   // RasterBatch
 #include "sector_resolver.h"   // ResolvedInstance
 #include "part_store.h"        // PartStore, LoadedPart, ExpandedNode
 
@@ -58,11 +57,6 @@ public:
               const float planes[6][4],
               const float view_proj[16],
               float pixel_budget);
-
-    // Stage-1 bridge: GPU-sync (glMemoryBarrier already issued in cull()), read back
-    // cmds + transforms, rebuild RasterBatch list for the existing draw path.
-    // Populates stat_culled_ / stat_emitted_ from ssbo_stats_ readback.
-    std::vector<RasterBatch> readback_batches(PartStore& store);
 
     // Stage-2: issue glMultiDrawArraysIndirect for all registered parts using the
     // GPU command + xform SSBOs written by the most recent cull() call.
@@ -115,7 +109,7 @@ public:
     void set_stats_readback(bool v) { stats_readback_ = v; }
     bool stats_readback() const     { return stats_readback_; }
 
-    // HUD counters (valid after readback_batches() or draw_indirect()).
+    // HUD counters (valid after draw_indirect() with stats_readback_ enabled).
     size_t culled_clusters() const { return stat_culled_; }        // frustum
     size_t culled_hiz()      const { return stat_culled_hiz_; }    // occlusion
     size_t emitted()         const { return stat_emitted_; }
@@ -135,6 +129,22 @@ public:
 
     // -1 if not yet registered.
     int part_slot_of(uint64_t hash) const;
+
+    // TEST-ONLY accessors: expose the GL buffer names and CPU-mirror data
+    // needed by gpu_cull_tests.cpp to implement its own readback helpers.
+    // Not for use in production viewer code.
+    unsigned test_ssbo_cmds()   const { return ssbo_cmds_; }
+    unsigned test_ssbo_xforms() const { return ssbo_xforms_; }
+    unsigned test_ssbo_stats()  const { return ssbo_stats_; }
+    uint32_t test_total_xform_slots() const { return total_xform_slots_; }
+    const std::vector<DrawArraysCmd>&  test_cmd_template()      const { return cmd_template_; }
+    const std::vector<GpuClusterMeta>& test_cluster_staging()   const { return cluster_staging_; }
+
+    // TEST-ONLY: read the stats SSBO and update the private stat counters
+    // (culled_clusters / culled_hiz / emitted).  Equivalent to the stats
+    // portion of the old readback_batches() without the xform/cmd readback.
+    // Call after cull() + a glMemoryBarrier to get current-frame values.
+    void test_readback_stats();
 
 private:
     // --- GL object names ---
@@ -177,7 +187,7 @@ private:
     // active_slots_[i] == 1 iff part slot i received >=1 GpuInstanceRec this frame.
     std::vector<uint8_t> active_slots_;
 
-    // HUD stats populated by readback_batches() or draw_indirect().
+    // HUD stats populated by draw_indirect().
     size_t stat_culled_      = 0;   // frustum
     size_t stat_culled_hiz_  = 0;   // occlusion
     size_t stat_emitted_     = 0;

@@ -54,10 +54,21 @@ struct LoadedPart {
     std::vector<ExpandedNode>   expansion;       // precomputed flattened drawable nodes (Task 4)
 };
 
+// Walk the part tree rooted at root_hash depth-first, depth-capped at 8.
+// Calls visitor(lp, hash, rel_transform, depth) for every reachable node;
+// rel_transform is engine row-major, accumulated from the root (identity at
+// depth 0). The visitor may filter on geometry predicates (e.g. lod_blas /
+// lod_mesh_data) as needed for its specific use case.
+// getter returns nullptr for unloadable parts (their subtrees are skipped).
+// GL-free: suitable for headless tests and the GPU culler compute path.
+void walk_part_tree(uint64_t root_hash,
+                    const std::function<const LoadedPart*(uint64_t)>& getter,
+                    const std::function<void(const LoadedPart*, uint64_t,
+                                            const float /*rel*/[16], int /*depth*/)>& visitor);
+
 // Precompute the flat list of drawable (part_hash, rel_transform) nodes for a
-// compositional part tree rooted at root_hash. The getter returns nullptr for
-// unloadable parts (their subtrees are skipped, matching the historical
-// CPU raster batch behaviour). Depth cap 8.
+// compositional part tree rooted at root_hash. Implemented via walk_part_tree;
+// visits only nodes with non-empty lod_mesh_data. Depth cap 8.
 // GL-free: suitable for headless tests and the GPU culler compute path.
 void build_expansion(uint64_t root_hash,
                      const std::function<const LoadedPart*(uint64_t)>& getter,

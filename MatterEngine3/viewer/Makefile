@@ -187,6 +187,14 @@ run-tilesetload: tileset-load-tests
 # silently mismatches the C++ TLAS texture layout (tiled reads vs single-row).
 shaders: regen-processed-shader
 	@[ -e shaders ] || ln -s ../../MatterSurfaceLib/shaders shaders
+	@missing=""; \
+	 for f in shaders/raster.vs shaders/raster.fs shaders/raytrace_tlas_blas_processed.fs; do \
+	     [ -e "$$f" ] || missing="$$missing $$f"; \
+	 done; \
+	 if [ -n "$$missing" ]; then \
+	     echo "ERROR: required shader files missing:$$missing"; \
+	     exit 1; \
+	 fi
 
 # shaders_gpu/ is a real directory committed to the repo; it lives next to the
 # binary on Linux (no copy needed, the binary resolves relative paths from its

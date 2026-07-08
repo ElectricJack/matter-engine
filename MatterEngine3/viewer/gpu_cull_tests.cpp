@@ -11,6 +11,7 @@
 #include "gpu_culler.h"
 #include "raster_cull.h"
 #include "raster_mesh.h"
+#include "raster_composer.h"   // RasterBatch (moved here from gpu_culler.h)
 #include "gpu_cull_types.h"
 #include "part_store.h"
 #include "sector_resolver.h"
@@ -27,6 +28,99 @@
 #include <string>
 #include <tuple>
 #include <vector>
+
+// ---------------------------------------------------------------------------
+// readback_batches — test-only helper (moved from gpu_culler.cpp).
+// Reads back the executed cmd + xform SSBOs after a cull() call and rebuilds
+// a RasterBatch list for per-bucket parity verification.
+//
+// Matrix conversion note:
+//   GL ssbo_xforms_ stores mat4 column-major (column c at floats [c*4..c*4+3]).
+//   raylib Matrix memory is ROW-major (declaration order m0,m4,m8,m12 = first row),
+//   and engine float[16] is also row-major, so row_major_to_matrix is a straight copy.
+//   A direct memcpy of GL data into Matrix would therefore yield the TRANSPOSE;
+//   we first transpose back to engine layout (transpose_to_gl is self-inverse),
+//   then convert via row_major_to_matrix.
+// ---------------------------------------------------------------------------
+static std::vector<viewer::RasterBatch> readback_batches(viewer::GpuCuller& culler,
+                                                          viewer::PartStore& /*store*/) {
+    using namespace viewer;
+    std::vector<RasterBatch> out;
+
+    const auto& cmd_tmpl   = culler.test_cmd_template();
+    unsigned ssbo_cmds     = culler.test_ssbo_cmds();
+    unsigned ssbo_xforms   = culler.test_ssbo_xforms();
+    unsigned ssbo_stats    = culler.test_ssbo_stats();
+    uint32_t total_slots   = culler.test_total_xform_slots();
+    const auto& cl_staging = culler.test_cluster_staging();
+
+    if (cmd_tmpl.empty() || !ssbo_cmds || !ssbo_xforms) return out;
+
+    // Read back the executed command buffer.
+    size_t cmds_bytes = cmd_tmpl.size() * sizeof(DrawArraysCmd);
+    std::vector<DrawArraysCmd> cmds_gpu(cmd_tmpl.size());
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_cmds);
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, (GLsizeiptr)cmds_bytes, cmds_gpu.data());
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+    // Read back all xform slots that might be populated.
+    std::vector<float> xforms_gpu;
+    if (total_slots > 0) {
+        xforms_gpu.resize((size_t)total_slots * 16);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_xforms);
+        glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0,
+                           (GLsizeiptr)((size_t)total_slots * 16 * sizeof(float)),
+                           xforms_gpu.data());
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    }
+
+    // Stats are not updated here — callers that need culled_clusters() /
+    // culled_hiz() / emitted() after cull() should call test_readback_stats()
+    // separately.  This function is solely for transform parity verification.
+    (void)ssbo_stats;
+
+    // Walk every bucket; emit a RasterBatch for each with instance_count > 0.
+    const auto& parts = culler.parts();
+    for (int ps = 0; ps < (int)parts.size(); ++ps) {
+        const auto& pg = parts[ps];
+        for (uint32_t ci = 0; ci < pg.cluster_count; ++ci) {
+            uint32_t global_ci = pg.cluster_start + ci;
+            for (int lv = 0; lv < kMaxLod; ++lv) {
+                uint32_t bucket = global_ci * (uint32_t)kMaxLod + (uint32_t)lv;
+                if (bucket >= (uint32_t)cmds_gpu.size()) continue;
+                const DrawArraysCmd& cmd = cmds_gpu[bucket];
+                if (cmd.instance_count == 0) continue;
+
+                RasterBatch b;
+                b.part_hash     = pg.part_hash;
+                // cluster_index: UINT32_MAX for synthetic whole-part, else LOCAL
+                // cluster index within the part (ci).
+                b.cluster_index = (pg.cluster_count == 1 &&
+                                   global_ci < cl_staging.size() &&
+                                   cl_staging[global_ci].cluster_index == 0xFFFFFFFFu)
+                                  ? UINT32_MAX : ci;
+                b.level = lv;
+
+                uint32_t base = cmd.base_instance;
+                uint32_t n    = cmd.instance_count;
+                b.transforms.reserve(n);
+                for (uint32_t i = 0; i < n; ++i) {
+                    uint32_t xf_slot = base + i;
+                    if (xf_slot >= total_slots) break;
+                    // GL column-major → engine row-major (transpose_to_gl is its
+                    // own inverse as a memory op) → raylib Matrix.
+                    float engine_t[16];
+                    transpose_to_gl(xforms_gpu.data() + (size_t)xf_slot * 16, engine_t);
+                    b.transforms.push_back(row_major_to_matrix(engine_t));
+                }
+                if (!b.transforms.empty())
+                    out.push_back(std::move(b));
+            }
+        }
+    }
+
+    return out;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -323,7 +417,7 @@ static bool test_parity_frustum_lod() {
         return false;
     }
 
-    auto batches = culler.readback_batches(store);
+    auto batches = readback_batches(culler, store);
 
     // ---- Compare ----
     // Build GPU per-(cluster_idx, lod) maps.
@@ -444,7 +538,7 @@ static bool test_multi_part_parity() {
         printf("  ERROR: cull() returned false for multi-part\n");
         return false;
     }
-    auto batches = culler.readback_batches(store);
+    auto batches = readback_batches(culler, store);
 
     // CPU reference — per-part, per-cluster.
     const viewer::LoadedPart* lp1 = store.get_or_load(hash1);
@@ -530,7 +624,7 @@ static bool test_matrix_convention() {
             printf("  SKIP (cull returned false): %s\n", label);
             return true;  // not a failure — might be culled
         }
-        auto batches = culler.readback_batches(store);
+        auto batches = readback_batches(culler, store);
 
         // Find any batch with transforms.
         bool found = false;
@@ -617,7 +711,7 @@ static bool test_cap_growth() {
         // Empty result is still OK (all culled), just means 0 drawn.
         // The important thing is no crash.
     }
-    auto batches = culler.readback_batches(store);
+    auto batches = readback_batches(culler, store);
 
     // CPU reference count for comparison.
     const viewer::LoadedPart* lp = store.get_or_load(hash);
@@ -670,7 +764,7 @@ static bool test_empty_resolve() {
     CHECK(!cull_ret, "empty_resolve: cull({}) returns false");
 
     // readback after a false cull should return empty (no new GPU work done).
-    auto batches = culler.readback_batches(store);
+    auto batches = readback_batches(culler, store);
     // May return previously allocated empty cmd structure; count actual transforms.
     int total = 0;
     for (const auto& b : batches) total += (int)b.transforms.size();
@@ -902,7 +996,7 @@ static bool test_hiz_occlusion() {
         ++g_failures; ++g_tests;
         return false;
     }
-    culler.readback_batches(store);
+    culler.test_readback_stats();
     printf("  phase1 (hiz on):  frustum=%zu hiz=%zu emitted=%zu\n",
            culler.culled_clusters(), culler.culled_hiz(), culler.emitted());
     CHECK(culler.culled_clusters() == 0, "hiz_occlusion: 0 frustum-culled (all in frustum)");
@@ -912,7 +1006,7 @@ static bool test_hiz_occlusion() {
     // --- Phase 2: HiZ off. Expect 0 hiz-culled / all 14 emitted. ---
     culler.set_hiz_enabled(false);
     culler.cull(resolved, store, eye, planes, vp, 1.0f);
-    culler.readback_batches(store);
+    culler.test_readback_stats();
     printf("  phase2 (hiz off): frustum=%zu hiz=%zu emitted=%zu\n",
            culler.culled_clusters(), culler.culled_hiz(), culler.emitted());
     CHECK(culler.culled_hiz() == 0, "hiz_occlusion: toggle off -> 0 hiz-culled");
@@ -924,7 +1018,7 @@ static bool test_hiz_occlusion() {
     culler.set_hiz_enabled(true);
     CHECK(!culler.hiz_valid(), "hiz_occlusion: re-enable leaves hiz_valid false until build");
     culler.cull(resolved, store, eye, planes, vp, 1.0f);
-    culler.readback_batches(store);
+    culler.test_readback_stats();
     CHECK(culler.culled_hiz() == 0, "hiz_occlusion: re-enable without build -> 0 hiz-culled");
     CHECK(culler.emitted() == 14,   "hiz_occlusion: re-enable without build -> 14 emitted");
 
@@ -932,7 +1026,7 @@ static bool test_hiz_occlusion() {
     culler.build_hiz(W, H);   // blit overwrites the wall with cleared depth...
     upload_wall();            // ...so re-upload it before culling
     culler.cull(resolved, store, eye, planes, vp, 1.0f);
-    culler.readback_batches(store);
+    culler.test_readback_stats();
     printf("  phase4 (rebuilt): frustum=%zu hiz=%zu emitted=%zu\n",
            culler.culled_clusters(), culler.culled_hiz(), culler.emitted());
     CHECK(culler.culled_hiz() == 8, "hiz_occlusion: rebuilt pyramid culls 8 again");

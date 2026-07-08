@@ -1,19 +1,9 @@
 #include "world_composer.h"
+#include "raster_cull.h"   // viewer::mul16
 
 #include <cstring>
-#include <functional>
 
 namespace viewer {
-
-// Row-major 4x4 multiply, matching the ChildInstance/ResolvedInstance convention.
-static void mul16(const float* a, const float* b, float* out) {
-    for (int i = 0; i < 4; ++i)
-        for (int j = 0; j < 4; ++j) {
-            float s = 0;
-            for (int k = 0; k < 4; ++k) s += a[i*4+k] * b[k*4+j];
-            out[i*4+j] = s;
-        }
-}
 
 int WorldComposer::compose(const WorldState& state,
                            SectorResolver& resolver,
@@ -23,20 +13,26 @@ int WorldComposer::compose(const WorldState& state,
 
     std::vector<TLASManager::DrawInstance> insts;
 
-    const int kMaxDepth = 8;
     const size_t kMaxInstances = 200000;
 
-    // Recursive emit: this node's own BLAS at `world`, then each child at world*child.
-    std::function<void(uint64_t, const float*, int, int)> emit =
-        [&](uint64_t hash, const float* world, int lod, int depth) {
-            if (depth > kMaxDepth || insts.size() >= kMaxInstances) return;
-            const LoadedPart* lp = store_.get_or_load(hash);
-            if (!lp) return;
-            // A geometry-less "assembly" part (e.g. a Tree that only places a
-            // Trunk + branches) has no BLAS of its own, but its children must
-            // still be expanded -- so only emit an instance when there IS geometry.
-            if (!lp->lod_blas.empty()) {
-                int use_lod = lod;
+    // Emit TLAS instances via the shared part-tree traversal (walk_part_tree,
+    // depth-capped at 8).  At depth 0 we use the resolved LOD; children get
+    // lod=0 (they are always rendered at full detail relative to the parent).
+    // Geometry-less assembly parts (lod_blas empty) are skipped but their
+    // children are still visited.
+    for (const auto& r : resolved) {
+        int resolved_lod = r.lod_level;
+        walk_part_tree(r.part_hash,
+            [&](uint64_t h) -> const LoadedPart* { return store_.get_or_load(h); },
+            [&](const LoadedPart* lp, uint64_t /*hash*/, const float rel[16], int depth) {
+                if (lp->lod_blas.empty()) return;
+                if (insts.size() >= kMaxInstances) return;
+
+                // World transform = r.transform * rel_transform (identity at depth 0).
+                float world[16];
+                viewer::mul16(r.transform, rel, world);
+
+                int use_lod = (depth == 0) ? resolved_lod : 0;
                 if (use_lod < 0) use_lod = 0;
                 if (use_lod >= (int)lp->lod_blas.size()) use_lod = (int)lp->lod_blas.size() - 1;
 
@@ -46,17 +42,7 @@ int WorldComposer::compose(const WorldState& state,
                 di.is_imposter = false;
                 std::memcpy(di.transform.m, world, sizeof(di.transform.m));
                 insts.push_back(di);
-            }
-
-            for (const auto& c : lp->children) {
-                float child_world[16];
-                mul16(world, c.transform, child_world);
-                emit(c.child_resolved_hash, child_world, 0, depth + 1);
-            }
-        };
-
-    for (const auto& r : resolved) {
-        emit(r.part_hash, r.transform, r.lod_level, 0);
+            });
     }
 
     // FNV-1a fingerprint over (blas_handle, transform) of every instance: when
