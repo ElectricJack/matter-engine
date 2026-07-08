@@ -585,6 +585,79 @@ ScriptHost::LodBudgetSpec ScriptHost::eval_lod_budgets(const std::string& source
     return out;
 }
 
+// Static discovery of a part's retopo settings (Phase 5 autoremesher). Mirrors
+// eval_lod_budgets: fresh isolated bake context, read the class's `static
+// retopo` object, populate individual RetopoSettings fields when present and
+// well-typed, otherwise leave the RetopoSettings{} defaults untouched. Fail-
+// closed: any parse/eval failure returns the default (enabled=false), so
+// existing schemas without a `static retopo` are transparently disabled and
+// bake byte-identically.
+part_asset::RetopoSettings ScriptHost::eval_retopo_settings(const std::string& source) {
+    part_asset::RetopoSettings out;   // defaults: enabled=false, 1.0, 3, 0, 60
+
+    std::string className = find_part_class_name(source);
+    if (className.empty()) return out;
+
+    ModuleStore store;
+    bool use_module = false;
+    if (!shared_lib_root_.empty()) {
+        module_resolver::FoldResult fr; std::string ferr;
+        if (!module_resolver::fold_sources(source, shared_lib_root_, fr, ferr)) return out;
+        if (!fr.modules.empty()) { store = store_from_fold(fr); use_module = true; }
+    }
+
+    JSRuntime* rt = nullptr; JSContext* ctx = nullptr;
+    BakeError eerr;
+    if (!eval_part_publish_class(source, className, use_module ? &store : nullptr,
+                                 rt, ctx, eerr))
+        return out;
+
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue authored = JS_GetPropertyStr(ctx, global, "__partClass");
+    JS_FreeValue(ctx, global);
+    if (JS_IsFunction(ctx, authored)) {
+        JSValue retopo = JS_GetPropertyStr(ctx, authored, "retopo");
+        if (JS_IsObject(retopo) && !JS_IsFunction(ctx, retopo) && !JS_IsArray(retopo)) {
+            // enabled (bool)
+            JSValue en = JS_GetPropertyStr(ctx, retopo, "enabled");
+            if (JS_IsBool(en)) out.enabled = (JS_ToBool(ctx, en) != 0);
+            JS_FreeValue(ctx, en);
+            // target_ratio (number)
+            JSValue tr = JS_GetPropertyStr(ctx, retopo, "target_ratio");
+            if (JS_IsNumber(tr)) {
+                double d = 0.0;
+                if (JS_ToFloat64(ctx, &d, tr) == 0) out.target_ratio = (float)d;
+            }
+            JS_FreeValue(ctx, tr);
+            // iterations (int)
+            JSValue it = JS_GetPropertyStr(ctx, retopo, "iterations");
+            if (JS_IsNumber(it)) {
+                int32_t v = 0;
+                if (JS_ToInt32(ctx, &v, it) == 0) out.iterations = (int)v;
+            }
+            JS_FreeValue(ctx, it);
+            // seed (uint32)
+            JSValue sd = JS_GetPropertyStr(ctx, retopo, "seed");
+            if (JS_IsNumber(sd)) {
+                uint32_t v = 0;
+                if (JS_ToUint32(ctx, &v, sd) == 0) out.seed = v;
+            }
+            JS_FreeValue(ctx, sd);
+            // timeout_seconds (int)
+            JSValue to = JS_GetPropertyStr(ctx, retopo, "timeout_seconds");
+            if (JS_IsNumber(to)) {
+                int32_t v = 0;
+                if (JS_ToInt32(ctx, &v, to) == 0) out.timeout_seconds = (int)v;
+            }
+            JS_FreeValue(ctx, to);
+        }
+        JS_FreeValue(ctx, retopo);
+    }
+    JS_FreeValue(ctx, authored);
+    JS_FreeContext(ctx); JS_FreeRuntime(rt);
+    return out;
+}
+
 uint64_t ScriptHost::resolve_hash(const std::string& source,
                                   const std::string& params_json,
                                   const uint64_t* child_hashes,

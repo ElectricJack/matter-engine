@@ -64,10 +64,10 @@ TARGET = minimal_cell_test
 $(TARGET): $(MAIN_SOURCE) $(MATTER_SOURCES)
 	$(CC) $(MAIN_SOURCE) $(MATTER_SOURCES) -o $(TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
 
-.PHONY: clean run run-simp run-blas run-cell run-cont run-reg run-tint run-cull run-par run-cube run-ao run-part run-vox
+.PHONY: clean run run-simp run-blas run-cell run-cont run-reg run-tint run-cull run-par run-cube run-ao run-part run-vox run-midx run-mtx run-retopo
 
 clean:
-	rm -f $(TARGET) $(SIMP_TARGET) $(BLAS_TARGET) $(CELL_TARGET) $(CONT_TARGET) $(REG_TARGET) $(TINT_TARGET) $(CULL_TARGET) $(PAR_TARGET) $(CUBE_TARGET) $(AO_TARGET) $(PART_TARGET) $(VOX_TARGET)
+	rm -f $(TARGET) $(SIMP_TARGET) $(BLAS_TARGET) $(CELL_TARGET) $(CONT_TARGET) $(REG_TARGET) $(TINT_TARGET) $(CULL_TARGET) $(PAR_TARGET) $(CUBE_TARGET) $(AO_TARGET) $(PART_TARGET) $(VOX_TARGET) $(MIDX_TARGET) $(MTX_TARGET) $(RETOPO_TARGET)
 
 run: $(TARGET)
 	./$(TARGET)
@@ -78,7 +78,7 @@ debug: $(TARGET)
 
 # Mesh simplifier unit tests (headless, no GL window required)
 SIMP_TARGET = mesh_simplifier_tests
-SIMP_SOURCES = mesh_simplifier_tests.cpp ../src/mesh_simplifier.cpp
+SIMP_SOURCES = mesh_simplifier_tests.cpp ../src/mesh_simplifier.cpp ../src/mesh_indexed.cpp
 
 $(SIMP_TARGET): $(SIMP_SOURCES)
 	$(CC) $(SIMP_SOURCES) -o $(SIMP_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
@@ -251,3 +251,46 @@ $(VOX_TARGET): $(VOX_CPP) $(VOX_C)
 
 run-vox: $(VOX_TARGET)
 	./$(VOX_TARGET)
+
+# MeshIndexed weld/unweld unit tests (headless, GL-free; only STL + MSL types).
+MIDX_TARGET = mesh_indexed_tests
+MIDX_SOURCES = mesh_indexed_tests.cpp ../src/mesh_indexed.cpp
+
+$(MIDX_TARGET): $(MIDX_SOURCES)
+	$(CC) $(MIDX_SOURCES) -o $(MIDX_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+
+run-midx: $(MIDX_TARGET)
+	./$(MIDX_TARGET)
+
+# Mesh transform (reproject_triex) unit tests (headless, GL-free).
+MTX_TARGET = mesh_transform_tests
+MTX_SOURCES = mesh_transform_tests.cpp ../src/mesh_indexed.cpp ../src/mesh_transform.cpp
+
+$(MTX_TARGET): $(MTX_SOURCES)
+	$(CC) $(MTX_SOURCES) -o $(MTX_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+
+run-mtx: $(MTX_TARGET)
+	./$(MTX_TARGET)
+
+# mesh_retopo wrapper unit tests (headless, GL-free).
+# Links against autoremesher_core (static) + TBB (shared). The rpath uses
+# $ORIGIN so the binary finds libtbb.so.2 at runtime without LD_LIBRARY_PATH.
+AR_CORE_PATH = ../../Libraries/autoremesher_core
+TBB_BUILD_DIR := $(firstword $(wildcard $(AR_CORE_PATH)/thirdparty/tbb/build/linux_*_release))
+TBB_BUILD_SUBDIR := $(patsubst $(AR_CORE_PATH)/thirdparty/tbb/build/%,%,$(TBB_BUILD_DIR))
+
+RETOPO_TARGET = mesh_retopo_tests
+RETOPO_SOURCES = mesh_retopo_tests.cpp ../src/mesh_retopo.cpp \
+                 ../src/mesh_indexed.cpp ../src/mesh_transform.cpp
+RETOPO_CFLAGS = $(CFLAGS) -I$(AR_CORE_PATH)/include
+RETOPO_LDFLAGS = $(LDFLAGS) \
+                 -L$(AR_CORE_PATH) -lautoremesher_core \
+                 -L$(TBB_BUILD_DIR) -ltbb \
+                 -Wl,-rpath,'$$ORIGIN/../../Libraries/autoremesher_core/thirdparty/tbb/build/$(TBB_BUILD_SUBDIR)' \
+                 -lpthread -ldl -lrt
+
+$(RETOPO_TARGET): $(RETOPO_SOURCES)
+	$(CC) $(RETOPO_SOURCES) -o $(RETOPO_TARGET) $(RETOPO_CFLAGS) $(INCLUDE_PATHS) $(RETOPO_LDFLAGS) $(LDLIBS)
+
+run-retopo: $(RETOPO_TARGET)
+	./$(RETOPO_TARGET)

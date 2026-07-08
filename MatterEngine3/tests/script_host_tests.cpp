@@ -1049,6 +1049,108 @@ static void test_eval_lod_budgets() {
     printf("  test_eval_lod_budgets OK\n");
 }
 
+// Phase 5 autoremesher integration: discover per-part retopo settings.
+// Mirrors eval_lod_budgets's discipline: fresh isolated context, fail-closed
+// on any error, existing schemas without `static retopo` read as defaults
+// (enabled=false) so back-compat holds.
+static void test_eval_retopo_settings() {
+    script_host::ScriptHost host;
+
+    // Opted-in: all fields specified.
+    const char* opted =
+        "class T extends Part {\n"
+        "  static params = { seed: 0 };\n"
+        "  static retopo = { enabled: true, target_ratio: 0.5,\n"
+        "                    iterations: 5, seed: 99, timeout_seconds: 120 };\n"
+        "  build(p) {}\n"
+        "}\n";
+    auto s = host.eval_retopo_settings(opted);
+    assert(s.enabled == true);
+    assert(s.target_ratio == 0.5f);
+    assert(s.iterations == 5);
+    assert(s.seed == 99u);
+    assert(s.timeout_seconds == 120);
+
+    // Partial: unspecified keys keep RetopoSettings defaults (per the plan's
+    // "no clamping in the binding" contract; clamping lives in MSL::retopo).
+    const char* partial =
+        "class P extends Part {\n"
+        "  static params = {};\n"
+        "  static retopo = { enabled: true, target_ratio: 0.75 };\n"
+        "  build(p) {}\n"
+        "}\n";
+    auto sp = host.eval_retopo_settings(partial);
+    assert(sp.enabled == true);
+    assert(sp.target_ratio == 0.75f);
+    assert(sp.iterations == 3);        // default
+    assert(sp.seed == 0u);              // default
+    assert(sp.timeout_seconds == 60);   // default
+
+    // No `static retopo` at all: full defaults (enabled=false). This is the
+    // back-compat path — every existing schema in the codebase lands here.
+    const char* plain =
+        "class NoRetopo extends Part { static params = {}; build(p) {} }\n";
+    auto sd = host.eval_retopo_settings(plain);
+    assert(sd.enabled == false);
+    assert(sd.target_ratio == 1.0f);
+    assert(sd.iterations == 3);
+    assert(sd.seed == 0u);
+    assert(sd.timeout_seconds == 60);
+
+    // Enabled explicitly false: overrides the default only in the "enabled"
+    // slot, everything else stays default. Sanity: parsing works when the
+    // block is present but opts out.
+    const char* disabled =
+        "class D extends Part {\n"
+        "  static retopo = { enabled: false };\n"
+        "  build(p) {}\n"
+        "}\n";
+    auto dd = host.eval_retopo_settings(disabled);
+    assert(dd.enabled == false);
+    assert(dd.target_ratio == 1.0f);
+
+    // Broken JS: fail-closed to defaults.
+    const char* broken = "not even javascript {{{";
+    auto db = host.eval_retopo_settings(broken);
+    assert(db.enabled == false);
+    assert(db.target_ratio == 1.0f);
+
+    // Wrong shape (retopo as array, not object): treat as absent, defaults.
+    const char* wrong_shape =
+        "class W extends Part {\n"
+        "  static retopo = [true, 0.5];\n"
+        "  build(p) {}\n"
+        "}\n";
+    auto dw = host.eval_retopo_settings(wrong_shape);
+    assert(dw.enabled == false);
+
+    // Wrong-typed fields: silently skipped (leave default). Follows the same
+    // "lenient at the wire, strict inside" pattern the DSL uses elsewhere.
+    const char* wrong_types =
+        "class WT extends Part {\n"
+        "  static retopo = { enabled: 'yes', target_ratio: 'half',\n"
+        "                    iterations: [], seed: null, timeout_seconds: {} };\n"
+        "  build(p) {}\n"
+        "}\n";
+    auto dwt = host.eval_retopo_settings(wrong_types);
+    assert(dwt.enabled == false);           // 'yes' is not a bool
+    assert(dwt.target_ratio == 1.0f);       // 'half' is not a number
+    assert(dwt.iterations == 3);
+    assert(dwt.seed == 0u);
+    assert(dwt.timeout_seconds == 60);
+
+    // Cache-key helper: target_ratio_bits() must return the exact IEEE-754
+    // bit pattern of the stored float (Task 13 folds this into the cache key).
+    part_asset::RetopoSettings r;
+    r.target_ratio = 0.5f;
+    uint32_t expected;
+    float f = 0.5f;
+    std::memcpy(&expected, &f, sizeof(expected));
+    assert(r.target_ratio_bits() == expected);
+
+    printf("  test_eval_retopo_settings OK\n");
+}
+
 int main() {
     test_embed_eval_1_plus_1();
     test_p5_round_mesh_dispatch();
@@ -1082,6 +1184,7 @@ int main() {
     test_g8_sphere_box_polymorphic();
     test_extrude_dispatch_and_polygon();
     test_eval_lod_budgets();
+    test_eval_retopo_settings();
     if (g_failures == 0) printf("ALL PASS\n");
     return g_failures ? 1 : 0;
 }

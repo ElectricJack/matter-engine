@@ -38,6 +38,17 @@ SurfaceLib/test_config
 # Allow raylib's vendored static lib through the *.a exclusion (committed builds)
 !Libraries/raylib/build/**/libraylib.a
 !Libraries/raylib/src/libraylib.a
+
+# Vendored TBB (Libraries/autoremesher_core/thirdparty/tbb) ships its own
+# build system under `build/` -- the .inc / Makefile source files there are
+# NOT artifacts and must be tracked. Un-ignore the whole tree, then re-ignore
+# the versioned per-config build output subdirs it emits at build time.
+!Libraries/autoremesher_core/thirdparty/tbb/build/
+!Libraries/autoremesher_core/thirdparty/tbb/build/**
+Libraries/autoremesher_core/thirdparty/tbb/build/linux_*_debug/
+Libraries/autoremesher_core/thirdparty/tbb/build/linux_*_release/
+Libraries/autoremesher_core/thirdparty/tbb/build/*_debug/
+Libraries/autoremesher_core/thirdparty/tbb/build/*_release/
 # Allow box3d's prebuilt Linux and MinGW static libs
 !Libraries/box3d/libbox3d.a
 !Libraries/box3d/build-mingw/libbox3d.a
@@ -61,6 +72,8 @@ MatterEngine3/viewer/*_tests
 # Other project test binaries (compiled from same-named *.cpp drivers)
 MatterSurfaceLib/tests/*_tests
 MeshChartingLib/tests/*_tests
+Libraries/autoremesher_core/tests/smoke_cube
+Libraries/autoremesher_core/tests/quad_to_tri_test
 
 # ObjectAllocatorLib and SpatialQueryLib test binaries + object dirs
 SpatialQueryLib/spatial_hash_tests

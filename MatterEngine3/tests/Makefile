@@ -85,6 +85,7 @@ COMMON_MSL_FULL_SRC = \
     $(MSL)/cluster.cpp \
     $(MSL)/cell.cpp \
     $(MSL)/mesh_simplifier.cpp \
+    $(MSL)/mesh_indexed.cpp \
     $(MSL)/bvh_analyzer.cpp \
     $(MSL)/mesh_worker_pool.cpp \
     $(MSL)/mesh_build_utils.cpp \
@@ -104,7 +105,7 @@ COMMON_MSL_C = \
 COMMON_MSL_C_OBJ = surface.o open_particle_surface.o fat_primitive.o \
                    spatial_hash.o object_allocator.o material_registry.o
 
-.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest
+.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests (headless, GL-free).
 # NEW impl ../src/part_asset_v2.cpp + consumed MatterSurfaceLib backend sources.
@@ -124,7 +125,7 @@ run-partv2: $(PARTV2_TARGET)
 	./$(PARTV2_TARGET)
 
 clean:
-	rm -f $(PARTV2_TARGET) $(SCRIPT_TARGET) $(GRAPH_TARGET) $(GRAPH_INT_TARGET) $(TRIVAR_TARGET) $(SHLIB_TARGET) $(COMP_TARGET) $(DEV_TARGET) $(EXAMPLE_TARGET) $(VIEWER_LOGIC_TARGET) $(TREEBAKE_TARGET) $(MEADOW_TARGET) $(MEADOWCHECK_TARGET) $(GRASSLOD_TARGET) $(STRESSFOREST_TARGET) $(TILESETMEADOWMANIFEST_TARGET)
+	rm -f $(PARTV2_TARGET) $(SCRIPT_TARGET) $(GRAPH_TARGET) $(GRAPH_INT_TARGET) $(TRIVAR_TARGET) $(SHLIB_TARGET) $(COMP_TARGET) $(DEV_TARGET) $(EXAMPLE_TARGET) $(VIEWER_LOGIC_TARGET) $(TREEBAKE_TARGET) $(MEADOW_TARGET) $(MEADOWCHECK_TARGET) $(GRASSLOD_TARGET) $(STRESSFOREST_TARGET) $(TILESETMEADOWMANIFEST_TARGET) $(RETOPO_INT_TARGET)
 
 # Script host (QuickJS-ng) + DSL/CSG bake tests (headless, GL-free for the host;
 # the BLAS surface path links raylib like the part-asset tests). QuickJS-ng C
@@ -285,6 +286,7 @@ COMP_TARGET = composition_tests
 COMP_CPP = composition_tests.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp \
            ../src/sector_grid.cpp ../src/lod_select.cpp ../src/part_asset_v2.cpp \
            $(MSL)/mesh_simplifier.cpp \
+           $(MSL)/mesh_indexed.cpp \
            $(COMMON_MSL_BLAS_SRC)
 COMP_C   = $(MSL)/material_registry.c
 COMP_C_OBJ = material_registry.o
@@ -304,6 +306,8 @@ FLATTEN_CPP = part_flatten_tests.cpp ../src/part_flatten.cpp ../src/lod_bake.cpp
               ../src/part_cluster.cpp \
               ../src/part_asset_v2.cpp \
               $(MSL)/mesh_simplifier.cpp \
+              $(MSL)/mesh_indexed.cpp \
+              $(MSL)/mesh_transform.cpp \
               $(COMMON_MSL_BLAS_SRC)
 FLATTEN_C   = $(MSL)/material_registry.c
 FLATTEN_C_OBJ = material_registry.o
@@ -315,6 +319,64 @@ $(FLATTEN_TARGET): $(FLATTEN_CPP) $(FLATTEN_C)
 
 run-flatten: $(FLATTEN_TARGET)
 	./$(FLATTEN_TARGET)
+
+# Phase 5 Task 14 — end-to-end retopo integration test. Same dep set as the
+# FLATTEN target (this test drives flatten_part) PLUS:
+#   * -DMATTER_HAVE_AUTOREMESHER so part_flatten.cpp compiles the retopo hook
+#     path (apply_retopo_hook + compute_retopo_cache_key + friends).
+#   * MSL's mesh_retopo.cpp + mesh_transform.cpp source files (retopo() +
+#     from_tri/to_tri live in MSL under the same -DMATTER_HAVE_AUTOREMESHER
+#     gate as part_flatten's hook).
+#   * autoremesher_core header include path (for autoremesher/remesh.h /
+#     AUTOREMESHER_CORE_VERSION), the static lib, and the TBB shared lib +
+#     $$ORIGIN-relative rpath so libtbb.so.2 is found without LD_LIBRARY_PATH.
+#     The rpath pattern mirrors MSL/tests/Makefile's RETOPO_TARGET stanza and
+#     Libraries/autoremesher_core/tests/Makefile (Tasks 6, 10).
+# Runtime prerequisite: libautoremesher_core.a and TBB must be built —
+# build-all.sh handles this. If the library is missing, the link step fails
+# with a clear "-lautoremesher_core not found" error.
+AR_CORE_PATH = ../../Libraries/autoremesher_core
+TBB_BUILD_DIR := $(firstword $(wildcard $(AR_CORE_PATH)/thirdparty/tbb/build/linux_*_release))
+TBB_BUILD_SUBDIR := $(patsubst $(AR_CORE_PATH)/thirdparty/tbb/build/%,%,$(TBB_BUILD_DIR))
+
+RETOPO_INT_TARGET = retopo_integration_tests
+RETOPO_INT_CPP = retopo_integration_tests.cpp ../src/part_flatten.cpp ../src/lod_bake.cpp \
+                 ../src/part_cluster.cpp \
+                 ../src/part_asset_v2.cpp \
+                 ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
+                 ../../MatterSurfaceLib/src/mesh_indexed.cpp \
+                 ../../MatterSurfaceLib/src/mesh_transform.cpp \
+                 ../../MatterSurfaceLib/src/mesh_retopo.cpp \
+                 ../../MatterSurfaceLib/src/blas_manager.cpp \
+                 ../../MatterSurfaceLib/src/bvh.cpp \
+                 ../../MatterSurfaceLib/src/tlas_manager.cpp \
+                 ../../MatterSurfaceLib/src/part_asset.cpp \
+                 ../../MatterSurfaceLib/src/vertex_ao.cpp \
+                 ../../MatterSurfaceLib/src/occupancy.cpp
+RETOPO_INT_C   = ../../MatterSurfaceLib/src/material_registry.c
+RETOPO_INT_C_OBJ = material_registry.o
+RETOPO_INT_CFLAGS  = $(CFLAGS) -DMATTER_HAVE_AUTOREMESHER -I$(AR_CORE_PATH)/include
+# --allow-multiple-definition: raylib bundles stb_image_write.h in rtextures.c
+# and autoremesher_core's geogram bundles its own copy in
+# image_serializer_stb.o. Both archives get pulled in here — raylib because
+# MSL's mesh_simplifier calls MemAlloc/MemFree, autoremesher_core because
+# apply_retopo_hook references autoremesher::retopo. The stb sources are
+# identical vendor copies so picking either definition is safe. This is a
+# link-order-only fix; the compiled objects are byte-equivalent in practice.
+RETOPO_INT_LDFLAGS = $(LDFLAGS) \
+                     -L$(AR_CORE_PATH) -lautoremesher_core \
+                     -L$(TBB_BUILD_DIR) -ltbb \
+                     -Wl,-rpath,'$$ORIGIN/../../Libraries/autoremesher_core/thirdparty/tbb/build/$(TBB_BUILD_SUBDIR)' \
+                     -Wl,--allow-multiple-definition
+
+$(RETOPO_INT_TARGET): $(RETOPO_INT_CPP) $(RETOPO_INT_C)
+	gcc -c $(RETOPO_INT_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) $(RETOPO_INT_CPP) $(RETOPO_INT_C_OBJ) -o $(RETOPO_INT_TARGET) \
+	      $(RETOPO_INT_CFLAGS) $(INCLUDE_PATHS) $(RETOPO_INT_LDFLAGS) $(LDLIBS)
+	rm -f $(RETOPO_INT_C_OBJ)
+
+run-retopo-integration: $(RETOPO_INT_TARGET)
+	./$(RETOPO_INT_TARGET)
 
 # SP-5 dev live-edit: debounce + upward-cone scoping + last-good (headless, GL-free).
 # All-new MatterEngine3 sources; inotify_watcher.cpp is Linux-only (guarded by __linux__ internally).
@@ -342,6 +404,7 @@ EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp \
               ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
               ../src/part_cluster.cpp \
               ../src/sector_grid.cpp ../src/lod_select.cpp \
+              $(MSL)/mesh_transform.cpp \
               $(COMMON_MSL_FULL_SRC)
 EXAMPLE_C   = $(COMMON_MSL_C)
 EXAMPLE_C_OBJ = $(COMMON_MSL_C_OBJ)

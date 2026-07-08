@@ -12,10 +12,33 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>   // std::memcpy (RetopoSettings::target_ratio_bits)
 #include <string>
 #include <vector>
 
 namespace part_asset {
+
+// Per-part opt-in retopo (autoremesher) settings, discovered from a schema's
+// `static retopo = {...}` static (Phase 5 autoremesher integration). Defaults
+// mean "not opted in": any part definition without the static reads as
+// disabled and the bake pipeline routes around retopo entirely, so existing
+// schemas bake byte-identically. See docs/superpowers/plans/2026-07-07-
+// autoremesher-integration.md; consumed by part_flatten's retopo hook (Task 13).
+struct RetopoSettings {
+    bool     enabled         = false;
+    float    target_ratio    = 1.0f;
+    int      iterations      = 3;
+    uint32_t seed            = 0;
+    int      timeout_seconds = 60;
+
+    // Bit-pattern of target_ratio for stable cache-key hashing (Task 13 folds
+    // this into the .retopo.part cache key; hashing a raw float is fraught).
+    uint32_t target_ratio_bits() const {
+        uint32_t b;
+        std::memcpy(&b, &target_ratio, sizeof(b));
+        return b;
+    }
+};
 
 constexpr uint32_t kFormatVersionV2 = 2u;
 constexpr uint32_t kFormatVersionV3 = 3u;
@@ -69,6 +92,14 @@ std::string cache_path_flat(uint64_t resolved_hash);
 // per level, finest (1.0) first. Content-addressed alongside the .part: any
 // source/param change changes the root hash and orphans the stale sidecar.
 std::string cache_path_lods(uint64_t resolved_hash);
+
+// Cache path for the RETOPO'd merged mesh (Phase 5 autoremesher). The
+// filename key is NOT the part's resolved hash — retopo output depends on
+// (flat mesh hash, RetopoSettings, autoremesher_core version, platform
+// triple), so part_flatten computes a fold of those inputs and uses THAT as
+// the key. Written iff MSL::retopo succeeds; on failure the pipeline keeps
+// the unretopo'd mesh and no sibling is written (next bake retries).
+std::string cache_path_retopo(uint64_t retopo_cache_key);
 
 struct LodVariants {
     double                anchor_size = 0.0;

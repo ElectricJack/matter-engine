@@ -8,14 +8,18 @@
 #include "../include/part_asset_v2.h"
 #include "../include/lod_bake.h"
 #include "../include/part_cluster.h"
+#include "../include/retopo_hook_stats.h"   // Task 13: retopo hook invocation counter
 #include "../../MatterSurfaceLib/include/blas_manager.hpp"
 #include "../../MatterSurfaceLib/include/tlas_manager.hpp"
 #include "../../MatterSurfaceLib/include/mesh_simplifier.hpp"
+#include "../../MatterSurfaceLib/include/mesh_indexed.hpp"
+#include "../../MatterSurfaceLib/include/mesh_transform.hpp"
 
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <dirent.h>       // opendir/readdir (retopo-hook sibling scan)
 #include <fstream>
 #include <map>
 #include <set>
@@ -338,7 +342,17 @@ static void test_reproject_two_materials() {
 
     std::vector<Tri> dec = lod_bake::decimate_to_error(tris, 0.05f);
     CHECK(!dec.empty() && dec.size() < tris.size(), "sphere decimated");
-    std::vector<TriEx> ex = lod_bake::reproject_triex(dec, tris, triex);
+    // Task 8: reproject_triex moved to MSL; wrap the Tri/TriEx call site
+    // through MeshIndexed until Task 11 refactors this test to speak
+    // MeshIndexed natively.
+    std::vector<TriEx> ex;
+    {
+        MeshIndexed src_m = from_tri(tris, &triex);
+        MeshIndexed tgt_m = from_tri(dec, nullptr);
+        ::reproject_triex(src_m, tgt_m);
+        std::vector<Tri> tgt_tris_ignored;
+        to_tri(tgt_m, tgt_tris_ignored, ex);
+    }
     CHECK(ex.size() == dec.size(), "reprojected TriEx parallel to output tris");
 
     std::set<int> mats;
@@ -1409,6 +1423,76 @@ static void test_flat_version_bump() {
     printf("  test_flat_version_bump OK\n");
 }
 
+// Task 13 (autoremesher): verify the retopo hook is inert when a schema does
+// NOT opt in, and (in a build with MATTER_HAVE_AUTOREMESHER undefined)
+// gracefully falls through to the streaming path when a schema opts in.
+//
+// Correctness gate (from the plan): existing bakes MUST produce identical
+// output for schemas that don't opt in. Since flatten_part_impl only routes
+// to the materialized+retopo path when BOTH targets.retopo.enabled AND
+// MATTER_HAVE_AUTOREMESHER hold, this test binary — built WITHOUT the macro
+// — always stays on the streaming path. Byte-identical output for both
+// opt-out and opt-in is the strongest guarantee this build can assert;
+// Task 14's autoremesher-linked test binary exercises the actual retopo
+// path.
+//
+// Invariants:
+//   1. Opt-in and opt-out produce byte-identical .flat.part in this build
+//      (streaming path is used unchanged for both).
+//   2. No .retopo.part sibling is written.
+//   3. retopo_hook_stats::invocation_count() stays 0.
+static void test_retopo_hook_optout_and_missing_autoremesher() {
+    // Fresh state.
+    matter_engine3::retopo_hook_stats::reset();
+    std::remove(flat_path().c_str());
+
+    // (a) Default targets: retopo disabled. Should behave as before.
+    part_flatten::FlattenTargets t_off;
+    // t_off.retopo defaults to enabled=false.
+    part_flatten::FlattenResult a = part_flatten::flatten_part(kCacheRoot,
+                                                               kParentHash, t_off);
+    CHECK(a.ok, "retopo hook: default (disabled) bake ok");
+    std::vector<char> bytes_off;
+    CHECK(read_bytes(flat_path(), bytes_off), "retopo hook: read flat.part bytes (disabled)");
+
+    // (b) Opt-in retopo. Build has no autoremesher -> flatten_part_impl
+    // falls straight through to the streaming path (byte-identical to opt-
+    // out for the .flat.part write).
+    std::remove(flat_path().c_str());
+    part_flatten::FlattenTargets t_on;
+    t_on.retopo.enabled = true;
+    t_on.retopo.target_ratio = 0.5f;
+    part_flatten::FlattenResult b = part_flatten::flatten_part(kCacheRoot,
+                                                               kParentHash, t_on);
+    CHECK(b.ok, "retopo hook: opt-in bake ok (falls back without autoremesher)");
+    std::vector<char> bytes_on;
+    CHECK(read_bytes(flat_path(), bytes_on), "retopo hook: read flat.part bytes (opt-in)");
+
+    // Byte-identical: same streaming path was used for both bakes.
+    CHECK(bytes_off == bytes_on,
+          "retopo hook: opt-in with no autoremesher produces byte-identical flat");
+
+    // No .retopo.part sibling written.
+    DIR* d = opendir((std::string(kCacheRoot) + "/parts").c_str());
+    bool found_retopo = false;
+    if (d) {
+        struct dirent* e;
+        while ((e = readdir(d)) != nullptr) {
+            std::string n = e->d_name;
+            if (n.size() > 12 &&
+                n.compare(n.size() - 12, 12, ".retopo.part") == 0) {
+                found_retopo = true; break;
+            }
+        }
+        closedir(d);
+    }
+    CHECK(!found_retopo, "retopo hook: no .retopo.part written on fallback");
+
+    // Counter untouched: MSL::retopo is never called without autoremesher.
+    CHECK(matter_engine3::retopo_hook_stats::invocation_count() == 0,
+          "retopo hook: invocation counter stays 0 without autoremesher");
+}
+
 int main() {
     if (!write_fixtures()) {
         printf("FAIL: could not write fixture parts under %s\n", kCacheRoot);
@@ -1437,6 +1521,7 @@ int main() {
     test_instance_boundary_records_refs();
     test_generous_budget_inlines();
     test_flat_version_bump();
+    test_retopo_hook_optout_and_missing_autoremesher();
 
     if (g_failures == 0) { printf("part_flatten_tests: ALL PASS\n"); return 0; }
     printf("part_flatten_tests: %d FAILURE(S)\n", g_failures);
