@@ -485,6 +485,7 @@ VIEWER_LOGIC_TARGET = viewer_logic_tests
 # filter-out keeps this in sync if EXAMPLE_CPP gains/loses a source.
 VIEWER_PIPELINE_CPP = $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
+              ../src/async_bake.cpp \
               ../src/render/world_state.cpp \
               ../src/provider/resolvers.cpp \
               ../src/render/part_store.cpp \

@@ -16,7 +16,7 @@
 #include "material_registry.h"
 
 #if defined(MATTER_HAVE_AUTOREMESHER)
-#include "mesh_retopo.hpp"     // retopo() TBB warm-up (see connect() below)
+#include "mesh_retopo.hpp"     // retopo() TBB warm-up (see install_graph() below)
 #include "mesh_indexed.hpp"
 #include "mesh_transform.hpp"  // from_tri
 #include "bvh.h"               // Tri / TriEx / float3
@@ -148,12 +148,47 @@ void tbb_warmup_retopo() {
            (int)wr.ok, wr.elapsed_seconds);
 }
 #endif
+
+// Extract the class name from a JS schema source so install-phase on_part
+// callbacks can report a human-readable module name. Schemas follow the pattern:
+//   class ClassName extends Part { ... }
+// Scan for "class " followed by an identifier, stopping at whitespace or '{'.
+// Returns empty string on parse failure (callback receives null module).
+std::string class_name_from_source(const std::string& source) {
+    const char* kw = "class ";
+    const size_t kwlen = 6;
+    size_t pos = source.find(kw);
+    while (pos != std::string::npos) {
+        size_t name_start = pos + kwlen;
+        // Skip whitespace between 'class' and the identifier
+        while (name_start < source.size() &&
+               (source[name_start] == ' ' || source[name_start] == '\t'))
+            ++name_start;
+        if (name_start >= source.size()) break;
+        // Read the identifier
+        size_t name_end = name_start;
+        while (name_end < source.size() &&
+               (std::isalnum((unsigned char)source[name_end]) || source[name_end] == '_' || source[name_end] == '$'))
+            ++name_end;
+        if (name_end > name_start) {
+            // Accept it if followed by whitespace or '{' (not a method/variable name collision)
+            if (name_end < source.size() &&
+                (source[name_end] == ' ' || source[name_end] == '\t' ||
+                 source[name_end] == '\n' || source[name_end] == '\r' ||
+                 source[name_end] == '{'))
+                return source.substr(name_start, name_end - name_start);
+        }
+        pos = source.find(kw, pos + 1);
+    }
+    return {};
+}
+
 } // namespace
 
 LocalProvider::LocalProvider(LocalProviderConfig cfg) : cfg_(std::move(cfg)) {}
 
-bool LocalProvider::connect(WorldManifest& out, std::string& err) {
-    // Reset all mutable state at entry so repeated connect() calls are
+bool LocalProvider::install_graph(std::string& err) {
+    // Reset all mutable state at entry so repeated install_graph() calls are
     // idempotent. Unload any previously-loaded tileset slots so a re-connect
     // for a different world doesn't inherit stale atlases. Also reset the
     // material-16 (DIRT) binding so the shader sees -1 (unbound) until the
@@ -164,7 +199,17 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
 
     baked_count_ = 0;
     hit_count_   = 0;
+    install_bake_count_ = 0;
     baked_hashes_.clear();
+
+    // Clear cross-phase state
+    roots_.clear();
+    expand_flags_.clear();
+    tileset_flags_.clear();
+    roots_for_install_.clear();
+    install_to_orig_.clear();
+    tileset_indices_.clear();
+    ir_ = part_graph::InstallResult{};
 
     // Ensure the persistent cache dir exists.
     // All artifact writes are absolute-path (Task 3 Phase B: HostBaker::bake
@@ -174,10 +219,10 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     fs_mkdir(parts_subdir.c_str());
 
     // Resolve all relative paths to absolute now (cache_root may itself be relative).
-    std::string abs_schemas    = abspath(cfg_.schemas_dir);
-    std::string abs_world_data = abspath(cfg_.world_data_dir);
-    std::string abs_shared_lib = abspath(cfg_.shared_lib_dir);
-    std::string abs_cache_root = abspath(cfg_.cache_root);
+    abs_schemas_    = abspath(cfg_.schemas_dir);
+    abs_world_data_ = abspath(cfg_.world_data_dir);
+    abs_shared_lib_ = abspath(cfg_.shared_lib_dir);
+    abs_cache_root_ = abspath(cfg_.cache_root);
 
 #if defined(MATTER_HAVE_AUTOREMESHER)
     // Warm the TBB scheduler BEFORE any heap-heavy work (install() calls
@@ -192,15 +237,21 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     // journal without a matching .retopo_success entry crashed autoremesher on
     // a previous run and will be skipped in this session. See
     // MatterEngine3/include/retopo_blacklist.h for the mechanism.
-    matter_engine3::retopo_blacklist::init(abs_cache_root);
+    matter_engine3::retopo_blacklist::init(abs_cache_root_);
 #endif
 
+#if defined(MATTER_HAVE_SCRIPT_HOST)
     // SP-2/SP-3/SP-7 wiring. HostBaker receives the absolute cache root; it passes
     // it through BakeOptions.parts_dir so bake_source writes artifacts to absolute
     // paths (Task 3 Phase B: no chdir required).
-    script_host::ScriptHost host;
-    host.set_shared_lib_root(abs_shared_lib);
-    FileModuleResolver resolver(host, abs_schemas);
+    host_ = std::make_unique<script_host::ScriptHost>();
+    host_->set_shared_lib_root(abs_shared_lib_);
+    resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_schemas_);
+    retopo_by_hash_.clear();
+
+    // Capture cfg_ pointer for the RecordingBaker lambda (install-phase on_part).
+    LocalProviderConfig* cfg_ptr = &cfg_;
+    int* install_bake_count_ptr  = &install_bake_count_;
 
     // Phase 5 autoremesher (Task 15): record each part's retopo settings by
     // hash so flatten_one() below can thread them into flatten_part().
@@ -212,14 +263,21 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     // flatten_one always sees the correct retopo settings. Schemas without
     // `static retopo` land on the default (enabled=false), so the map entry
     // is byte-identical to "not opted in".
-    std::unordered_map<uint64_t, part_asset::RetopoSettings> retopo_by_hash;
+    //
+    // Task 5 (Phase B): RecordingBaker::bake() also fires cfg_.on_part for
+    // each freshly-baked part during install, with total==0 (indeterminate).
+    std::unordered_map<uint64_t, part_asset::RetopoSettings>* retopo_map_ptr = &retopo_by_hash_;
+    script_host::ScriptHost* host_raw = host_.get();
     struct RecordingBaker : public Baker {
         HostBaker inner;
         script_host::ScriptHost& host;
         std::unordered_map<uint64_t, part_asset::RetopoSettings>* map;
+        LocalProviderConfig* cfg;
+        int* install_bake_count;
         RecordingBaker(script_host::ScriptHost& h, std::string parts_dir,
-                       std::unordered_map<uint64_t, part_asset::RetopoSettings>* m)
-            : inner(h, std::move(parts_dir)), host(h), map(m) {}
+                       std::unordered_map<uint64_t, part_asset::RetopoSettings>* m,
+                       LocalProviderConfig* c, int* ibc)
+            : inner(h, std::move(parts_dir)), host(h), map(m), cfg(c), install_bake_count(ibc) {}
         uint64_t resolve_hash(const std::string& source, const Params& params,
                               const std::vector<uint64_t>& child_hashes) override {
             uint64_t h = inner.resolve_hash(source, params, child_hashes);
@@ -237,6 +295,13 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
                   const std::vector<std::string>& child_modules,
                   const std::vector<std::string>& child_params,
                   uint64_t resolved_hash) override {
+            // Task 5 (Phase B): fire install-phase on_part before delegating.
+            // total == 0 signals indeterminate count (install phase).
+            if (cfg && cfg->on_part) {
+                std::string class_name = class_name_from_source(source);
+                const char* mod = class_name.empty() ? nullptr : class_name.c_str();
+                cfg->on_part(mod, ++(*install_bake_count), 0);
+            }
             return inner.bake(source, params, child_hashes, child_modules,
                               child_params, resolved_hash);
         }
@@ -246,14 +311,11 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
             return inner.bake_lod_variants(source, params, child_hashes, resolved_hash);
         }
     };
-    RecordingBaker baker(host, abs_cache_root, &retopo_by_hash);
-    PartGraph graph(resolver, baker);
+    RecordingBaker baker(*host_, abs_cache_root_, &retopo_by_hash_, cfg_ptr, install_bake_count_ptr);
+    PartGraph graph(*resolver_, baker);
 
-    std::vector<ChildRequest> roots;
-    std::vector<bool> expand_flags;
-    std::vector<bool> tileset_flags;
-    bool manifest_ok = PartGraph::read_manifest(abs_world_data, cfg_.world_name,
-                                                roots, err, &expand_flags, &tileset_flags);
+    bool manifest_ok = PartGraph::read_manifest(abs_world_data_, cfg_.world_name,
+                                                roots_, err, &expand_flags_, &tileset_flags_);
     if (!manifest_ok) {
         return false;
     }
@@ -261,39 +323,50 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     // Tileset roots are installed by run_tileset_phase (it calls install() itself
     // on the tileset script's `static requires` children). Split them out here so
     // PartGraph::install() only sees the non-tileset roots.
-    std::vector<ChildRequest> roots_for_install;
-    std::vector<size_t> install_to_orig;
-    std::vector<size_t> tileset_indices;
-    for (size_t i = 0; i < roots.size(); ++i) {
-        if (tileset_flags[i]) tileset_indices.push_back(i);
-        else { roots_for_install.push_back(roots[i]); install_to_orig.push_back(i); }
+    for (size_t i = 0; i < roots_.size(); ++i) {
+        if (tileset_flags_[i]) tileset_indices_.push_back(i);
+        else { roots_for_install_.push_back(roots_[i]); install_to_orig_.push_back(i); }
     }
 
-    InstallResult ir = graph.install(roots_for_install);
-    if (!ir.ok) {
-        err = ir.error;
+    ir_ = graph.install(roots_for_install_);
+    if (!ir_.ok) {
+        err = ir_.error;
         return false;
     }
-    baked_count_ = (int)ir.baked.size();
-    hit_count_   = ir.hits;
-    baked_hashes_.insert(ir.baked.begin(), ir.baked.end());
+    baked_count_ = (int)ir_.baked.size();
+    hit_count_   = ir_.hits;
+    baked_hashes_.insert(ir_.baked.begin(), ir_.baked.end());
 
     // Build hash -> module name map for use in fetch_parts()'s on_part callback.
     module_by_hash_.clear();
-    for (size_t j = 0; j < ir.root_hashes.size(); ++j)
-        if (ir.root_hashes[j] != 0)
-            module_by_hash_[ir.root_hashes[j]] = roots_for_install[j].module;
+    for (size_t j = 0; j < ir_.root_hashes.size(); ++j)
+        if (ir_.root_hashes[j] != 0)
+            module_by_hash_[ir_.root_hashes[j]] = roots_for_install_[j].module;
 
     // Map each root module to the child-FOLDED resolved hash the graph baked it under.
     // install() returns root_hashes parallel to `roots_for_install`; using them (instead
     // of an unfolded resolve_hash recompute) keeps manifest instances pointing at the .part
     // that actually exists on disk — critical once a root has children (e.g. Tree->Leaf).
-    if (ir.root_hashes.size() != roots_for_install.size()) {
+    if (ir_.root_hashes.size() != roots_for_install_.size()) {
         err = "install did not return a hash for every root";
         return false;
     }
-    // Place each manifest root at the origin; `expand`-flagged roots are instead
-    // replaced by their baked child-instance table (one world instance per child).
+
+    return true;
+#else
+    // Without MATTER_HAVE_SCRIPT_HOST, the install phase can't do real baking.
+    err = "install_graph: MATTER_HAVE_SCRIPT_HOST not defined";
+    return false;
+#endif
+}
+
+bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
+    // Requires install_graph() to have succeeded.
+    // All absolute paths (abs_*_) are set by install_graph().
+
+    // Reset tileset count (may be called again for cone rebake).
+    baked_tileset_count_ = 0;
+
     out.world_root_hash = 1;
     out.instances.clear();
     uint32_t next_id = 1;
@@ -314,7 +387,7 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     // is missing OR from an older bake version (peek_format_version != kFormatVersionFlat).
     auto flatten_one = [&](uint64_t part_hash) -> bool {
         const std::string flat_abs_path =
-            abs_cache_root + "/" + part_asset::cache_path_flat(part_hash);
+            abs_cache_root_ + "/" + part_asset::cache_path_flat(part_hash);
         if (part_asset::peek_format_version(flat_abs_path) == part_asset::kFormatVersionFlat)
             return true;
         // Phase 5 (Task 15): thread the per-schema retopo settings recorded
@@ -322,10 +395,12 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
         // default (enabled=false), so parts with no `static retopo` in their
         // schema behave exactly as before — no retopo, no .retopo.part sidecar.
         part_flatten::FlattenTargets targets;
-        auto rit = retopo_by_hash.find(part_hash);
-        if (rit != retopo_by_hash.end()) targets.retopo = rit->second;
+#if defined(MATTER_HAVE_SCRIPT_HOST)
+        auto rit = retopo_by_hash_.find(part_hash);
+        if (rit != retopo_by_hash_.end()) targets.retopo = rit->second;
+#endif
         part_flatten::FlattenResult fr =
-            part_flatten::flatten_part(abs_cache_root, part_hash, targets);
+            part_flatten::flatten_part(abs_cache_root_, part_hash, targets);
         if (fr.ok) {
             printf("LocalProvider: flattened %016llx (%zu clusters, %zu levels, %zu -> %zu tris, %zu instance_refs%s)\n",
                    (unsigned long long)part_hash, fr.clusters, fr.levels,
@@ -378,7 +453,7 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
                 // parts may not have been flattened yet). Non-fatal on failure.
                 flatten_one(ph);
                 const std::string flat_abs_path =
-                    abs_cache_root + "/" + part_asset::cache_path_flat(ph);
+                    abs_cache_root_ + "/" + part_asset::cache_path_flat(ph);
                 if (part_asset::peek_format_version(flat_abs_path) !=
                     part_asset::kFormatVersionFlat) continue;
                 BLASManager scratch_blas;
@@ -406,43 +481,43 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     // roots flagged `expand`, whose baked child-instance table is promoted to
     // individual world instances (per-child LOD, culling, and instanced
     // batching downstream). Tileset roots are handled separately below.
-    for (size_t i = 0; i < roots.size(); ++i) {
-        if (tileset_flags[i]) {
+    for (size_t i = 0; i < roots_.size(); ++i) {
+        if (tileset_flags_[i]) {
             // Handled below via run_tileset_phase; not placed as a world instance.
             continue;
         }
         // Map back to the install index for this original root.
         size_t k = 0; bool found = false;
-        for (size_t j = 0; j < install_to_orig.size(); ++j)
-            if (install_to_orig[j] == i) { k = j; found = true; break; }
+        for (size_t j = 0; j < install_to_orig_.size(); ++j)
+            if (install_to_orig_[j] == i) { k = j; found = true; break; }
         if (!found) continue;  // (unreachable — every non-tileset root was installed)
-        if (expand_flags[i]) {
-            if (!append_expanded_children(abs_cache_root, ir.root_hashes[k],
+        if (expand_flags_[i]) {
+            if (!append_expanded_children(abs_cache_root_, ir_.root_hashes[k],
                                           next_id, out.instances, err))
                 return false;
         } else {
-            place(ir.root_hashes[k], 0.0f, 0.0f, 0.0f, roots[i].module);
+            place(ir_.root_hashes[k], 0.0f, 0.0f, 0.0f, roots_[i].module);
         }
     }
     flatten_placed();
     append_instance_refs();
 
     // ---- Tileset roots: GPU bake + .gtex load into a viewer slot -----------
-    // run_tileset_phase reads world.manifest and .js from abs_world_data.
-    // The gtex is written to abs_world_data/<root_module>.gtex (the GPU overload
+    // run_tileset_phase reads world.manifest and .js from abs_world_data_.
+    // The gtex is written to abs_world_data_/<root_module>.gtex (the GPU overload
     // constructs the path as world_data_dir + "/" + root_module + ".gtex").
     //
-    // run_tileset_phase passes abs_cache_root to HostBaker; HostBaker::bake now
+    // run_tileset_phase passes abs_cache_root_ to HostBaker; HostBaker::bake now
     // propagates it via BakeOptions.parts_dir so bake_source writes absolute paths
     // (Task 3 Phase B: no chdir needed here).
-    // (baked_tileset_count_ already reset at connect() entry.)
+    // (baked_tileset_count_ already reset at compose_world() entry.)
 
     // Guard: fail-closed BEFORE any GL/disk work if the manifest declares more
     // tileset roots than we have sampler-array slots. Checking inside the loop
     // left 0..N-1 slots loaded with stale atlases on error.
-    if ((int)tileset_indices.size() > viewer::tileset_provider::max_slots()) {
+    if ((int)tileset_indices_.size() > viewer::tileset_provider::max_slots()) {
         err = "LocalProvider: manifest declares " +
-              std::to_string(tileset_indices.size()) +
+              std::to_string(tileset_indices_.size()) +
               " tileset roots but only " +
               std::to_string(viewer::tileset_provider::max_slots()) +
               " slots are available";
@@ -457,8 +532,8 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
         return fn(e);   // inline (synchronous path unchanged)
     };
 
-    for (size_t ti : tileset_indices) {
-        const std::string root_module = roots[ti].module;
+    for (size_t ti : tileset_indices_) {
+        const std::string root_module = roots_[ti].module;
         // Dev hook: MATTER_TILESET_DUMP_PNG=1 dumps loose <root>-albedo.png /
         // -normal.png / -orm.png / -height.png next to the .gtex so an operator
         // can eyeball the baked atlas without launching the viewer.
@@ -473,15 +548,15 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
             opts.force_rebake = false;   // let content_hash decide
             opts.dump_png     = dump_png;
             std::string re;
-            if (!tileset::run_tileset_phase(abs_world_data, cfg_.world_name, root_module,
-                                            abs_cache_root, settled, opts, re,
-                                            abs_shared_lib)) {
+            if (!tileset::run_tileset_phase(abs_world_data_, cfg_.world_name, root_module,
+                                            abs_cache_root_, settled, opts, re,
+                                            abs_shared_lib_)) {
                 ge = "run_tileset_phase(" + root_module + "): " + re +
                      " (if a GL error: set GALLIUM_DRIVER=d3d12 on WSLg)";
                 return false;
             }
             // The GPU overload writes: world_data_dir + "/" + root_module + ".gtex"
-            const std::string gtex_path = abs_world_data + "/" + root_module + ".gtex";
+            const std::string gtex_path = abs_world_data_ + "/" + root_module + ".gtex";
             std::string le;
             if (!viewer::tileset_provider::load_slot(slot_idx, gtex_path, le)) {
                 ge = "tileset_provider::load_slot(" + gtex_path + "): " + le;
@@ -504,7 +579,7 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
 
     // --- Parse world lights ---
     {
-        const std::string manifest_path = abs_world_data + "/" + cfg_.world_name + "/world.manifest";
+        const std::string manifest_path = abs_world_data_ + "/" + cfg_.world_name + "/world.manifest";
         std::string lights_err;
         if (!world_lights::parse_lights(manifest_path, out.lights, lights_err)) {
             printf("LocalProvider: warning: light parse failed: %s\n", lights_err.c_str());
@@ -560,7 +635,7 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
         const uint64_t probe_fingerprint = part_asset::fnv1a64(fp_buf.data(), fp_buf.size());
 
         // --- Probe cache path: <cache_root>/cache/<world_name>.probes ---
-        const std::string cache_subdir = abs_cache_root + "/cache";
+        const std::string cache_subdir = abs_cache_root_ + "/cache";
         {
             int r = fs_mkdir(cache_subdir.c_str());
             (void)r;   // EEXIST is fine; mirrors the parts/ mkdir above
@@ -587,7 +662,7 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
             // Build tracer (non-fatal on failure).
             world_tracer::WorldTracer tracer;
             std::string tracer_err;
-            if (!tracer.build(abs_cache_root, trace_instances, tracer_err)) {
+            if (!tracer.build(abs_cache_root_, trace_instances, tracer_err)) {
                 printf("probe bake failed: %s\n", tracer_err.c_str());
                 // out.probes stays null -> fallback shading
             } else {
@@ -617,6 +692,10 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     }
 
     return true;
+}
+
+bool LocalProvider::connect(WorldManifest& out, std::string& err) {
+    return install_graph(err) && compose_world(out, err);
 }
 
 std::vector<uint64_t>

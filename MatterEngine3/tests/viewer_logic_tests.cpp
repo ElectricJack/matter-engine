@@ -1213,6 +1213,78 @@ static void test_build_expansion_leaf_and_children() {
     printf("  test_build_expansion_leaf_and_children OK\n");
 }
 
+// Task 5 (Phase B): verify install_graph() fires on_part with total==0 for
+// freshly-baked parts, and that subsequent fetch_parts calls carry total==want.size().
+// Uses a cold temp cache so the install phase actually bakes at least one part.
+static void test_install_phase_on_part_progress() {
+#if defined(MATTER_HAVE_SCRIPT_HOST)
+    // Wipe a small throwaway cache so install_graph always bakes from scratch.
+    const std::string cold_cache = "/tmp/me3_install_progress_test";
+    system(("rm -rf " + cold_cache).c_str());
+    system(("mkdir -p " + cold_cache + "/parts").c_str());
+
+    // Records (done, total) pairs from all on_part callbacks in order.
+    std::vector<std::pair<int,int>> callbacks;
+
+    viewer::LocalProviderConfig cfg;
+    cfg.schemas_dir    = "../examples/world_demo/schemas";
+    cfg.world_data_dir = "../examples/world_demo/WorldData";
+    cfg.world_name     = "Demo";
+    cfg.shared_lib_dir = "../shared-lib";
+    cfg.cache_root     = cold_cache;
+    cfg.on_part = [&](const char* /*module*/, int done, int total) {
+        callbacks.emplace_back(done, total);
+    };
+
+    viewer::LocalProvider prov(cfg);
+
+    // install_graph fires on_part(module, ++n, 0) for each freshly-baked part.
+    std::string err;
+    bool ig_ok = prov.install_graph(err);
+    CHECK(ig_ok, "install_phase_progress: install_graph succeeds on cold cache");
+    if (!ig_ok) { printf("  install_graph error: %s\n", err.c_str()); }
+
+    // Assert at least one callback with total==0 fired during install_graph.
+    bool saw_install_phase = false;
+    for (const auto& cb : callbacks)
+        if (cb.second == 0) { saw_install_phase = true; break; }
+    CHECK(saw_install_phase, "install_phase_progress: on_part fired with total==0 during install");
+
+    // Record how many install callbacks there were before compose_world.
+    const size_t install_cb_count = callbacks.size();
+
+    // compose_world does not fire on_part (only install_graph does during baking;
+    // fetch_parts fires on_part with total==want.size() after reconcile).
+    viewer::WorldManifest m;
+    bool cw_ok = prov.compose_world(m, err);
+    CHECK(cw_ok, "install_phase_progress: compose_world succeeds");
+    if (!cw_ok) printf("  compose_world error: %s\n", err.c_str());
+
+    // Now fetch_parts: on_part should fire with total == want.size() (not 0).
+    viewer::PartStore store(cold_cache);
+    auto want = prov.reconcile(m, store);
+    if (!want.empty()) {
+        size_t pre = callbacks.size();
+        bool fp_ok = prov.fetch_parts(want, store, err);
+        CHECK(fp_ok, "install_phase_progress: fetch_parts succeeds");
+        size_t fetch_cb_count = callbacks.size() - pre;
+        // Every fetch callback should carry total == want.size().
+        bool fetch_totals_ok = true;
+        for (size_t i = pre; i < callbacks.size(); ++i)
+            if (callbacks[i].second != (int)want.size()) fetch_totals_ok = false;
+        CHECK(fetch_totals_ok, "install_phase_progress: fetch-phase on_part carries total==want.size()");
+        CHECK(fetch_cb_count == want.size(),
+              "install_phase_progress: one on_part callback per wanted part in fetch");
+    }
+
+    printf("  install_phase_progress: install callbacks=%zu (total==0), fetch callbacks=%zu\n",
+           install_cb_count, callbacks.size() - install_cb_count);
+    system(("rm -rf " + cold_cache).c_str());
+#else
+    printf("  test_install_phase_on_part_progress: MATTER_HAVE_SCRIPT_HOST not defined, skip\n");
+#endif
+}
+
 int main() {
     test_cull_transform_convention();
     test_world_state_version();
@@ -1248,6 +1320,8 @@ int main() {
     test_pack_whole_part_zero_threshold();
     // Task 4 (GPU culler): per-part compositional expansion table
     test_build_expansion_leaf_and_children();
+    // Task 5 (Phase B): install_graph() fires on_part with total==0; fetch_parts carries want.size()
+    test_install_phase_on_part_progress();
     delete g_shared_store; g_shared_store = nullptr;
     printf("\n%s\n", g_failures == 0 ? "viewer-logic OK" : "viewer-logic FAILED");
     return g_failures == 0 ? 0 : 1;
