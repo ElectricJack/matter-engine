@@ -31,11 +31,16 @@ clean:
 
 # Tests: ASan + UBSan (repo convention)
 TEST_FLAGS = -Wall -Wextra -g -I./include -fsanitize=address,undefined
-TEST_SRCS = tests/memory_tests.c $(wildcard $(SRC_DIR)/*.c)
+TEST_CC_OBJS = $(OBJ_DIR)/t_mem_pool.o $(OBJ_DIR)/t_mem_arena.o $(OBJ_DIR)/t_mem_array.o
 
-test: $(TEST_SRCS)
-	$(CC) $(TEST_FLAGS) -o memory_tests $(TEST_SRCS)
+$(OBJ_DIR)/t_%.o: $(SRC_DIR)/%.c $(HEADERS)
+	$(CC) $(TEST_FLAGS) -c $< -o $@
+
+test: $(TEST_CC_OBJS) tests/memory_tests.c tests/memory_hpp_tests.cpp
+	$(CC) $(TEST_FLAGS) -o memory_tests tests/memory_tests.c $(TEST_CC_OBJS)
 	./memory_tests
+	g++ -Wall -Wextra -g -std=c++14 -I./include -fsanitize=address,undefined -o memory_hpp_tests tests/memory_hpp_tests.cpp $(TEST_CC_OBJS)
+	./memory_hpp_tests
 
 -include $(OBJS:.o=.d)
 
