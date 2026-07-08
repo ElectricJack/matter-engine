@@ -15,6 +15,14 @@
 #include "tileset_provider.h"
 #include "material_registry.h"
 
+#if defined(MATTER_HAVE_AUTOREMESHER)
+#include "mesh_retopo.hpp"     // retopo() TBB warm-up (see connect() below)
+#include "mesh_indexed.hpp"
+#include "mesh_transform.hpp"  // from_tri
+#include "bvh.h"               // Tri / TriEx / float3
+#include <cmath>               // std::sqrt for warm-up mesh construction
+#endif
+
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -25,6 +33,7 @@
 #include <set>
 #include <sstream>
 #include <sys/stat.h>
+#include <unordered_map>
 #ifdef _WIN32
 #include <direct.h>      // _mkdir, _getcwd, _chdir
 #include <stdlib.h>      // _fullpath, _MAX_PATH
@@ -80,6 +89,68 @@ std::string abspath(const std::string& rel) {
     if (fs_realpath(rel.c_str(), buf)) return std::string(buf);
     return rel;
 }
+
+#if defined(MATTER_HAVE_AUTOREMESHER)
+// Phase 5 autoremesher (Task 15): one-shot TBB / geogram warm-up.
+// See MatterEngine3/tests/retopo_integration_tests.cpp for the empirical
+// motivation: on WSL2, the first retopo() call segfaults during TBB
+// "Multithreading enabled" init if it happens AFTER any heap-heavy work like
+// part_asset::save_v2 (which HostBaker::bake calls for every part). Calling
+// retopo() FIRST on a small valid mesh initializes the TBB scheduler in a
+// clean state and every subsequent retopo() succeeds. The N=4 spherified cube
+// is the same fixture used by the integration test — small (~96 tris) but
+// non-degenerate for the cross-field parameterizer.
+void tbb_warmup_retopo() {
+    std::vector<Tri> tris;
+    tris.reserve(6 * 4 * 4 * 2);
+    struct Face { float o[3], u[3], v[3]; };
+    const Face faces[6] = {
+        { {-1,-1,-1}, {2,0,0}, {0,2,0} },
+        { {-1,-1, 1}, {0,2,0}, {2,0,0} },
+        { {-1,-1,-1}, {0,0,2}, {2,0,0} },
+        { {-1, 1,-1}, {2,0,0}, {0,0,2} },
+        { {-1,-1,-1}, {0,2,0}, {0,0,2} },
+        { { 1,-1,-1}, {0,0,2}, {0,2,0} },
+    };
+    const int N = 4;
+    auto project = [](float x, float y, float z) {
+        float r = std::sqrt(x*x + y*y + z*z);
+        return make_float3(x / r, y / r, z / r);
+    };
+    for (const auto& f : faces) {
+        std::vector<float3> grid((N + 1) * (N + 1));
+        for (int j = 0; j <= N; ++j)
+            for (int i = 0; i <= N; ++i) {
+                float s = static_cast<float>(i) / N;
+                float t = static_cast<float>(j) / N;
+                grid[j * (N + 1) + i] = project(
+                    f.o[0] + s * f.u[0] + t * f.v[0],
+                    f.o[1] + s * f.u[1] + t * f.v[1],
+                    f.o[2] + s * f.u[2] + t * f.v[2]);
+            }
+        for (int j = 0; j < N; ++j)
+            for (int i = 0; i < N; ++i) {
+                float3 a = grid[j * (N + 1) + i];
+                float3 b = grid[j * (N + 1) + i + 1];
+                float3 c = grid[(j + 1) * (N + 1) + i];
+                float3 d = grid[(j + 1) * (N + 1) + i + 1];
+                Tri t1, t2;
+                t1.vertex0 = a; t1.vertex1 = b; t1.vertex2 = d;
+                t1.centroid = make_float3((a.x+b.x+d.x)/3, (a.y+b.y+d.y)/3, (a.z+b.z+d.z)/3);
+                t2.vertex0 = a; t2.vertex1 = d; t2.vertex2 = c;
+                t2.centroid = make_float3((a.x+d.x+c.x)/3, (a.y+d.y+c.y)/3, (a.z+d.z+c.z)/3);
+                tris.push_back(t1);
+                tris.push_back(t2);
+            }
+    }
+    MeshIndexed warm = from_tri(tris, nullptr);
+    RetopoOptions opts;
+    opts.threads = 1;
+    RetopoResult wr = retopo(warm, opts);
+    printf("LocalProvider: TBB warm-up retopo ok=%d elapsed=%.3fs\n",
+           (int)wr.ok, wr.elapsed_seconds);
+}
+#endif
 } // namespace
 
 LocalProvider::LocalProvider(LocalProviderConfig cfg) : cfg_(std::move(cfg)) {}
@@ -123,12 +194,67 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
         return false;
     }
 
+#if defined(MATTER_HAVE_AUTOREMESHER)
+    // Warm the TBB scheduler BEFORE any heap-heavy work (install() calls
+    // save_v2 for every fresh bake). Per the retopo_integration_tests docstring:
+    // on WSL2 the first retopo() call segfaults during TBB init if it happens
+    // AFTER save_v2 activity. This warms it once per process into a clean
+    // state. Runs unconditionally: cost is <50 ms on a tiny cube, and it
+    // avoids a conditional-execution hazard for worlds that DO have opt-ins.
+    tbb_warmup_retopo();
+#endif
+
     // SP-2/SP-3/SP-7 wiring. HostBaker's second arg is the PARENT of parts/ (== ".").
     // bake_source writes "parts/<hash>.part" relative to cwd (== abs_cache_root).
     script_host::ScriptHost host;
     host.set_shared_lib_root(abs_shared_lib);
     FileModuleResolver resolver(host, abs_schemas);
-    HostBaker baker(host, ".");
+
+    // Phase 5 autoremesher (Task 15): record each part's retopo settings by
+    // hash so flatten_one() below can thread them into flatten_part().
+    // Decorator over HostBaker: PartGraph::install calls resolve_hash() for
+    // EVERY node in the reachable graph (memoized by module+params), which
+    // gives us the source + resolved hash for every part regardless of cache
+    // state — cold OR warm. Recording on resolve_hash (not bake) means a
+    // repeat run with fully cached parts still populates the map, so
+    // flatten_one always sees the correct retopo settings. Schemas without
+    // `static retopo` land on the default (enabled=false), so the map entry
+    // is byte-identical to "not opted in".
+    std::unordered_map<uint64_t, part_asset::RetopoSettings> retopo_by_hash;
+    struct RecordingBaker : public Baker {
+        HostBaker inner;
+        script_host::ScriptHost& host;
+        std::unordered_map<uint64_t, part_asset::RetopoSettings>* map;
+        RecordingBaker(script_host::ScriptHost& h, std::string parts_dir,
+                       std::unordered_map<uint64_t, part_asset::RetopoSettings>* m)
+            : inner(h, std::move(parts_dir)), host(h), map(m) {}
+        uint64_t resolve_hash(const std::string& source, const Params& params,
+                              const std::vector<uint64_t>& child_hashes) override {
+            uint64_t h = inner.resolve_hash(source, params, child_hashes);
+            if (map && h != 0 && !map->count(h)) {
+                // Fail-closed: eval_retopo_settings returns defaults on any error.
+                // Guard the double-map lookup so re-visits of the same (source, params)
+                // don't re-parse (eval_retopo_settings spins up a QuickJS context).
+                (*map)[h] = host.eval_retopo_settings(source);
+            }
+            return h;
+        }
+        bool cached(uint64_t resolved_hash) override { return inner.cached(resolved_hash); }
+        bool bake(const std::string& source, const Params& params,
+                  const std::vector<uint64_t>& child_hashes,
+                  const std::vector<std::string>& child_modules,
+                  const std::vector<std::string>& child_params,
+                  uint64_t resolved_hash) override {
+            return inner.bake(source, params, child_hashes, child_modules,
+                              child_params, resolved_hash);
+        }
+        bool bake_lod_variants(const std::string& source, const Params& params,
+                               const std::vector<uint64_t>& child_hashes,
+                               uint64_t resolved_hash) override {
+            return inner.bake_lod_variants(source, params, child_hashes, resolved_hash);
+        }
+    };
+    RecordingBaker baker(host, ".", &retopo_by_hash);
     PartGraph graph(resolver, baker);
 
     std::vector<ChildRequest> roots;
@@ -197,12 +323,20 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
             abs_cache_root + "/" + part_asset::cache_path_flat(part_hash);
         if (part_asset::peek_format_version(flat_abs_path) == part_asset::kFormatVersionFlat)
             return true;
+        // Phase 5 (Task 15): thread the per-schema retopo settings recorded
+        // during bake into the flatten call. Absent-entry lookup returns the
+        // default (enabled=false), so parts with no `static retopo` in their
+        // schema behave exactly as before — no retopo, no .retopo.part sidecar.
+        part_flatten::FlattenTargets targets;
+        auto rit = retopo_by_hash.find(part_hash);
+        if (rit != retopo_by_hash.end()) targets.retopo = rit->second;
         part_flatten::FlattenResult fr =
-            part_flatten::flatten_part(abs_cache_root, part_hash);
+            part_flatten::flatten_part(abs_cache_root, part_hash, targets);
         if (fr.ok) {
-            printf("LocalProvider: flattened %016llx (%zu clusters, %zu levels, %zu -> %zu tris, %zu instance_refs)\n",
+            printf("LocalProvider: flattened %016llx (%zu clusters, %zu levels, %zu -> %zu tris, %zu instance_refs%s)\n",
                    (unsigned long long)part_hash, fr.clusters, fr.levels,
-                   fr.full_tris, fr.coarsest_tris, fr.instance_refs);
+                   fr.full_tris, fr.coarsest_tris, fr.instance_refs,
+                   targets.retopo.enabled ? ", retopo=on" : "");
             return true;
         } else {
             // Non-fatal: the viewer falls back to compositional rendering.

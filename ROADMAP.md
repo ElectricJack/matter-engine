@@ -1,4 +1,32 @@
 
+## autoremesher integration [DONE]
+
+Vendored MIT-licensed headless subset of huxingyi/autoremesher into
+`Libraries/autoremesher_core/`. Added `MeshIndexed`/`MeshTransform` boundary
+in MatterSurfaceLib and `mesh_retopo` module alongside the QEM simplifier.
+Retopo is per-part opt-in via `static retopo = { enabled: true, ... }` on the
+DSL part class definition, discovered by ScriptHost::eval_retopo_settings.
+Wiring landed in the viewer's LocalProvider (RecordingBaker decorator maps
+resolved_hash → RetopoSettings, threaded into `part_flatten::flatten_part`
+via `FlattenTargets.retopo`). TBB warm-up runs once per viewer process before
+any bake to sidestep the WSL2 first-call segfault. First opt-in: Meadow's
+Tree. Design: `docs/superpowers/specs/2026-07-07-autoremesher-integration-design.md`.
+Plan: `docs/superpowers/plans/2026-07-07-autoremesher-integration.md`.
+
+Task 15 report note: real Meadow-scale Tree geometry (~100k tris of dense
+non-manifold voxel bark) triggers a hard geogram abort() inside
+autoremesher_core that the C++ try/catch in the MSL retopo() wrapper cannot
+recover from. Task 14's end-to-end integration test on a spherified-cube
+fixture passes. The wiring is proven; the "subprocess isolation for crash
+safety" follow-up below is the correct fix for real Meadow-scale opt-ins.
+
+Follow-ups (out of scope for this landing): mesher-native indexed emit
+(remove Tri-boundary conversion at MSL entrance), per-cluster retopo with
+boundary preservation, subprocess isolation for crash safety (mandatory
+before real Meadow-scale schemas can safely opt in).
+
+---
+
 ## Fix HiZ occlusion false-positives (default is OFF because of this)
 
 **Backlog — surfaced 2026-07-05 during freehand Windows testing.**

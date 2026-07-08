@@ -27,6 +27,47 @@ LDLIBS  = ../../Libraries/raylib/build/linux/libraylib.a
 BOX3D_LIB = ../../Libraries/box3d/libbox3d.a
 LDLIBS   += $(BOX3D_LIB)
 
+# ---- Phase 5 autoremesher_core (Task 15 wiring) ----
+# The vendored autoremesher_core static lib + its TBB dependency. Linux-only:
+# the library was built for Linux in Task 4 (Libraries/autoremesher_core/) and
+# the geogram/TBB build under mingw isn't part of this landing. Windows viewer
+# builds WITHOUT -DMATTER_HAVE_AUTOREMESHER, so schemas that opt into retopo
+# transparently fall through to the streaming unretopo'd flatten path (same
+# behavior guarantee as tests/Makefile RETOPO_INT_TARGET's design).
+#
+# Only fold retopo into the build if the static lib and TBB build dir are
+# actually present — build-all.sh produces both. Otherwise skip retopo entirely
+# and the viewer builds as before (schemas without retopo unaffected; schemas
+# WITH retopo hit the #else warn-and-continue path in part_flatten.cpp).
+AR_CORE_PATH := ../../Libraries/autoremesher_core
+AR_CORE_LIB  := $(AR_CORE_PATH)/libautoremesher_core.a
+TBB_BUILD_DIR := $(firstword $(wildcard $(AR_CORE_PATH)/thirdparty/tbb/build/linux_*_release))
+TBB_BUILD_SUBDIR := $(patsubst $(AR_CORE_PATH)/thirdparty/tbb/build/%,%,$(TBB_BUILD_DIR))
+HAVE_AUTOREMESHER := $(and $(wildcard $(AR_CORE_LIB)),$(TBB_BUILD_DIR))
+
+ifneq ($(HAVE_AUTOREMESHER),)
+  # -DMATTER_HAVE_AUTOREMESHER enables the retopo hook in part_flatten.cpp and
+  # the retopo() / from_tri / to_tri glue in MSL. mesh_retopo.cpp is the MSL
+  # unit that wraps autoremesher_core::remesh().
+  AR_CORE_CFLAGS := -DMATTER_HAVE_AUTOREMESHER -I$(AR_CORE_PATH)/include
+  # --allow-multiple-definition: raylib bundles stb_image_write.h in rtextures.c
+  # and autoremesher_core's geogram bundles its own copy in
+  # image_serializer_stb.o. Both archives get pulled in here — raylib because
+  # the viewer draws GL, autoremesher_core because part_flatten's hook
+  # references autoremesher::retopo. The stb sources are byte-equivalent vendor
+  # copies, so picking either definition is safe. This mirrors tests/Makefile
+  # RETOPO_INT_TARGET's link workaround verbatim.
+  AR_CORE_LDFLAGS := -L$(AR_CORE_PATH) -lautoremesher_core \
+                     -L$(TBB_BUILD_DIR) -ltbb \
+                     -Wl,-rpath,'$$ORIGIN/../../Libraries/autoremesher_core/thirdparty/tbb/build/$(TBB_BUILD_SUBDIR)' \
+                     -Wl,--allow-multiple-definition
+  AR_CORE_CPP := ../../MatterSurfaceLib/src/mesh_retopo.cpp
+else
+  AR_CORE_CFLAGS :=
+  AR_CORE_LDFLAGS :=
+  AR_CORE_CPP :=
+endif
+
 # Test-only sources excluded from VIEWER_SRC so `make viewer` doesn't link them.
 TEST_ONLY_SRC = gpu_cull_tests.cpp
 
@@ -62,7 +103,8 @@ PIPELINE_CPP = ../src/part_graph.cpp \
               ../src/tileset_phase.cpp ../src/tileset_phase_gpu.cpp \
               ../src/tileset_bake.cpp ../src/tileset_settle.cpp \
               ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
-              ../../MatterSurfaceLib/src/lattice.cpp ../../MatterSurfaceLib/src/particle_culling.cpp
+              ../../MatterSurfaceLib/src/lattice.cpp ../../MatterSurfaceLib/src/particle_culling.cpp \
+              $(AR_CORE_CPP)
 
 # C sources (gcc-compiled to keep extern "C" symbols unmangled) + QuickJS C.
 PIPELINE_C = ../../MatterSurfaceLib/src/surface.c ../../MatterSurfaceLib/src/open_particle_surface.c \
@@ -80,10 +122,21 @@ IMGUI_SRC = $(IMGUI_PATH)/imgui.cpp $(IMGUI_PATH)/imgui_draw.cpp \
 # can compile them concurrently). Basenames are unique across all source dirs,
 # so flattening with $(notdir ...) is collision-free. vpath (below) lets the
 # pattern rules find each source by basename.
-CXX_FLAGS_BUILD = $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB $(INCLUDE_PATHS) -I../../Libraries/box3d/include $(QJS_INC) -MMD -MP
+# Linux gets -DMATTER_HAVE_AUTOREMESHER + autoremesher_core include path when
+# HAVE_AUTOREMESHER is set (see AR_CORE_CFLAGS above). Windows never opts in
+# (autoremesher_core hasn't been cross-built for mingw); schemas with the
+# opt-in fall through to the streaming path with a one-line warn on Windows.
+CXX_FLAGS_BUILD_COMMON = $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB $(INCLUDE_PATHS) -I../../Libraries/box3d/include $(QJS_INC) -MMD -MP
+CXX_FLAGS_BUILD = $(CXX_FLAGS_BUILD_COMMON) $(AR_CORE_CFLAGS)
+CXX_FLAGS_BUILD_WIN = $(CXX_FLAGS_BUILD_COMMON)
 CPP_NAMES = $(notdir $(VIEWER_SRC) $(PIPELINE_CPP) $(IMGUI_SRC))
 QJS_NAMES = $(notdir $(QJS_C))
 PIPC_NAMES = $(notdir $(PIPELINE_C))
+# Windows CPP set: excludes mesh_retopo.cpp (Linux-only via AR_CORE_CPP). The
+# empty AR_CORE_CPP on Windows would already make this a no-op — the filter is
+# defensive: even if HAVE_AUTOREMESHER is set on the host (Linux build), the
+# Windows target must not try to compile mesh_retopo.cpp (needs geogram TBB).
+CPP_NAMES_WIN = $(filter-out mesh_retopo.cpp,$(CPP_NAMES))
 
 vpath %.cpp . ../src ../../MatterSurfaceLib/src $(IMGUI_PATH) $(IMGUI_PATH)/backends
 vpath %.c ../../MatterSurfaceLib/src $(QJS_DIR)
@@ -95,9 +148,9 @@ L_QJS_OBJ  = $(addprefix $(L_DIR)/,$(QJS_NAMES:.c=.o))
 L_PIPC_OBJ = $(addprefix $(L_DIR)/,$(PIPC_NAMES:.c=.o))
 L_ALL_OBJ  = $(L_CPP_OBJ) $(L_QJS_OBJ) $(L_PIPC_OBJ)
 
-# Windows object sets
+# Windows object sets. Windows uses CPP_NAMES_WIN which excludes mesh_retopo.cpp.
 W_DIR = build/windows
-W_CPP_OBJ  = $(addprefix $(W_DIR)/,$(CPP_NAMES:.cpp=.o))
+W_CPP_OBJ  = $(addprefix $(W_DIR)/,$(CPP_NAMES_WIN:.cpp=.o))
 W_QJS_OBJ  = $(addprefix $(W_DIR)/,$(QJS_NAMES:.c=.o))
 W_PIPC_OBJ = $(addprefix $(W_DIR)/,$(PIPC_NAMES:.c=.o))
 W_ALL_OBJ  = $(W_CPP_OBJ) $(W_QJS_OBJ) $(W_PIPC_OBJ)
@@ -121,12 +174,12 @@ $(L_PIPC_OBJ): $(L_DIR)/%.o: ../../MatterSurfaceLib/src/%.c | $(L_DIR)
 	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
 
 viewer: shaders shaders_gpu_link $(L_ALL_OBJ)
-	$(CC) $(L_ALL_OBJ) -o viewer $(CFLAGS) $(LDFLAGS) $(LDLIBS)
+	$(CC) $(L_ALL_OBJ) -o viewer $(CFLAGS) $(LDFLAGS) $(LDLIBS) $(AR_CORE_LDFLAGS)
 
 # GPU cull parity test binary: same objects as viewer, minus main.o, plus gpu_cull_tests.o.
 GPU_TEST_OBJ = $(filter-out $(L_DIR)/main.o,$(L_ALL_OBJ)) $(L_TEST_OBJ)
 gpu-tests: shaders shaders_gpu_link $(GPU_TEST_OBJ)
-	$(CC) $(GPU_TEST_OBJ) -o gpu_tests $(CFLAGS) $(LDFLAGS) $(LDLIBS)
+	$(CC) $(GPU_TEST_OBJ) -o gpu_tests $(CFLAGS) $(LDFLAGS) $(LDLIBS) $(AR_CORE_LDFLAGS)
 
 # tileset headless GPU tests (Task 3..7). Same object set as gpu-tests + the
 # tileset_gpu_tests.cpp driver, minus main.o and gpu_cull_tests.o.
@@ -233,7 +286,7 @@ WIN_LIBS    = -lopengl32 -lgdi32 -lwinmm ../../Libraries/box3d/build-mingw/libbo
 
 # ---- Windows compile rules
 $(W_CPP_OBJ): $(W_DIR)/%.o: %.cpp | $(W_DIR)
-	$(WIN_CXX) -c $< -o $@ $(CXX_FLAGS_BUILD)
+	$(WIN_CXX) -c $< -o $@ $(CXX_FLAGS_BUILD_WIN)
 $(W_QJS_OBJ): $(W_DIR)/%.o: $(QJS_DIR)/%.c | $(W_DIR)
 	$(WIN_CC) -c $< -o $@ -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC) -MMD -MP
 $(W_PIPC_OBJ): $(W_DIR)/%.o: ../../MatterSurfaceLib/src/%.c | $(W_DIR)

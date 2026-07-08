@@ -12,6 +12,32 @@ import { sub, add, scale, length, normalize, cross } from 'shared-lib/vecmath';
 class Tree extends Part {
   static requires = [{ module: 'TreeBranch' }];
 
+  // Phase 5 autoremesher opt-in (Task 15). First schema to enable retopo:
+  // the trunk + bark voxel field is exactly the kind of dense, closed-manifold
+  // organic surface autoremesher's cross-field quad-remesher was designed for.
+  // Cleaner all-quad topology feeds a nicer QEM ladder (smoother silhouettes at
+  // LOD1/LOD2, smoother shading normals on the trunk). Fail-closed at the MSL
+  // wrapper level: retopo() catches std::exception and returns ok=false so the
+  // flatten path falls back to unretopo'd flatten.
+  //
+  // KNOWN LIMITATION (Task 15 report): full Meadow-scale Tree geometry
+  // (voxel bark + 100k+ tris with non-manifold overlap between bark strands)
+  // triggers a hard geogram abort() inside autoremesher_core that the C++
+  // try/catch cannot recover from. The wiring is verified end-to-end via
+  // MatterEngine3/tests/retopo_integration_tests (Task 14) on a spherified
+  // cube fixture; a viewer bake of the full Meadow world takes the Tree
+  // through the retopo hook but the process aborts inside geogram. Real
+  // Meadow deployment either needs (a) Tree geometry pre-cleaned for
+  // manifoldness, or (b) the "subprocess isolation for crash safety"
+  // follow-up listed in ROADMAP.md.
+  static retopo = {
+    enabled: true,
+    target_ratio: 1.0,
+    iterations: 3,
+    seed: 42,
+    timeout_seconds: 120,
+  };
+
   build(p) {
     const DEG = Math.PI / 180;
     // Scaled up from the original 0.25 so the bark resolves with more detail.
