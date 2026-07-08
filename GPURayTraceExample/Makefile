@@ -215,23 +215,23 @@ endif
 
 # Build rules for main target (C++)
 $(OBJ_DIR)/main.o: main.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/bvh.o: src/bvh.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 # object_allocator compiled from ObjectAllocatorLib (source of truth)
 $(OBJ_DIR)/object_allocator.o: $(OA_LIB)/src/object_allocator.c $(OA_LIB)/include/object_allocator.h
-	$(CC) -c $< $(CFLAGS) -o $@
+	$(CC) -c $< $(CFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/blas_manager.o: src/blas_manager.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/tlas_manager.o: src/tlas_manager.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/bvh_visualizer.o: src/bvh_visualizer.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 # Platform-specific clean
 clean:
@@ -275,5 +275,7 @@ platform:
 	@echo "Raylib library: $(RAYLIB_LIB)"
 	@echo "CC: $(CC)"
 	@echo "CXX: $(CXX)"
+
+-include $(OBJ:.o=.d)
 
 .PHONY: all clean clean-all raylib shaders rebuild-raylib platform

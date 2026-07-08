@@ -28,17 +28,17 @@ $(TARGET): $(OBJS)
 
 # Rule for main.c (in root directory)
 $(OBJ_DIR)/main.o: main.c $(HEADERS)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 # Rule for source files in src directory
 $(OBJ_DIR)/$(SRC_DIR)/%.o: $(SRC_DIR)/%.c $(HEADERS)
 	mkdir -p $(OBJ_DIR)/$(SRC_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 # object_allocator compiled from ObjectAllocatorLib (source of truth)
 $(OBJ_DIR)/src/object_allocator.o: $(OA_LIB)/src/object_allocator.c $(OA_LIB)/include/object_allocator.h
 	mkdir -p $(OBJ_DIR)/src
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 clean:
 	rm -rf $(OBJ_DIR) $(TARGET) spatial_hash_tests bvh_tests
@@ -56,5 +56,7 @@ test: $(TEST_SRCS) $(BVH_TEST_SRCS)
 	./spatial_hash_tests
 	$(CC) $(BVH_TEST_FLAGS) -o bvh_tests $(BVH_TEST_SRCS)
 	./bvh_tests
+
+-include $(OBJS:.o=.d)
 
 .PHONY: all clean test

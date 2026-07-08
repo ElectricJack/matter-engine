@@ -2,7 +2,7 @@ CC = gcc
 RAYLIB_PATH = ../Libraries/raylib
 SPATIAL_QUERY_PATH = ../SpatialQueryLib
 OA_LIB = ../ObjectAllocatorLib
-CFLAGS = -Wall -Wextra -O2 -I$(RAYLIB_PATH)/src -Iinclude -I$(SPATIAL_QUERY_PATH)/include -I$(OA_LIB)/include
+CFLAGS = -Wall -Wextra -O2 -MMD -MP -I$(RAYLIB_PATH)/src -Iinclude -I$(SPATIAL_QUERY_PATH)/include -I$(OA_LIB)/include
 
 # Detect OS
 UNAME_S := $(shell uname -s)
@@ -43,9 +43,11 @@ spatial_hash.o: $(SPATIAL_QUERY_PATH)/src/spatial_hash.c $(SPATIAL_QUERY_PATH)/i
 	$(CC) -c $< $(CFLAGS) -o $@
 
 clean:
-	rm -f $(OBJ) $(BIN)
+	rm -f $(OBJ) $(OBJ:.o=.d) $(BIN)
 
 clean-all: clean
 	$(MAKE) -C $(RAYLIB_PATH)/src clean
+
+-include $(OBJ:.o=.d)
 
 .PHONY: all clean clean-all raylib

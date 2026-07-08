@@ -82,20 +82,20 @@ $(RAYLIB_FORCE_FILE):
 
 # Rule for main.c (in root directory)
 $(OBJ_DIR)/main.o: main.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 # Rule for source files in src directory
 $(OBJ_DIR)/$(SRC_DIR)/%.o: $(SRC_DIR)/%.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 # Sibling library sources compiled directly from source of truth
 $(OBJ_DIR)/$(SRC_DIR)/object_allocator.o: $(OA_LIB)/src/object_allocator.c $(OA_LIB)/include/object_allocator.h
 	mkdir -p $(OBJ_DIR)/$(SRC_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 $(OBJ_DIR)/$(SRC_DIR)/spatial_hash.o: $(SPATIAL_QUERY_PATH)/src/spatial_hash.c $(SPATIAL_QUERY_PATH)/include/spatial_hash.h
 	mkdir -p $(OBJ_DIR)/$(SRC_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 # Platform-specific clean
 clean:
@@ -122,5 +122,7 @@ platform:
 	@echo "Current platform: $(PLATFORM)"
 	@echo "Build directory: $(BUILD_DIR)"
 	@echo "Raylib library: $(RAYLIB_LIB)"
+
+-include $(OBJS:.o=.d)
 
 .PHONY: all clean clean-all raylib rebuild-raylib platform
