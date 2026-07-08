@@ -44,6 +44,7 @@ MemoryLib/
 ├── README.md
 ├── main.c                 # demo/smoke binary (repo convention)
 ├── include/
+│   ├── mem_stats.h        # shared MemStats struct
 │   ├── mem_pool.h         # renamed object_allocator.h
 │   ├── mem_arena.h
 │   ├── mem_array.h
@@ -96,6 +97,7 @@ typedef struct MemArray {
     size_t count;
     size_t capacity;   // in elements
     size_t elemSize;
+    size_t growCount;  // number of reallocs (reported as stats totalAllocs)
 } MemArray;
 ```
 
@@ -106,6 +108,7 @@ typedef struct MemArray {
 - `void* mem_array_push(MemArray* arr);` — returns pointer to new element slot, NULL on OOM
 - `void mem_array_clear(MemArray* arr);` — count = 0, capacity retained
 - `void mem_array_free(MemArray* arr);`
+- `void mem_array_get_stats(const MemArray* arr, MemStats* out);`
 
 Heap-backed only; arena-backed arrays are an explicit non-goal for v1.
 
@@ -118,11 +121,13 @@ typedef struct MemStats {
     size_t totalAllocs;
     // type-specific extras:
     size_t pageCount;    // pool: pages; arena: blocks
+    size_t totalObjects; // pool only
     size_t freeObjects;  // pool only
 } MemStats;
 ```
 
 One `*_get_stats()` per allocator type. No tagging, no global registry.
+All C headers carry `extern "C"` guards so `memory.hpp` and C++ consumers link cleanly.
 
 ### C++ wrapper (`memory.hpp`)
 
