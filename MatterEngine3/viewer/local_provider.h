@@ -5,6 +5,7 @@
 #include "part_store.h"
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -17,6 +18,10 @@ struct LocalProviderConfig {
     std::string world_name;       // "Demo"
     std::string shared_lib_dir;   // ../shared-lib
     std::string cache_root;       // persistent parts/ cache (NOT a /tmp throwaway)
+
+    // Invoked during fetch_parts once per part processed (bake or cache hit):
+    // module = part module name, done/total = progress through the want list.
+    std::function<void(const char* module, int done, int total)> on_part;
 };
 
 // Drives the SP-3 install path over a persistent content-addressed cache and

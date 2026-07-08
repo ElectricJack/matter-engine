@@ -640,8 +640,10 @@ bool LocalProvider::fetch_parts(const std::vector<uint64_t>& want,
                                 PartStore& store, std::string& err) {
     // LocalProvider already wrote the .part blobs to the shared cache during
     // connect()'s install; "fetching" is just loading them into the store.
-    for (uint64_t h : want) {
+    for (size_t i = 0; i < want.size(); ++i) {
+        uint64_t h = want[i];
         if (!store.get_or_load(h)) { err = "load failed for part " + std::to_string(h); return false; }
+        if (cfg_.on_part) cfg_.on_part(/*module_name=*/nullptr, (int)(i + 1), (int)want.size());
     }
     return true;
 }

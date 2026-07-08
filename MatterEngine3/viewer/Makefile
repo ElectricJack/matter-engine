@@ -77,7 +77,8 @@ VIEWER_SRC = main.cpp renderer.cpp ui.cpp \
              world_composer.cpp local_provider.cpp \
              raster_mesh.cpp raster_composer.cpp probe_texture.cpp \
              gpu_culler.cpp tileset_gl_ctx.cpp tileset_bake_primary.cpp \
-             tileset_bake_ao.cpp tileset_provider.cpp
+             tileset_bake_ao.cpp tileset_provider.cpp \
+             matter_engine.cpp
 
 # ME3 pipeline + MSL backend C++ sources (verbatim from tests/Makefile EXAMPLE_CPP,
 # minus example_world.cpp). Same dir depth, so the ../ paths are unchanged.
