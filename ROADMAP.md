@@ -1,4 +1,32 @@
 
+## Shared-object build for MatterEngine3/tests Makefile (test-suite wall time)
+
+**Backlog — surfaced 2026-07-07 while running the full suite on the
+code-review-fixes merge.**
+
+`MatterEngine3/tests/Makefile` has ~20 test targets and each one compiles its
+full source list — all of MatterSurfaceLib's mesher, QuickJS-ng, and the
+engine sources — in a single `g++` invocation, then deletes the `.o` files
+(`rm -f $(*_C_OBJ)`). The same TUs (`surface.c`, `quickjs.c`, the
+marching-cubes pipeline) are rebuilt 15–20× per suite run with no object
+sharing and no intra-target parallelism. The 2026-07 code-review pass deduped
+the *source lists* (`COMMON_MSL_*` vars, Task 16) but kept the
+single-invocation compile structure, and skipped `-MMD` dep tracking there
+for the same reason (Task 17).
+
+Fix: compile shared sources once into a per-suite object directory
+(e.g. `obj/msl/`, `obj/qjs/`) with real per-TU rules + `-MMD -MP`, and have
+the ~20 targets link against those objects. Cuts the dominant chunk of suite
+wall time and enables `make -j`. Side benefit: removes the shared-intermediate
+race that makes concurrent `make` invocations in this directory destroy each
+other's builds (the `ld: cannot find quickjs.o` failure mode).
+
+Cross-refs: `MatterEngine3/tests/Makefile` (`COMMON_MSL_BLAS_SRC` /
+`COMMON_MSL_FULL_SRC` / `COMMON_MSL_C`), Task 16/17 notes in
+`docs/superpowers/plans/2026-07-07-code-review-fixes.md`.
+
+---
+
 ## autoremesher integration [DONE]
 
 Vendored MIT-licensed headless subset of huxingyi/autoremesher into

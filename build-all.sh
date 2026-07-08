@@ -102,6 +102,15 @@ prep_autoremesher_core() {
     else
         echo "  autoremesher_core: FAIL"
     fi
+    # TBB runtime: header-only inside the static lib, but consumers
+    # (retopo_integration_tests, viewer) link libtbb.so at final link time.
+    # TBB's own Makefile emits build/linux_*_release/.
+    ( cd Libraries/autoremesher_core/thirdparty/tbb && make tbb >/dev/null 2>&1 )
+    if ls Libraries/autoremesher_core/thirdparty/tbb/build/linux_*_release/libtbb.so.2 >/dev/null 2>&1; then
+        echo "  tbb runtime: OK"
+    else
+        echo "  tbb runtime: FAIL"
+    fi
 }
 
 if [ "$MODE" = "clean" ]; then
