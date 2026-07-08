@@ -1,8 +1,124 @@
-# Task 5 Report: Stage 2b — EngineContext/WorldSession Facade
+# Task 5 Report: Split `LocalProvider::connect()` into `install_graph()` + `compose_world()`; Install-Phase Progress
 
-## Summary
+**Commit:** `8a3977b`
+**Branch:** `feature/phase-b-async-bake`
 
-Created `MatterEngine3/viewer/matter_engine.cpp` implementing `matter::EngineContext` and `matter::WorldSession` as a facade over the in-place viewer pipeline. Added `LocalProviderConfig::on_part` progress callback. Build is clean; aerial screenshot MATCHes the reference.
+---
+
+## What Was Changed and Why
+
+### Files Modified
+
+1. **`MatterEngine3/src/provider/local_provider.h`** — Public API + private members
+2. **`MatterEngine3/src/provider/local_provider.cpp`** — Implementation split
+3. **`MatterEngine3/tests/viewer_logic_tests.cpp`** — New install-phase progress test
+4. **`MatterEngine3/tests/Makefile`** — Fix pre-existing linker break
+
+---
+
+## What Was Changed and Why (Summary)
+
+`connect()` was a monolithic function. This task mechanically splits it at the seam after `PartGraph::install()` completes (before scatter/placement begins), making the two phases independently callable so Task 6's worker command loop and Tasks 9/10 (cone rebake) can re-run composition without re-executing the expensive script eval + voxel bake.
+
+---
+
+## Split Point Chosen
+
+The split occurs **after `PartGraph::install()` completes and all root hash validation is done**, immediately before the scatter/placement section.
+
+- **`install_graph()` ends** after: `graph.install()`, counter updates, `module_by_hash_` build, root hash count validation. Returns `true`.
+- **`compose_world()` begins** with: `baked_tileset_count_ = 0` reset, placement loop, flatten + instance refs, tileset phase, probe bake.
+
+`connect()` = `install_graph(err) && compose_world(out, err)` — unchanged external behavior.
+
+---
+
+## New Member Variables Added
+
+### Always-present (no guard)
+| Variable | Type | Purpose |
+|----------|------|---------|
+| `install_bake_count_` | `int` | Counter for install-phase `on_part` callbacks |
+| `abs_schemas_`, `abs_world_data_`, `abs_shared_lib_`, `abs_cache_root_` | `std::string` | Resolved absolute paths (cross phase boundary) |
+| `roots_` | `std::vector<ChildRequest>` | All manifest roots |
+| `expand_flags_`, `tileset_flags_` | `std::vector<bool>` | Root flags parallel to roots_ |
+| `roots_for_install_` | `std::vector<ChildRequest>` | Non-tileset roots sent to PartGraph |
+| `install_to_orig_` | `std::vector<size_t>` | Index mapping install → original roots_ |
+| `tileset_indices_` | `std::vector<size_t>` | Indices of tileset roots in roots_ |
+| `ir_` | `part_graph::InstallResult` | Install result (root hashes, baked set, hits) |
+
+### Gated under `#if defined(MATTER_HAVE_SCRIPT_HOST)`
+| Variable | Type | Purpose |
+|----------|------|---------|
+| `host_` | `std::unique_ptr<script_host::ScriptHost>` | ScriptHost instance (spans phases) |
+| `resolver_` | `std::unique_ptr<part_graph::FileModuleResolver>` | Module resolver (spans phases) |
+| `retopo_by_hash_` | `std::unordered_map<uint64_t, part_asset::RetopoSettings>` | Per-part retopo settings for flatten_one() |
+
+---
+
+## Install-Phase `on_part` (Step 2)
+
+`RecordingBaker::bake()` fires `cfg_.on_part(module, ++n, 0)` before delegating. The module name is derived from the JS source via `class_name_from_source()` — a helper that scans for `class ClassName extends Part {`. Guarded: only fires when `cfg_.on_part` is set.
+
+---
+
+## Pre-existing Linker Break Fixed
+
+`viewer_logic_tests` was failing to link since Task 4 because `tileset_provider.cpp` and `tileset_bake_gpu.cpp` reference `matter_async::assert_gl_thread()`, but `async_bake.cpp` was missing from `VIEWER_LOGIC_CPP`. Added `../src/async_bake.cpp` to the Makefile entry.
+
+---
+
+## Test Commands Run and Results
+
+### `run-graph`
+**PASS** — All part_graph tests passed.
+
+### `run-graph-integration`
+**6 FAILs (all known pre-existing — Tree.js disabled):**
+- Tree placed the Trunk
+- demo Trunk .part reloads
+- Trunk registered voxel geometry
+- every placed Leaf is one of the four real shade variants
+- demo Leaf .part reloads
+- Leaf registered blade triangle mesh
+
+No new failures introduced.
+
+### `run-meadow` (brief calls this `run-meadowbake`)
+**PASS** — ALL PASS (terrain seam, rock/pebble/grass/treebranch).
+
+### `run-tilesetmeadowmanifest`
+**PASS** — 4 run, 0 failed.
+
+### `run-viewer-logic` (new test verification)
+New test `test_install_phase_on_part_progress`:
+```
+install_phase_progress: install callbacks=3 (total==0), fetch callbacks=1
+```
+All install-phase assertions pass:
+- install_graph succeeds on cold cache ✓
+- on_part fired with total==0 during install ✓ (3 callbacks)
+- compose_world succeeds ✓
+- fetch_parts succeeds ✓
+- Fetch-phase callbacks carry total==want.size() ✓
+
+Pre-existing failures in viewer-logic (unrelated, from Tree.js disabled):
+- "all manifest parts (and their children) loaded into shared store"
+- "passthrough composes every instance plus its children"
+- "flat tree has an empty child table"
+- "branch part loads from PartStore"
+
+---
+
+## Concerns
+
+**None blocking.**
+
+1. **`compose_world()` for cone rebake**: When called standalone (Tasks 9/10), it does NOT call `tileset_provider::unload_all()` — that happens in `install_graph()`. For cone rebake scenarios where only non-tileset parts change, this is correct. Tasks 9/10 should add an explicit unload if the tileset also changes.
+
+2. **`class_name_from_source` accuracy**: Works for `class Foo extends Part {` pattern (all demo schemas). Shared-lib modules also baked via HostBaker may have different patterns. The callback is informational (progress UI) so any mismatch is non-fatal — the callback receives `nullptr` module name and the on_part is still fired.
+
+3. **`Rng64` struct**: Present in the anonymous namespace but unused. Was in the original file; left unchanged.
 
 ---
 
