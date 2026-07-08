@@ -21,6 +21,7 @@
 #endif
 
 #include <algorithm>
+#include <atomic>    // g_invocations counter (safe if flatten_one ever parallelizes)
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -47,14 +48,17 @@
 namespace matter_engine3 {
 namespace retopo_hook_stats {
 // Static file-scope counter — same TU bumps it and same TU exposes it via
-// reset() / invocation_count(). Not thread-safe (flatten_part is single-
-// threaded per invocation). `bump()` is an implementation detail used only
-// by this TU's retopo hook — it's not declared in the header so callers
-// can't accidentally poke it.
-static uint64_t g_invocations = 0;
-void     reset()             { g_invocations = 0; }
-uint64_t invocation_count()  { return g_invocations; }
-void     bump()              { ++g_invocations; }
+// reset() / invocation_count(). Atomic so a future parallelization of
+// flatten_one (e.g. from local_provider.cpp) doesn't silently race the
+// counter. relaxed ordering is fine: callers only observe the counter after
+// their driving loop completes, and Task 14's integration test asserts on
+// the final value from a single thread. `bump()` is an implementation
+// detail used only by this TU's retopo hook — it's not declared in the
+// header so callers can't accidentally poke it.
+static std::atomic<uint64_t> g_invocations{0};
+void     reset()             { g_invocations.store(0, std::memory_order_relaxed); }
+uint64_t invocation_count()  { return g_invocations.load(std::memory_order_relaxed); }
+void     bump()              { g_invocations.fetch_add(1, std::memory_order_relaxed); }
 } // namespace retopo_hook_stats
 } // namespace matter_engine3
 
@@ -588,7 +592,14 @@ const float kIdentity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
         int32_t  timeout_seconds;
         uint32_t enabled;                 // uint32 not bool: pad-free layout
         uint64_t platform_triple_hash;
-    } payload{};
+    } payload;
+    // Ensure padding bytes are deterministic before folding the whole struct
+    // through fnv1a64. The layout has a 4-byte pad hole between `enabled`
+    // (offset 28) and `platform_triple_hash` (offset 32); `payload{}` happens
+    // to zero pad bytes on x86_64 gcc today but the standard does not require
+    // it, so a future compiler bump could silently start hashing garbage and
+    // invalidate every cached .retopo.part. memset makes the fold portable.
+    std::memset(&payload, 0, sizeof(payload));
     payload.flat_mesh_hash       = flat_mesh_hash;
     payload.target_ratio_bits    = rs.target_ratio_bits();
     payload.iterations           = rs.iterations;

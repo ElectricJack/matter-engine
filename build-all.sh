@@ -135,9 +135,11 @@ if [ "$MODE" = "test" ]; then
     done
 
     # MatterSurfaceLib headless suites (no GL window). Target name == binary name.
+    # mesh_indexed_tests, mesh_transform_tests are Phase 5 additions (Task 2/3).
     for suite in mesh_simplifier_tests material_registry_tests cell_bounds_tests \
                  blas_refcount_tests mesh_continuity_tests blas_tint_tests \
-                 particle_culling_tests voxel_imposter_tests; do
+                 particle_culling_tests voxel_imposter_tests \
+                 mesh_indexed_tests mesh_transform_tests; do
         if make -C MatterSurfaceLib/tests "$suite" >/dev/null 2>&1; then
             echo
             echo "--- MatterSurfaceLib ($suite) ---"
@@ -146,6 +148,22 @@ if [ "$MODE" = "test" ]; then
             RESULT[MatterSurfaceLib]="FAIL (test build)"
         fi
     done
+
+    # MSL mesh_retopo_tests (Phase 5 Task 6) — links libautoremesher_core.a + TBB.
+    # Only runs if the vendored lib built; otherwise skip cleanly (autoremesher_core
+    # is optional, prep_autoremesher_core above just warns "FAIL" and moves on).
+    if [ -f Libraries/autoremesher_core/libautoremesher_core.a ]; then
+        if make -C MatterSurfaceLib/tests mesh_retopo_tests >/dev/null 2>&1; then
+            echo
+            echo "--- MatterSurfaceLib (mesh_retopo_tests) ---"
+            MatterSurfaceLib/tests/mesh_retopo_tests || RESULT[MatterSurfaceLib]="FAIL (tests)"
+        else
+            RESULT[MatterSurfaceLib]="FAIL (test build)"
+        fi
+    else
+        echo
+        echo "--- MatterSurfaceLib (mesh_retopo_tests) SKIPPED (no libautoremesher_core.a) ---"
+    fi
 
     if make -C MeshChartingLib/tests mesh_charting_tests >/dev/null 2>&1; then
         echo; echo "--- MeshChartingLib (mesh_charting_tests) ---"
@@ -163,6 +181,19 @@ if [ "$MODE" = "test" ]; then
         echo "--- MatterEngine3 ($tgt) ---"
         make -C MatterEngine3/tests "$tgt" || RESULT[MatterEngine3]="FAIL ($tgt)"
     done
+
+    # Phase 5 retopo end-to-end integration (Task 14) — links autoremesher_core.
+    # Same gate as the MSL mesh_retopo suite above: skip cleanly if the vendored
+    # static lib wasn't built (e.g. clean checkout with no autoremesher_core).
+    if [ -f Libraries/autoremesher_core/libautoremesher_core.a ]; then
+        echo
+        echo "--- MatterEngine3 (run-retopo-integration) ---"
+        make -C MatterEngine3/tests run-retopo-integration \
+            || RESULT[MatterEngine3]="FAIL (run-retopo-integration)"
+    else
+        echo
+        echo "--- MatterEngine3 (run-retopo-integration) SKIPPED (no libautoremesher_core.a) ---"
+    fi
 
     # Viewer GPU tests — GL 4.6 required. On WSLg this needs GALLIUM_DRIVER=d3d12.
     # We infer availability by (a) the env var being set OR (b) glxinfo reporting >=4.6.

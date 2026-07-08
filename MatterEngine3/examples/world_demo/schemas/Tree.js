@@ -31,7 +31,11 @@ class Tree extends Part {
   // manifoldness, or (b) the "subprocess isolation for crash safety"
   // follow-up listed in ROADMAP.md.
   static retopo = {
-    enabled: true,
+    // Flipped off pending subprocess-isolation follow-up — see ROADMAP.md.
+    // Wiring is proven end-to-end by retopo_integration_tests (Task 14); a
+    // fresh Meadow bake against a MATTER_HAVE_AUTOREMESHER viewer would
+    // otherwise hit the geogram abort() documented above.
+    enabled: false,
     target_ratio: 1.0,
     iterations: 3,
     seed: 42,
