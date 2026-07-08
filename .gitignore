@@ -62,10 +62,12 @@ MatterEngine3/viewer/*_tests
 MatterSurfaceLib/tests/*_tests
 MeshChartingLib/tests/*_tests
 
-# ObjectAllocatorLib and SpatialQueryLib test binaries
+# ObjectAllocatorLib and SpatialQueryLib test binaries + object dirs
 SpatialQueryLib/spatial_hash_tests
 SpatialQueryLib/bvh_tests
 ObjectAllocatorLib/object_allocator_tests
+ObjectAllocatorLib/linux/
+SpatialQueryLib/linux/
 
 # Transient screenshots + sentinel files (FIFO shot capture)
 *.png.done
@@ -73,7 +75,8 @@ MatterEngine3/viewer/*.png
 MatterEngine3/viewer/shots_forestfloor/
 MatterEngine3/tools/shots_task6/
 shots/
-MatterEngine3/viewer/shaders/
+# (no trailing slash: shaders is a symlink in fresh checkouts, a dir otherwise)
+MatterEngine3/viewer/shaders
 
 # Local backups / imposter test outputs / world bake data
 *.bak
