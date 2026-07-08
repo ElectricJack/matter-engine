@@ -1,126 +1,122 @@
-# Task 2 Report: Stage 1a — Shader Embedding Codegen + `matter::shader_text`
+# Task 2: Public API Surface — Event Fields, BakeErrorCode, pump_gpu_jobs, enable_live_edit
 
-## What Was Built
+## Summary
+Successfully implemented Task 2: public API surface additions for Phase B async bake. All header modifications, implementation code, test extensions, and full builds completed and verified.
 
-1. **`MatterEngine3/tools/embed_shaders.py`** — codegen script verbatim from the brief. Reads shader files relative to a `<base_dir>`, emits a C++ header with inline string literals keyed by logical path.
+## Implementation Details
 
-2. **`MatterEngine3/include/shader_source.h`** — public API header defining `matter::shader_text()` and `matter::set_shader_override_dir()`, verbatim from the brief.
+### Step 1: Header Edits
 
-3. **`MatterEngine3/src/shader_source.cpp`** — implementation verbatim from the brief. Lookup order: `MATTER_SHADER_DIR` env → `g_override_dir` → embedded table.
+#### MatterEngine3/include/matter/events.h
+Replaced file body with new enums and struct as specified in brief:
+- Added `BakeErrorCode` enum: None, Cancelled, OutOfMemory, ScriptError, GpuError, IoError, Internal
+- Extended `Event` struct with Phase B fields (append-only):
+  - `std::string phase` — "install" | "compose" | "parts" | "gl" | "cone" | ""
+  - `BakeErrorCode code = BakeErrorCode::None` — BakeError classification
+  - `int errors = 0` — BakeFinished: failed-part count (skip-and-continue)
+- Updated field comments for clarity
 
-4. **`MatterEngine3/tests/shader_source_tests.cpp`** — three-assertion test verbatim from the brief: embedded lookup works, unknown path fails with useful error, override dir wins.
+#### MatterEngine3/include/matter/world_session.h
+- Added to `WorldDesc`: `bool enable_live_edit = false;` with documentation
+- Updated `request_bake()` comment to Phase B asynchronous semantics
+- Updated `reload()` comment to Phase B asynchronous semantics
+- Added new public method:
+  ```cpp
+  void pump_gpu_jobs(float ms_budget);
+  ```
+  with GL-thread context documentation
 
-5. **`MatterEngine3/.gitignore`** — single entry `shaders_gen/` to ignore the generated directory.
+#### MatterEngine3/src/matter_engine.cpp
+- Added `#include "async_bake.h"` to src includes
+- Added to `WorldSession::Impl`:
+  ```cpp
+  matter_async::GpuJobQueue gpu_jobs;
+  ```
+- Implemented pump_gpu_jobs:
+  ```cpp
+  void WorldSession::pump_gpu_jobs(float ms_budget) {
+      impl_->gpu_jobs.pump((double)ms_budget);
+  }
+  ```
 
-## Pre-Step: Extra `.glsl` Include Files
+### Step 2: Test Extension
 
-The brief instructs: grep the `.fs`/`.comp` sources for `#include`, add any extra glsl files to the table. Findings:
-- `shaders/raster.fs` includes `tileset_sampling.glsl` (already in brief's table)
-- `shaders_gpu/tileset_bake_ao.comp` and `tileset_bake_primary.comp` include `materials.glsl` and `bvh_tlas_common.glsl`
-- `shaders/raytrace_tlas_blas.fs` includes `materials.glsl`, `bvh_tlas_common.glsl`, `tileset_sampling.glsl`, `lighting.glsl` (note: this is the non-processed `.fs`, not in the embed table)
+#### MatterEngine3/tests/async_queue_tests.cpp
+- Added `#include "matter/events.h"` for public API access
+- Added test 9: `test_event_struct_shape()` that:
+  - Constructs `matter::Event` 
+  - Verifies defaults: `code == BakeErrorCode::None`, `errors == 0`, `phase.empty()`
+  - Sets fields and verifies persistence
+  - Integrated into main() test sequence
 
-Added to `SHADER_LOGICAL`: `shaders/materials.glsl`, `shaders/bvh_tlas_common.glsl`, `shaders/lighting.glsl`. Final embedded count: 12 shaders.
+**Note:** Verified `-I../include` already in Makefile INCLUDE_PATHS; no Makefile changes needed.
 
-## Makefile Changes
+## Test Execution Results
 
-### `MatterEngine3/Makefile`
-- Added `SHADER_LOGICAL` / `SHADER_FILES` variables and `shaders_gen/embedded_shaders.h` codegen target.
-- Added `src/shader_source.cpp` to `ME3_CPP` and `shader_source.o` to `ME3_OBJ`.
-- Made `$(ME3_OBJ)` depend on `shaders_gen/embedded_shaders.h` (so compiling the batch always has the header ready).
-
-### `MatterEngine3/viewer/Makefile`
-- Added `../src/shader_source.cpp` to `PIPELINE_CPP`.
-- Added `.PHONY: embedded-shaders` target that calls `$(MAKE) -C .. shaders_gen/embedded_shaders.h`.
-- Made `viewer` target depend on `embedded-shaders` (before the object builds).
-- Added `embedded-shaders` to `.PHONY` list.
-
-### `MatterEngine3/tests/Makefile`
-- Added `SHADER_SOURCE_TARGET`, `SHADER_SOURCE_CPP`, `$(SHADER_SOURCE_TARGET)` build rule, `run-shader-source` target.
-- Added `$(SHADER_SOURCE_TARGET)` to `clean`.
-- Added `run-shader-source` to `.PHONY`.
-- Include paths: `-I../include -I..` (so `shader_source.h` is found via `-I../include`, `../shaders_gen/embedded_shaders.h` is found via `-I..`).
-
-## Commands Run and Key Output
-
-### Step 5: Expect failure first
 ```
-$ cd MatterEngine3/tests && make shader_source_tests
-make: *** No rule to make target '../shaders_gen/embedded_shaders.h', needed by 'shader_source_tests'.  Stop.
-```
-Expected failure confirmed.
+make -C MatterEngine3/tests run-asyncq
+=== async_queue_tests ===
+[test_pump_runs_posted_jobs_in_order]
+ok pump_runs_posted_jobs_in_order
+[test_pump_respects_budget_but_always_runs_one]
+ok pump_respects_budget_but_always_runs_one
+[test_run_blocking_returns_result]
+ok run_blocking_returns_result
+[test_cancelled_token_skips_job]
+ok cancelled_token_skips_job
+[test_shutdown_unblocks_waiter]
+ok shutdown_unblocks_waiter
+[test_bakeall_supersedes_pending_and_cancels_inflight]
+ok bakeall_supersedes_pending_and_cancels_inflight
+[test_command_shutdown_wakes_pop]
+ok command_shutdown_wakes_pop
+[test_push_after_shutdown_is_cancelled_and_not_queued]
+ok push_after_shutdown_is_cancelled_and_not_queued
+[test_event_struct_shape]
+ok event_struct_shape_test
 
-### Step 5: Generate header
-```
-$ cd MatterEngine3 && make shaders_gen/embedded_shaders.h
-mkdir -p shaders_gen
-python3 tools/embed_shaders.py shaders_gen/embedded_shaders.h viewer shaders/raster.vs shaders/raster.fs shaders/tileset_sampling.glsl shaders/raytrace_tlas_blas_processed.fs shaders/materials.glsl shaders/bvh_tlas_common.glsl shaders/lighting.glsl shaders_gpu/cull.comp shaders_gpu/hiz_downsample.comp shaders_gpu/raster_gpu_driven.vs shaders_gpu/tileset_bake_primary.comp shaders_gpu/tileset_bake_ao.comp
-```
-12 entries embedded.
-
-### Step 5: Test run
-```
-$ cd MatterEngine3/tests && make run-shader-source
-g++ shader_source_tests.cpp ../src/shader_source.cpp -o shader_source_tests \
-      -std=c++17 -Wall -Wno-missing-braces -Wno-unused-variable -DPLATFORM_DESKTOP -DGRAPHICS_API_OPENGL_33 -I../include -I..
-./shader_source_tests
-shader_source_tests: all passed
-```
-
-### Step 6: Full library build
-```
-$ cd MatterEngine3 && make -j$(nproc)
-Exit: 0 (no errors/warnings)
-```
-
-### Step 6: Full viewer build
-```
-$ cd MatterEngine3/viewer && make -j$(nproc) viewer
-Exit: 0 (no errors/warnings)
-```
-
-## Deviations from Brief
-
-- `SHADER_LOGICAL` extended with `shaders/materials.glsl`, `shaders/bvh_tlas_common.glsl`, `shaders/lighting.glsl` per the brief's pre-step instruction. This is required behavior, not a deviation.
-- The viewer Makefile uses a `.PHONY: embedded-shaders` approach (runs `$(MAKE) -C ..`) rather than a per-object order-only dependency. This is functionally equivalent to the brief's "add an order-only rule" instruction — it ensures the header is generated before any `.o` is compiled.
-
-## Concerns
-
-None. All tests pass, both full builds succeed, no debug prints left in, `shaders_gen/` is gitignored.
-
----
-
-## Review Findings Fix (Commit 0b74970)
-
-### Finding I1 — embedded-shaders Prerequisite
-
-**Issue:** Test targets `gpu-tests`, `tileset-gpu-tests`, `tileset-seam-tests`, `tileset-provider-tests`, `tileset-load-tests` depended on `$(L_ALL_OBJ)` which includes `shader_source.o`, but did NOT depend on `embedded-shaders`, causing clean-checkout builds to fail with "no rule to make embedded_shaders.h".
-
-**Fix:** Added `embedded-shaders` prerequisite to each of the five test targets in `MatterEngine3/viewer/Makefile`, matching the style of the `viewer` target (line 182).
-
-**Verification:**
-```bash
-$ rm -f MatterEngine3/shaders_gen/embedded_shaders.h
-$ cd MatterEngine3/viewer && make tileset-load-tests -j$(nproc) > /tmp/fix-i1-build.log 2>&1; echo exit=$?
-exit=0
-$ grep -i "error\|undefined\|fatal" /tmp/fix-i1-build.log | head -20
-(no output — clean build)
+ALL PASS
 ```
 
-### Finding I2 — wire run-shader-source into build-all
+Status: **PASS** — All 9 tests pass, including new struct-shape case.
 
-**Issue:** `build-all.sh` test suite (line 188) ran a hardcoded list of MatterEngine3/tests run-* targets but omitted `run-shader-source`, added in commit 52772f9.
+## Build Verification
 
-**Fix:** Added `run-shader-source` to the target list in `build-all.sh` line 188, placed last to match existing style.
-
-**Verification:**
-```bash
-$ cd MatterEngine3/tests && make run-shader-source
-g++ shader_source_tests.cpp ../src/shader_source.cpp -o shader_source_tests \
-      -std=c++17 -Wall -Wno-missing-braces -Wno-unused-variable -DPLATFORM_DESKTOP -DGRAPHICS_API_OPENGL_33 -I../include -I..
-./shader_source_tests
-shader_source_tests: all passed
+### MatterEngine3
 ```
+make -C MatterEngine3 -j$(nproc)
+```
+**Status: PASS** — libmatter_engine3.a built successfully with no errors.
 
-### Files Changed
-- `MatterEngine3/viewer/Makefile` — added `embedded-shaders` prereq to 5 test targets
-- `build-all.sh` — added `run-shader-source` to test suite
+### MatterViewer
+```
+make -C MatterViewer -j$(nproc)
+```
+**Status: PASS** — viewer binary built successfully, linked with updated engine library, no compilation errors.
+
+Note: Raylib static library built separately prior to viewer build (dependency setup).
+
+## Files Modified
+1. `MatterEngine3/include/matter/events.h`
+2. `MatterEngine3/include/matter/world_session.h`
+3. `MatterEngine3/src/matter_engine.cpp`
+4. `MatterEngine3/tests/async_queue_tests.cpp`
+
+## Verification Checklist
+- ✅ Event struct fields added (append-only, no field reordering)
+- ✅ BakeErrorCode enum defined with all required values
+- ✅ WorldDesc.enable_live_edit field added with correct default
+- ✅ pump_gpu_jobs method signature and comment match brief specification
+- ✅ Implementation delegates correctly to gpu_jobs.pump()
+- ✅ Request_bake() comment updated to Phase B specification
+- ✅ Reload() comment updated to Phase B specification
+- ✅ Test case added and passes
+- ✅ MatterEngine3 compiles successfully
+- ✅ MatterViewer compiles successfully (unaffected by changes)
+- ✅ All async_queue_tests pass (8 pre-existing + 1 new struct-shape test)
+
+## Next Steps
+Ready for commit per Task 2 specification with commit message:
+```
+feat(phase-b): public API — structured BakeErrorCode, event phase/errors fields, pump_gpu_jobs, enable_live_edit (Task 2)
+```

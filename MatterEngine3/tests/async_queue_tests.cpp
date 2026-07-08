@@ -224,7 +224,7 @@ static void test_event_struct_shape() {
     CHECK(ev.phase == "compose", "phase set correctly");
     CHECK(ev.code == matter::BakeErrorCode::GpuError, "code set correctly");
     CHECK(ev.errors == 5, "errors set correctly");
-    printf("ok event_struct_shape_test\n");
+    printf("ok event_struct_shape\n");
 }
 
 // ---------------------------------------------------------------------------
