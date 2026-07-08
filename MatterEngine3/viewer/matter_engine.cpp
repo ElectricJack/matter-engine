@@ -453,7 +453,12 @@ void WorldSession::reload() {
 void WorldSession::tick() {
     // Poll provider deltas and apply to world state (main.cpp lines ~507–508).
     viewer::WorldDelta d;
-    if (impl_->provider->poll_deltas(d)) impl_->state.apply(d);
+    if (impl_->provider->poll_deltas(d)) {
+        impl_->state.apply(d);
+        // World content changed — lazy tracer is stale.
+        impl_->tracer_dirty = true;
+        impl_->tracer.reset();
+    }
 }
 
 void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,

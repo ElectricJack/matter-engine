@@ -496,6 +496,7 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../src/tileset_part_collider.cpp ../src/tileset_torus_bvh.cpp \
               ../src/world_lights.cpp ../src/probe_volume.cpp \
               ../src/world_tracer.cpp ../src/probe_bake.cpp \
+              ../src/shader_source.cpp \
               $(VIEWER_PIPELINE_CPP)
 # raster_composer.cpp is intentionally NOT linked: after Task 12 it depends on
 # GpuCuller (GL) via draw_gpu_driven, so it can't compile in the GL-free tests
@@ -503,7 +504,10 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
 # mesh_cache) were deleted together with the CPU raster path; GPU parity of the
 # per-cluster cull is covered by gpu_cull_tests in viewer/gpu_tests.
 
-$(VIEWER_LOGIC_TARGET): $(VIEWER_LOGIC_CPP) $(EXAMPLE_C) $(QJS_C)
+../shaders_gen/embedded_shaders.h:
+	$(MAKE) -C .. shaders_gen/embedded_shaders.h
+
+$(VIEWER_LOGIC_TARGET): $(VIEWER_LOGIC_CPP) $(EXAMPLE_C) $(QJS_C) | ../shaders_gen/embedded_shaders.h
 	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
 	gcc -c $(EXAMPLE_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
 	$(CC) $(VIEWER_LOGIC_CPP) $(QJS_OBJ) $(EXAMPLE_C_OBJ) -o $(VIEWER_LOGIC_TARGET) \
