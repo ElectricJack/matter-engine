@@ -17,7 +17,7 @@ typedef struct TestPoint {
 } TestPoint;
 
 // Test that MemPool works with our project setup
-bool test_object_allocator_integration() {
+bool test_mem_pool_integration() {
     MemPool* allocator = mem_pool_create(sizeof(TestPoint), 10);
     if (!allocator) {
         TEST_FAILED;
@@ -346,7 +346,7 @@ int main() {
     int passed = 0;
     int total = 9;
     
-    if (test_object_allocator_integration()) passed++;
+    if (test_mem_pool_integration()) passed++;
     if (test_spatial_hash_create_destroy()) passed++;
     if (test_spatial_hash_insert_query()) passed++;
     if (test_spatial_hash_remove()) passed++;
