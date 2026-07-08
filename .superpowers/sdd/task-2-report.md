@@ -1,126 +1,94 @@
-# Task 2 Report: Stage 1a — Shader Embedding Codegen + `matter::shader_text`
+# Task 2 Report: Migrate consumers and the build system to MemoryLib mem_pool API
 
-## What Was Built
+## What Was Done
 
-1. **`MatterEngine3/tools/embed_shaders.py`** — codegen script verbatim from the brief. Reads shader files relative to a `<base_dir>`, emits a C++ header with inline string literals keyed by logical path.
+Retargeted every consumer of the old `ObjectAllocatorLib` / `oa_*` API to the renamed
+`MemoryLib` / `mem_pool_*` API introduced in Task 1. All changes are mechanical renames
+with one exception (see Findings below).
 
-2. **`MatterEngine3/include/shader_source.h`** — public API header defining `matter::shader_text()` and `matter::set_shader_override_dir()`, verbatim from the brief.
+### Files changed (20 total)
 
-3. **`MatterEngine3/src/shader_source.cpp`** — implementation verbatim from the brief. Lookup order: `MATTER_SHADER_DIR` env → `g_override_dir` → embedded table.
+| File | Change |
+|------|--------|
+| `SpatialQueryLib/Makefile` | `OA_LIB` → `MEMORY_LIB`; paths to `../MemoryLib`; `object_allocator` → `mem_pool`; removed `mem_pool.c` from `BVH_TEST_SRCS` |
+| `SpatialQueryLib/src/bvh.c` | Deleted dead `#include "object_allocator.h"` (zero call sites confirmed) |
+| `SpatialQueryLib/main.c` | Header, type, and all `oa_*` call sites renamed to `mem_pool_*` |
+| `SpatialQueryLib/src/spatial_hash.c` | Header renamed |
+| `OpenParticleSurfaceLib/Makefile` | `OA_LIB` → `MEMORY_LIB`; paths; build rule target |
+| `OpenParticleSurfaceLib/src/open_particle_surface.c` | Header renamed |
+| `OpenParticleSurfaceLib/install_dependencies.sh` | All `ObjectAllocatorLib` / `object_allocator` refs renamed |
+| `OpenParticleSurfaceLib/build.sh` | Same |
+| `SurfaceLib/Makefile` | `OA_LIB` → `MEMORY_LIB`; paths; build rule target |
+| `GPURayTraceExample/Makefile` | Same + stale comment fixed |
+| `GPURayTraceExample/README.md` | `(copied from ObjectAllocatorLib)` → `(compiled from MemoryLib)` |
+| `ParticleDynamicsExample/Makefile` | `OA_LIB` → `MEMORY_LIB`; paths; build rule target |
+| `ParticleDynamicsExample/build.sh` | All refs renamed |
+| `ParticleDynamicsExample/README.md` | Dependency name + removed stale `object_allocator.c` from file tree |
+| `ParticleDynamicsExample/tests/Makefile` | Stale `../../SpatialQueryLib/src/object_allocator.c` → `../../MemoryLib/src/mem_pool.c` |
+| `build-all.sh` | Line 35: project name; lines 142-145: simplified binary-name loop |
+| `.gitignore` | Four edits: main binary, comment, two test binaries, linux dir |
+| `README.md` | Five edits: section header, dep refs, table row, test count |
+| `CLAUDE.md` | Library name in architecture section |
+| `ROADMAP.md` | Two occurrence renames |
 
-4. **`MatterEngine3/tests/shader_source_tests.cpp`** — three-assertion test verbatim from the brief: embedded lookup works, unknown path fails with useful error, override dir wins.
+## Findings
 
-5. **`MatterEngine3/.gitignore`** — single entry `shaders_gen/` to ignore the generated directory.
+**bvh.c dead include** — `SpatialQueryLib/src/bvh.c` had `#include "object_allocator.h"` at
+line 2 with zero `oa_*` call sites in the file. The include was removed entirely. `mem_pool.c`
+was also removed from `BVH_TEST_SRCS` since bvh tests never called pool functions.
 
-## Pre-Step: Extra `.glsl` Include Files
+**Stale path in ParticleDynamicsExample/tests/Makefile** — Line 10 referenced
+`../../SpatialQueryLib/src/object_allocator.c`, a path that never existed (SpatialQueryLib
+never owned `object_allocator.c`). Fixed to `../../MemoryLib/src/mem_pool.c`.
 
-The brief instructs: grep the `.fs`/`.comp` sources for `#include`, add any extra glsl files to the table. Findings:
-- `shaders/raster.fs` includes `tileset_sampling.glsl` (already in brief's table)
-- `shaders_gpu/tileset_bake_ao.comp` and `tileset_bake_primary.comp` include `materials.glsl` and `bvh_tlas_common.glsl`
-- `shaders/raytrace_tlas_blas.fs` includes `materials.glsl`, `bvh_tlas_common.glsl`, `tileset_sampling.glsl`, `lighting.glsl` (note: this is the non-processed `.fs`, not in the embed table)
+**MatterEngine3/MatterViewer MSL references are not in scope** — `MatterEngine3/Makefile`,
+`MatterEngine3/tests/Makefile`, and `MatterViewer/Makefile` all reference
+`$(MSL_DIR)/src/object_allocator.c`. These point to MatterSurfaceLib's vendored internal
+copy (never ObjectAllocatorLib). Confirmed pre-existing on `main` via
+`git show main:MatterEngine3/Makefile | grep object_allocator`. Not touched.
 
-Added to `SHADER_LOGICAL`: `shaders/materials.glsl`, `shaders/bvh_tlas_common.glsl`, `shaders/lighting.glsl`. Final embedded count: 12 shaders.
+## Gate Results
 
-## Makefile Changes
+Full `bash build-all.sh test` run completed (build died mid-grasslod OOM; remaining suites
+run individually). All failures are pre-existing on `main`:
 
-### `MatterEngine3/Makefile`
-- Added `SHADER_LOGICAL` / `SHADER_FILES` variables and `shaders_gen/embedded_shaders.h` codegen target.
-- Added `src/shader_source.cpp` to `ME3_CPP` and `shader_source.o` to `ME3_OBJ`.
-- Made `$(ME3_OBJ)` depend on `shaders_gen/embedded_shaders.h` (so compiling the batch always has the header ready).
+| Test Suite | Result |
+|---|---|
+| MemoryLib | PASS (6/6) |
+| SpatialQueryLib | PASS (spatial hash + BVH suites) |
+| MatterSurfaceLib (all suites) | PASS |
+| MatterEngine3 run-partv2 through run-dev | PASS |
+| MatterEngine3 run-example | FAIL (load_v2 Tree) — pre-existing |
+| MatterEngine3 run-graph-integration | FAIL (6 FAILs, Tree.js disabled) — pre-existing |
+| MatterEngine3 run-viewer-logic | FAIL (4 FAILs) — pre-existing |
+| MatterEngine3 run-grasslod | PASS |
+| MatterEngine3 run-stressforest | PASS (12/12) |
+| MatterEngine3 run-tilesetdsl | PASS |
+| MatterEngine3 run-tilesetbake | PASS |
+| MatterEngine3 run-tilesettorusbvh | PASS (12/12) |
+| MatterEngine3 run-tilesetmeadowmanifest | PASS (4/4) |
+| MatterEngine3 run-tilesetphysics/core/placement/gtex/shader-source | FAIL (pre-existing include-path build failures) |
 
-### `MatterEngine3/viewer/Makefile`
-- Added `../src/shader_source.cpp` to `PIPELINE_CPP`.
-- Added `.PHONY: embedded-shaders` target that calls `$(MAKE) -C .. shaders_gen/embedded_shaders.h`.
-- Made `viewer` target depend on `embedded-shaders` (before the object builds).
-- Added `embedded-shaders` to `.PHONY` list.
+All pre-existing failures confirmed identical on unmodified `main` via `git stash` checks.
 
-### `MatterEngine3/tests/Makefile`
-- Added `SHADER_SOURCE_TARGET`, `SHADER_SOURCE_CPP`, `$(SHADER_SOURCE_TARGET)` build rule, `run-shader-source` target.
-- Added `$(SHADER_SOURCE_TARGET)` to `clean`.
-- Added `run-shader-source` to `.PHONY`.
-- Include paths: `-I../include -I..` (so `shader_source.h` is found via `-I../include`, `../shaders_gen/embedded_shaders.h` is found via `-I..`).
+## Straggler Grep
 
-## Commands Run and Key Output
-
-### Step 5: Expect failure first
 ```
-$ cd MatterEngine3/tests && make shader_source_tests
-make: *** No rule to make target '../shaders_gen/embedded_shaders.h', needed by 'shader_source_tests'.  Stop.
-```
-Expected failure confirmed.
-
-### Step 5: Generate header
-```
-$ cd MatterEngine3 && make shaders_gen/embedded_shaders.h
-mkdir -p shaders_gen
-python3 tools/embed_shaders.py shaders_gen/embedded_shaders.h viewer shaders/raster.vs shaders/raster.fs shaders/tileset_sampling.glsl shaders/raytrace_tlas_blas_processed.fs shaders/materials.glsl shaders/bvh_tlas_common.glsl shaders/lighting.glsl shaders_gpu/cull.comp shaders_gpu/hiz_downsample.comp shaders_gpu/raster_gpu_driven.vs shaders_gpu/tileset_bake_primary.comp shaders_gpu/tileset_bake_ao.comp
-```
-12 entries embedded.
-
-### Step 5: Test run
-```
-$ cd MatterEngine3/tests && make run-shader-source
-g++ shader_source_tests.cpp ../src/shader_source.cpp -o shader_source_tests \
-      -std=c++17 -Wall -Wno-missing-braces -Wno-unused-variable -DPLATFORM_DESKTOP -DGRAPHICS_API_OPENGL_33 -I../include -I..
-./shader_source_tests
-shader_source_tests: all passed
-```
-
-### Step 6: Full library build
-```
-$ cd MatterEngine3 && make -j$(nproc)
-Exit: 0 (no errors/warnings)
-```
-
-### Step 6: Full viewer build
-```
-$ cd MatterEngine3/viewer && make -j$(nproc) viewer
-Exit: 0 (no errors/warnings)
-```
-
-## Deviations from Brief
-
-- `SHADER_LOGICAL` extended with `shaders/materials.glsl`, `shaders/bvh_tlas_common.glsl`, `shaders/lighting.glsl` per the brief's pre-step instruction. This is required behavior, not a deviation.
-- The viewer Makefile uses a `.PHONY: embedded-shaders` approach (runs `$(MAKE) -C ..`) rather than a per-object order-only dependency. This is functionally equivalent to the brief's "add an order-only rule" instruction — it ensures the header is generated before any `.o` is compiled.
-
-## Concerns
-
-None. All tests pass, both full builds succeed, no debug prints left in, `shaders_gen/` is gitignored.
-
----
-
-## Review Findings Fix (Commit 0b74970)
-
-### Finding I1 — embedded-shaders Prerequisite
-
-**Issue:** Test targets `gpu-tests`, `tileset-gpu-tests`, `tileset-seam-tests`, `tileset-provider-tests`, `tileset-load-tests` depended on `$(L_ALL_OBJ)` which includes `shader_source.o`, but did NOT depend on `embedded-shaders`, causing clean-checkout builds to fail with "no rule to make embedded_shaders.h".
-
-**Fix:** Added `embedded-shaders` prerequisite to each of the five test targets in `MatterEngine3/viewer/Makefile`, matching the style of the `viewer` target (line 182).
-
-**Verification:**
-```bash
-$ rm -f MatterEngine3/shaders_gen/embedded_shaders.h
-$ cd MatterEngine3/viewer && make tileset-load-tests -j$(nproc) > /tmp/fix-i1-build.log 2>&1; echo exit=$?
-exit=0
-$ grep -i "error\|undefined\|fatal" /tmp/fix-i1-build.log | head -20
-(no output — clean build)
+grep -rn "ObjectAllocatorLib|oa_create|oa_alloc|object_allocator" \
+  --include="*.c" --include="*.h" --include="*.cpp" --include="*.hpp" \
+  --include="Makefile" --include="*.sh" --include="*.md" . \
+  | grep -v "^./MatterSurfaceLib/" | grep -v "^./docs/" \
+  | grep -v "^./Libraries/" | grep -v "^./Examples/" \
+  | grep -v "^./.superpowers/sdd/"
 ```
 
-### Finding I2 — wire run-shader-source into build-all
+Residuals (all acceptable):
+- `MatterEngine3/Makefile`, `MatterEngine3/tests/Makefile`, `MatterViewer/Makefile` —
+  `$(MSL_DIR)/src/object_allocator.c` (MatterSurfaceLib vendored copy, pre-existing)
+- `MemoryLib/OBJECT_ALLOCATOR.md` — legacy docs inside MemoryLib, not a consumer
+- `SpatialQueryLib/main.c:20` — function name `test_object_allocator_integration()`
+  (test helper name, not an API symbol — intentionally kept per brief scope)
 
-**Issue:** `build-all.sh` test suite (line 188) ran a hardcoded list of MatterEngine3/tests run-* targets but omitted `run-shader-source`, added in commit 52772f9.
+## Commit
 
-**Fix:** Added `run-shader-source` to the target list in `build-all.sh` line 188, placed last to match existing style.
-
-**Verification:**
-```bash
-$ cd MatterEngine3/tests && make run-shader-source
-g++ shader_source_tests.cpp ../src/shader_source.cpp -o shader_source_tests \
-      -std=c++17 -Wall -Wno-missing-braces -Wno-unused-variable -DPLATFORM_DESKTOP -DGRAPHICS_API_OPENGL_33 -I../include -I..
-./shader_source_tests
-shader_source_tests: all passed
-```
-
-### Files Changed
-- `MatterEngine3/viewer/Makefile` — added `embedded-shaders` prereq to 5 test targets
-- `build-all.sh` — added `run-shader-source` to test suite
+`23ad9f1` — `refactor: retarget all ObjectAllocatorLib consumers to MemoryLib mem_pool API`
