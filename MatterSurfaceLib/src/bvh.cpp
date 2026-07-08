@@ -1,6 +1,7 @@
 #include "../include/precomp.h"
 #include "../include/bvh.h"
 #include <cstring>
+#include <cstdio>
 #include <algorithm>  // std::nth_element for TLAS centroid-axis split
 
 // functions
@@ -582,12 +583,24 @@ void TLAS::BuildRecursive(uint nodeIndex, uint first, uint count)
 	uint rightFirst = first + split;
 	uint rightCount = count - split;
 
+	// T4/16-bit packing guard (NDEBUG-safe): leftRight packs two 16-bit child
+	// indices; a child index beyond 65535 would wrap at pack time and corrupt
+	// traversal. Fail loudly and degrade this node to a leaf instead.
+	if (nodesUsed + 1 > 0xFFFFu) {
+		fprintf(stderr, "[ERROR] TLAS::BuildRecursive: node count exceeds 16-bit child index field "
+		        "(nodesUsed=%u); node %u degraded to leaf, %u instance(s) dropped.\n",
+		        nodesUsed, nodeIndex, count - 1);
+		node.leftRight = 0; // leaf sentinel
+		node.BLAS = nodeIdx[first];
+		return;
+	}
+
 	// Create child nodes
 	uint leftChild = nodesUsed++;
 	uint rightChild = nodesUsed++;
 
 	// Set interior node data
-	node.leftRight = (leftChild & 0xFFFF) | ((rightChild & 0xFFFF) << 16);
+	node.leftRight = leftChild | (rightChild << 16);
 	node.BLAS = 0; // Not used for interior nodes
 
 	// Recursively build children
