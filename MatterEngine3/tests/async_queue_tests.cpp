@@ -2,6 +2,7 @@
 // Tests: GpuJobQueue, CommandQueue, CancelToken, GL-thread guard.
 // Plain assert + printf style; no GL, no window, no GALLIUM env needed.
 #include "async_bake.h"
+#include "matter/events.h"
 #include "check.h"
 #include <cassert>
 #include <chrono>
@@ -207,6 +208,26 @@ static void test_push_after_shutdown_is_cancelled_and_not_queued() {
 }
 
 // ---------------------------------------------------------------------------
+// 9. event_struct_shape_test
+//    Constructs a matter::Event, sets phase/code/errors, asserts defaults.
+// ---------------------------------------------------------------------------
+static void test_event_struct_shape() {
+    std::printf("[test_event_struct_shape]\n");
+    matter::Event ev;
+    CHECK(ev.code == matter::BakeErrorCode::None, "default code is None");
+    CHECK(ev.errors == 0, "default errors is 0");
+    CHECK(ev.phase.empty(), "default phase is empty");
+
+    ev.phase = "compose";
+    ev.code = matter::BakeErrorCode::GpuError;
+    ev.errors = 5;
+    CHECK(ev.phase == "compose", "phase set correctly");
+    CHECK(ev.code == matter::BakeErrorCode::GpuError, "code set correctly");
+    CHECK(ev.errors == 5, "errors set correctly");
+    printf("ok event_struct_shape_test\n");
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
@@ -219,6 +240,7 @@ int main() {
     test_bakeall_supersedes_pending_and_cancels_inflight();
     test_command_shutdown_wakes_pop();
     test_push_after_shutdown_is_cancelled_and_not_queued();
+    test_event_struct_shape();
     if (g_failures) {
         std::printf("\n%d FAILURES\n", g_failures);
         return 1;

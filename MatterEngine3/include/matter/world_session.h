@@ -15,6 +15,7 @@ struct WorldDesc {
     const char* world_data_dir = nullptr;
     const char* world_name     = nullptr;  // world subdir of world_data_dir
     const char* shared_lib_dir = nullptr;  // shared .js library dir
+    bool enable_live_edit = false;  // watch schemas/shared-lib dirs, cone-rebake on save (Linux inotify; no-op elsewhere)
 };
 
 enum class RenderPath { GpuDriven, Raytrace };
@@ -50,8 +51,7 @@ class WorldSession {
 public:
     ~WorldSession();   // releases session GL resources — destroy before CloseWindow
 
-    // Phase A: synchronous — returns after the full bake + GPU upload completes.
-    // Emits BakeStarted, BakePartDone xN, then BakeFinished or BakeError.
+    // Phase B: asynchronous — enqueues a bake and returns immediately. Progress arrives via poll_event(); GL-side work runs inside pump_gpu_jobs(). A new request_bake()/reload() supersedes (cancels) an in-flight bake.
     void request_bake();
 
     // Poll provider deltas and apply them to world state. Call once per frame.
@@ -65,10 +65,14 @@ public:
     bool poll_event(Event& out);       // drain one; loop until false
     const FrameStats& frame_stats() const;
 
-    // Live-edit rebake. Fail-closed: on error a BakeError event is emitted and
-    // render() no-ops until a later request_bake()/reload() succeeds (the old
-    // world is torn down before rebaking). Same event sequence as request_bake.
+    // Phase B: asynchronous — enqueues a bake and returns immediately. Progress arrives via poll_event(); GL-side work runs inside pump_gpu_jobs(). A new request_bake()/reload() supersedes (cancels) an in-flight bake.
+    // Fail-closed: on error a BakeError event is emitted and render() no-ops until a later request_bake()/reload() succeeds (the old world is torn down before rebaking).
     void reload();
+
+    // Phase B: run queued GL-thread bake work for up to ms_budget milliseconds.
+    // Call once per frame on the thread that owns the GL context. Whole jobs
+    // only (no mid-job slicing); always makes progress when work is queued.
+    void pump_gpu_jobs(float ms_budget);
 
     // Query API (backed by a lazily built CPU BVH; first call after a bake pays
     // the build cost).

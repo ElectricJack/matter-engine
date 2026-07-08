@@ -9,6 +9,7 @@
 #include "matter/engine_context.h"
 #include "matter/world_session.h"
 
+#include "async_bake.h"
 #include "local_provider.h"
 #include "part_store.h"   // LoadedPart, walk_part_tree
 #include "world_composer.h"
@@ -101,6 +102,9 @@ struct WorldSession::Impl {
     std::deque<Event> events;
 
     FrameStats stats{};
+
+    // Phase B: async bake GPU work queue.
+    matter_async::GpuJobQueue gpu_jobs;
 
     // Lazy CPU tracer for the query API (raycast/instance_count/instance_info).
     // Built on first query after a bake. mutable so instance_count() const can build.
@@ -580,6 +584,10 @@ bool WorldSession::poll_event(Event& out) {
 
 const FrameStats& WorldSession::frame_stats() const {
     return impl_->stats;
+}
+
+void WorldSession::pump_gpu_jobs(float ms_budget) {
+    impl_->gpu_jobs.pump((double)ms_budget);
 }
 
 // ---------------------------------------------------------------------------
