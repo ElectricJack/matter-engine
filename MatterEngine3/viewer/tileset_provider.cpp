@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace viewer {
@@ -38,19 +39,46 @@ GLuint upload_tex_2d(const void* data, int w, int h, GLenum internal, GLenum for
     return id;
 }
 
-void set_sampler(GLuint program, const char* name, int unit) {
-    GLint loc = glGetUniformLocation(program, name);
-    if (loc >= 0) glUniform1i(loc, unit);
-}
+// Per-program cached uniform locations for bind_all_to_shader.
+// Each slot has: albedo, normal, orm, height sampler locs + tile_size_m, texelsPerMeter.
+struct SlotLocs {
+    GLint albedo     = -1;
+    GLint normal     = -1;
+    GLint orm        = -1;
+    GLint height     = -1;
+    GLint tile_size  = -1;
+    GLint texels_pm  = -1;
+};
+struct ProgramLocs {
+    SlotLocs slots[kMaxSlots];
+};
+// Keyed on GL program name.  One entry per shader program (typically just one
+// in steady state).  Cleared via clear_program_loc_cache() when a program is
+// deleted (called from tests or on reload).
+std::unordered_map<GLuint, ProgramLocs> g_prog_locs;
 
-void set_float_uniform(GLuint program, const char* name, float v) {
-    GLint loc = glGetUniformLocation(program, name);
-    if (loc >= 0) glUniform1f(loc, v);
-}
+// Populate the location cache for `program` if not already present.
+const ProgramLocs& get_or_build_locs(GLuint program) {
+    auto it = g_prog_locs.find(program);
+    if (it != g_prog_locs.end()) return it->second;
 
-void set_int_uniform(GLuint program, const char* name, int v) {
-    GLint loc = glGetUniformLocation(program, name);
-    if (loc >= 0) glUniform1i(loc, v);
+    ProgramLocs pl{};
+    char name[64];
+    for (int i = 0; i < kMaxSlots; ++i) {
+        std::snprintf(name, sizeof name, "groundAlbedo%d",  i);
+        pl.slots[i].albedo    = glGetUniformLocation(program, name);
+        std::snprintf(name, sizeof name, "groundNormal%d",  i);
+        pl.slots[i].normal    = glGetUniformLocation(program, name);
+        std::snprintf(name, sizeof name, "groundORM%d",     i);
+        pl.slots[i].orm       = glGetUniformLocation(program, name);
+        std::snprintf(name, sizeof name, "groundHeight%d",  i);
+        pl.slots[i].height    = glGetUniformLocation(program, name);
+        std::snprintf(name, sizeof name, "tilesetSlot%d_tileSize_m",     i);
+        pl.slots[i].tile_size = glGetUniformLocation(program, name);
+        std::snprintf(name, sizeof name, "tilesetSlot%d_texelsPerMeter", i);
+        pl.slots[i].texels_pm = glGetUniformLocation(program, name);
+    }
+    return g_prog_locs.emplace(program, pl).first->second;
 }
 
 } // anon
@@ -157,35 +185,34 @@ bool load_slot(int slot, const std::string& gtex_path, std::string& err) {
 
 void bind_all_to_shader(GLuint program) {
     // Base unit = 10, four samplers per slot; 4 slots => units 10..25.
+    // Uniform locations are looked up once per program and cached in g_prog_locs;
+    // subsequent frames use the cached GLint values with no snprintf overhead.
+    const ProgramLocs& pl = get_or_build_locs(program);
+
     for (int i = 0; i < kMaxSlots; ++i) {
         const TilesetSlot& s = g_slots[i];
         if (!s.valid) continue;
         const int base = 10 + i * 4;
-        char name[64];
-        std::snprintf(name, sizeof name, "groundAlbedo%d", i);
+        const SlotLocs& sl = pl.slots[i];
+
         glActiveTexture(GL_TEXTURE0 + base + 0);
         glBindTexture(GL_TEXTURE_2D, s.tex_albedo);
-        set_sampler(program, name, base + 0);
+        if (sl.albedo    >= 0) glUniform1i(sl.albedo,   base + 0);
 
-        std::snprintf(name, sizeof name, "groundNormal%d", i);
         glActiveTexture(GL_TEXTURE0 + base + 1);
         glBindTexture(GL_TEXTURE_2D, s.tex_normal);
-        set_sampler(program, name, base + 1);
+        if (sl.normal    >= 0) glUniform1i(sl.normal,   base + 1);
 
-        std::snprintf(name, sizeof name, "groundORM%d", i);
         glActiveTexture(GL_TEXTURE0 + base + 2);
         glBindTexture(GL_TEXTURE_2D, s.tex_orm);
-        set_sampler(program, name, base + 2);
+        if (sl.orm       >= 0) glUniform1i(sl.orm,      base + 2);
 
-        std::snprintf(name, sizeof name, "groundHeight%d", i);
         glActiveTexture(GL_TEXTURE0 + base + 3);
         glBindTexture(GL_TEXTURE_2D, s.tex_height);
-        set_sampler(program, name, base + 3);
+        if (sl.height    >= 0) glUniform1i(sl.height,   base + 3);
 
-        std::snprintf(name, sizeof name, "tilesetSlot%d_tileSize_m", i);
-        set_float_uniform(program, name, s.tile_size_m);
-        std::snprintf(name, sizeof name, "tilesetSlot%d_texelsPerMeter", i);
-        set_int_uniform(program, name, s.texels_per_meter);
+        if (sl.tile_size >= 0) glUniform1f(sl.tile_size, s.tile_size_m);
+        if (sl.texels_pm >= 0) glUniform1i(sl.texels_pm, s.texels_per_meter);
     }
     // Restore TEXTURE0 as the "active" slot so downstream code doesn't inherit
     // an unrelated unit selection.

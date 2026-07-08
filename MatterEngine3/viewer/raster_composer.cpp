@@ -239,13 +239,18 @@ int RasterComposer::draw_gpu_driven(GpuCuller& culler, PartStore& /*store*/,
                                      const Camera3D& cam) {
     if (!gpu_ready_) return 0;
 
-    // Upload frame uniforms to shader_gpu_ (sun/probes/material table).
-    setup_frame_uniforms(shader_gpu_,
-        loc_gpu_sun_dir_, loc_gpu_sun_color_, loc_gpu_ambient_,
-        loc_gpu_mat_table_, loc_gpu_mat_count_,
-        loc_gpu_probe_amb_, loc_gpu_probe_dom_,
-        loc_gpu_probe_orig_, loc_gpu_probe_cell_,
-        loc_gpu_probe_dims_, loc_gpu_use_probes_);
+    // Upload frame uniforms to shader_gpu_ (sun/probes/material table) only when
+    // dirty (set_lights / set_probes / (re)connect set the flag; cleared here).
+    // The material registry is static once loaded, so this is safe to gate.
+    if (uniforms_dirty_) {
+        setup_frame_uniforms(shader_gpu_,
+            loc_gpu_sun_dir_, loc_gpu_sun_color_, loc_gpu_ambient_,
+            loc_gpu_mat_table_, loc_gpu_mat_count_,
+            loc_gpu_probe_amb_, loc_gpu_probe_dom_,
+            loc_gpu_probe_orig_, loc_gpu_probe_cell_,
+            loc_gpu_probe_dims_, loc_gpu_use_probes_);
+        uniforms_dirty_ = false;
+    }
 
     // BeginMode3D sets the GL viewport + loads the view/projection matrices into
     // rlgl's internal state, which we then read via rlGetMatrix*.

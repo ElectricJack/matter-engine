@@ -414,6 +414,12 @@ int main() {
             viewer::extract_frustum_planes(vp, planes);
             // Propagate the runtime HiZ toggle every frame (HUD/FIFO/env).
             gpu_culler.set_hiz_enabled(stats.hiz_enabled);
+            // Gate stats readback: enable when the debug HUD or FIFO `stats` command
+            // needs current-frame values.  Default (stats_readback_=false) returns
+            // the one-frame-late cached value, avoiding a per-frame GPU sync.
+            // The viewer's HUD always displays counters, so we enable it every frame
+            // here; a headless render loop could clear this flag for pure throughput.
+            gpu_culler.set_stats_readback(true);
             gpu_culler.cull(resolved, *store, eye, planes, vp, stats.pixel_budget);
             auto t2 = std::chrono::steady_clock::now();
             stats.resolve_ms = std::chrono::duration<float, std::milli>(t1 - t0).count();

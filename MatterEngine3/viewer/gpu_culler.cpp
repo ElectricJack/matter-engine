@@ -43,11 +43,12 @@ GpuCuller::~GpuCuller() {
         if (pg.vao) glDeleteVertexArrays(1, &pg.vao);
         if (pg.vbo) glDeleteBuffers(1, &pg.vbo);
     }
-    if (ssbo_clusters_)  glDeleteBuffers(1, &ssbo_clusters_);
-    if (ssbo_instances_) glDeleteBuffers(1, &ssbo_instances_);
-    if (ssbo_cmds_)      glDeleteBuffers(1, &ssbo_cmds_);
-    if (ssbo_xforms_)    glDeleteBuffers(1, &ssbo_xforms_);
-    if (ssbo_stats_)     glDeleteBuffers(1, &ssbo_stats_);
+    if (ssbo_clusters_)       glDeleteBuffers(1, &ssbo_clusters_);
+    if (ssbo_instances_)      glDeleteBuffers(1, &ssbo_instances_);
+    if (ssbo_cmds_)           glDeleteBuffers(1, &ssbo_cmds_);
+    if (ssbo_cmds_template_)  glDeleteBuffers(1, &ssbo_cmds_template_);
+    if (ssbo_xforms_)         glDeleteBuffers(1, &ssbo_xforms_);
+    if (ssbo_stats_)          glDeleteBuffers(1, &ssbo_stats_);
     if (program_cull_)   glDeleteProgram(program_cull_);
     // HiZ objects (program_hiz_ + textures/FBO).
     release_hiz_objects();
@@ -196,6 +197,10 @@ void GpuCuller::recompute_regions() {
         }
     }
 
+    // base_instance fields in cmd_template_ were updated above; mark dirty so
+    // upload_cmd_template() refreshes the pristine GPU buffer.
+    cmds_template_dirty_ = true;
+
     // Reallocate ssbo_xforms_ to hold total_xform_slots_ mat4s.
     size_t need = (size_t)total_xform_slots_ * 16 * sizeof(float);
     if (need == 0) need = 1;   // keep valid GL object
@@ -215,25 +220,53 @@ void GpuCuller::recompute_regions() {
 }
 
 // ---------------------------------------------------------------------------
-// upload_cmd_template — upload the CPU cmd_template_ to ssbo_cmds_,
-// grow-reallocating ssbo_cmds_ if needed.
+// upload_cmd_template — upload the CPU cmd_template_ to ssbo_cmds_.
+//
+// Strategy: maintain a "pristine" template buffer (ssbo_cmds_template_) that
+// holds the zero-instance_count seed exactly once after any structural change.
+// Each frame we copy it to the live ssbo_cmds_ via glCopyBufferSubData, which
+// is a pure GPU-side blit (no CPU→GPU DMA) and avoids the per-frame CPU
+// glBufferSubData call.  The pristine buffer is reallocated only when
+// cmd_template_.size() grows (new part registered).
 // ---------------------------------------------------------------------------
 void GpuCuller::upload_cmd_template() {
     size_t need = cmd_template_.size() * sizeof(DrawArraysCmd);
     if (need == 0) return;
 
+    // (Re)allocate both buffers if the pristine buffer is too small.
     if (need > cmds_cap_bytes_) {
         size_t new_cap = cmds_cap_bytes_ == 0 ? need
                        : cmds_cap_bytes_ + cmds_cap_bytes_ / 2;
         if (new_cap < need) new_cap = need;
 
+        // Allocate pristine buffer; upload the CPU template as the seed.
+        if (!ssbo_cmds_template_) glGenBuffers(1, &ssbo_cmds_template_);
+        glBindBuffer(GL_COPY_READ_BUFFER, ssbo_cmds_template_);
+        glBufferData(GL_COPY_READ_BUFFER, (GLsizeiptr)new_cap, nullptr, GL_STATIC_DRAW);
+        glBufferSubData(GL_COPY_READ_BUFFER, 0, (GLsizeiptr)need, cmd_template_.data());
+        glBindBuffer(GL_COPY_READ_BUFFER, 0);
+
+        // Allocate live cmds buffer (will be overwritten every frame by the copy).
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_cmds_);
         glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)new_cap, nullptr, GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
         cmds_cap_bytes_ = new_cap;
+    } else if (cmds_template_dirty_) {
+        // Template size unchanged but content changed (base_instance update after
+        // region growth): refresh the pristine buffer from the CPU mirror.
+        glBindBuffer(GL_COPY_READ_BUFFER, ssbo_cmds_template_);
+        glBufferSubData(GL_COPY_READ_BUFFER, 0, (GLsizeiptr)need, cmd_template_.data());
+        glBindBuffer(GL_COPY_READ_BUFFER, 0);
     }
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_cmds_);
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, (GLsizeiptr)need, cmd_template_.data());
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    cmds_template_dirty_ = false;
+
+    // GPU-side blit: pristine → live (no CPU stall).
+    glBindBuffer(GL_COPY_READ_BUFFER,  ssbo_cmds_template_);
+    glBindBuffer(GL_COPY_WRITE_BUFFER, ssbo_cmds_);
+    glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, 0, 0, (GLsizeiptr)need);
+    glBindBuffer(GL_COPY_READ_BUFFER,  0);
+    glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -437,138 +470,172 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
     if (resolved.empty()) return false;
 
     // ------------------------------------------------------------------
-    // Pass 1: expand resolved instances via ExpandedNode tables.
-    // Count instances per part first so we can check/grow region_caps before
-    // dispatch (structural overflow prevention: region_cap >= N_p).
+    // Dirty-check: compute FNV-1a fingerprint over (part_hash, transform)
+    // of every ResolvedInstance.  If the resolved set is identical to the
+    // previous frame (count + content), skip the expand + SSBO re-upload
+    // (static world fast-path).  Mirrors world_composer.cpp:64-76.
     // ------------------------------------------------------------------
-    struct ExpandedInst {
-        int      part_slot;
-        float    transform[16];   // GL column-major (post-transpose_to_gl)
-    };
+    bool instances_dirty = false;
+    {
+        uint64_t fp = 1469598103934665603ull;
+        auto fold = [&fp](const void* p, size_t n) {
+            const unsigned char* b = static_cast<const unsigned char*>(p);
+            for (size_t i = 0; i < n; ++i) fp = (fp ^ b[i]) * 1099511628211ull;
+        };
+        for (const auto& ri : resolved) {
+            fold(&ri.part_hash, sizeof ri.part_hash);
+            fold(ri.transform,  sizeof ri.transform);
+        }
+        if (last_resolved_count_ != (int)resolved.size() || last_resolved_fp_ != fp) {
+            instances_dirty       = true;
+            last_resolved_count_  = (int)resolved.size();
+            last_resolved_fp_     = fp;
+        }
+    }
 
-    // First pass: build the full expanded list and record max per-part counts.
-    std::vector<ExpandedInst> expanded;
-    expanded.reserve(resolved.size() * 4);
+    if (instances_dirty) {
+        // ------------------------------------------------------------------
+        // Pass 1: expand resolved instances via ExpandedNode tables.
+        // Count instances per part first so we can check/grow region_caps before
+        // dispatch (structural overflow prevention: region_cap >= N_p).
+        // ------------------------------------------------------------------
+        expanded_.clear();
+        expanded_.reserve(resolved.size() * 4);
+        per_slot_count_.clear();
 
-    // Per-slot instance counts.
-    std::vector<uint32_t> per_slot_count;
+        for (const auto& ri : resolved) {
+            // Ensure the root part is registered.
+            int root_slot = ensure_part(ri.part_hash, store);
+            if (root_slot < 0) continue;
 
-    for (const auto& ri : resolved) {
-        // Ensure the root part is registered.
-        int root_slot = ensure_part(ri.part_hash, store);
-        if (root_slot < 0) continue;
+            const LoadedPart* lp = store.get_or_load(ri.part_hash);
+            if (!lp) continue;
 
-        const LoadedPart* lp = store.get_or_load(ri.part_hash);
-        if (!lp) continue;
+            // Walk expansion table (built by build_expansion in part_store.cpp).
+            if (!lp->expansion.empty()) {
+                for (const auto& en : lp->expansion) {
+                    int node_slot = ensure_part(en.part_hash, store);
+                    if (node_slot < 0) continue;
 
-        // Walk expansion table (built by build_expansion in part_store.cpp).
-        if (!lp->expansion.empty()) {
-            for (const auto& en : lp->expansion) {
-                int node_slot = ensure_part(en.part_hash, store);
-                if (node_slot < 0) continue;
+                    // Combined world transform: resolved.transform × node.rel_transform.
+                    float combined[16];
+                    mul16(ri.transform, en.rel_transform, combined);
 
-                // Combined world transform: resolved.transform × node.rel_transform.
-                float combined[16];
-                mul16(ri.transform, en.rel_transform, combined);
+                    // Transpose to GL column-major.
+                    float gl_xform[16];
+                    transpose_to_gl(combined, gl_xform);
 
-                // Transpose to GL column-major.
+                    ExpandedInst ei;
+                    ei.part_slot = node_slot;
+                    std::memcpy(ei.transform, gl_xform, 64);
+                    expanded_.push_back(ei);
+
+                    // Track per-slot count.
+                    if ((int)per_slot_count_.size() <= node_slot)
+                        per_slot_count_.resize(node_slot + 1, 0);
+                    per_slot_count_[node_slot]++;
+                }
+            } else {
+                // No expansion: the root part is drawable directly.
                 float gl_xform[16];
-                transpose_to_gl(combined, gl_xform);
+                transpose_to_gl(ri.transform, gl_xform);
 
                 ExpandedInst ei;
-                ei.part_slot = node_slot;
+                ei.part_slot = root_slot;
                 std::memcpy(ei.transform, gl_xform, 64);
-                expanded.push_back(ei);
+                expanded_.push_back(ei);
 
-                // Track per-slot count.
-                if ((int)per_slot_count.size() <= node_slot)
-                    per_slot_count.resize(node_slot + 1, 0);
-                per_slot_count[node_slot]++;
+                if ((int)per_slot_count_.size() <= root_slot)
+                    per_slot_count_.resize(root_slot + 1, 0);
+                per_slot_count_[root_slot]++;
             }
-        } else {
-            // No expansion: the root part is drawable directly.
-            float gl_xform[16];
-            transpose_to_gl(ri.transform, gl_xform);
-
-            ExpandedInst ei;
-            ei.part_slot = root_slot;
-            std::memcpy(ei.transform, gl_xform, 64);
-            expanded.push_back(ei);
-
-            if ((int)per_slot_count.size() <= root_slot)
-                per_slot_count.resize(root_slot + 1, 0);
-            per_slot_count[root_slot]++;
         }
-    }
 
-    if (expanded.empty()) {
+        if (expanded_.empty()) {
+            active_slots_.assign(parts_.size(), 0);
+            return false;
+        }
+
+        // ------------------------------------------------------------------
+        // Overflow check: if any part's resolved count > region_cap, grow that
+        // cap ×1.5 and recompute ALL regions.
+        // ------------------------------------------------------------------
+        bool regions_dirty = false;
+        for (int s = 0; s < (int)per_slot_count_.size(); ++s) {
+            if (s >= (int)parts_.size()) break;
+            uint32_t n = per_slot_count_[s];
+            if (n > parts_[s].region_cap) {
+                uint32_t new_cap = parts_[s].region_cap + parts_[s].region_cap / 2;
+                if (new_cap < n) new_cap = n;
+                parts_[s].region_cap = new_cap;
+                regions_dirty = true;
+                // P2-decision telemetry: region growth event.
+                printf("GpuCuller: slot %d region_cap %u -> grew for %u instances "
+                       "(clusters %u, %zu region bytes)\n",
+                       s, new_cap, n, parts_[s].cluster_count,
+                       (size_t)parts_[s].cluster_count * (size_t)kMaxLod * (size_t)new_cap * 64);
+            }
+        }
+        if (regions_dirty) recompute_regions();
+
+        // ------------------------------------------------------------------
+        // Build GpuInstanceRec staging vector and record active part slots.
+        // ------------------------------------------------------------------
+        // Clear active_slots_ for this frame; mark slots that receive >= 1 record.
         active_slots_.assign(parts_.size(), 0);
-        return false;
+
+        std::vector<GpuInstanceRec> inst_recs;
+        inst_recs.reserve(expanded_.size());
+
+        for (const auto& ei : expanded_) {
+            if (ei.part_slot < 0 || ei.part_slot >= (int)parts_.size()) continue;
+            const PartGpu& pg = parts_[ei.part_slot];
+
+            GpuInstanceRec rec{};
+            std::memcpy(rec.transform, ei.transform, 64);
+            rec.part_slot      = (uint32_t)ei.part_slot;
+            rec.base_lod       = 0;   // debug only; cluster-level selection is authoritative
+            rec.cluster_start  = pg.cluster_start;
+            rec.cluster_count  = pg.cluster_count;
+            inst_recs.push_back(rec);
+
+            active_slots_[(size_t)ei.part_slot] = 1;
+        }
+
+        uint32_t n_records = (uint32_t)inst_recs.size();
+        if (n_records == 0) return false;
+
+        // ------------------------------------------------------------------
+        // Upload instance data (orphan + sub).
+        // ------------------------------------------------------------------
+        size_t inst_need = n_records * sizeof(GpuInstanceRec);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_instances_);
+        if (inst_need > instances_cap_bytes_) {
+            size_t new_cap = instances_cap_bytes_ == 0 ? inst_need
+                           : instances_cap_bytes_ + instances_cap_bytes_ / 2;
+            if (new_cap < inst_need) new_cap = inst_need;
+            glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)new_cap, nullptr, GL_DYNAMIC_DRAW);
+            instances_cap_bytes_ = new_cap;
+        }
+        glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, (GLsizeiptr)inst_need, inst_recs.data());
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    } else {
+        // Static world fast-path: active_slots_ already set; no SSBO re-upload needed.
+        // Ensure active_slots_ is sized correctly (may have grown with a new part).
+        if (active_slots_.size() < parts_.size())
+            active_slots_.resize(parts_.size(), 0);
     }
 
-    // ------------------------------------------------------------------
-    // Overflow check: if any part's resolved count > region_cap, grow that
-    // cap ×1.5 and recompute ALL regions.
-    // ------------------------------------------------------------------
-    bool regions_dirty = false;
-    for (int s = 0; s < (int)per_slot_count.size(); ++s) {
-        if (s >= (int)parts_.size()) break;
-        uint32_t n = per_slot_count[s];
-        if (n > parts_[s].region_cap) {
-            uint32_t new_cap = parts_[s].region_cap + parts_[s].region_cap / 2;
-            if (new_cap < n) new_cap = n;
-            parts_[s].region_cap = new_cap;
-            regions_dirty = true;
-            // P2-decision telemetry: region growth event.
-            printf("GpuCuller: slot %d region_cap %u -> grew for %u instances "
-                   "(clusters %u, %zu region bytes)\n",
-                   s, new_cap, n, parts_[s].cluster_count,
-                   (size_t)parts_[s].cluster_count * (size_t)kMaxLod * (size_t)new_cap * 64);
+    // Recover n_records for the dispatch (always needed, even on fast-path).
+    uint32_t n_records = 0;
+    {
+        // Count from the expanded_ member (valid on both dirty and fast-path).
+        for (const auto& ei : expanded_) {
+            if (ei.part_slot >= 0 && ei.part_slot < (int)parts_.size())
+                ++n_records;
         }
     }
-    if (regions_dirty) recompute_regions();
-
-    // ------------------------------------------------------------------
-    // Build GpuInstanceRec staging vector and record active part slots.
-    // ------------------------------------------------------------------
-    // Clear active_slots_ for this frame; mark slots that receive >= 1 record.
-    active_slots_.assign(parts_.size(), 0);
-
-    std::vector<GpuInstanceRec> inst_recs;
-    inst_recs.reserve(expanded.size());
-
-    for (const auto& ei : expanded) {
-        if (ei.part_slot < 0 || ei.part_slot >= (int)parts_.size()) continue;
-        const PartGpu& pg = parts_[ei.part_slot];
-
-        GpuInstanceRec rec{};
-        std::memcpy(rec.transform, ei.transform, 64);
-        rec.part_slot      = (uint32_t)ei.part_slot;
-        rec.base_lod       = 0;   // debug only; cluster-level selection is authoritative
-        rec.cluster_start  = pg.cluster_start;
-        rec.cluster_count  = pg.cluster_count;
-        inst_recs.push_back(rec);
-
-        active_slots_[(size_t)ei.part_slot] = 1;
-    }
-
-    uint32_t n_records = (uint32_t)inst_recs.size();
     if (n_records == 0) return false;
-
-    // ------------------------------------------------------------------
-    // Upload instance data (orphan + sub).
-    // ------------------------------------------------------------------
-    size_t inst_need = n_records * sizeof(GpuInstanceRec);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_instances_);
-    if (inst_need > instances_cap_bytes_) {
-        size_t new_cap = instances_cap_bytes_ == 0 ? inst_need
-                       : instances_cap_bytes_ + instances_cap_bytes_ / 2;
-        if (new_cap < inst_need) new_cap = inst_need;
-        glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)new_cap, nullptr, GL_DYNAMIC_DRAW);
-        instances_cap_bytes_ = new_cap;
-    }
-    glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, (GLsizeiptr)inst_need, inst_recs.data());
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
     // ------------------------------------------------------------------
     // Seed cmds SSBO from template (zeros instance_count in every bucket).
@@ -745,28 +812,14 @@ std::vector<RasterBatch> GpuCuller::readback_batches(PartStore& store) {
 //   4. Set the mvp uniform on that shader
 //   5. Called rlDisableBackfaceCulling() if desired
 //
-// Returns drawn tris (from a small cmd readback of 16-B structs).
-// Also reads back the stats SSBO to update stat_culled_ / stat_emitted_.
+// Returns drawn tris (one-frame-late from the previous frame's cmd readback
+// when stats_readback_ is false, or the current frame's count when true).
+// Stats (stat_culled_ / stat_emitted_) are updated only when stats_readback_
+// is true, avoiding a per-frame GPU sync on the hot path.
 // ---------------------------------------------------------------------------
 int GpuCuller::draw_indirect() {
     if (parts_.empty() || cmd_template_.empty() || !ssbo_cmds_ || !ssbo_xforms_)
         return 0;
-
-    // Small readback: read back just the command buffer (360 cmds × 16 B = ~5.7 kB).
-    size_t cmds_bytes = cmd_template_.size() * sizeof(DrawArraysCmd);
-    std::vector<DrawArraysCmd> cmds_gpu(cmd_template_.size());
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_cmds_);
-    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, (GLsizeiptr)cmds_bytes, cmds_gpu.data());
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-
-    // Read back stats.
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_stats_);
-    uint32_t stats[3] = {0, 0, 0};
-    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(stats), stats);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-    stat_culled_     = stats[0];
-    stat_culled_hiz_ = stats[1];
-    stat_emitted_    = stats[2];
 
     // Bind the xforms SSBO to binding 3 (DrawXforms in raster_gpu_driven.vs).
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, ssbo_xforms_);
@@ -774,7 +827,6 @@ int GpuCuller::draw_indirect() {
     // Draw each registered part.
     glBindBuffer(GL_DRAW_INDIRECT_BUFFER, ssbo_cmds_);
 
-    int total_tris = 0;
     for (int ps = 0; ps < (int)parts_.size(); ++ps) {
         const PartGpu& pg = parts_[ps];
         if (pg.vao == 0) continue;
@@ -790,23 +842,49 @@ int GpuCuller::draw_indirect() {
             (const void*)(uintptr_t)cmd_offset,
             cmd_count,
             0);   // stride 0 = tightly packed
-
-        // Count tris from the readback (cpu-side, avoids a second GPU sync).
-        uint32_t base_bucket = pg.cluster_start * (uint32_t)kMaxLod;
-        for (uint32_t b = 0; b < (uint32_t)(pg.cluster_count * (uint32_t)kMaxLod); ++b) {
-            uint32_t bucket = base_bucket + b;
-            if (bucket < (uint32_t)cmds_gpu.size()) {
-                const DrawArraysCmd& cmd = cmds_gpu[bucket];
-                if (cmd.instance_count > 0 && cmd.count >= 3)
-                    total_tris += (int)(cmd.count / 3) * (int)cmd.instance_count;
-            }
-        }
     }
 
     glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
     glBindVertexArray(0);
 
-    return total_tris;
+    // Gated readbacks: only when stats panel is active.  Both the cmd readback
+    // (for tri count) and the stats readback stall the GPU pipeline.  When the
+    // gate is off we return the cached tri count from the previous frame.
+    if (stats_readback_) {
+        // Read back the command buffer to compute the current-frame tri count.
+        size_t cmds_bytes = cmd_template_.size() * sizeof(DrawArraysCmd);
+        std::vector<DrawArraysCmd> cmds_gpu(cmd_template_.size());
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_cmds_);
+        glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, (GLsizeiptr)cmds_bytes, cmds_gpu.data());
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+        // Read back stats SSBO.
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_stats_);
+        uint32_t stats[3] = {0, 0, 0};
+        glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(stats), stats);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+        stat_culled_     = stats[0];
+        stat_culled_hiz_ = stats[1];
+        stat_emitted_    = stats[2];
+
+        // Recompute tri count from the current-frame cmd data.
+        int total_tris = 0;
+        for (int ps = 0; ps < (int)parts_.size(); ++ps) {
+            const PartGpu& pg = parts_[ps];
+            uint32_t base_bucket = pg.cluster_start * (uint32_t)kMaxLod;
+            for (uint32_t b = 0; b < (uint32_t)(pg.cluster_count * (uint32_t)kMaxLod); ++b) {
+                uint32_t bucket = base_bucket + b;
+                if (bucket < (uint32_t)cmds_gpu.size()) {
+                    const DrawArraysCmd& cmd = cmds_gpu[bucket];
+                    if (cmd.instance_count > 0 && cmd.count >= 3)
+                        total_tris += (int)(cmd.count / 3) * (int)cmd.instance_count;
+                }
+            }
+        }
+        stat_last_tris_ = total_tris;
+    }
+
+    return stat_last_tris_;
 }
 
 // ---------------------------------------------------------------------------
@@ -825,14 +903,19 @@ void GpuCuller::reset() {
     cluster_staging_.clear();
     cmd_template_.clear();
 
-    clusters_cap_bytes_  = 0;
-    instances_cap_bytes_ = 0;
-    cmds_cap_bytes_      = 0;
-    xforms_cap_bytes_    = 0;
-    total_xform_slots_   = 0;
-    stat_culled_         = 0;
-    stat_culled_hiz_     = 0;
-    stat_emitted_        = 0;
+    clusters_cap_bytes_   = 0;
+    instances_cap_bytes_  = 0;
+    cmds_cap_bytes_       = 0;
+    xforms_cap_bytes_     = 0;
+    total_xform_slots_    = 0;
+    stat_culled_          = 0;
+    stat_culled_hiz_      = 0;
+    stat_emitted_         = 0;
+    last_resolved_fp_     = 0;
+    last_resolved_count_  = -1;
+    cmds_template_dirty_  = false;
+    expanded_.clear();
+    per_slot_count_.clear();
 
     // Re-initialize fixed-size buffers (keep same GL names to avoid re-init overhead).
     // ssbo_stats_: reset to zeros.
@@ -851,6 +934,11 @@ void GpuCuller::reset() {
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_cmds_);
     glBufferData(GL_SHADER_STORAGE_BUFFER, 1, nullptr, GL_DYNAMIC_DRAW);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    if (ssbo_cmds_template_) {
+        glBindBuffer(GL_COPY_READ_BUFFER, ssbo_cmds_template_);
+        glBufferData(GL_COPY_READ_BUFFER, 1, nullptr, GL_STATIC_DRAW);
+        glBindBuffer(GL_COPY_READ_BUFFER, 0);
+    }
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_xforms_);
     glBufferData(GL_SHADER_STORAGE_BUFFER, 1, nullptr, GL_DYNAMIC_COPY);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
@@ -894,6 +982,7 @@ void GpuCuller::build_hiz(int screen_w, int screen_h) {
             hiz_valid_   = false;
             return;
         }
+        uloc_hiz_src_       = glGetUniformLocation(program_hiz_, "src");
         uloc_hiz_src_mip_   = glGetUniformLocation(program_hiz_, "src_mip");
         uloc_hiz_dst_size_  = glGetUniformLocation(program_hiz_, "dst_size");
         uloc_hiz_copy_mode_ = glGetUniformLocation(program_hiz_, "copy_mode");
@@ -960,7 +1049,7 @@ void GpuCuller::build_hiz(int screen_w, int screen_h) {
     glUseProgram(program_hiz_);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, depth_copy_tex_);
-    glUniform1i(glGetUniformLocation(program_hiz_, "src"), 0);
+    glUniform1i(uloc_hiz_src_, 0);   // cached location — avoids per-call glGetUniformLocation
     glBindImageTexture(1, hiz_tex_, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
     glUniform1i(uloc_hiz_src_mip_,   0);
     glUniform1i(uloc_hiz_copy_mode_, 1);   // 1:1 copy
@@ -1019,7 +1108,7 @@ void GpuCuller::downsample_pyramid() {
     // Bind hiz_tex_ as sampler at unit 0.
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, hiz_tex_);
-    glUniform1i(glGetUniformLocation(program_hiz_, "src"), 0);
+    glUniform1i(uloc_hiz_src_, 0);   // cached location — avoids per-call glGetUniformLocation
     glUniform1i(uloc_hiz_copy_mode_, 0);   // 2x2 max-reduce
 
     // Keep BASE_LEVEL=0, MAX_LEVEL=full so texelFetch can access any level.
