@@ -116,6 +116,8 @@ void mem_arena_reset(MemArena* a) {
     largest->used = 0;
     a->blocks = largest;
     a->blockCount = 1;
+    /* totalAllocs and peakBytes are lifetime counters and survive reset;
+       only liveBytes tracks the current cycle. */
     a->liveBytes = 0;
 }
 
