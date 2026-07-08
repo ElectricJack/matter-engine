@@ -260,12 +260,10 @@ run-polytri: $(POLYTRI_TARGET)
 SHLIB_TARGET = shared_lib_tests
 SHLIB_CPP = shared_lib_tests.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
             ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \
-            ../src/part_asset_v2.cpp ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
+            ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
             $(COMMON_MSL_FULL_SRC)
-# Note: SHLIB omits fat_primitive.c (not needed by the module-resolver path).
-SHLIB_C   = $(MSL)/surface.c $(MSL)/open_particle_surface.c \
-            $(MSL)/spatial_hash.c $(MSL)/object_allocator.c $(MSL)/material_registry.c
-SHLIB_C_OBJ = surface.o open_particle_surface.o spatial_hash.o object_allocator.o material_registry.o
+SHLIB_C   = $(COMMON_MSL_C)
+SHLIB_C_OBJ = $(COMMON_MSL_C_OBJ)
 
 $(SHLIB_TARGET): $(SHLIB_CPP) $(SHLIB_C) $(QJS_C)
 	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
@@ -490,6 +488,12 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../viewer/local_provider.cpp \
               ../viewer/world_composer.cpp \
               ../viewer/raster_mesh.cpp \
+              ../viewer/tileset_provider.cpp ../viewer/tileset_gl_ctx.cpp \
+              ../src/tileset_phase.cpp ../src/tileset_phase_gpu.cpp \
+              ../src/tileset_bake_primary.cpp ../src/tileset_bake_ao.cpp \
+              ../src/tileset_settle.cpp ../src/tileset_gtex.cpp \
+              ../src/tileset_bake.cpp ../src/tileset_bake_gpu.cpp ../src/tileset_collider.cpp \
+              ../src/tileset_part_collider.cpp ../src/tileset_torus_bvh.cpp \
               ../src/world_lights.cpp ../src/probe_volume.cpp \
               ../src/world_tracer.cpp ../src/probe_bake.cpp \
               $(VIEWER_PIPELINE_CPP)
@@ -503,7 +507,8 @@ $(VIEWER_LOGIC_TARGET): $(VIEWER_LOGIC_CPP) $(EXAMPLE_C) $(QJS_C)
 	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
 	gcc -c $(EXAMPLE_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
 	$(CC) $(VIEWER_LOGIC_CPP) $(QJS_OBJ) $(EXAMPLE_C_OBJ) -o $(VIEWER_LOGIC_TARGET) \
-	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -pthread $(INCLUDE_PATHS) -I../viewer $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB -pthread $(INCLUDE_PATHS) -I../viewer \
+	      -I../../Libraries/box3d/include $(QJS_INC) $(LDFLAGS) $(LDLIBS) ../../Libraries/box3d/libbox3d.a
 	rm -f $(QJS_OBJ) $(EXAMPLE_C_OBJ)
 
 run-viewer-logic: $(VIEWER_LOGIC_TARGET)
