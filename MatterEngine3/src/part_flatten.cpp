@@ -628,6 +628,20 @@ const float kIdentity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
     return std::string(buf);
 }
 
+// Forward declarations for helpers defined below apply_retopo_hook.
+// Required for the -DMATTER_HAVE_AUTOREMESHER build: the #else branch of
+// apply_retopo_hook calls both helpers, but their definitions appear later in
+// the file (inside the same anonymous namespace). Declaring them here keeps
+// the file in natural reading order without reordering definitions.
+[[maybe_unused]] bool load_retopo_part(const std::string& path,
+                      uint64_t retopo_cache_key,
+                      std::vector<Tri>& tris_out,
+                      std::vector<TriEx>& triex_out);
+[[maybe_unused]] bool save_retopo_part(const std::string& path,
+                      uint64_t retopo_cache_key,
+                      const std::vector<Tri>& tris,
+                      const std::vector<TriEx>& triex);
+
 // Retopo hook entry point. Called with the materialized merged mesh
 // (tris/triex, world-space, before clustering). Handles:
 //   - cache-key composition (merged mesh + settings + core version + platform)
