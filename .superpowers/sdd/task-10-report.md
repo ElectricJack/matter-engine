@@ -186,3 +186,18 @@ All 10 tasks complete. Branch `feature/autoremesher-integration` is ready for me
 - Stage 4 (Task 7): FIFO command harness + viewer_shots.sh
 - Stage 5 (Tasks 8–9): Shader embedding (12 shaders in embedded_shaders.h)
 - Stage 6 (Task 10): grep-gate + full verification (this task)
+
+### Controller addendum (post-review)
+
+- **tileset_gpu_tests "FAIL (baseline)" claim corrected**: the controller re-ran
+  `GALLIUM_DRIVER=d3d12 make -j1 -C MatterEngine3/tests run-tilesetgpu` and the
+  standalone binary — result **62/62 passed, ALL PASS** (matching Task 9's fix-round
+  run). The FAIL observed during the build-all sweep was transient, most likely the
+  documented tests/ parallel shared-.o race, not a pre-existing baseline failure.
+  It is not in the baseline list and should not be labeled as such.
+- **grep_gate.sh M1 hardening**: allowlist pattern `ui\.h` end-anchored to
+  `ui\.h"` so a future header like `matter_ui.h` cannot slip through.
+- **I1 adjudication (wireframe toggle)**: plan-mandated — the Task 10 brief's FIFO
+  smoke explicitly sends `wireframe toggle` and expects `wireframe on` output; the
+  implementer kept the old bare `wireframe` command working. Recorded for the
+  final report as a deliberate additive FIFO extension, not byte-equivalent stdout.

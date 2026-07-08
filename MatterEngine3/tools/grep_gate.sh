@@ -14,7 +14,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 fail=0
 for app in MatterViewer; do
   hits=$(grep -rnE '#include\s+"' "$ROOT/$app" --include='*.cpp' --include='*.h' \
-    | grep -vE '"(matter/|raylib|rlgl|raymath|imgui|rlImGui|ui\.h|resource_dir|GLFW/)' || true)
+    | grep -vE '"(matter/|raylib|rlgl|raymath|imgui|rlImGui|ui\.h"|resource_dir|GLFW/)' || true)
   if [ -n "$hits" ]; then
     echo "GREP-GATE FAIL: $app includes engine internals:"; echo "$hits"; fail=1
   fi
