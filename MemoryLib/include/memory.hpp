@@ -32,6 +32,9 @@ public:
         static_assert(std::is_trivially_destructible<T>::value,
                       "arena memory is never destructed");
         static_assert(alignof(T) <= 8, "arena guarantees 8-byte alignment only");
+        if (count > static_cast<size_t>(-1) / sizeof(T)) {
+            return nullptr;
+        }
         return static_cast<T*>(mem_arena_alloc(a_, count * sizeof(T)));
     }
 

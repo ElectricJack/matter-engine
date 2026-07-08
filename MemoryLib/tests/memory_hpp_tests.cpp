@@ -23,6 +23,9 @@ int main() {
     mem::Arena moved(std::move(arena));
     assert(moved.valid() && !arena.valid());
 
+    // overflow-sized count must fail cleanly, not wrap
+    assert(moved.allocArray<Vec3>(static_cast<size_t>(-1) / 2) == nullptr);
+
     printf("Testing mem::Pool...\n");
     mem::Pool pool(sizeof(Vec3), 16);
     assert(pool.valid());
