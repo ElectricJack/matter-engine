@@ -74,8 +74,8 @@ static void test_run_blocking_returns_result() {
         got_ok = ok;
         got_err = err;
     });
-    // Give worker time to post the job, then pump it.
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    // Wait deterministically until the job is posted (queue non-idle), then pump.
+    while (q.idle()) std::this_thread::yield();
     q.pump(1000.0);
     worker.join();
     CHECK(got_ok == false, "run_blocking returned false for failing job");
@@ -116,7 +116,8 @@ static void test_shutdown_unblocks_waiter() {
             err);
         got_ok = ok;
     });
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    // Wait deterministically until the job is posted (queue non-idle), then shut down.
+    while (q.idle()) std::this_thread::yield();
     q.shut_down();
     worker.join();
     CHECK(got_ok == false, "run_blocking returned false after shut_down");
@@ -185,6 +186,27 @@ static void test_command_shutdown_wakes_pop() {
 }
 
 // ---------------------------------------------------------------------------
+// 8. push_after_shutdown_is_cancelled_and_not_queued
+//    shut_down() a CommandQueue, then push(BakeAll) — returned token must be
+//    already cancelled and a subsequent pop must return false (nothing dequeued).
+// ---------------------------------------------------------------------------
+static void test_push_after_shutdown_is_cancelled_and_not_queued() {
+    std::printf("[test_push_after_shutdown_is_cancelled_and_not_queued]\n");
+    CommandQueue cq;
+    cq.shut_down();
+
+    auto tok = cq.push({CommandKind::BakeAll, {}, nullptr});
+    CHECK(tok != nullptr, "push returns a non-null token even after shutdown");
+    CHECK(tok->is_cancelled(), "token returned by push-after-shutdown is already cancelled");
+
+    Command c;
+    bool ok = cq.pop(c);
+    CHECK(!ok, "pop returns false after shutdown (nothing dequeued)");
+
+    printf("ok push_after_shutdown_is_cancelled_and_not_queued\n");
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
@@ -196,6 +218,7 @@ int main() {
     test_shutdown_unblocks_waiter();
     test_bakeall_supersedes_pending_and_cancels_inflight();
     test_command_shutdown_wakes_pop();
+    test_push_after_shutdown_is_cancelled_and_not_queued();
     if (g_failures) {
         std::printf("\n%d FAILURES\n", g_failures);
         return 1;

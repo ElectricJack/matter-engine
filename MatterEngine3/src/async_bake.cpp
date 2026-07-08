@@ -146,6 +146,12 @@ std::shared_ptr<CancelToken> CommandQueue::push(Command c) {
 
     std::lock_guard<std::mutex> lk(m_);
 
+    // Guard: if already shut down, cancel the token and return without enqueuing.
+    if (shut_down_) {
+        tok->cancel();
+        return tok;
+    }
+
     if (c.kind == CommandKind::Shutdown) {
         // Cancel in-flight and all queued tokens, then clear queue and wake consumer.
         shut_down_ = true;
@@ -189,8 +195,9 @@ bool CommandQueue::pop(Command& out) {
     q_.pop_front();
     in_flight_ = out.token;
 
-    // If this is a Shutdown command, return false to signal the consumer.
+    // If this is a Shutdown command, clear in_flight_ and return false to signal the consumer.
     if (out.kind == CommandKind::Shutdown) {
+        in_flight_ = nullptr;
         return false;
     }
 
