@@ -1,53 +1,73 @@
-// MatterEngine3 world viewer: connect to a WorldProvider, reconcile a persistent
-// part cache, compose with a selectable SectorResolver, raytrace or rasterize,
-// ImGui HUD. Default: raster path (no ~60s shader warm-up). MATTER_RT=1 uses
-// the full raytrace path.
+// MatterEngine3 world viewer — Stage 3: consumes only the matter:: public API.
+// Engine interaction is fully delegated to matter::EngineContext / WorldSession;
+// main.cpp retains window init, FIFO/screenshot plumbing, UI, and camera policy.
+// MATTER_RT=1   — ray-traced path (no GL 4.6 required, ~60s shader warm-up)
+// MATTER_CAM    — "px,py,pz,tx,ty,tz" initial camera override
+// MATTER_WORLD  — case-insensitive world name override
+// MATTER_HIZ    — "0"|"1" initial HiZ occlusion override
+// MATTER_SCREENSHOT — path; render 3 frames then write PNG and exit
+// MATTER_CMD_FIFO   — named pipe; commands: cam/shot/stats/budget/hiz/reload/quit/wireframe
 #include "raylib.h"
 
-#include "local_provider.h"
-#include "part_store.h"
-#include "world_composer.h"
-#include "sector_resolver.h"
-#include "renderer.h"
-#include "raster_composer.h"
-#include "probe_texture.h"
+#include "matter/engine_context.h"
+#include "matter/world_session.h"
 #include "ui.h"
-#include "gl46.h"
-#include "gpu_culler.h"
-#include "raster_cull.h"
 
 #include <algorithm>   // std::transform
 #include <cctype>      // std::tolower
-#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>     // strcmp (FIFO `hiz on|off`)
-#include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
-#include <fcntl.h>      // open, O_RDWR/O_NONBLOCK (live-command FIFO)
+#include <fcntl.h>      // open, O_RDWR/O_NONBLOCK
 #include <sys/stat.h>   // mkfifo
 #include <unistd.h>     // read, close, unlink
 
-using namespace viewer;
+// ---------------------------------------------------------------------------
+// App-side camera policy (free-cam = raylib CAMERA_FREE)
+// Copied verbatim from Renderer::init_camera + Renderer::update_camera_free.
+// ---------------------------------------------------------------------------
+static void init_camera(Camera3D& cam) {
+    cam.position   = (Vector3){ 20.0f, 16.0f, 34.0f };
+    cam.target     = (Vector3){ 0.0f, 9.0f, 0.0f };
+    cam.up         = (Vector3){ 0.0f, 1.0f, 0.0f };
+    cam.fovy       = 45.0f;
+    cam.projection = CAMERA_PERSPECTIVE;
+}
 
+static void update_camera_free(Camera3D& cam) {
+    UpdateCamera(&cam, CAMERA_FREE);
+}
+
+// ---------------------------------------------------------------------------
+// Per-world resolver defaults (Meadow: wider radius + sub-pixel culling).
+// Now writes into app-side floats rather than a SectorLodResolver reference.
+// ---------------------------------------------------------------------------
 static void apply_world_resolver_defaults(const std::string& world_name,
-                                          SectorLodResolver& sec,
-                                          ViewerStats& stats) {
-    // Per-world resolver knobs: the Meadow spans ~256x256 units and needs a
-    // wider active radius plus sub-pixel culling; every other world uses the
-    // tight defaults.
+                                          float& active_radius,
+                                          float& min_projected_size,
+                                          viewer::ViewerStats& stats) {
     if (world_name == "Meadow") {
-        sec.set_active_radius(400.0f);
-        sec.set_min_projected_size(0.0015f);   // ~1 px at 720p (fov/height)
-        stats.resolver_choice = 1;             // SectorLod by default
+        active_radius      = 400.0f;
+        min_projected_size = 0.0015f;
+        stats.resolver_choice = 1;   // SectorLod by default
     } else {
-        sec.set_active_radius(64.0f);
-        sec.set_min_projected_size(0.0f);
-        stats.resolver_choice = 0;             // PassThrough by default
+        active_radius      = 64.0f;
+        min_projected_size = 0.0f;
+        stats.resolver_choice = 0;   // PassThrough by default
     }
+}
+
+// ---------------------------------------------------------------------------
+// Inline gpu_cull_requested() — avoids pulling in gl46.h / gpu_culler.h.
+// ---------------------------------------------------------------------------
+static bool gpu_cull_requested() {
+    const char* v = getenv("MATTER_GPU_CULL");
+    return v == nullptr || v[0] != '0';
 }
 
 int main() {
@@ -62,14 +82,14 @@ int main() {
     // InitWindow — it defaults ON and is only disabled by MATTER_GPU_CULL=0
     // (typically paired with MATTER_RT=1 on GL < 4.6 hardware).
     unsigned cfg_flags = FLAG_WINDOW_RESIZABLE;
-    if (use_rt || !viewer::gpu_cull_requested()) cfg_flags |= FLAG_MSAA_4X_HINT;
+    if (use_rt || !gpu_cull_requested()) cfg_flags |= FLAG_MSAA_4X_HINT;
     SetConfigFlags(cfg_flags);
     InitWindow(W, H, "MatterEngine3 World Viewer");
     SetTargetFPS(60);
 
-    Ui ui; ui.setup();
+    viewer::Ui ui; ui.setup();
 
-    auto worlds = scan_worlds("../examples");
+    auto worlds = viewer::scan_worlds("../examples");
     printf("worlds available (%d):\n", (int)worlds.size());
     for (size_t i = 0; i < worlds.size(); ++i) {
         printf("  [%zu] %s  (%s / %s)\n",
@@ -81,54 +101,41 @@ int main() {
         return 1;
     }
 
-    Renderer renderer;
-    renderer.init_camera();   // always: sets camera defaults used in both modes
+    // MATTER_GPU_CULL=0 requires MATTER_RT=1 (same FATAL gate as before).
+    if (!use_rt && !gpu_cull_requested()) {
+        fprintf(stderr, "FATAL: MATTER_GPU_CULL=0 requires MATTER_RT=1 "
+                "(the CPU raster path has been removed). Unset MATTER_GPU_CULL "
+                "for the default GPU-driven raster path, or set MATTER_RT=1 "
+                "to fall back to the software ray tracer.\n");
+        CloseWindow();
+        return 1;
+    }
+
+    // --- Engine setup ---
+    matter::EngineDesc edesc;
+    edesc.cache_root    = "cache";
+    edesc.allow_gl_lt_46 = use_rt;
     std::string err;
-    if (use_rt) {
-        if (!renderer.init_shader("shaders/raytrace_tlas_blas_processed.fs", err)) {
-            printf("FATAL: %s\n", err.c_str());
-            return 1;
-        }
-    }
+    auto engine = matter::EngineContext::create(edesc, err);
+    if (!engine) { fprintf(stderr, "FATAL: %s\n", err.c_str()); CloseWindow(); return 1; }
 
-    // Raster path is GPU-driven only. RT path bypasses the GL 4.6 check.
-    bool gpu_cull = false;
-    if (!use_rt) {
-        if (!viewer::gpu_cull_requested()) {
-            fprintf(stderr, "FATAL: MATTER_GPU_CULL=0 requires MATTER_RT=1 "
-                    "(the CPU raster path has been removed). Unset MATTER_GPU_CULL "
-                    "for the default GPU-driven raster path, or set MATTER_RT=1 "
-                    "to fall back to the software ray tracer.\n");
-            return 1;
-        }
-        std::string why;
-        if (!viewer::gl46_available(why)) {
-            fprintf(stderr, "FATAL: GL 4.6 required for raster path (%s). "
-                    "Set MATTER_GPU_CULL=0 with MATTER_RT=1 for the ray-traced fallback.\n",
-                    why.c_str());
-            return 1;
-        }
-        gpu_cull = true;
-        printf("GPU cull path: enabled (GL 4.6 ok)\n");
-    }
+    // Camera (app-owned; passed to session->render every frame).
+    Camera3D camera{};
+    init_camera(camera);
 
-    // MATTER_CAM="px,py,pz,tx,ty,tz" overrides the initial camera (eye + target),
-    // so a headless screenshot can frame an arbitrarily sized scene without a
-    // rebuild. Missing/garbage -> keep the renderer default.
+    // MATTER_CAM="px,py,pz,tx,ty,tz" overrides the initial camera.
     if (const char* cam_env = getenv("MATTER_CAM")) {
         float c[6];
         if (sscanf(cam_env, "%f,%f,%f,%f,%f,%f",
                    &c[0],&c[1],&c[2],&c[3],&c[4],&c[5]) == 6) {
-            renderer.camera().position = (Vector3){ c[0], c[1], c[2] };
-            renderer.camera().target   = (Vector3){ c[3], c[4], c[5] };
+            camera.position = (Vector3){ c[0], c[1], c[2] };
+            camera.target   = (Vector3){ c[3], c[4], c[5] };
             printf("MATTER_CAM: eye(%.1f,%.1f,%.1f) target(%.1f,%.1f,%.1f)\n",
                    c[0],c[1],c[2],c[3],c[4],c[5]);
         }
     }
 
-    // Pick the initial world from the scanned list. MATTER_WORLD (case-
-    // insensitive match against world_name) overrides the default; unknown
-    // value falls through to index 0.
+    // Pick initial world (MATTER_WORLD, case-insensitive).
     int initial_world = 0;
     if (const char* world_env = getenv("MATTER_WORLD")) {
         std::string want = world_env;
@@ -142,171 +149,65 @@ int main() {
         }
     }
 
-    LocalProviderConfig cfg;
-    cfg.schemas_dir    = worlds[initial_world].schemas_dir;
-    cfg.world_data_dir = worlds[initial_world].world_data_dir;
-    cfg.world_name     = worlds[initial_world].world_name;
-    cfg.shared_lib_dir = "../shared-lib";
-    cfg.cache_root     = "cache";   // persistent: viewer/cache/parts/<hash>.part
-
-    auto provider = std::make_unique<LocalProvider>(cfg);
-
-    // --- Connect sequence (reusable for the reload button). ---
-    ViewerStats stats{};
+    viewer::ViewerStats stats{};
     stats.world_current = initial_world;
-    // MATTER_HIZ=0|1 overrides the HiZ occlusion default (off) at startup, so
-    // A/B runs are scriptable without the FIFO. Runtime toggles: HUD checkbox
-    // + FIFO `hiz on|off`. Only meaningful when the GPU cull path is active.
+    // MATTER_HIZ=0|1 overrides HiZ default at startup.
     if (const char* hz = getenv("MATTER_HIZ")) stats.hiz_enabled = (hz[0] != '0');
-    WorldManifest manifest;
-    WorldState state;
-    std::unique_ptr<PartStore> store;
-    std::unique_ptr<WorldComposer> composer;
-    std::unique_ptr<RasterComposer> raster;
-    lod_select::PartLodTable lods;
-    ProbeTextures probe_tex{};   // current probe 3D textures; released on reload/shutdown
-    Color sky_clear = (Color){ 96, 118, 143, 255 };   // updated from tone-mapped sky_color
 
-    auto connect_sequence = [&]() -> bool {
-        if (!provider->connect(manifest, err)) { printf("connect: %s\n", err.c_str()); return false; }
-        store = std::make_unique<PartStore>(cfg.cache_root);
-        auto want = provider->reconcile(manifest, *store);
-        if (!provider->fetch_parts(want, *store, err)) { printf("fetch: %s\n", err.c_str()); return false; }
-        state.reset(manifest);
-        // Size the TLAS to the fully child-expanded instance count, not just the
-        // root count: each placed part recursively pulls in its baked children
-        // (e.g. a Tree expands to hundreds of Leaf instances). Mirrors the depth
-        // cap and empty-LOD skip in WorldComposer::compose.
-        size_t cap = 16;
-        for (const auto& e : manifest.instances) {
-            walk_part_tree(e.part_hash,
-                [&](uint64_t h) -> const LoadedPart* { return store->get_or_load(h); },
-                [&](const LoadedPart* lp, uint64_t /*hash*/, const float /*rel*/[16], int /*depth*/) {
-                    // A geometry-less assembly part contributes no instance of its own
-                    // but its children are still visited -- mirror WorldComposer::compose.
-                    if (!lp->lod_blas.empty()) ++cap;
-                });
-        }
-        composer = std::make_unique<WorldComposer>(*store, cap);
-        // Recreate RasterComposer on each (re)connect so stale GL mesh caches drop.
-        // Release stale probe textures before creating new ones (GL context must be live).
-        release_probe_textures(probe_tex);
-        raster = std::make_unique<RasterComposer>();
-        if (!use_rt) {
-            std::string rerr;
-            if (!raster->init(rerr)) {
-                printf("raster: %s\n", rerr.c_str());
-                return false;
-            }
-            // Always upload WorldLights (defaults reproduce Phase-1 look for worlds
-            // without light lines).
-            raster->set_lights(manifest.lights);
+    // App-side resolver knobs (written by apply_world_resolver_defaults, read each frame).
+    float active_radius      = 64.0f;
+    float min_projected_size = 0.0f;
 
-            // Upload probe textures if available; fallback to Phase-1 flat ambient.
-            if (manifest.probes && manifest.probes->valid()) {
-                probe_tex = upload_probe_textures(*manifest.probes);
-                raster->set_probes(probe_tex);
-            } else {
-                printf("probes unavailable - flat ambient fallback\n");
-            }
+    // App-side wireframe toggle (F9 / FIFO); no-op in rendering today (no set_wireframe).
+    bool wireframe = false;
 
-            // Tone-map sky_color (c/(c+1) then pow(1/2.2)) to derive the clear color.
-            // With the default lights this reproduces approximately the old (96,118,143).
-            auto tonemap = [](float c) -> unsigned char {
-                float mapped = c / (c + 1.0f);                    // Reinhard
-                float gamma  = std::pow(mapped, 1.0f / 2.2f);     // gamma
-                float clamped = gamma < 0.0f ? 0.0f : (gamma > 1.0f ? 1.0f : gamma);
-                return (unsigned char)(clamped * 255.0f + 0.5f);
-            };
-            sky_clear = (Color){
-                tonemap(manifest.lights.sky_color[0]),
-                tonemap(manifest.lights.sky_color[1]),
-                tonemap(manifest.lights.sky_color[2]),
-                255
-            };
-            printf("sky clear color: (%d,%d,%d)\n",
-                   (int)sky_clear.r, (int)sky_clear.g, (int)sky_clear.b);
-        }
-        // GPU-driven shader: load after init() so the raster shader is ready.
-        // FATAL on failure — there is no CPU raster fallback (MATTER_RT=1 is
-        // the escape hatch for older GL).
-        if (!use_rt) {
-            std::string gerr;
-            if (!raster->init_gpu_driven(gerr)) {
-                fprintf(stderr, "FATAL: GPU-driven shader init failed: %s. "
-                        "Set MATTER_RT=1 to fall back to the ray-traced path.\n",
-                        gerr.c_str());
-                return false;
+    // --- open_and_bake helper (used for initial connect, reload, world switch) ---
+    auto open_and_bake = [&](const viewer::WorldEntry& w) -> std::unique_ptr<matter::WorldSession> {
+        matter::WorldDesc wd;
+        wd.schemas_dir    = w.schemas_dir.c_str();
+        wd.world_data_dir = w.world_data_dir.c_str();
+        wd.world_name     = w.world_name.c_str();
+        wd.shared_lib_dir = "../shared-lib";
+        std::string werr;
+        auto s = engine->open_world(wd, werr);
+        if (!s) { printf("open_world: %s\n", werr.c_str()); return nullptr; }
+        s->request_bake();
+        matter::Event ev; bool ok = true;
+        while (s->poll_event(ev)) {
+            if (ev.type == matter::EventType::BakePartDone)
+                printf("bake %d/%d %s\n", ev.done, ev.total, ev.module.c_str());
+            if (ev.type == matter::EventType::BakeError) {
+                printf("bake error: %s\n", ev.message.c_str()); ok = false;
             }
         }
-        // Upload world lights to the raytrace shader (no-op in raster mode because
-        // the shader is not loaded; the raster path uses raster->set_lights above).
-        renderer.set_lights(manifest.lights);
-        lods = store->part_lod_table();
-        stats.connected        = true;
-        stats.parts_baked      = provider->baked_count();
-        stats.cache_hits       = provider->hit_count();
-        stats.last_want_count  = (int)want.size();
-        stats.instances_total  = (int)manifest.instances.size();
-        // Probe grid dims for HUD (all-zero = probes unavailable/OFF)
-        if (manifest.probes && manifest.probes->valid()) {
-            stats.probe_dims[0] = manifest.probes->grid.nx;
-            stats.probe_dims[1] = manifest.probes->grid.ny;
-            stats.probe_dims[2] = manifest.probes->grid.nz;
-        } else {
-            stats.probe_dims[0] = stats.probe_dims[1] = stats.probe_dims[2] = 0;
-        }
-        return true;
+        return ok ? std::move(s) : nullptr;
     };
-    if (!connect_sequence()) return 1;
 
-    // GPU culler: constructed and initialized ONLY when the GL 4.6 gate passed.
-    // Must be initialized after InitWindow (GL context live) and after connect_sequence
-    // (GL state settled). FATAL on init failure per task spec.
-    GpuCuller gpu_culler;
-    if (gpu_cull) {
-        std::string cull_err;
-        if (!gpu_culler.init(cull_err)) {
-            fprintf(stderr, "FATAL: GpuCuller::init failed: %s\n", cull_err.c_str());
-            return 1;
-        }
-        printf("GpuCuller: initialized\n");
-        stats.gpu_cull_active = true;
-    }
+    auto session = open_and_bake(worlds[initial_world]);
+    if (!session) { ui.shutdown(); CloseWindow(); return 1; }
 
-    PassThroughResolver pass;
-    // Constructor radius is overwritten immediately by apply_world_resolver_defaults;
-    // the placeholder 64.0f keeps the resolver in a valid state before the first call.
-    SectorLodResolver sec(16.0f, 64.0f);
-    apply_world_resolver_defaults(cfg.world_name, sec, stats);
+    stats.gpu_cull_active = !use_rt;
+    apply_world_resolver_defaults(worlds[initial_world].world_name,
+                                  active_radius, min_projected_size, stats);
 
-    // RT mode only: populate the TLAS and warm up the raytrace shader so the GPU
-    // compile stall happens here (with startup logging) instead of on the first
-    // real frame. Raster mode skips this entirely — no ~60s warm-up.
-    if (use_rt) {
-        Vector3 cp0 = renderer.camera().position;
-        composer->compose(state, pass, lods, make_float3(cp0.x, cp0.y, cp0.z));
-        renderer.warm_up(store->blas(), composer->tlas());
+    // Fill initial stats from the first bake.
+    {
+        const matter::FrameStats& fs = session->frame_stats();
+        stats.parts_baked     = (int)fs.parts_baked;
+        stats.cache_hits      = (int)fs.cache_hits;
+        stats.instances_total = (int)fs.instances_total;
+        memcpy(stats.probe_dims, fs.probe_dims, sizeof stats.probe_dims);
+        stats.connected = true;
     }
 
     bool camera_capture = false;
 
-    // Headless capture: if MATTER_SCREENSHOT is set, render a few frames so the
-    // raytrace output is stable, dump a PNG to that path, then exit cleanly.
+    // Headless capture: if MATTER_SCREENSHOT is set, render a few frames, dump PNG, exit.
     const char* screenshot_path = getenv("MATTER_SCREENSHOT");
     int frames_drawn = 0;
 
-    // --- Live command FIFO (optional) ---------------------------------------
-    // MATTER_CMD_FIFO names a named pipe; when set, the viewer stays alive and
-    // executes one-line commands so an external driver can move the camera,
-    // capture screenshots, and hot-reload schemas WITHOUT paying the (~60s)
-    // raytrace shader warm-up again. Commands (one per line):
-    //   cam <px> <py> <pz> <tx> <ty> <tz>   move eye + look-at target
-    //   shot <path>                          capture a PNG once the image settles
-    //   reload                               re-bake changed schemas + repopulate
-    //   quit                                 exit cleanly
-    // After each shot the viewer touches "<path>.done" so the driver can poll for
-    // a fully-written file instead of racing the PNG encode.
+    // --- Live command FIFO (optional) ---
+    // MATTER_CMD_FIFO names a named pipe; commands: cam/shot/stats/budget/hiz/reload/quit/wireframe
     int cmd_fd = -1;
     std::string cmd_buf;
     const char* fifo_path = getenv("MATTER_CMD_FIFO");
@@ -320,12 +221,11 @@ int main() {
         else            printf("MATTER_CMD_FIFO: listening on %s\n", fifo_path);
     }
 #else
-    // mkfifo/O_NONBLOCK are POSIX-only; the live-command FIFO is a Linux dev aid.
     if (fifo_path) printf("MATTER_CMD_FIFO not supported on Windows; ignoring\n");
 #endif
-    std::string shot_path;   // pending screenshot target
+    std::string shot_path;     // pending screenshot target
     std::string stats_label;   // pending `stats <label>` FIFO request
-    int  shot_frames = 0;    // frames to let the image settle before capture
+    int  shot_frames    = 0;   // frames to let the image settle before capture
     bool quit_requested = false;
 
     while (!WindowShouldClose()) {
@@ -333,8 +233,10 @@ int main() {
             camera_capture = !camera_capture;
             if (camera_capture) DisableCursor(); else EnableCursor();
         }
-        if (camera_capture) renderer.update_camera_free();
+        if (IsKeyPressed(KEY_F9)) wireframe = !wireframe;
+        if (camera_capture) update_camera_free(camera);
 
+        // FIFO command pump.
         if (cmd_fd >= 0) {
             char rb[512];
             ssize_t n;
@@ -350,22 +252,22 @@ int main() {
                 char labelbuf[64];
                 if (sscanf(line.c_str(), "cam %f %f %f %f %f %f",
                            &c[0],&c[1],&c[2],&c[3],&c[4],&c[5]) == 6) {
-                    renderer.camera().position = (Vector3){ c[0], c[1], c[2] };
-                    renderer.camera().target   = (Vector3){ c[3], c[4], c[5] };
+                    camera.position = (Vector3){ c[0], c[1], c[2] };
+                    camera.target   = (Vector3){ c[3], c[4], c[5] };
                 } else if (sscanf(line.c_str(), "shot %255s", pathbuf) == 1) {
-                    shot_path = pathbuf;
-                    shot_frames = 4;   // RT-derived settle count; applied harmlessly in raster mode too
+                    shot_path   = pathbuf;
+                    shot_frames = 4;   // settle count
                 } else if (sscanf(line.c_str(), "stats %63s", labelbuf) == 1) {
-                    stats_label = labelbuf;   // printed after this frame's stats fill
+                    stats_label = labelbuf;
                 } else if (sscanf(line.c_str(), "budget %f", &c[0]) == 1) {
-                    // Clamp to [0.05, 4.0]: wider than the HUD slider for scripted sweeps,
-                    // but guards against 0/negative values that break LOD selection math.
                     if (c[0] < 0.05f) c[0] = 0.05f;
                     if (c[0] > 4.0f)  c[0] = 4.0f;
                     stats.pixel_budget = c[0];
                 } else if (sscanf(line.c_str(), "hiz %15s", labelbuf) == 1) {
                     stats.hiz_enabled = (strcmp(labelbuf, "on") == 0);
                     printf("hiz %s\n", stats.hiz_enabled ? "on" : "off");
+                } else if (line == "wireframe") {
+                    wireframe = !wireframe;
                 } else if (line == "reload") {
                     stats.reload_requested = true;
                 } else if (line == "quit") {
@@ -376,88 +278,55 @@ int main() {
             }
         }
 
-        Vector3 cp = renderer.camera().position;
-        float3 cam = make_float3(cp.x, cp.y, cp.z);
+        // Tick world state (poll provider deltas).
+        session->tick();
 
-        SectorResolver& resolver =
-            (stats.resolver_choice == 1) ? (SectorResolver&)sec : (SectorResolver&)pass;
+        // Build render options.
+        matter::RenderOptions opts;
+        opts.path     = use_rt ? matter::RenderPath::Raytrace : matter::RenderPath::GpuDriven;
+        opts.resolver = stats.resolver_choice == 1 ? matter::ResolverKind::SectorLod
+                                                   : matter::ResolverKind::PassThrough;
+        opts.wireframe         = wireframe;
+        opts.hiz_occlusion     = stats.hiz_enabled;
+        opts.pixel_budget      = stats.pixel_budget;
+        opts.active_radius     = active_radius;
+        opts.min_projected_size = min_projected_size;
 
-        sec.set_pixel_budget(stats.pixel_budget);
-        raster->set_pixel_budget(stats.pixel_budget);
-
-        int active = 0;
-        if (use_rt) {
-            active = composer->compose(state, resolver, lods, cam);
-        } else {
-            auto t0 = std::chrono::steady_clock::now();
-            auto resolved = resolver.resolve(state, lods, cam);
-            auto t1 = std::chrono::steady_clock::now();
-            // Raster path is GPU-driven only (guaranteed by the startup FATAL gate).
-            float eye[3]     = {cp.x, cp.y, cp.z};
-            Vector3 tgt      = renderer.camera().target;
-            float target3[3] = {tgt.x, tgt.y, tgt.z};
-            float up3[3]     = {0, 1, 0};
-            float aspect     = (float)GetScreenWidth() / (float)GetScreenHeight();
-            // Build view/proj/vp explicitly (same near/far as
-            // camera_frustum_planes_raw) so the HiZ path gets the exact vp
-            // the frustum planes came from.
-            const float near_z = 0.05f, far_z = 4000.0f;
-            float view[16], proj[16], vp[16];
-            viewer::make_lookat(eye, target3, up3, view);
-            viewer::make_perspective(renderer.camera().fovy, aspect, near_z, far_z, proj);
-            viewer::mul16(view, proj, vp);
-            float planes[6][4];
-            viewer::extract_frustum_planes(vp, planes);
-            // Propagate the runtime HiZ toggle every frame (HUD/FIFO/env).
-            gpu_culler.set_hiz_enabled(stats.hiz_enabled);
-            // Gate stats readback: enable when the debug HUD or FIFO `stats` command
-            // needs current-frame values.  Default (stats_readback_=false) returns
-            // the one-frame-late cached value, avoiding a per-frame GPU sync.
-            // The viewer's HUD always displays counters, so we enable it every frame
-            // here; a headless render loop could clear this flag for pure throughput.
-            gpu_culler.set_stats_readback(true);
-            gpu_culler.cull(resolved, *store, eye, planes, vp, stats.pixel_budget);
-            auto t2 = std::chrono::steady_clock::now();
-            stats.resolve_ms = std::chrono::duration<float, std::milli>(t1 - t0).count();
-            stats.build_ms   = std::chrono::duration<float, std::milli>(t2 - t1).count();
-            active = (int)resolved.size();   // resolved count; emitted shown via gpu_emitted
-        }
-
-        stats.fps = (float)GetFPS();
+        stats.fps      = (float)GetFPS();
         stats.frame_ms = GetFrameTime() * 1000.0f;
-        stats.cam_pos[0] = cp.x; stats.cam_pos[1] = cp.y; stats.cam_pos[2] = cp.z;
-        stats.instances_active = active;
+        stats.cam_pos[0] = camera.position.x;
+        stats.cam_pos[1] = camera.position.y;
+        stats.cam_pos[2] = camera.position.z;
 
         BeginDrawing();
-            ClearBackground(sky_clear);
-            if (use_rt) {
-                renderer.draw(store->blas(), composer->tlas());
-            } else {
-                auto d0 = std::chrono::steady_clock::now();
-                stats.raster_tris = raster->draw_gpu_driven(
-                        gpu_culler, *store, renderer.camera());
-                stats.gpu_emitted    = (int)gpu_culler.emitted();
-                stats.gpu_culled     = (int)gpu_culler.culled_clusters();
-                stats.gpu_culled_hiz = (int)gpu_culler.culled_hiz();
-                stats.raster_batches  = 0;   // not meaningful for indirect path
-                stats.culled_clusters = stats.gpu_culled;
-                stats.batch_cache_hit = false;
-                stats.draw_ms = std::chrono::duration<float, std::milli>(
-                                    std::chrono::steady_clock::now() - d0).count();
-            }
-            // Build HiZ depth max-pyramid for next-frame occlusion culling.
-            // No-op when the HiZ toggle is off (set_hiz_enabled above).
-            if (gpu_cull) gpu_culler.build_hiz(GetScreenWidth(), GetScreenHeight());
+            session->render(camera, GetScreenWidth(), GetScreenHeight(), opts);
+            const matter::FrameStats& fs = session->frame_stats();
+            stats.resolve_ms      = fs.resolve_ms;
+            stats.build_ms        = fs.build_ms;
+            stats.draw_ms         = fs.draw_ms;
+            stats.instances_active = (int)fs.instances_resolved;
+            stats.gpu_emitted     = (int)fs.instances_drawn;
+            stats.gpu_culled      = (int)fs.clusters_culled;
+            stats.gpu_culled_hiz  = (int)fs.hiz_culled;
+            stats.culled_clusters = stats.gpu_culled;
+            stats.raster_tris     = (int)fs.triangles;
+            stats.raster_batches  = 0;
+            stats.batch_cache_hit = false;
+            stats.instances_total = (int)fs.instances_total;
+            stats.parts_baked     = (int)fs.parts_baked;
+            stats.cache_hits      = (int)fs.cache_hits;
+            stats.connected       = true;
+            memcpy(stats.probe_dims, fs.probe_dims, sizeof stats.probe_dims);
             ui.begin_frame();
             ui.draw_debug_panel(stats);
             ui.draw_worlds_panel(worlds, stats);
-            ui.draw_camera_panel(renderer.camera());
+            ui.draw_camera_panel(camera);
             ui.end_frame();
         EndDrawing();
 
         if (!stats_label.empty()) {
-            // Append-only format (scripts parse by position): the trailing
-            // field is the HiZ-occlusion-culled cluster count (Task 10).
+            // Append-only format (scripts parse by position): trailing field
+            // is the HiZ-occlusion-culled cluster count (Task 10).
             printf("STATS,%s,%.2f,%.2f,%.2f,%.2f,%d,%d,%d,%d,%d\n",
                    stats_label.c_str(), stats.frame_ms,
                    stats.resolve_ms, stats.build_ms, stats.draw_ms,
@@ -469,10 +338,6 @@ int main() {
         }
 
         if (screenshot_path) {
-            // Settle count of 3 is RT-derived (waits for raytrace to stabilize);
-            // harmless in raster mode where the image is stable on frame 1.
-            // Use LoadImageFromScreen + ExportImage so absolute paths work verbatim
-            // (raylib's TakeScreenshot silently prepends GetWorkingDirectory()).
             if (++frames_drawn >= 3) {
                 Image screen = LoadImageFromScreen();
                 if (!ExportImage(screen, screenshot_path)) {
@@ -485,14 +350,8 @@ int main() {
             }
         }
 
-        // FIFO-driven capture: shoot once the image has settled, then touch a
-        // "<path>.done" marker so the driver polls a complete file, not a
-        // half-encoded PNG.
+        // FIFO-driven capture: shoot once the image has settled.
         if (shot_frames > 0 && --shot_frames == 0) {
-            // raylib's TakeScreenshot silently prepends GetWorkingDirectory()
-            // to the path, so absolute paths land at `<cwd><path>` which is
-            // nonsense. Do the screen-capture + PNG export ourselves so
-            // absolute paths work verbatim.
             Image screen = LoadImageFromScreen();
             if (!ExportImage(screen, shot_path.c_str())) {
                 printf("shot FAILED %s\n", shot_path.c_str());
@@ -504,18 +363,26 @@ int main() {
             if (FILE* f = fopen(done.c_str(), "w")) fclose(f);
         }
 
-        WorldDelta d;
-        if (provider->poll_deltas(d)) state.apply(d);
-
         if (stats.reload_requested) {
             stats.reload_requested = false;
-            // Re-enable the cursor before reload so a failure can't strand it.
             if (camera_capture) { camera_capture = false; EnableCursor(); }
-            // Reset GpuCuller so stale part slots from the old world are cleared.
-            if (gpu_cull) gpu_culler.reset();
-            // connect_sequence replaces `store`/`composer`; if it fails partway the
-            // old composer would dangle, so bail the loop and shut down cleanly.
-            if (!connect_sequence()) { printf("reload failed; exiting\n"); break; }
+            // Drain events from the old session before reload.
+            session->reload();
+            matter::Event ev;
+            bool reload_ok = true;
+            while (session->poll_event(ev)) {
+                if (ev.type == matter::EventType::BakePartDone)
+                    printf("bake %d/%d %s\n", ev.done, ev.total, ev.module.c_str());
+                if (ev.type == matter::EventType::BakeError) {
+                    printf("bake error: %s\n", ev.message.c_str());
+                    reload_ok = false;
+                }
+            }
+            if (!reload_ok) {
+                // Fail-closed: keep running (session render() will no-op until
+                // a later reload succeeds). Matches brief "on BakeError keep running".
+                printf("reload failed; continuing\n");
+            }
         }
 
         if (stats.world_switch_requested >= 0) {
@@ -524,20 +391,21 @@ int main() {
             if (idx < (int)worlds.size()) {
                 const auto& w = worlds[idx];
                 printf("world switch -> [%d] %s\n", idx, w.label.c_str());
-                cfg.schemas_dir    = w.schemas_dir;
-                cfg.world_data_dir = w.world_data_dir;
-                cfg.world_name     = w.world_name;
-                // LocalProvider takes cfg by value at construction — mutating cfg
-                // alone doesn't reach the existing provider instance.
-                provider = std::make_unique<LocalProvider>(cfg);
-                // Re-enable the cursor before rebuilding so a failure can't strand it
-                // (mirrors the reload path).
                 if (camera_capture) { camera_capture = false; EnableCursor(); }
-                // Reset GpuCuller so stale part slots from the old world are cleared.
-                if (gpu_cull) gpu_culler.reset();
-                if (!connect_sequence()) { printf("world switch failed; exiting\n"); break; }
+                session.reset();
+                session = open_and_bake(w);
+                if (!session) { printf("world switch failed; exiting\n"); break; }
                 stats.world_current = idx;
-                apply_world_resolver_defaults(cfg.world_name, sec, stats);
+                apply_world_resolver_defaults(w.world_name, active_radius,
+                                              min_projected_size, stats);
+                {
+                    const matter::FrameStats& fs = session->frame_stats();
+                    stats.parts_baked     = (int)fs.parts_baked;
+                    stats.cache_hits      = (int)fs.cache_hits;
+                    stats.instances_total = (int)fs.instances_total;
+                    memcpy(stats.probe_dims, fs.probe_dims, sizeof stats.probe_dims);
+                    stats.connected = true;
+                }
             }
         }
 
@@ -546,14 +414,9 @@ int main() {
 
     if (cmd_fd >= 0) { close(cmd_fd); if (fifo_path) unlink(fifo_path); }
     if (camera_capture) EnableCursor();
-    // Reset GL-owning objects before CloseWindow; order matters — all
-    // UnloadMesh/UnloadShader calls must complete while the GL context is live.
-    release_probe_textures(probe_tex);
-    raster.reset();
-    composer.reset();
-    store.reset();
+    // Session destructor releases GL; must precede CloseWindow.
+    session.reset();
     ui.shutdown();
-    renderer.shutdown();
     CloseWindow();
     return 0;
 }
