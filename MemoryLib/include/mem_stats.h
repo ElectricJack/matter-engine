@@ -3,6 +3,10 @@
 
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef struct MemStats {
     size_t liveBytes;
     size_t peakBytes;
@@ -12,5 +16,9 @@ typedef struct MemStats {
     size_t totalObjects; /* pool only */
     size_t freeObjects;  /* pool only */
 } MemStats;
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* MEM_STATS_H */
