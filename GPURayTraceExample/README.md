@@ -235,7 +235,7 @@ make shaders                  # Process shaders only
 The project automatically manages dependencies:
 
 - **Raylib**: Graphics library (built from source)
-- **ObjectAllocator**: Memory management (copied from ObjectAllocatorLib)
+- **ObjectAllocator**: Memory management (compiled from MemoryLib)
 - **Shader Preprocessor**: GLSL include processing
 
 ## Troubleshooting

@@ -239,7 +239,7 @@ Cross-refs: `.superpowers/sdd/task-11-report.md`,
 
 	Requirements:
 	- Use SurfaceLib to generate isosurface meshes
-	- Use ObjectAllocatorLib as a memory manager for particles 
+	- Use MemoryLib as a memory manager for particles 
 	- Must have extremely high performance
 
 	API Functionality
@@ -252,7 +252,7 @@ Cross-refs: `.superpowers/sdd/task-11-report.md`,
 	* Utilize create_project.sh to: [DONE]
 		* Create the subdirectory structure [DONE]
 		* Initialize the git repo in the subdirectory [DONE]
-	* Create an install script that sets up syminks to ObjectAllocatorLib and SurfaceLib [DONE]
+	* Create an install script that sets up syminks to MemoryLib and SurfaceLib [DONE]
 	* Run the install script
 	* 
 

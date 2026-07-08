@@ -1,9 +1,9 @@
 CC = gcc
 CXX = g++
 RAYLIB_PATH = ../Libraries/raylib
-OA_LIB = ../ObjectAllocatorLib
-CFLAGS = -Wall -Wextra -O2 -I$(RAYLIB_PATH)/src -I./include -I$(OA_LIB)/include
-CXXFLAGS = -Wall -Wextra -O2 -std=c++14 -Wno-missing-field-initializers -I$(RAYLIB_PATH)/src -I./include -I$(OA_LIB)/include
+MEMORY_LIB = ../MemoryLib
+CFLAGS = -Wall -Wextra -O2 -I$(RAYLIB_PATH)/src -I./include -I$(MEMORY_LIB)/include
+CXXFLAGS = -Wall -Wextra -O2 -std=c++14 -Wno-missing-field-initializers -I$(RAYLIB_PATH)/src -I./include -I$(MEMORY_LIB)/include
 
 # Build flags:
 # TARGET=windows-native : Cross-compile for Windows from Linux using MinGW
@@ -127,7 +127,7 @@ $(shell mkdir -p $(RAYLIB_PATH)/build/$(PLATFORM))
 
 # C++ main application
 SRC = main.cpp src/bvh.cpp src/blas_manager.cpp src/tlas_manager.cpp src/bvh_visualizer.cpp
-OBJ = $(OBJ_DIR)/main.o $(OBJ_DIR)/bvh.o $(OBJ_DIR)/object_allocator.o $(OBJ_DIR)/blas_manager.o $(OBJ_DIR)/tlas_manager.o $(OBJ_DIR)/bvh_visualizer.o
+OBJ = $(OBJ_DIR)/main.o $(OBJ_DIR)/bvh.o $(OBJ_DIR)/mem_pool.o $(OBJ_DIR)/blas_manager.o $(OBJ_DIR)/tlas_manager.o $(OBJ_DIR)/bvh_visualizer.o
 BIN = $(BUILD_DIR)/gpu_raytrace$(BIN_SUFFIX)
 PREPROCESSOR = $(BUILD_DIR)/shader_preprocessor
 
@@ -220,8 +220,8 @@ $(OBJ_DIR)/main.o: main.cpp
 $(OBJ_DIR)/bvh.o: src/bvh.cpp
 	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
-# object_allocator compiled from ObjectAllocatorLib (source of truth)
-$(OBJ_DIR)/object_allocator.o: $(OA_LIB)/src/object_allocator.c $(OA_LIB)/include/object_allocator.h
+# mem_pool compiled from MemoryLib (source of truth)
+$(OBJ_DIR)/mem_pool.o: $(MEMORY_LIB)/src/mem_pool.c $(MEMORY_LIB)/include/mem_pool.h
 	$(CC) -c $< $(CFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/blas_manager.o: src/blas_manager.cpp

@@ -7,7 +7,7 @@ SOURCES = basic_test.cpp \
           ../src/material_manager.cpp \
           ../src/gamified_physics.cpp \
           ../../SpatialQueryLib/src/spatial_hash.c \
-          ../../SpatialQueryLib/src/object_allocator.c
+          ../../MemoryLib/src/mem_pool.c
 
 # Object files
 OBJECTS = $(SOURCES:.cpp=.o)

@@ -1,8 +1,8 @@
 CC = gcc
 RAYLIB_PATH = ../Libraries/raylib
 SPATIAL_QUERY_PATH = ../SpatialQueryLib
-OA_LIB = ../ObjectAllocatorLib
-CFLAGS = -Wall -Wextra -O2 -MMD -MP -I$(RAYLIB_PATH)/src -Iinclude -I$(SPATIAL_QUERY_PATH)/include -I$(OA_LIB)/include
+MEMORY_LIB = ../MemoryLib
+CFLAGS = -Wall -Wextra -O2 -MMD -MP -I$(RAYLIB_PATH)/src -Iinclude -I$(SPATIAL_QUERY_PATH)/include -I$(MEMORY_LIB)/include
 
 # Detect OS
 UNAME_S := $(shell uname -s)
@@ -21,7 +21,7 @@ endif
 
 # Source files — sibling library sources compiled directly from source of truth
 SRC = main.c src/surface.c tests.c
-OBJ = main.o src/surface.o tests.o object_allocator.o spatial_hash.o
+OBJ = main.o src/surface.o tests.o mem_pool.o spatial_hash.o
 BIN = surface_app
 
 all: $(BIN)
@@ -36,7 +36,7 @@ raylib:
 	$(CC) -c $< $(CFLAGS) -o $@
 
 # Sibling library sources compiled directly from source of truth
-object_allocator.o: $(OA_LIB)/src/object_allocator.c $(OA_LIB)/include/object_allocator.h
+mem_pool.o: $(MEMORY_LIB)/src/mem_pool.c $(MEMORY_LIB)/include/mem_pool.h
 	$(CC) -c $< $(CFLAGS) -o $@
 
 spatial_hash.o: $(SPATIAL_QUERY_PATH)/src/spatial_hash.c $(SPATIAL_QUERY_PATH)/include/spatial_hash.h

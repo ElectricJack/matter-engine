@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install_dependencies.sh - Create symlinks to SurfaceLib and ObjectAllocatorLib dependencies
+# install_dependencies.sh - Create symlinks to SurfaceLib and MemoryLib dependencies
 
 set -e  # exit on any error
 
@@ -16,14 +16,14 @@ ln -sf ../SurfaceLib/include/particle.h include/particle.h
 ln -sf ../SurfaceLib/src/surface.c src/surface.c
 ln -sf ../SurfaceLib/include/mc_tables.h src/mc_tables.h
 
-# Create symlinks for ObjectAllocatorLib
-echo "Creating symlinks for ObjectAllocatorLib..."
+# Create symlinks for MemoryLib
+echo "Creating symlinks for MemoryLib..."
 
-# ObjectAllocatorLib includes
-ln -sf ../ObjectAllocatorLib/include/object_allocator.h include/object_allocator.h
+# MemoryLib includes
+ln -sf ../MemoryLib/include/mem_pool.h include/mem_pool.h
 
-# ObjectAllocatorLib sources
-ln -sf ../ObjectAllocatorLib/src/object_allocator.c src/object_allocator.c
+# MemoryLib sources
+ln -sf ../MemoryLib/src/mem_pool.c src/mem_pool.c
 
 # Create symlinks for SpatialQueryLib
 echo "Creating symlinks for SpatialQueryLib..."
@@ -37,5 +37,5 @@ ln -sf ../SpatialQueryLib/src/spatial_hash.c src/spatial_hash.c
 echo "Symlinks created successfully."
 echo "Added dependencies:"
 echo "  - SurfaceLib: surface.h, particle.h, surface.c, mc_tables.h"
-echo "  - ObjectAllocatorLib: object_allocator.h, object_allocator.c"
+echo "  - MemoryLib: mem_pool.h, mem_pool.c"
 echo "  - SpatialQueryLib: spatial_hash.h, spatial_hash.c"

@@ -21,11 +21,11 @@ echo "Detected platform: $PLATFORM"
 echo "Copying dependencies..."
 cp '../SurfaceLib/include/surface.h' include/
 cp '../SurfaceLib/include/particle.h' include/
-cp '../ObjectAllocatorLib/include/object_allocator.h' include/
+cp '../MemoryLib/include/mem_pool.h' include/
 cp '../SpatialQueryLib/include/spatial_hash.h' include/
 
 cp '../SurfaceLib/src/surface.c' src/
-cp '../ObjectAllocatorLib/src/object_allocator.c' src/
+cp '../MemoryLib/src/mem_pool.c' src/
 cp '../SpatialQueryLib/src/spatial_hash.c' src/
 cp '../SurfaceLib/include/mc_tables.h' src/
 
