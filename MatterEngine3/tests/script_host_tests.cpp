@@ -23,8 +23,7 @@ static std::vector<uint8_t> read_all(const std::string& p){
     b.resize(n); if (fread(b.data(),1,n,f)!=(size_t)n) b.clear(); fclose(f); return b;
 }
 
-static int failures = 0;
-#define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); ++failures; } } while (0)
+#include "check.h"
 
 static void test_embed_eval_1_plus_1() {
     JSRuntime* rt = JS_NewRuntime();
@@ -1083,6 +1082,6 @@ int main() {
     test_g8_sphere_box_polymorphic();
     test_extrude_dispatch_and_polygon();
     test_eval_lod_budgets();
-    if (failures == 0) printf("ALL PASS\n");
-    return failures ? 1 : 0;
+    if (g_failures == 0) printf("ALL PASS\n");
+    return g_failures ? 1 : 0;
 }

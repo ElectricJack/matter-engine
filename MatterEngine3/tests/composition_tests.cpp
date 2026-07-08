@@ -12,8 +12,7 @@
 #include <vector>
 #include <algorithm>
 
-static int failures = 0;
-#define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); ++failures; } } while (0)
+#include "check.h"
 
 // Build a flat NxN quad grid (2 tris per cell) as a Tri vector in [0,1]^2.
 static std::vector<Tri> grid_tris(int n) {
@@ -306,6 +305,6 @@ int main() {
     test_sector_uses_closest_instance();
     test_variation_lod_independence();
     test_floor_cull_lod_select();
-    printf(failures ? "FAILED (%d)\n" : "OK\n", failures);
-    return failures ? 1 : 0;
+    printf(g_failures ? "FAILED (%d)\n" : "OK\n", g_failures);
+    return g_failures ? 1 : 0;
 }

@@ -7,11 +7,7 @@
 
 using namespace script_host;
 
-static int g_failures = 0;
-#define CHECK(cond, msg) do { \
-    if (!(cond)) { printf("FAIL: %s\n", (msg)); ++g_failures; } \
-    else         { printf("ok:   %s\n", (msg)); } \
-} while (0)
+#include "check.h"
 
 static const char* kMinimalTileset = R"JS(
 class Floor extends Tileset {

@@ -54,6 +54,56 @@ else
     LDLIBS = ../../Libraries/raylib/src/libraylib.a
 endif
 
+# ---------------------------------------------------------------------------
+# Shared MatterSurfaceLib source sets (eliminate copy-paste across ~20 targets).
+#
+# COMMON_MSL_BLAS_SRC — minimal BLAS/TLAS backend; used by targets that only
+#   need asset round-trip / BVH (no full mesher): partv2, graph, comp, flatten,
+#   lighting, tilesettorusbvh, tilesetmeadowmanifest.
+#
+# COMMON_MSL_FULL_SRC — full mesher + BLAS/TLAS; used by targets that invoke
+#   the marching-cubes / mesh-build pipeline: script, graph-integration, shlib,
+#   example, gallery, treebake, meadow, meadow-check, grasslod, stressforest,
+#   viewer-logic, tilesetbake.
+#
+# COMMON_MSL_C     — full C-source set (surface.c et al.) used alongside
+#   COMMON_MSL_FULL_SRC; compiled via gcc to keep extern "C" symbols unmangled.
+# COMMON_MSL_C_OBJ — the resulting .o list.
+# ---------------------------------------------------------------------------
+MSL = ../../MatterSurfaceLib/src
+
+COMMON_MSL_BLAS_SRC = \
+    $(MSL)/blas_manager.cpp \
+    $(MSL)/bvh.cpp \
+    $(MSL)/tlas_manager.cpp \
+    $(MSL)/vertex_ao.cpp \
+    $(MSL)/occupancy.cpp \
+    $(MSL)/part_asset.cpp
+
+COMMON_MSL_FULL_SRC = \
+    $(COMMON_MSL_BLAS_SRC) \
+    $(MSL)/cluster.cpp \
+    $(MSL)/cell.cpp \
+    $(MSL)/mesh_simplifier.cpp \
+    $(MSL)/bvh_analyzer.cpp \
+    $(MSL)/mesh_worker_pool.cpp \
+    $(MSL)/mesh_build_utils.cpp \
+    $(MSL)/meshing_algorithm.cpp \
+    $(MSL)/marching_cubes_algorithm.cpp \
+    $(MSL)/oriented_cube_algorithm.cpp \
+    $(MSL)/lattice.cpp \
+    $(MSL)/particle_culling.cpp
+
+COMMON_MSL_C = \
+    $(MSL)/surface.c \
+    $(MSL)/open_particle_surface.c \
+    $(MSL)/fat_primitive.c \
+    $(MSL)/spatial_hash.c \
+    $(MSL)/object_allocator.c \
+    $(MSL)/material_registry.c
+COMMON_MSL_C_OBJ = surface.o open_particle_surface.o fat_primitive.o \
+                   spatial_hash.o object_allocator.o material_registry.o
+
 .PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests (headless, GL-free).
@@ -61,13 +111,8 @@ endif
 # material_registry.c via gcc to keep its extern "C" symbols unmangled.
 PARTV2_TARGET = part_asset_v2_tests
 PARTV2_CPP = part_asset_v2_tests.cpp ../src/part_asset_v2.cpp \
-             ../../MatterSurfaceLib/src/part_asset.cpp \
-             ../../MatterSurfaceLib/src/blas_manager.cpp \
-             ../../MatterSurfaceLib/src/bvh.cpp \
-             ../../MatterSurfaceLib/src/tlas_manager.cpp \
-             ../../MatterSurfaceLib/src/vertex_ao.cpp \
-             ../../MatterSurfaceLib/src/occupancy.cpp
-PARTV2_C   = ../../MatterSurfaceLib/src/material_registry.c
+             $(COMMON_MSL_BLAS_SRC)
+PARTV2_C   = $(MSL)/material_registry.c
 PARTV2_C_OBJ = material_registry.o
 
 $(PARTV2_TARGET): $(PARTV2_CPP) $(PARTV2_C)
@@ -98,17 +143,9 @@ SCRIPT_TARGET = script_host_tests
 SCRIPT_CPP = script_host_tests.cpp ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
              ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
              ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
-             ../../MatterSurfaceLib/src/cluster.cpp ../../MatterSurfaceLib/src/cell.cpp ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
-             ../../MatterSurfaceLib/src/blas_manager.cpp ../../MatterSurfaceLib/src/bvh.cpp ../../MatterSurfaceLib/src/bvh_analyzer.cpp \
-             ../../MatterSurfaceLib/src/mesh_worker_pool.cpp ../../MatterSurfaceLib/src/mesh_build_utils.cpp \
-             ../../MatterSurfaceLib/src/meshing_algorithm.cpp ../../MatterSurfaceLib/src/marching_cubes_algorithm.cpp \
-             ../../MatterSurfaceLib/src/oriented_cube_algorithm.cpp ../../MatterSurfaceLib/src/vertex_ao.cpp \
-             ../../MatterSurfaceLib/src/occupancy.cpp ../../MatterSurfaceLib/src/tlas_manager.cpp ../../MatterSurfaceLib/src/part_asset.cpp \
-             ../../MatterSurfaceLib/src/lattice.cpp ../../MatterSurfaceLib/src/particle_culling.cpp
-SCRIPT_C   = ../../MatterSurfaceLib/src/surface.c ../../MatterSurfaceLib/src/open_particle_surface.c \
-             ../../MatterSurfaceLib/src/fat_primitive.c \
-             ../../MatterSurfaceLib/src/spatial_hash.c ../../MatterSurfaceLib/src/object_allocator.c ../../MatterSurfaceLib/src/material_registry.c
-SCRIPT_C_OBJ = surface.o open_particle_surface.o fat_primitive.o spatial_hash.o object_allocator.o material_registry.o
+             $(COMMON_MSL_FULL_SRC)
+SCRIPT_C   = $(COMMON_MSL_C)
+SCRIPT_C_OBJ = $(COMMON_MSL_C_OBJ)
 
 $(SCRIPT_TARGET): $(SCRIPT_CPP) $(SCRIPT_C) $(QJS_C)
 	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
@@ -129,12 +166,10 @@ ISO_TARGET = iso_primitive_tests
 ISO_CPP = iso_primitive_tests.cpp field_probe.cpp \
           ../src/csg_lowering.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
           ../src/part_asset_v2.cpp \
-          ../../MatterSurfaceLib/src/part_asset.cpp ../../MatterSurfaceLib/src/blas_manager.cpp \
-          ../../MatterSurfaceLib/src/bvh.cpp ../../MatterSurfaceLib/src/tlas_manager.cpp \
-          ../../MatterSurfaceLib/src/vertex_ao.cpp ../../MatterSurfaceLib/src/occupancy.cpp
-ISO_C   = ../../MatterSurfaceLib/src/surface.c ../../MatterSurfaceLib/src/fat_primitive.c \
-          ../../MatterSurfaceLib/src/spatial_hash.c ../../MatterSurfaceLib/src/object_allocator.c \
-          ../../MatterSurfaceLib/src/material_registry.c
+          $(COMMON_MSL_BLAS_SRC)
+ISO_C   = $(MSL)/surface.c $(MSL)/fat_primitive.c \
+          $(MSL)/spatial_hash.c $(MSL)/object_allocator.c \
+          $(MSL)/material_registry.c
 ISO_C_OBJ = surface.o fat_primitive.o spatial_hash.o object_allocator.o material_registry.o
 
 $(ISO_TARGET): $(ISO_CPP) $(ISO_C)
@@ -155,17 +190,9 @@ GRAPH_INT_CPP = part_graph_integration_tests.cpp ../src/part_graph.cpp \
                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
-                ../../MatterSurfaceLib/src/cluster.cpp ../../MatterSurfaceLib/src/cell.cpp ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
-                ../../MatterSurfaceLib/src/blas_manager.cpp ../../MatterSurfaceLib/src/bvh.cpp ../../MatterSurfaceLib/src/bvh_analyzer.cpp \
-                ../../MatterSurfaceLib/src/mesh_worker_pool.cpp ../../MatterSurfaceLib/src/mesh_build_utils.cpp \
-                ../../MatterSurfaceLib/src/meshing_algorithm.cpp ../../MatterSurfaceLib/src/marching_cubes_algorithm.cpp \
-                ../../MatterSurfaceLib/src/oriented_cube_algorithm.cpp ../../MatterSurfaceLib/src/vertex_ao.cpp \
-                ../../MatterSurfaceLib/src/occupancy.cpp ../../MatterSurfaceLib/src/tlas_manager.cpp ../../MatterSurfaceLib/src/part_asset.cpp \
-                ../../MatterSurfaceLib/src/lattice.cpp ../../MatterSurfaceLib/src/particle_culling.cpp
-GRAPH_INT_C   = ../../MatterSurfaceLib/src/surface.c ../../MatterSurfaceLib/src/open_particle_surface.c \
-                ../../MatterSurfaceLib/src/fat_primitive.c \
-                ../../MatterSurfaceLib/src/spatial_hash.c ../../MatterSurfaceLib/src/object_allocator.c ../../MatterSurfaceLib/src/material_registry.c
-GRAPH_INT_C_OBJ = surface.o open_particle_surface.o fat_primitive.o spatial_hash.o object_allocator.o material_registry.o
+                $(COMMON_MSL_FULL_SRC)
+GRAPH_INT_C   = $(COMMON_MSL_C)
+GRAPH_INT_C_OBJ = $(COMMON_MSL_C_OBJ)
 
 $(GRAPH_INT_TARGET): $(GRAPH_INT_CPP) $(GRAPH_INT_C) $(QJS_C)
 	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
@@ -181,13 +208,8 @@ run-graph-integration: $(GRAPH_INT_TARGET)
 # NEW MatterEngine3 sources ../src/<new>.cpp + consumed MatterSurfaceLib backend.
 GRAPH_TARGET = part_graph_tests
 GRAPH_SOURCES = part_graph_tests.cpp ../src/part_graph.cpp ../src/part_asset_v2.cpp \
-                ../../MatterSurfaceLib/src/part_asset.cpp \
-                ../../MatterSurfaceLib/src/blas_manager.cpp \
-                ../../MatterSurfaceLib/src/bvh.cpp \
-                ../../MatterSurfaceLib/src/tlas_manager.cpp \
-                ../../MatterSurfaceLib/src/vertex_ao.cpp \
-                ../../MatterSurfaceLib/src/occupancy.cpp
-GRAPH_C   = ../../MatterSurfaceLib/src/material_registry.c
+                $(COMMON_MSL_BLAS_SRC)
+GRAPH_C   = $(MSL)/material_registry.c
 GRAPH_C_OBJ = material_registry.o
 
 $(GRAPH_TARGET): $(GRAPH_SOURCES) $(GRAPH_C)
@@ -205,11 +227,8 @@ run-graph: $(GRAPH_TARGET)
 # compiled via gcc so its extern "C" symbols stay unmangled.
 TRIVAR_TARGET = triangle_variation_tests
 TRIVAR_CPP = triangle_variation_tests.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/part_asset_v2.cpp \
-             ../../MatterSurfaceLib/src/part_asset.cpp \
-             ../../MatterSurfaceLib/src/blas_manager.cpp ../../MatterSurfaceLib/src/bvh.cpp \
-             ../../MatterSurfaceLib/src/tlas_manager.cpp \
-             ../../MatterSurfaceLib/src/vertex_ao.cpp ../../MatterSurfaceLib/src/occupancy.cpp
-TRIVAR_C   = ../../MatterSurfaceLib/src/material_registry.c
+             $(COMMON_MSL_BLAS_SRC)
+TRIVAR_C   = $(MSL)/material_registry.c
 TRIVAR_C_OBJ = material_registry.o
 
 $(TRIVAR_TARGET): $(TRIVAR_CPP) $(TRIVAR_C)
@@ -241,15 +260,10 @@ SHLIB_TARGET = shared_lib_tests
 SHLIB_CPP = shared_lib_tests.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
             ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \
             ../src/part_asset_v2.cpp ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
-            ../../MatterSurfaceLib/src/cluster.cpp ../../MatterSurfaceLib/src/cell.cpp ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
-            ../../MatterSurfaceLib/src/blas_manager.cpp ../../MatterSurfaceLib/src/bvh.cpp ../../MatterSurfaceLib/src/bvh_analyzer.cpp \
-            ../../MatterSurfaceLib/src/mesh_worker_pool.cpp ../../MatterSurfaceLib/src/mesh_build_utils.cpp \
-            ../../MatterSurfaceLib/src/meshing_algorithm.cpp ../../MatterSurfaceLib/src/marching_cubes_algorithm.cpp \
-            ../../MatterSurfaceLib/src/oriented_cube_algorithm.cpp ../../MatterSurfaceLib/src/vertex_ao.cpp \
-            ../../MatterSurfaceLib/src/occupancy.cpp ../../MatterSurfaceLib/src/tlas_manager.cpp ../../MatterSurfaceLib/src/part_asset.cpp \
-            ../../MatterSurfaceLib/src/lattice.cpp ../../MatterSurfaceLib/src/particle_culling.cpp
-SHLIB_C   = ../../MatterSurfaceLib/src/surface.c ../../MatterSurfaceLib/src/open_particle_surface.c \
-            ../../MatterSurfaceLib/src/spatial_hash.c ../../MatterSurfaceLib/src/object_allocator.c ../../MatterSurfaceLib/src/material_registry.c
+            $(COMMON_MSL_FULL_SRC)
+# Note: SHLIB omits fat_primitive.c (not needed by the module-resolver path).
+SHLIB_C   = $(MSL)/surface.c $(MSL)/open_particle_surface.c \
+            $(MSL)/spatial_hash.c $(MSL)/object_allocator.c $(MSL)/material_registry.c
 SHLIB_C_OBJ = surface.o open_particle_surface.o spatial_hash.o object_allocator.o material_registry.o
 
 $(SHLIB_TARGET): $(SHLIB_CPP) $(SHLIB_C) $(QJS_C)
@@ -270,14 +284,9 @@ run-shlib: $(SHLIB_TARGET)
 COMP_TARGET = composition_tests
 COMP_CPP = composition_tests.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp \
            ../src/sector_grid.cpp ../src/lod_select.cpp ../src/part_asset_v2.cpp \
-           ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
-           ../../MatterSurfaceLib/src/blas_manager.cpp \
-           ../../MatterSurfaceLib/src/bvh.cpp \
-           ../../MatterSurfaceLib/src/tlas_manager.cpp \
-           ../../MatterSurfaceLib/src/part_asset.cpp \
-           ../../MatterSurfaceLib/src/vertex_ao.cpp \
-           ../../MatterSurfaceLib/src/occupancy.cpp
-COMP_C   = ../../MatterSurfaceLib/src/material_registry.c
+           $(MSL)/mesh_simplifier.cpp \
+           $(COMMON_MSL_BLAS_SRC)
+COMP_C   = $(MSL)/material_registry.c
 COMP_C_OBJ = material_registry.o
 
 $(COMP_TARGET): $(COMP_CPP) $(COMP_C)
@@ -294,14 +303,9 @@ FLATTEN_TARGET = part_flatten_tests
 FLATTEN_CPP = part_flatten_tests.cpp ../src/part_flatten.cpp ../src/lod_bake.cpp \
               ../src/part_cluster.cpp \
               ../src/part_asset_v2.cpp \
-              ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
-              ../../MatterSurfaceLib/src/blas_manager.cpp \
-              ../../MatterSurfaceLib/src/bvh.cpp \
-              ../../MatterSurfaceLib/src/tlas_manager.cpp \
-              ../../MatterSurfaceLib/src/part_asset.cpp \
-              ../../MatterSurfaceLib/src/vertex_ao.cpp \
-              ../../MatterSurfaceLib/src/occupancy.cpp
-FLATTEN_C   = ../../MatterSurfaceLib/src/material_registry.c
+              $(MSL)/mesh_simplifier.cpp \
+              $(COMMON_MSL_BLAS_SRC)
+FLATTEN_C   = $(MSL)/material_registry.c
 FLATTEN_C_OBJ = material_registry.o
 
 $(FLATTEN_TARGET): $(FLATTEN_CPP) $(FLATTEN_C)
@@ -338,17 +342,9 @@ EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp \
               ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
               ../src/part_cluster.cpp \
               ../src/sector_grid.cpp ../src/lod_select.cpp \
-              ../../MatterSurfaceLib/src/cluster.cpp ../../MatterSurfaceLib/src/cell.cpp ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
-              ../../MatterSurfaceLib/src/blas_manager.cpp ../../MatterSurfaceLib/src/bvh.cpp ../../MatterSurfaceLib/src/bvh_analyzer.cpp \
-              ../../MatterSurfaceLib/src/mesh_worker_pool.cpp ../../MatterSurfaceLib/src/mesh_build_utils.cpp \
-              ../../MatterSurfaceLib/src/meshing_algorithm.cpp ../../MatterSurfaceLib/src/marching_cubes_algorithm.cpp \
-              ../../MatterSurfaceLib/src/oriented_cube_algorithm.cpp ../../MatterSurfaceLib/src/vertex_ao.cpp \
-              ../../MatterSurfaceLib/src/occupancy.cpp ../../MatterSurfaceLib/src/tlas_manager.cpp ../../MatterSurfaceLib/src/part_asset.cpp \
-              ../../MatterSurfaceLib/src/lattice.cpp ../../MatterSurfaceLib/src/particle_culling.cpp
-EXAMPLE_C   = ../../MatterSurfaceLib/src/surface.c ../../MatterSurfaceLib/src/open_particle_surface.c \
-              ../../MatterSurfaceLib/src/spatial_hash.c ../../MatterSurfaceLib/src/object_allocator.c ../../MatterSurfaceLib/src/material_registry.c \
-              ../../MatterSurfaceLib/src/fat_primitive.c
-EXAMPLE_C_OBJ = surface.o open_particle_surface.o spatial_hash.o object_allocator.o material_registry.o fat_primitive.o
+              $(COMMON_MSL_FULL_SRC)
+EXAMPLE_C   = $(COMMON_MSL_C)
+EXAMPLE_C_OBJ = $(COMMON_MSL_C_OBJ)
 
 $(EXAMPLE_TARGET): $(EXAMPLE_CPP) $(EXAMPLE_C) $(QJS_C)
 	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
@@ -457,14 +453,9 @@ LIGHTING_TARGET = lighting_tests
 LIGHTING_SOURCES = lighting_tests.cpp ../src/world_lights.cpp ../src/probe_volume.cpp \
                    ../src/world_tracer.cpp ../src/probe_bake.cpp \
                    ../src/part_graph.cpp ../src/part_asset_v2.cpp \
-                   ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
-                   ../../MatterSurfaceLib/src/blas_manager.cpp \
-                   ../../MatterSurfaceLib/src/bvh.cpp \
-                   ../../MatterSurfaceLib/src/tlas_manager.cpp \
-                   ../../MatterSurfaceLib/src/part_asset.cpp \
-                   ../../MatterSurfaceLib/src/vertex_ao.cpp \
-                   ../../MatterSurfaceLib/src/occupancy.cpp
-LIGHTING_C   = ../../MatterSurfaceLib/src/material_registry.c
+                   $(MSL)/mesh_simplifier.cpp \
+                   $(COMMON_MSL_BLAS_SRC)
+LIGHTING_C   = $(MSL)/material_registry.c
 LIGHTING_C_OBJ = material_registry.o
 
 $(LIGHTING_TARGET): $(LIGHTING_SOURCES) $(LIGHTING_C)
@@ -570,30 +561,9 @@ TILESETBAKE_CPP = tileset_bake_tests.cpp ../src/part_graph.cpp \
                   ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \
                   ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                   ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
-                  ../../MatterSurfaceLib/src/cluster.cpp ../../MatterSurfaceLib/src/cell.cpp \
-                  ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
-                  ../../MatterSurfaceLib/src/blas_manager.cpp \
-                  ../../MatterSurfaceLib/src/bvh.cpp \
-                  ../../MatterSurfaceLib/src/bvh_analyzer.cpp \
-                  ../../MatterSurfaceLib/src/mesh_worker_pool.cpp \
-                  ../../MatterSurfaceLib/src/mesh_build_utils.cpp \
-                  ../../MatterSurfaceLib/src/meshing_algorithm.cpp \
-                  ../../MatterSurfaceLib/src/marching_cubes_algorithm.cpp \
-                  ../../MatterSurfaceLib/src/oriented_cube_algorithm.cpp \
-                  ../../MatterSurfaceLib/src/vertex_ao.cpp \
-                  ../../MatterSurfaceLib/src/occupancy.cpp \
-                  ../../MatterSurfaceLib/src/tlas_manager.cpp \
-                  ../../MatterSurfaceLib/src/part_asset.cpp \
-                  ../../MatterSurfaceLib/src/lattice.cpp \
-                  ../../MatterSurfaceLib/src/particle_culling.cpp
-TILESETBAKE_C   = ../../MatterSurfaceLib/src/surface.c \
-                  ../../MatterSurfaceLib/src/open_particle_surface.c \
-                  ../../MatterSurfaceLib/src/fat_primitive.c \
-                  ../../MatterSurfaceLib/src/spatial_hash.c \
-                  ../../MatterSurfaceLib/src/object_allocator.c \
-                  ../../MatterSurfaceLib/src/material_registry.c
-TILESETBAKE_C_OBJ = surface.o open_particle_surface.o fat_primitive.o \
-                    spatial_hash.o object_allocator.o material_registry.o
+                  $(COMMON_MSL_FULL_SRC)
+TILESETBAKE_C   = $(COMMON_MSL_C)
+TILESETBAKE_C_OBJ = $(COMMON_MSL_C_OBJ)
 
 $(TILESETBAKE_TARGET): $(TILESETBAKE_CPP) $(TILESETBAKE_C) $(QJS_C) $(BOX3D_DIR)/libbox3d.a
 	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
@@ -624,13 +594,8 @@ run-tilesetgtex: $(TILESETGTEX_TARGET)
 TILESETTORUSBVH_TARGET = tileset_torus_bvh_tests
 TILESETTORUSBVH_CPP    = tileset_torus_bvh_tests.cpp ../src/tileset_torus_bvh.cpp \
                          ../src/part_asset_v2.cpp \
-                         ../../MatterSurfaceLib/src/part_asset.cpp \
-                         ../../MatterSurfaceLib/src/blas_manager.cpp \
-                         ../../MatterSurfaceLib/src/bvh.cpp \
-                         ../../MatterSurfaceLib/src/tlas_manager.cpp \
-                         ../../MatterSurfaceLib/src/vertex_ao.cpp \
-                         ../../MatterSurfaceLib/src/occupancy.cpp
-TILESETTORUSBVH_C      = ../../MatterSurfaceLib/src/material_registry.c
+                         $(COMMON_MSL_BLAS_SRC)
+TILESETTORUSBVH_C      = $(MSL)/material_registry.c
 TILESETTORUSBVH_C_OBJ  = material_registry.o
 
 $(TILESETTORUSBVH_TARGET): $(TILESETTORUSBVH_CPP) $(TILESETTORUSBVH_C)
@@ -647,13 +612,8 @@ run-tilesettorusbvh: $(TILESETTORUSBVH_TARGET)
 TILESETMEADOWMANIFEST_TARGET = tileset_meadow_manifest_tests
 TILESETMEADOWMANIFEST_CPP = tileset_meadow_manifest_tests.cpp ../src/part_graph.cpp \
                             ../src/part_asset_v2.cpp \
-                            ../../MatterSurfaceLib/src/part_asset.cpp \
-                            ../../MatterSurfaceLib/src/blas_manager.cpp \
-                            ../../MatterSurfaceLib/src/bvh.cpp \
-                            ../../MatterSurfaceLib/src/tlas_manager.cpp \
-                            ../../MatterSurfaceLib/src/vertex_ao.cpp \
-                            ../../MatterSurfaceLib/src/occupancy.cpp
-TILESETMEADOWMANIFEST_C   = ../../MatterSurfaceLib/src/material_registry.c
+                            $(COMMON_MSL_BLAS_SRC)
+TILESETMEADOWMANIFEST_C   = $(MSL)/material_registry.c
 TILESETMEADOWMANIFEST_C_OBJ = material_registry.o
 
 $(TILESETMEADOWMANIFEST_TARGET): $(TILESETMEADOWMANIFEST_CPP) $(TILESETMEADOWMANIFEST_C)

@@ -22,11 +22,13 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <set>
 #include <string>
 #include <tuple>
+#include <unistd.h>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -138,6 +140,16 @@ static int g_tests    = 0;
         printf("  ok:   %s\n", (msg));              \
     }                                               \
 } while (0)
+
+// Create a unique temp directory for each test run (replaces fixed /tmp/gpu_test_* paths).
+// Caller is responsible for cleanup; on test failure the dir is left for diagnostics.
+static std::string make_test_tmpdir(const char* tag) {
+    char tmpl[64];
+    std::snprintf(tmpl, sizeof(tmpl), "/tmp/gpu_test_%s_XXXXXX", tag);
+    char* d = mkdtemp(tmpl);
+    if (!d) { perror("mkdtemp"); return "/tmp/gpu_test_fallback"; }
+    return std::string(d);
+}
 
 // Make a row-major engine identity+translate matrix:
 //   translation at m[3], m[7], m[11]  (column-vector convention).
@@ -332,7 +344,8 @@ static bool test_parity_frustum_lod() {
     printf("\n[test_parity_frustum_lod]\n");
 
     // ---- Setup ----
-    viewer::PartStore store("/tmp/gpu_test_unused");
+    std::string tmpdir = make_test_tmpdir("frustum");
+    viewer::PartStore store(tmpdir);
     uint64_t hash = build_fixture(store);
 
     // 200 instances on 20×10 grid, spacing 3.
@@ -359,7 +372,7 @@ static bool test_parity_frustum_lod() {
             resolved.push_back(make_ri(hash, t));
         }
     }
-    assert((int)resolved.size() == 200);
+    CHECK((int)resolved.size() == 200, "fixture: 10x20 grid has 200 instances");
 
     // Camera at origin looking +X, FOV 60, aspect 1.6.
     const float eye[3]    = { 0.0f, 0.0f, 0.0f };
@@ -376,7 +389,7 @@ static bool test_parity_frustum_lod() {
     // Our synthetic part has no expansion, so the loop just uses the root directly.
     // Per instance: for each cluster → aabb_culled, then cluster_lod_select.
     const viewer::LoadedPart* lp = store.get_or_load(hash);
-    assert(lp && !lp->clusters.empty());
+    CHECK(lp && !lp->clusters.empty(), "fixture part loads with at least one cluster");
 
     // Accumulate per-(global_cluster_idx, lod) → sorted translation multisets.
     // cluster_start for this part's slot is 0 (first registered part).
@@ -487,7 +500,8 @@ static bool test_parity_frustum_lod() {
 static bool test_multi_part_parity() {
     printf("\n[test_multi_part_parity]\n");
 
-    viewer::PartStore store("/tmp/gpu_test_mp");
+    std::string tmpdir = make_test_tmpdir("mp");
+    viewer::PartStore store(tmpdir);
 
     // Register part1 FIRST so it occupies cluster slots 0..1.
     // Part2 then gets cluster_start == 2 (> 0).
@@ -543,7 +557,7 @@ static bool test_multi_part_parity() {
     // CPU reference — per-part, per-cluster.
     const viewer::LoadedPart* lp1 = store.get_or_load(hash1);
     const viewer::LoadedPart* lp2 = store.get_or_load(hash2);
-    assert(lp1 && lp2);
+    CHECK(lp1 && lp2, "both fixture parts load from store");
 
     // Count per (part_hash, local_cluster_idx, lod).
     using Key3 = std::tuple<uint64_t, uint32_t, int>;
@@ -597,7 +611,8 @@ static bool test_multi_part_parity() {
 static bool test_matrix_convention() {
     printf("\n[test_matrix_convention]\n");
 
-    viewer::PartStore store("/tmp/gpu_test_unused2");
+    std::string tmpdir = make_test_tmpdir("matrix");
+    viewer::PartStore store(tmpdir);
     uint64_t hash = build_fixture(store);
 
     viewer::GpuCuller culler;
@@ -673,7 +688,8 @@ static bool test_matrix_convention() {
 static bool test_cap_growth() {
     printf("\n[test_cap_growth]\n");
 
-    viewer::PartStore store("/tmp/gpu_test_unused3");
+    std::string tmpdir = make_test_tmpdir("capgrow");
+    viewer::PartStore store(tmpdir);
     uint64_t hash = build_fixture(store);
 
     viewer::GpuCuller culler;
@@ -741,7 +757,8 @@ static bool test_cap_growth() {
 static bool test_empty_resolve() {
     printf("\n[test_empty_resolve]\n");
 
-    viewer::PartStore store("/tmp/gpu_test_unused4");
+    std::string tmpdir = make_test_tmpdir("empty");
+    viewer::PartStore store(tmpdir);
     uint64_t hash = build_fixture(store);
 
     viewer::GpuCuller culler;
@@ -934,7 +951,8 @@ static bool test_hiz_occlusion() {
 
     const int W = 320, H = 200;   // harness window dims (must match build_hiz)
 
-    viewer::PartStore store("/tmp/gpu_test_hiz_occ");
+    std::string tmpdir = make_test_tmpdir("hiz");
+    viewer::PartStore store(tmpdir);
     uint64_t hash = build_fixture(store);
 
     viewer::GpuCuller culler;

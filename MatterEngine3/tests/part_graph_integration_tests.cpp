@@ -21,8 +21,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-static int failures = 0;
-#define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); ++failures; } } while (0)
+#include "check.h"
 
 static bool file_exists(const std::string& p) { struct stat st; return stat(p.c_str(), &st) == 0; }
 
@@ -403,6 +402,6 @@ int main() {
     // SP-3 Task 13: budget-variant baking + .lods sidecar.
     test_lod_variant_sidecar();
 
-    if (failures == 0) printf("All part_graph integration tests passed\n");
-    return failures == 0 ? 0 : 1;
+    if (g_failures == 0) printf("All part_graph integration tests passed\n");
+    return g_failures == 0 ? 0 : 1;
 }

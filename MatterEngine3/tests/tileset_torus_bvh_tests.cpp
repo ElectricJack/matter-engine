@@ -17,9 +17,11 @@
 #include <vector>
 #include <sys/stat.h>
 
-static int g_pass = 0, g_fail = 0;
+#include "check.h"
+static int g_pass = 0;
+#undef CHECK
 #define CHECK(cond) do { \
-    if (!(cond)) { std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); ++g_fail; } \
+    if (!(cond)) { std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); ++g_failures; } \
     else { ++g_pass; } } while (0)
 
 // Fixture: build a SettledTorus with just a flat base (no instances) and
@@ -166,8 +168,8 @@ int main() {
     test_missing_part_fails_closed();
     test_placement_smoke();
 
-    std::printf("\n--- Results: %d/%d passed", g_pass, g_pass + g_fail);
-    if (g_fail == 0) std::printf(" --- ALL PASS\n");
-    else             std::printf(" --- %d FAIL\n", g_fail);
-    return g_fail > 0 ? 1 : 0;
+    std::printf("\n--- Results: %d/%d passed", g_pass, g_pass + g_failures);
+    if (g_failures == 0) std::printf(" --- ALL PASS\n");
+    else                 std::printf(" --- %d FAIL\n", g_failures);
+    return g_failures > 0 ? 1 : 0;
 }

@@ -16,8 +16,7 @@
 #include <tuple>
 #include <vector>
 
-static int failures = 0;
-#define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); ++failures; } } while (0)
+#include "check.h"
 
 static bool near3(float3 a, float3 b, float eps = 1e-5f) {
     return fabsf(a.x-b.x) < eps && fabsf(a.y-b.y) < eps && fabsf(a.z-b.z) < eps;
@@ -534,6 +533,6 @@ int main() {
     test_mesh_truncated_cone();
     test_mesh_capsule();
     test_mesh_round_baked_transform();
-    if (failures == 0) printf("All triangle_variation tests passed\n");
-    return failures == 0 ? 0 : 1;
+    if (g_failures == 0) printf("All triangle_variation tests passed\n");
+    return g_failures == 0 ? 0 : 1;
 }

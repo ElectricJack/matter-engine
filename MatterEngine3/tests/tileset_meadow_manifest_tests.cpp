@@ -7,7 +7,8 @@
 #include <string>
 #include <vector>
 
-static int g_tests = 0, g_failures = 0;
+#include "check.h"
+static int g_tests = 0;
 #define REQUIRE(cond) do { \
     ++g_tests; \
     if (!(cond)) { std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); ++g_failures; } \

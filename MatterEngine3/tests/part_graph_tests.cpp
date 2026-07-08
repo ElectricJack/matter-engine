@@ -9,8 +9,7 @@
 #include <string>
 #include <vector>
 
-static int failures = 0;
-#define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); ++failures; } } while (0)
+#include "check.h"
 
 using namespace part_graph;
 
@@ -408,6 +407,6 @@ int main() {
         system(("rm -rf " + dir).c_str());
     }
 
-    if (failures == 0) printf("All part_graph tests passed\n");
-    return failures == 0 ? 0 : 1;
+    if (g_failures == 0) printf("All part_graph tests passed\n");
+    return g_failures == 0 ? 0 : 1;
 }

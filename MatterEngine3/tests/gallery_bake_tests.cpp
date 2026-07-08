@@ -25,10 +25,7 @@
 
 using namespace part_graph;
 
-static int g_fail = 0;
-#define CHECK(cond, msg) do { \
-    if (!(cond)) { printf("FAIL: %s\n", (msg)); ++g_fail; } \
-} while (0)
+#include "check.h"
 
 static std::string abspath(const std::string& rel) {
     char buf[PATH_MAX];
@@ -102,7 +99,7 @@ int main() {
     InstallResult ir2 = graph.install(roots);
     CHECK(ir2.ok && ir2.baked.empty(), "second install should be a pure cache hit");
 
-    if (g_fail == 0) printf("ALL PASS\n");
-    else             printf("%d CHECK(s) FAILED\n", g_fail);
-    return g_fail == 0 ? 0 : 1;
+    if (g_failures == 0) printf("ALL PASS\n");
+    else                 printf("%d CHECK(s) FAILED\n", g_failures);
+    return g_failures == 0 ? 0 : 1;
 }

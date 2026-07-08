@@ -3,11 +3,7 @@
 #include <cstdio>
 #include <set>
 
-static int g_failures = 0;
-#define CHECK(cond, msg) do { \
-    if (!(cond)) { printf("FAIL: %s\n", (msg)); ++g_failures; } \
-    else         { printf("ok:   %s\n", (msg)); } \
-} while (0)
+#include "check.h"
 
 using namespace tileset;
 

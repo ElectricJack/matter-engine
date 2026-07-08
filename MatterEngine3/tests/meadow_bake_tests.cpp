@@ -18,10 +18,7 @@
 
 using namespace part_graph;
 
-static int failures = 0;
-#define CHECK(cond, msg) do { \
-    if (!(cond)) { printf("FAIL: %s\n", (msg)); ++failures; } \
-    else         { printf("ok:   %s\n", (msg)); } } while (0)
+#include "check.h"
 
 static std::string abspath(const std::string& rel) {
     char buf[PATH_MAX];
@@ -184,6 +181,6 @@ int main() {
         }
     }
 
-    printf(failures ? "\n%d FAILURE(S)\n" : "\nALL PASS\n", failures);
-    return failures ? 1 : 0;
+    printf(g_failures ? "\n%d FAILURE(S)\n" : "\nALL PASS\n", g_failures);
+    return g_failures ? 1 : 0;
 }

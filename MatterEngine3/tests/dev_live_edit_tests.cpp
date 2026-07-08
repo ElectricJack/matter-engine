@@ -12,10 +12,7 @@
 #include <unistd.h>
 #endif
 
-static int g_failures = 0;
-#define CHECK(cond, msg) do { \
-    if (!(cond)) { std::printf("  FAIL: %s (%s:%d)\n", msg, __FILE__, __LINE__); ++g_failures; } \
-    else { std::printf("  ok: %s\n", msg); } } while (0)
+#include "check.h"
 
 using namespace live_edit;
 
