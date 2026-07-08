@@ -4,7 +4,7 @@
 
 **Branch:** `feature/autoremesher-integration`
 **Base commit:** `40174b9` (Task 7 complete — MeshIndexed exists)
-**Commit SHA:** (populated by the commit step below)
+**Commit SHA:** `7f44e8a`
 
 ---
 

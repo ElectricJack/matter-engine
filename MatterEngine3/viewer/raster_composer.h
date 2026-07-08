@@ -61,6 +61,13 @@ public:
     // HUD counter (last draw_gpu_driven tri count; culler owns the rest).
     size_t drawn_tris() const { return stat_drawn_tris_; }
 
+    // Wireframe toggle: when true, draw_gpu_driven() flips glPolygonMode to
+    // GL_LINE around the indirect draw. Useful for visually inspecting mesh
+    // topology (e.g., before/after retopo). Restored to GL_FILL afterwards
+    // so subsequent raylib HUD draws remain filled.
+    void set_wireframe(bool w) { wireframe_ = w; }
+    bool wireframe() const { return wireframe_; }
+
 private:
     // Upload sun/probe/material uniforms to a shader (used by draw_gpu_driven()).
     void setup_frame_uniforms(Shader& sh,
@@ -95,6 +102,9 @@ private:
 
     // HUD stat (written by draw_gpu_driven).
     size_t stat_drawn_tris_ = 0;
+
+    // Toggle for wireframe rendering (see set_wireframe).
+    bool wireframe_ = false;
 };
 
 } // namespace viewer

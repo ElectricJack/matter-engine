@@ -85,7 +85,7 @@ PIPELINE_CPP = ../src/part_graph.cpp \
               ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/dsl_bindings.cpp \
               ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
               ../src/polygon_triangulate.cpp \
-              ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp ../src/part_flatten.cpp ../src/triangle_emit.cpp \
+              ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp ../src/part_flatten.cpp ../src/retopo_blacklist.cpp ../src/triangle_emit.cpp \
               ../src/part_cluster.cpp \
               ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
               ../src/tileset_torus_bvh.cpp \

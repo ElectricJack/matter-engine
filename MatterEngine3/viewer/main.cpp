@@ -337,6 +337,10 @@ int main() {
             camera_capture = !camera_capture;
             if (camera_capture) DisableCursor(); else EnableCursor();
         }
+        if (IsKeyPressed(KEY_F9) && raster) {
+            raster->set_wireframe(!raster->wireframe());
+            printf("wireframe %s\n", raster->wireframe() ? "on" : "off");
+        }
         if (camera_capture) renderer.update_camera_free();
 
         if (cmd_fd >= 0) {
@@ -370,6 +374,11 @@ int main() {
                 } else if (sscanf(line.c_str(), "hiz %15s", labelbuf) == 1) {
                     stats.hiz_enabled = (strcmp(labelbuf, "on") == 0);
                     printf("hiz %s\n", stats.hiz_enabled ? "on" : "off");
+                } else if (sscanf(line.c_str(), "wireframe %15s", labelbuf) == 1) {
+                    bool w = (strcmp(labelbuf, "on") == 0) ||
+                             (strcmp(labelbuf, "toggle") == 0 && raster && !raster->wireframe());
+                    if (raster) raster->set_wireframe(w);
+                    printf("wireframe %s\n", w ? "on" : "off");
                 } else if (line == "reload") {
                     stats.reload_requested = true;
                 } else if (line == "quit") {
