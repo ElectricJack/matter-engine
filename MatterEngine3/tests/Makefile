@@ -105,7 +105,7 @@ COMMON_MSL_C = \
 COMMON_MSL_C_OBJ = surface.o open_particle_surface.o fat_primitive.o \
                    spatial_hash.o object_allocator.o material_registry.o
 
-.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests
+.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests (headless, GL-free).
 # NEW impl ../src/part_asset_v2.cpp + consumed MatterSurfaceLib backend sources.
@@ -711,6 +711,17 @@ $(SHADER_SOURCE_TARGET): $(SHADER_SOURCE_CPP) ../shaders_gen/embedded_shaders.h
 
 run-shader-source: $(SHADER_SOURCE_TARGET)
 	./$(SHADER_SOURCE_TARGET)
+
+# Phase B Task 1 — async bake primitives (headless, GL-free, no GALLIUM env).
+# Sources: test driver + the new async_bake.cpp only; links pthreads via LDFLAGS.
+ASYNCQ_TARGET = async_queue_tests
+ASYNCQ_CPP = async_queue_tests.cpp ../src/async_bake.cpp
+
+$(ASYNCQ_TARGET): $(ASYNCQ_CPP)
+	$(CC) $(ASYNCQ_CPP) -o $(ASYNCQ_TARGET) $(CFLAGS) $(INCLUDE_PATHS) -lpthread
+
+run-asyncq: $(ASYNCQ_TARGET)
+	./$(ASYNCQ_TARGET)
 
 # ---------------------------------------------------------------------------
 # GPU tests (require GL 4.6 + GALLIUM_DRIVER=d3d12 on WSLg).

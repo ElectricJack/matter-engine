@@ -95,7 +95,8 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/render/gpu_culler.cpp src/render/probe_texture.cpp \
           src/render/tileset_provider.cpp src/render/tileset_gl_ctx.cpp \
           src/provider/local_provider.cpp src/provider/resolvers.cpp \
-          src/matter_engine.cpp
+          src/matter_engine.cpp \
+          src/async_bake.cpp
 
 # MatterSurfaceLib C++ backend sources compiled into the archive so MatterViewer
 # need not compile them directly (no libmsl.a). Same set as the old viewer's MSL_CPP
@@ -140,7 +141,8 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           renderer.o raster_composer.o raster_mesh.o part_store.o world_composer.o world_state.o \
           gpu_culler.o probe_texture.o tileset_provider.o tileset_gl_ctx.o \
           local_provider.o resolvers.o \
-          matter_engine.o
+          matter_engine.o \
+          async_bake.o
 
 # MSL C++ object names (basenames; same flat-object model as ME3_OBJ).
 MSL_OBJ = cluster.o cell.o mesh_simplifier.o mesh_indexed.o mesh_transform.o \
