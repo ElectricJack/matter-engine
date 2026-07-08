@@ -215,16 +215,18 @@ static uint64_t derive_seed(const std::string& merged_json) {
 // class to globalThis.__partClass; this is generic over the class name (no
 // hardcoded "Empty"/"Rock") and deterministic.
 static std::string find_part_class_name(const std::string& source) {
+    // Perf fix: compile the regex once (static const) instead of once per call.
+    static const std::regex re("class\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s+extends\\s+Part\\b");
     std::smatch m;
-    std::regex re("class\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s+extends\\s+Part\\b");
     if (std::regex_search(source, m, re)) return m[1].str();
     return std::string();
 }
 
 // Extract the authored class name from `class <Name> extends Tileset`.
 static std::string find_tileset_class_name(const std::string& source) {
+    // Perf fix: compile the regex once (static const) instead of once per call.
+    static const std::regex re("class\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s+extends\\s+Tileset\\b");
     std::smatch m;
-    std::regex re("class\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s+extends\\s+Tileset\\b");
     if (std::regex_search(source, m, re)) return m[1].str();
     return std::string();
 }
@@ -632,37 +634,23 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     // as a structured error rather than aborting the viewer.
     try {
 
-    // Merge static params + caller overrides into canonical JSON, and compute
-    // the resolved hash over (folded source, merged params, child hashes). Shares
-    // the exact fold+hash path resolve_hash uses so both agree byte-for-byte.
-    // The FoldResult also carries the resolved {specifier->source} module set,
-    // which the QuickJS module loader serves below (no filesystem reads at eval).
+    // Perf fix: fold sources once (removing the redundant fold that was inside
+    // merge_params_canonical) and spin up a single JSRuntime for the whole bake.
+    // The canonical params merge is performed in the bake context itself after the
+    // class is evaluated, eliminating the second JSRuntime that merge_params_canonical
+    // previously created. The fold result, merged string, and resolved_hash are all
+    // byte-identical to the previous double-RT path.
     module_resolver::FoldResult fold;
-    {
-        BakeError merr;
-        std::string canon = merge_params_canonical(source, params_json, merr);
-        if (!merr.ok) { r.error = merr; return r; }
-
-        const char* src_bytes = source.data();
-        size_t      src_len   = source.size();
-        if (!shared_lib_root_.empty()) {
-            std::string ferr;
-            if (!module_resolver::fold_sources(source, shared_lib_root_, fold, ferr)) {
-                // Fail-closed: a missing/illegal shared module aborts the bake with
-                // no artifact written, matching the existing fail-closed pattern.
-                r.error.ok = false;
-                r.error.message = "module resolution failed: " + ferr;
-                return r;
-            }
-            src_bytes = fold.folded.data();
-            src_len   = fold.folded.size();
+    if (!shared_lib_root_.empty()) {
+        std::string ferr;
+        if (!module_resolver::fold_sources(source, shared_lib_root_, fold, ferr)) {
+            // Fail-closed: a missing/illegal shared module aborts the bake with
+            // no artifact written, matching the existing fail-closed pattern.
+            r.error.ok = false;
+            r.error.message = "module resolution failed: " + ferr;
+            return r;
         }
-        r.resolved_hash = part_asset::compute_resolved_hash(
-            src_bytes, src_len,
-            canon.data(), canon.size(),
-            child_hashes, child_count);
     }
-    const std::string merged = last_merged_params_;
 
     // If the part imports shared-lib modules, serve their (already-folded) source
     // to the QuickJS module loader and evaluate the part as an ES module so the
@@ -685,31 +673,12 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     ctx = new_bake_context(rt, /*want_modules*/ use_module);
 
     // C++-owned authoring state for this bake; native DSL bindings mutate it.
+    // RNG seed and child-hash table are installed below after the class is evaluated
+    // (they depend on `merged` which is extracted from the class's static params).
     dsl::DslState state;
-    // Seed the deterministic RNG (bound to Math.random) from the merged params so
-    // the bake is reproducible and process-entropy-free.
-    state.set_rng(derive_seed(merged));
-    // Install the declared-children placement table so placeChild() can resolve
-    // placements during build(). Child hashes are already folded into the resolved
-    // hash upstream; this only feeds the placement table. Each child contributes a
-    // plain `module` key (no-param / fallback, last variant wins) AND, when its
-    // canonical params are known, a composite `module \x1f params` key that maps a
-    // parametric placeChild('M',{...}) to the EXACT required variant's real hash.
-    {
-        std::map<std::string, uint64_t> name2hash;
-        if (child_modules && child_hashes)
-            for (size_t i = 0; i < child_count; ++i) {
-                name2hash[child_modules[i]] = child_hashes[i];
-                if (child_params) {
-                    std::string key = child_modules[i];
-                    key.push_back('\x1f');
-                    key += child_params[i];
-                    name2hash[key] = child_hashes[i];
-                }
-            }
-        state.set_child_hashes(std::move(name2hash));
-    }
     JS_SetContextOpaque(ctx, &state);
+    // `merged` is populated after class eval (single-RT merge step below).
+    std::string merged;
 
     last_build_ran_ = false;
     last_buffer_.clear();
@@ -749,6 +718,70 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             r.error.ok = false; r.error.message = kNoPartClassMsg;
             goto done;
         }
+
+        // Single-RT merge: extract static params from the class and merge with
+        // caller overrides in this context — same logic as merge_params_canonical
+        // but without spinning up a second JSRuntime. Produces byte-identical
+        // `merged` and `r.resolved_hash` since the merge JS snippet and inputs
+        // (static params, params_json) are identical to the old double-RT path.
+        {
+            JSValue staticParams = JS_GetPropertyStr(ctx, authored, "params");
+            if (JS_IsUndefined(staticParams)) staticParams = JS_NewObject(ctx);
+            JSValue overrides = JS_ParseJSON(ctx, params_json.c_str(), params_json.size(), "<params>");
+            if (JS_IsException(overrides)) {
+                r.error = harvest_exception(ctx);
+                JS_FreeValue(ctx, staticParams); JS_FreeValue(ctx, overrides);
+                JS_FreeValue(ctx, authored); goto done;
+            }
+            static const char* kMerge =
+              "(function(d,o){let m=Object.assign({},d,o);"
+              "let keys=Object.keys(m).sort();let r={};for(let k of keys)r[k]=m[k];"
+              "return JSON.stringify(r);})";
+            JSValue mergeFn = JS_Eval(ctx, kMerge, strlen(kMerge), "<merge>",
+                                      JS_EVAL_TYPE_GLOBAL);
+            JSValue args2[2] = { staticParams, overrides };
+            JSValue mergedStr = JS_Call(ctx, mergeFn, JS_UNDEFINED, 2, args2);
+            if (JS_IsException(mergedStr)) {
+                r.error = harvest_exception(ctx);
+                JS_FreeValue(ctx, mergedStr); JS_FreeValue(ctx, mergeFn);
+                JS_FreeValue(ctx, overrides); JS_FreeValue(ctx, staticParams);
+                JS_FreeValue(ctx, authored); goto done;
+            }
+            const char* mjson = JS_ToCString(ctx, mergedStr);
+            merged = mjson ? mjson : "{}";
+            last_merged_params_ = merged;
+            if (mjson) JS_FreeCString(ctx, mjson);
+            JS_FreeValue(ctx, mergedStr); JS_FreeValue(ctx, mergeFn);
+            JS_FreeValue(ctx, overrides); JS_FreeValue(ctx, staticParams);
+
+            // Compute resolved_hash (same inputs as the old double-RT path: folded
+            // source bytes, canonical merged params, child hashes).
+            const char* src_bytes = fold.folded.empty() ? source.data() : fold.folded.data();
+            size_t      src_len   = fold.folded.empty() ? source.size() : fold.folded.size();
+            r.resolved_hash = part_asset::compute_resolved_hash(
+                src_bytes, src_len,
+                merged.data(), merged.size(),
+                child_hashes, child_count);
+
+            // Seed the deterministic RNG and install the child-hash table now that
+            // `merged` is available (deferred from the old pre-eval setup block).
+            state.set_rng(derive_seed(merged));
+            {
+                std::map<std::string, uint64_t> name2hash;
+                if (child_modules && child_hashes)
+                    for (size_t ci = 0; ci < child_count; ++ci) {
+                        name2hash[child_modules[ci]] = child_hashes[ci];
+                        if (child_params) {
+                            std::string key = child_modules[ci];
+                            key.push_back('\x1f');
+                            key += child_params[ci];
+                            name2hash[key] = child_hashes[ci];
+                        }
+                    }
+                state.set_child_hashes(std::move(name2hash));
+            }
+        }
+
         JSValue inst = JS_CallConstructor(ctx, authored, 0, nullptr);
         JS_FreeValue(ctx, authored);
         if (JS_IsException(inst)) { r.error = harvest_exception(ctx); JS_FreeValue(ctx,inst); goto done; }
@@ -792,6 +825,9 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         state.flush_retained_profile();
 
     // Fail-closed: a DSL session/transform misuse during build surfaces here.
+    // Note: we copy (not move) here because lower_build_buffer and the base_detail
+    // probe below still need state.buffer() on the success path. The move would
+    // have emptied the buffer before those reads, causing zero-triangle bakes.
     last_buffer_ = state.buffer();
     if (r.error.ok && state.has_error()) {
         r.error.ok = false;
@@ -853,28 +889,71 @@ BakeResult ScriptHost::bake_source(const std::string& source,
 
         // Determine the set of integer cell coordinates touched by any additive
         // particle, using the prototype's influence_radius = radius * 2 halo.
+        // Perf fix: instead of O(cells × particles) assignment, invert the loop —
+        // for each particle touch its cell range and push the particle index into
+        // every cell where intersects_sphere(pos, radius) is true. This is
+        // O(particles × avg_cells_per_particle) which is always ≤ the old cost.
         std::map<std::tuple<int,int,int>, std::unique_ptr<Cell>> cells;
         auto cell_key = [](int x,int y,int z){ return std::make_tuple(x,y,z); };
-        auto touch_cells = [&](Vector3 c, float inf) {
-            int x0 = (int)std::floor((c.x - inf) / cell_size);
-            int x1 = (int)std::floor((c.x + inf) / cell_size);
-            int y0 = (int)std::floor((c.y - inf) / cell_size);
-            int y1 = (int)std::floor((c.y + inf) / cell_size);
-            int z0 = (int)std::floor((c.z - inf) / cell_size);
-            int z1 = (int)std::floor((c.z + inf) / cell_size);
+
+        // Additive particles: create cells AND assign particle indices in one pass.
+        for (uint32_t i = 0; i < particles.size(); ++i) {
+            const StaticParticle& sp = particles[i];
+            float inf = sp.radius * 2.0f;
+            int x0 = (int)std::floor((sp.position.x - inf) / cell_size);
+            int x1 = (int)std::floor((sp.position.x + inf) / cell_size);
+            int y0 = (int)std::floor((sp.position.y - inf) / cell_size);
+            int y1 = (int)std::floor((sp.position.y + inf) / cell_size);
+            int z0 = (int)std::floor((sp.position.z - inf) / cell_size);
+            int z1 = (int)std::floor((sp.position.z + inf) / cell_size);
             for (int x=x0;x<=x1;++x) for (int y=y0;y<=y1;++y) for (int z=z0;z<=z1;++z) {
                 auto k = cell_key(x,y,z);
-                if (cells.find(k) == cells.end())
+                auto& cp = cells[k];
+                if (!cp) cp = std::make_unique<Cell>(Vector3{(float)x,(float)y,(float)z},
+                                                     0, cell_size);
+                // Use unchecked variant: each (i, cell) pair is visited at most once.
+                if (cp->intersects_sphere(sp.position, sp.radius))
+                    cp->add_particle_index_unchecked(i, sp.materialId);
+            }
+        }
+        // Fat primitives (oriented box / ellipsoid) expand the cell set too, so a
+        // pure-box part still gets cells to mesh its surface.
+        for (const FatPrim& fp : f.fat) {
+            float inf = fp.boundRadius * 2.0f;
+            int x0 = (int)std::floor((fp.center.x - inf) / cell_size);
+            int x1 = (int)std::floor((fp.center.x + inf) / cell_size);
+            int y0 = (int)std::floor((fp.center.y - inf) / cell_size);
+            int y1 = (int)std::floor((fp.center.y + inf) / cell_size);
+            int z0 = (int)std::floor((fp.center.z - inf) / cell_size);
+            int z1 = (int)std::floor((fp.center.z + inf) / cell_size);
+            for (int x=x0;x<=x1;++x) for (int y=y0;y<=y1;++y) for (int z=z0;z<=z1;++z) {
+                auto k = cell_key(x,y,z);
+                if (!cells[k])
                     cells[k] = std::make_unique<Cell>(Vector3{(float)x,(float)y,(float)z},
                                                       0, cell_size);
             }
-        };
-        for (const StaticParticle& sp : particles)
-            touch_cells(sp.position, sp.radius * 2.0f);
-        // Fat primitives (oriented box / ellipsoid) expand the cell set too, so a
-        // pure-box part still gets cells to mesh its surface.
-        for (const FatPrim& fp : f.fat)
-            touch_cells(fp.center, fp.boundRadius * 2.0f);
+        }
+
+        // Perf fix: build per-cell carve lists in one O(carve × avg_cells) pass
+        // instead of O(cells × carve) inside the per-cell loop below.
+        std::map<std::tuple<int,int,int>, std::vector<Particle>> cell_carve;
+        for (const Particle& cp : f.carve) {
+            float inf = cp.radius * 2.0f;   // generous halo to ensure no cell missed
+            int x0 = (int)std::floor((cp.position.x - inf) / cell_size);
+            int x1 = (int)std::floor((cp.position.x + inf) / cell_size);
+            int y0 = (int)std::floor((cp.position.y - inf) / cell_size);
+            int y1 = (int)std::floor((cp.position.y + inf) / cell_size);
+            int z0 = (int)std::floor((cp.position.z - inf) / cell_size);
+            int z1 = (int)std::floor((cp.position.z + inf) / cell_size);
+            for (int x=x0;x<=x1;++x) for (int y=y0;y<=y1;++y) for (int z=z0;z<=z1;++z) {
+                auto k = cell_key(x,y,z);
+                if (cells.count(k)) {
+                    // Mirrors the original 1.5x slack test from the per-cell loop.
+                    if (cells[k]->intersects_sphere(cp.position, cp.radius * 1.5f))
+                        cell_carve[k].push_back(cp);
+                }
+            }
+        }
 
         // One scratch shared across all cells. The consumed mesher's marching-cubes
         // pass leaves the per-vertex normal buffer (scratch->pool.normals) UNWRITTEN;
@@ -890,13 +969,8 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         SurfaceScratch* scratch = CreateSurfaceScratch();
         for (auto& kv : cells) {
             Cell* cell = kv.second.get();
-            // Assign overlapping additive particles to this cell, grouped by material.
-            cell->clear_particle_indices();
-            for (uint32_t i = 0; i < particles.size(); ++i) {
-                const StaticParticle& sp = particles[i];
-                if (cell->intersects_sphere(sp.position, sp.radius))
-                    cell->add_particle_index(i, sp.materialId);
-            }
+            // Particle indices were already assigned during the inverted pass above;
+            // no per-cell O(particles) scan needed here.
             // Seed an (empty) merge-group bucket for every fat primitive overlapping
             // this cell so build_cell_meshes iterates the group and meshes the box/
             // ellipsoid even when no additive sphere shares the cell. The fat field
@@ -909,12 +983,11 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             }
             if (cell->material_particle_indices.empty()) continue;
 
-            // Gather carve particles whose influence overlaps this cell (mirrors
-            // the prototype's intersects_sphere halo with the same 1.5x slack).
-            std::vector<Particle> carve;
-            for (const Particle& cp : f.carve)
-                if (cell->intersects_sphere(cp.position, cp.radius * 1.5f))
-                    carve.push_back(cp);
+            // Use the pre-built carve list for this cell (empty if no carve overlap).
+            static const std::vector<Particle> kEmptyCarve;
+            auto carve_it = cell_carve.find(kv.first);
+            const std::vector<Particle>& carve =
+                (carve_it != cell_carve.end()) ? carve_it->second : kEmptyCarve;
             const Particle* carvePtr = carve.empty() ? nullptr : carve.data();
             int carveCount = (int)carve.size();
 

@@ -339,8 +339,10 @@ public:
         }
     }
 
-    std::vector<Tri>&   tris()  { return tris_; }
-    std::vector<TriEx>& triex() { return triex_; }
+    std::vector<Tri>&         tris()        { return tris_; }
+    std::vector<TriEx>&       triex()       { return triex_; }
+    const std::vector<Tri>&   tris()  const { return tris_; }
+    const std::vector<TriEx>& triex() const { return triex_; }
     std::vector<part_asset::FlatInstanceRef>& instance_refs() { return instance_refs_; }
 
     // Bake-hardening #3: skeleton-gather outputs.
@@ -514,19 +516,30 @@ static FlattenResult flatten_budget_ladder(const std::string& cache_root,
     // lodBudgets.size(), so enforce a safe maximum here.
     const size_t n = std::min(v.hashes.size(), (size_t)16);
     for (size_t i = 0; i < n; ++i) {
-        std::vector<Tri> tris; std::vector<TriEx> ex;
+        // Perf fix: const-ref the root-level data when the variant hash matches
+        // the root (avoids copying ~10 MB of Tri/TriEx per LOD level). Non-root
+        // variants load their own Gatherer; we move its data out to avoid a second
+        // copy when pointing at it via the const pointer below.
+        std::vector<Tri>  gi_tris;
+        std::vector<TriEx> gi_ex;
+        const std::vector<Tri>*  tp;
+        const std::vector<TriEx>* ep;
         if (v.hashes[i] == root_hash) {
-            tris = g0.tris(); ex = g0.triex();
+            tp = &g0.tris(); ep = &g0.triex();
         } else {
             Gatherer gi(cache_root, targets);
             if (!gi.gather(v.hashes[i], kIdentity, 0, res.error)) return res;
-            tris = gi.tris(); ex = gi.triex();
+            gi_tris = std::move(gi.tris()); gi_ex = std::move(gi.triex());
+            tp = &gi_tris; ep = &gi_ex;
         }
+        const std::vector<Tri>&  tris = *tp;
+        const std::vector<TriEx>& ex  = *ep;
         if (tris.empty()) { res.error = "flatten: empty budget variant"; return res; }
         acc(tris);
 
         const TriEx* exp = ex.empty() ? nullptr : ex.data();
-        BLASHandle h = blas.register_triangles(tris.data(), (int)tris.size(), exp);
+        // register_triangles reads but does not modify the Tri array; const_cast is safe.
+        BLASHandle h = blas.register_triangles(const_cast<Tri*>(tris.data()), (int)tris.size(), exp);
         uint32_t idx = UINT32_MAX;
         const auto& entries = blas.get_entries();
         for (size_t k = 0; k < entries.size(); ++k)

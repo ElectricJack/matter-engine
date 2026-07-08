@@ -206,20 +206,27 @@ LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
     for (size_t lvl = 0; lvl < targets.keep_ratio.size(); ++lvl) {
         float keep = targets.keep_ratio[lvl];
         bool full = (keep >= 0.999f);
-        std::vector<Tri> geo = full ? tris : decimate_tris(tris, keep);
-        if (geo.empty()) geo = tris;     // never register empty geometry
-        std::vector<Tri> copy = geo;     // register_triangles takes Tri*
+        // Perf fix: for the undecimated (full) level, avoid copying `tris` by
+        // passing its data directly via const_cast (register_triangles reads only).
+        // For decimated levels, the QEM output is already a fresh vector.
+        std::vector<Tri> decimated;
+        if (!full) {
+            decimated = decimate_tris(tris, keep);
+            if (decimated.empty()) decimated = tris;  // never register empty geometry
+        }
+        const std::vector<Tri>& geo = full ? tris : decimated;
         // Per-triangle TriEx (materialId/tint/normals/AO) is only valid for the
         // undecimated level: `geo` is then the input triangle set in original order,
-        // so triex[i] still describes copy[i]. Decimation reorders/merges triangles,
+        // so triex[i] still describes geo[i]. Decimation reorders/merges triangles,
         // so those levels pass nullptr and fall back to the instance material.
-        const TriEx* ex = (full && triex && triex->size() == copy.size())
+        const TriEx* ex = (full && triex && triex->size() == geo.size())
                           ? triex->data() : nullptr;
         // register_triangles may deduplicate (returning an existing handle), so we
         // must NOT pre-record entries().size() as the index — it would be off-by-N
         // if prior identical geometry already occupies that slot. Look up the returned
         // handle's actual position in the entries array after registration instead.
-        BLASHandle h = blas.register_triangles(copy.data(), (int)copy.size(), ex);
+        // register_triangles reads but does not modify the Tri array; const_cast safe.
+        BLASHandle h = blas.register_triangles(const_cast<Tri*>(geo.data()), (int)geo.size(), ex);
         uint32_t idx = UINT32_MAX;
         const auto& entries = blas.get_entries();
         for (size_t i = 0; i < entries.size(); ++i) {
