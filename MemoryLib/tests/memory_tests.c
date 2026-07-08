@@ -1,4 +1,5 @@
 #include "../include/mem_pool.h"
+#include "../include/mem_arena.h"
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -144,6 +145,62 @@ void test_stats() {
     printf("  MemStats tests passed!\n");
 }
 
+void test_arena_basic() {
+    printf("Testing arena basic alloc + alignment...\n");
+    MemArena* a = mem_arena_create(1024);
+    assert(a != NULL);
+
+    int* x = (int*)mem_arena_alloc(a, sizeof(int) * 10);   /* 40 -> 40 */
+    assert(x != NULL);
+    assert(((uintptr_t)x % 8) == 0);
+    for (int i = 0; i < 10; i++) x[i] = i;
+
+    char* c = (char*)mem_arena_alloc(a, 3);                /* 3 -> 8 */
+    assert(c != NULL);
+    assert(((uintptr_t)c % 8) == 0);
+
+    for (int i = 0; i < 10; i++) assert(x[i] == i);        /* no overlap */
+
+    MemStats st;
+    mem_arena_get_stats(a, &st);
+    assert(st.totalAllocs == 2);
+    assert(st.pageCount == 1);
+    assert(st.liveBytes == 48);
+    assert(st.peakBytes == 48);
+
+    assert(mem_arena_alloc(a, 0) == NULL);
+    mem_arena_destroy(a);
+    printf("  Arena basic tests passed!\n");
+}
+
+void test_arena_chaining_and_reset() {
+    printf("Testing arena block chaining + reset...\n");
+    MemArena* a = mem_arena_create(64);
+    assert(a != NULL);
+
+    void* big = mem_arena_alloc(a, 256);   /* > 64: forces a new 256-byte block */
+    assert(big != NULL);
+    MemStats st;
+    mem_arena_get_stats(a, &st);
+    assert(st.pageCount == 2);
+    assert(st.liveBytes == 256);
+
+    mem_arena_reset(a);
+    mem_arena_get_stats(a, &st);
+    assert(st.pageCount == 1);             /* largest (256) block retained */
+    assert(st.liveBytes == 0);
+    assert(st.peakBytes == 256);           /* peak survives reset */
+
+    /* steady state: refill fits in the retained block — no new blocks */
+    for (int i = 0; i < 4; i++) assert(mem_arena_alloc(a, 64) != NULL);
+    mem_arena_get_stats(a, &st);
+    assert(st.pageCount == 1);
+    assert(st.liveBytes == 256);
+
+    mem_arena_destroy(a);
+    printf("  Arena chaining/reset tests passed!\n");
+}
+
 int main() {
     printf("Running MemPool tests...\n");
     printf("max_align_t alignment: %zu bytes\n\n", _Alignof(max_align_t));
@@ -153,6 +210,10 @@ int main() {
     test_multi_page_alignment();
     printf("\n");
     test_stats();
+    printf("\n");
+    test_arena_basic();
+    printf("\n");
+    test_arena_chaining_and_reset();
 
     printf("\nAll tests passed!\n");
     return 0;
