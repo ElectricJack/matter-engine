@@ -192,3 +192,59 @@ failure is pre-existing and not introduced here.
 - The lazy tracer re-builds from `state.entries()` on first query. For Meadow-scale
   worlds this will be expensive on first call (same cost as probe bake). Brief
   acknowledges this and says "warm the cache once and note it."
+
+---
+
+## Review Fix Report (Task 7 review findings)
+
+### Fix 1 — viewer_logic_tests link failure
+
+**Files modified:** `MatterEngine3/tests/Makefile`
+
+Changes:
+- Added `../src/shader_source.cpp` to `VIEWER_LOGIC_CPP` list (after `../src/probe_bake.cpp`, before `$(VIEWER_PIPELINE_CPP)`).
+- Added an explicit `../shaders_gen/embedded_shaders.h` target rule that calls `$(MAKE) -C .. shaders_gen/embedded_shaders.h`.
+- Changed `$(VIEWER_LOGIC_TARGET)` prerequisite line to use an order-only dependency `| ../shaders_gen/embedded_shaders.h` so the header is generated before compilation begins.
+
+### Fix 2 — tick() tracer invalidation
+
+**File modified:** `MatterEngine3/viewer/matter_engine.cpp`
+
+Changed `tick()` from the single-line `if` form to a braced block that, when a delta is applied, additionally executes:
+```cpp
+impl_->tracer_dirty = true;
+impl_->tracer.reset();
+```
+Matches the same pattern already in `bake_once()`.
+
+### Verification
+
+**Step 1** — `rm embedded_shaders.h` then build viewer_logic_tests:
+```
+exit=0
+grep 'undefined reference': (none)
+```
+Header regenerated automatically; link succeeded.
+
+**Step 2** — `make run-viewer-logic`:
+```
+exit=2
+FAILs:
+  FAIL: all manifest parts (and their children) loaded into shared store
+  FAIL: passthrough composes every instance plus its children
+  FAIL: flat tree has an empty child table
+  FAIL: branch part loads from PartStore
+```
+Exactly the 4 known pre-existing Tree-demo FAILs. No new failures.
+
+**Step 3** — `make -C MatterEngine3/viewer`:
+```
+exit=0
+```
+Facade recompiled clean.
+
+**Step 4** — `make -C MatterEngine3/viewer api-tests` then `GALLIUM_DRIVER=d3d12 ./api_tests`:
+```
+exit=0
+api_tests: all passed
+```

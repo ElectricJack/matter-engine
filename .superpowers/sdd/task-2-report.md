@@ -86,3 +86,41 @@ Exit: 0 (no errors/warnings)
 ## Concerns
 
 None. All tests pass, both full builds succeed, no debug prints left in, `shaders_gen/` is gitignored.
+
+---
+
+## Review Findings Fix (Commit 0b74970)
+
+### Finding I1 — embedded-shaders Prerequisite
+
+**Issue:** Test targets `gpu-tests`, `tileset-gpu-tests`, `tileset-seam-tests`, `tileset-provider-tests`, `tileset-load-tests` depended on `$(L_ALL_OBJ)` which includes `shader_source.o`, but did NOT depend on `embedded-shaders`, causing clean-checkout builds to fail with "no rule to make embedded_shaders.h".
+
+**Fix:** Added `embedded-shaders` prerequisite to each of the five test targets in `MatterEngine3/viewer/Makefile`, matching the style of the `viewer` target (line 182).
+
+**Verification:**
+```bash
+$ rm -f MatterEngine3/shaders_gen/embedded_shaders.h
+$ cd MatterEngine3/viewer && make tileset-load-tests -j$(nproc) > /tmp/fix-i1-build.log 2>&1; echo exit=$?
+exit=0
+$ grep -i "error\|undefined\|fatal" /tmp/fix-i1-build.log | head -20
+(no output — clean build)
+```
+
+### Finding I2 — wire run-shader-source into build-all
+
+**Issue:** `build-all.sh` test suite (line 188) ran a hardcoded list of MatterEngine3/tests run-* targets but omitted `run-shader-source`, added in commit 52772f9.
+
+**Fix:** Added `run-shader-source` to the target list in `build-all.sh` line 188, placed last to match existing style.
+
+**Verification:**
+```bash
+$ cd MatterEngine3/tests && make run-shader-source
+g++ shader_source_tests.cpp ../src/shader_source.cpp -o shader_source_tests \
+      -std=c++17 -Wall -Wno-missing-braces -Wno-unused-variable -DPLATFORM_DESKTOP -DGRAPHICS_API_OPENGL_33 -I../include -I..
+./shader_source_tests
+shader_source_tests: all passed
+```
+
+### Files Changed
+- `MatterEngine3/viewer/Makefile` — added `embedded-shaders` prereq to 5 test targets
+- `build-all.sh` — added `run-shader-source` to test suite
