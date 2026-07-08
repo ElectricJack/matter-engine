@@ -66,8 +66,9 @@ MeshChartingLib/tests/*_tests
 SpatialQueryLib/spatial_hash_tests
 SpatialQueryLib/bvh_tests
 ObjectAllocatorLib/object_allocator_tests
-ObjectAllocatorLib/linux/
-SpatialQueryLib/linux/
+# `make TARGET=linux` (build-all.sh convention) emits a binary named `linux`
+ObjectAllocatorLib/linux
+SpatialQueryLib/linux
 
 # Transient screenshots + sentinel files (FIFO shot capture)
 *.png.done
