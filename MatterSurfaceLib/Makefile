@@ -136,7 +136,6 @@ all: dependencies shaders $(BIN)
 dependencies:
 	@echo "Setting up dependencies for $(PLATFORM)..."
 	@mkdir -p src
-	@cp ../ObjectAllocatorLib/src/object_allocator.c src/
 
 shaders: shaders/raytrace_tlas_blas_processed.fs
 
