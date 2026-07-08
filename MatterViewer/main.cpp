@@ -266,8 +266,9 @@ int main() {
                 } else if (sscanf(line.c_str(), "hiz %15s", labelbuf) == 1) {
                     stats.hiz_enabled = (strcmp(labelbuf, "on") == 0);
                     printf("hiz %s\n", stats.hiz_enabled ? "on" : "off");
-                } else if (line == "wireframe") {
+                } else if (line == "wireframe" || line == "wireframe toggle") {
                     wireframe = !wireframe;
+                    printf("wireframe %s\n", wireframe ? "on" : "off");
                 } else if (line == "reload") {
                     stats.reload_requested = true;
                 } else if (line == "quit") {

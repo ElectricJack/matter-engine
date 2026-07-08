@@ -297,21 +297,20 @@ $(W_QJS_OBJ): $(W_DIR)/%.o: $(QJS_DIR)/%.c | $(W_DIR)
 $(W_PIPC_OBJ): $(W_DIR)/%.o: $(MSL_DIR)/src/%.c | $(W_DIR)
 	$(WIN_CC) -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(WIN_INCLUDE_PATHS) -MMD -MP
 
-windows: win-shaders win-shaders-gpu $(W_ALL_OBJ)
+windows: win-shaders-gpu $(W_ALL_OBJ)
 	$(WIN_CXX) $(W_ALL_OBJ) -o viewer.exe $(CFLAGS) -static $(WIN_RAYLIB) $(WIN_LIBS)
 
 -include $(W_ALL_OBJ:.o=.d)
 
-# A Windows .exe can't follow a Linux symlink, so copy MSL's shaders/ next to it.
-# Regenerate the processed shader first (see `regen-processed-shader`) so the copy
-# is current — otherwise the .exe ships a stale, layout-mismatched shader.
-win-shaders: regen-processed-shader
-	@rm -rf shaders && cp -r $(MSL_DIR)/shaders shaders
+# win-shaders: removed — all runtime shaders are now embedded at build time via
+# shaders_gen/embedded_shaders.h (Task 9). A Windows .exe no longer needs shader
+# files on disk; the embedded fallback in shader_text() covers every load.
+# The old `rm -rf shaders && cp -r` recipe also destroyed the Linux symlink, so
+# removing it keeps the shaders/ symlink intact after a cross-compile.
 
 # shaders_gpu/ is a committed git symlink in MatterViewer/ pointing to
 # MatterEngine3/shaders_gpu/. The symlink is navigable from WSL for the Linux
-# viewer; re-create it here in case a previous `make windows` overwrote it with
-# a real directory copy, or if it was missing for some other reason.
+# viewer; re-create it here in case it was missing for some other reason.
 win-shaders-gpu:
 	@[ -d shaders_gpu ] || ln -s $(ME3_DIR)/shaders_gpu shaders_gpu
 	@[ -d $(ME3_DIR)/shaders_gpu ] || (echo "ERROR: MatterEngine3/shaders_gpu/ missing" && exit 1)
@@ -323,4 +322,4 @@ win-shaders-gpu:
 clean:
 	rm -rf viewer viewer.exe build
 
-.PHONY: viewer windows clean shaders shaders_gpu_link win-shaders win-shaders-gpu regen-processed-shader mingw-box3d embedded-shaders build-engine-lib
+.PHONY: viewer windows clean shaders shaders_gpu_link win-shaders-gpu regen-processed-shader mingw-box3d embedded-shaders build-engine-lib

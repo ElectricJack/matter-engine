@@ -133,6 +133,12 @@ if [ "$MODE" = "test" ]; then
     echo "============================================================"
     echo "  Running headless test suites"
     echo "============================================================"
+
+    # Phase A: grep-gate — app projects must not include engine internals.
+    echo
+    echo "--- grep-gate (MatterViewer dependency rule) ---"
+    bash MatterEngine3/tools/grep_gate.sh || RESULT[MatterViewer]="FAIL (grep-gate)"
+
     for proj in ObjectAllocatorLib SpatialQueryLib; do
         bin="$proj/$(echo "$proj" | tr '[:upper:]' '[:lower:]')"
         # ObjectAllocatorLib's binary is named "objectallocator" (no Lib suffix).
