@@ -92,3 +92,45 @@ Residuals (all acceptable):
 ## Commit
 
 `23ad9f1` — `refactor: retarget all ObjectAllocatorLib consumers to MemoryLib mem_pool API`
+
+---
+
+## Fix round 1
+
+Two post-review findings fixed on branch `feature/memory-lib`.
+
+### Fix 1 — MatterSurfaceLib: drop obsolete `object_allocator.c` copy step
+
+**File changed:** `MatterSurfaceLib/Makefile` line 139 — deleted the `@cp ../ObjectAllocatorLib/src/object_allocator.c src/` line from the `dependencies` target. The vendored `src/object_allocator.c` is git-tracked inside MatterSurfaceLib and is the authoritative copy; the source directory `../ObjectAllocatorLib/` no longer exists, so the copy step caused `make -C MatterSurfaceLib` to abort. The `dependencies` target, its echo, and the `@mkdir -p src` line were preserved. No other MSL files touched.
+
+**Verification commands:**
+```
+make -C MatterSurfaceLib dependencies
+make -C MatterSurfaceLib WSL_LINUX=1   # (first 30 lines)
+```
+
+**Output summary:**
+- `make -C MatterSurfaceLib dependencies` → exited 0; printed "Setting up dependencies for linux..."
+- `make -C MatterSurfaceLib WSL_LINUX=1` → successfully passed the dependencies step, compiled `src/object_allocator.c` (vendored copy), and continued building all translation units. Build would ultimately fail later at link/display-init for unrelated GL/GLFW reasons (no display in headless WSL) — not related to `object_allocator`.
+
+**Commit:** `d45a093` — `fix(MatterSurfaceLib): drop obsolete object_allocator.c copy step (vendored copy is git-tracked)`
+
+---
+
+### Fix 2 — SpatialQueryLib: rename test helper to `test_mem_pool_integration`
+
+**File changed:** `SpatialQueryLib/main.c` — renamed `test_object_allocator_integration` → `test_mem_pool_integration` at the definition (line 20) and the call site (line 349). No other changes.
+
+**Verification commands:**
+```
+make -C SpatialQueryLib
+make -C SpatialQueryLib test
+./SpatialQueryLib/spatialquerylib
+```
+
+**Output summary:**
+- `make -C SpatialQueryLib` → clean build, exit 0.
+- `make -C SpatialQueryLib test` → spatial_hash_tests 8/8 passed; bvh_tests 5/5 passed (ASan + UBSan enabled).
+- `./spatialquerylib` → "9/9 tests passed", exit 0; first line of output: `PASSED: test_mem_pool_integration`.
+
+**Commit:** `67adacd` — `refactor(SpatialQueryLib): rename test_object_allocator_integration to test_mem_pool_integration`
