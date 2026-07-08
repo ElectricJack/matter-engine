@@ -83,6 +83,7 @@ namespace matter {
 struct EngineDesc {
     const char* cache_root;   // .part cache location
     const char* shader_dir;   // nullptr = embedded shaders (MATTER_SHADER_DIR overrides)
+    bool allow_gl_lt_46 = false;  // app sets true only for the MATTER_RT ray-traced fallback
 };
 class EngineContext {
 public:
@@ -101,7 +102,8 @@ public:
 struct WorldDesc {
     const char* schemas_dir;
     const char* world_data_dir;
-    const char* manifest;    // manifest file name inside world_data_dir (e.g. "world.manifest")
+    const char* world_name;      // world subdir of world_data_dir (provider locates the manifest)
+    const char* shared_lib_dir;  // shared .js library dir for the script host
 };
 
 enum class RenderPath { GpuDriven, Raytrace };
@@ -112,7 +114,9 @@ struct RenderOptions {
     ResolverKind resolver  = ResolverKind::SectorLod;
     bool wireframe         = false;
     bool hiz_occlusion     = false;   // default OFF per ROADMAP false-positive issue
-    int  pixel_budget      = 0;       // 0 = kernel default (today's viewer default value)
+    float pixel_budget     = 0.0f;    // 0 = kernel default (1.0); clamped to [0.05, 4.0]
+    float active_radius    = 0.0f;    // SectorLod knob; 0 = kernel default (64.0)
+    float min_projected_size = 0.0f;  // SectorLod sub-pixel cull threshold (0 = off)
 };
 
 struct FrameStats {   // everything today's HUD shows
@@ -223,6 +227,16 @@ Every stage ends with a building, rendering viewer. Files move only in Stage 5.
 | Shader embed breaks live iteration | `MATTER_SHADER_DIR` override preserved and documented |
 | Windows silent staleness after header moves | Mandatory clean rebuild (standing rule) |
 | Move commits conflict with concurrent work | Start only from post-merge main; Stage 5 needs a quiet tree |
+
+## Amendments (2026-07-07, during plan writing)
+
+- `pixel_budget` is a **float** multiplier (viewer clamps 0.05–4.0), not int — code
+  survey (`main.cpp` FIFO `budget %f`, `ViewerStats::pixel_budget = 1.0f`).
+- `WorldDesc` mirrors `LocalProviderConfig`: `manifest` field replaced by
+  `world_name` + `shared_lib_dir` (the provider locates the manifest itself).
+- `RenderOptions` gains `active_radius` / `min_projected_size` so per-world resolver
+  policy (`apply_world_resolver_defaults`, Meadow-specific) stays app-side.
+- `EngineDesc::allow_gl_lt_46` preserves today's MATTER_RT-on-old-GL fallback gate.
 
 ## Out of scope
 
