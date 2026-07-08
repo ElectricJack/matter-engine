@@ -227,6 +227,64 @@ static void test_demo_tree_has_leaves(const std::string& schemas,
     CHECK(l_children.empty(), "Leaf is a mesh leaf with no children");
 }
 
+// Task 3 (Phase B): foreign-cwd guard.
+// Proves that PartGraph::install with an ABSOLUTE parts_dir writes artifacts
+// under that absolute path regardless of the process cwd.  Before the fix,
+// bake_source's relative "parts/<hash>.part" was written to cwd (which was
+// abs_cache_root only because LocalProvider chdir'd there).
+// Test procedure:
+//   1. Prepare a fresh absolute sandbox.
+//   2. chdir("/") — a foreign cwd with no "parts/" subdir.
+//   3. Run install with HostBaker(abs_cache_root).
+//   4. Assert artifacts exist under abs_cache_root/parts/, NOT under /parts/.
+//   5. Restore original cwd so subsequent tests run from the correct dir.
+static void test_foreign_cwd_install() {
+    namespace pg = part_graph;
+
+    // Save original cwd so we can restore it at the end of this test.
+    char orig_cwd[4096];
+    if (!getcwd(orig_cwd, sizeof orig_cwd)) orig_cwd[0] = '\0';
+
+    const std::string root = "/tmp/me3_foreign_cwd";
+    system(("rm -rf " + root).c_str());
+    const std::string schemas = root + "/schemas";
+    system(("mkdir -p " + schemas + " " + root + "/parts").c_str());
+
+    write_file(schemas + "/ForeignBox.js",
+        "class ForeignBox extends Part {\n"
+        "  static params = {};\n"
+        "  build(p) { this.fill(1);\n"
+        "    this.beginShape(SHAPE.strip);\n"
+        "    this.vertex(0,0,0); this.vertex(1,0,0); this.vertex(0,1,0);\n"
+        "    this.endShape(); }\n"
+        "}\n");
+
+    // chdir to "/" — a completely foreign directory that has no parts/ subdir.
+    CHECK(chdir("/") == 0, "foreign_cwd: chdir(\"/\") succeeds");
+
+    script_host::ScriptHost host;
+    // HostBaker receives the ABSOLUTE parts parent dir; after the fix, bake_source
+    // must write to abs_cache_root/parts/<hash>.part rather than ./parts/<hash>.part.
+    pg::FileModuleResolver resolver(host, schemas);
+    pg::HostBaker baker(host, root);
+    pg::PartGraph graph(resolver, baker);
+
+    pg::InstallResult ir = graph.install({ pg::ChildRequest{"ForeignBox", pg::Params{}} });
+    CHECK(ir.ok, "foreign_cwd: install with absolute parts_dir succeeds");
+    if (!ir.ok) printf("  foreign_cwd install error: %s\n", ir.error.c_str());
+
+    if (ir.ok && ir.root_hashes.size() == 1) {
+        // Artifact must exist under the absolute sandbox, not under /parts/.
+        const std::string abs_part = root + "/" + part_asset::cache_path_resolved(ir.root_hashes[0]);
+        CHECK(file_exists(abs_part), "foreign_cwd: .part exists under absolute cache_root");
+    }
+
+    // Restore cwd so subsequent tests (lod_sidecar etc.) work correctly.
+    if (orig_cwd[0]) (void)chdir(orig_cwd);
+    system(("rm -rf " + root).c_str());
+    printf("  test_foreign_cwd_install done\n");
+}
+
 // SP-3 Task 13: budget-variant baking + .lods sidecar.
 // An opted-in childless schema (static lodBudgets = [1.0, 0.5]) in a fresh
 // temp sandbox is installed through the REAL FileModuleResolver + HostBaker.
@@ -398,6 +456,10 @@ int main() {
           "resolved demo schemas + shared-lib absolute paths");
     if (!demo_schemas.empty() && !demo_sharedlib.empty())
         test_demo_tree_has_leaves(demo_schemas, demo_sharedlib);
+
+    // Task 3 (Phase B): foreign-cwd guard — install with absolute parts_dir works
+    // regardless of process cwd.
+    test_foreign_cwd_install();
 
     // SP-3 Task 13: budget-variant baking + .lods sidecar.
     test_lod_variant_sidecar();

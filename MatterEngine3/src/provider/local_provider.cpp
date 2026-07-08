@@ -36,7 +36,7 @@
 #include <sys/stat.h>
 #include <unordered_map>
 #ifdef _WIN32
-#include <direct.h>      // _mkdir, _getcwd, _chdir
+#include <direct.h>      // _mkdir
 #include <stdlib.h>      // _fullpath, _MAX_PATH
 #ifndef PATH_MAX
 #define PATH_MAX _MAX_PATH
@@ -57,13 +57,9 @@ namespace {
 #ifdef _WIN32
 int  fs_mkdir(const char* p)                       { return _mkdir(p); }
 bool fs_realpath(const char* in, char* out)        { return _fullpath(out, in, PATH_MAX) != nullptr; }
-bool fs_getcwd(char* buf, size_t n)                { return _getcwd(buf, (int)n) != nullptr; }
-int  fs_chdir(const char* p)                       { return _chdir(p); }
 #else
 int  fs_mkdir(const char* p)                       { return ::mkdir(p, 0755); }
 bool fs_realpath(const char* in, char* out)        { return realpath(in, out) != nullptr; }
-bool fs_getcwd(char* buf, size_t n)                { return getcwd(buf, n) != nullptr; }
-int  fs_chdir(const char* p)                       { return chdir(p); }
 #endif
 struct Rng64 {
     uint64_t s;
@@ -171,29 +167,17 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     baked_hashes_.clear();
 
     // Ensure the persistent cache dir exists.
-    // bake_source writes "parts/<hash>.part" relative to cwd, so we temporarily
-    // chdir into cache_root (saving and restoring the caller's cwd). All other
-    // paths are resolved to absolute BEFORE the chdir so they remain valid.
+    // All artifact writes are absolute-path (Task 3 Phase B: HostBaker::bake
+    // passes parts_dir to bake_source via BakeOptions so no chdir is needed).
     fs_mkdir(cfg_.cache_root.c_str());
     std::string parts_subdir = cfg_.cache_root + "/parts";
     fs_mkdir(parts_subdir.c_str());
 
-    // Resolve all relative paths to absolute now, while cwd is still the caller's.
+    // Resolve all relative paths to absolute now (cache_root may itself be relative).
     std::string abs_schemas    = abspath(cfg_.schemas_dir);
     std::string abs_world_data = abspath(cfg_.world_data_dir);
     std::string abs_shared_lib = abspath(cfg_.shared_lib_dir);
     std::string abs_cache_root = abspath(cfg_.cache_root);
-
-    // Save caller's cwd, chdir to cache_root so bake_source writes parts/ there.
-    char orig_cwd[PATH_MAX];
-    if (!fs_getcwd(orig_cwd, sizeof(orig_cwd))) {
-        err = "getcwd failed";
-        return false;
-    }
-    if (fs_chdir(abs_cache_root.c_str()) != 0) {
-        err = "cache_root does not exist or could not be created: " + cfg_.cache_root;
-        return false;
-    }
 
 #if defined(MATTER_HAVE_AUTOREMESHER)
     // Warm the TBB scheduler BEFORE any heap-heavy work (install() calls
@@ -211,8 +195,9 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     matter_engine3::retopo_blacklist::init(abs_cache_root);
 #endif
 
-    // SP-2/SP-3/SP-7 wiring. HostBaker's second arg is the PARENT of parts/ (== ".").
-    // bake_source writes "parts/<hash>.part" relative to cwd (== abs_cache_root).
+    // SP-2/SP-3/SP-7 wiring. HostBaker receives the absolute cache root; it passes
+    // it through BakeOptions.parts_dir so bake_source writes artifacts to absolute
+    // paths (Task 3 Phase B: no chdir required).
     script_host::ScriptHost host;
     host.set_shared_lib_root(abs_shared_lib);
     FileModuleResolver resolver(host, abs_schemas);
@@ -261,7 +246,7 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
             return inner.bake_lod_variants(source, params, child_hashes, resolved_hash);
         }
     };
-    RecordingBaker baker(host, ".", &retopo_by_hash);
+    RecordingBaker baker(host, abs_cache_root, &retopo_by_hash);
     PartGraph graph(resolver, baker);
 
     std::vector<ChildRequest> roots;
@@ -270,7 +255,6 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     bool manifest_ok = PartGraph::read_manifest(abs_world_data, cfg_.world_name,
                                                 roots, err, &expand_flags, &tileset_flags);
     if (!manifest_ok) {
-        fs_chdir(orig_cwd);
         return false;
     }
 
@@ -288,7 +272,6 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     InstallResult ir = graph.install(roots_for_install);
     if (!ir.ok) {
         err = ir.error;
-        fs_chdir(orig_cwd);
         return false;
     }
     baked_count_ = (int)ir.baked.size();
@@ -300,9 +283,6 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     for (size_t j = 0; j < ir.root_hashes.size(); ++j)
         if (ir.root_hashes[j] != 0)
             module_by_hash_[ir.root_hashes[j]] = roots_for_install[j].module;
-
-    // Restore caller's cwd before doing anything further.
-    fs_chdir(orig_cwd);
 
     // Map each root module to the child-FOLDED resolved hash the graph baked it under.
     // install() returns root_hashes parallel to `roots_for_install`; using them (instead
@@ -452,11 +432,9 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     // The gtex is written to abs_world_data/<root_module>.gtex (the GPU overload
     // constructs the path as world_data_dir + "/" + root_module + ".gtex").
     //
-    // run_tileset_phase calls ScriptHost::bake_source internally to bake the
-    // tileset's child schemas (Pebble/Rock/Twig/Leaf). bake_source writes
-    // parts/<hash>.part RELATIVE to CWD, so we must chdir to abs_cache_root
-    // for the duration of the tileset loop (mirrors the earlier
-    // graph.install() setup at line 112).  Restore CWD after.
+    // run_tileset_phase passes abs_cache_root to HostBaker; HostBaker::bake now
+    // propagates it via BakeOptions.parts_dir so bake_source writes absolute paths
+    // (Task 3 Phase B: no chdir needed here).
     // (baked_tileset_count_ already reset at connect() entry.)
 
     // Guard: fail-closed BEFORE any GL/disk work if the manifest declares more
@@ -471,14 +449,6 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
         return false;
     }
 
-    bool restored_cwd_after_tileset = tileset_indices.empty();
-    if (!tileset_indices.empty()) {
-        if (fs_chdir(abs_cache_root.c_str()) != 0) {
-            err = "LocalProvider: chdir to cache_root failed before tileset bake: " +
-                  abs_cache_root;
-            return false;
-        }
-    }
     for (size_t ti : tileset_indices) {
         const std::string root_module = roots[ti].module;
         tileset::SettledTorus settled;
@@ -494,7 +464,6 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
                                         abs_shared_lib)) {
             err = "LocalProvider: run_tileset_phase(" + root_module + "): " + te +
                   " (if a GL error: set GALLIUM_DRIVER=d3d12 on WSLg)";
-            fs_chdir(orig_cwd);
             return false;
         }
         // The GPU overload writes: world_data_dir + "/" + root_module + ".gtex"
@@ -502,7 +471,6 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
         std::string le;
         if (!viewer::tileset_provider::load_slot(baked_tileset_count_, gtex_path, le)) {
             err = "LocalProvider: tileset_provider::load_slot(" + gtex_path + "): " + le;
-            fs_chdir(orig_cwd);
             return false;
         }
         // Bind material DIRT (16) to this slot by default — the world script may
@@ -511,9 +479,6 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
         ++baked_tileset_count_;
         printf("LocalProvider: tileset '%s' -> slot %d (%s)\n",
                root_module.c_str(), baked_tileset_count_ - 1, gtex_path.c_str());
-    }
-    if (!restored_cwd_after_tileset) {
-        fs_chdir(orig_cwd);
     }
 
     // --- Parse world lights ---

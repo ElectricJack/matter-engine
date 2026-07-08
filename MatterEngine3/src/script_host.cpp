@@ -1217,7 +1217,14 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             std::memcpy(ci.transform, c.transform, sizeof ci.transform);
             kids.push_back(ci);
         }
-        std::string path = part_asset::cache_path_resolved(r.resolved_hash);
+        // Build the write path: if opts.parts_dir is non-empty, make it absolute
+        // by joining parts_dir + "/" + cache_path_resolved(...).  Otherwise fall
+        // back to the legacy cwd-relative "parts/<hash>.part" so callers that
+        // chdir() themselves (e.g. existing tests) keep working unchanged.
+        std::string rel_path = part_asset::cache_path_resolved(r.resolved_hash);
+        std::string path = opts.parts_dir.empty()
+                           ? rel_path
+                           : opts.parts_dir + "/" + rel_path;
         part_asset::LodLevels lods{};   // SP-2 writes no LOD array.
         bool ok = part_asset::save_v2(path, blas, tlas,
                                       kids.empty() ? nullptr : kids.data(), kids.size(),

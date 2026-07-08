@@ -1,110 +1,139 @@
-# Task 3 Report: Stage 1b — All Shader Loads via `matter::shader_text`
+# Task 3 Report: cwd-independent bake writes — drop the install chdir bracket
 
-## Enumerated Load Sites and Conversions
+## Status: DONE
 
-### Site 1: `raster_composer.cpp:103–107` — `RasterComposer::init()`
-**Before:** `read_file_text("shaders/raster.vs")` and `read_file_text("shaders/raster.fs")` (local helper using `std::ifstream`)
-**After:** `matter::shader_text("shaders/raster.vs", vs_src, serr)` and `matter::shader_text("shaders/raster.fs", fs_raw, serr)` with return-false on error.
+---
 
-### Site 2: `raster_composer.cpp:79` — `resolve_glsl_includes()` include flattener
-**Before:** Called `read_file_text(base_dir + "/" + fname)` for each `#include` directive.
-**After:** Calls `matter::shader_text((base_dir + "/" + fname).c_str(), incl, serr)`. The `read_file_text` static helper and `<fstream>` include were removed.
+## Step 1: Write-Path Trace
 
-### Site 3: `raster_composer.cpp:183–208` — `RasterComposer::init_gpu_driven()`
-**Before:** `LoadFileText("shaders_gpu/raster_gpu_driven.vs")` and `LoadFileText("shaders/raster.fs")`, then `UnloadFileText()` calls.
-**After:** `matter::shader_text("shaders_gpu/raster_gpu_driven.vs", vs_str, serr)` and `matter::shader_text("shaders/raster.fs", fs_raw, serr)`. No `UnloadFileText` calls needed.
+### `bake_source` (script_host.cpp)
+- **Line 1220** (pre-fix): `std::string path = part_asset::cache_path_resolved(r.resolved_hash);`
+  — returns the relative string `"parts/<hex>.part"`.
+- **Line 1222**: `part_asset::save_v2(path, ...)` — writes to that **relative** path.
+  If cwd != cache_root, the write fails (ENOENT).
+- `BakeResult::written_path` carries the same relative string back to `HostBaker::bake`.
 
-### Site 4: `gpu_culler.cpp:61–99` — `GpuCuller::compile_compute()` (called at lines 105, 891)
-**Before:** `std::ifstream f(path); std::ostringstream ss; ss << f.rdbuf()` — disk read.
-**After:** `matter::shader_text(path, src, serr)` — embedded lookup. Removed `<fstream>` and `<sstream>` includes.
+### `HostBaker::cached` (part_graph.cpp line 311)
+- Joins `parts_dir_ + "/" + part_asset::cache_path_resolved(h)`.
+- `parts_dir_` was historically `"."` (the chdir-ed cwd), making this work only under chdir.
+- This read path was already absolute-capable; only `bake_source` was the write-path bug.
 
-### Site 5: `renderer.cpp:26–29` — `Renderer::init_shader()`
-**Before:** `LoadShader(nullptr, shader_fs_path.c_str())` — raylib disk read.
-**After:** `matter::shader_text(shader_fs_path.c_str(), fs_src, serr)` then `LoadShaderFromMemory(nullptr, fs_src.c_str())`. Added `#include "shader_source.h"`.
+### `HostBaker::bake` (part_graph.cpp line 330)
+- Called `host_.bake_source(... /*opts*/{} ...)` — empty `BakeOptions`, so `parts_dir` was
+  absent and `bake_source` fell through to the cwd-relative write path.
 
-### Site 6: `tileset_gl_ctx.cpp` — `load_compute_source()` and `expand_includes()`
-**Before:** `resolve_relative_to_exe()` → `read_file()` (both using `std::ifstream`). Include expansion used `read_file(includes_dir + "/" + name)`.
-**After:** New `fetch_shader()` helper: absolute paths (`/...`) use `read_file_direct()` for the test fixture (`test_include_expansion` writes temp files to /tmp); logical paths go through `matter::shader_text`. `expand_includes` uses `fetch_shader(includes_dir + "/" + name)`. Removed `<fstream>`, `<unistd.h>`, `<limits.h>`, `resolve_relative_to_exe`, and `read_file`. The Windows `#include <windows.h>` block was also removed (it was only needed for `resolve_relative_to_exe`).
+### `HostBaker::bake_lod_variants` (part_graph.cpp line 392)
+- `cached()`, sidecar reads, and variant `.part` existence checks all join `parts_dir_ + "/"` —
+  already absolute-capable.
+- **Bug also present** on the variant-bake call: `host_.bake_source(source, params_to_json(p2), {})`.
+  Fixed: passes `vopts.parts_dir = parts_dir_`.
 
-**Note on absolute-path handling:** The `test_include_expansion` test in `tileset_gpu_tests.cpp` calls `load_compute_source("/tmp/tileset_test_primary.comp", "/tmp", ...)` — absolute paths that cannot be in the embedded table. The `fetch_shader` helper detects absolute paths (leading `/`) and reads them directly from disk, preserving this test fixture without modifying `matter::shader_text`. All production callers use logical paths.
+### `LocalProvider::connect` (local_provider.cpp)
+- **Lines 187–196** (pre-fix): saved cwd, `chdir(abs_cache_root)`, then `fs_chdir(orig_cwd)`
+  in three places (manifest error, install error, success path).
+- **Lines 458–501** (pre-fix): second chdir bracket for tileset loop, two more `fs_chdir(orig_cwd)`.
+- `RecordingBaker baker(host, ".", ...)` — the `"."` worked only because cwd == abs_cache_root.
 
-### Sites NOT requiring changes:
-- `tileset_gpu_tests.cpp:186–187, 349–350, 446–447` — these call `load_compute_source()` which was converted in Site 6.
-- `tileset_bake_gpu.cpp:143–146` — same: calls `load_compute_source()`.
-- `main.cpp:88` — passes logical path string to `renderer.init_shader()` which was converted in Site 5.
+### ScriptHost internal artifact writes
+`bake_source` is the only place SP-2 writes `.part` bytes (`save_v2`). `eval_tileset`,
+`eval_requires`, `eval_lod_budgets`, and `resolve_hash` write nothing. `tileset_phase.cpp`
+already passed `parts_cache_dir` (absolute) to `HostBaker` — the fix completes the chain by
+propagating it through `BakeOptions.parts_dir` to `bake_source`.
 
-## Commands Run with Key Output
+---
 
-### Build
+## Step 2: TDD — RED
 
+Added `test_foreign_cwd_install()` to `MatterEngine3/tests/part_graph_integration_tests.cpp`.
+
+Test procedure:
+1. Create absolute sandbox `/tmp/me3_foreign_cwd` with `schemas/` and `parts/`.
+2. `chdir("/")` — foreign cwd with no `parts/` subdir.
+3. Construct `HostBaker(host, root)` where `root` is the absolute sandbox path.
+4. Call `graph.install({ ChildRequest{"ForeignBox", {}} })`.
+5. Assert artifact exists at `root + "/" + cache_path_resolved(hash)`.
+6. Restore original cwd so subsequent tests run correctly.
+
+**RED output (before fix):**
 ```
-make -C MatterEngine3 -j$(nproc)
-Exit: 0
-
-make -C MatterEngine3/viewer -j$(nproc) viewer
-Exit: 0
-
-make -C MatterEngine3/viewer -j$(nproc) gpu-tests tileset-gpu-tests
-Exit: 0
-```
-
-### GPU Test Suites
-
-```
-cd MatterEngine3/viewer && GALLIUM_DRIVER=d3d12 ./gpu_tests
---- Results: 31/31 passed --- ALL PASS
-
-cd MatterEngine3/viewer && GALLIUM_DRIVER=d3d12 ./tileset_gpu_tests
---- Results: 62/62 passed --- ALL PASS
-```
-
-### cwd-Independence Check
-
-```
-cd <repo-root> && GALLIUM_DRIVER=d3d12 MATTER_SCREENSHOT=/tmp/cwd_check.png MatterEngine3/viewer/viewer || true
-```
-Output: viewer initialized, `GPU cull path: enabled (GL 4.6 ok)`, then failed at `FATAL: no worlds found under ../examples` — shader loading succeeded, failure is cwd-relative world scan (expected, fixed in Task 9).
-
-```
-GALLIUM_DRIVER=d3d12 MATTER_SHADER_DIR=/nonexistent timeout 10 ./viewer
-```
-Output: `SHADER: [ID 1] Vertex shader compiled successfully` (etc.) — embedded fallback confirmed.
-
-### Screenshot Gate
-
-```
-GALLIUM_DRIVER=d3d12 bash MatterEngine3/tools/viewer_shots.sh embed /tmp/phase-a-embed
---- embed: shots + stats in /tmp/phase-a-embed (viewer exited)
-Exit: 0
-
-python3 MatterEngine3/tools/img_diff.py ref_aerial.png embed_aerial.png
-MATCH 210/921600 px (0.023%) exceed tol 2
-
-python3 MatterEngine3/tools/img_diff.py ref_corner.png embed_corner.png
-MATCH 224/921600 px (0.024%) exceed tol 2
-
-python3 MatterEngine3/tools/img_diff.py ref_midfield.png embed_midfield.png
-MATCH 236/921600 px (0.026%) exceed tol 2
-
-python3 MatterEngine3/tools/img_diff.py ref_far.png embed_far.png
-MATCH 132/921600 px (0.014%) exceed tol 2
-
-python3 MatterEngine3/tools/img_diff.py ref_empty.png embed_empty.png
-MATCH 111/921600 px (0.012%) exceed tol 2
+save_v2: fopen('parts/8fbf636ca4665b6c.part.tmp', 'wb') failed: errno=2 (No such file or directory)
+  HostBaker::bake: save_v2 failed
+FAIL: foreign_cwd: install with absolute parts_dir succeeds
+  foreign_cwd install error: bake failed for part: ForeignBox
 ```
 
-All 5: MATCH.
+---
 
-**Note:** The first viewer_shots.sh run crashed with a segfault in `connect_sequence()` (world loading with autoremesher/TBB). The second run succeeded. This is a pre-existing intermittent issue unrelated to shader loading — the viewer ran correctly without `MATTER_CMD_FIFO` in all my prior tests, and the refs confirm the viewer did complete successfully before. The note in memory about "geo_assert abort" on Meadow is specifically for Tree.js with retopo enabled (which is `enabled: false` in Tree.js). The occasional crash appears to be a TBB initialization race.
+## Step 3: Fix
 
-## Deviations
+### Files changed
 
-1. **`<fstream>` / `<sstream>` removal:** Removed from `raster_composer.cpp`, `gpu_culler.cpp`, `tileset_gl_ctx.cpp` — they were only needed for file reads. `<sstream>` remains in `raster_composer.cpp` for `resolve_glsl_includes`'s `std::istringstream`.
+**`MatterEngine3/src/script_host.h`**
+- Added `std::string parts_dir` field to `BakeOptions`.
+- When non-empty, `bake_source` prefixes the relative cache path: `parts_dir + "/" + rel_path`.
+- Empty `parts_dir` preserves backward compat for callers that still chdir themselves.
 
-2. **Absolute-path fallback in `tileset_gl_ctx.cpp`:** Added `read_file_direct()` and `fetch_shader()` helpers to handle the `test_include_expansion` test fixture which uses `/tmp/...` absolute paths. This is intentional: `matter::shader_text` is for logical shader paths; absolute paths are a test-only concern.
+**`MatterEngine3/src/script_host.cpp`** (near line 1220)
+- Build write path: if `opts.parts_dir` non-empty, use `opts.parts_dir + "/" + rel_path`;
+  otherwise fall back to cwd-relative `rel_path`.
 
-3. **Windows `#include <windows.h>` block removed:** Was only needed for `resolve_relative_to_exe()` (Win32 `GetModuleFileNameA`). Since that function is gone, the win32 block is dead code and was removed. Windows builds are noted as "not in scope" for this task.
+**`MatterEngine3/src/part_graph.cpp`**
+- `HostBaker::bake`: construct `script_host::BakeOptions bopts; bopts.parts_dir = parts_dir_;`
+  and pass it to `host_.bake_source(...)`.
+- `HostBaker::bake_lod_variants` (line 392): same for the variant-bake call.
 
-## Concerns
+**`MatterEngine3/src/provider/local_provider.cpp`**
+- Deleted the chdir bracket around `graph.install()` (lines 187–196, 293–294, plus the
+  install-error and manifest-error `fs_chdir(orig_cwd)` calls).
+- Deleted the second chdir bracket around the tileset loop (lines 458–501, including the two
+  `fs_chdir(orig_cwd)` calls in the tileset error paths).
+- Removed `fs_getcwd`/`fs_chdir` platform shims (now unused); trimmed `<direct.h>` comment.
+- Changed `RecordingBaker baker(host, ".", ...)` to `RecordingBaker baker(host, abs_cache_root, ...)`.
+- Updated stale comment on the SP-2/SP-3 wiring block.
 
-None. The brief's goal is achieved: no shader is loaded from a cwd-relative path anywhere in engine code.
+**`MatterEngine3/tests/part_graph_integration_tests.cpp`**
+- Added `test_foreign_cwd_install()`.
+- Added call to it in `main()` between the demo-tree test and `test_lod_variant_sidecar`.
+
+---
+
+## Step 4: TDD — GREEN
+
+After fixes, `make run-graph-integration` output (relevant lines):
+
+```
+  test_foreign_cwd_install done
+  test_lod_variant_sidecar OK
+```
+
+No FAIL for `foreign_cwd`. Test passes.
+
+Pre-existing 6 failures (`test_demo_tree_has_leaves`) remain unchanged — confirmed by baseline
+run with `git stash` showing identical failures before my changes. Root cause: that helper
+uses `load_v2(cache_path_resolved(hash), ...)` with a relative path after cwd is restored to
+the test-binary dir (no `parts/` there). Out of scope for Task 3.
+
+---
+
+## Suite Results
+
+| Target | Result | Notes |
+|---|---|---|
+| `run-graph` | ALL PASS | |
+| `run-script` | ALL PASS | |
+| `run-graph-integration` | 6 pre-existing FAILs; `foreign_cwd` PASS | See pre-existing note above |
+| `run-meadow` | ALL PASS | |
+| `run-meadow-check` | ALL PASS | |
+| `run-flatten` | ALL PASS | |
+| `run-grasslod` | ALL PASS | |
+| `run-treebake` | exit 0 | |
+
+---
+
+## Files Changed
+
+- `MatterEngine3/src/script_host.h`
+- `MatterEngine3/src/script_host.cpp`
+- `MatterEngine3/src/part_graph.cpp`
+- `MatterEngine3/src/provider/local_provider.cpp`
+- `MatterEngine3/tests/part_graph_integration_tests.cpp`

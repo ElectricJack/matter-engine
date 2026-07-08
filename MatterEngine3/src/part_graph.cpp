@@ -331,9 +331,13 @@ bool HostBaker::bake(const std::string& source, const Params& params,
                      const std::vector<uint64_t>& child_hashes,
                      const std::vector<std::string>& child_modules,
                      const std::vector<std::string>& child_params, uint64_t resolved_hash) {
-    // SP-2 bake_source recomputes the same hash and writes parts/<hash>.part via save_v2.
+    // SP-2 bake_source recomputes the same hash and writes the .part via save_v2.
+    // Pass parts_dir_ so bake_source writes to an absolute path rather than a
+    // cwd-relative "parts/<hash>.part" (Task 3 Phase B: cwd-independence).
+    script_host::BakeOptions bopts;
+    bopts.parts_dir = parts_dir_;
     script_host::BakeResult r = host_.bake_source(
-        source, params_to_json(params), /*opts*/{},
+        source, params_to_json(params), bopts,
         child_hashes.data(), child_hashes.size(),
         child_modules.data(), child_params.data());
     // The hash SP-3 memoized must equal where the .part landed (master C-2 guarantee).
@@ -385,7 +389,9 @@ bool HostBaker::bake_lod_variants(const std::string& source, const Params& param
         }
         Params p2 = params;
         p2["lodBudget"] = ParamValue::number(b);
-        script_host::BakeResult r = host_.bake_source(source, params_to_json(p2), {});
+        script_host::BakeOptions vopts;
+        vopts.parts_dir = parts_dir_;
+        script_host::BakeResult r = host_.bake_source(source, params_to_json(p2), vopts);
         if (!r.error.ok) return false;
         variant_hashes.push_back(r.resolved_hash);
     }
