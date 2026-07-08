@@ -184,7 +184,7 @@ viewer: embedded-shaders shaders shaders_gpu_link $(L_ALL_OBJ)
 
 # GPU cull parity test binary: same objects as viewer, minus main.o, plus gpu_cull_tests.o.
 GPU_TEST_OBJ = $(filter-out $(L_DIR)/main.o,$(L_ALL_OBJ)) $(L_TEST_OBJ)
-gpu-tests: shaders shaders_gpu_link $(GPU_TEST_OBJ)
+gpu-tests: embedded-shaders shaders shaders_gpu_link $(GPU_TEST_OBJ)
 	$(CC) $(GPU_TEST_OBJ) -o gpu_tests $(CFLAGS) $(LDFLAGS) $(LDLIBS) $(AR_CORE_LDFLAGS)
 
 # tileset headless GPU tests (Task 3..7). Same object set as gpu-tests + the
@@ -194,7 +194,7 @@ $(L_TSET_GPU_TEST_OBJ): tileset_gpu_tests.cpp | $(L_DIR)
 	$(CC) -c $< -o $@ $(CXX_FLAGS_BUILD)
 
 TILESET_GPU_TEST_OBJ = $(filter-out $(L_DIR)/main.o $(L_DIR)/gpu_cull_tests.o,$(L_ALL_OBJ)) $(L_TSET_GPU_TEST_OBJ)
-tileset-gpu-tests: shaders shaders_gpu_link $(TILESET_GPU_TEST_OBJ)
+tileset-gpu-tests: embedded-shaders shaders shaders_gpu_link $(TILESET_GPU_TEST_OBJ)
 	$(CC) $(TILESET_GPU_TEST_OBJ) -o tileset_gpu_tests $(CFLAGS) $(LDFLAGS) $(AR_CORE_LDFLAGS) $(LDLIBS)
 
 run-tilesetgpu: tileset-gpu-tests
@@ -207,7 +207,7 @@ $(L_TSET_SEAM_OBJ): tileset_seam_tests.cpp | $(L_DIR)
 	$(CC) -c $< -o $@ $(CXX_FLAGS_BUILD)
 
 TILESET_SEAM_TEST_OBJ = $(filter-out $(L_DIR)/main.o $(L_DIR)/gpu_cull_tests.o,$(L_ALL_OBJ)) $(L_TSET_SEAM_OBJ)
-tileset-seam-tests: shaders shaders_gpu_link $(TILESET_SEAM_TEST_OBJ)
+tileset-seam-tests: embedded-shaders shaders shaders_gpu_link $(TILESET_SEAM_TEST_OBJ)
 	$(CC) $(TILESET_SEAM_TEST_OBJ) -o tileset_seam_tests $(CFLAGS) $(LDFLAGS) $(AR_CORE_LDFLAGS) $(LDLIBS)
 
 run-tilesetseam: tileset-seam-tests
@@ -220,7 +220,7 @@ $(L_TSET_PROV_TEST_OBJ): tileset_provider_tests.cpp | $(L_DIR)
 	$(CC) -c $< -o $@ $(CXX_FLAGS_BUILD)
 
 TILESET_PROV_TEST_OBJ = $(filter-out $(L_DIR)/main.o $(L_DIR)/gpu_cull_tests.o,$(L_ALL_OBJ)) $(L_TSET_PROV_TEST_OBJ)
-tileset-provider-tests: shaders shaders_gpu_link $(TILESET_PROV_TEST_OBJ)
+tileset-provider-tests: embedded-shaders shaders shaders_gpu_link $(TILESET_PROV_TEST_OBJ)
 	$(CC) $(TILESET_PROV_TEST_OBJ) -o tileset_provider_tests $(CFLAGS) $(LDFLAGS) $(AR_CORE_LDFLAGS) $(LDLIBS)
 
 run-tilesetprovider: tileset-provider-tests
@@ -233,7 +233,7 @@ $(L_TSET_LOAD_TEST_OBJ): tileset_load_tests.cpp | $(L_DIR)
 	$(CC) -c $< -o $@ $(CXX_FLAGS_BUILD)
 
 TILESET_LOAD_TEST_OBJ = $(filter-out $(L_DIR)/main.o $(L_DIR)/gpu_cull_tests.o,$(L_ALL_OBJ)) $(L_TSET_LOAD_TEST_OBJ)
-tileset-load-tests: shaders shaders_gpu_link $(TILESET_LOAD_TEST_OBJ)
+tileset-load-tests: embedded-shaders shaders shaders_gpu_link $(TILESET_LOAD_TEST_OBJ)
 	$(CC) $(TILESET_LOAD_TEST_OBJ) -o tileset_load_tests $(CFLAGS) $(LDFLAGS) $(AR_CORE_LDFLAGS) $(LDLIBS)
 
 run-tilesetload: tileset-load-tests
