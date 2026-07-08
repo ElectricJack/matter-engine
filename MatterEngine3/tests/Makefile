@@ -105,7 +105,7 @@ COMMON_MSL_C = \
 COMMON_MSL_C_OBJ = surface.o open_particle_surface.o fat_primitive.o \
                    spatial_hash.o object_allocator.o material_registry.o
 
-.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest
+.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests (headless, GL-free).
 # NEW impl ../src/part_asset_v2.cpp + consumed MatterSurfaceLib backend sources.
@@ -125,7 +125,7 @@ run-partv2: $(PARTV2_TARGET)
 	./$(PARTV2_TARGET)
 
 clean:
-	rm -f $(PARTV2_TARGET) $(SCRIPT_TARGET) $(GRAPH_TARGET) $(GRAPH_INT_TARGET) $(TRIVAR_TARGET) $(SHLIB_TARGET) $(COMP_TARGET) $(DEV_TARGET) $(EXAMPLE_TARGET) $(VIEWER_LOGIC_TARGET) $(TREEBAKE_TARGET) $(MEADOW_TARGET) $(MEADOWCHECK_TARGET) $(GRASSLOD_TARGET) $(STRESSFOREST_TARGET) $(TILESETMEADOWMANIFEST_TARGET) $(RETOPO_INT_TARGET)
+	rm -f $(PARTV2_TARGET) $(SCRIPT_TARGET) $(GRAPH_TARGET) $(GRAPH_INT_TARGET) $(TRIVAR_TARGET) $(SHLIB_TARGET) $(COMP_TARGET) $(DEV_TARGET) $(EXAMPLE_TARGET) $(VIEWER_LOGIC_TARGET) $(TREEBAKE_TARGET) $(MEADOW_TARGET) $(MEADOWCHECK_TARGET) $(GRASSLOD_TARGET) $(STRESSFOREST_TARGET) $(TILESETMEADOWMANIFEST_TARGET) $(RETOPO_INT_TARGET) $(SHADER_SOURCE_TARGET)
 
 # Script host (QuickJS-ng) + DSL/CSG bake tests (headless, GL-free for the host;
 # the BLAS surface path links raylib like the part-asset tests). QuickJS-ng C
@@ -692,3 +692,15 @@ $(TILESETMEADOWMANIFEST_TARGET): $(TILESETMEADOWMANIFEST_CPP) $(TILESETMEADOWMAN
 
 run-tilesetmeadowmanifest: $(TILESETMEADOWMANIFEST_TARGET)
 	./$(TILESETMEADOWMANIFEST_TARGET)
+
+# Stage 1a — embedded shader lookup (headless, GL-free).
+# Needs the generated header; run `make -C .. shaders_gen/embedded_shaders.h` first.
+SHADER_SOURCE_TARGET = shader_source_tests
+SHADER_SOURCE_CPP = shader_source_tests.cpp ../src/shader_source.cpp
+
+$(SHADER_SOURCE_TARGET): $(SHADER_SOURCE_CPP) ../shaders_gen/embedded_shaders.h
+	$(CC) $(SHADER_SOURCE_CPP) -o $(SHADER_SOURCE_TARGET) \
+	      $(CFLAGS) -I../include -I..
+
+run-shader-source: $(SHADER_SOURCE_TARGET)
+	./$(SHADER_SOURCE_TARGET)

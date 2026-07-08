@@ -93,6 +93,7 @@ PIPELINE_CPP = ../src/part_graph.cpp \
               ../src/sector_grid.cpp ../src/lod_select.cpp \
               ../src/world_lights.cpp ../src/probe_volume.cpp \
               ../src/world_tracer.cpp ../src/probe_bake.cpp \
+              ../src/shader_source.cpp \
               ../../MatterSurfaceLib/src/cluster.cpp ../../MatterSurfaceLib/src/cell.cpp ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
               ../../MatterSurfaceLib/src/mesh_indexed.cpp ../../MatterSurfaceLib/src/mesh_transform.cpp \
               ../../MatterSurfaceLib/src/blas_manager.cpp ../../MatterSurfaceLib/src/bvh.cpp ../../MatterSurfaceLib/src/bvh_analyzer.cpp \
@@ -173,7 +174,12 @@ $(L_QJS_OBJ): $(L_DIR)/%.o: $(QJS_DIR)/%.c | $(L_DIR)
 $(L_PIPC_OBJ): $(L_DIR)/%.o: ../../MatterSurfaceLib/src/%.c | $(L_DIR)
 	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
 
-viewer: shaders shaders_gpu_link $(L_ALL_OBJ)
+# Generate embedded shader header before compiling any TU that includes it.
+.PHONY: embedded-shaders
+embedded-shaders:
+	$(MAKE) -C .. shaders_gen/embedded_shaders.h
+
+viewer: embedded-shaders shaders shaders_gpu_link $(L_ALL_OBJ)
 	$(CC) $(L_ALL_OBJ) -o viewer $(CFLAGS) $(LDFLAGS) $(LDLIBS) $(AR_CORE_LDFLAGS)
 
 # GPU cull parity test binary: same objects as viewer, minus main.o, plus gpu_cull_tests.o.
@@ -321,4 +327,4 @@ win-shaders-gpu:
 clean:
 	rm -rf viewer viewer.exe gpu_tests tileset_gpu_tests tileset_seam_tests tileset_provider_tests tileset_load_tests shaders build
 
-.PHONY: viewer windows gpu-tests tileset-gpu-tests run-tilesetgpu tileset-seam-tests run-tilesetseam tileset-provider-tests run-tilesetprovider tileset-load-tests run-tilesetload clean shaders shaders_gpu_link win-shaders win-shaders-gpu regen-processed-shader mingw-box3d
+.PHONY: viewer windows gpu-tests tileset-gpu-tests run-tilesetgpu tileset-seam-tests run-tilesetseam tileset-provider-tests run-tilesetprovider tileset-load-tests run-tilesetload clean shaders shaders_gpu_link win-shaders win-shaders-gpu regen-processed-shader mingw-box3d embedded-shaders
