@@ -1,6 +1,6 @@
-#include "../include/module_resolver.h"
-#include "../include/part_asset_v2.h"
-#include "../include/script_rng_binding.h"
+#include "module_resolver.h"
+#include "part_asset_v2.h"
+#include "script_rng_binding.h"
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
@@ -260,7 +260,7 @@ static void test_helper_pure_outputs() {
 }
 
 #ifdef SP2_SCRIPT_HOST
-#include "../include/script_host.h"   // SP-2
+#include "script_host.h"   // SP-2
 static void test_import_resolves_end_to_end() {
     // A tiny part importing geometry.ring + rng; bake it through SP-2's host with the
     // real shared-lib/ root and assert (a) bake succeeds, (b) same seed -> identical

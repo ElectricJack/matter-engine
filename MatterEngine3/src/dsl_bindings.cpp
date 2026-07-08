@@ -1,8 +1,8 @@
-#include "../include/dsl_state.h"
-#include "../include/dsl_bindings.h"
-#include "../include/tileset_spec.h"
-#include "../include/tileset_placement.h"
-#include "../include/tileset_layout.h"
+#include "dsl_state.h"
+#include "dsl_bindings.h"
+#include "tileset_spec.h"
+#include "tileset_placement.h"
+#include "tileset_layout.h"
 #include <cmath>
 #include <cstring>
 #include <vector>

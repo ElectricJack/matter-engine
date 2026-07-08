@@ -249,6 +249,9 @@ $(OBJ_DIR)/open_particle_surface.o: src/open_particle_surface.c
 $(OBJ_DIR)/surface.o: src/surface.c
 	$(CC) -c $< $(CFLAGS) -MMD -MP -o $@
 
+$(OBJ_DIR)/fat_primitive.o: src/fat_primitive.c
+	$(CC) -c $< $(CFLAGS) -MMD -MP -o $@
+
 $(OBJ_DIR)/material_registry.o: src/material_registry.c
 	$(CC) -c $< $(CFLAGS) -MMD -MP -o $@
 

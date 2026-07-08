@@ -1,4 +1,4 @@
-#include "../include/module_resolver.h"
+#include "module_resolver.h"
 #include <cctype>
 #include <fstream>
 #include <set>

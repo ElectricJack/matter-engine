@@ -15,8 +15,8 @@
 
 #include <cstdio>
 #include <cmath>
-#include "../include/dsl_state.h"
-#include "../include/csg_lowering.h"
+#include "dsl_state.h"
+#include "csg_lowering.h"
 
 #include "check.h"
 

@@ -5,9 +5,9 @@
 // units. This TU includes triangle_emit.hpp but NOT raymath.h. raylib.h (via
 // dsl_state.h) supplies the Matrix type without defining float3, so there is no
 // clash here.
-#include "../include/dsl_state.h"
+#include "dsl_state.h"
 #include "triangle_emit.hpp"
-#include "../include/polygon_triangulate.hpp"
+#include "polygon_triangulate.hpp"
 
 namespace dsl {
 

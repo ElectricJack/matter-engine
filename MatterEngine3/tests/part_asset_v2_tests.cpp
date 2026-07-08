@@ -1,4 +1,4 @@
-#include "../include/part_asset_v2.h"
+#include "part_asset_v2.h"
 #include "../../MatterSurfaceLib/include/blas_manager.hpp"
 #include "../../MatterSurfaceLib/include/tlas_manager.hpp"
 #include "../../MatterSurfaceLib/include/material_registry.h"

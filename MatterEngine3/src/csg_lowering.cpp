@@ -1,4 +1,4 @@
-#include "../include/csg_lowering.h"
+#include "csg_lowering.h"
 #include <cmath>
 
 // NOTE: raymath.h cannot be included in this TU: cluster.h transitively pulls in

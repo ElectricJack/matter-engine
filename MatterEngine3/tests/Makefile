@@ -43,7 +43,7 @@ endif
 
 # Include directories: NEW MatterEngine3 headers, then consumed MatterSurfaceLib
 # headers, then raylib.
-INCLUDE_PATHS = -I../include -I../../MatterSurfaceLib/include -I$(RAYLIB_PATH) -I../../Libraries/raylib/src
+INCLUDE_PATHS = -I../include -I../src -I../src/render -I../src/provider -I../../MatterSurfaceLib/include -I$(RAYLIB_PATH) -I../../Libraries/raylib/src
 
 # Library paths (match MatterSurfaceLib/tests; same depth).
 ifeq ($(UNAME_S),Linux)
@@ -105,7 +105,7 @@ COMMON_MSL_C = \
 COMMON_MSL_C_OBJ = surface.o open_particle_surface.o fat_primitive.o \
                    spatial_hash.o object_allocator.o material_registry.o
 
-.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source
+.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests (headless, GL-free).
 # NEW impl ../src/part_asset_v2.cpp + consumed MatterSurfaceLib backend sources.
@@ -482,13 +482,13 @@ VIEWER_LOGIC_TARGET = viewer_logic_tests
 # filter-out keeps this in sync if EXAMPLE_CPP gains/loses a source.
 VIEWER_PIPELINE_CPP = $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
-              ../viewer/world_state.cpp \
-              ../viewer/resolvers.cpp \
-              ../viewer/part_store.cpp \
-              ../viewer/local_provider.cpp \
-              ../viewer/world_composer.cpp \
-              ../viewer/raster_mesh.cpp \
-              ../viewer/tileset_provider.cpp ../viewer/tileset_gl_ctx.cpp \
+              ../src/render/world_state.cpp \
+              ../src/provider/resolvers.cpp \
+              ../src/render/part_store.cpp \
+              ../src/provider/local_provider.cpp \
+              ../src/render/world_composer.cpp \
+              ../src/render/raster_mesh.cpp \
+              ../src/render/tileset_provider.cpp ../src/render/tileset_gl_ctx.cpp \
               ../src/tileset_phase.cpp ../src/tileset_phase_gpu.cpp \
               ../src/tileset_bake_primary.cpp ../src/tileset_bake_ao.cpp \
               ../src/tileset_settle.cpp ../src/tileset_gtex.cpp \
@@ -511,7 +511,7 @@ $(VIEWER_LOGIC_TARGET): $(VIEWER_LOGIC_CPP) $(EXAMPLE_C) $(QJS_C) | ../shaders_g
 	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
 	gcc -c $(EXAMPLE_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
 	$(CC) $(VIEWER_LOGIC_CPP) $(QJS_OBJ) $(EXAMPLE_C_OBJ) -o $(VIEWER_LOGIC_TARGET) \
-	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB -pthread $(INCLUDE_PATHS) -I../viewer \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB -pthread $(INCLUDE_PATHS) \
 	      -I../../Libraries/box3d/include $(QJS_INC) $(LDFLAGS) $(LDLIBS) ../../Libraries/box3d/libbox3d.a
 	rm -f $(QJS_OBJ) $(EXAMPLE_C_OBJ)
 
@@ -708,3 +708,154 @@ $(SHADER_SOURCE_TARGET): $(SHADER_SOURCE_CPP) ../shaders_gen/embedded_shaders.h
 
 run-shader-source: $(SHADER_SOURCE_TARGET)
 	./$(SHADER_SOURCE_TARGET)
+
+# ---------------------------------------------------------------------------
+# GPU tests (require GL 4.6 + GALLIUM_DRIVER=d3d12 on WSLg).
+# These were formerly in MatterEngine3/viewer/; Stage 5 moved them here.
+#
+# GPU_PIPELINE_CPP — full engine+MSL C++ sources (mirrors MatterViewer PIPELINE_CPP).
+# GPU_RENDER_CPP   — render/provider/facade kernel sources.
+# GPU_MSL_CPP      — MSL C++ backend.
+# GPU_MSL_C        — MSL+QJS C sources (compiled via gcc, extern "C" safe).
+# GPU_MSL_C_OBJ    — corresponding .o names.
+# GPU_IMGUI        — Dear ImGui sources (needed for viewer-app GPU tests only if
+#                    ui.cpp were included; excluded here: GPU tests are headless).
+# ---------------------------------------------------------------------------
+BOX3D_DIR_GPU = ../../Libraries/box3d
+
+AR_CORE_PATH_GPU = ../../Libraries/autoremesher_core
+TBB_BUILD_DIR_GPU := $(firstword $(wildcard $(AR_CORE_PATH_GPU)/thirdparty/tbb/build/linux_*_release))
+TBB_BUILD_SUBDIR_GPU := $(patsubst $(AR_CORE_PATH_GPU)/thirdparty/tbb/build/%,%,$(TBB_BUILD_DIR_GPU))
+HAVE_AUTOREMESHER_GPU := $(and $(wildcard $(AR_CORE_PATH_GPU)/libautoremesher_core.a),$(TBB_BUILD_DIR_GPU))
+ifneq ($(HAVE_AUTOREMESHER_GPU),)
+  GPU_AR_CORE_CFLAGS  := -DMATTER_HAVE_AUTOREMESHER -I$(AR_CORE_PATH_GPU)/include
+  GPU_AR_CORE_LDFLAGS := -L$(AR_CORE_PATH_GPU) -lautoremesher_core \
+                         -L$(TBB_BUILD_DIR_GPU) -ltbb \
+                         -Wl,-rpath,'$$ORIGIN/../../Libraries/autoremesher_core/thirdparty/tbb/build/$(TBB_BUILD_SUBDIR_GPU)' \
+                         -Wl,--allow-multiple-definition
+  GPU_AR_CORE_CPP     := ../../MatterSurfaceLib/src/mesh_retopo.cpp
+else
+  GPU_AR_CORE_CFLAGS  :=
+  GPU_AR_CORE_LDFLAGS :=
+  GPU_AR_CORE_CPP     :=
+endif
+
+GPU_RENDER_CPP = \
+    ../src/render/renderer.cpp ../src/render/raster_composer.cpp \
+    ../src/render/raster_mesh.cpp ../src/render/part_store.cpp \
+    ../src/render/world_composer.cpp ../src/render/world_state.cpp \
+    ../src/render/gpu_culler.cpp ../src/render/probe_texture.cpp \
+    ../src/render/tileset_provider.cpp ../src/render/tileset_gl_ctx.cpp \
+    ../src/provider/local_provider.cpp ../src/provider/resolvers.cpp \
+    ../src/matter_engine.cpp
+
+GPU_PIPELINE_CPP = \
+    ../src/part_graph.cpp \
+    ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp \
+    ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp \
+    ../src/script_rng_binding.cpp \
+    ../src/polygon_triangulate.cpp \
+    ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
+    ../src/world_flatten.cpp ../src/part_flatten.cpp ../src/triangle_emit.cpp \
+    ../src/part_cluster.cpp \
+    ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
+    ../src/tileset_torus_bvh.cpp \
+    ../src/tileset_gtex.cpp ../src/tileset_bake_gpu.cpp \
+    ../src/sector_grid.cpp ../src/lod_select.cpp \
+    ../src/world_lights.cpp ../src/probe_volume.cpp \
+    ../src/world_tracer.cpp ../src/probe_bake.cpp \
+    ../src/shader_source.cpp \
+    ../src/tileset_phase.cpp ../src/tileset_phase_gpu.cpp \
+    ../src/tileset_bake.cpp ../src/tileset_settle.cpp \
+    ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
+    ../src/tileset_bake_primary.cpp ../src/tileset_bake_ao.cpp
+
+GPU_MSL_CPP = \
+    $(MSL)/cluster.cpp $(MSL)/cell.cpp \
+    $(MSL)/mesh_simplifier.cpp $(MSL)/mesh_indexed.cpp $(MSL)/mesh_transform.cpp \
+    $(MSL)/blas_manager.cpp $(MSL)/bvh.cpp $(MSL)/bvh_analyzer.cpp \
+    $(MSL)/mesh_worker_pool.cpp $(MSL)/mesh_build_utils.cpp \
+    $(MSL)/meshing_algorithm.cpp $(MSL)/marching_cubes_algorithm.cpp \
+    $(MSL)/oriented_cube_algorithm.cpp $(MSL)/vertex_ao.cpp \
+    $(MSL)/occupancy.cpp $(MSL)/tlas_manager.cpp $(MSL)/part_asset.cpp \
+    $(MSL)/lattice.cpp $(MSL)/particle_culling.cpp \
+    $(GPU_AR_CORE_CPP)
+
+GPU_MSL_C   = $(COMMON_MSL_C)
+GPU_MSL_C_OBJ = $(COMMON_MSL_C_OBJ)
+
+GPU_ALL_CPP = $(GPU_PIPELINE_CPP) $(GPU_RENDER_CPP) $(GPU_MSL_CPP)
+
+GPU_CFLAGS = $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB \
+             $(INCLUDE_PATHS) -I$(BOX3D_DIR_GPU)/include $(QJS_INC) \
+             $(GPU_AR_CORE_CFLAGS)
+
+# gpu_cull_tests binary: full pipeline + render + gpu_cull_tests.cpp driver.
+gpu-tests: gpu_cull_tests.cpp $(GPU_ALL_CPP) $(GPU_MSL_C) $(QJS_C) | ../shaders_gen/embedded_shaders.h
+	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
+	gcc -c $(GPU_MSL_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) gpu_cull_tests.cpp $(GPU_ALL_CPP) $(QJS_OBJ) $(GPU_MSL_C_OBJ) \
+	      -o gpu_tests $(GPU_CFLAGS) $(LDFLAGS) $(LDLIBS) \
+	      $(BOX3D_DIR_GPU)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+	rm -f $(QJS_OBJ) $(GPU_MSL_C_OBJ)
+
+# tileset_gpu_tests binary: full pipeline + render + tileset_gpu_tests.cpp driver.
+tileset-gpu-tests: tileset_gpu_tests.cpp $(GPU_ALL_CPP) $(GPU_MSL_C) $(QJS_C) | ../shaders_gen/embedded_shaders.h
+	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
+	gcc -c $(GPU_MSL_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) tileset_gpu_tests.cpp $(GPU_ALL_CPP) $(QJS_OBJ) $(GPU_MSL_C_OBJ) \
+	      -o tileset_gpu_tests $(GPU_CFLAGS) $(LDFLAGS) $(LDLIBS) \
+	      $(BOX3D_DIR_GPU)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+	rm -f $(QJS_OBJ) $(GPU_MSL_C_OBJ)
+
+run-tilesetgpu: tileset-gpu-tests
+	GALLIUM_DRIVER=d3d12 ./tileset_gpu_tests
+
+# tileset_seam_tests binary.
+tileset-seam-tests: tileset_seam_tests.cpp $(GPU_ALL_CPP) $(GPU_MSL_C) $(QJS_C) | ../shaders_gen/embedded_shaders.h
+	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
+	gcc -c $(GPU_MSL_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) tileset_seam_tests.cpp $(GPU_ALL_CPP) $(QJS_OBJ) $(GPU_MSL_C_OBJ) \
+	      -o tileset_seam_tests $(GPU_CFLAGS) $(LDFLAGS) $(LDLIBS) \
+	      $(BOX3D_DIR_GPU)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+	rm -f $(QJS_OBJ) $(GPU_MSL_C_OBJ)
+
+run-tilesetseam: tileset-seam-tests
+	GALLIUM_DRIVER=d3d12 ./tileset_seam_tests
+
+# tileset_provider_tests binary.
+tileset-provider-tests: tileset_provider_tests.cpp $(GPU_ALL_CPP) $(GPU_MSL_C) $(QJS_C) | ../shaders_gen/embedded_shaders.h
+	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
+	gcc -c $(GPU_MSL_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) tileset_provider_tests.cpp $(GPU_ALL_CPP) $(QJS_OBJ) $(GPU_MSL_C_OBJ) \
+	      -o tileset_provider_tests $(GPU_CFLAGS) $(LDFLAGS) $(LDLIBS) \
+	      $(BOX3D_DIR_GPU)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+	rm -f $(QJS_OBJ) $(GPU_MSL_C_OBJ)
+
+run-tilesetprovider: tileset-provider-tests
+	GALLIUM_DRIVER=d3d12 ./tileset_provider_tests
+
+# tileset_load_tests binary.
+tileset-load-tests: tileset_load_tests.cpp $(GPU_ALL_CPP) $(GPU_MSL_C) $(QJS_C) | ../shaders_gen/embedded_shaders.h
+	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
+	gcc -c $(GPU_MSL_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) tileset_load_tests.cpp $(GPU_ALL_CPP) $(QJS_OBJ) $(GPU_MSL_C_OBJ) \
+	      -o tileset_load_tests $(GPU_CFLAGS) $(LDFLAGS) $(LDLIBS) \
+	      $(BOX3D_DIR_GPU)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+	rm -f $(QJS_OBJ) $(GPU_MSL_C_OBJ)
+
+run-tilesetload: tileset-load-tests
+	GALLIUM_DRIVER=d3d12 ./tileset_load_tests
+
+# api-tests binary: full engine pipeline + api_tests.cpp driver.
+# Run from MatterViewer/ so cache=cache resolves (bake cache lives at MatterViewer/cache).
+api-tests: api_tests.cpp $(GPU_ALL_CPP) $(GPU_MSL_C) $(QJS_C) | ../shaders_gen/embedded_shaders.h
+	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
+	gcc -c $(GPU_MSL_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) api_tests.cpp $(GPU_ALL_CPP) $(QJS_OBJ) $(GPU_MSL_C_OBJ) \
+	      -o api_tests $(GPU_CFLAGS) $(LDFLAGS) $(LDLIBS) \
+	      $(BOX3D_DIR_GPU)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+	rm -f $(QJS_OBJ) $(GPU_MSL_C_OBJ)
+
+run-api-tests: api-tests
+	cd ../../MatterViewer && GALLIUM_DRIVER=d3d12 ../MatterEngine3/tests/api_tests

@@ -2,7 +2,7 @@
 // from a dsl::LoweredField, so iso_primitive_tests can compare meshed occupancy
 // against the analytic field_is_solid oracle.
 
-#include "../include/csg_lowering.h"
+#include "csg_lowering.h"
 extern "C" {
 #include "surface.h"
 }

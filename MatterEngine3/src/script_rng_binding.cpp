@@ -1,4 +1,4 @@
-#include "../include/script_rng_binding.h"
+#include "script_rng_binding.h"
 #include <cctype>
 #include <cstdlib>
 

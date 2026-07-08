@@ -1,4 +1,4 @@
-#include "../include/world_flatten.h"
+#include "world_flatten.h"
 #include <cstdio>
 #include <new>       // std::bad_alloc
 

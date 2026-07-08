@@ -7,7 +7,7 @@
 //   - No field interaction (triangle survives over a brush)    -> test_no_field_interaction
 //   - Variation dedup (same params -> one artifact, N records) -> test_variation_dedup
 //   - Variation/LOD independence (same LOD-array shape)        -> test_variation_lod_independence
-#include "../include/triangle_emit.hpp"
+#include "../src/triangle_emit.hpp"
 #include "../../MatterSurfaceLib/include/blas_manager.hpp"
 #include <cstdio>
 #include <cmath>

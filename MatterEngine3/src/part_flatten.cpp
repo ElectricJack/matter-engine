@@ -1,9 +1,9 @@
-#include "../include/part_flatten.h"
+#include "part_flatten.h"
 
-#include "../include/part_asset_v2.h"   // load_v2/save_flat_v3, cache_path_*, load_lod_sidecar
-#include "../include/lod_bake.h"        // decimate_to_error
-#include "../include/part_cluster.h"    // split_clusters
-#include "../include/retopo_hook_stats.h"  // Phase 5: hook invocation counter (Task 14)
+#include "part_asset_v2.h"   // load_v2/save_flat_v3, cache_path_*, load_lod_sidecar
+#include "lod_bake.h"        // decimate_to_error
+#include "part_cluster.h"    // split_clusters
+#include "retopo_hook_stats.h"  // Phase 5: hook invocation counter (Task 14)
 #include "tlas_manager.hpp"             // MSL TLASManager (load_v2 signature)
 #include "mesh_indexed.hpp"             // MSL from_tri/to_tri (reproject wrapping)
 #include "mesh_transform.hpp"           // MSL reproject_triex (was lod_bake::)

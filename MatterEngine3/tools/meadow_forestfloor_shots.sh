@@ -10,7 +10,7 @@ set -euo pipefail
 OUT="${1:?usage: meadow_forestfloor_shots.sh <out-dir>}"
 mkdir -p "$OUT"
 HERE="$(cd "$(dirname "$0")" && pwd)"
-cd "$HERE/../viewer"
+cd "$HERE/../../MatterViewer"
 
 FIFO="/tmp/matter_ff_shots_$$.fifo"
 LOG="$OUT/forestfloor_viewer.log"

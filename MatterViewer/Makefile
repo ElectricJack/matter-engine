@@ -1,11 +1,16 @@
-# MatterEngine3 World Viewer (GL build). Reuses the example_world pipeline source
-# set (SP-2 host + QuickJS + SP-4 compose + MSL backend) plus raylib GL and Dear
-# ImGui. NOT part of the headless build-all test sweep (needs a GL context).
-
+# MatterViewer — world viewer application (GL build).
+#
+# Linux: compiles only main.cpp + ui.cpp + imgui; links libmatter_engine3.a
+#   (which contains the render/provider/facade + bake pipeline + shader_source),
+#   MatterSurfaceLib sources (MSL backend compiled directly — no libmsl.a yet),
+#   QuickJS-ng, raylib, and box3d.
+#
+# Windows: MinGW cross-compile that still does direct-source compilation of all
+#   engine+MSL+QJS units with updated ../MatterEngine3/src/... paths.
+#
 # Per-object parallel build: each TU compiles to its own .o under build/<platform>/
 # so `make -j` fans them across cores; header changes are tracked via -MMD -MP
 # generated .d files (so incremental rebuilds are correct, not silently stale).
-# Parallel by default; override with e.g. `make -j1 windows` to serialize.
 JOBS ?= $(shell nproc)
 MAKEFLAGS += -j$(JOBS)
 
@@ -13,18 +18,27 @@ CC = g++
 CFLAGS = -std=c++17 -O2 -Wall -Wno-missing-braces -Wno-unused-variable \
          -DPLATFORM_DESKTOP -DGRAPHICS_API_OPENGL_43
 
-RAYLIB_PATH = ../../Libraries/raylib/src
-IMGUI_PATH  = ../../Libraries/imgui
-QJS_DIR     = ../../Libraries/quickjs-ng
+RAYLIB_PATH = ../Libraries/raylib/src
+IMGUI_PATH  = ../Libraries/imgui
+QJS_DIR     = ../Libraries/quickjs-ng
 QJS_INC     = -I$(QJS_DIR)
+BOX3D_DIR   = ../Libraries/box3d
+ME3_DIR     = ../MatterEngine3
+MSL_DIR     = ../MatterSurfaceLib
 
-INCLUDE_PATHS = -I../include -I../../MatterSurfaceLib/include -I$(RAYLIB_PATH) \
-                -I../viewer -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends \
-                -I$(RAYLIB_PATH)/external/glfw/include
+INCLUDE_PATHS = -I$(ME3_DIR)/include \
+                -I$(ME3_DIR)/src \
+                -I$(ME3_DIR)/src/render \
+                -I$(ME3_DIR)/src/provider \
+                -I$(MSL_DIR)/include \
+                -I$(RAYLIB_PATH) \
+                -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends \
+                -I$(RAYLIB_PATH)/external/glfw/include \
+                -I$(BOX3D_DIR)/include
 
 LDFLAGS = -lGL -lm -lpthread -ldl -lrt -lX11
-LDLIBS  = ../../Libraries/raylib/build/linux/libraylib.a
-BOX3D_LIB = ../../Libraries/box3d/libbox3d.a
+LDLIBS  = ../Libraries/raylib/build/linux/libraylib.a
+BOX3D_LIB = $(BOX3D_DIR)/libbox3d.a
 LDLIBS   += $(BOX3D_LIB)
 
 # ---- Phase 5 autoremesher_core (Task 15 wiring) ----
@@ -39,7 +53,7 @@ LDLIBS   += $(BOX3D_LIB)
 # actually present — build-all.sh produces both. Otherwise skip retopo entirely
 # and the viewer builds as before (schemas without retopo unaffected; schemas
 # WITH retopo hit the #else warn-and-continue path in part_flatten.cpp).
-AR_CORE_PATH := ../../Libraries/autoremesher_core
+AR_CORE_PATH := ../Libraries/autoremesher_core
 AR_CORE_LIB  := $(AR_CORE_PATH)/libautoremesher_core.a
 TBB_BUILD_DIR := $(firstword $(wildcard $(AR_CORE_PATH)/thirdparty/tbb/build/linux_*_release))
 TBB_BUILD_SUBDIR := $(patsubst $(AR_CORE_PATH)/thirdparty/tbb/build/%,%,$(TBB_BUILD_DIR))
@@ -59,59 +73,72 @@ ifneq ($(HAVE_AUTOREMESHER),)
   # RETOPO_INT_TARGET's link workaround verbatim.
   AR_CORE_LDFLAGS := -L$(AR_CORE_PATH) -lautoremesher_core \
                      -L$(TBB_BUILD_DIR) -ltbb \
-                     -Wl,-rpath,'$$ORIGIN/../../Libraries/autoremesher_core/thirdparty/tbb/build/$(TBB_BUILD_SUBDIR)' \
+                     -Wl,-rpath,'$$ORIGIN/../Libraries/autoremesher_core/thirdparty/tbb/build/$(TBB_BUILD_SUBDIR)' \
                      -Wl,--allow-multiple-definition
-  AR_CORE_CPP := ../../MatterSurfaceLib/src/mesh_retopo.cpp
+  AR_CORE_CPP := $(MSL_DIR)/src/mesh_retopo.cpp
 else
   AR_CORE_CFLAGS :=
   AR_CORE_LDFLAGS :=
   AR_CORE_CPP :=
 endif
 
-# Test-only sources excluded from VIEWER_SRC so `make viewer` doesn't link them.
-TEST_ONLY_SRC = gpu_cull_tests.cpp
+# ---- Linux viewer: main.cpp + ui.cpp + imgui; links libmatter_engine3.a ----
+# The .a contains: render/provider/facade + bake pipeline + shader_source.
+# MSL backend and QuickJS are compiled directly here (no libmsl.a yet).
 
-# Viewer units (GL-free logic + GL renderer/ui/main).
-VIEWER_SRC = main.cpp renderer.cpp ui.cpp \
-             world_state.cpp part_store.cpp resolvers.cpp \
-             world_composer.cpp local_provider.cpp \
-             raster_mesh.cpp raster_composer.cpp probe_texture.cpp \
-             gpu_culler.cpp tileset_gl_ctx.cpp tileset_bake_primary.cpp \
-             tileset_bake_ao.cpp tileset_provider.cpp \
-             matter_engine.cpp
+# Application entry points (GL + imgui; no engine logic).
+APP_SRC = main.cpp ui.cpp
 
-# ME3 pipeline + MSL backend C++ sources (verbatim from tests/Makefile EXAMPLE_CPP,
-# minus example_world.cpp). Same dir depth, so the ../ paths are unchanged.
-PIPELINE_CPP = ../src/part_graph.cpp \
-              ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/dsl_bindings.cpp \
-              ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
-              ../src/polygon_triangulate.cpp \
-              ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp ../src/part_flatten.cpp ../src/triangle_emit.cpp \
-              ../src/part_cluster.cpp \
-              ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
-              ../src/tileset_torus_bvh.cpp \
-              ../src/tileset_gtex.cpp ../src/tileset_bake_gpu.cpp \
-              ../src/sector_grid.cpp ../src/lod_select.cpp \
-              ../src/world_lights.cpp ../src/probe_volume.cpp \
-              ../src/world_tracer.cpp ../src/probe_bake.cpp \
-              ../src/shader_source.cpp \
-              ../../MatterSurfaceLib/src/cluster.cpp ../../MatterSurfaceLib/src/cell.cpp ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
-              ../../MatterSurfaceLib/src/mesh_indexed.cpp ../../MatterSurfaceLib/src/mesh_transform.cpp \
-              ../../MatterSurfaceLib/src/blas_manager.cpp ../../MatterSurfaceLib/src/bvh.cpp ../../MatterSurfaceLib/src/bvh_analyzer.cpp \
-              ../../MatterSurfaceLib/src/mesh_worker_pool.cpp ../../MatterSurfaceLib/src/mesh_build_utils.cpp \
-              ../../MatterSurfaceLib/src/meshing_algorithm.cpp ../../MatterSurfaceLib/src/marching_cubes_algorithm.cpp \
-              ../../MatterSurfaceLib/src/oriented_cube_algorithm.cpp ../../MatterSurfaceLib/src/vertex_ao.cpp \
-              ../../MatterSurfaceLib/src/occupancy.cpp ../../MatterSurfaceLib/src/tlas_manager.cpp ../../MatterSurfaceLib/src/part_asset.cpp \
-              ../src/tileset_phase.cpp ../src/tileset_phase_gpu.cpp \
-              ../src/tileset_bake.cpp ../src/tileset_settle.cpp \
-              ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
-              ../../MatterSurfaceLib/src/lattice.cpp ../../MatterSurfaceLib/src/particle_culling.cpp \
-              $(AR_CORE_CPP)
+# MSL backend C++ sources (compiled directly; same set as old PIPELINE_CPP minus ME3 srcs).
+MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
+          $(MSL_DIR)/src/mesh_simplifier.cpp $(MSL_DIR)/src/mesh_indexed.cpp \
+          $(MSL_DIR)/src/mesh_transform.cpp \
+          $(MSL_DIR)/src/blas_manager.cpp $(MSL_DIR)/src/bvh.cpp \
+          $(MSL_DIR)/src/bvh_analyzer.cpp \
+          $(MSL_DIR)/src/mesh_worker_pool.cpp $(MSL_DIR)/src/mesh_build_utils.cpp \
+          $(MSL_DIR)/src/meshing_algorithm.cpp \
+          $(MSL_DIR)/src/marching_cubes_algorithm.cpp \
+          $(MSL_DIR)/src/oriented_cube_algorithm.cpp \
+          $(MSL_DIR)/src/vertex_ao.cpp \
+          $(MSL_DIR)/src/occupancy.cpp $(MSL_DIR)/src/tlas_manager.cpp \
+          $(MSL_DIR)/src/part_asset.cpp \
+          $(MSL_DIR)/src/lattice.cpp $(MSL_DIR)/src/particle_culling.cpp \
+          $(AR_CORE_CPP)
+
+# ME3 pipeline C++ sources (compiled directly; the .a doesn't archive MSL/QJS deps).
+ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
+           $(ME3_DIR)/src/script_host.cpp $(ME3_DIR)/src/dsl_state.cpp \
+           $(ME3_DIR)/src/dsl_triangle.cpp $(ME3_DIR)/src/dsl_bindings.cpp \
+           $(ME3_DIR)/src/csg_lowering.cpp $(ME3_DIR)/src/module_resolver.cpp \
+           $(ME3_DIR)/src/script_rng_binding.cpp \
+           $(ME3_DIR)/src/polygon_triangulate.cpp \
+           $(ME3_DIR)/src/part_asset_v2.cpp $(ME3_DIR)/src/lod_bake.cpp \
+           $(ME3_DIR)/src/world_flatten.cpp $(ME3_DIR)/src/part_flatten.cpp \
+           $(ME3_DIR)/src/triangle_emit.cpp \
+           $(ME3_DIR)/src/part_cluster.cpp \
+           $(ME3_DIR)/src/tileset_placement.cpp $(ME3_DIR)/src/tileset_layout.cpp \
+           $(ME3_DIR)/src/tileset_torus_bvh.cpp \
+           $(ME3_DIR)/src/tileset_gtex.cpp $(ME3_DIR)/src/tileset_bake_gpu.cpp \
+           $(ME3_DIR)/src/sector_grid.cpp $(ME3_DIR)/src/lod_select.cpp \
+           $(ME3_DIR)/src/world_lights.cpp $(ME3_DIR)/src/probe_volume.cpp \
+           $(ME3_DIR)/src/world_tracer.cpp $(ME3_DIR)/src/probe_bake.cpp \
+           $(ME3_DIR)/src/shader_source.cpp \
+           $(ME3_DIR)/src/tileset_phase.cpp $(ME3_DIR)/src/tileset_phase_gpu.cpp \
+           $(ME3_DIR)/src/tileset_bake.cpp $(ME3_DIR)/src/tileset_settle.cpp \
+           $(ME3_DIR)/src/tileset_collider.cpp $(ME3_DIR)/src/tileset_part_collider.cpp \
+           $(ME3_DIR)/src/tileset_bake_primary.cpp $(ME3_DIR)/src/tileset_bake_ao.cpp \
+           $(ME3_DIR)/src/render/renderer.cpp $(ME3_DIR)/src/render/raster_composer.cpp \
+           $(ME3_DIR)/src/render/raster_mesh.cpp $(ME3_DIR)/src/render/part_store.cpp \
+           $(ME3_DIR)/src/render/world_composer.cpp $(ME3_DIR)/src/render/world_state.cpp \
+           $(ME3_DIR)/src/render/gpu_culler.cpp $(ME3_DIR)/src/render/probe_texture.cpp \
+           $(ME3_DIR)/src/render/tileset_provider.cpp $(ME3_DIR)/src/render/tileset_gl_ctx.cpp \
+           $(ME3_DIR)/src/provider/local_provider.cpp $(ME3_DIR)/src/provider/resolvers.cpp \
+           $(ME3_DIR)/src/matter_engine.cpp
 
 # C sources (gcc-compiled to keep extern "C" symbols unmangled) + QuickJS C.
-PIPELINE_C = ../../MatterSurfaceLib/src/surface.c ../../MatterSurfaceLib/src/open_particle_surface.c \
-             ../../MatterSurfaceLib/src/spatial_hash.c ../../MatterSurfaceLib/src/object_allocator.c \
-             ../../MatterSurfaceLib/src/material_registry.c ../../MatterSurfaceLib/src/fat_primitive.c
+PIPELINE_C = $(MSL_DIR)/src/surface.c $(MSL_DIR)/src/open_particle_surface.c \
+             $(MSL_DIR)/src/spatial_hash.c $(MSL_DIR)/src/object_allocator.c \
+             $(MSL_DIR)/src/material_registry.c $(MSL_DIR)/src/fat_primitive.c
 QJS_C   = $(QJS_DIR)/quickjs.c $(QJS_DIR)/libregexp.c $(QJS_DIR)/libunicode.c \
           $(QJS_DIR)/cutils.c $(QJS_DIR)/xsum.c
 
@@ -124,24 +151,24 @@ IMGUI_SRC = $(IMGUI_PATH)/imgui.cpp $(IMGUI_PATH)/imgui_draw.cpp \
 # can compile them concurrently). Basenames are unique across all source dirs,
 # so flattening with $(notdir ...) is collision-free. vpath (below) lets the
 # pattern rules find each source by basename.
-# Linux gets -DMATTER_HAVE_AUTOREMESHER + autoremesher_core include path when
-# HAVE_AUTOREMESHER is set (see AR_CORE_CFLAGS above). Windows never opts in
-# (autoremesher_core hasn't been cross-built for mingw); schemas with the
-# opt-in fall through to the streaming path with a one-line warn on Windows.
-CXX_FLAGS_BUILD_COMMON = $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB $(INCLUDE_PATHS) -I../../Libraries/box3d/include $(QJS_INC) -MMD -MP
+CXX_FLAGS_BUILD_COMMON = $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -MMD -MP
 CXX_FLAGS_BUILD = $(CXX_FLAGS_BUILD_COMMON) $(AR_CORE_CFLAGS)
 CXX_FLAGS_BUILD_WIN = $(CXX_FLAGS_BUILD_COMMON)
-CPP_NAMES = $(notdir $(VIEWER_SRC) $(PIPELINE_CPP) $(IMGUI_SRC))
+
+ALL_CPP_SRC = $(APP_SRC) $(ME3_CPP) $(MSL_CPP) $(IMGUI_SRC)
+CPP_NAMES = $(notdir $(ALL_CPP_SRC))
 QJS_NAMES = $(notdir $(QJS_C))
 PIPC_NAMES = $(notdir $(PIPELINE_C))
+
 # Windows CPP set: excludes mesh_retopo.cpp (Linux-only via AR_CORE_CPP). The
 # empty AR_CORE_CPP on Windows would already make this a no-op — the filter is
 # defensive: even if HAVE_AUTOREMESHER is set on the host (Linux build), the
 # Windows target must not try to compile mesh_retopo.cpp (needs geogram TBB).
 CPP_NAMES_WIN = $(filter-out mesh_retopo.cpp,$(CPP_NAMES))
 
-vpath %.cpp . ../src ../../MatterSurfaceLib/src $(IMGUI_PATH) $(IMGUI_PATH)/backends
-vpath %.c ../../MatterSurfaceLib/src $(QJS_DIR)
+vpath %.cpp . $(ME3_DIR)/src $(ME3_DIR)/src/render $(ME3_DIR)/src/provider \
+             $(MSL_DIR)/src $(IMGUI_PATH) $(IMGUI_PATH)/backends
+vpath %.c $(MSL_DIR)/src $(QJS_DIR)
 
 # Linux object sets
 L_DIR = build/linux
@@ -160,100 +187,21 @@ W_ALL_OBJ  = $(W_CPP_OBJ) $(W_QJS_OBJ) $(W_PIPC_OBJ)
 $(L_DIR) $(W_DIR):
 	mkdir -p $@
 
-# Test-only objects (compiled with same flags, but NOT part of L_ALL_OBJ so they
-# don't pollute the viewer link).
-TEST_CPP_NAMES = $(notdir $(TEST_ONLY_SRC))
-L_TEST_OBJ = $(addprefix $(L_DIR)/,$(TEST_CPP_NAMES:.cpp=.o))
-
 # ---- Linux compile rules
 $(L_CPP_OBJ): $(L_DIR)/%.o: %.cpp | $(L_DIR)
 	$(CC) -c $< -o $@ $(CXX_FLAGS_BUILD)
-$(L_TEST_OBJ): $(L_DIR)/%.o: %.cpp | $(L_DIR)
-	$(CC) -c $< -o $@ $(CXX_FLAGS_BUILD)
 $(L_QJS_OBJ): $(L_DIR)/%.o: $(QJS_DIR)/%.c | $(L_DIR)
 	gcc -c $< -o $@ -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC) -MMD -MP
-$(L_PIPC_OBJ): $(L_DIR)/%.o: ../../MatterSurfaceLib/src/%.c | $(L_DIR)
+$(L_PIPC_OBJ): $(L_DIR)/%.o: $(MSL_DIR)/src/%.c | $(L_DIR)
 	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
 
 # Generate embedded shader header before compiling any TU that includes it.
 .PHONY: embedded-shaders
 embedded-shaders:
-	$(MAKE) -C .. shaders_gen/embedded_shaders.h
+	$(MAKE) -C $(ME3_DIR) shaders_gen/embedded_shaders.h
 
 viewer: embedded-shaders shaders shaders_gpu_link $(L_ALL_OBJ)
 	$(CC) $(L_ALL_OBJ) -o viewer $(CFLAGS) $(LDFLAGS) $(LDLIBS) $(AR_CORE_LDFLAGS)
-
-# GPU cull parity test binary: same objects as viewer, minus main.o, plus gpu_cull_tests.o.
-GPU_TEST_OBJ = $(filter-out $(L_DIR)/main.o,$(L_ALL_OBJ)) $(L_TEST_OBJ)
-gpu-tests: embedded-shaders shaders shaders_gpu_link $(GPU_TEST_OBJ)
-	$(CC) $(GPU_TEST_OBJ) -o gpu_tests $(CFLAGS) $(LDFLAGS) $(LDLIBS) $(AR_CORE_LDFLAGS)
-
-# tileset headless GPU tests (Task 3..7). Same object set as gpu-tests + the
-# tileset_gpu_tests.cpp driver, minus main.o and gpu_cull_tests.o.
-L_TSET_GPU_TEST_OBJ = $(L_DIR)/tileset_gpu_tests.o
-$(L_TSET_GPU_TEST_OBJ): tileset_gpu_tests.cpp | $(L_DIR)
-	$(CC) -c $< -o $@ $(CXX_FLAGS_BUILD)
-
-TILESET_GPU_TEST_OBJ = $(filter-out $(L_DIR)/main.o $(L_DIR)/gpu_cull_tests.o,$(L_ALL_OBJ)) $(L_TSET_GPU_TEST_OBJ)
-tileset-gpu-tests: embedded-shaders shaders shaders_gpu_link $(TILESET_GPU_TEST_OBJ)
-	$(CC) $(TILESET_GPU_TEST_OBJ) -o tileset_gpu_tests $(CFLAGS) $(LDFLAGS) $(AR_CORE_LDFLAGS) $(LDLIBS)
-
-run-tilesetgpu: tileset-gpu-tests
-	./tileset_gpu_tests
-
-# tileset seam-invariance tests (Task 7). Same object set as tileset-gpu-tests
-# + tileset_seam_tests.cpp driver, minus main.o and gpu_cull_tests.o.
-L_TSET_SEAM_OBJ = $(L_DIR)/tileset_seam_tests.o
-$(L_TSET_SEAM_OBJ): tileset_seam_tests.cpp | $(L_DIR)
-	$(CC) -c $< -o $@ $(CXX_FLAGS_BUILD)
-
-TILESET_SEAM_TEST_OBJ = $(filter-out $(L_DIR)/main.o $(L_DIR)/gpu_cull_tests.o,$(L_ALL_OBJ)) $(L_TSET_SEAM_OBJ)
-tileset-seam-tests: embedded-shaders shaders shaders_gpu_link $(TILESET_SEAM_TEST_OBJ)
-	$(CC) $(TILESET_SEAM_TEST_OBJ) -o tileset_seam_tests $(CFLAGS) $(LDFLAGS) $(AR_CORE_LDFLAGS) $(LDLIBS)
-
-run-tilesetseam: tileset-seam-tests
-	./tileset_seam_tests
-
-# tileset_provider headless tests (Phase 4 Task 1). Same object set as
-# tileset-gpu-tests + the tileset_provider_tests.cpp driver, minus main.o.
-L_TSET_PROV_TEST_OBJ = $(L_DIR)/tileset_provider_tests.o
-$(L_TSET_PROV_TEST_OBJ): tileset_provider_tests.cpp | $(L_DIR)
-	$(CC) -c $< -o $@ $(CXX_FLAGS_BUILD)
-
-TILESET_PROV_TEST_OBJ = $(filter-out $(L_DIR)/main.o $(L_DIR)/gpu_cull_tests.o,$(L_ALL_OBJ)) $(L_TSET_PROV_TEST_OBJ)
-tileset-provider-tests: embedded-shaders shaders shaders_gpu_link $(TILESET_PROV_TEST_OBJ)
-	$(CC) $(TILESET_PROV_TEST_OBJ) -o tileset_provider_tests $(CFLAGS) $(LDFLAGS) $(AR_CORE_LDFLAGS) $(LDLIBS)
-
-run-tilesetprovider: tileset-provider-tests
-	./tileset_provider_tests
-
-# tileset load integration tests (Phase 4 Task 4). LocalProvider connect() path:
-# world.manifest tileset root -> run_tileset_phase(opts) -> load_slot.
-L_TSET_LOAD_TEST_OBJ = $(L_DIR)/tileset_load_tests.o
-$(L_TSET_LOAD_TEST_OBJ): tileset_load_tests.cpp | $(L_DIR)
-	$(CC) -c $< -o $@ $(CXX_FLAGS_BUILD)
-
-TILESET_LOAD_TEST_OBJ = $(filter-out $(L_DIR)/main.o $(L_DIR)/gpu_cull_tests.o,$(L_ALL_OBJ)) $(L_TSET_LOAD_TEST_OBJ)
-tileset-load-tests: embedded-shaders shaders shaders_gpu_link $(TILESET_LOAD_TEST_OBJ)
-	$(CC) $(TILESET_LOAD_TEST_OBJ) -o tileset_load_tests $(CFLAGS) $(LDFLAGS) $(AR_CORE_LDFLAGS) $(LDLIBS)
-
-run-tilesetload: tileset-load-tests
-	./tileset_load_tests
-
-# Full public-API integration test binary (Task 7, Stage 4). Same object set as
-# gpu-tests (all engine objs + matter_engine.cpp), minus main.o + gpu_cull_tests.o,
-# plus the api_tests driver from tests/. Must run from MatterEngine3/viewer so that
-# the bake cache ("cache/") is on the warm path.
-L_API_TEST_OBJ = $(L_DIR)/api_tests.o
-$(L_API_TEST_OBJ): ../tests/api_tests.cpp | $(L_DIR)
-	$(CC) -c $< -o $@ $(CXX_FLAGS_BUILD)
-
-API_TEST_OBJ = $(filter-out $(L_DIR)/main.o $(L_DIR)/gpu_cull_tests.o,$(L_ALL_OBJ)) $(L_API_TEST_OBJ)
-api-tests: embedded-shaders shaders shaders_gpu_link $(API_TEST_OBJ)
-	$(CC) $(API_TEST_OBJ) -o api_tests $(CFLAGS) $(LDFLAGS) $(LDLIBS) $(AR_CORE_LDFLAGS)
-
-run-api-tests: api-tests
-	GALLIUM_DRIVER=d3d12 ./api_tests
 
 -include $(L_ALL_OBJ:.o=.d)
 
@@ -262,7 +210,7 @@ run-api-tests: api-tests
 # MUST be regenerated from MSL's .glsl sources first — a stale processed file
 # silently mismatches the C++ TLAS texture layout (tiled reads vs single-row).
 shaders: regen-processed-shader
-	@[ -e shaders ] || ln -s ../../MatterSurfaceLib/shaders shaders
+	@[ -e shaders ] || ln -s $(MSL_DIR)/shaders shaders
 	@missing=""; \
 	 for f in shaders/raster.vs shaders/raster.fs shaders/raytrace_tlas_blas_processed.fs; do \
 	     [ -e "$$f" ] || missing="$$missing $$f"; \
@@ -272,18 +220,18 @@ shaders: regen-processed-shader
 	     exit 1; \
 	 fi
 
-# shaders_gpu/ is a real directory committed to the repo; it lives next to the
-# binary on Linux (no copy needed, the binary resolves relative paths from its
-# own directory).  Just ensure it exists (it always does after checkout).
+# shaders_gpu/ is a real directory committed to the repo; it lives under MatterEngine3/.
+# Create a symlink here so the binary can resolve shaders_gpu/cull.comp etc.
 shaders_gpu_link:
-	@[ -d shaders_gpu ] || (echo "ERROR: shaders_gpu/ directory missing" && exit 1)
+	@[ -e shaders_gpu ] || ln -s $(ME3_DIR)/shaders_gpu shaders_gpu
+	@[ -d shaders_gpu ] || (echo "ERROR: shaders_gpu/ symlink target missing" && exit 1)
 
 # Rebuild MSL's shader preprocessor and re-flatten the processed fragment shader
 # so edits to bvh_tlas_common.glsl / materials.glsl / lighting.glsl take effect.
-MSL_SHADERS = ../../MatterSurfaceLib/shaders
+MSL_SHADERS = $(MSL_DIR)/shaders
 regen-processed-shader:
 	@g++ -O2 -std=c++14 -o /tmp/me3_shader_preprocessor \
-	    ../../MatterSurfaceLib/src/shader_preprocessor.cpp
+	    $(MSL_DIR)/src/shader_preprocessor.cpp
 	@/tmp/me3_shader_preprocessor $(MSL_SHADERS)/raytrace_tlas_blas.fs \
 	    $(MSL_SHADERS)/raytrace_tlas_blas_processed.fs
 
@@ -291,7 +239,6 @@ regen-processed-shader:
 # box3d/src/timer.c includes <Windows.h> (capital W) which is case-sensitive on
 # Linux. We create a local wrapper header and compile timer.c separately.
 # Run `make mingw-box3d` once; the resulting build-mingw/libbox3d.a is committed.
-BOX3D_DIR     = ../../Libraries/box3d
 MINGW_CC      = x86_64-w64-mingw32-gcc
 MINGW_CASE_FIX_DIR = /tmp/box3d_mingw_case_fix
 
@@ -306,20 +253,20 @@ mingw-box3d:
 # ---- Native Windows .exe (MinGW cross-compile from WSL/Linux) ----
 # Mirrors MatterSurfaceLib's windows-native target: MinGW toolchain, the
 # prebuilt windows-native raylib, and Win32 GL/GDI libs, statically linked so
-# the .exe is self-contained. Run as MatterEngine3\viewer\viewer.exe on Windows.
+# the .exe is self-contained.
 WIN_CXX     = x86_64-w64-mingw32-g++-posix
 WIN_CC      = x86_64-w64-mingw32-gcc
-WIN_RAYLIB  = ../../Libraries/raylib/build/windows-native/libraylib.a
+WIN_RAYLIB  = ../Libraries/raylib/build/windows-native/libraylib.a
 # Win32 import libs raylib depends on; MUST come AFTER libraylib.a on the link
 # line so the static linker can resolve raylib's __imp_* references.
-WIN_LIBS    = -lopengl32 -lgdi32 -lwinmm ../../Libraries/box3d/build-mingw/libbox3d.a
+WIN_LIBS    = -lopengl32 -lgdi32 -lwinmm $(BOX3D_DIR)/build-mingw/libbox3d.a
 
 # ---- Windows compile rules
 $(W_CPP_OBJ): $(W_DIR)/%.o: %.cpp | $(W_DIR)
 	$(WIN_CXX) -c $< -o $@ $(CXX_FLAGS_BUILD_WIN)
 $(W_QJS_OBJ): $(W_DIR)/%.o: $(QJS_DIR)/%.c | $(W_DIR)
 	$(WIN_CC) -c $< -o $@ -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC) -MMD -MP
-$(W_PIPC_OBJ): $(W_DIR)/%.o: ../../MatterSurfaceLib/src/%.c | $(W_DIR)
+$(W_PIPC_OBJ): $(W_DIR)/%.o: $(MSL_DIR)/src/%.c | $(W_DIR)
 	$(WIN_CC) -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
 
 windows: win-shaders win-shaders-gpu $(W_ALL_OBJ)
@@ -331,16 +278,15 @@ windows: win-shaders win-shaders-gpu $(W_ALL_OBJ)
 # Regenerate the processed shader first (see `regen-processed-shader`) so the copy
 # is current — otherwise the .exe ships a stale, layout-mismatched shader.
 win-shaders: regen-processed-shader
-	@rm -rf shaders && cp -r ../../MatterSurfaceLib/shaders shaders
+	@rm -rf shaders && cp -r $(MSL_DIR)/shaders shaders
 
-# shaders_gpu/ is a real directory committed to the repo; it lives next to viewer.exe
-# already (viewer.exe is output to the same viewer/ dir, same as on Linux).
-# No copy needed: the .exe resolves "shaders_gpu/cull.comp" relative to cwd, which is
-# this directory when launched from MatterEngine3\viewer\ on Windows.
+# shaders_gpu/ symlink works for the Linux binary but not Windows .exe.
+# Copy shaders_gpu/ from MatterEngine3 for the Windows build.
 win-shaders-gpu:
-	@[ -d shaders_gpu ] || (echo "ERROR: shaders_gpu/ directory missing" && exit 1)
+	@[ -d shaders_gpu ] || ln -s $(ME3_DIR)/shaders_gpu shaders_gpu
+	@[ -d $(ME3_DIR)/shaders_gpu ] || (echo "ERROR: MatterEngine3/shaders_gpu/ missing" && exit 1)
 
 clean:
-	rm -rf viewer viewer.exe gpu_tests tileset_gpu_tests tileset_seam_tests tileset_provider_tests tileset_load_tests api_tests shaders build
+	rm -rf viewer viewer.exe shaders shaders_gpu build
 
-.PHONY: viewer windows gpu-tests tileset-gpu-tests run-tilesetgpu tileset-seam-tests run-tilesetseam tileset-provider-tests run-tilesetprovider tileset-load-tests run-tilesetload api-tests run-api-tests clean shaders shaders_gpu_link win-shaders win-shaders-gpu regen-processed-shader mingw-box3d embedded-shaders
+.PHONY: viewer windows clean shaders shaders_gpu_link win-shaders win-shaders-gpu regen-processed-shader mingw-box3d embedded-shaders

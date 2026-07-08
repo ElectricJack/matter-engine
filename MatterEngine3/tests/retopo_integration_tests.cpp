@@ -41,9 +41,9 @@
 // The Terrain is a low-tri open grid — never fed to retopo since retopo is
 // disabled for that fixture.
 
-#include "../include/part_flatten.h"
-#include "../include/part_asset_v2.h"
-#include "../include/retopo_hook_stats.h"
+#include "part_flatten.h"
+#include "part_asset_v2.h"
+#include "retopo_hook_stats.h"
 #include "../../MatterSurfaceLib/include/blas_manager.hpp"
 #include "../../MatterSurfaceLib/include/tlas_manager.hpp"
 #include "../../MatterSurfaceLib/include/mesh_retopo.hpp"

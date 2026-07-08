@@ -1,10 +1,10 @@
 // SP-4 Composition-to-world tests: LOD bake, world flatten, sector grid, LOD select.
 // Harness convention mirrors MatterSurfaceLib/tests/part_asset_tests.cpp.
-#include "../include/lod_bake.h"
-#include "../include/world_flatten.h"
-#include "../include/sector_grid.h"
-#include "../include/lod_select.h"
-#include "../include/part_asset_v2.h"
+#include "lod_bake.h"
+#include "world_flatten.h"
+#include "sector_grid.h"
+#include "lod_select.h"
+#include "part_asset_v2.h"
 #include "../../MatterSurfaceLib/include/blas_manager.hpp"
 #include "../../MatterSurfaceLib/include/tlas_manager.hpp"
 #include <cstdio>

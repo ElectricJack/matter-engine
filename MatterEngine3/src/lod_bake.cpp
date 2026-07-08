@@ -1,4 +1,4 @@
-#include "../include/lod_bake.h"
+#include "lod_bake.h"
 #include "../../MatterSurfaceLib/include/mesh_simplifier.hpp"
 #include "../../MatterSurfaceLib/include/mesh_indexed.hpp"
 #include <cmath>

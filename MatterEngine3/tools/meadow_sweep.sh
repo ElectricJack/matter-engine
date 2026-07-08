@@ -7,7 +7,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # Source shared pose set.
 # shellcheck source=tools/lib_poses.sh
 source "$HERE/lib_poses.sh"
-cd "$HERE/../viewer"
+cd "$HERE/../../MatterViewer"
 
 FIFO="/tmp/matter_sweep_$$.fifo"
 LOG="/tmp/matter_sweep_$$.log"

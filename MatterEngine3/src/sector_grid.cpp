@@ -1,4 +1,4 @@
-#include "../include/sector_grid.h"
+#include "sector_grid.h"
 #include <cmath>
 
 namespace sector_grid {

@@ -1,4 +1,4 @@
-#include "../include/part_asset_v2.h"
+#include "part_asset_v2.h"
 
 #include <cstdio>
 #include <cstring>

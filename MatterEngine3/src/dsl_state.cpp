@@ -1,4 +1,4 @@
-#include "../include/dsl_state.h"
+#include "dsl_state.h"
 #define RAYMATH_IMPLEMENTATION
 #include "raymath.h"
 

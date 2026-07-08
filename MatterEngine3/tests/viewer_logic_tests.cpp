@@ -1,14 +1,14 @@
 // Headless tests for the GL-free viewer units (WorldState, resolvers, PartStore,
 // LocalProvider cache behavior). Run via `make run-viewer-logic`.
-#include "../viewer/world_source.h"
-#include "../viewer/sector_resolver.h"
-#include "../viewer/part_store.h"
-#include "../viewer/local_provider.h"
-#include "../viewer/world_composer.h"
-#include "../viewer/raster_mesh.h"
-#include "../viewer/raster_cull.h"
-#include "../viewer/probe_texture.h"   // kProbeAmbientScale (previously via raster_composer.h)
-#include "../viewer/gpu_cull_types.h"
+#include "../src/provider/world_source.h"
+#include "../src/provider/sector_resolver.h"
+#include "../src/render/part_store.h"
+#include "../src/provider/local_provider.h"
+#include "../src/render/world_composer.h"
+#include "../src/render/raster_mesh.h"
+#include "../src/render/raster_cull.h"
+#include "../src/render/probe_texture.h"   // kProbeAmbientScale (previously via raster_composer.h)
+#include "../src/render/gpu_cull_types.h"
 #include "lod_select.h"   // PartLodTable, PartLod
 #include "part_graph.h"   // PartGraph + FileModuleResolver/HostBaker (script-host guarded)
 #include "part_asset_v2.h"

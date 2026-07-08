@@ -1,4 +1,4 @@
-#include "../include/script_host.h"
+#include "script_host.h"
 extern "C" {
 #include "quickjs.h"
 }
@@ -6,13 +6,13 @@ extern "C" {
 #include "tileset_base.js.h"
 #include "part_asset_v2.h"   // SP-1 v2 helper (compute_resolved_hash, save_v2)
 #include "triangle_emit.hpp" // direct-triangle (mesh) session buffer
-#include "../include/dsl_state.h"
-#include "../include/dsl_bindings.h"
-#include "../include/csg_lowering.h"   // NEW MatterEngine3 header
-#include "../include/lod_bake.h"        // QEM decimation for simplify() on direct-tri parts
-#include "../include/module_resolver.h" // SP-7 shared-lib fold + resolution
-#include "../include/tileset_layout.h"     // tile_colors (Task 5: variant hook)
-#include "../include/tileset_placement.h"  // placement_seed (Task 5: variant rng)
+#include "dsl_state.h"
+#include "dsl_bindings.h"
+#include "csg_lowering.h"   // NEW MatterEngine3 header
+#include "lod_bake.h"        // QEM decimation for simplify() on direct-tri parts
+#include "module_resolver.h" // SP-7 shared-lib fold + resolution
+#include "tileset_layout.h"     // tile_colors (Task 5: variant hook)
+#include "tileset_placement.h"  // placement_seed (Task 5: variant rng)
 #include "cluster.h"                    // consumed prototype (StaticParticle, Cluster)
 #include "cell.h"                       // consumed prototype (Cell, build_cell_meshes GL-free)
 #include "mesh_worker_pool.h"           // consumed prototype (CellMeshResult/GroupMeshResult)

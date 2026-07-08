@@ -4,11 +4,11 @@
 // Fixtures: synthetic parent/child .part v2 files written into a temp cache dir
 // (parts/<hash>.part), then flatten_part() merges them and we verify the flat
 // artifact via load_v2.
-#include "../include/part_flatten.h"
-#include "../include/part_asset_v2.h"
-#include "../include/lod_bake.h"
-#include "../include/part_cluster.h"
-#include "../include/retopo_hook_stats.h"   // Task 13: retopo hook invocation counter
+#include "part_flatten.h"
+#include "part_asset_v2.h"
+#include "lod_bake.h"
+#include "part_cluster.h"
+#include "retopo_hook_stats.h"   // Task 13: retopo hook invocation counter
 #include "../../MatterSurfaceLib/include/blas_manager.hpp"
 #include "../../MatterSurfaceLib/include/tlas_manager.hpp"
 #include "../../MatterSurfaceLib/include/mesh_simplifier.hpp"

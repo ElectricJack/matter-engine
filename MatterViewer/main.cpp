@@ -89,7 +89,7 @@ int main() {
 
     viewer::Ui ui; ui.setup();
 
-    auto worlds = viewer::scan_worlds("../examples");
+    auto worlds = viewer::scan_worlds("../MatterEngine3/examples");
     printf("worlds available (%d):\n", (int)worlds.size());
     for (size_t i = 0; i < worlds.size(); ++i) {
         printf("  [%zu] %s  (%s / %s)\n",
@@ -97,7 +97,7 @@ int main() {
                worlds[i].schemas_dir.c_str(), worlds[i].world_data_dir.c_str());
     }
     if (worlds.empty()) {
-        printf("FATAL: no worlds found under ../examples\n");
+        printf("FATAL: no worlds found under ../MatterEngine3/examples\n");
         return 1;
     }
 
@@ -167,7 +167,7 @@ int main() {
         wd.schemas_dir    = w.schemas_dir.c_str();
         wd.world_data_dir = w.world_data_dir.c_str();
         wd.world_name     = w.world_name.c_str();
-        wd.shared_lib_dir = "../shared-lib";
+        wd.shared_lib_dir = "../MatterEngine3/shared-lib";
         std::string werr;
         auto s = engine->open_world(wd, werr);
         if (!s) { printf("open_world: %s\n", werr.c_str()); return nullptr; }

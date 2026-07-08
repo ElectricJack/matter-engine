@@ -15,7 +15,7 @@
 set -euo pipefail
 STAGE="${1:?usage: stress_sweep.sh <stage-label>}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
-cd "$HERE/../viewer"
+cd "$HERE/../../MatterViewer"
 
 CSV="$HERE/../docs/perf/stress_sweep.csv"
 TODAY="$(date +%F)"

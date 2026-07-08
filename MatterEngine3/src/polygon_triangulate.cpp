@@ -1,4 +1,4 @@
-#include "../include/polygon_triangulate.hpp"
+#include "polygon_triangulate.hpp"
 #include <cmath>
 #include <algorithm>
 

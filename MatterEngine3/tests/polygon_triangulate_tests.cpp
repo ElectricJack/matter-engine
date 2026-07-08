@@ -6,7 +6,7 @@
 //   - square-with-square-hole -> test_square_with_hole
 // For each: correct triangle count, no degenerate/zero-area tris, triangles
 // cover the polygon area (and not the hole).
-#include "../include/polygon_triangulate.hpp"
+#include "../src/polygon_triangulate.hpp"
 #include <cstdio>
 #include <cmath>
 #include <vector>

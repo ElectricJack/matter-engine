@@ -98,4 +98,18 @@ Current projects and their relationships:
    - Dependencies: raylib
    - Provides: Isosurface generation algorithms
 
+3. **MatterEngine3** - Kernel library (`libmatter_engine3.a`) for the procedural engine
+   - Provides: script host (QuickJS-ng DSL), bake pipeline (world_flatten/lod_bake/sector_grid),
+     render subsystem (renderer/raster_composer/part_store/world_composer/gpu_culler),
+     provider subsystem (local_provider/resolvers), facade (matter_engine.cpp)
+   - Build: `make -C MatterEngine3` → `libmatter_engine3.a` + embedded shader header
+   - Tests: `make -C MatterEngine3/tests run-*` (headless) and GPU suites with `GALLIUM_DRIVER=d3d12`
+
+4. **MatterViewer** - Interactive viewer application linking the kernel library
+   - Dependencies: MatterEngine3 (libmatter_engine3.a), MatterSurfaceLib, raylib, Dear ImGui,
+     QuickJS-ng, Box3d, optionally autoremesher_core + TBB
+   - Build: `make -C MatterViewer` → `viewer` binary (runs from MatterViewer/ working directory)
+   - Shader symlinks: `MatterViewer/shaders` → MatterSurfaceLib/shaders,
+     `MatterViewer/shaders_gpu` → MatterEngine3/shaders_gpu
+
 Future projects can build on these existing components by creating the appropriate symlinks.

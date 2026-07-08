@@ -35,6 +35,7 @@ SIMPLE_PROJECTS=(
     ObjectAllocatorLib
     SpatialQueryLib
     MatterEngine3
+    MatterViewer
 )
 
 # Projects whose Makefile defaults to Windows cross-compile and need
@@ -217,25 +218,31 @@ if [ "$MODE" = "test" ]; then
     if [ "$can_gpu" -eq 1 ]; then
         for tgt in run-tilesetgpu run-tilesetseam; do
             echo
-            echo "--- MatterEngine3/viewer ($tgt) ---"
-            make -C MatterEngine3/viewer "$tgt" || RESULT[MatterEngine3]="FAIL ($tgt)"
+            echo "--- MatterEngine3/tests ($tgt) ---"
+            make -C MatterEngine3/tests "$tgt" || RESULT[MatterEngine3]="FAIL ($tgt)"
         done
 
         echo
-        echo "--- MatterEngine3/viewer (tileset-provider-tests) ---"
-        make -C MatterEngine3/viewer run-tilesetprovider || RESULT[MatterEngine3]="FAIL (run-tilesetprovider)"
+        echo "--- MatterEngine3/tests (tileset-provider-tests) ---"
+        make -C MatterEngine3/tests run-tilesetprovider || RESULT[MatterEngine3]="FAIL (run-tilesetprovider)"
 
         echo
-        echo "--- MatterEngine3/viewer (tileset-load-tests) ---"
-        make -C MatterEngine3/viewer run-tilesetload || RESULT[MatterEngine3]="FAIL (run-tilesetload)"
+        echo "--- MatterEngine3/tests (tileset-load-tests) ---"
+        make -C MatterEngine3/tests run-tilesetload || RESULT[MatterEngine3]="FAIL (run-tilesetload)"
+
+        echo
+        echo "--- MatterEngine3/tests (api-tests) ---"
+        make -C MatterEngine3/tests api-tests || RESULT[MatterEngine3]="FAIL (api-tests build)"
+        ( cd MatterViewer && GALLIUM_DRIVER=d3d12 ../MatterEngine3/tests/api_tests ) \
+            || RESULT[MatterEngine3]="FAIL (api-tests run)"
 
         echo
         echo "--- MatterEngine3/tools (meadow_forestfloor_shots) ---"
-        MatterEngine3/tools/meadow_forestfloor_shots.sh /tmp/build_all_ff_shots \
+        bash MatterEngine3/tools/meadow_forestfloor_shots.sh /tmp/build_all_ff_shots \
             || RESULT[MatterEngine3]="FAIL (meadow_forestfloor_shots)"
     else
         echo
-        echo "--- MatterEngine3/viewer GPU tests SKIPPED (needs GL 4.6 + GALLIUM_DRIVER=d3d12) ---"
+        echo "--- MatterEngine3/tests GPU tests SKIPPED (needs GL 4.6 + GALLIUM_DRIVER=d3d12) ---"
     fi
 fi
 
