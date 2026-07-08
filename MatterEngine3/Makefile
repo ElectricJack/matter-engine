@@ -1,9 +1,10 @@
 # Makefile for MatterEngine3 (script host + voxel-CSG bake library).
 #
-# MatterEngine3 is a library sub-project: it has no application `main` of its own
-# yet, so `make` builds a static archive (libmatter_engine3.a) that bundles the
-# script host, the DSL/CSG bake pipeline, SP-1's part-asset v2 serializer, and the
-# vendored QuickJS-ng engine. A future consumer app links this archive.
+# MatterEngine3 is a library sub-project: it has no application `main` of its own,
+# so `make` builds a static archive (libmatter_engine3.a) that bundles the full
+# engine — script host, DSL/CSG bake pipeline, part-graph, LOD flatten/select,
+# render/provider/facade, MatterSurfaceLib backend, and vendored QuickJS-ng.
+# MatterViewer links this single archive plus raylib and (optionally) autoremesher.
 #
 # MatterEngine3 consumes the MatterSurfaceLib prototype READ-ONLY:
 #   new headers via -Iinclude, consumed prototype headers via
@@ -11,6 +12,26 @@
 #   ../Libraries/quickjs-ng and compiled with gcc so its extern "C" symbols stay
 #   unmangled. Per CLAUDE.md memory: after struct/header changes, prefer
 #   `make clean && make` to avoid stale objects.
+#
+# GRAPHICS_API rationale (I1): the old MatterEngine3/viewer/Makefile always used
+# GRAPHICS_API_OPENGL_43 for the render sources (renderer.cpp, raster_composer.cpp,
+# etc.) — confirmed by `git show 75d8e7f:MatterViewer/Makefile | grep GRAPHICS_API`.
+# GL 4.3 is required for compute shaders (cull.comp, hiz_downsample.comp, etc.)
+# used by GpuCuller and the tileset bake pipeline. OPENGL_33 would silently omit
+# gl*Compute* API surface from rlgl.h, breaking any compute-shader dispatch.
+# Keeping OPENGL_43 here matches the viewer and GPU tests; MatterEngine3/tests/Makefile
+# now also uses OPENGL_43 in its GPU-test CFLAGS so the same render sources see
+# the same GL define everywhere they are compiled.
+#
+# Caller can inject extra flags via EXTRA_CFLAGS / EXTRA_INCLUDE:
+#   make -C MatterEngine3 EXTRA_CFLAGS="-DMATTER_HAVE_AUTOREMESHER ..." \
+#        EXTRA_INCLUDE="-I../Libraries/autoremesher_core/include"
+# MatterViewer/Makefile does this when libautoremesher_core.a is present so that
+# part_flatten.cpp compiles with the retopo hook enabled.
+#
+# When MATTER_HAVE_AUTOREMESHER is passed via EXTRA_CFLAGS, the caller must also
+# set EXTRA_RETOPO_CPP to point at MatterSurfaceLib/src/mesh_retopo.cpp so the
+# retopo implementation object is included in the archive.
 
 UNAME_S := $(shell uname -s)
 UNAME_M := $(shell uname -m)
@@ -28,18 +49,22 @@ endif
 
 CC      = g++
 CFLAGS  = -std=c++17 -Wall -Wno-missing-braces -Wno-unused-variable -O2 -D$(PLATFORM) -D$(GRAPHICS) \
-          -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB
+          -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB $(EXTRA_CFLAGS)
 ifeq ($(UNAME_S),Darwin)
     CFLAGS += -mmacosx-version-min=$(MACOS_VERSION)
 endif
 
 RAYLIB_PATH = ../Libraries/raylib/src
+MSL_DIR     = ../MatterSurfaceLib
 
 # Include directories: NEW MatterEngine3 headers, consumed MatterSurfaceLib
 # headers, vendored QuickJS-ng, then raylib (for the BLAS/Tri/TriEx types).
 QJS_DIR       = ../Libraries/quickjs-ng
 BOX3D_DIR     = ../Libraries/box3d
-INCLUDE_PATHS = -Iinclude -Isrc -Isrc/render -Isrc/provider -I../MatterSurfaceLib/include -I$(QJS_DIR) -I$(RAYLIB_PATH) -I$(BOX3D_DIR)/include
+INCLUDE_PATHS = -Iinclude -Isrc -Isrc/render -Isrc/provider \
+                -I$(MSL_DIR)/include -I$(MSL_DIR)/src \
+                -I$(QJS_DIR) -I$(RAYLIB_PATH) -I$(BOX3D_DIR)/include \
+                $(EXTRA_INCLUDE)
 
 # Vendored QuickJS-ng engine. v0.10.0 needs xsum.c (xsum_small_* symbols) beyond
 # the core four. Compiled via gcc (C) so the embedding symbols stay unmangled.
@@ -47,13 +72,21 @@ QJS_C   = $(QJS_DIR)/quickjs.c $(QJS_DIR)/libregexp.c \
           $(QJS_DIR)/libunicode.c $(QJS_DIR)/cutils.c $(QJS_DIR)/xsum.c
 QJS_OBJ = quickjs.o libregexp.o libunicode.o cutils.o xsum.o
 
-# MatterEngine3 sources: bake/script/DSL/CSG pipeline + render + provider + facade.
+# MatterEngine3 C++ sources: full pipeline — bake/script/DSL/CSG, part-graph,
+# LOD flatten/select, tileset pipeline, render, provider, and facade.
 ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
-          src/csg_lowering.cpp src/part_asset_v2.cpp src/world_lights.cpp \
-          src/probe_volume.cpp src/world_tracer.cpp src/part_cluster.cpp \
+          src/dsl_triangle.cpp src/triangle_emit.cpp src/polygon_triangulate.cpp \
+          src/csg_lowering.cpp src/module_resolver.cpp src/script_rng_binding.cpp \
+          src/part_asset_v2.cpp src/part_graph.cpp \
+          src/lod_bake.cpp src/world_flatten.cpp src/part_flatten.cpp \
+          src/sector_grid.cpp src/lod_select.cpp \
+          src/world_lights.cpp src/probe_volume.cpp \
+          src/world_tracer.cpp src/probe_bake.cpp \
+          src/part_cluster.cpp \
           src/tileset_layout.cpp src/tileset_collider.cpp src/tileset_settle.cpp \
           src/tileset_placement.cpp src/tileset_part_collider.cpp src/tileset_bake.cpp \
-          src/tileset_phase.cpp src/tileset_gtex.cpp src/tileset_torus_bvh.cpp \
+          src/tileset_phase.cpp src/tileset_phase_gpu.cpp \
+          src/tileset_gtex.cpp src/tileset_torus_bvh.cpp \
           src/tileset_bake_primary.cpp src/tileset_bake_ao.cpp src/tileset_bake_gpu.cpp \
           src/shader_source.cpp \
           src/render/renderer.cpp src/render/raster_composer.cpp src/render/raster_mesh.cpp \
@@ -62,15 +95,58 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/render/tileset_provider.cpp src/render/tileset_gl_ctx.cpp \
           src/provider/local_provider.cpp src/provider/resolvers.cpp \
           src/matter_engine.cpp
-ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o csg_lowering.o part_asset_v2.o world_lights.o \
-          probe_volume.o world_tracer.o part_cluster.o tileset_layout.o tileset_collider.o \
+
+# MatterSurfaceLib C++ backend sources compiled into the archive so MatterViewer
+# need not compile them directly (no libmsl.a). Same set as the old viewer's MSL_CPP
+# minus mesh_retopo.cpp (handled separately via EXTRA_RETOPO_CPP when AR is present).
+MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
+          $(MSL_DIR)/src/mesh_simplifier.cpp $(MSL_DIR)/src/mesh_indexed.cpp \
+          $(MSL_DIR)/src/mesh_transform.cpp \
+          $(MSL_DIR)/src/blas_manager.cpp $(MSL_DIR)/src/bvh.cpp \
+          $(MSL_DIR)/src/bvh_analyzer.cpp \
+          $(MSL_DIR)/src/mesh_worker_pool.cpp $(MSL_DIR)/src/mesh_build_utils.cpp \
+          $(MSL_DIR)/src/meshing_algorithm.cpp \
+          $(MSL_DIR)/src/marching_cubes_algorithm.cpp \
+          $(MSL_DIR)/src/oriented_cube_algorithm.cpp \
+          $(MSL_DIR)/src/vertex_ao.cpp \
+          $(MSL_DIR)/src/occupancy.cpp $(MSL_DIR)/src/tlas_manager.cpp \
+          $(MSL_DIR)/src/part_asset.cpp \
+          $(MSL_DIR)/src/lattice.cpp $(MSL_DIR)/src/particle_culling.cpp \
+          $(EXTRA_RETOPO_CPP)
+
+# MSL C sources: compiled via gcc to keep extern "C" symbols unmangled.
+MSL_C   = $(MSL_DIR)/src/surface.c $(MSL_DIR)/src/open_particle_surface.c \
+          $(MSL_DIR)/src/spatial_hash.c $(MSL_DIR)/src/object_allocator.c \
+          $(MSL_DIR)/src/material_registry.c $(MSL_DIR)/src/fat_primitive.c
+MSL_C_OBJ = surface.o open_particle_surface.o spatial_hash.o \
+            object_allocator.o material_registry.o fat_primitive.o
+
+ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
+          dsl_triangle.o triangle_emit.o polygon_triangulate.o \
+          csg_lowering.o module_resolver.o script_rng_binding.o \
+          part_asset_v2.o part_graph.o \
+          lod_bake.o world_flatten.o part_flatten.o \
+          sector_grid.o lod_select.o \
+          world_lights.o probe_volume.o \
+          world_tracer.o probe_bake.o \
+          part_cluster.o \
+          tileset_layout.o tileset_collider.o \
           tileset_settle.o tileset_placement.o tileset_part_collider.o tileset_bake.o \
-          tileset_phase.o tileset_gtex.o tileset_torus_bvh.o tileset_bake_primary.o \
+          tileset_phase.o tileset_phase_gpu.o \
+          tileset_gtex.o tileset_torus_bvh.o tileset_bake_primary.o \
           tileset_bake_ao.o tileset_bake_gpu.o shader_source.o \
           renderer.o raster_composer.o raster_mesh.o part_store.o world_composer.o world_state.o \
           gpu_culler.o probe_texture.o tileset_provider.o tileset_gl_ctx.o \
           local_provider.o resolvers.o \
           matter_engine.o
+
+# MSL C++ object names (basenames; same flat-object model as ME3_OBJ).
+MSL_OBJ = cluster.o cell.o mesh_simplifier.o mesh_indexed.o mesh_transform.o \
+          blas_manager.o bvh.o bvh_analyzer.o \
+          mesh_worker_pool.o mesh_build_utils.o meshing_algorithm.o \
+          marching_cubes_algorithm.o oriented_cube_algorithm.o vertex_ao.o \
+          occupancy.o tlas_manager.o part_asset.o \
+          lattice.o particle_culling.o $(if $(EXTRA_RETOPO_CPP),mesh_retopo.o)
 
 LIB = libmatter_engine3.a
 
@@ -86,22 +162,36 @@ SHADER_LOGICAL := shaders/raster.vs shaders/raster.fs shaders/tileset_sampling.g
 # shaders/ is a symlink -> ../MatterSurfaceLib/shaders; shaders_gpu/ is a real dir.
 SHADER_FILES := $(SHADER_LOGICAL)
 
+.PHONY: all clean test
+
+# all MUST be the first target so it is the default goal.
+all: $(LIB)
+
 shaders_gen/embedded_shaders.h: tools/embed_shaders.py $(SHADER_FILES)
 	mkdir -p shaders_gen
 	python3 tools/embed_shaders.py $@ . $(SHADER_LOGICAL)
 
-.PHONY: all clean test
+# Per-file pattern rules enable safe parallel compilation with `make -j`.
+# vpath directs Make to search source directories by basename.
+vpath %.cpp src src/render src/provider $(MSL_DIR)/src
+vpath %.c $(QJS_DIR) $(MSL_DIR)/src
 
-all: $(LIB)
+# QuickJS C sources (gcc, extern "C" safe).
+%.o: $(QJS_DIR)/%.c
+	gcc -c $< -o $@ -O2 -DCONFIG_VERSION='"0.10.0"' -I$(QJS_DIR)
 
-$(QJS_OBJ): $(QJS_C)
-	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' -I$(QJS_DIR)
+# MSL C sources (gcc, extern "C" safe).
+%.o: $(MSL_DIR)/src/%.c
+	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
 
-$(ME3_OBJ): $(ME3_CPP) shaders_gen/embedded_shaders.h
-	$(CC) -c $(ME3_CPP) $(CFLAGS) $(INCLUDE_PATHS)
+# ME3 + MSL C++ sources (each source file gets its own .o via pattern rule).
+# ME3 objects depend on the generated shader header.
+$(ME3_OBJ): shaders_gen/embedded_shaders.h
+%.o: %.cpp
+	$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDE_PATHS)
 
-$(LIB): $(QJS_OBJ) $(ME3_OBJ)
-	ar rcs $(LIB) $(QJS_OBJ) $(ME3_OBJ)
+$(LIB): $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ)
+	ar rcs $(LIB) $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ)
 
 # Delegate to the test suite (headless, GL-free host + raylib-linked BLAS path).
 test:
@@ -109,5 +199,5 @@ test:
 	$(MAKE) -C tests run-script
 
 clean:
-	rm -f $(LIB) $(QJS_OBJ) $(ME3_OBJ)
+	rm -f $(LIB) $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ)
 	$(MAKE) -C tests clean

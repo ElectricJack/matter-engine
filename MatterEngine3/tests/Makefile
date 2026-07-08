@@ -786,7 +786,14 @@ GPU_MSL_C_OBJ = $(COMMON_MSL_C_OBJ)
 
 GPU_ALL_CPP = $(GPU_PIPELINE_CPP) $(GPU_RENDER_CPP) $(GPU_MSL_CPP)
 
-GPU_CFLAGS = $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB \
+# GPU tests compile the render sources (renderer.cpp, raster_composer.cpp, etc.)
+# which require GL 4.3 compute shaders. Override GRAPHICS to OPENGL_43 here so
+# the render sources see the same define as in libmatter_engine3.a (which is also
+# built with OPENGL_43). Using OPENGL_33 would silently omit gl*Compute* from
+# rlgl.h, causing compile or runtime failures in GPU test binaries.
+GPU_GRAPHICS = GRAPHICS_API_OPENGL_43
+GPU_CFLAGS = $(filter-out -D$(GRAPHICS),$(CFLAGS)) -D$(GPU_GRAPHICS) \
+             -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB \
              $(INCLUDE_PATHS) -I$(BOX3D_DIR_GPU)/include $(QJS_INC) \
              $(GPU_AR_CORE_CFLAGS)
 

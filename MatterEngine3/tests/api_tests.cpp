@@ -14,7 +14,7 @@ int main() {
     InitWindow(640, 360, "api_tests");
     std::string err;
     matter::EngineDesc ed;
-    ed.cache_root = "cache";   // run from MatterEngine3/viewer so the bake cache is warm
+    ed.cache_root = "cache";   // run from MatterViewer/ so the bake cache is warm
     auto engine = matter::EngineContext::create(ed, err);
     if (!engine) { printf("FAIL create: %s\n", err.c_str()); return 1; }
 
