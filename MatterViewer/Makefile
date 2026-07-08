@@ -223,11 +223,15 @@ else
 endif
 
 # Generate embedded shader header before compiling any TU that includes it.
+# Needed by the Windows direct-source build (shader_source.cpp); the Linux
+# viewer gets it implicitly — the library sub-make generates the header before
+# its own objects. Keeping it off the viewer prereq list also avoids two
+# parallel recursive makes into ME3_DIR racing under -j.
 .PHONY: embedded-shaders
 embedded-shaders:
 	$(MAKE) -C $(ME3_DIR) shaders_gen/embedded_shaders.h
 
-viewer: build-engine-lib embedded-shaders shaders shaders_gpu_link $(L_ALL_OBJ)
+viewer: build-engine-lib shaders shaders_gpu_link $(L_ALL_OBJ)
 	$(CC) $(L_ALL_OBJ) $(ME3_DIR)/libmatter_engine3.a -o viewer \
 	      $(CFLAGS) $(LDFLAGS) $(LDLIBS) $(AR_CORE_LDFLAGS)
 
@@ -296,6 +300,10 @@ $(W_QJS_OBJ): $(W_DIR)/%.o: $(QJS_DIR)/%.c | $(W_DIR)
 	$(WIN_CC) -c $< -o $@ -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC) -MMD -MP
 $(W_PIPC_OBJ): $(W_DIR)/%.o: $(MSL_DIR)/src/%.c | $(W_DIR)
 	$(WIN_CC) -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(WIN_INCLUDE_PATHS) -MMD -MP
+
+# Order-only: the header must exist before shader_source.cpp compiles, but its
+# regeneration must not force object rebuilds (embedded-shaders is phony).
+$(W_CPP_OBJ): | embedded-shaders
 
 windows: win-shaders-gpu $(W_ALL_OBJ)
 	$(WIN_CXX) $(W_ALL_OBJ) -o viewer.exe $(CFLAGS) -static $(WIN_RAYLIB) $(WIN_LIBS)
