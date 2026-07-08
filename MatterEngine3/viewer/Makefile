@@ -189,7 +189,7 @@ $(L_TSET_GPU_TEST_OBJ): tileset_gpu_tests.cpp | $(L_DIR)
 
 TILESET_GPU_TEST_OBJ = $(filter-out $(L_DIR)/main.o $(L_DIR)/gpu_cull_tests.o,$(L_ALL_OBJ)) $(L_TSET_GPU_TEST_OBJ)
 tileset-gpu-tests: shaders shaders_gpu_link $(TILESET_GPU_TEST_OBJ)
-	$(CC) $(TILESET_GPU_TEST_OBJ) -o tileset_gpu_tests $(CFLAGS) $(LDFLAGS) $(LDLIBS)
+	$(CC) $(TILESET_GPU_TEST_OBJ) -o tileset_gpu_tests $(CFLAGS) $(LDFLAGS) $(AR_CORE_LDFLAGS) $(LDLIBS)
 
 run-tilesetgpu: tileset-gpu-tests
 	./tileset_gpu_tests
@@ -202,7 +202,7 @@ $(L_TSET_SEAM_OBJ): tileset_seam_tests.cpp | $(L_DIR)
 
 TILESET_SEAM_TEST_OBJ = $(filter-out $(L_DIR)/main.o $(L_DIR)/gpu_cull_tests.o,$(L_ALL_OBJ)) $(L_TSET_SEAM_OBJ)
 tileset-seam-tests: shaders shaders_gpu_link $(TILESET_SEAM_TEST_OBJ)
-	$(CC) $(TILESET_SEAM_TEST_OBJ) -o tileset_seam_tests $(CFLAGS) $(LDFLAGS) $(LDLIBS)
+	$(CC) $(TILESET_SEAM_TEST_OBJ) -o tileset_seam_tests $(CFLAGS) $(LDFLAGS) $(AR_CORE_LDFLAGS) $(LDLIBS)
 
 run-tilesetseam: tileset-seam-tests
 	./tileset_seam_tests
@@ -215,7 +215,7 @@ $(L_TSET_PROV_TEST_OBJ): tileset_provider_tests.cpp | $(L_DIR)
 
 TILESET_PROV_TEST_OBJ = $(filter-out $(L_DIR)/main.o $(L_DIR)/gpu_cull_tests.o,$(L_ALL_OBJ)) $(L_TSET_PROV_TEST_OBJ)
 tileset-provider-tests: shaders shaders_gpu_link $(TILESET_PROV_TEST_OBJ)
-	$(CC) $(TILESET_PROV_TEST_OBJ) -o tileset_provider_tests $(CFLAGS) $(LDFLAGS) $(LDLIBS)
+	$(CC) $(TILESET_PROV_TEST_OBJ) -o tileset_provider_tests $(CFLAGS) $(LDFLAGS) $(AR_CORE_LDFLAGS) $(LDLIBS)
 
 run-tilesetprovider: tileset-provider-tests
 	./tileset_provider_tests
@@ -228,7 +228,7 @@ $(L_TSET_LOAD_TEST_OBJ): tileset_load_tests.cpp | $(L_DIR)
 
 TILESET_LOAD_TEST_OBJ = $(filter-out $(L_DIR)/main.o $(L_DIR)/gpu_cull_tests.o,$(L_ALL_OBJ)) $(L_TSET_LOAD_TEST_OBJ)
 tileset-load-tests: shaders shaders_gpu_link $(TILESET_LOAD_TEST_OBJ)
-	$(CC) $(TILESET_LOAD_TEST_OBJ) -o tileset_load_tests $(CFLAGS) $(LDFLAGS) $(LDLIBS)
+	$(CC) $(TILESET_LOAD_TEST_OBJ) -o tileset_load_tests $(CFLAGS) $(LDFLAGS) $(AR_CORE_LDFLAGS) $(LDLIBS)
 
 run-tilesetload: tileset-load-tests
 	./tileset_load_tests

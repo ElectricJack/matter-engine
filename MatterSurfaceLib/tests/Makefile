@@ -105,10 +105,10 @@ CELL_CPP = cell_bounds_tests.cpp ../src/cell.cpp ../src/mesh_simplifier.cpp \
            ../src/mesh_build_utils.cpp ../src/meshing_algorithm.cpp \
            ../src/marching_cubes_algorithm.cpp ../src/oriented_cube_algorithm.cpp \
            ../src/vertex_ao.cpp ../src/occupancy.cpp
-CELL_C = ../src/surface.c ../src/open_particle_surface.c \
+CELL_C = ../src/surface.c ../src/fat_primitive.c ../src/open_particle_surface.c \
          ../src/spatial_hash.c ../src/object_allocator.c ../src/material_registry.c
 
-CELL_C_OBJ = surface.o open_particle_surface.o spatial_hash.o object_allocator.o material_registry.o
+CELL_C_OBJ = surface.o fat_primitive.o open_particle_surface.o spatial_hash.o object_allocator.o material_registry.o
 
 $(CELL_TARGET): $(CELL_CPP) $(CELL_C)
 	gcc -c $(CELL_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
@@ -124,10 +124,10 @@ run-cell: $(CELL_TARGET)
 # their symbols unmangled for the extern "C" decls.
 CONT_TARGET = mesh_continuity_tests
 CONT_CPP = mesh_continuity_tests.cpp ../src/mesh_simplifier.cpp
-CONT_C   = ../src/surface.c ../src/open_particle_surface.c \
+CONT_C   = ../src/surface.c ../src/fat_primitive.c ../src/open_particle_surface.c \
            ../src/spatial_hash.c ../src/object_allocator.c
 
-CONT_C_OBJ = surface.o open_particle_surface.o spatial_hash.o object_allocator.o
+CONT_C_OBJ = surface.o fat_primitive.o open_particle_surface.o spatial_hash.o object_allocator.o
 
 $(CONT_TARGET): $(CONT_CPP) $(CONT_C)
 	gcc -c $(CONT_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
@@ -190,10 +190,10 @@ PAR_CPP = parallel_mesh_tests.cpp ../src/cell.cpp ../src/mesh_simplifier.cpp \
           ../src/mesh_worker_pool.cpp ../src/mesh_build_utils.cpp \
           ../src/meshing_algorithm.cpp ../src/marching_cubes_algorithm.cpp \
           ../src/oriented_cube_algorithm.cpp ../src/vertex_ao.cpp ../src/occupancy.cpp
-PAR_C = ../src/surface.c ../src/open_particle_surface.c \
+PAR_C = ../src/surface.c ../src/fat_primitive.c ../src/open_particle_surface.c \
         ../src/spatial_hash.c ../src/object_allocator.c ../src/material_registry.c
 
-PAR_C_OBJ = surface.o open_particle_surface.o spatial_hash.o object_allocator.o material_registry.o
+PAR_C_OBJ = surface.o fat_primitive.o open_particle_surface.o spatial_hash.o object_allocator.o material_registry.o
 
 $(PAR_TARGET): $(PAR_CPP) $(PAR_C)
 	gcc -c $(PAR_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
