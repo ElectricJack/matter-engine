@@ -1,4 +1,4 @@
-#include "../include/object_allocator.h"
+#include "../include/mem_pool.h"
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -9,7 +9,7 @@ void test_object_alignment() {
     printf("Testing object alignment with objectSize=12...\n");
 
     // Create allocator with objectSize=12 (not a multiple of max_align_t)
-    ObjectAllocator* allocator = oa_create(12, 10);
+    MemPool* allocator = mem_pool_create(12, 10);
     assert(allocator != NULL);
 
     size_t alignment = _Alignof(max_align_t);
@@ -17,7 +17,7 @@ void test_object_alignment() {
     // Allocate several objects and verify alignment
     void* ptrs[5];
     for (int i = 0; i < 5; i++) {
-        ptrs[i] = oa_alloc(allocator);
+        ptrs[i] = mem_pool_alloc(allocator);
         assert(ptrs[i] != NULL);
 
         uintptr_t addr = (uintptr_t)ptrs[i];
@@ -35,7 +35,7 @@ void test_object_alignment() {
 
     // Free objects
     for (int i = 0; i < 5; i++) {
-        oa_free(allocator, ptrs[i]);
+        mem_pool_free(allocator, ptrs[i]);
     }
 
     printf("  All objects properly aligned!\n");
@@ -44,7 +44,7 @@ void test_object_alignment() {
     printf("Testing alloc-after-free reuse...\n");
     void* reuse_ptrs[5];
     for (int i = 0; i < 5; i++) {
-        reuse_ptrs[i] = oa_alloc(allocator);
+        reuse_ptrs[i] = mem_pool_alloc(allocator);
         assert(reuse_ptrs[i] != NULL);
 
         uintptr_t addr = (uintptr_t)reuse_ptrs[i];
@@ -61,13 +61,13 @@ void test_object_alignment() {
 
     // Free the reused objects
     for (int i = 0; i < 5; i++) {
-        oa_free(allocator, reuse_ptrs[i]);
+        mem_pool_free(allocator, reuse_ptrs[i]);
     }
 
     printf("  Alloc-after-free reuse verified!\n");
 
     // Clean up
-    oa_destroy(allocator);
+    mem_pool_destroy(allocator);
 
     printf("  All objects properly aligned!\n");
 }
@@ -77,7 +77,7 @@ void test_multi_page_alignment() {
     printf("Testing alignment across multiple pages (allocate 25 objects with objectsPerPage=10)...\n");
 
     // Create allocator with objectsPerPage=10, so 25 objects will span multiple pages
-    ObjectAllocator* allocator = oa_create(12, 10);
+    MemPool* allocator = mem_pool_create(12, 10);
     assert(allocator != NULL);
 
     size_t alignment = _Alignof(max_align_t);
@@ -85,7 +85,7 @@ void test_multi_page_alignment() {
 
     // Allocate 25 objects (more than one page of 10 objects)
     for (int i = 0; i < 25; i++) {
-        ptrs[i] = oa_alloc(allocator);
+        ptrs[i] = mem_pool_alloc(allocator);
         assert(ptrs[i] != NULL);
 
         uintptr_t addr = (uintptr_t)ptrs[i];
@@ -102,22 +102,57 @@ void test_multi_page_alignment() {
 
     // Free all objects
     for (int i = 0; i < 25; i++) {
-        oa_free(allocator, ptrs[i]);
+        mem_pool_free(allocator, ptrs[i]);
     }
 
     // Clean up
-    oa_destroy(allocator);
+    mem_pool_destroy(allocator);
 
     printf("  All multi-page objects properly aligned!\n");
 }
 
+void test_stats() {
+    printf("Testing MemStats...\n");
+    MemPool* pool = mem_pool_create(32, 4);
+    assert(pool != NULL);
+
+    MemStats st;
+    mem_pool_get_stats(pool, &st);
+    assert(st.totalAllocs == 0);
+    assert(st.liveBytes == 0);
+    assert(st.pageCount == 0);
+
+    void* a = mem_pool_alloc(pool);
+    void* b = mem_pool_alloc(pool);
+    assert(a && b);
+    mem_pool_get_stats(pool, &st);
+    assert(st.totalAllocs == 2);
+    assert(st.pageCount == 1);
+    assert(st.totalObjects == 4);
+    assert(st.freeObjects == 2);
+    assert(st.liveBytes > 0);
+    size_t peakAfterTwo = st.peakBytes;
+    assert(peakAfterTwo == st.liveBytes);
+
+    mem_pool_free(pool, a);
+    mem_pool_get_stats(pool, &st);
+    assert(st.peakBytes == peakAfterTwo);   /* peak survives frees */
+    assert(st.liveBytes < peakAfterTwo);
+    assert(st.totalAllocs == 2);            /* allocs only count up */
+
+    mem_pool_destroy(pool);
+    printf("  MemStats tests passed!\n");
+}
+
 int main() {
-    printf("Running ObjectAllocator tests...\n");
+    printf("Running MemPool tests...\n");
     printf("max_align_t alignment: %zu bytes\n\n", _Alignof(max_align_t));
 
     test_object_alignment();
     printf("\n");
     test_multi_page_alignment();
+    printf("\n");
+    test_stats();
 
     printf("\nAll tests passed!\n");
     return 0;
