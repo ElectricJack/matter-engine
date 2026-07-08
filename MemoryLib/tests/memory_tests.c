@@ -1,5 +1,6 @@
 #include "../include/mem_pool.h"
 #include "../include/mem_arena.h"
+#include "../include/mem_array.h"
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -201,6 +202,51 @@ void test_arena_chaining_and_reset() {
     printf("  Arena chaining/reset tests passed!\n");
 }
 
+void test_array_growth() {
+    printf("Testing mem_array growth + clear + free...\n");
+    MemArray arr;
+    mem_array_init(&arr, sizeof(int));
+    assert(arr.data == NULL && arr.count == 0 && arr.capacity == 0);
+
+    for (int i = 0; i < 100; i++) {
+        int* slot = (int*)mem_array_push(&arr);
+        assert(slot != NULL);
+        *slot = i;
+    }
+    assert(arr.count == 100);
+    assert(arr.capacity >= 100);
+    for (int i = 0; i < 100; i++) assert(((int*)arr.data)[i] == i);
+
+    MemStats st;
+    mem_array_get_stats(&arr, &st);
+    assert(st.liveBytes == 100 * sizeof(int));
+    assert(st.peakBytes == arr.capacity * sizeof(int));
+    assert(st.totalAllocs == arr.growCount);
+    assert(st.totalAllocs >= 2);            /* 100 ints can't fit the first grow */
+
+    size_t capBefore = arr.capacity;
+    mem_array_clear(&arr);
+    assert(arr.count == 0 && arr.capacity == capBefore);   /* capacity retained */
+
+    mem_array_free(&arr);
+    assert(arr.data == NULL && arr.capacity == 0 && arr.count == 0);
+    printf("  mem_array growth tests passed!\n");
+}
+
+void test_array_growth_policy() {
+    printf("Testing mem_array growth policy...\n");
+    MemArray arr;
+    mem_array_init(&arr, 1);
+    assert(mem_array_ensure(&arr, 1) == 1);
+    assert(arr.capacity == 16);              /* minimum step */
+    assert(mem_array_ensure(&arr, 17) == 1);
+    assert(arr.capacity == 24);              /* 16 * 3 / 2 */
+    assert(mem_array_ensure(&arr, 100) == 1);
+    assert(arr.capacity == 100);             /* jump straight when 1.5x is short */
+    mem_array_free(&arr);
+    printf("  mem_array growth policy tests passed!\n");
+}
+
 int main() {
     printf("Running MemPool tests...\n");
     printf("max_align_t alignment: %zu bytes\n\n", _Alignof(max_align_t));
@@ -214,6 +260,10 @@ int main() {
     test_arena_basic();
     printf("\n");
     test_arena_chaining_and_reset();
+    printf("\n");
+    test_array_growth();
+    printf("\n");
+    test_array_growth_policy();
 
     printf("\nAll tests passed!\n");
     return 0;
