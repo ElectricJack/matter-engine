@@ -411,8 +411,8 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
     if (active_radius == 0.0f) active_radius = 64.0f;
 
     impl_->sec.set_active_radius(active_radius);
-    if (opts.min_projected_size != 0.0f)
-        impl_->sec.set_min_projected_size(opts.min_projected_size);
+    // Unconditional: 0 = off (matches pre-facade main.cpp, which always set it).
+    impl_->sec.set_min_projected_size(opts.min_projected_size);
     impl_->sec.set_pixel_budget(budget);
     impl_->raster->set_pixel_budget(budget);
 
