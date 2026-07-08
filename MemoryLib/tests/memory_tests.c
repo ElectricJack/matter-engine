@@ -247,6 +247,28 @@ void test_array_growth_policy() {
     printf("  mem_array growth policy tests passed!\n");
 }
 
+static void test_array_ensure_overflow(void) {
+    printf("Testing MemArray ensure overflow guard...\n");
+    MemArray arr;
+    mem_array_init(&arr, 8);
+    void* slot = mem_array_push(&arr);
+    assert(slot != NULL);
+    assert(arr.count == 1);
+    /* overflow-sized request must fail without disturbing the array */
+    assert(mem_array_ensure(&arr, SIZE_MAX / 2) == 0);
+    assert(arr.count == 1);
+    assert(arr.capacity == 16);
+    assert(arr.data != NULL);
+    /* elemSize == 0 arrays cannot grow */
+    MemArray zero;
+    mem_array_init(&zero, 0);
+    assert(mem_array_ensure(&zero, 4) == 0);
+    assert(mem_array_push(&zero) == NULL);
+    mem_array_free(&zero);
+    mem_array_free(&arr);
+    printf("  MemArray overflow guard tests passed!\n");
+}
+
 int main() {
     printf("Running MemPool tests...\n");
     printf("max_align_t alignment: %zu bytes\n\n", _Alignof(max_align_t));
@@ -264,6 +286,8 @@ int main() {
     test_array_growth();
     printf("\n");
     test_array_growth_policy();
+    printf("\n");
+    test_array_ensure_overflow();
 
     printf("\nAll tests passed!\n");
     return 0;

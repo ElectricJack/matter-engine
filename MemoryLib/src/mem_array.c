@@ -1,6 +1,7 @@
 #include "../include/mem_array.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 void mem_array_init(MemArray* arr, size_t elemSize) {
     arr->data = NULL;
@@ -20,6 +21,10 @@ int mem_array_ensure(MemArray* arr, size_t minCapacity) {
     }
     if (newCap < 16) {
         newCap = 16;
+    }
+    /* Guard against overflow: newCap * elemSize must not wrap size_t */
+    if (arr->elemSize == 0 || newCap > SIZE_MAX / arr->elemSize) {
+        return 0;
     }
     void* tmp = realloc(arr->data, newCap * arr->elemSize);
     if (!tmp) {
