@@ -23,6 +23,7 @@ struct Hit {
     int   material_id = -1;      // registry index (TriEx materialId % 1000000), -1 if no TriEx
     float emission = 0.0f;       // MaterialRegistryGet(material_id)->emission (0 if id<0)
     float albedo[3] = {0.5f,0.5f,0.5f};
+    uint32_t instance = 0xffffffffu;  // index into expanded instance table; 0xffffffff = miss
 };
 
 class WorldTracer {
@@ -37,6 +38,11 @@ public:
     bool occluded(const float origin[3], const float dir[3], float max_t) const;
     void world_bounds(float mn[3], float mx[3]) const;   // valid after build
     size_t instance_count() const;
+
+    // Post-expansion instance table (children expanded by the compositional
+    // fallback get their own entries). Valid after build().
+    size_t expanded_instance_count() const;
+    bool expanded_instance(size_t idx, uint64_t& part_hash, float transform[16]) const;
 
 private:
     struct Impl;

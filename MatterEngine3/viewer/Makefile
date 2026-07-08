@@ -240,6 +240,21 @@ tileset-load-tests: embedded-shaders shaders shaders_gpu_link $(TILESET_LOAD_TES
 run-tilesetload: tileset-load-tests
 	./tileset_load_tests
 
+# Full public-API integration test binary (Task 7, Stage 4). Same object set as
+# gpu-tests (all engine objs + matter_engine.cpp), minus main.o + gpu_cull_tests.o,
+# plus the api_tests driver from tests/. Must run from MatterEngine3/viewer so that
+# the bake cache ("cache/") is on the warm path.
+L_API_TEST_OBJ = $(L_DIR)/api_tests.o
+$(L_API_TEST_OBJ): ../tests/api_tests.cpp | $(L_DIR)
+	$(CC) -c $< -o $@ $(CXX_FLAGS_BUILD)
+
+API_TEST_OBJ = $(filter-out $(L_DIR)/main.o $(L_DIR)/gpu_cull_tests.o,$(L_ALL_OBJ)) $(L_API_TEST_OBJ)
+api-tests: embedded-shaders shaders shaders_gpu_link $(API_TEST_OBJ)
+	$(CC) $(API_TEST_OBJ) -o api_tests $(CFLAGS) $(LDFLAGS) $(LDLIBS) $(AR_CORE_LDFLAGS)
+
+run-api-tests: api-tests
+	GALLIUM_DRIVER=d3d12 ./api_tests
+
 -include $(L_ALL_OBJ:.o=.d)
 
 # Shader path resolves relative to the binary; symlink MSL's shaders/ dir.
@@ -326,6 +341,6 @@ win-shaders-gpu:
 	@[ -d shaders_gpu ] || (echo "ERROR: shaders_gpu/ directory missing" && exit 1)
 
 clean:
-	rm -rf viewer viewer.exe gpu_tests tileset_gpu_tests tileset_seam_tests tileset_provider_tests tileset_load_tests shaders build
+	rm -rf viewer viewer.exe gpu_tests tileset_gpu_tests tileset_seam_tests tileset_provider_tests tileset_load_tests api_tests shaders build
 
-.PHONY: viewer windows gpu-tests tileset-gpu-tests run-tilesetgpu tileset-seam-tests run-tilesetseam tileset-provider-tests run-tilesetprovider tileset-load-tests run-tilesetload clean shaders shaders_gpu_link win-shaders win-shaders-gpu regen-processed-shader mingw-box3d embedded-shaders
+.PHONY: viewer windows gpu-tests tileset-gpu-tests run-tilesetgpu tileset-seam-tests run-tilesetseam tileset-provider-tests run-tilesetprovider tileset-load-tests run-tilesetload api-tests run-api-tests clean shaders shaders_gpu_link win-shaders win-shaders-gpu regen-processed-shader mingw-box3d embedded-shaders

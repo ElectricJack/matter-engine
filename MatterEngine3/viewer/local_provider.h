@@ -48,6 +48,7 @@ private:
     int                  hit_count_   = 0;
     int                  baked_tileset_count_ = 0;
     std::set<uint64_t>   baked_hashes_;  // hashes freshly baked by last connect()
+    std::map<uint64_t, std::string> module_by_hash_; // hash -> module name (from manifest roots)
 };
 
 // Expand an assembly root's baked child-instance table (from its .part in

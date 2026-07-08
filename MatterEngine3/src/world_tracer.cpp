@@ -174,6 +174,7 @@ struct IBVHNode {
 
 struct ExpandedInst {
     const LoadedTracePart* part = nullptr;
+    uint64_t part_hash = 0;          // hash of the part (for expanded_instance())
     float transform[16];   // row-major world placement
     float inv[16];         // inverse of transform
     NormalMat* nm = nullptr; // inverse-transpose 3×3 for normals (owned by pool)
@@ -336,6 +337,7 @@ struct WorldTracer::Impl {
         nm_pool_.emplace_back(world_xf);
         ExpandedInst ei;
         ei.part = part;
+        ei.part_hash = hash;
         std::memcpy(ei.transform, world_xf, 64);
         if (!invert4x4(world_xf, ei.inv)) {
             std::fprintf(stderr, "world_tracer: near-singular transform for hash %llu\n",
@@ -517,22 +519,26 @@ struct WorldTracer::Impl {
                        const float worldO[3], const float worldD[3],
                        const float rD_world[3],
                        float& best_t,
-                       float best_normal[3], int& best_mat) const {
+                       float best_normal[3], int& best_mat,
+                       int& best_inst) const {
         const IBVHNode& node = ibvh_[node_idx];
         if (!aabb_hit(node.bmin, node.bmax, worldO, rD_world, best_t)) return;
 
         if (node.count > 0) {
             // Leaf
             for (int i = node.first; i < node.first + node.count; ++i) {
-                const ExpandedInst& ei = expanded_[order[i]];
+                int inst_idx = order[i];
+                const ExpandedInst& ei = expanded_[inst_idx];
                 if (!aabb_hit(ei.world_mn, ei.world_mx, worldO, rD_world, best_t)) continue;
-                intersect_instance(ei, worldO, worldD, best_t, best_normal, best_mat);
+                if (intersect_instance(ei, worldO, worldD, best_t, best_normal, best_mat)) {
+                    best_inst = inst_idx;
+                }
             }
         } else {
             traverse_ibvh(node.left,  order, worldO, worldD, rD_world,
-                          best_t, best_normal, best_mat);
+                          best_t, best_normal, best_mat, best_inst);
             traverse_ibvh(node.right, order, worldO, worldD, rD_world,
-                          best_t, best_normal, best_mat);
+                          best_t, best_normal, best_mat, best_inst);
         }
     }
 
@@ -594,6 +600,7 @@ bool WorldTracer::trace(const float origin[3], const float dir[3],
     float best_t = max_t;
     float best_normal[3] = {0,0,1};
     int   best_mat = -1;
+    int   best_inst = -1;
 
     float rD_world[3];
     rD_world[0] = (std::fabs(dir[0]) > 1e-30f) ? 1.f/dir[0] : 1e30f;
@@ -601,7 +608,7 @@ bool WorldTracer::trace(const float origin[3], const float dir[3],
     rD_world[2] = (std::fabs(dir[2]) > 1e-30f) ? 1.f/dir[2] : 1e30f;
 
     im.traverse_ibvh(0, im.ibvh_order_, origin, dir, rD_world,
-                     best_t, best_normal, best_mat);
+                     best_t, best_normal, best_mat, best_inst);
 
     if (best_t >= max_t - 1e-7f) return false;
 
@@ -610,6 +617,7 @@ bool WorldTracer::trace(const float origin[3], const float dir[3],
     hit.normal[1] = best_normal[1];
     hit.normal[2] = best_normal[2];
     hit.material_id = best_mat;
+    hit.instance = (best_inst >= 0) ? (uint32_t)best_inst : 0xffffffffu;
 
     if (best_mat >= 0) {
         const MaterialDef* mat = MaterialRegistryGet(best_mat);
@@ -646,6 +654,19 @@ void WorldTracer::world_bounds(float mn[3], float mx[3]) const {
 
 size_t WorldTracer::instance_count() const {
     return impl_ ? impl_->expanded_.size() : 0;
+}
+
+size_t WorldTracer::expanded_instance_count() const {
+    return impl_ ? impl_->expanded_.size() : 0;
+}
+
+bool WorldTracer::expanded_instance(size_t idx, uint64_t& part_hash,
+                                    float transform[16]) const {
+    if (!impl_ || idx >= impl_->expanded_.size()) return false;
+    const ExpandedInst& ei = impl_->expanded_[idx];
+    part_hash = ei.part_hash;
+    std::memcpy(transform, ei.transform, 64);
+    return true;
 }
 
 } // namespace world_tracer

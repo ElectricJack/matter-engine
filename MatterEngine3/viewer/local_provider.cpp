@@ -288,6 +288,12 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     hit_count_   = ir.hits;
     baked_hashes_.insert(ir.baked.begin(), ir.baked.end());
 
+    // Build hash -> module name map for use in fetch_parts()'s on_part callback.
+    module_by_hash_.clear();
+    for (size_t j = 0; j < ir.root_hashes.size(); ++j)
+        if (ir.root_hashes[j] != 0)
+            module_by_hash_[ir.root_hashes[j]] = roots_for_install[j].module;
+
     // Restore caller's cwd before doing anything further.
     fs_chdir(orig_cwd);
 
@@ -304,10 +310,11 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     out.world_root_hash = 1;
     out.instances.clear();
     uint32_t next_id = 1;
-    auto place = [&](uint64_t h, float x, float y, float z) {
+    auto place = [&](uint64_t h, float x, float y, float z, const std::string& mod = {}) {
         WorldManifestEntry e;
         e.instance_id = next_id++;
         e.part_hash   = h;
+        e.module      = mod;
         set_translate(e.transform, x, y, z);
         out.instances.push_back(e);
     };
@@ -427,7 +434,7 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
                                           next_id, out.instances, err))
                 return false;
         } else {
-            place(ir.root_hashes[k], 0.0f, 0.0f, 0.0f);
+            place(ir.root_hashes[k], 0.0f, 0.0f, 0.0f, roots[i].module);
         }
     }
     flatten_placed();
@@ -643,7 +650,12 @@ bool LocalProvider::fetch_parts(const std::vector<uint64_t>& want,
     for (size_t i = 0; i < want.size(); ++i) {
         uint64_t h = want[i];
         if (!store.get_or_load(h)) { err = "load failed for part " + std::to_string(h); return false; }
-        if (cfg_.on_part) cfg_.on_part(/*module_name=*/nullptr, (int)(i + 1), (int)want.size());
+        if (cfg_.on_part) {
+            auto it = module_by_hash_.find(h);
+            const char* mod = (it != module_by_hash_.end() && !it->second.empty())
+                              ? it->second.c_str() : nullptr;
+            cfg_.on_part(mod, (int)(i + 1), (int)want.size());
+        }
     }
     return true;
 }

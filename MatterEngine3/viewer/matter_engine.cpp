@@ -20,6 +20,7 @@
 #include "raster_cull.h"
 #include "gl46.h"
 #include "shader_source.h"   // matter::set_shader_override_dir (Task 1 header)
+#include "world_tracer.h"    // WorldTracer — lazy CPU BVH for query API
 
 // Raylib must come before glad to avoid double-definition of GL types.
 #include "raylib.h"
@@ -28,10 +29,12 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <deque>
 #include <functional>
 #include <memory>
 #include <string>
+#include <unordered_map>
 
 namespace matter {
 
@@ -98,6 +101,17 @@ struct WorldSession::Impl {
     std::deque<Event> events;
 
     FrameStats stats{};
+
+    // Lazy CPU tracer for the query API (raycast/instance_count/instance_info).
+    // Built on first query after a bake. mutable so instance_count() const can build.
+    mutable std::unique_ptr<world_tracer::WorldTracer> tracer;
+    mutable bool tracer_dirty = true;  // true after every bake/reload
+
+    // hash -> module name for expanded_instance info (filled from manifest)
+    mutable std::unordered_map<uint64_t, std::string> module_by_hash;
+
+    // Ensure tracer is built and up-to-date. Returns false if build failed.
+    bool ensure_tracer() const;
 
     // The core bake/reconnect logic relocated from main.cpp's connect_sequence.
     // Returns true on success; on failure sets err and leaves connected = false.
@@ -210,6 +224,51 @@ bool WorldSession::Impl::bake_once(std::string& err) {
         stats.probe_dims[0] = stats.probe_dims[1] = stats.probe_dims[2] = 0;
     }
     connected = true;
+    // Invalidate the lazy tracer: world content changed.
+    tracer_dirty = true;
+    tracer.reset();
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// WorldSession::Impl::ensure_tracer
+// Build the lazy CPU BVH from the current world state. Returns false if the
+// tracer could not be built (e.g. no parts loaded yet). Const so that
+// instance_count() const can trigger it via the mutable members.
+// ---------------------------------------------------------------------------
+bool WorldSession::Impl::ensure_tracer() const {
+    if (!tracer_dirty && tracer) return true;
+
+    // Build TraceInstance list from state root entries.
+    const auto& entries = state.entries();
+    if (entries.empty()) return false;
+
+    std::vector<world_tracer::TraceInstance> trace_instances;
+    trace_instances.reserve(entries.size());
+    for (const auto& e : entries) {
+        world_tracer::TraceInstance ti;
+        ti.part_hash = e.part_hash;
+        std::memcpy(ti.transform, e.transform, sizeof(ti.transform));
+        trace_instances.push_back(ti);
+    }
+
+    tracer = std::make_unique<world_tracer::WorldTracer>();
+    std::string err;
+    if (!tracer->build(engine->cache_root, trace_instances, err)) {
+        std::fprintf(stderr, "WorldSession: tracer build failed: %s\n", err.c_str());
+        tracer.reset();
+        return false;
+    }
+
+    // Build hash -> module name from manifest entries (best-effort; only root entries
+    // that came from named manifest roots will have a non-empty module field).
+    module_by_hash.clear();
+    for (const auto& e : manifest.instances) {
+        if (!e.module.empty())
+            module_by_hash[e.part_hash] = e.module;
+    }
+
+    tracer_dirty = false;
     return true;
 }
 
@@ -518,19 +577,54 @@ const FrameStats& WorldSession::frame_stats() const {
 }
 
 // ---------------------------------------------------------------------------
-// Query stubs — implemented in Task 7.
+// Query API — backed by a lazily built CPU BVH (WorldTracer).
 // ---------------------------------------------------------------------------
-bool WorldSession::raycast(const float /*origin*/[3], const float /*dir*/[3],
-                           float /*max_t*/, RayHit& /*out*/) {
-    return false;
+bool WorldSession::raycast(const float origin[3], const float dir[3],
+                           float max_t, RayHit& out) {
+    if (!impl_->connected) return false;
+    if (!impl_->ensure_tracer()) return false;
+
+    world_tracer::Hit hit;
+    if (!impl_->tracer->trace(origin, dir, max_t, hit)) return false;
+
+    out.t           = hit.t;
+    out.normal[0]   = hit.normal[0];
+    out.normal[1]   = hit.normal[1];
+    out.normal[2]   = hit.normal[2];
+    out.material_id = hit.material_id;
+    out.instance    = hit.instance;
+
+    // Resolve part_hash via expanded_instance table.
+    out.part_hash = 0;
+    if (hit.instance != 0xffffffffu) {
+        float xf[16];
+        impl_->tracer->expanded_instance(hit.instance, out.part_hash, xf);
+    }
+    return true;
 }
 
 uint32_t WorldSession::instance_count() const {
-    return 0;
+    if (!impl_->connected) return 0;
+    if (!impl_->ensure_tracer()) return 0;
+    return (uint32_t)impl_->tracer->expanded_instance_count();
 }
 
-bool WorldSession::instance_info(uint32_t /*idx*/, InstanceInfo& /*out*/) {
-    return false;
+bool WorldSession::instance_info(uint32_t idx, InstanceInfo& out) {
+    if (!impl_->connected) return false;
+    if (!impl_->ensure_tracer()) return false;
+
+    uint64_t part_hash = 0;
+    if (!impl_->tracer->expanded_instance(idx, part_hash, out.transform)) return false;
+
+    out.part_hash = part_hash;
+
+    // Module name: look up in hash->module map built from manifest entries.
+    out.module_name = nullptr;
+    auto it = impl_->module_by_hash.find(part_hash);
+    if (it != impl_->module_by_hash.end() && !it->second.empty())
+        out.module_name = it->second.c_str();
+
+    return true;
 }
 
 } // namespace matter

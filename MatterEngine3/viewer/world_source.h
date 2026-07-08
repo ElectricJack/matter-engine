@@ -19,6 +19,7 @@ struct WorldManifestEntry {
     uint32_t instance_id = 0;
     uint64_t part_hash   = 0;   // resolved hash of the placed part
     float    transform[16] = {0};
+    std::string module;          // schema module name (empty if unknown/child-expanded)
 };
 
 struct WorldManifest {
