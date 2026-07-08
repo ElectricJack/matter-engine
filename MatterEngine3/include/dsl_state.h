@@ -203,7 +203,6 @@ public:
     }
 
     const BuildBuffer& buffer() const { return buffer_; }
-    BuildBuffer&       buffer()       { return buffer_; }
 
     // A recorded child-part placement: resolved hash of the child + the world
     // transform (row-major) at the current matrix-stack top when placeChild ran.
