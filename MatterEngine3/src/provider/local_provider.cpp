@@ -52,8 +52,7 @@ namespace viewer {
 
 // Deterministic splitmix64 (matches example_world's scatter exactly).
 namespace {
-// Filesystem portability shim: MinGW lacks the POSIX mkdir(mode)/realpath and
-// spells getcwd/chdir with leading underscores.
+// Filesystem portability shim: MinGW mkdir and realpath have different names.
 #ifdef _WIN32
 int  fs_mkdir(const char* p)                       { return _mkdir(p); }
 bool fs_realpath(const char* in, char* out)        { return _fullpath(out, in, PATH_MAX) != nullptr; }

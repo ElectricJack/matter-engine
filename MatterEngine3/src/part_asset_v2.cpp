@@ -232,7 +232,7 @@ static bool write_file_atomic(const std::string& path,
     const std::string tmp = path + ".tmp";
     FILE* f = std::fopen(tmp.c_str(), "wb");
     if (!f) {
-        std::fprintf(stderr, "  save_v2: fopen('%s', 'wb') failed: errno=%d (%s); cwd is what matters — bake_source runs after LocalProvider chdir'd to abs_cache_root\n",
+        std::fprintf(stderr, "  save_v2: fopen('%s', 'wb') failed: errno=%d (%s); path is absolute from BakeOptions.parts_dir (or cwd-relative if empty)\n",
                      tmp.c_str(), errno, std::strerror(errno));
         return false;
     }

@@ -7,8 +7,9 @@
 // parts/<hash>.part files exist on disk and a second install bakes 0 (all hits).
 //
 // bake_source writes to the RELATIVE path cache_path_resolved() = "parts/<hash>.part",
-// so this test chdir()s into a fresh temp dir and points HostBaker at "parts" so
-// both the writer and the cache check agree on the location (plan precondition).
+// so most tests chdir()s into a fresh temp dir and point HostBaker at "parts" so
+// both the writer and the cache check agree on the location (plan precondition);
+// the test_foreign_cwd_install variant intentionally avoids chdir to prove absolute-path independence.
 
 #include "part_graph.h"        // includes script_host.h under the guard
 #include "part_asset_v2.h"     // cache_path_resolved
