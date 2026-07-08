@@ -65,8 +65,9 @@ public:
     bool poll_event(Event& out);       // drain one; loop until false
     const FrameStats& frame_stats() const;
 
-    // Live-edit rebake. Fail-closed: on error the old world keeps rendering
-    // and a BakeError event is emitted. Same event sequence as request_bake.
+    // Live-edit rebake. Fail-closed: on error a BakeError event is emitted and
+    // render() no-ops until a later request_bake()/reload() succeeds (the old
+    // world is torn down before rebaking). Same event sequence as request_bake.
     void reload();
 
     // Query API (backed by a lazily built CPU BVH; first call after a bake pays
