@@ -1,6 +1,5 @@
 #include "../include/tlas_manager.hpp"
 #include <algorithm>
-#include <cassert>
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
@@ -475,11 +474,20 @@ void TLASManager::generate_node_texture_data(std::vector<float>& output_data,
         // such integers exactly, which corrupted the low (left) bits during traversal.
         uint32_t leftChild  = node.leftRight & 0xFFFFu;
         uint32_t rightChild = (node.leftRight >> 16) & 0xFFFFu;
-        // T4/16-bit packing guard: assert the indices fit in 16 bits as packed.
-        // The TLAS BVH stores left|right in a uint32 as two 16-bit halves.
-        // Beyond 65535 nodes the high 16 bits spill and traversal silently breaks.
-        assert(leftChild  <= 0xFFFFu && "TLAS left child index exceeds 16-bit field");
-        assert(rightChild <= 0xFFFFu && "TLAS right child index exceeds 16-bit field");
+        // T4/16-bit packing guard (NDEBUG-safe): the TLAS BVH stores left|right
+        // in a uint32 as two 16-bit halves.  Beyond 65535 nodes the packed half
+        // wraps and traversal silently breaks.  Fail loudly instead of writing
+        // corrupt texture data.
+        if (leftChild > 0xFFFFu) {
+            fprintf(stderr, "[ERROR] TLASManager: TLAS left child index %u exceeds 16-bit field (0xFFFF); "
+                    "node %d skipped to avoid corrupt texture data.\n", leftChild, i);
+            continue;
+        }
+        if (rightChild > 0xFFFFu) {
+            fprintf(stderr, "[ERROR] TLASManager: TLAS right child index %u exceeds 16-bit field (0xFFFF); "
+                    "node %d skipped to avoid corrupt texture data.\n", rightChild, i);
+            continue;
+        }
 
         // Row 0: aabbMin + leftChild (0 for leaf nodes, which acts as the leaf sentinel)
         int row0Idx = texel_off(i, 0);
