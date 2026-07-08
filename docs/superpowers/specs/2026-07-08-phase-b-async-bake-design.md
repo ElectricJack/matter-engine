@@ -24,7 +24,7 @@ kill the session.
 | Question | Decision |
 |---|---|
 | Parallelism | **One background worker thread now**; queue/job/cancel types designed so a worker pool can slot in later (after OOM hardening). No parallel part baking in Phase B. |
-| Scope | **Everything routes through the job system** — full bake, `reload()`, and live-edit cone rebakes. One bake path. |
+| Scope | **Everything routes through the job system** — full bake, `reload()`, and live-edit cone rebakes. One bake path. Includes wiring the previously test-only `LiveEditSession` into production (see Live-edit integration). |
 | Cancellation | **Between-jobs (per-part) checkpoints now**; cancel flag plumbed through a job context so stages can add mid-stage checkpoints later. Triggers: session shutdown, superseding bake/reload. (Live-edit bursts are coalesced upstream by the existing debounce, not by cancellation.) |
 | GPU jobs | **Coarse jobs, no mid-job slicing.** A long shader compile hitches the pump once; per-program job granularity is the knob. `GL_KHR_parallel_shader_compile` is a demo-polish follow-up, not Phase B. |
 | Per-part failure | **Skip-and-continue** (behavior change): a failed part emits a structured error and the bake proceeds; `BakeFinished` reports an error count. Previously one bad part failed the whole bake. |
@@ -120,16 +120,33 @@ thread (destructor runs on it). No app-side ceremony for quit-mid-bake.
 
 ## Live-edit integration
 
-- File watcher + debounce stay in app-thread `tick()`; on fire, `tick()`
-  enqueues `RebakeCone(changed_files)`.
-- **Cone computation moves into the worker** (it reads the part graph; the
-  worker is the sole graph mutator → no shared-graph locking).
+**Reality check (found during planning):** `LiveEditSession` (watcher →
+debounce → cone rebake, the SP-5 work) exists in the kernel with full test
+coverage but was never wired into production — its seam interfaces
+(`live_edit::GraphResolver` / `Baker` / `Flattener`, `live_edit_interfaces.h`)
+have no production implementations. Production "live edit" today is FIFO
+`reload` → full `bake_once`, where content-addressed caching provides
+cone-like behavior implicitly. **Phase B wires `LiveEditSession` for real**
+(decided 2026-07-08):
+
+- New production seam implementations bridging `LiveEditSession` to the
+  provider/script-host machinery: `GraphResolver` over the part graph
+  (`part_graph.h` resolve/reverse-map/topo), `Baker` over
+  `script_host`/`HostBaker`, `Flattener` over the root re-flatten path.
+- File watcher + debounce run in app-thread `tick()` (watcher polling is
+  cheap); when the debounce fires, `tick()` enqueues
+  `RebakeCone(changed_files)`.
+- **Cone computation and rebake run in the worker** (the worker is the sole
+  graph mutator → no shared-graph locking).
 - **The 2000ms dev budget retires** — it bounded main-thread stalls, which no
-  longer exist. A cone rebake runs to completion as one cancellable command.
+  longer exist. A cone rebake runs to completion as one cancellable command
+  (cancel checkpoints between cone entries).
 - Fail-closed unchanged: script error → last-good artifact kept. The internal
   `LiveEditError` folds into the public event stream as
   `BakeError{code: ScriptError, part, message}`.
-- Rebaked parts publish via the same upload-and-publish job.
+- Rebaked parts publish via the same upload-and-publish job; the world state
+  refresh after a cone rebake re-resolves affected manifest entries to the
+  new part hashes.
 
 ## Error handling
 
