@@ -178,3 +178,14 @@ Comment said "Copy shaders_gpu/ from MatterEngine3 for the Windows build" but th
 5. `make -j1 -C MatterEngine3/tests run-tilesetgpu` (GALLIUM_DRIVER=d3d12) — 62/62 passed ✓
 6. `GALLIUM_DRIVER=d3d12 make -j1 -C MatterEngine3/tests run-api-tests` — api_tests: all passed ✓
 7. `bash build-all.sh` — all 10 projects OK ✓
+
+### Controller addendum (b234c06)
+
+The fix round's `build-engine-lib` ran `make -C MatterEngine3 clean` on every
+viewer build when autoremesher is present (correctness-first, but kills
+incremental iteration). Replaced with a `.lib_flags` stamp owned by
+MatterEngine3/Makefile: every C++ object depends on the stamp, which is
+rewritten only when EXTRA_CFLAGS differ — flag changes force a full recompile,
+same-flag builds are incremental. Stamp removed by `clean`, git-ignored.
+Verified: flag change → 68-object recompile; same flags → 0 recompiles,
+`make -C MatterViewer` 8s; api_tests all passed against the rebuilt lib.
