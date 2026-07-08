@@ -222,6 +222,117 @@ static JSValue j_ts_base(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     return JS_UNDEFINED;
 }
 
+// ---------------------------------------------------------------------------
+// place_one_instance — shared per-point placement logic for j_ts_layer.
+//
+// Fills `out` with scale, pos[1], quat, and child_hash drawn from attr_rng.
+// The x/z coordinates are NOT set here; the caller maps them after this call
+// (strip orientation swap vs. interior pass-through differ by call site).
+//
+// orient: 0 = vertical strip (x=across, z=along),
+//         1 = horizontal strip (x=along, z=across),
+//        -1 = interior (x=pt.x, z=pt.z, no swap).
+// The x/z assignment IS performed here so both call sites are unified.
+//
+// Does NOT free params_val or r_helper on error (caller owns them).
+// Returns false and sets ts->has_error on any error; out is unmodified.
+// ---------------------------------------------------------------------------
+static bool place_one_instance(
+    JSContext* c,
+    tileset::TilesetState* ts,
+    dsl::DslState* state,
+    const std::string& module,
+    const tileset::LayerSpec& layer,
+    bool params_is_fn,
+    uint64_t fixed_hash,
+    JSValueConst params_val,
+    JSValueConst r_helper,
+    dsl::Rng& attr_rng,
+    const tileset::Point2& pt,
+    int orient,
+    tileset::Placement& out)
+{
+    tileset::Placement p{};
+
+    // scale drawn first.
+    // NOTE: if scale_range transitions between degenerate ([a,a]) and
+    // non-degenerate, the RNG draw is added or removed here, shifting
+    // every subsequent placement attribute (y, quat, params) in the stream.
+    if (layer.scale_range[0] == layer.scale_range[1]) {
+        p.scale = layer.scale_range[0];
+    } else {
+        p.scale = layer.scale_range[0] +
+                  (float)attr_rng.next_unit() * (layer.scale_range[1] - layer.scale_range[0]);
+    }
+
+    // y / quat
+    if (layer.physics) {
+        p.pos[1] = layer.drop_h[0] +
+                   (float)attr_rng.next_unit() * (layer.drop_h[1] - layer.drop_h[0]);
+        random_unit_quat(attr_rng, p.quat);
+    } else {
+        p.pos[1] = 0.0f;
+        float angle = (float)attr_rng.next_unit() * 6.2831853f;
+        float half = angle * 0.5f;
+        p.quat[0] = 0.0f;
+        p.quat[1] = std::sin(half);
+        p.quat[2] = 0.0f;
+        p.quat[3] = std::cos(half);
+    }
+
+    // params
+    if (params_is_fn) {
+        ts->param_rng = &attr_rng;
+        JSValue ret = JS_Call(c, params_val, JS_UNDEFINED, 1, &r_helper);
+        ts->param_rng = nullptr;
+        if (JS_IsException(ret)) {
+            JS_FreeValue(c, ret);
+            ts->set_error("layer('" + module + "'): params fn threw");
+            return false;
+        }
+        JSValue js = JS_JSONStringify(c, ret, JS_UNDEFINED, JS_UNDEFINED);
+        JS_FreeValue(c, ret);
+        std::string pjson;
+        if (!JS_IsException(js)) {
+            size_t len = 0;
+            const char* s = JS_ToCStringLen(c, &len, js);
+            if (s) { pjson.assign(s, len); JS_FreeCString(c, s); }
+        }
+        JS_FreeValue(c, js);
+        uint64_t h = 0;
+        // Fail-closed: if fn returned a non-trivial params object, the composite
+        // key (module\x1f<params>) must be explicitly declared in static requires.
+        // Trivial (empty/"{}"): fall through to plain-module lookup so that a fn
+        // that returns {} for a plain-declared module still resolves correctly.
+        bool has_real_params = !pjson.empty() && pjson != "{}";
+        if (has_real_params &&
+            !state->has_composite_child_key(module, pjson.c_str(), pjson.size())) {
+            ts->set_error("layer('" + module + "'): params variant not declared in static requires");
+            return false;
+        }
+        if (!state->lookup_child_hash(module, has_real_params ? pjson.c_str() : nullptr,
+                                      has_real_params ? pjson.size() : 0, h)) {
+            ts->set_error("layer('" + module + "'): params variant not declared in static requires");
+            return false;
+        }
+        p.child_hash = h;
+    } else {
+        p.child_hash = fixed_hash;
+    }
+
+    // Map coordinates: strips swap x/z based on orientation; interior is direct.
+    if (orient == 0) {
+        p.pos[0] = pt.x; p.pos[2] = pt.z;  // vertical: x=across, z=along
+    } else if (orient == 1) {
+        p.pos[0] = pt.z; p.pos[2] = pt.x;  // horizontal: x=along, z=across
+    } else {
+        p.pos[0] = pt.x; p.pos[2] = pt.z;  // interior: direct
+    }
+
+    out = p;
+    return true;
+}
+
 static JSValue j_ts_layer(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     tileset::TilesetState* ts = ts_of(c);
     if (!ts) { state_of(c)->set_error("tileset verb outside Tileset root"); return JS_UNDEFINED; }
@@ -426,78 +537,13 @@ static JSValue j_ts_layer(JSContext* c, JSValueConst, int n, JSValueConst* a) {
 
             for (const auto& pt : pts) {
                 tileset::Placement p{};
-                // scale drawn first.
-                // NOTE: if scale_range transitions between degenerate ([a,a]) and
-                // non-degenerate, the RNG draw is added or removed here, shifting
-                // every subsequent placement attribute (y, quat, params) in the stream.
-                if (layer.scale_range[0] == layer.scale_range[1]) {
-                    p.scale = layer.scale_range[0];
-                } else {
-                    p.scale = layer.scale_range[0] +
-                              (float)attr_rng.next_unit() * (layer.scale_range[1] - layer.scale_range[0]);
-                }
-                // y / quat
-                if (layer.physics) {
-                    p.pos[1] = layer.drop_h[0] +
-                               (float)attr_rng.next_unit() * (layer.drop_h[1] - layer.drop_h[0]);
-                    random_unit_quat(attr_rng, p.quat);
-                } else {
-                    p.pos[1] = 0.0f;
-                    float angle = (float)attr_rng.next_unit() * 6.2831853f;
-                    float half = angle * 0.5f;
-                    p.quat[0] = 0.0f;
-                    p.quat[1] = std::sin(half);
-                    p.quat[2] = 0.0f;
-                    p.quat[3] = std::cos(half);
-                }
-                // params
-                if (params_is_fn) {
-                    ts->param_rng = &attr_rng;
-                    JSValue ret = JS_Call(c, params_val, JS_UNDEFINED, 1, &r_helper);
-                    ts->param_rng = nullptr;
-                    if (JS_IsException(ret)) {
-                        JS_FreeValue(c, ret);
-                        ts->set_error("layer('" + module + "'): params fn threw");
-                        JS_FreeValue(c, params_val);
-                        JS_FreeValue(c, r_helper);
-                        return JS_UNDEFINED;
-                    }
-                    JSValue js = JS_JSONStringify(c, ret, JS_UNDEFINED, JS_UNDEFINED);
-                    JS_FreeValue(c, ret);
-                    std::string pjson;
-                    if (!JS_IsException(js)) {
-                        size_t len=0; const char* s = JS_ToCStringLen(c, &len, js);
-                        if (s) { pjson.assign(s, len); JS_FreeCString(c,s); }
-                    }
-                    JS_FreeValue(c, js);
-                    uint64_t h=0;
-                    // Fail-closed: if fn returned a non-trivial params object, the composite
-                    // key (module\x1f<params>) must be explicitly declared in static requires.
-                    // Trivial (empty/"{}"): fall through to plain-module lookup so that a fn
-                    // that returns {} for a plain-declared module still resolves correctly.
-                    bool has_real_params = !pjson.empty() && pjson != "{}";
-                    if (has_real_params && !state->has_composite_child_key(module, pjson.c_str(), pjson.size())) {
-                        ts->set_error("layer('" + module + "'): params variant not declared in static requires");
-                        JS_FreeValue(c, params_val);
-                        JS_FreeValue(c, r_helper);
-                        return JS_UNDEFINED;
-                    }
-                    if (!state->lookup_child_hash(module, has_real_params ? pjson.c_str() : nullptr,
-                                                  has_real_params ? pjson.size() : 0, h)) {
-                        ts->set_error("layer('" + module + "'): params variant not declared in static requires");
-                        JS_FreeValue(c, params_val);
-                        JS_FreeValue(c, r_helper);
-                        return JS_UNDEFINED;
-                    }
-                    p.child_hash = h;
-                } else {
-                    p.child_hash = fixed_hash;
-                }
-                // Map strip coordinates: across=pt.x, along=pt.z
-                if (orient == 0) {
-                    p.pos[0] = pt.x; p.pos[2] = pt.z;  // vertical: x=across, z=along
-                } else {
-                    p.pos[0] = pt.z; p.pos[2] = pt.x;  // horizontal: x=along, z=across
+                if (!place_one_instance(c, ts, state, module, layer,
+                                        params_is_fn, fixed_hash,
+                                        params_val, r_helper,
+                                        attr_rng, pt, orient, p)) {
+                    JS_FreeValue(c, params_val);
+                    JS_FreeValue(c, r_helper);
+                    return JS_UNDEFINED;
                 }
                 dest.push_back(p);
             }
@@ -524,74 +570,14 @@ static JSValue j_ts_layer(JSContext* c, JSValueConst, int n, JSValueConst* a) {
 
         for (const auto& pt : pts) {
             tileset::Placement p{};
-            // scale.
-            // NOTE: if scale_range transitions between degenerate ([a,a]) and
-            // non-degenerate, the RNG draw is added or removed here, shifting
-            // every subsequent placement attribute (y, quat, params) in the stream.
-            if (layer.scale_range[0] == layer.scale_range[1]) {
-                p.scale = layer.scale_range[0];
-            } else {
-                p.scale = layer.scale_range[0] +
-                          (float)attr_rng.next_unit() * (layer.scale_range[1] - layer.scale_range[0]);
+            if (!place_one_instance(c, ts, state, module, layer,
+                                    params_is_fn, fixed_hash,
+                                    params_val, r_helper,
+                                    attr_rng, pt, -1, p)) {
+                JS_FreeValue(c, params_val);
+                JS_FreeValue(c, r_helper);
+                return JS_UNDEFINED;
             }
-            // y / quat
-            if (layer.physics) {
-                p.pos[1] = layer.drop_h[0] +
-                           (float)attr_rng.next_unit() * (layer.drop_h[1] - layer.drop_h[0]);
-                random_unit_quat(attr_rng, p.quat);
-            } else {
-                p.pos[1] = 0.0f;
-                float angle = (float)attr_rng.next_unit() * 6.2831853f;
-                float half = angle * 0.5f;
-                p.quat[0] = 0.0f;
-                p.quat[1] = std::sin(half);
-                p.quat[2] = 0.0f;
-                p.quat[3] = std::cos(half);
-            }
-            // params
-            if (params_is_fn) {
-                ts->param_rng = &attr_rng;
-                JSValue ret = JS_Call(c, params_val, JS_UNDEFINED, 1, &r_helper);
-                ts->param_rng = nullptr;
-                if (JS_IsException(ret)) {
-                    JS_FreeValue(c, ret);
-                    ts->set_error("layer('" + module + "'): params fn threw");
-                    JS_FreeValue(c, params_val);
-                    JS_FreeValue(c, r_helper);
-                    return JS_UNDEFINED;
-                }
-                JSValue js = JS_JSONStringify(c, ret, JS_UNDEFINED, JS_UNDEFINED);
-                JS_FreeValue(c, ret);
-                std::string pjson;
-                if (!JS_IsException(js)) {
-                    size_t len=0; const char* s = JS_ToCStringLen(c, &len, js);
-                    if (s) { pjson.assign(s, len); JS_FreeCString(c,s); }
-                }
-                JS_FreeValue(c, js);
-                uint64_t h=0;
-                // Fail-closed: if fn returned a non-trivial params object, the composite
-                // key (module\x1f<params>) must be explicitly declared in static requires.
-                // Trivial (empty/"{}"): fall through to plain-module lookup so that a fn
-                // that returns {} for a plain-declared module still resolves correctly.
-                bool has_real_params = !pjson.empty() && pjson != "{}";
-                if (has_real_params && !state->has_composite_child_key(module, pjson.c_str(), pjson.size())) {
-                    ts->set_error("layer('" + module + "'): params variant not declared in static requires");
-                    JS_FreeValue(c, params_val);
-                    JS_FreeValue(c, r_helper);
-                    return JS_UNDEFINED;
-                }
-                if (!state->lookup_child_hash(module, has_real_params ? pjson.c_str() : nullptr,
-                                              has_real_params ? pjson.size() : 0, h)) {
-                    ts->set_error("layer('" + module + "'): params variant not declared in static requires");
-                    JS_FreeValue(c, params_val);
-                    JS_FreeValue(c, r_helper);
-                    return JS_UNDEFINED;
-                }
-                p.child_hash = h;
-            } else {
-                p.child_hash = fixed_hash;
-            }
-            p.pos[0] = pt.x; p.pos[2] = pt.z;
             dest.push_back(p);
         }
     }

@@ -248,7 +248,9 @@ bool load_gtex(const std::string& path,
     // Decode PNG blobs (RGB8/RG8/RGB8) via stb_image; R16 is raw uint16 LE.
     auto decode_png = [&](int chan_id, int expect_comp, std::vector<uint8_t>& out) -> bool {
         const GTexChannelEntry* e = by_id[chan_id];
-        if (e->offset + e->size > raw.size()) return false;
+        // Cast to uint64_t before adding: both fields are uint32_t and their sum
+        // can wrap to a value that passes the bounds check on a >2 GB file (B12).
+        if ((uint64_t)e->offset + (uint64_t)e->size > raw.size()) return false;
         int w = 0, h = 0, comp = 0;
         stbi_uc* px = stbi_load_from_memory(raw.data() + e->offset, (int)e->size,
                                             &w, &h, &comp, expect_comp);
@@ -270,7 +272,8 @@ bool load_gtex(const std::string& path,
     // Height R16 raw.
     {
         const GTexChannelEntry* e = by_id[CHAN_HEIGHT_R16];
-        if (e->offset + e->size > raw.size()) {
+        // Cast to uint64_t before adding to avoid uint32 wrap (B12).
+        if ((uint64_t)e->offset + (uint64_t)e->size > raw.size()) {
             err = "load_gtex: height blob overflow: " + path; return false;
         }
         if (e->size != e->width * e->height * 2) {
