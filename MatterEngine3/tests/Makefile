@@ -303,6 +303,7 @@ FLATTEN_TARGET = part_flatten_tests
 FLATTEN_CPP = part_flatten_tests.cpp ../src/part_flatten.cpp ../src/lod_bake.cpp \
               ../src/part_cluster.cpp \
               ../src/part_asset_v2.cpp \
+              ../src/retopo_blacklist.cpp \
               $(MSL)/mesh_simplifier.cpp \
               $(MSL)/mesh_indexed.cpp \
               $(MSL)/mesh_transform.cpp \
@@ -341,6 +342,7 @@ RETOPO_INT_TARGET = retopo_integration_tests
 RETOPO_INT_CPP = retopo_integration_tests.cpp ../src/part_flatten.cpp ../src/lod_bake.cpp \
                  ../src/part_cluster.cpp \
                  ../src/part_asset_v2.cpp \
+                 ../src/retopo_blacklist.cpp \
                  ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
                  ../../MatterSurfaceLib/src/mesh_indexed.cpp \
                  ../../MatterSurfaceLib/src/mesh_transform.cpp \
@@ -399,6 +401,7 @@ EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp \
               ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/dsl_bindings.cpp \
               ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
               ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp ../src/part_flatten.cpp \
+              ../src/retopo_blacklist.cpp \
               ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
               ../src/part_cluster.cpp \
               ../src/sector_grid.cpp ../src/lod_select.cpp \

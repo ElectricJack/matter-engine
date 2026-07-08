@@ -265,7 +265,12 @@ int RasterComposer::draw_gpu_driven(GpuCuller& culler, PartStore& /*store*/,
     // Disable backface culling (mesh-session winding not guaranteed).
     rlDisableBackfaceCulling();
 
+    // Wireframe toggle: flip polygon mode around the indirect draw so mesh
+    // topology becomes visible. Restored to GL_FILL afterwards so raylib's
+    // subsequent HUD draws remain filled.
+    if (wireframe_) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     int tris = culler.draw_indirect();
+    if (wireframe_) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
     rlEnableBackfaceCulling();
 

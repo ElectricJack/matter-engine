@@ -114,10 +114,40 @@ void reproject_triex(const MeshIndexed& source, MeshIndexed& target) {
         return best;
     };
 
+    // Pre-pass: smooth per-vertex normals on TARGET. Accumulate each triangle's
+    // twice-area-weighted face normal (unnormalized cross product) into all
+    // three of its vertices, then normalize per vertex. This gives smooth
+    // shading across shared vertices — the same convention mesh_simplifier's
+    // buildMesh uses internally, so a simplify()→reproject_triex chain now
+    // preserves smooth shading end-to-end instead of collapsing to per-face flat
+    // normals as the pre-2026-07-07 behavior did.
+    std::vector<float3> tgt_vert_normals(target.positions.size(), make_float3(0, 0, 0));
+    for (size_t ti = 0; ti < tgt_tri_count; ++ti) {
+        uint32_t i0 = target.indices[ti * 3 + 0];
+        uint32_t i1 = target.indices[ti * 3 + 1];
+        uint32_t i2 = target.indices[ti * 3 + 2];
+        const float3& a = target.positions[i0];
+        const float3& b = target.positions[i1];
+        const float3& c = target.positions[i2];
+        float3 e1 = make_float3(b.x - a.x, b.y - a.y, b.z - a.z);
+        float3 e2 = make_float3(c.x - a.x, c.y - a.y, c.z - a.z);
+        float3 fn = make_float3(e1.y * e2.z - e1.z * e2.y,
+                                e1.z * e2.x - e1.x * e2.z,
+                                e1.x * e2.y - e1.y * e2.x);
+        tgt_vert_normals[i0].x += fn.x; tgt_vert_normals[i0].y += fn.y; tgt_vert_normals[i0].z += fn.z;
+        tgt_vert_normals[i1].x += fn.x; tgt_vert_normals[i1].y += fn.y; tgt_vert_normals[i1].z += fn.z;
+        tgt_vert_normals[i2].x += fn.x; tgt_vert_normals[i2].y += fn.y; tgt_vert_normals[i2].z += fn.z;
+    }
+    for (size_t v = 0; v < tgt_vert_normals.size(); ++v) {
+        float3& n = tgt_vert_normals[v];
+        float len = sqrtf(n.x * n.x + n.y * n.y + n.z * n.z);
+        if (len > 1e-12f) { n.x /= len; n.y /= len; n.z /= len; }
+        else { n.x = 0; n.y = 1; n.z = 0; }
+    }
+
     target.triex.clear();
     target.triex.reserve(tgt_tri_count);
     for (size_t ti = 0; ti < tgt_tri_count; ++ti) {
-        // Target triangle corners for centroid + geometric-normal recompute.
         uint32_t i0 = target.indices[ti * 3 + 0];
         uint32_t i1 = target.indices[ti * 3 + 1];
         uint32_t i2 = target.indices[ti * 3 + 2];
@@ -130,17 +160,9 @@ void reproject_triex(const MeshIndexed& source, MeshIndexed& target) {
 
         const TriEx& src = source.triex[nearest_src(tc)];
         TriEx ex = src;   // materialId, tint, uv, AO carried from source
-        // Geometric normal of the NEW triangle: decimation changed the surface,
-        // so the source shading normals no longer describe it.
-        float3 e1 = make_float3(b.x - a.x, b.y - a.y, b.z - a.z);
-        float3 e2 = make_float3(cc.x - a.x, cc.y - a.y, cc.z - a.z);
-        float3 n = make_float3(e1.y * e2.z - e1.z * e2.y,
-                               e1.z * e2.x - e1.x * e2.z,
-                               e1.x * e2.y - e1.y * e2.x);
-        float len = sqrtf(n.x * n.x + n.y * n.y + n.z * n.z);
-        if (len > 1e-12f) { n.x /= len; n.y /= len; n.z /= len; }
-        else n = make_float3(0, 1, 0);
-        ex.N0 = n; ex.N1 = n; ex.N2 = n;
+        ex.N0 = tgt_vert_normals[i0];
+        ex.N1 = tgt_vert_normals[i1];
+        ex.N2 = tgt_vert_normals[i2];
         target.triex.push_back(ex);
     }
 }

@@ -79,6 +79,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/csg_lowering.cpp src/module_resolver.cpp src/script_rng_binding.cpp \
           src/part_asset_v2.cpp src/part_graph.cpp \
           src/lod_bake.cpp src/world_flatten.cpp src/part_flatten.cpp \
+          src/retopo_blacklist.cpp \
           src/sector_grid.cpp src/lod_select.cpp \
           src/world_lights.cpp src/probe_volume.cpp \
           src/world_tracer.cpp src/probe_bake.cpp \
@@ -126,6 +127,7 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           csg_lowering.o module_resolver.o script_rng_binding.o \
           part_asset_v2.o part_graph.o \
           lod_bake.o world_flatten.o part_flatten.o \
+          retopo_blacklist.o \
           sector_grid.o lod_select.o \
           world_lights.o probe_volume.o \
           world_tracer.o probe_bake.o \

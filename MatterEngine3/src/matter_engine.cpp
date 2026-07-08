@@ -541,6 +541,7 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
         viewer::extract_frustum_planes(vp, planes);
         // Propagate the runtime HiZ toggle every frame.
         impl_->gpu_culler.set_hiz_enabled(opts.hiz_occlusion);
+        impl_->raster->set_wireframe(opts.wireframe);
         // Enable stats readback (same as main.cpp line 418 — viewer always shows counters).
         impl_->gpu_culler.set_stats_readback(true);
         impl_->gpu_culler.cull(resolved, *impl_->store, eye, planes, vp, budget);

@@ -158,7 +158,8 @@ int main() {
     float active_radius      = 64.0f;
     float min_projected_size = 0.0f;
 
-    // App-side wireframe toggle (F9 / FIFO); no-op in rendering today (no set_wireframe).
+    // Wireframe toggle (F9 / FIFO) — flows through RenderOptions.wireframe to the
+    // kernel's raster composer, which flips glPolygonMode around the indirect draw.
     bool wireframe = false;
 
     // --- open_and_bake helper (used for initial connect, reload, world switch) ---
@@ -268,6 +269,9 @@ int main() {
                     printf("hiz %s\n", stats.hiz_enabled ? "on" : "off");
                 } else if (line == "wireframe" || line == "wireframe toggle") {
                     wireframe = !wireframe;
+                    printf("wireframe %s\n", wireframe ? "on" : "off");
+                } else if (line == "wireframe on" || line == "wireframe off") {
+                    wireframe = (line == "wireframe on");
                     printf("wireframe %s\n", wireframe ? "on" : "off");
                 } else if (line == "reload") {
                     stats.reload_requested = true;

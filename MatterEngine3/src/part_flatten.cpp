@@ -4,6 +4,7 @@
 #include "lod_bake.h"        // decimate_to_error
 #include "part_cluster.h"    // split_clusters
 #include "retopo_hook_stats.h"  // Phase 5: hook invocation counter (Task 14)
+#include "retopo_blacklist.h"   // Phase 5 f/u: crash-recovery blacklist (2026-07-07)
 #include "tlas_manager.hpp"             // MSL TLASManager (load_v2 signature)
 #include "mesh_indexed.hpp"             // MSL from_tri/to_tri (reproject wrapping)
 #include "mesh_transform.hpp"           // MSL reproject_triex (was lod_bake::)
@@ -686,11 +687,29 @@ const float kIdentity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
         // through to the miss path and overwrite.
     }
 
+    // Blacklist gate — skip inputs known to have crashed autoremesher's LSCM
+    // solver on a previous run (see retopo_blacklist.h). This is the
+    // process-death-as-isolation-boundary path from the design's non-goal
+    // section; the on-disk journal converges over 2-3 restarts to skip every
+    // input that trips a geo_assert abort().
+    if (matter_engine3::retopo_blacklist::is_blacklisted(retopo_key)) {
+        std::fprintf(stderr,
+            "[warn] retopo: part=\"%s\" err=\"blacklisted (crashed on prior run)\" "
+            "elapsed=0.00s -> falling back to unretopo'd mesh\n",
+            retopo_log_part_id(root_hash).c_str());
+        return;
+    }
+
     // Cache-miss path — run MSL::retopo. Bump invocation counter FIRST so
     // Task 14 sees the pipeline reached the retopo call even if the retopo
     // itself fails (a failed retopo call still counts as an invocation from
     // the test's perspective).
     matter_engine3::retopo_hook_stats::bump();
+
+    // Journal begin BEFORE dispatch — if MSL::retopo aborts the process, this
+    // entry stays in pending without a matching success entry, and the next
+    // startup will mark the hash blacklisted.
+    matter_engine3::retopo_blacklist::begin_attempt(retopo_key);
 
     const auto t0 = std::chrono::steady_clock::now();
     MeshIndexed in = from_tri(tris, &triex);
@@ -702,6 +721,10 @@ const float kIdentity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
     ropts.threads         = 1;             // deterministic FP summation
 
     RetopoResult rres = retopo(in, ropts);
+    // Journal end AFTER return — we survived, so this key does not stay
+    // pending. A subsequent viewer startup will see success covers pending
+    // and not blacklist this hash.
+    matter_engine3::retopo_blacklist::end_attempt(retopo_key);
     const auto t1 = std::chrono::steady_clock::now();
     const double elapsed =
         std::chrono::duration<double>(t1 - t0).count();

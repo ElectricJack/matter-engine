@@ -20,6 +20,7 @@
 #include "mesh_indexed.hpp"
 #include "mesh_transform.hpp"  // from_tri
 #include "bvh.h"               // Tri / TriEx / float3
+#include "retopo_blacklist.h"  // load persistent crash-recovery journal
 #include <cmath>               // std::sqrt for warm-up mesh construction
 #endif
 
@@ -202,6 +203,12 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     // state. Runs unconditionally: cost is <50 ms on a tiny cube, and it
     // avoids a conditional-execution hazard for worlds that DO have opt-ins.
     tbb_warmup_retopo();
+
+    // Load the retopo blacklist journal. Any hash present in the .retopo_pending
+    // journal without a matching .retopo_success entry crashed autoremesher on
+    // a previous run and will be skipped in this session. See
+    // MatterEngine3/include/retopo_blacklist.h for the mechanism.
+    matter_engine3::retopo_blacklist::init(abs_cache_root);
 #endif
 
     // SP-2/SP-3/SP-7 wiring. HostBaker's second arg is the PARENT of parts/ (== ".").
