@@ -184,9 +184,20 @@ vpath %.c $(QJS_DIR) $(MSL_DIR)/src
 %.o: $(MSL_DIR)/src/%.c
 	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
 
+# EXTRA_CFLAGS changes are invisible to make's dependency graph (objects look
+# up-to-date even though they were compiled with different defines, e.g.
+# MATTER_HAVE_AUTOREMESHER). Every C++ object depends on .lib_flags, which is
+# rewritten only when the flag set differs — so a flag change forces a full
+# recompile while same-flag builds stay incremental.
+.PHONY: FORCE
+FORCE:
+.lib_flags: FORCE
+	@[ "`cat $@ 2>/dev/null`" = '$(EXTRA_CFLAGS)' ] || printf '%s' '$(EXTRA_CFLAGS)' > $@
+
 # ME3 + MSL C++ sources (each source file gets its own .o via pattern rule).
 # ME3 objects depend on the generated shader header.
 $(ME3_OBJ): shaders_gen/embedded_shaders.h
+$(ME3_OBJ) $(MSL_OBJ): .lib_flags
 %.o: %.cpp
 	$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDE_PATHS)
 
@@ -199,5 +210,5 @@ test:
 	$(MAKE) -C tests run-script
 
 clean:
-	rm -f $(LIB) $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ)
+	rm -f $(LIB) $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) .lib_flags
 	$(MAKE) -C tests clean

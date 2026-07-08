@@ -209,14 +209,11 @@ $(L_CPP_OBJ): $(L_DIR)/%.o: %.cpp | $(L_DIR)
 # When autoremesher is present, pass the flag + AR include path so that
 # part_flatten.cpp and mesh_retopo.cpp inside the library see the right defines.
 # EXTRA_RETOPO_CPP tells the library Makefile to also compile mesh_retopo.cpp.
+# The library Makefile stamps its EXTRA_CFLAGS (.lib_flags) and self-forces a
+# full recompile only when the flag set changes, so this stays incremental.
 .PHONY: build-engine-lib
 build-engine-lib:
 ifneq ($(HAVE_AUTOREMESHER),)
-	# When autoremesher is present, we need part_flatten.cpp compiled with
-	# -DMATTER_HAVE_AUTOREMESHER and mesh_retopo.cpp included in the archive.
-	# Since Make can't detect EXTRA_CFLAGS changes in an already-built archive,
-	# force a clean rebuild of the library whenever autoremesher is available.
-	$(MAKE) -C $(ME3_DIR) clean
 	$(MAKE) -C $(ME3_DIR) \
 	    EXTRA_CFLAGS="$(AR_CORE_CFLAGS)" \
 	    EXTRA_INCLUDE="-I$(AR_CORE_PATH)/include" \
