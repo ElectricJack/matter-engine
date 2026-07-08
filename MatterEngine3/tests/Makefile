@@ -755,6 +755,7 @@ else
 endif
 
 GPU_RENDER_CPP = \
+    ../src/async_bake.cpp \
     ../src/render/renderer.cpp ../src/render/raster_composer.cpp \
     ../src/render/raster_mesh.cpp ../src/render/part_store.cpp \
     ../src/render/world_composer.cpp ../src/render/world_state.cpp \

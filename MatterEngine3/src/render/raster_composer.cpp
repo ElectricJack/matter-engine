@@ -1,3 +1,4 @@
+#include "async_bake.h"
 #include "raster_composer.h"
 #include "tileset_provider.h"      // bind_all_to_shader for Wang atlas samplers
 #include "material_registry.h"
@@ -90,6 +91,7 @@ static std::string resolve_glsl_includes(const std::string& src,
 }
 
 bool RasterComposer::init(std::string& err) {
+    matter_async::assert_gl_thread("RasterComposer::init");
     // Load vertex and fragment shaders, resolving #include directives manually
     // (Mesa GLSL does not resolve #include without glNamedStringARB registration).
     std::string vs_src, fs_raw, serr;
@@ -170,6 +172,7 @@ void RasterComposer::setup_frame_uniforms(Shader& sh,
 // init_gpu_driven — load raster_gpu_driven.vs + patched raster.fs (#version 460).
 // ---------------------------------------------------------------------------
 bool RasterComposer::init_gpu_driven(std::string& err) {
+    matter_async::assert_gl_thread("RasterComposer::init_gpu_driven");
     // Load VS text from shaders_gpu/raster_gpu_driven.vs.
     std::string vs_str, fs_raw, serr;
     if (!matter::shader_text("shaders_gpu/raster_gpu_driven.vs", vs_str, serr)) {

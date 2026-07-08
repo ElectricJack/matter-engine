@@ -3,6 +3,7 @@
 // Do NOT include raylib.h before glad.h in this TU — raylib.h pulls in rlgl.h which
 // includes glad.h under an RLGL_IMPLEMENTATION guard, causing redefinition warnings.
 // We only need the raw GL declarations here.
+#include "async_bake.h"
 #include "probe_texture.h"
 
 // Pull in glad declarations (header-only pointer declarations; the definitions were
@@ -21,6 +22,7 @@ static inline uint8_t to_u8(float x) {
 }
 
 ProbeTextures upload_probe_textures(const probe_volume::ProbeVolume& v) {
+    matter_async::assert_gl_thread("upload_probe_textures");
     ProbeTextures out;
     if (!v.valid()) return out;
 

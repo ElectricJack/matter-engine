@@ -448,36 +448,57 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
         return false;
     }
 
+    // Phase B: route GL work through gpu_run when set (async path); fall back to
+    // inline execution when null (synchronous callers and tests — no behavior change).
+    auto run_gl = [&](const char* name, std::function<bool(std::string&)> fn,
+                      std::string& e) -> bool {
+        if (cfg_.gpu_run) return cfg_.gpu_run(name, std::move(fn), e);
+        return fn(e);   // inline (synchronous path unchanged)
+    };
+
     for (size_t ti : tileset_indices) {
         const std::string root_module = roots[ti].module;
-        tileset::SettledTorus settled;
-        tileset::TilesetPhaseOpts opts;
-        opts.force_rebake = false;   // let content_hash decide
         // Dev hook: MATTER_TILESET_DUMP_PNG=1 dumps loose <root>-albedo.png /
         // -normal.png / -orm.png / -height.png next to the .gtex so an operator
         // can eyeball the baked atlas without launching the viewer.
-        opts.dump_png     = std::getenv("MATTER_TILESET_DUMP_PNG") != nullptr;
+        const bool dump_png = std::getenv("MATTER_TILESET_DUMP_PNG") != nullptr;
+        const int slot_idx  = baked_tileset_count_;  // capture by value for closure
+
         std::string te;
-        if (!tileset::run_tileset_phase(abs_world_data, cfg_.world_name, root_module,
-                                        abs_cache_root, settled, opts, te,
-                                        abs_shared_lib)) {
-            err = "LocalProvider: run_tileset_phase(" + root_module + "): " + te +
-                  " (if a GL error: set GALLIUM_DRIVER=d3d12 on WSLg)";
+        // ONE closure per tileset: bake + upload together (per-tileset granularity).
+        bool ok = run_gl(root_module.c_str(), [&](std::string& ge) -> bool {
+            tileset::SettledTorus settled;
+            tileset::TilesetPhaseOpts opts;
+            opts.force_rebake = false;   // let content_hash decide
+            opts.dump_png     = dump_png;
+            std::string re;
+            if (!tileset::run_tileset_phase(abs_world_data, cfg_.world_name, root_module,
+                                            abs_cache_root, settled, opts, re,
+                                            abs_shared_lib)) {
+                ge = "run_tileset_phase(" + root_module + "): " + re +
+                     " (if a GL error: set GALLIUM_DRIVER=d3d12 on WSLg)";
+                return false;
+            }
+            // The GPU overload writes: world_data_dir + "/" + root_module + ".gtex"
+            const std::string gtex_path = abs_world_data + "/" + root_module + ".gtex";
+            std::string le;
+            if (!viewer::tileset_provider::load_slot(slot_idx, gtex_path, le)) {
+                ge = "tileset_provider::load_slot(" + gtex_path + "): " + le;
+                return false;
+            }
+            // Bind material DIRT (16) to this slot by default — the world script may
+            // override later. Non-DIRT materials keep groundTilesetSlot = -1.
+            MaterialRegistrySetGroundTilesetSlot(16, slot_idx);
+            printf("LocalProvider: tileset '%s' -> slot %d (%s)\n",
+                   root_module.c_str(), slot_idx, gtex_path.c_str());
+            return true;
+        }, te);
+
+        if (!ok) {
+            err = "LocalProvider: tileset '" + root_module + "': " + te;
             return false;
         }
-        // The GPU overload writes: world_data_dir + "/" + root_module + ".gtex"
-        const std::string gtex_path = abs_world_data + "/" + root_module + ".gtex";
-        std::string le;
-        if (!viewer::tileset_provider::load_slot(baked_tileset_count_, gtex_path, le)) {
-            err = "LocalProvider: tileset_provider::load_slot(" + gtex_path + "): " + le;
-            return false;
-        }
-        // Bind material DIRT (16) to this slot by default — the world script may
-        // override later. Non-DIRT materials keep groundTilesetSlot = -1.
-        MaterialRegistrySetGroundTilesetSlot(16, baked_tileset_count_);
         ++baked_tileset_count_;
-        printf("LocalProvider: tileset '%s' -> slot %d (%s)\n",
-               root_module.c_str(), baked_tileset_count_ - 1, gtex_path.c_str());
     }
 
     // --- Parse world lights ---

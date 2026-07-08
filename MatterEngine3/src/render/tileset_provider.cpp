@@ -1,5 +1,6 @@
 // tileset_provider.cpp — see header.
 
+#include "async_bake.h"
 #include "tileset_provider.h"
 #include "tileset_gtex.h"
 
@@ -105,6 +106,7 @@ void unload_all() {
 }
 
 bool load_slot(int slot, const std::string& gtex_path, std::string& err) {
+    matter_async::assert_gl_thread("tileset_provider::load_slot");
     if (slot < 0 || slot >= kMaxSlots) {
         err = "tileset_provider::load_slot: slot " + std::to_string(slot) +
               " out of range [0," + std::to_string(kMaxSlots) + ")";

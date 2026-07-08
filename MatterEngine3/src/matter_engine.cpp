@@ -287,6 +287,10 @@ EngineContext::~EngineContext() = default;
 
 std::unique_ptr<EngineContext> EngineContext::create(const EngineDesc& desc,
                                                      std::string& err) {
+    // Register the calling thread as the GL thread so assert_gl_thread guards
+    // are armed in debug builds. Must be called before any GL work begins.
+    matter_async::register_gl_thread();
+
     // Plumb shader override dir (nullptr clears to env/embedded).
     matter::set_shader_override_dir(desc.shader_dir);
 

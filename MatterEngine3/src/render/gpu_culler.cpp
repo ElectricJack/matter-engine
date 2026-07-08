@@ -8,6 +8,7 @@
 //   transpose_to_gl(t, out) writes out[c*4+r] = t[r*4+c], producing GL column-major.
 //   The GLSL shader then has M[col][row] memory order, which matches standard gl_Position math.
 
+#include "async_bake.h"
 #include "gpu_culler.h"
 #include "raster_cull.h"    // mul16, inst_scale
 
@@ -98,6 +99,7 @@ unsigned GpuCuller::compile_compute(const char* path, std::string& err) {
 // init — compile shader, allocate fixed-size buffers.
 // ---------------------------------------------------------------------------
 bool GpuCuller::init(std::string& err) {
+    matter_async::assert_gl_thread("GpuCuller::init");
     program_cull_ = compile_compute("shaders_gpu/cull.comp", err);
     if (!program_cull_) return false;
 

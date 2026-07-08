@@ -1,5 +1,6 @@
 // tileset_bake_gpu.cpp — orchestrates the .gtex bake.
 
+#include "async_bake.h"
 #include "tileset_bake_gpu.h"
 #include "tileset_bake.h"          // SettledTorus, BakeInputs, SettledInstance
 #include "tileset_spec.h"          // TileConfig
@@ -105,6 +106,7 @@ bool bake_tileset_gpu(const SettledTorus& settled,
                       bool dump_png,
                       std::string& err)
 {
+    matter_async::assert_gl_thread("bake_tileset_gpu");
     try {
         // ------------------------------------------------------------------
         // 1. Cache-hit check.

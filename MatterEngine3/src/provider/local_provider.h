@@ -9,6 +9,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <utility>
 
 namespace viewer {
 
@@ -22,6 +23,12 @@ struct LocalProviderConfig {
     // Invoked during fetch_parts once per part processed (bake or cache hit):
     // module = part module name, done/total = progress through the want list.
     std::function<void(const char* module, int done, int total)> on_part;
+
+    // Phase B: run `fn` on the GL thread and wait for completion. Null => run
+    // inline on the calling thread (synchronous callers, tests).
+    std::function<bool(const char* name,
+                       std::function<bool(std::string& err)> fn,
+                       std::string& err)> gpu_run;
 };
 
 // Drives the SP-3 install path over a persistent content-addressed cache and
