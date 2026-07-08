@@ -98,7 +98,11 @@ public:
 ### matter/world_session.h
 
 ```cpp
-struct WorldDesc { const char* schemas_dir; const char* world_data_dir; const char* manifest; };
+struct WorldDesc {
+    const char* schemas_dir;
+    const char* world_data_dir;
+    const char* manifest;    // manifest file name inside world_data_dir (e.g. "world.manifest")
+};
 
 enum class RenderPath { GpuDriven, Raytrace };
 enum class ResolverKind { SectorLod, PassThrough };
@@ -108,7 +112,7 @@ struct RenderOptions {
     ResolverKind resolver  = ResolverKind::SectorLod;
     bool wireframe         = false;
     bool hiz_occlusion     = false;   // default OFF per ROADMAP false-positive issue
-    int  pixel_budget;                // resolver pixel budget (current viewer default)
+    int  pixel_budget      = 0;       // 0 = kernel default (today's viewer default value)
 };
 
 struct FrameStats {   // everything today's HUD shows
