@@ -19,21 +19,14 @@
 #include <unordered_map>
 #include <vector>
 
+// Shared row-major math helpers (mul16, NormalMat).
+#include "mat_math.h"
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
 namespace {
-
-// Row-major 4x4 multiply (same convention as ChildInstance / WorldComposer).
-static void mul16(const float* a, const float* b, float* out) {
-    for (int i = 0; i < 4; ++i)
-        for (int j = 0; j < 4; ++j) {
-            float s = 0;
-            for (int k = 0; k < 4; ++k) s += a[i*4+k] * b[k*4+j];
-            out[i*4+j] = s;
-        }
-}
 
 // Full 4x4 row-major matrix inversion via the adjugate method.
 // Returns false and writes identity if |det| < 1e-12.
@@ -105,39 +98,8 @@ static bool invert4x4(const float* m, float* out) {
     return true;
 }
 
-// Inverse-transpose upper-3×3 for normals (copy of NormalMat from part_flatten.cpp).
-// Stores as row-major 3×3 such that  n_world = nm * n_local.
-struct NormalMat3 {
-    float n[9];
-    explicit NormalMat3(const float* m4x4) {
-        const float a=m4x4[0], b=m4x4[1], c=m4x4[2],
-                    d=m4x4[4], e=m4x4[5], f=m4x4[6],
-                    g=m4x4[8], h=m4x4[9], i=m4x4[10];
-        const float A =  (e*i - f*h), B = -(d*i - f*g), C =  (d*h - e*g);
-        const float det = a*A + b*B + c*C;
-        if (std::fabs(det) < 1e-12f) {
-            // Fallback: use raw 3×3
-            n[0]=a; n[1]=b; n[2]=c; n[3]=d; n[4]=e; n[5]=f; n[6]=g; n[7]=h; n[8]=i;
-            return;
-        }
-        const float id2 = 1.f / det;
-        // Inverse cofactors, then transpose
-        float tmp[9];
-        tmp[0] = A*id2;             tmp[3] = -(b*i - c*h)*id2;  tmp[6] =  (b*f - c*e)*id2;
-        tmp[1] = B*id2;             tmp[4] =  (a*i - c*g)*id2;  tmp[7] = -(a*f - c*d)*id2;
-        tmp[2] = C*id2;             tmp[5] = -(a*h - b*g)*id2;  tmp[8] =  (a*e - b*d)*id2;
-        // Transpose tmp into n
-        std::swap(tmp[1], tmp[3]); std::swap(tmp[2], tmp[6]); std::swap(tmp[5], tmp[7]);
-        std::memcpy(n, tmp, 36);
-    }
-    void apply(const float v[3], float out[3]) const {
-        out[0] = n[0]*v[0] + n[1]*v[1] + n[2]*v[2];
-        out[1] = n[3]*v[0] + n[4]*v[1] + n[5]*v[2];
-        out[2] = n[6]*v[0] + n[7]*v[1] + n[8]*v[2];
-        float len = std::sqrt(out[0]*out[0]+out[1]*out[1]+out[2]*out[2]);
-        if (len > 1e-12f) { out[0]/=len; out[1]/=len; out[2]/=len; }
-    }
-};
+// NormalMat (inverse-transpose upper-3×3) is now in mat_math.h.
+// NormalMat was a local copy; callers now use NormalMat directly.
 
 // Transform a point by a row-major 4×4 (w=1, no divide).
 static void xform_point(const float* m, const float p[3], float out[3]) {
@@ -214,7 +176,7 @@ struct ExpandedInst {
     const LoadedTracePart* part = nullptr;
     float transform[16];   // row-major world placement
     float inv[16];         // inverse of transform
-    NormalMat3* nm = nullptr; // inverse-transpose 3×3 for normals (owned by pool)
+    NormalMat* nm = nullptr; // inverse-transpose 3×3 for normals (owned by pool)
     float world_mn[3], world_mx[3];  // world AABB
 };
 
@@ -230,7 +192,7 @@ struct WorldTracer::Impl {
     // Part cache (by resolved hash)
     std::unordered_map<uint64_t, std::unique_ptr<LoadedTracePart>> parts_;
     // NormalMat pool — deque so push_back never invalidates existing element pointers.
-    std::deque<NormalMat3> nm_pool_;
+    std::deque<NormalMat> nm_pool_;
     // Expanded instances
     std::vector<ExpandedInst> expanded_;
     // Instance BVH nodes
@@ -500,14 +462,17 @@ struct WorldTracer::Impl {
             s.entry->bvh->Intersect(ray, 0);
 
             if (ray.hit.t < t_before - 1e-7f) {
-                best_t = ray.hit.t;
-                improved = true;
-
                 // Determine tri index (low 20 bits of instPrim)
                 uint32_t tri_idx = ray.hit.instPrim & 0xFFFFFu;
 
-                // Geometric normal from triangle edges, transformed by inv-transpose
+                // Only commit the hit (and update normal/material) when tri_idx
+                // is valid. If it is out of range the BVH returned a bogus hit;
+                // keep the previous best rather than advancing best_t with stale
+                // normal/material (B7: stale-shading commit fix).
                 if (tri_idx < (uint32_t)s.entry->triangles.size()) {
+                    best_t = ray.hit.t;
+                    improved = true;
+
                     const Tri& tri = s.entry->triangles[tri_idx];
                     // Local edge vectors
                     float e1[3] = { tri.vertex1.x-tri.vertex0.x,

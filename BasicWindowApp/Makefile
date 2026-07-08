@@ -1,7 +1,7 @@
 CC = gcc
 RAYLIB_PATH = ../Libraries/raylib
 IMGUI_PATH = ../Libraries/imgui
-CFLAGS = -Wall -Wextra -O2 -I$(RAYLIB_PATH)/src -I$(RAYLIB_PATH)/src/external/glfw/include -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends
+CFLAGS = -Wall -Wextra -O2 -MMD -MP -I$(RAYLIB_PATH)/src -I$(RAYLIB_PATH)/src/external/glfw/include -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends
 
 # Detect OS
 UNAME_S := $(shell uname -s)
@@ -60,9 +60,11 @@ imgui_impl_glfw.o: $(IMGUI_PATH)/backends/imgui_impl_glfw.cpp
 	g++ -c $< $(CFLAGS) -std=c++11 -o $@
 
 clean:
-	rm -f $(OBJ) $(BIN)
+	rm -f $(OBJ) $(OBJ:.o=.d) $(BIN)
 
 clean-all: clean
 	$(MAKE) -C $(RAYLIB_PATH)/src clean
+
+-include $(OBJ:.o=.d)
 
 .PHONY: all clean clean-all raylib

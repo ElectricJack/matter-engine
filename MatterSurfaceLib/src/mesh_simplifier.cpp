@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstring>
 #include <unordered_map>
+#include <cstdio>
 
 namespace {
 
@@ -200,6 +201,13 @@ static Mesh buildMesh(const std::vector<WVert>& verts, const std::vector<WTri>& 
     }
     int nt = (int)idx.size() / 3;
     if (nv == 0 || nt == 0) return out; // zeroed -> empty mesh
+
+    // T4 fix: 16-bit indices silently truncate past 65535 vertices.
+    if (nv > 65535) {
+        fprintf(stderr, "[ERROR] SimplifyMesh: %d vertices exceed 65535 (16-bit index limit); "
+                "returning empty mesh.\n", nv);
+        return out;
+    }
 
     out.vertexCount = nv;
     out.triangleCount = nt;

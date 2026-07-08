@@ -49,11 +49,11 @@ public:
     // Runtime LOD quality/speed dial; forwarded to GpuCuller::cull each frame.
     void set_pixel_budget(float b) { pixel_budget_ = b; }
 
-    // Store WorldLights; draw_gpu_driven() uploads them each frame.
-    void set_lights(const world_lights::WorldLights& l) { lights_ = l; }
+    // Store WorldLights; draw_gpu_driven() uploads them on the next dirty frame only.
+    void set_lights(const world_lights::WorldLights& l) { lights_ = l; uniforms_dirty_ = true; }
 
-    // Store probe textures; draw_gpu_driven() binds them to units 4/5 and sets useProbes=1.
-    void set_probes(const ProbeTextures& t) { probes_ = t; }
+    // Store probe textures; draw_gpu_driven() binds them on the next dirty frame only.
+    void set_probes(const ProbeTextures& t) { probes_ = t; uniforms_dirty_ = true; }
 
     // Accessor for testing (verifies set_lights stores values correctly).
     const world_lights::WorldLights& lights() const { return lights_; }
@@ -92,6 +92,10 @@ private:
     float pixel_budget_ = 1.0f;            // runtime LOD quality/speed dial
     world_lights::WorldLights lights_{};   // defaults reproduce Phase-1 hardcoded values
     ProbeTextures probes_{};               // default-constructed: valid() == false
+
+    // Dirty flag: set on set_lights / set_probes / reconnect; cleared after
+    // the first upload_frame_uniforms so the hot path skips per-frame uploads.
+    bool uniforms_dirty_ = true;
 
     // HUD stat (written by draw_gpu_driven).
     size_t stat_drawn_tris_ = 0;

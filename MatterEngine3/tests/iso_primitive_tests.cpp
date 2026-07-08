@@ -18,8 +18,7 @@
 #include "../include/dsl_state.h"
 #include "../include/csg_lowering.h"
 
-static int failures = 0;
-#define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); ++failures; } } while (0)
+#include "check.h"
 
 // Probe the production field at a world point through the lowered field. Returns
 // true if the meshed surface would treat the point as inside (scalar < 0).
@@ -39,7 +38,7 @@ static void agree(const dsl::BuildBuffer& buf, Vector3 p, const char* msg) {
     if (oracle != meshv) {
         printf("FAIL: %s (oracle=%d mesh=%d at %.2f,%.2f,%.2f)\n",
                msg, (int)oracle, (int)meshv, p.x, p.y, p.z);
-        ++failures;
+        ++g_failures;
     }
 }
 
@@ -198,6 +197,6 @@ int main() {
     test_cylinder_matches_oracle();
     test_cone_tapers();
     test_ordered_csg_capsule();
-    if (failures == 0) printf("ALL PASS\n");
-    return failures ? 1 : 0;
+    if (g_failures == 0) printf("ALL PASS\n");
+    return g_failures ? 1 : 0;
 }

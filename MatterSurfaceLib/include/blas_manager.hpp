@@ -59,11 +59,15 @@ public:
         std::vector<TriEx> tri_extra;   // parallel to triangles; empty if none supplied
         uint32_t hash;
         uint32_t ref_count; // number of live owners (cells) referencing this BLAS
+        // Per-entry GPU dirty flag: set when this entry's data has not yet been
+        // uploaded to the GPU texture. Cleared after ensure_gpu_textures_ready
+        // processes it. Allows the fast-path skip when no entry has changed.
+        mutable bool gpu_dirty = true;
 
         BLASEntry(BLASHandle h, std::unique_ptr<BvhMesh> m, std::unique_ptr<BVH> b,
                   std::vector<Tri>&& tris, std::vector<TriEx>&& tex, uint32_t hash_val)
             : handle(h), mesh(std::move(m)), bvh(std::move(b)), triangles(std::move(tris)),
-              tri_extra(std::move(tex)), hash(hash_val), ref_count(1) {}
+              tri_extra(std::move(tex)), hash(hash_val), ref_count(1), gpu_dirty(true) {}
     };
 
     // Texel columns are capped to this so the texture width never exceeds
@@ -103,14 +107,22 @@ public:
     BLASManager(BLASManager&&) = default;
     BLASManager& operator=(BLASManager&&) = default;
     
-    // Register mesh data and get BLAS handle
-    BLASHandle register_triangles(const std::vector<Tri>& triangles);
+    // Register mesh data and get BLAS handle.
+    // force_subdiv_one_prim: when true, build the BVH with subdivToOnePrim=true so
+    // every triangle gets its own leaf — needed for unit tests with sparse geometry.
+    // Defaults to false; do NOT set it based on triangle_count (that was the old
+    // "triangle_count==3" heuristic, now removed per code review finding B4/smells).
+    BLASHandle register_triangles(const std::vector<Tri>& triangles,
+                                  bool force_subdiv_one_prim = false);
 
-    BLASHandle register_triangles(Tri* triangles, int triangle_count, const TriEx* triex = nullptr);
+    BLASHandle register_triangles(Tri* triangles, int triangle_count,
+                                  const TriEx* triex = nullptr,
+                                  bool force_subdiv_one_prim = false);
 
     // Register mesh data together with per-vertex shading normals (one TriEx per
     // triangle, same order as triangles). triex may be empty to fall back to face normals.
-    BLASHandle register_triangles(const std::vector<Tri>& triangles, const std::vector<TriEx>& triex);
+    BLASHandle register_triangles(const std::vector<Tri>& triangles, const std::vector<TriEx>& triex,
+                                  bool force_subdiv_one_prim = false);
 
     // Register a fully baked BLAS loaded from disk: installs the saved BVH arrays
     // directly (no BVH build, no dedup lookup). Used by part_asset::load. tris,
@@ -215,6 +227,7 @@ private:
     
     std::vector<std::unique_ptr<BLASEntry>> entries_;
     std::unordered_multimap<uint32_t, size_t> hash_to_entry_; // hash -> entry index
+    std::unordered_map<BLASHandle, size_t> handle_to_index_;  // handle -> entry index (O(1) lookup)
     BLASHandle next_handle_;
     
     // Cached totals (mutable for lazy evaluation)
@@ -226,6 +239,11 @@ private:
     mutable Texture2D triangles_texture_{};
     mutable Texture2D nodes_texture_{};
     mutable bool textures_dirty_ = true;
+    // Cached total counts from the last successful GPU upload; used to detect
+    // whether the entry set has changed (add/release) vs. only data has changed
+    // within an unchanged set (enabling the partial-update fast path).
+    mutable int gpu_total_triangles_ = 0;
+    mutable int gpu_total_nodes_ = 0;
     
     // Shader binding optimization
     mutable uint32_t cached_shader_id_ = 0;

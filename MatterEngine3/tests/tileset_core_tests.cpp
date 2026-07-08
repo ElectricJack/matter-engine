@@ -8,11 +8,7 @@
 #include <cmath>
 #include <cstdint>
 
-static int g_failures = 0;
-#define CHECK(cond, msg) do { \
-    if (!(cond)) { printf("FAIL: %s\n", (msg)); ++g_failures; } \
-    else         { printf("ok:   %s\n", (msg)); } \
-} while (0)
+#include "check.h"
 
 static void test_layout_complete_set() {
     // All 16 (top,bottom,left,right) combinations occur exactly once.

@@ -9,11 +9,7 @@
 #include "box3d/collision.h"
 #include "box3d/math_functions.h"
 
-static int g_failures = 0;
-#define CHECK(cond, msg) do { \
-    if (!(cond)) { printf("FAIL: %s\n", (msg)); ++g_failures; } \
-    else         { printf("ok:   %s\n", (msg)); } \
-} while (0)
+#include "check.h"
 
 // ---------------------------------------------------------------------------
 // test_smoke_drop: a unit cube dropped on a static slab settles and sleeps.

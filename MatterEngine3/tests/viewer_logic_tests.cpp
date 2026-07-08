@@ -31,10 +31,7 @@
 #include <vector>
 #include <unistd.h>
 
-static int g_failures = 0;
-#define CHECK(cond, msg) do { \
-    if (!(cond)) { printf("FAIL: %s\n", (msg)); ++g_failures; } \
-    else        { printf("ok:   %s\n", (msg)); } } while (0)
+#include "check.h"
 
 // Shared PartStore and WorldManifest populated once by test_local_provider_cache's cold run
 // and reused by subsequent tests that need loaded parts. This avoids re-running the
@@ -64,20 +61,20 @@ static viewer::WorldManifestEntry mk_entry(uint32_t id, uint64_t hash, float x, 
 
 static void test_world_state_version() {
     viewer::WorldState s;
-    assert(s.version() == 0);
+    CHECK(s.version() == 0, "initial version == 0");
 
     viewer::WorldManifest m;
     m.instances.push_back(mk_entry(1, 0xAAu, 0.0f));
     s.reset(m);
-    assert(s.version() == 1);
+    CHECK(s.version() == 1, "version after reset == 1");
 
     viewer::WorldDelta d;
     d.added.push_back(mk_entry(2, 0xAAu, 4.0f));
     s.apply(d);
-    assert(s.version() == 2);
+    CHECK(s.version() == 2, "version after apply == 2");
 
     s.reset(m);                    // reset always bumps, even to the same content
-    assert(s.version() == 3);
+    CHECK(s.version() == 3, "version after second reset == 3");
     printf("  test_world_state_version OK\n");
 }
 
@@ -1029,31 +1026,31 @@ static void test_resolver_binning_cache() {
     float3 cam = make_float3(0, 0, 0);
 
     auto out1 = r.resolve(s, lods, cam);
-    assert(r.rebin_count() == 1);
+    CHECK(r.rebin_count() == 1, "first resolve: rebin_count == 1");
 
     // Same world + camera: identical output, no re-bin.
     auto out2 = r.resolve(s, lods, cam);
-    assert(r.rebin_count() == 1);
-    assert(out1.size() == out2.size());
+    CHECK(r.rebin_count() == 1, "second resolve same state: rebin_count still == 1");
+    CHECK(out1.size() == out2.size(), "second resolve: same output size");
     for (size_t i = 0; i < out1.size(); ++i) {
-        assert(out1[i].part_hash == out2[i].part_hash);
-        assert(out1[i].lod_level == out2[i].lod_level);
-        assert(std::memcmp(out1[i].transform, out2[i].transform,
-                           sizeof(float) * 16) == 0);
+        CHECK(out1[i].part_hash == out2[i].part_hash, "second resolve: part_hash matches");
+        CHECK(out1[i].lod_level == out2[i].lod_level, "second resolve: lod_level matches");
+        CHECK(std::memcmp(out1[i].transform, out2[i].transform,
+                          sizeof(float) * 16) == 0, "second resolve: transform matches");
     }
 
     // Camera move alone must NOT re-bin (LOD selection still re-runs).
     float3 cam2 = make_float3(30, 0, 30);
     (void)r.resolve(s, lods, cam2);
-    assert(r.rebin_count() == 1);
+    CHECK(r.rebin_count() == 1, "camera-only move: no re-bin");
 
     // World delta bumps the version -> re-bin; new instance shows up.
     viewer::WorldDelta d;
     d.added.push_back(mk_entry(3, 0xAAu, 60, 0, 60));
     s.apply(d);
     auto out4 = r.resolve(s, lods, cam);
-    assert(r.rebin_count() == 2);
-    assert(out4.size() == out1.size() + 1);
+    CHECK(r.rebin_count() == 2, "after world delta: rebin_count == 2");
+    CHECK(out4.size() == out1.size() + 1, "after world delta: one more instance");
     printf("  test_resolver_binning_cache OK\n");
 }
 
@@ -1079,14 +1076,14 @@ static void test_pixel_budget_dial() {
         for (const auto& pk : sk.second) {
             int lf = pk.second;
             int lh = half.at(sk.first).at(pk.first);
-            assert(lh >= lf);                     // coarser-or-equal at lower budget
+            CHECK(lh >= lf, "half-budget selects coarser-or-equal LOD");
         }
 
     // The dial also scales the floor cull: visible at budget 1, culled at 0.1.
     auto floored = lod_select::select_sector_lods(sectors, parts, cam, 0.02f, 0.1f);
-    assert(floored.at(sector_grid::SectorCoord{0,0,0}).at(0xA2u) == -1);
+    CHECK(floored.at(sector_grid::SectorCoord{0,0,0}).at(0xA2u) == -1, "floor-culled at low budget");
     auto unfloored = lod_select::select_sector_lods(sectors, parts, cam, 0.02f, 1.0f);
-    assert(unfloored.at(sector_grid::SectorCoord{0,0,0}).at(0xA2u) >= 0);
+    CHECK(unfloored.at(sector_grid::SectorCoord{0,0,0}).at(0xA2u) >= 0, "visible at full budget");
     printf("  test_pixel_budget_dial OK\n");
 }
 
@@ -1107,8 +1104,8 @@ static void test_never_invisible_guarantee() {
     float3 cam = make_float3(20000, 0, 0);
     auto chosen = lod_select::select_sector_lods(sectors, parts, cam, 0.0015f);
     const auto& sec = chosen.at(sector_grid::SectorCoord{0,0,0});
-    assert(sec.at(0xB16u) == 3);      // radius >= 4 m: clamped to coarsest, never -1
-    assert(sec.at(0x5A11u) == -1);    // small part: still floor-culled
+    CHECK(sec.at(0xB16u) == 3, "large part clamped to coarsest LOD, never -1");
+    CHECK(sec.at(0x5A11u) == -1, "small part still floor-culled at extreme distance");
     printf("  test_never_invisible_guarantee OK\n");
 }
 
@@ -1122,7 +1119,7 @@ static void test_cluster_budget_dial() {
     float eye[3] = { 10, 0, 0 };
     int lf = viewer::cluster_lod_select(cl, inst, eye, 1.0f);
     int lh = viewer::cluster_lod_select(cl, inst, eye, 0.5f);
-    assert(lh >= lf);
+    CHECK(lh >= lf, "cluster: half-budget selects coarser-or-equal LOD");
     printf("  test_cluster_budget_dial OK\n");
 }
 

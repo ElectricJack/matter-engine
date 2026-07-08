@@ -10,10 +10,9 @@
 //   culler.init(err);                            // compile cull.comp, allocate fixed buffers
 //   culler.ensure_part(hash, store);             // register per-part GPU state lazily
 //   culler.cull(resolved, store, eye, planes, vp, budget);  // upload + dispatch
-//   auto batches = culler.readback_batches(store);       // bridge to RasterBatch list
+//   culler.draw_indirect();                      // issue glMultiDrawArraysIndirect
 
 #include "gpu_cull_types.h"    // GpuClusterMeta, GpuInstanceRec, DrawArraysCmd, kMaxLod
-#include "raster_composer.h"   // RasterBatch
 #include "sector_resolver.h"   // ResolvedInstance
 #include "part_store.h"        // PartStore, LoadedPart, ExpandedNode
 
@@ -59,11 +58,6 @@ public:
               const float view_proj[16],
               float pixel_budget);
 
-    // Stage-1 bridge: GPU-sync (glMemoryBarrier already issued in cull()), read back
-    // cmds + transforms, rebuild RasterBatch list for the existing draw path.
-    // Populates stat_culled_ / stat_emitted_ from ssbo_stats_ readback.
-    std::vector<RasterBatch> readback_batches(PartStore& store);
-
     // Stage-2: issue glMultiDrawArraysIndirect for all registered parts using the
     // GPU command + xform SSBOs written by the most recent cull() call.
     // shader_id must already be active (glUseProgram).
@@ -108,7 +102,14 @@ public:
     // patterns into mip 0 and verify the reduce math without a depth blit.
     unsigned hiz_tex_for_test() const { return hiz_tex_; }
 
-    // HUD counters (valid after readback_batches() or draw_indirect()).
+    // Enable/disable the per-frame GPU stats readback (glGetBufferSubData on the
+    // stats SSBO in draw_indirect()).  When disabled, stat_culled_ / stat_emitted_
+    // retain the values from the last readback (one-frame-late).  Default: off.
+    // Turn on only when the HUD stats panel is visible.
+    void set_stats_readback(bool v) { stats_readback_ = v; }
+    bool stats_readback() const     { return stats_readback_; }
+
+    // HUD counters (valid after draw_indirect() with stats_readback_ enabled).
     size_t culled_clusters() const { return stat_culled_; }        // frustum
     size_t culled_hiz()      const { return stat_culled_hiz_; }    // occlusion
     size_t emitted()         const { return stat_emitted_; }
@@ -129,14 +130,32 @@ public:
     // -1 if not yet registered.
     int part_slot_of(uint64_t hash) const;
 
+    // TEST-ONLY accessors: expose the GL buffer names and CPU-mirror data
+    // needed by gpu_cull_tests.cpp to implement its own readback helpers.
+    // Not for use in production viewer code.
+    unsigned test_ssbo_cmds()   const { return ssbo_cmds_; }
+    unsigned test_ssbo_xforms() const { return ssbo_xforms_; }
+    unsigned test_ssbo_stats()  const { return ssbo_stats_; }
+    uint32_t test_total_xform_slots() const { return total_xform_slots_; }
+    const std::vector<DrawArraysCmd>&  test_cmd_template()      const { return cmd_template_; }
+    const std::vector<GpuClusterMeta>& test_cluster_staging()   const { return cluster_staging_; }
+
+    // TEST-ONLY: read the stats SSBO and update the private stat counters
+    // (culled_clusters / culled_hiz / emitted).  Equivalent to the stats
+    // portion of the old readback_batches() without the xform/cmd readback.
+    // Call after cull() + a glMemoryBarrier to get current-frame values.
+    void test_readback_stats();
+
 private:
     // --- GL object names ---
-    unsigned ssbo_clusters_  = 0;   // binding 0: ClusterMeta array
-    unsigned ssbo_instances_ = 0;   // binding 1: GpuInstanceRec array
-    unsigned ssbo_cmds_      = 0;   // binding 2: DrawArraysCmd array
-    unsigned ssbo_xforms_    = 0;   // binding 3: mat4 output transforms
-    unsigned ssbo_stats_     = 0;   // binding 4: {stat_culled_frustum, stat_culled_hiz, stat_emitted}
-    unsigned program_cull_   = 0;
+    unsigned ssbo_clusters_       = 0;   // binding 0: ClusterMeta array
+    unsigned ssbo_instances_      = 0;   // binding 1: GpuInstanceRec array
+    unsigned ssbo_cmds_           = 0;   // binding 2: DrawArraysCmd array (live, written by cull.comp)
+    unsigned ssbo_cmds_template_  = 0;   // pristine zero-instance_count seed; GPU-blitted to ssbo_cmds_ each frame
+    unsigned ssbo_xforms_         = 0;   // binding 3: mat4 output transforms
+    unsigned ssbo_stats_          = 0;   // binding 4: {stat_culled_frustum, stat_culled_hiz, stat_emitted}
+    unsigned program_cull_        = 0;
+    bool     cmds_template_dirty_ = false;  // set when base_instance fields change without a size change
 
     // Uniform locations cached after program link.
     int uloc_planes_               = -1;
@@ -168,10 +187,32 @@ private:
     // active_slots_[i] == 1 iff part slot i received >=1 GpuInstanceRec this frame.
     std::vector<uint8_t> active_slots_;
 
-    // HUD stats populated by readback_batches() or draw_indirect().
+    // HUD stats populated by draw_indirect().
     size_t stat_culled_      = 0;   // frustum
     size_t stat_culled_hiz_  = 0;   // occlusion
     size_t stat_emitted_     = 0;
+    int    stat_last_tris_   = 0;   // tri count from the last cmd readback (one-frame-late when gate is off)
+
+    // --- GPU readback gate ---
+    // When false, draw_indirect() skips glGetBufferSubData on ssbo_stats_
+    // so the frame-loop GPU sync is avoided when the HUD is not reading stats.
+    bool stats_readback_ = false;
+
+    // --- Instance upload dirty-check ---
+    // FNV-1a fingerprint over (part_hash, transform) of every ResolvedInstance
+    // from the previous cull() call, plus the count.  When both match, skip
+    // the expand + SSBO re-upload phase (static world fast-path).
+    uint64_t last_resolved_fp_    = 0;
+    int      last_resolved_count_ = -1;
+
+    // Hoisted per-frame expansion state (reused across frames; avoids repeated
+    // large-vector alloc/free for static worlds on the dirty-check fast-path).
+    struct ExpandedInst {
+        int   part_slot;
+        float transform[16];   // GL column-major (post-transpose_to_gl)
+    };
+    std::vector<ExpandedInst> expanded_;
+    std::vector<uint32_t>     per_slot_count_;
 
     // -----------------------------------------------------------------------
     // HiZ pyramid state (screen-sized; kept across reset()).
@@ -187,6 +228,7 @@ private:
     int      hiz_h_           = 0;       // cached height (for resize detection)
     int      hiz_mip_levels_  = 0;       // floor(log2(max(w,h)))+1
     // Uniform locations on program_hiz_.
+    int      uloc_hiz_src_        = -1;   // "src" sampler (depth copy + downsample)
     int      uloc_hiz_src_mip_    = -1;
     int      uloc_hiz_dst_size_   = -1;
     int      uloc_hiz_copy_mode_  = -1;

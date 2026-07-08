@@ -17,8 +17,13 @@ ParticleSystem::~ParticleSystem() {
 }
 
 void ParticleSystem::initialize() {
-    printf("Initializing material-based particle system...\n"); 
-    
+    printf("Initializing material-based particle system...\n");
+
+    // Seed the per-system RNG once (not per-frame)
+    rng_ = std::mt19937(std::random_device{}());
+    warned_radius_clamped_ = false;
+    warned_neighbors_truncated_ = false;
+
     // Create spatial hash for efficient neighbor queries
     spatial_hash_ = sh_create(SPATIAL_CELL_SIZE, 1024); // Start with 1024 initial capacity
     if (!spatial_hash_) {
@@ -47,9 +52,6 @@ void ParticleSystem::initialize() {
     chemical_energy_.reserve(initial_capacity);
     kinetic_energy_.reserve(initial_capacity);
     device_states_.reserve(initial_capacity);
-    
-    // Reserve space for particle references
-    particle_refs_.reserve(initial_capacity);
     
     // Initialize black hole at center
     black_hole_.position = {0, 0, 0};
@@ -102,8 +104,7 @@ void ParticleSystem::cleanup() {
     active_arcs_.clear();
 
     particle_types_.clear();
-    particle_refs_.clear();
-    
+
     // Destroy spatial hash
     if (spatial_hash_) {
         sh_destroy(spatial_hash_);
@@ -183,8 +184,10 @@ void ParticleSystem::add_particle(uint32_t type_id, const Vector3& position, con
         device_states_.emplace_back();  // Default device state
     }
     
-    printf("Added particle %u (%s) at (%.2f, %.2f, %.2f) T=%.1f°C Q=%.2f\n",
+#ifdef DEBUG_PARTICLE_SPAWN
+    printf("Added particle %u (%s) at (%.2f, %.2f, %.2f) T=%.1f C Q=%.2f\n",
            index, material.name, position.x, position.y, position.z, temperature, charge);
+#endif
 }
 
 void ParticleSystem::remove_particle(uint32_t particle_index) {
@@ -313,26 +316,39 @@ void ParticleSystem::apply_particle_particle_forces_spatial(float dt) {
         
         const ParticleType& particle_type = particle_types_[type_id_[i]];
         
-        // Calculate gravity radius for this particle type
+        // Calculate gravity radius for this particle type; clamp to avoid
+        // (2r+1)^3 cell explosion that hammers the spatial-hash query loop.
         float gravity_radius = calculate_gravity_radius(particle_type.mass);
-        
+        if (gravity_radius > MAX_QUERY_RADIUS) {
+            if (!warned_radius_clamped_) {
+                printf("Warning: gravity radius %.1f clamped to MAX_QUERY_RADIUS %.1f\n",
+                       gravity_radius, MAX_QUERY_RADIUS);
+                warned_radius_clamped_ = true;
+            }
+            gravity_radius = MAX_QUERY_RADIUS;
+        }
+
         float px = pos_x_[i];
         float py = pos_y_[i];
         float pz = pos_z_[i];
-        
+
         // Query neighbors within gravity influence radius
         int neighbor_count;
         {
             PROFILE_SECTION("Spatial Hash Query");
             neighbor_count = sh_query_radius(spatial_hash_, px, py, pz, gravity_radius, neighbors, MAX_NEIGHBORS);
         }
+        if (neighbor_count == MAX_NEIGHBORS && !warned_neighbors_truncated_) {
+            printf("Warning: neighbor query returned MAX_NEIGHBORS (%d); results may be truncated\n",
+                   MAX_NEIGHBORS);
+            warned_neighbors_truncated_ = true;
+        }
         
         // Apply forces from each neighbor
         {
             PROFILE_SECTION("Force Application");
             for (int n = 0; n < neighbor_count; ++n) {
-                ParticleRef* neighbor_ref = (ParticleRef*)neighbors[n];
-                uint32_t neighbor_idx = neighbor_ref->particle_index;
+                uint32_t neighbor_idx = (uint32_t)(uintptr_t)neighbors[n];
                 
                 // Skip self-reference
                 if (neighbor_idx == i) continue;
@@ -410,8 +426,7 @@ void ParticleSystem::handle_particle_collisions_spatial() {
             
             // Check for collisions with each neighbor
             for (int n = 0; n < neighbor_count; ++n) {
-                ParticleRef* neighbor_ref = (ParticleRef*)neighbors[n];
-                uint32_t neighbor_idx = neighbor_ref->particle_index;
+                uint32_t neighbor_idx = (uint32_t)(uintptr_t)neighbors[n];
                 
                 // Skip self-reference
                 if (neighbor_idx == i) continue;
@@ -469,9 +484,10 @@ void ParticleSystem::handle_particle_collisions_spatial() {
         
         // Add some angular velocity for visual interest
         float angular_boost = 0.1f * (mass1 + mass2);
-        new_vel_x += ((float)rand() / RAND_MAX - 0.5f) * angular_boost;
-        new_vel_y += ((float)rand() / RAND_MAX - 0.5f) * angular_boost;
-        new_vel_z += ((float)rand() / RAND_MAX - 0.5f) * angular_boost;
+        std::uniform_real_distribution<float> kick(-0.5f, 0.5f);
+        new_vel_x += kick(rng_) * angular_boost;
+        new_vel_y += kick(rng_) * angular_boost;
+        new_vel_z += kick(rng_) * angular_boost;
         
         // Average temperature
         float new_temp = (temperature_[p1] + temperature_[p2]) * 0.5f + 10.0f; // Heat from collision
@@ -484,11 +500,10 @@ void ParticleSystem::handle_particle_collisions_spatial() {
         remove_particle(p2);
         
         // Add the merged particle
-        add_particle(new_type_id, Vector3{new_x, new_y, new_z}, 
+        add_particle(new_type_id, Vector3{new_x, new_y, new_z},
                     Vector3{new_vel_x, new_vel_y, new_vel_z}, new_temp, 0.0f);
-        
-        // Only process one collision per frame to avoid complex index management
-        break;
+        // Both particles are now inactive; the active_ flag check above will
+        // skip any subsequent pairs involving either index.
     }
 }
 
@@ -501,24 +516,16 @@ void ParticleSystem::populate_spatial_hash() {
         sh_clear(spatial_hash_);
     }
     
-    // Clear particle references and prepare for new ones
-    {
-        PROFILE_SECTION("Clear Particle Refs");
-        particle_refs_.clear();
-    }
-    
     // Insert all active particles into spatial hash
+    // Store particle index as the payload (cast via uintptr_t) to avoid
+    // dangling-pointer UB that would result from storing &particle_refs_[i]
+    // into a std::vector that can reallocate during future push_back/emplace.
     {
         PROFILE_SECTION("Insert Particles");
         for (uint32_t i = 0; i < pos_x_.size(); ++i) {
             if (!active_[i]) continue;
-            
-            // Create particle reference
-            particle_refs_.emplace_back(i);
-            ParticleRef* ref = &particle_refs_.back();
-            
-            // Insert into spatial hash at particle position
-            sh_insert(spatial_hash_, pos_x_[i], pos_y_[i], pos_z_[i], ref);
+            sh_insert(spatial_hash_, pos_x_[i], pos_y_[i], pos_z_[i],
+                      (void*)(uintptr_t)i);
         }
     }
 }
@@ -541,10 +548,12 @@ void ParticleSystem::integrate_particles(float dt) {
         pos_y_[i] += vel_y_[i] * dt;
         pos_z_[i] += vel_z_[i] * dt;
         
-        // Apply damping
-        vel_x_[i] *= DAMPING;
-        vel_y_[i] *= DAMPING;
-        vel_z_[i] *= DAMPING;
+        // Apply frame-rate independent damping: factor = DAMPING^(dt*60)
+        // At 60 fps this matches the old per-frame multiply; at other rates it scales correctly.
+        float damp = powf(DAMPING, dt * 60.0f);
+        vel_x_[i] *= damp;
+        vel_y_[i] *= damp;
+        vel_z_[i] *= damp;
         
         // Update temperature based on velocity (kinetic energy)
         float speed_sq = vel_x_[i]*vel_x_[i] + vel_y_[i]*vel_y_[i] + vel_z_[i]*vel_z_[i];
@@ -563,12 +572,14 @@ void ParticleSystem::check_bounds() {
         
         if (distance_from_center > MAX_DISTANCE) {
             // Reset to near center with small random velocity
-            pos_x_[i] = ((float)rand() / RAND_MAX - 0.5f) * 4.0f;
-            pos_y_[i] = ((float)rand() / RAND_MAX - 0.5f) * 4.0f;
-            pos_z_[i] = ((float)rand() / RAND_MAX - 0.5f) * 4.0f;
-            vel_x_[i] = ((float)rand() / RAND_MAX - 0.5f) * 2.0f;
-            vel_y_[i] = ((float)rand() / RAND_MAX - 0.5f) * 2.0f;
-            vel_z_[i] = ((float)rand() / RAND_MAX - 0.5f) * 2.0f;
+            std::uniform_real_distribution<float> pos_dist(-2.0f, 2.0f);
+            std::uniform_real_distribution<float> vel_dist(-1.0f, 1.0f);
+            pos_x_[i] = pos_dist(rng_);
+            pos_y_[i] = pos_dist(rng_);
+            pos_z_[i] = pos_dist(rng_);
+            vel_x_[i] = vel_dist(rng_);
+            vel_y_[i] = vel_dist(rng_);
+            vel_z_[i] = vel_dist(rng_);
             temperature_[i] = 20.0f;
         }
     }
@@ -645,24 +656,30 @@ void ParticleSystem::apply_thermal_conduction(float dt) {
         int neighbor_count = sh_query_radius(spatial_hash_, px, py, pz, thermal_radius, neighbors, MAX_NEIGHBORS);
         
         for (int n = 0; n < neighbor_count; ++n) {
-            ParticleRef* neighbor_ref = (ParticleRef*)neighbors[n];
-            uint32_t neighbor_idx = neighbor_ref->particle_index;
+            uint32_t neighbor_idx = (uint32_t)(uintptr_t)neighbors[n];
             
             if (neighbor_idx == i || neighbor_idx >= active_.size() || !active_[neighbor_idx]) continue;
-            
-            float distance = sqrtf(powf(pos_x_[neighbor_idx] - px, 2) + 
-                                 powf(pos_y_[neighbor_idx] - py, 2) + 
-                                 powf(pos_z_[neighbor_idx] - pz, 2));
-            
-            if (distance < thermal_radius) {
+
+            float ndx = pos_x_[neighbor_idx] - px;
+            float ndy = pos_y_[neighbor_idx] - py;
+            float ndz = pos_z_[neighbor_idx] - pz;
+            float dist_sq = ndx*ndx + ndy*ndy + ndz*ndz;
+
+            // sh_query_radius already guarantees dist <= thermal_radius; skip
+            // only near-zero cases that would cause divide-by-zero below.
+            if (dist_sq < 1e-8f) continue;
+            float distance = sqrtf(dist_sq);
+
+            {
                 float thermal_conductivity = calculate_thermal_conductivity_between(i, neighbor_idx);
                 float temp_diff = temperature_[neighbor_idx] - temperature_[i];
-                
+
                 // Heat transfer: Q = k * A * (T2 - T1) / d * dt
-                float area = 3.14159f * powf(std::min(particle_type.radius, 
-                                                    particle_types_[type_id_[neighbor_idx]].radius), 2);
+                float min_r = std::min(particle_type.radius,
+                                       particle_types_[type_id_[neighbor_idx]].radius);
+                float area = 3.14159f * (min_r * min_r);
                 float heat_transfer = thermal_conductivity * area * temp_diff / distance * dt * THERMAL_DIFFUSION_RATE;
-                
+
                 // Apply heat transfer
                 float heat_capacity_i = material.heat_capacity * particle_type.mass;
                 temperature_[i] += heat_transfer / heat_capacity_i;
@@ -746,22 +763,25 @@ void ParticleSystem::apply_electrical_conduction(float dt) {
         int neighbor_count = sh_query_radius(spatial_hash_, px, py, pz, electrical_radius, neighbors, MAX_NEIGHBORS);
         
         for (int n = 0; n < neighbor_count; ++n) {
-            ParticleRef* neighbor_ref = (ParticleRef*)neighbors[n];
-            uint32_t neighbor_idx = neighbor_ref->particle_index;
+            uint32_t neighbor_idx = (uint32_t)(uintptr_t)neighbors[n];
             
             if (neighbor_idx == i || neighbor_idx >= active_.size() || !active_[neighbor_idx]) continue;
-            
-            float distance = sqrtf(powf(pos_x_[neighbor_idx] - px, 2) + 
-                                 powf(pos_y_[neighbor_idx] - py, 2) + 
-                                 powf(pos_z_[neighbor_idx] - pz, 2));
-            
-            if (distance < electrical_radius) {
+
+            {
+                float ndx = pos_x_[neighbor_idx] - px;
+                float ndy = pos_y_[neighbor_idx] - py;
+                float ndz = pos_z_[neighbor_idx] - pz;
+                float dist_sq = ndx*ndx + ndy*ndy + ndz*ndz;
+                if (dist_sq < 1e-8f) continue;
+                float distance = sqrtf(dist_sq);
+
                 float electrical_conductivity = calculate_electrical_conductivity_between(i, neighbor_idx);
                 float voltage_diff = voltage_[neighbor_idx] - voltage_[i];
-                
+
                 // Current flow: I = σ * A * (V2 - V1) / d
-                float area = 3.14159f * powf(std::min(particle_type.radius, 
-                                                    particle_types_[type_id_[neighbor_idx]].radius), 2);
+                float min_r = std::min(particle_type.radius,
+                                       particle_types_[type_id_[neighbor_idx]].radius);
+                float area = 3.14159f * (min_r * min_r);
                 float current = electrical_conductivity * area * voltage_diff / distance * dt;
                 
                 // Apply charge transfer
@@ -776,8 +796,6 @@ void ParticleSystem::apply_electrical_conduction(float dt) {
 }
 
 void ParticleSystem::apply_joule_heating(float dt) {
-    void* neighbors[MAX_NEIGHBORS];
-    
     // Apply Joule heating from electrical currents
     for (uint32_t i = 0; i < pos_x_.size(); ++i) {
         if (!active_[i]) continue;
@@ -818,16 +836,17 @@ void ParticleSystem::check_dielectric_breakdown() {
         int neighbor_count = sh_query_radius(spatial_hash_, px, py, pz, breakdown_radius, neighbors, MAX_NEIGHBORS);
         
         for (int n = 0; n < neighbor_count; ++n) {
-            ParticleRef* neighbor_ref = (ParticleRef*)neighbors[n];
-            uint32_t neighbor_idx = neighbor_ref->particle_index;
+            uint32_t neighbor_idx = (uint32_t)(uintptr_t)neighbors[n];
             
             if (neighbor_idx == i || neighbor_idx >= active_.size() || !active_[neighbor_idx]) continue;
-            
-            float distance = sqrtf(powf(pos_x_[neighbor_idx] - px, 2) + 
-                                 powf(pos_y_[neighbor_idx] - py, 2) + 
-                                 powf(pos_z_[neighbor_idx] - pz, 2));
-            
-            if (distance > 0.0f) {
+
+            {
+                float ndx = pos_x_[neighbor_idx] - px;
+                float ndy = pos_y_[neighbor_idx] - py;
+                float ndz = pos_z_[neighbor_idx] - pz;
+                float dist_sq = ndx*ndx + ndy*ndy + ndz*ndz;
+                if (dist_sq < 1e-8f) continue;
+                float distance = sqrtf(dist_sq);
                 float electric_field = std::abs(voltage_[neighbor_idx] - voltage_[i]) / distance;
                 
                 if (electric_field > material.spark_threshold) {
@@ -844,9 +863,8 @@ void ParticleSystem::check_dielectric_breakdown() {
 void ParticleSystem::process_chemical_reactions(float dt) {
     void* neighbors[MAX_NEIGHBORS];
     std::vector<uint32_t> nearby_particles;
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_real_distribution<> dis(0.0, 1.0);
+    // Use the per-system RNG (rng_) seeded once in initialize()
+    std::uniform_real_distribution<float> dis(0.0f, 1.0f);
     
     // Process each particle as a potential reaction site
     for (uint32_t i = 0; i < pos_x_.size(); ++i) {
@@ -867,8 +885,7 @@ void ParticleSystem::process_chemical_reactions(float dt) {
         nearby_particles.push_back(i);
         
         for (int n = 0; n < neighbor_count; ++n) {
-            ParticleRef* neighbor_ref = (ParticleRef*)neighbors[n];
-            uint32_t neighbor_idx = neighbor_ref->particle_index;
+            uint32_t neighbor_idx = (uint32_t)(uintptr_t)neighbors[n];
             
             if (neighbor_idx != i && neighbor_idx < active_.size() && active_[neighbor_idx]) {
                 nearby_particles.push_back(neighbor_idx);
@@ -877,9 +894,9 @@ void ParticleSystem::process_chemical_reactions(float dt) {
         
         // Check all chemical reactions
         for (const auto& reaction : material_manager_.get_chemical_reactions()) {
-            if (temp >= reaction.activation_temperature && 
+            if (temp >= reaction.activation_temperature &&
                 can_react(reaction.reactants, nearby_particles) &&
-                dis(gen) < reaction.probability) {
+                dis(rng_) < reaction.probability) {
                 
                 // Perform the reaction
                 Vector3 reaction_center = {px, py, pz};
@@ -1214,19 +1231,21 @@ void ParticleSystem::spawn_products(const std::unordered_map<MaterialType, int>&
         }
         
         // Spawn product particles
+        std::uniform_real_distribution<float> spawn_pos_dist(-1.0f, 1.0f);
+        std::uniform_real_distribution<float> spawn_vel_dist(-2.0f, 2.0f);
         for (int i = 0; i < count; ++i) {
             // Random position around reaction center
             Vector3 spawn_pos = {
-                reaction_center.x + ((float)rand() / RAND_MAX - 0.5f) * 2.0f,
-                reaction_center.y + ((float)rand() / RAND_MAX - 0.5f) * 2.0f,
-                reaction_center.z + ((float)rand() / RAND_MAX - 0.5f) * 2.0f
+                reaction_center.x + spawn_pos_dist(rng_),
+                reaction_center.y + spawn_pos_dist(rng_),
+                reaction_center.z + spawn_pos_dist(rng_)
             };
-            
+
             // Random velocity
             Vector3 spawn_vel = {
-                ((float)rand() / RAND_MAX - 0.5f) * 4.0f,
-                ((float)rand() / RAND_MAX - 0.5f) * 4.0f,
-                ((float)rand() / RAND_MAX - 0.5f) * 4.0f
+                spawn_vel_dist(rng_),
+                spawn_vel_dist(rng_),
+                spawn_vel_dist(rng_)
             };
             
             // Temperature based on energy change
@@ -1353,21 +1372,20 @@ void ParticleSystem::draw_neighbor_connections() {
         
         const ParticleType& particle_type = particle_types_[type_id_[i]];
         
-        // Calculate gravity radius for this particle type
-        float gravity_radius = calculate_gravity_radius(particle_type.mass);
-        
+        // Calculate gravity radius for this particle type (clamped as in physics)
+        float gravity_radius = fminf(calculate_gravity_radius(particle_type.mass), MAX_QUERY_RADIUS);
+
         float px = pos_x_[i];
         float py = pos_y_[i];
         float pz = pos_z_[i];
         Vector3 particle_pos = {px, py, pz};
-        
+
         // Query neighbors within gravity influence radius (same as physics)
         int neighbor_count = sh_query_radius(spatial_hash_, px, py, pz, gravity_radius, neighbors, MAX_NEIGHBORS);
         
         // Draw lines to each neighbor that affects this particle's motion
         for (int n = 0; n < neighbor_count; ++n) {
-            ParticleRef* neighbor_ref = (ParticleRef*)neighbors[n];
-            uint32_t neighbor_idx = neighbor_ref->particle_index;
+            uint32_t neighbor_idx = (uint32_t)(uintptr_t)neighbors[n];
             
             // Skip self-reference
             if (neighbor_idx == i) continue;

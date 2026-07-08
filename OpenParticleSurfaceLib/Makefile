@@ -1,6 +1,8 @@
 CC = gcc
 RAYLIB_PATH = ../Libraries/raylib
-CFLAGS = -Wall -Wextra -O2 -I$(RAYLIB_PATH)/src -Iinclude
+SPATIAL_QUERY_PATH = ../SpatialQueryLib
+OA_LIB = ../ObjectAllocatorLib
+CFLAGS = -Wall -Wextra -O2 -I$(RAYLIB_PATH)/src -Iinclude -I$(SPATIAL_QUERY_PATH)/include -I$(OA_LIB)/include
 
 # Detect OS and set platform-specific variables
 UNAME_S := $(shell uname -s)
@@ -35,9 +37,9 @@ $(shell mkdir -p $(OBJ_DIR)/$(SRC_DIR))
 $(shell mkdir -p $(BUILD_DIR))
 $(shell mkdir -p $(RAYLIB_PATH)/build/$(PLATFORM))
 
-# Source files - Include both core files and linked library files
-SRCS = main.c $(SRC_DIR)/open_particle_surface.c $(SRC_DIR)/surface.c $(SRC_DIR)/object_allocator.c $(SRC_DIR)/spatial_hash.c
-OBJS = $(SRCS:%.c=$(OBJ_DIR)/%.o)
+# Source files - sibling library sources compiled directly from source of truth
+SRCS = main.c $(SRC_DIR)/open_particle_surface.c $(SRC_DIR)/surface.c
+OBJS = $(OBJ_DIR)/main.o $(OBJ_DIR)/$(SRC_DIR)/open_particle_surface.o $(OBJ_DIR)/$(SRC_DIR)/surface.o $(OBJ_DIR)/$(SRC_DIR)/object_allocator.o $(OBJ_DIR)/$(SRC_DIR)/spatial_hash.o
 
 # Target executable (platform-specific)
 BIN = $(BUILD_DIR)/open_particle_surface
@@ -80,11 +82,20 @@ $(RAYLIB_FORCE_FILE):
 
 # Rule for main.c (in root directory)
 $(OBJ_DIR)/main.o: main.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 # Rule for source files in src directory
 $(OBJ_DIR)/$(SRC_DIR)/%.o: $(SRC_DIR)/%.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
+
+# Sibling library sources compiled directly from source of truth
+$(OBJ_DIR)/$(SRC_DIR)/object_allocator.o: $(OA_LIB)/src/object_allocator.c $(OA_LIB)/include/object_allocator.h
+	mkdir -p $(OBJ_DIR)/$(SRC_DIR)
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
+
+$(OBJ_DIR)/$(SRC_DIR)/spatial_hash.o: $(SPATIAL_QUERY_PATH)/src/spatial_hash.c $(SPATIAL_QUERY_PATH)/include/spatial_hash.h
+	mkdir -p $(OBJ_DIR)/$(SRC_DIR)
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 # Platform-specific clean
 clean:
@@ -111,5 +122,7 @@ platform:
 	@echo "Current platform: $(PLATFORM)"
 	@echo "Build directory: $(BUILD_DIR)"
 	@echo "Raylib library: $(RAYLIB_LIB)"
+
+-include $(OBJS:.o=.d)
 
 .PHONY: all clean clean-all raylib rebuild-raylib platform

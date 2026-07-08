@@ -220,101 +220,101 @@ endif
 
 # Build rules for main target (C++)
 $(OBJ_DIR)/main.o: main.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/bvh.o: src/bvh.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/object_allocator.o: src/object_allocator.c
-	$(CC) -c $< $(CFLAGS) -o $@
+	$(CC) -c $< $(CFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/blas_manager.o: src/blas_manager.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/tlas_manager.o: src/tlas_manager.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/part_asset.o: src/part_asset.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/bvh_visualizer.o: src/bvh_visualizer.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/bvh_analyzer.o: src/bvh_analyzer.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/open_particle_surface.o: src/open_particle_surface.c
-	$(CC) -c $< $(CFLAGS) -o $@
+	$(CC) -c $< $(CFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/surface.o: src/surface.c
-	$(CC) -c $< $(CFLAGS) -o $@
+	$(CC) -c $< $(CFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/material_registry.o: src/material_registry.c
-	$(CC) -c $< $(CFLAGS) -o $@
+	$(CC) -c $< $(CFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/spatial_hash.o: src/spatial_hash.c
-	$(CC) -c $< $(CFLAGS) -o $@
+	$(CC) -c $< $(CFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/cluster.o: src/cluster.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/cell.o: src/cell.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/mesh_worker_pool.o: src/mesh_worker_pool.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/mesh_build_utils.o: src/mesh_build_utils.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/meshing_algorithm.o: src/meshing_algorithm.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/marching_cubes_algorithm.o: src/marching_cubes_algorithm.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/oriented_cube_algorithm.o: src/oriented_cube_algorithm.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/mesh_simplifier.o: src/mesh_simplifier.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/lattice.o: src/lattice.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/occupancy.o: src/occupancy.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/particle_culling.o: src/particle_culling.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/vertex_ao.o: src/vertex_ao.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/voxel_imposter.o: src/voxel_imposter.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 # ImGui build rules
 $(OBJ_DIR)/imgui.o: $(IMGUI_PATH)/imgui.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/imgui_demo.o: $(IMGUI_PATH)/imgui_demo.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/imgui_draw.o: $(IMGUI_PATH)/imgui_draw.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/imgui_tables.o: $(IMGUI_PATH)/imgui_tables.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/imgui_widgets.o: $(IMGUI_PATH)/imgui_widgets.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/imgui_impl_opengl3.o: $(IMGUI_PATH)/backends/imgui_impl_opengl3.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/imgui_impl_glfw.o: $(IMGUI_PATH)/backends/imgui_impl_glfw.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 # Platform-specific clean
 clean:
@@ -358,5 +358,7 @@ platform:
 	@echo "Raylib library: $(RAYLIB_LIB)"
 	@echo "CC: $(CC)"
 	@echo "CXX: $(CXX)"
+
+-include $(OBJ:.o=.d)
 
 .PHONY: all clean clean-all raylib shaders dependencies rebuild-raylib platform

@@ -7,8 +7,7 @@
 #include <cstring>
 #include <vector>
 
-static int failures = 0;
-#define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); ++failures; } } while (0)
+#include "check.h"
 
 static void test_resolved_hash() {
     using namespace part_asset;
@@ -374,6 +373,6 @@ int main() {
     test_round_trip_no_children();
     test_v2_guards();
     test_new_materials();
-    if (failures == 0) printf("All part_asset_v2 tests passed\n");
-    return failures == 0 ? 0 : 1;
+    if (g_failures == 0) printf("All part_asset_v2 tests passed\n");
+    return g_failures == 0 ? 0 : 1;
 }

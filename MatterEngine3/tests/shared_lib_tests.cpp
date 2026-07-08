@@ -12,8 +12,7 @@
 #include <algorithm>
 #include <cmath>
 
-static int failures = 0;
-#define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); ++failures; } } while (0)
+#include "check.h"
 
 // ---- scratch shared-lib helpers (used by Task 4 + Task 6/8) ----------------
 std::string make_scratch_shared_lib(const std::string& src_root) {
@@ -309,6 +308,6 @@ int main() {
     test_script_rng_binding();
     test_helper_pure_outputs();
     test_import_resolves_end_to_end();
-    if (failures == 0) printf("All shared_lib tests passed\n");
-    return failures == 0 ? 0 : 1;
+    if (g_failures == 0) printf("All shared_lib tests passed\n");
+    return g_failures == 0 ? 0 : 1;
 }

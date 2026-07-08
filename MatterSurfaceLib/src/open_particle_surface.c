@@ -6,13 +6,19 @@
 #include "raymath.h"
 #include "rlgl.h"
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <stdbool.h>
 #include <math.h>
 #include <string.h>
 
-// Debug printf wrapper for tracking issues
+// Debug printf wrapper — compiled in only when OPS_DEBUG is defined (perf fix:
+// hot-path printf spam gated; matches the canonical OpenParticleSurfaceLib).
+#ifdef OPS_DEBUG
 #define DEBUG_LOG(fmt, ...) printf("[DEBUG] " fmt "\n", ##__VA_ARGS__)
+#else
+#define DEBUG_LOG(fmt, ...) ((void)0)
+#endif
 
 // Configuration
 #define CELL_SIZE             16.0f    // Size of each spatial hash cell 
@@ -35,17 +41,20 @@ typedef struct {
     int     cellIndices[MAX_OVERLAPPING_CELLS]; // Indices of all cells containing this particle
     int     cellCount;     // Number of cells this particle belongs to
     bool    active;        // Whether the particle is active
+    int     nextFree;      // Free-list link (-1 = end-of-list, used when !active)
 } InternalParticle;
 
 // Spatial hash cell structure
 typedef struct {
-    int            particleCount;    // Number of particles in this cell
-    int*           particleIndices;  // Array of indices to particles
-    bool           dirty;            // Whether this cell needs mesh regeneration
-    Mesh           mesh;             // Mesh for this cell
-    Bounds         bounds;           // Bounds for this cell
-    bool           hasMesh;          // Whether a mesh has been generated
-    GridCoord      coord;            // Grid coordinates of this cell
+    int            particleCount;       // Number of particles in this cell
+    int            particleCapacity;    // B3 fix: capacity of particleIndices array
+    int*           particleIndices;     // Array of indices to particles (grows dynamically)
+    bool           dirty;               // Whether this cell needs mesh regeneration
+    Mesh           mesh;                // Mesh for this cell
+    Bounds         bounds;              // Bounds for this cell
+    bool           hasMesh;             // Whether a mesh has been generated
+    GridCoord      coord;               // Grid coordinates of this cell
+    bool           isActive;            // Whether the cell is already in the active list (O(1) dedup)
 } SpatialHashCell;
 
 // Cell counter for tracking total cells (replaces CellMap.size)
@@ -69,6 +78,9 @@ static ObjectAllocator* particleAllocator = NULL;
 static ActiveCellList activeCells = {0};
 static SpatialHash* spatialHash = NULL;
 
+// Free-list head for O(1) free-slot lookup in CreateParticle (-1 = none)
+static int freeParticleHead = -1;
+
 // Static buffer for particle data to avoid repeated malloc/free
 static Particle* cellParticleBuffer = NULL;
 static int cellParticleBufferSize = 0;
@@ -86,6 +98,8 @@ static int GetCellIndex(GridCoord coord);
 static GridCoord GetGridCoordFromPosition(Vector3 position);
 static Bounds GetSpatialHashBounds(GridCoord coord);
 static int UpdateDirtyCells(int maxUpdates);
+// B3 fix: ensure a cell's particle index array can hold minCapacity entries
+static bool CellParticleArrayEnsure(SpatialHashCell* cell, int minCapacity);
 
 // HashGridCoord function removed - now using spatial hash for cell lookups
 
@@ -130,53 +144,82 @@ static Vector3 GridCoordToWorldPos(GridCoord coord) {
     };
 }
 
+// B3 fix: ensure a cell's particle index array can hold at least minCapacity entries.
+// Returns false on allocation failure (original array is preserved).
+static bool CellParticleArrayEnsure(SpatialHashCell* cell, int minCapacity) {
+    if (cell->particleCapacity >= minCapacity) return true;
+
+    int newCap = cell->particleCapacity == 0 ? 64 : cell->particleCapacity * 2;
+    if (newCap < minCapacity) newCap = minCapacity;
+
+    int* tmp = (int*)realloc(cell->particleIndices, newCap * sizeof(int));
+    if (!tmp) {
+        fprintf(stderr, "[ERROR] Failed to grow cell particle index array to %d\n", newCap);
+        return false;
+    }
+    cell->particleIndices = tmp;
+    cell->particleCapacity = newCap;
+    return true;
+}
+
+// B1 fix: store integer cell index in the spatial hash (as (void*)(intptr_t)(idx+1))
+// so that NULL means "not found" and idx==0 is a valid index.
+// This prevents dangling pointers when spatialHashCells is realloc'd.
 static int GetCellIndex(GridCoord coord) {
     // Convert grid coordinates to world position for spatial hash lookup
     Vector3 worldPos = GridCoordToWorldPos(coord);
-    
-    // Try to find existing cell using the spatial hash
-    SpatialHashCell* existingCell = (SpatialHashCell*)sh_query_first(spatialHash, worldPos.x, worldPos.y, worldPos.z, 0.1f);
-    
-    if (existingCell != NULL) {
-        // Found existing cell, return its index
-        return (int)(existingCell - spatialHashCells);
+
+    // Try to find existing cell using the spatial hash.
+    // Stored as (void*)(intptr_t)(idx+1) to distinguish idx==0 from NULL.
+    void* stored = sh_query_first(spatialHash, worldPos.x, worldPos.y, worldPos.z, 0.1f);
+
+    if (stored != NULL) {
+        // Decode stored index
+        return (int)((intptr_t)stored - 1);
     }
-    
+
     // Cell doesn't exist yet, create a new one
-    
+
     // Make sure spatialHashCells has room for a new cell
     if (totalCellCount >= spatialHashCellsCapacity) {
         int newCapacity = spatialHashCellsCapacity + 1000; // Add some buffer
-        spatialHashCells = (SpatialHashCell*)realloc(spatialHashCells, newCapacity * sizeof(SpatialHashCell));
-        
-        // Initialize new cells
-        for (int i = spatialHashCellsCapacity; i < newCapacity; i++) {
-            SpatialHashCell* cell = &spatialHashCells[i];
-            cell->particleCount   = 0;
-            cell->particleIndices = NULL; // Will allocate on demand
-            cell->dirty           = false;
-            cell->hasMesh         = false;
+        // B8 fix: use a temp pointer so OOM doesn't lose the original block
+        SpatialHashCell* tmp = (SpatialHashCell*)realloc(spatialHashCells, newCapacity * sizeof(SpatialHashCell));
+        if (!tmp) {
+            fprintf(stderr, "[ERROR] Failed to grow spatialHashCells to %d\n", newCapacity);
+            return -1;
         }
-        
+        spatialHashCells = tmp;
+        // NOTE: realloc may have moved the array; all stored spatial-hash payloads
+        // are integer indices (not pointers into this array), so no fix-up needed.
+
+        // Initialize new cells (memset to zero first, then set non-zero defaults)
+        memset(&spatialHashCells[spatialHashCellsCapacity], 0,
+               (size_t)(newCapacity - spatialHashCellsCapacity) * sizeof(SpatialHashCell));
+        // All bool fields (dirty, hasMesh, isActive) default to false via memset.
+
         spatialHashCellsCapacity = newCapacity;
     }
-    
+
     // Get the index for the new cell
     int newCellIndex = totalCellCount;
     totalCellCount++;
-    
+
     // Initialize the new cell
     SpatialHashCell* newCell = &spatialHashCells[newCellIndex];
-    newCell->coord = coord;
-    newCell->bounds = GetSpatialHashBounds(coord);
-    newCell->particleCount = 0;
-    newCell->particleIndices = NULL;
-    newCell->dirty = false;
-    newCell->hasMesh = false;
-    
-    // Insert the cell into the spatial hash at its world position
-    sh_insert(spatialHash, worldPos.x, worldPos.y, worldPos.z, newCell);
-    
+    newCell->coord             = coord;
+    newCell->bounds            = GetSpatialHashBounds(coord);
+    newCell->particleCount     = 0;
+    newCell->particleCapacity  = 0;
+    newCell->particleIndices   = NULL;
+    newCell->dirty             = false;
+    newCell->hasMesh           = false;
+
+    // Insert the cell index into the spatial hash.
+    // Encode as (idx+1) so that idx==0 is distinguishable from NULL.
+    sh_insert(spatialHash, worldPos.x, worldPos.y, worldPos.z,
+              (void*)(intptr_t)(newCellIndex + 1));
+
     return newCellIndex;
 }
 
@@ -237,7 +280,7 @@ static void GetOverlappingCells(Vector3 position, float radius, GridCoord* cells
                     (*cellCount)++;
                     
                     if (*cellCount >= maxCells) {
-                        printf("Warning: Maximum overlapping cells reached (%d)\n", maxCells);
+                        DEBUG_LOG("Warning: Maximum overlapping cells reached (%d)", maxCells);
                         break;
                     }
                 }
@@ -256,26 +299,29 @@ static void InitializeActiveCellTracking(void) {
     activeCells.count = 0;
 }
 
-// Add a cell to the active list if not already present
+// Add a cell to the active list if not already present — O(1) via isActive flag.
 static void AddActiveCellIfNeeded(int cellIndex) {
-    // Check if cell is already in active list
-    for (int i = 0; i < activeCells.count; i++) {
-        if (activeCells.indices[i] == cellIndex) {
-            return; // Already tracked
-        }
-    }
-    
+    if (cellIndex < 0 || cellIndex >= spatialHashCellsCapacity) return;
+    // Fast O(1) dedup: isActive is set when a cell enters the list.
+    if (spatialHashCells[cellIndex].isActive) return;
+
     DEBUG_LOG("Adding cell %d to active cells list", cellIndex);
-    
+
     // Expand capacity if needed
     if (activeCells.count >= activeCells.capacity) {
-        activeCells.capacity *= 2;
-        activeCells.indices = (int*)realloc(activeCells.indices, 
-                                          activeCells.capacity * sizeof(int));
+        int newCap = activeCells.capacity * 2;
+        int* tmp = (int*)realloc(activeCells.indices, newCap * sizeof(int));
+        if (!tmp) {
+            fprintf(stderr, "[ERROR] OOM growing activeCells\n");
+            return;
+        }
+        activeCells.indices  = tmp;
+        activeCells.capacity = newCap;
     }
-    
-    // Add to active list
+
+    // Add to active list and mark as active
     activeCells.indices[activeCells.count++] = cellIndex;
+    spatialHashCells[cellIndex].isActive = true;
 }
 
 // API implementation
@@ -292,11 +338,14 @@ void InitializeParticleSystem(int maxParticles, float radius) {
     
     // Preallocate space for particles
     particles = (InternalParticle*)malloc(maxParticleCount * sizeof(InternalParticle));
-    
-    // Initialize particles as inactive
+
+    // Initialize particles as inactive and build the free list for O(1) slot lookup.
+    // Each inactive slot links to the next: 0->1->2->...->N-1->(-1).
     for (int i = 0; i < maxParticleCount; i++) {
-        particles[i].active = false;
+        particles[i].active   = false;
+        particles[i].nextFree = (i + 1 < maxParticleCount) ? (i + 1) : -1;
     }
+    freeParticleHead = (maxParticleCount > 0) ? 0 : -1;
     
     // Initialize the new shared spatial hash for storing cells
     // Estimate cell capacity based on particle distribution
@@ -306,8 +355,9 @@ void InitializeParticleSystem(int maxParticles, float radius) {
     // Allocate initial array for spatial hash cells
     // This will grow dynamically as needed
     int initialCellCapacity = 1000;
-    spatialHashCells = (SpatialHashCell*)malloc(initialCellCapacity * sizeof(SpatialHashCell));
+    spatialHashCells = (SpatialHashCell*)calloc(initialCellCapacity, sizeof(SpatialHashCell));
     spatialHashCellsCapacity = initialCellCapacity;
+    // calloc zeroes the array; isActive defaults to false for all cells.
     
     // Initialize active cell tracking
     InitializeActiveCellTracking();
@@ -380,6 +430,7 @@ void ShutdownParticleSystem(void) {
     currentParticleCount = 0;
     particleRadius = 0.0f;
     totalCellCount = 0;
+    freeParticleHead = -1;
 }
 
 ParticleHandle CreateParticle(Vector3 position, int materialId) {
@@ -389,25 +440,20 @@ ParticleHandle CreateParticle(Vector3 position, int materialId) {
         return -1;
     }
     
-    // Find a free slot for the new particle
-    int particleIndex = -1;
-    for (int i = 0; i < maxParticleCount; i++) {
-        if (!particles[i].active) {
-            particleIndex = i;
-            break;
-        }
-    }
-    
+    // Find a free slot via the free list — O(1)
+    int particleIndex = freeParticleHead;
     if (particleIndex == -1) {
         DEBUG_LOG("Failed to create particle: no free slots available");
         return -1;
     }
-    
+    freeParticleHead = particles[particleIndex].nextFree;
+
     // Initialize the particle
-    particles[particleIndex].position = position;
+    particles[particleIndex].position  = position;
     particles[particleIndex].materialId = materialId;
-    particles[particleIndex].active = true;
+    particles[particleIndex].active    = true;
     particles[particleIndex].cellCount = 0;
+    particles[particleIndex].nextFree  = -1;
     
     // Find all cells that this particle overlaps
     GridCoord overlappingCells[MAX_OVERLAPPING_CELLS];
@@ -423,44 +469,34 @@ ParticleHandle CreateParticle(Vector3 position, int materialId) {
         if (particles[particleIndex].cellCount < MAX_OVERLAPPING_CELLS) {
             particles[particleIndex].cellIndices[particles[particleIndex].cellCount++] = cellIndex;
         } else {
-            printf("Warning: Maximum overlapping cells reached for particle %d\n", particleIndex);
+            DEBUG_LOG("Warning: Maximum overlapping cells reached for particle %d", particleIndex);
             break;
         }
 
         SpatialHashCell* cell = &spatialHashCells[cellIndex];
-        
+
         // Set the cell's grid coordinates and bounds if it's a new cell
         if (cell->particleCount == 0) {
-            cell->coord = overlappingCells[i];
-            cell->bounds = GetSpatialHashBounds(overlappingCells[i]);
-            
-            // First particle - need to allocate the indices array
-            if (cell->particleIndices == NULL) {
-                cell->particleIndices = (int*)malloc(10000 * sizeof(int));
-                if (cell->particleIndices == NULL) {
-                    printf("Failed to allocate particle indices array for cell %d\n", cellIndex);
-                    continue; // Skip this cell but continue with others
-                }
-            }
+            cell->coord   = overlappingCells[i];
+            cell->bounds  = GetSpatialHashBounds(overlappingCells[i]);
         }
-        
-        // Safety check before adding particle to cell
-        if (cell->particleIndices == NULL) {
-            printf("Error: particleIndices is NULL for cell %d\n", cellIndex);
-            continue; // Skip this cell but continue with others
+
+        // B3 fix: grow the index array dynamically instead of fixed 10k malloc
+        if (!CellParticleArrayEnsure(cell, cell->particleCount + 1)) {
+            continue; // OOM: skip this cell but continue with others
         }
-        
+
         // Add particle to cell
         cell->particleIndices[cell->particleCount] = particleIndex;
         cell->particleCount++;
         cell->dirty = true; // Mark as dirty
-        
+
         // Track cell as active
         AddActiveCellIfNeeded(cellIndex);
     }
-    
+
     // Note: particles are now tracked via their cells in the spatial hash
-    
+
     // Increment counter
     currentParticleCount++;
     
@@ -539,45 +575,35 @@ bool UpdateParticlePosition(ParticleHandle handle, Vector3 newPosition) {
         if (particles[handle].cellCount < MAX_OVERLAPPING_CELLS) {
             particles[handle].cellIndices[particles[handle].cellCount++] = cellIndex;
         } else {
-            printf("Warning: Maximum overlapping cells reached for particle %d\n", handle);
+            DEBUG_LOG("Warning: Maximum overlapping cells reached for particle %d", handle);
             break;
         }
 
         // Get the cell
         SpatialHashCell* cell = &spatialHashCells[cellIndex];
-        
+
         // Set the cell's grid coordinates and bounds if it's a new cell
         if (cell->particleCount == 0) {
-            cell->coord = newOverlappingCells[i];
-            cell->bounds = GetSpatialHashBounds(newOverlappingCells[i]);
-            
-            // First particle - need to allocate the indices array
-            if (cell->particleIndices == NULL) {
-                cell->particleIndices = (int*)malloc(10000 * sizeof(int));
-                if (cell->particleIndices == NULL) {
-                    printf("Failed to allocate particle indices array for cell %d\n", cellIndex);
-                    continue; // Skip this cell but continue with others
-                }
-            }
+            cell->coord   = newOverlappingCells[i];
+            cell->bounds  = GetSpatialHashBounds(newOverlappingCells[i]);
         }
-        
-        // Safety check before adding particle to cell
-        if (cell->particleIndices == NULL) {
-            printf("Error: particleIndices is NULL for cell %d\n", cellIndex);
-            continue; // Skip this cell but continue with others
+
+        // B3 fix: grow the index array dynamically instead of fixed 10k malloc
+        if (!CellParticleArrayEnsure(cell, cell->particleCount + 1)) {
+            continue; // OOM: skip this cell but continue with others
         }
-        
+
         // Add particle to cell
         cell->particleIndices[cell->particleCount] = handle;
         cell->particleCount++;
         cell->dirty = true; // Mark as dirty
-        
+
         // Track cell as active
         AddActiveCellIfNeeded(cellIndex);
     }
-    
+
     // Note: particles are now tracked via their cells in the spatial hash
-    
+
     return true;
 }
 
@@ -617,16 +643,16 @@ bool DeleteParticle(ParticleHandle handle) {
     }
     
     // Note: particles are now tracked via their cells in the spatial hash
-    
-    // Mark particle as inactive
-    particles[handle].active = false;
-    
-    // Reset particle's cell count
+
+    // Mark particle as inactive and push slot back onto the free list
+    particles[handle].active   = false;
     particles[handle].cellCount = 0;
-    
+    particles[handle].nextFree  = freeParticleHead;
+    freeParticleHead = handle;
+
     // Decrement counter
     currentParticleCount--;
-    
+
     return true;
 }
 
@@ -661,7 +687,7 @@ static int UpdateDirtyCells(int maxUpdates) {
     
     // Debug output if there are dirty cells but few being processed
     if (totalDirty > 5 && maxUpdates < totalDirty) {
-        printf("[INFO] %d total dirty cells found, processing up to %d\n", totalDirty, maxUpdates);
+        DEBUG_LOG("[INFO] %d total dirty cells found, processing up to %d", totalDirty, maxUpdates);
     }
     
     // Track newly created cells with a higher priority for the first few frames
@@ -720,8 +746,8 @@ static int UpdateDirtyCells(int maxUpdates) {
                 
                 // Track new cells for debugging
                 if (isNewCell) {
-                    printf("[INFO] Prioritizing new cell %d with %d particles\n", 
-                           cellIndex, spatialHashCells[cellIndex].particleCount);
+                    DEBUG_LOG("[INFO] Prioritizing new cell %d with %d particles",
+                              cellIndex, spatialHashCells[cellIndex].particleCount);
                 }
             }
         }
@@ -732,10 +758,10 @@ static int UpdateDirtyCells(int maxUpdates) {
         int cellIndex = dirtyIndices[idx];
         
         // Log cell being processed
-        printf("[DEBUG] Processing cell %d (%s): %d particles\n", 
-               cellIndex, 
-               spatialHashCells[cellIndex].hasMesh ? "existing" : "new",
-               spatialHashCells[cellIndex].particleCount);
+        DEBUG_LOG("[DEBUG] Processing cell %d (%s): %d particles",
+                  cellIndex,
+                  spatialHashCells[cellIndex].hasMesh ? "existing" : "new",
+                  spatialHashCells[cellIndex].particleCount);
         
         // Ensure the buffer is large enough
         if (spatialHashCells[cellIndex].particleCount > cellParticleBufferSize) {
@@ -743,7 +769,7 @@ static int UpdateDirtyCells(int maxUpdates) {
             Particle* newBuffer = (Particle*)realloc(cellParticleBuffer,
                                                newSize * sizeof(Particle));
             if (!newBuffer) {
-                printf("[ERROR] Failed to grow cell particle buffer to %d entries\n", newSize);
+                fprintf(stderr, "[ERROR] Failed to grow cell particle buffer to %d entries\n", newSize);
                 continue; // keep old buffer/size; skip this cell
             }
             cellParticleBuffer = newBuffer;
@@ -770,7 +796,7 @@ static int UpdateDirtyCells(int maxUpdates) {
         
         // Only generate mesh if we have enough valid particles
         if (validCount < 5) {
-            printf("[DEBUG] Cell %d skipped: insufficient valid particles (%d)\n", cellIndex, validCount);
+            DEBUG_LOG("[DEBUG] Cell %d skipped: insufficient valid particles (%d)", cellIndex, validCount);
             spatialHashCells[cellIndex].hasMesh = false;
             spatialHashCells[cellIndex].dirty = false; // Mark as clean even though no mesh was generated
             continue;
@@ -793,15 +819,15 @@ static int UpdateDirtyCells(int maxUpdates) {
         spatialHashCells[cellIndex].dirty = false;
         updatedCount++;
         
-        printf("[DEBUG] Cell %d mesh generated successfully: %d vertices\n", 
-               cellIndex, spatialHashCells[cellIndex].mesh.vertexCount);
+        DEBUG_LOG("[DEBUG] Cell %d mesh generated successfully: %d vertices",
+                  cellIndex, spatialHashCells[cellIndex].mesh.vertexCount);
     }
     
     // Log summary
     if (totalDirty > 0) {
-        printf("[INFO] Updated %d/%d dirty cells (%.1f%%)\n", 
-               updatedCount, totalDirty, 
-               (100.0f * updatedCount) / totalDirty);
+        DEBUG_LOG("[INFO] Updated %d/%d dirty cells (%.1f%%)",
+                  updatedCount, totalDirty,
+                  (100.0f * updatedCount) / totalDirty);
     }
     
     return updatedCount;

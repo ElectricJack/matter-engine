@@ -23,8 +23,7 @@
 #include <vector>
 #include <sys/stat.h>
 
-static int failures = 0;
-#define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); ++failures; } } while (0)
+#include "check.h"
 
 static const char* kCacheRoot = "/tmp/part_flatten_tests_cache";
 
@@ -1439,7 +1438,7 @@ int main() {
     test_generous_budget_inlines();
     test_flat_version_bump();
 
-    if (failures == 0) { printf("part_flatten_tests: ALL PASS\n"); return 0; }
-    printf("part_flatten_tests: %d FAILURE(S)\n", failures);
+    if (g_failures == 0) { printf("part_flatten_tests: ALL PASS\n"); return 0; }
+    printf("part_flatten_tests: %d FAILURE(S)\n", g_failures);
     return 1;
 }

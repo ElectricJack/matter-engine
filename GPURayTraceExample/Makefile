@@ -1,8 +1,9 @@
 CC = gcc
 CXX = g++
 RAYLIB_PATH = ../Libraries/raylib
-CFLAGS = -Wall -Wextra -O2 -I$(RAYLIB_PATH)/src -I./include
-CXXFLAGS = -Wall -Wextra -O2 -std=c++14 -Wno-missing-field-initializers -I$(RAYLIB_PATH)/src -I./include
+OA_LIB = ../ObjectAllocatorLib
+CFLAGS = -Wall -Wextra -O2 -I$(RAYLIB_PATH)/src -I./include -I$(OA_LIB)/include
+CXXFLAGS = -Wall -Wextra -O2 -std=c++14 -Wno-missing-field-initializers -I$(RAYLIB_PATH)/src -I./include -I$(OA_LIB)/include
 
 # Build flags:
 # TARGET=windows-native : Cross-compile for Windows from Linux using MinGW
@@ -125,17 +126,12 @@ $(shell mkdir -p $(BUILD_DIR))
 $(shell mkdir -p $(RAYLIB_PATH)/build/$(PLATFORM))
 
 # C++ main application
-SRC = main.cpp src/bvh.cpp src/object_allocator.c src/blas_manager.cpp src/tlas_manager.cpp src/bvh_visualizer.cpp
+SRC = main.cpp src/bvh.cpp src/blas_manager.cpp src/tlas_manager.cpp src/bvh_visualizer.cpp
 OBJ = $(OBJ_DIR)/main.o $(OBJ_DIR)/bvh.o $(OBJ_DIR)/object_allocator.o $(OBJ_DIR)/blas_manager.o $(OBJ_DIR)/tlas_manager.o $(OBJ_DIR)/bvh_visualizer.o
 BIN = $(BUILD_DIR)/gpu_raytrace$(BIN_SUFFIX)
 PREPROCESSOR = $(BUILD_DIR)/shader_preprocessor
 
-all: dependencies shaders $(BIN)
-
-dependencies:
-	@echo "Setting up dependencies for $(PLATFORM)..."
-	@mkdir -p src
-	@cp ../ObjectAllocatorLib/src/object_allocator.c src/
+all: shaders $(BIN)
 
 shaders: shaders/raytrace_tlas_blas_processed.fs
 
@@ -219,22 +215,23 @@ endif
 
 # Build rules for main target (C++)
 $(OBJ_DIR)/main.o: main.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/bvh.o: src/bvh.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
-$(OBJ_DIR)/object_allocator.o: src/object_allocator.c
-	$(CC) -c $< $(CFLAGS) -o $@
+# object_allocator compiled from ObjectAllocatorLib (source of truth)
+$(OBJ_DIR)/object_allocator.o: $(OA_LIB)/src/object_allocator.c $(OA_LIB)/include/object_allocator.h
+	$(CC) -c $< $(CFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/blas_manager.o: src/blas_manager.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/tlas_manager.o: src/tlas_manager.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/bvh_visualizer.o: src/bvh_visualizer.cpp
-	$(CXX) -c $< $(CXXFLAGS) -o $@
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 # Platform-specific clean
 clean:
@@ -279,4 +276,6 @@ platform:
 	@echo "CC: $(CC)"
 	@echo "CXX: $(CXX)"
 
-.PHONY: all clean clean-all raylib shaders dependencies rebuild-raylib platform
+-include $(OBJ:.o=.d)
+
+.PHONY: all clean clean-all raylib shaders rebuild-raylib platform

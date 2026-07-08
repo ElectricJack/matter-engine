@@ -116,6 +116,15 @@ void Cell::add_particle_index(uint32_t particle_index, uint32_t material_id) {
     }
 }
 
+void Cell::add_particle_index_unchecked(uint32_t particle_index, uint32_t material_id) {
+    // Fast path used in rebuild_dirty_cells after clear_particle_indices(): the
+    // caller iterates each particle at most once per cell, so uniqueness is
+    // guaranteed — skip the O(n) std::find.
+    uint32_t group = (uint32_t)MaterialMergeGroup((int)material_id);
+    material_particle_indices[group].push_back(particle_index);
+    is_dirty = true;
+}
+
 void Cell::remove_particle_index(uint32_t particle_index, uint32_t material_id) {
     uint32_t group = (uint32_t)MaterialMergeGroup((int)material_id);
     auto material_it = material_particle_indices.find(group);
@@ -392,13 +401,21 @@ void Cell::commit_group_mesh(GroupMeshResult& result, BLASManager& blas_manager)
             BVH* bvh = blas_manager.get_bvh(material_blas[group_id]);
             BvhMesh* mesh_ptr = blas_manager.get_mesh(material_blas[group_id]);
             if (bvh && mesh_ptr) {
+                // B11 fix: use a stable name (no triangle count) so the registry
+                // key is consistent across rebuilds; unregister the old entry first
+                // so we don't accumulate dangling pointers.
                 std::string analysis_name = "Cell(" + std::to_string((int)coordinates.x) + "," +
                                            std::to_string((int)coordinates.y) + "," +
                                            std::to_string((int)coordinates.z) + ")_Mat" +
-                                           std::to_string(group_id) + "_" +
-                                           std::to_string(triangles.size()) + "tris";
+                                           std::to_string(group_id);
+                BVHReportManager::UnregisterBVH(analysis_name); // remove stale entry
                 BVHReportManager::RegisterBVH(analysis_name, bvh, mesh_ptr);
-                BVHReportManager::UpdateAnalysis(analysis_name);
+                // Perf: UpdateAnalysis runs a full BVH quality pass — skip it on
+                // every commit unless the caller opts in via MSL_BVH_ANALYSIS=1.
+                static const bool bvh_analysis_enabled = (getenv("MSL_BVH_ANALYSIS") != nullptr);
+                if (bvh_analysis_enabled) {
+                    BVHReportManager::UpdateAnalysis(analysis_name);
+                }
             }
         } else {
             material_blas[group_id] = 0;
@@ -438,6 +455,16 @@ void Cell::commit_cell_meshes(CellMeshResult& result, BLASManager& blas_manager)
 }
 
 void Cell::clear_meshes(BLASManager* blas_manager) {
+    // B11 fix: unregister BVH analyzer entries before releasing the BLAS so the
+    // registry never holds dangling raw pointers.
+    for (const auto& blas_entry : material_blas) {
+        std::string analysis_name = "Cell(" + std::to_string((int)coordinates.x) + "," +
+                                   std::to_string((int)coordinates.y) + "," +
+                                   std::to_string((int)coordinates.z) + ")_Mat" +
+                                   std::to_string(blas_entry.first);
+        BVHReportManager::UnregisterBVH(analysis_name);
+    }
+
     // Release this cell's BLAS references so the manager can reclaim entries
     // that no live cell still points at (prevents unbounded GPU accumulation).
     if (blas_manager) {

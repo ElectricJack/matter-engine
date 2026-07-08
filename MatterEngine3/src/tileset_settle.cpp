@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <memory>
 
 #include "box3d/box3d.h"
 #include "box3d/collision.h"
@@ -73,7 +74,7 @@ struct SettleWorld::Impl {
 };
 
 SettleWorld::SettleWorld(float torus_size, const HeightField& base, const SettleParams& params) {
-    impl_ = new Impl();
+    impl_ = std::make_unique<Impl>();
     impl_->params = params;
     const float S = params.sim_scale;
     impl_->torus = torus_size * S;
@@ -118,7 +119,7 @@ SettleWorld::SettleWorld(float torus_size, const HeightField& base, const Settle
 SettleWorld::~SettleWorld() {
     b3DestroyWorld(impl_->world);
     if (impl_->base_mesh) b3DestroyMesh(impl_->base_mesh);
-    delete impl_;
+    // impl_ is now std::unique_ptr<Impl>; destructor runs automatically.
 }
 
 int SettleWorld::add_sync_group(const std::vector<Pose>& occurrence_frames) {

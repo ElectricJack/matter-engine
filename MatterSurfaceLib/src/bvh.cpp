@@ -1,6 +1,8 @@
 #include "../include/precomp.h"
 #include "../include/bvh.h"
 #include <cstring>
+#include <cstdio>
+#include <algorithm>  // std::nth_element for TLAS centroid-axis split
 
 // functions
 
@@ -547,22 +549,60 @@ void TLAS::BuildRecursive(uint nodeIndex, uint first, uint count)
 		node.BLAS = nodeIdx[first]; // instance index
 		return;
 	}
-	
-	// Split instances into two groups
+
+	// Perf: sort along the longest centroid axis before splitting at the median.
+	// The original count/2 split in insertion order produces degenerate trees when
+	// instances happen to be ordered along one axis. Sorting by centroid on the
+	// widest dimension gives near-SAH quality for uniform distributions at O(N log N).
+	float3 extent = node.aabbMax - node.aabbMin;
+	int axis = 0;
+	if (extent.y > extent.x) axis = 1;
+	if (axis == 0 && extent.z > extent.x) axis = 2;
+	else if (axis == 1 && extent.z > extent.y) axis = 2;
+
+	// Helper: extract centroid along the chosen axis (float3 has no [] operator).
+	auto centroid_on_axis = [this, axis](uint idx) -> float {
+		const float3& bmin = blas[idx].bounds.bmin;
+		const float3& bmax = blas[idx].bounds.bmax;
+		if (axis == 1) return (bmin.y + bmax.y) * 0.5f;
+		if (axis == 2) return (bmin.z + bmax.z) * 0.5f;
+		return (bmin.x + bmax.x) * 0.5f;
+	};
+
+	// Partial sort: use std::nth_element on nodeIdx[first..first+count) to place
+	// the median at split, with smaller centroids to the left and larger to the right.
 	uint split = count / 2;
+	uint* base = nodeIdx + first;
+	std::nth_element(base, base + split, base + count,
+		[&centroid_on_axis](uint a, uint b) {
+			return centroid_on_axis(a) < centroid_on_axis(b);
+		});
+
 	uint leftFirst = first;
 	uint leftCount = split;
 	uint rightFirst = first + split;
 	uint rightCount = count - split;
-	
+
+	// T4/16-bit packing guard (NDEBUG-safe): leftRight packs two 16-bit child
+	// indices; a child index beyond 65535 would wrap at pack time and corrupt
+	// traversal. Fail loudly and degrade this node to a leaf instead.
+	if (nodesUsed + 1 > 0xFFFFu) {
+		fprintf(stderr, "[ERROR] TLAS::BuildRecursive: node count exceeds 16-bit child index field "
+		        "(nodesUsed=%u); node %u degraded to leaf, %u instance(s) dropped.\n",
+		        nodesUsed, nodeIndex, count - 1);
+		node.leftRight = 0; // leaf sentinel
+		node.BLAS = nodeIdx[first];
+		return;
+	}
+
 	// Create child nodes
 	uint leftChild = nodesUsed++;
 	uint rightChild = nodesUsed++;
-	
+
 	// Set interior node data
-	node.leftRight = (leftChild & 0xFFFF) | ((rightChild & 0xFFFF) << 16);
+	node.leftRight = leftChild | (rightChild << 16);
 	node.BLAS = 0; // Not used for interior nodes
-	
+
 	// Recursively build children
 	BuildRecursive(leftChild, leftFirst, leftCount);
 	BuildRecursive(rightChild, rightFirst, rightCount);

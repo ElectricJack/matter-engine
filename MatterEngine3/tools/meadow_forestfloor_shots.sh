@@ -18,14 +18,24 @@ mkfifo "$FIFO"
 MATTER_WORLD="${MATTER_WORLD:-floordemo}" \
 GALLIUM_DRIVER="${GALLIUM_DRIVER:-d3d12}" \
 MATTER_CMD_FIFO="$FIFO" \
-./viewer > "$LOG" 2>&1 &
+stdbuf -oL ./viewer > "$LOG" 2>&1 &
 PID=$!
 trap 'kill $PID 2>/dev/null || true; rm -f "$FIFO"' EXIT
 
-# GroundOnly world contains just the ForestFloor tileset (no Meadow tree scatter),
-# so cold-cache load = tileset settle + bake ~30-60s. Retarget to `meadow` here
-# once the Meadow tree-scatter GpuCuller SSBO growth is separately capped.
-sleep 90
+# Readiness: poll for "MATTER_CMD_FIFO: listening" instead of fixed sleep.
+# GroundOnly world cold-cache load = tileset settle + bake ~30-60s; cap 300s.
+READY=0
+for _ in $(seq 1 300); do
+    if ! kill -0 "$PID" 2>/dev/null; then break; fi
+    if grep -q 'MATTER_CMD_FIFO: listening' "$LOG" 2>/dev/null; then READY=1; break; fi
+    sleep 1
+done
+if [ "$READY" != 1 ]; then
+    echo "ERROR: viewer not ready after 300s (or died). Log tail:" >&2
+    tail -n 10 "$LOG" >&2
+    exit 1
+fi
+sleep 2   # settle a few frames after readiness signal
 
 shoot() {  # name px py pz tx ty tz
   local name="$1"

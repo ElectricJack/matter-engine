@@ -5,6 +5,9 @@
 #include "../include/part_cluster.h"    // split_clusters
 #include "tlas_manager.hpp"             // MSL TLASManager (load_v2 signature)
 
+// Shared row-major matrix helpers (mul16, NormalMat).
+#include "mat_math.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -47,16 +50,7 @@ static bool peak_logging_enabled() {
     return v && v[0] && v[0] != '0';
 }
 
-// Row-major 4x4 multiply; same convention as ChildInstance transforms and the
-// viewer WorldComposer (translation lives in m[3], m[7], m[11]).
-void mul16(const float* a, const float* b, float* out) {
-    for (int i = 0; i < 4; ++i)
-        for (int j = 0; j < 4; ++j) {
-            float s = 0;
-            for (int k = 0; k < 4; ++k) s += a[i*4+k] * b[k*4+j];
-            out[i*4+j] = s;
-        }
-}
+// mul16 and NormalMat (core) are provided by mat_math.h above.
 
 float3 xform_point(const float* m, const float3& p) {
     return make_float3(m[0]*p.x + m[1]*p.y + m[2]*p.z  + m[3],
@@ -64,36 +58,16 @@ float3 xform_point(const float* m, const float3& p) {
                        m[8]*p.x + m[9]*p.y + m[10]*p.z + m[11]);
 }
 
-// Inverse-transpose of the upper 3x3, for shading normals under non-uniform
-// scale. Falls back to the raw 3x3 when the matrix is (near-)singular.
-struct NormalMat {
-    float n[9];
-    explicit NormalMat(const float* m) {
-        const float a=m[0], b=m[1], c=m[2],
-                    d=m[4], e=m[5], f=m[6],
-                    g=m[8], h=m[9], i=m[10];
-        const float A =  (e*i - f*h), B = -(d*i - f*g), C =  (d*h - e*g);
-        const float det = a*A + b*B + c*C;
-        if (std::fabs(det) < 1e-12f) {
-            n[0]=a; n[1]=b; n[2]=c; n[3]=d; n[4]=e; n[5]=f; n[6]=g; n[7]=h; n[8]=i;
-            return;
-        }
-        // inverse (cofactor/det), then transpose -> store transposed inverse.
-        const float id = 1.0f / det;
-        n[0] = A*id;             n[3] = -(b*i - c*h)*id;  n[6] =  (b*f - c*e)*id;
-        n[1] = B*id;             n[4] =  (a*i - c*g)*id;  n[7] = -(a*f - c*d)*id;
-        n[2] = C*id;             n[5] = -(a*h - b*g)*id;  n[8] =  (a*e - b*d)*id;
-        // n currently holds inverse in column-major-of-row-major sense; we want
-        // (M^-1)^T applied as row-major. Transpose in place.
-        std::swap(n[1], n[3]); std::swap(n[2], n[6]); std::swap(n[5], n[7]);
-    }
+// Thin float3 adapter over the shared NormalMat (see mat_math.h).
+// The core inverse-transpose math lives in NormalMat; this wrapper
+// bridges to float3 so existing call sites (nm.apply(float3)) are unchanged.
+struct NormalMatF3 : NormalMat {
+    explicit NormalMatF3(const float* m) : NormalMat(m) {}
     float3 apply(const float3& v) const {
-        float3 r = make_float3(n[0]*v.x + n[1]*v.y + n[2]*v.z,
-                               n[3]*v.x + n[4]*v.y + n[5]*v.z,
-                               n[6]*v.x + n[7]*v.y + n[8]*v.z);
-        float len = std::sqrt(r.x*r.x + r.y*r.y + r.z*r.z);
-        if (len > 1e-12f) { r.x/=len; r.y/=len; r.z/=len; }
-        return r;
+        float in[3]  = { v.x, v.y, v.z };
+        float out[3] = {};
+        NormalMat::apply(in, out);
+        return make_float3(out[0], out[1], out[2]);
     }
 };
 
@@ -119,12 +93,12 @@ struct Ticket {
 };
 
 // One traversal node's world-space context, shared by every triangle the walk
-// emits under it. NormalMat is the inverse-transpose of the world's upper 3x3
+// emits under it. NormalMatF3 is the inverse-transpose of the world's upper 3x3
 // — deriving it costs a few divs, so we cache it once per node instead of once
 // per triangle (a scatter can have 50k+ tris under the same context).
 struct Context {
     float world[16];
-    NormalMat nm;
+    NormalMatF3 nm;
     explicit Context(const float* w) : nm(w) {
         std::memcpy(world, w, 16 * sizeof(float));
     }
@@ -164,7 +138,7 @@ public:
         const PartGeo* geo = load(hash, err);
         if (!geo) return false;
 
-        NormalMat nm(world);
+        NormalMatF3 nm(world);
         for (size_t i = 0; i < geo->tris.size(); ++i) {
             const Tri& s = geo->tris[i];
             Tri t;
@@ -339,8 +313,10 @@ public:
         }
     }
 
-    std::vector<Tri>&   tris()  { return tris_; }
-    std::vector<TriEx>& triex() { return triex_; }
+    std::vector<Tri>&         tris()        { return tris_; }
+    std::vector<TriEx>&       triex()       { return triex_; }
+    const std::vector<Tri>&   tris()  const { return tris_; }
+    const std::vector<TriEx>& triex() const { return triex_; }
     std::vector<part_asset::FlatInstanceRef>& instance_refs() { return instance_refs_; }
 
     // Bake-hardening #3: skeleton-gather outputs.
@@ -514,19 +490,30 @@ static FlattenResult flatten_budget_ladder(const std::string& cache_root,
     // lodBudgets.size(), so enforce a safe maximum here.
     const size_t n = std::min(v.hashes.size(), (size_t)16);
     for (size_t i = 0; i < n; ++i) {
-        std::vector<Tri> tris; std::vector<TriEx> ex;
+        // Perf fix: const-ref the root-level data when the variant hash matches
+        // the root (avoids copying ~10 MB of Tri/TriEx per LOD level). Non-root
+        // variants load their own Gatherer; we move its data out to avoid a second
+        // copy when pointing at it via the const pointer below.
+        std::vector<Tri>  gi_tris;
+        std::vector<TriEx> gi_ex;
+        const std::vector<Tri>*  tp;
+        const std::vector<TriEx>* ep;
         if (v.hashes[i] == root_hash) {
-            tris = g0.tris(); ex = g0.triex();
+            tp = &g0.tris(); ep = &g0.triex();
         } else {
             Gatherer gi(cache_root, targets);
             if (!gi.gather(v.hashes[i], kIdentity, 0, res.error)) return res;
-            tris = gi.tris(); ex = gi.triex();
+            gi_tris = std::move(gi.tris()); gi_ex = std::move(gi.triex());
+            tp = &gi_tris; ep = &gi_ex;
         }
+        const std::vector<Tri>&  tris = *tp;
+        const std::vector<TriEx>& ex  = *ep;
         if (tris.empty()) { res.error = "flatten: empty budget variant"; return res; }
         acc(tris);
 
         const TriEx* exp = ex.empty() ? nullptr : ex.data();
-        BLASHandle h = blas.register_triangles(tris.data(), (int)tris.size(), exp);
+        // register_triangles reads but does not modify the Tri array; const_cast is safe.
+        BLASHandle h = blas.register_triangles(const_cast<Tri*>(tris.data()), (int)tris.size(), exp);
         uint32_t idx = UINT32_MAX;
         const auto& entries = blas.get_entries();
         for (size_t k = 0; k < entries.size(); ++k)

@@ -47,8 +47,37 @@ Matrix4x4 matrix_multiply(const Matrix4x4* a, const Matrix4x4* b) {
 }
 
 Matrix4x4 matrix_inverse(const Matrix4x4* m) {
-    // Simplified inverse for now - would need full implementation
-    return *m; // placeholder
+    // Full 4x4 matrix inverse via cofactor / adjugate method.
+    const float* s = m->m;
+    float inv[16];
+
+    inv[0]  =  s[5]*s[10]*s[15] - s[5]*s[11]*s[14] - s[9]*s[6]*s[15] + s[9]*s[7]*s[14] + s[13]*s[6]*s[11] - s[13]*s[7]*s[10];
+    inv[4]  = -s[4]*s[10]*s[15] + s[4]*s[11]*s[14] + s[8]*s[6]*s[15] - s[8]*s[7]*s[14] - s[12]*s[6]*s[11] + s[12]*s[7]*s[10];
+    inv[8]  =  s[4]*s[9]*s[15]  - s[4]*s[11]*s[13] - s[8]*s[5]*s[15] + s[8]*s[7]*s[13] + s[12]*s[5]*s[11] - s[12]*s[7]*s[9];
+    inv[12] = -s[4]*s[9]*s[14]  + s[4]*s[10]*s[13] + s[8]*s[5]*s[14] - s[8]*s[6]*s[13] - s[12]*s[5]*s[10] + s[12]*s[6]*s[9];
+
+    inv[1]  = -s[1]*s[10]*s[15] + s[1]*s[11]*s[14] + s[9]*s[2]*s[15] - s[9]*s[3]*s[14] - s[13]*s[2]*s[11] + s[13]*s[3]*s[10];
+    inv[5]  =  s[0]*s[10]*s[15] - s[0]*s[11]*s[14] - s[8]*s[2]*s[15] + s[8]*s[3]*s[14] + s[12]*s[2]*s[11] - s[12]*s[3]*s[10];
+    inv[9]  = -s[0]*s[9]*s[15]  + s[0]*s[11]*s[13] + s[8]*s[1]*s[15] - s[8]*s[3]*s[13] - s[12]*s[1]*s[11] + s[12]*s[3]*s[9];
+    inv[13] =  s[0]*s[9]*s[14]  - s[0]*s[10]*s[13] - s[8]*s[1]*s[14] + s[8]*s[2]*s[13] + s[12]*s[1]*s[10] - s[12]*s[2]*s[9];
+
+    inv[2]  =  s[1]*s[6]*s[15]  - s[1]*s[7]*s[14]  - s[5]*s[2]*s[15] + s[5]*s[3]*s[14] + s[13]*s[2]*s[7]  - s[13]*s[3]*s[6];
+    inv[6]  = -s[0]*s[6]*s[15]  + s[0]*s[7]*s[14]  + s[4]*s[2]*s[15] - s[4]*s[3]*s[14] - s[12]*s[2]*s[7]  + s[12]*s[3]*s[6];
+    inv[10] =  s[0]*s[5]*s[15]  - s[0]*s[7]*s[13]  - s[4]*s[1]*s[15] + s[4]*s[3]*s[13] + s[12]*s[1]*s[7]  - s[12]*s[3]*s[5];
+    inv[14] = -s[0]*s[5]*s[14]  + s[0]*s[6]*s[13]  + s[4]*s[1]*s[14] - s[4]*s[2]*s[13] - s[12]*s[1]*s[6]  + s[12]*s[2]*s[5];
+
+    inv[3]  = -s[1]*s[6]*s[11]  + s[1]*s[7]*s[10]  + s[5]*s[2]*s[11] - s[5]*s[3]*s[10] - s[9]*s[2]*s[7]   + s[9]*s[3]*s[6];
+    inv[7]  =  s[0]*s[6]*s[11]  - s[0]*s[7]*s[10]  - s[4]*s[2]*s[11] + s[4]*s[3]*s[10] + s[8]*s[2]*s[7]   - s[8]*s[3]*s[6];
+    inv[11] = -s[0]*s[5]*s[11]  + s[0]*s[7]*s[9]   + s[4]*s[1]*s[11] - s[4]*s[3]*s[9]  - s[8]*s[1]*s[7]   + s[8]*s[3]*s[5];
+    inv[15] =  s[0]*s[5]*s[10]  - s[0]*s[6]*s[9]   - s[4]*s[1]*s[10] + s[4]*s[2]*s[9]  + s[8]*s[1]*s[6]   - s[8]*s[2]*s[5];
+
+    float det = s[0]*inv[0] + s[1]*inv[4] + s[2]*inv[8] + s[3]*inv[12];
+    if (det == 0.0f) return *m; // singular: return input as safe fallback
+
+    float invDet = 1.0f / det;
+    Matrix4x4 result;
+    for (int i = 0; i < 16; i++) result.m[i] = inv[i] * invDet;
+    return result;
 }
 
 Matrix4x4 matrix_translation(float x, float y, float z) {
@@ -247,6 +276,7 @@ void TLASManager::draw_batch(const std::vector<DrawInstance>& instances) {
 
 void TLASManager::clear() {
     draw_records_.clear();
+    active_draw_records_.clear(); // B4 fix: reset compacted record list
     next_instance_id_ = 1;
     
     // Reset matrix stack to just identity
@@ -296,29 +326,34 @@ void TLASManager::build(const BLASManager& blas_manager) {
         instance_array_size_ = 0;
     }
     
+    // B4 fix: build a compacted list of draw records that have a valid BLAS so that
+    // active_draw_records_[i] corresponds exactly to tlas_->blas[i].
+    active_draw_records_.clear();
+
     // Create BVH instances from draw records (using unique_ptr approach for now)
     instances_.reserve(draw_records_.size());
     std::vector<BVHInstance*> instance_ptrs;
     instance_ptrs.reserve(draw_records_.size());
-    
+
     for (const auto& record : draw_records_) {
         // Get BVH from manager
         BVH* bvh = blas_manager.get_bvh(record.blas_handle);
         if (!bvh) {
             printf("Warning: BLAS handle %u not found in BLAS manager\n", record.blas_handle);
-            continue;
+            continue; // skip: do NOT add to active_draw_records_
         }
-        
+
         // Create BVH instance
         auto instance = std::make_unique<BVHInstance>(bvh, record.instance_id);
-        
+
         // Convert and set transform - this will also calculate world bounds
         mat4 new_transform = convert_matrix(record.transform);
         instance->SetTransform(new_transform);
-        
-        // Add to our vectors
+
+        // Add to our vectors — record and instance are added in lock-step
         instance_ptrs.push_back(instance.get());
         instances_.push_back(std::move(instance));
+        active_draw_records_.push_back(record); // B4: keep parallel with blas[]
     }
     
     // Create and build TLAS
@@ -392,24 +427,23 @@ void TLASManager::generate_instance_texture_data(const BLASManager& blas_manager
         }
 
         // Row 8: metadata (blasIndex + materialId + padding)
+        // B4 fix: use active_draw_records_ (compacted parallel to tlas_->blas[])
+        // instead of draw_records_ (which may have gaps from skipped BLAS handles).
         int metadataIdx = texel_off(i, 8);
         if (metadataIdx + 3 < static_cast<int>(output_data.size())) {
-            // Get the actual BLAS node start offset for this instance
-            // This is what the shader expects for geometry traversal
-            BLASHandle blas_handle = i < static_cast<int>(draw_records_.size()) ? 
-                                   draw_records_[i].blas_handle : INVALID_BLAS_HANDLE;
+            BLASHandle blas_handle = i < static_cast<int>(active_draw_records_.size()) ?
+                                   active_draw_records_[i].blas_handle : INVALID_BLAS_HANDLE;
             BLASOffsets offsets = blas_manager.get_offsets(blas_handle);
             output_data[metadataIdx + 0] = static_cast<float>(offsets.node_offset);
 
-            // Instance metadata set
-            
-            // Get material ID from the corresponding draw record
             uint32_t materialId = 0;
-            if (i < static_cast<int>(draw_records_.size())) {
-                materialId = draw_records_[i].material_id;
+            bool is_imposter = false;
+            if (i < static_cast<int>(active_draw_records_.size())) {
+                materialId   = active_draw_records_[i].material_id;
+                is_imposter  = active_draw_records_[i].is_imposter;
             }
             output_data[metadataIdx + 1] = static_cast<float>(materialId);
-            output_data[metadataIdx + 2] = (i < static_cast<int>(draw_records_.size()) && draw_records_[i].is_imposter) ? 1.0f : 0.0f; // is_imposter flag
+            output_data[metadataIdx + 2] = is_imposter ? 1.0f : 0.0f;
             output_data[metadataIdx + 3] = 0.0f; // reserved
         }
     }
@@ -440,6 +474,8 @@ void TLASManager::generate_node_texture_data(std::vector<float>& output_data,
         // such integers exactly, which corrupted the low (left) bits during traversal.
         uint32_t leftChild  = node.leftRight & 0xFFFFu;
         uint32_t rightChild = (node.leftRight >> 16) & 0xFFFFu;
+        // 16-bit packing overflow is guarded at pack time (TLAS::BuildRecursive
+        // in bvh.cpp); values extracted here are masked and cannot exceed 0xFFFF.
 
         // Row 0: aabbMin + leftChild (0 for leaf nodes, which acts as the leaf sentinel)
         int row0Idx = texel_off(i, 0);

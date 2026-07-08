@@ -27,10 +27,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-static int failures = 0;
-#define CHECK(cond, msg) do { \
-    if (!(cond)) { printf("FAIL: %s\n", (msg)); ++failures; } \
-    else         { printf("ok:   %s\n", (msg)); } } while (0)
+#include "check.h"
 
 static bool feq(float a, float b, float eps = 1e-5f) {
     return std::fabs(a - b) < eps;
@@ -763,7 +760,7 @@ static void test_bake_occluder_plane() {
     bool built = wt.build(kTracerCache, insts, err);
     if (!built) {
         printf("FAIL: bake occluder: build failed: %s\n", err.c_str());
-        ++failures;
+        ++g_failures;
         return;
     }
 
@@ -829,7 +826,7 @@ static void test_bake_closed_box() {
     bool built = wt.build(kTracerCache, insts, err);
     if (!built) {
         printf("FAIL: bake closed box: build failed: %s\n", err.c_str());
-        ++failures;
+        ++g_failures;
         return;
     }
 
@@ -905,7 +902,7 @@ static void test_bake_emissive() {
         bool ok = part_asset::save_v2(path, blas, tlas, nullptr, 0, lods, kEmissiveHash);
         if (!ok) {
             printf("FAIL: emissive: could not write emissive fixture\n");
-            ++failures;
+            ++g_failures;
             return;
         }
     }
@@ -936,7 +933,7 @@ static void test_bake_emissive() {
     bool built = wt.build(kTracerCache, insts, err);
     if (!built) {
         printf("FAIL: emissive: build failed: %s\n", err.c_str());
-        ++failures;
+        ++g_failures;
         return;
     }
 
@@ -1136,7 +1133,7 @@ int main() {
     printf("\n--- Task 3: WorldTracer ---\n");
     if (!wt_write_cube_fixture()) {
         printf("FAIL: could not write cube fixture under %s\n", kTracerCache);
-        ++failures;
+        ++g_failures;
     } else {
         test_tracer_identity_hit();
         test_tracer_translated();
@@ -1151,7 +1148,7 @@ int main() {
     printf("\n--- Task 3 gap: compositional child expansion ---\n");
     if (!wt_write_compositional_fixture()) {
         printf("FAIL: could not write compositional fixture under %s\n", kTracerCache);
-        ++failures;
+        ++g_failures;
     } else {
         test_tracer_compositional_child();
     }
@@ -1164,10 +1161,10 @@ int main() {
     test_bake_spotlight();
     test_bake_determinism();
 
-    if (failures == 0) {
+    if (g_failures == 0) {
         printf("\nALL PASS (%d checks failed)\n", 0);
     } else {
-        printf("\n%d FAIL(s)\n", failures);
+        printf("\n%d FAIL(s)\n", g_failures);
     }
-    return failures == 0 ? 0 : 1;
+    return g_failures == 0 ? 0 : 1;
 }

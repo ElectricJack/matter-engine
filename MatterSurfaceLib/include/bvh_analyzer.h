@@ -143,6 +143,9 @@ public:
     static std::string GenerateFullReport();
     static std::string GenerateSummaryReport();
     
+    // Unregister a single BVH by name (call before release_blas to avoid dangling)
+    static void UnregisterBVH(const std::string& name);
+
     // Clear all registered BVHs
     static void Clear();
     

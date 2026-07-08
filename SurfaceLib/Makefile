@@ -1,6 +1,8 @@
 CC = gcc
 RAYLIB_PATH = ../Libraries/raylib
-CFLAGS = -Wall -Wextra -O2 -I$(RAYLIB_PATH)/src -Iinclude
+SPATIAL_QUERY_PATH = ../SpatialQueryLib
+OA_LIB = ../ObjectAllocatorLib
+CFLAGS = -Wall -Wextra -O2 -MMD -MP -I$(RAYLIB_PATH)/src -Iinclude -I$(SPATIAL_QUERY_PATH)/include -I$(OA_LIB)/include
 
 # Detect OS
 UNAME_S := $(shell uname -s)
@@ -17,9 +19,9 @@ ifeq ($(OS),Windows_NT)
     LDLIBS = $(RAYLIB_PATH)/src/libraylib.a
 endif
 
-# Source files
-SRC = main.c src/surface.c src/spatial_hash.c src/object_allocator.c tests.c
-OBJ = $(SRC:.c=.o)
+# Source files — sibling library sources compiled directly from source of truth
+SRC = main.c src/surface.c tests.c
+OBJ = main.o src/surface.o tests.o object_allocator.o spatial_hash.o
 BIN = surface_app
 
 all: $(BIN)
@@ -33,10 +35,19 @@ raylib:
 %.o: %.c
 	$(CC) -c $< $(CFLAGS) -o $@
 
+# Sibling library sources compiled directly from source of truth
+object_allocator.o: $(OA_LIB)/src/object_allocator.c $(OA_LIB)/include/object_allocator.h
+	$(CC) -c $< $(CFLAGS) -o $@
+
+spatial_hash.o: $(SPATIAL_QUERY_PATH)/src/spatial_hash.c $(SPATIAL_QUERY_PATH)/include/spatial_hash.h
+	$(CC) -c $< $(CFLAGS) -o $@
+
 clean:
-	rm -f $(OBJ) $(BIN)
+	rm -f $(OBJ) $(OBJ:.o=.d) $(BIN)
 
 clean-all: clean
 	$(MAKE) -C $(RAYLIB_PATH)/src clean
+
+-include $(OBJ:.o=.d)
 
 .PHONY: all clean clean-all raylib

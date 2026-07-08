@@ -15,8 +15,7 @@ using poly_tri::Contour;
 using poly_tri::Profile;
 using poly_tri::triangulate;
 
-static int failures = 0;
-#define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); ++failures; } } while (0)
+#include "check.h"
 
 struct V2 { float x, y; };
 
@@ -122,6 +121,6 @@ int main() {
     test_convex_square();
     test_concave_L();
     test_square_with_hole();
-    if (failures == 0) printf("All polygon_triangulate tests passed\n");
-    return failures == 0 ? 0 : 1;
+    if (g_failures == 0) printf("All polygon_triangulate tests passed\n");
+    return g_failures == 0 ? 0 : 1;
 }

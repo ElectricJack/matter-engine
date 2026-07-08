@@ -110,20 +110,22 @@ BLASHandle BLASManager::find_existing_blas(const Tri* triangles, int count, uint
 }
 
 
-BLASHandle BLASManager::register_triangles(const std::vector<Tri>& triangles) {
-    return register_triangles(const_cast<Tri*>(triangles.data()), 
-                             static_cast<int>(triangles.size()));
+BLASHandle BLASManager::register_triangles(const std::vector<Tri>& triangles, bool force_subdiv_one_prim) {
+    return register_triangles(const_cast<Tri*>(triangles.data()),
+                             static_cast<int>(triangles.size()), nullptr, force_subdiv_one_prim);
 }
 
 
-BLASHandle BLASManager::register_triangles(const std::vector<Tri>& triangles, const std::vector<TriEx>& triex) {
+BLASHandle BLASManager::register_triangles(const std::vector<Tri>& triangles, const std::vector<TriEx>& triex,
+                                           bool force_subdiv_one_prim) {
     const TriEx* triex_ptr = (triex.size() == triangles.size() && !triex.empty()) ? triex.data() : nullptr;
     return register_triangles(const_cast<Tri*>(triangles.data()),
-                              static_cast<int>(triangles.size()), triex_ptr);
+                              static_cast<int>(triangles.size()), triex_ptr, force_subdiv_one_prim);
 }
 
 
-BLASHandle BLASManager::register_triangles(Tri* triangles, int triangle_count, const TriEx* triex) {
+BLASHandle BLASManager::register_triangles(Tri* triangles, int triangle_count, const TriEx* triex,
+                                           bool force_subdiv_one_prim) {
     PROFILE_SECTION("BLAS Registration");
     
     if (!triangles || triangle_count <= 0) {
@@ -136,11 +138,9 @@ BLASHandle BLASManager::register_triangles(Tri* triangles, int triangle_count, c
     // Check if BLAS already exists; share it and bump its reference count.
     BLASHandle existing = find_existing_blas(triangles, triangle_count, hash, triex);
     if (existing != INVALID_BLAS_HANDLE) {
-        for (auto& entry : entries_) {
-            if (entry->handle == existing) {
-                entry->ref_count++;
-                break;
-            }
+        auto idx_it = handle_to_index_.find(existing);
+        if (idx_it != handle_to_index_.end() && idx_it->second < entries_.size()) {
+            entries_[idx_it->second]->ref_count++;
         }
         return existing;
     }
@@ -175,12 +175,11 @@ BLASHandle BLASManager::register_triangles(Tri* triangles, int triangle_count, c
 
         // Create BVH using the proper constructor
         auto bvh = std::make_unique<BVH>(mesh.get());
-        
-        // For the unit test scene, enable subdivToOnePrim to force proper subdivision
-        if (triangle_count == 3) {
-            // This is likely our unit test with 3 well-separated triangles
+        // force_subdiv_one_prim: explicit flag requested by the caller.
+        // Previously this was triggered heuristically by triangle_count==3, which
+        // changed production behaviour for real 3-tri meshes (code-review smell fix).
+        if (force_subdiv_one_prim) {
             bvh->subdivToOnePrim = true;
-            // Rebuild with the correct flag
             bvh->Build();
         }
         
@@ -196,13 +195,14 @@ BLASHandle BLASManager::register_triangles(Tri* triangles, int triangle_count, c
         auto entry = std::make_unique<BLASEntry>(handle, std::move(mesh), std::move(bvh),
                                                  std::move(triangle_copy), std::move(tri_extra_copy), hash);
         
-        // Add to hash table
+        // Add to hash table and handle map
         size_t entry_index = entries_.size();
         hash_to_entry_.emplace(hash, entry_index);
-        
+        handle_to_index_.emplace(handle, entry_index);
+
         // Add to entries
         entries_.push_back(std::move(entry));
-        
+
         mark_dirty(); // Mark all cached data as dirty
         return handle;
     }
@@ -255,6 +255,7 @@ BLASHandle BLASManager::register_prebuilt(const Tri* tris, const TriEx* triex, i
 
     size_t entry_index = entries_.size();
     hash_to_entry_.emplace(hash, entry_index);
+    handle_to_index_.emplace(handle, entry_index);
     entries_.push_back(std::move(entry));
 
     mark_dirty();
@@ -265,22 +266,27 @@ BLASHandle BLASManager::register_prebuilt(const Tri* tris, const TriEx* triex, i
 void BLASManager::release_blas(BLASHandle handle) {
     if (handle == INVALID_BLAS_HANDLE) return;
 
-    auto it = std::find_if(entries_.begin(), entries_.end(),
-        [handle](const auto& entry) { return entry->handle == handle; });
-    if (it == entries_.end()) return;
+    // O(1) handle lookup via handle_to_index_ map.
+    auto idx_it = handle_to_index_.find(handle);
+    if (idx_it == handle_to_index_.end()) return;
+    size_t idx = idx_it->second;
+    if (idx >= entries_.size()) return;
 
-    if ((*it)->ref_count > 1) {
-        (*it)->ref_count--;
+    if (entries_[idx]->ref_count > 1) {
+        entries_[idx]->ref_count--;
         return;
     }
 
     // Last owner: drop the entry and reclaim its place in the combined arrays.
-    entries_.erase(it);
+    entries_.erase(entries_.begin() + static_cast<ptrdiff_t>(idx));
+    handle_to_index_.erase(idx_it);
 
-    // entries_ indices shifted, so rebuild the hash lookup table from scratch.
+    // entries_ indices shifted, so rebuild both lookup tables from scratch.
     hash_to_entry_.clear();
+    handle_to_index_.clear();
     for (size_t i = 0; i < entries_.size(); ++i) {
         hash_to_entry_.emplace(entries_[i]->hash, i);
+        handle_to_index_.emplace(entries_[i]->handle, i);
     }
 
     mark_dirty();
@@ -288,36 +294,29 @@ void BLASManager::release_blas(BLASHandle handle) {
 
 bool BLASManager::has_blas(BLASHandle handle) const {
     if (handle == INVALID_BLAS_HANDLE) return false;
-    
-    return std::any_of(entries_.begin(), entries_.end(),
-        [handle](const auto& entry) { return entry->handle == handle; });
+    auto it = handle_to_index_.find(handle);
+    return (it != handle_to_index_.end() && it->second < entries_.size());
 }
 
 BVH* BLASManager::get_bvh(BLASHandle handle) const {
     if (handle == INVALID_BLAS_HANDLE) return nullptr;
-    
-    auto it = std::find_if(entries_.begin(), entries_.end(),
-        [handle](const auto& entry) { return entry->handle == handle; });
-    
-    return (it != entries_.end()) ? (*it)->bvh.get() : nullptr;
+    auto it = handle_to_index_.find(handle);
+    if (it == handle_to_index_.end() || it->second >= entries_.size()) return nullptr;
+    return entries_[it->second]->bvh.get();
 }
 
 BvhMesh* BLASManager::get_mesh(BLASHandle handle) const {
     if (handle == INVALID_BLAS_HANDLE) return nullptr;
-    
-    auto it = std::find_if(entries_.begin(), entries_.end(),
-        [handle](const auto& entry) { return entry->handle == handle; });
-    
-    return (it != entries_.end()) ? (*it)->mesh.get() : nullptr;
+    auto it = handle_to_index_.find(handle);
+    if (it == handle_to_index_.end() || it->second >= entries_.size()) return nullptr;
+    return entries_[it->second]->mesh.get();
 }
 
 const BLASManager::BLASEntry* BLASManager::get_entry(BLASHandle handle) const {
     if (handle == INVALID_BLAS_HANDLE) return nullptr;
-    
-    auto it = std::find_if(entries_.begin(), entries_.end(),
-        [handle](const auto& entry) { return entry->handle == handle; });
-    
-    return (it != entries_.end()) ? it->get() : nullptr;
+    auto it = handle_to_index_.find(handle);
+    if (it == handle_to_index_.end() || it->second >= entries_.size()) return nullptr;
+    return entries_[it->second].get();
 }
 
 void BLASManager::update_totals() const {
@@ -351,24 +350,26 @@ int BLASManager::get_total_node_count() const {
 BLASOffsets BLASManager::get_offsets(BLASHandle handle) const {
     BLASOffsets offsets{0, 0};
     if (handle == INVALID_BLAS_HANDLE) return offsets;
-    
+
+    // O(1) existence check; walk only up to the target index.
+    auto idx_it = handle_to_index_.find(handle);
+    if (idx_it == handle_to_index_.end()) return offsets; // Not found
+
     int triangle_offset = 0;
     int node_offset = 0;
-    
-    for (const auto& entry : entries_) {
-        if (entry->handle == handle) {
-            offsets.triangle_offset = triangle_offset;
-            offsets.node_offset = node_offset;
-            return offsets;
-        }
-        
+    size_t target = idx_it->second;
+
+    for (size_t i = 0; i < target && i < entries_.size(); ++i) {
+        const auto& entry = entries_[i];
         if (entry->mesh && entry->bvh) {
             triangle_offset += entry->mesh->triCount;
             node_offset += entry->bvh->nodesUsed;
         }
     }
-    
-    return offsets; // Not found
+
+    offsets.triangle_offset = triangle_offset;
+    offsets.node_offset = node_offset;
+    return offsets;
 }
 
 void BLASManager::generate_triangle_data(std::vector<Tri>& output_triangles) const {
@@ -446,195 +447,264 @@ void BLASManager::generate_node_texture_data(LegacyBVHNode* output_nodes) const 
     std::copy(temp.begin(), temp.end(), output_nodes);
 }
 
-void BLASManager::ensure_gpu_textures_ready() {
-    if (!textures_dirty_) return;
-    
-    PROFILE_SECTION("BLAS GPU Texture Update");
-    
-    // Clean up old textures
-    if (triangles_texture_.id != 0) UnloadTexture(triangles_texture_);
-    if (nodes_texture_.id != 0) UnloadTexture(nodes_texture_);
-    
-    // Generate triangle texture
-    {
-        PROFILE_SECTION("BLAS Triangle Texture Creation");
-        
-        std::vector<Tri> all_triangles;
-        generate_triangle_data(all_triangles);
-        
-        if (!all_triangles.empty()) {
-            // Tiled layout: cap the width at TEXTURE_TILE_WIDTH and wrap overflow
-            // into extra vertical tile rows so width never exceeds GL_MAX_TEXTURE_SIZE.
-            // Each triangle occupies 6 texel rows (3 vertices + 3 per-vertex normals).
-            const int triangle_total = static_cast<int>(all_triangles.size());
-            const int tile_w = std::min(triangle_total, TEXTURE_TILE_WIDTH);
-            const int tiles_y = (triangle_total + tile_w - 1) / tile_w;
-            int texture_width = tile_w;
-            int texture_height = tiles_y * 6;
-            auto texel_off = [tile_w, texture_width](int idx, int row) {
-                int tx = idx % tile_w;
-                int ty = idx / tile_w;
-                return ((ty * 6 + row) * texture_width + tx) * 4;
-            };
+// Helper: build the CPU-side triangle texture buffer for ALL entries.
+// On return, texture_data is sized to (texture_width * texture_height * 4) floats.
+// Returns false if there are no triangles (caller should skip GPU upload).
+static bool build_triangle_texture_buffer(
+        const std::vector<std::unique_ptr<BLASManager::BLASEntry>>& entries_,
+        std::vector<float>& texture_data,
+        int& texture_width, int& texture_height) {
 
-            std::vector<float> texture_data(texture_width * texture_height * 4);
+    // Compute total triangle count from the entries directly (totals may be stale).
+    int triangle_total = 0;
+    for (const auto& e : entries_)
+        if (e->mesh && e->bvh) triangle_total += e->mesh->triCount;
+    if (triangle_total == 0) return false;
 
-            // Walk entries in the same order as generate_triangle_data so the flat
-            // all_triangles index lines up with each entry's per-triangle triEx normals.
-            size_t triangle_index = 0;
-            for (const auto& entry : entries_) {
-                if (!entry->mesh || !entry->bvh) continue;
-                const bool has_normals = (entry->mesh->triEx != nullptr);
+    const int tile_w = std::min(triangle_total, BLASManager::TEXTURE_TILE_WIDTH);
+    const int tiles_y = (triangle_total + tile_w - 1) / tile_w;
+    texture_width  = tile_w;
+    texture_height = tiles_y * 6;
 
-                for (int i = 0; i < entry->mesh->triCount; i++) {
-                    uint original_idx = entry->bvh->triIdx[i];
-                    if (original_idx >= entry->triangles.size() || triangle_index >= all_triangles.size()) {
-                        continue;
-                    }
+    auto texel_off = [tile_w, texture_width](int idx, int row) {
+        int tx = idx % tile_w;
+        int ty = idx / tile_w;
+        return ((ty * 6 + row) * texture_width + tx) * 4;
+    };
 
-                    const Tri& tri = all_triangles[triangle_index];
+    texture_data.assign(static_cast<size_t>(texture_width * texture_height) * 4, 0.0f);
 
-                    // Row 0: v0
-                    int row0_idx = texel_off(static_cast<int>(triangle_index), 0);
-                    texture_data[row0_idx + 0] = tri.vertex0.x;
-                    texture_data[row0_idx + 1] = tri.vertex0.y;
-                    texture_data[row0_idx + 2] = tri.vertex0.z;
-                    // Row 0 .w carries the per-triangle materialId (>=0). -1 means "no per-triangle
-                    // material; shader falls back to the instance material". Must match the shader
-                    // fetch of data0.w in bvh_tlas_common.glsl (decodeTriangle / hit block).
-                    texture_data[row0_idx + 3] = pack_material_w(entry->mesh->triEx,
-                                                                 static_cast<int>(original_idx));
+    // Regenerate ALL entries so the flat index matches generate_triangle_data order.
+    // NOTE: even in the partial-update path we rebuild all entries' CPU data because
+    // we do not cache the previous CPU buffer.  Clean entries' texels are identical to
+    // what is already on the GPU; the caller uses UpdateTexture (not Unload+Load) so
+    // the GPU allocation is reused and no extra work is done by the driver for the
+    // unchanged spans.
+    size_t triangle_index = 0;
+    for (const auto& entry : entries_) {
+        if (!entry->mesh || !entry->bvh) continue;
+        const bool has_normals = (entry->mesh->triEx != nullptr);
 
-                    // Row 1: v1
-                    int row1_idx = texel_off(static_cast<int>(triangle_index), 1);
-                    texture_data[row1_idx + 0] = tri.vertex1.x;
-                    texture_data[row1_idx + 1] = tri.vertex1.y;
-                    texture_data[row1_idx + 2] = tri.vertex1.z;
-                    texture_data[row1_idx + 3] = pack_tint_w(entry->mesh->triEx, static_cast<int>(original_idx), 0); // tint.r
+        for (int i = 0; i < entry->mesh->triCount; i++) {
+            uint original_idx = entry->bvh->triIdx[i];
+            if (original_idx >= static_cast<uint>(entry->triangles.size())) continue;
 
-                    // Row 2: v2
-                    int row2_idx = texel_off(static_cast<int>(triangle_index), 2);
-                    texture_data[row2_idx + 0] = tri.vertex2.x;
-                    texture_data[row2_idx + 1] = tri.vertex2.y;
-                    texture_data[row2_idx + 2] = tri.vertex2.z;
-                    texture_data[row2_idx + 3] = pack_tint_w(entry->mesh->triEx, static_cast<int>(original_idx), 1); // tint.g
+            // Reconstruct the triangle from the BVH-reordered array
+            // (mirrors generate_triangle_data).
+            const Tri& tri = entry->triangles[original_idx];
 
-                    // Per-vertex normals (rows 3-5). Fall back to the face normal when
-                    // the mesh carries no shading normals so all three rows match.
-                    float3 n0, n1, n2;
-                    if (has_normals) {
-                        const TriEx& ex = entry->mesh->triEx[original_idx];
-                        n0 = ex.N0; n1 = ex.N1; n2 = ex.N2;
-                    } else {
-                        float3 fn = normalize(cross(tri.vertex1 - tri.vertex0, tri.vertex2 - tri.vertex0));
-                        n0 = n1 = n2 = fn;
-                    }
+            // Row 0: v0 + material
+            int row0_idx = texel_off(static_cast<int>(triangle_index), 0);
+            texture_data[row0_idx + 0] = tri.vertex0.x;
+            texture_data[row0_idx + 1] = tri.vertex0.y;
+            texture_data[row0_idx + 2] = tri.vertex0.z;
+            texture_data[row0_idx + 3] = BLASManager::pack_material_w(entry->mesh->triEx,
+                                                                       static_cast<int>(original_idx));
 
-                    const float3 normals[3] = { n0, n1, n2 };
-                    for (int row = 0; row < 3; row++) {
-                        int row_idx = texel_off(static_cast<int>(triangle_index), row + 3);
-                        texture_data[row_idx + 0] = normals[row].x;
-                        texture_data[row_idx + 1] = normals[row].y;
-                        texture_data[row_idx + 2] = normals[row].z;
-                        texture_data[row_idx + 3] = 0.0f;
-                    }
+            // Row 1: v1 + tint.r
+            int row1_idx = texel_off(static_cast<int>(triangle_index), 1);
+            texture_data[row1_idx + 0] = tri.vertex1.x;
+            texture_data[row1_idx + 1] = tri.vertex1.y;
+            texture_data[row1_idx + 2] = tri.vertex1.z;
+            texture_data[row1_idx + 3] = BLASManager::pack_tint_w(entry->mesh->triEx, static_cast<int>(original_idx), 0);
 
-                    // Pack tint.b/.a into the spare .w of normal rows 3 and 4,
-                    // and the three baked per-vertex AO values into row 5 .w
-                    // (8 bits each; see pack_ao_w / shader floatBitsToUint unpack).
-                    // Row 5 .xyz holds N2 (third per-vertex normal) and is left intact.
-                    {
-                        int rowB = texel_off(static_cast<int>(triangle_index), 3);
-                        int rowA = texel_off(static_cast<int>(triangle_index), 4);
-                        int rowAO = texel_off(static_cast<int>(triangle_index), 5);
-                        texture_data[rowB + 3] = pack_tint_w(entry->mesh->triEx, static_cast<int>(original_idx), 2); // tint.b
-                        texture_data[rowA + 3] = pack_tint_w(entry->mesh->triEx, static_cast<int>(original_idx), 3); // tint.a
-                        if (has_normals) {
-                            const TriEx& exr = entry->mesh->triEx[original_idx];
-                            texture_data[rowAO + 3] = pack_ao_w(exr.ao0, exr.ao1, exr.ao2);
-                        } else {
-                            texture_data[rowAO + 3] = pack_ao_w(1.0f, 1.0f, 1.0f); // no triEx -> unoccluded
-                        }
-                    }
+            // Row 2: v2 + tint.g
+            int row2_idx = texel_off(static_cast<int>(triangle_index), 2);
+            texture_data[row2_idx + 0] = tri.vertex2.x;
+            texture_data[row2_idx + 1] = tri.vertex2.y;
+            texture_data[row2_idx + 2] = tri.vertex2.z;
+            texture_data[row2_idx + 3] = BLASManager::pack_tint_w(entry->mesh->triEx, static_cast<int>(original_idx), 1);
 
-                    triangle_index++;
+            // Rows 3-5: per-vertex normals (or face normal when no triEx)
+            float3 n0, n1, n2;
+            if (has_normals) {
+                const TriEx& ex = entry->mesh->triEx[original_idx];
+                n0 = ex.N0; n1 = ex.N1; n2 = ex.N2;
+            } else {
+                float3 fn = normalize(cross(tri.vertex1 - tri.vertex0, tri.vertex2 - tri.vertex0));
+                n0 = n1 = n2 = fn;
+            }
+            const float3 normals[3] = { n0, n1, n2 };
+            for (int row = 0; row < 3; row++) {
+                int row_idx = texel_off(static_cast<int>(triangle_index), row + 3);
+                texture_data[row_idx + 0] = normals[row].x;
+                texture_data[row_idx + 1] = normals[row].y;
+                texture_data[row_idx + 2] = normals[row].z;
+                texture_data[row_idx + 3] = 0.0f;
+            }
+
+            // Pack tint.b/.a into spare .w of normal rows 3 and 4, and AO into row 5 .w
+            {
+                int rowB  = texel_off(static_cast<int>(triangle_index), 3);
+                int rowA  = texel_off(static_cast<int>(triangle_index), 4);
+                int rowAO = texel_off(static_cast<int>(triangle_index), 5);
+                texture_data[rowB  + 3] = BLASManager::pack_tint_w(entry->mesh->triEx, static_cast<int>(original_idx), 2);
+                texture_data[rowA  + 3] = BLASManager::pack_tint_w(entry->mesh->triEx, static_cast<int>(original_idx), 3);
+                if (has_normals) {
+                    const TriEx& exr = entry->mesh->triEx[original_idx];
+                    texture_data[rowAO + 3] = pack_ao_w(exr.ao0, exr.ao1, exr.ao2);
+                } else {
+                    texture_data[rowAO + 3] = pack_ao_w(1.0f, 1.0f, 1.0f);
                 }
             }
 
-            Image tri_image = {
-                .data = texture_data.data(),
-                .width = texture_width,
-                .height = texture_height,
-                .mipmaps = 1,
-                .format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32
-            };
-            
-            triangles_texture_ = LoadTextureFromImage(tri_image);
-            SetTextureFilter(triangles_texture_, TEXTURE_FILTER_POINT);
+            triangle_index++;
         }
     }
-    
-    // Generate nodes texture
+    return true;
+}
+
+// Helper: build the CPU-side BVH node texture buffer for ALL entries.
+// Returns false if there are no nodes.
+static bool build_node_texture_buffer(
+        const std::vector<std::unique_ptr<BLASManager::BLASEntry>>& entries_,
+        std::vector<float>& texture_data,
+        int& texture_width, int& texture_height) {
+
+    int node_total = 0;
+    for (const auto& e : entries_)
+        if (e->mesh && e->bvh) node_total += static_cast<int>(e->bvh->nodesUsed);
+    if (node_total == 0) return false;
+
+    const int tile_w = std::min(node_total, BLASManager::TEXTURE_TILE_WIDTH);
+    const int tiles_y = (node_total + tile_w - 1) / tile_w;
+    texture_width  = tile_w;
+    texture_height = tiles_y * 3;
+
+    auto texel_off = [tile_w, texture_width](int idx, int row) {
+        int tx = idx % tile_w;
+        int ty = idx / tile_w;
+        return ((ty * 3 + row) * texture_width + tx) * 4;
+    };
+
+    texture_data.assign(static_cast<size_t>(texture_width * texture_height) * 4, 0.0f);
+
+    int node_offset = 0;
+    int triangle_offset = 0;
+    int flat_idx = 0;
+    for (const auto& entry : entries_) {
+        if (!entry->mesh || !entry->bvh) continue;
+        for (uint j = 0; j < entry->bvh->nodesUsed; j++) {
+            const auto& src_node = entry->bvh->bvhNode[j];
+
+            uint32_t leftFirst = src_node.leftFirst;
+            uint32_t triCount  = src_node.triCount;
+            if (triCount > 0)
+                leftFirst += static_cast<uint32_t>(triangle_offset);
+            else
+                leftFirst += static_cast<uint32_t>(node_offset);
+
+            int row0_idx = texel_off(flat_idx, 0);
+            texture_data[row0_idx + 0] = src_node.aabbMin.x;
+            texture_data[row0_idx + 1] = src_node.aabbMin.y;
+            texture_data[row0_idx + 2] = src_node.aabbMin.z;
+            texture_data[row0_idx + 3] = static_cast<float>(leftFirst);
+
+            int row1_idx = texel_off(flat_idx, 1);
+            texture_data[row1_idx + 0] = src_node.aabbMax.x;
+            texture_data[row1_idx + 1] = src_node.aabbMax.y;
+            texture_data[row1_idx + 2] = src_node.aabbMax.z;
+            texture_data[row1_idx + 3] = static_cast<float>(triCount);
+
+            // Row 2: padding (already zero-filled by assign)
+            flat_idx++;
+        }
+        node_offset     += static_cast<int>(entry->bvh->nodesUsed);
+        triangle_offset += entry->mesh->triCount;
+    }
+    return true;
+}
+
+void BLASManager::ensure_gpu_textures_ready() {
+    if (!textures_dirty_) return;
+
+    PROFILE_SECTION("BLAS GPU Texture Update");
+
+    // --- Per-entry dirty fast path ---
+    // If the entry set is unchanged (same totals as last upload) AND no individual
+    // entry is marked gpu_dirty, the GPU textures are already current. This is the
+    // cheap-win case: a ref-count increment on a shared BLAS sets textures_dirty_
+    // via mark_dirty() but all per-entry data is unchanged.
+    update_totals(); // ensure cached_total_triangles_ / cached_total_nodes_ are fresh
+    const bool set_changed = (cached_total_triangles_ != gpu_total_triangles_ ||
+                              cached_total_nodes_     != gpu_total_nodes_);
+    if (!set_changed) {
+        bool any_entry_dirty = false;
+        for (const auto& entry : entries_) {
+            if (entry->gpu_dirty) { any_entry_dirty = true; break; }
+        }
+        if (!any_entry_dirty) {
+            // Nothing has changed on the GPU since last upload; clear the flag and return.
+            textures_dirty_ = false;
+            return;
+        }
+    }
+
+    // Determine whether we can reuse the existing texture objects (same dimensions)
+    // or must reallocate (entry set changed → tile_w changes → all offsets shift).
+    // When we can reuse, UpdateTexture is cheaper than UnloadTexture + LoadTextureFromImage.
+    const bool can_reuse_textures = !set_changed &&
+                                    (triangles_texture_.id != 0) &&
+                                    (nodes_texture_.id != 0);
+
+    // --- Triangle texture ---
+    {
+        PROFILE_SECTION("BLAS Triangle Texture Creation");
+
+        std::vector<float> texture_data;
+        int texture_width = 0, texture_height = 0;
+        if (build_triangle_texture_buffer(entries_, texture_data, texture_width, texture_height)) {
+            if (can_reuse_textures &&
+                triangles_texture_.width == texture_width &&
+                triangles_texture_.height == texture_height) {
+                // Same layout: push data in-place; no GPU allocation.
+                UpdateTexture(triangles_texture_, texture_data.data());
+            } else {
+                if (triangles_texture_.id != 0) UnloadTexture(triangles_texture_);
+                Image tri_image = {
+                    .data    = texture_data.data(),
+                    .width   = texture_width,
+                    .height  = texture_height,
+                    .mipmaps = 1,
+                    .format  = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32
+                };
+                triangles_texture_ = LoadTextureFromImage(tri_image);
+                SetTextureFilter(triangles_texture_, TEXTURE_FILTER_POINT);
+            }
+        }
+    }
+
+    // --- BVH node texture ---
     {
         PROFILE_SECTION("BLAS Nodes Texture Creation");
-        
-        std::vector<LegacyBVHNode> all_nodes;
-        generate_node_data(all_nodes);
-        
-        if (!all_nodes.empty()) {
-            // Tiled layout (see triangle texture above). Each node occupies 3 texel
-            // rows: aabbMin+leftFirst, aabbMax+triCount, padding.
-            const int node_total = static_cast<int>(all_nodes.size());
-            const int tile_w = std::min(node_total, TEXTURE_TILE_WIDTH);
-            const int tiles_y = (node_total + tile_w - 1) / tile_w;
-            int texture_width = tile_w;
-            int texture_height = tiles_y * 3;
-            auto texel_off = [tile_w, texture_width](int idx, int row) {
-                int tx = idx % tile_w;
-                int ty = idx / tile_w;
-                return ((ty * 3 + row) * texture_width + tx) * 4;
-            };
 
-            std::vector<float> texture_data(texture_width * texture_height * 4);
-
-            for (size_t i = 0; i < all_nodes.size(); i++) {
-                const LegacyBVHNode& node = all_nodes[i];
-
-                // Row 0: aabbMin + leftFirst
-                int row0_idx = texel_off(static_cast<int>(i), 0);
-                texture_data[row0_idx + 0] = node.aabbMin.x;
-                texture_data[row0_idx + 1] = node.aabbMin.y;
-                texture_data[row0_idx + 2] = node.aabbMin.z;
-                texture_data[row0_idx + 3] = static_cast<float>(node.leftFirst);
-
-                // Row 1: aabbMax + triCount
-                int row1_idx = texel_off(static_cast<int>(i), 1);
-                texture_data[row1_idx + 0] = node.aabbMax.x;
-                texture_data[row1_idx + 1] = node.aabbMax.y;
-                texture_data[row1_idx + 2] = node.aabbMax.z;
-                texture_data[row1_idx + 3] = static_cast<float>(node.triCount);
-
-                // Row 2: padding
-                int row2_idx = texel_off(static_cast<int>(i), 2);
-                texture_data[row2_idx + 0] = 0.0f;
-                texture_data[row2_idx + 1] = 0.0f;
-                texture_data[row2_idx + 2] = 0.0f;
-                texture_data[row2_idx + 3] = 0.0f;
+        std::vector<float> texture_data;
+        int texture_width = 0, texture_height = 0;
+        if (build_node_texture_buffer(entries_, texture_data, texture_width, texture_height)) {
+            if (can_reuse_textures &&
+                nodes_texture_.width == texture_width &&
+                nodes_texture_.height == texture_height) {
+                UpdateTexture(nodes_texture_, texture_data.data());
+            } else {
+                if (nodes_texture_.id != 0) UnloadTexture(nodes_texture_);
+                Image blas_image = {
+                    .data    = texture_data.data(),
+                    .width   = texture_width,
+                    .height  = texture_height,
+                    .mipmaps = 1,
+                    .format  = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32
+                };
+                nodes_texture_ = LoadTextureFromImage(blas_image);
+                SetTextureFilter(nodes_texture_, TEXTURE_FILTER_POINT);
             }
-
-            Image blas_image = {
-                .data = texture_data.data(),
-                .width = texture_width,
-                .height = texture_height,
-                .mipmaps = 1,
-                .format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32
-            };
-
-            nodes_texture_ = LoadTextureFromImage(blas_image);
-            SetTextureFilter(nodes_texture_, TEXTURE_FILTER_POINT);
         }
     }
-    
+
+    // Record the counts that are now on the GPU, and clear per-entry dirty flags.
+    gpu_total_triangles_ = cached_total_triangles_;
+    gpu_total_nodes_     = cached_total_nodes_;
+    for (const auto& entry : entries_) entry->gpu_dirty = false;
+
     textures_dirty_ = false;
 }
 
@@ -730,6 +800,7 @@ void BLASManager::reset_stats() {
     // This would clear all data - be careful!
     entries_.clear();
     hash_to_entry_.clear();
+    handle_to_index_.clear();
     next_handle_ = 1;
     totals_dirty_ = true;
 }
@@ -750,6 +821,7 @@ void BLASManager::clear() {
     // Clear all data structures
     entries_.clear();
     hash_to_entry_.clear();
+    handle_to_index_.clear();
     next_handle_ = 1;
     
     // Mark everything as dirty to force regeneration
@@ -757,6 +829,8 @@ void BLASManager::clear() {
     textures_dirty_ = true;
     shader_values_dirty_ = true;
     cached_shader_id_ = 0;
+    gpu_total_triangles_ = 0;
+    gpu_total_nodes_     = 0;
     
     printf("BLASManager: Cleared, ready for new BLAS registrations\n");
 }

@@ -4,7 +4,7 @@
 #include <assert.h>
 #include <string.h>
 #include <math.h>
-#include "include/object_allocator.h"
+#include "object_allocator.h"
 #include "include/spatial_hash.h"
 #include "include/bvh.h"
 

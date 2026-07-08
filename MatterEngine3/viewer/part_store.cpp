@@ -15,33 +15,48 @@
 namespace viewer {
 
 // ---------------------------------------------------------------------------
-// build_expansion implementation
+// walk_part_tree implementation — single recursive traversal shared by
+// build_expansion, WorldComposer::compose, and the main.cpp TLAS-sizing walk.
 // ---------------------------------------------------------------------------
 
-static void expand_rec(uint64_t hash, const float parent_rel[16], int depth,
-                       const std::function<const viewer::LoadedPart*(uint64_t)>& getter,
-                       std::vector<viewer::ExpandedNode>& out) {
-    if (depth > 8) return;                        // matches raster_composer.cpp kMaxDepth
+static void walk_rec(uint64_t hash, const float parent_rel[16], int depth,
+                     const std::function<const viewer::LoadedPart*(uint64_t)>& getter,
+                     const std::function<void(const viewer::LoadedPart*, uint64_t,
+                                              const float[16], int)>& visitor) {
+    if (depth > 8) return;
     const viewer::LoadedPart* lp = getter(hash);
     if (!lp) return;
-    if (!lp->lod_mesh_data.empty()) {
-        viewer::ExpandedNode n;
-        n.part_hash = hash;
-        memcpy(n.rel_transform, parent_rel, sizeof n.rel_transform);
-        out.push_back(n);
-    }
+    visitor(lp, hash, parent_rel, depth);
     for (const auto& c : lp->children) {
         float rel[16];
         viewer::mul16(parent_rel, c.transform, rel);
-        expand_rec(c.child_resolved_hash, rel, depth + 1, getter, out);
+        walk_rec(c.child_resolved_hash, rel, depth + 1, getter, visitor);
     }
 }
+
+void walk_part_tree(uint64_t root_hash,
+        const std::function<const LoadedPart*(uint64_t)>& getter,
+        const std::function<void(const LoadedPart*, uint64_t,
+                                 const float[16], int)>& visitor) {
+    static const float kIdentity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    walk_rec(root_hash, kIdentity, 0, getter, visitor);
+}
+
+// ---------------------------------------------------------------------------
+// build_expansion — thin wrapper over walk_part_tree
+// ---------------------------------------------------------------------------
 
 void build_expansion(uint64_t root_hash,
         const std::function<const LoadedPart*(uint64_t)>& getter,
         std::vector<ExpandedNode>& out) {
-    static const float kIdentity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
-    expand_rec(root_hash, kIdentity, 0, getter, out);
+    walk_part_tree(root_hash, getter,
+        [&](const LoadedPart* lp, uint64_t hash, const float rel[16], int /*depth*/) {
+            if (lp->lod_mesh_data.empty()) return;
+            ExpandedNode n;
+            n.part_hash = hash;
+            memcpy(n.rel_transform, rel, sizeof n.rel_transform);
+            out.push_back(n);
+        });
 }
 
 // ---------------------------------------------------------------------------

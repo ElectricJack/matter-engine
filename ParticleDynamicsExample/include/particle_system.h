@@ -16,6 +16,7 @@ extern "C" {
 #include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
+#include <random>
 
 // Forward declarations
 class MaterialManager;
@@ -38,13 +39,6 @@ struct BlackHole {
     Color color;
     
     BlackHole() : position({0, 0, 0}), mass(100.0f), radius(2.0f), color(BLACK) {}
-};
-
-// Simple particle reference for spatial hash lookups
-struct ParticleRef {
-    uint32_t particle_index;
-    
-    ParticleRef(uint32_t idx = 0) : particle_index(idx) {}
 };
 
 class ParticleSystem {
@@ -225,8 +219,7 @@ private:
     
     // Spatial hash for efficient neighbor queries
     SpatialHash* spatial_hash_;
-    std::vector<ParticleRef> particle_refs_;  // Pool of particle references for reuse
-    
+
     // Material manager reference
     MaterialManager& material_manager_;
     
@@ -245,6 +238,13 @@ private:
     
     // Performance tracking
     float physics_time_ms_;
+
+    // RNG — seeded once in initialize(), used everywhere
+    std::mt19937 rng_;
+
+    // One-time warning flags
+    bool warned_radius_clamped_ = false;
+    bool warned_neighbors_truncated_ = false;
     
     // Physics parameters
     static constexpr float GRAVITATIONAL_CONSTANT = 50.0f;   // Scaled for simulation
@@ -254,10 +254,11 @@ private:
     static constexpr float COLLISION_DISTANCE     = 0.15f;   // Distance for particle merging
     
     // Spatial optimization parameters
-    static constexpr float SPATIAL_CELL_SIZE      = 1.0f;    // Size of spatial hash cells
+    static constexpr float SPATIAL_CELL_SIZE      = 4.0f;    // Size of spatial hash cells (larger = fewer cells per query)
+    static constexpr float MAX_QUERY_RADIUS       = 16 * SPATIAL_CELL_SIZE;  // Cap radius to keep (2r+1)^3 <= ~1k cells
     static constexpr float GRAVITY_BASE_RADIUS    = 5.0f;    // Base gravity influence radius
     static constexpr float MASS_RADIUS_MULTIPLIER = 100.0f;  // How much mass affects influence radius
-    static constexpr int   MAX_NEIGHBORS          = 64;      // Maximum neighbors to check per particle
+    static constexpr int   MAX_NEIGHBORS          = 128;     // Maximum neighbors to check per particle
     
     // Material physics parameters
     static constexpr float THERMAL_DIFFUSION_RATE = 0.1f;    // Heat transfer rate

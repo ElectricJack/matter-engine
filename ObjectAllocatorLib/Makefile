@@ -26,14 +26,24 @@ $(TARGET): $(OBJS)
 
 # Rule for main.c (in root directory)
 $(OBJ_DIR)/main.o: main.c $(HEADERS)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 # Rule for source files in src directory
 $(OBJ_DIR)/$(SRC_DIR)/%.o: $(SRC_DIR)/%.c $(HEADERS)
 	mkdir -p $(OBJ_DIR)/$(SRC_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 clean:
-	rm -rf $(OBJ_DIR) $(TARGET)
+	rm -rf $(OBJ_DIR) $(TARGET) object_allocator_tests
 
-.PHONY: all clean
+# Test target: build and run tests with AddressSanitizer + UBSan
+TEST_SRCS = tests/object_allocator_tests.c src/object_allocator.c
+TEST_FLAGS = -Wall -Wextra -g -I./include -fsanitize=address,undefined
+
+test: $(TEST_SRCS)
+	$(CC) $(TEST_FLAGS) -o object_allocator_tests $(TEST_SRCS)
+	./object_allocator_tests
+
+-include $(OBJS:.o=.d)
+
+.PHONY: all clean test
