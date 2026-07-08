@@ -6,6 +6,7 @@
 // it before rlgl.h so glad is the canonical GL declaration source; the manual
 // extern "C" glFinish that was here would conflict with glad's pointer decl.
 #include "tileset_provider.h"    // bind_all_to_shader for Wang atlas samplers
+#include "shader_source.h"       // matter::shader_text
 
 #include "rlgl.h"   // rlDrawRenderBatchActive
 
@@ -24,8 +25,13 @@ void Renderer::init_camera() {
 }
 
 bool Renderer::init_shader(const std::string& shader_fs_path, std::string& err) {
-    shader_ = LoadShader(nullptr, shader_fs_path.c_str());
-    if (shader_.id == 0) { err = "failed to load shader: " + shader_fs_path; return false; }
+    std::string fs_src, serr;
+    if (!matter::shader_text(shader_fs_path.c_str(), fs_src, serr)) {
+        err = "failed to load shader: " + shader_fs_path + ": " + serr;
+        return false;
+    }
+    shader_ = LoadShaderFromMemory(nullptr, fs_src.c_str());
+    if (shader_.id == 0) { err = "failed to compile shader: " + shader_fs_path; return false; }
 
     loc_cam_pos_       = GetShaderLocation(shader_, "cameraPos");
     loc_cam_target_    = GetShaderLocation(shader_, "cameraTarget");

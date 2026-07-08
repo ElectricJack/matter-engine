@@ -14,12 +14,11 @@
 // Raylib must come before glad to avoid double-definition of GL types.
 #include "raylib.h"
 #include "external/glad.h"
+#include "shader_source.h"   // matter::shader_text
 
 #include <cassert>
 #include <cstdio>
 #include <cstring>
-#include <fstream>
-#include <sstream>
 
 namespace viewer {
 
@@ -55,18 +54,15 @@ GpuCuller::~GpuCuller() {
 }
 
 // ---------------------------------------------------------------------------
-// compile_compute — load GLSL source from file, compile as GL_COMPUTE_SHADER,
-// link into a program.  Returns program name or 0.
+// compile_compute — load GLSL source via matter::shader_text, compile as
+// GL_COMPUTE_SHADER, link into a program.  Returns program name or 0.
 // ---------------------------------------------------------------------------
 unsigned GpuCuller::compile_compute(const char* path, std::string& err) {
-    std::ifstream f(path);
-    if (!f) {
-        err = std::string("cull.comp: cannot open ") + path;
+    std::string src, serr;
+    if (!matter::shader_text(path, src, serr)) {
+        err = std::string("compile_compute: cannot load ") + path + ": " + serr;
         return 0;
     }
-    std::ostringstream ss;
-    ss << f.rdbuf();
-    std::string src = ss.str();
     const char* csrc = src.c_str();
 
     unsigned shader = glCreateShader(GL_COMPUTE_SHADER);

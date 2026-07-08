@@ -2,12 +2,12 @@
 #include "tileset_provider.h"      // bind_all_to_shader for Wang atlas samplers
 #include "material_registry.h"
 #include "gpu_culler.h"
+#include "shader_source.h"         // matter::shader_text
 // raylib must come before rlgl.h and glad to avoid double-definition of GL types.
 #include "raylib.h"
 #include "rlgl.h"
 #include "external/glad.h"
 #include <cmath>
-#include <fstream>
 #include <sstream>
 #include <string>
 
@@ -40,22 +40,14 @@ namespace viewer {
 // Frustum/matrix helpers live in raster_cull.h (GL-free, shared with the
 // GpuCuller compute path and viewer_logic_tests).
 
-// Read a text file into a string; returns empty on failure.
-static std::string read_file_text(const std::string& path) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) return {};
-    std::ostringstream ss; ss << f.rdbuf();
-    return ss.str();
-}
-
 // Resolve #include "file" directives in GLSL source, recursively expanding
 // transitive includes up to max_depth levels.  Mesa/GLSL #include requires
 // GL_ARB_shading_language_include with named-string registration — which the
 // viewer doesn't use.  Inline includes manually so the raster fragment shader
 // can share tileset_sampling.glsl without the extension.
-// Only handles includes relative to the shader dir (passed as `base_dir`).
-// Lines where "//" appears before "#include" on the same line are treated as
-// comments and emitted verbatim.
+// Includes are resolved via matter::shader_text using "base_dir/name" as the
+// logical path.  Lines where "//" appears before "#include" on the same line
+// are treated as comments and emitted verbatim.
 static std::string resolve_glsl_includes(const std::string& src,
                                          const std::string& base_dir,
                                          int depth = 0) {
@@ -76,8 +68,8 @@ static std::string resolve_glsl_includes(const std::string& src,
             if (end != std::string::npos) {
                 std::string fname = line.substr(inc_pos + prefix.size(),
                                                end - inc_pos - prefix.size());
-                std::string incl = read_file_text(base_dir + "/" + fname);
-                if (!incl.empty()) {
+                std::string incl, serr;
+                if (matter::shader_text((base_dir + "/" + fname).c_str(), incl, serr)) {
                     out += "// --- begin " + fname + " ---\n";
                     // Recursively expand transitive #includes up to the depth cap.
                     if (depth < kMaxDepth)
@@ -100,10 +92,9 @@ static std::string resolve_glsl_includes(const std::string& src,
 bool RasterComposer::init(std::string& err) {
     // Load vertex and fragment shaders, resolving #include directives manually
     // (Mesa GLSL does not resolve #include without glNamedStringARB registration).
-    const std::string vs_src = read_file_text("shaders/raster.vs");
-    const std::string fs_raw = read_file_text("shaders/raster.fs");
-    if (vs_src.empty()) { err = "raster vertex shader not found: shaders/raster.vs"; return false; }
-    if (fs_raw.empty()) { err = "raster fragment shader not found: shaders/raster.fs"; return false; }
+    std::string vs_src, fs_raw, serr;
+    if (!matter::shader_text("shaders/raster.vs", vs_src, serr)) { err = serr; return false; }
+    if (!matter::shader_text("shaders/raster.fs", fs_raw, serr)) { err = serr; return false; }
     const std::string fs_src = resolve_glsl_includes(fs_raw, "shaders");
     shader_ = LoadShaderFromMemory(vs_src.c_str(), fs_src.c_str());
     if (shader_.id == 0) { err = "raster shader failed to load"; return false; }
@@ -180,23 +171,21 @@ void RasterComposer::setup_frame_uniforms(Shader& sh,
 // ---------------------------------------------------------------------------
 bool RasterComposer::init_gpu_driven(std::string& err) {
     // Load VS text from shaders_gpu/raster_gpu_driven.vs.
-    char* vs_text = LoadFileText("shaders_gpu/raster_gpu_driven.vs");
-    if (!vs_text) {
-        err = "init_gpu_driven: cannot open shaders_gpu/raster_gpu_driven.vs";
+    std::string vs_str, fs_raw, serr;
+    if (!matter::shader_text("shaders_gpu/raster_gpu_driven.vs", vs_str, serr)) {
+        err = "init_gpu_driven: " + serr;
         return false;
     }
 
     // Load FS text from shaders/raster.fs (same file used by the base shader).
-    char* fs_text_raw = LoadFileText("shaders/raster.fs");
-    if (!fs_text_raw) {
-        UnloadFileText(vs_text);
-        err = "init_gpu_driven: cannot open shaders/raster.fs";
+    if (!matter::shader_text("shaders/raster.fs", fs_raw, serr)) {
+        err = "init_gpu_driven: " + serr;
         return false;
     }
 
     // Patch FS: replace the leading "#version 330" with "#version 460", then
     // resolve #include directives (Mesa GLSL does not handle #include natively).
-    std::string fs_str(fs_text_raw);
+    std::string fs_str(fs_raw);
     {
         const std::string old_ver = "#version 330";
         const std::string new_ver = "#version 460";
@@ -204,11 +193,9 @@ bool RasterComposer::init_gpu_driven(std::string& err) {
         if (pos != std::string::npos)
             fs_str.replace(pos, old_ver.size(), new_ver);
     }
-    UnloadFileText(fs_text_raw);
     fs_str = resolve_glsl_includes(fs_str, "shaders");
 
-    shader_gpu_ = LoadShaderFromMemory(vs_text, fs_str.c_str());
-    UnloadFileText(vs_text);
+    shader_gpu_ = LoadShaderFromMemory(vs_str.c_str(), fs_str.c_str());
 
     if (shader_gpu_.id == 0) {
         err = "init_gpu_driven: LoadShaderFromMemory failed";
