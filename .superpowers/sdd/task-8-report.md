@@ -251,3 +251,44 @@ The ~5% pixel difference vs Phase A refs is NOT introduced by the SSBO fix. The 
 | raster_batches | 0 | 0 ✓ |
 
 `instances_active`, `culled_clusters`, and `hiz_culled` match exactly across all 5 poses. `raster_tris` differs by small amounts (~100–200 triangles) due to LOD level timing variance — same cause as the image differences above, not from the SSBO fix. Phase B run1 and run2 `raster_tris` are identical (exact match), confirming Phase B is internally deterministic.
+
+## Fix round 2 — controller gate investigation (post-SSBO-fix DIFF verdicts)
+
+The fix-round-1 gate table (all 5 poses DIFF ~4.5-5.8%) was investigated by the controller. Root causes, in order of contribution:
+
+1. **ImGui panel drift (~4.5% of the ~5%)** — `MatterViewer/imgui.ini` (git-ignored) persists window positions. The interactive FIFO check (Step 5) ran with a mouse and left `Viewer Debug` at Pos=27,302; the Phase A refs were captured with Pos=19,287 Size=332,326 (recovered from the primary checkout's imgui.ini). Panel pixels dominated the img_diff count. Fixed by restoring the ref-vintage ini into the worktree.
+
+2. **Pre-existing cold-bake nondeterminism (NOT Phase B)** — sync-baked cache (primary checkout, Phase A vintage) vs async cold bake: all 573 files share filenames (input hashes identical) but bodies differ — mostly small float scatter (~41 KB spread over 4 MB flats; 12-byte diffs in .part files), plus one structural diff: the 32-cluster meadow terrain flat `5110477d66a7ae90` is 1.49 MB smaller (the −186 raster_tris in fix round 1). **Discriminator:** two cold bakes with the *same Phase B binary* differ by the same kind/magnitude (terrain flat: 2.36 MB of differing bytes run1-vs-run2). The bake was never byte-deterministic across cold runs; Phase A's gate only passed because it ran warm against the cache that produced the refs. Recommend a backlog item (content-addressed cache assumes byte-identical rebakes — see the TriEx padding normalization comment in part_asset_v2.cpp).
+
+3. **Definitive gate run (phaseb4)** — ref-vintage ini + the refs' own sync-baked cache (byte-identical geometry), warm:
+   | pose | result | diff_pct |
+   |------|--------|----------|
+   | aerial | DIFF | 1.016% |
+   | corner | MATCH | 0.118% |
+   | midfield | MATCH | 0.414% |
+   | far | MATCH | 0.248% |
+   | empty | MATCH | 0.030% |
+   STATS: instances_active, raster_tris, culled_clusters, hiz_culled match the refs **exactly on all 5 poses** (aerial raster_tris 8394670 == ref).
+
+4. **Aerial residual (1.016%) — draw-order z/alpha ties** — with identical geometry and exact-matching counters, the remaining canopy speckle is coverage flips: 79% of differing pixels have |channel delta| > 16 (leaf-vs-leaf/ground winner flips). Mechanism: the sync viewer registered GpuCuller slots lazily (ref log: 51 slot registrations) while the async publish path registers all parts up-front in want[] order (276 registrations) → different slot/draw order → depth-tie winners differ on dense coincident foliage. Phase B is internally deterministic (run-to-run 0.02-0.03%).
+
+5. **Tooling note (Step 4 follow-up)** — the GL publish phase takes ~2 min at the 4 ms/frame pump budget; a cold Meadow bake + publish exceeds viewer_shots.sh's 300 s readiness cap (one run failed on this). Warm runs fit comfortably. Cap may need to be configurable for cold-bake gate runs.
+
+**Open item (spec-level):** exit criterion 2 says the 5-shot gate passes vs the Phase A refs; aerial fails at 1.016% vs the 0.5% threshold for the draw-order reason above. Escalated to Jack.
+
+## Fix round 3 (review minors)
+
+**Branch:** feature/phase-b-async-bake
+**Date:** 2026-07-08
+
+Minor fixes from code review of async-viewer conversion:
+
+1. **MatterViewer/main.cpp** (world-switch path, line ~404): Added explicit zeroing of stale HUD stats after a new world session begins its async bake. Sets `parts_baked=0`, `cache_hits=0`, `instances_total=0`, and `probe_dims[]` to zero. Prevents HUD from showing the previous world's values until the new bake completes. Initial-load path requires no change (fields start zeroed at startup).
+
+2. **MatterEngine3/tools/viewer_shots.sh** (lines 27-28): Fixed readiness-poll comment to accurately describe the code. Comment previously claimed the script polls for "viewer: bake ready" OR falls back to "MATTER_CMD_FIFO: listening", but the grep only matches "viewer: bake ready". Updated to: "poll the log for \"viewer: bake ready\". A binary that never prints it times out at 300s (cold bake can take ~180s; allow margin)."
+
+3. **MatterEngine3/tools/meadow_sweep.sh** (lines 19-20): Same comment fix as viewer_shots.sh.
+
+4. **MatterEngine3/src/render/gpu_culler.cpp** (line 178): Removed task-history parenthetical "(Phase B Task 8 blocker)" from the SSBO capacity-growth comment block. Kept the full technical explanation of geometric growth and the D3D12 device-removal context.
+
+**Compile verification:** `make -C MatterViewer -j$(nproc)` → exit=0. No new warnings from main.cpp, viewer_shots.sh, meadow_sweep.sh, or gpu_culler.cpp.

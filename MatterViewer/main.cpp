@@ -400,6 +400,12 @@ int main() {
                 apply_world_resolver_defaults(w.world_name, active_radius,
                                               min_projected_size, stats);
                 // Phase B: bake is async — stats update via frame_stats() each frame.
+                // Zero stale values to prevent HUD showing the previous world's stats
+                // until the new bake finishes.
+                stats.parts_baked = 0;
+                stats.cache_hits = 0;
+                stats.instances_total = 0;
+                memset(stats.probe_dims, 0, sizeof stats.probe_dims);
                 stats.connected = true;
             }
         }

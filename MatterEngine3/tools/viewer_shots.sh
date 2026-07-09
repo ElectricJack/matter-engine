@@ -24,9 +24,8 @@ MATTER_WORLD="${MATTER_WORLD:-meadow}" MATTER_CMD_FIFO="$FIFO" stdbuf -oL ./view
 PID=$!
 trap 'kill $PID 2>/dev/null || true; rm -f "$FIFO"' EXIT
 
-# Readiness: poll the log for "viewer: bake ready" (Phase B async bake) or
-# fall back to "MATTER_CMD_FIFO: listening" (Phase A sync bake — fires after
-# the blocking bake completes). Cap: 300 s (cold Meadow bake can take ~180 s).
+# Readiness: poll the log for "viewer: bake ready". A binary that never
+# prints it times out at 300s (cold bake can take ~180s; allow margin).
 READY=0
 for _ in $(seq 1 300); do
     if ! kill -0 "$PID" 2>/dev/null; then break; fi
@@ -39,6 +38,7 @@ if [ "$READY" != 1 ]; then
     exit 1
 fi
 sleep 2   # settle a few frames after readiness signal
+
 
 shoot() {  # name px py pz tx ty tz
   local name="$1"; shift

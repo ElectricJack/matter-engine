@@ -175,7 +175,7 @@ void GpuCuller::grow_clusters_ssbo(size_t need_bytes) {
 //   max(total_xform_slots_, xforms_cap_slots_ * 2)
 // so ~276 Meadow part registrations produce O(log 276) ≈ 9 reallocations
 // instead of 276 — preventing the D3D12 device-removal crash during
-// incremental async bake (Phase B Task 8 blocker).
+// incremental async bake.
 //
 // ssbo_xforms_ is output-only from the cull compute shader; its contents
 // are written entirely by the shader every frame, so the existing GPU
