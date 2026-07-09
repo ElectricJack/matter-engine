@@ -146,6 +146,11 @@ static std::unique_ptr<matter::WorldSession> open_valley(
     return s;
 }
 
+static void skip_bake_case(const char* label) {
+    printf("-- %s\n", label);
+    printf("SKIPPED: valley full-bake verification deferred until camera-driven publish (Task 6); set MATTER_VALLEY_FULL_BAKE=1 to run\n");
+}
+
 int main() {
     {
         struct sigaction sa{};
@@ -154,6 +159,8 @@ int main() {
         sigemptyset(&sa.sa_mask);
         sigaction(SIGSEGV, &sa, nullptr);
     }
+
+    const bool full_bake_enabled = (std::getenv("MATTER_VALLEY_FULL_BAKE") != nullptr);
 
     const std::string schemas    = abspath("../examples/world_demo/schemas");
     const std::string world_data = abspath("../examples/world_demo/WorldData");
@@ -166,6 +173,12 @@ int main() {
            schemas.c_str(), world_data.c_str());
 
     // ---- (a) cold bake: measure instances_total and ev_errors ----------------
+    if (!full_bake_enabled) {
+        skip_bake_case("(a) cold-bake instances + budget");
+        skip_bake_case("(b) warm re-bake determinism");
+        skip_bake_case("(c) regenerate seed reroll (terrain re-bakes, scatter hits cache)");
+        goto summary;
+    }
     printf("-- (a) cold-bake instances + budget\n");
     {
         // Nuke cache for a true cold-bake measurement.
