@@ -1187,6 +1187,74 @@ static void test_pf_bindings_smoke() {
     CHECK(r2.error.ok, "pf smoke bake 2 succeeds");
 }
 
+// Task 7: __pf_stampPaths positive test — imports shared-lib/particleflow,
+// runs a sim, stamps paths into a voxel session, and asserts a non-empty part.
+static void test_pf_stamp_paths_positive() {
+    const char* src =
+        "import { ParticleSim, PathRecorder } from 'shared-lib/particleflow';\n"
+        "class P extends Part {\n"
+        "  static params = {};\n"
+        "  build(p) {\n"
+        "    const rec = new PathRecorder(0.03, ['thickness']);\n"
+        "    const sim = new ParticleSim({\n"
+        "      seed: 11, dt: 1.0, maxTurnRate: 0.4, depositEvery: 0.05,\n"
+        "      maxParticles: 16, hashCell: 0.25, maxAge: 60,\n"
+        "      attributes: ['thickness'],\n"
+        "      emitters: [{ shape: 'point', center: [0,0,0], rate: 1, vel0: 0.06,\n"
+        "                   jitter: 0.1, attrInit: [0.08] }],\n"
+        "      fields: [{ type: 'bias', dir: [0,1,0], weight: 0.4 }],\n"
+        "    }).attach(rec);\n"
+        "    sim.run(80);\n"
+        "    if (rec.count < 1) throw new Error('no paths');\n"
+        "    this.fill(MAT.bark);\n"
+        "    this.beginVoxels(0.05);\n"
+        "    this.paths(rec, { radiusChannel: 'thickness', minRadius: 0.02 });\n"
+        "    this.endVoxels();\n"
+        "  }\n"
+        "}\n";
+    script_host::ScriptHost host;
+    host.set_shared_lib_root("../shared-lib");
+    script_host::BakeResult r = host.bake_source(src, "{}", {});
+    CHECK(r.error.ok, "pf stamp paths bake succeeds");
+    CHECK(!r.written_path.empty(), "pf stamp paths: part written");
+    CHECK(file_exists(r.written_path), "pf stamp paths: .part file exists on disk");
+    // Verify the bake produced non-empty geometry: a file produced by voxel
+    // stamping is always larger than a header-only file (> 256 bytes).
+    auto bytes = read_all(r.written_path);
+    CHECK(bytes.size() > 256, "pf stamp paths: .part file has non-trivial geometry");
+}
+
+// Task 7: __pf_stampPaths negative test — calling this.paths() before
+// beginVoxels must fail with the exact error message.
+static void test_pf_stamp_paths_outside_session() {
+    const char* src =
+        "import { ParticleSim, PathRecorder } from 'shared-lib/particleflow';\n"
+        "class P extends Part {\n"
+        "  static params = {};\n"
+        "  build(p) {\n"
+        "    const rec = new PathRecorder(0.03, ['thickness']);\n"
+        "    const sim = new ParticleSim({\n"
+        "      seed: 11, dt: 1.0, maxTurnRate: 0.4, depositEvery: 0.05,\n"
+        "      maxParticles: 16, hashCell: 0.25, maxAge: 60,\n"
+        "      attributes: ['thickness'],\n"
+        "      emitters: [{ shape: 'point', center: [0,0,0], rate: 1, vel0: 0.06,\n"
+        "                   jitter: 0.1, attrInit: [0.08] }],\n"
+        "      fields: [{ type: 'bias', dir: [0,1,0], weight: 0.4 }],\n"
+        "    }).attach(rec);\n"
+        "    sim.run(80);\n"
+        "    this.fill(MAT.bark);\n"
+        "    this.paths(rec);\n"  // NO beginVoxels — must fail
+        "  }\n"
+        "}\n";
+    script_host::ScriptHost host;
+    host.set_shared_lib_root("../shared-lib");
+    script_host::BakeResult r = host.bake_source(src, "{}", {});
+    CHECK(!r.error.ok, "pf stamp outside session: bake must fail");
+    CHECK(r.written_path.empty(), "pf stamp outside session: no file written");
+    CHECK(r.error.message.find("paths() outside an open voxel session") != std::string::npos,
+          "pf stamp outside session: exact error message present");
+}
+
 static void test_pf_ontick_views() {
     // Task 6: onTick zero-copy SoA views — verifies per-tick callback receives
     // typed-array views into live SoA buffers, views are detached after the
@@ -1264,6 +1332,8 @@ int main() {
     test_modifier_region_bake_rules();
     test_pf_bindings_smoke();
     test_pf_ontick_views();
+    test_pf_stamp_paths_positive();
+    test_pf_stamp_paths_outside_session();
     if (g_failures == 0) printf("ALL PASS\n");
     return g_failures ? 1 : 0;
 }

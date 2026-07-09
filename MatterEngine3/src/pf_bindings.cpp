@@ -471,6 +471,75 @@ JSValue j_pf_path(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     return o;
 }
 
+// __pf_stampPaths(recId, opts) — feed recorded paths into the OPEN voxel
+// session: one tapered cone brush per segment + a sphere per vertex so joints
+// are rounded. Radii come from a recorded channel (default 'thickness'),
+// floored at minRadius, scaled by radiusScale.
+JSValue j_pf_stampPaths(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    DslState* st = state_of(c);
+    if (st->session() != dsl::Session::Voxels) {
+        st->set_error("paths() outside an open voxel session");
+        return JS_UNDEFINED;
+    }
+    if (n < 1) { st->set_error("paths(): recorder handle required"); return JS_UNDEFINED; }
+    pf::PathRecorder* rec = rec_of(c, st, a[0]);
+    if (!rec) return JS_UNDEFINED;
+    JSValueConst opts = (n >= 2 && JS_IsObject(a[1])) ? a[1] : JS_UNDEFINED;
+
+    std::string rch = "thickness";
+    double min_r = 0.01, r_scale = 1.0;
+    std::vector<int32_t> filter;
+    if (!JS_IsUndefined(opts)) {
+        rch     = get_str(c, opts, "radiusChannel", rch.c_str());
+        min_r   = get_num(c, opts, "minRadius", min_r);
+        r_scale = get_num(c, opts, "radiusScale", r_scale);
+        JSValue f = JS_GetPropertyStr(c, opts, "filter");
+        if (JS_IsObject(f)) {
+            JSValue len = JS_GetPropertyStr(c, f, "length");
+            uint32_t nf = 0; JS_ToUint32(c, &nf, len); JS_FreeValue(c, len);
+            for (uint32_t i = 0; i < nf; ++i) {
+                JSValue e = JS_GetPropertyUint32(c, f, i);
+                int32_t idx = -1; JS_ToInt32(c, &idx, e); JS_FreeValue(c, e);
+                filter.push_back(idx);
+            }
+        }
+        JS_FreeValue(c, f);
+    }
+
+    const pf::PathSet& ps = rec->paths();
+    int ch = -1;
+    for (size_t k = 0; k < ps.channel_names.size(); ++k)
+        if (ps.channel_names[k] == rch) { ch = static_cast<int>(k); break; }
+
+    auto stamp_path = [&](const pf::PathSet::Path& p) {
+        size_t nv = p.vertex_count();
+        if (nv == 0) return;
+        auto radius_at = [&](size_t i) -> float {
+            float r = (ch >= 0 && i < p.channels[static_cast<size_t>(ch)].size())
+                          ? p.channels[static_cast<size_t>(ch)][i] : static_cast<float>(min_r);
+            r *= static_cast<float>(r_scale);
+            return std::max(r, static_cast<float>(min_r));
+        };
+        auto vert = [&](size_t i) -> Vector3 {
+            return Vector3{p.xyz[3*i], p.xyz[3*i+1], p.xyz[3*i+2]};
+        };
+        st->sphere(vert(0), radius_at(0), dsl::CsgOp::Union);
+        for (size_t i = 1; i < nv; ++i) {
+            st->cone(vert(i - 1), vert(i), radius_at(i - 1), radius_at(i), dsl::CsgOp::Union);
+            st->sphere(vert(i), radius_at(i), dsl::CsgOp::Union);
+        }
+    };
+
+    if (filter.empty()) {
+        for (const auto& p : ps.paths) stamp_path(p);
+    } else {
+        for (int32_t idx : filter)
+            if (idx >= 0 && static_cast<size_t>(idx) < ps.paths.size())
+                stamp_path(ps.paths[static_cast<size_t>(idx)]);
+    }
+    return JS_UNDEFINED;
+}
+
 } // namespace
 
 void install_pf_bindings(JSContext* ctx) {
@@ -491,6 +560,7 @@ void install_pf_bindings(JSContext* ctx) {
     bind("__pf_emit", j_pf_emit, 2);
     bind("__pf_kill", j_pf_kill, 2);
     bind("__pf_setFieldWeight", j_pf_setFieldWeight, 3);
+    bind("__pf_stampPaths", j_pf_stampPaths, 2);
     JS_FreeValue(ctx, g);
 }
 
