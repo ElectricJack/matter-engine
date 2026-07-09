@@ -409,6 +409,16 @@ bool LocalProvider::ensure_part_baked(uint64_t part_hash, std::string& err) {
         return false;
     }
 
+    // Top-level entry guard: bake_plan covers every node of the installed graph.
+    // An absent hash at the top level means the caller passed a stale or garbage
+    // hash — fail fast rather than silently succeeding with no bake output.
+    if (ir_.bake_plan.find(part_hash) == ir_.bake_plan.end()) {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)part_hash);
+        err = std::string("ensure_part_baked: hash ") + buf + " not in bake plan";
+        return false;
+    }
+
     // Post-order DFS over bake_plan children so children are baked before parents.
     // Each node: cached() short-circuits; otherwise bake + bake_lod_variants.
     // Visited set prevents double-visiting in a DAG (shared children).
@@ -422,7 +432,7 @@ bool LocalProvider::ensure_part_baked(uint64_t part_hash, std::string& err) {
         auto it = ir_.bake_plan.find(hash);
         if (it == ir_.bake_plan.end()) {
             // Not in bake_plan — already baked by install (BakePolicy::All path)
-            // or not a known node. Treat as cached/ok.
+            // or not a known node. Treat as cached/ok for recursive child lookups.
             return true;
         }
         const part_graph::BakeInputs& bi = it->second;
@@ -434,6 +444,12 @@ bool LocalProvider::ensure_part_baked(uint64_t part_hash, std::string& err) {
 
         // cached() short-circuits
         if (host_baker_->cached(hash)) return true;
+
+        // Fire on_part callback (demand phase, total==0 signals indeterminate count).
+        if (cfg_.on_part) {
+            const char* mod = bi.module.empty() ? nullptr : bi.module.c_str();
+            cfg_.on_part(mod, ++install_bake_count_, 0);
+        }
 
         // Bake
         bool bake_ok = false;

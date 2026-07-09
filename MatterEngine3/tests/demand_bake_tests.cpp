@@ -271,11 +271,32 @@ static bool test_ensure_part_baked_subtree(const std::string& sandbox) {
     // Fresh cache for this test
     run_cmd("rm -rf " + sandbox + "/cache && mkdir -p " + sandbox + "/cache/parts");
 
-    auto prov = make_provider(sandbox);
+    // Wire an on_part counter so we can assert the second call is a true no-op.
+    // ensure_part_baked fires on_part for each part it actually bakes (not for
+    // cached() short-circuits), so the counter must increase on the first call
+    // and must NOT increase on the second call.
+    int on_part_count = 0;
+    viewer::LocalProviderConfig cfg;
+    cfg.schemas_dir    = sandbox + "/schemas";
+    cfg.world_data_dir = sandbox + "/world_data";
+    cfg.world_name     = "Hier";
+    cfg.shared_lib_dir = sandbox + "/shared-lib";
+    cfg.cache_root     = sandbox + "/cache";
+    cfg.gl_available   = false;
+    cfg.on_part = [&](const char* /*module*/, int /*done*/, int /*total*/) {
+        ++on_part_count;
+    };
+    auto prov = std::make_unique<viewer::LocalProvider>(std::move(cfg));
+
     std::string err;
     bool ok = prov->install_graph(err, part_graph::BakePolicy::RootsOnly);
     CHECK(ok, "install_graph(RootsOnly) succeeded");
     if (!ok) { printf("  err: %s\n", err.c_str()); return false; }
+
+    // Reset counter to 0 after install (install fires on_part for roots baked).
+    const int count_after_install = on_part_count;
+    on_part_count = 0;
+    printf("  on_part count during install (roots): %d\n", count_after_install);
 
     const part_graph::InstallResult& ir = prov->install_result();
     const auto& snap = prov->graph_snapshot();
@@ -308,14 +329,28 @@ static bool test_ensure_part_baked_subtree(const std::string& sandbox) {
     CHECK(part_exists(cache_root, grandchild_hash),
           "grandchild .part exists after ensure_part_baked");
 
-    // Second call must be a no-op (cached() short-circuits)
-    // Confirm by checking that ir_.baked count doesn't change
-    // We verify idempotency by calling again and checking it returns true
-    // without error (and no new files created at different timestamps needed --
-    // we just verify it returns true and .part files still exist).
+    // on_part must have fired at least once (child + grandchild both baked).
+    const int count_after_first = on_part_count;
+    printf("  on_part count during first ensure_part_baked: %d\n", count_after_first);
+    CHECK(count_after_first > 0,
+          "on_part fired during first ensure_part_baked (parts were baked)");
+
+    // Second call must be a no-op: cached() short-circuits before any bake,
+    // so on_part must NOT fire and the counter must not increase.
+    on_part_count = 0;
     std::string bake_err2;
     bool bake_ok2 = prov->ensure_part_baked(child_hash, bake_err2);
     CHECK(bake_ok2, "ensure_part_baked(child) second call succeeded (no-op)");
+    printf("  on_part count during second ensure_part_baked (expect 0): %d\n", on_part_count);
+    CHECK(on_part_count == 0,
+          "on_part did NOT fire on second ensure_part_baked (cached() short-circuit)");
+
+    // Fix 1 direct assertion: unknown top-level hash must fail with an error message.
+    std::string stale_err;
+    bool stale_ok = prov->ensure_part_baked(0xDEADBEEFDEADBEEFULL, stale_err);
+    CHECK(!stale_ok, "ensure_part_baked(stale/garbage hash) returns false");
+    CHECK(!stale_err.empty(), "ensure_part_baked(stale/garbage hash) sets err");
+    printf("  stale hash error: %s\n", stale_err.c_str());
 
     printf("  (b) PASS\n");
     return true;

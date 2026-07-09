@@ -334,6 +334,9 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots,
         // bake_lod_variants for skipped nodes is deferred to ensure_part_baked.
         if (policy == BakePolicy::RootsOnly &&
             root_resolved_hashes.find(n.resolved_hash) == root_resolved_hashes.end()) {
+            // Intentional: skipped (non-root) nodes are never added to failed_keys,
+            // so the root's child-failure guard below will always pass under RootsOnly.
+            // Child-bake failures are deferred to ensure_part_baked at publish time.
             continue;
         }
 
