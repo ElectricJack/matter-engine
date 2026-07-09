@@ -18,7 +18,7 @@ V3 field_force(const Sim& s, const FieldConfig& f, uint32_t slot) {
     switch (f.type) {
         case FieldType::Bias: return normalize(f.dir);
         case FieldType::Drag: {
-            const float* v = const_cast<Sim&>(s).vel_data();
+            const float* v = s.vel_data();
             return V3{v[3*slot], v[3*slot+1], v[3*slot+2]} * (-f.k);
         }
         default: return {0, 0, 0};

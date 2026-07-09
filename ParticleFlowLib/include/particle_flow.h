@@ -130,6 +130,7 @@ public:
     float* vel_data() { return vel_.data(); }
     uint8_t* alive_data() { return alive_.data(); }
     const float* pos_data() const { return pos_.data(); }
+    const float* vel_data() const { return vel_.data(); }
     const uint8_t* alive_data() const { return alive_.data(); }
     float* attr_data(uint32_t ch) { return attrs_[ch].data(); }
     const float* attr_data(uint32_t ch) const { return attrs_[ch].data(); }
