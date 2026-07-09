@@ -125,7 +125,7 @@ bool parse_field(JSContext* c, DslState* st, JSValueConst f,
     out->kill_radius    = static_cast<float>(get_num(c, f, "killRadius", 0.1));
     out->kill_on_consume= get_bool(c, f, "killOnConsume", true);
     out->scale          = static_cast<float>(get_num(c, f, "scale", 1.0));
-    out->seed           = static_cast<uint64_t>(get_num(c, f, "seed", 0.0));
+    out->seed           = static_cast<uint32_t>(get_num(c, f, "seed", 0.0));
     out->k              = static_cast<float>(get_num(c, f, "k", 1.0));
     JSValue fade = JS_GetPropertyStr(c, f, "fade");
     if (JS_IsObject(fade)) {

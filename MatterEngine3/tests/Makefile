@@ -351,12 +351,21 @@ MODBAKE_TARGET = modifier_region_bake_tests
 MODBAKE_CPP = modifier_region_bake_tests.cpp $(filter-out script_host_tests.cpp, $(SCRIPT_CPP))
 MODBAKE_C   = $(COMMON_MSL_C)
 
+PF_LIB = ../../ParticleFlowLib
+# any target that links dsl_bindings.cpp must also link pf_bindings.cpp + ParticleFlowLib sources
+PF_CPP = ../src/pf_bindings.cpp \
+         $(PF_LIB)/src/pf_math.cpp \
+         $(PF_LIB)/src/pf_sim.cpp \
+         $(PF_LIB)/src/pf_fields.cpp \
+         $(PF_LIB)/src/pf_path_recorder.cpp
+
 GRAPH_INT_TARGET = part_graph_integration_tests
 GRAPH_INT_CPP = part_graph_integration_tests.cpp ../src/part_graph.cpp \
                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
                 ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                $(PF_CPP) \
                 $(COMMON_MSL_FULL_SRC)
 GRAPH_INT_C   = $(COMMON_MSL_C)
 
@@ -371,21 +380,15 @@ EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp \
               ../src/sector_grid.cpp ../src/lod_select.cpp \
               ../src/modifier_apply.cpp $(MSL)/mesh_smooth.cpp \
               $(MSL)/mesh_transform.cpp \
+              $(PF_CPP) \
               $(COMMON_MSL_FULL_SRC)
 EXAMPLE_C   = $(COMMON_MSL_C)
 
 GALLERY_TARGET = gallery_bake_tests
 GALLERY_CPP = gallery_bake_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 
-PF_LIB = ../../ParticleFlowLib
-PF_CPP = ../src/pf_bindings.cpp \
-         $(PF_LIB)/src/pf_math.cpp \
-         $(PF_LIB)/src/pf_sim.cpp \
-         $(PF_LIB)/src/pf_fields.cpp \
-         $(PF_LIB)/src/pf_path_recorder.cpp
-
 TREEBAKE_TARGET = tree_bake_check
-TREEBAKE_CPP = tree_bake_check.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP)) $(PF_CPP)
+TREEBAKE_CPP = tree_bake_check.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 
 MEADOW_TARGET = meadow_bake_tests
 MEADOW_CPP = meadow_bake_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
@@ -418,6 +421,7 @@ TILESETBAKE_CPP = tileset_bake_tests.cpp ../src/part_graph.cpp \
                   ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                   ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
                   ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                  $(PF_CPP) \
                   $(COMMON_MSL_FULL_SRC)
 TILESETBAKE_C   = $(COMMON_MSL_C)
 
@@ -433,6 +437,7 @@ SHLIB_CPP = shared_lib_tests.cpp ../src/module_resolver.cpp ../src/script_rng_bi
             ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \
             ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
             ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+            $(PF_CPP) \
             $(COMMON_MSL_FULL_SRC)
 SHLIB_C   = $(COMMON_MSL_C)
 
@@ -475,6 +480,7 @@ RETOPO_INT_CPP = retopo_integration_tests.cpp \
                  $(MSL)/mesh_retopo.cpp \
                  $(MSL)/mesh_smooth.cpp \
                  $(MSL)/mesh_transform.cpp \
+                 $(PF_CPP) \
                  $(COMMON_MSL_FULL_SRC)
 RETOPO_INT_C   = $(COMMON_MSL_C)
 # --allow-multiple-definition: raylib bundles stb_image_write.h in rtextures.c
@@ -521,7 +527,8 @@ GPU_PIPELINE_CPP = \
     ../src/tileset_bake.cpp ../src/tileset_settle.cpp \
     ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
     ../src/tileset_bake_primary.cpp ../src/tileset_bake_ao.cpp \
-    ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp
+    ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+    $(PF_CPP)
 
 GPU_MSL_CPP = \
     $(MSL)/cluster.cpp $(MSL)/cell.cpp \
