@@ -171,6 +171,11 @@ int main() {
         wd.world_data_dir = w.world_data_dir.c_str();
         wd.world_name     = w.world_name.c_str();
         wd.shared_lib_dir = "../MatterEngine3/shared-lib";
+        // Task 10: MATTER_LIVE_EDIT=1 opts in to inotify live-edit (Linux only;
+        // ignored with a notice on other platforms).
+        wd.enable_live_edit = (getenv("MATTER_LIVE_EDIT") != nullptr);
+        if (wd.enable_live_edit)
+            printf("live-edit: enabled (MATTER_LIVE_EDIT=1)\n");
         std::string werr;
         auto s = engine->open_world(wd, werr);
         if (!s) { printf("open_world: %s\n", werr.c_str()); return nullptr; }

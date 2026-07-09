@@ -36,6 +36,11 @@ public:
     // nothing was ready). Call once per host tick.
     RebuildReport tick();
 
+    // Run a rebuild pass directly for the given set of paths (bypasses the
+    // internal debounce state). Used by the RebakeCone worker command path,
+    // which performs its own debounce on the app thread before enqueueing.
+    RebuildReport rebuild(const std::set<std::string>& paths);
+
     // Pure scoping helper (exposed for unit tests): the upward cone of a set of
     // directly-changed parts = the changed parts + all their transitive
     // ancestors, returned as a set.

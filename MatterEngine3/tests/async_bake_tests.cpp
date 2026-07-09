@@ -792,6 +792,238 @@ static bool test_load_failure_skips_part(const std::string& sandbox) {
     return ok && parts_errors >= 1 && saw_io_error && log.error_count == 1 && ic > 0;
 }
 
+// --- Task 10 tests -----------------------------------------------------------
+
+#ifdef __linux__
+
+// (j) live_edit_inotify_e2e
+// enable_live_edit=true on the Box sandbox. Full bake. Record instance_count +
+// a raycast part_hash. Rewrite Box.js changing geometry size. Pump tick() +
+// pump_gpu_jobs() up to 30 s. Assert:
+//   - a BakeFinished (or BakeStarted) arrives without calling reload().
+//   - the raycast part_hash CHANGED (new resolved hash).
+// Fail-closed sub-case: write a syntax error into Box.js -> BakeError{code:ScriptError}
+// arrives; world still queryable with the OLD hash; fix the file -> recovers.
+static bool test_live_edit_inotify_e2e(const std::string& sandbox) {
+    printf("-- (j) live_edit_inotify_e2e\n");
+
+    // Fresh cache.
+    run("rm -rf " + sandbox + "/cache && mkdir -p " + sandbox + "/cache/parts");
+
+    std::string err;
+    std::string cache_root_s = sandbox + "/cache";
+    std::string schemas_s    = sandbox + "/schemas";
+    std::string wdata_s      = sandbox + "/world_data";
+    std::string shlib_s      = sandbox + "/shared-lib";
+
+    matter::EngineDesc ed;
+    ed.cache_root     = cache_root_s.c_str();
+    ed.allow_gl_lt_46 = true;
+    auto engine = matter::EngineContext::create(ed, err);
+    CHECK(engine != nullptr, "live_edit_e2e: engine created");
+    if (!engine) { printf("  err: %s\n", err.c_str()); return false; }
+
+    matter::WorldDesc wd;
+    wd.schemas_dir     = schemas_s.c_str();
+    wd.world_data_dir  = wdata_s.c_str();
+    wd.world_name      = "Box";
+    wd.shared_lib_dir  = shlib_s.c_str();
+    wd.enable_live_edit = true;
+    auto s = engine->open_world(wd, err);
+    CHECK(s != nullptr, "live_edit_e2e: session opened");
+    if (!s) { printf("  err: %s\n", err.c_str()); return false; }
+
+    // 1) Initial bake.
+    s->request_bake();
+    std::vector<EvRec> first_log;
+    bool initial_ok = drive_bake(*s, first_log, 60);
+    CHECK(initial_ok, "live_edit_e2e: initial bake completed");
+    if (!initial_ok) return false;
+
+    // Record initial state.
+    uint32_t ic_before = s->instance_count();
+    printf("  instance_count before edit: %u\n", ic_before);
+    CHECK(ic_before > 0, "live_edit_e2e: initial instances > 0");
+
+    // Raycast to get the part_hash before the edit.
+    uint64_t hash_before = 0;
+    {
+        float org[3] = {0.0f, 2.0f, 0.0f};
+        float dir[3] = {0.0f,-1.0f, 0.0f};
+        matter::RayHit hit;
+        if (s->raycast(org, dir, 100.0f, hit))
+            hash_before = hit.part_hash;
+        else
+            // No hit — just grab the first instance's hash as a stand-in.
+            for (uint32_t i = 0; i < ic_before && hash_before == 0; ++i) {
+                matter::InstanceInfo info;
+                if (s->instance_info(i, info)) hash_before = info.part_hash;
+            }
+    }
+    printf("  part_hash before edit: %llu\n", (unsigned long long)hash_before);
+
+    // 2) Rewrite Box.js with a different size (changes the resolved hash).
+    write_file(sandbox + "/schemas/Box.js",
+        "class Box extends Part {\n"
+        "  build(p) {\n"
+        "    this.fill(MAT.stone);\n"
+        "    const S = 0.6;\n"   // changed from 0.5 to 0.6
+        "    this.beginShape(SHAPE.triangles);\n"
+        "    this.vertex(-S, 0, -S); this.vertex(-S, 0,  S); this.vertex( S, 0, -S);\n"
+        "    this.vertex( S, 0, -S); this.vertex(-S, 0,  S); this.vertex( S, 0,  S);\n"
+        "    this.endShape();\n"
+        "  }\n"
+        "}\n");
+    printf("  Box.js rewritten (S=0.6)\n");
+
+    // 3) Pump tick + gpu_jobs for up to 30 s waiting for BakeFinished.
+    bool saw_cone_finished = false;
+    {
+        auto deadline = clk::now() + std::chrono::seconds(30);
+        while (clk::now() < deadline && !saw_cone_finished) {
+            s->tick();
+            s->pump_gpu_jobs(4.0f);
+            matter::Event ev;
+            while (s->poll_event(ev)) {
+                printf("  ev: %s code=%d phase=%s module=%s\n",
+                       ev_type_name((matter::EventType)ev.type).c_str(),
+                       (int)ev.code, ev.phase.c_str(), ev.module.c_str());
+                if (ev.type == matter::EventType::BakeFinished)
+                    saw_cone_finished = true;
+                if (ev.type == matter::EventType::BakeError)
+                    printf("  BakeError: %s\n", ev.message.c_str());
+            }
+            if (!saw_cone_finished)
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    }
+    CHECK(saw_cone_finished, "live_edit_e2e: BakeFinished arrived without reload()");
+    if (!saw_cone_finished) return false;
+
+    // Check that the part_hash changed.
+    uint64_t hash_after = 0;
+    {
+        float org[3] = {0.0f, 2.0f, 0.0f};
+        float dir[3] = {0.0f,-1.0f, 0.0f};
+        matter::RayHit hit;
+        if (s->raycast(org, dir, 100.0f, hit))
+            hash_after = hit.part_hash;
+        else
+            for (uint32_t i = 0, ic = s->instance_count(); i < ic && hash_after == 0; ++i) {
+                matter::InstanceInfo info;
+                if (s->instance_info(i, info)) hash_after = info.part_hash;
+            }
+    }
+    printf("  part_hash after edit: %llu\n", (unsigned long long)hash_after);
+    CHECK(hash_after != 0, "live_edit_e2e: hash_after is non-zero");
+    CHECK(hash_after != hash_before, "live_edit_e2e: part_hash CHANGED after live edit");
+
+    // 4) Fail-closed sub-case: write a syntax error.
+    uint64_t hash_after_break = hash_after;
+    write_file(sandbox + "/schemas/Box.js",
+        "class Box extends Part {\n"
+        "  build(p) { this.fill(MAT.stone;\n"  // syntax error: missing )
+        "}\n");
+    printf("  Box.js broken (syntax error)\n");
+
+    bool saw_script_error = false;
+    {
+        auto deadline = clk::now() + std::chrono::seconds(30);
+        while (clk::now() < deadline && !saw_script_error) {
+            s->tick();
+            s->pump_gpu_jobs(4.0f);
+            matter::Event ev;
+            while (s->poll_event(ev)) {
+                printf("  ev: %s code=%d phase=%s\n",
+                       ev_type_name((matter::EventType)ev.type).c_str(),
+                       (int)ev.code, ev.phase.c_str());
+                if (ev.type == matter::EventType::BakeError &&
+                    ev.code == matter::BakeErrorCode::ScriptError)
+                    saw_script_error = true;
+            }
+            if (!saw_script_error)
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    }
+    CHECK(saw_script_error, "live_edit_e2e: BakeError{ScriptError} on syntax error");
+
+    // World still queryable with the old hash (fail-closed).
+    {
+        float org[3] = {0.0f, 2.0f, 0.0f};
+        float dir[3] = {0.0f,-1.0f, 0.0f};
+        matter::RayHit hit;
+        uint64_t hash_during_broken = 0;
+        if (s->raycast(org, dir, 100.0f, hit))
+            hash_during_broken = hit.part_hash;
+        else
+            for (uint32_t i = 0, ic = s->instance_count(); i < ic && hash_during_broken == 0; ++i) {
+                matter::InstanceInfo info;
+                if (s->instance_info(i, info)) hash_during_broken = info.part_hash;
+            }
+        printf("  part_hash during broken: %llu (expected %llu)\n",
+               (unsigned long long)hash_during_broken,
+               (unsigned long long)hash_after_break);
+        CHECK(hash_during_broken == hash_after_break,
+              "live_edit_e2e: world queryable with last-good hash during syntax error");
+    }
+
+    // 5) Fix the file -> recovers.
+    write_file(sandbox + "/schemas/Box.js",
+        "class Box extends Part {\n"
+        "  build(p) {\n"
+        "    this.fill(MAT.stone);\n"
+        "    const S = 0.7;\n"   // different from both v1 and v2
+        "    this.beginShape(SHAPE.triangles);\n"
+        "    this.vertex(-S, 0, -S); this.vertex(-S, 0,  S); this.vertex( S, 0, -S);\n"
+        "    this.vertex( S, 0, -S); this.vertex(-S, 0,  S); this.vertex( S, 0,  S);\n"
+        "    this.endShape();\n"
+        "  }\n"
+        "}\n");
+    printf("  Box.js fixed (S=0.7)\n");
+
+    bool saw_recovery = false;
+    {
+        auto deadline = clk::now() + std::chrono::seconds(30);
+        while (clk::now() < deadline && !saw_recovery) {
+            s->tick();
+            s->pump_gpu_jobs(4.0f);
+            matter::Event ev;
+            while (s->poll_event(ev)) {
+                printf("  ev: %s code=%d phase=%s\n",
+                       ev_type_name((matter::EventType)ev.type).c_str(),
+                       (int)ev.code, ev.phase.c_str());
+                if (ev.type == matter::EventType::BakeFinished)
+                    saw_recovery = true;
+            }
+            if (!saw_recovery)
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    }
+    CHECK(saw_recovery, "live_edit_e2e: BakeFinished after fixing syntax error (recovery)");
+
+    // After recovery, hash changed again.
+    {
+        uint64_t hash_recovered = 0;
+        float org[3] = {0.0f, 2.0f, 0.0f};
+        float dir[3] = {0.0f,-1.0f, 0.0f};
+        matter::RayHit hit;
+        if (s->raycast(org, dir, 100.0f, hit))
+            hash_recovered = hit.part_hash;
+        else
+            for (uint32_t i = 0, ic = s->instance_count(); i < ic && hash_recovered == 0; ++i) {
+                matter::InstanceInfo info;
+                if (s->instance_info(i, info)) hash_recovered = info.part_hash;
+            }
+        printf("  part_hash after recovery: %llu\n", (unsigned long long)hash_recovered);
+        CHECK(hash_recovered != hash_after_break,
+              "live_edit_e2e: part_hash changed again after recovery");
+    }
+
+    return saw_cone_finished && saw_script_error && saw_recovery;
+}
+
+#endif // __linux__
+
 int main() {
     // Unique sandbox per pid so parallel test runs don't collide.
     std::string sandbox = "/tmp/me3_asyncbake_" + std::to_string((int)getpid());
@@ -813,6 +1045,11 @@ int main() {
 
     // Task 7 fix (review): load-phase skip-and-continue in publish jobs.
     test_load_failure_skips_part(sandbox);
+
+#ifdef __linux__
+    // Task 10: inotify live-edit end-to-end.
+    test_live_edit_inotify_e2e(sandbox);
+#endif
 
     printf(g_failures ? "\n%d FAILURE(S)\n" : "\nALL PASS\n", g_failures);
     // Best-effort cleanup so /tmp doesn't accumulate.

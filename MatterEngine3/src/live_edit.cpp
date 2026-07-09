@@ -52,6 +52,10 @@ RebuildReport LiveEditSession::run_rebuild(const std::set<std::string>& paths) {
     return rep;
 }
 
+RebuildReport LiveEditSession::rebuild(const std::set<std::string>& paths) {
+    return run_rebuild(paths);
+}
+
 RebuildReport LiveEditSession::tick() {
     // 1. Drain newly observed events into the pending debounce set.
     std::vector<FileEvent> evs;

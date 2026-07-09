@@ -467,7 +467,11 @@ GPU_RENDER_CPP = \
     ../src/render/gpu_culler.cpp ../src/render/probe_texture.cpp \
     ../src/render/tileset_provider.cpp ../src/render/tileset_gl_ctx.cpp \
     ../src/provider/local_provider.cpp ../src/provider/resolvers.cpp \
-    ../src/matter_engine.cpp
+    ../src/matter_engine.cpp \
+    ../src/live_edit.cpp \
+    ../src/live_edit_prod.cpp \
+    ../src/inotify_watcher.cpp \
+    ../src/part_graph_snapshot.cpp
 
 GPU_PIPELINE_CPP = \
     ../src/part_graph.cpp \

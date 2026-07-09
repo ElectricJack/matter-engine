@@ -23,6 +23,14 @@
 #include "shader_source.h"   // matter::set_shader_override_dir (Task 1 header)
 #include "world_tracer.h"    // WorldTracer — lazy CPU BVH for query API
 
+// Task 10: live-edit watcher + production seams.
+#include "live_edit.h"
+#include "live_edit_prod.h"
+#include "part_graph_snapshot.h"
+#ifdef __linux__
+#include "inotify_watcher.h"
+#endif
+
 // Raylib must come before glad to avoid double-definition of GL types.
 #include "raylib.h"
 #include "external/glad.h"   // glClearColor / glClear (same as gpu_culler.cpp)
@@ -43,6 +51,21 @@
 #include <vector>
 
 namespace matter {
+
+// Task 10: NullWatcher — a FileWatcher that never yields events.
+// Used as the FileWatcher argument for LiveEditSession constructed on the
+// worker thread (which uses rebuild(paths) directly, never tick()).
+namespace {
+class NullWatcher : public live_edit::FileWatcher {
+public:
+    void add_watch(const std::string&) override {}
+    int poll(std::vector<live_edit::FileEvent>&) override { return 0; }
+    long long now_ms() override {
+        auto t = std::chrono::steady_clock::now().time_since_epoch();
+        return (long long)std::chrono::duration_cast<std::chrono::milliseconds>(t).count();
+    }
+};
+} // anonymous namespace
 
 // Classify a provider-returned error string into a structured code. The
 // executor doesn't get typed errors back from the pipeline (yet — Task 7 wires
@@ -170,6 +193,24 @@ struct WorldSession::Impl {
     void worker_loop();
     // Execute one BakeAll/Reload command. Called only on the worker thread.
     void execute_bake(matter_async::Command& cmd, bool is_reload);
+    // Execute a RebakeCone command. Called only on the worker thread.
+    void execute_rebake_cone(matter_async::Command& cmd);
+
+    // --- Task 10: live-edit watcher state (app thread only) ------------------
+    bool enable_live_edit = false;
+
+#ifdef __linux__
+    // Inotify watcher, lazily created in tick() when enable_live_edit is true.
+    std::unique_ptr<live_edit::InotifyWatcher> inotify_watcher;
+    bool inotify_watching = false;  // dirs added to the watcher?
+#endif
+
+    // Debounce state (mirrors LiveEditSession::tick debounce, ~15 lines).
+    // App thread only — no mutex needed.
+    std::set<std::string> le_pending_paths_;
+    long long le_last_event_ms_ = 0;
+    bool le_have_pending_ = false;
+    static constexpr long long k_debounce_ms = 150;
 };
 
 // ---------------------------------------------------------------------------
@@ -204,10 +245,7 @@ void WorldSession::Impl::worker_loop() {
                     execute_bake(cmd, /*is_reload=*/true);
                     break;
                 case matter_async::CommandKind::RebakeCone:
-                    // Task 9 will implement RebakeCone; treat as a full BakeAll
-                    // for now so a stray push does something sane instead of
-                    // silently dropping.
-                    execute_bake(cmd, /*is_reload=*/false);
+                    execute_rebake_cone(cmd);
                     break;
                 case matter_async::CommandKind::Shutdown:
                     bake_active.store(false, std::memory_order_release);
@@ -727,6 +765,405 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
 }
 
 // ---------------------------------------------------------------------------
+// WorldSession::Impl::execute_rebake_cone
+// Worker-side RebakeCone executor. Builds the upward cone from the provider's
+// current snapshot + a fresh ScriptHost, runs LiveEditSession::rebuild(paths),
+// then (on success) compose_world + the same publish flow as BakeAll (steps 4-8).
+// Fail-closed: on rebuild failure emit errors and DO NOTHING — old world keeps
+// rendering (last-good artifacts intact).
+// ---------------------------------------------------------------------------
+void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
+    auto& token = cmd.token;
+    auto is_cancelled = [&] { return token && token->is_cancelled(); };
+
+    const std::set<std::string> paths(cmd.changed_files.begin(),
+                                      cmd.changed_files.end());
+    if (paths.empty()) return;
+
+    if (is_cancelled()) return;
+
+    // Emit-error helper.
+    auto emit_error = [&](BakeErrorCode code, const char* phase, const std::string& msg) {
+        Event ev;
+        ev.type    = EventType::BakeError;
+        ev.code    = code;
+        ev.phase   = phase;
+        ev.message = msg;
+        emit_event(std::move(ev));
+    };
+
+    // 0) Announce start.
+    {
+        Event ev;
+        ev.type = EventType::BakeStarted;
+        emit_event(std::move(ev));
+    }
+
+    if (is_cancelled()) {
+        emit_error(BakeErrorCode::Cancelled, "cone", "cancelled");
+        return;
+    }
+
+    // 1) Build production seams over the provider's current snapshot.
+    //    provider is valid on the worker thread (bake_active guard in tick() fences app).
+    //    cfg_ fields are set before open_world and not modified concurrently.
+    part_graph_snapshot::Snapshot& snap = provider->graph_snapshot();
+
+    // Fresh ScriptHost for the rebake (shared-lib root from cfg).
+    script_host::ScriptHost host;
+    host.set_shared_lib_root(cfg.shared_lib_dir);
+
+    live_edit_prod::ProdGraphResolver gr(snap, host,
+                                         cfg.schemas_dir,
+                                         cfg.shared_lib_dir);
+    live_edit_prod::ProdBaker         pb(snap, host, engine->cache_root);
+    live_edit_prod::ProdFlattener     pf(snap, host, engine->cache_root);
+
+    // NullSink: we convert errors to BakeError events below.
+    struct NullSink : live_edit::ErrorSink {
+        void report(const live_edit::LiveEditError&) override {}
+    } null_sink;
+
+    NullWatcher nw;
+    live_edit::LiveEditSession sess(nw, gr, pb, pf, null_sink,
+                                   live_edit::LiveEditConfig{/*debounce_ms=*/0,
+                                                             /*bake_budget_ms=*/0});
+
+    // 2) Run the cone rebuild.
+    live_edit::RebuildReport rep = sess.rebuild(paths);
+
+    if (!rep.succeeded) {
+        // Fail-closed: emit structured errors, do NOT touch the rendered world.
+        for (const auto& e : rep.errors) {
+            BakeErrorCode code;
+            if (e.cause == live_edit::LiveEditError::Cause::FlattenFailed)
+                code = BakeErrorCode::Internal;
+            else
+                code = BakeErrorCode::ScriptError;
+            Event ev;
+            ev.type    = EventType::BakeError;
+            ev.code    = code;
+            ev.phase   = "cone";
+            ev.module  = e.part;
+            ev.message = e.message;
+            emit_event(std::move(ev));
+        }
+        return;  // old world keeps rendering
+    }
+
+    if (is_cancelled()) {
+        emit_error(BakeErrorCode::Cancelled, "cone", "cancelled");
+        return;
+    }
+
+    // 3) Re-install the graph so ir_.root_hashes picks up the new cone hashes.
+    //    The cone rebuild wrote new .part artifacts to the content-addressed
+    //    cache; re-install is cheap because all parts are now cache hits.
+    //    Refresh cfg_ callbacks with the cone command's token before re-installing.
+    cfg.on_part = [this](const char* module, int done, int total) {
+        Event ev;
+        ev.type   = EventType::BakePartDone;
+        ev.module = module ? module : "";
+        ev.done   = done;
+        ev.total  = total;
+        ev.phase  = (total == 0) ? "install" : "parts";
+        emit_event(std::move(ev));
+    };
+    cfg.gpu_run = [this, token](const char* name,
+                                std::function<bool(std::string&)> fn,
+                                std::string& err) -> bool {
+        matter_async::GpuJob j;
+        j.name  = name ? name : "gpu";
+        j.fn    = std::move(fn);
+        j.token = token;
+        return gpu_jobs.run_blocking(std::move(j), err);
+    };
+    // Re-create the provider so it picks up the updated cfg_ callbacks.
+    provider = std::make_unique<viewer::LocalProvider>(cfg);
+
+    {
+        std::string ierr;
+        if (!provider->install_graph(ierr)) {
+            emit_error(is_cancelled() ? BakeErrorCode::Cancelled : classify_error(ierr),
+                       "cone", ierr.empty() ? "install_graph failed" : ierr);
+            return;
+        }
+        // Emit per-part errors for any partial install failures.
+        for (const auto& fp : provider->install_result().failed) {
+            BakeErrorCode code = classify_error(fp.error);
+            Event ev;
+            ev.type    = EventType::BakeError;
+            ev.code    = code;
+            ev.phase   = "cone";
+            ev.module  = fp.module;
+            ev.message = fp.error;
+            emit_event(std::move(ev));
+        }
+    }
+
+    if (is_cancelled()) {
+        emit_error(BakeErrorCode::Cancelled, "cone", "cancelled");
+        return;
+    }
+
+    // 4) compose_world using the re-installed provider.
+    viewer::WorldManifest new_manifest;
+    {
+        std::string cerr;
+        if (!provider->compose_world(new_manifest, cerr)) {
+            emit_error(is_cancelled() ? BakeErrorCode::Cancelled : classify_error(cerr),
+                       "cone", cerr.empty() ? "compose_world failed" : cerr);
+            return;
+        }
+    }
+
+    if (is_cancelled()) {
+        emit_error(BakeErrorCode::Cancelled, "cone", "cancelled");
+        return;
+    }
+
+    // 4-8) Identical to execute_bake steps 4-8: reset job -> reconcile ->
+    //      per-part publish -> finalize -> BakeFinished.
+    struct ResetOutput {
+        std::unique_ptr<viewer::PartStore>      new_store;
+        std::unique_ptr<viewer::WorldComposer>  new_composer;
+        std::unique_ptr<viewer::RasterComposer> new_raster;
+        viewer::ProbeTextures                   new_probe_tex{};
+    };
+    auto reset_out = std::make_shared<ResetOutput>();
+
+    matter_async::GpuJob reset_job;
+    reset_job.name  = "cone.reset";
+    reset_job.token = token;
+    reset_job.fn = [this, reset_out, new_manifest](std::string& err) -> bool {
+        matter_async::assert_gl_thread("cone.reset");
+        connected.store(false, std::memory_order_release);
+
+        viewer::release_probe_textures(probe_tex);
+        reset_out->new_raster = std::make_unique<viewer::RasterComposer>();
+        auto& raster_local = reset_out->new_raster;
+        if (!engine->gl46) {
+            renderer.set_lights(new_manifest.lights);
+        } else {
+            std::string rerr;
+            if (!raster_local->init(rerr)) { err = rerr; return false; }
+            raster_local->set_lights(new_manifest.lights);
+            if (new_manifest.probes && new_manifest.probes->valid()) {
+                reset_out->new_probe_tex = viewer::upload_probe_textures(*new_manifest.probes);
+                raster_local->set_probes(reset_out->new_probe_tex);
+            }
+            auto tonemap = [](float c) -> unsigned char {
+                float mapped  = c / (c + 1.0f);
+                float gamma   = std::pow(mapped, 1.0f / 2.2f);
+                float clamped = gamma < 0.0f ? 0.0f : (gamma > 1.0f ? 1.0f : gamma);
+                return (unsigned char)(clamped * 255.0f + 0.5f);
+            };
+            unsigned char r = tonemap(new_manifest.lights.sky_color[0]);
+            unsigned char g = tonemap(new_manifest.lights.sky_color[1]);
+            unsigned char b = tonemap(new_manifest.lights.sky_color[2]);
+            sky_clear[0] = r / 255.f; sky_clear[1] = g / 255.f; sky_clear[2] = b / 255.f;
+            std::string gerr;
+            if (!raster_local->init_gpu_driven(gerr)) {
+                err = "GPU-driven shader init failed: " + gerr;
+                return false;
+            }
+        }
+        renderer.set_lights(new_manifest.lights);
+
+        reset_out->new_store    = std::make_unique<viewer::PartStore>(cfg.cache_root);
+        reset_out->new_composer = std::make_unique<viewer::WorldComposer>(
+            *reset_out->new_store, /*tlas_capacity=*/16);
+
+        state.reset(viewer::WorldManifest{});
+        raster.swap(reset_out->new_raster);
+        composer.swap(reset_out->new_composer);
+        store.swap(reset_out->new_store);
+        probe_tex = reset_out->new_probe_tex;
+        reset_out->new_probe_tex = viewer::ProbeTextures{};
+        manifest = new_manifest;
+        connected.store(true, std::memory_order_release);
+        tracer_dirty = true;
+        tracer.reset();
+        return true;
+    };
+    {
+        std::string rerr;
+        if (!gpu_jobs.run_blocking(std::move(reset_job), rerr)) {
+            emit_error(is_cancelled() ? BakeErrorCode::Cancelled : BakeErrorCode::GpuError,
+                       "gl", rerr.empty() ? "cone reset job failed" : rerr);
+            return;
+        }
+    }
+    if (is_cancelled()) { emit_error(BakeErrorCode::Cancelled, "gl", "cancelled"); return; }
+
+    // Reconcile.
+    struct ReconcileOutput { std::vector<uint64_t> want; };
+    auto reco_out = std::make_shared<ReconcileOutput>();
+    matter_async::GpuJob reco_job;
+    reco_job.name  = "cone.reconcile";
+    reco_job.token = token;
+    reco_job.fn    = [this, reco_out](std::string& /*err*/) -> bool {
+        matter_async::assert_gl_thread("cone.reconcile");
+        reco_out->want = provider->reconcile(manifest, *store);
+        return true;
+    };
+    {
+        std::string rerr;
+        if (!gpu_jobs.run_blocking(std::move(reco_job), rerr)) {
+            emit_error(is_cancelled() ? BakeErrorCode::Cancelled : BakeErrorCode::GpuError,
+                       "gl", rerr.empty() ? "cone reconcile failed" : rerr);
+            return;
+        }
+    }
+    if (is_cancelled()) { emit_error(BakeErrorCode::Cancelled, "gl", "cancelled"); return; }
+
+    // Publish.
+    std::vector<uint64_t> publish_order = reco_out->want;
+    {
+        std::set<uint64_t> in_want(publish_order.begin(), publish_order.end());
+        std::set<uint64_t> seen(publish_order.begin(), publish_order.end());
+        for (const auto& e : manifest.instances) {
+            if (in_want.count(e.part_hash)) continue;
+            if (!seen.insert(e.part_hash).second) continue;
+            publish_order.push_back(e.part_hash);
+        }
+    }
+    const int total_parts = (int)publish_order.size();
+    const auto& want = publish_order;
+
+    std::unordered_map<uint64_t, std::string> mod_by_hash;
+    for (const auto& e : manifest.instances)
+        if (!e.module.empty()) mod_by_hash[e.part_hash] = e.module;
+
+    struct CapState { size_t needed = 0; size_t current = 16; int load_fail_count = 0; };
+    auto cap_state = std::make_shared<CapState>();
+
+    int count_errors = 0;
+    for (int i = 0; i < total_parts; ++i) {
+        if (is_cancelled()) {
+            emit_error(BakeErrorCode::Cancelled, "parts", "cancelled between parts");
+            return;
+        }
+        uint64_t h = want[i];
+        {
+            Event ev;
+            ev.type   = EventType::BakePartDone;
+            auto it   = mod_by_hash.find(h);
+            ev.module = (it != mod_by_hash.end()) ? it->second : "";
+            ev.done   = i + 1;
+            ev.total  = total_parts;
+            ev.phase  = "parts";
+            emit_event(std::move(ev));
+        }
+        std::string part_module;
+        {
+            auto it = mod_by_hash.find(h);
+            if (it != mod_by_hash.end()) part_module = it->second;
+        }
+        std::vector<viewer::WorldManifestEntry> added;
+        for (const auto& e : manifest.instances)
+            if (e.part_hash == h) added.push_back(e);
+        const size_t entry_count = added.size();
+
+        matter_async::GpuJob pj;
+        pj.name  = "cone.publish";
+        pj.token = token;
+        pj.fn = [this, i, h, part_module, added_moved = std::move(added),
+                 entry_count, cap_state](std::string& /*err*/) -> bool {
+            matter_async::assert_gl_thread("cone.publish");
+            bool part_failed = false;
+            BakeErrorCode fail_code = BakeErrorCode::IoError;
+            std::string fail_msg;
+            try {
+                if (!store->get_or_load(h)) {
+                    fail_code = BakeErrorCode::IoError;
+                    fail_msg  = "load failed for part " + part_module;
+                    part_failed = true;
+                }
+            } catch (std::bad_alloc&) {
+                fail_code = BakeErrorCode::OutOfMemory;
+                fail_msg  = "std::bad_alloc loading part " + part_module;
+                part_failed = true;
+            } catch (std::exception& ex) {
+                fail_code = BakeErrorCode::IoError;
+                fail_msg  = ex.what();
+                part_failed = true;
+            }
+            if (part_failed) {
+                Event bev;
+                bev.type    = EventType::BakeError;
+                bev.code    = fail_code;
+                bev.phase   = "parts";
+                bev.module  = part_module;
+                bev.message = fail_msg;
+                emit_event(std::move(bev));
+                ++cap_state->load_fail_count;
+                return true;
+            }
+            viewer::WorldDelta d;
+            d.added = added_moved;
+            state.apply(d);
+            tracer_dirty = true;
+            tracer.reset();
+            size_t drawable_nodes = 0;
+            viewer::walk_part_tree(h,
+                [this](uint64_t hh) -> const viewer::LoadedPart* { return store->get_or_load(hh); },
+                [&](const viewer::LoadedPart* lp, uint64_t, const float[16], int) {
+                    if (!lp->lod_blas.empty()) ++drawable_nodes;
+                });
+            cap_state->needed += entry_count * drawable_nodes;
+            if (cap_state->needed > cap_state->current) {
+                size_t new_cap = cap_state->needed > cap_state->current * 2
+                                     ? cap_state->needed : cap_state->current * 2;
+                composer = std::make_unique<viewer::WorldComposer>(*store, new_cap);
+                cap_state->current = new_cap;
+            }
+            return true;
+        };
+        gpu_jobs.post(std::move(pj));
+    }
+
+    // Finalize.
+    matter_async::GpuJob finalize_job;
+    finalize_job.name  = "cone.finalize";
+    finalize_job.token = token;
+    finalize_job.fn    = [this](std::string& /*err*/) -> bool {
+        matter_async::assert_gl_thread("cone.finalize");
+        lods = store->part_lod_table();
+        stats.instances_total = (uint32_t)manifest.instances.size();
+        stats.parts_baked     = (uint32_t)provider->baked_count();
+        stats.cache_hits      = (uint32_t)provider->hit_count();
+        size_t cap = 16;
+        for (const auto& e : manifest.instances) {
+            viewer::walk_part_tree(e.part_hash,
+                [this](uint64_t hh) -> const viewer::LoadedPart* { return store->get_or_load(hh); },
+                [&](const viewer::LoadedPart* lp, uint64_t, const float[16], int) {
+                    if (!lp->lod_blas.empty()) ++cap;
+                });
+        }
+        composer = std::make_unique<viewer::WorldComposer>(*store, cap);
+        return true;
+    };
+    {
+        std::string ferr;
+        if (!gpu_jobs.run_blocking(std::move(finalize_job), ferr)) {
+            emit_error(is_cancelled() ? BakeErrorCode::Cancelled : BakeErrorCode::GpuError,
+                       "gl", ferr.empty() ? "cone finalize failed" : ferr);
+            return;
+        }
+    }
+
+    count_errors += cap_state->load_fail_count;
+
+    {
+        Event ev;
+        ev.type   = EventType::BakeFinished;
+        ev.errors = count_errors;
+        emit_event(std::move(ev));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // WorldSession::Impl::ensure_tracer
 // Build the lazy CPU BVH from the current world state. Returns false if the
 // tracer could not be built (e.g. no parts loaded yet). Const so that
@@ -817,6 +1254,23 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
     simpl->cfg.shared_lib_dir = desc.shared_lib_dir ? desc.shared_lib_dir : "";
     simpl->cfg.cache_root     = impl_->cache_root;
 
+    // Task 10: live-edit opt-in. On Linux, eagerly create and register the
+    // inotify watcher so events during and after the initial bake are captured.
+#ifdef __linux__
+    simpl->enable_live_edit = desc.enable_live_edit;
+    if (desc.enable_live_edit && !simpl->cfg.schemas_dir.empty()) {
+        simpl->inotify_watcher = std::make_unique<live_edit::InotifyWatcher>();
+        simpl->inotify_watcher->add_watch(simpl->cfg.schemas_dir);
+        if (!simpl->cfg.shared_lib_dir.empty())
+            simpl->inotify_watcher->add_watch(simpl->cfg.shared_lib_dir);
+        simpl->inotify_watching = true;
+        printf("live-edit: watching %s\n", simpl->cfg.schemas_dir.c_str());
+    }
+#else
+    if (desc.enable_live_edit)
+        printf("live-edit: MATTER_LIVE_EDIT=1 ignored on non-Linux (inotify not available)\n");
+#endif
+
     // Construct provider. No bake here — caller must call request_bake().
     simpl->provider = std::make_unique<viewer::LocalProvider>(simpl->cfg);
 
@@ -901,6 +1355,42 @@ void WorldSession::tick() {
         impl_->tracer_dirty = true;
         impl_->tracer.reset();
     }
+
+#ifdef __linux__
+    // Task 10: inotify watcher + 150 ms debounce (app thread only).
+    // Only active when enable_live_edit was set in WorldDesc.
+    // The watcher is created eagerly in open_world; we only poll here.
+    if (impl_->enable_live_edit && impl_->inotify_watching) {
+        // Drain newly observed events into the pending debounce set.
+        std::vector<live_edit::FileEvent> evs;
+        impl_->inotify_watcher->poll(evs);
+        for (const auto& e : evs) {
+            impl_->le_pending_paths_.insert(e.path);
+            if (e.t_ms > impl_->le_last_event_ms_)
+                impl_->le_last_event_ms_ = e.t_ms;
+            impl_->le_have_pending_ = true;
+        }
+
+        // Fire once the quiet window has elapsed since the last event.
+        if (impl_->le_have_pending_) {
+            long long now = impl_->inotify_watcher->now_ms();
+            if (now - impl_->le_last_event_ms_ >= impl_->k_debounce_ms) {
+                // Quiet window elapsed: push a RebakeCone command.
+                std::vector<std::string> paths(impl_->le_pending_paths_.begin(),
+                                               impl_->le_pending_paths_.end());
+                impl_->le_pending_paths_.clear();
+                impl_->le_have_pending_ = false;
+                impl_->le_last_event_ms_ = 0;
+
+                impl_->ensure_worker_started();
+                matter_async::Command c;
+                c.kind          = matter_async::CommandKind::RebakeCone;
+                c.changed_files = std::move(paths);
+                impl_->commands.push(std::move(c));
+            }
+        }
+    }
+#endif // __linux__
 }
 
 void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
