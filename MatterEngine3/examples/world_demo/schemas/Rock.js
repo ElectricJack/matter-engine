@@ -7,33 +7,9 @@ import { rng } from 'shared-lib/rng';
 class Rock extends Part {
   static params = { seed: 0 };
 
-  // Phase 5 autoremesher opt-in — 2026-07-07 demo.
-  //
-  // Meadow bake produces 8 unique Rock meshes (ROCK_VARIANTS=8). Empirically,
-  // 3 seeds retopo cleanly (2234→64 / 852→62 / 1008→52 tris across the LOD
-  // ladder) and at least one triggers a geo_assert abort() inside
-  // autoremesher_core's LSCM solver — the same crash class as Tree.js.
-  //
-  // Blacklist mechanism (retopo_blacklist.{h,cpp}): each retopo attempt
-  // journals its cache-key hash on disk; a hash present in the pending journal
-  // without a matching success entry crashed the previous run and is skipped.
-  // Convergence: 2-3 viewer restarts identify every crasher, after which the
-  // meadow bake is stable and the 3+ safe Rock seeds render with retopo'd
-  // topology (visible in wireframe via F9 or FIFO `wireframe on`).
-  //
-  // On a fresh checkout WITHOUT a populated blacklist: the first meadow bake
-  // will crash on the first bad seed. Just relaunch — the blacklist grows,
-  // the crasher gets skipped, and eventually the bake completes cleanly.
-  static retopo = {
-    enabled: true,
-    target_ratio: 1.0,
-    iterations: 3,
-    seed: 42,
-    timeout_seconds: 60,
-  };
-
   build(p) {
     const r = rng(1000 + p.seed);
+    this.beginModifier();
     this.beginVoxels(0.15);
     this.fill(MAT.rock);
     this.smoothing(0.12);
@@ -58,5 +34,8 @@ class Rock extends Part {
     }
 
     this.endVoxels();
+    this.endModifier([
+      { retopo: { target_ratio: 1.0, iterations: 3, seed: 42, timeout_seconds: 60 } },
+    ]);
   }
 }
