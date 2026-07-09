@@ -127,7 +127,7 @@ struct WorldSession::Impl {
     // 64.0f keeps it valid before first render call.
     viewer::SectorLodResolver sec{16.0f, 64.0f};
 
-    bool connected = false;
+    std::atomic<bool> connected{false};
 
     // Event queue — capped at 4096 to prevent unbounded growth if the app
     // never drains (older events dropped when the cap is hit).
@@ -279,9 +279,10 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
             return;
         }
     }
-    // In reload mode, mark the old world unusable until the reset job below
-    // publishes a new one (fail-closed matches today's reload behavior).
-    if (is_reload) connected = false;
+    // In reload mode, marking `connected = false` is done inside the GL reset
+    // job below (same thread that will set it back to true), so old-world
+    // rendering continues until the GL reset actually runs (fail-closed matches
+    // today's reload behavior, and the write is on the app/GL thread — no race).
 
     // Install-phase on_part carries phase="install" (total==0, indeterminate).
     cfg.on_part = [this](const char* module, int done, int total) {
@@ -353,6 +354,12 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     reset_job.token = token;
     reset_job.fn = [this, reset_out, new_manifest](std::string& err) -> bool {
         matter_async::assert_gl_thread("bake.reset");
+        // Fail-close: mark disconnected on the app/GL thread before tearing
+        // down the old world. This write and the matching `connected = true`
+        // below are both on the GL thread — no data race with the atomic.
+        // Old world stops rendering from this point until the new one is ready.
+        connected.store(false, std::memory_order_release);
+
         // --- relocated from the old bake_once (GL setup block) ---------------
         // Release stale probe textures before creating new ones.
         viewer::release_probe_textures(probe_tex);
@@ -445,7 +452,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         // Publish the new manifest snapshot on the app/GL thread and mark
         // connected. tracer is stale from now on.
         manifest    = new_manifest;
-        connected   = true;
+        connected.store(true, std::memory_order_release);
         tracer_dirty = true;
         tracer.reset();
         return true;
@@ -514,6 +521,12 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     for (const auto& e : manifest.instances)
         if (!e.module.empty()) mod_by_hash[e.part_hash] = e.module;
 
+    // Shared cap-growth state across all publish jobs. Both fields are read and
+    // written only on the GL thread (all publish jobs are FIFO on the pump), so
+    // no mutex is needed. Initial cap matches the reset job's WorldComposer(16).
+    struct CapState { size_t needed = 0; size_t current = 16; };
+    auto cap_state = std::make_shared<CapState>();
+
     for (int i = 0; i < total_parts; ++i) {
         if (is_cancelled()) {
             emit_error(BakeErrorCode::Cancelled, "parts", "cancelled between parts");
@@ -539,11 +552,13 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         std::vector<viewer::WorldManifestEntry> added;
         for (const auto& e : manifest.instances)
             if (e.part_hash == h) added.push_back(e);
+        const size_t entry_count = added.size();
 
         matter_async::GpuJob pj;
         pj.name  = "bake.publish";
         pj.token = token;
-        pj.fn = [this, h, added_moved = std::move(added)](std::string& err) -> bool {
+        pj.fn = [this, h, added_moved = std::move(added),
+                 entry_count, cap_state](std::string& err) -> bool {
             matter_async::assert_gl_thread("bake.publish");
             if (!store->get_or_load(h)) {
                 err = "load failed for part " + std::to_string(h);
@@ -555,26 +570,25 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
             tracer_dirty = true;
             tracer.reset();
 
-            // Composer cap growth: count drawable nodes contributed by this
-            // part (walk_part_tree with an empty-lod skip mirrors WorldComposer).
+            // Composer cap growth (spec step 6): count drawable nodes in this
+            // part's tree, accumulate needed_cap, and recreate the composer
+            // when the cap is exceeded. TLAS recomposes every frame so recreate
+            // is cheap; we add headroom (max(needed, current*2)) to avoid
+            // recreating on every part.
             size_t drawable_nodes = 0;
             viewer::walk_part_tree(h,
                 [this](uint64_t hh) -> const viewer::LoadedPart* { return store->get_or_load(hh); },
                 [&](const viewer::LoadedPart* lp, uint64_t, const float[16], int) {
                     if (!lp->lod_blas.empty()) ++drawable_nodes;
                 });
-            // We don't know the composer's exact current cap without exposing
-            // it, so use a monotonically growing counter shared with the
-            // finalize job: not necessary here — always safe to recreate when
-            // needed since TLAS recomposes every frame. Compute the "needed"
-            // as (current_state_entries × drawable_nodes) upper bound and
-            // recreate the composer when it likely exceeds. Cheaper: just
-            // ensure the composer sees the enlarged set on the next compose.
-            // A single recreate at finalize with the exact walk is the
-            // authoritative sizing; the mid-bake grows are conservative
-            // over-shoots to avoid TLAS::draw_batch overflow if compose is
-            // called by a raced render() before finalize.
-            (void)drawable_nodes;
+            cap_state->needed += entry_count * drawable_nodes;
+            if (cap_state->needed > cap_state->current) {
+                size_t new_cap = cap_state->needed > cap_state->current * 2
+                                     ? cap_state->needed
+                                     : cap_state->current * 2;
+                composer = std::make_unique<viewer::WorldComposer>(*store, new_cap);
+                cap_state->current = new_cap;
+            }
             return true;
         };
         gpu_jobs.post(std::move(pj));

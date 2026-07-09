@@ -125,3 +125,23 @@ Files committed:
 - MatterEngine3/tests/async_bake_tests.cpp
 - MatterEngine3/tests/api_tests.cpp
 - .superpowers/sdd/task-6-report.md
+
+## Fix round 1
+
+### Changes (MatterEngine3/src/matter_engine.cpp)
+
+**Fix 1 — Composer cap growth mid-bake (spec step 6).**
+The publish job previously computed `drawable_nodes` via `walk_part_tree` but then discarded it with `(void)drawable_nodes;`. The fix introduces a `CapState` struct (shared across all publish jobs via `std::shared_ptr`) tracking `needed` and `current` cap. Each publish job accumulates `cap_state->needed += entry_count * drawable_nodes` and recreates `WorldComposer(*store, new_cap)` in-place when `needed > current`, using `max(needed, current*2)` headroom to avoid per-part recreates. The finalize job's exact-cap recreate is unchanged.
+
+**Fix 2 — `connected` data race.**
+Two aspects addressed:
+- (a) The worker-thread write `if (is_reload) connected = false;` (at execute_bake line ~282 in 7a15efc) was removed from the worker and moved into the GL reset job's `fn` body, which runs on the app/GL thread. The reset job now opens with `connected.store(false, std::memory_order_release)` before tearing down the old world, and closes with `connected.store(true, std::memory_order_release)` after the new world is ready. This matches the spec's fail-closed semantics: old world keeps rendering until the reset job actually runs.
+- (b) `Impl::connected` was promoted from `bool` to `std::atomic<bool>` (declaration at Impl line ~130). All read sites (`render()`/`ensure_tracer()`/`raycast()`/`instance_count()`) now read an atomic; all write sites use `store(..., release)`.
+
+### Test command and result
+
+```
+GALLIUM_DRIVER=d3d12 make -C MatterEngine3/tests run-asyncbake
+```
+
+Result: **ALL PASS — 4/4 cases** (request_bake_returns_immediately, bake_completes_with_finished, determinism, reload_reenters). Build: `make -C MatterEngine3/tests -j$(nproc) async-bake-tests` succeeded with no warnings on the changed TU.
