@@ -40,18 +40,6 @@ static void write_file(const std::string& path, const std::string& body) {
     f << body;
 }
 
-static std::string read_file(const std::string& path) {
-    std::ifstream f(path, std::ios::binary);
-    std::ostringstream ss; ss << f.rdbuf();
-    return ss.str();
-}
-
-static std::string abspath(const std::string& rel) {
-    char buf[PATH_MAX];
-    if (realpath(rel.c_str(), buf)) return std::string(buf);
-    return rel;
-}
-
 // ---------------------------------------------------------------------------
 // Test sandbox setup
 // ---------------------------------------------------------------------------
@@ -456,7 +444,7 @@ static void test_flattener() {
     CHECK(bake_ok.ok, "bake Root ok");
 
     // ProdFlattener.reflatten(Root) -> writes .flat.part
-    live_edit_prod::ProdFlattener pf(snap, s.root);
+    live_edit_prod::ProdFlattener pf(snap, host, s.root);
     auto flat_out = pf.reflatten("Root");
     CHECK(flat_out.ok, "ProdFlattener.reflatten(Root) succeeded");
     if (!flat_out.ok)

@@ -74,16 +74,24 @@ private:
 
 // SP-4 production seam: re-flatten one affected root's subtree.
 // Calls part_flatten::flatten_part with the root's current resolved hash and
-// the provider's default FlattenTargets settings.
+// the root's retopo settings, read from its current source file via
+// ScriptHost::eval_retopo_settings. Using the current source (rather than a
+// hash-keyed map) is correct for live-edit: after reresolve the root has a NEW
+// hash that no install-time map contains; its current source is exactly what
+// produced that hash, so its `static retopo` block is the authoritative settings.
+// On file-read failure, falls back to default targets (fail-closed; schemas
+// without `static retopo` evaluate to defaults anyway).
 class ProdFlattener : public live_edit::Flattener {
 public:
     ProdFlattener(part_graph_snapshot::Snapshot& snap,
+                  script_host::ScriptHost& host,
                   std::string abs_cache_root);
 
     live_edit::BakeOutcome reflatten(const live_edit::PartId& root) override;
 
 private:
     part_graph_snapshot::Snapshot& snap_;
+    script_host::ScriptHost&       host_;
     std::string                    abs_cache_root_;
 };
 

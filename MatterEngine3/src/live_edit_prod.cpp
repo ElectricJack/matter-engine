@@ -266,8 +266,10 @@ ProdBaker::bake(const live_edit::PartId& p,
 // ---------------------------------------------------------------------------
 
 ProdFlattener::ProdFlattener(part_graph_snapshot::Snapshot& snap,
+                             script_host::ScriptHost& host,
                              std::string abs_cache_root)
     : snap_(snap)
+    , host_(host)
     , abs_cache_root_(std::move(abs_cache_root))
 {}
 
@@ -281,8 +283,31 @@ ProdFlattener::reflatten(const live_edit::PartId& root) {
     }
 
     uint64_t root_hash = it->second.resolved_hash;
+
+    // Build FlattenTargets from the root's current source file.
+    // Reading current source (not a hash-keyed map) is correct: after
+    // reresolve the root carries a new hash; its current source is exactly
+    // what produced that hash, so its `static retopo` block is authoritative.
+    // On file-read failure fall back to default targets (fail-closed):
+    // eval_retopo_settings itself returns defaults on any JS error, and
+    // schemas without `static retopo` evaluate to enabled=false defaults.
+    part_flatten::FlattenTargets targets;
+    {
+        const std::string& source_path = it->second.source_path;
+        std::ifstream fin(source_path, std::ios::binary);
+        if (fin) {
+            std::ostringstream ss; ss << fin.rdbuf();
+            targets.retopo = host_.eval_retopo_settings(ss.str());
+        } else {
+            std::fprintf(stderr,
+                "ProdFlattener::reflatten: cannot open source %s; "
+                "falling back to default FlattenTargets\n",
+                source_path.c_str());
+        }
+    }
+
     part_flatten::FlattenResult fr =
-        part_flatten::flatten_part(abs_cache_root_, root_hash, part_flatten::FlattenTargets{});
+        part_flatten::flatten_part(abs_cache_root_, root_hash, targets);
 
     if (!fr.ok) {
         return { false, live_edit::LiveEditError{
