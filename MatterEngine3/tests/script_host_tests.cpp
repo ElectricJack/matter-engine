@@ -1295,6 +1295,51 @@ static void test_pf_ontick_views() {
     CHECK(r.error.ok, "pf onTick views bake succeeds");
 }
 
+// Task 8: shared-lib/strands.js — attractor clouds + end-biased twig anchors
+static void test_strands_ellipsoid_and_anchors() {
+    const char* src =
+        "import { ParticleSim, PathRecorder } from 'shared-lib/particleflow';\n"
+        "import { ellipsoidCloud, twigAnchors } from 'shared-lib/strands';\n"
+        "class P extends Part {\n"
+        "  build(p) {\n"
+        "    const cloud = ellipsoidCloud(5, 200, [0, 8, 0], [3, 2, 3]);\n"
+        "    if (cloud.length !== 600) throw new Error('cloud size');\n"
+        "    for (let i = 0; i < 200; ++i) {\n"
+        "      const dx = (cloud[3*i] - 0) / 3, dy = (cloud[3*i+1] - 8) / 2, dz = (cloud[3*i+2] - 0) / 3;\n"
+        "      if (dx*dx + dy*dy + dz*dz > 1.0001) throw new Error('point outside ellipsoid');\n"
+        "    }\n"
+        "    const cloud2 = ellipsoidCloud(5, 200, [0, 8, 0], [3, 2, 3]);\n"
+        "    for (let i = 0; i < 600; ++i) if (cloud[i] !== cloud2[i]) throw new Error('cloud not deterministic');\n"
+        "\n"
+        "    const rec = new PathRecorder(0.03, ['thickness']);\n"
+        "    const sim = new ParticleSim({\n"
+        "      seed: 9, dt: 1.0, maxTurnRate: 0.3, depositEvery: 0.05,\n"
+        "      maxParticles: 32, hashCell: 0.25, maxAge: 80,\n"
+        "      attributes: ['thickness'],\n"
+        "      emitters: [{ shape: 'disc', center: [0,0,0], axis: [0,1,0], radius: 0.2,\n"
+        "                   rate: 2, vel0: 0.06, jitter: 0.15, attrInit: [0.1] }],\n"
+        "      fields: [\n"
+        "        { type: 'bias', dir: [0,1,0], weight: 0.5 },\n"
+        "        { type: 'attract', weight: 0.8, influence: 4.0, killRadius: 0.3, killOnConsume: true },\n"
+        "      ],\n"
+        "    }).attach(rec);\n"
+        "    sim.setAttractors(cloud);\n"
+        "    sim.run(200);\n"
+        "    const anchors = twigAnchors(sim, rec, { seed: 2, perPath: 2, maxThickness: 10 });\n"
+        "    if (anchors.length < 1) throw new Error('no twig anchors');\n"
+        "    for (const a of anchors) {\n"
+        "      const nl = Math.hypot(a.normal[0], a.normal[1], a.normal[2]);\n"
+        "      if (Math.abs(nl - 1) > 1e-3) throw new Error('anchor normal not unit');\n"
+        "      if (a.t < 0 || a.t > 1) throw new Error('anchor t out of range');\n"
+        "    }\n"
+        "  }\n"
+        "}\n";
+    script_host::ScriptHost host;
+    host.set_shared_lib_root("../shared-lib");
+    script_host::BakeResult r = host.bake_source(src, "{}", {});
+    CHECK(r.error.ok, "strands ellipsoid and anchors bake succeeds");
+}
+
 int main() {
     test_embed_eval_1_plus_1();
     test_p5_round_mesh_dispatch();
@@ -1334,6 +1379,7 @@ int main() {
     test_pf_ontick_views();
     test_pf_stamp_paths_positive();
     test_pf_stamp_paths_outside_session();
+    test_strands_ellipsoid_and_anchors();
     if (g_failures == 0) printf("ALL PASS\n");
     return g_failures ? 1 : 0;
 }
