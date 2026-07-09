@@ -1,7 +1,8 @@
 # Geometry Modifier Regions Design
 
 **Date:** 2026-07-08
-**Status:** Approved (brainstorm with Jack)
+**Status:** Approved (brainstorm with Jack; Engine Flow amended same day — modifiers run at
+part **bake**, not flatten, after pipeline research)
 **Depends on:** Phase B async bake landing first (part_flatten/local_provider under active rewrite)
 
 ## Motivation
@@ -31,9 +32,16 @@ SDF-level smooth-min blending). One mechanism should own all of it.
   not aliased. All callers migrate in the same change (Tree.js is the only live
   `simplify()` caller; Rock.js the only `static retopo` user).
 - **Retopo consumes raw (optionally smoothed) isosurface output**, never post-QEM meshes.
-- **Failure = skip with warning:** a modifier that fails at flatten (retopo
+- **Failure = skip with warning:** a modifier that fails at bake (retopo
   abort/blacklist, OOM, timeout) is skipped; the rest of the stack still runs. No special
   fallback syntax — a stack of `[{smooth}, {retopo}]` degrades to the smoothed mesh.
+- **Modifiers run at part bake, not flatten** (amendment): geometry first exists as
+  triangle meshes during `script_host::bake_source` (BuildOps → csg_lowering → per-cell
+  marching cubes → BLAS → `.part`). Regions are meshed, cross-cell welded into one
+  indexed mesh, stack-processed, and registered as BLAS before the asset is written.
+  The flatten-time retopo hook was only ever there because that's where a merged mesh
+  happened to exist; it is deleted, and the separate `.retopo.part` cache goes with it —
+  baked parts are already cached by resolved hash.
 - **TreeBranch converts to isosurface** as part of the migration (its `line()` tube pass
   becomes a voxel session; `line()` is already an SDF capsule brush in-session per the
   session-polymorphic DSL convention). Leaves stay mesh.
@@ -60,7 +68,7 @@ class Tree extends Part {
   (including the meshed output of voxel sessions begun inside) belongs to the region.
 - `endModifier(list)` — closes the region and attaches its ordered modifier stack.
 - **Regions do not nest** (clean error). Multiple sequential regions per part are fine.
-- Geometry outside any region passes through flatten untouched (identity).
+- Geometry outside any region passes through the bake untouched (identity).
 - Child parts placed inside a region are **not** captured — `placeChild` instances are
   governed by the child schema's own regions. Tree cannot reach into TreeBranch.
 - Unbalanced markers, unknown modifier names, or malformed params are clean script errors
@@ -76,21 +84,25 @@ class Tree extends Part {
 
 Shorthand `{ simplify: 0.3 }` (bare number) is accepted for simplify.
 
-## Engine Flow
+## Engine Flow (amended: bake-time, not flatten-time)
 
-1. **Build:** script host records region boundaries + stacks alongside emitted geometry
-   (region id tagged onto chunks; stacks serialized with the part's build output the same
-   way retopo settings flow today via `eval_*_settings` in script_host.cpp — NOT
-   dsl_bindings.cpp, which owns runtime verb bindings only).
-2. **Flatten:** per-region sub-meshes are kept separate; each region's stack runs in
-   list order on its chunk; then chunks (modified + untouched) merge. This **replaces**
-   the whole-merged-mesh `apply_retopo_hook` in part_flatten.cpp.
-3. **Caching:** `.retopo.part` cache re-keys **per region** — fold(region mesh hash,
-   full stack settings, extraction-sync constant, platform) — so any stack edit
-   invalidates only that region's cached output.
-4. **Blacklist:** the crash-recovery journal (`retopo_blacklist`) keys on the same
-   per-region hash. A crashing region blacklists itself; other regions and parts proceed.
-5. **No-autoremesher builds:** as today — retopo modifier logs a one-line warning and is
+1. **Build:** `beginModifier`/`endModifier` bindings record region boundaries as index
+   ranges over the DslState build buffer (and direct-triangle buffer) plus the parsed
+   modifier stack. Pure bookkeeping; no geometry work during build().
+2. **Bake (`script_host::bake_source`):** region BuildOps are lowered and cell-meshed
+   separately from non-region ops. Per region, per material-merge-group: cell meshes are
+   accumulated across all cells and welded into one indexed mesh (cross-cell seams become
+   interior edges), the ordered stack runs on it, and the result registers as one BLAS
+   entry. Non-region geometry takes the existing per-cell path untouched.
+3. **Caching:** none beyond the existing `.part` asset cache — baked parts are keyed by
+   resolved hash, so modifiers (including retopo) rerun only when the part actually
+   changes. The `.retopo.part` sibling cache is deleted along with the flatten hook.
+4. **Blacklist:** the crash-recovery journal (`retopo_blacklist`) moves to bake time,
+   keyed per region chunk — fold(welded region mesh hash, stack settings). A crashing
+   chunk blacklists itself; other chunks, regions, and parts proceed on restart.
+5. **Flatten:** `apply_retopo_hook`, its cache helpers, `FlattenTargets::retopo`,
+   `eval_retopo_settings`, and `RetopoSettings` are all deleted (clean cut).
+6. **No-autoremesher builds:** as today — retopo modifier logs a one-line warning and is
    skipped (Windows cross-build stays clean without autoremesher_core).
 
 ## Smooth Implementation (new MSL pass)
@@ -119,7 +131,7 @@ Shorthand `{ simplify: 0.3 }` (bare number) is accepted for simplify.
 
 - MSL: `mesh_smooth_tests` — volume preservation within tolerance, closed-mesh
   invariants (vert/index counts unchanged, no NaNs), determinism byte-identity.
-- Engine: region plumbing tests at the flatten level — region chunk isolated from
+- Engine: region plumbing tests at the bake level — region chunk isolated from
   non-region geometry; stack order respected (simplify-then-smooth ≠ smooth-then-simplify
   fixture); failure-skip (forced retopo failure still yields smoothed chunk); multiple
   regions independent; cache key changes when stack edited.
