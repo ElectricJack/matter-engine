@@ -83,6 +83,11 @@ public:
 
     size_t tile_count() const { return tiles_.size(); }
 
+    // Read-only access to all tile records (indexed by tile_idx).
+    // Used by execute_refine_step to obtain coarse_hash, full_hash, manifest_idx
+    // by the same index that mark() and evict_beyond() use.
+    const TileRecord& tile_at(uint32_t tile_idx) const { return tiles_[tile_idx]; }
+
     // Number of tiles currently in State::Full.
     size_t full_count() const;
 
@@ -91,6 +96,12 @@ public:
     // for camera height when comparing distances.
     // Returns false if none pending; sets *out to the record.
     bool next(const float focus[3], TileRecord** out);
+
+    // Return the index of a TileRecord returned by next().
+    // Precondition: tr must be a pointer into this controller's tile array.
+    uint32_t tile_index_of(const TileRecord* tr) const {
+        return (uint32_t)(tr - tiles_.data());
+    }
 
     // Update a tile's state.  tile_idx < tile_count().
     void mark(uint32_t tile_idx, TileRecord::State s);

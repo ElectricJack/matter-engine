@@ -56,7 +56,13 @@ struct Command {
 class CommandQueue {
 public:
     std::shared_ptr<CancelToken> push(Command c);
-    bool pop(Command& out);   // blocks; false once shut down and drained
+    bool pop(Command& out);             // blocks; false once shut down and drained
+    // Phase C Task 6: timed pop for the refine loop.
+    // Returns true + fills out if a command is available within ms milliseconds.
+    // Returns false (and does NOT fill out) on timeout, shutdown, or empty+drained.
+    // Caller must check the return value; false on shutdown signals termination.
+    // out_timed_out is set to true on timeout (vs false on shutdown/drained).
+    bool pop_wait(Command& out, int ms, bool& out_timed_out);
     void shut_down();
 private:
     std::mutex m_;

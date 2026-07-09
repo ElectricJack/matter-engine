@@ -177,6 +177,7 @@ int main() {
         skip_bake_case("(a) cold-bake instances + budget");
         skip_bake_case("(b) warm re-bake determinism");
         skip_bake_case("(c) regenerate seed reroll (terrain re-bakes, scatter hits cache)");
+        skip_bake_case("(d) phase-2 refinement: RefineTileDone events");
         goto summary;
     }
     printf("-- (a) cold-bake instances + budget\n");
@@ -255,6 +256,72 @@ int main() {
                           "valley-det: identical instance count across warm runs");
                 }
             }
+        }
+    }
+
+    // ---- (d) phase-2 refinement: RefineTileDone fires after camera approach ----
+    // Task 6 (Phase C): camera-driven refine loop.  After a warm bake, move the
+    // camera focus close to (0,0,0) and drive the refine loop for a bounded time.
+    // Expect: at least one RefineTileDone event with module="Terrain", phase="refine",
+    // done >= 1, total == 2601 (one coarse slot per Meadow tile).
+    // The refine radius env var is left at default (160 world-units) so only tiles
+    // nearest the origin are upgraded; no exhaustive full-bake needed.
+    printf("-- (d) phase-2 refinement: RefineTileDone events\n");
+    {
+        std::string err;
+        std::unique_ptr<matter::EngineContext> engine;
+        auto s = open_valley(schemas, world_data, shared_lib, cache_dir, engine, err);
+        CHECK(s != nullptr, "valley-refine: session opened");
+        if (!s) { goto summary; }
+
+        s->request_bake();
+
+        int bake_errors = 0;
+        bool bake_ok = drive_bake(*s, bake_errors);
+        CHECK(bake_ok, "valley-refine: initial bake completed");
+        if (!bake_ok) goto summary;
+        CHECK(bake_errors == 0, "valley-refine: bake ev_errors == 0");
+
+        // Move focus to origin — tiles near (0,0,0) are within default radius (160m).
+        {
+            float focus[3] = {0.0f, 0.0f, 0.0f};
+            s->set_bake_focus(focus);
+        }
+
+        // Drive refine loop for up to 30s, stop at first RefineTileDone.
+        {
+            int refine_events = 0;
+            int refine_done_max = 0;
+            int refine_total = 0;
+            bool got_refine_module = false;
+            bool got_refine_phase  = false;
+
+            auto deadline = clk::now() + std::chrono::seconds(30);
+            while (clk::now() < deadline) {
+                s->pump_gpu_jobs(4.0f);
+                matter::Event ev;
+                while (s->poll_event(ev)) {
+                    if (ev.type == matter::EventType::RefineTileDone) {
+                        ++refine_events;
+                        if ((int)ev.done > refine_done_max) refine_done_max = (int)ev.done;
+                        refine_total = (int)ev.total;
+                        if (ev.module == "Terrain")  got_refine_module = true;
+                        if (ev.phase  == "refine")   got_refine_phase  = true;
+                    }
+                }
+                if (refine_events > 0) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+
+            printf("  refine_events=%d refine_done_max=%d refine_total=%d\n",
+                   refine_events, refine_done_max, refine_total);
+            fflush(stdout);
+
+            CHECK(refine_events >= 1, "valley-refine: at least one RefineTileDone event");
+            CHECK(got_refine_module, "valley-refine: RefineTileDone module=Terrain");
+            CHECK(got_refine_phase,  "valley-refine: RefineTileDone phase=refine");
+            CHECK(refine_done_max >= 1, "valley-refine: done >= 1");
+            CHECK(refine_total == 2601, "valley-refine: total == 2601 (all Meadow tiles)");
         }
     }
 

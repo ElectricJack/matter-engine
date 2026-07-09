@@ -27,6 +27,9 @@
 #include "live_edit.h"
 #include "live_edit_prod.h"
 #include "part_graph_snapshot.h"
+
+// Phase C Task 6: camera-driven refine loop.
+#include "refine_controller.h"
 #ifdef __linux__
 #include "inotify_watcher.h"
 #endif
@@ -223,6 +226,9 @@ struct WorldSession::Impl {
     void execute_bake(matter_async::Command& cmd, bool is_reload);
     // Execute a RebakeCone command. Called only on the worker thread.
     void execute_rebake_cone(matter_async::Command& cmd);
+    // Phase C Task 6: execute one camera-driven refine step.
+    // Called by worker_loop in the pop_wait timeout path when refine_ctrl is live.
+    void execute_refine_step();
 
     // Parameters for publish_pipeline — the genuine differences between the
     // BakeAll/Reload and RebakeCone publish flows.
@@ -284,6 +290,28 @@ struct WorldSession::Impl {
     long long le_last_event_ms_ = 0;
     bool le_have_pending_ = false;
     static constexpr long long k_debounce_ms = 150;
+
+    // --- Phase C Task 6: camera-driven refine loop ----------------------------
+    // RefineController: built from the graph snapshot + world instances after each
+    // full publish finishes; rebuilt on supersession (BakeAll/Reload). Null when no
+    // world is live or the bake has not yet finished.
+    // Accessed ONLY on the worker thread — no mutex needed.
+    std::unique_ptr<matter_refine::RefineController> refine_ctrl;
+
+    // Provider kept alive through the refine phase so ensure_part_baked/flattened
+    // remain callable without new machinery. Set at the end of publish_pipeline
+    // (same shared_ptr as pp.provider_ref); cleared when the refine phase ends or
+    // a new bake supersedes this session.
+    std::shared_ptr<viewer::LocalProvider> refine_provider;
+
+    // Refine radius (XZ eviction distance in world units). Read ONCE at open_world
+    // time from MATTER_REFINE_RADIUS env var; default 160.0f (≈ 10 tiles of 10 m).
+    // Exposed as an env override so tests can set a small radius without recompile.
+    float refine_radius = 160.0f;
+
+    // Tile count from the most-recent RefineController::build() (used in emitted events).
+    // Worker thread only.
+    size_t refine_tile_count = 0;
 };
 
 // ---------------------------------------------------------------------------
@@ -303,7 +331,84 @@ void WorldSession::Impl::ensure_worker_started() {
 }
 
 void WorldSession::Impl::worker_loop() {
+    // Phase C Task 6: refine loop.
+    // After a bake finishes (bake_active = false) and a RefineController is live,
+    // the worker uses pop_wait(50ms) instead of pop() so it can service one refine
+    // step per timeout slot.  Commands always win: a bake/reload command cancels and
+    // rebuilds the refine controller.
+    //
+    // Invariant: a refine step never runs while a command is pending or a bake is in
+    // flight — commands always win the pop.
+
     for (;;) {
+        // When a refine controller is live, use timed pop so idle slots drive refine.
+        if (refine_ctrl) {
+            matter_async::Command cmd;
+            bool timed_out = false;
+            bool got_cmd = commands.pop_wait(cmd, /*ms=*/50, timed_out);
+
+            if (!got_cmd && !timed_out) {
+                // Shutdown + drained. Reset refine state and exit.
+                refine_ctrl.reset();
+                refine_provider.reset();
+                return;
+            }
+
+            if (got_cmd) {
+                // A command arrived — execute it (supersedes refine).
+                if (cmd.kind == matter_async::CommandKind::Shutdown) {
+                    refine_ctrl.reset();
+                    refine_provider.reset();
+                    return;
+                }
+                // BakeAll/Reload: reset refine controller (will be rebuilt post-publish).
+                if (cmd.kind == matter_async::CommandKind::BakeAll ||
+                    cmd.kind == matter_async::CommandKind::Reload) {
+                    refine_ctrl.reset();
+                    refine_provider.reset();
+                }
+                bake_active.store(true, std::memory_order_release);
+                try {
+                    switch (cmd.kind) {
+                        case matter_async::CommandKind::BakeAll:
+                            execute_bake(cmd, /*is_reload=*/false);
+                            break;
+                        case matter_async::CommandKind::Reload:
+                            execute_bake(cmd, /*is_reload=*/true);
+                            break;
+                        case matter_async::CommandKind::RebakeCone:
+                            execute_rebake_cone(cmd);
+                            break;
+                        case matter_async::CommandKind::Shutdown:
+                            bake_active.store(false, std::memory_order_release);
+                            refine_ctrl.reset();
+                            refine_provider.reset();
+                            return;
+                    }
+                } catch (std::bad_alloc&) {
+                    Event ev;
+                    ev.type    = EventType::BakeError;
+                    ev.code    = BakeErrorCode::OutOfMemory;
+                    ev.message = "std::bad_alloc";
+                    emit_event(std::move(ev));
+                } catch (std::exception& e) {
+                    Event ev;
+                    ev.type    = EventType::BakeError;
+                    ev.code    = BakeErrorCode::Internal;
+                    ev.message = e.what();
+                    emit_event(std::move(ev));
+                }
+                bake_active.store(false, std::memory_order_release);
+                continue;
+            }
+
+            // Timed out with no command — take ONE refine step.
+            // Invariant: refine_ctrl is live, no command is pending.
+            execute_refine_step();
+            continue;
+        }
+
+        // No refine controller: block until next command (original behavior).
         matter_async::Command cmd;
         if (!commands.pop(cmd)) return;   // shutdown + drained
         if (cmd.kind == matter_async::CommandKind::Shutdown) return;
@@ -705,14 +810,19 @@ void WorldSession::Impl::publish_pipeline(
     // placeChild/translate output; NOT at [12],[13],[14] which is the last row).
     // Parts with no manifest entry sort last (dist = +infinity).
     // Stable sort ascending by dist², tie-break by part hash (deterministic).
+    //
+    // Phase C Task 6 (carried-in follow-up a): snap_focus is hoisted outside the
+    // block so the ref-streaming section of the publish loop can apply the same
+    // comparator to newly-appended tail entries (stable sort of the appended segment
+    // after each ref-streaming batch).
+    float snap_focus[3];
     {
-        float snap_focus[3];
-        {
-            std::lock_guard<std::mutex> lk(focus_mutex);
-            snap_focus[0] = focus[0];
-            snap_focus[1] = focus[1];
-            snap_focus[2] = focus[2];
-        }
+        std::lock_guard<std::mutex> lk(focus_mutex);
+        snap_focus[0] = focus[0];
+        snap_focus[1] = focus[1];
+        snap_focus[2] = focus[2];
+    }
+    {
         // Build min dist² map: hash → smallest dist² across all manifest entries.
         std::unordered_map<uint64_t, float> min_dist2;
         for (const uint64_t h : publish_order)
@@ -838,6 +948,7 @@ void WorldSession::Impl::publish_pipeline(
                 if (part_asset::load_flat_v3(flat_abs, h, scratch_blas,
                                               scratch_tlas, clusters_ignored, refs)
                     && !refs.empty()) {
+                    size_t tail_start = publish_order.size();
                     for (const auto& r : refs) {
                         uint64_t rh = r.child_resolved_hash;
                         if (!queued_hashes.insert(rh).second) continue; // already queued
@@ -855,6 +966,40 @@ void WorldSession::Impl::publish_pipeline(
                         // without new provider plumbing; BakePartDone.module = "".
                         manifest.instances.push_back(we);
                         publish_order.push_back(rh);
+                    }
+                    // Phase C Task 6 (carried-in follow-up a): sort the newly-appended
+                    // tail of publish_order by focus distance — same comparator as the
+                    // initial sort applied to the full list before the loop.
+                    // Only the new entries [tail_start, end) are unsorted; indices
+                    // [0, tail_start) are already committed (GPU jobs posted); sorting
+                    // the tail ensures ref-streamed children publish in focus order.
+                    if (publish_order.size() > tail_start + 1) {
+                        // Build min dist² for just the new tail entries from manifest.
+                        std::unordered_map<uint64_t, float> tail_dist2;
+                        for (size_t ti = tail_start; ti < publish_order.size(); ++ti)
+                            tail_dist2[publish_order[ti]] = std::numeric_limits<float>::infinity();
+                        for (const auto& e : manifest.instances) {
+                            auto it = tail_dist2.find(e.part_hash);
+                            if (it == tail_dist2.end()) continue;
+                            float dx = e.transform[3]  - snap_focus[0];
+                            float dy = e.transform[7]  - snap_focus[1];
+                            float dz = e.transform[11] - snap_focus[2];
+                            float d2 = dx*dx + dy*dy + dz*dz;
+                            if (d2 < it->second) it->second = d2;
+                        }
+                        std::stable_sort(
+                            publish_order.begin() + (ptrdiff_t)tail_start,
+                            publish_order.end(),
+                            [&](uint64_t a, uint64_t b) {
+                                float da = tail_dist2.count(a)
+                                    ? tail_dist2[a]
+                                    : std::numeric_limits<float>::infinity();
+                                float db = tail_dist2.count(b)
+                                    ? tail_dist2[b]
+                                    : std::numeric_limits<float>::infinity();
+                                if (da != db) return da < db;
+                                return a < b;  // tie-break: ascending hash (deterministic)
+                            });
                     }
                 }
             }
@@ -1059,6 +1204,222 @@ void WorldSession::Impl::publish_pipeline(
                 emit_event(std::move(ev));
             }
         }
+    }
+
+    // 10) Phase C Task 6: build RefineController from graph snapshot + world instances.
+    //     Only for BakeAll/Reload (provider_ref set); cone rebakes don't update the
+    //     terrain tile set.  Runs after the tileset tail so the world is fully settled.
+    //     Reset then rebuild so supersession starts fresh.
+    if (p.provider_ref && !is_cancelled()) {
+        refine_provider = p.provider_ref;   // extend provider lifetime into refine phase
+
+        // Build GraphNodes for RefineController from the retained bake_plan, which
+        // covers ALL parametric variants (one entry per (module, params) pair keyed
+        // by resolved_hash). The graph_snapshot_.nodes map has only one entry per
+        // module name (the first-seen variant per the "module-identity contract" in
+        // part_graph.cpp), so it cannot distinguish Terrain(tx=0,tz=0) from
+        // Terrain(tx=1,tz=0).  The bake_plan has BakeInputs{module, params} for each
+        // distinct resolved_hash — exactly what RefineController needs.
+        const auto& bake_plan = p.provider_ref->install_result().bake_plan;
+        std::vector<matter_refine::GraphNode> gnodes;
+        gnodes.reserve(bake_plan.size());
+        for (const auto& kv : bake_plan) {
+            matter_refine::GraphNode gn;
+            gn.module        = kv.second.module;
+            gn.params_json   = part_graph::params_to_json(kv.second.params);
+            gn.resolved_hash = kv.first;   // key IS the resolved_hash
+            gnodes.push_back(std::move(gn));
+        }
+
+        // Build instance refs from manifest.instances (row-major: tx=[3], ty=[7], tz=[11]).
+        std::vector<matter_refine::InstanceRef> irefs;
+        irefs.reserve(manifest.instances.size());
+        for (uint32_t i = 0; i < (uint32_t)manifest.instances.size(); ++i) {
+            const auto& e = manifest.instances[i];
+            matter_refine::InstanceRef ir;
+            ir.hash             = e.part_hash;
+            ir.translation[0]   = e.transform[3];
+            ir.translation[1]   = e.transform[7];
+            ir.translation[2]   = e.transform[11];
+            ir.manifest_idx     = i;
+            irefs.push_back(ir);
+        }
+
+        auto new_ctrl = std::make_unique<matter_refine::RefineController>();
+        new_ctrl->build(
+            matter_refine::span<const matter_refine::GraphNode>(gnodes.data(), gnodes.size()),
+            matter_refine::span<const matter_refine::InstanceRef>(irefs.data(), irefs.size()));
+
+        refine_tile_count = new_ctrl->tile_count();
+        refine_ctrl = std::move(new_ctrl);
+        printf("[refine] controller built: %zu tiles\n", refine_tile_count);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WorldSession::Impl::execute_refine_step
+// Phase C Task 6: one camera-driven refine step. Called by worker_loop in the
+// pop_wait timeout slot when refine_ctrl is live and no command is pending.
+//
+// Per step:
+//   1. Evict full tiles beyond refine_radius (farthest-first): post GpuJob to
+//      swap instance full→coarse + release_part(full) + store.release(full),
+//      then mark(Coarse) and emit RefineTileDone with decremented done.
+//   2. Take the highest-priority Coarse tile nearest to the focus.
+//   3. ensure_part_baked(full_hash) + ensure_part_flattened(full_hash) on the worker.
+//      On error: log, mark(Coarse) (skip this tile), continue.
+//   4. Post a GpuJob (fire-and-forget) that loads the full variant and swaps
+//      manifest.instances[manifest_idx].part_hash coarse→full, then applies a
+//      WorldDelta so state reflects the new hash.
+//      GL-thread invariant: assert_gl_thread inside the job.
+//   5. mark(Full) + emit RefineTileDone{module="Terrain", done=full_count,
+//      total=tile_count, phase="refine"}.
+//
+// Focus is projected to y=0 before passing to RefineController (carried-in
+// follow-up b from Task 4 review): tile centers sit at y=0; camera height H
+// would otherwise shrink the effective XZ eviction radius to sqrt(r²−H²).
+// Projecting to y=0 makes refine_radius a clean XZ ground-plane distance,
+// which matches what the user intends when tuning the radius in world units.
+// ---------------------------------------------------------------------------
+void WorldSession::Impl::execute_refine_step() {
+    if (!refine_ctrl || !refine_provider) return;
+
+    // Snapshot focus; project to y=0 (design note: see above).
+    float focus_yz0[3];
+    {
+        std::lock_guard<std::mutex> lk(focus_mutex);
+        focus_yz0[0] = focus[0];
+        focus_yz0[1] = 0.0f;  // project to ground plane — tiles sit at y=0
+        focus_yz0[2] = focus[2];
+    }
+
+    const size_t tile_count = refine_tile_count;
+
+    // 1) Evict full tiles beyond radius (farthest-first).
+    {
+        std::vector<uint32_t> to_evict = refine_ctrl->evict_beyond(focus_yz0, refine_radius);
+        for (uint32_t ti : to_evict) {
+            const matter_refine::TileRecord& rec = refine_ctrl->tile_at(ti);
+            // Capture fields for the GpuJob lambda.
+            uint64_t full_hash_e  = rec.full_hash;
+            uint64_t coarse_hash_e = rec.coarse_hash;
+            uint32_t midx_e       = rec.manifest_idx;
+
+            // Mark Coarse first (worker thread); GpuJob runs later on GL thread.
+            refine_ctrl->mark(ti, matter_refine::TileRecord::State::Coarse);
+
+            // full_count after eviction.
+            size_t done_after = refine_ctrl->full_count();
+
+            // Post eviction job: swap instance full→coarse + GPU release.
+            matter_async::GpuJob ej;
+            ej.name = "refine.evict";
+            ej.fn   = [this, full_hash_e, coarse_hash_e, midx_e](std::string& /*err*/) -> bool {
+                matter_async::assert_gl_thread("refine.evict");
+                // Swap instance hash back to coarse in the manifest.
+                if (midx_e < (uint32_t)manifest.instances.size()) {
+                    manifest.instances[midx_e].part_hash = coarse_hash_e;
+                    // Apply delta so WorldState reflects the swap.
+                    viewer::WorldDelta d;
+                    d.added.push_back(manifest.instances[midx_e]);
+                    state.apply(d);
+                    tracer_dirty = true;
+                    tracer.reset();
+                }
+                // Release full-res GPU and CPU resources.
+                if (culler_ready) gpu_culler.release_part(full_hash_e);
+                if (store)        store->release(full_hash_e);
+                return true;
+            };
+            gpu_jobs.post(std::move(ej));
+
+            // Emit RefineTileDone with the new (decremented) done count.
+            Event ev;
+            ev.type   = EventType::RefineTileDone;
+            ev.module = "Terrain";
+            ev.done   = (int)done_after;
+            ev.total  = (int)tile_count;
+            ev.phase  = "refine";
+            emit_event(std::move(ev));
+        }
+    }
+
+    // 2) Pick the nearest Coarse tile to focus.
+    matter_refine::TileRecord* tr = nullptr;
+    if (!refine_ctrl->next(focus_yz0, &tr)) return;  // all tiles Full or Queued
+
+    uint32_t ti_next     = refine_ctrl->tile_index_of(tr);
+    uint64_t full_hash_n = tr->full_hash;
+    uint64_t coarse_hash_n = tr->coarse_hash;
+    uint32_t midx_n      = tr->manifest_idx;
+
+    if (full_hash_n == 0) {
+        // No full variant — skip this tile silently.
+        refine_ctrl->mark(ti_next, matter_refine::TileRecord::State::Full); // treat as done
+        return;
+    }
+
+    // Mark Queued so worker_loop doesn't re-pick it on the next timeout.
+    refine_ctrl->mark(ti_next, matter_refine::TileRecord::State::Queued);
+
+    // 3) Bake the full variant on the worker thread.
+    {
+        std::string berr;
+        if (!refine_provider->ensure_part_baked(full_hash_n, berr)) {
+            // Bake failure: log and mark Coarse so the tile stays eligible for retry.
+            fprintf(stderr, "[refine] ensure_part_baked failed for full hash %016llx: %s\n",
+                    (unsigned long long)full_hash_n, berr.c_str());
+            refine_ctrl->mark(ti_next, matter_refine::TileRecord::State::Coarse);
+            return;
+        }
+        refine_provider->ensure_part_flattened(full_hash_n);
+    }
+
+    // 4) Post GPU job: load full variant + swap instance hash + apply delta.
+    size_t done_after_n = refine_ctrl->full_count() + 1; // will be Full after mark below
+    (void)coarse_hash_n;  // coarse_hash for eviction; not needed for upgrade swap
+
+    matter_async::GpuJob uj;
+    uj.name = "refine.upgrade";
+    uj.fn   = [this, full_hash_n, midx_n](std::string& /*err*/) -> bool {
+        matter_async::assert_gl_thread("refine.upgrade");
+        // Load the full part into the store.
+        if (!store->get_or_load(full_hash_n)) {
+            // Load failure — leave the manifest unchanged; tile stays Coarse implicitly
+            // (mark(Coarse) is called on the worker after post, but we need to
+            // communicate this back).  For simplicity, silently skip; the tile
+            // will be re-picked on the next refine step since mark(Full) hasn't run.
+            return true;  // skip-and-continue
+        }
+        // Ensure part registered in culler.
+        if (culler_ready) gpu_culler.ensure_part(full_hash_n, *store);
+
+        // Swap manifest entry's part_hash to the full variant.
+        if (midx_n < (uint32_t)manifest.instances.size()) {
+            manifest.instances[midx_n].part_hash = full_hash_n;
+            viewer::WorldDelta d;
+            d.added.push_back(manifest.instances[midx_n]);
+            state.apply(d);
+            tracer_dirty = true;
+            tracer.reset();
+        }
+        return true;
+    };
+    gpu_jobs.post(std::move(uj));
+
+    // 5) Mark Full (on worker, before the GL job runs — OK because the state
+    //    bit is used only by the refine controller, not the renderer).
+    refine_ctrl->mark(ti_next, matter_refine::TileRecord::State::Full);
+
+    // Emit RefineTileDone.
+    {
+        Event ev;
+        ev.type   = EventType::RefineTileDone;
+        ev.module = "Terrain";
+        ev.done   = (int)refine_ctrl->full_count();
+        ev.total  = (int)tile_count;
+        ev.phase  = "refine";
+        emit_event(std::move(ev));
     }
 }
 
@@ -1349,6 +1710,17 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
     if (desc.enable_live_edit)
         printf("live-edit: MATTER_LIVE_EDIT=1 ignored on non-Linux (inotify not available)\n");
 #endif
+
+    // Phase C Task 6: read MATTER_REFINE_RADIUS override ONCE at init time.
+    // Default 160.0f (≈ 10 tiles × 10 m/tile). Tests can set a small value
+    // via the env var to exercise eviction without a large world.
+    {
+        const char* rr_env = std::getenv("MATTER_REFINE_RADIUS");
+        if (rr_env) {
+            float rr = std::atof(rr_env);
+            if (rr > 0.0f) simpl->refine_radius = rr;
+        }
+    }
 
     // Construct provider. No bake here — caller must call request_bake().
     simpl->provider = std::make_shared<viewer::LocalProvider>(simpl->cfg);

@@ -98,10 +98,12 @@ struct EvRec {
 
 static std::string ev_type_name(matter::EventType t) {
     switch (t) {
-        case matter::EventType::BakeStarted:  return "BakeStarted";
-        case matter::EventType::BakePartDone: return "BakePartDone";
-        case matter::EventType::BakeFinished: return "BakeFinished";
-        case matter::EventType::BakeError:    return "BakeError";
+        case matter::EventType::BakeStarted:    return "BakeStarted";
+        case matter::EventType::BakePartDone:   return "BakePartDone";
+        case matter::EventType::BakeFinished:   return "BakeFinished";
+        case matter::EventType::BakeError:      return "BakeError";
+        // Phase C Task 6: camera-driven refine loop event (append-only).
+        case matter::EventType::RefineTileDone: return "RefineTileDone";
     }
     return "?";
 }

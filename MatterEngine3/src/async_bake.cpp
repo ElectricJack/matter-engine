@@ -204,6 +204,35 @@ bool CommandQueue::pop(Command& out) {
     return true;
 }
 
+bool CommandQueue::pop_wait(Command& out, int ms, bool& out_timed_out) {
+    out_timed_out = false;
+    std::unique_lock<std::mutex> lk(m_);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    bool signaled = cv_.wait_until(lk, deadline,
+        [this] { return !q_.empty() || shut_down_; });
+
+    if (!signaled) {
+        // Timed out — no command arrived.
+        out_timed_out = true;
+        return false;
+    }
+    if (q_.empty()) {
+        // Shut down and drained.
+        return false;
+    }
+
+    out = std::move(q_.front());
+    q_.pop_front();
+    in_flight_ = out.token;
+
+    if (out.kind == CommandKind::Shutdown) {
+        in_flight_ = nullptr;
+        return false;
+    }
+
+    return true;
+}
+
 void CommandQueue::shut_down() {
     std::lock_guard<std::mutex> lk(m_);
     shut_down_ = true;

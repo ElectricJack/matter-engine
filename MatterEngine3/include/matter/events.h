@@ -3,7 +3,13 @@
 
 namespace matter {
 
-enum class EventType { BakeStarted, BakePartDone, BakeFinished, BakeError };
+enum class EventType { BakeStarted, BakePartDone, BakeFinished, BakeError,
+                       // Phase C Task 6: camera-driven refine loop event.
+                       // Emitted after each tile is upgraded (coarse→full) or evicted
+                       // (full→coarse).  done = current full-resident tile count;
+                       // total = total tile count from the RefineController.
+                       // phase = "refine".  module = "Terrain" (always, for now).
+                       RefineTileDone };
 
 // Structured bake-error classification (Phase B). None on non-error events.
 enum class BakeErrorCode { None, Cancelled, OutOfMemory, ScriptError, GpuError, IoError, Internal };
