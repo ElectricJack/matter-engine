@@ -44,10 +44,14 @@ public:
 
 private:
     int cx(float v) const { return (int)std::floor(v / cell_); }
-    static uint64_t key(int x, int y, int z) {
-        return ((uint64_t)(uint32_t)x * 73856093ull) ^
-               ((uint64_t)(uint32_t)y * 19349663ull) ^
-               ((uint64_t)(uint32_t)z * 83492791ull);
+    // Injective within +/- 2^20 cells per axis (far beyond any part bake):
+    // 21 low bits of each coordinate packed into one 64-bit key. Distinct
+    // cells always get distinct keys, so buckets never merge and queries
+    // can never report a point twice.
+    static uint64_t key(int32_t x, int32_t y, int32_t z) {
+        return (uint64_t(uint32_t(x) & 0x1FFFFF) << 42) |
+               (uint64_t(uint32_t(y) & 0x1FFFFF) << 21) |
+               (uint64_t(uint32_t(z) & 0x1FFFFF));
     }
     float cell_;
     size_t count_ = 0;

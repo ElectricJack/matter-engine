@@ -6,6 +6,7 @@
 #include <cstring>
 #include <cmath>
 #include <vector>
+#include <algorithm>
 
 using namespace pf;
 
@@ -70,11 +71,56 @@ static void test_spatial_hash_vs_brute_force() {
     printf("  spatial hash OK (%zu pts)\n", pts.size());
 }
 
+static void test_spatial_hash_no_duplicates() {
+    // Regression test: injective packed-coordinate key must prevent
+    // duplicate query results from cell collisions. Dense grid [-16,16]^3
+    // at step 4 with cell_size 1.0 = 9^3 = 729 points.
+    std::vector<V3> pts;
+    for (int x = -16; x <= 16; x += 4) {
+        for (int y = -16; y <= 16; y += 4) {
+            for (int z = -16; z <= 16; z += 4) {
+                pts.push_back({(float)x, (float)y, (float)z});
+            }
+        }
+    }
+    SpatialHash h(1.0f);
+    for (uint32_t i = 0; i < pts.size(); ++i) h.insert(pts[i], i);
+    assert(h.size() == pts.size());
+
+    Rng rng(42);
+    for (int q_iter = 0; q_iter < 50; ++q_iter) {
+        V3 center{rng.range(-16, 16), rng.range(-16, 16), rng.range(-16, 16)};
+        const float radius = 3.0f;
+
+        // Collect query results.
+        std::vector<uint32_t> got;
+        h.query(center, radius, [&](uint32_t idx, V3, float d2) {
+            got.push_back(idx);
+        });
+
+        // Verify count matches brute force.
+        size_t expect_count = 0;
+        for (uint32_t i = 0; i < pts.size(); ++i) {
+            V3 d = pts[i] - center;
+            if (dot(d, d) <= radius * radius) ++expect_count;
+        }
+        assert(got.size() == expect_count && "query count must match brute force");
+
+        // Verify no duplicates: sort and check adjacent pairs.
+        std::sort(got.begin(), got.end());
+        for (size_t i = 1; i < got.size(); ++i) {
+            assert(got[i] != got[i - 1] && "no point id can appear twice in query results");
+        }
+    }
+    printf("  spatial hash no-duplicates OK (%zu pts, 50 queries)\n", pts.size());
+}
+
 int main() {
     printf("pf_tests:\n");
     test_rng_determinism();
     test_v3_math();
     test_spatial_hash_vs_brute_force();
+    test_spatial_hash_no_duplicates();
     printf("pf_tests: ALL OK\n");
     return 0;
 }
