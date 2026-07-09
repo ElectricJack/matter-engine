@@ -10,11 +10,10 @@ extern "C" {
 #include "quickjs.h"
 }
 
-// Per-part SCHEMA-level configuration (lodBudgets, lodAnchorSize, retopo, ...)
-// is discovered via `static` class properties read by ScriptHost — NOT via the
-// runtime verb bindings below. If you're looking for the retopo binding (Phase
-// 5 autoremesher integration) or the lodBudgets binding, see:
-//   MatterEngine3/src/script_host.cpp :: eval_retopo_settings, eval_lod_budgets
+// Per-part SCHEMA-level configuration (lodBudgets, lodAnchorSize) is
+// discovered via `static` class properties read by ScriptHost — NOT via the
+// runtime verb bindings below. If you're looking for the lodBudgets binding,
+// see: MatterEngine3/src/script_host.cpp :: eval_lod_budgets
 // This file only owns the runtime-verb bindings the Part class methods forward
 // to (translate, box, sphere, placeChild, tileset verbs, etc.).
 
@@ -54,7 +53,6 @@ static JSValue j_box(JSContext* c, JSValueConst, int, JSValueConst* a){
 static JSValue j_op(JSContext* c, JSValueConst, int, JSValueConst* a){
     int32_t k=0; JS_ToInt32(c,&k,a[0]); state_of(c)->set_last_op((CsgOp)k); return JS_UNDEFINED; }
 static JSValue j_smoothing(JSContext* c, JSValueConst, int, JSValueConst* a){ state_of(c)->smoothing((float)argd(c,a[0])); return JS_UNDEFINED; }
-static JSValue j_simplify(JSContext* c, JSValueConst, int, JSValueConst* a){ state_of(c)->set_simplify((float)argd(c,a[0])); return JS_UNDEFINED; }
 
 static JSValue j_beginModifier(JSContext* c, JSValueConst, int, JSValueConst*) {
     state_of(c)->begin_modifier_region(); return JS_UNDEFINED; }
@@ -779,7 +777,6 @@ void install_bindings(JSContext* ctx) {
     bind("__dsl_beginVoxels",j_beginVoxels,1); bind("__dsl_endVoxels",j_endVoxels,0);
     bind("__dsl_sphere",j_sphere,4); bind("__dsl_box",j_box,6);
     bind("__dsl_op",j_op,1); bind("__dsl_smoothing",j_smoothing,1);
-    bind("__dsl_simplify",j_simplify,1);
     bind("__dsl_beginModifier",j_beginModifier,0); bind("__dsl_endModifier",j_endModifier,1);
     bind("__dsl_placeChild",j_placeChild,2);
     bind("__dsl_beginShape",j_beginShape,1); bind("__dsl_vertex",j_vertex,3);

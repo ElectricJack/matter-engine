@@ -141,12 +141,6 @@ public:
     void smoothing(float k) { smoothing_ = (k < 0 ? 0 : k); }
     float smoothing_k() const { return smoothing_; }
 
-    // Per-part mesh simplification (keep-fraction): 1.0 = full detail, 0.3 = keep
-    // 30% (i.e. "70% simplification"). Parts opt in via this.simplify(); leaves
-    // never call it, so their ratio stays 1.0 and the host skips decimation.
-    void set_simplify(float r) { simplify_ratio_ = (r <= 0 ? 0.001f : (r > 1 ? 1.0f : r)); }
-    float simplify_ratio() const { return simplify_ratio_; }
-
     // Modifier regions. begin/end are defined in dsl_triangle.cpp — they
     // capture tris_buf_->triangles().size(), and this header cannot include
     // triangle_emit.hpp (float3/raymath clash).
@@ -304,7 +298,6 @@ private:
     Session  session_ = Session::None;
     float    spacing_ = 0.1f;
     float    smoothing_ = 0.0f;
-    float    simplify_ratio_ = 1.0f;  // keep-fraction; 1.0 = no simplification
     size_t   session_start_ = 0;  // index into buffer_.ops where the open session began
     BuildBuffer buffer_;
     bool        has_error_ = false;

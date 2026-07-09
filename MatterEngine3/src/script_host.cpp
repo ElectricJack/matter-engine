@@ -9,7 +9,6 @@ extern "C" {
 #include "dsl_state.h"
 #include "dsl_bindings.h"
 #include "csg_lowering.h"   // NEW MatterEngine3 header
-#include "lod_bake.h"        // QEM decimation for simplify() on direct-tri parts
 #include "module_resolver.h" // SP-7 shared-lib fold + resolution
 #include "modifier_apply.h"  // Task 4: bake-time modifier region stack apply
 #include "mesh_indexed.hpp"  // Task 4: weld/unweld across cells for region path
@@ -588,79 +587,6 @@ ScriptHost::LodBudgetSpec ScriptHost::eval_lod_budgets(const std::string& source
     return out;
 }
 
-// Static discovery of a part's retopo settings (Phase 5 autoremesher). Mirrors
-// eval_lod_budgets: fresh isolated bake context, read the class's `static
-// retopo` object, populate individual RetopoSettings fields when present and
-// well-typed, otherwise leave the RetopoSettings{} defaults untouched. Fail-
-// closed: any parse/eval failure returns the default (enabled=false), so
-// existing schemas without a `static retopo` are transparently disabled and
-// bake byte-identically.
-part_asset::RetopoSettings ScriptHost::eval_retopo_settings(const std::string& source) {
-    part_asset::RetopoSettings out;   // defaults: enabled=false, 1.0, 3, 0, 60
-
-    std::string className = find_part_class_name(source);
-    if (className.empty()) return out;
-
-    ModuleStore store;
-    bool use_module = false;
-    if (!shared_lib_root_.empty()) {
-        module_resolver::FoldResult fr; std::string ferr;
-        if (!module_resolver::fold_sources(source, shared_lib_root_, fr, ferr)) return out;
-        if (!fr.modules.empty()) { store = store_from_fold(fr); use_module = true; }
-    }
-
-    JSRuntime* rt = nullptr; JSContext* ctx = nullptr;
-    BakeError eerr;
-    if (!eval_part_publish_class(source, className, use_module ? &store : nullptr,
-                                 rt, ctx, eerr))
-        return out;
-
-    JSValue global = JS_GetGlobalObject(ctx);
-    JSValue authored = JS_GetPropertyStr(ctx, global, "__partClass");
-    JS_FreeValue(ctx, global);
-    if (JS_IsFunction(ctx, authored)) {
-        JSValue retopo = JS_GetPropertyStr(ctx, authored, "retopo");
-        if (JS_IsObject(retopo) && !JS_IsFunction(ctx, retopo) && !JS_IsArray(retopo)) {
-            // enabled (bool)
-            JSValue en = JS_GetPropertyStr(ctx, retopo, "enabled");
-            if (JS_IsBool(en)) out.enabled = (JS_ToBool(ctx, en) != 0);
-            JS_FreeValue(ctx, en);
-            // target_ratio (number)
-            JSValue tr = JS_GetPropertyStr(ctx, retopo, "target_ratio");
-            if (JS_IsNumber(tr)) {
-                double d = 0.0;
-                if (JS_ToFloat64(ctx, &d, tr) == 0) out.target_ratio = (float)d;
-            }
-            JS_FreeValue(ctx, tr);
-            // iterations (int)
-            JSValue it = JS_GetPropertyStr(ctx, retopo, "iterations");
-            if (JS_IsNumber(it)) {
-                int32_t v = 0;
-                if (JS_ToInt32(ctx, &v, it) == 0) out.iterations = (int)v;
-            }
-            JS_FreeValue(ctx, it);
-            // seed (uint32)
-            JSValue sd = JS_GetPropertyStr(ctx, retopo, "seed");
-            if (JS_IsNumber(sd)) {
-                uint32_t v = 0;
-                if (JS_ToUint32(ctx, &v, sd) == 0) out.seed = v;
-            }
-            JS_FreeValue(ctx, sd);
-            // timeout_seconds (int)
-            JSValue to = JS_GetPropertyStr(ctx, retopo, "timeout_seconds");
-            if (JS_IsNumber(to)) {
-                int32_t v = 0;
-                if (JS_ToInt32(ctx, &v, to) == 0) out.timeout_seconds = (int)v;
-            }
-            JS_FreeValue(ctx, to);
-        }
-        JS_FreeValue(ctx, retopo);
-    }
-    JS_FreeValue(ctx, authored);
-    JS_FreeContext(ctx); JS_FreeRuntime(rt);
-    return out;
-}
-
 uint64_t ScriptHost::resolve_hash(const std::string& source,
                                   const std::string& params_json,
                                   const uint64_t* child_hashes,
@@ -716,15 +642,14 @@ static void ensure_triex(MeshIndexed& m, const TriEx& proto) {
 
 // Lower + cell-mesh one BuildBuffer and register its triangles.
 //   stack == nullptr: existing per-cell path, byte-identical to before —
-//     each cell/group registers its own BLAS entry (cell_simplify applies).
+//     each cell/group registers its own BLAS entry.
 //   stack != nullptr: region path — per material-merge-group, repacked
 //     Tri/TriEx are ACCUMULATED across cells, welded into one indexed mesh
 //     (cross-cell seams become interior edges), run through the modifier
-//     stack, and registered as ONE BLAS entry (cell_simplify must be 1.0).
+//     stack, and registered as ONE BLAS entry.
 static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
                          const std::vector<dsl::ModifierSpec>* stack,
                          const std::string& label,
-                         float cell_simplify,
                          BLASManager& blas,
                          TLASManager& tlas) {
     dsl::LoweredField f = dsl::lower_build_buffer(buf);
@@ -858,7 +783,7 @@ static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
         int carveCount = (int)carve.size();
 
         CellMeshResult res = cell->build_cell_meshes(
-            particles, scratch, /*simplification*/cell_simplify, base_detail,
+            particles, scratch, /*simplification*/1.0f, base_detail,
             /*max_pow*/6, /*uniform_detail*/0.0f, carvePtr, carveCount,
             gstagesPtr, fatPtr, fatCount, clusterStage);
 
@@ -1264,14 +1189,12 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         std::snprintf(plabel, sizeof(plabel), "part %016llx",
                       (unsigned long long)r.resolved_hash);
         if (!base_buf.ops.empty())
-            mesh_sdf_ops(base_buf, nullptr, plabel, state.simplify_ratio(), blas, tlas);
+            mesh_sdf_ops(base_buf, nullptr, plabel, blas, tlas);
         for (size_t ri = 0; ri < regions.size(); ++ri) {
             if (region_bufs[ri].ops.empty()) continue;
             char rlabel[96];
             std::snprintf(rlabel, sizeof(rlabel), "%s region %zu", plabel, ri);
-            // cell_simplify = 1.0 for regions: per-cell QEM must not pre-chew a
-            // region — simplify only runs via the modifier stack.
-            mesh_sdf_ops(region_bufs[ri], &regions[ri].stack, rlabel, 1.0f, blas, tlas);
+            mesh_sdf_ops(region_bufs[ri], &regions[ri].stack, rlabel, blas, tlas);
         }
 
         // Direct-triangle session: register the DSL's accumulated mesh triangles as
@@ -1305,42 +1228,19 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                 }
             }
 
-            // Base direct-triangle path: unchanged behavior (including the QEM
-            // decimate branch controlled by state.simplify_ratio()).
+            // Base direct-triangle path: register each triangle as-is.
             if (!base_t.empty()) {
-                // Parts that call this.simplify() (trunk/branches, but never leaves)
-                // get QEM-decimated here. decimate_tris carries only vertex POSITIONS,
-                // so the per-vertex TriEx (normals/uv/material) cannot survive the
-                // collapse; we recompute geometric face normals from the decimated
-                // triangles and carry the part's single material (simplify-using parts
-                // are single-material bark, so src_e[0].materialId is representative).
-                const float simp = state.simplify_ratio();
-                const bool decimate = simp < 0.999f;
-                std::vector<Tri> work = decimate ? lod_bake::decimate_tris(base_t, simp) : base_t;
-                const uint32_t mat = base_e.empty() ? 0u : base_e[0].materialId;
-
-                std::vector<Tri>   norm(work.size());
-                std::vector<TriEx> normEx(work.size());
-                for (size_t i = 0; i < work.size(); ++i) {
+                std::vector<Tri>   norm(base_t.size());
+                std::vector<TriEx> normEx(base_t.size());
+                for (size_t i = 0; i < base_t.size(); ++i) {
                     Tri t; std::memset(&t, 0, sizeof(Tri));
-                    t.vertex0 = work[i].vertex0; t.vertex1 = work[i].vertex1;
-                    t.vertex2 = work[i].vertex2; t.centroid = work[i].centroid;
+                    t.vertex0 = base_t[i].vertex0; t.vertex1 = base_t[i].vertex1;
+                    t.vertex2 = base_t[i].vertex2; t.centroid = base_t[i].centroid;
                     norm[i] = t;
                 }
-                for (size_t i = 0; i < work.size(); ++i) {
+                for (size_t i = 0; i < base_t.size(); ++i) {
                     TriEx e; std::memset(&e, 0, sizeof(TriEx));
-                    if (decimate) {
-                        // No source TriEx to copy: geometric face normal + carried material.
-                        const Tri& tr = norm[i];
-                        float ax=tr.vertex1.x-tr.vertex0.x, ay=tr.vertex1.y-tr.vertex0.y, az=tr.vertex1.z-tr.vertex0.z;
-                        float bx=tr.vertex2.x-tr.vertex0.x, by=tr.vertex2.y-tr.vertex0.y, bz=tr.vertex2.z-tr.vertex0.z;
-                        float nx=ay*bz-az*by, ny=az*bx-ax*bz, nz=ax*by-ay*bx;
-                        float nl=std::sqrt(nx*nx+ny*ny+nz*nz);
-                        if (nl>1e-12f) { nx/=nl; ny/=nl; nz/=nl; } else { nx=0; ny=0; nz=1; }
-                        float3 fn = make_float3(nx,ny,nz);
-                        e.N0=fn; e.N1=fn; e.N2=fn;
-                        e.materialId=mat;
-                    } else {
+                    if (i < base_e.size()) {
                         const TriEx& s = base_e[i];
                         e.uv0=s.uv0; e.uv1=s.uv1; e.uv2=s.uv2;
                         e.N0=s.N0; e.N1=s.N1; e.N2=s.N2;

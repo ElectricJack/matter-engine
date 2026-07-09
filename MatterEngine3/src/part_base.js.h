@@ -29,7 +29,6 @@ globalThis.Part = class Part {
   difference()           { __dsl_op(1); }
   intersection()         { __dsl_op(2); }
   smoothing(k)           { __dsl_smoothing(k); }
-  simplify(ratio)        { __dsl_simplify(ratio); }
   beginModifier()        { __dsl_beginModifier(); }
   endModifier(list)      { __dsl_endModifier(list); }
   placeChild(module,params) { __dsl_placeChild(module, params); }

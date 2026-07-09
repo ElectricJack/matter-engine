@@ -99,12 +99,6 @@ std::string cache_path_lods(uint64_t resolved_hash) {
     return std::string("parts/") + hex + ".lods";
 }
 
-std::string cache_path_retopo(uint64_t retopo_cache_key) {
-    char hex[17];
-    snprintf(hex, sizeof hex, "%016llx", (unsigned long long)retopo_cache_key);
-    return std::string("parts/") + hex + ".retopo.part";
-}
-
 bool load_lod_sidecar(const std::string& path, LodVariants& out) {
     std::ifstream in(path);
     if (!in) return false;
