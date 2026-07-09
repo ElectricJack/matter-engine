@@ -434,7 +434,29 @@ lod_select::PartLodTable PartStore::part_lod_table() const {
 //     disk artifact exists).
 // ---------------------------------------------------------------------------
 void PartStore::release(uint64_t part_hash) {
-    loaded_.erase(part_hash);
+    auto it = loaded_.find(part_hash);
+    if (it == loaded_.end()) return;  // safe no-op for unknown hashes
+
+    const LoadedPart& lp = it->second;
+
+    // Release all BLAS handles in the whole-part LOD ladder.
+    for (BLASHandle h : lp.lod_blas) {
+        if (h != INVALID_BLAS_HANDLE) {
+            blas_.release_blas(h);
+        }
+    }
+
+    // Release all BLAS handles in each per-cluster LOD ladder.
+    for (const auto& cluster : lp.clusters) {
+        for (BLASHandle h : cluster.lod_blas) {
+            if (h != INVALID_BLAS_HANDLE) {
+                blas_.release_blas(h);
+            }
+        }
+    }
+
+    // Now safe to erase the LoadedPart from memory.
+    loaded_.erase(it);
 }
 
 } // namespace viewer

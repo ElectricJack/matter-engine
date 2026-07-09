@@ -18,8 +18,10 @@
 #include "sector_resolver.h"
 #include "raster_mesh.h"
 #include "gpu_cull_types.h"
+#include "blas_manager.hpp"
 
 #include "external/glad.h"
+#include "precomp.h"
 
 #include <cassert>
 #include <cmath>
@@ -78,18 +80,28 @@ static viewer::RasterMeshData make_one_tri_mesh() {
 }
 
 // Inject a simple 1-cluster, 1-LOD part under the given hash.
+// Registers actual BLAS geometry so the part holds live BLAS handles.
 static void inject_simple_part(viewer::PartStore& store, uint64_t hash) {
     viewer::LoadedPart lp;
     lp.lod_mesh_data.push_back(make_one_tri_mesh());
     lp.thresholds  = { 0.5f };
     lp.bound_radius = 2.0f;
 
+    // Register a 1-triangle BLAS with the shared manager so lp.lod_blas holds a live handle.
+    Tri tri;
+    tri.vertex0 = make_float3(0.0f, 0.0f, 0.0f);
+    tri.vertex1 = make_float3(1.0f, 0.0f, 0.0f);
+    tri.vertex2 = make_float3(0.0f, 1.0f, 0.0f);
+    tri.centroid = make_float3(1.0f/3.0f, 1.0f/3.0f, 0.0f);
+    BLASHandle h = store.blas().register_triangles(&tri, 1);
+    lp.lod_blas.push_back(h);
+
     viewer::LoadedCluster cl;
     cl.aabb_min[0] = -1.0f; cl.aabb_min[1] = -1.0f; cl.aabb_min[2] = -1.0f;
     cl.aabb_max[0] =  1.0f; cl.aabb_max[1] =  1.0f; cl.aabb_max[2] =  1.0f;
     cl.radius = 1.73f;
     cl.thresholds = { 0.5f };
-    cl.lod_blas   = { 0 };
+    cl.lod_blas   = { h };  // Use the same registered BLAS handle
     cl.lod_mesh   = { 0 };
     lp.clusters.push_back(cl);
 
@@ -377,6 +389,7 @@ static void test_cluster_staging_zeroed_after_release() {
 //
 //   Call PartStore::release(hash). inject A again (simulate re-bake).
 //   get_or_load(hash) must return a fresh pointer (not the stale one).
+//   Assert that BLAS entries were properly released (live_count decreases).
 //   (Since inject_for_test replaces the entry, we verify release() removed the
 //   old entry so that a subsequent injection + get_or_load works cleanly.)
 // ---------------------------------------------------------------------------
@@ -393,12 +406,20 @@ static void test_partstore_release() {
     const viewer::LoadedPart* ptr1 = store.get_or_load(hashA);
     CHECK(ptr1 != nullptr, "get_or_load returns non-null on first call");
 
+    // Note the BLAS entry count before release.
+    size_t blas_live_before = store.blas().live_count();
+    CHECK(blas_live_before > 0, "BLAS has live entries after injection");
+
     // Release from CPU store.
     store.release(hashA);
 
     // Pointer to the removed entry is now dangling — do NOT dereference ptr1.
     // loaded_count() must drop by 1.
     CHECK(store.loaded_count() == 0, "loaded_count drops to 0 after release");
+
+    // BLAS live entries must decrease (handles were released).
+    size_t blas_live_after = store.blas().live_count();
+    CHECK(blas_live_after < blas_live_before, "BLAS live count decreases after PartStore::release");
 
     // Re-inject (simulates re-bake completing with a fresh artifact).
     inject_simple_part(store, hashA);
@@ -409,6 +430,10 @@ static void test_partstore_release() {
     // because map invalidation rules make the comparison unreliable.
     // The meaningful check is that the store accepted the new entry.
     CHECK(store.loaded_count() == 1, "loaded_count is 1 after re-inject");
+
+    // BLAS entries must go up again (new handles from re-injection).
+    size_t blas_live_after_reinject = store.blas().live_count();
+    CHECK(blas_live_after_reinject > blas_live_after, "BLAS live count increases after re-inject");
 }
 
 // ---------------------------------------------------------------------------
