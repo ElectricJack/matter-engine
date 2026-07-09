@@ -51,7 +51,8 @@ class Tree extends Part {
     follower.addAction('Rotz2', () => this.rotateZ(a2));
 
     // Safety guard (v2 had none): cap placed twigs so a deep rewrite can't OOM.
-    const MAX_BRANCHES = 110;
+    //const MAX_BRANCHES = 110;
+    const MAX_BRANCHES = 10;
     let branches = 0;
 
     follower.onGetForwardDistance = () => (2.0 + Math.random() * 3.6) * S;
@@ -66,9 +67,11 @@ class Tree extends Part {
           // Splay each branch outward: a random azimuth plus an outward tilt off
           // the (near-vertical) crown direction, so branches radiate to fill the
           // canopy volume instead of all shooting straight up in a clump.
-          this.rotateY(Math.random() * 360 * DEG);
-          this.rotateX((30 + Math.random() * 45) * DEG);
-          this.placeChild('TreeBranch');
+          
+          //this.rotateY(Math.random() * 360 * DEG);
+          //this.rotateX((30 + Math.random() * 45) * DEG);
+          //this.placeChild('TreeBranch');
+
           this.popMatrix();
           ++branches;
         }
