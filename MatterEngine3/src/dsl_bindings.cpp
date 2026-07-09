@@ -1,5 +1,6 @@
 #include "dsl_state.h"
 #include "dsl_bindings.h"
+#include "pf_bindings.h"
 #include "tileset_spec.h"
 #include "tileset_placement.h"
 #include "tileset_layout.h"
@@ -798,6 +799,7 @@ void install_bindings(JSContext* ctx) {
         JS_SetPropertyStr(ctx, math, "random", JS_NewCFunction(ctx, j_random, "random", 0));
     }
     JS_FreeValue(ctx, math);
+    install_pf_bindings(ctx);
     JS_FreeValue(ctx,g);
 }
 

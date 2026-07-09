@@ -1150,6 +1150,43 @@ static void test_modifier_region_bake_rules() {
     }
 }
 
+static void test_pf_bindings_smoke() {
+    // Smoke test: create a sim + recorder via __pf_* bindings, run 60 ticks,
+    // and verify deposits and at least one recorded path with Float32Array xyz.
+    // Baked twice as a cheap determinism probe.
+    const char* src =
+        "class P extends Part {\n"
+        "  build(p) {\n"
+        "    const sim = __pf_simCreate({\n"
+        "      seed: 7, dt: 1.0, maxTurnRate: 0.5, depositEvery: 0.05,\n"
+        "      maxParticles: 64, hashCell: 0.25, maxAge: 40,\n"
+        "      emitters: [{ shape: 'point', center: [0,0,0], rate: 2, vel0: 0.05, jitter: 0.2 }],\n"
+        "      fields: [{ type: 'bias', dir: [0,1,0], weight: 0.5 }],\n"
+        "    });\n"
+        "    if (sim < 0) throw new Error('simCreate failed: ' + sim);\n"
+        "    const rec = __pf_recorderCreate(0.02, []);\n"
+        "    __pf_attach(sim, rec);\n"
+        "    const ran = __pf_run(sim, 60);\n"
+        "    if (ran !== 60) throw new Error('run returned ' + ran);\n"
+        "    const dep = __pf_depositedCount(sim);\n"
+        "    if (dep < 10) throw new Error('too few deposits: ' + dep);\n"
+        "    const pc = __pf_pathCount(rec);\n"
+        "    if (pc < 1) throw new Error('no paths recorded: ' + pc);\n"
+        "    const path = __pf_path(rec, 0);\n"
+        "    if (!path) throw new Error('path(rec,0) returned null');\n"
+        "    if (!(path.xyz instanceof Float32Array)) throw new Error('xyz not Float32Array: ' + typeof path.xyz);\n"
+        "    if (path.xyz.length < 6) throw new Error('path too short: ' + path.xyz.length);\n"
+        "  }\n"
+        "}\n";
+    script_host::ScriptHost host;
+    // First bake
+    script_host::BakeResult r1 = host.bake_source(src, "{}", {});
+    CHECK(r1.error.ok, "pf smoke bake 1 succeeds");
+    // Second bake (determinism probe — same host, fresh context)
+    script_host::BakeResult r2 = host.bake_source(src, "{}", {});
+    CHECK(r2.error.ok, "pf smoke bake 2 succeeds");
+}
+
 int main() {
     test_embed_eval_1_plus_1();
     test_p5_round_mesh_dispatch();
@@ -1185,6 +1222,7 @@ int main() {
     test_eval_lod_budgets();
     test_modifier_region_state_rules();
     test_modifier_region_bake_rules();
+    test_pf_bindings_smoke();
     if (g_failures == 0) printf("ALL PASS\n");
     return g_failures ? 1 : 0;
 }

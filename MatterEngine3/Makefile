@@ -56,6 +56,7 @@ endif
 
 RAYLIB_PATH = ../Libraries/raylib/src
 MSL_DIR     = ../MatterSurfaceLib
+PFL_DIR     = ../ParticleFlowLib
 
 # Include directories: NEW MatterEngine3 headers, consumed MatterSurfaceLib
 # headers, vendored QuickJS-ng, then raylib (for the BLAS/Tri/TriEx types).
@@ -64,7 +65,7 @@ BOX3D_DIR     = ../Libraries/box3d
 INCLUDE_PATHS = -Iinclude -Isrc -Isrc/render -Isrc/provider \
                 -I$(MSL_DIR)/include -I$(MSL_DIR)/src \
                 -I$(QJS_DIR) -I$(RAYLIB_PATH) -I$(BOX3D_DIR)/include \
-                $(EXTRA_INCLUDE)
+                -I$(PFL_DIR)/include $(EXTRA_INCLUDE)
 
 # Vendored QuickJS-ng engine. v0.10.0 needs xsum.c (xsum_small_* symbols) beyond
 # the core four. Compiled via gcc (C) so the embedding symbols stay unmangled.
@@ -127,6 +128,7 @@ MSL_C_OBJ = surface.o open_particle_surface.o spatial_hash.o \
             object_allocator.o material_registry.o fat_primitive.o
 
 ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
+          pf_math.o pf_sim.o pf_fields.o pf_path_recorder.o pf_bindings.o \
           dsl_triangle.o triangle_emit.o polygon_triangulate.o \
           csg_lowering.o module_resolver.o script_rng_binding.o \
           part_asset_v2.o part_graph.o part_graph_snapshot.o \
@@ -182,7 +184,7 @@ shaders_gen/embedded_shaders.h: tools/embed_shaders.py $(SHADER_FILES)
 
 # Per-file pattern rules enable safe parallel compilation with `make -j`.
 # vpath directs Make to search source directories by basename.
-vpath %.cpp src src/render src/provider $(MSL_DIR)/src
+vpath %.cpp src src/render src/provider $(MSL_DIR)/src $(PFL_DIR)/src
 vpath %.c $(QJS_DIR) $(MSL_DIR)/src
 
 # QuickJS C sources (gcc, extern "C" safe).
