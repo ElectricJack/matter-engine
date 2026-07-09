@@ -180,7 +180,7 @@ GPU_GRAPHICS := GRAPHICS_API_OPENGL_43
 
 FLAVOR_def_FLAGS      := $(CFLAGS) $(INCLUDE_PATHS)
 FLAVOR_qjs_FLAGS      := $(CFLAGS) $(INCLUDE_PATHS) $(QJS_INC)
-FLAVOR_sh_FLAGS       := $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC)
+FLAVOR_sh_FLAGS       := $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC)
 FLAVOR_sp2_FLAGS      := $(CFLAGS) -DSP2_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC)
 FLAVOR_vl_FLAGS       := $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB -pthread $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC)
 FLAVOR_retopo_FLAGS   := $(CFLAGS) -DMATTER_HAVE_AUTOREMESHER $(INCLUDE_PATHS) -I$(AR_CORE_PATH)/include
@@ -817,7 +817,7 @@ run-live: $(DEV_TARGET)
 
 # Box3d physics smoke test.
 tileset_physics_tests: tileset_physics_tests.cpp ../src/tileset_settle.cpp ../src/tileset_collider.cpp $(BOX3D_DIR)/libbox3d.a
-	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include -I$(BOX3D_DIR)/include \
+	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include -I../src -I$(BOX3D_DIR)/include \
 	    -o $@ tileset_physics_tests.cpp ../src/tileset_settle.cpp ../src/tileset_collider.cpp \
 	    $(BOX3D_DIR)/libbox3d.a -lm
 
@@ -828,14 +828,14 @@ run-tilesetphysics: tileset_physics_tests
 	./tileset_physics_tests
 
 tileset_core_tests: tileset_core_tests.cpp ../src/tileset_layout.cpp ../src/tileset_collider.cpp
-	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include \
+	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include -I../src \
 	    -o $@ tileset_core_tests.cpp ../src/tileset_layout.cpp ../src/tileset_collider.cpp
 
 run-tilesetcore: tileset_core_tests
 	./tileset_core_tests
 
 tileset_placement_tests: tileset_placement_tests.cpp ../src/tileset_placement.cpp
-	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include \
+	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include -I../src \
 	    -o $@ tileset_placement_tests.cpp ../src/tileset_placement.cpp
 
 run-tilesetplacement: tileset_placement_tests

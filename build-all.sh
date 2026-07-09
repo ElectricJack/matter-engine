@@ -192,7 +192,7 @@ if [ "$MODE" = "test" ]; then
     # raylib-linked BLAS path). Each run-* target builds then runs its binary, so
     # a non-zero status covers both build and test failures. run-graph-integration
     # exercises the full SP-3 install -> SP-2 ScriptHost bake path end-to-end.
-    for tgt in run-partv2 run-script run-iso run-graph run-graph-integration run-trivar run-polytri run-shlib run-comp run-flatten run-dev run-example run-gallery run-treebake run-meadow run-meadow-check run-viewer-logic run-lighting run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source; do
+    for tgt in run-partv2 run-script run-iso run-graph run-graph-integration run-trivar run-polytri run-shlib run-comp run-flatten run-dev run-example run-gallery run-treebake run-meadow run-meadow-check run-viewer-logic run-lighting run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq run-liveprod; do
         echo
         echo "--- MatterEngine3 ($tgt) ---"
         make -C MatterEngine3/tests "$tgt" || RESULT[MatterEngine3]="FAIL ($tgt)"
@@ -241,6 +241,13 @@ if [ "$MODE" = "test" ]; then
         make -C MatterEngine3/tests api-tests || RESULT[MatterEngine3]="FAIL (api-tests build)"
         ( cd MatterViewer && GALLIUM_DRIVER=d3d12 ../MatterEngine3/tests/api_tests ) \
             || RESULT[MatterEngine3]="FAIL (api-tests run)"
+
+        echo
+        echo "--- MatterEngine3/tests (run-asyncbake) ---"
+        # Phase B: async-bake-tests links GPU objects (needs embedded_shaders.h) but
+        # runs headless (allow_gl_lt_46=true; no window). GALLIUM_DRIVER not needed at
+        # runtime but the target must build in the GPU-capable environment.
+        make -C MatterEngine3/tests run-asyncbake || RESULT[MatterEngine3]="FAIL (run-asyncbake)"
 
         echo
         echo "--- MatterEngine3/tools (meadow_forestfloor_shots) ---"

@@ -130,6 +130,10 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/render/gpu_culler.cpp $(ME3_DIR)/src/render/probe_texture.cpp \
               $(ME3_DIR)/src/render/tileset_provider.cpp $(ME3_DIR)/src/render/tileset_gl_ctx.cpp \
               $(ME3_DIR)/src/provider/local_provider.cpp $(ME3_DIR)/src/provider/resolvers.cpp \
+              $(ME3_DIR)/src/async_bake.cpp \
+              $(ME3_DIR)/src/live_edit.cpp \
+              $(ME3_DIR)/src/live_edit_prod.cpp \
+              $(ME3_DIR)/src/part_graph_snapshot.cpp \
               $(ME3_DIR)/src/matter_engine.cpp
 
 WIN_MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
@@ -291,7 +295,7 @@ WIN_CC      = x86_64-w64-mingw32-gcc
 WIN_RAYLIB  = ../Libraries/raylib/build/windows-native/libraylib.a
 # Win32 import libs raylib depends on; MUST come AFTER libraylib.a on the link
 # line so the static linker can resolve raylib's __imp_* references.
-WIN_LIBS    = -lopengl32 -lgdi32 -lwinmm $(BOX3D_DIR)/build-mingw/libbox3d.a
+WIN_LIBS    = -lopengl32 -lgdi32 -lwinmm $(BOX3D_DIR)/build-mingw/libbox3d.a -lwinpthread
 
 # ---- Windows compile rules
 $(W_CPP_OBJ): $(W_DIR)/%.o: %.cpp | $(W_DIR)
