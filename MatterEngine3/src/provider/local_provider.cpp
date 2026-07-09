@@ -351,10 +351,16 @@ bool LocalProvider::install_graph(std::string& err) {
     baked_hashes_.insert(ir_.baked.begin(), ir_.baked.end());
 
     // Build hash -> module name map for use in fetch_parts()'s on_part callback.
+    // Populate from roots first, then augment with all graph snapshot nodes so
+    // that expanded children (e.g. BoxA placed inside a World expand root) also
+    // get a module name in BakePartDone events and publish sort operations.
     module_by_hash_.clear();
     for (size_t j = 0; j < ir_.root_hashes.size(); ++j)
         if (ir_.root_hashes[j] != 0)
             module_by_hash_[ir_.root_hashes[j]] = roots_for_install_[j].module;
+    for (const auto& kv : graph_snapshot_.nodes)
+        if (kv.second.resolved_hash != 0)
+            module_by_hash_.emplace(kv.second.resolved_hash, kv.second.module);
 
     // Map each root module to the child-FOLDED resolved hash the graph baked it under.
     // install() returns root_hashes parallel to `roots_for_install`; using them (instead
@@ -514,6 +520,18 @@ bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
             place(ir_.root_hashes[k], 0.0f, 0.0f, 0.0f, roots_[i].module);
         }
     }
+    // Backfill module names for expanded children: append_expanded_children does
+    // not know the module name of each child hash, but module_by_hash_ (built at
+    // install time from graph_snapshot_.nodes) covers the full graph. Fill in any
+    // empty module fields so BakePartDone events and publish-sort operations have
+    // correct labels for all placed parts (roots and expanded children alike).
+    for (auto& e : out.instances) {
+        if (e.module.empty()) {
+            auto it = module_by_hash_.find(e.part_hash);
+            if (it != module_by_hash_.end()) e.module = it->second;
+        }
+    }
+
     flatten_placed();
     append_instance_refs();
 

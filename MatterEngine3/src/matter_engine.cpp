@@ -35,6 +35,7 @@
 #include "raylib.h"
 #include "external/glad.h"   // glClearColor / glClear (same as gpu_culler.cpp)
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -42,6 +43,7 @@
 #include <cstring>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -170,6 +172,12 @@ struct WorldSession::Impl {
     // guarded by events_mutex.
     std::deque<Event> events;
     std::mutex        events_mutex;
+
+    // Phase C Task 3: bake focus point (app thread writes, worker reads).
+    // Uses its own mutex (separate from events_mutex) so a set_bake_focus call
+    // never contends with event fan-out. Initialized to (0,0,0).
+    std::mutex focus_mutex;
+    float      focus[3] = {0.f, 0.f, 0.f};
 
     FrameStats stats{};
 
@@ -406,11 +414,19 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
 
     provider = std::make_unique<viewer::LocalProvider>(cfg);
 
+    // Instrumentation rider (Phase C): coarse phase timing for large-world
+    // attribution. Tileset phase is embedded inside compose_world (not
+    // separable without surgery into LocalProvider), so compose_ms covers
+    // scatter + flatten + tileset bake. Summary emitted at BakeFinished time.
+    using clk_t = std::chrono::steady_clock;
+    auto t_bake_start = clk_t::now();
+
     // install_graph on the worker (script eval + per-part bake; no GL).
     // Task 7: skip-and-continue — install_graph() returns true even with partial
     // failures; emit one BakeError per failed part, then continue the pipeline
     // with the parts that succeeded. count_errors accumulates the total.
     int count_errors = 0;
+    auto t_install_start = clk_t::now();
     {
         std::string err;
         if (!provider->install_graph(err)) {
@@ -432,9 +448,14 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
             ++count_errors;
         }
     }
+    double install_ms = std::chrono::duration<double, std::milli>(
+        clk_t::now() - t_install_start).count();
     if (is_cancelled()) { emit_error(BakeErrorCode::Cancelled, "install", "cancelled"); return; }
 
     // 3) compose_world on the worker (scatter/place; tileset GL marshaled) ----
+    // NOTE: tileset phase runs inside compose_world and is not separable without
+    // surgery into LocalProvider — compose_ms includes scatter + flatten + tileset.
+    auto t_compose_start = clk_t::now();
     viewer::WorldManifest new_manifest;
     {
         std::string err;
@@ -445,10 +466,13 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
             return;
         }
     }
+    double compose_ms = std::chrono::duration<double, std::milli>(
+        clk_t::now() - t_compose_start).count();
     if (is_cancelled()) { emit_error(BakeErrorCode::Cancelled, "compose", "cancelled"); return; }
 
     // 4-8) Shared publish flow: reset → reconcile → per-part publish → finalize
     //      → BakeFinished. count_errors is seeded with install-phase failures.
+    auto t_publish_start = clk_t::now();
     PublishPipelineParams pp;
     pp.job_prefix            = "bake";
     pp.count_errors_seed     = count_errors;
@@ -458,6 +482,12 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     pp.fault_hook            = cfg.test_fault_hook;
     pp.load_msg_include_hash = true;
     publish_pipeline(token, std::move(new_manifest), pp);
+    double publish_ms = std::chrono::duration<double, std::milli>(
+        clk_t::now() - t_publish_start).count();
+    double total_ms = std::chrono::duration<double, std::milli>(
+        clk_t::now() - t_bake_start).count();
+    fprintf(stderr, "[bake-timing] install=%.0fms compose=%.0fms publish=%.0fms total=%.0fms\n",
+            install_ms, compose_ms, publish_ms, total_ms);
 }
 
 // ---------------------------------------------------------------------------
@@ -637,6 +667,49 @@ void WorldSession::Impl::publish_pipeline(
             publish_order.push_back(e.part_hash);
         }
     }
+
+    // Phase C Task 3: distance-ordered publish.
+    // Snapshot focus ONCE so the entire pass uses one consistent value
+    // (deterministic; app thread may call set_bake_focus at any time).
+    // Build hash → min squared distance to any of its manifest entries.
+    // WorldManifestEntry.transform is a row-major float[16]: translation lives
+    // at indices [3]=tx, [7]=ty, [11]=tz (matching set_translate and the DSL
+    // placeChild/translate output; NOT at [12],[13],[14] which is the last row).
+    // Parts with no manifest entry sort last (dist = +infinity).
+    // Stable sort ascending by dist², tie-break by part hash (deterministic).
+    {
+        float snap_focus[3];
+        {
+            std::lock_guard<std::mutex> lk(focus_mutex);
+            snap_focus[0] = focus[0];
+            snap_focus[1] = focus[1];
+            snap_focus[2] = focus[2];
+        }
+        // Build min dist² map: hash → smallest dist² across all manifest entries.
+        std::unordered_map<uint64_t, float> min_dist2;
+        for (const uint64_t h : publish_order)
+            min_dist2[h] = std::numeric_limits<float>::infinity();
+        for (const auto& e : manifest.instances) {
+            auto it = min_dist2.find(e.part_hash);
+            if (it == min_dist2.end()) continue;
+            // Row-major 4×4: translation at [3]=tx, [7]=ty, [11]=tz.
+            float dx = e.transform[3]  - snap_focus[0];
+            float dy = e.transform[7]  - snap_focus[1];
+            float dz = e.transform[11] - snap_focus[2];
+            float d2 = dx*dx + dy*dy + dz*dz;
+            if (d2 < it->second) it->second = d2;
+        }
+        std::stable_sort(publish_order.begin(), publish_order.end(),
+            [&](uint64_t a, uint64_t b) {
+                float da = min_dist2.count(a) ? min_dist2[a]
+                                              : std::numeric_limits<float>::infinity();
+                float db = min_dist2.count(b) ? min_dist2[b]
+                                              : std::numeric_limits<float>::infinity();
+                if (da != db) return da < db;
+                return a < b;   // tie-break: ascending part hash (deterministic)
+            });
+    }
+
     const int total_parts = (int)publish_order.size();
     const auto& want = publish_order;
 
@@ -1156,6 +1229,16 @@ void WorldSession::set_test_fault_hook(std::function<void(int)> hook) {
     // command builds a fresh LocalProvider(cfg_). Thread-safe: only call this
     // before request_bake() or between bakes on the same thread as the caller.
     impl_->cfg.test_fault_hook = std::move(hook);
+}
+
+void WorldSession::set_bake_focus(const float pos[3]) {
+    // Phase C Task 3: thread-safe write of the focus point.
+    // Copied under focus_mutex; the worker reads a snapshot at the top of
+    // publish_pipeline so the whole pass uses one consistent focus value.
+    std::lock_guard<std::mutex> lk(impl_->focus_mutex);
+    impl_->focus[0] = pos[0];
+    impl_->focus[1] = pos[1];
+    impl_->focus[2] = pos[2];
 }
 
 void WorldSession::request_bake() {

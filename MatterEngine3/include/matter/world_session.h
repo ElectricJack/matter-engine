@@ -70,6 +70,13 @@ public:
     // only (no mid-job slicing); always makes progress when work is queued.
     void pump_gpu_jobs(float ms_budget);
 
+    // Phase C Task 3: set the spatial focus for the next bake pass.
+    // publish_pipeline sorts parts ascending by min dist² from focus to any
+    // of that part's manifest entry translations; parts with no placement sort
+    // last; ties break by part hash (deterministic). Thread-safe: may be called
+    // from the app thread at any time before or between bakes.
+    void set_bake_focus(const float pos[3]);
+
     bool poll_event(Event& out);       // drain one; loop until false
     const FrameStats& frame_stats() const;
 
