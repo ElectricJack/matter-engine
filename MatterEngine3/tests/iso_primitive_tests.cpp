@@ -188,6 +188,40 @@ static void test_ordered_csg_capsule() {
     agree(s.buffer(), {0,0.2f,0}, "ordered: just inside bore removed");
 }
 
+// ---- Test 9: opening Difference stage must NOT seed the field as solid ------
+// Regression for the CSG per-cell culling bug: when a cell contains ONLY a
+// Difference-stage brush (fat prim body fully outside the cell but huge cut box
+// inside it), the fold previously seeded field=d (the cut box's interior, d<0)
+// making it appear solid. Fix: start from INFINITY; an opening Difference yields
+// fmaxf(INF,-d)=INF -> correctly nothing (no Union body to cut into).
+static void test_opening_difference_not_solid() {
+    dsl::BuildBuffer buf;
+    // A single Difference box brush with no preceding Union brush.
+    // At the origin the box is solid (d < 0), so the OLD code would set field=d<0
+    // and return "solid" from field_distance and field_is_solid.
+    // The correct result is positive/empty: there is no geometry to subtract from.
+    dsl::BuildOp op{};
+    op.op          = dsl::CsgOp::Difference;
+    op.kind        = dsl::BrushKind::Box;
+    // Identity matrix: field order is m0,m4,m8,m12, m1,m5,m9,m13, ...
+    op.transform   = Matrix{1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    op.center      = {0, 0, 0};
+    op.halfExtents = {2.0f, 2.0f, 2.0f};
+    op.radius      = 0.0f;
+    op.segB        = {0, 0, 0};
+    op.r1          = 0.0f;
+    buf.ops.push_back(op);
+
+    Vector3 inside{0, 0, 0};
+    // field_is_solid oracle: no union body → not solid.
+    bool oracle_solid = dsl::field_is_solid(buf, inside);
+    CHECK(!oracle_solid, "opening Difference oracle: no union body -> not solid");
+
+    // field_distance: positive (outside/empty) even though the box is locally solid.
+    float d = dsl::field_distance(buf, 0, buf.ops.size(), 0.0f, inside);
+    CHECK(d > 0.0f, "opening Difference field_distance: inside box returns positive (empty)");
+}
+
 // --- field_distance oracle (rock-realism raycast seam) ---------------------
 
 static void test_field_distance_sphere_exact() {
@@ -277,6 +311,7 @@ int main() {
     test_cylinder_matches_oracle();
     test_cone_tapers();
     test_ordered_csg_capsule();
+    test_opening_difference_not_solid();
     test_field_distance_sphere_exact();
     test_field_distance_smin_bulge();
     test_field_distance_difference_stage();

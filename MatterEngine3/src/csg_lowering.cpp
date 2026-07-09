@@ -143,12 +143,15 @@ bool field_is_solid(const BuildBuffer& buf, const Vector3& wp) {
             case BrushKind::Cylinder: d = sdCappedCone(lpw, o.center, o.segB, o.radius, o.r1); break;
             default:                  d = sdSphere(lp, o.radius); break;
         }
-        if (!any) { field = d; any=true; continue; }
+        // Apply the op directly against the running field (starts at 1e9 = empty).
+        // Opening Union: fminf(1e9,d)=d (correct seed). Opening Difference:
+        // fmaxf(1e9,-d)=1e9 (nothing yet — correct). Opening Intersection: 1e9.
         switch (o.op) {
             case CsgOp::Union:        field = fminf(field, d); break;
             case CsgOp::Difference:   field = fmaxf(field, -d); break;
             case CsgOp::Intersection: field = fmaxf(field, d); break;
         }
+        any = true;
     }
     return any && field < 0.0f;
 }
@@ -156,8 +159,8 @@ bool field_is_solid(const BuildBuffer& buf, const Vector3& wp) {
 // Signed-distance sibling of field_is_solid, mirroring the mesher's STAGED
 // smooth-min evaluation (surface.c CalculateScalarStaged): consecutive same-op
 // ops form a stage; within a stage distances combine via log-sum-exp smin with
-// fillet k; stages fold in authored order (first non-empty stage seeds the
-// field; Union=min, Difference=max(field,-d), Intersection=max(field,d)).
+// fillet k; stages fold in authored order starting from INFINITY=empty
+// (Union=min, Difference=max(field,-d), Intersection=max(field,d)).
 // With k<=1e-5 this degenerates to hard ops and matches field_is_solid's sign.
 float field_distance(const BuildBuffer& buf, size_t opBegin, size_t opEnd,
                      float k, const Vector3& worldPoint) {
@@ -180,12 +183,15 @@ float field_distance(const BuildBuffer& buf, size_t opBegin, size_t opEnd,
             for (float v : vals) sum += expf(-(v - stageMin) / k);
             d = stageMin - k * logf(sum);
         }
-        if (!haveAny) { field = d; haveAny = true; }
-        else switch (stageOp) {
+        // Apply each stage's op directly against the running field (starts at
+        // 1e9 = empty). Opening Union: fminf(1e9,d)=d. Opening Difference:
+        // fmaxf(1e9,-d)=1e9 (nothing yet). Opening Intersection: 1e9.
+        switch (stageOp) {
             case CsgOp::Union:        field = fminf(field, d);  break;
             case CsgOp::Difference:   field = fmaxf(field, -d); break;
             case CsgOp::Intersection: field = fmaxf(field, d);  break;
         }
+        haveAny = true;
         vals.clear(); stageMin = 1e9f; stageOpen = false;
     };
 

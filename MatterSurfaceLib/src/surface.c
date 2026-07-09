@@ -1442,17 +1442,16 @@ static ScalarMaterialPair CalculateScalarStaged(
         float d = smin_set(vals, n, fmin, blendWidth);
 
         CsgStageOp op = stages ? stages->stageOp[s] : CSG_STAGE_UNION;
-        if (!haveAny) {
-            // First non-empty stage seeds the field regardless of its op (an
-            // opening Difference/Intersection has nothing to act on yet).
-            field = d; haveAny = 1;
-        } else {
-            switch (op) {
-                case CSG_STAGE_UNION:        field = fminf(field, d); break;
-                case CSG_STAGE_DIFFERENCE:   field = fmaxf(field, -d); break;
-                case CSG_STAGE_INTERSECTION: field = fmaxf(field, d); break;
-            }
+        // Apply every stage's op directly against the running field (which
+        // starts at INFINITY = empty). An opening Union yields fminf(INF,d)=d
+        // (correct seed). An opening Difference yields fmaxf(INF,-d)=INF (no
+        // geometry yet — correct). An opening Intersection yields INF (nothing).
+        switch (op) {
+            case CSG_STAGE_UNION:        field = fminf(field, d); break;
+            case CSG_STAGE_DIFFERENCE:   field = fmaxf(field, -d); break;
+            case CSG_STAGE_INTERSECTION: field = fmaxf(field, d); break;
         }
+        haveAny = 1;
     }
 
     result.scalarValue = haveAny ? field : INFINITY;
