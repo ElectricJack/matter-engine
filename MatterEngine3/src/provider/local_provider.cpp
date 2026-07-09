@@ -556,10 +556,10 @@ bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
         const int slot_idx  = baked_tileset_count_;  // capture by value for closure
 
         // Headless path: run physics settle only; skip GPU atlas bake.
-        // Without a valid GL context, bake_tileset_gpu → glGetIntegerv would
-        // dereference an unloaded GLAD function pointer and SIGSEGV (ip=0).
+        // Without GLAD loaded, bake_tileset_gpu → glGetIntegerv would
+        // dereference a null function pointer and SIGSEGV (ip=0).
         // The .gtex atlas is generated later when the viewer opens the world
-        // with a live GL 4.3+ context.
+        // with a live GL context (GL 4.6 required by the tileset GPU path).
         // slot_idx is NOT incremented here so viewer-side slot allocation
         // is unaffected (the slot is claimed when the GPU path actually runs).
         if (!cfg_.gl_available) {

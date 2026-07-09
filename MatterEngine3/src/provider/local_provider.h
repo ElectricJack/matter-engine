@@ -41,10 +41,12 @@ struct LocalProviderConfig {
                        std::function<bool(std::string& err)> fn,
                        std::string& err)> gpu_run;
 
-    // True when a valid GL context is available for the tileset GPU bake.
-    // False in headless mode (allow_gl_lt_46=true / tests without a window):
-    // the tileset phase runs physics-settle only; the .gtex is generated later
-    // when a viewer with a GL context opens the world.
+    // True when GLAD function pointers are loaded (i.e., a window was created).
+    // False in headless tests (no window, no GL context): the tileset phase
+    // runs physics-settle only; the .gtex is generated later when a viewer
+    // with a live GL context opens the world (GL 4.6 required by GPU path).
+    // Note: does NOT imply GL 4.6 — contexts with allow_gl_lt_46=true have
+    // GLAD loaded and set this true; gl46_available() then decides success/error.
     bool gl_available = false;
 
     // Task 7: OOM/error injection hook for testing skip-and-continue.

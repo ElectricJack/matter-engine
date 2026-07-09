@@ -395,11 +395,14 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         j.token = token;
         return gpu_jobs.run_blocking(std::move(j), err);
     };
-    // Signal whether a valid GL context exists so the tileset phase can choose
-    // between headless settle-only and full GPU atlas bake. engine->gl46 is
-    // true only when GL 4.6 was confirmed available at EngineContext::create()
-    // time (i.e., allow_gl_lt_46 was false and gl46_available() returned true).
-    cfg.gl_available = engine->gl46;
+    // Signal whether GLAD function pointers are loaded (i.e., a window exists)
+    // so the tileset phase can choose between headless settle-only and full GPU
+    // atlas bake. GLAD pointers are process-global and written once at window
+    // init before any bake, so reading them from the worker thread is safe.
+    // Using gl_loaded() rather than engine->gl46 so that RT/viewer contexts
+    // (allow_gl_lt_46=true) still attempt the atlas bake and get a proper
+    // success-or-clear-error from gl46_available(), instead of a silent skip.
+    cfg.gl_available = viewer::gl_loaded();
 
     provider = std::make_unique<viewer::LocalProvider>(cfg);
 
@@ -942,7 +945,7 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
         j.token = token;
         return gpu_jobs.run_blocking(std::move(j), err);
     };
-    cfg.gl_available = engine->gl46;
+    cfg.gl_available = viewer::gl_loaded();  // same semantics as execute_bake: loaded ≠ 4.6-confirmed
     // Re-create the provider so it picks up the updated cfg_ callbacks.
     provider = std::make_unique<viewer::LocalProvider>(cfg);
 

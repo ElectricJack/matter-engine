@@ -6,6 +6,15 @@
 
 namespace viewer {
 
+// True when GLAD function pointers have been loaded (i.e., a window was
+// created and rlLoadExtensions ran). False in headless tests where InitWindow
+// was never called. Distinguishes "no GL context ever" from "context present
+// but < 4.6" — the latter should still attempt the GPU bake and get a clear
+// error from gl46_available(), not a silent skip.
+inline bool gl_loaded() {
+    return glad_glGetIntegerv != nullptr;
+}
+
 // True when the live context exposes everything the GPU cull path needs.
 // Call AFTER InitWindow (glad must be loaded).
 inline bool gl46_available(std::string& why) {
