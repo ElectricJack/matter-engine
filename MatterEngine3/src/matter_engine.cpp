@@ -738,9 +738,10 @@ void WorldSession::Impl::publish_pipeline(
             });
     }
 
-    // module_by_hash for the BakePartDone label — same source as fetch_parts.
-    // Kept per-command so a cache-warm run still labels events correctly.
-    // Phase C Task 14: populated incrementally as ref-streamed hashes arrive.
+    // module_by_hash for the BakePartDone label — seeded from manifest.instances
+    // entries that already carry a module name (graph-known roots set e.module).
+    // Ref-streamed children appended during the publish loop have no module name
+    // available without new provider plumbing, so their BakePartDone.module = "".
     std::unordered_map<uint64_t, std::string> mod_by_hash;
     for (const auto& e : manifest.instances)
         if (!e.module.empty()) mod_by_hash[e.part_hash] = e.module;
@@ -792,9 +793,11 @@ void WorldSession::Impl::publish_pipeline(
         if (demand_provider) {
             std::string berr;
             if (!demand_provider->ensure_part_baked(h, berr)) {
-                // Part not in bake_plan (e.g. ref-streamed hash not covered): skip.
-                // Emit BakeError only if the error is non-trivial (hash-not-found
-                // for ref-streamed children is expected if the flat is pre-baked).
+                // "not in bake plan": only top-level unknown hashes trigger this;
+                // initial publish_order comes from graph-known roots; tileset roots
+                // are excluded from manifest.instances (local_provider.cpp:558-559)
+                // so they never reach publish_order. Deeper bake failures produce
+                // distinct wording and fall through to the BakeError branch below.
                 if (berr.find("not in bake plan") == std::string::npos) {
                     std::string part_module_b;
                     { auto it = mod_by_hash.find(h); if (it != mod_by_hash.end()) part_module_b = it->second; }
@@ -843,9 +846,14 @@ void WorldSession::Impl::publish_pipeline(
                         we.instance_id = next_manifest_id++;
                         we.part_hash   = rh;
                         std::memcpy(we.transform, r.transform, sizeof(we.transform));
+                        // Worker-thread append: safe because all GpuJob publish
+                        // lambdas consume a moved `added` snapshot and never read
+                        // manifest.instances directly; run_blocking(finalize_job)
+                        // provides the acquire barrier before finalize reads it.
+                        // (Invariant: publish-job bodies must NOT read manifest.)
+                        // Module name is not available for ref-streamed children
+                        // without new provider plumbing; BakePartDone.module = "".
                         manifest.instances.push_back(we);
-                        // Update module label if available from graph snapshot.
-                        // (mod_by_hash will be populated below for events.)
                         publish_order.push_back(rh);
                     }
                 }
@@ -858,8 +866,8 @@ void WorldSession::Impl::publish_pipeline(
         {
             Event ev;
             ev.type   = EventType::BakePartDone;
-            // mod_by_hash covers expanded children too (LocalProvider backfills
-            // module names from the graph snapshot), so module is rarely empty.
+            // mod_by_hash is seeded from graph-known roots only; ref-streamed
+            // children publish with module="" (no provider API to look them up).
             auto it   = mod_by_hash.find(h);
             ev.module = (it != mod_by_hash.end()) ? it->second : "";
             ev.done   = (int)(i + 1);
