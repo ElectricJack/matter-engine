@@ -6,7 +6,7 @@
 
 **Architecture:** Three streams on the merged Phase B kernel. (1) Content: seedable terrain noise + mountain bands + two-resolution terrain tiles in `examples/world_demo`. (2) Kernel: **demand-driven bake** (resolve-only install; per-part bake-on-publish in `set_bake_focus` distance order), a RefineController that swaps coarse↔full tile instances by camera priority with part-level eviction (`release_part`), and `regenerate(seed)`. (3) App: kernel-only `ExplorerDemo/` raylib app + Windows packaging.
 
-> **Revision 2026-07-09 (approved by Jack): Option C — demand-driven bake.** Task 2 measured a 703s cold bake because `PartGraph::install` bakes every graph node before the publish loop starts; publish sorting alone cannot meet the ≤60s silhouette gate. Tasks 13–15 (new) restructure the pipeline: install resolves hashes/placements without baking non-root geometry; the publish loop bakes+flattens each part on demand in focus order; the tileset phase moves off the critical path with a settle-result cache. `static requires` keeps its meaning ("this child exists, with these params") but no longer implies bake-now — the engine decides which level of which part to bake, and when. **Execution order: 13 → 14 → 15 → 4 → 6 → 8 → 9 → 10 → 11 → 12** (Tasks 1, 2, 3, 5, 7 were completed before this revision).
+> **Revision 2026-07-09 (approved by Jack): Option C — demand-driven bake.** Task 2 measured a 703s cold bake because `PartGraph::install` bakes every graph node before the publish loop starts; publish sorting alone cannot meet the ≤60s silhouette gate. Tasks 13–15 (new) restructure the pipeline: install resolves hashes/placements without baking non-root geometry; the publish loop bakes+flattens each part on demand in focus order; the tileset phase moves off the critical path with a settle-result cache. `static requires` keeps its meaning ("this child exists, with these params") but no longer implies bake-now — the engine decides which level of which part to bake, and when. **Execution order: 13 → 14 → 16 → 15 → 4 → 6 → 8 → 9 → 10 → 11 → 12** (Tasks 1, 2, 3, 5, 7 were completed before this revision). Task 16 (added 2026-07-09 after Task 14 verification): fix the pre-existing parametric `placeChild` hash-lookup bug — canonical-vs-JS-stringify key mismatch made every parametric placement fall back to the module-only entry, so all 2,601 terrain tiles shared one hash. Discovered when demand-driven publish exposed only ~42 unique hashes in the valley manifest.
 
 **Tech Stack:** C++17, QuickJS-ng DSL (`.js` schemas), raylib, GL 4.6 (GALLIUM_DRIVER=d3d12 on WSLg), MinGW cross-compile for Windows.
 
@@ -25,6 +25,7 @@
 - Tests per task: only genuinely-covering suites. Full sweep (`./build-all.sh test`) is the final gate only (Task 12).
 - Kernel public API lives in `MatterEngine3/include/matter/`; ExplorerDemo may include nothing else from the engine.
 - Option C (approved 2026-07-09): `static requires` declares that a child exists with given params — it does NOT imply bake-now. The engine decides which parts/levels to bake and when. No task may reintroduce an eager bake-all-nodes pass.
+- Test-scope decision (Jack, 2026-07-09): no headless test may cold-bake the full 51×51 valley (2,601 distinct tiles). Valley full-bake verification is env-gated OFF (skip with printed reason) until the camera-driven lazy publish (Task 6) lands — at that point Jack tests live and gives feedback. Small sandbox worlds (a handful of parts) remain the covering suites for all bake logic.
 - Engine matrices are ROW-major: translation lives at indices [3], [7], [11] of the 16-float transform (any plan text or memory saying 12/13/14 is wrong).
 
 ---
@@ -536,9 +537,9 @@ The behavior flip. After this task: cold bake wall time to first published part 
 
 - [ ] **Step 3: Implement** per Produces. Delete `flatten_placed`/`append_instance_refs` from compose_world (their logic now lives in the publish loop / Task 13 members). Install flips to `BakePolicy::RootsOnly` inside `install_graph()`.
 
-- [ ] **Step 4: Adapt encoded assumptions:** `run-asyncbake` cases (a)–(k) — parts_baked counters move from install-phase to publish-phase; `[bake-timing]` rider (Task 3) now shows publish-dominant time (update the test that greps it, if any). `run-valley`: cold-bake wall time assertion can TIGHTEN — assert `parts_baked` excludes the 2601 full-res tiles (expect ≈2601 coarse + variants + root, not 5225) and record the new cold wall time in the report.
+- [ ] **Step 4: Adapt encoded assumptions:** `run-asyncbake` cases (a)–(k) — parts_baked counters move from install-phase to publish-phase; `[bake-timing]` rider (Task 3) now shows publish-dominant time (update the test that greps it, if any). ~~`run-valley`: tighten parts_baked assertions~~ **SUPERSEDED (Jack, 2026-07-09): the valley suite's full-bake cases are env-gated OFF** (`MATTER_VALLEY_FULL_BAKE=1` re-enables; default prints SKIPPED + reason) — full-valley verification waits for the camera-driven publish (Task 6), then Jack tests live. Rationale: the placeChild hash bug (Task 16) means pre-fix valley numbers are meaningless, and post-fix a headless cold bake of 2,601 distinct tiles is too slow for tests.
 
-- [ ] **Step 5: Run `run-demandbake`, `run-asyncbake`, `run-valley` (background, ≥40 min budget).** Expected: all PASS.
+- [ ] **Step 5: Run `run-demandbake`, `run-asyncbake`, and `run-valley` (which must print its SKIPPED markers and exit 0).** Expected: all PASS.
 
 - [ ] **Step 6: Commit** — `feat(phase-c): demand-driven bake — RootsOnly install + bake-on-publish streaming`
 
@@ -579,11 +580,39 @@ bool settle_cache_save(const std::string& cache_root, uint64_t key, const Settle
 
 - [ ] **Step 6: Commit** — `feat(phase-c): settle-result cache + tileset phase off the critical path`
 
+### Task 16: Parametric placeChild resolves the canonical child hash (pre-existing bug fix)
+
+**The bug (predates Phase C; G6 parametric-children era):** `DslState::lookup_child_hash` (dsl_state.cpp:127–142) first tries the composite key `module + '\x1f' + params_json` where `params_json` is the raw `JS_JSONStringify` of the schema author's object (j_placeChild, dsl_bindings.cpp:66) — ES insertion-order keys, ES shortest number format. But the `name2hash` table (script_host.cpp:843–854 in `bake_source`, and identically 1382–1394 in `eval_tileset`) is keyed with `child_params[ci]` = `params_to_json(kid.params)` (part_graph.cpp:149; serializer at part_graph.cpp:48–57: **sorted** std::map key order, `%.17g` numbers, no whitespace). The byte streams differ for any multi-key object (order) and any non-integer float (format), so the composite lookup always misses and line 138 silently falls back to the bare-module key — which holds only ONE hash per module. Every parametric placement of a module resolves to the same part. This made all 2,601 Meadow Valley terrain tiles render one tile's geometry.
+
+**Files:**
+- Modify: `MatterEngine3/src/part_graph.h` (declare `params_from_json` / `params_to_json` — currently file-local in part_graph.cpp:48–57; make them non-static and declared in the header)
+- Modify: `MatterEngine3/src/dsl_state.cpp` (`lookup_child_hash` normalization + fallback semantics), `dsl_state.h` (doc comment on `set_child_hashes` stating the canonical key format)
+- Test: extend `MatterEngine3/tests/demand_bake_tests.cpp` (cases f, g — small sandbox worlds ONLY per the test-scope constraint)
+
+**Interfaces:**
+- Consumes: `params_from_json(const std::string&) -> Params` and `params_to_json(const Params&) -> std::string` (part_graph.cpp), `name2hash` composite key format `module + '\x1f' + params_to_json(params)`.
+- Produces (semantics change, no new API): when `placeChild(module, params)` is called WITH params, the lookup normalizes the JSON bytes via `params_from_json` → `params_to_json` (fixing key order + float format) and requires a composite-key match; **on miss it is a bake error** (`set_error`, message naming the module and the normalized params) — the silent module-only fallback is removed for the with-params case, because it is exactly the bug's failure mode. `placeChild(module)` without params keeps the module-only lookup unchanged. One chokepoint fixes both `name2hash` producers (bake_source + eval_tileset) since both key on `params_to_json` bytes.
+
+- [ ] **Step 1: Write the failing tests** (demand_bake_tests, sandbox schema dir):
+  - (f) `test_parametric_placements_distinct`: root schema whose `static requires` declares two children of the same module with different params (`{i:1}`, `{i:2}`) plus one with deliberately unsorted multi-key float params (`{b:2, a:0.1}`); `build()` places all three via `placeChild(module, params)`. Bake the root; read its `.part` child-instance table (as `append_expanded_children` does) and assert three DISTINCT hashes, each equal to the graph snapshot's resolved_hash for the matching params.
+  - (g) `test_placechild_param_mismatch_errors`: `build()` places `{i:3}` (never declared) → root bake FAILS with an error mentioning the module name; nothing silently placed.
+
+- [ ] **Step 2: Run `run-demandbake`.** Expected: (f) FAILS today — all three placements share one hash (the module-fallback bug); (g) FAILS today — silent fallback instead of error.
+
+- [ ] **Step 3: Implement:** expose the two serializers in part_graph.h; in `lookup_child_hash`, when `params_json` is non-empty: normalized = `params_to_json(params_from_json(std::string(params_json, len)))`, look up `module + '\x1f' + normalized`, and return false on miss (NO module fallback); when params absent, module-only lookup as today. Update `placeChild`'s error message to distinguish "undeclared child" from "no declared child of '<module>' matches params <normalized>".
+
+- [ ] **Step 4: Audit every schema using placeChild with params** (grep `placeChild(` across `MatterEngine3/examples/`, `MatterEngine3/shared-lib/`, `MatterEngine3/src/part_base.js.h`, viewer worlds): confirm each with-params call site's params match a `static requires` declaration (they now error instead of silently mis-resolving). List each call site + verdict in the report. Fix any schema that relied on the fallback innocently (expected: none; Meadow's terrain is the known beneficiary).
+
+- [ ] **Step 5: Run `run-demandbake` (f,g now PASS) and `run-asyncbake`.** Expected: all PASS. Do NOT run full-valley bakes (env-gated per the test-scope constraint).
+
+- [ ] **Step 6: Commit** — `fix(phase-c): parametric placeChild resolves canonical child hash; param mismatch is a bake error`
+
 ---
 
 ## Self-Review Notes
 
 - Spec coverage: §1 world → Tasks 1–2; §2.1 scheduler → 3, 13, 14, 6; §2.2 two-pass → 2, 14, 6; §2.3 residency (amended part-level) → 5, 6; §2.4 seeds/scale → 1, 7, 2 (capacity asserts); §2.5 events → 14, 6; §3 app → 8–10; §4 packaging/1-min/shader-warmup → 11, 12, with the 60s gate made reachable by 13–15 (Task 2 measured 703s under eager bake); §5 testing → per-task + 12. Staged-camera social clips → 9. Tree content: not planned (Jack's track).
 - Option C revision consistency: Tasks 13→14→15 are ordered additive-primitives → behavior-flip → off-critical-path tileset; Task 4 pairs from the resolve-time snapshot (no bake needed); Task 6 consumes `ensure_part_baked`/`ensure_part_flattened` (no second bake path); Task 12's silhouette marker is BakeFinished, which Task 15 guarantees fires before the async tileset phase.
-- Type consistency: `set_bake_focus(const float pos[3])`, `regenerate(uint64_t)`, `RefineTileDone`, `release_part(uint64_t)`, `PartStore::release(uint64_t)`, `pop_wait(Command&, int ms)`, `BakePolicy::{All,RootsOnly}`, `BakeInputs`, `InstallResult::bake_plan`, `ensure_part_baked(uint64_t, std::string&)`, `ensure_part_flattened(uint64_t)`, `settle_cache_load/save` used consistently across Tasks 3–15.
+- Type consistency: `set_bake_focus(const float pos[3])`, `regenerate(uint64_t)`, `RefineTileDone`, `release_part(uint64_t)`, `PartStore::release(uint64_t)`, `pop_wait(Command&, int ms)`, `BakePolicy::{All,RootsOnly}`, `BakeInputs`, `InstallResult::bake_plan`, `ensure_part_baked(uint64_t, std::string&)`, `ensure_part_flattened(uint64_t)`, `settle_cache_load/save`, `params_from_json`/`params_to_json` (Task 16 exposes the part_graph.cpp serializers in part_graph.h) used consistently across Tasks 3–16.
+- Task 16 consistency: the fix normalizes lookup bytes inside `DslState::lookup_child_hash` only — `j_placeChild` (dsl_bindings.cpp) and both `name2hash` producers (script_host.cpp:854, :1393) are unchanged; with-params lookup miss becomes a bake error (no module fallback), without-params placeChild keeps the bare-module path. Tests use small sandbox worlds only, per the Global Constraints test-scope line (no full 51×51 valley bakes headless).
 - Known judgment points for implementers: exact snow material id (Task 1), scatter density constants to hit ≤150k (Task 2, must show the arithmetic in a comment), whether box3d is needed in the ExplorerDemo Windows link (Task 11 — determined by the engine unit list, not a choice).
