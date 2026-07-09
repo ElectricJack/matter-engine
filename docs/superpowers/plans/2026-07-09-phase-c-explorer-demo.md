@@ -4,7 +4,9 @@
 
 **Goal:** A tiny downloadable Windows demo of a ~10x Meadow ("Meadow Valley", 51×51 tiles, flyable mountain range) that cold-bakes entirely from code, is flyable in under 1 minute, and continuously refines terrain toward the camera.
 
-**Architecture:** Three streams on the merged Phase B kernel. (1) Content: seedable terrain noise + mountain bands + two-resolution terrain tiles in `examples/world_demo`. (2) Kernel: `set_bake_focus` distance-ordered publish, a RefineController that swaps coarse↔full tile instances by camera priority with part-level eviction (`release_part`), and `regenerate(seed)`. (3) App: kernel-only `ExplorerDemo/` raylib app + Windows packaging.
+**Architecture:** Three streams on the merged Phase B kernel. (1) Content: seedable terrain noise + mountain bands + two-resolution terrain tiles in `examples/world_demo`. (2) Kernel: **demand-driven bake** (resolve-only install; per-part bake-on-publish in `set_bake_focus` distance order), a RefineController that swaps coarse↔full tile instances by camera priority with part-level eviction (`release_part`), and `regenerate(seed)`. (3) App: kernel-only `ExplorerDemo/` raylib app + Windows packaging.
+
+> **Revision 2026-07-09 (approved by Jack): Option C — demand-driven bake.** Task 2 measured a 703s cold bake because `PartGraph::install` bakes every graph node before the publish loop starts; publish sorting alone cannot meet the ≤60s silhouette gate. Tasks 13–15 (new) restructure the pipeline: install resolves hashes/placements without baking non-root geometry; the publish loop bakes+flattens each part on demand in focus order; the tileset phase moves off the critical path with a settle-result cache. `static requires` keeps its meaning ("this child exists, with these params") but no longer implies bake-now — the engine decides which level of which part to bake, and when. **Execution order: 13 → 14 → 15 → 4 → 6 → 8 → 9 → 10 → 11 → 12** (Tasks 1, 2, 3, 5, 7 were completed before this revision).
 
 **Tech Stack:** C++17, QuickJS-ng DSL (`.js` schemas), raylib, GL 4.6 (GALLIUM_DRIVER=d3d12 on WSLg), MinGW cross-compile for Windows.
 
@@ -22,6 +24,8 @@
 - After any engine change that a Windows binary ships: `make windows`; after struct/header changes: clean the Windows objs first.
 - Tests per task: only genuinely-covering suites. Full sweep (`./build-all.sh test`) is the final gate only (Task 12).
 - Kernel public API lives in `MatterEngine3/include/matter/`; ExplorerDemo may include nothing else from the engine.
+- Option C (approved 2026-07-09): `static requires` declares that a child exists with given params — it does NOT imply bake-now. The engine decides which parts/levels to bake and when. No task may reintroduce an eager bake-all-nodes pass.
+- Engine matrices are ROW-major: translation lives at indices [3], [7], [11] of the 16-float transform (any plan text or memory saying 12/13/14 is wrong).
 
 ---
 
@@ -248,6 +252,7 @@ public:
 ```
 
 - Consumes: graph snapshot nodes (module name + params). Params parsing: extract `tx`, `tz`, `res` with a small string scan of the canonical JSON (keys are sorted by `merge_params_canonical` — no JSON library needed; document the dependency on canonical form).
+- **Option C note:** after Task 13 the snapshot is filled at resolve time, so full-res Terrain nodes appear in it whether or not their geometry has been baked yet. That is exactly what RefineController needs — pairing is done on resolved hashes, and Task 6 bakes the full-res part on demand when a tile is selected. No pairing-logic change required.
 
 - [ ] **Step 1: Write the failing tests** — pure CPU, no engine: feed `build()` synthetic nodes (4 tiles × 2 res + 2 scatter nodes to be ignored) + instances; assert `tile_count()==4`, `next()` returns nearest-to-focus coarse tile and honors `mark(Queued/Full)`, `evict_beyond()` returns only Full tiles outside radius sorted farthest-first, non-Terrain nodes ignored.
 
@@ -300,8 +305,8 @@ void release_part(uint64_t part_hash);  // deletes the part's VAO/VBO, zeroes it
 - Test: `MatterEngine3/tests/refine_loop_tests.cpp` (new, gpu flavor) + extend `async_bake_tests.cpp` (event enum name table, line ~99)
 
 **Interfaces:**
-- Consumes: RefineController (Task 4), `release_part`/`release` (Task 5), focus (Task 3), GpuJobQueue::post, emit_event, CancelToken supersession.
-- Produces: after a bake's initial publish finishes, the worker services refinement: `worker_loop` uses `pop_wait(cmd, 50)`; on timeout with a live world + pending tiles, it takes ONE refine step: `RefineController::next(focus)` → ensure the full-res part is baked (script eval or cache hit — same per-part path as publish_pipeline's, factored via the Phase B `publish_pipeline` helper) → post a GpuJob that runs `get_or_load(full_hash)` + `ensure_part` + swaps the world instance's hash at `manifest_idx` (coarse→full; position unchanged, resolver re-bins that entry) → `mark(Full)` + `emit_event(RefineTileDone{module:"Terrain", done:full_count, total:tile_count, phase:"refine"})`. Eviction: each refine step first calls `evict_beyond(focus, radius)` (radius: Impl float `refine_radius = 160.0f`, i.e. 10 tiles); per evicted tile posts a GpuJob: swap instance full→coarse, `release_part(full)`, `store.release(full)`, `mark(Coarse)`. Supersession: any BakeAll/Reload command cancels/rebuilds the controller (rebuilt from the new graph snapshot at publish end).
+- Consumes: RefineController (Task 4), `release_part`/`release` (Task 5), focus (Task 3), `ensure_part_baked`/`ensure_part_flattened` (Tasks 13/14 — the same demand-bake primitives the publish loop uses), GpuJobQueue::post, emit_event, CancelToken supersession.
+- Produces: after a bake's initial publish finishes, the worker services refinement: `worker_loop` uses `pop_wait(cmd, 50)`; on timeout with a live world + pending tiles, it takes ONE refine step: `RefineController::next(focus)` → `provider->ensure_part_baked(full_hash, err)` + `ensure_part_flattened(full_hash)` (cache hit on warm runs; on error: log, `mark(Coarse)` to skip the tile, continue) → post a GpuJob that runs `get_or_load(full_hash)` + `ensure_part` + swaps the world instance's hash at `manifest_idx` (coarse→full; position unchanged, resolver re-bins that entry) → `mark(Full)` + `emit_event(RefineTileDone{module:"Terrain", done:full_count, total:tile_count, phase:"refine"})`. Eviction: each refine step first calls `evict_beyond(focus, radius)` (radius: Impl float `refine_radius = 160.0f`, i.e. 10 tiles); per evicted tile posts a GpuJob: swap instance full→coarse, `release_part(full)`, `store.release(full)`, `mark(Coarse)`. Supersession: any BakeAll/Reload command cancels/rebuilds the controller (rebuilt from the new graph snapshot at publish end).
 - **A refine step never runs while a bake command is pending or in flight** — commands always win the pop.
 
 - [ ] **Step 1: Write failing tests** (gpu flavor, real world too heavy — use the async sandbox recipe extended with a 3×3 two-res "MiniValley" schema: a tiny Meadow-like root placing 9 coarse tiles, requiring 9 full ones):
@@ -312,7 +317,7 @@ void release_part(uint64_t part_hash);  // deletes the part's VAO/VBO, zeroes it
 
 - [ ] **Step 2: `run-refineloop` target (gpu flavor); run.** Expected: FAIL.
 
-- [ ] **Step 3: Implement** per the Produces block. Key details: `pop_wait` = `cv.wait_for`; refine bake reuses the factored per-part bake+publish helper from Phase B (commit 974c867 introduced `publish_pipeline` helper — reuse, don't duplicate); instance table mutation happens on the GL thread inside the posted job while `tick()` is not concurrently mutating (both are app/GL-thread — same thread, safe by construction; assert thread id in debug).
+- [ ] **Step 3: Implement** per the Produces block. Key details: `pop_wait` = `cv.wait_for`; refine bake calls the Task 13/14 primitives (`ensure_part_baked` → `ensure_part_flattened`) — do NOT invent a second bake path; the refine loop needs the provider kept alive through the session (Task 14 already extends its lifetime through publish — extend to the refine phase too); instance table mutation happens on the GL thread inside the posted job while `tick()` is not concurrently mutating (both are app/GL-thread — same thread, safe by construction; assert thread id in debug).
 
 - [ ] **Step 4: Run `run-refineloop`, then `run-asyncbake` (event table + worker changes), then `run-releasepart`.** Expected: all PASS.
 
@@ -367,7 +372,7 @@ void release_part(uint64_t part_hash);  // deletes the part's VAO/VBO, zeroes it
 
 **Interfaces:**
 - Consumes: Event stream (BakeStarted/BakePartDone/BakeFinished/BakeError/RefineTileDone), CameraRig.
-- Produces: `Hud::feed(const matter::Event&)`, `Hud::draw(int w, int h)` — bottom strip: bake phase + `done/total` bar during initial bake; after BakeFinished a subtle corner readout `refined X/Y near you`; BakeError → 6-second toast queue (module + message), never fatal. `StagedCamera::update(CameraRig&, float dt)` — plays until `BakeFinished` or any user input: shot 1 slow orbit at spawn (40s), shot 2 pull-back+rise revealing the range (30s), then loops a gentle drift; any input → `user_has_control()=true` permanently.
+- Produces: `Hud::feed(const matter::Event&)`, `Hud::draw(int w, int h)` — bottom strip: bake phase + `done/total` bar during initial bake (**Option C: `total` grows during ref streaming — recompute the bar fraction per event, never cache the first total; the bar may step backward slightly, that's fine**); after BakeFinished a subtle corner readout `refined X/Y near you`; BakeError → 6-second toast queue (module + message), never fatal. `StagedCamera::update(CameraRig&, float dt)` — plays until `BakeFinished` or any user input: shot 1 slow orbit at spawn (40s), shot 2 pull-back+rise revealing the range (30s), then loops a gentle drift; any input → `user_has_control()=true` permanently.
 
 - [ ] **Step 1: Implement HUD + staged camera** per Interfaces (pure raylib drawing; no new deps).
 - [ ] **Step 2: Wire into main loop:** events feed HUD; staged camera drives rig only while `!user_has_control()` and smoke mode not forcing a fixed cam.
@@ -412,9 +417,9 @@ void release_part(uint64_t part_hash);  // deletes the part's VAO/VBO, zeroes it
 - Test: full-repo sweep + measured gates
 
 **Interfaces:**
-- Produces: `time_to_flying.sh`: rm -rf local cache → cold smoke run under d3d12 → parses log timestamps: `t_ready` = first `explorer: ready`, `t_silhouette` = BakePartDone `done==total` for phase="parts" (coarse pass complete). Prints both. Gate: **t_silhouette ≤ 60s** on the Linux/d3d12 box AND on the Windows machine (manual timing by Jack in Task 11 Step 4 / re-run here).
+- Produces: `time_to_flying.sh`: rm -rf local cache → cold smoke run under d3d12 → parses log timestamps: `t_ready` = first `explorer: ready`, `t_silhouette` = **BakeFinished** (initial coarse publish complete; under Option C the tileset phase runs after this and BakePartDone `total` grows during ref streaming, so BakeFinished is the reliable marker). Prints both. Gate: **t_silhouette ≤ 60s** on the Linux/d3d12 box AND on the Windows machine (manual timing by Jack in Task 11 Step 4 / re-run here).
 
-- [ ] **Step 1: Write + run time_to_flying.sh (cold, 3 runs).** Record numbers. If > 60s: tuning order — coarse N 8→6, publish job granularity, shader-warmup overlap (kick `request_bake()` before first frame; verify pump ordering) — each its own measured commit.
+- [ ] **Step 1: Write + run time_to_flying.sh (cold, 3 runs).** Record numbers. If > 60s: tuning order — coarse N 8→6, publish job granularity, shader-warmup overlap (kick `request_bake()` before first frame; verify pump ordering), first-frame gating (with demand bake the nearest coarse tiles publish first — the app can show the world before BakeFinished if visuals warrant, but the gate metric stays BakeFinished) — each its own measured commit.
 - [ ] **Step 2: Frame-rate during bake-behind:** smoke run with FPS logging (min/avg over 60s warm run while refining); gate: no sustained <30 fps on d3d12/WSLg (3060 native will be higher). Record.
 - [ ] **Step 3: Full sweep:** `./build-all.sh test` (the only full-sweep run in this plan). Expected: all suites green, including run-valley/run-refineloop/run-releasepart/run-refinectl/run-terrainnoise.
 - [ ] **Step 4: `make windows` clean rebuild** (headers changed across the plan) for BOTH MatterViewer and ExplorerDemo; re-package zip.
@@ -422,8 +427,163 @@ void release_part(uint64_t part_hash);  // deletes the part's VAO/VBO, zeroes it
 
 ---
 
+### Task 13: Resolve/bake split — `BakePolicy`, retained bake plan, on-demand part bake primitives
+
+Pure additive task: after it, the engine still behaves exactly as before (bake-all). It only creates the primitives Task 14 flips the engine onto. Zero behavior change is the review criterion.
+
+**Files:**
+- Modify: `MatterEngine3/src/part_graph.h` (install signature ~line 131), `part_graph.cpp` (resolve lambda ~100–173, bake loop ~230–291, snapshot fill ~307–383)
+- Modify: `MatterEngine3/src/provider/local_provider.h`, `local_provider.cpp` (install_graph ~192, compose_world's `flatten_one` lambda ~424–452)
+- Test: `MatterEngine3/tests/demand_bake_tests.cpp` (new, headless — same flavor/link recipe as async_bake_tests), `run-demandbake` Makefile target
+
+**Interfaces:**
+- Produces:
+
+```cpp
+// part_graph.h
+enum class BakePolicy { All, RootsOnly };   // All = today's behavior
+
+struct BakeInputs {                          // everything Baker::bake needs, per node
+    std::string module;
+    std::string source;
+    Params      params;
+    std::vector<uint64_t>    child_hashes;
+    std::vector<std::string> child_modules;
+    std::vector<std::string> child_params;
+};
+// InstallResult gains:
+std::unordered_map<uint64_t, BakeInputs> bake_plan;   // keyed by resolved_hash, EVERY node
+
+InstallResult install(const std::vector<ChildRequest>& roots,
+                      part_graph_snapshot::Snapshot* snap = nullptr,
+                      BakePolicy policy = BakePolicy::All);
+
+// local_provider.h
+// Bake one part (and, post-order, any unbaked children in its subtree) using the
+// retained bake_plan. cached() short-circuits per node; also runs bake_lod_variants.
+// Safe to call from the worker thread after install_graph (host_ is idle post-install).
+bool ensure_part_baked(uint64_t part_hash, std::string& err);
+// Flatten one baked part to .flat.part (moved out of compose_world's flatten_one
+// lambda into a member; identical logic incl. retopo_by_hash_ threading + version sniff).
+bool ensure_part_flattened(uint64_t part_hash);
+```
+
+- Consumes: the existing resolve/bake separation inside `install` (resolve lambda fully populates `memo` before the bake loop — verified), `RecordingBaker` (on_part/test_fault_hook fire per real bake, unchanged), `part_flatten::flatten_part`.
+
+- [ ] **Step 1: Write the failing tests** (headless, uses the async sandbox schema dir — a root with 2 children, one child itself with a grandchild, so the subtree recursion is exercised):
+
+```cpp
+// test_roots_only_bakes_roots: install(policy=RootsOnly) on a cold cache →
+//   root .part exists on disk; child/grandchild .part do NOT; snapshot has ALL
+//   nodes with resolved_hash+params_json; bake_plan covers all nodes.
+// test_ensure_part_baked_subtree: ensure_part_baked(child_hash) → child AND
+//   grandchild .part appear; second call is a no-op (cached() — assert bake
+//   count via cfg_.on_part counter did not increase).
+// test_hash_parity: resolved hashes from RootsOnly install == hashes from a
+//   BakePolicy::All install on a twin cache dir (byte-identical uint64 sets).
+// test_ensure_part_flattened: after ensure_part_baked(child), flatten →
+//   .flat.part exists with kFormatVersionFlat.
+```
+
+- [ ] **Step 2: Add `run-demandbake` target; run.** Expected: FAIL (no BakePolicy).
+
+- [ ] **Step 3: Implement.**
+  - `part_graph.cpp`: move snapshot population to right after the resolve pass (it only reads `memo` — verified); build `bake_plan` from `memo` in the same walk; in the bake loop, `if (policy == BakePolicy::RootsOnly && !is_root_hash(n.resolved_hash)) continue;` (root set = `result.root_hashes`). `bake_lod_variants` stays coupled to actually-baked/cache-hit nodes it runs for today — for skipped nodes it moves into `ensure_part_baked`.
+  - `local_provider.cpp`: retain `ir_.bake_plan`; `ensure_part_baked` does post-order DFS over `bake_plan` children (`child_hashes`), per node: `cached()` → skip, else `RecordingBaker::bake(...)` equivalent through `host_` (reuse the same HostBaker instance pattern install uses — factor the baker construction so install and ensure_part_baked share it), then `bake_lod_variants`. `ensure_part_flattened` = the moved `flatten_one` body.
+  - `install_graph()` keeps calling with `BakePolicy::All` in this task (no engine behavior change).
+
+- [ ] **Step 4: Run `run-demandbake`, then `run-asyncbake` (install internals changed).** Expected: both PASS, asyncbake untouched behavior.
+
+- [ ] **Step 5: Commit** — `feat(phase-c): BakePolicy::RootsOnly + retained bake plan + ensure_part_baked/flattened primitives`
+
+### Task 14: Bake-on-publish — flip the engine to demand-driven streaming
+
+The behavior flip. After this task: cold bake wall time to first published part collapses (no eager child bakes); parts bake worker-side in focus order immediately before their GPU upload; full-res Terrain variants (required but never placed) are not baked at all until something publishes them.
+
+**Files:**
+- Modify: `MatterEngine3/src/provider/local_provider.cpp` (install_graph → RootsOnly; compose_world: delete `flatten_placed()` + `append_instance_refs()` calls and lambdas), `local_provider.h` (config/docs)
+- Modify: `MatterEngine3/src/matter_engine.cpp` (publish_pipeline ~524–922: per-part worker-side ensure step + ref streaming; error accounting ~823–913)
+- Modify: `MatterEngine3/tests/async_bake_tests.cpp` (cases whose parts_baked/timing assumptions encode bake-at-install), `valley_layout_tests.cpp` (same)
+- Test: extend `MatterEngine3/tests/demand_bake_tests.cpp` with an end-to-end case
+
+**Interfaces:**
+- Consumes: `ensure_part_baked` / `ensure_part_flattened` (Task 13), focus-sorted `publish_order` (Task 3), `part_asset::load_flat_v3` refs (the BOUNDARY path), `cap_state->load_fail_count` error path (matter_engine.cpp:831).
+- Produces (per-part publish flow, worker thread, replacing "artifacts already on disk" assumption):
+
+```cpp
+// publish_pipeline per-part loop (worker), for each h in publish_order:
+//   1. between-parts cancel checkpoint (existing)
+//   2. if (!provider->ensure_part_baked(h, perr))      → count as publish error:
+//        emit BakeError{phase="parts", module, perr}; ++bake_fail_count; continue;
+//      (provider stays alive for the whole publish — extend its lifetime in
+//       PublishPipelineParams; today it may be released after compose)
+//   3. provider->ensure_part_flattened(h);              // non-fatal, same as today
+//   4. NEW ref streaming: if the flat has FlatInstanceRefs (load_flat_v3 CPU-side),
+//      append WorldManifestEntry per ref to the manifest copy + push ref hashes
+//      onto the tail of publish_order (dedup via std::set of queued hashes);
+//      total_parts grows — BakePartDone.total may increase between events (document
+//      in events.h; HUD consumers must not assume constant total).
+//   5. post the per-part GpuJob (unchanged: get_or_load + WorldDelta + cap growth)
+// BakeFinished.errors = count_errors_seed + bake_fail_count + load_fail_count.
+```
+
+- `LocalProvider::connect()` (sync API used by legacy/synchronous tests) keeps eager behavior: `install(BakePolicy::All)` + compose with eager flatten (keep a private eager path or a bool param on compose_world defaulting to eager; the async engine passes lazy). Audit every `connect(` caller and state in the report which path each uses.
+- Cone-rebake (`execute_rebake_cone` ~1042) and live-edit: install is all-cache-hits there; RootsOnly makes it strictly cheaper. Verify `run-asyncbake` live-edit cases.
+
+- [ ] **Step 1: Write the failing e2e test** (demand_bake_tests): sandbox world with root + 3 children on a cold cache; drive the async session to BakeFinished; assert (a) BakeFinished.errors==0, (b) all placed parts' .part+.flat.part now exist, (c) a required-but-never-placed variant's .part does NOT exist, (d) instances render (frame_stats().instances_total as in async cases), (e) BakePartDone events arrived with phase="parts" and module labels.
+
+- [ ] **Step 2: Run it.** Expected: FAIL (publish loop assumes disk artifacts; never-placed variant gets baked at install).
+
+- [ ] **Step 3: Implement** per Produces. Delete `flatten_placed`/`append_instance_refs` from compose_world (their logic now lives in the publish loop / Task 13 members). Install flips to `BakePolicy::RootsOnly` inside `install_graph()`.
+
+- [ ] **Step 4: Adapt encoded assumptions:** `run-asyncbake` cases (a)–(k) — parts_baked counters move from install-phase to publish-phase; `[bake-timing]` rider (Task 3) now shows publish-dominant time (update the test that greps it, if any). `run-valley`: cold-bake wall time assertion can TIGHTEN — assert `parts_baked` excludes the 2601 full-res tiles (expect ≈2601 coarse + variants + root, not 5225) and record the new cold wall time in the report.
+
+- [ ] **Step 5: Run `run-demandbake`, `run-asyncbake`, `run-valley` (background, ≥40 min budget).** Expected: all PASS.
+
+- [ ] **Step 6: Commit** — `feat(phase-c): demand-driven bake — RootsOnly install + bake-on-publish streaming`
+
+### Task 15: Tileset off the critical path — settle-result cache + async tileset phase
+
+Removes the ~350s-per-bake tileset wall from time-to-silhouette. Two independent levers: (a) cache the settle result on disk so warm bakes skip physics entirely; (b) run the whole tileset phase after the initial publish finishes, so the silhouette never waits on it even cold.
+
+**Files:**
+- Modify: `MatterEngine3/src/tileset_bake.h/.cpp` (settle cache load/save around `settle_tileset`), `MatterEngine3/src/provider/local_provider.cpp` (compose_world: remove inline tileset phase; new `run_tileset_deferred` member), `local_provider.h`
+- Modify: `MatterEngine3/src/matter_engine.cpp` (publish_pipeline tail: post-finalize tileset step + events)
+- Test: extend `MatterEngine3/tests/tileset_gpu_tests.cpp` (cache round-trip) + `demand_bake_tests.cpp` (deferred ordering, headless)
+
+**Interfaces:**
+- Produces:
+
+```cpp
+// tileset_bake.h
+// Serialize/restore SettledTorus{cfg, base, instances, variant_ranges, report}.
+// Cache file: <cache_root>/tileset/<key>.settle ; key = FNV-1a over
+// (script_source_hash, sorted child resolved_hashes, kEngineBakeVersion, kBox3dVersion)
+// — an INPUT key (pose_hash is an output, unusable for lookup).
+bool settle_cache_load(const std::string& cache_root, uint64_t key, SettledTorus& out);
+bool settle_cache_save(const std::string& cache_root, uint64_t key, const SettledTorus& s);
+```
+
+- Deferred phase: `compose_world` skips tileset roots entirely (manifest returns without tileset scatter). After the finalize GpuJob in publish_pipeline, the worker runs the tileset phase per tileset root: settle-cache check → on miss `ensure_part_baked` the tileset's child parts (colliders come from baked .part files — verified) + settle + save; then post the existing GL atlas job (`bake_tileset_gpu` has its own .gtex cache) + a manifest-delta GpuJob appending the settled scatter instances (same delta path as ref streaming, Task 14). Events: `BakePartDone{phase="tileset", done, total}` per tileset root and settled-instance batch; BakeFinished still fires BEFORE the tileset phase (silhouette semantics) — document in events.h that phase="tileset" events may follow BakeFinished. Cancellation: between-tileset-root checkpoints, same token.
+- Consumes: `run_tileset_phase` internals (tileset_phase.cpp:45–161 — child install + eval_tileset + settle), `gtex_content_hash`/`gtex_cache_hit` (tileset_bake_gpu.cpp:114–222), GpuJobQueue.
+
+- [ ] **Step 1: Failing tests.** (a) tileset_gpu_tests: settle → save → load round-trip equals original (instances count, poses bitwise, report.pose_hash); second settle run with warm cache does 0 physics steps (expose via SettleReport or a counter). (b) demand_bake (headless): world with a tileset root → BakeFinished arrives with zero tileset events before it; tileset events (or the headless settle-only note) arrive after.
+
+- [ ] **Step 2: Run both.** Expected: FAIL.
+
+- [ ] **Step 3: Implement** per Produces. Serialization: plain little-endian binary with a version header (follow part_asset's writer conventions); reject on version/key mismatch (treat as miss).
+
+- [ ] **Step 4: Run `run-tilesetgpu` (d3d12), `run-demandbake`, `run-asyncbake`.** Expected: PASS. Then `run-valley`: warm re-bake wall time should collapse (was ~350s, settle-dominated — assert warm re-bake < 120s and record the number).
+
+- [ ] **Step 5: Visual check** — `tools/viewer_shots.sh` with `GALLIUM_DRIVER=d3d12 MATTER_WORLD=Meadow` (self-terminating): ground atlas + scatter present in the shots (they arrive post-silhouette but long before the shot script's poses).
+
+- [ ] **Step 6: Commit** — `feat(phase-c): settle-result cache + tileset phase off the critical path`
+
+---
+
 ## Self-Review Notes
 
-- Spec coverage: §1 world → Tasks 1–2; §2.1 scheduler → 3, 6; §2.2 two-pass → 2, 6; §2.3 residency (amended part-level) → 5, 6; §2.4 seeds/scale → 1, 7, 2 (capacity asserts); §2.5 events → 6; §3 app → 8–10; §4 packaging/1-min/shader-warmup → 11, 12; §5 testing → per-task + 12. Staged-camera social clips → 9. Tree content: not planned (Jack's track).
-- Type consistency: `set_bake_focus(const float pos[3])`, `regenerate(uint64_t)`, `RefineTileDone`, `release_part(uint64_t)`, `PartStore::release(uint64_t)`, `pop_wait(Command&, int ms)` used consistently across Tasks 3–10.
+- Spec coverage: §1 world → Tasks 1–2; §2.1 scheduler → 3, 13, 14, 6; §2.2 two-pass → 2, 14, 6; §2.3 residency (amended part-level) → 5, 6; §2.4 seeds/scale → 1, 7, 2 (capacity asserts); §2.5 events → 14, 6; §3 app → 8–10; §4 packaging/1-min/shader-warmup → 11, 12, with the 60s gate made reachable by 13–15 (Task 2 measured 703s under eager bake); §5 testing → per-task + 12. Staged-camera social clips → 9. Tree content: not planned (Jack's track).
+- Option C revision consistency: Tasks 13→14→15 are ordered additive-primitives → behavior-flip → off-critical-path tileset; Task 4 pairs from the resolve-time snapshot (no bake needed); Task 6 consumes `ensure_part_baked`/`ensure_part_flattened` (no second bake path); Task 12's silhouette marker is BakeFinished, which Task 15 guarantees fires before the async tileset phase.
+- Type consistency: `set_bake_focus(const float pos[3])`, `regenerate(uint64_t)`, `RefineTileDone`, `release_part(uint64_t)`, `PartStore::release(uint64_t)`, `pop_wait(Command&, int ms)`, `BakePolicy::{All,RootsOnly}`, `BakeInputs`, `InstallResult::bake_plan`, `ensure_part_baked(uint64_t, std::string&)`, `ensure_part_flattened(uint64_t)`, `settle_cache_load/save` used consistently across Tasks 3–15.
 - Known judgment points for implementers: exact snow material id (Task 1), scatter density constants to hit ≤150k (Task 2, must show the arithmetic in a comment), whether box3d is needed in the ExplorerDemo Windows link (Task 11 — determined by the engine unit list, not a choice).
