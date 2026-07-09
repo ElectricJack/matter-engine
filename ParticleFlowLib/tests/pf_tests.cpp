@@ -230,6 +230,96 @@ static void test_emission_cap_age_reuse() {
     printf("  emission/cap/age/reuse OK\n");
 }
 
+static void test_adhere_pulls_toward_deposited() {
+    SimConfig c;
+    c.seed = 11; c.dt = 1.0f; c.max_turn_rate = 0.5f; c.deposit_every = 1e9f;
+    FieldConfig ad; ad.type = FieldType::Adhere; ad.mode = FieldMode::Steer;
+    ad.weight = 1.0f; ad.radius = 2.0f; ad.surface_offset = 0.0f;
+    c.fields = {ad};
+    Sim s(c);
+    // Wall of deposited points on the x=0 plane (via a throwaway particle's
+    // spawn deposits): emit dead-still particles along the plane then kill.
+    for (int i = -3; i <= 3; ++i) {
+        uint32_t sl = s.emit_particle({0, (float)i * 0.3f, 0}, {0,0,0}, nullptr);
+        s.kill(sl);
+    }
+    assert(s.deposited_count() == 7);
+    // A mover at x=1 heading +y must curve toward the wall (x decreasing).
+    uint32_t m = s.emit_particle({1, 0, 0}, {0, 0.1f, 0}, nullptr);
+    s.run(20);
+    assert(slot_pos(s, m).x < 0.9f && "adhere must pull toward deposited set");
+    printf("  adhere OK (x=%.3f)\n", slot_pos(s, m).x);
+}
+
+static void test_separate_pushes_apart() {
+    SimConfig c;
+    c.seed = 12; c.dt = 1.0f; c.max_turn_rate = 0.5f; c.deposit_every = 1e9f;
+    FieldConfig sep; sep.type = FieldType::Separate; sep.mode = FieldMode::Steer;
+    sep.weight = 1.0f; sep.radius = 1.0f;
+    c.fields = {sep};
+    Sim s(c);
+    uint32_t a = s.emit_particle({-0.1f, 0, 0}, {0, 0.1f, 0}, nullptr);
+    uint32_t b = s.emit_particle({ 0.1f, 0, 0}, {0, 0.1f, 0}, nullptr);
+    float d0 = length(slot_pos(s, a) - slot_pos(s, b));
+    s.run(15);
+    float d1 = length(slot_pos(s, a) - slot_pos(s, b));
+    assert(d1 > d0 + 0.05f && "separate must push live particles apart");
+    printf("  separate OK (%.3f -> %.3f)\n", d0, d1);
+}
+
+static void test_attract_consume_and_kill() {
+    SimConfig c;
+    c.seed = 13; c.dt = 1.0f; c.max_turn_rate = 0.6f; c.deposit_every = 1e9f;
+    c.speed_target = 0.2f; c.speed_relax = 1.0f;
+    FieldConfig at; at.type = FieldType::Attract; at.mode = FieldMode::Steer;
+    at.weight = 1.0f; at.influence = 10.0f; at.kill_radius = 0.25f;
+    at.kill_on_consume = true;
+    c.fields = {at};
+    Sim s(c);
+    float cloud[6] = { 3, 0, 0,   0, 3, 0 };
+    s.set_attractors(cloud, 2);
+    assert(s.attractors_remaining() == 2);
+    uint32_t a = s.emit_particle({0.5f, 0, 0}, {0.2f, 0, 0}, nullptr);
+    (void)a;
+    s.run(40);
+    assert(s.attractors_remaining() == 1 && "nearest attractor must be consumed");
+    assert(s.alive_count() == 0 && "kill_on_consume terminates the strand");
+    printf("  attract consume/kill OK\n");
+}
+
+static void test_surface_normal() {
+    SimConfig c; c.seed = 14; c.deposit_every = 1e9f;
+    Sim s(c);
+    // Deposit a small patch around the origin in the y=0 plane.
+    for (int i = -2; i <= 2; ++i) for (int j = -2; j <= 2; ++j) {
+        uint32_t sl = s.emit_particle({i * 0.2f, 0, j * 0.2f}, {0,0,0}, nullptr);
+        s.kill(sl);
+    }
+    bool ok = false;
+    V3 n = s.surface_normal({0, 0.5f, 0}, 1.5f, &ok);
+    assert(ok && "patch within radius");
+    assert(n.y > 0.95f && "normal points outward (away from the deposit)");
+    ok = true;
+    s.surface_normal({100, 100, 100}, 1.0f, &ok);
+    assert(!ok && "no neighbors -> ok=false");
+    printf("  surface normal OK\n");
+}
+
+static void test_curl_is_deterministic_and_bounded() {
+    SimConfig c; c.seed = 15; c.deposit_every = 1e9f; c.max_turn_rate = 0.5f;
+    FieldConfig cu; cu.type = FieldType::Curl; cu.mode = FieldMode::Steer;
+    cu.weight = 1.0f; cu.scale = 2.0f; cu.seed = 777;
+    c.fields = {cu};
+    Sim s1(c), s2(c);
+    uint32_t p1 = s1.emit_particle({0,0,0}, {0.1f, 0, 0}, nullptr);
+    uint32_t p2 = s2.emit_particle({0,0,0}, {0.1f, 0, 0}, nullptr);
+    s1.run(50); s2.run(50);
+    V3 a = slot_pos(s1, p1), b = slot_pos(s2, p2);
+    assert(std::memcmp(&a, &b, sizeof(V3)) == 0 && "curl must be deterministic");
+    assert(length(a) > 1e-3f && "particle must move");
+    printf("  curl OK\n");
+}
+
 int main() {
     printf("pf_tests:\n");
     test_rng_determinism();
@@ -240,6 +330,11 @@ int main() {
     test_gravity_parabola();
     test_turn_clamp();
     test_emission_cap_age_reuse();
+    test_adhere_pulls_toward_deposited();
+    test_separate_pushes_apart();
+    test_attract_consume_and_kill();
+    test_surface_normal();
+    test_curl_is_deterministic_and_bounded();
     printf("pf_tests: ALL OK\n");
     return 0;
 }
