@@ -64,10 +64,10 @@ TARGET = minimal_cell_test
 $(TARGET): $(MAIN_SOURCE) $(MATTER_SOURCES)
 	$(CC) $(MAIN_SOURCE) $(MATTER_SOURCES) -o $(TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
 
-.PHONY: clean run run-simp run-blas run-cell run-cont run-reg run-tint run-cull run-par run-cube run-ao run-part run-vox run-midx run-mtx run-retopo
+.PHONY: clean run run-simp run-blas run-cell run-cont run-reg run-tint run-cull run-par run-cube run-ao run-part run-vox run-midx run-mtx run-retopo run-smooth
 
 clean:
-	rm -f $(TARGET) $(SIMP_TARGET) $(BLAS_TARGET) $(CELL_TARGET) $(CONT_TARGET) $(REG_TARGET) $(TINT_TARGET) $(CULL_TARGET) $(PAR_TARGET) $(CUBE_TARGET) $(AO_TARGET) $(PART_TARGET) $(VOX_TARGET) $(MIDX_TARGET) $(MTX_TARGET) $(RETOPO_TARGET)
+	rm -f $(TARGET) $(SIMP_TARGET) $(BLAS_TARGET) $(CELL_TARGET) $(CONT_TARGET) $(REG_TARGET) $(TINT_TARGET) $(CULL_TARGET) $(PAR_TARGET) $(CUBE_TARGET) $(AO_TARGET) $(PART_TARGET) $(VOX_TARGET) $(MIDX_TARGET) $(MTX_TARGET) $(RETOPO_TARGET) $(SMOOTH_TARGET)
 
 run: $(TARGET)
 	./$(TARGET)
@@ -294,3 +294,13 @@ $(RETOPO_TARGET): $(RETOPO_SOURCES)
 
 run-retopo: $(RETOPO_TARGET)
 	./$(RETOPO_TARGET)
+
+# Taubin smoothing unit tests (headless, no GL window required)
+SMOOTH_TARGET = mesh_smooth_tests
+SMOOTH_SOURCES = mesh_smooth_tests.cpp ../src/mesh_smooth.cpp
+
+$(SMOOTH_TARGET): $(SMOOTH_SOURCES)
+	$(CC) $(SMOOTH_SOURCES) -o $(SMOOTH_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+
+run-smooth: $(SMOOTH_TARGET)
+	./$(SMOOTH_TARGET)

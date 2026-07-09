@@ -63,6 +63,34 @@ struct BuildBuffer {
     void clear() { ops.clear(); }
 };
 
+// --- Modifier regions (beginModifier/endModifier, spec 2026-07-08) ---
+// A region marks a range of authored geometry whose baked mesh is post-
+// processed by an ordered modifier stack at part bake. Regions do not nest;
+// sessions must not straddle region boundaries; placeChild placements are
+// NOT captured (children are governed by their own schema's regions).
+enum class ModifierKind { Simplify, Smooth, Retopo };
+
+struct ModifierSpec {
+    ModifierKind kind = ModifierKind::Simplify;
+    // simplify
+    float ratio = 1.0f;              // keep-fraction, (0..1]
+    // smooth (Taubin lambda/mu)
+    int   iterations = 2;
+    float lambda = 0.5f;
+    float mu = -0.53f;
+    // retopo
+    float    target_ratio = 1.0f;
+    int      retopo_iterations = 3;
+    uint32_t seed = 0;
+    int      timeout_seconds = 60;
+};
+
+struct ModifierRegion {
+    size_t op_begin = 0, op_end = 0;    // [op_begin, op_end) over BuildBuffer::ops
+    size_t tri_begin = 0, tri_end = 0;  // [tri_begin, tri_end) over the direct-triangle buffer
+    std::vector<ModifierSpec> stack;    // execution order
+};
+
 // C++-owned authoring state. JS bindings mutate this; JS holds no engine state.
 class DslState {
 public:
@@ -113,11 +141,13 @@ public:
     void smoothing(float k) { smoothing_ = (k < 0 ? 0 : k); }
     float smoothing_k() const { return smoothing_; }
 
-    // Per-part mesh simplification (keep-fraction): 1.0 = full detail, 0.3 = keep
-    // 30% (i.e. "70% simplification"). Parts opt in via this.simplify(); leaves
-    // never call it, so their ratio stays 1.0 and the host skips decimation.
-    void set_simplify(float r) { simplify_ratio_ = (r <= 0 ? 0.001f : (r > 1 ? 1.0f : r)); }
-    float simplify_ratio() const { return simplify_ratio_; }
+    // Modifier regions. begin/end are defined in dsl_triangle.cpp — they
+    // capture tris_buf_->triangles().size(), and this header cannot include
+    // triangle_emit.hpp (float3/raymath clash).
+    void begin_modifier_region();                          // misuse -> set_error
+    void end_modifier_region(std::vector<ModifierSpec> stack);  // misuse -> set_error
+    bool modifier_region_open() const { return region_open_; }
+    const std::vector<ModifierRegion>& modifier_regions() const { return regions_; }
 
     // Brush/solid emission. Session-polymorphic (G8):
     //   Voxels    -> SDF brush into the build buffer (unchanged behavior)
@@ -268,7 +298,6 @@ private:
     Session  session_ = Session::None;
     float    spacing_ = 0.1f;
     float    smoothing_ = 0.0f;
-    float    simplify_ratio_ = 1.0f;  // keep-fraction; 1.0 = no simplification
     size_t   session_start_ = 0;  // index into buffer_.ops where the open session began
     BuildBuffer buffer_;
     bool        has_error_ = false;
@@ -285,6 +314,11 @@ private:
     std::vector<ProfilePoint2>              poly_outer_;   // accumulating outer
     std::vector<std::vector<ProfilePoint2>> poly_holes_;   // accumulating holes
     RetainedProfile retained_;                    // finalized profile (lazy emit)
+
+    bool   region_open_ = false;
+    size_t region_start_op_ = 0;
+    size_t region_start_tri_ = 0;
+    std::vector<ModifierRegion> regions_;
 };
 
 } // namespace dsl

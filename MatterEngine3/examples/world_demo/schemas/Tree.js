@@ -12,47 +12,12 @@ import { sub, add, scale, length, normalize, cross } from 'shared-lib/vecmath';
 class Tree extends Part {
   static requires = [{ module: 'TreeBranch' }];
 
-  // Phase 5 autoremesher opt-in (Task 15). First schema to enable retopo:
-  // the trunk + bark voxel field is exactly the kind of dense, closed-manifold
-  // organic surface autoremesher's cross-field quad-remesher was designed for.
-  // Cleaner all-quad topology feeds a nicer QEM ladder (smoother silhouettes at
-  // LOD1/LOD2, smoother shading normals on the trunk). Fail-closed at the MSL
-  // wrapper level: retopo() catches std::exception and returns ok=false so the
-  // flatten path falls back to unretopo'd flatten.
-  //
-  // KNOWN LIMITATION (Task 15 report): full Meadow-scale Tree geometry
-  // (voxel bark + 100k+ tris with non-manifold overlap between bark strands)
-  // triggers a hard geogram abort() inside autoremesher_core that the C++
-  // try/catch cannot recover from. The wiring is verified end-to-end via
-  // MatterEngine3/tests/retopo_integration_tests (Task 14) on a spherified
-  // cube fixture; a viewer bake of the full Meadow world takes the Tree
-  // through the retopo hook but the process aborts inside geogram. Real
-  // Meadow deployment either needs (a) Tree geometry pre-cleaned for
-  // manifoldness, or (b) the "subprocess isolation for crash safety"
-  // follow-up listed in ROADMAP.md.
-  static retopo = {
-    // Flipped off pending subprocess-isolation follow-up — see ROADMAP.md.
-    // Wiring is proven end-to-end by retopo_integration_tests (Task 14); a
-    // fresh Meadow bake against a MATTER_HAVE_AUTOREMESHER viewer would
-    // otherwise hit the geogram abort() documented above.
-    enabled: false,
-    target_ratio: 1.0,
-    iterations: 3,
-    seed: 42,
-    timeout_seconds: 120,
-  };
-
   build(p) {
     const DEG = Math.PI / 180;
     // Scaled up from the original 0.25 so the bark resolves with more detail.
     const S = 0.5;
     const a1 = -35 * DEG;
     const a2 =  45 * DEG;
-
-    // Heavy mesh simplification on the voxel trunk (keep 30% => ~70% reduction).
-    // QEM preserves high-curvature bark ribs while collapsing the flatter trunk
-    // body. Branches opt in too (TreeBranch.js); leaves never call simplify().
-    this.simplify(0.3);
 
     // --- prototype tunables (world units, sized for S = 0.5) ----------------
     const BARK_RATIO  = 1 / 8;    // bark dab radius = local trunk radius * 1/8
@@ -141,6 +106,7 @@ class Tree extends Part {
     };
 
     this.fill(MAT.bark);
+    this.beginModifier();
     this.beginVoxels(VOX);
 
     // Pass 2: flowing core. Stroke widths are DIAMETERS, so the sweep radius is
@@ -206,5 +172,18 @@ class Tree extends Part {
     }
 
     this.endVoxels();
+    // simplify runs before retopo/smooth so a QEM-decimated mesh (heavy
+    // curvature-aware collapse of the bark surface) feeds the smoother and the
+    // retopo solver. This is the modifier-region equivalent of the old
+    // `this.simplify(0.3)` — required to keep merged flatten output bounded
+    // when retopo is blacklisted (autoremesher aborts on real Meadow bark
+    // geometry, per Task 7 report). Without it, 64 Tree flatten instances of
+    // ~343K tris merged with their TreeBranch/Leaf children produce a ~2.5M-tri
+    // merged mesh → ~256 clusters → GPU region buffer overflow → empty world.
+    this.endModifier([
+      { simplify: 0.3 },
+      { smooth: { iterations: 2 } },
+      { retopo: { target_ratio: 1.0, iterations: 3, seed: 42, timeout_seconds: 120 } },
+    ]);
   }
 }

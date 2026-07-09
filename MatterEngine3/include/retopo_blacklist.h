@@ -2,18 +2,18 @@
 // crashed the process (typically autoremesher_core's LSCM geo_assert abort()).
 //
 // Mechanism: two-file journal in the cache dir.
-//   parts/.retopo_pending — appended before each MSL::retopo call
-//   parts/.retopo_success — appended after each MSL::retopo return
+//   parts/.retopo_pending — appended before each modifier_apply retopo call
+//   parts/.retopo_success — appended after each modifier_apply retopo return
 // A hash present in pending but not in success crashed mid-retopo; on the
 // next process startup init() promotes it to the blacklist and future
-// apply_retopo_hook calls skip retopo for it.
+// modifier_apply::apply_stack calls skip retopo for that region chunk.
 //
 // This is the "poor man's subprocess isolation" the Phase 5 design listed as
 // an out-of-scope follow-up: process death IS the isolation boundary, and
 // the on-disk journal captures which inputs to avoid on rerun.
 //
-// Thread-safety: single-threaded assumption. Meadow bakes parts sequentially
-// via HostBaker, and apply_retopo_hook is only called from that path.
+// Thread-safety: single-threaded assumption. Parts bake sequentially via
+// HostBaker, and modifier_apply is only called from bake_source's serial path.
 #ifndef MATTER_ENGINE3_RETOPO_BLACKLIST_H
 #define MATTER_ENGINE3_RETOPO_BLACKLIST_H
 

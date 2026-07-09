@@ -81,6 +81,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/live_edit.cpp src/live_edit_prod.cpp src/inotify_watcher.cpp \
           src/lod_bake.cpp src/world_flatten.cpp src/part_flatten.cpp \
           src/retopo_blacklist.cpp \
+          src/modifier_apply.cpp \
           src/sector_grid.cpp src/lod_select.cpp \
           src/world_lights.cpp src/probe_volume.cpp \
           src/world_tracer.cpp src/probe_bake.cpp \
@@ -104,6 +105,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
 # minus mesh_retopo.cpp (handled separately via EXTRA_RETOPO_CPP when AR is present).
 MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
           $(MSL_DIR)/src/mesh_simplifier.cpp $(MSL_DIR)/src/mesh_indexed.cpp \
+          $(MSL_DIR)/src/mesh_smooth.cpp \
           $(MSL_DIR)/src/mesh_transform.cpp \
           $(MSL_DIR)/src/blas_manager.cpp $(MSL_DIR)/src/bvh.cpp \
           $(MSL_DIR)/src/bvh_analyzer.cpp \
@@ -131,6 +133,7 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           live_edit.o live_edit_prod.o inotify_watcher.o \
           lod_bake.o world_flatten.o part_flatten.o \
           retopo_blacklist.o \
+          modifier_apply.o \
           sector_grid.o lod_select.o \
           world_lights.o probe_volume.o \
           world_tracer.o probe_bake.o \
@@ -147,7 +150,7 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           async_bake.o
 
 # MSL C++ object names (basenames; same flat-object model as ME3_OBJ).
-MSL_OBJ = cluster.o cell.o mesh_simplifier.o mesh_indexed.o mesh_transform.o \
+MSL_OBJ = cluster.o cell.o mesh_simplifier.o mesh_indexed.o mesh_smooth.o mesh_transform.o \
           blas_manager.o bvh.o bvh_analyzer.o \
           mesh_worker_pool.o mesh_build_utils.o meshing_algorithm.o \
           marching_cubes_algorithm.o oriented_cube_algorithm.o vertex_ao.o \

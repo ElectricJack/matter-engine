@@ -17,9 +17,6 @@ class TreeBranch extends Part {
     const a1 = -52 * DEG;
     const a2 =  60 * DEG;
 
-    // No simplification on the twig tubes they are already as simple as possible
-    //this.simplify(0.3);
-
     const lsys = new LSystem();
     lsys.init('X');
     // More bracketed splits per node => the branch forks repeatedly instead of
@@ -76,11 +73,20 @@ class TreeBranch extends Part {
     };
     follower.execute();
 
-    // Pass 2: emit each segment as a tapered mesh tube. Stroke widths are
+    // Pass 2: emit each segment as an isosurface capsule. Stroke widths are
     // diameters, so the tube radius is half the width.
     this.fill(MAT.bark);
-    for (const [from, to, wFrom, wTo] of segs) {
+    this.beginModifier();
+    this.beginVoxels(0.06);   // resolves the thinnest twig tips; tune at the Meadow gate
+    for (const [from, to, wFrom, wTo] of segs)
       this.line(from, to, wFrom * 0.5, wTo * 0.5);
-    }
+    this.endVoxels();
+    // simplify runs before smooth so the QEM decimation acts on the raw
+    // isosurface (many small twigs meshed at VOX=0.06 -> ~33k tris/branch).
+    // Tree flattens 64 TreeBranch instances; without simplify the merged
+    // flatten output blows past the GPU region-buffer budget and the world
+    // renders empty (Task 7 gate report). 0.3 restores the volume budget the
+    // pre-modifier-regions bake achieved via per-cell QEM(0.3) at the mesher.
+    this.endModifier([{ simplify: 0.3 }, { smooth: { iterations: 1 } }]);
   }
 }

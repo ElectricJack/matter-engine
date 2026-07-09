@@ -130,15 +130,17 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/render/gpu_culler.cpp $(ME3_DIR)/src/render/probe_texture.cpp \
               $(ME3_DIR)/src/render/tileset_provider.cpp $(ME3_DIR)/src/render/tileset_gl_ctx.cpp \
               $(ME3_DIR)/src/provider/local_provider.cpp $(ME3_DIR)/src/provider/resolvers.cpp \
+              $(ME3_DIR)/src/modifier_apply.cpp $(ME3_DIR)/src/retopo_blacklist.cpp \
               $(ME3_DIR)/src/async_bake.cpp \
               $(ME3_DIR)/src/live_edit.cpp \
               $(ME3_DIR)/src/live_edit_prod.cpp \
+              $(ME3_DIR)/src/inotify_watcher.cpp \
               $(ME3_DIR)/src/part_graph_snapshot.cpp \
               $(ME3_DIR)/src/matter_engine.cpp
 
 WIN_MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
               $(MSL_DIR)/src/mesh_simplifier.cpp $(MSL_DIR)/src/mesh_indexed.cpp \
-              $(MSL_DIR)/src/mesh_transform.cpp \
+              $(MSL_DIR)/src/mesh_smooth.cpp $(MSL_DIR)/src/mesh_transform.cpp \
               $(MSL_DIR)/src/blas_manager.cpp $(MSL_DIR)/src/bvh.cpp \
               $(MSL_DIR)/src/bvh_analyzer.cpp \
               $(MSL_DIR)/src/mesh_worker_pool.cpp $(MSL_DIR)/src/mesh_build_utils.cpp \

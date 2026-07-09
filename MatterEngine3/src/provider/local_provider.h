@@ -8,7 +8,6 @@
 
 #if defined(MATTER_HAVE_SCRIPT_HOST)
 #include "script_host.h"
-#include "part_asset_v2.h"  // part_asset::RetopoSettings
 #endif
 
 #include <cstdint>
@@ -122,7 +121,6 @@ private:
     // Owned objects that span both phases.
     std::unique_ptr<script_host::ScriptHost>            host_;
     std::unique_ptr<part_graph::FileModuleResolver>     resolver_;
-    std::unordered_map<uint64_t, part_asset::RetopoSettings> retopo_by_hash_;
 #endif
 };
 

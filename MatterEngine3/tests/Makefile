@@ -183,7 +183,7 @@ FLAVOR_qjs_FLAGS      := $(CFLAGS) $(INCLUDE_PATHS) $(QJS_INC)
 FLAVOR_sh_FLAGS       := $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC)
 FLAVOR_sp2_FLAGS      := $(CFLAGS) -DSP2_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC)
 FLAVOR_vl_FLAGS       := $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB -pthread $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC)
-FLAVOR_retopo_FLAGS   := $(CFLAGS) -DMATTER_HAVE_AUTOREMESHER $(INCLUDE_PATHS) -I$(AR_CORE_PATH)/include
+FLAVOR_retopo_FLAGS   := $(CFLAGS) -DMATTER_HAVE_AUTOREMESHER $(INCLUDE_PATHS) -I$(AR_CORE_PATH)/include $(QJS_INC)
 FLAVOR_gpu_FLAGS      := $(filter-out -D$(GRAPHICS),$(CFLAGS)) -D$(GPU_GRAPHICS) \
                          -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB \
                          $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) $(GPU_AR_CORE_CFLAGS)
@@ -322,6 +322,11 @@ ASYNCQ_CPP = async_queue_tests.cpp ../src/async_bake.cpp
 TILESETGTEX_TARGET = tileset_gtex_tests
 TILESETGTEX_CPP    = tileset_gtex_tests.cpp ../src/tileset_gtex.cpp
 
+MODAPPLY_TARGET = modifier_apply_tests
+MODAPPLY_CPP = modifier_apply_tests.cpp ../src/modifier_apply.cpp \
+               ../src/retopo_blacklist.cpp \
+               $(MSL)/mesh_smooth.cpp $(MSL)/mesh_simplifier.cpp $(MSL)/mesh_indexed.cpp
+
 # Simple standalone targets (they use tiny custom flag sets — kept as-is with
 # per-target rules below, no shared objects).
 
@@ -333,14 +338,22 @@ SCRIPT_TARGET = script_host_tests
 SCRIPT_CPP = script_host_tests.cpp ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
              ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
              ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
+             ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
              $(COMMON_MSL_FULL_SRC)
 SCRIPT_C   = $(COMMON_MSL_C)
+
+# Modifier-region bake plumbing (Task 4): reuses the script-host object set
+# with a different top-level .cpp.
+MODBAKE_TARGET = modifier_region_bake_tests
+MODBAKE_CPP = modifier_region_bake_tests.cpp $(filter-out script_host_tests.cpp, $(SCRIPT_CPP))
+MODBAKE_C   = $(COMMON_MSL_C)
 
 GRAPH_INT_TARGET = part_graph_integration_tests
 GRAPH_INT_CPP = part_graph_integration_tests.cpp ../src/part_graph.cpp \
                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
+                ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
                 $(COMMON_MSL_FULL_SRC)
 GRAPH_INT_C   = $(COMMON_MSL_C)
 
@@ -353,6 +366,7 @@ EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp \
               ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
               ../src/part_cluster.cpp \
               ../src/sector_grid.cpp ../src/lod_select.cpp \
+              ../src/modifier_apply.cpp $(MSL)/mesh_smooth.cpp \
               $(MSL)/mesh_transform.cpp \
               $(COMMON_MSL_FULL_SRC)
 EXAMPLE_C   = $(COMMON_MSL_C)
@@ -393,6 +407,7 @@ TILESETBAKE_CPP = tileset_bake_tests.cpp ../src/part_graph.cpp \
                   ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \
                   ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                   ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
+                  ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
                   $(COMMON_MSL_FULL_SRC)
 TILESETBAKE_C   = $(COMMON_MSL_C)
 
@@ -407,6 +422,7 @@ SHLIB_TARGET = shared_lib_tests
 SHLIB_CPP = shared_lib_tests.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
             ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \
             ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
+            ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
             $(COMMON_MSL_FULL_SRC)
 SHLIB_C   = $(COMMON_MSL_C)
 
@@ -433,22 +449,24 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               $(VIEWER_PIPELINE_CPP)
 
 # ===== flavor retopo (retopo_integration_tests) ========================
+# The test calls script_host::ScriptHost::bake_source(), which requires the
+# full script-host + DSL + modifier_apply source set.  Build with the retopo
+# flavor (-DMATTER_HAVE_AUTOREMESHER) so modifier_apply dispatches retopo.
+# mesh_retopo.cpp is the only autoremesher-specific addition over MODBAKE_CPP.
 RETOPO_INT_TARGET = retopo_integration_tests
-RETOPO_INT_CPP = retopo_integration_tests.cpp ../src/part_flatten.cpp ../src/lod_bake.cpp \
-                 ../src/part_cluster.cpp \
-                 ../src/part_asset_v2.cpp \
-                 ../src/retopo_blacklist.cpp \
-                 $(MSL)/mesh_simplifier.cpp \
-                 $(MSL)/mesh_indexed.cpp \
-                 $(MSL)/mesh_transform.cpp \
+RETOPO_INT_CPP = retopo_integration_tests.cpp \
+                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp \
+                 ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp \
+                 ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
+                 ../src/part_flatten.cpp ../src/part_cluster.cpp \
+                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
+                 ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp \
                  $(MSL)/mesh_retopo.cpp \
-                 $(MSL)/blas_manager.cpp \
-                 $(MSL)/bvh.cpp \
-                 $(MSL)/tlas_manager.cpp \
-                 $(MSL)/part_asset.cpp \
-                 $(MSL)/vertex_ao.cpp \
-                 $(MSL)/occupancy.cpp
-RETOPO_INT_C   = $(MSL)/material_registry.c
+                 $(MSL)/mesh_smooth.cpp \
+                 $(MSL)/mesh_transform.cpp \
+                 $(COMMON_MSL_FULL_SRC)
+RETOPO_INT_C   = $(COMMON_MSL_C)
 # --allow-multiple-definition: raylib bundles stb_image_write.h in rtextures.c
 # and autoremesher_core's geogram bundles its own copy in
 # image_serializer_stb.o. Both archives get pulled in here.
@@ -492,7 +510,8 @@ GPU_PIPELINE_CPP = \
     ../src/tileset_phase.cpp ../src/tileset_phase_gpu.cpp \
     ../src/tileset_bake.cpp ../src/tileset_settle.cpp \
     ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
-    ../src/tileset_bake_primary.cpp ../src/tileset_bake_ao.cpp
+    ../src/tileset_bake_primary.cpp ../src/tileset_bake_ao.cpp \
+    ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp
 
 GPU_MSL_CPP = \
     $(MSL)/cluster.cpp $(MSL)/cell.cpp \
@@ -527,10 +546,12 @@ def_CPP_SRCS := $(sort \
     $(POLYTRI_CPP) \
     $(SHADER_SOURCE_CPP) \
     $(ASYNCQ_CPP) \
-    $(TILESETGTEX_CPP))
+    $(TILESETGTEX_CPP) \
+    $(MODAPPLY_CPP))
 
 qjs_CPP_SRCS := $(sort \
     $(SCRIPT_CPP) \
+    $(MODBAKE_CPP) \
     $(TILESETDSL_CPP))
 
 sh_CPP_SRCS := $(sort \
@@ -608,8 +629,10 @@ POLYTRI_OBJS = $(call obj_list,def,$(POLYTRI_CPP))
 SHADER_SOURCE_OBJS = $(call obj_list,def,$(SHADER_SOURCE_CPP))
 ASYNCQ_OBJS = $(call obj_list,def,$(ASYNCQ_CPP))
 TILESETGTEX_OBJS = $(call obj_list,def,$(TILESETGTEX_CPP))
+MODAPPLY_OBJS = $(call obj_list,def,$(MODAPPLY_CPP))
 
 SCRIPT_OBJS = $(call obj_list,qjs,$(SCRIPT_CPP)) $(call obj_list,mslc,$(SCRIPT_C)) $(qjsc_C_OBJS)
+MODBAKE_OBJS = $(call obj_list,qjs,$(MODBAKE_CPP)) $(call obj_list,mslc,$(MODBAKE_C)) $(qjsc_C_OBJS)
 TILESETDSL_OBJS = $(call obj_list,qjs,$(TILESETDSL_CPP)) $(call obj_list,mslc,$(SCRIPT_C)) $(qjsc_C_OBJS)
 
 GRAPH_INT_OBJS = $(call obj_list,sh,$(GRAPH_INT_CPP)) $(call obj_list,mslc,$(GRAPH_INT_C)) $(qjsc_C_OBJS)
@@ -625,7 +648,7 @@ LIVEPROD_OBJS    = $(call obj_list,sh,$(LIVEPROD_CPP)) $(call obj_list,mslc,$(LI
 
 SHLIB_OBJS = $(call obj_list,sp2,$(SHLIB_CPP)) $(call obj_list,mslc,$(SHLIB_C)) $(qjsc_C_OBJS)
 VIEWER_LOGIC_OBJS = $(call obj_list,vl,$(VIEWER_LOGIC_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
-RETOPO_INT_OBJS = $(call obj_list,retopo,$(RETOPO_INT_CPP)) $(call obj_list,mslc,$(RETOPO_INT_C))
+RETOPO_INT_OBJS = $(call obj_list,retopo,$(RETOPO_INT_CPP)) $(call obj_list,mslc,$(RETOPO_INT_C)) $(qjsc_C_OBJS)
 
 # GPU binaries reuse the same gpu-flavor object set. Each binary is:
 # <driver>.o + $(GPU_ALL_CPP) objects + mslc + qjsc.
@@ -634,7 +657,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod
+.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-modapply run-modbake
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -896,6 +919,22 @@ $(ASYNCQ_TARGET): $(ASYNCQ_OBJS)
 run-asyncq: $(ASYNCQ_TARGET)
 	./$(ASYNCQ_TARGET)
 
+# modifier_apply stack runner (simplify/smooth/retopo, failure=skip, blacklist chunk hash).
+$(MODAPPLY_TARGET): $(MODAPPLY_OBJS)
+	$(CC) $(MODAPPLY_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+
+run-modapply: $(MODAPPLY_TARGET)
+	./$(MODAPPLY_TARGET)
+
+# Modifier-region bake plumbing (Task 4): full bake through ScriptHost, region
+# meshes welded across cells and stack-processed.
+$(MODBAKE_TARGET): $(MODBAKE_OBJS)
+	$(CC) $(MODBAKE_OBJS) -o $@ \
+	      $(CFLAGS) $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+
+run-modbake: $(MODBAKE_TARGET)
+	./$(MODBAKE_TARGET)
+
 # ---------------------------------------------------------------------------
 # GPU tests (require GL 4.6 + GALLIUM_DRIVER=d3d12 on WSLg).
 # All share the same $(GPU_SHARED_OBJS) — one flavor `gpu` for the C++ pipeline
@@ -970,7 +1009,7 @@ clean:
 	      $(POLYTRI_TARGET) $(ISO_TARGET) $(FLATTEN_TARGET) $(LIGHTING_TARGET) \
 	      $(TILESETTORUSBVH_TARGET) $(TILESETDSL_TARGET) $(TILESETBAKE_TARGET) \
 	      $(TILESETGTEX_TARGET) $(ASYNCQ_TARGET) $(GALLERY_TARGET) \
-	      $(LIVEPROD_TARGET) \
+	      $(LIVEPROD_TARGET) $(MODAPPLY_TARGET) $(MODBAKE_TARGET) \
 	      tileset_physics_tests tileset_core_tests tileset_placement_tests \
 	      gpu_tests tileset_gpu_tests tileset_seam_tests tileset_provider_tests \
 	      tileset_load_tests api_tests async_bake_tests

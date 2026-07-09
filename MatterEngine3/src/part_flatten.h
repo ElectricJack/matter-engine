@@ -9,8 +9,6 @@
 //
 // GL-free: consumes .part files from the cache and writes one back.
 
-#include "part_asset_v2.h"  // part_asset::RetopoSettings (Phase 5 hook)
-
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -56,16 +54,6 @@ struct FlattenTargets {
     // scatter-heavy roots (StressForest) trip it and land on the instance-ref
     // path automatically. Schemas / build scripts may override.
     size_t budget_tri_bytes = 512ull * 1024ull * 1024ull;
-
-    // Phase 5 autoremesher: per-part retopo settings. Default (enabled=false)
-    // means the flatten pipeline behaves exactly as before — no retopo, no
-    // .retopo.part sidecar, byte-identical output for every existing schema.
-    // The caller (typically HostBaker) queries ScriptHost::eval_retopo_settings
-    // for the part's source and threads the result in here. See
-    // MatterEngine3/src/part_flatten.cpp for the hook and the cache-key
-    // composition (hash of merged mesh hash + settings + core version +
-    // platform triple).
-    part_asset::RetopoSettings retopo;
 };
 
 // Bake-hardening #2: decision recorded per part during the bottom-up pass.
