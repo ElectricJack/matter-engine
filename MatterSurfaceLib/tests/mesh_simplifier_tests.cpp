@@ -354,6 +354,62 @@ static void test_simplify_meshindexed_overload_delegates() {
     printf("PASSED\n");
 }
 
+// Regression: the previous MeshIndexed shim adapted through raylib::Mesh (16-bit
+// indices) and silently returned input unchanged for meshes > 65535 vertices.
+// A modifier-region `{ simplify: X }` stack on a large voxel isosurface bake
+// (Tree/TreeBranch at VOX=0.06 → 172K verts) was therefore a no-op, blowing
+// the Meadow bake's flatten cluster count from ~32 to ~256 and the .flat.part
+// past the GPU region-buffer budget. This test builds a synthetic mesh with
+// well over 65535 unique vertices, calls simplify, and asserts the output tri
+// count actually shrank.
+static void test_simplify_meshindexed_over_65535_verts() {
+    printf("=== test_simplify_meshindexed_over_65535_verts ===\n");
+    // 320 x 260 grid of quads (2 tris each) = 166,400 tris; each cell has 4
+    // unique corners so vertex count = 321 * 261 = 83,781 verts — well above
+    // 65535. Each quad is a 1-unit square in the XY plane; each is a topological
+    // island (no vertex sharing across cells) so QEM has plenty to collapse.
+    MeshIndexed in;
+    const int W = 320, H = 260;
+    in.positions.reserve((size_t)W * H * 4);
+    in.indices.reserve((size_t)W * H * 6);
+    for (int j = 0; j < H; ++j) {
+        for (int i = 0; i < W; ++i) {
+            uint32_t base = (uint32_t)in.positions.size();
+            const float x0 = (float)i, x1 = (float)(i + 1);
+            const float y0 = (float)j, y1 = (float)(j + 1);
+            in.positions.push_back(make_float3(x0, y0, 0));
+            in.positions.push_back(make_float3(x1, y0, 0));
+            in.positions.push_back(make_float3(x1, y1, 0));
+            in.positions.push_back(make_float3(x0, y1, 0));
+            in.indices.push_back(base + 0);
+            in.indices.push_back(base + 1);
+            in.indices.push_back(base + 2);
+            in.indices.push_back(base + 0);
+            in.indices.push_back(base + 2);
+            in.indices.push_back(base + 3);
+        }
+    }
+    assert(in.positions.size() > 65535);
+
+    const size_t in_tris = in.indices.size() / 3;
+    SimplifyOptions opts;
+    opts.target_ratio  = 0.3f;
+    opts.lock_boundary = false;
+
+    MeshIndexed out = simplify(in, opts, nullptr);
+
+    const size_t out_tris = out.indices.size() / 3;
+    printf("  in_verts=%zu in_tris=%zu -> out_verts=%zu out_tris=%zu\n",
+           in.positions.size(), in_tris, out.positions.size(), out_tris);
+    // The bug fix: over-65535 input must NOT silently return the caller's
+    // input. QEM at ratio 0.3 on an aggressively-collapsible planar grid
+    // should land near 30% (plus welding across shared cell borders).
+    assert(out_tris > 0);
+    assert(out_tris < in_tris);   // decimation actually happened
+    assert(out_tris < in_tris / 2u); // significantly reduced (well over 50% off)
+    printf("PASSED\n");
+}
+
 int main() {
     printf("=== Mesh Simplifier Tests ===\n");
     test_indices_in_range_sphere();
@@ -369,6 +425,7 @@ int main() {
     test_boundary_preserved();
     test_watertight_seam();
     test_simplify_meshindexed_overload_delegates();
+    test_simplify_meshindexed_over_65535_verts();
     printf("\nAll mesh simplifier tests PASSED\n");
     return 0;
 }

@@ -81,6 +81,12 @@ class TreeBranch extends Part {
     for (const [from, to, wFrom, wTo] of segs)
       this.line(from, to, wFrom * 0.5, wTo * 0.5);
     this.endVoxels();
-    this.endModifier([{ smooth: { iterations: 1 } }]);
+    // simplify runs before smooth so the QEM decimation acts on the raw
+    // isosurface (many small twigs meshed at VOX=0.06 -> ~33k tris/branch).
+    // Tree flattens 64 TreeBranch instances; without simplify the merged
+    // flatten output blows past the GPU region-buffer budget and the world
+    // renders empty (Task 7 gate report). 0.3 restores the volume budget the
+    // pre-modifier-regions bake achieved via per-cell QEM(0.3) at the mesher.
+    this.endModifier([{ simplify: 0.3 }, { smooth: { iterations: 1 } }]);
   }
 }

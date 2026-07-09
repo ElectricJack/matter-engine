@@ -172,7 +172,16 @@ class Tree extends Part {
     }
 
     this.endVoxels();
+    // simplify runs before retopo/smooth so a QEM-decimated mesh (heavy
+    // curvature-aware collapse of the bark surface) feeds the smoother and the
+    // retopo solver. This is the modifier-region equivalent of the old
+    // `this.simplify(0.3)` — required to keep merged flatten output bounded
+    // when retopo is blacklisted (autoremesher aborts on real Meadow bark
+    // geometry, per Task 7 report). Without it, 64 Tree flatten instances of
+    // ~343K tris merged with their TreeBranch/Leaf children produce a ~2.5M-tri
+    // merged mesh → ~256 clusters → GPU region buffer overflow → empty world.
     this.endModifier([
+      { simplify: 0.3 },
       { smooth: { iterations: 2 } },
       { retopo: { target_ratio: 1.0, iterations: 3, seed: 42, timeout_seconds: 120 } },
     ]);
