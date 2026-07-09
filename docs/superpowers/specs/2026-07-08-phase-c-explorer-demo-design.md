@@ -85,14 +85,16 @@ Coarse and full-res tiles are the same schema with different resolution params
 → different part hashes → both live naturally in the cache. Refinement =
 publish full-res part, retire the coarse instance. No cache format changes.
 
-### 2.3 Residency policy in PartStore
+### 2.3 Residency policy (part-level)
 
-`.part` files keep the full QEM ladder on disk. In memory/VRAM, the finest
-rungs are hot-loaded only within a camera radius; coarse rungs stay resident
-everywhere; eviction on radius exit. This bounds VRAM at 3060 scale regardless
-of world size. (The LOD selector already ignores fine rungs at distance, so
-this changes residency, not rendered output.) It is the seed of real streaming
-later without claiming to be that yet.
+`.part` files keep the full QEM ladder on disk. Residency is at the **part
+level**, which the two-pass tile design provides naturally: coarse tile parts
+stay resident everywhere; full-res tile parts are loaded whole within a camera
+radius and evicted whole on radius exit (new `release_part` seam in
+GpuCuller/PartStore — the current architecture stores all LOD rungs in one
+monolithic VBO per part, so per-rung residency is not viable and is not
+attempted). This bounds VRAM at 3060 scale regardless of world size. It is
+the seed of real streaming later without claiming to be that yet.
 
 ### 2.4 Seed plumbing + scale hardening
 
