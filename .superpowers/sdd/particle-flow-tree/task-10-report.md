@@ -86,13 +86,22 @@ Four new tests added to `MatterEngine3/tests/script_host_tests.cpp` and register
 
 ### 4.2 Incremental equivalence + append-only spot-check (`test_pf_incremental_equivalence`)
 
-**Approach:**
-- Script A: `__pf_run(sim, 300)` in one shot, collect depositedCount + path[0] xyz prefix
-- Script B: `__pf_run(sim, 120)` then `__pf_run(sim, 180)`. After first segment, snapshot path[0].xyz prefix; after second run, verify prefix unchanged (append-only). Both scripts use seed 17.
+**Original design (vacuous):** Two separate scripts (class PA, class PB) with dual `ScriptHost` instances, compared by `.part` file size. Problem: Neither script stamped geometry (no `this.paths()` or `beginVoxels`), producing empty shells ~= 876 bytes. Size check asserted nothing about simulation state.
 
-The test uses in-script throw on path prefix mismatch (cheapest possible approach within the existing `bake_source` API, which doesn't expose JS global variables directly). The primary evidence is Script B succeeding without throwing.
+**Corrected design (genuine):** ONE bake with TWO identically-configured sims in same script:
+- `simX`: `__pf_run(simX, 300)` in one shot
+- `simY`: `__pf_run(simY, 120)` then `__pf_run(simY, 180)` (total 300 ticks)
+- Both seeded 17; determinism guarantee: X and Y must agree exactly on `depositedCount` + full `path[0].xyz` sequence
+- Mid-run snapshot: Y records `path[0].xyz` after 120 ticks, then verifies prefix unchanged after 180-tick extension (proves append-only)
+- All assertions in-JS: mismatch → thrown error → bake fails with precise diagnostic message
+- No geometry stamped (not needed for equivalence proof), but no vacuous file-size comparison
 
-**Evidence:** Output: `pf incremental: run(300) part=876 bytes, run(120)+run(180) part=876 bytes` — identical .part sizes confirm equivalent geometry. No append-only violation. Both `CHECK(r.error.ok)` assertions passed.
+**Why the rewrite fixes the problem:**
+- Old test: Empty `.part` files, same size by coincidence (garbage in = garbage out)
+- New test: Simulation state (deposits + path data) compared directly in JS; any kernel/binding equivalence bug surfaces as throw message
+- Append-only check doubles as a regression guard for path-recorder mutations
+
+**Status:** PASS — Commit `4134583` — test(pf): genuine in-JS incremental-equivalence assertion (two sims, one bake, exact compare)
 
 ### 4.3 Budget fail-closed (`test_pf_budget_fail_closed`)
 
