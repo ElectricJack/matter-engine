@@ -27,9 +27,28 @@ int main() {
     if (!session) { printf("FAIL open_world: %s\n", err.c_str()); return 1; }
 
     session->request_bake();
+    // Phase B (Task 6): bake now runs on a worker thread and marshals GL work
+    // back to this (app/GL) thread via pump_gpu_jobs. Drive the event stream
+    // to BakeFinished/BakeError or a 60-second timeout.
     std::vector<matter::Event> evs;
-    matter::Event ev;
-    while (session->poll_event(ev)) evs.push_back(ev);
+    {
+        double t0 = GetTime();
+        bool finished = false;
+        while (!finished && GetTime() - t0 < 60.0) {
+            session->pump_gpu_jobs(4.0f);
+            matter::Event ev;
+            while (session->poll_event(ev)) {
+                evs.push_back(ev);
+                if (ev.type == matter::EventType::BakeFinished) { finished = true; break; }
+                if (ev.type == matter::EventType::BakeError) {
+                    printf("FAIL bake error: phase=%s code=%d msg=%s\n",
+                           ev.phase.c_str(), (int)ev.code, ev.message.c_str());
+                    return 1;
+                }
+            }
+        }
+        if (!finished) { printf("FAIL: bake timeout after 60s\n"); return 1; }
+    }
     if (evs.empty()) { printf("FAIL: no events\n"); return 1; }
     assert(!evs.empty());
     assert(evs.front().type == matter::EventType::BakeStarted);

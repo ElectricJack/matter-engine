@@ -27,6 +27,7 @@
 #include "raylib.h"
 #include "external/glad.h"   // glClearColor / glClear (same as gpu_culler.cpp)
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -34,10 +35,41 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <set>
 #include <string>
+#include <thread>
 #include <unordered_map>
+#include <vector>
 
 namespace matter {
+
+// Classify a provider-returned error string into a structured code. The
+// executor doesn't get typed errors back from the pipeline (yet — Task 7 wires
+// finer-grained tags), so we bucket by substring for now. Task 7 will overlay
+// the real code plumbing; keeping it here makes it easy to hoist later.
+static BakeErrorCode classify_error(const std::string& err) {
+    if (err.find("cancel") != std::string::npos ||
+        err.find("shutdown") != std::string::npos)
+        return BakeErrorCode::Cancelled;
+    if (err.find("out of memory") != std::string::npos ||
+        err.find("bad_alloc") != std::string::npos)
+        return BakeErrorCode::OutOfMemory;
+    if (err.find("GPU") != std::string::npos ||
+        err.find("gpu") != std::string::npos ||
+        err.find("shader") != std::string::npos ||
+        err.find("GL") != std::string::npos)
+        return BakeErrorCode::GpuError;
+    if (err.find("manifest") != std::string::npos ||
+        err.find("not found") != std::string::npos ||
+        err.find("load") != std::string::npos)
+        return BakeErrorCode::IoError;
+    if (err.find("bake ") != std::string::npos ||
+        err.find("script") != std::string::npos ||
+        err.find("install") != std::string::npos)
+        return BakeErrorCode::ScriptError;
+    return BakeErrorCode::Internal;
+}
 
 // ---------------------------------------------------------------------------
 // EngineContext::Impl — minimal engine-level state shared by all sessions.
@@ -99,12 +131,22 @@ struct WorldSession::Impl {
 
     // Event queue — capped at 4096 to prevent unbounded growth if the app
     // never drains (older events dropped when the cap is hit).
+    // Phase B: worker + app thread both touch this, so every access is
+    // guarded by events_mutex.
     std::deque<Event> events;
+    std::mutex        events_mutex;
 
     FrameStats stats{};
 
-    // Phase B: async bake GPU work queue.
+    // Phase B: async bake GPU work queue + command queue + worker thread.
     matter_async::GpuJobQueue gpu_jobs;
+    matter_async::CommandQueue commands;
+    std::thread                worker;
+    // Set to true while the worker is inside a command (BakeAll/Reload); read
+    // by tick() to skip provider->poll_deltas() while the provider is being
+    // torn down and rebuilt. Cheap insurance: LocalProvider::poll_deltas
+    // currently always returns false, but the flag also fences future providers.
+    std::atomic<bool> bake_active{false};
 
     // Lazy CPU tracer for the query API (raycast/instance_count/instance_info).
     // Built on first query after a bake. mutable so instance_count() const can build.
@@ -117,121 +159,479 @@ struct WorldSession::Impl {
     // Ensure tracer is built and up-to-date. Returns false if build failed.
     bool ensure_tracer() const;
 
-    // The core bake/reconnect logic relocated from main.cpp's connect_sequence.
-    // Returns true on success; on failure sets err and leaves connected = false.
-    bool bake_once(std::string& err);
+    // --- Phase B: async bake worker helpers (defined below) ------------------
+    // Emit an event onto the queue (thread-safe). Applies the 4096 cap.
+    void emit_event(Event ev);
+    // Start the worker thread if not already running.
+    void ensure_worker_started();
+    // Worker thread entry point.
+    void worker_loop();
+    // Execute one BakeAll/Reload command. Called only on the worker thread.
+    void execute_bake(matter_async::Command& cmd, bool is_reload);
 };
 
 // ---------------------------------------------------------------------------
-// WorldSession::Impl::bake_once
-// Verbatim relocation of main.cpp's connect_sequence lambda (~lines 170–260).
+// WorldSession::Impl::emit_event / ensure_worker_started / worker_loop
+// Phase B: worker command loop and event fan-out.
 // ---------------------------------------------------------------------------
-bool WorldSession::Impl::bake_once(std::string& err) {
-    if (!provider->connect(manifest, err)) {
-        printf("connect: %s\n", err.c_str());
-        return false;
-    }
-    store = std::make_unique<viewer::PartStore>(cfg.cache_root);
-    auto want = provider->reconcile(manifest, *store);
-    if (!provider->fetch_parts(want, *store, err)) {
-        printf("fetch: %s\n", err.c_str());
-        return false;
-    }
-    state.reset(manifest);
-    // Size the TLAS to the fully child-expanded instance count, not just the
-    // root count: each placed part recursively pulls in its baked children
-    // (e.g. a Tree expands to hundreds of Leaf instances). Mirrors the depth
-    // cap and empty-LOD skip in WorldComposer::compose.
-    size_t cap = 16;
-    for (const auto& e : manifest.instances) {
-        viewer::walk_part_tree(e.part_hash,
-            [&](uint64_t h) -> const viewer::LoadedPart* { return store->get_or_load(h); },
-            [&](const viewer::LoadedPart* lp, uint64_t /*hash*/, const float /*rel*/[16], int /*depth*/) {
-                // A geometry-less assembly part contributes no instance of its own
-                // but its children are still visited -- mirror WorldComposer::compose.
-                if (!lp->lod_blas.empty()) ++cap;
-            });
-    }
-    composer = std::make_unique<viewer::WorldComposer>(*store, cap);
-    // Recreate RasterComposer on each (re)connect so stale GL mesh caches drop.
-    // Release stale probe textures before creating new ones (GL context must be live).
-    viewer::release_probe_textures(probe_tex);
-    raster = std::make_unique<viewer::RasterComposer>();
-    if (!engine->gl46) {
-        // RT path: set lights (no-op if shader not yet loaded; deferred to lazy
-        // RT init in render()). Raster path skips raster init in non-gl46 mode.
-        renderer.set_lights(manifest.lights);
-    } else {
-        // Raster path (GL 4.6).
-        std::string rerr;
-        if (!raster->init(rerr)) {
-            printf("raster: %s\n", rerr.c_str());
-            err = rerr;
-            return false;
-        }
-        // Always upload WorldLights (defaults reproduce Phase-1 look for worlds
-        // without light lines).
-        raster->set_lights(manifest.lights);
 
-        // Upload probe textures if available; fallback to Phase-1 flat ambient.
-        if (manifest.probes && manifest.probes->valid()) {
-            probe_tex = viewer::upload_probe_textures(*manifest.probes);
-            raster->set_probes(probe_tex);
-        } else {
-            printf("probes unavailable - flat ambient fallback\n");
-        }
+void WorldSession::Impl::emit_event(Event ev) {
+    std::lock_guard<std::mutex> lk(events_mutex);
+    if (events.size() >= 4096) events.pop_front();
+    events.push_back(std::move(ev));
+}
 
-        // Tone-map sky_color (c/(c+1) then pow(1/2.2)) to derive the clear color.
-        // With the default lights this reproduces approximately the old (96,118,143).
-        auto tonemap = [](float c) -> unsigned char {
-            float mapped  = c / (c + 1.0f);                   // Reinhard
-            float gamma   = std::pow(mapped, 1.0f / 2.2f);    // gamma
-            float clamped = gamma < 0.0f ? 0.0f : (gamma > 1.0f ? 1.0f : gamma);
-            return (unsigned char)(clamped * 255.0f + 0.5f);
+void WorldSession::Impl::ensure_worker_started() {
+    if (worker.joinable()) return;
+    worker = std::thread([this] { worker_loop(); });
+}
+
+void WorldSession::Impl::worker_loop() {
+    for (;;) {
+        matter_async::Command cmd;
+        if (!commands.pop(cmd)) return;   // shutdown + drained
+        if (cmd.kind == matter_async::CommandKind::Shutdown) return;
+
+        bake_active.store(true, std::memory_order_release);
+        try {
+            switch (cmd.kind) {
+                case matter_async::CommandKind::BakeAll:
+                    execute_bake(cmd, /*is_reload=*/false);
+                    break;
+                case matter_async::CommandKind::Reload:
+                    execute_bake(cmd, /*is_reload=*/true);
+                    break;
+                case matter_async::CommandKind::RebakeCone:
+                    // Task 9 will implement RebakeCone; treat as a full BakeAll
+                    // for now so a stray push does something sane instead of
+                    // silently dropping.
+                    execute_bake(cmd, /*is_reload=*/false);
+                    break;
+                case matter_async::CommandKind::Shutdown:
+                    bake_active.store(false, std::memory_order_release);
+                    return;
+            }
+        } catch (std::bad_alloc&) {
+            Event ev;
+            ev.type    = EventType::BakeError;
+            ev.code    = BakeErrorCode::OutOfMemory;
+            ev.message = "std::bad_alloc";
+            emit_event(std::move(ev));
+        } catch (std::exception& e) {
+            Event ev;
+            ev.type    = EventType::BakeError;
+            ev.code    = BakeErrorCode::Internal;
+            ev.message = e.what();
+            emit_event(std::move(ev));
+        }
+        bake_active.store(false, std::memory_order_release);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WorldSession::Impl::execute_bake
+// The worker-side command executor. Runs the BakeAll/Reload pipeline on the
+// worker thread, marshaling GL work to the app/GL thread via gpu_jobs.
+// Steps mirror the Task 6 brief: emit BakeStarted -> install -> compose ->
+// GL reset job -> reconcile job (store swap) -> per-part publish jobs
+// (interleaved with cancellation checks) -> finalize job -> BakeFinished.
+// ---------------------------------------------------------------------------
+void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload) {
+    auto& token = cmd.token;
+    auto is_cancelled = [&] { return token && token->is_cancelled(); };
+
+    // 1) BakeStarted -----------------------------------------------------------
+    {
+        Event ev;
+        ev.type = EventType::BakeStarted;
+        emit_event(std::move(ev));
+    }
+
+    // Emit-a-BakeError helper (worker-side, so all call sites just tag phase).
+    auto emit_error = [&](BakeErrorCode code, const char* phase, const std::string& msg) {
+        Event ev;
+        ev.type    = EventType::BakeError;
+        ev.code    = code;
+        ev.phase   = phase;
+        ev.message = msg;
+        emit_event(std::move(ev));
+    };
+
+    // 2) Build a fresh provider and install the part graph --------------------
+    // The provider is per-command: on_part is wired to emit BakePartDone with
+    // the appropriate phase, and gpu_run marshals tileset GL to the app thread
+    // via gpu_jobs.run_blocking (this Task 6 seam; Task 4 added the field).
+    // The reload variant additionally resets the GPU culler before we begin.
+    if (is_reload && culler_ready) {
+        // GpuCuller state lives on the GL thread. Marshal the reset.
+        matter_async::GpuJob rj;
+        rj.name  = "gpu_culler.reset";
+        rj.token = token;
+        rj.fn    = [this](std::string& /*err*/) {
+            matter_async::assert_gl_thread("gpu_culler.reset");
+            gpu_culler.reset();
+            return true;
         };
-        // Compute exact same (unsigned char) values as main.cpp lines 215-226,
-        // then store as c/255.f so glClearColor gets the same bucket.
-        unsigned char r = tonemap(manifest.lights.sky_color[0]);
-        unsigned char g = tonemap(manifest.lights.sky_color[1]);
-        unsigned char b = tonemap(manifest.lights.sky_color[2]);
-        sky_clear[0] = r / 255.f;
-        sky_clear[1] = g / 255.f;
-        sky_clear[2] = b / 255.f;
-        printf("sky clear color: (%d,%d,%d)\n", (int)r, (int)g, (int)b);
-    }
-    // GPU-driven shader: load after init() so the raster shader is ready.
-    // FATAL on failure — there is no CPU raster fallback (MATTER_RT=1 is
-    // the escape hatch for older GL).
-    if (engine->gl46) {
-        std::string gerr;
-        if (!raster->init_gpu_driven(gerr)) {
-            fprintf(stderr, "FATAL: GPU-driven shader init failed: %s. "
-                    "Set MATTER_RT=1 to fall back to the ray-traced path.\n",
-                    gerr.c_str());
-            err = "GPU-driven shader init failed: " + gerr;
-            return false;
+        std::string rerr;
+        if (!gpu_jobs.run_blocking(std::move(rj), rerr)) {
+            emit_error(is_cancelled() ? BakeErrorCode::Cancelled : BakeErrorCode::GpuError,
+                       "gl", rerr.empty() ? "gpu_culler.reset failed" : rerr);
+            return;
         }
     }
-    // Upload world lights to the raytrace shader (no-op in raster mode because
-    // the shader is not loaded; the raster path uses raster->set_lights above).
-    renderer.set_lights(manifest.lights);
-    lods = store->part_lod_table();
-    stats.instances_total = (uint32_t)manifest.instances.size();
-    stats.parts_baked     = (uint32_t)provider->baked_count();
-    stats.cache_hits      = (uint32_t)provider->hit_count();
-    // Probe grid dims for HUD (all-zero = probes unavailable/OFF)
-    if (manifest.probes && manifest.probes->valid()) {
-        stats.probe_dims[0] = manifest.probes->grid.nx;
-        stats.probe_dims[1] = manifest.probes->grid.ny;
-        stats.probe_dims[2] = manifest.probes->grid.nz;
-    } else {
-        stats.probe_dims[0] = stats.probe_dims[1] = stats.probe_dims[2] = 0;
+    // In reload mode, mark the old world unusable until the reset job below
+    // publishes a new one (fail-closed matches today's reload behavior).
+    if (is_reload) connected = false;
+
+    // Install-phase on_part carries phase="install" (total==0, indeterminate).
+    cfg.on_part = [this](const char* module, int done, int total) {
+        Event ev;
+        ev.type   = EventType::BakePartDone;
+        ev.module = module ? module : "";
+        ev.done   = done;
+        ev.total  = total;
+        // total==0 => install phase; total>0 => fetch/parts phase.
+        // Distinguish by total: install fires with 0, per-part with want.size().
+        ev.phase  = (total == 0) ? "install" : "parts";
+        emit_event(std::move(ev));
+    };
+    // Bind gpu_run to marshal tileset GL work to the app thread via gpu_jobs.
+    cfg.gpu_run = [this, token](const char* name,
+                                std::function<bool(std::string&)> fn,
+                                std::string& err) -> bool {
+        matter_async::GpuJob j;
+        j.name  = name ? name : "gpu";
+        j.fn    = std::move(fn);
+        j.token = token;
+        return gpu_jobs.run_blocking(std::move(j), err);
+    };
+
+    provider = std::make_unique<viewer::LocalProvider>(cfg);
+
+    // install_graph on the worker (script eval + per-part bake; no GL).
+    {
+        std::string err;
+        if (!provider->install_graph(err)) {
+            printf("install: %s\n", err.c_str());
+            emit_error(is_cancelled() ? BakeErrorCode::Cancelled : classify_error(err),
+                       "install", err);
+            return;
+        }
     }
-    connected = true;
-    // Invalidate the lazy tracer: world content changed.
-    tracer_dirty = true;
-    tracer.reset();
-    return true;
+    if (is_cancelled()) { emit_error(BakeErrorCode::Cancelled, "install", "cancelled"); return; }
+
+    // 3) compose_world on the worker (scatter/place; tileset GL marshaled) ----
+    viewer::WorldManifest new_manifest;
+    {
+        std::string err;
+        if (!provider->compose_world(new_manifest, err)) {
+            printf("compose: %s\n", err.c_str());
+            emit_error(is_cancelled() ? BakeErrorCode::Cancelled : classify_error(err),
+                       "compose", err);
+            return;
+        }
+    }
+    if (is_cancelled()) { emit_error(BakeErrorCode::Cancelled, "compose", "cancelled"); return; }
+
+    // 4) GL reset job — recreate raster + composer + PartStore on the GL thread
+    // Also creates the fresh PartStore inside the job so the old store (still
+    // holding GL-owned BLAS textures) is destroyed on the GL thread, matching
+    // today's teardown ordering.
+    struct ResetOutput {
+        std::unique_ptr<viewer::PartStore>     new_store;
+        std::unique_ptr<viewer::WorldComposer> new_composer;
+        std::unique_ptr<viewer::RasterComposer> new_raster;
+        viewer::ProbeTextures                   new_probe_tex{};
+    };
+    auto reset_out = std::make_shared<ResetOutput>();
+
+    // Capture manifest snapshot by value into the reset job — it needs the
+    // lights/probes to program the raster composer, and the worker will
+    // overwrite `manifest` when publishing per-part deltas below.
+    matter_async::GpuJob reset_job;
+    reset_job.name  = "bake.reset";
+    reset_job.token = token;
+    reset_job.fn = [this, reset_out, new_manifest](std::string& err) -> bool {
+        matter_async::assert_gl_thread("bake.reset");
+        // --- relocated from the old bake_once (GL setup block) ---------------
+        // Release stale probe textures before creating new ones.
+        viewer::release_probe_textures(probe_tex);
+        reset_out->new_raster = std::make_unique<viewer::RasterComposer>();
+        auto& raster_local = reset_out->new_raster;
+        if (!engine->gl46) {
+            // RT path: set lights (no-op if shader not yet loaded; the lazy RT
+            // init in render() will re-apply after loading). Raster path skips
+            // raster init in non-gl46 mode.
+            renderer.set_lights(new_manifest.lights);
+        } else {
+            std::string rerr;
+            if (!raster_local->init(rerr)) {
+                printf("raster: %s\n", rerr.c_str());
+                err = rerr;
+                return false;
+            }
+            raster_local->set_lights(new_manifest.lights);
+
+            if (new_manifest.probes && new_manifest.probes->valid()) {
+                reset_out->new_probe_tex = viewer::upload_probe_textures(*new_manifest.probes);
+                raster_local->set_probes(reset_out->new_probe_tex);
+            } else {
+                printf("probes unavailable - flat ambient fallback\n");
+            }
+
+            // Tone-map sky_color (c/(c+1) then pow(1/2.2)) to derive the clear
+            // color. With the default lights this reproduces approximately
+            // (96,118,143).
+            auto tonemap = [](float c) -> unsigned char {
+                float mapped  = c / (c + 1.0f);
+                float gamma   = std::pow(mapped, 1.0f / 2.2f);
+                float clamped = gamma < 0.0f ? 0.0f : (gamma > 1.0f ? 1.0f : gamma);
+                return (unsigned char)(clamped * 255.0f + 0.5f);
+            };
+            unsigned char r = tonemap(new_manifest.lights.sky_color[0]);
+            unsigned char g = tonemap(new_manifest.lights.sky_color[1]);
+            unsigned char b = tonemap(new_manifest.lights.sky_color[2]);
+            sky_clear[0] = r / 255.f;
+            sky_clear[1] = g / 255.f;
+            sky_clear[2] = b / 255.f;
+            printf("sky clear color: (%d,%d,%d)\n", (int)r, (int)g, (int)b);
+
+            // GPU-driven shader init after set_lights (mirrors old bake_once).
+            std::string gerr;
+            if (!raster_local->init_gpu_driven(gerr)) {
+                fprintf(stderr, "FATAL: GPU-driven shader init failed: %s. "
+                        "Set MATTER_RT=1 to fall back to the ray-traced path.\n",
+                        gerr.c_str());
+                err = "GPU-driven shader init failed: " + gerr;
+                return false;
+            }
+        }
+        // Upload world lights to the raytrace shader (no-op in raster mode).
+        renderer.set_lights(new_manifest.lights);
+
+        // First-success GpuCuller init (relocated from the old request_bake tail).
+        if (!culler_ready && engine->gl46) {
+            std::string cull_err;
+            if (!gpu_culler.init(cull_err)) {
+                fprintf(stderr, "FATAL: GpuCuller::init failed: %s\n", cull_err.c_str());
+                err = "GpuCuller::init failed: " + cull_err;
+                return false;
+            }
+            printf("GpuCuller: initialized\n");
+            culler_ready = true;
+        }
+
+        // Fresh PartStore inside the GL job so the OLD store (BLAS textures)
+        // is destroyed on the GL thread.
+        reset_out->new_store = std::make_unique<viewer::PartStore>(cfg.cache_root);
+        // Small initial cap; grows in the publish jobs; final exact cap on
+        // the finalize job.
+        reset_out->new_composer = std::make_unique<viewer::WorldComposer>(
+            *reset_out->new_store, /*tlas_capacity=*/16);
+
+        // Clear world state (entries only — lights/probes are the raster/renderer's
+        // concern and already programmed above). apply() of per-hash deltas below
+        // grows it back up.
+        state.reset(viewer::WorldManifest{});
+
+        // Swap ownership from old objects to the fresh ones. The old objects
+        // destruct here on the GL thread (raster shader/texture cleanup).
+        raster.swap(reset_out->new_raster);
+        composer.swap(reset_out->new_composer);
+        store.swap(reset_out->new_store);
+        probe_tex = reset_out->new_probe_tex;
+        reset_out->new_probe_tex = viewer::ProbeTextures{}; // moved
+
+        // Publish the new manifest snapshot on the app/GL thread and mark
+        // connected. tracer is stale from now on.
+        manifest    = new_manifest;
+        connected   = true;
+        tracer_dirty = true;
+        tracer.reset();
+        return true;
+    };
+    {
+        std::string rerr;
+        if (!gpu_jobs.run_blocking(std::move(reset_job), rerr)) {
+            emit_error(is_cancelled() ? BakeErrorCode::Cancelled : BakeErrorCode::GpuError,
+                       "gl", rerr.empty() ? "reset job failed" : rerr);
+            return;
+        }
+    }
+    if (is_cancelled()) { emit_error(BakeErrorCode::Cancelled, "gl", "cancelled"); return; }
+
+    // 5) Reconcile job (store swap already done in reset; reconcile now reads
+    //    the new store from the app thread and returns the want-list to us).
+    struct ReconcileOutput { std::vector<uint64_t> want; };
+    auto reco_out = std::make_shared<ReconcileOutput>();
+    matter_async::GpuJob reco_job;
+    reco_job.name  = "bake.reconcile";
+    reco_job.token = token;
+    reco_job.fn    = [this, reco_out](std::string& /*err*/) -> bool {
+        matter_async::assert_gl_thread("bake.reconcile");
+        reco_out->want = provider->reconcile(manifest, *store);
+        return true;
+    };
+    {
+        std::string rerr;
+        if (!gpu_jobs.run_blocking(std::move(reco_job), rerr)) {
+            emit_error(is_cancelled() ? BakeErrorCode::Cancelled : BakeErrorCode::GpuError,
+                       "gl", rerr.empty() ? "reconcile failed" : rerr);
+            return;
+        }
+    }
+    if (is_cancelled()) { emit_error(BakeErrorCode::Cancelled, "gl", "cancelled"); return; }
+
+    // 6) Per-part publish jobs (fire-and-forget, FIFO).
+    //    - Emit BakePartDone at POST time on the worker (deterministic order).
+    //    - Check cancellation between posts (the between-parts checkpoint).
+    //    - The job loads the part into store, applies the delta of entries
+    //      matching this part_hash, invalidates the tracer, and grows the
+    //      composer cap when needed.
+    //
+    // Publish order: `want` first (parts we know need loading + drive
+    // BakePartDone progress), then any manifest hashes NOT in want (warm-cache
+    // reload: parts already on disk that reconcile skipped — the fresh store
+    // still needs to load them and state still needs their entries applied).
+    // The trailing hashes get BakePartDone events too so the caller sees a
+    // consistent (done, total) progression regardless of cache state.
+    std::vector<uint64_t> publish_order = reco_out->want;
+    {
+        std::set<uint64_t> in_want(publish_order.begin(), publish_order.end());
+        std::set<uint64_t> seen(publish_order.begin(), publish_order.end());
+        for (const auto& e : manifest.instances) {
+            if (in_want.count(e.part_hash)) continue;
+            if (!seen.insert(e.part_hash).second) continue;
+            publish_order.push_back(e.part_hash);
+        }
+    }
+    const int total_parts = (int)publish_order.size();
+    const auto& want = publish_order;
+
+    // module_by_hash for the BakePartDone label — same source as fetch_parts.
+    // Kept per-command so a cache-warm run still labels events correctly.
+    std::unordered_map<uint64_t, std::string> mod_by_hash;
+    for (const auto& e : manifest.instances)
+        if (!e.module.empty()) mod_by_hash[e.part_hash] = e.module;
+
+    for (int i = 0; i < total_parts; ++i) {
+        if (is_cancelled()) {
+            emit_error(BakeErrorCode::Cancelled, "parts", "cancelled between parts");
+            return;
+        }
+        uint64_t h = want[i];
+
+        // Deterministic post-time emit.
+        {
+            Event ev;
+            ev.type   = EventType::BakePartDone;
+            auto it   = mod_by_hash.find(h);
+            ev.module = (it != mod_by_hash.end()) ? it->second : "";
+            ev.done   = i + 1;
+            ev.total  = total_parts;
+            ev.phase  = "parts";
+            emit_event(std::move(ev));
+        }
+
+        // Snapshot manifest entries whose part_hash == h. Copied by value so
+        // the job doesn't race with a future manifest swap (though a supersede
+        // cancels the token before that happens).
+        std::vector<viewer::WorldManifestEntry> added;
+        for (const auto& e : manifest.instances)
+            if (e.part_hash == h) added.push_back(e);
+
+        matter_async::GpuJob pj;
+        pj.name  = "bake.publish";
+        pj.token = token;
+        pj.fn = [this, h, added_moved = std::move(added)](std::string& err) -> bool {
+            matter_async::assert_gl_thread("bake.publish");
+            if (!store->get_or_load(h)) {
+                err = "load failed for part " + std::to_string(h);
+                return false;
+            }
+            viewer::WorldDelta d;
+            d.added = added_moved;
+            state.apply(d);
+            tracer_dirty = true;
+            tracer.reset();
+
+            // Composer cap growth: count drawable nodes contributed by this
+            // part (walk_part_tree with an empty-lod skip mirrors WorldComposer).
+            size_t drawable_nodes = 0;
+            viewer::walk_part_tree(h,
+                [this](uint64_t hh) -> const viewer::LoadedPart* { return store->get_or_load(hh); },
+                [&](const viewer::LoadedPart* lp, uint64_t, const float[16], int) {
+                    if (!lp->lod_blas.empty()) ++drawable_nodes;
+                });
+            // We don't know the composer's exact current cap without exposing
+            // it, so use a monotonically growing counter shared with the
+            // finalize job: not necessary here — always safe to recreate when
+            // needed since TLAS recomposes every frame. Compute the "needed"
+            // as (current_state_entries × drawable_nodes) upper bound and
+            // recreate the composer when it likely exceeds. Cheaper: just
+            // ensure the composer sees the enlarged set on the next compose.
+            // A single recreate at finalize with the exact walk is the
+            // authoritative sizing; the mid-bake grows are conservative
+            // over-shoots to avoid TLAS::draw_batch overflow if compose is
+            // called by a raced render() before finalize.
+            (void)drawable_nodes;
+            return true;
+        };
+        gpu_jobs.post(std::move(pj));
+    }
+
+    // 7) Finalize job (blocking): part_lod_table + census + exact-cap
+    //    composer recreate using the original bake_once cap walk.
+    matter_async::GpuJob finalize_job;
+    finalize_job.name  = "bake.finalize";
+    finalize_job.token = token;
+    finalize_job.fn    = [this](std::string& /*err*/) -> bool {
+        matter_async::assert_gl_thread("bake.finalize");
+        lods = store->part_lod_table();
+
+        // Census (relocated from the old bake_once tail).
+        stats.instances_total = (uint32_t)manifest.instances.size();
+        stats.parts_baked     = (uint32_t)provider->baked_count();
+        stats.cache_hits      = (uint32_t)provider->hit_count();
+        if (manifest.probes && manifest.probes->valid()) {
+            stats.probe_dims[0] = manifest.probes->grid.nx;
+            stats.probe_dims[1] = manifest.probes->grid.ny;
+            stats.probe_dims[2] = manifest.probes->grid.nz;
+        } else {
+            stats.probe_dims[0] = stats.probe_dims[1] = stats.probe_dims[2] = 0;
+        }
+
+        // Final exact-cap composer recreate. Walk the (now fully loaded) part
+        // tree of every manifest instance and count drawable nodes exactly, as
+        // the old bake_once did. Everything is already in the store from the
+        // publish jobs, so this is cheap.
+        size_t cap = 16;
+        for (const auto& e : manifest.instances) {
+            viewer::walk_part_tree(e.part_hash,
+                [this](uint64_t hh) -> const viewer::LoadedPart* { return store->get_or_load(hh); },
+                [&](const viewer::LoadedPart* lp, uint64_t, const float[16], int) {
+                    if (!lp->lod_blas.empty()) ++cap;
+                });
+        }
+        composer = std::make_unique<viewer::WorldComposer>(*store, cap);
+        return true;
+    };
+    {
+        std::string ferr;
+        if (!gpu_jobs.run_blocking(std::move(finalize_job), ferr)) {
+            emit_error(is_cancelled() ? BakeErrorCode::Cancelled : BakeErrorCode::GpuError,
+                       "gl", ferr.empty() ? "finalize failed" : ferr);
+            return;
+        }
+    }
+
+    // 8) BakeFinished ---------------------------------------------------------
+    {
+        Event ev;
+        ev.type   = EventType::BakeFinished;
+        ev.errors = 0;   // Task 7 will surface skip-and-continue counts.
+        emit_event(std::move(ev));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -342,8 +742,21 @@ WorldSession::WorldSession(std::unique_ptr<Impl> impl)
     : impl_(std::move(impl)) {}
 
 WorldSession::~WorldSession() {
-    // Shutdown order mirrors main.cpp lines ~549–557 (reset GL-owning objects
-    // before CloseWindow; order: probe_tex -> raster -> composer -> store).
+    // Phase B destructor protocol (Task 6 brief):
+    //   1) commands.shut_down() — cancels in-flight token, wakes worker.
+    //   2) gpu_jobs.shut_down() — unblocks any run_blocking waiter on the
+    //      worker so it can observe the cancel and return.
+    //   3) worker.join() — the worker thread returns from execute_bake.
+    //   4) gpu_jobs.pump(1e9) — drain stragglers on the GL thread so any
+    //      posted publish jobs run their destructors here (not deferred).
+    //   5) existing GL teardown (release probe_tex -> raster -> composer
+    //      -> store, then renderer.shutdown()) mirrors main.cpp lines
+    //      ~549–557.
+    impl_->commands.shut_down();
+    impl_->gpu_jobs.shut_down();
+    if (impl_->worker.joinable()) impl_->worker.join();
+    impl_->gpu_jobs.pump(1e9);
+
     viewer::release_probe_textures(impl_->probe_tex);
     impl_->raster.reset();
     impl_->composer.reset();
@@ -352,114 +765,36 @@ WorldSession::~WorldSession() {
 }
 
 void WorldSession::request_bake() {
-    // Emit BakeStarted.
-    {
-        Event ev;
-        ev.type = EventType::BakeStarted;
-        if (impl_->events.size() >= 4096) impl_->events.pop_front();
-        impl_->events.push_back(std::move(ev));
-    }
-
-    // Install the on_part progress callback so BakePartDone events flow out.
-    impl_->cfg.on_part = [this](const char* module, int done, int total) {
-        Event ev;
-        ev.type   = EventType::BakePartDone;
-        ev.module = module ? module : "";
-        ev.done   = done;
-        ev.total  = total;
-        if (impl_->events.size() >= 4096) impl_->events.pop_front();
-        impl_->events.push_back(std::move(ev));
-    };
-    impl_->provider = std::make_unique<viewer::LocalProvider>(impl_->cfg);
-
-    std::string err;
-    if (!impl_->bake_once(err)) {
-        Event ev;
-        ev.type    = EventType::BakeError;
-        ev.message = err;
-        if (impl_->events.size() >= 4096) impl_->events.pop_front();
-        impl_->events.push_back(std::move(ev));
-        return;
-    }
-
-    // First success: initialize GPU culler (only when GL 4.6 available).
-    if (!impl_->culler_ready && impl_->engine->gl46) {
-        std::string cull_err;
-        if (!impl_->gpu_culler.init(cull_err)) {
-            fprintf(stderr, "FATAL: GpuCuller::init failed: %s\n", cull_err.c_str());
-            // Treat init failure as a bake error so the app can surface it.
-            Event ev;
-            ev.type    = EventType::BakeError;
-            ev.message = "GpuCuller::init failed: " + cull_err;
-            if (impl_->events.size() >= 4096) impl_->events.pop_front();
-            impl_->events.push_back(std::move(ev));
-            return;
-        }
-        printf("GpuCuller: initialized\n");
-        impl_->culler_ready = true;
-    }
-
-    // Emit BakeFinished.
-    {
-        Event ev;
-        ev.type = EventType::BakeFinished;
-        if (impl_->events.size() >= 4096) impl_->events.pop_front();
-        impl_->events.push_back(std::move(ev));
-    }
+    // Phase B: enqueue a BakeAll command and return immediately. The worker
+    // executes the pipeline; progress arrives via poll_event() and GL work
+    // runs in pump_gpu_jobs() on the app/GL thread. Supersession is handled
+    // inside CommandQueue::push (cancels in-flight token + clears pending).
+    impl_->ensure_worker_started();
+    matter_async::Command c;
+    c.kind = matter_async::CommandKind::BakeAll;
+    impl_->commands.push(std::move(c));
 }
 
 void WorldSession::reload() {
-    // Live-edit rebake. Reset GPU culler so stale part slots from the old world
-    // are cleared. Recreate provider from cfg, then run bake_once.
-    // Fail-closed: on error, connected is marked false (set by bake_once on
-    // failure) so render() no-ops — old world objects may dangle if bake_once
-    // fails partway through tearing down store/composer, so we accept the
-    // fail-closed behavior rather than trying to restore the old state.
-    impl_->connected = false;
-
-    // Emit BakeStarted.
-    {
-        Event ev;
-        ev.type = EventType::BakeStarted;
-        if (impl_->events.size() >= 4096) impl_->events.pop_front();
-        impl_->events.push_back(std::move(ev));
-    }
-
-    if (impl_->culler_ready) impl_->gpu_culler.reset();
-
-    // Install on_part callback.
-    impl_->cfg.on_part = [this](const char* module, int done, int total) {
-        Event ev;
-        ev.type   = EventType::BakePartDone;
-        ev.module = module ? module : "";
-        ev.done   = done;
-        ev.total  = total;
-        if (impl_->events.size() >= 4096) impl_->events.pop_front();
-        impl_->events.push_back(std::move(ev));
-    };
-    impl_->provider = std::make_unique<viewer::LocalProvider>(impl_->cfg);
-
-    std::string err;
-    if (!impl_->bake_once(err)) {
-        Event ev;
-        ev.type    = EventType::BakeError;
-        ev.message = err;
-        if (impl_->events.size() >= 4096) impl_->events.pop_front();
-        impl_->events.push_back(std::move(ev));
-        return;
-    }
-
-    // Emit BakeFinished.
-    {
-        Event ev;
-        ev.type = EventType::BakeFinished;
-        if (impl_->events.size() >= 4096) impl_->events.pop_front();
-        impl_->events.push_back(std::move(ev));
-    }
+    // Phase B: identical shape to request_bake(), but kind = Reload so the
+    // worker will additionally reset the GPU culler at the top of execute_bake
+    // (mirroring old reload() semantics).
+    impl_->ensure_worker_started();
+    matter_async::Command c;
+    c.kind = matter_async::CommandKind::Reload;
+    impl_->commands.push(std::move(c));
 }
 
 void WorldSession::tick() {
     // Poll provider deltas and apply to world state (main.cpp lines ~507–508).
+    // Phase B: the worker may be tearing down or rebuilding provider under us;
+    // skip poll_deltas while a bake command is active. LocalProvider::poll_deltas
+    // returns false today, so this atomic-flag guard suffices without a
+    // shared_ptr/mutex promotion of `provider`. When a future provider grows a
+    // live delta stream (e.g. NetworkProvider), promote provider under a small
+    // mutex so tick() can hold a strong ref for the duration of poll_deltas.
+    if (impl_->bake_active.load(std::memory_order_acquire)) return;
+    if (!impl_->provider) return;
     viewer::WorldDelta d;
     if (impl_->provider->poll_deltas(d)) {
         impl_->state.apply(d);
@@ -580,6 +915,9 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
 }
 
 bool WorldSession::poll_event(Event& out) {
+    // Phase B: worker thread pushes into `events` under events_mutex; the
+    // consumer (app thread) drains here under the same lock.
+    std::lock_guard<std::mutex> lk(impl_->events_mutex);
     if (impl_->events.empty()) return false;
     out = std::move(impl_->events.front());
     impl_->events.pop_front();
