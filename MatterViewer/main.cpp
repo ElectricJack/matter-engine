@@ -276,6 +276,12 @@ int main() {
             }
         }
 
+        // Phase C: feed camera position as bake/refine focus every frame.
+        {
+            const float focus[3] = { camera.position.x, camera.position.y, camera.position.z };
+            session->set_bake_focus(focus);
+        }
+
         // Tick world state (poll provider deltas).
         session->tick();
 

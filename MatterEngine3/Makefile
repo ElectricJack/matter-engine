@@ -97,6 +97,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/render/tileset_provider.cpp src/render/tileset_gl_ctx.cpp \
           src/provider/local_provider.cpp src/provider/resolvers.cpp \
           src/matter_engine.cpp \
+          src/refine_controller.cpp \
           src/async_bake.cpp
 
 # MatterSurfaceLib C++ backend sources compiled into the archive so MatterViewer
@@ -144,6 +145,7 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           gpu_culler.o probe_texture.o tileset_provider.o tileset_gl_ctx.o \
           local_provider.o resolvers.o \
           matter_engine.o \
+          refine_controller.o \
           async_bake.o
 
 # MSL C++ object names (basenames; same flat-object model as ME3_OBJ).
