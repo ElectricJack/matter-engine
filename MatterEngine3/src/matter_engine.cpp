@@ -744,6 +744,8 @@ void WorldSession::Impl::publish_pipeline(
         {
             Event ev;
             ev.type   = EventType::BakePartDone;
+            // mod_by_hash covers expanded children too (LocalProvider backfills
+            // module names from the graph snapshot), so module is rarely empty.
             auto it   = mod_by_hash.find(h);
             ev.module = (it != mod_by_hash.end()) ? it->second : "";
             ev.done   = i + 1;
