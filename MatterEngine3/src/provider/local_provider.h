@@ -77,9 +77,11 @@ public:
 
     // Heavy phase: ScriptHost + PartGraph::install (script eval, mesh, per-part bake).
     // Must be called before compose_world(). Idempotent state reset happens here.
-    // policy=BakePolicy::All (default) bakes every node — today's behavior.
-    // policy=BakePolicy::RootsOnly only bakes root nodes; use ensure_part_baked()
-    // to bake individual part subtrees on demand after install.
+    //
+    // policy=BakePolicy::All (default, sync/connect() path): bakes every node eagerly.
+    // policy=BakePolicy::RootsOnly (async execute_bake path, Phase C Task 14):
+    //   only bakes root nodes; the retained bake_plan covers all nodes so
+    //   ensure_part_baked() can bake individual subtrees on demand from the publish loop.
     bool install_graph(std::string& err,
                        part_graph::BakePolicy policy = part_graph::BakePolicy::All);
 

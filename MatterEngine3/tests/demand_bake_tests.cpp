@@ -474,6 +474,265 @@ static bool test_ensure_part_flattened(const std::string& sandbox) {
 }
 
 // ---------------------------------------------------------------------------
+// (e) test_demand_bake_e2e — end-to-end async demand-bake flow.
+//
+// Sandbox: Root requires [Placed1, Placed2, Placed3, Unplaced].
+//   Placed1/2/3 are placed via placeChild() in Root's build().
+//   Unplaced is declared in static requires but NOT placed in build().
+//
+// Drive the async session to BakeFinished and assert:
+//   (a) BakeFinished.errors == 0
+//   (b) all placed parts' .part and .flat.part now exist on disk
+//   (c) Unplaced's .part does NOT exist (never published → never baked)
+//   (d) instances_total > 0 (placed parts rendered)
+//   (e) BakePartDone events with phase="parts" and non-empty module labels arrived
+// ---------------------------------------------------------------------------
+
+// Build a sandbox mimicking the Meadow pattern for demand bake:
+//   World (expand root) requires [Placed1, Placed2, Placed3, Unplaced].
+//   World's build() only calls placeChild for Placed1/2/3.
+//   The manifest declares World with `expand` flag so each placed child
+//   becomes a first-class manifest entry. Unplaced is in `requires` but
+//   never a placeChild → it's in the bake_plan but never in manifest →
+//   never in publish_order → never gets ensure_part_baked called.
+//
+// This mirrors the Terrain coarse/full pattern in Meadow.js:
+//   requires both resolutions but only places coarse tiles.
+static bool build_e2e_sandbox(const std::string& root) {
+    run_cmd("rm -rf " + root);
+    run_cmd("mkdir -p " + root + "/schemas");
+    run_cmd("mkdir -p " + root + "/world_data/E2E");
+    run_cmd("mkdir -p " + root + "/shared-lib");
+    run_cmd("mkdir -p " + root + "/cache/parts");
+
+    // Leaf schema template — each leaf is a distinct geometry so hashes differ.
+    auto write_leaf = [&](const std::string& name, float size) -> bool {
+        std::ostringstream js;
+        js << "class " << name << " extends Part {\n"
+           << "  build(p) {\n"
+           << "    this.fill(MAT.stone);\n"
+           << "    const S = " << size << ";\n"
+           << "    this.beginShape(SHAPE.triangles);\n"
+           << "    this.vertex(-S, 0, -S); this.vertex(-S, 0, S); this.vertex(S, 0, -S);\n"
+           << "    this.vertex(S, 0, -S); this.vertex(-S, 0, S); this.vertex(S, 0, S);\n"
+           << "    this.endShape();\n"
+           << "  }\n"
+           << "}\n";
+        return write_file(root + "/schemas/" + name + ".js", js.str());
+    };
+
+    if (!write_leaf("Placed1",  0.3f)) return false;
+    if (!write_leaf("Placed2",  0.4f)) return false;
+    if (!write_leaf("Placed3",  0.5f)) return false;
+    if (!write_leaf("Unplaced", 0.6f)) return false;  // required but never placed
+
+    // World (expand root): requires all four, but placeChild only the three placed.
+    // Unplaced is in static requires (bake_plan covers it) but never placeChild'd.
+    // With `expand` in world.manifest, only Placed1/2/3 become manifest entries.
+    if (!write_file(root + "/schemas/World.js",
+        "class World extends Part {\n"
+        "  static get requires() {\n"
+        "    return [\n"
+        "      { module: 'Placed1',  params: {} },\n"
+        "      { module: 'Placed2',  params: {} },\n"
+        "      { module: 'Placed3',  params: {} },\n"
+        "      { module: 'Unplaced', params: {} }\n"
+        "    ];\n"
+        "  }\n"
+        "  build(p) {\n"
+        "    this.fill(MAT.stone);\n"
+        "    const S = 0.7;\n"
+        "    this.beginShape(SHAPE.triangles);\n"
+        "    this.vertex(-S, 0, -S); this.vertex(-S, 0, S); this.vertex(S, 0, -S);\n"
+        "    this.vertex(S, 0, -S); this.vertex(-S, 0, S); this.vertex(S, 0, S);\n"
+        "    this.endShape();\n"
+        "    this.placeChild('Placed1', {}, [1,0,0,0, 0,1,0,0, 0,0,1,0,  0,0,0,1]);\n"
+        "    this.placeChild('Placed2', {}, [1,0,0,0, 0,1,0,0, 0,0,1,0,  2,0,0,1]);\n"
+        "    this.placeChild('Placed3', {}, [1,0,0,0, 0,1,0,0, 0,0,1,0, -2,0,0,1]);\n"
+        "    // Unplaced is NOT placed — required (bake_plan covers it) but never a world instance\n"
+        "  }\n"
+        "}\n")) return false;
+
+    // Manifest: World with `expand` flag — children become individual instances.
+    // Only placed children (Placed1/2/3) appear in the expanded manifest.
+    if (!write_file(root + "/world_data/E2E/world.manifest",
+        "# demand-bake e2e test\n"
+        "World expand\n")) return false;
+
+    return true;
+}
+
+using clk_e2e = std::chrono::steady_clock;
+
+static bool drive_bake_e2e(matter::WorldSession& s,
+                            std::vector<matter::Event>& log,
+                            int timeout_sec = 120) {
+    auto deadline = clk_e2e::now() + std::chrono::seconds(timeout_sec);
+    bool finished = false;
+    while (clk_e2e::now() < deadline) {
+        s.pump_gpu_jobs(4.0f);
+        matter::Event ev;
+        bool any = false;
+        while (s.poll_event(ev)) {
+            any = true;
+            log.push_back(ev);
+            if (ev.type == matter::EventType::BakeFinished) { finished = true; break; }
+            if (ev.type == matter::EventType::BakeError) {
+                printf("  BakeError: code=%d phase=%s msg=%s\n",
+                       (int)ev.code, ev.phase.c_str(), ev.message.c_str());
+            }
+        }
+        if (finished) return true;
+        if (!any) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    printf("  drive_bake_e2e TIMEOUT after %ds\n", timeout_sec);
+    return false;
+}
+
+static bool test_demand_bake_e2e(const std::string& base_dir) {
+    printf("-- (e) test_demand_bake_e2e\n");
+
+    const std::string sandbox = base_dir + "_e2e";
+    if (!build_e2e_sandbox(sandbox)) {
+        printf("  FAIL: build_e2e_sandbox\n");
+        ++g_failures;
+        return false;
+    }
+
+    // Cold cache
+    run_cmd("rm -rf " + sandbox + "/cache && mkdir -p " + sandbox + "/cache/parts");
+
+    std::string cache_root_s = sandbox + "/cache";
+    std::string schemas_s    = sandbox + "/schemas";
+    std::string wdata_s      = sandbox + "/world_data";
+    std::string shlib_s      = sandbox + "/shared-lib";
+
+    std::string err;
+    matter::EngineDesc ed;
+    ed.cache_root     = cache_root_s.c_str();
+    ed.allow_gl_lt_46 = true;
+    auto engine = matter::EngineContext::create(ed, err);
+    CHECK(engine != nullptr, "e2e: engine created");
+    if (!engine) { printf("  err: %s\n", err.c_str()); run_cmd("rm -rf " + sandbox); return false; }
+
+    matter::WorldDesc wd;
+    wd.schemas_dir    = schemas_s.c_str();
+    wd.world_data_dir = wdata_s.c_str();
+    wd.world_name     = "E2E";
+    wd.shared_lib_dir = shlib_s.c_str();
+    auto s = engine->open_world(wd, err);
+    CHECK(s != nullptr, "e2e: session opened");
+    if (!s) { printf("  err: %s\n", err.c_str()); run_cmd("rm -rf " + sandbox); return false; }
+
+    s->request_bake();
+    std::vector<matter::Event> log;
+    bool bake_ok = drive_bake_e2e(*s, log);
+    CHECK(bake_ok, "e2e: BakeFinished arrived");
+    if (!bake_ok) { run_cmd("rm -rf " + sandbox); return false; }
+
+    // (a) BakeFinished.errors == 0
+    matter::Event* finished_ev = nullptr;
+    for (auto& ev : log)
+        if (ev.type == matter::EventType::BakeFinished) { finished_ev = &ev; break; }
+    CHECK(finished_ev != nullptr, "e2e: BakeFinished event found");
+    if (finished_ev) {
+        printf("  BakeFinished.errors=%d\n", finished_ev->errors);
+        CHECK(finished_ev->errors == 0, "e2e: BakeFinished.errors == 0");
+    }
+
+    // We need part hashes to verify disk presence. Use LocalProvider directly to get them.
+    // Build a LocalProvider on the existing warm cache to read graph snapshot hashes.
+    viewer::LocalProviderConfig cfg2;
+    cfg2.schemas_dir    = schemas_s;
+    cfg2.world_data_dir = wdata_s;
+    cfg2.world_name     = "E2E";
+    cfg2.shared_lib_dir = shlib_s;
+    cfg2.cache_root     = cache_root_s;
+    cfg2.gl_available   = false;
+    auto prov = std::make_unique<viewer::LocalProvider>(std::move(cfg2));
+    std::string ierr;
+    // Use RootsOnly so we get the bake_plan without re-baking anything.
+    bool inst_ok = prov->install_graph(ierr, part_graph::BakePolicy::RootsOnly);
+    CHECK(inst_ok, "e2e: verify provider install succeeded");
+    if (!inst_ok) { printf("  install err: %s\n", ierr.c_str()); run_cmd("rm -rf " + sandbox); return false; }
+
+    const part_graph::InstallResult& ir = prov->install_result();
+    const auto& snap = prov->graph_snapshot();
+
+    // World expand root: the manifest gets Placed1/2/3 as world instances.
+    // World itself is the root. Unplaced is in bake_plan but NOT in manifest.
+    uint64_t world_hash = (ir.root_hashes.empty() ? 0 : ir.root_hashes[0]);
+    uint64_t placed1_hash = 0, placed2_hash = 0, placed3_hash = 0, unplaced_hash = 0;
+    {
+        auto it = snap.nodes.find("Placed1");
+        if (it != snap.nodes.end()) placed1_hash = it->second.resolved_hash;
+        it = snap.nodes.find("Placed2");
+        if (it != snap.nodes.end()) placed2_hash = it->second.resolved_hash;
+        it = snap.nodes.find("Placed3");
+        if (it != snap.nodes.end()) placed3_hash = it->second.resolved_hash;
+        it = snap.nodes.find("Unplaced");
+        if (it != snap.nodes.end()) unplaced_hash = it->second.resolved_hash;
+    }
+    printf("  world=%016llx placed1=%016llx placed2=%016llx placed3=%016llx unplaced=%016llx\n",
+           (unsigned long long)world_hash,
+           (unsigned long long)placed1_hash,
+           (unsigned long long)placed2_hash,
+           (unsigned long long)placed3_hash,
+           (unsigned long long)unplaced_hash);
+    CHECK(world_hash    != 0, "e2e: world hash resolved");
+    CHECK(placed1_hash  != 0, "e2e: placed1 hash resolved");
+    CHECK(placed2_hash  != 0, "e2e: placed2 hash resolved");
+    CHECK(placed3_hash  != 0, "e2e: placed3 hash resolved");
+    CHECK(unplaced_hash != 0, "e2e: unplaced hash resolved");
+    // Unplaced must be covered by bake_plan (it's in requires)
+    CHECK(ir.bake_plan.count(unplaced_hash) > 0,
+          "e2e: unplaced IS in bake_plan (requires declared it)");
+
+    // (b) All placed parts' .part AND .flat.part now exist on disk.
+    // With expand flag: Placed1/2/3 are direct manifest entries → each gets
+    // ensure_part_baked + ensure_part_flattened in the publish loop.
+    // World's own .part also exists (baked at install as root).
+    CHECK(part_exists(cache_root_s, world_hash),  "e2e: World .part exists (root, baked at install)");
+    CHECK(part_exists(cache_root_s, placed1_hash), "e2e: Placed1 .part exists (demand baked)");
+    CHECK(part_exists(cache_root_s, placed2_hash), "e2e: Placed2 .part exists (demand baked)");
+    CHECK(part_exists(cache_root_s, placed3_hash), "e2e: Placed3 .part exists (demand baked)");
+    CHECK(flat_part_exists(cache_root_s, placed1_hash), "e2e: Placed1 .flat.part exists");
+    CHECK(flat_part_exists(cache_root_s, placed2_hash), "e2e: Placed2 .flat.part exists");
+    CHECK(flat_part_exists(cache_root_s, placed3_hash), "e2e: Placed3 .flat.part exists");
+
+    // (c) Unplaced's .part does NOT exist.
+    // With RootsOnly install: World is the root (baked); Placed1/2/3 are demand-baked
+    // by the publish loop. Unplaced is in bake_plan but never appears in the manifest
+    // (World's build() never calls placeChild('Unplaced')) so it's never in
+    // publish_order and ensure_part_baked is never called for it.
+    printf("  unplaced .part exists: %s (expect: no)\n",
+           part_exists(cache_root_s, unplaced_hash) ? "YES" : "no");
+    CHECK(!part_exists(cache_root_s, unplaced_hash),
+          "e2e: Unplaced .part does NOT exist (never in manifest → never demand-baked)");
+
+    // (d) instances_total > 0
+    const auto& fs = s->frame_stats();
+    printf("  instances_total=%u\n", fs.instances_total);
+    CHECK(fs.instances_total > 0, "e2e: instances_total > 0 (placed parts rendered)");
+
+    // (e) At least one BakePartDone with phase="parts" and a non-empty module label
+    int parts_events_with_module = 0;
+    for (const auto& ev : log) {
+        if (ev.type == matter::EventType::BakePartDone && ev.phase == "parts") {
+            if (!ev.module.empty()) ++parts_events_with_module;
+        }
+    }
+    printf("  BakePartDone(phase=parts, module!=empty) count: %d\n",
+           parts_events_with_module);
+    CHECK(parts_events_with_module >= 1,
+          "e2e: BakePartDone events with phase=parts and non-empty module arrived");
+
+    run_cmd("rm -rf " + sandbox);
+    printf("  (e) PASS\n");
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
@@ -490,14 +749,16 @@ int main() {
     bool b = test_ensure_part_baked_subtree(sandbox);
     bool c = test_hash_parity(sandbox);
     bool d = test_ensure_part_flattened(sandbox);
+    bool e = test_demand_bake_e2e(sandbox);
 
     printf("\n");
     if (g_failures == 0) {
-        printf("ALL PASS (%s %s %s %s)\n",
+        printf("ALL PASS (%s %s %s %s %s)\n",
                a ? "a" : "a-FAIL",
                b ? "b" : "b-FAIL",
                c ? "c" : "c-FAIL",
-               d ? "d" : "d-FAIL");
+               d ? "d" : "d-FAIL",
+               e ? "e" : "e-FAIL");
         return 0;
     }
     printf("%d FAILURE(S)\n", g_failures);

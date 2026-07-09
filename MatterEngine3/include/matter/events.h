@@ -11,7 +11,11 @@ enum class BakeErrorCode { None, Cancelled, OutOfMemory, ScriptError, GpuError, 
 struct Event {
     EventType type = EventType::BakeStarted;
     std::string module;        // BakePartDone/BakeError: part module name (may be empty)
-    int done = 0, total = 0;   // BakePartDone counters (total 0 = indeterminate phase)
+    // BakePartDone counters: total 0 = indeterminate phase.
+    // Phase C Task 14 (demand-bake): total may INCREASE between events as
+    // FlatInstanceRef children are discovered during publish. HUD consumers
+    // must not assume total is constant across a single bake sequence.
+    int done = 0, total = 0;
     std::string message;       // BakeError: error detail
     // --- Phase B additions (struct is append-only) ---
     std::string phase;         // "install" | "compose" | "parts" | "gl" | "cone" | ""

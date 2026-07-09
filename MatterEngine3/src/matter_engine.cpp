@@ -123,8 +123,11 @@ struct WorldSession::Impl {
     EngineContext::Impl* engine = nullptr;   // non-owning
 
     // Provider config and live provider instance.
+    // Phase C Task 14: shared_ptr so publish job lambdas can capture a strong
+    // reference, ensuring the provider outlives all in-flight publish jobs even
+    // if a superseded bake creates a new provider before the old jobs complete.
     viewer::LocalProviderConfig cfg;
-    std::unique_ptr<viewer::LocalProvider> provider;
+    std::shared_ptr<viewer::LocalProvider> provider;
 
     // World data.
     viewer::WorldManifest manifest;
@@ -251,6 +254,12 @@ struct WorldSession::Impl {
         // True for BakeAll/Reload (matches existing message format);
         // false for RebakeCone (existing message omits the hash).
         bool load_msg_include_hash = false;
+        // Phase C Task 14: demand-driven bake. When non-null, each publish job
+        // calls provider_ref->ensure_part_baked() + ensure_part_flattened()
+        // before the GPU load, and streams newly discovered FlatInstanceRefs
+        // onto the tail of publish_order. Null for cone (cone re-bake via
+        // LiveEditSession; all artifacts pre-exist).
+        std::shared_ptr<viewer::LocalProvider> provider_ref;
     };
 
     // Shared publish flow: steps 4-8 (reset job → reconcile → per-part publish
@@ -427,7 +436,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         cfg.root_params_json = seed_root_params_json;
     }
 
-    provider = std::make_unique<viewer::LocalProvider>(cfg);
+    provider = std::make_shared<viewer::LocalProvider>(cfg);
 
     // Instrumentation rider (Phase C): coarse phase timing for large-world
     // attribution. Tileset phase is embedded inside compose_world (not
@@ -437,6 +446,8 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     auto t_bake_start = clk_t::now();
 
     // install_graph on the worker (script eval + per-part bake; no GL).
+    // Phase C Task 14: RootsOnly — only root nodes are baked at install.
+    // Children bake on demand in the publish loop (ensure_part_baked).
     // Task 7: skip-and-continue — install_graph() returns true even with partial
     // failures; emit one BakeError per failed part, then continue the pipeline
     // with the parts that succeeded. count_errors accumulates the total.
@@ -444,7 +455,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     auto t_install_start = clk_t::now();
     {
         std::string err;
-        if (!provider->install_graph(err)) {
+        if (!provider->install_graph(err, part_graph::BakePolicy::RootsOnly)) {
             printf("install: %s\n", err.c_str());
             emit_error(is_cancelled() ? BakeErrorCode::Cancelled : classify_error(err),
                        "install", err);
@@ -487,6 +498,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
 
     // 4-8) Shared publish flow: reset → reconcile → per-part publish → finalize
     //      → BakeFinished. count_errors is seeded with install-phase failures.
+    // Phase C Task 14: pass provider_ref so publish jobs can bake on demand.
     auto t_publish_start = clk_t::now();
     PublishPipelineParams pp;
     pp.job_prefix            = "bake";
@@ -496,6 +508,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     pp.verbose_reset_log     = true;
     pp.fault_hook            = cfg.test_fault_hook;
     pp.load_msg_include_hash = true;
+    pp.provider_ref          = provider;  // shared_ptr extends lifetime through publish
     publish_pipeline(token, std::move(new_manifest), pp);
     double publish_ms = std::chrono::duration<double, std::milli>(
         clk_t::now() - t_publish_start).count();
@@ -725,11 +738,9 @@ void WorldSession::Impl::publish_pipeline(
             });
     }
 
-    const int total_parts = (int)publish_order.size();
-    const auto& want = publish_order;
-
     // module_by_hash for the BakePartDone label — same source as fetch_parts.
     // Kept per-command so a cache-warm run still labels events correctly.
+    // Phase C Task 14: populated incrementally as ref-streamed hashes arrive.
     std::unordered_map<uint64_t, std::string> mod_by_hash;
     for (const auto& e : manifest.instances)
         if (!e.module.empty()) mod_by_hash[e.part_hash] = e.module;
@@ -748,14 +759,102 @@ void WorldSession::Impl::publish_pipeline(
     auto fault_hook = p.fault_hook;
     bool include_hash = p.load_msg_include_hash;
 
-    for (int i = 0; i < total_parts; ++i) {
+    // Phase C Task 14: demand-driven bake tracking.
+    // queued_hashes: dedup set for ref-streamed hashes appended to publish_order.
+    // bake_fail_count: worker-side bake failures (separate from load_fail_count).
+    std::set<uint64_t> queued_hashes(publish_order.begin(), publish_order.end());
+    int bake_fail_count = 0;
+
+    // next_manifest_id: for appending new WorldManifestEntry for streamed refs.
+    // Start after the last existing id so new entries don't collide.
+    uint32_t next_manifest_id = 1;
+    for (const auto& e : manifest.instances)
+        if (e.instance_id >= next_manifest_id) next_manifest_id = e.instance_id + 1;
+
+    // Demand-bake provider: set when provider_ref is supplied (BakeAll/Reload).
+    // Null for cone (artifacts pre-exist).
+    auto demand_provider = p.provider_ref;
+
+    // Dynamic loop: publish_order may grow as FlatInstanceRefs are discovered.
+    // total grows too — BakePartDone.total may increase between events (documented
+    // in events.h: HUD consumers must not assume constant total).
+    for (size_t i = 0; i < publish_order.size(); ++i) {
         if (is_cancelled()) {
             emit_error(BakeErrorCode::Cancelled, "parts", "cancelled between parts");
             return;
         }
-        uint64_t h = want[i];
+        uint64_t h = publish_order[i];
+
+        // Phase C Task 14 step 2: ensure part is baked (worker thread, CPU-only).
+        // For demand-bake path (demand_provider set): bake this part's subtree on
+        // demand before the GPU upload. On failure: emit BakeError, skip GPU job.
+        bool part_bake_failed = false;
+        if (demand_provider) {
+            std::string berr;
+            if (!demand_provider->ensure_part_baked(h, berr)) {
+                // Part not in bake_plan (e.g. ref-streamed hash not covered): skip.
+                // Emit BakeError only if the error is non-trivial (hash-not-found
+                // for ref-streamed children is expected if the flat is pre-baked).
+                if (berr.find("not in bake plan") == std::string::npos) {
+                    std::string part_module_b;
+                    { auto it = mod_by_hash.find(h); if (it != mod_by_hash.end()) part_module_b = it->second; }
+                    Event bev;
+                    bev.type    = EventType::BakeError;
+                    bev.code    = classify_error(berr);
+                    bev.phase   = "parts";
+                    bev.module  = part_module_b;
+                    bev.message = berr;
+                    emit_event(std::move(bev));
+                    ++bake_fail_count;
+                }
+                // Skip GPU job for this part (artifact missing)
+                part_bake_failed = true;
+            }
+        }
+
+        // Phase C Task 14 step 3: flatten (non-fatal, same as compose_world's flatten_one).
+        if (!part_bake_failed && demand_provider) {
+            demand_provider->ensure_part_flattened(h);
+        }
+
+        // Phase C Task 14 step 4: ref streaming.
+        // Read the flat.part for this hash and append any FlatInstanceRefs to
+        // manifest.instances + publish_order tail (dedup via queued_hashes).
+        // Runs on the worker before posting the GPU job, so the new entries are
+        // visible to the upcoming GPU job's `added` snapshot build.
+        if (!part_bake_failed) {
+            // Only attempt ref streaming when the flat is available (demand or eager).
+            const std::string flat_abs = engine->cache_root + "/" +
+                                         part_asset::cache_path_flat(h);
+            if (part_asset::peek_format_version(flat_abs) ==
+                    part_asset::kFormatVersionFlat) {
+                BLASManager scratch_blas;
+                TLASManager scratch_tlas(4);
+                std::vector<part_asset::FlatCluster> clusters_ignored;
+                std::vector<part_asset::FlatInstanceRef> refs;
+                if (part_asset::load_flat_v3(flat_abs, h, scratch_blas,
+                                              scratch_tlas, clusters_ignored, refs)
+                    && !refs.empty()) {
+                    for (const auto& r : refs) {
+                        uint64_t rh = r.child_resolved_hash;
+                        if (!queued_hashes.insert(rh).second) continue; // already queued
+                        // Append a WorldManifestEntry for this ref child.
+                        viewer::WorldManifestEntry we;
+                        we.instance_id = next_manifest_id++;
+                        we.part_hash   = rh;
+                        std::memcpy(we.transform, r.transform, sizeof(we.transform));
+                        manifest.instances.push_back(we);
+                        // Update module label if available from graph snapshot.
+                        // (mod_by_hash will be populated below for events.)
+                        publish_order.push_back(rh);
+                    }
+                }
+            }
+        }
 
         // Deterministic post-time emit (order must not change).
+        // total = publish_order.size() at emit time — may grow between events
+        // as FlatInstanceRefs are discovered (see events.h).
         {
             Event ev;
             ev.type   = EventType::BakePartDone;
@@ -763,11 +862,13 @@ void WorldSession::Impl::publish_pipeline(
             // module names from the graph snapshot), so module is rarely empty.
             auto it   = mod_by_hash.find(h);
             ev.module = (it != mod_by_hash.end()) ? it->second : "";
-            ev.done   = i + 1;
-            ev.total  = total_parts;
+            ev.done   = (int)(i + 1);
+            ev.total  = (int)publish_order.size();
             ev.phase  = "parts";
             emit_event(std::move(ev));
         }
+
+        if (part_bake_failed) continue;  // skip GPU job for this part
 
         // Capture module name at post-time so the publish job lambda can label
         // BakeError events without accessing mod_by_hash on the GL thread.
@@ -802,7 +903,7 @@ void WorldSession::Impl::publish_pipeline(
             bool          part_failed = false;
 
             try {
-                if (fault_hook) fault_hook(i);
+                if (fault_hook) fault_hook((int)i);
                 if (!store->get_or_load(h)) {
                     fail_code = BakeErrorCode::IoError;
                     fail_msg  = "load failed for part " + part_module;
@@ -906,11 +1007,12 @@ void WorldSession::Impl::publish_pipeline(
         }
     }
 
-    // Merge load-phase (publish-job) failures into count_errors.
+    // Merge load-phase (publish-job) failures and bake-phase failures into count_errors.
     // run_blocking(finalize_job) above guarantees all publish jobs completed
     // before we reach here, so load_fail_count is final and safe to read on
     // the worker thread (GL-thread writes are sequenced before the barrier).
-    int count_errors = p.count_errors_seed + cap_state->load_fail_count;
+    // bake_fail_count was accumulated on the worker thread (sequenced before finalize).
+    int count_errors = p.count_errors_seed + bake_fail_count + cap_state->load_fail_count;
 
     // 8) BakeFinished.
     {
@@ -1044,7 +1146,7 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
     // will re-install with the same seed override — the cone only touches the
     // changed files' subtree, so this is correct and consistent.
     // Re-create the provider so it picks up the updated cfg_ callbacks.
-    provider = std::make_unique<viewer::LocalProvider>(cfg);
+    provider = std::make_shared<viewer::LocalProvider>(cfg);
 
     {
         std::string ierr;
@@ -1210,7 +1312,7 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
 #endif
 
     // Construct provider. No bake here — caller must call request_bake().
-    simpl->provider = std::make_unique<viewer::LocalProvider>(simpl->cfg);
+    simpl->provider = std::make_shared<viewer::LocalProvider>(simpl->cfg);
 
     // Always init the camera; sets defaults used in both RT and raster modes.
     simpl->renderer.init_camera();

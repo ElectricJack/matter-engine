@@ -442,8 +442,11 @@ bool LocalProvider::ensure_part_baked(uint64_t part_hash, std::string& err) {
             if (!bake_subtree(child_hash)) return false;
         }
 
-        // cached() short-circuits
-        if (host_baker_->cached(hash)) return true;
+        // cached() short-circuits — counts as a demand-phase cache hit.
+        if (host_baker_->cached(hash)) {
+            ++hit_count_;
+            return true;
+        }
 
         // Fire on_part callback (demand phase, total==0 signals indeterminate count).
         if (cfg_.on_part) {
@@ -476,6 +479,12 @@ bool LocalProvider::ensure_part_baked(uint64_t part_hash, std::string& err) {
             bake_err = "lod-variant bake failed for part: " + bi.module;
             return false;
         }
+
+        // Track freshly demand-baked parts in baked_count_ and baked_hashes_ so
+        // frame_stats().parts_baked reflects demand-phase activity and future
+        // reconcile() calls know this hash is freshly written to disk.
+        ++baked_count_;
+        baked_hashes_.insert(hash);
 
         return true;
     };
@@ -535,77 +544,11 @@ bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
         out.instances.push_back(e);
     };
 
-    // Bake-time flattening of every placed root: merge its whole child subtree
-    // into per-cluster meshes with per-cluster LOD ladders (<hash>.flat.part),
-    // so the viewer renders flat cluster instances per root instead of
-    // re-expanding hundreds of child instances each frame.
-    // Task 13: delegates to ensure_part_flattened() (member) so the logic lives
-    // in one place and is reusable from on-demand flatten paths.
-    auto flatten_one = [&](uint64_t part_hash) -> bool {
-        return ensure_part_flattened(part_hash);
-    };
-    auto flatten_placed = [&]() {
-        std::set<uint64_t> done;
-        for (const auto& e : out.instances) {
-            if (!done.insert(e.part_hash).second) continue;
-            flatten_one(e.part_hash);
-        }
-    };
-
-    // Bake-hardening #2: expand FlatInstanceRefs recorded in each placed
-    // root's .flat.part into world manifest entries. A pure-scatter root
-    // (StressForest) that busts the flatten budget lands on the BOUNDARY
-    // path — its .flat.part contains N refs, one per placement, which the
-    // GpuCuller consumes exactly like any other resolved instance. Runs
-    // AFTER flatten_placed so every referenced part is guaranteed to have
-    // been baked and (recursively) flattened. Iterates to a fixed point so
-    // nested boundaries are expanded too.
-    auto append_instance_refs = [&]() {
-        // Snapshot the set of already-emitted part hashes so we don't
-        // double-expand a part that appears both as a manifest root and as
-        // an instance ref of another root.
-        std::set<uint64_t> visited;
-        // Deferred expansion: read every unique part's flat.part refs and
-        // append world entries; repeat until no new part hashes appear.
-        while (true) {
-            std::vector<uint64_t> to_process;
-            std::set<uint64_t> seen;
-            for (const auto& e : out.instances) {
-                if (!seen.insert(e.part_hash).second) continue;
-                if (visited.count(e.part_hash)) continue;
-                to_process.push_back(e.part_hash);
-            }
-            if (to_process.empty()) break;
-            const size_t before = out.instances.size();
-            for (uint64_t ph : to_process) {
-                visited.insert(ph);
-                // Make sure this part's flat.part exists (some added-mid-loop
-                // parts may not have been flattened yet). Non-fatal on failure.
-                flatten_one(ph);
-                const std::string flat_abs_path =
-                    abs_cache_root_ + "/" + part_asset::cache_path_flat(ph);
-                if (part_asset::peek_format_version(flat_abs_path) !=
-                    part_asset::kFormatVersionFlat) continue;
-                BLASManager scratch_blas;
-                TLASManager scratch_tlas(4);
-                std::vector<part_asset::FlatCluster> clusters_ignored;
-                std::vector<part_asset::FlatInstanceRef> refs;
-                if (!part_asset::load_flat_v3(flat_abs_path, ph, scratch_blas,
-                                              scratch_tlas, clusters_ignored, refs))
-                    continue;
-                if (refs.empty()) continue;
-                out.instances.reserve(out.instances.size() + refs.size());
-                for (const auto& r : refs) {
-                    WorldManifestEntry we;
-                    we.instance_id = next_id++;
-                    we.part_hash   = r.child_resolved_hash;
-                    std::memcpy(we.transform, r.transform, sizeof(we.transform));
-                    out.instances.push_back(we);
-                }
-            }
-            if (out.instances.size() == before) break;   // fixed point
-        }
-    };
+    // Note: flatten_placed() and append_instance_refs() have moved to the publish
+    // pipeline (matter_engine.cpp::publish_pipeline per-part bake+flatten+streaming).
+    // compose_world() now only places roots and runs the tileset phase; per-part
+    // flatten and FlatInstanceRef expansion happen on-demand in the publish loop.
+    // connect() (sync API) still runs flatten+refs eagerly via its own compose path.
 
     // Generic placement: every non-tileset manifest root is placed at the origin, except
     // roots flagged `expand`, whose baked child-instance table is promoted to
@@ -642,9 +585,6 @@ bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
             if (it != module_by_hash_.end()) e.module = it->second;
         }
     }
-
-    flatten_placed();
-    append_instance_refs();
 
     // ---- Tileset roots: GPU bake + .gtex load into a viewer slot -----------
     // run_tileset_phase reads world.manifest and .js from abs_world_data_.
@@ -863,7 +803,67 @@ bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
 }
 
 bool LocalProvider::connect(WorldManifest& out, std::string& err) {
-    return install_graph(err) && compose_world(out, err);
+    // Sync API: keep eager behavior — BakePolicy::All bakes every node at install.
+    // After compose_world (which now skips flatten/refs in the async path),
+    // eagerly flatten all placed roots and expand FlatInstanceRefs here.
+    if (!install_graph(err, part_graph::BakePolicy::All)) return false;
+    if (!compose_world(out, err)) return false;
+
+    // Eager flatten: every placed root gets a .flat.part so synchronous callers
+    // (tests, gallery_bake, viewer_logic_tests) see the flat artifacts immediately.
+    {
+        std::set<uint64_t> done;
+        for (const auto& e : out.instances) {
+            if (!done.insert(e.part_hash).second) continue;
+            ensure_part_flattened(e.part_hash);
+        }
+    }
+
+    // Eager FlatInstanceRef expansion: read each placed root's .flat.part and
+    // append world entries for any instance refs (BOUNDARY-path roots like
+    // StressForest). Iterates to a fixed point so nested boundaries expand too.
+    {
+        uint32_t next_id = out.instances.empty() ? 1u :
+            (out.instances.back().instance_id + 1u);
+        std::set<uint64_t> visited;
+        while (true) {
+            std::vector<uint64_t> to_process;
+            std::set<uint64_t> seen;
+            for (const auto& e : out.instances) {
+                if (!seen.insert(e.part_hash).second) continue;
+                if (visited.count(e.part_hash)) continue;
+                to_process.push_back(e.part_hash);
+            }
+            if (to_process.empty()) break;
+            const size_t before = out.instances.size();
+            for (uint64_t ph : to_process) {
+                visited.insert(ph);
+                ensure_part_flattened(ph);
+                const std::string flat_abs_path =
+                    abs_cache_root_ + "/" + part_asset::cache_path_flat(ph);
+                if (part_asset::peek_format_version(flat_abs_path) !=
+                    part_asset::kFormatVersionFlat) continue;
+                BLASManager scratch_blas;
+                TLASManager scratch_tlas(4);
+                std::vector<part_asset::FlatCluster> clusters_ignored;
+                std::vector<part_asset::FlatInstanceRef> refs;
+                if (!part_asset::load_flat_v3(flat_abs_path, ph, scratch_blas,
+                                              scratch_tlas, clusters_ignored, refs))
+                    continue;
+                if (refs.empty()) continue;
+                out.instances.reserve(out.instances.size() + refs.size());
+                for (const auto& r : refs) {
+                    WorldManifestEntry we;
+                    we.instance_id = next_id++;
+                    we.part_hash   = r.child_resolved_hash;
+                    std::memcpy(we.transform, r.transform, sizeof(we.transform));
+                    out.instances.push_back(we);
+                }
+            }
+            if (out.instances.size() == before) break;  // fixed point
+        }
+    }
+    return true;
 }
 
 std::vector<uint64_t>
