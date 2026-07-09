@@ -20,6 +20,16 @@
 - **Event struct is append-only** — new fields go after existing ones; existing field meanings don't change.
 - Viewer binary runs with cwd = `MatterViewer/`. All paths below are relative to the repo root unless absolute.
 - Commit after every task (specific paths only, never `git add -A`).
+- **Test policy (amended 2026-07-08, supersedes per-task suite lists in Steps below):**
+  each task builds and runs ONLY its own covering suite (the test binary that
+  directly exercises the deliverable). Fix rounds re-run only that suite;
+  comment/include-only fixes are compile-check only. Batch regression happens at
+  checkpoints, not per task: after Task 7 (`run-asyncq run-asyncbake
+  run-viewer-logic run-api-tests`), Task 8's screenshot gate as written, after
+  Task 10 (live-edit suites `run-dev` + `run-asyncbake`), and Task 11 runs the
+  full sweep as the final gate (unchanged). Tests Makefile is incremental +
+  parallel-safe (commit 4e62c29): build binaries with `-j$(nproc)`, run suites
+  sequentially.
 
 ## Interface Reference (used across tasks)
 
