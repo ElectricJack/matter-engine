@@ -94,3 +94,56 @@ This is a Phase C pipeline characteristic. Options to address it (outside Task 8
 3. Accept the timing and update the brief's expectations.
 
 The binary is correct. The visual evidence of correct rendering comes from the 200s cold run screenshot. The warm/cold black frames are a world-complexity artifact, not a code bug.
+
+---
+
+## Review Finding Fix: SPAWN_Y corrected to precomputed terrain height + 8
+
+### Finding addressed
+Review finding (task-8-review.md, Important): `camera_rig.cpp` `SPAWN_Y = 48.0f` deviates from spec's "heightAt+8" by 40m, producing bird's-eye spawn instead of near-ground immersive start.
+
+### How the terrain height was computed
+
+The world's terrain function lives in `MatterEngine3/shared-lib/terrain_noise.js`. The default seed is `20260709` (from `Meadow.js` `static params = { worldSeed: 20260709 }`). World size is `816.0` (51 tiles x 16 units). World center is `(408, 408)`.
+
+Transcribed the JS `heightField(seed, worldSize).heightAt(x, z)` math into a Node.js script and evaluated:
+
+```
+seed (folded to 32-bit): 20260709
+cx=408, cz=408  (world center, r=0)
+R_MEADOW=130.56  R_FOOT=277.44
+ampAt(408,408) = 6  (center is flat meadow; no foothills/mountain amplification)
+heightAt(408, 408) = -0.0108694782642485
+```
+
+The terrain height at world center is **-0.011 units** (effectively 0.0). The world center sits at the very bottom of the meadow bowl where `r=0` from center, `mt=0`, and the 3-octave FBM plus detail octaves nearly cancel. `ampAt=6` with near-zero FBM value gives approximately zero world-space height.
+
+**Precomputed spawn Y: `0.0 + 8.0 = 8.0f`**
+
+### Code change
+
+`ExplorerDemo/camera_rig.cpp`:
+- Comment block updated to document the precomputed terrain height
+- `SPAWN_Y` changed from `48.0f` to `8.0f`
+- Inline comment: `// precomputed heightAt(408,408)~0 + 8 m above terrain`
+
+### Smoke test
+
+```
+cd ExplorerDemo && GALLIUM_DRIVER=d3d12 EXPLORER_SMOKE="secs=200,shot=/tmp/explorer_spawn_fix.png" ./explorer
+```
+
+Key output (cold parts cache run):
+```
+explorer: bake started
+explorer: ready
+explorer: screenshot written to /tmp/explorer_spawn_fix.png
+explorer: smoke done (200.0s, 11537 frames)
+exit=0
+```
+
+Note: A warm-cache run (second run after the first 200s cold run) crashed at GpuCuller slot 50 (SIGSEGV). This is a pre-existing bug in the GpuCuller that occurs when 50+ unique part geometries are loaded; with warm cache, tiles load 10x faster and hit the crash boundary within the 200s window. Cold cache (cleared `cache/parts/`) reproduces the original cold run behavior and exits cleanly. The crash is unrelated to the SPAWN_Y change.
+
+### Screenshot verdict
+
+`/tmp/explorer_spawn_fix.png`: Near-ground immersive meadow view. Camera at Y=8 (8m above terrain surface ~0) with slight downward pitch. Dense green grass geometry fills the frame in all directions -- camera is within the grass canopy. Rendered geometry visible: grass blades, two light-colored rocks. No solid color/black (not inside terrain). HUD visible top-left (FPS:50, inst:7523). Scene content confirms camera is above terrain at near-ground level, inside the meadow environment. PASS: camera is near ground, not bird's-eye aerial.

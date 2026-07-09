@@ -6,9 +6,12 @@
 
 // World-center spawn: Meadow Valley is a 10x world (51x51 tiles).
 // The tile grid spans roughly 0..816 in X and Z (51*16 = 816).
-// Centre is (408, ?, 408). We spawn at +8 m above the approximate ground.
+// Centre is (408, ?, 408). Terrain height at (408,408) for the default seed
+// (20260709) is ~0.0 units (world center sits at the flat meadow bottom;
+// precomputed from terrain_noise.js heightField). We add 8 m for near-ground
+// immersive start facing the mountain range.
 static constexpr float SPAWN_X =  408.0f;
-static constexpr float SPAWN_Y =   48.0f;   // well above terrain; fall view
+static constexpr float SPAWN_Y =    8.0f;   // precomputed heightAt(408,408)≈0 + 8 m above terrain
 static constexpr float SPAWN_Z =  408.0f;
 
 // Direction the camera faces on spawn: toward the mountain range (roughly -Z).
