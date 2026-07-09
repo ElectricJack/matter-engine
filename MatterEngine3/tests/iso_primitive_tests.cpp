@@ -188,6 +188,86 @@ static void test_ordered_csg_capsule() {
     agree(s.buffer(), {0,0.2f,0}, "ordered: just inside bore removed");
 }
 
+// --- field_distance oracle (rock-realism raycast seam) ---------------------
+
+static void test_field_distance_sphere_exact() {
+    dsl::DslState s;
+    s.beginVoxels(0.1f);
+    s.sphere({0, 1, 0}, 0.5f, dsl::CsgOp::Union);
+    s.endVoxels();
+    const dsl::BuildBuffer& buf = s.buffer();
+    float dOut  = dsl::field_distance(buf, 0, buf.ops.size(), 0.0f, {2.0f, 1, 0});
+    float dIn   = dsl::field_distance(buf, 0, buf.ops.size(), 0.0f, {0.0f, 1, 0});
+    float dSurf = dsl::field_distance(buf, 0, buf.ops.size(), 0.0f, {0.5f, 1, 0});
+    CHECK(fabsf(dOut - 1.5f) < 1e-4f, "sphere: outside distance 1.5");
+    CHECK(fabsf(dIn + 0.5f) < 1e-4f, "sphere: center distance -0.5");
+    CHECK(fabsf(dSurf) < 1e-4f, "sphere: zero at surface");
+}
+
+static void test_field_distance_smin_bulge() {
+    // Two overlapping spheres with k=0.1: at the midpoint the smooth union
+    // must dip BELOW the hard min (metaball bulge), by k*ln(2) exactly
+    // (both distances equal there).
+    dsl::DslState s;
+    s.beginVoxels(0.1f);
+    s.sphere({-0.3f, 0.5f, 0}, 0.4f, dsl::CsgOp::Union);
+    s.sphere({ 0.3f, 0.5f, 0}, 0.4f, dsl::CsgOp::Union);
+    s.endVoxels();
+    const dsl::BuildBuffer& buf = s.buffer();
+    Vector3 mid{0, 0.5f, 0};
+    float hard   = dsl::field_distance(buf, 0, buf.ops.size(), 0.0f, mid);
+    float smooth = dsl::field_distance(buf, 0, buf.ops.size(), 0.1f, mid);
+    CHECK(fabsf(hard - (-0.1f)) < 1e-4f, "smin: hard min at midpoint is -0.1");
+    CHECK(fabsf(smooth - (hard - 0.1f * logf(2.0f))) < 1e-4f,
+          "smin: k=0.1 dips k*ln(2) below hard min at equidistant point");
+}
+
+static void test_field_distance_difference_stage() {
+    // Sphere r=0.5 at (0,1,0), then a difference box spanning x in [0.4, 0.9]:
+    // the cut face is at x=0.4. Points in the removed region are positive.
+    dsl::DslState s;
+    s.beginVoxels(0.1f);
+    s.sphere({0, 1, 0}, 0.5f, dsl::CsgOp::Union);
+    s.box({0.65f, 1, 0}, {0.25f, 0.6f, 0.6f}, dsl::CsgOp::Union);
+    s.set_last_op(dsl::CsgOp::Difference);
+    s.endVoxels();
+    const dsl::BuildBuffer& buf = s.buffer();
+    float inCut  = dsl::field_distance(buf, 0, buf.ops.size(), 0.0f, {0.45f, 1, 0});
+    float inBody = dsl::field_distance(buf, 0, buf.ops.size(), 0.0f, {0.0f, 1, 0});
+    CHECK(inCut > 0.0f, "difference: removed region is outside (positive)");
+    CHECK(inBody < 0.0f, "difference: body core still inside");
+}
+
+static void test_field_distance_sign_matches_oracle() {
+    // With k=0 (hard ops) the sign of field_distance must agree with
+    // field_is_solid everywhere. Probe a coarse grid over a CSG scene.
+    dsl::DslState s;
+    s.beginVoxels(0.1f);
+    s.sphere({0, 0.5f, 0}, 0.5f, dsl::CsgOp::Union);
+    s.sphere({0.4f, 0.7f, 0.1f}, 0.35f, dsl::CsgOp::Union);
+    s.box({0.5f, 0.5f, 0}, {0.2f, 0.2f, 0.2f}, dsl::CsgOp::Union);
+    s.set_last_op(dsl::CsgOp::Difference);
+    s.endVoxels();
+    const dsl::BuildBuffer& buf = s.buffer();
+    int checked = 0;
+    for (float x = -1.0f; x <= 1.0f; x += 0.2f)
+    for (float y = -0.5f; y <= 1.5f; y += 0.2f)
+    for (float z = -1.0f; z <= 1.0f; z += 0.2f) {
+        Vector3 p{x, y, z};
+        float d = dsl::field_distance(buf, 0, buf.ops.size(), 0.0f, p);
+        if (fabsf(d) < 1e-3f) continue; // skip surface-ambiguous points
+        bool solid = dsl::field_is_solid(buf, p);
+        if (solid != (d < 0.0f)) {
+            printf("FAIL: sign mismatch at %.2f,%.2f,%.2f (solid=%d d=%f)\n",
+                   x, y, z, (int)solid, d);
+            ++g_failures;
+            return;
+        }
+        ++checked;
+    }
+    CHECK(checked > 500, "sign oracle: probed a meaningful grid");
+}
+
 int main() {
     test_box_matches_oracle();
     test_scaled_sphere_radius();
@@ -197,6 +277,10 @@ int main() {
     test_cylinder_matches_oracle();
     test_cone_tapers();
     test_ordered_csg_capsule();
+    test_field_distance_sphere_exact();
+    test_field_distance_smin_bulge();
+    test_field_distance_difference_stage();
+    test_field_distance_sign_matches_oracle();
     if (g_failures == 0) printf("ALL PASS\n");
     return g_failures ? 1 : 0;
 }
