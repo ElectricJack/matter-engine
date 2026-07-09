@@ -21,7 +21,7 @@ drops everything at once, retaining the largest block — steady state is zero
 mallocs per cycle.
 
 ### `mem_array.h` — growable array
-The one blessed realloc idiom: 1.5x growth, 16-element minimum, OOM-safe
+The one blessed realloc idiom: new capacity is `max(minCapacity, capacity*3/2, 16)` so a large `ensure` jumps straight to `minCapacity`, OOM-safe
 (`mem_array_ensure` returns 0 and leaves data intact).
 
 ### `memory.hpp` — C++ RAII wrappers

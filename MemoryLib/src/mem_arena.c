@@ -1,6 +1,7 @@
 #include "../include/mem_arena.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 
 #define ARENA_ALIGN 8
 
@@ -65,6 +66,9 @@ void mem_arena_destroy(MemArena* a) {
 void* mem_arena_alloc(MemArena* a, size_t size) {
     if (!a || size == 0) {
         return NULL;
+    }
+    if (size > SIZE_MAX - (ARENA_ALIGN - 1)) {
+        return NULL;   /* round-up would wrap */
     }
     size = (size + ARENA_ALIGN - 1) / ARENA_ALIGN * ARENA_ALIGN;
 

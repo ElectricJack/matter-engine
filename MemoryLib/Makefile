@@ -27,7 +27,7 @@ $(OBJ_DIR)/$(SRC_DIR)/%.o: $(SRC_DIR)/%.c $(HEADERS)
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 clean:
-	rm -rf $(OBJ_DIR) $(TARGET) memory_tests memory_hpp_tests
+	rm -rf $(OBJ_DIR) $(TARGET) objectallocator memory_tests memory_hpp_tests
 
 # Tests: ASan + UBSan (repo convention)
 TEST_FLAGS = -Wall -Wextra -g -I./include -fsanitize=address,undefined

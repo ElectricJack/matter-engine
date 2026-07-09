@@ -21,7 +21,7 @@ set(SOURCES
     ../src/material_manager.cpp
     ../src/gamified_physics.cpp
     ../../SpatialQueryLib/src/spatial_hash.c
-    ../../SpatialQueryLib/src/object_allocator.c
+    ../../MemoryLib/src/mem_pool.c
 )
 
 # Create test executable

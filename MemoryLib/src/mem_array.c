@@ -37,6 +37,9 @@ int mem_array_ensure(MemArray* arr, size_t minCapacity) {
 }
 
 void* mem_array_push(MemArray* arr) {
+    if (arr->count == SIZE_MAX) {
+        return NULL;
+    }
     if (arr->count == arr->capacity && !mem_array_ensure(arr, arr->count + 1)) {
         return NULL;
     }
@@ -52,7 +55,7 @@ void mem_array_free(MemArray* arr) {
     arr->data = NULL;
     arr->count = 0;
     arr->capacity = 0;
-    arr->growCount = 0;
+    /* growCount is a lifetime counter; survives free (consistent with arena totalAllocs) */
 }
 
 void mem_array_get_stats(const MemArray* arr, MemStats* out) {
