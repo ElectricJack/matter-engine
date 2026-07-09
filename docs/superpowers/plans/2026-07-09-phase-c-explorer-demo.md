@@ -574,9 +574,9 @@ bool settle_cache_save(const std::string& cache_root, uint64_t key, const Settle
 
 - [ ] **Step 3: Implement** per Produces. Serialization: plain little-endian binary with a version header (follow part_asset's writer conventions); reject on version/key mismatch (treat as miss).
 
-- [ ] **Step 4: Run `run-tilesetgpu` (d3d12), `run-demandbake`, `run-asyncbake`.** Expected: PASS. Then `run-valley`: warm re-bake wall time should collapse (was ~350s, settle-dominated — assert warm re-bake < 120s and record the number).
+- [ ] **Step 4: Run `run-tilesetgpu` (d3d12), `run-demandbake`, `run-asyncbake`.** Expected: PASS. Then `run-valley`: expect the env-gated bake cases to print SKIPPED and the suite to end ALL PASS. *(SUPERSEDED by the test-scope decision, 2026-07-09: the original warm-re-bake < 120s assert lives INSIDE the env-gated valley case — it runs only under `MATTER_VALLEY_FULL_BAKE=1`, evaluated when Jack tests live at Task 6. Post-Task-16, a cold Meadow bake is 2,601 distinct tiles; no headless run may trigger it.)*
 
-- [ ] **Step 5: Visual check** — `tools/viewer_shots.sh` with `GALLIUM_DRIVER=d3d12 MATTER_WORLD=Meadow` (self-terminating): ground atlas + scatter present in the shots (they arrive post-silhouette but long before the shot script's poses).
+- [ ] **Step 5: Visual check** — *(SUPERSEDED by the test-scope decision: no Meadow viewer runs until Task 6 — a cold Meadow bake is now 2,601 distinct tiles.)* Instead: `tools/viewer_shots.sh` with `GALLIUM_DRIVER=d3d12` on a SMALL tileset-using world (any existing small demo world with a tileset ground; if none exists, skip the visual and state so in the report — the settle-cache round-trip test and the gated-valley timing assert carry verification until Jack's live test at Task 6).
 
 - [ ] **Step 6: Commit** — `feat(phase-c): settle-result cache + tileset phase off the critical path`
 
