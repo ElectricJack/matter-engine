@@ -562,6 +562,7 @@ gpu_CPP_SRCS := $(sort \
     api_tests.cpp \
     async_bake_tests.cpp \
     valley_layout_tests.cpp \
+    release_part_tests.cpp \
     $(GPU_ALL_CPP))
 
 # C-source flavors. Union across binaries that use them.
@@ -641,7 +642,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise valley-layout-tests run-valley
+.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise valley-layout-tests run-valley release-part-tests run-releasepart run-gpucull
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -982,6 +983,19 @@ valley-layout-tests: $(call obj_of,gpu,valley_layout_tests.cpp) $(GPU_SHARED_OBJ
 run-valley: valley-layout-tests
 	./valley_layout_tests
 
+# Phase C Task 5 — part-level release: PartStore::release + GpuCuller::release_part.
+release-part-tests: $(call obj_of,gpu,release_part_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
+	$(CC) $(call obj_of,gpu,release_part_tests.cpp) $(GPU_SHARED_OBJS) \
+	      -o release_part_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
+	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+
+run-releasepart: release-part-tests
+	GALLIUM_DRIVER=d3d12 ./release_part_tests
+
+# GPU cull parity suite (gpu_cull_tests.cpp) — run target for task-gate use.
+run-gpucull: gpu-tests
+	GALLIUM_DRIVER=d3d12 ./gpu_tests
+
 # ---------------------------------------------------------------------------
 # Clean: remove OBJDIR and all binaries (test-binary-name list, since they
 # aren't $(TARGET)-style variables in every case).
@@ -1000,4 +1014,4 @@ clean:
 	      valley_layout_tests \
 	      tileset_physics_tests tileset_core_tests tileset_placement_tests \
 	      gpu_tests tileset_gpu_tests tileset_seam_tests tileset_provider_tests \
-	      tileset_load_tests api_tests async_bake_tests
+	      tileset_load_tests api_tests async_bake_tests release_part_tests

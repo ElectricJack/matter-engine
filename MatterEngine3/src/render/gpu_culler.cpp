@@ -481,6 +481,76 @@ int GpuCuller::part_slot_of(uint64_t hash) const {
 }
 
 // ---------------------------------------------------------------------------
+// release_part — evict a single part's GPU resources.
+//
+// The dead slot (vao == 0) remains in parts_ as a hole; no compaction.
+// draw_indirect() already skips entries with pg.vao == 0.
+// The cull shader skips clusters with lod_count == 0 (zeroed here and
+// patched into ssbo_clusters_ via glBufferSubData on the exact range).
+//
+// After this call:
+//   - slot_of_[hash] no longer exists  → ensure_part() will assign a new slot
+//   - parts_[old_slot].vao == 0        → dead; draw_indirect skips it
+//   - cluster_staging_[cl_start..+cl_count]: lod_count zeroed in CPU mirror
+//   - ssbo_clusters_ patched on that byte range (glBufferSubData)
+//   - cmd_template_ entries for this part's buckets left in place but
+//     region_base/base_instance values are now orphaned; next ensure_part
+//     re-appends fresh entries at the end. The orphaned cmd entries still
+//     occupy space but have instance_count = 0 every frame (cull shader
+//     can't emit instances for dead clusters), so they produce no draw calls.
+//
+// Bounded waste: region_base slots and cmd_template_ entries for the dead
+// slot remain allocated.  The waste is bounded by the number of released
+// parts and is reclaimed on the next world reset().
+//
+// Safe no-op if part_hash is not registered.
+// ---------------------------------------------------------------------------
+void GpuCuller::release_part(uint64_t part_hash) {
+    auto it = slot_of_.find(part_hash);
+    if (it == slot_of_.end()) return;   // not registered — no-op
+
+    int slot = it->second;
+    slot_of_.erase(it);
+
+    if (slot < 0 || slot >= (int)parts_.size()) return;
+    PartGpu& pg = parts_[slot];
+
+    // Delete GL objects.
+    if (pg.vao) { glDeleteVertexArrays(1, &pg.vao); pg.vao = 0; }
+    if (pg.vbo) { glDeleteBuffers(1, &pg.vbo);      pg.vbo = 0; }
+
+    // Zero lod_count for all cluster entries in the CPU mirror so the cull
+    // shader will produce no instances for this part's clusters.
+    uint32_t cl_start = pg.cluster_start;
+    uint32_t cl_count = pg.cluster_count;
+    for (uint32_t ci = 0; ci < cl_count; ++ci) {
+        uint32_t idx = cl_start + ci;
+        if (idx < (uint32_t)cluster_staging_.size()) {
+            cluster_staging_[idx].lod_count = 0;
+        }
+    }
+
+    // Patch ssbo_clusters_ on exactly the affected range (avoids a full upload).
+    if (cl_count > 0 && cl_start < (uint32_t)cluster_staging_.size() && ssbo_clusters_) {
+        uint32_t actual_count = std::min(cl_count,
+            (uint32_t)cluster_staging_.size() - cl_start);
+        if (actual_count > 0) {
+            size_t byte_offset = (size_t)cl_start * sizeof(GpuClusterMeta);
+            size_t byte_len    = (size_t)actual_count * sizeof(GpuClusterMeta);
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_clusters_);
+            glBufferSubData(GL_SHADER_STORAGE_BUFFER,
+                            (GLintptr)byte_offset, (GLsizeiptr)byte_len,
+                            cluster_staging_.data() + cl_start);
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+        }
+    }
+
+    // Mark the slot dead (vao already zeroed above; also clear hash for clarity).
+    pg.part_hash    = 0;
+    pg.cluster_count = 0;
+}
+
+// ---------------------------------------------------------------------------
 // cull — the frame main entry point.
 // ---------------------------------------------------------------------------
 bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,

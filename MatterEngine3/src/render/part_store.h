@@ -94,6 +94,11 @@ public:
     // LOD table for the SectorResolver: radius + thresholds per loaded part.
     lod_select::PartLodTable part_lod_table() const;
 
+    // Release a loaded part from CPU memory (lod_mesh_data, BLAS handles, clusters).
+    // After this call get_or_load(part_hash) will re-read from disk on next access.
+    // Safe no-op if part_hash is not currently loaded.
+    void release(uint64_t part_hash);
+
     // TEST-ONLY: register a pre-built LoadedPart under a hash without any disk I/O.
     // Used by gpu_cull_tests to build synthetic fixtures. Not for production use.
     void inject_for_test(uint64_t part_hash, LoadedPart lp) {

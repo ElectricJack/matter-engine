@@ -417,4 +417,24 @@ lod_select::PartLodTable PartStore::part_lod_table() const {
     return table;
 }
 
+// ---------------------------------------------------------------------------
+// release — evict a loaded part from the CPU store.
+//
+// Erasing the map entry destroys the LoadedPart in-place, which releases
+// lod_mesh_data vectors and runs the BLASHandle destructors.  BLASManager
+// handles the reference-counted triangle buffers; the shared blas_ remains
+// valid for other parts that share BLAS entries.
+//
+// After this call:
+//   - loaded_.count(part_hash) == 0
+//   - load_failed_ is NOT cleared: if the part previously failed to load, it
+//     stays suppressed.  Use-case for release is evicting successfully-loaded
+//     geometry, not retrying failed loads.
+//   - get_or_load(part_hash) will re-read from disk (or return nullptr if no
+//     disk artifact exists).
+// ---------------------------------------------------------------------------
+void PartStore::release(uint64_t part_hash) {
+    loaded_.erase(part_hash);
+}
+
 } // namespace viewer

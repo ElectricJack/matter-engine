@@ -43,6 +43,13 @@ public:
     // Returns dense part_slot (0-based index into parts_) or -1 on failure.
     int ensure_part(uint64_t part_hash, PartStore& store);
 
+    // Release a single part's GPU resources (VAO/VBO deleted, cluster lod_count zeroed
+    // in cluster_staging_ and patched into ssbo_clusters_, hash removed from slot_of_,
+    // PartGpu marked dead with vao=0).  The dead slot is a hole — no compaction.
+    // ensure_part() after release assigns a fresh slot at the end of parts_.
+    // Safe no-op if part_hash is not currently registered.
+    void release_part(uint64_t part_hash);
+
     // Frame: upload instances (expansion applied), seed cmds, dispatch cull.
     // planes[6][4] from raster_cull.h extract_frustum_planes (or the
     // camera_frustum_planes wrappers).  cam_eye[3] world-space eye position.
