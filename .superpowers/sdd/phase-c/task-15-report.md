@@ -100,3 +100,56 @@ The headless overload (the `#else !MATTER_HAVE_SCRIPT_HOST` stub) and the GPU ov
 | `run-tilesetgpu` (d3d12) | 91/91 PASS |
 | `run-demandbake` | ALL PASS (a–i) |
 | `run-asyncbake` | ALL PASS |
+
+---
+
+## Fix round (review I1–I3)
+
+### I1 — Settle off the GL thread
+
+**Change:** `local_provider.cpp:run_tileset_deferred` GL branch. Previously the entire `run_tileset_phase(opts)` call (including physics settle) was inside the `run_gl` lambda, blocking the GL/app thread for the full cold-settle duration (~350s on cache miss).
+
+Restructured into two steps:
+1. **Worker thread** (before `run_gl`): call the settle-only overload `run_tileset_phase(world, world_name, module, cache_root, settled, err, shlib)`. This owns the cache load/save and physics settle; it is CPU-only.
+2. **Worker thread** (before `run_gl`): compute `script_source_hash` by re-reading the root `.js` and hashing with `part_asset::fnv1a64` (same as `tileset_phase_gpu.cpp`), and assemble `gtex_path`.
+3. **GL thread** (inside `run_gl`): call `bake_tileset_gpu(settled, script_source_hash, gtex_path, bi, ...)` then `tileset_provider::load_slot`. The `bake_tileset_gpu` function has its own `.gtex` content-hash cache so warm hits are near-instant. The settled scatter data (poses) is captured by reference from the worker frame, which is alive for the duration of `run_blocking`.
+
+The headless branch was left untouched (already settles on the worker). `tileset_phase_gpu.cpp`'s `run_tileset_phase(opts)` overload is no longer called from `run_tileset_deferred`; the split is inlined directly. Cache semantics are identical: the settle-only overload owns load/save.
+
+**Test evidence:** `run-tilesetgpu` 99/99 PASS (deferred wiring + GL ordering); `run-demandbake` ALL PASS (a–i, includes test (h) verifying tileset events arrive after BakeFinished).
+
+### I2 — connect() sync-path tileset failure restored to fatal
+
+**Change:** `local_provider.cpp:connect()`. Task 15 changed the sync path from fatal (pre-Task-15 inline loop returned `false + err` on tileset failure) to non-fatal (logged to stderr, returned `true`). Restored fatal: if `run_tileset_deferred` fails on the sync path, `connect()` now propagates the error via `err` and returns `false`.
+
+Comment added at the `connect()` call site explaining the semantic: "FATAL on this sync path (pre-Task-15 behavior): connect() callers (tests, gallery_bake, viewer_logic_tests) expect a fully prepared world on success."
+
+Comment added at `publish_pipeline` step 9 explaining the non-fatal semantic: "NON-FATAL here: the silhouette already published; a tileset failure must not kill a session whose geometry is already rendering."
+
+**Test evidence:** `run-demandbake` ALL PASS; `run-asyncbake` ALL PASS.
+
+### I3 — settle_cache_load fail-closed on corrupted files
+
+**Change:** `tileset_bake.cpp:settle_cache_load`. Added fail-closed bounds checking before every `resize()` call:
+- File size is measured at open time via `seekg(end)` / `tellg()`.
+- A `remaining()` lambda computes bytes left from current stream position.
+- `bn` (BaseField.n) is validated: must be 0 or `BaseField::kSamplesPerTile` (64); any other value returns false.
+- Before `base.heights.resize(hn)`: validates `hn * sizeof(float) <= remaining()`.
+- Before `instances.resize(inst_count)`: validates `inst_count <= (1u<<20)` and `inst_count * kInstanceBytes <= remaining()` (kInstanceBytes = 44).
+- Before `variant_ranges.resize(vr_count)`: validates `vr_count <= (1u<<20)` and `vr_count * kVRBytes <= remaining()` (kVRBytes = 36).
+- Before `layers.resize(layer_count)`: validates `layer_count <= (1u<<10)` and `layer_count * kLayerBytes <= remaining()` (kLayerBytes = 9).
+- All paths return false on inconsistency; no exceptions escape.
+
+**TDD test** `test_settle_cache_corrupted_file` added to `tileset_gpu_tests.cpp` (CPU-only, runs before GL init):
+- Case 1: writes a valid cache file, truncates to 16 bytes, asserts `settle_cache_load` returns false without crashing.
+- Case 2: writes a valid cache file, overwrites `inst_count` with `0xFFFFFFFF`, asserts `settle_cache_load` returns false (prevents ~44 GB alloc attempt).
+
+**Test evidence:** `run-tilesetgpu` 99/99 PASS (was 91/91; 8 new tests including the two corrupt-file cases plus warm-hit re-run).
+
+### Gate results
+
+| Target | Result |
+|---|---|
+| `run-tilesetgpu` (d3d12) | 99/99 PASS |
+| `run-demandbake` | ALL PASS (a–i) |
+| `run-asyncbake` | ALL PASS |

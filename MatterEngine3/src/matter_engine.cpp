@@ -1033,7 +1033,10 @@ void WorldSession::Impl::publish_pipeline(
     // 9) Deferred tileset phase (Task 15): runs after BakeFinished so silhouette
     //    is never blocked by the ~350s box3d settle wall.
     //    BakePartDone{phase="tileset"} events may follow BakeFinished — documented
-    //    in events.h. Non-fatal on failure: the silhouette is already visible.
+    //    in events.h.
+    //    NON-FATAL here: the silhouette already published; a tileset failure must
+    //    not kill a session whose geometry is already rendering. (Fatal on the
+    //    connect() sync path — LocalProvider::connect — where callers need the full world.)
     if (p.provider_ref) {
         auto tileset_on_part = [this, &pfx](int done, int total, const char* module) {
             Event ev;

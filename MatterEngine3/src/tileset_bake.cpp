@@ -735,6 +735,22 @@ bool settle_cache_load(const std::string& cache_root, uint64_t key, SettledTorus
     std::ifstream f(path, std::ios::binary);
     if (!f) return false;
 
+    // Measure file size upfront so counts can be validated before resize.
+    // Fail-closed: any inconsistency between an on-disk count and remaining bytes
+    // returns false (treat as miss); no exceptions escape, no crash on truncation.
+    f.seekg(0, std::ios::end);
+    if (!f.good()) return false;
+    const std::streamoff file_size = f.tellg();
+    f.seekg(0, std::ios::beg);
+    if (!f.good() || file_size < 0) return false;
+
+    // Returns remaining bytes from current stream position.
+    auto remaining = [&]() -> size_t {
+        std::streamoff pos = f.tellg();
+        if (pos < 0 || pos > file_size) return 0;
+        return static_cast<size_t>(file_size - pos);
+    };
+
     // Header validation.
     uint32_t magic = 0, version = 0;
     uint64_t stored_key = 0;
@@ -759,9 +775,10 @@ bool settle_cache_load(const std::string& cache_root, uint64_t key, SettledTorus
     if (!read_le(f, out.cfg.edge_strip_width))     return false;
     if (!read_le(f, out.cfg.corner_clear_radius))  return false;
 
-    // BaseField.
+    // BaseField. bn must be 0 or kSamplesPerTile; other values are corrupt.
     int32_t bn = 0;
     if (!read_le(f, bn))              return false;
+    if (bn != 0 && bn != BaseField::kSamplesPerTile) return false;
     out.base.n = (int)bn;
     if (!read_le(f, out.base.cell))   return false;
     if (!read_le(f, out.base.material)) return false;
@@ -770,15 +787,20 @@ bool settle_cache_load(const std::string& cache_root, uint64_t key, SettledTorus
     out.base.set = (base_set != 0);
     if (out.base.set && out.base.n > 0) {
         size_t hn = (size_t)out.base.n * out.base.n;
+        // Validate: hn floats must fit in the remaining file bytes.
+        if (hn > remaining() / sizeof(float)) return false;
         out.base.heights.resize(hn);
         f.read(reinterpret_cast<char*>(out.base.heights.data()),
                (std::streamsize)(hn * sizeof(float)));
         if (!f.good()) return false;
     }
 
-    // Instances.
+    // Instances. Each SettledInstance on disk: uint64 + float + 7*float + int32 = 44 bytes.
+    static constexpr size_t kInstanceBytes = sizeof(uint64_t) + 8 * sizeof(float) + sizeof(int32_t);
     uint32_t inst_count = 0;
     if (!read_le(f, inst_count)) return false;
+    if (inst_count > (1u << 20)) return false;  // > 1M instances → corrupt
+    if ((size_t)inst_count * kInstanceBytes > remaining()) return false;
     out.instances.resize(inst_count);
     for (auto& si : out.instances) {
         if (!read_le(f, si.child_hash)) return false;
@@ -795,9 +817,12 @@ bool settle_cache_load(const std::string& cache_root, uint64_t key, SettledTorus
         si.layer = (int)layer;
     }
 
-    // VariantRanges.
+    // VariantRanges. Each on disk: int32 + 4*uint64 = 36 bytes.
+    static constexpr size_t kVRBytes = sizeof(int32_t) + 4 * sizeof(uint64_t);
     uint32_t vr_count = 0;
     if (!read_le(f, vr_count)) return false;
+    if (vr_count > (1u << 20)) return false;  // > 1M ranges → corrupt
+    if ((size_t)vr_count * kVRBytes > remaining()) return false;
     out.variant_ranges.resize(vr_count);
     for (auto& vr : out.variant_ranges) {
         int32_t tile = 0;
@@ -814,13 +839,16 @@ bool settle_cache_load(const std::string& cache_root, uint64_t key, SettledTorus
         vr.child_end   = (size_t)child_end;
     }
 
-    // Report.
+    // Report. Each LayerResult on disk: uint8 + int32 + float = 9 bytes.
+    static constexpr size_t kLayerBytes = sizeof(uint8_t) + sizeof(int32_t) + sizeof(float);
     uint8_t conv_all = 0;
     if (!read_le(f, conv_all))                return false;
     out.report.converged_all = (conv_all != 0);
     if (!read_le(f, out.report.pose_hash))    return false;
     uint32_t layer_count = 0;
     if (!read_le(f, layer_count)) return false;
+    if (layer_count > (1u << 10)) return false;  // > 1024 layers → corrupt
+    if ((size_t)layer_count * kLayerBytes > remaining()) return false;
     out.report.layers.resize(layer_count);
     for (auto& lr : out.report.layers) {
         uint8_t lconv = 0;

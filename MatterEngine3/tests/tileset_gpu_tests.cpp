@@ -711,12 +711,100 @@ static void test_settle_cache_warm_hit() {
     std::system(("rm -rf " + cache_root).c_str());
 }
 
+// -----------------------------------------------------------------------------
+// Task 15 review I3 — fail-closed cache reader: corrupt/truncated files must
+// return false and must not crash or allocate unbounded memory.
+// -----------------------------------------------------------------------------
+static void test_settle_cache_corrupted_file() {
+    using namespace tileset;
+
+    const std::string cache_root = "/tmp/settle_cache_corrupt_test";
+    std::system(("rm -rf " + cache_root + " && mkdir -p " + cache_root + "/tileset").c_str());
+
+    // Build a minimal valid SettledTorus and save it.
+    SettledTorus orig;
+    orig.cfg.size = 2.0f;
+    orig.cfg.seed = 0xABCD;
+    orig.base.n        = BaseField::kSamplesPerTile;
+    orig.base.cell     = orig.cfg.size / (float)orig.base.n;
+    orig.base.material = 1;
+    orig.base.set      = true;
+    orig.base.heights.assign((size_t)orig.base.n * orig.base.n, 0.0f);
+    orig.report.pose_hash    = 0x1122334455667788ull;
+    orig.report.converged_all = true;
+    {
+        SettledInstance si;
+        si.child_hash = 0xFEEDFACEDEADBEEFull;
+        si.scale = 1.0f;
+        si.pose  = Pose{ 0.5f, 0.0f, 0.5f, 0.0f, 0.0f, 0.0f, 1.0f };
+        si.layer = 0;
+        orig.instances.push_back(si);
+    }
+
+    const uint64_t key = 0xBADC0FFEE0DDF00Dull;
+    REQUIRE(settle_cache_save(cache_root, key, orig));
+
+    // Determine path so we can truncate / corrupt it.
+    const std::string cache_path = cache_root + "/tileset/badc0ffee0ddf00d.settle";
+
+    // Case 1: truncate the file to 16 bytes (leaves header but strips body).
+    {
+        // Read, truncate, write back.
+        std::ifstream rf(cache_path, std::ios::binary);
+        REQUIRE(rf.good());
+        std::string bytes((std::istreambuf_iterator<char>(rf)), {});
+        rf.close();
+        REQUIRE(bytes.size() > 16u);
+        std::ofstream wf(cache_path, std::ios::binary | std::ios::trunc);
+        wf.write(bytes.data(), 16);  // just the first 16 bytes
+        wf.close();
+
+        SettledTorus bad;
+        bool result = settle_cache_load(cache_root, key, bad);
+        REQUIRE(!result);  // must return false, not crash
+    }
+
+    // Restore the valid file for the next case.
+    REQUIRE(settle_cache_save(cache_root, key, orig));
+
+    // Case 2: corrupt the inst_count field to 0xFFFFFFFF (would trigger ~44 GB alloc).
+    {
+        std::ifstream rf(cache_path, std::ios::binary);
+        REQUIRE(rf.good());
+        std::string bytes((std::istreambuf_iterator<char>(rf)), {});
+        rf.close();
+
+        // inst_count is a uint32 that appears after TileConfig + BaseField in the body.
+        // Header: magic(4)+version(4)+key(8)+ebv(4)+bv(4) = 24 bytes
+        // TileConfig: size(4)+tpm(4)+seed(8)+edge_strip_width(4)+corner_clear_radius(4) = 24
+        // BaseField: bn(4)+cell(4)+material(4)+base_set(1)+heights(n*n*4)
+        const size_t n = (size_t)BaseField::kSamplesPerTile;
+        const size_t inst_count_offset = 24 + 24 + 4 + 4 + 4 + 1 + n * n * sizeof(float);
+        REQUIRE(bytes.size() > inst_count_offset + 4u);
+        // Overwrite inst_count with 0xFFFFFFFF.
+        bytes[inst_count_offset + 0] = (char)0xFF;
+        bytes[inst_count_offset + 1] = (char)0xFF;
+        bytes[inst_count_offset + 2] = (char)0xFF;
+        bytes[inst_count_offset + 3] = (char)0xFF;
+        std::ofstream wf(cache_path, std::ios::binary | std::ios::trunc);
+        wf.write(bytes.data(), (std::streamsize)bytes.size());
+        wf.close();
+
+        SettledTorus bad;
+        bool result = settle_cache_load(cache_root, key, bad);
+        REQUIRE(!result);  // must return false, not allocate ~44 GB and crash
+    }
+
+    std::system(("rm -rf " + cache_root).c_str());
+}
+
 int main() {
     // CPU-side pack layout check: runs before GL init so it's always exercised.
     test_material_pack_layout();
     test_material_tileset_slot_setter();
     test_settle_cache_round_trip();
     test_settle_cache_warm_hit();
+    test_settle_cache_corrupted_file();
 
     SetConfigFlags(FLAG_WINDOW_HIDDEN);
     InitWindow(320, 200, "tileset_gpu_tests");

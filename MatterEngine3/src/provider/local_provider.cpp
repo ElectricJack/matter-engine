@@ -776,23 +776,46 @@ bool LocalProvider::run_tileset_deferred(
             continue;
         }
 
-        // GL available: run full settle + GPU bake.
+        // GL available: settle on the worker (CPU-only, cache-wired), then GPU bake on GL thread.
         const bool dump_png = std::getenv("MATTER_TILESET_DUMP_PNG") != nullptr;
+
+        // Step 1 (worker thread): physics settle + cache load/save — no GL needed.
+        tileset::SettledTorus settled;
+        {
+            std::string se;
+            if (!tileset::run_tileset_phase(abs_world_data_, cfg_.world_name, root_module,
+                                            abs_cache_root_, settled, se, abs_shared_lib_)) {
+                err = "LocalProvider: tileset '" + root_module + "' settle failed: " + se;
+                return false;
+            }
+        }
+
+        // Compute script source hash on the worker (needed by bake_tileset_gpu for .gtex cache key).
+        const std::string root_js_path =
+            abs_world_data_ + "/../schemas/" + root_module + ".js";
+        uint64_t script_source_hash = 0;
+        {
+            std::ifstream jf(root_js_path, std::ios::binary);
+            if (jf) {
+                std::ostringstream ss; ss << jf.rdbuf();
+                const std::string src = ss.str();
+                script_source_hash = part_asset::fnv1a64(src.data(), src.size());
+            }
+            // If the file can't be read, hash stays 0 — bake_tileset_gpu will force-rebake.
+        }
+        const std::string gtex_path = abs_world_data_ + "/" + root_module + ".gtex";
+
+        // Step 2 (GL thread): GPU atlas bake + slot upload — GL required.
         std::string te;
         bool ok = run_gl(root_module.c_str(), [&](std::string& ge) -> bool {
-            tileset::SettledTorus settled;
-            tileset::TilesetPhaseOpts opts;
-            opts.force_rebake = false;
-            opts.dump_png     = dump_png;
-            std::string re;
-            if (!tileset::run_tileset_phase(abs_world_data_, cfg_.world_name, root_module,
-                                            abs_cache_root_, settled, opts, re,
-                                            abs_shared_lib_)) {
-                ge = "run_tileset_phase(" + root_module + "): " + re +
+            tileset::BakeInputs bi; bi.parts_cache_dir = abs_cache_root_;
+            std::string be;
+            if (!tileset::bake_tileset_gpu(settled, script_source_hash, gtex_path,
+                                           bi, false, dump_png, be)) {
+                ge = "bake_tileset_gpu(" + root_module + "): " + be +
                      " (if a GL error: set GALLIUM_DRIVER=d3d12 on WSLg)";
                 return false;
             }
-            const std::string gtex_path = abs_world_data_ + "/" + root_module + ".gtex";
             std::string le;
             if (!viewer::tileset_provider::load_slot(slot_idx, gtex_path, le)) {
                 ge = "tileset_provider::load_slot(" + gtex_path + "): " + le;
@@ -887,13 +910,13 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     // Task 15: sync API eagerly runs the deferred tileset phase (headless or GL).
     // Async path runs this after BakeFinished via publish_pipeline step 9.
     // Null callbacks: no progress reporting, no cancellation on the sync path.
+    // FATAL on this sync path (pre-Task-15 behavior): connect() callers (tests,
+    // gallery_bake, viewer_logic_tests) expect a fully prepared world on success.
     if (!tileset_indices_.empty()) {
         std::string te;
         if (!run_tileset_deferred(nullptr, nullptr, te)) {
-            // Non-fatal for connect(): log but don't fail. Tileset artifacts may
-            // be unavailable (headless or no GL yet) — viewer recovers on open.
-            fprintf(stderr, "[local_provider] connect: tileset deferred failed: %s\n",
-                    te.c_str());
+            err = "LocalProvider::connect: tileset phase failed: " + te;
+            return false;
         }
     }
     return true;
