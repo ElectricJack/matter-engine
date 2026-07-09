@@ -322,6 +322,11 @@ ASYNCQ_CPP = async_queue_tests.cpp ../src/async_bake.cpp
 TILESETGTEX_TARGET = tileset_gtex_tests
 TILESETGTEX_CPP    = tileset_gtex_tests.cpp ../src/tileset_gtex.cpp
 
+# Phase C Task 4 — RefineController tile-pairing + priority/eviction (pure CPU, def flavor).
+REFINECTL_TARGET = refine_controller_tests
+REFINECTL_CPP    = refine_controller_tests.cpp ../src/refine_controller.cpp \
+                   ../src/part_graph_snapshot.cpp
+
 # Simple standalone targets (they use tiny custom flag sets — kept as-is with
 # per-target rules below, no shared objects).
 
@@ -531,7 +536,8 @@ def_CPP_SRCS := $(sort \
     $(POLYTRI_CPP) \
     $(SHADER_SOURCE_CPP) \
     $(ASYNCQ_CPP) \
-    $(TILESETGTEX_CPP))
+    $(TILESETGTEX_CPP) \
+    $(REFINECTL_CPP))
 
 qjs_CPP_SRCS := $(sort \
     $(SCRIPT_CPP) \
@@ -616,6 +622,7 @@ POLYTRI_OBJS = $(call obj_list,def,$(POLYTRI_CPP))
 SHADER_SOURCE_OBJS = $(call obj_list,def,$(SHADER_SOURCE_CPP))
 ASYNCQ_OBJS = $(call obj_list,def,$(ASYNCQ_CPP))
 TILESETGTEX_OBJS = $(call obj_list,def,$(TILESETGTEX_CPP))
+REFINECTL_OBJS = $(call obj_list,def,$(REFINECTL_CPP))
 
 SCRIPT_OBJS = $(call obj_list,qjs,$(SCRIPT_CPP)) $(call obj_list,mslc,$(SCRIPT_C)) $(qjsc_C_OBJS)
 TILESETDSL_OBJS = $(call obj_list,qjs,$(TILESETDSL_CPP)) $(call obj_list,mslc,$(SCRIPT_C)) $(qjsc_C_OBJS)
@@ -643,7 +650,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise valley-layout-tests run-valley release-part-tests run-releasepart run-gpucull demand-bake-tests run-demandbake
+.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise valley-layout-tests run-valley release-part-tests run-releasepart run-gpucull demand-bake-tests run-demandbake run-refinectl
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -913,6 +920,13 @@ $(ASYNCQ_TARGET): $(ASYNCQ_OBJS)
 run-asyncq: $(ASYNCQ_TARGET)
 	./$(ASYNCQ_TARGET)
 
+# Phase C Task 4 — RefineController tile pairing + priority/eviction (pure CPU, def flavor).
+$(REFINECTL_TARGET): $(REFINECTL_OBJS)
+	$(CC) $(REFINECTL_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS)
+
+run-refinectl: $(REFINECTL_TARGET)
+	./$(REFINECTL_TARGET)
+
 # ---------------------------------------------------------------------------
 # GPU tests (require GL 4.6 + GALLIUM_DRIVER=d3d12 on WSLg).
 # All share the same $(GPU_SHARED_OBJS) — one flavor `gpu` for the C++ pipeline
@@ -1021,6 +1035,7 @@ clean:
 	      $(TILESETTORUSBVH_TARGET) $(TILESETDSL_TARGET) $(TILESETBAKE_TARGET) \
 	      $(TILESETGTEX_TARGET) $(ASYNCQ_TARGET) $(GALLERY_TARGET) \
 	      $(LIVEPROD_TARGET) $(TERRAINNOISE_TARGET) \
+	      $(REFINECTL_TARGET) \
 	      valley_layout_tests \
 	      tileset_physics_tests tileset_core_tests tileset_placement_tests \
 	      gpu_tests tileset_gpu_tests tileset_seam_tests tileset_provider_tests \
