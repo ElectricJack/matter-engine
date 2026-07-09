@@ -1379,9 +1379,9 @@ static void test_pf_determinism_double_bake() {
 // identical depositedCount and identical first path xyz prefix.
 // Also checks append-only: path[0] xyz is unchanged after the extra run.
 static void test_pf_incremental_equivalence() {
-    // Script A: run(300) in one shot, record path[0].xyz + depositedCount
+    // Script A: run(300) in one shot
     const char* srcA =
-        "class PA extends Part {\n"
+        "class P extends Part {\n"
         "  static params = {};\n"
         "  build(p) {\n"
         "    const sim = __pf_simCreate({\n"
@@ -1404,9 +1404,9 @@ static void test_pf_incremental_equivalence() {
         "  }\n"
         "}\n";
 
-    // Script B: run(120) then run(180) (incremental)
+    // Script B: run(120) then run(180) (incremental, same class name)
     const char* srcB =
-        "class PB extends Part {\n"
+        "class P extends Part {\n"
         "  static params = {};\n"
         "  build(p) {\n"
         "    const sim = __pf_simCreate({\n"
@@ -1447,20 +1447,14 @@ static void test_pf_incremental_equivalence() {
     auto rB = hB.bake_source(srcB, "{}", {});
     CHECK(rB.error.ok, "pf incremental: run(120)+run(180) bake succeeds (no append-only violation)");
 
-    // Both bakes produce the same resolved_hash (same source with different class name
-    // => different hash, but depositedCount+xyz are what we really care about). Read
-    // __pf_res via the fact that bake_source doesn't expose global vars directly, so
-    // instead compare via the written .part size as a proxy: if run(N+M)==run(N);run(M)
-    // in terms of deposits, the voxelized geometry will be the same size. The strongest
-    // evidence is the two scripts both succeed and match output sizes.
+    // Both bakes use the same class name P and same source except for the tick split:
+    // run(300) vs run(120);run(180). They should produce .part files of same size
+    // (voxel geometry equivalent). NOTE: full byte-identity deferred due to bake
+    // nondeterminism in header fields (Phase B deferred: "bake cold-run nondeterminism").
     std::vector<uint8_t> bA = read_all(rA.written_path);
     std::vector<uint8_t> bB = read_all(rB.written_path);
-    // Note: Part file sizes may differ slightly due to different class names affecting
-    // the header hash. We check incremental equivalence through the error path above
-    // (the second script throws on mismatch). The primary gate is rB.error.ok.
-    (void)bA; (void)bB;
-    printf("  pf incremental: run(300) part=%zu bytes, run(120)+run(180) part=%zu bytes\n",
-           bA.size(), bB.size());
+    CHECK(!bA.empty(), "pf incremental: run(300) produced non-empty .part");
+    CHECK(bA.size() == bB.size(), "pf incremental: run(N+M) and run(N);run(M) produce same-size .part");
 }
 
 // Task 10: Budget fail-closed — sim.run() inside a bake with time_budget_ms set
