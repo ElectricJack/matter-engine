@@ -148,6 +148,10 @@ if [ "$MODE" = "test" ]; then
         fi
     done
 
+    echo
+    echo "--- MemoryLib (memory_tests + memory_hpp_tests) ---"
+    make -C MemoryLib test || RESULT[MemoryLib]="FAIL (tests)"
+
     # MatterSurfaceLib headless suites (no GL window). Target name == binary name.
     # mesh_indexed_tests, mesh_transform_tests are Phase 5 additions (Task 2/3).
     for suite in mesh_simplifier_tests material_registry_tests cell_bounds_tests \
