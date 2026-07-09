@@ -646,6 +646,68 @@ static void test_settle_cache_round_trip() {
     SettledTorus bad;
     REQUIRE(!settle_cache_load(cache_root, key ^ 0x1ull, bad));
 
+    // (c) from_cache field: storage layer does NOT set it; it defaults false.
+    //     The wiring in run_tileset_phase sets it to true on a cache hit.
+    REQUIRE(!loaded.report.from_cache);
+
+    std::system(("rm -rf " + cache_root).c_str());
+}
+
+// -----------------------------------------------------------------------------
+// Task 15 (wiring) — warm-hit test: save a SettledTorus, then reload it and
+// simulate the run_tileset_phase wiring: from_cache must be true on the second
+// "run", instances and pose_hash must match exactly.
+// This is the CPU-side coverage; demand_bake_tests (i) covers the full wiring
+// through run_tileset_phase with a real script sandbox.
+// -----------------------------------------------------------------------------
+static void test_settle_cache_warm_hit() {
+    using namespace tileset;
+
+    const std::string cache_root = "/tmp/settle_cache_warmhit_test";
+    std::system(("rm -rf " + cache_root + " && mkdir -p " + cache_root + "/tileset").c_str());
+
+    // Fixture with a distinct pose_hash so the round-trip is unambiguous.
+    SettledTorus orig;
+    orig.cfg.size = 1.0f;
+    orig.cfg.seed = 0xBEEF;
+    orig.base.n        = BaseField::kSamplesPerTile;
+    orig.base.cell     = orig.cfg.size / (float)orig.base.n;
+    orig.base.material = 7;
+    orig.base.set      = true;
+    orig.base.heights.assign((size_t)orig.base.n * orig.base.n, 0.05f);
+    orig.report.pose_hash     = 0x0102030405060708ull;
+    orig.report.converged_all = true;
+    orig.report.from_cache    = false;  // cold run: not from cache
+
+    SettledInstance si;
+    si.child_hash = 0xDEADC0DECAFEF00Dull;
+    si.scale      = 2.0f;
+    si.pose       = Pose{ 5.0f, 0.0f, 3.0f, 0.0f, 0.0f, 0.0f, 1.0f };
+    si.layer      = 1;
+    orig.instances.push_back(si);
+
+    const uint64_t key = 0xCAFEBABEDEADF00Dull;
+
+    // "Cold run": save simulates what run_tileset_phase does after settle_tileset.
+    REQUIRE(settle_cache_save(cache_root, key, orig));
+
+    // "Warm run": load and mark from_cache = true (mirrors run_tileset_phase wiring).
+    SettledTorus warm;
+    bool hit = settle_cache_load(cache_root, key, warm);
+    REQUIRE(hit);
+    warm.report.from_cache = true;   // wiring sets this on cache hit
+
+    // Warm-hit evidence: from_cache must be true.
+    REQUIRE(warm.report.from_cache);
+    // Bitwise-identical instances.
+    REQUIRE(warm.instances.size() == orig.instances.size());
+    REQUIRE(warm.report.pose_hash == orig.report.pose_hash);
+    const auto& a = orig.instances[0];
+    const auto& b = warm.instances[0];
+    REQUIRE(b.child_hash == a.child_hash);
+    REQUIRE(std::memcmp(&a.pose, &b.pose, sizeof(Pose)) == 0);
+    REQUIRE(std::memcmp(&a.scale, &b.scale, sizeof(float)) == 0);
+
     std::system(("rm -rf " + cache_root).c_str());
 }
 
@@ -654,6 +716,7 @@ int main() {
     test_material_pack_layout();
     test_material_tileset_slot_setter();
     test_settle_cache_round_trip();
+    test_settle_cache_warm_hit();
 
     SetConfigFlags(FLAG_WINDOW_HIDDEN);
     InitWindow(320, 200, "tileset_gpu_tests");

@@ -31,6 +31,7 @@ struct SettleReport {
     // the aggregate converged_all flag, not an individual LayerResult entry.
     std::vector<LayerResult> layers;
     uint64_t pose_hash = 0;            // SettleWorld determinism hash
+    bool from_cache = false;           // true when loaded from settle cache (no physics ran)
 };
 
 struct SettledTorus {

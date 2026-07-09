@@ -20,6 +20,7 @@
 #include "part_graph.h"      // FileModuleResolver, HostBaker, PartGraph, ChildRequest
 #include "script_host.h"     // ScriptHost, eval_requires, eval_tileset
 #include "tileset_bake.h"    // settle_tileset, BakeInputs, SettledTorus
+#include "part_asset.h"      // fnv1a64 (settle cache key: script source hash)
 
 #include <fstream>
 #include <sstream>
@@ -147,15 +148,35 @@ bool run_tileset_phase(const std::string& world_data_dir, const std::string& /*w
     }
 
     // -----------------------------------------------------------------------
-    // 6. Settle: physics + placement → SettledTorus.
+    // 6. Settle: cache check → on miss, physics + placement → save.
+    //    Cache key: FNV-1a over (script_source_hash, sorted child hashes,
+    //    kEngineBakeVersion, kBox3dVersion) — same as settle_cache_key().
     // -----------------------------------------------------------------------
     BakeInputs bi;
     bi.parts_cache_dir = parts_cache_dir;
 
+    // Compute script source hash (plain FNV-1a over source bytes).
+    const uint64_t script_source_hash =
+        part_asset::fnv1a64(root_source.data(), root_source.size());
+
+    // Sort child hashes ascending (settle_cache_key contract).
+    std::vector<uint64_t> sorted_hashes = child_hashes;
+    std::sort(sorted_hashes.begin(), sorted_hashes.end());
+
+    const uint64_t cache_key = settle_cache_key(script_source_hash, sorted_hashes);
+
+    // Try warm cache first; parts_cache_dir doubles as the cache root.
+    if (settle_cache_load(parts_cache_dir, cache_key, out)) {
+        out.report.from_cache = true;
+        return true;
+    }
+
     if (!settle_tileset(er.spec, bi, out, err)) {
-        // err is already populated by settle_tileset
         return false;
     }
+
+    // Best-effort save; a failure here is non-fatal (next run will re-settle).
+    settle_cache_save(parts_cache_dir, cache_key, out);
 
     return true;
 }

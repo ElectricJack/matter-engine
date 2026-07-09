@@ -32,6 +32,8 @@
 #include "script_host.h"      // ScriptHost
 #include "blas_manager.hpp"   // BLASManager (for load_v2 in case f)
 #include "tlas_manager.hpp"   // TLASManager (for load_v2 in case f)
+#include "tileset_phase.h"    // run_tileset_phase (settle-only overload)
+#include "tileset_bake.h"     // SettledTorus, SettleReport
 
 #include <chrono>
 #include <cstdio>
@@ -1251,6 +1253,119 @@ static bool test_tileset_deferred_ordering(const std::string& base_dir) {
     return true;
 }
 
+// Build a tileset sandbox that uses string module specifiers in layer() so
+// that run_tileset_phase can call eval_tileset in isolation (no pre-defined
+// class references needed in the JS global scope).
+static bool build_cache_wiring_sandbox(const std::string& root) {
+    run_cmd("rm -rf " + root);
+    run_cmd("mkdir -p " + root + "/schemas");
+    run_cmd("mkdir -p " + root + "/world_data/WireWorld");
+    run_cmd("mkdir -p " + root + "/shared-lib");
+    run_cmd("mkdir -p " + root + "/cache/parts");
+
+    // Leaf pebble (no requires).
+    if (!write_file(root + "/schemas/WirePebble.js",
+        "class WirePebble extends Part {\n"
+        "  build(p) {\n"
+        "    this.fill(MAT.stone);\n"
+        "    const S = 0.1;\n"
+        "    this.beginShape(SHAPE.triangles);\n"
+        "    this.vertex(-S, 0, -S); this.vertex(-S, 0, S); this.vertex(S, 0, -S);\n"
+        "    this.vertex(S, 0, -S); this.vertex(-S, 0, S); this.vertex(S, 0, S);\n"
+        "    this.endShape();\n"
+        "  }\n"
+        "}\n")) return false;
+
+    // Tileset using a string literal specifier in layer() and the positional
+    // base(fn, material) API to avoid any JS reference-resolution issues in
+    // the eval_tileset context (which evaluates the script in isolation).
+    if (!write_file(root + "/schemas/WireTileset.js",
+        "class WireTileset extends Tileset {\n"
+        "  static requires = [\n"
+        "    { module: 'WirePebble', params: {} },\n"
+        "  ];\n"
+        "  build(p) {\n"
+        "    this.tile({ size: 2 });\n"
+        "    this.base((x, z) => 0, MAT.dirt);\n"
+        "    this.layer('WirePebble', {\n"
+        "      density: 1.0,\n"
+        "      physics: false,\n"
+        "    });\n"
+        "  }\n"
+        "}\n")) return false;
+
+    if (!write_file(root + "/world_data/WireWorld/world.manifest",
+        "# settle-cache wiring test\n"
+        "WireTileset tileset\n")) return false;
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// (i) test_tileset_settle_cache_wiring
+//
+// Calls run_tileset_phase twice on the same WireTileset sandbox with the
+// same cache_root. Asserts:
+//   (1) First run: from_cache == false (cold settle ran).
+//   (2) Second run: from_cache == true (warm hit; no physics ran).
+//   (3) Instances count, pose_hash, and individual poses are bitwise identical.
+// ---------------------------------------------------------------------------
+static bool test_tileset_settle_cache_wiring(const std::string& base_dir) {
+    printf("-- (i) test_tileset_settle_cache_wiring\n");
+
+    const std::string sandbox = base_dir + "_settle_cache_wiring";
+    if (!build_cache_wiring_sandbox(sandbox)) {
+        printf("  FAIL: build_cache_wiring_sandbox\n");
+        ++g_failures;
+        return false;
+    }
+
+    // Cold cache.
+    run_cmd("rm -rf " + sandbox + "/cache && mkdir -p " + sandbox + "/cache/parts");
+
+    const std::string world_data = sandbox + "/world_data";
+    const std::string cache_root = sandbox + "/cache";
+    const std::string shlib      = sandbox + "/shared-lib";
+
+    // First run: cold cache — settle runs, cache is saved.
+    tileset::SettledTorus first;
+    std::string err1;
+    bool ok1 = tileset::run_tileset_phase(world_data, "WireWorld", "WireTileset",
+                                          cache_root, first, err1, shlib);
+    if (!ok1) printf("  first run err: %s\n", err1.c_str());
+    CHECK(ok1, "(i) first run_tileset_phase succeeded");
+    CHECK(!first.report.from_cache, "(i) first run: from_cache == false (cold settle)");
+
+    // Second run: warm cache — settle must be skipped.
+    tileset::SettledTorus second;
+    std::string err2;
+    bool ok2 = tileset::run_tileset_phase(world_data, "WireWorld", "WireTileset",
+                                          cache_root, second, err2, shlib);
+    if (!ok2) printf("  second run err: %s\n", err2.c_str());
+    CHECK(ok2, "(i) second run_tileset_phase succeeded");
+    CHECK(second.report.from_cache, "(i) second run: from_cache == true (warm cache hit)");
+
+    // Results must be bitwise identical.
+    CHECK(second.instances.size() == first.instances.size(),
+          "(i) instance count matches");
+    CHECK(second.report.pose_hash == first.report.pose_hash,
+          "(i) pose_hash matches");
+    bool poses_ok = (second.instances.size() == first.instances.size());
+    for (size_t k = 0; k < first.instances.size() && poses_ok; ++k) {
+        if (std::memcmp(&first.instances[k].pose,
+                        &second.instances[k].pose,
+                        sizeof(tileset::Pose)) != 0)
+            poses_ok = false;
+        if (first.instances[k].child_hash != second.instances[k].child_hash)
+            poses_ok = false;
+    }
+    CHECK(poses_ok, "(i) all instance poses bitwise-identical");
+
+    run_cmd("rm -rf " + sandbox);
+    printf("  (i) PASS\n");
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -1272,10 +1387,11 @@ int main() {
     bool f = test_parametric_placements_distinct(sandbox);
     bool g = test_placechild_param_mismatch_errors(sandbox);
     bool h = test_tileset_deferred_ordering(sandbox);
+    bool i = test_tileset_settle_cache_wiring(sandbox);
 
     printf("\n");
     if (g_failures == 0) {
-        printf("ALL PASS (%s %s %s %s %s %s %s %s)\n",
+        printf("ALL PASS (%s %s %s %s %s %s %s %s %s)\n",
                a ? "a" : "a-FAIL",
                b ? "b" : "b-FAIL",
                c ? "c" : "c-FAIL",
@@ -1283,7 +1399,8 @@ int main() {
                e ? "e" : "e-FAIL",
                f ? "f" : "f-FAIL",
                g ? "g" : "g-FAIL",
-               h ? "h" : "h-FAIL");
+               h ? "h" : "h-FAIL",
+               i ? "i" : "i-FAIL");
         return 0;
     }
     printf("%d FAILURE(S)\n", g_failures);
