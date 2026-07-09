@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -84,6 +85,13 @@ public:
     bool raycast(const float origin[3], const float dir[3], float max_t, RayHit& out);
     uint32_t instance_count() const;
     bool instance_info(uint32_t idx, InstanceInfo& out);
+
+    // Task 7 test seam: install a per-part fault hook on the underlying provider
+    // config. The hook fires once per part processed during install_graph() and the
+    // publish loop; it may throw (std::bad_alloc → OutOfMemory; any other exception →
+    // ScriptError/Internal). Null clears the hook.
+    // NOT part of the stable public API — for kernel-internal tests only.
+    void set_test_fault_hook(std::function<void(int)> hook);
 
     struct Impl;
     explicit WorldSession(std::unique_ptr<Impl> impl);   // internal; use open_world

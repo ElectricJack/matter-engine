@@ -124,3 +124,21 @@ Files committed:
 - `MatterEngine3/src/render/gpu_culler.cpp`
 - `MatterEngine3/tests/Makefile`
 - `.superpowers/sdd/task-4-report.md`
+
+---
+
+## Fix round 1
+
+**Issue:** `#include <utility>` was added to `MatterEngine3/src/provider/local_provider.h` (line 12) for `std::move` usage, but the header itself does not use `std::move` — it is only used in the implementation file.
+
+**Fix:** Deleted `#include <utility>` from `local_provider.h`, added it to `local_provider.cpp` line 38 (with the standard-library includes).
+
+**Build command:** `make -C MatterEngine3 -j8 2>&1 | tail -5`
+
+**Result:** 
+```
+ar rcs libmatter_engine3.a [all objects...]
+make: Leaving directory '.../MatterEngine3'
+exit=0
+```
+Build successful, libmatter_engine3.a up to date.

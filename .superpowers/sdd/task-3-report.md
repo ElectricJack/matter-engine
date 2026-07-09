@@ -137,3 +137,16 @@ the test-binary dir (no `parts/` there). Out of scope for Task 3.
 - `MatterEngine3/src/part_graph.cpp`
 - `MatterEngine3/src/provider/local_provider.cpp`
 - `MatterEngine3/tests/part_graph_integration_tests.cpp`
+
+---
+
+## Fix round 1
+
+**Commit:** 712ec7b `fix(phase-b): update stale chdir-era comments/diagnostics (Task 3 review)`
+
+**Changes:**
+1. `MatterEngine3/src/part_asset_v2.cpp` line 235: diagnostic message updated from "cwd is what matters — bake_source runs after LocalProvider chdir'd to abs_cache_root" to "path is absolute from BakeOptions.parts_dir (or cwd-relative if empty)".
+2. `MatterEngine3/src/provider/local_provider.cpp` lines 55-56: shim comment trimmed from "MinGW lacks the POSIX mkdir(mode)/realpath and spells getcwd/chdir with leading underscores" to "MinGW mkdir and realpath have different names" (getcwd/chdir shims no longer exist).
+3. `MatterEngine3/tests/part_graph_integration_tests.cpp` file header: added clause "the test_foreign_cwd_install variant intentionally avoids chdir to prove absolute-path independence" to document the new test's purpose.
+
+**Build & test:** `make -C MatterEngine3 -j$(nproc)` ✓ | `make -C MatterEngine3/tests run-graph` ✓ ALL PASS

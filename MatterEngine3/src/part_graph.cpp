@@ -4,8 +4,11 @@
 #include <cstdio>
 #include <fstream>
 #include <functional>
+#include <new>          // std::bad_alloc
 #include <set>
 #include <sstream>
+#include <stdexcept>    // std::exception
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -168,14 +171,39 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots) {
             return true;
         };
 
-    std::vector<uint64_t> root_keys;
-    for (const auto& r : roots) {
+    // Resolve all roots. Two-tier policy:
+    //   - Hard errors (abort whole install): cycle detection, missing required module
+    //     (structural graph problems no sibling can work around).
+    //   - Soft errors (skip-and-continue): hash-resolution failure, script eval failure
+    //     (a broken/invalid single root — siblings continue).
+    // Cycle and missing-module errors embed "cycle" or "missing requires target" in the
+    // error string; everything else is treated as a soft per-root failure.
+    result.root_hashes.resize(roots.size(), 0);
+    std::vector<std::pair<uint64_t, size_t>> root_keys_with_idx;  // (memo_key, root_index)
+    for (size_t ri = 0; ri < roots.size(); ++ri) {
+        const auto& r = roots[ri];
         uint64_t k = 0;
-        if (!resolve(r, k)) { result.error = error; return result; }
-        root_keys.push_back(k);
+        if (!resolve(r, k)) {
+            // Hard-error if the failure indicates a structural graph problem.
+            if (error.find("cycle") != std::string::npos ||
+                error.find("missing requires target") != std::string::npos) {
+                result.error = error;
+                return result;
+            }
+            // Soft error: record as a failed root and continue sibling roots.
+            FailedPart fp;
+            fp.module        = r.module;
+            fp.resolved_hash = 0;
+            fp.error         = error;
+            result.failed.push_back(std::move(fp));
+            // result.root_hashes[ri] already 0 from resize.
+            error.clear();
+            continue;
+        }
+        root_keys_with_idx.push_back({k, ri});
         // Surface the child-folded resolved hash so callers (e.g. LocalProvider's
         // manifest) reference the SAME hash the graph bakes to, not an unfolded recompute.
-        result.root_hashes.push_back(memo.at(k).resolved_hash);
+        result.root_hashes[ri] = memo.at(k).resolved_hash;
     }
 
     // Topological (post-order) bake over the reachable set from roots: a node is baked
@@ -189,27 +217,91 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots) {
         for (uint64_t ck : n.child_keys) post(ck);
         topo.push_back(key);
     };
-    for (uint64_t rk : root_keys) post(rk);
+    for (const auto& kp : root_keys_with_idx) post(kp.first);
+
+    // Task 7: skip-and-continue policy.
+    // failed_keys: memo_keys of nodes that failed (bake or lod-variants failure).
+    // A node whose ANY child is in failed_keys is itself skipped and recorded as
+    // "missing child" in result.failed[]. Siblings are unaffected.
+    std::set<uint64_t> failed_keys;
 
     for (uint64_t key : topo) {
         const InternalNode& n = memo.at(key);
+
+        // Check if any direct child failed -> skip this node.
+        bool child_failed = false;
+        std::string missing_child_name;
+        for (size_t ci = 0; ci < n.child_keys.size(); ++ci) {
+            if (failed_keys.count(n.child_keys[ci])) {
+                child_failed = true;
+                // Use child_modules[ci] for the error message (parallel to child_keys).
+                missing_child_name = (ci < n.child_modules.size()) ? n.child_modules[ci] : "unknown";
+                break;
+            }
+        }
+        if (child_failed) {
+            failed_keys.insert(key);
+            FailedPart fp;
+            fp.module        = n.module;
+            fp.resolved_hash = n.resolved_hash;
+            fp.error         = "missing child: " + missing_child_name;
+            result.failed.push_back(std::move(fp));
+            continue;
+        }
+
         if (baker_.cached(n.resolved_hash)) {
             ++result.hits;
         } else {
-            if (!baker_.bake(n.source, n.params, n.child_hashes, n.child_modules,
-                             n.child_params, n.resolved_hash)) {
-                result.error = "bake failed for part: " + n.module;
-                return result;
+            // Task 7: exceptions from baker_.bake() (e.g. test_fault_hook throws) are
+            // caught here and treated identically to a false return value (skip-and-continue).
+            bool bake_ok = false;
+            std::string bake_err;
+            try {
+                bake_ok = baker_.bake(n.source, n.params, n.child_hashes, n.child_modules,
+                                      n.child_params, n.resolved_hash);
+            } catch (std::bad_alloc&) {
+                bake_err = "out of memory (bad_alloc) baking part: " + n.module;
+            } catch (std::exception& e) {
+                bake_err = std::string("exception baking part: ") + n.module + ": " + e.what();
+            } catch (...) {
+                bake_err = "unknown exception baking part: " + n.module;
+            }
+            if (!bake_ok) {
+                // Task 7 skip-and-continue: record the failure, mark this key failed,
+                // continue to sibling nodes. Dependents will be skipped below.
+                failed_keys.insert(key);
+                FailedPart fp;
+                fp.module        = n.module;
+                fp.resolved_hash = n.resolved_hash;
+                fp.error         = bake_err.empty() ? ("bake failed for part: " + n.module)
+                                                    : bake_err;
+                result.failed.push_back(std::move(fp));
+                continue;
             }
             result.baked.push_back(n.resolved_hash);
         }
         if (!baker_.bake_lod_variants(n.source, n.params, n.child_hashes,
                                       n.resolved_hash)) {
+            // lod-variant failure remains a hard error (sidecar is non-optional for
+            // parts that opt in; a partial ladder is worse than a missing one).
             result.error = "lod-variant bake failed for part: " + n.module;
             return result;
         }
     }
+
+    // ok=true even with partial failures; caller checks result.failed for details.
     result.ok = true;
+
+    // Propagate bake-phase failures: for roots whose node failed during bake,
+    // zero out root_hashes[original_root_index] so callers skip placing them.
+    for (const auto& kp : root_keys_with_idx) {
+        uint64_t memo_key = kp.first;
+        size_t   orig_idx = kp.second;
+        if (failed_keys.count(memo_key)) {
+            result.root_hashes[orig_idx] = 0;
+        }
+    }
+
     return result;
 }
 

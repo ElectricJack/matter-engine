@@ -39,6 +39,13 @@ struct LocalProviderConfig {
     std::function<bool(const char* name,
                        std::function<bool(std::string& err)> fn,
                        std::string& err)> gpu_run;
+
+    // Task 7: OOM/error injection hook for testing skip-and-continue.
+    // Fired once per part processed (install bake + fetch/load); `part_index` is the
+    // 0-based index within the current phase's part list. May throw to inject an error
+    // (std::bad_alloc → OutOfMemory, any other exception → ScriptError/Internal).
+    // Null in production (kernel-internal test seam; not part of the public stable API).
+    std::function<void(int part_index)> test_fault_hook;
 };
 
 // Drives the SP-3 install path over a persistent content-addressed cache and
@@ -69,6 +76,9 @@ public:
     int baked_count() const { return baked_count_; }
     int hit_count()   const { return hit_count_; }
     int baked_tileset_count() const { return baked_tileset_count_; }
+
+    // Task 7: access install-phase partial failures (populated after install_graph()).
+    const part_graph::InstallResult& install_result() const { return ir_; }
 
 private:
     LocalProviderConfig  cfg_;

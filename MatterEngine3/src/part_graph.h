@@ -97,12 +97,22 @@ struct ResolvedNode {
     std::vector<uint64_t> child_keys;    // direct children's memo keys (for topo edges)
 };
 
+// One per-part failure recorded under skip-and-continue policy.
+struct FailedPart {
+    std::string module;    // module name (or "unknown" if unavailable)
+    std::string error;     // reason: bake error message, or "missing child: <module>"
+    uint64_t    resolved_hash = 0;  // 0 if hash could not be determined
+};
+
 struct InstallResult {
     bool                     ok = false;
     std::string              error;       // human-readable; names the offending part on failure
     std::vector<uint64_t>    baked;       // resolved hashes baked this run (cache misses)
     int                      hits = 0;    // parts skipped because already cached
     std::vector<uint64_t>    root_hashes; // resolved hash per root (parallel to `roots`), child-folded
+    // Task 7: skip-and-continue. Populated even when ok==true (partial failure).
+    // A root whose resolve failed has hash 0 in root_hashes AND an entry in failed[].
+    std::vector<FailedPart>  failed;      // parts that failed but were skipped
 };
 
 class PartGraph {

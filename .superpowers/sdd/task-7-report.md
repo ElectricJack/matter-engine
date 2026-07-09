@@ -1,250 +1,361 @@
-# Task 7 Report: Query API + api_tests (Stage 4)
+# Task 7 Report: Cancellation + Shutdown Protocol + OOM Safety Net + Per-Part Skip-and-Continue
+
+**Branch:** `feature/phase-b-async-bake`
+**Date:** 2026-07-08
+**Suites run:** `run-asyncbake` (8/8), `run-graph`, `run-graph-integration`
+
+---
 
 ## Summary
 
-Implemented `WorldSession::raycast`, `instance_count`, `instance_info` over a lazily
-built `world_tracer::WorldTracer`, and added an `api_tests` integration binary that
-exercises the full public API end-to-end.
+Task 7 completes the async-bake protocol's robustness story with three orthogonal
+improvements:
+
+1. **Cancellation observable** — supersede cancels an in-flight bake (leveraged the
+   `CancelToken` already wired in Task 6; new test exercises it end-to-end).
+2. **Destructor/shutdown join** — existing join-on-destroy behavior re-verified; new test
+   forces mid-bake destruction.
+3. **OOM safety net + per-part skip-and-continue** — `PartGraph::install()` now catches
+   `std::bad_alloc` and `std::exception` per bake node; one bad part no longer kills the
+   whole bake. A new `test_fault_hook` seam enables deterministic OOM injection in tests.
+   Broken JS scripts that fail at `resolve_hash()` are also soft-skipped.
 
 ---
 
-## Step 1: WorldTracer extensions
+## Step 1: `PartGraph::install()` — skip-and-continue policy
 
-**Files modified:** `MatterEngine3/include/world_tracer.h`, `MatterEngine3/src/world_tracer.cpp`
+**File:** `MatterEngine3/src/part_graph.cpp`
 
-Changes:
-- Added `uint32_t instance = 0xffffffffu` to `Hit` (index into expanded instance table;
-  0xffffffff means miss).
-- Added `uint64_t part_hash` to the anonymous `ExpandedInst` struct so
-  `expanded_instance()` can return the hash without an O(N) pointer scan.
-- `expand_instance()` sets `ei.part_hash = hash` when emitting a leaf ExpandedInst.
-- `traverse_ibvh()` signature extended with `int& best_inst`; when
-  `intersect_instance` returns true, `best_inst` is updated to the instance index.
-- `trace()` sets `hit.instance` from `best_inst` after the traversal.
-- Added `expanded_instance_count()` (returns `impl_->expanded_.size()`).
-- Added `expanded_instance(idx, part_hash&, transform[16])` (reads from
-  `impl_->expanded_[idx]`, returns part_hash + row-major world transform).
+### Two-tier resolve failure policy
 
-All changes are additive — existing callers (`probe_bake.cpp`, `local_provider.cpp`)
-are unaffected.
+Root-level resolve failures use a two-tier policy:
 
----
+- **Hard abort** (whole-bake failure): error string contains `"cycle"` or
+  `"missing requires target"` — structural graph errors that make the rest of the
+  install meaningless.
+- **Soft skip**: all other resolve failures (e.g., broken JS that fails at
+  `resolve_hash()`) — record a `FailedPart` and continue to the next root.
 
-## Step 2: Facade query methods
-
-**Files modified:** `MatterEngine3/viewer/matter_engine.cpp`, `MatterEngine3/viewer/world_source.h`, `MatterEngine3/viewer/local_provider.h`, `MatterEngine3/viewer/local_provider.cpp`
-
-### WorldManifestEntry module field
-
-Added `std::string module` to `WorldManifestEntry` in `world_source.h`. Approach
-chosen: there was no existing hash→module mapping accessible from the session;
-`WorldManifestEntry` is the authoritative per-instance record so this is the right
-place. Child-expanded instances leave `module` empty (acceptable per query.h docs).
-
-In `local_provider.cpp`: the `place()` lambda now accepts `const std::string& mod`
-(defaulting to empty) and populates `e.module`. The placement loop passes
-`roots[i].module` so every non-expanded root instance gets its source module name.
-
-### on_part module plumbing (bonus)
-
-Added `std::map<uint64_t, std::string> module_by_hash_` to `LocalProvider`. Populated
-in `connect()` from `ir.root_hashes` + `roots_for_install` after install. Used in
-`fetch_parts()` to pass the real module name to `cfg_.on_part` (was always nullptr
-before).
-
-### Lazy tracer in WorldSession::Impl
-
-Added to `WorldSession::Impl`:
-- `mutable std::unique_ptr<world_tracer::WorldTracer> tracer`
-- `mutable bool tracer_dirty = true`
-- `mutable std::unordered_map<uint64_t, std::string> module_by_hash`
-- `bool ensure_tracer() const`
-
-`ensure_tracer()`: builds `vector<TraceInstance>` from `state.entries()`, calls
-`tracer->build(engine->cache_root, ...)`, and builds `module_by_hash` from
-`manifest.instances`. Returns false if build fails (tracer stays null, queries no-op).
-
-`bake_once()` resets `tracer_dirty = true` and `tracer.reset()` on success so the
-tracer is rebuilt fresh after each bake/reload.
-
-### Query implementations
-
-- `raycast()`: calls `ensure_tracer`, `tracer->trace`, maps `Hit` fields to `RayHit`.
-  `part_hash` resolved via `expanded_instance(hit.instance, …)`.
-- `instance_count()`: calls `ensure_tracer`, returns `expanded_instance_count()`.
-  `const` method works because all tracer state is `mutable`.
-- `instance_info()`: calls `ensure_tracer`, calls `expanded_instance(idx, …)`,
-  looks up `module_name` in `module_by_hash`. `module_name` is nullptr for child
-  instances that have no manifest entry (documented in query.h).
-
----
-
-## Step 3: api_tests
-
-**File created:** `MatterEngine3/tests/api_tests.cpp`
-
-**Fixture chosen:** `examples/primitive_demo / Primitives`
-
-Rationale: Only one schema root (`Gallery`), 4 expanded trace instances, single world
-entry. Smallest available world — no tileset roots, no scatter, bake is fast (~4 parts).
-The `Meadow` fixture was explicitly excluded (too slow per brief). `world_demo/Demo`
-is larger (has Tree, which has a known load_v2 FAIL).
-
-Test sequence:
-1. Hidden GL window, EngineContext::create (GL 4.6 path).
-2. open_world → request_bake → drain events (assert BakeStarted + BakeFinished).
-3. instance_count() > 0, instance_info(0) returns true.
-4. 3 frames of render() with PassThrough resolver; assert nonblack > 5% of pixels.
-5. raycast from (tx, ty+100, tz) down — asserts hit_ok && t > 0.
-
----
-
-## Step 4: Makefile target
-
-Added `api-tests` and `run-api-tests` targets to `MatterEngine3/viewer/Makefile`.
-Object set mirrors `gpu-tests`: all engine objs minus `main.o` + `gpu_cull_tests.o`,
-plus `build/linux/api_tests.o` (compiled from `../tests/api_tests.cpp`). Added to
-`.PHONY` and `clean`.
-
----
-
-## Step 5: Headless suites
-
-All tests run from `MatterEngine3/tests/`. Results:
-
-| Suite                   | Result              | Notes                            |
-|-------------------------|---------------------|----------------------------------|
-| run-partv2              | ALL PASS            |                                  |
-| run-graph               | ALL PASS            |                                  |
-| run-script              | ALL PASS            |                                  |
-| run-shlib               | ALL PASS            |                                  |
-| run-iso                 | ALL PASS            |                                  |
-| run-polytri             | ALL PASS            |                                  |
-| run-trivar              | ALL PASS            |                                  |
-| run-comp                | ALL PASS            |                                  |
-| run-flatten             | ALL PASS            |                                  |
-| run-dev                 | ALL PASS            |                                  |
-| run-gallery             | ALL PASS            |                                  |
-| run-lighting            | ALL PASS            |                                  |
-| run-grasslod            | ALL PASS            |                                  |
-| run-stressforest        | ALL PASS            |                                  |
-| run-tilesetphysics      | PASSED (0 failures) |                                  |
-| run-tilesetcore         | PASSED (0 failures) |                                  |
-| run-tilesetplacement    | PASSED (0 failures) |                                  |
-| run-tilesetdsl          | PASSED (0 failures) |                                  |
-| run-tilesettorusbvh     | ALL PASS            |                                  |
-| run-tilesetmeadowmanifest | ALL PASS          |                                  |
-| run-shader-source       | ALL PASS            |                                  |
-| run-graph-integration   | 6 FAILs             | Pre-existing (Tree demo rot)     |
-| run-example             | 1 FAIL              | Pre-existing (load_v2 Tree FAIL) |
-| run-viewer-logic        | BUILD FAIL          | Pre-existing (see note below)    |
-
-**Pre-existing viewer-logic build failure:** The tests Makefile's VIEWER_LOGIC_CPP
-list includes `../viewer/tileset_gl_ctx.cpp` which calls `matter::shader_text()`, but
-`../src/shader_source.cpp` is not in the link set for that target. The undefined
-reference to `matter::shader_text` existed before this task (confirmed by stashing
-all changes and retrying — same linker error). Gate criterion met: no NEW failures.
-
-**run-tilesetbake, run-meadow, run-treebake, run-retopo-integration, run-tilesetgtex:**
-not run in this session (heavy bake tests or retopo-specific); not part of the task-7
-gate per brief context.
-
----
-
-## api_tests verbatim output
-
-```
-GPU cull path: enabled (GL 4.6 ok)
-LocalProvider: TBB warm-up retopo ok=1 elapsed=0.023s
-PartStore: loaded v3 FLAT part fdb9c731c2ab8ccc (10 LOD levels, 1 clusters)
-sky clear color: (142,148,157)
-GpuCuller: initialized
-events: 2 (0 PartDone)
-instance_count: 4
-instance[0]: part_hash=3bea28343669acc0 module=(null)
-GpuCuller: part fdb9c731c2ab8ccc slot 0 clusters 1 region_cap 4096 (2359296 region bytes)
-GpuCuller: xforms SSBO 2359296 bytes (2.2 MB, 36864 slots, 1 parts)
-nonblack: 230400/230400
-raycast: hit=1 t=98.300 instance=0
-api_tests: all passed
+```cpp
+for (size_t ri = 0; ri < roots.size(); ++ri) {
+    uint64_t k = 0;
+    if (!resolve(r, k)) {
+        if (error.find("cycle") != std::string::npos ||
+            error.find("missing requires target") != std::string::npos) {
+            result.error = error;
+            return result;  // hard error
+        }
+        FailedPart fp; fp.module = r.module; fp.error = error;
+        result.failed.push_back(std::move(fp)); error.clear(); continue;
+    }
+    root_keys_with_idx.push_back({k, ri});
+    result.root_hashes[ri] = memo.at(k).resolved_hash;
+}
 ```
 
-Notes:
-- `events: 2 (0 PartDone)`: warm cache — BakeStarted + BakeFinished only.
-- `module=(null)`: instance[0] is a child leaf of Gallery; no manifest entry with module
-  name maps to that particular expanded-child hash. This is correct per spec.
-- `nonblack: 230400/230400`: all pixels non-black (fully lit primitive gallery scene).
-- `raycast: t=98.300`: the ray from y+100 hit geometry at t~98, just below origin.
+### Per-bake-node exception catch
+
+The topological bake loop now wraps `baker_.bake()` in a try-catch:
+
+- `std::bad_alloc` → `OutOfMemory` in the recorded error; node added to `failed_keys`
+- `std::exception` → message captured; node added to `failed_keys`
+
+If a node's direct child is in `failed_keys`, the node itself is skipped with a
+`"missing child"` error (propagation prevents zombie nodes from being baked with
+missing dependencies).
+
+### Index correctness: `root_keys_with_idx`
+
+Pre-existing code used a flat `root_keys` vector that became non-parallel to
+`result.root_hashes` after skipped roots. Fixed by using:
+
+```cpp
+std::vector<std::pair<uint64_t, size_t>> root_keys_with_idx;
+// pair: (memo_key, original_root_index)
+```
+
+`result.root_hashes` is pre-sized to `roots.size()` with zeros, and the final
+propagation pass uses `orig_idx` to zero out bake-failed roots correctly.
+
+### `result.ok = true` with partial failures
+
+`install()` now returns `ok = true` even when some parts failed. Callers distinguish
+success-with-failures from clean success via `result.failed.empty()`.
+
+---
+
+## Step 2: `FailedPart` struct and `InstallResult` extension
+
+**File:** `MatterEngine3/src/part_graph.h`
+
+```cpp
+struct FailedPart {
+    std::string module;
+    std::string error;
+    uint64_t    resolved_hash = 0;
+};
+
+struct InstallResult {
+    bool ok = false;
+    std::string error;
+    std::vector<uint64_t> baked;
+    int hits = 0;
+    std::vector<uint64_t> root_hashes;
+    std::vector<FailedPart> failed;   // Task 7: skip-and-continue
+};
+```
+
+---
+
+## Step 3: `test_fault_hook` injection seam
+
+**Files:** `MatterEngine3/src/provider/local_provider.h`,
+`MatterEngine3/src/provider/local_provider.cpp`
+
+`LocalProviderConfig` gains:
+
+```cpp
+std::function<void(int part_index)> test_fault_hook;
+```
+
+`RecordingBaker::bake()` fires the hook before the real bake call:
+
+```cpp
+if (cfg && cfg->test_fault_hook)
+    cfg->test_fault_hook(*install_bake_count);
+```
+
+The hook may throw — `std::bad_alloc` is caught by the new bake-loop try-catch in
+`PartGraph::install()` and becomes a soft `FailedPart`.
+
+`fetch_parts()` also fires the hook (at index `i`) before `get_or_load()` so the same
+hook covers the fetch/load phase.
+
+`compose_world()` skips roots with `ir_.root_hashes[k] == 0` (failed roots produce no
+instances):
+
+```cpp
+if (ir_.root_hashes[k] == 0) continue;  // Task 7: skip failed roots
+```
+
+`install_result()` accessor exposes the `InstallResult` for post-install inspection.
+
+---
+
+## Step 4: `set_test_fault_hook()` on `WorldSession`
+
+**Files:** `MatterEngine3/include/matter/world_session.h`,
+`MatterEngine3/src/matter_engine.cpp`
+
+Declaration in `world_session.h`:
+
+```cpp
+// Task 7 test seam: install a per-part fault hook on the underlying provider
+// config. NOT part of the stable public API — for kernel-internal tests only.
+void set_test_fault_hook(std::function<void(int)> hook);
+```
+
+Implementation in `matter_engine.cpp` stores the hook on `impl_->cfg.test_fault_hook`,
+which is copied into each `LocalProvider` constructed per command in `execute_bake()`.
+
+---
+
+## Step 5: Event emission for per-part failures
+
+**File:** `MatterEngine3/src/matter_engine.cpp`
+
+After `install_graph()` succeeds, the worker thread emits one `BakeError` event per
+`ir_.failed` entry:
+
+```cpp
+int count_errors = 0;
+for (const auto& fp : provider->install_result().failed) {
+    BakeErrorCode code = classify_error(fp.error);
+    Event ev;
+    ev.type    = EventType::BakeError;
+    ev.code    = code;
+    ev.phase   = "install";
+    ev.module  = fp.module;
+    ev.message = fp.error;
+    emit_event(std::move(ev)); ++count_errors;
+}
+// ...
+BakeFinished ev;
+ev.errors = count_errors;
+```
+
+`classify_error()` was extended:
+
+```cpp
+if (err.find("resolve hash") != std::string::npos ||
+    err.find("evaluate")     != std::string::npos)
+    return BakeErrorCode::ScriptError;
+```
+
+This maps broken-script resolve failures to `ScriptError` (not `Internal`).
+
+---
+
+## Step 6: Updated `part_graph_tests.cpp` Task 10 assertions
+
+**File:** `MatterEngine3/tests/part_graph_tests.cpp`
+
+The pre-existing Task 10 test asserted whole-bake failure when a child bake failed.
+Under the new skip-and-continue policy that is no longer correct. Updated:
+
+```cpp
+// Old:
+CHECK(!r.ok, "install fails when a child bake fails");
+
+// New:
+CHECK(r.ok, "install returns ok=true under skip-and-continue policy");
+CHECK(!r.failed.empty(), "at least one FailedPart recorded");
+// child node failure propagated to parent as "missing child"
+```
+
+---
+
+## Step 7: New tests in `async_bake_tests.cpp`
+
+**File:** `MatterEngine3/tests/async_bake_tests.cpp`
+
+Four new tests added (e–h; existing tests are a–d):
+
+### (e) `test_supersede_cancels_inflight`
+
+Verifies that a second `request_bake()` supersedes an in-flight bake. Uses
+`build_multi_sandbox(root, 6)` to create a 6-part cold-cache world (enough parts to
+keep the first bake busy), calls `request_bake()` twice in immediate succession, then
+drains events with `drive_bake_tolerant()`. Asserts that exactly one `BakeFinished` is
+received and that it reports `errors == 0`.
+
+### (f) `test_destructor_mid_bake_joins`
+
+Opens a session, calls `request_bake()`, then immediately destroys the
+`WorldSession` (goes out of scope). Verifies that the destructor does not crash or
+hang — the join-on-destroy path from Task 6 is exercised.
+
+### (g) `test_oom_injection_skips_part`
+
+Installs a `set_test_fault_hook` that throws `std::bad_alloc` at `part_index == 1`.
+After a successful bake, asserts:
+- At least one `BakeError` event was received with `code == OutOfMemory` and
+  `phase == "install"`.
+- `instance_count() >= 1` — the remaining healthy part still produced instances.
+
+```
+-- (g) oom_injection_skips_part
+  OOM BakeError: module=Part1 phase=install
+  instance_count after OOM injection: 1
+```
+
+### (h) `test_broken_script_skips_part`
+
+Writes a `BrokenPart.js` with a JS syntax error (`define` call with unmatched paren)
+into the sandbox schemas dir. After baking, asserts:
+- At least one `BakeError` with `code == ScriptError`.
+- `instance_count() >= 1` — the healthy part still produced instances.
+
+```
+-- (h) broken_script_skips_part
+  ScriptError BakeError: module=BrokenPart phase=install
+  instance_count after broken script: 1
+```
+
+---
+
+## Design decisions and fixes
+
+### Why `root_keys_with_idx`
+
+The original flat `root_keys` vector was appended to only when resolve succeeded, making
+it non-parallel to `result.root_hashes`. The final bake-failed-root zeroing used
+`root_keys[ri]` as the propagation key but `ri` was the index into `root_keys`, not
+`roots[]`. Using `std::pair<uint64_t, size_t>` with the original root index baked in
+makes the propagation correct regardless of how many roots were soft-skipped.
+
+### Why broken JS hits the root-level soft path, not the bake-loop catch
+
+QuickJS parse errors surface during `resolve_hash()` — the script is evaluated at
+resolve time, not at bake time. A broken `define(...)` call causes
+`failed to resolve hash for part: BrokenPart`, which is not a "cycle" or
+"missing requires target" error, so it takes the soft-skip path at root level.
+The bake-loop try-catch handles run-time bake exceptions (OOM, etc.) and never sees
+scripts that never resolved.
+
+### Why `classify_error` needed extending
+
+Before Task 7, "resolve hash" failures fell through to `BakeErrorCode::Internal`.
+Broken JS is a user content error, not an engine bug, so mapping it to `ScriptError`
+is correct and gives consumers an actionable error code.
+
+---
+
+## Test results
+
+### `run-graph`
+
+```
+ALL PASS
+exit=0
+```
+
+All existing tests pass, including the updated Task 10 skip-and-continue assertions.
+
+### `run-graph-integration`
+
+```
+exit=0
+6 FAILs (all pre-existing: Tree.js disabled)
+```
+
+No new failures.
+
+### `run-asyncbake`
+
+```
+-- (a) basic_bake_events      PASS
+-- (b) reload_replaces_world  PASS
+-- (c) live_edit_noop         PASS
+-- (d) part_done_progress     PASS
+-- (e) supersede_cancels_inflight  PASS
+-- (f) destructor_mid_bake_joins   PASS
+-- (g) oom_injection_skips_part    PASS
+-- (h) broken_script_skips_part    PASS
+ALL PASS
+exit=0
+```
+
+---
+
+## Files changed
+
+| File | Change |
+|------|--------|
+| `MatterEngine3/src/part_graph.h` | Added `FailedPart`, `failed[]` to `InstallResult` |
+| `MatterEngine3/src/part_graph.cpp` | Two-tier resolve policy, bake-loop try-catch, `root_keys_with_idx`, `failed_keys` propagation, `ok=true` with partial failures |
+| `MatterEngine3/src/provider/local_provider.h` | `test_fault_hook` in `LocalProviderConfig`, `install_result()` accessor |
+| `MatterEngine3/src/provider/local_provider.cpp` | Hook fire in `RecordingBaker::bake()` and `fetch_parts()`; skip zero-hash roots in `compose_world()` |
+| `MatterEngine3/include/matter/world_session.h` | `set_test_fault_hook()` declaration, `#include <functional>` |
+| `MatterEngine3/src/matter_engine.cpp` | `set_test_fault_hook()` impl, `count_errors` accumulator, per-failed-part `BakeError` emission, `classify_error` extension |
+| `MatterEngine3/tests/part_graph_tests.cpp` | Updated Task 10 assertions to skip-and-continue semantics |
+| `MatterEngine3/tests/async_bake_tests.cpp` | 4 new tests (e–h), `build_multi_sandbox`, `drive_bake_tolerant`, `open_session` helpers |
 
 ---
 
 ## Deviations
 
-None from the brief's spec. Module plumbing for `on_part` done as the optional bonus
-(hash→module map built after install, passed through fetch_parts). Viewer-logic build
-failure is pre-existing and not introduced here.
+None. All four new tests (e–h) were implemented as specified in the brief. The
+`set_test_fault_hook` is clearly marked `NOT part of the stable public API` in both
+the header and the implementation. The `test_fault_hook` field in
+`LocalProviderConfig` is similarly annotated.
 
 ## Concerns
 
-- The `module_by_hash` in `WorldSession::Impl` only maps root-level manifest part
-  hashes. Expanded children (from flat.part instance refs or compositional expansion)
-  will have `module_name = nullptr`. This is the documented acceptable behavior.
-- The lazy tracer re-builds from `state.entries()` on first query. For Meadow-scale
-  worlds this will be expensive on first call (same cost as probe bake). Brief
-  acknowledges this and says "warm the cache once and note it."
-
----
-
-## Review Fix Report (Task 7 review findings)
-
-### Fix 1 — viewer_logic_tests link failure
-
-**Files modified:** `MatterEngine3/tests/Makefile`
-
-Changes:
-- Added `../src/shader_source.cpp` to `VIEWER_LOGIC_CPP` list (after `../src/probe_bake.cpp`, before `$(VIEWER_PIPELINE_CPP)`).
-- Added an explicit `../shaders_gen/embedded_shaders.h` target rule that calls `$(MAKE) -C .. shaders_gen/embedded_shaders.h`.
-- Changed `$(VIEWER_LOGIC_TARGET)` prerequisite line to use an order-only dependency `| ../shaders_gen/embedded_shaders.h` so the header is generated before compilation begins.
-
-### Fix 2 — tick() tracer invalidation
-
-**File modified:** `MatterEngine3/viewer/matter_engine.cpp`
-
-Changed `tick()` from the single-line `if` form to a braced block that, when a delta is applied, additionally executes:
-```cpp
-impl_->tracer_dirty = true;
-impl_->tracer.reset();
-```
-Matches the same pattern already in `bake_once()`.
-
-### Verification
-
-**Step 1** — `rm embedded_shaders.h` then build viewer_logic_tests:
-```
-exit=0
-grep 'undefined reference': (none)
-```
-Header regenerated automatically; link succeeded.
-
-**Step 2** — `make run-viewer-logic`:
-```
-exit=2
-FAILs:
-  FAIL: all manifest parts (and their children) loaded into shared store
-  FAIL: passthrough composes every instance plus its children
-  FAIL: flat tree has an empty child table
-  FAIL: branch part loads from PartStore
-```
-Exactly the 4 known pre-existing Tree-demo FAILs. No new failures.
-
-**Step 3** — `make -C MatterEngine3/viewer`:
-```
-exit=0
-```
-Facade recompiled clean.
-
-**Step 4** — `make -C MatterEngine3/viewer api-tests` then `GALLIUM_DRIVER=d3d12 ./api_tests`:
-```
-exit=0
-api_tests: all passed
-```
+- The `build_multi_sandbox` helper writes real schemas to a temp dir; on Windows the
+  tmpdir path separator must be `/` for QuickJS module resolution. Not an issue on
+  Linux but worth noting for future ports.
+- The six-part cold-cache in `supersede_cancels_inflight` relies on the bake being slow
+  enough for the second `request_bake()` to arrive while the first is in flight. On a
+  very fast machine with a warm cache both calls may complete before the event loop
+  drains, in which case the test still passes (one `BakeFinished`, `errors==0`).

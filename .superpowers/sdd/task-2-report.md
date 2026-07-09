@@ -115,8 +115,27 @@ Note: Raylib static library built separately prior to viewer build (dependency s
 - ✅ MatterViewer compiles successfully (unaffected by changes)
 - ✅ All async_queue_tests pass (8 pre-existing + 1 new struct-shape test)
 
+## Fix round 1
+
+**Review findings applied:**
+
+1. `world_session.h`: Moved `pump_gpu_jobs(float ms_budget)` declaration with 3-line comment to immediately AFTER `render()` method (was after `reload()`). Per plan requirement.
+
+2. `world_session.h`: Re-wrapped long single-line comments on `request_bake()` and `reload()` from ~175 chars to ~80-char `//` blocks, preserving exact wording including reload()'s fail-closed note.
+
+3. `async_queue_tests.cpp`: Fixed test 9 output tokens — entry `[test_event_struct_shape]` (already matched), exit changed from `ok event_struct_shape_test` to `ok event_struct_shape` for consistency with all other test pairs.
+
+**Test command:**
+```
+make -C MatterEngine3 -j$(nproc)
+make -C MatterEngine3/tests run-asyncq
+```
+
+**Result:**
+- Build: PASS — libmatter_engine3.a linked successfully
+- Tests: ALL PASS — all 9 cases pass, pristine output with matching [test_X] / ok X tokens
+
+**Commit:** b489497 `fix(phase-b): header comment wrapping + pump_gpu_jobs placement per plan (Task 2 review)`
+
 ## Next Steps
-Ready for commit per Task 2 specification with commit message:
-```
-feat(phase-b): public API — structured BakeErrorCode, event phase/errors fields, pump_gpu_jobs, enable_live_edit (Task 2)
-```
+Ready for merge pending final review.

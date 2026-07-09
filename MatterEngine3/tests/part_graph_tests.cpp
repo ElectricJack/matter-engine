@@ -305,10 +305,14 @@ int main() {
         CHECK(r2.hits == 1, "unrelated Stable branch stays a cache hit");
     }
 
-    // Task 10: failure propagation (child bake fail => parent unbaked => install fails named).
+    // Task 10 (updated for Task 7 skip-and-continue policy):
+    // Child bake fails => skip-and-continue: install returns ok=true but failed[] is
+    // non-empty; Child appears in failed[], Root is skipped with "missing child" cause;
+    // neither is recorded in baked[]. (Old assertion was ok=false; changed deliberately
+    // in Task 7 to match the new partial-failure policy.)
     {
-        // Root -> Child. Child's bake fails => Child never recorded, Root never baked,
-        // install fails naming Child.
+        // Root -> Child. Child's bake fails => Child in failed[], Root in failed[]
+        // with "missing child" cause; install still returns ok=true (partial).
         FakeModuleResolver res;
         res.modules["Child"] = FakeModule{ "src-Child", nullptr, false };
         res.modules["Root"]  = FakeModule{ "src-Root",
@@ -319,8 +323,19 @@ int main() {
 
         PartGraph g(res, baker);
         InstallResult r = g.install({ ChildRequest{"Root", Params{}} });
-        CHECK(!r.ok, "install fails when a child bake fails");
-        CHECK(r.error.find("Child") != std::string::npos, "error names the failing part (Child)");
+        // Task 7: skip-and-continue => ok=true even with partial failures.
+        CHECK(r.ok, "install returns ok=true under skip-and-continue policy");
+        CHECK(!r.failed.empty(), "at least one FailedPart recorded");
+        // Child must appear in failed[] naming the bake failure.
+        bool child_in_failed = false;
+        for (const auto& fp : r.failed) if (fp.module == "Child") child_in_failed = true;
+        CHECK(child_in_failed, "Child appears in failed[] after bake failure");
+        // Root must appear in failed[] with "missing child" cause.
+        bool root_missing_child = false;
+        for (const auto& fp : r.failed)
+            if (fp.module == "Root" && fp.error.find("missing child") != std::string::npos)
+                root_missing_child = true;
+        CHECK(root_missing_child, "Root skipped with 'missing child' cause");
         CHECK(r.baked.empty(), "no part recorded as baked when child fails");
         // Root must NOT have been baked (its child hash is unavailable).
         uint64_t root_hash = part_asset::compute_resolved_hash(

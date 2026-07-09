@@ -295,6 +295,11 @@ bool LocalProvider::install_graph(std::string& err) {
                   const std::vector<std::string>& child_modules,
                   const std::vector<std::string>& child_params,
                   uint64_t resolved_hash) override {
+            // Task 7: fire test_fault_hook (0-based index = current count BEFORE increment).
+            // Exceptions propagate to PartGraph::install's per-node try-catch if present,
+            // or to the worker's top-level catch; they serve as the OOM injection point.
+            if (cfg && cfg->test_fault_hook)
+                cfg->test_fault_hook(*install_bake_count);
             // Task 5 (Phase B): fire install-phase on_part before delegating.
             // total == 0 signals indeterminate count (install phase).
             if (cfg && cfg->on_part) {
@@ -491,6 +496,8 @@ bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
         for (size_t j = 0; j < install_to_orig_.size(); ++j)
             if (install_to_orig_[j] == i) { k = j; found = true; break; }
         if (!found) continue;  // (unreachable — every non-tileset root was installed)
+        // Task 7: skip roots that failed during install (root_hash == 0 → failed).
+        if (ir_.root_hashes[k] == 0) continue;
         if (expand_flags_[i]) {
             if (!append_expanded_children(abs_cache_root_, ir_.root_hashes[k],
                                           next_id, out.instances, err))
@@ -719,8 +726,12 @@ bool LocalProvider::fetch_parts(const std::vector<uint64_t>& want,
                                 PartStore& store, std::string& err) {
     // LocalProvider already wrote the .part blobs to the shared cache during
     // connect()'s install; "fetching" is just loading them into the store.
+    // Task 7: test_fault_hook fires per-part in this loop too; exceptions propagate
+    // to the caller (execute_bake's publish-job, which has its own skip handler).
     for (size_t i = 0; i < want.size(); ++i) {
         uint64_t h = want[i];
+        // Task 7: fire test_fault_hook (0-based index).
+        if (cfg_.test_fault_hook) cfg_.test_fault_hook((int)i);
         if (!store.get_or_load(h)) { err = "load failed for part " + std::to_string(h); return false; }
         if (cfg_.on_part) {
             auto it = module_by_hash_.find(h);

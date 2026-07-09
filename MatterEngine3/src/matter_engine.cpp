@@ -66,7 +66,9 @@ static BakeErrorCode classify_error(const std::string& err) {
         return BakeErrorCode::IoError;
     if (err.find("bake ") != std::string::npos ||
         err.find("script") != std::string::npos ||
-        err.find("install") != std::string::npos)
+        err.find("install") != std::string::npos ||
+        err.find("resolve hash") != std::string::npos ||
+        err.find("evaluate") != std::string::npos)
         return BakeErrorCode::ScriptError;
     return BakeErrorCode::Internal;
 }
@@ -310,6 +312,10 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     provider = std::make_unique<viewer::LocalProvider>(cfg);
 
     // install_graph on the worker (script eval + per-part bake; no GL).
+    // Task 7: skip-and-continue — install_graph() returns true even with partial
+    // failures; emit one BakeError per failed part, then continue the pipeline
+    // with the parts that succeeded. count_errors accumulates the total.
+    int count_errors = 0;
     {
         std::string err;
         if (!provider->install_graph(err)) {
@@ -317,6 +323,18 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
             emit_error(is_cancelled() ? BakeErrorCode::Cancelled : classify_error(err),
                        "install", err);
             return;
+        }
+        // Emit per-part errors for any parts that failed during install.
+        for (const auto& fp : provider->install_result().failed) {
+            BakeErrorCode code = classify_error(fp.error);
+            Event ev;
+            ev.type    = EventType::BakeError;
+            ev.code    = code;
+            ev.phase   = "install";
+            ev.module  = fp.module;
+            ev.message = fp.error;
+            emit_event(std::move(ev));
+            ++count_errors;
         }
     }
     if (is_cancelled()) { emit_error(BakeErrorCode::Cancelled, "install", "cancelled"); return; }
@@ -643,7 +661,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     {
         Event ev;
         ev.type   = EventType::BakeFinished;
-        ev.errors = 0;   // Task 7 will surface skip-and-continue counts.
+        ev.errors = count_errors;   // Task 7: skip-and-continue failure count.
         emit_event(std::move(ev));
     }
 }
@@ -776,6 +794,13 @@ WorldSession::~WorldSession() {
     impl_->composer.reset();
     impl_->store.reset();
     impl_->renderer.shutdown();
+}
+
+void WorldSession::set_test_fault_hook(std::function<void(int)> hook) {
+    // Task 7 test seam: stored on cfg_ so it's picked up when the next bake
+    // command builds a fresh LocalProvider(cfg_). Thread-safe: only call this
+    // before request_bake() or between bakes on the same thread as the caller.
+    impl_->cfg.test_fault_hook = std::move(hook);
 }
 
 void WorldSession::request_bake() {
