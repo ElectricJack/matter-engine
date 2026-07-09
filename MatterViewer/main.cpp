@@ -162,8 +162,10 @@ int main() {
     // kernel's raster composer, which flips glPolygonMode around the indirect draw.
     bool wireframe = false;
 
-    // --- open_and_bake helper (used for initial connect, reload, world switch) ---
-    auto open_and_bake = [&](const viewer::WorldEntry& w) -> std::unique_ptr<matter::WorldSession> {
+    // --- open_world_and_start_bake helper (used for initial connect, world switch) ---
+    // Phase B: enqueues the bake and returns immediately. Progress surfaces through
+    // the per-frame poll_event() drain; GPU work runs inside pump_gpu_jobs() each frame.
+    auto open_world_and_start_bake = [&](const viewer::WorldEntry& w) -> std::unique_ptr<matter::WorldSession> {
         matter::WorldDesc wd;
         wd.schemas_dir    = w.schemas_dir.c_str();
         wd.world_data_dir = w.world_data_dir.c_str();
@@ -173,33 +175,19 @@ int main() {
         auto s = engine->open_world(wd, werr);
         if (!s) { printf("open_world: %s\n", werr.c_str()); return nullptr; }
         s->request_bake();
-        matter::Event ev; bool ok = true;
-        while (s->poll_event(ev)) {
-            if (ev.type == matter::EventType::BakePartDone)
-                printf("bake %d/%d %s\n", ev.done, ev.total, ev.module.c_str());
-            if (ev.type == matter::EventType::BakeError) {
-                printf("bake error: %s\n", ev.message.c_str()); ok = false;
-            }
-        }
-        return ok ? std::move(s) : nullptr;
+        return s;
     };
 
-    auto session = open_and_bake(worlds[initial_world]);
+    auto session = open_world_and_start_bake(worlds[initial_world]);
     if (!session) { ui.shutdown(); CloseWindow(); return 1; }
 
     stats.gpu_cull_active = !use_rt;
     apply_world_resolver_defaults(worlds[initial_world].world_name,
                                   active_radius, min_projected_size, stats);
 
-    // Fill initial stats from the first bake.
-    {
-        const matter::FrameStats& fs = session->frame_stats();
-        stats.parts_baked     = (int)fs.parts_baked;
-        stats.cache_hits      = (int)fs.cache_hits;
-        stats.instances_total = (int)fs.instances_total;
-        memcpy(stats.probe_dims, fs.probe_dims, sizeof stats.probe_dims);
-        stats.connected = true;
-    }
+    // Phase B: bake is asynchronous — stats fields are zero until the first
+    // BakeFinished event surfaces; they update every frame via frame_stats().
+    stats.connected = true;
 
     bool camera_capture = false;
 
@@ -286,6 +274,28 @@ int main() {
         // Tick world state (poll provider deltas).
         session->tick();
 
+        // Phase B: execute queued GL bake work (up to 4 ms per frame).
+        session->pump_gpu_jobs(4.0f);
+
+        // Phase B: non-blocking event drain — print progress; no loop stalls.
+        {
+            matter::Event ev;
+            while (session->poll_event(ev)) {
+                if (ev.type == matter::EventType::BakePartDone)
+                    printf("bake %d/%d %s\n", ev.done, ev.total, ev.module.c_str());
+                else if (ev.type == matter::EventType::BakeFinished) {
+                    printf("bake finished (%d errors)\n", ev.errors);
+                    // Phase B tooling: print the readiness signal again so that
+                    // viewer_shots.sh (which polls for "viewer: bake ready") can
+                    // distinguish FIFO-setup time from bake-completion time.
+                    if (fifo_path)
+                        printf("viewer: bake ready\n");
+                    fflush(stdout);
+                } else if (ev.type == matter::EventType::BakeError)
+                    printf("bake error [%s]: %s\n", ev.module.c_str(), ev.message.c_str());
+            }
+        }
+
         // Build render options.
         matter::RenderOptions opts;
         opts.path     = use_rt ? matter::RenderPath::Raytrace : matter::RenderPath::GpuDriven;
@@ -371,23 +381,9 @@ int main() {
         if (stats.reload_requested) {
             stats.reload_requested = false;
             if (camera_capture) { camera_capture = false; EnableCursor(); }
-            // Drain events from the old session before reload.
+            // Phase B: enqueue the reload bake and return immediately.
+            // Progress and errors surface through the per-frame poll_event() drain.
             session->reload();
-            matter::Event ev;
-            bool reload_ok = true;
-            while (session->poll_event(ev)) {
-                if (ev.type == matter::EventType::BakePartDone)
-                    printf("bake %d/%d %s\n", ev.done, ev.total, ev.module.c_str());
-                if (ev.type == matter::EventType::BakeError) {
-                    printf("bake error: %s\n", ev.message.c_str());
-                    reload_ok = false;
-                }
-            }
-            if (!reload_ok) {
-                // Fail-closed: keep running (session render() will no-op until
-                // a later reload succeeds). Matches brief "on BakeError keep running".
-                printf("reload failed; continuing\n");
-            }
         }
 
         if (stats.world_switch_requested >= 0) {
@@ -398,19 +394,13 @@ int main() {
                 printf("world switch -> [%d] %s\n", idx, w.label.c_str());
                 if (camera_capture) { camera_capture = false; EnableCursor(); }
                 session.reset();
-                session = open_and_bake(w);
+                session = open_world_and_start_bake(w);
                 if (!session) { printf("world switch failed; exiting\n"); break; }
                 stats.world_current = idx;
                 apply_world_resolver_defaults(w.world_name, active_radius,
                                               min_projected_size, stats);
-                {
-                    const matter::FrameStats& fs = session->frame_stats();
-                    stats.parts_baked     = (int)fs.parts_baked;
-                    stats.cache_hits      = (int)fs.cache_hits;
-                    stats.instances_total = (int)fs.instances_total;
-                    memcpy(stats.probe_dims, fs.probe_dims, sizeof stats.probe_dims);
-                    stats.connected = true;
-                }
+                // Phase B: bake is async — stats update via frame_stats() each frame.
+                stats.connected = true;
             }
         }
 

@@ -16,16 +16,16 @@ MATTER_WORLD=meadow MATTER_CMD_FIFO="$FIFO" stdbuf -oL ./viewer > "$LOG" 2>&1 &
 PID=$!
 trap 'kill $PID 2>/dev/null || true; rm -f "$FIFO" "$LOG"' EXIT
 
-# Readiness: poll for "MATTER_CMD_FIFO: listening" instead of fixed sleep.
-# Cold bake ~40 s; cap 120 s.
+# Readiness: poll for "viewer: bake ready" (Phase B async bake) or fall back
+# to "MATTER_CMD_FIFO: listening" (Phase A sync bake). Cap: 300 s.
 READY=0
-for _ in $(seq 1 120); do
+for _ in $(seq 1 300); do
     if ! kill -0 "$PID" 2>/dev/null; then break; fi
-    if grep -q 'MATTER_CMD_FIFO: listening' "$LOG" 2>/dev/null; then READY=1; break; fi
+    if grep -q 'viewer: bake ready' "$LOG" 2>/dev/null; then READY=1; break; fi
     sleep 1
 done
 if [ "$READY" != 1 ]; then
-    echo "ERROR: viewer not ready after 120s (or died). Log tail:" >&2
+    echo "ERROR: viewer not ready after 300s (or died). Log tail:" >&2
     tail -n 10 "$LOG" >&2
     exit 1
 fi

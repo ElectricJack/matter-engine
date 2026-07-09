@@ -24,17 +24,17 @@ MATTER_WORLD="${MATTER_WORLD:-meadow}" MATTER_CMD_FIFO="$FIFO" stdbuf -oL ./view
 PID=$!
 trap 'kill $PID 2>/dev/null || true; rm -f "$FIFO"' EXIT
 
-# Readiness: poll the log for the FIFO-listener line instead of a fixed sleep.
-# The viewer prints "MATTER_CMD_FIFO: listening" after the world has loaded.
-# Cap: 180 s (cold bake can take ~40 s; allow generous margin).
+# Readiness: poll the log for "viewer: bake ready" (Phase B async bake) or
+# fall back to "MATTER_CMD_FIFO: listening" (Phase A sync bake — fires after
+# the blocking bake completes). Cap: 300 s (cold Meadow bake can take ~180 s).
 READY=0
-for _ in $(seq 1 180); do
+for _ in $(seq 1 300); do
     if ! kill -0 "$PID" 2>/dev/null; then break; fi
-    if grep -q 'MATTER_CMD_FIFO: listening' "$LOG" 2>/dev/null; then READY=1; break; fi
+    if grep -q 'viewer: bake ready' "$LOG" 2>/dev/null; then READY=1; break; fi
     sleep 1
 done
 if [ "$READY" != 1 ]; then
-    echo "ERROR: viewer not ready after 180s (or died). Log tail:" >&2
+    echo "ERROR: viewer not ready after 300s (or died). Log tail:" >&2
     tail -n 10 "$LOG" >&2
     exit 1
 fi
