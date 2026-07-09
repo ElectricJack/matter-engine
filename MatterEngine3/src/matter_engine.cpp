@@ -71,6 +71,16 @@ public:
 // executor doesn't get typed errors back from the pipeline (yet — Task 7 wires
 // finer-grained tags), so we bucket by substring for now. Task 7 will overlay
 // the real code plumbing; keeping it here makes it easy to hoist later.
+//
+// Priority order (highest → lowest):
+//   1. Cancelled / shutdown   — always terminal; must not misclassify as I/O
+//   2. OOM / bad_alloc        — memory exhaustion
+//   3. GPU errors             — shader/GL failures
+//   4. Script errors          — evaluated BEFORE I/O: a script message may
+//      contain "load" or "not found" (e.g. "failed to load module"), so the
+//      script bucket must win over the I/O bucket.
+//   5. I/O errors             — missing files / manifest failures
+//   6. Internal               — catch-all
 static BakeErrorCode classify_error(const std::string& err) {
     if (err.find("cancel") != std::string::npos ||
         err.find("shutdown") != std::string::npos)
@@ -83,16 +93,16 @@ static BakeErrorCode classify_error(const std::string& err) {
         err.find("shader") != std::string::npos ||
         err.find("GL") != std::string::npos)
         return BakeErrorCode::GpuError;
-    if (err.find("manifest") != std::string::npos ||
-        err.find("not found") != std::string::npos ||
-        err.find("load") != std::string::npos)
-        return BakeErrorCode::IoError;
     if (err.find("bake ") != std::string::npos ||
         err.find("script") != std::string::npos ||
         err.find("install") != std::string::npos ||
         err.find("resolve hash") != std::string::npos ||
         err.find("evaluate") != std::string::npos)
         return BakeErrorCode::ScriptError;
+    if (err.find("manifest") != std::string::npos ||
+        err.find("not found") != std::string::npos ||
+        err.find("load") != std::string::npos)
+        return BakeErrorCode::IoError;
     return BakeErrorCode::Internal;
 }
 
@@ -195,6 +205,45 @@ struct WorldSession::Impl {
     void execute_bake(matter_async::Command& cmd, bool is_reload);
     // Execute a RebakeCone command. Called only on the worker thread.
     void execute_rebake_cone(matter_async::Command& cmd);
+
+    // Parameters for publish_pipeline — the genuine differences between the
+    // BakeAll/Reload and RebakeCone publish flows.
+    struct PublishPipelineParams {
+        // Job name prefix: "bake" or "cone" (used in GpuJob::name strings and
+        // assert_gl_thread markers so tracing distinguishes the two executors).
+        std::string job_prefix;
+        // Initial error count. execute_bake seeds this from install-phase
+        // failures; execute_rebake_cone passes 0 (cone install errors are
+        // emitted but not counted in BakeFinished.errors).
+        int count_errors_seed = 0;
+        // Whether to attempt first-success GpuCuller init inside the reset job.
+        // True for BakeAll/Reload (first bake arms the culler); false for
+        // RebakeCone (culler already initialized by the prior full bake).
+        bool init_culler = false;
+        // Whether to update stats.probe_dims in the finalize job.
+        // True for BakeAll/Reload (full world manifest); false for RebakeCone
+        // (cone is a partial rebuild; probe layout is unchanged).
+        bool update_probe_dims = false;
+        // Whether to emit verbose diagnostic prints inside the reset job
+        // (raster init error, probe-unavailable warning, sky-clear color).
+        // True for BakeAll/Reload; false for RebakeCone.
+        bool verbose_reset_log = false;
+        // Test fault hook, forwarded into each publish job lambda.
+        // Non-null only in test builds that call set_test_fault_hook().
+        // execute_rebake_cone does not wire the hook (cone is not injection-tested).
+        std::function<void(int)> fault_hook;
+        // Whether to append " (hash N)" to the load-failure message.
+        // True for BakeAll/Reload (matches existing message format);
+        // false for RebakeCone (existing message omits the hash).
+        bool load_msg_include_hash = false;
+    };
+
+    // Shared publish flow: steps 4-8 (reset job → reconcile → per-part publish
+    // jobs → finalize job → BakeFinished). Called only on the worker thread.
+    // `new_manifest` is consumed (moved in) by the reset job.
+    void publish_pipeline(const std::shared_ptr<matter_async::CancelToken>& token,
+                          viewer::WorldManifest new_manifest,
+                          const PublishPipelineParams& p);
 
     // --- Task 10: live-edit watcher state (app thread only) ------------------
     bool enable_live_edit = false;
@@ -390,61 +439,88 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     }
     if (is_cancelled()) { emit_error(BakeErrorCode::Cancelled, "compose", "cancelled"); return; }
 
-    // 4) GL reset job — recreate raster + composer + PartStore on the GL thread
-    // Also creates the fresh PartStore inside the job so the old store (still
-    // holding GL-owned BLAS textures) is destroyed on the GL thread, matching
-    // today's teardown ordering.
+    // 4-8) Shared publish flow: reset → reconcile → per-part publish → finalize
+    //      → BakeFinished. count_errors is seeded with install-phase failures.
+    PublishPipelineParams pp;
+    pp.job_prefix            = "bake";
+    pp.count_errors_seed     = count_errors;
+    pp.init_culler           = true;
+    pp.update_probe_dims     = true;
+    pp.verbose_reset_log     = true;
+    pp.fault_hook            = cfg.test_fault_hook;
+    pp.load_msg_include_hash = true;
+    publish_pipeline(token, std::move(new_manifest), pp);
+}
+
+// ---------------------------------------------------------------------------
+// WorldSession::Impl::publish_pipeline
+// Steps 4-8 of the bake/cone publish flow, shared by execute_bake and
+// execute_rebake_cone. Caller has already emitted BakeStarted, run
+// install_graph (accumulating errors into p.count_errors_seed), and produced
+// new_manifest via compose_world. This function takes ownership of new_manifest.
+//
+// Genuine differences parametrized via PublishPipelineParams:
+//   job_prefix          — "bake" vs "cone" in GpuJob names + assert markers
+//   count_errors_seed   — install-phase errors (0 for cone)
+//   init_culler         — first-success GpuCuller init (bake only)
+//   update_probe_dims   — stats.probe_dims census in finalize (bake only)
+//   verbose_reset_log   — raster/probe/sky diagnostic prints in reset (bake only)
+//   fault_hook          — test injection hook in publish job (bake only)
+//   load_msg_include_hash — append "(hash N)" to load-failure message (bake only)
+// ---------------------------------------------------------------------------
+void WorldSession::Impl::publish_pipeline(
+    const std::shared_ptr<matter_async::CancelToken>& token,
+    viewer::WorldManifest new_manifest,
+    const PublishPipelineParams& p)
+{
+    auto is_cancelled = [&] { return token && token->is_cancelled(); };
+
+    auto emit_error = [&](BakeErrorCode code, const char* phase, const std::string& msg) {
+        Event ev;
+        ev.type    = EventType::BakeError;
+        ev.code    = code;
+        ev.phase   = phase;
+        ev.message = msg;
+        emit_event(std::move(ev));
+    };
+
+    const std::string& pfx = p.job_prefix;
+
+    // 4) GL reset job: recreate raster + composer + PartStore on the GL thread.
     struct ResetOutput {
-        std::unique_ptr<viewer::PartStore>     new_store;
-        std::unique_ptr<viewer::WorldComposer> new_composer;
+        std::unique_ptr<viewer::PartStore>      new_store;
+        std::unique_ptr<viewer::WorldComposer>  new_composer;
         std::unique_ptr<viewer::RasterComposer> new_raster;
         viewer::ProbeTextures                   new_probe_tex{};
     };
     auto reset_out = std::make_shared<ResetOutput>();
 
-    // Capture manifest snapshot by value into the reset job — it needs the
-    // lights/probes to program the raster composer, and the worker will
-    // overwrite `manifest` when publishing per-part deltas below.
     matter_async::GpuJob reset_job;
-    reset_job.name  = "bake.reset";
+    reset_job.name  = pfx + ".reset";
     reset_job.token = token;
-    reset_job.fn = [this, reset_out, new_manifest](std::string& err) -> bool {
-        matter_async::assert_gl_thread("bake.reset");
-        // Fail-close: mark disconnected on the app/GL thread before tearing
-        // down the old world. This write and the matching `connected = true`
-        // below are both on the GL thread — no data race with the atomic.
-        // Old world stops rendering from this point until the new one is ready.
+    reset_job.fn = [this, reset_out, new_manifest, p, pfx](std::string& err) -> bool {
+        matter_async::assert_gl_thread((pfx + ".reset").c_str());
         connected.store(false, std::memory_order_release);
 
-        // --- relocated from the old bake_once (GL setup block) ---------------
-        // Release stale probe textures before creating new ones.
         viewer::release_probe_textures(probe_tex);
         reset_out->new_raster = std::make_unique<viewer::RasterComposer>();
         auto& raster_local = reset_out->new_raster;
         if (!engine->gl46) {
-            // RT path: set lights (no-op if shader not yet loaded; the lazy RT
-            // init in render() will re-apply after loading). Raster path skips
-            // raster init in non-gl46 mode.
             renderer.set_lights(new_manifest.lights);
         } else {
             std::string rerr;
             if (!raster_local->init(rerr)) {
-                printf("raster: %s\n", rerr.c_str());
+                if (p.verbose_reset_log) printf("raster: %s\n", rerr.c_str());
                 err = rerr;
                 return false;
             }
             raster_local->set_lights(new_manifest.lights);
-
             if (new_manifest.probes && new_manifest.probes->valid()) {
                 reset_out->new_probe_tex = viewer::upload_probe_textures(*new_manifest.probes);
                 raster_local->set_probes(reset_out->new_probe_tex);
-            } else {
+            } else if (p.verbose_reset_log) {
                 printf("probes unavailable - flat ambient fallback\n");
             }
-
-            // Tone-map sky_color (c/(c+1) then pow(1/2.2)) to derive the clear
-            // color. With the default lights this reproduces approximately
-            // (96,118,143).
             auto tonemap = [](float c) -> unsigned char {
                 float mapped  = c / (c + 1.0f);
                 float gamma   = std::pow(mapped, 1.0f / 2.2f);
@@ -457,23 +533,21 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
             sky_clear[0] = r / 255.f;
             sky_clear[1] = g / 255.f;
             sky_clear[2] = b / 255.f;
-            printf("sky clear color: (%d,%d,%d)\n", (int)r, (int)g, (int)b);
-
-            // GPU-driven shader init after set_lights (mirrors old bake_once).
+            if (p.verbose_reset_log)
+                printf("sky clear color: (%d,%d,%d)\n", (int)r, (int)g, (int)b);
             std::string gerr;
             if (!raster_local->init_gpu_driven(gerr)) {
-                fprintf(stderr, "FATAL: GPU-driven shader init failed: %s. "
-                        "Set MATTER_RT=1 to fall back to the ray-traced path.\n",
-                        gerr.c_str());
+                if (p.verbose_reset_log)
+                    fprintf(stderr, "FATAL: GPU-driven shader init failed: %s. "
+                            "Set MATTER_RT=1 to fall back to the ray-traced path.\n",
+                            gerr.c_str());
                 err = "GPU-driven shader init failed: " + gerr;
                 return false;
             }
         }
-        // Upload world lights to the raytrace shader (no-op in raster mode).
         renderer.set_lights(new_manifest.lights);
 
-        // First-success GpuCuller init (relocated from the old request_bake tail).
-        if (!culler_ready && engine->gl46) {
+        if (p.init_culler && !culler_ready && engine->gl46) {
             std::string cull_err;
             if (!gpu_culler.init(cull_err)) {
                 fprintf(stderr, "FATAL: GpuCuller::init failed: %s\n", cull_err.c_str());
@@ -484,30 +558,18 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
             culler_ready = true;
         }
 
-        // Fresh PartStore inside the GL job so the OLD store (BLAS textures)
-        // is destroyed on the GL thread.
         reset_out->new_store = std::make_unique<viewer::PartStore>(cfg.cache_root);
-        // Small initial cap; grows in the publish jobs; final exact cap on
-        // the finalize job.
         reset_out->new_composer = std::make_unique<viewer::WorldComposer>(
             *reset_out->new_store, /*tlas_capacity=*/16);
 
-        // Clear world state (entries only — lights/probes are the raster/renderer's
-        // concern and already programmed above). apply() of per-hash deltas below
-        // grows it back up.
         state.reset(viewer::WorldManifest{});
-
-        // Swap ownership from old objects to the fresh ones. The old objects
-        // destruct here on the GL thread (raster shader/texture cleanup).
         raster.swap(reset_out->new_raster);
         composer.swap(reset_out->new_composer);
         store.swap(reset_out->new_store);
         probe_tex = reset_out->new_probe_tex;
-        reset_out->new_probe_tex = viewer::ProbeTextures{}; // moved
+        reset_out->new_probe_tex = viewer::ProbeTextures{};
 
-        // Publish the new manifest snapshot on the app/GL thread and mark
-        // connected. tracer is stale from now on.
-        manifest    = new_manifest;
+        manifest = new_manifest;
         connected.store(true, std::memory_order_release);
         tracer_dirty = true;
         tracer.reset();
@@ -517,21 +579,20 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         std::string rerr;
         if (!gpu_jobs.run_blocking(std::move(reset_job), rerr)) {
             emit_error(is_cancelled() ? BakeErrorCode::Cancelled : BakeErrorCode::GpuError,
-                       "gl", rerr.empty() ? "reset job failed" : rerr);
+                       "gl", rerr.empty() ? pfx + " reset job failed" : rerr);
             return;
         }
     }
     if (is_cancelled()) { emit_error(BakeErrorCode::Cancelled, "gl", "cancelled"); return; }
 
-    // 5) Reconcile job (store swap already done in reset; reconcile now reads
-    //    the new store from the app thread and returns the want-list to us).
+    // 5) Reconcile job.
     struct ReconcileOutput { std::vector<uint64_t> want; };
     auto reco_out = std::make_shared<ReconcileOutput>();
     matter_async::GpuJob reco_job;
-    reco_job.name  = "bake.reconcile";
+    reco_job.name  = pfx + ".reconcile";
     reco_job.token = token;
-    reco_job.fn    = [this, reco_out](std::string& /*err*/) -> bool {
-        matter_async::assert_gl_thread("bake.reconcile");
+    reco_job.fn    = [this, reco_out, pfx](std::string& /*err*/) -> bool {
+        matter_async::assert_gl_thread((pfx + ".reconcile").c_str());
         reco_out->want = provider->reconcile(manifest, *store);
         return true;
     };
@@ -539,7 +600,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         std::string rerr;
         if (!gpu_jobs.run_blocking(std::move(reco_job), rerr)) {
             emit_error(is_cancelled() ? BakeErrorCode::Cancelled : BakeErrorCode::GpuError,
-                       "gl", rerr.empty() ? "reconcile failed" : rerr);
+                       "gl", rerr.empty() ? pfx + " reconcile failed" : rerr);
             return;
         }
     }
@@ -580,17 +641,16 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     // Shared cap-growth state across all publish jobs. Both fields are read and
     // written only on the GL thread (all publish jobs are FIFO on the pump), so
     // no mutex is needed. Initial cap matches the reset job's WorldComposer(16).
-    // Task 7 fix: load_fail_count accumulates per-part load failures across all
-    // publish jobs (GL thread only, FIFO — no mutex needed). Read by worker after
-    // run_blocking(finalize_job) guarantees all publish jobs have completed.
+    // load_fail_count accumulates per-part load failures (GL thread only, FIFO).
+    // Read by worker after run_blocking(finalize_job) guarantees all publish
+    // jobs have completed.
     struct CapState { size_t needed = 0; size_t current = 16; int load_fail_count = 0; };
     auto cap_state = std::make_shared<CapState>();
 
     // Capture the fault hook once at post-time (by value) so each publish job
-    // holds its own copy. Safe: hook is set before request_bake() and not
-    // modified until the next bake command, which cannot start until after
-    // execute_bake returns and run_blocking(finalize_job) has completed.
-    auto fault_hook = cfg.test_fault_hook;
+    // holds its own copy.
+    auto fault_hook = p.fault_hook;
+    bool include_hash = p.load_msg_include_hash;
 
     for (int i = 0; i < total_parts; ++i) {
         if (is_cancelled()) {
@@ -599,7 +659,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         }
         uint64_t h = want[i];
 
-        // Deterministic post-time emit (unchanged — order must not change).
+        // Deterministic post-time emit (order must not change).
         {
             Event ev;
             ev.type   = EventType::BakePartDone;
@@ -619,22 +679,21 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
             if (it != mod_by_hash.end()) part_module = it->second;
         }
 
-        // Snapshot manifest entries whose part_hash == h. Copied by value so
-        // the job doesn't race with a future manifest swap (though a supersede
-        // cancels the token before that happens).
+        // Snapshot manifest entries whose part_hash == h.
         std::vector<viewer::WorldManifestEntry> added;
         for (const auto& e : manifest.instances)
             if (e.part_hash == h) added.push_back(e);
         const size_t entry_count = added.size();
 
         matter_async::GpuJob pj;
-        pj.name  = "bake.publish";
+        pj.name  = pfx + ".publish";
         pj.token = token;
         pj.fn = [this, i, h, part_module, added_moved = std::move(added),
-                 entry_count, cap_state, fault_hook](std::string& /*err*/) -> bool {
-            matter_async::assert_gl_thread("bake.publish");
+                 entry_count, cap_state, fault_hook, include_hash,
+                 pfx](std::string& /*err*/) -> bool {
+            matter_async::assert_gl_thread((pfx + ".publish").c_str());
 
-            // Task 7 fix: per-part skip-and-continue in the publish (load) phase.
+            // Per-part skip-and-continue in the publish (load) phase.
             // Fire the test fault hook before get_or_load; catch exceptions to
             // inject deterministic faults. On any failure: emit a BakeError,
             // increment load_fail_count, and return true-with-skip (do NOT
@@ -648,8 +707,9 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
                 if (fault_hook) fault_hook(i);
                 if (!store->get_or_load(h)) {
                     fail_code = BakeErrorCode::IoError;
-                    fail_msg  = "load failed for part " + part_module +
-                                " (hash " + std::to_string(h) + ")";
+                    fail_msg  = "load failed for part " + part_module;
+                    if (include_hash)
+                        fail_msg += " (hash " + std::to_string(h) + ")";
                     part_failed = true;
                 }
             } catch (std::bad_alloc&) {
@@ -680,11 +740,10 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
             tracer_dirty = true;
             tracer.reset();
 
-            // Composer cap growth (spec step 6): count drawable nodes in this
-            // part's tree, accumulate needed_cap, and recreate the composer
-            // when the cap is exceeded. TLAS recomposes every frame so recreate
-            // is cheap; we add headroom (max(needed, current*2)) to avoid
-            // recreating on every part.
+            // Composer cap growth: count drawable nodes in this part's tree,
+            // accumulate needed_cap, and recreate the composer when the cap is
+            // exceeded. TLAS recomposes every frame so recreate is cheap; we add
+            // headroom (max(needed, current*2)) to avoid recreating on every part.
             size_t drawable_nodes = 0;
             viewer::walk_part_tree(h,
                 [this](uint64_t hh) -> const viewer::LoadedPart* { return store->get_or_load(hh); },
@@ -704,25 +763,25 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         gpu_jobs.post(std::move(pj));
     }
 
-    // 7) Finalize job (blocking): part_lod_table + census + exact-cap
-    //    composer recreate using the original bake_once cap walk.
+    // 7) Finalize job (blocking): part_lod_table + census + exact-cap composer.
     matter_async::GpuJob finalize_job;
-    finalize_job.name  = "bake.finalize";
+    finalize_job.name  = pfx + ".finalize";
     finalize_job.token = token;
-    finalize_job.fn    = [this](std::string& /*err*/) -> bool {
-        matter_async::assert_gl_thread("bake.finalize");
+    finalize_job.fn    = [this, p, pfx](std::string& /*err*/) -> bool {
+        matter_async::assert_gl_thread((pfx + ".finalize").c_str());
         lods = store->part_lod_table();
 
-        // Census (relocated from the old bake_once tail).
         stats.instances_total = (uint32_t)manifest.instances.size();
         stats.parts_baked     = (uint32_t)provider->baked_count();
         stats.cache_hits      = (uint32_t)provider->hit_count();
-        if (manifest.probes && manifest.probes->valid()) {
-            stats.probe_dims[0] = manifest.probes->grid.nx;
-            stats.probe_dims[1] = manifest.probes->grid.ny;
-            stats.probe_dims[2] = manifest.probes->grid.nz;
-        } else {
-            stats.probe_dims[0] = stats.probe_dims[1] = stats.probe_dims[2] = 0;
+        if (p.update_probe_dims) {
+            if (manifest.probes && manifest.probes->valid()) {
+                stats.probe_dims[0] = manifest.probes->grid.nx;
+                stats.probe_dims[1] = manifest.probes->grid.ny;
+                stats.probe_dims[2] = manifest.probes->grid.nz;
+            } else {
+                stats.probe_dims[0] = stats.probe_dims[1] = stats.probe_dims[2] = 0;
+            }
         }
 
         // Final exact-cap composer recreate. Walk the (now fully loaded) part
@@ -744,22 +803,22 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         std::string ferr;
         if (!gpu_jobs.run_blocking(std::move(finalize_job), ferr)) {
             emit_error(is_cancelled() ? BakeErrorCode::Cancelled : BakeErrorCode::GpuError,
-                       "gl", ferr.empty() ? "finalize failed" : ferr);
+                       "gl", ferr.empty() ? pfx + " finalize failed" : ferr);
             return;
         }
     }
 
-    // Task 7 fix: merge load-phase (publish-job) failures into count_errors.
+    // Merge load-phase (publish-job) failures into count_errors.
     // run_blocking(finalize_job) above guarantees all publish jobs completed
     // before we reach here, so load_fail_count is final and safe to read on
     // the worker thread (GL-thread writes are sequenced before the barrier).
-    count_errors += cap_state->load_fail_count;
+    int count_errors = p.count_errors_seed + cap_state->load_fail_count;
 
-    // 8) BakeFinished ---------------------------------------------------------
+    // 8) BakeFinished.
     {
         Event ev;
         ev.type   = EventType::BakeFinished;
-        ev.errors = count_errors;   // Task 7: install + load failure count.
+        ev.errors = count_errors;
         emit_event(std::move(ev));
     }
 }
@@ -922,245 +981,18 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
         return;
     }
 
-    // 4-8) Identical to execute_bake steps 4-8: reset job -> reconcile ->
-    //      per-part publish -> finalize -> BakeFinished.
-    struct ResetOutput {
-        std::unique_ptr<viewer::PartStore>      new_store;
-        std::unique_ptr<viewer::WorldComposer>  new_composer;
-        std::unique_ptr<viewer::RasterComposer> new_raster;
-        viewer::ProbeTextures                   new_probe_tex{};
-    };
-    auto reset_out = std::make_shared<ResetOutput>();
-
-    matter_async::GpuJob reset_job;
-    reset_job.name  = "cone.reset";
-    reset_job.token = token;
-    reset_job.fn = [this, reset_out, new_manifest](std::string& err) -> bool {
-        matter_async::assert_gl_thread("cone.reset");
-        connected.store(false, std::memory_order_release);
-
-        viewer::release_probe_textures(probe_tex);
-        reset_out->new_raster = std::make_unique<viewer::RasterComposer>();
-        auto& raster_local = reset_out->new_raster;
-        if (!engine->gl46) {
-            renderer.set_lights(new_manifest.lights);
-        } else {
-            std::string rerr;
-            if (!raster_local->init(rerr)) { err = rerr; return false; }
-            raster_local->set_lights(new_manifest.lights);
-            if (new_manifest.probes && new_manifest.probes->valid()) {
-                reset_out->new_probe_tex = viewer::upload_probe_textures(*new_manifest.probes);
-                raster_local->set_probes(reset_out->new_probe_tex);
-            }
-            auto tonemap = [](float c) -> unsigned char {
-                float mapped  = c / (c + 1.0f);
-                float gamma   = std::pow(mapped, 1.0f / 2.2f);
-                float clamped = gamma < 0.0f ? 0.0f : (gamma > 1.0f ? 1.0f : gamma);
-                return (unsigned char)(clamped * 255.0f + 0.5f);
-            };
-            unsigned char r = tonemap(new_manifest.lights.sky_color[0]);
-            unsigned char g = tonemap(new_manifest.lights.sky_color[1]);
-            unsigned char b = tonemap(new_manifest.lights.sky_color[2]);
-            sky_clear[0] = r / 255.f; sky_clear[1] = g / 255.f; sky_clear[2] = b / 255.f;
-            std::string gerr;
-            if (!raster_local->init_gpu_driven(gerr)) {
-                err = "GPU-driven shader init failed: " + gerr;
-                return false;
-            }
-        }
-        renderer.set_lights(new_manifest.lights);
-
-        reset_out->new_store    = std::make_unique<viewer::PartStore>(cfg.cache_root);
-        reset_out->new_composer = std::make_unique<viewer::WorldComposer>(
-            *reset_out->new_store, /*tlas_capacity=*/16);
-
-        state.reset(viewer::WorldManifest{});
-        raster.swap(reset_out->new_raster);
-        composer.swap(reset_out->new_composer);
-        store.swap(reset_out->new_store);
-        probe_tex = reset_out->new_probe_tex;
-        reset_out->new_probe_tex = viewer::ProbeTextures{};
-        manifest = new_manifest;
-        connected.store(true, std::memory_order_release);
-        tracer_dirty = true;
-        tracer.reset();
-        return true;
-    };
-    {
-        std::string rerr;
-        if (!gpu_jobs.run_blocking(std::move(reset_job), rerr)) {
-            emit_error(is_cancelled() ? BakeErrorCode::Cancelled : BakeErrorCode::GpuError,
-                       "gl", rerr.empty() ? "cone reset job failed" : rerr);
-            return;
-        }
-    }
-    if (is_cancelled()) { emit_error(BakeErrorCode::Cancelled, "gl", "cancelled"); return; }
-
-    // Reconcile.
-    struct ReconcileOutput { std::vector<uint64_t> want; };
-    auto reco_out = std::make_shared<ReconcileOutput>();
-    matter_async::GpuJob reco_job;
-    reco_job.name  = "cone.reconcile";
-    reco_job.token = token;
-    reco_job.fn    = [this, reco_out](std::string& /*err*/) -> bool {
-        matter_async::assert_gl_thread("cone.reconcile");
-        reco_out->want = provider->reconcile(manifest, *store);
-        return true;
-    };
-    {
-        std::string rerr;
-        if (!gpu_jobs.run_blocking(std::move(reco_job), rerr)) {
-            emit_error(is_cancelled() ? BakeErrorCode::Cancelled : BakeErrorCode::GpuError,
-                       "gl", rerr.empty() ? "cone reconcile failed" : rerr);
-            return;
-        }
-    }
-    if (is_cancelled()) { emit_error(BakeErrorCode::Cancelled, "gl", "cancelled"); return; }
-
-    // Publish.
-    std::vector<uint64_t> publish_order = reco_out->want;
-    {
-        std::set<uint64_t> in_want(publish_order.begin(), publish_order.end());
-        std::set<uint64_t> seen(publish_order.begin(), publish_order.end());
-        for (const auto& e : manifest.instances) {
-            if (in_want.count(e.part_hash)) continue;
-            if (!seen.insert(e.part_hash).second) continue;
-            publish_order.push_back(e.part_hash);
-        }
-    }
-    const int total_parts = (int)publish_order.size();
-    const auto& want = publish_order;
-
-    std::unordered_map<uint64_t, std::string> mod_by_hash;
-    for (const auto& e : manifest.instances)
-        if (!e.module.empty()) mod_by_hash[e.part_hash] = e.module;
-
-    struct CapState { size_t needed = 0; size_t current = 16; int load_fail_count = 0; };
-    auto cap_state = std::make_shared<CapState>();
-
-    int count_errors = 0;
-    for (int i = 0; i < total_parts; ++i) {
-        if (is_cancelled()) {
-            emit_error(BakeErrorCode::Cancelled, "parts", "cancelled between parts");
-            return;
-        }
-        uint64_t h = want[i];
-        {
-            Event ev;
-            ev.type   = EventType::BakePartDone;
-            auto it   = mod_by_hash.find(h);
-            ev.module = (it != mod_by_hash.end()) ? it->second : "";
-            ev.done   = i + 1;
-            ev.total  = total_parts;
-            ev.phase  = "parts";
-            emit_event(std::move(ev));
-        }
-        std::string part_module;
-        {
-            auto it = mod_by_hash.find(h);
-            if (it != mod_by_hash.end()) part_module = it->second;
-        }
-        std::vector<viewer::WorldManifestEntry> added;
-        for (const auto& e : manifest.instances)
-            if (e.part_hash == h) added.push_back(e);
-        const size_t entry_count = added.size();
-
-        matter_async::GpuJob pj;
-        pj.name  = "cone.publish";
-        pj.token = token;
-        pj.fn = [this, i, h, part_module, added_moved = std::move(added),
-                 entry_count, cap_state](std::string& /*err*/) -> bool {
-            matter_async::assert_gl_thread("cone.publish");
-            bool part_failed = false;
-            BakeErrorCode fail_code = BakeErrorCode::IoError;
-            std::string fail_msg;
-            try {
-                if (!store->get_or_load(h)) {
-                    fail_code = BakeErrorCode::IoError;
-                    fail_msg  = "load failed for part " + part_module;
-                    part_failed = true;
-                }
-            } catch (std::bad_alloc&) {
-                fail_code = BakeErrorCode::OutOfMemory;
-                fail_msg  = "std::bad_alloc loading part " + part_module;
-                part_failed = true;
-            } catch (std::exception& ex) {
-                fail_code = BakeErrorCode::IoError;
-                fail_msg  = ex.what();
-                part_failed = true;
-            }
-            if (part_failed) {
-                Event bev;
-                bev.type    = EventType::BakeError;
-                bev.code    = fail_code;
-                bev.phase   = "parts";
-                bev.module  = part_module;
-                bev.message = fail_msg;
-                emit_event(std::move(bev));
-                ++cap_state->load_fail_count;
-                return true;
-            }
-            viewer::WorldDelta d;
-            d.added = added_moved;
-            state.apply(d);
-            tracer_dirty = true;
-            tracer.reset();
-            size_t drawable_nodes = 0;
-            viewer::walk_part_tree(h,
-                [this](uint64_t hh) -> const viewer::LoadedPart* { return store->get_or_load(hh); },
-                [&](const viewer::LoadedPart* lp, uint64_t, const float[16], int) {
-                    if (!lp->lod_blas.empty()) ++drawable_nodes;
-                });
-            cap_state->needed += entry_count * drawable_nodes;
-            if (cap_state->needed > cap_state->current) {
-                size_t new_cap = cap_state->needed > cap_state->current * 2
-                                     ? cap_state->needed : cap_state->current * 2;
-                composer = std::make_unique<viewer::WorldComposer>(*store, new_cap);
-                cap_state->current = new_cap;
-            }
-            return true;
-        };
-        gpu_jobs.post(std::move(pj));
-    }
-
-    // Finalize.
-    matter_async::GpuJob finalize_job;
-    finalize_job.name  = "cone.finalize";
-    finalize_job.token = token;
-    finalize_job.fn    = [this](std::string& /*err*/) -> bool {
-        matter_async::assert_gl_thread("cone.finalize");
-        lods = store->part_lod_table();
-        stats.instances_total = (uint32_t)manifest.instances.size();
-        stats.parts_baked     = (uint32_t)provider->baked_count();
-        stats.cache_hits      = (uint32_t)provider->hit_count();
-        size_t cap = 16;
-        for (const auto& e : manifest.instances) {
-            viewer::walk_part_tree(e.part_hash,
-                [this](uint64_t hh) -> const viewer::LoadedPart* { return store->get_or_load(hh); },
-                [&](const viewer::LoadedPart* lp, uint64_t, const float[16], int) {
-                    if (!lp->lod_blas.empty()) ++cap;
-                });
-        }
-        composer = std::make_unique<viewer::WorldComposer>(*store, cap);
-        return true;
-    };
-    {
-        std::string ferr;
-        if (!gpu_jobs.run_blocking(std::move(finalize_job), ferr)) {
-            emit_error(is_cancelled() ? BakeErrorCode::Cancelled : BakeErrorCode::GpuError,
-                       "gl", ferr.empty() ? "cone finalize failed" : ferr);
-            return;
-        }
-    }
-
-    count_errors += cap_state->load_fail_count;
-
-    {
-        Event ev;
-        ev.type   = EventType::BakeFinished;
-        ev.errors = count_errors;
-        emit_event(std::move(ev));
-    }
+    // 4-8) Shared publish flow. Cone install errors are emitted above but not
+    //      seeded into count_errors_seed (cone does not report them in
+    //      BakeFinished.errors, matching the original execute_rebake_cone behavior).
+    PublishPipelineParams pp;
+    pp.job_prefix            = "cone";
+    pp.count_errors_seed     = 0;
+    pp.init_culler           = false;
+    pp.update_probe_dims     = false;
+    pp.verbose_reset_log     = false;
+    pp.fault_hook            = {};
+    pp.load_msg_include_hash = false;
+    publish_pipeline(token, std::move(new_manifest), pp);
 }
 
 // ---------------------------------------------------------------------------
