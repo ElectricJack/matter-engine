@@ -215,6 +215,13 @@ public:
     tri_emit::TriangleBuildBuffer*       triangle_buffer()       { return tris_buf_.get(); }
     const tri_emit::TriangleBuildBuffer* triangle_buffer() const { return tris_buf_.get(); }
 
+    // In-session surface probe: sphere-trace the analytic smooth-min field of
+    // the brushes emitted SO FAR in the open voxel session (smoothing cursor at
+    // call time). Fail-closed outside a session / with no brushes. Returns true
+    // and fills outPoint/outNormal on a hit; false on a miss (no error).
+    bool raycast(const Vector3& origin, const Vector3& dir,
+                 Vector3& outPoint, Vector3& outNormal);
+
     // Set the op applied to the most-recently-emitted brush (postfix CSG verbs).
     // G3: scoped to an OPEN voxel session AND the current session's brush range
     // (session_start_). A stray op across a session boundary (e.g. difference()

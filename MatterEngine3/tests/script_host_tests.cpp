@@ -1150,6 +1150,84 @@ static void test_modifier_region_bake_rules() {
     }
 }
 
+// --- raycast(): in-session analytic surface probe ---------------------------
+
+static void test_raycast_sphere_point_and_normal() {
+    script_host::ScriptHost host;
+    const char* src =
+        "class Probe extends Part { static params={};\n"
+        "  build(p){\n"
+        "    this.beginVoxels(0.1);\n"
+        "    this.sphere([0,1,0],0.5);\n"
+        "    const h=this.raycast([3,1,0],[-1,0,0]);\n"
+        "    if(!h) throw new Error('expected hit, got null');\n"
+        "    if(Math.abs(h.point[0]-0.5)>0.02) throw new Error('bad point.x '+h.point[0]);\n"
+        "    if(Math.abs(h.point[1]-1.0)>0.02) throw new Error('bad point.y '+h.point[1]);\n"
+        "    if(Math.abs(h.point[2])>0.02) throw new Error('bad point.z '+h.point[2]);\n"
+        "    if(h.normal[0]<0.95) throw new Error('bad normal.x '+h.normal[0]);\n"
+        "    if(Math.abs(h.normal[1])>0.1||Math.abs(h.normal[2])>0.1) throw new Error('bad normal');\n"
+        "    this.endVoxels();\n"
+        "  } }";
+    auto r = host.bake_source(src, "{}", {});
+    CHECK(r.error.ok, "raycast sphere probe: point+normal within tolerance");
+}
+
+static void test_raycast_miss_returns_null() {
+    script_host::ScriptHost host;
+    const char* src =
+        "class Probe extends Part { static params={};\n"
+        "  build(p){\n"
+        "    this.beginVoxels(0.1);\n"
+        "    this.sphere([0,1,0],0.5);\n"
+        "    const h=this.raycast([3,5,0],[-1,0,0]);\n"   // ray passes 4 units above
+        "    if(h!==null) throw new Error('expected null miss');\n"
+        "    this.endVoxels();\n"
+        "  } }";
+    auto r = host.bake_source(src, "{}", {});
+    CHECK(r.error.ok, "raycast miss returns null");
+}
+
+static void test_raycast_outside_session_fails_closed() {
+    script_host::ScriptHost host;
+    const char* src =
+        "class Probe extends Part { static params={};\n"
+        "  build(p){ this.raycast([3,0,0],[-1,0,0]); } }";
+    auto r = host.bake_source(src, "{}", {});
+    CHECK(!r.error.ok, "raycast outside a voxel session fails the bake");
+    CHECK(r.error.message.find("raycast") != std::string::npos,
+          "error message names raycast");
+}
+
+static void test_raycast_no_brushes_fails_closed() {
+    script_host::ScriptHost host;
+    const char* src =
+        "class Probe extends Part { static params={};\n"
+        "  build(p){ this.beginVoxels(0.1); this.raycast([3,0,0],[-1,0,0]); this.endVoxels(); } }";
+    auto r = host.bake_source(src, "{}", {});
+    CHECK(!r.error.ok, "raycast with no brushes in session fails the bake");
+}
+
+static void test_raycast_sees_difference_cut() {
+    script_host::ScriptHost host;
+    // Sphere r=0.5 at (0,1,0); difference box spans x in [0.4,0.9] so the cut
+    // face is the plane x=0.4. A +x probe must now hit that plane, not x=0.5.
+    const char* src =
+        "class Probe extends Part { static params={};\n"
+        "  build(p){\n"
+        "    this.beginVoxels(0.1);\n"
+        "    this.sphere([0,1,0],0.5);\n"
+        "    this.box([0.65,1,0],[0.25,0.6,0.6]);\n"
+        "    this.difference();\n"
+        "    const h=this.raycast([3,1,0],[-1,0,0]);\n"
+        "    if(!h) throw new Error('expected hit');\n"
+        "    if(Math.abs(h.point[0]-0.4)>0.02) throw new Error('cut face not seen: x='+h.point[0]);\n"
+        "    if(h.normal[0]<0.95) throw new Error('cut face normal not +x');\n"
+        "    this.endVoxels();\n"
+        "  } }";
+    auto r = host.bake_source(src, "{}", {});
+    CHECK(r.error.ok, "raycast sees an earlier difference cut");
+}
+
 int main() {
     test_embed_eval_1_plus_1();
     test_p5_round_mesh_dispatch();
@@ -1185,6 +1263,11 @@ int main() {
     test_eval_lod_budgets();
     test_modifier_region_state_rules();
     test_modifier_region_bake_rules();
+    test_raycast_sphere_point_and_normal();
+    test_raycast_miss_returns_null();
+    test_raycast_outside_session_fails_closed();
+    test_raycast_no_brushes_fails_closed();
+    test_raycast_sees_difference_cut();
     if (g_failures == 0) printf("ALL PASS\n");
     return g_failures ? 1 : 0;
 }
