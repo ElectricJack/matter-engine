@@ -31,8 +31,10 @@
 #include <cstring>
 #include <fstream>
 #include <memory>
+#include <new>         // std::bad_alloc (Task 7 fix: fetch_parts skip-and-continue)
 #include <set>
 #include <sstream>
+#include <stdexcept>   // std::exception (Task 7 fix: fetch_parts skip-and-continue)
 #include <sys/stat.h>
 #include <unordered_map>
 #include <utility>
@@ -726,20 +728,66 @@ bool LocalProvider::fetch_parts(const std::vector<uint64_t>& want,
                                 PartStore& store, std::string& err) {
     // LocalProvider already wrote the .part blobs to the shared cache during
     // connect()'s install; "fetching" is just loading them into the store.
-    // Task 7: test_fault_hook fires per-part in this loop too; exceptions propagate
-    // to the caller (execute_bake's publish-job, which has its own skip handler).
+    //
+    // Task 7 fix: null get_or_load no longer hard-aborts (old: return false).
+    // Instead, record the failure into fetch_failed_ and continue to the next
+    // part. Return true if the loop completed, even with failures; callers that
+    // care about partial failures inspect fetch_failed(). This matches the plan:
+    // "a get_or_load null return appends to a failed list instead of returning false".
+    //
+    // Remaining callers of fetch_parts():
+    //   - viewer_logic_tests.cpp:182  — direct unit test; now gets true-with-failures
+    //     and can inspect fetch_failed() for assertions (expected by plan).
+    //   - viewer_logic_tests.cpp:1268 — install_phase_progress test; same behavior.
+    // The async path (execute_bake) does NOT call fetch_parts; it calls
+    // store->get_or_load() directly in publish jobs. Both callers now see
+    // skip-and-continue, which is the intended behavior per the plan.
+    fetch_failed_.clear();
     for (size_t i = 0; i < want.size(); ++i) {
         uint64_t h = want[i];
-        // Task 7: fire test_fault_hook (0-based index).
-        if (cfg_.test_fault_hook) cfg_.test_fault_hook((int)i);
-        if (!store.get_or_load(h)) { err = "load failed for part " + std::to_string(h); return false; }
-        if (cfg_.on_part) {
+        // Task 7: fire test_fault_hook (0-based index) with per-part exception catch.
+        std::string module_name;
+        {
             auto it = module_by_hash_.find(h);
-            const char* mod = (it != module_by_hash_.end() && !it->second.empty())
-                              ? it->second.c_str() : nullptr;
+            if (it != module_by_hash_.end()) module_name = it->second;
+        }
+
+        bool part_failed = false;
+        try {
+            if (cfg_.test_fault_hook) cfg_.test_fault_hook((int)i);
+            if (!store.get_or_load(h)) {
+                FetchFailed ff;
+                ff.module = module_name;
+                ff.error  = "load failed for part " + std::to_string(h);
+                fetch_failed_.push_back(std::move(ff));
+                part_failed = true;
+            }
+        } catch (std::bad_alloc&) {
+            FetchFailed ff;
+            ff.module = module_name;
+            ff.error  = "std::bad_alloc loading part " + std::to_string(h);
+            fetch_failed_.push_back(std::move(ff));
+            part_failed = true;
+        } catch (std::exception& ex) {
+            FetchFailed ff;
+            ff.module = module_name;
+            ff.error  = ex.what();
+            fetch_failed_.push_back(std::move(ff));
+            part_failed = true;
+        }
+
+        if (part_failed) continue;  // skip-and-continue
+
+        if (cfg_.on_part) {
+            const char* mod = module_name.empty() ? nullptr : module_name.c_str();
             cfg_.on_part(mod, (int)(i + 1), (int)want.size());
         }
     }
+    // Return true (loop completed) even with partial failures. Report empty err
+    // string on partial failure — callers inspect fetch_failed() for details.
+    // Return false only if there is a fatal structural failure (none currently
+    // possible in this implementation).
+    (void)err;  // no fatal error path in this implementation
     return true;
 }
 

@@ -25,8 +25,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <new>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <sys/stat.h>
 #include <thread>
@@ -716,6 +718,80 @@ static bool test_broken_script_skips_part(const std::string& sandbox) {
     return ok && saw_script_error && log.error_count == 1 && ic > 0;
 }
 
+// --- (i) load_failure_skips_part --------------------------------------------
+// Verifies that a load failure in the publish phase (get_or_load returns null,
+// or hook throws) skips that part but lets the bake finish with the remaining
+// parts still published.
+//
+// Hook design (deterministic): the hook fires once per part in the INSTALL
+// phase (RecordingBaker::bake, idx=0..N-1) and once per part in the PUBLISH
+// phase (publish job, idx=0..N-1). We count visits to index 1: the first visit
+// (install) is allowed to pass; the SECOND visit (publish) throws. This forces
+// exactly one load-phase BakeError (phase="parts") while Part0 (idx=0) still
+// publishes successfully.
+//
+// World: 2-part sandbox (Part0 + Part1). Part0 publishes normally; Part1's
+// publish-phase hook fires after install has completed for both parts.
+static bool test_load_failure_skips_part(const std::string& sandbox) {
+    printf("-- (i) load_failure_skips_part\n");
+
+    const std::string multi = sandbox + "_loadfail";
+    if (!build_multi_sandbox(multi, 2)) {
+        printf("  FAIL: build_multi_sandbox\n");
+        ++g_failures;
+        return false;
+    }
+    run("rm -rf " + multi + "/cache && mkdir -p " + multi + "/cache/parts");
+
+    std::string err;
+    std::unique_ptr<matter::EngineContext> engine;
+    auto s = open_session(multi, err, engine, "Multi");
+    CHECK(s != nullptr, "load_fail: session opened");
+    if (!s) { run("rm -rf " + multi); return false; }
+
+    // Stateful hook: track visits to idx=1. First visit (install phase) passes;
+    // second visit (publish phase) throws std::runtime_error → IoError.
+    auto visits_at_1 = std::make_shared<int>(0);
+    s->set_test_fault_hook([visits_at_1](int idx) {
+        if (idx == 1) {
+            ++(*visits_at_1);
+            if (*visits_at_1 >= 2) {
+                // Second visit: publish phase — inject a load failure.
+                throw std::runtime_error("injected load failure for part 1");
+            }
+            // First visit: install phase — allow it to pass.
+        }
+    });
+
+    s->request_bake();
+
+    FullBakeLog log;
+    bool ok = drive_bake_tolerant(*s, log);
+    CHECK(ok, "load_fail: BakeFinished arrived");
+
+    // Find BakeError with phase="parts".
+    int parts_errors = 0;
+    bool saw_io_error = false;
+    for (const auto& ev : log.events) {
+        if (ev.type == matter::EventType::BakeError && ev.phase == "parts") {
+            ++parts_errors;
+            if (ev.code == matter::BakeErrorCode::IoError)
+                saw_io_error = true;
+            printf("  BakeError(parts): code=%d module=%s msg=%s\n",
+                   (int)ev.code, ev.module.c_str(), ev.message.c_str());
+        }
+    }
+    CHECK(parts_errors >= 1, "load_fail: at least one BakeError with phase=\"parts\"");
+    CHECK(saw_io_error, "load_fail: BakeError code is IoError");
+    CHECK(log.error_count == 1, "load_fail: BakeFinished.errors == 1");
+    uint32_t ic = s->instance_count();
+    printf("  instance_count after load failure: %u\n", ic);
+    CHECK(ic > 0, "load_fail: surviving part has instances (instance_count > 0)");
+
+    run("rm -rf " + multi);
+    return ok && parts_errors >= 1 && saw_io_error && log.error_count == 1 && ic > 0;
+}
+
 int main() {
     // Unique sandbox per pid so parallel test runs don't collide.
     std::string sandbox = "/tmp/me3_asyncbake_" + std::to_string((int)getpid());
@@ -734,6 +810,9 @@ int main() {
     test_destructor_mid_bake_joins(sandbox);
     test_oom_injection_skips_part(sandbox);
     test_broken_script_skips_part(sandbox);
+
+    // Task 7 fix (review): load-phase skip-and-continue in publish jobs.
+    test_load_failure_skips_part(sandbox);
 
     printf(g_failures ? "\n%d FAILURE(S)\n" : "\nALL PASS\n", g_failures);
     // Best-effort cleanup so /tmp doesn't accumulate.

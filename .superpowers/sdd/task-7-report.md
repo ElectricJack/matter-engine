@@ -359,3 +359,65 @@ the header and the implementation. The `test_fault_hook` field in
   enough for the second `request_bake()` to arrive while the first is in flight. On a
   very fast machine with a warm cache both calls may complete before the event loop
   drains, in which case the test still passes (one `BakeFinished`, `errors==0`).
+
+## Fix round 1
+
+### What changed
+
+**A. Publish-job skip-and-continue (`MatterEngine3/src/matter_engine.cpp`)**
+
+The per-part publish job lambda previously called `store->get_or_load(h)` and on null returned `false`, aborting the entire job pipeline (the error evaporated — no `BakeError`, no count in `BakeFinished.errors`). Fixed:
+
+- `CapState` struct extended with `load_fail_count = 0` field shared across all publish jobs (GL thread only, FIFO — no mutex needed). The `run_blocking(finalize_job)` barrier ensures the count is final when the worker reads it after finalize.
+- Fault hook captured by value at post-time (`auto fault_hook = cfg.test_fault_hook`) so the publish lambda holds its own copy. The part index `i` is captured from the loop variable. Both are captured at post-time on the worker thread.
+- Inside the publish job: `fault_hook(i)` fires before `get_or_load`, inside a try/catch block. `std::bad_alloc` → `OutOfMemory`; `std::exception` → `IoError`. On any failure: emit `BakeError{phase:"parts", module, code}` via the mutex-guarded `emit_event`, increment `load_fail_count`, and `return true` (skip-and-continue).
+- After `run_blocking(finalize_job)`: `count_errors += cap_state->load_fail_count` merges load failures with install failures before emitting `BakeFinished`.
+- No-failure path: logic is inside the try/catch and the existing cap-growth / delta-apply code is only reached when `part_failed == false`. Event order is unchanged.
+
+**Design choice: accumulator location.** Used `CapState` (already a shared_ptr across publish jobs) rather than a new struct or `std::atomic`, because: (a) all publish jobs are FIFO on the GL thread so there is no concurrent write, making atomics unnecessary overhead; (b) reusing the existing shared struct keeps the capture list minimal; (c) the finalize job (which follows all publishes) provides the sequencing barrier needed to safely read the count from the worker thread.
+
+**B. `fetch_parts` policy (`MatterEngine3/src/provider/local_provider.cpp`)**
+
+The null-get_or_load hard abort (`return false`) was replaced with record-and-continue:
+- New member `std::vector<FetchFailed> fetch_failed_` (cleared at the top of each call) collects `{module, error}` for each failed part.
+- Per-part `try/catch` around hook fire + `get_or_load`: `std::bad_alloc` and `std::exception` both record a `FetchFailed` and `continue`.
+- `fetch_parts()` always returns `true` (loop completed). Callers inspect `fetch_failed()` for partial failures.
+- Added `#include <new>` and `#include <stdexcept>` to supply `std::bad_alloc` and `std::exception`.
+- `FetchFailed` struct and `fetch_failed()` accessor declared in `local_provider.h`.
+
+**Remaining callers of `fetch_parts` (grepped):**
+- `MatterEngine3/tests/viewer_logic_tests.cpp:182` — direct unit test; now receives `true` with any failures accessible via `fetch_failed()`. This matches the plan's intended behavior.
+- `MatterEngine3/tests/viewer_logic_tests.cpp:1268` — `install_phase_progress` test; same. Both callers' behavior change is intended by the plan.
+- The async path (`execute_bake`) does **not** call `fetch_parts` — it calls `store->get_or_load()` directly in publish jobs, which is now covered by Fix A.
+
+**C. New test: `load_failure_skips_part` (`MatterEngine3/tests/async_bake_tests.cpp`)**
+
+Added test `(i)` after the existing eight tests. Uses a 2-part sandbox (Part0 + Part1). Hook design: a `shared_ptr<int> visits_at_1` counter tracks how many times the hook receives `idx == 1`. First visit (install phase, Part1 baked) → passes. Second visit (publish phase, Part1 publish job) → throws `std::runtime_error` → caught as `IoError`. Assertions:
+- At least one `BakeError{phase:"parts", code:IoError}` received.
+- `BakeFinished.errors == 1`.
+- `instance_count() > 0` (Part0 published successfully).
+
+Added `#include <memory>`, `#include <stdexcept>` to the test file.
+
+### Test command and results
+
+```
+make -C MatterEngine3/tests -j$(nproc) async-bake-tests
+GALLIUM_DRIVER=d3d12 make -C MatterEngine3/tests run-asyncbake
+```
+
+```
+-- (a) request_bake_returns_immediately  PASS
+-- (b) bake_completes_with_finished      PASS
+-- (c) determinism                       PASS
+-- (d) reload_reenters                   PASS
+-- (e) supersede_cancels_inflight        PASS
+-- (f) destructor_mid_bake_joins         PASS
+-- (g) oom_injection_skips_part          PASS
+-- (h) broken_script_skips_part         PASS
+-- (i) load_failure_skips_part           PASS
+ALL PASS
+exit=0
+```
+
+All 9 cases pass.

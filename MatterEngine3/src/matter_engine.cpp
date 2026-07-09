@@ -542,8 +542,17 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     // Shared cap-growth state across all publish jobs. Both fields are read and
     // written only on the GL thread (all publish jobs are FIFO on the pump), so
     // no mutex is needed. Initial cap matches the reset job's WorldComposer(16).
-    struct CapState { size_t needed = 0; size_t current = 16; };
+    // Task 7 fix: load_fail_count accumulates per-part load failures across all
+    // publish jobs (GL thread only, FIFO — no mutex needed). Read by worker after
+    // run_blocking(finalize_job) guarantees all publish jobs have completed.
+    struct CapState { size_t needed = 0; size_t current = 16; int load_fail_count = 0; };
     auto cap_state = std::make_shared<CapState>();
+
+    // Capture the fault hook once at post-time (by value) so each publish job
+    // holds its own copy. Safe: hook is set before request_bake() and not
+    // modified until the next bake command, which cannot start until after
+    // execute_bake returns and run_blocking(finalize_job) has completed.
+    auto fault_hook = cfg.test_fault_hook;
 
     for (int i = 0; i < total_parts; ++i) {
         if (is_cancelled()) {
@@ -552,7 +561,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         }
         uint64_t h = want[i];
 
-        // Deterministic post-time emit.
+        // Deterministic post-time emit (unchanged — order must not change).
         {
             Event ev;
             ev.type   = EventType::BakePartDone;
@@ -562,6 +571,14 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
             ev.total  = total_parts;
             ev.phase  = "parts";
             emit_event(std::move(ev));
+        }
+
+        // Capture module name at post-time so the publish job lambda can label
+        // BakeError events without accessing mod_by_hash on the GL thread.
+        std::string part_module;
+        {
+            auto it = mod_by_hash.find(h);
+            if (it != mod_by_hash.end()) part_module = it->second;
         }
 
         // Snapshot manifest entries whose part_hash == h. Copied by value so
@@ -575,13 +592,50 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         matter_async::GpuJob pj;
         pj.name  = "bake.publish";
         pj.token = token;
-        pj.fn = [this, h, added_moved = std::move(added),
-                 entry_count, cap_state](std::string& err) -> bool {
+        pj.fn = [this, i, h, part_module, added_moved = std::move(added),
+                 entry_count, cap_state, fault_hook](std::string& /*err*/) -> bool {
             matter_async::assert_gl_thread("bake.publish");
-            if (!store->get_or_load(h)) {
-                err = "load failed for part " + std::to_string(h);
-                return false;
+
+            // Task 7 fix: per-part skip-and-continue in the publish (load) phase.
+            // Fire the test fault hook before get_or_load; catch exceptions to
+            // inject deterministic faults. On any failure: emit a BakeError,
+            // increment load_fail_count, and return true-with-skip (do NOT
+            // publish the delta; do not abort the job pipeline).
+            // emit_event is mutex-guarded so calling from the GL thread is safe.
+            BakeErrorCode fail_code = BakeErrorCode::IoError;
+            std::string   fail_msg;
+            bool          part_failed = false;
+
+            try {
+                if (fault_hook) fault_hook(i);
+                if (!store->get_or_load(h)) {
+                    fail_code = BakeErrorCode::IoError;
+                    fail_msg  = "load failed for part " + part_module +
+                                " (hash " + std::to_string(h) + ")";
+                    part_failed = true;
+                }
+            } catch (std::bad_alloc&) {
+                fail_code  = BakeErrorCode::OutOfMemory;
+                fail_msg   = "std::bad_alloc loading part " + part_module;
+                part_failed = true;
+            } catch (std::exception& ex) {
+                fail_code  = BakeErrorCode::IoError;
+                fail_msg   = ex.what();
+                part_failed = true;
             }
+
+            if (part_failed) {
+                Event bev;
+                bev.type    = EventType::BakeError;
+                bev.code    = fail_code;
+                bev.phase   = "parts";
+                bev.module  = part_module;
+                bev.message = fail_msg;
+                emit_event(std::move(bev));
+                ++cap_state->load_fail_count;
+                return true;   // skip-and-continue: pipeline keeps running
+            }
+
             viewer::WorldDelta d;
             d.added = added_moved;
             state.apply(d);
@@ -657,11 +711,17 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         }
     }
 
+    // Task 7 fix: merge load-phase (publish-job) failures into count_errors.
+    // run_blocking(finalize_job) above guarantees all publish jobs completed
+    // before we reach here, so load_fail_count is final and safe to read on
+    // the worker thread (GL-thread writes are sequenced before the barrier).
+    count_errors += cap_state->load_fail_count;
+
     // 8) BakeFinished ---------------------------------------------------------
     {
         Event ev;
         ev.type   = EventType::BakeFinished;
-        ev.errors = count_errors;   // Task 7: skip-and-continue failure count.
+        ev.errors = count_errors;   // Task 7: install + load failure count.
         emit_event(std::move(ev));
     }
 }

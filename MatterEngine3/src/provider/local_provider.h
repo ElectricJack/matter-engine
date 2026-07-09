@@ -80,6 +80,11 @@ public:
     // Task 7: access install-phase partial failures (populated after install_graph()).
     const part_graph::InstallResult& install_result() const { return ir_; }
 
+    // Task 7 fix: per-part load failures recorded during fetch_parts() when
+    // get_or_load returns null (skip-and-continue; returns true even with failures).
+    struct FetchFailed { std::string module; std::string error; };
+    const std::vector<FetchFailed>& fetch_failed() const { return fetch_failed_; }
+
 private:
     LocalProviderConfig  cfg_;
     int                  baked_count_ = 0;
@@ -88,6 +93,7 @@ private:
     int                  install_bake_count_ = 0; // counter for install-phase on_part callbacks
     std::set<uint64_t>   baked_hashes_;  // hashes freshly baked by last install_graph()
     std::map<uint64_t, std::string> module_by_hash_; // hash -> module name (from manifest roots)
+    std::vector<FetchFailed> fetch_failed_; // Task 7 fix: per-part load failures from fetch_parts()
 
     // State produced by install_graph(), consumed by compose_world().
     // Valid only after a successful install_graph() call.
