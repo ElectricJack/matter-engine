@@ -129,6 +129,7 @@ int main() {
     render_opts.hiz_occlusion    = false;
     render_opts.active_radius    = 400.0f;
     render_opts.min_projected_size = 0.0015f;
+    render_opts.cull_backfaces   = true;
 
     bool bake_started = false;   // true once BakeStarted event is seen
     bool bake_done    = false;   // true once BakeFinished event is seen
@@ -191,6 +192,10 @@ int main() {
 
         // --- Render ---
         BeginDrawing();
+            // session->render clears to the kernel sky color once connected,
+            // but early-returns before that — clear here so the install/load
+            // window isn't left with an uncleared framebuffer.
+            ClearBackground((Color){ 96, 118, 143, 255 });
             session->render(rig.cam, GetScreenWidth(), GetScreenHeight(), render_opts);
             const matter::FrameStats& fs = session->frame_stats();
             draw_hud(fs, (float)GetFPS(), bake_done);

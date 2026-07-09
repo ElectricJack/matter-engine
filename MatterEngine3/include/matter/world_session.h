@@ -30,6 +30,9 @@ struct RenderOptions {
     float pixel_budget    = 0.0f;     // 0 = default (1.0); clamped to [0.05, 4.0]
     float active_radius   = 0.0f;     // SectorLod knob; 0 = default (64.0)
     float min_projected_size = 0.0f;  // SectorLod sub-pixel cull; 0 = off
+    bool  cull_backfaces  = false;    // GpuDriven path: skip backface triangles
+                                      // (off by default: mesh-session winding
+                                      // is not guaranteed for all part kinds)
 };
 
 struct FrameStats {
