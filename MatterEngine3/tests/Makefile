@@ -377,8 +377,15 @@ EXAMPLE_C   = $(COMMON_MSL_C)
 GALLERY_TARGET = gallery_bake_tests
 GALLERY_CPP = gallery_bake_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 
+PF_LIB = ../../ParticleFlowLib
+PF_CPP = ../src/pf_bindings.cpp \
+         $(PF_LIB)/src/pf_math.cpp \
+         $(PF_LIB)/src/pf_sim.cpp \
+         $(PF_LIB)/src/pf_fields.cpp \
+         $(PF_LIB)/src/pf_path_recorder.cpp
+
 TREEBAKE_TARGET = tree_bake_check
-TREEBAKE_CPP = tree_bake_check.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
+TREEBAKE_CPP = tree_bake_check.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP)) $(PF_CPP)
 
 MEADOW_TARGET = meadow_bake_tests
 MEADOW_CPP = meadow_bake_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
