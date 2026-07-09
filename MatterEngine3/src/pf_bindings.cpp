@@ -284,9 +284,49 @@ JSValue j_pf_setAttractors(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     return JS_UNDEFINED;
 }
 
-// __pf_run(simId, ticks) -> ticks actually run. Checks the bake time budget
-// every RUN_CHUNK ticks (the VM interrupt handler cannot preempt native code).
-// Task 6 extends this signature with (every, onTick) for zero-copy views.
+// Wrap a raw sim buffer as a typed array WITHOUT copying. free_func = nullptr:
+// QuickJS does not own the memory; we detach the buffer after the callback so
+// JS can never touch freed/moved sim storage. Returns {ta, buf} — caller must
+// detach buf and free both values.
+struct RawView { JSValue ta; JSValue buf; };
+
+RawView raw_view(JSContext* c, void* data, size_t bytes, JSTypedArrayEnum kind) {
+    JSValue buf = JS_NewArrayBuffer(c, static_cast<uint8_t*>(data), bytes,
+                                    /*free_func*/ nullptr, /*opaque*/ nullptr,
+                                    /*is_shared*/ false);
+    JSValue argv[3] = {buf, JS_UNDEFINED, JS_UNDEFINED};
+    JSValue ta = JS_NewTypedArray(c, 3, argv, kind);
+    return {ta, buf};
+}
+
+// Build the per-tick view object; collect its buffers for post-callback detach.
+JSValue build_tick_view(JSContext* c, pf::Sim* sim, std::vector<JSValue>* bufs) {
+    JSValue o = JS_NewObject(c);
+    size_t slots = sim->slot_count();
+    JS_SetPropertyStr(c, o, "count", JS_NewInt64(c, static_cast<int64_t>(slots)));
+    JS_SetPropertyStr(c, o, "tick", JS_NewInt64(c, static_cast<int64_t>(sim->tick())));
+    RawView pos = raw_view(c, sim->pos_data(), slots * 3 * sizeof(float),
+                           JS_TYPED_ARRAY_FLOAT32);
+    JS_SetPropertyStr(c, o, "pos", pos.ta); bufs->push_back(pos.buf);
+    RawView vel = raw_view(c, sim->vel_data(), slots * 3 * sizeof(float),
+                           JS_TYPED_ARRAY_FLOAT32);
+    JS_SetPropertyStr(c, o, "vel", vel.ta); bufs->push_back(vel.buf);
+    RawView alv = raw_view(c, sim->alive_data(), slots * sizeof(uint8_t),
+                           JS_TYPED_ARRAY_UINT8);
+    JS_SetPropertyStr(c, o, "alive", alv.ta); bufs->push_back(alv.buf);
+    JSValue attrs = JS_NewObject(c);
+    for (uint32_t ch = 0; ch < sim->channel_count(); ++ch) {
+        RawView av = raw_view(c, sim->attr_data(ch), slots * sizeof(float),
+                              JS_TYPED_ARRAY_FLOAT32);
+        JS_SetPropertyStr(c, attrs, sim->config().attributes[ch].c_str(), av.ta);
+        bufs->push_back(av.buf);
+    }
+    JS_SetPropertyStr(c, o, "attrs", attrs);
+    return o;
+}
+
+// __pf_run(simId, ticks, every?, onTick?) -> ticks actually run.
+// Chunk size = min(every, RUN_CHUNK-capped remainder); budget checked per chunk.
 constexpr uint32_t RUN_CHUNK = 32;
 JSValue j_pf_run(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     DslState* st = state_of(c);
@@ -294,17 +334,68 @@ JSValue j_pf_run(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     pf::Sim* sim = sim_of(c, st, a[0]);
     if (!sim) return JS_NewInt32(c, 0);
     uint32_t ticks = static_cast<uint32_t>(argd(c, a[1]));
+    uint32_t every = (n >= 3 && !JS_IsUndefined(a[2]))
+                         ? static_cast<uint32_t>(argd(c, a[2])) : 0;
+    JSValueConst on_tick = (n >= 4 && JS_IsFunction(c, a[3])) ? a[3] : JS_UNDEFINED;
+    bool has_cb = every > 0 && !JS_IsUndefined(on_tick);
+
     uint32_t done = 0;
     while (done < ticks) {
         if (st->budget_exceeded()) {
             st->set_error("pf.run: bake time budget exceeded mid-simulation");
             break;
         }
-        uint32_t chunk = std::min(RUN_CHUNK, ticks - done);
+        uint32_t chunk = std::min(has_cb ? every : RUN_CHUNK, ticks - done);
         sim->run(chunk);
         done += chunk;
+        if (has_cb) {
+            std::vector<JSValue> bufs;
+            JSValue view = build_tick_view(c, sim, &bufs);
+            JSValue arg[1] = {view};
+            JSValue r = JS_Call(c, on_tick, JS_UNDEFINED, 1, arg);
+            for (JSValue b : bufs) { JS_DetachArrayBuffer(c, b); JS_FreeValue(c, b); }
+            JS_FreeValue(c, view);
+            if (JS_IsException(r)) { JS_FreeValue(c, r); return JS_EXCEPTION; }
+            bool stop = JS_IsBool(r) && JS_ToBool(c, r) == 0;
+            JS_FreeValue(c, r);
+            if (stop) break;
+        }
     }
     return JS_NewInt32(c, static_cast<int32_t>(done));
+}
+
+// __pf_emit(simId, cfgObj) — one-shot manual emission. cfg reuses emitter keys:
+// { center: [x,y,z], axis: [x,y,z], vel0: speed, attrInit: [floats] }.
+// vel is constructed as axis * vel0 (matching how the kernel's emitter fires).
+JSValue j_pf_emit(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    DslState* st = state_of(c);
+    if (n < 2 || !JS_IsObject(a[1])) { st->set_error("pf.emit: (simId, cfg) required"); return JS_UNDEFINED; }
+    pf::Sim* sim = sim_of(c, st, a[0]);
+    if (!sim) return JS_UNDEFINED;
+    pf::EmitterConfig ec; parse_emitter(c, a[1], &ec);
+    pf::V3 vel = ec.axis * ec.vel0;
+    sim->emit_particle(ec.center, vel,
+                       ec.attr_init.empty() ? nullptr : ec.attr_init.data());
+    return JS_UNDEFINED;
+}
+
+JSValue j_pf_kill(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    DslState* st = state_of(c);
+    if (n < 2) return JS_UNDEFINED;
+    pf::Sim* sim = sim_of(c, st, a[0]);
+    if (sim) sim->kill(static_cast<uint32_t>(argd(c, a[1])));
+    return JS_UNDEFINED;
+}
+
+JSValue j_pf_setFieldWeight(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    DslState* st = state_of(c);
+    if (n < 3) return JS_UNDEFINED;
+    pf::Sim* sim = sim_of(c, st, a[0]);
+    if (!sim) return JS_UNDEFINED;
+    uint32_t i = static_cast<uint32_t>(argd(c, a[1]));
+    if (i >= sim->field_count()) { st->set_error("pf.setFieldWeight: field index out of range"); return JS_UNDEFINED; }
+    sim->set_field_weight(i, static_cast<float>(argd(c, a[2])));
+    return JS_UNDEFINED;
 }
 
 JSValue j_pf_attractorsRemaining(JSContext* c, JSValueConst, int n, JSValueConst* a) {
@@ -397,6 +488,9 @@ void install_pf_bindings(JSContext* ctx) {
     bind("__pf_surfaceNormal", j_pf_surfaceNormal, 5);
     bind("__pf_pathCount", j_pf_pathCount, 1);
     bind("__pf_path", j_pf_path, 2);
+    bind("__pf_emit", j_pf_emit, 2);
+    bind("__pf_kill", j_pf_kill, 2);
+    bind("__pf_setFieldWeight", j_pf_setFieldWeight, 3);
     JS_FreeValue(ctx, g);
 }
 

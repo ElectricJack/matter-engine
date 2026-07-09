@@ -1187,6 +1187,46 @@ static void test_pf_bindings_smoke() {
     CHECK(r2.error.ok, "pf smoke bake 2 succeeds");
 }
 
+static void test_pf_ontick_views() {
+    // Task 6: onTick zero-copy SoA views — verifies per-tick callback receives
+    // typed-array views into live SoA buffers, views are detached after the
+    // callback returns (dangling access returns empty/throws), early-stop on
+    // false return works, and __pf_setFieldWeight does not crash.
+    const char* src =
+        "class P extends Part {\n"
+        "  build(p) {\n"
+        "    const sim = __pf_simCreate({\n"
+        "      seed: 3, dt: 1.0, maxTurnRate: 0.5, depositEvery: 0.05,\n"
+        "      maxParticles: 32, hashCell: 0.25, maxAge: 0,\n"
+        "      attributes: ['thickness'],\n"
+        "      emitters: [{ shape: 'point', center: [0,0,0], rate: 1, vel0: 0.05,\n"
+        "                   jitter: 0, attrInit: [0.5] }],\n"
+        "      fields: [{ type: 'bias', dir: [0,1,0], weight: 0.3 }],\n"
+        "    });\n"
+        "    let calls = 0, sawAlive = false, savedView = null;\n"
+        "    const ran = __pf_run(sim, 50, 10, (v) => {\n"
+        "      ++calls;\n"
+        "      if (!(v.pos instanceof Float32Array)) throw new Error('pos not F32');\n"
+        "      if (!(v.attrs.thickness instanceof Float32Array)) throw new Error('no attr view');\n"
+        "      for (let i = 0; i < v.count; ++i) if (v.alive[i]) { sawAlive = true; break; }\n"
+        "      savedView = v;\n"
+        "      if (calls === 3) __pf_setFieldWeight(sim, 0, 0.0);\n"
+        "      return calls < 4;\n"
+        "    });\n"
+        "    if (calls !== 4) throw new Error('expected 4 callbacks, got ' + calls);\n"
+        "    if (ran !== 40) throw new Error('early stop should yield 40 ticks, got ' + ran);\n"
+        "    if (!sawAlive) throw new Error('no alive particles seen');\n"
+        "    let detached = false;\n"
+        "    try { const x = savedView.pos[0]; if (savedView.pos.length === 0) detached = true; }\n"
+        "    catch (e) { detached = true; }\n"
+        "    if (!detached && savedView.pos.length !== 0) throw new Error('view not detached');\n"
+        "  }\n"
+        "}\n";
+    script_host::ScriptHost host;
+    script_host::BakeResult r = host.bake_source(src, "{}", {});
+    CHECK(r.error.ok, "pf onTick views bake succeeds");
+}
+
 int main() {
     test_embed_eval_1_plus_1();
     test_p5_round_mesh_dispatch();
@@ -1223,6 +1263,7 @@ int main() {
     test_modifier_region_state_rules();
     test_modifier_region_bake_rules();
     test_pf_bindings_smoke();
+    test_pf_ontick_views();
     if (g_failures == 0) printf("ALL PASS\n");
     return g_failures ? 1 : 0;
 }
