@@ -55,6 +55,14 @@ struct LocalProviderConfig {
     // (std::bad_alloc → OutOfMemory, any other exception → ScriptError/Internal).
     // Null in production (kernel-internal test seam; not part of the public stable API).
     std::function<void(int part_index)> test_fault_hook;
+
+    // Phase C Task 7: optional root-params override JSON object, e.g. {"worldSeed": 2}.
+    // When non-empty, merged (overrides win) into every manifest root's params before
+    // merge_params_canonical, so the resolved hash changes with the seed value.
+    // Empty string = no override (today's default behavior).
+    // Populated by WorldSession::regenerate(); not used by execute_rebake_cone (cone
+    // rebuilds operate on a diff of changed files, not a full root-params change).
+    std::string root_params_json;
 };
 
 // Drives the SP-3 install path over a persistent content-addressed cache and

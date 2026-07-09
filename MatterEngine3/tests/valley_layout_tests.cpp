@@ -245,6 +245,53 @@ int main() {
         }
     }
 
+    // ---- (c) regenerate: terrain re-bakes, scatter hits cache -----------------
+    // Task 7 (Phase C): call regenerate(<new seed>) on a warm-cache world and
+    // assert that terrain tiles re-bake (parts_baked >= 2601, one per coarse tile
+    // placed by Meadow.build — the full-res tiles share the same terrain hashes
+    // because they are children of the same Terrain schema with different `res`
+    // param, but only coarse tiles are placed in the world manifest; each unique
+    // (tx, tz, res, worldSeed) combination is one distinct part_hash, so there
+    // are 2×51×51 = 5202 unique Terrain hashes but only 2601 placed instances).
+    // Scatter/vegetation variants (Rock/Pebble/Grass/Tree) use seed-free params
+    // and always hit cache regardless of worldSeed — cache_hits > 0 confirms this.
+    printf("-- (c) regenerate seed reroll (terrain re-bakes, scatter hits cache)\n");
+    {
+        std::string err;
+        std::unique_ptr<matter::EngineContext> engine;
+        auto s = open_valley(schemas, world_data, shared_lib, cache_dir, engine, err);
+        CHECK(s != nullptr, "valley-regenerate: session opened");
+        if (!s) { goto summary; }
+
+        // Use a seed value clearly different from the default (20260709) so all
+        // Terrain hashes change and the bake is definitely a cache miss for terrain.
+        // Seed 42 is simple, memorable, and guaranteed not to collide with 20260709.
+        s->regenerate(42);
+
+        int ev_errors_c = 0;
+        bool ok_c = drive_bake(*s, ev_errors_c, 900 /* 15-min timeout */);
+        CHECK(ok_c, "valley-regenerate: bake completed (BakeFinished)");
+
+        g_phase = 3;
+        const auto& fs_c = s->frame_stats();
+        printf("  instances_total=%u parts_baked=%u cache_hits=%u ev_errors=%d\n",
+               fs_c.instances_total, fs_c.parts_baked, fs_c.cache_hits, ev_errors_c);
+        fflush(stdout);
+
+        // Terrain re-baked: 51×51 coarse tiles = 2601 Terrain variants, plus
+        // Meadow itself (1 root part). Full-res tiles also have new hashes but
+        // are not placed in the manifest (bake count is for placed roots).
+        // The exact count may be higher if flatten/probe also run fresh parts.
+        CHECK(fs_c.parts_baked >= 2601,
+              "valley-regenerate: terrain re-baked (parts_baked >= 2601)");
+        // Scatter variants (Rock/Pebble/Grass/Tree) hit cache — cache_hits > 0
+        // confirms the seed-free schema paths were not re-baked.
+        CHECK(fs_c.cache_hits > 0,
+              "valley-regenerate: scatter/vegetation hit cache (cache_hits > 0)");
+        CHECK(ev_errors_c == 0, "valley-regenerate: ev_errors == 0");
+        fflush(stdout);
+    }
+
 summary:
     printf(g_failures ? "\n%d FAILURE(S)\n" : "\nALL PASS\n", g_failures);
     return g_failures ? 1 : 0;

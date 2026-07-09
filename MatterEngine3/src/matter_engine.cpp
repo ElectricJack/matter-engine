@@ -179,6 +179,13 @@ struct WorldSession::Impl {
     std::mutex focus_mutex;
     float      focus[3] = {0.f, 0.f, 0.f};
 
+    // Phase C Task 7: root-params override for regenerate(seed). App thread writes
+    // under seed_mutex; execute_bake() reads a snapshot under the same mutex and
+    // installs it into cfg.root_params_json before constructing the provider.
+    // Empty string = no override (default). Set by WorldSession::regenerate().
+    std::mutex  seed_mutex;
+    std::string seed_root_params_json;
+
     FrameStats stats{};
 
     // Phase B: async bake GPU work queue + command queue + worker thread.
@@ -411,6 +418,14 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     // (allow_gl_lt_46=true) still attempt the atlas bake and get a proper
     // success-or-clear-error from gl46_available(), instead of a silent skip.
     cfg.gl_available = viewer::gl_loaded();
+
+    // Phase C Task 7: snapshot the root-params override (set by regenerate()).
+    // Read under seed_mutex so a concurrent regenerate() on the app thread is
+    // safe. Installed into cfg so the fresh LocalProvider sees it in install_graph().
+    {
+        std::lock_guard<std::mutex> lk(seed_mutex);
+        cfg.root_params_json = seed_root_params_json;
+    }
 
     provider = std::make_unique<viewer::LocalProvider>(cfg);
 
@@ -1021,6 +1036,13 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
         return gpu_jobs.run_blocking(std::move(j), err);
     };
     cfg.gl_available = viewer::gl_loaded();  // same semantics as execute_bake: loaded ≠ 4.6-confirmed
+    // Phase C Task 7: cfg.root_params_json is intentionally NOT reset here.
+    // The cone path operates within the current world's seed context: whatever
+    // worldSeed was set by the last execute_bake() (via regenerate() or a plain
+    // reload()) stays in cfg so the cone's install_graph() resolves hashes
+    // consistently with the live world. A cone triggered after regenerate(seed)
+    // will re-install with the same seed override — the cone only touches the
+    // changed files' subtree, so this is correct and consistent.
     // Re-create the provider so it picks up the updated cfg_ callbacks.
     provider = std::make_unique<viewer::LocalProvider>(cfg);
 
@@ -1258,6 +1280,26 @@ void WorldSession::reload() {
     // Phase B: identical shape to request_bake(), but kind = Reload so the
     // worker will additionally reset the GPU culler at the top of execute_bake
     // (mirroring old reload() semantics).
+    impl_->ensure_worker_started();
+    matter_async::Command c;
+    c.kind = matter_async::CommandKind::Reload;
+    impl_->commands.push(std::move(c));
+}
+
+void WorldSession::regenerate(uint64_t world_seed) {
+    // Phase C Task 7: store the root-params override and enqueue a Reload.
+    // The override JSON is built here on the app thread (cheap sprintf), stored
+    // under seed_mutex, and snapshotted by execute_bake() just before it
+    // constructs the LocalProvider. Full supersession semantics: if a bake is
+    // already in flight, the Reload cancels it at the next between-parts
+    // checkpoint and starts fresh with the new seed.
+    {
+        std::lock_guard<std::mutex> lk(impl_->seed_mutex);
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "{\"worldSeed\":%llu}",
+                      (unsigned long long)world_seed);
+        impl_->seed_root_params_json = buf;
+    }
     impl_->ensure_worker_started();
     matter_async::Command c;
     c.kind = matter_async::CommandKind::Reload;

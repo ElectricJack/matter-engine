@@ -87,6 +87,22 @@ public:
     // request_bake()/reload() succeeds (the old world is torn down before rebaking).
     void reload();
 
+    // Phase C Task 7: enqueue a seed-driven world reroll. Stores
+    // root_params_override = {"worldSeed": <world_seed>} and enqueues a Reload
+    // with full supersession semantics (a newer regenerate/reload supersedes any
+    // in-flight bake at the next between-parts checkpoint).
+    //
+    // The override is merged into each root part's params BEFORE
+    // merge_params_canonical so the resolved hash changes with the seed. Terrain
+    // parts that declare `static params = {worldSeed: …}` re-bake on a new seed
+    // and hit cache on a repeated same seed. Scatter/vegetation parts that do NOT
+    // declare worldSeed are unaffected by the override and always hit cache — a
+    // reroll re-bakes terrain while vegetation variants are served from cache.
+    //
+    // Thread-safe: may be called from the app thread at any time; the override is
+    // captured into cfg before the next LocalProvider is constructed.
+    void regenerate(uint64_t world_seed);
+
     // Query API (backed by a lazily built CPU BVH; first call after a bake pays
     // the build cost).
     bool raycast(const float origin[3], const float dir[3], float max_t, RayHit& out);

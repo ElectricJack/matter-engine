@@ -336,6 +336,23 @@ bool LocalProvider::install_graph(std::string& err) {
         else { roots_for_install_.push_back(roots_[i]); install_to_orig_.push_back(i); }
     }
 
+    // Phase C Task 7: if a root_params_json override is set (e.g. {"worldSeed": 2}
+    // from WorldSession::regenerate()), merge it into every root's params before
+    // calling install() so merge_params_canonical (and hence the resolved hash)
+    // reflects the override. Override keys win; keys absent from the override are
+    // unchanged. Only manifest roots receive the override; child parts (scatter
+    // schemas such as Rock/Grass) get their params exclusively from the parent's
+    // `static requires` function, which intentionally does NOT forward worldSeed to
+    // scatter children — so their hashes are seed-free and hit cache on a reroll.
+    if (!cfg_.root_params_json.empty()) {
+        Params override_params = params_from_json(cfg_.root_params_json);
+        if (!override_params.empty()) {
+            for (auto& root : roots_for_install_)
+                for (const auto& kv : override_params)
+                    root.params[kv.first] = kv.second;
+        }
+    }
+
     ir_ = graph.install(roots_for_install_, &graph_snapshot_);
     if (!ir_.ok) {
         err = ir_.error;

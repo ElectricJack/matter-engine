@@ -1199,6 +1199,96 @@ static bool test_live_edit_inotify_e2e(const std::string& sandbox) {
     return saw_cone_finished && saw_script_error && saw_recovery;
 }
 
+// --- (l) regenerate_seed_reroll -------------------------------------------
+// Task 7 (Phase C): WorldSession::regenerate(seed) — root-params override reload.
+//
+// Sandbox: Box.js gains `static params = {worldSeed: 1}` and uses worldSeed in
+// its geometry so that the part hash depends on the seed.  Three sub-cases:
+//   1. Initial bake: parts_baked >= 1.
+//   2. regenerate(2): new seed → cache miss → parts_baked >= 1.
+//   3. regenerate(2) again: same seed → warm reload → parts_baked == 0.
+static bool build_seed_sandbox(const std::string& root) {
+    run("rm -rf " + root);
+    run("mkdir -p " + root + "/schemas");
+    run("mkdir -p " + root + "/world_data/SeedBox");
+    run("mkdir -p " + root + "/shared-lib");
+    run("mkdir -p " + root + "/cache/parts");
+
+    // Box.js: static params = {worldSeed: 1} so the hash differs per seed.
+    // Geometry size is derived from worldSeed so different seeds produce
+    // different hashes (merge_params_canonical folds params into the hash).
+    if (!write_file(root + "/schemas/Box.js",
+        "class Box extends Part {\n"
+        "  static params = { worldSeed: 1 };\n"
+        "  build(p) {\n"
+        "    this.fill(MAT.stone);\n"
+        "    const S = 0.4 + (p.worldSeed % 10) * 0.01;\n"
+        "    this.beginShape(SHAPE.triangles);\n"
+        "    this.vertex(-S, 0, -S); this.vertex(-S, 0,  S); this.vertex( S, 0, -S);\n"
+        "    this.vertex( S, 0, -S); this.vertex(-S, 0,  S); this.vertex( S, 0,  S);\n"
+        "    this.endShape();\n"
+        "  }\n"
+        "}\n")) return false;
+
+    if (!write_file(root + "/world_data/SeedBox/world.manifest",
+        "# SeedBox world (regenerate test)\n"
+        "Box\n")) return false;
+
+    return true;
+}
+
+static bool test_regenerate_seed_reroll(const std::string& sandbox) {
+    printf("-- (l) regenerate_seed_reroll\n");
+
+    const std::string sroot = sandbox + "_seed";
+    if (!build_seed_sandbox(sroot)) {
+        printf("  FAIL: build_seed_sandbox\n");
+        ++g_failures;
+        return false;
+    }
+
+    // Cold cache: both seed=1 and seed=2 must be genuine misses initially.
+    run("rm -rf " + sroot + "/cache && mkdir -p " + sroot + "/cache/parts");
+
+    std::string err;
+    std::unique_ptr<matter::EngineContext> engine;
+    auto s = open_session(sroot, err, engine, "SeedBox");
+    CHECK(s != nullptr, "regenerate: session opened");
+    if (!s) { run("rm -rf " + sroot); return false; }
+
+    // 1) Initial bake (seed=1 from static params default).
+    s->request_bake();
+    std::vector<EvRec> log1;
+    bool ok1 = drive_bake(*s, log1);
+    CHECK(ok1, "regenerate: initial bake completed");
+    uint32_t pb1 = s->frame_stats().parts_baked;
+    printf("  [seed=1 initial] parts_baked=%u\n", pb1);
+    CHECK(pb1 >= 1, "regenerate: initial bake has parts_baked >= 1 (cache miss)");
+
+    // 2) regenerate(2) → different seed → cache miss → re-bakes terrain analog.
+    s->regenerate(2);
+    std::vector<EvRec> log2;
+    bool ok2 = drive_bake(*s, log2);
+    CHECK(ok2, "regenerate: seed=2 bake completed");
+    uint32_t pb2 = s->frame_stats().parts_baked;
+    printf("  [seed=2] parts_baked=%u\n", pb2);
+    CHECK(pb2 >= 1, "regenerate: seed=2 re-baked (cache miss, parts_baked >= 1)");
+
+    // 3) regenerate(2) again → same seed → warm reload → cache hit → parts_baked == 0.
+    s->regenerate(2);
+    std::vector<EvRec> log3;
+    bool ok3 = drive_bake(*s, log3);
+    CHECK(ok3, "regenerate: seed=2 repeat bake completed");
+    uint32_t pb3 = s->frame_stats().parts_baked;
+    uint32_t ch3 = s->frame_stats().cache_hits;
+    printf("  [seed=2 repeat] parts_baked=%u cache_hits=%u\n", pb3, ch3);
+    CHECK(pb3 == 0, "regenerate: same seed is a warm reload (parts_baked == 0)");
+    CHECK(ch3 >= 1, "regenerate: same seed has cache_hits >= 1");
+
+    run("rm -rf " + sroot);
+    return ok1 && ok2 && ok3 && pb1 >= 1 && pb2 >= 1 && pb3 == 0 && ch3 >= 1;
+}
+
 #endif // __linux__
 
 int main() {
@@ -1230,6 +1320,9 @@ int main() {
     // Task 10: inotify live-edit end-to-end.
     test_live_edit_inotify_e2e(sandbox);
 #endif
+
+    // Task 7 (Phase C): regenerate(seed) — root param override reload.
+    test_regenerate_seed_reroll(sandbox);
 
     printf(g_failures ? "\n%d FAILURE(S)\n" : "\nALL PASS\n", g_failures);
     // Best-effort cleanup so /tmp doesn't accumulate.

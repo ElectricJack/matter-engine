@@ -44,14 +44,19 @@ const MEADOW_ROCKS  =  499, MEADOW_PEBBLES =  3328, MEADOW_GRASS =  33281, MEADO
 const FOOT_ROCKS    = 1725, FOOT_GRASS     = 28750;
 const MOUNT_ROCKS   =  484;
 
-function makeRequires() {
+// makeRequires(seed): generate child requests propagating worldSeed to Terrain
+// so each seed produces distinct terrain hashes (cache miss on reroll) while
+// scatter schemas (Rock/Pebble/Grass/Tree) use seed-free params and always hit
+// cache across rerolls. Called as a function-requires so p.worldSeed flows in.
+function makeRequires(seed) {
   const req = [];
   // Two Terrain variants per tile: coarse (N=8) and full (N=64).
+  // worldSeed flows through so terrain hashes change per seed (cache miss on reroll).
   for (let tz = 0; tz < TILES; tz++)
     for (let tx = 0; tx < TILES; tx++)
       for (const res of ['coarse', 'full'])
         req.push({ module: 'Terrain',
-                   params: { tx, tz, res, worldSeed: 20260709, worldSize: WORLD } });
+                   params: { tx, tz, res, worldSeed: seed, worldSize: WORLD } });
   // Scatter schema variants (seed-free params — cache-stable across worldSeed).
   for (let s = 0; s < ROCK_VARIANTS;   ++s) req.push({ module: 'Rock',   params: { seed: s } });
   for (let s = 0; s < PEBBLE_VARIANTS; ++s) req.push({ module: 'Pebble', params: { seed: s } });
@@ -62,7 +67,10 @@ function makeRequires() {
 
 class Meadow extends Part {
   static params  = { worldSeed: 20260709 };
-  static requires = makeRequires();
+  // Function-based requires so p.worldSeed propagates to Terrain child hashes.
+  // Scatter children (Rock/Pebble/Grass/Tree) use seed-free params and hit cache
+  // across rerolls — only terrain tiles re-bake when the seed changes.
+  static requires = function(p) { return makeRequires(p.worldSeed); };
 
   build(p) {
     const H = heightField(p.worldSeed, WORLD);
