@@ -183,7 +183,7 @@ FLAVOR_qjs_FLAGS      := $(CFLAGS) $(INCLUDE_PATHS) $(QJS_INC)
 FLAVOR_sh_FLAGS       := $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC)
 FLAVOR_sp2_FLAGS      := $(CFLAGS) -DSP2_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC)
 FLAVOR_vl_FLAGS       := $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB -pthread $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC)
-FLAVOR_retopo_FLAGS   := $(CFLAGS) -DMATTER_HAVE_AUTOREMESHER $(INCLUDE_PATHS) -I$(AR_CORE_PATH)/include
+FLAVOR_retopo_FLAGS   := $(CFLAGS) -DMATTER_HAVE_AUTOREMESHER $(INCLUDE_PATHS) -I$(AR_CORE_PATH)/include $(QJS_INC)
 FLAVOR_gpu_FLAGS      := $(filter-out -D$(GRAPHICS),$(CFLAGS)) -D$(GPU_GRAPHICS) \
                          -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB \
                          $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) $(GPU_AR_CORE_CFLAGS)
@@ -449,22 +449,24 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               $(VIEWER_PIPELINE_CPP)
 
 # ===== flavor retopo (retopo_integration_tests) ========================
+# The test calls script_host::ScriptHost::bake_source(), which requires the
+# full script-host + DSL + modifier_apply source set.  Build with the retopo
+# flavor (-DMATTER_HAVE_AUTOREMESHER) so modifier_apply dispatches retopo.
+# mesh_retopo.cpp is the only autoremesher-specific addition over MODBAKE_CPP.
 RETOPO_INT_TARGET = retopo_integration_tests
-RETOPO_INT_CPP = retopo_integration_tests.cpp ../src/part_flatten.cpp ../src/lod_bake.cpp \
-                 ../src/part_cluster.cpp \
-                 ../src/part_asset_v2.cpp \
-                 ../src/retopo_blacklist.cpp \
-                 $(MSL)/mesh_simplifier.cpp \
-                 $(MSL)/mesh_indexed.cpp \
-                 $(MSL)/mesh_transform.cpp \
+RETOPO_INT_CPP = retopo_integration_tests.cpp \
+                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp \
+                 ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp \
+                 ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
+                 ../src/part_flatten.cpp ../src/part_cluster.cpp \
+                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
+                 ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp \
                  $(MSL)/mesh_retopo.cpp \
-                 $(MSL)/blas_manager.cpp \
-                 $(MSL)/bvh.cpp \
-                 $(MSL)/tlas_manager.cpp \
-                 $(MSL)/part_asset.cpp \
-                 $(MSL)/vertex_ao.cpp \
-                 $(MSL)/occupancy.cpp
-RETOPO_INT_C   = $(MSL)/material_registry.c
+                 $(MSL)/mesh_smooth.cpp \
+                 $(MSL)/mesh_transform.cpp \
+                 $(COMMON_MSL_FULL_SRC)
+RETOPO_INT_C   = $(COMMON_MSL_C)
 # --allow-multiple-definition: raylib bundles stb_image_write.h in rtextures.c
 # and autoremesher_core's geogram bundles its own copy in
 # image_serializer_stb.o. Both archives get pulled in here.
@@ -646,7 +648,7 @@ LIVEPROD_OBJS    = $(call obj_list,sh,$(LIVEPROD_CPP)) $(call obj_list,mslc,$(LI
 
 SHLIB_OBJS = $(call obj_list,sp2,$(SHLIB_CPP)) $(call obj_list,mslc,$(SHLIB_C)) $(qjsc_C_OBJS)
 VIEWER_LOGIC_OBJS = $(call obj_list,vl,$(VIEWER_LOGIC_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
-RETOPO_INT_OBJS = $(call obj_list,retopo,$(RETOPO_INT_CPP)) $(call obj_list,mslc,$(RETOPO_INT_C))
+RETOPO_INT_OBJS = $(call obj_list,retopo,$(RETOPO_INT_CPP)) $(call obj_list,mslc,$(RETOPO_INT_C)) $(qjsc_C_OBJS)
 
 # GPU binaries reuse the same gpu-flavor object set. Each binary is:
 # <driver>.o + $(GPU_ALL_CPP) objects + mslc + qjsc.

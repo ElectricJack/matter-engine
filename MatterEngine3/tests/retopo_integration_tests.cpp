@@ -9,9 +9,10 @@
 //     -> writes parts/<hash>.part
 //
 // The test bakes a small sphere schema twice — once with a retopo modifier
-// region and once without — and asserts that retopo_blacklist journal files
-// were touched (begin_attempt / end_attempt were called) and that bake
-// succeeds in both cases.
+// region and once without — using the SAME class name differing only in the
+// endModifier([...]) call.  The resolved hashes must differ (the stack is
+// folded into the hash) and the baked BLAS triangle counts must differ
+// (retopo actually changed the mesh content, not just the hash).
 //
 // Runtime requirements: libautoremesher_core.a must be built (build-all.sh
 // does this) and libtbb.so must be present at the rpath baked into this
@@ -83,29 +84,39 @@ static bool journal_file_exists(const std::string& cache_root, const char* name)
 // DSL sources
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Both schemas share the same class name ("SpherePart") so the resolved hash
+// difference comes ONLY from the modifier stack, not from the class name.
+
+// Both schemas share the same class name and geometry parameters.  The ONLY
+// difference between A and B is the endModifier([...]) retopo stack in B.
+//
+// Geometry: fill=2, resolution=0.2, sphere radius=0.5 — the same parameters
+// used by modifier_region_bake_tests so we know autoremesher can handle this
+// mesh without hitting a geo_assert in geogram's parameterizer.
+
 // A small sphere baked WITHOUT a retopo modifier region (baseline).
 static const char* kSphereNoRetopo =
-    "class SphereNoRetopo extends Part {\n"
+    "class SpherePart extends Part {\n"
     "  static params = {};\n"
     "  build(p) {\n"
-    "    this.fill(8);\n"
-    "    this.beginVoxels(0.25);\n"
-    "    this.sphere([0,0,0], 1.0);\n"
+    "    this.beginVoxels(0.2);\n"
+    "    this.fill(2);\n"
+    "    this.sphere([0,0,0], 0.5);\n"
     "    this.endVoxels();\n"
     "  }\n"
     "}\n";
 
 // The same sphere wrapped in a retopo modifier region.
 // target_ratio=1.0, 1 iteration, seed=0, 10s timeout — fast retopo
-// for a test fixture.
+// for a test fixture.  ONLY endModifier([...]) differs from kSphereNoRetopo.
 static const char* kSphereWithRetopo =
-    "class SphereWithRetopo extends Part {\n"
+    "class SpherePart extends Part {\n"
     "  static params = {};\n"
     "  build(p) {\n"
-    "    this.fill(8);\n"
     "    this.beginModifier();\n"
-    "    this.beginVoxels(0.25);\n"
-    "    this.sphere([0,0,0], 1.0);\n"
+    "    this.beginVoxels(0.2);\n"
+    "    this.fill(2);\n"
+    "    this.sphere([0,0,0], 0.5);\n"
     "    this.endVoxels();\n"
     "    this.endModifier([{ retopo: { target_ratio: 1.0, iterations: 1, seed: 0, timeout_seconds: 10 } }]);\n"
     "  }\n"
@@ -188,9 +199,12 @@ static void test_retopo_region_bake() {
         std::printf("  error: %s\n", r_retopo.error.message.c_str());
     CHECK(r_retopo.resolved_hash != 0, "Bake B: non-zero resolved hash");
 
-    // Hashes must differ (different source -> different hash).
+    // Hashes must differ: both schemas use the same class name "SpherePart", so the
+    // resolved hash difference comes only from the endModifier([...]) stack being
+    // present in Bake B.  This would NOT be satisfied if retopo were a silent no-op
+    // at hash time (the stack is folded into the hash by bake_source).
     CHECK(r_no_retopo.resolved_hash != r_retopo.resolved_hash,
-          "Bake A and B have different resolved hashes (different sources)");
+          "Bake A and B have different resolved hashes (stack-driven difference)");
 
     // ── Assert retopo_blacklist journal files were touched by Bake B.
     // modifier_apply::apply_stack calls begin_attempt before dispatching
@@ -203,21 +217,48 @@ static void test_retopo_region_bake() {
               "Bake B: retopo_blacklist .retopo_success journal written");
     }
 
-    // ── Both .part files exist on disk.
+    // ── Both .part files exist on disk, and triangle content actually differs.
+    //
+    // Load each baked .part into a fresh BLASManager, extract all triangles, and
+    // assert the count differs.  This proves retopo ran and mutated the mesh —
+    // not just that the hashes differ from the stack encoding.
     {
         struct stat st;
-        std::string path_a = opts.parts_dir + "/" +
-            part_asset::cache_path_resolved(r_no_retopo.resolved_hash);
-        // cache_path_resolved returns "parts/<hex>.part"; strip the "parts/" prefix
-        // since opts.parts_dir is already cache_root/parts.
-        std::string stem_a = part_asset::cache_path_resolved(r_no_retopo.resolved_hash);
-        // stem_a = "parts/xxxx.part" -> just use the written_path directly
         CHECK(!r_no_retopo.written_path.empty(), "Bake A: written_path non-empty");
         CHECK(r_no_retopo.written_path.empty() || ::stat(r_no_retopo.written_path.c_str(), &st) == 0,
               "Bake A: .part file exists on disk");
         CHECK(!r_retopo.written_path.empty(), "Bake B: written_path non-empty");
         CHECK(r_retopo.written_path.empty() || ::stat(r_retopo.written_path.c_str(), &st) == 0,
               "Bake B: .part file exists on disk");
+
+        if (r_no_retopo.error.ok && r_retopo.error.ok &&
+            !r_no_retopo.written_path.empty() && !r_retopo.written_path.empty()) {
+            // Load Bake A.
+            BLASManager blas_a; TLASManager tlas_a(64);
+            std::vector<part_asset::ChildInstance> kids_a; part_asset::LodLevels lods_a;
+            bool ok_a = part_asset::load_v2(r_no_retopo.written_path,
+                                             r_no_retopo.resolved_hash,
+                                             blas_a, tlas_a, kids_a, lods_a);
+            CHECK(ok_a, "Bake A: load_v2 succeeds");
+
+            // Load Bake B.
+            BLASManager blas_b; TLASManager tlas_b(64);
+            std::vector<part_asset::ChildInstance> kids_b; part_asset::LodLevels lods_b;
+            bool ok_b = part_asset::load_v2(r_retopo.written_path,
+                                             r_retopo.resolved_hash,
+                                             blas_b, tlas_b, kids_b, lods_b);
+            CHECK(ok_b, "Bake B: load_v2 succeeds");
+
+            if (ok_a && ok_b) {
+                std::vector<Tri> tris_a, tris_b;
+                blas_a.generate_triangle_data(tris_a);
+                blas_b.generate_triangle_data(tris_b);
+                std::printf("  triangle counts: no-retopo=%zu  retopo=%zu\n",
+                            tris_a.size(), tris_b.size());
+                CHECK(tris_a.size() != tris_b.size(),
+                      "Bake A and B triangle counts differ (retopo changed mesh content)");
+            }
+        }
     }
 
     rmrf(cache_root);
