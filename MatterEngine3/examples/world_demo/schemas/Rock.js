@@ -78,7 +78,7 @@ class Rock extends Part {
 
     this.endVoxels();
     this.endModifier([
-      { retopo: { target_ratio: 1.0, iterations: 3, seed: 42, timeout_seconds: 60 } },
+      { retopo: { target_ratio: 0.35, iterations: 3, seed: 42, timeout_seconds: 60 } },
     ]);
   }
 }
