@@ -174,7 +174,8 @@ IMGUI_SRC = $(IMGUI_PATH)/imgui.cpp $(IMGUI_PATH)/imgui_draw.cpp \
 #
 # Windows: full direct-source compile (APP_SRC + WIN_ME3_CPP + WIN_MSL_CPP + IMGUI_SRC).
 CXX_FLAGS_BUILD_COMMON = $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -MMD -MP
-CXX_FLAGS_BUILD_WIN_COMMON = $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB $(WIN_INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -MMD -MP
+# Windows is the release build path for now: -DNDEBUG disables assert().
+CXX_FLAGS_BUILD_WIN_COMMON = $(CFLAGS) -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB $(WIN_INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -ffunction-sections -fdata-sections -MMD -MP
 
 # Linux object set: ONLY app + imgui.
 L_CPP_SRC = $(APP_SRC) $(IMGUI_SRC)
@@ -303,16 +304,16 @@ WIN_LIBS    = -lopengl32 -lgdi32 -lwinmm $(BOX3D_DIR)/build-mingw/libbox3d.a -lw
 $(W_CPP_OBJ): $(W_DIR)/%.o: %.cpp | $(W_DIR)
 	$(WIN_CXX) -c $< -o $@ $(CXX_FLAGS_BUILD_WIN_COMMON)
 $(W_QJS_OBJ): $(W_DIR)/%.o: $(QJS_DIR)/%.c | $(W_DIR)
-	$(WIN_CC) -c $< -o $@ -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC) -MMD -MP
+	$(WIN_CC) -c $< -o $@ -O2 -DNDEBUG -DCONFIG_VERSION='"0.10.0"' $(QJS_INC) -ffunction-sections -fdata-sections -MMD -MP
 $(W_PIPC_OBJ): $(W_DIR)/%.o: $(MSL_DIR)/src/%.c | $(W_DIR)
-	$(WIN_CC) -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(WIN_INCLUDE_PATHS) -MMD -MP
+	$(WIN_CC) -c $< -o $@ -O2 -DNDEBUG -DPLATFORM_DESKTOP $(WIN_INCLUDE_PATHS) -ffunction-sections -fdata-sections -MMD -MP
 
 # Order-only: the header must exist before shader_source.cpp compiles, but its
 # regeneration must not force object rebuilds (embedded-shaders is phony).
 $(W_CPP_OBJ): | embedded-shaders
 
 windows: win-shaders-gpu $(W_ALL_OBJ)
-	$(WIN_CXX) $(W_ALL_OBJ) -o viewer.exe $(CFLAGS) -static $(WIN_RAYLIB) $(WIN_LIBS)
+	$(WIN_CXX) $(W_ALL_OBJ) -o viewer.exe $(CFLAGS) -static -s -Wl,--gc-sections $(WIN_RAYLIB) $(WIN_LIBS)
 
 -include $(W_ALL_OBJ:.o=.d)
 
