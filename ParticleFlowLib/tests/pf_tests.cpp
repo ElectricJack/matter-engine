@@ -320,6 +320,79 @@ static void test_curl_is_deterministic_and_bounded() {
     printf("  curl OK\n");
 }
 
+static bool pathsets_equal(const PathSet& a, const PathSet& b) {
+    if (a.paths.size() != b.paths.size()) return false;
+    for (size_t i = 0; i < a.paths.size(); ++i) {
+        const auto& pa = a.paths[i]; const auto& pb = b.paths[i];
+        if (pa.particle_id != pb.particle_id || pa.closed != pb.closed) return false;
+        if (pa.xyz.size() != pb.xyz.size()) return false;
+        if (memcmp(pa.xyz.data(), pb.xyz.data(), pa.xyz.size()*sizeof(float))) return false;
+        for (size_t c = 0; c < pa.channels.size(); ++c)
+            if (memcmp(pa.channels[c].data(), pb.channels[c].data(),
+                       pa.channels[c].size()*sizeof(float))) return false;
+    }
+    return true;
+}
+
+static void test_path_recorder() {
+    SimConfig c = base_cfg();
+    c.max_age = 120;
+    // one-shot vs incremental, both recorded
+    Sim a(c), b(c);
+    PathRecorder ra(0.02f, c.attributes), rb(0.02f, c.attributes);
+    a.attach(&ra); b.attach(&rb);
+    a.run(200);
+    b.run(80); b.run(120);
+    assert(pathsets_equal(ra.paths(), rb.paths()) &&
+           "recorded PathSet must be identical for N+M vs N,M");
+    const PathSet& ps = ra.paths();
+    assert(!ps.paths.empty());
+    assert(ps.channel_names.size() == 1 && ps.channel_names[0] == "radius");
+    size_t closed = 0;
+    for (const auto& p : ps.paths) {
+        assert(p.vertex_count() >= 1);
+        assert(p.channels.size() == 1);
+        assert(p.channels[0].size() == p.vertex_count());
+        // min-segment decimation: consecutive vertices >= min_segment apart
+        for (size_t v = 1; v < p.vertex_count(); ++v) {
+            V3 q0{p.xyz[3*(v-1)], p.xyz[3*(v-1)+1], p.xyz[3*(v-1)+2]};
+            V3 q1{p.xyz[3*v],     p.xyz[3*v+1],     p.xyz[3*v+2]};
+            assert(length(q1 - q0) >= 0.02f - 1e-5f);
+        }
+        if (p.closed) ++closed;
+    }
+    assert(closed > 0 && "max_age deaths must close paths");
+    // end direction helper
+    for (const auto& p : ps.paths) {
+        if (p.vertex_count() < 2) continue;
+        V3 d = path_end_dir(p);
+        assert(std::fabs(length(d) - 1.0f) < 1e-4f);
+        break;
+    }
+    printf("  path recorder OK (%zu paths, %zu closed)\n", ps.paths.size(), closed);
+}
+
+static void test_pathset_append_only() {
+    SimConfig c = base_cfg();
+    Sim s(c);
+    PathRecorder r(0.02f, c.attributes);
+    s.attach(&r);
+    s.run(100);
+    // Snapshot, run more, verify the old prefix is untouched (accretion).
+    PathSet snap = r.paths();   // copy
+    s.run(100);
+    const PathSet& now = r.paths();
+    assert(now.paths.size() >= snap.paths.size());
+    for (size_t i = 0; i < snap.paths.size(); ++i) {
+        const auto& po = snap.paths[i]; const auto& pn = now.paths[i];
+        assert(pn.particle_id == po.particle_id);
+        assert(pn.xyz.size() >= po.xyz.size());
+        assert(!memcmp(pn.xyz.data(), po.xyz.data(), po.xyz.size()*sizeof(float))
+               && "existing vertices must never move (monotonic accretion)");
+    }
+    printf("  pathset append-only OK\n");
+}
+
 int main() {
     printf("pf_tests:\n");
     test_rng_determinism();
@@ -335,6 +408,8 @@ int main() {
     test_attract_consume_and_kill();
     test_surface_normal();
     test_curl_is_deterministic_and_bounded();
+    test_path_recorder();
+    test_pathset_append_only();
     printf("pf_tests: ALL OK\n");
     return 0;
 }

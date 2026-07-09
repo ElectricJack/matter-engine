@@ -185,4 +185,25 @@ private:
     std::vector<ITickObserver*> observers_;
 };
 
+// Records each particle's trajectory into an append-only PathSet.
+// Vertices are appended when a particle has moved >= min_segment from its
+// last recorded vertex (plus the spawn vertex and the final position at death).
+class PathRecorder : public ITickObserver {
+public:
+    PathRecorder(float min_segment, const std::vector<std::string>& channel_names);
+    void on_tick(const Sim& s, uint32_t tick) override;
+    const PathSet& paths() const { return set_; }
+
+private:
+    struct Track { uint32_t path_index; V3 last; };
+    float min_seg_;
+    PathSet set_;
+    std::vector<Track> by_id_;      // particle id -> track (ids are dense)
+    std::vector<uint8_t> known_;    // particle id known?
+    void append_vertex(const Sim& s, uint32_t slot, uint32_t path_index);
+};
+
+// Unit direction of the last segment ({0,0,0} for single-vertex paths).
+V3 path_end_dir(const PathSet::Path& p);
+
 } // namespace pf
