@@ -127,16 +127,24 @@ bool DslState::has_composite_child_key(const std::string& module,
 bool DslState::lookup_child_hash(const std::string& module,
                                  const char* params_json, size_t len,
                                  uint64_t& out) {
-    const auto end = child_hashes_.end();
-    auto it = end;
     if (params_json && len > 0) {
+        // params_json is expected to be CANONICAL (normalized via params_from_json ->
+        // params_to_json by the caller) so this is an exact key match. The name2hash
+        // table is keyed by params_to_json bytes (part_graph.cpp:149); callers in
+        // dsl_bindings.cpp normalize raw JS_JSONStringify output before invoking us.
+        // On miss: return false — no bare-module fallback for the with-params case
+        // (that silent fallback was the bug causing all parametric placements of the
+        // same module to resolve to one hash regardless of params).
         std::string key = module;
         key.push_back('\x1f');
         key.append(params_json, len);
-        it = child_hashes_.find(key);
+        auto it = child_hashes_.find(key);
+        if (it != child_hashes_.end()) { out = it->second; return true; }
+        return false;
     }
-    if (it == end) it = child_hashes_.find(module);
-    if (it == end) return false;
+    // No params: plain module-only lookup (unchanged behavior).
+    auto it = child_hashes_.find(module);
+    if (it == child_hashes_.end()) return false;
     out = it->second;
     return true;
 }
@@ -144,11 +152,20 @@ bool DslState::lookup_child_hash(const std::string& module,
 void DslState::placeChild(const std::string& module,
                           const void* params, size_t params_len) {
     uint64_t hash = 0;
-    if (!lookup_child_hash(module,
-                           static_cast<const char*>(params), params_len,
-                           hash)) {
-        set_error("placeChild: undeclared child '" + module +
-                  "' (add it to static requires)");
+    const char* params_ptr = static_cast<const char*>(params);
+    if (!lookup_child_hash(module, params_ptr, params_len, hash)) {
+        if (params_ptr && params_len > 0) {
+            // With params: composite-key miss — no matching declared variant.
+            // params_ptr is already normalized (canonical JSON) per the contract
+            // set by dsl_bindings.cpp. Include it in the error for diagnostics.
+            set_error("placeChild: no declared child of '" + module +
+                      "' matches params " +
+                      std::string(params_ptr, params_len) +
+                      " (add it to static requires)");
+        } else {
+            set_error("placeChild: undeclared child '" + module +
+                      "' (add it to static requires)");
+        }
         return;
     }
     ChildPlacement p;

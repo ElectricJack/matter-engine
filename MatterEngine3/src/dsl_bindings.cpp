@@ -3,6 +3,7 @@
 #include "tileset_spec.h"
 #include "tileset_placement.h"
 #include "tileset_layout.h"
+#include "part_graph.h"   // params_from_json, params_to_json — canonical JSON normalizer
 #include <cmath>
 #include <cstring>
 #include <vector>
@@ -19,6 +20,18 @@ extern "C" {
 // to (translate, box, sphere, placeChild, tileset verbs, etc.).
 
 namespace dsl {
+
+// Normalize raw JS_JSONStringify bytes to the canonical params_to_json format
+// (sorted keys, %.17g numbers, no whitespace) so that composite child-hash
+// lookups (`module \x1f params_json`) match the keys the host writes into
+// name2hash (part_graph.cpp: params_to_json(kid.params)).
+// An empty input returns an empty string so callers can distinguish "no params"
+// from "params that happen to parse to an empty map".
+static std::string normalize_params_json(const char* s, size_t len) {
+    if (!s || len == 0) return {};
+    part_graph::Params p = part_graph::params_from_json(std::string(s, len));
+    return part_graph::params_to_json(p);
+}
 
 static DslState* state_of(JSContext* ctx) {
     return static_cast<DslState*>(JS_GetContextOpaque(ctx));
@@ -59,16 +72,32 @@ static JSValue j_placeChild(JSContext* c, JSValueConst, int n, JSValueConst* a){
     const char* m = JS_ToCString(c, a[0]);
     if (!m) return JS_UNDEFINED;
     // G6: optional params (a plain JS object/array) -> canonical JSON bytes folded
-    // into the child's resolved hash so parametric children dedup. JSON.stringify
-    // gives a deterministic byte stream for the content-addressed key. No params
-    // (undefined/null) = today's behavior (declared hash unchanged).
+    // into the child's resolved hash so parametric children dedup. Normalize via
+    // params_from_json -> params_to_json (sorted keys, %.17g numbers) so the lookup
+    // key matches the name2hash keys the host builds with params_to_json(kid.params).
+    // Without normalization, JS_JSONStringify's ES key order and shortest-repr numbers
+    // differ from the canonical format, causing composite key misses and a silent
+    // bare-module fallback that collapsed all parametric placements to one hash.
+    // No params (undefined/null) = bare-module lookup (unchanged behavior).
     if (n > 1 && !JS_IsUndefined(a[1]) && !JS_IsNull(a[1])) {
         JSValue js = JS_JSONStringify(c, a[1], JS_UNDEFINED, JS_UNDEFINED);
         if (!JS_IsException(js)) {
             size_t len = 0;
             const char* s = JS_ToCStringLen(c, &len, js);
-            if (s) { state_of(c)->placeChild(m, s, len); JS_FreeCString(c, s); }
-            else   { state_of(c)->placeChild(m); }
+            if (s) {
+                std::string normalized = normalize_params_json(s, len);
+                JS_FreeCString(c, s);
+                // "{}" (empty params object) and empty string both mean "no params"
+                // — use the bare-module lookup so a placeChild('Foo', {}) works for
+                // a module declared without params in static requires.
+                if (!normalized.empty() && normalized != "{}") {
+                    state_of(c)->placeChild(m, normalized.c_str(), normalized.size());
+                } else {
+                    state_of(c)->placeChild(m);
+                }
+            } else {
+                state_of(c)->placeChild(m);
+            }
         } else {
             state_of(c)->placeChild(m);
         }
@@ -307,6 +336,11 @@ static bool place_one_instance(
             if (s) { pjson.assign(s, len); JS_FreeCString(c, s); }
         }
         JS_FreeValue(c, js);
+        // Normalize: round-trip through params_from_json -> params_to_json so the
+        // composite key matches name2hash's canonical bytes (sorted keys, %.17g).
+        if (!pjson.empty() && pjson != "{}") {
+            pjson = normalize_params_json(pjson.c_str(), pjson.size());
+        }
         uint64_t h = 0;
         // Fail-closed: if fn returned a non-trivial params object, the composite
         // key (module\x1f<params>) must be explicitly declared in static requires.
@@ -461,13 +495,18 @@ static JSValue j_ts_layer(JSContext* c, JSValueConst, int n, JSValueConst* a) {
         else { JS_FreeValue(c, params_val); params_val = JS_UNDEFINED; }
     }
 
-    // If params is a static object, stringify once now.
+    // If params is a static object, stringify and normalize once now.
     std::string static_params_json;
     if (params_is_obj) {
         JSValue js = JS_JSONStringify(c, params_val, JS_UNDEFINED, JS_UNDEFINED);
         if (!JS_IsException(js)) {
             size_t len=0; const char* s = JS_ToCStringLen(c, &len, js);
-            if (s) { static_params_json.assign(s, len); JS_FreeCString(c,s); }
+            if (s) {
+                // Normalize: sorted keys + %.17g numbers so the composite key
+                // matches name2hash's params_to_json bytes.
+                static_params_json = normalize_params_json(s, len);
+                JS_FreeCString(c,s);
+            }
         }
         JS_FreeValue(c, js);
         JS_FreeValue(c, params_val); params_val = JS_UNDEFINED;
@@ -613,14 +652,17 @@ static JSValue j_ts_dropChild(JSContext* c, JSValueConst, int n, JSValueConst* a
     std::string module(m);
     JS_FreeCString(c, m);
 
-    // Optional params (arg 1) — stringify like placeChild does.
+    // Optional params (arg 1) — stringify and normalize like placeChild does.
     std::string params_str;
     if (n > 1 && !JS_IsUndefined(a[1]) && !JS_IsNull(a[1])) {
         JSValue js = JS_JSONStringify(c, a[1], JS_UNDEFINED, JS_UNDEFINED);
         if (!JS_IsException(js)) {
             size_t len = 0;
             const char* s = JS_ToCStringLen(c, &len, js);
-            if (s) { params_str.assign(s, len); JS_FreeCString(c, s); }
+            if (s) {
+                params_str = normalize_params_json(s, len);
+                JS_FreeCString(c, s);
+            }
         }
         JS_FreeValue(c, js);
     }
