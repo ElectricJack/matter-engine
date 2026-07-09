@@ -33,6 +33,7 @@ SIMPLE_PROJECTS=(
     BasicWindowApp
     SurfaceLib
     MemoryLib
+    ParticleFlowLib
     SpatialQueryLib
     MatterEngine3
     MatterViewer
@@ -151,6 +152,10 @@ if [ "$MODE" = "test" ]; then
     echo
     echo "--- MemoryLib (memory_tests + memory_hpp_tests) ---"
     make -C MemoryLib test || RESULT[MemoryLib]="FAIL (tests)"
+
+    echo
+    echo "--- ParticleFlowLib (pf_tests, ASan+UBSan) ---"
+    make -C ParticleFlowLib test || RESULT[ParticleFlowLib]="FAIL (tests)"
 
     # MatterSurfaceLib headless suites (no GL window). Target name == binary name.
     # mesh_indexed_tests, mesh_transform_tests are Phase 5 additions (Task 2/3).
