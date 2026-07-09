@@ -396,11 +396,15 @@ TILESETBAKE_CPP = tileset_bake_tests.cpp ../src/part_graph.cpp \
                   $(COMMON_MSL_FULL_SRC)
 TILESETBAKE_C   = $(COMMON_MSL_C)
 
-# ===== flavor qjs (script_host_tests + tileset_dsl_tests) ===============
+# ===== flavor qjs (script_host_tests + tileset_dsl_tests + terrainnoise) ===
 # NOTE: script_host_tests originally compiled with CFLAGS + INCLUDE_PATHS +
 # QJS_INC (no -DMATTER_HAVE_SCRIPT_HOST). That maps to `qjs`, not `sh`.
 TILESETDSL_TARGET = tileset_dsl_tests
 TILESETDSL_CPP = tileset_dsl_tests.cpp $(filter-out script_host_tests.cpp, $(SCRIPT_CPP))
+
+# Phase C Task 1: terrain noise contract (qjs flavor — module_resolver + QJS only).
+TERRAINNOISE_TARGET = terrain_noise_tests
+TERRAINNOISE_CPP = terrain_noise_tests.cpp ../src/module_resolver.cpp
 
 # ===== flavor sp2 (SP2_SCRIPT_HOST) =====================================
 SHLIB_TARGET = shared_lib_tests
@@ -531,7 +535,8 @@ def_CPP_SRCS := $(sort \
 
 qjs_CPP_SRCS := $(sort \
     $(SCRIPT_CPP) \
-    $(TILESETDSL_CPP))
+    $(TILESETDSL_CPP) \
+    $(TERRAINNOISE_CPP))
 
 sh_CPP_SRCS := $(sort \
     $(GRAPH_INT_CPP) \
@@ -611,6 +616,7 @@ TILESETGTEX_OBJS = $(call obj_list,def,$(TILESETGTEX_CPP))
 
 SCRIPT_OBJS = $(call obj_list,qjs,$(SCRIPT_CPP)) $(call obj_list,mslc,$(SCRIPT_C)) $(qjsc_C_OBJS)
 TILESETDSL_OBJS = $(call obj_list,qjs,$(TILESETDSL_CPP)) $(call obj_list,mslc,$(SCRIPT_C)) $(qjsc_C_OBJS)
+TERRAINNOISE_OBJS = $(call obj_list,qjs,$(TERRAINNOISE_CPP)) $(qjsc_C_OBJS)
 
 GRAPH_INT_OBJS = $(call obj_list,sh,$(GRAPH_INT_CPP)) $(call obj_list,mslc,$(GRAPH_INT_C)) $(qjsc_C_OBJS)
 EXAMPLE_OBJS = $(call obj_list,sh,$(EXAMPLE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
@@ -634,7 +640,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod
+.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -849,6 +855,14 @@ $(TILESETDSL_TARGET): $(TILESETDSL_OBJS)
 run-tilesetdsl: $(TILESETDSL_TARGET)
 	./$(TILESETDSL_TARGET)
 
+# Phase C Task 1: terrain noise contract.
+$(TERRAINNOISE_TARGET): $(TERRAINNOISE_OBJS)
+	$(CC) $(TERRAINNOISE_OBJS) -o $@ \
+	      $(CFLAGS) $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+
+run-terrainnoise: $(TERRAINNOISE_TARGET)
+	./$(TERRAINNOISE_TARGET)
+
 # Tileset bake bridge.
 $(TILESETBAKE_TARGET): $(TILESETBAKE_OBJS) $(BOX3D_DIR)/libbox3d.a
 	$(CC) $(TILESETBAKE_OBJS) \
@@ -970,7 +984,7 @@ clean:
 	      $(POLYTRI_TARGET) $(ISO_TARGET) $(FLATTEN_TARGET) $(LIGHTING_TARGET) \
 	      $(TILESETTORUSBVH_TARGET) $(TILESETDSL_TARGET) $(TILESETBAKE_TARGET) \
 	      $(TILESETGTEX_TARGET) $(ASYNCQ_TARGET) $(GALLERY_TARGET) \
-	      $(LIVEPROD_TARGET) \
+	      $(LIVEPROD_TARGET) $(TERRAINNOISE_TARGET) \
 	      tileset_physics_tests tileset_core_tests tileset_placement_tests \
 	      gpu_tests tileset_gpu_tests tileset_seam_tests tileset_provider_tests \
 	      tileset_load_tests api_tests async_bake_tests

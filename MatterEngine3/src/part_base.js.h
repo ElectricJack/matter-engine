@@ -1,7 +1,7 @@
 #pragma once
 static const char* kPartBaseJS = R"JS(
 globalThis.MAT = {
-  bark: 14, leaf: 15, dirt: 16,
+  bark: 14, leaf: 15, dirt: 16, snow: 17,
   grass: 2, stone: 8, stoneDark: 9, rock: 11,
   sand: 13, water: 7, metal: 3, glass: 4, light: 5,
 };
