@@ -4,7 +4,7 @@
 #include <assert.h>
 #include <string.h>
 #include <math.h>
-#include "object_allocator.h"
+#include "mem_pool.h"
 #include "include/spatial_hash.h"
 #include "include/bvh.h"
 
@@ -16,19 +16,19 @@ typedef struct TestPoint {
     int data;
 } TestPoint;
 
-// Test that ObjectAllocator works with our project setup
-bool test_object_allocator_integration() {
-    ObjectAllocator* allocator = oa_create(sizeof(TestPoint), 10);
+// Test that MemPool works with our project setup
+bool test_mem_pool_integration() {
+    MemPool* allocator = mem_pool_create(sizeof(TestPoint), 10);
     if (!allocator) {
         TEST_FAILED;
         return false;
     }
     
     // Allocate a test point
-    TestPoint* point = (TestPoint*)oa_alloc(allocator);
+    TestPoint* point = (TestPoint*)mem_pool_alloc(allocator);
     if (!point) {
         TEST_FAILED;
-        oa_destroy(allocator);
+        mem_pool_destroy(allocator);
         return false;
     }
     
@@ -40,13 +40,13 @@ bool test_object_allocator_integration() {
     
     if (point->x != 1.0f || point->y != 2.0f || point->z != 3.0f || point->data != 42) {
         TEST_FAILED;
-        oa_destroy(allocator);
+        mem_pool_destroy(allocator);
         return false;
     }
     
     // Free the point
-    oa_free(allocator, point);
-    oa_destroy(allocator);
+    mem_pool_free(allocator, point);
+    mem_pool_destroy(allocator);
     TEST_PASSED;
     return true;
 }
@@ -346,7 +346,7 @@ int main() {
     int passed = 0;
     int total = 9;
     
-    if (test_object_allocator_integration()) passed++;
+    if (test_mem_pool_integration()) passed++;
     if (test_spatial_hash_create_destroy()) passed++;
     if (test_spatial_hash_insert_query()) passed++;
     if (test_spatial_hash_remove()) passed++;

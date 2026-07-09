@@ -13,7 +13,7 @@ build/
 # Per-project compiled binaries (named after the project)
 BasicWindowApp/cube_app
 SurfaceLib/surface_app
-ObjectAllocatorLib/objectallocator
+MemoryLib/memorylib
 OpenParticleSurfaceLib/open_particle_surface
 SpatialQueryLib/spatialquerylib
 GPURayTraceExample/gpu_raytrace
@@ -75,12 +75,13 @@ MeshChartingLib/tests/*_tests
 Libraries/autoremesher_core/tests/smoke_cube
 Libraries/autoremesher_core/tests/quad_to_tri_test
 
-# ObjectAllocatorLib and SpatialQueryLib test binaries + object dirs
+# MemoryLib and SpatialQueryLib test binaries + object dirs
 SpatialQueryLib/spatial_hash_tests
 SpatialQueryLib/bvh_tests
-ObjectAllocatorLib/object_allocator_tests
+MemoryLib/memory_tests
+MemoryLib/memory_hpp_tests
 # `make TARGET=linux` (build-all.sh convention) emits a binary named `linux`
-ObjectAllocatorLib/linux
+MemoryLib/linux
 SpatialQueryLib/linux
 
 # Transient screenshots + sentinel files (FIFO shot capture)

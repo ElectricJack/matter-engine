@@ -1,4 +1,4 @@
-#include "../include/object_allocator.h"
+#include "../include/mem_pool.h"
 #include <stdlib.h>
 #include <stddef.h>
 #include <string.h>
@@ -8,16 +8,18 @@ typedef struct ObjectHeader {
     struct ObjectHeader* next;
 } ObjectHeader;
 
-// ObjectAllocator implementation
-struct ObjectAllocator {
-    size_t objectSize;         // Size of each object
-    size_t objectsPerPage;     // Number of objects in each page
-    size_t pageCount;          // Number of pages allocated
-    size_t totalObjects;       // Total number of objects across all pages
-    size_t freeObjects;        // Number of free objects available
-    ObjectHeader* freeList;    // Linked list of free objects
-    void** pages;              // Array of allocated pages
-    size_t pagesCapacity;      // Capacity of the pages array
+// MemPool implementation
+struct MemPool {
+    size_t objectSize;         /* stride (header-padded, max_align_t-aligned) */
+    size_t objectsPerPage;
+    size_t pageCount;
+    size_t totalObjects;
+    size_t freeObjects;
+    size_t totalAllocs;        /* lifetime mem_pool_alloc count */
+    size_t peakLiveBytes;      /* high-water mark of live bytes */
+    ObjectHeader* freeList;
+    void** pages;
+    size_t pagesCapacity;
 };
 
 // Calculate the actual size needed for each object (including header)
@@ -34,7 +36,7 @@ static size_t calculate_object_size(size_t requested_size) {
 }
 
 // Allocate a new page of objects and add them to the free list
-static int allocate_page(ObjectAllocator* allocator) {
+static int allocate_page(MemPool* allocator) {
     if (!allocator) {
         return 0;
     }
@@ -84,13 +86,13 @@ static int allocate_page(ObjectAllocator* allocator) {
 }
 
 // Create a new object allocator
-ObjectAllocator* oa_create(size_t objectSize, size_t objectsPerPage) {
+MemPool* mem_pool_create(size_t objectSize, size_t objectsPerPage) {
     if (objectSize == 0 || objectsPerPage == 0) {
         return NULL;
     }
     
     // Allocate and initialize the object allocator
-    ObjectAllocator* allocator = (ObjectAllocator*)malloc(sizeof(ObjectAllocator));
+    MemPool* allocator = (MemPool*)malloc(sizeof(MemPool));
     if (!allocator) {
         return NULL;
     }
@@ -104,6 +106,8 @@ ObjectAllocator* oa_create(size_t objectSize, size_t objectsPerPage) {
     allocator->pageCount = 0;
     allocator->totalObjects = 0;
     allocator->freeObjects = 0;
+    allocator->totalAllocs = 0;
+    allocator->peakLiveBytes = 0;
     allocator->freeList = NULL;
     allocator->pagesCapacity = 10; // Initial capacity for pages array
     
@@ -118,7 +122,7 @@ ObjectAllocator* oa_create(size_t objectSize, size_t objectsPerPage) {
 }
 
 // Destroy an object allocator and free all associated memory
-void oa_destroy(ObjectAllocator* allocator) {
+void mem_pool_destroy(MemPool* allocator) {
     if (!allocator) {
         return;
     }
@@ -136,7 +140,7 @@ void oa_destroy(ObjectAllocator* allocator) {
 }
 
 // Allocate an object from the allocator
-void* oa_alloc(ObjectAllocator* allocator) {
+void* mem_pool_alloc(MemPool* allocator) {
     if (!allocator) {
         return NULL;
     }
@@ -154,7 +158,12 @@ void* oa_alloc(ObjectAllocator* allocator) {
     
     // Update statistics
     allocator->freeObjects--;
-    
+    allocator->totalAllocs++;
+    {
+        size_t live = (allocator->totalObjects - allocator->freeObjects) * allocator->objectSize;
+        if (live > allocator->peakLiveBytes) allocator->peakLiveBytes = live;
+    }
+
     // We want to keep the memory untouched for test_reuse to work properly
     // Clear only the header to avoid data leakage
     obj->next = NULL;
@@ -163,7 +172,7 @@ void* oa_alloc(ObjectAllocator* allocator) {
 }
 
 // Free an object back to the allocator
-void oa_free(ObjectAllocator* allocator, void* object) {
+void mem_pool_free(MemPool* allocator, void* object) {
     if (!allocator || !object) {
         return;
     }
@@ -179,13 +188,15 @@ void oa_free(ObjectAllocator* allocator, void* object) {
     allocator->freeObjects++;
 }
 
-// Get statistics about the allocator's current state
-void oa_get_stats(ObjectAllocator* allocator, size_t* pageCount, size_t* totalObjects, size_t* freeObjects) {
-    if (!allocator || !pageCount || !totalObjects || !freeObjects) {
+void mem_pool_get_stats(MemPool* pool, MemStats* out) {
+    if (!pool || !out) {
         return;
     }
-    
-    *pageCount = allocator->pageCount;
-    *totalObjects = allocator->totalObjects;
-    *freeObjects = allocator->freeObjects;
+    memset(out, 0, sizeof(*out));
+    out->liveBytes = (pool->totalObjects - pool->freeObjects) * pool->objectSize;
+    out->peakBytes = pool->peakLiveBytes;
+    out->totalAllocs = pool->totalAllocs;
+    out->pageCount = pool->pageCount;
+    out->totalObjects = pool->totalObjects;
+    out->freeObjects = pool->freeObjects;
 }

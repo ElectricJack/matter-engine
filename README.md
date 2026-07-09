@@ -16,7 +16,7 @@ Ordered roughly from foundational → integration.
 
 C++ raylib starter with ImGui integration — a rotating cube with live controls and the canonical Dear ImGui demo window. Every later project was forked from this template.
 
-### `ObjectAllocatorLib/` — paged growable allocator (C)
+### `MemoryLib/` — memory managers: pool, arena, growable array (C)
 
 Test-driven C allocator that grows in pages of fixed-size objects. No graphics. **6/6 tests pass.**
 
@@ -34,7 +34,7 @@ Generic spatial hash for radius/box queries and a CPU-side BVH that can flatten 
 
 ![OpenParticleSurfaceLib screenshot](docs/screenshots/open_particle_surface_lib.png)
 
-C library that hot-rebuilds isosurface meshes as particles move. Pulls in `SurfaceLib` and `ObjectAllocatorLib`. Tested up to 1M particles with active-cell tracking and dirty-bounds rebuilds.
+C library that hot-rebuilds isosurface meshes as particles move. Pulls in `SurfaceLib` and `MemoryLib`. Tested up to 1M particles with active-cell tracking and dirty-bounds rebuilds.
 
 ### `GPURayTraceExample/` — pixel-shader BVH ray tracer
 
@@ -72,7 +72,7 @@ See [`ROADMAP.md`](./ROADMAP.md) for the design intent behind each project and w
 # Clean and rebuild from scratch
 ./build-all.sh clean
 
-# Build, then run the headless test suites (ObjectAllocatorLib + SpatialQueryLib)
+# Build, then run the headless test suites (MemoryLib + SpatialQueryLib)
 ./build-all.sh test
 ```
 
@@ -96,7 +96,7 @@ make WSL_LINUX=1    # or just `make` on native Linux/macOS
 |---|---|---|
 | `BasicWindowApp` | `make` | `./cube_app` |
 | `SurfaceLib` | `make` | `./surface_app` |
-| `ObjectAllocatorLib` | `make` | `./objectallocator` (test runner) |
+| `MemoryLib` | `make` | `./memorylib` (test runner) |
 | `SpatialQueryLib` | `make` | `./spatialquerylib` (test runner) |
 | `OpenParticleSurfaceLib` | `make` | `./open_particle_surface` |
 | `GPURayTraceExample` | `make WSL_LINUX=1` | `./gpu_raytrace` |
@@ -108,7 +108,7 @@ make WSL_LINUX=1    # or just `make` on native Linux/macOS
 Working as of the latest commit, verified by `./build-all.sh test` on Linux/WSL with an RTX 4090 via WSLg:
 
 - All 8 projects build cleanly
-- All 15 headless tests pass (6 in `ObjectAllocatorLib`, 9 in `SpatialQueryLib`)
+- All 15 headless tests pass (6 in `MemoryLib`, 9 in `SpatialQueryLib`)
 - All raylib apps initialize a window and reach the render loop
 - `MatterSurfaceLib` runs the full pipeline: 1 cluster → 80 cells → marching-cubes mesh generation → BLAS registration → TLAS-based GPU ray tracing
 

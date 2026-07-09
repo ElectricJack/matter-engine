@@ -43,7 +43,7 @@ ProjectName/
 
 To share code between projects while maintaining independence:
 
-1. Library projects (like `SurfaceLib`, `ObjectAllocatorLib`, `SpatialQueryLib`) organize reusable code in `include/` and `src/` directories
+1. Library projects (like `SurfaceLib`, `MemoryLib`, `SpatialQueryLib`) organize reusable code in `include/` and `src/` directories
 2. Consumer projects reference siblings via `-I../OtherProject/include` in their Makefile's CFLAGS (the common approach today; see `ParticleDynamicsExample/Makefile` for an example pulling in `SpatialQueryLib`)
 3. As an alternative, consumer projects can create symlinks to specific files when finer-grained reuse is needed
 

@@ -32,7 +32,7 @@ esac
 SIMPLE_PROJECTS=(
     BasicWindowApp
     SurfaceLib
-    ObjectAllocatorLib
+    MemoryLib
     SpatialQueryLib
     MatterEngine3
     MatterViewer
@@ -139,16 +139,18 @@ if [ "$MODE" = "test" ]; then
     echo "--- grep-gate (MatterViewer dependency rule) ---"
     bash MatterEngine3/tools/grep_gate.sh || RESULT[MatterViewer]="FAIL (grep-gate)"
 
-    for proj in ObjectAllocatorLib SpatialQueryLib; do
+    for proj in MemoryLib SpatialQueryLib; do
         bin="$proj/$(echo "$proj" | tr '[:upper:]' '[:lower:]')"
-        # ObjectAllocatorLib's binary is named "objectallocator" (no Lib suffix).
-        [ "$proj" = "ObjectAllocatorLib" ] && bin="$proj/objectallocator"
         if [ -x "$bin" ]; then
             echo
             echo "--- $proj ---"
             "$bin" || RESULT[$proj]="FAIL (tests)"
         fi
     done
+
+    echo
+    echo "--- MemoryLib (memory_tests + memory_hpp_tests) ---"
+    make -C MemoryLib test || RESULT[MemoryLib]="FAIL (tests)"
 
     # MatterSurfaceLib headless suites (no GL window). Target name == binary name.
     # mesh_indexed_tests, mesh_transform_tests are Phase 5 additions (Task 2/3).

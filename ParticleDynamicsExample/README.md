@@ -129,7 +129,7 @@ static constexpr int   MAX_NEIGHBORS          = 16;    // Safety limit for neigh
 
 ### Dependencies
 - **SpatialQueryLib** - Spatial hash implementation
-- **ObjectAllocatorLib** - Memory management  
+- **MemoryLib** - Memory management  
 - **raylib** - Graphics and windowing
 - **Standard C++14** compiler
 
@@ -151,8 +151,7 @@ make
 ParticleDynamicsExample/
 ├── src/
 │   ├── particle_system.cpp    # Main simulation with spatial optimization
-│   ├── spatial_hash.c         # Spatial hash implementation  
-│   └── object_allocator.c     # Memory management
+│   └── spatial_hash.c         # Spatial hash implementation  
 ├── include/
 │   └── particle_system.h     # Core data structures and parameters
 ├── main.cpp                   # Demo application and UI

@@ -1,5 +1,5 @@
 #include "../include/spatial_hash.h"
-#include "object_allocator.h"
+#include "mem_pool.h"
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>
@@ -32,7 +32,7 @@ struct SpatialHash {
     int bucketCount;
     float cellSize;
     int totalObjects;
-    ObjectAllocator* entryAllocator;
+    MemPool* entryAllocator;
 };
 
 /* Compute the next power of two >= n (n must be > 0) */
@@ -91,7 +91,7 @@ SpatialHash* sh_create(float cellSize, int initialCapacity) {
     hash->totalObjects = 0;
 
     // Create allocator for bucket entries
-    hash->entryAllocator = oa_create(sizeof(BucketEntry), initialCapacity);
+    hash->entryAllocator = mem_pool_create(sizeof(BucketEntry), initialCapacity);
     if (!hash->entryAllocator) {
         free(hash->buckets);
         free(hash);
@@ -110,7 +110,7 @@ void sh_destroy(SpatialHash* hash) {
 
     // Destroy allocator
     if (hash->entryAllocator) {
-        oa_destroy(hash->entryAllocator);
+        mem_pool_destroy(hash->entryAllocator);
     }
 
     // Free buckets array
@@ -127,7 +127,7 @@ void sh_clear(SpatialHash* hash) {
         BucketEntry* entry = hash->buckets[i].head;
         while (entry) {
             BucketEntry* next = entry->next;
-            oa_free(hash->entryAllocator, entry);
+            mem_pool_free(hash->entryAllocator, entry);
             entry = next;
         }
         hash->buckets[i].head = NULL;
@@ -149,7 +149,7 @@ bool sh_insert(SpatialHash* hash, float x, float y, float z, void* object) {
     unsigned int bucketIndex = hash_coord(coord, mask);
 
     // Create new entry
-    BucketEntry* entry = (BucketEntry*)oa_alloc(hash->entryAllocator);
+    BucketEntry* entry = (BucketEntry*)mem_pool_alloc(hash->entryAllocator);
     if (!entry) return false;
 
     entry->object = object;
@@ -186,7 +186,7 @@ bool sh_remove(SpatialHash* hash, float x, float y, float z, void* object) {
             entry->x == x && entry->y == y && entry->z == z) {
             // Remove from linked list
             *current = entry->next;
-            oa_free(hash->entryAllocator, entry);
+            mem_pool_free(hash->entryAllocator, entry);
             hash->buckets[bucketIndex].count--;
             hash->totalObjects--;
             return true;

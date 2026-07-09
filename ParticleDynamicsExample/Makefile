@@ -2,9 +2,9 @@ CC = gcc
 CXX = g++
 RAYLIB_PATH = ../Libraries/raylib
 SPATIAL_QUERY_PATH = ../SpatialQueryLib
-OA_LIB = ../ObjectAllocatorLib
-CFLAGS = -Wall -Wextra -O2 -I$(RAYLIB_PATH)/src -I./include -I$(SPATIAL_QUERY_PATH)/include -I$(OA_LIB)/include
-CXXFLAGS = -Wall -Wextra -O2 -std=c++14 -Wno-missing-field-initializers -I$(RAYLIB_PATH)/src -I./include -I$(SPATIAL_QUERY_PATH)/include -I$(OA_LIB)/include
+MEMORY_LIB = ../MemoryLib
+CFLAGS = -Wall -Wextra -O2 -I$(RAYLIB_PATH)/src -I./include -I$(SPATIAL_QUERY_PATH)/include -I$(MEMORY_LIB)/include
+CXXFLAGS = -Wall -Wextra -O2 -std=c++14 -Wno-missing-field-initializers -I$(RAYLIB_PATH)/src -I./include -I$(SPATIAL_QUERY_PATH)/include -I$(MEMORY_LIB)/include
 
 # Build flags:
 # TARGET=linux           : Build Linux executable (overrides default Windows build)
@@ -66,7 +66,7 @@ $(shell mkdir -p $(RAYLIB_PATH)/build/$(PLATFORM))
 
 # C++ main application with spatial query library and demos
 SRC = main.cpp src/particle_system.cpp src/material_manager.cpp src/gamified_physics.cpp src/cluster.cpp src/cluster_manager.cpp src/solar_system_demo.cpp src/material_sandbox_demo.cpp
-OBJ = $(OBJ_DIR)/main.o $(OBJ_DIR)/particle_system.o $(OBJ_DIR)/material_manager.o $(OBJ_DIR)/gamified_physics.o $(OBJ_DIR)/cluster.o $(OBJ_DIR)/cluster_manager.o $(OBJ_DIR)/solar_system_demo.o $(OBJ_DIR)/material_sandbox_demo.o $(OBJ_DIR)/object_allocator.o $(OBJ_DIR)/spatial_hash.o
+OBJ = $(OBJ_DIR)/main.o $(OBJ_DIR)/particle_system.o $(OBJ_DIR)/material_manager.o $(OBJ_DIR)/gamified_physics.o $(OBJ_DIR)/cluster.o $(OBJ_DIR)/cluster_manager.o $(OBJ_DIR)/solar_system_demo.o $(OBJ_DIR)/material_sandbox_demo.o $(OBJ_DIR)/mem_pool.o $(OBJ_DIR)/spatial_hash.o
 BIN = $(BUILD_DIR)/particle_dynamics$(BIN_SUFFIX)
 
 all: $(BIN)
@@ -134,7 +134,7 @@ $(OBJ_DIR)/%.o: src/%.c
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 # Sibling library sources compiled directly from source of truth
-$(OBJ_DIR)/object_allocator.o: $(OA_LIB)/src/object_allocator.c $(OA_LIB)/include/object_allocator.h
+$(OBJ_DIR)/mem_pool.o: $(MEMORY_LIB)/src/mem_pool.c $(MEMORY_LIB)/include/mem_pool.h
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 $(OBJ_DIR)/spatial_hash.o: $(SPATIAL_QUERY_PATH)/src/spatial_hash.c $(SPATIAL_QUERY_PATH)/include/spatial_hash.h

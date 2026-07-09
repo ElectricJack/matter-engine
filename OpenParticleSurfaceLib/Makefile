@@ -1,8 +1,8 @@
 CC = gcc
 RAYLIB_PATH = ../Libraries/raylib
 SPATIAL_QUERY_PATH = ../SpatialQueryLib
-OA_LIB = ../ObjectAllocatorLib
-CFLAGS = -Wall -Wextra -O2 -I$(RAYLIB_PATH)/src -Iinclude -I$(SPATIAL_QUERY_PATH)/include -I$(OA_LIB)/include
+MEMORY_LIB = ../MemoryLib
+CFLAGS = -Wall -Wextra -O2 -I$(RAYLIB_PATH)/src -Iinclude -I$(SPATIAL_QUERY_PATH)/include -I$(MEMORY_LIB)/include
 
 # Detect OS and set platform-specific variables
 UNAME_S := $(shell uname -s)
@@ -39,7 +39,7 @@ $(shell mkdir -p $(RAYLIB_PATH)/build/$(PLATFORM))
 
 # Source files - sibling library sources compiled directly from source of truth
 SRCS = main.c $(SRC_DIR)/open_particle_surface.c $(SRC_DIR)/surface.c
-OBJS = $(OBJ_DIR)/main.o $(OBJ_DIR)/$(SRC_DIR)/open_particle_surface.o $(OBJ_DIR)/$(SRC_DIR)/surface.o $(OBJ_DIR)/$(SRC_DIR)/object_allocator.o $(OBJ_DIR)/$(SRC_DIR)/spatial_hash.o
+OBJS = $(OBJ_DIR)/main.o $(OBJ_DIR)/$(SRC_DIR)/open_particle_surface.o $(OBJ_DIR)/$(SRC_DIR)/surface.o $(OBJ_DIR)/$(SRC_DIR)/mem_pool.o $(OBJ_DIR)/$(SRC_DIR)/spatial_hash.o
 
 # Target executable (platform-specific)
 BIN = $(BUILD_DIR)/open_particle_surface
@@ -89,7 +89,7 @@ $(OBJ_DIR)/$(SRC_DIR)/%.o: $(SRC_DIR)/%.c
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 # Sibling library sources compiled directly from source of truth
-$(OBJ_DIR)/$(SRC_DIR)/object_allocator.o: $(OA_LIB)/src/object_allocator.c $(OA_LIB)/include/object_allocator.h
+$(OBJ_DIR)/$(SRC_DIR)/mem_pool.o: $(MEMORY_LIB)/src/mem_pool.c $(MEMORY_LIB)/include/mem_pool.h
 	mkdir -p $(OBJ_DIR)/$(SRC_DIR)
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 

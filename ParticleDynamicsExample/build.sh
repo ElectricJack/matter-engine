@@ -44,26 +44,26 @@ echo "Setting up project directories..."
 mkdir -p src include build
 
 # Copy object allocator if available
-if [ -f "../ObjectAllocatorLib/src/object_allocator.c" ]; then
-    echo "Copying object allocator from ObjectAllocatorLib..."
-    cp ../ObjectAllocatorLib/src/object_allocator.c src/
-    cp ../ObjectAllocatorLib/include/object_allocator.h include/ 2>/dev/null || true
+if [ -f "../MemoryLib/src/mem_pool.c" ]; then
+    echo "Copying object allocator from MemoryLib..."
+    cp ../MemoryLib/src/mem_pool.c src/
+    cp ../MemoryLib/include/mem_pool.h include/ 2>/dev/null || true
 else
-    echo "Warning: ObjectAllocatorLib not found. Creating stub..."
-    cat > src/object_allocator.c << 'EOF'
+    echo "Warning: MemoryLib not found. Creating stub..."
+    cat > src/mem_pool.c << 'EOF'
 // Stub object allocator - replace with real implementation
 #include <stdlib.h>
 #include <stdio.h>
 
-void* object_allocator_alloc(size_t size) {
+void* mem_pool_alloc(size_t size) {
     return malloc(size);
 }
 
-void object_allocator_free(void* ptr) {
+void mem_pool_free(void* ptr) {
     free(ptr);
 }
 
-void object_allocator_init() {
+void mem_pool_init() {
     printf("Using stub object allocator\n");
 }
 EOF
