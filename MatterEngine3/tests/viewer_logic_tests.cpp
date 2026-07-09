@@ -180,6 +180,7 @@ static void test_local_provider_cache() {
         g_shared_store = new viewer::PartStore(cache);
         auto want = prov.reconcile(m, *g_shared_store);
         CHECK(prov.fetch_parts(want, *g_shared_store, err), "fetch_parts loads all wanted parts");
+        CHECK(prov.fetch_failed().empty(), "fetch_parts had no per-part failures");
 
         // Force-load any parts not yet in the store (warm-run case: reconcile returned
         // empty so fetch_parts was a no-op, but downstream tests still need them loaded).
@@ -1267,6 +1268,7 @@ static void test_install_phase_on_part_progress() {
         size_t pre = callbacks.size();
         bool fp_ok = prov.fetch_parts(want, store, err);
         CHECK(fp_ok, "install_phase_progress: fetch_parts succeeds");
+        CHECK(prov.fetch_failed().empty(), "install_phase_progress: fetch_parts had no per-part failures");
         size_t fetch_cb_count = callbacks.size() - pre;
         // Every fetch callback should carry total == want.size().
         bool fetch_totals_ok = true;

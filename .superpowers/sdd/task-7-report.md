@@ -421,3 +421,7 @@ exit=0
 ```
 
 All 9 cases pass.
+
+**D. Test assertion fix: `fetch_failed()` assertions at test call sites (`MatterEngine3/tests/viewer_logic_tests.cpp`)**
+
+Two test call sites (lines 182 and 1268) that previously only checked the boolean return value of `fetch_parts()` were updated to also assert that `fetch_failed()` is empty, confirming that no per-part load failures occurred. Added via commit 07e8231.
