@@ -33,6 +33,14 @@ Sim::Sim(SimConfig cfg)
       live_hash_(cfg_.hash_cell > 0 ? cfg_.hash_cell : auto_cell(cfg_)) {
     attrs_.resize(cfg_.attributes.size());
     emit_acc_.assign(cfg_.emitters.size(), 0.0f);
+    // pre-reserve to capacity: onTick views hold raw pointers; growth must never reallocate
+    pos_.reserve(3 * cfg_.max_particles);
+    vel_.reserve(3 * cfg_.max_particles);
+    alive_.reserve(cfg_.max_particles);
+    id_.reserve(cfg_.max_particles);
+    age_.reserve(cfg_.max_particles);
+    dep_dist_.reserve(cfg_.max_particles);
+    for (auto& ch : attrs_) ch.reserve(cfg_.max_particles);
 }
 
 void Sim::attach(ITickObserver* o) { observers_.push_back(o); }
