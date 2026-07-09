@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace part_graph {
@@ -101,6 +102,25 @@ struct ResolvedNode {
     std::vector<uint64_t> child_keys;    // direct children's memo keys (for topo edges)
 };
 
+// Bake policy controlling which nodes are actually baked during install().
+// All     = today's behavior: every reachable node is baked (or cache-hit).
+// RootsOnly = only root nodes are baked; non-root nodes are resolved and
+//             recorded in bake_plan but not baked. Use ensure_part_baked()
+//             (LocalProvider) to bake individual subtrees on demand.
+enum class BakePolicy { All, RootsOnly };
+
+// Everything Baker::bake needs for one resolved node.  Retained in
+// InstallResult::bake_plan so on-demand bake can be driven post-install
+// without re-resolving the graph.
+struct BakeInputs {
+    std::string              module;
+    std::string              source;
+    Params                   params;
+    std::vector<uint64_t>    child_hashes;
+    std::vector<std::string> child_modules;
+    std::vector<std::string> child_params;
+};
+
 // One per-part failure recorded under skip-and-continue policy.
 struct FailedPart {
     std::string module;    // module name (or "unknown" if unavailable)
@@ -117,6 +137,11 @@ struct InstallResult {
     // Task 7: skip-and-continue. Populated even when ok==true (partial failure).
     // A root whose resolve failed has hash 0 in root_hashes AND an entry in failed[].
     std::vector<FailedPart>  failed;      // parts that failed but were skipped
+    // Task 13 (Phase C): retained bake plan — every resolved node, keyed by
+    // resolved_hash. Populated regardless of BakePolicy so on-demand bake has
+    // full graph info even after a RootsOnly install. Used by
+    // LocalProvider::ensure_part_baked().
+    std::unordered_map<uint64_t, BakeInputs> bake_plan;
 };
 
 class PartGraph {
@@ -127,8 +152,12 @@ public:
     // If snap is non-null, it is populated with the graph snapshot (Task 9:
     // live-edit production seams). Run on the WORKER thread under the async
     // session — no extra locking needed (install is the sole graph mutator).
+    // policy=BakePolicy::All (default) bakes every node — today's behavior.
+    // policy=BakePolicy::RootsOnly bakes only root nodes; non-roots are
+    // resolved and captured in result.bake_plan for later on-demand bake.
     InstallResult install(const std::vector<ChildRequest>& roots,
-                          part_graph_snapshot::Snapshot* snap = nullptr);
+                          part_graph_snapshot::Snapshot* snap = nullptr,
+                          BakePolicy policy = BakePolicy::All);
 
     // Parse WorldData/<world>/world.manifest into root ChildRequests. Each line:
     // "<Module> [expand] [tileset]"; '#' starts a comment. Roots take their `static params`

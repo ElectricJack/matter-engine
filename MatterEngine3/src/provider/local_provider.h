@@ -77,7 +77,26 @@ public:
 
     // Heavy phase: ScriptHost + PartGraph::install (script eval, mesh, per-part bake).
     // Must be called before compose_world(). Idempotent state reset happens here.
-    bool install_graph(std::string& err);
+    // policy=BakePolicy::All (default) bakes every node — today's behavior.
+    // policy=BakePolicy::RootsOnly only bakes root nodes; use ensure_part_baked()
+    // to bake individual part subtrees on demand after install.
+    bool install_graph(std::string& err,
+                       part_graph::BakePolicy policy = part_graph::BakePolicy::All);
+
+    // Task 13 (Phase C): on-demand bake primitives.
+    // Bake one part (and, post-order, any unbaked children in its subtree) using
+    // the retained bake_plan from the last install_graph(). cached() short-circuits
+    // per node; also runs bake_lod_variants for freshly-baked nodes. Safe to call
+    // from the worker thread after install_graph (host_ is idle post-install).
+    // Returns false (with err set) on bake failure; true on success or already cached.
+    bool ensure_part_baked(uint64_t part_hash, std::string& err);
+
+    // Flatten one baked part to .flat.part (moved from compose_world's flatten_one
+    // lambda into a member; identical logic incl. retopo_by_hash_ threading +
+    // version sniff). Requires the part to have been baked (ensure_part_baked first).
+    // Returns false (non-fatal) if flatten_part fails; caller falls back to
+    // compositional rendering.
+    bool ensure_part_flattened(uint64_t part_hash);
 
     // Post-install: scatter/place, expand, per-root flatten, instance refs,
     // tileset phase (via gpu_run), probe bake. Reusable after a cone rebake.
@@ -138,6 +157,7 @@ private:
     // Owned objects that span both phases.
     std::unique_ptr<script_host::ScriptHost>            host_;
     std::unique_ptr<part_graph::FileModuleResolver>     resolver_;
+    std::unique_ptr<part_graph::HostBaker>              host_baker_;  // Task 13: shared baker
     std::unordered_map<uint64_t, part_asset::RetopoSettings> retopo_by_hash_;
 #endif
 };

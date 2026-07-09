@@ -189,7 +189,7 @@ std::string class_name_from_source(const std::string& source) {
 
 LocalProvider::LocalProvider(LocalProviderConfig cfg) : cfg_(std::move(cfg)) {}
 
-bool LocalProvider::install_graph(std::string& err) {
+bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy policy) {
     // Reset all mutable state at entry so repeated install_graph() calls are
     // idempotent. Unload any previously-loaded tileset slots so a re-connect
     // for a different world doesn't inherit stale atlases. Also reset the
@@ -251,6 +251,9 @@ bool LocalProvider::install_graph(std::string& err) {
     host_->set_shared_lib_root(abs_shared_lib_);
     resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_schemas_);
     retopo_by_hash_.clear();
+    // Task 13 (Phase C): create a shared HostBaker that persists beyond install_graph()
+    // so ensure_part_baked() can reuse it without reconstructing a ScriptHost.
+    host_baker_ = std::make_unique<part_graph::HostBaker>(*host_, abs_cache_root_);
 
     // Capture cfg_ pointer for the RecordingBaker lambda (install-phase on_part).
     LocalProviderConfig* cfg_ptr = &cfg_;
@@ -269,18 +272,21 @@ bool LocalProvider::install_graph(std::string& err) {
     //
     // Task 5 (Phase B): RecordingBaker::bake() also fires cfg_.on_part for
     // each freshly-baked part during install, with total==0 (indeterminate).
+    // Task 13: RecordingBaker delegates to *host_baker_ (the shared HostBaker
+    // member) instead of an inline inner, so ensure_part_baked() reuses it.
     std::unordered_map<uint64_t, part_asset::RetopoSettings>* retopo_map_ptr = &retopo_by_hash_;
     script_host::ScriptHost* host_raw = host_.get();
+    part_graph::HostBaker* shared_baker_ptr = host_baker_.get();
     struct RecordingBaker : public Baker {
-        HostBaker inner;
+        part_graph::HostBaker& inner;
         script_host::ScriptHost& host;
         std::unordered_map<uint64_t, part_asset::RetopoSettings>* map;
         LocalProviderConfig* cfg;
         int* install_bake_count;
-        RecordingBaker(script_host::ScriptHost& h, std::string parts_dir,
+        RecordingBaker(part_graph::HostBaker& b, script_host::ScriptHost& h,
                        std::unordered_map<uint64_t, part_asset::RetopoSettings>* m,
                        LocalProviderConfig* c, int* ibc)
-            : inner(h, std::move(parts_dir)), host(h), map(m), cfg(c), install_bake_count(ibc) {}
+            : inner(b), host(h), map(m), cfg(c), install_bake_count(ibc) {}
         uint64_t resolve_hash(const std::string& source, const Params& params,
                               const std::vector<uint64_t>& child_hashes) override {
             uint64_t h = inner.resolve_hash(source, params, child_hashes);
@@ -319,7 +325,7 @@ bool LocalProvider::install_graph(std::string& err) {
             return inner.bake_lod_variants(source, params, child_hashes, resolved_hash);
         }
     };
-    RecordingBaker baker(*host_, abs_cache_root_, &retopo_by_hash_, cfg_ptr, install_bake_count_ptr);
+    RecordingBaker baker(*shared_baker_ptr, *host_, &retopo_by_hash_, cfg_ptr, install_bake_count_ptr);
     PartGraph graph(*resolver_, baker);
 
     bool manifest_ok = PartGraph::read_manifest(abs_world_data_, cfg_.world_name,
@@ -353,7 +359,7 @@ bool LocalProvider::install_graph(std::string& err) {
         }
     }
 
-    ir_ = graph.install(roots_for_install_, &graph_snapshot_);
+    ir_ = graph.install(roots_for_install_, &graph_snapshot_, policy);
     if (!ir_.ok) {
         err = ir_.error;
         return false;
@@ -396,6 +402,104 @@ bool LocalProvider::install_graph(std::string& err) {
 #endif
 }
 
+bool LocalProvider::ensure_part_baked(uint64_t part_hash, std::string& err) {
+#if defined(MATTER_HAVE_SCRIPT_HOST)
+    if (!host_baker_) {
+        err = "ensure_part_baked: install_graph() has not been called";
+        return false;
+    }
+
+    // Post-order DFS over bake_plan children so children are baked before parents.
+    // Each node: cached() short-circuits; otherwise bake + bake_lod_variants.
+    // Visited set prevents double-visiting in a DAG (shared children).
+    std::set<uint64_t> visited;
+    std::string bake_err;
+
+    std::function<bool(uint64_t)> bake_subtree = [&](uint64_t hash) -> bool {
+        if (visited.count(hash)) return true;
+        visited.insert(hash);
+
+        auto it = ir_.bake_plan.find(hash);
+        if (it == ir_.bake_plan.end()) {
+            // Not in bake_plan — already baked by install (BakePolicy::All path)
+            // or not a known node. Treat as cached/ok.
+            return true;
+        }
+        const part_graph::BakeInputs& bi = it->second;
+
+        // Recurse into children first (post-order).
+        for (uint64_t child_hash : bi.child_hashes) {
+            if (!bake_subtree(child_hash)) return false;
+        }
+
+        // cached() short-circuits
+        if (host_baker_->cached(hash)) return true;
+
+        // Bake
+        bool bake_ok = false;
+        try {
+            bake_ok = host_baker_->bake(bi.source, bi.params, bi.child_hashes,
+                                        bi.child_modules, bi.child_params, hash);
+        } catch (std::bad_alloc&) {
+            bake_err = "out of memory baking part: " + bi.module;
+            return false;
+        } catch (std::exception& e) {
+            bake_err = std::string("exception baking part: ") + bi.module + ": " + e.what();
+            return false;
+        } catch (...) {
+            bake_err = "unknown exception baking part: " + bi.module;
+            return false;
+        }
+        if (!bake_ok) {
+            bake_err = "bake failed for part: " + bi.module;
+            return false;
+        }
+
+        // bake_lod_variants (mirrors install's per-node call)
+        if (!host_baker_->bake_lod_variants(bi.source, bi.params, bi.child_hashes, hash)) {
+            bake_err = "lod-variant bake failed for part: " + bi.module;
+            return false;
+        }
+
+        return true;
+    };
+
+    bool ok = bake_subtree(part_hash);
+    if (!ok) err = bake_err;
+    return ok;
+#else
+    err = "ensure_part_baked: MATTER_HAVE_SCRIPT_HOST not defined";
+    return false;
+#endif
+}
+
+bool LocalProvider::ensure_part_flattened(uint64_t part_hash) {
+    // Identical logic to compose_world's flatten_one lambda (moved here verbatim
+    // as a member; compose_world delegates to this function).
+    const std::string flat_abs_path =
+        abs_cache_root_ + "/" + part_asset::cache_path_flat(part_hash);
+    if (part_asset::peek_format_version(flat_abs_path) == part_asset::kFormatVersionFlat)
+        return true;
+    part_flatten::FlattenTargets targets;
+#if defined(MATTER_HAVE_SCRIPT_HOST)
+    auto rit = retopo_by_hash_.find(part_hash);
+    if (rit != retopo_by_hash_.end()) targets.retopo = rit->second;
+#endif
+    part_flatten::FlattenResult fr =
+        part_flatten::flatten_part(abs_cache_root_, part_hash, targets);
+    if (fr.ok) {
+        printf("LocalProvider: flattened %016llx (%zu clusters, %zu levels, %zu -> %zu tris, %zu instance_refs%s)\n",
+               (unsigned long long)part_hash, fr.clusters, fr.levels,
+               fr.full_tris, fr.coarsest_tris, fr.instance_refs,
+               targets.retopo.enabled ? ", retopo=on" : "");
+        return true;
+    } else {
+        printf("LocalProvider: flatten failed for %016llx: %s\n",
+               (unsigned long long)part_hash, fr.error.c_str());
+        return false;
+    }
+}
+
 bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
     // Requires install_graph() to have succeeded.
     // All absolute paths (abs_*_) are set by install_graph().
@@ -419,36 +523,10 @@ bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
     // into per-cluster meshes with per-cluster LOD ladders (<hash>.flat.part),
     // so the viewer renders flat cluster instances per root instead of
     // re-expanding hundreds of child instances each frame.
-    // Content-addressed AND version-sniffed: regenerate when the flat artifact
-    // is missing OR from an older bake version (peek_format_version != kFormatVersionFlat).
+    // Task 13: delegates to ensure_part_flattened() (member) so the logic lives
+    // in one place and is reusable from on-demand flatten paths.
     auto flatten_one = [&](uint64_t part_hash) -> bool {
-        const std::string flat_abs_path =
-            abs_cache_root_ + "/" + part_asset::cache_path_flat(part_hash);
-        if (part_asset::peek_format_version(flat_abs_path) == part_asset::kFormatVersionFlat)
-            return true;
-        // Phase 5 (Task 15): thread the per-schema retopo settings recorded
-        // during bake into the flatten call. Absent-entry lookup returns the
-        // default (enabled=false), so parts with no `static retopo` in their
-        // schema behave exactly as before — no retopo, no .retopo.part sidecar.
-        part_flatten::FlattenTargets targets;
-#if defined(MATTER_HAVE_SCRIPT_HOST)
-        auto rit = retopo_by_hash_.find(part_hash);
-        if (rit != retopo_by_hash_.end()) targets.retopo = rit->second;
-#endif
-        part_flatten::FlattenResult fr =
-            part_flatten::flatten_part(abs_cache_root_, part_hash, targets);
-        if (fr.ok) {
-            printf("LocalProvider: flattened %016llx (%zu clusters, %zu levels, %zu -> %zu tris, %zu instance_refs%s)\n",
-                   (unsigned long long)part_hash, fr.clusters, fr.levels,
-                   fr.full_tris, fr.coarsest_tris, fr.instance_refs,
-                   targets.retopo.enabled ? ", retopo=on" : "");
-            return true;
-        } else {
-            // Non-fatal: the viewer falls back to compositional rendering.
-            printf("LocalProvider: flatten failed for %016llx: %s\n",
-                   (unsigned long long)part_hash, fr.error.c_str());
-            return false;
-        }
+        return ensure_part_flattened(part_hash);
     };
     auto flatten_placed = [&]() {
         std::set<uint64_t> done;
