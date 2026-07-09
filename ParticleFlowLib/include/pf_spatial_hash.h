@@ -1,8 +1,12 @@
 #pragma once
-#include "particle_flow.h"
+// Included by particle_flow.h after V3 is defined; do not include directly.
+// V3 must be defined in pf namespace before this is included.
 #include <cmath>
 #include <unordered_map>
 #include <utility>
+
+// Forward declare V3 for use in this header
+namespace pf { struct V3; }
 
 namespace pf {
 
