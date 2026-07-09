@@ -15,13 +15,13 @@ class Rock extends Part {
     this.beginModifier();
     this.beginVoxels(0.10);
     this.fill(MAT.rock);
-    this.smoothing(0.06);
+    this.smoothing(0.035);
 
     // Dominant axis + global anisotropy: settled/bedded, not potato-round.
     const yaw = r.range(0, Math.PI * 2);
     const axis = [Math.cos(yaw), 0, Math.sin(yaw)];
     const stretch = r.range(1.1, 1.5);
-    const squashY = r.range(0.65, 0.9);
+    const squashY = r.range(0.72, 0.95);
 
     const blobs = 4 + r.int(4); // 4-7 ellipsoids
     for (let i = 0; i < blobs; ++i) {
@@ -60,7 +60,7 @@ class Rock extends Part {
       // Depth below the surface point, clamped so the plane keeps >=55% of
       // the centroid->surface distance (structurally no L-shape gouges).
       const hitDist = length(sub(hit.point, C));
-      const t = Math.min(r.range(0.03, 0.12), 0.45 * hitDist);
+      const t = Math.min(r.range(0.06, 0.2), 0.45 * hitDist);
 
       // Large box whose face lies on the plane through (hit.point - m*t):
       // center the box at q + m*B and aim +Z along -m via lookAt.
