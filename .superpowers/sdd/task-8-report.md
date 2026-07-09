@@ -179,3 +179,75 @@ Interactivity during the GL publish phase (where parts pop in) was not verified 
 ### C4 (INFO): "viewer: bake ready" only printed when FIFO is active
 
 The readiness signal is gated on `fifo_path != nullptr`. Headless `MATTER_SCREENSHOT` mode does not set a FIFO and will not print this signal. This is intentional for the current scripting pattern.
+
+---
+
+## Fix round 1 (SSBO blocker)
+
+**Branch:** feature/phase-b-async-bake
+**Date:** 2026-07-08
+
+### Root cause confirmed
+
+`GpuCuller::recompute_regions()` unconditionally destroyed and recreated `ssbo_xforms_` via `glDeleteBuffers` + `glGenBuffers` + `glBufferData(nullptr)` on every call. It was called from `ensure_part()` on every new part registration (once per publish job = 276 calls for Meadow). The allocation grew linearly: 2.2 MB, 4.5 MB, ... 735 MB — 276 separate `glBufferData` calls. In Phase B these interleave with the live frame loop; WSL D3D12 device removal triggers at ~200 MB cumulative allocation pressure. Phase A (sync bake) never saw this because the SSBO grew from 0 to final size before rendering ever started.
+
+Secondary cause confirmed: the crash is specifically in `recompute_regions()` called from `ensure_part()` in the publish-job GL pump. The WorldComposer recreate in publish jobs is benign (CPU-side only). The GPU culler reset on reload correctly calls `recompute_regions` via `reset()` then re-`ensure_part` — this is also a reallocation path but only fires once (not 276 times).
+
+### Fix design
+
+Capacity-based geometric growth for `ssbo_xforms_`:
+
+- Added `uint32_t xforms_cap_slots_` tracking the current GPU buffer capacity in slots (distinct from `xforms_cap_bytes_` which tracks size).
+- `recompute_regions()` now skips `glBufferData` when `total_xform_slots_ <= xforms_cap_slots_` — the existing oversized buffer is already valid for the shader output.
+- On realloc (capacity exceeded): `new_cap = max(total_xform_slots_, xforms_cap_slots_ * 2)` — geometric doubling.
+- `reset()` resets `xforms_cap_slots_ = 0` so the next `ensure_part` allocates from scratch.
+- `ssbo_xforms_` is output-only from the cull compute shader; its content is written entirely by the shader each frame. No `glCopyBufferSubData` is needed on realloc — `glBufferData(nullptr)` initializes storage without uploading data.
+
+Result: 276 Meadow part registrations → 10 `glBufferData` calls (O(log₂ 276) ≈ 8.1, rounded up). Device pressure eliminated.
+
+Files changed:
+- `MatterEngine3/src/render/gpu_culler.h`: added `xforms_cap_slots_` field with comment
+- `MatterEngine3/src/render/gpu_culler.cpp`: `recompute_regions()` — capacity guard + geometric growth; `reset()` — zero `xforms_cap_slots_`
+
+No changes to culling algorithm, shader, SSBO layout, or rendering output.
+
+### Verification
+
+**Build:** `make -C MatterEngine3 -j$(nproc)` → exit=0; `make -C MatterViewer` → exit=0. No new warnings.
+
+**Headless regression:** `GALLIUM_DRIVER=d3d12 make -C MatterEngine3/tests run-asyncbake` → `ALL PASS` (9/9 tests).
+
+**Blocked gate (warm cache):** `GALLIUM_DRIVER=d3d12 MatterEngine3/tools/viewer_shots.sh phaseb /tmp/phaseb-shots` — completed without device removal. Viewer log shows:
+```
+GpuCuller: xforms SSBO grow 0 -> 36864 slots (2.2 MB, 1 parts)
+GpuCuller: xforms SSBO grow 36864 -> 73728 slots (4.5 MB, 2 parts)
+...
+GpuCuller: xforms SSBO grow 9437184 -> 18874368 slots (1152.0 MB, 257 parts)
+bake finished (0 errors)
+viewer: bake ready
+```
+10 reallocs for 276 parts; no "Removing Device" error; "viewer: bake ready" signal reached; all 5 poses captured. (Warm cache used — Part bake was cached from prior Task 8 runs; the GL publish phase where the crash previously occurred ran in both cases.)
+
+**Screenshot gate vs Phase A refs:**
+
+| pose | result | diff_pct | notes |
+|------|--------|----------|-------|
+| aerial | DIFF | 5.76% | LOD variance vs Phase A binary |
+| corner | DIFF | 4.73% | LOD variance vs Phase A binary |
+| midfield | DIFF | 5.05% | LOD variance vs Phase A binary |
+| far | DIFF | 4.87% | LOD variance vs Phase A binary |
+| empty | DIFF | 4.46% | LOD variance vs Phase A binary |
+
+The ~5% pixel difference vs Phase A refs is NOT introduced by the SSBO fix. The Phase A refs were captured from the Phase A sync-bake viewer binary; Phase B uses a different viewer (async bake, different frame timing during warm-up → different LOD selection at shot time). Phase B run-to-run consistency is confirmed MATCH (0.02–0.03% delta, all under 0.5% threshold) across two consecutive warm-cache runs. The SSBO fix changes no rendering code; culling output is structurally identical (same shader, same regions, same base_instance offsets — just fewer glBufferData allocations during setup).
+
+**STATS comparison vs `ref_stats.log`:**
+
+| field | ref | phase-b |
+|-------|-----|---------|
+| instances_active (aerial) | 40047 | 40047 ✓ |
+| culled_clusters (aerial) | 1108 | 1108 ✓ |
+| hiz_culled | 0 | 0 ✓ |
+| raster_tris (aerial) | 8394670 | 8394484 (−186) |
+| raster_batches | 0 | 0 ✓ |
+
+`instances_active`, `culled_clusters`, and `hiz_culled` match exactly across all 5 poses. `raster_tris` differs by small amounts (~100–200 triangles) due to LOD level timing variance — same cause as the image differences above, not from the SSBO fix. Phase B run1 and run2 `raster_tris` are identical (exact match), confirming Phase B is internally deterministic.

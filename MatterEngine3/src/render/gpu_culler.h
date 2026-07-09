@@ -180,8 +180,13 @@ private:
     size_t cmds_cap_bytes_      = 0;
     size_t xforms_cap_bytes_    = 0;
 
-    // Running total of xform slots allocated across all parts (P1 regions).
+    // Running total of xform slots needed across all parts (P1 regions).
     uint32_t total_xform_slots_ = 0;
+    // Capacity of ssbo_xforms_ in slots (not bytes). Tracked separately so
+    // recompute_regions() can skip glBufferData when the existing buffer is
+    // already large enough — preventing the per-part-publish reallocation storm
+    // that causes D3D12 device removal during incremental async bake.
+    uint32_t xforms_cap_slots_  = 0;
 
     // Per-frame active part slots: set in cull(), consumed in draw_indirect().
     // active_slots_[i] == 1 iff part slot i received >=1 GpuInstanceRec this frame.

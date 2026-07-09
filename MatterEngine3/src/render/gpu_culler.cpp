@@ -164,11 +164,22 @@ void GpuCuller::grow_clusters_ssbo(size_t need_bytes) {
 
 // ---------------------------------------------------------------------------
 // recompute_regions — recompute ALL part region_base / cmd_template_
-// base_instance fields, then reallocate ssbo_xforms_.
+// base_instance fields, then grow ssbo_xforms_ if necessary.
 //
 // Called whenever any part's region_cap changes (overflow growth ×1.5) or a
 // new part is registered.  O(total parts * max_lod * max_clusters) but this
 // only fires on a resize event, not every frame.
+//
+// Capacity-based growth: ssbo_xforms_ is only reallocated when
+// total_xform_slots_ exceeds xforms_cap_slots_.  The new capacity is
+//   max(total_xform_slots_, xforms_cap_slots_ * 2)
+// so ~276 Meadow part registrations produce O(log 276) ≈ 9 reallocations
+// instead of 276 — preventing the D3D12 device-removal crash during
+// incremental async bake (Phase B Task 8 blocker).
+//
+// ssbo_xforms_ is output-only from the cull compute shader; its contents
+// are written entirely by the shader every frame, so the existing GPU
+// buffer content does not need to be preserved on reallocation.
 // ---------------------------------------------------------------------------
 void GpuCuller::recompute_regions() {
     total_xform_slots_ = 0;
@@ -198,22 +209,37 @@ void GpuCuller::recompute_regions() {
     // upload_cmd_template() refreshes the pristine GPU buffer.
     cmds_template_dirty_ = true;
 
-    // Reallocate ssbo_xforms_ to hold total_xform_slots_ mat4s.
-    size_t need = (size_t)total_xform_slots_ * 16 * sizeof(float);
-    if (need == 0) need = 1;   // keep valid GL object
+    // Capacity-based growth for ssbo_xforms_: only reallocate when the needed
+    // slot count exceeds the current GPU buffer capacity.  On realloc, double
+    // the capacity (geometric growth) to amortize future calls.
+    // ssbo_xforms_ is written entirely by the cull compute shader each frame;
+    // no CPU content needs to be preserved — glBufferData(nullptr) suffices.
+    if (total_xform_slots_ > xforms_cap_slots_ || !ssbo_xforms_) {
+        uint32_t new_cap = (xforms_cap_slots_ == 0)
+                         ? total_xform_slots_
+                         : xforms_cap_slots_ * 2;
+        if (new_cap < total_xform_slots_) new_cap = total_xform_slots_;
+        if (new_cap == 0) new_cap = 1;   // keep valid GL object
 
-    // P2-decision telemetry (Stage-4 brief): total xforms SSBO footprint at
-    // every registration/grow event, printed BEFORE the allocation so the
-    // number survives an out-of-memory failure.
-    printf("GpuCuller: xforms SSBO %zu bytes (%.1f MB, %u slots, %zu parts)\n",
-           need, (double)need / (1024.0 * 1024.0), total_xform_slots_, parts_.size());
+        size_t new_bytes = (size_t)new_cap * 16 * sizeof(float);
 
-    if (ssbo_xforms_) glDeleteBuffers(1, &ssbo_xforms_);
-    glGenBuffers(1, &ssbo_xforms_);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_xforms_);
-    glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)need, nullptr, GL_DYNAMIC_COPY);
-    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-    xforms_cap_bytes_ = need;
+        // P2-decision telemetry: log realloc events (not every registration).
+        printf("GpuCuller: xforms SSBO grow %u -> %u slots (%.1f MB, %zu parts)\n",
+               xforms_cap_slots_, new_cap,
+               (double)new_bytes / (1024.0 * 1024.0), parts_.size());
+
+        if (ssbo_xforms_) glDeleteBuffers(1, &ssbo_xforms_);
+        glGenBuffers(1, &ssbo_xforms_);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_xforms_);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)new_bytes, nullptr, GL_DYNAMIC_COPY);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+        xforms_cap_slots_ = new_cap;
+        xforms_cap_bytes_ = new_bytes;
+    }
+    // else: existing buffer is large enough; base_instance offsets are already
+    // updated in cmd_template_ above; the shader will write into the correct
+    // slots within the oversized buffer — no GL work needed.
 }
 
 // ---------------------------------------------------------------------------
@@ -819,6 +845,7 @@ void GpuCuller::reset() {
     cmds_cap_bytes_       = 0;
     xforms_cap_bytes_     = 0;
     total_xform_slots_    = 0;
+    xforms_cap_slots_     = 0;
     stat_culled_          = 0;
     stat_culled_hiz_      = 0;
     stat_emitted_         = 0;
