@@ -1,0 +1,239 @@
+// ExplorerDemo — minimal standalone app that consumes only the MatterEngine3
+// public API (matter/*.h) to let a user fly through the Meadow Valley world.
+//
+// Env vars:
+//   EXPLORER_SMOKE="secs=<n>[,shot=<path>]"
+//       Smoke-test mode: run for n seconds, optionally capture screenshot to
+//       <path>, print "explorer: ready" on the first rendered frame after
+//       BakeStarted, then exit 0.
+//
+// Run from the ExplorerDemo/ directory so that cache/ resolves correctly.
+
+#include "raylib.h"
+#include "raymath.h"
+
+#include "matter/engine_context.h"
+#include "matter/world_session.h"
+#include "matter/events.h"
+
+#include "camera_rig.h"
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
+#include <string>
+
+// ---------------------------------------------------------------------------
+// Smoke-mode helpers: parse EXPLORER_SMOKE="secs=<n>[,shot=<path>]"
+// ---------------------------------------------------------------------------
+struct SmokeOpts {
+    bool   active       = false;
+    int    secs         = 0;
+    char   shot[512]    = {};
+    bool   ready_printed = false;
+};
+
+static SmokeOpts parse_smoke_env() {
+    SmokeOpts opts{};
+    const char* env = getenv("EXPLORER_SMOKE");
+    if (!env) return opts;
+    opts.active = true;
+    // Parse "secs=<n>" and optional ",shot=<path>".
+    const char* p = strstr(env, "secs=");
+    if (p) opts.secs = atoi(p + 5);
+    p = strstr(env, "shot=");
+    if (p) {
+        p += 5;
+        int i = 0;
+        while (*p && *p != ',' && i < (int)(sizeof(opts.shot) - 1))
+            opts.shot[i++] = *p++;
+        opts.shot[i] = '\0';
+    }
+    return opts;
+}
+
+// ---------------------------------------------------------------------------
+// HUD: minimal DrawText overlay (Task 9 replaces this with ImGui panel).
+// ---------------------------------------------------------------------------
+static void draw_hud(const matter::FrameStats& fs, float fps, bool bake_done) {
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             "FPS: %.0f  inst: %u/%u  parts: %u  hits: %u",
+             fps,
+             fs.instances_drawn, fs.instances_total,
+             fs.parts_baked, fs.cache_hits);
+    DrawText(buf, 8, 8, 18, RAYWHITE);
+
+    snprintf(buf, sizeof(buf),
+             "resolve %.1fms  build %.1fms  draw %.1fms  %s",
+             fs.resolve_ms, fs.build_ms, fs.draw_ms,
+             bake_done ? "BAKED" : "baking...");
+    DrawText(buf, 8, 30, 16, RAYWHITE);
+
+    DrawText("Tab: capture mouse   WASD/QE: move   Shift: fast", 8, 52, 14, LIGHTGRAY);
+}
+
+// ---------------------------------------------------------------------------
+// main
+// ---------------------------------------------------------------------------
+int main() {
+    SmokeOpts smoke = parse_smoke_env();
+
+    // --- Window init ---
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE);
+    InitWindow(1280, 720, "ExplorerDemo — Meadow Valley");
+    SetTargetFPS(60);
+
+    // --- Engine setup ---
+    matter::EngineDesc edesc;
+    edesc.cache_root    = "cache";
+    edesc.shader_dir    = nullptr;    // use embedded shaders
+    edesc.allow_gl_lt_46 = false;
+
+    std::string err;
+    auto engine = matter::EngineContext::create(edesc, err);
+    if (!engine) {
+        fprintf(stderr, "FATAL: EngineContext::create failed: %s\n", err.c_str());
+        CloseWindow();
+        return 1;
+    }
+
+    // --- World session (Meadow Valley) ---
+    matter::WorldDesc wd;
+    wd.schemas_dir    = "../MatterEngine3/examples/world_demo/schemas";
+    wd.world_data_dir = "../MatterEngine3/examples/world_demo/WorldData";
+    wd.world_name     = "Meadow";
+    wd.shared_lib_dir = "../MatterEngine3/shared-lib";
+    wd.enable_live_edit = false;
+
+    auto session = engine->open_world(wd, err);
+    if (!session) {
+        fprintf(stderr, "FATAL: open_world failed: %s\n", err.c_str());
+        CloseWindow();
+        return 1;
+    }
+
+    // Kick off the first bake (demand-driven; camera focus guides tile order).
+    session->request_bake();
+
+    // --- Camera rig ---
+    CameraRig rig;
+    rig.init();
+
+    // Resolver knobs for Meadow Valley (same as MatterViewer's Meadow defaults).
+    matter::RenderOptions render_opts;
+    render_opts.path             = matter::RenderPath::GpuDriven;
+    render_opts.resolver         = matter::ResolverKind::SectorLod;
+    render_opts.wireframe        = false;
+    render_opts.hiz_occlusion    = false;
+    render_opts.active_radius    = 400.0f;
+    render_opts.min_projected_size = 0.0015f;
+
+    bool bake_started = false;   // true once BakeStarted event is seen
+    bool bake_done    = false;   // true once BakeFinished event is seen
+
+    double t_start = GetTime();
+    int    frames  = 0;
+
+    // Screenshot capture: in smoke mode, take the shot 3s before the deadline
+    // so that as much terrain as possible has assembled before the capture.
+    // (BakeStarted fires within the first frame; taking a shot 3 frames after
+    // BakeStarted always yields a black frame on a cold bake.)
+    bool smoke_shot_written = false;
+
+    while (!WindowShouldClose()) {
+        float dt = GetFrameTime();
+
+        // --- Input + camera update ---
+        rig.update(dt);
+
+        // --- Set bake focus to camera position every frame (before tick). ---
+        {
+            const float focus[3] = {
+                rig.cam.position.x,
+                rig.cam.position.y,
+                rig.cam.position.z
+            };
+            session->set_bake_focus(focus);
+        }
+
+        // --- Tick world state ---
+        session->tick();
+
+        // --- Execute queued GL bake work (up to 4 ms per frame) ---
+        session->pump_gpu_jobs(4.0f);
+
+        // --- Drain events ---
+        {
+            matter::Event ev;
+            while (session->poll_event(ev)) {
+                if (ev.type == matter::EventType::BakeStarted) {
+                    bake_started = true;
+                    printf("explorer: bake started\n");
+                    fflush(stdout);
+                } else if (ev.type == matter::EventType::BakePartDone) {
+                    printf("bake %d/%d %s\n", ev.done, ev.total, ev.module.c_str());
+                } else if (ev.type == matter::EventType::BakeFinished) {
+                    bake_done = true;
+                    printf("bake finished (%d errors)\n", ev.errors);
+                    fflush(stdout);
+                } else if (ev.type == matter::EventType::BakeError) {
+                    fprintf(stderr, "bake error [%s]: %s\n",
+                            ev.module.c_str(), ev.message.c_str());
+                } else if (ev.type == matter::EventType::RefineTileDone) {
+                    // Refine events are frequent; log at low verbosity.
+                    // printf("refine tile %d/%d  tx=%d tz=%d\n",
+                    //        ev.done, ev.total, ev.tile_tx, ev.tile_tz);
+                }
+            }
+        }
+
+        // --- Render ---
+        BeginDrawing();
+            session->render(rig.cam, GetScreenWidth(), GetScreenHeight(), render_opts);
+            const matter::FrameStats& fs = session->frame_stats();
+            draw_hud(fs, (float)GetFPS(), bake_done);
+        EndDrawing();
+
+        ++frames;
+
+        // --- Smoke-mode ready signal: first rendered frame after BakeStarted ---
+        if (smoke.active && bake_started && !smoke.ready_printed) {
+            printf("explorer: ready\n");
+            fflush(stdout);
+            smoke.ready_printed = true;
+        }
+
+        // --- Smoke-mode time limit + screenshot ---
+        if (smoke.active) {
+            double elapsed = GetTime() - t_start;
+            // Capture screenshot 3 seconds before the deadline so the image shows
+            // as much assembled terrain as possible (cold bake takes the full window).
+            if (!smoke_shot_written && smoke.shot[0] != '\0' &&
+                elapsed >= (double)(smoke.secs - 3)) {
+                smoke_shot_written = true;
+                Image screen = LoadImageFromScreen();
+                if (ExportImage(screen, smoke.shot)) {
+                    printf("explorer: screenshot written to %s\n", smoke.shot);
+                } else {
+                    printf("explorer: screenshot FAILED %s\n", smoke.shot);
+                }
+                UnloadImage(screen);
+                fflush(stdout);
+            }
+            if ((int)elapsed >= smoke.secs) {
+                printf("explorer: smoke done (%.1fs, %d frames)\n", elapsed, frames);
+                fflush(stdout);
+                break;
+            }
+        }
+    }
+
+    // Destroy session before closing the GL context.
+    session.reset();
+    engine.reset();
+
+    CloseWindow();
+    return 0;
+}
