@@ -1379,82 +1379,53 @@ static void test_pf_determinism_double_bake() {
 // identical depositedCount and identical first path xyz prefix.
 // Also checks append-only: path[0] xyz is unchanged after the extra run.
 static void test_pf_incremental_equivalence() {
-    // Script A: run(300) in one shot
-    const char* srcA =
+    // Two identically-configured sims in ONE bake: X does run(300) in one shot,
+    // Y does run(120) then run(180). Determinism per seed means X and Y must agree
+    // exactly (depositedCount + full path[0] xyz). Y's mid-run snapshot also proves
+    // append-only: path[0]'s prefix is unchanged by the second run() call.
+    const char* src =
         "class P extends Part {\n"
         "  static params = {};\n"
         "  build(p) {\n"
-        "    const sim = __pf_simCreate({\n"
+        "    const mk = () => __pf_simCreate({\n"
         "      seed: 17, dt: 1.0, maxTurnRate: 0.3, depositEvery: 0.05,\n"
         "      maxParticles: 32, hashCell: 0.25, maxAge: 200,\n"
         "      emitters: [{ shape: 'point', center: [0,0,0], rate: 1, vel0: 0.06, jitter: 0.1 }],\n"
         "      fields: [{ type: 'bias', dir: [0,1,0], weight: 0.4 }],\n"
         "    });\n"
-        "    const rec = __pf_recorderCreate(0.03, []);\n"
-        "    __pf_attach(sim, rec);\n"
-        "    __pf_run(sim, 300);\n"
-        "    const dep = __pf_depositedCount(sim);\n"
-        "    const pc  = __pf_pathCount(rec);\n"
-        "    const p0  = pc > 0 ? __pf_path(rec, 0) : null;\n"
-        "    // store dep + first 6 xyz floats as a tag string\n"
-        "    const xyz = (p0 && p0.xyz.length >= 6)\n"
-        "        ? Array.from(p0.xyz.slice(0, 6)).map(v=>v.toFixed(6)).join(',')\n"
-        "        : 'empty';\n"
-        "    globalThis.__pf_res = dep + '|' + xyz;\n"
-        "  }\n"
-        "}\n";
-
-    // Script B: run(120) then run(180) (incremental, same class name)
-    const char* srcB =
-        "class P extends Part {\n"
-        "  static params = {};\n"
-        "  build(p) {\n"
-        "    const sim = __pf_simCreate({\n"
-        "      seed: 17, dt: 1.0, maxTurnRate: 0.3, depositEvery: 0.05,\n"
-        "      maxParticles: 32, hashCell: 0.25, maxAge: 200,\n"
-        "      emitters: [{ shape: 'point', center: [0,0,0], rate: 1, vel0: 0.06, jitter: 0.1 }],\n"
-        "      fields: [{ type: 'bias', dir: [0,1,0], weight: 0.4 }],\n"
-        "    });\n"
-        "    const rec = __pf_recorderCreate(0.03, []);\n"
-        "    __pf_attach(sim, rec);\n"
-        "    __pf_run(sim, 120);\n"
-        "    // snapshot path count + path[0].xyz after first segment (append-only check)\n"
-        "    const pc_mid = __pf_pathCount(rec);\n"
-        "    const p0_mid = pc_mid > 0 ? __pf_path(rec, 0) : null;\n"
-        "    const xyz_mid = (p0_mid && p0_mid.xyz.length >= 6)\n"
-        "        ? Array.from(p0_mid.xyz.slice(0, 6)).map(v=>v.toFixed(6)).join(',')\n"
-        "        : 'empty';\n"
-        "    __pf_run(sim, 180);\n"
-        "    const dep = __pf_depositedCount(sim);\n"
-        "    const pc  = __pf_pathCount(rec);\n"
-        "    const p0  = pc > 0 ? __pf_path(rec, 0) : null;\n"
-        "    const xyz_final = (p0 && p0.xyz.length >= 6)\n"
-        "        ? Array.from(p0.xyz.slice(0, 6)).map(v=>v.toFixed(6)).join(',')\n"
-        "        : 'empty';\n"
-        "    // append-only: first 6 floats of path[0] must be unchanged after extra run\n"
-        "    if (xyz_mid !== 'empty' && xyz_final !== 'empty' && xyz_mid !== xyz_final) {\n"
-        "        throw new Error('append-only violated: path[0] prefix changed. mid=' + xyz_mid + ' final=' + xyz_final);\n"
+        "    const simX = mk(); const recX = __pf_recorderCreate(0.03, []);\n"
+        "    __pf_attach(simX, recX);\n"
+        "    __pf_run(simX, 300);\n"
+        "    const simY = mk(); const recY = __pf_recorderCreate(0.03, []);\n"
+        "    __pf_attach(simY, recY);\n"
+        "    __pf_run(simY, 120);\n"
+        "    const pcMid = __pf_pathCount(recY);\n"
+        "    const midXyz = pcMid > 0 ? Array.from(__pf_path(recY, 0).xyz) : [];\n"
+        "    __pf_run(simY, 180);\n"
+        "    // append-only: path[0]'s recorded prefix must be unchanged by run #2\n"
+        "    if (pcMid > 0) {\n"
+        "      const fin = Array.from(__pf_path(recY, 0).xyz);\n"
+        "      if (fin.length < midXyz.length) throw new Error('append-only violated: path[0] shrank');\n"
+        "      for (let i = 0; i < midXyz.length; ++i)\n"
+        "        if (fin[i] !== midXyz[i]) throw new Error('append-only violated: path[0] prefix changed at ' + i);\n"
         "    }\n"
-        "    globalThis.__pf_res = dep + '|' + xyz_final;\n"
+        "    // incremental equivalence: X (one shot) === Y (split run)\n"
+        "    const depX = __pf_depositedCount(simX), depY = __pf_depositedCount(simY);\n"
+        "    if (depX !== depY) throw new Error('incremental mismatch: depositedCount ' + depX + ' vs ' + depY);\n"
+        "    const pcX = __pf_pathCount(recX), pcY = __pf_pathCount(recY);\n"
+        "    if (pcX !== pcY) throw new Error('incremental mismatch: pathCount ' + pcX + ' vs ' + pcY);\n"
+        "    if (pcX > 0) {\n"
+        "      const ax = Array.from(__pf_path(recX, 0).xyz), ay = Array.from(__pf_path(recY, 0).xyz);\n"
+        "      if (ax.length !== ay.length) throw new Error('incremental mismatch: path[0] length');\n"
+        "      for (let i = 0; i < ax.length; ++i)\n"
+        "        if (ax[i] !== ay[i]) throw new Error('incremental mismatch: path[0].xyz[' + i + ']');\n"
+        "    }\n"
+        "    if (depX === 0 && pcX === 0) throw new Error('degenerate test: nothing deposited and no paths');\n"
         "  }\n"
         "}\n";
-
-    script_host::ScriptHost hA;
-    auto rA = hA.bake_source(srcA, "{}", {});
-    CHECK(rA.error.ok, "pf incremental: run(300) bake succeeds");
-
-    script_host::ScriptHost hB;
-    auto rB = hB.bake_source(srcB, "{}", {});
-    CHECK(rB.error.ok, "pf incremental: run(120)+run(180) bake succeeds (no append-only violation)");
-
-    // Both bakes use the same class name P and same source except for the tick split:
-    // run(300) vs run(120);run(180). They should produce .part files of same size
-    // (voxel geometry equivalent). NOTE: full byte-identity deferred due to bake
-    // nondeterminism in header fields (Phase B deferred: "bake cold-run nondeterminism").
-    std::vector<uint8_t> bA = read_all(rA.written_path);
-    std::vector<uint8_t> bB = read_all(rB.written_path);
-    CHECK(!bA.empty(), "pf incremental: run(300) produced non-empty .part");
-    CHECK(bA.size() == bB.size(), "pf incremental: run(N+M) and run(N);run(M) produce same-size .part");
+    script_host::ScriptHost h;
+    auto r = h.bake_source(src, "{}", {});
+    CHECK(r.error.ok, "pf incremental: run(300) === run(120);run(180) (in-JS exact comparison; append-only prefix intact)");
 }
 
 // Task 10: Budget fail-closed — sim.run() inside a bake with time_budget_ms set
