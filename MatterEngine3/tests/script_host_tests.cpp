@@ -1150,6 +1150,337 @@ static void test_modifier_region_bake_rules() {
     }
 }
 
+static void test_pf_bindings_smoke() {
+    // Smoke test: create a sim + recorder via __pf_* bindings, run 60 ticks,
+    // and verify deposits and at least one recorded path with Float32Array xyz.
+    // Baked twice as a cheap determinism probe.
+    const char* src =
+        "class P extends Part {\n"
+        "  build(p) {\n"
+        "    const sim = __pf_simCreate({\n"
+        "      seed: 7, dt: 1.0, maxTurnRate: 0.5, depositEvery: 0.05,\n"
+        "      maxParticles: 64, hashCell: 0.25, maxAge: 40,\n"
+        "      emitters: [{ shape: 'point', center: [0,0,0], rate: 2, vel0: 0.05, jitter: 0.2 }],\n"
+        "      fields: [{ type: 'bias', dir: [0,1,0], weight: 0.5 }],\n"
+        "    });\n"
+        "    if (sim < 0) throw new Error('simCreate failed: ' + sim);\n"
+        "    const rec = __pf_recorderCreate(0.02, []);\n"
+        "    __pf_attach(sim, rec);\n"
+        "    const ran = __pf_run(sim, 60);\n"
+        "    if (ran !== 60) throw new Error('run returned ' + ran);\n"
+        "    const dep = __pf_depositedCount(sim);\n"
+        "    if (dep < 10) throw new Error('too few deposits: ' + dep);\n"
+        "    const pc = __pf_pathCount(rec);\n"
+        "    if (pc < 1) throw new Error('no paths recorded: ' + pc);\n"
+        "    const path = __pf_path(rec, 0);\n"
+        "    if (!path) throw new Error('path(rec,0) returned null');\n"
+        "    if (!(path.xyz instanceof Float32Array)) throw new Error('xyz not Float32Array: ' + typeof path.xyz);\n"
+        "    if (path.xyz.length < 6) throw new Error('path too short: ' + path.xyz.length);\n"
+        "  }\n"
+        "}\n";
+    script_host::ScriptHost host;
+    // First bake
+    script_host::BakeResult r1 = host.bake_source(src, "{}", {});
+    CHECK(r1.error.ok, "pf smoke bake 1 succeeds");
+    // Second bake (determinism probe — same host, fresh context)
+    script_host::BakeResult r2 = host.bake_source(src, "{}", {});
+    CHECK(r2.error.ok, "pf smoke bake 2 succeeds");
+}
+
+// Task 7: __pf_stampPaths positive test — imports shared-lib/particleflow,
+// runs a sim, stamps paths into a voxel session, and asserts a non-empty part.
+static void test_pf_stamp_paths_positive() {
+    const char* src =
+        "import { ParticleSim, PathRecorder } from 'shared-lib/particleflow';\n"
+        "class P extends Part {\n"
+        "  static params = {};\n"
+        "  build(p) {\n"
+        "    const rec = new PathRecorder(0.03, ['thickness']);\n"
+        "    const sim = new ParticleSim({\n"
+        "      seed: 11, dt: 1.0, maxTurnRate: 0.4, depositEvery: 0.05,\n"
+        "      maxParticles: 16, hashCell: 0.25, maxAge: 60,\n"
+        "      attributes: ['thickness'],\n"
+        "      emitters: [{ shape: 'point', center: [0,0,0], rate: 1, vel0: 0.06,\n"
+        "                   jitter: 0.1, attrInit: [0.08] }],\n"
+        "      fields: [{ type: 'bias', dir: [0,1,0], weight: 0.4 }],\n"
+        "    }).attach(rec);\n"
+        "    sim.run(80);\n"
+        "    if (rec.count < 1) throw new Error('no paths');\n"
+        "    this.fill(MAT.bark);\n"
+        "    this.beginVoxels(0.05);\n"
+        "    this.paths(rec, { radiusChannel: 'thickness', minRadius: 0.02 });\n"
+        "    this.endVoxels();\n"
+        "  }\n"
+        "}\n";
+    script_host::ScriptHost host;
+    host.set_shared_lib_root("../shared-lib");
+    script_host::BakeResult r = host.bake_source(src, "{}", {});
+    CHECK(r.error.ok, "pf stamp paths bake succeeds");
+    CHECK(!r.written_path.empty(), "pf stamp paths: part written");
+    CHECK(file_exists(r.written_path), "pf stamp paths: .part file exists on disk");
+    // Verify the bake produced non-empty geometry: a file produced by voxel
+    // stamping is always larger than a header-only file (> 256 bytes).
+    auto bytes = read_all(r.written_path);
+    CHECK(bytes.size() > 256, "pf stamp paths: .part file has non-trivial geometry");
+}
+
+// Task 7: __pf_stampPaths negative test — calling this.paths() before
+// beginVoxels must fail with the exact error message.
+static void test_pf_stamp_paths_outside_session() {
+    const char* src =
+        "import { ParticleSim, PathRecorder } from 'shared-lib/particleflow';\n"
+        "class P extends Part {\n"
+        "  static params = {};\n"
+        "  build(p) {\n"
+        "    const rec = new PathRecorder(0.03, ['thickness']);\n"
+        "    const sim = new ParticleSim({\n"
+        "      seed: 11, dt: 1.0, maxTurnRate: 0.4, depositEvery: 0.05,\n"
+        "      maxParticles: 16, hashCell: 0.25, maxAge: 60,\n"
+        "      attributes: ['thickness'],\n"
+        "      emitters: [{ shape: 'point', center: [0,0,0], rate: 1, vel0: 0.06,\n"
+        "                   jitter: 0.1, attrInit: [0.08] }],\n"
+        "      fields: [{ type: 'bias', dir: [0,1,0], weight: 0.4 }],\n"
+        "    }).attach(rec);\n"
+        "    sim.run(80);\n"
+        "    this.fill(MAT.bark);\n"
+        "    this.paths(rec);\n"  // NO beginVoxels — must fail
+        "  }\n"
+        "}\n";
+    script_host::ScriptHost host;
+    host.set_shared_lib_root("../shared-lib");
+    script_host::BakeResult r = host.bake_source(src, "{}", {});
+    CHECK(!r.error.ok, "pf stamp outside session: bake must fail");
+    CHECK(r.written_path.empty(), "pf stamp outside session: no file written");
+    CHECK(r.error.message.find("paths() outside an open voxel session") != std::string::npos,
+          "pf stamp outside session: exact error message present");
+}
+
+static void test_pf_ontick_views() {
+    // Task 6: onTick zero-copy SoA views — verifies per-tick callback receives
+    // typed-array views into live SoA buffers, views are detached after the
+    // callback returns (dangling access returns empty/throws), early-stop on
+    // false return works, and __pf_setFieldWeight does not crash.
+    const char* src =
+        "class P extends Part {\n"
+        "  build(p) {\n"
+        "    const sim = __pf_simCreate({\n"
+        "      seed: 3, dt: 1.0, maxTurnRate: 0.5, depositEvery: 0.05,\n"
+        "      maxParticles: 32, hashCell: 0.25, maxAge: 0,\n"
+        "      attributes: ['thickness'],\n"
+        "      emitters: [{ shape: 'point', center: [0,0,0], rate: 1, vel0: 0.05,\n"
+        "                   jitter: 0, attrInit: [0.5] }],\n"
+        "      fields: [{ type: 'bias', dir: [0,1,0], weight: 0.3 }],\n"
+        "    });\n"
+        "    let calls = 0, sawAlive = false, savedView = null;\n"
+        "    const ran = __pf_run(sim, 50, 10, (v) => {\n"
+        "      ++calls;\n"
+        "      if (!(v.pos instanceof Float32Array)) throw new Error('pos not F32');\n"
+        "      if (!(v.attrs.thickness instanceof Float32Array)) throw new Error('no attr view');\n"
+        "      for (let i = 0; i < v.count; ++i) if (v.alive[i]) { sawAlive = true; break; }\n"
+        "      savedView = v;\n"
+        "      if (calls === 3) __pf_setFieldWeight(sim, 0, 0.0);\n"
+        "      return calls < 4;\n"
+        "    });\n"
+        "    if (calls !== 4) throw new Error('expected 4 callbacks, got ' + calls);\n"
+        "    if (ran !== 40) throw new Error('early stop should yield 40 ticks, got ' + ran);\n"
+        "    if (!sawAlive) throw new Error('no alive particles seen');\n"
+        "    let detached = false;\n"
+        "    try { const x = savedView.pos[0]; if (savedView.pos.length === 0) detached = true; }\n"
+        "    catch (e) { detached = true; }\n"
+        "    if (!detached && savedView.pos.length !== 0) throw new Error('view not detached');\n"
+        "  }\n"
+        "}\n";
+    script_host::ScriptHost host;
+    script_host::BakeResult r = host.bake_source(src, "{}", {});
+    CHECK(r.error.ok, "pf onTick views bake succeeds");
+}
+
+// Task 8: shared-lib/strands.js — attractor clouds + end-biased twig anchors
+static void test_strands_ellipsoid_and_anchors() {
+    const char* src =
+        "import { ParticleSim, PathRecorder } from 'shared-lib/particleflow';\n"
+        "import { ellipsoidCloud, twigAnchors } from 'shared-lib/strands';\n"
+        "class P extends Part {\n"
+        "  build(p) {\n"
+        "    const cloud = ellipsoidCloud(5, 200, [0, 8, 0], [3, 2, 3]);\n"
+        "    if (cloud.length !== 600) throw new Error('cloud size');\n"
+        "    for (let i = 0; i < 200; ++i) {\n"
+        "      const dx = (cloud[3*i] - 0) / 3, dy = (cloud[3*i+1] - 8) / 2, dz = (cloud[3*i+2] - 0) / 3;\n"
+        "      if (dx*dx + dy*dy + dz*dz > 1.0001) throw new Error('point outside ellipsoid');\n"
+        "    }\n"
+        "    const cloud2 = ellipsoidCloud(5, 200, [0, 8, 0], [3, 2, 3]);\n"
+        "    for (let i = 0; i < 600; ++i) if (cloud[i] !== cloud2[i]) throw new Error('cloud not deterministic');\n"
+        "\n"
+        "    const rec = new PathRecorder(0.03, ['thickness']);\n"
+        "    const sim = new ParticleSim({\n"
+        "      seed: 9, dt: 1.0, maxTurnRate: 0.3, depositEvery: 0.05,\n"
+        "      maxParticles: 32, hashCell: 0.25, maxAge: 80,\n"
+        "      attributes: ['thickness'],\n"
+        "      emitters: [{ shape: 'disc', center: [0,0,0], axis: [0,1,0], radius: 0.2,\n"
+        "                   rate: 2, vel0: 0.06, jitter: 0.15, attrInit: [0.1] }],\n"
+        "      fields: [\n"
+        "        { type: 'bias', dir: [0,1,0], weight: 0.5 },\n"
+        "        { type: 'attract', weight: 0.8, influence: 4.0, killRadius: 0.3, killOnConsume: true },\n"
+        "      ],\n"
+        "    }).attach(rec);\n"
+        "    sim.setAttractors(cloud);\n"
+        "    sim.run(200);\n"
+        "    const anchors = twigAnchors(sim, rec, { seed: 2, perPath: 2, maxThickness: 10 });\n"
+        "    if (anchors.length < 1) throw new Error('no twig anchors');\n"
+        "    for (const a of anchors) {\n"
+        "      const nl = Math.hypot(a.normal[0], a.normal[1], a.normal[2]);\n"
+        "      if (Math.abs(nl - 1) > 1e-3) throw new Error('anchor normal not unit');\n"
+        "      if (a.t < 0 || a.t > 1) throw new Error('anchor t out of range');\n"
+        "    }\n"
+        "  }\n"
+        "}\n";
+    script_host::ScriptHost host;
+    host.set_shared_lib_root("../shared-lib");
+    script_host::BakeResult r = host.bake_source(src, "{}", {});
+    CHECK(r.error.ok, "strands ellipsoid and anchors bake succeeds");
+}
+
+// Task 10: Determinism end-to-end — pf-driven stamp baked twice, byte-identical
+// output .part files. Verifies that same seed + config + ticks => identical geometry.
+static void test_pf_determinism_double_bake() {
+    const char* src =
+        "import { ParticleSim, PathRecorder } from 'shared-lib/particleflow';\n"
+        "class P extends Part {\n"
+        "  static params = {};\n"
+        "  build(p) {\n"
+        "    const rec = new PathRecorder(0.04, ['thickness']);\n"
+        "    const sim = new ParticleSim({\n"
+        "      seed: 42, dt: 1.0, maxTurnRate: 0.5, depositEvery: 0.05,\n"
+        "      maxParticles: 32, hashCell: 0.25, maxAge: 60,\n"
+        "      attributes: ['thickness'],\n"
+        "      emitters: [{ shape: 'point', center: [0,0,0], rate: 2, vel0: 0.06,\n"
+        "                   jitter: 0.15, attrInit: [0.08] }],\n"
+        "      fields: [{ type: 'bias', dir: [0,1,0], weight: 0.6 }],\n"
+        "    }).attach(rec);\n"
+        "    sim.run(120);\n"
+        "    this.fill(MAT.bark);\n"
+        "    this.beginVoxels(0.05);\n"
+        "    this.paths(rec, { radiusChannel: 'thickness', minRadius: 0.02 });\n"
+        "    this.endVoxels();\n"
+        "  }\n"
+        "}\n";
+    script_host::ScriptHost h1; h1.set_shared_lib_root("../shared-lib");
+    script_host::BakeResult r1 = h1.bake_source(src, "{}", {});
+    script_host::ScriptHost h2; h2.set_shared_lib_root("../shared-lib");
+    script_host::BakeResult r2 = h2.bake_source(src, "{}", {});
+    CHECK(r1.error.ok && r2.error.ok, "pf determinism: both bakes succeed");
+    std::vector<uint8_t> b1 = read_all(r1.written_path);
+    std::vector<uint8_t> b2 = read_all(r2.written_path);
+    CHECK(!b1.empty(), "pf determinism: bake 1 produced non-empty .part");
+    CHECK(b1 == b2, "pf determinism: re-bake produces byte-identical .part (same seed+config+ticks)");
+}
+
+// Task 10: Incremental equivalence — run(300) vs run(120);run(180) must yield
+// identical depositedCount and identical first path xyz prefix.
+// Also checks append-only: path[0] xyz is unchanged after the extra run.
+static void test_pf_incremental_equivalence() {
+    // Two identically-configured sims in ONE bake: X does run(300) in one shot,
+    // Y does run(120) then run(180). Determinism per seed means X and Y must agree
+    // exactly (depositedCount + full path[0] xyz). Y's mid-run snapshot also proves
+    // append-only: path[0]'s prefix is unchanged by the second run() call.
+    const char* src =
+        "class P extends Part {\n"
+        "  static params = {};\n"
+        "  build(p) {\n"
+        "    const mk = () => __pf_simCreate({\n"
+        "      seed: 17, dt: 1.0, maxTurnRate: 0.3, depositEvery: 0.05,\n"
+        "      maxParticles: 32, hashCell: 0.25, maxAge: 200,\n"
+        "      emitters: [{ shape: 'point', center: [0,0,0], rate: 1, vel0: 0.06, jitter: 0.1 }],\n"
+        "      fields: [{ type: 'bias', dir: [0,1,0], weight: 0.4 }],\n"
+        "    });\n"
+        "    const simX = mk(); const recX = __pf_recorderCreate(0.03, []);\n"
+        "    __pf_attach(simX, recX);\n"
+        "    __pf_run(simX, 300);\n"
+        "    const simY = mk(); const recY = __pf_recorderCreate(0.03, []);\n"
+        "    __pf_attach(simY, recY);\n"
+        "    __pf_run(simY, 120);\n"
+        "    const pcMid = __pf_pathCount(recY);\n"
+        "    const midXyz = pcMid > 0 ? Array.from(__pf_path(recY, 0).xyz) : [];\n"
+        "    __pf_run(simY, 180);\n"
+        "    // append-only: path[0]'s recorded prefix must be unchanged by run #2\n"
+        "    if (pcMid > 0) {\n"
+        "      const fin = Array.from(__pf_path(recY, 0).xyz);\n"
+        "      if (fin.length < midXyz.length) throw new Error('append-only violated: path[0] shrank');\n"
+        "      for (let i = 0; i < midXyz.length; ++i)\n"
+        "        if (fin[i] !== midXyz[i]) throw new Error('append-only violated: path[0] prefix changed at ' + i);\n"
+        "    }\n"
+        "    // incremental equivalence: X (one shot) === Y (split run)\n"
+        "    const depX = __pf_depositedCount(simX), depY = __pf_depositedCount(simY);\n"
+        "    if (depX !== depY) throw new Error('incremental mismatch: depositedCount ' + depX + ' vs ' + depY);\n"
+        "    const pcX = __pf_pathCount(recX), pcY = __pf_pathCount(recY);\n"
+        "    if (pcX !== pcY) throw new Error('incremental mismatch: pathCount ' + pcX + ' vs ' + pcY);\n"
+        "    if (pcX > 0) {\n"
+        "      const ax = Array.from(__pf_path(recX, 0).xyz), ay = Array.from(__pf_path(recY, 0).xyz);\n"
+        "      if (ax.length !== ay.length) throw new Error('incremental mismatch: path[0] length');\n"
+        "      for (let i = 0; i < ax.length; ++i)\n"
+        "        if (ax[i] !== ay[i]) throw new Error('incremental mismatch: path[0].xyz[' + i + ']');\n"
+        "    }\n"
+        "    if (depX === 0 && pcX === 0) throw new Error('degenerate test: nothing deposited and no paths');\n"
+        "  }\n"
+        "}\n";
+    script_host::ScriptHost h;
+    auto r = h.bake_source(src, "{}", {});
+    CHECK(r.error.ok, "pf incremental: run(300) === run(120);run(180) (in-JS exact comparison; append-only prefix intact)");
+}
+
+// Task 10: Budget fail-closed — sim.run() inside a bake with time_budget_ms set
+// should fail with the "budget exceeded" error, not hang.
+static void test_pf_budget_fail_closed() {
+    // A script that asks for a very large run but with a 1ms wall-clock budget.
+    // The pf.run binding checks st->budget_exceeded() per chunk (RUN_CHUNK=32 ticks)
+    // and sets "pf.run: bake time budget exceeded mid-simulation".
+    const char* src =
+        "class BudgetTest extends Part {\n"
+        "  static params = {};\n"
+        "  build(p) {\n"
+        "    const sim = __pf_simCreate({\n"
+        "      seed: 1, dt: 1.0, maxTurnRate: 0.5, depositEvery: 0.02,\n"
+        "      maxParticles: 128, hashCell: 0.1, maxAge: 0,\n"
+        "      emitters: [{ shape: 'point', center: [0,0,0], rate: 10, vel0: 0.05, jitter: 0.1 }],\n"
+        "      fields: [],\n"
+        "    });\n"
+        "    const rec = __pf_recorderCreate(0.01, []);\n"
+        "    __pf_attach(sim, rec);\n"
+        "    __pf_run(sim, 100000);\n"
+        "  }\n"
+        "}\n";
+    script_host::ScriptHost host;
+    script_host::BakeOptions opts;
+    opts.time_budget_ms = 1;  // 1ms — guaranteed to expire before 100000 ticks
+    auto r = host.bake_source(src, "{}", opts);
+    CHECK(!r.error.ok, "pf budget: bake must fail when budget exceeded");
+    CHECK(r.written_path.empty(), "pf budget: no .part file written when budget exceeded");
+    CHECK(r.error.message.find("budget") != std::string::npos ||
+          r.error.message.find("interrupt") != std::string::npos,
+          "pf budget: error message contains 'budget' or 'interrupt'");
+    printf("  pf budget error message: %s\n", r.error.message.c_str());
+}
+
+// Task 10: Stale handle — calling __pf_run with an invalid sim id (999) must
+// set an error and cause the bake to fail cleanly (no crash, no hang).
+static void test_pf_stale_handle() {
+    const char* src =
+        "class StaleTest extends Part {\n"
+        "  static params = {};\n"
+        "  build(p) {\n"
+        "    __pf_run(999, 10);\n"
+        "  }\n"
+        "}\n";
+    script_host::ScriptHost host;
+    auto r = host.bake_source(src, "{}", {});
+    CHECK(!r.error.ok, "pf stale handle: bake must fail on invalid sim handle");
+    CHECK(r.written_path.empty(), "pf stale handle: no .part file written");
+    CHECK(r.error.message.find("stale") != std::string::npos ||
+          r.error.message.find("invalid") != std::string::npos,
+          "pf stale handle: error message contains 'stale' or 'invalid'");
+    printf("  pf stale handle error message: %s\n", r.error.message.c_str());
+}
+
 int main() {
     test_embed_eval_1_plus_1();
     test_p5_round_mesh_dispatch();
@@ -1185,6 +1516,16 @@ int main() {
     test_eval_lod_budgets();
     test_modifier_region_state_rules();
     test_modifier_region_bake_rules();
+    test_pf_bindings_smoke();
+    test_pf_ontick_views();
+    test_pf_stamp_paths_positive();
+    test_pf_stamp_paths_outside_session();
+    test_strands_ellipsoid_and_anchors();
+    // Task 10 correctness-refinement checklist
+    test_pf_determinism_double_bake();
+    test_pf_incremental_equivalence();
+    test_pf_budget_fail_closed();
+    test_pf_stale_handle();
     if (g_failures == 0) printf("ALL PASS\n");
     return g_failures ? 1 : 0;
 }

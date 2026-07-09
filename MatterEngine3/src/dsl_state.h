@@ -2,6 +2,7 @@
 #include "raylib.h"   // Vector3, Matrix, Vector4
 #include "dsl_rng.h"
 #include "tileset_spec.h"
+#include <chrono>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -283,6 +284,23 @@ public:
     const std::string& error() const { return error_; }
     void set_error(const std::string& m) { if (!has_error_) { has_error_ = true; error_ = m; } }
 
+    // --- ParticleFlowLib handle registry (bake-scoped) -----------------------
+    // pf_bindings.cpp owns the concrete type; DslState just keeps it alive for
+    // the duration of the bake so sim/recorder ids die with the context.
+    void set_pf_registry(std::shared_ptr<void> r) { pf_registry_ = std::move(r); }
+    void* pf_registry() const { return pf_registry_.get(); }
+
+    // --- Time-budget mirror ---------------------------------------------------
+    // script_host stashes the interrupt-handler deadline here so native run
+    // loops (which the VM interrupt cannot preempt) can check it between chunks.
+    void set_budget(std::chrono::steady_clock::time_point d, bool bounded) {
+        budget_deadline_ = d; budget_bounded_ = bounded;
+    }
+    bool budget_exceeded() const {
+        return budget_bounded_ &&
+               std::chrono::steady_clock::now() >= budget_deadline_;
+    }
+
     // Tileset mode: non-null only when evaluating a Tileset root.
     tileset::TilesetState* tileset() { return tileset_.get(); }
     void enable_tileset() { tileset_ = std::make_unique<tileset::TilesetState>(); }
@@ -319,6 +337,10 @@ private:
     size_t region_start_op_ = 0;
     size_t region_start_tri_ = 0;
     std::vector<ModifierRegion> regions_;
+
+    std::shared_ptr<void> pf_registry_;
+    std::chrono::steady_clock::time_point budget_deadline_{};
+    bool budget_bounded_ = false;
 };
 
 } // namespace dsl

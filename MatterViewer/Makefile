@@ -46,7 +46,8 @@ WIN_INCLUDE_PATHS = $(INCLUDE_PATHS) \
                     -I$(ME3_DIR)/src \
                     -I$(ME3_DIR)/src/render \
                     -I$(ME3_DIR)/src/provider \
-                    -I$(MSL_DIR)/src
+                    -I$(MSL_DIR)/src \
+                    -I../ParticleFlowLib/include
 
 LDFLAGS = -lGL -lm -lpthread -ldl -lrt -lX11
 LDLIBS  = ../Libraries/raylib/build/linux/libraylib.a
@@ -136,7 +137,12 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/live_edit_prod.cpp \
               $(ME3_DIR)/src/inotify_watcher.cpp \
               $(ME3_DIR)/src/part_graph_snapshot.cpp \
-              $(ME3_DIR)/src/matter_engine.cpp
+              $(ME3_DIR)/src/matter_engine.cpp \
+              $(ME3_DIR)/src/pf_bindings.cpp \
+              ../ParticleFlowLib/src/pf_math.cpp \
+              ../ParticleFlowLib/src/pf_sim.cpp \
+              ../ParticleFlowLib/src/pf_fields.cpp \
+              ../ParticleFlowLib/src/pf_path_recorder.cpp
 
 WIN_MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
               $(MSL_DIR)/src/mesh_simplifier.cpp $(MSL_DIR)/src/mesh_indexed.cpp \
@@ -188,7 +194,8 @@ QJS_NAMES = $(notdir $(QJS_C))
 PIPC_NAMES_WIN = $(notdir $(WIN_PIPELINE_C))
 
 vpath %.cpp . $(ME3_DIR)/src $(ME3_DIR)/src/render $(ME3_DIR)/src/provider \
-             $(MSL_DIR)/src $(IMGUI_PATH) $(IMGUI_PATH)/backends
+             $(MSL_DIR)/src $(IMGUI_PATH) $(IMGUI_PATH)/backends \
+             ../ParticleFlowLib/src
 vpath %.c $(MSL_DIR)/src $(QJS_DIR)
 
 .DEFAULT_GOAL := viewer

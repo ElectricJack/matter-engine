@@ -54,7 +54,7 @@ endif
 
 # Include directories: NEW MatterEngine3 headers, then consumed MatterSurfaceLib
 # headers, then raylib.
-INCLUDE_PATHS = -I../include -I../src -I../src/render -I../src/provider -I../../MatterSurfaceLib/include -I$(RAYLIB_PATH) -I../../Libraries/raylib/src
+INCLUDE_PATHS = -I../include -I../src -I../src/render -I../src/provider -I../../MatterSurfaceLib/include -I$(RAYLIB_PATH) -I../../Libraries/raylib/src -I../../ParticleFlowLib/include
 
 # Library paths (match MatterSurfaceLib/tests; same depth).
 ifeq ($(UNAME_S),Linux)
@@ -339,6 +339,9 @@ SCRIPT_CPP = script_host_tests.cpp ../src/script_host.cpp ../src/dsl_state.cpp .
              ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
              ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
              ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+             ../src/pf_bindings.cpp \
+             ../../ParticleFlowLib/src/pf_math.cpp ../../ParticleFlowLib/src/pf_sim.cpp \
+             ../../ParticleFlowLib/src/pf_fields.cpp ../../ParticleFlowLib/src/pf_path_recorder.cpp \
              $(COMMON_MSL_FULL_SRC)
 SCRIPT_C   = $(COMMON_MSL_C)
 
@@ -348,12 +351,21 @@ MODBAKE_TARGET = modifier_region_bake_tests
 MODBAKE_CPP = modifier_region_bake_tests.cpp $(filter-out script_host_tests.cpp, $(SCRIPT_CPP))
 MODBAKE_C   = $(COMMON_MSL_C)
 
+PF_LIB = ../../ParticleFlowLib
+# any target that links dsl_bindings.cpp must also link pf_bindings.cpp + ParticleFlowLib sources
+PF_CPP = ../src/pf_bindings.cpp \
+         $(PF_LIB)/src/pf_math.cpp \
+         $(PF_LIB)/src/pf_sim.cpp \
+         $(PF_LIB)/src/pf_fields.cpp \
+         $(PF_LIB)/src/pf_path_recorder.cpp
+
 GRAPH_INT_TARGET = part_graph_integration_tests
 GRAPH_INT_CPP = part_graph_integration_tests.cpp ../src/part_graph.cpp \
                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
                 ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                $(PF_CPP) \
                 $(COMMON_MSL_FULL_SRC)
 GRAPH_INT_C   = $(COMMON_MSL_C)
 
@@ -368,6 +380,7 @@ EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp \
               ../src/sector_grid.cpp ../src/lod_select.cpp \
               ../src/modifier_apply.cpp $(MSL)/mesh_smooth.cpp \
               $(MSL)/mesh_transform.cpp \
+              $(PF_CPP) \
               $(COMMON_MSL_FULL_SRC)
 EXAMPLE_C   = $(COMMON_MSL_C)
 
@@ -408,6 +421,7 @@ TILESETBAKE_CPP = tileset_bake_tests.cpp ../src/part_graph.cpp \
                   ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                   ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
                   ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                  $(PF_CPP) \
                   $(COMMON_MSL_FULL_SRC)
 TILESETBAKE_C   = $(COMMON_MSL_C)
 
@@ -423,6 +437,7 @@ SHLIB_CPP = shared_lib_tests.cpp ../src/module_resolver.cpp ../src/script_rng_bi
             ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \
             ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
             ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+            $(PF_CPP) \
             $(COMMON_MSL_FULL_SRC)
 SHLIB_C   = $(COMMON_MSL_C)
 
@@ -465,6 +480,7 @@ RETOPO_INT_CPP = retopo_integration_tests.cpp \
                  $(MSL)/mesh_retopo.cpp \
                  $(MSL)/mesh_smooth.cpp \
                  $(MSL)/mesh_transform.cpp \
+                 $(PF_CPP) \
                  $(COMMON_MSL_FULL_SRC)
 RETOPO_INT_C   = $(COMMON_MSL_C)
 # --allow-multiple-definition: raylib bundles stb_image_write.h in rtextures.c
@@ -511,7 +527,8 @@ GPU_PIPELINE_CPP = \
     ../src/tileset_bake.cpp ../src/tileset_settle.cpp \
     ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
     ../src/tileset_bake_primary.cpp ../src/tileset_bake_ao.cpp \
-    ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp
+    ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+    $(PF_CPP)
 
 GPU_MSL_CPP = \
     $(MSL)/cluster.cpp $(MSL)/cell.cpp \

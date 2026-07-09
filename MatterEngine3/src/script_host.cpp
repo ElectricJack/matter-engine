@@ -975,6 +975,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     // (they depend on `merged` which is extracted from the class's static params).
     dsl::DslState state;
     JS_SetContextOpaque(ctx, &state);
+    state.set_budget(ic.deadline, ic.bounded);
     // `merged` is populated after class eval (single-RT merge step below).
     std::string merged;
 
@@ -1484,6 +1485,7 @@ TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
         state.set_child_hashes(std::move(name2hash));
     }
     JS_SetContextOpaque(ctx, &state);
+    state.set_budget(ic.deadline, ic.bounded);
 
     {
     // Inject Part base, then Tileset base (Tileset extends Part), then DSL bindings.
