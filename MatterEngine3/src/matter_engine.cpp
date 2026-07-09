@@ -395,6 +395,11 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         j.token = token;
         return gpu_jobs.run_blocking(std::move(j), err);
     };
+    // Signal whether a valid GL context exists so the tileset phase can choose
+    // between headless settle-only and full GPU atlas bake. engine->gl46 is
+    // true only when GL 4.6 was confirmed available at EngineContext::create()
+    // time (i.e., allow_gl_lt_46 was false and gl46_available() returned true).
+    cfg.gl_available = engine->gl46;
 
     provider = std::make_unique<viewer::LocalProvider>(cfg);
 
@@ -937,6 +942,7 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
         j.token = token;
         return gpu_jobs.run_blocking(std::move(j), err);
     };
+    cfg.gl_available = engine->gl46;
     // Re-create the provider so it picks up the updated cfg_ callbacks.
     provider = std::make_unique<viewer::LocalProvider>(cfg);
 

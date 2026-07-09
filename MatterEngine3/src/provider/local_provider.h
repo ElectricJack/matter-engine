@@ -41,6 +41,12 @@ struct LocalProviderConfig {
                        std::function<bool(std::string& err)> fn,
                        std::string& err)> gpu_run;
 
+    // True when a valid GL context is available for the tileset GPU bake.
+    // False in headless mode (allow_gl_lt_46=true / tests without a window):
+    // the tileset phase runs physics-settle only; the .gtex is generated later
+    // when a viewer with a GL context opens the world.
+    bool gl_available = false;
+
     // Task 7: OOM/error injection hook for testing skip-and-continue.
     // Fired once per part processed (install bake + fetch/load); `part_index` is the
     // 0-based index within the current phase's part list. May throw to inject an error

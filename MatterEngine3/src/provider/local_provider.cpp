@@ -555,6 +555,30 @@ bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
         const bool dump_png = std::getenv("MATTER_TILESET_DUMP_PNG") != nullptr;
         const int slot_idx  = baked_tileset_count_;  // capture by value for closure
 
+        // Headless path: run physics settle only; skip GPU atlas bake.
+        // Without a valid GL context, bake_tileset_gpu → glGetIntegerv would
+        // dereference an unloaded GLAD function pointer and SIGSEGV (ip=0).
+        // The .gtex atlas is generated later when the viewer opens the world
+        // with a live GL 4.3+ context.
+        // slot_idx is NOT incremented here so viewer-side slot allocation
+        // is unaffected (the slot is claimed when the GPU path actually runs).
+        if (!cfg_.gl_available) {
+            fprintf(stderr, "[local_provider] headless tileset phase: '%s'\n", root_module.c_str());
+            fflush(stderr);
+            std::string se;
+            tileset::SettledTorus settled;
+            if (!tileset::run_tileset_phase(abs_world_data_, cfg_.world_name, root_module,
+                                            abs_cache_root_, settled, se,
+                                            abs_shared_lib_)) {
+                err = "LocalProvider: tileset '" + root_module +
+                      "' settle failed (headless): " + se;
+                return false;
+            }
+            printf("LocalProvider: tileset '%s' settle ok (headless, GPU bake deferred)\n",
+                   root_module.c_str());
+            continue;   // skip slot upload and baked_tileset_count_ increment
+        }
+
         std::string te;
         // ONE closure per tileset: bake + upload together (per-tileset granularity).
         bool ok = run_gl(root_module.c_str(), [&](std::string& ge) -> bool {

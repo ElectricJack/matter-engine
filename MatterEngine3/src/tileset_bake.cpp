@@ -4,6 +4,7 @@
 #include "tileset_settle.h"
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <map>
 #include <sstream>
