@@ -240,10 +240,19 @@ GroupMeshResult Cell::build_group_mesh(uint32_t group_id, const std::vector<Stat
 
     auto group_it = material_particle_indices.find(group_id);
     if (group_it == material_particle_indices.end() || group_it->second.empty()) {
-        return result;
+        // Fat-prim-only groups (e.g. capsule line() strokes in a voxel session)
+        // have no additive particle indices but still need to be meshed.  Skip
+        // only when there are also no fat prims — the combined empty check at
+        // line "if (particles.empty() && cell_fat.empty())" below handles the
+        // true-empty case once fat prims have been collected.
+        if (fatCount == 0) return result;
     }
 
-    const auto& particle_indices = group_it->second;
+    // particle_indices is empty for fat-prim-only groups; the loops below are
+    // no-ops in that case, which is correct (fat prims provide all the geometry).
+    static const std::vector<uint32_t> kEmptyIndices;
+    const auto& particle_indices =
+        (group_it != material_particle_indices.end()) ? group_it->second : kEmptyIndices;
 
     Bounds bounds;
     bounds.center = center;
