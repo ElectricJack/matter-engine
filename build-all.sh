@@ -157,7 +157,7 @@ if [ "$MODE" = "test" ]; then
     for suite in mesh_simplifier_tests material_registry_tests cell_bounds_tests \
                  blas_refcount_tests mesh_continuity_tests blas_tint_tests \
                  particle_culling_tests voxel_imposter_tests \
-                 mesh_indexed_tests mesh_transform_tests; do
+                 mesh_indexed_tests mesh_transform_tests mesh_smooth_tests; do
         if make -C MatterSurfaceLib/tests "$suite" >/dev/null 2>&1; then
             echo
             echo "--- MatterSurfaceLib ($suite) ---"
