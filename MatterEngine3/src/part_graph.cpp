@@ -5,6 +5,7 @@
 #include <fstream>
 #include <functional>
 #include <new>          // std::bad_alloc
+#include <regex>        // shared-lib import scan (Task 9)
 #include <set>
 #include <sstream>
 #include <stdexcept>    // std::exception
@@ -96,7 +97,8 @@ uint64_t memo_key_of(const std::string& source, const std::string& canon_params)
 
 } // namespace
 
-InstallResult PartGraph::install(const std::vector<ChildRequest>& roots) {
+InstallResult PartGraph::install(const std::vector<ChildRequest>& roots,
+                                  part_graph_snapshot::Snapshot* snap) {
     InstallResult result;
     std::unordered_map<uint64_t, InternalNode> memo;   // memo_key -> node
     std::string error;
@@ -299,6 +301,85 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots) {
         size_t   orig_idx = kp.second;
         if (failed_keys.count(memo_key)) {
             result.root_hashes[orig_idx] = 0;
+        }
+    }
+
+    // Task 9: populate the snapshot (if requested) from the completed DFS.
+    // A module path is derived from the resolver's schemas_dir if load_source is
+    // a FileModuleResolver (best effort). For snapshot use the memo nodes: every
+    // resolved (module, params, children, hash) is captured here. failed nodes
+    // have hash = whatever was resolved (may be 0 for resolve failures).
+    if (snap) {
+        // Build a set of root module names for is_root tagging.
+        std::set<std::string> root_modules;
+        for (const auto& kp : root_keys_with_idx)
+            root_modules.insert(memo.at(kp.first).module);
+
+        // Regex for shared-lib import detection:
+        // matches: from ['"]shared-lib/(<name>)['"]
+        // or:      import ['"]shared-lib/(<name>)['"]
+        static const std::regex kSharedImportRe(
+            R"((?:from|import)\s+['"]shared-lib/([^'"]+)['"])");
+
+        for (const auto& kv : memo) {
+            const InternalNode& n = kv.second;
+
+            // Build snapshot node (one per unique module name; if the same
+            // module appears with different params it may appear multiple times
+            // in memo — take the first seen for the snapshot, matching the
+            // module-identity contract from the brief).
+            if (snap->nodes.count(n.module)) continue;
+
+            part_graph_snapshot::Node snode;
+            snode.module        = n.module;
+            snode.params_json   = params_to_json(n.params);
+            snode.resolved_hash = n.resolved_hash;
+            snode.is_root       = root_modules.count(n.module) > 0;
+
+            // Children: use child_modules (parallel to child_hashes).
+            // Deduplicate while preserving insertion order.
+            {
+                std::set<std::string> seen_children;
+                for (const auto& cm : n.child_modules) {
+                    if (seen_children.insert(cm).second)
+                        snode.children.push_back(cm);
+                }
+            }
+
+            // shared_imports: scan source for `from/import 'shared-lib/<X>'`.
+            {
+                std::set<std::string> seen_imports;
+                auto begin = std::sregex_iterator(n.source.begin(), n.source.end(),
+                                                  kSharedImportRe);
+                auto end   = std::sregex_iterator();
+                for (auto it = begin; it != end; ++it) {
+                    std::string imp = (*it)[1].str();
+                    if (seen_imports.insert(imp).second)
+                        snode.shared_imports.push_back(imp);
+                }
+            }
+
+            // source_path: ask the resolver (FileModuleResolver overrides to return
+            // <schemas_dir>/<module>.js; base class returns "").
+            snode.source_path = resolver_.source_path_for(n.module);
+
+            snap->nodes.emplace(n.module, std::move(snode));
+        }
+
+        // Build by_file and by_import indices. source_path is filled in by the
+        // caller (LocalProvider) after it sets abs_schemas_; here we skip if empty.
+        for (auto& kv2 : snap->nodes) {
+            part_graph_snapshot::Node& sn = kv2.second;
+            if (!sn.source_path.empty()) {
+                auto& bfv = snap->by_file[sn.source_path];
+                if (std::find(bfv.begin(), bfv.end(), sn.module) == bfv.end())
+                    bfv.push_back(sn.module);
+            }
+            for (const auto& imp : sn.shared_imports) {
+                auto& biv = snap->by_import[imp];
+                if (std::find(biv.begin(), biv.end(), sn.module) == biv.end())
+                    biv.push_back(sn.module);
+            }
         }
     }
 

@@ -375,6 +375,14 @@ GRASSLOD_CPP = grass_lod_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP
 STRESSFOREST_TARGET = stress_forest_tests
 STRESSFOREST_CPP = stress_forest_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 
+# ===== Task 9: live-edit production seams ==================================
+LIVEPROD_TARGET = live_edit_prod_tests
+LIVEPROD_CPP = live_edit_prod_tests.cpp \
+               ../src/live_edit_prod.cpp \
+               ../src/part_graph_snapshot.cpp \
+               $(filter-out example_world.cpp, $(EXAMPLE_CPP))
+LIVEPROD_C   = $(COMMON_MSL_C)
+
 TILESETBAKE_TARGET = tileset_bake_tests
 TILESETBAKE_CPP = tileset_bake_tests.cpp ../src/part_graph.cpp \
                   ../src/tileset_bake.cpp ../src/tileset_settle.cpp \
@@ -530,7 +538,8 @@ sh_CPP_SRCS := $(sort \
     $(MEADOWCHECK_CPP) \
     $(GRASSLOD_CPP) \
     $(STRESSFOREST_CPP) \
-    $(TILESETBAKE_CPP))
+    $(TILESETBAKE_CPP) \
+    $(LIVEPROD_CPP))
 
 sp2_CPP_SRCS := $(sort $(SHLIB_CPP))
 vl_CPP_SRCS  := $(sort $(VIEWER_LOGIC_CPP))
@@ -608,6 +617,7 @@ MEADOWCHECK_OBJS = $(call obj_list,sh,$(MEADOWCHECK_CPP)) $(call obj_list,mslc,$
 GRASSLOD_OBJS = $(call obj_list,sh,$(GRASSLOD_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 STRESSFOREST_OBJS = $(call obj_list,sh,$(STRESSFOREST_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 TILESETBAKE_OBJS = $(call obj_list,sh,$(TILESETBAKE_CPP)) $(call obj_list,mslc,$(TILESETBAKE_C)) $(qjsc_C_OBJS)
+LIVEPROD_OBJS    = $(call obj_list,sh,$(LIVEPROD_CPP)) $(call obj_list,mslc,$(LIVEPROD_C)) $(qjsc_C_OBJS)
 
 SHLIB_OBJS = $(call obj_list,sp2,$(SHLIB_CPP)) $(call obj_list,mslc,$(SHLIB_C)) $(qjsc_C_OBJS)
 VIEWER_LOGIC_OBJS = $(call obj_list,vl,$(VIEWER_LOGIC_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
@@ -620,7 +630,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests
+.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -789,6 +799,18 @@ $(STRESSFOREST_TARGET): $(STRESSFOREST_OBJS)
 run-stressforest: $(STRESSFOREST_TARGET)
 	./$(STRESSFOREST_TARGET)
 
+# Task 9: live-edit production seam tests (ProdGraphResolver/Baker/Flattener).
+$(LIVEPROD_TARGET): $(LIVEPROD_OBJS)
+	$(CC) $(LIVEPROD_OBJS) -o $@ \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+
+run-liveprod: $(LIVEPROD_TARGET)
+	./$(LIVEPROD_TARGET)
+
+# Alias: run-live = dev_live_edit regression (SP-5 seam interfaces, fake graph).
+run-live: $(DEV_TARGET)
+	./$(DEV_TARGET)
+
 # Box3d physics smoke test.
 tileset_physics_tests: tileset_physics_tests.cpp ../src/tileset_settle.cpp ../src/tileset_collider.cpp $(BOX3D_DIR)/libbox3d.a
 	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include -I$(BOX3D_DIR)/include \
@@ -944,6 +966,7 @@ clean:
 	      $(POLYTRI_TARGET) $(ISO_TARGET) $(FLATTEN_TARGET) $(LIGHTING_TARGET) \
 	      $(TILESETTORUSBVH_TARGET) $(TILESETDSL_TARGET) $(TILESETBAKE_TARGET) \
 	      $(TILESETGTEX_TARGET) $(ASYNCQ_TARGET) $(GALLERY_TARGET) \
+	      $(LIVEPROD_TARGET) \
 	      tileset_physics_tests tileset_core_tests tileset_placement_tests \
 	      gpu_tests tileset_gpu_tests tileset_seam_tests tileset_provider_tests \
 	      tileset_load_tests api_tests async_bake_tests

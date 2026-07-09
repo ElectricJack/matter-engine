@@ -3,7 +3,8 @@
 
 #include "world_source.h"
 #include "part_store.h"
-#include "part_graph.h"   // PartGraph, InstallResult, ChildRequest
+#include "part_graph.h"           // PartGraph, InstallResult, ChildRequest
+#include "part_graph_snapshot.h"  // Task 9: live-edit graph snapshot
 
 #if defined(MATTER_HAVE_SCRIPT_HOST)
 #include "script_host.h"
@@ -80,6 +81,11 @@ public:
     // Task 7: access install-phase partial failures (populated after install_graph()).
     const part_graph::InstallResult& install_result() const { return ir_; }
 
+    // Task 9: access the graph snapshot recorded by the last install_graph().
+    // Valid after a successful install_graph() call. Updated by reresolve() in
+    // ProdGraphResolver for live-edit cascade tracking.
+    part_graph_snapshot::Snapshot& graph_snapshot() { return graph_snapshot_; }
+
     // Task 7 fix: per-part load failures recorded during fetch_parts() when
     // get_or_load returns null (skip-and-continue; returns true even with failures).
     struct FetchFailed { std::string module; std::string error; };
@@ -94,6 +100,7 @@ private:
     std::set<uint64_t>   baked_hashes_;  // hashes freshly baked by last install_graph()
     std::map<uint64_t, std::string> module_by_hash_; // hash -> module name (from manifest roots)
     std::vector<FetchFailed> fetch_failed_; // Task 7 fix: per-part load failures from fetch_parts()
+    part_graph_snapshot::Snapshot graph_snapshot_;  // Task 9: live-edit graph snapshot
 
     // State produced by install_graph(), consumed by compose_world().
     // Valid only after a successful install_graph() call.

@@ -212,6 +212,7 @@ bool LocalProvider::install_graph(std::string& err) {
     install_to_orig_.clear();
     tileset_indices_.clear();
     ir_ = part_graph::InstallResult{};
+    graph_snapshot_ = part_graph_snapshot::Snapshot{};  // Task 9: reset snapshot
 
     // Ensure the persistent cache dir exists.
     // All artifact writes are absolute-path (Task 3 Phase B: HostBaker::bake
@@ -335,11 +336,16 @@ bool LocalProvider::install_graph(std::string& err) {
         else { roots_for_install_.push_back(roots_[i]); install_to_orig_.push_back(i); }
     }
 
-    ir_ = graph.install(roots_for_install_);
+    ir_ = graph.install(roots_for_install_, &graph_snapshot_);
     if (!ir_.ok) {
         err = ir_.error;
         return false;
     }
+    // Task 9: source_path is set by FileModuleResolver::source_path_for (called
+    // from install's snapshot recording). Re-build the by_file index now that
+    // source_path entries are present (they were set during install for FileModuleResolver).
+    // The by_import index is already built in install; by_file is also built there.
+    // Nothing extra needed here: install fills both indices directly.
     baked_count_ = (int)ir_.baked.size();
     hit_count_   = ir_.hits;
     baked_hashes_.insert(ir_.baked.begin(), ir_.baked.end());

@@ -77,7 +77,8 @@ QJS_OBJ = quickjs.o libregexp.o libunicode.o cutils.o xsum.o
 ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/dsl_triangle.cpp src/triangle_emit.cpp src/polygon_triangulate.cpp \
           src/csg_lowering.cpp src/module_resolver.cpp src/script_rng_binding.cpp \
-          src/part_asset_v2.cpp src/part_graph.cpp \
+          src/part_asset_v2.cpp src/part_graph.cpp src/part_graph_snapshot.cpp \
+          src/live_edit_prod.cpp \
           src/lod_bake.cpp src/world_flatten.cpp src/part_flatten.cpp \
           src/retopo_blacklist.cpp \
           src/sector_grid.cpp src/lod_select.cpp \

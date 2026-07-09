@@ -1,4 +1,5 @@
 #pragma once
+#include "part_graph_snapshot.h"
 #include <cstdint>
 #include <map>
 #include <string>
@@ -35,6 +36,9 @@ struct ModuleResolver {
     // false => module failed to evaluate (=> hard error).
     virtual bool get_requires(const std::string& module, const Params& params,
                               std::vector<ChildRequest>& children_out) = 0;
+    // Task 9: optional source path for snapshot recording. Default returns "".
+    // FileModuleResolver overrides to return <schemas_dir>/<module>.js.
+    virtual std::string source_path_for(const std::string& /*module*/) const { return {}; }
 };
 
 // Seam: how SP-3 bakes one part. Real impl (Task 12) delegates to SP-2 ScriptHost
@@ -120,7 +124,11 @@ public:
     PartGraph(ModuleResolver& resolver, Baker& baker);
 
     // Resolve + topo-sort + bake the reachable graph for the given roots.
-    InstallResult install(const std::vector<ChildRequest>& roots);
+    // If snap is non-null, it is populated with the graph snapshot (Task 9:
+    // live-edit production seams). Run on the WORKER thread under the async
+    // session — no extra locking needed (install is the sole graph mutator).
+    InstallResult install(const std::vector<ChildRequest>& roots,
+                          part_graph_snapshot::Snapshot* snap = nullptr);
 
     // Parse WorldData/<world>/world.manifest into root ChildRequests. Each line:
     // "<Module> [expand] [tileset]"; '#' starts a comment. Roots take their `static params`
@@ -159,6 +167,10 @@ public:
     bool load_source(const std::string& module, std::string& source_out) override;
     bool get_requires(const std::string& module, const Params& params,
                       std::vector<ChildRequest>& children_out) override;
+    // Task 9: returns <schemas_dir>/<module>.js for snapshot source_path recording.
+    std::string source_path_for(const std::string& module) const override {
+        return schemas_dir_ + "/" + module + ".js";
+    }
 private:
     script_host::ScriptHost& host_;
     std::string              schemas_dir_;
