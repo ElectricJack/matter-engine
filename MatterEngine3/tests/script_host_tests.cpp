@@ -1053,6 +1053,106 @@ static void test_eval_lod_budgets() {
 // Mirrors eval_lod_budgets's discipline: fresh isolated context, fail-closed
 // on any error, existing schemas without `static retopo` read as defaults
 // (enabled=false) so back-compat holds.
+static void test_modifier_region_state_rules() {
+    {   // regions do not nest
+        dsl::DslState s;
+        s.begin_modifier_region();
+        s.begin_modifier_region();
+        CHECK(s.has_error(), "nested beginModifier is an error");
+    }
+    {   // end without begin
+        dsl::DslState s;
+        s.end_modifier_region({});
+        CHECK(s.has_error(), "endModifier without beginModifier is an error");
+    }
+    {   // cannot open inside a session
+        dsl::DslState s;
+        s.beginVoxels(0.1f);
+        s.begin_modifier_region();
+        CHECK(s.has_error(), "beginModifier inside an open session is an error");
+    }
+    {   // cannot close while a session is open (sessions must not straddle)
+        dsl::DslState s;
+        s.begin_modifier_region();
+        s.beginVoxels(0.1f);
+        s.end_modifier_region({});
+        CHECK(s.has_error(), "endModifier while a session is open is an error");
+    }
+    {   // happy path: op ranges cover exactly the brushes emitted inside
+        dsl::DslState s;
+        s.beginVoxels(0.1f);
+        s.sphere({0,0,0}, 1.0f, dsl::CsgOp::Union);   // op 0: outside any region
+        s.endVoxels();
+        s.begin_modifier_region();
+        s.beginVoxels(0.1f);
+        s.sphere({0,0,0}, 1.0f, dsl::CsgOp::Union);   // op 1: inside
+        s.endVoxels();
+        dsl::ModifierSpec smooth_spec{};
+        smooth_spec.kind = dsl::ModifierKind::Smooth;
+        s.end_modifier_region({ smooth_spec });
+        CHECK(!s.has_error(), "well-formed modifier region has no error");
+        CHECK(s.modifier_regions().size() == 1, "one region recorded");
+        CHECK(s.modifier_regions()[0].op_begin == 1, "region op_begin is 1");
+        CHECK(s.modifier_regions()[0].op_end == 2, "region op_end is 2");
+        CHECK(s.modifier_regions()[0].stack.size() == 1, "region stack has one entry");
+        CHECK(!s.modifier_region_open(), "region is closed after endModifier");
+    }
+}
+
+static void test_modifier_region_bake_rules() {
+    script_host::ScriptHost host;
+    {   // region left open at end of build -> clean bake error
+        const char* src =
+            "class P extends Part { build(p) {"
+            "  this.beginModifier();"
+            "  this.beginVoxels(0.2); this.fill(2); this.sphere([0,0,0],0.5); this.endVoxels();"
+            "} }";
+        script_host::BakeResult r = host.bake_source(src, "{}", {});
+        CHECK(!r.error.ok, "open modifier region at build end is a bake error");
+    }
+    {   // unknown modifier name -> clean bake error
+        const char* src =
+            "class P extends Part { build(p) {"
+            "  this.beginModifier();"
+            "  this.beginVoxels(0.2); this.fill(2); this.sphere([0,0,0],0.5); this.endVoxels();"
+            "  this.endModifier([{ frobnicate: {} }]);"
+            "} }";
+        script_host::BakeResult r = host.bake_source(src, "{}", {});
+        CHECK(!r.error.ok, "unknown modifier name is a bake error");
+    }
+    {   // simplify ratio out of (0,1] -> clean bake error
+        const char* src =
+            "class P extends Part { build(p) {"
+            "  this.beginModifier();"
+            "  this.beginVoxels(0.2); this.fill(2); this.sphere([0,0,0],0.5); this.endVoxels();"
+            "  this.endModifier([{ simplify: 1.5 }]);"
+            "} }";
+        script_host::BakeResult r = host.bake_source(src, "{}", {});
+        CHECK(!r.error.ok, "simplify ratio > 1 is a bake error");
+    }
+    {   // two-key entry -> clean bake error
+        const char* src =
+            "class P extends Part { build(p) {"
+            "  this.beginModifier();"
+            "  this.beginVoxels(0.2); this.fill(2); this.sphere([0,0,0],0.5); this.endVoxels();"
+            "  this.endModifier([{ smooth: {}, retopo: {} }]);"
+            "} }";
+        script_host::BakeResult r = host.bake_source(src, "{}", {});
+        CHECK(!r.error.ok, "two-key modifier entry is a bake error");
+    }
+    {   // well-formed region bakes clean (stack processing lands in Task 4);
+        // shorthand { simplify: 0.4 } accepted
+        const char* src =
+            "class P extends Part { build(p) {"
+            "  this.beginModifier();"
+            "  this.beginVoxels(0.2); this.fill(2); this.sphere([0,0,0],0.5); this.endVoxels();"
+            "  this.endModifier([{ smooth: { iterations: 1 } }, { simplify: 0.4 }]);"
+            "} }";
+        script_host::BakeResult r = host.bake_source(src, "{}", {});
+        CHECK(r.error.ok, "well-formed modifier region bakes clean");
+    }
+}
+
 static void test_eval_retopo_settings() {
     script_host::ScriptHost host;
 
@@ -1185,6 +1285,8 @@ int main() {
     test_extrude_dispatch_and_polygon();
     test_eval_lod_budgets();
     test_eval_retopo_settings();
+    test_modifier_region_state_rules();
+    test_modifier_region_bake_rules();
     if (g_failures == 0) printf("ALL PASS\n");
     return g_failures ? 1 : 0;
 }

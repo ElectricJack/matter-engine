@@ -30,6 +30,8 @@ globalThis.Part = class Part {
   intersection()         { __dsl_op(2); }
   smoothing(k)           { __dsl_smoothing(k); }
   simplify(ratio)        { __dsl_simplify(ratio); }
+  beginModifier()        { __dsl_beginModifier(); }
+  endModifier(list)      { __dsl_endModifier(list); }
   placeChild(module,params) { __dsl_placeChild(module, params); }
   beginShape(mode)       { __dsl_beginShape(mode|0); }
   vertex(x,y,z)          { __dsl_vertex(x,y,(z===undefined?0:z)); }

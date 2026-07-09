@@ -911,6 +911,11 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         r.error.ok = false;
         r.error.message = "session left open at end of build";
     }
+    if (r.error.ok && state.modifier_region_open()) {
+        r.error.ok = false;
+        r.error.message =
+            "modifier region left open at end of build (beginModifier without endModifier)";
+    }
     // G7: an unbalanced transform stack (a pushMatrix without a matching
     // popMatrix) leaves depth > 1. Fail closed, same path as the open-session
     // check, so authoring bugs surface instead of silently leaking a frame.

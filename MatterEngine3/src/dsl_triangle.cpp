@@ -230,6 +230,33 @@ void DslState::extrude(const float* path_xyz, int path_n) {
     retained_.holes.clear();
 }
 
+void DslState::begin_modifier_region() {
+    if (region_open_) { set_error("beginModifier: modifier regions do not nest"); return; }
+    if (session_ != Session::None) {
+        set_error("beginModifier inside an open session (call it before beginVoxels/beginShape)");
+        return;
+    }
+    region_open_ = true;
+    region_start_op_  = buffer_.ops.size();
+    region_start_tri_ = tris_buf_->triangles().size();
+}
+
+void DslState::end_modifier_region(std::vector<ModifierSpec> stack) {
+    if (!region_open_) { set_error("endModifier without beginModifier"); return; }
+    if (session_ != Session::None) {
+        set_error("endModifier inside an open session (close the session first)");
+        return;
+    }
+    ModifierRegion r;
+    r.op_begin  = region_start_op_;
+    r.op_end    = buffer_.ops.size();
+    r.tri_begin = region_start_tri_;
+    r.tri_end   = tris_buf_->triangles().size();
+    r.stack     = std::move(stack);
+    regions_.push_back(std::move(r));
+    region_open_ = false;
+}
+
 void DslState::flush_retained_profile() {
     if (!retained_.valid) return;
     if (!retained_.empty()) {
