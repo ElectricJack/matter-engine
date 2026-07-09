@@ -11,6 +11,8 @@ extern "C" {
 #include "csg_lowering.h"   // NEW MatterEngine3 header
 #include "lod_bake.h"        // QEM decimation for simplify() on direct-tri parts
 #include "module_resolver.h" // SP-7 shared-lib fold + resolution
+#include "modifier_apply.h"  // Task 4: bake-time modifier region stack apply
+#include "mesh_indexed.hpp"  // Task 4: weld/unweld across cells for region path
 #include "tileset_layout.h"     // tile_colors (Task 5: variant hook)
 #include "tileset_placement.h"  // placement_seed (Task 5: variant rng)
 #include "cluster.h"                    // consumed prototype (StaticParticle, Cluster)
@@ -30,6 +32,7 @@ extern "C" {
 #include <memory>
 #include <new>       // std::bad_alloc
 #include <regex>
+#include <utility>   // std::pair
 
 namespace script_host {
 
@@ -687,6 +690,303 @@ uint64_t ScriptHost::resolve_hash(const std::string& source,
         child_hashes, child_count);
 }
 
+// Guarantee one TriEx per triangle after a modifier stack. Retopo output has
+// no TriEx; rebuild with face normals and the group's material/tint (uniform
+// within a material-merge-group, so proto = the group's first input TriEx).
+static void ensure_triex(MeshIndexed& m, const TriEx& proto) {
+    const size_t ntris = m.indices.size() / 3;
+    if (m.triex.size() == ntris) return;
+    m.triex.assign(ntris, TriEx{});
+    for (size_t t = 0; t < ntris; ++t) {
+        const float3 p0 = m.positions[m.indices[3*t]];
+        const float3 p1 = m.positions[m.indices[3*t + 1]];
+        const float3 p2 = m.positions[m.indices[3*t + 2]];
+        const float ex1 = p1.x-p0.x, ey1 = p1.y-p0.y, ez1 = p1.z-p0.z;
+        const float ex2 = p2.x-p0.x, ey2 = p2.y-p0.y, ez2 = p2.z-p0.z;
+        float nx = ey1*ez2 - ez1*ey2, ny = ez1*ex2 - ex1*ez2, nz = ex1*ey2 - ey1*ex2;
+        const float len = std::sqrt(nx*nx + ny*ny + nz*nz);
+        if (len > 1e-20f) { nx /= len; ny /= len; nz /= len; }
+        else              { nx = 0; ny = 0; nz = 1; }
+        TriEx& e = m.triex[t];
+        e.materialId = proto.materialId;
+        e.tint = proto.tint;
+        e.N0 = e.N1 = e.N2 = make_float3(nx, ny, nz);
+    }
+}
+
+// Lower + cell-mesh one BuildBuffer and register its triangles.
+//   stack == nullptr: existing per-cell path, byte-identical to before —
+//     each cell/group registers its own BLAS entry (cell_simplify applies).
+//   stack != nullptr: region path — per material-merge-group, repacked
+//     Tri/TriEx are ACCUMULATED across cells, welded into one indexed mesh
+//     (cross-cell seams become interior edges), run through the modifier
+//     stack, and registered as ONE BLAS entry (cell_simplify must be 1.0).
+static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
+                         const std::vector<dsl::ModifierSpec>* stack,
+                         const std::string& label,
+                         float cell_simplify,
+                         BLASManager& blas,
+                         TLASManager& tlas) {
+    dsl::LoweredField f = dsl::lower_build_buffer(buf);
+    const float cell_size = 1.0f;   // smallest_cell_size (matches Cluster default)
+    const float base_detail = buf.ops.empty()
+                                  ? 0.1f : buf.ops[0].spacing;
+
+    // group_id -> accumulated (Tri, TriEx) across all cells. std::map for
+    // deterministic group iteration order.
+    std::map<uint32_t, std::pair<std::vector<Tri>, std::vector<TriEx>>> region_acc;
+
+    // Build the additive particle vector once (Cell reads it by index).
+    const std::vector<StaticParticle>& particles = f.additive;
+
+    // Ordered-CSG: a global FieldStages carrying just the stage-op list. The
+    // per-cell FieldStages (with the cell-local particle->stage map) is built
+    // inside Cell::build_group_mesh; here we only hand over the op order and
+    // the additive->stage map. Staging engages only when there is >1 stage or
+    // any fat primitive, so the common single-union part stays byte-identical.
+    FieldStages gstages{};
+    gstages.stageOp = f.stages.empty() ? nullptr : f.stages.data();
+    gstages.stageCount = (int)f.stages.size();
+    const FieldStages* gstagesPtr = (f.stages.size() > 1 || !f.fat.empty())
+                                        ? &gstages : nullptr;
+    const FatPrim* fatPtr = f.fat.empty() ? nullptr : f.fat.data();
+    int fatCount = (int)f.fat.size();
+    const int* clusterStage = f.additive_stage.empty() ? nullptr : f.additive_stage.data();
+
+    // Determine the set of integer cell coordinates touched by any additive
+    // particle, using the prototype's influence_radius = radius * 2 halo.
+    // Perf fix: instead of O(cells × particles) assignment, invert the loop —
+    // for each particle touch its cell range and push the particle index into
+    // every cell where intersects_sphere(pos, radius) is true. This is
+    // O(particles × avg_cells_per_particle) which is always ≤ the old cost.
+    std::map<std::tuple<int,int,int>, std::unique_ptr<Cell>> cells;
+    auto cell_key = [](int x,int y,int z){ return std::make_tuple(x,y,z); };
+
+    // Additive particles: create cells AND assign particle indices in one pass.
+    for (uint32_t i = 0; i < particles.size(); ++i) {
+        const StaticParticle& sp = particles[i];
+        float inf = sp.radius * 2.0f;
+        int x0 = (int)std::floor((sp.position.x - inf) / cell_size);
+        int x1 = (int)std::floor((sp.position.x + inf) / cell_size);
+        int y0 = (int)std::floor((sp.position.y - inf) / cell_size);
+        int y1 = (int)std::floor((sp.position.y + inf) / cell_size);
+        int z0 = (int)std::floor((sp.position.z - inf) / cell_size);
+        int z1 = (int)std::floor((sp.position.z + inf) / cell_size);
+        for (int x=x0;x<=x1;++x) for (int y=y0;y<=y1;++y) for (int z=z0;z<=z1;++z) {
+            auto k = cell_key(x,y,z);
+            auto& cp = cells[k];
+            if (!cp) cp = std::make_unique<Cell>(Vector3{(float)x,(float)y,(float)z},
+                                                 0, cell_size);
+            // Use unchecked variant: each (i, cell) pair is visited at most once.
+            if (cp->intersects_sphere(sp.position, sp.radius))
+                cp->add_particle_index_unchecked(i, sp.materialId);
+        }
+    }
+    // Fat primitives (oriented box / ellipsoid) expand the cell set too, so a
+    // pure-box part still gets cells to mesh its surface.
+    for (const FatPrim& fp : f.fat) {
+        float inf = fp.boundRadius * 2.0f;
+        int x0 = (int)std::floor((fp.center.x - inf) / cell_size);
+        int x1 = (int)std::floor((fp.center.x + inf) / cell_size);
+        int y0 = (int)std::floor((fp.center.y - inf) / cell_size);
+        int y1 = (int)std::floor((fp.center.y + inf) / cell_size);
+        int z0 = (int)std::floor((fp.center.z - inf) / cell_size);
+        int z1 = (int)std::floor((fp.center.z + inf) / cell_size);
+        for (int x=x0;x<=x1;++x) for (int y=y0;y<=y1;++y) for (int z=z0;z<=z1;++z) {
+            auto k = cell_key(x,y,z);
+            if (!cells[k])
+                cells[k] = std::make_unique<Cell>(Vector3{(float)x,(float)y,(float)z},
+                                                  0, cell_size);
+        }
+    }
+
+    // Perf fix: build per-cell carve lists in one O(carve × avg_cells) pass
+    // instead of O(cells × carve) inside the per-cell loop below.
+    std::map<std::tuple<int,int,int>, std::vector<Particle>> cell_carve;
+    for (const Particle& cp : f.carve) {
+        float inf = cp.radius * 2.0f;   // generous halo to ensure no cell missed
+        int x0 = (int)std::floor((cp.position.x - inf) / cell_size);
+        int x1 = (int)std::floor((cp.position.x + inf) / cell_size);
+        int y0 = (int)std::floor((cp.position.y - inf) / cell_size);
+        int y1 = (int)std::floor((cp.position.y + inf) / cell_size);
+        int z0 = (int)std::floor((cp.position.z - inf) / cell_size);
+        int z1 = (int)std::floor((cp.position.z + inf) / cell_size);
+        for (int x=x0;x<=x1;++x) for (int y=y0;y<=y1;++y) for (int z=z0;z<=z1;++z) {
+            auto k = cell_key(x,y,z);
+            if (cells.count(k)) {
+                // Mirrors the original 1.5x slack test from the per-cell loop.
+                if (cells[k]->intersects_sphere(cp.position, cp.radius * 1.5f))
+                    cell_carve[k].push_back(cp);
+            }
+        }
+    }
+
+    // One scratch shared across all cells. The consumed mesher's marching-cubes
+    // pass leaves the per-vertex normal buffer (scratch->pool.normals) UNWRITTEN;
+    // compute_surface_normals_impl then reads the incoming (uninitialized) normal
+    // for any degenerate vertex (vertex on a particle center / no neighbor in the
+    // gradient search) before normalizing it. A fresh scratch per cell hands each
+    // cell a freshly realloc'd (garbage) buffer, so those degenerate reads vary
+    // run-to-run and the saved .part normals are nondeterministic. Sharing one
+    // scratch keeps the pool buffer stable across the (deterministic) cell
+    // sequence; we also clear it to a fixed pattern up front so the very first
+    // cell's degenerate reads are deterministic too. surface.c/cell.cpp are
+    // read-only, so this is the only lever available to make the bake byte-stable.
+    SurfaceScratch* scratch = CreateSurfaceScratch();
+    for (auto& kv : cells) {
+        Cell* cell = kv.second.get();
+        // Particle indices were already assigned during the inverted pass above;
+        // no per-cell O(particles) scan needed here.
+        // Seed an (empty) merge-group bucket for every fat primitive overlapping
+        // this cell so build_cell_meshes iterates the group and meshes the box/
+        // ellipsoid even when no additive sphere shares the cell. The fat field
+        // eval pulls its own surface; the bucket just makes the group visible.
+        for (const FatPrim& fp : f.fat) {
+            if (cell->intersects_sphere(fp.center, fp.boundRadius * 1.5f)) {
+                uint32_t g = (uint32_t)MaterialMergeGroup(fp.materialId);
+                cell->material_particle_indices[g]; // default-inserts empty bucket
+            }
+        }
+        if (cell->material_particle_indices.empty()) continue;
+
+        // Use the pre-built carve list for this cell (empty if no carve overlap).
+        static const std::vector<Particle> kEmptyCarve;
+        auto carve_it = cell_carve.find(kv.first);
+        const std::vector<Particle>& carve =
+            (carve_it != cell_carve.end()) ? carve_it->second : kEmptyCarve;
+        const Particle* carvePtr = carve.empty() ? nullptr : carve.data();
+        int carveCount = (int)carve.size();
+
+        CellMeshResult res = cell->build_cell_meshes(
+            particles, scratch, /*simplification*/cell_simplify, base_detail,
+            /*max_pow*/6, /*uniform_detail*/0.0f, carvePtr, carveCount,
+            gstagesPtr, fatPtr, fatCount, clusterStage);
+
+        // Register each group's GL-free triangle arrays directly into the BLAS
+        // and place an identity instance in the TLAS.
+        for (GroupMeshResult& g : res.groups) {
+            if (g.triangles.empty()) continue;
+            // Determinism: Tri unions a float3 (12B) with an __m128 (16B), so
+            // each vertex slot has 4 padding bytes the mesher never writes.
+            // save_v2 serializes the entry's Tri bytes verbatim, so that stale
+            // stack garbage would make re-bakes byte-differ. Re-pack each Tri
+            // through a value-initialized copy (zeroed padding) before
+            // registering so the saved .part is byte-stable across bakes.
+            std::vector<Tri> norm(g.triangles.size());
+            for (size_t i = 0; i < g.triangles.size(); ++i) {
+                Tri t;
+                std::memset(&t, 0, sizeof(Tri));   // zero union padding too
+                t.vertex0 = g.triangles[i].vertex0;
+                t.vertex1 = g.triangles[i].vertex1;
+                t.vertex2 = g.triangles[i].vertex2;
+                t.centroid = g.triangles[i].centroid;
+                norm[i] = t;
+            }
+            // TriEx is 16-byte aligned (float4 tint) with trailing padding
+            // bytes the mesher leaves uninitialized; re-pack through a
+            // memset-zeroed copy for the same byte-stability reason as Tri.
+            // (Value-init {} does not reliably zero trailing alignment
+            // padding for a class with default member initializers.)
+            //
+            // Per-vertex normals: keep the mesher's smooth (SDF-gradient) normals,
+            // which are deterministic given the single shared SurfaceScratch above
+            // (a fresh-per-cell scratch handed each cell a freshly realloc'd, and
+            // therefore garbage, normal buffer; the marching-cubes pass never
+            // writes that buffer and compute_surface_normals_impl reads the
+            // uninitialized value for degenerate vertices, which then varied
+            // run-to-run). As a robustness guard against any residual degenerate
+            // vertex whose normal comes back non-finite or non-unit, fall back to
+            // the deterministic geometric face normal derived from the (byte-
+            // identical) Tri vertices.
+            std::vector<TriEx> normEx(g.triangle_normals.size());
+            for (size_t i = 0; i < g.triangle_normals.size(); ++i) {
+                TriEx e;
+                std::memset(&e, 0, sizeof(TriEx));   // zero all bytes incl. padding
+                const TriEx& s = g.triangle_normals[i];
+                e.uv0=s.uv0; e.uv1=s.uv1; e.uv2=s.uv2;
+                auto finite_unit = [](const float3& v){
+                    float l2 = v.x*v.x + v.y*v.y + v.z*v.z;
+                    return std::isfinite(l2) && l2 > 0.25f && l2 < 4.0f; // |v| in [0.5,2]
+                };
+                if (finite_unit(s.N0) && finite_unit(s.N1) && finite_unit(s.N2)) {
+                    e.N0=s.N0; e.N1=s.N1; e.N2=s.N2;
+                } else {
+                    // Deterministic geometric face normal from the byte-identical Tri.
+                    const Tri& tr = norm[i];
+                    float ax=tr.vertex1.x-tr.vertex0.x, ay=tr.vertex1.y-tr.vertex0.y, az=tr.vertex1.z-tr.vertex0.z;
+                    float bx=tr.vertex2.x-tr.vertex0.x, by=tr.vertex2.y-tr.vertex0.y, bz=tr.vertex2.z-tr.vertex0.z;
+                    float nx=ay*bz-az*by, ny=az*bx-ax*bz, nz=ax*by-ay*bx;
+                    float nl=std::sqrt(nx*nx+ny*ny+nz*nz);
+                    if (nl>1e-12f) { nx/=nl; ny/=nl; nz/=nl; } else { nx=0; ny=0; nz=1; }
+                    float3 fn = make_float3(nx,ny,nz);
+                    e.N0=fn; e.N1=fn; e.N2=fn;
+                }
+                e.materialId=s.materialId;
+                // tint/ao: derive deterministically rather than copy the mesher's
+                // values. AO is not baked in SP-2 (default 1.0 = unoccluded), and
+                // the authored per-material default tint (alpha 0 => use material
+                // albedo) is used. This keeps the saved asset independent of the
+                // mesher's per-triangle nearest-particle tint lookup.
+                e.tint = make_float4(1.0f, 1.0f, 1.0f, 0.0f);
+                e.ao0 = 1.0f; e.ao1 = 1.0f; e.ao2 = 1.0f;
+                normEx[i]=e;
+            }
+            if (!stack) {
+                BLASHandle h = blas.register_triangles(norm, normEx);
+                if (h != INVALID_BLAS_HANDLE) {
+                    tlas.load_identity();
+                    tlas.draw(h, g.group_id);
+                }
+            } else {
+                auto& acc = region_acc[g.group_id];
+                acc.first.insert(acc.first.end(), norm.begin(), norm.end());
+                acc.second.insert(acc.second.end(), normEx.begin(), normEx.end());
+            }
+        }
+    }
+    DestroySurfaceScratch(scratch);
+
+    if (stack) {
+        for (auto& entry : region_acc) {
+            const uint32_t group_id = entry.first;
+            auto& acc = entry.second;
+            if (acc.first.empty()) continue;
+            MeshIndexed welded = from_tri(acc.first, &acc.second);
+            char glabel[128];
+            std::snprintf(glabel, sizeof(glabel), "%s group %u", label.c_str(), group_id);
+            MeshIndexed done = modifier_apply::apply_stack(std::move(welded), *stack, glabel);
+            if (done.positions.empty() || done.indices.empty()) continue;
+            ensure_triex(done, acc.second[0]);
+            std::vector<Tri> tris; std::vector<TriEx> triex;
+            to_tri(done, tris, triex);
+            // memset-zero repack (byte-stable .part) — same field-by-field
+            // repack the per-cell path above performs on its norm/normEx.
+            std::vector<Tri> norm(tris.size());
+            std::vector<TriEx> normEx(triex.size());
+            for (size_t i = 0; i < tris.size(); ++i) {
+                std::memset(&norm[i], 0, sizeof(Tri));
+                norm[i].vertex0 = tris[i].vertex0;
+                norm[i].vertex1 = tris[i].vertex1;
+                norm[i].vertex2 = tris[i].vertex2;
+                norm[i].centroid = tris[i].centroid;
+
+                std::memset(&normEx[i], 0, sizeof(TriEx));
+                const TriEx& s = triex[i];
+                normEx[i].uv0 = s.uv0; normEx[i].uv1 = s.uv1; normEx[i].uv2 = s.uv2;
+                normEx[i].N0  = s.N0;  normEx[i].N1  = s.N1;  normEx[i].N2  = s.N2;
+                normEx[i].materialId = s.materialId;
+                normEx[i].tint = make_float4(1.0f, 1.0f, 1.0f, 0.0f);
+                normEx[i].ao0 = 1.0f; normEx[i].ao1 = 1.0f; normEx[i].ao2 = 1.0f;
+            }
+            BLASHandle h = blas.register_triangles(norm, normEx);
+            if (h != INVALID_BLAS_HANDLE) {
+                tlas.load_identity();
+                tlas.draw(h, group_id);
+            }
+        }
+    }
+}
+
 BakeResult ScriptHost::bake_source(const std::string& source,
                                    const std::string& params_json,
                                    const BakeOptions& opts,
@@ -937,220 +1237,42 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     // arrays straight into the BLAS (the same register_triangles path the headless
     // part-asset tests use), skipping the GL UploadMesh entirely.
     if (r.error.ok) {
-        dsl::LoweredField f = dsl::lower_build_buffer(state.buffer());
-        const float cell_size = 1.0f;   // smallest_cell_size (matches Cluster default)
-        const float base_detail = state.buffer().ops.empty()
-                                      ? 0.1f : state.buffer().ops[0].spacing;
-
         // Bake-time TLAS holds one draw per marching-cubes mesh group (≈ one per
         // surface cell). A detailed/large trunk touches well over the default 100
         // cells, and exceeding the cap silently drops geometry from the baked part,
         // so size it generously for the part bake.
         BLASManager blas; TLASManager tlas(65536);
 
-        // Build the additive particle vector once (Cell reads it by index).
-        const std::vector<StaticParticle>& particles = f.additive;
-
-        // Ordered-CSG: a global FieldStages carrying just the stage-op list. The
-        // per-cell FieldStages (with the cell-local particle->stage map) is built
-        // inside Cell::build_group_mesh; here we only hand over the op order and
-        // the additive->stage map. Staging engages only when there is >1 stage or
-        // any fat primitive, so the common single-union part stays byte-identical.
-        FieldStages gstages{};
-        gstages.stageOp = f.stages.empty() ? nullptr : f.stages.data();
-        gstages.stageCount = (int)f.stages.size();
-        const FieldStages* gstagesPtr = (f.stages.size() > 1 || !f.fat.empty())
-                                            ? &gstages : nullptr;
-        const FatPrim* fatPtr = f.fat.empty() ? nullptr : f.fat.data();
-        int fatCount = (int)f.fat.size();
-        const int* clusterStage = f.additive_stage.empty() ? nullptr : f.additive_stage.data();
-
-        // Determine the set of integer cell coordinates touched by any additive
-        // particle, using the prototype's influence_radius = radius * 2 halo.
-        // Perf fix: instead of O(cells × particles) assignment, invert the loop —
-        // for each particle touch its cell range and push the particle index into
-        // every cell where intersects_sphere(pos, radius) is true. This is
-        // O(particles × avg_cells_per_particle) which is always ≤ the old cost.
-        std::map<std::tuple<int,int,int>, std::unique_ptr<Cell>> cells;
-        auto cell_key = [](int x,int y,int z){ return std::make_tuple(x,y,z); };
-
-        // Additive particles: create cells AND assign particle indices in one pass.
-        for (uint32_t i = 0; i < particles.size(); ++i) {
-            const StaticParticle& sp = particles[i];
-            float inf = sp.radius * 2.0f;
-            int x0 = (int)std::floor((sp.position.x - inf) / cell_size);
-            int x1 = (int)std::floor((sp.position.x + inf) / cell_size);
-            int y0 = (int)std::floor((sp.position.y - inf) / cell_size);
-            int y1 = (int)std::floor((sp.position.y + inf) / cell_size);
-            int z0 = (int)std::floor((sp.position.z - inf) / cell_size);
-            int z1 = (int)std::floor((sp.position.z + inf) / cell_size);
-            for (int x=x0;x<=x1;++x) for (int y=y0;y<=y1;++y) for (int z=z0;z<=z1;++z) {
-                auto k = cell_key(x,y,z);
-                auto& cp = cells[k];
-                if (!cp) cp = std::make_unique<Cell>(Vector3{(float)x,(float)y,(float)z},
-                                                     0, cell_size);
-                // Use unchecked variant: each (i, cell) pair is visited at most once.
-                if (cp->intersects_sphere(sp.position, sp.radius))
-                    cp->add_particle_index_unchecked(i, sp.materialId);
+        // Partition state.buffer().ops into (base, regions[]) by the recorded
+        // ModifierRegion op ranges. Regions are ordered and non-overlapping
+        // (dsl_state disallows nesting), so a single walk suffices.
+        const std::vector<dsl::ModifierRegion>& regions = state.modifier_regions();
+        dsl::BuildBuffer base_buf;
+        std::vector<dsl::BuildBuffer> region_bufs(regions.size());
+        {
+            const std::vector<dsl::BuildOp>& all_ops = state.buffer().ops;
+            size_t ri = 0;
+            for (size_t i = 0; i < all_ops.size(); ++i) {
+                while (ri < regions.size() && i >= regions[ri].op_end) ++ri;
+                if (ri < regions.size() && i >= regions[ri].op_begin)
+                    region_bufs[ri].ops.push_back(all_ops[i]);
+                else
+                    base_buf.ops.push_back(all_ops[i]);
             }
         }
-        // Fat primitives (oriented box / ellipsoid) expand the cell set too, so a
-        // pure-box part still gets cells to mesh its surface.
-        for (const FatPrim& fp : f.fat) {
-            float inf = fp.boundRadius * 2.0f;
-            int x0 = (int)std::floor((fp.center.x - inf) / cell_size);
-            int x1 = (int)std::floor((fp.center.x + inf) / cell_size);
-            int y0 = (int)std::floor((fp.center.y - inf) / cell_size);
-            int y1 = (int)std::floor((fp.center.y + inf) / cell_size);
-            int z0 = (int)std::floor((fp.center.z - inf) / cell_size);
-            int z1 = (int)std::floor((fp.center.z + inf) / cell_size);
-            for (int x=x0;x<=x1;++x) for (int y=y0;y<=y1;++y) for (int z=z0;z<=z1;++z) {
-                auto k = cell_key(x,y,z);
-                if (!cells[k])
-                    cells[k] = std::make_unique<Cell>(Vector3{(float)x,(float)y,(float)z},
-                                                      0, cell_size);
-            }
+        char plabel[64];
+        std::snprintf(plabel, sizeof(plabel), "part %016llx",
+                      (unsigned long long)r.resolved_hash);
+        if (!base_buf.ops.empty())
+            mesh_sdf_ops(base_buf, nullptr, plabel, state.simplify_ratio(), blas, tlas);
+        for (size_t ri = 0; ri < regions.size(); ++ri) {
+            if (region_bufs[ri].ops.empty()) continue;
+            char rlabel[96];
+            std::snprintf(rlabel, sizeof(rlabel), "%s region %zu", plabel, ri);
+            // cell_simplify = 1.0 for regions: per-cell QEM must not pre-chew a
+            // region — simplify only runs via the modifier stack.
+            mesh_sdf_ops(region_bufs[ri], &regions[ri].stack, rlabel, 1.0f, blas, tlas);
         }
-
-        // Perf fix: build per-cell carve lists in one O(carve × avg_cells) pass
-        // instead of O(cells × carve) inside the per-cell loop below.
-        std::map<std::tuple<int,int,int>, std::vector<Particle>> cell_carve;
-        for (const Particle& cp : f.carve) {
-            float inf = cp.radius * 2.0f;   // generous halo to ensure no cell missed
-            int x0 = (int)std::floor((cp.position.x - inf) / cell_size);
-            int x1 = (int)std::floor((cp.position.x + inf) / cell_size);
-            int y0 = (int)std::floor((cp.position.y - inf) / cell_size);
-            int y1 = (int)std::floor((cp.position.y + inf) / cell_size);
-            int z0 = (int)std::floor((cp.position.z - inf) / cell_size);
-            int z1 = (int)std::floor((cp.position.z + inf) / cell_size);
-            for (int x=x0;x<=x1;++x) for (int y=y0;y<=y1;++y) for (int z=z0;z<=z1;++z) {
-                auto k = cell_key(x,y,z);
-                if (cells.count(k)) {
-                    // Mirrors the original 1.5x slack test from the per-cell loop.
-                    if (cells[k]->intersects_sphere(cp.position, cp.radius * 1.5f))
-                        cell_carve[k].push_back(cp);
-                }
-            }
-        }
-
-        // One scratch shared across all cells. The consumed mesher's marching-cubes
-        // pass leaves the per-vertex normal buffer (scratch->pool.normals) UNWRITTEN;
-        // compute_surface_normals_impl then reads the incoming (uninitialized) normal
-        // for any degenerate vertex (vertex on a particle center / no neighbor in the
-        // gradient search) before normalizing it. A fresh scratch per cell hands each
-        // cell a freshly realloc'd (garbage) buffer, so those degenerate reads vary
-        // run-to-run and the saved .part normals are nondeterministic. Sharing one
-        // scratch keeps the pool buffer stable across the (deterministic) cell
-        // sequence; we also clear it to a fixed pattern up front so the very first
-        // cell's degenerate reads are deterministic too. surface.c/cell.cpp are
-        // read-only, so this is the only lever available to make the bake byte-stable.
-        SurfaceScratch* scratch = CreateSurfaceScratch();
-        for (auto& kv : cells) {
-            Cell* cell = kv.second.get();
-            // Particle indices were already assigned during the inverted pass above;
-            // no per-cell O(particles) scan needed here.
-            // Seed an (empty) merge-group bucket for every fat primitive overlapping
-            // this cell so build_cell_meshes iterates the group and meshes the box/
-            // ellipsoid even when no additive sphere shares the cell. The fat field
-            // eval pulls its own surface; the bucket just makes the group visible.
-            for (const FatPrim& fp : f.fat) {
-                if (cell->intersects_sphere(fp.center, fp.boundRadius * 1.5f)) {
-                    uint32_t g = (uint32_t)MaterialMergeGroup(fp.materialId);
-                    cell->material_particle_indices[g]; // default-inserts empty bucket
-                }
-            }
-            if (cell->material_particle_indices.empty()) continue;
-
-            // Use the pre-built carve list for this cell (empty if no carve overlap).
-            static const std::vector<Particle> kEmptyCarve;
-            auto carve_it = cell_carve.find(kv.first);
-            const std::vector<Particle>& carve =
-                (carve_it != cell_carve.end()) ? carve_it->second : kEmptyCarve;
-            const Particle* carvePtr = carve.empty() ? nullptr : carve.data();
-            int carveCount = (int)carve.size();
-
-            CellMeshResult res = cell->build_cell_meshes(
-                particles, scratch, /*simplification*/state.simplify_ratio(), base_detail,
-                /*max_pow*/6, /*uniform_detail*/0.0f, carvePtr, carveCount,
-                gstagesPtr, fatPtr, fatCount, clusterStage);
-
-            // Register each group's GL-free triangle arrays directly into the BLAS
-            // and place an identity instance in the TLAS.
-            for (GroupMeshResult& g : res.groups) {
-                if (g.triangles.empty()) continue;
-                // Determinism: Tri unions a float3 (12B) with an __m128 (16B), so
-                // each vertex slot has 4 padding bytes the mesher never writes.
-                // save_v2 serializes the entry's Tri bytes verbatim, so that stale
-                // stack garbage would make re-bakes byte-differ. Re-pack each Tri
-                // through a value-initialized copy (zeroed padding) before
-                // registering so the saved .part is byte-stable across bakes.
-                std::vector<Tri> norm(g.triangles.size());
-                for (size_t i = 0; i < g.triangles.size(); ++i) {
-                    Tri t;
-                    std::memset(&t, 0, sizeof(Tri));   // zero union padding too
-                    t.vertex0 = g.triangles[i].vertex0;
-                    t.vertex1 = g.triangles[i].vertex1;
-                    t.vertex2 = g.triangles[i].vertex2;
-                    t.centroid = g.triangles[i].centroid;
-                    norm[i] = t;
-                }
-                // TriEx is 16-byte aligned (float4 tint) with trailing padding
-                // bytes the mesher leaves uninitialized; re-pack through a
-                // memset-zeroed copy for the same byte-stability reason as Tri.
-                // (Value-init {} does not reliably zero trailing alignment
-                // padding for a class with default member initializers.)
-                //
-                // Per-vertex normals: keep the mesher's smooth (SDF-gradient) normals,
-                // which are deterministic given the single shared SurfaceScratch above
-                // (a fresh-per-cell scratch handed each cell a freshly realloc'd, and
-                // therefore garbage, normal buffer; the marching-cubes pass never
-                // writes that buffer and compute_surface_normals_impl reads the
-                // uninitialized value for degenerate vertices, which then varied
-                // run-to-run). As a robustness guard against any residual degenerate
-                // vertex whose normal comes back non-finite or non-unit, fall back to
-                // the deterministic geometric face normal derived from the (byte-
-                // identical) Tri vertices.
-                std::vector<TriEx> normEx(g.triangle_normals.size());
-                for (size_t i = 0; i < g.triangle_normals.size(); ++i) {
-                    TriEx e;
-                    std::memset(&e, 0, sizeof(TriEx));   // zero all bytes incl. padding
-                    const TriEx& s = g.triangle_normals[i];
-                    e.uv0=s.uv0; e.uv1=s.uv1; e.uv2=s.uv2;
-                    auto finite_unit = [](const float3& v){
-                        float l2 = v.x*v.x + v.y*v.y + v.z*v.z;
-                        return std::isfinite(l2) && l2 > 0.25f && l2 < 4.0f; // |v| in [0.5,2]
-                    };
-                    if (finite_unit(s.N0) && finite_unit(s.N1) && finite_unit(s.N2)) {
-                        e.N0=s.N0; e.N1=s.N1; e.N2=s.N2;
-                    } else {
-                        // Deterministic geometric face normal from the byte-identical Tri.
-                        const Tri& tr = norm[i];
-                        float ax=tr.vertex1.x-tr.vertex0.x, ay=tr.vertex1.y-tr.vertex0.y, az=tr.vertex1.z-tr.vertex0.z;
-                        float bx=tr.vertex2.x-tr.vertex0.x, by=tr.vertex2.y-tr.vertex0.y, bz=tr.vertex2.z-tr.vertex0.z;
-                        float nx=ay*bz-az*by, ny=az*bx-ax*bz, nz=ax*by-ay*bx;
-                        float nl=std::sqrt(nx*nx+ny*ny+nz*nz);
-                        if (nl>1e-12f) { nx/=nl; ny/=nl; nz/=nl; } else { nx=0; ny=0; nz=1; }
-                        float3 fn = make_float3(nx,ny,nz);
-                        e.N0=fn; e.N1=fn; e.N2=fn;
-                    }
-                    e.materialId=s.materialId;
-                    // tint/ao: derive deterministically rather than copy the mesher's
-                    // values. AO is not baked in SP-2 (default 1.0 = unoccluded), and
-                    // the authored per-material default tint (alpha 0 => use material
-                    // albedo) is used. This keeps the saved asset independent of the
-                    // mesher's per-triangle nearest-particle tint lookup.
-                    e.tint = make_float4(1.0f, 1.0f, 1.0f, 0.0f);
-                    e.ao0 = 1.0f; e.ao1 = 1.0f; e.ao2 = 1.0f;
-                    normEx[i]=e;
-                }
-                BLASHandle h = blas.register_triangles(norm, normEx);
-                if (h != INVALID_BLAS_HANDLE) {
-                    tlas.load_identity();
-                    tlas.draw(h, g.group_id);
-                }
-            }
-        }
-        DestroySurfaceScratch(scratch);
 
         // Direct-triangle session: register the DSL's accumulated mesh triangles as
         // one more BLAS with an identity TLAS instance. These are literal surfaces
@@ -1163,52 +1285,116 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             const std::vector<Tri>&   src_t = tb->triangles();
             const std::vector<TriEx>& src_e = tb->tri_extra();
 
-            // Parts that call this.simplify() (trunk/branches, but never leaves)
-            // get QEM-decimated here. decimate_tris carries only vertex POSITIONS,
-            // so the per-vertex TriEx (normals/uv/material) cannot survive the
-            // collapse; we recompute geometric face normals from the decimated
-            // triangles and carry the part's single material (simplify-using parts
-            // are single-material bark, so src_e[0].materialId is representative).
-            const float simp = state.simplify_ratio();
-            const bool decimate = simp < 0.999f;
-            std::vector<Tri> work = decimate ? lod_bake::decimate_tris(src_t, simp) : src_t;
-            const uint32_t mat = src_e.empty() ? 0u : src_e[0].materialId;
-
-            std::vector<Tri>   norm(work.size());
-            std::vector<TriEx> normEx(work.size());
-            for (size_t i = 0; i < work.size(); ++i) {
-                Tri t; std::memset(&t, 0, sizeof(Tri));
-                t.vertex0 = work[i].vertex0; t.vertex1 = work[i].vertex1;
-                t.vertex2 = work[i].vertex2; t.centroid = work[i].centroid;
-                norm[i] = t;
-            }
-            for (size_t i = 0; i < work.size(); ++i) {
-                TriEx e; std::memset(&e, 0, sizeof(TriEx));
-                if (decimate) {
-                    // No source TriEx to copy: geometric face normal + carried material.
-                    const Tri& tr = norm[i];
-                    float ax=tr.vertex1.x-tr.vertex0.x, ay=tr.vertex1.y-tr.vertex0.y, az=tr.vertex1.z-tr.vertex0.z;
-                    float bx=tr.vertex2.x-tr.vertex0.x, by=tr.vertex2.y-tr.vertex0.y, bz=tr.vertex2.z-tr.vertex0.z;
-                    float nx=ay*bz-az*by, ny=az*bx-ax*bz, nz=ax*by-ay*bx;
-                    float nl=std::sqrt(nx*nx+ny*ny+nz*nz);
-                    if (nl>1e-12f) { nx/=nl; ny/=nl; nz/=nl; } else { nx=0; ny=0; nz=1; }
-                    float3 fn = make_float3(nx,ny,nz);
-                    e.N0=fn; e.N1=fn; e.N2=fn;
-                    e.materialId=mat;
-                } else {
-                    const TriEx& s = src_e[i];
-                    e.uv0=s.uv0; e.uv1=s.uv1; e.uv2=s.uv2;
-                    e.N0=s.N0; e.N1=s.N1; e.N2=s.N2;
-                    e.materialId=s.materialId;
+            // Partition the direct-triangle stream into base + one bucket per
+            // modifier region using each region's recorded [tri_begin, tri_end).
+            // Single walk over the flat stream (regions are ordered/non-overlapping).
+            std::vector<Tri>   base_t;   std::vector<TriEx> base_e;
+            std::vector<std::vector<Tri>>   region_t(regions.size());
+            std::vector<std::vector<TriEx>> region_e(regions.size());
+            {
+                size_t ri = 0;
+                for (size_t i = 0; i < src_t.size(); ++i) {
+                    while (ri < regions.size() && i >= regions[ri].tri_end) ++ri;
+                    if (ri < regions.size() && i >= regions[ri].tri_begin) {
+                        region_t[ri].push_back(src_t[i]);
+                        if (i < src_e.size()) region_e[ri].push_back(src_e[i]);
+                    } else {
+                        base_t.push_back(src_t[i]);
+                        if (i < src_e.size()) base_e.push_back(src_e[i]);
+                    }
                 }
-                e.tint = make_float4(1.0f, 1.0f, 1.0f, 0.0f);
-                e.ao0 = e.ao1 = e.ao2 = 1.0f;
-                normEx[i]=e;
             }
-            BLASHandle h = blas.register_triangles(norm, normEx);
-            if (h != INVALID_BLAS_HANDLE) {
-                tlas.load_identity();
-                tlas.draw(h, 0);
+
+            // Base direct-triangle path: unchanged behavior (including the QEM
+            // decimate branch controlled by state.simplify_ratio()).
+            if (!base_t.empty()) {
+                // Parts that call this.simplify() (trunk/branches, but never leaves)
+                // get QEM-decimated here. decimate_tris carries only vertex POSITIONS,
+                // so the per-vertex TriEx (normals/uv/material) cannot survive the
+                // collapse; we recompute geometric face normals from the decimated
+                // triangles and carry the part's single material (simplify-using parts
+                // are single-material bark, so src_e[0].materialId is representative).
+                const float simp = state.simplify_ratio();
+                const bool decimate = simp < 0.999f;
+                std::vector<Tri> work = decimate ? lod_bake::decimate_tris(base_t, simp) : base_t;
+                const uint32_t mat = base_e.empty() ? 0u : base_e[0].materialId;
+
+                std::vector<Tri>   norm(work.size());
+                std::vector<TriEx> normEx(work.size());
+                for (size_t i = 0; i < work.size(); ++i) {
+                    Tri t; std::memset(&t, 0, sizeof(Tri));
+                    t.vertex0 = work[i].vertex0; t.vertex1 = work[i].vertex1;
+                    t.vertex2 = work[i].vertex2; t.centroid = work[i].centroid;
+                    norm[i] = t;
+                }
+                for (size_t i = 0; i < work.size(); ++i) {
+                    TriEx e; std::memset(&e, 0, sizeof(TriEx));
+                    if (decimate) {
+                        // No source TriEx to copy: geometric face normal + carried material.
+                        const Tri& tr = norm[i];
+                        float ax=tr.vertex1.x-tr.vertex0.x, ay=tr.vertex1.y-tr.vertex0.y, az=tr.vertex1.z-tr.vertex0.z;
+                        float bx=tr.vertex2.x-tr.vertex0.x, by=tr.vertex2.y-tr.vertex0.y, bz=tr.vertex2.z-tr.vertex0.z;
+                        float nx=ay*bz-az*by, ny=az*bx-ax*bz, nz=ax*by-ay*bx;
+                        float nl=std::sqrt(nx*nx+ny*ny+nz*nz);
+                        if (nl>1e-12f) { nx/=nl; ny/=nl; nz/=nl; } else { nx=0; ny=0; nz=1; }
+                        float3 fn = make_float3(nx,ny,nz);
+                        e.N0=fn; e.N1=fn; e.N2=fn;
+                        e.materialId=mat;
+                    } else {
+                        const TriEx& s = base_e[i];
+                        e.uv0=s.uv0; e.uv1=s.uv1; e.uv2=s.uv2;
+                        e.N0=s.N0; e.N1=s.N1; e.N2=s.N2;
+                        e.materialId=s.materialId;
+                    }
+                    e.tint = make_float4(1.0f, 1.0f, 1.0f, 0.0f);
+                    e.ao0 = e.ao1 = e.ao2 = 1.0f;
+                    normEx[i]=e;
+                }
+                BLASHandle h = blas.register_triangles(norm, normEx);
+                if (h != INVALID_BLAS_HANDLE) {
+                    tlas.load_identity();
+                    tlas.draw(h, 0);
+                }
+            }
+
+            // Each non-empty region chunk: weld -> apply_stack -> ensure_triex ->
+            // unweld -> memset-zero repack -> register as one BLAS entry (group 0).
+            for (size_t ri = 0; ri < regions.size(); ++ri) {
+                if (region_t[ri].empty()) continue;
+                MeshIndexed welded = from_tri(region_t[ri], &region_e[ri]);
+                char rlabel[128];
+                std::snprintf(rlabel, sizeof(rlabel),
+                              "part %016llx region %zu (tris)",
+                              (unsigned long long)r.resolved_hash, ri);
+                MeshIndexed done = modifier_apply::apply_stack(std::move(welded),
+                                                               regions[ri].stack, rlabel);
+                if (done.positions.empty() || done.indices.empty()) continue;
+                TriEx proto{}; if (!region_e[ri].empty()) proto = region_e[ri][0];
+                ensure_triex(done, proto);
+                std::vector<Tri> tris; std::vector<TriEx> triex;
+                to_tri(done, tris, triex);
+                std::vector<Tri>   norm(tris.size());
+                std::vector<TriEx> normEx(triex.size());
+                for (size_t i = 0; i < tris.size(); ++i) {
+                    std::memset(&norm[i], 0, sizeof(Tri));
+                    norm[i].vertex0 = tris[i].vertex0;
+                    norm[i].vertex1 = tris[i].vertex1;
+                    norm[i].vertex2 = tris[i].vertex2;
+                    norm[i].centroid = tris[i].centroid;
+
+                    std::memset(&normEx[i], 0, sizeof(TriEx));
+                    const TriEx& s = triex[i];
+                    normEx[i].uv0 = s.uv0; normEx[i].uv1 = s.uv1; normEx[i].uv2 = s.uv2;
+                    normEx[i].N0  = s.N0;  normEx[i].N1  = s.N1;  normEx[i].N2  = s.N2;
+                    normEx[i].materialId = s.materialId;
+                    normEx[i].tint = make_float4(1.0f, 1.0f, 1.0f, 0.0f);
+                    normEx[i].ao0 = 1.0f; normEx[i].ao1 = 1.0f; normEx[i].ao2 = 1.0f;
+                }
+                BLASHandle h = blas.register_triangles(norm, normEx);
+                if (h != INVALID_BLAS_HANDLE) {
+                    tlas.load_identity();
+                    tlas.draw(h, 0);
+                }
             }
         }
 
