@@ -18,7 +18,9 @@ struct Event {
     int done = 0, total = 0;
     std::string message;       // BakeError: error detail
     // --- Phase B additions (struct is append-only) ---
-    std::string phase;         // "install" | "compose" | "parts" | "gl" | "cone" | ""
+    // Task 15: BakePartDone with phase="tileset" may follow BakeFinished (deferred
+    // tileset phase runs after the initial publish so silhouette is not blocked).
+    std::string phase;         // "install" | "compose" | "parts" | "gl" | "cone" | "tileset" | ""
     BakeErrorCode code = BakeErrorCode::None;   // BakeError classification
     int errors = 0;            // BakeFinished: failed-part count (skip-and-continue)
 };

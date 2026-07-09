@@ -586,19 +586,17 @@ bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
         }
     }
 
-    // ---- Tileset roots: GPU bake + .gtex load into a viewer slot -----------
-    // run_tileset_phase reads world.manifest and .js from abs_world_data_.
-    // The gtex is written to abs_world_data_/<root_module>.gtex (the GPU overload
-    // constructs the path as world_data_dir + "/" + root_module + ".gtex").
+    // ---- Tileset roots: deferred (Task 15) -----------------------------------
+    // Tileset roots are no longer run in compose_world. They run after BakeFinished
+    // in the deferred tileset phase (publish_pipeline tail in matter_engine.cpp)
+    // via run_tileset_deferred(). This removes the ~350s box3d settle wall from
+    // the silhouette critical path.
     //
-    // run_tileset_phase passes abs_cache_root_ to HostBaker; HostBaker::bake now
-    // propagates it via BakeOptions.parts_dir so bake_source writes absolute paths
-    // (Task 3 Phase B: no chdir needed here).
-    // (baked_tileset_count_ already reset at compose_world() entry.)
-
+    // connect() (synchronous API) still runs them eagerly via run_tileset_deferred
+    // called immediately after compose_world().
+    //
     // Guard: fail-closed BEFORE any GL/disk work if the manifest declares more
-    // tileset roots than we have sampler-array slots. Checking inside the loop
-    // left 0..N-1 slots loaded with stale atlases on error.
+    // tileset roots than we have sampler-array slots.
     if ((int)tileset_indices_.size() > viewer::tileset_provider::max_slots()) {
         err = "LocalProvider: manifest declares " +
               std::to_string(tileset_indices_.size()) +
@@ -607,83 +605,7 @@ bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
               " slots are available";
         return false;
     }
-
-    // Phase B: route GL work through gpu_run when set (async path); fall back to
-    // inline execution when null (synchronous callers and tests — no behavior change).
-    auto run_gl = [&](const char* name, std::function<bool(std::string&)> fn,
-                      std::string& e) -> bool {
-        if (cfg_.gpu_run) return cfg_.gpu_run(name, std::move(fn), e);
-        return fn(e);   // inline (synchronous path unchanged)
-    };
-
-    for (size_t ti : tileset_indices_) {
-        const std::string root_module = roots_[ti].module;
-        // Dev hook: MATTER_TILESET_DUMP_PNG=1 dumps loose <root>-albedo.png /
-        // -normal.png / -orm.png / -height.png next to the .gtex so an operator
-        // can eyeball the baked atlas without launching the viewer.
-        const bool dump_png = std::getenv("MATTER_TILESET_DUMP_PNG") != nullptr;
-        const int slot_idx  = baked_tileset_count_;  // capture by value for closure
-
-        // Headless path: run physics settle only; skip GPU atlas bake.
-        // Without GLAD loaded, bake_tileset_gpu → glGetIntegerv would
-        // dereference a null function pointer and SIGSEGV (ip=0).
-        // The .gtex atlas is generated later when the viewer opens the world
-        // with a live GL context (GL 4.6 required by the tileset GPU path).
-        // slot_idx is NOT incremented here so viewer-side slot allocation
-        // is unaffected (the slot is claimed when the GPU path actually runs).
-        if (!cfg_.gl_available) {
-            fprintf(stderr, "[local_provider] headless tileset phase: '%s'\n", root_module.c_str());
-            fflush(stderr);
-            std::string se;
-            tileset::SettledTorus settled;
-            if (!tileset::run_tileset_phase(abs_world_data_, cfg_.world_name, root_module,
-                                            abs_cache_root_, settled, se,
-                                            abs_shared_lib_)) {
-                err = "LocalProvider: tileset '" + root_module +
-                      "' settle failed (headless): " + se;
-                return false;
-            }
-            printf("LocalProvider: tileset '%s' settle ok (headless, GPU bake deferred)\n",
-                   root_module.c_str());
-            continue;   // skip slot upload and baked_tileset_count_ increment
-        }
-
-        std::string te;
-        // ONE closure per tileset: bake + upload together (per-tileset granularity).
-        bool ok = run_gl(root_module.c_str(), [&](std::string& ge) -> bool {
-            tileset::SettledTorus settled;
-            tileset::TilesetPhaseOpts opts;
-            opts.force_rebake = false;   // let content_hash decide
-            opts.dump_png     = dump_png;
-            std::string re;
-            if (!tileset::run_tileset_phase(abs_world_data_, cfg_.world_name, root_module,
-                                            abs_cache_root_, settled, opts, re,
-                                            abs_shared_lib_)) {
-                ge = "run_tileset_phase(" + root_module + "): " + re +
-                     " (if a GL error: set GALLIUM_DRIVER=d3d12 on WSLg)";
-                return false;
-            }
-            // The GPU overload writes: world_data_dir + "/" + root_module + ".gtex"
-            const std::string gtex_path = abs_world_data_ + "/" + root_module + ".gtex";
-            std::string le;
-            if (!viewer::tileset_provider::load_slot(slot_idx, gtex_path, le)) {
-                ge = "tileset_provider::load_slot(" + gtex_path + "): " + le;
-                return false;
-            }
-            // Bind material DIRT (16) to this slot by default — the world script may
-            // override later. Non-DIRT materials keep groundTilesetSlot = -1.
-            MaterialRegistrySetGroundTilesetSlot(16, slot_idx);
-            printf("LocalProvider: tileset '%s' -> slot %d (%s)\n",
-                   root_module.c_str(), slot_idx, gtex_path.c_str());
-            return true;
-        }, te);
-
-        if (!ok) {
-            err = "LocalProvider: tileset '" + root_module + "': " + te;
-            return false;
-        }
-        ++baked_tileset_count_;
-    }
+    // tileset roots placed/slotted later; baked_tileset_count_ stays 0 until deferred phase.
 
     // --- Parse world lights ---
     {
@@ -802,6 +724,104 @@ bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
     return true;
 }
 
+bool LocalProvider::run_tileset_deferred(
+    std::function<void(int done, int total, const char* module)> on_tileset_part,
+    std::function<bool()> is_cancelled,
+    std::string& err)
+{
+#if defined(MATTER_HAVE_SCRIPT_HOST)
+    // Guard: max slots checked at compose_world time; indices already validated.
+    const int total = (int)tileset_indices_.size();
+
+    // Phase B: route GL work through gpu_run when set; fall back to inline.
+    auto run_gl = [&](const char* name, std::function<bool(std::string&)> fn,
+                      std::string& e) -> bool {
+        if (cfg_.gpu_run) return cfg_.gpu_run(name, std::move(fn), e);
+        return fn(e);
+    };
+
+    for (int idx = 0; idx < total; ++idx) {
+        if (is_cancelled && is_cancelled()) {
+            err = "tileset deferred phase cancelled";
+            return false;
+        }
+
+        const size_t ti = tileset_indices_[(size_t)idx];
+        const std::string root_module = roots_[ti].module;
+
+        if (on_tileset_part)
+            on_tileset_part(idx, total, root_module.c_str());
+
+        const int slot_idx = baked_tileset_count_;
+
+        if (!cfg_.gl_available) {
+            // Headless: settle-only (no GPU atlas).
+            fprintf(stderr, "[local_provider] headless deferred tileset: '%s'\n",
+                    root_module.c_str());
+            fflush(stderr);
+            std::string se;
+            tileset::SettledTorus settled;
+            if (!tileset::run_tileset_phase(abs_world_data_, cfg_.world_name, root_module,
+                                            abs_cache_root_, settled, se,
+                                            abs_shared_lib_)) {
+                err = "LocalProvider: tileset '" + root_module +
+                      "' settle failed (headless): " + se;
+                return false;
+            }
+            printf("LocalProvider: tileset '%s' settle ok (deferred headless)\n",
+                   root_module.c_str());
+
+            if (on_tileset_part)
+                on_tileset_part(idx + 1, total, root_module.c_str());
+            continue;
+        }
+
+        // GL available: run full settle + GPU bake.
+        const bool dump_png = std::getenv("MATTER_TILESET_DUMP_PNG") != nullptr;
+        std::string te;
+        bool ok = run_gl(root_module.c_str(), [&](std::string& ge) -> bool {
+            tileset::SettledTorus settled;
+            tileset::TilesetPhaseOpts opts;
+            opts.force_rebake = false;
+            opts.dump_png     = dump_png;
+            std::string re;
+            if (!tileset::run_tileset_phase(abs_world_data_, cfg_.world_name, root_module,
+                                            abs_cache_root_, settled, opts, re,
+                                            abs_shared_lib_)) {
+                ge = "run_tileset_phase(" + root_module + "): " + re +
+                     " (if a GL error: set GALLIUM_DRIVER=d3d12 on WSLg)";
+                return false;
+            }
+            const std::string gtex_path = abs_world_data_ + "/" + root_module + ".gtex";
+            std::string le;
+            if (!viewer::tileset_provider::load_slot(slot_idx, gtex_path, le)) {
+                ge = "tileset_provider::load_slot(" + gtex_path + "): " + le;
+                return false;
+            }
+            MaterialRegistrySetGroundTilesetSlot(16, slot_idx);
+            printf("LocalProvider: tileset '%s' -> slot %d (%s) [deferred]\n",
+                   root_module.c_str(), slot_idx, gtex_path.c_str());
+            return true;
+        }, te);
+
+        if (!ok) {
+            err = "LocalProvider: tileset '" + root_module + "': " + te;
+            return false;
+        }
+        ++baked_tileset_count_;
+
+        if (on_tileset_part)
+            on_tileset_part(idx + 1, total, root_module.c_str());
+    }
+    return true;
+#else
+    (void)on_tileset_part;
+    (void)is_cancelled;
+    err = "run_tileset_deferred: MATTER_HAVE_SCRIPT_HOST not defined";
+    return false;
+#endif
+}
+
 bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     // Sync API: keep eager behavior — BakePolicy::All bakes every node at install.
     // After compose_world (which now skips flatten/refs in the async path),
@@ -861,6 +881,19 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
                 }
             }
             if (out.instances.size() == before) break;  // fixed point
+        }
+    }
+
+    // Task 15: sync API eagerly runs the deferred tileset phase (headless or GL).
+    // Async path runs this after BakeFinished via publish_pipeline step 9.
+    // Null callbacks: no progress reporting, no cancellation on the sync path.
+    if (!tileset_indices_.empty()) {
+        std::string te;
+        if (!run_tileset_deferred(nullptr, nullptr, te)) {
+            // Non-fatal for connect(): log but don't fail. Tileset artifacts may
+            // be unavailable (headless or no GL yet) — viewer recovers on open.
+            fprintf(stderr, "[local_provider] connect: tileset deferred failed: %s\n",
+                    te.c_str());
         }
     }
     return true;

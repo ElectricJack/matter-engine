@@ -1029,6 +1029,34 @@ void WorldSession::Impl::publish_pipeline(
         ev.errors = count_errors;
         emit_event(std::move(ev));
     }
+
+    // 9) Deferred tileset phase (Task 15): runs after BakeFinished so silhouette
+    //    is never blocked by the ~350s box3d settle wall.
+    //    BakePartDone{phase="tileset"} events may follow BakeFinished — documented
+    //    in events.h. Non-fatal on failure: the silhouette is already visible.
+    if (p.provider_ref) {
+        auto tileset_on_part = [this, &pfx](int done, int total, const char* module) {
+            Event ev;
+            ev.type   = EventType::BakePartDone;
+            ev.phase  = "tileset";
+            ev.module = module ? module : "";
+            ev.done   = done;
+            ev.total  = total;
+            emit_event(std::move(ev));
+        };
+        std::string terr;
+        if (!p.provider_ref->run_tileset_deferred(tileset_on_part, is_cancelled, terr)) {
+            if (!is_cancelled()) {
+                // Non-fatal: emit BakeError but the world is already rendering.
+                Event ev;
+                ev.type    = EventType::BakeError;
+                ev.code    = classify_error(terr);
+                ev.phase   = "tileset";
+                ev.message = terr;
+                emit_event(std::move(ev));
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

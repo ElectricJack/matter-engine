@@ -101,9 +101,20 @@ public:
     bool ensure_part_flattened(uint64_t part_hash);
 
     // Post-install: scatter/place, expand, per-root flatten, instance refs,
-    // tileset phase (via gpu_run), probe bake. Reusable after a cone rebake.
-    // Requires install_graph() to have succeeded first.
+    // probe bake. Tileset roots are skipped here; call run_tileset_deferred
+    // after BakeFinished (Task 15: tileset off the critical path).
+    // Reusable after a cone rebake. Requires install_graph() to have succeeded.
     bool compose_world(WorldManifest& out, std::string& err);
+
+    // Run the deferred tileset phase for all tileset roots after BakeFinished.
+    // settle_cache_load → on miss: ensure_part_baked children + settle_tileset
+    // + settle_cache_save; then bake_tileset_gpu (if gl_available).
+    // Emits progress via on_tileset_part (done, total, root_module) for each
+    // tileset root processed. Returns false on hard failure (sets err).
+    bool run_tileset_deferred(
+        std::function<void(int done, int total, const char* module)> on_tileset_part,
+        std::function<bool()> is_cancelled,
+        std::string& err);
 
     std::vector<uint64_t> reconcile(const WorldManifest& manifest,
                                     const PartStore& store) override;

@@ -51,4 +51,17 @@ struct BakeInputs {
 bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
                     SettledTorus& out, std::string& err);
 
+// Settle-result cache: serialize/restore a SettledTorus to/from disk.
+// Cache file: <cache_root>/tileset/<key>.settle
+// key = FNV-1a over (script_source_hash, sorted child resolved_hashes,
+//                    kEngineBakeVersion, kBox3dVersion).
+// Plain little-endian binary with a version header; reject on version/key mismatch.
+bool settle_cache_load(const std::string& cache_root, uint64_t key, SettledTorus& out);
+bool settle_cache_save(const std::string& cache_root, uint64_t key, const SettledTorus& s);
+
+// Compute the settle cache key from its inputs.
+// sorted_child_hashes must be sorted in ascending order by caller.
+uint64_t settle_cache_key(uint64_t script_source_hash,
+                          const std::vector<uint64_t>& sorted_child_hashes);
+
 } // namespace tileset

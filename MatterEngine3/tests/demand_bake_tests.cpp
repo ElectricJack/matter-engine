@@ -1067,6 +1067,191 @@ static bool test_placechild_param_mismatch_errors(const std::string& base_dir) {
 }
 
 // ---------------------------------------------------------------------------
+// (h) test_tileset_deferred_ordering
+//
+// Build a world with one tileset root (SimpleTileset). The tileset root's
+// children are leaf parts. Bake the world async (headless). Assert:
+//   (1) BakeFinished arrives with zero BakePartDone(phase="tileset") events
+//       preceding it — the tileset phase is deferred.
+//   (2) After BakeFinished, BakePartDone(phase="tileset") events arrive (or,
+//       in the headless path, the worker completes without crashing — the key
+//       invariant is that BakeFinished was not held back by tileset work).
+//
+// Note: the headless path runs settle-only (no GPU atlas). The event sequence
+// still provides the ordering guarantee: BakeFinished precedes tileset events.
+// ---------------------------------------------------------------------------
+static bool build_tileset_sandbox(const std::string& root) {
+    run_cmd("rm -rf " + root);
+    run_cmd("mkdir -p " + root + "/schemas");
+    run_cmd("mkdir -p " + root + "/world_data/TileWorld");
+    run_cmd("mkdir -p " + root + "/shared-lib");
+    run_cmd("mkdir -p " + root + "/cache/parts");
+
+    // A simple leaf pebble part (no requires).
+    if (!write_file(root + "/schemas/SmallPebble.js",
+        "class SmallPebble extends Part {\n"
+        "  build(p) {\n"
+        "    this.fill(MAT.stone);\n"
+        "    const S = 0.1;\n"
+        "    this.beginShape(SHAPE.triangles);\n"
+        "    this.vertex(-S, 0, -S); this.vertex(-S, 0, S); this.vertex(S, 0, -S);\n"
+        "    this.vertex(S, 0, -S); this.vertex(-S, 0, S); this.vertex(S, 0, S);\n"
+        "    this.endShape();\n"
+        "  }\n"
+        "}\n")) return false;
+
+    // A simple tileset root: requires SmallPebble, places it via interior().
+    // Uses a flat base with no physics (physics: false) to avoid the box3d
+    // simulation cost in the headless test context.
+    if (!write_file(root + "/schemas/SimpleTileset.js",
+        "class SimpleTileset extends Tileset {\n"
+        "  static requires = [\n"
+        "    { module: 'SmallPebble', params: {} },\n"
+        "  ];\n"
+        "  build(p) {\n"
+        "    this.tile({ size: 2 });\n"
+        "    this.base({ material: MAT.dirt, heights: () => 0 });\n"
+        "    this.layer(SmallPebble, {\n"
+        "      density: 1.0,\n"
+        "      physics: false,\n"
+        "    });\n"
+        "  }\n"
+        "}\n")) return false;
+
+    // World manifest: SimpleTileset with `tileset` flag so it routes through the
+    // tileset phase rather than the generic part publish path.
+    if (!write_file(root + "/world_data/TileWorld/world.manifest",
+        "# tileset deferred ordering test\n"
+        "SimpleTileset tileset\n")) return false;
+
+    return true;
+}
+
+static bool test_tileset_deferred_ordering(const std::string& base_dir) {
+    printf("-- (h) test_tileset_deferred_ordering\n");
+
+    const std::string sandbox = base_dir + "_tileset";
+    if (!build_tileset_sandbox(sandbox)) {
+        printf("  FAIL: build_tileset_sandbox\n");
+        ++g_failures;
+        return false;
+    }
+
+    // Cold cache.
+    run_cmd("rm -rf " + sandbox + "/cache && mkdir -p " + sandbox + "/cache/parts");
+
+    const std::string cache_root_s = sandbox + "/cache";
+    const std::string schemas_s    = sandbox + "/schemas";
+    const std::string wdata_s      = sandbox + "/world_data";
+    const std::string shlib_s      = sandbox + "/shared-lib";
+
+    std::string err;
+    matter::EngineDesc ed;
+    ed.cache_root     = cache_root_s.c_str();
+    ed.allow_gl_lt_46 = true;  // headless
+    auto engine = matter::EngineContext::create(ed, err);
+    CHECK(engine != nullptr, "h: engine created");
+    if (!engine) { printf("  err: %s\n", err.c_str()); run_cmd("rm -rf " + sandbox); return false; }
+
+    matter::WorldDesc wd;
+    wd.schemas_dir    = schemas_s.c_str();
+    wd.world_data_dir = wdata_s.c_str();
+    wd.world_name     = "TileWorld";
+    wd.shared_lib_dir = shlib_s.c_str();
+    auto s = engine->open_world(wd, err);
+    CHECK(s != nullptr, "h: session opened");
+    if (!s) { printf("  err: %s\n", err.c_str()); run_cmd("rm -rf " + sandbox); return false; }
+
+    s->request_bake();
+
+    // Drain events until BakeFinished (or timeout).
+    std::vector<matter::Event> pre_finished;
+    std::vector<matter::Event> post_finished;
+    bool got_finished = false;
+    bool got_error    = false;
+    const int timeout_sec = 120;
+    auto deadline = clk_e2e::now() + std::chrono::seconds(timeout_sec);
+
+    while (clk_e2e::now() < deadline) {
+        s->pump_gpu_jobs(4.0f);
+        matter::Event ev;
+        bool any = false;
+        while (s->poll_event(ev)) {
+            any = true;
+            if (!got_finished) {
+                if (ev.type == matter::EventType::BakeFinished) {
+                    got_finished = true;
+                } else {
+                    pre_finished.push_back(ev);
+                }
+            } else {
+                post_finished.push_back(ev);
+            }
+            if (ev.type == matter::EventType::BakeError) {
+                printf("  BakeError: code=%d phase=%s msg=%s\n",
+                       (int)ev.code, ev.phase.c_str(), ev.message.c_str());
+                got_error = true;
+            }
+        }
+        if (got_finished) {
+            // Drain a short window for post-BakeFinished events.
+            auto post_deadline = clk_e2e::now() + std::chrono::seconds(30);
+            while (clk_e2e::now() < post_deadline) {
+                s->pump_gpu_jobs(4.0f);
+                while (s->poll_event(ev)) {
+                    post_finished.push_back(ev);
+                    if (ev.type == matter::EventType::BakeError) {
+                        printf("  BakeError(post): code=%d phase=%s msg=%s\n",
+                               (int)ev.code, ev.phase.c_str(), ev.message.c_str());
+                        got_error = true;
+                    }
+                }
+                // Check if we got tileset events or if there's nothing more to wait for.
+                bool has_tileset = false;
+                for (const auto& pev : post_finished)
+                    if (pev.phase == "tileset") { has_tileset = true; break; }
+                if (has_tileset) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            break;
+        }
+        if (!any) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    CHECK(got_finished, "h: BakeFinished arrived");
+    if (!got_finished) { run_cmd("rm -rf " + sandbox); return false; }
+
+    // Key assertion: NO BakePartDone(phase="tileset") events before BakeFinished.
+    int tileset_before_finished = 0;
+    for (const auto& ev : pre_finished)
+        if (ev.type == matter::EventType::BakePartDone && ev.phase == "tileset")
+            ++tileset_before_finished;
+    printf("  tileset events before BakeFinished: %d (expect 0)\n", tileset_before_finished);
+    CHECK(tileset_before_finished == 0,
+          "h: no BakePartDone(phase=tileset) events before BakeFinished");
+
+    // Log post-BakeFinished events for verification (optional in headless path).
+    int tileset_after = 0;
+    for (const auto& ev : post_finished) {
+        if (ev.type == matter::EventType::BakePartDone && ev.phase == "tileset") {
+            ++tileset_after;
+            printf("  BakePartDone(tileset) after BakeFinished: done=%d total=%d\n",
+                   ev.done, ev.total);
+        }
+    }
+    printf("  tileset events after BakeFinished: %d\n", tileset_after);
+    // Tileset events should follow BakeFinished (deferred phase completed).
+    // In headless mode, the deferred phase runs settle-only.
+    CHECK(tileset_after > 0, "h: BakePartDone(phase=tileset) events arrived after BakeFinished");
+
+    (void)got_error;  // reported inline; non-fatal for ordering test
+
+    run_cmd("rm -rf " + sandbox);
+    printf("  (h) PASS\n");
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
@@ -1086,17 +1271,19 @@ int main() {
     bool e = test_demand_bake_e2e(sandbox);
     bool f = test_parametric_placements_distinct(sandbox);
     bool g = test_placechild_param_mismatch_errors(sandbox);
+    bool h = test_tileset_deferred_ordering(sandbox);
 
     printf("\n");
     if (g_failures == 0) {
-        printf("ALL PASS (%s %s %s %s %s %s %s)\n",
+        printf("ALL PASS (%s %s %s %s %s %s %s %s)\n",
                a ? "a" : "a-FAIL",
                b ? "b" : "b-FAIL",
                c ? "c" : "c-FAIL",
                d ? "d" : "d-FAIL",
                e ? "e" : "e-FAIL",
                f ? "f" : "f-FAIL",
-               g ? "g" : "g-FAIL");
+               g ? "g" : "g-FAIL",
+               h ? "h" : "h-FAIL");
         return 0;
     }
     printf("%d FAILURE(S)\n", g_failures);
