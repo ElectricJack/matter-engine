@@ -29,6 +29,11 @@ struct Event {
     std::string phase;         // "install" | "compose" | "parts" | "gl" | "cone" | "tileset" | ""
     BakeErrorCode code = BakeErrorCode::None;   // BakeError classification
     int errors = 0;            // BakeFinished: failed-part count (skip-and-continue)
+    // --- Phase C Task 6 additions (struct is append-only) ---
+    // RefineTileDone: identity of the tile that was upgraded or evicted.
+    // Both are -1 when the event does not correspond to a specific (tx,tz) tile.
+    int tile_tx = -1;          // Terrain tx param
+    int tile_tz = -1;          // Terrain tz param
 };
 
 } // namespace matter

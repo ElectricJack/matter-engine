@@ -99,10 +99,14 @@ static bool build_miniValley_sandbox(const std::string& root) {
         "}\n")) return false;
 
     // MiniValley.js — root that places 9 coarse tiles and requires 9 full tiles.
-    // Each coarse tile is placed with placeChild using the identity transform
-    // offset by (tx*10, 0, tz*10) in the last column of a row-major 4x4.
-    // The requires() array ensures all 18 nodes (9 coarse + 9 full) appear in
-    // the graph snapshot so RefineController::build() can pair them.
+    // Placement uses pushMatrix/translate/placeChild/popMatrix so each coarse tile
+    // receives a unique world-space origin (tx*10, 0, tz*10).  The matrix argument
+    // to placeChild is NOT supported by the DSL binding — placement origin is set
+    // via the transform stack (same pattern as Meadow.js).
+    // The requires() array ensures all 18 nodes (9 coarse + 9 full) appear in the
+    // graph snapshot / bake_plan so RefineController::build() can pair them.
+    // The `expand` flag in world.manifest promotes these 9 placeChild children to
+    // separate world manifest instances (giving RefineController per-tile positions).
     std::ostringstream root_js;
     root_js << "class MiniValley extends Part {\n";
     root_js << "  static get requires() {\n    return [\n";
@@ -115,27 +119,25 @@ static bool build_miniValley_sandbox(const std::string& root) {
     root_js << "    ];\n  }\n";
     root_js << "  build(p) {\n";
     root_js << "    this.fill(MAT.stone);\n";
-    // Place a tiny root surface so this part has geometry.
-    root_js << "    this.beginShape(SHAPE.triangles);\n";
-    root_js << "    this.vertex(0,0,0); this.vertex(1,0,0); this.vertex(0,1,0);\n";
-    root_js << "    this.endShape();\n";
-    // Place coarse tiles.
+    // Place coarse tiles using translate + placeChild (no matrix arg — transform stack).
     for (int tx = 0; tx < 3; ++tx) {
         for (int tz = 0; tz < 3; ++tz) {
-            // Row-major 4x4 identity with translation at [3]=ox, [7]=0, [11]=oz.
-            float ox = (float)(tx * 10);
-            float oz = (float)(tz * 10);
-            root_js << "    this.placeChild('Terrain', { res:'coarse', tx:" << tx << ", tz:" << tz
-                    << " }, [1,0,0," << ox << ", 0,1,0,0, 0,0,1," << oz << ", 0,0,0,1]);\n";
+            root_js << "    this.pushMatrix();\n";
+            root_js << "    this.translate(" << (tx * 10) << ", 0, " << (tz * 10) << ");\n";
+            root_js << "    this.placeChild('Terrain', { res:'coarse', tx:" << tx << ", tz:" << tz << " });\n";
+            root_js << "    this.popMatrix();\n";
         }
     }
     root_js << "  }\n}\n";
     if (!write_file(root + "/schemas/MiniValley.js", root_js.str())) return false;
 
-    // World manifest: one MiniValley placement.
+    // World manifest: MiniValley with `expand` so each coarse tile becomes a
+    // separate world instance (gives RefineController per-tile positions).
+    // Without `expand`, all children are merged into the root's flat and the
+    // manifest has only one entry at origin — RefineController can't distinguish tiles.
     if (!write_file(root + "/world_data/MiniValley/world.manifest",
         "# MiniValley 3x3 refine-loop test fixture\n"
-        "MiniValley\n")) return false;
+        "MiniValley expand\n")) return false;
 
     return true;
 }
@@ -230,9 +232,17 @@ static bool test_refines_toward_focus(const std::string& sandbox) {
     if (!br.finished) return false;
 
     // Now pump the refine loop for up to 30s, collecting RefineTileDone events.
+    // I2: capture the first tile's identity so we can assert it is (2,2) — the focus tile.
+    // Focus is at (25,0,25); tile centers are at (tx*10+5, 0, tz*10+5), so tile (2,2)
+    // has center (25,0,25) — exactly the focus, distance 0.  Any other tile is farther.
+    // The assert discriminates: temporarily invert the comparator in RefineController::next
+    // (farthest-first) and the first event will carry tile (0,0) or (0,2), not (2,2).
     int refine_done_max = 0;
     int refine_events   = 0;
-    bool first_module_ok = false;
+    bool first_module_ok  = false;
+    bool first_is_focus   = false;  // I2: first refined tile must be (2,2)
+    int  first_tile_tx    = -1;
+    int  first_tile_tz    = -1;
 
     auto deadline = clk::now() + std::chrono::seconds(30);
     while (clk::now() < deadline) {
@@ -243,10 +253,15 @@ static bool test_refines_toward_focus(const std::string& sandbox) {
                 ++refine_events;
                 if (ev.done > refine_done_max) refine_done_max = ev.done;
                 if (refine_events == 1) {
-                    // First refined tile should have phase="refine".
+                    // First refined tile should have phase="refine" and identity (2,2).
                     first_module_ok = (ev.phase == "refine");
-                    printf("  first RefineTileDone: module=%s done=%d total=%d phase=%s\n",
-                           ev.module.c_str(), ev.done, ev.total, ev.phase.c_str());
+                    first_tile_tx   = ev.tile_tx;
+                    first_tile_tz   = ev.tile_tz;
+                    first_is_focus  = (ev.tile_tx == 2 && ev.tile_tz == 2);
+                    printf("  first RefineTileDone: module=%s done=%d total=%d "
+                           "phase=%s tile_tx=%d tile_tz=%d (expect 2,2)\n",
+                           ev.module.c_str(), ev.done, ev.total, ev.phase.c_str(),
+                           ev.tile_tx, ev.tile_tz);
                 }
                 if (ev.done >= 9) break;
             } else if (ev.type == matter::EventType::BakeError) {
@@ -257,9 +272,11 @@ static bool test_refines_toward_focus(const std::string& sandbox) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    printf("  refine_events=%d refine_done_max=%d\n", refine_events, refine_done_max);
+    printf("  refine_events=%d refine_done_max=%d first_tile=(%d,%d)\n",
+           refine_events, refine_done_max, first_tile_tx, first_tile_tz);
     CHECK(refine_events > 0,  "refine-focus: at least one RefineTileDone arrived");
     CHECK(first_module_ok,    "refine-focus: first RefineTileDone has phase=refine");
+    CHECK(first_is_focus,     "refine-focus: first RefineTileDone is tile (2,2) — focus tile first");
     CHECK(refine_done_max >= 9, "refine-focus: done reaches 9 (all tiles upgraded)");
     return true;
 }

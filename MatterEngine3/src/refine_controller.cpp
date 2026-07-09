@@ -102,12 +102,18 @@ void RefineController::build(span<const GraphNode> nodes,
     for (const auto& kv : by_tile) {
         const TileAccum& acc = kv.second;
 
+        // Recover (tx, tz) from the map key (upper/lower 32 bits).
+        int rec_tx = (int)(uint32_t)(kv.first >> 32);
+        int rec_tz = (int)(uint32_t)(kv.first & 0xFFFFFFFFu);
+
         TileRecord rec;
         rec.coarse_hash = acc.coarse_hash;
         rec.full_hash   = acc.full_hash;
         rec.state       = TileRecord::State::Coarse;
         rec.pos[0] = rec.pos[1] = rec.pos[2] = 0.0f;
         rec.manifest_idx = 0;
+        rec.tile_tx = rec_tx;
+        rec.tile_tz = rec_tz;
 
         // Match coarse instance to get world position + manifest_idx.
         if (acc.coarse_hash != 0) {

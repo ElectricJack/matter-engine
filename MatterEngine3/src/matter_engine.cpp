@@ -312,6 +312,21 @@ struct WorldSession::Impl {
     // Tile count from the most-recent RefineController::build() (used in emitted events).
     // Worker thread only.
     size_t refine_tile_count = 0;
+
+    // I1 fix: deferred upgrade results from GL jobs.
+    // Worker-thread-only. Each entry records a pending refine.upgrade outcome:
+    //   tile_idx — index in refine_ctrl to mark Full (success) or Coarse (failure)
+    //   tile_tx / tile_tz — for the RefineTileDone event
+    //   result  — shared_ptr<atomic<int>>: 0=in-flight, 1=success, 2=failure
+    // The GL job writes the result; the worker drains at the START of each step
+    // and calls mark() + emits the event. Worker owns ALL mark() calls.
+    struct PendingUpgrade {
+        uint32_t tile_idx;
+        int      tile_tx;
+        int      tile_tz;
+        std::shared_ptr<std::atomic<int>> result; // 0=in-flight, 1=success, 2=fail
+    };
+    std::vector<PendingUpgrade> refine_pending_upgrades_;
 };
 
 // ---------------------------------------------------------------------------
@@ -351,6 +366,7 @@ void WorldSession::Impl::worker_loop() {
                 // Shutdown + drained. Reset refine state and exit.
                 refine_ctrl.reset();
                 refine_provider.reset();
+                refine_pending_upgrades_.clear();
                 return;
             }
 
@@ -359,6 +375,7 @@ void WorldSession::Impl::worker_loop() {
                 if (cmd.kind == matter_async::CommandKind::Shutdown) {
                     refine_ctrl.reset();
                     refine_provider.reset();
+                    refine_pending_upgrades_.clear();
                     return;
                 }
                 // BakeAll/Reload: reset refine controller (will be rebuilt post-publish).
@@ -366,6 +383,7 @@ void WorldSession::Impl::worker_loop() {
                     cmd.kind == matter_async::CommandKind::Reload) {
                     refine_ctrl.reset();
                     refine_provider.reset();
+                    refine_pending_upgrades_.clear();
                 }
                 bake_active.store(true, std::memory_order_release);
                 try {
@@ -383,6 +401,7 @@ void WorldSession::Impl::worker_loop() {
                             bake_active.store(false, std::memory_order_release);
                             refine_ctrl.reset();
                             refine_provider.reset();
+                            refine_pending_upgrades_.clear();
                             return;
                     }
                 } catch (std::bad_alloc&) {
@@ -1284,6 +1303,49 @@ void WorldSession::Impl::publish_pipeline(
 void WorldSession::Impl::execute_refine_step() {
     if (!refine_ctrl || !refine_provider) return;
 
+    const size_t tile_count = refine_tile_count;
+
+    // 0) Drain pending upgrade results written by GL jobs in prior steps.
+    //    Worker owns all mark() calls; GL jobs write to an atomic slot and return —
+    //    the worker applies the outcome here so state transitions are sequenced
+    //    entirely on the worker thread with no data race.
+    //    Handoff: GL job writes result atomic (1=success, 2=failure); worker reads
+    //    it here, calls mark(Full) on success or mark(Coarse)+log on failure, then
+    //    emits the deferred RefineTileDone (upgrade events are emitted at drain time,
+    //    one step after the job was posted).
+    {
+        auto it = refine_pending_upgrades_.begin();
+        while (it != refine_pending_upgrades_.end()) {
+            int r = it->result->load(std::memory_order_acquire);
+            if (r == 0) {
+                ++it; // still in-flight — check again next step
+                continue;
+            }
+            uint32_t ti    = it->tile_idx;
+            int      ev_tx = it->tile_tx;
+            int      ev_tz = it->tile_tz;
+            if (r == 1) {
+                // Swap succeeded — promote tile to Full and report progress.
+                refine_ctrl->mark(ti, matter_refine::TileRecord::State::Full);
+                Event ev;
+                ev.type    = EventType::RefineTileDone;
+                ev.module  = "Terrain";
+                ev.done    = (int)refine_ctrl->full_count();
+                ev.total   = (int)tile_count;
+                ev.phase   = "refine";
+                ev.tile_tx = ev_tx;
+                ev.tile_tz = ev_tz;
+                emit_event(std::move(ev));
+            } else {
+                // Swap failed (get_or_load returned null) — leave Coarse for retry.
+                fprintf(stderr, "[refine] upgrade GL job failed for tile (%d,%d) — "
+                        "will retry on next refine step\n", ev_tx, ev_tz);
+                refine_ctrl->mark(ti, matter_refine::TileRecord::State::Coarse);
+            }
+            it = refine_pending_upgrades_.erase(it);
+        }
+    }
+
     // Snapshot focus; project to y=0 (design note: see above).
     float focus_yz0[3];
     {
@@ -1293,17 +1355,25 @@ void WorldSession::Impl::execute_refine_step() {
         focus_yz0[2] = focus[2];
     }
 
-    const size_t tile_count = refine_tile_count;
-
     // 1) Evict full tiles beyond radius (farthest-first).
     {
         std::vector<uint32_t> to_evict = refine_ctrl->evict_beyond(focus_yz0, refine_radius);
         for (uint32_t ti : to_evict) {
             const matter_refine::TileRecord& rec = refine_ctrl->tile_at(ti);
             // Capture fields for the GpuJob lambda.
-            uint64_t full_hash_e  = rec.full_hash;
+            uint64_t full_hash_e   = rec.full_hash;
             uint64_t coarse_hash_e = rec.coarse_hash;
-            uint32_t midx_e       = rec.manifest_idx;
+            uint32_t midx_e        = rec.manifest_idx;
+            int      ev_tx_e       = rec.tile_tx;
+            int      ev_tz_e       = rec.tile_tz;
+
+            // I3 fix: skip eviction job for tiles with no real full variant
+            // (null-hash tiles were marked Full as "skip forever"; releasing hash 0
+            // is a no-op today but would regress if release-callers assume live hashes).
+            if (full_hash_e == 0) {
+                refine_ctrl->mark(ti, matter_refine::TileRecord::State::Coarse);
+                continue;
+            }
 
             // Mark Coarse first (worker thread); GpuJob runs later on GL thread.
             refine_ctrl->mark(ti, matter_refine::TileRecord::State::Coarse);
@@ -1335,11 +1405,13 @@ void WorldSession::Impl::execute_refine_step() {
 
             // Emit RefineTileDone with the new (decremented) done count.
             Event ev;
-            ev.type   = EventType::RefineTileDone;
-            ev.module = "Terrain";
-            ev.done   = (int)done_after;
-            ev.total  = (int)tile_count;
-            ev.phase  = "refine";
+            ev.type    = EventType::RefineTileDone;
+            ev.module  = "Terrain";
+            ev.done    = (int)done_after;
+            ev.total   = (int)tile_count;
+            ev.phase   = "refine";
+            ev.tile_tx = ev_tx_e;
+            ev.tile_tz = ev_tz_e;
             emit_event(std::move(ev));
         }
     }
@@ -1348,14 +1420,16 @@ void WorldSession::Impl::execute_refine_step() {
     matter_refine::TileRecord* tr = nullptr;
     if (!refine_ctrl->next(focus_yz0, &tr)) return;  // all tiles Full or Queued
 
-    uint32_t ti_next     = refine_ctrl->tile_index_of(tr);
-    uint64_t full_hash_n = tr->full_hash;
+    uint32_t ti_next       = refine_ctrl->tile_index_of(tr);
+    uint64_t full_hash_n   = tr->full_hash;
     uint64_t coarse_hash_n = tr->coarse_hash;
-    uint32_t midx_n      = tr->manifest_idx;
+    uint32_t midx_n        = tr->manifest_idx;
+    int      next_tx       = tr->tile_tx;
+    int      next_tz       = tr->tile_tz;
 
     if (full_hash_n == 0) {
-        // No full variant — skip this tile silently.
-        refine_ctrl->mark(ti_next, matter_refine::TileRecord::State::Full); // treat as done
+        // No full variant — treat as permanently done (never emits RefineTileDone).
+        refine_ctrl->mark(ti_next, matter_refine::TileRecord::State::Full);
         return;
     }
 
@@ -1372,24 +1446,34 @@ void WorldSession::Impl::execute_refine_step() {
             refine_ctrl->mark(ti_next, matter_refine::TileRecord::State::Coarse);
             return;
         }
-        refine_provider->ensure_part_flattened(full_hash_n);
+        if (!refine_provider->ensure_part_flattened(full_hash_n)) {
+            // Flatten failure: log and mark Coarse so the tile stays eligible for retry.
+            fprintf(stderr, "[refine] ensure_part_flattened failed for full hash %016llx\n",
+                    (unsigned long long)full_hash_n);
+            refine_ctrl->mark(ti_next, matter_refine::TileRecord::State::Coarse);
+            return;
+        }
     }
 
     // 4) Post GPU job: load full variant + swap instance hash + apply delta.
-    size_t done_after_n = refine_ctrl->full_count() + 1; // will be Full after mark below
+    //    I1 fix: the GL job writes its outcome to a shared atomic so the worker can
+    //    call mark(Full/Coarse) at the START of the next step (drain in step 0 above).
+    //    Worker owns ALL mark() calls; GL job only writes the result atomic.
     (void)coarse_hash_n;  // coarse_hash for eviction; not needed for upgrade swap
+
+    auto result_slot = std::make_shared<std::atomic<int>>(0); // 0=in-flight
+    refine_pending_upgrades_.push_back({ti_next, next_tx, next_tz, result_slot});
 
     matter_async::GpuJob uj;
     uj.name = "refine.upgrade";
-    uj.fn   = [this, full_hash_n, midx_n](std::string& /*err*/) -> bool {
+    uj.fn   = [this, full_hash_n, midx_n, result_slot](std::string& /*err*/) -> bool {
         matter_async::assert_gl_thread("refine.upgrade");
         // Load the full part into the store.
         if (!store->get_or_load(full_hash_n)) {
-            // Load failure — leave the manifest unchanged; tile stays Coarse implicitly
-            // (mark(Coarse) is called on the worker after post, but we need to
-            // communicate this back).  For simplicity, silently skip; the tile
-            // will be re-picked on the next refine step since mark(Full) hasn't run.
-            return true;  // skip-and-continue
+            // Load failure — manifest unchanged; tile will be retried (marked Coarse
+            // by the worker when it drains this result at the next step).
+            result_slot->store(2, std::memory_order_release); // 2 = failure
+            return true;  // skip-and-continue; worker handles the state transition
         }
         // Ensure part registered in culler.
         if (culler_ready) gpu_culler.ensure_part(full_hash_n, *store);
@@ -1403,24 +1487,12 @@ void WorldSession::Impl::execute_refine_step() {
             tracer_dirty = true;
             tracer.reset();
         }
+        result_slot->store(1, std::memory_order_release); // 1 = success
         return true;
     };
     gpu_jobs.post(std::move(uj));
-
-    // 5) Mark Full (on worker, before the GL job runs — OK because the state
-    //    bit is used only by the refine controller, not the renderer).
-    refine_ctrl->mark(ti_next, matter_refine::TileRecord::State::Full);
-
-    // Emit RefineTileDone.
-    {
-        Event ev;
-        ev.type   = EventType::RefineTileDone;
-        ev.module = "Terrain";
-        ev.done   = (int)refine_ctrl->full_count();
-        ev.total  = (int)tile_count;
-        ev.phase  = "refine";
-        emit_event(std::move(ev));
-    }
+    // mark(Full) and RefineTileDone are deferred to the drain in step 0 of the next
+    // execute_refine_step call, after the GL job has written result_slot.
 }
 
 // ---------------------------------------------------------------------------

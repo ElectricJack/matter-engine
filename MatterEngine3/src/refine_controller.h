@@ -65,6 +65,8 @@ struct TileRecord {
     float    pos[3] = {0, 0, 0};  // tile world center (instance translation + TILE_SIZE/2)
     enum class State { Coarse, Queued, Full } state = State::Coarse;
     uint32_t manifest_idx = 0;    // index of the coarse instance's manifest entry
+    int      tile_tx = 0;         // Terrain tx param (for event identity / test assertions)
+    int      tile_tz = 0;         // Terrain tz param (for event identity / test assertions)
 };
 
 // ---------------------------------------------------------------------------

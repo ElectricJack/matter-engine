@@ -1029,7 +1029,7 @@ refine-loop-tests: $(call obj_of,gpu,refine_loop_tests.cpp) $(GPU_SHARED_OBJS) |
 	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
 
 run-refineloop: refine-loop-tests
-	./refine_loop_tests
+	GALLIUM_DRIVER=d3d12 ./refine_loop_tests
 
 # ---------------------------------------------------------------------------
 # Clean: remove OBJDIR and all binaries (test-binary-name list, since they
