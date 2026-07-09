@@ -38,17 +38,14 @@ static std::string extract_str(const std::string& json, const char* key) {
     return json.substr(pos, end - pos);
 }
 
-// Extract an integer value for `key` from canonical params_json.
-// Returns 0 if not found (tx/tz are never negative in Meadow, so 0 is a safe sentinel
-// for missing; callers only use this after confirming module=="Terrain").
-// Example: json={"res":"coarse","tx":5,...}, key="tx" -> 5
-static int extract_int(const std::string& json, const char* key) {
+// Extract an integer value for `key` from canonical params_json, with found flag.
+// Returns (value, true) if found, (0, false) if not found.
+static std::pair<int, bool> extract_int_or_missing(const std::string& json, const char* key) {
     std::string needle = std::string("\"") + key + "\":";
     auto pos = json.find(needle);
-    if (pos == std::string::npos) return 0;
+    if (pos == std::string::npos) return {0, false};
     pos += needle.size();
-    // Value ends at ',' or '}'.  Use strtol.
-    return static_cast<int>(std::strtol(json.c_str() + pos, nullptr, 10));
+    return {static_cast<int>(std::strtol(json.c_str() + pos, nullptr, 10)), true};
 }
 
 // ---------------------------------------------------------------------------
@@ -79,9 +76,15 @@ void RefineController::build(span<const GraphNode> nodes,
     for (const auto& node : nodes) {
         if (node.module != "Terrain") continue;
 
+        // Extract required keys with presence checking; skip malformed nodes.
+        auto [tx, tx_found] = extract_int_or_missing(node.params_json, "tx");
+        auto [tz, tz_found] = extract_int_or_missing(node.params_json, "tz");
         std::string res = extract_str(node.params_json, "res");
-        int tx = extract_int(node.params_json, "tx");
-        int tz = extract_int(node.params_json, "tz");
+
+        if (!tx_found || !tz_found || res.empty()) {
+            // Malformed Terrain node (missing tx, tz, or res) — skip it.
+            continue;
+        }
 
         uint64_t key = ((uint64_t)(uint32_t)tx << 32) | (uint64_t)(uint32_t)tz;
         TileAccum& acc = by_tile[key];

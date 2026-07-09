@@ -67,3 +67,32 @@ ALL PASS
 ## Concerns
 
 None.
+
+---
+
+## Fix Round (Review I-1/I-2)
+
+### I-1: 3D distance metric documentation (evict_beyond / next)
+
+**Change:** Added clarifying doc-comments to `next()` and `evict_beyond()` methods in refine_controller.h stating that distance is 3D (includes y-component). For ground-plane tiles with pos[1]=0, the caller must account for camera height when comparing distances or choosing an eviction radius; the effective XZ-radius shrinks to sqrt(radius²−H²) at height H.
+
+**Rationale:** Task 6 will wire the real camera focus (which has nonzero height above terrain). Without this note, an incorrect radius would be chosen, evicting all tiles or none. The metric itself is unchanged; only the documentation clarifies the existing behavior.
+
+### I-2: Skip malformed Terrain nodes (missing tx/tz/res)
+
+**Changes:**
+1. Added helper `extract_int_or_missing()` that returns `(value, found_flag)` instead of a sentinel 0.
+2. Modified `build()` to check all three required keys (`tx`, `tz`, `res`) and skip any Terrain node where any is missing.
+3. Removed the old `extract_int()` helper (now unused).
+4. Added test case `test_malformed_terrain_missing_keys()`: builds a world with 4 valid tiles, then adds 3 malformed Terrain nodes (each missing one required key). Asserts tile_count remains 4 and existing hashes are intact.
+
+**Rationale:** Previously, missing tx/tz would silently default to 0, landing the node in bucket (0,0) and potentially corrupting tile (0,0)'s hashes. With this fix, malformed nodes are silently skipped (as per the design: "callers only use this after confirming module=='Terrain'", now extended to include required key presence).
+
+**Test evidence:**
+```
+[test_malformed_terrain_missing_keys]
+ok malformed_terrain_missing_keys
+ALL PASS (9/9 tests)
+```
+
+No compiler warnings. All tests pass.

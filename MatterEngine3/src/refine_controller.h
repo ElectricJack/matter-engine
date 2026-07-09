@@ -87,6 +87,8 @@ public:
     size_t full_count() const;
 
     // Highest-priority tile not yet Full/Queued, nearest to focus.
+    // Distance is 3D (includes y); for ground-plane tiles with pos[1]=0, caller must account
+    // for camera height when comparing distances.
     // Returns false if none pending; sets *out to the record.
     bool next(const float focus[3], TileRecord** out);
 
@@ -94,6 +96,8 @@ public:
     void mark(uint32_t tile_idx, TileRecord::State s);
 
     // Full tiles farther than radius from focus, sorted farthest-first.
+    // Distance is 3D (includes y); for ground-plane tiles with pos[1]=0, caller must account
+    // for camera height when choosing radius (effective XZ-radius shrinks to sqrt(radius²−H²)).
     // Coarse and Queued tiles are never included.
     std::vector<uint32_t> evict_beyond(const float focus[3], float radius) const;
 

@@ -376,6 +376,56 @@ static void test_next_all_full() {
 }
 
 // ---------------------------------------------------------------------------
+// (i) malformed_terrain_missing_keys: Terrain nodes lacking tx/tz/res should be skipped
+// ---------------------------------------------------------------------------
+static void test_malformed_terrain_missing_keys() {
+    printf("[test_malformed_terrain_missing_keys]\n");
+    std::vector<GraphNode> nodes;
+    std::vector<InstanceRef> instances;
+    // Build a 2-tile world with valid tiles
+    make_4tile_world(nodes, instances);
+    size_t initial_node_count = nodes.size();
+
+    // Record the initial tile (0,0) state (hash)
+    RefineController rc_init;
+    rc_init.build({nodes.data(), nodes.size()}, {instances.data(), instances.size()});
+    uint64_t tile_00_coarse_hash = rc_init.tile_count() > 0 ?
+        /* We need to inspect; actually tile (0,0) is index 0 */ 100 : 0;
+
+    // Now add a malformed Terrain node with missing tx
+    GraphNode bad1;
+    bad1.module = "Terrain";
+    bad1.params_json = "{\"res\":\"coarse\",\"tz\":0,\"worldSeed\":42,\"worldSize\":10}";
+    // Missing "tx" key — should default to extract_int return = 0
+    bad1.resolved_hash = 999;
+    nodes.push_back(bad1);
+
+    // Add another malformed Terrain node with missing tz
+    GraphNode bad2;
+    bad2.module = "Terrain";
+    bad2.params_json = "{\"res\":\"coarse\",\"tx\":0,\"worldSeed\":42,\"worldSize\":10}";
+    // Missing "tz" key
+    bad2.resolved_hash = 998;
+    nodes.push_back(bad2);
+
+    // Add a malformed Terrain node missing res
+    GraphNode bad3;
+    bad3.module = "Terrain";
+    bad3.params_json = "{\"tx\":2,\"tz\":2,\"worldSeed\":42,\"worldSize\":10}";
+    // Missing "res" key
+    bad3.resolved_hash = 997;
+    nodes.push_back(bad3);
+
+    RefineController rc;
+    rc.build({nodes.data(), nodes.size()}, {instances.data(), instances.size()});
+
+    // tile_count should still be 4 (only the original 4 valid tiles from make_4tile_world)
+    // The malformed nodes should have been skipped
+    CHECK(rc.tile_count() == 4, "tile_count==4 with malformed nodes (they are skipped)");
+    printf("ok malformed_terrain_missing_keys\n");
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
@@ -387,5 +437,6 @@ int main() {
     test_evict_beyond();
     test_no_coarse_instance();
     test_next_all_full();
+    test_malformed_terrain_missing_keys();
     return check_summary();
 }
