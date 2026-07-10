@@ -55,6 +55,27 @@ static JSValue j_op(JSContext* c, JSValueConst, int, JSValueConst* a){
     int32_t k=0; JS_ToInt32(c,&k,a[0]); state_of(c)->set_last_op((CsgOp)k); return JS_UNDEFINED; }
 static JSValue j_smoothing(JSContext* c, JSValueConst, int, JSValueConst* a){ state_of(c)->smoothing((float)argd(c,a[0])); return JS_UNDEFINED; }
 
+static JSValue j_raycast(JSContext* c, JSValueConst, int, JSValueConst* a){
+    Vector3 hit{}, nrm{};
+    bool ok = state_of(c)->raycast(
+        {(float)argd(c,a[0]),(float)argd(c,a[1]),(float)argd(c,a[2])},
+        {(float)argd(c,a[3]),(float)argd(c,a[4]),(float)argd(c,a[5])},
+        hit, nrm);
+    if (!ok) return JS_NULL;   // miss OR fail-closed error (bake fails anyway)
+    JSValue pt = JS_NewArray(c);
+    JS_SetPropertyUint32(c, pt, 0, JS_NewFloat64(c, hit.x));
+    JS_SetPropertyUint32(c, pt, 1, JS_NewFloat64(c, hit.y));
+    JS_SetPropertyUint32(c, pt, 2, JS_NewFloat64(c, hit.z));
+    JSValue nm = JS_NewArray(c);
+    JS_SetPropertyUint32(c, nm, 0, JS_NewFloat64(c, nrm.x));
+    JS_SetPropertyUint32(c, nm, 1, JS_NewFloat64(c, nrm.y));
+    JS_SetPropertyUint32(c, nm, 2, JS_NewFloat64(c, nrm.z));
+    JSValue obj = JS_NewObject(c);
+    JS_SetPropertyStr(c, obj, "point", pt);
+    JS_SetPropertyStr(c, obj, "normal", nm);
+    return obj;
+}
+
 static JSValue j_beginModifier(JSContext* c, JSValueConst, int, JSValueConst*) {
     state_of(c)->begin_modifier_region(); return JS_UNDEFINED; }
 
@@ -778,6 +799,7 @@ void install_bindings(JSContext* ctx) {
     bind("__dsl_beginVoxels",j_beginVoxels,1); bind("__dsl_endVoxels",j_endVoxels,0);
     bind("__dsl_sphere",j_sphere,4); bind("__dsl_box",j_box,6);
     bind("__dsl_op",j_op,1); bind("__dsl_smoothing",j_smoothing,1);
+    bind("__dsl_raycast",j_raycast,6);
     bind("__dsl_beginModifier",j_beginModifier,0); bind("__dsl_endModifier",j_endModifier,1);
     bind("__dsl_placeChild",j_placeChild,2);
     bind("__dsl_beginShape",j_beginShape,1); bind("__dsl_vertex",j_vertex,3);

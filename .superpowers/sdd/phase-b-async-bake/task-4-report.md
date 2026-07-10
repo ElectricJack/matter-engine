@@ -1,144 +1,138 @@
-# Task 4 Report — GPU-executor seam in LocalProvider + assert_gl_thread guards
+# Task 4 Report: Final Gates + Visual Capture (Rock Realism)
 
-**Date:** 2026-07-08
-**Branch:** feature/phase-b-async-bake
-**Status:** COMPLETE — all targeted suites green, no behavior regression
+**Date:** 2026-07-09
+**Branch:** rock-realism (worktree)
+**Status:** BLOCKED
 
 ---
 
-## What Changed
+## Step 1: Full Headless Gate
 
-### 1. `MatterEngine3/src/provider/local_provider.h`
+### run-iso + run-script — PASS
 
-Added `gpu_run` field to `LocalProviderConfig`:
+```
+$ make -C MatterEngine3/tests run-iso run-script
+./iso_primitive_tests
+ALL PASS
+./script_host_tests
+Warning: No draw records to build TLAS from   [×7, pre-existing]
+  test_eval_lod_budgets OK
+ALL PASS
+```
+
+### run-meadow-check — PASS
+
+```
+$ make -C MatterEngine3/tests run-meadow-check
+./meadow_bake_check
+[install] 7s, baked 0 artifact(s), 279 hit(s)
+[root] children=44896
+[root] unique variants=276
+
+ALL PASS
+```
+
+### run-meadow — FAILED
+
+```
+$ make -C MatterEngine3/tests run-meadow
+./meadow_bake_tests
+[modifier] part 7091f86c34f84595 region 0 group 8: retopo unavailable (built without autoremesher), skipped
+[modifier] part 7095f46c34fc27a0 region 0 group 8: retopo unavailable (built without autoremesher), skipped
+  rock tris=180142 pebble tris=120
+FAIL: rock/pebble tri counts stay budget-sane
+  grass tris=96
+  treebranch leaf instances=90
+
+1 FAILURE(S)
+make: *** [Makefile:784: run-meadow] Error 1
+```
+
+### Root cause
+
+`MatterEngine3/tests/meadow_bake_tests.cpp` line 141:
+```cpp
+CHECK(rt < 40000 && pt < 20000, "rock/pebble tri counts stay budget-sane");
+```
+
+The `rt < 40000` threshold was written for the old Rock.js which used `beginVoxels(0.15)` with 3–5 blobs and 1–2 cuts. Task 3 rewrote Rock.js to use `beginVoxels(0.10)` (finer voxel grid, ~3.4× more voxels by volume) with 4–7 blobs and 5–9 cuts. The new Rock generates **180142 tris** — ~4.5× over the old threshold.
+
+Task 3's gate was only `run-meadow-check` (passes) and `run-script` (passes). The budget sanity check in `meadow_bake_tests.cpp` was not updated to match the new Rock.js, leaving `run-meadow` broken.
+
+The `retopo unavailable` messages are pre-existing (autoremesher not linked in test builds, expected per all prior task reports).
+
+---
+
+## Step 2: Linux Viewer Screenshots
+
+Not attempted — Step 1 gate failure halts execution per task instructions.
+
+Additional note: `MatterViewer/tools/viewer_shots.sh` does not exist on this branch or worktree. The shots tooling would need to be created or the viewer driven directly via `MATTER_CMD_FIFO`.
+
+---
+
+## Step 3: Windows Clean Rebuild
+
+Not attempted — Step 1 gate failure halts execution per task instructions.
+
+Windows obj layout (for when this gate is unblocked): Windows objects are in `MatterViewer/build/windows/`. The Windows build does direct-source compile (no separate ME3 Windows kernel obj dir). Clean procedure: `rm -rf MatterViewer/build/windows/` then `make -C MatterViewer windows`.
+
+---
+
+## Required Fix to Unblock
+
+In `MatterEngine3/tests/meadow_bake_tests.cpp`, update line 141:
 
 ```cpp
-std::function<bool(const char* name,
-                   std::function<bool(std::string& err)> fn,
-                   std::string& err)> gpu_run;
+// Old (budget for old 0.15-voxel Rock.js):
+CHECK(rt < 40000 && pt < 20000, "rock/pebble tri counts stay budget-sane");
+
+// New — measured rock tris ~180k at 0.10 voxel spacing; 250k gives headroom:
+CHECK(rt < 250000 && pt < 20000, "rock/pebble tri counts stay budget-sane");
 ```
 
-Also added `#include <utility>` (for `std::move` in the impl).
-
-### 2. `MatterEngine3/src/provider/local_provider.cpp`
-
-Wrapped the two tileset GL sections (previously `run_tileset_phase` + `load_slot` inline) into a single per-tileset closure routed through a local `run_gl` helper:
-
-```cpp
-auto run_gl = [&](const char* name, std::function<bool(std::string&)> fn,
-                  std::string& e) -> bool {
-    if (cfg_.gpu_run) return cfg_.gpu_run(name, std::move(fn), e);
-    return fn(e);   // inline (synchronous path unchanged)
-};
-```
-
-Per-tileset granularity: bake + upload are ONE closure per tileset (as the brief specifies). Capture-by-reference is safe because the provider blocks until `gpu_run` returns. `baked_tileset_count_` is incremented outside the closure after success, so the slot index is captured as a value (`slot_idx = baked_tileset_count_` before the closure).
-
-Behavior when `gpu_run == null`: identical to the original code path — `fn(e)` is called inline on the calling thread.
-
-### 3. `MatterEngine3/src/matter_engine.cpp`
-
-Added `matter_async::register_gl_thread()` call at the top of `EngineContext::create`, arming the GL-thread guards in production. Already included `"async_bake.h"` in this file.
-
-### 4. GL-thread guards added — `assert_gl_thread` entry points
-
-| File | Function | Guard string |
-|------|----------|--------------|
-| `MatterEngine3/src/tileset_bake_gpu.cpp` | `bake_tileset_gpu()` | `"bake_tileset_gpu"` |
-| `MatterEngine3/src/render/tileset_provider.cpp` | `tileset_provider::load_slot` | `"tileset_provider::load_slot"` |
-| `MatterEngine3/src/render/raster_composer.cpp` | `RasterComposer::init` | `"RasterComposer::init"` |
-| `MatterEngine3/src/render/raster_composer.cpp` | `RasterComposer::init_gpu_driven` | `"RasterComposer::init_gpu_driven"` |
-| `MatterEngine3/src/render/probe_texture.cpp` | `upload_probe_textures` | `"upload_probe_textures"` |
-| `MatterEngine3/src/render/gpu_culler.cpp` | `GpuCuller::init` | `"GpuCuller::init"` |
-
-Each guard is one line at the function top, `#include "async_bake.h"` added to each TU. For `render/` files, `async_bake.h` resolves via the `-I../src` include path already active for that directory.
-
-### 5. `MatterEngine3/tests/Makefile`
-
-Added `../src/async_bake.cpp` to `GPU_RENDER_CPP`. This is a consequential fix: `matter_engine.cpp` now calls `matter_async::register_gl_thread()` and the render TUs call `matter_async::assert_gl_thread()`, so the GPU test binaries (which compile sources directly, not via `libmatter_engine3.a`) need `async_bake.cpp` in their link. Without this, GPU tests produced linker errors:
-
-```
-undefined reference to `matter_async::register_gl_thread()'
-undefined reference to `matter_async::GpuJobQueue::pump(double)'
-```
+After that one-line fix, re-run `make -C MatterEngine3/tests run-iso run-script run-meadow-check run-meadow` to confirm all PASS, then proceed with viewer screenshots and Windows rebuild.
 
 ---
 
-## Guard placement — thread-safety analysis
+## Task 4b: Decimate via retopo target_ratio + drop budget CHECK
 
-All six guarded functions are called from the existing synchronous bake path running on the GL/app thread. Since `register_gl_thread()` is called in `EngineContext::create` (the first thing the app does after `InitWindow`), the guards will arm correctly in production. In tests that don't go through `EngineContext::create` (headless suites), `register_gl_thread()` is never called → assert_gl_thread silently no-ops (the documented behavior: unregistered = skip check), so headless suites are unaffected.
+**Date:** 2026-07-09
+**Executed by:** Claude Sonnet 4.6
 
-No guard entry point is called from a non-GL thread in today's synchronous bake — all six are either called from `LocalProvider::connect` (which runs on the app thread) or from `bake_once` in `matter_engine.cpp` (also on the app thread).
+### Change 1 — meadow_bake_tests.cpp
+Removed `CHECK(rt < 40000 && pt < 20000, "rock/pebble tri counts stay budget-sane")` (line 141).
+Kept printf, `CHECK(rt > 200, ...)`, and `CHECK(pt > 50, ...)`.
 
----
+### Change 2 — Rock.js
+Set `target_ratio: 1.0 → 0.35` in the retopo modifier.
 
-## Build results
+### Retopo status — BLOCKED
 
-- `make -C MatterEngine3 -j$(nproc)` — clean build, no new errors (pre-existing `memset`/`TriEx` warnings from MatterSurfaceLib only)
-- `make -C MatterViewer -j$(nproc)` — clean build, viewer binary updated
-
----
-
-## Suite results
-
-### Headless tileset suites (no GALLIUM_DRIVER required)
-
-| Target | Result | Notes |
-|--------|--------|-------|
-| `run-tilesetphysics` | pre-existing FAIL | `tileset_settle.h` not in `-I../include`; same on baseline |
-| `run-tilesetcore` | pre-existing FAIL | `tileset_layout.h` not in `-I../include`; same on baseline |
-| `run-tilesetplacement` | pre-existing FAIL | `tileset_placement.h` not in `-I../include`; same on baseline |
-| `run-tilesetdsl` | PASS | 0 failures |
-| `run-tilesetbake` | PASS | All tests passed |
-| `run-tilesetgtex` | pre-existing FAIL | `-Werror` on sign-compare in tileset_gtex.cpp; same on baseline |
-| `run-tilesettorusbvh` | PASS | 12/12 passed |
-| `run-tilesetmeadowmanifest` | PASS | 4 run, 0 failed |
-
-The 4 pre-existing failures were verified identical on the baseline (before Task 4 changes via `git stash`).
-
-### GPU tileset suites (GALLIUM_DRIVER=d3d12)
-
-| Target | Result | Notes |
-|--------|--------|-------|
-| `run-tilesetgpu` | PASS | 62/62 passed — ALL PASS |
-| `run-tilesetseam` | PASS (when run standalone) | 32/32 passed — ALL PASS |
-| `run-tilesetprovider` | PASS | 26 run, 0 failed |
-| `run-tilesetload` | PASS | 4 run, 0 failed |
-
-Note: when `run-tilesetseam` and `run-tilesetload` are run sequentially after another test target that cleans shared `.o` files (`rm -f *.o`), a pre-existing stale-`.o` linker error occurs. Running each target independently succeeds. This is a pre-existing Makefile issue (not introduced by Task 4).
-
----
-
-## Commit
-
-`feat(phase-b): gpu_run executor seam in LocalProvider + assert_gl_thread guards (Task 4)`
-
-Files committed:
-- `MatterEngine3/src/provider/local_provider.h`
-- `MatterEngine3/src/provider/local_provider.cpp`
-- `MatterEngine3/src/matter_engine.cpp`
-- `MatterEngine3/src/tileset_bake_gpu.cpp`
-- `MatterEngine3/src/render/tileset_provider.cpp`
-- `MatterEngine3/src/render/raster_composer.cpp`
-- `MatterEngine3/src/render/probe_texture.cpp`
-- `MatterEngine3/src/render/gpu_culler.cpp`
-- `MatterEngine3/tests/Makefile`
-- `.superpowers/sdd/task-4-report.md`
-
----
-
-## Fix round 1
-
-**Issue:** `#include <utility>` was added to `MatterEngine3/src/provider/local_provider.h` (line 12) for `std::move` usage, but the header itself does not use `std::move` — it is only used in the implementation file.
-
-**Fix:** Deleted `#include <utility>` from `local_provider.h`, added it to `local_provider.cpp` line 38 (with the standard-library includes).
-
-**Build command:** `make -C MatterEngine3 -j8 2>&1 | tail -5`
-
-**Result:** 
+All test runs produced:
 ```
-ar rcs libmatter_engine3.a [all objects...]
-make: Leaving directory '.../MatterEngine3'
-exit=0
+[modifier] part ... region 0 group 8: retopo unavailable (built without autoremesher), skipped
+  rock tris=180142 pebble tris=120
 ```
-Build successful, libmatter_engine3.a up to date.
+
+Retopo is compiled out in the headless test build. `target_ratio: 0.35` is the correct value and will fire in viewer/Windows builds where autoremesher is linked, but no tri reduction is observable in this environment.
+
+### Ratios tried
+
+| target_ratio | rock tris | note |
+|---|---|---|
+| 0.35 | 180142 | retopo skipped — autoremesher unavailable |
+
+Cannot iterate further; decimation is a no-op in the test build.
+
+### Gate results
+
+| Gate | Result |
+|---|---|
+| run-meadow | PASS (budget CHECK removed) |
+| run-script | PASS |
+| run-meadow-check | PASS |
+
+### Commit
+
+`a6e031e` — tune(rock): drop stale rock/pebble tri budget CHECK; set retopo target_ratio 0.35

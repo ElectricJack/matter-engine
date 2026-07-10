@@ -1,5 +1,6 @@
 #include "csg_lowering.h"
 #include <cmath>
+#include <vector>
 
 // NOTE: raymath.h cannot be included in this TU: cluster.h transitively pulls in
 // the prototype's precomp.h `struct float3` (x/y/z members) which collides with
@@ -142,14 +143,81 @@ bool field_is_solid(const BuildBuffer& buf, const Vector3& wp) {
             case BrushKind::Cylinder: d = sdCappedCone(lpw, o.center, o.segB, o.radius, o.r1); break;
             default:                  d = sdSphere(lp, o.radius); break;
         }
-        if (!any) { field = d; any=true; continue; }
+        // Apply the op directly against the running field (starts at 1e9 = empty).
+        // Opening Union: fminf(1e9,d)=d (correct seed). Opening Difference:
+        // fmaxf(1e9,-d)=1e9 (nothing yet — correct). Opening Intersection: 1e9.
         switch (o.op) {
             case CsgOp::Union:        field = fminf(field, d); break;
             case CsgOp::Difference:   field = fmaxf(field, -d); break;
             case CsgOp::Intersection: field = fmaxf(field, d); break;
         }
+        any = true;
     }
     return any && field < 0.0f;
+}
+
+// Signed-distance sibling of field_is_solid, mirroring the mesher's STAGED
+// smooth-min evaluation (surface.c CalculateScalarStaged): consecutive same-op
+// ops form a stage; within a stage distances combine via log-sum-exp smin with
+// fillet k; stages fold in authored order starting from INFINITY=empty
+// (Union=min, Difference=max(field,-d), Intersection=max(field,d)).
+// With k<=1e-5 this degenerates to hard ops and matches field_is_solid's sign.
+float field_distance(const BuildBuffer& buf, size_t opBegin, size_t opEnd,
+                     float k, const Vector3& worldPoint) {
+    float field = 1e9f;
+    bool haveAny = false;
+
+    // Accumulate one stage's per-brush distances, then fold and reset.
+    std::vector<float> vals;
+    vals.reserve(16);
+    float stageMin = 1e9f;
+    CsgOp stageOp = CsgOp::Union;
+    bool stageOpen = false;
+
+    auto foldStage = [&]() {
+        if (!stageOpen || vals.empty()) { vals.clear(); stageOpen = false; return; }
+        // smin_set (surface.c:1345): f = fmin - k*ln(sum exp(-(f_i-fmin)/k)).
+        float d = stageMin;
+        if (k > 1e-5f && vals.size() > 1) {
+            float sum = 0.0f;
+            for (float v : vals) sum += expf(-(v - stageMin) / k);
+            d = stageMin - k * logf(sum);
+        }
+        // Apply each stage's op directly against the running field (starts at
+        // 1e9 = empty). Opening Union: fminf(1e9,d)=d. Opening Difference:
+        // fmaxf(1e9,-d)=1e9 (nothing yet). Opening Intersection: 1e9.
+        switch (stageOp) {
+            case CsgOp::Union:        field = fminf(field, d);  break;
+            case CsgOp::Difference:   field = fmaxf(field, -d); break;
+            case CsgOp::Intersection: field = fmaxf(field, d);  break;
+        }
+        haveAny = true;
+        vals.clear(); stageMin = 1e9f; stageOpen = false;
+    };
+
+    if (opEnd > buf.ops.size()) opEnd = buf.ops.size();
+    for (size_t i = opBegin; i < opEnd; ++i) {
+        const BuildOp& o = buf.ops[i];
+        if (stageOpen && o.op != stageOp) foldStage();
+        if (!stageOpen) { stageOp = o.op; stageOpen = true; }
+
+        // Per-brush distance: identical metric to field_is_solid.
+        Matrix inv = mat_invert(o.transform);
+        Vector3 lpw = xf(inv, worldPoint);
+        Vector3 lp = { lpw.x - o.center.x, lpw.y - o.center.y, lpw.z - o.center.z };
+        float d;
+        switch (o.kind) {
+            case BrushKind::Sphere:   d = sdSphere(lp, o.radius); break;
+            case BrushKind::Box:      d = sdBox(lp, o.halfExtents); break;
+            case BrushKind::Capsule:  d = sdCapsule(lpw, o.center, o.segB, o.radius); break;
+            case BrushKind::Cylinder: d = sdCappedCone(lpw, o.center, o.segB, o.radius, o.r1); break;
+            default:                  d = sdSphere(lp, o.radius); break;
+        }
+        vals.push_back(d);
+        if (d < stageMin) stageMin = d;
+    }
+    foldStage();
+    return haveAny ? field : 1e9f;
 }
 
 // Map a dsl::CsgOp to the field-eval stage op enum (same ordering).
