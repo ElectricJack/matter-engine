@@ -245,6 +245,10 @@ public:
         current_module_ = module;
     }
 
+    // Task 5: world field binding (for terrainVolume verb). Threaded into every
+    // BakeOptions constructed by bake().
+    void set_world(const dsl::WorldBinding& w) { world_ = w; }
+
 private:
     script_host::ScriptHost& host_;
     std::string              parts_dir_;
@@ -256,6 +260,9 @@ private:
     bool is_transient(const std::string& module) const {
         return transient_modules_ && transient_modules_->count(module) != 0;
     }
+
+    // Task 5: world field binding
+    dsl::WorldBinding world_;
 };
 
 } // namespace part_graph

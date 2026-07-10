@@ -46,5 +46,6 @@ globalThis.Part = class Part {
   cone(a,b,r0,r1)        { __dsl_cone(a[0],a[1],a[2], b[0],b[1],b[2], r0, (r1===undefined?0:r1)); }
   position()             { return __dsl_position(); }
   paths(rec,opts)        { __pf_stampPaths((rec&&rec.__id!==undefined)?rec.__id:rec, opts); }
+  terrainVolume(tx,tz,rung,mats) { __terrainVolume(tx,tz,rung,(mats===undefined?null:mats)); }
 };
 )JS";

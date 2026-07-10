@@ -1113,6 +1113,8 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                     }
                 state.set_child_hashes(std::move(name2hash));
             }
+            // Thread the world field binding so terrainVolume can call the mesher.
+            state.set_world(opts.world);
         }
         prof_merge = prof_lap();
 

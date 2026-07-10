@@ -1,6 +1,7 @@
 #pragma once
 #include "raylib.h"   // Vector3, Matrix, Vector4
 #include "dsl_rng.h"
+#include "terrain_field.h"
 #include "tileset_spec.h"
 #include <chrono>
 #include <cstdint>
@@ -12,6 +13,15 @@
 namespace tri_emit { class TriangleBuildBuffer; }
 
 namespace dsl {
+
+// World field binding: threaded into DslState so the terrainVolume verb can call
+// the field's mesher. Null field pointer means "no world bound".
+struct WorldBinding {
+    const terrain_field::FieldRuntime* field = nullptr;
+    float sector_size = 16.0f;
+    float y_min       = -64.0f;
+    float y_max       = 192.0f;
+};
 
 enum class Session { None, Voxels, Triangles };  // Lattice is a later sub-project.
 
@@ -323,6 +333,11 @@ public:
     size_t op_count() const { return buffer_.ops.size(); }
     size_t child_count_ts() const { return children_.size(); }
 
+    // World field binding (set by the host before build() when baking a terrain
+    // sector part). terrainVolume reads this.
+    void set_world(const WorldBinding& w) { world_ = w; }
+    const WorldBinding& world() const { return world_; }
+
 private:
     std::unique_ptr<tileset::TilesetState> tileset_;
     std::vector<Matrix> stack_;   // never empty (seeded with identity)
@@ -356,6 +371,7 @@ private:
     std::shared_ptr<void> pf_registry_;
     std::chrono::steady_clock::time_point budget_deadline_{};
     bool budget_bounded_ = false;
+    WorldBinding world_;  // terrain field binding (null by default)
 };
 
 } // namespace dsl

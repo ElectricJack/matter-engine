@@ -598,6 +598,7 @@ bool HostBaker::bake(const std::string& source, const Params& params,
     // Task 2: route transient modules to scratch_dir instead.
     script_host::BakeOptions bopts;
     bopts.parts_dir = is_transient(current_module_) ? transient_dir_ : parts_dir_;
+    bopts.world = world_;  // Task 5: thread world binding for terrainVolume
     script_host::BakeResult r = host_.bake_source(
         source, params_to_json(params), bopts,
         child_hashes.data(), child_hashes.size(),

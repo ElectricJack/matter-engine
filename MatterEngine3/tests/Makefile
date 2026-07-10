@@ -346,6 +346,24 @@ MODAPPLY_CPP = modifier_apply_tests.cpp ../src/modifier_apply.cpp \
 TERRAINFIELD_TARGET = terrain_field_tests
 TERRAINFIELD_CPP    = terrain_field_tests.cpp ../src/terrain_field.cpp
 
+# Phase C Task 5 — terrain mesher (pure CPU: terrain_field + terrain_mesher, no JS, no GL).
+TERRAINMESH_TARGET = terrain_mesher_tests
+TERRAINMESH_CPP    = terrain_mesher_tests.cpp ../src/terrain_field.cpp ../src/terrain_mesher.cpp
+
+# Phase C Task 5 — terrain verb (sh flavor: bake_source + WorldBinding + terrainVolume).
+TERRAINVERB_TARGET = terrain_verb_tests
+TERRAINVERB_CPP = terrain_verb_tests.cpp ../src/part_graph.cpp \
+                  ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+                  ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
+                  ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
+                  ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                  ../src/terrain_field.cpp ../src/terrain_mesher.cpp \
+                  ../src/pf_bindings.cpp \
+                  ../../ParticleFlowLib/src/pf_math.cpp ../../ParticleFlowLib/src/pf_sim.cpp \
+                  ../../ParticleFlowLib/src/pf_fields.cpp ../../ParticleFlowLib/src/pf_path_recorder.cpp \
+                  $(COMMON_MSL_FULL_SRC)
+TERRAINVERB_C = $(COMMON_MSL_C)
+
 # Simple standalone targets (they use tiny custom flag sets — kept as-is with
 # per-target rules below, no shared objects).
 
@@ -358,6 +376,7 @@ SCRIPT_CPP = script_host_tests.cpp ../src/part_graph.cpp ../src/script_host.cpp 
              ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
              ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
              ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+             $(TERRAIN_SRC) \
              ../src/pf_bindings.cpp \
              ../../ParticleFlowLib/src/pf_math.cpp ../../ParticleFlowLib/src/pf_sim.cpp \
              ../../ParticleFlowLib/src/pf_fields.cpp ../../ParticleFlowLib/src/pf_path_recorder.cpp \
@@ -378,12 +397,17 @@ PF_CPP = ../src/pf_bindings.cpp \
          $(PF_LIB)/src/pf_fields.cpp \
          $(PF_LIB)/src/pf_path_recorder.cpp
 
+# any target that links dsl_bindings.cpp must also link the terrain sources
+# (dsl_bindings.cpp now registers the terrainVolume verb which calls mesh_sector)
+TERRAIN_SRC = ../src/terrain_field.cpp ../src/terrain_mesher.cpp
+
 GRAPH_INT_TARGET = part_graph_integration_tests
 GRAPH_INT_CPP = part_graph_integration_tests.cpp ../src/part_graph.cpp \
                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
                 ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                $(TERRAIN_SRC) \
                 $(PF_CPP) \
                 $(COMMON_MSL_FULL_SRC)
 GRAPH_INT_C   = $(COMMON_MSL_C)
@@ -399,6 +423,7 @@ EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp \
               ../src/sector_grid.cpp ../src/lod_select.cpp \
               ../src/modifier_apply.cpp $(MSL)/mesh_smooth.cpp \
               $(MSL)/mesh_transform.cpp \
+              $(TERRAIN_SRC) \
               $(PF_CPP) \
               $(COMMON_MSL_FULL_SRC)
 EXAMPLE_C   = $(COMMON_MSL_C)
@@ -443,6 +468,7 @@ TILESETBAKE_CPP = tileset_bake_tests.cpp ../src/part_graph.cpp \
                   ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                   ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
                   ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                  $(TERRAIN_SRC) \
                   $(PF_CPP) \
                   $(COMMON_MSL_FULL_SRC)
 TILESETBAKE_C   = $(COMMON_MSL_C)
@@ -464,7 +490,7 @@ EVALWORLD_CPP = eval_world_tests.cpp ../src/part_graph.cpp \
                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
                 ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
-                ../src/terrain_field.cpp \
+                $(TERRAIN_SRC) \
                 ../src/pf_bindings.cpp \
                 ../../ParticleFlowLib/src/pf_math.cpp ../../ParticleFlowLib/src/pf_sim.cpp \
                 ../../ParticleFlowLib/src/pf_fields.cpp ../../ParticleFlowLib/src/pf_path_recorder.cpp \
@@ -478,6 +504,7 @@ FOLDCACHE_CPP = fold_cache_tests.cpp ../src/part_graph.cpp \
                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
                 ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                $(TERRAIN_SRC) \
                 ../src/pf_bindings.cpp \
                 ../../ParticleFlowLib/src/pf_math.cpp ../../ParticleFlowLib/src/pf_sim.cpp \
                 ../../ParticleFlowLib/src/pf_fields.cpp ../../ParticleFlowLib/src/pf_path_recorder.cpp \
@@ -490,6 +517,7 @@ SHLIB_CPP = shared_lib_tests.cpp ../src/module_resolver.cpp ../src/script_rng_bi
             ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \
             ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
             ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+            $(TERRAIN_SRC) \
             $(PF_CPP) \
             $(COMMON_MSL_FULL_SRC)
 SHLIB_C   = $(COMMON_MSL_C)
@@ -533,6 +561,7 @@ RETOPO_INT_CPP = retopo_integration_tests.cpp \
                  $(MSL)/mesh_retopo.cpp \
                  $(MSL)/mesh_smooth.cpp \
                  $(MSL)/mesh_transform.cpp \
+                 $(TERRAIN_SRC) \
                  $(PF_CPP) \
                  $(COMMON_MSL_FULL_SRC)
 RETOPO_INT_C   = $(COMMON_MSL_C)
@@ -583,6 +612,7 @@ GPU_PIPELINE_CPP = \
     ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
     ../src/tileset_bake_primary.cpp ../src/tileset_bake_ao.cpp \
     ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+    $(TERRAIN_SRC) \
     $(PF_CPP)
 
 GPU_MSL_CPP = \
@@ -622,7 +652,8 @@ def_CPP_SRCS := $(sort \
     $(REFINECTL_CPP) \
     $(RESOLVECACHE_CPP) \
     $(MODAPPLY_CPP) \
-    $(TERRAINFIELD_CPP))
+    $(TERRAINFIELD_CPP) \
+    $(TERRAINMESH_CPP))
 
 qjs_CPP_SRCS := $(sort \
     $(SCRIPT_CPP) \
@@ -632,6 +663,7 @@ qjs_CPP_SRCS := $(sort \
 
 sh_CPP_SRCS := $(sort \
     $(EVALWORLD_CPP) \
+    $(TERRAINVERB_CPP) \
     $(FOLDCACHE_CPP) \
     $(GRAPH_INT_CPP) \
     $(EXAMPLE_CPP) \
@@ -717,6 +749,8 @@ REFINECTL_OBJS = $(call obj_list,def,$(REFINECTL_CPP))
 RESOLVECACHE_OBJS = $(call obj_list,def,$(RESOLVECACHE_CPP)) $(call obj_list,mslc,$(RESOLVECACHE_C))
 MODAPPLY_OBJS = $(call obj_list,def,$(MODAPPLY_CPP))
 TERRAINFIELD_OBJS = $(call obj_list,def,$(TERRAINFIELD_CPP))
+TERRAINMESH_OBJS  = $(call obj_list,def,$(TERRAINMESH_CPP))
+TERRAINVERB_OBJS  = $(call obj_list,sh,$(TERRAINVERB_CPP)) $(call obj_list,mslc,$(TERRAINVERB_C)) $(qjsc_C_OBJS)
 
 SCRIPT_OBJS = $(call obj_list,qjs,$(SCRIPT_CPP)) $(call obj_list,mslc,$(SCRIPT_C)) $(qjsc_C_OBJS)
 MODBAKE_OBJS = $(call obj_list,qjs,$(MODBAKE_CPP)) $(call obj_list,mslc,$(MODBAKE_C)) $(qjsc_C_OBJS)
@@ -748,7 +782,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-partv2 run-script run-foldcache run-evalworld run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise valley-layout-tests run-valley release-part-tests run-releasepart run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield
+.PHONY: clean run-partv2 run-script run-foldcache run-evalworld run-terrainmesh run-terrainverb run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise valley-layout-tests run-valley release-part-tests run-releasepart run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -784,6 +818,21 @@ $(EVALWORLD_TARGET): $(EVALWORLD_OBJS)
 
 run-evalworld: $(EVALWORLD_TARGET)
 	./$(EVALWORLD_TARGET)
+
+# Phase C Task 5 — terrain mesher (pure CPU, no JS, no GL).
+$(TERRAINMESH_TARGET): $(TERRAINMESH_OBJS)
+	$(CC) $(TERRAINMESH_OBJS) -o $@ $(CFLAGS) -I../src -lm
+
+run-terrainmesh: $(TERRAINMESH_TARGET)
+	./$(TERRAINMESH_TARGET)
+
+# Phase C Task 5 — terrainVolume verb through ScriptHost::bake_source.
+$(TERRAINVERB_TARGET): $(TERRAINVERB_OBJS)
+	$(CC) $(TERRAINVERB_OBJS) -o $@ \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+
+run-terrainverb: $(TERRAINVERB_TARGET)
+	./$(TERRAINVERB_TARGET)
 
 # Phase 1 typed iso-primitives + ordered CSG.
 $(ISO_TARGET): $(ISO_OBJS)
@@ -1211,6 +1260,8 @@ clean:
 	      $(TERRAINNOISE_TARGET) \
 	      $(REFINECTL_TARGET) \
 	      $(TERRAINFIELD_TARGET) \
+	      $(TERRAINMESH_TARGET) \
+	      $(TERRAINVERB_TARGET) \
 	      $(EVALWORLD_TARGET) \
 	      valley_layout_tests \
 	      tileset_physics_tests tileset_core_tests tileset_placement_tests \

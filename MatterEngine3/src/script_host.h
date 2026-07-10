@@ -24,6 +24,9 @@ struct BakeOptions {
     // "parts/<hash>.part".  Set by HostBaker::bake so the bake pipeline is
     // cwd-independent (Task 3 Phase B).
     std::string parts_dir;
+    // World field binding: threaded through so the terrainVolume verb can call
+    // terrain_mesher::mesh_sector. Null field = unbound (terrainVolume fails loudly).
+    dsl::WorldBinding world;
 };
 
 struct BakeResult {

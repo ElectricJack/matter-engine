@@ -5,6 +5,8 @@
 #include "tileset_placement.h"
 #include "tileset_layout.h"
 #include "part_graph.h"   // params_from_json, params_to_json — canonical JSON normalizer
+#include "terrain_mesher.h"
+#include "triangle_emit.hpp"
 #include <cmath>
 #include <cstring>
 #include <vector>
@@ -829,6 +831,73 @@ static JSValue j_ts_variant(JSContext* c, JSValueConst, int n, JSValueConst* a) 
     return JS_UNDEFINED;
 }
 
+// terrainVolume(tx, tz, rung, matArray)
+// Meshes one sector of the bound terrain field using native surface-nets and
+// pushes the result directly into the triangle buffer. matArray is an array of
+// four material IDs [grass, dirt, rock, snow] indexed by the field's material_at.
+// Fails loudly if no world binding is installed.
+static JSValue j_terrainVolume(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    DslState* st = state_of(c);
+    const WorldBinding& w = st->world();
+    if (!w.field) {
+        st->set_error("terrainVolume: no world bound — set BakeOptions.world before baking a terrain sector");
+        return JS_UNDEFINED;
+    }
+    if (n < 3) { st->set_error("terrainVolume: requires (tx, tz, rung[, mats])"); return JS_UNDEFINED; }
+
+    int64_t tx = 0, tz = 0;
+    JS_ToInt64(c, &tx, a[0]);
+    JS_ToInt64(c, &tz, a[1]);
+    int32_t rung = 0;
+    JS_ToInt32(c, &rung, a[2]);
+
+    // Optional material array: up to 4 entries [grass, dirt, rock, snow].
+    // Defaults to 0..3 if not supplied.
+    uint32_t mat[4] = {0, 1, 2, 3};
+    if (n >= 4 && JS_IsArray(a[3])) {
+        for (int i = 0; i < 4; ++i) {
+            JSValue v = JS_GetPropertyUint32(c, a[3], (uint32_t)i);
+            if (!JS_IsUndefined(v)) {
+                int32_t m = 0; JS_ToInt32(c, &m, v);
+                mat[i] = (uint32_t)m;
+            }
+            JS_FreeValue(c, v);
+        }
+    }
+
+    terrain_mesher::SectorMesh mesh;
+    std::string err;
+    if (!terrain_mesher::mesh_sector(*w.field, tx, tz, rung,
+                                      w.sector_size, w.y_min, w.y_max, mesh, err)) {
+        st->set_error("terrainVolume: " + err);
+        return JS_UNDEFINED;
+    }
+
+    // Push all buckets into the triangle buffer with gradient normals.
+    tri_emit::TriangleBuildBuffer* buf = st->triangle_buffer();
+    for (const auto& bkt : mesh.buckets) {
+        // Map mesher material (0..3 = grass/dirt/rock/snow) to the caller's IDs.
+        uint32_t mat_id = bkt.material < 4 ? mat[bkt.material] : mat[0];
+        const size_t n_tris = bkt.positions.size() / 9;
+        for (size_t t = 0; t < n_tris; ++t) {
+            auto p = [&](int v) -> float3 {
+                return make_float3(bkt.positions[t*9+v*3+0],
+                                   bkt.positions[t*9+v*3+1],
+                                   bkt.positions[t*9+v*3+2]);
+            };
+            auto nm = [&](int v) -> float3 {
+                return make_float3(bkt.normals[t*9+v*3+0],
+                                   bkt.normals[t*9+v*3+1],
+                                   bkt.normals[t*9+v*3+2]);
+            };
+            buf->push_with_normals(p(0), p(1), p(2),
+                                   nm(0), nm(1), nm(2),
+                                   (int)mat_id);
+        }
+    }
+    return JS_UNDEFINED;
+}
+
 void install_bindings(JSContext* ctx) {
     JSValue g = JS_GetGlobalObject(ctx);
     auto bind=[&](const char* n, JSCFunction* f, int argc){ JS_SetPropertyStr(ctx,g,n,JS_NewCFunction(ctx,f,n,argc)); };
@@ -851,6 +920,8 @@ void install_bindings(JSContext* ctx) {
     bind("__dsl_beginContour",j_beginContour,0); bind("__dsl_endContour",j_endContour,0);
     bind("__dsl_joinType",j_joinType,1); bind("__dsl_extrude",j_extrude,1);
     bind("__dsl_position",j_position,0);
+    // Terrain verb binding (Task 5: terrainVolume).
+    bind("__terrainVolume",j_terrainVolume,4);
     // Tileset verb bindings.
     bind("__dsl_ts_tile",j_ts_tile,5); bind("__dsl_ts_base",j_ts_base,2);
     bind("__dsl_ts_layer",j_ts_layer,2); bind("__dsl_ts_dropChild",j_ts_dropChild,2);
