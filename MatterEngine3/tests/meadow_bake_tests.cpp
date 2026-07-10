@@ -86,7 +86,8 @@ int main() {
     CHECK(a.size() == 8192, "tile is a 64x64 quad grid (8192 tris)");
     CHECK(b.size() == 8192, "second tile same density");
 
-    // Relief sanity: FBM base is +-6 units; heights must actually vary.
+    // Relief sanity: amplitude is banded — 6 (meadow) / 30 (foothills) / 120 (mountains)
+    // plus ~2 units of detail octaves; heights must actually vary.
     float ymin = 1e9f, ymax = -1e9f;
     for (const auto& t : a) {
         for (const float3* v : { &t.vertex0, &t.vertex1, &t.vertex2 }) {
@@ -95,7 +96,8 @@ int main() {
         }
     }
     CHECK(ymax - ymin > 0.2f, "tile has visible relief (not flat)");
-    CHECK(ymax < 8.0f && ymin > -8.0f, "heights within the +-6-ish design range");
+    printf("[terrain] ymin=%.2f ymax=%.2f\n", ymin, ymax);
+    CHECK(ymax < 130.0f && ymin > -130.0f, "heights within the banded design range (amp <= 120 + detail)");
 
     // Seam: tile(0,0) local x==16 must equal tile(1,0) local x==0 at every z.
     auto edge_heights = [](const std::vector<Tri>& tris, float edge_x) {
