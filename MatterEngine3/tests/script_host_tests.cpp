@@ -1559,6 +1559,22 @@ static void test_raycast_sees_difference_cut() {
     CHECK(r.error.ok, "raycast sees an earlier difference cut");
 }
 
+static void test_placechild_instanced_flags() {
+    dsl::DslState st;
+    st.set_child_hashes({{"A", 1}, {"B", 2}, {"C", 3}});
+    st.placeChild("A", nullptr, 0);                    // plain
+    st.placeChild("B", nullptr, 0, true, 64.0f);       // instanced default px
+    st.placeChild("C", nullptr, 0, true, 32.0f);       // instanced custom px
+    const auto& kids = st.children();
+    CHECK(kids.size() == 3, "three children recorded");
+    CHECK(!kids[0].instanced, "plain child not instanced");
+    CHECK(kids[0].inline_below_px == 0.0f, "plain child inline_below_px == 0");
+    CHECK(kids[1].instanced, "B is instanced");
+    CHECK(kids[1].inline_below_px == 64.0f, "B inline_below_px == 64");
+    CHECK(kids[2].instanced, "C is instanced");
+    CHECK(kids[2].inline_below_px == 32.0f, "C inline_below_px == 32");
+}
+
 int main() {
     test_embed_eval_1_plus_1();
     test_p5_round_mesh_dispatch();
@@ -1609,6 +1625,7 @@ int main() {
     test_raycast_outside_session_fails_closed();
     test_raycast_no_brushes_fails_closed();
     test_raycast_sees_difference_cut();
+    test_placechild_instanced_flags();
     if (g_failures == 0) printf("ALL PASS\n");
     return g_failures ? 1 : 0;
 }

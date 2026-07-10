@@ -170,6 +170,18 @@ static JSValue j_endModifier(JSContext* c, JSValueConst, int n, JSValueConst* a)
 static JSValue j_placeChild(JSContext* c, JSValueConst, int n, JSValueConst* a){
     const char* m = JS_ToCString(c, a[0]);
     if (!m) return JS_UNDEFINED;
+    // Parse optional third-argument options object { instanced, inlineBelowPx }.
+    bool instanced = false;
+    double inline_px = 0.0;
+    if (n > 2 && JS_IsObject(a[2])) {
+        JSValue vi = JS_GetPropertyStr(c, a[2], "instanced");
+        instanced = JS_ToBool(c, vi) > 0;
+        JS_FreeValue(c, vi);
+        JSValue vp = JS_GetPropertyStr(c, a[2], "inlineBelowPx");
+        if (!JS_IsUndefined(vp) && !JS_IsNull(vp)) JS_ToFloat64(c, &inline_px, vp);
+        JS_FreeValue(c, vp);
+        if (instanced && inline_px <= 0.0) inline_px = 64.0;   // engine default
+    }
     // G6: optional params (a plain JS object/array) -> canonical JSON bytes folded
     // into the child's resolved hash so parametric children dedup. JSON.stringify
     // gives a deterministic byte stream for the content-addressed key. No params
@@ -179,14 +191,14 @@ static JSValue j_placeChild(JSContext* c, JSValueConst, int n, JSValueConst* a){
         if (!JS_IsException(js)) {
             size_t len = 0;
             const char* s = JS_ToCStringLen(c, &len, js);
-            if (s) { state_of(c)->placeChild(m, s, len); JS_FreeCString(c, s); }
-            else   { state_of(c)->placeChild(m); }
+            if (s) { state_of(c)->placeChild(m, s, len, instanced, (float)inline_px); JS_FreeCString(c, s); }
+            else   { state_of(c)->placeChild(m, nullptr, 0, instanced, (float)inline_px); }
         } else {
-            state_of(c)->placeChild(m);
+            state_of(c)->placeChild(m, nullptr, 0, instanced, (float)inline_px);
         }
         JS_FreeValue(c, js);
     } else {
-        state_of(c)->placeChild(m);
+        state_of(c)->placeChild(m, nullptr, 0, instanced, (float)inline_px);
     }
     JS_FreeCString(c, m);
     return JS_UNDEFINED; }

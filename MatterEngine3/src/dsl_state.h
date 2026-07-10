@@ -244,7 +244,12 @@ public:
 
     // A recorded child-part placement: resolved hash of the child + the world
     // transform (row-major) at the current matrix-stack top when placeChild ran.
-    struct ChildPlacement { uint64_t hash; float transform[16]; };
+    struct ChildPlacement {
+        uint64_t hash;
+        float transform[16];
+        bool instanced = false;
+        float inline_below_px = 0.0f;
+    };
 
     // Host installs the declared children's placement table before build();
     // placeChild looks entries up here. Keys come in two forms (the host inserts
@@ -276,7 +281,8 @@ public:
     // the plain `module` key when no variant matches (or no params given). Unknown
     // module -> set_error (fail-closed).
     void placeChild(const std::string& module,
-                    const void* params = nullptr, size_t params_len = 0);
+                    const void* params = nullptr, size_t params_len = 0,
+                    bool instanced = false, float inline_below_px = 0.0f);
 
     const std::vector<ChildPlacement>& children() const { return children_; }
 

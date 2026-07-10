@@ -229,7 +229,8 @@ bool DslState::lookup_child_hash(const std::string& module,
 }
 
 void DslState::placeChild(const std::string& module,
-                          const void* params, size_t params_len) {
+                          const void* params, size_t params_len,
+                          bool instanced, float inline_below_px) {
     uint64_t hash = 0;
     if (!lookup_child_hash(module,
                            static_cast<const char*>(params), params_len,
@@ -241,6 +242,8 @@ void DslState::placeChild(const std::string& module,
     ChildPlacement p;
     p.hash = hash;
     matrix_to_row16(top(), p.transform);
+    p.instanced = instanced;
+    p.inline_below_px = inline_below_px;
     children_.push_back(p);
 }
 
