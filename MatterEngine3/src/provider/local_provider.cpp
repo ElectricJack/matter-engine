@@ -305,6 +305,10 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
                                uint64_t resolved_hash) override {
             return inner.bake_lod_variants(source, params, child_hashes, resolved_hash);
         }
+        // Task 2: forward module notification to HostBaker for transient routing.
+        void set_baking_module(const std::string& module) override {
+            inner.set_baking_module(module);
+        }
     };
     RecordingBaker baker(*shared_baker_ptr, cfg_ptr, install_bake_count_ptr);
     PartGraph graph(*resolver_, baker);
