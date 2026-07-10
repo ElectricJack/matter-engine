@@ -147,3 +147,53 @@ Note: A warm-cache run (second run after the first 200s cold run) crashed at Gpu
 ### Screenshot verdict
 
 `/tmp/explorer_spawn_fix.png`: Near-ground immersive meadow view. Camera at Y=8 (8m above terrain surface ~0) with slight downward pitch. Dense green grass geometry fills the frame in all directions -- camera is within the grass canopy. Rendered geometry visible: grass blades, two light-colored rocks. No solid color/black (not inside terrain). HUD visible top-left (FPS:50, inst:7523). Scene content confirms camera is above terrain at near-ground level, inside the meadow environment. PASS: camera is near ground, not bird's-eye aerial.
+
+---
+
+## GpuCuller 300s Regression Fix: Performance::Profiler data race
+
+### Finding
+
+The 300s cold smoke test that was added as the regression gate for the kInitialRegionCap=16 fix crashed with SIGSEGV at ~145 slots — well past the original slot-50 OOM boundary, but before the 300s deadline. The crash presented as a write fault inside `__merge_sort_with_buffer` (UlmmE_ comparator, initial publish sort) on the worker thread. Seven different hypotheses were ruled out by code analysis (NaN comparator, GL/CPU threading, BLASManager destructor GL calls, data races on manifest, SSBO sizing, cmd_template_ OOB, heap overflow in VBO data).
+
+AddressSanitizer (`-fsanitize=address`) pinpointed the root cause as a **heap-use-after-free** in `Performance::Profiler::end_section()`:
+
+- **Freed by T0 (GL thread)**: `pump_gpu_jobs` → publish GL job → `PartStore::get_or_load` → `PartStore::load_flat` → `BLASManager::register_triangles` → `ScopedTimer` dtor → `Profiler::end_section()` → `section_starts_.erase(it)` deletes the map node
+- **Read by T8 (worker thread)**: `ensure_part_flattened` → `flatten_part_impl` → `BLASManager::register_triangles` → `ScopedTimer` ctor → `Profiler::begin_section()` → `section_starts_[name]` reads the freed node
+
+Both threads used their own separate `BLASManager` instances but shared the `Performance::Profiler::instance()` singleton, whose `std::unordered_map<string, TimePoint> section_starts_` was accessed from both threads without any synchronization.
+
+The crash manifested non-deterministically (slot counts: 102, 145, 296) because it depended on the GL thread's publish job and the worker thread's `ensure_part_flattened` racing on the profiler map.
+
+### Fix
+
+`MatterSurfaceLib/include/profiler.hpp`: added `mutable std::mutex mutex_` to `Performance::Profiler` and locked it in all mutating and reading public methods: `begin_frame`, `end_frame`, `begin_section`, `end_section`, `reset_stats`, `print_stats`, `get_frame_time_ms`, `get_section_time_ms`. In `begin_section` and `end_frame`, the timestamp is captured BEFORE acquiring the lock to keep timing accurate.
+
+### 300s regression result
+
+```
+cd ExplorerDemo && GALLIUM_DRIVER=d3d12 EXPLORER_SMOKE="secs=300,shot=/tmp/explorer_regioncap.png" ./explorer
+```
+
+```
+explorer: bake started
+explorer: ready
+explorer: screenshot written to /tmp/explorer_regioncap.png
+explorer: smoke done (300.0s, 9912 frames)
+[bake-timing] install=135056ms compose=93ms publish=164872ms total=300022ms
+Window closed successfully
+exit=0
+```
+
+Part count: **1801 slots** (well past the original slot-50 OOM boundary and the 145-slot crash point).
+
+### Screenshot verdict
+
+`/tmp/explorer_regioncap.png`: Full Meadow Valley scene rendered — dense grass canopy at near-ground level (camera Y=8), scattered rocks, deciduous trees (scatter geometry), mountain range in background. Immersive near-ground view confirming both the SPAWN_Y=8 and the full 300s bake progress. PASS.
+
+### Test suite results (post-fix)
+
+- `make run-partv2`: All part_asset_v2 tests passed
+- `make run-demandbake`: ALL PASS (a b c d e f g h i)
+- `make run-releasepart`: 37/37 passed — ALL PASS
+- `make run-gpucull`: 31/31 passed — ALL PASS

@@ -134,6 +134,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/live_edit.cpp \
               $(ME3_DIR)/src/live_edit_prod.cpp \
               $(ME3_DIR)/src/part_graph_snapshot.cpp \
+              $(ME3_DIR)/src/refine_controller.cpp \
               $(ME3_DIR)/src/matter_engine.cpp
 
 WIN_MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \

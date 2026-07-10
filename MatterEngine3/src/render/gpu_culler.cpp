@@ -23,6 +23,12 @@
 
 namespace viewer {
 
+// Per-bucket instance-transform slot count assigned to each newly registered
+// part.  Starts small because worlds stream many unique single-instance terrain
+// tiles; the overflow path in cull() grows region_cap to the real per-part
+// count on the part's first resolved frame, so no OOB window exists.
+static constexpr uint32_t kInitialRegionCap = 16;
+
 // ---------------------------------------------------------------------------
 // release_hiz_objects — free HiZ GL objects (textures, FBO, program).
 // Called from destructor and when recreating on resize.
@@ -313,7 +319,7 @@ int GpuCuller::ensure_part(uint64_t part_hash, PartStore& store) {
     pg.cluster_start  = (uint32_t)cluster_staging_.size();
     pg.cluster_count  = 0;
     pg.region_base    = 0;   // recomputed below
-    pg.region_cap     = 4096;
+    pg.region_cap     = kInitialRegionCap;
 
     // -----------------------------------------------------------------
     // Build interleaved VBO (stride 36 B per vertex):
