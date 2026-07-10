@@ -24,6 +24,7 @@ extern "C" {
 #include "material_registry.h"          // MaterialMergeGroup (fat-prim bucket seeding)
 }
 #include <cstdio>
+#include <cstdlib>   // std::getenv (MATTER_BAKE_PROFILE)
 #include <cstring>
 #include <cmath>
 #include <chrono>
@@ -941,6 +942,21 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     // as a structured error rather than aborting the viewer.
     try {
 
+    // MATTER_BAKE_PROFILE=1: per-bake phase timing line on stderr (diagnostic).
+    static const bool prof_on = std::getenv("MATTER_BAKE_PROFILE") != nullptr;
+    using prof_clock = std::chrono::steady_clock;
+    prof_clock::time_point prof_t0 = prof_clock::now();
+    prof_clock::time_point prof_t  = prof_t0;
+    double prof_fold = 0, prof_ctx = 0, prof_eval = 0, prof_merge = 0,
+           prof_build = 0, prof_mesh = 0, prof_save = 0;
+    std::string prof_class;
+    auto prof_lap = [&]() -> double {
+        prof_clock::time_point n = prof_clock::now();
+        double ms = std::chrono::duration<double, std::milli>(n - prof_t).count();
+        prof_t = n;
+        return ms;
+    };
+
     // Perf fix: fold sources once (removing the redundant fold that was inside
     // merge_params_canonical) and spin up a single JSRuntime for the whole bake.
     // The canonical params merge is performed in the bake context itself after the
@@ -965,6 +981,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     // eval) to keep the bake deterministic and file-access-free.
     ModuleStore store = store_from_fold(fold);
     const bool use_module = !store.sources.empty();
+    prof_fold = prof_lap();
 
     rt = JS_NewRuntime();
     if (use_module) JS_SetModuleLoaderFunc(rt, sh_module_normalize, sh_module_loader, &store);
@@ -997,6 +1014,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     if (JS_IsException(base)) { r.error = harvest_exception(ctx); JS_FreeValue(ctx,base); goto done; }
     JS_FreeValue(ctx, base);
     dsl::install_bindings(ctx);
+    prof_ctx = prof_lap();
 
     {
         // Eval user source + a generic trampoline that publishes the authored
@@ -1006,6 +1024,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             r.error.ok = false; r.error.message = kNoPartClassMsg;
             goto done;
         }
+        prof_class = className;
         std::string wrapped = source + "\n;globalThis.__partClass = " + className + ";\n";
         if (use_module) {
             bool threw = false;
@@ -1017,6 +1036,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             if (JS_IsException(v)) { r.error = harvest_exception(ctx); JS_FreeValue(ctx,v); goto done; }
             JS_FreeValue(ctx, v);
         }
+        prof_eval = prof_lap();
 
         JSValue global = JS_GetGlobalObject(ctx);
         JSValue authored = JS_GetPropertyStr(ctx, global, "__partClass");
@@ -1089,6 +1109,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                 state.set_child_hashes(std::move(name2hash));
             }
         }
+        prof_merge = prof_lap();
 
         JSValue inst = JS_CallConstructor(ctx, authored, 0, nullptr);
         JS_FreeValue(ctx, authored);
@@ -1111,6 +1132,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         JS_FreeValue(ctx, bret);
         JS_FreeValue(ctx, paramsObj);
         JS_FreeValue(ctx, inst);
+        prof_build = prof_lap();
 
         // Capture globalThis.__amb (a probe authored code may set) so tests can
         // assert the bake context exposes no ambient Date/require/fetch/os bindings.
@@ -1327,16 +1349,30 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                            ? rel_path
                            : opts.parts_dir + "/" + rel_path;
         part_asset::LodLevels lods{};   // SP-2 writes no LOD array.
+        prof_mesh = prof_lap();
         bool ok = part_asset::save_v2(path, blas, tlas,
                                       kids.empty() ? nullptr : kids.data(), kids.size(),
                                       lods, r.resolved_hash);
         if (!ok) { r.error.ok = false; r.error.message = "save_v2 failed"; }
         else { r.written_path = path; }
+        prof_save = prof_lap();
     }
 
 done:
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);
+    if (prof_on) {
+        double total = std::chrono::duration<double, std::milli>(
+                           prof_clock::now() - prof_t0).count();
+        std::fprintf(stderr,
+            "[bake_profile] %s total=%.1f fold=%.1f ctx=%.1f eval=%.1f "
+            "merge=%.1f build=%.1f mesh=%.1f save=%.1f free=%.1f\n",
+            prof_class.empty() ? "?" : prof_class.c_str(), total,
+            prof_fold, prof_ctx, prof_eval, prof_merge, prof_build,
+            prof_mesh, prof_save,
+            total - (prof_fold + prof_ctx + prof_eval + prof_merge +
+                     prof_build + prof_mesh + prof_save));
+    }
     return r;
 
     } catch (const std::bad_alloc& e) {
