@@ -145,7 +145,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
 
 WIN_MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
               $(MSL_DIR)/src/mesh_simplifier.cpp $(MSL_DIR)/src/mesh_indexed.cpp \
-              $(MSL_DIR)/src/mesh_transform.cpp \
+              $(MSL_DIR)/src/mesh_smooth.cpp $(MSL_DIR)/src/mesh_transform.cpp \
               $(MSL_DIR)/src/blas_manager.cpp $(MSL_DIR)/src/bvh.cpp \
               $(MSL_DIR)/src/bvh_analyzer.cpp \
               $(MSL_DIR)/src/mesh_worker_pool.cpp $(MSL_DIR)/src/mesh_build_utils.cpp \

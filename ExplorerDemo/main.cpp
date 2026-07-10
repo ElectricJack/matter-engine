@@ -280,6 +280,13 @@ int main() {
     double t_start = GetTime();
     int    frames  = 0;
 
+    // FPS tracking for smoke-mode min/avg summary.
+    float fps_min = 1e9f;
+    float fps_sum = 0.0f;
+    int   fps_samples = 0;
+    // Periodic FPS logging in smoke mode: every 10 s.
+    double fps_next_log = t_start + 10.0;
+
     // Screenshot capture: in smoke mode, take the shot 3s before the deadline
     // so that as much terrain as possible has assembled before the capture.
     // (BakeStarted fires within the first frame; taking a shot 3 frames after
@@ -440,6 +447,24 @@ int main() {
 
         ++frames;
 
+        // --- FPS sampling (smoke mode) ---
+        if (smoke.active && frames > 1) {
+            float f = (float)GetFPS();
+            if (f > 0.0f) {
+                if (f < fps_min) fps_min = f;
+                fps_sum += f;
+                ++fps_samples;
+            }
+            double now_d = GetTime();
+            if (now_d >= fps_next_log) {
+                float avg = fps_samples > 0 ? fps_sum / (float)fps_samples : 0.0f;
+                printf("explorer: fps sample t=%.0fs  cur=%.1f  min=%.1f  avg=%.1f\n",
+                       now_d - t_start, f, fps_min, avg);
+                fflush(stdout);
+                fps_next_log = now_d + 10.0;
+            }
+        }
+
         // --- Smoke-mode ready signal: first rendered frame after BakeStarted ---
         if (smoke.active && bake_started && !smoke.ready_printed) {
             printf("explorer: ready\n");
@@ -465,7 +490,10 @@ int main() {
                 fflush(stdout);
             }
             if ((int)elapsed >= smoke.secs) {
+                float avg = fps_samples > 0 ? fps_sum / (float)fps_samples : 0.0f;
                 printf("explorer: smoke done (%.1fs, %d frames)\n", elapsed, frames);
+                printf("explorer: fps_summary min=%.1f avg=%.1f samples=%d\n",
+                       fps_samples > 0 ? fps_min : 0.0f, avg, fps_samples);
                 fflush(stdout);
                 break;
             }

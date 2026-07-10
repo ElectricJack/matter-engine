@@ -197,3 +197,47 @@ Part count: **1801 slots** (well past the original slot-50 OOM boundary and the 
 - `make run-demandbake`: ALL PASS (a b c d e f g h i)
 - `make run-releasepart`: 37/37 passed — ALL PASS
 - `make run-gpucull`: 31/31 passed — ALL PASS
+
+## Fix report: begin_frame timestamp + refineloop gate
+
+### Change made
+
+In `MatterSurfaceLib/include/profiler.hpp`, `begin_frame()` previously captured
+its `Clock::now()` timestamp *after* acquiring `mutex_`, making it inconsistent
+with `end_frame()` and `begin_section()`, which both capture their timestamps
+*before* the lock. The fix introduces a local variable `t` that is populated
+with `Clock::now()` before the `std::lock_guard` is constructed, then assigns
+`frame_start_ = t` under the lock. This ensures lock-contention time can never
+inflate the frame-start measurement.
+
+Commit: `0f70ac4` — `fix(profiler): capture begin_frame timestamp before lock for consistency`
+
+### Tests run
+
+**1. Profiler coverage (run-releasepart)**
+Command:
+```
+GALLIUM_DRIVER=d3d12 make -C MatterEngine3/tests run-releasepart
+```
+Result: `--- Results: 37/37 passed --- ALL PASS`
+
+**2. Refine-worker path (run-refineloop)** — previously unclosed gate
+Command:
+```
+GALLIUM_DRIVER=d3d12 make -C MatterEngine3/tests run-refineloop
+```
+Result:
+```
+  (a) refines_toward_focus:    PASS
+  (b) eviction:                PASS
+  (c) supersede_cancels_refine:PASS
+ALL PASS
+```
+
+Both suites compiled cleanly against the updated header (profiler.hpp is
+header-only; the tests' dep-tracking caused automatic recompilation).
+
+## ASAN verification at HEAD (0f70ac4)
+- Rebuilt libmatter_engine3.a with `EXTRA_CFLAGS="-fsanitize=address -fno-omit-frame-pointer -g -O1"`, linked ExplorerDemo/explorer_asan at HEAD; release lib restored afterwards.
+- `GALLIUM_DRIVER=d3d12 ASAN_OPTIONS=detect_leaks=0 EXPLORER_SMOKE="secs=600,shot=..." ./explorer_asan`: exit 0, 600.1s, 13313 frames, ZERO ASAN reports (/tmp/explorer_asan2.log). Screenshot shows fully assembled meadow.
+- Pre-fix ASAN binary (18:14, before 63ff68f) aborted ~4 min in: heap-use-after-free on Profiler section map — T0 GL thread (pump→load_flat→register_triangles→end_section free) vs T8 bake worker (publish_pipeline→flatten→register_triangles operator[] read). Confirms diagnosis; mutex fix closes it.
