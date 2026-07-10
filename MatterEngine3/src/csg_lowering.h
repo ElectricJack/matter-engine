@@ -48,7 +48,8 @@ bool field_is_solid(const BuildBuffer& buf, const Vector3& worldPoint);
 // Analytic signed-distance oracle over ops[opBegin, opEnd), mirroring the
 // mesher's staged smooth-min field (surface.c): per-stage log-sum-exp smin
 // with fillet k, stages folded in authored order (consecutive same-op ops =
-// one stage; first non-empty stage seeds the field). k <= 1e-5 = hard ops.
+// one stage; field starts at +INFINITY and every stage applies its op, so an
+// opening Difference/Intersection yields nothing). k <= 1e-5 = hard ops.
 // Returns +INFINITY (1e9f) when the range is empty. Distances under
 // non-uniform brush transforms are distorted (same caveat as field_is_solid)
 // — callers must trace conservatively.

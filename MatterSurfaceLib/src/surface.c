@@ -1208,6 +1208,9 @@ static inline void ApplySubtractField(ScalarMaterialPair* result, Vector3 positi
                                       Particle* carveParticles, int carveCount, float k_c,
                                       SpatialHash* carve_hash, float carve_query_radius) {
     if (!carveParticles || carveCount <= 0) return;
+    // Empty additive field (e.g. a part whose stages are all subtractive now
+    // folds to +INFINITY): nothing to carve from, and INF-INF below would NaN.
+    if (!isfinite(result->scalarValue)) return;
     float f_add = result->scalarValue;
 
     if (carve_hash) {
