@@ -396,6 +396,9 @@ MEADOW_CPP = meadow_bake_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP
 MEADOWCHECK_TARGET = meadow_bake_check
 MEADOWCHECK_CPP = meadow_bake_check.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 
+ROCKPROF_TARGET = rock_bake_profile
+ROCKPROF_CPP = rock_bake_profile.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
+
 GRASSLOD_TARGET = grass_lod_tests
 GRASSLOD_CPP = grass_lod_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 
@@ -578,6 +581,7 @@ sh_CPP_SRCS := $(sort \
     $(TREEBAKE_CPP) \
     $(MEADOW_CPP) \
     $(MEADOWCHECK_CPP) \
+    $(ROCKPROF_CPP) \
     $(GRASSLOD_CPP) \
     $(STRESSFOREST_CPP) \
     $(TILESETBAKE_CPP) \
@@ -658,6 +662,7 @@ GALLERY_OBJS = $(call obj_list,sh,$(GALLERY_CPP)) $(call obj_list,mslc,$(EXAMPLE
 TREEBAKE_OBJS = $(call obj_list,sh,$(TREEBAKE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 MEADOW_OBJS = $(call obj_list,sh,$(MEADOW_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 MEADOWCHECK_OBJS = $(call obj_list,sh,$(MEADOWCHECK_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
+ROCKPROF_OBJS = $(call obj_list,sh,$(ROCKPROF_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 GRASSLOD_OBJS = $(call obj_list,sh,$(GRASSLOD_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 STRESSFOREST_OBJS = $(call obj_list,sh,$(STRESSFOREST_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 TILESETBAKE_OBJS = $(call obj_list,sh,$(TILESETBAKE_CPP)) $(call obj_list,mslc,$(TILESETBAKE_C)) $(qjsc_C_OBJS)
@@ -807,6 +812,14 @@ $(MEADOWCHECK_TARGET): $(MEADOWCHECK_OBJS)
 
 run-meadow-check: $(MEADOWCHECK_TARGET)
 	./$(MEADOWCHECK_TARGET)
+
+# Rock bake profiling harness (cold bake per variant, wall time).
+$(ROCKPROF_TARGET): $(ROCKPROF_OBJS)
+	$(CC) $(ROCKPROF_OBJS) -o $@ \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+
+run-rock-profile: $(ROCKPROF_TARGET)
+	./$(ROCKPROF_TARGET)
 
 # --- Viewer GL-free logic suite.
 ../shaders_gen/embedded_shaders.h:

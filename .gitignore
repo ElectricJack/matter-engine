@@ -60,6 +60,7 @@ MatterEngine3/viewer/viewer
 MatterEngine3/tests/*_tests
 MatterEngine3/tests/*_tests_*
 MatterEngine3/tests/*_check
+MatterEngine3/tests/*_profile
 MatterEngine3/tests/example_world
 MatterEngine3/tests/parts/
 MatterEngine3/tests/*.log

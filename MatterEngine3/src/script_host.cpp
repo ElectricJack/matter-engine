@@ -708,8 +708,13 @@ static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
         }
     }
     // Fat primitives (oriented box / ellipsoid) expand the cell set too, so a
-    // pure-box part still gets cells to mesh its surface.
+    // pure-box part still gets cells to mesh its surface. ONLY Union-stage
+    // prims can create surface: Difference/Intersection stages fold as
+    // max(field, ±d), which never turns empty space solid, so a subtractive
+    // prim's bounds must not spawn cells (a huge carve box — e.g. Rock facet
+    // cuts — would otherwise mesh thousands of provably-empty cells).
     for (const FatPrim& fp : f.fat) {
+        if (f.stages[fp.stage] != CSG_STAGE_UNION) continue;
         float inf = fp.boundRadius * 2.0f;
         int x0 = (int)std::floor((fp.center.x - inf) / cell_size);
         int x1 = (int)std::floor((fp.center.x + inf) / cell_size);
@@ -767,6 +772,10 @@ static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
         // ellipsoid even when no additive sphere shares the cell. The fat field
         // eval pulls its own surface; the bucket just makes the group visible.
         for (const FatPrim& fp : f.fat) {
+            // Same Union-only rule as the cell-creation pass above: a carved
+            // surface belongs to the additive material's group, so subtractive
+            // prims never need to seed a bucket.
+            if (f.stages[fp.stage] != CSG_STAGE_UNION) continue;
             if (cell->intersects_sphere(fp.center, fp.boundRadius * 1.5f)) {
                 uint32_t g = (uint32_t)MaterialMergeGroup(fp.materialId);
                 cell->material_particle_indices[g]; // default-inserts empty bucket
