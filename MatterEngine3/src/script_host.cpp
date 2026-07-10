@@ -1331,7 +1331,25 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                                       kids.empty() ? nullptr : kids.data(), kids.size(),
                                       lods, r.resolved_hash);
         if (!ok) { r.error.ok = false; r.error.message = "save_v2 failed"; }
-        else { r.written_path = path; }
+        else {
+            r.written_path = path;
+            // Write the flatten-hints sidecar for any instanced placeChild children.
+            // Key = child index in state.children() order (== baked child order).
+            // Value = inline_below_px threshold. Only written if >= 1 child is instanced.
+            part_asset::FlattenHints hints;
+            {
+                const auto& kids = state.children();
+                for (size_t i = 0; i < kids.size(); ++i)
+                    if (kids[i].instanced)
+                        hints.child_px[(uint32_t)i] = kids[i].inline_below_px;
+            }
+            if (!hints.child_px.empty()) {
+                std::string hpath = opts.parts_dir.empty()
+                    ? part_asset::cache_path_hints(r.resolved_hash)
+                    : opts.parts_dir + "/" + part_asset::cache_path_hints(r.resolved_hash);
+                part_asset::save_flatten_hints(hpath, hints);
+            }
+        }
     }
 
 done:
