@@ -45,7 +45,7 @@ LDLIBS  = ../Libraries/raylib/build/linux/libraylib.a \
 
 BUILD_DIR = build/linux
 
-APP_SRC   = main.cpp camera_rig.cpp
+APP_SRC   = main.cpp camera_rig.cpp hud.cpp staged_camera.cpp
 CPP_NAMES = $(notdir $(APP_SRC))
 
 $(BUILD_DIR):
@@ -159,7 +159,7 @@ QJS_C = $(QJS_DIR)/quickjs.c $(QJS_DIR)/libregexp.c $(QJS_DIR)/libunicode.c \
         $(QJS_DIR)/cutils.c $(QJS_DIR)/xsum.c
 
 # Application sources (no imgui for ExplorerDemo).
-WIN_APP_SRC = main.cpp camera_rig.cpp
+WIN_APP_SRC = main.cpp camera_rig.cpp hud.cpp staged_camera.cpp
 
 # Per-object lists for Windows build.
 W_DIR = build/windows

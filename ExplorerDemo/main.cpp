@@ -26,6 +26,8 @@
 #include "matter/events.h"
 
 #include "camera_rig.h"
+#include "hud.h"
+#include "staged_camera.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -131,27 +133,6 @@ static SmokeOpts parse_smoke_env() {
 }
 
 // ---------------------------------------------------------------------------
-// HUD: minimal DrawText overlay (Task 9 replaces this with ImGui panel).
-// ---------------------------------------------------------------------------
-static void draw_hud(const matter::FrameStats& fs, float fps, bool bake_done) {
-    char buf[256];
-    snprintf(buf, sizeof(buf),
-             "FPS: %.0f  inst: %u/%u  parts: %u  hits: %u",
-             fps,
-             fs.instances_drawn, fs.instances_total,
-             fs.parts_baked, fs.cache_hits);
-    DrawText(buf, 8, 8, 18, RAYWHITE);
-
-    snprintf(buf, sizeof(buf),
-             "resolve %.1fms  build %.1fms  draw %.1fms  %s",
-             fs.resolve_ms, fs.build_ms, fs.draw_ms,
-             bake_done ? "BAKED" : "baking...");
-    DrawText(buf, 8, 30, 16, RAYWHITE);
-
-    DrawText("Tab: capture mouse   WASD/QE: move   Shift: fast", 8, 52, 14, LIGHTGRAY);
-}
-
-// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
@@ -201,6 +182,10 @@ int main() {
     CameraRig rig;
     rig.init();
 
+    // --- Loading HUD + staged camera (Task 9) ---
+    Hud          hud;
+    StagedCamera staged;
+
     // Resolver knobs for Meadow Valley (same as MatterViewer's Meadow defaults).
     matter::RenderOptions render_opts;
     render_opts.path             = matter::RenderPath::GpuDriven;
@@ -225,9 +210,26 @@ int main() {
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
+        float now = (float)GetTime();
 
-        // --- Input + camera update ---
-        rig.update(dt);
+        // --- Staged camera or user input ---
+        // staged.update() returns true while it's still driving the rig.
+        // If user has given input (rig.has_user_input()), staged camera exits.
+        // In smoke mode the staged camera still runs (that's how screenshots verify it).
+        bool staged_active = staged.update(rig, dt, bake_done);
+
+        // Only call rig.update() when staged camera isn't active, OR always call
+        // it to capture input state (but suppress movement when staged is active).
+        // We always call it so input detection works; rig.update() moves the camera
+        // only when not overridden by set_staged_pose().
+        if (!staged_active) {
+            rig.update(dt);
+        } else {
+            // Still poll input state so has_user_input() fires on first key press.
+            // We pass dt=0 to suppress any actual movement; staged pose is set by
+            // staged.update() above via set_staged_pose().
+            rig.update(0.0f);
+        }
 
         // --- Set bake focus to camera position every frame (before tick). ---
         {
@@ -245,10 +247,13 @@ int main() {
         // --- Execute queued GL bake work (up to 4 ms per frame) ---
         session->pump_gpu_jobs(4.0f);
 
-        // --- Drain events ---
+        // --- Drain events; feed HUD ---
         {
             matter::Event ev;
             while (session->poll_event(ev)) {
+                // Feed every event to the HUD.
+                hud.feed(ev);
+
                 if (ev.type == matter::EventType::BakeStarted) {
                     bake_started = true;
                     printf("explorer: bake started\n");
@@ -257,6 +262,7 @@ int main() {
                     printf("bake %d/%d %s\n", ev.done, ev.total, ev.module.c_str());
                 } else if (ev.type == matter::EventType::BakeFinished) {
                     bake_done = true;
+                    staged.notify_bake_finished();
                     printf("bake finished (%d errors)\n", ev.errors);
                     fflush(stdout);
                 } else if (ev.type == matter::EventType::BakeError) {
@@ -278,7 +284,8 @@ int main() {
             ClearBackground((Color){ 96, 118, 143, 255 });
             session->render(rig.cam, GetScreenWidth(), GetScreenHeight(), render_opts);
             const matter::FrameStats& fs = session->frame_stats();
-            draw_hud(fs, (float)GetFPS(), bake_done);
+            // Task 9: draw HUD (replaces old draw_hud free function).
+            hud.draw(GetScreenWidth(), GetScreenHeight(), fs, (float)GetFPS(), now);
         EndDrawing();
 
         ++frames;
