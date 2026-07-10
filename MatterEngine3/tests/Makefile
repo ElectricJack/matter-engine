@@ -514,6 +514,7 @@ FOLDCACHE_C = $(COMMON_MSL_C)
 # ===== flavor sp2 (SP2_SCRIPT_HOST) =====================================
 SHLIB_TARGET = shared_lib_tests
 SHLIB_CPP = shared_lib_tests.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
+            ../src/part_graph.cpp \
             ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \
             ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
             ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
