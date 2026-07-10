@@ -831,6 +831,43 @@ static JSValue j_ts_variant(JSContext* c, JSValueConst, int n, JSValueConst* a) 
     return JS_UNDEFINED;
 }
 
+// ---------------------------------------------------------------------------
+// World query verbs: heightAt / slopeAt / moistureAt / biomeAt
+// All fail loudly when no world field is bound.
+// ---------------------------------------------------------------------------
+static JSValue j_heightAt(JSContext* c, JSValueConst, int, JSValueConst* a) {
+    DslState* st = state_of(c);
+    const WorldBinding& w = st->world();
+    if (!w.field) { st->set_error("heightAt: no world field bound"); return JS_UNDEFINED; }
+    return JS_NewFloat64(c, w.field->height_at((float)argd(c, a[0]), (float)argd(c, a[1])));
+}
+static JSValue j_slopeAt(JSContext* c, JSValueConst, int, JSValueConst* a) {
+    DslState* st = state_of(c);
+    const WorldBinding& w = st->world();
+    if (!w.field) { st->set_error("slopeAt: no world field bound"); return JS_UNDEFINED; }
+    return JS_NewFloat64(c, w.field->slope_at((float)argd(c, a[0]), (float)argd(c, a[1])));
+}
+static JSValue j_moistureAt(JSContext* c, JSValueConst, int, JSValueConst* a) {
+    DslState* st = state_of(c);
+    const WorldBinding& w = st->world();
+    if (!w.field) { st->set_error("moistureAt: no world field bound"); return JS_UNDEFINED; }
+    return JS_NewFloat64(c, w.field->moisture_at((float)argd(c, a[0]), (float)argd(c, a[1])));
+}
+static JSValue j_biomeAt(JSContext* c, JSValueConst, int, JSValueConst* a) {
+    DslState* st = state_of(c);
+    const WorldBinding& w = st->world();
+    if (!w.field) { st->set_error("biomeAt: no world field bound"); return JS_UNDEFINED; }
+    using B = terrain_field::FieldRuntime;
+    const char* s = "meadow";
+    switch (w.field->biome_at((float)argd(c, a[0]), (float)argd(c, a[1]))) {
+        case B::Ocean:     s = "ocean";     break;
+        case B::Meadow:    s = "meadow";    break;
+        case B::Foothills: s = "foothills"; break;
+        case B::Mountains: s = "mountains"; break;
+    }
+    return JS_NewString(c, s);
+}
+
 // terrainVolume(tx, tz, rung, matArray)
 // Meshes one sector of the bound terrain field using native surface-nets and
 // pushes the result directly into the triangle buffer. matArray is an array of
@@ -922,6 +959,11 @@ void install_bindings(JSContext* ctx) {
     bind("__dsl_position",j_position,0);
     // Terrain verb binding (Task 5: terrainVolume).
     bind("__terrainVolume",j_terrainVolume,4);
+    // World query verbs (Task 7: heightAt/slopeAt/moistureAt/biomeAt).
+    bind("__heightAt",j_heightAt,2);
+    bind("__slopeAt",j_slopeAt,2);
+    bind("__moistureAt",j_moistureAt,2);
+    bind("__biomeAt",j_biomeAt,2);
     // Tileset verb bindings.
     bind("__dsl_ts_tile",j_ts_tile,5); bind("__dsl_ts_base",j_ts_base,2);
     bind("__dsl_ts_layer",j_ts_layer,2); bind("__dsl_ts_dropChild",j_ts_dropChild,2);

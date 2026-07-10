@@ -364,6 +364,18 @@ TERRAINVERB_CPP = terrain_verb_tests.cpp ../src/part_graph.cpp \
                   $(COMMON_MSL_FULL_SRC)
 TERRAINVERB_C = $(COMMON_MSL_C)
 
+# Phase C Task 7 — WorldSector.js + native world query verbs (sh flavor).
+SECTORBAKE_TARGET = sector_bake_tests
+SECTORBAKE_CPP = sector_bake_tests.cpp ../src/part_graph.cpp \
+                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
+                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
+                 ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                 $(TERRAIN_SRC) \
+                 $(PF_CPP) \
+                 $(COMMON_MSL_FULL_SRC)
+SECTORBAKE_C = $(COMMON_MSL_C)
+
 # Simple standalone targets (they use tiny custom flag sets — kept as-is with
 # per-target rules below, no shared objects).
 
@@ -665,6 +677,7 @@ qjs_CPP_SRCS := $(sort \
 sh_CPP_SRCS := $(sort \
     $(EVALWORLD_CPP) \
     $(TERRAINVERB_CPP) \
+    $(SECTORBAKE_CPP) \
     $(FOLDCACHE_CPP) \
     $(GRAPH_INT_CPP) \
     $(EXAMPLE_CPP) \
@@ -752,6 +765,7 @@ MODAPPLY_OBJS = $(call obj_list,def,$(MODAPPLY_CPP))
 TERRAINFIELD_OBJS = $(call obj_list,def,$(TERRAINFIELD_CPP))
 TERRAINMESH_OBJS  = $(call obj_list,def,$(TERRAINMESH_CPP))
 TERRAINVERB_OBJS  = $(call obj_list,sh,$(TERRAINVERB_CPP)) $(call obj_list,mslc,$(TERRAINVERB_C)) $(qjsc_C_OBJS)
+SECTORBAKE_OBJS   = $(call obj_list,sh,$(SECTORBAKE_CPP)) $(call obj_list,mslc,$(SECTORBAKE_C)) $(qjsc_C_OBJS)
 
 SCRIPT_OBJS = $(call obj_list,qjs,$(SCRIPT_CPP)) $(call obj_list,mslc,$(SCRIPT_C)) $(qjsc_C_OBJS)
 MODBAKE_OBJS = $(call obj_list,qjs,$(MODBAKE_CPP)) $(call obj_list,mslc,$(MODBAKE_C)) $(qjsc_C_OBJS)
@@ -783,7 +797,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-partv2 run-script run-foldcache run-evalworld run-terrainmesh run-terrainverb run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise valley-layout-tests run-valley release-part-tests run-releasepart run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield
+.PHONY: clean run-partv2 run-script run-foldcache run-evalworld run-terrainmesh run-terrainverb run-sectorbake run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise valley-layout-tests run-valley release-part-tests run-releasepart run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -834,6 +848,14 @@ $(TERRAINVERB_TARGET): $(TERRAINVERB_OBJS)
 
 run-terrainverb: $(TERRAINVERB_TARGET)
 	./$(TERRAINVERB_TARGET)
+
+# Phase C Task 7 — WorldSector.js + world query verbs.
+$(SECTORBAKE_TARGET): $(SECTORBAKE_OBJS)
+	$(CC) $(SECTORBAKE_OBJS) -o $@ \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+
+run-sectorbake: $(SECTORBAKE_TARGET)
+	./$(SECTORBAKE_TARGET)
 
 # Phase 1 typed iso-primitives + ordered CSG.
 $(ISO_TARGET): $(ISO_OBJS)
@@ -1263,6 +1285,7 @@ clean:
 	      $(TERRAINFIELD_TARGET) \
 	      $(TERRAINMESH_TARGET) \
 	      $(TERRAINVERB_TARGET) \
+	      $(SECTORBAKE_TARGET) \
 	      $(EVALWORLD_TARGET) \
 	      valley_layout_tests \
 	      tileset_physics_tests tileset_core_tests tileset_placement_tests \
