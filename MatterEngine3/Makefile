@@ -56,6 +56,7 @@ endif
 
 RAYLIB_PATH = ../Libraries/raylib/src
 MSL_DIR     = ../MatterSurfaceLib
+PFL_DIR     = ../ParticleFlowLib
 
 # Include directories: NEW MatterEngine3 headers, consumed MatterSurfaceLib
 # headers, vendored QuickJS-ng, then raylib (for the BLAS/Tri/TriEx types).
@@ -64,7 +65,7 @@ BOX3D_DIR     = ../Libraries/box3d
 INCLUDE_PATHS = -Iinclude -Isrc -Isrc/render -Isrc/provider \
                 -I$(MSL_DIR)/include -I$(MSL_DIR)/src \
                 -I$(QJS_DIR) -I$(RAYLIB_PATH) -I$(BOX3D_DIR)/include \
-                $(EXTRA_INCLUDE)
+                -I$(PFL_DIR)/include $(EXTRA_INCLUDE)
 
 # Vendored QuickJS-ng engine. v0.10.0 needs xsum.c (xsum_small_* symbols) beyond
 # the core four. Compiled via gcc (C) so the embedding symbols stay unmangled.
@@ -81,6 +82,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/live_edit.cpp src/live_edit_prod.cpp src/inotify_watcher.cpp \
           src/lod_bake.cpp src/world_flatten.cpp src/part_flatten.cpp \
           src/retopo_blacklist.cpp \
+          src/modifier_apply.cpp \
           src/sector_grid.cpp src/lod_select.cpp \
           src/world_lights.cpp src/probe_volume.cpp \
           src/world_tracer.cpp src/probe_bake.cpp \
@@ -106,6 +108,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
 # minus mesh_retopo.cpp (handled separately via EXTRA_RETOPO_CPP when AR is present).
 MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
           $(MSL_DIR)/src/mesh_simplifier.cpp $(MSL_DIR)/src/mesh_indexed.cpp \
+          $(MSL_DIR)/src/mesh_smooth.cpp \
           $(MSL_DIR)/src/mesh_transform.cpp \
           $(MSL_DIR)/src/blas_manager.cpp $(MSL_DIR)/src/bvh.cpp \
           $(MSL_DIR)/src/bvh_analyzer.cpp \
@@ -127,12 +130,14 @@ MSL_C_OBJ = surface.o open_particle_surface.o spatial_hash.o \
             object_allocator.o material_registry.o fat_primitive.o
 
 ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
+          pf_math.o pf_sim.o pf_fields.o pf_path_recorder.o pf_bindings.o \
           dsl_triangle.o triangle_emit.o polygon_triangulate.o \
           csg_lowering.o module_resolver.o script_rng_binding.o \
           part_asset_v2.o part_graph.o part_graph_snapshot.o \
           live_edit.o live_edit_prod.o inotify_watcher.o \
           lod_bake.o world_flatten.o part_flatten.o \
           retopo_blacklist.o \
+          modifier_apply.o \
           sector_grid.o lod_select.o \
           world_lights.o probe_volume.o \
           world_tracer.o probe_bake.o \
@@ -151,7 +156,7 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           resolve_cache.o
 
 # MSL C++ object names (basenames; same flat-object model as ME3_OBJ).
-MSL_OBJ = cluster.o cell.o mesh_simplifier.o mesh_indexed.o mesh_transform.o \
+MSL_OBJ = cluster.o cell.o mesh_simplifier.o mesh_indexed.o mesh_smooth.o mesh_transform.o \
           blas_manager.o bvh.o bvh_analyzer.o \
           mesh_worker_pool.o mesh_build_utils.o meshing_algorithm.o \
           marching_cubes_algorithm.o oriented_cube_algorithm.o vertex_ao.o \
@@ -183,7 +188,7 @@ shaders_gen/embedded_shaders.h: tools/embed_shaders.py $(SHADER_FILES)
 
 # Per-file pattern rules enable safe parallel compilation with `make -j`.
 # vpath directs Make to search source directories by basename.
-vpath %.cpp src src/render src/provider $(MSL_DIR)/src
+vpath %.cpp src src/render src/provider $(MSL_DIR)/src $(PFL_DIR)/src
 vpath %.c $(QJS_DIR) $(MSL_DIR)/src
 
 # QuickJS C sources (gcc, extern "C" safe).

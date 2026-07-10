@@ -472,67 +472,103 @@ Mesh simplify_mesh(const Mesh& input, const SimplifyOptions& opts, const CellBou
 
 #include "mesh_indexed.hpp"
 
+// Build the internal WVert/WTri topology from a MeshIndexed input WITHOUT
+// going through raylib::Mesh (which has a 16-bit-index cap at 65535 verts).
+// MeshIndexed is already welded by from_tri via exact-quantized position, so
+// we re-weld here with the same 1e-5 quantization tolerance to keep bit-exact
+// equivalence with buildTopology(raylib::Mesh) on small inputs (the raylib
+// path also welds by 1e-5-quantized position). Degenerate triangles are
+// dropped identically.
+static void buildTopologyIndexed(const MeshIndexed& m,
+                                 std::vector<WVert>& verts,
+                                 std::vector<WTri>& tris) {
+    const size_t triCount = m.indices.size() / 3;
+    WeldMap weld;
+    weld.init(triCount * 4 + 8);
+    auto weldVertex = [&](float x, float y, float z) -> int {
+        std::array<long long,3> key = {
+            (long long)std::llround((double)x * 100000.0),
+            (long long)std::llround((double)y * 100000.0),
+            (long long)std::llround((double)z * 100000.0)
+        };
+        int existing = weld.find(key);
+        if (existing >= 0) return existing;
+        int vi = (int)verts.size();
+        WVert w; w.pos = {x, y, z};
+        verts.push_back(w);
+        weld.insert(key, vi);
+        return vi;
+    };
+
+    tris.resize(triCount);
+    for (size_t t = 0; t < triCount; ++t) {
+        for (int k = 0; k < 3; ++k) {
+            uint32_t src = m.indices[t*3+k];
+            const float3& p = m.positions[src];
+            tris[t].v[k] = weldVertex(p.x, p.y, p.z);
+        }
+        if (tris[t].v[0] == tris[t].v[1] ||
+            tris[t].v[1] == tris[t].v[2] ||
+            tris[t].v[0] == tris[t].v[2])
+            tris[t].removed = true;
+    }
+}
+
+// Convert the internal WVert/WTri topology directly to MeshIndexed. No 16-bit
+// index intermediate — uint32_t indices carry through end-to-end. Vertex
+// normals aren't part of MeshIndexed, so we omit the normal computation done
+// by buildMesh(raylib::Mesh) — callers derive per-face normals as needed
+// (part_flatten does; modifier_apply's ensure_triex fills per-triangle
+// TriEx.N0/1/2 from surviving positions after simplify).
+static MeshIndexed buildMeshIndexed(const std::vector<WVert>& verts,
+                                    const std::vector<WTri>& tris) {
+    MeshIndexed out;
+    std::vector<int> remap(verts.size(), -1);
+    int nv = 0;
+    for (size_t i = 0; i < verts.size(); ++i)
+        if (!verts[i].removed) remap[i] = nv++;
+    if (nv == 0) return out;
+    out.positions.reserve(nv);
+    for (size_t i = 0; i < verts.size(); ++i) {
+        if (verts[i].removed) continue;
+        out.positions.push_back(make_float3((float)verts[i].pos.x,
+                                            (float)verts[i].pos.y,
+                                            (float)verts[i].pos.z));
+    }
+    out.indices.reserve(tris.size() * 3);
+    for (const auto& tr : tris) {
+        if (tr.removed) continue;
+        out.indices.push_back((uint32_t)remap[tr.v[0]]);
+        out.indices.push_back((uint32_t)remap[tr.v[1]]);
+        out.indices.push_back((uint32_t)remap[tr.v[2]]);
+    }
+    if (out.indices.empty()) { out.positions.clear(); }
+    return out;
+}
+
 MeshIndexed simplify(const MeshIndexed& in,
                      const SimplifyOptions& opts,
                      const CellBounds* bounds) {
-    MeshIndexed out;
-    if (in.indices.empty()) return out;
+    if (in.indices.empty()) return {};
 
-    // Adapt MeshIndexed → raylib::Mesh (indexed) → call existing simplify_mesh
-    // → convert result back to MeshIndexed. All allocations use raylib's
-    // MemAlloc; the returned raylib::Mesh owns its buffers until we MemFree.
-    Mesh rl{};
-    rl.vertexCount   = (int)in.positions.size();
-    rl.triangleCount = (int)(in.indices.size() / 3);
-    rl.vertices      = (float*)MemAlloc(sizeof(float) * 3 * rl.vertexCount);
-    rl.indices       = (unsigned short*)MemAlloc(sizeof(unsigned short) * in.indices.size());
+    // Native MeshIndexed path: build WVert/WTri directly (no raylib::Mesh
+    // intermediate), run the shared QEM decimate, then unpack directly to
+    // MeshIndexed. Removes the raylib::Mesh 16-bit-index cap that silently
+    // degraded to identity for meshes > 65535 verts — a genuine MSL bug that
+    // made the modifier-regions `{ simplify: X }` stack a no-op for large
+    // voxel isosurfaces (Tree/TreeBranch bakes at VOX=0.06 easily exceed
+    // 65535 verts). Approved MSL scope decision, 2026-07-09.
+    std::vector<WVert> verts;
+    std::vector<WTri>  tris;
+    buildTopologyIndexed(in, verts, tris);
+    int inputTri = 0;
+    for (const auto& t : tris) if (!t.removed) ++inputTri;
+    if (inputTri == 0) return in;
 
-    for (int i = 0; i < rl.vertexCount; ++i) {
-        rl.vertices[i*3 + 0] = in.positions[i].x;
-        rl.vertices[i*3 + 1] = in.positions[i].y;
-        rl.vertices[i*3 + 2] = in.positions[i].z;
-    }
-    for (size_t i = 0; i < in.indices.size(); ++i) {
-        rl.indices[i] = (unsigned short)in.indices[i];
-    }
-    // NOTE: unsigned short caps vertex count at 65535. For meshes larger than
-    // that, this shim path breaks — a follow-up (Task 11 migration) removes
-    // the raylib::Mesh intermediate entirely. For now, callers whose flatten
-    // meshes exceed 65535 verts get an unimplemented path; guard here:
-    if (rl.vertexCount > 65535) {
-        MemFree(rl.vertices);   // free rl.vertices — no other allocs outstanding
-        MemFree(rl.indices);    // free rl.indices  — no other allocs outstanding
-        // Degrade to identity: return input unchanged.
-        return in;
-    }
+    decimate(verts, tris, opts, bounds, inputTri);
 
-    Mesh simplified = simplify_mesh(rl, opts, bounds);
-
-    if (simplified.vertexCount == 0) {
-        // Simplifier degenerate fallback — return input unchanged.
-        MemFree(rl.vertices);   // free rl.vertices — simplified owns nothing (vertexCount==0)
-        MemFree(rl.indices);    // free rl.indices
-        return in;
-    }
-
-    out.positions.reserve(simplified.vertexCount);
-    for (int i = 0; i < simplified.vertexCount; ++i) {
-        out.positions.push_back(make_float3(simplified.vertices[i*3 + 0],
-                                            simplified.vertices[i*3 + 1],
-                                            simplified.vertices[i*3 + 2]));
-    }
-    if (simplified.indices) {
-        out.indices.reserve(simplified.triangleCount * 3);
-        for (int i = 0; i < simplified.triangleCount * 3; ++i) {
-            out.indices.push_back((uint32_t)simplified.indices[i]);
-        }
-    }
-
-    // Success path: free both the input staging Mesh and the simplified output Mesh.
-    MemFree(rl.vertices);                                // free rl.vertices
-    MemFree(rl.indices);                                 // free rl.indices
-    if (simplified.vertices) MemFree(simplified.vertices); // free simplified.vertices
-    if (simplified.indices)  MemFree(simplified.indices);  // free simplified.indices
-
+    MeshIndexed out = buildMeshIndexed(verts, tris);
+    // Degenerate fallback — matches the pre-refactor raylib::Mesh path.
+    if (out.indices.empty()) return in;
     return out;
 }

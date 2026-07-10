@@ -33,6 +33,7 @@ SIMPLE_PROJECTS=(
     BasicWindowApp
     SurfaceLib
     MemoryLib
+    ParticleFlowLib
     SpatialQueryLib
     MatterEngine3
     MatterViewer
@@ -153,12 +154,16 @@ if [ "$MODE" = "test" ]; then
     echo "--- MemoryLib (memory_tests + memory_hpp_tests) ---"
     make -C MemoryLib test || RESULT[MemoryLib]="FAIL (tests)"
 
+    echo
+    echo "--- ParticleFlowLib (pf_tests, ASan+UBSan) ---"
+    make -C ParticleFlowLib test || RESULT[ParticleFlowLib]="FAIL (tests)"
+
     # MatterSurfaceLib headless suites (no GL window). Target name == binary name.
     # mesh_indexed_tests, mesh_transform_tests are Phase 5 additions (Task 2/3).
     for suite in mesh_simplifier_tests material_registry_tests cell_bounds_tests \
                  blas_refcount_tests mesh_continuity_tests blas_tint_tests \
                  particle_culling_tests voxel_imposter_tests \
-                 mesh_indexed_tests mesh_transform_tests; do
+                 mesh_indexed_tests mesh_transform_tests mesh_smooth_tests; do
         if make -C MatterSurfaceLib/tests "$suite" >/dev/null 2>&1; then
             echo
             echo "--- MatterSurfaceLib ($suite) ---"
@@ -195,7 +200,7 @@ if [ "$MODE" = "test" ]; then
     # raylib-linked BLAS path). Each run-* target builds then runs its binary, so
     # a non-zero status covers both build and test failures. run-graph-integration
     # exercises the full SP-3 install -> SP-2 ScriptHost bake path end-to-end.
-    for tgt in run-partv2 run-script run-iso run-graph run-graph-integration run-trivar run-polytri run-shlib run-comp run-flatten run-dev run-example run-gallery run-treebake run-meadow run-meadow-check run-viewer-logic run-lighting run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq run-liveprod; do
+    for tgt in run-partv2 run-script run-iso run-graph run-graph-integration run-trivar run-polytri run-shlib run-comp run-flatten run-dev run-example run-gallery run-treebake run-meadow run-meadow-check run-viewer-logic run-lighting run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq run-liveprod run-modapply run-modbake; do
         echo
         echo "--- MatterEngine3 ($tgt) ---"
         make -C MatterEngine3/tests "$tgt" || RESULT[MatterEngine3]="FAIL ($tgt)"

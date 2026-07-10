@@ -1,5 +1,6 @@
 #include "dsl_state.h"
 #include "dsl_bindings.h"
+#include "pf_bindings.h"
 #include "tileset_spec.h"
 #include "tileset_placement.h"
 #include "tileset_layout.h"
@@ -11,11 +12,10 @@ extern "C" {
 #include "quickjs.h"
 }
 
-// Per-part SCHEMA-level configuration (lodBudgets, lodAnchorSize, retopo, ...)
-// is discovered via `static` class properties read by ScriptHost — NOT via the
-// runtime verb bindings below. If you're looking for the retopo binding (Phase
-// 5 autoremesher integration) or the lodBudgets binding, see:
-//   MatterEngine3/src/script_host.cpp :: eval_retopo_settings, eval_lod_budgets
+// Per-part SCHEMA-level configuration (lodBudgets, lodAnchorSize) is
+// discovered via `static` class properties read by ScriptHost — NOT via the
+// runtime verb bindings below. If you're looking for the lodBudgets binding,
+// see: MatterEngine3/src/script_host.cpp :: eval_lod_budgets
 // This file only owns the runtime-verb bindings the Part class methods forward
 // to (translate, box, sphere, placeChild, tileset verbs, etc.).
 
@@ -67,7 +67,119 @@ static JSValue j_box(JSContext* c, JSValueConst, int, JSValueConst* a){
 static JSValue j_op(JSContext* c, JSValueConst, int, JSValueConst* a){
     int32_t k=0; JS_ToInt32(c,&k,a[0]); state_of(c)->set_last_op((CsgOp)k); return JS_UNDEFINED; }
 static JSValue j_smoothing(JSContext* c, JSValueConst, int, JSValueConst* a){ state_of(c)->smoothing((float)argd(c,a[0])); return JS_UNDEFINED; }
-static JSValue j_simplify(JSContext* c, JSValueConst, int, JSValueConst* a){ state_of(c)->set_simplify((float)argd(c,a[0])); return JS_UNDEFINED; }
+
+static JSValue j_raycast(JSContext* c, JSValueConst, int, JSValueConst* a){
+    Vector3 hit{}, nrm{};
+    bool ok = state_of(c)->raycast(
+        {(float)argd(c,a[0]),(float)argd(c,a[1]),(float)argd(c,a[2])},
+        {(float)argd(c,a[3]),(float)argd(c,a[4]),(float)argd(c,a[5])},
+        hit, nrm);
+    if (!ok) return JS_NULL;   // miss OR fail-closed error (bake fails anyway)
+    JSValue pt = JS_NewArray(c);
+    JS_SetPropertyUint32(c, pt, 0, JS_NewFloat64(c, hit.x));
+    JS_SetPropertyUint32(c, pt, 1, JS_NewFloat64(c, hit.y));
+    JS_SetPropertyUint32(c, pt, 2, JS_NewFloat64(c, hit.z));
+    JSValue nm = JS_NewArray(c);
+    JS_SetPropertyUint32(c, nm, 0, JS_NewFloat64(c, nrm.x));
+    JS_SetPropertyUint32(c, nm, 1, JS_NewFloat64(c, nrm.y));
+    JS_SetPropertyUint32(c, nm, 2, JS_NewFloat64(c, nrm.z));
+    JSValue obj = JS_NewObject(c);
+    JS_SetPropertyStr(c, obj, "point", pt);
+    JS_SetPropertyStr(c, obj, "normal", nm);
+    return obj;
+}
+
+static JSValue j_beginModifier(JSContext* c, JSValueConst, int, JSValueConst*) {
+    state_of(c)->begin_modifier_region(); return JS_UNDEFINED; }
+
+// Optional numeric field: returns true and fills `out` iff present (non-null).
+static bool opt_num(JSContext* c, JSValueConst obj, const char* k, double& out) {
+    JSValue v = JS_GetPropertyStr(c, obj, k);
+    const bool has = !JS_IsUndefined(v) && !JS_IsNull(v);
+    if (has) JS_ToFloat64(c, &out, v);
+    JS_FreeValue(c, v);
+    return has;
+}
+
+// endModifier(list): an Array of one-key objects in execution order, e.g.
+//   [{ smooth: { iterations: 2 } }, { retopo: {...} }, { simplify: 0.3 }]
+// Shorthand: { simplify: 0.3 } (bare number).
+static JSValue j_endModifier(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    DslState* st = state_of(c);
+    if (n < 1 || !JS_IsArray(a[0])) {
+        st->set_error("endModifier: expected an array of modifier entries");
+        return JS_UNDEFINED;
+    }
+    JSValue lenv = JS_GetPropertyStr(c, a[0], "length");
+    uint32_t len = 0; JS_ToUint32(c, &len, lenv); JS_FreeValue(c, lenv);
+
+    std::vector<ModifierSpec> stack;
+    for (uint32_t i = 0; i < len && !st->has_error(); ++i) {
+        JSValue entry = JS_GetPropertyUint32(c, a[0], i);
+        JSPropertyEnum* props = nullptr;
+        uint32_t pcount = 0;
+        if (!JS_IsObject(entry) ||
+            JS_GetOwnPropertyNames(c, &props, &pcount, entry,
+                                   JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) < 0) {
+            st->set_error("endModifier: each entry must be an object like { smooth: {...} }");
+            JS_FreeValue(c, entry);
+            break;
+        }
+        if (pcount != 1) {
+            st->set_error("endModifier: each entry must have exactly one key (the modifier name)");
+        } else {
+            const char* key = JS_AtomToCString(c, props[0].atom);
+            JSValue val = JS_GetProperty(c, entry, props[0].atom);
+            ModifierSpec spec{};
+            double d = 0.0;
+            if (key && !std::strcmp(key, "simplify")) {
+                spec.kind = ModifierKind::Simplify;
+                if (JS_IsNumber(val)) d = argd(c, val);          // shorthand { simplify: 0.3 }
+                else if (!opt_num(c, val, "ratio", d)) d = 0.0;  // { simplify: { ratio: 0.3 } }
+                if (!(d > 0.0 && d <= 1.0))
+                    st->set_error("endModifier: simplify ratio must be in (0, 1]");
+                spec.ratio = (float)d;
+            } else if (key && !std::strcmp(key, "smooth")) {
+                spec.kind = ModifierKind::Smooth;
+                if (!JS_IsObject(val)) {
+                    st->set_error("endModifier: smooth params must be an object");
+                } else {
+                    if (opt_num(c, val, "iterations", d)) spec.iterations = (int)d;
+                    if (opt_num(c, val, "lambda", d))     spec.lambda = (float)d;
+                    if (opt_num(c, val, "mu", d))         spec.mu = (float)d;
+                    if (spec.iterations < 1 || !(spec.lambda > 0.0f) || !(spec.mu < 0.0f))
+                        st->set_error("endModifier: smooth params out of range "
+                                      "(iterations>=1, lambda>0, mu<0)");
+                }
+            } else if (key && !std::strcmp(key, "retopo")) {
+                spec.kind = ModifierKind::Retopo;
+                if (!JS_IsObject(val)) {
+                    st->set_error("endModifier: retopo params must be an object");
+                } else {
+                    if (opt_num(c, val, "target_ratio", d))    spec.target_ratio = (float)d;
+                    if (opt_num(c, val, "iterations", d))      spec.retopo_iterations = (int)d;
+                    if (opt_num(c, val, "seed", d))            spec.seed = (uint32_t)d;
+                    if (opt_num(c, val, "timeout_seconds", d)) spec.timeout_seconds = (int)d;
+                    if (!(spec.target_ratio > 0.0f) || spec.retopo_iterations < 1 ||
+                        spec.timeout_seconds < 1)
+                        st->set_error("endModifier: retopo params out of range");
+                }
+            } else {
+                st->set_error(std::string("endModifier: unknown modifier '") +
+                              (key ? key : "?") + "'");
+            }
+            if (key) JS_FreeCString(c, key);
+            JS_FreeValue(c, val);
+            if (!st->has_error()) stack.push_back(spec);
+        }
+        for (uint32_t p = 0; p < pcount; ++p) JS_FreeAtom(c, props[p].atom);
+        js_free(c, props);
+        JS_FreeValue(c, entry);
+    }
+    if (!st->has_error()) st->end_modifier_region(std::move(stack));
+    return JS_UNDEFINED;
+}
+
 static JSValue j_placeChild(JSContext* c, JSValueConst, int n, JSValueConst* a){
     const char* m = JS_ToCString(c, a[0]);
     if (!m) return JS_UNDEFINED;
@@ -729,7 +841,8 @@ void install_bindings(JSContext* ctx) {
     bind("__dsl_beginVoxels",j_beginVoxels,1); bind("__dsl_endVoxels",j_endVoxels,0);
     bind("__dsl_sphere",j_sphere,4); bind("__dsl_box",j_box,6);
     bind("__dsl_op",j_op,1); bind("__dsl_smoothing",j_smoothing,1);
-    bind("__dsl_simplify",j_simplify,1);
+    bind("__dsl_raycast",j_raycast,6);
+    bind("__dsl_beginModifier",j_beginModifier,0); bind("__dsl_endModifier",j_endModifier,1);
     bind("__dsl_placeChild",j_placeChild,2);
     bind("__dsl_beginShape",j_beginShape,1); bind("__dsl_vertex",j_vertex,3);
     bind("__dsl_endShape",j_endShape,0); bind("__dsl_line",j_line,8);
@@ -750,6 +863,7 @@ void install_bindings(JSContext* ctx) {
         JS_SetPropertyStr(ctx, math, "random", JS_NewCFunction(ctx, j_random, "random", 0));
     }
     JS_FreeValue(ctx, math);
+    install_pf_bindings(ctx);
     JS_FreeValue(ctx,g);
 }
 

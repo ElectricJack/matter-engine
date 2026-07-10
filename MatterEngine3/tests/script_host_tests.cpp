@@ -1049,106 +1049,514 @@ static void test_eval_lod_budgets() {
     printf("  test_eval_lod_budgets OK\n");
 }
 
-// Phase 5 autoremesher integration: discover per-part retopo settings.
-// Mirrors eval_lod_budgets's discipline: fresh isolated context, fail-closed
-// on any error, existing schemas without `static retopo` read as defaults
-// (enabled=false) so back-compat holds.
-static void test_eval_retopo_settings() {
+// Modifier region DSL state rules: nesting, ordering, and error cases.
+static void test_modifier_region_state_rules() {
+    {   // regions do not nest
+        dsl::DslState s;
+        s.begin_modifier_region();
+        s.begin_modifier_region();
+        CHECK(s.has_error(), "nested beginModifier is an error");
+    }
+    {   // end without begin
+        dsl::DslState s;
+        s.end_modifier_region({});
+        CHECK(s.has_error(), "endModifier without beginModifier is an error");
+    }
+    {   // cannot open inside a session
+        dsl::DslState s;
+        s.beginVoxels(0.1f);
+        s.begin_modifier_region();
+        CHECK(s.has_error(), "beginModifier inside an open session is an error");
+    }
+    {   // cannot close while a session is open (sessions must not straddle)
+        dsl::DslState s;
+        s.begin_modifier_region();
+        s.beginVoxels(0.1f);
+        s.end_modifier_region({});
+        CHECK(s.has_error(), "endModifier while a session is open is an error");
+    }
+    {   // happy path: op ranges cover exactly the brushes emitted inside
+        dsl::DslState s;
+        s.beginVoxels(0.1f);
+        s.sphere({0,0,0}, 1.0f, dsl::CsgOp::Union);   // op 0: outside any region
+        s.endVoxels();
+        s.begin_modifier_region();
+        s.beginVoxels(0.1f);
+        s.sphere({0,0,0}, 1.0f, dsl::CsgOp::Union);   // op 1: inside
+        s.endVoxels();
+        dsl::ModifierSpec smooth_spec{};
+        smooth_spec.kind = dsl::ModifierKind::Smooth;
+        s.end_modifier_region({ smooth_spec });
+        CHECK(!s.has_error(), "well-formed modifier region has no error");
+        CHECK(s.modifier_regions().size() == 1, "one region recorded");
+        CHECK(s.modifier_regions()[0].op_begin == 1, "region op_begin is 1");
+        CHECK(s.modifier_regions()[0].op_end == 2, "region op_end is 2");
+        CHECK(s.modifier_regions()[0].stack.size() == 1, "region stack has one entry");
+        CHECK(!s.modifier_region_open(), "region is closed after endModifier");
+    }
+}
+
+static void test_modifier_region_bake_rules() {
     script_host::ScriptHost host;
+    {   // region left open at end of build -> clean bake error
+        const char* src =
+            "class P extends Part { build(p) {"
+            "  this.beginModifier();"
+            "  this.beginVoxels(0.2); this.fill(2); this.sphere([0,0,0],0.5); this.endVoxels();"
+            "} }";
+        script_host::BakeResult r = host.bake_source(src, "{}", {});
+        CHECK(!r.error.ok, "open modifier region at build end is a bake error");
+    }
+    {   // unknown modifier name -> clean bake error
+        const char* src =
+            "class P extends Part { build(p) {"
+            "  this.beginModifier();"
+            "  this.beginVoxels(0.2); this.fill(2); this.sphere([0,0,0],0.5); this.endVoxels();"
+            "  this.endModifier([{ frobnicate: {} }]);"
+            "} }";
+        script_host::BakeResult r = host.bake_source(src, "{}", {});
+        CHECK(!r.error.ok, "unknown modifier name is a bake error");
+    }
+    {   // simplify ratio out of (0,1] -> clean bake error
+        const char* src =
+            "class P extends Part { build(p) {"
+            "  this.beginModifier();"
+            "  this.beginVoxels(0.2); this.fill(2); this.sphere([0,0,0],0.5); this.endVoxels();"
+            "  this.endModifier([{ simplify: 1.5 }]);"
+            "} }";
+        script_host::BakeResult r = host.bake_source(src, "{}", {});
+        CHECK(!r.error.ok, "simplify ratio > 1 is a bake error");
+    }
+    {   // two-key entry -> clean bake error
+        const char* src =
+            "class P extends Part { build(p) {"
+            "  this.beginModifier();"
+            "  this.beginVoxels(0.2); this.fill(2); this.sphere([0,0,0],0.5); this.endVoxels();"
+            "  this.endModifier([{ smooth: {}, retopo: {} }]);"
+            "} }";
+        script_host::BakeResult r = host.bake_source(src, "{}", {});
+        CHECK(!r.error.ok, "two-key modifier entry is a bake error");
+    }
+    {   // well-formed region bakes clean (stack processing lands in Task 4);
+        // shorthand { simplify: 0.4 } accepted
+        const char* src =
+            "class P extends Part { build(p) {"
+            "  this.beginModifier();"
+            "  this.beginVoxels(0.2); this.fill(2); this.sphere([0,0,0],0.5); this.endVoxels();"
+            "  this.endModifier([{ smooth: { iterations: 1 } }, { simplify: 0.4 }]);"
+            "} }";
+        script_host::BakeResult r = host.bake_source(src, "{}", {});
+        CHECK(r.error.ok, "well-formed modifier region bakes clean");
+    }
+}
 
-    // Opted-in: all fields specified.
-    const char* opted =
-        "class T extends Part {\n"
-        "  static params = { seed: 0 };\n"
-        "  static retopo = { enabled: true, target_ratio: 0.5,\n"
-        "                    iterations: 5, seed: 99, timeout_seconds: 120 };\n"
-        "  build(p) {}\n"
+static void test_pf_bindings_smoke() {
+    // Smoke test: create a sim + recorder via __pf_* bindings, run 60 ticks,
+    // and verify deposits and at least one recorded path with Float32Array xyz.
+    // Baked twice as a cheap determinism probe.
+    const char* src =
+        "class P extends Part {\n"
+        "  build(p) {\n"
+        "    const sim = __pf_simCreate({\n"
+        "      seed: 7, dt: 1.0, maxTurnRate: 0.5, depositEvery: 0.05,\n"
+        "      maxParticles: 64, hashCell: 0.25, maxAge: 40,\n"
+        "      emitters: [{ shape: 'point', center: [0,0,0], rate: 2, vel0: 0.05, jitter: 0.2 }],\n"
+        "      fields: [{ type: 'bias', dir: [0,1,0], weight: 0.5 }],\n"
+        "    });\n"
+        "    if (sim < 0) throw new Error('simCreate failed: ' + sim);\n"
+        "    const rec = __pf_recorderCreate(0.02, []);\n"
+        "    __pf_attach(sim, rec);\n"
+        "    const ran = __pf_run(sim, 60);\n"
+        "    if (ran !== 60) throw new Error('run returned ' + ran);\n"
+        "    const dep = __pf_depositedCount(sim);\n"
+        "    if (dep < 10) throw new Error('too few deposits: ' + dep);\n"
+        "    const pc = __pf_pathCount(rec);\n"
+        "    if (pc < 1) throw new Error('no paths recorded: ' + pc);\n"
+        "    const path = __pf_path(rec, 0);\n"
+        "    if (!path) throw new Error('path(rec,0) returned null');\n"
+        "    if (!(path.xyz instanceof Float32Array)) throw new Error('xyz not Float32Array: ' + typeof path.xyz);\n"
+        "    if (path.xyz.length < 6) throw new Error('path too short: ' + path.xyz.length);\n"
+        "  }\n"
         "}\n";
-    auto s = host.eval_retopo_settings(opted);
-    assert(s.enabled == true);
-    assert(s.target_ratio == 0.5f);
-    assert(s.iterations == 5);
-    assert(s.seed == 99u);
-    assert(s.timeout_seconds == 120);
+    script_host::ScriptHost host;
+    // First bake
+    script_host::BakeResult r1 = host.bake_source(src, "{}", {});
+    CHECK(r1.error.ok, "pf smoke bake 1 succeeds");
+    // Second bake (determinism probe — same host, fresh context)
+    script_host::BakeResult r2 = host.bake_source(src, "{}", {});
+    CHECK(r2.error.ok, "pf smoke bake 2 succeeds");
+}
 
-    // Partial: unspecified keys keep RetopoSettings defaults (per the plan's
-    // "no clamping in the binding" contract; clamping lives in MSL::retopo).
-    const char* partial =
+// Task 7: __pf_stampPaths positive test — imports shared-lib/particleflow,
+// runs a sim, stamps paths into a voxel session, and asserts a non-empty part.
+static void test_pf_stamp_paths_positive() {
+    const char* src =
+        "import { ParticleSim, PathRecorder } from 'shared-lib/particleflow';\n"
         "class P extends Part {\n"
         "  static params = {};\n"
-        "  static retopo = { enabled: true, target_ratio: 0.75 };\n"
-        "  build(p) {}\n"
+        "  build(p) {\n"
+        "    const rec = new PathRecorder(0.03, ['thickness']);\n"
+        "    const sim = new ParticleSim({\n"
+        "      seed: 11, dt: 1.0, maxTurnRate: 0.4, depositEvery: 0.05,\n"
+        "      maxParticles: 16, hashCell: 0.25, maxAge: 60,\n"
+        "      attributes: ['thickness'],\n"
+        "      emitters: [{ shape: 'point', center: [0,0,0], rate: 1, vel0: 0.06,\n"
+        "                   jitter: 0.1, attrInit: [0.08] }],\n"
+        "      fields: [{ type: 'bias', dir: [0,1,0], weight: 0.4 }],\n"
+        "    }).attach(rec);\n"
+        "    sim.run(80);\n"
+        "    if (rec.count < 1) throw new Error('no paths');\n"
+        "    this.fill(MAT.bark);\n"
+        "    this.beginVoxels(0.05);\n"
+        "    this.paths(rec, { radiusChannel: 'thickness', minRadius: 0.02 });\n"
+        "    this.endVoxels();\n"
+        "  }\n"
         "}\n";
-    auto sp = host.eval_retopo_settings(partial);
-    assert(sp.enabled == true);
-    assert(sp.target_ratio == 0.75f);
-    assert(sp.iterations == 3);        // default
-    assert(sp.seed == 0u);              // default
-    assert(sp.timeout_seconds == 60);   // default
+    script_host::ScriptHost host;
+    host.set_shared_lib_root("../shared-lib");
+    script_host::BakeResult r = host.bake_source(src, "{}", {});
+    CHECK(r.error.ok, "pf stamp paths bake succeeds");
+    CHECK(!r.written_path.empty(), "pf stamp paths: part written");
+    CHECK(file_exists(r.written_path), "pf stamp paths: .part file exists on disk");
+    // Verify the bake produced non-empty geometry: a file produced by voxel
+    // stamping is always larger than a header-only file (> 256 bytes).
+    auto bytes = read_all(r.written_path);
+    CHECK(bytes.size() > 256, "pf stamp paths: .part file has non-trivial geometry");
+}
 
-    // No `static retopo` at all: full defaults (enabled=false). This is the
-    // back-compat path — every existing schema in the codebase lands here.
-    const char* plain =
-        "class NoRetopo extends Part { static params = {}; build(p) {} }\n";
-    auto sd = host.eval_retopo_settings(plain);
-    assert(sd.enabled == false);
-    assert(sd.target_ratio == 1.0f);
-    assert(sd.iterations == 3);
-    assert(sd.seed == 0u);
-    assert(sd.timeout_seconds == 60);
-
-    // Enabled explicitly false: overrides the default only in the "enabled"
-    // slot, everything else stays default. Sanity: parsing works when the
-    // block is present but opts out.
-    const char* disabled =
-        "class D extends Part {\n"
-        "  static retopo = { enabled: false };\n"
-        "  build(p) {}\n"
+// Task 7: __pf_stampPaths negative test — calling this.paths() before
+// beginVoxels must fail with the exact error message.
+static void test_pf_stamp_paths_outside_session() {
+    const char* src =
+        "import { ParticleSim, PathRecorder } from 'shared-lib/particleflow';\n"
+        "class P extends Part {\n"
+        "  static params = {};\n"
+        "  build(p) {\n"
+        "    const rec = new PathRecorder(0.03, ['thickness']);\n"
+        "    const sim = new ParticleSim({\n"
+        "      seed: 11, dt: 1.0, maxTurnRate: 0.4, depositEvery: 0.05,\n"
+        "      maxParticles: 16, hashCell: 0.25, maxAge: 60,\n"
+        "      attributes: ['thickness'],\n"
+        "      emitters: [{ shape: 'point', center: [0,0,0], rate: 1, vel0: 0.06,\n"
+        "                   jitter: 0.1, attrInit: [0.08] }],\n"
+        "      fields: [{ type: 'bias', dir: [0,1,0], weight: 0.4 }],\n"
+        "    }).attach(rec);\n"
+        "    sim.run(80);\n"
+        "    this.fill(MAT.bark);\n"
+        "    this.paths(rec);\n"  // NO beginVoxels — must fail
+        "  }\n"
         "}\n";
-    auto dd = host.eval_retopo_settings(disabled);
-    assert(dd.enabled == false);
-    assert(dd.target_ratio == 1.0f);
+    script_host::ScriptHost host;
+    host.set_shared_lib_root("../shared-lib");
+    script_host::BakeResult r = host.bake_source(src, "{}", {});
+    CHECK(!r.error.ok, "pf stamp outside session: bake must fail");
+    CHECK(r.written_path.empty(), "pf stamp outside session: no file written");
+    CHECK(r.error.message.find("paths() outside an open voxel session") != std::string::npos,
+          "pf stamp outside session: exact error message present");
+}
 
-    // Broken JS: fail-closed to defaults.
-    const char* broken = "not even javascript {{{";
-    auto db = host.eval_retopo_settings(broken);
-    assert(db.enabled == false);
-    assert(db.target_ratio == 1.0f);
-
-    // Wrong shape (retopo as array, not object): treat as absent, defaults.
-    const char* wrong_shape =
-        "class W extends Part {\n"
-        "  static retopo = [true, 0.5];\n"
-        "  build(p) {}\n"
+static void test_pf_ontick_views() {
+    // Task 6: onTick zero-copy SoA views — verifies per-tick callback receives
+    // typed-array views into live SoA buffers, views are detached after the
+    // callback returns (dangling access returns empty/throws), early-stop on
+    // false return works, and __pf_setFieldWeight does not crash.
+    const char* src =
+        "class P extends Part {\n"
+        "  build(p) {\n"
+        "    const sim = __pf_simCreate({\n"
+        "      seed: 3, dt: 1.0, maxTurnRate: 0.5, depositEvery: 0.05,\n"
+        "      maxParticles: 32, hashCell: 0.25, maxAge: 0,\n"
+        "      attributes: ['thickness'],\n"
+        "      emitters: [{ shape: 'point', center: [0,0,0], rate: 1, vel0: 0.05,\n"
+        "                   jitter: 0, attrInit: [0.5] }],\n"
+        "      fields: [{ type: 'bias', dir: [0,1,0], weight: 0.3 }],\n"
+        "    });\n"
+        "    let calls = 0, sawAlive = false, savedView = null;\n"
+        "    const ran = __pf_run(sim, 50, 10, (v) => {\n"
+        "      ++calls;\n"
+        "      if (!(v.pos instanceof Float32Array)) throw new Error('pos not F32');\n"
+        "      if (!(v.attrs.thickness instanceof Float32Array)) throw new Error('no attr view');\n"
+        "      for (let i = 0; i < v.count; ++i) if (v.alive[i]) { sawAlive = true; break; }\n"
+        "      savedView = v;\n"
+        "      if (calls === 3) __pf_setFieldWeight(sim, 0, 0.0);\n"
+        "      return calls < 4;\n"
+        "    });\n"
+        "    if (calls !== 4) throw new Error('expected 4 callbacks, got ' + calls);\n"
+        "    if (ran !== 40) throw new Error('early stop should yield 40 ticks, got ' + ran);\n"
+        "    if (!sawAlive) throw new Error('no alive particles seen');\n"
+        "    let detached = false;\n"
+        "    try { const x = savedView.pos[0]; if (savedView.pos.length === 0) detached = true; }\n"
+        "    catch (e) { detached = true; }\n"
+        "    if (!detached && savedView.pos.length !== 0) throw new Error('view not detached');\n"
+        "  }\n"
         "}\n";
-    auto dw = host.eval_retopo_settings(wrong_shape);
-    assert(dw.enabled == false);
+    script_host::ScriptHost host;
+    script_host::BakeResult r = host.bake_source(src, "{}", {});
+    CHECK(r.error.ok, "pf onTick views bake succeeds");
+}
 
-    // Wrong-typed fields: silently skipped (leave default). Follows the same
-    // "lenient at the wire, strict inside" pattern the DSL uses elsewhere.
-    const char* wrong_types =
-        "class WT extends Part {\n"
-        "  static retopo = { enabled: 'yes', target_ratio: 'half',\n"
-        "                    iterations: [], seed: null, timeout_seconds: {} };\n"
-        "  build(p) {}\n"
+// Task 8: shared-lib/strands.js — attractor clouds + end-biased twig anchors
+static void test_strands_ellipsoid_and_anchors() {
+    const char* src =
+        "import { ParticleSim, PathRecorder } from 'shared-lib/particleflow';\n"
+        "import { ellipsoidCloud, twigAnchors } from 'shared-lib/strands';\n"
+        "class P extends Part {\n"
+        "  build(p) {\n"
+        "    const cloud = ellipsoidCloud(5, 200, [0, 8, 0], [3, 2, 3]);\n"
+        "    if (cloud.length !== 600) throw new Error('cloud size');\n"
+        "    for (let i = 0; i < 200; ++i) {\n"
+        "      const dx = (cloud[3*i] - 0) / 3, dy = (cloud[3*i+1] - 8) / 2, dz = (cloud[3*i+2] - 0) / 3;\n"
+        "      if (dx*dx + dy*dy + dz*dz > 1.0001) throw new Error('point outside ellipsoid');\n"
+        "    }\n"
+        "    const cloud2 = ellipsoidCloud(5, 200, [0, 8, 0], [3, 2, 3]);\n"
+        "    for (let i = 0; i < 600; ++i) if (cloud[i] !== cloud2[i]) throw new Error('cloud not deterministic');\n"
+        "\n"
+        "    const rec = new PathRecorder(0.03, ['thickness']);\n"
+        "    const sim = new ParticleSim({\n"
+        "      seed: 9, dt: 1.0, maxTurnRate: 0.3, depositEvery: 0.05,\n"
+        "      maxParticles: 32, hashCell: 0.25, maxAge: 80,\n"
+        "      attributes: ['thickness'],\n"
+        "      emitters: [{ shape: 'disc', center: [0,0,0], axis: [0,1,0], radius: 0.2,\n"
+        "                   rate: 2, vel0: 0.06, jitter: 0.15, attrInit: [0.1] }],\n"
+        "      fields: [\n"
+        "        { type: 'bias', dir: [0,1,0], weight: 0.5 },\n"
+        "        { type: 'attract', weight: 0.8, influence: 4.0, killRadius: 0.3, killOnConsume: true },\n"
+        "      ],\n"
+        "    }).attach(rec);\n"
+        "    sim.setAttractors(cloud);\n"
+        "    sim.run(200);\n"
+        "    const anchors = twigAnchors(sim, rec, { seed: 2, perPath: 2, maxThickness: 10 });\n"
+        "    if (anchors.length < 1) throw new Error('no twig anchors');\n"
+        "    for (const a of anchors) {\n"
+        "      const nl = Math.hypot(a.normal[0], a.normal[1], a.normal[2]);\n"
+        "      if (Math.abs(nl - 1) > 1e-3) throw new Error('anchor normal not unit');\n"
+        "      if (a.t < 0 || a.t > 1) throw new Error('anchor t out of range');\n"
+        "    }\n"
+        "  }\n"
         "}\n";
-    auto dwt = host.eval_retopo_settings(wrong_types);
-    assert(dwt.enabled == false);           // 'yes' is not a bool
-    assert(dwt.target_ratio == 1.0f);       // 'half' is not a number
-    assert(dwt.iterations == 3);
-    assert(dwt.seed == 0u);
-    assert(dwt.timeout_seconds == 60);
+    script_host::ScriptHost host;
+    host.set_shared_lib_root("../shared-lib");
+    script_host::BakeResult r = host.bake_source(src, "{}", {});
+    CHECK(r.error.ok, "strands ellipsoid and anchors bake succeeds");
+}
 
-    // Cache-key helper: target_ratio_bits() must return the exact IEEE-754
-    // bit pattern of the stored float (Task 13 folds this into the cache key).
-    part_asset::RetopoSettings r;
-    r.target_ratio = 0.5f;
-    uint32_t expected;
-    float f = 0.5f;
-    std::memcpy(&expected, &f, sizeof(expected));
-    assert(r.target_ratio_bits() == expected);
+// Task 10: Determinism end-to-end — pf-driven stamp baked twice, byte-identical
+// output .part files. Verifies that same seed + config + ticks => identical geometry.
+static void test_pf_determinism_double_bake() {
+    const char* src =
+        "import { ParticleSim, PathRecorder } from 'shared-lib/particleflow';\n"
+        "class P extends Part {\n"
+        "  static params = {};\n"
+        "  build(p) {\n"
+        "    const rec = new PathRecorder(0.04, ['thickness']);\n"
+        "    const sim = new ParticleSim({\n"
+        "      seed: 42, dt: 1.0, maxTurnRate: 0.5, depositEvery: 0.05,\n"
+        "      maxParticles: 32, hashCell: 0.25, maxAge: 60,\n"
+        "      attributes: ['thickness'],\n"
+        "      emitters: [{ shape: 'point', center: [0,0,0], rate: 2, vel0: 0.06,\n"
+        "                   jitter: 0.15, attrInit: [0.08] }],\n"
+        "      fields: [{ type: 'bias', dir: [0,1,0], weight: 0.6 }],\n"
+        "    }).attach(rec);\n"
+        "    sim.run(120);\n"
+        "    this.fill(MAT.bark);\n"
+        "    this.beginVoxels(0.05);\n"
+        "    this.paths(rec, { radiusChannel: 'thickness', minRadius: 0.02 });\n"
+        "    this.endVoxels();\n"
+        "  }\n"
+        "}\n";
+    script_host::ScriptHost h1; h1.set_shared_lib_root("../shared-lib");
+    script_host::BakeResult r1 = h1.bake_source(src, "{}", {});
+    script_host::ScriptHost h2; h2.set_shared_lib_root("../shared-lib");
+    script_host::BakeResult r2 = h2.bake_source(src, "{}", {});
+    CHECK(r1.error.ok && r2.error.ok, "pf determinism: both bakes succeed");
+    std::vector<uint8_t> b1 = read_all(r1.written_path);
+    std::vector<uint8_t> b2 = read_all(r2.written_path);
+    CHECK(!b1.empty(), "pf determinism: bake 1 produced non-empty .part");
+    CHECK(b1 == b2, "pf determinism: re-bake produces byte-identical .part (same seed+config+ticks)");
+}
 
-    printf("  test_eval_retopo_settings OK\n");
+// Task 10: Incremental equivalence — run(300) vs run(120);run(180) must yield
+// identical depositedCount and identical first path xyz prefix.
+// Also checks append-only: path[0] xyz is unchanged after the extra run.
+static void test_pf_incremental_equivalence() {
+    // Two identically-configured sims in ONE bake: X does run(300) in one shot,
+    // Y does run(120) then run(180). Determinism per seed means X and Y must agree
+    // exactly (depositedCount + full path[0] xyz). Y's mid-run snapshot also proves
+    // append-only: path[0]'s prefix is unchanged by the second run() call.
+    const char* src =
+        "class P extends Part {\n"
+        "  static params = {};\n"
+        "  build(p) {\n"
+        "    const mk = () => __pf_simCreate({\n"
+        "      seed: 17, dt: 1.0, maxTurnRate: 0.3, depositEvery: 0.05,\n"
+        "      maxParticles: 32, hashCell: 0.25, maxAge: 200,\n"
+        "      emitters: [{ shape: 'point', center: [0,0,0], rate: 1, vel0: 0.06, jitter: 0.1 }],\n"
+        "      fields: [{ type: 'bias', dir: [0,1,0], weight: 0.4 }],\n"
+        "    });\n"
+        "    const simX = mk(); const recX = __pf_recorderCreate(0.03, []);\n"
+        "    __pf_attach(simX, recX);\n"
+        "    __pf_run(simX, 300);\n"
+        "    const simY = mk(); const recY = __pf_recorderCreate(0.03, []);\n"
+        "    __pf_attach(simY, recY);\n"
+        "    __pf_run(simY, 120);\n"
+        "    const pcMid = __pf_pathCount(recY);\n"
+        "    const midXyz = pcMid > 0 ? Array.from(__pf_path(recY, 0).xyz) : [];\n"
+        "    __pf_run(simY, 180);\n"
+        "    // append-only: path[0]'s recorded prefix must be unchanged by run #2\n"
+        "    if (pcMid > 0) {\n"
+        "      const fin = Array.from(__pf_path(recY, 0).xyz);\n"
+        "      if (fin.length < midXyz.length) throw new Error('append-only violated: path[0] shrank');\n"
+        "      for (let i = 0; i < midXyz.length; ++i)\n"
+        "        if (fin[i] !== midXyz[i]) throw new Error('append-only violated: path[0] prefix changed at ' + i);\n"
+        "    }\n"
+        "    // incremental equivalence: X (one shot) === Y (split run)\n"
+        "    const depX = __pf_depositedCount(simX), depY = __pf_depositedCount(simY);\n"
+        "    if (depX !== depY) throw new Error('incremental mismatch: depositedCount ' + depX + ' vs ' + depY);\n"
+        "    const pcX = __pf_pathCount(recX), pcY = __pf_pathCount(recY);\n"
+        "    if (pcX !== pcY) throw new Error('incremental mismatch: pathCount ' + pcX + ' vs ' + pcY);\n"
+        "    if (pcX > 0) {\n"
+        "      const ax = Array.from(__pf_path(recX, 0).xyz), ay = Array.from(__pf_path(recY, 0).xyz);\n"
+        "      if (ax.length !== ay.length) throw new Error('incremental mismatch: path[0] length');\n"
+        "      for (let i = 0; i < ax.length; ++i)\n"
+        "        if (ax[i] !== ay[i]) throw new Error('incremental mismatch: path[0].xyz[' + i + ']');\n"
+        "    }\n"
+        "    if (depX === 0 && pcX === 0) throw new Error('degenerate test: nothing deposited and no paths');\n"
+        "  }\n"
+        "}\n";
+    script_host::ScriptHost h;
+    auto r = h.bake_source(src, "{}", {});
+    CHECK(r.error.ok, "pf incremental: run(300) === run(120);run(180) (in-JS exact comparison; append-only prefix intact)");
+}
+
+// Task 10: Budget fail-closed — sim.run() inside a bake with time_budget_ms set
+// should fail with the "budget exceeded" error, not hang.
+static void test_pf_budget_fail_closed() {
+    // A script that asks for a very large run but with a 1ms wall-clock budget.
+    // The pf.run binding checks st->budget_exceeded() per chunk (RUN_CHUNK=32 ticks)
+    // and sets "pf.run: bake time budget exceeded mid-simulation".
+    const char* src =
+        "class BudgetTest extends Part {\n"
+        "  static params = {};\n"
+        "  build(p) {\n"
+        "    const sim = __pf_simCreate({\n"
+        "      seed: 1, dt: 1.0, maxTurnRate: 0.5, depositEvery: 0.02,\n"
+        "      maxParticles: 128, hashCell: 0.1, maxAge: 0,\n"
+        "      emitters: [{ shape: 'point', center: [0,0,0], rate: 10, vel0: 0.05, jitter: 0.1 }],\n"
+        "      fields: [],\n"
+        "    });\n"
+        "    const rec = __pf_recorderCreate(0.01, []);\n"
+        "    __pf_attach(sim, rec);\n"
+        "    __pf_run(sim, 100000);\n"
+        "  }\n"
+        "}\n";
+    script_host::ScriptHost host;
+    script_host::BakeOptions opts;
+    opts.time_budget_ms = 1;  // 1ms — guaranteed to expire before 100000 ticks
+    auto r = host.bake_source(src, "{}", opts);
+    CHECK(!r.error.ok, "pf budget: bake must fail when budget exceeded");
+    CHECK(r.written_path.empty(), "pf budget: no .part file written when budget exceeded");
+    CHECK(r.error.message.find("budget") != std::string::npos ||
+          r.error.message.find("interrupt") != std::string::npos,
+          "pf budget: error message contains 'budget' or 'interrupt'");
+    printf("  pf budget error message: %s\n", r.error.message.c_str());
+}
+
+// Task 10: Stale handle — calling __pf_run with an invalid sim id (999) must
+// set an error and cause the bake to fail cleanly (no crash, no hang).
+static void test_pf_stale_handle() {
+    const char* src =
+        "class StaleTest extends Part {\n"
+        "  static params = {};\n"
+        "  build(p) {\n"
+        "    __pf_run(999, 10);\n"
+        "  }\n"
+        "}\n";
+    script_host::ScriptHost host;
+    auto r = host.bake_source(src, "{}", {});
+    CHECK(!r.error.ok, "pf stale handle: bake must fail on invalid sim handle");
+    CHECK(r.written_path.empty(), "pf stale handle: no .part file written");
+    CHECK(r.error.message.find("stale") != std::string::npos ||
+          r.error.message.find("invalid") != std::string::npos,
+          "pf stale handle: error message contains 'stale' or 'invalid'");
+    printf("  pf stale handle error message: %s\n", r.error.message.c_str());
+}
+
+// --- raycast(): in-session analytic surface probe ---------------------------
+
+static void test_raycast_sphere_point_and_normal() {
+    script_host::ScriptHost host;
+    const char* src =
+        "class Probe extends Part { static params={};\n"
+        "  build(p){\n"
+        "    this.beginVoxels(0.1);\n"
+        "    this.sphere([0,1,0],0.5);\n"
+        "    const h=this.raycast([3,1,0],[-1,0,0]);\n"
+        "    if(!h) throw new Error('expected hit, got null');\n"
+        "    if(Math.abs(h.point[0]-0.5)>0.02) throw new Error('bad point.x '+h.point[0]);\n"
+        "    if(Math.abs(h.point[1]-1.0)>0.02) throw new Error('bad point.y '+h.point[1]);\n"
+        "    if(Math.abs(h.point[2])>0.02) throw new Error('bad point.z '+h.point[2]);\n"
+        "    if(h.normal[0]<0.95) throw new Error('bad normal.x '+h.normal[0]);\n"
+        "    if(Math.abs(h.normal[1])>0.1||Math.abs(h.normal[2])>0.1) throw new Error('bad normal');\n"
+        "    this.endVoxels();\n"
+        "  } }";
+    auto r = host.bake_source(src, "{}", {});
+    CHECK(r.error.ok, "raycast sphere probe: point+normal within tolerance");
+}
+
+static void test_raycast_miss_returns_null() {
+    script_host::ScriptHost host;
+    const char* src =
+        "class Probe extends Part { static params={};\n"
+        "  build(p){\n"
+        "    this.beginVoxels(0.1);\n"
+        "    this.sphere([0,1,0],0.5);\n"
+        "    const h=this.raycast([3,5,0],[-1,0,0]);\n"   // ray passes 4 units above
+        "    if(h!==null) throw new Error('expected null miss');\n"
+        "    this.endVoxels();\n"
+        "  } }";
+    auto r = host.bake_source(src, "{}", {});
+    CHECK(r.error.ok, "raycast miss returns null");
+}
+
+static void test_raycast_outside_session_fails_closed() {
+    script_host::ScriptHost host;
+    const char* src =
+        "class Probe extends Part { static params={};\n"
+        "  build(p){ this.raycast([3,0,0],[-1,0,0]); } }";
+    auto r = host.bake_source(src, "{}", {});
+    CHECK(!r.error.ok, "raycast outside a voxel session fails the bake");
+    CHECK(r.error.message.find("raycast") != std::string::npos,
+          "error message names raycast");
+}
+
+static void test_raycast_no_brushes_fails_closed() {
+    script_host::ScriptHost host;
+    const char* src =
+        "class Probe extends Part { static params={};\n"
+        "  build(p){ this.beginVoxels(0.1); this.raycast([3,0,0],[-1,0,0]); this.endVoxels(); } }";
+    auto r = host.bake_source(src, "{}", {});
+    CHECK(!r.error.ok, "raycast with no brushes in session fails the bake");
+}
+
+static void test_raycast_sees_difference_cut() {
+    script_host::ScriptHost host;
+    // Sphere r=0.5 at (0,1,0); difference box spans x in [0.4,0.9] so the cut
+    // face is the plane x=0.4. A +x probe must now hit that plane, not x=0.5.
+    const char* src =
+        "class Probe extends Part { static params={};\n"
+        "  build(p){\n"
+        "    this.beginVoxels(0.1);\n"
+        "    this.sphere([0,1,0],0.5);\n"
+        "    this.box([0.65,1,0],[0.25,0.6,0.6]);\n"
+        "    this.difference();\n"
+        "    const h=this.raycast([3,1,0],[-1,0,0]);\n"
+        "    if(!h) throw new Error('expected hit');\n"
+        "    if(Math.abs(h.point[0]-0.4)>0.02) throw new Error('cut face not seen: x='+h.point[0]);\n"
+        "    if(h.normal[0]<0.95) throw new Error('cut face normal not +x');\n"
+        "    this.endVoxels();\n"
+        "  } }";
+    auto r = host.bake_source(src, "{}", {});
+    CHECK(r.error.ok, "raycast sees an earlier difference cut");
 }
 
 int main() {
@@ -1184,7 +1592,23 @@ int main() {
     test_g8_sphere_box_polymorphic();
     test_extrude_dispatch_and_polygon();
     test_eval_lod_budgets();
-    test_eval_retopo_settings();
+    test_modifier_region_state_rules();
+    test_modifier_region_bake_rules();
+    test_pf_bindings_smoke();
+    test_pf_ontick_views();
+    test_pf_stamp_paths_positive();
+    test_pf_stamp_paths_outside_session();
+    test_strands_ellipsoid_and_anchors();
+    // Task 10 correctness-refinement checklist
+    test_pf_determinism_double_bake();
+    test_pf_incremental_equivalence();
+    test_pf_budget_fail_closed();
+    test_pf_stale_handle();
+    test_raycast_sphere_point_and_normal();
+    test_raycast_miss_returns_null();
+    test_raycast_outside_session_fails_closed();
+    test_raycast_no_brushes_fails_closed();
+    test_raycast_sees_difference_cut();
     if (g_failures == 0) printf("ALL PASS\n");
     return g_failures ? 1 : 0;
 }

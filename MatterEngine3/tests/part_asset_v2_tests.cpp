@@ -353,32 +353,6 @@ static void test_v2_guards() {
     remove(path);
 }
 
-// Phase 5 autoremesher integration: RetopoSettings struct contract.
-// The plan requires: default-constructed = "not opted in" so every existing
-// schema/part on disk lands in the not-opted-in branch and bakes byte-
-// identically. Also spot-checks target_ratio_bits() bit-pattern helper (Task
-// 13 folds it into the .retopo.part cache key; a wrong bit pattern would
-// silently mis-key the cache).
-static void test_retopo_settings_defaults() {
-    part_asset::RetopoSettings d;
-    CHECK(d.enabled == false, "RetopoSettings default: disabled");
-    CHECK(d.target_ratio == 1.0f, "RetopoSettings default: target_ratio == 1.0");
-    CHECK(d.iterations == 3, "RetopoSettings default: iterations == 3");
-    CHECK(d.seed == 0u, "RetopoSettings default: seed == 0");
-    CHECK(d.timeout_seconds == 60, "RetopoSettings default: timeout_seconds == 60");
-
-    // target_ratio_bits: exact IEEE-754 bit pattern.
-    part_asset::RetopoSettings r;
-    r.target_ratio = 0.75f;
-    uint32_t expected = 0;
-    float src = 0.75f;
-    std::memcpy(&expected, &src, sizeof(expected));
-    CHECK(r.target_ratio_bits() == expected, "target_ratio_bits returns IEEE-754 bits");
-    // Zero / negative-zero-ish edge: 0.0f is 0x00000000.
-    r.target_ratio = 0.0f;
-    CHECK(r.target_ratio_bits() == 0u, "target_ratio_bits(0.0f) == 0");
-}
-
 static void test_new_materials() {
     CHECK(MaterialRegistryCount() == 17, "registry has 17 materials after bark/leaf/dirt");
     const MaterialDef* bark = MaterialRegistryGet(14);
@@ -399,7 +373,6 @@ int main() {
     test_round_trip_no_children();
     test_v2_guards();
     test_new_materials();
-    test_retopo_settings_defaults();
     if (g_failures == 0) printf("All part_asset_v2 tests passed\n");
     return g_failures == 0 ? 0 : 1;
 }

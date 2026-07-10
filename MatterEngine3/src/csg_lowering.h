@@ -45,4 +45,15 @@ LoweredField lower_build_buffer(const BuildBuffer& buf);
 // at a world point. Used by tests to assert primitive/CSG occupancy without GL.
 bool field_is_solid(const BuildBuffer& buf, const Vector3& worldPoint);
 
+// Analytic signed-distance oracle over ops[opBegin, opEnd), mirroring the
+// mesher's staged smooth-min field (surface.c): per-stage log-sum-exp smin
+// with fillet k, stages folded in authored order (consecutive same-op ops =
+// one stage; field starts at +INFINITY and every stage applies its op, so an
+// opening Difference/Intersection yields nothing). k <= 1e-5 = hard ops.
+// Returns +INFINITY (1e9f) when the range is empty. Distances under
+// non-uniform brush transforms are distorted (same caveat as field_is_solid)
+// — callers must trace conservatively.
+float field_distance(const BuildBuffer& buf, size_t opBegin, size_t opEnd,
+                     float k, const Vector3& worldPoint);
+
 } // namespace dsl

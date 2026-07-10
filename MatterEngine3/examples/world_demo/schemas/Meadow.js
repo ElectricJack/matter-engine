@@ -20,6 +20,11 @@ const GRASS_VARIANTS  = 5;
 const GRASS_SLOPE_MAX = 0.5;   // thin grass on slopes steeper than this
 const TREE_MIN_DIST   = 24.0;  // rejection-sampling spacing between oaks
 
+// Landmark boulders: a few large Rock bakes (discrete sizes to bound the
+// variant count) scattered sparsely; instance scale adds continuous variety.
+// Count scaled ~10x from the 256x256 world (14) to preserve density.
+const BOULDER_SIZES = [2.5, 4.0], BOULDER_SEEDS = 4, BOULDERS = 140;
+
 // Scatter budget arithmetic — expected placed instance counts:
 // World: 51×51 = 2,601 tiles placed (coarse only).
 // Band areas (by tile-centre radial test, WORLD=816):
@@ -59,6 +64,9 @@ function makeRequires(seed) {
                    params: { tx, tz, res, worldSeed: seed, worldSize: WORLD } });
   // Scatter schema variants (seed-free params — cache-stable across worldSeed).
   for (let s = 0; s < ROCK_VARIANTS;   ++s) req.push({ module: 'Rock',   params: { seed: s } });
+  for (const sz of BOULDER_SIZES)
+    for (let s = 0; s < BOULDER_SEEDS; ++s)
+      req.push({ module: 'Rock', params: { seed: s, size: sz } });
   for (let s = 0; s < PEBBLE_VARIANTS; ++s) req.push({ module: 'Pebble', params: { seed: s } });
   for (let s = 0; s < GRASS_VARIANTS;  ++s) req.push({ module: 'Grass',  params: { seed: s } });
   req.push({ module: 'Tree' });
@@ -134,6 +142,13 @@ class Meadow extends Part {
     for (let i = 0; i < MEADOW_ROCKS; ++i) {
       const [x, z] = randPos(meadowTiles);
       put('Rock', { seed: r.int(ROCK_VARIANTS) }, x, z, r.range(0.6, 1.8), 0.15 * r.range(0.6, 1.8));
+    }
+    // Landmark boulders: scattered across the whole world (all bands).
+    for (let i = 0; i < BOULDERS; ++i) {
+      const x = r.range(0, WORLD), z = r.range(0, WORLD);
+      const sz = BOULDER_SIZES[r.int(BOULDER_SIZES.length)];
+      const s = r.range(0.8, 1.2);
+      put('Rock', { seed: r.int(BOULDER_SEEDS), size: sz }, x, z, s, 0.15 * sz * s);
     }
     for (let i = 0; i < MEADOW_PEBBLES; ++i) {
       const [x, z] = randPos(meadowTiles);

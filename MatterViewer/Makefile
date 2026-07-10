@@ -46,7 +46,8 @@ WIN_INCLUDE_PATHS = $(INCLUDE_PATHS) \
                     -I$(ME3_DIR)/src \
                     -I$(ME3_DIR)/src/render \
                     -I$(ME3_DIR)/src/provider \
-                    -I$(MSL_DIR)/src
+                    -I$(MSL_DIR)/src \
+                    -I../ParticleFlowLib/include
 
 LDFLAGS = -lGL -lm -lpthread -ldl -lrt -lX11
 LDLIBS  = ../Libraries/raylib/build/linux/libraylib.a
@@ -130,18 +131,24 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/render/gpu_culler.cpp $(ME3_DIR)/src/render/probe_texture.cpp \
               $(ME3_DIR)/src/render/tileset_provider.cpp $(ME3_DIR)/src/render/tileset_gl_ctx.cpp \
               $(ME3_DIR)/src/provider/local_provider.cpp $(ME3_DIR)/src/provider/resolvers.cpp \
+              $(ME3_DIR)/src/modifier_apply.cpp $(ME3_DIR)/src/retopo_blacklist.cpp \
               $(ME3_DIR)/src/async_bake.cpp \
               $(ME3_DIR)/src/live_edit.cpp \
               $(ME3_DIR)/src/live_edit_prod.cpp \
+              $(ME3_DIR)/src/inotify_watcher.cpp \
               $(ME3_DIR)/src/part_graph_snapshot.cpp \
               $(ME3_DIR)/src/refine_controller.cpp \
               $(ME3_DIR)/src/resolve_cache.cpp \
-              $(ME3_DIR)/src/retopo_blacklist.cpp \
-              $(ME3_DIR)/src/matter_engine.cpp
+              $(ME3_DIR)/src/matter_engine.cpp \
+              $(ME3_DIR)/src/pf_bindings.cpp \
+              ../ParticleFlowLib/src/pf_math.cpp \
+              ../ParticleFlowLib/src/pf_sim.cpp \
+              ../ParticleFlowLib/src/pf_fields.cpp \
+              ../ParticleFlowLib/src/pf_path_recorder.cpp
 
 WIN_MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
               $(MSL_DIR)/src/mesh_simplifier.cpp $(MSL_DIR)/src/mesh_indexed.cpp \
-              $(MSL_DIR)/src/mesh_transform.cpp \
+              $(MSL_DIR)/src/mesh_smooth.cpp $(MSL_DIR)/src/mesh_transform.cpp \
               $(MSL_DIR)/src/blas_manager.cpp $(MSL_DIR)/src/bvh.cpp \
               $(MSL_DIR)/src/bvh_analyzer.cpp \
               $(MSL_DIR)/src/mesh_worker_pool.cpp $(MSL_DIR)/src/mesh_build_utils.cpp \
@@ -175,7 +182,8 @@ IMGUI_SRC = $(IMGUI_PATH)/imgui.cpp $(IMGUI_PATH)/imgui_draw.cpp \
 #
 # Windows: full direct-source compile (APP_SRC + WIN_ME3_CPP + WIN_MSL_CPP + IMGUI_SRC).
 CXX_FLAGS_BUILD_COMMON = $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -MMD -MP
-CXX_FLAGS_BUILD_WIN_COMMON = $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB $(WIN_INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -MMD -MP
+# Windows is the release build path for now: -DNDEBUG disables assert().
+CXX_FLAGS_BUILD_WIN_COMMON = $(CFLAGS) -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB $(WIN_INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -ffunction-sections -fdata-sections -MMD -MP
 
 # Linux object set: ONLY app + imgui.
 L_CPP_SRC = $(APP_SRC) $(IMGUI_SRC)
@@ -188,7 +196,8 @@ QJS_NAMES = $(notdir $(QJS_C))
 PIPC_NAMES_WIN = $(notdir $(WIN_PIPELINE_C))
 
 vpath %.cpp . $(ME3_DIR)/src $(ME3_DIR)/src/render $(ME3_DIR)/src/provider \
-             $(MSL_DIR)/src $(IMGUI_PATH) $(IMGUI_PATH)/backends
+             $(MSL_DIR)/src $(IMGUI_PATH) $(IMGUI_PATH)/backends \
+             ../ParticleFlowLib/src
 vpath %.c $(MSL_DIR)/src $(QJS_DIR)
 
 .DEFAULT_GOAL := viewer
@@ -304,16 +313,16 @@ WIN_LIBS    = -lopengl32 -lgdi32 -lwinmm $(BOX3D_DIR)/build-mingw/libbox3d.a -lw
 $(W_CPP_OBJ): $(W_DIR)/%.o: %.cpp | $(W_DIR)
 	$(WIN_CXX) -c $< -o $@ $(CXX_FLAGS_BUILD_WIN_COMMON)
 $(W_QJS_OBJ): $(W_DIR)/%.o: $(QJS_DIR)/%.c | $(W_DIR)
-	$(WIN_CC) -c $< -o $@ -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC) -MMD -MP
+	$(WIN_CC) -c $< -o $@ -O2 -DNDEBUG -DCONFIG_VERSION='"0.10.0"' $(QJS_INC) -ffunction-sections -fdata-sections -MMD -MP
 $(W_PIPC_OBJ): $(W_DIR)/%.o: $(MSL_DIR)/src/%.c | $(W_DIR)
-	$(WIN_CC) -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(WIN_INCLUDE_PATHS) -MMD -MP
+	$(WIN_CC) -c $< -o $@ -O2 -DNDEBUG -DPLATFORM_DESKTOP $(WIN_INCLUDE_PATHS) -ffunction-sections -fdata-sections -MMD -MP
 
 # Order-only: the header must exist before shader_source.cpp compiles, but its
 # regeneration must not force object rebuilds (embedded-shaders is phony).
 $(W_CPP_OBJ): | embedded-shaders
 
 windows: win-shaders-gpu $(W_ALL_OBJ)
-	$(WIN_CXX) $(W_ALL_OBJ) -o viewer.exe $(CFLAGS) -static $(WIN_RAYLIB) $(WIN_LIBS)
+	$(WIN_CXX) $(W_ALL_OBJ) -o viewer.exe $(CFLAGS) -static -s -Wl,--gc-sections $(WIN_RAYLIB) $(WIN_LIBS)
 
 -include $(W_ALL_OBJ:.o=.d)
 

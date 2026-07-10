@@ -53,8 +53,8 @@ void append_journal(const std::string& path, uint64_t h) {
 } // namespace
 
 void init(const std::string& cache_root) {
-    // Journal files live under <cache_root>/parts/ next to the .part/.retopo.part
-    // sibling artifacts so they move with the cache dir.
+    // Journal files live under <cache_root>/parts/ alongside the .part artifacts
+    // so they move with the cache dir.
     g_pending_path = cache_root + "/parts/.retopo_pending";
     g_success_path = cache_root + "/parts/.retopo_success";
 

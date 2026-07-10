@@ -35,7 +35,8 @@ WIN_INCLUDE_PATHS = $(INCLUDE_PATHS) \
                     -I$(MSL_DIR)/include \
                     -I$(MSL_DIR)/src \
                     -I$(QJS_DIR) \
-                    -I$(BOX3D_DIR)/include
+                    -I$(BOX3D_DIR)/include \
+                    -I../ParticleFlowLib/include
 
 LDFLAGS = -lGL -lm -lpthread -ldl -lrt -lX11
 LDLIBS  = ../Libraries/raylib/build/linux/libraylib.a \
@@ -108,7 +109,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/polygon_triangulate.cpp \
               $(ME3_DIR)/src/part_asset_v2.cpp $(ME3_DIR)/src/lod_bake.cpp \
               $(ME3_DIR)/src/world_flatten.cpp $(ME3_DIR)/src/part_flatten.cpp \
-              $(ME3_DIR)/src/retopo_blacklist.cpp \
+              $(ME3_DIR)/src/modifier_apply.cpp $(ME3_DIR)/src/retopo_blacklist.cpp \
               $(ME3_DIR)/src/triangle_emit.cpp \
               $(ME3_DIR)/src/part_cluster.cpp \
               $(ME3_DIR)/src/tileset_placement.cpp $(ME3_DIR)/src/tileset_layout.cpp \
@@ -135,7 +136,12 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/part_graph_snapshot.cpp \
               $(ME3_DIR)/src/refine_controller.cpp \
               $(ME3_DIR)/src/resolve_cache.cpp \
-              $(ME3_DIR)/src/matter_engine.cpp
+              $(ME3_DIR)/src/matter_engine.cpp \
+              $(ME3_DIR)/src/pf_bindings.cpp \
+              ../ParticleFlowLib/src/pf_math.cpp \
+              ../ParticleFlowLib/src/pf_sim.cpp \
+              ../ParticleFlowLib/src/pf_fields.cpp \
+              ../ParticleFlowLib/src/pf_path_recorder.cpp
 
 WIN_MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
               $(MSL_DIR)/src/mesh_simplifier.cpp $(MSL_DIR)/src/mesh_indexed.cpp \
@@ -175,7 +181,8 @@ W_PIPC_OBJ = $(addprefix $(W_DIR)/,$(PIPC_NAMES_WIN:.c=.o))
 W_ALL_OBJ  = $(W_CPP_OBJ) $(W_QJS_OBJ) $(W_PIPC_OBJ)
 
 # vpath lets the pattern rules find sources by basename.
-vpath %.cpp . $(ME3_DIR)/src $(ME3_DIR)/src/render $(ME3_DIR)/src/provider $(MSL_DIR)/src
+vpath %.cpp . $(ME3_DIR)/src $(ME3_DIR)/src/render $(ME3_DIR)/src/provider $(MSL_DIR)/src \
+             ../ParticleFlowLib/src
 vpath %.c $(MSL_DIR)/src $(QJS_DIR)
 
 $(W_DIR):

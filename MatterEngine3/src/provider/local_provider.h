@@ -8,7 +8,6 @@
 
 #if defined(MATTER_HAVE_SCRIPT_HOST)
 #include "script_host.h"
-#include "part_asset_v2.h"  // part_asset::RetopoSettings
 #endif
 
 #include <cstdint>
@@ -94,8 +93,8 @@ public:
     bool ensure_part_baked(uint64_t part_hash, std::string& err);
 
     // Flatten one baked part to .flat.part (moved from compose_world's flatten_one
-    // lambda into a member; identical logic incl. retopo_by_hash_ threading +
-    // version sniff). Requires the part to have been baked (ensure_part_baked first).
+    // lambda into a member; identical logic incl. version sniff).
+    // Requires the part to have been baked (ensure_part_baked first).
     // Returns false (non-fatal) if flatten_part fails; caller falls back to
     // compositional rendering.
     bool ensure_part_flattened(uint64_t part_hash);
@@ -134,14 +133,6 @@ public:
     // ProdGraphResolver for live-edit cascade tracking.
     part_graph_snapshot::Snapshot& graph_snapshot() { return graph_snapshot_; }
 
-#if defined(MATTER_HAVE_SCRIPT_HOST)
-    // Phase C Task 17: expose retopo_by_hash_ for resolve-cache save.
-    // Valid after a successful install_graph() or restore_from_cache() call.
-    const std::unordered_map<uint64_t, part_asset::RetopoSettings>& retopo_by_hash() const {
-        return retopo_by_hash_;
-    }
-#endif
-
     // Phase C Task 17 — resolve cache restore hook.
     // Called by execute_bake on a resolve-cache hit INSTEAD of install_graph().
     // Restores bake_plan, root_hashes, graph_snapshot from the cache payload and
@@ -155,9 +146,6 @@ public:
         const part_graph_snapshot::Snapshot&              snapshot,
         const std::unordered_map<uint64_t, part_graph::BakeInputs>& bake_plan,
         const std::vector<uint64_t>&                      root_hashes,
-#if defined(MATTER_HAVE_SCRIPT_HOST)
-        const std::unordered_map<uint64_t, part_asset::RetopoSettings>& retopo_by_hash,
-#endif
         std::string& err);
 
     // Phase C Task 17 — try to load cached probes for a pre-built manifest.
@@ -204,7 +192,6 @@ private:
     std::unique_ptr<script_host::ScriptHost>            host_;
     std::unique_ptr<part_graph::FileModuleResolver>     resolver_;
     std::unique_ptr<part_graph::HostBaker>              host_baker_;  // Task 13: shared baker
-    std::unordered_map<uint64_t, part_asset::RetopoSettings> retopo_by_hash_;
 #endif
 };
 

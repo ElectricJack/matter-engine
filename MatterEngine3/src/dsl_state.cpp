@@ -1,11 +1,24 @@
 #include "dsl_state.h"
 #define RAYMATH_IMPLEMENTATION
 #include "raymath.h"
+#include <cmath>
 
 // NOTE: The TriangleBuildBuffer-touching members (ctor/dtor + beginShape/vertex/
 // endShape/line) live in dsl_triangle.cpp, NOT here. triangle_emit.hpp pulls in
 // MSL's precomp.h, whose `struct float3` collides with raymath.h's `float3`, so
 // this TU (which needs raymath for the matrix stack) must stay free of it.
+//
+// csg_lowering.h carries the same transitive float3 collision (cluster.h ->
+// vertex_ao.h -> bvh.h). Forward-declare the one function we need instead of
+// including the full header.
+
+// Forward-declaration: avoids the float3 collision from csg_lowering.h's
+// transitive includes (bvh.h defines float3{x,y,z} which conflicts with
+// raymath.h's float3{v[3]}). Implemented in csg_lowering.cpp.
+namespace dsl {
+    float field_distance(const BuildBuffer& buf, size_t opBegin, size_t opEnd,
+                         float k, const Vector3& worldPoint);
+}
 
 namespace dsl {
 
@@ -103,6 +116,80 @@ void DslState::emit_voxel_segment(BrushKind kind, const Vector3& a, const Vector
     o.materialId=material_; o.center=a; o.segB=b; o.radius=r0; o.r1=r1;
     o.smoothing=smoothing_; o.spacing=spacing_; o.tint=tint_;
     buffer_.ops.push_back(o);
+}
+
+bool DslState::raycast(const Vector3& origin, const Vector3& dir,
+                       Vector3& outPoint, Vector3& outNormal) {
+    if (session_ != Session::Voxels) {
+        set_error("raycast outside an open voxel session");
+        return false;
+    }
+    if (buffer_.ops.size() <= session_start_) {
+        set_error("raycast with no brushes emitted in this session");
+        return false;
+    }
+    float len = sqrtf(dir.x*dir.x + dir.y*dir.y + dir.z*dir.z);
+    if (len < 1e-9f) { set_error("raycast with zero-length direction"); return false; }
+    Vector3 d = { dir.x/len, dir.y/len, dir.z/len };
+
+    const size_t b = session_start_, e = buffer_.ops.size();
+    const float k = smoothing_;
+    auto field = [&](const Vector3& p) {
+        return field_distance(buffer_, b, e, k, p);
+    };
+
+    // Conservative sphere trace. The smin union under-reports distance (safe);
+    // Difference/Intersection folds can over-report near carve boundaries, so
+    // scale steps down and cap them. Bisect once a sign change brackets the hit.
+    const float kStepScale = 0.7f;
+    const float kMaxStep   = 0.5f;
+    const float kMaxT      = 100.0f;
+    const int   kMaxSteps  = 512;
+    const float kEps       = 1e-4f;
+
+    float t = 0.0f;
+    Vector3 p = origin;
+    float fd = field(p);
+    if (fd <= kEps) {
+        // Started on/inside the surface: report the origin itself.
+        outPoint = origin;
+    } else {
+        float tPrev = t, fdPrev = fd;
+        bool hit = false;
+        for (int i = 0; i < kMaxSteps && t < kMaxT; ++i) {
+            float step = fd * kStepScale;
+            if (step > kMaxStep) step = kMaxStep;
+            if (step < kEps)     step = kEps;
+            tPrev = t; fdPrev = fd;
+            t += step;
+            p = { origin.x + d.x*t, origin.y + d.y*t, origin.z + d.z*t };
+            fd = field(p);
+            if (fd <= 0.0f) { hit = true; break; }
+        }
+        if (!hit) return false;   // miss: not an error
+        // Bisection refine within [tPrev, t].
+        float lo = tPrev, hi = t;
+        (void)fdPrev;
+        for (int i = 0; i < 32; ++i) {
+            float mid = 0.5f * (lo + hi);
+            Vector3 mp = { origin.x + d.x*mid, origin.y + d.y*mid, origin.z + d.z*mid };
+            if (field(mp) > 0.0f) lo = mid; else hi = mid;
+        }
+        float tHit = 0.5f * (lo + hi);
+        outPoint = { origin.x + d.x*tHit, origin.y + d.y*tHit, origin.z + d.z*tHit };
+    }
+
+    // Central-difference gradient, normalized outward.
+    const float h = fmaxf(1e-3f, 0.25f * spacing_);
+    Vector3 g = {
+        field({outPoint.x + h, outPoint.y, outPoint.z}) - field({outPoint.x - h, outPoint.y, outPoint.z}),
+        field({outPoint.x, outPoint.y + h, outPoint.z}) - field({outPoint.x, outPoint.y - h, outPoint.z}),
+        field({outPoint.x, outPoint.y, outPoint.z + h}) - field({outPoint.x, outPoint.y, outPoint.z - h}),
+    };
+    float gl = sqrtf(g.x*g.x + g.y*g.y + g.z*g.z);
+    if (gl < 1e-9f) { outNormal = { -d.x, -d.y, -d.z }; }
+    else            { outNormal = { g.x/gl, g.y/gl, g.z/gl }; }
+    return true;
 }
 
 // raylib Matrix stores its 16 floats column-major (m0,m4,m8,m12 = first row of

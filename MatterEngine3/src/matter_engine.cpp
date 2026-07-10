@@ -595,9 +595,6 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
                 if (provider->restore_from_cache(rc_payload.snapshot,
                                                  rc_payload.bake_plan,
                                                  rc_payload.root_hashes,
-#if defined(MATTER_HAVE_SCRIPT_HOST)
-                                                 rc_payload.retopo_by_hash,
-#endif
                                                  rc_err)) {
                     // Populate new_manifest from cached instances + lights.
                     viewer::WorldManifest cached_manifest;
@@ -709,9 +706,6 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         rc_save.snapshot    = provider->graph_snapshot();
         rc_save.bake_plan   = provider->install_result().bake_plan;
         rc_save.root_hashes = provider->install_result().root_hashes;
-#if defined(MATTER_HAVE_SCRIPT_HOST)
-        rc_save.retopo_by_hash = provider->retopo_by_hash();
-#endif
         if (!resolve_cache::save(engine->cache_root, cfg.world_name,
                                  rc_cache_key, rc_save)) {
             fprintf(stderr, "resolve cache: save failed (non-fatal)\n");

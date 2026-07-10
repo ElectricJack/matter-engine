@@ -250,7 +250,6 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     host_ = std::make_unique<script_host::ScriptHost>();
     host_->set_shared_lib_root(abs_shared_lib_);
     resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_schemas_);
-    retopo_by_hash_.clear();
     // Task 13 (Phase C): create a shared HostBaker that persists beyond install_graph()
     // so ensure_part_baked() can reuse it without reconstructing a ScriptHost.
     host_baker_ = std::make_unique<part_graph::HostBaker>(*host_, abs_cache_root_);
@@ -259,44 +258,21 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     LocalProviderConfig* cfg_ptr = &cfg_;
     int* install_bake_count_ptr  = &install_bake_count_;
 
-    // Phase 5 autoremesher (Task 15): record each part's retopo settings by
-    // hash so flatten_one() below can thread them into flatten_part().
-    // Decorator over HostBaker: PartGraph::install calls resolve_hash() for
-    // EVERY node in the reachable graph (memoized by module+params), which
-    // gives us the source + resolved hash for every part regardless of cache
-    // state — cold OR warm. Recording on resolve_hash (not bake) means a
-    // repeat run with fully cached parts still populates the map, so
-    // flatten_one always sees the correct retopo settings. Schemas without
-    // `static retopo` land on the default (enabled=false), so the map entry
-    // is byte-identical to "not opted in".
-    //
-    // Task 5 (Phase B): RecordingBaker::bake() also fires cfg_.on_part for
+    // Task 5 (Phase B): RecordingBaker::bake() fires cfg_.on_part for
     // each freshly-baked part during install, with total==0 (indeterminate).
     // Task 13: RecordingBaker delegates to *host_baker_ (the shared HostBaker
     // member) instead of an inline inner, so ensure_part_baked() reuses it.
-    std::unordered_map<uint64_t, part_asset::RetopoSettings>* retopo_map_ptr = &retopo_by_hash_;
-    script_host::ScriptHost* host_raw = host_.get();
     part_graph::HostBaker* shared_baker_ptr = host_baker_.get();
     struct RecordingBaker : public Baker {
         part_graph::HostBaker& inner;
-        script_host::ScriptHost& host;
-        std::unordered_map<uint64_t, part_asset::RetopoSettings>* map;
         LocalProviderConfig* cfg;
         int* install_bake_count;
-        RecordingBaker(part_graph::HostBaker& b, script_host::ScriptHost& h,
-                       std::unordered_map<uint64_t, part_asset::RetopoSettings>* m,
+        RecordingBaker(part_graph::HostBaker& b,
                        LocalProviderConfig* c, int* ibc)
-            : inner(b), host(h), map(m), cfg(c), install_bake_count(ibc) {}
+            : inner(b), cfg(c), install_bake_count(ibc) {}
         uint64_t resolve_hash(const std::string& source, const Params& params,
                               const std::vector<uint64_t>& child_hashes) override {
-            uint64_t h = inner.resolve_hash(source, params, child_hashes);
-            if (map && h != 0 && !map->count(h)) {
-                // Fail-closed: eval_retopo_settings returns defaults on any error.
-                // Guard the double-map lookup so re-visits of the same (source, params)
-                // don't re-parse (eval_retopo_settings spins up a QuickJS context).
-                (*map)[h] = host.eval_retopo_settings(source);
-            }
-            return h;
+            return inner.resolve_hash(source, params, child_hashes);
         }
         bool cached(uint64_t resolved_hash) override { return inner.cached(resolved_hash); }
         bool bake(const std::string& source, const Params& params,
@@ -325,7 +301,7 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
             return inner.bake_lod_variants(source, params, child_hashes, resolved_hash);
         }
     };
-    RecordingBaker baker(*shared_baker_ptr, *host_, &retopo_by_hash_, cfg_ptr, install_bake_count_ptr);
+    RecordingBaker baker(*shared_baker_ptr, cfg_ptr, install_bake_count_ptr);
     PartGraph graph(*resolver_, baker);
 
     bool manifest_ok = PartGraph::read_manifest(abs_world_data_, cfg_.world_name,
@@ -505,18 +481,12 @@ bool LocalProvider::ensure_part_flattened(uint64_t part_hash) {
         abs_cache_root_ + "/" + part_asset::cache_path_flat(part_hash);
     if (part_asset::peek_format_version(flat_abs_path) == part_asset::kFormatVersionFlat)
         return true;
-    part_flatten::FlattenTargets targets;
-#if defined(MATTER_HAVE_SCRIPT_HOST)
-    auto rit = retopo_by_hash_.find(part_hash);
-    if (rit != retopo_by_hash_.end()) targets.retopo = rit->second;
-#endif
     part_flatten::FlattenResult fr =
-        part_flatten::flatten_part(abs_cache_root_, part_hash, targets);
+        part_flatten::flatten_part(abs_cache_root_, part_hash);
     if (fr.ok) {
-        printf("LocalProvider: flattened %016llx (%zu clusters, %zu levels, %zu -> %zu tris, %zu instance_refs%s)\n",
+        printf("LocalProvider: flattened %016llx (%zu clusters, %zu levels, %zu -> %zu tris, %zu instance_refs)\n",
                (unsigned long long)part_hash, fr.clusters, fr.levels,
-               fr.full_tris, fr.coarsest_tris, fr.instance_refs,
-               targets.retopo.enabled ? ", retopo=on" : "");
+               fr.full_tris, fr.coarsest_tris, fr.instance_refs);
         return true;
     } else {
         printf("LocalProvider: flatten failed for %016llx: %s\n",
@@ -1043,9 +1013,6 @@ bool LocalProvider::restore_from_cache(
     const part_graph_snapshot::Snapshot&              snapshot,
     const std::unordered_map<uint64_t, part_graph::BakeInputs>& bake_plan,
     const std::vector<uint64_t>&                      root_hashes,
-#if defined(MATTER_HAVE_SCRIPT_HOST)
-    const std::unordered_map<uint64_t, part_asset::RetopoSettings>& retopo_by_hash,
-#endif
     std::string& err)
 {
 #if defined(MATTER_HAVE_SCRIPT_HOST)
@@ -1080,8 +1047,6 @@ bool LocalProvider::restore_from_cache(
     host_ = std::make_unique<script_host::ScriptHost>();
     host_->set_shared_lib_root(abs_shared_lib_);
     resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_schemas_);
-    retopo_by_hash_.clear();
-    retopo_by_hash_ = retopo_by_hash;  // restore from cache payload (I-1 fix)
     host_baker_ = std::make_unique<part_graph::HostBaker>(*host_, abs_cache_root_);
 
     // Read the world manifest to populate roots_/expand_flags_/tileset_flags_/

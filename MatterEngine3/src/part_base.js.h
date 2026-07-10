@@ -29,7 +29,9 @@ globalThis.Part = class Part {
   difference()           { __dsl_op(1); }
   intersection()         { __dsl_op(2); }
   smoothing(k)           { __dsl_smoothing(k); }
-  simplify(ratio)        { __dsl_simplify(ratio); }
+  raycast(o,d)           { return __dsl_raycast(o[0],o[1],o[2], d[0],d[1],d[2]); }
+  beginModifier()        { __dsl_beginModifier(); }
+  endModifier(list)      { __dsl_endModifier(list); }
   placeChild(module,params) { __dsl_placeChild(module, params); }
   beginShape(mode)       { __dsl_beginShape(mode|0); }
   vertex(x,y,z)          { __dsl_vertex(x,y,(z===undefined?0:z)); }
@@ -43,5 +45,6 @@ globalThis.Part = class Part {
   cylinder(a,b,r)        { __dsl_cylinder(a[0],a[1],a[2], b[0],b[1],b[2], r); }
   cone(a,b,r0,r1)        { __dsl_cone(a[0],a[1],a[2], b[0],b[1],b[2], r0, (r1===undefined?0:r1)); }
   position()             { return __dsl_position(); }
+  paths(rec,opts)        { __pf_stampPaths((rec&&rec.__id!==undefined)?rec.__id:rec, opts); }
 };
 )JS";
