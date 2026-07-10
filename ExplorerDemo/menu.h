@@ -11,12 +11,31 @@
 // New seed: calls WorldSession::regenerate(random 64-bit seed), re-arms the
 // staged camera, and closes the menu. The HUD returns to bake-progress mode
 // automatically when it receives the BakeStarted event.
+//
+// Input design: main.cpp collects ALL input (real keyboard, gamepad, synthetic)
+// into a FrameInput once per frame — the single decision point. Menu::update()
+// consumes only that normalized struct; it never calls IsKeyPressed itself.
+// This guarantees each physical key is read exactly once per frame and makes
+// the ESC double-toggle impossible by construction.
 
 #include <cstdint>
+#include <cstdio>
 
 // Forward declarations to avoid pulling in all headers.
 namespace matter { class WorldSession; }
 struct StagedCamera;
+
+// ---------------------------------------------------------------------------
+// FrameInput — normalized per-frame input flags.
+// Collected once in main.cpp (real keys + gamepad + synthetic); passed to
+// menu.update() as the exclusive input source (menu never reads raw keys).
+// ---------------------------------------------------------------------------
+struct FrameInput {
+    bool esc   = false;
+    bool up    = false;
+    bool down  = false;
+    bool enter = false;
+};
 
 class Menu {
 public:
@@ -25,21 +44,17 @@ public:
     // True when the menu is visible (camera input should be paused).
     bool is_open() const { return open_; }
 
-    // Toggle open/closed (call when ESC pressed or gamepad Start detected).
-    void toggle() { open_ = !open_; if (open_) selected_ = 0; }
+    // Open / close explicitly (used by main.cpp's single decision point).
+    void open()  { open_ = true;  selected_ = 0; printf("menu: open\n"); fflush(stdout); }
+    void close() { open_ = false; printf("menu: closed\n"); fflush(stdout); }
 
-    // Open / close explicitly.
-    void open()  { open_ = true;  selected_ = 0; }
-    void close() { open_ = false; }
-
-    // Per-frame update: handles keyboard + gamepad navigation.
+    // Per-frame update: handles navigation and actions when open.
     // Returns true while the menu remains open.
     // On "New seed": calls session.regenerate(), resets staged, closes menu.
     // On "Quit": sets quit_requested = true; caller should break the loop.
-    // synthetic_key: -1 = none; KEY_ESCAPE / KEY_UP / KEY_DOWN / KEY_ENTER
-    //   from the smoke-mode synthetic key queue (injected by main).
+    // input is the normalized FrameInput collected by main.cpp this frame.
     bool update(matter::WorldSession& session, StagedCamera& staged,
-                int synthetic_key, bool& quit_requested);
+                const FrameInput& input, bool& quit_requested);
 
     // Draw the overlay (call between BeginDrawing/EndDrawing).
     // w, h = framebuffer dimensions.

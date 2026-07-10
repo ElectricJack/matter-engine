@@ -306,22 +306,45 @@ int main() {
             }
         }
 
-        // --- ESC toggles menu (real key only; synthetic handled in menu.update()) ---
-        // Check the raw key press here so we can toggle before updating camera.
-        // Synthetic ESC is passed to menu.update() below.
-        if (IsKeyPressed(KEY_ESCAPE) && synth_key != KEY_ESCAPE) {
-            menu.toggle();
+        // --- Single decision point: collect all input into FrameInput ---
+        // Real keyboard, gamepad, and synthetic keys are all OR'd together here,
+        // once per frame. menu.update() consumes only this struct — it never calls
+        // IsKeyPressed itself — so each physical key is read exactly once and the
+        // ESC double-toggle is impossible by construction.
+        FrameInput finput;
+        finput.esc   = IsKeyPressed(KEY_ESCAPE);
+        finput.up    = IsKeyPressed(KEY_UP)    || IsKeyPressed(KEY_W);
+        finput.down  = IsKeyPressed(KEY_DOWN)  || IsKeyPressed(KEY_S);
+        finput.enter = IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER) ||
+                       IsKeyPressed(KEY_SPACE);
+
+        // Gamepad (pad 0): d-pad + A/cross to navigate, Start to toggle.
+        bool gamepad_start = false;
+        if (IsGamepadAvailable(0)) {
+            gamepad_start = IsGamepadButtonPressed(0, GAMEPAD_BUTTON_MIDDLE_RIGHT);
+            if (IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_UP))    finput.up    = true;
+            if (IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_DOWN))  finput.down  = true;
+            if (IsGamepadButtonPressed(0, GAMEPAD_BUTTON_RIGHT_FACE_DOWN)) finput.enter = true;
+            if (gamepad_start)                                              finput.esc   = true;
         }
-        // Gamepad Start button toggles menu (real only; synthetic not needed for gamepad).
-        if (IsGamepadAvailable(0) &&
-            IsGamepadButtonPressed(0, GAMEPAD_BUTTON_MIDDLE_RIGHT)) {
-            menu.toggle();
+
+        // Synthetic keys (smoke-mode): OR into the same flags.
+        if (synth_key == KEY_ESCAPE) finput.esc   = true;
+        if (synth_key == KEY_UP)     finput.up    = true;
+        if (synth_key == KEY_DOWN)   finput.down  = true;
+        if (synth_key == KEY_ENTER)  finput.enter = true;
+
+        // ESC (or gamepad Start) toggles the menu: open when closed, let
+        // menu.update() handle close when open (via its esc flag).
+        if (finput.esc && !menu.is_open()) {
+            menu.open();
+            finput.esc = false;  // consumed by open; don't also close in update()
         }
 
         // --- Menu update: handles navigation and actions when open ---
         bool quit_from_menu = false;
         if (menu.is_open()) {
-            menu.update(*session, staged, synth_key, quit_from_menu);
+            menu.update(*session, staged, finput, quit_from_menu);
             if (quit_from_menu) break;
             // When menu closes via New seed, bake_done/bake_started are reset
             // automatically: BakeStarted event will fire next frame and reset HUD.
@@ -331,11 +354,6 @@ int main() {
                 bake_done    = false;
                 bake_started = false;
             }
-        } else if (synth_key == KEY_ESCAPE) {
-            // A synthetic ESC that wasn't consumed by the menu means: open the menu.
-            menu.open();
-            // The synth key was consumed; don't pass it further.
-            synth_key = -1;
         }
 
         // --- Staged camera or user input ---

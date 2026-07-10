@@ -44,47 +44,29 @@ const char* Menu::entry_label(int idx) {
 // ---------------------------------------------------------------------------
 // update() — navigation + action for one frame
 // ---------------------------------------------------------------------------
+// Consumes only the normalized FrameInput collected by main.cpp.  No raw
+// IsKeyPressed / IsGamepadButtonPressed calls here — each physical key is
+// read exactly once per frame at the single decision point in main.cpp.
 bool Menu::update(matter::WorldSession& session, StagedCamera& staged,
-                  int synthetic_key, bool& quit_requested) {
+                  const FrameInput& input, bool& quit_requested) {
     if (!open_) return false;
 
-    // --- Collect real inputs ---
-    bool key_up    = IsKeyPressed(KEY_UP)   || IsKeyPressed(KEY_W);
-    bool key_down  = IsKeyPressed(KEY_DOWN) || IsKeyPressed(KEY_S);
-    bool key_enter = IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_KP_ENTER) ||
-                     IsKeyPressed(KEY_SPACE);
-    bool key_esc   = IsKeyPressed(KEY_ESCAPE);
-
-    // Gamepad (pad 0): d-pad up/down + A/cross to confirm.
-    if (IsGamepadAvailable(0)) {
-        if (IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_UP))    key_up    = true;
-        if (IsGamepadButtonPressed(0, GAMEPAD_BUTTON_LEFT_FACE_DOWN))  key_down  = true;
-        if (IsGamepadButtonPressed(0, GAMEPAD_BUTTON_RIGHT_FACE_DOWN)) key_enter = true; // A / cross
-        if (IsGamepadButtonPressed(0, GAMEPAD_BUTTON_MIDDLE_RIGHT))    key_esc   = true; // Start
-    }
-
-    // --- Inject synthetic keys (smoke-mode) ---
-    if (synthetic_key == KEY_UP)     key_up    = true;
-    if (synthetic_key == KEY_DOWN)   key_down  = true;
-    if (synthetic_key == KEY_ENTER)  key_enter = true;
-    if (synthetic_key == KEY_ESCAPE) key_esc   = true;
-
-    // --- ESC toggles menu closed (Resume) ---
-    if (key_esc) {
+    // --- ESC closes menu (Resume) ---
+    if (input.esc) {
         close();
         return false;
     }
 
     // --- Navigation ---
-    if (key_up) {
+    if (input.up) {
         selected_ = (selected_ - 1 + ENTRY_COUNT) % ENTRY_COUNT;
     }
-    if (key_down) {
+    if (input.down) {
         selected_ = (selected_ + 1) % ENTRY_COUNT;
     }
 
     // --- Confirm ---
-    if (key_enter) {
+    if (input.enter) {
         switch (selected_) {
             case 0:  // Resume
                 close();
