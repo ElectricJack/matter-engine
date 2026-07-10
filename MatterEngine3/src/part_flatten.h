@@ -89,8 +89,8 @@ inline float ref_cutover_threshold(float inline_below_px, float parent_radius,
 // all ladder rungs), meaning the entire ladder is "coarse" relative to this
 // cutover — the part stays as an instance ref at all LODs.
 //
-// Levels [0, L*) are the fine segment (inline); [L*, end) are the coarse
-// segment (instance ref).
+// Levels [0, L*) are the fine segment (kept as instance refs); [L*, end) are
+// the coarse segment (child geometry inlined into the merged mesh).
 inline int cutover_level_index(float cutover_threshold, const FlattenTargets& t) {
     for (size_t i = 0; i < t.radius_divisor.size(); ++i)
         if (cutover_threshold >= t.pixel_budget * t.pixel_angle * t.radius_divisor[i])
