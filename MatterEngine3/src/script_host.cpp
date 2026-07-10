@@ -1428,68 +1428,92 @@ WorldEvalResult ScriptHost::eval_world(const std::string& source,
     // 2. Merge static params + overrides (canonical JSON).
     //    World classes extend World, not Part, so merge_params_canonical will
     //    return kNoPartClassMsg. Accept its fallback "{}" and then manually
-    //    apply params_json overrides.
+    //    read the class's `static params` + overlay caller overrides — always,
+    //    even when params_json is "{}", so that static defaults (e.g. worldSeed:42)
+    //    are picked up when the caller passes no overrides.
     std::string merged;
     {
         BakeError merr;
         merged = merge_params_canonical(source, params_json, merr);
         if (!merr.ok) {
             // Expected: no `extends Part` in World source.  Merge manually.
+            // Always run this block (not just when params_json != "{}") so that
+            // `static params` defaults are included even with an empty override.
             merged = "{}";
-            if (!params_json.empty() && params_json != "{}") {
-                // Simple merge: eval World class's static params then overlay
-                // caller overrides using a tiny context.
-                // Find and eval `static params = {...}` manually via JS.
-                JSRuntime* prt = JS_NewRuntime();
-                JSContext* pctx = JS_NewContext(prt);
-                // Evaluate kWorldBaseJS + source to get the class, read static params.
-                std::string setup = std::string(kWorldBaseJS) + "\n" + source
-                                    + "\n;globalThis.__worldClass = " + className + ";\n";
-                JSValue sv = JS_Eval(pctx, setup.c_str(), setup.size(), "<world-merge>",
-                                     JS_EVAL_TYPE_GLOBAL);
-                if (!JS_IsException(sv)) {
-                    JSValue global = JS_GetGlobalObject(pctx);
-                    JSValue cls    = JS_GetPropertyStr(pctx, global, "__worldClass");
-                    JSValue spar   = JS_GetPropertyStr(pctx, cls, "params");
-                    JS_FreeValue(pctx, cls);
-                    JS_FreeValue(pctx, global);
-                    // Merge: start with static params, overlay caller.
-                    static const char* kMerge =
-                        "(function(sp,ov){"
-                        "let base=sp||{};"
-                        "let over=ov||{};"
-                        "let m=Object.assign({},base,over);"
-                        "let keys=Object.keys(m).sort();"
-                        "let r={};for(let k of keys)r[k]=m[k];"
-                        "return JSON.stringify(r);})";
-                    JSValue mfn = JS_Eval(pctx, kMerge, strlen(kMerge), "<merge>",
-                                          JS_EVAL_TYPE_GLOBAL);
-                    JSValue pjv = JS_ParseJSON(pctx, params_json.c_str(),
-                                               params_json.size(), "<params>");
-                    if (!JS_IsException(mfn) && !JS_IsUndefined(spar) &&
-                        !JS_IsException(pjv)) {
-                        JSValue args[2] = { spar, pjv };
-                        JSValue res = JS_Call(pctx, mfn, JS_UNDEFINED, 2, args);
-                        if (!JS_IsException(res)) {
-                            const char* cs = JS_ToCString(pctx, res);
-                            if (cs) { merged = cs; JS_FreeCString(pctx, cs); }
-                        }
-                        JS_FreeValue(pctx, res);
+            JSRuntime* prt = JS_NewRuntime();
+            JSContext* pctx = JS_NewContext(prt);
+            // Evaluate kWorldBaseJS + source to get the class, read static params.
+            std::string setup = std::string(kWorldBaseJS) + "\n" + source
+                                + "\n;globalThis.__worldClass = " + className + ";\n";
+            JSValue sv = JS_Eval(pctx, setup.c_str(), setup.size(), "<world-merge>",
+                                 JS_EVAL_TYPE_GLOBAL);
+            if (!JS_IsException(sv)) {
+                JSValue global = JS_GetGlobalObject(pctx);
+                JSValue cls    = JS_GetPropertyStr(pctx, global, "__worldClass");
+                JSValue spar   = JS_GetPropertyStr(pctx, cls, "params");
+                JS_FreeValue(pctx, cls);
+                JS_FreeValue(pctx, global);
+                // Merge: start with static params, overlay caller (overrides win).
+                static const char* kMerge =
+                    "(function(sp,ov){"
+                    "let base=sp||{};"
+                    "let over=ov||{};"
+                    "let m=Object.assign({},base,over);"
+                    "let keys=Object.keys(m).sort();"
+                    "let r={};for(let k of keys)r[k]=m[k];"
+                    "return JSON.stringify(r);})";
+                JSValue mfn = JS_Eval(pctx, kMerge, strlen(kMerge), "<merge>",
+                                      JS_EVAL_TYPE_GLOBAL);
+                JSValue pjv = JS_ParseJSON(pctx, params_json.c_str(),
+                                           params_json.size(), "<params>");
+                if (!JS_IsException(mfn) && !JS_IsUndefined(spar) &&
+                    !JS_IsException(pjv)) {
+                    JSValue args[2] = { spar, pjv };
+                    JSValue res = JS_Call(pctx, mfn, JS_UNDEFINED, 2, args);
+                    if (!JS_IsException(res)) {
+                        const char* cs = JS_ToCString(pctx, res);
+                        if (cs) { merged = cs; JS_FreeCString(pctx, cs); }
                     }
-                    JS_FreeValue(pctx, pjv);
-                    JS_FreeValue(pctx, mfn);
-                    JS_FreeValue(pctx, spar);
+                    JS_FreeValue(pctx, res);
                 }
-                JS_FreeValue(pctx, sv);
-                JS_FreeContext(pctx);
-                JS_FreeRuntime(prt);
+                JS_FreeValue(pctx, pjv);
+                JS_FreeValue(pctx, mfn);
+                JS_FreeValue(pctx, spar);
             }
+            JS_FreeValue(pctx, sv);
+            JS_FreeContext(pctx);
+            JS_FreeRuntime(prt);
+        }
+    }
+
+    // 2b. Fold shared-lib imports so any `import` statement in the world source
+    //     resolves correctly — same step eval_requires takes before setting up its
+    //     runtime. Without this, a World module that imports a shared-lib helper
+    //     would fail with a module-not-found error at eval time.
+    module_resolver::FoldResult fold;
+    ModuleStore fold_store;
+    bool use_module = false;
+    if (!shared_lib_root_.empty()) {
+        std::string ferr;
+        if (!fold_sources_cached(source, fold, ferr)) {
+            r.message = "module resolution failed: " + ferr;
+            return r;
+        }
+        if (!fold.modules.empty()) {
+            fold_store = store_from_fold(fold);
+            use_module = true;
         }
     }
 
     // 3. Fresh runtime + context (hermetic bake: one JSRuntime per eval).
     JSRuntime* rt  = JS_NewRuntime();
-    JSContext* ctx = JS_NewContext(rt);
+    // Install the module loader when the world source has shared-lib imports,
+    // exactly as eval_requires does for Part/Tileset sources.
+    if (use_module)
+        JS_SetModuleLoaderFunc(rt, sh_module_normalize, sh_module_loader, &fold_store);
+    // Use new_bake_context (not JS_NewContext) so ES-module intrinsics are enabled
+    // when use_module is true — mirrors eval_part_publish_class's context setup.
+    JSContext* ctx = new_bake_context(rt, use_module);
 
     auto done = [&]() { JS_FreeContext(ctx); JS_FreeRuntime(rt); };
 
@@ -1506,16 +1530,31 @@ WorldEvalResult ScriptHost::eval_world(const std::string& source,
     }
 
     // 5. Evaluate the World class + publish it as __worldClass.
+    //    When the world source has shared-lib imports the module loader (installed
+    //    above) resolves them from fold_store — evaluate as an ES module so the
+    //    import bindings are wired.  Without imports, fall back to global eval.
+    //    Mirrors eval_part_publish_class exactly (Finding 1 fix).
     {
         std::string wrapped = source + "\n;globalThis.__worldClass = " + className + ";\n";
-        JSValue v = JS_Eval(ctx, wrapped.c_str(), wrapped.size(),
-                            "<world>", JS_EVAL_TYPE_GLOBAL);
-        if (JS_IsException(v)) {
-            BakeError e = harvest_exception(ctx);
-            r.message = e.message;
-            JS_FreeValue(ctx, v); done(); return r;
+        if (use_module) {
+            bool threw = false;
+            JSValue v = eval_part_as_module(ctx, rt, wrapped, &threw);
+            if (threw) {
+                BakeError e = harvest_exception(ctx);
+                r.message = e.message;
+                JS_FreeValue(ctx, v); done(); return r;
+            }
+            JS_FreeValue(ctx, v);
+        } else {
+            JSValue v = JS_Eval(ctx, wrapped.c_str(), wrapped.size(),
+                                "<world>", JS_EVAL_TYPE_GLOBAL);
+            if (JS_IsException(v)) {
+                BakeError e = harvest_exception(ctx);
+                r.message = e.message;
+                JS_FreeValue(ctx, v); done(); return r;
+            }
+            JS_FreeValue(ctx, v);
         }
-        JS_FreeValue(ctx, v);
     }
 
     // 6. Instantiate the class and call field(mergedParams).

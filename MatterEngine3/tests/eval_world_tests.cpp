@@ -54,5 +54,30 @@ int main() {
     CHECK(!bad.ok && bad.message.find("boom") != std::string::npos,
           "field() error surfaces");
 
+    // Finding 2: static params defaults must be picked up even when the caller
+    // passes "{}" (no overrides). The seed used in field() should be 42 (the
+    // class default), so the program must match an explicit worldSeed:42 call.
+    WorldEvalResult r_default = host.eval_world(kWorld, "{}");
+    WorldEvalResult r_explicit42 = host.eval_world(kWorld, "{\"worldSeed\":42}");
+    CHECK(r_default.ok, r_default.message.c_str());
+    CHECK(r_explicit42.ok, r_explicit42.message.c_str());
+    CHECK(r_default.field_program == r_explicit42.field_program,
+          "static params default worldSeed=42 matches explicit override");
+    // Non-default seed must differ, confirming the seed is actually wired.
+    WorldEvalResult r_other = host.eval_world(kWorld, "{\"worldSeed\":99}");
+    CHECK(r_other.ok, r_other.message.c_str());
+    CHECK(r_default.field_program != r_other.field_program,
+          "non-default seed produces different program (static default really used)");
+
+    // Finding 1: a World whose field() uses a shared-lib symbol still works when
+    // no shared_lib_root is set (no imports in the test source — the fold path is
+    // a no-op, confirming it doesn't break the import-free path).
+    // When a shared-lib root IS present the fold step would resolve imports; we
+    // verify here that the fold-gated code path does not regress the base case.
+    WorldEvalResult r_nofold = host.eval_world(kWorld, "{}");
+    CHECK(r_nofold.ok, r_nofold.message.c_str());
+    CHECK(r_nofold.field_program == r.field_program,
+          "fold path is transparent when no shared-lib root is set");
+
     return check_summary();
 }
