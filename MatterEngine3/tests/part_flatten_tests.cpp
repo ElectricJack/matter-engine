@@ -1433,6 +1433,44 @@ static void test_generous_budget_inlines() {
     std::remove(flat.c_str());
 }
 
+static void test_cutover_helpers() {
+    part_flatten::FlattenTargets t;  // defaults: pb=1.0, pa=1.047/720, div={512,256,128,64,32,16,8,4,2}
+    // Computed pb*pa*div[i] thresholds (i=0..8):
+    //   0.744533, 0.372267, 0.186133, 0.093067, 0.046533, 0.023267, 0.011633, 0.005817, 0.002908
+    // (pa = 1.047/720 = 0.001454167; pb = 1.0)
+
+    // cutover_level_index: smallest i whose threshold is <= cutover
+    // 1.0 >= thr[0]=0.7445 => index 0
+    CHECK(part_flatten::cutover_level_index(1.0f, t) == 0, "cutover=1.0 maps to index 0");
+    // 0.5 >= thr[1]=0.3723 but < thr[0]=0.7445 => index 1
+    CHECK(part_flatten::cutover_level_index(0.5f, t) == 1, "cutover=0.5 maps to index 1");
+    // 0.1 >= thr[3]=0.0931 but < thr[2]=0.1861 => index 3
+    CHECK(part_flatten::cutover_level_index(0.1f, t) == 3, "cutover=0.1 maps to index 3");
+    // 0.001 < thr[8]=0.0029 => none qualify => div.size()=9
+    CHECK(part_flatten::cutover_level_index(0.001f, t) == (int)t.radius_divisor.size(),
+          "cutover=0.001 maps to div.size() (coarsest)");
+    // 0.0 never >= any positive threshold => div.size()=9 (coarsest)
+    CHECK(part_flatten::cutover_level_index(0.0f, t) == (int)t.radius_divisor.size(),
+          "cutover=0.0 maps to div.size() (coarsest)");
+
+    // ref_cutover_threshold: px*pa*pb*parent_r / (child_r * scale)
+    // = 64 * 0.00145417 * 1.0 * 10.7 / (1.732 * 1.0) = 0.57495 ≈ 0.575
+    float c = part_flatten::ref_cutover_threshold(64.0f, 10.7f, 1.732f, 1.0f, t);
+    CHECK(std::fabs(c - 0.575f) < 0.001f, "ref_cutover_threshold(64px,10.7,1.732,1) ≈ 0.575");
+    // zero guards: degenerate inputs return 0
+    CHECK(part_flatten::ref_cutover_threshold(64.0f, 10.7f, 0.0f, 1.0f, t) == 0.0f,
+          "ref_cutover_threshold: zero child_radius returns 0");
+    CHECK(part_flatten::ref_cutover_threshold(64.0f, 0.0f, 1.0f, 1.0f, t) == 0.0f,
+          "ref_cutover_threshold: zero parent_radius returns 0");
+
+    // transform_uniform_scale: column-0 length of row-major 4x4
+    float m[16] = {0.35f,0,0,0,  0,0.35f,0,0,  0,0,0.35f,0,  0,0,0,1};
+    CHECK(std::fabs(part_flatten::transform_uniform_scale(m) - 0.35f) < 1e-6f,
+          "transform_uniform_scale(0.35-scale matrix) == 0.35");
+
+    printf("  test_cutover_helpers OK\n");
+}
+
 static void test_flat_version_bump() {
     uint64_t hash = write_small_sphere_part();   // Task 7 fixture
     auto res = part_flatten::flatten_part(kCacheRoot, hash);
@@ -1489,6 +1527,7 @@ int main() {
     test_instance_boundary_records_refs();
     test_generous_budget_inlines();
     test_flat_version_bump();
+    test_cutover_helpers();
 
     if (g_failures == 0) { printf("part_flatten_tests: ALL PASS\n"); return 0; }
     printf("part_flatten_tests: %d FAILURE(S)\n", g_failures);
