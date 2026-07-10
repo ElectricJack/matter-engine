@@ -61,13 +61,15 @@ int main() {
     CHECK(tris == 0, "meadow root has zero own geometry (pure assembly)");
 
     printf("[root] children=%zu\n", children.size());
-    CHECK(children.size() == 44896,
-          "child table = 256 tiles + 600 rocks + 4000 pebbles + 40000 grass + 40 trees");
+    CHECK(children.size() == 44910,
+          "child table = 256 tiles + 600 rocks + 14 boulders + 4000 pebbles + 40000 grass + 40 trees");
 
     std::set<uint64_t> uniq;
     for (const auto& c : children) uniq.insert(c.child_resolved_hash);
     printf("[root] unique variants=%zu\n", uniq.size());
-    CHECK(uniq.size() == 276, "276 unique variants (256+8+6+5+1)");
+    // 256+8+6+5+1 base variants + the boulder (seed,size) combos the 14
+    // deterministic scatter draws actually hit (6 of the 8 declared).
+    CHECK(uniq.size() == 282, "282 unique variants (276 base + 6 placed boulder combos)");
 
     // Determinism: a fresh graph over the warm cache = same hash, zero bakes.
     PartGraph graph2(resolver, baker);

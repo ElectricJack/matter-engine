@@ -13,6 +13,9 @@ const TILES = 16;                 // world = TILES x TILES terrain tiles
 const TILE  = 16.0;               // world units per tile (must match Terrain.js)
 const ROCK_VARIANTS = 8, PEBBLE_VARIANTS = 6, GRASS_VARIANTS = 5;
 const ROCKS = 600, PEBBLES = 4000, GRASS_CLUMPS = 40000, TREES = 40;
+// Landmark boulders: a few large Rock bakes (discrete sizes to bound the
+// variant count) scattered sparsely; instance scale adds continuous variety.
+const BOULDER_SIZES = [2.5, 4.0], BOULDER_SEEDS = 4, BOULDERS = 14;
 const TREE_MIN_DIST = 24.0;       // rejection-sampling spacing between oaks
 const GRASS_SLOPE_MAX = 0.5;      // thin grass on slopes steeper than this
 const SCATTER_SEED = 20260702;
@@ -24,6 +27,9 @@ function makeRequires() {
     for (let tx = 0; tx < TILES; ++tx)
       req.push({ module: 'Terrain', params: { tx: tx, tz: tz } });
   for (let s = 0; s < ROCK_VARIANTS; ++s)   req.push({ module: 'Rock',   params: { seed: s } });
+  for (const sz of BOULDER_SIZES)
+    for (let s = 0; s < BOULDER_SEEDS; ++s)
+      req.push({ module: 'Rock', params: { seed: s, size: sz } });
   for (let s = 0; s < PEBBLE_VARIANTS; ++s) req.push({ module: 'Pebble', params: { seed: s } });
   for (let s = 0; s < GRASS_VARIANTS; ++s)  req.push({ module: 'Grass',  params: { seed: s } });
   req.push({ module: 'Tree' });
@@ -60,6 +66,12 @@ class Meadow extends Part {
       const x = r.range(0, W), z = r.range(0, W);
       const s = r.range(0.6, 1.8);
       put('Rock', { seed: r.int(ROCK_VARIANTS) }, x, z, s, 0.15 * s);  // sink ~15%
+    }
+    for (let i = 0; i < BOULDERS; ++i) {
+      const x = r.range(0, W), z = r.range(0, W);
+      const sz = BOULDER_SIZES[r.int(BOULDER_SIZES.length)];
+      const s = r.range(0.8, 1.2);
+      put('Rock', { seed: r.int(BOULDER_SEEDS), size: sz }, x, z, s, 0.15 * sz * s);
     }
     for (let i = 0; i < PEBBLES; ++i) {
       const x = r.range(0, W), z = r.range(0, W);
