@@ -92,6 +92,10 @@ std::string serialize_params(const Params& params);
 // placements and by the script host for resolve_hash. Public for roundtrip tests.
 std::string params_to_json(const Params& params);
 
+// Inverse of params_to_json: flat JSON object {"k": num|bool|"str", ...} → Params.
+// SP-3 v1 only handles the shapes eval_requires emits (flat numbers/bools/strings).
+Params params_from_json(const std::string& json);
+
 // Resolved node in the graph (one per unique (source_hash, canonical_params)).
 struct ResolvedNode {
     uint64_t              resolved_hash = 0;
@@ -182,11 +186,6 @@ private:
 #include "script_host.h"   // SP-2 (MatterEngine3, via -I../include)
 
 namespace part_graph {
-
-// Inverse of params_to_json: flat JSON object {"k": num|bool|"str", ...} → Params.
-// SP-3 v1 only handles the shapes eval_requires emits (flat numbers/bools/strings).
-// Defined in part_graph.cpp (MATTER_HAVE_SCRIPT_HOST section).
-Params params_from_json(const std::string& json);
 
 // Reads .js modules from <schemas_dir> and evaluates `static requires` via the host's
 // top-level eval (no build()).

@@ -67,6 +67,49 @@ std::string params_to_json(const Params& params) {
     return os.str();
 }
 
+// Minimal flat-object JSON parser for the shapes eval_requires emits (flat
+// number|bool|"string"; SP-3 v1 strings carry no escapes). Unknown shapes -> skip.
+Params params_from_json(const std::string& json) {
+    Params out;
+    size_t i = 0, n = json.size();
+    auto skip_ws = [&]{ while (i < n && (json[i]==' '||json[i]=='\t'||json[i]=='\n'||json[i]=='\r')) ++i; };
+    auto parse_str = [&](std::string& s) -> bool {
+        if (i >= n || json[i] != '"') return false;
+        ++i; size_t start = i;
+        while (i < n && json[i] != '"') ++i;
+        if (i >= n) return false;
+        s = json.substr(start, i - start); ++i; return true;
+    };
+    skip_ws();
+    if (i >= n || json[i] != '{') return out; ++i;
+    skip_ws();
+    if (i < n && json[i] == '}') return out;
+    while (i < n) {
+        skip_ws();
+        std::string key;
+        if (!parse_str(key)) break;
+        skip_ws();
+        if (i >= n || json[i] != ':') break; ++i;
+        skip_ws();
+        if (i < n && json[i] == '"') {
+            std::string v; if (!parse_str(v)) break;
+            out[key] = ParamValue::string_(v);
+        } else if (json.compare(i, 4, "true") == 0) {
+            out[key] = ParamValue::boolean_(true); i += 4;
+        } else if (json.compare(i, 5, "false") == 0) {
+            out[key] = ParamValue::boolean_(false); i += 5;
+        } else {
+            size_t start = i;
+            while (i < n && json[i] != ',' && json[i] != '}') ++i;
+            out[key] = ParamValue::number(std::strtod(json.c_str() + start, nullptr));
+        }
+        skip_ws();
+        if (i < n && json[i] == ',') { ++i; continue; }
+        if (i < n && json[i] == '}') break;
+    }
+    return out;
+}
+
 PartGraph::PartGraph(ModuleResolver& resolver, Baker& baker)
     : resolver_(resolver), baker_(baker) {}
 
@@ -472,11 +515,6 @@ namespace part_graph {
 // params_to_json is defined in the always-compiled section above (install() keys
 // child placements by it); the host path reuses it for resolve_hash/bake.
 
-// Inverse: a flat JSON object {"k":num|bool|"str", ...} -> Params. SP-3 v1 only sees
-// the shapes eval_requires emits (flat numbers/bools/strings), so a tiny hand parser
-// suffices; reuse the host's own emitter contract rather than a full JSON lib.
-Params params_from_json(const std::string& json);  // defined below
-
 FileModuleResolver::FileModuleResolver(script_host::ScriptHost& host, std::string schemas_dir)
     : host_(host), schemas_dir_(std::move(schemas_dir)) {}
 
@@ -612,49 +650,6 @@ bool HostBaker::bake_lod_variants(const std::string& source, const Params& param
         if (!o.good()) return false;
     }
     return std::rename(tmp.c_str(), sidecar.c_str()) == 0;
-}
-
-// Minimal flat-object JSON parser for the shapes eval_requires emits (flat
-// number|bool|"string"; SP-3 v1 strings carry no escapes). Unknown shapes -> skip.
-Params params_from_json(const std::string& json) {
-    Params out;
-    size_t i = 0, n = json.size();
-    auto skip_ws = [&]{ while (i < n && (json[i]==' '||json[i]=='\t'||json[i]=='\n'||json[i]=='\r')) ++i; };
-    auto parse_str = [&](std::string& s) -> bool {
-        if (i >= n || json[i] != '"') return false;
-        ++i; size_t start = i;
-        while (i < n && json[i] != '"') ++i;
-        if (i >= n) return false;
-        s = json.substr(start, i - start); ++i; return true;
-    };
-    skip_ws();
-    if (i >= n || json[i] != '{') return out; ++i;
-    skip_ws();
-    if (i < n && json[i] == '}') return out;
-    while (i < n) {
-        skip_ws();
-        std::string key;
-        if (!parse_str(key)) break;
-        skip_ws();
-        if (i >= n || json[i] != ':') break; ++i;
-        skip_ws();
-        if (i < n && json[i] == '"') {
-            std::string v; if (!parse_str(v)) break;
-            out[key] = ParamValue::string_(v);
-        } else if (json.compare(i, 4, "true") == 0) {
-            out[key] = ParamValue::boolean_(true); i += 4;
-        } else if (json.compare(i, 5, "false") == 0) {
-            out[key] = ParamValue::boolean_(false); i += 5;
-        } else {
-            size_t start = i;
-            while (i < n && json[i] != ',' && json[i] != '}') ++i;
-            out[key] = ParamValue::number(std::strtod(json.c_str() + start, nullptr));
-        }
-        skip_ws();
-        if (i < n && json[i] == ',') { ++i; continue; }
-        if (i < n && json[i] == '}') break;
-    }
-    return out;
 }
 
 } // namespace part_graph
