@@ -327,6 +327,10 @@ REFINECTL_TARGET = refine_controller_tests
 REFINECTL_CPP    = refine_controller_tests.cpp ../src/refine_controller.cpp \
                    ../src/part_graph_snapshot.cpp
 
+# Phase C Task 8 — SectorStreamer (pure CPU, no JS, no GL).
+SECTORSTREAM_TARGET = sector_streamer_tests
+SECTORSTREAM_CPP    = sector_streamer_tests.cpp ../src/sector_streamer.cpp
+
 # Phase C Task 17 — resolve/manifest cache (headless, no GL needed).
 RESOLVECACHE_TARGET = resolve_cache_tests
 RESOLVECACHE_CPP    = resolve_cache_tests.cpp \
@@ -663,6 +667,7 @@ def_CPP_SRCS := $(sort \
     $(ASYNCQ_CPP) \
     $(TILESETGTEX_CPP) \
     $(REFINECTL_CPP) \
+    $(SECTORSTREAM_CPP) \
     $(RESOLVECACHE_CPP) \
     $(MODAPPLY_CPP) \
     $(TERRAINFIELD_CPP) \
@@ -760,6 +765,7 @@ SHADER_SOURCE_OBJS = $(call obj_list,def,$(SHADER_SOURCE_CPP))
 ASYNCQ_OBJS = $(call obj_list,def,$(ASYNCQ_CPP))
 TILESETGTEX_OBJS = $(call obj_list,def,$(TILESETGTEX_CPP))
 REFINECTL_OBJS = $(call obj_list,def,$(REFINECTL_CPP))
+SECTORSTREAM_OBJS = $(call obj_list,def,$(SECTORSTREAM_CPP))
 RESOLVECACHE_OBJS = $(call obj_list,def,$(RESOLVECACHE_CPP)) $(call obj_list,mslc,$(RESOLVECACHE_C))
 MODAPPLY_OBJS = $(call obj_list,def,$(MODAPPLY_CPP))
 TERRAINFIELD_OBJS = $(call obj_list,def,$(TERRAINFIELD_CPP))
@@ -797,7 +803,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-partv2 run-script run-foldcache run-evalworld run-terrainmesh run-terrainverb run-sectorbake run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise valley-layout-tests run-valley release-part-tests run-releasepart run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield
+.PHONY: clean run-partv2 run-script run-foldcache run-evalworld run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise valley-layout-tests run-valley release-part-tests run-releasepart run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1121,6 +1127,13 @@ $(REFINECTL_TARGET): $(REFINECTL_OBJS)
 run-refinectl: $(REFINECTL_TARGET)
 	./$(REFINECTL_TARGET)
 
+# Phase C Task 8 — SectorStreamer (pure CPU, no JS, no GL).
+$(SECTORSTREAM_TARGET): $(SECTORSTREAM_OBJS)
+	$(CC) $(SECTORSTREAM_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS)
+
+run-sectorstream: $(SECTORSTREAM_TARGET)
+	./$(SECTORSTREAM_TARGET)
+
 # modifier_apply stack runner (simplify/smooth/retopo, failure=skip, blacklist chunk hash).
 $(MODAPPLY_TARGET): $(MODAPPLY_OBJS)
 	$(CC) $(MODAPPLY_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
@@ -1282,6 +1295,7 @@ clean:
 	      $(LIVEPROD_TARGET) $(MODAPPLY_TARGET) $(MODBAKE_TARGET) \
 	      $(TERRAINNOISE_TARGET) \
 	      $(REFINECTL_TARGET) \
+	      $(SECTORSTREAM_TARGET) \
 	      $(TERRAINFIELD_TARGET) \
 	      $(TERRAINMESH_TARGET) \
 	      $(TERRAINVERB_TARGET) \
