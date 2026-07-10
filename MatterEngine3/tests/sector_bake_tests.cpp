@@ -62,5 +62,30 @@ int main() {
         R"({"tx":0,"tz":0,"rung":0,"worldSeed":42,"fieldHash":"xyz","biomes":""})");
     CHECK(rf.error.ok && rf.resolved_hash != r0.resolved_hash, "fieldHash changes hash");
 
+    // ground geometry: the baked .part file must be significantly larger than a
+    // bare header, indicating terrain triangles were serialized into it.
+    {
+        CHECK(!r0.written_path.empty(), "bake wrote a .part file");
+        std::ifstream pf(r0.written_path, std::ios::binary | std::ios::ate);
+        long long fsz = pf ? (long long)pf.tellg() : 0LL;
+        CHECK(fsz > 256, "sector .part has non-trivial size (ground geometry present)");
+    }
+
+    // scatter bake: rung >= 2 enables vegetation scatter (see WorldSector.js line 34).
+    // Provide a biome table with non-zero grass/rocks/pebbles counts so the
+    // scatter code paths execute even at this deterministic seed/tile.
+    // We cannot assert child instance geometry here (child hashes are not wired
+    // up in this harness), but we CAN assert the bake succeeds and its hash
+    // differs from a rung-0 bake of the same tile (rung is a hash input).
+    {
+        const char* p_scatter =
+            R"({"tx":0,"tz":0,"rung":2,"worldSeed":42,"fieldHash":"abc",)"
+            R"("biomes":"{\"meadow\":{\"rocks\":4,\"pebbles\":4,\"grass\":5}}"})";
+        BakeResult rs = bake(p_scatter);
+        CHECK(rs.error.ok, rs.error.message.c_str());
+        // rung is folded into the hash, so rung-2 must differ from rung-0
+        CHECK(rs.resolved_hash != r0.resolved_hash, "scatter-rung hash differs from terrain-only rung");
+    }
+
     return check_summary();
 }

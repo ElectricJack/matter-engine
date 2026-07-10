@@ -89,6 +89,37 @@ int main() {
         auto ev = s.take_evictions();
         CHECK(ev.empty(), "no eviction within hysteresis");
     }
+    // --- hysteresis oscillation: repeated bouncing within the band causes no churn ---
+    // Hysteresis=16 means a settled sector is not re-evaluated until the camera
+    // moves more than 16 world units. Oscillating the camera ±7 units (well under
+    // hysteresis) ten times in a row must produce zero new requests and zero
+    // evictions — the streamer must not churn on sustained jitter inside the band.
+    {
+        SectorStreamer s(cfg);
+        settle(s, 8.0f, 8.0f);
+        s.take_evictions();
+        size_t resident_before = s.resident_count();
+
+        // Bounce ±7 around the settled position 10 times. Each individual move is
+        // ≤14 units of total displacement, within the 16-unit hysteresis window.
+        int new_requests = 0;
+        std::vector<Eviction> all_evs;
+        for (int bounce = 0; bounce < 10; ++bounce) {
+            float cam_x = 8.0f + (bounce % 2 == 0 ? 7.0f : -7.0f);
+            s.update(cam_x, 8.0f);
+            SectorRequest q;
+            while (s.next_request(q)) {
+                ++new_requests;
+                s.on_published(q.tx, q.tz, q.rung);
+            }
+            auto ev = s.take_evictions();
+            all_evs.insert(all_evs.end(), ev.begin(), ev.end());
+        }
+        CHECK(new_requests == 0, "hysteresis: no new requests during repeated oscillation");
+        CHECK(all_evs.empty(), "hysteresis: no evictions during repeated oscillation");
+        CHECK(s.resident_count() == resident_before,
+              "hysteresis: resident count stable during repeated oscillation");
+    }
     // --- late publish rejected ------------------------------------------------
     {
         SectorStreamer s(cfg);
