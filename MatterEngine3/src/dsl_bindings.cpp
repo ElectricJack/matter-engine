@@ -910,27 +910,25 @@ static JSValue j_terrainVolume(JSContext* c, JSValueConst, int n, JSValueConst* 
         return JS_UNDEFINED;
     }
 
-    // Push all buckets into the triangle buffer with gradient normals.
-    tri_emit::TriangleBuildBuffer* buf = st->triangle_buffer();
+    // Emit each material bucket via the standard fill→beginShape→vertex→endShape
+    // path so the downstream mesh pipeline (AO bake, normal blending) computes
+    // shading normals the same way it does for Terrain.js today. The mesher's
+    // gradient normals live in SectorMesh for test validation only — no new
+    // normal plumbing enters the verb emission path.
     for (const auto& bkt : mesh.buckets) {
         // Map mesher material (0..3 = grass/dirt/rock/snow) to the caller's IDs.
         uint32_t mat_id = bkt.material < 4 ? mat[bkt.material] : mat[0];
         const size_t n_tris = bkt.positions.size() / 9;
+        st->fill(mat_id);
+        st->beginShape(0 /* triangles */);
         for (size_t t = 0; t < n_tris; ++t) {
-            auto p = [&](int v) -> float3 {
-                return make_float3(bkt.positions[t*9+v*3+0],
-                                   bkt.positions[t*9+v*3+1],
-                                   bkt.positions[t*9+v*3+2]);
-            };
-            auto nm = [&](int v) -> float3 {
-                return make_float3(bkt.normals[t*9+v*3+0],
-                                   bkt.normals[t*9+v*3+1],
-                                   bkt.normals[t*9+v*3+2]);
-            };
-            buf->push_with_normals(p(0), p(1), p(2),
-                                   nm(0), nm(1), nm(2),
-                                   (int)mat_id);
+            for (int v = 0; v < 3; ++v) {
+                st->vertex(bkt.positions[t*9+v*3+0],
+                           bkt.positions[t*9+v*3+1],
+                           bkt.positions[t*9+v*3+2]);
+            }
         }
+        st->endShape();
     }
     return JS_UNDEFINED;
 }

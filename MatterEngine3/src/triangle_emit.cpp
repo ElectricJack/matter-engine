@@ -38,24 +38,6 @@ void TriangleBuildBuffer::emitTriangle(float3 p0, float3 p1, float3 p2,
     triex_.push_back(e);
 }
 
-void TriangleBuildBuffer::push_with_normals(float3 p0, float3 p1, float3 p2,
-                                             float3 n0, float3 n1, float3 n2,
-                                             int material_id, float4 tint) {
-    Tri t;
-    t.vertex0  = p0; t.vertex1 = p1; t.vertex2 = p2;
-    t.centroid = make_float3((p0.x+p1.x+p2.x)/3.0f,
-                             (p0.y+p1.y+p2.y)/3.0f,
-                             (p0.z+p1.z+p2.z)/3.0f);
-    tris_.push_back(t);
-    TriEx e{};
-    e.uv0 = e.uv1 = e.uv2 = make_float2(0.0f, 0.0f);
-    e.N0 = n0; e.N1 = n1; e.N2 = n2;
-    e.materialId = material_id;
-    e.tint = tint;
-    e.ao0 = e.ao1 = e.ao2 = 1.0f;
-    triex_.push_back(e);
-}
-
 void TriangleBuildBuffer::beginShape(ShapeType type, const mat4& transform,
                                      int material_id, float4 tint) {
     cur_type_ = type;

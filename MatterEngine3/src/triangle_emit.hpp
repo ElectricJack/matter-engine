@@ -100,14 +100,6 @@ public:
     const std::vector<Tri>&   triangles() const { return tris_; }
     const std::vector<TriEx>& tri_extra() const { return triex_; }
 
-    // Direct push with explicit per-vertex normals (for terrain mesher output
-    // which stores gradient normals separately from positions). No transform
-    // is applied — positions/normals are already in the desired space.
-    void push_with_normals(float3 p0, float3 p1, float3 p2,
-                           float3 n0, float3 n1, float3 n2,
-                           int material_id,
-                           float4 tint = make_float4(1,1,1,0));
-
     // Append this buffer's contents onto a host's triangle/triex arrays (the
     // SP-2 build-buffer merge seam). Used so the voxel-lowered mesh and the
     // direct triangles register as ONE BLAS.
