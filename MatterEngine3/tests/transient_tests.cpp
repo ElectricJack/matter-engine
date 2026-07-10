@@ -162,6 +162,10 @@ int main() {
     viewer::PartStore store(cache_root);
     store.set_scratch_dir(prov->transient_dir());
 
+    // Verify scratch-first has() lookup works
+    CHECK(store.has(terrain_hash),
+          "PartStore::has(terrain_hash) returns true via scratch-first lookup");
+
     const viewer::LoadedPart* loaded_terrain = store.get_or_load(terrain_hash);
     CHECK(loaded_terrain != nullptr, "PartStore::get_or_load(terrain_hash) succeeded via scratch");
     if (loaded_terrain == nullptr) {

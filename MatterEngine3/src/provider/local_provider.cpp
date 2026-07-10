@@ -439,6 +439,9 @@ bool LocalProvider::ensure_part_baked(uint64_t part_hash, std::string& err) {
             cfg_.on_part(mod, ++install_bake_count_, 0);
         }
 
+        // Set the baking module for transient routing (must precede bake call)
+        host_baker_->set_baking_module(bi.module);
+
         // Bake
         bool bake_ok = false;
         try {
@@ -1057,6 +1060,11 @@ bool LocalProvider::restore_from_cache(
     host_->set_shared_lib_root(abs_shared_lib_);
     resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_schemas_);
     host_baker_ = std::make_unique<part_graph::HostBaker>(*host_, abs_cache_root_);
+
+    // Task 2: apply transient settings to the baker (if set_transient_modules was called)
+    if (!transient_modules_.empty()) {
+        host_baker_->set_transient(&transient_modules_, transient_dir_);
+    }
 
     // Read the world manifest to populate roots_/expand_flags_/tileset_flags_/
     // tileset_indices_ so run_tileset_deferred() still operates correctly.

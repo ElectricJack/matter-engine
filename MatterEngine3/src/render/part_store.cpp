@@ -81,6 +81,19 @@ static std::string resolve_artifact_path(uint64_t part_hash, const std::string& 
     return cache_root + "/" + part_asset::cache_path_resolved(part_hash);
 }
 
+// Task 2: resolve the flat artifact path, checking scratch dir first, then cache.
+static std::string resolve_flat_path(uint64_t part_hash, const std::string& scratch_dir,
+                                     const std::string& cache_root) {
+    struct stat st;
+    if (!scratch_dir.empty()) {
+        std::string scratch_path = scratch_dir + "/" + part_asset::cache_path_flat(part_hash);
+        if (::stat(scratch_path.c_str(), &st) == 0) {
+            return scratch_path;
+        }
+    }
+    return cache_root + "/" + part_asset::cache_path_flat(part_hash);
+}
+
 bool PartStore::has(uint64_t part_hash) const {
     if (loaded_.count(part_hash)) return true;
     struct stat st;
@@ -93,7 +106,7 @@ bool PartStore::has(uint64_t part_hash) const {
 // if v3 is unavailable. Returns false (fall back to the compositional .part) when
 // the file is absent or fails to load in either format.
 bool PartStore::load_flat(uint64_t part_hash, LoadedPart& lp) {
-    const std::string path = cache_root_ + "/" + part_asset::cache_path_flat(part_hash);
+    const std::string path = resolve_flat_path(part_hash, scratch_dir_, cache_root_);
 
     // Sniff version first; fall back to compositional path when absent.
     uint32_t ver = part_asset::peek_format_version(path);
