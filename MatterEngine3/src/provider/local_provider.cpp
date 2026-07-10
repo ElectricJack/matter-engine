@@ -313,8 +313,10 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     RecordingBaker baker(*shared_baker_ptr, cfg_ptr, install_bake_count_ptr);
     PartGraph graph(*resolver_, baker);
 
+    world_module_.clear();
     bool manifest_ok = PartGraph::read_manifest(abs_world_data_, cfg_.world_name,
-                                                roots_, err, &expand_flags_, &tileset_flags_);
+                                                roots_, err, &expand_flags_, &tileset_flags_,
+                                                &world_module_);
     if (!manifest_ok) {
         return false;
     }
@@ -1078,8 +1080,10 @@ bool LocalProvider::restore_from_cache(
     // tileset_indices_ so run_tileset_deferred() still operates correctly.
     {
         std::string merr;
+        world_module_.clear();
         if (!PartGraph::read_manifest(abs_world_data_, cfg_.world_name,
-                                      roots_, merr, &expand_flags_, &tileset_flags_)) {
+                                      roots_, merr, &expand_flags_, &tileset_flags_,
+                                      &world_module_)) {
             err = "restore_from_cache: failed to read manifest: " + merr;
             return false;
         }

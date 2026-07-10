@@ -38,6 +38,19 @@ struct TilesetEvalResult {
     uint64_t resolved_hash = 0;
 };
 
+// Result of ScriptHost::eval_world: the canonical field program text (ready
+// for terrain_field::FieldProgram::parse), the biomes() table as JSON, and
+// the world constants from `static world`.
+struct WorldEvalResult {
+    bool ok = false;
+    std::string message;          // error text when !ok
+    std::string field_program;    // canonical op-line text for FieldProgram::parse
+    std::string biomes_json;      // JSON.stringify of biomes() return value
+    float sector_size = 16.0f;
+    float y_min = -64.0f;
+    float y_max = 192.0f;
+};
+
 // Discovered child instance from a part's static `requires(...)` (eval'd WITHOUT baking).
 struct RequiredChild {
     std::string module_specifier;  // child part the parent instances
@@ -69,6 +82,13 @@ public:
                           const std::string& params_json,
                           const uint64_t* child_hashes = nullptr,
                           size_t child_count = 0);
+
+    // Evaluate a World root: fresh isolated context, runs field() + biomes(),
+    // accumulates the field-program op lines, and returns them as a FieldProgram
+    // text string plus the JSON-serialised biomes table and world constants.
+    // Fail-closed: on any JS error ok=false with message set.
+    WorldEvalResult eval_world(const std::string& source,
+                               const std::string& params_json);
 
     // Evaluate a Tileset root: fresh isolated context, records verbs into a TilesetSpec.
     // No geometry artifact is written. Fail-closed like bake_source.

@@ -173,6 +173,10 @@ public:
     // Access the transient scratch dir (for test assertions).
     const std::string& transient_dir() const { return transient_dir_; }
 
+    // Phase C Task 4: name of the module tagged `world` in world.manifest (empty
+    // if no world-kind entry). Populated after install_graph(). Task 9 consumes it.
+    const std::string& world_module() const { return world_module_; }
+
 private:
     LocalProviderConfig  cfg_;
     int                  baked_count_ = 0;
@@ -210,6 +214,9 @@ private:
     // Task 2: transient module routing state
     std::set<std::string> transient_modules_;
     std::string transient_dir_;
+
+    // Task 4: world-kind module name from manifest (empty if none).
+    std::string world_module_;
 };
 
 // Expand an assembly root's baked child-instance table (from its .part in

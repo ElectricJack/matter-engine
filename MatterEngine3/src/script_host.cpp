@@ -4,6 +4,7 @@ extern "C" {
 }
 #include "part_base.js.h"
 #include "tileset_base.js.h"
+#include "world_base.js.h"
 #include "part_asset_v2.h"   // SP-1 v2 helper (compute_resolved_hash, save_v2)
 #include "triangle_emit.hpp" // direct-triangle (mesh) session buffer
 #include "dsl_state.h"
@@ -1397,6 +1398,312 @@ done:
         if (rt)  JS_FreeRuntime(rt);
         return r;
     }
+}
+
+// Extract the authored class name from `class <Name> extends World`.
+static std::string find_world_class_name(const std::string& source) {
+    static const std::regex re("class\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s+extends\\s+World\\b");
+    std::smatch m;
+    if (std::regex_search(source, m, re)) return m[1].str();
+    return std::string();
+}
+
+// ---------------------------------------------------------------------------
+// eval_world: evaluate a World-definition class, return the field program text
+// and biome table JSON. Mirrors eval_requires/eval_tileset structurally.
+// ---------------------------------------------------------------------------
+WorldEvalResult ScriptHost::eval_world(const std::string& source,
+                                       const std::string& params_json) {
+    WorldEvalResult r;
+
+    // 1. Find class name.
+    std::string className = find_world_class_name(source);
+    if (className.empty()) {
+        r.message = "no class extending World found";
+        return r;
+    }
+
+    // 2. Merge static params + overrides (canonical JSON).
+    //    World classes extend World, not Part, so merge_params_canonical will
+    //    return kNoPartClassMsg. Accept its fallback "{}" and then manually
+    //    apply params_json overrides.
+    std::string merged;
+    {
+        BakeError merr;
+        merged = merge_params_canonical(source, params_json, merr);
+        if (!merr.ok) {
+            // Expected: no `extends Part` in World source.  Merge manually.
+            merged = "{}";
+            if (!params_json.empty() && params_json != "{}") {
+                // Simple merge: eval World class's static params then overlay
+                // caller overrides using a tiny context.
+                // Find and eval `static params = {...}` manually via JS.
+                JSRuntime* prt = JS_NewRuntime();
+                JSContext* pctx = JS_NewContext(prt);
+                // Evaluate kWorldBaseJS + source to get the class, read static params.
+                std::string setup = std::string(kWorldBaseJS) + "\n" + source
+                                    + "\n;globalThis.__worldClass = " + className + ";\n";
+                JSValue sv = JS_Eval(pctx, setup.c_str(), setup.size(), "<world-merge>",
+                                     JS_EVAL_TYPE_GLOBAL);
+                if (!JS_IsException(sv)) {
+                    JSValue global = JS_GetGlobalObject(pctx);
+                    JSValue cls    = JS_GetPropertyStr(pctx, global, "__worldClass");
+                    JSValue spar   = JS_GetPropertyStr(pctx, cls, "params");
+                    JS_FreeValue(pctx, cls);
+                    JS_FreeValue(pctx, global);
+                    // Merge: start with static params, overlay caller.
+                    static const char* kMerge =
+                        "(function(sp,ov){"
+                        "let base=sp||{};"
+                        "let over=ov||{};"
+                        "let m=Object.assign({},base,over);"
+                        "let keys=Object.keys(m).sort();"
+                        "let r={};for(let k of keys)r[k]=m[k];"
+                        "return JSON.stringify(r);})";
+                    JSValue mfn = JS_Eval(pctx, kMerge, strlen(kMerge), "<merge>",
+                                          JS_EVAL_TYPE_GLOBAL);
+                    JSValue pjv = JS_ParseJSON(pctx, params_json.c_str(),
+                                               params_json.size(), "<params>");
+                    if (!JS_IsException(mfn) && !JS_IsUndefined(spar) &&
+                        !JS_IsException(pjv)) {
+                        JSValue args[2] = { spar, pjv };
+                        JSValue res = JS_Call(pctx, mfn, JS_UNDEFINED, 2, args);
+                        if (!JS_IsException(res)) {
+                            const char* cs = JS_ToCString(pctx, res);
+                            if (cs) { merged = cs; JS_FreeCString(pctx, cs); }
+                        }
+                        JS_FreeValue(pctx, res);
+                    }
+                    JS_FreeValue(pctx, pjv);
+                    JS_FreeValue(pctx, mfn);
+                    JS_FreeValue(pctx, spar);
+                }
+                JS_FreeValue(pctx, sv);
+                JS_FreeContext(pctx);
+                JS_FreeRuntime(prt);
+            }
+        }
+    }
+
+    // 3. Fresh runtime + context (hermetic bake: one JSRuntime per eval).
+    JSRuntime* rt  = JS_NewRuntime();
+    JSContext* ctx = JS_NewContext(rt);
+
+    auto done = [&]() { JS_FreeContext(ctx); JS_FreeRuntime(rt); };
+
+    // 4. Evaluate kWorldBaseJS into the context (defines FieldNode, noise2, …, World).
+    {
+        JSValue v = JS_Eval(ctx, kWorldBaseJS, strlen(kWorldBaseJS),
+                            "<world-base>", JS_EVAL_TYPE_GLOBAL);
+        if (JS_IsException(v)) {
+            BakeError e = harvest_exception(ctx);
+            r.message = "world-base eval failed: " + e.message;
+            JS_FreeValue(ctx, v); done(); return r;
+        }
+        JS_FreeValue(ctx, v);
+    }
+
+    // 5. Evaluate the World class + publish it as __worldClass.
+    {
+        std::string wrapped = source + "\n;globalThis.__worldClass = " + className + ";\n";
+        JSValue v = JS_Eval(ctx, wrapped.c_str(), wrapped.size(),
+                            "<world>", JS_EVAL_TYPE_GLOBAL);
+        if (JS_IsException(v)) {
+            BakeError e = harvest_exception(ctx);
+            r.message = e.message;
+            JS_FreeValue(ctx, v); done(); return r;
+        }
+        JS_FreeValue(ctx, v);
+    }
+
+    // 6. Instantiate the class and call field(mergedParams).
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue cls    = JS_GetPropertyStr(ctx, global, "__worldClass");
+    JS_FreeValue(ctx, global);
+
+    if (!JS_IsFunction(ctx, cls)) {
+        r.message = "world class not a constructor";
+        JS_FreeValue(ctx, cls); done(); return r;
+    }
+
+    JSValue inst = JS_CallConstructor(ctx, cls, 0, nullptr);
+    if (JS_IsException(inst)) {
+        BakeError e = harvest_exception(ctx);
+        r.message = "world constructor threw: " + e.message;
+        JS_FreeValue(ctx, cls); done(); return r;
+    }
+
+    // Parse merged params into a JS object.
+    JSValue paramsObj = JS_ParseJSON(ctx, merged.c_str(), merged.size(), "<merged>");
+    if (JS_IsException(paramsObj)) paramsObj = JS_NewObject(ctx);
+
+    // Call field(params).
+    JSValue fieldFn = JS_GetPropertyStr(ctx, inst, "field");
+    JSValue fieldResult = JS_UNDEFINED;
+    if (!JS_IsFunction(ctx, fieldFn)) {
+        r.message = "world.field() is not a function";
+        JS_FreeValue(ctx, paramsObj); JS_FreeValue(ctx, fieldFn);
+        JS_FreeValue(ctx, inst); JS_FreeValue(ctx, cls); done(); return r;
+    }
+    fieldResult = JS_Call(ctx, fieldFn, inst, 1, &paramsObj);
+    JS_FreeValue(ctx, fieldFn);
+    JS_FreeValue(ctx, paramsObj);
+
+    if (JS_IsException(fieldResult)) {
+        BakeError e = harvest_exception(ctx);
+        r.message = e.message;
+        JS_FreeValue(ctx, fieldResult);
+        JS_FreeValue(ctx, inst); JS_FreeValue(ctx, cls); done(); return r;
+    }
+
+    // 7. Read the density/moisture/relief/seaLevel from fieldResult.
+    int density_reg  = -1;
+    int moisture_reg = -1;
+    int relief_reg   = -1;
+    float sea_level  = 0.0f;
+    float mount_relief_thresh = 0.65f;
+    float rocky_moist_thresh  = 0.35f;
+
+    auto get_reg = [&](const char* key, int& out) {
+        JSValue v = JS_GetPropertyStr(ctx, fieldResult, key);
+        if (!JS_IsException(v) && !JS_IsUndefined(v)) {
+            JSValue rv = JS_GetPropertyStr(ctx, v, "r");
+            if (!JS_IsException(rv)) {
+                uint32_t u = 0;
+                JS_ToUint32(ctx, &u, rv);
+                out = (int)u;
+            }
+            JS_FreeValue(ctx, rv);
+        }
+        JS_FreeValue(ctx, v);
+    };
+    get_reg("density",  density_reg);
+    get_reg("moisture", moisture_reg);
+    get_reg("relief",   relief_reg);
+
+    {
+        JSValue v = JS_GetPropertyStr(ctx, fieldResult, "seaLevel");
+        if (!JS_IsException(v) && !JS_IsUndefined(v)) {
+            double d = 0.0;
+            JS_ToFloat64(ctx, &d, v);
+            sea_level = (float)d;
+        }
+        JS_FreeValue(ctx, v);
+    }
+    JS_FreeValue(ctx, fieldResult);
+
+    if (density_reg < 0 || moisture_reg < 0 || relief_reg < 0) {
+        r.message = "field() must return { density, moisture, relief, seaLevel }";
+        JS_FreeValue(ctx, inst); JS_FreeValue(ctx, cls); done(); return r;
+    }
+
+    // 8. Check biomeThresholds static.
+    {
+        JSValue bt = JS_GetPropertyStr(ctx, cls, "biomeThresholds");
+        if (!JS_IsException(bt) && !JS_IsUndefined(bt)) {
+            JSValue mr = JS_GetPropertyStr(ctx, bt, "mountRelief");
+            JSValue rm = JS_GetPropertyStr(ctx, bt, "rockyMoisture");
+            if (!JS_IsException(mr) && !JS_IsUndefined(mr)) {
+                double d = 0.65; JS_ToFloat64(ctx, &d, mr); mount_relief_thresh = (float)d;
+            }
+            if (!JS_IsException(rm) && !JS_IsUndefined(rm)) {
+                double d = 0.35; JS_ToFloat64(ctx, &d, rm); rocky_moist_thresh  = (float)d;
+            }
+            JS_FreeValue(ctx, mr);
+            JS_FreeValue(ctx, rm);
+        }
+        JS_FreeValue(ctx, bt);
+    }
+
+    // 9. Read `static world` constants.
+    {
+        JSValue wc = JS_GetPropertyStr(ctx, cls, "world");
+        if (!JS_IsException(wc) && !JS_IsUndefined(wc)) {
+            JSValue ss   = JS_GetPropertyStr(ctx, wc, "sectorSize");
+            JSValue ymin = JS_GetPropertyStr(ctx, wc, "yMin");
+            JSValue ymax = JS_GetPropertyStr(ctx, wc, "yMax");
+            if (!JS_IsException(ss) && !JS_IsUndefined(ss)) {
+                double d = 16.0; JS_ToFloat64(ctx, &d, ss); r.sector_size = (float)d;
+            }
+            if (!JS_IsException(ymin) && !JS_IsUndefined(ymin)) {
+                double d = -64.0; JS_ToFloat64(ctx, &d, ymin); r.y_min = (float)d;
+            }
+            if (!JS_IsException(ymax) && !JS_IsUndefined(ymax)) {
+                double d = 192.0; JS_ToFloat64(ctx, &d, ymax); r.y_max = (float)d;
+            }
+            JS_FreeValue(ctx, ss);
+            JS_FreeValue(ctx, ymin);
+            JS_FreeValue(ctx, ymax);
+        }
+        JS_FreeValue(ctx, wc);
+    }
+
+    // 10. Read globalThis.__world_ops (array of op-line strings accumulated by FieldNode).
+    {
+        JSValue g = JS_GetGlobalObject(ctx);
+        JSValue ops = JS_GetPropertyStr(ctx, g, "__world_ops");
+        JS_FreeValue(ctx, g);
+
+        uint32_t len = 0;
+        JSValue lenV = JS_GetPropertyStr(ctx, ops, "length");
+        JS_ToUint32(ctx, &len, lenV);
+        JS_FreeValue(ctx, lenV);
+
+        std::string prog;
+        for (uint32_t i = 0; i < len; ++i) {
+            JSValue line = JS_GetPropertyUint32(ctx, ops, i);
+            const char* s = JS_ToCString(ctx, line);
+            if (s) { prog += s; prog += '\n'; JS_FreeCString(ctx, s); }
+            JS_FreeValue(ctx, line);
+        }
+        JS_FreeValue(ctx, ops);
+
+        // Append directive lines.
+        prog += "height r"   + std::to_string(density_reg)  + '\n';
+        prog += "moisture r" + std::to_string(moisture_reg) + '\n';
+        prog += "relief r"   + std::to_string(relief_reg)   + '\n';
+        {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "seaLevel %g\n", (double)sea_level);
+            prog += buf;
+            std::snprintf(buf, sizeof(buf), "biome %g %g\n",
+                          (double)mount_relief_thresh, (double)rocky_moist_thresh);
+            prog += buf;
+        }
+        r.field_program = std::move(prog);
+    }
+
+    // 11. Call biomes() if present, JSON-stringify result.
+    {
+        JSValue biomesFn = JS_GetPropertyStr(ctx, inst, "biomes");
+        if (JS_IsFunction(ctx, biomesFn)) {
+            JSValue biomesResult = JS_Call(ctx, biomesFn, inst, 0, nullptr);
+            if (!JS_IsException(biomesResult)) {
+                JSValue global2 = JS_GetGlobalObject(ctx);
+                JSValue jsonObj  = JS_GetPropertyStr(ctx, global2, "JSON");
+                JSValue stringifyFn = JS_GetPropertyStr(ctx, jsonObj, "stringify");
+                JS_FreeValue(ctx, global2);
+                JS_FreeValue(ctx, jsonObj);
+                JSValue sresult = JS_Call(ctx, stringifyFn, JS_UNDEFINED,
+                                          1, &biomesResult);
+                if (!JS_IsException(sresult)) {
+                    const char* s = JS_ToCString(ctx, sresult);
+                    if (s) { r.biomes_json = s; JS_FreeCString(ctx, s); }
+                }
+                JS_FreeValue(ctx, sresult);
+                JS_FreeValue(ctx, stringifyFn);
+            }
+            JS_FreeValue(ctx, biomesResult);
+        }
+        JS_FreeValue(ctx, biomesFn);
+    }
+
+    JS_FreeValue(ctx, inst);
+    JS_FreeValue(ctx, cls);
+    done();
+
+    r.ok = true;
+    return r;
 }
 
 // Evaluate a Tileset root: fresh isolated context, records DSL verbs into a
