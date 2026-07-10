@@ -760,6 +760,46 @@ static void test_v3_round_trip() {
         CHECK(blas_in.get_entries()[1]->triangles.size() == 2, "v3: blas[1] tri count = 2");
     }
 
+    // v6: segment tag + inline_cutover round-trip.
+    // Set distinct segment values on the two clusters before re-saving.
+    clusters_out[0].segment = 0;
+    clusters_out[1].segment = 1;
+
+    // Build two instance refs with distinct inline_cutover values.
+    std::vector<part_asset::FlatInstanceRef> refs(2);
+    refs[0].child_resolved_hash = 0x1111111111111111ull;
+    refs[1].child_resolved_hash = 0x2222222222222222ull;
+    for (int i = 0; i < 16; ++i) {
+        refs[0].transform[i] = (i == 0 || i == 5 || i == 10 || i == 15) ? 1.0f : 0.0f;
+        refs[1].transform[i] = refs[0].transform[i];
+    }
+    refs[0].inline_cutover = 0.575f;
+    refs[1].inline_cutover = 0.0f;
+
+    const uint64_t kV6Hash = 0xABCDEF0012345679ull;
+    const std::string v6_path = std::string(kCacheRoot) + "/parts/test_v6_roundtrip.flat.part";
+
+    bool saved_v6 = part_asset::save_flat_v3(v6_path, blas_out, tlas_out, clusters_out, refs, kV6Hash);
+    CHECK(saved_v6, "v6: save_flat_v3 with segment+inline_cutover returns true");
+    if (!saved_v6) { printf("  SKIPPING v6 field checks\n"); return; }
+
+    BLASManager blas_v6;
+    TLASManager tlas_v6(16);
+    std::vector<part_asset::FlatCluster> loaded_clusters;
+    std::vector<part_asset::FlatInstanceRef> loaded_refs;
+    bool loaded_v6 = part_asset::load_flat_v3(v6_path, kV6Hash, blas_v6, tlas_v6,
+                                               loaded_clusters, loaded_refs);
+    CHECK(loaded_v6, "v6: load_flat_v3 returns true");
+    if (loaded_v6 && loaded_clusters.size() == 2) {
+        CHECK(loaded_clusters[0].segment == 0, "v6: cluster0 segment == 0");
+        CHECK(loaded_clusters[1].segment == 1, "v6: cluster1 segment == 1");
+    }
+    if (loaded_v6 && loaded_refs.size() == 2) {
+        CHECK(loaded_refs[0].inline_cutover == 0.575f, "v6: refs[0].inline_cutover == 0.575f");
+        CHECK(loaded_refs[1].inline_cutover == 0.0f,  "v6: refs[1].inline_cutover == 0.0f");
+    }
+    static_assert(sizeof(part_asset::FlatInstanceRef) == 80, "flat ref layout");
+
     printf("PASSED\n");
 }
 
@@ -1401,7 +1441,7 @@ static void test_flat_version_bump() {
 
     // New flats carry the bumped version.
     assert(part_asset::peek_format_version(p) == part_asset::kFormatVersionFlat);
-    assert(part_asset::kFormatVersionFlat == 5u);
+    assert(part_asset::kFormatVersionFlat == 6u);
 
     // Patch the version field back to 3 (a pre-retune bake): loader must reject.
     // Header layout: magic (u32) then format_version (u32) — verify the write
