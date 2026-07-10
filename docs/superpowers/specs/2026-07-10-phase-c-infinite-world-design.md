@@ -133,8 +133,12 @@ pipeline. `build()`:
      surface, not volume).
    - **Bulk fill:** evaluate density over the slab grid straight into the
      voxel session's scalar field, one native loop.
-   - **Extract:** existing MatterSurfaceLib isosurface path — same mesher,
-     buckets, artifact format as voxel parts today.
+   - **Extract:** native surface-nets isosurface extraction in MatterEngine3
+     (new `terrain_mesher`), emitting triangles through the existing
+     mesh-session artifact path (same downstream buckets/artifact format as
+     Terrain.js today). MatterSurfaceLib's brush-op mesher is built around
+     analytic SDF brush lists, not sampled grids, and MSL stays read-only —
+     so terrain extraction lives engine-side.
    - **Materials + normals:** `materialAt` per surface sample; normals from
      field gradient (finite difference).
    - **Skirt:** short downward apron at sector borders (Phase C crack
@@ -222,10 +226,13 @@ explorer; ocean-biome sectors simply have terrain below it.
   redundant shared-lib disk reads per bake. Applies to all parts.
 - **Bytecode cache** (optional): compiled class bytecode reuse (−0.7 ms
   ctx/eval). Fresh JSRuntime per bake is retained.
-- **Transient BakePolicy bit** (engine-side, set by the streamer for sector
-  variants): skip `cached()` disk probes and `save_v2`; artifacts live only
-  in the part store. Removes all 9p traffic from the hot loop. Scatter
-  assets keep disk caching.
+- **Transient artifact policy** (engine-side, applied to sector variants):
+  sector artifacts are written to a tmpfs scratch directory (not the parts
+  cache) and deleted on eviction; `cached()` never probes the disk cache for
+  them. Removes all 9p traffic from the hot loop and bounds disk usage by
+  the resident ring. (Chosen over fully memory-resident artifacts, which
+  would require buffer-based load/save plumbing through PartStore for the
+  same economics.) Scatter assets keep disk caching.
 
 ## Error Handling
 
