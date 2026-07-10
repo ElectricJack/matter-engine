@@ -30,6 +30,9 @@
 
 // Phase C Task 6: camera-driven refine loop.
 #include "refine_controller.h"
+
+// Phase C Task 17: resolve/manifest cache for instant warm relaunch.
+#include "resolve_cache.h"
 #ifdef __linux__
 #include "inotify_watcher.h"
 #endif
@@ -569,6 +572,80 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     using clk_t = std::chrono::steady_clock;
     auto t_bake_start = clk_t::now();
 
+    // Phase C Task 17: resolve/manifest cache — skip JS eval on warm launches.
+    // Live-edit sessions bypass the cache (they need a live script host graph).
+    // Fail-closed: any anomaly (bad key, truncated file, probe miss) falls through
+    // to the full install+compose path.
+    bool resolve_cache_hit = false;
+    uint64_t rc_cache_key  = 0;
+    if (!enable_live_edit && !cfg.schemas_dir.empty() && !cfg.world_data_dir.empty()) {
+        const std::string world_manifest_path =
+            cfg.world_data_dir + "/" + cfg.world_name + "/world.manifest";
+        rc_cache_key = resolve_cache::compute_key(
+            world_manifest_path,
+            cfg.root_params_json,
+            cfg.schemas_dir,
+            cfg.shared_lib_dir);
+        if (rc_cache_key != 0) {
+            resolve_cache::ResolveCachePayload rc_payload;
+            if (resolve_cache::load(engine->cache_root, cfg.world_name,
+                                    rc_cache_key, rc_payload)) {
+                // Cache header valid — try to restore provider state.
+                std::string rc_err;
+                if (provider->restore_from_cache(rc_payload.snapshot,
+                                                 rc_payload.bake_plan,
+                                                 rc_payload.root_hashes,
+                                                 rc_err)) {
+                    // Populate new_manifest from cached instances + lights.
+                    viewer::WorldManifest cached_manifest;
+                    cached_manifest.instances = std::move(rc_payload.instances);
+                    cached_manifest.lights    = rc_payload.lights;
+
+                    // Try to load probes from existing probe cache.
+                    // Miss → treat as resolve-cache miss (full path).
+                    if (provider->try_load_cached_probes(cached_manifest)) {
+                        fprintf(stderr, "resolve cache: hit %016llx\n",
+                                (unsigned long long)rc_cache_key);
+
+                        // Proceed directly to publish_pipeline with cached data.
+                        auto t_publish_start_rc = clk_t::now();
+                        double total_ms_rc = std::chrono::duration<double, std::milli>(
+                            clk_t::now() - t_bake_start).count();
+                        fprintf(stderr,
+                            "[bake-timing] install=0ms compose=0ms (resolve-cache-hit) "
+                            "publish=...ms total(pre-publish)=%.0fms\n", total_ms_rc);
+
+                        PublishPipelineParams pp_rc;
+                        pp_rc.job_prefix            = "bake";
+                        pp_rc.count_errors_seed     = 0;
+                        pp_rc.init_culler           = true;
+                        pp_rc.update_probe_dims     = true;
+                        pp_rc.verbose_reset_log     = true;
+                        pp_rc.fault_hook            = cfg.test_fault_hook;
+                        pp_rc.load_msg_include_hash = true;
+                        pp_rc.provider_ref          = provider;
+                        publish_pipeline(token, std::move(cached_manifest), pp_rc);
+                        double publish_ms_rc = std::chrono::duration<double, std::milli>(
+                            clk_t::now() - t_publish_start_rc).count();
+                        double total_ms2 = std::chrono::duration<double, std::milli>(
+                            clk_t::now() - t_bake_start).count();
+                        fprintf(stderr,
+                            "[bake-timing] install=0ms compose=0ms publish=%.0fms "
+                            "total=%.0fms (resolve-cache-hit)\n",
+                            publish_ms_rc, total_ms2);
+                        return;  // done — no full install+compose
+                    } else {
+                        fprintf(stderr,
+                            "resolve cache: hit key but probe cache miss — full resolve\n");
+                    }
+                } else {
+                    fprintf(stderr, "resolve cache: restore_from_cache failed (%s) — full resolve\n",
+                            rc_err.c_str());
+                }
+            }
+        }
+    }
+
     // install_graph on the worker (script eval + per-part bake; no GL).
     // Phase C Task 14: RootsOnly — only root nodes are baked at install.
     // Children bake on demand in the publish loop (ensure_part_baked).
@@ -619,6 +696,24 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     double compose_ms = std::chrono::duration<double, std::milli>(
         clk_t::now() - t_compose_start).count();
     if (is_cancelled()) { emit_error(BakeErrorCode::Cancelled, "compose", "cancelled"); return; }
+
+    // Phase C Task 17: save resolve cache after a successful full install+compose.
+    // Write to temp + rename (atomic). Non-fatal on failure (no cache next warm launch).
+    if (!enable_live_edit && rc_cache_key != 0 && !is_cancelled()) {
+        resolve_cache::ResolveCachePayload rc_save;
+        rc_save.instances   = new_manifest.instances;
+        rc_save.lights      = new_manifest.lights;
+        rc_save.snapshot    = provider->graph_snapshot();
+        rc_save.bake_plan   = provider->install_result().bake_plan;
+        rc_save.root_hashes = provider->install_result().root_hashes;
+        if (!resolve_cache::save(engine->cache_root, cfg.world_name,
+                                 rc_cache_key, rc_save)) {
+            fprintf(stderr, "resolve cache: save failed (non-fatal)\n");
+        } else {
+            fprintf(stderr, "resolve cache: saved key %016llx\n",
+                    (unsigned long long)rc_cache_key);
+        }
+    }
 
     // 4-8) Shared publish flow: reset → reconcile → per-part publish → finalize
     //      → BakeFinished. count_errors is seeded with install-phase failures.

@@ -134,6 +134,28 @@ public:
     // ProdGraphResolver for live-edit cascade tracking.
     part_graph_snapshot::Snapshot& graph_snapshot() { return graph_snapshot_; }
 
+    // Phase C Task 17 — resolve cache restore hook.
+    // Called by execute_bake on a resolve-cache hit INSTEAD of install_graph().
+    // Restores bake_plan, root_hashes, graph_snapshot from the cache payload and
+    // initialises the ScriptHost + HostBaker so ensure_part_baked() can re-bake
+    // individual cache-miss parts on a warm run without global re-resolve.
+    // Also reads the world manifest to populate roots_/tileset_indices_ so the
+    // deferred tileset phase (run_tileset_deferred) still runs correctly.
+    // Requires: MATTER_HAVE_SCRIPT_HOST (returns false otherwise).
+    // Fail-closed: any setup error returns false; caller falls through to full resolve.
+    bool restore_from_cache(
+        const part_graph_snapshot::Snapshot&              snapshot,
+        const std::unordered_map<uint64_t, part_graph::BakeInputs>& bake_plan,
+        const std::vector<uint64_t>&                      root_hashes,
+        std::string& err);
+
+    // Phase C Task 17 — try to load cached probes for a pre-built manifest.
+    // Computes the same probe fingerprint compose_world would have used (from
+    // manifest instances + lights + default BakeParams), then calls
+    // probe_volume::load_probes. Assigns out.probes on success.
+    // Returns false (and leaves out.probes null) on any probe cache miss.
+    bool try_load_cached_probes(WorldManifest& m);
+
     // Task 7 fix: per-part load failures recorded during fetch_parts() when
     // get_or_load returns null (skip-and-continue; returns true even with failures).
     struct FetchFailed { std::string module; std::string error; };

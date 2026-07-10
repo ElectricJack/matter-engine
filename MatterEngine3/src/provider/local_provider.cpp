@@ -1035,4 +1035,149 @@ bool append_expanded_children(const std::string& cache_root, uint64_t root_hash,
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Phase C Task 17 — resolve cache restore hook
+// ---------------------------------------------------------------------------
+
+bool LocalProvider::restore_from_cache(
+    const part_graph_snapshot::Snapshot&              snapshot,
+    const std::unordered_map<uint64_t, part_graph::BakeInputs>& bake_plan,
+    const std::vector<uint64_t>&                      root_hashes,
+    std::string& err)
+{
+#if defined(MATTER_HAVE_SCRIPT_HOST)
+    // Reset mutable state (mirrors the preamble of install_graph()).
+    viewer::tileset_provider::unload_all();
+    MaterialRegistrySetGroundTilesetSlot(16, -1);
+    baked_tileset_count_ = 0;
+    baked_count_  = 0;
+    hit_count_    = 0;
+    install_bake_count_ = 0;
+    baked_hashes_.clear();
+    roots_.clear();
+    expand_flags_.clear();
+    tileset_flags_.clear();
+    roots_for_install_.clear();
+    install_to_orig_.clear();
+    tileset_indices_.clear();
+    ir_ = part_graph::InstallResult{};
+    graph_snapshot_ = part_graph_snapshot::Snapshot{};
+
+    // Resolve absolute paths.
+    fs_mkdir(cfg_.cache_root.c_str());
+    std::string parts_subdir = cfg_.cache_root + "/parts";
+    fs_mkdir(parts_subdir.c_str());
+    abs_schemas_    = abspath(cfg_.schemas_dir);
+    abs_world_data_ = abspath(cfg_.world_data_dir);
+    abs_shared_lib_ = abspath(cfg_.shared_lib_dir);
+    abs_cache_root_ = abspath(cfg_.cache_root);
+
+    // Initialise ScriptHost + HostBaker so ensure_part_baked() can re-bake
+    // individual cache-miss parts without running a global resolve.
+    host_ = std::make_unique<script_host::ScriptHost>();
+    host_->set_shared_lib_root(abs_shared_lib_);
+    resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_schemas_);
+    retopo_by_hash_.clear();
+    host_baker_ = std::make_unique<part_graph::HostBaker>(*host_, abs_cache_root_);
+
+    // Read the world manifest to populate roots_/expand_flags_/tileset_flags_/
+    // tileset_indices_ so run_tileset_deferred() still operates correctly.
+    {
+        std::string merr;
+        if (!PartGraph::read_manifest(abs_world_data_, cfg_.world_name,
+                                      roots_, merr, &expand_flags_, &tileset_flags_)) {
+            err = "restore_from_cache: failed to read manifest: " + merr;
+            return false;
+        }
+        for (size_t i = 0; i < roots_.size(); ++i) {
+            if (tileset_flags_[i]) tileset_indices_.push_back(i);
+            else { roots_for_install_.push_back(roots_[i]); install_to_orig_.push_back(i); }
+        }
+    }
+
+    // Apply root_params_json override (mirrors install_graph's merge step).
+    if (!cfg_.root_params_json.empty()) {
+        // We don't actually need to merge params into roots_ here because we're
+        // not re-resolving the graph — the cached root_hashes already reflect the
+        // override. We still populate roots_ for tileset phase which will re-eval
+        // its own script; tileset scripts don't use root_params_json.
+        (void)cfg_.root_params_json;
+    }
+
+    // Restore cache payload into ir_.
+    ir_.ok          = true;
+    ir_.root_hashes = root_hashes;
+    ir_.bake_plan   = bake_plan;
+
+    // Restore graph snapshot.
+    graph_snapshot_ = snapshot;
+
+    // Build module_by_hash_ from snapshot nodes (for diagnostics / module labels).
+    module_by_hash_.clear();
+    for (const auto& kv : graph_snapshot_.nodes)
+        module_by_hash_[kv.second.resolved_hash] = kv.second.module;
+
+    return true;
+#else
+    err = "restore_from_cache: MATTER_HAVE_SCRIPT_HOST not defined";
+    return false;
+#endif
+}
+
+bool LocalProvider::try_load_cached_probes(WorldManifest& m) {
+    // Replicates the probe fingerprint computation from compose_world() so the
+    // same .probes cache file is used on a warm (cache-hit) launch.
+    probe_bake::BakeParams bake_params;  // default BakeParams (same as compose_world)
+    std::vector<uint8_t> fp_buf;
+
+    // 1. Instances (part_hash u64 + transform[16] floats)
+    for (const auto& e : m.instances) {
+        const size_t off = fp_buf.size();
+        fp_buf.resize(off + sizeof(uint64_t) + 16 * sizeof(float));
+        std::memcpy(fp_buf.data() + off, &e.part_hash, sizeof(uint64_t));
+        std::memcpy(fp_buf.data() + off + sizeof(uint64_t), e.transform, 16 * sizeof(float));
+    }
+
+    // 2. Bake grid constants (packed struct, same layout as compose_world)
+    struct BakeGridKey {
+        float cell;
+        int   max_cells_axis;
+        int   pad_cells;
+        int   rays_per_cell;
+        int   sun_rays;
+        float sun_cone_deg;
+    } gk;
+    static_assert(sizeof(BakeGridKey) == 24, "probe fingerprint struct size mismatch");
+    gk.cell           = bake_params.cell;
+    gk.max_cells_axis = bake_params.max_cells_axis;
+    gk.pad_cells      = bake_params.pad_cells;
+    gk.rays_per_cell  = bake_params.rays_per_cell;
+    gk.sun_rays       = bake_params.sun_rays;
+    gk.sun_cone_deg   = bake_params.sun_cone_deg;
+    {
+        const size_t off = fp_buf.size();
+        fp_buf.resize(off + sizeof(BakeGridKey));
+        std::memcpy(fp_buf.data() + off, &gk, sizeof(BakeGridKey));
+    }
+
+    // 3. Lights fingerprint
+    uint64_t lf = world_lights::lights_fingerprint(m.lights);
+    {
+        const size_t off = fp_buf.size();
+        fp_buf.resize(off + sizeof(uint64_t));
+        std::memcpy(fp_buf.data() + off, &lf, sizeof(uint64_t));
+    }
+
+    const uint64_t probe_fingerprint = part_asset::fnv1a64(fp_buf.data(), fp_buf.size());
+
+    // Try to load from the probe cache.
+    const std::string cache_subdir = abs_cache_root_ + "/cache";
+    const std::string probes_path  = cache_subdir + "/" + cfg_.world_name + ".probes";
+    probe_volume::ProbeVolume vol;
+    if (!probe_volume::load_probes(probes_path, vol, probe_fingerprint))
+        return false;
+    m.probes = std::make_shared<probe_volume::ProbeVolume>(std::move(vol));
+    return true;
+}
+
 } // namespace viewer

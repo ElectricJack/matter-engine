@@ -327,6 +327,16 @@ REFINECTL_TARGET = refine_controller_tests
 REFINECTL_CPP    = refine_controller_tests.cpp ../src/refine_controller.cpp \
                    ../src/part_graph_snapshot.cpp
 
+# Phase C Task 17 — resolve/manifest cache (headless, no GL needed).
+RESOLVECACHE_TARGET = resolve_cache_tests
+RESOLVECACHE_CPP    = resolve_cache_tests.cpp \
+                      ../src/resolve_cache.cpp \
+                      ../src/part_graph.cpp \
+                      ../src/part_graph_snapshot.cpp \
+                      ../src/part_asset_v2.cpp \
+                      $(COMMON_MSL_BLAS_SRC)
+RESOLVECACHE_C      = $(MSL)/material_registry.c
+
 # Simple standalone targets (they use tiny custom flag sets — kept as-is with
 # per-target rules below, no shared objects).
 
@@ -481,7 +491,8 @@ GPU_RENDER_CPP = \
     ../src/live_edit_prod.cpp \
     ../src/inotify_watcher.cpp \
     ../src/part_graph_snapshot.cpp \
-    ../src/refine_controller.cpp
+    ../src/refine_controller.cpp \
+    ../src/resolve_cache.cpp
 
 GPU_PIPELINE_CPP = \
     ../src/part_graph.cpp \
@@ -538,7 +549,8 @@ def_CPP_SRCS := $(sort \
     $(SHADER_SOURCE_CPP) \
     $(ASYNCQ_CPP) \
     $(TILESETGTEX_CPP) \
-    $(REFINECTL_CPP))
+    $(REFINECTL_CPP) \
+    $(RESOLVECACHE_CPP))
 
 qjs_CPP_SRCS := $(sort \
     $(SCRIPT_CPP) \
@@ -625,6 +637,7 @@ SHADER_SOURCE_OBJS = $(call obj_list,def,$(SHADER_SOURCE_CPP))
 ASYNCQ_OBJS = $(call obj_list,def,$(ASYNCQ_CPP))
 TILESETGTEX_OBJS = $(call obj_list,def,$(TILESETGTEX_CPP))
 REFINECTL_OBJS = $(call obj_list,def,$(REFINECTL_CPP))
+RESOLVECACHE_OBJS = $(call obj_list,def,$(RESOLVECACHE_CPP)) $(call obj_list,mslc,$(RESOLVECACHE_C))
 
 SCRIPT_OBJS = $(call obj_list,qjs,$(SCRIPT_CPP)) $(call obj_list,mslc,$(SCRIPT_C)) $(qjsc_C_OBJS)
 TILESETDSL_OBJS = $(call obj_list,qjs,$(TILESETDSL_CPP)) $(call obj_list,mslc,$(SCRIPT_C)) $(qjsc_C_OBJS)
@@ -652,7 +665,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise valley-layout-tests run-valley release-part-tests run-releasepart run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop
+.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise valley-layout-tests run-valley release-part-tests run-releasepart run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1031,6 +1044,14 @@ refine-loop-tests: $(call obj_of,gpu,refine_loop_tests.cpp) $(GPU_SHARED_OBJS) |
 run-refineloop: refine-loop-tests
 	GALLIUM_DRIVER=d3d12 ./refine_loop_tests
 
+# Phase C Task 17 — resolve/manifest cache round-trip (headless, no GL needed).
+resolve-cache-tests: $(call obj_list,def,$(RESOLVECACHE_CPP)) $(call obj_list,mslc,$(RESOLVECACHE_C))
+	$(CC) $(call obj_list,def,$(RESOLVECACHE_CPP)) $(call obj_list,mslc,$(RESOLVECACHE_C)) \
+	      -o resolve_cache_tests $(FLAVOR_def_FLAGS) $(LDFLAGS) $(LDLIBS)
+
+run-resolvecache: resolve-cache-tests
+	./resolve_cache_tests
+
 # ---------------------------------------------------------------------------
 # Clean: remove OBJDIR and all binaries (test-binary-name list, since they
 # aren't $(TARGET)-style variables in every case).
@@ -1051,4 +1072,5 @@ clean:
 	      tileset_physics_tests tileset_core_tests tileset_placement_tests \
 	      gpu_tests tileset_gpu_tests tileset_seam_tests tileset_provider_tests \
 	      tileset_load_tests api_tests async_bake_tests demand_bake_tests release_part_tests \
-	      refine_loop_tests
+	      refine_loop_tests \
+	      resolve_cache_tests
