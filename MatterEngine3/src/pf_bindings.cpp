@@ -103,11 +103,13 @@ std::string get_str(JSContext* c, JSValueConst obj, const char* key,
 }
 
 bool parse_field(JSContext* c, DslState* st, JSValueConst f,
+                 const std::vector<std::string>& state_names,
                  pf::FieldConfig* out) {
     std::string type = get_str(c, f, "type", "");
     if      (type == "bias")     out->type = pf::FieldType::Bias;
     else if (type == "curl")     out->type = pf::FieldType::Curl;
     else if (type == "adhere")   out->type = pf::FieldType::Adhere;
+    else if (type == "align")    out->type = pf::FieldType::Align;
     else if (type == "attract")  out->type = pf::FieldType::Attract;
     else if (type == "separate") out->type = pf::FieldType::Separate;
     else if (type == "drag")     out->type = pf::FieldType::Drag;
@@ -127,6 +129,17 @@ bool parse_field(JSContext* c, DslState* st, JSValueConst f,
     out->scale          = static_cast<float>(get_num(c, f, "scale", 1.0));
     out->seed           = static_cast<uint32_t>(get_num(c, f, "seed", 0.0));
     out->k              = static_cast<float>(get_num(c, f, "k", 1.0));
+    std::string ws = get_str(c, f, "weightState", "");
+    if (!ws.empty()) {
+        out->weight_state = -1;
+        for (size_t i = 0; i < state_names.size(); ++i)
+            if (state_names[i] == ws) { out->weight_state = (int)i; break; }
+        if (out->weight_state < 0) {
+            st->set_error("particleSim: weightState '" + ws +
+                          "' is not a declared state channel");
+            return false;
+        }
+    }
     JSValue fade = JS_GetPropertyStr(c, f, "fade");
     if (JS_IsObject(fade)) {
         out->fade.enabled = true;
@@ -147,6 +160,37 @@ bool parse_field(JSContext* c, DslState* st, JSValueConst f,
     return true;
 }
 
+void read_f32_list(JSContext* c, JSValueConst obj, const char* key,
+                   std::vector<float>* out) {
+    JSValue v = JS_GetPropertyStr(c, obj, key);
+    if (JS_IsObject(v)) {
+        JSValue len = JS_GetPropertyStr(c, v, "length");
+        uint32_t n = 0; JS_ToUint32(c, &n, len); JS_FreeValue(c, len);
+        for (uint32_t i = 0; i < n; ++i) {
+            JSValue x = JS_GetPropertyUint32(c, v, i);
+            double d = 0; JS_ToFloat64(c, &d, x); JS_FreeValue(c, x);
+            out->push_back(static_cast<float>(d));
+        }
+    }
+    JS_FreeValue(c, v);
+}
+
+void read_str_list(JSContext* c, JSValueConst obj, const char* key,
+                   std::vector<std::string>* out) {
+    JSValue v = JS_GetPropertyStr(c, obj, key);
+    if (JS_IsObject(v)) {
+        JSValue len = JS_GetPropertyStr(c, v, "length");
+        uint32_t n = 0; JS_ToUint32(c, &n, len); JS_FreeValue(c, len);
+        for (uint32_t i = 0; i < n; ++i) {
+            JSValue s = JS_GetPropertyUint32(c, v, i);
+            const char* cs = JS_ToCString(c, s);
+            if (cs) { out->push_back(cs); JS_FreeCString(c, cs); }
+            JS_FreeValue(c, s);
+        }
+    }
+    JS_FreeValue(c, v);
+}
+
 void parse_emitter(JSContext* c, JSValueConst e, pf::EmitterConfig* out) {
     std::string shape = get_str(c, e, "shape", "point");
     out->shape  = (shape == "disc") ? 1 : (shape == "ring") ? 2 : 0;
@@ -157,17 +201,8 @@ void parse_emitter(JSContext* c, JSValueConst e, pf::EmitterConfig* out) {
     // vel0 in the kernel is a scalar float (initial speed along axis)
     out->vel0   = static_cast<float>(get_num(c, e, "vel0", 1.0));
     out->jitter = static_cast<float>(get_num(c, e, "jitter", 0.0));
-    JSValue ai = JS_GetPropertyStr(c, e, "attrInit");
-    if (JS_IsObject(ai)) {
-        JSValue len = JS_GetPropertyStr(c, ai, "length");
-        uint32_t n = 0; JS_ToUint32(c, &n, len); JS_FreeValue(c, len);
-        for (uint32_t i = 0; i < n; ++i) {
-            JSValue x = JS_GetPropertyUint32(c, ai, i);
-            double d = 0; JS_ToFloat64(c, &d, x); JS_FreeValue(c, x);
-            out->attr_init.push_back(static_cast<float>(d));
-        }
-    }
-    JS_FreeValue(c, ai);
+    read_f32_list(c, e, "attrInit", &out->attr_init);
+    read_f32_list(c, e, "stateInit", &out->state_init);
 }
 
 // __pf_simCreate(cfgObj) -> id
@@ -187,18 +222,8 @@ JSValue j_pf_simCreate(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     cfg.max_age       = static_cast<uint32_t>(get_num(c, a[0], "maxAge", 0.0));
     cfg.max_particles = static_cast<uint32_t>(get_num(c, a[0], "maxParticles", 4096.0));
     cfg.hash_cell     = static_cast<float>(get_num(c, a[0], "hashCell", 0.25));
-    JSValue attrs = JS_GetPropertyStr(c, a[0], "attributes");
-    if (JS_IsObject(attrs)) {
-        JSValue len = JS_GetPropertyStr(c, attrs, "length");
-        uint32_t na = 0; JS_ToUint32(c, &na, len); JS_FreeValue(c, len);
-        for (uint32_t i = 0; i < na; ++i) {
-            JSValue s = JS_GetPropertyUint32(c, attrs, i);
-            const char* cs = JS_ToCString(c, s);
-            if (cs) { cfg.attributes.push_back(cs); JS_FreeCString(c, cs); }
-            JS_FreeValue(c, s);
-        }
-    }
-    JS_FreeValue(c, attrs);
+    read_str_list(c, a[0], "attributes", &cfg.attributes);
+    read_str_list(c, a[0], "state", &cfg.state);
     JSValue ems = JS_GetPropertyStr(c, a[0], "emitters");
     if (JS_IsObject(ems)) {
         JSValue len = JS_GetPropertyStr(c, ems, "length");
@@ -218,7 +243,7 @@ JSValue j_pf_simCreate(JSContext* c, JSValueConst, int n, JSValueConst* a) {
         for (uint32_t i = 0; i < nf; ++i) {
             JSValue f = JS_GetPropertyUint32(c, flds, i);
             pf::FieldConfig fc;
-            bool ok = parse_field(c, st, f, &fc);
+            bool ok = parse_field(c, st, f, cfg.state, &fc);
             JS_FreeValue(c, f);
             if (!ok) { JS_FreeValue(c, flds); return JS_NewInt32(c, -1); }
             cfg.fields.push_back(std::move(fc));
@@ -322,6 +347,14 @@ JSValue build_tick_view(JSContext* c, pf::Sim* sim, std::vector<JSValue>* bufs) 
         bufs->push_back(av.buf);
     }
     JS_SetPropertyStr(c, o, "attrs", attrs);
+    JSValue states = JS_NewObject(c);
+    for (uint32_t ch = 0; ch < sim->state_count(); ++ch) {
+        RawView sv = raw_view(c, sim->state_data(ch), slots * sizeof(float),
+                              JS_TYPED_ARRAY_FLOAT32);
+        JS_SetPropertyStr(c, states, sim->config().state[ch].c_str(), sv.ta);
+        bufs->push_back(sv.buf);
+    }
+    JS_SetPropertyStr(c, o, "state", states);
     return o;
 }
 
@@ -375,8 +408,57 @@ JSValue j_pf_emit(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     pf::EmitterConfig ec; parse_emitter(c, a[1], &ec);
     pf::V3 vel = ec.axis * ec.vel0;
     sim->emit_particle(ec.center, vel,
-                       ec.attr_init.empty() ? nullptr : ec.attr_init.data());
+                       ec.attr_init.empty() ? nullptr : ec.attr_init.data(),
+                       ec.state_init.empty() ? nullptr : ec.state_init.data());
     return JS_UNDEFINED;
+}
+
+// __pf_nearestAttractor(simId, x, y, z, maxDist, unclaimedOnly)
+//   -> {idx, pos:[x,y,z], dist} | null
+JSValue j_pf_nearestAttractor(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    DslState* st = state_of(c);
+    if (n < 5) return JS_NULL;
+    pf::Sim* sim = sim_of(c, st, a[0]);
+    if (!sim) return JS_NULL;
+    pf::V3 p{static_cast<float>(argd(c, a[1])), static_cast<float>(argd(c, a[2])),
+             static_cast<float>(argd(c, a[3]))};
+    float max_dist = static_cast<float>(argd(c, a[4]));
+    bool unclaimed = (n >= 6) && JS_ToBool(c, a[5]) > 0;
+    int idx = sim->nearest_attractor(p, max_dist, unclaimed);
+    if (idx < 0) return JS_NULL;
+    pf::V3 ap = sim->attractor_pos(static_cast<uint32_t>(idx));
+    JSValue o = JS_NewObject(c);
+    JS_SetPropertyStr(c, o, "idx", JS_NewInt32(c, idx));
+    JSValue arr = JS_NewArray(c);
+    JS_SetPropertyUint32(c, arr, 0, JS_NewFloat64(c, ap.x));
+    JS_SetPropertyUint32(c, arr, 1, JS_NewFloat64(c, ap.y));
+    JS_SetPropertyUint32(c, arr, 2, JS_NewFloat64(c, ap.z));
+    JS_SetPropertyStr(c, o, "pos", arr);
+    JS_SetPropertyStr(c, o, "dist", JS_NewFloat64(c, pf::length(ap - p)));
+    return o;
+}
+
+// __pf_claimAttractor(simId, slot, idx) -> bool
+JSValue j_pf_claimAttractor(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    DslState* st = state_of(c);
+    if (n < 3) return JS_FALSE;
+    pf::Sim* sim = sim_of(c, st, a[0]);
+    if (!sim) return JS_FALSE;
+    return JS_NewBool(c, sim->claim_attractor(
+        static_cast<uint32_t>(argd(c, a[1])),
+        static_cast<uint32_t>(argd(c, a[2]))));
+}
+
+// __pf_depositNear(simId, x, y, z, radius) -> count of deposited points
+JSValue j_pf_depositNear(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    DslState* st = state_of(c);
+    if (n < 5) return JS_NewInt32(c, 0);
+    pf::Sim* sim = sim_of(c, st, a[0]);
+    if (!sim) return JS_NewInt32(c, 0);
+    pf::V3 p{static_cast<float>(argd(c, a[1])), static_cast<float>(argd(c, a[2])),
+             static_cast<float>(argd(c, a[3]))};
+    return JS_NewInt32(c, static_cast<int32_t>(
+        sim->deposit_near_count(p, static_cast<float>(argd(c, a[4])))));
 }
 
 JSValue j_pf_kill(JSContext* c, JSValueConst, int n, JSValueConst* a) {
@@ -560,6 +642,9 @@ void install_pf_bindings(JSContext* ctx) {
     bind("__pf_emit", j_pf_emit, 2);
     bind("__pf_kill", j_pf_kill, 2);
     bind("__pf_setFieldWeight", j_pf_setFieldWeight, 3);
+    bind("__pf_nearestAttractor", j_pf_nearestAttractor, 6);
+    bind("__pf_claimAttractor", j_pf_claimAttractor, 3);
+    bind("__pf_depositNear", j_pf_depositNear, 5);
     bind("__pf_stampPaths", j_pf_stampPaths, 2);
     JS_FreeValue(ctx, g);
 }

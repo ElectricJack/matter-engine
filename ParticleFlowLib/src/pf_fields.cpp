@@ -76,6 +76,19 @@ static V3 adhere_dir(const Sim& s, const FieldConfig& f, V3 p) {
     return normalize(target - p);
 }
 
+// Average forward heading of nearby deposits: steer WITH the direction prior
+// strands were traveling here, not just toward their wood (that's Adhere).
+// Without this a follower can orbit a column while staying perfectly adhered.
+static V3 align_dir(const Sim& s, const FieldConfig& f, V3 p) {
+    const auto& dirs = s.deposited_dirs();
+    V3 sum{0,0,0}; uint32_t n = 0;
+    s.deposited_hash().query(p, f.radius, [&](uint32_t idx, V3, float) {
+        sum = sum + dirs[idx]; ++n;
+    });
+    if (n == 0) return {0,0,0};
+    return normalize(sum);
+}
+
 static V3 separate_dir(const Sim& s, const FieldConfig& f, uint32_t slot, V3 p) {
     V3 push{0,0,0}; uint32_t n = 0;
     s.live_hash().query(p, f.radius, [&](uint32_t idx, V3 q, float d2) {
@@ -93,6 +106,7 @@ V3 field_steer_dir(const Sim& s, const FieldConfig& f, uint32_t slot) {
         case FieldType::Bias:     return normalize(f.dir);
         case FieldType::Curl:     return curl_noise(f.seed, slot_p(s, slot), f.scale);
         case FieldType::Adhere:   return adhere_dir(s, f, slot_p(s, slot));
+        case FieldType::Align:    return align_dir(s, f, slot_p(s, slot));
         case FieldType::Separate: return separate_dir(s, f, slot, slot_p(s, slot));
         default:                  return {0, 0, 0};   // Attract handled by Sim; Drag is force-only
     }
@@ -114,24 +128,34 @@ V3 field_force(const Sim& s, const FieldConfig& f, uint32_t slot) {
 // Sim members that need attractor mutation / deposited queries
 // ---------------------------------------------------------------------------
 V3 Sim::attract_dir(uint32_t slot, V3 p) {
-    // Nearest unconsumed attractor within influence. Linear scan is fine at
-    // the ~500-attractor scale; ascending index = deterministic tie-break.
     const FieldConfig* fc = nullptr;
     for (const auto& f : cfg_.fields)
         if (f.type == FieldType::Attract) { fc = &f; break; }
     if (!fc || attr_remaining_ == 0) return {0,0,0};
-    int best = -1; float best_d2 = fc->influence * fc->influence;
-    for (size_t i = 0; i < attractors_.size(); ++i) {
-        if (attr_consumed_[i]) continue;
-        V3 d = attractors_[i] - p;
-        float d2 = dot(d, d);
-        if (d2 < best_d2) { best_d2 = d2; best = (int)i; }
+    int best = -1; float best_d2;
+    if (claim_of_[slot] != UINT32_MAX && !attr_consumed_[claim_of_[slot]]) {
+        // Claimed target: beeline regardless of influence radius.
+        best = (int)claim_of_[slot];
+        V3 d = attractors_[(size_t)best] - p;
+        best_d2 = dot(d, d);
+    } else {
+        // Nearest unconsumed, unclaimed attractor within influence. Linear scan
+        // is fine at the ~500-attractor scale; ascending index = deterministic
+        // tie-break.
+        best_d2 = fc->influence * fc->influence;
+        for (size_t i = 0; i < attractors_.size(); ++i) {
+            if (attr_consumed_[i] || attr_claimed_[i]) continue;
+            V3 d = attractors_[i] - p;
+            float d2 = dot(d, d);
+            if (d2 < best_d2) { best_d2 = d2; best = (int)i; }
+        }
+        if (best < 0) return {0,0,0};
     }
-    if (best < 0) return {0,0,0};
     if (best_d2 <= fc->kill_radius * fc->kill_radius) {
         attr_consumed_[best] = 1;
         --attr_remaining_;
         if (fc->kill_on_consume) kill_slot(slot);
+        else if (claim_of_[slot] == (uint32_t)best) claim_of_[slot] = UINT32_MAX;
         return {0,0,0};
     }
     return normalize(attractors_[best] - p);

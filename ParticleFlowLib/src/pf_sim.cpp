@@ -19,7 +19,8 @@ static inline void write3(std::vector<float>& a, uint32_t i, V3 v) {
 static float auto_cell(const SimConfig& c) {
     float r = 0.0f;
     for (const auto& f : c.fields) {
-        if (f.type == FieldType::Adhere || f.type == FieldType::Separate)
+        if (f.type == FieldType::Adhere || f.type == FieldType::Separate ||
+            f.type == FieldType::Align)
             r = std::max(r, f.radius);
         if (f.type == FieldType::Attract)
             r = std::max(r, f.influence);
@@ -32,6 +33,7 @@ Sim::Sim(SimConfig cfg)
       dep_hash_(cfg_.hash_cell > 0 ? cfg_.hash_cell : auto_cell(cfg_)),
       live_hash_(cfg_.hash_cell > 0 ? cfg_.hash_cell : auto_cell(cfg_)) {
     attrs_.resize(cfg_.attributes.size());
+    states_.resize(cfg_.state.size());
     emit_acc_.assign(cfg_.emitters.size(), 0.0f);
     // pre-reserve to capacity: onTick views hold raw pointers; growth must never reallocate
     pos_.reserve(3 * cfg_.max_particles);
@@ -40,7 +42,9 @@ Sim::Sim(SimConfig cfg)
     id_.reserve(cfg_.max_particles);
     age_.reserve(cfg_.max_particles);
     dep_dist_.reserve(cfg_.max_particles);
+    claim_of_.reserve(cfg_.max_particles);
     for (auto& ch : attrs_) ch.reserve(cfg_.max_particles);
+    for (auto& ch : states_) ch.reserve(cfg_.max_particles);
 }
 
 void Sim::attach(ITickObserver* o) { observers_.push_back(o); }
@@ -49,6 +53,7 @@ void Sim::set_attractors(const float* xyz, size_t n) {
     for (size_t i = 0; i < n; ++i) {
         attractors_.push_back({xyz[3*i], xyz[3*i+1], xyz[3*i+2]});
         attr_consumed_.push_back(0);
+        attr_claimed_.push_back(0);
     }
     attr_remaining_ += (uint32_t)n;
 }
@@ -59,12 +64,49 @@ int Sim::channel_index(const std::string& name) const {
     return -1;
 }
 
-void Sim::deposit(V3 p) {
-    dep_hash_.insert(p, (uint32_t)deposited_pts_.size());
-    deposited_pts_.push_back(p);
+int Sim::state_index(const std::string& name) const {
+    for (size_t i = 0; i < cfg_.state.size(); ++i)
+        if (cfg_.state[i] == name) return (int)i;
+    return -1;
 }
 
-uint32_t Sim::emit_particle(V3 p, V3 v, const float* attr_or_null) {
+int Sim::nearest_attractor(V3 p, float max_dist, bool unclaimed_only) const {
+    int best = -1; float best_d2 = max_dist * max_dist;
+    for (size_t i = 0; i < attractors_.size(); ++i) {
+        if (attr_consumed_[i]) continue;
+        if (unclaimed_only && attr_claimed_[i]) continue;
+        V3 d = attractors_[i] - p;
+        float d2 = dot(d, d);
+        if (d2 < best_d2) { best_d2 = d2; best = (int)i; }
+    }
+    return best;
+}
+
+bool Sim::claim_attractor(uint32_t slot, uint32_t idx) {
+    if (slot >= slot_count() || !alive_[slot]) return false;
+    if (idx >= attractors_.size() || attr_consumed_[idx] || attr_claimed_[idx])
+        return false;
+    if (claim_of_[slot] != UINT32_MAX && !attr_consumed_[claim_of_[slot]])
+        attr_claimed_[claim_of_[slot]] = 0;    // re-claim: release the old one
+    attr_claimed_[idx] = 1;
+    claim_of_[slot] = idx;
+    return true;
+}
+
+uint32_t Sim::deposit_near_count(V3 p, float radius) const {
+    uint32_t n = 0;
+    dep_hash_.query(p, radius, [&](uint32_t, V3, float) { ++n; });
+    return n;
+}
+
+void Sim::deposit(V3 p, V3 dir) {
+    dep_hash_.insert(p, (uint32_t)deposited_pts_.size());
+    deposited_pts_.push_back(p);
+    deposited_dirs_.push_back(normalize(dir));
+}
+
+uint32_t Sim::emit_particle(V3 p, V3 v, const float* attr_or_null,
+                            const float* state_or_null) {
     if (alive_n_ >= cfg_.max_particles) return UINT32_MAX;
     uint32_t slot;
     if (!free_slots_.empty()) { slot = free_slots_.back(); free_slots_.pop_back(); }
@@ -72,17 +114,22 @@ uint32_t Sim::emit_particle(V3 p, V3 v, const float* attr_or_null) {
         slot = slot_count();
         pos_.resize(pos_.size() + 3); vel_.resize(vel_.size() + 3);
         for (auto& ch : attrs_) ch.push_back(0.0f);
+        for (auto& ch : states_) ch.push_back(0.0f);
         alive_.push_back(0); id_.push_back(0); age_.push_back(0);
         dep_dist_.push_back(0.0f);
+        claim_of_.push_back(UINT32_MAX);
     }
     write3(pos_, slot, p); write3(vel_, slot, v);
     for (size_t c = 0; c < attrs_.size(); ++c)
         attrs_[c][slot] = attr_or_null ? attr_or_null[c] : 0.0f;
+    for (size_t c = 0; c < states_.size(); ++c)
+        states_[c][slot] = state_or_null ? state_or_null[c] : 0.0f;
     alive_[slot] = 1; id_[slot] = next_id_++; age_[slot] = 0;
     dep_dist_[slot] = 0.0f;
+    claim_of_[slot] = UINT32_MAX;
     ++alive_n_;
     born_.push_back(slot);
-    deposit(p);                     // spawn point is wood from tick zero
+    deposit(p, v);                  // spawn point is wood from tick zero
     return slot;
 }
 
@@ -92,6 +139,10 @@ void Sim::kill(uint32_t slot) {
 
 void Sim::kill_slot(uint32_t i) {
     alive_[i] = 0; --alive_n_;
+    if (claim_of_[i] != UINT32_MAX) {
+        if (!attr_consumed_[claim_of_[i]]) attr_claimed_[claim_of_[i]] = 0;
+        claim_of_[i] = UINT32_MAX;
+    }
     died_.push_back(i);
     free_slots_.push_back(i);
 }
@@ -132,7 +183,11 @@ void Sim::run_emitters() {
             size_t nc = std::min(attrs_.size(), (size_t)16);
             for (size_t c = 0; c < nc; ++c)
                 attrs[c] = c < em.attr_init.size() ? em.attr_init[c] : 0.0f;
-            if (emit_particle(p, v, attrs) == UINT32_MAX) { emit_acc_[e] = 0; break; }
+            float states[16] = {0};
+            size_t ns = std::min(states_.size(), (size_t)16);
+            for (size_t c = 0; c < ns; ++c)
+                states[c] = c < em.state_init.size() ? em.state_init[c] : 0.0f;
+            if (emit_particle(p, v, attrs, states) == UINT32_MAX) { emit_acc_[e] = 0; break; }
         }
     }
 }
@@ -159,6 +214,8 @@ void Sim::integrate_slot(uint32_t i) {
     for (size_t fi = 0; fi < cfg_.fields.size(); ++fi) {
         const FieldConfig& f = cfg_.fields[fi];
         float w = f.weight * fade_mult(f, p);
+        if (f.weight_state >= 0 && (size_t)f.weight_state < states_.size())
+            w *= std::max(states_[(size_t)f.weight_state][i], 0.0f);
         if (w == 0.0f) continue;
         if (f.mode == FieldMode::Force) {
             force = force + field_force(*this, f, i) * w;
@@ -186,7 +243,7 @@ void Sim::integrate_slot(uint32_t i) {
     }
     write3(pos_, i, p); write3(vel_, i, v);
     dep_dist_[i] += length(v) * cfg_.dt;
-    if (dep_dist_[i] >= cfg_.deposit_every) { deposit(p); dep_dist_[i] = 0.0f; }
+    if (dep_dist_[i] >= cfg_.deposit_every) { deposit(p, v); dep_dist_[i] = 0.0f; }
     if (cfg_.max_age > 0 && ++age_[i] >= cfg_.max_age) kill_slot(i);
     else if (cfg_.max_age == 0) ++age_[i];
 }

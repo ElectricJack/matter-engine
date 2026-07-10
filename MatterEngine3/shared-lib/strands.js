@@ -2,20 +2,36 @@ import { rng } from 'shared-lib/rng';
 
 // --- attractor clouds (Float32Array xyz triplets, deterministic per seed) ----
 
-export function ellipsoidCloud(seed, count, center, radii) {
+// minDist (optional): Poisson-disk style spacing — candidates closer than
+// minDist to an already-placed point are rejected (dart throwing). If the
+// ellipsoid can't fit `count` points at that spacing, returns fewer.
+export function ellipsoidCloud(seed, count, center, radii, minDist) {
   const r = rng(seed);
   const out = new Float32Array(count * 3);
-  for (let i = 0; i < count; ++i) {
+  const md2 = minDist ? minDist * minDist : 0;
+  let placed = 0;
+  for (let attempts = count * 200; placed < count && attempts > 0; --attempts) {
     // rejection-sample the unit ball, then scale per-axis
     let x, y, z;
     do {
       x = r.range(-1, 1); y = r.range(-1, 1); z = r.range(-1, 1);
     } while (x * x + y * y + z * z > 1);
-    out[3 * i]     = center[0] + x * radii[0];
-    out[3 * i + 1] = center[1] + y * radii[1];
-    out[3 * i + 2] = center[2] + z * radii[2];
+    const px = center[0] + x * radii[0];
+    const py = center[1] + y * radii[1];
+    const pz = center[2] + z * radii[2];
+    if (md2 > 0) {
+      let ok = true;
+      for (let j = 0; j < placed; ++j) {
+        const dx = out[3 * j] - px, dy = out[3 * j + 1] - py,
+              dz = out[3 * j + 2] - pz;
+        if (dx * dx + dy * dy + dz * dz < md2) { ok = false; break; }
+      }
+      if (!ok) continue;
+    }
+    out[3 * placed] = px; out[3 * placed + 1] = py; out[3 * placed + 2] = pz;
+    ++placed;
   }
-  return out;
+  return placed === count ? out : out.slice(0, placed * 3);
 }
 
 export function coneCloud(seed, count, apex, axis, height, spreadAngle) {

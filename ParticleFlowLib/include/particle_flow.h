@@ -57,7 +57,7 @@ struct PathSet {
 // ---------------------------------------------------------------------------
 // Sim configuration
 // ---------------------------------------------------------------------------
-enum class FieldType { Bias, Curl, Adhere, Attract, Separate, Drag };
+enum class FieldType { Bias, Curl, Adhere, Align, Attract, Separate, Drag };
 enum class FieldMode { Steer, Force };
 
 // Optional axial weight fade: multiplier 1 where dot(p,axis) <= from,
@@ -68,6 +68,10 @@ struct FieldConfig {
     FieldType type = FieldType::Bias;
     FieldMode mode = FieldMode::Steer;
     float weight = 1.0f;
+    // Optional per-particle weight multiplier: index into SimConfig::state
+    // channels (-1 = off). Effective weight = weight * fade * max(state, 0),
+    // so scripts can gate or blend any field per particle from onTick.
+    int weight_state = -1;
     Fade fade;
     V3 dir{0,1,0};                // Bias direction
     float radius = 1.0f;          // Adhere/Separate neighborhood radius
@@ -88,6 +92,7 @@ struct EmitterConfig {
     float vel0 = 1.0f;            // initial speed along axis
     float jitter = 0.0f;          // random velocity magnitude added
     std::vector<float> attr_init; // one per declared channel (missing -> 0)
+    std::vector<float> state_init;// one per declared state channel (missing -> 0)
 };
 
 struct SimConfig {
@@ -101,6 +106,10 @@ struct SimConfig {
     uint32_t max_particles = 16384;
     float hash_cell = 0.0f;       // 0 = auto (max field neighborhood radius)
     std::vector<std::string> attributes;
+    // Script-state channels: per-particle floats like attributes, but NOT
+    // recorded into paths. Free space for onTick policies (branch flags,
+    // cooldowns, per-particle field weights via FieldConfig::weight_state...).
+    std::vector<std::string> state;
     std::vector<EmitterConfig> emitters;
     std::vector<FieldConfig> fields;
 };
@@ -136,18 +145,36 @@ public:
     const float* attr_data(uint32_t ch) const { return attrs_[ch].data(); }
     uint32_t channel_count() const { return (uint32_t)attrs_.size(); }
     int channel_index(const std::string& name) const;
+    float* state_data(uint32_t ch) { return states_[ch].data(); }
+    const float* state_data(uint32_t ch) const { return states_[ch].data(); }
+    uint32_t state_count() const { return (uint32_t)states_.size(); }
+    int state_index(const std::string& name) const;
     uint32_t id_of(uint32_t slot) const { return id_[slot]; }
     const std::vector<uint32_t>& born_this_tick() const { return born_; }
     const std::vector<uint32_t>& died_this_tick() const { return died_; }
 
-    uint32_t emit_particle(V3 pos, V3 vel, const float* attr_or_null);
+    uint32_t emit_particle(V3 pos, V3 vel, const float* attr_or_null,
+                           const float* state_or_null = nullptr);
     void kill(uint32_t slot);
     void set_field_weight(uint32_t field_index, float w);
     uint32_t field_count() const { return (uint32_t)cfg_.fields.size(); }
     uint32_t attractors_remaining() const { return attr_remaining_; }
 
+    // Script-driven attractor reservation. A claimed attractor is skipped by
+    // the generic nearest-attractor steering; its claimer beelines to it.
+    // Claims are released if the claimer dies before consuming.
+    int nearest_attractor(V3 p, float max_dist, bool unclaimed_only) const;
+    bool claim_attractor(uint32_t slot, uint32_t attractor_idx);
+    V3 attractor_pos(uint32_t idx) const { return attractors_[idx]; }
+    uint32_t attractor_count() const { return (uint32_t)attractors_.size(); }
+    // Count of deposited points within radius (open-space probes for scripts).
+    uint32_t deposit_near_count(V3 p, float radius) const;
+
     size_t deposited_count() const { return deposited_pts_.size(); }
     const std::vector<V3>& deposited_points() const { return deposited_pts_; }
+    // Unit heading of the depositing particle at deposit time (parallel to
+    // deposited_points). Align fields steer along these.
+    const std::vector<V3>& deposited_dirs() const { return deposited_dirs_; }
     const SpatialHash& deposited_hash() const { return dep_hash_; }
     const SpatialHash& live_hash() const { return live_hash_; }
     // Outward surface normal estimate from the deposited neighborhood.
@@ -162,7 +189,7 @@ private:
     void run_emitters();
     void integrate_slot(uint32_t i);
     void kill_slot(uint32_t i);
-    void deposit(V3 p);
+    void deposit(V3 p, V3 dir);
     float fade_mult(const FieldConfig& f, V3 p) const;
     V3 attract_dir(uint32_t slot, V3 p);   // consumes attractors (Task 3)
 
@@ -171,16 +198,20 @@ private:
     uint32_t tick_ = 0, next_id_ = 0, alive_n_ = 0;
     std::vector<float> pos_, vel_;
     std::vector<std::vector<float>> attrs_;
+    std::vector<std::vector<float>> states_;
     std::vector<uint8_t> alive_;
     std::vector<uint32_t> id_, age_;
+    std::vector<uint32_t> claim_of_;        // per-slot claimed attractor (UINT32_MAX = none)
     std::vector<float> dep_dist_;
     std::vector<uint32_t> free_slots_;
     std::vector<uint32_t> born_, died_;
     std::vector<float> emit_acc_;
     std::vector<V3> deposited_pts_;         // append-only
+    std::vector<V3> deposited_dirs_;        // parallel to deposited_pts_
     SpatialHash dep_hash_, live_hash_;
     std::vector<V3> attractors_;            // append-only
     std::vector<uint8_t> attr_consumed_;
+    std::vector<uint8_t> attr_claimed_;
     uint32_t attr_remaining_ = 0;
     std::vector<ITickObserver*> observers_;
 };
