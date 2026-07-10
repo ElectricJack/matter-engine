@@ -115,6 +115,29 @@ bool load_lod_sidecar(const std::string& path, LodVariants& out) {
     return true;
 }
 
+std::string cache_path_hints(uint64_t resolved_hash) {
+    char buf[64];
+    snprintf(buf, sizeof buf, "parts/%016llx.hints",
+             (unsigned long long)resolved_hash);
+    return buf;
+}
+
+bool save_flatten_hints(const std::string& path, const FlattenHints& hints) {
+    std::ofstream out(path);
+    if (!out) return false;
+    for (const auto& [idx, px] : hints.child_px)
+        out << idx << " " << px << "\n";
+    return (bool)out;
+}
+
+bool load_flatten_hints(const std::string& path, FlattenHints& out_hints) {
+    std::ifstream ifs(path);
+    if (!ifs) return false;
+    uint32_t idx; float px;
+    while (ifs >> idx >> px) out_hints.child_px[idx] = px;
+    return true;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal helpers: write/read the common body (materials, BLAS, instances,
 // children, top-level lods). The v3 writer calls save_common_body and then

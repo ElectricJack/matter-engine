@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -77,6 +78,16 @@ struct LodVariants {
 };
 // False if the file is missing or unparseable (callers fall back to QEM).
 bool load_lod_sidecar(const std::string& path, LodVariants& out);
+
+// Cache key for the flatten-hints sidecar of a part: "parts/<16-hex>.hints".
+// Stores which children are LOD-instanced and at what pixel threshold.
+std::string cache_path_hints(uint64_t resolved_hash);
+
+struct FlattenHints {
+    std::map<uint32_t, float> child_px;   // child index (bake order) -> inlineBelowPx
+};
+bool save_flatten_hints(const std::string& path, const FlattenHints& hints);
+bool load_flatten_hints(const std::string& path, FlattenHints& out);
 
 // Serialize the baked managers + child table + LOD levels to path (atomic temp+rename).
 // Writes format_version=2. Returns false on any I/O failure or dangling BLAS handle.

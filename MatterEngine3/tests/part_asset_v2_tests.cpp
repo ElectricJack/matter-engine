@@ -6,8 +6,11 @@
 #include <cstdint>
 #include <cstring>
 #include <vector>
+#include <sys/stat.h>
 
 #include "check.h"
+
+static const char* kCacheRoot = "/tmp/part_asset_v2_tests_cache";
 
 static void test_resolved_hash() {
     using namespace part_asset;
@@ -364,6 +367,34 @@ static void test_new_materials() {
     CHECK(dirt->albedo[0] > dirt->albedo[2], "material 16 is brown dirt");
 }
 
+static void test_flatten_hints_round_trip() {
+    // Ensure cache root and parts/ subdir exist.
+    mkdir(kCacheRoot, 0755);
+    mkdir((std::string(kCacheRoot) + "/parts").c_str(), 0755);
+
+    const uint64_t h = 0xABCD0000ABCD0000ull;
+    CHECK(part_asset::cache_path_hints(h) == "parts/abcd0000abcd0000.hints",
+          "cache_path_hints returns correct filename");
+
+    std::string p = std::string(kCacheRoot) + "/" + part_asset::cache_path_hints(h);
+
+    part_asset::FlattenHints out;
+    out.child_px[1] = 64.0f;
+    out.child_px[5] = 32.0f;
+    CHECK(part_asset::save_flatten_hints(p, out), "save_flatten_hints returns true");
+
+    part_asset::FlattenHints loaded;
+    CHECK(part_asset::load_flatten_hints(p, loaded), "load_flatten_hints returns true");
+    CHECK(loaded.child_px.size() == 2, "loaded hints has 2 entries");
+    CHECK(loaded.child_px.at(1) == 64.0f, "child 1 px preserved");
+    CHECK(loaded.child_px.at(5) == 32.0f, "child 5 px preserved");
+
+    part_asset::FlattenHints missing;
+    CHECK(!part_asset::load_flatten_hints(p + ".nope", missing),
+          "load_flatten_hints returns false for missing file");
+    CHECK(missing.child_px.empty(), "hints empty after failed load");
+}
+
 int main() {
     test_cache_path_resolved();
     test_resolved_hash();
@@ -373,6 +404,7 @@ int main() {
     test_round_trip_no_children();
     test_v2_guards();
     test_new_materials();
+    test_flatten_hints_round_trip();
     if (g_failures == 0) printf("All part_asset_v2 tests passed\n");
     return g_failures == 0 ? 0 : 1;
 }
