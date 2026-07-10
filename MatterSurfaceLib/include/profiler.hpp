@@ -50,8 +50,12 @@ public:
     }
     
     void begin_frame() {
+        // Capture timestamp BEFORE acquiring the lock so lock contention
+        // does not pollute the frame-start measurement (consistent with
+        // end_frame() and begin_section()).
+        auto t = Clock::now();
         std::lock_guard<std::mutex> lk(mutex_);
-        frame_start_ = Clock::now();
+        frame_start_ = t;
         frame_count_++;
     }
 
