@@ -2,6 +2,15 @@
 // public API (matter/*.h) to let a user fly through the Meadow Valley world.
 //
 // Env vars:
+//   EXPLORER_DATA_DIR=<path>
+//       Root directory for world data. Expected layout:
+//           <dir>/schemas/          — world schema .js files
+//           <dir>/shared-lib/       — shared DSL library .js files
+//           <dir>/worlds/Meadow/    — Meadow world data
+//       Defaults to ./WorldData (packaged layout, relative to the exe's cwd).
+//       Dev builds fall back to ../MatterEngine3/examples/world_demo/... if
+//       ./WorldData does not exist and EXPLORER_DATA_DIR is unset.
+//
 //   EXPLORER_SMOKE="secs=<n>[,shot=<path>]"
 //       Smoke-test mode: run for n seconds, optionally capture screenshot to
 //       <path>, print "explorer: ready" on the first rendered frame after
@@ -23,6 +32,74 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#ifdef _WIN32
+#  include <sys/stat.h>
+#else
+#  include <sys/stat.h>
+#endif
+
+// ---------------------------------------------------------------------------
+// Data-directory resolution: EXPLORER_DATA_DIR override with dev-path fallback.
+//
+// Packaged layout (./WorldData/):
+//   schemas/          — world schema .js files
+//   shared-lib/       — shared DSL library .js files
+//   worlds/Meadow/    — Meadow world data
+//
+// Dev layout (../MatterEngine3/...):
+//   examples/world_demo/schemas/
+//   examples/world_demo/WorldData/Meadow/
+//   shared-lib/
+// ---------------------------------------------------------------------------
+static bool dir_exists(const std::string& path) {
+    struct stat st{};
+    if (stat(path.c_str(), &st) != 0) return false;
+#ifdef _WIN32
+    return (st.st_mode & _S_IFDIR) != 0;
+#else
+    return S_ISDIR(st.st_mode);
+#endif
+}
+
+// WorldPaths holds the three directory arguments for matter::WorldDesc.
+// world_data_dir is the PARENT directory containing the world subdirectory
+// (engine appends "/" + world_name to find world.manifest etc.).
+struct WorldPaths {
+    std::string schemas_dir;
+    std::string world_data_dir;   // parent of worlds; engine appends /Meadow
+    std::string shared_lib_dir;
+};
+
+static WorldPaths resolve_world_paths() {
+    // 1. Explicit override always wins.
+    const char* env = getenv("EXPLORER_DATA_DIR");
+    if (env && env[0] != '\0') {
+        std::string base = env;
+        // Packaged layout under the override dir:
+        //   <base>/schemas/, <base>/worlds/<world_name>/, <base>/shared-lib/
+        return {
+            base + "/schemas",
+            base + "/worlds",
+            base + "/shared-lib"
+        };
+    }
+
+    // 2. Packaged layout: ./WorldData exists in cwd (i.e. next to the exe).
+    if (dir_exists("WorldData")) {
+        return {
+            "WorldData/schemas",
+            "WorldData/worlds",
+            "WorldData/shared-lib"
+        };
+    }
+
+    // 3. Dev fallback: ../MatterEngine3/... layout (original hardcoded paths).
+    return {
+        "../MatterEngine3/examples/world_demo/schemas",
+        "../MatterEngine3/examples/world_demo/WorldData",
+        "../MatterEngine3/shared-lib"
+    };
+}
 
 // ---------------------------------------------------------------------------
 // Smoke-mode helpers: parse EXPLORER_SMOKE="secs=<n>[,shot=<path>]"
@@ -100,11 +177,14 @@ int main() {
     }
 
     // --- World session (Meadow Valley) ---
+    // Data paths are resolved from EXPLORER_DATA_DIR, ./WorldData (packaged),
+    // or the dev ../MatterEngine3/... layout (fallback when ./WorldData absent).
+    WorldPaths wp = resolve_world_paths();
     matter::WorldDesc wd;
-    wd.schemas_dir    = "../MatterEngine3/examples/world_demo/schemas";
-    wd.world_data_dir = "../MatterEngine3/examples/world_demo/WorldData";
+    wd.schemas_dir    = wp.schemas_dir.c_str();
+    wd.world_data_dir = wp.world_data_dir.c_str();
     wd.world_name     = "Meadow";
-    wd.shared_lib_dir = "../MatterEngine3/shared-lib";
+    wd.shared_lib_dir = wp.shared_lib_dir.c_str();
     wd.enable_live_edit = false;
 
     auto session = engine->open_world(wd, err);
