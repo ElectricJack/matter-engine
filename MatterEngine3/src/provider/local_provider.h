@@ -134,6 +134,14 @@ public:
     // ProdGraphResolver for live-edit cascade tracking.
     part_graph_snapshot::Snapshot& graph_snapshot() { return graph_snapshot_; }
 
+#if defined(MATTER_HAVE_SCRIPT_HOST)
+    // Phase C Task 17: expose retopo_by_hash_ for resolve-cache save.
+    // Valid after a successful install_graph() or restore_from_cache() call.
+    const std::unordered_map<uint64_t, part_asset::RetopoSettings>& retopo_by_hash() const {
+        return retopo_by_hash_;
+    }
+#endif
+
     // Phase C Task 17 — resolve cache restore hook.
     // Called by execute_bake on a resolve-cache hit INSTEAD of install_graph().
     // Restores bake_plan, root_hashes, graph_snapshot from the cache payload and
@@ -147,6 +155,9 @@ public:
         const part_graph_snapshot::Snapshot&              snapshot,
         const std::unordered_map<uint64_t, part_graph::BakeInputs>& bake_plan,
         const std::vector<uint64_t>&                      root_hashes,
+#if defined(MATTER_HAVE_SCRIPT_HOST)
+        const std::unordered_map<uint64_t, part_asset::RetopoSettings>& retopo_by_hash,
+#endif
         std::string& err);
 
     // Phase C Task 17 — try to load cached probes for a pre-built manifest.

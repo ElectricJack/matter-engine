@@ -15,6 +15,7 @@
 #include "world_lights.h"         // WorldLights
 #include "part_graph.h"           // BakeInputs, InstallResult
 #include "part_graph_snapshot.h"  // Snapshot
+#include "part_asset_v2.h"        // RetopoSettings
 
 #include <cstdint>
 #include <string>
@@ -35,6 +36,11 @@ struct ResolveCachePayload {
     // LocalProvider ir_.bake_plan and ir_.root_hashes (needed by ensure_part_baked).
     std::unordered_map<uint64_t, part_graph::BakeInputs> bake_plan;
     std::vector<uint64_t>                                root_hashes;
+
+    // LocalProvider retopo_by_hash_ (needed by ensure_part_flattened).
+    // Maps resolved_hash -> per-part autoremesher retopo settings recorded during
+    // install_graph(). Empty map = no parts opted in to retopo (common case).
+    std::unordered_map<uint64_t, part_asset::RetopoSettings> retopo_by_hash;
 };
 
 // Compute the cache key by folding:

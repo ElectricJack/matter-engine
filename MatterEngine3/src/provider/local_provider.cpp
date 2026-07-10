@@ -1043,6 +1043,9 @@ bool LocalProvider::restore_from_cache(
     const part_graph_snapshot::Snapshot&              snapshot,
     const std::unordered_map<uint64_t, part_graph::BakeInputs>& bake_plan,
     const std::vector<uint64_t>&                      root_hashes,
+#if defined(MATTER_HAVE_SCRIPT_HOST)
+    const std::unordered_map<uint64_t, part_asset::RetopoSettings>& retopo_by_hash,
+#endif
     std::string& err)
 {
 #if defined(MATTER_HAVE_SCRIPT_HOST)
@@ -1078,6 +1081,7 @@ bool LocalProvider::restore_from_cache(
     host_->set_shared_lib_root(abs_shared_lib_);
     resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_schemas_);
     retopo_by_hash_.clear();
+    retopo_by_hash_ = retopo_by_hash;  // restore from cache payload (I-1 fix)
     host_baker_ = std::make_unique<part_graph::HostBaker>(*host_, abs_cache_root_);
 
     // Read the world manifest to populate roots_/expand_flags_/tileset_flags_/

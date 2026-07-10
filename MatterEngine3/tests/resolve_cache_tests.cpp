@@ -13,8 +13,11 @@
 //   (g) snapshot_indices    — by_file and by_import maps are reconstructed.
 //   (h) multi_source_dedup  — multiple bake_plan entries sharing the same
 //                             source string are deduplicated in the file.
+//   (i) round_trip_retopo   — non-empty retopo_by_hash map survives save/load
+//                             with all RetopoSettings fields intact (I-1 fix).
 
 #include "resolve_cache.h"
+#include "part_asset_v2.h"
 #include "part_graph.h"
 #include "part_graph_snapshot.h"
 #include "world_source.h"
@@ -189,6 +192,21 @@ static resolve_cache::ResolveCachePayload make_payload() {
     // root_hashes.
     p.root_hashes = {0xDEADBEEFCAFEBABEull};
 
+    // retopo_by_hash — one opted-in entry, one disabled entry.
+    {
+        part_asset::RetopoSettings rs_on;
+        rs_on.enabled         = true;
+        rs_on.target_ratio    = 0.25f;
+        rs_on.iterations      = 5;
+        rs_on.seed            = 42u;
+        rs_on.timeout_seconds = 120;
+        p.retopo_by_hash[0xDEADBEEFCAFEBABEull] = rs_on;
+
+        part_asset::RetopoSettings rs_off;
+        // All defaults: enabled=false, target_ratio=1.0f, iterations=3, seed=0, timeout=60
+        p.retopo_by_hash[0x1111111111111111ull] = rs_off;
+    }
+
     return p;
 }
 
@@ -288,6 +306,19 @@ static void test_round_trip_basic() {
 
     // root_hashes
     CHECK(out.root_hashes == p.root_hashes);
+
+    // retopo_by_hash
+    CHECK(out.retopo_by_hash.size() == p.retopo_by_hash.size());
+    for (const auto& kv : p.retopo_by_hash) {
+        auto it = out.retopo_by_hash.find(kv.first);
+        CHECK(it != out.retopo_by_hash.end());
+        if (it == out.retopo_by_hash.end()) continue;
+        CHECK(it->second.enabled         == kv.second.enabled);
+        CHECK(it->second.target_ratio    == kv.second.target_ratio);
+        CHECK(it->second.iterations      == kv.second.iterations);
+        CHECK(it->second.seed            == kv.second.seed);
+        CHECK(it->second.timeout_seconds == kv.second.timeout_seconds);
+    }
 
     run("rm -rf " + root);
 }
@@ -473,6 +504,64 @@ static void test_multi_source_dedup() {
     run("rm -rf " + root);
 }
 
+// (i) non-empty retopo_by_hash survives save/load (I-1 fix)
+static void test_round_trip_retopo() {
+    printf("[resolve_cache] round_trip_retopo\n");
+    const std::string root = "/tmp/rc_test_retopo";
+    run("rm -rf " + root);
+    run("mkdir -p " + root + "/cache");
+
+    const uint64_t KEY = 0xBEEFBEEFBEEFBEEFull;
+
+    // Build a minimal payload with only the retopo map populated.
+    resolve_cache::ResolveCachePayload p;
+    p.root_hashes = {0xAAAAAAAAAAAAAAAAull, 0xBBBBBBBBBBBBBBBBull};
+
+    part_asset::RetopoSettings rs1;
+    rs1.enabled         = true;
+    rs1.target_ratio    = 0.5f;
+    rs1.iterations      = 7;
+    rs1.seed            = 99u;
+    rs1.timeout_seconds = 30;
+    p.retopo_by_hash[0xAAAAAAAAAAAAAAAAull] = rs1;
+
+    part_asset::RetopoSettings rs2;  // all defaults (enabled=false)
+    p.retopo_by_hash[0xBBBBBBBBBBBBBBBBull] = rs2;
+
+    REQUIRE(resolve_cache::save(root, "TestWorld", KEY, p));
+
+    resolve_cache::ResolveCachePayload out;
+    REQUIRE(resolve_cache::load(root, "TestWorld", KEY, out));
+
+    // Verify root_hashes still round-trips.
+    CHECK(out.root_hashes == p.root_hashes);
+
+    // Verify retopo map: size, fields for both entries.
+    REQUIRE(out.retopo_by_hash.size() == 2u);
+
+    {
+        auto it = out.retopo_by_hash.find(0xAAAAAAAAAAAAAAAAull);
+        REQUIRE(it != out.retopo_by_hash.end());
+        CHECK(it->second.enabled         == true);
+        CHECK(it->second.target_ratio    == 0.5f);
+        CHECK(it->second.iterations      == 7);
+        CHECK(it->second.seed            == 99u);
+        CHECK(it->second.timeout_seconds == 30);
+    }
+
+    {
+        auto it = out.retopo_by_hash.find(0xBBBBBBBBBBBBBBBBull);
+        REQUIRE(it != out.retopo_by_hash.end());
+        CHECK(it->second.enabled         == false);
+        CHECK(it->second.target_ratio    == 1.0f);
+        CHECK(it->second.iterations      == 3);
+        CHECK(it->second.seed            == 0u);
+        CHECK(it->second.timeout_seconds == 60);
+    }
+
+    run("rm -rf " + root);
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -487,6 +576,7 @@ int main() {
     test_bad_magic_rejected();
     test_bad_key_rejected();
     test_multi_source_dedup();
+    test_round_trip_retopo();
 
     printf("=== %d/%d passed ===\n", g_tests_passed, g_tests_run);
     return (g_tests_passed == g_tests_run) ? 0 : 1;

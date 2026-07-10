@@ -78,6 +78,16 @@
 //     u32  root_hashes_count
 //     u64[root_hashes_count]  root_hashes
 //
+//     === retopo_by_hash (version 2+) ===
+//     u32  retopo_count
+//     for each entry:
+//       u64  resolved_hash
+//       u8   enabled (0/1)
+//       f32  target_ratio
+//       u32  iterations
+//       u32  seed
+//       u32  timeout_seconds
+//
 // "str" in the above means: u32 len, u8[len] bytes (UTF-8, no NUL).
 
 #include "resolve_cache.h"
@@ -109,8 +119,10 @@ namespace resolve_cache {
 // ---------------------------------------------------------------------------
 
 // 'RC1\0' in little-endian: 0x00314352
+// Version 2: added retopo_by_hash section (I-1 fix; old v1 files are treated as
+// misses because fmt_ver != kResolveCacheVersion).
 static constexpr uint32_t kResolveCacheMagic   = 0x00314352u;
-static constexpr uint32_t kResolveCacheVersion = 1u;
+static constexpr uint32_t kResolveCacheVersion = 2u;
 
 // ---------------------------------------------------------------------------
 // Low-level binary read/write helpers (little-endian)
@@ -457,6 +469,25 @@ bool save(const std::string& cache_root,
             if (!write_le(f, rh)) return false;
     }
 
+    // === retopo_by_hash (version 2+) ===
+    // Each entry: u64 resolved_hash, u8 enabled, f32 target_ratio, u32 iterations,
+    //             u32 seed, u32 timeout_seconds.
+    {
+        uint32_t rc = (uint32_t)p.retopo_by_hash.size();
+        if (!write_le(f, rc)) return false;
+        for (const auto& kv : p.retopo_by_hash) {
+            if (!write_le(f, kv.first)) return false;
+            uint8_t en = kv.second.enabled ? 1u : 0u;
+            if (!write_le(f, en)) return false;
+            if (!write_le(f, kv.second.target_ratio)) return false;
+            uint32_t iters = (uint32_t)kv.second.iterations;
+            if (!write_le(f, iters)) return false;
+            if (!write_le(f, kv.second.seed)) return false;
+            uint32_t tmo = (uint32_t)kv.second.timeout_seconds;
+            if (!write_le(f, tmo)) return false;
+        }
+    }
+
     f.close();
     if (!f.good() && !f.eof()) {
         std::remove(tmp.c_str());
@@ -663,6 +694,31 @@ bool load(const std::string& cache_root,
         out.root_hashes.resize(rhc);
         for (uint32_t i = 0; i < rhc; ++i)
             if (!read_le(f, out.root_hashes[i])) return false;
+    }
+
+    // === retopo_by_hash (version 2+) ===
+    {
+        out.retopo_by_hash.clear();
+        uint32_t rc = 0;
+        if (!read_le(f, rc)) return false;
+        if (rc > 1024u * 1024u) return false;  // sanity
+        for (uint32_t i = 0; i < rc; ++i) {
+            uint64_t h = 0;
+            if (!read_le(f, h)) return false;
+            part_asset::RetopoSettings rs;
+            uint8_t en = 0;
+            if (!read_le(f, en)) return false;
+            rs.enabled = (en != 0);
+            if (!read_le(f, rs.target_ratio)) return false;
+            uint32_t iters = 0;
+            if (!read_le(f, iters)) return false;
+            rs.iterations = (int)iters;
+            if (!read_le(f, rs.seed)) return false;
+            uint32_t tmo = 0;
+            if (!read_le(f, tmo)) return false;
+            rs.timeout_seconds = (int)tmo;
+            out.retopo_by_hash[h] = rs;
+        }
     }
 
     // Confirm we're at EOF (detect truncation of a valid header + too-short payload).
