@@ -125,6 +125,9 @@ public:
 
     uint64_t fold_cache_hits() const { return fold_hits_; }
     uint64_t fold_cache_misses() const { return fold_misses_; }
+    // Clears the fold cache. Called by set_shared_lib_root() to invalidate cached
+    // folded sources when the shared-lib root changes. Engine reload does not call
+    // this because install_graph() recreates the ScriptHost (fresh cache by design).
     void clear_fold_cache();
 
     std::string last_merged_params() const { return last_merged_params_; }

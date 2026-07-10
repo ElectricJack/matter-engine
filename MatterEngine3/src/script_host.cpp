@@ -1928,8 +1928,9 @@ bool ScriptHost::fold_sources_cached(const std::string& source,
     // Insert into cache (under lock).
     {
         std::lock_guard<std::mutex> lk(fold_mu_);
-        ++fold_misses_;
-        out = fold_cache_.emplace(key, std::move(fresh)).first->second;
+        auto ins = fold_cache_.emplace(key, std::move(fresh));
+        if (ins.second) ++fold_misses_;  // Only count if emplace actually inserted
+        out = ins.first->second;
     }
 
     return true;
