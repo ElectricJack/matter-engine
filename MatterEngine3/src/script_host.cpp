@@ -316,9 +316,11 @@ std::string ScriptHost::merge_params_canonical(const std::string& source,
     ModuleStore store;
     bool use_module = false;
     if (!shared_lib_root_.empty()) {
-        module_resolver::FoldResult fr; std::string ferr;
-        if (!module_resolver::fold_sources(source, shared_lib_root_, fr, ferr)) {
-            err.ok = false; err.message = "module resolution failed: " + ferr;
+        module_resolver::FoldResult fr;
+        std::string ferr;
+        if (!fold_sources_cached(source, fr, ferr)) {
+            err.ok = false;
+            err.message = "module resolution failed: " + ferr;
             return last_merged_params_;
         }
         if (!fr.modules.empty()) { store = store_from_fold(fr); use_module = true; }
@@ -405,8 +407,9 @@ std::vector<RequiredChild> ScriptHost::eval_requires(const std::string& source,
     ModuleStore store;
     bool use_module = false;
     if (!shared_lib_root_.empty()) {
-        module_resolver::FoldResult fr; std::string ferr;
-        if (!module_resolver::fold_sources(source, shared_lib_root_, fr, ferr)) return out;
+        module_resolver::FoldResult fr;
+        std::string ferr;
+        if (!fold_sources_cached(source, fr, ferr)) return out;
         if (!fr.modules.empty()) { store = store_from_fold(fr); use_module = true; }
     }
 
@@ -546,8 +549,9 @@ ScriptHost::LodBudgetSpec ScriptHost::eval_lod_budgets(const std::string& source
     ModuleStore store;
     bool use_module = false;
     if (!shared_lib_root_.empty()) {
-        module_resolver::FoldResult fr; std::string ferr;
-        if (!module_resolver::fold_sources(source, shared_lib_root_, fr, ferr)) return out;
+        module_resolver::FoldResult fr;
+        std::string ferr;
+        if (!fold_sources_cached(source, fr, ferr)) return out;
         if (!fr.modules.empty()) { store = store_from_fold(fr); use_module = true; }
     }
 
@@ -966,7 +970,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     module_resolver::FoldResult fold;
     if (!shared_lib_root_.empty()) {
         std::string ferr;
-        if (!module_resolver::fold_sources(source, shared_lib_root_, fold, ferr)) {
+        if (!fold_sources_cached(source, fold, ferr)) {
             // Fail-closed: a missing/illegal shared module aborts the bake with
             // no artifact written, matching the existing fail-closed pattern.
             r.error.ok = false;
@@ -1474,7 +1478,7 @@ TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
         size_t      src_len   = source.size();
         if (!shared_lib_root_.empty()) {
             std::string ferr;
-            if (!module_resolver::fold_sources(source, shared_lib_root_, fold, ferr)) {
+            if (!fold_sources_cached(source, fold, ferr)) {
                 r.error.ok = false;
                 r.error.message = "module resolution failed: " + ferr;
                 return r;
@@ -1870,6 +1874,70 @@ ts_done:
         if (rt)  JS_FreeRuntime(rt);
         return r;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Fold cache implementation (Task 1, Phase C).
+// ---------------------------------------------------------------------------
+
+// FNV-1a 64-bit hash of two strings (source + shared_lib_root).
+// Used as cache key for (source, shared_lib_root) pairs.
+static uint64_t fold_key_fnv1a64(const std::string& a, const std::string& b) {
+    uint64_t h = 1469598103934665603ull;  // FNV offset basis
+    auto mix = [&](const std::string& s) {
+        for (unsigned char c : s) {
+            h ^= c;
+            h *= 1099511628211ull;  // FNV prime
+        }
+        h ^= 0xff;
+        h *= 1099511628211ull;  // separator
+    };
+    mix(a);
+    mix(b);
+    return h;
+}
+
+bool ScriptHost::fold_sources_cached(const std::string& source,
+                                     module_resolver::FoldResult& out,
+                                     std::string& err) {
+    // If no shared-lib root, skip the cache and just return an empty fold result.
+    if (shared_lib_root_.empty()) {
+        out = module_resolver::FoldResult{};
+        return true;
+    }
+
+    const uint64_t key = fold_key_fnv1a64(source, shared_lib_root_);
+
+    // Check cache first (with lock).
+    {
+        std::lock_guard<std::mutex> lk(fold_mu_);
+        auto it = fold_cache_.find(key);
+        if (it != fold_cache_.end()) {
+            ++fold_hits_;
+            out = it->second;
+            return true;
+        }
+    }
+
+    // Cache miss: fold the sources.
+    module_resolver::FoldResult fresh;
+    if (!module_resolver::fold_sources(source, shared_lib_root_, fresh, err)) {
+        return false;
+    }
+
+    // Insert into cache (under lock).
+    {
+        std::lock_guard<std::mutex> lk(fold_mu_);
+        ++fold_misses_;
+        out = fold_cache_.emplace(key, std::move(fresh)).first->second;
+    }
+
+    return true;
+}
+
+void ScriptHost::clear_fold_cache() {
+    std::lock_guard<std::mutex> lk(fold_mu_);
+    fold_cache_.clear();
 }
 
 } // namespace script_host

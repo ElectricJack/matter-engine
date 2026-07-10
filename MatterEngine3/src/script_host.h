@@ -2,8 +2,11 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <mutex>
+#include <unordered_map>
 #include "dsl_state.h"
 #include "tileset_spec.h"
+#include "module_resolver.h"
 
 namespace script_host {
 
@@ -106,8 +109,23 @@ public:
     // serves those module sources to the QuickJS module loader so the `import`
     // actually resolves at bake time. Empty (default) => no module resolution and
     // the raw part source is hashed (legacy behavior; non-importer parts are
-    // unaffected).
-    void set_shared_lib_root(const std::string& root) { shared_lib_root_ = root; }
+    // unaffected). Clearing fold_cache when the root changes ensures shared-lib
+    // edits invalidate the cache (prevent stale folded sources).
+    void set_shared_lib_root(const std::string& root) {
+        shared_lib_root_ = root;
+        clear_fold_cache();  // invalidate cache on root change
+    }
+
+    // Cached fold_sources: looks up (source, shared_lib_root) by FNV1a64 hash key.
+    // Returns true on success (fold succeeded); false on fold failure (err set).
+    // Increments fold_cache_hits on cache hit, fold_cache_misses on miss.
+    bool fold_sources_cached(const std::string& source,
+                             module_resolver::FoldResult& out,
+                             std::string& err);
+
+    uint64_t fold_cache_hits() const { return fold_hits_; }
+    uint64_t fold_cache_misses() const { return fold_misses_; }
+    void clear_fold_cache();
 
     std::string last_merged_params() const { return last_merged_params_; }
     bool last_build_ran() const { return last_build_ran_; }
@@ -129,6 +147,12 @@ private:
     bool last_build_ran_ = false;
     dsl::BuildBuffer last_buffer_;
     std::string last_ambient_probe_;
+
+    // Fold cache: (source, shared_lib_root) -> FoldResult (thread-safe).
+    std::mutex fold_mu_;
+    std::unordered_map<uint64_t, module_resolver::FoldResult> fold_cache_;
+    uint64_t fold_hits_ = 0;
+    uint64_t fold_misses_ = 0;
 };
 
 } // namespace script_host
