@@ -107,6 +107,35 @@ of thousands of tris.
 - Levels gain a segment tag (fine/coarse).
 - Loader continues to read v3 artifacts.
 
+### Scale invariance of the cutover
+
+The cutover does not depend on what scale the part is instanced into the world
+at. Ladder thresholds are ratios on the projected-size scale
+(`bound_radius / distance × pixel_budget`, lod_select.cpp:52; threshold
+semantics at lod_bake.h:46-52), not world-space sizes — a part placed at 2×
+scale has 2× the bound radius and crosses any threshold at 2× the distance,
+i.e. at the same on-screen size.
+
+Converting the child pixel threshold to a parent-ladder threshold is a
+bake-time constant: at any distance,
+`child_projected / parent_projected = (child_radius × ref_scale) / parent_radius`,
+and everything on the right is known at bake (the ref's relative transform,
+including its scale, is in the placement). So:
+
+```
+parent_cutover_threshold = child_px_threshold × parent_radius / (child_radius × ref_scale)
+```
+
+computed once per ref at flatten time and stored in ladder-threshold units.
+
+**Known pre-existing caveat (out of scope):** `select_sector_lods` looks up
+`bound_radius` per part *hash*, not per instance (lod_select.cpp:52), so an
+instance placed at a non-unit world scale is LOD-selected as if at scale 1.
+This limitation applies to all LOD selection today; the cutover inherits it,
+no worse and no better. Deliberately not fixed in this work (Jack,
+2026-07-10); if parts start being placed at widely varying world scales, fix
+per-instance radius in the resolver separately.
+
 ## Runtime
 
 **Loader (`part_store::load_flat`):** reads v4, builds both cluster segments,
