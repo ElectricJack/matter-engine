@@ -393,6 +393,19 @@ static void test_flatten_hints_round_trip() {
     CHECK(!part_asset::load_flatten_hints(p + ".nope", missing),
           "load_flatten_hints returns false for missing file");
     CHECK(missing.child_px.empty(), "hints empty after failed load");
+
+    // Malformed-input: valid first line then non-numeric token — must be all-or-nothing.
+    std::string pmal = std::string(kCacheRoot) + "/parts/malformed_hints_test.hints";
+    {
+        std::ofstream ofs(pmal);
+        ofs << "1 64\n";
+        ofs << "2 notanumber\n";
+    }
+    part_asset::FlattenHints hmal;
+    CHECK(!part_asset::load_flatten_hints(pmal, hmal),
+          "load_flatten_hints returns false for malformed file");
+    CHECK(hmal.child_px.empty(),
+          "hints cleared (all-or-nothing) on malformed file");
 }
 
 int main() {

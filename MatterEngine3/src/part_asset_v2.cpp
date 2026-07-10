@@ -135,6 +135,7 @@ bool load_flatten_hints(const std::string& path, FlattenHints& out_hints) {
     if (!ifs) return false;
     uint32_t idx; float px;
     while (ifs >> idx >> px) out_hints.child_px[idx] = px;
+    if (ifs.fail() && !ifs.eof()) { out_hints.child_px.clear(); return false; }
     return true;
 }
 
