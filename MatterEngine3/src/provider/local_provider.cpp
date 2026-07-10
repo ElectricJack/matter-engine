@@ -489,12 +489,20 @@ bool LocalProvider::ensure_part_baked(uint64_t part_hash, std::string& err) {
 bool LocalProvider::ensure_part_flattened(uint64_t part_hash) {
     // Identical logic to compose_world's flatten_one lambda (moved here verbatim
     // as a member; compose_world delegates to this function).
+    // Transient parts live in scratch; their flats belong there too (never the cache).
+    std::string root = abs_cache_root_;
+    if (!transient_dir_.empty()) {
+        const std::string scratch_part =
+            transient_dir_ + "/" + part_asset::cache_path_resolved(part_hash);
+        if (part_asset::peek_format_version(scratch_part) != 0)
+            root = transient_dir_;
+    }
     const std::string flat_abs_path =
-        abs_cache_root_ + "/" + part_asset::cache_path_flat(part_hash);
+        root + "/" + part_asset::cache_path_flat(part_hash);
     if (part_asset::peek_format_version(flat_abs_path) == part_asset::kFormatVersionFlat)
         return true;
     part_flatten::FlattenResult fr =
-        part_flatten::flatten_part(abs_cache_root_, part_hash);
+        part_flatten::flatten_part(root, part_hash);
     if (fr.ok) {
         printf("LocalProvider: flattened %016llx (%zu clusters, %zu levels, %zu -> %zu tris, %zu instance_refs)\n",
                (unsigned long long)part_hash, fr.clusters, fr.levels,

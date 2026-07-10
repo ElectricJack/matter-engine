@@ -157,7 +157,47 @@ int main() {
           "Terrain .part does NOT exist under cache dir");
     printf("  Terrain transient file: %s\n", scratch_terrain.c_str());
 
-    // 3. Verify PartStore::get_or_load finds Terrain via scratch lookup
+    // 3. Test ensure_part_flattened for transient Terrain (flatten from scratch root)
+    {
+        bool ok = prov->ensure_part_flattened(terrain_hash);
+        CHECK(ok, "ensure_part_flattened(terrain_hash) returns true");
+    }
+
+    // 4. Verify Terrain's .flat.part exists in scratch, NOT in cache
+    {
+        const std::string scratch_flat = prov->transient_dir() + "/" +
+                                         part_asset::cache_path_flat(terrain_hash);
+        const std::string cache_flat = cache_root + "/" +
+                                       part_asset::cache_path_flat(terrain_hash);
+
+        CHECK(part_asset::peek_format_version(scratch_flat) == part_asset::kFormatVersionFlat,
+              "Terrain .flat.part exists in scratch (valid format)");
+        CHECK(part_asset::peek_format_version(cache_flat) == 0,
+              "Terrain .flat.part does NOT exist in cache (peek_format_version returns 0)");
+        printf("  Terrain flat in scratch: %s\n", scratch_flat.c_str());
+    }
+
+    // 5. Test ensure_part_flattened for persistent Rock (flatten to cache root)
+    {
+        bool ok = prov->ensure_part_flattened(rock_hash);
+        CHECK(ok, "ensure_part_flattened(rock_hash) returns true");
+    }
+
+    // 6. Verify Rock's .flat.part exists in cache, NOT in scratch
+    {
+        const std::string cache_flat = cache_root + "/" +
+                                       part_asset::cache_path_flat(rock_hash);
+        const std::string scratch_flat = prov->transient_dir() + "/" +
+                                         part_asset::cache_path_flat(rock_hash);
+
+        CHECK(part_asset::peek_format_version(cache_flat) == part_asset::kFormatVersionFlat,
+              "Rock .flat.part exists in cache (valid format)");
+        CHECK(part_asset::peek_format_version(scratch_flat) == 0,
+              "Rock .flat.part does NOT exist in scratch (peek_format_version returns 0)");
+        printf("  Rock flat in cache: %s\n", cache_flat.c_str());
+    }
+
+    // 7. Verify PartStore::get_or_load finds Terrain via scratch lookup
     // Create a test PartStore with the scratch dir configured
     viewer::PartStore store(cache_root);
     store.set_scratch_dir(prov->transient_dir());
@@ -173,13 +213,13 @@ int main() {
         return 1;
     }
 
-    // 4. Release Terrain and verify scratch file is gone
+    // 8. Release Terrain and verify scratch files are gone
     prov->release_transient(terrain_hash);
     CHECK(!file_exists(scratch_terrain),
-          "Terrain scratch file deleted after release_transient");
+          "Terrain scratch .part file deleted after release_transient");
     printf("  Terrain scratch file deleted\n");
 
-    // 5. Verify Rock's artifact IS in cache (unchanged for persistent modules)
+    // 9. Verify Rock's artifact IS in cache (unchanged for persistent modules)
     const std::string cache_rock = cache_root + "/" +
                                    part_asset::cache_path_resolved(rock_hash);
     CHECK(file_exists(cache_rock),
