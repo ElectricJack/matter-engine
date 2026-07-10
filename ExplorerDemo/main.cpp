@@ -11,10 +11,12 @@
 //       Dev builds fall back to ../MatterEngine3/examples/world_demo/... if
 //       ./WorldData does not exist and EXPLORER_DATA_DIR is unset.
 //
-//   EXPLORER_SMOKE="secs=<n>[,shot=<path>]"
+//   EXPLORER_SMOKE="secs=<n>[,shot=<path>][,keys=<csv>]"
 //       Smoke-test mode: run for n seconds, optionally capture screenshot to
 //       <path>, print "explorer: ready" on the first rendered frame after
 //       BakeStarted, then exit 0.
+//       keys=<csv>: timed synthetic key injections, e.g. keys=esc@5,down@6,enter@7
+//         Key names: esc, up, down, enter.  Times are seconds since launch.
 //
 // Run from the ExplorerDemo/ directory so that cache/ resolves correctly.
 
@@ -27,6 +29,7 @@
 
 #include "camera_rig.h"
 #include "hud.h"
+#include "menu.h"
 #include "staged_camera.h"
 
 #include <cstdio>
@@ -34,6 +37,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <vector>
 #ifdef _WIN32
 #  include <sys/stat.h>
 #else
@@ -104,13 +108,78 @@ static WorldPaths resolve_world_paths() {
 }
 
 // ---------------------------------------------------------------------------
-// Smoke-mode helpers: parse EXPLORER_SMOKE="secs=<n>[,shot=<path>]"
+// Synthetic key injection (smoke-mode keys=<csv>)
+// Format: "keyname@seconds" e.g. "esc@5,down@6,enter@7"
+// Supported key names: esc, up, down, enter
+// ---------------------------------------------------------------------------
+struct SyntheticKey {
+    float fire_at;   // seconds since launch
+    int   key_code;  // raylib KEY_* constant
+    bool  fired = false;
+};
+
+static int parse_key_name(const char* name, int len) {
+    // Match against supported names (case-insensitive by convention; lowercase input expected).
+    auto eq = [&](const char* s) {
+        return (int)strlen(s) == len && strncmp(name, s, (size_t)len) == 0;
+    };
+    if (eq("esc"))   return KEY_ESCAPE;
+    if (eq("up"))    return KEY_UP;
+    if (eq("down"))  return KEY_DOWN;
+    if (eq("enter")) return KEY_ENTER;
+    return -1;  // unknown
+}
+
+static std::vector<SyntheticKey> parse_keys_csv(const char* csv) {
+    // csv is the value after "keys=", terminated by ',' (next option) or end of string.
+    std::vector<SyntheticKey> result;
+    const char* p = csv;
+    while (*p) {
+        // Skip leading commas (inter-key delimiters within the keys value).
+        // The outer EXPLORER_SMOKE parser already trimmed up to "keys="; here entries
+        // are delimited by comma.  But "keys=" may be followed by tokens that contain
+        // commas before the next k=v pair — we can't know where the csv ends unless we
+        // look for "key@time" patterns.  We stop at a token that contains '=' (next
+        // key=value option) or at end-of-string.
+        // Find next token (comma-separated).
+        const char* tok_end = p;
+        while (*tok_end && *tok_end != ',') tok_end++;
+
+        // If this token contains '=' but no '@', it is a "secs=N" style option — stop.
+        const char* at = strchr(p, '@');
+        if (!at || at >= tok_end) {
+            // Check for '=' to detect next k=v option.
+            const char* eq_sign = (const char*)memchr(p, '=', (size_t)(tok_end - p));
+            if (eq_sign) break;  // next option
+            // No '@' and no '=': skip unknown token.
+            p = tok_end;
+            if (*p == ',') p++;
+            continue;
+        }
+
+        // Parse "keyname@seconds".
+        int name_len = (int)(at - p);
+        float secs   = (float)atof(at + 1);
+        int key_code = parse_key_name(p, name_len);
+        if (key_code >= 0) {
+            result.push_back({ secs, key_code, false });
+        }
+
+        p = tok_end;
+        if (*p == ',') p++;
+    }
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// Smoke-mode helpers: parse EXPLORER_SMOKE="secs=<n>[,shot=<path>][,keys=<csv>]"
 // ---------------------------------------------------------------------------
 struct SmokeOpts {
     bool   active       = false;
     int    secs         = 0;
     char   shot[512]    = {};
     bool   ready_printed = false;
+    std::vector<SyntheticKey> synth_keys;
 };
 
 static SmokeOpts parse_smoke_env() {
@@ -118,7 +187,7 @@ static SmokeOpts parse_smoke_env() {
     const char* env = getenv("EXPLORER_SMOKE");
     if (!env) return opts;
     opts.active = true;
-    // Parse "secs=<n>" and optional ",shot=<path>".
+    // Parse "secs=<n>" and optional ",shot=<path>" and optional ",keys=<csv>".
     const char* p = strstr(env, "secs=");
     if (p) opts.secs = atoi(p + 5);
     p = strstr(env, "shot=");
@@ -128,6 +197,11 @@ static SmokeOpts parse_smoke_env() {
         while (*p && *p != ',' && i < (int)(sizeof(opts.shot) - 1))
             opts.shot[i++] = *p++;
         opts.shot[i] = '\0';
+    }
+    p = strstr(env, "keys=");
+    if (p) {
+        p += 5;
+        opts.synth_keys = parse_keys_csv(p);
     }
     return opts;
 }
@@ -142,6 +216,9 @@ int main() {
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
     InitWindow(1280, 720, "ExplorerDemo — Meadow Valley");
     SetTargetFPS(60);
+    // Disable raylib's built-in ESC→close behavior: we intercept ESC for the
+    // escape menu. Quit is handled explicitly via the menu's Quit entry.
+    SetExitKey(KEY_NULL);
 
     // --- Engine setup ---
     matter::EngineDesc edesc;
@@ -182,9 +259,10 @@ int main() {
     CameraRig rig;
     rig.init();
 
-    // --- Loading HUD + staged camera (Task 9) ---
+    // --- Loading HUD + staged camera (Task 9) + menu (Task 10) ---
     Hud          hud;
     StagedCamera staged;
+    Menu         menu;
 
     // Resolver knobs for Meadow Valley (same as MatterViewer's Meadow defaults).
     matter::RenderOptions render_opts;
@@ -211,24 +289,76 @@ int main() {
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
         float now = (float)GetTime();
+        double elapsed_d = GetTime() - t_start;
+
+        // --- Synthetic key injection (smoke-mode keys= csv) ---
+        // Fire keys whose timestamp has passed (once each).
+        int synth_key = -1;  // KEY_* constant, or -1 if none this frame
+        if (smoke.active) {
+            for (auto& sk : smoke.synth_keys) {
+                if (!sk.fired && elapsed_d >= (double)sk.fire_at) {
+                    sk.fired  = true;
+                    synth_key = sk.key_code;
+                    printf("explorer: synthetic key %d at %.1fs\n", sk.key_code, (float)elapsed_d);
+                    fflush(stdout);
+                    break;  // one key per frame is sufficient
+                }
+            }
+        }
+
+        // --- ESC toggles menu (real key only; synthetic handled in menu.update()) ---
+        // Check the raw key press here so we can toggle before updating camera.
+        // Synthetic ESC is passed to menu.update() below.
+        if (IsKeyPressed(KEY_ESCAPE) && synth_key != KEY_ESCAPE) {
+            menu.toggle();
+        }
+        // Gamepad Start button toggles menu (real only; synthetic not needed for gamepad).
+        if (IsGamepadAvailable(0) &&
+            IsGamepadButtonPressed(0, GAMEPAD_BUTTON_MIDDLE_RIGHT)) {
+            menu.toggle();
+        }
+
+        // --- Menu update: handles navigation and actions when open ---
+        bool quit_from_menu = false;
+        if (menu.is_open()) {
+            menu.update(*session, staged, synth_key, quit_from_menu);
+            if (quit_from_menu) break;
+            // When menu closes via New seed, bake_done/bake_started are reset
+            // automatically: BakeStarted event will fire next frame and reset HUD.
+            // We also reset our local bake_done flag here if staged was re-armed.
+            if (!staged.user_has_control()) {
+                // staged.reset() was called; clear our local bake tracking.
+                bake_done    = false;
+                bake_started = false;
+            }
+        } else if (synth_key == KEY_ESCAPE) {
+            // A synthetic ESC that wasn't consumed by the menu means: open the menu.
+            menu.open();
+            // The synth key was consumed; don't pass it further.
+            synth_key = -1;
+        }
 
         // --- Staged camera or user input ---
         // staged.update() returns true while it's still driving the rig.
         // If user has given input (rig.has_user_input()), staged camera exits.
         // In smoke mode the staged camera still runs (that's how screenshots verify it).
-        bool staged_active = staged.update(rig, dt, bake_done);
+        // When the menu is open, camera input is paused (pass dt=0 to suppress movement).
+        bool staged_active = staged.update(rig, menu.is_open() ? 0.0f : dt, bake_done);
 
         // Only call rig.update() when staged camera isn't active, OR always call
         // it to capture input state (but suppress movement when staged is active).
         // We always call it so input detection works; rig.update() moves the camera
         // only when not overridden by set_staged_pose().
-        if (!staged_active) {
-            rig.update(dt);
-        } else {
-            // Still poll input state so has_user_input() fires on first key press.
-            // We pass dt=0 to suppress any actual movement; staged pose is set by
-            // staged.update() above via set_staged_pose().
-            rig.update(0.0f);
+        // When the menu is open, suppress all camera movement.
+        if (!menu.is_open()) {
+            if (!staged_active) {
+                rig.update(dt);
+            } else {
+                // Still poll input state so has_user_input() fires on first key press.
+                // We pass dt=0 to suppress any actual movement; staged pose is set by
+                // staged.update() above via set_staged_pose().
+                rig.update(0.0f);
+            }
         }
 
         // --- Set bake focus to camera position every frame (before tick). ---
@@ -286,6 +416,8 @@ int main() {
             const matter::FrameStats& fs = session->frame_stats();
             // Task 9: draw HUD (replaces old draw_hud free function).
             hud.draw(GetScreenWidth(), GetScreenHeight(), fs, (float)GetFPS(), now);
+            // Task 10: draw escape menu overlay (world renders behind — the showcase).
+            menu.draw(GetScreenWidth(), GetScreenHeight());
         EndDrawing();
 
         ++frames;

@@ -36,6 +36,15 @@ public:
     // Signal BakeFinished (releases the staged camera).
     void notify_bake_finished() { bake_done_ = true; }
 
+    // Re-arm the staged sequence from the beginning (called on New-seed regenerate).
+    // Resets elapsed time and clears the bake-done / user-taken latches so the
+    // cinematic sequence runs again while the new world bakes.
+    void reset() {
+        elapsed_    = 0.0f;
+        user_taken_ = false;
+        bake_done_  = false;
+    }
+
 private:
     float  elapsed_    = 0.0f;   // cumulative time in staged mode (seconds)
     bool   user_taken_ = false;
