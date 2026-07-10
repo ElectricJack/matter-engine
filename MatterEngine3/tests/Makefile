@@ -637,6 +637,7 @@ gpu_CPP_SRCS := $(sort \
     api_tests.cpp \
     async_bake_tests.cpp \
     demand_bake_tests.cpp \
+    transient_tests.cpp \
     valley_layout_tests.cpp \
     release_part_tests.cpp \
     refine_loop_tests.cpp \
@@ -1103,6 +1104,17 @@ demand-bake-tests: $(call obj_of,gpu,demand_bake_tests.cpp) $(GPU_SHARED_OBJS) |
 run-demandbake: demand-bake-tests
 	./demand_bake_tests
 
+# Phase C Task 2 — transient artifact routing (tmpfs scratch dir).
+# Tests: bake transient modules to scratch, release_transient unlink,
+# PartStore scratch-aware get_or_load, persistent modules still use cache.
+transient-tests: $(call obj_of,gpu,transient_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
+	$(CC) $(call obj_of,gpu,transient_tests.cpp) $(GPU_SHARED_OBJS) \
+	      -o transient_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
+	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+
+run-transient: transient-tests
+	./transient_tests
+
 # Phase C Task 2 — Meadow Valley layout structural test (long, own target).
 # Uses real world_demo schemas + WorldData/Meadow manifest; headless
 # (allow_gl_lt_46=true). Not part of any quick-suite aggregate.
@@ -1164,6 +1176,6 @@ clean:
 	      valley_layout_tests \
 	      tileset_physics_tests tileset_core_tests tileset_placement_tests \
 	      gpu_tests tileset_gpu_tests tileset_seam_tests tileset_provider_tests \
-	      tileset_load_tests api_tests async_bake_tests demand_bake_tests release_part_tests \
+	      tileset_load_tests api_tests async_bake_tests demand_bake_tests transient_tests release_part_tests \
 	      refine_loop_tests \
 	      resolve_cache_tests

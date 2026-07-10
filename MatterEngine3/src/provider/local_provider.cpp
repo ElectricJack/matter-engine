@@ -254,6 +254,11 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     // so ensure_part_baked() can reuse it without reconstructing a ScriptHost.
     host_baker_ = std::make_unique<part_graph::HostBaker>(*host_, abs_cache_root_);
 
+    // Task 2: apply transient settings to the baker (if set_transient_modules was called)
+    if (!transient_modules_.empty()) {
+        host_baker_->set_transient(&transient_modules_, transient_dir_);
+    }
+
     // Capture cfg_ pointer for the RecordingBaker lambda (install-phase on_part).
     LocalProviderConfig* cfg_ptr = &cfg_;
     int* install_bake_count_ptr  = &install_bake_count_;
@@ -1147,6 +1152,34 @@ bool LocalProvider::try_load_cached_probes(WorldManifest& m) {
         return false;
     m.probes = std::make_shared<probe_volume::ProbeVolume>(std::move(vol));
     return true;
+}
+
+// Task 2: transient artifact routing
+void LocalProvider::set_transient_modules(std::set<std::string> modules) {
+    transient_modules_ = std::move(modules);
+
+    // Create the scratch dir: /tmp/matter_transient/<pid>/
+    // Use mkdir -p semantics (safe no-op if already exists).
+    pid_t pid = ::getpid();
+    transient_dir_ = "/tmp/matter_transient/" + std::to_string(pid);
+
+    // mkdir -p: ensure parent dirs exist
+    std::system(("mkdir -p " + transient_dir_).c_str());
+
+    // Note: baker and store configuration happens in install_graph() once they're created.
+    // PartStore is owned at a higher level, so callers must call
+    // store.set_scratch_dir(prov->transient_dir()) independently.
+}
+
+void LocalProvider::release_transient(uint64_t hash) {
+    if (transient_dir_.empty()) return;  // not configured
+
+    // Unlink .part and .flat.part from scratch
+    const std::string part_path = transient_dir_ + "/" + part_asset::cache_path_resolved(hash);
+    const std::string flat_path = transient_dir_ + "/" + part_asset::cache_path_flat(hash);
+
+    ::unlink(part_path.c_str());
+    ::unlink(flat_path.c_str());
 }
 
 } // namespace viewer

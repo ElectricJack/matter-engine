@@ -160,6 +160,19 @@ public:
     struct FetchFailed { std::string module; std::string error; };
     const std::vector<FetchFailed>& fetch_failed() const { return fetch_failed_; }
 
+    // Phase C Task 2: transient artifact routing (tmpfs scratch dir).
+    // Configure the baker and store to route bakes of the listed modules to
+    // a per-process scratch dir (/tmp/matter_transient/<pid>/). The scratch
+    // dir is created with mkdir -p semantics.
+    void set_transient_modules(std::set<std::string> modules);
+
+    // Release a transient part: unlink its .part and .flat.part from scratch.
+    // Safe no-op if the artifact is absent or not transient.
+    void release_transient(uint64_t hash);
+
+    // Access the transient scratch dir (for test assertions).
+    const std::string& transient_dir() const { return transient_dir_; }
+
 private:
     LocalProviderConfig  cfg_;
     int                  baked_count_ = 0;
@@ -193,6 +206,10 @@ private:
     std::unique_ptr<part_graph::FileModuleResolver>     resolver_;
     std::unique_ptr<part_graph::HostBaker>              host_baker_;  // Task 13: shared baker
 #endif
+
+    // Task 2: transient module routing state
+    std::set<std::string> transient_modules_;
+    std::string transient_dir_;
 };
 
 // Expand an assembly root's baked child-instance table (from its .part in

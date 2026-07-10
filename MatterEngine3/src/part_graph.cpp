@@ -412,6 +412,8 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots,
             bool bake_ok = false;
             std::string bake_err;
             try {
+                // Task 2: notify baker of the module being baked (for transient routing)
+                baker_.set_baking_module(n.module);
                 bake_ok = baker_.bake(n.source, n.params, n.child_hashes, n.child_modules,
                                       n.child_params, n.resolved_hash);
             } catch (std::bad_alloc&) {
@@ -550,23 +552,32 @@ uint64_t HostBaker::resolve_hash(const std::string& source, const Params& params
 }
 
 bool HostBaker::cached(uint64_t resolved_hash) {
-    std::string path = parts_dir_ + "/" + part_asset::cache_path_resolved(resolved_hash);
-    std::ifstream in(path, std::ios::binary);
-    if (!in.good()) return false;
-    // Validate the header: magic must be 'TRAP', version 2, and the embedded
-    // resolved_hash must match `resolved_hash`. Otherwise the file is stale
-    // (a previous bake with the SAME filename hash-key but DIFFERENT resolved
-    // hash — happens when a schema is edited between runs and the old .part
-    // was left behind).  Treat mismatch as cache miss so we re-bake.
-    // Header layout (see part_asset_v2.cpp:write_file_atomic):
-    //   [0..4)  magic uint32   ('TRAP' little-endian = 0x50415254)
-    //   [4..8)  version uint32 (currently 2)
-    //   [8..16) resolved_hash XOR version (uint64, obfuscation)
-    struct { uint32_t magic; uint32_t version; uint64_t hash_xor; } hdr{};
-    in.read(reinterpret_cast<char*>(&hdr), sizeof(hdr));
-    if (!in.good()) return false;
-    if (hdr.magic != 0x50415254u || hdr.version != 2u) return false;
-    return hdr.hash_xor == (resolved_hash ^ (uint64_t)hdr.version);
+    // Task 2: check scratch dir first (if configured), then normal cache.
+    auto check_path = [resolved_hash](const std::string& base_dir) -> bool {
+        if (base_dir.empty()) return false;
+        std::string path = base_dir + "/" + part_asset::cache_path_resolved(resolved_hash);
+        std::ifstream in(path, std::ios::binary);
+        if (!in.good()) return false;
+        // Validate the header: magic must be 'TRAP', version 2, and the embedded
+        // resolved_hash must match `resolved_hash`. Otherwise the file is stale
+        // (a previous bake with the SAME filename hash-key but DIFFERENT resolved
+        // hash — happens when a schema is edited between runs and the old .part
+        // was left behind).  Treat mismatch as cache miss so we re-bake.
+        // Header layout (see part_asset_v2.cpp:write_file_atomic):
+        //   [0..4)  magic uint32   ('TRAP' little-endian = 0x50415254)
+        //   [4..8)  version uint32 (currently 2)
+        //   [8..16) resolved_hash XOR version (uint64, obfuscation)
+        struct { uint32_t magic; uint32_t version; uint64_t hash_xor; } hdr{};
+        in.read(reinterpret_cast<char*>(&hdr), sizeof(hdr));
+        if (!in.good()) return false;
+        if (hdr.magic != 0x50415254u || hdr.version != 2u) return false;
+        return hdr.hash_xor == (resolved_hash ^ (uint64_t)hdr.version);
+    };
+
+    // Check scratch first (if transient_dir_ is configured)
+    if (check_path(transient_dir_)) return true;
+    // Fall back to normal cache
+    return check_path(parts_dir_);
 }
 
 bool HostBaker::bake(const std::string& source, const Params& params,
@@ -576,8 +587,9 @@ bool HostBaker::bake(const std::string& source, const Params& params,
     // SP-2 bake_source recomputes the same hash and writes the .part via save_v2.
     // Pass parts_dir_ so bake_source writes to an absolute path rather than a
     // cwd-relative "parts/<hash>.part" (Task 3 Phase B: cwd-independence).
+    // Task 2: route transient modules to scratch_dir instead.
     script_host::BakeOptions bopts;
-    bopts.parts_dir = parts_dir_;
+    bopts.parts_dir = is_transient(current_module_) ? transient_dir_ : parts_dir_;
     script_host::BakeResult r = host_.bake_source(
         source, params_to_json(params), bopts,
         child_hashes.data(), child_hashes.size(),
@@ -605,7 +617,9 @@ bool HostBaker::bake_lod_variants(const std::string& source, const Params& param
         printf("HostBaker: lodBudgets on a part with children is unsupported; skipping\n");
         return true;
     }
-    const std::string sidecar = parts_dir_ + "/" + part_asset::cache_path_lods(resolved_hash);
+    // Task 2: route sidecar to scratch if transient
+    const std::string base_dir = is_transient(current_module_) ? transient_dir_ : parts_dir_;
+    const std::string sidecar = base_dir + "/" + part_asset::cache_path_lods(resolved_hash);
     {
         // content-addressed fast path: sidecar exists AND every referenced .part exists.
         // If a variant was pruned from the cache, fall through and re-bake the whole ladder.
@@ -613,7 +627,7 @@ bool HostBaker::bake_lod_variants(const std::string& source, const Params& param
         if (part_asset::load_lod_sidecar(sidecar, existing)) {
             bool all_present = true;
             for (uint64_t h : existing.hashes) {
-                const std::string vpath = parts_dir_ + "/" + part_asset::cache_path_resolved(h);
+                const std::string vpath = base_dir + "/" + part_asset::cache_path_resolved(h);
                 std::ifstream probe(vpath);
                 if (!probe.good()) { all_present = false; break; }
             }
@@ -632,7 +646,7 @@ bool HostBaker::bake_lod_variants(const std::string& source, const Params& param
         Params p2 = params;
         p2["lodBudget"] = ParamValue::number(b);
         script_host::BakeOptions vopts;
-        vopts.parts_dir = parts_dir_;
+        vopts.parts_dir = base_dir;
         script_host::BakeResult r = host_.bake_source(source, params_to_json(p2), vopts);
         if (!r.error.ok) return false;
         variant_hashes.push_back(r.resolved_hash);

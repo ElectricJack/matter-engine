@@ -68,10 +68,23 @@ std::string PartStore::disk_path(uint64_t part_hash) const {
     return cache_root_ + "/" + part_asset::cache_path_resolved(part_hash);
 }
 
+// Task 2: resolve the actual disk path, checking scratch dir first, then cache.
+static std::string resolve_artifact_path(uint64_t part_hash, const std::string& scratch_dir,
+                                         const std::string& cache_root) {
+    struct stat st;
+    if (!scratch_dir.empty()) {
+        std::string scratch_path = scratch_dir + "/" + part_asset::cache_path_resolved(part_hash);
+        if (::stat(scratch_path.c_str(), &st) == 0) {
+            return scratch_path;
+        }
+    }
+    return cache_root + "/" + part_asset::cache_path_resolved(part_hash);
+}
+
 bool PartStore::has(uint64_t part_hash) const {
     if (loaded_.count(part_hash)) return true;
     struct stat st;
-    return ::stat(disk_path(part_hash).c_str(), &st) == 0;
+    return ::stat(resolve_artifact_path(part_hash, scratch_dir_, cache_root_).c_str(), &st) == 0;
 }
 
 // Flat-preferred load: a bake-time flattened artifact (<hash>.flat.part) already
@@ -320,7 +333,8 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
         }
     }
 
-    const std::string path = disk_path(part_hash);
+    // Task 2: check scratch dir first (if configured), then fall back to cache
+    const std::string path = resolve_artifact_path(part_hash, scratch_dir_, cache_root_);
 
     // load_v2 registers the full-resolution geometry into a SCRATCH BLASManager;
     // we then re-bake LODs into the shared store BLASManager.

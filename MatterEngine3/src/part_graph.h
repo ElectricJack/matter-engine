@@ -2,6 +2,7 @@
 #include "part_graph_snapshot.h"
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -82,6 +83,10 @@ struct Baker {
         (void)source; (void)params; (void)child_hashes; (void)resolved_hash;
         return true;
     }
+
+    // Task 2 optional seam: notify baker of the module name about to be baked.
+    // Default no-op; HostBaker overrides to route transient modules to scratch.
+    virtual void set_baking_module(const std::string& /*module*/) {}
 };
 
 // Canonical params string (sorted keys, %.17g numbers). Public for unit testing.
@@ -220,9 +225,33 @@ public:
     bool bake_lod_variants(const std::string& source, const Params& params,
                            const std::vector<uint64_t>& child_hashes,
                            uint64_t resolved_hash) override;
+
+    // Task 2: configure transient-module routing.
+    // modules points to a set of module names (e.g., {"Terrain"}); bakes of
+    // these modules write artifacts under scratch_dir instead of parts_dir_.
+    // cached() checks both locations (scratch first).
+    void set_transient(const std::set<std::string>* modules, std::string scratch_dir) {
+        transient_modules_ = modules;
+        transient_dir_ = std::move(scratch_dir);
+    }
+
+    // Task 2 seam: called by PartGraph::install before each bake to set
+    // the current module being baked. Used to route transient modules to scratch.
+    void set_baking_module(const std::string& module) override {
+        current_module_ = module;
+    }
+
 private:
     script_host::ScriptHost& host_;
     std::string              parts_dir_;
+
+    // Task 2: transient-module state
+    const std::set<std::string>* transient_modules_ = nullptr;
+    std::string transient_dir_;
+    std::string current_module_;
+    bool is_transient(const std::string& module) const {
+        return transient_modules_ && transient_modules_->count(module) != 0;
+    }
 };
 
 } // namespace part_graph
