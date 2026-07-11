@@ -1078,6 +1078,65 @@ static void test_resolver_binning_cache() {
     printf("  test_resolver_binning_cache OK\n");
 }
 
+static void test_resolver_cutover_expansion() {
+    printf("=== test_resolver_cutover_expansion ===\n");
+
+    lod_select::PartLodTable lods;
+    auto& parent = lods[0xAAAAull];
+    parent.bound_radius = 10.0f;
+    parent.thresholds = {0.74453f, 0.37227f, 0.0f};
+    parent.inline_cutover = 1.0f;
+    lod_select::PartLodRef ref{};
+    ref.child_hash = 0xBBBBull;
+    float rel[16] = {1,0,0,5, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    std::memcpy(ref.rel_transform, rel, sizeof rel);
+    ref.child_scale = 1.0f;
+    parent.refs.push_back(ref);
+    auto& child = lods[0xBBBBull];
+    child.bound_radius = 1.0f;
+    child.thresholds = {0.74453f, 0.37227f, 0.0f};
+
+    viewer::WorldState state;
+    viewer::WorldManifest m; m.world_root_hash = 1;
+    m.instances.push_back(mk_entry(1, 0xAAAAull, 0.0f));
+    state.reset(m);
+
+    viewer::SectorLodResolver resolver(16.0f, 1000.0f);
+
+    // NEAR: camera at (0,0,5) -> dist ~5 from origin -> ps = 10/5 = 2.0 >= cutover 1.0
+    // -> trunk (segment 0) + child (segment 1).
+    auto near_out = resolver.resolve(state, lods, make_float3(0, 0, 5));
+    CHECK(near_out.size() == 2, "cutover near: 2 resolved instances (trunk + child)");
+    if (near_out.size() == 2) {
+        CHECK(near_out[0].part_hash == 0xAAAAull, "cutover near: trunk is parent");
+        CHECK(near_out[0].segment == 0, "cutover near: trunk segment == 0");
+        CHECK(near_out[1].part_hash == 0xBBBBull, "cutover near: child is child");
+        CHECK(near_out[1].segment == 1, "cutover near: child segment == 1");
+        // child_ps = 2.0 * 1.0 * 1.0 / 10.0 = 0.2 -> clears 0.0 (level 2) but not 0.37227
+        CHECK(near_out[1].lod_level == 2, "cutover near: child LOD level 2 (coarsest)");
+    }
+
+    // FAR: camera at (0,0,20) -> dist 20 -> ps = 10/20 = 0.5 < cutover 1.0
+    // -> single merged instance, segment 1.
+    auto far_out = resolver.resolve(state, lods, make_float3(0, 0, 20));
+    CHECK(far_out.size() == 1, "cutover far: 1 merged instance");
+    if (far_out.size() == 1) {
+        CHECK(far_out[0].segment == 1, "cutover far: merged segment == 1");
+        CHECK(far_out[0].part_hash == 0xAAAAull, "cutover far: merged is parent");
+    }
+
+    // No-cutover: part with cutover 0 always emits single merged instance.
+    parent.inline_cutover = 0.0f;
+    parent.refs.clear();
+    auto no_cut = resolver.resolve(state, lods, make_float3(0, 0, 5));
+    CHECK(no_cut.size() == 1, "no-cutover: 1 merged instance");
+    if (no_cut.size() == 1) {
+        CHECK(no_cut[0].segment == 1, "no-cutover: segment == 1");
+    }
+
+    printf("  test_resolver_cutover_expansion OK\n");
+}
+
 static void test_pixel_budget_dial() {
     // Budget 0.5 selects coarser-or-equal levels than 1.0 for every part (spec test).
     sector_grid::Sectors sectors;
@@ -1316,6 +1375,7 @@ int main() {
     test_world_state_delta();
     test_resolvers();
     test_resolver_binning_cache();
+    test_resolver_cutover_expansion();
     test_part_store_missing();
     test_local_provider_cache();
     test_composer_counts();

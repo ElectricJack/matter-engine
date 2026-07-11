@@ -35,6 +35,11 @@ struct PartLod {
 };
 using PartLodTable = std::map<uint64_t, PartLod>;     // resolved_hash -> PartLod
 
+struct LodChoice {
+    int   level;
+    float projected_size;
+};
+
 // For each sector, find its CLOSEST instance to cam_pos, and for every distinct
 // part hash present in the sector compute its chosen LOD level using the closest
 // instance's distance. Parts whose projected size falls below min_projected_size
@@ -42,8 +47,15 @@ using PartLodTable = std::map<uint64_t, PartLod>;     // resolved_hash -> PartLo
 // them). The 0.0f default disables the floor.
 // pixel_budget scales the projected size before BOTH the floor check and level
 // selection — the runtime quality/speed dial (Stage 2). Default 1.0 is bit-
-// identical to the pre-budget behaviour. Returns
-// sector -> (part hash -> chosen level index, or -1).
+// identical to the pre-budget behaviour.
+// _ex returns sector -> (part hash -> LodChoice{level, projected_size}).
+std::map<sector_grid::SectorCoord, std::map<uint64_t, LodChoice>>
+select_sector_lods_ex(const sector_grid::Sectors& sectors,
+                      const PartLodTable& parts, const float3& cam_pos,
+                      float min_projected_size = 0.0f,
+                      float pixel_budget = 1.0f);
+
+// Thin wrapper: returns sector -> (part hash -> chosen level index, or -1).
 std::map<sector_grid::SectorCoord, std::map<uint64_t,int>>
 select_sector_lods(const sector_grid::Sectors& sectors,
                    const PartLodTable& parts, const float3& cam_pos,

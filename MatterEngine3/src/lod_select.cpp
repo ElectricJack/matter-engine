@@ -30,22 +30,20 @@ int select_level(float size, const std::vector<float>& thr) {
     return (int)thr.size() - 1;                // cleared nothing -> coarsest
 }
 
-std::map<sector_grid::SectorCoord, std::map<uint64_t,int>>
-select_sector_lods(const sector_grid::Sectors& sectors,
-                   const PartLodTable& parts, const float3& cam,
-                   float min_projected_size, float pixel_budget) {
-    std::map<sector_grid::SectorCoord, std::map<uint64_t,int>> out;
+std::map<sector_grid::SectorCoord, std::map<uint64_t, LodChoice>>
+select_sector_lods_ex(const sector_grid::Sectors& sectors,
+                      const PartLodTable& parts, const float3& cam,
+                      float min_projected_size, float pixel_budget) {
+    std::map<sector_grid::SectorCoord, std::map<uint64_t, LodChoice>> out;
     for (const auto& kv : sectors) {
         const auto& coord = kv.first;
         const auto& insts = kv.second;
-        // Closest instance distance in this sector.
         float closest = std::numeric_limits<float>::max();
         for (const auto& f : insts) {
             float d = dist(sector_grid::instance_position(f), cam);
             if (d < closest) closest = d;
         }
         if (closest < 1e-4f) closest = 1e-4f;
-        // For each distinct part in the sector, select its level at the closest distance.
         for (const auto& f : insts) {
             auto pit = parts.find(f.resolved_hash);
             if (pit == parts.end()) continue;
@@ -60,9 +58,21 @@ select_sector_lods(const sector_grid::Sectors& sectors,
             } else {
                 level = select_level(size, pit->second.thresholds);
             }
-            out[coord][f.resolved_hash] = level;
+            out[coord][f.resolved_hash] = {level, size};
         }
     }
+    return out;
+}
+
+std::map<sector_grid::SectorCoord, std::map<uint64_t,int>>
+select_sector_lods(const sector_grid::Sectors& sectors,
+                   const PartLodTable& parts, const float3& cam,
+                   float min_projected_size, float pixel_budget) {
+    auto ex = select_sector_lods_ex(sectors, parts, cam, min_projected_size, pixel_budget);
+    std::map<sector_grid::SectorCoord, std::map<uint64_t,int>> out;
+    for (const auto& kv : ex)
+        for (const auto& pv : kv.second)
+            out[kv.first][pv.first] = pv.second.level;
     return out;
 }
 
