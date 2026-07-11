@@ -2363,15 +2363,15 @@ void WorldSession::Impl::probe_thread_loop() {
         bool have_req = false;
         float fx, fy, fz;
         {
+            std::lock_guard<std::mutex> fl(focus_mutex);
+            fx = focus[0]; fy = focus[1]; fz = focus[2];
+        }
+        {
             std::unique_lock<std::mutex> lk(probe_mu);
             // 500ms tick doubles as the composite/upload throttle.
             probe_cv.wait_for(lk, std::chrono::milliseconds(500),
                               [&] { return probe_stop || !probe_pending.empty(); });
             if (probe_stop) return;
-            {
-                std::lock_guard<std::mutex> fl(focus_mutex);
-                fx = focus[0]; fy = focus[1]; fz = focus[2];
-            }
             if (!probe_pending.empty()) {
                 size_t best = 0; float bd = 1e30f;   // nearest-to-camera first
                 for (size_t i = 0; i < probe_pending.size(); ++i) {
