@@ -1182,13 +1182,19 @@ bool LocalProvider::try_load_cached_probes(WorldManifest& m) {
 void LocalProvider::set_transient_modules(std::set<std::string> modules) {
     transient_modules_ = std::move(modules);
 
-    // Create the scratch dir: /tmp/matter_transient/<pid>/
-    // Use mkdir -p semantics (safe no-op if already exists).
+#ifdef _WIN32
+    const char* tmp = std::getenv("TEMP");
+    if (!tmp) tmp = std::getenv("TMP");
+    if (!tmp) tmp = ".";
+    transient_dir_ = std::string(tmp) + "/matter_transient/" + std::to_string(::_getpid());
+    std::string win_path = transient_dir_;
+    for (char& c : win_path) if (c == '/') c = '\\';
+    std::system(("mkdir \"" + win_path + "\" 2>nul").c_str());
+#else
     pid_t pid = ::getpid();
     transient_dir_ = "/tmp/matter_transient/" + std::to_string(pid);
-
-    // mkdir -p: ensure parent dirs exist
     std::system(("mkdir -p " + transient_dir_).c_str());
+#endif
 
     // Note: baker and store configuration happens in install_graph() once they're created.
     // PartStore is owned at a higher level, so callers must call
@@ -1202,8 +1208,8 @@ void LocalProvider::release_transient(uint64_t hash) {
     const std::string part_path = transient_dir_ + "/" + part_asset::cache_path_resolved(hash);
     const std::string flat_path = transient_dir_ + "/" + part_asset::cache_path_flat(hash);
 
-    ::unlink(part_path.c_str());
-    ::unlink(flat_path.c_str());
+    std::remove(part_path.c_str());
+    std::remove(flat_path.c_str());
 }
 
 } // namespace viewer
