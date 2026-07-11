@@ -100,6 +100,8 @@ public:
     const std::vector<Tri>&   triangles() const { return tris_; }
     const std::vector<TriEx>& tri_extra() const { return triex_; }
 
+    void pushRaw(const Tri& t, const TriEx& e) { tris_.push_back(t); triex_.push_back(e); }
+
     // Append this buffer's contents onto a host's triangle/triex arrays (the
     // SP-2 build-buffer merge seam). Used so the voxel-lowered mesh and the
     // direct triangles register as ONE BLAS.

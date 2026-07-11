@@ -5,11 +5,11 @@
 #include <cmath>
 
 static constexpr float SPAWN_X =    0.0f;
-static constexpr float SPAWN_Y =   25.0f;
+static constexpr float SPAWN_Y =   60.0f;
 static constexpr float SPAWN_Z =    0.0f;
 
 static constexpr float SPAWN_YAW   = 3.14159265f;
-static constexpr float SPAWN_PITCH = -0.15f;
+static constexpr float SPAWN_PITCH = -0.10f;
 
 static constexpr float DEG2RAD_F = 0.01745329251f;
 static constexpr float PI_F      = 3.14159265358979f;
@@ -56,7 +56,7 @@ void CameraRig::update(float dt) {
     if (cursor_captured_) {
         Vector2 md = GetMouseDelta();
         if (fabsf(md.x) > 0.5f || fabsf(md.y) > 0.5f) {
-            dyaw   += md.x * look_sensitivity_;
+            dyaw   -= md.x * look_sensitivity_;
             dpitch -= md.y * look_sensitivity_;   // screen Y inverted from world pitch
             user_input_seen_ = true;
         }
@@ -77,15 +77,16 @@ void CameraRig::update(float dt) {
     if (pitch_ >  MAX_PITCH) pitch_ =  MAX_PITCH;
     if (pitch_ < -MAX_PITCH) pitch_ = -MAX_PITCH;
 
-    // --- Compute move direction from yaw (ignore pitch for movement) ---
-    Vector3 forward = {  sinf(yaw_), 0.0f,  cosf(yaw_) };
+    // --- Compute move direction: forward follows the full look direction
+    //     (fly toward where you're pointing); strafe stays horizontal.
+    Vector3 forward = direction_from_yaw_pitch(yaw_, pitch_);
     Vector3 right   = {  cosf(yaw_), 0.0f, -sinf(yaw_) };
 
     float move_x = 0.0f, move_y = 0.0f, move_z = 0.0f;
 
     // Keyboard (WASD + QE for vertical).
-    if (IsKeyDown(KEY_W)) { move_x += forward.x; move_z += forward.z; user_input_seen_ = true; }
-    if (IsKeyDown(KEY_S)) { move_x -= forward.x; move_z -= forward.z; user_input_seen_ = true; }
+    if (IsKeyDown(KEY_W)) { move_x += forward.x; move_y += forward.y; move_z += forward.z; user_input_seen_ = true; }
+    if (IsKeyDown(KEY_S)) { move_x -= forward.x; move_y -= forward.y; move_z -= forward.z; user_input_seen_ = true; }
     if (IsKeyDown(KEY_D)) { move_x += right.x;   move_z += right.z;   user_input_seen_ = true; }
     if (IsKeyDown(KEY_A)) { move_x -= right.x;   move_z -= right.z;   user_input_seen_ = true; }
     if (IsKeyDown(KEY_E)) { move_y += 1.0f; user_input_seen_ = true; }
@@ -97,7 +98,7 @@ void CameraRig::update(float dt) {
         float ly = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_Y);
         // Dead-zone.
         if (fabsf(lx) > 0.1f) { move_x += right.x * lx;   move_z += right.z * lx; user_input_seen_ = true; }
-        if (fabsf(ly) > 0.1f) { move_x += forward.x * (-ly); move_z += forward.z * (-ly); user_input_seen_ = true; }
+        if (fabsf(ly) > 0.1f) { move_x += forward.x * (-ly); move_y += forward.y * (-ly); move_z += forward.z * (-ly); user_input_seen_ = true; }
 
         // Triggers for vertical.
         float lt = GetGamepadAxisMovement(0, GAMEPAD_AXIS_LEFT_TRIGGER);

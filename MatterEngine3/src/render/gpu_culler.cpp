@@ -113,6 +113,7 @@ bool GpuCuller::init(std::string& err) {
     uloc_planes_                = glGetUniformLocation(program_cull_, "planes");
     uloc_cam_eye_               = glGetUniformLocation(program_cull_, "cam_eye");
     uloc_pixel_budget_          = glGetUniformLocation(program_cull_, "pixel_budget");
+    uloc_min_projected_size_    = glGetUniformLocation(program_cull_, "min_projected_size");
     uloc_instance_count_        = glGetUniformLocation(program_cull_, "instance_count");
     uloc_max_clusters_per_inst_ = glGetUniformLocation(program_cull_, "max_clusters_per_instance");
     uloc_hiz_enabled_           = glGetUniformLocation(program_cull_, "hiz_enabled");
@@ -776,6 +777,7 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
     glUniform4fv(uloc_planes_, 6, flat_planes);
     glUniform3f(uloc_cam_eye_, cam_eye[0], cam_eye[1], cam_eye[2]);
     glUniform1f(uloc_pixel_budget_, pixel_budget);
+    glUniform1f(uloc_min_projected_size_, min_projected_size_);
     glUniform1ui(uloc_instance_count_, n_records);
     glUniform1ui(uloc_max_clusters_per_inst_, max_cpi);
 

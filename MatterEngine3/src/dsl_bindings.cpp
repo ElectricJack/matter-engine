@@ -910,25 +910,17 @@ static JSValue j_terrainVolume(JSContext* c, JSValueConst, int n, JSValueConst* 
         return JS_UNDEFINED;
     }
 
-    // Emit each material bucket via the standard fill→beginShape→vertex→endShape
-    // path so the downstream mesh pipeline (AO bake, normal blending) computes
-    // shading normals the same way it does for Terrain.js today. The mesher's
-    // gradient normals live in SectorMesh for test validation only — no new
-    // normal plumbing enters the verb emission path.
+    // Emit each material bucket with the mesher's gradient normals for smooth
+    // terrain shading. Uses pushTerrainTriangle to bypass the face-normal
+    // fallback in the standard beginShape/vertex/endShape path.
     for (const auto& bkt : mesh.buckets) {
-        // Map mesher material (0..3 = grass/dirt/rock/snow) to the caller's IDs.
         uint32_t mat_id = bkt.material < 4 ? mat[bkt.material] : mat[0];
         const size_t n_tris = bkt.positions.size() / 9;
-        st->fill(mat_id);
-        st->beginShape(0 /* triangles */);
         for (size_t t = 0; t < n_tris; ++t) {
-            for (int v = 0; v < 3; ++v) {
-                st->vertex(bkt.positions[t*9+v*3+0],
-                           bkt.positions[t*9+v*3+1],
-                           bkt.positions[t*9+v*3+2]);
-            }
+            st->pushTerrainTriangle(&bkt.positions[t * 9],
+                                    &bkt.normals[t * 9],
+                                    (int)mat_id);
         }
-        st->endShape();
     }
     return JS_UNDEFINED;
 }

@@ -137,11 +137,15 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
         push_tri(b, *v00, *v10, *v11);
         push_tri(b, *v00, *v11, *v01);
     };
-    // Ownership predicate: base sample (lattice i, k) maps to local [0, S).
+    // Ownership predicate: lattice indices [1..n] map to sector-local [0, S).
+    // Integer comparison avoids float precision gaps at sector boundaries.
+    // Each sector's mesh ends EXACTLY at the border: the border cell rows are
+    // shared with the neighbor (same world samples -> bitwise-identical verts)
+    // and sit on the mesh's open boundary, so the LOD ladder's topological
+    // boundary lock freezes them at every level. Watertight at any LOD pair
+    // without skirts or overlap geometry — do not extend ownership past [1..n].
     auto owned = [&](int i, int k) -> bool {
-        float lx = float(i - 1) * voxel;
-        float lz = float(k - 1) * voxel;
-        return lx >= 0.0f && lx < sector_size && lz >= 0.0f && lz < sector_size;
+        return i >= 1 && i <= n && k >= 1 && k <= n;
     };
 
     for (int k = 0; k < szn; ++k)
@@ -158,7 +162,7 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
                     if ((a > 0) != (b > 0))
                         emit_quad(get_vert(i - 1, j, k - 1), get_vert(i, j, k - 1),
                                   get_vert(i, j, k),         get_vert(i - 1, j, k),
-                                  /*flip=*/a <= 0, wxs, wzs);
+                                  /*flip=*/a > 0, wxs, wzs);
                 }
                 // +x edge (vertical face in x direction).
                 if (i + 1 < sx && owned(i, k)) {
@@ -166,7 +170,7 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
                     if ((a > 0) != (b > 0))
                         emit_quad(get_vert(i, j - 1, k - 1), get_vert(i, j, k - 1),
                                   get_vert(i, j, k),         get_vert(i, j - 1, k),
-                                  /*flip=*/a > 0, wxs + 0.5f * voxel, wzs);
+                                  /*flip=*/a <= 0, wxs + 0.5f * voxel, wzs);
                 }
                 // +z edge (vertical face in z direction).
                 if (k + 1 < szn && owned(i, k)) {
@@ -178,31 +182,6 @@ bool mesh_sector(const terrain_field::FieldRuntime& field,
                 }
             }
 
-    // Skirts: vertical curtains along all 4 borders to cover cross-rung seams.
-    auto skirt_seg = [&](float lx0, float lz0, float lx1, float lz1,
-                         float nx, float nz) {
-        float wx0 = float(ox) + lx0, wz0 = float(oz) + lz0;
-        float wx1 = float(ox) + lx1, wz1 = float(oz) + lz1;
-        float h0 = field.height_at(wx0, wz0) + 0.5f * voxel;
-        float h1 = field.height_at(wx1, wz1) + 0.5f * voxel;
-        // Skirt drops 2.0 units below the surface (one coarsest-rung voxel depth).
-        CellVert t0{{lx0, h0,         lz0}, {nx, 0, nz}};
-        CellVert b0{{lx0, h0 - 2.0f,  lz0}, {nx, 0, nz}};
-        CellVert t1{{lx1, h1,         lz1}, {nx, 0, nz}};
-        CellVert b1{{lx1, h1 - 2.0f,  lz1}, {nx, 0, nz}};
-        MaterialBucket& bkt = bucket_for(out,
-            uint32_t(field.material_at(0.5f * (wx0 + wx1), 0.5f * (wz0 + wz1))));
-        push_tri(bkt, t0, b0, b1);
-        push_tri(bkt, t0, b1, t1);
-    };
-    for (int i = 0; i < n; ++i) {
-        float a = float(i) * voxel, c = float(i + 1) * voxel;
-        float S = sector_size;
-        skirt_seg(a, 0, c, 0, 0, -1);   // -z border
-        skirt_seg(a, S, c, S, 0,  1);   // +z border
-        skirt_seg(0, a, 0, c, -1, 0);   // -x border
-        skirt_seg(S, a, S, c,  1, 0);   // +x border
-    }
     return true;
 }
 

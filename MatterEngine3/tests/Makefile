@@ -85,7 +85,7 @@ obj_of = $(OBJDIR)/$(1)/$(call mangle,$(2)).o
 #
 # COMMON_MSL_FULL_SRC — full mesher + BLAS/TLAS; used by targets that invoke
 #   the marching-cubes / mesh-build pipeline: script, graph-integration, shlib,
-#   example, gallery, treebake, meadow, meadow-check, grasslod, stressforest,
+#   example, gallery, treebake, grasslod, stressforest,
 #   viewer-logic, tilesetbake.
 #
 # COMMON_MSL_C     — full C-source set (surface.c et al.) used alongside
@@ -385,7 +385,7 @@ SECTORBAKE_C = $(COMMON_MSL_C)
 
 # ===== flavor sh (script-host) =========================================
 # script_host_tests uses just def+QJS_INC (no MATTER_HAVE_SCRIPT_HOST). But
-# the graph_integration/example/meadow/gallery/treebake/grasslod/stressforest
+# the graph_integration/example/gallery/treebake/grasslod/stressforest
 # family all use -DMATTER_HAVE_SCRIPT_HOST + QJS_INC.
 SCRIPT_TARGET = script_host_tests
 SCRIPT_CPP = script_host_tests.cpp ../src/part_graph.cpp ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
@@ -449,12 +449,6 @@ GALLERY_CPP = gallery_bake_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_C
 
 TREEBAKE_TARGET = tree_bake_check
 TREEBAKE_CPP = tree_bake_check.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
-
-MEADOW_TARGET = meadow_bake_tests
-MEADOW_CPP = meadow_bake_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
-
-MEADOWCHECK_TARGET = meadow_bake_check
-MEADOWCHECK_CPP = meadow_bake_check.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 
 ROCKPROF_TARGET = rock_bake_profile
 ROCKPROF_CPP = rock_bake_profile.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
@@ -689,8 +683,6 @@ sh_CPP_SRCS := $(sort \
     $(EXAMPLE_CPP) \
     $(GALLERY_CPP) \
     $(TREEBAKE_CPP) \
-    $(MEADOW_CPP) \
-    $(MEADOWCHECK_CPP) \
     $(ROCKPROF_CPP) \
     $(GRASSLOD_CPP) \
     $(STRESSFOREST_CPP) \
@@ -710,7 +702,6 @@ gpu_CPP_SRCS := $(sort \
     async_bake_tests.cpp \
     demand_bake_tests.cpp \
     transient_tests.cpp \
-    valley_layout_tests.cpp \
     release_part_tests.cpp \
     refine_loop_tests.cpp \
     world_stream_tests.cpp \
@@ -786,8 +777,6 @@ GRAPH_INT_OBJS = $(call obj_list,sh,$(GRAPH_INT_CPP)) $(call obj_list,mslc,$(GRA
 EXAMPLE_OBJS = $(call obj_list,sh,$(EXAMPLE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 GALLERY_OBJS = $(call obj_list,sh,$(GALLERY_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 TREEBAKE_OBJS = $(call obj_list,sh,$(TREEBAKE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
-MEADOW_OBJS = $(call obj_list,sh,$(MEADOW_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
-MEADOWCHECK_OBJS = $(call obj_list,sh,$(MEADOWCHECK_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 ROCKPROF_OBJS = $(call obj_list,sh,$(ROCKPROF_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 GRASSLOD_OBJS = $(call obj_list,sh,$(GRASSLOD_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 STRESSFOREST_OBJS = $(call obj_list,sh,$(STRESSFOREST_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
@@ -805,7 +794,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-partv2 run-script run-foldcache run-evalworld run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise valley-layout-tests run-valley release-part-tests run-releasepart run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream
+.PHONY: clean run-partv2 run-script run-foldcache run-evalworld run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -961,22 +950,6 @@ $(TREEBAKE_TARGET): $(TREEBAKE_OBJS)
 
 run-treebake: $(TREEBAKE_TARGET)
 	./$(TREEBAKE_TARGET)
-
-# Headless bake tests for the Meadow schemas.
-$(MEADOW_TARGET): $(MEADOW_OBJS)
-	$(CC) $(MEADOW_OBJS) -o $@ \
-	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
-
-run-meadow: $(MEADOW_TARGET)
-	./$(MEADOW_TARGET)
-
-# Full Meadow world bake check.
-$(MEADOWCHECK_TARGET): $(MEADOWCHECK_OBJS)
-	$(CC) $(MEADOWCHECK_OBJS) -o $@ \
-	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
-
-run-meadow-check: $(MEADOWCHECK_TARGET)
-	./$(MEADOWCHECK_TARGET)
 
 # Rock bake profiling harness (cold bake per variant, wall time).
 $(ROCKPROF_TARGET): $(ROCKPROF_OBJS)
@@ -1248,17 +1221,6 @@ transient-tests: $(call obj_of,gpu,transient_tests.cpp) $(GPU_SHARED_OBJS) | ../
 run-transient: transient-tests
 	./transient_tests
 
-# Phase C Task 2 — Meadow Valley layout structural test (long, own target).
-# Uses real world_demo schemas + WorldData/Meadow manifest; headless
-# (allow_gl_lt_46=true). Not part of any quick-suite aggregate.
-valley-layout-tests: $(call obj_of,gpu,valley_layout_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
-	$(CC) $(call obj_of,gpu,valley_layout_tests.cpp) $(GPU_SHARED_OBJS) \
-	      -o valley_layout_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
-	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
-
-run-valley: valley-layout-tests
-	./valley_layout_tests
-
 # Phase C Task 5 — part-level release: PartStore::release + GpuCuller::release_part.
 release-part-tests: $(call obj_of,gpu,release_part_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
 	$(CC) $(call obj_of,gpu,release_part_tests.cpp) $(GPU_SHARED_OBJS) \
@@ -1297,8 +1259,8 @@ clean:
 	rm -rf $(OBJDIR)
 	rm -f $(PARTV2_TARGET) $(SCRIPT_TARGET) $(GRAPH_TARGET) $(GRAPH_INT_TARGET) \
 	      $(TRIVAR_TARGET) $(SHLIB_TARGET) $(COMP_TARGET) $(DEV_TARGET) \
-	      $(EXAMPLE_TARGET) $(VIEWER_LOGIC_TARGET) $(TREEBAKE_TARGET) $(MEADOW_TARGET) \
-	      $(MEADOWCHECK_TARGET) $(GRASSLOD_TARGET) $(STRESSFOREST_TARGET) \
+	      $(EXAMPLE_TARGET) $(VIEWER_LOGIC_TARGET) $(TREEBAKE_TARGET) \
+	      $(GRASSLOD_TARGET) $(STRESSFOREST_TARGET) \
 	      $(TILESETMEADOWMANIFEST_TARGET) $(RETOPO_INT_TARGET) $(SHADER_SOURCE_TARGET) \
 	      $(POLYTRI_TARGET) $(ISO_TARGET) $(FLATTEN_TARGET) $(LIGHTING_TARGET) \
 	      $(TILESETTORUSBVH_TARGET) $(TILESETDSL_TARGET) $(TILESETBAKE_TARGET) \
@@ -1312,7 +1274,6 @@ clean:
 	      $(TERRAINVERB_TARGET) \
 	      $(SECTORBAKE_TARGET) \
 	      $(EVALWORLD_TARGET) \
-	      valley_layout_tests \
 	      tileset_physics_tests tileset_core_tests tileset_placement_tests \
 	      gpu_tests tileset_gpu_tests tileset_seam_tests tileset_provider_tests \
 	      tileset_load_tests api_tests async_bake_tests demand_bake_tests transient_tests release_part_tests \

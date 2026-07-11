@@ -338,6 +338,11 @@ public:
     void set_world(const WorldBinding& w) { world_ = w; }
     const WorldBinding& world() const { return world_; }
 
+    // Push a terrain triangle with explicit per-vertex normals (gradient normals
+    // from the terrain mesher). Bypasses the face-normal computation in the
+    // standard beginShape/vertex/endShape path.
+    void pushTerrainTriangle(const float pos[9], const float nrm[9], int material_id);
+
 private:
     std::unique_ptr<tileset::TilesetState> tileset_;
     std::vector<Matrix> stack_;   // never empty (seeded with identity)

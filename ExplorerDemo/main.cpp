@@ -11,18 +11,21 @@
 //       Dev builds fall back to ../MatterEngine3/examples/world_demo/... if
 //       ./WorldData does not exist and EXPLORER_DATA_DIR is unset.
 //
-//   EXPLORER_SMOKE="secs=<n>[,shot=<path>][,keys=<csv>]"
+//   EXPLORER_SMOKE="secs=<n>[,shot=<path>][,keys=<csv>][,fly=<dx>,<dz>,<speed>]"
 //       Smoke-test mode: run for n seconds, optionally capture screenshot to
 //       <path>, print "explorer: ready" on the first rendered frame after
 //       BakeStarted, then exit 0.
 //       keys=<csv>: timed synthetic key injections, e.g. keys=esc@5,down@6,enter@7
 //         Key names: esc, up, down, enter.  Times are seconds since launch.
+//       fly=dx,dz,speed: after bake finishes, move camera in direction (dx,dz)
+//         normalized at <speed> units/sec, at cruise altitude sea_level+25.
 //
 // Run from the ExplorerDemo/ directory so that cache/ resolves correctly.
 
 #include "raylib.h"
 #include "raymath.h"
 #include "rlgl.h"
+#include "external/glad.h"   // glPolygonOffset for the water depth bias
 
 #include "matter/engine_context.h"
 #include "matter/world_session.h"
@@ -33,6 +36,7 @@
 #include "menu.h"
 #include "staged_camera.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -181,6 +185,11 @@ struct SmokeOpts {
     char   shot[512]    = {};
     bool   ready_printed = false;
     std::vector<SyntheticKey> synth_keys;
+    // fly=dx,dz,speed: endless-flight mode — move camera in (dx,dz) at speed units/sec
+    bool   fly_active   = false;
+    float  fly_dx       = 0.0f;
+    float  fly_dz       = 0.0f;
+    float  fly_speed    = 40.0f;
 };
 
 static SmokeOpts parse_smoke_env() {
@@ -204,6 +213,18 @@ static SmokeOpts parse_smoke_env() {
         p += 5;
         opts.synth_keys = parse_keys_csv(p);
     }
+    p = strstr(env, "fly=");
+    if (p) {
+        float dx = 0, dz = 0, spd = 40;
+        if (sscanf(p + 4, "%f,%f,%f", &dx, &dz, &spd) >= 2) {
+            float len = sqrtf(dx*dx + dz*dz);
+            if (len > 1e-6f) { dx /= len; dz /= len; }
+            opts.fly_active = true;
+            opts.fly_dx     = dx;
+            opts.fly_dz     = dz;
+            opts.fly_speed  = spd;
+        }
+    }
     return opts;
 }
 
@@ -220,6 +241,7 @@ int main() {
     // Disable raylib's built-in ESC→close behavior: we intercept ESC for the
     // escape menu. Quit is handled explicitly via the menu's Quit entry.
     SetExitKey(KEY_NULL);
+    rlSetClipPlanes(1.0, 5000.0);
 
     // --- Engine setup ---
     matter::EngineDesc edesc;
@@ -271,7 +293,7 @@ int main() {
     render_opts.resolver         = matter::ResolverKind::SectorLod;
     render_opts.wireframe        = false;
     render_opts.hiz_occlusion    = false;
-    render_opts.active_radius    = 400.0f;
+    render_opts.active_radius    = 2600.0f;
     render_opts.min_projected_size = 0.0015f;
     render_opts.cull_backfaces   = true;
 
@@ -387,6 +409,19 @@ int main() {
             }
         }
 
+        // --- Smoke fly mode: translate camera along (fly_dx, fly_dz) ---
+        // When active, overrides staged camera after bake finishes.
+        // Cruise altitude = sea_level + 25, looking forward along travel direction.
+        if (smoke.fly_active && bake_done && !menu.is_open()) {
+            float sl = 0.0f;
+            session->sea_level(sl);
+            float cruise = sl + 25.0f;
+            float px = rig.cam.position.x + smoke.fly_dx * smoke.fly_speed * dt;
+            float pz = rig.cam.position.z + smoke.fly_dz * smoke.fly_speed * dt;
+            float yaw = atan2f(smoke.fly_dx, smoke.fly_dz);
+            rig.set_staged_pose(px, cruise, pz, yaw, -0.1f);
+        }
+
         // --- Camera floor clamp: don't fly below sea level ---
         {
             float sl;
@@ -454,25 +489,38 @@ int main() {
             session->render(rig.cam, GetScreenWidth(), GetScreenHeight(), render_opts);
 
             // Water plane: translucent quad at sea level, following the camera.
-            {
+            // TEMPORARY: disabled while diagnosing distant drawing errors.
+            if (false) {
                 float sl;
                 if (session->sea_level(sl)) {
                     float cx = rig.cam.position.x;
                     float cz = rig.cam.position.z;
-                    float half = 800.0f;
+                    float half = 3000.0f;
+                    float wsl = sl - 0.15f;
                     Color water = {30, 90, 140, 140};
                     BeginMode3D(rig.cam);
                     rlDisableBackfaceCulling();
+                    // Depth-bias the water away from the camera: meadow plains
+                    // run within centimeters of sea level, which z-fights at
+                    // distance where depth precision exceeds that gap. The
+                    // slope-scaled offset lets terrain win those ties without
+                    // visibly lowering the water up close.
+                    rlDrawRenderBatchActive();
+                    glEnable(GL_POLYGON_OFFSET_FILL);
+                    glPolygonOffset(2.0f, 2.0f);
                     DrawTriangle3D(
-                        (Vector3){cx - half, sl, cz - half},
-                        (Vector3){cx - half, sl, cz + half},
-                        (Vector3){cx + half, sl, cz + half},
+                        (Vector3){cx - half, wsl, cz - half},
+                        (Vector3){cx - half, wsl, cz + half},
+                        (Vector3){cx + half, wsl, cz + half},
                         water);
                     DrawTriangle3D(
-                        (Vector3){cx - half, sl, cz - half},
-                        (Vector3){cx + half, sl, cz + half},
-                        (Vector3){cx + half, sl, cz - half},
+                        (Vector3){cx - half, wsl, cz - half},
+                        (Vector3){cx + half, wsl, cz + half},
+                        (Vector3){cx + half, wsl, cz - half},
                         water);
+                    rlDrawRenderBatchActive();
+                    glDisable(GL_POLYGON_OFFSET_FILL);
+                    glPolygonOffset(0.0f, 0.0f);
                     rlEnableBackfaceCulling();
                     EndMode3D();
                 }
@@ -531,9 +579,10 @@ int main() {
             }
             if ((int)elapsed >= smoke.secs) {
                 float avg = fps_samples > 0 ? fps_sum / (float)fps_samples : 0.0f;
+                const matter::FrameStats& fst = session->frame_stats();
                 printf("explorer: smoke done (%.1fs, %d frames)\n", elapsed, frames);
-                printf("explorer: fps_summary min=%.1f avg=%.1f samples=%d\n",
-                       fps_samples > 0 ? fps_min : 0.0f, avg, fps_samples);
+                printf("explorer: fps_summary min=%.1f avg=%.1f samples=%d resident_sectors=%u\n",
+                       fps_samples > 0 ? fps_min : 0.0f, avg, fps_samples, fst.resident_sectors);
                 fflush(stdout);
                 break;
             }

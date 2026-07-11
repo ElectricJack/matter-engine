@@ -1515,10 +1515,23 @@ void WorldSession::Impl::publish_pipeline(
         refine_ctrl.reset();   // world sessions don't use refine
 
         matter_stream::Config scfg;
-        // Default ring table: 48/120/300/800; env override for tests.
+        scfg.sector_size = world_sector_size;
+        // Scale default rings to the world's sector size.
+        float S = world_sector_size;
+        // Rung is a pure SCATTER DETAIL TIER, not a mesh resolution: WorldSector
+        // always meshes terrain at voxel rung 0, so the terrain mesh (and its
+        // locked border rims) is identical at every tier — cross-rung terrain
+        // stitching is still unsolved, and this keeps sector seams watertight.
+        // Tier 2 (near) adds grass, tier 1 adds rocks/pebbles, tier 0 (far)
+        // carries only trees + landmark boulders.
+        scfg.rings = {
+            {3.0f  * S, 2},
+            {8.0f  * S, 1},
+            {40.0f * S, 0}
+        };
+        // Env override for tests: "r0:rung0,r1:rung1,..." e.g. "192:1,640:0"
         const char* rings_env = std::getenv("MATTER_STREAM_RINGS");
         if (rings_env) {
-            // Simple format: "r0:rung0,r1:rung1,..." e.g. "32:3,80:2,160:1,400:0"
             scfg.rings.clear();
             const char* p2 = rings_env;
             while (*p2) {
@@ -1531,6 +1544,7 @@ void WorldSession::Impl::publish_pipeline(
                 if (r > 0) scfg.rings.push_back({r, rg});
             }
         }
+        scfg.max_inflight = 16;
         sector_streamer = std::make_unique<matter_stream::SectorStreamer>(scfg);
         refine_provider = p.provider_ref;  // extend provider lifetime
         printf("[stream] SectorStreamer built for world-kind session\n");
@@ -1845,7 +1859,10 @@ bool WorldSession::Impl::install_world(
     }
 
     // 8. Asset install: eval_requires on WorldSector to discover its child variants,
-    //    then resolve_hash + ensure_part_baked + ensure_part_flattened for each child.
+    //    then recursively resolve each variant's own `requires` (Tree -> TreeBranch
+    //    -> Twig -> Leaf), baking depth-first so every part bakes with its REAL
+    //    child hashes. Memoized by module+params so shared sub-trees (every Tree
+    //    seed reuses TreeBranch) resolve and bake exactly once.
     std::vector<script_host::RequiredChild> children =
         host.eval_requires(world_sector_source, "{}");
     fprintf(stderr, "[stream] WorldSector requires %zu child variants\n", children.size());
@@ -1857,16 +1874,28 @@ bool WorldSession::Impl::install_world(
     sector_child_modules.reserve(children.size());
     sector_child_params.reserve(children.size());
 
-    // Resolve + bake each child asset variant.
-    for (const auto& child : children) {
-        if (token && token->is_cancelled()) {
-            err = "install_world: cancelled during asset install";
-            return false;
+    std::unordered_map<std::string, uint64_t> installed;   // module\x1f params -> hash
+    std::vector<std::string> visiting;                     // DFS stack for cycle guard
+    bool install_cancelled = false;
+
+    std::function<bool(const std::string&, const std::string&, uint64_t&)> install_variant =
+        [&](const std::string& module, const std::string& params_json,
+            uint64_t& out_hash) -> bool {
+        const std::string key = module + '\x1f' + params_json;
+        auto it = installed.find(key);
+        if (it != installed.end()) { out_hash = it->second; return true; }
+        if (token && token->is_cancelled()) { install_cancelled = true; return false; }
+        for (const auto& v : visiting) {
+            if (v == key) {
+                fprintf(stderr, "install_world: requires cycle at %s (skipping)\n",
+                        module.c_str());
+                return false;
+            }
         }
-        // Read child source
-        std::string child_source;
+
+        std::string source;
         {
-            const std::string child_js = cfg.schemas_dir + "/" + child.module_specifier + ".js";
+            const std::string child_js = cfg.schemas_dir + "/" + module + ".js";
             std::ifstream in(child_js, std::ios::binary);
             if (!in) {
                 fprintf(stderr, "install_world: cannot read child %s (skipping)\n", child_js.c_str());
@@ -1876,42 +1905,91 @@ bool WorldSession::Impl::install_world(
                 ev.phase = "install";
                 ev.message = "cannot read child " + child_js;
                 emit_event(std::move(ev));
-                continue;
+                return false;
             }
             std::ostringstream ss; ss << in.rdbuf();
-            child_source = ss.str();
+            source = ss.str();
         }
-        // Resolve hash for this child variant (no children of its own for leaf schemas).
-        uint64_t child_hash = host.resolve_hash(child_source, child.params_json);
 
-        // Bake via the provider's demand path (checks cache first).
-        // We need this child in the provider's bake_plan. Since it might not be
-        // there (world-kind manifests have no graph roots for asset schemas), we
-        // use the host_baker directly.
-        if (!provider->host_baker().cached(child_hash)) {
-            provider->host_baker().set_baking_module(child.module_specifier);
-            if (!provider->host_baker().bake(child_source,
-                    part_graph::params_from_json(child.params_json),
-                    {}, {}, {}, child_hash)) {
+        // Recurse into this variant's own requires first (post-order bake).
+        std::vector<script_host::RequiredChild> kids = host.eval_requires(source, params_json);
+        std::vector<uint64_t>    kid_hashes;
+        std::vector<std::string> kid_modules;
+        std::vector<std::string> kid_params;
+        visiting.push_back(key);
+        for (const auto& kid : kids) {
+            uint64_t kh = 0;
+            if (!install_variant(kid.module_specifier, kid.params_json, kh)) {
+                visiting.pop_back();
+                return false;   // a missing dependency fails the whole variant
+            }
+            kid_hashes.push_back(kh);
+            kid_modules.push_back(kid.module_specifier);
+            kid_params.push_back(kid.params_json);
+        }
+        visiting.pop_back();
+
+        uint64_t hash = host.resolve_hash(source, params_json,
+                                          kid_hashes.empty() ? nullptr : kid_hashes.data(),
+                                          kid_hashes.size());
+
+        // Bake via the host_baker directly (world-kind manifests have no graph
+        // roots for asset schemas, so the provider's bake_plan can't be used).
+        if (!provider->host_baker().cached(hash)) {
+            provider->host_baker().set_baking_module(module);
+            if (!provider->host_baker().bake(source,
+                    part_graph::params_from_json(params_json),
+                    kid_hashes, kid_modules, kid_params, hash)) {
                 fprintf(stderr, "install_world: bake failed for %s (skipping)\n",
-                        child.module_specifier.c_str());
+                        module.c_str());
                 Event ev;
                 ev.type = EventType::BakeError;
                 ev.code = BakeErrorCode::ScriptError;
                 ev.phase = "install";
-                ev.message = "bake failed for " + child.module_specifier +
-                             " params=" + child.params_json;
+                ev.message = "bake failed for " + module + " params=" + params_json;
                 emit_event(std::move(ev));
-                continue;
+                return false;
             }
             provider->host_baker().bake_lod_variants(
-                child_source, part_graph::params_from_json(child.params_json),
-                {}, child_hash);
+                source, part_graph::params_from_json(params_json),
+                kid_hashes, hash);
         }
 
+        installed[key] = hash;
+        out_hash = hash;
+        return true;
+    };
+
+    for (const auto& child : children) {
+        uint64_t child_hash = 0;
+        if (!install_variant(child.module_specifier, child.params_json, child_hash)) {
+            if (install_cancelled) {
+                err = "install_world: cancelled during asset install";
+                return false;
+            }
+            continue;   // per-variant failure already logged + event emitted
+        }
         sector_child_hashes.push_back(child_hash);
         sector_child_modules.push_back(child.module_specifier);
         sector_child_params.push_back(child.params_json);
+    }
+
+    // Flatten every top-level variant so PartStore loads it as ONE flat
+    // instance (per-cluster LOD ladders down to tens of tris) instead of
+    // re-expanding its whole child subtree — a Tree otherwise renders as
+    // ~3.8k child instances whose per-part QEM ladders bottom out at 1%.
+    // Children need no flats of their own: they inline into the parent's.
+    // Content-addressed and idempotent, so warm starts skip the work.
+    {
+        std::set<uint64_t> flattened;
+        for (uint64_t h : sector_child_hashes) {
+            if (!flattened.insert(h).second) continue;
+            if (token && token->is_cancelled()) {
+                err = "install_world: cancelled during asset flatten";
+                return false;
+            }
+            provider->ensure_part_flattened(h);   // failure logged; QEM fallback still renders
+        }
     }
 
     fprintf(stderr, "[stream] asset install complete: %zu child hashes, "
@@ -2698,7 +2776,7 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
         // Build view/proj/vp explicitly (same near/far as
         // camera_frustum_planes_raw) so the HiZ path gets the exact vp
         // the frustum planes came from.
-        const float near_z = 0.05f, far_z = 4000.0f;
+        const float near_z = 1.0f, far_z = 5000.0f;
         float view[16], proj[16], vp[16];
         viewer::make_lookat(eye, target3, up3, view);
         viewer::make_perspective(cam.fovy, aspect, near_z, far_z, proj);
@@ -2711,12 +2789,15 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
         impl_->raster->set_cull_backfaces(opts.cull_backfaces);
         // Enable stats readback (same as main.cpp line 418 — viewer always shows counters).
         impl_->gpu_culler.set_stats_readback(true);
+        impl_->gpu_culler.set_min_projected_size(opts.min_projected_size);
         impl_->gpu_culler.cull(resolved, *impl_->store, eye, planes, vp, budget);
         auto t2 = std::chrono::steady_clock::now();
 
         impl_->stats.resolve_ms = std::chrono::duration<float, std::milli>(t1 - t0).count();
         impl_->stats.build_ms   = std::chrono::duration<float, std::milli>(t2 - t1).count();
         impl_->stats.instances_resolved = (uint32_t)resolved.size();
+        impl_->stats.instances_total    = (uint32_t)resolved.size();
+        impl_->stats.parts_baked        = (uint32_t)impl_->store->loaded_count();
 
         // Clear + draw (main.cpp lines ~432–447).
         glClearColor(impl_->sky_clear[0], impl_->sky_clear[1], impl_->sky_clear[2], 1.0f);

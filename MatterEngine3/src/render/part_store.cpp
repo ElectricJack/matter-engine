@@ -395,6 +395,19 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
         radius = 0.5f * std::sqrt(dx*dx+dy*dy+dz*dz);
     }
 
+    // Compute dominant material from full-res TriEx for LOD fallback.
+    float dominant_mat = -1.0f;
+    if (triex_ptr && !triex_ptr->empty()) {
+        int counts[256] = {};
+        for (const auto& t : *triex_ptr) {
+            int m = t.materialId;
+            if (m >= 0 && m < 256) counts[m]++;
+        }
+        int max_cnt = 0;
+        for (int i = 0; i < 256; ++i)
+            if (counts[i] > max_cnt) { max_cnt = counts[i]; dominant_mat = (float)i; }
+    }
+
     // Re-bake LODs into the SHARED store BLASManager. lod_bake stores the
     // ABSOLUTE entries_ index (== get_entries().size() before registration),
     // so use blas_indices[0] directly as the index — do NOT add 'before'.
@@ -418,7 +431,7 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
             const TriEx* mesh_ex = (e->tri_extra.size() == e->triangles.size() && !e->tri_extra.empty())
                                       ? e->tri_extra.data() : nullptr;
             lp.lod_mesh_data.push_back(
-                build_raster_mesh_data(e->triangles.data(), mesh_ex, (int)e->triangles.size()));
+                build_raster_mesh_data(e->triangles.data(), mesh_ex, (int)e->triangles.size(), dominant_mat));
         } else {
             lp.lod_mesh_data.push_back({});
         }

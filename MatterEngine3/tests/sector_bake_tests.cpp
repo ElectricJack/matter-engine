@@ -37,8 +37,8 @@ int main() {
         auto req_b = host.eval_requires(src, R"({"tx":900,"tz":-77,"rung":0})");
         CHECK(!req_a.empty(), "requires non-empty");
         CHECK(req_a.size() == req_b.size(), "requires independent of tx/tz");
-        // 8 rocks + 8 boulders + 6 pebbles + 5 grass = 27
-        CHECK(req_a.size() == 27, "full variant list");
+        // 8 rocks + 8 boulders + 6 pebbles + 5 grass + 3 trees = 30
+        CHECK(req_a.size() == 30, "full variant list");
     }
 
     system("rm -rf /tmp/sector_bake_parts && mkdir -p /tmp/sector_bake_parts");
@@ -48,7 +48,7 @@ int main() {
         opts.world.field = &field;
         return host.bake_source(src, params, opts);
     };
-    // rung 0 bakes terrain-only (no placeChild -> bakes even without child hashes)
+    // Empty biomes -> terrain-only (no placeChild -> bakes even without child hashes)
     const char* p00 = R"({"tx":0,"tz":0,"rung":0,"worldSeed":42,"fieldHash":"abc","biomes":""})";
     BakeResult r0 = bake(p00);
     CHECK(r0.error.ok, r0.error.message.c_str());
@@ -74,10 +74,10 @@ int main() {
         CHECK(fsz > 256, "sector .part has non-trivial size (ground geometry present)");
     }
 
-    // scatter bake: rung >= 2 runs the vegetation/placeChild path (WorldSector.js:34).
+    // scatter bake: a non-empty biomes table + rung 2 runs the full placeChild path.
     // placeChild does a STRICT composite-key lookup (module \x1f canonical-params)
     // with no bare-module fallback, so we must install the schema's full declared
-    // variant table (assetVariants: 27 entries). bake_source keys the table with
+    // variant table (assetVariants: 30 entries). bake_source keys the table with
     // child_params[i] verbatim, while placeChild normalizes its JS params via
     // params_from_json->params_to_json — so we canonicalize each variant's params
     // through the SAME functions, guaranteeing the keys match. Dummy child hashes
@@ -102,7 +102,8 @@ int main() {
                 add("Rock", "{\"seed\":" + std::to_string(s) + ",\"size\":" + sz + "}");
         for (int s = 0; s < 6; ++s) add("Pebble", "{\"seed\":" + std::to_string(s) + "}");
         for (int s = 0; s < 5; ++s) add("Grass", "{\"seed\":" + std::to_string(s) + "}");
-        CHECK(mods.size() == 27, "installed full declared variant table");
+        for (int s = 0; s < 3; ++s) add("Tree", "{\"seed\":" + std::to_string(s) + "}");
+        CHECK(mods.size() == 30, "installed full declared variant table");
 
         BakeOptions opts;
         opts.parts_dir = "/tmp/sector_bake_parts";

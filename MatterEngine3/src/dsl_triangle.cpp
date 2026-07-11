@@ -298,4 +298,22 @@ void DslState::flush_retained_profile() {
     retained_.holes.clear();
 }
 
+void DslState::pushTerrainTriangle(const float pos[9], const float nrm[9], int material_id) {
+    Tri t;
+    t.vertex0 = make_float3(pos[0], pos[1], pos[2]);
+    t.vertex1 = make_float3(pos[3], pos[4], pos[5]);
+    t.vertex2 = make_float3(pos[6], pos[7], pos[8]);
+    t.centroid = make_float3((pos[0]+pos[3]+pos[6])/3.0f,
+                             (pos[1]+pos[4]+pos[7])/3.0f,
+                             (pos[2]+pos[5]+pos[8])/3.0f);
+    TriEx e{};
+    e.N0 = make_float3(nrm[0], nrm[1], nrm[2]);
+    e.N1 = make_float3(nrm[3], nrm[4], nrm[5]);
+    e.N2 = make_float3(nrm[6], nrm[7], nrm[8]);
+    e.materialId = material_id;
+    e.tint = make_float4(1, 1, 1, 0);
+    e.ao0 = e.ao1 = e.ao2 = 1.0f;
+    tris_buf_->pushRaw(t, e);
+}
+
 } // namespace dsl
