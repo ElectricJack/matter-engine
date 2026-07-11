@@ -22,8 +22,8 @@ class MeadowWorld extends World {
 
   biomes() {
     return {
-      meadow:    { grass: 600, pebbles: 64, rocks: 8, trees: 6 },
-      foothills: { grass: 160, rocks: 10, trees: 10 },
+      meadow:    { grass: 3000, pebbles: 64, rocks: 8, trees: 6 },
+      foothills: { grass: 800, rocks: 10, trees: 10 },
       mountains: { rocks: 4 },
       ocean:     {},
     };
