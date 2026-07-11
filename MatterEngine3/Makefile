@@ -84,7 +84,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/retopo_blacklist.cpp \
           src/modifier_apply.cpp \
           src/sector_grid.cpp src/lod_select.cpp \
-          src/world_lights.cpp src/probe_volume.cpp \
+          src/world_lights.cpp src/probe_volume.cpp src/probe_bricks.cpp \
           src/world_tracer.cpp src/probe_bake.cpp \
           src/part_cluster.cpp \
           src/tileset_layout.cpp src/tileset_collider.cpp src/tileset_settle.cpp \
@@ -142,7 +142,7 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           retopo_blacklist.o \
           modifier_apply.o \
           sector_grid.o lod_select.o \
-          world_lights.o probe_volume.o \
+          world_lights.o probe_volume.o probe_bricks.o \
           world_tracer.o probe_bake.o \
           part_cluster.o \
           tileset_layout.o tileset_collider.o \

@@ -346,6 +346,12 @@ MODAPPLY_CPP = modifier_apply_tests.cpp ../src/modifier_apply.cpp \
                ../src/retopo_blacklist.cpp \
                $(MSL)/mesh_smooth.cpp $(MSL)/mesh_simplifier.cpp $(MSL)/mesh_indexed.cpp
 
+# Phase C Task 3 — probe brick store + trilinear window compositor (pure CPU, no JS, no GL).
+PROBEBRICK_TARGET = probe_brick_tests
+PROBEBRICK_CPP    = probe_brick_tests.cpp ../src/probe_bricks.cpp ../src/probe_volume.cpp \
+                    $(COMMON_MSL_BLAS_SRC)
+PROBEBRICK_C      = $(MSL)/material_registry.c
+
 # Phase C Task 3 — terrain field program interpreter (pure CPU, no JS, no GL).
 TERRAINFIELD_TARGET = terrain_field_tests
 TERRAINFIELD_CPP    = terrain_field_tests.cpp ../src/terrain_field.cpp
@@ -666,7 +672,8 @@ def_CPP_SRCS := $(sort \
     $(RESOLVECACHE_CPP) \
     $(MODAPPLY_CPP) \
     $(TERRAINFIELD_CPP) \
-    $(TERRAINMESH_CPP))
+    $(TERRAINMESH_CPP) \
+    $(PROBEBRICK_CPP))
 
 qjs_CPP_SRCS := $(sort \
     $(SCRIPT_CPP) \
@@ -708,7 +715,7 @@ gpu_CPP_SRCS := $(sort \
     $(GPU_ALL_CPP))
 
 # C-source flavors. Union across binaries that use them.
-mslc_C_SRCS := $(sort $(COMMON_MSL_C))
+mslc_C_SRCS := $(sort $(COMMON_MSL_C) $(PROBEBRICK_C))
 qjsc_C_SRCS := $(sort $(QJS_C))
 
 # Object lists per flavor.
@@ -763,6 +770,7 @@ RESOLVECACHE_OBJS = $(call obj_list,def,$(RESOLVECACHE_CPP)) $(call obj_list,msl
 MODAPPLY_OBJS = $(call obj_list,def,$(MODAPPLY_CPP))
 TERRAINFIELD_OBJS = $(call obj_list,def,$(TERRAINFIELD_CPP))
 TERRAINMESH_OBJS  = $(call obj_list,def,$(TERRAINMESH_CPP))
+PROBEBRICK_OBJS   = $(call obj_list,def,$(PROBEBRICK_CPP)) $(call obj_list,mslc,$(PROBEBRICK_C))
 TERRAINVERB_OBJS  = $(call obj_list,sh,$(TERRAINVERB_CPP)) $(call obj_list,mslc,$(TERRAINVERB_C)) $(qjsc_C_OBJS)
 SECTORBAKE_OBJS   = $(call obj_list,sh,$(SECTORBAKE_CPP)) $(call obj_list,mslc,$(SECTORBAKE_C)) $(qjsc_C_OBJS)
 
@@ -794,7 +802,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-partv2 run-script run-foldcache run-evalworld run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream
+.PHONY: clean run-partv2 run-script run-foldcache run-evalworld run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-probebrick
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1243,6 +1251,13 @@ refine-loop-tests: $(call obj_of,gpu,refine_loop_tests.cpp) $(GPU_SHARED_OBJS) |
 run-refineloop: refine-loop-tests
 	GALLIUM_DRIVER=d3d12 ./refine_loop_tests
 
+# Phase C Task 3 — probe brick store + trilinear window compositor (pure CPU, no GL).
+$(PROBEBRICK_TARGET): $(PROBEBRICK_OBJS)
+	$(CC) $(PROBEBRICK_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+
+run-probebrick: $(PROBEBRICK_TARGET)
+	./$(PROBEBRICK_TARGET)
+
 # Phase C Task 17 — resolve/manifest cache round-trip (headless, no GL needed).
 resolve-cache-tests: $(call obj_list,def,$(RESOLVECACHE_CPP)) $(call obj_list,mslc,$(RESOLVECACHE_C))
 	$(CC) $(call obj_list,def,$(RESOLVECACHE_CPP)) $(call obj_list,mslc,$(RESOLVECACHE_C)) \
@@ -1279,4 +1294,5 @@ clean:
 	      tileset_load_tests api_tests async_bake_tests demand_bake_tests transient_tests release_part_tests \
 	      refine_loop_tests \
 	      resolve_cache_tests \
-	      world_stream_tests
+	      world_stream_tests \
+	      $(PROBEBRICK_TARGET)
