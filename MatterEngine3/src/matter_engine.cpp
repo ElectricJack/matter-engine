@@ -1578,7 +1578,7 @@ void WorldSession::Impl::publish_pipeline(
         }
         scfg.max_inflight = 16;
         sector_streamer = std::make_unique<matter_stream::SectorStreamer>(scfg);
-        probe_thread_start();  // Phase C Task 5: start probe brick bake thread
+        // probe_thread_start();  // disabled — probe baking needs more work
         refine_provider = p.provider_ref;  // extend provider lifetime
         printf("[stream] SectorStreamer built for world-kind session\n");
     }
