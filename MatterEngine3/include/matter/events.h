@@ -3,6 +3,11 @@
 
 namespace matter {
 
+// BakeStarted/BakePartDone/BakeFinished/BakeError are reused for world-kind
+// (infinite-world) sessions. In that mode BakeStarted fires at request_bake,
+// BakePartDone fires during the asset install phase, and BakeFinished fires
+// once the first streaming cycle completes with no remaining holes. BakeError
+// may fire for individual sector bake failures (phase = "stream").
 enum class EventType { BakeStarted, BakePartDone, BakeFinished, BakeError,
                        // Phase C Task 6: camera-driven refine loop event.
                        // Emitted after each tile is upgraded (coarse→full) or evicted

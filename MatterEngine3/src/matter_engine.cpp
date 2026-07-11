@@ -52,11 +52,13 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <fstream>
 #include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -239,6 +241,14 @@ struct WorldSession::Impl {
     // Phase C Task 9: execute one sector-streamer step (world-kind sessions).
     // Called by worker_loop in the pop_wait timeout path when sector_streamer is live.
     void execute_sector_stream_step();
+    // Phase C Task 9: install world-kind field, set world binding on host_baker,
+    // install sector child assets. Called from execute_bake after install_graph
+    // succeeds when provider->world_module() is non-empty.
+    bool install_world(const std::shared_ptr<matter_async::CancelToken>& token,
+                       std::string& err);
+    // Phase C Task 9: drain sector evictions — release resources for evicted sectors.
+    // Called on the worker thread (within a gpu_jobs.run_blocking context or inline).
+    void drain_sector_evictions();
 
     // Parameters for publish_pipeline — the genuine differences between the
     // BakeAll/Reload and RebakeCone publish flows.
@@ -377,6 +387,16 @@ struct WorldSession::Impl {
     // next_manifest_id so the two don't collide; starts at 0x10000000 for sectors).
     uint32_t sector_next_id = 0x10000000u;
 
+    // Sector size from the eval_world result (world units per sector tile).
+    float world_sector_size = 16.0f;
+
+    // Cached sector source text (WorldSector.js read once at install_world time).
+    std::string world_sector_source;
+
+    // True once the first streaming cycle has completed with no remaining holes.
+    // Reset on BakeAll/Reload/regenerate. Used to emit BakeFinished for world-kind.
+    bool world_initial_load_done = false;
+
     // I1 fix: deferred upgrade results from GL jobs.
     // Worker-thread-only. Each entry records a pending refine.upgrade outcome:
     //   tile_idx — index in refine_ctrl to mark Full (success) or Coarse (failure)
@@ -451,7 +471,14 @@ void WorldSession::Impl::worker_loop() {
                     refine_ctrl.reset();
                     refine_provider.reset();
                     refine_pending_upgrades_.clear();
+                    // Phase C Task 9: drain sector evictions before destroying streamer.
+                    if (sector_streamer) {
+                        sector_streamer->clear();
+                        drain_sector_evictions();
+                    }
                     sector_streamer.reset();
+                    world_field.reset();
+                    world_initial_load_done = false;
                 }
                 bake_active.store(true, std::memory_order_release);
                 try {
@@ -746,6 +773,47 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     double install_ms = std::chrono::duration<double, std::milli>(
         clk_t::now() - t_install_start).count();
     if (is_cancelled()) { emit_error(BakeErrorCode::Cancelled, "install", "cancelled"); return; }
+
+    // --- Phase C Task 9: world-kind divergence --------------------------------
+    // If the manifest contained a `world` flag, skip compose_world and instead
+    // eval the world definition, install the field + sector assets, and proceed
+    // to publish_pipeline with an empty manifest. The SectorStreamer (built in
+    // publish_pipeline's tail) will stream sectors on demand.
+    if (!provider->world_module().empty()) {
+        auto t_world_start = clk_t::now();
+        std::string werr;
+        world_initial_load_done = false;  // reset for this generation
+        if (!install_world(token, werr)) {
+            fprintf(stderr, "install_world: %s\n", werr.c_str());
+            emit_error(is_cancelled() ? BakeErrorCode::Cancelled : classify_error(werr),
+                       "install", werr);
+            return;
+        }
+        double world_ms = std::chrono::duration<double, std::milli>(
+            clk_t::now() - t_world_start).count();
+        if (is_cancelled()) { emit_error(BakeErrorCode::Cancelled, "install", "cancelled"); return; }
+
+        // World-kind sessions use an empty manifest; sectors are streamed.
+        viewer::WorldManifest empty_manifest;
+        auto t_publish_start = clk_t::now();
+        PublishPipelineParams pp;
+        pp.job_prefix            = "bake";
+        pp.count_errors_seed     = count_errors;
+        pp.init_culler           = true;
+        pp.update_probe_dims     = false;
+        pp.verbose_reset_log     = true;
+        pp.fault_hook            = cfg.test_fault_hook;
+        pp.load_msg_include_hash = true;
+        pp.provider_ref          = provider;
+        publish_pipeline(token, std::move(empty_manifest), pp);
+        double publish_ms = std::chrono::duration<double, std::milli>(
+            clk_t::now() - t_publish_start).count();
+        double total_ms = std::chrono::duration<double, std::milli>(
+            clk_t::now() - t_bake_start).count();
+        fprintf(stderr, "[bake-timing] install=%.0fms world=%.0fms publish=%.0fms total=%.0fms (world-kind)\n",
+                install_ms, world_ms, publish_ms, total_ms);
+        return;  // world-kind path complete — SectorStreamer built in publish_pipeline tail
+    }
 
     // 3) compose_world on the worker (scatter/place; tileset GL marshaled) ----
     // NOTE: tileset phase runs inside compose_world and is not separable without
@@ -1688,12 +1756,399 @@ void WorldSession::Impl::execute_refine_step() {
 }
 
 // ---------------------------------------------------------------------------
+// WorldSession::Impl::install_world
+// Phase C Task 9: called from execute_bake after install_graph when
+// provider->world_module() is non-empty. Evaluates the world definition,
+// parses the field program, sets the world binding on the host_baker, marks
+// WorldSector as transient, and pre-bakes the sector child asset set.
+// Returns false + err on failure (caller emits BakeError).
+// ---------------------------------------------------------------------------
+bool WorldSession::Impl::install_world(
+    const std::shared_ptr<matter_async::CancelToken>& token,
+    std::string& err)
+{
+    const std::string& wmod = provider->world_module();
+    if (wmod.empty()) { err = "install_world: no world module"; return false; }
+
+    // 1. Read world source: <schemas_dir>/<world_module>.js
+    std::string world_source;
+    {
+        const std::string world_js = cfg.schemas_dir + "/" + wmod + ".js";
+        std::ifstream in(world_js, std::ios::binary);
+        if (!in) { err = "install_world: cannot read " + world_js; return false; }
+        std::ostringstream ss; ss << in.rdbuf();
+        world_source = ss.str();
+    }
+
+    // 2. eval_world with the root_params_json override.
+    script_host::ScriptHost host;
+    host.set_shared_lib_root(cfg.shared_lib_dir);
+    std::string params_json = cfg.root_params_json.empty() ? "{}" : cfg.root_params_json;
+    script_host::WorldEvalResult r = host.eval_world(world_source, params_json);
+    if (!r.ok) { err = "install_world: eval_world failed: " + r.message; return false; }
+
+    // 3. Parse field program -> FieldRuntime.
+    terrain_field::FieldProgram prog;
+    std::string perr;
+    if (!terrain_field::FieldProgram::parse(r.field_program, prog, perr)) {
+        err = "install_world: FieldProgram::parse failed: " + perr;
+        return false;
+    }
+    world_field = std::make_unique<terrain_field::FieldRuntime>(std::move(prog));
+
+    // 4. Store world constants.
+    world_sea_level    = world_field->sea_level();
+    world_biomes_json  = r.biomes_json;
+    world_sector_size  = r.sector_size;
+    {
+        char hbuf[32];
+        std::snprintf(hbuf, sizeof(hbuf), "%016llx",
+                      (unsigned long long)world_field->hash());
+        world_field_hash = hbuf;
+    }
+    // Extract worldSeed from merged params. eval_world applies class defaults,
+    // so the seed is embedded in the field program's hash. The caller may also
+    // have set it via regenerate(). Check root_params_json first.
+    world_seed = 0;
+    {
+        // Simple extraction: look for "worldSeed" key in the params_json.
+        // params_from_json returns a Params map; if it has worldSeed, use it.
+        auto ps = part_graph::params_from_json(params_json);
+        auto it = ps.find("worldSeed");
+        if (it != ps.end() && it->second.kind == part_graph::ParamValue::Kind::Number) {
+            world_seed = (uint64_t)it->second.num;
+        }
+    }
+
+    // 5. Set world binding on the provider's host_baker so sector bakes get
+    //    the field (terrainVolume / heightAt / biomeAt etc.).
+    dsl::WorldBinding wb;
+    wb.field       = world_field.get();
+    wb.sector_size = r.sector_size;
+    wb.y_min       = r.y_min;
+    wb.y_max       = r.y_max;
+    provider->host_baker().set_world(wb);
+
+    // 6. Mark WorldSector as transient so its artifacts go to scratch.
+    provider->set_transient_modules({"WorldSector"});
+    if (store) store->set_scratch_dir(provider->transient_dir());
+
+    // 7. Read sector source: <schemas_dir>/WorldSector.js
+    {
+        const std::string sector_js = cfg.schemas_dir + "/WorldSector.js";
+        std::ifstream in(sector_js, std::ios::binary);
+        if (!in) { err = "install_world: cannot read " + sector_js; return false; }
+        std::ostringstream ss; ss << in.rdbuf();
+        world_sector_source = ss.str();
+    }
+
+    // 8. Asset install: eval_requires on WorldSector to discover its child variants,
+    //    then resolve_hash + ensure_part_baked + ensure_part_flattened for each child.
+    std::vector<script_host::RequiredChild> children =
+        host.eval_requires(world_sector_source, "{}");
+    fprintf(stderr, "[stream] WorldSector requires %zu child variants\n", children.size());
+
+    sector_child_hashes.clear();
+    sector_child_modules.clear();
+    sector_child_params.clear();
+    sector_child_hashes.reserve(children.size());
+    sector_child_modules.reserve(children.size());
+    sector_child_params.reserve(children.size());
+
+    // Resolve + bake each child asset variant.
+    for (const auto& child : children) {
+        if (token && token->is_cancelled()) {
+            err = "install_world: cancelled during asset install";
+            return false;
+        }
+        // Read child source
+        std::string child_source;
+        {
+            const std::string child_js = cfg.schemas_dir + "/" + child.module_specifier + ".js";
+            std::ifstream in(child_js, std::ios::binary);
+            if (!in) {
+                err = "install_world: cannot read child " + child_js;
+                return false;
+            }
+            std::ostringstream ss; ss << in.rdbuf();
+            child_source = ss.str();
+        }
+        // Resolve hash for this child variant (no children of its own for leaf schemas).
+        uint64_t child_hash = host.resolve_hash(child_source, child.params_json);
+
+        // Bake via the provider's demand path (checks cache first).
+        // We need this child in the provider's bake_plan. Since it might not be
+        // there (world-kind manifests have no graph roots for asset schemas), we
+        // use the host_baker directly.
+        if (!provider->host_baker().cached(child_hash)) {
+            provider->host_baker().set_baking_module(child.module_specifier);
+            if (!provider->host_baker().bake(child_source,
+                    part_graph::params_from_json(child.params_json),
+                    {}, {}, {}, child_hash)) {
+                err = "install_world: bake failed for " + child.module_specifier +
+                      " params=" + child.params_json;
+                return false;
+            }
+            provider->host_baker().bake_lod_variants(
+                child_source, part_graph::params_from_json(child.params_json),
+                {}, child_hash);
+        }
+
+        sector_child_hashes.push_back(child_hash);
+        sector_child_modules.push_back(child.module_specifier);
+        sector_child_params.push_back(child.params_json);
+    }
+
+    fprintf(stderr, "[stream] asset install complete: %zu child hashes, "
+            "field_hash=%s, sector_size=%.1f, sea_level=%.2f\n",
+            sector_child_hashes.size(), world_field_hash.c_str(),
+            world_sector_size, world_sea_level);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// WorldSession::Impl::drain_sector_evictions
+// Phase C Task 9: process pending evictions from the sector streamer.
+// Removes instances from world state, releases GPU and PartStore resources,
+// releases transient artifacts. Posts a blocking GL job to ensure all state
+// mutations happen on the GL thread. Called on the worker thread.
+// ---------------------------------------------------------------------------
+void WorldSession::Impl::drain_sector_evictions() {
+    if (!sector_streamer) return;
+    auto evs = sector_streamer->take_evictions();
+    if (evs.empty()) return;
+
+    auto evs_shared = std::make_shared<std::vector<matter_stream::Eviction>>(std::move(evs));
+    matter_async::GpuJob ej;
+    ej.name = "stream.drain_evict";
+    ej.fn   = [this, evs_shared](std::string& /*err*/) -> bool {
+        matter_async::assert_gl_thread("stream.drain_evict");
+        for (const auto& ev : *evs_shared) {
+            SectorKey sk{ev.tx, ev.tz, ev.rung};
+            std::lock_guard<std::mutex> lk(sector_map_mutex);
+            auto it = sector_map.find(sk);
+            if (it == sector_map.end()) continue;
+
+            uint32_t inst_id   = it->second.instance_id;
+            uint64_t part_hash = it->second.part_hash;
+
+            viewer::WorldDelta d;
+            d.removed.push_back(inst_id);
+            state.apply(d);
+            tracer_dirty = true;
+            tracer.reset();
+
+            if (culler_ready) gpu_culler.release_part(part_hash);
+            if (store) store->release(part_hash);
+            if (provider) provider->release_transient(part_hash);
+
+            sector_map.erase(it);
+        }
+        return true;
+    };
+    std::string eerr;
+    gpu_jobs.run_blocking(std::move(ej), eerr);
+}
+
+// ---------------------------------------------------------------------------
 // WorldSession::Impl::execute_sector_stream_step
-// Phase C Task 9 WIP stub — full implementation pending.
+// Phase C Task 9: one sector-streaming step. Called by worker_loop in the
+// pop_wait timeout slot when sector_streamer is live and no command is pending.
+//
+// Per step:
+//   1. Update camera position on the streamer.
+//   2. Drain evictions (sectors camera left behind).
+//   3. Service bake requests (holes and upgrades, nearest first).
+//   4. On bake success → GL publish job.
+//   5. After first cycle with no remaining holes → emit BakeFinished.
 // ---------------------------------------------------------------------------
 void WorldSession::Impl::execute_sector_stream_step() {
     if (!sector_streamer) return;
-    // TODO(task-9): update camera, service requests, bake sectors, publish/evict.
+    if (!provider) return;
+
+    // 1. Update camera position.
+    float fx, fz;
+    {
+        std::lock_guard<std::mutex> lk(focus_mutex);
+        fx = focus[0];
+        fz = focus[2];
+    }
+    sector_streamer->update(fx, fz);
+
+    // 2. Drain evictions on a blocking GL job so world state is updated on the
+    //    GL thread (matches the pattern used by refine evictions).
+    {
+        auto evs = sector_streamer->take_evictions();
+        if (!evs.empty()) {
+            // Package eviction work into a blocking GL job.
+            auto evs_shared = std::make_shared<std::vector<matter_stream::Eviction>>(std::move(evs));
+            matter_async::GpuJob ej;
+            ej.name = "stream.evict";
+            ej.fn   = [this, evs_shared](std::string& /*err*/) -> bool {
+                matter_async::assert_gl_thread("stream.evict");
+                for (const auto& ev : *evs_shared) {
+                    SectorKey sk{ev.tx, ev.tz, ev.rung};
+                    std::lock_guard<std::mutex> lk(sector_map_mutex);
+                    auto it = sector_map.find(sk);
+                    if (it == sector_map.end()) continue;
+
+                    uint32_t inst_id   = it->second.instance_id;
+                    uint64_t part_hash = it->second.part_hash;
+
+                    viewer::WorldDelta d;
+                    d.removed.push_back(inst_id);
+                    state.apply(d);
+                    tracer_dirty = true;
+                    tracer.reset();
+
+                    if (culler_ready) gpu_culler.release_part(part_hash);
+                    if (store) store->release(part_hash);
+                    if (provider) provider->release_transient(part_hash);
+
+                    sector_map.erase(it);
+                }
+                return true;
+            };
+            std::string eerr;
+            gpu_jobs.run_blocking(std::move(ej), eerr);
+        }
+    }
+
+    // 3. Service bake requests.
+    matter_stream::SectorRequest req;
+    while (sector_streamer->next_request(req)) {
+        // Build params JSON for WorldSector bake.
+        // biomes_json needs to be escaped for embedding in a JSON string value.
+        std::string biomes_escaped;
+        biomes_escaped.reserve(world_biomes_json.size() + 16);
+        for (char c : world_biomes_json) {
+            if (c == '"') biomes_escaped += "\\\"";
+            else if (c == '\\') biomes_escaped += "\\\\";
+            else biomes_escaped += c;
+        }
+
+        char params_buf[1024];
+        std::snprintf(params_buf, sizeof(params_buf),
+            R"({"tx":%lld,"tz":%lld,"rung":%d,"worldSeed":%llu,"fieldHash":"%s","biomes":"%s"})",
+            (long long)req.tx, (long long)req.tz, req.rung,
+            (unsigned long long)world_seed, world_field_hash.c_str(),
+            biomes_escaped.c_str());
+        std::string sector_params(params_buf);
+
+        // Bake this sector.
+        script_host::BakeOptions opts;
+        opts.parts_dir = provider->transient_dir();
+        opts.world.field       = world_field.get();
+        opts.world.sector_size = world_sector_size;
+        opts.world.y_min       = -64.0f;
+        opts.world.y_max       = 192.0f;
+
+        script_host::ScriptHost bake_host;
+        bake_host.set_shared_lib_root(cfg.shared_lib_dir);
+        auto br = bake_host.bake_source(
+            world_sector_source, sector_params, opts,
+            sector_child_hashes.data(), sector_child_hashes.size(),
+            sector_child_modules.data(), sector_child_params.data());
+
+        if (!br.error.ok) {
+            fprintf(stderr, "[stream] sector bake failed (%lld,%lld r%d): %s\n",
+                    (long long)req.tx, (long long)req.tz, req.rung,
+                    br.error.message.c_str());
+            sector_streamer->on_failed(req.tx, req.tz, req.rung);
+
+            Event ev;
+            ev.type    = EventType::BakeError;
+            ev.code    = BakeErrorCode::ScriptError;
+            ev.phase   = "stream";
+            ev.message = br.error.message;
+            emit_event(std::move(ev));
+            continue;
+        }
+
+        uint64_t sector_hash = br.resolved_hash;
+
+        // 4. GL publish job: add this sector to the world.
+        int64_t pub_tx = req.tx, pub_tz = req.tz;
+        int pub_rung = req.rung;
+        float S = world_sector_size;
+
+        matter_async::GpuJob pj;
+        pj.name = "stream.publish";
+        pj.fn = [this, pub_tx, pub_tz, pub_rung, sector_hash, S](std::string& /*err*/) -> bool {
+            matter_async::assert_gl_thread("stream.publish");
+
+            if (!sector_streamer->on_published(pub_tx, pub_tz, pub_rung)) {
+                // No longer desired — discard.
+                if (provider) provider->release_transient(sector_hash);
+                return true;
+            }
+
+            // Load the part.
+            if (store && !store->get_or_load(sector_hash)) {
+                fprintf(stderr, "[stream] get_or_load failed for sector (%lld,%lld r%d)\n",
+                        (long long)pub_tx, (long long)pub_tz, pub_rung);
+                return true;
+            }
+
+            // Assign instance id.
+            uint32_t inst_id;
+            {
+                std::lock_guard<std::mutex> lk(sector_map_mutex);
+                inst_id = sector_next_id++;
+            }
+
+            // Build transform: ROW-major, translate at [3],[7],[11].
+            viewer::WorldManifestEntry we;
+            we.instance_id = inst_id;
+            we.part_hash   = sector_hash;
+            we.module      = "WorldSector";
+            // Identity + translation.
+            std::memset(we.transform, 0, sizeof(we.transform));
+            we.transform[0]  = 1.0f;
+            we.transform[5]  = 1.0f;
+            we.transform[10] = 1.0f;
+            we.transform[15] = 1.0f;
+            we.transform[3]  = (float)pub_tx * S;  // tx
+            we.transform[7]  = 0.0f;                // ty
+            we.transform[11] = (float)pub_tz * S;  // tz
+
+            viewer::WorldDelta d;
+            d.added.push_back(we);
+            state.apply(d);
+            tracer_dirty = true;
+            tracer.reset();
+
+            // Ensure GPU culler knows about this part.
+            if (culler_ready && store)
+                gpu_culler.ensure_part(sector_hash, *store);
+
+            // Record in sector_map.
+            {
+                std::lock_guard<std::mutex> lk(sector_map_mutex);
+                SectorKey sk{pub_tx, pub_tz, pub_rung};
+                sector_map[sk] = SectorEntry{inst_id, sector_hash};
+            }
+
+            // Grow composer cap if needed.
+            if (composer && store) {
+                size_t cap_needed = state.entries().size() + 16;
+                composer = std::make_unique<viewer::WorldComposer>(*store, cap_needed);
+            }
+
+            return true;
+        };
+        gpu_jobs.post(std::move(pj));
+    }
+
+    // 5. After the first update+drain cycle with no remaining holes, emit BakeFinished.
+    if (!world_initial_load_done && sector_streamer->resident_count() > 0 &&
+        sector_streamer->inflight_count() == 0) {
+        world_initial_load_done = true;
+        Event ev;
+        ev.type   = EventType::BakeFinished;
+        ev.errors = 0;
+        emit_event(std::move(ev));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2156,6 +2611,10 @@ void WorldSession::tick() {
 void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
                           const RenderOptions& opts) {
     if (!impl_->connected) return;
+
+    // Phase C Task 9: update resident_sectors stat each frame.
+    impl_->stats.resident_sectors = impl_->sector_streamer
+        ? (uint32_t)impl_->sector_streamer->resident_count() : 0;
 
     // Apply option defaults.
     float budget = opts.pixel_budget;

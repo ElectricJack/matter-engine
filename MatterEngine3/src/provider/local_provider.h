@@ -177,6 +177,12 @@ public:
     // if no world-kind entry). Populated after install_graph(). Task 9 consumes it.
     const std::string& world_module() const { return world_module_; }
 
+#if defined(MATTER_HAVE_SCRIPT_HOST)
+    // Phase C Task 9: expose the shared HostBaker so install_world can set the
+    // world binding and bake sector child assets through the same baker instance.
+    part_graph::HostBaker& host_baker() { return *host_baker_; }
+#endif
+
 private:
     LocalProviderConfig  cfg_;
     int                  baked_count_ = 0;

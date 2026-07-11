@@ -1,0 +1,1 @@
+../../../../examples/world_demo/schemas/WorldSector.js
