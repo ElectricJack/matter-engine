@@ -1869,8 +1869,14 @@ bool WorldSession::Impl::install_world(
             const std::string child_js = cfg.schemas_dir + "/" + child.module_specifier + ".js";
             std::ifstream in(child_js, std::ios::binary);
             if (!in) {
-                err = "install_world: cannot read child " + child_js;
-                return false;
+                fprintf(stderr, "install_world: cannot read child %s (skipping)\n", child_js.c_str());
+                Event ev;
+                ev.type = EventType::BakeError;
+                ev.code = BakeErrorCode::ScriptError;
+                ev.phase = "install";
+                ev.message = "cannot read child " + child_js;
+                emit_event(std::move(ev));
+                continue;
             }
             std::ostringstream ss; ss << in.rdbuf();
             child_source = ss.str();
@@ -1887,9 +1893,16 @@ bool WorldSession::Impl::install_world(
             if (!provider->host_baker().bake(child_source,
                     part_graph::params_from_json(child.params_json),
                     {}, {}, {}, child_hash)) {
-                err = "install_world: bake failed for " + child.module_specifier +
-                      " params=" + child.params_json;
-                return false;
+                fprintf(stderr, "install_world: bake failed for %s (skipping)\n",
+                        child.module_specifier.c_str());
+                Event ev;
+                ev.type = EventType::BakeError;
+                ev.code = BakeErrorCode::ScriptError;
+                ev.phase = "install";
+                ev.message = "bake failed for " + child.module_specifier +
+                             " params=" + child.params_json;
+                emit_event(std::move(ev));
+                continue;
             }
             provider->host_baker().bake_lod_variants(
                 child_source, part_graph::params_from_json(child.params_json),

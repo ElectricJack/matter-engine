@@ -4,20 +4,12 @@
 
 #include <cmath>
 
-// World-center spawn: Meadow Valley is a 10x world (51x51 tiles).
-// The tile grid spans roughly 0..816 in X and Z (51*16 = 816).
-// Centre is (408, ?, 408). Terrain height at (408,408) for the default seed
-// (20260709) is ~0.0 units (world center sits at the flat meadow bottom;
-// precomputed from terrain_noise.js heightField). We add 8 m for near-ground
-// immersive start facing the mountain range.
-static constexpr float SPAWN_X =  408.0f;
-static constexpr float SPAWN_Y =    8.0f;   // precomputed heightAt(408,408)≈0 + 8 m above terrain
-static constexpr float SPAWN_Z =  408.0f;
+static constexpr float SPAWN_X =    0.0f;
+static constexpr float SPAWN_Y =   25.0f;
+static constexpr float SPAWN_Z =    0.0f;
 
-// Direction the camera faces on spawn: toward the mountain range (roughly -Z).
-// yaw=PI faces -Z.
-static constexpr float SPAWN_YAW   = 3.14159265f;   // PI  → face -Z
-static constexpr float SPAWN_PITCH = -0.15f;         // slight downward tilt
+static constexpr float SPAWN_YAW   = 3.14159265f;
+static constexpr float SPAWN_PITCH = -0.15f;
 
 static constexpr float DEG2RAD_F = 0.01745329251f;
 static constexpr float PI_F      = 3.14159265358979f;

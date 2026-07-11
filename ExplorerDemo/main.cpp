@@ -22,6 +22,7 @@
 
 #include "raylib.h"
 #include "raymath.h"
+#include "rlgl.h"
 
 #include "matter/engine_context.h"
 #include "matter/world_session.h"
@@ -214,7 +215,7 @@ int main() {
 
     // --- Window init ---
     SetConfigFlags(FLAG_WINDOW_RESIZABLE);
-    InitWindow(1280, 720, "ExplorerDemo — Meadow Valley");
+    InitWindow(1280, 720, "ExplorerDemo — Meadow World");
     SetTargetFPS(60);
     // Disable raylib's built-in ESC→close behavior: we intercept ESC for the
     // escape menu. Quit is handled explicitly via the menu's Quit entry.
@@ -241,7 +242,7 @@ int main() {
     matter::WorldDesc wd;
     wd.schemas_dir    = wp.schemas_dir.c_str();
     wd.world_data_dir = wp.world_data_dir.c_str();
-    wd.world_name     = "Meadow";
+    wd.world_name     = "MeadowWorld";
     wd.shared_lib_dir = wp.shared_lib_dir.c_str();
     wd.enable_live_edit = false;
 
@@ -386,6 +387,19 @@ int main() {
             }
         }
 
+        // --- Camera floor clamp: don't fly below sea level ---
+        {
+            float sl;
+            if (session->sea_level(sl)) {
+                float floor = sl + 0.5f;
+                if (rig.cam.position.y < floor) {
+                    float dy = floor - rig.cam.position.y;
+                    rig.cam.position.y = floor;
+                    rig.cam.target.y += dy;
+                }
+            }
+        }
+
         // --- Set bake focus to camera position every frame (before tick). ---
         {
             const float focus[3] = {
@@ -438,6 +452,32 @@ int main() {
             // window isn't left with an uncleared framebuffer.
             ClearBackground((Color){ 96, 118, 143, 255 });
             session->render(rig.cam, GetScreenWidth(), GetScreenHeight(), render_opts);
+
+            // Water plane: translucent quad at sea level, following the camera.
+            {
+                float sl;
+                if (session->sea_level(sl)) {
+                    float cx = rig.cam.position.x;
+                    float cz = rig.cam.position.z;
+                    float half = 800.0f;
+                    Color water = {30, 90, 140, 140};
+                    BeginMode3D(rig.cam);
+                    rlDisableBackfaceCulling();
+                    DrawTriangle3D(
+                        (Vector3){cx - half, sl, cz - half},
+                        (Vector3){cx - half, sl, cz + half},
+                        (Vector3){cx + half, sl, cz + half},
+                        water);
+                    DrawTriangle3D(
+                        (Vector3){cx - half, sl, cz - half},
+                        (Vector3){cx + half, sl, cz + half},
+                        (Vector3){cx + half, sl, cz - half},
+                        water);
+                    rlEnableBackfaceCulling();
+                    EndMode3D();
+                }
+            }
+
             const matter::FrameStats& fs = session->frame_stats();
             // Task 9: draw HUD (replaces old draw_hud free function).
             hud.draw(GetScreenWidth(), GetScreenHeight(), fs, (float)GetFPS(), now);

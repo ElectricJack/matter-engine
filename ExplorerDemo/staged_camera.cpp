@@ -11,9 +11,8 @@
 
 #include <cmath>
 
-// Meadow Valley centre (same constants as camera_rig.cpp).
-static constexpr float CX = 408.0f;
-static constexpr float CZ = 408.0f;
+static constexpr float CX = 0.0f;
+static constexpr float CZ = 0.0f;
 
 static constexpr float PI_F = 3.14159265358979f;
 

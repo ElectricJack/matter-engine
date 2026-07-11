@@ -162,8 +162,8 @@ void Hud::draw_stats_corner(int /*w*/, int /*h*/,
                              const matter::FrameStats& fs, float fps) const {
     char buf[256];
     snprintf(buf, sizeof(buf),
-             "FPS: %.0f  inst: %u/%u  parts: %u  hits: %u",
-             fps,
+             "FPS: %.0f  sectors: %u  inst: %u/%u  parts: %u  hits: %u",
+             fps, fs.resident_sectors,
              fs.instances_drawn, fs.instances_total,
              fs.parts_baked, fs.cache_hits);
     DrawText(buf, 8, 8, 18, RAYWHITE);
