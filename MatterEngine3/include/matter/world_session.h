@@ -49,6 +49,8 @@ struct FrameStats {
     uint32_t parts_baked = 0;         // cache misses last bake
     uint32_t cache_hits  = 0;         // cache hits last bake
     int probe_dims[3] = {0, 0, 0};    // probe grid (all zero = unavailable)
+    // Phase C Task 9: world-kind sessions only; 0 for closed-world sessions.
+    uint32_t resident_sectors = 0;
 };
 
 class WorldSession {
@@ -89,6 +91,11 @@ public:
     // on error a BakeError event is emitted and render() no-ops until a later
     // request_bake()/reload() succeeds (the old world is torn down before rebaking).
     void reload();
+
+    // Phase C Task 9: world-kind sessions: the sea level from the world definition.
+    // Returns true and sets `out` for world-kind sessions; returns false for
+    // closed-world (expand/tileset) sessions (no water plane in those worlds).
+    bool sea_level(float& out) const;
 
     // Phase C Task 7: enqueue a seed-driven world reroll. Stores
     // root_params_override = {"worldSeed": <world_seed>} and enqueues a Reload

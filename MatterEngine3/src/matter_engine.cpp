@@ -31,6 +31,10 @@
 // Phase C Task 6: camera-driven refine loop.
 #include "refine_controller.h"
 
+// Phase C Task 9: sector streamer.
+#include "sector_streamer.h"
+#include "terrain_field.h"
+
 // Phase C Task 17: resolve/manifest cache for instant warm relaunch.
 #include "resolve_cache.h"
 #ifdef __linux__
@@ -232,6 +236,9 @@ struct WorldSession::Impl {
     // Phase C Task 6: execute one camera-driven refine step.
     // Called by worker_loop in the pop_wait timeout path when refine_ctrl is live.
     void execute_refine_step();
+    // Phase C Task 9: execute one sector-streamer step (world-kind sessions).
+    // Called by worker_loop in the pop_wait timeout path when sector_streamer is live.
+    void execute_sector_stream_step();
 
     // Parameters for publish_pipeline — the genuine differences between the
     // BakeAll/Reload and RebakeCone publish flows.
@@ -316,6 +323,60 @@ struct WorldSession::Impl {
     // Worker thread only.
     size_t refine_tile_count = 0;
 
+    // --- Phase C Task 9: SectorStreamer world-kind loop ----------------------
+    // Non-null when the current session opened a world-kind manifest.
+    // Owned by the worker thread (created in publish_pipeline tail, cleared
+    // on supersession / shutdown). Null for closed-world sessions.
+    std::unique_ptr<matter_stream::SectorStreamer> sector_streamer;
+
+    // World-kind field runtime (owned; lives for the session generation).
+    // Null for closed-world sessions or before install completes.
+    std::unique_ptr<terrain_field::FieldRuntime> world_field;
+
+    // Sea level from the most recent eval_world result (-inf = not a world).
+    float world_sea_level = std::numeric_limits<float>::lowest();
+
+    // Biomes JSON forwarded to every sector bake.
+    std::string world_biomes_json;
+
+    // worldSeed from the most recent install (forwarded to sector params).
+    uint64_t world_seed = 0;
+
+    // fieldHash = 16-hex-digit string of FieldRuntime::hash().
+    std::string world_field_hash;
+
+    // child_hashes for every WorldSector bake (the fixed 28-variant asset set).
+    // Populated after the asset install in publish_pipeline; the order matches
+    // child_modules/child_params and is identical for every sector.
+    std::vector<uint64_t>    sector_child_hashes;
+    std::vector<std::string> sector_child_modules;
+    std::vector<std::string> sector_child_params;
+
+    // Resident-sector map: (tx,tz,rung) → {instance_id, part_hash}.
+    // Worker thread writes at publish; GL thread writes at evict (but the
+    // eviction apply also happens on the GL thread, so no data race if we
+    // restrict all sector_map writes/reads to the GL thread via the gpu_jobs
+    // queue).  To keep things simple we guard with sector_map_mutex.
+    struct SectorEntry { uint32_t instance_id; uint64_t part_hash; };
+    struct SectorKey {
+        int64_t tx, tz; int rung;
+        bool operator==(const SectorKey& o) const { return tx==o.tx && tz==o.tz && rung==o.rung; }
+    };
+    struct SectorKeyHash {
+        size_t operator()(const SectorKey& k) const {
+            uint64_t h = (uint64_t(uint32_t(int32_t(k.tx))) << 32) | uint32_t(int32_t(k.tz));
+            h ^= h >> 33;
+            h ^= uint64_t(k.rung) * 0xbf58476d1ce4e5b9ull;
+            return (size_t)h;
+        }
+    };
+    std::unordered_map<SectorKey, SectorEntry, SectorKeyHash> sector_map;
+    std::mutex sector_map_mutex;
+
+    // Next instance id for sector placements (separate from the publish-pipeline
+    // next_manifest_id so the two don't collide; starts at 0x10000000 for sectors).
+    uint32_t sector_next_id = 0x10000000u;
+
     // I1 fix: deferred upgrade results from GL jobs.
     // Worker-thread-only. Each entry records a pending refine.upgrade outcome:
     //   tile_idx — index in refine_ctrl to mark Full (success) or Coarse (failure)
@@ -359,26 +420,29 @@ void WorldSession::Impl::worker_loop() {
     // flight — commands always win the pop.
 
     for (;;) {
-        // When a refine controller is live, use timed pop so idle slots drive refine.
-        if (refine_ctrl) {
+        // When a refine controller OR sector streamer is live, use timed pop so
+        // idle slots drive refine/streaming steps.  Commands always win the pop.
+        if (refine_ctrl || sector_streamer) {
             matter_async::Command cmd;
             bool timed_out = false;
             bool got_cmd = commands.pop_wait(cmd, /*ms=*/50, timed_out);
 
             if (!got_cmd && !timed_out) {
-                // Shutdown + drained. Reset refine state and exit.
+                // Shutdown + drained. Reset state and exit.
                 refine_ctrl.reset();
                 refine_provider.reset();
                 refine_pending_upgrades_.clear();
+                sector_streamer.reset();
                 return;
             }
 
             if (got_cmd) {
-                // A command arrived — execute it (supersedes refine).
+                // A command arrived — execute it (supersedes refine/stream).
                 if (cmd.kind == matter_async::CommandKind::Shutdown) {
                     refine_ctrl.reset();
                     refine_provider.reset();
                     refine_pending_upgrades_.clear();
+                    sector_streamer.reset();
                     return;
                 }
                 // BakeAll/Reload: reset refine controller (will be rebuilt post-publish).
@@ -387,6 +451,7 @@ void WorldSession::Impl::worker_loop() {
                     refine_ctrl.reset();
                     refine_provider.reset();
                     refine_pending_upgrades_.clear();
+                    sector_streamer.reset();
                 }
                 bake_active.store(true, std::memory_order_release);
                 try {
@@ -424,13 +489,16 @@ void WorldSession::Impl::worker_loop() {
                 continue;
             }
 
-            // Timed out with no command — take ONE refine step.
-            // Invariant: refine_ctrl is live, no command is pending.
-            execute_refine_step();
+            // Timed out with no command — take ONE refine/stream step.
+            if (refine_ctrl) {
+                execute_refine_step();
+            } else if (sector_streamer) {
+                execute_sector_stream_step();
+            }
             continue;
         }
 
-        // No refine controller: block until next command (original behavior).
+        // No refine controller or sector streamer: block until next command.
         matter_async::Command cmd;
         if (!commands.pop(cmd)) return;   // shutdown + drained
         if (cmd.kind == matter_async::CommandKind::Shutdown) return;
@@ -1368,6 +1436,35 @@ void WorldSession::Impl::publish_pipeline(
         refine_ctrl = std::move(new_ctrl);
         printf("[refine] controller built: %zu tiles\n", refine_tile_count);
     }
+
+    // --- Phase C Task 9: world-kind session — SectorStreamer ------------------
+    // If install_graph set world_field (world-kind), build the streamer instead
+    // of (in addition to — world manifests have no asset-placed instances) refine.
+    // closed-world sessions: world_field == null → skip.
+    if (p.provider_ref && !is_cancelled() && world_field) {
+        refine_ctrl.reset();   // world sessions don't use refine
+
+        matter_stream::Config scfg;
+        // Default ring table: 48/120/300/800; env override for tests.
+        const char* rings_env = std::getenv("MATTER_STREAM_RINGS");
+        if (rings_env) {
+            // Simple format: "r0:rung0,r1:rung1,..." e.g. "32:3,80:2,160:1,400:0"
+            scfg.rings.clear();
+            const char* p2 = rings_env;
+            while (*p2) {
+                float r = std::atof(p2);
+                while (*p2 && *p2 != ':') ++p2;
+                if (*p2 == ':') ++p2;
+                int rg = std::atoi(p2);
+                while (*p2 && *p2 != ',') ++p2;
+                if (*p2 == ',') ++p2;
+                if (r > 0) scfg.rings.push_back({r, rg});
+            }
+        }
+        sector_streamer = std::make_unique<matter_stream::SectorStreamer>(scfg);
+        refine_provider = p.provider_ref;  // extend provider lifetime
+        printf("[stream] SectorStreamer built for world-kind session\n");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1588,6 +1685,15 @@ void WorldSession::Impl::execute_refine_step() {
     gpu_jobs.post(std::move(uj));
     // mark(Full) and RefineTileDone are deferred to the drain in step 0 of the next
     // execute_refine_step call, after the GL job has written result_slot.
+}
+
+// ---------------------------------------------------------------------------
+// WorldSession::Impl::execute_sector_stream_step
+// Phase C Task 9 WIP stub — full implementation pending.
+// ---------------------------------------------------------------------------
+void WorldSession::Impl::execute_sector_stream_step() {
+    if (!sector_streamer) return;
+    // TODO(task-9): update camera, service requests, bake sectors, publish/evict.
 }
 
 // ---------------------------------------------------------------------------
@@ -1984,6 +2090,12 @@ void WorldSession::regenerate(uint64_t world_seed) {
     matter_async::Command c;
     c.kind = matter_async::CommandKind::Reload;
     impl_->commands.push(std::move(c));
+}
+
+bool WorldSession::sea_level(float& out) const {
+    if (impl_->world_sea_level == std::numeric_limits<float>::lowest()) return false;
+    out = impl_->world_sea_level;
+    return true;
 }
 
 void WorldSession::tick() {
