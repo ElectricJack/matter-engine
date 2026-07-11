@@ -2,10 +2,13 @@
 #include "check.h"
 #include "../src/script_host.h"
 #include "../src/terrain_field.h"
+#include "../src/part_graph.h"
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
+#include <string>
+#include <vector>
 
 using namespace script_host;
 
@@ -71,17 +74,47 @@ int main() {
         CHECK(fsz > 256, "sector .part has non-trivial size (ground geometry present)");
     }
 
-    // scatter bake: rung >= 2 enables vegetation scatter (see WorldSector.js line 34).
-    // Provide a biome table with non-zero grass/rocks/pebbles counts so the
-    // scatter code paths execute even at this deterministic seed/tile.
-    // We cannot assert child instance geometry here (child hashes are not wired
-    // up in this harness), but we CAN assert the bake succeeds and its hash
-    // differs from a rung-0 bake of the same tile (rung is a hash input).
+    // scatter bake: rung >= 2 runs the vegetation/placeChild path (WorldSector.js:34).
+    // placeChild does a STRICT composite-key lookup (module \x1f canonical-params)
+    // with no bare-module fallback, so we must install the schema's full declared
+    // variant table (assetVariants: 28 entries). bake_source keys the table with
+    // child_params[i] verbatim, while placeChild normalizes its JS params via
+    // params_from_json->params_to_json — so we canonicalize each variant's params
+    // through the SAME functions, guaranteeing the keys match. Dummy child hashes
+    // are fine: the parent bake records instance refs alongside its terrain; it
+    // does not re-bake the children. Counts are supplied under every land biome so
+    // scatter fires whatever biome the tile center resolves to.
     {
+        auto canon = [](const std::string& raw) {
+            return raw.empty() ? std::string()
+                : part_graph::params_to_json(part_graph::params_from_json(raw));
+        };
+        std::vector<std::string> mods, cparams;
+        std::vector<uint64_t> hashes;
+        auto add = [&](const char* module, const std::string& raw) {
+            mods.push_back(module);
+            cparams.push_back(canon(raw));
+            hashes.push_back(0x1000ull + hashes.size());   // distinct dummy hashes
+        };
+        for (int s = 0; s < 8; ++s) add("Rock", "{\"seed\":" + std::to_string(s) + "}");
+        for (const char* sz : {"2.5", "4.0"})
+            for (int s = 0; s < 4; ++s)
+                add("Rock", "{\"seed\":" + std::to_string(s) + ",\"size\":" + sz + "}");
+        for (int s = 0; s < 6; ++s) add("Pebble", "{\"seed\":" + std::to_string(s) + "}");
+        for (int s = 0; s < 5; ++s) add("Grass", "{\"seed\":" + std::to_string(s) + "}");
+        add("Tree", "");
+        CHECK(mods.size() == 28, "installed full declared variant table");
+
+        BakeOptions opts;
+        opts.parts_dir = "/tmp/sector_bake_parts";
+        opts.world.field = &field;
         const char* p_scatter =
-            R"({"tx":0,"tz":0,"rung":2,"worldSeed":42,"fieldHash":"abc",)"
-            R"("biomes":"{\"meadow\":{\"rocks\":4,\"pebbles\":4,\"grass\":5}}"})";
-        BakeResult rs = bake(p_scatter);
+            R"({"tx":0,"tz":0,"rung":2,"worldSeed":42,"fieldHash":"abc","biomes":)"
+            R"("{\"meadow\":{\"rocks\":4,\"pebbles\":4,\"grass\":5,\"trees\":1},)"
+            R"(\"foothills\":{\"rocks\":4,\"pebbles\":4,\"grass\":5,\"trees\":1},)"
+            R"(\"mountains\":{\"rocks\":4,\"pebbles\":4,\"grass\":5,\"trees\":1}}"})";
+        BakeResult rs = host.bake_source(src, p_scatter, opts,
+            hashes.data(), hashes.size(), mods.data(), cparams.data());
         CHECK(rs.error.ok, rs.error.message.c_str());
         // rung is folded into the hash, so rung-2 must differ from rung-0
         CHECK(rs.resolved_hash != r0.resolved_hash, "scatter-rung hash differs from terrain-only rung");
