@@ -225,7 +225,13 @@ void GpuCuller::recompute_regions() {
                          ? total_xform_slots_
                          : xforms_cap_slots_ + xforms_cap_slots_ / 2;
         if (new_cap < total_xform_slots_) new_cap = total_xform_slots_;
-        if (max_ssbo_slots_ > 0 && new_cap > max_ssbo_slots_) new_cap = max_ssbo_slots_;
+        if (max_ssbo_slots_ > 0 && new_cap > max_ssbo_slots_) {
+            new_cap = max_ssbo_slots_;
+            if (new_cap < total_xform_slots_)
+                printf("GpuCuller: WARNING: xforms SSBO clamped to %u slots "
+                       "(need %u); rendering may be corrupt\n",
+                       new_cap, total_xform_slots_);
+        }
         if (new_cap == 0) new_cap = 1;   // keep valid GL object
 
         size_t new_bytes = (size_t)new_cap * 16 * sizeof(float);
