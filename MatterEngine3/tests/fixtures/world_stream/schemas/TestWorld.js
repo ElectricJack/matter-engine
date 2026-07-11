@@ -10,7 +10,7 @@ class TestWorld extends World {
     return { density: heightToDensity(height), moisture, relief, seaLevel: 0.0 };
   }
   biomes() {
-    return { meadow: { grass: 156, pebbles: 16, rocks: 2, trees: true },
+    return { meadow: { grass: 156, pebbles: 16, rocks: 2 },
              foothills: { grass: 39, rocks: 2 },
              mountains: { rocks: 1 }, ocean: {} };
   }

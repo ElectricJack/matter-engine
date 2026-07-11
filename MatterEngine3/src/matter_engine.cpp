@@ -806,6 +806,8 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         pp.load_msg_include_hash = true;
         pp.provider_ref          = provider;
         publish_pipeline(token, std::move(empty_manifest), pp);
+        // publish_pipeline replaces PartStore — re-apply transient scratch dir.
+        if (store) store->set_scratch_dir(provider->transient_dir());
         double publish_ms = std::chrono::duration<double, std::milli>(
             clk_t::now() - t_publish_start).count();
         double total_ms = std::chrono::duration<double, std::milli>(
@@ -2734,6 +2736,8 @@ bool WorldSession::poll_event(Event& out) {
 }
 
 const FrameStats& WorldSession::frame_stats() const {
+    impl_->stats.resident_sectors = impl_->sector_streamer
+        ? (uint32_t)impl_->sector_streamer->resident_count() : 0;
     return impl_->stats;
 }
 

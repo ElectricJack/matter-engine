@@ -68,20 +68,30 @@ int main() {
     // Use a small streaming ring for fast test.
     // (env MATTER_STREAM_RINGS is set by the run target to e.g. "32:3,80:2")
 
-    // 1. request_bake -> BakeFinished
+    // 1. request_bake -> two BakeFinished events:
+    //    (a) install complete (empty manifest published)
+    //    (b) first sectors streamed in (from execute_sector_stream_step)
     session->request_bake();
-    printf("waiting for BakeFinished (world-kind)...\n");
+    printf("waiting for BakeFinished #1 (install)...\n");
     if (!wait_for_bake_finished(*session, 120.0)) {
-        printf("FAIL: bake did not complete within 120s\n");
+        printf("FAIL: install bake did not complete within 120s\n");
         session.reset();
         CloseWindow();
         return 1;
     }
-    printf("BakeFinished received\n");
+    printf("BakeFinished #1 (install) received\n");
 
-    // Drive the streaming loop: pump GPU jobs and poke the session so sectors publish.
-    // The streaming worker ticks on its own, but we need to pump GL jobs.
-    for (int i = 0; i < 60; ++i) {
+    printf("waiting for BakeFinished #2 (first sectors)...\n");
+    if (!wait_for_bake_finished(*session, 120.0)) {
+        printf("FAIL: sector streaming did not complete within 120s\n");
+        session.reset();
+        CloseWindow();
+        return 1;
+    }
+    printf("BakeFinished #2 (streaming) received\n");
+
+    // Pump a few more frames to let GL publish jobs land.
+    for (int i = 0; i < 30; ++i) {
         session->pump_gpu_jobs(16.0f);
         session->tick();
     }
@@ -131,17 +141,24 @@ int main() {
     // rs2 may be equal if the rings are large enough, but should still be > 0.
     assert(rs2 > 0 && "resident_sectors > 0 after focus move");
 
-    // 5. regenerate(7) -> BakeFinished again
+    // 5. regenerate(7) -> two BakeFinished events again (install + streaming)
     printf("regenerate(7)...\n");
     session->regenerate(7);
     if (!wait_for_bake_finished(*session, 120.0)) {
-        printf("FAIL: regenerate bake did not complete within 120s\n");
+        printf("FAIL: regenerate install did not complete within 120s\n");
         session.reset();
         CloseWindow();
         return 1;
     }
-    // Pump to let sectors stream in.
-    for (int i = 0; i < 60; ++i) {
+    printf("regenerate install BakeFinished received\n");
+    if (!wait_for_bake_finished(*session, 120.0)) {
+        printf("FAIL: regenerate streaming did not complete within 120s\n");
+        session.reset();
+        CloseWindow();
+        return 1;
+    }
+    printf("regenerate streaming BakeFinished received\n");
+    for (int i = 0; i < 30; ++i) {
         session->pump_gpu_jobs(16.0f);
         session->tick();
     }
