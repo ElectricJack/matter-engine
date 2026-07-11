@@ -623,6 +623,7 @@ GPU_PIPELINE_CPP = \
     ../src/tileset_gtex.cpp ../src/tileset_bake_gpu.cpp \
     ../src/sector_grid.cpp ../src/lod_select.cpp \
     ../src/world_lights.cpp ../src/probe_volume.cpp \
+    ../src/probe_bricks.cpp \
     ../src/world_tracer.cpp ../src/probe_bake.cpp \
     ../src/shader_source.cpp \
     ../src/tileset_phase.cpp ../src/tileset_phase_gpu.cpp \

@@ -117,6 +117,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/tileset_gtex.cpp $(ME3_DIR)/src/tileset_bake_gpu.cpp \
               $(ME3_DIR)/src/sector_grid.cpp $(ME3_DIR)/src/lod_select.cpp \
               $(ME3_DIR)/src/world_lights.cpp $(ME3_DIR)/src/probe_volume.cpp \
+              $(ME3_DIR)/src/probe_bricks.cpp \
               $(ME3_DIR)/src/world_tracer.cpp $(ME3_DIR)/src/probe_bake.cpp \
               $(ME3_DIR)/src/shader_source.cpp \
               $(ME3_DIR)/src/tileset_phase.cpp $(ME3_DIR)/src/tileset_phase_gpu.cpp \

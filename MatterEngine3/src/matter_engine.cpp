@@ -35,6 +35,10 @@
 #include "sector_streamer.h"
 #include "terrain_field.h"
 
+// Phase C Task 5: probe brick store + bake for streamed worlds.
+#include "probe_bricks.h"
+#include "probe_bake.h"
+
 // Phase C Task 17: resolve/manifest cache for instant warm relaunch.
 #include "resolve_cache.h"
 #ifdef __linux__
@@ -56,6 +60,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <condition_variable>
 #include <mutex>
 #include <set>
 #include <sstream>
@@ -411,6 +416,30 @@ struct WorldSession::Impl {
         std::shared_ptr<std::atomic<int>> result; // 0=in-flight, 1=success, 2=fail
     };
     std::vector<PendingUpgrade> refine_pending_upgrades_;
+
+    // --- Phase C Task 5: per-sector probe bricks (streamed-world baked lighting) ---
+    // Probe thread bakes bricks with probe_bake over a WorldTracer of nearby
+    // resident sectors, stores them in probe_store, and composites a camera-
+    // centred window volume. The GL thread uploads the window when ready.
+    probe_bricks::BrickStore probe_store;
+    std::thread probe_thread;
+    std::mutex probe_mu;                    // guards probe_stop/probe_pending/probe_window
+    std::condition_variable probe_cv;
+    bool probe_stop = false;
+    struct BrickReq { int64_t tx, tz; int rung; };
+    std::vector<BrickReq> probe_pending;
+    probe_volume::ProbeVolume probe_window;         // pending composited window
+    std::atomic<bool> probe_window_ready{false};
+    float probe_center[3] = {0, 0, 0};              // probe-thread-only: last composite centre
+    uint64_t probe_epoch = 0;                        // probe-thread-only: tracer instance fingerprint
+    std::unique_ptr<world_tracer::WorldTracer> probe_tracer;   // probe-thread-only
+
+    void probe_thread_start();
+    void probe_thread_join();
+    void probe_request_brick(int64_t tx, int64_t tz, int rung);
+    void probe_note_evicted_locked(int64_t tx, int64_t tz);   // caller holds sector_map_mutex
+    void probe_thread_loop();
+    void probe_composite_now(float cx, float cy, float cz);
 };
 
 // ---------------------------------------------------------------------------
@@ -452,6 +481,7 @@ void WorldSession::Impl::worker_loop() {
                 refine_ctrl.reset();
                 refine_provider.reset();
                 refine_pending_upgrades_.clear();
+                probe_thread_join();  // Phase C Task 5: stop before streamer dies
                 sector_streamer.reset();
                 return;
             }
@@ -462,6 +492,7 @@ void WorldSession::Impl::worker_loop() {
                     refine_ctrl.reset();
                     refine_provider.reset();
                     refine_pending_upgrades_.clear();
+                    probe_thread_join();  // Phase C Task 5: stop before streamer dies
                     sector_streamer.reset();
                     return;
                 }
@@ -473,6 +504,7 @@ void WorldSession::Impl::worker_loop() {
                     refine_pending_upgrades_.clear();
                     // Phase C Task 9: drain sector evictions before destroying streamer.
                     if (sector_streamer) {
+                        probe_thread_join();  // Phase C Task 5: stop before streamer dies
                         sector_streamer->clear();
                         drain_sector_evictions();
                     }
@@ -1546,6 +1578,7 @@ void WorldSession::Impl::publish_pipeline(
         }
         scfg.max_inflight = 16;
         sector_streamer = std::make_unique<matter_stream::SectorStreamer>(scfg);
+        probe_thread_start();  // Phase C Task 5: start probe brick bake thread
         refine_provider = p.provider_ref;  // extend provider lifetime
         printf("[stream] SectorStreamer built for world-kind session\n");
     }
@@ -2036,6 +2069,7 @@ void WorldSession::Impl::drain_sector_evictions() {
             if (provider) provider->release_transient(part_hash);
 
             sector_map.erase(it);
+            probe_note_evicted_locked(ev.tx, ev.tz);  // Phase C Task 5
         }
         return true;
     };
@@ -2099,6 +2133,7 @@ void WorldSession::Impl::execute_sector_stream_step() {
                     if (provider) provider->release_transient(part_hash);
 
                     sector_map.erase(it);
+                    probe_note_evicted_locked(ev.tx, ev.tz);  // Phase C Task 5
                 }
                 return true;
             };
@@ -2222,6 +2257,9 @@ void WorldSession::Impl::execute_sector_stream_step() {
                 sector_map[sk] = SectorEntry{inst_id, sector_hash};
             }
 
+            // Phase C Task 5: request a probe brick for this sector.
+            probe_request_brick(pub_tx, pub_tz, pub_rung);
+
             // Grow composer cap if needed.
             if (composer && store) {
                 size_t cap_needed = state.entries().size() + 16;
@@ -2241,6 +2279,202 @@ void WorldSession::Impl::execute_sector_stream_step() {
         ev.type   = EventType::BakeFinished;
         ev.errors = 0;
         emit_event(std::move(ev));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WorldSession::Impl probe brick thread — Phase C Task 5
+// Bakes per-sector probe bricks and composites a camera-centred window volume
+// for the GL thread to upload. All functions here are private to Impl.
+// ---------------------------------------------------------------------------
+
+void WorldSession::Impl::probe_thread_start() {
+    {
+        std::lock_guard<std::mutex> lk(probe_mu);
+        probe_stop = false;
+    }
+    if (!probe_thread.joinable())
+        probe_thread = std::thread([this] { probe_thread_loop(); });
+}
+
+void WorldSession::Impl::probe_thread_join() {
+    {
+        std::lock_guard<std::mutex> lk(probe_mu);
+        probe_stop = true;
+    }
+    probe_cv.notify_all();
+    if (probe_thread.joinable()) probe_thread.join();
+    probe_tracer.reset();
+    probe_store.clear();
+    {
+        std::lock_guard<std::mutex> lk(probe_mu);
+        probe_pending.clear();
+    }
+    probe_window_ready = false;
+}
+
+void WorldSession::Impl::probe_request_brick(int64_t tx, int64_t tz, int rung) {
+    if (rung < 1) return;                       // far ring: flat ambient
+    if (probe_store.has(tx, tz)) return;        // baked once per residency
+    {
+        std::lock_guard<std::mutex> lk(probe_mu);
+        for (const auto& r : probe_pending)
+            if (r.tx == tx && r.tz == tz) return;
+        probe_pending.push_back(BrickReq{tx, tz, rung});
+    }
+    probe_cv.notify_one();
+}
+
+void WorldSession::Impl::probe_note_evicted_locked(int64_t tx, int64_t tz) {
+    // Only drop the brick when NO rung of this sector remains resident
+    // (rung upgrades evict the old rung while the new one stays).
+    for (int r = 0; r <= 3; ++r)
+        if (sector_map.count(SectorKey{tx, tz, r})) return;
+    if (probe_store.erase(tx, tz))
+        fprintf(stderr, "[probe] brick freed (%lld,%lld)\n",
+                (long long)tx, (long long)tz);
+    std::lock_guard<std::mutex> lk(probe_mu);
+    for (size_t i = 0; i < probe_pending.size(); ++i)
+        if (probe_pending[i].tx == tx && probe_pending[i].tz == tz) {
+            probe_pending.erase(probe_pending.begin() + i);
+            break;
+        }
+}
+
+void WorldSession::Impl::probe_composite_now(float cx, float cy, float cz) {
+    probe_bricks::WindowParams wp;
+    probe_volume::ProbeVolume vol;
+    size_t covered = probe_store.composite(cx, cy, cz, manifest.lights,
+                                           world_sector_size, wp, vol);
+    if (covered == 0) return;
+    {
+        std::lock_guard<std::mutex> lk(probe_mu);
+        probe_window = std::move(vol);
+    }
+    probe_center[0] = cx; probe_center[1] = cy; probe_center[2] = cz;
+    probe_window_ready = true;
+}
+
+void WorldSession::Impl::probe_thread_loop() {
+    const world_lights::WorldLights lights = manifest.lights;
+    const float S = world_sector_size;
+    for (;;) {
+        BrickReq req{0, 0, -1};
+        bool have_req = false;
+        float fx, fy, fz;
+        {
+            std::unique_lock<std::mutex> lk(probe_mu);
+            // 500ms tick doubles as the composite/upload throttle.
+            probe_cv.wait_for(lk, std::chrono::milliseconds(500),
+                              [&] { return probe_stop || !probe_pending.empty(); });
+            if (probe_stop) return;
+            {
+                std::lock_guard<std::mutex> fl(focus_mutex);
+                fx = focus[0]; fy = focus[1]; fz = focus[2];
+            }
+            if (!probe_pending.empty()) {
+                size_t best = 0; float bd = 1e30f;   // nearest-to-camera first
+                for (size_t i = 0; i < probe_pending.size(); ++i) {
+                    float dx = ((float)probe_pending[i].tx + 0.5f) * S - fx;
+                    float dz = ((float)probe_pending[i].tz + 0.5f) * S - fz;
+                    float d = dx * dx + dz * dz;
+                    if (d < bd) { bd = d; best = i; }
+                }
+                req = probe_pending[best];
+                probe_pending.erase(probe_pending.begin() + best);
+                have_req = true;
+            }
+        }
+
+        if (!have_req) {
+            // Idle tick: re-composite when the camera drifted > 2 cells.
+            probe_bricks::WindowParams wp;
+            float dx = fx - probe_center[0], dy = fy - probe_center[1],
+                  dz = fz - probe_center[2];
+            if (probe_store.count() > 0 &&
+                dx * dx + dy * dy + dz * dz > 4.0f * wp.cell * wp.cell)
+                probe_composite_now(fx, fy, fz);
+            continue;
+        }
+        if (probe_store.has(req.tx, req.tz)) continue;
+
+        // ---- gather tracer instances: resident sectors within 12 sectors ----
+        const int64_t R = 12;
+        std::vector<world_tracer::TraceInstance> inst;
+        uint64_t fp = 1469598103934665603ull;
+        {
+            std::lock_guard<std::mutex> lk(sector_map_mutex);
+            for (const auto& kv : sector_map) {
+                if (std::llabs(kv.first.tx - req.tx) > R ||
+                    std::llabs(kv.first.tz - req.tz) > R) continue;
+                world_tracer::TraceInstance ti;
+                ti.part_hash = kv.second.part_hash;
+                std::memset(ti.transform, 0, sizeof(ti.transform));
+                ti.transform[0] = ti.transform[5] = ti.transform[10] = ti.transform[15] = 1.0f;
+                ti.transform[3]  = (float)kv.first.tx * S;
+                ti.transform[11] = (float)kv.first.tz * S;
+                inst.push_back(ti);
+                fp = (fp ^ kv.second.part_hash) * 1099511628211ull;
+                fp = (fp ^ (uint64_t)(kv.first.tx * 73856093ll ^ kv.first.tz * 19349663ll))
+                     * 1099511628211ull;
+            }
+        }
+        if (inst.empty() || !world_field) continue;
+
+        if (!probe_tracer || fp != probe_epoch) {
+            auto tr = std::make_unique<world_tracer::WorldTracer>();
+            if (provider) tr->set_scratch_dir(provider->transient_dir());
+            std::string terr;
+            if (!tr->build(engine->cache_root, inst, terr)) {
+                fprintf(stderr, "[probe] tracer build failed (%lld,%lld): %s\n",
+                        (long long)req.tx, (long long)req.tz, terr.c_str());
+                continue;
+            }
+            probe_tracer = std::move(tr);
+            probe_epoch = fp;
+        }
+
+        // ---- vertical bounds: field heights over a 5x5 sample of the sector ----
+        float y_lo = 1e30f, y_hi = -1e30f;
+        for (int i = 0; i <= 4; ++i)
+            for (int j = 0; j <= 4; ++j) {
+                float h = world_field->height_at(((float)req.tx + i * 0.25f) * S,
+                                                 ((float)req.tz + j * 0.25f) * S);
+                y_lo = std::min(y_lo, h);
+                y_hi = std::max(y_hi, h);
+            }
+
+        probe_bake::BakeParams bp;
+        bp.cell = (req.rung >= 2) ? 4.0f : 8.0f;   // near ring dense, mid ring half
+        bp.has_bounds = true;
+        bp.bounds_min[0] = (float)req.tx * S;  bp.bounds_max[0] = (float)(req.tx + 1) * S;
+        bp.bounds_min[2] = (float)req.tz * S;  bp.bounds_max[2] = (float)(req.tz + 1) * S;
+        bp.bounds_min[1] = y_lo - 8.0f;        bp.bounds_max[1] = y_hi + 24.0f;  // canopy pad
+        bp.threads = 2;   // sector bakes own the big cores
+
+        auto t0 = std::chrono::steady_clock::now();
+        probe_volume::ProbeVolume brick = probe_bake::bake_probes(*probe_tracer, lights, bp);
+        float secs = std::chrono::duration<float>(
+                         std::chrono::steady_clock::now() - t0).count();
+        if (!brick.valid()) {
+            fprintf(stderr, "[probe] brick bake FAILED (%lld,%lld r%d)\n",
+                    (long long)req.tx, (long long)req.tz, req.rung);
+            continue;
+        }
+        // Evicted mid-bake? Discard — otherwise the brick would linger forever
+        // (its eviction notification already ran).
+        {
+            std::lock_guard<std::mutex> lk(sector_map_mutex);
+            bool resident = false;
+            for (int r = 0; r <= 3 && !resident; ++r)
+                resident = sector_map.count(SectorKey{req.tx, req.tz, r}) != 0;
+            if (!resident) continue;
+        }
+        fprintf(stderr, "[probe] brick (%lld,%lld r%d) %dx%dx%d in %.2fs\n",
+                (long long)req.tx, (long long)req.tz, req.rung,
+                brick.grid.nx, brick.grid.ny, brick.grid.nz, secs);
+        probe_store.put(req.tx, req.tz, std::move(brick));
+        probe_composite_now(fx, fy, fz);
     }
 }
 
@@ -2575,6 +2809,10 @@ WorldSession::~WorldSession() {
     if (impl_->worker.joinable()) impl_->worker.join();
     impl_->gpu_jobs.pump(1e9);
 
+    // Phase C Task 5: join probe thread in case the worker exited without
+    // calling probe_thread_join() (e.g., session never baked a world).
+    impl_->probe_thread_join();
+
     viewer::release_probe_textures(impl_->probe_tex);
     impl_->raster.reset();
     impl_->composer.reset();
@@ -2708,6 +2946,9 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
     // Phase C Task 9: update resident_sectors stat each frame.
     impl_->stats.resident_sectors = impl_->sector_streamer
         ? (uint32_t)impl_->sector_streamer->resident_count() : 0;
+    // Phase C Task 5: probe brick count.
+    impl_->stats.probe_bricks = impl_->sector_streamer
+        ? (uint32_t)impl_->probe_store.count() : 0;
 
     // Apply option defaults.
     float budget = opts.pixel_budget;
@@ -2764,6 +3005,24 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
 
     } else {
         // --- GpuDriven path (mirrors main.cpp lines ~392–431 + ~436–451) ---
+
+        // Phase C Task 5: upload latest composited probe window (streamed world only).
+        if (impl_->sector_streamer && impl_->probe_window_ready.exchange(false)) {
+            probe_volume::ProbeVolume vol;
+            {
+                std::lock_guard<std::mutex> lk(impl_->probe_mu);
+                vol = std::move(impl_->probe_window);
+            }
+            if (vol.valid()) {
+                viewer::release_probe_textures(impl_->probe_tex);
+                impl_->probe_tex = viewer::upload_probe_textures(vol);
+                impl_->raster->set_probes(impl_->probe_tex);
+                impl_->stats.probe_dims[0] = vol.grid.nx;
+                impl_->stats.probe_dims[1] = vol.grid.ny;
+                impl_->stats.probe_dims[2] = vol.grid.nz;
+            }
+        }
+
         auto t0 = std::chrono::steady_clock::now();
         auto resolved = resolver.resolve(impl_->state, impl_->lods, cam_pos);
         auto t1 = std::chrono::steady_clock::now();
@@ -2832,7 +3091,13 @@ bool WorldSession::poll_event(Event& out) {
 const FrameStats& WorldSession::frame_stats() const {
     impl_->stats.resident_sectors = impl_->sector_streamer
         ? (uint32_t)impl_->sector_streamer->resident_count() : 0;
+    impl_->stats.probe_bricks = impl_->sector_streamer
+        ? (uint32_t)impl_->probe_store.count() : 0;
     return impl_->stats;
+}
+
+bool WorldSession::debug_probe_brick(int64_t tx, int64_t tz) const {
+    return impl_->probe_store.has(tx, tz);
 }
 
 void WorldSession::pump_gpu_jobs(float ms_budget) {

@@ -100,6 +100,21 @@ int main() {
     printf("resident_sectors after initial load: %u\n", rs1);
     assert(rs1 > 0 && "resident_sectors > 0 after first stream cycle");
 
+    // Probe bricks appear for resident sectors (bounded poll; bakes are async).
+    auto poll_brick = [&](int64_t tx, int64_t tz, bool want, double timeout_s) {
+        double t0 = GetTime();
+        while (GetTime() - t0 < timeout_s) {
+            session->pump_gpu_jobs(16.0f);
+            session->tick();
+            if (session->debug_probe_brick(tx, tz) == want) return true;
+        }
+        return false;
+    };
+    bool brick0 = poll_brick(0, 0, true, 90.0);
+    printf("probe brick (0,0) appeared: %d\n", (int)brick0);
+    assert(brick0 && "probe brick baked for resident sector (0,0)");
+    assert(session->frame_stats().probe_bricks > 0 && "probe_bricks stat > 0");
+
     // 2. sea_level()
     float sl = -999.0f;
     bool has_sl = session->sea_level(sl);
@@ -140,6 +155,12 @@ int main() {
     printf("resident_sectors after focus move: %u (was %u)\n", rs2, rs1);
     // rs2 may be equal if the rings are large enough, but should still be > 0.
     assert(rs2 > 0 && "resident_sectors > 0 after focus move");
+
+    // Bricks are freed when the sector column fully evicts.
+    // Focus moved to (200,0,200) — sector (0,0) is outside the 80m outer ring.
+    bool brick0_gone = poll_brick(0, 0, false, 60.0);
+    printf("probe brick (0,0) freed after eviction: %d\n", (int)brick0_gone);
+    assert(brick0_gone && "probe brick freed on full eviction");
 
     // 5. regenerate(7) -> two BakeFinished events again (install + streaming)
     printf("regenerate(7)...\n");
