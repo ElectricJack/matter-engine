@@ -85,7 +85,7 @@ obj_of = $(OBJDIR)/$(1)/$(call mangle,$(2)).o
 #
 # COMMON_MSL_FULL_SRC — full mesher + BLAS/TLAS; used by targets that invoke
 #   the marching-cubes / mesh-build pipeline: script, graph-integration, shlib,
-#   example, gallery, treebake, meadow, meadow-check, grasslod, stressforest,
+#   example, gallery, treebake, grasslod, stressforest,
 #   viewer-logic, tilesetbake.
 #
 # COMMON_MSL_C     — full C-source set (surface.c et al.) used alongside
@@ -322,23 +322,83 @@ ASYNCQ_CPP = async_queue_tests.cpp ../src/async_bake.cpp
 TILESETGTEX_TARGET = tileset_gtex_tests
 TILESETGTEX_CPP    = tileset_gtex_tests.cpp ../src/tileset_gtex.cpp
 
+# Phase C Task 4 — RefineController tile-pairing + priority/eviction (pure CPU, def flavor).
+REFINECTL_TARGET = refine_controller_tests
+REFINECTL_CPP    = refine_controller_tests.cpp ../src/refine_controller.cpp \
+                   ../src/part_graph_snapshot.cpp
+
+# Phase C Task 8 — SectorStreamer (pure CPU, no JS, no GL).
+SECTORSTREAM_TARGET = sector_streamer_tests
+SECTORSTREAM_CPP    = sector_streamer_tests.cpp ../src/sector_streamer.cpp
+
+# Phase C Task 17 — resolve/manifest cache (headless, no GL needed).
+RESOLVECACHE_TARGET = resolve_cache_tests
+RESOLVECACHE_CPP    = resolve_cache_tests.cpp \
+                      ../src/resolve_cache.cpp \
+                      ../src/part_graph.cpp \
+                      ../src/part_graph_snapshot.cpp \
+                      ../src/part_asset_v2.cpp \
+                      $(COMMON_MSL_BLAS_SRC)
+RESOLVECACHE_C      = $(MSL)/material_registry.c
+
 MODAPPLY_TARGET = modifier_apply_tests
 MODAPPLY_CPP = modifier_apply_tests.cpp ../src/modifier_apply.cpp \
                ../src/retopo_blacklist.cpp \
                $(MSL)/mesh_smooth.cpp $(MSL)/mesh_simplifier.cpp $(MSL)/mesh_indexed.cpp
+
+# Phase C Task 3 — probe brick store + trilinear window compositor (pure CPU, no JS, no GL).
+PROBEBRICK_TARGET = probe_brick_tests
+PROBEBRICK_CPP    = probe_brick_tests.cpp ../src/probe_bricks.cpp ../src/probe_volume.cpp \
+                    $(COMMON_MSL_BLAS_SRC)
+PROBEBRICK_C      = $(MSL)/material_registry.c
+
+# Phase C Task 3 — terrain field program interpreter (pure CPU, no JS, no GL).
+TERRAINFIELD_TARGET = terrain_field_tests
+TERRAINFIELD_CPP    = terrain_field_tests.cpp ../src/terrain_field.cpp
+
+# Phase C Task 5 — terrain mesher (pure CPU: terrain_field + terrain_mesher, no JS, no GL).
+TERRAINMESH_TARGET = terrain_mesher_tests
+TERRAINMESH_CPP    = terrain_mesher_tests.cpp ../src/terrain_field.cpp ../src/terrain_mesher.cpp
+
+# Phase C Task 5 — terrain verb (sh flavor: bake_source + WorldBinding + terrainVolume).
+TERRAINVERB_TARGET = terrain_verb_tests
+TERRAINVERB_CPP = terrain_verb_tests.cpp ../src/part_graph.cpp \
+                  ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+                  ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
+                  ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
+                  ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                  ../src/terrain_field.cpp ../src/terrain_mesher.cpp \
+                  ../src/pf_bindings.cpp \
+                  ../../ParticleFlowLib/src/pf_math.cpp ../../ParticleFlowLib/src/pf_sim.cpp \
+                  ../../ParticleFlowLib/src/pf_fields.cpp ../../ParticleFlowLib/src/pf_path_recorder.cpp \
+                  $(COMMON_MSL_FULL_SRC)
+TERRAINVERB_C = $(COMMON_MSL_C)
+
+# Phase C Task 7 — WorldSector.js + native world query verbs (sh flavor).
+SECTORBAKE_TARGET = sector_bake_tests
+SECTORBAKE_CPP = sector_bake_tests.cpp ../src/part_graph.cpp \
+                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
+                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
+                 ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                 $(TERRAIN_SRC) \
+                 $(PF_CPP) \
+                 $(COMMON_MSL_FULL_SRC)
+SECTORBAKE_C = $(COMMON_MSL_C)
 
 # Simple standalone targets (they use tiny custom flag sets — kept as-is with
 # per-target rules below, no shared objects).
 
 # ===== flavor sh (script-host) =========================================
 # script_host_tests uses just def+QJS_INC (no MATTER_HAVE_SCRIPT_HOST). But
-# the graph_integration/example/meadow/gallery/treebake/grasslod/stressforest
+# the graph_integration/example/gallery/treebake/grasslod/stressforest
 # family all use -DMATTER_HAVE_SCRIPT_HOST + QJS_INC.
 SCRIPT_TARGET = script_host_tests
-SCRIPT_CPP = script_host_tests.cpp ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+SCRIPT_CPP = script_host_tests.cpp ../src/part_graph.cpp ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
              ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
              ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
              ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+             $(TERRAIN_SRC) \
              ../src/pf_bindings.cpp \
              ../../ParticleFlowLib/src/pf_math.cpp ../../ParticleFlowLib/src/pf_sim.cpp \
              ../../ParticleFlowLib/src/pf_fields.cpp ../../ParticleFlowLib/src/pf_path_recorder.cpp \
@@ -359,12 +419,17 @@ PF_CPP = ../src/pf_bindings.cpp \
          $(PF_LIB)/src/pf_fields.cpp \
          $(PF_LIB)/src/pf_path_recorder.cpp
 
+# any target that links dsl_bindings.cpp must also link the terrain sources
+# (dsl_bindings.cpp now registers the terrainVolume verb which calls mesh_sector)
+TERRAIN_SRC = ../src/terrain_field.cpp ../src/terrain_mesher.cpp
+
 GRAPH_INT_TARGET = part_graph_integration_tests
 GRAPH_INT_CPP = part_graph_integration_tests.cpp ../src/part_graph.cpp \
                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
                 ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                $(TERRAIN_SRC) \
                 $(PF_CPP) \
                 $(COMMON_MSL_FULL_SRC)
 GRAPH_INT_C   = $(COMMON_MSL_C)
@@ -380,6 +445,7 @@ EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp \
               ../src/sector_grid.cpp ../src/lod_select.cpp \
               ../src/modifier_apply.cpp $(MSL)/mesh_smooth.cpp \
               $(MSL)/mesh_transform.cpp \
+              $(TERRAIN_SRC) \
               $(PF_CPP) \
               $(COMMON_MSL_FULL_SRC)
 EXAMPLE_C   = $(COMMON_MSL_C)
@@ -389,12 +455,6 @@ GALLERY_CPP = gallery_bake_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_C
 
 TREEBAKE_TARGET = tree_bake_check
 TREEBAKE_CPP = tree_bake_check.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
-
-MEADOW_TARGET = meadow_bake_tests
-MEADOW_CPP = meadow_bake_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
-
-MEADOWCHECK_TARGET = meadow_bake_check
-MEADOWCHECK_CPP = meadow_bake_check.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 
 ROCKPROF_TARGET = rock_bake_profile
 ROCKPROF_CPP = rock_bake_profile.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
@@ -424,22 +484,57 @@ TILESETBAKE_CPP = tileset_bake_tests.cpp ../src/part_graph.cpp \
                   ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                   ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
                   ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                  $(TERRAIN_SRC) \
                   $(PF_CPP) \
                   $(COMMON_MSL_FULL_SRC)
 TILESETBAKE_C   = $(COMMON_MSL_C)
 
-# ===== flavor qjs (script_host_tests + tileset_dsl_tests) ===============
+# ===== flavor qjs (script_host_tests + tileset_dsl_tests + terrainnoise) ===
 # NOTE: script_host_tests originally compiled with CFLAGS + INCLUDE_PATHS +
 # QJS_INC (no -DMATTER_HAVE_SCRIPT_HOST). That maps to `qjs`, not `sh`.
 TILESETDSL_TARGET = tileset_dsl_tests
 TILESETDSL_CPP = tileset_dsl_tests.cpp $(filter-out script_host_tests.cpp, $(SCRIPT_CPP))
 
+# Phase C Task 1: terrain noise contract (qjs flavor — module_resolver + QJS only).
+TERRAINNOISE_TARGET = terrain_noise_tests
+TERRAINNOISE_CPP = terrain_noise_tests.cpp ../src/module_resolver.cpp
+
+# Phase C Task 4 — eval_world: World builder DSL + ScriptHost::eval_world (sh flavor).
+EVALWORLD_TARGET = eval_world_tests
+EVALWORLD_CPP = eval_world_tests.cpp ../src/part_graph.cpp \
+                ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+                ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
+                ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
+                ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                $(TERRAIN_SRC) \
+                ../src/pf_bindings.cpp \
+                ../../ParticleFlowLib/src/pf_math.cpp ../../ParticleFlowLib/src/pf_sim.cpp \
+                ../../ParticleFlowLib/src/pf_fields.cpp ../../ParticleFlowLib/src/pf_path_recorder.cpp \
+                $(COMMON_MSL_FULL_SRC)
+EVALWORLD_C = $(COMMON_MSL_C)
+
+# Phase C Task 1: fold cache in ScriptHost (sh flavor).
+FOLDCACHE_TARGET = fold_cache_tests
+FOLDCACHE_CPP = fold_cache_tests.cpp ../src/part_graph.cpp \
+                ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+                ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
+                ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
+                ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                $(TERRAIN_SRC) \
+                ../src/pf_bindings.cpp \
+                ../../ParticleFlowLib/src/pf_math.cpp ../../ParticleFlowLib/src/pf_sim.cpp \
+                ../../ParticleFlowLib/src/pf_fields.cpp ../../ParticleFlowLib/src/pf_path_recorder.cpp \
+                $(COMMON_MSL_FULL_SRC)
+FOLDCACHE_C = $(COMMON_MSL_C)
+
 # ===== flavor sp2 (SP2_SCRIPT_HOST) =====================================
 SHLIB_TARGET = shared_lib_tests
 SHLIB_CPP = shared_lib_tests.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
+            ../src/part_graph.cpp \
             ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \
             ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
             ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+            $(TERRAIN_SRC) \
             $(PF_CPP) \
             $(COMMON_MSL_FULL_SRC)
 SHLIB_C   = $(COMMON_MSL_C)
@@ -483,6 +578,7 @@ RETOPO_INT_CPP = retopo_integration_tests.cpp \
                  $(MSL)/mesh_retopo.cpp \
                  $(MSL)/mesh_smooth.cpp \
                  $(MSL)/mesh_transform.cpp \
+                 $(TERRAIN_SRC) \
                  $(PF_CPP) \
                  $(COMMON_MSL_FULL_SRC)
 RETOPO_INT_C   = $(COMMON_MSL_C)
@@ -508,7 +604,10 @@ GPU_RENDER_CPP = \
     ../src/live_edit.cpp \
     ../src/live_edit_prod.cpp \
     ../src/inotify_watcher.cpp \
-    ../src/part_graph_snapshot.cpp
+    ../src/part_graph_snapshot.cpp \
+    ../src/refine_controller.cpp \
+    ../src/resolve_cache.cpp \
+    ../src/sector_streamer.cpp
 
 GPU_PIPELINE_CPP = \
     ../src/part_graph.cpp \
@@ -524,6 +623,7 @@ GPU_PIPELINE_CPP = \
     ../src/tileset_gtex.cpp ../src/tileset_bake_gpu.cpp \
     ../src/sector_grid.cpp ../src/lod_select.cpp \
     ../src/world_lights.cpp ../src/probe_volume.cpp \
+    ../src/probe_bricks.cpp \
     ../src/world_tracer.cpp ../src/probe_bake.cpp \
     ../src/shader_source.cpp \
     ../src/tileset_phase.cpp ../src/tileset_phase_gpu.cpp \
@@ -531,6 +631,7 @@ GPU_PIPELINE_CPP = \
     ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
     ../src/tileset_bake_primary.cpp ../src/tileset_bake_ao.cpp \
     ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+    $(TERRAIN_SRC) \
     $(PF_CPP)
 
 GPU_MSL_CPP = \
@@ -567,20 +668,29 @@ def_CPP_SRCS := $(sort \
     $(SHADER_SOURCE_CPP) \
     $(ASYNCQ_CPP) \
     $(TILESETGTEX_CPP) \
-    $(MODAPPLY_CPP))
+    $(REFINECTL_CPP) \
+    $(SECTORSTREAM_CPP) \
+    $(RESOLVECACHE_CPP) \
+    $(MODAPPLY_CPP) \
+    $(TERRAINFIELD_CPP) \
+    $(TERRAINMESH_CPP) \
+    $(PROBEBRICK_CPP))
 
 qjs_CPP_SRCS := $(sort \
     $(SCRIPT_CPP) \
     $(MODBAKE_CPP) \
-    $(TILESETDSL_CPP))
+    $(TILESETDSL_CPP) \
+    $(TERRAINNOISE_CPP))
 
 sh_CPP_SRCS := $(sort \
+    $(EVALWORLD_CPP) \
+    $(TERRAINVERB_CPP) \
+    $(SECTORBAKE_CPP) \
+    $(FOLDCACHE_CPP) \
     $(GRAPH_INT_CPP) \
     $(EXAMPLE_CPP) \
     $(GALLERY_CPP) \
     $(TREEBAKE_CPP) \
-    $(MEADOW_CPP) \
-    $(MEADOWCHECK_CPP) \
     $(ROCKPROF_CPP) \
     $(GRASSLOD_CPP) \
     $(STRESSFOREST_CPP) \
@@ -598,10 +708,15 @@ gpu_CPP_SRCS := $(sort \
     tileset_load_tests.cpp \
     api_tests.cpp \
     async_bake_tests.cpp \
+    demand_bake_tests.cpp \
+    transient_tests.cpp \
+    release_part_tests.cpp \
+    refine_loop_tests.cpp \
+    world_stream_tests.cpp \
     $(GPU_ALL_CPP))
 
 # C-source flavors. Union across binaries that use them.
-mslc_C_SRCS := $(sort $(COMMON_MSL_C))
+mslc_C_SRCS := $(sort $(COMMON_MSL_C) $(PROBEBRICK_C))
 qjsc_C_SRCS := $(sort $(QJS_C))
 
 # Object lists per flavor.
@@ -650,18 +765,27 @@ POLYTRI_OBJS = $(call obj_list,def,$(POLYTRI_CPP))
 SHADER_SOURCE_OBJS = $(call obj_list,def,$(SHADER_SOURCE_CPP))
 ASYNCQ_OBJS = $(call obj_list,def,$(ASYNCQ_CPP))
 TILESETGTEX_OBJS = $(call obj_list,def,$(TILESETGTEX_CPP))
+REFINECTL_OBJS = $(call obj_list,def,$(REFINECTL_CPP))
+SECTORSTREAM_OBJS = $(call obj_list,def,$(SECTORSTREAM_CPP))
+RESOLVECACHE_OBJS = $(call obj_list,def,$(RESOLVECACHE_CPP)) $(call obj_list,mslc,$(RESOLVECACHE_C))
 MODAPPLY_OBJS = $(call obj_list,def,$(MODAPPLY_CPP))
+TERRAINFIELD_OBJS = $(call obj_list,def,$(TERRAINFIELD_CPP))
+TERRAINMESH_OBJS  = $(call obj_list,def,$(TERRAINMESH_CPP))
+PROBEBRICK_OBJS   = $(call obj_list,def,$(PROBEBRICK_CPP)) $(call obj_list,mslc,$(PROBEBRICK_C))
+TERRAINVERB_OBJS  = $(call obj_list,sh,$(TERRAINVERB_CPP)) $(call obj_list,mslc,$(TERRAINVERB_C)) $(qjsc_C_OBJS)
+SECTORBAKE_OBJS   = $(call obj_list,sh,$(SECTORBAKE_CPP)) $(call obj_list,mslc,$(SECTORBAKE_C)) $(qjsc_C_OBJS)
 
 SCRIPT_OBJS = $(call obj_list,qjs,$(SCRIPT_CPP)) $(call obj_list,mslc,$(SCRIPT_C)) $(qjsc_C_OBJS)
 MODBAKE_OBJS = $(call obj_list,qjs,$(MODBAKE_CPP)) $(call obj_list,mslc,$(MODBAKE_C)) $(qjsc_C_OBJS)
 TILESETDSL_OBJS = $(call obj_list,qjs,$(TILESETDSL_CPP)) $(call obj_list,mslc,$(SCRIPT_C)) $(qjsc_C_OBJS)
+TERRAINNOISE_OBJS = $(call obj_list,qjs,$(TERRAINNOISE_CPP)) $(qjsc_C_OBJS)
+EVALWORLD_OBJS = $(call obj_list,sh,$(EVALWORLD_CPP)) $(call obj_list,mslc,$(EVALWORLD_C)) $(qjsc_C_OBJS)
+FOLDCACHE_OBJS = $(call obj_list,sh,$(FOLDCACHE_CPP)) $(call obj_list,mslc,$(FOLDCACHE_C)) $(qjsc_C_OBJS)
 
 GRAPH_INT_OBJS = $(call obj_list,sh,$(GRAPH_INT_CPP)) $(call obj_list,mslc,$(GRAPH_INT_C)) $(qjsc_C_OBJS)
 EXAMPLE_OBJS = $(call obj_list,sh,$(EXAMPLE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 GALLERY_OBJS = $(call obj_list,sh,$(GALLERY_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 TREEBAKE_OBJS = $(call obj_list,sh,$(TREEBAKE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
-MEADOW_OBJS = $(call obj_list,sh,$(MEADOW_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
-MEADOWCHECK_OBJS = $(call obj_list,sh,$(MEADOWCHECK_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 ROCKPROF_OBJS = $(call obj_list,sh,$(ROCKPROF_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 GRASSLOD_OBJS = $(call obj_list,sh,$(GRASSLOD_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 STRESSFOREST_OBJS = $(call obj_list,sh,$(STRESSFOREST_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
@@ -679,7 +803,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-modapply run-modbake
+.PHONY: clean run-partv2 run-script run-foldcache run-evalworld run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-probebrick
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -699,6 +823,45 @@ $(SCRIPT_TARGET): $(SCRIPT_OBJS)
 
 run-script: $(SCRIPT_TARGET)
 	./$(SCRIPT_TARGET)
+
+# Phase C Task 1: fold cache in ScriptHost + resolve_hash hit/miss counting.
+$(FOLDCACHE_TARGET): $(FOLDCACHE_OBJS)
+	$(CC) $(FOLDCACHE_OBJS) -o $@ \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+
+run-foldcache: $(FOLDCACHE_TARGET)
+	./$(FOLDCACHE_TARGET)
+
+# Phase C Task 4 — eval_world: World builder DSL + ScriptHost::eval_world.
+$(EVALWORLD_TARGET): $(EVALWORLD_OBJS)
+	$(CC) $(EVALWORLD_OBJS) -o $@ \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+
+run-evalworld: $(EVALWORLD_TARGET)
+	./$(EVALWORLD_TARGET)
+
+# Phase C Task 5 — terrain mesher (pure CPU, no JS, no GL).
+$(TERRAINMESH_TARGET): $(TERRAINMESH_OBJS)
+	$(CC) $(TERRAINMESH_OBJS) -o $@ $(CFLAGS) -I../src -lm
+
+run-terrainmesh: $(TERRAINMESH_TARGET)
+	./$(TERRAINMESH_TARGET)
+
+# Phase C Task 5 — terrainVolume verb through ScriptHost::bake_source.
+$(TERRAINVERB_TARGET): $(TERRAINVERB_OBJS)
+	$(CC) $(TERRAINVERB_OBJS) -o $@ \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+
+run-terrainverb: $(TERRAINVERB_TARGET)
+	./$(TERRAINVERB_TARGET)
+
+# Phase C Task 7 — WorldSector.js + world query verbs.
+$(SECTORBAKE_TARGET): $(SECTORBAKE_OBJS)
+	$(CC) $(SECTORBAKE_OBJS) -o $@ \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+
+run-sectorbake: $(SECTORBAKE_TARGET)
+	./$(SECTORBAKE_TARGET)
 
 # Phase 1 typed iso-primitives + ordered CSG.
 $(ISO_TARGET): $(ISO_OBJS)
@@ -797,22 +960,6 @@ $(TREEBAKE_TARGET): $(TREEBAKE_OBJS)
 run-treebake: $(TREEBAKE_TARGET)
 	./$(TREEBAKE_TARGET)
 
-# Headless bake tests for the Meadow schemas.
-$(MEADOW_TARGET): $(MEADOW_OBJS)
-	$(CC) $(MEADOW_OBJS) -o $@ \
-	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
-
-run-meadow: $(MEADOW_TARGET)
-	./$(MEADOW_TARGET)
-
-# Full Meadow world bake check.
-$(MEADOWCHECK_TARGET): $(MEADOWCHECK_OBJS)
-	$(CC) $(MEADOWCHECK_OBJS) -o $@ \
-	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
-
-run-meadow-check: $(MEADOWCHECK_TARGET)
-	./$(MEADOWCHECK_TARGET)
-
 # Rock bake profiling harness (cold bake per variant, wall time).
 $(ROCKPROF_TARGET): $(ROCKPROF_OBJS)
 	$(CC) $(ROCKPROF_OBJS) -o $@ \
@@ -902,6 +1049,14 @@ $(TILESETDSL_TARGET): $(TILESETDSL_OBJS)
 run-tilesetdsl: $(TILESETDSL_TARGET)
 	./$(TILESETDSL_TARGET)
 
+# Phase C Task 1: terrain noise contract.
+$(TERRAINNOISE_TARGET): $(TERRAINNOISE_OBJS)
+	$(CC) $(TERRAINNOISE_OBJS) -o $@ \
+	      $(CFLAGS) $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+
+run-terrainnoise: $(TERRAINNOISE_TARGET)
+	./$(TERRAINNOISE_TARGET)
+
 # Tileset bake bridge.
 $(TILESETBAKE_TARGET): $(TILESETBAKE_OBJS) $(BOX3D_DIR)/libbox3d.a
 	$(CC) $(TILESETBAKE_OBJS) \
@@ -949,12 +1104,33 @@ $(ASYNCQ_TARGET): $(ASYNCQ_OBJS)
 run-asyncq: $(ASYNCQ_TARGET)
 	./$(ASYNCQ_TARGET)
 
+# Phase C Task 4 — RefineController tile pairing + priority/eviction (pure CPU, def flavor).
+$(REFINECTL_TARGET): $(REFINECTL_OBJS)
+	$(CC) $(REFINECTL_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS)
+
+run-refinectl: $(REFINECTL_TARGET)
+	./$(REFINECTL_TARGET)
+
+# Phase C Task 8 — SectorStreamer (pure CPU, no JS, no GL).
+$(SECTORSTREAM_TARGET): $(SECTORSTREAM_OBJS)
+	$(CC) $(SECTORSTREAM_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS)
+
+run-sectorstream: $(SECTORSTREAM_TARGET)
+	./$(SECTORSTREAM_TARGET)
+
 # modifier_apply stack runner (simplify/smooth/retopo, failure=skip, blacklist chunk hash).
 $(MODAPPLY_TARGET): $(MODAPPLY_OBJS)
 	$(CC) $(MODAPPLY_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
 
 run-modapply: $(MODAPPLY_TARGET)
 	./$(MODAPPLY_TARGET)
+
+# Phase C Task 3 — terrain field program (pure CPU, no JS, no GL).
+$(TERRAINFIELD_TARGET): $(TERRAINFIELD_OBJS)
+	$(CC) $(TERRAINFIELD_OBJS) -o $@ $(CFLAGS) -I../src -lm
+
+run-terrainfield: $(TERRAINFIELD_TARGET)
+	./$(TERRAINFIELD_TARGET)
 
 # Modifier-region bake plumbing (Task 4): full bake through ScriptHost, region
 # meshes welded across cells and stack-processed.
@@ -1016,6 +1192,15 @@ api-tests: $(call obj_of,gpu,api_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/
 run-api-tests: api-tests
 	cd ../../MatterViewer && GALLIUM_DRIVER=d3d12 ../MatterEngine3/tests/api_tests
 
+# Phase C Task 9 — world-kind session end-to-end test (GPU suite).
+world-stream-tests: $(call obj_of,gpu,world_stream_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
+	$(CC) $(call obj_of,gpu,world_stream_tests.cpp) $(GPU_SHARED_OBJS) \
+	      -o world_stream_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
+	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+
+run-worldstream: world-stream-tests
+	cd ../../MatterViewer && GALLIUM_DRIVER=d3d12 MATTER_STREAM_RINGS="32:3,80:2" ../MatterEngine3/tests/world_stream_tests
+
 # Phase B Task 6 — async bake worker command loop tests.
 async-bake-tests: $(call obj_of,gpu,async_bake_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
 	$(CC) $(call obj_of,gpu,async_bake_tests.cpp) $(GPU_SHARED_OBJS) \
@@ -1025,6 +1210,63 @@ async-bake-tests: $(call obj_of,gpu,async_bake_tests.cpp) $(GPU_SHARED_OBJS) | .
 run-asyncbake: async-bake-tests
 	./async_bake_tests
 
+# Phase C Task 13 — demand-driven bake primitives (BakePolicy + bake_plan + ensure_*).
+demand-bake-tests: $(call obj_of,gpu,demand_bake_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
+	$(CC) $(call obj_of,gpu,demand_bake_tests.cpp) $(GPU_SHARED_OBJS) \
+	      -o demand_bake_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
+	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+
+run-demandbake: demand-bake-tests
+	./demand_bake_tests
+
+# Phase C Task 2 — transient artifact routing (tmpfs scratch dir).
+# Tests: bake transient modules to scratch, release_transient unlink,
+# PartStore scratch-aware get_or_load, persistent modules still use cache.
+transient-tests: $(call obj_of,gpu,transient_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
+	$(CC) $(call obj_of,gpu,transient_tests.cpp) $(GPU_SHARED_OBJS) \
+	      -o transient_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
+	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+
+run-transient: transient-tests
+	./transient_tests
+
+# Phase C Task 5 — part-level release: PartStore::release + GpuCuller::release_part.
+release-part-tests: $(call obj_of,gpu,release_part_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
+	$(CC) $(call obj_of,gpu,release_part_tests.cpp) $(GPU_SHARED_OBJS) \
+	      -o release_part_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
+	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+
+run-releasepart: release-part-tests
+	GALLIUM_DRIVER=d3d12 ./release_part_tests
+
+# GPU cull parity suite (gpu_cull_tests.cpp) — run target for task-gate use.
+run-gpucull: gpu-tests
+	GALLIUM_DRIVER=d3d12 ./gpu_tests
+
+# Phase C Task 6 — camera-driven refine loop (headless, allow_gl_lt_46=true).
+refine-loop-tests: $(call obj_of,gpu,refine_loop_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
+	$(CC) $(call obj_of,gpu,refine_loop_tests.cpp) $(GPU_SHARED_OBJS) \
+	      -o refine_loop_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
+	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+
+run-refineloop: refine-loop-tests
+	GALLIUM_DRIVER=d3d12 ./refine_loop_tests
+
+# Phase C Task 3 — probe brick store + trilinear window compositor (pure CPU, no GL).
+$(PROBEBRICK_TARGET): $(PROBEBRICK_OBJS)
+	$(CC) $(PROBEBRICK_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+
+run-probebrick: $(PROBEBRICK_TARGET)
+	./$(PROBEBRICK_TARGET)
+
+# Phase C Task 17 — resolve/manifest cache round-trip (headless, no GL needed).
+resolve-cache-tests: $(call obj_list,def,$(RESOLVECACHE_CPP)) $(call obj_list,mslc,$(RESOLVECACHE_C))
+	$(CC) $(call obj_list,def,$(RESOLVECACHE_CPP)) $(call obj_list,mslc,$(RESOLVECACHE_C)) \
+	      -o resolve_cache_tests $(FLAVOR_def_FLAGS) $(LDFLAGS) $(LDLIBS)
+
+run-resolvecache: resolve-cache-tests
+	./resolve_cache_tests
+
 # ---------------------------------------------------------------------------
 # Clean: remove OBJDIR and all binaries (test-binary-name list, since they
 # aren't $(TARGET)-style variables in every case).
@@ -1033,13 +1275,25 @@ clean:
 	rm -rf $(OBJDIR)
 	rm -f $(PARTV2_TARGET) $(SCRIPT_TARGET) $(GRAPH_TARGET) $(GRAPH_INT_TARGET) \
 	      $(TRIVAR_TARGET) $(SHLIB_TARGET) $(COMP_TARGET) $(DEV_TARGET) \
-	      $(EXAMPLE_TARGET) $(VIEWER_LOGIC_TARGET) $(TREEBAKE_TARGET) $(MEADOW_TARGET) \
-	      $(MEADOWCHECK_TARGET) $(GRASSLOD_TARGET) $(STRESSFOREST_TARGET) \
+	      $(EXAMPLE_TARGET) $(VIEWER_LOGIC_TARGET) $(TREEBAKE_TARGET) \
+	      $(GRASSLOD_TARGET) $(STRESSFOREST_TARGET) \
 	      $(TILESETMEADOWMANIFEST_TARGET) $(RETOPO_INT_TARGET) $(SHADER_SOURCE_TARGET) \
 	      $(POLYTRI_TARGET) $(ISO_TARGET) $(FLATTEN_TARGET) $(LIGHTING_TARGET) \
 	      $(TILESETTORUSBVH_TARGET) $(TILESETDSL_TARGET) $(TILESETBAKE_TARGET) \
 	      $(TILESETGTEX_TARGET) $(ASYNCQ_TARGET) $(GALLERY_TARGET) \
 	      $(LIVEPROD_TARGET) $(MODAPPLY_TARGET) $(MODBAKE_TARGET) \
+	      $(TERRAINNOISE_TARGET) \
+	      $(REFINECTL_TARGET) \
+	      $(SECTORSTREAM_TARGET) \
+	      $(TERRAINFIELD_TARGET) \
+	      $(TERRAINMESH_TARGET) \
+	      $(TERRAINVERB_TARGET) \
+	      $(SECTORBAKE_TARGET) \
+	      $(EVALWORLD_TARGET) \
 	      tileset_physics_tests tileset_core_tests tileset_placement_tests \
 	      gpu_tests tileset_gpu_tests tileset_seam_tests tileset_provider_tests \
-	      tileset_load_tests api_tests async_bake_tests
+	      tileset_load_tests api_tests async_bake_tests demand_bake_tests transient_tests release_part_tests \
+	      refine_loop_tests \
+	      resolve_cache_tests \
+	      world_stream_tests \
+	      $(PROBEBRICK_TARGET)

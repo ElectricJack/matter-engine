@@ -67,6 +67,49 @@ std::string params_to_json(const Params& params) {
     return os.str();
 }
 
+// Minimal flat-object JSON parser for the shapes eval_requires emits (flat
+// number|bool|"string"; SP-3 v1 strings carry no escapes). Unknown shapes -> skip.
+Params params_from_json(const std::string& json) {
+    Params out;
+    size_t i = 0, n = json.size();
+    auto skip_ws = [&]{ while (i < n && (json[i]==' '||json[i]=='\t'||json[i]=='\n'||json[i]=='\r')) ++i; };
+    auto parse_str = [&](std::string& s) -> bool {
+        if (i >= n || json[i] != '"') return false;
+        ++i; size_t start = i;
+        while (i < n && json[i] != '"') ++i;
+        if (i >= n) return false;
+        s = json.substr(start, i - start); ++i; return true;
+    };
+    skip_ws();
+    if (i >= n || json[i] != '{') return out; ++i;
+    skip_ws();
+    if (i < n && json[i] == '}') return out;
+    while (i < n) {
+        skip_ws();
+        std::string key;
+        if (!parse_str(key)) break;
+        skip_ws();
+        if (i >= n || json[i] != ':') break; ++i;
+        skip_ws();
+        if (i < n && json[i] == '"') {
+            std::string v; if (!parse_str(v)) break;
+            out[key] = ParamValue::string_(v);
+        } else if (json.compare(i, 4, "true") == 0) {
+            out[key] = ParamValue::boolean_(true); i += 4;
+        } else if (json.compare(i, 5, "false") == 0) {
+            out[key] = ParamValue::boolean_(false); i += 5;
+        } else {
+            size_t start = i;
+            while (i < n && json[i] != ',' && json[i] != '}') ++i;
+            out[key] = ParamValue::number(std::strtod(json.c_str() + start, nullptr));
+        }
+        skip_ws();
+        if (i < n && json[i] == ',') { ++i; continue; }
+        if (i < n && json[i] == '}') break;
+    }
+    return out;
+}
+
 PartGraph::PartGraph(ModuleResolver& resolver, Baker& baker)
     : resolver_(resolver), baker_(baker) {}
 
@@ -98,7 +141,8 @@ uint64_t memo_key_of(const std::string& source, const std::string& canon_params)
 } // namespace
 
 InstallResult PartGraph::install(const std::vector<ChildRequest>& roots,
-                                  part_graph_snapshot::Snapshot* snap) {
+                                  part_graph_snapshot::Snapshot* snap,
+                                  BakePolicy policy) {
     InstallResult result;
     std::unordered_map<uint64_t, InternalNode> memo;   // memo_key -> node
     std::string error;
@@ -221,94 +265,26 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots,
     };
     for (const auto& kp : root_keys_with_idx) post(kp.first);
 
-    // Task 7: skip-and-continue policy.
-    // failed_keys: memo_keys of nodes that failed (bake or lod-variants failure).
-    // A node whose ANY child is in failed_keys is itself skipped and recorded as
-    // "missing child" in result.failed[]. Siblings are unaffected.
-    std::set<uint64_t> failed_keys;
-
-    for (uint64_t key : topo) {
-        const InternalNode& n = memo.at(key);
-
-        // Check if any direct child failed -> skip this node.
-        bool child_failed = false;
-        std::string missing_child_name;
-        for (size_t ci = 0; ci < n.child_keys.size(); ++ci) {
-            if (failed_keys.count(n.child_keys[ci])) {
-                child_failed = true;
-                // Use child_modules[ci] for the error message (parallel to child_keys).
-                missing_child_name = (ci < n.child_modules.size()) ? n.child_modules[ci] : "unknown";
-                break;
-            }
-        }
-        if (child_failed) {
-            failed_keys.insert(key);
-            FailedPart fp;
-            fp.module        = n.module;
-            fp.resolved_hash = n.resolved_hash;
-            fp.error         = "missing child: " + missing_child_name;
-            result.failed.push_back(std::move(fp));
-            continue;
-        }
-
-        if (baker_.cached(n.resolved_hash)) {
-            ++result.hits;
-        } else {
-            // Task 7: exceptions from baker_.bake() (e.g. test_fault_hook throws) are
-            // caught here and treated identically to a false return value (skip-and-continue).
-            bool bake_ok = false;
-            std::string bake_err;
-            try {
-                bake_ok = baker_.bake(n.source, n.params, n.child_hashes, n.child_modules,
-                                      n.child_params, n.resolved_hash);
-            } catch (std::bad_alloc&) {
-                bake_err = "out of memory (bad_alloc) baking part: " + n.module;
-            } catch (std::exception& e) {
-                bake_err = std::string("exception baking part: ") + n.module + ": " + e.what();
-            } catch (...) {
-                bake_err = "unknown exception baking part: " + n.module;
-            }
-            if (!bake_ok) {
-                // Task 7 skip-and-continue: record the failure, mark this key failed,
-                // continue to sibling nodes. Dependents will be skipped below.
-                failed_keys.insert(key);
-                FailedPart fp;
-                fp.module        = n.module;
-                fp.resolved_hash = n.resolved_hash;
-                fp.error         = bake_err.empty() ? ("bake failed for part: " + n.module)
-                                                    : bake_err;
-                result.failed.push_back(std::move(fp));
-                continue;
-            }
-            result.baked.push_back(n.resolved_hash);
-        }
-        if (!baker_.bake_lod_variants(n.source, n.params, n.child_hashes,
-                                      n.resolved_hash)) {
-            // lod-variant failure remains a hard error (sidecar is non-optional for
-            // parts that opt in; a partial ladder is worse than a missing one).
-            result.error = "lod-variant bake failed for part: " + n.module;
-            return result;
-        }
+    // Task 13 (Phase C): build bake_plan from memo (all resolved nodes).
+    // Done here — after resolve is complete and topo is known — so it covers
+    // every node regardless of BakePolicy.  The snapshot is also populated here
+    // (it only reads memo; moving it earlier than the bake loop is safe per the
+    // verified precondition that resolve fully populates memo before the bake loop).
+    for (const auto& kv : memo) {
+        const InternalNode& n = kv.second;
+        BakeInputs bi;
+        bi.module        = n.module;
+        bi.source        = n.source;
+        bi.params        = n.params;
+        bi.child_hashes  = n.child_hashes;
+        bi.child_modules = n.child_modules;
+        bi.child_params  = n.child_params;
+        result.bake_plan.emplace(n.resolved_hash, std::move(bi));
     }
 
-    // ok=true even with partial failures; caller checks result.failed for details.
-    result.ok = true;
-
-    // Propagate bake-phase failures: for roots whose node failed during bake,
-    // zero out root_hashes[original_root_index] so callers skip placing them.
-    for (const auto& kp : root_keys_with_idx) {
-        uint64_t memo_key = kp.first;
-        size_t   orig_idx = kp.second;
-        if (failed_keys.count(memo_key)) {
-            result.root_hashes[orig_idx] = 0;
-        }
-    }
-
-    // Task 9: populate the snapshot (if requested) from the completed DFS.
-    // A module path is derived from the resolver's schemas_dir if load_source is
-    // a FileModuleResolver (best effort). For snapshot use the memo nodes: every
-    // resolved (module, params, children, hash) is captured here. failed nodes
-    // have hash = whatever was resolved (may be 0 for resolve failures).
+    // Task 9: populate the snapshot (if requested) from the completed resolve.
+    // Moved from below the bake loop: snapshot only reads memo, so it is safe
+    // to fill it here (before the bake loop) for all BakePolicy variants.
     if (snap) {
         // Build a set of root module names for is_root tagging.
         std::set<std::string> root_modules;
@@ -366,8 +342,7 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots,
             snap->nodes.emplace(n.module, std::move(snode));
         }
 
-        // Build by_file and by_import indices. source_path is filled in by the
-        // caller (LocalProvider) after it sets abs_schemas_; here we skip if empty.
+        // Build by_file and by_import indices.
         for (auto& kv2 : snap->nodes) {
             part_graph_snapshot::Node& sn = kv2.second;
             if (!sn.source_path.empty()) {
@@ -383,13 +358,115 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots,
         }
     }
 
+    // Build root resolved_hash set for BakePolicy::RootsOnly filtering.
+    std::set<uint64_t> root_resolved_hashes;
+    for (const auto& kp : root_keys_with_idx)
+        root_resolved_hashes.insert(memo.at(kp.first).resolved_hash);
+
+    // Task 7: skip-and-continue policy.
+    // failed_keys: memo_keys of nodes that failed (bake or lod-variants failure).
+    // A node whose ANY child is in failed_keys is itself skipped and recorded as
+    // "missing child" in result.failed[]. Siblings are unaffected.
+    std::set<uint64_t> failed_keys;
+
+    for (uint64_t key : topo) {
+        const InternalNode& n = memo.at(key);
+
+        // Task 13 (Phase C): RootsOnly policy — skip baking non-root nodes.
+        // They are already captured in bake_plan for on-demand bake later.
+        // bake_lod_variants for skipped nodes is deferred to ensure_part_baked.
+        if (policy == BakePolicy::RootsOnly &&
+            root_resolved_hashes.find(n.resolved_hash) == root_resolved_hashes.end()) {
+            // Intentional: skipped (non-root) nodes are never added to failed_keys,
+            // so the root's child-failure guard below will always pass under RootsOnly.
+            // Child-bake failures are deferred to ensure_part_baked at publish time.
+            continue;
+        }
+
+        // Check if any direct child failed -> skip this node.
+        bool child_failed = false;
+        std::string missing_child_name;
+        for (size_t ci = 0; ci < n.child_keys.size(); ++ci) {
+            if (failed_keys.count(n.child_keys[ci])) {
+                child_failed = true;
+                // Use child_modules[ci] for the error message (parallel to child_keys).
+                missing_child_name = (ci < n.child_modules.size()) ? n.child_modules[ci] : "unknown";
+                break;
+            }
+        }
+        if (child_failed) {
+            failed_keys.insert(key);
+            FailedPart fp;
+            fp.module        = n.module;
+            fp.resolved_hash = n.resolved_hash;
+            fp.error         = "missing child: " + missing_child_name;
+            result.failed.push_back(std::move(fp));
+            continue;
+        }
+
+        if (baker_.cached(n.resolved_hash)) {
+            ++result.hits;
+        } else {
+            // Task 7: exceptions from baker_.bake() (e.g. test_fault_hook throws) are
+            // caught here and treated identically to a false return value (skip-and-continue).
+            bool bake_ok = false;
+            std::string bake_err;
+            try {
+                // Task 2: notify baker of the module being baked (for transient routing)
+                baker_.set_baking_module(n.module);
+                bake_ok = baker_.bake(n.source, n.params, n.child_hashes, n.child_modules,
+                                      n.child_params, n.resolved_hash);
+            } catch (std::bad_alloc&) {
+                bake_err = "out of memory (bad_alloc) baking part: " + n.module;
+            } catch (std::exception& e) {
+                bake_err = std::string("exception baking part: ") + n.module + ": " + e.what();
+            } catch (...) {
+                bake_err = "unknown exception baking part: " + n.module;
+            }
+            if (!bake_ok) {
+                // Task 7 skip-and-continue: record the failure, mark this key failed,
+                // continue to sibling nodes. Dependents will be skipped below.
+                failed_keys.insert(key);
+                FailedPart fp;
+                fp.module        = n.module;
+                fp.resolved_hash = n.resolved_hash;
+                fp.error         = bake_err.empty() ? ("bake failed for part: " + n.module)
+                                                    : bake_err;
+                result.failed.push_back(std::move(fp));
+                continue;
+            }
+            result.baked.push_back(n.resolved_hash);
+        }
+        if (!baker_.bake_lod_variants(n.source, n.params, n.child_hashes,
+                                      n.resolved_hash)) {
+            // lod-variant failure remains a hard error (sidecar is non-optional for
+            // parts that opt in; a partial ladder is worse than a missing one).
+            result.error = "lod-variant bake failed for part: " + n.module;
+            return result;
+        }
+    }
+
+    // ok=true even with partial failures; caller checks result.failed for details.
+    result.ok = true;
+
+    // Propagate bake-phase failures: for roots whose node failed during bake,
+    // zero out root_hashes[original_root_index] so callers skip placing them.
+    for (const auto& kp : root_keys_with_idx) {
+        uint64_t memo_key = kp.first;
+        size_t   orig_idx = kp.second;
+        if (failed_keys.count(memo_key)) {
+            result.root_hashes[orig_idx] = 0;
+        }
+    }
+
     return result;
 }
 
 bool PartGraph::read_manifest(const std::string& world_data_dir, const std::string& world,
                               std::vector<ChildRequest>& roots_out, std::string& error_out,
                               std::vector<bool>* expand_out,
-                              std::vector<bool>* tileset_out) {
+                              std::vector<bool>* tileset_out,
+                              std::string* world_module_out) {
     std::string path = world_data_dir + "/" + world + "/world.manifest";
     std::ifstream in(path);
     if (!in) {
@@ -408,10 +485,11 @@ bool PartGraph::read_manifest(const std::string& world_data_dir, const std::stri
         std::string name, flag;
         tokens >> name;
         if (name == "light") continue;  // light lines are owned by world_lights::parse_lights
-        bool expand = false, tileset = false;
+        bool expand = false, tileset = false, is_world = false;
         while (tokens >> flag) {
             if (flag == "expand") expand = true;
             else if (flag == "tileset") tileset = true;
+            else if (flag == "world") is_world = true;
             else {
                 error_out = "unknown manifest flag '" + flag + "' for root " + name;
                 return false;
@@ -420,6 +498,12 @@ bool PartGraph::read_manifest(const std::string& world_data_dir, const std::stri
         if (expand && tileset) {
             error_out = "root " + name + " cannot be both tileset and expand";
             return false;
+        }
+        // World-kind lines are NOT added to roots_out — the world module is never
+        // a graph root; it is evaluated separately by LocalProvider via eval_world.
+        if (is_world) {
+            if (world_module_out) *world_module_out = name;
+            continue;
         }
         roots_out.push_back(ChildRequest{ name, Params{} });
         if (expand_out)  expand_out->push_back(expand);
@@ -440,11 +524,6 @@ namespace part_graph {
 
 // params_to_json is defined in the always-compiled section above (install() keys
 // child placements by it); the host path reuses it for resolve_hash/bake.
-
-// Inverse: a flat JSON object {"k":num|bool|"str", ...} -> Params. SP-3 v1 only sees
-// the shapes eval_requires emits (flat numbers/bools/strings), so a tiny hand parser
-// suffices; reuse the host's own emitter contract rather than a full JSON lib.
-Params params_from_json(const std::string& json);  // defined below
 
 FileModuleResolver::FileModuleResolver(script_host::ScriptHost& host, std::string schemas_dir)
     : host_(host), schemas_dir_(std::move(schemas_dir)) {}
@@ -481,23 +560,32 @@ uint64_t HostBaker::resolve_hash(const std::string& source, const Params& params
 }
 
 bool HostBaker::cached(uint64_t resolved_hash) {
-    std::string path = parts_dir_ + "/" + part_asset::cache_path_resolved(resolved_hash);
-    std::ifstream in(path, std::ios::binary);
-    if (!in.good()) return false;
-    // Validate the header: magic must be 'TRAP', version 2, and the embedded
-    // resolved_hash must match `resolved_hash`. Otherwise the file is stale
-    // (a previous bake with the SAME filename hash-key but DIFFERENT resolved
-    // hash — happens when a schema is edited between runs and the old .part
-    // was left behind).  Treat mismatch as cache miss so we re-bake.
-    // Header layout (see part_asset_v2.cpp:write_file_atomic):
-    //   [0..4)  magic uint32   ('TRAP' little-endian = 0x50415254)
-    //   [4..8)  version uint32 (currently 2)
-    //   [8..16) resolved_hash XOR version (uint64, obfuscation)
-    struct { uint32_t magic; uint32_t version; uint64_t hash_xor; } hdr{};
-    in.read(reinterpret_cast<char*>(&hdr), sizeof(hdr));
-    if (!in.good()) return false;
-    if (hdr.magic != 0x50415254u || hdr.version != 2u) return false;
-    return hdr.hash_xor == (resolved_hash ^ (uint64_t)hdr.version);
+    // Task 2: check scratch dir first (if configured), then normal cache.
+    auto check_path = [resolved_hash](const std::string& base_dir) -> bool {
+        if (base_dir.empty()) return false;
+        std::string path = base_dir + "/" + part_asset::cache_path_resolved(resolved_hash);
+        std::ifstream in(path, std::ios::binary);
+        if (!in.good()) return false;
+        // Validate the header: magic must be 'TRAP', version 2, and the embedded
+        // resolved_hash must match `resolved_hash`. Otherwise the file is stale
+        // (a previous bake with the SAME filename hash-key but DIFFERENT resolved
+        // hash — happens when a schema is edited between runs and the old .part
+        // was left behind).  Treat mismatch as cache miss so we re-bake.
+        // Header layout (see part_asset_v2.cpp:write_file_atomic):
+        //   [0..4)  magic uint32   ('TRAP' little-endian = 0x50415254)
+        //   [4..8)  version uint32 (currently 2)
+        //   [8..16) resolved_hash XOR version (uint64, obfuscation)
+        struct { uint32_t magic; uint32_t version; uint64_t hash_xor; } hdr{};
+        in.read(reinterpret_cast<char*>(&hdr), sizeof(hdr));
+        if (!in.good()) return false;
+        if (hdr.magic != 0x50415254u || hdr.version != 2u) return false;
+        return hdr.hash_xor == (resolved_hash ^ (uint64_t)hdr.version);
+    };
+
+    // Check scratch first (if transient_dir_ is configured)
+    if (check_path(transient_dir_)) return true;
+    // Fall back to normal cache
+    return check_path(parts_dir_);
 }
 
 bool HostBaker::bake(const std::string& source, const Params& params,
@@ -507,8 +595,10 @@ bool HostBaker::bake(const std::string& source, const Params& params,
     // SP-2 bake_source recomputes the same hash and writes the .part via save_v2.
     // Pass parts_dir_ so bake_source writes to an absolute path rather than a
     // cwd-relative "parts/<hash>.part" (Task 3 Phase B: cwd-independence).
+    // Task 2: route transient modules to scratch_dir instead.
     script_host::BakeOptions bopts;
-    bopts.parts_dir = parts_dir_;
+    bopts.parts_dir = is_transient(current_module_) ? transient_dir_ : parts_dir_;
+    bopts.world = world_;  // Task 5: thread world binding for terrainVolume
     script_host::BakeResult r = host_.bake_source(
         source, params_to_json(params), bopts,
         child_hashes.data(), child_hashes.size(),
@@ -536,7 +626,9 @@ bool HostBaker::bake_lod_variants(const std::string& source, const Params& param
         printf("HostBaker: lodBudgets on a part with children is unsupported; skipping\n");
         return true;
     }
-    const std::string sidecar = parts_dir_ + "/" + part_asset::cache_path_lods(resolved_hash);
+    // Task 2: route sidecar to scratch if transient
+    const std::string base_dir = is_transient(current_module_) ? transient_dir_ : parts_dir_;
+    const std::string sidecar = base_dir + "/" + part_asset::cache_path_lods(resolved_hash);
     {
         // content-addressed fast path: sidecar exists AND every referenced .part exists.
         // If a variant was pruned from the cache, fall through and re-bake the whole ladder.
@@ -544,7 +636,7 @@ bool HostBaker::bake_lod_variants(const std::string& source, const Params& param
         if (part_asset::load_lod_sidecar(sidecar, existing)) {
             bool all_present = true;
             for (uint64_t h : existing.hashes) {
-                const std::string vpath = parts_dir_ + "/" + part_asset::cache_path_resolved(h);
+                const std::string vpath = base_dir + "/" + part_asset::cache_path_resolved(h);
                 std::ifstream probe(vpath);
                 if (!probe.good()) { all_present = false; break; }
             }
@@ -563,7 +655,7 @@ bool HostBaker::bake_lod_variants(const std::string& source, const Params& param
         Params p2 = params;
         p2["lodBudget"] = ParamValue::number(b);
         script_host::BakeOptions vopts;
-        vopts.parts_dir = parts_dir_;
+        vopts.parts_dir = base_dir;
         script_host::BakeResult r = host_.bake_source(source, params_to_json(p2), vopts);
         if (!r.error.ok) return false;
         variant_hashes.push_back(r.resolved_hash);
@@ -581,49 +673,6 @@ bool HostBaker::bake_lod_variants(const std::string& source, const Params& param
         if (!o.good()) return false;
     }
     return std::rename(tmp.c_str(), sidecar.c_str()) == 0;
-}
-
-// Minimal flat-object JSON parser for the shapes eval_requires emits (flat
-// number|bool|"string"; SP-3 v1 strings carry no escapes). Unknown shapes -> skip.
-Params params_from_json(const std::string& json) {
-    Params out;
-    size_t i = 0, n = json.size();
-    auto skip_ws = [&]{ while (i < n && (json[i]==' '||json[i]=='\t'||json[i]=='\n'||json[i]=='\r')) ++i; };
-    auto parse_str = [&](std::string& s) -> bool {
-        if (i >= n || json[i] != '"') return false;
-        ++i; size_t start = i;
-        while (i < n && json[i] != '"') ++i;
-        if (i >= n) return false;
-        s = json.substr(start, i - start); ++i; return true;
-    };
-    skip_ws();
-    if (i >= n || json[i] != '{') return out; ++i;
-    skip_ws();
-    if (i < n && json[i] == '}') return out;
-    while (i < n) {
-        skip_ws();
-        std::string key;
-        if (!parse_str(key)) break;
-        skip_ws();
-        if (i >= n || json[i] != ':') break; ++i;
-        skip_ws();
-        if (i < n && json[i] == '"') {
-            std::string v; if (!parse_str(v)) break;
-            out[key] = ParamValue::string_(v);
-        } else if (json.compare(i, 4, "true") == 0) {
-            out[key] = ParamValue::boolean_(true); i += 4;
-        } else if (json.compare(i, 5, "false") == 0) {
-            out[key] = ParamValue::boolean_(false); i += 5;
-        } else {
-            size_t start = i;
-            while (i < n && json[i] != ',' && json[i] != '}') ++i;
-            out[key] = ParamValue::number(std::strtod(json.c_str() + start, nullptr));
-        }
-        skip_ws();
-        if (i < n && json[i] == ',') { ++i; continue; }
-        if (i < n && json[i] == '}') break;
-    }
-    return out;
 }
 
 } // namespace part_graph

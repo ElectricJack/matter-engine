@@ -8,7 +8,8 @@ static unsigned char to_u8(float v) {
     return (unsigned char)(c * 255.0f + 0.5f);
 }
 
-RasterMeshData build_raster_mesh_data(const Tri* tris, const TriEx* triex, int tri_count) {
+RasterMeshData build_raster_mesh_data(const Tri* tris, const TriEx* triex, int tri_count,
+                                      float default_mat_id) {
     RasterMeshData d;
     d.vertex_count = tri_count * 3;
     d.vertices.reserve(d.vertex_count * 3);  d.normals.reserve(d.vertex_count * 3);
@@ -27,7 +28,7 @@ RasterMeshData build_raster_mesh_data(const Tri* tris, const TriEx* triex, int t
         const float aos[3] = { triex ? triex[i].ao0 : 1.0f,
                                triex ? triex[i].ao1 : 1.0f,
                                triex ? triex[i].ao2 : 1.0f };
-        const float mat_id = triex ? (float)triex[i].materialId : -1.0f;
+        const float mat_id = triex ? (float)triex[i].materialId : default_mat_id;
         unsigned char rgba[4] = { 255, 255, 255, 0 };            // neutral tint
         if (triex) {
             rgba[0] = to_u8(triex[i].tint.x); rgba[1] = to_u8(triex[i].tint.y);

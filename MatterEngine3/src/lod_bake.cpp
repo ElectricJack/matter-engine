@@ -21,7 +21,13 @@ std::vector<Tri> decimate_tris(const std::vector<Tri>& tris, float keep_ratio) {
     MeshIndexed in = from_tri(tris, nullptr);
     SimplifyOptions opts;
     opts.target_ratio  = keep_ratio;
-    opts.lock_boundary = false;
+    // Topological boundary lock: open-edge vertices are never moved or
+    // collapsed, so an open mesh's rim polyline is identical at every LOD.
+    // Streamed terrain sectors render through THIS ladder (PartStore's
+    // load-time re-bake, not part_flatten), and adjacent sectors share
+    // bitwise-identical rim verts — locking keeps them watertight at any
+    // LOD pairing. Closed meshes have no open edges and are unaffected.
+    opts.lock_boundary = true;
 
     MeshIndexed out = simplify(in, opts, nullptr);
 

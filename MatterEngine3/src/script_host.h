@@ -2,8 +2,11 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include <mutex>
+#include <unordered_map>
 #include "dsl_state.h"
 #include "tileset_spec.h"
+#include "module_resolver.h"
 
 namespace script_host {
 
@@ -21,6 +24,9 @@ struct BakeOptions {
     // "parts/<hash>.part".  Set by HostBaker::bake so the bake pipeline is
     // cwd-independent (Task 3 Phase B).
     std::string parts_dir;
+    // World field binding: threaded through so the terrainVolume verb can call
+    // terrain_mesher::mesh_sector. Null field = unbound (terrainVolume fails loudly).
+    dsl::WorldBinding world;
 };
 
 struct BakeResult {
@@ -33,6 +39,19 @@ struct TilesetEvalResult {
     BakeError error;
     tileset::TilesetSpec spec;
     uint64_t resolved_hash = 0;
+};
+
+// Result of ScriptHost::eval_world: the canonical field program text (ready
+// for terrain_field::FieldProgram::parse), the biomes() table as JSON, and
+// the world constants from `static world`.
+struct WorldEvalResult {
+    bool ok = false;
+    std::string message;          // error text when !ok
+    std::string field_program;    // canonical op-line text for FieldProgram::parse
+    std::string biomes_json;      // JSON.stringify of biomes() return value
+    float sector_size = 16.0f;
+    float y_min = -64.0f;
+    float y_max = 192.0f;
 };
 
 // Discovered child instance from a part's static `requires(...)` (eval'd WITHOUT baking).
@@ -66,6 +85,13 @@ public:
                           const std::string& params_json,
                           const uint64_t* child_hashes = nullptr,
                           size_t child_count = 0);
+
+    // Evaluate a World root: fresh isolated context, runs field() + biomes(),
+    // accumulates the field-program op lines, and returns them as a FieldProgram
+    // text string plus the JSON-serialised biomes table and world constants.
+    // Fail-closed: on any JS error ok=false with message set.
+    WorldEvalResult eval_world(const std::string& source,
+                               const std::string& params_json);
 
     // Evaluate a Tileset root: fresh isolated context, records verbs into a TilesetSpec.
     // No geometry artifact is written. Fail-closed like bake_source.
@@ -106,8 +132,26 @@ public:
     // serves those module sources to the QuickJS module loader so the `import`
     // actually resolves at bake time. Empty (default) => no module resolution and
     // the raw part source is hashed (legacy behavior; non-importer parts are
-    // unaffected).
-    void set_shared_lib_root(const std::string& root) { shared_lib_root_ = root; }
+    // unaffected). Clearing fold_cache when the root changes ensures shared-lib
+    // edits invalidate the cache (prevent stale folded sources).
+    void set_shared_lib_root(const std::string& root) {
+        shared_lib_root_ = root;
+        clear_fold_cache();  // invalidate cache on root change
+    }
+
+    // Cached fold_sources: looks up (source, shared_lib_root) by FNV1a64 hash key.
+    // Returns true on success (fold succeeded); false on fold failure (err set).
+    // Increments fold_cache_hits on cache hit, fold_cache_misses on miss.
+    bool fold_sources_cached(const std::string& source,
+                             module_resolver::FoldResult& out,
+                             std::string& err);
+
+    uint64_t fold_cache_hits() const { return fold_hits_; }
+    uint64_t fold_cache_misses() const { return fold_misses_; }
+    // Clears the fold cache. Called by set_shared_lib_root() to invalidate cached
+    // folded sources when the shared-lib root changes. Engine reload does not call
+    // this because install_graph() recreates the ScriptHost (fresh cache by design).
+    void clear_fold_cache();
 
     std::string last_merged_params() const { return last_merged_params_; }
     bool last_build_ran() const { return last_build_ran_; }
@@ -129,6 +173,12 @@ private:
     bool last_build_ran_ = false;
     dsl::BuildBuffer last_buffer_;
     std::string last_ambient_probe_;
+
+    // Fold cache: (source, shared_lib_root) -> FoldResult (thread-safe).
+    std::mutex fold_mu_;
+    std::unordered_map<uint64_t, module_resolver::FoldResult> fold_cache_;
+    uint64_t fold_hits_ = 0;
+    uint64_t fold_misses_ = 0;
 };
 
 } // namespace script_host

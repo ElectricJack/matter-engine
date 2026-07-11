@@ -68,10 +68,36 @@ std::string PartStore::disk_path(uint64_t part_hash) const {
     return cache_root_ + "/" + part_asset::cache_path_resolved(part_hash);
 }
 
+// Task 2: resolve the actual disk path, checking scratch dir first, then cache.
+static std::string resolve_artifact_path(uint64_t part_hash, const std::string& scratch_dir,
+                                         const std::string& cache_root) {
+    struct stat st;
+    if (!scratch_dir.empty()) {
+        std::string scratch_path = scratch_dir + "/" + part_asset::cache_path_resolved(part_hash);
+        if (::stat(scratch_path.c_str(), &st) == 0) {
+            return scratch_path;
+        }
+    }
+    return cache_root + "/" + part_asset::cache_path_resolved(part_hash);
+}
+
+// Task 2: resolve the flat artifact path, checking scratch dir first, then cache.
+static std::string resolve_flat_path(uint64_t part_hash, const std::string& scratch_dir,
+                                     const std::string& cache_root) {
+    struct stat st;
+    if (!scratch_dir.empty()) {
+        std::string scratch_path = scratch_dir + "/" + part_asset::cache_path_flat(part_hash);
+        if (::stat(scratch_path.c_str(), &st) == 0) {
+            return scratch_path;
+        }
+    }
+    return cache_root + "/" + part_asset::cache_path_flat(part_hash);
+}
+
 bool PartStore::has(uint64_t part_hash) const {
     if (loaded_.count(part_hash)) return true;
     struct stat st;
-    return ::stat(disk_path(part_hash).c_str(), &st) == 0;
+    return ::stat(resolve_artifact_path(part_hash, scratch_dir_, cache_root_).c_str(), &st) == 0;
 }
 
 // Flat-preferred load: a bake-time flattened artifact (<hash>.flat.part) already
@@ -80,7 +106,7 @@ bool PartStore::has(uint64_t part_hash) const {
 // if v3 is unavailable. Returns false (fall back to the compositional .part) when
 // the file is absent or fails to load in either format.
 bool PartStore::load_flat(uint64_t part_hash, LoadedPart& lp) {
-    const std::string path = cache_root_ + "/" + part_asset::cache_path_flat(part_hash);
+    const std::string path = resolve_flat_path(part_hash, scratch_dir_, cache_root_);
 
     // Sniff version first; fall back to compositional path when absent.
     uint32_t ver = part_asset::peek_format_version(path);
@@ -320,7 +346,8 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
         }
     }
 
-    const std::string path = disk_path(part_hash);
+    // Task 2: check scratch dir first (if configured), then fall back to cache
+    const std::string path = resolve_artifact_path(part_hash, scratch_dir_, cache_root_);
 
     // load_v2 registers the full-resolution geometry into a SCRATCH BLASManager;
     // we then re-bake LODs into the shared store BLASManager.
@@ -368,6 +395,19 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
         radius = 0.5f * std::sqrt(dx*dx+dy*dy+dz*dz);
     }
 
+    // Compute dominant material from full-res TriEx for LOD fallback.
+    float dominant_mat = -1.0f;
+    if (triex_ptr && !triex_ptr->empty()) {
+        int counts[256] = {};
+        for (const auto& t : *triex_ptr) {
+            int m = t.materialId;
+            if (m >= 0 && m < 256) counts[m]++;
+        }
+        int max_cnt = 0;
+        for (int i = 0; i < 256; ++i)
+            if (counts[i] > max_cnt) { max_cnt = counts[i]; dominant_mat = (float)i; }
+    }
+
     // Re-bake LODs into the SHARED store BLASManager. lod_bake stores the
     // ABSOLUTE entries_ index (== get_entries().size() before registration),
     // so use blas_indices[0] directly as the index — do NOT add 'before'.
@@ -391,7 +431,7 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
             const TriEx* mesh_ex = (e->tri_extra.size() == e->triangles.size() && !e->tri_extra.empty())
                                       ? e->tri_extra.data() : nullptr;
             lp.lod_mesh_data.push_back(
-                build_raster_mesh_data(e->triangles.data(), mesh_ex, (int)e->triangles.size()));
+                build_raster_mesh_data(e->triangles.data(), mesh_ex, (int)e->triangles.size(), dominant_mat));
         } else {
             lp.lod_mesh_data.push_back({});
         }
@@ -415,6 +455,48 @@ lod_select::PartLodTable PartStore::part_lod_table() const {
     for (const auto& kv : loaded_)
         table[kv.first] = lod_select::PartLod{ kv.second.bound_radius, kv.second.thresholds };
     return table;
+}
+
+// ---------------------------------------------------------------------------
+// release — evict a loaded part from the CPU store.
+//
+// Erasing the map entry destroys the LoadedPart in-place, which releases
+// lod_mesh_data vectors and runs the BLASHandle destructors.  BLASManager
+// handles the reference-counted triangle buffers; the shared blas_ remains
+// valid for other parts that share BLAS entries.
+//
+// After this call:
+//   - loaded_.count(part_hash) == 0
+//   - load_failed_ is NOT cleared: if the part previously failed to load, it
+//     stays suppressed.  Use-case for release is evicting successfully-loaded
+//     geometry, not retrying failed loads.
+//   - get_or_load(part_hash) will re-read from disk (or return nullptr if no
+//     disk artifact exists).
+// ---------------------------------------------------------------------------
+void PartStore::release(uint64_t part_hash) {
+    auto it = loaded_.find(part_hash);
+    if (it == loaded_.end()) return;  // safe no-op for unknown hashes
+
+    const LoadedPart& lp = it->second;
+
+    // Release all BLAS handles in the whole-part LOD ladder.
+    for (BLASHandle h : lp.lod_blas) {
+        if (h != INVALID_BLAS_HANDLE) {
+            blas_.release_blas(h);
+        }
+    }
+
+    // Release all BLAS handles in each per-cluster LOD ladder.
+    for (const auto& cluster : lp.clusters) {
+        for (BLASHandle h : cluster.lod_blas) {
+            if (h != INVALID_BLAS_HANDLE) {
+                blas_.release_blas(h);
+            }
+        }
+    }
+
+    // Now safe to erase the LoadedPart from memory.
+    loaded_.erase(it);
 }
 
 } // namespace viewer

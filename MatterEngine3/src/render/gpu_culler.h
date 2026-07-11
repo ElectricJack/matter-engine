@@ -43,6 +43,13 @@ public:
     // Returns dense part_slot (0-based index into parts_) or -1 on failure.
     int ensure_part(uint64_t part_hash, PartStore& store);
 
+    // Release a single part's GPU resources (VAO/VBO deleted, cluster lod_count zeroed
+    // in cluster_staging_ and patched into ssbo_clusters_, hash removed from slot_of_,
+    // PartGpu marked dead with vao=0).  The dead slot is a hole — no compaction.
+    // ensure_part() after release assigns a fresh slot at the end of parts_.
+    // Safe no-op if part_hash is not currently registered.
+    void release_part(uint64_t part_hash);
+
     // Frame: upload instances (expansion applied), seed cmds, dispatch cull.
     // planes[6][4] from raster_cull.h extract_frustum_planes (or the
     // camera_frustum_planes wrappers).  cam_eye[3] world-space eye position.
@@ -109,6 +116,12 @@ public:
     void set_stats_readback(bool v) { stats_readback_ = v; }
     bool stats_readback() const     { return stats_readback_; }
 
+    // Sub-pixel cluster floor: clusters whose projected size falls below this
+    // are skipped entirely instead of drawing the coarsest LOD forever.
+    // 0 (default) disables — keeps CPU/GPU parity tests exact.
+    void set_min_projected_size(float v) { min_projected_size_ = v; }
+    float min_projected_size() const     { return min_projected_size_; }
+
     // HUD counters (valid after draw_indirect() with stats_readback_ enabled).
     size_t culled_clusters() const { return stat_culled_; }        // frustum
     size_t culled_hiz()      const { return stat_culled_hiz_; }    // occlusion
@@ -161,6 +174,7 @@ private:
     int uloc_planes_               = -1;
     int uloc_cam_eye_              = -1;
     int uloc_pixel_budget_         = -1;
+    int uloc_min_projected_size_   = -1;
     int uloc_instance_count_       = -1;
     int uloc_max_clusters_per_inst_= -1;
     int uloc_hiz_enabled_          = -1;
@@ -202,6 +216,8 @@ private:
     // When false, draw_indirect() skips glGetBufferSubData on ssbo_stats_
     // so the frame-loop GPU sync is avoided when the HUD is not reading stats.
     bool stats_readback_ = false;
+
+    float min_projected_size_ = 0.0f;   // sub-pixel cluster floor; 0 = off
 
     // --- Instance upload dirty-check ---
     // FNV-1a fingerprint over (part_hash, transform) of every ResolvedInstance

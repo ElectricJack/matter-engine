@@ -76,6 +76,7 @@ static void test_local_provider_processes_tileset_root() {
     cfg.world_name      = "TinyWorld";
     cfg.shared_lib_dir  = root + "/shared-lib";
     cfg.cache_root      = root + "/cache";
+    cfg.gl_available    = true;   // hidden raylib window is a real GL context
 
     viewer::LocalProvider provider(cfg);
     viewer::WorldManifest wm;
@@ -156,6 +157,7 @@ static void test_local_provider_bakes_meadow_forestfloor() {
     cfg.world_name      = "Sandbox";
     cfg.shared_lib_dir  = root + "/shared-lib";
     cfg.cache_root      = root + "/cache";
+    cfg.gl_available    = true;   // hidden raylib window is a real GL context
 
     viewer::LocalProvider provider(cfg);
     viewer::WorldManifest wm;

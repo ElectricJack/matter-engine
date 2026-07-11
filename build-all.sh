@@ -37,6 +37,7 @@ SIMPLE_PROJECTS=(
     SpatialQueryLib
     MatterEngine3
     MatterViewer
+    ExplorerDemo
 )
 
 # Projects whose Makefile defaults to Windows cross-compile and need
@@ -199,7 +200,7 @@ if [ "$MODE" = "test" ]; then
     # raylib-linked BLAS path). Each run-* target builds then runs its binary, so
     # a non-zero status covers both build and test failures. run-graph-integration
     # exercises the full SP-3 install -> SP-2 ScriptHost bake path end-to-end.
-    for tgt in run-partv2 run-script run-iso run-graph run-graph-integration run-trivar run-polytri run-shlib run-comp run-flatten run-dev run-example run-gallery run-treebake run-meadow run-meadow-check run-viewer-logic run-lighting run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq run-liveprod run-modapply run-modbake; do
+    for tgt in run-partv2 run-script run-iso run-graph run-graph-integration run-trivar run-polytri run-shlib run-comp run-flatten run-dev run-example run-gallery run-treebake run-viewer-logic run-lighting run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq run-liveprod run-modapply run-modbake run-probebrick; do
         echo
         echo "--- MatterEngine3 ($tgt) ---"
         make -C MatterEngine3/tests "$tgt" || RESULT[MatterEngine3]="FAIL ($tgt)"
@@ -260,6 +261,17 @@ if [ "$MODE" = "test" ]; then
         echo "--- MatterEngine3/tools (meadow_forestfloor_shots) ---"
         bash MatterEngine3/tools/meadow_forestfloor_shots.sh /tmp/build_all_ff_shots \
             || RESULT[MatterEngine3]="FAIL (meadow_forestfloor_shots)"
+
+        # ExplorerDemo warm-cache smoke test (15s; verifies the binary starts, renders,
+        # and exits cleanly). Guarded by binary existence so a build failure skips it
+        # cleanly. The Meadow install phase (~173s) means the scene may be black but
+        # the binary must exit 0 without crashing.
+        if [ -x "ExplorerDemo/explorer" ]; then
+            echo
+            echo "--- ExplorerDemo (warm-cache smoke, 15s) ---"
+            ( cd ExplorerDemo && GALLIUM_DRIVER=d3d12 EXPLORER_SMOKE="secs=15" ./explorer ) \
+                || RESULT[ExplorerDemo]="FAIL (smoke)"
+        fi
     else
         echo
         echo "--- MatterEngine3/tests GPU tests SKIPPED (needs GL 4.6 + GALLIUM_DRIVER=d3d12) ---"

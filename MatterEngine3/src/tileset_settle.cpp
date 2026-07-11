@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstring>
 #include <memory>
+#include <stdexcept>
 
 #include "box3d/box3d.h"
 #include "box3d/collision.h"
@@ -52,10 +53,8 @@ struct SettleWorld::Impl {
     b3WorldId world;
     float torus = 0.0f;        // sim units
     SettleParams params;
-    // base mesh data must outlive the world's mesh shape
-    std::vector<b3Vec3> base_verts;
-    std::vector<int32_t> base_indices;
-    b3MeshData* base_mesh = nullptr;
+    // base heightfield data must outlive the world's shape
+    b3HeightFieldData* base_hf = nullptr;
 
     struct TrackedBody { b3BodyId id; int group; int instance; };
     std::vector<TrackedBody> bodies;   // spawn order
@@ -83,42 +82,51 @@ SettleWorld::SettleWorld(float torus_size, const HeightField& base, const Settle
     wdef.gravity = (b3Vec3){ 0.0f, -9.8f * S, 0.0f };
     impl_->world = b3CreateWorld(&wdef);
 
-    // Base terrain: two CCW-up triangles per heightfield cell.
-    const int nx = base.count_x, nz = base.count_z;
-    impl_->base_verts.reserve((size_t)nx * nz);
-    for (int z = 0; z < nz; ++z)
-        for (int x = 0; x < nx; ++x)
-            impl_->base_verts.push_back((b3Vec3){
-                x * base.cell * S,
-                base.heights[(size_t)z * nx + x] * S,
-                z * base.cell * S });
-    for (int z = 0; z + 1 < nz; ++z)
-        for (int x = 0; x + 1 < nx; ++x) {
-            int32_t a = z * nx + x,       b = z * nx + x + 1;
-            int32_t c = (z + 1) * nx + x, d = (z + 1) * nx + x + 1;
-            // +Y-up winding (counter-clockwise seen from above).
-            impl_->base_indices.insert(impl_->base_indices.end(), { a, c, b });
-            impl_->base_indices.insert(impl_->base_indices.end(), { b, c, d });
+    // Base terrain: use b3HeightField (dedicated heightfield shape) instead of a
+    // triangle mesh. A mesh of N*N cells produces 2*(N-1)^2 triangles; at the
+    // ForestFloor resolution (257x257 grid → 131,072 triangles) the BVH sort in
+    // b3CreateMesh overflows its 256-node DFS stack and returns NULL, which then
+    // causes a NULL-dereference in b3CreateMeshShape. The heightfield shape does
+    // not build a BVH and handles arbitrary grid sizes without issue.
+    {
+        const int nx = base.count_x, nz = base.count_z;
+        float hmin = base.heights[0], hmax = base.heights[0];
+        for (float h : base.heights) {
+            if (h < hmin) hmin = h;
+            if (h > hmax) hmax = h;
         }
-    b3MeshDef mdef;
-    std::memset(&mdef, 0, sizeof mdef);   // plain struct: no Default fn / cookie
-    mdef.vertices = impl_->base_verts.data();
-    mdef.vertexCount = (int)impl_->base_verts.size();
-    mdef.indices = impl_->base_indices.data();
-    mdef.triangleCount = (int)(impl_->base_indices.size() / 3);
-    mdef.identifyEdges = true;
-    impl_->base_mesh = b3CreateMesh(&mdef, nullptr, 0);
 
-    b3BodyDef gdef = b3DefaultBodyDef();
-    gdef.type = b3_staticBody;
-    b3BodyId ground = b3CreateBody(impl_->world, &gdef);
-    b3ShapeDef gsdef = b3DefaultShapeDef();
-    b3CreateMeshShape(ground, &gsdef, impl_->base_mesh, (b3Vec3){ 1.0f, 1.0f, 1.0f });
+        b3HeightFieldDef hfdef;
+        std::memset(&hfdef, 0, sizeof hfdef);
+        hfdef.heights            = const_cast<float*>(base.heights.data());
+        hfdef.materialIndices    = nullptr;
+        // scale.x / scale.z = grid spacing in sim units; scale.y = height multiplier.
+        hfdef.scale              = (b3Vec3){ base.cell * S, S, base.cell * S };
+        hfdef.countX             = nx;
+        hfdef.countZ             = nz;
+        hfdef.globalMinimumHeight = hmin;
+        hfdef.globalMaximumHeight = hmax;
+        hfdef.clockwiseWinding   = false;
+
+        impl_->base_hf = b3CreateHeightField(&hfdef);
+        if (!impl_->base_hf) {
+            // This should never happen for a sane grid (non-empty, finite heights),
+            // but guard anyway so a failure surfaces as an exception rather than a
+            // NULL-deref deep in physics.
+            throw std::runtime_error("tileset settle: b3CreateHeightField returned NULL");
+        }
+
+        b3BodyDef gdef = b3DefaultBodyDef();
+        gdef.type = b3_staticBody;
+        b3BodyId ground = b3CreateBody(impl_->world, &gdef);
+        b3ShapeDef gsdef = b3DefaultShapeDef();
+        b3CreateHeightFieldShape(ground, &gsdef, impl_->base_hf);
+    }
 }
 
 SettleWorld::~SettleWorld() {
     b3DestroyWorld(impl_->world);
-    if (impl_->base_mesh) b3DestroyMesh(impl_->base_mesh);
+    if (impl_->base_hf) b3DestroyHeightField(impl_->base_hf);
     // impl_ is now std::unique_ptr<Impl>; destructor runs automatically.
 }
 
@@ -186,8 +194,16 @@ LayerResult SettleWorld::settle_layer(const std::vector<BodySpawn>& spawns) {
                                         c.hull_points[i+1] * S,
                                         c.hull_points[i+2] * S });
             b3HullData* hull = b3CreateHull(pts.data(), (int)pts.size(), 32);
-            b3CreateHullShape(id, &sd, hull);
-            b3DestroyHull(hull);
+            if (!hull) {
+                // Fallback: b3CreateHull needs >= 4 non-coplanar points; if hull
+                // creation fails, use a sphere approximation so the body is still
+                // simulated correctly.
+                b3Sphere sph = { (b3Vec3){ c.center[0]*S, c.center[1]*S, c.center[2]*S }, c.radius*S };
+                b3CreateSphereShape(id, &sd, &sph);
+            } else {
+                b3CreateHullShape(id, &sd, hull);
+                b3DestroyHull(hull);
+            }
             break;
         }
         }

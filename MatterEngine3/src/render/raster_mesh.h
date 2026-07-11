@@ -17,7 +17,8 @@ struct RasterMeshData {
     int vertex_count = 0;
 };
 
-RasterMeshData build_raster_mesh_data(const Tri* tris, const TriEx* triex, int tri_count);
+RasterMeshData build_raster_mesh_data(const Tri* tris, const TriEx* triex, int tri_count,
+                                      float default_mat_id = -1.0f);
 
 // Row-major float[16] -> raylib Matrix. raylib's field declaration order
 // (m0,m4,m8,m12,m1,...) IS row-major memory, so this is a straight copy.

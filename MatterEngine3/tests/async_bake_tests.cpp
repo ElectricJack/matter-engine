@@ -98,10 +98,12 @@ struct EvRec {
 
 static std::string ev_type_name(matter::EventType t) {
     switch (t) {
-        case matter::EventType::BakeStarted:  return "BakeStarted";
-        case matter::EventType::BakePartDone: return "BakePartDone";
-        case matter::EventType::BakeFinished: return "BakeFinished";
-        case matter::EventType::BakeError:    return "BakeError";
+        case matter::EventType::BakeStarted:    return "BakeStarted";
+        case matter::EventType::BakePartDone:   return "BakePartDone";
+        case matter::EventType::BakeFinished:   return "BakeFinished";
+        case matter::EventType::BakeError:      return "BakeError";
+        // Phase C Task 6: camera-driven refine loop event (append-only).
+        case matter::EventType::RefineTileDone: return "RefineTileDone";
     }
     return "?";
 }
@@ -792,6 +794,183 @@ static bool test_load_failure_skips_part(const std::string& sandbox) {
     return ok && parts_errors >= 1 && saw_io_error && log.error_count == 1 && ic > 0;
 }
 
+// --- Task 3 tests (Phase C): set_bake_focus + distance-ordered publish ------
+
+// Build a sandbox with three distinct leaf schemas (BoxA, BoxB, BoxC) and a
+// parent "World" that places them at (0,0,0), (100,0,0), (200,0,0) and is
+// flagged `expand` so the children become world manifest entries.
+// Focus near C (200,0,0) → BakePartDone order: C, B, A.
+// Focus near A (0,0,0)   → BakePartDone order: A, B, C.
+static bool build_focus_sandbox(const std::string& root) {
+    run("rm -rf " + root);
+    run("mkdir -p " + root + "/schemas");
+    run("mkdir -p " + root + "/world_data/FocusWorld");
+    run("mkdir -p " + root + "/shared-lib");
+    run("mkdir -p " + root + "/cache/parts");
+
+    // Three distinct leaf schemas. Geometry is the same shape but the class
+    // name makes each one a unique module → distinct resolved hash.
+    const char* leaf_tmpl =
+        "class %s extends Part {\n"
+        "  build(p) {\n"
+        "    this.fill(MAT.stone);\n"
+        "    const S = 0.5;\n"
+        "    this.beginShape(SHAPE.triangles);\n"
+        "    this.vertex(-S, 0, -S); this.vertex(-S, 0,  S); this.vertex( S, 0, -S);\n"
+        "    this.vertex( S, 0, -S); this.vertex(-S, 0,  S); this.vertex( S, 0,  S);\n"
+        "    this.endShape();\n"
+        "  }\n"
+        "}\n";
+
+    char buf[1024];
+    for (const char* name : {"BoxA", "BoxB", "BoxC"}) {
+        std::snprintf(buf, sizeof(buf), leaf_tmpl, name);
+        if (!write_file(root + "/schemas/" + name + ".js", std::string(buf)))
+            return false;
+    }
+
+    // Parent that places the three children at distinct X offsets so manifest
+    // entries carry different translations. `expand` in world.manifest promotes
+    // each child to a first-class world instance with its placement transform.
+    if (!write_file(root + "/schemas/World.js",
+        "class World extends Part {\n"
+        "  static requires = [\n"
+        "    { module: 'BoxA' },\n"
+        "    { module: 'BoxB' },\n"
+        "    { module: 'BoxC' },\n"
+        "  ];\n"
+        "  build(p) {\n"
+        "    this.pushMatrix();\n"
+        "    this.translate(0, 0, 0);\n"
+        "    this.placeChild('BoxA');\n"
+        "    this.popMatrix();\n"
+        "    this.pushMatrix();\n"
+        "    this.translate(100, 0, 0);\n"
+        "    this.placeChild('BoxB');\n"
+        "    this.popMatrix();\n"
+        "    this.pushMatrix();\n"
+        "    this.translate(200, 0, 0);\n"
+        "    this.placeChild('BoxC');\n"
+        "    this.popMatrix();\n"
+        "  }\n"
+        "}\n")) return false;
+
+    // `expand` flag unpacks World's children into world manifest entries.
+    if (!write_file(root + "/world_data/FocusWorld/world.manifest",
+        "# Focus-order test world\n"
+        "World expand\n")) return false;
+
+    return true;
+}
+
+// Collect BakePartDone module names (phase=="parts") in arrival order for one
+// bake drive. Returns empty vector on error.
+static std::vector<std::string> collect_partdone_modules(matter::WorldSession& s,
+                                                          int timeout_sec = 60) {
+    std::vector<std::string> order;
+    auto deadline = clk::now() + std::chrono::seconds(timeout_sec);
+    bool finished = false;
+    while (clk::now() < deadline && !finished) {
+        s.pump_gpu_jobs(4.0f);
+        matter::Event ev;
+        bool any = false;
+        while (s.poll_event(ev)) {
+            any = true;
+            if (ev.type == matter::EventType::BakePartDone && ev.phase == "parts") {
+                order.push_back(ev.module);
+            }
+            if (ev.type == matter::EventType::BakeFinished) { finished = true; break; }
+            if (ev.type == matter::EventType::BakeError) {
+                printf("  BakeError: code=%d phase=%s msg=%s\n",
+                       (int)ev.code, ev.phase.c_str(), ev.message.c_str());
+                return {};
+            }
+        }
+        if (!any) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    if (!finished) { printf("  collect_partdone_modules TIMEOUT\n"); return {}; }
+    return order;
+}
+
+// (k) focus_orders_publish
+// Verifies that set_bake_focus() reorders BakePartDone by ascending distance
+// from the focus point. Uses the FocusWorld sandbox where:
+//   BoxA is at (0, 0, 0), BoxB at (100, 0, 0), BoxC at (200, 0, 0).
+static bool test_focus_orders_publish(const std::string& sandbox) {
+    printf("-- (k) focus_orders_publish\n");
+
+    const std::string froot = sandbox + "_focus";
+    if (!build_focus_sandbox(froot)) {
+        printf("  FAIL: build_focus_sandbox\n");
+        ++g_failures;
+        return false;
+    }
+
+    // Fresh cache for the first run.
+    run("rm -rf " + froot + "/cache && mkdir -p " + froot + "/cache/parts");
+
+    std::string err;
+    std::unique_ptr<matter::EngineContext> engine;
+    auto s = open_session(froot, err, engine, "FocusWorld");
+    CHECK(s != nullptr, "focus: session opened");
+    if (!s) { run("rm -rf " + froot); return false; }
+
+    // --- focus near C (200,0,0): expected order C,B,A -----------------------
+    {
+        float fc[3] = {200.f, 0.f, 0.f};
+        s->set_bake_focus(fc);
+        s->request_bake();
+        auto order = collect_partdone_modules(*s);
+        printf("  [focus near C] order:");
+        for (const auto& m : order) printf(" %s", m.c_str());
+        printf("\n");
+        CHECK(order.size() == 3, "focus near C: got 3 BakePartDone(parts)");
+        if (order.size() == 3) {
+            CHECK(order[0] == "BoxC", "focus near C: first is BoxC");
+            CHECK(order[1] == "BoxB", "focus near C: second is BoxB");
+            CHECK(order[2] == "BoxA", "focus near C: third is BoxA");
+        }
+    }
+
+    // --- focus near A (0,0,0): expected order A,B,C; also tests repeatability
+    // Reload to get a fresh publish pass (cache will be warm → hits only).
+    {
+        float fa[3] = {0.f, 0.f, 0.f};
+        s->set_bake_focus(fa);
+        s->reload();
+        auto order = collect_partdone_modules(*s);
+        printf("  [focus near A] order:");
+        for (const auto& m : order) printf(" %s", m.c_str());
+        printf("\n");
+        CHECK(order.size() == 3, "focus near A: got 3 BakePartDone(parts)");
+        if (order.size() == 3) {
+            CHECK(order[0] == "BoxA", "focus near A: first is BoxA");
+            CHECK(order[1] == "BoxB", "focus near A: second is BoxB");
+            CHECK(order[2] == "BoxC", "focus near A: third is BoxC");
+        }
+    }
+
+    // --- Repeatability: same focus→same order on a second reload --------------
+    {
+        float fc[3] = {200.f, 0.f, 0.f};
+        s->set_bake_focus(fc);
+        s->reload();
+        auto order2 = collect_partdone_modules(*s);
+        printf("  [focus near C, repeat] order:");
+        for (const auto& m : order2) printf(" %s", m.c_str());
+        printf("\n");
+        CHECK(order2.size() == 3, "focus near C repeat: 3 events");
+        if (order2.size() == 3) {
+            CHECK(order2[0] == "BoxC", "focus near C repeat: first is BoxC");
+            CHECK(order2[1] == "BoxB", "focus near C repeat: second is BoxB");
+            CHECK(order2[2] == "BoxA", "focus near C repeat: third is BoxA");
+        }
+    }
+
+    run("rm -rf " + froot);
+    return true;
+}
+
 // --- Task 10 tests -----------------------------------------------------------
 
 #ifdef __linux__
@@ -1022,6 +1201,96 @@ static bool test_live_edit_inotify_e2e(const std::string& sandbox) {
     return saw_cone_finished && saw_script_error && saw_recovery;
 }
 
+// --- (l) regenerate_seed_reroll -------------------------------------------
+// Task 7 (Phase C): WorldSession::regenerate(seed) — root-params override reload.
+//
+// Sandbox: Box.js gains `static params = {worldSeed: 1}` and uses worldSeed in
+// its geometry so that the part hash depends on the seed.  Three sub-cases:
+//   1. Initial bake: parts_baked >= 1.
+//   2. regenerate(2): new seed → cache miss → parts_baked >= 1.
+//   3. regenerate(2) again: same seed → warm reload → parts_baked == 0.
+static bool build_seed_sandbox(const std::string& root) {
+    run("rm -rf " + root);
+    run("mkdir -p " + root + "/schemas");
+    run("mkdir -p " + root + "/world_data/SeedBox");
+    run("mkdir -p " + root + "/shared-lib");
+    run("mkdir -p " + root + "/cache/parts");
+
+    // Box.js: static params = {worldSeed: 1} so the hash differs per seed.
+    // Geometry size is derived from worldSeed so different seeds produce
+    // different hashes (merge_params_canonical folds params into the hash).
+    if (!write_file(root + "/schemas/Box.js",
+        "class Box extends Part {\n"
+        "  static params = { worldSeed: 1 };\n"
+        "  build(p) {\n"
+        "    this.fill(MAT.stone);\n"
+        "    const S = 0.4 + (p.worldSeed % 10) * 0.01;\n"
+        "    this.beginShape(SHAPE.triangles);\n"
+        "    this.vertex(-S, 0, -S); this.vertex(-S, 0,  S); this.vertex( S, 0, -S);\n"
+        "    this.vertex( S, 0, -S); this.vertex(-S, 0,  S); this.vertex( S, 0,  S);\n"
+        "    this.endShape();\n"
+        "  }\n"
+        "}\n")) return false;
+
+    if (!write_file(root + "/world_data/SeedBox/world.manifest",
+        "# SeedBox world (regenerate test)\n"
+        "Box\n")) return false;
+
+    return true;
+}
+
+static bool test_regenerate_seed_reroll(const std::string& sandbox) {
+    printf("-- (l) regenerate_seed_reroll\n");
+
+    const std::string sroot = sandbox + "_seed";
+    if (!build_seed_sandbox(sroot)) {
+        printf("  FAIL: build_seed_sandbox\n");
+        ++g_failures;
+        return false;
+    }
+
+    // Cold cache: both seed=1 and seed=2 must be genuine misses initially.
+    run("rm -rf " + sroot + "/cache && mkdir -p " + sroot + "/cache/parts");
+
+    std::string err;
+    std::unique_ptr<matter::EngineContext> engine;
+    auto s = open_session(sroot, err, engine, "SeedBox");
+    CHECK(s != nullptr, "regenerate: session opened");
+    if (!s) { run("rm -rf " + sroot); return false; }
+
+    // 1) Initial bake (seed=1 from static params default).
+    s->request_bake();
+    std::vector<EvRec> log1;
+    bool ok1 = drive_bake(*s, log1);
+    CHECK(ok1, "regenerate: initial bake completed");
+    uint32_t pb1 = s->frame_stats().parts_baked;
+    printf("  [seed=1 initial] parts_baked=%u\n", pb1);
+    CHECK(pb1 >= 1, "regenerate: initial bake has parts_baked >= 1 (cache miss)");
+
+    // 2) regenerate(2) → different seed → cache miss → re-bakes terrain analog.
+    s->regenerate(2);
+    std::vector<EvRec> log2;
+    bool ok2 = drive_bake(*s, log2);
+    CHECK(ok2, "regenerate: seed=2 bake completed");
+    uint32_t pb2 = s->frame_stats().parts_baked;
+    printf("  [seed=2] parts_baked=%u\n", pb2);
+    CHECK(pb2 >= 1, "regenerate: seed=2 re-baked (cache miss, parts_baked >= 1)");
+
+    // 3) regenerate(2) again → same seed → warm reload → cache hit → parts_baked == 0.
+    s->regenerate(2);
+    std::vector<EvRec> log3;
+    bool ok3 = drive_bake(*s, log3);
+    CHECK(ok3, "regenerate: seed=2 repeat bake completed");
+    uint32_t pb3 = s->frame_stats().parts_baked;
+    uint32_t ch3 = s->frame_stats().cache_hits;
+    printf("  [seed=2 repeat] parts_baked=%u cache_hits=%u\n", pb3, ch3);
+    CHECK(pb3 == 0, "regenerate: same seed is a warm reload (parts_baked == 0)");
+    CHECK(ch3 >= 1, "regenerate: same seed has cache_hits >= 1");
+
+    run("rm -rf " + sroot);
+    return ok1 && ok2 && ok3 && pb1 >= 1 && pb2 >= 1 && pb3 == 0 && ch3 >= 1;
+}
+
 #endif // __linux__
 
 int main() {
@@ -1046,10 +1315,16 @@ int main() {
     // Task 7 fix (review): load-phase skip-and-continue in publish jobs.
     test_load_failure_skips_part(sandbox);
 
+    // Task 3 (Phase C): set_bake_focus + distance-ordered publish.
+    test_focus_orders_publish(sandbox);
+
 #ifdef __linux__
     // Task 10: inotify live-edit end-to-end.
     test_live_edit_inotify_e2e(sandbox);
 #endif
+
+    // Task 7 (Phase C): regenerate(seed) — root param override reload.
+    test_regenerate_seed_reroll(sandbox);
 
     printf(g_failures ? "\n%d FAILURE(S)\n" : "\nALL PASS\n", g_failures);
     // Best-effort cleanup so /tmp doesn't accumulate.

@@ -68,6 +68,10 @@ public:
     void set_wireframe(bool w) { wireframe_ = w; }
     bool wireframe() const { return wireframe_; }
 
+    // Keep backface culling enabled during the indirect draw. Default off:
+    // mesh-session winding is not guaranteed for all part kinds.
+    void set_cull_backfaces(bool c) { cull_backfaces_ = c; }
+
 private:
     // Upload sun/probe/material uniforms to a shader (used by draw_gpu_driven()).
     void setup_frame_uniforms(Shader& sh,
@@ -109,6 +113,9 @@ private:
 
     // Toggle for wireframe rendering (see set_wireframe).
     bool wireframe_ = false;
+
+    // Toggle for backface culling during the indirect draw (see set_cull_backfaces).
+    bool cull_backfaces_ = false;
 };
 
 } // namespace viewer

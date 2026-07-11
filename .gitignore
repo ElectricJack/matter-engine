@@ -104,5 +104,12 @@ MatterEngine3/examples/world_demo/WorldData/*.gtex
 !Screenshots/shots/
 MatterViewer/cache
 MatterViewer/viewer
+ExplorerDemo/explorer
+ExplorerDemo/explorer_asan
+ExplorerDemo/explorer.exe
+ExplorerDemo/cache
+ExplorerDemo/shaders
+ExplorerDemo/shaders_gpu
+ExplorerDemo/dist/
 MatterEngine3/parts
 parts

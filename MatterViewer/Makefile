@@ -137,6 +137,11 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/live_edit_prod.cpp \
               $(ME3_DIR)/src/inotify_watcher.cpp \
               $(ME3_DIR)/src/part_graph_snapshot.cpp \
+              $(ME3_DIR)/src/refine_controller.cpp \
+              $(ME3_DIR)/src/resolve_cache.cpp \
+              $(ME3_DIR)/src/terrain_field.cpp \
+              $(ME3_DIR)/src/terrain_mesher.cpp \
+              $(ME3_DIR)/src/sector_streamer.cpp \
               $(ME3_DIR)/src/matter_engine.cpp \
               $(ME3_DIR)/src/pf_bindings.cpp \
               ../ParticleFlowLib/src/pf_math.cpp \

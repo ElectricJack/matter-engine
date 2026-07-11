@@ -94,6 +94,15 @@ public:
     // LOD table for the SectorResolver: radius + thresholds per loaded part.
     lod_select::PartLodTable part_lod_table() const;
 
+    // Release a loaded part from CPU memory (lod_mesh_data, BLAS handles, clusters).
+    // After this call get_or_load(part_hash) will re-read from disk on next access.
+    // Safe no-op if part_hash is not currently loaded.
+    void release(uint64_t part_hash);
+
+    // Task 2: set the scratch directory for transient parts.
+    // get_or_load probes scratch first, then falls back to cache_root_.
+    void set_scratch_dir(std::string dir) { scratch_dir_ = std::move(dir); }
+
     // TEST-ONLY: register a pre-built LoadedPart under a hash without any disk I/O.
     // Used by gpu_cull_tests to build synthetic fixtures. Not for production use.
     void inject_for_test(uint64_t part_hash, LoadedPart lp) {
@@ -109,6 +118,7 @@ private:
     bool load_flat(uint64_t part_hash, LoadedPart& lp);
 
     std::string                       cache_root_;
+    std::string                       scratch_dir_;     // Task 2: transient scratch dir
     BLASManager                       blas_;
     std::map<uint64_t, LoadedPart>    loaded_;
     std::set<uint64_t>                load_failed_;      // suppress repeat logging

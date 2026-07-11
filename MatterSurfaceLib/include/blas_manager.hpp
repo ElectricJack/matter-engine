@@ -143,20 +143,23 @@ public:
 
     // Check if a BLAS exists
     bool has_blas(BLASHandle handle) const;
-    
+
     // Get BVH from handle
     BVH* get_bvh(BLASHandle handle) const;
-    
-    // Get Mesh from handle 
+
+    // Get Mesh from handle
     BvhMesh* get_mesh(BLASHandle handle) const;
-    
+
     // Get entry from handle (for visualization)
     const BLASEntry* get_entry(BLASHandle handle) const;
-    
+
     // Get total counts for GPU texture generation
     int get_total_triangle_count() const;
     int get_total_node_count() const;
     int get_unique_blas_count() const { return static_cast<int>(entries_.size()); }
+
+    // Get the count of live BLAS entries (useful for testing release paths).
+    size_t live_count() const { return entries_.size(); }
     
     // Access to internal entries for visualization
     const std::vector<std::unique_ptr<BLASEntry>>& get_entries() const { return entries_; }

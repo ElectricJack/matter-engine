@@ -2,7 +2,9 @@
 #include "part_graph_snapshot.h"
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace part_graph {
@@ -81,6 +83,10 @@ struct Baker {
         (void)source; (void)params; (void)child_hashes; (void)resolved_hash;
         return true;
     }
+
+    // Task 2 optional seam: notify baker of the module name about to be baked.
+    // Default no-op; HostBaker overrides to route transient modules to scratch.
+    virtual void set_baking_module(const std::string& /*module*/) {}
 };
 
 // Canonical params string (sorted keys, %.17g numbers). Public for unit testing.
@@ -91,6 +97,10 @@ std::string serialize_params(const Params& params);
 // placements and by the script host for resolve_hash. Public for roundtrip tests.
 std::string params_to_json(const Params& params);
 
+// Inverse of params_to_json: flat JSON object {"k": num|bool|"str", ...} → Params.
+// SP-3 v1 only handles the shapes eval_requires emits (flat numbers/bools/strings).
+Params params_from_json(const std::string& json);
+
 // Resolved node in the graph (one per unique (source_hash, canonical_params)).
 struct ResolvedNode {
     uint64_t              resolved_hash = 0;
@@ -99,6 +109,25 @@ struct ResolvedNode {
     Params                params;        // effective params
     std::vector<uint64_t> child_hashes;  // direct children's resolved hashes (sorted by SP-1)
     std::vector<uint64_t> child_keys;    // direct children's memo keys (for topo edges)
+};
+
+// Bake policy controlling which nodes are actually baked during install().
+// All     = today's behavior: every reachable node is baked (or cache-hit).
+// RootsOnly = only root nodes are baked; non-root nodes are resolved and
+//             recorded in bake_plan but not baked. Use ensure_part_baked()
+//             (LocalProvider) to bake individual subtrees on demand.
+enum class BakePolicy { All, RootsOnly };
+
+// Everything Baker::bake needs for one resolved node.  Retained in
+// InstallResult::bake_plan so on-demand bake can be driven post-install
+// without re-resolving the graph.
+struct BakeInputs {
+    std::string              module;
+    std::string              source;
+    Params                   params;
+    std::vector<uint64_t>    child_hashes;
+    std::vector<std::string> child_modules;
+    std::vector<std::string> child_params;
 };
 
 // One per-part failure recorded under skip-and-continue policy.
@@ -117,6 +146,11 @@ struct InstallResult {
     // Task 7: skip-and-continue. Populated even when ok==true (partial failure).
     // A root whose resolve failed has hash 0 in root_hashes AND an entry in failed[].
     std::vector<FailedPart>  failed;      // parts that failed but were skipped
+    // Task 13 (Phase C): retained bake plan — every resolved node, keyed by
+    // resolved_hash. Populated regardless of BakePolicy so on-demand bake has
+    // full graph info even after a RootsOnly install. Used by
+    // LocalProvider::ensure_part_baked().
+    std::unordered_map<uint64_t, BakeInputs> bake_plan;
 };
 
 class PartGraph {
@@ -127,8 +161,12 @@ public:
     // If snap is non-null, it is populated with the graph snapshot (Task 9:
     // live-edit production seams). Run on the WORKER thread under the async
     // session — no extra locking needed (install is the sole graph mutator).
+    // policy=BakePolicy::All (default) bakes every node — today's behavior.
+    // policy=BakePolicy::RootsOnly bakes only root nodes; non-roots are
+    // resolved and captured in result.bake_plan for later on-demand bake.
     InstallResult install(const std::vector<ChildRequest>& roots,
-                          part_graph_snapshot::Snapshot* snap = nullptr);
+                          part_graph_snapshot::Snapshot* snap = nullptr,
+                          BakePolicy policy = BakePolicy::All);
 
     // Parse WorldData/<world>/world.manifest into root ChildRequests. Each line:
     // "<Module> [expand] [tileset]"; '#' starts a comment. Roots take their `static params`
@@ -137,11 +175,15 @@ public:
     // child-instance table the provider promotes to individual world instances.
     // If tileset_out is non-null it receives one flag per root: `tileset` marks a
     // tileset root. Unknown flag tokens hard-error; tileset + expand on the same
-    // root also errors. Returns false + error on missing manifest.
+    // root also errors. If world_module_out is non-null it is set to the name of
+    // the module tagged `world` in the manifest (empty string if none). World-kind
+    // lines are NOT added to roots_out — the world module is never a graph root.
+    // Returns false + error on missing manifest.
     static bool read_manifest(const std::string& world_data_dir, const std::string& world,
                               std::vector<ChildRequest>& roots_out, std::string& error_out,
                               std::vector<bool>* expand_out = nullptr,
-                              std::vector<bool>* tileset_out = nullptr);
+                              std::vector<bool>* tileset_out = nullptr,
+                              std::string* world_module_out = nullptr);
 private:
     ModuleResolver& resolver_;
     Baker&          baker_;
@@ -153,11 +195,6 @@ private:
 #include "script_host.h"   // SP-2 (MatterEngine3, via -I../include)
 
 namespace part_graph {
-
-// Inverse of params_to_json: flat JSON object {"k": num|bool|"str", ...} → Params.
-// SP-3 v1 only handles the shapes eval_requires emits (flat numbers/bools/strings).
-// Defined in part_graph.cpp (MATTER_HAVE_SCRIPT_HOST section).
-Params params_from_json(const std::string& json);
 
 // Reads .js modules from <schemas_dir> and evaluates `static requires` via the host's
 // top-level eval (no build()).
@@ -192,9 +229,40 @@ public:
     bool bake_lod_variants(const std::string& source, const Params& params,
                            const std::vector<uint64_t>& child_hashes,
                            uint64_t resolved_hash) override;
+
+    // Task 2: configure transient-module routing.
+    // modules points to a set of module names (e.g., {"Terrain"}); bakes of
+    // these modules write artifacts under scratch_dir instead of parts_dir_.
+    // cached() checks both locations (scratch first).
+    void set_transient(const std::set<std::string>* modules, std::string scratch_dir) {
+        transient_modules_ = modules;
+        transient_dir_ = std::move(scratch_dir);
+    }
+
+    // Task 2 seam: called by PartGraph::install before each bake to set
+    // the current module being baked. Used to route transient modules to scratch.
+    void set_baking_module(const std::string& module) override {
+        current_module_ = module;
+    }
+
+    // Task 5: world field binding (for terrainVolume verb). Threaded into every
+    // BakeOptions constructed by bake().
+    void set_world(const dsl::WorldBinding& w) { world_ = w; }
+
 private:
     script_host::ScriptHost& host_;
     std::string              parts_dir_;
+
+    // Task 2: transient-module state
+    const std::set<std::string>* transient_modules_ = nullptr;
+    std::string transient_dir_;
+    std::string current_module_;
+    bool is_transient(const std::string& module) const {
+        return transient_modules_ && transient_modules_->count(module) != 0;
+    }
+
+    // Task 5: world field binding
+    dsl::WorldBinding world_;
 };
 
 } // namespace part_graph

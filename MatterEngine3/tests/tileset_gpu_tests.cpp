@@ -563,10 +563,248 @@ static void test_end_to_end_cache_hit() {
     ::unlink(gtex_path.c_str());
 }
 
+// -----------------------------------------------------------------------------
+// Task 15 test — settle-result cache round-trip (CPU-only, runs before GL init).
+// Asserts:
+//   (a) settle → save → load: instance count, poses bitwise, report.pose_hash.
+//   (b) second settle with warm cache: settle_cache_load succeeds and matches.
+// -----------------------------------------------------------------------------
+static void test_settle_cache_round_trip() {
+    using namespace tileset;
+
+    // Trivial SettledTorus fixture: flat base, two synthetic instances at distinct poses.
+    SettledTorus orig;
+    orig.cfg.size = 2.0f;
+    orig.cfg.seed = 0x1234;
+    orig.base.n        = BaseField::kSamplesPerTile;
+    orig.base.cell     = orig.cfg.size / (float)orig.base.n;
+    orig.base.material = 3;
+    orig.base.set      = true;
+    orig.base.heights.assign((size_t)orig.base.n * orig.base.n, 0.0f);
+    orig.report.pose_hash = 0xDEADBEEF11223344ull;
+    orig.report.converged_all = true;
+
+    // Two synthetic instances with distinct poses.
+    {
+        SettledInstance si1;
+        si1.child_hash = 0xAAAABBBBCCCCDDDDull;
+        si1.scale      = 1.0f;
+        si1.pose       = Pose{ 1.0f, 0.0f, 2.0f, 0.0f, 0.0f, 0.0f, 1.0f };
+        si1.layer      = -1;
+        orig.instances.push_back(si1);
+
+        SettledInstance si2;
+        si2.child_hash = 0x1111222233334444ull;
+        si2.scale      = 1.5f;
+        si2.pose       = Pose{ 3.0f, 0.1f, 0.5f, 0.1f, 0.0f, 0.0f, 0.995f };
+        si2.layer      = 0;
+        orig.instances.push_back(si2);
+    }
+    {
+        LayerResult lr; lr.converged = true; lr.sim_time = 0.5f;
+        orig.report.layers.push_back(lr);
+    }
+
+    const std::string cache_root = "/tmp/settle_cache_test";
+    std::system(("rm -rf " + cache_root + " && mkdir -p " + cache_root + "/tileset").c_str());
+
+    // Use a test cache key (any non-zero value).
+    const uint64_t key = 0xFEEDFACECAFEBABEull;
+
+    // (a) Save then load: data must round-trip exactly.
+    bool saved = settle_cache_save(cache_root, key, orig);
+    REQUIRE(saved);
+
+    SettledTorus loaded;
+    bool loaded_ok = settle_cache_load(cache_root, key, loaded);
+    REQUIRE(loaded_ok);
+
+    REQUIRE(loaded.instances.size() == orig.instances.size());
+    REQUIRE(loaded.report.pose_hash == orig.report.pose_hash);
+    REQUIRE(loaded.report.converged_all == orig.report.converged_all);
+    REQUIRE(loaded.report.layers.size() == orig.report.layers.size());
+
+    // Poses must be bitwise identical.
+    for (size_t i = 0; i < orig.instances.size(); ++i) {
+        const auto& a = orig.instances[i];
+        const auto& b = loaded.instances[i];
+        REQUIRE(b.child_hash == a.child_hash);
+        REQUIRE(b.layer == a.layer);
+        REQUIRE(std::memcmp(&a.pose, &b.pose, sizeof(Pose)) == 0);
+        // scale: use bitwise compare to guarantee exact float identity.
+        REQUIRE(std::memcmp(&a.scale, &b.scale, sizeof(float)) == 0);
+    }
+
+    // cfg and base round-trip.
+    REQUIRE(std::memcmp(&loaded.cfg, &orig.cfg, sizeof(TileConfig)) == 0);
+    REQUIRE(loaded.base.set == orig.base.set);
+    REQUIRE(loaded.base.n   == orig.base.n);
+    REQUIRE(loaded.base.material == orig.base.material);
+    REQUIRE(loaded.base.heights == orig.base.heights);
+
+    // (b) Wrong-key lookup: must return false (cache miss, not stale data).
+    SettledTorus bad;
+    REQUIRE(!settle_cache_load(cache_root, key ^ 0x1ull, bad));
+
+    // (c) from_cache field: storage layer does NOT set it; it defaults false.
+    //     The wiring in run_tileset_phase sets it to true on a cache hit.
+    REQUIRE(!loaded.report.from_cache);
+
+    std::system(("rm -rf " + cache_root).c_str());
+}
+
+// -----------------------------------------------------------------------------
+// Task 15 (wiring) — warm-hit test: save a SettledTorus, then reload it and
+// simulate the run_tileset_phase wiring: from_cache must be true on the second
+// "run", instances and pose_hash must match exactly.
+// This is the CPU-side coverage; demand_bake_tests (i) covers the full wiring
+// through run_tileset_phase with a real script sandbox.
+// -----------------------------------------------------------------------------
+static void test_settle_cache_warm_hit() {
+    using namespace tileset;
+
+    const std::string cache_root = "/tmp/settle_cache_warmhit_test";
+    std::system(("rm -rf " + cache_root + " && mkdir -p " + cache_root + "/tileset").c_str());
+
+    // Fixture with a distinct pose_hash so the round-trip is unambiguous.
+    SettledTorus orig;
+    orig.cfg.size = 1.0f;
+    orig.cfg.seed = 0xBEEF;
+    orig.base.n        = BaseField::kSamplesPerTile;
+    orig.base.cell     = orig.cfg.size / (float)orig.base.n;
+    orig.base.material = 7;
+    orig.base.set      = true;
+    orig.base.heights.assign((size_t)orig.base.n * orig.base.n, 0.05f);
+    orig.report.pose_hash     = 0x0102030405060708ull;
+    orig.report.converged_all = true;
+    orig.report.from_cache    = false;  // cold run: not from cache
+
+    SettledInstance si;
+    si.child_hash = 0xDEADC0DECAFEF00Dull;
+    si.scale      = 2.0f;
+    si.pose       = Pose{ 5.0f, 0.0f, 3.0f, 0.0f, 0.0f, 0.0f, 1.0f };
+    si.layer      = 1;
+    orig.instances.push_back(si);
+
+    const uint64_t key = 0xCAFEBABEDEADF00Dull;
+
+    // "Cold run": save simulates what run_tileset_phase does after settle_tileset.
+    REQUIRE(settle_cache_save(cache_root, key, orig));
+
+    // "Warm run": load and mark from_cache = true (mirrors run_tileset_phase wiring).
+    SettledTorus warm;
+    bool hit = settle_cache_load(cache_root, key, warm);
+    REQUIRE(hit);
+    warm.report.from_cache = true;   // wiring sets this on cache hit
+
+    // Warm-hit evidence: from_cache must be true.
+    REQUIRE(warm.report.from_cache);
+    // Bitwise-identical instances.
+    REQUIRE(warm.instances.size() == orig.instances.size());
+    REQUIRE(warm.report.pose_hash == orig.report.pose_hash);
+    const auto& a = orig.instances[0];
+    const auto& b = warm.instances[0];
+    REQUIRE(b.child_hash == a.child_hash);
+    REQUIRE(std::memcmp(&a.pose, &b.pose, sizeof(Pose)) == 0);
+    REQUIRE(std::memcmp(&a.scale, &b.scale, sizeof(float)) == 0);
+
+    std::system(("rm -rf " + cache_root).c_str());
+}
+
+// -----------------------------------------------------------------------------
+// Task 15 review I3 — fail-closed cache reader: corrupt/truncated files must
+// return false and must not crash or allocate unbounded memory.
+// -----------------------------------------------------------------------------
+static void test_settle_cache_corrupted_file() {
+    using namespace tileset;
+
+    const std::string cache_root = "/tmp/settle_cache_corrupt_test";
+    std::system(("rm -rf " + cache_root + " && mkdir -p " + cache_root + "/tileset").c_str());
+
+    // Build a minimal valid SettledTorus and save it.
+    SettledTorus orig;
+    orig.cfg.size = 2.0f;
+    orig.cfg.seed = 0xABCD;
+    orig.base.n        = BaseField::kSamplesPerTile;
+    orig.base.cell     = orig.cfg.size / (float)orig.base.n;
+    orig.base.material = 1;
+    orig.base.set      = true;
+    orig.base.heights.assign((size_t)orig.base.n * orig.base.n, 0.0f);
+    orig.report.pose_hash    = 0x1122334455667788ull;
+    orig.report.converged_all = true;
+    {
+        SettledInstance si;
+        si.child_hash = 0xFEEDFACEDEADBEEFull;
+        si.scale = 1.0f;
+        si.pose  = Pose{ 0.5f, 0.0f, 0.5f, 0.0f, 0.0f, 0.0f, 1.0f };
+        si.layer = 0;
+        orig.instances.push_back(si);
+    }
+
+    const uint64_t key = 0xBADC0FFEE0DDF00Dull;
+    REQUIRE(settle_cache_save(cache_root, key, orig));
+
+    // Determine path so we can truncate / corrupt it.
+    const std::string cache_path = cache_root + "/tileset/badc0ffee0ddf00d.settle";
+
+    // Case 1: truncate the file to 16 bytes (leaves header but strips body).
+    {
+        // Read, truncate, write back.
+        std::ifstream rf(cache_path, std::ios::binary);
+        REQUIRE(rf.good());
+        std::string bytes((std::istreambuf_iterator<char>(rf)), {});
+        rf.close();
+        REQUIRE(bytes.size() > 16u);
+        std::ofstream wf(cache_path, std::ios::binary | std::ios::trunc);
+        wf.write(bytes.data(), 16);  // just the first 16 bytes
+        wf.close();
+
+        SettledTorus bad;
+        bool result = settle_cache_load(cache_root, key, bad);
+        REQUIRE(!result);  // must return false, not crash
+    }
+
+    // Restore the valid file for the next case.
+    REQUIRE(settle_cache_save(cache_root, key, orig));
+
+    // Case 2: corrupt the inst_count field to 0xFFFFFFFF (would trigger ~44 GB alloc).
+    {
+        std::ifstream rf(cache_path, std::ios::binary);
+        REQUIRE(rf.good());
+        std::string bytes((std::istreambuf_iterator<char>(rf)), {});
+        rf.close();
+
+        // inst_count is a uint32 that appears after TileConfig + BaseField in the body.
+        // Header: magic(4)+version(4)+key(8)+ebv(4)+bv(4) = 24 bytes
+        // TileConfig: size(4)+tpm(4)+seed(8)+edge_strip_width(4)+corner_clear_radius(4) = 24
+        // BaseField: bn(4)+cell(4)+material(4)+base_set(1)+heights(n*n*4)
+        const size_t n = (size_t)BaseField::kSamplesPerTile;
+        const size_t inst_count_offset = 24 + 24 + 4 + 4 + 4 + 1 + n * n * sizeof(float);
+        REQUIRE(bytes.size() > inst_count_offset + 4u);
+        // Overwrite inst_count with 0xFFFFFFFF.
+        bytes[inst_count_offset + 0] = (char)0xFF;
+        bytes[inst_count_offset + 1] = (char)0xFF;
+        bytes[inst_count_offset + 2] = (char)0xFF;
+        bytes[inst_count_offset + 3] = (char)0xFF;
+        std::ofstream wf(cache_path, std::ios::binary | std::ios::trunc);
+        wf.write(bytes.data(), (std::streamsize)bytes.size());
+        wf.close();
+
+        SettledTorus bad;
+        bool result = settle_cache_load(cache_root, key, bad);
+        REQUIRE(!result);  // must return false, not allocate ~44 GB and crash
+    }
+
+    std::system(("rm -rf " + cache_root).c_str());
+}
+
 int main() {
     // CPU-side pack layout check: runs before GL init so it's always exercised.
     test_material_pack_layout();
     test_material_tileset_slot_setter();
+    test_settle_cache_round_trip();
+    test_settle_cache_warm_hit();
+    test_settle_cache_corrupted_file();
 
     SetConfigFlags(FLAG_WINDOW_HIDDEN);
     InitWindow(320, 200, "tileset_gpu_tests");

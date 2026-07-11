@@ -1,6 +1,7 @@
 #pragma once
 #include "raylib.h"   // Vector3, Matrix, Vector4
 #include "dsl_rng.h"
+#include "terrain_field.h"
 #include "tileset_spec.h"
 #include <chrono>
 #include <cstdint>
@@ -12,6 +13,15 @@
 namespace tri_emit { class TriangleBuildBuffer; }
 
 namespace dsl {
+
+// World field binding: threaded into DslState so the terrainVolume verb can call
+// the field's mesher. Null field pointer means "no world bound".
+struct WorldBinding {
+    const terrain_field::FieldRuntime* field = nullptr;
+    float sector_size = 16.0f;
+    float y_min       = -64.0f;
+    float y_max       = 192.0f;
+};
 
 enum class Session { None, Voxels, Triangles };  // Lattice is a later sub-project.
 
@@ -248,10 +258,15 @@ public:
 
     // Host installs the declared children's placement table before build();
     // placeChild looks entries up here. Keys come in two forms (the host inserts
-    // BOTH for every declared child): a plain `module` name (no-param / fallback,
-    // last-variant-wins) and a composite `module \x1f canonical-params-json` that
-    // selects ONE specific required variant. Empty map => any placeChild is a
-    // fail-closed error.
+    // BOTH for every declared child):
+    //   - plain `module` name (no-param lookup; last-variant-wins for bare-key)
+    //   - composite `module + '\x1f' + params_to_json(params)` (canonical JSON:
+    //     sorted keys, numbers via %.17g, no whitespace — see part_graph::params_to_json)
+    //     that selects ONE specific required variant by its canonical params.
+    // Empty map => any placeChild is a fail-closed error.
+    // placeChild with params normalizes the author's JSON (raw JS_JSONStringify) via
+    // params_from_json -> params_to_json before the composite lookup so key-order
+    // differences and float-format differences are resolved transparently.
     void set_child_hashes(std::map<std::string, uint64_t> m) { child_hashes_ = std::move(m); }
 
     // Exposed composite-key lookup used by both placeChild and j_ts_layer:
@@ -271,10 +286,13 @@ public:
     // Record a placement of `module` at the current transform-stack top.
     //
     // When `params` is present (the JSON.stringify bytes of the placeChild params
-    // object), look up the composite `module \x1f params` key so the placement
-    // resolves to the EXACT required variant's real resolved hash. Falls back to
-    // the plain `module` key when no variant matches (or no params given). Unknown
-    // module -> set_error (fail-closed).
+    // object), the raw bytes are normalized via params_from_json -> params_to_json
+    // (fixing ES key order and float format) and then looked up as the composite
+    // `module \x1f canonical-params-json` key. A miss is a fail-closed bake error
+    // naming the module and the normalized params — there is NO bare-module fallback
+    // for the with-params case (that silent fallback was the bug causing all parametric
+    // placements to resolve to one hash). Without params, uses the plain module-only
+    // key (unchanged behavior). Unknown module or undeclared variant -> set_error.
     void placeChild(const std::string& module,
                     const void* params = nullptr, size_t params_len = 0);
 
@@ -315,6 +333,16 @@ public:
     size_t op_count() const { return buffer_.ops.size(); }
     size_t child_count_ts() const { return children_.size(); }
 
+    // World field binding (set by the host before build() when baking a terrain
+    // sector part). terrainVolume reads this.
+    void set_world(const WorldBinding& w) { world_ = w; }
+    const WorldBinding& world() const { return world_; }
+
+    // Push a terrain triangle with explicit per-vertex normals (gradient normals
+    // from the terrain mesher). Bypasses the face-normal computation in the
+    // standard beginShape/vertex/endShape path.
+    void pushTerrainTriangle(const float pos[9], const float nrm[9], int material_id);
+
 private:
     std::unique_ptr<tileset::TilesetState> tileset_;
     std::vector<Matrix> stack_;   // never empty (seeded with identity)
@@ -348,6 +376,7 @@ private:
     std::shared_ptr<void> pf_registry_;
     std::chrono::steady_clock::time_point budget_deadline_{};
     bool budget_bounded_ = false;
+    WorldBinding world_;  // terrain field binding (null by default)
 };
 
 } // namespace dsl

@@ -31,6 +31,7 @@ layout(std430, binding = 4) buffer Stats                 { uint stat_culled_frus
 uniform vec4  planes[6];
 uniform vec3  cam_eye;
 uniform float pixel_budget;
+uniform float min_projected_size;   // sub-pixel cluster floor; 0 = off
 uniform uint  instance_count;
 uniform uint  max_clusters_per_instance;
 
@@ -113,6 +114,10 @@ void main() {
     vec3 wc  = (inst.transform * vec4(lc3, 1.0)).xyz;
     float dist = max(distance(wc, cam_eye), 0.01);
     float psize = cm.aabb_min_radius.w * scale / dist * pixel_budget;
+    if (min_projected_size > 0.0 && psize < min_projected_size) {
+        atomicAdd(stat_culled_frustum, 1u);
+        return;
+    }
     int lv = int(cm.lod_count) - 1;
     for (uint i = 0u; i < cm.lod_count; ++i)
         if (psize >= cm.thresholds[i]) { lv = int(i); break; }

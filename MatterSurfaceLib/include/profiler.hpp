@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -49,17 +50,24 @@ public:
     }
     
     void begin_frame() {
-        frame_start_ = Clock::now();
+        // Capture timestamp BEFORE acquiring the lock so lock contention
+        // does not pollute the frame-start measurement (consistent with
+        // end_frame() and begin_section()).
+        auto t = Clock::now();
+        std::lock_guard<std::mutex> lk(mutex_);
+        frame_start_ = t;
         frame_count_++;
     }
-    
+
     void end_frame() {
-        frame_end_ = Clock::now();
+        auto frame_end = Clock::now();
+        std::lock_guard<std::mutex> lk(mutex_);
+        frame_end_ = frame_end;
         auto frame_duration = std::chrono::duration_cast<Duration>(frame_end_ - frame_start_);
         double frame_time_ms = frame_duration.count() / 1e6;
-        
+
         frame_stats_.update(frame_time_ms);
-        
+
         // Update percentages every few frames for smoother display
         if (frame_count_ % 10 == 0) {
             update_percentages();
@@ -67,26 +75,31 @@ public:
     }
     
     void begin_section(const std::string& name) {
-        section_starts_[name] = Clock::now();
+        // Take a timestamp BEFORE acquiring the lock to keep timing accurate.
+        auto t = Clock::now();
+        std::lock_guard<std::mutex> lk(mutex_);
+        section_starts_[name] = t;
     }
-    
+
     void end_section(const std::string& name) {
+        auto end_time = Clock::now();
+        std::lock_guard<std::mutex> lk(mutex_);
         auto it = section_starts_.find(name);
         if (it == section_starts_.end()) return;
-        
-        auto end_time = Clock::now();
+
         auto duration = std::chrono::duration_cast<Duration>(end_time - it->second);
         double time_ms = duration.count() / 1e6;
-        
+
         sections_[name].name = name;
         sections_[name].update(time_ms);
-        
+
         section_starts_.erase(it);
     }
     
     void print_stats() const {
+        std::lock_guard<std::mutex> lk(mutex_);
         printf("\n=== Performance Statistics ===\n");
-        printf("Frame: %.2f ms (%.1f FPS)\n", 
+        printf("Frame: %.2f ms (%.1f FPS)\n",
                frame_stats_.average_time_ms, 1000.0 / frame_stats_.average_time_ms);
         printf("Frames: %d\n", frame_count_);
         printf("\nSection Breakdown:\n");
@@ -130,6 +143,7 @@ public:
     }
     
     void reset_stats() {
+        std::lock_guard<std::mutex> lk(mutex_);
         frame_stats_.reset();
         frame_count_ = 0;
         for (auto& pair : sections_) {
@@ -138,10 +152,12 @@ public:
     }
     
     double get_frame_time_ms() const {
+        std::lock_guard<std::mutex> lk(mutex_);
         return frame_stats_.average_time_ms;
     }
     
     double get_section_time_ms(const std::string& name) const {
+        std::lock_guard<std::mutex> lk(mutex_);
         auto it = sections_.find(name);
         return (it != sections_.end()) ? it->second.average_time_ms : 0.0;
     }
@@ -157,11 +173,12 @@ private:
         }
     }
     
+    mutable std::mutex mutex_;
     TimePoint frame_start_;
     TimePoint frame_end_;
     SectionStats frame_stats_{"Frame"};
     int frame_count_ = 0;
-    
+
     std::unordered_map<std::string, SectionStats> sections_;
     std::unordered_map<std::string, TimePoint> section_starts_;
 };

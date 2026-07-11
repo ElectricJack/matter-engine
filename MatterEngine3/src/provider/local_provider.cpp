@@ -189,7 +189,7 @@ std::string class_name_from_source(const std::string& source) {
 
 LocalProvider::LocalProvider(LocalProviderConfig cfg) : cfg_(std::move(cfg)) {}
 
-bool LocalProvider::install_graph(std::string& err) {
+bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy policy) {
     // Reset all mutable state at entry so repeated install_graph() calls are
     // idempotent. Unload any previously-loaded tileset slots so a re-connect
     // for a different world doesn't inherit stale atlases. Also reset the
@@ -250,6 +250,14 @@ bool LocalProvider::install_graph(std::string& err) {
     host_ = std::make_unique<script_host::ScriptHost>();
     host_->set_shared_lib_root(abs_shared_lib_);
     resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_schemas_);
+    // Task 13 (Phase C): create a shared HostBaker that persists beyond install_graph()
+    // so ensure_part_baked() can reuse it without reconstructing a ScriptHost.
+    host_baker_ = std::make_unique<part_graph::HostBaker>(*host_, abs_cache_root_);
+
+    // Task 2: apply transient settings to the baker (if set_transient_modules was called)
+    if (!transient_modules_.empty()) {
+        host_baker_->set_transient(&transient_modules_, transient_dir_);
+    }
 
     // Capture cfg_ pointer for the RecordingBaker lambda (install-phase on_part).
     LocalProviderConfig* cfg_ptr = &cfg_;
@@ -257,13 +265,16 @@ bool LocalProvider::install_graph(std::string& err) {
 
     // Task 5 (Phase B): RecordingBaker::bake() fires cfg_.on_part for
     // each freshly-baked part during install, with total==0 (indeterminate).
+    // Task 13: RecordingBaker delegates to *host_baker_ (the shared HostBaker
+    // member) instead of an inline inner, so ensure_part_baked() reuses it.
+    part_graph::HostBaker* shared_baker_ptr = host_baker_.get();
     struct RecordingBaker : public Baker {
-        HostBaker inner;
+        part_graph::HostBaker& inner;
         LocalProviderConfig* cfg;
         int* install_bake_count;
-        RecordingBaker(script_host::ScriptHost& h, std::string parts_dir,
+        RecordingBaker(part_graph::HostBaker& b,
                        LocalProviderConfig* c, int* ibc)
-            : inner(h, std::move(parts_dir)), cfg(c), install_bake_count(ibc) {}
+            : inner(b), cfg(c), install_bake_count(ibc) {}
         uint64_t resolve_hash(const std::string& source, const Params& params,
                               const std::vector<uint64_t>& child_hashes) override {
             return inner.resolve_hash(source, params, child_hashes);
@@ -294,12 +305,18 @@ bool LocalProvider::install_graph(std::string& err) {
                                uint64_t resolved_hash) override {
             return inner.bake_lod_variants(source, params, child_hashes, resolved_hash);
         }
+        // Task 2: forward module notification to HostBaker for transient routing.
+        void set_baking_module(const std::string& module) override {
+            inner.set_baking_module(module);
+        }
     };
-    RecordingBaker baker(*host_, abs_cache_root_, cfg_ptr, install_bake_count_ptr);
+    RecordingBaker baker(*shared_baker_ptr, cfg_ptr, install_bake_count_ptr);
     PartGraph graph(*resolver_, baker);
 
+    world_module_.clear();
     bool manifest_ok = PartGraph::read_manifest(abs_world_data_, cfg_.world_name,
-                                                roots_, err, &expand_flags_, &tileset_flags_);
+                                                roots_, err, &expand_flags_, &tileset_flags_,
+                                                &world_module_);
     if (!manifest_ok) {
         return false;
     }
@@ -312,7 +329,24 @@ bool LocalProvider::install_graph(std::string& err) {
         else { roots_for_install_.push_back(roots_[i]); install_to_orig_.push_back(i); }
     }
 
-    ir_ = graph.install(roots_for_install_, &graph_snapshot_);
+    // Phase C Task 7: if a root_params_json override is set (e.g. {"worldSeed": 2}
+    // from WorldSession::regenerate()), merge it into every root's params before
+    // calling install() so merge_params_canonical (and hence the resolved hash)
+    // reflects the override. Override keys win; keys absent from the override are
+    // unchanged. Only manifest roots receive the override; child parts (scatter
+    // schemas such as Rock/Grass) get their params exclusively from the parent's
+    // `static requires` function, which intentionally does NOT forward worldSeed to
+    // scatter children — so their hashes are seed-free and hit cache on a reroll.
+    if (!cfg_.root_params_json.empty()) {
+        Params override_params = params_from_json(cfg_.root_params_json);
+        if (!override_params.empty()) {
+            for (auto& root : roots_for_install_)
+                for (const auto& kv : override_params)
+                    root.params[kv.first] = kv.second;
+        }
+    }
+
+    ir_ = graph.install(roots_for_install_, &graph_snapshot_, policy);
     if (!ir_.ok) {
         err = ir_.error;
         return false;
@@ -327,10 +361,16 @@ bool LocalProvider::install_graph(std::string& err) {
     baked_hashes_.insert(ir_.baked.begin(), ir_.baked.end());
 
     // Build hash -> module name map for use in fetch_parts()'s on_part callback.
+    // Populate from roots first, then augment with all graph snapshot nodes so
+    // that expanded children (e.g. BoxA placed inside a World expand root) also
+    // get a module name in BakePartDone events and publish sort operations.
     module_by_hash_.clear();
     for (size_t j = 0; j < ir_.root_hashes.size(); ++j)
         if (ir_.root_hashes[j] != 0)
             module_by_hash_[ir_.root_hashes[j]] = roots_for_install_[j].module;
+    for (const auto& kv : graph_snapshot_.nodes)
+        if (kv.second.resolved_hash != 0)
+            module_by_hash_.emplace(kv.second.resolved_hash, kv.second.module);
 
     // Map each root module to the child-FOLDED resolved hash the graph baked it under.
     // install() returns root_hashes parallel to `roots_for_install`; using them (instead
@@ -347,6 +387,134 @@ bool LocalProvider::install_graph(std::string& err) {
     err = "install_graph: MATTER_HAVE_SCRIPT_HOST not defined";
     return false;
 #endif
+}
+
+bool LocalProvider::ensure_part_baked(uint64_t part_hash, std::string& err) {
+#if defined(MATTER_HAVE_SCRIPT_HOST)
+    if (!host_baker_) {
+        err = "ensure_part_baked: install_graph() has not been called";
+        return false;
+    }
+
+    // Top-level entry guard: bake_plan covers every node of the installed graph.
+    // An absent hash at the top level means the caller passed a stale or garbage
+    // hash — fail fast rather than silently succeeding with no bake output.
+    if (ir_.bake_plan.find(part_hash) == ir_.bake_plan.end()) {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%016llx", (unsigned long long)part_hash);
+        err = std::string("ensure_part_baked: hash ") + buf + " not in bake plan";
+        return false;
+    }
+
+    // Post-order DFS over bake_plan children so children are baked before parents.
+    // Each node: cached() short-circuits; otherwise bake + bake_lod_variants.
+    // Visited set prevents double-visiting in a DAG (shared children).
+    std::set<uint64_t> visited;
+    std::string bake_err;
+
+    std::function<bool(uint64_t)> bake_subtree = [&](uint64_t hash) -> bool {
+        if (visited.count(hash)) return true;
+        visited.insert(hash);
+
+        auto it = ir_.bake_plan.find(hash);
+        if (it == ir_.bake_plan.end()) {
+            // Not in bake_plan — already baked by install (BakePolicy::All path)
+            // or not a known node. Treat as cached/ok for recursive child lookups.
+            return true;
+        }
+        const part_graph::BakeInputs& bi = it->second;
+
+        // Recurse into children first (post-order).
+        for (uint64_t child_hash : bi.child_hashes) {
+            if (!bake_subtree(child_hash)) return false;
+        }
+
+        // cached() short-circuits — counts as a demand-phase cache hit.
+        if (host_baker_->cached(hash)) {
+            ++hit_count_;
+            return true;
+        }
+
+        // Fire on_part callback (demand phase, total==0 signals indeterminate count).
+        if (cfg_.on_part) {
+            const char* mod = bi.module.empty() ? nullptr : bi.module.c_str();
+            cfg_.on_part(mod, ++install_bake_count_, 0);
+        }
+
+        // Set the baking module for transient routing (must precede bake call)
+        host_baker_->set_baking_module(bi.module);
+
+        // Bake
+        bool bake_ok = false;
+        try {
+            bake_ok = host_baker_->bake(bi.source, bi.params, bi.child_hashes,
+                                        bi.child_modules, bi.child_params, hash);
+        } catch (std::bad_alloc&) {
+            bake_err = "out of memory baking part: " + bi.module;
+            return false;
+        } catch (std::exception& e) {
+            bake_err = std::string("exception baking part: ") + bi.module + ": " + e.what();
+            return false;
+        } catch (...) {
+            bake_err = "unknown exception baking part: " + bi.module;
+            return false;
+        }
+        if (!bake_ok) {
+            bake_err = "bake failed for part: " + bi.module;
+            return false;
+        }
+
+        // bake_lod_variants (mirrors install's per-node call)
+        if (!host_baker_->bake_lod_variants(bi.source, bi.params, bi.child_hashes, hash)) {
+            bake_err = "lod-variant bake failed for part: " + bi.module;
+            return false;
+        }
+
+        // Track freshly demand-baked parts in baked_count_ and baked_hashes_ so
+        // frame_stats().parts_baked reflects demand-phase activity and future
+        // reconcile() calls know this hash is freshly written to disk.
+        ++baked_count_;
+        baked_hashes_.insert(hash);
+
+        return true;
+    };
+
+    bool ok = bake_subtree(part_hash);
+    if (!ok) err = bake_err;
+    return ok;
+#else
+    err = "ensure_part_baked: MATTER_HAVE_SCRIPT_HOST not defined";
+    return false;
+#endif
+}
+
+bool LocalProvider::ensure_part_flattened(uint64_t part_hash) {
+    // Identical logic to compose_world's flatten_one lambda (moved here verbatim
+    // as a member; compose_world delegates to this function).
+    // Transient parts live in scratch; their flats belong there too (never the cache).
+    std::string root = abs_cache_root_;
+    if (!transient_dir_.empty()) {
+        const std::string scratch_part =
+            transient_dir_ + "/" + part_asset::cache_path_resolved(part_hash);
+        if (part_asset::peek_format_version(scratch_part) != 0)
+            root = transient_dir_;
+    }
+    const std::string flat_abs_path =
+        root + "/" + part_asset::cache_path_flat(part_hash);
+    if (part_asset::peek_format_version(flat_abs_path) == part_asset::kFormatVersionFlat)
+        return true;
+    part_flatten::FlattenResult fr =
+        part_flatten::flatten_part(root, part_hash);
+    if (fr.ok) {
+        printf("LocalProvider: flattened %016llx (%zu clusters, %zu levels, %zu -> %zu tris, %zu instance_refs)\n",
+               (unsigned long long)part_hash, fr.clusters, fr.levels,
+               fr.full_tris, fr.coarsest_tris, fr.instance_refs);
+        return true;
+    } else {
+        printf("LocalProvider: flatten failed for %016llx: %s\n",
+               (unsigned long long)part_hash, fr.error.c_str());
+        return false;
+    }
 }
 
 bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
@@ -368,93 +536,11 @@ bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
         out.instances.push_back(e);
     };
 
-    // Bake-time flattening of every placed root: merge its whole child subtree
-    // into per-cluster meshes with per-cluster LOD ladders (<hash>.flat.part),
-    // so the viewer renders flat cluster instances per root instead of
-    // re-expanding hundreds of child instances each frame.
-    // Content-addressed AND version-sniffed: regenerate when the flat artifact
-    // is missing OR from an older bake version (peek_format_version != kFormatVersionFlat).
-    auto flatten_one = [&](uint64_t part_hash) -> bool {
-        const std::string flat_abs_path =
-            abs_cache_root_ + "/" + part_asset::cache_path_flat(part_hash);
-        if (part_asset::peek_format_version(flat_abs_path) == part_asset::kFormatVersionFlat)
-            return true;
-        part_flatten::FlattenResult fr =
-            part_flatten::flatten_part(abs_cache_root_, part_hash);
-        if (fr.ok) {
-            printf("LocalProvider: flattened %016llx (%zu clusters, %zu levels, %zu -> %zu tris, %zu instance_refs)\n",
-                   (unsigned long long)part_hash, fr.clusters, fr.levels,
-                   fr.full_tris, fr.coarsest_tris, fr.instance_refs);
-            return true;
-        } else {
-            // Non-fatal: the viewer falls back to compositional rendering.
-            printf("LocalProvider: flatten failed for %016llx: %s\n",
-                   (unsigned long long)part_hash, fr.error.c_str());
-            return false;
-        }
-    };
-    auto flatten_placed = [&]() {
-        std::set<uint64_t> done;
-        for (const auto& e : out.instances) {
-            if (!done.insert(e.part_hash).second) continue;
-            flatten_one(e.part_hash);
-        }
-    };
-
-    // Bake-hardening #2: expand FlatInstanceRefs recorded in each placed
-    // root's .flat.part into world manifest entries. A pure-scatter root
-    // (StressForest) that busts the flatten budget lands on the BOUNDARY
-    // path — its .flat.part contains N refs, one per placement, which the
-    // GpuCuller consumes exactly like any other resolved instance. Runs
-    // AFTER flatten_placed so every referenced part is guaranteed to have
-    // been baked and (recursively) flattened. Iterates to a fixed point so
-    // nested boundaries are expanded too.
-    auto append_instance_refs = [&]() {
-        // Snapshot the set of already-emitted part hashes so we don't
-        // double-expand a part that appears both as a manifest root and as
-        // an instance ref of another root.
-        std::set<uint64_t> visited;
-        // Deferred expansion: read every unique part's flat.part refs and
-        // append world entries; repeat until no new part hashes appear.
-        while (true) {
-            std::vector<uint64_t> to_process;
-            std::set<uint64_t> seen;
-            for (const auto& e : out.instances) {
-                if (!seen.insert(e.part_hash).second) continue;
-                if (visited.count(e.part_hash)) continue;
-                to_process.push_back(e.part_hash);
-            }
-            if (to_process.empty()) break;
-            const size_t before = out.instances.size();
-            for (uint64_t ph : to_process) {
-                visited.insert(ph);
-                // Make sure this part's flat.part exists (some added-mid-loop
-                // parts may not have been flattened yet). Non-fatal on failure.
-                flatten_one(ph);
-                const std::string flat_abs_path =
-                    abs_cache_root_ + "/" + part_asset::cache_path_flat(ph);
-                if (part_asset::peek_format_version(flat_abs_path) !=
-                    part_asset::kFormatVersionFlat) continue;
-                BLASManager scratch_blas;
-                TLASManager scratch_tlas(4);
-                std::vector<part_asset::FlatCluster> clusters_ignored;
-                std::vector<part_asset::FlatInstanceRef> refs;
-                if (!part_asset::load_flat_v3(flat_abs_path, ph, scratch_blas,
-                                              scratch_tlas, clusters_ignored, refs))
-                    continue;
-                if (refs.empty()) continue;
-                out.instances.reserve(out.instances.size() + refs.size());
-                for (const auto& r : refs) {
-                    WorldManifestEntry we;
-                    we.instance_id = next_id++;
-                    we.part_hash   = r.child_resolved_hash;
-                    std::memcpy(we.transform, r.transform, sizeof(we.transform));
-                    out.instances.push_back(we);
-                }
-            }
-            if (out.instances.size() == before) break;   // fixed point
-        }
-    };
+    // Note: flatten_placed() and append_instance_refs() have moved to the publish
+    // pipeline (matter_engine.cpp::publish_pipeline per-part bake+flatten+streaming).
+    // compose_world() now only places roots and runs the tileset phase; per-part
+    // flatten and FlatInstanceRef expansion happen on-demand in the publish loop.
+    // connect() (sync API) still runs flatten+refs eagerly via its own compose path.
 
     // Generic placement: every non-tileset manifest root is placed at the origin, except
     // roots flagged `expand`, whose baked child-instance table is promoted to
@@ -480,22 +566,29 @@ bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
             place(ir_.root_hashes[k], 0.0f, 0.0f, 0.0f, roots_[i].module);
         }
     }
-    flatten_placed();
-    append_instance_refs();
+    // Backfill module names for expanded children: append_expanded_children does
+    // not know the module name of each child hash, but module_by_hash_ (built at
+    // install time from graph_snapshot_.nodes) covers the full graph. Fill in any
+    // empty module fields so BakePartDone events and publish-sort operations have
+    // correct labels for all placed parts (roots and expanded children alike).
+    for (auto& e : out.instances) {
+        if (e.module.empty()) {
+            auto it = module_by_hash_.find(e.part_hash);
+            if (it != module_by_hash_.end()) e.module = it->second;
+        }
+    }
 
-    // ---- Tileset roots: GPU bake + .gtex load into a viewer slot -----------
-    // run_tileset_phase reads world.manifest and .js from abs_world_data_.
-    // The gtex is written to abs_world_data_/<root_module>.gtex (the GPU overload
-    // constructs the path as world_data_dir + "/" + root_module + ".gtex").
+    // ---- Tileset roots: deferred (Task 15) -----------------------------------
+    // Tileset roots are no longer run in compose_world. They run after BakeFinished
+    // in the deferred tileset phase (publish_pipeline tail in matter_engine.cpp)
+    // via run_tileset_deferred(). This removes the ~350s box3d settle wall from
+    // the silhouette critical path.
     //
-    // run_tileset_phase passes abs_cache_root_ to HostBaker; HostBaker::bake now
-    // propagates it via BakeOptions.parts_dir so bake_source writes absolute paths
-    // (Task 3 Phase B: no chdir needed here).
-    // (baked_tileset_count_ already reset at compose_world() entry.)
-
+    // connect() (synchronous API) still runs them eagerly via run_tileset_deferred
+    // called immediately after compose_world().
+    //
     // Guard: fail-closed BEFORE any GL/disk work if the manifest declares more
-    // tileset roots than we have sampler-array slots. Checking inside the loop
-    // left 0..N-1 slots loaded with stale atlases on error.
+    // tileset roots than we have sampler-array slots.
     if ((int)tileset_indices_.size() > viewer::tileset_provider::max_slots()) {
         err = "LocalProvider: manifest declares " +
               std::to_string(tileset_indices_.size()) +
@@ -504,59 +597,7 @@ bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
               " slots are available";
         return false;
     }
-
-    // Phase B: route GL work through gpu_run when set (async path); fall back to
-    // inline execution when null (synchronous callers and tests — no behavior change).
-    auto run_gl = [&](const char* name, std::function<bool(std::string&)> fn,
-                      std::string& e) -> bool {
-        if (cfg_.gpu_run) return cfg_.gpu_run(name, std::move(fn), e);
-        return fn(e);   // inline (synchronous path unchanged)
-    };
-
-    for (size_t ti : tileset_indices_) {
-        const std::string root_module = roots_[ti].module;
-        // Dev hook: MATTER_TILESET_DUMP_PNG=1 dumps loose <root>-albedo.png /
-        // -normal.png / -orm.png / -height.png next to the .gtex so an operator
-        // can eyeball the baked atlas without launching the viewer.
-        const bool dump_png = std::getenv("MATTER_TILESET_DUMP_PNG") != nullptr;
-        const int slot_idx  = baked_tileset_count_;  // capture by value for closure
-
-        std::string te;
-        // ONE closure per tileset: bake + upload together (per-tileset granularity).
-        bool ok = run_gl(root_module.c_str(), [&](std::string& ge) -> bool {
-            tileset::SettledTorus settled;
-            tileset::TilesetPhaseOpts opts;
-            opts.force_rebake = false;   // let content_hash decide
-            opts.dump_png     = dump_png;
-            std::string re;
-            if (!tileset::run_tileset_phase(abs_world_data_, cfg_.world_name, root_module,
-                                            abs_cache_root_, settled, opts, re,
-                                            abs_shared_lib_)) {
-                ge = "run_tileset_phase(" + root_module + "): " + re +
-                     " (if a GL error: set GALLIUM_DRIVER=d3d12 on WSLg)";
-                return false;
-            }
-            // The GPU overload writes: world_data_dir + "/" + root_module + ".gtex"
-            const std::string gtex_path = abs_world_data_ + "/" + root_module + ".gtex";
-            std::string le;
-            if (!viewer::tileset_provider::load_slot(slot_idx, gtex_path, le)) {
-                ge = "tileset_provider::load_slot(" + gtex_path + "): " + le;
-                return false;
-            }
-            // Bind material DIRT (16) to this slot by default — the world script may
-            // override later. Non-DIRT materials keep groundTilesetSlot = -1.
-            MaterialRegistrySetGroundTilesetSlot(16, slot_idx);
-            printf("LocalProvider: tileset '%s' -> slot %d (%s)\n",
-                   root_module.c_str(), slot_idx, gtex_path.c_str());
-            return true;
-        }, te);
-
-        if (!ok) {
-            err = "LocalProvider: tileset '" + root_module + "': " + te;
-            return false;
-        }
-        ++baked_tileset_count_;
-    }
+    // tileset roots placed/slotted later; baked_tileset_count_ stays 0 until deferred phase.
 
     // --- Parse world lights ---
     {
@@ -675,8 +716,202 @@ bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
     return true;
 }
 
+bool LocalProvider::run_tileset_deferred(
+    std::function<void(int done, int total, const char* module)> on_tileset_part,
+    std::function<bool()> is_cancelled,
+    std::string& err)
+{
+#if defined(MATTER_HAVE_SCRIPT_HOST)
+    // Guard: max slots checked at compose_world time; indices already validated.
+    const int total = (int)tileset_indices_.size();
+
+    // Phase B: route GL work through gpu_run when set; fall back to inline.
+    auto run_gl = [&](const char* name, std::function<bool(std::string&)> fn,
+                      std::string& e) -> bool {
+        if (cfg_.gpu_run) return cfg_.gpu_run(name, std::move(fn), e);
+        return fn(e);
+    };
+
+    for (int idx = 0; idx < total; ++idx) {
+        if (is_cancelled && is_cancelled()) {
+            err = "tileset deferred phase cancelled";
+            return false;
+        }
+
+        const size_t ti = tileset_indices_[(size_t)idx];
+        const std::string root_module = roots_[ti].module;
+
+        if (on_tileset_part)
+            on_tileset_part(idx, total, root_module.c_str());
+
+        const int slot_idx = baked_tileset_count_;
+
+        if (!cfg_.gl_available) {
+            // Headless: settle-only (no GPU atlas).
+            fprintf(stderr, "[local_provider] headless deferred tileset: '%s'\n",
+                    root_module.c_str());
+            fflush(stderr);
+            std::string se;
+            tileset::SettledTorus settled;
+            if (!tileset::run_tileset_phase(abs_world_data_, cfg_.world_name, root_module,
+                                            abs_cache_root_, settled, se,
+                                            abs_shared_lib_)) {
+                err = "LocalProvider: tileset '" + root_module +
+                      "' settle failed (headless): " + se;
+                return false;
+            }
+            printf("LocalProvider: tileset '%s' settle ok (deferred headless)\n",
+                   root_module.c_str());
+
+            if (on_tileset_part)
+                on_tileset_part(idx + 1, total, root_module.c_str());
+            continue;
+        }
+
+        // GL available: settle on the worker (CPU-only, cache-wired), then GPU bake on GL thread.
+        const bool dump_png = std::getenv("MATTER_TILESET_DUMP_PNG") != nullptr;
+
+        // Step 1 (worker thread): physics settle + cache load/save — no GL needed.
+        tileset::SettledTorus settled;
+        {
+            std::string se;
+            if (!tileset::run_tileset_phase(abs_world_data_, cfg_.world_name, root_module,
+                                            abs_cache_root_, settled, se, abs_shared_lib_)) {
+                err = "LocalProvider: tileset '" + root_module + "' settle failed: " + se;
+                return false;
+            }
+        }
+
+        // Compute script source hash on the worker (needed by bake_tileset_gpu for .gtex cache key).
+        const std::string root_js_path =
+            abs_world_data_ + "/../schemas/" + root_module + ".js";
+        uint64_t script_source_hash = 0;
+        {
+            std::ifstream jf(root_js_path, std::ios::binary);
+            if (jf) {
+                std::ostringstream ss; ss << jf.rdbuf();
+                const std::string src = ss.str();
+                script_source_hash = part_asset::fnv1a64(src.data(), src.size());
+            }
+            // If the file can't be read, hash stays 0 — bake_tileset_gpu will force-rebake.
+        }
+        const std::string gtex_path = abs_world_data_ + "/" + root_module + ".gtex";
+
+        // Step 2 (GL thread): GPU atlas bake + slot upload — GL required.
+        std::string te;
+        bool ok = run_gl(root_module.c_str(), [&](std::string& ge) -> bool {
+            tileset::BakeInputs bi; bi.parts_cache_dir = abs_cache_root_;
+            std::string be;
+            if (!tileset::bake_tileset_gpu(settled, script_source_hash, gtex_path,
+                                           bi, false, dump_png, be)) {
+                ge = "bake_tileset_gpu(" + root_module + "): " + be +
+                     " (if a GL error: set GALLIUM_DRIVER=d3d12 on WSLg)";
+                return false;
+            }
+            std::string le;
+            if (!viewer::tileset_provider::load_slot(slot_idx, gtex_path, le)) {
+                ge = "tileset_provider::load_slot(" + gtex_path + "): " + le;
+                return false;
+            }
+            MaterialRegistrySetGroundTilesetSlot(16, slot_idx);
+            printf("LocalProvider: tileset '%s' -> slot %d (%s) [deferred]\n",
+                   root_module.c_str(), slot_idx, gtex_path.c_str());
+            return true;
+        }, te);
+
+        if (!ok) {
+            err = "LocalProvider: tileset '" + root_module + "': " + te;
+            return false;
+        }
+        ++baked_tileset_count_;
+
+        if (on_tileset_part)
+            on_tileset_part(idx + 1, total, root_module.c_str());
+    }
+    return true;
+#else
+    (void)on_tileset_part;
+    (void)is_cancelled;
+    err = "run_tileset_deferred: MATTER_HAVE_SCRIPT_HOST not defined";
+    return false;
+#endif
+}
+
 bool LocalProvider::connect(WorldManifest& out, std::string& err) {
-    return install_graph(err) && compose_world(out, err);
+    // Sync API: keep eager behavior — BakePolicy::All bakes every node at install.
+    // After compose_world (which now skips flatten/refs in the async path),
+    // eagerly flatten all placed roots and expand FlatInstanceRefs here.
+    if (!install_graph(err, part_graph::BakePolicy::All)) return false;
+    if (!compose_world(out, err)) return false;
+
+    // Eager flatten: every placed root gets a .flat.part so synchronous callers
+    // (tests, gallery_bake, viewer_logic_tests) see the flat artifacts immediately.
+    {
+        std::set<uint64_t> done;
+        for (const auto& e : out.instances) {
+            if (!done.insert(e.part_hash).second) continue;
+            ensure_part_flattened(e.part_hash);
+        }
+    }
+
+    // Eager FlatInstanceRef expansion: read each placed root's .flat.part and
+    // append world entries for any instance refs (BOUNDARY-path roots like
+    // StressForest). Iterates to a fixed point so nested boundaries expand too.
+    {
+        uint32_t next_id = out.instances.empty() ? 1u :
+            (out.instances.back().instance_id + 1u);
+        std::set<uint64_t> visited;
+        while (true) {
+            std::vector<uint64_t> to_process;
+            std::set<uint64_t> seen;
+            for (const auto& e : out.instances) {
+                if (!seen.insert(e.part_hash).second) continue;
+                if (visited.count(e.part_hash)) continue;
+                to_process.push_back(e.part_hash);
+            }
+            if (to_process.empty()) break;
+            const size_t before = out.instances.size();
+            for (uint64_t ph : to_process) {
+                visited.insert(ph);
+                ensure_part_flattened(ph);
+                const std::string flat_abs_path =
+                    abs_cache_root_ + "/" + part_asset::cache_path_flat(ph);
+                if (part_asset::peek_format_version(flat_abs_path) !=
+                    part_asset::kFormatVersionFlat) continue;
+                BLASManager scratch_blas;
+                TLASManager scratch_tlas(4);
+                std::vector<part_asset::FlatCluster> clusters_ignored;
+                std::vector<part_asset::FlatInstanceRef> refs;
+                if (!part_asset::load_flat_v3(flat_abs_path, ph, scratch_blas,
+                                              scratch_tlas, clusters_ignored, refs))
+                    continue;
+                if (refs.empty()) continue;
+                out.instances.reserve(out.instances.size() + refs.size());
+                for (const auto& r : refs) {
+                    WorldManifestEntry we;
+                    we.instance_id = next_id++;
+                    we.part_hash   = r.child_resolved_hash;
+                    std::memcpy(we.transform, r.transform, sizeof(we.transform));
+                    out.instances.push_back(we);
+                }
+            }
+            if (out.instances.size() == before) break;  // fixed point
+        }
+    }
+
+    // Task 15: sync API eagerly runs the deferred tileset phase (headless or GL).
+    // Async path runs this after BakeFinished via publish_pipeline step 9.
+    // Null callbacks: no progress reporting, no cancellation on the sync path.
+    // FATAL on this sync path (pre-Task-15 behavior): connect() callers (tests,
+    // gallery_bake, viewer_logic_tests) expect a fully prepared world on success.
+    if (!tileset_indices_.empty()) {
+        std::string te;
+        if (!run_tileset_deferred(nullptr, nullptr, te)) {
+            err = "LocalProvider::connect: tileset phase failed: " + te;
+            return false;
+        }
+    }
+    return true;
 }
 
 std::vector<uint64_t>
@@ -790,6 +1025,191 @@ bool append_expanded_children(const std::string& cache_root, uint64_t root_hash,
         out_instances.push_back(e);
     }
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Phase C Task 17 — resolve cache restore hook
+// ---------------------------------------------------------------------------
+
+bool LocalProvider::restore_from_cache(
+    const part_graph_snapshot::Snapshot&              snapshot,
+    const std::unordered_map<uint64_t, part_graph::BakeInputs>& bake_plan,
+    const std::vector<uint64_t>&                      root_hashes,
+    std::string& err)
+{
+#if defined(MATTER_HAVE_SCRIPT_HOST)
+    // Reset mutable state (mirrors the preamble of install_graph()).
+    viewer::tileset_provider::unload_all();
+    MaterialRegistrySetGroundTilesetSlot(16, -1);
+    baked_tileset_count_ = 0;
+    baked_count_  = 0;
+    hit_count_    = 0;
+    install_bake_count_ = 0;
+    baked_hashes_.clear();
+    roots_.clear();
+    expand_flags_.clear();
+    tileset_flags_.clear();
+    roots_for_install_.clear();
+    install_to_orig_.clear();
+    tileset_indices_.clear();
+    ir_ = part_graph::InstallResult{};
+    graph_snapshot_ = part_graph_snapshot::Snapshot{};
+
+    // Resolve absolute paths.
+    fs_mkdir(cfg_.cache_root.c_str());
+    std::string parts_subdir = cfg_.cache_root + "/parts";
+    fs_mkdir(parts_subdir.c_str());
+    abs_schemas_    = abspath(cfg_.schemas_dir);
+    abs_world_data_ = abspath(cfg_.world_data_dir);
+    abs_shared_lib_ = abspath(cfg_.shared_lib_dir);
+    abs_cache_root_ = abspath(cfg_.cache_root);
+
+    // Initialise ScriptHost + HostBaker so ensure_part_baked() can re-bake
+    // individual cache-miss parts without running a global resolve.
+    host_ = std::make_unique<script_host::ScriptHost>();
+    host_->set_shared_lib_root(abs_shared_lib_);
+    resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_schemas_);
+    host_baker_ = std::make_unique<part_graph::HostBaker>(*host_, abs_cache_root_);
+
+    // Task 2: apply transient settings to the baker (if set_transient_modules was called)
+    if (!transient_modules_.empty()) {
+        host_baker_->set_transient(&transient_modules_, transient_dir_);
+    }
+
+    // Read the world manifest to populate roots_/expand_flags_/tileset_flags_/
+    // tileset_indices_ so run_tileset_deferred() still operates correctly.
+    {
+        std::string merr;
+        world_module_.clear();
+        if (!PartGraph::read_manifest(abs_world_data_, cfg_.world_name,
+                                      roots_, merr, &expand_flags_, &tileset_flags_,
+                                      &world_module_)) {
+            err = "restore_from_cache: failed to read manifest: " + merr;
+            return false;
+        }
+        for (size_t i = 0; i < roots_.size(); ++i) {
+            if (tileset_flags_[i]) tileset_indices_.push_back(i);
+            else { roots_for_install_.push_back(roots_[i]); install_to_orig_.push_back(i); }
+        }
+    }
+
+    // Apply root_params_json override (mirrors install_graph's merge step).
+    if (!cfg_.root_params_json.empty()) {
+        // We don't actually need to merge params into roots_ here because we're
+        // not re-resolving the graph — the cached root_hashes already reflect the
+        // override. We still populate roots_ for tileset phase which will re-eval
+        // its own script; tileset scripts don't use root_params_json.
+        (void)cfg_.root_params_json;
+    }
+
+    // Restore cache payload into ir_.
+    ir_.ok          = true;
+    ir_.root_hashes = root_hashes;
+    ir_.bake_plan   = bake_plan;
+
+    // Restore graph snapshot.
+    graph_snapshot_ = snapshot;
+
+    // Build module_by_hash_ from snapshot nodes (for diagnostics / module labels).
+    module_by_hash_.clear();
+    for (const auto& kv : graph_snapshot_.nodes)
+        module_by_hash_[kv.second.resolved_hash] = kv.second.module;
+
+    return true;
+#else
+    err = "restore_from_cache: MATTER_HAVE_SCRIPT_HOST not defined";
+    return false;
+#endif
+}
+
+bool LocalProvider::try_load_cached_probes(WorldManifest& m) {
+    // Replicates the probe fingerprint computation from compose_world() so the
+    // same .probes cache file is used on a warm (cache-hit) launch.
+    probe_bake::BakeParams bake_params;  // default BakeParams (same as compose_world)
+    std::vector<uint8_t> fp_buf;
+
+    // 1. Instances (part_hash u64 + transform[16] floats)
+    for (const auto& e : m.instances) {
+        const size_t off = fp_buf.size();
+        fp_buf.resize(off + sizeof(uint64_t) + 16 * sizeof(float));
+        std::memcpy(fp_buf.data() + off, &e.part_hash, sizeof(uint64_t));
+        std::memcpy(fp_buf.data() + off + sizeof(uint64_t), e.transform, 16 * sizeof(float));
+    }
+
+    // 2. Bake grid constants (packed struct, same layout as compose_world)
+    struct BakeGridKey {
+        float cell;
+        int   max_cells_axis;
+        int   pad_cells;
+        int   rays_per_cell;
+        int   sun_rays;
+        float sun_cone_deg;
+    } gk;
+    static_assert(sizeof(BakeGridKey) == 24, "probe fingerprint struct size mismatch");
+    gk.cell           = bake_params.cell;
+    gk.max_cells_axis = bake_params.max_cells_axis;
+    gk.pad_cells      = bake_params.pad_cells;
+    gk.rays_per_cell  = bake_params.rays_per_cell;
+    gk.sun_rays       = bake_params.sun_rays;
+    gk.sun_cone_deg   = bake_params.sun_cone_deg;
+    {
+        const size_t off = fp_buf.size();
+        fp_buf.resize(off + sizeof(BakeGridKey));
+        std::memcpy(fp_buf.data() + off, &gk, sizeof(BakeGridKey));
+    }
+
+    // 3. Lights fingerprint
+    uint64_t lf = world_lights::lights_fingerprint(m.lights);
+    {
+        const size_t off = fp_buf.size();
+        fp_buf.resize(off + sizeof(uint64_t));
+        std::memcpy(fp_buf.data() + off, &lf, sizeof(uint64_t));
+    }
+
+    const uint64_t probe_fingerprint = part_asset::fnv1a64(fp_buf.data(), fp_buf.size());
+
+    // Try to load from the probe cache.
+    const std::string cache_subdir = abs_cache_root_ + "/cache";
+    const std::string probes_path  = cache_subdir + "/" + cfg_.world_name + ".probes";
+    probe_volume::ProbeVolume vol;
+    if (!probe_volume::load_probes(probes_path, vol, probe_fingerprint))
+        return false;
+    m.probes = std::make_shared<probe_volume::ProbeVolume>(std::move(vol));
+    return true;
+}
+
+// Task 2: transient artifact routing
+void LocalProvider::set_transient_modules(std::set<std::string> modules) {
+    transient_modules_ = std::move(modules);
+
+#ifdef _WIN32
+    const char* tmp = std::getenv("TEMP");
+    if (!tmp) tmp = std::getenv("TMP");
+    if (!tmp) tmp = ".";
+    transient_dir_ = std::string(tmp) + "/matter_transient/" + std::to_string(::_getpid());
+    std::string win_path = transient_dir_;
+    for (char& c : win_path) if (c == '/') c = '\\';
+    std::system(("mkdir \"" + win_path + "\" 2>nul").c_str());
+#else
+    pid_t pid = ::getpid();
+    transient_dir_ = "/tmp/matter_transient/" + std::to_string(pid);
+    std::system(("mkdir -p " + transient_dir_).c_str());
+#endif
+
+    // Note: baker and store configuration happens in install_graph() once they're created.
+    // PartStore is owned at a higher level, so callers must call
+    // store.set_scratch_dir(prov->transient_dir()) independently.
+}
+
+void LocalProvider::release_transient(uint64_t hash) {
+    if (transient_dir_.empty()) return;  // not configured
+
+    // Unlink .part and .flat.part from scratch
+    const std::string part_path = transient_dir_ + "/" + part_asset::cache_path_resolved(hash);
+    const std::string flat_path = transient_dir_ + "/" + part_asset::cache_path_flat(hash);
+
+    std::remove(part_path.c_str());
+    std::remove(flat_path.c_str());
 }
 
 } // namespace viewer

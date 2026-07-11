@@ -265,8 +265,9 @@ int RasterComposer::draw_gpu_driven(GpuCuller& culler, PartStore& /*store*/,
     // returns -1 and the helper skips the binding).
     viewer::tileset_provider::bind_all_to_shader((GLuint)shader_gpu_.id);
 
-    // Disable backface culling (mesh-session winding not guaranteed).
-    rlDisableBackfaceCulling();
+    // Backface culling is normally disabled here (mesh-session winding not
+    // guaranteed); RenderOptions::cull_backfaces opts back in.
+    if (!cull_backfaces_) rlDisableBackfaceCulling();
 
     // Wireframe toggle: flip polygon mode around the indirect draw so mesh
     // topology becomes visible. Restored to GL_FILL afterwards so raylib's

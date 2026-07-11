@@ -40,12 +40,28 @@ struct LocalProviderConfig {
                        std::function<bool(std::string& err)> fn,
                        std::string& err)> gpu_run;
 
+    // True when GLAD function pointers are loaded (i.e., a window was created).
+    // False in headless tests (no window, no GL context): the tileset phase
+    // runs physics-settle only; the .gtex is generated later when a viewer
+    // with a live GL context opens the world (GL 4.6 required by GPU path).
+    // Note: does NOT imply GL 4.6 — contexts with allow_gl_lt_46=true have
+    // GLAD loaded and set this true; gl46_available() then decides success/error.
+    bool gl_available = false;
+
     // Task 7: OOM/error injection hook for testing skip-and-continue.
     // Fired once per part processed (install bake + fetch/load); `part_index` is the
     // 0-based index within the current phase's part list. May throw to inject an error
     // (std::bad_alloc → OutOfMemory, any other exception → ScriptError/Internal).
     // Null in production (kernel-internal test seam; not part of the public stable API).
     std::function<void(int part_index)> test_fault_hook;
+
+    // Phase C Task 7: optional root-params override JSON object, e.g. {"worldSeed": 2}.
+    // When non-empty, merged (overrides win) into every manifest root's params before
+    // merge_params_canonical, so the resolved hash changes with the seed value.
+    // Empty string = no override (today's default behavior).
+    // Populated by WorldSession::regenerate(); not used by execute_rebake_cone (cone
+    // rebuilds operate on a diff of changed files, not a full root-params change).
+    std::string root_params_json;
 };
 
 // Drives the SP-3 install path over a persistent content-addressed cache and
@@ -60,12 +76,44 @@ public:
 
     // Heavy phase: ScriptHost + PartGraph::install (script eval, mesh, per-part bake).
     // Must be called before compose_world(). Idempotent state reset happens here.
-    bool install_graph(std::string& err);
+    //
+    // policy=BakePolicy::All (default, sync/connect() path): bakes every node eagerly.
+    // policy=BakePolicy::RootsOnly (async execute_bake path, Phase C Task 14):
+    //   only bakes root nodes; the retained bake_plan covers all nodes so
+    //   ensure_part_baked() can bake individual subtrees on demand from the publish loop.
+    bool install_graph(std::string& err,
+                       part_graph::BakePolicy policy = part_graph::BakePolicy::All);
+
+    // Task 13 (Phase C): on-demand bake primitives.
+    // Bake one part (and, post-order, any unbaked children in its subtree) using
+    // the retained bake_plan from the last install_graph(). cached() short-circuits
+    // per node; also runs bake_lod_variants for freshly-baked nodes. Safe to call
+    // from the worker thread after install_graph (host_ is idle post-install).
+    // Returns false (with err set) on bake failure; true on success or already cached.
+    bool ensure_part_baked(uint64_t part_hash, std::string& err);
+
+    // Flatten one baked part to .flat.part (moved from compose_world's flatten_one
+    // lambda into a member; identical logic incl. version sniff).
+    // Requires the part to have been baked (ensure_part_baked first).
+    // Returns false (non-fatal) if flatten_part fails; caller falls back to
+    // compositional rendering.
+    bool ensure_part_flattened(uint64_t part_hash);
 
     // Post-install: scatter/place, expand, per-root flatten, instance refs,
-    // tileset phase (via gpu_run), probe bake. Reusable after a cone rebake.
-    // Requires install_graph() to have succeeded first.
+    // probe bake. Tileset roots are skipped here; call run_tileset_deferred
+    // after BakeFinished (Task 15: tileset off the critical path).
+    // Reusable after a cone rebake. Requires install_graph() to have succeeded.
     bool compose_world(WorldManifest& out, std::string& err);
+
+    // Run the deferred tileset phase for all tileset roots after BakeFinished.
+    // settle_cache_load → on miss: ensure_part_baked children + settle_tileset
+    // + settle_cache_save; then bake_tileset_gpu (if gl_available).
+    // Emits progress via on_tileset_part (done, total, root_module) for each
+    // tileset root processed. Returns false on hard failure (sets err).
+    bool run_tileset_deferred(
+        std::function<void(int done, int total, const char* module)> on_tileset_part,
+        std::function<bool()> is_cancelled,
+        std::string& err);
 
     std::vector<uint64_t> reconcile(const WorldManifest& manifest,
                                     const PartStore& store) override;
@@ -85,10 +133,55 @@ public:
     // ProdGraphResolver for live-edit cascade tracking.
     part_graph_snapshot::Snapshot& graph_snapshot() { return graph_snapshot_; }
 
+    // Phase C Task 17 — resolve cache restore hook.
+    // Called by execute_bake on a resolve-cache hit INSTEAD of install_graph().
+    // Restores bake_plan, root_hashes, graph_snapshot from the cache payload and
+    // initialises the ScriptHost + HostBaker so ensure_part_baked() can re-bake
+    // individual cache-miss parts on a warm run without global re-resolve.
+    // Also reads the world manifest to populate roots_/tileset_indices_ so the
+    // deferred tileset phase (run_tileset_deferred) still runs correctly.
+    // Requires: MATTER_HAVE_SCRIPT_HOST (returns false otherwise).
+    // Fail-closed: any setup error returns false; caller falls through to full resolve.
+    bool restore_from_cache(
+        const part_graph_snapshot::Snapshot&              snapshot,
+        const std::unordered_map<uint64_t, part_graph::BakeInputs>& bake_plan,
+        const std::vector<uint64_t>&                      root_hashes,
+        std::string& err);
+
+    // Phase C Task 17 — try to load cached probes for a pre-built manifest.
+    // Computes the same probe fingerprint compose_world would have used (from
+    // manifest instances + lights + default BakeParams), then calls
+    // probe_volume::load_probes. Assigns out.probes on success.
+    // Returns false (and leaves out.probes null) on any probe cache miss.
+    bool try_load_cached_probes(WorldManifest& m);
+
     // Task 7 fix: per-part load failures recorded during fetch_parts() when
     // get_or_load returns null (skip-and-continue; returns true even with failures).
     struct FetchFailed { std::string module; std::string error; };
     const std::vector<FetchFailed>& fetch_failed() const { return fetch_failed_; }
+
+    // Phase C Task 2: transient artifact routing (tmpfs scratch dir).
+    // Configure the baker and store to route bakes of the listed modules to
+    // a per-process scratch dir (/tmp/matter_transient/<pid>/). The scratch
+    // dir is created with mkdir -p semantics.
+    void set_transient_modules(std::set<std::string> modules);
+
+    // Release a transient part: unlink its .part and .flat.part from scratch.
+    // Safe no-op if the artifact is absent or not transient.
+    void release_transient(uint64_t hash);
+
+    // Access the transient scratch dir (for test assertions).
+    const std::string& transient_dir() const { return transient_dir_; }
+
+    // Phase C Task 4: name of the module tagged `world` in world.manifest (empty
+    // if no world-kind entry). Populated after install_graph(). Task 9 consumes it.
+    const std::string& world_module() const { return world_module_; }
+
+#if defined(MATTER_HAVE_SCRIPT_HOST)
+    // Phase C Task 9: expose the shared HostBaker so install_world can set the
+    // world binding and bake sector child assets through the same baker instance.
+    part_graph::HostBaker& host_baker() { return *host_baker_; }
+#endif
 
 private:
     LocalProviderConfig  cfg_;
@@ -121,7 +214,15 @@ private:
     // Owned objects that span both phases.
     std::unique_ptr<script_host::ScriptHost>            host_;
     std::unique_ptr<part_graph::FileModuleResolver>     resolver_;
+    std::unique_ptr<part_graph::HostBaker>              host_baker_;  // Task 13: shared baker
 #endif
+
+    // Task 2: transient module routing state
+    std::set<std::string> transient_modules_;
+    std::string transient_dir_;
+
+    // Task 4: world-kind module name from manifest (empty if none).
+    std::string world_module_;
 };
 
 // Expand an assembly root's baked child-instance table (from its .part in

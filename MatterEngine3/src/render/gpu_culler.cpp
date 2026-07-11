@@ -23,6 +23,12 @@
 
 namespace viewer {
 
+// Per-bucket instance-transform slot count assigned to each newly registered
+// part.  Starts small because worlds stream many unique single-instance terrain
+// tiles; the overflow path in cull() grows region_cap to the real per-part
+// count on the part's first resolved frame, so no OOB window exists.
+static constexpr uint32_t kInitialRegionCap = 16;
+
 // ---------------------------------------------------------------------------
 // release_hiz_objects — free HiZ GL objects (textures, FBO, program).
 // Called from destructor and when recreating on resize.
@@ -107,6 +113,7 @@ bool GpuCuller::init(std::string& err) {
     uloc_planes_                = glGetUniformLocation(program_cull_, "planes");
     uloc_cam_eye_               = glGetUniformLocation(program_cull_, "cam_eye");
     uloc_pixel_budget_          = glGetUniformLocation(program_cull_, "pixel_budget");
+    uloc_min_projected_size_    = glGetUniformLocation(program_cull_, "min_projected_size");
     uloc_instance_count_        = glGetUniformLocation(program_cull_, "instance_count");
     uloc_max_clusters_per_inst_ = glGetUniformLocation(program_cull_, "max_clusters_per_instance");
     uloc_hiz_enabled_           = glGetUniformLocation(program_cull_, "hiz_enabled");
@@ -313,7 +320,7 @@ int GpuCuller::ensure_part(uint64_t part_hash, PartStore& store) {
     pg.cluster_start  = (uint32_t)cluster_staging_.size();
     pg.cluster_count  = 0;
     pg.region_base    = 0;   // recomputed below
-    pg.region_cap     = 4096;
+    pg.region_cap     = kInitialRegionCap;
 
     // -----------------------------------------------------------------
     // Build interleaved VBO (stride 36 B per vertex):
@@ -478,6 +485,76 @@ int GpuCuller::ensure_part(uint64_t part_hash, PartStore& store) {
 int GpuCuller::part_slot_of(uint64_t hash) const {
     auto it = slot_of_.find(hash);
     return it != slot_of_.end() ? it->second : -1;
+}
+
+// ---------------------------------------------------------------------------
+// release_part — evict a single part's GPU resources.
+//
+// The dead slot (vao == 0) remains in parts_ as a hole; no compaction.
+// draw_indirect() already skips entries with pg.vao == 0.
+// The cull shader skips clusters with lod_count == 0 (zeroed here and
+// patched into ssbo_clusters_ via glBufferSubData on the exact range).
+//
+// After this call:
+//   - slot_of_[hash] no longer exists  → ensure_part() will assign a new slot
+//   - parts_[old_slot].vao == 0        → dead; draw_indirect skips it
+//   - cluster_staging_[cl_start..+cl_count]: lod_count zeroed in CPU mirror
+//   - ssbo_clusters_ patched on that byte range (glBufferSubData)
+//   - cmd_template_ entries for this part's buckets left in place but
+//     region_base/base_instance values are now orphaned; next ensure_part
+//     re-appends fresh entries at the end. The orphaned cmd entries still
+//     occupy space but have instance_count = 0 every frame (cull shader
+//     can't emit instances for dead clusters), so they produce no draw calls.
+//
+// Bounded waste: region_base slots and cmd_template_ entries for the dead
+// slot remain allocated.  The waste is bounded by the number of released
+// parts and is reclaimed on the next world reset().
+//
+// Safe no-op if part_hash is not registered.
+// ---------------------------------------------------------------------------
+void GpuCuller::release_part(uint64_t part_hash) {
+    auto it = slot_of_.find(part_hash);
+    if (it == slot_of_.end()) return;   // not registered — no-op
+
+    int slot = it->second;
+    slot_of_.erase(it);
+
+    if (slot < 0 || slot >= (int)parts_.size()) return;
+    PartGpu& pg = parts_[slot];
+
+    // Delete GL objects.
+    if (pg.vao) { glDeleteVertexArrays(1, &pg.vao); pg.vao = 0; }
+    if (pg.vbo) { glDeleteBuffers(1, &pg.vbo);      pg.vbo = 0; }
+
+    // Zero lod_count for all cluster entries in the CPU mirror so the cull
+    // shader will produce no instances for this part's clusters.
+    uint32_t cl_start = pg.cluster_start;
+    uint32_t cl_count = pg.cluster_count;
+    for (uint32_t ci = 0; ci < cl_count; ++ci) {
+        uint32_t idx = cl_start + ci;
+        if (idx < (uint32_t)cluster_staging_.size()) {
+            cluster_staging_[idx].lod_count = 0;
+        }
+    }
+
+    // Patch ssbo_clusters_ on exactly the affected range (avoids a full upload).
+    if (cl_count > 0 && cl_start < (uint32_t)cluster_staging_.size() && ssbo_clusters_) {
+        uint32_t actual_count = std::min(cl_count,
+            (uint32_t)cluster_staging_.size() - cl_start);
+        if (actual_count > 0) {
+            size_t byte_offset = (size_t)cl_start * sizeof(GpuClusterMeta);
+            size_t byte_len    = (size_t)actual_count * sizeof(GpuClusterMeta);
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_clusters_);
+            glBufferSubData(GL_SHADER_STORAGE_BUFFER,
+                            (GLintptr)byte_offset, (GLsizeiptr)byte_len,
+                            cluster_staging_.data() + cl_start);
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+        }
+    }
+
+    // Mark the slot dead (vao already zeroed above; also clear hash for clarity).
+    pg.part_hash    = 0;
+    pg.cluster_count = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -700,6 +777,7 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
     glUniform4fv(uloc_planes_, 6, flat_planes);
     glUniform3f(uloc_cam_eye_, cam_eye[0], cam_eye[1], cam_eye[2]);
     glUniform1f(uloc_pixel_budget_, pixel_budget);
+    glUniform1f(uloc_min_projected_size_, min_projected_size_);
     glUniform1ui(uloc_instance_count_, n_records);
     glUniform1ui(uloc_max_clusters_per_inst_, max_cpi);
 

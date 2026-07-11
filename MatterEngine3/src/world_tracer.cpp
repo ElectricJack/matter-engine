@@ -16,6 +16,7 @@
 #include <deque>
 #include <memory>
 #include <string>
+#include <sys/stat.h>
 #include <unordered_map>
 #include <vector>
 
@@ -202,6 +203,8 @@ struct WorldTracer::Impl {
     float world_mn_[3] = { 1e30f,  1e30f,  1e30f};
     float world_mx_[3] = {-1e30f, -1e30f, -1e30f};
     bool built_ = false;
+    std::string cache_root_;
+    std::string scratch_dir_;
 
     // ---- Loading ----
 
@@ -219,10 +222,17 @@ struct WorldTracer::Impl {
 
         // Try flat artifact first; fall back to compositional.
         bool loaded = false;
-        const std::string flat_path =
-            cache_root + "/" + part_asset::cache_path_flat(hash);
-        const std::string comp_path =
-            cache_root + "/" + part_asset::cache_path_resolved(hash);
+        auto file_exists = [](const std::string& p) {
+            struct stat st; return ::stat(p.c_str(), &st) == 0;
+        };
+        std::string flat_path = cache_root + "/" + part_asset::cache_path_flat(hash);
+        std::string comp_path = cache_root + "/" + part_asset::cache_path_resolved(hash);
+        if (!scratch_dir_.empty()) {
+            const std::string sf = scratch_dir_ + "/" + part_asset::cache_path_flat(hash);
+            const std::string sc = scratch_dir_ + "/" + part_asset::cache_path_resolved(hash);
+            if (file_exists(sf)) flat_path = sf;
+            if (file_exists(sc)) comp_path = sc;
+        }
 
         if (part_asset::load_v2(flat_path, hash,
                                 *ltp->blas_mgr, *ltp->tlas_mgr,
@@ -552,11 +562,17 @@ struct WorldTracer::Impl {
 WorldTracer::WorldTracer() = default;
 WorldTracer::~WorldTracer() = default;
 
+void WorldTracer::set_scratch_dir(const std::string& dir) {
+    scratch_dir_ = dir;
+}
+
 bool WorldTracer::build(const std::string& cache_root,
                         const std::vector<TraceInstance>& instances,
                         std::string& err) {
     impl_ = std::make_unique<Impl>();
     Impl& im = *impl_;
+    im.cache_root_ = cache_root;
+    im.scratch_dir_ = scratch_dir_;
 
     // nm_pool_ is a deque so pointers remain stable across push_back.
     im.expanded_.reserve(instances.size());

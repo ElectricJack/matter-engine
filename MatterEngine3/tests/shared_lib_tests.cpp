@@ -261,6 +261,73 @@ static void test_helper_pure_outputs() {
 
 #ifdef SP2_SCRIPT_HOST
 #include "script_host.h"   // SP-2
+
+// Task 6: scatter_grid.js — deterministic cross-sector spaced scatter.
+// Bakes a tiny Part that imports scatter_grid, runs the contract assertions in
+// JS, and throws on any failure.  A clean bake means all assertions passed.
+static void test_scatter_grid() {
+    using namespace script_host;
+    ScriptHost host;
+    host.set_shared_lib_root("../shared-lib");
+    // JS assertions mirroring the plan spec, run inside build() so a failure
+    // throws and makes bake_source return error.ok == false.
+    const std::string part = R"JS(
+import { cellCandidate, survives, candidatesInRect } from 'shared-lib/scatter_grid';
+class ScatterCheck extends Part {
+  build(p) {
+    const MD = 24.0, SEED = 20260710, KIND = 1;
+
+    // (a) min-dist property over a 10x10-cell region
+    const all = candidatesInRect(SEED, KIND, MD, 0, 0, 10 * MD, 10 * MD);
+    if (all.length < 5) throw new Error('suspiciously few survivors: ' + all.length);
+    for (let i = 0; i < all.length; ++i)
+      for (let j = i + 1; j < all.length; ++j) {
+        const dx = all[i].x - all[j].x, dz = all[i].z - all[j].z;
+        if (dx*dx + dz*dz < MD*MD - 1e-6)
+          throw new Error('min-dist violated: ' + Math.sqrt(dx*dx + dz*dz));
+      }
+
+    // (b) partition property: 3x3 sector rects tile the 240x240 rect exactly
+    const S = 80.0;
+    let union = [];
+    for (let a = 0; a < 3; ++a)
+      for (let b = 0; b < 3; ++b)
+        union = union.concat(candidatesInRect(SEED, KIND, MD, a*S, b*S, S, S));
+    const whole = candidatesInRect(SEED, KIND, MD, 0, 0, 3*S, 3*S);
+    if (union.length !== whole.length)
+      throw new Error('partition mismatch: ' + union.length + ' vs ' + whole.length);
+    const keyOf = c => c.x.toFixed(4) + ',' + c.z.toFixed(4);
+    const set = new Set(union.map(keyOf));
+    for (const c of whole)
+      if (!set.has(keyOf(c))) throw new Error('candidate missing from union');
+
+    // (c) determinism + seed sensitivity
+    const again = candidatesInRect(SEED, KIND, MD, 0, 0, 240, 240);
+    if (JSON.stringify(again) !== JSON.stringify(whole)) throw new Error('nondeterministic');
+    const other = candidatesInRect(SEED + 1, KIND, MD, 0, 0, 240, 240);
+    if (JSON.stringify(other) === JSON.stringify(whole)) throw new Error('seed-insensitive');
+
+    // (d) kind independence
+    const k2 = candidatesInRect(SEED, KIND + 1, MD, 0, 0, 240, 240);
+    if (JSON.stringify(k2) === JSON.stringify(whole)) throw new Error('kind-insensitive');
+
+    // (e) negative-coordinate cells work (infinite world)
+    const neg = candidatesInRect(SEED, KIND, MD, -400, -400, 240, 240);
+    if (neg.length < 5) throw new Error('negative-region survivors: ' + neg.length);
+
+    // Emit a placeholder shape so the bake doesn't fail for empty geometry.
+    this.beginShape(SHAPE.triangles);
+    this.vertex(0,0,0); this.vertex(1,0,0); this.vertex(0,1,0);
+    this.endShape();
+  }
+}
+)JS";
+    BakeOptions opts; opts.parts_dir = "/tmp/scatter_grid_test_parts";
+    system("mkdir -p /tmp/scatter_grid_test_parts");
+    BakeResult r = host.bake_source(part, "{}", opts);
+    CHECK(r.error.ok, ("scatter_grid assertions failed: " + r.error.message).c_str());
+}
+
 static void test_import_resolves_end_to_end() {
     // A tiny part importing geometry.ring + rng; bake it through SP-2's host with the
     // real shared-lib/ root and assert (a) bake succeeds, (b) same seed -> identical
@@ -293,6 +360,9 @@ static void test_import_resolves_end_to_end() {
     remove_scratch_shared_lib(scratch);
 }
 #else
+static void test_scatter_grid() {
+    printf("INFO: SP-2 ScriptHost not linked; scatter_grid test skipped (compile with -DSP2_SCRIPT_HOST)\n");
+}
 static void test_import_resolves_end_to_end() {
     printf("INFO: SP-2 ScriptHost not linked; end-to-end bake test skipped (compile with -DSP2_SCRIPT_HOST)\n");
 }
@@ -307,6 +377,7 @@ int main() {
     test_rng_reference_stream();
     test_script_rng_binding();
     test_helper_pure_outputs();
+    test_scatter_grid();
     test_import_resolves_end_to_end();
     if (g_failures == 0) printf("All shared_lib tests passed\n");
     return g_failures == 0 ? 0 : 1;

@@ -30,6 +30,9 @@ struct RenderOptions {
     float pixel_budget    = 0.0f;     // 0 = default (1.0); clamped to [0.05, 4.0]
     float active_radius   = 0.0f;     // SectorLod knob; 0 = default (64.0)
     float min_projected_size = 0.0f;  // SectorLod sub-pixel cull; 0 = off
+    bool  cull_backfaces  = false;    // GpuDriven path: skip backface triangles
+                                      // (off by default: mesh-session winding
+                                      // is not guaranteed for all part kinds)
 };
 
 struct FrameStats {
@@ -46,6 +49,10 @@ struct FrameStats {
     uint32_t parts_baked = 0;         // cache misses last bake
     uint32_t cache_hits  = 0;         // cache hits last bake
     int probe_dims[3] = {0, 0, 0};    // probe grid (all zero = unavailable)
+    // Phase C Task 9: world-kind sessions only; 0 for closed-world sessions.
+    uint32_t resident_sectors = 0;
+    // Phase C Task 5: resident probe bricks (streamed world); 0 for closed-world.
+    uint32_t probe_bricks = 0;
 };
 
 class WorldSession {
@@ -70,6 +77,13 @@ public:
     // only (no mid-job slicing); always makes progress when work is queued.
     void pump_gpu_jobs(float ms_budget);
 
+    // Phase C Task 3: set the spatial focus for the next bake pass.
+    // publish_pipeline sorts parts ascending by min dist² from focus to any
+    // of that part's manifest entry translations; parts with no placement sort
+    // last; ties break by part hash (deterministic). Thread-safe: may be called
+    // from the app thread at any time before or between bakes.
+    void set_bake_focus(const float pos[3]);
+
     bool poll_event(Event& out);       // drain one; loop until false
     const FrameStats& frame_stats() const;
 
@@ -79,6 +93,27 @@ public:
     // on error a BakeError event is emitted and render() no-ops until a later
     // request_bake()/reload() succeeds (the old world is torn down before rebaking).
     void reload();
+
+    // Phase C Task 9: world-kind sessions: the sea level from the world definition.
+    // Returns true and sets `out` for world-kind sessions; returns false for
+    // closed-world (expand/tileset) sessions (no water plane in those worlds).
+    bool sea_level(float& out) const;
+
+    // Phase C Task 7: enqueue a seed-driven world reroll. Stores
+    // root_params_override = {"worldSeed": <world_seed>} and enqueues a Reload
+    // with full supersession semantics (a newer regenerate/reload supersedes any
+    // in-flight bake at the next between-parts checkpoint).
+    //
+    // The override is merged into each root part's params BEFORE
+    // merge_params_canonical so the resolved hash changes with the seed. Terrain
+    // parts that declare `static params = {worldSeed: …}` re-bake on a new seed
+    // and hit cache on a repeated same seed. Scatter/vegetation parts that do NOT
+    // declare worldSeed are unaffected by the override and always hit cache — a
+    // reroll re-bakes terrain while vegetation variants are served from cache.
+    //
+    // Thread-safe: may be called from the app thread at any time; the override is
+    // captured into cfg before the next LocalProvider is constructed.
+    void regenerate(uint64_t world_seed);
 
     // Query API (backed by a lazily built CPU BVH; first call after a bake pays
     // the build cost).
@@ -92,6 +127,10 @@ public:
     // ScriptError/Internal). Null clears the hook.
     // NOT part of the stable public API — for kernel-internal tests only.
     void set_test_fault_hook(std::function<void(int)> hook);
+
+    // Phase C Task 5 test seam: does the streamed-world probe store hold a brick
+    // for this sector column? Always false for closed-world sessions.
+    bool debug_probe_brick(int64_t tx, int64_t tz) const;
 
     struct Impl;
     explicit WorldSession(std::unique_ptr<Impl> impl);   // internal; use open_world

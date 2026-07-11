@@ -4,6 +4,7 @@ extern "C" {
 }
 #include "part_base.js.h"
 #include "tileset_base.js.h"
+#include "world_base.js.h"
 #include "part_asset_v2.h"   // SP-1 v2 helper (compute_resolved_hash, save_v2)
 #include "triangle_emit.hpp" // direct-triangle (mesh) session buffer
 #include "dsl_state.h"
@@ -24,6 +25,7 @@ extern "C" {
 #include "material_registry.h"          // MaterialMergeGroup (fat-prim bucket seeding)
 }
 #include <cstdio>
+#include <cstdlib>   // std::getenv (MATTER_BAKE_PROFILE)
 #include <cstring>
 #include <cmath>
 #include <chrono>
@@ -315,9 +317,11 @@ std::string ScriptHost::merge_params_canonical(const std::string& source,
     ModuleStore store;
     bool use_module = false;
     if (!shared_lib_root_.empty()) {
-        module_resolver::FoldResult fr; std::string ferr;
-        if (!module_resolver::fold_sources(source, shared_lib_root_, fr, ferr)) {
-            err.ok = false; err.message = "module resolution failed: " + ferr;
+        module_resolver::FoldResult fr;
+        std::string ferr;
+        if (!fold_sources_cached(source, fr, ferr)) {
+            err.ok = false;
+            err.message = "module resolution failed: " + ferr;
             return last_merged_params_;
         }
         if (!fr.modules.empty()) { store = store_from_fold(fr); use_module = true; }
@@ -404,8 +408,9 @@ std::vector<RequiredChild> ScriptHost::eval_requires(const std::string& source,
     ModuleStore store;
     bool use_module = false;
     if (!shared_lib_root_.empty()) {
-        module_resolver::FoldResult fr; std::string ferr;
-        if (!module_resolver::fold_sources(source, shared_lib_root_, fr, ferr)) return out;
+        module_resolver::FoldResult fr;
+        std::string ferr;
+        if (!fold_sources_cached(source, fr, ferr)) return out;
         if (!fr.modules.empty()) { store = store_from_fold(fr); use_module = true; }
     }
 
@@ -545,8 +550,9 @@ ScriptHost::LodBudgetSpec ScriptHost::eval_lod_budgets(const std::string& source
     ModuleStore store;
     bool use_module = false;
     if (!shared_lib_root_.empty()) {
-        module_resolver::FoldResult fr; std::string ferr;
-        if (!module_resolver::fold_sources(source, shared_lib_root_, fr, ferr)) return out;
+        module_resolver::FoldResult fr;
+        std::string ferr;
+        if (!fold_sources_cached(source, fr, ferr)) return out;
         if (!fr.modules.empty()) { store = store_from_fold(fr); use_module = true; }
     }
 
@@ -941,6 +947,21 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     // as a structured error rather than aborting the viewer.
     try {
 
+    // MATTER_BAKE_PROFILE=1: per-bake phase timing line on stderr (diagnostic).
+    static const bool prof_on = std::getenv("MATTER_BAKE_PROFILE") != nullptr;
+    using prof_clock = std::chrono::steady_clock;
+    prof_clock::time_point prof_t0 = prof_clock::now();
+    prof_clock::time_point prof_t  = prof_t0;
+    double prof_fold = 0, prof_ctx = 0, prof_eval = 0, prof_merge = 0,
+           prof_build = 0, prof_mesh = 0, prof_save = 0;
+    std::string prof_class;
+    auto prof_lap = [&]() -> double {
+        prof_clock::time_point n = prof_clock::now();
+        double ms = std::chrono::duration<double, std::milli>(n - prof_t).count();
+        prof_t = n;
+        return ms;
+    };
+
     // Perf fix: fold sources once (removing the redundant fold that was inside
     // merge_params_canonical) and spin up a single JSRuntime for the whole bake.
     // The canonical params merge is performed in the bake context itself after the
@@ -950,7 +971,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     module_resolver::FoldResult fold;
     if (!shared_lib_root_.empty()) {
         std::string ferr;
-        if (!module_resolver::fold_sources(source, shared_lib_root_, fold, ferr)) {
+        if (!fold_sources_cached(source, fold, ferr)) {
             // Fail-closed: a missing/illegal shared module aborts the bake with
             // no artifact written, matching the existing fail-closed pattern.
             r.error.ok = false;
@@ -965,6 +986,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     // eval) to keep the bake deterministic and file-access-free.
     ModuleStore store = store_from_fold(fold);
     const bool use_module = !store.sources.empty();
+    prof_fold = prof_lap();
 
     rt = JS_NewRuntime();
     if (use_module) JS_SetModuleLoaderFunc(rt, sh_module_normalize, sh_module_loader, &store);
@@ -997,6 +1019,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     if (JS_IsException(base)) { r.error = harvest_exception(ctx); JS_FreeValue(ctx,base); goto done; }
     JS_FreeValue(ctx, base);
     dsl::install_bindings(ctx);
+    prof_ctx = prof_lap();
 
     {
         // Eval user source + a generic trampoline that publishes the authored
@@ -1006,6 +1029,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             r.error.ok = false; r.error.message = kNoPartClassMsg;
             goto done;
         }
+        prof_class = className;
         std::string wrapped = source + "\n;globalThis.__partClass = " + className + ";\n";
         if (use_module) {
             bool threw = false;
@@ -1017,6 +1041,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             if (JS_IsException(v)) { r.error = harvest_exception(ctx); JS_FreeValue(ctx,v); goto done; }
             JS_FreeValue(ctx, v);
         }
+        prof_eval = prof_lap();
 
         JSValue global = JS_GetGlobalObject(ctx);
         JSValue authored = JS_GetPropertyStr(ctx, global, "__partClass");
@@ -1088,7 +1113,10 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                     }
                 state.set_child_hashes(std::move(name2hash));
             }
+            // Thread the world field binding so terrainVolume can call the mesher.
+            state.set_world(opts.world);
         }
+        prof_merge = prof_lap();
 
         JSValue inst = JS_CallConstructor(ctx, authored, 0, nullptr);
         JS_FreeValue(ctx, authored);
@@ -1111,6 +1139,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         JS_FreeValue(ctx, bret);
         JS_FreeValue(ctx, paramsObj);
         JS_FreeValue(ctx, inst);
+        prof_build = prof_lap();
 
         // Capture globalThis.__amb (a probe authored code may set) so tests can
         // assert the bake context exposes no ambient Date/require/fetch/os bindings.
@@ -1327,16 +1356,30 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                            ? rel_path
                            : opts.parts_dir + "/" + rel_path;
         part_asset::LodLevels lods{};   // SP-2 writes no LOD array.
+        prof_mesh = prof_lap();
         bool ok = part_asset::save_v2(path, blas, tlas,
                                       kids.empty() ? nullptr : kids.data(), kids.size(),
                                       lods, r.resolved_hash);
         if (!ok) { r.error.ok = false; r.error.message = "save_v2 failed"; }
         else { r.written_path = path; }
+        prof_save = prof_lap();
     }
 
 done:
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);
+    if (prof_on) {
+        double total = std::chrono::duration<double, std::milli>(
+                           prof_clock::now() - prof_t0).count();
+        std::fprintf(stderr,
+            "[bake_profile] %s total=%.1f fold=%.1f ctx=%.1f eval=%.1f "
+            "merge=%.1f build=%.1f mesh=%.1f save=%.1f free=%.1f\n",
+            prof_class.empty() ? "?" : prof_class.c_str(), total,
+            prof_fold, prof_ctx, prof_eval, prof_merge, prof_build,
+            prof_mesh, prof_save,
+            total - (prof_fold + prof_ctx + prof_eval + prof_merge +
+                     prof_build + prof_mesh + prof_save));
+    }
     return r;
 
     } catch (const std::bad_alloc& e) {
@@ -1357,6 +1400,351 @@ done:
         if (rt)  JS_FreeRuntime(rt);
         return r;
     }
+}
+
+// Extract the authored class name from `class <Name> extends World`.
+static std::string find_world_class_name(const std::string& source) {
+    static const std::regex re("class\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s+extends\\s+World\\b");
+    std::smatch m;
+    if (std::regex_search(source, m, re)) return m[1].str();
+    return std::string();
+}
+
+// ---------------------------------------------------------------------------
+// eval_world: evaluate a World-definition class, return the field program text
+// and biome table JSON. Mirrors eval_requires/eval_tileset structurally.
+// ---------------------------------------------------------------------------
+WorldEvalResult ScriptHost::eval_world(const std::string& source,
+                                       const std::string& params_json) {
+    WorldEvalResult r;
+
+    // 1. Find class name.
+    std::string className = find_world_class_name(source);
+    if (className.empty()) {
+        r.message = "no class extending World found";
+        return r;
+    }
+
+    // 2. Merge static params + overrides (canonical JSON).
+    //    World classes extend World, not Part, so merge_params_canonical will
+    //    return kNoPartClassMsg. Accept its fallback "{}" and then manually
+    //    read the class's `static params` + overlay caller overrides — always,
+    //    even when params_json is "{}", so that static defaults (e.g. worldSeed:42)
+    //    are picked up when the caller passes no overrides.
+    std::string merged;
+    {
+        BakeError merr;
+        merged = merge_params_canonical(source, params_json, merr);
+        if (!merr.ok) {
+            // Expected: no `extends Part` in World source.  Merge manually.
+            // Always run this block (not just when params_json != "{}") so that
+            // `static params` defaults are included even with an empty override.
+            merged = "{}";
+            JSRuntime* prt = JS_NewRuntime();
+            JSContext* pctx = JS_NewContext(prt);
+            // Evaluate kWorldBaseJS + source to get the class, read static params.
+            std::string setup = std::string(kWorldBaseJS) + "\n" + source
+                                + "\n;globalThis.__worldClass = " + className + ";\n";
+            JSValue sv = JS_Eval(pctx, setup.c_str(), setup.size(), "<world-merge>",
+                                 JS_EVAL_TYPE_GLOBAL);
+            if (!JS_IsException(sv)) {
+                JSValue global = JS_GetGlobalObject(pctx);
+                JSValue cls    = JS_GetPropertyStr(pctx, global, "__worldClass");
+                JSValue spar   = JS_GetPropertyStr(pctx, cls, "params");
+                JS_FreeValue(pctx, cls);
+                JS_FreeValue(pctx, global);
+                // Merge: start with static params, overlay caller (overrides win).
+                static const char* kMerge =
+                    "(function(sp,ov){"
+                    "let base=sp||{};"
+                    "let over=ov||{};"
+                    "let m=Object.assign({},base,over);"
+                    "let keys=Object.keys(m).sort();"
+                    "let r={};for(let k of keys)r[k]=m[k];"
+                    "return JSON.stringify(r);})";
+                JSValue mfn = JS_Eval(pctx, kMerge, strlen(kMerge), "<merge>",
+                                      JS_EVAL_TYPE_GLOBAL);
+                JSValue pjv = JS_ParseJSON(pctx, params_json.c_str(),
+                                           params_json.size(), "<params>");
+                if (!JS_IsException(mfn) && !JS_IsUndefined(spar) &&
+                    !JS_IsException(pjv)) {
+                    JSValue args[2] = { spar, pjv };
+                    JSValue res = JS_Call(pctx, mfn, JS_UNDEFINED, 2, args);
+                    if (!JS_IsException(res)) {
+                        const char* cs = JS_ToCString(pctx, res);
+                        if (cs) { merged = cs; JS_FreeCString(pctx, cs); }
+                    }
+                    JS_FreeValue(pctx, res);
+                }
+                JS_FreeValue(pctx, pjv);
+                JS_FreeValue(pctx, mfn);
+                JS_FreeValue(pctx, spar);
+            }
+            JS_FreeValue(pctx, sv);
+            JS_FreeContext(pctx);
+            JS_FreeRuntime(prt);
+        }
+    }
+
+    // 2b. Fold shared-lib imports so any `import` statement in the world source
+    //     resolves correctly — same step eval_requires takes before setting up its
+    //     runtime. Without this, a World module that imports a shared-lib helper
+    //     would fail with a module-not-found error at eval time.
+    module_resolver::FoldResult fold;
+    ModuleStore fold_store;
+    bool use_module = false;
+    if (!shared_lib_root_.empty()) {
+        std::string ferr;
+        if (!fold_sources_cached(source, fold, ferr)) {
+            r.message = "module resolution failed: " + ferr;
+            return r;
+        }
+        if (!fold.modules.empty()) {
+            fold_store = store_from_fold(fold);
+            use_module = true;
+        }
+    }
+
+    // 3. Fresh runtime + context (hermetic bake: one JSRuntime per eval).
+    JSRuntime* rt  = JS_NewRuntime();
+    // Install the module loader when the world source has shared-lib imports,
+    // exactly as eval_requires does for Part/Tileset sources.
+    if (use_module)
+        JS_SetModuleLoaderFunc(rt, sh_module_normalize, sh_module_loader, &fold_store);
+    // Use new_bake_context (not JS_NewContext) so ES-module intrinsics are enabled
+    // when use_module is true — mirrors eval_part_publish_class's context setup.
+    JSContext* ctx = new_bake_context(rt, use_module);
+
+    auto done = [&]() { JS_FreeContext(ctx); JS_FreeRuntime(rt); };
+
+    // 4. Evaluate kWorldBaseJS into the context (defines FieldNode, noise2, …, World).
+    {
+        JSValue v = JS_Eval(ctx, kWorldBaseJS, strlen(kWorldBaseJS),
+                            "<world-base>", JS_EVAL_TYPE_GLOBAL);
+        if (JS_IsException(v)) {
+            BakeError e = harvest_exception(ctx);
+            r.message = "world-base eval failed: " + e.message;
+            JS_FreeValue(ctx, v); done(); return r;
+        }
+        JS_FreeValue(ctx, v);
+    }
+
+    // 5. Evaluate the World class + publish it as __worldClass.
+    //    When the world source has shared-lib imports the module loader (installed
+    //    above) resolves them from fold_store — evaluate as an ES module so the
+    //    import bindings are wired.  Without imports, fall back to global eval.
+    //    Mirrors eval_part_publish_class exactly (Finding 1 fix).
+    {
+        std::string wrapped = source + "\n;globalThis.__worldClass = " + className + ";\n";
+        if (use_module) {
+            bool threw = false;
+            JSValue v = eval_part_as_module(ctx, rt, wrapped, &threw);
+            if (threw) {
+                BakeError e = harvest_exception(ctx);
+                r.message = e.message;
+                JS_FreeValue(ctx, v); done(); return r;
+            }
+            JS_FreeValue(ctx, v);
+        } else {
+            JSValue v = JS_Eval(ctx, wrapped.c_str(), wrapped.size(),
+                                "<world>", JS_EVAL_TYPE_GLOBAL);
+            if (JS_IsException(v)) {
+                BakeError e = harvest_exception(ctx);
+                r.message = e.message;
+                JS_FreeValue(ctx, v); done(); return r;
+            }
+            JS_FreeValue(ctx, v);
+        }
+    }
+
+    // 6. Instantiate the class and call field(mergedParams).
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue cls    = JS_GetPropertyStr(ctx, global, "__worldClass");
+    JS_FreeValue(ctx, global);
+
+    if (!JS_IsFunction(ctx, cls)) {
+        r.message = "world class not a constructor";
+        JS_FreeValue(ctx, cls); done(); return r;
+    }
+
+    JSValue inst = JS_CallConstructor(ctx, cls, 0, nullptr);
+    if (JS_IsException(inst)) {
+        BakeError e = harvest_exception(ctx);
+        r.message = "world constructor threw: " + e.message;
+        JS_FreeValue(ctx, cls); done(); return r;
+    }
+
+    // Parse merged params into a JS object.
+    JSValue paramsObj = JS_ParseJSON(ctx, merged.c_str(), merged.size(), "<merged>");
+    if (JS_IsException(paramsObj)) paramsObj = JS_NewObject(ctx);
+
+    // Call field(params).
+    JSValue fieldFn = JS_GetPropertyStr(ctx, inst, "field");
+    JSValue fieldResult = JS_UNDEFINED;
+    if (!JS_IsFunction(ctx, fieldFn)) {
+        r.message = "world.field() is not a function";
+        JS_FreeValue(ctx, paramsObj); JS_FreeValue(ctx, fieldFn);
+        JS_FreeValue(ctx, inst); JS_FreeValue(ctx, cls); done(); return r;
+    }
+    fieldResult = JS_Call(ctx, fieldFn, inst, 1, &paramsObj);
+    JS_FreeValue(ctx, fieldFn);
+    JS_FreeValue(ctx, paramsObj);
+
+    if (JS_IsException(fieldResult)) {
+        BakeError e = harvest_exception(ctx);
+        r.message = e.message;
+        JS_FreeValue(ctx, fieldResult);
+        JS_FreeValue(ctx, inst); JS_FreeValue(ctx, cls); done(); return r;
+    }
+
+    // 7. Read the density/moisture/relief/seaLevel from fieldResult.
+    int density_reg  = -1;
+    int moisture_reg = -1;
+    int relief_reg   = -1;
+    float sea_level  = 0.0f;
+    float mount_relief_thresh = 0.65f;
+    float rocky_moist_thresh  = 0.35f;
+
+    auto get_reg = [&](const char* key, int& out) {
+        JSValue v = JS_GetPropertyStr(ctx, fieldResult, key);
+        if (!JS_IsException(v) && !JS_IsUndefined(v)) {
+            JSValue rv = JS_GetPropertyStr(ctx, v, "r");
+            if (!JS_IsException(rv)) {
+                uint32_t u = 0;
+                JS_ToUint32(ctx, &u, rv);
+                out = (int)u;
+            }
+            JS_FreeValue(ctx, rv);
+        }
+        JS_FreeValue(ctx, v);
+    };
+    get_reg("density",  density_reg);
+    get_reg("moisture", moisture_reg);
+    get_reg("relief",   relief_reg);
+
+    {
+        JSValue v = JS_GetPropertyStr(ctx, fieldResult, "seaLevel");
+        if (!JS_IsException(v) && !JS_IsUndefined(v)) {
+            double d = 0.0;
+            JS_ToFloat64(ctx, &d, v);
+            sea_level = (float)d;
+        }
+        JS_FreeValue(ctx, v);
+    }
+    JS_FreeValue(ctx, fieldResult);
+
+    if (density_reg < 0 || moisture_reg < 0 || relief_reg < 0) {
+        r.message = "field() must return { density, moisture, relief, seaLevel }";
+        JS_FreeValue(ctx, inst); JS_FreeValue(ctx, cls); done(); return r;
+    }
+
+    // 8. Check biomeThresholds static.
+    {
+        JSValue bt = JS_GetPropertyStr(ctx, cls, "biomeThresholds");
+        if (!JS_IsException(bt) && !JS_IsUndefined(bt)) {
+            JSValue mr = JS_GetPropertyStr(ctx, bt, "mountRelief");
+            JSValue rm = JS_GetPropertyStr(ctx, bt, "rockyMoisture");
+            if (!JS_IsException(mr) && !JS_IsUndefined(mr)) {
+                double d = 0.65; JS_ToFloat64(ctx, &d, mr); mount_relief_thresh = (float)d;
+            }
+            if (!JS_IsException(rm) && !JS_IsUndefined(rm)) {
+                double d = 0.35; JS_ToFloat64(ctx, &d, rm); rocky_moist_thresh  = (float)d;
+            }
+            JS_FreeValue(ctx, mr);
+            JS_FreeValue(ctx, rm);
+        }
+        JS_FreeValue(ctx, bt);
+    }
+
+    // 9. Read `static world` constants.
+    {
+        JSValue wc = JS_GetPropertyStr(ctx, cls, "world");
+        if (!JS_IsException(wc) && !JS_IsUndefined(wc)) {
+            JSValue ss   = JS_GetPropertyStr(ctx, wc, "sectorSize");
+            JSValue ymin = JS_GetPropertyStr(ctx, wc, "yMin");
+            JSValue ymax = JS_GetPropertyStr(ctx, wc, "yMax");
+            if (!JS_IsException(ss) && !JS_IsUndefined(ss)) {
+                double d = 16.0; JS_ToFloat64(ctx, &d, ss); r.sector_size = (float)d;
+            }
+            if (!JS_IsException(ymin) && !JS_IsUndefined(ymin)) {
+                double d = -64.0; JS_ToFloat64(ctx, &d, ymin); r.y_min = (float)d;
+            }
+            if (!JS_IsException(ymax) && !JS_IsUndefined(ymax)) {
+                double d = 192.0; JS_ToFloat64(ctx, &d, ymax); r.y_max = (float)d;
+            }
+            JS_FreeValue(ctx, ss);
+            JS_FreeValue(ctx, ymin);
+            JS_FreeValue(ctx, ymax);
+        }
+        JS_FreeValue(ctx, wc);
+    }
+
+    // 10. Read globalThis.__world_ops (array of op-line strings accumulated by FieldNode).
+    {
+        JSValue g = JS_GetGlobalObject(ctx);
+        JSValue ops = JS_GetPropertyStr(ctx, g, "__world_ops");
+        JS_FreeValue(ctx, g);
+
+        uint32_t len = 0;
+        JSValue lenV = JS_GetPropertyStr(ctx, ops, "length");
+        JS_ToUint32(ctx, &len, lenV);
+        JS_FreeValue(ctx, lenV);
+
+        std::string prog;
+        for (uint32_t i = 0; i < len; ++i) {
+            JSValue line = JS_GetPropertyUint32(ctx, ops, i);
+            const char* s = JS_ToCString(ctx, line);
+            if (s) { prog += s; prog += '\n'; JS_FreeCString(ctx, s); }
+            JS_FreeValue(ctx, line);
+        }
+        JS_FreeValue(ctx, ops);
+
+        // Append directive lines.
+        prog += "height r"   + std::to_string(density_reg)  + '\n';
+        prog += "moisture r" + std::to_string(moisture_reg) + '\n';
+        prog += "relief r"   + std::to_string(relief_reg)   + '\n';
+        {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "seaLevel %g\n", (double)sea_level);
+            prog += buf;
+            std::snprintf(buf, sizeof(buf), "biome %g %g\n",
+                          (double)mount_relief_thresh, (double)rocky_moist_thresh);
+            prog += buf;
+        }
+        r.field_program = std::move(prog);
+    }
+
+    // 11. Call biomes() if present, JSON-stringify result.
+    {
+        JSValue biomesFn = JS_GetPropertyStr(ctx, inst, "biomes");
+        if (JS_IsFunction(ctx, biomesFn)) {
+            JSValue biomesResult = JS_Call(ctx, biomesFn, inst, 0, nullptr);
+            if (!JS_IsException(biomesResult)) {
+                JSValue global2 = JS_GetGlobalObject(ctx);
+                JSValue jsonObj  = JS_GetPropertyStr(ctx, global2, "JSON");
+                JSValue stringifyFn = JS_GetPropertyStr(ctx, jsonObj, "stringify");
+                JS_FreeValue(ctx, global2);
+                JS_FreeValue(ctx, jsonObj);
+                JSValue sresult = JS_Call(ctx, stringifyFn, JS_UNDEFINED,
+                                          1, &biomesResult);
+                if (!JS_IsException(sresult)) {
+                    const char* s = JS_ToCString(ctx, sresult);
+                    if (s) { r.biomes_json = s; JS_FreeCString(ctx, s); }
+                }
+                JS_FreeValue(ctx, sresult);
+                JS_FreeValue(ctx, stringifyFn);
+            }
+            JS_FreeValue(ctx, biomesResult);
+        }
+        JS_FreeValue(ctx, biomesFn);
+    }
+
+    JS_FreeValue(ctx, inst);
+    JS_FreeValue(ctx, cls);
+    done();
+
+    r.ok = true;
+    return r;
 }
 
 // Evaluate a Tileset root: fresh isolated context, records DSL verbs into a
@@ -1438,7 +1826,7 @@ TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
         size_t      src_len   = source.size();
         if (!shared_lib_root_.empty()) {
             std::string ferr;
-            if (!module_resolver::fold_sources(source, shared_lib_root_, fold, ferr)) {
+            if (!fold_sources_cached(source, fold, ferr)) {
                 r.error.ok = false;
                 r.error.message = "module resolution failed: " + ferr;
                 return r;
@@ -1834,6 +2222,71 @@ ts_done:
         if (rt)  JS_FreeRuntime(rt);
         return r;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Fold cache implementation (Task 1, Phase C).
+// ---------------------------------------------------------------------------
+
+// FNV-1a 64-bit hash of two strings (source + shared_lib_root).
+// Used as cache key for (source, shared_lib_root) pairs.
+static uint64_t fold_key_fnv1a64(const std::string& a, const std::string& b) {
+    uint64_t h = 1469598103934665603ull;  // FNV offset basis
+    auto mix = [&](const std::string& s) {
+        for (unsigned char c : s) {
+            h ^= c;
+            h *= 1099511628211ull;  // FNV prime
+        }
+        h ^= 0xff;
+        h *= 1099511628211ull;  // separator
+    };
+    mix(a);
+    mix(b);
+    return h;
+}
+
+bool ScriptHost::fold_sources_cached(const std::string& source,
+                                     module_resolver::FoldResult& out,
+                                     std::string& err) {
+    // If no shared-lib root, skip the cache and just return an empty fold result.
+    if (shared_lib_root_.empty()) {
+        out = module_resolver::FoldResult{};
+        return true;
+    }
+
+    const uint64_t key = fold_key_fnv1a64(source, shared_lib_root_);
+
+    // Check cache first (with lock).
+    {
+        std::lock_guard<std::mutex> lk(fold_mu_);
+        auto it = fold_cache_.find(key);
+        if (it != fold_cache_.end()) {
+            ++fold_hits_;
+            out = it->second;
+            return true;
+        }
+    }
+
+    // Cache miss: fold the sources.
+    module_resolver::FoldResult fresh;
+    if (!module_resolver::fold_sources(source, shared_lib_root_, fresh, err)) {
+        return false;
+    }
+
+    // Insert into cache (under lock).
+    {
+        std::lock_guard<std::mutex> lk(fold_mu_);
+        auto ins = fold_cache_.emplace(key, std::move(fresh));
+        if (ins.second) ++fold_misses_;  // Only count if emplace actually inserted
+        out = ins.first->second;
+    }
+
+    return true;
+}
+
+void ScriptHost::clear_fold_cache() {
+    std::lock_guard<std::mutex> lk(fold_mu_);
+    fold_cache_.clear();
 }
 
 } // namespace script_host
