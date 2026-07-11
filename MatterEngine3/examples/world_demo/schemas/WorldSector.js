@@ -103,7 +103,10 @@ class WorldSector extends Part {
       const g = patch(c.x, c.z, GROVE, 1 / 110);
       if (g < 0.10 || c.u > (g - 0.10) * 4) continue;
       if (this.slopeAt(c.x, c.z) > TREE_SLOPE_MAX) continue;
-      const s = 0.9 + 0.5 * c.v;
+      // Scale 1..3, long-tail: raw blends candidate jitter with grove
+      // strength so giants only appear deep in grove cores.
+      const gN = Math.min(1, Math.max(0, (g - 0.10) / 0.90));
+      const s  = 1 + 2 * Math.pow(0.65 * c.v + 0.35 * gN, 1.7);
       this.pushMatrix();
       this.translate(c.x - ox, this.heightAt(c.x, c.z) - 0.4 * s, c.z - oz);
       this.rotateY(c.rot);
@@ -153,9 +156,13 @@ class WorldSector extends Part {
     for (let i = 0, n = grassMax * 2; i < n && placed < grassMax; ++i) {
       const [wx, wz] = inSector();
       if (this.biomeAt(wx, wz) === 'ocean') continue;
-      if (patch(wx, wz, TUFT, 1 / 30) < -0.05) continue;
+      const t = patch(wx, wz, TUFT, 1 / 30);
+      if (t < -0.05) continue;
       if (this.slopeAt(wx, wz) > GRASS_SLOPE_MAX && r.random() < 0.7) continue;
-      put('Grass', { seed: r.int(GRASS_VARIANTS) }, wx, wz, r.range(0.8, 1.3), 0.02);
+      // Scale 1..5, long-tail: mostly 1-2x, rare 4-5x clumps at tuft cores.
+      const tuftN = Math.min(1, Math.max(0, (t + 0.05) / 1.05));
+      const gs = 1 + 4 * Math.pow(r.random(), 2.5) * (0.5 + 0.5 * tuftN);
+      put('Grass', { seed: r.int(GRASS_VARIANTS) }, wx, wz, gs, 0.02);
       ++placed;
     }
   }
