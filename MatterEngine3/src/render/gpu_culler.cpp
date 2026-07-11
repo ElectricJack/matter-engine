@@ -121,6 +121,12 @@ bool GpuCuller::init(std::string& err) {
     glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(zeros), zeros, GL_DYNAMIC_READ);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
+    // Query the GL implementation's max SSBO size and convert to xform slots
+    // (each slot = one mat4 = 16 floats = 64 bytes).  Mesa d3d12 reports 128 MB.
+    GLint64 max_ssbo_bytes = 0;
+    glGetInteger64v(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, &max_ssbo_bytes);
+    max_ssbo_slots_ = (uint32_t)(max_ssbo_bytes / (16 * sizeof(float)));
+
     // Create zero-size placeholder buffers for the growable SSBOs; actual
     // allocations happen lazily in ensure_part / cull.
     glGenBuffers(1, &ssbo_clusters_);
@@ -172,10 +178,10 @@ void GpuCuller::grow_clusters_ssbo(size_t need_bytes) {
 //
 // Capacity-based growth: ssbo_xforms_ is only reallocated when
 // total_xform_slots_ exceeds xforms_cap_slots_.  The new capacity is
-//   max(total_xform_slots_, xforms_cap_slots_ * 2)
-// so ~276 Meadow part registrations produce O(log 276) ≈ 9 reallocations
-// instead of 276 — preventing the D3D12 device-removal crash during
-// incremental async bake.
+//   max(total_xform_slots_, xforms_cap_slots_ * 3/2)
+// clamped to GL_MAX_SHADER_STORAGE_BLOCK_SIZE (128 MB on Mesa d3d12).
+// ×1.5 instead of ×2 prevents the doubling from breaching the GL limit
+// for large forests (~86k instances, Task #40).
 //
 // ssbo_xforms_ is output-only from the cull compute shader; its contents
 // are written entirely by the shader every frame, so the existing GPU
@@ -210,15 +216,16 @@ void GpuCuller::recompute_regions() {
     cmds_template_dirty_ = true;
 
     // Capacity-based growth for ssbo_xforms_: only reallocate when the needed
-    // slot count exceeds the current GPU buffer capacity.  On realloc, double
-    // the capacity (geometric growth) to amortize future calls.
+    // slot count exceeds the current GPU buffer capacity.  On realloc, grow by
+    // ×1.5 (not ×2) and clamp to the GL implementation's max SSBO size.
     // ssbo_xforms_ is written entirely by the cull compute shader each frame;
     // no CPU content needs to be preserved — glBufferData(nullptr) suffices.
     if (total_xform_slots_ > xforms_cap_slots_ || !ssbo_xforms_) {
         uint32_t new_cap = (xforms_cap_slots_ == 0)
                          ? total_xform_slots_
-                         : xforms_cap_slots_ * 2;
+                         : xforms_cap_slots_ + xforms_cap_slots_ / 2;
         if (new_cap < total_xform_slots_) new_cap = total_xform_slots_;
+        if (max_ssbo_slots_ > 0 && new_cap > max_ssbo_slots_) new_cap = max_ssbo_slots_;
         if (new_cap == 0) new_cap = 1;   // keep valid GL object
 
         size_t new_bytes = (size_t)new_cap * 16 * sizeof(float);

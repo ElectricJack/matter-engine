@@ -157,6 +157,7 @@ private:
     unsigned ssbo_stats_          = 0;   // binding 4: {stat_culled_frustum, stat_culled_hiz, stat_emitted}
     unsigned program_cull_        = 0;
     bool     cmds_template_dirty_ = false;  // set when base_instance fields change without a size change
+    uint32_t max_ssbo_slots_      = 0;      // GL_MAX_SHADER_STORAGE_BLOCK_SIZE / (16*sizeof(float))
 
     // Uniform locations cached after program link.
     int uloc_planes_               = -1;
