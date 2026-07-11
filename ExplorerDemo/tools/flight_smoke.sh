@@ -80,7 +80,16 @@ else
     FAIL=1
 fi
 
-# 4. smoke done line present (run completed without crash)
+# 4. probe bricks baked
+probe_bricks=$(grep -c "\[probe\] brick (" "$LOGFILE" || true)
+if [ "${probe_bricks:-0}" -gt 0 ]; then
+    echo "PASS: probe bricks baked ($probe_bricks)"
+else
+    echo "FAIL: no probe bricks baked"
+    FAIL=1
+fi
+
+# 5. smoke done line present (run completed without crash)
 if grep -q "smoke done" "$LOGFILE"; then
     echo "PASS: smoke done (run completed)"
 else
