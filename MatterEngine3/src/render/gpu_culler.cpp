@@ -425,10 +425,12 @@ int GpuCuller::ensure_part(uint64_t part_hash, PartStore& store) {
                              pg.cluster_start + ci));
         }
         pg.cluster_count = (uint32_t)lp->clusters.size();
+        pg.fine_cluster_count = lp->fine_cluster_count;
     } else {
         // Whole-part synthetic cluster.
         cluster_staging_.push_back(pack_whole_part(*lp, part_slot_u));
         pg.cluster_count = 1;
+        pg.fine_cluster_count = 1;
     }
 
     // -----------------------------------------------------------------
@@ -508,6 +510,7 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
         for (const auto& ri : resolved) {
             fold(&ri.part_hash, sizeof ri.part_hash);
             fold(ri.transform,  sizeof ri.transform);
+            fold(&ri.segment,   sizeof ri.segment);
         }
         if (last_resolved_count_ != (int)resolved.size() || last_resolved_fp_ != fp) {
             instances_dirty       = true;
@@ -550,6 +553,7 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
 
                     ExpandedInst ei;
                     ei.part_slot = node_slot;
+                    ei.segment   = ri.segment;
                     std::memcpy(ei.transform, gl_xform, 64);
                     expanded_.push_back(ei);
 
@@ -565,6 +569,7 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
 
                 ExpandedInst ei;
                 ei.part_slot = root_slot;
+                ei.segment   = ri.segment;
                 std::memcpy(ei.transform, gl_xform, 64);
                 expanded_.push_back(ei);
 
@@ -617,9 +622,20 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
             GpuInstanceRec rec{};
             std::memcpy(rec.transform, ei.transform, 64);
             rec.part_slot      = (uint32_t)ei.part_slot;
-            rec.base_lod       = 0;   // debug only; cluster-level selection is authoritative
-            rec.cluster_start  = pg.cluster_start;
-            rec.cluster_count  = pg.cluster_count;
+            rec.base_lod       = 0;
+            const uint32_t fine_n = pg.fine_cluster_count;
+            if (fine_n < pg.cluster_count) {
+                if (ei.segment == 0) {
+                    rec.cluster_start = pg.cluster_start;
+                    rec.cluster_count = fine_n;
+                } else {
+                    rec.cluster_start = pg.cluster_start + fine_n;
+                    rec.cluster_count = pg.cluster_count - fine_n;
+                }
+            } else {
+                rec.cluster_start = pg.cluster_start;
+                rec.cluster_count = pg.cluster_count;
+            }
             inst_recs.push_back(rec);
 
             active_slots_[(size_t)ei.part_slot] = 1;

@@ -121,6 +121,7 @@ public:
         std::vector<MeshRange> ranges;   // parallel to LoadedPart::lod_mesh_data
         uint32_t cluster_start;          // global ClusterMeta index of first cluster
         uint32_t cluster_count;
+        uint32_t fine_cluster_count;     // clusters[0..fine) are segment-0 (fine/trunk)
         uint32_t region_base;            // DrawInstance region start in ssbo_xforms_ (P1)
         uint32_t region_cap;             // per-instance cap (grows ×1.5 on overflow)
     };
@@ -214,6 +215,7 @@ private:
     // large-vector alloc/free for static worlds on the dirty-check fast-path).
     struct ExpandedInst {
         int   part_slot;
+        int   segment;         // 0 = fine (trunk), 1 = coarse/merged
         float transform[16];   // GL column-major (post-transpose_to_gl)
     };
     std::vector<ExpandedInst> expanded_;
