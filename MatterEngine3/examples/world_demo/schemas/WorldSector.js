@@ -8,7 +8,7 @@ import { candidatesInRect } from 'shared-lib/scatter_grid';
 const SECTOR = 16.0;
 const ROCK_VARIANTS = 8, PEBBLE_VARIANTS = 6, GRASS_VARIANTS = 5;
 const BOULDER_SIZES = [2.5, 4.0], BOULDER_SEEDS = 4;
-const TREE_MIN_DIST = 24.0, BOULDER_MIN_DIST = 70.0;
+const BOULDER_MIN_DIST = 70.0;
 const GRASS_SLOPE_MAX = 0.5;
 
 function assetVariants() {
@@ -19,7 +19,6 @@ function assetVariants() {
       req.push({ module: 'Rock', params: { seed: s, size: sz } });
   for (let s = 0; s < PEBBLE_VARIANTS; ++s) req.push({ module: 'Pebble', params: { seed: s } });
   for (let s = 0; s < GRASS_VARIANTS; ++s) req.push({ module: 'Grass', params: { seed: s } });
-  req.push({ module: 'Tree' });
   return req;
 }
 
@@ -69,17 +68,6 @@ class WorldSector extends Part {
     }
 
     // ---- spaced kinds: cross-sector deterministic ---------------------------
-    if (counts.trees) {
-      for (const c of candidatesInRect(p.worldSeed, 1, TREE_MIN_DIST, ox, oz, SECTOR, SECTOR)) {
-        if (this.biomeAt(c.x, c.z) === 'ocean') continue;
-        if (this.slopeAt(c.x, c.z) > 0.8) continue;
-        this.pushMatrix();
-        this.translate(c.x - ox, this.heightAt(c.x, c.z), c.z - oz);
-        this.rotateY(c.rot);
-        this.placeChild('Tree');
-        this.popMatrix();
-      }
-    }
     // Landmark boulders: every land biome, sparse.
     for (const c of candidatesInRect(p.worldSeed, 2, BOULDER_MIN_DIST, ox, oz, SECTOR, SECTOR)) {
       if (this.biomeAt(c.x, c.z) === 'ocean') continue;

@@ -37,8 +37,8 @@ int main() {
         auto req_b = host.eval_requires(src, R"({"tx":900,"tz":-77,"rung":0})");
         CHECK(!req_a.empty(), "requires non-empty");
         CHECK(req_a.size() == req_b.size(), "requires independent of tx/tz");
-        // 8 rocks + 8 boulders + 6 pebbles + 5 grass + 1 tree = 28
-        CHECK(req_a.size() == 28, "full variant list");
+        // 8 rocks + 8 boulders + 6 pebbles + 5 grass = 27
+        CHECK(req_a.size() == 27, "full variant list");
     }
 
     system("rm -rf /tmp/sector_bake_parts && mkdir -p /tmp/sector_bake_parts");
@@ -77,7 +77,7 @@ int main() {
     // scatter bake: rung >= 2 runs the vegetation/placeChild path (WorldSector.js:34).
     // placeChild does a STRICT composite-key lookup (module \x1f canonical-params)
     // with no bare-module fallback, so we must install the schema's full declared
-    // variant table (assetVariants: 28 entries). bake_source keys the table with
+    // variant table (assetVariants: 27 entries). bake_source keys the table with
     // child_params[i] verbatim, while placeChild normalizes its JS params via
     // params_from_json->params_to_json — so we canonicalize each variant's params
     // through the SAME functions, guaranteeing the keys match. Dummy child hashes
@@ -102,17 +102,16 @@ int main() {
                 add("Rock", "{\"seed\":" + std::to_string(s) + ",\"size\":" + sz + "}");
         for (int s = 0; s < 6; ++s) add("Pebble", "{\"seed\":" + std::to_string(s) + "}");
         for (int s = 0; s < 5; ++s) add("Grass", "{\"seed\":" + std::to_string(s) + "}");
-        add("Tree", "");
-        CHECK(mods.size() == 28, "installed full declared variant table");
+        CHECK(mods.size() == 27, "installed full declared variant table");
 
         BakeOptions opts;
         opts.parts_dir = "/tmp/sector_bake_parts";
         opts.world.field = &field;
         const char* p_scatter =
             R"({"tx":0,"tz":0,"rung":2,"worldSeed":42,"fieldHash":"abc","biomes":)"
-            R"("{\"meadow\":{\"rocks\":4,\"pebbles\":4,\"grass\":5,\"trees\":1},)"
-            R"(\"foothills\":{\"rocks\":4,\"pebbles\":4,\"grass\":5,\"trees\":1},)"
-            R"(\"mountains\":{\"rocks\":4,\"pebbles\":4,\"grass\":5,\"trees\":1}}"})";
+            R"("{\"meadow\":{\"rocks\":4,\"pebbles\":4,\"grass\":5},)"
+            R"(\"foothills\":{\"rocks\":4,\"pebbles\":4,\"grass\":5},)"
+            R"(\"mountains\":{\"rocks\":4,\"pebbles\":4,\"grass\":5}}"})";
         BakeResult rs = host.bake_source(src, p_scatter, opts,
             hashes.data(), hashes.size(), mods.data(), cparams.data());
         CHECK(rs.error.ok, rs.error.message.c_str());
