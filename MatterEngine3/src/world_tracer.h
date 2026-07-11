@@ -39,6 +39,11 @@ public:
     void world_bounds(float mn[3], float mx[3]) const;   // valid after build
     size_t instance_count() const;
 
+    // Optional secondary artifact dir (streamed transient parts). Checked
+    // FIRST, exactly like PartStore's scratch dir (same path construction:
+    // scratch + "/" + cache_path_flat/_resolved). Set before build().
+    void set_scratch_dir(const std::string& dir);
+
     // Post-expansion instance table (children expanded by the compositional
     // fallback get their own entries). Valid after build().
     size_t expanded_instance_count() const;
