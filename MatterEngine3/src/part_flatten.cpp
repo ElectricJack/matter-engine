@@ -11,6 +11,7 @@
 #include "mat_math.h"
 
 #include <algorithm>
+#include <cfloat>    // FLT_MAX (segmented error-budget sentinel)
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>   // std::getenv
@@ -80,7 +81,31 @@ struct PartGeo {
     std::vector<Tri>   tris;
     std::vector<TriEx> triex;                                // parallel to tris
     std::vector<part_asset::ChildInstance> children;
+    // LOD-instanced-children: per-part flatten hints (child index -> inline px).
+    // Loaded lazily in Gatherer::load; absent sidecar => empty map (no hints).
+    part_asset::FlattenHints hints;
 };
+
+// LOD-instanced-children: synthesize a neutral TriEx for a triangle that has no
+// per-triangle table (instance-material fallback, geometric normal). Same body
+// as the fallback block in Gatherer::load (:403-418); factored so the segmented
+// merge path can reuse it when a child level's TriEx count mismatches its Tri
+// count. Leave the load() block untouched (its byte output must not drift).
+static TriEx neutral_triex_for(const Tri& t) {
+    TriEx ex;
+    std::memset(&ex, 0, sizeof(TriEx));
+    ex.tint = make_float4(1, 1, 1, 0);
+    ex.ao0 = ex.ao1 = ex.ao2 = 1.0f;
+    float3 e1 = make_float3(t.vertex1.x-t.vertex0.x, t.vertex1.y-t.vertex0.y, t.vertex1.z-t.vertex0.z);
+    float3 e2 = make_float3(t.vertex2.x-t.vertex0.x, t.vertex2.y-t.vertex0.y, t.vertex2.z-t.vertex0.z);
+    float3 n = make_float3(e1.y*e2.z - e1.z*e2.y,
+                           e1.z*e2.x - e1.x*e2.z,
+                           e1.x*e2.y - e1.y*e2.x);
+    float len = std::sqrt(n.x*n.x + n.y*n.y + n.z*n.z);
+    if (len > 1e-12f) { n.x/=len; n.y/=len; n.z/=len; } else n = make_float3(0,1,0);
+    ex.N0 = ex.N1 = ex.N2 = n;
+    return ex;
+}
 
 // Bake-hardening #3: skeleton-gather ticket. Each ticket points at a single
 // source triangle (geo_idx into geos_ + local_tri_idx) instantiated under one
@@ -251,9 +276,24 @@ public:
             self_is_boundary = (it != decisions_->end() &&
                                 it->second == FlattenDecision::BOUNDARY);
         }
-        for (const auto& c : geo->children) {
+        // LOD-instanced-children: index-based so hints can key on child index.
+        // The hinted check comes BEFORE the budget-BOUNDARY check: a hinted
+        // child is excluded from the trunk (its subtree is never gathered) and
+        // recorded as a HintedRef regardless of any budget-forced boundary at
+        // this node — "hinted wins over BOUNDARY".
+        for (size_t ci = 0; ci < geo->children.size(); ++ci) {
+            const auto& c = geo->children[ci];
             float child_world[16];
             mul16(world, c.transform, child_world);
+            auto hit = geo->hints.child_px.find((uint32_t)ci);
+            if (hit != geo->hints.child_px.end()) {
+                HintedRef hr;
+                hr.ref.child_resolved_hash = c.child_resolved_hash;
+                std::memcpy(hr.ref.transform, child_world, 16 * sizeof(float));
+                hr.px = hit->second;
+                hinted_refs_.push_back(hr);
+                continue;   // subtree excluded from trunk; hinted wins over BOUNDARY
+            }
             if (self_is_boundary) {
                 part_asset::FlatInstanceRef ref{};
                 ref.child_resolved_hash = c.child_resolved_hash;
@@ -320,6 +360,13 @@ public:
     const std::vector<Tri>&   tris()  const { return tris_; }
     const std::vector<TriEx>& triex() const { return triex_; }
     std::vector<part_asset::FlatInstanceRef>& instance_refs() { return instance_refs_; }
+
+    // LOD-instanced-children: a hinted child recorded during skeleton_gather.
+    // The subtree is excluded from the trunk mesh; the coarse segment inlines
+    // the child's OWN coarse LODs (not its full-res gather), and the fine
+    // segment keeps it as an instance ref. `px` is the schema's inlineBelowPx.
+    struct HintedRef { part_asset::FlatInstanceRef ref; float px; };
+    const std::vector<HintedRef>& hinted_refs() const { return hinted_refs_; }
 
     // Bake-hardening #3: skeleton-gather outputs.
     std::vector<float3>&  centroids() { return centroids_; }
@@ -419,6 +466,11 @@ private:
             }
         }
         geo->ok = true;
+        // LOD-instanced-children: load the per-part flatten hints sidecar. It's
+        // all-or-nothing and returns false when absent — that IS the "no hints"
+        // case, so the return value is intentionally ignored.
+        (void)part_asset::load_flatten_hints(
+            cache_root_ + "/" + part_asset::cache_path_hints(hash), geo->hints);
         auto ins = cache_.emplace(hash, std::move(geo));
         return ins.first->second.get();
     }
@@ -432,6 +484,10 @@ private:
     // recorded here (world-space transform + child hash) instead of being
     // expanded into tris/triex. The writer emits them as FlatInstanceRefs.
     std::vector<part_asset::FlatInstanceRef> instance_refs_;
+    // LOD-instanced-children: children excluded from the trunk by a flatten
+    // hint (at any depth). Consumed by flatten_segmented to build the coarse
+    // segment and the fine-segment instance refs.
+    std::vector<HintedRef> hinted_refs_;
     // Optional per-part decision map, keyed by resolved hash. self_hash_ is
     // the root of the flatten job — the root's own decision is not applied
     // to itself (a BOUNDARY root still writes its own .flat.part).
@@ -609,6 +665,415 @@ static size_t decide_bottomup(uint64_t hash, int depth,
     return est;
 }
 
+// =====================================================================
+// LOD-instanced-children: segmented flatten (fine trunk + coarse merge).
+// =====================================================================
+
+// Deliberate copy of lod_select::select_level (lod_select.cpp:24-31).
+// lod_select.cpp is NOT in the flatten link target, so we cannot #include or
+// link it; this duplication is plan-mandated. `thr` is fine->coarse (thr[0] the
+// largest). Returns the smallest index i where size >= thr[i]; the coarsest
+// index when size clears nothing; 0 when thr is empty.
+static int select_level_local(float size, const std::vector<float>& thr) {
+    for (size_t i = 0; i < thr.size(); ++i)
+        if (size >= thr[i]) return (int)i;
+    return thr.empty() ? 0 : (int)thr.size() - 1;
+}
+
+// A child's already-baked flat, merged into a per-level view: level `li` holds
+// the concatenation of every cluster's level min(li, cluster_levels-1). The
+// coarse segment of the parent inlines geometry from these levels (NOT a
+// full-res gather of the child), so shared branch geometry is de-duplicated.
+struct ChildFlat {
+    bool ok = false;
+    float radius = 0.0f;
+    float aabb_min[3] = { 0,0,0 };
+    float aabb_max[3] = { 0,0,0 };
+    std::vector<float>               thresholds;   // per merged level (max over clusters)
+    std::vector<std::vector<Tri>>    level_tris;   // per merged level geometry
+    std::vector<std::vector<TriEx>>  level_triex;  // parallel to level_tris
+};
+
+// Peek the child flat; if missing or not the current flat version, recursively
+// flatten the child first (its coarse LODs are the coarse-segment source). Then
+// load via the 6-arg load_flat_v3 and build the merged per-level view.
+static bool load_child_flat(const std::string& cache_root, uint64_t child_hash,
+                            const FlattenTargets& targets, ChildFlat& out,
+                            std::string* err) {
+    const std::string flat_path =
+        cache_root + "/" + part_asset::cache_path_flat(child_hash);
+    if (part_asset::peek_format_version(flat_path) != part_asset::kFormatVersionFlat) {
+        // Missing or stale: bake the child's own flat first (recursive dep).
+        FlattenResult cr = flatten_part(cache_root, child_hash, targets);
+        if (!cr.ok) {
+            if (err) *err = "flatten_segmented: child flatten failed for " +
+                            flat_path + " (" + cr.error + ")";
+            return false;
+        }
+    }
+
+    BLASManager blas;
+    TLASManager tlas(4);
+    std::vector<part_asset::FlatCluster> clusters;
+    std::vector<part_asset::FlatInstanceRef> refs;
+    if (!part_asset::load_flat_v3(flat_path, child_hash, blas, tlas, clusters, refs)) {
+        if (err) *err = "flatten_segmented: load_flat_v3 failed for " + flat_path;
+        return false;
+    }
+    if (clusters.empty()) {
+        if (err) *err = "flatten_segmented: child flat has no clusters: " + flat_path;
+        return false;
+    }
+
+    // If the child is itself segmented, its coarse (segment 1) clusters are the
+    // stand-alone coarse geometry we want to inline; restrict the merged view to
+    // those. Otherwise every cluster contributes.
+    bool child_segmented = false;
+    for (const auto& c : clusters) if (c.segment == 1) { child_segmented = true; break; }
+
+    std::vector<const part_asset::FlatCluster*> used;
+    for (const auto& c : clusters)
+        if (!child_segmented || c.segment == 1) used.push_back(&c);
+    if (used.empty()) used.push_back(&clusters[0]);   // degenerate guard
+
+    const auto& entries = blas.get_entries();
+    auto tris_at = [&](const part_asset::FlatCluster* c, size_t li,
+                       std::vector<Tri>& dst_t, std::vector<TriEx>& dst_ex) {
+        if (c->lods.empty()) return;
+        const size_t use_li = std::min(li, c->lods.size() - 1);
+        for (uint32_t bi : c->lods[use_li].blas_indices) {
+            if (bi >= entries.size()) continue;
+            const auto& e = *entries[bi];
+            dst_t.insert(dst_t.end(), e.triangles.begin(), e.triangles.end());
+            if (e.tri_extra.size() == e.triangles.size()) {
+                dst_ex.insert(dst_ex.end(), e.tri_extra.begin(), e.tri_extra.end());
+            } else {
+                for (const Tri& t : e.triangles) dst_ex.push_back(neutral_triex_for(t));
+            }
+        }
+    };
+
+    // Merged level count = max levels over used clusters.
+    size_t max_levels = 0;
+    for (auto* c : used) max_levels = std::max(max_levels, c->lods.size());
+    out.level_tris.assign(max_levels, {});
+    out.level_triex.assign(max_levels, {});
+    out.thresholds.assign(max_levels, 0.0f);
+    for (size_t li = 0; li < max_levels; ++li) {
+        float thr = 0.0f;
+        for (auto* c : used) {
+            tris_at(c, li, out.level_tris[li], out.level_triex[li]);
+            const size_t use_li = std::min(li, c->lods.empty() ? size_t(0)
+                                                               : c->lods.size() - 1);
+            if (!c->lods.empty())
+                thr = std::max(thr, c->lods[use_li].screen_size_threshold);
+        }
+        out.thresholds[li] = thr;
+    }
+
+    // AABB / radius from ALL clusters (half diagonal of the union box).
+    float mn[3] = { FLT_MAX, FLT_MAX, FLT_MAX };
+    float mx[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+    for (const auto& c : clusters)
+        for (int k = 0; k < 3; ++k) {
+            mn[k] = std::min(mn[k], c.aabb_min[k]);
+            mx[k] = std::max(mx[k], c.aabb_max[k]);
+        }
+    for (int k = 0; k < 3; ++k) { out.aabb_min[k] = mn[k]; out.aabb_max[k] = mx[k]; }
+    const float dx = mx[0]-mn[0], dy = mx[1]-mn[1], dz = mx[2]-mn[2];
+    out.radius = 0.5f * std::sqrt(dx*dx + dy*dy + dz*dz);
+    out.ok = true;
+    return true;
+}
+
+// Build the segmented flat artifact: a FINE segment (trunk-only, ladder levels
+// [0,L*) as divisors, children kept as instance refs) followed by a COARSE
+// segment (trunk + each hinted child's own coarse-LOD geometry inlined, ladder
+// levels [L*,end)). Fine clusters are written FIRST so they lead the artifact.
+static FlattenResult flatten_segmented(const std::string& cache_root,
+                                       uint64_t root_hash,
+                                       const FlattenTargets& targets,
+                                       Gatherer& g,
+                                       float world_aabb_min[3],
+                                       float world_aabb_max[3]) {
+    FlattenResult res;
+    const auto& hrefs = g.hinted_refs();
+
+    // 1. Load unique child flats.
+    std::map<uint64_t, ChildFlat> child_flats;
+    for (const auto& hr : hrefs) {
+        const uint64_t ch = hr.ref.child_resolved_hash;
+        if (child_flats.count(ch)) continue;
+        ChildFlat cf;
+        if (!load_child_flat(cache_root, ch, targets, cf, &res.error)) return res;
+        child_flats.emplace(ch, std::move(cf));
+    }
+
+    // 2. Extend the world AABB by the 8 transformed corners of each hinted
+    //    child's AABB; radius = half diagonal of the extended box.
+    float mn[3] = { world_aabb_min[0], world_aabb_min[1], world_aabb_min[2] };
+    float mx[3] = { world_aabb_max[0], world_aabb_max[1], world_aabb_max[2] };
+    auto extend = [&](const float3& p) {
+        mn[0]=std::min(mn[0],p.x); mn[1]=std::min(mn[1],p.y); mn[2]=std::min(mn[2],p.z);
+        mx[0]=std::max(mx[0],p.x); mx[1]=std::max(mx[1],p.y); mx[2]=std::max(mx[2],p.z);
+    };
+    for (const auto& hr : hrefs) {
+        const ChildFlat& cf = child_flats[hr.ref.child_resolved_hash];
+        for (int c = 0; c < 8; ++c) {
+            float3 corner = make_float3((c & 1) ? cf.aabb_max[0] : cf.aabb_min[0],
+                                        (c & 2) ? cf.aabb_max[1] : cf.aabb_min[1],
+                                        (c & 4) ? cf.aabb_max[2] : cf.aabb_min[2]);
+            extend(xform_point(hr.ref.transform, corner));
+        }
+    }
+    // If the trunk was empty, mn/mx may still be at their init sentinels; guard.
+    for (int k = 0; k < 3; ++k)
+        if (mn[k] > mx[k]) { mn[k] = 0.0f; mx[k] = 0.0f; }
+    const float rdx = mx[0]-mn[0], rdy = mx[1]-mn[1], rdz = mx[2]-mn[2];
+    const float radius = 0.5f * std::sqrt(rdx*rdx + rdy*rdy + rdz*rdz);
+
+    // 3. Per-ref cutover; unified = max over refs; L* + eps_first_coarse.
+    const size_t ndiv = targets.radius_divisor.size();
+    float unified_cutover = 0.0f;
+    for (const auto& hr : hrefs) {
+        const ChildFlat& cf = child_flats[hr.ref.child_resolved_hash];
+        const float ref_scale = transform_uniform_scale(hr.ref.transform);
+        const float cut = ref_cutover_threshold(hr.px, radius, cf.radius,
+                                                ref_scale, targets);
+        unified_cutover = std::max(unified_cutover, cut);
+    }
+    const int Lstar = cutover_level_index(unified_cutover, targets);
+    const float eps_first_coarse =
+        (Lstar < (int)ndiv) ? radius / targets.radius_divisor[Lstar] : FLT_MAX;
+
+    // 4. Per-ref child source level + eps_child_used.
+    //    C = child level selected at the cutover px;
+    //    E = coarsest child level j with eps_child_local(j)*ref_scale <=
+    //        eps_first_coarse/2; src = min(C, E).
+    float eps_child_used = 0.0f;
+    struct RefPlan { const part_asset::FlatInstanceRef* ref; int src; uint64_t hash; };
+    std::vector<RefPlan> plans;
+    plans.reserve(hrefs.size());
+    for (const auto& hr : hrefs) {
+        const ChildFlat& cf = child_flats[hr.ref.child_resolved_hash];
+        const float ref_scale = transform_uniform_scale(hr.ref.transform);
+        const size_t nlev = cf.level_tris.size();
+        auto eps_child_local = [&](int j) -> float {
+            if (j <= 0) return 0.0f;
+            if ((size_t)(j-1) >= cf.thresholds.size()) return FLT_MAX;
+            const float thr = cf.thresholds[j-1];
+            if (thr <= 0.0f) return FLT_MAX;   // treat as huge eps => excluded
+            return cf.radius * targets.pixel_budget * targets.pixel_angle / thr;
+        };
+        const int C = select_level_local(
+            hr.px * targets.pixel_angle * targets.pixel_budget, cf.thresholds);
+        int E = 0;
+        for (int j = 0; j < (int)nlev; ++j) {
+            if (eps_child_local(j) * ref_scale <= eps_first_coarse / 2.0f) E = j;
+        }
+        int src = std::min(C, E);
+        if (nlev == 0) src = 0;
+        else src = std::max(0, std::min(src, (int)nlev - 1));
+        eps_child_used = std::max(eps_child_used,
+                                  eps_child_local(src) * ref_scale);
+        RefPlan p; p.ref = &hr.ref; p.src = src; p.hash = hr.ref.child_resolved_hash;
+        plans.push_back(p);
+    }
+    if (eps_child_used == FLT_MAX) eps_child_used = 0.0f;   // safety (all-excluded)
+
+    // 5. Trunk: materialize the full gathered trunk in identity order (the
+    //    trunk is small by construction when hints exist).
+    std::vector<Tri>   trunk;
+    std::vector<TriEx> trunk_ex;
+    {
+        std::vector<uint32_t> ident(g.tickets().size());
+        for (uint32_t i = 0; i < ident.size(); ++i) ident[i] = i;
+        float dmn[3], dmx[3];
+        g.materialize_range(ident, 0, (uint32_t)ident.size(),
+                            trunk, trunk_ex, dmn, dmx);
+    }
+    res.fine_tris = trunk.size();
+
+    // 6. Merged = trunk + each ref's child.level_tris[src] transformed.
+    std::vector<Tri>   merged   = trunk;
+    std::vector<TriEx> merged_ex = trunk_ex;
+    for (const auto& p : plans) {
+        const ChildFlat& cf = child_flats[p.hash];
+        if ((size_t)p.src >= cf.level_tris.size()) continue;
+        const auto& src_t  = cf.level_tris[p.src];
+        const auto& src_ex = cf.level_triex[p.src];
+        NormalMatF3 nm(p.ref->transform);
+        for (size_t i = 0; i < src_t.size(); ++i) {
+            const Tri& s = src_t[i];
+            Tri t;
+            t.vertex0 = xform_point(p.ref->transform, s.vertex0);
+            t.vertex1 = xform_point(p.ref->transform, s.vertex1);
+            t.vertex2 = xform_point(p.ref->transform, s.vertex2);
+            t.centroid = make_float3((t.vertex0.x+t.vertex1.x+t.vertex2.x)/3,
+                                     (t.vertex0.y+t.vertex1.y+t.vertex2.y)/3,
+                                     (t.vertex0.z+t.vertex1.z+t.vertex2.z)/3);
+            TriEx ex = (i < src_ex.size()) ? src_ex[i] : neutral_triex_for(s);
+            ex.N0 = nm.apply(ex.N0);
+            ex.N1 = nm.apply(ex.N1);
+            ex.N2 = nm.apply(ex.N2);
+            merged.push_back(t);
+            merged_ex.push_back(ex);
+        }
+    }
+    res.full_tris = res.coarse_input_tris = merged.size();
+
+    // Shared BLAS/TLAS for the artifact.
+    BLASManager blas;
+    TLASManager tlas(4);
+    std::vector<part_asset::FlatCluster> flat_clusters;
+    size_t max_levels = 0;
+    size_t coarsest_tris = 0;
+
+    auto find_blas_idx = [&](BLASHandle h) -> uint32_t {
+        const auto& entries = blas.get_entries();
+        for (size_t k = 0; k < entries.size(); ++k)
+            if (entries[k]->handle == h) return (uint32_t)k;
+        return UINT32_MAX;
+    };
+
+    // 7. build_segment: split a materialized mesh into clusters, build a ladder
+    //    over divisors [div_lo, div_hi) with QEM budget eps_total - eps_base
+    //    (skip a level if that is <= 0). Level 0 is registered with eps_base for
+    //    continuity. Shares the blas/register/threshold-fill machinery with the
+    //    classic path.
+    struct LevelMeta { float eps; uint32_t blas_idx; };
+    bool seg_error = false;
+    auto build_segment = [&](const std::vector<Tri>& tris,
+                             const std::vector<TriEx>& triex,
+                             int div_lo, int div_hi,
+                             float eps_base, uint32_t segment_tag) {
+        if (tris.empty()) return;
+        // Cluster via centroid-only split (deterministic, matches classic path).
+        std::vector<float3> centroids(tris.size());
+        for (size_t i = 0; i < tris.size(); ++i) centroids[i] = tris[i].centroid;
+        std::vector<uint32_t> order;
+        auto clusters = part_cluster::split_centroids(centroids, order,
+                                                      targets.cluster_target_tris);
+
+        auto register_level = [&](const std::vector<Tri>& lt,
+                                  const std::vector<TriEx>& le,
+                                  float eps, std::vector<LevelMeta>& metas) -> bool {
+            const TriEx* ex_ptr = le.empty() ? nullptr : le.data();
+            BLASHandle h = blas.register_triangles(const_cast<Tri*>(lt.data()),
+                                                   (int)lt.size(), ex_ptr);
+            uint32_t idx = find_blas_idx(h);
+            if (idx == UINT32_MAX) { res.error = "flatten: BLAS registration failed"; return false; }
+            metas.push_back({eps, idx});
+            return true;
+        };
+
+        for (const auto& cl : clusters) {
+            // Permute-copy this cluster's slice + AABB.
+            std::vector<Tri>   ctris(cl.tri_count);
+            std::vector<TriEx> ctriex(cl.tri_count);
+            float cl_min[3] = { FLT_MAX, FLT_MAX, FLT_MAX };
+            float cl_max[3] = { -FLT_MAX, -FLT_MAX, -FLT_MAX };
+            for (uint32_t j = 0; j < cl.tri_count; ++j) {
+                const uint32_t src_idx = order[cl.first_tri + j];
+                ctris[j]  = tris[src_idx];
+                ctriex[j] = (src_idx < triex.size()) ? triex[src_idx]
+                                                     : neutral_triex_for(tris[src_idx]);
+                const Tri& t = ctris[j];
+                for (const float3* v : {&t.vertex0, &t.vertex1, &t.vertex2}) {
+                    cl_min[0]=std::min(cl_min[0],v->x); cl_max[0]=std::max(cl_max[0],v->x);
+                    cl_min[1]=std::min(cl_min[1],v->y); cl_max[1]=std::max(cl_max[1],v->y);
+                    cl_min[2]=std::min(cl_min[2],v->z); cl_max[2]=std::max(cl_max[2],v->z);
+                }
+            }
+
+            std::vector<LevelMeta> level_metas;
+            // Raw level 0 registered with eps_base so its threshold lands at or
+            // below the cutover (continuity between fine and coarse segments).
+            if (!register_level(ctris, ctriex, eps_base, level_metas)) { seg_error = true; return; }
+
+            size_t prev_count = ctris.size();
+            size_t last_kept_count = ctris.size();
+            for (int di = div_lo; di < div_hi; ++di) {
+                const float eps_total = radius / targets.radius_divisor[di];
+                const float eps_qem = eps_total - eps_base;
+                if (eps_qem <= 0.0f) continue;   // skip: budget already spent by child
+                std::vector<Tri> geo =
+                    lod_bake::decimate_to_error(ctris, eps_qem, /*use_aabb_bounds=*/false);
+                if (geo.empty() || geo.size() >= prev_count) continue;  // no progress
+                std::vector<TriEx> ex;
+                {
+                    MeshIndexed src_m = from_tri(ctris, &ctriex);
+                    MeshIndexed tgt_m = from_tri(geo, nullptr);
+                    ::reproject_triex(src_m, tgt_m);
+                    std::vector<Tri> tgt_tris_ignored;
+                    to_tri(tgt_m, tgt_tris_ignored, ex);
+                }
+                if (!register_level(geo, ex, eps_total, level_metas)) { seg_error = true; return; }
+                prev_count = geo.size();
+                last_kept_count = geo.size();
+                if (prev_count <= (size_t)targets.min_level_tris) break;
+            }
+
+            // Threshold fill: level i's threshold from level (i+1)'s eps; coarsest 0.
+            part_asset::LodLevels lods;
+            lods.reserve(level_metas.size());
+            for (size_t i = 0; i < level_metas.size(); ++i) {
+                float thr = 0.0f;
+                if (i + 1 < level_metas.size()) {
+                    const float next_eps = level_metas[i + 1].eps;
+                    if (next_eps > 0.0f)
+                        thr = radius * targets.pixel_budget * targets.pixel_angle / next_eps;
+                }
+                part_asset::LodLevel lvl;
+                lvl.screen_size_threshold = thr;
+                lvl.blas_indices.push_back(level_metas[i].blas_idx);
+                lods.push_back(std::move(lvl));
+            }
+
+            if (level_metas.size() > max_levels) max_levels = level_metas.size();
+            coarsest_tris = last_kept_count;
+
+            part_asset::FlatCluster fc;
+            fc.aabb_min[0]=cl_min[0]; fc.aabb_min[1]=cl_min[1]; fc.aabb_min[2]=cl_min[2];
+            fc.aabb_max[0]=cl_max[0]; fc.aabb_max[1]=cl_max[1]; fc.aabb_max[2]=cl_max[2];
+            fc.segment = segment_tag;
+            fc.lods = std::move(lods);
+            flat_clusters.push_back(std::move(fc));
+        }
+    };
+
+    // 8. Fine (segment 0) first, then coarse (segment 1).
+    //    Fine: trunk over divisors [0, L*), eps_base 0.
+    //    Coarse: merged over divisors [L*, ndiv), eps_base eps_child_used.
+    build_segment(trunk, trunk_ex, 0, Lstar, 0.0f, 0);
+    if (seg_error) return res;
+    build_segment(merged, merged_ex, Lstar, (int)ndiv, eps_child_used, 1);
+    if (seg_error) return res;
+
+    // 9. Hinted refs carry the unified cutover; budget-BOUNDARY refs keep 0.
+    std::vector<part_asset::FlatInstanceRef> out_refs;
+    out_refs.reserve(hrefs.size() + g.instance_refs().size());
+    for (const auto& hr : hrefs) {
+        part_asset::FlatInstanceRef r = hr.ref;
+        r.inline_cutover = unified_cutover;
+        out_refs.push_back(r);
+    }
+    for (const auto& r : g.instance_refs()) out_refs.push_back(r);   // cutover stays 0
+
+    res.levels        = max_levels;
+    res.clusters      = flat_clusters.size();
+    res.coarsest_tris = coarsest_tris;
+    res.instance_refs = out_refs.size();
+
+    const std::string out_path = cache_root + "/" + part_asset::cache_path_flat(root_hash);
+    if (!part_asset::save_flat_v3(out_path, blas, tlas, flat_clusters, out_refs, root_hash)) {
+        res.error = "flatten: save_flat_v3 failed for " + out_path;
+        return res;
+    }
+    res.ok = true;
+    return res;
+}
+
 static FlattenResult flatten_part_impl(const std::string& cache_root,
                                        uint64_t root_hash,
                                        const FlattenTargets& targets) {
@@ -691,6 +1156,14 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
     if (!g.skeleton_gather(root_hash, kIdentity, 0, res.error,
                            world_aabb_min, world_aabb_max))
         return res;
+
+    // LOD-instanced-children: if any child was excluded from the trunk by a
+    // flatten hint, take the segmented path (fine trunk + coarse child-LOD
+    // merge). Only branch when hints exist so the UNHINTED path stays
+    // byte-identical to the classic streaming ladder below.
+    if (!g.hinted_refs().empty())
+        return flatten_segmented(cache_root, root_hash, targets, g,
+                                 world_aabb_min, world_aabb_max);
 
     std::vector<part_asset::FlatInstanceRef>& refs = g.instance_refs();
     std::vector<float3>& centroids = g.centroids();

@@ -760,6 +760,46 @@ static void test_v3_round_trip() {
         CHECK(blas_in.get_entries()[1]->triangles.size() == 2, "v3: blas[1] tri count = 2");
     }
 
+    // v6: segment tag + inline_cutover round-trip.
+    // Set distinct segment values on the two clusters before re-saving.
+    clusters_out[0].segment = 0;
+    clusters_out[1].segment = 1;
+
+    // Build two instance refs with distinct inline_cutover values.
+    std::vector<part_asset::FlatInstanceRef> refs(2);
+    refs[0].child_resolved_hash = 0x1111111111111111ull;
+    refs[1].child_resolved_hash = 0x2222222222222222ull;
+    for (int i = 0; i < 16; ++i) {
+        refs[0].transform[i] = (i == 0 || i == 5 || i == 10 || i == 15) ? 1.0f : 0.0f;
+        refs[1].transform[i] = refs[0].transform[i];
+    }
+    refs[0].inline_cutover = 0.575f;
+    refs[1].inline_cutover = 0.0f;
+
+    const uint64_t kV6Hash = 0xABCDEF0012345679ull;
+    const std::string v6_path = std::string(kCacheRoot) + "/parts/test_v6_roundtrip.flat.part";
+
+    bool saved_v6 = part_asset::save_flat_v3(v6_path, blas_out, tlas_out, clusters_out, refs, kV6Hash);
+    CHECK(saved_v6, "v6: save_flat_v3 with segment+inline_cutover returns true");
+    if (!saved_v6) { printf("  SKIPPING v6 field checks\n"); return; }
+
+    BLASManager blas_v6;
+    TLASManager tlas_v6(16);
+    std::vector<part_asset::FlatCluster> loaded_clusters;
+    std::vector<part_asset::FlatInstanceRef> loaded_refs;
+    bool loaded_v6 = part_asset::load_flat_v3(v6_path, kV6Hash, blas_v6, tlas_v6,
+                                               loaded_clusters, loaded_refs);
+    CHECK(loaded_v6, "v6: load_flat_v3 returns true");
+    if (loaded_v6 && loaded_clusters.size() == 2) {
+        CHECK(loaded_clusters[0].segment == 0, "v6: cluster0 segment == 0");
+        CHECK(loaded_clusters[1].segment == 1, "v6: cluster1 segment == 1");
+    }
+    if (loaded_v6 && loaded_refs.size() == 2) {
+        CHECK(loaded_refs[0].inline_cutover == 0.575f, "v6: refs[0].inline_cutover == 0.575f");
+        CHECK(loaded_refs[1].inline_cutover == 0.0f,  "v6: refs[1].inline_cutover == 0.0f");
+    }
+    static_assert(sizeof(part_asset::FlatInstanceRef) == 80, "flat ref layout");
+
     printf("PASSED\n");
 }
 
@@ -1393,6 +1433,44 @@ static void test_generous_budget_inlines() {
     std::remove(flat.c_str());
 }
 
+static void test_cutover_helpers() {
+    part_flatten::FlattenTargets t;  // defaults: pb=1.0, pa=1.047/720, div={512,256,128,64,32,16,8,4,2}
+    // Computed pb*pa*div[i] thresholds (i=0..8):
+    //   0.744533, 0.372267, 0.186133, 0.093067, 0.046533, 0.023267, 0.011633, 0.005817, 0.002908
+    // (pa = 1.047/720 = 0.001454167; pb = 1.0)
+
+    // cutover_level_index: smallest i whose threshold is <= cutover
+    // 1.0 >= thr[0]=0.7445 => index 0
+    CHECK(part_flatten::cutover_level_index(1.0f, t) == 0, "cutover=1.0 maps to index 0");
+    // 0.5 >= thr[1]=0.3723 but < thr[0]=0.7445 => index 1
+    CHECK(part_flatten::cutover_level_index(0.5f, t) == 1, "cutover=0.5 maps to index 1");
+    // 0.1 >= thr[3]=0.0931 but < thr[2]=0.1861 => index 3
+    CHECK(part_flatten::cutover_level_index(0.1f, t) == 3, "cutover=0.1 maps to index 3");
+    // 0.001 < thr[8]=0.0029 => none qualify => div.size()=9
+    CHECK(part_flatten::cutover_level_index(0.001f, t) == (int)t.radius_divisor.size(),
+          "cutover=0.001 maps to div.size() (coarsest)");
+    // 0.0 never >= any positive threshold => div.size()=9 (coarsest)
+    CHECK(part_flatten::cutover_level_index(0.0f, t) == (int)t.radius_divisor.size(),
+          "cutover=0.0 maps to div.size() (coarsest)");
+
+    // ref_cutover_threshold: px*pa*pb*parent_r / (child_r * scale)
+    // = 64 * 0.00145417 * 1.0 * 10.7 / (1.732 * 1.0) = 0.57495 ≈ 0.575
+    float c = part_flatten::ref_cutover_threshold(64.0f, 10.7f, 1.732f, 1.0f, t);
+    CHECK(std::fabs(c - 0.575f) < 0.001f, "ref_cutover_threshold(64px,10.7,1.732,1) ≈ 0.575");
+    // zero guards: degenerate inputs return 0
+    CHECK(part_flatten::ref_cutover_threshold(64.0f, 10.7f, 0.0f, 1.0f, t) == 0.0f,
+          "ref_cutover_threshold: zero child_radius returns 0");
+    CHECK(part_flatten::ref_cutover_threshold(64.0f, 0.0f, 1.0f, 1.0f, t) == 0.0f,
+          "ref_cutover_threshold: zero parent_radius returns 0");
+
+    // transform_uniform_scale: column-0 length of row-major 4x4
+    float m[16] = {0.35f,0,0,0,  0,0.35f,0,0,  0,0,0.35f,0,  0,0,0,1};
+    CHECK(std::fabs(part_flatten::transform_uniform_scale(m) - 0.35f) < 1e-6f,
+          "transform_uniform_scale(0.35-scale matrix) == 0.35");
+
+    printf("  test_cutover_helpers OK\n");
+}
+
 static void test_flat_version_bump() {
     uint64_t hash = write_small_sphere_part();   // Task 7 fixture
     auto res = part_flatten::flatten_part(kCacheRoot, hash);
@@ -1401,7 +1479,7 @@ static void test_flat_version_bump() {
 
     // New flats carry the bumped version.
     assert(part_asset::peek_format_version(p) == part_asset::kFormatVersionFlat);
-    assert(part_asset::kFormatVersionFlat == 5u);
+    assert(part_asset::kFormatVersionFlat == 6u);
 
     // Patch the version field back to 3 (a pre-retune bake): loader must reject.
     // Header layout: magic (u32) then format_version (u32) — verify the write
@@ -1419,6 +1497,171 @@ static void test_flat_version_bump() {
     std::vector<part_asset::FlatCluster> cl2;
     assert(!part_asset::load_flat_v3(p, hash, b2, t2, cl2));
     printf("  test_flat_version_bump OK\n");
+}
+
+// ------------------------------------------------------ Task 6: segmented --
+
+// A dedicated parent hash for the segmented-flatten fixtures. Kept distinct
+// from kParentHash so the existing unhinted merge/determinism tests (which run
+// first in main() and expect NO hints sidecar) are never perturbed by the
+// hints file this fixture writes.
+static const uint64_t kSegParentHash = 0x5555000055550000ull;
+// Second parent hash: SAME geometry as kSegParentHash but flattened WITHOUT a
+// hints sidecar, so the guard test can prove the unhinted path is unchanged.
+static const uint64_t kSegParentNoHintHash = 0x6666000066660000ull;
+
+// Dedicated seg child: a small multi-LOD sphere (segs=20,rings=10 => 360 tris
+// full-res, with a genuinely coarser LOD1). Distinct hash so it re-flattens on
+// its own into a real ladder — the coarse segment of the parent then sources
+// from the child's DECIMATED coarse levels, provably fewer than full-res.
+static const uint64_t kSegChildHash = 0x7777000077770007ull;
+
+// child_full_res_tris = seg child LOD0 tri count (360). Used by the coarse-L0
+// range assertion below (coarse-sourced geometry is strictly less than this).
+static const size_t kChildFullResTris = 360;
+
+static bool write_seg_child() {
+    std::vector<Tri> full = sphere_tris(20, 10);          // ~360 tris
+    std::vector<Tri> coarse = sphere_tris(8, 4);          // ~48 tris (real LOD1)
+    return save_fixture(kSegChildHash, 7, {full, coarse}, {});
+}
+
+// Write a parent fixture: 2-tri quad trunk (material 3) with two child
+// instances (kSegChildHash, a multi-LOD sphere) at translate(+10,0,0)/(-10,0,0).
+static bool write_seg_parent(uint64_t parent_hash) {
+    std::vector<Tri> quad = quad_tris();
+    std::vector<part_asset::ChildInstance> children(2);
+    children[0].child_resolved_hash = kSegChildHash;
+    set_translate(children[0].transform, 10, 0, 0);
+    children[1].child_resolved_hash = kSegChildHash;
+    set_translate(children[1].transform, -10, 0, 0);
+    return save_fixture(parent_hash, 3, {quad}, children);
+}
+
+static void test_flatten_segmented() {
+    printf("=== test_flatten_segmented ===\n");
+    CHECK(write_seg_child(), "seg child fixture written");
+    CHECK(write_seg_parent(kSegParentHash), "seg parent fixture written");
+
+    // Hints sidecar: inline both children below 64 px.
+    part_asset::FlattenHints h;
+    h.child_px[0] = 64.0f;
+    h.child_px[1] = 64.0f;
+    CHECK(part_asset::save_flatten_hints(
+              std::string(kCacheRoot) + "/" + part_asset::cache_path_hints(kSegParentHash), h),
+          "seg hints sidecar written");
+
+    const std::string flat = std::string(kCacheRoot) + "/" +
+                             part_asset::cache_path_flat(kSegParentHash);
+    std::remove(flat.c_str());
+
+    part_flatten::FlattenTargets t;
+    auto res = part_flatten::flatten_part(kCacheRoot, kSegParentHash, t);
+    CHECK(res.ok, "seg flatten_part ok");
+    if (!res.ok) { printf("  error: %s\n", res.error.c_str()); return; }
+
+    BLASManager blas; TLASManager tlas(16);
+    std::vector<part_asset::FlatCluster> cl;
+    std::vector<part_asset::FlatInstanceRef> refs;
+    bool loaded = part_asset::load_flat_v3(flat, kSegParentHash, blas, tlas, cl, refs);
+    CHECK(loaded, "seg flat loads as v6");
+    if (!loaded) return;
+
+    bool has_fine = false, has_coarse = false;
+    for (auto& c : cl) { if (c.segment == 0) has_fine = true; else has_coarse = true; }
+    CHECK(has_fine && has_coarse, "artifact has both fine and coarse clusters");
+
+    // Fine segment level 0 = trunk only = exactly the 2 quad tris.
+    // Coarse segment level 0 = trunk + child coarse LODs.
+    auto tri_of = [&](uint32_t bi) -> size_t {
+        return (bi < blas.get_entries().size())
+                   ? blas.get_entries()[bi]->triangles.size() : 0;
+    };
+    size_t fine_l0 = 0, coarse_l0 = 0;
+    for (auto& c : cl) {
+        if (c.lods.empty()) continue;
+        size_t l0 = 0;
+        for (uint32_t bi : c.lods[0].blas_indices) l0 += tri_of(bi);
+        if (c.segment == 0) fine_l0   += l0;
+        else                coarse_l0 += l0;
+    }
+    CHECK(fine_l0 == 2, "fine L0 == 2 (trunk-only)");
+    // Coarse L0 = trunk + child coarse LODs: strictly more than the bare trunk,
+    // and strictly less than trunk + 2 * child FULL-res (proves coarse source,
+    // not full-res gather).
+    CHECK(coarse_l0 > 2, "coarse L0 > 2 (trunk + child coarse)");
+    CHECK(coarse_l0 < 2 + 2 * kChildFullResTris,
+          "coarse L0 < trunk + 2 * child full-res (coarse-sourced, not full gather)");
+
+    // Two refs, equal positive cutover (unified max).
+    CHECK(refs.size() == 2, "two hinted instance refs written");
+    if (refs.size() == 2) {
+        CHECK(refs[0].inline_cutover > 0.0f, "ref cutover positive");
+        CHECK(refs[0].inline_cutover == refs[1].inline_cutover, "refs share unified cutover");
+    }
+
+    // fine/coarse counters populated.
+    CHECK(res.fine_tris == 2, "res.fine_tris == 2 (trunk)");
+    CHECK(res.coarse_input_tris == res.full_tris,
+          "res.coarse_input_tris mirrors res.full_tris (merged coarse input)");
+    CHECK(res.coarse_input_tris > 2, "coarse input tris > trunk");
+
+    printf("  fine_l0=%zu coarse_l0=%zu coarse_input=%zu cutover=%.5f\n",
+           fine_l0, coarse_l0, res.coarse_input_tris,
+           refs.empty() ? 0.0f : refs[0].inline_cutover);
+    printf("  test_flatten_segmented OK\n");
+}
+
+// Guard 1: the SAME geometry flattened WITHOUT a hints sidecar must produce an
+// artifact with ZERO segment-1 clusters and all refs cutover == 0 (byte-for-byte
+// the classic streaming path). Guard 2: flattening WITH hints twice is
+// byte-identical (segmented path is deterministic).
+static void test_flatten_unhinted_unchanged() {
+    printf("=== test_flatten_unhinted_unchanged ===\n");
+
+    // --- Guard 1: no hints sidecar => no segment-1 clusters, no cutover refs.
+    CHECK(write_seg_child(), "seg child fixture written (guard)");
+    CHECK(write_seg_parent(kSegParentNoHintHash), "no-hint parent fixture written");
+    // Make sure no stray hints file exists for this hash.
+    std::remove((std::string(kCacheRoot) + "/" +
+                 part_asset::cache_path_hints(kSegParentNoHintHash)).c_str());
+    const std::string flat_nh = std::string(kCacheRoot) + "/" +
+                                part_asset::cache_path_flat(kSegParentNoHintHash);
+    std::remove(flat_nh.c_str());
+    auto res_nh = part_flatten::flatten_part(kCacheRoot, kSegParentNoHintHash);
+    CHECK(res_nh.ok, "no-hint flatten ok");
+    if (res_nh.ok) {
+        BLASManager b; TLASManager tl(16);
+        std::vector<part_asset::FlatCluster> cl;
+        std::vector<part_asset::FlatInstanceRef> refs;
+        CHECK(part_asset::load_flat_v3(flat_nh, kSegParentNoHintHash, b, tl, cl, refs),
+              "no-hint flat loads");
+        bool any_coarse = false;
+        for (auto& c : cl) if (c.segment != 0) any_coarse = true;
+        CHECK(!any_coarse, "no-hint artifact has ZERO segment-1 clusters");
+        bool all_zero_cut = true;
+        for (auto& r : refs) if (r.inline_cutover != 0.0f) all_zero_cut = false;
+        CHECK(all_zero_cut, "no-hint refs all have inline_cutover == 0");
+        CHECK(res_nh.fine_tris == 0 && res_nh.coarse_input_tris == 0,
+              "no-hint path leaves fine/coarse counters at 0");
+    }
+
+    // --- Guard 2: hinted flatten is deterministic (byte-identical re-runs).
+    const std::string flat_h = std::string(kCacheRoot) + "/" +
+                               part_asset::cache_path_flat(kSegParentHash);
+    // (Fixture + hints sidecar were written by test_flatten_segmented, which
+    // runs immediately before this in main(); re-assert they exist.)
+    std::remove(flat_h.c_str());
+    auto a = part_flatten::flatten_part(kCacheRoot, kSegParentHash);
+    std::vector<char> bytes_a;
+    CHECK(a.ok && read_bytes(flat_h, bytes_a), "hinted flatten #1 written");
+    std::remove(flat_h.c_str());
+    auto b2 = part_flatten::flatten_part(kCacheRoot, kSegParentHash);
+    std::vector<char> bytes_b;
+    CHECK(b2.ok && read_bytes(flat_h, bytes_b), "hinted flatten #2 written");
+    CHECK(bytes_a == bytes_b, "hinted re-flatten is byte-identical (deterministic)");
+
+    printf("  test_flatten_unhinted_unchanged OK\n");
 }
 
 int main() {
@@ -1449,6 +1692,9 @@ int main() {
     test_instance_boundary_records_refs();
     test_generous_budget_inlines();
     test_flat_version_bump();
+    test_cutover_helpers();
+    test_flatten_segmented();
+    test_flatten_unhinted_unchanged();
 
     if (g_failures == 0) { printf("part_flatten_tests: ALL PASS\n"); return 0; }
     printf("part_flatten_tests: %d FAILURE(S)\n", g_failures);

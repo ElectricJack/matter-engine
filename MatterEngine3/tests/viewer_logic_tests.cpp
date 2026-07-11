@@ -929,6 +929,11 @@ static void test_partstore_cluster_loading() {
         if (lp2) {
             CHECK(!lp2->lod_blas.empty(), "v2 flat: legacy lod_blas non-empty");
             CHECK(lp2->clusters.size() == 1, "v2 flat: produces exactly 1 synthetic cluster");
+            // Task 7 guards: unsegmented flat has fine_cluster_count == clusters.size()
+            // and no flat_refs (v2 format has no instance-refs trailer).
+            CHECK(lp2->fine_cluster_count == lp2->clusters.size(),
+                  "v2 flat: fine_cluster_count == clusters.size() (unsegmented)");
+            CHECK(lp2->flat_refs.empty(), "v2 flat: flat_refs empty (unsegmented)");
         }
     }
 
@@ -952,6 +957,24 @@ static void test_partstore_cluster_loading() {
         if (lp3) {
             CHECK(lp3->clusters.empty(), "comp path: clusters stays empty (no flat artifact)");
             CHECK(!lp3->lod_blas.empty(), "comp path: legacy lod_blas populated");
+            // Task 7 guards: compositional path has fine_cluster_count == 0 (== clusters.size())
+            // and empty flat_refs.
+            CHECK(lp3->fine_cluster_count == (uint32_t)lp3->clusters.size(),
+                  "comp path: fine_cluster_count == clusters.size() (compositional, 0)");
+            CHECK(lp3->flat_refs.empty(), "comp path: flat_refs empty (compositional)");
+        }
+    }
+
+    // (g) Task 7 guard on the v3 flat: unsegmented v3 has fine_cluster_count == clusters.size()
+    // and flat_refs empty (the fixture used at top of this test has no instance_refs).
+    {
+        viewer::PartStore store4(root);
+        const viewer::LoadedPart* lp4 = store4.get_or_load(kV3Hash);
+        if (lp4) {
+            CHECK(lp4->fine_cluster_count == (uint32_t)lp4->clusters.size(),
+                  "v3 unsegmented: fine_cluster_count == clusters.size()");
+            CHECK(lp4->flat_refs.empty(),
+                  "v3 unsegmented: flat_refs empty (no instance_refs in fixture)");
         }
     }
 
@@ -1053,6 +1076,65 @@ static void test_resolver_binning_cache() {
     CHECK(r.rebin_count() == 2, "after world delta: rebin_count == 2");
     CHECK(out4.size() == out1.size() + 1, "after world delta: one more instance");
     printf("  test_resolver_binning_cache OK\n");
+}
+
+static void test_resolver_cutover_expansion() {
+    printf("=== test_resolver_cutover_expansion ===\n");
+
+    lod_select::PartLodTable lods;
+    auto& parent = lods[0xAAAAull];
+    parent.bound_radius = 10.0f;
+    parent.thresholds = {0.74453f, 0.37227f, 0.0f};
+    parent.inline_cutover = 1.0f;
+    lod_select::PartLodRef ref{};
+    ref.child_hash = 0xBBBBull;
+    float rel[16] = {1,0,0,5, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    std::memcpy(ref.rel_transform, rel, sizeof rel);
+    ref.child_scale = 1.0f;
+    parent.refs.push_back(ref);
+    auto& child = lods[0xBBBBull];
+    child.bound_radius = 1.0f;
+    child.thresholds = {0.74453f, 0.37227f, 0.0f};
+
+    viewer::WorldState state;
+    viewer::WorldManifest m; m.world_root_hash = 1;
+    m.instances.push_back(mk_entry(1, 0xAAAAull, 0.0f));
+    state.reset(m);
+
+    viewer::SectorLodResolver resolver(16.0f, 1000.0f);
+
+    // NEAR: camera at (0,0,5) -> dist ~5 from origin -> ps = 10/5 = 2.0 >= cutover 1.0
+    // -> trunk (segment 0) + child (segment 1).
+    auto near_out = resolver.resolve(state, lods, make_float3(0, 0, 5));
+    CHECK(near_out.size() == 2, "cutover near: 2 resolved instances (trunk + child)");
+    if (near_out.size() == 2) {
+        CHECK(near_out[0].part_hash == 0xAAAAull, "cutover near: trunk is parent");
+        CHECK(near_out[0].segment == 0, "cutover near: trunk segment == 0");
+        CHECK(near_out[1].part_hash == 0xBBBBull, "cutover near: child is child");
+        CHECK(near_out[1].segment == 1, "cutover near: child segment == 1");
+        // child_ps = 2.0 * 1.0 * 1.0 / 10.0 = 0.2 -> clears 0.0 (level 2) but not 0.37227
+        CHECK(near_out[1].lod_level == 2, "cutover near: child LOD level 2 (coarsest)");
+    }
+
+    // FAR: camera at (0,0,20) -> dist 20 -> ps = 10/20 = 0.5 < cutover 1.0
+    // -> single merged instance, segment 1.
+    auto far_out = resolver.resolve(state, lods, make_float3(0, 0, 20));
+    CHECK(far_out.size() == 1, "cutover far: 1 merged instance");
+    if (far_out.size() == 1) {
+        CHECK(far_out[0].segment == 1, "cutover far: merged segment == 1");
+        CHECK(far_out[0].part_hash == 0xAAAAull, "cutover far: merged is parent");
+    }
+
+    // No-cutover: part with cutover 0 always emits single merged instance.
+    parent.inline_cutover = 0.0f;
+    parent.refs.clear();
+    auto no_cut = resolver.resolve(state, lods, make_float3(0, 0, 5));
+    CHECK(no_cut.size() == 1, "no-cutover: 1 merged instance");
+    if (no_cut.size() == 1) {
+        CHECK(no_cut[0].segment == 1, "no-cutover: segment == 1");
+    }
+
+    printf("  test_resolver_cutover_expansion OK\n");
 }
 
 static void test_pixel_budget_dial() {
@@ -1293,6 +1375,7 @@ int main() {
     test_world_state_delta();
     test_resolvers();
     test_resolver_binning_cache();
+    test_resolver_cutover_expansion();
     test_part_store_missing();
     test_local_provider_cache();
     test_composer_counts();
@@ -1306,6 +1389,8 @@ int main() {
     test_probe_quantization_roundtrip();
     test_provider_regen_stale_v2_flat();
     test_partstore_cluster_loading();
+    // test_partstore_segmented_loading moved to partstore_tests.cpp (run-partstore)
+    // to avoid the 30GB Meadow flatten test in this binary.
     // Task 13 per-cluster frustum cull tests + Task 6 fingerprint test deleted
     // in Task 12 along with the CPU raster batch path (RasterComposer::build_batches).
     // Per-cluster cull is exercised in gpu_cull_tests via readback_batches parity.

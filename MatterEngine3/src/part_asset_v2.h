@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -21,8 +22,9 @@ constexpr uint32_t kFormatVersionV2 = 2u;
 constexpr uint32_t kFormatVersionV3 = 3u;
 // Flat-artifact bake version: bump whenever FlattenTargets defaults change so
 // stale flats regenerate automatically (Stage 2 ladder retune bumped 3 -> 4;
-// bake-hardening #2 bumped 4 -> 5 to add the instance_refs trailer).
-constexpr uint32_t kFormatVersionFlat = 5u;
+// bake-hardening #2 bumped 4 -> 5 to add the instance_refs trailer;
+// lod-instanced-children bumped 5 -> 6 to add segment tag + inline_cutover).
+constexpr uint32_t kFormatVersionFlat = 6u;
 
 // Content-addressed identity for a part. All three inputs are OPAQUE byte ranges
 // to SP-1 (script source, params, child resolved-hashes). child_hashes need NOT be
@@ -78,6 +80,16 @@ struct LodVariants {
 // False if the file is missing or unparseable (callers fall back to QEM).
 bool load_lod_sidecar(const std::string& path, LodVariants& out);
 
+// Cache key for the flatten-hints sidecar of a part: "parts/<16-hex>.hints".
+// Stores which children are LOD-instanced and at what pixel threshold.
+std::string cache_path_hints(uint64_t resolved_hash);
+
+struct FlattenHints {
+    std::map<uint32_t, float> child_px;   // child index (bake order) -> inlineBelowPx
+};
+bool save_flatten_hints(const std::string& path, const FlattenHints& hints);
+bool load_flatten_hints(const std::string& path, FlattenHints& out);
+
 // Serialize the baked managers + child table + LOD levels to path (atomic temp+rename).
 // Writes format_version=2. Returns false on any I/O failure or dangling BLAS handle.
 // GL-free. children may be null iff child_count == 0; lods may be empty.
@@ -99,33 +111,36 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
 // One cluster of a v3 flat artifact: its vertex AABB and its own LOD ladder
 // (same LodLevel type; blas_indices point into the shared BLAS table).
 struct FlatCluster {
-    float    aabb_min[3];
-    float    aabb_max[3];
+    float     aabb_min[3];
+    float     aabb_max[3];
+    uint32_t  segment = 0;   // 0 = fine, 1 = coarse; unsegmented artifacts write 0
     LodLevels lods;
 };
 
-// Instance-reference record in a v5 flat artifact: when the flatten decision
+// Instance-reference record in a v6 flat artifact: when the flatten decision
 // declares a child subtree an "instance boundary" (its inlined size would
 // exceed FlattenTargets::budget_tri_bytes), the parent .flat.part stores each
 // placement as a (child_hash, transform, count=1) record rather than inlining
 // the child's mesh. The runtime consumer expands these into world instances so
 // GpuCuller processes them like any other scatter-placed instance.
-// Kept padding-free (8 + 64 = 72 bytes) so sizeof(FlatInstanceRef) is a stable
-// layout guard mirroring ChildInstance.
+// inline_cutover: parent ladder-threshold units; 0 = never inline (budget-forced BOUNDARY).
+// _pad is NOT serialized; it exists only to make sizeof == 80.
 struct FlatInstanceRef {
     uint64_t child_resolved_hash;
     float    transform[16];
+    float    inline_cutover = 0.0f;  // parent ladder-threshold units; 0 = never inline
+    float    _pad = 0.0f;            // NOT serialized — layout padding only
 };
-static_assert(sizeof(FlatInstanceRef) == 72,
-              "FlatInstanceRef must be padding-free for a stable layout guard");
+static_assert(sizeof(FlatInstanceRef) == 80, "flat ref layout");
 
-// v5 flat save/load: identical body to v2 (materials, BLAS table, internal
+// v6 flat save/load: identical body to v2 (materials, BLAS table, internal
 // instances, EMPTY children, EMPTY top-level lods) + an appended cluster table
-// + an appended instance_refs table (may be empty).
-// load_v2 on a v5 file fails its version guard (callers regenerate), and
-// load_flat_v3 on a v2 file fails likewise. Name kept for continuity with v3/v4
+// (each cluster writes segment after aabb_max) + an appended instance_refs table
+// (each ref appends inline_cutover after the transform; _pad is NOT serialized).
+// load_v2 on a v6 file fails its version guard (callers regenerate), and
+// load_flat_v3 on a v2 file fails likewise. Name kept for continuity with v3/v4/v5
 // (the on-disk format simply appends a trailer; the two-arg loader below is a
-// v3/v4-compatible shim for tests that don't care about instance_refs).
+// back-compat shim for tests that don't care about instance_refs).
 bool save_flat_v3(const std::string& path, const BLASManager& blas,
                   const TLASManager& tlas,
                   const std::vector<FlatCluster>& clusters,

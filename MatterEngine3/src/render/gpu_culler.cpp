@@ -128,6 +128,12 @@ bool GpuCuller::init(std::string& err) {
     glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(zeros), zeros, GL_DYNAMIC_READ);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
+    // Query the GL implementation's max SSBO size and convert to xform slots
+    // (each slot = one mat4 = 16 floats = 64 bytes).  Mesa d3d12 reports 128 MB.
+    GLint64 max_ssbo_bytes = 0;
+    glGetInteger64v(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, &max_ssbo_bytes);
+    max_ssbo_slots_ = (uint32_t)(max_ssbo_bytes / (16 * sizeof(float)));
+
     // Create zero-size placeholder buffers for the growable SSBOs; actual
     // allocations happen lazily in ensure_part / cull.
     glGenBuffers(1, &ssbo_clusters_);
@@ -179,10 +185,10 @@ void GpuCuller::grow_clusters_ssbo(size_t need_bytes) {
 //
 // Capacity-based growth: ssbo_xforms_ is only reallocated when
 // total_xform_slots_ exceeds xforms_cap_slots_.  The new capacity is
-//   max(total_xform_slots_, xforms_cap_slots_ * 2)
-// so ~276 Meadow part registrations produce O(log 276) ≈ 9 reallocations
-// instead of 276 — preventing the D3D12 device-removal crash during
-// incremental async bake.
+//   max(total_xform_slots_, xforms_cap_slots_ * 3/2)
+// clamped to GL_MAX_SHADER_STORAGE_BLOCK_SIZE (128 MB on Mesa d3d12).
+// ×1.5 instead of ×2 prevents the doubling from breaching the GL limit
+// for large forests (~86k instances, Task #40).
 //
 // ssbo_xforms_ is output-only from the cull compute shader; its contents
 // are written entirely by the shader every frame, so the existing GPU
@@ -217,15 +223,22 @@ void GpuCuller::recompute_regions() {
     cmds_template_dirty_ = true;
 
     // Capacity-based growth for ssbo_xforms_: only reallocate when the needed
-    // slot count exceeds the current GPU buffer capacity.  On realloc, double
-    // the capacity (geometric growth) to amortize future calls.
+    // slot count exceeds the current GPU buffer capacity.  On realloc, grow by
+    // ×1.5 (not ×2) and clamp to the GL implementation's max SSBO size.
     // ssbo_xforms_ is written entirely by the cull compute shader each frame;
     // no CPU content needs to be preserved — glBufferData(nullptr) suffices.
     if (total_xform_slots_ > xforms_cap_slots_ || !ssbo_xforms_) {
         uint32_t new_cap = (xforms_cap_slots_ == 0)
                          ? total_xform_slots_
-                         : xforms_cap_slots_ * 2;
+                         : xforms_cap_slots_ + xforms_cap_slots_ / 2;
         if (new_cap < total_xform_slots_) new_cap = total_xform_slots_;
+        if (max_ssbo_slots_ > 0 && new_cap > max_ssbo_slots_) {
+            new_cap = max_ssbo_slots_;
+            if (new_cap < total_xform_slots_)
+                printf("GpuCuller: WARNING: xforms SSBO clamped to %u slots "
+                       "(need %u); rendering may be corrupt\n",
+                       new_cap, total_xform_slots_);
+        }
         if (new_cap == 0) new_cap = 1;   // keep valid GL object
 
         size_t new_bytes = (size_t)new_cap * 16 * sizeof(float);
@@ -432,10 +445,12 @@ int GpuCuller::ensure_part(uint64_t part_hash, PartStore& store) {
                              pg.cluster_start + ci));
         }
         pg.cluster_count = (uint32_t)lp->clusters.size();
+        pg.fine_cluster_count = lp->fine_cluster_count;
     } else {
         // Whole-part synthetic cluster.
         cluster_staging_.push_back(pack_whole_part(*lp, part_slot_u));
         pg.cluster_count = 1;
+        pg.fine_cluster_count = 1;
     }
 
     // -----------------------------------------------------------------
@@ -585,6 +600,7 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
         for (const auto& ri : resolved) {
             fold(&ri.part_hash, sizeof ri.part_hash);
             fold(ri.transform,  sizeof ri.transform);
+            fold(&ri.segment,   sizeof ri.segment);
         }
         if (last_resolved_count_ != (int)resolved.size() || last_resolved_fp_ != fp) {
             instances_dirty       = true;
@@ -627,6 +643,7 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
 
                     ExpandedInst ei;
                     ei.part_slot = node_slot;
+                    ei.segment   = ri.segment;
                     std::memcpy(ei.transform, gl_xform, 64);
                     expanded_.push_back(ei);
 
@@ -642,6 +659,7 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
 
                 ExpandedInst ei;
                 ei.part_slot = root_slot;
+                ei.segment   = ri.segment;
                 std::memcpy(ei.transform, gl_xform, 64);
                 expanded_.push_back(ei);
 
@@ -694,9 +712,20 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
             GpuInstanceRec rec{};
             std::memcpy(rec.transform, ei.transform, 64);
             rec.part_slot      = (uint32_t)ei.part_slot;
-            rec.base_lod       = 0;   // debug only; cluster-level selection is authoritative
-            rec.cluster_start  = pg.cluster_start;
-            rec.cluster_count  = pg.cluster_count;
+            rec.base_lod       = 0;
+            const uint32_t fine_n = pg.fine_cluster_count;
+            if (fine_n < pg.cluster_count) {
+                if (ei.segment == 0) {
+                    rec.cluster_start = pg.cluster_start;
+                    rec.cluster_count = fine_n;
+                } else {
+                    rec.cluster_start = pg.cluster_start + fine_n;
+                    rec.cluster_count = pg.cluster_count - fine_n;
+                }
+            } else {
+                rec.cluster_start = pg.cluster_start;
+                rec.cluster_count = pg.cluster_count;
+            }
             inst_recs.push_back(rec);
 
             active_slots_[(size_t)ei.part_slot] = 1;

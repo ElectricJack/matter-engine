@@ -1234,6 +1234,7 @@ void WorldSession::Impl::publish_pipeline(
                     && !refs.empty()) {
                     size_t tail_start = publish_order.size();
                     for (const auto& r : refs) {
+                        if (r.inline_cutover > 0.0f) continue;
                         uint64_t rh = r.child_resolved_hash;
                         if (!queued_hashes.insert(rh).second) continue; // already queued
                         // Append a WorldManifestEntry for this ref child.

@@ -9,6 +9,7 @@
 //
 // GL-free: consumes .part files from the cache and writes one back.
 
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -56,6 +57,47 @@ struct FlattenTargets {
     size_t budget_tri_bytes = 512ull * 1024ull * 1024ull;
 };
 
+// --------------- cutover math helpers (header-only, usable from gpu code) ----
+
+// Column-0 length of a row-major 4x4 float matrix — extracts the uniform scale
+// factor from a transform (assuming no shear).
+inline float transform_uniform_scale(const float t[16]) {
+    return std::sqrt(t[0]*t[0] + t[4]*t[4] + t[8]*t[8]);
+}
+
+// Compute the parent-ladder cutover threshold from a child's pixel-size inline
+// threshold. The result is the world-space error value at which the parent LOD
+// ladder should switch from inlining the child's geometry to referencing it as
+// an instance.
+//
+// Formula: cutover = inline_below_px * pa * pb * parent_radius
+//                    / (child_radius_local * ref_scale)
+//
+// Returns 0 on degenerate inputs (child_radius_local * ref_scale <= 0 or
+// parent_radius <= 0) so callers can treat 0 as "always keep as instance ref".
+inline float ref_cutover_threshold(float inline_below_px, float parent_radius,
+                                   float child_radius_local, float ref_scale,
+                                   const FlattenTargets& t) {
+    const float denom = child_radius_local * ref_scale;
+    if (denom <= 0.0f || parent_radius <= 0.0f) return 0.0f;
+    return inline_below_px * t.pixel_angle * t.pixel_budget * parent_radius / denom;
+}
+
+// Map a cutover_threshold to a ladder level index: returns the smallest i such
+// that cutover_threshold >= pb*pa*radius_divisor[i] (the level's nominal
+// threshold). Returns (int)div.size() when no level qualifies (cutover is below
+// all ladder rungs), meaning the entire ladder is "coarse" relative to this
+// cutover — the part stays as an instance ref at all LODs.
+//
+// Levels [0, L*) are the fine segment (kept as instance refs); [L*, end) are
+// the coarse segment (child geometry inlined into the merged mesh).
+inline int cutover_level_index(float cutover_threshold, const FlattenTargets& t) {
+    for (size_t i = 0; i < t.radius_divisor.size(); ++i)
+        if (cutover_threshold >= t.pixel_budget * t.pixel_angle * t.radius_divisor[i])
+            return (int)i;
+    return (int)t.radius_divisor.size();
+}
+
 // Bake-hardening #2: decision recorded per part during the bottom-up pass.
 // INLINE  : this part's subtree is small enough to merge into a single mesh.
 // BOUNDARY: this part stays as a stand-alone artifact; every parent that
@@ -74,6 +116,10 @@ struct FlattenResult {
     // merged mesh; recorded as FlatInstanceRefs in the .flat.part trailer for
     // the runtime consumer to expand into world instances.
     size_t      instance_refs = 0;
+    // LOD-instanced-children: triangle counts for the fine/coarse segments
+    // used by the cutover math helpers to split the ladder.
+    size_t      fine_tris = 0;          // trunk-only QEM input (segmented flats)
+    size_t      coarse_input_tris = 0;  // merged coarse-segment input
 };
 
 // Flatten the subtree rooted at root_hash. Reads parts from

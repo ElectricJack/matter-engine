@@ -1,4 +1,5 @@
 #include "sector_resolver.h"
+#include "raster_cull.h"       // viewer::mul16
 
 #include "world_flatten.h"     // world_flatten::FlatInstance
 #include <cmath>
@@ -47,8 +48,8 @@ SectorLodResolver::resolve(const WorldState& state,
         ++rebin_count_;
     }
     const sector_grid::Sectors& sectors = sectors_;
-    auto chosen = lod_select::select_sector_lods(sectors, lods, cam_pos,
-                                                 min_projected_size_, pixel_budget_);
+    auto chosen = lod_select::select_sector_lods_ex(sectors, lods, cam_pos,
+                                                    min_projected_size_, pixel_budget_);
 
     // 3. Emit instances only for sectors within the activation sphere.
     std::vector<ResolvedInstance> out;
@@ -60,17 +61,45 @@ SectorLodResolver::resolve(const WorldState& state,
         float dx = sx - cam_pos.x, dy = sy - cam_pos.y, dz = sz - cam_pos.z;
         if (std::sqrt(dx*dx + dy*dy + dz*dz) > active_radius_) continue;
 
-        static const std::map<uint64_t,int> kNoLods;
+        static const std::map<uint64_t, lod_select::LodChoice> kNoLods;
         auto cit = chosen.find(c);
-        const std::map<uint64_t,int>& lod_for_part = (cit != chosen.end()) ? cit->second : kNoLods;
+        const auto& lod_for_part = (cit != chosen.end()) ? cit->second : kNoLods;
         for (const auto& inst : sk.second) {
-            int lod = 0;
+            int lod = 0; float ps = 0.0f;
             auto it = lod_for_part.find(inst.resolved_hash);
-            if (it != lod_for_part.end()) lod = it->second;
-            if (lod < 0) continue;   // floor-culled: projected size below the min
+            if (it != lod_for_part.end()) { lod = it->second.level; ps = it->second.projected_size; }
+            if (lod < 0) continue;
+
+            auto pit = lods.find(inst.resolved_hash);
+            const lod_select::PartLod* pl = (pit != lods.end()) ? &pit->second : nullptr;
+            if (pl && pl->inline_cutover > 0.0f && ps >= pl->inline_cutover) {
+                ResolvedInstance r;
+                r.part_hash = inst.resolved_hash;
+                r.lod_level = lod;
+                r.segment = 0;
+                std::memcpy(r.transform, inst.world.cell, sizeof(r.transform));
+                out.push_back(r);
+                for (const auto& ref : pl->refs) {
+                    ResolvedInstance cr;
+                    cr.part_hash = ref.child_hash;
+                    cr.segment = 1;
+                    mul16(inst.world.cell, ref.rel_transform, cr.transform);
+                    auto child_it = lods.find(ref.child_hash);
+                    if (child_it != lods.end() && pl->bound_radius > 0.0f) {
+                        float child_ps = ps * child_it->second.bound_radius * ref.child_scale
+                                         / pl->bound_radius;
+                        cr.lod_level = lod_select::select_level(child_ps, child_it->second.thresholds);
+                    } else {
+                        cr.lod_level = 0;
+                    }
+                    out.push_back(cr);
+                }
+                continue;
+            }
             ResolvedInstance r;
             r.part_hash = inst.resolved_hash;
             r.lod_level = lod;
+            r.segment = 1;
             std::memcpy(r.transform, inst.world.cell, sizeof(r.transform));
             out.push_back(r);
         }

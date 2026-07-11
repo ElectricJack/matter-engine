@@ -115,6 +115,30 @@ bool load_lod_sidecar(const std::string& path, LodVariants& out) {
     return true;
 }
 
+std::string cache_path_hints(uint64_t resolved_hash) {
+    char buf[64];
+    snprintf(buf, sizeof buf, "parts/%016llx.hints",
+             (unsigned long long)resolved_hash);
+    return buf;
+}
+
+bool save_flatten_hints(const std::string& path, const FlattenHints& hints) {
+    std::ofstream out(path);
+    if (!out) return false;
+    for (const auto& [idx, px] : hints.child_px)
+        out << idx << " " << px << "\n";
+    return (bool)out;
+}
+
+bool load_flatten_hints(const std::string& path, FlattenHints& out_hints) {
+    std::ifstream ifs(path);
+    if (!ifs) return false;
+    uint32_t idx; float px;
+    while (ifs >> idx >> px) out_hints.child_px[idx] = px;
+    if (ifs.fail() && !ifs.eof()) { out_hints.child_px.clear(); return false; }
+    return true;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal helpers: write/read the common body (materials, BLAS, instances,
 // children, top-level lods). The v3 writer calls save_common_body and then
@@ -436,7 +460,7 @@ bool save_flat_v3(const std::string& path, const BLASManager& blas,
                   uint64_t resolved_hash) {
     std::vector<uint8_t> body;
     std::unordered_map<BLASHandle, uint32_t> h2i;
-    // v5 body = common body (children=empty, top-lods=empty) + cluster table
+    // v6 body = common body (children=empty, top-lods=empty) + cluster table
     //          + instance_refs trailer (may be empty).
     if (!append_common_body(body, blas, tlas, nullptr, 0, LodLevels{}, h2i))
         return false;
@@ -446,6 +470,7 @@ bool save_flat_v3(const std::string& path, const BLASManager& blas,
     for (const auto& c : clusters) {
         put_bytes(body, c.aabb_min, 3 * sizeof(float));
         put_bytes(body, c.aabb_max, 3 * sizeof(float));
+        put<uint32_t>(body, c.segment);                         // v6: segment tag
         put<uint32_t>(body, static_cast<uint32_t>(c.lods.size()));
         for (const auto& lvl : c.lods) {
             put<float>(body, lvl.screen_size_threshold);
@@ -454,13 +479,15 @@ bool save_flat_v3(const std::string& path, const BLASManager& blas,
         }
     }
 
-    // --- Instance refs (v5 trailer) ---
+    // --- Instance refs (v6 trailer) ---
     // Each entry is a placement of a child part that the flatten decision left
     // as an instance boundary; runtime consumer expands to a world instance.
+    // _pad is NOT serialized.
     put<uint32_t>(body, static_cast<uint32_t>(instance_refs.size()));
     for (const auto& r : instance_refs) {
         put<uint64_t>(body, r.child_resolved_hash);
         put_bytes(body, r.transform, 16 * sizeof(float));
+        put<float>(body, r.inline_cutover);                     // v6: inline cutover
     }
 
     return write_file_atomic(path, kFormatVersionFlat, resolved_hash, body);
@@ -517,6 +544,7 @@ bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
         if (!r.ok) return false;
         std::memcpy(fc.aabb_min, amin, 3 * sizeof(float));
         std::memcpy(fc.aabb_max, amax, 3 * sizeof(float));
+        fc.segment = r.get<uint32_t>();                        // v6: segment tag
         const uint32_t level_count = r.get<uint32_t>();
         if (!r.ok) return false;
         fc.lods.reserve(level_count);
@@ -538,8 +566,8 @@ bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
     }
     if (!r.ok) return false;
 
-    // --- Instance refs trailer (v5) ---
-    // Every valid v5 flat has this trailer, even if empty. If the reader hits
+    // --- Instance refs trailer (v6) ---
+    // Every valid v6 flat has this trailer, even if empty. If the reader hits
     // EOF before we can read the ref_count, the artifact is malformed.
     const uint32_t ref_count = r.get<uint32_t>();
     if (!r.ok) return false;
@@ -550,6 +578,7 @@ bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
         const uint8_t* tf = r.take(16 * sizeof(float));
         if (!r.ok) return false;
         std::memcpy(ref.transform, tf, 16 * sizeof(float));
+        ref.inline_cutover = r.get<float>();                   // v6: inline cutover (_pad not serialized)
         instance_refs_out.push_back(ref);
     }
     return r.ok;

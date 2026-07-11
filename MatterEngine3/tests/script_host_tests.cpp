@@ -1559,6 +1559,66 @@ static void test_raycast_sees_difference_cut() {
     CHECK(r.error.ok, "raycast sees an earlier difference cut");
 }
 
+// Task 3: bake_source writes a .hints sidecar for instanced placeChild children.
+// Also validates the JS→binding→bake path for the {instanced, inlineBelowPx} options
+// (closed coverage gap from Task 1): the JS binding must produce instanced=true and
+// the correct inline_below_px (64 default, or the explicit value).
+static void test_bake_writes_flatten_hints() {
+    using namespace script_host;
+    ScriptHost host;
+
+    const char* kid_src =
+        "class Kid extends Part {"
+        "  build(p){ this.beginVoxels(0.1); this.fill(MAT.leaf);"
+        "            this.sphere([0,0,0],0.1); this.endVoxels(); } }";
+    BakeResult kr = host.bake_source(kid_src, "{}", {});
+    CHECK(kr.error.ok, "hints: Kid bakes");
+    uint64_t kid_hash = kr.resolved_hash;
+
+    const char* parent_src =
+        "class Root extends Part {"
+        "  build(p){"
+        "    this.beginVoxels(0.2); this.fill(MAT.bark);"
+        "    this.box([0,0,0],[0.2,0.2,0.2]); this.endVoxels();"
+        "    this.placeChild('Kid');"                                         // idx 0: plain
+        "    this.placeChild('Kid', null, { instanced: true });"              // idx 1: default 64
+        "    this.placeChild('Kid', null, { instanced: true, inlineBelowPx: 32 });" // idx 2: 32
+        "  } }";
+    uint64_t kids[1]     = { kid_hash };
+    std::string names[1] = { std::string("Kid") };
+    BakeResult pr = host.bake_source(parent_src, "{}", {}, kids, 1, names);
+    CHECK(pr.error.ok, "hints: parent bakes with instanced children");
+
+    // Use default cache location (no parts_dir) — hints land at
+    // part_asset::cache_path_hints(parent_hash) relative to CWD.
+    std::string hp = part_asset::cache_path_hints(pr.resolved_hash);
+    part_asset::FlattenHints h;
+    bool hints_loaded = part_asset::load_flatten_hints(hp, h);
+    CHECK(hints_loaded, "hints sidecar written");
+    if (hints_loaded) {
+        CHECK(h.child_px.size() == 2, "hints: two instanced entries");
+        CHECK(h.child_px.count(0) == 0, "hints: plain child (idx 0) not in hints");
+        CHECK(h.child_px.count(1) && h.child_px.at(1) == 64.0f, "hints: idx 1 has default 64 px");
+        CHECK(h.child_px.count(2) && h.child_px.at(2) == 32.0f, "hints: idx 2 has explicit 32 px");
+    }
+}
+
+static void test_placechild_instanced_flags() {
+    dsl::DslState st;
+    st.set_child_hashes({{"A", 1}, {"B", 2}, {"C", 3}});
+    st.placeChild("A", nullptr, 0);                    // plain
+    st.placeChild("B", nullptr, 0, true, 64.0f);       // instanced default px
+    st.placeChild("C", nullptr, 0, true, 32.0f);       // instanced custom px
+    const auto& kids = st.children();
+    CHECK(kids.size() == 3, "three children recorded");
+    CHECK(!kids[0].instanced, "plain child not instanced");
+    CHECK(kids[0].inline_below_px == 0.0f, "plain child inline_below_px == 0");
+    CHECK(kids[1].instanced, "B is instanced");
+    CHECK(kids[1].inline_below_px == 64.0f, "B inline_below_px == 64");
+    CHECK(kids[2].instanced, "C is instanced");
+    CHECK(kids[2].inline_below_px == 32.0f, "C inline_below_px == 32");
+}
+
 int main() {
     test_embed_eval_1_plus_1();
     test_p5_round_mesh_dispatch();
@@ -1609,6 +1669,8 @@ int main() {
     test_raycast_outside_session_fails_closed();
     test_raycast_no_brushes_fails_closed();
     test_raycast_sees_difference_cut();
+    test_placechild_instanced_flags();
+    test_bake_writes_flatten_hints();
     if (g_failures == 0) printf("ALL PASS\n");
     return g_failures ? 1 : 0;
 }

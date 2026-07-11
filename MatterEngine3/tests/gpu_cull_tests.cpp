@@ -1054,6 +1054,129 @@ static bool test_hiz_occlusion() {
 }
 
 // ---------------------------------------------------------------------------
+// TEST 8: Segment gating — fine_cluster_count splits cluster range per segment.
+// ---------------------------------------------------------------------------
+static bool test_cull_segment_gating() {
+    printf("\n[test_cull_segment_gating]\n");
+
+    std::string tmpdir = make_test_tmpdir("segment");
+    viewer::PartStore store(tmpdir);
+
+    const uint64_t seg_hash = 0x5E610AFE00000001ULL;
+    {
+        viewer::LoadedPart lp;
+        lp.lod_mesh_data.push_back(make_one_tri_mesh());
+        lp.lod_mesh_data.push_back(make_one_tri_mesh());
+        lp.thresholds = { 0.5f, 0.0f };
+        lp.bound_radius = 6.0f;
+
+        // Cluster 0 (fine, segment=0)
+        viewer::LoadedCluster c0;
+        c0.aabb_min[0] = -5; c0.aabb_min[1] = -1; c0.aabb_min[2] = -1;
+        c0.aabb_max[0] = -3; c0.aabb_max[1] =  1; c0.aabb_max[2] =  1;
+        c0.radius = 1.8f;
+        c0.thresholds = { 0.5f, 0.0f };
+        c0.lod_blas = { 0, 0 };
+        c0.lod_mesh = { 0, 0 };
+        lp.clusters.push_back(c0);
+
+        // Cluster 1 (coarse, segment=1)
+        viewer::LoadedCluster c1;
+        c1.aabb_min[0] = 3; c1.aabb_min[1] = -1; c1.aabb_min[2] = -1;
+        c1.aabb_max[0] = 5; c1.aabb_max[1] =  1; c1.aabb_max[2] =  1;
+        c1.radius = 1.8f;
+        c1.thresholds = { 0.5f, 0.0f };
+        c1.lod_blas = { 0, 0 };
+        c1.lod_mesh = { 1, 1 };
+        lp.clusters.push_back(c1);
+
+        lp.fine_cluster_count = 1;
+        store.inject_for_test(seg_hash, std::move(lp));
+    }
+
+    viewer::GpuCuller culler;
+    std::string err;
+    if (!culler.init(err)) { printf("  ERROR: init: %s\n", err.c_str()); return false; }
+    int slot = culler.ensure_part(seg_hash, store);
+    CHECK(slot >= 0, "segment: ensure_part OK");
+    if (slot < 0) return false;
+
+    const auto& pg = culler.parts()[slot];
+    CHECK(pg.fine_cluster_count == 1, "segment: PartGpu.fine_cluster_count == 1");
+    CHECK(pg.cluster_count == 2, "segment: PartGpu.cluster_count == 2");
+
+    float eye[3]    = { 0, 0, -20 };
+    float target[3] = { 0, 0, 0 };
+    float up[3]     = { 0, 1, 0 };
+    float vp[16], planes[6][4];
+    make_cam(eye, target, up, 90.0f, 1.0f, 0.1f, 1000.0f, vp, planes);
+
+    float ident[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+
+    // Segment 0 -> only fine cluster (cluster 0) emitted
+    {
+        viewer::ResolvedInstance ri = make_ri(seg_hash, ident);
+        ri.segment = 0;
+        std::vector<viewer::ResolvedInstance> resolved = { ri };
+        culler.cull(resolved, store, eye, planes, vp, 1.0f);
+        culler.test_readback_stats();
+        printf("  seg0: emitted=%zu\n", culler.emitted());
+        CHECK(culler.emitted() == 1, "segment 0: only fine cluster emitted (1)");
+    }
+
+    // Segment 1 -> only coarse cluster (cluster 1) emitted
+    // Same transform as above — fingerprint must see segment change.
+    {
+        viewer::ResolvedInstance ri = make_ri(seg_hash, ident);
+        ri.segment = 1;
+        std::vector<viewer::ResolvedInstance> resolved = { ri };
+        culler.cull(resolved, store, eye, planes, vp, 1.0f);
+        culler.test_readback_stats();
+        printf("  seg1: emitted=%zu\n", culler.emitted());
+        CHECK(culler.emitted() == 1, "segment 1: only coarse cluster emitted (1)");
+    }
+
+    // Unsegmented part (fine == count) -> full range regardless of segment
+    const uint64_t unseg_hash = 0x0115E60CAFE00002ULL;
+    {
+        viewer::LoadedPart lp;
+        lp.lod_mesh_data.push_back(make_one_tri_mesh());
+        lp.thresholds = { 0.5f, 0.0f };
+        lp.bound_radius = 6.0f;
+
+        viewer::LoadedCluster c0;
+        c0.aabb_min[0] = -5; c0.aabb_min[1] = -1; c0.aabb_min[2] = -1;
+        c0.aabb_max[0] = -3; c0.aabb_max[1] =  1; c0.aabb_max[2] =  1;
+        c0.radius = 1.8f; c0.thresholds = { 0.5f, 0.0f };
+        c0.lod_blas = { 0, 0 }; c0.lod_mesh = { 0, 0 };
+        lp.clusters.push_back(c0);
+
+        viewer::LoadedCluster c1;
+        c1.aabb_min[0] = 3; c1.aabb_min[1] = -1; c1.aabb_min[2] = -1;
+        c1.aabb_max[0] = 5; c1.aabb_max[1] =  1; c1.aabb_max[2] =  1;
+        c1.radius = 1.8f; c1.thresholds = { 0.5f, 0.0f };
+        c1.lod_blas = { 0, 0 }; c1.lod_mesh = { 0, 0 };
+        lp.clusters.push_back(c1);
+
+        lp.fine_cluster_count = 2;
+        store.inject_for_test(unseg_hash, std::move(lp));
+    }
+    culler.ensure_part(unseg_hash, store);
+
+    {
+        viewer::ResolvedInstance ri = make_ri(unseg_hash, ident);
+        ri.segment = 0;
+        std::vector<viewer::ResolvedInstance> resolved = { ri };
+        culler.cull(resolved, store, eye, planes, vp, 1.0f);
+        culler.test_readback_stats();
+        printf("  unseg seg0: emitted=%zu\n", culler.emitted());
+        CHECK(culler.emitted() == 2, "unsegmented seg 0: full range (2 clusters)");
+    }
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
@@ -1077,6 +1200,7 @@ int main() {
     test_empty_resolve();
     test_hiz_pyramid();
     test_hiz_occlusion();
+    test_cull_segment_gating();
 
     CloseWindow();
 
