@@ -563,9 +563,7 @@ WorldTracer::WorldTracer() = default;
 WorldTracer::~WorldTracer() = default;
 
 void WorldTracer::set_scratch_dir(const std::string& dir) {
-    if (impl_) {
-        impl_->scratch_dir_ = dir;
-    }
+    scratch_dir_ = dir;
 }
 
 bool WorldTracer::build(const std::string& cache_root,
@@ -574,6 +572,7 @@ bool WorldTracer::build(const std::string& cache_root,
     impl_ = std::make_unique<Impl>();
     Impl& im = *impl_;
     im.cache_root_ = cache_root;
+    im.scratch_dir_ = scratch_dir_;
 
     // nm_pool_ is a deque so pointers remain stable across push_back.
     im.expanded_.reserve(instances.size());

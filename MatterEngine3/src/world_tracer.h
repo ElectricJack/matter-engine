@@ -52,6 +52,7 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    std::string scratch_dir_;
 };
 
 } // namespace world_tracer
