@@ -445,6 +445,7 @@ bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
                 if (refs.empty()) continue;
                 out.instances.reserve(out.instances.size() + refs.size());
                 for (const auto& r : refs) {
+                    if (r.inline_cutover > 0.0f) continue;
                     WorldManifestEntry we;
                     we.instance_id = next_id++;
                     we.part_hash   = r.child_resolved_hash;
