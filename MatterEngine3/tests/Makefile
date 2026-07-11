@@ -327,6 +327,14 @@ MODAPPLY_CPP = modifier_apply_tests.cpp ../src/modifier_apply.cpp \
                ../src/retopo_blacklist.cpp \
                $(MSL)/mesh_smooth.cpp $(MSL)/mesh_simplifier.cpp $(MSL)/mesh_indexed.cpp
 
+PARTSTORE_TARGET = partstore_tests
+PARTSTORE_CPP = partstore_tests.cpp ../src/render/part_store.cpp \
+                ../src/render/raster_mesh.cpp ../src/lod_select.cpp \
+                ../src/sector_grid.cpp ../src/lod_bake.cpp ../src/part_asset_v2.cpp \
+                $(MSL)/mesh_simplifier.cpp $(MSL)/mesh_indexed.cpp \
+                $(COMMON_MSL_BLAS_SRC)
+PARTSTORE_C   = $(MSL)/material_registry.c
+
 # Simple standalone targets (they use tiny custom flag sets — kept as-is with
 # per-target rules below, no shared objects).
 
@@ -567,7 +575,8 @@ def_CPP_SRCS := $(sort \
     $(SHADER_SOURCE_CPP) \
     $(ASYNCQ_CPP) \
     $(TILESETGTEX_CPP) \
-    $(MODAPPLY_CPP))
+    $(MODAPPLY_CPP) \
+    $(PARTSTORE_CPP))
 
 qjs_CPP_SRCS := $(sort \
     $(SCRIPT_CPP) \
@@ -651,6 +660,7 @@ SHADER_SOURCE_OBJS = $(call obj_list,def,$(SHADER_SOURCE_CPP))
 ASYNCQ_OBJS = $(call obj_list,def,$(ASYNCQ_CPP))
 TILESETGTEX_OBJS = $(call obj_list,def,$(TILESETGTEX_CPP))
 MODAPPLY_OBJS = $(call obj_list,def,$(MODAPPLY_CPP))
+PARTSTORE_OBJS = $(call obj_list,def,$(PARTSTORE_CPP)) $(call obj_list,mslc,$(PARTSTORE_C))
 
 SCRIPT_OBJS = $(call obj_list,qjs,$(SCRIPT_CPP)) $(call obj_list,mslc,$(SCRIPT_C)) $(qjsc_C_OBJS)
 MODBAKE_OBJS = $(call obj_list,qjs,$(MODBAKE_CPP)) $(call obj_list,mslc,$(MODBAKE_C)) $(qjsc_C_OBJS)
@@ -679,7 +689,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-modapply run-modbake
+.PHONY: clean run-partv2 run-partstore run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-modapply run-modbake
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -956,6 +966,13 @@ $(MODAPPLY_TARGET): $(MODAPPLY_OBJS)
 run-modapply: $(MODAPPLY_TARGET)
 	./$(MODAPPLY_TARGET)
 
+# Lightweight part_store loader: segmented v6 flat + instance refs.
+$(PARTSTORE_TARGET): $(PARTSTORE_OBJS)
+	$(CC) $(PARTSTORE_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+
+run-partstore: $(PARTSTORE_TARGET)
+	./$(PARTSTORE_TARGET)
+
 # Modifier-region bake plumbing (Task 4): full bake through ScriptHost, region
 # meshes welded across cells and stack-processed.
 $(MODBAKE_TARGET): $(MODBAKE_OBJS)
@@ -1039,7 +1056,7 @@ clean:
 	      $(POLYTRI_TARGET) $(ISO_TARGET) $(FLATTEN_TARGET) $(LIGHTING_TARGET) \
 	      $(TILESETTORUSBVH_TARGET) $(TILESETDSL_TARGET) $(TILESETBAKE_TARGET) \
 	      $(TILESETGTEX_TARGET) $(ASYNCQ_TARGET) $(GALLERY_TARGET) \
-	      $(LIVEPROD_TARGET) $(MODAPPLY_TARGET) $(MODBAKE_TARGET) \
+	      $(LIVEPROD_TARGET) $(MODAPPLY_TARGET) $(MODBAKE_TARGET) $(PARTSTORE_TARGET) \
 	      tileset_physics_tests tileset_core_tests tileset_placement_tests \
 	      gpu_tests tileset_gpu_tests tileset_seam_tests tileset_provider_tests \
 	      tileset_load_tests api_tests async_bake_tests

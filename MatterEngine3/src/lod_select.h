@@ -18,10 +18,20 @@ float projected_size(const float3& world_center, float bound_radius,
 // clears nothing, clamps to the coarsest (last) level.
 int select_level(float projected_size, const std::vector<float>& thresholds);
 
+// A single instance-ref entry in a part's LOD table: identifies the child part
+// and its placement relative to the parent, plus the child's uniform scale factor.
+struct PartLodRef {
+    uint64_t child_hash;
+    float    rel_transform[16];
+    float    child_scale;
+};
+
 // Per-part LOD metadata needed for selection.
 struct PartLod {
     float bound_radius;
     std::vector<float> thresholds;   // matches the part's LodLevels, fine->coarse
+    float inline_cutover = 0.0f;     // max over flat_refs with cutover>0; 0 = no refs
+    std::vector<PartLodRef> refs;    // instanced-children refs (cutover>0 only)
 };
 using PartLodTable = std::map<uint64_t, PartLod>;     // resolved_hash -> PartLod
 

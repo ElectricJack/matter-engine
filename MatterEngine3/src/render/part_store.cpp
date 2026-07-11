@@ -4,7 +4,9 @@
 #include "part_asset_v2.h"     // load_v2, cache_path_resolved, ChildInstance, LodLevels
 #include "lod_bake.h"          // lod_bake::bake_lods, BakeTargets
 #include "tlas_manager.hpp"    // TLASManager (load_v2 signature needs one)
+#include "part_flatten.h"      // part_flatten::transform_uniform_scale
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -91,18 +93,39 @@ bool PartStore::load_flat(uint64_t part_hash, LoadedPart& lp) {
         BLASManager scratch;
         TLASManager scratch_tlas(65536);
         std::vector<part_asset::FlatCluster> clusters_in;
-        if (!part_asset::load_flat_v3(path, part_hash, scratch, scratch_tlas, clusters_in) ||
+        std::vector<part_asset::FlatInstanceRef> refs_in;
+        if (!part_asset::load_flat_v3(path, part_hash, scratch, scratch_tlas, clusters_in, refs_in) ||
             clusters_in.empty()) {
             printf("PartStore: v3 flat artifact unusable for %016llx (%s), falling back\n",
                    (unsigned long long)part_hash, path.c_str());
             return false;
         }
 
+        // Determine if the flat is segmented (has any coarse-segment clusters).
+        bool segmented = std::any_of(clusters_in.begin(), clusters_in.end(),
+                                     [](const part_asset::FlatCluster& c){ return c.segment == 1; });
+
+        // Partition fine clusters before coarse (stable: preserves within-segment order).
+        // This must happen BEFORE the registration loops so lp.clusters[0..fine_count-1]
+        // are contiguous fine-segment entries.
+        std::stable_partition(clusters_in.begin(), clusters_in.end(),
+                              [](const part_asset::FlatCluster& c){ return c.segment == 0; });
+
         const auto& entries = scratch.get_entries();
 
         // Determine max LOD count across clusters.
+        // When segmented, use coarse clusters only for the legacy view — those are the
+        // merged representation; fine clusters are trunk-only and should not inflate the
+        // whole-part threshold.
         size_t max_lods = 0;
-        for (const auto& cl : clusters_in) max_lods = std::max(max_lods, cl.lods.size());
+        for (const auto& cl : clusters_in) {
+            if (segmented && cl.segment != 1) continue;
+            max_lods = std::max(max_lods, cl.lods.size());
+        }
+        if (max_lods == 0) {
+            // No coarse clusters (or empty): fall back to all clusters for max_lods.
+            for (const auto& cl : clusters_in) max_lods = std::max(max_lods, cl.lods.size());
+        }
         if (max_lods == 0) return false;
 
         // --- Step 1: Legacy whole-part view for the RT path (WorldComposer/TLAS). ---
@@ -111,8 +134,11 @@ bool PartStore::load_flat(uint64_t part_hash, LoadedPart& lp) {
         // the RasterComposer's `lp.lod_mesh_data[level]` access remains correct.
         //
         // Legacy level i = concatenation over clusters of level min(i, cluster.levels-1).
-        // Legacy threshold i = max over clusters of that same choice.
-        // bound_radius = union of cluster AABBs from the stored FlatCluster AABBs.
+        //   When segmented: over COARSE clusters only (segment==1). That is the merged
+        //   representation (children inlined); fine clusters are trunk-only stubs.
+        // Legacy threshold i = max over those same clusters.
+        // bound_radius = union of cluster AABBs from the stored FlatCluster AABBs
+        //   over ALL clusters (both segments).
         float g_mn[3] = {1e30f,1e30f,1e30f}, g_mx[3] = {-1e30f,-1e30f,-1e30f};
         for (const auto& cl : clusters_in) {
             for (int k = 0; k < 3; ++k) {
@@ -130,6 +156,8 @@ bool PartStore::load_flat(uint64_t part_hash, LoadedPart& lp) {
             std::vector<TriEx> triex;
             float thr = 0.0f;
             for (const auto& cl : clusters_in) {
+                // When segmented, the legacy view uses only coarse clusters.
+                if (segmented && cl.segment != 1) continue;
                 // Use level min(li, cluster_levels-1) for clusters with fewer levels.
                 size_t use_li = (li < cl.lods.size()) ? li : cl.lods.size() - 1;
                 thr = std::fmax(thr, cl.lods[use_li].screen_size_threshold);
@@ -163,6 +191,11 @@ bool PartStore::load_flat(uint64_t part_hash, LoadedPart& lp) {
         // shared blas_. Per-cluster mesh-data is APPENDED to lp.lod_mesh_data AFTER the
         // legacy whole-part entries (indices lp.lod_blas.size()..end). lod_mesh[i] is
         // an absolute index into lp.lod_mesh_data.
+        //
+        // Cluster order: fine (segment=0) clusters first (stable_partition above ensures
+        // this). fine_pushed counts PUSHED (non-empty) fine clusters — the empty-cluster
+        // skip means we can't simply count input clusters with segment==0.
+        uint32_t fine_pushed = 0;
         lp.clusters.reserve(clusters_in.size());
         for (const auto& cl_in : clusters_in) {
             LoadedCluster cl_out;
@@ -205,14 +238,30 @@ bool PartStore::load_flat(uint64_t part_hash, LoadedPart& lp) {
             }
             if (cl_out.lod_blas.empty()) {
                 // Cluster yielded no geometry - skip rather than leaving an empty entry.
+                // Do NOT increment fine_pushed here: we only count pushed (non-empty) clusters.
                 continue;
             }
+            if (segmented && cl_in.segment == 0) ++fine_pushed;
             lp.clusters.push_back(std::move(cl_out));
         }
         if (lp.clusters.empty()) return false;
 
-        printf("PartStore: loaded v3 FLAT part %016llx (%zu LOD levels, %zu clusters)\n",
-               (unsigned long long)part_hash, lp.lod_blas.size(), lp.clusters.size());
+        // Set fine_cluster_count: for segmented flats, count pushed fine clusters;
+        // for unsegmented flats, all clusters are "fine" (fine_cluster_count == size).
+        lp.fine_cluster_count = segmented ? fine_pushed : (uint32_t)lp.clusters.size();
+
+        // Filter instance refs: only keep refs with inline_cutover > 0.
+        // Budget-BOUNDARY refs have cutover == 0 (never inline) and are excluded.
+        for (const auto& ref : refs_in) {
+            if (ref.inline_cutover > 0.0f) {
+                lp.flat_refs.push_back(ref);
+                lp.inline_cutover = std::max(lp.inline_cutover, ref.inline_cutover);
+            }
+        }
+
+        printf("PartStore: loaded v3 FLAT part %016llx (%zu LOD levels, %zu clusters, %zu refs)\n",
+               (unsigned long long)part_hash, lp.lod_blas.size(), lp.clusters.size(),
+               lp.flat_refs.size());
         return true;
     }
 
@@ -289,6 +338,9 @@ bool PartStore::load_flat(uint64_t part_hash, LoadedPart& lp) {
         }
         if (!syn_cl.lod_blas.empty()) lp.clusters.push_back(std::move(syn_cl));
 
+        // v2 flat is never segmented: all clusters are fine.
+        lp.fine_cluster_count = (uint32_t)lp.clusters.size();
+
         printf("PartStore: loaded v2 FLAT part %016llx (%zu LOD levels, 1 synthetic cluster)\n",
                (unsigned long long)part_hash, lp.lod_blas.size());
         return true;
@@ -308,15 +360,22 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
     {
         LoadedPart flat;
         if (load_flat(part_hash, flat)) {
-            auto ins = loaded_.emplace(part_hash, std::move(flat));
-            // Build expansion into a local vector first, then assign to avoid
-            // holding a reference across the recursive get_or_load calls that
-            // build_expansion may trigger. (std::map doesn't invalidate refs on
-            // insert, but the brief explicitly warns about this; be explicit.)
+            // Insert the parent FIRST (before any recursive child loads) to prevent
+            // re-entrancy: if a child transitively references the same parent hash,
+            // the early-out at the top of get_or_load will return the already-inserted
+            // (partially constructed) entry rather than recursing infinitely.
+            loaded_.emplace(part_hash, std::move(flat));
+
+            // Recursively load each flat_ref child. The parent is already in loaded_
+            // so circular references are safe.
+            for (const auto& ref : loaded_[part_hash].flat_refs)
+                get_or_load(ref.child_resolved_hash);
+
+            // Build expansion into a local vector first, then assign.
             std::vector<ExpandedNode> exp;
             build_expansion(part_hash, [this](uint64_t h){ return get_or_load(h); }, exp);
             loaded_[part_hash].expansion = std::move(exp);
-            return &ins.first->second;
+            return &loaded_[part_hash];
         }
     }
 
@@ -402,6 +461,9 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
                (unsigned long long)part_hash);
     }
 
+    // Compositional path: no flat artifact, so clusters is empty; treat all as fine.
+    lp.fine_cluster_count = (uint32_t)lp.clusters.size();  // 0 for compositional parts
+
     auto ins = loaded_.emplace(part_hash, std::move(lp));
     // Build expansion into a local vector first (see flat path comment above).
     std::vector<ExpandedNode> exp;
@@ -412,8 +474,21 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
 
 lod_select::PartLodTable PartStore::part_lod_table() const {
     lod_select::PartLodTable table;
-    for (const auto& kv : loaded_)
-        table[kv.first] = lod_select::PartLod{ kv.second.bound_radius, kv.second.thresholds };
+    for (const auto& kv : loaded_) {
+        const LoadedPart& lp = kv.second;
+        lod_select::PartLod pl;
+        pl.bound_radius    = lp.bound_radius;
+        pl.thresholds      = lp.thresholds;
+        pl.inline_cutover  = lp.inline_cutover;
+        for (const auto& ref : lp.flat_refs) {
+            lod_select::PartLodRef r;
+            r.child_hash = ref.child_resolved_hash;
+            std::memcpy(r.rel_transform, ref.transform, sizeof r.rel_transform);
+            r.child_scale = part_flatten::transform_uniform_scale(ref.transform);
+            pl.refs.push_back(r);
+        }
+        table[kv.first] = std::move(pl);
+    }
     return table;
 }
 

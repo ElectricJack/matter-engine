@@ -929,6 +929,11 @@ static void test_partstore_cluster_loading() {
         if (lp2) {
             CHECK(!lp2->lod_blas.empty(), "v2 flat: legacy lod_blas non-empty");
             CHECK(lp2->clusters.size() == 1, "v2 flat: produces exactly 1 synthetic cluster");
+            // Task 7 guards: unsegmented flat has fine_cluster_count == clusters.size()
+            // and no flat_refs (v2 format has no instance-refs trailer).
+            CHECK(lp2->fine_cluster_count == lp2->clusters.size(),
+                  "v2 flat: fine_cluster_count == clusters.size() (unsegmented)");
+            CHECK(lp2->flat_refs.empty(), "v2 flat: flat_refs empty (unsegmented)");
         }
     }
 
@@ -952,6 +957,24 @@ static void test_partstore_cluster_loading() {
         if (lp3) {
             CHECK(lp3->clusters.empty(), "comp path: clusters stays empty (no flat artifact)");
             CHECK(!lp3->lod_blas.empty(), "comp path: legacy lod_blas populated");
+            // Task 7 guards: compositional path has fine_cluster_count == 0 (== clusters.size())
+            // and empty flat_refs.
+            CHECK(lp3->fine_cluster_count == (uint32_t)lp3->clusters.size(),
+                  "comp path: fine_cluster_count == clusters.size() (compositional, 0)");
+            CHECK(lp3->flat_refs.empty(), "comp path: flat_refs empty (compositional)");
+        }
+    }
+
+    // (g) Task 7 guard on the v3 flat: unsegmented v3 has fine_cluster_count == clusters.size()
+    // and flat_refs empty (the fixture used at top of this test has no instance_refs).
+    {
+        viewer::PartStore store4(root);
+        const viewer::LoadedPart* lp4 = store4.get_or_load(kV3Hash);
+        if (lp4) {
+            CHECK(lp4->fine_cluster_count == (uint32_t)lp4->clusters.size(),
+                  "v3 unsegmented: fine_cluster_count == clusters.size()");
+            CHECK(lp4->flat_refs.empty(),
+                  "v3 unsegmented: flat_refs empty (no instance_refs in fixture)");
         }
     }
 
@@ -1306,6 +1329,8 @@ int main() {
     test_probe_quantization_roundtrip();
     test_provider_regen_stale_v2_flat();
     test_partstore_cluster_loading();
+    // test_partstore_segmented_loading moved to partstore_tests.cpp (run-partstore)
+    // to avoid the 30GB Meadow flatten test in this binary.
     // Task 13 per-cluster frustum cull tests + Task 6 fingerprint test deleted
     // in Task 12 along with the CPU raster batch path (RasterComposer::build_batches).
     // Per-cluster cull is exercised in gpu_cull_tests via readback_batches parity.

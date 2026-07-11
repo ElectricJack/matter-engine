@@ -52,6 +52,10 @@ struct LoadedPart {
     std::vector<RasterMeshData> lod_mesh_data;  // parallel to lod_blas (CPU-only; GL upload is lazy)
     std::vector<LoadedCluster>  clusters;        // non-empty iff a v3 flat was loaded
     std::vector<ExpandedNode>   expansion;       // precomputed flattened drawable nodes (Task 4)
+    // Task 7: LOD-instanced-children
+    std::vector<part_asset::FlatInstanceRef> flat_refs;  // only refs with inline_cutover > 0
+    float    inline_cutover  = 0.0f;   // max over flat_refs; 0 = no cutover refs
+    uint32_t fine_cluster_count = 0;   // clusters[0..fine_cluster_count-1] are segment-0
 };
 
 // Walk the part tree rooted at root_hash depth-first, depth-capped at 8.
@@ -86,6 +90,13 @@ public:
     // Load (memoized) a part: load_v2 -> lod_bake LODs -> register in the shared
     // BLASManager. Returns nullptr on failure (logged once per hash). idempotent.
     const LoadedPart* get_or_load(uint64_t part_hash);
+
+    // Return a pointer to an already-loaded part (nullptr if not loaded). Does NOT
+    // trigger loading. Useful for tests and post-load inspection.
+    const LoadedPart* find(uint64_t part_hash) const {
+        auto it = loaded_.find(part_hash);
+        return (it != loaded_.end()) ? &it->second : nullptr;
+    }
 
     BLASManager& blas() { return blas_; }
     const std::string& cache_root() const { return cache_root_; }
