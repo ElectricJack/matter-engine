@@ -50,7 +50,9 @@ The opt-in lives on the **placement** (the same child may deserve instancing
 under one parent and inlining under another):
 
 ```js
-this.placeChild('TreeBranch', {
+// Options are the THIRD argument; the second is params-JSON (feeds the
+// composite child-hash lookup and must not be disturbed).
+this.placeChild('TreeBranch', null, {
   instanced: true,     // keep as instance ref at fine LOD levels
   inlineBelowPx: 64,   // optional: inline once the child projects smaller than
                        // this many pixels (same screen-size units as ladder
@@ -97,7 +99,7 @@ world-space error bound ε_L, pick the child's source ladder level with
 coarse segment starts from branch coarse LODs, so total flatten input is tens
 of thousands of tris.
 
-## Artifact format (v3 → v4)
+## Artifact format (v5 → v6)
 
 - `FlatInstanceRef` gains an inline-cutover field stored as a **screen-size
   threshold** (same units as ladder thresholds), not a level index — robust to
@@ -105,7 +107,9 @@ of thousands of tris.
 - Threshold 0 = never inline (today's budget-forced BOUNDARY), so both cases
   share one representation.
 - Levels gain a segment tag (fine/coarse).
-- Loader continues to read v3 artifacts.
+- **No back-compat loader** — the existing peek/auto-regen path re-flattens
+  stale artifacts on first use. One-time re-flatten of world_demo flats
+  happens implicitly on first run after merge.
 
 ### Scale invariance of the cutover
 
@@ -180,7 +184,7 @@ determines whether it trips constantly or only in extreme scenes.
 - Flatten: fine-segment levels contain no instanced-child tris; coarse levels
   do; coarse-level input came from the child's coarse ladder (tri-count
   assertion); combined error ≤ ε_L on a synthetic part.
-- Artifact: v4 write/read round-trip; v3 artifacts still load.
+- Artifact: v6 write/read round-trip (no v5 back-compat loader).
 - Resolver: fine level selected → trunk + N child instances with correct
   transforms; coarse → 1 instance; px→level cutover mapping correct.
 

@@ -332,7 +332,7 @@ class Tree extends Part {
         this.rotateZ(site * GOLD + (rnd() * 40 - 20) * DEG);
         this.rotateX((30 + rnd() * 30) * DEG);   // sweep toward the limb tip
         this.scale(0.35, 0.35, 0.35);
-        this.placeChild('TreeBranch');
+        this.placeChild('TreeBranch', null, { instanced: true });
         this.popMatrix();
         ++branches; ++site;
       }
