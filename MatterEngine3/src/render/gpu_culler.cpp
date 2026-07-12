@@ -990,6 +990,32 @@ void GpuCuller::reset() {
 }
 
 // ---------------------------------------------------------------------------
+// ensure_depth_blit — Task 5 RT: ensure depth_copy_tex_ has a current copy of
+// the default framebuffer's depth. When HiZ is already enabled and sized, this
+// just blits depth; otherwise it forces a build_hiz pass to allocate textures.
+// ---------------------------------------------------------------------------
+void GpuCuller::ensure_depth_blit(int screen_w, int screen_h) {
+    if (screen_w <= 0 || screen_h <= 0) return;
+    if (!depth_copy_tex_ || hiz_w_ != screen_w || hiz_h_ != screen_h) {
+        // Need to allocate / reallocate depth textures via build_hiz().
+        bool was_enabled = hiz_enabled_;
+        hiz_enabled_ = true;
+        build_hiz(screen_w, screen_h);
+        hiz_enabled_ = was_enabled;
+        if (!was_enabled) hiz_valid_ = false;
+        return;
+    }
+    // Textures exist and are the right size; just blit.
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, depth_fbo_);
+    glBlitFramebuffer(0, 0, screen_w, screen_h,
+                      0, 0, screen_w, screen_h,
+                      GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+}
+
+// ---------------------------------------------------------------------------
 // build_hiz — blit default-framebuffer depth into depth_copy_tex_, then copy
 // into hiz_tex_ mip 0 (R32F), then downsample_pyramid() for all remaining mips.
 //

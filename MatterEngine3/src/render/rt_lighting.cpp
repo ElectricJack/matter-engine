@@ -2,13 +2,23 @@
 
 #ifdef MATTER_HAVE_OPTIX
 
+// Raylib must come before glad to avoid double-definition of GL types.
+// glad.h must precede cudaGL.h which includes <GL/gl.h>.
+#include "raylib.h"
+#include "external/glad.h"
+
 #include <cuda.h>
 #include <cudaGL.h>
 #include <optix.h>
 #include <optix_stubs.h>
 #include <optix_function_table_definition.h>
 
+#include "shaders_rt/rt_params.h"          // RtLaunchParams (shared host/device struct)
+#include "../../shaders_gen/embedded_rt_shaders.h"
+#include "shader_source.h"   // matter::shader_text
+
 #include <cstdio>
+#include <cstring>
 #include <vector>
 
 namespace viewer {
@@ -64,10 +74,43 @@ bool RtLighting::init(std::string& err) {
     available_ = true;
     printf("RtLighting: OptiX %d.%d initialized on device 0\n",
            OPTIX_VERSION / 10000, (OPTIX_VERSION % 10000) / 100);
+
+    // Task 5: build the shadow ray pipeline and compile GL shaders.
+    if (!build_pipeline(err)) return false;
+    if (!compile_gl_shaders(err)) return false;
+
     return true;
 }
 
 void RtLighting::shutdown() {
+    // Free pipeline resources.
+    if (d_params_)       { cuMemFree((CUdeviceptr)d_params_);       d_params_ = 0; }
+    if (sbt_raygen_buf_) { cuMemFree((CUdeviceptr)sbt_raygen_buf_); sbt_raygen_buf_ = 0; }
+    if (sbt_miss_buf_)   { cuMemFree((CUdeviceptr)sbt_miss_buf_);   sbt_miss_buf_ = 0; }
+    if (sbt_hit_buf_)    { cuMemFree((CUdeviceptr)sbt_hit_buf_);    sbt_hit_buf_ = 0; }
+    if (pipeline_)       { optixPipelineDestroy((OptixPipeline)pipeline_);     pipeline_ = nullptr; }
+    if (raygen_pg_)      { optixProgramGroupDestroy((OptixProgramGroup)raygen_pg_); raygen_pg_ = nullptr; }
+    if (miss_pg_)        { optixProgramGroupDestroy((OptixProgramGroup)miss_pg_);   miss_pg_ = nullptr; }
+    if (hit_pg_)         { optixProgramGroupDestroy((OptixProgramGroup)hit_pg_);    hit_pg_ = nullptr; }
+
+    // Free CUDA interop.
+    if (interop_registered_) {
+        cuGraphicsUnregisterResource((CUgraphicsResource)cuda_depth_resource_);
+        cuGraphicsUnregisterResource((CUgraphicsResource)cuda_shadow_resource_);
+        interop_registered_ = false;
+        cuda_depth_resource_ = 0;
+        cuda_shadow_resource_ = 0;
+    }
+
+    // Free GL resources.
+    if (depth_linear_tex_) { glDeleteTextures(1, &depth_linear_tex_); depth_linear_tex_ = 0; }
+    if (shadow_gl_tex_)    { glDeleteTextures(1, &shadow_gl_tex_);    shadow_gl_tex_ = 0; }
+    if (scene_copy_tex_)   { glDeleteTextures(1, &scene_copy_tex_);   scene_copy_tex_ = 0; }
+    if (scene_fbo_)        { glDeleteFramebuffers(1, &scene_fbo_);    scene_fbo_ = 0; }
+    if (dummy_vao_)        { glDeleteVertexArrays(1, &dummy_vao_);    dummy_vao_ = 0; }
+    if (depth_lin_prog_)   { glDeleteProgram(depth_lin_prog_);        depth_lin_prog_ = 0; }
+    if (composite_prog_)   { glDeleteProgram(composite_prog_);        composite_prog_ = 0; }
+
     // Free all BLAS resources before destroying the OptiX context.
     for (auto& [_, blas] : blas_cache_) {
         cuMemFree((CUdeviceptr)blas.d_vertices);
@@ -241,6 +284,328 @@ void RtLighting::update_instances(const InstanceInput* instances, int count) {
     cuMemFree(d_temp);
 
     tlas_handle_ = (uint64_t)handle;
+}
+
+// ---------------------------------------------------------------------------
+// Task 5: OptiX pipeline construction
+// ---------------------------------------------------------------------------
+bool RtLighting::build_pipeline(std::string& err) {
+    auto ctx = (OptixDeviceContext)optix_ctx_;
+
+    OptixModuleCompileOptions mod_opts = {};
+    mod_opts.maxRegisterCount = OPTIX_COMPILE_DEFAULT_MAX_REGISTER_COUNT;
+    mod_opts.optLevel         = OPTIX_COMPILE_OPTIMIZATION_DEFAULT;
+
+    OptixPipelineCompileOptions pipe_opts = {};
+    pipe_opts.usesMotionBlur                   = false;
+    pipe_opts.traversableGraphFlags            = OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_ANY;
+    pipe_opts.numPayloadValues                 = 1;
+    pipe_opts.numAttributeValues               = 2;
+    pipe_opts.exceptionFlags                   = OPTIX_EXCEPTION_FLAG_NONE;
+    pipe_opts.pipelineLaunchParamsVariableName  = "params";
+
+    char log[2048]; size_t log_size;
+
+    auto create_module = [&](const char* ptx_str, OptixModule& mod) -> bool {
+        log_size = sizeof(log);
+        OptixResult r = optixModuleCreate(ctx, &mod_opts, &pipe_opts,
+                                          ptx_str, strlen(ptx_str),
+                                          log, &log_size, &mod);
+        if (r != OPTIX_SUCCESS) {
+            err = std::string("optixModuleCreate: ") + log;
+            return false;
+        }
+        return true;
+    };
+
+    OptixModule mod_raygen = nullptr, mod_miss = nullptr, mod_hit = nullptr;
+    if (!create_module(matter_rt_embedded::shadow_raygen_ptx, mod_raygen)) return false;
+    if (!create_module(matter_rt_embedded::shadow_miss_ptx, mod_miss)) return false;
+    if (!create_module(matter_rt_embedded::shadow_hit_ptx, mod_hit)) return false;
+
+    OptixProgramGroupOptions pg_opts = {};
+    OptixProgramGroupDesc pg_desc = {};
+
+    pg_desc.kind = OPTIX_PROGRAM_GROUP_KIND_RAYGEN;
+    pg_desc.raygen.module = mod_raygen;
+    pg_desc.raygen.entryFunctionName = "__raygen__shadow";
+    log_size = sizeof(log);
+    optixProgramGroupCreate(ctx, &pg_desc, 1, &pg_opts, log, &log_size,
+                            (OptixProgramGroup*)&raygen_pg_);
+
+    pg_desc = {};
+    pg_desc.kind = OPTIX_PROGRAM_GROUP_KIND_MISS;
+    pg_desc.miss.module = mod_miss;
+    pg_desc.miss.entryFunctionName = "__miss__shadow";
+    log_size = sizeof(log);
+    optixProgramGroupCreate(ctx, &pg_desc, 1, &pg_opts, log, &log_size,
+                            (OptixProgramGroup*)&miss_pg_);
+
+    pg_desc = {};
+    pg_desc.kind = OPTIX_PROGRAM_GROUP_KIND_HITGROUP;
+    pg_desc.hitgroup.moduleAH            = mod_hit;
+    pg_desc.hitgroup.entryFunctionNameAH = "__anyhit__shadow";
+    log_size = sizeof(log);
+    optixProgramGroupCreate(ctx, &pg_desc, 1, &pg_opts, log, &log_size,
+                            (OptixProgramGroup*)&hit_pg_);
+
+    OptixProgramGroup groups[] = {
+        (OptixProgramGroup)raygen_pg_,
+        (OptixProgramGroup)miss_pg_,
+        (OptixProgramGroup)hit_pg_
+    };
+    OptixPipelineLinkOptions link_opts = {};
+    link_opts.maxTraceDepth = 1;
+    log_size = sizeof(log);
+    optixPipelineCreate(ctx, &pipe_opts, &link_opts,
+                        groups, 3, log, &log_size,
+                        (OptixPipeline*)&pipeline_);
+
+    struct alignas(OPTIX_SBT_RECORD_ALIGNMENT) SbtRecord {
+        char header[OPTIX_SBT_RECORD_HEADER_SIZE];
+    };
+
+    auto upload_sbt = [](void* pg, uint64_t& buf) {
+        SbtRecord rec = {};
+        optixSbtRecordPackHeader((OptixProgramGroup)pg, &rec);
+        CUdeviceptr d_buf = 0;
+        cuMemAlloc(&d_buf, sizeof(SbtRecord));
+        cuMemcpyHtoD(d_buf, &rec, sizeof(SbtRecord));
+        buf = (uint64_t)d_buf;
+    };
+    upload_sbt(raygen_pg_, sbt_raygen_buf_);
+    upload_sbt(miss_pg_,   sbt_miss_buf_);
+    upload_sbt(hit_pg_,    sbt_hit_buf_);
+
+    CUdeviceptr d_p = 0;
+    cuMemAlloc(&d_p, sizeof(RtLaunchParams));
+    d_params_ = (uint64_t)d_p;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Task 5: GL shader compilation (depth linearize + composite)
+// ---------------------------------------------------------------------------
+bool RtLighting::compile_gl_shaders(std::string& err) {
+    auto compile_shader = [](GLenum type, const char* src) -> unsigned {
+        GLuint s = glCreateShader(type);
+        glShaderSource(s, 1, &src, nullptr);
+        glCompileShader(s);
+        GLint ok = 0;
+        glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
+        if (!ok) { glDeleteShader(s); return 0; }
+        return s;
+    };
+
+    auto link_program = [](unsigned vs, unsigned fs) -> unsigned {
+        GLuint p = glCreateProgram();
+        glAttachShader(p, vs);
+        glAttachShader(p, fs);
+        glLinkProgram(p);
+        glDeleteShader(vs);
+        glDeleteShader(fs);
+        return p;
+    };
+
+    // Depth linearize compute shader.
+    {
+        std::string src, serr;
+        if (!matter::shader_text("shaders_gpu/depth_linearize.comp", src, serr)) {
+            err = "depth_linearize.comp not found in embedded shaders: " + serr;
+            return false;
+        }
+        GLuint cs = compile_shader(GL_COMPUTE_SHADER, src.c_str());
+        if (!cs) { err = "depth_linearize.comp compile failed"; return false; }
+        depth_lin_prog_ = glCreateProgram();
+        glAttachShader(depth_lin_prog_, cs);
+        glLinkProgram(depth_lin_prog_);
+        glDeleteShader(cs);
+    }
+
+    // Composite vertex + fragment shader.
+    {
+        std::string vs_src, vs_err, fs_src, fs_err;
+        if (!matter::shader_text("shaders_gpu/rt_composite.vs", vs_src, vs_err)) {
+            err = "rt_composite.vs not found: " + vs_err;
+            return false;
+        }
+        if (!matter::shader_text("shaders_gpu/rt_composite.fs", fs_src, fs_err)) {
+            err = "rt_composite.fs not found: " + fs_err;
+            return false;
+        }
+        GLuint vs = compile_shader(GL_VERTEX_SHADER, vs_src.c_str());
+        GLuint fs = compile_shader(GL_FRAGMENT_SHADER, fs_src.c_str());
+        if (!vs || !fs) { err = "rt_composite compile failed"; return false; }
+        composite_prog_ = link_program(vs, fs);
+    }
+
+    glGenVertexArrays(1, &dummy_vao_);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Task 5: resize / prepare_depth / trace_shadows / composite
+// ---------------------------------------------------------------------------
+void RtLighting::resize(int screen_w, int screen_h) {
+    int new_tw = screen_w / 4;
+    int new_th = screen_h / 4;
+    if (new_tw < 1) new_tw = 1;
+    if (new_th < 1) new_th = 1;
+    if (new_tw == trace_w_ && new_th == trace_h_ && screen_w == screen_w_) return;
+    trace_w_ = new_tw;
+    trace_h_ = new_th;
+    screen_w_ = screen_w;
+    screen_h_ = screen_h;
+
+    if (interop_registered_) {
+        cuGraphicsUnregisterResource((CUgraphicsResource)cuda_depth_resource_);
+        cuGraphicsUnregisterResource((CUgraphicsResource)cuda_shadow_resource_);
+        interop_registered_ = false;
+    }
+
+    if (depth_linear_tex_) glDeleteTextures(1, &depth_linear_tex_);
+    glGenTextures(1, &depth_linear_tex_);
+    glBindTexture(GL_TEXTURE_2D, depth_linear_tex_);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32F, trace_w_, trace_h_);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    if (shadow_gl_tex_) glDeleteTextures(1, &shadow_gl_tex_);
+    glGenTextures(1, &shadow_gl_tex_);
+    glBindTexture(GL_TEXTURE_2D, shadow_gl_tex_);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_R32F, trace_w_, trace_h_);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    CUgraphicsResource depth_res = nullptr, shadow_res = nullptr;
+    cuGraphicsGLRegisterImage(&depth_res, depth_linear_tex_,
+                              GL_TEXTURE_2D, CU_GRAPHICS_REGISTER_FLAGS_READ_ONLY);
+    cuGraphicsGLRegisterImage(&shadow_res, shadow_gl_tex_,
+                              GL_TEXTURE_2D, CU_GRAPHICS_REGISTER_FLAGS_SURFACE_LDST);
+    cuda_depth_resource_  = (uint64_t)depth_res;
+    cuda_shadow_resource_ = (uint64_t)shadow_res;
+    interop_registered_ = true;
+
+    if (scene_copy_tex_) glDeleteTextures(1, &scene_copy_tex_);
+    glGenTextures(1, &scene_copy_tex_);
+    glBindTexture(GL_TEXTURE_2D, scene_copy_tex_);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, screen_w, screen_h);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    if (scene_fbo_) glDeleteFramebuffers(1, &scene_fbo_);
+    glGenFramebuffers(1, &scene_fbo_);
+    glBindFramebuffer(GL_FRAMEBUFFER, scene_fbo_);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, scene_copy_tex_, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+void RtLighting::prepare_depth(unsigned gl_depth_tex, int screen_w, int screen_h) {
+    resize(screen_w, screen_h);
+
+    glUseProgram(depth_lin_prog_);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, gl_depth_tex);
+    glUniform1i(glGetUniformLocation(depth_lin_prog_, "u_depth"), 0);
+    glBindImageTexture(0, depth_linear_tex_, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
+
+    int gx = (trace_w_ + 15) / 16;
+    int gy = (trace_h_ + 15) / 16;
+    glDispatchCompute(gx, gy, 1);
+    glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+    glUseProgram(0);
+}
+
+void RtLighting::trace_shadows(const float inv_vp[16], const float sun_dir[3]) {
+    if (!available_ || !tlas_handle_ || trace_w_ == 0) return;
+
+    CUgraphicsResource resources[2] = {
+        (CUgraphicsResource)cuda_depth_resource_,
+        (CUgraphicsResource)cuda_shadow_resource_
+    };
+    cuGraphicsMapResources(2, resources, 0);
+
+    CUarray depth_array = nullptr, shadow_array = nullptr;
+    cuGraphicsSubResourceGetMappedArray(&depth_array,
+        (CUgraphicsResource)cuda_depth_resource_, 0, 0);
+    cuGraphicsSubResourceGetMappedArray(&shadow_array,
+        (CUgraphicsResource)cuda_shadow_resource_, 0, 0);
+
+    CUDA_RESOURCE_DESC res_desc = {};
+    res_desc.resType = CU_RESOURCE_TYPE_ARRAY;
+
+    res_desc.res.array.hArray = depth_array;
+    CUsurfObject depth_surf = 0;
+    cuSurfObjectCreate(&depth_surf, &res_desc);
+
+    res_desc.res.array.hArray = shadow_array;
+    CUsurfObject shadow_surf = 0;
+    cuSurfObjectCreate(&shadow_surf, &res_desc);
+
+    RtLaunchParams lp = {};
+    lp.tlas           = (OptixTraversableHandle)tlas_handle_;
+    memcpy(lp.inv_vp, inv_vp, 16 * sizeof(float));
+    memcpy(lp.sun_dir, sun_dir, 3 * sizeof(float));
+    lp.width          = trace_w_;
+    lp.height         = trace_h_;
+    lp.depth_surface  = (unsigned long long)depth_surf;
+    lp.shadow_surface = (unsigned long long)shadow_surf;
+
+    cuMemcpyHtoD((CUdeviceptr)d_params_, &lp, sizeof(RtLaunchParams));
+
+    OptixShaderBindingTable sbt = {};
+    sbt.raygenRecord                = (CUdeviceptr)sbt_raygen_buf_;
+    sbt.missRecordBase              = (CUdeviceptr)sbt_miss_buf_;
+    sbt.missRecordStrideInBytes     = OPTIX_SBT_RECORD_HEADER_SIZE;
+    sbt.missRecordCount             = 1;
+    sbt.hitgroupRecordBase          = (CUdeviceptr)sbt_hit_buf_;
+    sbt.hitgroupRecordStrideInBytes = OPTIX_SBT_RECORD_HEADER_SIZE;
+    sbt.hitgroupRecordCount         = 1;
+
+    optixLaunch((OptixPipeline)pipeline_, 0,
+                (CUdeviceptr)d_params_, sizeof(RtLaunchParams),
+                &sbt, trace_w_, trace_h_, 1);
+    cuCtxSynchronize();
+
+    cuSurfObjectDestroy(depth_surf);
+    cuSurfObjectDestroy(shadow_surf);
+    cuGraphicsUnmapResources(2, resources, 0);
+}
+
+void RtLighting::composite(int screen_w, int screen_h, float shadow_strength) {
+    if (!available_ || !shadow_gl_tex_) return;
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, scene_fbo_);
+    glBlitFramebuffer(0, 0, screen_w, screen_h,
+                      0, 0, screen_w, screen_h,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+
+    glUseProgram(composite_prog_);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, scene_copy_tex_);
+    glUniform1i(glGetUniformLocation(composite_prog_, "u_scene"), 0);
+
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, shadow_gl_tex_);
+    glUniform1i(glGetUniformLocation(composite_prog_, "u_shadow"), 1);
+
+    glUniform1f(glGetUniformLocation(composite_prog_, "u_shadow_strength"), shadow_strength);
+
+    glDisable(GL_DEPTH_TEST);
+    glBindVertexArray(dummy_vao_);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    glEnable(GL_DEPTH_TEST);
+
+    glUseProgram(0);
+    glActiveTexture(GL_TEXTURE0);
 }
 
 RtLighting::~RtLighting() { shutdown(); }

@@ -33,6 +33,7 @@ struct RenderOptions {
     bool  cull_backfaces  = false;    // GpuDriven path: skip backface triangles
                                       // (off by default: mesh-session winding
                                       // is not guaranteed for all part kinds)
+    bool  rt_shadows      = false;   // Task 5: OptiX shadow ray tracing (requires CUDA)
 };
 
 struct FrameStats {

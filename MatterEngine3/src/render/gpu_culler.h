@@ -109,6 +109,13 @@ public:
     // patterns into mip 0 and verify the reduce math without a depth blit.
     unsigned hiz_tex_for_test() const { return hiz_tex_; }
 
+    // Task 5 RT: expose the depth copy texture for GL-CUDA interop.
+    unsigned depth_copy_tex() const { return depth_copy_tex_; }
+
+    // Task 5 RT: ensure the depth copy texture is current (blit from default FB).
+    // Useful when HiZ is disabled but the RT shadow path needs the depth texture.
+    void ensure_depth_blit(int screen_w, int screen_h);
+
     // Enable/disable the per-frame GPU stats readback (glGetBufferSubData on the
     // stats SSBO in draw_indirect()).  When disabled, stat_culled_ / stat_emitted_
     // retain the values from the last readback (one-frame-late).  Default: off.

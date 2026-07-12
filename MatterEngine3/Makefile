@@ -67,6 +67,10 @@ INCLUDE_PATHS = -Iinclude -Isrc -Isrc/render -Isrc/provider \
                 -I$(QJS_DIR) -I$(RAYLIB_PATH) -I$(BOX3D_DIR)/include \
                 -I$(PFL_DIR)/include $(EXTRA_INCLUDE)
 
+# Ensure `all` is the default goal even when HAVE_CUDA defines earlier explicit
+# targets (the RT_EMBEDDED_HEADER rule would otherwise become the default goal).
+.DEFAULT_GOAL := all
+
 # --- CUDA / OptiX (optional, gated by HAVE_CUDA) ---
 CUDA_PATH  ?= /usr/local/cuda
 OPTIX_PATH ?= $(HOME)/NVIDIA-OptiX-SDK-7.7.0
@@ -208,7 +212,9 @@ SHADER_LOGICAL := shaders/raster.vs shaders/raster.fs shaders/tileset_sampling.g
     shaders/materials.glsl shaders/bvh_tlas_common.glsl shaders/lighting.glsl \
     shaders_gpu/cull.comp shaders_gpu/hiz_downsample.comp \
     shaders_gpu/raster_gpu_driven.vs shaders_gpu/tileset_bake_primary.comp \
-    shaders_gpu/tileset_bake_ao.comp
+    shaders_gpu/tileset_bake_ao.comp \
+    shaders_gpu/depth_linearize.comp \
+    shaders_gpu/rt_composite.vs shaders_gpu/rt_composite.fs
 # SHADER_FILES resolves logical paths into real filesystem paths under MatterEngine3/:
 # shaders/ is a symlink -> ../MatterSurfaceLib/shaders; shaders_gpu/ is a real dir.
 SHADER_FILES := $(SHADER_LOGICAL)

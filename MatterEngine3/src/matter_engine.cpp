@@ -19,6 +19,7 @@
 #include "probe_texture.h"
 #include "gpu_culler.h"
 #include "raster_cull.h"
+#include "rt_lighting.h"
 #include "gl46.h"
 #include "shader_source.h"   // matter::set_shader_override_dir (Task 1 header)
 #include "world_tracer.h"    // WorldTracer — lazy CPU BVH for query API
@@ -85,6 +86,32 @@ public:
     }
 };
 } // anonymous namespace
+
+// Task 5: standard cofactor-based 4x4 matrix inverse for RT depth unproject.
+static bool invert4x4(const float* m, float* inv) {
+    float d[16];
+    d[0]  =  m[5]*m[10]*m[15] - m[5]*m[11]*m[14] - m[9]*m[6]*m[15] + m[9]*m[7]*m[14] + m[13]*m[6]*m[11] - m[13]*m[7]*m[10];
+    d[4]  = -m[4]*m[10]*m[15] + m[4]*m[11]*m[14] + m[8]*m[6]*m[15] - m[8]*m[7]*m[14] - m[12]*m[6]*m[11] + m[12]*m[7]*m[10];
+    d[8]  =  m[4]*m[9]*m[15]  - m[4]*m[11]*m[13] - m[8]*m[5]*m[15] + m[8]*m[7]*m[13] + m[12]*m[5]*m[11] - m[12]*m[7]*m[9];
+    d[12] = -m[4]*m[9]*m[14]  + m[4]*m[10]*m[13] + m[8]*m[5]*m[14] - m[8]*m[6]*m[13] - m[12]*m[5]*m[10] + m[12]*m[6]*m[9];
+    float det = m[0]*d[0] + m[1]*d[4] + m[2]*d[8] + m[3]*d[12];
+    if (det == 0.0f) return false;
+    float inv_det = 1.0f / det;
+    d[1]  = -m[1]*m[10]*m[15] + m[1]*m[11]*m[14] + m[9]*m[2]*m[15] - m[9]*m[3]*m[14] - m[13]*m[2]*m[11] + m[13]*m[3]*m[10];
+    d[5]  =  m[0]*m[10]*m[15] - m[0]*m[11]*m[14] - m[8]*m[2]*m[15] + m[8]*m[3]*m[14] + m[12]*m[2]*m[11] - m[12]*m[3]*m[10];
+    d[9]  = -m[0]*m[9]*m[15]  + m[0]*m[11]*m[13] + m[8]*m[1]*m[15] - m[8]*m[3]*m[13] - m[12]*m[1]*m[11] + m[12]*m[3]*m[9];
+    d[13] =  m[0]*m[9]*m[14]  - m[0]*m[10]*m[13] - m[8]*m[1]*m[14] + m[8]*m[2]*m[13] + m[12]*m[1]*m[10] - m[12]*m[2]*m[9];
+    d[2]  =  m[1]*m[6]*m[15]  - m[1]*m[7]*m[14]  - m[5]*m[2]*m[15] + m[5]*m[3]*m[14] + m[13]*m[2]*m[7]  - m[13]*m[3]*m[6];
+    d[6]  = -m[0]*m[6]*m[15]  + m[0]*m[7]*m[14]  + m[4]*m[2]*m[15] - m[4]*m[3]*m[14] - m[12]*m[2]*m[7]  + m[12]*m[3]*m[6];
+    d[10] =  m[0]*m[5]*m[15]  - m[0]*m[7]*m[13]  - m[4]*m[1]*m[15] + m[4]*m[3]*m[13] + m[12]*m[1]*m[7]  - m[12]*m[3]*m[5];
+    d[14] = -m[0]*m[5]*m[14]  + m[0]*m[6]*m[13]  + m[4]*m[1]*m[14] - m[4]*m[2]*m[13] - m[12]*m[1]*m[6]  + m[12]*m[2]*m[5];
+    d[3]  = -m[1]*m[6]*m[11]  + m[1]*m[7]*m[10]  + m[5]*m[2]*m[11] - m[5]*m[3]*m[10] - m[9]*m[2]*m[7]   + m[9]*m[3]*m[6];
+    d[7]  =  m[0]*m[6]*m[11]  - m[0]*m[7]*m[10]  - m[4]*m[2]*m[11] + m[4]*m[3]*m[10] + m[8]*m[2]*m[7]   - m[8]*m[3]*m[6];
+    d[11] = -m[0]*m[5]*m[11]  + m[0]*m[7]*m[9]   + m[4]*m[1]*m[11] - m[4]*m[3]*m[9]  - m[8]*m[1]*m[7]   + m[8]*m[3]*m[5];
+    d[15] =  m[0]*m[5]*m[10]  - m[0]*m[6]*m[9]   - m[4]*m[1]*m[10] + m[4]*m[2]*m[9]  + m[8]*m[1]*m[6]   - m[8]*m[2]*m[5];
+    for (int i = 0; i < 16; ++i) inv[i] = d[i] * inv_det;
+    return true;
+}
 
 // Classify a provider-returned error string into a structured code. The
 // executor doesn't get typed errors back from the pipeline (yet — Task 7 wires
@@ -177,6 +204,10 @@ struct WorldSession::Impl {
     viewer::Renderer renderer;
     bool             rt_shader_ready = false;
     bool             rt_warmed       = false;
+
+    // Task 5: OptiX shadow ray tracing (lazy init on first rt_shadows frame).
+    viewer::RtLighting rt_lighting;
+    bool               rt_lighting_ready = false;
 
     // Resolvers — mirrors main.cpp's pass/sec locals.
     viewer::PassThroughResolver pass;
@@ -3076,6 +3107,60 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
         // No-op when HiZ toggle is off.
         if (impl_->culler_ready)
             impl_->gpu_culler.build_hiz(fb_width, fb_height);
+
+        // Task 5: OptiX RT shadow tracing (after depth is available).
+        if (opts.rt_shadows && impl_->culler_ready) {
+            if (!impl_->rt_lighting_ready) {
+                std::string rt_err;
+                if (impl_->rt_lighting.init(rt_err)) {
+                    impl_->rt_lighting_ready = true;
+                    printf("RT shadows enabled\n");
+                } else {
+                    printf("RT shadows unavailable: %s\n", rt_err.c_str());
+                }
+            }
+            if (impl_->rt_lighting_ready && impl_->rt_lighting.available()) {
+                // Register parts that have BLAS-ready vertex data.
+                for (auto& ri : resolved) {
+                    auto* lp = impl_->store->get_or_load(ri.part_hash);
+                    if (lp && !lp->lod_mesh_data.empty()) {
+                        int lod = std::min(ri.lod_level, (int)lp->lod_mesh_data.size() - 1);
+                        auto& mesh = lp->lod_mesh_data[lod];
+                        impl_->rt_lighting.register_part(ri.part_hash,
+                            mesh.vertices.data(), mesh.vertex_count);
+                    }
+                }
+
+                // Build instance list for TLAS.
+                std::vector<viewer::RtLighting::InstanceInput> rt_instances;
+                rt_instances.reserve(resolved.size());
+                for (auto& ri : resolved) {
+                    viewer::RtLighting::InstanceInput inp;
+                    inp.part_hash = ri.part_hash;
+                    inp.lod_level = ri.lod_level;
+                    memcpy(inp.transform, ri.transform, sizeof(inp.transform));
+                    rt_instances.push_back(inp);
+                }
+                impl_->rt_lighting.update_instances(rt_instances.data(),
+                                                    (int)rt_instances.size());
+
+                // Ensure depth texture is current for GL-CUDA interop.
+                impl_->gpu_culler.ensure_depth_blit(fb_width, fb_height);
+                impl_->rt_lighting.prepare_depth(
+                    impl_->gpu_culler.depth_copy_tex(), fb_width, fb_height);
+
+                // Compute inverse VP for depth unprojection.
+                float inv_vp[16];
+                invert4x4(vp, inv_vp);
+
+                // sun_dir points FROM sun toward scene; negate for shadow ray direction.
+                const float* sd = impl_->manifest.lights.sun_dir;
+                float neg_sun[3] = {-sd[0], -sd[1], -sd[2]};
+
+                impl_->rt_lighting.trace_shadows(inv_vp, neg_sun);
+                impl_->rt_lighting.composite(fb_width, fb_height, 0.7f);
+            }
+        }
     }
 }
 

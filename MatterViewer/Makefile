@@ -147,6 +147,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/terrain_field.cpp \
               $(ME3_DIR)/src/terrain_mesher.cpp \
               $(ME3_DIR)/src/sector_streamer.cpp \
+              $(ME3_DIR)/src/probe_bricks.cpp \
               $(ME3_DIR)/src/matter_engine.cpp \
               $(ME3_DIR)/src/pf_bindings.cpp \
               ../ParticleFlowLib/src/pf_math.cpp \
