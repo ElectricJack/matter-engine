@@ -20,6 +20,7 @@
 #include "gpu_culler.h"
 #include "raster_cull.h"
 #include "rt_lighting.h"
+#include "material_registry.h"  // MaterialRegistryPackForGPU/Count, MATERIAL_FLOATS_PER_DEF
 #include "gl46.h"
 #include "shader_source.h"   // matter::set_shader_override_dir (Task 1 header)
 #include "world_tracer.h"    // WorldTracer — lazy CPU BVH for query API
@@ -3143,6 +3144,13 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
                     std::string gbuf_err;
                     if (!impl_->raster->init_gbuffer_shader(gbuf_err))
                         printf("G-buffer shader failed: %s\n", gbuf_err.c_str());
+                    // Upload material table to device for RT closest-hit.
+                    {
+                        float mat_table[32 * MATERIAL_FLOATS_PER_DEF] = {0};
+                        MaterialRegistryPackForGPU(mat_table);
+                        int mat_count = MaterialRegistryCount();
+                        impl_->rt_lighting.upload_material_table(mat_table, mat_count);
+                    }
                 } else {
                     printf("RT shadows unavailable: %s\n", rt_err.c_str());
                     impl_->rt_lighting_failed = true;
@@ -3159,7 +3167,8 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
                     if (lp && !lp->lod_mesh_data.empty()) {
                         auto& mesh = lp->lod_mesh_data[0];
                         impl_->rt_lighting.register_part(ci.part_hash,
-                            mesh.vertices.data(), mesh.vertex_count);
+                            mesh.vertices.data(), mesh.normals.data(),
+                            mesh.texcoords.data(), mesh.vertex_count);
                     }
                 }
 

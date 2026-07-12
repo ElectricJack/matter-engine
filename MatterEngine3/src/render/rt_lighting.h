@@ -11,10 +11,13 @@
 namespace viewer {
 
 struct RtBlas {
-    uint64_t d_vertices = 0;   // CUdeviceptr — GPU vertex buffer
-    uint64_t gas_buffer = 0;   // CUdeviceptr — compacted GAS buffer
-    uint64_t traversable = 0;  // OptixTraversableHandle
+    uint64_t d_vertices  = 0;   // CUdeviceptr — GPU vertex buffer (float3 per vert)
+    uint64_t d_normals   = 0;   // CUdeviceptr — GPU normal buffer (float3 per vert)
+    uint64_t d_texcoords = 0;   // CUdeviceptr — GPU texcoord buffer (float2 per vert)
+    uint64_t gas_buffer  = 0;   // CUdeviceptr — compacted GAS buffer
+    uint64_t traversable = 0;   // OptixTraversableHandle
     int vertex_count = 0;
+    int blas_sbt_index = -1;    // index into per-BLAS SBT hitgroup records
 };
 
 class RtLighting {
@@ -26,8 +29,11 @@ public:
     void shutdown();
     bool available() const { return available_; }
 
-    void register_part(uint64_t part_hash, const float* vertices, int vertex_count);
+    void register_part(uint64_t part_hash, const float* vertices,
+                       const float* normals, const float* texcoords,
+                       int vertex_count);
     void unregister_part(uint64_t part_hash);
+    void upload_material_table(const float* table, int count);
 
     struct InstanceInput {
         uint64_t part_hash;
@@ -99,10 +105,22 @@ private:
     void*    raygen_pg_      = nullptr;   // OptixProgramGroup
     void*    miss_pg_        = nullptr;   // OptixProgramGroup
     void*    hit_pg_         = nullptr;   // OptixProgramGroup
+    void*    closesthit_pg_  = nullptr;   // OptixProgramGroup — created in Task 3
     uint64_t sbt_raygen_buf_ = 0;         // CUdeviceptr
     uint64_t sbt_miss_buf_   = 0;         // CUdeviceptr
-    uint64_t sbt_hit_buf_    = 0;         // CUdeviceptr
+    uint64_t sbt_hit_buf_    = 0;         // CUdeviceptr (Phase 1 single-record fallback)
     uint64_t d_params_       = 0;         // CUdeviceptr
+
+    // Phase 2: device material table
+    uint64_t d_material_table_ = 0;    // CUdeviceptr
+    int      material_count_   = 0;
+
+    // Phase 2: per-BLAS SBT management
+    int      next_blas_sbt_index_ = 0;
+    uint64_t d_hitgroup_sbt_      = 0;  // CUdeviceptr — array of SBT hitgroup records
+    int      hitgroup_sbt_cap_    = 0;
+    bool     sbt_dirty_           = false;
+    void rebuild_hitgroup_sbt();
 
     bool build_pipeline(std::string& err);
     bool compile_gl_shaders(std::string& err);
@@ -121,8 +139,9 @@ public:
     bool init(std::string& err) { err = "not compiled with OptiX (rebuild with HAVE_CUDA=1)"; return false; }
     void shutdown() {}
     bool available() const { return false; }
-    void register_part(uint64_t, const float*, int) {}
+    void register_part(uint64_t, const float*, const float*, const float*, int) {}
     void unregister_part(uint64_t) {}
+    void upload_material_table(const float*, int) {}
     struct InstanceInput { uint64_t part_hash; int lod_level; float transform[16]; };
     void update_instances(const InstanceInput*, int) {}
     uint64_t tlas_handle() const { return 0; }

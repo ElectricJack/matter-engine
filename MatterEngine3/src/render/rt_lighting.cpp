@@ -126,9 +126,18 @@ void RtLighting::shutdown() {
     if (gbuffer_depth_tex_)  { glDeleteTextures(1, &gbuffer_depth_tex_);         gbuffer_depth_tex_ = 0; }
     gbuffer_w_ = gbuffer_h_ = 0;
 
+    // Phase 2: free material table and per-BLAS SBT.
+    if (d_material_table_) { cuMemFree((CUdeviceptr)d_material_table_); d_material_table_ = 0; }
+    if (d_hitgroup_sbt_)   { cuMemFree((CUdeviceptr)d_hitgroup_sbt_);   d_hitgroup_sbt_ = 0; }
+    hitgroup_sbt_cap_    = 0;
+    next_blas_sbt_index_ = 0;
+    material_count_      = 0;
+
     // Free all BLAS resources before destroying the OptiX context.
     for (auto& [_, blas] : blas_cache_) {
         cuMemFree((CUdeviceptr)blas.d_vertices);
+        cuMemFree((CUdeviceptr)blas.d_normals);
+        cuMemFree((CUdeviceptr)blas.d_texcoords);
         cuMemFree((CUdeviceptr)blas.gas_buffer);
     }
     blas_cache_.clear();
@@ -153,17 +162,34 @@ void RtLighting::shutdown() {
     available_ = false;
 }
 
-void RtLighting::register_part(uint64_t part_hash, const float* vertices, int vertex_count) {
+void RtLighting::register_part(uint64_t part_hash, const float* vertices,
+                                const float* normals, const float* texcoords,
+                                int vertex_count) {
     if (!available_ || blas_cache_.count(part_hash)) return;
 
     RtBlas blas;
     blas.vertex_count = vertex_count;
 
+    // Upload vertex positions (for BLAS geometry).
     size_t verts_bytes = (size_t)vertex_count * 3 * sizeof(float);
     CUdeviceptr d_verts = 0;
     cuMemAlloc(&d_verts, verts_bytes);
     cuMemcpyHtoD(d_verts, vertices, verts_bytes);
     blas.d_vertices = (uint64_t)d_verts;
+
+    // Upload normals (for closest-hit material queries).
+    size_t norms_bytes = (size_t)vertex_count * 3 * sizeof(float);
+    CUdeviceptr d_norms = 0;
+    cuMemAlloc(&d_norms, norms_bytes);
+    cuMemcpyHtoD(d_norms, normals, norms_bytes);
+    blas.d_normals = (uint64_t)d_norms;
+
+    // Upload texcoords (materialId, bakedAO per vertex).
+    size_t tc_bytes = (size_t)vertex_count * 2 * sizeof(float);
+    CUdeviceptr d_tc = 0;
+    cuMemAlloc(&d_tc, tc_bytes);
+    cuMemcpyHtoD(d_tc, texcoords, tc_bytes);
+    blas.d_texcoords = (uint64_t)d_tc;
 
     OptixAccelBuildOptions accel_opts = {};
     accel_opts.buildFlags = OPTIX_BUILD_FLAG_ALLOW_COMPACTION | OPTIX_BUILD_FLAG_PREFER_FAST_TRACE;
@@ -215,8 +241,10 @@ void RtLighting::register_part(uint64_t part_hash, const float* vertices, int ve
     cuCtxSynchronize();
     cuMemFree(d_output);
 
-    blas.gas_buffer  = (uint64_t)d_compacted;
-    blas.traversable = (uint64_t)handle;
+    blas.gas_buffer      = (uint64_t)d_compacted;
+    blas.traversable     = (uint64_t)handle;
+    blas.blas_sbt_index  = next_blas_sbt_index_++;
+    sbt_dirty_           = true;
     blas_cache_[part_hash] = blas;
 }
 
@@ -224,12 +252,81 @@ void RtLighting::unregister_part(uint64_t part_hash) {
     auto it = blas_cache_.find(part_hash);
     if (it == blas_cache_.end()) return;
     cuMemFree((CUdeviceptr)it->second.d_vertices);
+    cuMemFree((CUdeviceptr)it->second.d_normals);
+    cuMemFree((CUdeviceptr)it->second.d_texcoords);
     cuMemFree((CUdeviceptr)it->second.gas_buffer);
     blas_cache_.erase(it);
+    sbt_dirty_ = true;
+}
+
+void RtLighting::rebuild_hitgroup_sbt() {
+    if (!sbt_dirty_) return;
+    sbt_dirty_ = false;
+
+    int num_blas = next_blas_sbt_index_;
+    if (num_blas == 0) return;
+
+    struct alignas(OPTIX_SBT_RECORD_ALIGNMENT) HitGroupRecord {
+        char header[OPTIX_SBT_RECORD_HEADER_SIZE];
+        HitGroupData data;
+    };
+
+    int num_records = num_blas * 2;  // 2 ray types per BLAS
+    std::vector<HitGroupRecord> records((size_t)num_records);
+
+    for (auto& [hash, blas] : blas_cache_) {
+        int base = blas.blas_sbt_index * 2;
+
+        // Ray type 0: shadow (anyhit — no per-geometry data needed but struct must be filled)
+        {
+            auto& rec = records[(size_t)base + 0];
+            memset(&rec, 0, sizeof(rec));
+            optixSbtRecordPackHeader((OptixProgramGroup)hit_pg_, &rec);
+            rec.data.normals      = nullptr;
+            rec.data.texcoords    = nullptr;
+            rec.data.vertex_count = 0;
+        }
+
+        // Ray type 1: radiance (closest-hit — needs per-geometry attribute data)
+        {
+            auto& rec = records[(size_t)base + 1];
+            memset(&rec, 0, sizeof(rec));
+            // closesthit_pg_ is built in Task 3. Until then, use hit_pg_ as placeholder.
+            optixSbtRecordPackHeader(
+                (OptixProgramGroup)(closesthit_pg_ ? closesthit_pg_ : hit_pg_), &rec);
+            rec.data.normals      = reinterpret_cast<float*>((CUdeviceptr)blas.d_normals);
+            rec.data.texcoords    = reinterpret_cast<float*>((CUdeviceptr)blas.d_texcoords);
+            rec.data.vertex_count = blas.vertex_count;
+        }
+    }
+
+    size_t total_bytes = (size_t)num_records * sizeof(HitGroupRecord);
+    if (num_records > hitgroup_sbt_cap_) {
+        if (d_hitgroup_sbt_) cuMemFree((CUdeviceptr)d_hitgroup_sbt_);
+        CUdeviceptr d = 0;
+        cuMemAlloc(&d, total_bytes);
+        d_hitgroup_sbt_    = (uint64_t)d;
+        hitgroup_sbt_cap_  = num_records;
+    }
+    cuMemcpyHtoD((CUdeviceptr)d_hitgroup_sbt_, records.data(), total_bytes);
+}
+
+void RtLighting::upload_material_table(const float* table, int count) {
+    if (!available_) return;
+    size_t bytes = (size_t)count * 12 * sizeof(float);
+    if (d_material_table_ == 0 || count != material_count_) {
+        if (d_material_table_) cuMemFree((CUdeviceptr)d_material_table_);
+        CUdeviceptr d = 0;
+        cuMemAlloc(&d, bytes);
+        d_material_table_ = (uint64_t)d;
+    }
+    cuMemcpyHtoD((CUdeviceptr)d_material_table_, table, bytes);
+    material_count_ = count;
 }
 
 void RtLighting::update_instances(const InstanceInput* instances, int count) {
     if (!available_ || count == 0) return;
+    rebuild_hitgroup_sbt();
 
     std::vector<OptixInstance> optix_instances;
     optix_instances.reserve(count);
@@ -245,7 +342,7 @@ void RtLighting::update_instances(const InstanceInput* instances, int count) {
         inst.transform[8]  = t[8];  inst.transform[9]  = t[9];  inst.transform[10] = t[10]; inst.transform[11] = t[11];
 
         inst.instanceId        = i;
-        inst.sbtOffset         = 0;
+        inst.sbtOffset         = (unsigned int)(it->second.blas_sbt_index * 2);  // 2 ray types per BLAS
         inst.visibilityMask    = 0xFF;
         inst.flags             = OPTIX_INSTANCE_FLAG_NONE;
         inst.traversableHandle = (OptixTraversableHandle)it->second.traversable;
@@ -571,14 +668,27 @@ bool RtLighting::trace_shadows(const float inv_vp[16], const float sun_dir[3]) {
 
     cuMemcpyHtoD((CUdeviceptr)d_params_, &lp, sizeof(RtLaunchParams));
 
+    // Per-BLAS SBT: each BLAS gets 2 records (shadow ray type 0, radiance ray type 1).
+    struct alignas(OPTIX_SBT_RECORD_ALIGNMENT) HitGroupRecord {
+        char header[OPTIX_SBT_RECORD_HEADER_SIZE];
+        HitGroupData data;
+    };
+
     OptixShaderBindingTable sbt = {};
     sbt.raygenRecord                = (CUdeviceptr)sbt_raygen_buf_;
     sbt.missRecordBase              = (CUdeviceptr)sbt_miss_buf_;
     sbt.missRecordStrideInBytes     = OPTIX_SBT_RECORD_HEADER_SIZE;
     sbt.missRecordCount             = 1;
-    sbt.hitgroupRecordBase          = (CUdeviceptr)sbt_hit_buf_;
-    sbt.hitgroupRecordStrideInBytes = OPTIX_SBT_RECORD_HEADER_SIZE;
-    sbt.hitgroupRecordCount         = 1;
+    if (d_hitgroup_sbt_ && next_blas_sbt_index_ > 0) {
+        sbt.hitgroupRecordBase          = (CUdeviceptr)d_hitgroup_sbt_;
+        sbt.hitgroupRecordStrideInBytes = sizeof(HitGroupRecord);
+        sbt.hitgroupRecordCount         = (unsigned int)(next_blas_sbt_index_ * 2);
+    } else {
+        // Fallback: no BLAS registered yet, use the Phase 1 single record.
+        sbt.hitgroupRecordBase          = (CUdeviceptr)sbt_hit_buf_;
+        sbt.hitgroupRecordStrideInBytes = OPTIX_SBT_RECORD_HEADER_SIZE;
+        sbt.hitgroupRecordCount         = 1;
+    }
 
     optixLaunch((OptixPipeline)pipeline_, 0,
                 (CUdeviceptr)d_params_, sizeof(RtLaunchParams),
