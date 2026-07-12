@@ -3153,6 +3153,7 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
 
                 if (impl_->rt_lighting.trace_lighting(inv_vp, neg_sun, sun_col, sky_col,
                                                        fb_width, fb_height)) {
+                    impl_->rt_lighting.accumulate_and_denoise(inv_vp);
                     impl_->rt_lighting.composite_lighting(fb_width, fb_height);
                 }
             }

@@ -21,6 +21,7 @@ struct RtLaunchParams {
     int    screen_w, screen_h;           // full-res dimensions (for G-buffer sampling)
     float  sun_color[3];
     float  sky_color[3];
+    int    frame_index;           // monotonically increasing frame counter for temporal jitter
 };
 
 // Per-BLAS hit group data: device pointers to per-vertex attribute arrays.

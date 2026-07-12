@@ -180,7 +180,7 @@ extern "C" __global__ void __raygen__lighting() {
     float ao        = orm_raw.z / 255.0f;
 
     // Initialize RNG per pixel.
-    unsigned int seed = tea(idx.x + idx.y * params.width, 0);
+    unsigned int seed = tea(idx.x + idx.y * params.width, params.frame_index);
 
     float3 sun_dir = make_float3(params.sun_dir[0], params.sun_dir[1], params.sun_dir[2]);
     float3 sun_col = make_float3(params.sun_color[0], params.sun_color[1], params.sun_color[2]);

@@ -68,6 +68,9 @@ public:
     // Phase 2 Task 4: composite lighting output to default framebuffer
     void composite_lighting(int screen_w, int screen_h);
 
+    // Phase 2 Task 5: temporal accumulation + denoiser
+    void accumulate_and_denoise(const float inv_vp[16]);
+
 private:
     bool available_ = false;
     // CUDA device + OptiX context handles stored as void* to avoid
@@ -149,6 +152,29 @@ private:
     uint64_t cuda_gb_orm_resource_     = 0;     // CUgraphicsResource (G-buffer)
     bool     lighting_interop_registered_ = false;
 
+    // Phase 2 Task 5: temporal accumulation
+    uint64_t d_accum_buffer_   = 0;    // CUdeviceptr — RGBA32F, half-res (persistent across frames)
+    uint64_t d_current_buffer_ = 0;    // CUdeviceptr — RGBA32F, half-res (current frame raw output)
+    int      accum_w_ = 0, accum_h_ = 0;
+    int      frame_index_ = 0;
+    float    prev_vp_[16] = {};
+    bool     have_prev_vp_ = false;
+
+    // Phase 2 Task 5: OptiX denoiser
+    void*    denoiser_             = nullptr;  // OptixDenoiser
+    uint64_t d_denoiser_state_     = 0;        // CUdeviceptr
+    uint64_t d_denoiser_scratch_   = 0;        // CUdeviceptr
+    size_t   denoiser_state_size_  = 0;
+    size_t   denoiser_scratch_size_= 0;
+    uint64_t d_denoised_buffer_    = 0;        // CUdeviceptr — RGBA32F output
+    uint64_t d_denoise_albedo_     = 0;        // CUdeviceptr — guide albedo (RGBA32F)
+    uint64_t d_denoise_normal_     = 0;        // CUdeviceptr — guide normal (RGBA32F)
+
+    bool init_denoiser(std::string& err);
+    void accumulate(const float inv_vp[16]);
+    void denoise();
+    void copy_denoised_to_gl();
+
     bool build_pipeline(std::string& err);
     bool build_lighting_pipeline(std::string& err);
     bool compile_gl_shaders(std::string& err);
@@ -188,6 +214,7 @@ public:
     bool trace_lighting(const float[16], const float[3], const float[3], const float[3], int, int) { return false; }
     unsigned lighting_output_tex() const { return 0; }
     void composite_lighting(int, int) {}
+    void accumulate_and_denoise(const float[16]) {}
 };
 } // namespace viewer
 
