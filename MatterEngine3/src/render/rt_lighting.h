@@ -29,6 +29,14 @@ public:
     void register_part(uint64_t part_hash, const float* vertices, int vertex_count);
     void unregister_part(uint64_t part_hash);
 
+    struct InstanceInput {
+        uint64_t part_hash;
+        int      lod_level;
+        float    transform[16];  // row-major 4x4
+    };
+    void update_instances(const InstanceInput* instances, int count);
+    uint64_t tlas_handle() const { return tlas_handle_; }
+
 private:
     bool available_ = false;
     // CUDA device + OptiX context handles stored as void* to avoid
@@ -37,12 +45,19 @@ private:
     void* optix_ctx_  = nullptr;  // OptixDeviceContext
 
     std::unordered_map<uint64_t, RtBlas> blas_cache_;
+
+    uint64_t tlas_buffer_   = 0;   // CUdeviceptr — TLAS output buffer
+    size_t   tlas_buf_size_ = 0;
+    uint64_t tlas_handle_   = 0;   // OptixTraversableHandle
+    uint64_t d_instances_   = 0;   // CUdeviceptr — OptixInstance array on device
+    int      instance_cap_  = 0;
 };
 
 } // namespace viewer
 
 #else // !MATTER_HAVE_OPTIX
 
+#include <cstdint>
 #include <string>
 
 namespace viewer {
@@ -53,6 +68,9 @@ public:
     bool available() const { return false; }
     void register_part(uint64_t, const float*, int) {}
     void unregister_part(uint64_t) {}
+    struct InstanceInput { uint64_t part_hash; int lod_level; float transform[16]; };
+    void update_instances(const InstanceInput*, int) {}
+    uint64_t tlas_handle() const { return 0; }
 };
 } // namespace viewer
 

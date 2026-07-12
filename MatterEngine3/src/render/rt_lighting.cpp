@@ -9,6 +9,7 @@
 #include <optix_function_table_definition.h>
 
 #include <cstdio>
+#include <vector>
 
 namespace viewer {
 
@@ -73,6 +74,13 @@ void RtLighting::shutdown() {
         cuMemFree((CUdeviceptr)blas.gas_buffer);
     }
     blas_cache_.clear();
+
+    // Free TLAS resources.
+    if (tlas_buffer_) { cuMemFree((CUdeviceptr)tlas_buffer_); tlas_buffer_ = 0; }
+    if (d_instances_) { cuMemFree((CUdeviceptr)d_instances_); d_instances_ = 0; }
+    tlas_buf_size_ = 0;
+    tlas_handle_   = 0;
+    instance_cap_  = 0;
 
     if (optix_ctx_) {
         optixDeviceContextDestroy((OptixDeviceContext)optix_ctx_);
@@ -160,6 +168,79 @@ void RtLighting::unregister_part(uint64_t part_hash) {
     cuMemFree((CUdeviceptr)it->second.d_vertices);
     cuMemFree((CUdeviceptr)it->second.gas_buffer);
     blas_cache_.erase(it);
+}
+
+void RtLighting::update_instances(const InstanceInput* instances, int count) {
+    if (!available_ || count == 0) return;
+
+    std::vector<OptixInstance> optix_instances;
+    optix_instances.reserve(count);
+
+    for (int i = 0; i < count; ++i) {
+        auto it = blas_cache_.find(instances[i].part_hash);
+        if (it == blas_cache_.end()) continue;
+
+        OptixInstance inst = {};
+        const float* t = instances[i].transform;
+        inst.transform[0]  = t[0];  inst.transform[1]  = t[1];  inst.transform[2]  = t[2];  inst.transform[3]  = t[3];
+        inst.transform[4]  = t[4];  inst.transform[5]  = t[5];  inst.transform[6]  = t[6];  inst.transform[7]  = t[7];
+        inst.transform[8]  = t[8];  inst.transform[9]  = t[9];  inst.transform[10] = t[10]; inst.transform[11] = t[11];
+
+        inst.instanceId        = i;
+        inst.sbtOffset         = 0;
+        inst.visibilityMask    = 0xFF;
+        inst.flags             = OPTIX_INSTANCE_FLAG_DISABLE_ANYHIT;
+        inst.traversableHandle = (OptixTraversableHandle)it->second.traversable;
+        optix_instances.push_back(inst);
+    }
+
+    if (optix_instances.empty()) return;
+    int inst_count = (int)optix_instances.size();
+
+    size_t inst_bytes = inst_count * sizeof(OptixInstance);
+    if (inst_count > instance_cap_) {
+        if (d_instances_) cuMemFree((CUdeviceptr)d_instances_);
+        CUdeviceptr d_inst = 0;
+        cuMemAlloc(&d_inst, inst_bytes);
+        d_instances_ = (uint64_t)d_inst;
+        instance_cap_ = inst_count;
+    }
+    cuMemcpyHtoD((CUdeviceptr)d_instances_, optix_instances.data(), inst_bytes);
+
+    OptixBuildInput build_input = {};
+    build_input.type = OPTIX_BUILD_INPUT_TYPE_INSTANCES;
+    build_input.instanceArray.instances    = (CUdeviceptr)d_instances_;
+    build_input.instanceArray.numInstances = inst_count;
+
+    OptixAccelBuildOptions accel_opts = {};
+    accel_opts.buildFlags = OPTIX_BUILD_FLAG_ALLOW_UPDATE | OPTIX_BUILD_FLAG_PREFER_FAST_TRACE;
+    accel_opts.operation  = OPTIX_BUILD_OPERATION_BUILD;
+
+    OptixAccelBufferSizes buf_sizes = {};
+    optixAccelComputeMemoryUsage((OptixDeviceContext)optix_ctx_, &accel_opts,
+                                 &build_input, 1, &buf_sizes);
+
+    if (buf_sizes.outputSizeInBytes > tlas_buf_size_) {
+        if (tlas_buffer_) cuMemFree((CUdeviceptr)tlas_buffer_);
+        CUdeviceptr d_tlas = 0;
+        cuMemAlloc(&d_tlas, buf_sizes.outputSizeInBytes);
+        tlas_buffer_   = (uint64_t)d_tlas;
+        tlas_buf_size_ = buf_sizes.outputSizeInBytes;
+    }
+
+    CUdeviceptr d_temp = 0;
+    cuMemAlloc(&d_temp, buf_sizes.tempSizeInBytes);
+
+    OptixTraversableHandle handle = 0;
+    optixAccelBuild((OptixDeviceContext)optix_ctx_, 0,
+                    &accel_opts, &build_input, 1,
+                    d_temp, buf_sizes.tempSizeInBytes,
+                    (CUdeviceptr)tlas_buffer_, buf_sizes.outputSizeInBytes,
+                    &handle, nullptr, 0);
+    cuCtxSynchronize();
+    cuMemFree(d_temp);
+
+    tlas_handle_ = (uint64_t)handle;
 }
 
 RtLighting::~RtLighting() { shutdown(); }
