@@ -69,7 +69,7 @@ INCLUDE_PATHS = -Iinclude -Isrc -Isrc/render -Isrc/provider \
 
 # --- CUDA / OptiX (optional, gated by HAVE_CUDA) ---
 CUDA_PATH  ?= /usr/local/cuda
-OPTIX_PATH ?= $(HOME)/NVIDIA-OptiX-SDK-9.0.0
+OPTIX_PATH ?= $(HOME)/NVIDIA-OptiX-SDK-7.7.0
 
 ifdef HAVE_CUDA
   NVCC       = $(CUDA_PATH)/bin/nvcc

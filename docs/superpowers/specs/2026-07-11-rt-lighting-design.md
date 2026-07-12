@@ -85,32 +85,44 @@ Trace 1 shadow ray per pixel at quarter resolution, produce a shadow visibility 
    - Writes binary shadow (0.0 or 1.0) to output buffer
    - Jitters ray origin slightly for soft shadow accumulation over frames
 
-4. **Interop output** — Shadow buffer is a CUDA surface backed by a GL texture via `cudaGraphicsGLRegisterImage`. After trace, GL samples it immediately.
+4. **Interop output** — Shadow buffer is a CUDA surface backed by a GL texture via `cuGraphicsGLRegisterImage`. After trace, GL samples it immediately.
 
 5. **Composite** — Fullscreen GL shader: `raster_color * mix(shadow_darkening, 1.0, shadow_tex)`. Bilinear sampling at quarter res gives soft penumbra edges.
 
 ### Depth Buffer Sharing (GL to CUDA)
 
-The HiZ pass already blits depth to `depth_copy_tex_` (GL_DEPTH_COMPONENT32F). Register this texture with CUDA via `cudaGraphicsGLRegisterImage`. In the ray gen program, sample depth + inverse view-projection matrix to reconstruct world-space position.
+The HiZ pass already blits depth to `depth_copy_tex_` (GL_DEPTH_COMPONENT32F). Register this texture with CUDA via `cuGraphicsGLRegisterImage` (driver API). In the ray gen program, sample depth + inverse view-projection matrix to reconstruct world-space position.
 
 ### Build System
 
+**MatterEngine3/Makefile** (gated by `HAVE_CUDA=1`):
+
 ```makefile
-CUDA_PATH ?= /usr/local/cuda
-OPTIX_PATH ?= /opt/optix
+CUDA_PATH  ?= /usr/local/cuda
+OPTIX_PATH ?= $(HOME)/NVIDIA-OptiX-SDK-7.7.0
+NVCC        = $(CUDA_PATH)/bin/nvcc
+NVCC_FLAGS  = --ptx --machine 64 -O2 -I$(OPTIX_PATH)/include -I$(CUDA_PATH)/include
 
-NVCC = $(CUDA_PATH)/bin/nvcc
-NVCC_FLAGS = -ptx -I$(OPTIX_PATH)/include -I$(CUDA_PATH)/include
-
-PTX_DIR = shaders_rt
-PTX_FILES = $(PTX_DIR)/shadow_raygen.ptx
-
-$(PTX_DIR)/%.ptx: $(PTX_DIR)/%.cu
+# .cu → .ptx (Linux nvcc, platform-independent output)
+$(RT_CU_DIR)/%.ptx: $(RT_CU_DIR)/%.cu
 	$(NVCC) $(NVCC_FLAGS) -o $@ $<
 
-LDFLAGS += -L$(CUDA_PATH)/lib64 -lcudart
-CFLAGS  += -I$(CUDA_PATH)/include -I$(OPTIX_PATH)/include
+# .ptx → embedded header
+shaders_gen/embedded_rt_shaders.h: $(RT_PTX)
+	python3 tools/embed_rt_shaders.py $@ $(RT_PTX)
+
+# CFLAGS: headers only, no runtime lib
+CFLAGS += -DMATTER_HAVE_OPTIX -I$(CUDA_PATH)/include -I$(OPTIX_PATH)/include
 ```
+
+**MatterViewer/Makefile** Windows target (gated by `HAVE_CUDA=1`):
+
+```makefile
+# Link against nvcuda.dll import lib + cfgmgr32 (for OptiX registry search)
+WIN_LIBS += ../Libraries/cuda-mingw/libnvcuda.dll.a -lcfgmgr32
+```
+
+No `-lcudart` on either platform. Linux links `-lcuda -L/usr/lib/wsl/lib`; Windows links the committed `libnvcuda.dll.a`.
 
 ### Phase 1 Result
 
@@ -219,10 +231,11 @@ When the resolver expands tree branches into individual instances at close range
 
 ### Fallback
 
-If OptiX initialization fails (no NVIDIA GPU, driver too old):
+If OptiX initialization fails (no NVIDIA GPU, driver too old, WSL2 build):
 - `RtLighting::available()` returns false
 - Raster path falls back to flat ambient + sun (existing code path minus probes)
 - No crash, just basic lighting
+- WSL2 builds always take this path (compiled as no-op stub when `HAVE_CUDA` is not set)
 
 ### Phase 3 Result
 
@@ -247,12 +260,58 @@ After all phases:
 - Material table and per-triangle TriEx data
 - HiZ occlusion culling (still needed for raster)
 
+## Platform Strategy
+
+OptiX does not work in WSL2 (the driver's `libnvoptix.so.1` is a non-functional dxcore shim that doesn't export `optixQueryFunctionTable`). RT shadows run on the **Windows build only** (`make windows HAVE_CUDA=1`). WSL2 builds compile the no-op `RtLighting` stub and function normally without RT.
+
+### CUDA Driver API Only
+
+`rt_lighting.cpp` uses exclusively the CUDA **driver** API (`cuda.h`: `cuMemAlloc`, `cuMemcpyHtoD`, etc.) instead of the CUDA runtime API (`cuda_runtime.h`: `cudaMalloc`, `cudaMemcpy`, etc.). This eliminates the dependency on `libcudart` / `cudart64_*.dll` and the CUDA Toolkit at link time.
+
+| Runtime API (removed) | Driver API (used) |
+|---|---|
+| `cudaMalloc` | `cuMemAlloc` |
+| `cudaMemcpy(..., HtoD)` | `cuMemcpyHtoD` |
+| `cudaMemcpy(..., DtoH)` | `cuMemcpyDtoH` |
+| `cudaFree` | `cuMemFree` |
+| `cudaDeviceSynchronize` | `cuCtxSynchronize` |
+| `cudaGraphicsGLRegisterImage` | `cuGraphicsGLRegisterImage` |
+| `cudaGraphicsMapResources` | `cuGraphicsMapResources` |
+| `cudaGraphicsUnmapResources` | `cuGraphicsUnmapResources` |
+| `cudaGraphicsUnregisterResource` | `cuGraphicsUnregisterResource` |
+| `cudaGraphicsSubResourceGetMappedArray` | `cuGraphicsSubResourceGetMappedArray` |
+| `cudaCreateSurfaceObject` | `cuSurfObjectCreate` |
+| `cudaDestroySurfaceObject` | `cuSurfObjectDestroy` |
+
+The CUDA driver API is provided by `nvcuda.dll` (Windows, ships with every NVIDIA driver) or `libcuda.so` (Linux). No CUDA Toolkit installation is needed on the target machine.
+
+### Windows Cross-Compilation
+
+MinGW cross-compiles `rt_lighting.cpp` alongside the other engine sources in `make windows`. A hand-written `nvcuda.def` listing the ~15 `cu*` functions we call is converted to a MinGW import library (`libnvcuda.dll.a`, ~2KB) via `dlltool` and committed under `Libraries/cuda-mingw/`. At runtime, `viewer.exe` loads `nvcuda.dll` from `C:\Windows\System32\` (part of the NVIDIA driver).
+
+OptiX requires no link-time dependency — `optix_stubs.h` uses `LoadLibraryA("nvoptix.dll")` on Windows. The stubs use `cfgmgr32.h` (available in MinGW) to search the registry for the driver directory, so `-lcfgmgr32` is added to the Windows link flags.
+
+### PTX Embedding
+
+PTX is platform-independent, compiled by Linux nvcc. Rather than shipping `.ptx` files alongside `viewer.exe`, they are embedded as C string constants in `shaders_gen/embedded_rt_shaders.h` (same pattern as `embed_shaders.py` for GLSL). `build_pipeline()` reads from these constants instead of opening files.
+
+Build order: `.cu` → nvcc → `.ptx` → `embed_rt_shaders.py` → `embedded_rt_shaders.h` → compile `rt_lighting.cpp`
+
+### New Build Files
+
+| File | Purpose |
+|------|---------|
+| `Libraries/cuda-mingw/nvcuda.def` | Manual export list for nvcuda.dll |
+| `Libraries/cuda-mingw/libnvcuda.dll.a` | MinGW import library (committed) |
+| `tools/embed_rt_shaders.py` | PTX → C header embedder |
+
 ## Dependencies
 
-- CUDA Toolkit (build-time: nvcc; runtime: libcudart)
-- OptiX SDK 8.x (headers only; runtime in NVIDIA driver >= 535)
+- CUDA Toolkit (build-time only: nvcc for PTX compilation; NOT needed at runtime or for Windows cross-compilation)
+- OptiX SDK 7.7 (headers only; runtime in NVIDIA driver)
 - RTX GPU (4090 target; any RTX card works, just slower)
 - GL 4.6 (existing requirement, unchanged)
+- MinGW cfgmgr32 (for OptiX Windows loading; ships with MinGW)
 
 ## Configuration
 
