@@ -3162,6 +3162,17 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
                     const float* sd = impl_->manifest.lights.sun_dir;
                     float neg_sun[3] = {-sd[0], -sd[1], -sd[2]};
 
+                    static bool rt_diag_once = false;
+                    if (!rt_diag_once) {
+                        rt_diag_once = true;
+                        printf("RT shadow diag: sun_dir=(%.3f,%.3f,%.3f) neg_sun=(%.3f,%.3f,%.3f)\n",
+                               sd[0], sd[1], sd[2], neg_sun[0], neg_sun[1], neg_sun[2]);
+                        printf("RT shadow diag: eye=(%.1f,%.1f,%.1f) near=%.1f far=%.1f\n",
+                               eye[0], eye[1], eye[2], near_z, far_z);
+                        printf("RT shadow diag: trace_res=%dx%d tlas_instances=%d\n",
+                               fb_width/2, fb_height/2, (int)rt_instances.size());
+                    }
+
                     if (impl_->rt_lighting.trace_shadows(inv_vp, neg_sun)) {
                         impl_->rt_lighting.composite(fb_width, fb_height, 0.7f);
                     }

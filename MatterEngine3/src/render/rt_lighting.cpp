@@ -454,8 +454,8 @@ bool RtLighting::compile_gl_shaders(std::string& err) {
 // Task 5: resize / prepare_depth / trace_shadows / composite
 // ---------------------------------------------------------------------------
 void RtLighting::resize(int screen_w, int screen_h) {
-    int new_tw = screen_w / 4;
-    int new_th = screen_h / 4;
+    int new_tw = screen_w / 2;
+    int new_th = screen_h / 2;
     if (new_tw < 1) new_tw = 1;
     if (new_th < 1) new_th = 1;
     if (new_tw == trace_w_ && new_th == trace_h_ && screen_w == screen_w_) return;

@@ -34,14 +34,10 @@ extern "C" __global__ void __raygen__shadow() {
     float3 origin = make_float3(world_x, world_y, world_z);
     float3 dir    = make_float3(params.sun_dir[0], params.sun_dir[1], params.sun_dir[2]);
 
-    origin.x += dir.x * 0.05f;
-    origin.y += dir.y * 0.05f;
-    origin.z += dir.z * 0.05f;
-
     unsigned int shadow_hit = 0;
     optixTrace(params.tlas,
                origin, dir,
-               0.0f, 1000.0f, 0.0f,
+               0.5f, 1000.0f, 0.0f,
                0xFF,
                OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT | OPTIX_RAY_FLAG_DISABLE_CLOSESTHIT,
                0, 1, 0,
