@@ -54,7 +54,7 @@ LDLIBS  = ../Libraries/raylib/build/linux/libraylib.a
 
 CUDA_PATH ?= /usr/local/cuda
 ifdef HAVE_CUDA
-  LDFLAGS += -L$(CUDA_PATH)/lib64 -lcudart -ldl
+  LDFLAGS += -L/usr/lib/wsl/lib -lcuda -ldl
 endif
 BOX3D_LIB = $(BOX3D_DIR)/libbox3d.a
 LDLIBS   += $(BOX3D_LIB)
@@ -153,6 +153,12 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               ../ParticleFlowLib/src/pf_sim.cpp \
               ../ParticleFlowLib/src/pf_fields.cpp \
               ../ParticleFlowLib/src/pf_path_recorder.cpp
+
+ifdef HAVE_CUDA
+  WIN_ME3_CPP += $(ME3_DIR)/src/render/rt_lighting.cpp
+  CXX_FLAGS_BUILD_WIN_COMMON += -DMATTER_HAVE_OPTIX \
+      -I$(CUDA_PATH)/include -I$(OPTIX_PATH)/include
+endif
 
 WIN_MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
               $(MSL_DIR)/src/mesh_simplifier.cpp $(MSL_DIR)/src/mesh_indexed.cpp \
@@ -316,6 +322,9 @@ WIN_RAYLIB  = ../Libraries/raylib/build/windows-native/libraylib.a
 # Win32 import libs raylib depends on; MUST come AFTER libraylib.a on the link
 # line so the static linker can resolve raylib's __imp_* references.
 WIN_LIBS    = -lopengl32 -lgdi32 -lwinmm $(BOX3D_DIR)/build-mingw/libbox3d.a -lwinpthread
+ifdef HAVE_CUDA
+  WIN_LIBS += ../Libraries/cuda-mingw/libnvcuda.dll.a -lcfgmgr32
+endif
 
 # ---- Windows compile rules
 $(W_CPP_OBJ): $(W_DIR)/%.o: %.cpp | $(W_DIR)

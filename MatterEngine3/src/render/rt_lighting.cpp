@@ -3,7 +3,7 @@
 #ifdef MATTER_HAVE_OPTIX
 
 #include <cuda.h>
-#include <cuda_runtime.h>
+#include <cudaGL.h>
 #include <optix.h>
 #include <optix_stubs.h>
 #include <optix_function_table_definition.h>

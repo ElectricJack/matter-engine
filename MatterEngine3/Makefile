@@ -83,7 +83,17 @@ ifdef HAVE_CUDA
 $(RT_CU_DIR)/%.ptx: $(RT_CU_DIR)/%.cu
 	$(NVCC) $(NVCC_FLAGS) -o $@ $<
 
-rt_lighting.o: src/render/rt_lighting.cpp
+RT_EMBEDDED_HEADER = shaders_gen/embedded_rt_shaders.h
+
+# $(RT_EMBEDDED_HEADER) depends on whatever PTX files currently exist on disk.
+# When no PTX exist yet (before Task 5 adds .cu sources), the wildcard list is
+# empty — the header is still regenerated (empty namespace) but make does not
+# error on missing prerequisites.
+$(RT_EMBEDDED_HEADER): $(wildcard $(RT_PTX))
+	mkdir -p shaders_gen
+	python3 tools/embed_rt_shaders.py $@ $(wildcard $(RT_PTX))
+
+rt_lighting.o: src/render/rt_lighting.cpp $(RT_EMBEDDED_HEADER)
 	$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDE_PATHS) -I$(CUDA_PATH)/include -I$(OPTIX_PATH)/include
 endif
 

@@ -52,6 +52,9 @@ Libraries/autoremesher_core/thirdparty/tbb/build/*_release/
 # Allow box3d's prebuilt Linux and MinGW static libs
 !Libraries/box3d/libbox3d.a
 !Libraries/box3d/build-mingw/libbox3d.a
+# Allow the MinGW nvcuda import library (generated from nvcuda.def; committed so
+# the Windows build works without mingw-dlltool on every developer machine)
+!Libraries/cuda-mingw/libnvcuda.dll.a
 MatterEngine3/viewer/cache
 MatterSurfaceLib/parts
 
