@@ -208,6 +208,7 @@ struct WorldSession::Impl {
     // Task 5: OptiX shadow ray tracing (lazy init on first rt_shadows frame).
     viewer::RtLighting rt_lighting;
     bool               rt_lighting_ready = false;
+    bool               rt_lighting_failed = false;
 
     // Resolvers — mirrors main.cpp's pass/sec locals.
     viewer::PassThroughResolver pass;
@@ -3109,7 +3110,7 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
             impl_->gpu_culler.build_hiz(fb_width, fb_height);
 
         // Task 5: OptiX RT shadow tracing (after depth is available).
-        if (opts.rt_shadows && impl_->culler_ready) {
+        if (opts.rt_shadows && impl_->culler_ready && !impl_->rt_lighting_failed) {
             if (!impl_->rt_lighting_ready) {
                 std::string rt_err;
                 if (impl_->rt_lighting.init(rt_err)) {
@@ -3117,6 +3118,7 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
                     printf("RT shadows enabled\n");
                 } else {
                     printf("RT shadows unavailable: %s\n", rt_err.c_str());
+                    impl_->rt_lighting_failed = true;
                 }
             }
             if (impl_->rt_lighting_ready && impl_->rt_lighting.available()) {
