@@ -319,6 +319,7 @@ int main() {
         opts.min_projected_size = min_projected_size;
 #ifdef MATTER_HAVE_OPTIX
         opts.rt_shadows = true;
+        opts.rt_full_lighting = true;
 #endif
 
         stats.fps      = (float)GetFPS();

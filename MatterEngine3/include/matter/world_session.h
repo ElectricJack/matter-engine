@@ -34,6 +34,7 @@ struct RenderOptions {
                                       // (off by default: mesh-session winding
                                       // is not guaranteed for all part kinds)
     bool  rt_shadows      = false;   // Task 5: OptiX shadow ray tracing (requires CUDA)
+    bool  rt_full_lighting = false;  // Phase 2: full RT PBR (G-buffer + RT lighting)
 };
 
 struct FrameStats {

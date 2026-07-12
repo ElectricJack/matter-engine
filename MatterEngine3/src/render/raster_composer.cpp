@@ -305,6 +305,95 @@ int RasterComposer::draw_gpu_driven(GpuCuller& culler, PartStore& /*store*/,
 RasterComposer::~RasterComposer() {
     if (ready_) UnloadShader(shader_);   // material_ holds the same shader; don't double-free via UnloadMaterial
     if (gpu_ready_) UnloadShader(shader_gpu_);
+    if (gbuf_ready_) UnloadShader(shader_gbuf_);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: G-buffer shader init + draw
+// ---------------------------------------------------------------------------
+bool RasterComposer::init_gbuffer_shader(std::string& err) {
+    matter_async::assert_gl_thread("RasterComposer::init_gbuffer_shader");
+    std::string vs_str, fs_raw, serr;
+    if (!matter::shader_text("shaders_gpu/raster_gpu_driven.vs", vs_str, serr)) {
+        err = "init_gbuffer_shader: " + serr;
+        return false;
+    }
+    if (!matter::shader_text("shaders_gpu/raster_gbuffer.fs", fs_raw, serr)) {
+        err = "init_gbuffer_shader: " + serr;
+        return false;
+    }
+    std::string fs_str = resolve_glsl_includes(fs_raw, "shaders");
+
+    shader_gbuf_ = LoadShaderFromMemory(vs_str.c_str(), fs_str.c_str());
+    if (shader_gbuf_.id == 0) {
+        err = "init_gbuffer_shader: LoadShaderFromMemory failed";
+        return false;
+    }
+
+    loc_gbuf_mvp_       = GetShaderLocation(shader_gbuf_, "mvp");
+    loc_gbuf_mat_table_ = GetShaderLocation(shader_gbuf_, "materialTable");
+    loc_gbuf_mat_count_ = GetShaderLocation(shader_gbuf_, "materialCount");
+    loc_gbuf_sun_dir_   = GetShaderLocation(shader_gbuf_, "sunDir");
+
+    gbuf_ready_ = true;
+    return true;
+}
+
+int RasterComposer::draw_gpu_driven_gbuffer(GpuCuller& culler, PartStore& /*store*/,
+                                             const Camera3D& cam,
+                                             float near_z, float far_z) {
+    if (!gbuf_ready_) return 0;
+
+    // Upload material table to the G-buffer shader.
+    {
+        float table[64 * MATERIAL_FLOATS_PER_DEF] = {0};
+        MaterialRegistryPackForGPU(table);
+        int cnt = MaterialRegistryCount();
+        SetShaderValue(shader_gbuf_, loc_gbuf_mat_count_, &cnt, SHADER_UNIFORM_INT);
+        SetShaderValueV(shader_gbuf_, loc_gbuf_mat_table_, table, SHADER_UNIFORM_FLOAT,
+                        cnt * MATERIAL_FLOATS_PER_DEF);
+        float sdx = lights_.sun_dir[0], sdy = lights_.sun_dir[1], sdz = lights_.sun_dir[2];
+        float sdlen = std::sqrt(sdx*sdx + sdy*sdy + sdz*sdz);
+        if (sdlen < 1e-6f) sdlen = 1.0f;
+        Vector3 sun_dir = (Vector3){ sdx/sdlen, sdy/sdlen, sdz/sdlen };
+        SetShaderValue(shader_gbuf_, loc_gbuf_sun_dir_, &sun_dir, SHADER_UNIFORM_VEC3);
+    }
+
+    BeginMode3D(cam);
+
+    // Override projection to match near/far used by the RT shadow pipeline.
+    {
+        float aspect = (float)rlGetFramebufferWidth() / (float)rlGetFramebufferHeight();
+        double top   = (double)near_z * tan((double)cam.fovy * 0.5 * DEG2RAD);
+        double right = top * (double)aspect;
+        rlMatrixMode(RL_PROJECTION);
+        rlLoadIdentity();
+        rlFrustum(-right, right, -top, top, (double)near_z, (double)far_z);
+        rlMatrixMode(RL_MODELVIEW);
+    }
+
+    rlDrawRenderBatchActive();
+
+    Matrix matModelView = mat_mul(rlGetMatrixTransform(), rlGetMatrixModelview());
+    Matrix mvp          = mat_mul(matModelView, rlGetMatrixProjection());
+
+    glUseProgram(shader_gbuf_.id);
+    rlSetUniformMatrix(loc_gbuf_mvp_, mvp);
+
+    // Bind tileset atlases (for Wang-tile ground G-buffer output).
+    viewer::tileset_provider::bind_all_to_shader((GLuint)shader_gbuf_.id);
+
+    if (!cull_backfaces_) rlDisableBackfaceCulling();
+    if (wireframe_) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+    int tris = culler.draw_indirect();
+    if (wireframe_) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    rlEnableBackfaceCulling();
+
+    rlEnableShader(rlGetShaderIdDefault());
+    EndMode3D();
+
+    stat_drawn_tris_ = (size_t)tris;
+    return tris;
 }
 
 } // namespace viewer

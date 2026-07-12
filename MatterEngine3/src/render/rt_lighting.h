@@ -44,6 +44,15 @@ public:
     void composite(int screen_w, int screen_h, float shadow_strength);
     unsigned shadow_texture() const { return shadow_gl_tex_; }
 
+    // Phase 2: G-buffer
+    bool begin_gbuffer(int screen_w, int screen_h);
+    void end_gbuffer();
+    unsigned gbuffer_fbo() const { return gbuffer_fbo_; }
+    unsigned gbuffer_albedo_tex() const { return gbuffer_albedo_tex_; }
+    unsigned gbuffer_normal_tex() const { return gbuffer_normal_tex_; }
+    unsigned gbuffer_orm_tex() const { return gbuffer_orm_tex_; }
+    unsigned gbuffer_depth_tex() const { return gbuffer_depth_tex_; }
+
 private:
     bool available_ = false;
     // CUDA device + OptiX context handles stored as void* to avoid
@@ -69,6 +78,16 @@ private:
     unsigned dummy_vao_        = 0;
     int      trace_w_ = 0, trace_h_ = 0;
     int      screen_w_ = 0, screen_h_ = 0;
+
+    // Phase 2: G-buffer FBO and textures (full resolution)
+    unsigned gbuffer_fbo_         = 0;
+    unsigned gbuffer_albedo_tex_  = 0;  // RGBA8: albedo.rgb, emission
+    unsigned gbuffer_normal_tex_  = 0;  // RGBA16F: normal.xyz, translucency
+    unsigned gbuffer_orm_tex_     = 0;  // RGBA8: roughness, metallic, bakedAO, materialId/255
+    unsigned gbuffer_depth_tex_   = 0;  // DEPTH_COMPONENT32F
+    int      gbuffer_w_ = 0, gbuffer_h_ = 0;
+
+    void resize_gbuffer(int w, int h);
 
     // CUDA interop (Task 5)
     uint64_t cuda_depth_resource_  = 0;   // CUgraphicsResource
@@ -112,6 +131,13 @@ public:
     bool trace_shadows(const float[16], const float[3]) { return false; }
     void composite(int, int, float) {}
     unsigned shadow_texture() const { return 0; }
+    bool begin_gbuffer(int, int) { return false; }
+    void end_gbuffer() {}
+    unsigned gbuffer_fbo() const { return 0; }
+    unsigned gbuffer_albedo_tex() const { return 0; }
+    unsigned gbuffer_normal_tex() const { return 0; }
+    unsigned gbuffer_orm_tex() const { return 0; }
+    unsigned gbuffer_depth_tex() const { return 0; }
 };
 } // namespace viewer
 

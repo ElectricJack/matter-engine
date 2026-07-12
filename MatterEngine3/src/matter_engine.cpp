@@ -3091,18 +3091,42 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
         impl_->stats.instances_total    = (uint32_t)resolved.size();
         impl_->stats.parts_baked        = (uint32_t)impl_->store->loaded_count();
 
-        // Clear + draw (main.cpp lines ~432–447).
-        glClearColor(impl_->sky_clear[0], impl_->sky_clear[1], impl_->sky_clear[2], 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        // Clear + draw: Phase 2 G-buffer path or Phase 1 default path.
+        if (opts.rt_full_lighting && impl_->rt_lighting_ready && impl_->rt_lighting.available()) {
+            // Phase 2: draw into G-buffer FBO.
+            impl_->rt_lighting.begin_gbuffer(fb_width, fb_height);
+            auto d0 = std::chrono::steady_clock::now();
+            impl_->stats.triangles = (uint32_t)impl_->raster->draw_gpu_driven_gbuffer(
+                    impl_->gpu_culler, *impl_->store, cam, near_z, far_z);
+            impl_->rt_lighting.end_gbuffer();
+            impl_->stats.instances_drawn = (uint32_t)impl_->gpu_culler.emitted();
+            impl_->stats.clusters_culled = (uint32_t)impl_->gpu_culler.culled_clusters();
+            impl_->stats.hiz_culled      = (uint32_t)impl_->gpu_culler.culled_hiz();
+            impl_->stats.draw_ms = std::chrono::duration<float, std::milli>(
+                                       std::chrono::steady_clock::now() - d0).count();
 
-        auto d0 = std::chrono::steady_clock::now();
-        impl_->stats.triangles = (uint32_t)impl_->raster->draw_gpu_driven(
-                impl_->gpu_culler, *impl_->store, cam, near_z, far_z);
-        impl_->stats.instances_drawn    = (uint32_t)impl_->gpu_culler.emitted();
-        impl_->stats.clusters_culled    = (uint32_t)impl_->gpu_culler.culled_clusters();
-        impl_->stats.hiz_culled         = (uint32_t)impl_->gpu_culler.culled_hiz();
-        impl_->stats.draw_ms = std::chrono::duration<float, std::milli>(
-                                   std::chrono::steady_clock::now() - d0).count();
+            // Debug: blit G-buffer albedo to default FB so we can see something.
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, impl_->rt_lighting.gbuffer_fbo());
+            glReadBuffer(GL_COLOR_ATTACHMENT0);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            glBlitFramebuffer(0, 0, fb_width, fb_height,
+                              0, 0, fb_width, fb_height,
+                              GL_COLOR_BUFFER_BIT, GL_NEAREST);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+        } else {
+            // Phase 1: draw to default framebuffer (existing path).
+            glClearColor(impl_->sky_clear[0], impl_->sky_clear[1], impl_->sky_clear[2], 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+            auto d0 = std::chrono::steady_clock::now();
+            impl_->stats.triangles = (uint32_t)impl_->raster->draw_gpu_driven(
+                    impl_->gpu_culler, *impl_->store, cam, near_z, far_z);
+            impl_->stats.instances_drawn    = (uint32_t)impl_->gpu_culler.emitted();
+            impl_->stats.clusters_culled    = (uint32_t)impl_->gpu_culler.culled_clusters();
+            impl_->stats.hiz_culled         = (uint32_t)impl_->gpu_culler.culled_hiz();
+            impl_->stats.draw_ms = std::chrono::duration<float, std::milli>(
+                                       std::chrono::steady_clock::now() - d0).count();
+        }
 
         // Build HiZ depth max-pyramid for next-frame occlusion culling.
         // No-op when HiZ toggle is off.
@@ -3116,6 +3140,9 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
                 if (impl_->rt_lighting.init(rt_err)) {
                     impl_->rt_lighting_ready = true;
                     printf("RT shadows enabled\n");
+                    std::string gbuf_err;
+                    if (!impl_->raster->init_gbuffer_shader(gbuf_err))
+                        printf("G-buffer shader failed: %s\n", gbuf_err.c_str());
                 } else {
                     printf("RT shadows unavailable: %s\n", rt_err.c_str());
                     impl_->rt_lighting_failed = true;

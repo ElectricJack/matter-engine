@@ -118,6 +118,14 @@ void RtLighting::shutdown() {
     if (depth_lin_prog_)   { glDeleteProgram(depth_lin_prog_);        depth_lin_prog_ = 0; }
     if (composite_prog_)   { glDeleteProgram(composite_prog_);        composite_prog_ = 0; }
 
+    // Phase 2: G-buffer cleanup.
+    if (gbuffer_fbo_)        { glDeleteFramebuffers(1, &gbuffer_fbo_);          gbuffer_fbo_ = 0; }
+    if (gbuffer_albedo_tex_) { glDeleteTextures(1, &gbuffer_albedo_tex_);        gbuffer_albedo_tex_ = 0; }
+    if (gbuffer_normal_tex_) { glDeleteTextures(1, &gbuffer_normal_tex_);        gbuffer_normal_tex_ = 0; }
+    if (gbuffer_orm_tex_)    { glDeleteTextures(1, &gbuffer_orm_tex_);           gbuffer_orm_tex_ = 0; }
+    if (gbuffer_depth_tex_)  { glDeleteTextures(1, &gbuffer_depth_tex_);         gbuffer_depth_tex_ = 0; }
+    gbuffer_w_ = gbuffer_h_ = 0;
+
     // Free all BLAS resources before destroying the OptiX context.
     for (auto& [_, blas] : blas_cache_) {
         cuMemFree((CUdeviceptr)blas.d_vertices);
@@ -614,6 +622,57 @@ void RtLighting::composite(int screen_w, int screen_h, float shadow_strength) {
 
     glUseProgram(0);
     glActiveTexture(GL_TEXTURE0);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: G-buffer FBO allocation and begin/end helpers
+// ---------------------------------------------------------------------------
+void RtLighting::resize_gbuffer(int w, int h) {
+    if (w == gbuffer_w_ && h == gbuffer_h_) return;
+    gbuffer_w_ = w;
+    gbuffer_h_ = h;
+
+    auto recreate_tex = [](unsigned& tex, GLenum ifmt, int w, int h, GLenum min_f, GLenum mag_f) {
+        if (tex) glDeleteTextures(1, &tex);
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexStorage2D(GL_TEXTURE_2D, 1, ifmt, w, h);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, min_f);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, mag_f);
+    };
+    recreate_tex(gbuffer_albedo_tex_, GL_RGBA8,               w, h, GL_NEAREST, GL_NEAREST);
+    recreate_tex(gbuffer_normal_tex_, GL_RGBA16F,             w, h, GL_NEAREST, GL_NEAREST);
+    recreate_tex(gbuffer_orm_tex_,    GL_RGBA8,               w, h, GL_NEAREST, GL_NEAREST);
+    recreate_tex(gbuffer_depth_tex_,  GL_DEPTH_COMPONENT32F,  w, h, GL_NEAREST, GL_NEAREST);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    if (gbuffer_fbo_) glDeleteFramebuffers(1, &gbuffer_fbo_);
+    glGenFramebuffers(1, &gbuffer_fbo_);
+    glBindFramebuffer(GL_FRAMEBUFFER, gbuffer_fbo_);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, gbuffer_albedo_tex_, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, gbuffer_normal_tex_, 0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, gbuffer_orm_tex_,    0);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,  GL_TEXTURE_2D, gbuffer_depth_tex_,  0);
+    GLenum bufs[] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2 };
+    glDrawBuffers(3, bufs);
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE)
+        printf("RtLighting: G-buffer FBO incomplete: 0x%x\n", status);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+bool RtLighting::begin_gbuffer(int screen_w, int screen_h) {
+    if (!available_) return false;
+    resize_gbuffer(screen_w, screen_h);
+    glBindFramebuffer(GL_FRAMEBUFFER, gbuffer_fbo_);
+    glViewport(0, 0, screen_w, screen_h);
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    return true;
+}
+
+void RtLighting::end_gbuffer() {
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
 RtLighting::~RtLighting() { shutdown(); }

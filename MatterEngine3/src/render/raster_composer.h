@@ -61,6 +61,10 @@ public:
     // Accessor for testing (verifies set_lights stores values correctly).
     const world_lights::WorldLights& lights() const { return lights_; }
 
+    bool init_gbuffer_shader(std::string& err);
+    int draw_gpu_driven_gbuffer(GpuCuller& culler, PartStore& store,
+                                const Camera3D& cam, float near_z, float far_z);
+
     // HUD counter (last draw_gpu_driven tri count; culler owns the rest).
     size_t drawn_tris() const { return stat_drawn_tris_; }
 
@@ -96,6 +100,13 @@ private:
     // GPU-driven shader (raster_gpu_driven.vs + patched raster.fs).
     Shader shader_gpu_{};
     bool   gpu_ready_ = false;
+
+    // Phase 2 G-buffer shader (raster_gpu_driven.vs + raster_gbuffer.fs).
+    Shader shader_gbuf_{};
+    bool   gbuf_ready_ = false;
+    int    loc_gbuf_mvp_         = -1;
+    int    loc_gbuf_mat_table_   = -1, loc_gbuf_mat_count_ = -1;
+    int    loc_gbuf_sun_dir_     = -1;
     int    loc_gpu_mvp_         = -1;
     int    loc_gpu_sun_dir_     = -1, loc_gpu_sun_color_ = -1, loc_gpu_ambient_   = -1;
     int    loc_gpu_mat_table_   = -1, loc_gpu_mat_count_ = -1;
