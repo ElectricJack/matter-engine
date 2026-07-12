@@ -59,6 +59,12 @@ public:
     unsigned gbuffer_orm_tex() const { return gbuffer_orm_tex_; }
     unsigned gbuffer_depth_tex() const { return gbuffer_depth_tex_; }
 
+    // Phase 2 Task 3: full lighting pipeline
+    bool trace_lighting(const float inv_vp[16], const float sun_dir[3],
+                        const float sun_color[3], const float sky_color[3],
+                        int screen_w, int screen_h);
+    unsigned lighting_output_tex() const { return lighting_gl_tex_; }
+
 private:
     bool available_ = false;
     // CUDA device + OptiX context handles stored as void* to avoid
@@ -105,7 +111,6 @@ private:
     void*    raygen_pg_      = nullptr;   // OptixProgramGroup
     void*    miss_pg_        = nullptr;   // OptixProgramGroup
     void*    hit_pg_         = nullptr;   // OptixProgramGroup
-    void*    closesthit_pg_  = nullptr;   // OptixProgramGroup — created in Task 3
     uint64_t sbt_raygen_buf_ = 0;         // CUdeviceptr
     uint64_t sbt_miss_buf_   = 0;         // CUdeviceptr
     uint64_t sbt_hit_buf_    = 0;         // CUdeviceptr (Phase 1 single-record fallback)
@@ -122,7 +127,24 @@ private:
     bool     sbt_dirty_           = false;
     void rebuild_hitgroup_sbt();
 
+    // Phase 2: lighting pipeline (separate from shadow-only pipeline)
+    void*    lighting_pipeline_    = nullptr;   // OptixPipeline
+    void*    lighting_raygen_pg_   = nullptr;   // OptixProgramGroup
+    void*    radiance_miss_pg_     = nullptr;   // OptixProgramGroup
+    void*    closesthit_pg_        = nullptr;   // OptixProgramGroup
+    uint64_t sbt_lighting_raygen_  = 0;         // CUdeviceptr
+    uint64_t sbt_lighting_miss_    = 0;         // CUdeviceptr — 2 miss records (shadow + radiance)
+
+    // Phase 2: lighting output texture + interop
+    unsigned lighting_gl_tex_          = 0;     // RGBA16F at half-res
+    uint64_t cuda_lighting_resource_   = 0;     // CUgraphicsResource
+    uint64_t cuda_gb_albedo_resource_  = 0;     // CUgraphicsResource (G-buffer)
+    uint64_t cuda_gb_normal_resource_  = 0;     // CUgraphicsResource (G-buffer)
+    uint64_t cuda_gb_orm_resource_     = 0;     // CUgraphicsResource (G-buffer)
+    bool     lighting_interop_registered_ = false;
+
     bool build_pipeline(std::string& err);
+    bool build_lighting_pipeline(std::string& err);
     bool compile_gl_shaders(std::string& err);
 };
 
@@ -157,6 +179,8 @@ public:
     unsigned gbuffer_normal_tex() const { return 0; }
     unsigned gbuffer_orm_tex() const { return 0; }
     unsigned gbuffer_depth_tex() const { return 0; }
+    bool trace_lighting(const float[16], const float[3], const float[3], const float[3], int, int) { return false; }
+    unsigned lighting_output_tex() const { return 0; }
 };
 } // namespace viewer
 

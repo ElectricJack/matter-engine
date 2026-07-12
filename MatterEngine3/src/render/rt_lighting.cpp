@@ -86,6 +86,9 @@ bool RtLighting::init(std::string& err) {
     if (!build_pipeline(err)) return false;
     if (!compile_gl_shaders(err)) return false;
 
+    // Task 3: build the full lighting pipeline.
+    if (!build_lighting_pipeline(err)) return false;
+
     return true;
 }
 
@@ -117,6 +120,22 @@ void RtLighting::shutdown() {
     if (dummy_vao_)        { glDeleteVertexArrays(1, &dummy_vao_);    dummy_vao_ = 0; }
     if (depth_lin_prog_)   { glDeleteProgram(depth_lin_prog_);        depth_lin_prog_ = 0; }
     if (composite_prog_)   { glDeleteProgram(composite_prog_);        composite_prog_ = 0; }
+
+    // Phase 2 Task 3: lighting pipeline cleanup.
+    if (lighting_pipeline_)    { optixPipelineDestroy((OptixPipeline)lighting_pipeline_);          lighting_pipeline_ = nullptr; }
+    if (lighting_raygen_pg_)   { optixProgramGroupDestroy((OptixProgramGroup)lighting_raygen_pg_); lighting_raygen_pg_ = nullptr; }
+    if (radiance_miss_pg_)     { optixProgramGroupDestroy((OptixProgramGroup)radiance_miss_pg_);   radiance_miss_pg_ = nullptr; }
+    if (closesthit_pg_)        { optixProgramGroupDestroy((OptixProgramGroup)closesthit_pg_);       closesthit_pg_ = nullptr; }
+    if (sbt_lighting_raygen_)  { cuMemFree((CUdeviceptr)sbt_lighting_raygen_); sbt_lighting_raygen_ = 0; }
+    if (sbt_lighting_miss_)    { cuMemFree((CUdeviceptr)sbt_lighting_miss_);   sbt_lighting_miss_ = 0; }
+    if (lighting_interop_registered_) {
+        cuGraphicsUnregisterResource((CUgraphicsResource)cuda_lighting_resource_);
+        cuGraphicsUnregisterResource((CUgraphicsResource)cuda_gb_albedo_resource_);
+        cuGraphicsUnregisterResource((CUgraphicsResource)cuda_gb_normal_resource_);
+        cuGraphicsUnregisterResource((CUgraphicsResource)cuda_gb_orm_resource_);
+        lighting_interop_registered_ = false;
+    }
+    if (lighting_gl_tex_)  { glDeleteTextures(1, &lighting_gl_tex_);  lighting_gl_tex_ = 0; }
 
     // Phase 2: G-buffer cleanup.
     if (gbuffer_fbo_)        { glDeleteFramebuffers(1, &gbuffer_fbo_);          gbuffer_fbo_ = 0; }
@@ -783,6 +802,267 @@ bool RtLighting::begin_gbuffer(int screen_w, int screen_h) {
 
 void RtLighting::end_gbuffer() {
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 Task 3: build_lighting_pipeline
+// ---------------------------------------------------------------------------
+bool RtLighting::build_lighting_pipeline(std::string& err) {
+    auto ctx = (OptixDeviceContext)optix_ctx_;
+
+    OptixModuleCompileOptions mod_opts = {};
+    mod_opts.maxRegisterCount = OPTIX_COMPILE_DEFAULT_MAX_REGISTER_COUNT;
+    mod_opts.optLevel         = OPTIX_COMPILE_OPTIMIZATION_DEFAULT;
+
+    OptixPipelineCompileOptions pipe_opts = {};
+    pipe_opts.usesMotionBlur                   = false;
+    pipe_opts.traversableGraphFlags            = OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_ANY;
+    pipe_opts.numPayloadValues                 = 7;   // 6 for radiance + 1 for shadow
+    pipe_opts.numAttributeValues               = 2;
+    pipe_opts.exceptionFlags                   = OPTIX_EXCEPTION_FLAG_NONE;
+    pipe_opts.pipelineLaunchParamsVariableName  = "params";
+
+    char log[2048]; size_t log_size;
+    auto create_module = [&](const char* ptx_str, OptixModule& mod) -> bool {
+        log_size = sizeof(log);
+        OptixResult r = optixModuleCreate(ctx, &mod_opts, &pipe_opts,
+                                          ptx_str, strlen(ptx_str),
+                                          log, &log_size, &mod);
+        if (r != OPTIX_SUCCESS) {
+            err = std::string("optixModuleCreate: ") + log;
+            return false;
+        }
+        return true;
+    };
+
+    OptixModule mod_lr = nullptr, mod_lch = nullptr, mod_lm = nullptr;
+    OptixModule mod_sh = nullptr, mod_sm = nullptr;
+    if (!create_module(matter_rt_embedded::lighting_raygen_ptx,     mod_lr))  return false;
+    if (!create_module(matter_rt_embedded::lighting_closesthit_ptx, mod_lch)) return false;
+    if (!create_module(matter_rt_embedded::lighting_miss_ptx,       mod_lm))  return false;
+    if (!create_module(matter_rt_embedded::shadow_hit_ptx,          mod_sh))  return false;
+    if (!create_module(matter_rt_embedded::shadow_miss_ptx,         mod_sm))  return false;
+
+    OptixProgramGroupOptions pg_opts = {};
+    OptixProgramGroupDesc pg_desc = {};
+
+    // Raygen: lighting
+    pg_desc.kind = OPTIX_PROGRAM_GROUP_KIND_RAYGEN;
+    pg_desc.raygen.module = mod_lr;
+    pg_desc.raygen.entryFunctionName = "__raygen__lighting";
+    log_size = sizeof(log);
+    optixProgramGroupCreate(ctx, &pg_desc, 1, &pg_opts, log, &log_size,
+                            (OptixProgramGroup*)&lighting_raygen_pg_);
+
+    // Miss 0: shadow (no-op, payload stays 0)
+    pg_desc = {};
+    pg_desc.kind = OPTIX_PROGRAM_GROUP_KIND_MISS;
+    pg_desc.miss.module = mod_sm;
+    pg_desc.miss.entryFunctionName = "__miss__shadow";
+    log_size = sizeof(log);
+    OptixProgramGroup shadow_miss_pg = nullptr;
+    optixProgramGroupCreate(ctx, &pg_desc, 1, &pg_opts, log, &log_size, &shadow_miss_pg);
+
+    // Miss 1: radiance (returns sky color)
+    pg_desc = {};
+    pg_desc.kind = OPTIX_PROGRAM_GROUP_KIND_MISS;
+    pg_desc.miss.module = mod_lm;
+    pg_desc.miss.entryFunctionName = "__miss__radiance";
+    log_size = sizeof(log);
+    optixProgramGroupCreate(ctx, &pg_desc, 1, &pg_opts, log, &log_size,
+                            (OptixProgramGroup*)&radiance_miss_pg_);
+
+    // Hitgroup 1 (ray type 1): radiance closest-hit
+    pg_desc = {};
+    pg_desc.kind = OPTIX_PROGRAM_GROUP_KIND_HITGROUP;
+    pg_desc.hitgroup.moduleCH            = mod_lch;
+    pg_desc.hitgroup.entryFunctionNameCH = "__closesthit__radiance";
+    log_size = sizeof(log);
+    optixProgramGroupCreate(ctx, &pg_desc, 1, &pg_opts, log, &log_size,
+                            (OptixProgramGroup*)&closesthit_pg_);
+
+    OptixProgramGroup groups[] = {
+        (OptixProgramGroup)lighting_raygen_pg_,
+        shadow_miss_pg,
+        (OptixProgramGroup)radiance_miss_pg_,
+        (OptixProgramGroup)hit_pg_,       // shadow anyhit (from Phase 1)
+        (OptixProgramGroup)closesthit_pg_
+    };
+    OptixPipelineLinkOptions link_opts = {};
+    link_opts.maxTraceDepth = 2;  // raygen → GI bounce → nested shadow
+    log_size = sizeof(log);
+    optixPipelineCreate(ctx, &pipe_opts, &link_opts,
+                        groups, 5, log, &log_size,
+                        (OptixPipeline*)&lighting_pipeline_);
+
+    // SBT: raygen record
+    struct alignas(OPTIX_SBT_RECORD_ALIGNMENT) SbtRecord {
+        char header[OPTIX_SBT_RECORD_HEADER_SIZE];
+    };
+    {
+        SbtRecord rec = {};
+        optixSbtRecordPackHeader((OptixProgramGroup)lighting_raygen_pg_, &rec);
+        CUdeviceptr d = 0;
+        cuMemAlloc(&d, sizeof(SbtRecord));
+        cuMemcpyHtoD(d, &rec, sizeof(SbtRecord));
+        sbt_lighting_raygen_ = (uint64_t)d;
+    }
+
+    // SBT: 2 miss records (shadow + radiance)
+    {
+        SbtRecord recs[2] = {};
+        optixSbtRecordPackHeader(shadow_miss_pg, &recs[0]);
+        optixSbtRecordPackHeader((OptixProgramGroup)radiance_miss_pg_, &recs[1]);
+        CUdeviceptr d = 0;
+        cuMemAlloc(&d, 2 * sizeof(SbtRecord));
+        cuMemcpyHtoD(d, recs, 2 * sizeof(SbtRecord));
+        sbt_lighting_miss_ = (uint64_t)d;
+    }
+
+    // Hitgroup SBT is built dynamically by rebuild_hitgroup_sbt() (Task 2).
+    // Signal a rebuild now that closesthit_pg_ is real.
+    sbt_dirty_ = true;
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 Task 3: trace_lighting
+// ---------------------------------------------------------------------------
+bool RtLighting::trace_lighting(const float inv_vp[16], const float sun_dir[3],
+                                 const float sun_color[3], const float sky_color[3],
+                                 int screen_w, int screen_h) {
+    if (!available_ || !tlas_handle_ || trace_w_ == 0) return false;
+    if (!lighting_pipeline_) return false;
+
+    // Ensure lighting output texture exists at half-res.
+    int new_tw = screen_w / 2;
+    int new_th = screen_h / 2;
+    if (new_tw < 1) new_tw = 1;
+    if (new_th < 1) new_th = 1;
+
+    if (!lighting_gl_tex_ || new_tw != trace_w_ || new_th != trace_h_) {
+        resize(screen_w, screen_h);
+
+        if (lighting_interop_registered_) {
+            cuGraphicsUnregisterResource((CUgraphicsResource)cuda_lighting_resource_);
+            cuGraphicsUnregisterResource((CUgraphicsResource)cuda_gb_albedo_resource_);
+            cuGraphicsUnregisterResource((CUgraphicsResource)cuda_gb_normal_resource_);
+            cuGraphicsUnregisterResource((CUgraphicsResource)cuda_gb_orm_resource_);
+            lighting_interop_registered_ = false;
+        }
+
+        if (lighting_gl_tex_) glDeleteTextures(1, &lighting_gl_tex_);
+        glGenTextures(1, &lighting_gl_tex_);
+        glBindTexture(GL_TEXTURE_2D, lighting_gl_tex_);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA16F, trace_w_, trace_h_);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        CUgraphicsResource res = nullptr;
+        cuGraphicsGLRegisterImage(&res, lighting_gl_tex_,
+                                  GL_TEXTURE_2D, CU_GRAPHICS_REGISTER_FLAGS_SURFACE_LDST);
+        cuda_lighting_resource_ = (uint64_t)res;
+
+        // Register G-buffer textures for CUDA read.
+        CUgraphicsResource alb_res = nullptr, norm_res = nullptr, orm_res = nullptr;
+        cuGraphicsGLRegisterImage(&alb_res, gbuffer_albedo_tex_,
+                                  GL_TEXTURE_2D, CU_GRAPHICS_REGISTER_FLAGS_READ_ONLY);
+        cuGraphicsGLRegisterImage(&norm_res, gbuffer_normal_tex_,
+                                  GL_TEXTURE_2D, CU_GRAPHICS_REGISTER_FLAGS_READ_ONLY);
+        cuGraphicsGLRegisterImage(&orm_res, gbuffer_orm_tex_,
+                                  GL_TEXTURE_2D, CU_GRAPHICS_REGISTER_FLAGS_READ_ONLY);
+        cuda_gb_albedo_resource_ = (uint64_t)alb_res;
+        cuda_gb_normal_resource_ = (uint64_t)norm_res;
+        cuda_gb_orm_resource_    = (uint64_t)orm_res;
+        lighting_interop_registered_ = true;
+    }
+
+    // Map all CUDA resources.
+    CUgraphicsResource resources[5] = {
+        (CUgraphicsResource)cuda_depth_resource_,
+        (CUgraphicsResource)cuda_lighting_resource_,
+        (CUgraphicsResource)cuda_gb_albedo_resource_,
+        (CUgraphicsResource)cuda_gb_normal_resource_,
+        (CUgraphicsResource)cuda_gb_orm_resource_,
+    };
+    cuGraphicsMapResources(5, resources, 0);
+
+    // Get CUDA arrays and create surface objects.
+    auto get_surf = [](CUgraphicsResource res) -> CUsurfObject {
+        CUarray arr = nullptr;
+        cuGraphicsSubResourceGetMappedArray(&arr, res, 0, 0);
+        CUDA_RESOURCE_DESC rd = {};
+        rd.resType = CU_RESOURCE_TYPE_ARRAY;
+        rd.res.array.hArray = arr;
+        CUsurfObject s = 0;
+        cuSurfObjectCreate(&s, &rd);
+        return s;
+    };
+
+    CUsurfObject depth_surf    = get_surf((CUgraphicsResource)cuda_depth_resource_);
+    CUsurfObject lighting_surf = get_surf((CUgraphicsResource)cuda_lighting_resource_);
+    CUsurfObject albedo_surf   = get_surf((CUgraphicsResource)cuda_gb_albedo_resource_);
+    CUsurfObject normal_surf   = get_surf((CUgraphicsResource)cuda_gb_normal_resource_);
+    CUsurfObject orm_surf      = get_surf((CUgraphicsResource)cuda_gb_orm_resource_);
+
+    // Fill launch params.
+    RtLaunchParams lp = {};
+    lp.tlas            = (OptixTraversableHandle)tlas_handle_;
+    memcpy(lp.inv_vp, inv_vp, 16 * sizeof(float));
+    memcpy(lp.sun_dir, sun_dir, 3 * sizeof(float));
+    lp.width           = trace_w_;
+    lp.height          = trace_h_;
+    lp.depth_surface   = (unsigned long long)depth_surf;
+    lp.shadow_surface  = 0;  // not used by lighting raygen
+    lp.material_table  = (float*)(CUdeviceptr)d_material_table_;
+    lp.material_count  = material_count_;
+    lp.albedo_surface  = (unsigned long long)albedo_surf;
+    lp.normal_surface  = (unsigned long long)normal_surf;
+    lp.orm_surface     = (unsigned long long)orm_surf;
+    lp.lighting_surface = (unsigned long long)lighting_surf;
+    lp.screen_w        = screen_w;
+    lp.screen_h        = screen_h;
+    memcpy(lp.sun_color, sun_color, 3 * sizeof(float));
+    memcpy(lp.sky_color, sky_color, 3 * sizeof(float));
+
+    cuMemcpyHtoD((CUdeviceptr)d_params_, &lp, sizeof(RtLaunchParams));
+
+    // Ensure hitgroup SBT is current (closesthit_pg_ is now real after build_lighting_pipeline).
+    rebuild_hitgroup_sbt();
+
+    // Build SBT for the lighting pipeline.
+    struct alignas(OPTIX_SBT_RECORD_ALIGNMENT) SbtRecord {
+        char header[OPTIX_SBT_RECORD_HEADER_SIZE];
+    };
+    struct alignas(OPTIX_SBT_RECORD_ALIGNMENT) HitGroupRecord {
+        char header[OPTIX_SBT_RECORD_HEADER_SIZE];
+        HitGroupData data;
+    };
+
+    OptixShaderBindingTable sbt = {};
+    sbt.raygenRecord                = (CUdeviceptr)sbt_lighting_raygen_;
+    sbt.missRecordBase              = (CUdeviceptr)sbt_lighting_miss_;
+    sbt.missRecordStrideInBytes     = sizeof(SbtRecord);
+    sbt.missRecordCount             = 2;  // shadow miss + radiance miss
+    sbt.hitgroupRecordBase          = (CUdeviceptr)d_hitgroup_sbt_;
+    sbt.hitgroupRecordStrideInBytes = sizeof(HitGroupRecord);
+    sbt.hitgroupRecordCount         = (unsigned int)(next_blas_sbt_index_ * 2);
+
+    optixLaunch((OptixPipeline)lighting_pipeline_, 0,
+                (CUdeviceptr)d_params_, sizeof(RtLaunchParams),
+                &sbt, trace_w_, trace_h_, 1);
+    cuCtxSynchronize();
+
+    // Cleanup surface objects.
+    cuSurfObjectDestroy(depth_surf);
+    cuSurfObjectDestroy(lighting_surf);
+    cuSurfObjectDestroy(albedo_surf);
+    cuSurfObjectDestroy(normal_surf);
+    cuSurfObjectDestroy(orm_surf);
+    cuGraphicsUnmapResources(5, resources, 0);
+    return true;
 }
 
 RtLighting::~RtLighting() { shutdown(); }

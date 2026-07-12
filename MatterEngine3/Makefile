@@ -80,7 +80,8 @@ ifdef HAVE_CUDA
   NVCC_FLAGS = --ptx --machine 64 -O2 -I$(OPTIX_PATH)/include -I$(CUDA_PATH)/include
   CFLAGS    += -DMATTER_HAVE_OPTIX -I$(CUDA_PATH)/include -I$(OPTIX_PATH)/include
   RT_CU_DIR  = src/render/shaders_rt
-  RT_PTX     = $(RT_CU_DIR)/shadow_raygen.ptx $(RT_CU_DIR)/shadow_miss.ptx $(RT_CU_DIR)/shadow_hit.ptx
+  RT_PTX     = $(RT_CU_DIR)/shadow_raygen.ptx $(RT_CU_DIR)/shadow_miss.ptx $(RT_CU_DIR)/shadow_hit.ptx \
+               $(RT_CU_DIR)/lighting_raygen.ptx $(RT_CU_DIR)/lighting_closesthit.ptx $(RT_CU_DIR)/lighting_miss.ptx
   RT_CPP     = src/render/rt_lighting.cpp
   RT_OBJ     = rt_lighting.o
 
