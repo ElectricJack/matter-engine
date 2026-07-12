@@ -163,7 +163,7 @@ void RtLighting::register_part(uint64_t part_hash, const float* vertices, int ve
     CUdeviceptr vertex_ptrs[1] = { d_verts };
     tri.vertexBuffers       = vertex_ptrs;
     tri.numSbtRecords       = 1;
-    unsigned int flags[1]   = { OPTIX_GEOMETRY_FLAG_DISABLE_ANYHIT };
+    unsigned int flags[1]   = { OPTIX_GEOMETRY_FLAG_NONE };
     tri.flags               = flags;
 
     OptixAccelBufferSizes buf_sizes = {};
@@ -232,7 +232,7 @@ void RtLighting::update_instances(const InstanceInput* instances, int count) {
         inst.instanceId        = i;
         inst.sbtOffset         = 0;
         inst.visibilityMask    = 0xFF;
-        inst.flags             = OPTIX_INSTANCE_FLAG_DISABLE_ANYHIT;
+        inst.flags             = OPTIX_INSTANCE_FLAG_NONE;
         inst.traversableHandle = (OptixTraversableHandle)it->second.traversable;
         optix_instances.push_back(inst);
     }

@@ -3151,16 +3151,14 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
                 impl_->rt_lighting.prepare_depth(
                     impl_->gpu_culler.depth_copy_tex(), fb_width, fb_height);
 
-                // Compute inverse VP for depth unprojection.
                 float inv_vp[16];
-                invert4x4(vp, inv_vp);
+                if (invert4x4(vp, inv_vp)) {
+                    const float* sd = impl_->manifest.lights.sun_dir;
+                    float neg_sun[3] = {-sd[0], -sd[1], -sd[2]};
 
-                // sun_dir points FROM sun toward scene; negate for shadow ray direction.
-                const float* sd = impl_->manifest.lights.sun_dir;
-                float neg_sun[3] = {-sd[0], -sd[1], -sd[2]};
-
-                impl_->rt_lighting.trace_shadows(inv_vp, neg_sun);
-                impl_->rt_lighting.composite(fb_width, fb_height, 0.7f);
+                    impl_->rt_lighting.trace_shadows(inv_vp, neg_sun);
+                    impl_->rt_lighting.composite(fb_width, fb_height, 0.7f);
+                }
             }
         }
     }
