@@ -216,7 +216,8 @@ SHADER_LOGICAL := shaders/raster.vs shaders/raster.fs shaders/tileset_sampling.g
     shaders_gpu/tileset_bake_ao.comp \
     shaders_gpu/depth_linearize.comp \
     shaders_gpu/rt_composite.vs shaders_gpu/rt_composite.fs \
-    shaders_gpu/raster_gbuffer.fs
+    shaders_gpu/raster_gbuffer.fs \
+    shaders_gpu/rt_lighting_composite.fs
 # SHADER_FILES resolves logical paths into real filesystem paths under MatterEngine3/:
 # shaders/ is a symlink -> ../MatterSurfaceLib/shaders; shaders_gpu/ is a real dir.
 SHADER_FILES := $(SHADER_LOGICAL)

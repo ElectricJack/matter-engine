@@ -65,6 +65,9 @@ public:
                         int screen_w, int screen_h);
     unsigned lighting_output_tex() const { return lighting_gl_tex_; }
 
+    // Phase 2 Task 4: composite lighting output to default framebuffer
+    void composite_lighting(int screen_w, int screen_h);
+
 private:
     bool available_ = false;
     // CUDA device + OptiX context handles stored as void* to avoid
@@ -135,6 +138,9 @@ private:
     uint64_t sbt_lighting_raygen_  = 0;         // CUdeviceptr
     uint64_t sbt_lighting_miss_    = 0;         // CUdeviceptr — 2 miss records (shadow + radiance)
 
+    // Phase 2 Task 4: lighting composite shader program
+    unsigned lighting_composite_prog_  = 0;
+
     // Phase 2: lighting output texture + interop
     unsigned lighting_gl_tex_          = 0;     // RGBA16F at half-res
     uint64_t cuda_lighting_resource_   = 0;     // CUgraphicsResource
@@ -181,6 +187,7 @@ public:
     unsigned gbuffer_depth_tex() const { return 0; }
     bool trace_lighting(const float[16], const float[3], const float[3], const float[3], int, int) { return false; }
     unsigned lighting_output_tex() const { return 0; }
+    void composite_lighting(int, int) {}
 };
 } // namespace viewer
 

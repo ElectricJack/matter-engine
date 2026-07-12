@@ -3106,14 +3106,56 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
             impl_->stats.draw_ms = std::chrono::duration<float, std::milli>(
                                        std::chrono::steady_clock::now() - d0).count();
 
-            // Debug: blit G-buffer albedo to default FB so we can see something.
-            glBindFramebuffer(GL_READ_FRAMEBUFFER, impl_->rt_lighting.gbuffer_fbo());
-            glReadBuffer(GL_COLOR_ATTACHMENT0);
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-            glBlitFramebuffer(0, 0, fb_width, fb_height,
-                              0, 0, fb_width, fb_height,
-                              GL_COLOR_BUFFER_BIT, GL_NEAREST);
-            glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+            // Depth linearize from G-buffer depth for RT reconstruction.
+            impl_->rt_lighting.prepare_depth(
+                impl_->rt_lighting.gbuffer_depth_tex(), fb_width, fb_height);
+
+            // GL→CUDA sync before OptiX launch.
+            glFinish();
+
+            // Build TLAS + register parts (same as Phase 1 shadow path).
+            std::vector<viewer::GpuCuller::RtInstance> culler_instances;
+            impl_->gpu_culler.fill_rt_instances(culler_instances);
+            for (auto& ci : culler_instances) {
+                auto* lp = impl_->store->get_or_load(ci.part_hash);
+                if (lp && !lp->lod_mesh_data.empty()) {
+                    auto& mesh = lp->lod_mesh_data[0];
+                    impl_->rt_lighting.register_part(ci.part_hash,
+                        mesh.vertices.data(), mesh.normals.data(),
+                        mesh.texcoords.data(), mesh.vertex_count);
+                }
+            }
+
+            std::vector<viewer::RtLighting::InstanceInput> rt_instances;
+            rt_instances.reserve(culler_instances.size());
+            for (auto& ci : culler_instances) {
+                viewer::RtLighting::InstanceInput inp;
+                inp.part_hash = ci.part_hash;
+                inp.lod_level = 0;
+                memcpy(inp.transform, ci.transform, sizeof(inp.transform));
+                rt_instances.push_back(inp);
+            }
+            impl_->rt_lighting.update_instances(rt_instances.data(),
+                                                (int)rt_instances.size());
+
+            float inv_vp[16];
+            if (invert4x4(vp, inv_vp)) {
+                const float* sd = impl_->manifest.lights.sun_dir;
+                float neg_sun[3] = {-sd[0], -sd[1], -sd[2]};
+                float sun_col[3] = {
+                    impl_->manifest.lights.sun_color[0],
+                    impl_->manifest.lights.sun_color[1],
+                    impl_->manifest.lights.sun_color[2]};
+                float sky_col[3] = {
+                    impl_->manifest.lights.sky_color[0],
+                    impl_->manifest.lights.sky_color[1],
+                    impl_->manifest.lights.sky_color[2]};
+
+                if (impl_->rt_lighting.trace_lighting(inv_vp, neg_sun, sun_col, sky_col,
+                                                       fb_width, fb_height)) {
+                    impl_->rt_lighting.composite_lighting(fb_width, fb_height);
+                }
+            }
         } else {
             // Phase 1: draw to default framebuffer (existing path).
             glClearColor(impl_->sky_clear[0], impl_->sky_clear[1], impl_->sky_clear[2], 1.0f);

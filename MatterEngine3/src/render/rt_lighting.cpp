@@ -118,8 +118,9 @@ void RtLighting::shutdown() {
     if (scene_copy_tex_)   { glDeleteTextures(1, &scene_copy_tex_);   scene_copy_tex_ = 0; }
     if (scene_fbo_)        { glDeleteFramebuffers(1, &scene_fbo_);    scene_fbo_ = 0; }
     if (dummy_vao_)        { glDeleteVertexArrays(1, &dummy_vao_);    dummy_vao_ = 0; }
-    if (depth_lin_prog_)   { glDeleteProgram(depth_lin_prog_);        depth_lin_prog_ = 0; }
-    if (composite_prog_)   { glDeleteProgram(composite_prog_);        composite_prog_ = 0; }
+    if (depth_lin_prog_)           { glDeleteProgram(depth_lin_prog_);            depth_lin_prog_ = 0; }
+    if (composite_prog_)           { glDeleteProgram(composite_prog_);            composite_prog_ = 0; }
+    if (lighting_composite_prog_)  { glDeleteProgram(lighting_composite_prog_);   lighting_composite_prog_ = 0; }
 
     // Phase 2 Task 3: lighting pipeline cleanup.
     if (lighting_pipeline_)    { optixPipelineDestroy((OptixPipeline)lighting_pipeline_);          lighting_pipeline_ = nullptr; }
@@ -553,13 +554,16 @@ bool RtLighting::compile_gl_shaders(std::string& err) {
         glDeleteShader(cs);
     }
 
-    // Composite vertex + fragment shader.
+    // Load the fullscreen vertex shader once; reused for all composite passes.
+    std::string vs_src, vs_err;
+    if (!matter::shader_text("shaders_gpu/rt_composite.vs", vs_src, vs_err)) {
+        err = "rt_composite.vs not found: " + vs_err;
+        return false;
+    }
+
+    // Phase 1: shadow composite shader.
     {
-        std::string vs_src, vs_err, fs_src, fs_err;
-        if (!matter::shader_text("shaders_gpu/rt_composite.vs", vs_src, vs_err)) {
-            err = "rt_composite.vs not found: " + vs_err;
-            return false;
-        }
+        std::string fs_src, fs_err;
         if (!matter::shader_text("shaders_gpu/rt_composite.fs", fs_src, fs_err)) {
             err = "rt_composite.fs not found: " + fs_err;
             return false;
@@ -568,6 +572,19 @@ bool RtLighting::compile_gl_shaders(std::string& err) {
         GLuint fs = compile_shader(GL_FRAGMENT_SHADER, fs_src.c_str());
         if (!vs || !fs) { err = "rt_composite compile failed"; return false; }
         composite_prog_ = link_program(vs, fs);
+    }
+
+    // Phase 2: lighting composite shader (same fullscreen VS + new FS).
+    {
+        std::string fs_src2, fs_err2;
+        if (!matter::shader_text("shaders_gpu/rt_lighting_composite.fs", fs_src2, fs_err2)) {
+            err = "rt_lighting_composite.fs not found: " + fs_err2;
+            return false;
+        }
+        GLuint vs2 = compile_shader(GL_VERTEX_SHADER, vs_src.c_str());  // reuse vs_src from above
+        GLuint fs2 = compile_shader(GL_FRAGMENT_SHADER, fs_src2.c_str());
+        if (!vs2 || !fs2) { err = "rt_lighting_composite compile failed"; return false; }
+        lighting_composite_prog_ = link_program(vs2, fs2);
     }
 
     glGenVertexArrays(1, &dummy_vao_);
@@ -1063,6 +1080,35 @@ bool RtLighting::trace_lighting(const float inv_vp[16], const float sun_dir[3],
     cuSurfObjectDestroy(orm_surf);
     cuGraphicsUnmapResources(5, resources, 0);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2 Task 4: composite_lighting — tonemapped fullscreen blit to default FB
+// ---------------------------------------------------------------------------
+void RtLighting::composite_lighting(int screen_w, int screen_h) {
+    if (!available_ || !lighting_gl_tex_ || !lighting_composite_prog_) return;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, screen_w, screen_h);
+
+    glUseProgram(lighting_composite_prog_);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, gbuffer_albedo_tex_);
+    glUniform1i(glGetUniformLocation(lighting_composite_prog_, "u_albedo"), 0);
+
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, lighting_gl_tex_);
+    glUniform1i(glGetUniformLocation(lighting_composite_prog_, "u_lighting"), 1);
+
+    glDisable(GL_DEPTH_TEST);
+    glBindVertexArray(dummy_vao_);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glBindVertexArray(0);
+    glEnable(GL_DEPTH_TEST);
+
+    glUseProgram(0);
+    glActiveTexture(GL_TEXTURE0);
 }
 
 RtLighting::~RtLighting() { shutdown(); }
