@@ -151,6 +151,9 @@ public:
     // -1 if not yet registered.
     int part_slot_of(uint64_t hash) const;
 
+    struct RtInstance { uint64_t part_hash; float transform[16]; };
+    int fill_rt_instances(std::vector<RtInstance>& out) const;
+
     // TEST-ONLY accessors: expose the GL buffer names and CPU-mirror data
     // needed by gpu_cull_tests.cpp to implement its own readback helpers.
     // Not for use in production viewer code.

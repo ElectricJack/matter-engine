@@ -317,7 +317,9 @@ int main() {
         opts.pixel_budget      = stats.pixel_budget;
         opts.active_radius     = active_radius;
         opts.min_projected_size = min_projected_size;
+#ifdef MATTER_HAVE_OPTIX
         opts.rt_shadows = true;
+#endif
 
         stats.fps      = (float)GetFPS();
         stats.frame_ms = GetFrameTime() * 1000.0f;

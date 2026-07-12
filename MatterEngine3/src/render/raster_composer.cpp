@@ -226,7 +226,8 @@ bool RasterComposer::init_gpu_driven(std::string& err) {
 // draw_gpu_driven — set uniforms + issue glMultiDrawArraysIndirect.
 // ---------------------------------------------------------------------------
 int RasterComposer::draw_gpu_driven(GpuCuller& culler, PartStore& /*store*/,
-                                     const Camera3D& cam) {
+                                     const Camera3D& cam,
+                                     float near_z, float far_z) {
     if (!gpu_ready_) return 0;
 
     // Upload frame uniforms to shader_gpu_ (sun/probes/material table) only when
@@ -245,6 +246,20 @@ int RasterComposer::draw_gpu_driven(GpuCuller& culler, PartStore& /*store*/,
     // BeginMode3D sets the GL viewport + loads the view/projection matrices into
     // rlgl's internal state, which we then read via rlGetMatrix*.
     BeginMode3D(cam);
+
+    // Override raylib's default projection (RL_CULL_DISTANCE_NEAR/FAR = 0.01/1000)
+    // with the caller's near/far so the depth buffer matches the VP matrix used
+    // by the RT shadow pipeline's inv_vp for world-space reconstruction.
+    {
+        float aspect = (float)rlGetFramebufferWidth() / (float)rlGetFramebufferHeight();
+        double top   = (double)near_z * tan((double)cam.fovy * 0.5 * DEG2RAD);
+        double right = top * (double)aspect;
+        rlMatrixMode(RL_PROJECTION);
+        rlLoadIdentity();
+        rlFrustum(-right, right, -top, top, (double)near_z, (double)far_z);
+        rlMatrixMode(RL_MODELVIEW);
+    }
+
     // Flush any pending raylib batch before switching shaders.
     rlDrawRenderBatchActive();
 

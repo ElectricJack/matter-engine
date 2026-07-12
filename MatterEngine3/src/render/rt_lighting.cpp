@@ -2,6 +2,13 @@
 
 #ifdef MATTER_HAVE_OPTIX
 
+// Prevent wingdi.h / winuser.h symbols (Rectangle, CloseWindow, ShowCursor)
+// from colliding with raylib's identically-named declarations.
+#ifdef _WIN32
+#define NOGDI
+#define NOUSER
+#endif
+
 // Raylib must come before glad to avoid double-definition of GL types.
 // glad.h must precede cudaGL.h which includes <GL/gl.h>.
 #include "raylib.h"
@@ -519,8 +526,8 @@ void RtLighting::prepare_depth(unsigned gl_depth_tex, int screen_w, int screen_h
     glUseProgram(0);
 }
 
-void RtLighting::trace_shadows(const float inv_vp[16], const float sun_dir[3]) {
-    if (!available_ || !tlas_handle_ || trace_w_ == 0) return;
+bool RtLighting::trace_shadows(const float inv_vp[16], const float sun_dir[3]) {
+    if (!available_ || !tlas_handle_ || trace_w_ == 0) return false;
 
     CUgraphicsResource resources[2] = {
         (CUgraphicsResource)cuda_depth_resource_,
@@ -573,6 +580,7 @@ void RtLighting::trace_shadows(const float inv_vp[16], const float sun_dir[3]) {
     cuSurfObjectDestroy(depth_surf);
     cuSurfObjectDestroy(shadow_surf);
     cuGraphicsUnmapResources(2, resources, 0);
+    return true;
 }
 
 void RtLighting::composite(int screen_w, int screen_h, float shadow_strength) {

@@ -157,8 +157,6 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
 
 ifdef HAVE_CUDA
   WIN_ME3_CPP += $(ME3_DIR)/src/render/rt_lighting.cpp
-  CXX_FLAGS_BUILD_WIN_COMMON += -DMATTER_HAVE_OPTIX \
-      -I$(CUDA_PATH)/include -I$(OPTIX_PATH)/include
 endif
 
 WIN_MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
@@ -199,6 +197,9 @@ IMGUI_SRC = $(IMGUI_PATH)/imgui.cpp $(IMGUI_PATH)/imgui_draw.cpp \
 CXX_FLAGS_BUILD_COMMON = $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -MMD -MP
 # Windows is the release build path for now: -DNDEBUG disables assert().
 CXX_FLAGS_BUILD_WIN_COMMON = $(CFLAGS) -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB $(WIN_INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -ffunction-sections -fdata-sections -MMD -MP
+ifdef HAVE_CUDA
+  CXX_FLAGS_BUILD_WIN_COMMON += -DMATTER_HAVE_OPTIX -I$(CUDA_PATH)/include -I$(OPTIX_PATH)/include
+endif
 
 # Linux object set: ONLY app + imgui.
 L_CPP_SRC = $(APP_SRC) $(IMGUI_SRC)

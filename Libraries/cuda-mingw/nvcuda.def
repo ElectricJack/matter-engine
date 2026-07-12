@@ -6,7 +6,7 @@ EXPORTS
 cuInit
 cuDeviceGet
 cuDevicePrimaryCtxRetain
-cuDevicePrimaryCtxRelease
+cuDevicePrimaryCtxRelease_v2
 cuCtxSetCurrent
 cuCtxSynchronize
 cuMemAlloc_v2

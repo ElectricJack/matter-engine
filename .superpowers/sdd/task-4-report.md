@@ -1,34 +1,42 @@
-## Fix round (post-hoc review)
+# Task 4 Report: TLAS Construction + Per-Frame Instance Sync
 
-### Finding 1 (fixed) — eval_world step 5: wrong eval strategy for module sources
+## Status: DONE
 
-The committed code at step 5 used `fold.folded` (a `std::vector<char>` NUL-separated hash
-buffer) in a ternary with `source` (a `std::string`), causing a compile error.  Beyond the
-type error, using `fold.folded` as eval source was semantically wrong: it is the concatenated
-hashing buffer, not executable JS.
+## Commit
+`5ea4303` — feat(rt): TLAS construction from instance transforms
 
-Fix: mirrored `eval_part_publish_class` exactly.  When `use_module = true`, `wrapped` (raw
-`source` + class-publish suffix) is evaluated via `eval_part_as_module` so QuickJS resolves
-`import` statements through the fold_store module loader.  When `use_module = false`, the
-previous `JS_Eval(…, JS_EVAL_TYPE_GLOBAL)` path is used unchanged.
+## What Was Done
 
-Also fixed: step 3 was creating the context with `JS_NewContext(rt)` instead of
-`new_bake_context(rt, use_module)`.  The latter enables ES-module intrinsics when
-`use_module = true`, matching `eval_part_publish_class`.
+### Step 1 — rt_lighting.h (OPTIX block)
+- Added `InstanceInput` struct (public): `part_hash`, `lod_level`, `transform[16]`
+- Added `update_instances()` declaration and `tlas_handle()` inline accessor
+- Added private TLAS state: `tlas_buffer_`, `tlas_buf_size_`, `tlas_handle_`, `d_instances_`, `instance_cap_` — all `uint64_t`/`size_t`/`int`, no CUDA headers in the header
 
-Changed: `MatterEngine3/src/script_host.cpp` steps 3 and 5 of `eval_world`.
+### Step 1 — rt_lighting.h (stub block)
+- Added `#include <cstdint>` (needed for `uint64_t` in stub `tlas_handle()` return)
+- Added `InstanceInput` struct stub, `update_instances` no-op, `tlas_handle()` returning 0
 
-### Finding 2 (already handled; confirmed by new test assertions)
+### Step 2 — rt_lighting.cpp: update_instances
+- Filters instances via BLAS cache (skips unknown part_hashes)
+- Copies first 3 rows of row-major 4x4 into OptiX 3x4 transform (indices 0–11)
+- Grows `d_instances_` device buffer only when `inst_count > instance_cap_`
+- Grows `tlas_buffer_` only when needed; per-call temp buffer allocated/freed each build
+- Stores result `tlas_handle_ = (uint64_t)handle`
+- Added `#include <vector>` for `std::vector<OptixInstance>`
 
-The existing merge block (step 2) already reads `static params` from the World class and
-overlays caller overrides via the `kMerge` snippet.  The test at lines 57–70 of
-`eval_world_tests.cpp` (already committed) confirms that passing `"{}"` yields a program
-identical to passing `{"worldSeed":42}` (the class default), and that passing
-`{"worldSeed":99}` yields a different program.  No code change was needed for Finding 2.
+### Step 3 — shutdown() TLAS cleanup
+- Frees `tlas_buffer_` and `d_instances_` after BLAS cleanup, before context destroy
+- Resets `tlas_buf_size_`, `tlas_handle_`, `instance_cap_` to zero
 
-### Verification
+### Step 4 — test_rt_tlas.cpp
+- Registers part hash 1, builds TLAS from 3 instances at offset X positions
+- Asserts `tlas_handle() != 0` after initial build and after transform-update rebuild
+- Falls through to SKIP on OptiX init failure (WSL2 expected)
 
-```
-make -C MatterEngine3          → clean (warnings only, no errors)
-make -C MatterEngine3/tests run-evalworld  → ALL PASS
-```
+## Build & Test Results
+
+Build: clean, zero warnings.
+Test: `SKIP: optixInit failed: 7805` — OptiX not available in WSL2, graceful skip as expected.
+
+## Concerns
+None.

@@ -3097,7 +3097,7 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
 
         auto d0 = std::chrono::steady_clock::now();
         impl_->stats.triangles = (uint32_t)impl_->raster->draw_gpu_driven(
-                impl_->gpu_culler, *impl_->store, cam);
+                impl_->gpu_culler, *impl_->store, cam, near_z, far_z);
         impl_->stats.instances_drawn    = (uint32_t)impl_->gpu_culler.emitted();
         impl_->stats.clusters_culled    = (uint32_t)impl_->gpu_culler.culled_clusters();
         impl_->stats.hiz_culled         = (uint32_t)impl_->gpu_culler.culled_hiz();
@@ -3122,25 +3122,28 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
                 }
             }
             if (impl_->rt_lighting_ready && impl_->rt_lighting.available()) {
-                // Register parts that have BLAS-ready vertex data.
-                for (auto& ri : resolved) {
-                    auto* lp = impl_->store->get_or_load(ri.part_hash);
+                // Use the GpuCuller's expanded instance list (includes children).
+                std::vector<viewer::GpuCuller::RtInstance> culler_instances;
+                impl_->gpu_culler.fill_rt_instances(culler_instances);
+
+                // Register BLASes for any parts not yet in the cache.
+                for (auto& ci : culler_instances) {
+                    auto* lp = impl_->store->get_or_load(ci.part_hash);
                     if (lp && !lp->lod_mesh_data.empty()) {
-                        int lod = std::min(ri.lod_level, (int)lp->lod_mesh_data.size() - 1);
-                        auto& mesh = lp->lod_mesh_data[lod];
-                        impl_->rt_lighting.register_part(ri.part_hash,
+                        auto& mesh = lp->lod_mesh_data[0];
+                        impl_->rt_lighting.register_part(ci.part_hash,
                             mesh.vertices.data(), mesh.vertex_count);
                     }
                 }
 
-                // Build instance list for TLAS.
+                // Build TLAS from culler's expanded instances.
                 std::vector<viewer::RtLighting::InstanceInput> rt_instances;
-                rt_instances.reserve(resolved.size());
-                for (auto& ri : resolved) {
+                rt_instances.reserve(culler_instances.size());
+                for (auto& ci : culler_instances) {
                     viewer::RtLighting::InstanceInput inp;
-                    inp.part_hash = ri.part_hash;
-                    inp.lod_level = ri.lod_level;
-                    memcpy(inp.transform, ri.transform, sizeof(inp.transform));
+                    inp.part_hash = ci.part_hash;
+                    inp.lod_level = 0;
+                    memcpy(inp.transform, ci.transform, sizeof(inp.transform));
                     rt_instances.push_back(inp);
                 }
                 impl_->rt_lighting.update_instances(rt_instances.data(),
@@ -3151,13 +3154,17 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
                 impl_->rt_lighting.prepare_depth(
                     impl_->gpu_culler.depth_copy_tex(), fb_width, fb_height);
 
+                // GL must finish before CUDA maps the depth texture.
+                glFinish();
+
                 float inv_vp[16];
                 if (invert4x4(vp, inv_vp)) {
                     const float* sd = impl_->manifest.lights.sun_dir;
                     float neg_sun[3] = {-sd[0], -sd[1], -sd[2]};
 
-                    impl_->rt_lighting.trace_shadows(inv_vp, neg_sun);
-                    impl_->rt_lighting.composite(fb_width, fb_height, 0.7f);
+                    if (impl_->rt_lighting.trace_shadows(inv_vp, neg_sun)) {
+                        impl_->rt_lighting.composite(fb_width, fb_height, 0.7f);
+                    }
                 }
             }
         }

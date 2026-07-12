@@ -43,8 +43,11 @@ public:
     bool init_gpu_driven(std::string& err);
 
     // Set shader uniforms + issue glMultiDrawArraysIndirect via culler.
+    // near_z/far_z override raylib's default projection so the depth buffer
+    // matches the VP matrix used by the RT shadow pipeline's inv_vp.
     // Returns drawn tris (sum from live cmd buckets).
-    int draw_gpu_driven(GpuCuller& culler, PartStore& store, const Camera3D& cam);
+    int draw_gpu_driven(GpuCuller& culler, PartStore& store, const Camera3D& cam,
+                        float near_z = 0.01f, float far_z = 1000.0f);
 
     // Runtime LOD quality/speed dial; forwarded to GpuCuller::cull each frame.
     void set_pixel_budget(float b) { pixel_budget_ = b; }

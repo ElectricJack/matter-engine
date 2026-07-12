@@ -40,7 +40,7 @@ public:
     // Task 5: shadow ray pipeline
     void resize(int screen_w, int screen_h);
     void prepare_depth(unsigned gl_depth_tex, int screen_w, int screen_h);
-    void trace_shadows(const float inv_vp[16], const float sun_dir[3]);
+    bool trace_shadows(const float inv_vp[16], const float sun_dir[3]);
     void composite(int screen_w, int screen_h, float shadow_strength);
     unsigned shadow_texture() const { return shadow_gl_tex_; }
 
@@ -99,7 +99,7 @@ private:
 namespace viewer {
 class RtLighting {
 public:
-    bool init(std::string&) { return false; }
+    bool init(std::string& err) { err = "not compiled with OptiX (rebuild with HAVE_CUDA=1)"; return false; }
     void shutdown() {}
     bool available() const { return false; }
     void register_part(uint64_t, const float*, int) {}
@@ -109,7 +109,7 @@ public:
     uint64_t tlas_handle() const { return 0; }
     void resize(int, int) {}
     void prepare_depth(unsigned, int, int) {}
-    void trace_shadows(const float[16], const float[3]) {}
+    bool trace_shadows(const float[16], const float[3]) { return false; }
     void composite(int, int, float) {}
     unsigned shadow_texture() const { return 0; }
 };

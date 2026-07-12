@@ -125,3 +125,26 @@ IW Task 10: complete (commits ce7a10a + fix cdcf290, review Approved)
   - Windows Makefiles: terrain_field/terrain_mesher/sector_streamer added to ExplorerDemo + MatterViewer WIN_ME3_CPP; explorer.exe link clean
   - Gates: sector_bake ALL PASS (27 variants), api_tests PASS, world_stream_tests ALL PASSED, smoke 120s 60fps 1318 sectors, zero BakeError lines
   - Minors for final triage: terrain near origin mostly underwater (plains add(-6) below sea_level 0; mountain ridges visible at horizon); instances_total=0 in world-kind path (counter only set by old expand path)
+
+=== RT LIGHTING PHASE 1 (2026-07-12) ===
+Plan: docs/superpowers/plans/2026-07-11-rt-lighting-phase1.md (5 tasks)
+BASE at start: e22bd84
+
+Task 1: complete (commit a8c2df9, pre-existing — CUDA driver API init + OptiX context)
+Task 2: complete (commit 5c71e38, review Approved)
+  - Delivered: nvcuda.def + libnvcuda.dll.a (14KB, committed), embed_rt_shaders.py (both tools/ and MatterEngine3/tools/), ME3 Makefile PTX embed rule with wildcard prereq, rt_lighting.cpp cuda_runtime.h→cudaGL.h, MatterViewer Linux -lcuda -L/usr/lib/wsl/lib, Windows HAVE_CUDA gate (WIN_ME3_CPP + CXX_FLAGS + WIN_LIBS)
+  - Minor (final review triage): wildcard prereq+recipe duplication (use $^ instead); c_escape trailing newline; libnvcuda.dll.a 14KB vs spec ~2-3KB estimate
+Task 3: complete (commit 7408ac8, review Approved)
+  - Delivered: RtBlas struct (uint64_t opaque handles), register_part (vertex upload + compacted BLAS build), unregister_part (free), shutdown cleanup; test_rt_blas.cpp (SKIP in WSL2)
+  - Important (deferred, not blocking): no error checking on OptiX/CUDA calls inside register_part — spec skeleton shares this gap; address at final integration
+  - Minor (final review triage): d_compacted_size could use pinned host alloc; RtBlas public struct exposure; test has no post-register assertion
+Task 4: complete (commit 5ea4303, review Approved)
+  - Delivered: InstanceInput struct, update_instances (row-major→3x4 OptiX transform, TLAS build with ALLOW_UPDATE flag, d_instances growth policy), tlas_handle() accessor, shutdown cleanup; test_rt_tlas.cpp (SKIP in WSL2)
+  - Minor (final review triage): instance_cap_ no-shrink (intentional); instanceId gaps on skip; ALLOW_UPDATE set without UPDATE codepath; no error checking (inherited from Task 3)
+Task 5: complete (commits fd74865 + fix 7640ec9, review Approved after 1 fix)
+  - Delivered: rt_params.h (unsigned long long for driver-API surface objects), shadow_raygen/miss/hit.cu (PTX shaders), depth_linearize.comp + rt_composite.vs/fs (GL shaders), full pipeline build + SBT, CUDA-GL interop (depth R32F + shadow R32F), resize/prepare_depth/trace_shadows/composite, ensure_depth_blit on GpuCuller, rt_shadows in RenderOptions, viewer render loop integration with lazy init, main.cpp rt_shadows=true
+  - Fix 7640ec9: init retry spam — added rt_lighting_failed flag to prevent per-frame retry+printf when OptiX unavailable (WSL2)
+  - Known API adaptations: shader_text() API mismatch fixed, invert4x4 added (no viewer::invert16), sun_dir negated
+  - Minor (final review triage): per-frame BLAS re-registration loop; link_program lambda inconsistency; missing glLinkProgram status checks; probe_bricks.cpp scope creep in WIN_ME3_CPP
+Final review fix: cdaf470 — DISABLE_ANYHIT flags removed (shadows would have been invisible), invert4x4 return guarded, duplicate tools/embed_rt_shaders.py removed
+Final review: Approved with fixes applied. Remaining minor: resize() height check gap; shadow_strength hardcoded 0.7f; ALLOW_UPDATE without UPDATE path; per-frame BLAS re-registration loop; missing GL link status checks

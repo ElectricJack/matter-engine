@@ -502,6 +502,25 @@ int GpuCuller::part_slot_of(uint64_t hash) const {
     return it != slot_of_.end() ? it->second : -1;
 }
 
+int GpuCuller::fill_rt_instances(std::vector<RtInstance>& out) const {
+    out.clear();
+    out.reserve(expanded_.size());
+    for (auto& ei : expanded_) {
+        if (ei.part_slot < 0 || ei.part_slot >= (int)parts_.size()) continue;
+        auto& pg = parts_[ei.part_slot];
+        if (!pg.vao) continue;
+        RtInstance ri;
+        ri.part_hash = pg.part_hash;
+        const float* c = ei.transform;
+        ri.transform[0]=c[0]; ri.transform[1]=c[4]; ri.transform[2]=c[8];  ri.transform[3]=c[12];
+        ri.transform[4]=c[1]; ri.transform[5]=c[5]; ri.transform[6]=c[9];  ri.transform[7]=c[13];
+        ri.transform[8]=c[2]; ri.transform[9]=c[6]; ri.transform[10]=c[10]; ri.transform[11]=c[14];
+        ri.transform[12]=c[3]; ri.transform[13]=c[7]; ri.transform[14]=c[11]; ri.transform[15]=c[15];
+        out.push_back(ri);
+    }
+    return (int)out.size();
+}
+
 // ---------------------------------------------------------------------------
 // release_part — evict a single part's GPU resources.
 //
