@@ -139,10 +139,11 @@ void RtLighting::shutdown() {
     frame_index_ = 0;
 
     // Phase 2 Task 3: lighting pipeline cleanup.
-    if (lighting_pipeline_)    { optixPipelineDestroy((OptixPipeline)lighting_pipeline_);          lighting_pipeline_ = nullptr; }
-    if (lighting_raygen_pg_)   { optixProgramGroupDestroy((OptixProgramGroup)lighting_raygen_pg_); lighting_raygen_pg_ = nullptr; }
-    if (radiance_miss_pg_)     { optixProgramGroupDestroy((OptixProgramGroup)radiance_miss_pg_);   radiance_miss_pg_ = nullptr; }
-    if (closesthit_pg_)        { optixProgramGroupDestroy((OptixProgramGroup)closesthit_pg_);       closesthit_pg_ = nullptr; }
+    if (lighting_pipeline_)         { optixPipelineDestroy((OptixPipeline)lighting_pipeline_);                  lighting_pipeline_ = nullptr; }
+    if (lighting_raygen_pg_)        { optixProgramGroupDestroy((OptixProgramGroup)lighting_raygen_pg_);         lighting_raygen_pg_ = nullptr; }
+    if (lighting_shadow_miss_pg_)   { optixProgramGroupDestroy((OptixProgramGroup)lighting_shadow_miss_pg_);    lighting_shadow_miss_pg_ = nullptr; }
+    if (radiance_miss_pg_)          { optixProgramGroupDestroy((OptixProgramGroup)radiance_miss_pg_);           radiance_miss_pg_ = nullptr; }
+    if (closesthit_pg_)             { optixProgramGroupDestroy((OptixProgramGroup)closesthit_pg_);              closesthit_pg_ = nullptr; }
     if (sbt_lighting_raygen_)  { cuMemFree((CUdeviceptr)sbt_lighting_raygen_); sbt_lighting_raygen_ = 0; }
     if (sbt_lighting_miss_)    { cuMemFree((CUdeviceptr)sbt_lighting_miss_);   sbt_lighting_miss_ = 0; }
     if (lighting_interop_registered_) {
@@ -893,8 +894,8 @@ bool RtLighting::build_lighting_pipeline(std::string& err) {
     pg_desc.miss.module = mod_sm;
     pg_desc.miss.entryFunctionName = "__miss__shadow";
     log_size = sizeof(log);
-    OptixProgramGroup shadow_miss_pg = nullptr;
-    optixProgramGroupCreate(ctx, &pg_desc, 1, &pg_opts, log, &log_size, &shadow_miss_pg);
+    optixProgramGroupCreate(ctx, &pg_desc, 1, &pg_opts, log, &log_size,
+                            (OptixProgramGroup*)&lighting_shadow_miss_pg_);
 
     // Miss 1: radiance (returns sky color)
     pg_desc = {};
@@ -916,7 +917,7 @@ bool RtLighting::build_lighting_pipeline(std::string& err) {
 
     OptixProgramGroup groups[] = {
         (OptixProgramGroup)lighting_raygen_pg_,
-        shadow_miss_pg,
+        (OptixProgramGroup)lighting_shadow_miss_pg_,
         (OptixProgramGroup)radiance_miss_pg_,
         (OptixProgramGroup)hit_pg_,       // shadow anyhit (from Phase 1)
         (OptixProgramGroup)closesthit_pg_
@@ -944,7 +945,7 @@ bool RtLighting::build_lighting_pipeline(std::string& err) {
     // SBT: 2 miss records (shadow + radiance)
     {
         SbtRecord recs[2] = {};
-        optixSbtRecordPackHeader(shadow_miss_pg, &recs[0]);
+        optixSbtRecordPackHeader((OptixProgramGroup)lighting_shadow_miss_pg_, &recs[0]);
         optixSbtRecordPackHeader((OptixProgramGroup)radiance_miss_pg_, &recs[1]);
         CUdeviceptr d = 0;
         cuMemAlloc(&d, 2 * sizeof(SbtRecord));

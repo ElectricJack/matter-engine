@@ -277,12 +277,8 @@ extern "C" __global__ void __raygen__lighting() {
     // 4. SSS/Translucency (if translucency > 0).
     float3 sss = make_float3(0, 0, 0);
     if (translucency > 0.01f) {
-        // Trace through surface in reverse-normal direction.
-        float3 back_dir = make_float3(-N.x, -N.y, -N.z);
-        RadianceResult back_hit = trace_radiance(world_pos, back_dir, 0.1f, 5.0f);
-        (void)back_hit;  // back_hit used for potential future occlusion check
-
         // Check if sun is visible from behind (backlit leaf glow).
+        // SSS uses sun shadow + backface NdotL only; no radiance trace needed.
         float back_sun_vis = trace_shadow(world_pos, sun_dir) ? 0.0f : 1.0f;
         float back_ndl = fmaxf(0.0f, -(N.x*sun_dir.x + N.y*sun_dir.y + N.z*sun_dir.z));
 

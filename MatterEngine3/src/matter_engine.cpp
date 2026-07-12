@@ -3178,7 +3178,9 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
             impl_->gpu_culler.build_hiz(fb_width, fb_height);
 
         // Task 5: OptiX RT shadow tracing (after depth is available).
-        if (opts.rt_shadows && impl_->culler_ready && !impl_->rt_lighting_failed) {
+        // Init block fires for either rt_shadows or rt_full_lighting so the CUDA/OptiX
+        // pipeline, G-buffer shader, and material table are ready for Phase 2 as well.
+        if ((opts.rt_shadows || opts.rt_full_lighting) && impl_->culler_ready && !impl_->rt_lighting_failed) {
             if (!impl_->rt_lighting_ready) {
                 std::string rt_err;
                 if (impl_->rt_lighting.init(rt_err)) {
@@ -3252,8 +3254,12 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
                                fb_width/2, fb_height/2, (int)rt_instances.size());
                     }
 
-                    if (impl_->rt_lighting.trace_shadows(inv_vp, neg_sun)) {
-                        impl_->rt_lighting.composite(fb_width, fb_height, 0.7f);
+                    // Phase 1 shadow composite only runs when Phase 2 full lighting
+                    // is NOT active — Phase 2 composites its own output instead.
+                    if (!opts.rt_full_lighting) {
+                        if (impl_->rt_lighting.trace_shadows(inv_vp, neg_sun)) {
+                            impl_->rt_lighting.composite(fb_width, fb_height, 0.7f);
+                        }
                     }
                 }
             }

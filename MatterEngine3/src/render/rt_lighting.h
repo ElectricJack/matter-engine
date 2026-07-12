@@ -134,10 +134,11 @@ private:
     void rebuild_hitgroup_sbt();
 
     // Phase 2: lighting pipeline (separate from shadow-only pipeline)
-    void*    lighting_pipeline_    = nullptr;   // OptixPipeline
-    void*    lighting_raygen_pg_   = nullptr;   // OptixProgramGroup
-    void*    radiance_miss_pg_     = nullptr;   // OptixProgramGroup
-    void*    closesthit_pg_        = nullptr;   // OptixProgramGroup
+    void*    lighting_pipeline_         = nullptr;   // OptixPipeline
+    void*    lighting_raygen_pg_        = nullptr;   // OptixProgramGroup
+    void*    lighting_shadow_miss_pg_   = nullptr;   // OptixProgramGroup (shadow miss for lighting pipeline)
+    void*    radiance_miss_pg_          = nullptr;   // OptixProgramGroup
+    void*    closesthit_pg_             = nullptr;   // OptixProgramGroup
     uint64_t sbt_lighting_raygen_  = 0;         // CUdeviceptr
     uint64_t sbt_lighting_miss_    = 0;         // CUdeviceptr — 2 miss records (shadow + radiance)
 
