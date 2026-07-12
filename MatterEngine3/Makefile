@@ -67,6 +67,26 @@ INCLUDE_PATHS = -Iinclude -Isrc -Isrc/render -Isrc/provider \
                 -I$(QJS_DIR) -I$(RAYLIB_PATH) -I$(BOX3D_DIR)/include \
                 -I$(PFL_DIR)/include $(EXTRA_INCLUDE)
 
+# --- CUDA / OptiX (optional, gated by HAVE_CUDA) ---
+CUDA_PATH  ?= /usr/local/cuda
+OPTIX_PATH ?= $(HOME)/NVIDIA-OptiX-SDK-9.0.0
+
+ifdef HAVE_CUDA
+  NVCC       = $(CUDA_PATH)/bin/nvcc
+  NVCC_FLAGS = --ptx --machine 64 -O2 -I$(OPTIX_PATH)/include -I$(CUDA_PATH)/include
+  CFLAGS    += -DMATTER_HAVE_OPTIX -I$(CUDA_PATH)/include -I$(OPTIX_PATH)/include
+  RT_CU_DIR  = src/render/shaders_rt
+  RT_PTX     = $(RT_CU_DIR)/shadow_raygen.ptx $(RT_CU_DIR)/shadow_miss.ptx $(RT_CU_DIR)/shadow_hit.ptx
+  RT_CPP     = src/render/rt_lighting.cpp
+  RT_OBJ     = rt_lighting.o
+
+$(RT_CU_DIR)/%.ptx: $(RT_CU_DIR)/%.cu
+	$(NVCC) $(NVCC_FLAGS) -o $@ $<
+
+rt_lighting.o: src/render/rt_lighting.cpp
+	$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDE_PATHS) -I$(CUDA_PATH)/include -I$(OPTIX_PATH)/include
+endif
+
 # Vendored QuickJS-ng engine. v0.10.0 needs xsum.c (xsum_small_* symbols) beyond
 # the core four. Compiled via gcc (C) so the embedding symbols stay unmangled.
 QJS_C   = $(QJS_DIR)/quickjs.c $(QJS_DIR)/libregexp.c \
@@ -221,6 +241,11 @@ $(ME3_OBJ): shaders_gen/embedded_shaders.h
 $(ME3_OBJ) $(MSL_OBJ): .lib_flags
 %.o: %.cpp
 	$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDE_PATHS)
+
+ifdef HAVE_CUDA
+ME3_OBJ += $(RT_OBJ)
+$(LIB): $(RT_PTX)
+endif
 
 $(LIB): $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ)
 	ar rcs $(LIB) $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ)

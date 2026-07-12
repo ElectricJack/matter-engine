@@ -51,6 +51,11 @@ WIN_INCLUDE_PATHS = $(INCLUDE_PATHS) \
 
 LDFLAGS = -lGL -lm -lpthread -ldl -lrt -lX11
 LDLIBS  = ../Libraries/raylib/build/linux/libraylib.a
+
+CUDA_PATH ?= /usr/local/cuda
+ifdef HAVE_CUDA
+  LDFLAGS += -L$(CUDA_PATH)/lib64 -lcudart -ldl
+endif
 BOX3D_LIB = $(BOX3D_DIR)/libbox3d.a
 LDLIBS   += $(BOX3D_LIB)
 
