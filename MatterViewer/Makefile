@@ -52,7 +52,8 @@ WIN_INCLUDE_PATHS = $(INCLUDE_PATHS) \
 LDFLAGS = -lGL -lm -lpthread -ldl -lrt -lX11
 LDLIBS  = ../Libraries/raylib/build/linux/libraylib.a
 
-CUDA_PATH ?= /usr/local/cuda
+CUDA_PATH ?= /c/PROGRA~1/NVIDIA~2/CUDA/v13.3
+OPTIX_PATH ?= /c/PROGRA~3/NVIDIA~1/OPTIXS~1.0
 ifdef HAVE_CUDA
   LDFLAGS += -L/usr/lib/wsl/lib -lcuda -ldl
 endif
@@ -318,15 +319,30 @@ mingw-box3d:
 # Mirrors MatterSurfaceLib's windows-native target: MinGW toolchain, the
 # prebuilt windows-native raylib, and Win32 GL/GDI libs, statically linked so
 # the .exe is self-contained.
-WIN_CXX     = x86_64-w64-mingw32-g++-posix
+WIN_CXX     ?= /ucrt64/bin/g++
 WIN_CC      = x86_64-w64-mingw32-gcc
 WIN_RAYLIB  = ../Libraries/raylib/build/windows-native/libraylib.a
+GLSLC ?= /ucrt64/bin/glslc
+VULKAN_INCLUDE ?= /ucrt64/include
+VULKAN_LIB_DIR ?= /ucrt64/lib
+WIN_FEATURES = build/windows/build_features.txt
 # Win32 import libs raylib depends on; MUST come AFTER libraylib.a on the link
 # line so the static linker can resolve raylib's __imp_* references.
 WIN_LIBS    = -lopengl32 -lgdi32 -lwinmm $(BOX3D_DIR)/build-mingw/libbox3d.a -lwinpthread
 ifdef HAVE_CUDA
   WIN_LIBS += ../Libraries/cuda-mingw/libnvcuda.dll.a -lcfgmgr32
 endif
+
+.PHONY: vulkan-preflight
+vulkan-preflight:
+	@test "$(HAVE_CUDA)" = "1" || (echo "ERROR: Phase 1 requires HAVE_CUDA=1"; exit 1)
+	@WIN_CXX="$(WIN_CXX)" VULKAN_INCLUDE="$(VULKAN_INCLUDE)" \
+	 VULKAN_LIB_DIR="$(VULKAN_LIB_DIR)" GLSLC="$(GLSLC)" \
+	 CUDA_PATH="$(CUDA_PATH)" OPTIX_PATH="$(OPTIX_PATH)" sh tools/check_vulkan_toolchain.sh
+
+$(WIN_FEATURES): vulkan-preflight
+	@mkdir -p $(dir $@)
+	@printf 'VULKAN=1\nCUDA=1\nOPTIX=1\nOPENGL=0\n' > $@
 
 # ---- Windows compile rules
 $(W_CPP_OBJ): $(W_DIR)/%.o: %.cpp | $(W_DIR)
