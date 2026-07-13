@@ -11,7 +11,11 @@
 
 #include "matter/engine_context.h"
 #include "matter/world_session.h"
+#include "camera_controller.h"
 #include "ui.h"
+
+#define GLFW_INCLUDE_NONE
+#include <GLFW/glfw3.h>
 
 #include <algorithm>   // std::transform
 #include <cctype>      // std::tolower
@@ -28,19 +32,15 @@
 #include <unistd.h>     // read, close, unlink
 
 // ---------------------------------------------------------------------------
-// App-side camera policy (free-cam = raylib CAMERA_FREE)
-// Copied verbatim from Renderer::init_camera + Renderer::update_camera_free.
+// App-side camera defaults; free-fly input lives in CameraController.
 // ---------------------------------------------------------------------------
-static void init_camera(Camera3D& cam) {
-    cam.position   = (Vector3){ 20.0f, 16.0f, 34.0f };
-    cam.target     = (Vector3){ 0.0f, 9.0f, 0.0f };
-    cam.up         = (Vector3){ 0.0f, 1.0f, 0.0f };
-    cam.fovy       = 45.0f;
-    cam.projection = CAMERA_PERSPECTIVE;
-}
-
-static void update_camera_free(Camera3D& cam) {
-    UpdateCamera(&cam, CAMERA_FREE);
+static void init_camera(matter::CameraDesc& cam) {
+    cam.position = {20.0f, 16.0f, 34.0f};
+    cam.target = {0.0f, 9.0f, 0.0f};
+    cam.up = {0.0f, 1.0f, 0.0f};
+    cam.vertical_fov_radians = 0.78539816339f;
+    cam.near_plane = 1.0f;
+    cam.far_plane = 5000.0f;
 }
 
 // ---------------------------------------------------------------------------
@@ -120,7 +120,7 @@ int main() {
     if (!engine) { fprintf(stderr, "FATAL: %s\n", err.c_str()); CloseWindow(); return 1; }
 
     // Camera (app-owned; passed to session->render every frame).
-    Camera3D camera{};
+    matter::CameraDesc camera{};
     init_camera(camera);
 
     // MATTER_CAM="px,py,pz,tx,ty,tz" overrides the initial camera.
@@ -128,8 +128,8 @@ int main() {
         float c[6];
         if (sscanf(cam_env, "%f,%f,%f,%f,%f,%f",
                    &c[0],&c[1],&c[2],&c[3],&c[4],&c[5]) == 6) {
-            camera.position = (Vector3){ c[0], c[1], c[2] };
-            camera.target   = (Vector3){ c[3], c[4], c[5] };
+            camera.position = {c[0], c[1], c[2]};
+            camera.target = {c[3], c[4], c[5]};
             printf("MATTER_CAM: eye(%.1f,%.1f,%.1f) target(%.1f,%.1f,%.1f)\n",
                    c[0],c[1],c[2],c[3],c[4],c[5]);
         }
@@ -195,6 +195,8 @@ int main() {
     stats.connected = true;
 
     bool camera_capture = false;
+    viewer::CameraController camera_controller;
+    GLFWwindow* glfw_window = glfwGetCurrentContext();
 
     // Headless capture: if MATTER_SCREENSHOT is set, render a few frames, dump PNG, exit.
     const char* screenshot_path = getenv("MATTER_SCREENSHOT");
@@ -225,10 +227,10 @@ int main() {
     while (!WindowShouldClose()) {
         if (IsKeyPressed(KEY_TAB)) {
             camera_capture = !camera_capture;
-            if (camera_capture) DisableCursor(); else EnableCursor();
+            camera_controller.set_capture(glfw_window, camera_capture);
         }
         if (IsKeyPressed(KEY_F9)) wireframe = !wireframe;
-        if (camera_capture) update_camera_free(camera);
+        camera_controller.update(glfw_window, GetFrameTime(), camera);
 
         // FIFO command pump.
         if (cmd_fd >= 0) {
@@ -246,8 +248,8 @@ int main() {
                 char labelbuf[64];
                 if (sscanf(line.c_str(), "cam %f %f %f %f %f %f",
                            &c[0],&c[1],&c[2],&c[3],&c[4],&c[5]) == 6) {
-                    camera.position = (Vector3){ c[0], c[1], c[2] };
-                    camera.target   = (Vector3){ c[3], c[4], c[5] };
+                    camera.position = {c[0], c[1], c[2]};
+                    camera.target = {c[3], c[4], c[5]};
                 } else if (sscanf(line.c_str(), "shot %255s", pathbuf) == 1) {
                     shot_path   = pathbuf;
                     shot_frames = 4;   // settle count
@@ -395,7 +397,10 @@ int main() {
 
         if (stats.reload_requested) {
             stats.reload_requested = false;
-            if (camera_capture) { camera_capture = false; EnableCursor(); }
+            if (camera_capture) {
+                camera_capture = false;
+                camera_controller.set_capture(glfw_window, false);
+            }
             // Phase B: enqueue the reload bake and return immediately.
             // Progress and errors surface through the per-frame poll_event() drain.
             session->reload();
@@ -407,7 +412,10 @@ int main() {
             if (idx < (int)worlds.size()) {
                 const auto& w = worlds[idx];
                 printf("world switch -> [%d] %s\n", idx, w.label.c_str());
-                if (camera_capture) { camera_capture = false; EnableCursor(); }
+                if (camera_capture) {
+                    camera_capture = false;
+                    camera_controller.set_capture(glfw_window, false);
+                }
                 session.reset();
                 session = open_world_and_start_bake(w);
                 if (!session) { printf("world switch failed; exiting\n"); break; }

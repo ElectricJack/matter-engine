@@ -49,6 +49,14 @@
 #  include <sys/stat.h>
 #endif
 
+static matter::CameraDesc camera_desc_for_render(const Camera3D& camera) {
+    return {{camera.position.x, camera.position.y, camera.position.z},
+            {camera.target.x, camera.target.y, camera.target.z},
+            {camera.up.x, camera.up.y, camera.up.z},
+            camera.fovy * 3.14159265358979323846f / 180.0f,
+            1.0f, 5000.0f};
+}
+
 // ---------------------------------------------------------------------------
 // Data-directory resolution: EXPLORER_DATA_DIR override with dev-path fallback.
 //
@@ -486,7 +494,8 @@ int main() {
             // but early-returns before that — clear here so the install/load
             // window isn't left with an uncleared framebuffer.
             ClearBackground((Color){ 96, 118, 143, 255 });
-            session->render(rig.cam, GetScreenWidth(), GetScreenHeight(), render_opts);
+            const matter::CameraDesc render_camera = camera_desc_for_render(rig.cam);
+            session->render(render_camera, GetScreenWidth(), GetScreenHeight(), render_opts);
 
             // Water plane: translucent quad at sea level, following the camera.
             // TEMPORARY: disabled while diagnosing distant drawing errors.

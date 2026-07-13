@@ -78,6 +78,18 @@ namespace matter {
 // Used as the FileWatcher argument for LiveEditSession constructed on the
 // worker thread (which uses rebuild(paths) directly, never tick()).
 namespace {
+// Temporary compatibility boundary for the current OpenGL/raylib renderer.
+// Remove this when Renderer and RasterComposer consume CameraDesc directly.
+Camera3D to_legacy_raylib_camera_for_compatibility(const CameraDesc& camera) {
+    Camera3D legacy{};
+    legacy.position = {camera.position.x, camera.position.y, camera.position.z};
+    legacy.target = {camera.target.x, camera.target.y, camera.target.z};
+    legacy.up = {camera.up.x, camera.up.y, camera.up.z};
+    legacy.fovy = camera.vertical_fov_radians * 180.0f / 3.14159265358979323846f;
+    legacy.projection = CAMERA_PERSPECTIVE;
+    return legacy;
+}
+
 class NullWatcher : public live_edit::FileWatcher {
 public:
     void add_watch(const std::string&) override {}
@@ -2974,7 +2986,7 @@ void WorldSession::tick() {
 #endif // __linux__
 }
 
-void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
+void WorldSession::render(const CameraDesc& cam, int fb_width, int fb_height,
                           const RenderOptions& opts) {
     if (!impl_->connected) return;
 
@@ -3006,8 +3018,9 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
             ? (viewer::SectorResolver&)impl_->sec
             : (viewer::SectorResolver&)impl_->pass;
 
-    const Vector3 cp = cam.position;
-    const float3  cam_pos = make_float3(cp.x, cp.y, cp.z);
+    const Float3 cp = cam.position;
+    const float3 cam_pos = make_float3(cp.x, cp.y, cp.z);
+    const Camera3D legacy_camera = to_legacy_raylib_camera_for_compatibility(cam);
 
     if (opts.path == RenderPath::Raytrace) {
         // --- Raytrace path (mirrors main.cpp lines ~389–391 + warm-up ~286–290) ---
@@ -3031,7 +3044,7 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
         }
 
         // Sync camera (the facade owns its own Renderer, not main.cpp's).
-        impl_->renderer.camera() = cam;
+        impl_->renderer.camera() = legacy_camera;
 
         // Clear + draw.
         glClearColor(impl_->sky_clear[0], impl_->sky_clear[1], impl_->sky_clear[2], 1.0f);
@@ -3063,15 +3076,11 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
         auto t1 = std::chrono::steady_clock::now();
 
         float eye[3]     = {cp.x, cp.y, cp.z};
-        const float near_z = 1.0f, far_z = 5000.0f;
-        matter::CameraDesc camera{{cam.position.x, cam.position.y, cam.position.z},
-                                  {cam.target.x, cam.target.y, cam.target.z},
-                                  {cam.up.x, cam.up.y, cam.up.z},
-                                  cam.fovy * 3.14159265358979323846f / 180.0f,
-                                  near_z, far_z};
+        const float near_z = cam.near_plane;
+        const float far_z = cam.far_plane;
         viewer::FrameMatrices frame{};
         std::string matrix_error;
-        if (!viewer::build_frame_matrices(camera,
+        if (!viewer::build_frame_matrices(cam,
                                           static_cast<uint32_t>(fb_width),
                                           static_cast<uint32_t>(fb_height),
                                           frame, matrix_error)) {
@@ -3102,7 +3111,7 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
             impl_->rt_lighting.begin_gbuffer(fb_width, fb_height);
             auto d0 = std::chrono::steady_clock::now();
             impl_->stats.triangles = (uint32_t)impl_->raster->draw_gpu_driven_gbuffer(
-                    impl_->gpu_culler, *impl_->store, cam, near_z, far_z);
+                    impl_->gpu_culler, *impl_->store, legacy_camera, near_z, far_z);
             impl_->rt_lighting.end_gbuffer();
             impl_->stats.instances_drawn = (uint32_t)impl_->gpu_culler.emitted();
             impl_->stats.clusters_culled = (uint32_t)impl_->gpu_culler.culled_clusters();
@@ -3168,7 +3177,7 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
 
             auto d0 = std::chrono::steady_clock::now();
             impl_->stats.triangles = (uint32_t)impl_->raster->draw_gpu_driven(
-                    impl_->gpu_culler, *impl_->store, cam, near_z, far_z);
+                    impl_->gpu_culler, *impl_->store, legacy_camera, near_z, far_z);
             impl_->stats.instances_drawn    = (uint32_t)impl_->gpu_culler.emitted();
             impl_->stats.clusters_culled    = (uint32_t)impl_->gpu_culler.culled_clusters();
             impl_->stats.hiz_culled         = (uint32_t)impl_->gpu_culler.culled_hiz();

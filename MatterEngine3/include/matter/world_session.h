@@ -4,7 +4,7 @@
 #include <memory>
 #include <string>
 
-#include "raylib.h"   // Camera3D — POD math types are part of the API by design
+#include "matter/camera.h"
 
 #include "matter/events.h"
 #include "matter/query.h"
@@ -71,7 +71,7 @@ public:
 
     // Resolve -> cull -> clear (kernel-derived sky color) -> draw into the
     // currently bound framebuffer. Requires a live GL context on this thread.
-    void render(const Camera3D& cam, int fb_width, int fb_height,
+    void render(const CameraDesc& cam, int fb_width, int fb_height,
                 const RenderOptions& opts);
 
     // Phase B: run queued GL-thread bake work for up to ms_budget milliseconds.

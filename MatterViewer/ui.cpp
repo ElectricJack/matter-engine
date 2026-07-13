@@ -114,10 +114,14 @@ void Ui::draw_debug_panel(ViewerStats& s) {
     ImGui::End();
 }
 
-void Ui::draw_camera_panel(Camera3D& cam) {
-    ImGui::SetNextWindowPos(ImVec2(GetScreenWidth() - 270.0f, 20.0f), ImGuiCond_FirstUseEver);
+void Ui::draw_camera_panel(matter::CameraDesc& cam) {
+    ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - 270.0f, 20.0f),
+                            ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(250, 0), ImGuiCond_FirstUseEver);
     ImGui::Begin("Camera");
+
+    ImGui::DragFloat3("Position", &cam.position.x, 0.1f);
+    ImGui::DragFloat3("Target", &cam.target.x, 0.1f);
 
     float dx = cam.position.x - cam.target.x;
     float dy = cam.position.y - cam.target.y;

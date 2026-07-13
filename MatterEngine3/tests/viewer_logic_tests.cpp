@@ -17,6 +17,7 @@
 #include "part_flatten.h"  // Task 11: flatten_part for regen sniff test
 #include "world_lights.h"
 #include "probe_volume.h"
+#include "../../MatterViewer/camera_controller.h"
 
 #include <cmath>
 #include <cstdio>
@@ -40,6 +41,36 @@
 // expensive lod_bake on the large Tree geometry more than once per process.
 static viewer::PartStore* g_shared_store = nullptr;
 static viewer::WorldManifest g_shared_manifest;
+
+static bool camera_close3(matter::Float3 a, matter::Float3 b, float epsilon) {
+    return std::fabs(a.x - b.x) <= epsilon &&
+           std::fabs(a.y - b.y) <= epsilon &&
+           std::fabs(a.z - b.z) <= epsilon;
+}
+
+static void test_forward_moves_along_camera_forward() {
+    constexpr float kQuarterPi = 0.78539816339f;
+    matter::CameraDesc camera{{0, 0, 5}, {0, 0, 0}, {0, 1, 0},
+                              kQuarterPi, 1, 5000};
+    viewer::CameraInput input{};
+    input.forward = 1.0f;
+    viewer::apply_camera_input(camera, input, 1.0f, 2.0f, 0.002f);
+    CHECK(camera_close3(camera.position, {0, 0, 3}, 1e-5f), "forward position");
+    CHECK(camera_close3(camera.target, {0, 0, -2}, 1e-5f), "forward target");
+    printf("  test_forward_moves_along_camera_forward OK\n");
+}
+
+static void test_yaw_turns_camera_analytically() {
+    constexpr float kHalfPi = 1.57079632679f;
+    matter::CameraDesc camera{{0, 0, 0}, {0, 0, -5}, {0, 1, 0},
+                              0.78539816339f, 1, 5000};
+    viewer::CameraInput input{};
+    input.yaw_pixels = kHalfPi / 0.002f;
+    viewer::apply_camera_input(camera, input, 1.0f, 0.0f, 0.002f);
+    CHECK(camera_close3(camera.position, {0, 0, 0}, 1e-5f), "yaw position unchanged");
+    CHECK(camera_close3(camera.target, {5, 0, 0}, 1e-5f), "yaw target");
+    printf("  test_yaw_turns_camera_analytically OK\n");
+}
 
 static viewer::WorldManifestEntry mk_entry(uint32_t id, uint64_t hash, float x) {
     viewer::WorldManifestEntry e{};
@@ -1389,6 +1420,8 @@ static void test_install_phase_on_part_progress() {
 }
 
 int main() {
+    test_forward_moves_along_camera_forward();
+    test_yaw_turns_camera_analytically();
     test_cull_transform_convention();
     test_world_state_version();
     test_world_state_delta();

@@ -106,7 +106,7 @@ endif
 # MATTER_HAVE_AUTOREMESHER when autoremesher is present.
 
 # Application entry points (GL + imgui; no engine logic).
-APP_SRC = main.cpp ui.cpp
+APP_SRC = main.cpp ui.cpp camera_controller.cpp
 
 # Windows direct-source compile: ME3 pipeline + MSL + QJS (mirrors old viewer).
 # These are ONLY used by the Windows target; the Linux target links libmatter_engine3.a.

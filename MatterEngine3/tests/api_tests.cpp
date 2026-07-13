@@ -72,12 +72,10 @@ int main() {
     float tx = info.transform[3];
     float ty = info.transform[7];
     float tz = info.transform[11];
-    Camera3D cam{};
-    cam.position = (Vector3){ tx + 8.0f, ty + 6.0f, tz + 8.0f };
-    cam.target   = (Vector3){ tx, ty, tz };
-    cam.up       = (Vector3){0, 1, 0};
-    cam.fovy     = 60.0f;
-    cam.projection = CAMERA_PERSPECTIVE;
+    matter::CameraDesc cam{{tx + 8.0f, ty + 6.0f, tz + 8.0f},
+                           {tx, ty, tz}, {0, 1, 0},
+                           60.0f * 3.14159265358979323846f / 180.0f,
+                           1.0f, 5000.0f};
     matter::RenderOptions opts;   // defaults: GpuDriven + SectorLod
     opts.resolver = matter::ResolverKind::PassThrough;
     for (int i = 0; i < 3; ++i) {

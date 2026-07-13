@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "raylib.h"   // Camera3D for the orbit panel
+#include "matter/camera.h"
 
 namespace viewer {
 
@@ -81,7 +81,7 @@ public:
     void draw_debug_panel(ViewerStats& stats);
     // MSL-style orbit/zoom controls: navigate the view without locking the cursor
     // or using WASD (works over remote desktop). Mutates the camera in place.
-    void draw_camera_panel(Camera3D& cam);
+    void draw_camera_panel(matter::CameraDesc& cam);
     // Standalone panel listing available worlds as buttons. Clicking a non-current
     // world sets stats.world_switch_requested; main handles the swap next frame.
     void draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& stats);

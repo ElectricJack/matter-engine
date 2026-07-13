@@ -123,12 +123,10 @@ int main() {
     assert(std::fabs(sl - 0.0f) < 0.01f && "seaLevel matches fixture (0.0)");
 
     // 3. render one frame -> triangles > 0
-    Camera3D cam{};
-    cam.position = (Vector3){8.0f, 40.0f, 8.0f};
-    cam.target   = (Vector3){8.0f, 0.0f, 8.0f};
-    cam.up       = (Vector3){0, 1, 0};
-    cam.fovy     = 60.0f;
-    cam.projection = CAMERA_PERSPECTIVE;
+    matter::CameraDesc cam{{8.0f, 40.0f, 8.0f}, {8.0f, 0.0f, 8.0f},
+                           {0, 1, 0},
+                           60.0f * 3.14159265358979323846f / 180.0f,
+                           1.0f, 5000.0f};
     matter::RenderOptions opts;
     opts.resolver = matter::ResolverKind::PassThrough;
     for (int i = 0; i < 3; ++i) {
