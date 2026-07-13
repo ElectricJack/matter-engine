@@ -1,6 +1,8 @@
 #include "check.h"
 
 #include <cmath>
+#include <fstream>
+#include <sstream>
 #include <string>
 
 #include "matter/camera.h"
@@ -170,6 +172,21 @@ void test_unrepresentable_depth_range_has_specific_error() {
           "unrepresentable depth range error");
 }
 
+void test_active_raygen_kernels_use_vulkan_ndc_depth() {
+    const char* paths[] = {
+        "../src/render/shaders_rt/shadow_raygen.cu",
+        "../src/render/shaders_rt/lighting_raygen.cu",
+    };
+    for (const char* path : paths) {
+        std::ifstream input(path);
+        std::ostringstream text;
+        text << input.rdbuf();
+        CHECK(input.good() &&
+                  text.str().find("float ndc_z = z_ndc;") != std::string::npos,
+              "active raygen consumes Vulkan NDC depth directly");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -183,5 +200,6 @@ int main() {
     test_singular_matrix_inverse_fails();
     test_small_invertible_pivot_is_not_called_singular();
     test_unrepresentable_depth_range_has_specific_error();
+    test_active_raygen_kernels_use_vulkan_ndc_depth();
     return check_summary();
 }

@@ -19,7 +19,7 @@ extern "C" __global__ void __raygen__shadow() {
 
     float ndc_x = ((float)idx.x + 0.5f) / (float)params.width  * 2.0f - 1.0f;
     float ndc_y = ((float)idx.y + 0.5f) / (float)params.height * 2.0f - 1.0f;
-    float ndc_z = z_ndc * 2.0f - 1.0f;
+    float ndc_z = z_ndc;
 
     const float* m = params.inv_vp;
     float cx = ndc_x*m[0] + ndc_y*m[4] + ndc_z*m[8]  + m[12];

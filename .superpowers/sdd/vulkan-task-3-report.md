@@ -65,3 +65,31 @@ The complete requested legacy command could not run in this native environment:
 - Pre-existing dirty hunks in `matter_engine.cpp`, `part_store.cpp`, and
   `MatterEngine3/Makefile` were excluded with patch staging. All other unrelated
   dirty files remain unstaged.
+
+## Review fix: Vulkan-ZO RT unprojection
+
+Review identified that both active OptiX ray-generation kernels still converted
+the sampled `[0,1]` depth to OpenGL NDC `[-1,1]`, even though Task 3 now supplies
+the inverse Vulkan-ZO `world_to_clip`. Data-flow inspection confirmed
+`depth_linearize.comp` copies the window-depth sample unchanged.
+
+TDD evidence:
+
+- Added a `run-matrix` source gate requiring both active kernels to contain
+  `float ndc_z = z_ndc;`.
+- RED: `run-matrix` reported exactly two failures, one for each kernel.
+- Minimal fix: changed only the two `ndc_z` assignments; x/y reconstruction and
+  the projection contract were left unchanged.
+- GREEN: fresh `make -B -C MatterEngine3/tests run-matrix ...` returned
+  `ALL PASS`.
+
+Additional verification:
+
+- Fresh UCRT64 compilation of `matrix_math.o`, `frame_matrices.o`, and
+  `matter_engine.o`: exit 0.
+- CUDA 13.3 + OptiX 8.1 direct PTX compilation of both `shadow_raygen.cu` and
+  `lighting_raygen.cu`: exit 0. Both emitted only the existing nvcc warning that
+  the extern constant `params` declaration is treated as a static definition.
+- `lighting_raygen.cu` already contained extensive unrelated dirty work. Only
+  the one-line Vulkan unprojection hunk was patch-staged; the unrelated CUDA
+  edits remain unstaged. `shadow_raygen.cu` contributed only its one-line fix.
