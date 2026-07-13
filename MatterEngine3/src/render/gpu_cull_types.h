@@ -1,7 +1,9 @@
 #ifndef VIEWER_GPU_CULL_TYPES_H
 #define VIEWER_GPU_CULL_TYPES_H
+#include "gpu_matrix_pack.h"
 #include "part_store.h"
 #include <cstdint>
+#include <cstring>
 
 namespace viewer {
 
@@ -22,7 +24,7 @@ static_assert(sizeof(GpuClusterMeta) == 128, "must match std430 layout in cull.c
 
 // std430 mirror of cull.comp's GpuInstance. 80 B.
 struct GpuInstanceRec {
-    float transform[16];      // GL column-major memory order (transpose_to_gl output)
+    GpuMat4 object_to_world;  // explicit GLSL column-major packing
     uint32_t part_slot;
     uint32_t base_lod;        // debug/HUD only; cluster-level selection is authoritative
     uint32_t cluster_start;   // global ClusterMeta index of this part's first cluster
@@ -34,13 +36,12 @@ static_assert(sizeof(GpuInstanceRec) == 80, "must match std430 layout in cull.co
 struct DrawArraysCmd { uint32_t count, instance_count, first, base_instance; };
 static_assert(sizeof(DrawArraysCmd) == 16, "GL DrawArraysIndirectCommand");
 
-// Engine float[16] is row-major storage of a column-vector matrix.
-// GL/std430 mat4 reads memory as columns, so upload the transpose:
-// the shader's M * vec4(p,1) then equals viewer::transform_point(t, p).
-inline void transpose_to_gl(const float t[16], float out[16]) {
-    for (int r = 0; r < 4; ++r)
-        for (int c = 0; c < 4; ++c)
-            out[c*4 + r] = t[r*4 + c];
+inline GpuInstanceRec pack_instance(const float source[16]) {
+    matter::Mat4f matrix{};
+    std::memcpy(matrix.m, source, sizeof matrix.m);
+    GpuInstanceRec packed{};
+    packed.object_to_world = pack_glsl_mat4(matrix);
+    return packed;
 }
 
 inline GpuClusterMeta pack_cluster(const LoadedCluster& cl, uint32_t part_slot,

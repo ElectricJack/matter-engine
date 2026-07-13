@@ -394,6 +394,7 @@ SECTORBAKE_C = $(COMMON_MSL_C)
 
 PARTSTORE_TARGET = partstore_tests
 PARTSTORE_CPP = partstore_tests.cpp ../src/render/part_store.cpp \
+                ../src/render/matrix_math.cpp \
                 ../src/render/raster_mesh.cpp ../src/lod_select.cpp \
                 ../src/sector_grid.cpp ../src/lod_bake.cpp ../src/part_asset_v2.cpp \
                 $(MSL)/mesh_simplifier.cpp $(MSL)/mesh_indexed.cpp \
@@ -558,6 +559,7 @@ VIEWER_LOGIC_TARGET = viewer_logic_tests
 VIEWER_PIPELINE_CPP = $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../src/async_bake.cpp \
+              ../src/render/matrix_math.cpp ../src/render/frame_matrices.cpp \
               ../src/render/world_state.cpp \
               ../src/provider/resolvers.cpp \
               ../src/render/part_store.cpp \
@@ -608,6 +610,7 @@ RETOPO_INT_LDFLAGS = $(LDFLAGS) \
 # ===== flavor gpu (GPU tests) ==========================================
 GPU_RENDER_CPP = \
     ../src/async_bake.cpp \
+    ../src/render/matrix_math.cpp ../src/render/frame_matrices.cpp \
     ../src/render/renderer.cpp ../src/render/raster_composer.cpp \
     ../src/render/raster_mesh.cpp ../src/render/part_store.cpp \
     ../src/render/world_composer.cpp ../src/render/world_state.cpp \

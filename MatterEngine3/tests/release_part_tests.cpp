@@ -191,9 +191,8 @@ static void test_release_part_b_survives() {
         { 0, 0, 1, 1000 }, {  0, 0,-1, 1000 },
     };
     float eye[3]     = { 0, 0, -10 };
-    float vp[16];
-    memset(vp, 0, sizeof vp);
-    vp[0] = 1; vp[5] = 1; vp[10] = 1; vp[15] = 1;
+    matter::Mat4f vp{};
+    vp.m[0] = 1; vp.m[5] = 1; vp.m[10] = 1; vp.m[15] = 1;
 
     std::vector<viewer::ResolvedInstance> resolved = { make_ri(hashB) };
     bool cull_ok = culler.cull(resolved, store, eye, planes, vp, 1.0f);

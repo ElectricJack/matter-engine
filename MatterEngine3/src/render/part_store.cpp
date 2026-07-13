@@ -1,5 +1,5 @@
 #include "part_store.h"
-#include "raster_cull.h"       // viewer::mul16
+#include "matrix_math.h"
 
 #include "part_asset_v2.h"     // load_v2, cache_path_resolved, ChildInstance, LodLevels
 #include "lod_bake.h"          // lod_bake::bake_lods, BakeTargets
@@ -30,9 +30,12 @@ static void walk_rec(uint64_t hash, const float parent_rel[16], int depth,
     if (!lp) return;
     visitor(lp, hash, parent_rel, depth);
     for (const auto& c : lp->children) {
-        float rel[16];
-        viewer::mul16(parent_rel, c.transform, rel);
-        walk_rec(c.child_resolved_hash, rel, depth + 1, getter, visitor);
+        matter::Mat4f parent{};
+        matter::Mat4f child{};
+        std::memcpy(parent.m, parent_rel, sizeof parent.m);
+        std::memcpy(child.m, c.transform, sizeof child.m);
+        const matter::Mat4f rel = viewer::mat4_mul(parent, child);
+        walk_rec(c.child_resolved_hash, rel.m, depth + 1, getter, visitor);
     }
 }
 

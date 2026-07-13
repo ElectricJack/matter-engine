@@ -129,6 +129,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/tileset_bake_primary.cpp src/tileset_bake_ao.cpp src/tileset_bake_gpu.cpp \
           src/shader_source.cpp \
           src/render/renderer.cpp src/render/raster_composer.cpp src/render/raster_mesh.cpp \
+          src/render/matrix_math.cpp src/render/frame_matrices.cpp \
           src/render/part_store.cpp src/render/world_composer.cpp src/render/world_state.cpp \
           src/render/gpu_culler.cpp src/render/probe_texture.cpp \
           src/render/tileset_provider.cpp src/render/tileset_gl_ctx.cpp \
@@ -185,7 +186,8 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           tileset_phase.o tileset_phase_gpu.o \
           tileset_gtex.o tileset_torus_bvh.o tileset_bake_primary.o \
           tileset_bake_ao.o tileset_bake_gpu.o shader_source.o \
-          renderer.o raster_composer.o raster_mesh.o part_store.o world_composer.o world_state.o \
+          renderer.o raster_composer.o raster_mesh.o matrix_math.o frame_matrices.o \
+          part_store.o world_composer.o world_state.o \
           gpu_culler.o probe_texture.o tileset_provider.o tileset_gl_ctx.o \
           local_provider.o resolvers.o \
           matter_engine.o \

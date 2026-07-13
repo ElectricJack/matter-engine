@@ -1,5 +1,5 @@
 #include "sector_resolver.h"
-#include "raster_cull.h"       // viewer::mul16
+#include "matrix_math.h"
 
 #include "world_flatten.h"     // world_flatten::FlatInstance
 #include <cmath>
@@ -83,7 +83,12 @@ SectorLodResolver::resolve(const WorldState& state,
                     ResolvedInstance cr;
                     cr.part_hash = ref.child_hash;
                     cr.segment = 1;
-                    mul16(inst.world.cell, ref.rel_transform, cr.transform);
+                    matter::Mat4f parent{};
+                    matter::Mat4f relative{};
+                    std::memcpy(parent.m, inst.world.cell, sizeof parent.m);
+                    std::memcpy(relative.m, ref.rel_transform, sizeof relative.m);
+                    const matter::Mat4f child = mat4_mul(parent, relative);
+                    std::memcpy(cr.transform, child.m, sizeof cr.transform);
                     auto child_it = lods.find(ref.child_hash);
                     if (child_it != lods.end() && pl->bound_radius > 0.0f) {
                         float child_ps = ps * child_it->second.bound_radius * ref.child_scale

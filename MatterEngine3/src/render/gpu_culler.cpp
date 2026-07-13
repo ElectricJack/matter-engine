@@ -5,12 +5,12 @@
 // Matrix conventions (important — read before editing):
 //   Engine float[16] is row-major storage of column-vector matrices.
 //   Translation lives at t[3], t[7], t[11] (row 0,1,2 col 3).
-//   transpose_to_gl(t, out) writes out[c*4+r] = t[r*4+c], producing GL column-major.
+//   CPU transforms remain canonical until explicitly packed at the GPU boundary.
 //   The GLSL shader then has M[col][row] memory order, which matches standard gl_Position math.
 
 #include "async_bake.h"
 #include "gpu_culler.h"
-#include "raster_cull.h"    // mul16, inst_scale
+#include "matrix_math.h"
 
 // Raylib must come before glad to avoid double-definition of GL types.
 #include "raylib.h"
@@ -511,11 +511,7 @@ int GpuCuller::fill_rt_instances(std::vector<RtInstance>& out) const {
         if (!pg.vao) continue;
         RtInstance ri;
         ri.part_hash = pg.part_hash;
-        const float* c = ei.transform;
-        ri.transform[0]=c[0]; ri.transform[1]=c[4]; ri.transform[2]=c[8];  ri.transform[3]=c[12];
-        ri.transform[4]=c[1]; ri.transform[5]=c[5]; ri.transform[6]=c[9];  ri.transform[7]=c[13];
-        ri.transform[8]=c[2]; ri.transform[9]=c[6]; ri.transform[10]=c[10]; ri.transform[11]=c[14];
-        ri.transform[12]=c[3]; ri.transform[13]=c[7]; ri.transform[14]=c[11]; ri.transform[15]=c[15];
+        std::memcpy(ri.transform, ei.transform, sizeof ri.transform);
         out.push_back(ri);
     }
     return (int)out.size();
@@ -598,7 +594,7 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
                      PartStore& store,
                      const float cam_eye[3],
                      const float planes[6][4],
-                     const float view_proj[16],
+                     const matter::Mat4f& world_to_clip,
                      float pixel_budget)
 {
     if (resolved.empty()) return false;
@@ -653,17 +649,16 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
                     if (node_slot < 0) continue;
 
                     // Combined world transform: resolved.transform × node.rel_transform.
-                    float combined[16];
-                    mul16(ri.transform, en.rel_transform, combined);
-
-                    // Transpose to GL column-major.
-                    float gl_xform[16];
-                    transpose_to_gl(combined, gl_xform);
+                    matter::Mat4f root{};
+                    matter::Mat4f relative{};
+                    std::memcpy(root.m, ri.transform, sizeof root.m);
+                    std::memcpy(relative.m, en.rel_transform, sizeof relative.m);
+                    const matter::Mat4f combined = mat4_mul(root, relative);
 
                     ExpandedInst ei;
                     ei.part_slot = node_slot;
                     ei.segment   = ri.segment;
-                    std::memcpy(ei.transform, gl_xform, 64);
+                    std::memcpy(ei.transform, combined.m, sizeof ei.transform);
                     expanded_.push_back(ei);
 
                     // Track per-slot count.
@@ -673,13 +668,10 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
                 }
             } else {
                 // No expansion: the root part is drawable directly.
-                float gl_xform[16];
-                transpose_to_gl(ri.transform, gl_xform);
-
                 ExpandedInst ei;
                 ei.part_slot = root_slot;
                 ei.segment   = ri.segment;
-                std::memcpy(ei.transform, gl_xform, 64);
+                std::memcpy(ei.transform, ri.transform, sizeof ei.transform);
                 expanded_.push_back(ei);
 
                 if ((int)per_slot_count_.size() <= root_slot)
@@ -728,8 +720,7 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
             if (ei.part_slot < 0 || ei.part_slot >= (int)parts_.size()) continue;
             const PartGpu& pg = parts_[ei.part_slot];
 
-            GpuInstanceRec rec{};
-            std::memcpy(rec.transform, ei.transform, 64);
+            GpuInstanceRec rec = pack_instance(ei.transform);
             rec.part_slot      = (uint32_t)ei.part_slot;
             rec.base_lod       = 0;
             const uint32_t fine_n = pg.fine_cluster_count;
@@ -834,15 +825,13 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
     // runtime flag is on AND a pyramid was actually built (hiz_valid_) — the
     // first frame after enable (and any MSAA-guard trip) has no pyramid.
     //
-    // view_proj: engine ROW-MAJOR vp uploaded with transpose=GL_FALSE.  GL
-    // reads the memory column-major, which is exactly the shader-convention
-    // VP (= transpose of the C++ storage) — the same implicit transpose that
-    // row_major_to_matrix + raylib's matrix upload perform for the draw path,
-    // and the same convention extract_frustum_planes documents.
+    // Canonical CPU world_to_clip is explicitly packed for GLSL upload.
     // ------------------------------------------------------------------
     const int hiz_on = (hiz_enabled_ && hiz_valid_ && hiz_tex_) ? 1 : 0;
     glUniform1i(uloc_hiz_enabled_, hiz_on);
-    glUniformMatrix4fv(uloc_view_proj_, 1, GL_FALSE, view_proj);
+    const GpuMat4 packed_world_to_clip = pack_glsl_mat4(world_to_clip);
+    glUniformMatrix4fv(uloc_view_proj_, 1, GL_FALSE,
+                       packed_world_to_clip.elements);
     if (hiz_on) {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, hiz_tex_);

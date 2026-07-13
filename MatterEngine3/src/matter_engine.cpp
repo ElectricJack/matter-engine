@@ -19,6 +19,7 @@
 #include "probe_texture.h"
 #include "gpu_culler.h"
 #include "raster_cull.h"
+#include "frame_matrices.h"
 #include "rt_lighting.h"
 #include "material_registry.h"  // MaterialRegistryPackForGPU/Count, MATERIAL_FLOATS_PER_DEF
 #include "gl46.h"
@@ -3062,20 +3063,22 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
         auto t1 = std::chrono::steady_clock::now();
 
         float eye[3]     = {cp.x, cp.y, cp.z};
-        Vector3 tgt      = cam.target;
-        float target3[3] = {tgt.x, tgt.y, tgt.z};
-        float up3[3]     = {0, 1, 0};
-        float aspect     = (float)fb_width / (float)fb_height;
-        // Build view/proj/vp explicitly (same near/far as
-        // camera_frustum_planes_raw) so the HiZ path gets the exact vp
-        // the frustum planes came from.
         const float near_z = 1.0f, far_z = 5000.0f;
-        float view[16], proj[16], vp[16];
-        viewer::make_lookat(eye, target3, up3, view);
-        viewer::make_perspective(cam.fovy, aspect, near_z, far_z, proj);
-        viewer::mul16(view, proj, vp);
-        float planes[6][4];
-        viewer::extract_frustum_planes(vp, planes);
+        matter::CameraDesc camera{{cam.position.x, cam.position.y, cam.position.z},
+                                  {cam.target.x, cam.target.y, cam.target.z},
+                                  {cam.up.x, cam.up.y, cam.up.z},
+                                  cam.fovy * 3.14159265358979323846f / 180.0f,
+                                  near_z, far_z};
+        viewer::FrameMatrices frame{};
+        std::string matrix_error;
+        if (!viewer::build_frame_matrices(camera,
+                                          static_cast<uint32_t>(fb_width),
+                                          static_cast<uint32_t>(fb_height),
+                                          frame, matrix_error)) {
+            printf("Frame matrix build failed: %s\n", matrix_error.c_str());
+            return;
+        }
+        const float* vp = frame.world_to_clip.m;
         // Propagate the runtime HiZ toggle every frame.
         impl_->gpu_culler.set_hiz_enabled(opts.hiz_occlusion);
         impl_->raster->set_wireframe(opts.wireframe);
@@ -3083,7 +3086,8 @@ void WorldSession::render(const Camera3D& cam, int fb_width, int fb_height,
         // Enable stats readback (same as main.cpp line 418 — viewer always shows counters).
         impl_->gpu_culler.set_stats_readback(true);
         impl_->gpu_culler.set_min_projected_size(opts.min_projected_size);
-        impl_->gpu_culler.cull(resolved, *impl_->store, eye, planes, vp, budget);
+        impl_->gpu_culler.cull(resolved, *impl_->store, eye,
+                               frame.frustum_planes, frame.world_to_clip, budget);
         auto t2 = std::chrono::steady_clock::now();
 
         impl_->stats.resolve_ms = std::chrono::duration<float, std::milli>(t1 - t0).count();

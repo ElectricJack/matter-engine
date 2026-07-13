@@ -1,5 +1,5 @@
 #include "world_composer.h"
-#include "raster_cull.h"   // viewer::mul16
+#include "matrix_math.h"
 
 #include <cstring>
 
@@ -29,8 +29,11 @@ int WorldComposer::compose(const WorldState& state,
                 if (insts.size() >= kMaxInstances) return;
 
                 // World transform = r.transform * rel_transform (identity at depth 0).
-                float world[16];
-                viewer::mul16(r.transform, rel, world);
+                matter::Mat4f root{};
+                matter::Mat4f relative{};
+                std::memcpy(root.m, r.transform, sizeof root.m);
+                std::memcpy(relative.m, rel, sizeof relative.m);
+                const matter::Mat4f world = viewer::mat4_mul(root, relative);
 
                 int use_lod = (depth == 0) ? resolved_lod : 0;
                 if (use_lod < 0) use_lod = 0;
@@ -40,7 +43,7 @@ int WorldComposer::compose(const WorldState& state,
                 di.blas_handle = lp->lod_blas[use_lod];
                 di.material_id = 0;
                 di.is_imposter = false;
-                std::memcpy(di.transform.m, world, sizeof(di.transform.m));
+                std::memcpy(di.transform.m, world.m, sizeof(di.transform.m));
                 insts.push_back(di);
             });
     }

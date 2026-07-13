@@ -13,6 +13,7 @@
 #include "raster_mesh.h"
 #include "raster_composer.h"   // RasterBatch (moved here from gpu_culler.h)
 #include "gpu_cull_types.h"
+#include "frame_matrices.h"
 #include "part_store.h"
 #include "sector_resolver.h"
 
@@ -41,7 +42,7 @@
 //   raylib Matrix memory is ROW-major (declaration order m0,m4,m8,m12 = first row),
 //   and engine float[16] is also row-major, so row_major_to_matrix is a straight copy.
 //   A direct memcpy of GL data into Matrix would therefore yield the TRANSPOSE;
-//   we first transpose back to engine layout (transpose_to_gl is self-inverse),
+//   we explicitly unpack it into canonical engine layout,
 //   then convert via row_major_to_matrix.
 // ---------------------------------------------------------------------------
 static std::vector<viewer::RasterBatch> readback_batches(viewer::GpuCuller& culler,
@@ -109,10 +110,12 @@ static std::vector<viewer::RasterBatch> readback_batches(viewer::GpuCuller& cull
                 for (uint32_t i = 0; i < n; ++i) {
                     uint32_t xf_slot = base + i;
                     if (xf_slot >= total_slots) break;
-                    // GL column-major → engine row-major (transpose_to_gl is its
-                    // own inverse as a memory op) → raylib Matrix.
+                    // GL column-major -> canonical engine layout -> raylib Matrix.
                     float engine_t[16];
-                    transpose_to_gl(xforms_gpu.data() + (size_t)xf_slot * 16, engine_t);
+                    const float* packed = xforms_gpu.data() + (size_t)xf_slot * 16;
+                    for (int row = 0; row < 4; ++row)
+                        for (int column = 0; column < 4; ++column)
+                            engine_t[row * 4 + column] = packed[column * 4 + row];
                     b.transforms.push_back(row_major_to_matrix(engine_t));
                 }
                 if (!b.transforms.empty())
@@ -295,19 +298,25 @@ static uint64_t build_fixture2(viewer::PartStore& store) {
     return hash;
 }
 
-// Build the engine row-major view-proj (vp) AND the frustum planes for a
-// camera. Mirrors camera_frustum_planes_raw but exposes the vp so tests can
-// feed GpuCuller::cull()'s view_proj parameter (HiZ path). near/far are
+// Build canonical Vulkan frame matrices for the GPU culler. near/far are
 // per-test: the engine default near of 0.05 packs all practical depths at
 // window-z ≈ 1, useless for occlusion assertions.
 static void make_cam(const float eye[3], const float target[3], const float up[3],
                      float fovy_deg, float aspect, float near_z, float far_z,
-                     float vp[16], float planes[6][4]) {
-    float view[16], proj[16];
-    viewer::make_lookat(eye, target, up, view);
-    viewer::make_perspective(fovy_deg, aspect, near_z, far_z, proj);
-    viewer::mul16(view, proj, vp);
-    viewer::extract_frustum_planes(vp, planes);
+                     matter::Mat4f& vp, float planes[6][4]) {
+    matter::CameraDesc camera{{eye[0], eye[1], eye[2]},
+                              {target[0], target[1], target[2]},
+                              {up[0], up[1], up[2]},
+                              fovy_deg * 3.14159265358979323846f / 180.0f,
+                              near_z, far_z};
+    viewer::FrameMatrices frame{};
+    std::string error;
+    const uint32_t height = 1000;
+    const uint32_t width = static_cast<uint32_t>(aspect * height + 0.5f);
+    CHECK(viewer::build_frame_matrices(camera, width, height, frame, error),
+          "build Vulkan frame matrices");
+    vp = frame.world_to_clip;
+    std::memcpy(planes, frame.frustum_planes, sizeof frame.frustum_planes);
 }
 
 // Build a ResolvedInstance for a given transform.
@@ -381,7 +390,7 @@ static bool test_parity_frustum_lod() {
     const float fovy      = 60.0f;
     const float aspect    = 1.6f;
 
-    float vp[16];
+    matter::Mat4f vp{};
     float planes[6][4];
     make_cam(eye, target, up, fovy, aspect, 0.05f, 4000.0f, vp, planes);
 
@@ -535,7 +544,7 @@ static bool test_multi_part_parity() {
     const float eye[3]    = { 0.0f, 0.0f, 0.0f };
     const float target[3] = { 1.0f, 0.0f, 0.0f };
     const float up[3]     = { 0.0f, 1.0f, 0.0f };
-    float vp[16];
+    matter::Mat4f vp{};
     float planes[6][4];
     make_cam(eye, target, up, 60.0f, 1.6f, 0.05f, 4000.0f, vp, planes);
 
@@ -628,7 +637,7 @@ static bool test_matrix_convention() {
     const float eye[3]    = { 0.0f, 0.0f, 0.0f };
     const float target[3] = { 1.0f, 0.0f, 0.0f };
     const float up[3]     = { 0.0f, 1.0f, 0.0f };
-    float vp[16];
+    matter::Mat4f vp{};
     float planes[6][4];
     make_cam(eye, target, up, 90.0f, 1.0f, 0.05f, 4000.0f, vp, planes);
 
@@ -704,7 +713,7 @@ static bool test_cap_growth() {
     const float eye[3]    = { -1.0f, 0.0f, 0.0f };
     const float target[3] = { 1.0f, 0.0f, 0.0f };
     const float up[3]     = { 0.0f, 1.0f, 0.0f };
-    float vp[16];
+    matter::Mat4f vp{};
     float planes[6][4];
     make_cam(eye, target, up, 170.0f, 1.0f, 0.05f, 4000.0f, vp, planes);
 
@@ -772,7 +781,7 @@ static bool test_empty_resolve() {
     const float eye[3]    = { 0.0f, 0.0f, 0.0f };
     const float target[3] = { 1.0f, 0.0f, 0.0f };
     const float up[3]     = { 0.0f, 1.0f, 0.0f };
-    float vp[16];
+    matter::Mat4f vp{};
     float planes[6][4];
     make_cam(eye, target, up, 60.0f, 1.6f, 0.05f, 4000.0f, vp, planes);
 
@@ -968,7 +977,7 @@ static bool test_hiz_occlusion() {
     const float eye[3]    = { 0.0f, 0.0f, 0.0f };
     const float target[3] = { 1.0f, 0.0f, 0.0f };
     const float up[3]     = { 0.0f, 1.0f, 0.0f };
-    float vp[16];
+    matter::Mat4f vp{};
     float planes[6][4];
     make_cam(eye, target, up, 90.0f, (float)W / (float)H, 1.0f, 100.0f, vp, planes);
 
@@ -1108,7 +1117,8 @@ static bool test_cull_segment_gating() {
     float eye[3]    = { 0, 0, -20 };
     float target[3] = { 0, 0, 0 };
     float up[3]     = { 0, 1, 0 };
-    float vp[16], planes[6][4];
+    matter::Mat4f vp{};
+    float planes[6][4];
     make_cam(eye, target, up, 90.0f, 1.0f, 0.1f, 1000.0f, vp, planes);
 
     float ident[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};

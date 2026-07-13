@@ -9,6 +9,8 @@
 #include "../src/render/raster_cull.h"
 #include "../src/render/probe_texture.h"   // kProbeAmbientScale (previously via raster_composer.h)
 #include "../src/render/gpu_cull_types.h"
+#include "../src/render/frame_matrices.h"
+#include "../src/render/matrix_math.h"
 #include "lod_select.h"   // PartLodTable, PartLod
 #include "part_graph.h"   // PartGraph + FileModuleResolver/HostBaker (script-host guarded)
 #include "part_asset_v2.h"
@@ -998,15 +1000,15 @@ static void test_cull_transform_convention() {
     // T(100, 0, 0) in engine convention.
     float t100[16] = { 1,0,0,100,  0,1,0,0,  0,0,1,0,  0,0,0,1 };
 
-    float ox, oy, oz;
-    viewer::transform_point(t100, 0, 0, 0, ox, oy, oz);
-    CHECK(std::fabs(ox - 100.0f) < 1e-4f && std::fabs(oy) < 1e-4f &&
-          std::fabs(oz) < 1e-4f,
+    const matter::Mat4f transform = viewer::persisted_mat4(t100);
+    const auto origin = viewer::transform_point(transform, {0, 0, 0});
+    CHECK(std::fabs(origin.x - 100.0f) < 1e-4f && std::fabs(origin.y) < 1e-4f &&
+          std::fabs(origin.z) < 1e-4f,
           "cull_convention: T(100,0,0) maps origin to (100,0,0)");
 
-    viewer::transform_point(t100, 1, 2, 3, ox, oy, oz);
-    CHECK(std::fabs(ox - 101.0f) < 1e-4f && std::fabs(oy - 2.0f) < 1e-4f &&
-          std::fabs(oz - 3.0f) < 1e-4f,
+    const auto point = viewer::transform_point(transform, {1, 2, 3});
+    CHECK(std::fabs(point.x - 101.0f) < 1e-4f && std::fabs(point.y - 2.0f) < 1e-4f &&
+          std::fabs(point.z - 3.0f) < 1e-4f,
           "cull_convention: T(100,0,0) maps (1,2,3) to (101,2,3)");
 
     // Half-space planes accepting only x >= 50 (repeated to fill all 6 slots).
@@ -1207,21 +1209,30 @@ static void test_cluster_budget_dial() {
 }
 
 static void test_frustum_planes_known_camera() {
-    // Camera at origin looking down -Z (engine convention: forward = target-eye).
-    float eye[3] = {0, 0, 0}, target[3] = {0, 0, -1}, up[3] = {0, 1, 0};
-    float planes[6][4];
-    viewer::camera_frustum_planes_raw(eye, target, up, 60.0f, 16.0f/9.0f, planes);
+    matter::CameraDesc camera{{0, 0, 0}, {0, 0, -1}, {0, 1, 0},
+                              60.0f * 3.14159265358979323846f / 180.0f,
+                              0.05f, 4000.0f};
+    viewer::FrameMatrices frame{};
+    std::string error;
+    CHECK(viewer::build_frame_matrices(camera, 1600, 900, frame, error),
+          "Vulkan frame matrices build");
+    const auto near_ndc = viewer::project_ndc(frame.world_to_clip, {0, 0, -0.05f});
+    const auto far_ndc = viewer::project_ndc(frame.world_to_clip, {0, 0, -4000.0f});
+    CHECK(std::fabs(near_ndc.z) < 1e-5f, "Vulkan near plane maps to NDC z=0");
+    CHECK(std::fabs(far_ndc.z - 1.0f) < 1e-5f, "Vulkan far plane maps to NDC z=1");
     // A point straight ahead inside the frustum passes all 6 planes.
     float p[3] = {0, 0, -10};
     for (int i = 0; i < 6; ++i) {
-        float d = planes[i][0]*p[0] + planes[i][1]*p[1] + planes[i][2]*p[2] + planes[i][3];
+        float d = frame.frustum_planes[i][0]*p[0] + frame.frustum_planes[i][1]*p[1]
+                + frame.frustum_planes[i][2]*p[2] + frame.frustum_planes[i][3];
         CHECK(d >= 0.0f, "inside point passes plane");
     }
     // A point 1000 units behind the camera fails at least one plane.
     float q[3] = {0, 0, 1000};
     bool outside = false;
     for (int i = 0; i < 6; ++i) {
-        float d = planes[i][0]*q[0] + planes[i][1]*q[1] + planes[i][2]*q[2] + planes[i][3];
+        float d = frame.frustum_planes[i][0]*q[0] + frame.frustum_planes[i][1]*q[1]
+                + frame.frustum_planes[i][2]*q[2] + frame.frustum_planes[i][3];
         if (d < 0.0f) outside = true;
     }
     CHECK(outside, "behind point fails a plane");
@@ -1229,18 +1240,26 @@ static void test_frustum_planes_known_camera() {
 }
 
 // Task 3: GPU record types + packing
-static void test_transpose_to_gl_roundtrip() {
-    // Engine transform: translate(5,6,7) — translation at [3],[7],[11].
-    float t[16] = {1,0,0,5, 0,1,0,6, 0,0,1,7, 0,0,0,1};
-    float g[16];
-    viewer::transpose_to_gl(t, g);
-    // GL column-major memory: translation lands in the 4th column = g[12..14].
-    CHECK(g[12] == 5 && g[13] == 6 && g[14] == 7, "translation in GL column 3");
-    // shader (M*v).x for v=(0,0,0,1) = g[12] -> 5, matches transform_point x.
-    float ox, oy, oz;
-    viewer::transform_point(t, 0, 0, 0, ox, oy, oz);
-    CHECK(ox == 5 && oy == 6 && oz == 7, "transform_point agrees");
-    printf("  test_transpose_to_gl_roundtrip OK\n");
+static void test_serialized_transform_bytes_are_unchanged() {
+    // Persisted transform: translate(7,8,9) at [3],[7],[11].
+    float fixture[16] = {1,0,0,7, 0,1,0,8, 0,0,1,9, 0,0,0,1};
+    matter::Mat4f matrix{};
+    std::memcpy(matrix.m, fixture, sizeof fixture);
+    const auto translated = viewer::transform_point(matrix, {0,0,0});
+    CHECK(std::fabs(translated.x - 7.0f) < 1e-6f &&
+          std::fabs(translated.y - 8.0f) < 1e-6f &&
+          std::fabs(translated.z - 9.0f) < 1e-6f,
+          "serialized translation remains at [3,7,11]");
+    CHECK(std::memcmp(matrix.m, fixture, sizeof fixture) == 0,
+          "serialized transform bytes unchanged");
+    const viewer::GpuInstanceRec packed = viewer::pack_instance(fixture);
+    CHECK(packed.object_to_world.elements[12] == 7.0f &&
+          packed.object_to_world.elements[13] == 8.0f &&
+          packed.object_to_world.elements[14] == 9.0f,
+          "explicit GLSL packing moves translation to column 3");
+    CHECK(std::memcmp(fixture, matrix.m, sizeof fixture) == 0,
+          "GPU packing does not mutate serialized bytes");
+    printf("  test_serialized_transform_bytes_are_unchanged OK\n");
 }
 
 static void test_pack_cluster_thresholds() {
@@ -1402,7 +1421,7 @@ int main() {
     // Task 1 (GPU culler): frustum/matrix helpers in raster_cull.h
     test_frustum_planes_known_camera();
     // Task 3 (GPU culler): GPU record types + packing
-    test_transpose_to_gl_roundtrip();
+    test_serialized_transform_bytes_are_unchanged();
     test_pack_cluster_thresholds();
     test_pack_whole_part_zero_threshold();
     // Task 4 (GPU culler): per-part compositional expansion table

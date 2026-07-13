@@ -17,7 +17,7 @@ struct ClusterMeta {
     uint  pad1a; uint pad1b; uint pad1c;
 };
 struct GpuInstance {
-    mat4 transform;             // column-major (pre-transposed on upload)
+    mat4 transform;             // explicitly packed GLSL column-major matrix
     uint part_slot; uint base_lod; uint cluster_start; uint cluster_count;
 };
 struct DrawCmd { uint count; uint instance_count; uint first; uint base_instance; };
@@ -39,7 +39,7 @@ uniform uint  max_clusters_per_instance;
 // pyramid was built this session (previous frame's depth, conservative).
 uniform int  hiz_enabled;
 uniform sampler2D hiz_tex;
-uniform mat4 view_proj;          // shader-convention VP (CPU vp transposed on upload)
+uniform mat4 view_proj;          // explicitly packed Vulkan world-to-clip
 uniform vec2 hiz_size;           // mip-0 texel dims
 
 void main() {
@@ -82,7 +82,7 @@ void main() {
             if (c.w <= 0.001) { crosses_near = true; break; }
             vec3 ndc = c.xyz / c.w;
             uv_min = min(uv_min, ndc.xy); uv_max = max(uv_max, ndc.xy);
-            z_min = min(z_min, ndc.z * 0.5 + 0.5);   // [0,1] window depth
+            z_min = min(z_min, ndc.z);   // Vulkan NDC already matches [0,1] depth
         }
         if (!crosses_near) {
             vec2 a = clamp(uv_min * 0.5 + 0.5, 0.0, 1.0);

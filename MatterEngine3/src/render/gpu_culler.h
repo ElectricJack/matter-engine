@@ -51,18 +51,15 @@ public:
     void release_part(uint64_t part_hash);
 
     // Frame: upload instances (expansion applied), seed cmds, dispatch cull.
-    // planes[6][4] from raster_cull.h extract_frustum_planes (or the
-    // camera_frustum_planes wrappers).  cam_eye[3] world-space eye position.
-    // view_proj[16] is the engine ROW-MAJOR VP from mul16(view, proj) — the
-    // SAME matrix extract_frustum_planes consumes; cull() uploads it so the
-    // shader receives the column-vector (shader-convention) VP for HiZ.
+    // Planes and world_to_clip come from one build_frame_matrices call.
+    // cam_eye[3] is the world-space eye; the matrix is explicitly GPU-packed.
     // pixel_budget is the runtime LOD quality dial (default 1.0).
     // Returns false if nothing to draw (empty resolved list or no registered parts).
     bool cull(const std::vector<ResolvedInstance>& resolved,
               PartStore& store,
               const float cam_eye[3],
               const float planes[6][4],
-              const float view_proj[16],
+              const matter::Mat4f& world_to_clip,
               float pixel_budget);
 
     // Stage-2: issue glMultiDrawArraysIndirect for all registered parts using the
@@ -243,7 +240,7 @@ private:
     struct ExpandedInst {
         int   part_slot;
         int   segment;         // 0 = fine (trunk), 1 = coarse/merged
-        float transform[16];   // GL column-major (post-transpose_to_gl)
+        float transform[16];   // canonical CPU object-to-world persisted layout
     };
     std::vector<ExpandedInst> expanded_;
     std::vector<uint32_t>     per_slot_count_;
