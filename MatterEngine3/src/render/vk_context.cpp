@@ -1457,6 +1457,46 @@ bool VulkanDevice::end_frame(const VulkanFrame& frame, std::string& error) {
     return impl_->end_frame(frame, error);
 }
 
+bool VulkanDevice::submit_and_wait(VkCommandBuffer command_buffer,
+                                   VkFence fence, bool& completion_proven,
+                                   std::string& error) {
+    error.clear();
+    // No work is pending until vkQueueSubmit2 succeeds.
+    completion_proven = true;
+    if (!impl_->ensure_healthy(error)) return false;
+    if (command_buffer == VK_NULL_HANDLE || fence == VK_NULL_HANDLE) {
+        error = "submit_and_wait requires valid command buffer and fence handles";
+        return impl_->poison_device(error,
+                                    "immediate submission invariant failed");
+    }
+    VkCommandBufferSubmitInfo command_info{
+        VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO};
+    command_info.commandBuffer = command_buffer;
+    VkSubmitInfo2 submit{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+    submit.commandBufferInfoCount = 1;
+    submit.pCommandBufferInfos = &command_info;
+    const VkResult submitted =
+        vkQueueSubmit2(impl_->graphics_queue, 1, &submit, fence);
+    if (submitted != VK_SUCCESS) {
+        // A failed queue submission did not make this command buffer pending,
+        // so its owning pool can be released even though the device is poisoned.
+        completion_proven = true;
+        vk_ok(submitted, "vkQueueSubmit2(immediate)", error);
+        return impl_->poison_device(error, "immediate queue submission failed");
+    }
+    completion_proven = false;
+    const VkResult waited = vkWaitForFences(
+        impl_->device, 1, &fence, VK_TRUE,
+        std::numeric_limits<uint64_t>::max());
+    if (waited != VK_SUCCESS) {
+        vk_ok(waited, "vkWaitForFences(immediate)", error);
+        return impl_->poison_device(
+            error, "immediate submission completion is unproven");
+    }
+    completion_proven = true;
+    return true;
+}
+
 void VulkanDevice::wait_idle() {
     if (impl_->device == VK_NULL_HANDLE) return;
     if (impl_->device_poisoned) {

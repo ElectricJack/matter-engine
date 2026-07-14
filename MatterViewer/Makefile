@@ -365,16 +365,40 @@ build/windows/glfw/%.o: $(GLFW_SRC_DIR)/%.c
 $(GLFW_WIN_LIB): $(GLFW_WIN_OBJ)
 	$(WIN_AR) rcs $@ $^
 
+VK_SPV = build/shaders_vk/transform_probe.comp.spv
+VK_EMBEDDED_HEADER = $(ME3_DIR)/shaders_gen/embedded_spirv.h
+
+build/shaders_vk/%.spv: $(ME3_DIR)/shaders_vk/%
+	@mkdir -p $(dir $@)
+	$(GLSLC) --target-env=vulkan1.3 -O $< -o $@
+
+$(VK_EMBEDDED_HEADER): $(VK_SPV) $(ME3_DIR)/tools/embed_spirv.py
+	python3 $(ME3_DIR)/tools/embed_spirv.py $@ $(VK_SPV)
+
 build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/tests/vulkan_smoke_tests.cpp \
-        $(ME3_DIR)/src/render/vk_context.cpp $(GLFW_WIN_LIB)
+        $(ME3_DIR)/include/matter/vulkan_device.h \
+        $(ME3_DIR)/src/render/gpu_matrix_pack.h \
+        $(ME3_DIR)/src/render/matrix_math.h \
+        $(ME3_DIR)/src/render/vk_resources.h \
+        $(ME3_DIR)/src/render/vk_pipeline.h \
+        $(ME3_DIR)/src/render/vk_context.cpp \
+        $(ME3_DIR)/src/render/vk_resources.cpp \
+        $(ME3_DIR)/src/render/vk_pipeline.cpp \
+        $(ME3_DIR)/src/render/matrix_math.cpp \
+        $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB)
 	@mkdir -p $(dir $@)
 	$(WIN_CXX) $(ME3_DIR)/tests/vulkan_smoke_tests.cpp \
-	    $(ME3_DIR)/src/render/vk_context.cpp $(GLFW_WIN_LIB) -o $@ \
+	    $(ME3_DIR)/src/render/vk_context.cpp \
+	    $(ME3_DIR)/src/render/vk_resources.cpp \
+	    $(ME3_DIR)/src/render/vk_pipeline.cpp \
+	    $(ME3_DIR)/src/render/matrix_math.cpp \
+	    $(GLFW_WIN_LIB) -o $@ \
 	    -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers \
 	    -static \
 	    -DMATTER_VK_TEST_LAYER_PATH='"$(VULKAN_RUNTIME_DIR)"' \
-	    -I$(ME3_DIR)/include -I$(ME3_DIR)/tests \
+	    -I$(ME3_DIR) -I$(ME3_DIR)/include -I$(ME3_DIR)/src \
+	    -I$(ME3_DIR)/tests \
 	    -I../Libraries/raylib/src/external/glfw/include \
 	    -I$(VULKAN_INCLUDE) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 \
 	    -lgdi32 -luser32 -lshell32 -Wl,-Bstatic

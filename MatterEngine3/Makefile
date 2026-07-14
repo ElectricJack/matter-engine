@@ -224,7 +224,7 @@ SHADER_LOGICAL := shaders/raster.vs shaders/raster.fs shaders/tileset_sampling.g
 # shaders/ is a symlink -> ../MatterSurfaceLib/shaders; shaders_gpu/ is a real dir.
 SHADER_FILES := $(SHADER_LOGICAL)
 
-.PHONY: all clean test
+.PHONY: all clean test vulkan-spirv
 
 # all MUST be the first target so it is the default goal.
 all: $(LIB)
@@ -232,6 +232,18 @@ all: $(LIB)
 shaders_gen/embedded_shaders.h: tools/embed_shaders.py $(SHADER_FILES)
 	mkdir -p shaders_gen
 	python3 tools/embed_shaders.py $@ . $(SHADER_LOGICAL)
+
+GLSLC ?= glslc
+VK_SPV = build/shaders_vk/transform_probe.comp.spv
+
+build/shaders_vk/%.spv: shaders_vk/%
+	@mkdir -p $(dir $@)
+	$(GLSLC) --target-env=vulkan1.3 -O $< -o $@
+
+shaders_gen/embedded_spirv.h: $(VK_SPV) tools/embed_spirv.py
+	python3 tools/embed_spirv.py $@ $(VK_SPV)
+
+vulkan-spirv: shaders_gen/embedded_spirv.h
 
 # Per-file pattern rules enable safe parallel compilation with `make -j`.
 # vpath directs Make to search source directories by basename.

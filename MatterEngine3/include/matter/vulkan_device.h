@@ -33,6 +33,8 @@ public:
 
     bool begin_frame(VulkanFrame& frame, std::string& error);
     bool end_frame(const VulkanFrame& frame, std::string& error);
+    bool submit_and_wait(VkCommandBuffer command_buffer, VkFence fence,
+                         bool& completion_proven, std::string& error);
     void wait_idle();
 
     VkInstance instance() const;

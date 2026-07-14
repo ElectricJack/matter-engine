@@ -4,11 +4,16 @@
 #include <GLFW/glfw3.h>
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <thread>
 
 #include "matter/vulkan_device.h"
+#include "render/gpu_matrix_pack.h"
+#include "render/matrix_math.h"
+#include "render/vk_pipeline.h"
 
 int main() {
 #ifdef MATTER_VK_TEST_LAYER_PATH
@@ -35,6 +40,40 @@ int main() {
     CHECK(vulkan != nullptr, error.empty() ? "create Vulkan device" : error.c_str());
 
     if (vulkan) {
+        const char* smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
+        if (smoke_mode && std::string(smoke_mode) == "transform") {
+            const matter::Mat4f matrix = viewer::mat4_mul(
+                viewer::mat4_translation({3.0f, 4.0f, 5.0f}),
+                viewer::mat4_rotation_y(0.5f));
+            const matter::Float4 input{1.0f, 2.0f, 3.0f, 1.0f};
+            matter::Float4 output{};
+            const matter::Float4 expected = viewer::transform(matrix, input);
+            const auto close4 = [](matter::Float4 a, matter::Float4 b,
+                                   float epsilon) {
+                return std::fabs(a.x - b.x) <= epsilon &&
+                       std::fabs(a.y - b.y) <= epsilon &&
+                       std::fabs(a.z - b.z) <= epsilon &&
+                       std::fabs(a.w - b.w) <= epsilon;
+            };
+            matter::run_transform_probe(
+                *vulkan, viewer::pack_glsl_mat4(matrix), input, output);
+            CHECK(close4(output, expected, 1e-5f),
+                  "CPU GPU transform parity");
+            std::printf("transform CPU: %.8f %.8f %.8f %.8f\n", expected.x,
+                        expected.y, expected.z, expected.w);
+            std::printf("transform GPU: %.8f %.8f %.8f %.8f\n", output.x,
+                        output.y, output.z, output.w);
+            CHECK(vulkan->validation_error_count() == 0,
+                  "no Vulkan validation errors");
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            vulkan.reset();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+
         for (int i = 0; i < 3; ++i) {
             matter::VulkanFrame frame{};
             const bool began = vulkan->begin_frame(frame, error);
