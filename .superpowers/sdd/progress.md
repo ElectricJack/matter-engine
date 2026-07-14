@@ -132,3 +132,13 @@ Task 6: performance gate implemented; StressForest50k parity measurement blocked
   - Correctness evidence: `make -C MatterViewer windows HAVE_CUDA=1 CUDA_PATH=/c/PROGRA~1/NVIDIA~2/CUDA/v13.3 -j1` passed (`CUDA_ACTIVE=1`); `make -C MatterViewer vulkan-smoke HAVE_CUDA=1 CUDA_PATH=/c/PROGRA~1/NVIDIA~2/CUDA/v13.3 -j1` passed all six fault modes with validation errors 0; `powershell.exe -NoProfile -ExecutionPolicy Bypass -File MatterViewer/tools/check_vulkan_viewer.ps1` passed; `powershell.exe -NoProfile -ExecutionPolicy Bypass -File MatterViewer/tools/smoke_vulkan_viewer.ps1` passed viewer cases with validation errors 0.
   - Sampling-path smoke (end-to-end frame cadence): CornellBox, warmup 1s/sample 3s: 180 frames, median 59.97 FPS / 16.68 ms, p95 17.28 ms, static vertex/cluster/stable instance/immediate-submit deltas all 0, validation errors 0. The previous command-recording-only measurement was invalidated and corrected in a13ac38; the independent review approved the end-to-end cadence boundary.
   - Required performance command: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File MatterViewer/tools/perf_vulkan_instancing.ps1 -World StressForest50k -WarmupSeconds 10 -SampleSeconds 20 -MinimumFps 55` did not reach warmup or sample output: cached world bake completed then `FATAL: render: VkSceneCluster LOD count must be in [1, kVkMaxLod]`, viewer exit 1. No StressForest FPS or p95 is claimed; threshold was not changed. User-reported OpenGL comparison remains about 4 ms / locked 60 FPS.
+
+---
+
+# Vulkan RTX and DLSS Super Resolution SDD Progress Ledger
+Branch: feature/rt-lighting-phase2 | Plan: docs/superpowers/plans/2026-07-14-vulkan-rt-dlss-super-resolution.md
+BASE at start: 41b5a5e
+
+Task 1: complete (commits 60ac19a + 86321f7 + 361297e, review clean)
+  - Optional Streamline manual-hooking bootstrap is native-fallback safe and retains proxy dispatch/lifetime for every proxy-created Vulkan object.
+  - Build/test evidence is limited to diff checks, shell syntax, and fallback Make dry-run because the sandbox cannot execute the MSYS CUDA/Vulkan child process and no Streamline SDK is installed.
