@@ -10,6 +10,28 @@
 #include "vk_resources.h"
 
 namespace matter {
+namespace detail {
+
+struct VkComputePipelineAllocation {
+    VkDevice device = VK_NULL_HANDLE;
+    VkDescriptorSetLayout descriptor_set_layout = VK_NULL_HANDLE;
+    VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
+
+    ~VkComputePipelineAllocation() {
+        if (device != VK_NULL_HANDLE && pipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(device, pipeline, nullptr);
+        if (device != VK_NULL_HANDLE && pipeline_layout != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
+        if (device != VK_NULL_HANDLE && descriptor_pool != VK_NULL_HANDLE)
+            vkDestroyDescriptorPool(device, descriptor_pool, nullptr);
+        if (device != VK_NULL_HANDLE && descriptor_set_layout != VK_NULL_HANDLE)
+            vkDestroyDescriptorSetLayout(device, descriptor_set_layout, nullptr);
+    }
+};
+
+}  // namespace detail
 namespace {
 
 bool vk_error(const char* operation, VkResult result, std::string& error) {
@@ -23,33 +45,6 @@ struct DispatchRecord {
     uint32_t x;
     uint32_t y;
     uint32_t z;
-};
-
-class PipelineDependencies final : public ImmediateDependencies {
-public:
-    explicit PipelineDependencies(VkComputePipelineResource& pipeline)
-        : borrowed_pipeline_(&pipeline) {
-        for (const auto& reference : pipeline.referenced_buffers) {
-            if (std::find(borrowed_buffers_.begin(), borrowed_buffers_.end(),
-                          reference.second) == borrowed_buffers_.end()) {
-                borrowed_buffers_.push_back(reference.second);
-            }
-        }
-        owned_buffers_.resize(borrowed_buffers_.size());
-    }
-
-    void abandon() noexcept override {
-        for (size_t i = 0; i < borrowed_buffers_.size(); ++i) {
-            owned_buffers_[i] = std::move(*borrowed_buffers_[i]);
-        }
-        owned_pipeline_ = std::move(*borrowed_pipeline_);
-    }
-
-private:
-    VkComputePipelineResource* borrowed_pipeline_ = nullptr;
-    std::vector<VkBufferResource*> borrowed_buffers_;
-    VkComputePipelineResource owned_pipeline_{};
-    std::vector<VkBufferResource> owned_buffers_;
 };
 
 void record_dispatch(VkCommandBuffer command_buffer, void* user_data) {
@@ -115,23 +110,23 @@ VkComputePipelineResource& VkComputePipelineResource::operator=(
     pipeline = std::exchange(other.pipeline, VK_NULL_HANDLE);
     descriptor_pool = std::exchange(other.descriptor_pool, VK_NULL_HANDLE);
     descriptor_set = std::exchange(other.descriptor_set, VK_NULL_HANDLE);
+    lifetime = std::move(other.lifetime);
     referenced_buffers = std::move(other.referenced_buffers);
     return *this;
 }
 
 void VkComputePipelineResource::reset() {
-    if (device != VK_NULL_HANDLE && pipeline != VK_NULL_HANDLE) {
-        vkDestroyPipeline(device, pipeline, nullptr);
-    }
-    if (device != VK_NULL_HANDLE && pipeline_layout != VK_NULL_HANDLE) {
-        vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
-    }
-    if (device != VK_NULL_HANDLE && descriptor_pool != VK_NULL_HANDLE) {
-        vkDestroyDescriptorPool(device, descriptor_pool, nullptr);
-    }
-    if (device != VK_NULL_HANDLE &&
-        descriptor_set_layout != VK_NULL_HANDLE) {
-        vkDestroyDescriptorSetLayout(device, descriptor_set_layout, nullptr);
+    if (lifetime) {
+        lifetime.reset();
+    } else {
+        if (device != VK_NULL_HANDLE && pipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(device, pipeline, nullptr);
+        if (device != VK_NULL_HANDLE && pipeline_layout != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
+        if (device != VK_NULL_HANDLE && descriptor_pool != VK_NULL_HANDLE)
+            vkDestroyDescriptorPool(device, descriptor_pool, nullptr);
+        if (device != VK_NULL_HANDLE && descriptor_set_layout != VK_NULL_HANDLE)
+            vkDestroyDescriptorSetLayout(device, descriptor_set_layout, nullptr);
     }
     device = VK_NULL_HANDLE;
     descriptor_set_layout = VK_NULL_HANDLE;
@@ -237,6 +232,13 @@ bool create_compute_pipeline(
             return vk_error("vkAllocateDescriptorSets", result, error);
         }
     }
+    candidate.lifetime =
+        std::make_shared<detail::VkComputePipelineAllocation>();
+    candidate.lifetime->device = candidate.device;
+    candidate.lifetime->descriptor_set_layout = candidate.descriptor_set_layout;
+    candidate.lifetime->pipeline_layout = candidate.pipeline_layout;
+    candidate.lifetime->pipeline = candidate.pipeline;
+    candidate.lifetime->descriptor_pool = candidate.descriptor_pool;
     output = std::move(candidate);
     return true;
 }
@@ -258,9 +260,9 @@ void write_storage_buffer_descriptor(VkComputePipelineResource& pipeline,
         pipeline.referenced_buffers.begin(), pipeline.referenced_buffers.end(),
         [binding](const auto& reference) { return reference.first == binding; });
     if (existing == pipeline.referenced_buffers.end()) {
-        pipeline.referenced_buffers.emplace_back(binding, &buffer);
+        pipeline.referenced_buffers.emplace_back(binding, buffer.lifetime);
     } else {
-        existing->second = &buffer;
+        existing->second = buffer.lifetime;
     }
 }
 
@@ -274,8 +276,15 @@ bool dispatch_compute(VulkanDevice& vulkan,
     }
     DispatchRecord dispatch{&pipeline, group_count_x, group_count_y,
                             group_count_z};
-    auto dependencies = std::make_unique<PipelineDependencies>(pipeline);
+    std::vector<std::shared_ptr<void>> dependencies{pipeline.lifetime};
+    for (const auto& reference : pipeline.referenced_buffers) {
+        if (std::find(dependencies.begin(), dependencies.end(),
+                      reference.second) == dependencies.end()) {
+            dependencies.push_back(reference.second);
+        }
+    }
     return submit_immediate(vulkan, record_dispatch, &dispatch, error,
+                            ImmediateSubmitPhase::compute_dispatch,
                             std::move(dependencies));
 }
 

@@ -6,10 +6,16 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "matter/vulkan_device.h"
 
 namespace matter {
+
+namespace detail {
+struct VkBufferAllocation;
+struct VkImageAllocation;
+}  // namespace detail
 
 struct VkBufferResource {
     VkDevice device = VK_NULL_HANDLE;
@@ -22,6 +28,7 @@ struct VkBufferResource {
     VkDeviceSize allocation_size = 0;
     VkDeviceSize non_coherent_atom_size = 1;
     VkMemoryPropertyFlags memory_properties = 0;
+    std::shared_ptr<detail::VkBufferAllocation> lifetime;
 
     VkBufferResource() = default;
     ~VkBufferResource();
@@ -41,6 +48,7 @@ struct VkImageResource {
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkExtent3D extent{};
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    std::shared_ptr<detail::VkImageAllocation> lifetime;
 
     VkImageResource() = default;
     ~VkImageResource();
@@ -103,12 +111,15 @@ bool transition_image(VulkanDevice& vulkan, VkImageResource& image,
                       VkImageAspectFlags aspect, std::string& error);
 
 using ImmediateRecordFn = void (*)(VkCommandBuffer, void*);
-class ImmediateDependencies : public VulkanRetainedResource {
-public:
-    virtual void abandon() noexcept = 0;
+enum class ImmediateSubmitPhase {
+    staging_upload,
+    staging_readback,
+    image_transition,
+    compute_dispatch,
 };
 bool submit_immediate(VulkanDevice& vulkan, ImmediateRecordFn record,
                       void* user_data, std::string& error,
-                      std::unique_ptr<ImmediateDependencies> dependencies = {});
+                      ImmediateSubmitPhase phase,
+                      std::vector<std::shared_ptr<void>> dependencies = {});
 
 }  // namespace matter

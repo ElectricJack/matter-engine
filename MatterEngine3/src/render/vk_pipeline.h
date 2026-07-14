@@ -4,6 +4,7 @@
 
 #include <string>
 #include <string_view>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -14,6 +15,9 @@ namespace matter {
 
 class VulkanDevice;
 struct VkBufferResource;
+namespace detail {
+struct VkComputePipelineAllocation;
+}
 
 struct VkComputePipelineResource {
     VkDevice device = VK_NULL_HANDLE;
@@ -22,7 +26,8 @@ struct VkComputePipelineResource {
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
     VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
-    std::vector<std::pair<uint32_t, VkBufferResource*>> referenced_buffers;
+    std::shared_ptr<detail::VkComputePipelineAllocation> lifetime;
+    std::vector<std::pair<uint32_t, std::shared_ptr<void>>> referenced_buffers;
 
     VkComputePipelineResource() = default;
     ~VkComputePipelineResource();

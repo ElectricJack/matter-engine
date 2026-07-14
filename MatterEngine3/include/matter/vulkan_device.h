@@ -13,14 +13,10 @@ struct GLFWwindow;
 
 namespace matter {
 
-class VulkanRetainedResource {
-public:
-    virtual ~VulkanRetainedResource() = default;
-
-private:
-    VulkanRetainedResource* next_ = nullptr;
-    friend class VulkanDevice;
-};
+namespace detail {
+class DeviceRetentionAccess;
+class DeviceSubmitAccess;
+}  // namespace detail
 
 struct VulkanFrame {
     VkCommandBuffer command_buffer = VK_NULL_HANDLE;
@@ -44,8 +40,6 @@ public:
     bool end_frame(const VulkanFrame& frame, std::string& error);
     bool submit_and_wait(VkCommandBuffer command_buffer, VkFence fence,
                          bool& completion_proven, std::string& error);
-    void retain_until_device_cleanup(
-        std::unique_ptr<VulkanRetainedResource> resource) noexcept;
     void wait_idle();
 
     VkInstance instance() const;
@@ -54,9 +48,18 @@ public:
     VkQueue graphics_queue() const;
     uint32_t graphics_queue_family() const;
     uint32_t validation_error_count() const;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    static uint32_t test_validation_error_total();
+#endif
 
 private:
     VulkanDevice();
+    friend class detail::DeviceRetentionAccess;
+    friend class detail::DeviceSubmitAccess;
+    bool submit_and_wait_for_phase(VkCommandBuffer command_buffer,
+                                   VkFence fence, bool& completion_proven,
+                                   const char* fault_phase,
+                                   std::string& error);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };

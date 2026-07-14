@@ -7,8 +7,44 @@
 #include <utility>
 
 #include "matter/vulkan_device.h"
+#include "vk_device_internal.h"
 
 namespace matter {
+namespace detail {
+
+struct VkBufferAllocation {
+    VkDevice device = VK_NULL_HANDLE;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    void* mapped = nullptr;
+
+    ~VkBufferAllocation() {
+        if (device != VK_NULL_HANDLE && mapped && memory != VK_NULL_HANDLE)
+            vkUnmapMemory(device, memory);
+        if (device != VK_NULL_HANDLE && buffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device, buffer, nullptr);
+        if (device != VK_NULL_HANDLE && memory != VK_NULL_HANDLE)
+            vkFreeMemory(device, memory, nullptr);
+    }
+};
+
+struct VkImageAllocation {
+    VkDevice device = VK_NULL_HANDLE;
+    VkImage image = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+
+    ~VkImageAllocation() {
+        if (device != VK_NULL_HANDLE && view != VK_NULL_HANDLE)
+            vkDestroyImageView(device, view, nullptr);
+        if (device != VK_NULL_HANDLE && image != VK_NULL_HANDLE)
+            vkDestroyImage(device, image, nullptr);
+        if (device != VK_NULL_HANDLE && memory != VK_NULL_HANDLE)
+            vkFreeMemory(device, memory, nullptr);
+    }
+};
+
+}  // namespace detail
 namespace {
 
 const char* result_name(VkResult result) {
@@ -86,47 +122,20 @@ void record_transition(VkCommandBuffer command_buffer, void* user_data) {
                             transition.destination_access, transition.aspect);
 }
 
-class BufferDependencies final : public ImmediateDependencies {
-public:
-    BufferDependencies(VkBufferResource& first, VkBufferResource& second)
-        : borrowed_{&first, &second} {}
-
-    void abandon() noexcept override {
-        for (size_t i = 0; i < borrowed_.size(); ++i) {
-            owned_[i] = std::move(*borrowed_[i]);
-        }
-    }
-
-private:
-    std::array<VkBufferResource*, 2> borrowed_{};
-    std::array<VkBufferResource, 2> owned_{};
-};
-
-class ImageDependencies final : public ImmediateDependencies {
-public:
-    explicit ImageDependencies(VkImageResource& image) : borrowed_(&image) {}
-
-    void abandon() noexcept override { owned_ = std::move(*borrowed_); }
-
-private:
-    VkImageResource* borrowed_ = nullptr;
-    VkImageResource owned_{};
-};
-
-class ImmediateSubmissionRetention final : public VulkanRetainedResource {
+class ImmediateSubmissionRetention final
+    : public detail::DeviceRetainedResource {
 public:
     ImmediateSubmissionRetention(
-        VkDevice device, std::unique_ptr<ImmediateDependencies> dependencies)
+        VkDevice device, std::vector<std::shared_ptr<void>> dependencies)
         : device_(device), dependencies_(std::move(dependencies)) {}
 
     ~ImmediateSubmissionRetention() override {
-        dependencies_.reset();
+        dependencies_.clear();
         if (fence_ != VK_NULL_HANDLE) vkDestroyFence(device_, fence_, nullptr);
         if (pool_ != VK_NULL_HANDLE) vkDestroyCommandPool(device_, pool_, nullptr);
     }
 
     void abandon(VkCommandPool& pool, VkFence& fence) noexcept {
-        if (dependencies_) dependencies_->abandon();
         pool_ = std::exchange(pool, VK_NULL_HANDLE);
         fence_ = std::exchange(fence, VK_NULL_HANDLE);
     }
@@ -135,7 +144,7 @@ private:
     VkDevice device_ = VK_NULL_HANDLE;
     VkCommandPool pool_ = VK_NULL_HANDLE;
     VkFence fence_ = VK_NULL_HANDLE;
-    std::unique_ptr<ImmediateDependencies> dependencies_;
+    std::vector<std::shared_ptr<void>> dependencies_;
 };
 
 }  // namespace
@@ -158,18 +167,20 @@ VkBufferResource& VkBufferResource::operator=(VkBufferResource&& other) noexcept
     allocation_size = std::exchange(other.allocation_size, 0);
     non_coherent_atom_size = std::exchange(other.non_coherent_atom_size, 1);
     memory_properties = std::exchange(other.memory_properties, 0);
+    lifetime = std::move(other.lifetime);
     return *this;
 }
 
 void VkBufferResource::reset() {
-    if (device != VK_NULL_HANDLE && mapped && memory != VK_NULL_HANDLE) {
-        vkUnmapMemory(device, memory);
-    }
-    if (device != VK_NULL_HANDLE && buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(device, buffer, nullptr);
-    }
-    if (device != VK_NULL_HANDLE && memory != VK_NULL_HANDLE) {
-        vkFreeMemory(device, memory, nullptr);
+    if (lifetime) {
+        lifetime.reset();
+    } else {
+        if (device != VK_NULL_HANDLE && mapped && memory != VK_NULL_HANDLE)
+            vkUnmapMemory(device, memory);
+        if (device != VK_NULL_HANDLE && buffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device, buffer, nullptr);
+        if (device != VK_NULL_HANDLE && memory != VK_NULL_HANDLE)
+            vkFreeMemory(device, memory, nullptr);
     }
     device = VK_NULL_HANDLE;
     buffer = VK_NULL_HANDLE;
@@ -198,18 +209,20 @@ VkImageResource& VkImageResource::operator=(VkImageResource&& other) noexcept {
     format = std::exchange(other.format, VK_FORMAT_UNDEFINED);
     extent = std::exchange(other.extent, VkExtent3D{});
     layout = std::exchange(other.layout, VK_IMAGE_LAYOUT_UNDEFINED);
+    lifetime = std::move(other.lifetime);
     return *this;
 }
 
 void VkImageResource::reset() {
-    if (device != VK_NULL_HANDLE && view != VK_NULL_HANDLE) {
-        vkDestroyImageView(device, view, nullptr);
-    }
-    if (device != VK_NULL_HANDLE && image != VK_NULL_HANDLE) {
-        vkDestroyImage(device, image, nullptr);
-    }
-    if (device != VK_NULL_HANDLE && memory != VK_NULL_HANDLE) {
-        vkFreeMemory(device, memory, nullptr);
+    if (lifetime) {
+        lifetime.reset();
+    } else {
+        if (device != VK_NULL_HANDLE && view != VK_NULL_HANDLE)
+            vkDestroyImageView(device, view, nullptr);
+        if (device != VK_NULL_HANDLE && image != VK_NULL_HANDLE)
+            vkDestroyImage(device, image, nullptr);
+        if (device != VK_NULL_HANDLE && memory != VK_NULL_HANDLE)
+            vkFreeMemory(device, memory, nullptr);
     }
     device = VK_NULL_HANDLE;
     image = VK_NULL_HANDLE;
@@ -317,6 +330,11 @@ bool create_buffer(VulkanDevice& vulkan, VkDeviceSize size,
             return false;
         }
     }
+    candidate.lifetime = std::make_shared<detail::VkBufferAllocation>();
+    candidate.lifetime->device = candidate.device;
+    candidate.lifetime->buffer = candidate.buffer;
+    candidate.lifetime->memory = candidate.memory;
+    candidate.lifetime->mapped = candidate.mapped;
     output = std::move(candidate);
     return true;
 }
@@ -329,6 +347,8 @@ bool map_buffer(VkBufferResource& resource, std::string& error) {
     if (resource.mapped) return true;
     VkResult result = vkMapMemory(resource.device, resource.memory, 0,
                                   VK_WHOLE_SIZE, 0, &resource.mapped);
+    if (result == VK_SUCCESS && resource.lifetime)
+        resource.lifetime->mapped = resource.mapped;
     return result == VK_SUCCESS || fail_result("vkMapMemory", result, error);
 }
 
@@ -391,7 +411,8 @@ bool invalidate_buffer(VkBufferResource& resource, VkDeviceSize offset,
 
 bool submit_immediate(VulkanDevice& vulkan, ImmediateRecordFn record,
                       void* user_data, std::string& error,
-                      std::unique_ptr<ImmediateDependencies> dependencies) {
+                      ImmediateSubmitPhase phase,
+                      std::vector<std::shared_ptr<void>> dependencies) {
     if (!record) {
         error = "submit_immediate requires a record callback";
         return false;
@@ -446,13 +467,20 @@ bool submit_immediate(VulkanDevice& vulkan, ImmediateRecordFn record,
         return fail_result("vkCreateFence", result, error);
     }
     bool completion_proven = false;
-    const bool submitted = vulkan.submit_and_wait(
-        command_buffer, fence, completion_proven, error);
+    const char* phase_name = phase == ImmediateSubmitPhase::staging_upload
+                                 ? "staging-upload"
+                             : phase == ImmediateSubmitPhase::staging_readback
+                                 ? "staging-readback"
+                             : phase == ImmediateSubmitPhase::image_transition
+                                 ? "image-transition"
+                                 : "dispatch-moved-buffer";
+    const bool submitted = detail::DeviceSubmitAccess::submit_and_wait(
+        vulkan, command_buffer, fence, completion_proven, phase_name, error);
     if (!completion_proven) {
         // Completion is ambiguous: atomically transfer the command objects and
         // every caller-registered dependency to device-lifetime ownership.
         retained->abandon(pool, fence);
-        vulkan.retain_until_device_cleanup(std::move(retained));
+        detail::DeviceRetentionAccess::retain(vulkan, std::move(retained));
     }
     cleanup();
     return submitted;
@@ -483,9 +511,10 @@ bool upload_buffer(VulkanDevice& vulkan, VkBufferResource& destination,
     if (!flush_buffer(staging, 0, byte_count, error)) return false;
     CopyBufferRecord copy{staging.buffer, destination.buffer,
                           {0, offset, byte_count}};
-    auto dependencies =
-        std::make_unique<BufferDependencies>(staging, destination);
+    std::vector<std::shared_ptr<void>> dependencies{staging.lifetime,
+                                                    destination.lifetime};
     return submit_immediate(vulkan, record_copy_buffer, &copy, error,
+                            ImmediateSubmitPhase::staging_upload,
                             std::move(dependencies));
 }
 
@@ -513,8 +542,10 @@ bool readback_buffer(VulkanDevice& vulkan, VkBufferResource& source, void* data,
     }
     CopyBufferRecord copy{source.buffer, staging.buffer,
                           {offset, 0, byte_count}};
-    auto dependencies = std::make_unique<BufferDependencies>(source, staging);
+    std::vector<std::shared_ptr<void>> dependencies{source.lifetime,
+                                                    staging.lifetime};
     if (!submit_immediate(vulkan, record_copy_buffer, &copy, error,
+                          ImmediateSubmitPhase::staging_readback,
                           std::move(dependencies)) ||
         !map_buffer(staging, error) ||
         !invalidate_buffer(staging, 0, byte_count, error)) {
@@ -580,6 +611,11 @@ bool create_image(VulkanDevice& vulkan, VkImageType type, VkFormat format,
     view.subresourceRange.layerCount = 1;
     result = vkCreateImageView(candidate.device, &view, nullptr, &candidate.view);
     if (result != VK_SUCCESS) return fail_result("vkCreateImageView", result, error);
+    candidate.lifetime = std::make_shared<detail::VkImageAllocation>();
+    candidate.lifetime->device = candidate.device;
+    candidate.lifetime->image = candidate.image;
+    candidate.lifetime->view = candidate.view;
+    candidate.lifetime->memory = candidate.memory;
     output = std::move(candidate);
     return true;
 }
@@ -622,8 +658,9 @@ bool transition_image(VulkanDevice& vulkan, VkImageResource& image,
     const VkImageLayout old_layout = image.layout;
     TransitionRecord transition{&image, new_layout, source_stage, source_access,
                                 destination_stage, destination_access, aspect};
-    auto dependencies = std::make_unique<ImageDependencies>(image);
+    std::vector<std::shared_ptr<void>> dependencies{image.lifetime};
     if (!submit_immediate(vulkan, record_transition, &transition, error,
+                          ImmediateSubmitPhase::image_transition,
                           std::move(dependencies))) {
         if (image.device != VK_NULL_HANDLE) image.layout = old_layout;
         return false;

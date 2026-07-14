@@ -9,11 +9,102 @@
 #include <cstdlib>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "matter/vulkan_device.h"
 #include "render/gpu_matrix_pack.h"
 #include "render/matrix_math.h"
 #include "render/vk_pipeline.h"
+#include "render/vk_resources.h"
+
+namespace {
+
+void finish_vulkan_test(std::unique_ptr<matter::VulkanDevice>& vulkan) {
+    CHECK(vulkan->validation_error_count() == 0,
+          "no Vulkan validation errors before device teardown");
+    vulkan.reset();
+    CHECK(matter::VulkanDevice::test_validation_error_total() == 0,
+          "no Vulkan validation errors through retained device teardown");
+}
+
+bool run_retention_fault(matter::VulkanDevice& vulkan,
+                         const std::string& phase, std::string& error) {
+    _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS", phase.c_str());
+    bool result = false;
+    if (phase == "staging-upload") {
+        matter::VkBufferResource buffer;
+        const uint32_t value = 0x12345678u;
+        result = matter::create_buffer(
+                     vulkan, sizeof(value),
+                     VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                         VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, buffer, error) &&
+                 matter::upload_buffer(vulkan, buffer, &value, sizeof(value), 0,
+                                       error);
+    } else if (phase == "staging-readback") {
+        matter::VkBufferResource buffer;
+        uint32_t value = 0;
+        result = matter::create_buffer(
+                     vulkan, sizeof(value),
+                     VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                         VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, buffer, error) &&
+                 matter::readback_buffer(vulkan, buffer, &value, sizeof(value),
+                                         0, error);
+    } else if (phase == "image-transition") {
+        matter::VkImageResource image;
+        result = matter::create_image(
+                     vulkan, VK_IMAGE_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM,
+                     {1, 1, 1},
+                     VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                         VK_IMAGE_USAGE_SAMPLED_BIT,
+                     VK_IMAGE_ASPECT_COLOR_BIT,
+                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, error) &&
+                 matter::transition_image(
+                     vulkan, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                     VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                     VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                     VK_IMAGE_ASPECT_COLOR_BIT, error);
+    } else if (phase == "dispatch-moved-buffer") {
+        matter::VkBufferResource buffer;
+        matter::VkComputePipelineResource pipeline;
+        VkDescriptorSetLayoutBinding binding{};
+        binding.binding = 0;
+        binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        binding.descriptorCount = 1;
+        binding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        if (matter::create_buffer(
+                vulkan, 96,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, buffer, error) &&
+            matter::create_compute_pipeline(vulkan,
+                                            "transform_probe.comp.spv",
+                                            {binding}, pipeline, error)) {
+            matter::write_storage_buffer_descriptor(pipeline, 0, buffer, 0, 96);
+            std::vector<matter::VkBufferResource> relocated;
+            relocated.push_back(std::move(buffer));
+            const auto* original_address = &relocated.front();
+            relocated.reserve(relocated.capacity() + 1);
+            CHECK(&relocated.front() != original_address,
+                  "bound buffer owner relocates after descriptor write");
+            _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS",
+                      "staging-upload");
+            CHECK(matter::dispatch_compute(vulkan, pipeline, 1, 1, 1, error),
+                  "fault injection ignores a nonmatching submit phase");
+            _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS",
+                      phase.c_str());
+            result = matter::dispatch_compute(vulkan, pipeline, 1, 1, 1, error);
+        }
+    }
+    _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS", "");
+    return result;
+}
+
+}  // namespace
 
 int main() {
 #ifdef MATTER_VK_TEST_LAYER_PATH
@@ -41,18 +132,14 @@ int main() {
 
     if (vulkan) {
         const char* smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
-        if (smoke_mode && std::string(smoke_mode) == "retention-fault") {
-            _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS", "1");
-            matter::Float4 output{};
-            const bool probe_ran = matter::run_transform_probe(
-                *vulkan, viewer::pack_glsl_mat4(viewer::mat4_identity()),
-                {1.0f, 2.0f, 3.0f, 1.0f}, output);
-            _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS", "");
-            CHECK(!probe_ran,
-                  "fault injection makes immediate completion ambiguous");
-            CHECK(vulkan->validation_error_count() == 0,
-                  "ambiguous submit retains all referenced resources");
-            vulkan.reset();
+        if (smoke_mode &&
+            std::string(smoke_mode).rfind("retention-fault-", 0) == 0) {
+            const std::string phase = std::string(smoke_mode).substr(16);
+            const bool completed = run_retention_fault(*vulkan, phase, error);
+            CHECK(!completed, "selected submit phase becomes ambiguous");
+            CHECK(error.find("forced ambiguous") != std::string::npos,
+                  "fault injection reached the selected submit phase");
+            finish_vulkan_test(vulkan);
             if (window) glfwDestroyWindow(window);
             glfwTerminate();
             return check_summary();
@@ -80,12 +167,10 @@ int main() {
                         expected.y, expected.z, expected.w);
             std::printf("transform GPU: %.8f %.8f %.8f %.8f\n", output.x,
                         output.y, output.z, output.w);
-            CHECK(vulkan->validation_error_count() == 0,
-                  "no Vulkan validation errors");
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
             vulkan->wait_idle();
-            vulkan.reset();
+            finish_vulkan_test(vulkan);
             if (window) glfwDestroyWindow(window);
             glfwTerminate();
             return check_summary();
@@ -200,12 +285,10 @@ int main() {
                         "framebuffer\n");
         }
 
-        CHECK(vulkan->validation_error_count() == 0,
-              "no Vulkan validation errors");
         std::printf("validation errors: %u\n",
                     vulkan->validation_error_count());
         vulkan->wait_idle();
-        vulkan.reset();
+        finish_vulkan_test(vulkan);
     }
 
     if (window) glfwDestroyWindow(window);

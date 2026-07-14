@@ -16,8 +16,14 @@
 #include <utility>
 #include <vector>
 
+#include "vk_device_internal.h"
+
 namespace matter {
 namespace {
+
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+std::atomic<uint32_t> g_test_validation_error_total{0};
+#endif
 
 constexpr uint32_t kFramesInFlight = 2;
 constexpr const char* kValidationLayer = "VK_LAYER_KHRONOS_validation";
@@ -266,7 +272,7 @@ struct VulkanDevice::Impl {
     bool swapchain_recreate_required = false;
     bool device_poisoned = false;
     bool wsi_completion_ambiguous = false;
-    VulkanRetainedResource* retained_resources = nullptr;
+    detail::DeviceRetainedResource* retained_resources = nullptr;
     std::string poison_error;
     VulkanFrame active_frame{};
 
@@ -327,6 +333,10 @@ struct VulkanDevice::Impl {
         if ((severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0 &&
             is_validation) {
             self->validation_errors.fetch_add(1, std::memory_order_relaxed);
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+            g_test_validation_error_total.fetch_add(1,
+                                                    std::memory_order_relaxed);
+#endif
         }
         std::fprintf(stderr, "Vulkan %s %s: %s\n",
                      is_validation ? "validation" : "loader/general",
@@ -341,6 +351,9 @@ struct VulkanDevice::Impl {
 
     bool initialize(GLFWwindow* input_window, bool enable_validation,
                     std::string& error) {
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+        g_test_validation_error_total.store(0, std::memory_order_relaxed);
+#endif
         window = input_window;
         validation_enabled = enable_validation;
         if (!window) {
@@ -1401,9 +1414,9 @@ struct VulkanDevice::Impl {
             }
         }
         while (retained_resources) {
-            VulkanRetainedResource* resource = retained_resources;
-            retained_resources = resource->next_;
-            resource->next_ = nullptr;
+            detail::DeviceRetainedResource* resource = retained_resources;
+            retained_resources = resource->next;
+            resource->next = nullptr;
             delete resource;
         }
         for (FrameSlot& frame : frames) {
@@ -1468,6 +1481,18 @@ bool VulkanDevice::end_frame(const VulkanFrame& frame, std::string& error) {
 bool VulkanDevice::submit_and_wait(VkCommandBuffer command_buffer,
                                    VkFence fence, bool& completion_proven,
                                    std::string& error) {
+    return submit_and_wait_for_phase(command_buffer, fence, completion_proven,
+                                     nullptr, error);
+}
+
+bool VulkanDevice::submit_and_wait_for_phase(VkCommandBuffer command_buffer,
+                                             VkFence fence,
+                                             bool& completion_proven,
+                                             const char* fault_phase,
+                                             std::string& error) {
+#ifndef MATTER_VK_TEST_FAULT_INJECTION
+    (void)fault_phase;
+#endif
     error.clear();
     // No work is pending until vkQueueSubmit2 succeeds.
     completion_proven = true;
@@ -1496,7 +1521,8 @@ bool VulkanDevice::submit_and_wait(VkCommandBuffer command_buffer,
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     const char* force_ambiguous =
         std::getenv("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS");
-    if (force_ambiguous && std::strcmp(force_ambiguous, "1") == 0) {
+    if (force_ambiguous && fault_phase &&
+        std::strcmp(force_ambiguous, fault_phase) == 0) {
         error = "forced ambiguous immediate completion for retention test";
         return impl_->poison_device(
             error, "immediate submission completion is unproven");
@@ -1514,11 +1540,20 @@ bool VulkanDevice::submit_and_wait(VkCommandBuffer command_buffer,
     return true;
 }
 
-void VulkanDevice::retain_until_device_cleanup(
-    std::unique_ptr<VulkanRetainedResource> resource) noexcept {
+void detail::DeviceRetentionAccess::retain(
+    VulkanDevice& owner,
+    std::unique_ptr<DeviceRetainedResource> resource) noexcept {
     if (!resource) return;
-    resource->next_ = impl_->retained_resources;
-    impl_->retained_resources = resource.release();
+    resource->next = owner.impl_->retained_resources;
+    owner.impl_->retained_resources = resource.release();
+}
+
+bool detail::DeviceSubmitAccess::submit_and_wait(
+    VulkanDevice& owner, VkCommandBuffer command_buffer, VkFence fence,
+    bool& completion_proven, const char* fault_phase, std::string& error) {
+    return owner.submit_and_wait_for_phase(command_buffer, fence,
+                                           completion_proven, fault_phase,
+                                           error);
 }
 
 void VulkanDevice::wait_idle() {
@@ -1548,5 +1583,10 @@ uint32_t VulkanDevice::graphics_queue_family() const {
 uint32_t VulkanDevice::validation_error_count() const {
     return impl_->validation_errors.load(std::memory_order_relaxed);
 }
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+uint32_t VulkanDevice::test_validation_error_total() {
+    return g_test_validation_error_total.load(std::memory_order_relaxed);
+}
+#endif
 
 }  // namespace matter
