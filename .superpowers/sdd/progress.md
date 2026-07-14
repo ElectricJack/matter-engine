@@ -121,3 +121,7 @@ Task 3: complete (commits d792d05 + 78370c6, review clean)
 Task 4: complete (commit c0359e9, review clean)
   - GPU culling, compute-to-indirect synchronization, G-buffer, and composite are recorded into the acquired frame command buffer with no production immediate-submit boundary.
   - Indirect draws are grouped by raster-capable active part and respect maxDrawIndirectCount; strict CUDA 13.3, cull, raster, and default smokes passed with zero validation errors.
+
+Task 5: complete (commits 83f4df1 + f2c5d64, review clean)
+  - Culling statistics publish only after their frame slot is fence-completed and reused; the production path performs no cull-stat submission, wait, or readback.
+  - Frame diagnostics expose cache/upload/layout/immediate-submit counters; strict CUDA 13.3 fault coverage, cull/raster/default smokes, and the full CUDA Windows viewer build passed with zero validation errors.
