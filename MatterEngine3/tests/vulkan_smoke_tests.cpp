@@ -96,14 +96,19 @@ void run_streamline_presentation_funnel_tests(matter::VulkanDevice& vulkan) {
                                    successful_events.end(), "acquire");
     const auto common_present = std::find(
         acquire, successful_events.end(), "present_common");
-    const auto present = std::find(common_present, successful_events.end(),
-                                   "present");
+    const auto event_after_common =
+        common_present == successful_events.end()
+            ? successful_events.end()
+            : std::next(common_present);
     CHECK(acquire != successful_events.end() &&
               common_present != successful_events.end() &&
-              present != successful_events.end() &&
+              event_after_common != successful_events.end() &&
+              *event_after_common == "present" &&
               std::count(successful_events.begin(), successful_events.end(),
-                         "present_common") == 1,
-          "VulkanDevice funnels successful acquire, one common-present, and present");
+                         "present_common") == 1 &&
+              std::count(successful_events.begin(), successful_events.end(),
+                         "present") == 1,
+          "VulkanDevice funnels acquire before adjacent sole common-present and present");
     CHECK(vulkan.test_last_present_common_serial() == submitted.serial,
           "common-present handoff exposes the submitted frame serial");
 }
