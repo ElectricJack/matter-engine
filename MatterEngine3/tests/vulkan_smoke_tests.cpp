@@ -298,8 +298,8 @@ void run_cull_region_and_lifecycle_tests(matter::VulkanDevice& vulkan) {
           "overflow cannot overwrite adjacent bucket transform");
     renderer.release_part(77);
     std::vector<viewer::VkSceneRenderer::RtInstance> rt_instances;
-    CHECK(renderer.fill_rt_instances(rt_instances) == 0,
-          "release removes RT instances");
+    CHECK(renderer.fill_rt_instances(rt_instances) == 3,
+          "release keeps the coherent uploaded RT snapshot until dispatch");
     CHECK(renderer.ensure_part(part, error) >= 0,
           error.empty() ? "re-add part without reset" : error.c_str());
     CHECK(renderer.update_instances({near_instance}, error),
@@ -314,15 +314,14 @@ void run_cull_region_and_lifecycle_tests(matter::VulkanDevice& vulkan) {
     mixed.clusters[2].lods.push_back({6, 3, -1.0f});
     CHECK(renderer.ensure_part(mixed, error) >= 0,
           error.empty() ? "ensure mixed-size part" : error.c_str());
-    CHECK(renderer.cluster_count() == 4,
-          "mixed live scene has only active clusters");
-
     const viewer::VkSceneInstance mixed_instance{
         88, viewer::mat4_translation({0.0f, 0.0f, -3.0f})};
     CHECK(renderer.update_instances({near_instance, mixed_instance}, error),
           error.empty() ? "upload mixed-size instances" : error.c_str());
     CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f, error),
           error.empty() ? "dispatch mixed-size culling" : error.c_str());
+    CHECK(renderer.cluster_count() == 4,
+          "mixed uploaded scene has only active clusters");
     CHECK(renderer.draw_command_count() == 4 * viewer::kVkMaxLod,
           "mixed live scene command count is bounded by active clusters");
     viewer::VkCullStats mixed_stats{};
@@ -341,8 +340,8 @@ void run_cull_region_and_lifecycle_tests(matter::VulkanDevice& vulkan) {
 
     for (int cycle = 0; cycle < 4; ++cycle) {
         renderer.release_part(77);
-        CHECK(renderer.cluster_count() == 3,
-              "release compacts active cluster records");
+        CHECK(renderer.cluster_count() == 4,
+              "release keeps uploaded cluster count coherent until dispatch");
         CHECK(renderer.ensure_part(part, error) >= 0,
               error.empty() ? "re-add churn part" : error.c_str());
         CHECK(renderer.update_instances({mixed_instance, near_instance}, error),
@@ -489,6 +488,9 @@ void run_vk_scene_checked_size_tests(matter::VulkanDevice& vulkan) {
         std::vector<viewer::DrawCommand> baseline_commands;
         CHECK(renderer.readback_commands(baseline_commands, error),
               "read baseline commands before growth fault");
+        std::vector<viewer::VkSceneRenderer::RtInstance> baseline_rt;
+        CHECK(renderer.fill_rt_instances(baseline_rt) == 1,
+              "read baseline RT snapshot before growth fault");
         CHECK(renderer.ensure_part(scene.parts[1], error) >= 0,
               "stage larger scene under normal limits");
         CHECK(renderer.update_instances({scene.instances[0], scene.instances[1]},
@@ -506,6 +508,13 @@ void run_vk_scene_checked_size_tests(matter::VulkanDevice& vulkan) {
         renderer.clear_test_device_limits(error);
         CHECK(renderer.draw_command_count() == baseline_commands.size(),
               "failed growth preserves uploaded indirect command count");
+        std::vector<viewer::VkSceneRenderer::RtInstance> preserved_rt;
+        CHECK(renderer.cluster_count() == 1 &&
+                  renderer.fill_rt_instances(preserved_rt) == 1 &&
+                  preserved_rt[0].part_hash == baseline_rt[0].part_hash &&
+                  rt_matrix_equal(preserved_rt[0].transform,
+                                  scene.instances[0].object_to_world),
+              "failed preflight preserves coherent uploaded raster and RT scene");
         std::vector<viewer::DrawCommand> preserved_commands;
         CHECK(renderer.readback_commands(preserved_commands, error) &&
                   preserved_commands == baseline_commands,
@@ -537,6 +546,97 @@ void run_vk_scene_checked_size_tests(matter::VulkanDevice& vulkan) {
                   error.find("maxDrawIndirectCount") != std::string::npos,
               "dispatch_culling enforces forced indirect command limit");
         renderer.clear_test_device_limits(error);
+    }
+
+    {
+        viewer::VkSceneRenderer renderer(vulkan);
+        CHECK(renderer.init(error), "init renderer before replacement fault");
+        CHECK(renderer.ensure_part(scene.parts[0], error) >= 0 &&
+                  renderer.update_instances({scene.instances[0]}, error) &&
+                  renderer.dispatch_culling(scene.frame, scene.eye, 1.0f,
+                                             error),
+              error.empty() ? "establish replacement-fault baseline"
+                            : error.c_str());
+        CHECK(renderer.ensure_part(scene.parts[1], error) >= 0 &&
+                  renderer.update_instances(
+                      {scene.instances[0], scene.instances[1]}, error),
+              error.empty() ? "stage replacement-fault growth"
+                            : error.c_str());
+        renderer.set_test_scene_failure(1,
+            std::numeric_limits<uint32_t>::max());
+        CHECK(!renderer.dispatch_culling(scene.frame, scene.eye, 1.0f, error) &&
+                  error.find("poisoned after partial GPU mutation") !=
+                      std::string::npos &&
+                  error.find("replacement") != std::string::npos,
+              "later replacement failure poisons renderer");
+        const std::string poison_reason = error;
+        CHECK(renderer.indirect_buffer() == VK_NULL_HANDLE &&
+                  renderer.draw_transform_buffer() == VK_NULL_HANDLE &&
+                  renderer.draw_command_count() == 0 &&
+                  renderer.cluster_count() == 0 &&
+                  renderer.cluster_buffer_size() == 0 &&
+                  renderer.command_buffer_size() == 0 &&
+                  renderer.draw_transform_buffer_size() == 0,
+              "poisoned renderer exposes no draw buffers or counts");
+        std::vector<viewer::DrawCommand> poisoned_commands(1);
+        CHECK(!renderer.readback_commands(poisoned_commands, error) &&
+                  poisoned_commands.empty() && error == poison_reason,
+              "poisoned command readback fails with stable diagnostic");
+        viewer::VkCullStats poisoned_stats{};
+        CHECK(!renderer.cull_stats(poisoned_stats, error) &&
+                  error == poison_reason,
+              "poisoned stats readback fails with stable diagnostic");
+        std::vector<viewer::VkSceneRenderer::RtInstance> poisoned_rt(1);
+        CHECK(renderer.fill_rt_instances(poisoned_rt) == 0 &&
+                  poisoned_rt.empty(),
+              "poisoned renderer exposes no RT instances");
+        CHECK(!renderer.dispatch_culling(scene.frame, scene.eye, 1.0f, error) &&
+                  error == poison_reason && !renderer.init(error) &&
+                  error == poison_reason,
+              "poison is terminal with a stable diagnostic");
+        CHECK(renderer.ensure_part(scene.parts[0], error) == -1 &&
+                  error == poison_reason &&
+                  !renderer.update_instances({scene.instances[0]}, error) &&
+                  error == poison_reason,
+              "poison blocks scene mutation with the stable diagnostic");
+        renderer.reset();
+        CHECK(renderer.init(error),
+              error.empty() ? "full reset permits renderer reinitialization"
+                            : error.c_str());
+        CHECK(renderer.ensure_part(scene.parts[0], error) >= 0 &&
+                  renderer.update_instances({scene.instances[0]}, error) &&
+                  renderer.dispatch_culling(scene.frame, scene.eye, 1.0f,
+                                             error),
+              error.empty() ? "renderer works after full reset and reinit"
+                            : error.c_str());
+    }
+
+    {
+        viewer::VkSceneRenderer renderer(vulkan);
+        CHECK(renderer.init(error), "init renderer before upload fault");
+        CHECK(renderer.ensure_part(scene.parts[0], error) >= 0 &&
+                  renderer.ensure_part(scene.parts[1], error) >= 0 &&
+                  renderer.update_instances(
+                      {scene.instances[0], scene.instances[1]}, error) &&
+                  renderer.dispatch_culling(scene.frame, scene.eye, 1.0f,
+                                             error),
+              error.empty() ? "establish upload-fault buffers"
+                            : error.c_str());
+        renderer.set_test_scene_failure(
+            std::numeric_limits<uint32_t>::max(), 1);
+        CHECK(!renderer.dispatch_culling(scene.frame, scene.eye, 1.0f, error) &&
+                  error.find("poisoned after partial GPU mutation") !=
+                      std::string::npos &&
+                  error.find("upload") != std::string::npos,
+              "later upload failure poisons renderer");
+        const std::string poison_reason = error;
+        std::vector<viewer::GpuMat4> poisoned_transforms(1);
+        CHECK(!renderer.readback_draw_transforms(poisoned_transforms, error) &&
+                  poisoned_transforms.empty() && error == poison_reason &&
+                  renderer.indirect_buffer() == VK_NULL_HANDLE &&
+                  renderer.draw_transform_buffer() == VK_NULL_HANDLE &&
+                  renderer.draw_command_count() == 0,
+              "upload-poisoned renderer fails closed with stable diagnostic");
     }
 }
 

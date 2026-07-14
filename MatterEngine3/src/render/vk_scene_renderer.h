@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -103,6 +104,9 @@ public:
     bool readback_draw_transforms(std::vector<GpuMat4>& transforms,
                                   std::string& error);
     int fill_rt_instances(std::vector<RtInstance>& output) const;
+    // A poisoned renderer fails closed. reset() then performs a full GPU
+    // resource/pipeline teardown, clears the poison, and requires re-init
+    // (explicitly or through the next dispatch_culling call) before reuse.
     void reset();
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     void set_test_device_limits(VkDeviceSize max_storage_buffer_range,
@@ -114,20 +118,30 @@ public:
     bool set_test_command_first_instance(uint32_t command_index,
                                          uint32_t first_instance,
                                          std::string& error);
+    void set_test_scene_failure(uint32_t fail_after_replacements,
+                                uint32_t fail_after_uploads);
 #endif
 
-    VkBuffer indirect_buffer() const { return commands_.buffer; }
-    VkBuffer draw_transform_buffer() const { return draw_transforms_.buffer; }
+    VkBuffer indirect_buffer() const {
+        return poisoned() ? VK_NULL_HANDLE : commands_.buffer;
+    }
+    VkBuffer draw_transform_buffer() const {
+        return poisoned() ? VK_NULL_HANDLE : draw_transforms_.buffer;
+    }
     uint32_t draw_command_count() const {
-        return uploaded_command_count_;
+        return poisoned() ? 0 : uploaded_command_count_;
     }
     uint32_t cluster_count() const {
-        return static_cast<uint32_t>(cluster_staging_.size());
+        return poisoned() ? 0 : uploaded_cluster_count_;
     }
-    VkDeviceSize cluster_buffer_size() const { return clusters_.size; }
-    VkDeviceSize command_buffer_size() const { return commands_.size; }
+    VkDeviceSize cluster_buffer_size() const {
+        return poisoned() ? 0 : clusters_.size;
+    }
+    VkDeviceSize command_buffer_size() const {
+        return poisoned() ? 0 : commands_.size;
+    }
     VkDeviceSize draw_transform_buffer_size() const {
-        return draw_transforms_.size;
+        return poisoned() ? 0 : draw_transforms_.size;
     }
 
 private:
@@ -172,12 +186,15 @@ private:
     bool ensure_buffer(matter::VkBufferResource& buffer,
                        VkDeviceSize required_size, VkBufferUsageFlags usage,
                        uint32_t set_index, uint32_t binding,
-                       std::string& error);
+                       std::string& error, bool* replaced = nullptr);
     void update_descriptor(uint32_t set_index, uint32_t binding,
                            const matter::VkBufferResource& buffer);
     bool upload_scene_buffers(std::string& error);
     bool rebuild_command_template(std::string& error);
     bool load_device_limits(std::string& error);
+    bool fail_if_poisoned(std::string& error) const;
+    bool poison(std::string& error);
+    bool poisoned() const { return !poison_reason_.empty(); }
     void destroy_pipeline();
 
     matter::VulkanDevice* vulkan_ = nullptr;
@@ -207,11 +224,18 @@ private:
     uint32_t draw_transform_slots_ = 0;
     uint32_t uploaded_command_count_ = 0;
     uint32_t uploaded_transform_slots_ = 0;
+    uint32_t uploaded_cluster_count_ = 0;
+    std::vector<RtInstance> uploaded_rt_instances_;
+    std::string poison_reason_;
     DeviceLimits limits_{};
     DeviceLimits physical_limits_{};
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     DeviceLimits test_limits_{};
     bool use_test_limits_ = false;
+    uint32_t test_fail_after_replacements_ =
+        std::numeric_limits<uint32_t>::max();
+    uint32_t test_fail_after_uploads_ =
+        std::numeric_limits<uint32_t>::max();
 #endif
 };
 

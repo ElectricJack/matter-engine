@@ -298,7 +298,8 @@ bool VkSceneRenderer::ensure_buffer(matter::VkBufferResource& buffer,
                                     VkDeviceSize required_size,
                                     VkBufferUsageFlags usage,
                                     uint32_t set_index, uint32_t binding,
-                                    std::string& error) {
+                                    std::string& error, bool* replaced) {
+    if (replaced) *replaced = false;
     const VkDeviceSize descriptor_limit =
         set_index == 0 ? limits_.max_uniform_buffer_range
                        : limits_.max_storage_buffer_range;
@@ -326,7 +327,25 @@ bool VkSceneRenderer::ensure_buffer(matter::VkBufferResource& buffer,
     }
     buffer = std::move(replacement);
     update_descriptor(set_index, binding, buffer);
+    if (replaced) *replaced = true;
     return true;
+}
+
+bool VkSceneRenderer::fail_if_poisoned(std::string& error) const {
+    if (!poisoned()) return false;
+    error = poison_reason_;
+    return true;
+}
+
+bool VkSceneRenderer::poison(std::string& error) {
+    if (!poisoned()) {
+        const std::string cause =
+            error.empty() ? "unknown Vulkan scene mutation failure" : error;
+        poison_reason_ =
+            "VkSceneRenderer poisoned after partial GPU mutation: " + cause;
+    }
+    error = poison_reason_;
+    return false;
 }
 
 bool VkSceneRenderer::load_device_limits(std::string& error) {
@@ -389,6 +408,7 @@ void VkSceneRenderer::set_test_device_limits(
     VkDeviceSize max_uniform_buffer_range, VkDeviceSize max_buffer_size,
     uint32_t max_dispatch_group_count_x,
     uint32_t max_draw_indirect_count) {
+    if (poisoned()) return;
     test_limits_.max_storage_buffer_range = max_storage_buffer_range;
     test_limits_.max_uniform_buffer_range = max_uniform_buffer_range;
     test_limits_.max_buffer_size = max_buffer_size;
@@ -415,6 +435,7 @@ void VkSceneRenderer::set_test_device_limits(
 
 void VkSceneRenderer::clear_test_device_limits(std::string& error) {
     error.clear();
+    if (fail_if_poisoned(error)) return;
     use_test_limits_ = false;
     limits_ = physical_limits_;
 }
@@ -422,6 +443,7 @@ void VkSceneRenderer::clear_test_device_limits(std::string& error) {
 bool VkSceneRenderer::set_test_command_first_instance(
     uint32_t command_index, uint32_t first_instance, std::string& error) {
     error.clear();
+    if (fail_if_poisoned(error)) return false;
     if (command_index >= command_template_.size()) {
         error = "test command index is outside the command table";
         return false;
@@ -440,10 +462,18 @@ bool VkSceneRenderer::set_test_command_first_instance(
     command_template_ = std::move(candidate);
     return true;
 }
+
+void VkSceneRenderer::set_test_scene_failure(
+    uint32_t fail_after_replacements, uint32_t fail_after_uploads) {
+    if (poisoned()) return;
+    test_fail_after_replacements_ = fail_after_replacements;
+    test_fail_after_uploads_ = fail_after_uploads;
+}
 #endif
 
 bool VkSceneRenderer::init(std::string& error) {
     error.clear();
+    if (fail_if_poisoned(error)) return false;
     if (initialized_) return true;
     if (pipeline_ != VK_NULL_HANDLE) destroy_pipeline();
     if (!load_device_limits(error)) return false;
@@ -481,6 +511,7 @@ bool VkSceneRenderer::init(std::string& error) {
 int VkSceneRenderer::ensure_part(const VkScenePart& part,
                                  std::string& error) {
     error.clear();
+    if (fail_if_poisoned(error)) return -1;
     const auto existing = slot_of_.find(part.part_hash);
     if (existing != slot_of_.end()) return existing->second;
     if (part.clusters.empty()) {
@@ -551,6 +582,7 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
 }
 
 void VkSceneRenderer::release_part(uint64_t part_hash) {
+    if (poisoned()) return;
     const auto found = slot_of_.find(part_hash);
     if (found == slot_of_.end()) return;
     const uint32_t released_slot = static_cast<uint32_t>(found->second);
@@ -625,6 +657,7 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
 bool VkSceneRenderer::update_instances(
     const std::vector<VkSceneInstance>& instances, std::string& error) {
     error.clear();
+    if (fail_if_poisoned(error)) return false;
     int public_count = 0;
     if (!vk_scene_detail::checked_size_to_int(
             instances.size(), public_count, "VkSceneInstance count", error)) {
@@ -796,36 +829,73 @@ bool VkSceneRenderer::upload_scene_buffers(std::string& error) {
     if (!storage_size_ok(cluster_bytes, "cluster buffer") ||
         !storage_size_ok(instance_bytes, "instance buffer") ||
         !storage_size_ok(command_bytes, "draw-command buffer") ||
-        !storage_size_ok(transform_bytes, "draw-transform buffer") ||
-        !ensure_buffer(clusters_, cluster_bytes,
-                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 1, 0, error) ||
-        !ensure_buffer(instances_, instance_bytes,
-                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 1, 1, error) ||
-        !ensure_buffer(commands_, command_bytes,
-                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                           VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-                       1, 2, error) ||
-        !ensure_buffer(draw_transforms_, transform_bytes,
-                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 1, 3, error)) {
+        !storage_size_ok(transform_bytes, "draw-transform buffer")) {
+        return false;
+    }
+    std::vector<RtInstance> candidate_rt_instances = rt_instances_;
+    const uint32_t candidate_cluster_count =
+        static_cast<uint32_t>(cluster_staging_.size());
+    bool gpu_mutated = false;
+    uint32_t replacements = 0;
+    const auto ensure_scene_buffer = [&](matter::VkBufferResource& buffer,
+                                         VkDeviceSize size,
+                                         VkBufferUsageFlags usage,
+                                         uint32_t binding) {
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+        if (replacements == test_fail_after_replacements_) {
+            error = "forced scene buffer replacement failure";
+            return gpu_mutated ? poison(error) : false;
+        }
+#endif
+        bool replaced = false;
+        if (!ensure_buffer(buffer, size, usage, 1, binding, error, &replaced))
+            return gpu_mutated ? poison(error) : false;
+        if (replaced) {
+            gpu_mutated = true;
+            ++replacements;
+        }
+        return true;
+    };
+    if (!ensure_scene_buffer(clusters_, cluster_bytes,
+                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0) ||
+        !ensure_scene_buffer(instances_, instance_bytes,
+                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 1) ||
+        !ensure_scene_buffer(commands_, command_bytes,
+                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                 VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                             2) ||
+        !ensure_scene_buffer(draw_transforms_, transform_bytes,
+                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 3)) {
         return false;
     }
     const VkCullStats zero_stats{};
+    uint32_t uploads = 0;
+    const auto upload_scene_buffer = [&](matter::VkBufferResource& buffer,
+                                         const void* data, VkDeviceSize size) {
+        if (size == 0) return true;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+        if (uploads == test_fail_after_uploads_) {
+            error = "forced scene buffer upload failure";
+            return poison(error);
+        }
+#endif
+        gpu_mutated = true;
+        if (!matter::upload_buffer(*vulkan_, buffer, data, size, 0, error))
+            return poison(error);
+        ++uploads;
+        return true;
+    };
     const bool uploaded =
-        (cluster_bytes == 0 ||
-         matter::upload_buffer(*vulkan_, clusters_, cluster_staging_.data(),
-                               cluster_bytes, 0, error)) &&
-        (instance_bytes == 0 ||
-         matter::upload_buffer(*vulkan_, instances_, instance_staging_.data(),
-                               instance_bytes, 0, error)) &&
-        (command_bytes == 0 ||
-         matter::upload_buffer(*vulkan_, commands_, command_template_.data(),
-                               command_bytes, 0, error)) &&
-        matter::upload_buffer(*vulkan_, stats_, &zero_stats,
-                              sizeof(zero_stats), 0, error);
+        upload_scene_buffer(clusters_, cluster_staging_.data(), cluster_bytes) &&
+        upload_scene_buffer(instances_, instance_staging_.data(), instance_bytes) &&
+        upload_scene_buffer(commands_, command_template_.data(), command_bytes) &&
+        upload_scene_buffer(stats_, &zero_stats, sizeof(zero_stats));
     if (uploaded) {
         uploaded_command_count_ =
             static_cast<uint32_t>(command_template_.size());
         uploaded_transform_slots_ = draw_transform_slots_;
+        uploaded_cluster_count_ = candidate_cluster_count;
+        uploaded_rt_instances_ = std::move(candidate_rt_instances);
     }
     return uploaded;
 }
@@ -835,6 +905,7 @@ bool VkSceneRenderer::dispatch_culling(const FrameMatrices& frame,
                                        float pixel_budget,
                                        std::string& error) {
     error.clear();
+    if (fail_if_poisoned(error)) return false;
     if (!initialized_ && !init(error)) return false;
     if (command_template_.size() > limits_.max_draw_indirect_count) {
         error = "draw-command count exceeds Vulkan maxDrawIndirectCount";
@@ -874,7 +945,7 @@ bool VkSceneRenderer::dispatch_culling(const FrameMatrices& frame,
     constants.capacities[3] = draw_transform_slots_;
     if (!matter::upload_buffer(*vulkan_, frame_constants_, &constants,
                                sizeof(constants), 0, error)) {
-        return false;
+        return poison(error);
     }
     if (instance_staging_.empty() || max_clusters_per_instance_ == 0)
         return true;
@@ -884,21 +955,29 @@ bool VkSceneRenderer::dispatch_culling(const FrameMatrices& frame,
     std::vector<std::shared_ptr<void>> dependencies{
         frame_constants_.lifetime, clusters_.lifetime, instances_.lifetime,
         commands_.lifetime, draw_transforms_.lifetime, stats_.lifetime};
-    return matter::submit_immediate(
+    if (!matter::submit_immediate(
         *vulkan_, record_cull_dispatch, &dispatch, error,
         matter::ImmediateSubmitPhase::compute_dispatch,
-        std::move(dependencies));
+        std::move(dependencies))) {
+        return poison(error);
+    }
+    return true;
 }
 
 bool VkSceneRenderer::cull_stats(VkCullStats& stats,
                                  std::string& error) {
     stats = {};
+    if (fail_if_poisoned(error)) return false;
     return matter::readback_buffer(*vulkan_, stats_,
                                    &stats, sizeof(stats), 0, error);
 }
 
 bool VkSceneRenderer::readback_commands(
     std::vector<DrawCommand>& commands, std::string& error) {
+    if (fail_if_poisoned(error)) {
+        commands.clear();
+        return false;
+    }
     commands.resize(uploaded_command_count_);
     if (commands.empty()) return true;
     VkDeviceSize bytes = 0;
@@ -912,6 +991,10 @@ bool VkSceneRenderer::readback_commands(
 
 bool VkSceneRenderer::readback_draw_transforms(
     std::vector<GpuMat4>& transforms, std::string& error) {
+    if (fail_if_poisoned(error)) {
+        transforms.clear();
+        return false;
+    }
     transforms.resize(uploaded_transform_slots_);
     if (transforms.empty()) return true;
     VkDeviceSize bytes = 0;
@@ -925,18 +1008,33 @@ bool VkSceneRenderer::readback_draw_transforms(
 
 int VkSceneRenderer::fill_rt_instances(
     std::vector<RtInstance>& output) const {
+    if (poisoned()) {
+        output.clear();
+        return 0;
+    }
     int count = 0;
     std::string error;
-    if (!vk_scene_detail::checked_size_to_int(rt_instances_.size(), count,
+    if (!vk_scene_detail::checked_size_to_int(uploaded_rt_instances_.size(), count,
                                                "RT instance count", error)) {
         output.clear();
         return 0;
     }
-    output = rt_instances_;
+    output = uploaded_rt_instances_;
     return count;
 }
 
 void VkSceneRenderer::reset() {
+    const bool full_reset = poisoned();
+    if (full_reset) {
+        if (vulkan_) vulkan_->wait_idle();
+        destroy_pipeline();
+        frame_constants_.reset();
+        clusters_.reset();
+        instances_.reset();
+        commands_.reset();
+        draw_transforms_.reset();
+        stats_.reset();
+    }
     parts_.clear();
     slot_of_.clear();
     cluster_staging_.clear();
@@ -949,6 +1047,13 @@ void VkSceneRenderer::reset() {
     draw_transform_slots_ = 0;
     uploaded_command_count_ = 0;
     uploaded_transform_slots_ = 0;
+    uploaded_cluster_count_ = 0;
+    uploaded_rt_instances_.clear();
+    poison_reason_.clear();
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    test_fail_after_replacements_ = std::numeric_limits<uint32_t>::max();
+    test_fail_after_uploads_ = std::numeric_limits<uint32_t>::max();
+#endif
 }
 
 }  // namespace viewer
