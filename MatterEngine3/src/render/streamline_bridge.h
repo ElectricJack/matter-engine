@@ -1,5 +1,8 @@
 #pragma once
 
+#if defined(_WIN32) && !defined(VK_USE_PLATFORM_WIN32_KHR)
+#define VK_USE_PLATFORM_WIN32_KHR
+#endif
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
@@ -13,6 +16,7 @@ namespace matter {
 class StreamlineBridge {
 public:
     static StreamlineBridge initialize_before_vulkan();
+    static StreamlineBridge native_fallback(std::string reason);
 
     bool initialized() const { return initialized_; }
     bool dlss_requested() const { return dlss_requested_; }
@@ -65,12 +69,22 @@ public:
                               const VkSwapchainCreateInfoKHR* create,
                               const VkAllocationCallbacks* allocator,
                               VkSwapchainKHR* swapchain);
+    VkResult get_swapchain_images(VkDevice device, VkSwapchainKHR swapchain,
+                                  uint32_t* image_count, VkImage* images);
     void destroy_swapchain(VkDevice device, VkSwapchainKHR swapchain,
                            const VkAllocationCallbacks* allocator);
     VkResult acquire_next_image(VkDevice device, VkSwapchainKHR swapchain,
                                 uint64_t timeout, VkSemaphore semaphore,
                                 VkFence fence, uint32_t* image_index);
     VkResult device_wait_idle(VkDevice device);
+#ifdef _WIN32
+    VkResult create_win32_surface(VkInstance instance,
+                                  const VkWin32SurfaceCreateInfoKHR* create,
+                                  const VkAllocationCallbacks* allocator,
+                                  VkSurfaceKHR* surface);
+#endif
+    void destroy_surface(VkInstance instance, VkSurfaceKHR surface,
+                         const VkAllocationCallbacks* allocator);
 
 private:
     bool initialized_ = false;
@@ -78,6 +92,7 @@ private:
     bool dlss_available_ = false;
     bool proxy_dispatch_used_ = false;
     bool use_proxy_dispatch_ = false;
+    bool proxy_object_created_ = false;
     bool streamline_initialized_ = false;
     std::string dlss_unavailable_reason_;
     std::vector<const char*> instance_extensions_;
@@ -97,9 +112,14 @@ private:
     PFN_vkCreateDevice create_device_proxy_ = nullptr;
     PFN_vkQueuePresentKHR queue_present_proxy_ = nullptr;
     PFN_vkCreateSwapchainKHR create_swapchain_proxy_ = nullptr;
+    PFN_vkGetSwapchainImagesKHR get_swapchain_images_proxy_ = nullptr;
     PFN_vkDestroySwapchainKHR destroy_swapchain_proxy_ = nullptr;
     PFN_vkAcquireNextImageKHR acquire_next_image_proxy_ = nullptr;
     PFN_vkDeviceWaitIdle device_wait_idle_proxy_ = nullptr;
+#ifdef _WIN32
+    PFN_vkCreateWin32SurfaceKHR create_win32_surface_proxy_ = nullptr;
+#endif
+    PFN_vkDestroySurfaceKHR destroy_surface_proxy_ = nullptr;
 
     bool populate_instance_proxies(VkInstance instance);
     bool populate_device_proxies(VkDevice device);

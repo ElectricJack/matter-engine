@@ -5,6 +5,10 @@
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
+#ifdef _WIN32
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -293,6 +297,8 @@ struct VulkanDevice::Impl {
     std::shared_ptr<detail::DeviceAccessToken> device_lifetime;
     PFN_vkReleaseSwapchainImagesEXT release_swapchain_images = nullptr;
     VkQueue graphics_queue = VK_NULL_HANDLE;
+    std::vector<VkQueue> streamline_graphics_queues;
+    std::vector<VkQueue> streamline_compute_queues;
     uint32_t graphics_queue_family = std::numeric_limits<uint32_t>::max();
     bool draw_indirect_first_instance_enabled = false;
     bool multi_draw_indirect_enabled = false;
@@ -536,8 +542,22 @@ struct VulkanDevice::Impl {
     }
 
     bool create_surface(std::string& error) {
+#ifdef _WIN32
+        VkWin32SurfaceCreateInfoKHR create{
+            VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
+        create.hinstance = GetModuleHandleW(nullptr);
+        create.hwnd = glfwGetWin32Window(window);
+        if (!create.hinstance || !create.hwnd) {
+            error = "GLFW did not expose a native Win32 window for Vulkan";
+            return false;
+        }
+        return vk_ok(streamline.create_win32_surface(instance, &create, nullptr,
+                                                      &surface),
+                     "vkCreateWin32SurfaceKHR", error);
+#else
         return vk_ok(glfwCreateWindowSurface(instance, window, nullptr, &surface),
                      "glfwCreateWindowSurface", error);
+#endif
     }
 
     std::vector<std::string> missing_device_capabilities(
@@ -576,6 +596,9 @@ struct VulkanDevice::Impl {
         queue = find_graphics_present_queue(candidate, surface);
         if (queue.family == std::numeric_limits<uint32_t>::max()) {
             missing.emplace_back("graphics+present queue family");
+        } else if (required_graphics_queues + required_compute_queues >
+                   queue.queue_count) {
+            missing.emplace_back("enough queues for Streamline requirements");
         }
 
         VkPhysicalDeviceFeatures2 features2{
@@ -816,28 +839,19 @@ struct VulkanDevice::Impl {
         vkGetPhysicalDeviceQueueFamilyProperties(physical_device,
                                                  &queue_family_count,
                                                  queue_families.data());
-        if (compute_queue_count != 0 ||
-            graphics_queue_family >= queue_families.size() ||
-            graphics_queue_count >
+        const uint32_t total_queue_count =
+            graphics_queue_count + compute_queue_count;
+        if (graphics_queue_family >= queue_families.size() ||
+            total_queue_count >
                 queue_families[graphics_queue_family].queueCount) {
-            streamline.disable(
-                "Streamline queue requirements are unavailable; using native Vulkan fallback");
-            extensions = {
-                VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-                VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,
-                VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME,
-                VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME,
-            };
-            features12 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
-            features13 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
-            graphics_queue_count = 1;
-            compute_queue_count = 0;
+            error = "selected Vulkan queue family cannot satisfy Streamline queue requirements";
+            return false;
         }
-        std::vector<float> priorities(graphics_queue_count, 1.0f);
+        std::vector<float> priorities(total_queue_count, 1.0f);
         VkDeviceQueueCreateInfo queue_create{
             VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
         queue_create.queueFamilyIndex = graphics_queue_family;
-        queue_create.queueCount = graphics_queue_count;
+        queue_create.queueCount = total_queue_count;
         queue_create.pQueuePriorities = priorities.data();
 
         features13.dynamicRendering = VK_TRUE;
@@ -877,9 +891,25 @@ struct VulkanDevice::Impl {
         device_lifetime =
             std::make_shared<detail::DeviceAccessToken>(device);
         vkGetDeviceQueue(device, graphics_queue_family, 0, &graphics_queue);
+        const uint32_t streamline_graphics_begin =
+            graphics_queue_count > 1 ? 1 : 0;
+        const uint32_t streamline_compute_begin =
+            compute_queue_count != 0 ? graphics_queue_count : 0;
+        streamline_graphics_queues.resize(graphics_queue_count - 1);
+        for (uint32_t i = 0; i < streamline_graphics_queues.size(); ++i) {
+            vkGetDeviceQueue(device, graphics_queue_family, i + 1,
+                             &streamline_graphics_queues[i]);
+        }
+        streamline_compute_queues.resize(compute_queue_count);
+        for (uint32_t i = 0; i < streamline_compute_queues.size(); ++i) {
+            vkGetDeviceQueue(device, graphics_queue_family,
+                             streamline_compute_begin + i,
+                             &streamline_compute_queues[i]);
+        }
         if (!streamline.set_vulkan_info(
-                instance, physical_device, device, graphics_queue_family, 0,
-                graphics_queue_family, 0))
+                instance, physical_device, device, graphics_queue_family,
+                streamline_graphics_begin, graphics_queue_family,
+                streamline_compute_begin))
             return false;
         release_swapchain_images =
             reinterpret_cast<PFN_vkReleaseSwapchainImagesEXT>(
@@ -997,8 +1027,8 @@ struct VulkanDevice::Impl {
             return false;
         }
         uint32_t actual_count = 0;
-        VkResult result =
-            vkGetSwapchainImagesKHR(device, replacement, &actual_count, nullptr);
+        VkResult result = streamline.get_swapchain_images(
+            device, replacement, &actual_count, nullptr);
         if (result != VK_SUCCESS || actual_count == 0) {
             streamline.destroy_swapchain(device, replacement, nullptr);
             if (result == VK_SUCCESS) {
@@ -1008,8 +1038,8 @@ struct VulkanDevice::Impl {
             return vk_ok(result, "vkGetSwapchainImagesKHR", error);
         }
         std::vector<VkImage> images(actual_count);
-        result = vkGetSwapchainImagesKHR(device, replacement, &actual_count,
-                                         images.data());
+        result = streamline.get_swapchain_images(device, replacement,
+                                                  &actual_count, images.data());
         if (result != VK_SUCCESS) {
             streamline.destroy_swapchain(device, replacement, nullptr);
             return vk_ok(result, "vkGetSwapchainImagesKHR", error);
@@ -1799,13 +1829,16 @@ struct VulkanDevice::Impl {
         }
         if (swapchain != VK_NULL_HANDLE)
             streamline.destroy_swapchain(device, swapchain, nullptr);
+        if (surface != VK_NULL_HANDLE) {
+            streamline.destroy_surface(instance, surface, nullptr);
+            surface = VK_NULL_HANDLE;
+        }
+        // All proxy-routed objects are gone before the interposer unloads.
+        streamline.shutdown();
         if (device != VK_NULL_HANDLE) {
-            streamline.shutdown();
             if (device_lifetime) device_lifetime->invalidate();
             vkDestroyDevice(device, nullptr);
         }
-        if (surface != VK_NULL_HANDLE)
-            vkDestroySurfaceKHR(instance, surface, nullptr);
         if (debug_messenger != VK_NULL_HANDLE) {
             const auto destroy_debug =
                 reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
@@ -1876,14 +1909,27 @@ std::unique_ptr<VulkanDevice> VulkanDevice::create(GLFWwindow* window,
                                                    bool enable_validation,
                                                    std::string& error) {
     error.clear();
-    StreamlineBridge streamline = StreamlineBridge::initialize_before_vulkan();
-    std::unique_ptr<VulkanDevice> result(
-        new VulkanDevice(std::make_unique<Impl>(std::move(streamline))));
-    if (!result->impl_->initialize(window, enable_validation, error)) {
-        result->impl_->streamline.shutdown();
-        return nullptr;
+    const auto make_device = [](StreamlineBridge bridge) {
+        return std::unique_ptr<VulkanDevice>(
+            new VulkanDevice(std::make_unique<Impl>(std::move(bridge))));
+    };
+    std::unique_ptr<VulkanDevice> result =
+        make_device(StreamlineBridge::initialize_before_vulkan());
+    if (result->impl_->initialize(window, enable_validation, error)) {
+        return result;
     }
-    return result;
+    const bool retry_native = result->impl_->streamline.dlss_requested() ||
+                              result->impl_->streamline.proxy_dispatch_used();
+    if (!retry_native) return nullptr;
+
+    result.reset();  // Teardown keeps proxy dispatch alive through destruction.
+    error.clear();
+    result = make_device(StreamlineBridge::native_fallback(
+        "Streamline Vulkan requirements unavailable; retried native Vulkan"));
+    if (result->impl_->initialize(window, enable_validation, error)) {
+        return result;
+    }
+    return nullptr;
 }
 
 bool VulkanDevice::begin_frame(VulkanFrame& frame, std::string& error) {

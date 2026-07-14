@@ -191,6 +191,13 @@ StreamlineBridge StreamlineBridge::initialize_before_vulkan() {
     return bridge;
 }
 
+StreamlineBridge StreamlineBridge::native_fallback(std::string reason) {
+    StreamlineBridge bridge;
+    bridge.initialized_ = true;
+    bridge.dlss_unavailable_reason_ = std::move(reason);
+    return bridge;
+}
+
 bool StreamlineBridge::validate_requirements(
     const VkPhysicalDeviceVulkan12Features& supported_features12,
     const VkPhysicalDeviceVulkan13Features& supported_features13,
@@ -275,8 +282,12 @@ bool StreamlineBridge::set_vulkan_info(
 void StreamlineBridge::disable(std::string reason) {
     dlss_requested_ = false;
     dlss_available_ = false;
-    use_proxy_dispatch_ = false;
     dlss_unavailable_reason_ = std::move(reason);
+    // A proxy-created Vulkan object must keep the interposer loaded and all
+    // proxy calls routed until that object is destroyed.  The owner retries
+    // the complete initialization natively after this stack is torn down.
+    if (proxy_object_created_) return;
+    use_proxy_dispatch_ = false;
     instance_extensions_.clear();
     device_extensions_.clear();
     required_features12_ = {};
@@ -321,6 +332,8 @@ bool StreamlineBridge::populate_device_proxies(VkDevice device) {
         get_device_proc_addr_proxy_(device, "vkQueuePresentKHR"));
     create_swapchain_proxy_ = reinterpret_cast<PFN_vkCreateSwapchainKHR>(
         get_device_proc_addr_proxy_(device, "vkCreateSwapchainKHR"));
+    get_swapchain_images_proxy_ = reinterpret_cast<PFN_vkGetSwapchainImagesKHR>(
+        get_device_proc_addr_proxy_(device, "vkGetSwapchainImagesKHR"));
     destroy_swapchain_proxy_ = reinterpret_cast<PFN_vkDestroySwapchainKHR>(
         get_device_proc_addr_proxy_(device, "vkDestroySwapchainKHR"));
     acquire_next_image_proxy_ = reinterpret_cast<PFN_vkAcquireNextImageKHR>(
@@ -328,8 +341,8 @@ bool StreamlineBridge::populate_device_proxies(VkDevice device) {
     device_wait_idle_proxy_ = reinterpret_cast<PFN_vkDeviceWaitIdle>(
         get_device_proc_addr_proxy_(device, "vkDeviceWaitIdle"));
     return queue_present_proxy_ && create_swapchain_proxy_ &&
-           destroy_swapchain_proxy_ && acquire_next_image_proxy_ &&
-           device_wait_idle_proxy_;
+           get_swapchain_images_proxy_ && destroy_swapchain_proxy_ &&
+           acquire_next_image_proxy_ && device_wait_idle_proxy_;
 }
 
 VkResult StreamlineBridge::create_instance(
@@ -338,8 +351,26 @@ VkResult StreamlineBridge::create_instance(
     if (use_proxy_dispatch_ && create_instance_proxy_) {
         proxy_dispatch_used_ = true;
         const VkResult result = create_instance_proxy_(create, allocator, instance);
-        if (result == VK_SUCCESS && !populate_instance_proxies(*instance)) {
-            disable("Streamline SDK could not provide vkCreateDevice proxy");
+        if (result == VK_SUCCESS) {
+            proxy_object_created_ = true;
+#ifdef _WIN32
+            create_win32_surface_proxy_ =
+                reinterpret_cast<PFN_vkCreateWin32SurfaceKHR>(
+                    get_instance_proc_addr_proxy_(*instance,
+                                                  "vkCreateWin32SurfaceKHR"));
+            destroy_surface_proxy_ = reinterpret_cast<PFN_vkDestroySurfaceKHR>(
+                get_instance_proc_addr_proxy_(*instance, "vkDestroySurfaceKHR"));
+            if (!populate_instance_proxies(*instance) ||
+                !create_win32_surface_proxy_ || !destroy_surface_proxy_) {
+                disable("Streamline SDK could not provide required instance manual hooks");
+                return VK_ERROR_INITIALIZATION_FAILED;
+            }
+#else
+            if (!populate_instance_proxies(*instance)) {
+                disable("Streamline SDK could not provide vkCreateDevice proxy");
+                return VK_ERROR_INITIALIZATION_FAILED;
+            }
+#endif
         }
         return result;
     }
@@ -353,12 +384,26 @@ VkResult StreamlineBridge::create_device(
         proxy_dispatch_used_ = true;
         const VkResult result =
             create_device_proxy_(physical_device, create, allocator, device);
-        if (result == VK_SUCCESS && !populate_device_proxies(*device)) {
-            disable("Streamline SDK could not provide required Vulkan manual hooks");
+        if (result == VK_SUCCESS) {
+            proxy_object_created_ = true;
+            if (!populate_device_proxies(*device)) {
+                disable("Streamline SDK could not provide required Vulkan manual hooks");
+                return VK_ERROR_INITIALIZATION_FAILED;
+            }
         }
         return result;
     }
     return vkCreateDevice(physical_device, create, allocator, device);
+}
+
+VkResult StreamlineBridge::get_swapchain_images(
+    VkDevice device, VkSwapchainKHR swapchain, uint32_t* image_count,
+    VkImage* images) {
+    if (use_proxy_dispatch_ && get_swapchain_images_proxy_) {
+        proxy_dispatch_used_ = true;
+        return get_swapchain_images_proxy_(device, swapchain, image_count, images);
+    }
+    return vkGetSwapchainImagesKHR(device, swapchain, image_count, images);
 }
 
 VkResult StreamlineBridge::queue_present(VkQueue queue,
@@ -409,6 +454,29 @@ VkResult StreamlineBridge::device_wait_idle(VkDevice device) {
         return device_wait_idle_proxy_(device);
     }
     return vkDeviceWaitIdle(device);
+}
+
+#ifdef _WIN32
+VkResult StreamlineBridge::create_win32_surface(
+    VkInstance instance, const VkWin32SurfaceCreateInfoKHR* create,
+    const VkAllocationCallbacks* allocator, VkSurfaceKHR* surface) {
+    if (use_proxy_dispatch_ && create_win32_surface_proxy_) {
+        proxy_dispatch_used_ = true;
+        return create_win32_surface_proxy_(instance, create, allocator, surface);
+    }
+    return vkCreateWin32SurfaceKHR(instance, create, allocator, surface);
+}
+#endif
+
+void StreamlineBridge::destroy_surface(
+    VkInstance instance, VkSurfaceKHR surface,
+    const VkAllocationCallbacks* allocator) {
+    if (use_proxy_dispatch_ && destroy_surface_proxy_) {
+        proxy_dispatch_used_ = true;
+        destroy_surface_proxy_(instance, surface, allocator);
+        return;
+    }
+    vkDestroySurfaceKHR(instance, surface, allocator);
 }
 
 }  // namespace matter
