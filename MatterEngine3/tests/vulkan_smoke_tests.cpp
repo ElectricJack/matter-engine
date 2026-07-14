@@ -3,8 +3,10 @@
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
+#include <chrono>
 #include <cstdio>
 #include <string>
+#include <thread>
 
 #include "matter/vulkan_device.h"
 
@@ -43,6 +45,89 @@ int main() {
             CHECK(ended, error.empty() ? "end frame" : error.c_str());
             if (!ended) break;
         }
+
+        glfwSetWindowSize(window, 480, 270);
+        int resized_width = 0;
+        int resized_height = 0;
+        for (int i = 0; i < 50; ++i) {
+            glfwPollEvents();
+            glfwGetFramebufferSize(window, &resized_width, &resized_height);
+            if (resized_width != 320 || resized_height != 200) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        matter::VulkanFrame resized{};
+        const bool began_resized = vulkan->begin_frame(resized, error);
+        CHECK(began_resized,
+              error.empty() ? "begin resized frame" : error.c_str());
+        if (began_resized) {
+            CHECK(resized.swapchain_recreated,
+                  "resize recreates the swapchain once");
+            CHECK(vulkan->end_frame(resized, error),
+                  error.empty() ? "end resized frame" : error.c_str());
+        }
+
+        matter::VulkanFrame stable{};
+        const bool began_stable = vulkan->begin_frame(stable, error);
+        CHECK(began_stable,
+              error.empty() ? "begin stable resized frame" : error.c_str());
+        if (began_stable) {
+            CHECK(!stable.swapchain_recreated,
+                  "stable framebuffer does not recreate perpetually");
+            CHECK(vulkan->end_frame(stable, error),
+                  error.empty() ? "end stable resized frame" : error.c_str());
+        }
+
+        glfwShowWindow(window);
+        glfwIconifyWindow(window);
+        int minimized_width = -1;
+        int minimized_height = -1;
+        for (int i = 0; i < 50; ++i) {
+            glfwPollEvents();
+            glfwGetFramebufferSize(window, &minimized_width, &minimized_height);
+            if (minimized_width == 0 || minimized_height == 0) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (minimized_width == 0 || minimized_height == 0) {
+            matter::VulkanFrame minimized{};
+            const auto start = std::chrono::steady_clock::now();
+            const bool began_minimized = vulkan->begin_frame(minimized, error);
+            const auto elapsed = std::chrono::steady_clock::now() - start;
+            CHECK(!began_minimized,
+                  "zero-sized framebuffer skips frame acquisition");
+            CHECK(error.find("zero-sized") != std::string::npos,
+                  "zero-sized framebuffer reports a recoverable result");
+            CHECK(elapsed < std::chrono::milliseconds(250),
+                  "zero-sized framebuffer returns promptly");
+        } else {
+            std::printf("SKIP: platform did not expose a zero-sized minimized "
+                        "framebuffer\n");
+        }
+        glfwRestoreWindow(window);
+        glfwHideWindow(window);
+        int restored_width = 0;
+        int restored_height = 0;
+        for (int i = 0; i < 50; ++i) {
+            glfwPollEvents();
+            glfwGetFramebufferSize(window, &restored_width, &restored_height);
+            if (restored_width > 0 && restored_height > 0) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (restored_width > 0 && restored_height > 0) {
+            matter::VulkanFrame restored{};
+            const bool began_restored = vulkan->begin_frame(restored, error);
+            CHECK(began_restored,
+                  error.empty() ? "begin restored frame" : error.c_str());
+            if (began_restored) {
+                CHECK(restored.swapchain_recreated,
+                      "restored framebuffer recreates after becoming nonzero");
+                CHECK(vulkan->end_frame(restored, error),
+                      error.empty() ? "end restored frame" : error.c_str());
+            }
+        } else {
+            std::printf("SKIP: minimized window did not restore a nonzero "
+                        "framebuffer\n");
+        }
+
         CHECK(vulkan->validation_error_count() == 0,
               "no Vulkan validation errors");
         std::printf("validation errors: %u\n",

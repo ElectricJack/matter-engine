@@ -187,6 +187,8 @@ struct VulkanDevice::Impl {
         VkCommandPool command_pool = VK_NULL_HANDLE;
         VkCommandBuffer command_buffer = VK_NULL_HANDLE;
         VkSemaphore image_available = VK_NULL_HANDLE;
+        VkFence acquire_fence = VK_NULL_HANDLE;
+        bool acquire_fence_pending = false;
         VkFence fence = VK_NULL_HANDLE;
     };
 
@@ -198,6 +200,7 @@ struct VulkanDevice::Impl {
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     VkPhysicalDevice physical_device = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
+    PFN_vkReleaseSwapchainImagesEXT release_swapchain_images = nullptr;
     VkQueue graphics_queue = VK_NULL_HANDLE;
     uint32_t graphics_queue_family = std::numeric_limits<uint32_t>::max();
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
@@ -206,12 +209,17 @@ struct VulkanDevice::Impl {
     std::vector<VkImage> swapchain_images;
     std::vector<bool> swapchain_image_initialized;
     std::vector<VkSemaphore> render_finished;
+    std::vector<VkFence> present_fences;
+    std::vector<bool> present_fence_pending;
     std::array<FrameSlot, kFramesInFlight> frames{};
     uint32_t frame_slot = 0;
     uint64_t next_serial = 1;
     bool frame_active = false;
     bool acquired_suboptimal = false;
     bool report_recreated = false;
+    bool swapchain_recreate_required = false;
+    bool device_poisoned = false;
+    std::string poison_error;
     VulkanFrame active_frame{};
 
     static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
@@ -274,6 +282,9 @@ struct VulkanDevice::Impl {
         }
         std::vector<const char*> required_extensions(
             glfw_extensions, glfw_extensions + glfw_count);
+        required_extensions.push_back(
+            VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
+        required_extensions.push_back(VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME);
         if (validation_enabled) {
             required_extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         }
@@ -354,7 +365,8 @@ struct VulkanDevice::Impl {
     std::vector<std::string> missing_device_capabilities(
         VkPhysicalDevice candidate, QueueSelection& queue,
         VkPhysicalDeviceVulkan12Features& features12,
-        VkPhysicalDeviceVulkan13Features& features13) {
+        VkPhysicalDeviceVulkan13Features& features13,
+        VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT& maintenance1) {
         std::vector<std::string> missing;
         VkPhysicalDeviceProperties properties{};
         vkGetPhysicalDeviceProperties(candidate, &properties);
@@ -362,10 +374,11 @@ struct VulkanDevice::Impl {
             missing.emplace_back("Vulkan device API version 1.3");
         }
         const auto extensions = device_extensions(candidate);
-        constexpr std::array<const char*, 3> required_extensions = {
+        constexpr std::array<const char*, 4> required_extensions = {
             VK_KHR_SWAPCHAIN_EXTENSION_NAME,
             VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,
             VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME,
+            VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME,
         };
         for (const char* extension : required_extensions) {
             if (extensions.count(extension) == 0) missing.emplace_back(extension);
@@ -380,9 +393,16 @@ struct VulkanDevice::Impl {
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         features12 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
         features13 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+        maintenance1 = {
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT};
         features2.pNext = &features12;
         features12.pNext = &features13;
+        features13.pNext = &maintenance1;
         vkGetPhysicalDeviceFeatures2(candidate, &features2);
+        if (!features12.timelineSemaphore) {
+            missing.emplace_back(
+                "VkPhysicalDeviceVulkan12Features::timelineSemaphore");
+        }
         if (!features13.dynamicRendering) {
             missing.emplace_back(
                 "VkPhysicalDeviceVulkan13Features::dynamicRendering");
@@ -419,6 +439,10 @@ struct VulkanDevice::Impl {
             missing.emplace_back("VkPhysicalDeviceVulkan12Features::"
                                  "shaderStorageBufferArrayNonUniformIndexing");
         }
+        if (!maintenance1.swapchainMaintenance1) {
+            missing.emplace_back("VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT::"
+                                 "swapchainMaintenance1");
+        }
 
         // External memory/semaphore are Vulkan 1.1 core capabilities.  Their
         // Win32 extension names above expose handles; these queries verify that
@@ -448,6 +472,10 @@ struct VulkanDevice::Impl {
 
         VkPhysicalDeviceExternalSemaphoreInfo semaphore_info{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO};
+        VkSemaphoreTypeCreateInfo semaphore_type{
+            VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO};
+        semaphore_type.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+        semaphore_info.pNext = &semaphore_type;
         semaphore_info.handleType =
             VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
         VkExternalSemaphoreProperties semaphore_properties{
@@ -460,8 +488,9 @@ struct VulkanDevice::Impl {
         if ((semaphore_properties.externalSemaphoreFeatures &
              required_semaphore) != required_semaphore) {
             missing.emplace_back(
-                "VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT "
-                "import+export");
+                "timeline VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT "
+                "VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT+"
+                "VK_EXTERNAL_SEMAPHORE_FEATURE_EXPORTABLE_BIT");
         }
 
         if (extensions.count(VK_KHR_SWAPCHAIN_EXTENSION_NAME) != 0) {
@@ -512,8 +541,9 @@ struct VulkanDevice::Impl {
             QueueSelection queue;
             VkPhysicalDeviceVulkan12Features features12{};
             VkPhysicalDeviceVulkan13Features features13{};
+            VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT maintenance1{};
             auto missing = missing_device_capabilities(
-                candidate, queue, features12, features13);
+                candidate, queue, features12, features13, maintenance1);
             if (!missing.empty()) {
                 rejected.emplace_back(std::string(properties.deviceName) +
                                       ": " + join(missing, ", "));
@@ -557,10 +587,11 @@ struct VulkanDevice::Impl {
     }
 
     bool create_logical_device(std::string& error) {
-        constexpr std::array<const char*, 3> extensions = {
+        constexpr std::array<const char*, 4> extensions = {
             VK_KHR_SWAPCHAIN_EXTENSION_NAME,
             VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,
             VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME,
+            VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME,
         };
         const float priority = 1.0f;
         VkDeviceQueueCreateInfo queue_create{
@@ -575,7 +606,12 @@ struct VulkanDevice::Impl {
         features13.synchronization2 = VK_TRUE;
         VkPhysicalDeviceVulkan12Features features12{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+        VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT maintenance1{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT};
+        maintenance1.swapchainMaintenance1 = VK_TRUE;
         features12.pNext = &features13;
+        features13.pNext = &maintenance1;
+        features12.timelineSemaphore = VK_TRUE;
         features12.descriptorIndexing = VK_TRUE;
         features12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
         features12.shaderStorageBufferArrayNonUniformIndexing = VK_TRUE;
@@ -595,6 +631,13 @@ struct VulkanDevice::Impl {
             return false;
         }
         vkGetDeviceQueue(device, graphics_queue_family, 0, &graphics_queue);
+        release_swapchain_images =
+            reinterpret_cast<PFN_vkReleaseSwapchainImagesEXT>(
+                vkGetDeviceProcAddr(device, "vkReleaseSwapchainImagesEXT"));
+        if (!release_swapchain_images) {
+            error = "Missing Vulkan function vkReleaseSwapchainImagesEXT";
+            return false;
+        }
         return true;
     }
 
@@ -618,14 +661,16 @@ struct VulkanDevice::Impl {
         return true;
     }
 
-    bool wait_for_nonzero_framebuffer() {
-        int width = 0;
-        int height = 0;
-        glfwGetFramebufferSize(window, &width, &height);
-        while (width == 0 || height == 0) {
-            if (glfwWindowShouldClose(window)) return false;
-            glfwWaitEvents();
-            glfwGetFramebufferSize(window, &width, &height);
+    bool desired_framebuffer_extent(VkExtent2D& extent, std::string& error) {
+        VkSurfaceCapabilitiesKHR capabilities{};
+        if (!vk_ok(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
+                       physical_device, surface, &capabilities),
+                   "vkGetPhysicalDeviceSurfaceCapabilitiesKHR", error)) {
+            return false;
+        }
+        if (!framebuffer_extent(capabilities, extent)) {
+            error = "Framebuffer is zero-sized; frame skipped";
+            return false;
         }
         return true;
     }
@@ -713,35 +758,66 @@ struct VulkanDevice::Impl {
         return true;
     }
 
-    bool create_render_finished_semaphores(std::string& error) {
+    bool create_swapchain_sync(std::string& error) {
         for (VkSemaphore semaphore : render_finished) {
             vkDestroySemaphore(device, semaphore, nullptr);
         }
+        for (VkFence fence : present_fences) {
+            vkDestroyFence(device, fence, nullptr);
+        }
         render_finished.assign(swapchain_images.size(), VK_NULL_HANDLE);
+        present_fences.assign(swapchain_images.size(), VK_NULL_HANDLE);
+        present_fence_pending.assign(swapchain_images.size(), false);
         VkSemaphoreCreateInfo create{
             VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-        for (VkSemaphore& semaphore : render_finished) {
-            if (!vk_ok(vkCreateSemaphore(device, &create, nullptr, &semaphore),
-                       "vkCreateSemaphore(render finished)", error)) {
+        VkFenceCreateInfo fence_create{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        for (size_t i = 0; i < render_finished.size(); ++i) {
+            if (!vk_ok(vkCreateSemaphore(device, &create, nullptr,
+                                         &render_finished[i]),
+                        "vkCreateSemaphore(render finished)", error)) {
+                return false;
+            }
+            if (!vk_ok(vkCreateFence(device, &fence_create, nullptr,
+                                     &present_fences[i]),
+                       "vkCreateFence(present completion)", error)) {
                 return false;
             }
         }
         return true;
     }
 
+    bool wait_for_present_completion(std::string& error) {
+        std::vector<VkFence> pending;
+        for (size_t i = 0; i < present_fences.size(); ++i) {
+            if (present_fence_pending[i]) pending.push_back(present_fences[i]);
+        }
+        if (pending.empty()) return true;
+        return vk_ok(vkWaitForFences(device, static_cast<uint32_t>(pending.size()),
+                                     pending.data(), VK_TRUE,
+                                     std::numeric_limits<uint64_t>::max()),
+                     "vkWaitForFences(present completion)", error);
+    }
+
     bool recreate_swapchain(std::string& error) {
-        if (!wait_for_nonzero_framebuffer()) {
-            error = "Window closed while waiting for a nonzero framebuffer";
+        int width = 0;
+        int height = 0;
+        glfwGetFramebufferSize(window, &width, &height);
+        if (width <= 0 || height <= 0) {
+            error = "Framebuffer is zero-sized; frame skipped";
+            swapchain_recreate_required = true;
             return false;
         }
         if (!vk_ok(vkDeviceWaitIdle(device), "vkDeviceWaitIdle", error)) {
             return false;
         }
+        if (!wait_for_present_completion(error)) return false;
         if (!create_swapchain(swapchain, error) ||
-            !create_render_finished_semaphores(error)) {
+            !create_swapchain_sync(error)) {
             return false;
         }
         report_recreated = true;
+        swapchain_recreate_required = false;
+        acquired_suboptimal = false;
         return true;
     }
 
@@ -769,8 +845,15 @@ struct VulkanDevice::Impl {
             VkSemaphoreCreateInfo semaphore{
                 VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
             if (!vk_ok(vkCreateSemaphore(device, &semaphore, nullptr,
-                                         &frame.image_available),
-                       "vkCreateSemaphore(image available)", error)) {
+                                          &frame.image_available),
+                        "vkCreateSemaphore(image available)", error)) {
+                return false;
+            }
+            VkFenceCreateInfo acquire_fence{
+                VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+            if (!vk_ok(vkCreateFence(device, &acquire_fence, nullptr,
+                                     &frame.acquire_fence),
+                       "vkCreateFence(acquire completion)", error)) {
                 return false;
             }
             VkFenceCreateInfo fence{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
@@ -780,7 +863,7 @@ struct VulkanDevice::Impl {
                 return false;
             }
         }
-        return create_render_finished_semaphores(error);
+        return create_swapchain_sync(error);
     }
 
     bool begin_frame(VulkanFrame& output, std::string& error) {
@@ -790,14 +873,25 @@ struct VulkanDevice::Impl {
             error = "begin_frame called while a frame is already active";
             return false;
         }
+        if (device_poisoned) {
+            error = poison_error;
+            return false;
+        }
 
         int framebuffer_width = 0;
         int framebuffer_height = 0;
         glfwGetFramebufferSize(window, &framebuffer_width, &framebuffer_height);
-        if (framebuffer_width > 0 && framebuffer_height > 0 &&
-            (static_cast<uint32_t>(framebuffer_width) != swapchain_extent.width ||
-             static_cast<uint32_t>(framebuffer_height) !=
-                 swapchain_extent.height)) {
+        if (framebuffer_width <= 0 || framebuffer_height <= 0) {
+            error = "Framebuffer is zero-sized; frame skipped";
+            swapchain_recreate_required = true;
+            return false;
+        }
+
+        VkExtent2D desired_extent{};
+        if (!desired_framebuffer_extent(desired_extent, error)) return false;
+        if (swapchain_recreate_required ||
+            desired_extent.width != swapchain_extent.width ||
+            desired_extent.height != swapchain_extent.height) {
             if (!recreate_swapchain(error)) return false;
         }
 
@@ -809,31 +903,63 @@ struct VulkanDevice::Impl {
         }
 
         uint32_t image_index = 0;
+        if (!vk_ok(vkResetFences(device, 1, &slot.acquire_fence),
+                   "vkResetFences(acquire completion)", error)) {
+            return false;
+        }
         VkResult acquire = vkAcquireNextImageKHR(
             device, swapchain, std::numeric_limits<uint64_t>::max(),
-            slot.image_available, VK_NULL_HANDLE, &image_index);
+            slot.image_available, slot.acquire_fence, &image_index);
         if (acquire == VK_ERROR_OUT_OF_DATE_KHR) {
             if (!recreate_swapchain(error)) return false;
+            if (!vk_ok(vkResetFences(device, 1, &slot.acquire_fence),
+                       "vkResetFences(acquire completion)", error)) {
+                return false;
+            }
             acquire = vkAcquireNextImageKHR(
                 device, swapchain, std::numeric_limits<uint64_t>::max(),
-                slot.image_available, VK_NULL_HANDLE, &image_index);
+                slot.image_available, slot.acquire_fence, &image_index);
         }
         if (acquire != VK_SUCCESS && acquire != VK_SUBOPTIMAL_KHR) {
             return vk_ok(acquire, "vkAcquireNextImageKHR", error);
         }
+        slot.acquire_fence_pending = true;
+        if (!vk_ok(vkWaitForFences(
+                       device, 1, &slot.acquire_fence, VK_TRUE,
+                       std::numeric_limits<uint64_t>::max()),
+                   "vkWaitForFences(acquire completion)", error)) {
+            device_poisoned = true;
+            poison_error = error +
+                           "; Vulkan device disabled because acquisition "
+                           "completion could not be established";
+            error = poison_error;
+            return false;
+        }
+        slot.acquire_fence_pending = false;
         acquired_suboptimal = acquire == VK_SUBOPTIMAL_KHR;
 
-        if (!vk_ok(vkResetFences(device, 1, &slot.fence), "vkResetFences",
-                   error) ||
-            !vk_ok(vkResetCommandPool(device, slot.command_pool, 0),
-                   "vkResetCommandPool", error)) {
+        if (present_fence_pending[image_index]) {
+            if (!vk_ok(vkWaitForFences(
+                           device, 1, &present_fences[image_index], VK_TRUE,
+                           std::numeric_limits<uint64_t>::max()),
+                       "vkWaitForFences(previous present)", error)) {
+                recover_unsubmitted_acquire(slot, image_index, error);
+                return false;
+            }
+            present_fence_pending[image_index] = false;
+        }
+
+        if (!vk_ok(vkResetCommandPool(device, slot.command_pool, 0),
+                    "vkResetCommandPool", error)) {
+            recover_unsubmitted_acquire(slot, image_index, error);
             return false;
         }
         VkCommandBufferBeginInfo begin{
             VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         if (!vk_ok(vkBeginCommandBuffer(slot.command_buffer, &begin),
-                   "vkBeginCommandBuffer", error)) {
+                    "vkBeginCommandBuffer", error)) {
+            recover_unsubmitted_acquire(slot, image_index, error);
             return false;
         }
 
@@ -874,6 +1000,77 @@ struct VulkanDevice::Impl {
         return true;
     }
 
+    void abandon_active_frame() {
+        frame_active = false;
+        acquired_suboptimal = false;
+        swapchain_recreate_required = true;
+    }
+
+    void append_recovery_error(std::string& error,
+                               const std::string& recovery_error) {
+        if (!recovery_error.empty()) error += "; additionally, " + recovery_error;
+    }
+
+    bool release_acquired_image(uint32_t image_index, std::string& error) {
+        VkReleaseSwapchainImagesInfoEXT release{
+            VK_STRUCTURE_TYPE_RELEASE_SWAPCHAIN_IMAGES_INFO_EXT};
+        release.swapchain = swapchain;
+        release.imageIndexCount = 1;
+        release.pImageIndices = &image_index;
+        return vk_ok(release_swapchain_images(device, &release),
+                     "vkReleaseSwapchainImagesEXT", error);
+    }
+
+    void recover_unsubmitted_acquire(FrameSlot& slot, uint32_t image_index,
+                                     std::string& error) {
+        std::string recovery_error;
+        if (!release_acquired_image(image_index, recovery_error)) {
+            append_recovery_error(error, recovery_error);
+        }
+        vkDestroySemaphore(device, slot.image_available, nullptr);
+        slot.image_available = VK_NULL_HANDLE;
+        VkSemaphoreCreateInfo create{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+        recovery_error.clear();
+        if (!vk_ok(vkCreateSemaphore(device, &create, nullptr,
+                                     &slot.image_available),
+                   "vkCreateSemaphore(image available recovery)",
+                   recovery_error)) {
+            append_recovery_error(error, recovery_error);
+        }
+        swapchain_recreate_required = true;
+    }
+
+    void recover_submitted_without_present(FrameSlot& slot,
+                                           uint32_t image_index,
+                                           std::string& error) {
+        std::string recovery_error;
+        if (!vk_ok(vkWaitForFences(device, 1, &slot.fence, VK_TRUE,
+                                   std::numeric_limits<uint64_t>::max()),
+                   "vkWaitForFences(abandoned submission)", recovery_error)) {
+            append_recovery_error(error, recovery_error);
+        } else {
+            recovery_error.clear();
+            if (!release_acquired_image(image_index, recovery_error)) {
+                append_recovery_error(error, recovery_error);
+            }
+        }
+        swapchain_recreate_required = true;
+    }
+
+    bool restore_signaled_frame_fence(FrameSlot& slot, std::string& error) {
+        vkDestroyFence(device, slot.fence, nullptr);
+        slot.fence = VK_NULL_HANDLE;
+        VkFenceCreateInfo create{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        create.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+        std::string fence_error;
+        if (!vk_ok(vkCreateFence(device, &create, nullptr, &slot.fence),
+                   "vkCreateFence(frame recovery)", fence_error)) {
+            append_recovery_error(error, fence_error);
+            return false;
+        }
+        return true;
+    }
+
     bool end_frame(const VulkanFrame& input, std::string& error) {
         error.clear();
         if (!frame_active) {
@@ -910,7 +1107,9 @@ struct VulkanDevice::Impl {
         to_present_dependency.pImageMemoryBarriers = &to_present;
         vkCmdPipelineBarrier2(slot.command_buffer, &to_present_dependency);
         if (!vk_ok(vkEndCommandBuffer(slot.command_buffer),
-                   "vkEndCommandBuffer", error)) {
+                    "vkEndCommandBuffer", error)) {
+            recover_unsubmitted_acquire(slot, input.image_index, error);
+            abandon_active_frame();
             return false;
         }
 
@@ -932,12 +1131,33 @@ struct VulkanDevice::Impl {
         submit.pCommandBufferInfos = &command;
         submit.signalSemaphoreInfoCount = 1;
         submit.pSignalSemaphoreInfos = &signal;
+        if (!vk_ok(vkResetFences(device, 1, &slot.fence), "vkResetFences(frame)",
+                   error)) {
+            recover_unsubmitted_acquire(slot, input.image_index, error);
+            abandon_active_frame();
+            return false;
+        }
         if (!vk_ok(vkQueueSubmit2(graphics_queue, 1, &submit, slot.fence),
-                   "vkQueueSubmit2", error)) {
+                    "vkQueueSubmit2", error)) {
+            restore_signaled_frame_fence(slot, error);
+            recover_unsubmitted_acquire(slot, input.image_index, error);
+            abandon_active_frame();
             return false;
         }
 
+        if (!vk_ok(vkResetFences(device, 1,
+                                 &present_fences[input.image_index]),
+                   "vkResetFences(present completion)", error)) {
+            recover_submitted_without_present(slot, input.image_index, error);
+            abandon_active_frame();
+            return false;
+        }
+        VkSwapchainPresentFenceInfoEXT present_fence_info{
+            VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT};
+        present_fence_info.swapchainCount = 1;
+        present_fence_info.pFences = &present_fences[input.image_index];
         VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+        present.pNext = &present_fence_info;
         present.waitSemaphoreCount = 1;
         present.pWaitSemaphores = &render_finished[input.image_index];
         present.swapchainCount = 1;
@@ -945,6 +1165,11 @@ struct VulkanDevice::Impl {
         present.pImageIndices = &input.image_index;
         const VkResult present_result =
             vkQueuePresentKHR(graphics_queue, &present);
+        if (present_result == VK_SUCCESS || present_result == VK_SUBOPTIMAL_KHR ||
+            present_result == VK_ERROR_OUT_OF_DATE_KHR ||
+            present_result == VK_ERROR_SURFACE_LOST_KHR) {
+            present_fence_pending[input.image_index] = true;
+        }
         swapchain_image_initialized[input.image_index] = true;
         frame_active = false;
         frame_slot = (frame_slot + 1) % kFramesInFlight;
@@ -955,14 +1180,46 @@ struct VulkanDevice::Impl {
             return recreate_swapchain(error);
         }
         acquired_suboptimal = false;
+        if (present_result == VK_ERROR_OUT_OF_HOST_MEMORY ||
+            present_result == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+            recover_submitted_without_present(slot, input.image_index, error);
+        }
         return vk_ok(present_result, "vkQueuePresentKHR", error);
     }
 
     void cleanup() {
-        if (device != VK_NULL_HANDLE) vkDeviceWaitIdle(device);
+        if (device != VK_NULL_HANDLE) {
+            const VkResult idle = vkDeviceWaitIdle(device);
+            if (idle != VK_SUCCESS) {
+                std::fprintf(stderr,
+                             "Vulkan cleanup stopped after %s; preserving "
+                             "potentially in-use device children\n",
+                             result_name(idle));
+                return;
+            }
+            for (FrameSlot& frame : frames) {
+                if (frame.acquire_fence_pending) {
+                    const VkResult waited = vkWaitForFences(
+                        device, 1, &frame.acquire_fence, VK_TRUE,
+                        std::numeric_limits<uint64_t>::max());
+                    if (waited != VK_SUCCESS) {
+                        std::fprintf(stderr,
+                                     "Vulkan cleanup stopped after %s; "
+                                     "preserving pending acquisition objects\n",
+                                     result_name(waited));
+                        return;
+                    }
+                    frame.acquire_fence_pending = false;
+                }
+            }
+            std::string ignored_error;
+            wait_for_present_completion(ignored_error);
+        }
         for (FrameSlot& frame : frames) {
             if (frame.fence != VK_NULL_HANDLE)
                 vkDestroyFence(device, frame.fence, nullptr);
+            if (frame.acquire_fence != VK_NULL_HANDLE)
+                vkDestroyFence(device, frame.acquire_fence, nullptr);
             if (frame.image_available != VK_NULL_HANDLE)
                 vkDestroySemaphore(device, frame.image_available, nullptr);
             if (frame.command_pool != VK_NULL_HANDLE)
@@ -971,6 +1228,9 @@ struct VulkanDevice::Impl {
         for (VkSemaphore semaphore : render_finished) {
             if (semaphore != VK_NULL_HANDLE)
                 vkDestroySemaphore(device, semaphore, nullptr);
+        }
+        for (VkFence fence : present_fences) {
+            if (fence != VK_NULL_HANDLE) vkDestroyFence(device, fence, nullptr);
         }
         if (swapchain != VK_NULL_HANDLE)
             vkDestroySwapchainKHR(device, swapchain, nullptr);
