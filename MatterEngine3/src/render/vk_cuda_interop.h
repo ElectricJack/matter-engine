@@ -24,6 +24,26 @@ bool cuda_vulkan_device_ids_match_for_test(
     bool force_mismatch = false) noexcept;
 
 uint32_t win32_process_handle_count() noexcept;
+uint32_t cuda_vulkan_application_export_handle_count() noexcept;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+uintptr_t cuda_vulkan_current_context_for_test(std::string& error) noexcept;
+uintptr_t cuda_vulkan_create_caller_context_for_test(std::string& error) noexcept;
+void cuda_vulkan_destroy_caller_context_for_test(uintptr_t context) noexcept;
+bool cuda_vulkan_luid_matches_for_test(
+    bool vulkan_valid, const std::array<uint8_t, VK_LUID_SIZE>& vulkan_luid,
+    uint32_t vulkan_node_mask, bool cuda_valid,
+    const std::array<uint8_t, VK_LUID_SIZE>& cuda_luid,
+    uint32_t cuda_node_mask) noexcept;
+std::string cuda_vulkan_luid_failure_diagnostic_for_test(
+    const std::string& vulkan_name,
+    const std::array<uint8_t, VK_UUID_SIZE>& vulkan_uuid,
+    const std::array<uint8_t, VK_LUID_SIZE>& vulkan_luid,
+    uint32_t vulkan_node_mask, const std::string& cuda_name,
+    const std::array<uint8_t, VK_UUID_SIZE>& cuda_uuid,
+    int cuda_result);
+void cuda_vulkan_reset_test_destroy_call_count() noexcept;
+uint32_t cuda_vulkan_test_destroy_call_count() noexcept;
+#endif
 
 class CudaVulkanInterop {
 public:
@@ -39,6 +59,7 @@ public:
 
     const std::array<uint8_t, VK_UUID_SIZE>& vulkan_uuid() const noexcept;
     const std::array<uint8_t, VK_UUID_SIZE>& cuda_uuid() const noexcept;
+    bool poisoned() const noexcept;
 
 private:
     CudaVulkanInterop();

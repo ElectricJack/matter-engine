@@ -305,6 +305,7 @@ struct VulkanDevice::Impl {
     bool report_recreated = false;
     bool swapchain_recreate_required = false;
     bool device_poisoned = false;
+    bool preserve_external_work = false;
     bool wsi_completion_ambiguous = false;
     detail::DeviceRetainedResource* retained_resources = nullptr;
     std::string poison_error;
@@ -1580,6 +1581,14 @@ struct VulkanDevice::Impl {
     }
 
     void cleanup() {
+        if (preserve_external_work) {
+            std::fprintf(stderr,
+                         "Vulkan cleanup intentionally preserving the logical "
+                         "device and children because external work completion "
+                         "is unproven\n");
+            if (device_lifetime) device_lifetime->invalidate();
+            return;
+        }
         if (device != VK_NULL_HANDLE) {
             VkResult idle = VK_SUCCESS;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
@@ -1913,6 +1922,10 @@ bool VulkanDevice::draw_indirect_first_instance_enabled() const {
 }
 uint32_t VulkanDevice::validation_error_count() const {
     return impl_->validation_errors.load(std::memory_order_relaxed);
+}
+
+void VulkanDevice::preserve_after_unproven_external_work() noexcept {
+    impl_->preserve_external_work = true;
 }
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
 uint32_t VulkanDevice::test_validation_error_total() {

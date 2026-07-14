@@ -59,6 +59,9 @@ public:
     uint32_t swapchain_image_count() const;
     bool draw_indirect_first_instance_enabled() const;
     uint32_t validation_error_count() const;
+    // External API work may outlive every completion primitive we can safely
+    // query. In that terminal case, preserve the logical device and children.
+    void preserve_after_unproven_external_work() noexcept;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     static uint32_t test_validation_error_total();
 #endif

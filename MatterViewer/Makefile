@@ -447,6 +447,10 @@ build/windows/vulkan_smoke_tests.exe: \
 vulkan-smoke: vulkan-preflight $(GLFW_WIN_LIB) \
               build/windows/vulkan_smoke_tests.exe \
               build/windows/vulkan_compat_tests.exe
+	/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe \
+	    -NoProfile -ExecutionPolicy Bypass -File \
+	    tools/smoke_vulkan_interop_faults.ps1 \
+	    -TestPath build/windows/vulkan_smoke_tests.exe
 
 build/windows/vulkan_compat_tests.exe: \
         $(ME3_DIR)/tests/vulkan_compat_tests.cpp \

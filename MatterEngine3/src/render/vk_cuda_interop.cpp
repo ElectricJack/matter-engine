@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <iomanip>
@@ -16,6 +17,34 @@
 
 namespace matter {
 namespace {
+
+std::atomic<uint32_t> g_application_export_handles{0};
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+std::atomic<uint32_t> g_interop_destroy_calls{0};
+#endif
+
+bool close_export_handle(HANDLE handle, const char* label,
+                         std::string& error) noexcept {
+    if (!handle) return true;
+    const BOOL closed = CloseHandle(handle);
+    if (closed) {
+        g_application_export_handles.fetch_sub(1, std::memory_order_relaxed);
+        return true;
+    }
+    error = std::string("CloseHandle(") + label + ") failed: " +
+            std::to_string(GetLastError());
+    return false;
+}
+
+bool fault_is(const char* name) noexcept {
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    const char* selected = std::getenv("MATTER_VK_INTEROP_FAULT");
+    return selected && std::strcmp(selected, name) == 0;
+#else
+    (void)name;
+    return false;
+#endif
+}
 
 std::string hex_id(const uint8_t* bytes, size_t size) {
     std::ostringstream out;
@@ -68,7 +97,10 @@ struct CudaApi {
     CUDA_FN(device_get_luid, decltype(&cuDeviceGetLuid));
     CUDA_FN(ctx_create, decltype(&cuCtxCreate));
     CUDA_FN(ctx_destroy, decltype(&cuCtxDestroy));
+    CUDA_FN(ctx_get_current, decltype(&cuCtxGetCurrent));
     CUDA_FN(ctx_set_current, decltype(&cuCtxSetCurrent));
+    CUDA_FN(ctx_push_current, decltype(&cuCtxPushCurrent));
+    CUDA_FN(ctx_pop_current, decltype(&cuCtxPopCurrent));
     CUDA_FN(stream_create, decltype(&cuStreamCreate));
     CUDA_FN(stream_destroy, decltype(&cuStreamDestroy));
     CUDA_FN(module_load_data, decltype(&cuModuleLoadData));
@@ -121,7 +153,10 @@ struct CudaApi {
         LOAD(device_get_luid, "cuDeviceGetLuid");
         LOAD(ctx_create, "cuCtxCreate_v4");
         LOAD(ctx_destroy, "cuCtxDestroy_v2");
+        LOAD(ctx_get_current, "cuCtxGetCurrent");
         LOAD(ctx_set_current, "cuCtxSetCurrent");
+        LOAD(ctx_push_current, "cuCtxPushCurrent_v2");
+        LOAD(ctx_pop_current, "cuCtxPopCurrent_v2");
         LOAD(stream_create, "cuStreamCreate");
         LOAD(stream_destroy, "cuStreamDestroy_v2");
         LOAD(module_load_data, "cuModuleLoadData");
@@ -179,10 +214,137 @@ bool cuda_vulkan_device_ids_match_for_test(
     return !force_mismatch && vulkan_uuid == cuda_uuid;
 }
 
+namespace {
+bool luid_matches(bool vulkan_valid, const uint8_t* vulkan_luid,
+                  uint32_t vulkan_node_mask, bool cuda_valid,
+                  const uint8_t* cuda_luid, uint32_t cuda_node_mask) noexcept {
+    return !vulkan_valid ||
+           (cuda_valid &&
+            std::memcmp(vulkan_luid, cuda_luid, VK_LUID_SIZE) == 0 &&
+            vulkan_node_mask == cuda_node_mask);
+}
+
+std::string luid_failure_diagnostic(
+    const std::string& vulkan_name, const uint8_t* vulkan_uuid,
+    const uint8_t* vulkan_luid, uint32_t vulkan_node_mask,
+    const std::string& cuda_name, const uint8_t* cuda_uuid,
+    int cuda_result) {
+    return "cuDeviceGetLuid failed for UUID-matched CUDA device " + cuda_name +
+           " with CUresult " + std::to_string(cuda_result) + "; Vulkan " +
+           vulkan_name + " uuid=" + hex_id(vulkan_uuid, VK_UUID_SIZE) +
+           " luid=" + hex_id(vulkan_luid, VK_LUID_SIZE) + " nodeMask=" +
+           std::to_string(vulkan_node_mask) + "; CUDA uuid=" +
+           hex_id(cuda_uuid, VK_UUID_SIZE) +
+           " luid=<unavailable> nodeMask=<unavailable>";
+}
+}  // namespace
+
 uint32_t win32_process_handle_count() noexcept {
     DWORD count = 0;
     return GetProcessHandleCount(GetCurrentProcess(), &count) ? count : UINT32_MAX;
 }
+
+uint32_t cuda_vulkan_application_export_handle_count() noexcept {
+    return g_application_export_handles.load(std::memory_order_relaxed);
+}
+
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+bool cuda_vulkan_luid_matches_for_test(
+    bool vulkan_valid, const std::array<uint8_t, VK_LUID_SIZE>& vulkan_luid,
+    uint32_t vulkan_node_mask, bool cuda_valid,
+    const std::array<uint8_t, VK_LUID_SIZE>& cuda_luid,
+    uint32_t cuda_node_mask) noexcept {
+    return luid_matches(vulkan_valid, vulkan_luid.data(), vulkan_node_mask,
+                        cuda_valid, cuda_luid.data(), cuda_node_mask);
+}
+
+std::string cuda_vulkan_luid_failure_diagnostic_for_test(
+    const std::string& vulkan_name,
+    const std::array<uint8_t, VK_UUID_SIZE>& vulkan_uuid,
+    const std::array<uint8_t, VK_LUID_SIZE>& vulkan_luid,
+    uint32_t vulkan_node_mask, const std::string& cuda_name,
+    const std::array<uint8_t, VK_UUID_SIZE>& cuda_uuid,
+    int cuda_result) {
+    return luid_failure_diagnostic(vulkan_name, vulkan_uuid.data(),
+                                   vulkan_luid.data(), vulkan_node_mask,
+                                   cuda_name, cuda_uuid.data(), cuda_result);
+}
+
+uintptr_t cuda_vulkan_current_context_for_test(std::string& error) noexcept {
+    error.clear();
+    HMODULE library = LoadLibraryA("nvcuda.dll");
+    if (!library) {
+        error = "LoadLibraryA(nvcuda.dll) failed while querying current context";
+        return 0;
+    }
+    using GetCurrent = CUresult(CUDAAPI*)(CUcontext*);
+    GetCurrent get_current = nullptr;
+    const FARPROC symbol = GetProcAddress(library, "cuCtxGetCurrent");
+    std::memcpy(&get_current, &symbol, sizeof(get_current));
+    CUcontext context = nullptr;
+    if (!get_current || get_current(&context) != CUDA_SUCCESS)
+        error = "cuCtxGetCurrent failed in test seam";
+    FreeLibrary(library);
+    return reinterpret_cast<uintptr_t>(context);
+}
+
+namespace {
+HMODULE g_test_cuda_library = nullptr;
+decltype(&cuCtxDestroy) g_test_ctx_destroy = nullptr;
+}
+
+uintptr_t cuda_vulkan_create_caller_context_for_test(std::string& error) noexcept {
+    error.clear();
+    if (!g_test_cuda_library) g_test_cuda_library = LoadLibraryA("nvcuda.dll");
+    if (!g_test_cuda_library) {
+        error = "LoadLibraryA(nvcuda.dll) failed for caller context fixture";
+        return 0;
+    }
+    decltype(&cuInit) init = nullptr;
+    decltype(&cuDeviceGet) device_get = nullptr;
+    decltype(&cuCtxCreate) create = nullptr;
+    const FARPROC init_symbol = GetProcAddress(g_test_cuda_library, "cuInit");
+    const FARPROC device_symbol = GetProcAddress(g_test_cuda_library, "cuDeviceGet");
+    const FARPROC create_symbol = GetProcAddress(g_test_cuda_library, "cuCtxCreate_v4");
+    const FARPROC destroy_symbol = GetProcAddress(g_test_cuda_library, "cuCtxDestroy_v2");
+    std::memcpy(&init, &init_symbol, sizeof(init));
+    std::memcpy(&device_get, &device_symbol, sizeof(device_get));
+    std::memcpy(&create, &create_symbol, sizeof(create));
+    std::memcpy(&g_test_ctx_destroy, &destroy_symbol, sizeof(g_test_ctx_destroy));
+    CUdevice device = 0;
+    CUcontext context = nullptr;
+    CUresult result = init ? init(0) : CUDA_ERROR_NOT_FOUND;
+    if (result == CUDA_SUCCESS)
+        result = device_get ? device_get(&device, 0) : CUDA_ERROR_NOT_FOUND;
+    if (result == CUDA_SUCCESS)
+        result = create ? create(&context, nullptr, CU_CTX_SCHED_AUTO, device)
+                        : CUDA_ERROR_NOT_FOUND;
+    if (result != CUDA_SUCCESS) {
+        error = "caller CUDA context fixture creation failed with CUresult " +
+                std::to_string(int(result));
+        return 0;
+    }
+    return reinterpret_cast<uintptr_t>(context);
+}
+
+void cuda_vulkan_destroy_caller_context_for_test(uintptr_t context) noexcept {
+    if (context && g_test_ctx_destroy)
+        g_test_ctx_destroy(reinterpret_cast<CUcontext>(context));
+    if (g_test_cuda_library) FreeLibrary(g_test_cuda_library);
+    g_test_cuda_library = nullptr;
+    g_test_ctx_destroy = nullptr;
+}
+
+void cuda_vulkan_reset_test_destroy_call_count() noexcept {
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    g_interop_destroy_calls.store(0, std::memory_order_relaxed);
+#endif
+}
+
+uint32_t cuda_vulkan_test_destroy_call_count() noexcept {
+    return g_interop_destroy_calls.load(std::memory_order_relaxed);
+}
+#endif
 
 struct CudaVulkanInterop::Impl {
     VulkanDevice* vulkan = nullptr;
@@ -199,6 +361,27 @@ struct CudaVulkanInterop::Impl {
     std::array<uint8_t, VK_UUID_SIZE> cu_uuid{};
     std::string vk_name;
     std::string cu_name;
+    std::string poison_error;
+    bool preserve_resources = false;
+
+    struct ScopedContext {
+        Impl& owner;
+        bool pushed = false;
+        explicit ScopedContext(Impl& value, std::string& error) : owner(value) {
+            if (!owner.cuda_context) return;
+            pushed = owner.cuda.ok(owner.cuda.ctx_push_current(owner.cuda_context),
+                                   "cuCtxPushCurrent", error);
+        }
+        ~ScopedContext() {
+            if (!pushed) return;
+            CUcontext popped = nullptr;
+            const CUresult result = owner.cuda.ctx_pop_current(&popped);
+            if (result != CUDA_SUCCESS || popped != owner.cuda_context)
+                std::fprintf(stderr, "CUDA context restoration failed: %d\n",
+                             int(result));
+        }
+        explicit operator bool() const noexcept { return pushed; }
+    };
 
     bool diagnostics() const noexcept {
         const char* value = std::getenv("MATTER_VK_INTEROP_HANDLE_DIAGNOSTICS");
@@ -206,9 +389,11 @@ struct CudaVulkanInterop::Impl {
     }
     void trace(const char* boundary, int result = 0,
                const char* sync = "n/a") const noexcept {
-        if (diagnostics())
+        if (diagnostics()) {
             std::printf("HANDLE_DIAG %-38s count=%u result=%d sync=%s\n",
                         boundary, win32_process_handle_count(), result, sync);
+            std::fflush(stdout);
+        }
     }
 
     struct Cycle {
@@ -218,46 +403,82 @@ struct CudaVulkanInterop::Impl {
         VkDeviceMemory memory = VK_NULL_HANDLE;
         VkBuffer readback = VK_NULL_HANDLE;
         VkDeviceMemory readback_memory = VK_NULL_HANDLE;
+        VkFence clear_fence = VK_NULL_HANDLE;
         VkFence fence = VK_NULL_HANDLE;
         VkCommandBuffer commands[2]{};
         CUexternalMemory external_memory = nullptr;
         CUmipmappedArray mipmapped = nullptr;
         CUsurfObject surface = 0;
-        bool cuda_work_pending = false;
-        uint64_t pending_timeline = 0;
+        bool kernel_launched = false;
+        bool signal_enqueued = false;
+        bool vk_readback_submitted = false;
+        bool fence_completed = false;
+        bool clear_submitted = false;
         bool initialized_layout = false;
         ~Cycle() {
-            if (pending_timeline && owner.vk_semaphore) {
-                VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
-                wait.semaphoreCount = 1;
-                wait.pSemaphores = &owner.vk_semaphore;
-                wait.pValues = &pending_timeline;
-                const VkResult result = vkWaitSemaphores(owner.vulkan->device(),
-                                                         &wait, UINT64_MAX);
-                owner.trace("vkWaitSemaphores(failure)", int(result),
-                            "blocking failure cleanup only");
-            }
-            if (cuda_work_pending && owner.stream) {
-                const CUresult result = owner.cuda.stream_synchronize(owner.stream);
-                owner.trace("cuStreamSynchronize(failure)", int(result),
-                            "blocking teardown only");
+            if (owner.preserve_resources) return;
+            std::string context_error;
+            ScopedContext context(owner, context_error);
+            if (owner.cuda_context && !context) {
+                owner.preserve_resources = true;
+                if (owner.vulkan)
+                    owner.vulkan->preserve_after_unproven_external_work();
+                return;
             }
             const CUresult sr = surface ? owner.cuda.surface_destroy(surface) : CUDA_SUCCESS;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+            if (surface) g_interop_destroy_calls.fetch_add(1, std::memory_order_relaxed);
+#endif
             owner.trace("cuSurfObjectDestroy", int(sr), "synchronous API");
             const CUresult ar = mipmapped ? owner.cuda.destroy_mipmapped(mipmapped) : CUDA_SUCCESS;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+            if (mipmapped) g_interop_destroy_calls.fetch_add(1, std::memory_order_relaxed);
+#endif
             owner.trace("cuMipmappedArrayDestroy", int(ar), "synchronous API");
             const CUresult mr = external_memory ? owner.cuda.destroy_memory(external_memory) : CUDA_SUCCESS;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+            if (external_memory) g_interop_destroy_calls.fetch_add(1, std::memory_order_relaxed);
+#endif
             owner.trace("cuDestroyExternalMemory", int(mr), "synchronous API");
             if (sr != CUDA_SUCCESS || ar != CUDA_SUCCESS || mr != CUDA_SUCCESS)
                 std::fprintf(stderr, "CUDA interop cleanup errors: surface=%d mip=%d memory=%d\n",
                              int(sr), int(ar), int(mr));
             VkDevice device = owner.vulkan->device();
-            if (fence) vkDestroyFence(device, fence, nullptr);
-            if (commands[0]) vkFreeCommandBuffers(device, owner.command_pool, 2, commands);
-            if (readback) vkDestroyBuffer(device, readback, nullptr);
-            if (readback_memory) vkFreeMemory(device, readback_memory, nullptr);
-            if (image) vkDestroyImage(device, image, nullptr);
-            if (memory) vkFreeMemory(device, memory, nullptr);
+            if (clear_fence) { vkDestroyFence(device, clear_fence, nullptr);
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+                g_interop_destroy_calls.fetch_add(1, std::memory_order_relaxed);
+#endif
+            }
+            if (fence) { vkDestroyFence(device, fence, nullptr);
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+                g_interop_destroy_calls.fetch_add(1, std::memory_order_relaxed);
+#endif
+            }
+            if (commands[0]) { vkFreeCommandBuffers(device, owner.command_pool, 2, commands);
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+                g_interop_destroy_calls.fetch_add(1, std::memory_order_relaxed);
+#endif
+            }
+            if (readback) { vkDestroyBuffer(device, readback, nullptr);
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+                g_interop_destroy_calls.fetch_add(1, std::memory_order_relaxed);
+#endif
+            }
+            if (readback_memory) { vkFreeMemory(device, readback_memory, nullptr);
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+                g_interop_destroy_calls.fetch_add(1, std::memory_order_relaxed);
+#endif
+            }
+            if (image) { vkDestroyImage(device, image, nullptr);
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+                g_interop_destroy_calls.fetch_add(1, std::memory_order_relaxed);
+#endif
+            }
+            if (memory) { vkFreeMemory(device, memory, nullptr);
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+                g_interop_destroy_calls.fetch_add(1, std::memory_order_relaxed);
+#endif
+            }
         }
     };
     std::vector<std::unique_ptr<Cycle>> size_classes;
@@ -267,11 +488,21 @@ struct CudaVulkanInterop::Impl {
     ~Impl() { reset(); }
 
     void reset() noexcept {
-        if (cuda_context) cuda.ctx_set_current(cuda_context);
-        size_classes.clear();
-        if (cuda_semaphore) { const CUresult r = cuda.destroy_semaphore(cuda_semaphore); trace("cuDestroyExternalSemaphore", int(r), "synchronous API"); }
-        if (module) { const CUresult r = cuda.module_unload(module); trace("cuModuleUnload", int(r), "synchronous API"); }
-        if (stream) { const CUresult r = cuda.stream_destroy(stream); trace("cuStreamDestroy", int(r), "may defer pending work"); }
+        if (preserve_resources) return;
+        {
+            std::string context_error;
+            ScopedContext context(*this, context_error);
+            if (cuda_context && !context) {
+                preserve_resources = true;
+                if (vulkan) vulkan->preserve_after_unproven_external_work();
+                return;
+            }
+            size_classes.clear();
+            if (preserve_resources) return;
+            if (cuda_semaphore) { const CUresult r = cuda.destroy_semaphore(cuda_semaphore); trace("cuDestroyExternalSemaphore", int(r), "synchronous API"); }
+            if (module) { const CUresult r = cuda.module_unload(module); trace("cuModuleUnload", int(r), "synchronous API"); }
+            if (stream) { const CUresult r = cuda.stream_destroy(stream); trace("cuStreamDestroy", int(r), "may defer pending work"); }
+        }
         cuda_semaphore = nullptr;
         module = nullptr;
         stream = nullptr;
@@ -284,6 +515,25 @@ struct CudaVulkanInterop::Impl {
         }
         command_pool = VK_NULL_HANDLE;
         vk_semaphore = VK_NULL_HANDLE;
+    }
+
+    bool fail_if_poisoned(std::string& error) const {
+        if (poison_error.empty()) return false;
+        error = poison_error;
+        return true;
+    }
+
+    bool poison(std::string& error, const char* reason, bool preserve) {
+        if (poison_error.empty()) {
+            const std::string cause = error;
+            poison_error = std::string("CUDA Vulkan interop poisoned after ") +
+                           reason + (cause.empty() ? "" : ": " + cause);
+        }
+        preserve_resources = preserve_resources || preserve;
+        if (preserve && vulkan)
+            vulkan->preserve_after_unproven_external_work();
+        error = poison_error;
+        return false;
     }
 
     bool select_cuda_device(std::string& error) {
@@ -310,15 +560,29 @@ struct CudaVulkanInterop::Impl {
             std::memcpy(candidate_uuid.data(), uuid.bytes, VK_UUID_SIZE);
             char cuda_luid[VK_LUID_SIZE]{};
             unsigned node_mask = 0;
-            const bool cuda_luid_valid =
-                cuda.device_get_luid(cuda_luid, &node_mask, candidate) == CUDA_SUCCESS;
-            const bool luid_matches = !ids.deviceLUIDValid || !cuda_luid_valid ||
-                std::memcmp(ids.deviceLUID, cuda_luid, VK_LUID_SIZE) == 0;
+            const CUresult luid_result =
+                cuda.device_get_luid(cuda_luid, &node_mask, candidate);
+            const bool cuda_luid_valid = luid_result == CUDA_SUCCESS;
+            const bool candidate_luid_matches = luid_matches(
+                ids.deviceLUIDValid, ids.deviceLUID, ids.deviceNodeMask,
+                cuda_luid_valid, reinterpret_cast<uint8_t*>(cuda_luid),
+                node_mask);
             reported.emplace_back(std::string(name) + " uuid=" +
-                                  hex_id(candidate_uuid.data(), candidate_uuid.size()) +
-                                  (cuda_luid_valid ? " luid=" + hex_id(
-                                      reinterpret_cast<uint8_t*>(cuda_luid), VK_LUID_SIZE) : ""));
-            if (cuda_vulkan_device_ids_match_for_test(vk_uuid, candidate_uuid) && luid_matches) {
+                                   hex_id(candidate_uuid.data(), candidate_uuid.size()) +
+                                   (cuda_luid_valid ? " luid=" + hex_id(
+                                       reinterpret_cast<uint8_t*>(cuda_luid), VK_LUID_SIZE) +
+                                       " nodeMask=" + std::to_string(node_mask)
+                                     : " luid-error=" + std::to_string(int(luid_result))));
+            if (ids.deviceLUIDValid && !cuda_luid_valid &&
+                candidate_uuid == vk_uuid) {
+                error = luid_failure_diagnostic(
+                    vk_name, vk_uuid.data(), ids.deviceLUID,
+                    ids.deviceNodeMask, name, candidate_uuid.data(),
+                    int(luid_result));
+                return false;
+            }
+            if (cuda_vulkan_device_ids_match_for_test(vk_uuid, candidate_uuid) &&
+                candidate_luid_matches) {
                 cuda_device = candidate;
                 cu_uuid = candidate_uuid;
                 cu_name = name;
@@ -327,7 +591,9 @@ struct CudaVulkanInterop::Impl {
         }
         error = "Vulkan/CUDA adapter mismatch: Vulkan " + vk_name + " uuid=" +
                 hex_id(vk_uuid.data(), vk_uuid.size()) +
-                (ids.deviceLUIDValid ? " luid=" + hex_id(ids.deviceLUID, VK_LUID_SIZE) : "") +
+                 (ids.deviceLUIDValid ? " luid=" + hex_id(ids.deviceLUID, VK_LUID_SIZE) : "") +
+                 (ids.deviceLUIDValid ? " nodeMask=" +
+                                        std::to_string(ids.deviceNodeMask) : "") +
                 "; CUDA devices=";
         for (const auto& item : reported) error += " [" + item + "]";
         return false;
@@ -355,22 +621,21 @@ struct CudaVulkanInterop::Impl {
         HANDLE handle = nullptr;
         if (!vk_result(get_handle(vulkan->device(), &get, &handle),
                        "vkGetSemaphoreWin32HandleKHR", error)) return false;
+        g_application_export_handles.fetch_add(1, std::memory_order_relaxed);
         trace("vkGetSemaphoreWin32HandleKHR");
         CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC desc{};
         desc.type = CU_EXTERNAL_SEMAPHORE_HANDLE_TYPE_TIMELINE_SEMAPHORE_WIN32;
         desc.handle.win32.handle = handle;
         if (!cuda.ok(cuda.import_semaphore(&cuda_semaphore, &desc),
                      "cuImportExternalSemaphore", error)) {
-            CloseHandle(handle);
+            std::string close_error;
+            if (!close_export_handle(handle, "exported semaphore", close_error))
+                error += "; " + close_error;
             return false;
         }
         trace("cuImportExternalSemaphore", 0,
               "synchronous import; async wait/signal later");
-        if (!CloseHandle(handle)) {
-            error = "CloseHandle(exported semaphore) failed: " +
-                    std::to_string(GetLastError());
-            return false;
-        }
+        if (!close_export_handle(handle, "exported semaphore", error)) return false;
         trace("CloseHandle(semaphore export)");
         return true;
     }
@@ -380,10 +645,17 @@ struct CudaVulkanInterop::Impl {
         trace("LoadLibrary(nvcuda.dll)");
         if (!select_cuda_device(error)) return false;
         trace("cuInit + adapter selection");
+        CUcontext caller_context = nullptr;
+        if (!cuda.ok(cuda.ctx_get_current(&caller_context), "cuCtxGetCurrent", error))
+            return false;
+        struct RestoreCallerContext {
+            CudaApi& cuda;
+            CUcontext context;
+            ~RestoreCallerContext() { cuda.ctx_set_current(context); }
+        } restore{cuda, caller_context};
         if (!cuda.ok(cuda.ctx_create(&cuda_context, nullptr,
                                     CU_CTX_SCHED_AUTO, cuda_device),
                      "cuCtxCreate", error) ||
-            !cuda.ok(cuda.ctx_set_current(cuda_context), "cuCtxSetCurrent", error) ||
             !cuda.ok(cuda.stream_create(&stream, CU_STREAM_NON_BLOCKING),
                      "cuStreamCreate", error) ||
             !cuda.ok(cuda.module_load_data(&module, matter_cuda_embedded::invert_ptx),
@@ -405,14 +677,92 @@ struct CudaVulkanInterop::Impl {
         return true;
     }
 
+    bool recover_post_launch_failure(Cycle& cycle, uint64_t cyan_value,
+                                     std::string& error,
+                                     const char* reason) {
+        const std::string original = error;
+        std::string context_error;
+        ScopedContext context(*this, context_error);
+        if (!context) {
+            error = original + "; " + context_error;
+            return poison(error, "CUDA completion became unprovable", true);
+        }
+        CUresult synchronized = cuda.stream_synchronize(stream);
+        if (fault_is("cuda-async-unproven")) synchronized = CUDA_ERROR_UNKNOWN;
+        trace("cuStreamSynchronize(failure)", int(synchronized),
+              "first completion proof after kernel launch");
+        if (synchronized != CUDA_SUCCESS) {
+            std::string sync_error;
+            cuda.ok(synchronized, "cuStreamSynchronize(failure recovery)",
+                    sync_error);
+            error = original + (original.empty() ? "" : "; ") + sync_error;
+            return poison(error, "CUDA completion became unprovable", true);
+        }
+        cycle.kernel_launched = false;
+
+        constexpr uint64_t kFailureWaitNanoseconds = 5'000'000'000ull;
+        const VkResult clear_waited = vkWaitForFences(
+            vulkan->device(), 1, &cycle.clear_fence, VK_TRUE,
+            kFailureWaitNanoseconds);
+        trace("vkWaitForFences(clear failure)", int(clear_waited),
+              "bounded after CUDA completion proof");
+        if (clear_waited != VK_SUCCESS) {
+            std::string wait_error;
+            vk_result(clear_waited, "vkWaitForFences(clear failure recovery)",
+                      wait_error);
+            error = original + (original.empty() ? "" : "; ") + wait_error;
+            return poison(error, "Vulkan clear completion became unprovable", true);
+        }
+        if (cycle.signal_enqueued) {
+            VkSemaphoreWaitInfo wait{VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO};
+            wait.semaphoreCount = 1;
+            wait.pSemaphores = &vk_semaphore;
+            wait.pValues = &cyan_value;
+            VkResult waited = vkWaitSemaphores(
+                vulkan->device(), &wait, kFailureWaitNanoseconds);
+            if (fault_is("vk-recovery-unproven")) waited = VK_TIMEOUT;
+            trace("vkWaitSemaphores(failure)", int(waited),
+                  "bounded failure cleanup only");
+            if (waited != VK_SUCCESS) {
+                std::string wait_error;
+                vk_result(waited, "vkWaitSemaphores(bounded failure recovery)",
+                          wait_error);
+                error = original + (original.empty() ? "" : "; ") + wait_error;
+                return poison(error, "Vulkan timeline completion became unprovable",
+                              true);
+            }
+            cycle.signal_enqueued = false;
+        }
+        if (cycle.vk_readback_submitted && !cycle.fence_completed) {
+            const VkResult waited = vkWaitForFences(
+                vulkan->device(), 1, &cycle.fence, VK_TRUE,
+                kFailureWaitNanoseconds);
+            trace("vkWaitForFences(failure)", int(waited),
+                  "bounded failure cleanup only");
+            if (waited != VK_SUCCESS) {
+                std::string wait_error;
+                vk_result(waited, "vkWaitForFences(bounded failure recovery)",
+                          wait_error);
+                error = original + (original.empty() ? "" : "; ") + wait_error;
+                return poison(error, "Vulkan fence completion became unprovable",
+                              true);
+            }
+            cycle.fence_completed = true;
+        }
+        error = original;
+        return poison(error, reason, false);
+    }
+
     bool run(VkExtent2D extent, uint64_t serial, CudaVulkanInteropPixel& pixel,
              std::string& error) {
+        if (fail_if_poisoned(error)) return false;
         if (!extent.width || !extent.height) { error = "interop extent must be nonzero"; return false; }
         if (serial == 0 || serial <= last_serial || serial > UINT64_MAX / 2) {
             error = "interop frame serial must be strictly increasing and fit timeline values";
             return false;
         }
-        if (!cuda.ok(cuda.ctx_set_current(cuda_context), "cuCtxSetCurrent", error)) return false;
+        ScopedContext context(*this, error);
+        if (!context) return false;
         Cycle* selected = nullptr;
         for (const auto& entry : size_classes) {
             if (entry->extent.width == extent.width &&
@@ -531,6 +881,7 @@ struct CudaVulkanInterop::Impl {
         HANDLE memory_handle = nullptr;
         if (!vk_result(get_memory_handle(vulkan->device(), &get_memory, &memory_handle),
                        "vkGetMemoryWin32HandleKHR", error)) return false;
+        g_application_export_handles.fetch_add(1, std::memory_order_relaxed);
         trace("vkGetMemoryWin32HandleKHR");
         CUDA_EXTERNAL_MEMORY_HANDLE_DESC memory_desc{};
         memory_desc.type = CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32;
@@ -539,15 +890,14 @@ struct CudaVulkanInterop::Impl {
         memory_desc.flags = CUDA_EXTERNAL_MEMORY_DEDICATED;
         if (!cuda.ok(cuda.import_memory(&cycle.external_memory, &memory_desc),
                      "cuImportExternalMemory", error)) {
-            CloseHandle(memory_handle);
+            std::string close_error;
+            if (!close_export_handle(memory_handle, "exported image memory",
+                                     close_error))
+                error += "; " + close_error;
             return false;
         }
         trace("cuImportExternalMemory", 0, "synchronous import");
-        if (!CloseHandle(memory_handle)) {
-            error = "CloseHandle(exported image memory) failed: " +
-                    std::to_string(GetLastError());
-            return false;
-        }
+        if (!close_export_handle(memory_handle, "exported image memory", error)) return false;
         trace("CloseHandle(memory export)");
 
         CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC map_desc{};
@@ -604,15 +954,21 @@ struct CudaVulkanInterop::Impl {
                                                 cycle.commands),
                        "vkAllocateCommandBuffers(interop)", error)) return false;
         VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-        if (!vk_result(vkCreateFence(vulkan->device(), &fence_info, nullptr, &cycle.fence),
+        if (!vk_result(vkCreateFence(vulkan->device(), &fence_info, nullptr,
+                                     &cycle.clear_fence),
+                       "vkCreateFence(interop clear)", error) ||
+            !vk_result(vkCreateFence(vulkan->device(), &fence_info, nullptr, &cycle.fence),
                        "vkCreateFence(interop readback)", error)) return false;
         } else {
-            if (!vk_result(vkResetFences(vulkan->device(), 1, &cycle.fence),
+            const VkFence fences[] = {cycle.clear_fence, cycle.fence};
+            if (!vk_result(vkResetFences(vulkan->device(), 2, fences),
                            "vkResetFences(interop)", error) ||
                 !vk_result(vkResetCommandBuffer(cycle.commands[0], 0),
                            "vkResetCommandBuffer(clear)", error) ||
                 !vk_result(vkResetCommandBuffer(cycle.commands[1], 0),
                            "vkResetCommandBuffer(readback)", error)) return false;
+            cycle.fence_completed = false;
+            cycle.clear_submitted = false;
         }
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -672,31 +1028,60 @@ struct CudaVulkanInterop::Impl {
         clear_submit.signalSemaphoreInfoCount = 1;
         clear_submit.pSignalSemaphoreInfos = &signal_red;
         if (!vk_result(vkQueueSubmit2(vulkan->graphics_queue(), 1, &clear_submit,
-                                      VK_NULL_HANDLE),
+                                      cycle.clear_fence),
                        "vkQueueSubmit2(clear/signals red)", error)) return false;
-        cycle.pending_timeline = red_value;
+        cycle.clear_submitted = true;
         trace("vkQueueSubmit2(clear)", 0, "asynchronous");
 
         CUDA_EXTERNAL_SEMAPHORE_WAIT_PARAMS wait{};
         wait.params.fence.value = red_value;
         if (!cuda.ok(cuda.wait_semaphore(&cuda_semaphore, &wait, 1, stream),
-                     "cuWaitExternalSemaphoresAsync(red)", error)) return false;
+                     "cuWaitExternalSemaphoresAsync(red)", error))
+            return recover_post_launch_failure(cycle, cyan_value, error,
+                                               "CUDA wait enqueue failure");
         void* arguments[] = {&cycle.surface, &extent.width, &extent.height};
         if (!cuda.ok(cuda.launch_kernel(kernel,
                                         (extent.width + 7) / 8,
                                         (extent.height + 7) / 8, 1,
                                         8, 8, 1, 0, stream, arguments, nullptr),
-                     "cuLaunchKernel(vk_cuda_invert)", error)) return false;
+                     "cuLaunchKernel(vk_cuda_invert)", error))
+            return recover_post_launch_failure(cycle, cyan_value, error,
+                                               "CUDA kernel launch failure");
+        cycle.kernel_launched = true;
+        if (fault_is("after-kernel-before-signal")) {
+            error = "forced failure after kernel launch before CUDA signal enqueue";
+            return recover_post_launch_failure(cycle, cyan_value, error,
+                                               "post-kernel fault");
+        }
         CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS signal{};
         signal.params.fence.value = cyan_value;
+        if (fault_is("signal-enqueue-failure")) {
+            error = "forced cuSignalExternalSemaphoresAsync failure";
+            return recover_post_launch_failure(cycle, cyan_value, error,
+                                               "CUDA signal enqueue failure");
+        }
         if (!cuda.ok(cuda.signal_semaphore(&cuda_semaphore, &signal, 1, stream),
-                     "cuSignalExternalSemaphoresAsync(cyan)", error)) return false;
-        cycle.cuda_work_pending = true;
-        cycle.pending_timeline = cyan_value;
+                     "cuSignalExternalSemaphoresAsync(cyan)", error))
+            return recover_post_launch_failure(cycle, cyan_value, error,
+                                               "CUDA signal enqueue failure");
+        cycle.signal_enqueued = true;
         trace("CUDA wait+kernel+signal queued", 0, "asynchronous");
+        if (fault_is("after-signal-before-vk-wait") ||
+            fault_is("cuda-async-unproven") ||
+            fault_is("vk-recovery-unproven")) {
+            error = fault_is("cuda-async-unproven")
+                        ? "forced asynchronous CUDA completion failure"
+                        : fault_is("vk-recovery-unproven")
+                              ? "forced Vulkan timeline recovery failure"
+                              : "forced failure after CUDA signal before Vulkan wait";
+            return recover_post_launch_failure(cycle, cyan_value, error,
+                                               "post-signal fault");
+        }
 
         if (!vk_result(vkBeginCommandBuffer(cycle.commands[1], &begin),
-                       "vkBeginCommandBuffer(readback)", error)) return false;
+                       "vkBeginCommandBuffer(readback)", error))
+            return recover_post_launch_failure(cycle, cyan_value, error,
+                                               "Vulkan readback recording failure");
         VkImageMemoryBarrier2 to_source{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
         to_source.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
         to_source.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
@@ -726,7 +1111,9 @@ struct CudaVulkanInterop::Impl {
         host_dependency.pMemoryBarriers = &host_barrier;
         vkCmdPipelineBarrier2(cycle.commands[1], &host_dependency);
         if (!vk_result(vkEndCommandBuffer(cycle.commands[1]),
-                       "vkEndCommandBuffer(readback)", error)) return false;
+                       "vkEndCommandBuffer(readback)", error))
+            return recover_post_launch_failure(cycle, cyan_value, error,
+                                               "Vulkan readback recording failure");
         VkSemaphoreSubmitInfo wait_cyan{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
         wait_cyan.semaphore = vk_semaphore;
         wait_cyan.value = cyan_value;
@@ -740,12 +1127,26 @@ struct CudaVulkanInterop::Impl {
         read_submit.pCommandBufferInfos = &read_command;
         if (!vk_result(vkQueueSubmit2(vulkan->graphics_queue(), 1, &read_submit,
                                       cycle.fence),
-                       "vkQueueSubmit2(wait cyan/readback)", error) ||
-            !vk_result(vkWaitForFences(vulkan->device(), 1, &cycle.fence, VK_TRUE,
-                                       UINT64_MAX),
-                       "vkWaitForFences(final interop readback)", error)) return false;
-        cycle.cuda_work_pending = false;
-        cycle.pending_timeline = 0;
+                       "vkQueueSubmit2(wait cyan/readback)", error))
+            return recover_post_launch_failure(cycle, cyan_value, error,
+                                               "Vulkan readback submission failure");
+        cycle.vk_readback_submitted = true;
+        if (fault_is("vk-wait-failure")) {
+            error = "forced Vulkan fence wait failure";
+            return recover_post_launch_failure(cycle, cyan_value, error,
+                                               "Vulkan fence wait failure");
+        }
+        constexpr uint64_t kNormalWaitNanoseconds = 30'000'000'000ull;
+        if (!vk_result(vkWaitForFences(vulkan->device(), 1, &cycle.fence, VK_TRUE,
+                                       kNormalWaitNanoseconds),
+                       "vkWaitForFences(final interop readback)", error))
+            return recover_post_launch_failure(cycle, cyan_value, error,
+                                               "Vulkan fence wait failure");
+        cycle.fence_completed = true;
+        cycle.kernel_launched = false;
+        cycle.signal_enqueued = false;
+        cycle.vk_readback_submitted = false;
+        cycle.clear_submitted = false;
         cycle.initialized_layout = true;
         trace("vkWaitForFences(final)", 0, "blocking completion proof");
 
@@ -765,7 +1166,13 @@ struct CudaVulkanInterop::Impl {
 };
 
 CudaVulkanInterop::CudaVulkanInterop() : impl_(std::make_unique<Impl>()) {}
-CudaVulkanInterop::~CudaVulkanInterop() = default;
+CudaVulkanInterop::~CudaVulkanInterop() {
+    if (impl_ && impl_->preserve_resources) {
+        // Completion is unproven. Keep the CUDA context, driver DLL reference,
+        // and every CUDA/Vulkan object alive rather than risk use-after-free.
+        (void)impl_.release();
+    }
+}
 
 std::unique_ptr<CudaVulkanInterop> CudaVulkanInterop::create(
     VulkanDevice& vulkan, std::string& error) {
@@ -787,6 +1194,10 @@ const std::array<uint8_t, VK_UUID_SIZE>& CudaVulkanInterop::vulkan_uuid() const 
 }
 const std::array<uint8_t, VK_UUID_SIZE>& CudaVulkanInterop::cuda_uuid() const noexcept {
     return impl_->cu_uuid;
+}
+
+bool CudaVulkanInterop::poisoned() const noexcept {
+    return impl_ && !impl_->poison_error.empty();
 }
 
 }  // namespace matter

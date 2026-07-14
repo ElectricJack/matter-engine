@@ -716,9 +716,13 @@ Use opaque Win32 external-memory handles, `vkGetMemoryWin32HandleKHR`, `cuImport
 Run: `make -C MatterViewer vulkan-smoke HAVE_CUDA=1`, then
 `powershell.exe -NoProfile -Command '$env:MATTER_VK_SMOKE_MODE="interop"; $env:MATTER_VK_SMOKE_RESIZES="100"; & .\MatterViewer\build\windows\vulkan_smoke_tests.exe'`.
 
-Expected: 100 cycles pass, zero validation errors, process handle count returns
-within two handles of baseline, and the manifest reports `CUDA_ACTIVE=1` and
-`OPTIX_ACTIVE=0`.
+Expected: 100 cycles pass, zero validation errors, the application-owned export
+handle counter is zero after every import/failure/reset, steady-state process
+handle count after warming each size class remains within two handles, and the
+manifest reports `CUDA_ACTIVE=1` and `OPTIX_ACTIVE=0`. A raw pre-init versus
+post-teardown process count is not a valid gate: Phase 1 boundary traces showed
+NVIDIA Vulkan lazily/deferredly creates and retains driver objects at first
+image allocation/submission even in the Vulkan-only control.
 
 ```sh
 git add MatterEngine3/src/render/vk_cuda_interop.h MatterEngine3/src/render/vk_cuda_interop.cpp \
