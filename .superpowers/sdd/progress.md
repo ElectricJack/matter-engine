@@ -53,18 +53,6 @@ BASE at start: ff3a71f
 
 No tasks complete yet. Resume at Task 1.
 
-Task 1: complete (commit f294ffe, review clean)
-  - VulkanFrame now identifies its two frame slots; resources retained for an active frame release only after that slot's fence is next observed complete.
-  - CUDA 13.3 build and default RTX 4090 smoke passed with zero validation errors.
-
-Task 2: complete (commit 0ea1b5d, review clean)
-  - Vulkan resolved-instance expansion now uses the OpenGL FNV contract: part hash, transform bytes, and segment; lod level is intentionally excluded.
-  - Stable roots reuse the expanded Vulkan instances before hierarchy traversal; CUDA 13.3 default smoke passed with zero validation errors.
-
-Task 3: complete (commits d792d05 + 78370c6, review clean)
-  - Static scene buffers persist while instances, commands, transforms, stats, and descriptors are isolated per Vulkan frame slot.
-  - Descriptor-pool sizing and frame-resource setup are transactional; strict CUDA 13.3, focused cull, and default smokes passed with zero validation errors.
-
 Task 1: complete (commits ff3a71f..fbdd131, review clean)
   - Environment gate: CUDA 13.3 and OptiX 8.1 found; Vulkan headers, import library, and glslc absent.
   - Minor: default CUDA/OptiX paths use machine-specific Windows 8.3 aliases; overrides are supported.
@@ -117,3 +105,19 @@ Branch: feature/rt-lighting-phase2 | Plan: docs/superpowers/plans/2026-07-14-vul
 BASE at start: 8b8c7d7
 
 No tasks complete yet. Resume at Task 1.
+
+Task 1: complete (commit f294ffe, review clean)
+  - VulkanFrame now identifies its two frame slots; resources retained for an active frame release only after that slot's fence is next observed complete.
+  - CUDA 13.3 build and default RTX 4090 smoke passed with zero validation errors.
+
+Task 2: complete (commit 0ea1b5d, review clean)
+  - Vulkan resolved-instance expansion now uses the OpenGL FNV contract: part hash, transform bytes, and segment; lod level is intentionally excluded.
+  - Stable roots reuse the expanded Vulkan instances before hierarchy traversal; CUDA 13.3 default smoke passed with zero validation errors.
+
+Task 3: complete (commits d792d05 + 78370c6, review clean)
+  - Static scene buffers persist while instances, commands, transforms, stats, and descriptors are isolated per Vulkan frame slot.
+  - Descriptor-pool sizing and frame-resource setup are transactional; strict CUDA 13.3, focused cull, and default smokes passed with zero validation errors.
+
+Task 4: complete (commit c0359e9, review clean)
+  - GPU culling, compute-to-indirect synchronization, G-buffer, and composite are recorded into the acquired frame command buffer with no production immediate-submit boundary.
+  - Indirect draws are grouped by raster-capable active part and respect maxDrawIndirectCount; strict CUDA 13.3, cull, raster, and default smokes passed with zero validation errors.

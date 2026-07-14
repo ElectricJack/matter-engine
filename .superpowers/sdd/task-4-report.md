@@ -1,42 +1,41 @@
-# Task 4 Report: TLAS Construction + Per-Frame Instance Sync
+# Task 4 Report: Asynchronous Culling and Grouped Indirect Rasterization
 
-## Status: DONE
+## Status
 
-## Commit
-`5ea4303` — feat(rt): TLAS construction from instance transforms
+Complete in commit `c0359e9` (`perf(vulkan): record asynchronous instanced frame`).
 
-## What Was Done
+## Implementation
 
-### Step 1 — rt_lighting.h (OPTIX block)
-- Added `InstanceInput` struct (public): `part_hash`, `lod_level`, `transform[16]`
-- Added `update_instances()` declaration and `tlas_handle()` inline accessor
-- Added private TLAS state: `tlas_buffer_`, `tlas_buf_size_`, `tlas_handle_`, `d_instances_`, `instance_cap_` — all `uint64_t`/`size_t`/`int`, no CUDA headers in the header
+- Required and enabled `VkPhysicalDeviceFeatures::multiDrawIndirect`, with a
+  named preflight diagnostic and a `VulkanDevice` capability query.
+- Added an atomic immediate-submit diagnostic counter for smoke assertions.
+- Added `VkSceneRenderer::record_cull_and_render`, which records the compute
+  dispatch, the compute-to-indirect/vertex synchronization2 dependency, and
+  G-buffer/HDR rasterization directly into the acquired frame command buffer.
+- Preserved GPU ownership of culling, LOD selection, transform expansion, and
+  indirect instance counts. The production `WorldSession::render` path does no
+  cull-stat or indirect-command readback and performs no submit/wait boundary
+  between dispatch and rasterization.
+- Persisted per-part active-instance counts and command ranges. Rasterization
+  issues one contiguous multi-draw indirect range per active part, splitting
+  only when the device `maxDrawIndirectCount` requires it.
+- Retained newly created raster attachments for the active frame, preserving
+  the frame-lifetime contract from Task 1.
 
-### Step 1 — rt_lighting.h (stub block)
-- Added `#include <cstdint>` (needed for `uint64_t` in stub `tlas_handle()` return)
-- Added `InstanceInput` struct stub, `update_instances` no-op, `tlas_handle()` returning 0
+## Tests
 
-### Step 2 — rt_lighting.cpp: update_instances
-- Filters instances via BLAS cache (skips unknown part_hashes)
-- Copies first 3 rows of row-major 4x4 into OptiX 3x4 transform (indices 0–11)
-- Grows `d_instances_` device buffer only when `inst_count > instance_cap_`
-- Grows `tlas_buffer_` only when needed; per-call temp buffer allocated/freed each build
-- Stores result `tlas_handle_ = (uint64_t)handle`
-- Added `#include <vector>` for `std::vector<OptixInstance>`
-
-### Step 3 — shutdown() TLAS cleanup
-- Frees `tlas_buffer_` and `d_instances_` after BLAS cleanup, before context destroy
-- Resets `tlas_buf_size_`, `tlas_handle_`, `instance_cap_` to zero
-
-### Step 4 — test_rt_tlas.cpp
-- Registers part hash 1, builds TLAS from 3 instances at offset X positions
-- Asserts `tlas_handle() != 0` after initial build and after transform-update rebuild
-- Falls through to SKIP on OptiX init failure (WSL2 expected)
-
-## Build & Test Results
-
-Build: clean, zero warnings.
-Test: `SKIP: optixInit failed: 7805` — OptiX not available in WSL2, graceful skip as expected.
+- Added smoke coverage for multiDrawIndirect enablement, absence of immediate
+  submissions in the record path, two active grouped ranges, and forced
+  `maxDrawIndirectCount = 3` splitting with contiguous coverage.
+- Strict CUDA 13.3 Windows Vulkan smoke build passed with `-Wall -Wextra
+  -Werror`.
+- A production-only strict compile of `vk_scene_renderer.cpp` without
+  `MATTER_VK_TEST_FAULT_INJECTION` passed, confirming immediate diagnostic
+  APIs are excluded from the production build.
+- `MATTER_VK_SMOKE_MODE=cull`, `raster`, and `default` each reported
+  `validation errors: 0` and `ALL PASS`.
 
 ## Concerns
-None.
+
+- The host Vulkan loader emits pre-existing EOS overlay/ReShade discovery
+  messages after successful tests; smoke validation remains zero.
