@@ -6,6 +6,10 @@ $makefile = Get-Content -Raw (Join-Path $root 'MatterViewer\Makefile')
 $engine = Get-Content -Raw (Join-Path $root 'MatterEngine3\include\matter\engine_context.h')
 $world = Get-Content -Raw (Join-Path $root 'MatterEngine3\include\matter\world_session.h')
 $vkContext = Get-Content -Raw (Join-Path $root 'MatterEngine3\src\render\vk_context.cpp')
+$vkScene = Get-Content -Raw (Join-Path $root 'MatterEngine3\src\render\vk_scene_renderer.cpp')
+$vkSceneHeader = Get-Content -Raw (Join-Path $root 'MatterEngine3\src\render\vk_scene_renderer.h')
+$engineImpl = Get-Content -Raw (Join-Path $root 'MatterEngine3\src\matter_engine.cpp')
+$compositeShader = Get-Content -Raw (Join-Path $root 'MatterEngine3\shaders_vk\composite.frag')
 $runtimeSmokePath = Join-Path $root 'MatterViewer\tools\smoke_vulkan_viewer.ps1'
 $runtimeSmoke = if (Test-Path $runtimeSmokePath) { Get-Content -Raw $runtimeSmokePath } else { '' }
 $failures = [System.Collections.Generic.List[string]]::new()
@@ -51,6 +55,52 @@ Require-Text $runtimeSmoke 'MATTER_TEST_RESIZE' 'runtime resize exercise'
 Require-Text $runtimeSmoke 'PNG signature' 'runtime PNG signature validation'
 Require-Text $runtimeSmoke 'GetPixel' 'runtime nontrivial pixel validation'
 Require-Text $runtimeSmoke 'validation errors' 'runtime validation-clean assertion'
+
+# Task 9 completion review: Vulkan world rendering must consume authored
+# materials/lights and must not expose controls that are active no-ops.
+Require-Text $engineImpl 'MaterialRegistryGet' 'Vulkan material registry lookup'
+Require-Text $engineImpl 'mesh.texcoords[uv]' 'Vulkan material id channel'
+Forbid-Text $engineImpl 'vertex.orm = {ao, 0.7f' 'invented Vulkan roughness'
+Require-Text $vkSceneHeader 'VkSceneLighting' 'Vulkan scene lighting contract'
+Require-Text $vkScene 'lighting_' 'Vulkan scene lighting state'
+Require-Text $compositeShader 'sun_direction' 'world sun direction shading'
+Require-Text $compositeShader 'sky_color' 'world sky lighting'
+Forbid-Text $compositeShader 'max(normal.y' 'hard-coded normal-Y lighting'
+Require-Text $ui 'not available in Vulkan milestone' 'disabled Vulkan milestone controls'
+
+# Every CPU/legacy release site in the world facade must release the matching
+# Vulkan part before its PartStore record can be reloaded.
+$releaseSiteCount = ([regex]::Matches($engineImpl, 'store->release\(')).Count
+$vkReleaseSiteCount = ([regex]::Matches($engineImpl, 'vk_scene->release_part\(')).Count
+if ($vkReleaseSiteCount -lt $releaseSiteCount) {
+    $failures.Add("Vulkan release symmetry: $vkReleaseSiteCount Vulkan releases for $releaseSiteCount PartStore releases")
+}
+
+# The Windows artifact is Vulkan-only. Source headers may still supply POD
+# compatibility types, but the recipe/import table may not retain GL backends.
+Require-Text $makefile '-DMATTER_VULKAN_ONLY' 'Vulkan-only Windows macro'
+Forbid-Text $windowsRecipe '$(WIN_RAYLIB)' 'Windows raylib link'
+Forbid-Text $windowsRecipe '-lopengl32' 'Windows OpenGL link'
+Forbid-Text $windowsRecipe 'imgui_impl_opengl3.cpp' 'Windows OpenGL ImGui backend'
+Require-Text $makefile 'objdump' 'PE import inspection'
+@('opengl32','ChoosePixelFormat','SetPixelFormat','SwapBuffers','cuGraphicsGL') | ForEach-Object {
+    Require-Text $makefile $_ 'forbidden PE import check'
+}
+
+# ImGui pipelines are render-format-specific. A resize that changes the
+# swapchain format must rebuild the Vulkan backend, not only change image count.
+Require-Text $ui 'frame.swapchain_format != swapchain_format_' 'ImGui format-change detection'
+Require-Text $ui 'ImGui_ImplVulkan_Shutdown' 'ImGui format-change teardown'
+Require-Text $ui 'ImGui_ImplVulkan_Init' 'ImGui format-change rebuild'
+Require-Text $ui 'ImGui_ImplVulkan_SetMinImageCount' 'ImGui min image count update'
+Require-Text $runtimeSmoke 'VK_LAYER_PATH' 'explicit validation layer discovery'
+Forbid-Text $runtimeSmoke 'VK_LOADER_LAYERS_DISABLE' 'validation layer disable override'
+Require-Text $runtimeSmoke 'red Cornell region' 'Cornell material assertion'
+Require-Text $runtimeSmoke 'green Cornell region' 'Cornell material assertion'
+Require-Text $runtimeSmoke 'gray Cornell region' 'Cornell material assertion'
+Require-Text $runtimeSmoke 'Get-FileHash' 'PNG hash assertion'
+Require-Text $main 'CreateFile' 'Windows command file reader'
+Forbid-Text $main 'MATTER_CMD_FIFO not supported on Windows' 'ignored Windows command interface'
 
 if ($failures.Count -ne 0) {
     [Console]::Error.WriteLine('vulkan-viewer gate: FAIL')

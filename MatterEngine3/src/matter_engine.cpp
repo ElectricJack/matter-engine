@@ -12,17 +12,19 @@
 #include "async_bake.h"
 #include "local_provider.h"
 #include "part_store.h"   // LoadedPart, walk_part_tree
+#ifndef MATTER_VULKAN_ONLY
 #include "world_composer.h"
-#include "sector_resolver.h"
 #include "renderer.h"
 #include "raster_composer.h"
 #include "probe_texture.h"
 #include "gpu_culler.h"
 #include "raster_cull.h"
-#include "frame_matrices.h"
 #include "rt_lighting.h"
-#include "material_registry.h"  // MaterialRegistryPackForGPU/Count, MATERIAL_FLOATS_PER_DEF
 #include "gl46.h"
+#endif
+#include "sector_resolver.h"
+#include "frame_matrices.h"
+#include "material_registry.h"  // MaterialRegistryPackForGPU/Count, MATERIAL_FLOATS_PER_DEF
 #include "shader_source.h"   // matter::set_shader_override_dir (Task 1 header)
 #include "world_tracer.h"    // WorldTracer — lazy CPU BVH for query API
 #ifdef MATTER_VULKAN_VIEWER
@@ -53,9 +55,11 @@
 #include "inotify_watcher.h"
 #endif
 
+#ifndef MATTER_VULKAN_ONLY
 // Raylib must come before glad to avoid double-definition of GL types.
 #include "raylib.h"
 #include "external/glad.h"   // glClearColor / glClear (same as gpu_culler.cpp)
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -83,6 +87,7 @@ namespace matter {
 // Used as the FileWatcher argument for LiveEditSession constructed on the
 // worker thread (which uses rebuild(paths) directly, never tick()).
 namespace {
+#ifndef MATTER_VULKAN_ONLY
 // Temporary compatibility boundary for the current OpenGL/raylib renderer.
 // Remove this when Renderer and RasterComposer consume CameraDesc directly.
 Camera3D to_legacy_raylib_camera_for_compatibility(const CameraDesc& camera) {
@@ -94,6 +99,7 @@ Camera3D to_legacy_raylib_camera_for_compatibility(const CameraDesc& camera) {
     legacy.projection = CAMERA_PERSPECTIVE;
     return legacy;
 }
+#endif
 
 class NullWatcher : public live_edit::FileWatcher {
 public:
@@ -199,15 +205,19 @@ struct WorldSession::Impl {
 
     // Compositor objects.
     std::unique_ptr<viewer::PartStore>      store;
+#ifndef MATTER_VULKAN_ONLY
     std::unique_ptr<viewer::WorldComposer>  composer;
     std::unique_ptr<viewer::RasterComposer> raster;
+#endif
 #ifdef MATTER_VULKAN_VIEWER
     std::unique_ptr<viewer::VkSceneRenderer> vk_scene;
 #endif
     lod_select::PartLodTable                lods;
 
     // Probe textures (released before recreating on reconnect/shutdown).
+#ifndef MATTER_VULKAN_ONLY
     viewer::ProbeTextures probe_tex{};
+#endif
 
     // Sky clear color: derived from tone-mapped sky_color in bake_once().
     // Three separate floats kept as gamma-mapped floats passed to glClearColor
@@ -219,8 +229,8 @@ struct WorldSession::Impl {
     float sky_clear[3] = {96 / 255.f, 118 / 255.f, 143 / 255.f};
 
     // GPU culler (per-session; initialized once per session after first bake).
+#ifndef MATTER_VULKAN_ONLY
     viewer::GpuCuller gpu_culler;
-    bool              culler_ready = false;
 
     // RT renderer (camera synced per render; shader lazily initialized on first
     // Raytrace render to avoid the ~60s shader warm-up until it's actually needed).
@@ -232,6 +242,8 @@ struct WorldSession::Impl {
     viewer::RtLighting rt_lighting;
     bool               rt_lighting_ready = false;
     bool               rt_lighting_failed = false;
+#endif
+    bool              culler_ready = false;
 
     // Resolvers — mirrors main.cpp's pass/sec locals.
     viewer::PassThroughResolver pass;
@@ -684,6 +696,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     // the appropriate phase, and gpu_run marshals tileset GL to the app thread
     // via gpu_jobs.run_blocking (this Task 6 seam; Task 4 added the field).
     // The reload variant additionally resets the GPU culler before we begin.
+#ifndef MATTER_VULKAN_ONLY
     if (is_reload && culler_ready) {
         // GpuCuller state lives on the GL thread. Marshal the reset.
         matter_async::GpuJob rj;
@@ -701,6 +714,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
             return;
         }
     }
+#endif
     // In reload mode, marking `connected = false` is done inside the GL reset
     // job below (same thread that will set it back to true), so old-world
     // rendering continues until the GL reset actually runs (fail-closed matches
@@ -735,7 +749,11 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     // Using gl_loaded() rather than engine->gl46 so that RT/viewer contexts
     // (allow_gl_lt_46=true) still attempt the atlas bake and get a proper
     // success-or-clear-error from gl46_available(), instead of a silent skip.
+#ifdef MATTER_VULKAN_ONLY
+    cfg.gl_available = false;
+#else
     cfg.gl_available = viewer::gl_loaded();
+#endif
 
     // Phase C Task 7: snapshot the root-params override (set by regenerate()).
     // Read under seed_mutex so a concurrent regenerate() on the app thread is
@@ -999,9 +1017,11 @@ void WorldSession::Impl::publish_pipeline(
     // 4) GL reset job: recreate raster + composer + PartStore on the GL thread.
     struct ResetOutput {
         std::unique_ptr<viewer::PartStore>      new_store;
+#ifndef MATTER_VULKAN_ONLY
         std::unique_ptr<viewer::WorldComposer>  new_composer;
         std::unique_ptr<viewer::RasterComposer> new_raster;
         viewer::ProbeTextures                   new_probe_tex{};
+#endif
     };
     auto reset_out = std::make_shared<ResetOutput>();
 
@@ -1012,10 +1032,11 @@ void WorldSession::Impl::publish_pipeline(
         matter_async::assert_gl_thread((pfx + ".reset").c_str());
         connected.store(false, std::memory_order_release);
 
-        viewer::release_probe_textures(probe_tex);
 #ifdef MATTER_VULKAN_VIEWER
         if (vk_scene) vk_scene->reset();
 #endif
+#ifndef MATTER_VULKAN_ONLY
+        viewer::release_probe_textures(probe_tex);
         reset_out->new_raster = std::make_unique<viewer::RasterComposer>();
         auto& raster_local = reset_out->new_raster;
         if (engine->render_device) {
@@ -1072,17 +1093,34 @@ void WorldSession::Impl::publish_pipeline(
             printf("GpuCuller: initialized\n");
             culler_ready = true;
         }
+#endif
 
         reset_out->new_store = std::make_unique<viewer::PartStore>(cfg.cache_root);
+#ifndef MATTER_VULKAN_ONLY
         reset_out->new_composer = std::make_unique<viewer::WorldComposer>(
             *reset_out->new_store, /*tlas_capacity=*/16);
+#endif
 
         state.reset(viewer::WorldManifest{});
+#ifndef MATTER_VULKAN_ONLY
         raster.swap(reset_out->new_raster);
         composer.swap(reset_out->new_composer);
+#endif
         store.swap(reset_out->new_store);
+#ifndef MATTER_VULKAN_ONLY
         probe_tex = reset_out->new_probe_tex;
         reset_out->new_probe_tex = viewer::ProbeTextures{};
+#endif
+
+        auto tonemap_sky = [](float c) -> float {
+            float mapped = c / (c + 1.0f);
+            float gamma = std::pow(mapped, 1.0f / 2.2f);
+            float clamped = std::max(0.0f, std::min(1.0f, gamma));
+            return std::floor(clamped * 255.0f + 0.5f) / 255.0f;
+        };
+        sky_clear[0] = tonemap_sky(new_manifest.lights.sky_color[0]);
+        sky_clear[1] = tonemap_sky(new_manifest.lights.sky_color[1]);
+        sky_clear[2] = tonemap_sky(new_manifest.lights.sky_color[2]);
 
         manifest = new_manifest;
         connected.store(true, std::memory_order_release);
@@ -1437,6 +1475,7 @@ void WorldSession::Impl::publish_pipeline(
             tracer_dirty = true;
             tracer.reset();
 
+#ifndef MATTER_VULKAN_ONLY
             // Composer cap growth: count drawable nodes in this part's tree,
             // accumulate needed_cap, and recreate the composer when the cap is
             // exceeded. TLAS recomposes every frame so recreate is cheap; we add
@@ -1455,6 +1494,7 @@ void WorldSession::Impl::publish_pipeline(
                 composer = std::make_unique<viewer::WorldComposer>(*store, new_cap);
                 cap_state->current = new_cap;
             }
+#endif
             return true;
         };
         gpu_jobs.post(std::move(pj));
@@ -1481,6 +1521,7 @@ void WorldSession::Impl::publish_pipeline(
             }
         }
 
+#ifndef MATTER_VULKAN_ONLY
         // Final exact-cap composer recreate. Walk the (now fully loaded) part
         // tree of every manifest instance and count drawable nodes exactly, as
         // the old bake_once did. Everything is already in the store from the
@@ -1494,6 +1535,7 @@ void WorldSession::Impl::publish_pipeline(
                 });
         }
         composer = std::make_unique<viewer::WorldComposer>(*store, cap);
+#endif
         return true;
     };
     {
@@ -1767,7 +1809,12 @@ void WorldSession::Impl::execute_refine_step() {
                     tracer.reset();
                 }
                 // Release full-res GPU and CPU resources.
+#ifndef MATTER_VULKAN_ONLY
                 if (culler_ready) gpu_culler.release_part(full_hash_e);
+#endif
+#ifdef MATTER_VULKAN_VIEWER
+                if (vk_scene)     vk_scene->release_part(full_hash_e);
+#endif
                 if (store)        store->release(full_hash_e);
                 return true;
             };
@@ -1846,7 +1893,9 @@ void WorldSession::Impl::execute_refine_step() {
             return true;  // skip-and-continue; worker handles the state transition
         }
         // Ensure part registered in culler.
+#ifndef MATTER_VULKAN_ONLY
         if (culler_ready) gpu_culler.ensure_part(full_hash_n, *store);
+#endif
 
         // Swap manifest entry's part_hash to the full variant.
         if (midx_n < (uint32_t)manifest.instances.size()) {
@@ -2125,7 +2174,12 @@ void WorldSession::Impl::drain_sector_evictions() {
             tracer_dirty = true;
             tracer.reset();
 
+#ifndef MATTER_VULKAN_ONLY
             if (culler_ready) gpu_culler.release_part(part_hash);
+#endif
+#ifdef MATTER_VULKAN_VIEWER
+            if (vk_scene) vk_scene->release_part(part_hash);
+#endif
             if (store) store->release(part_hash);
             if (provider) provider->release_transient(part_hash);
 
@@ -2189,7 +2243,12 @@ void WorldSession::Impl::execute_sector_stream_step() {
                     tracer_dirty = true;
                     tracer.reset();
 
+#ifndef MATTER_VULKAN_ONLY
                     if (culler_ready) gpu_culler.release_part(part_hash);
+#endif
+#ifdef MATTER_VULKAN_VIEWER
+                    if (vk_scene) vk_scene->release_part(part_hash);
+#endif
                     if (store) store->release(part_hash);
                     if (provider) provider->release_transient(part_hash);
 
@@ -2308,8 +2367,10 @@ void WorldSession::Impl::execute_sector_stream_step() {
             tracer.reset();
 
             // Ensure GPU culler knows about this part.
+#ifndef MATTER_VULKAN_ONLY
             if (culler_ready && store)
                 gpu_culler.ensure_part(sector_hash, *store);
+#endif
 
             // Record in sector_map.
             {
@@ -2321,11 +2382,13 @@ void WorldSession::Impl::execute_sector_stream_step() {
             // Phase C Task 5: request a probe brick for this sector.
             probe_request_brick(pub_tx, pub_tz, pub_rung);
 
+#ifndef MATTER_VULKAN_ONLY
             // Grow composer cap if needed.
             if (composer && store) {
                 size_t cap_needed = state.entries().size() + 16;
                 composer = std::make_unique<viewer::WorldComposer>(*store, cap_needed);
             }
+#endif
 
             return true;
         };
@@ -2653,7 +2716,11 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
         j.token = token;
         return gpu_jobs.run_blocking(std::move(j), err);
     };
+#ifdef MATTER_VULKAN_ONLY
+    cfg.gl_available = false;
+#else
     cfg.gl_available = viewer::gl_loaded();  // same semantics as execute_bake: loaded ≠ 4.6-confirmed
+#endif
     // Phase C Task 7: cfg.root_params_json is intentionally NOT reset here.
     // The cone path operates within the current world's seed context: whatever
     // worldSeed was set by the last execute_bake() (via regenerate() or a plain
@@ -2789,6 +2856,7 @@ std::unique_ptr<EngineContext> EngineContext::create(const EngineDesc& desc,
     impl->cache_root = desc.cache_root ? desc.cache_root : "cache";
     impl->render_device = desc.render_device;
 
+#ifndef MATTER_VULKAN_ONLY
     if (!desc.render_device && !desc.allow_gl_lt_46) {
         // GL 4.6 gate (main.cpp lines ~95–113). When allow_gl_lt_46 is set
         // (RT path) we skip the check and leave impl->gl46 = false.
@@ -2801,6 +2869,12 @@ std::unique_ptr<EngineContext> EngineContext::create(const EngineDesc& desc,
         impl->gl46 = true;
         printf("GPU cull path: enabled (GL 4.6 ok)\n");
     }
+#else
+    if (!desc.render_device) {
+        err = "MATTER_VULKAN_ONLY requires a Vulkan render device";
+        return nullptr;
+    }
+#endif
 
     return std::unique_ptr<EngineContext>(new EngineContext(std::move(impl)));
 }
@@ -2855,8 +2929,10 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
     }
 #endif
 
+#ifndef MATTER_VULKAN_ONLY
     // Always init the camera; sets defaults used in both RT and raster modes.
     simpl->renderer.init_camera();
+#endif
 
     return std::unique_ptr<WorldSession>(new WorldSession(std::move(simpl)));
 }
@@ -2892,11 +2968,15 @@ WorldSession::~WorldSession() {
     impl_->vk_scene.reset();
 #endif
 
+#ifndef MATTER_VULKAN_ONLY
     viewer::release_probe_textures(impl_->probe_tex);
     impl_->raster.reset();
     impl_->composer.reset();
+#endif
     impl_->store.reset();
+#ifndef MATTER_VULKAN_ONLY
     impl_->renderer.shutdown();
+#endif
 }
 
 void WorldSession::set_test_fault_hook(std::function<void(int)> hook) {
@@ -3063,16 +3143,40 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
             else
                 vertex.normal = {0.0f, 1.0f, 0.0f};
             const size_t c = static_cast<size_t>(vi) * 4;
-            if (mesh.colors.size() >= c + 4)
-                vertex.albedo = {mesh.colors[c] / 255.0f,
-                                 mesh.colors[c + 1] / 255.0f,
-                                 mesh.colors[c + 2] / 255.0f, 1.0f};
-            else
-                vertex.albedo = {1.0f, 1.0f, 1.0f, 1.0f};
             const size_t uv = static_cast<size_t>(vi) * 2;
+            int material_id = mesh.texcoords.size() > uv
+                                  ? static_cast<int>(mesh.texcoords[uv] + 0.5f)
+                                  : -1;
+            if (material_id >= 1000000) material_id -= 1000000;
+            const MaterialDef* material = MaterialRegistryGet(material_id);
+            float tint[4] = {1.0f, 1.0f, 1.0f, 0.0f};
+            if (mesh.colors.size() >= c + 4) {
+                for (int channel = 0; channel < 4; ++channel)
+                    tint[channel] = mesh.colors[c + channel] / 255.0f;
+            }
+            const float tint_strength = tint[3];
+            vertex.albedo = {
+                material->albedo[0] * (1.0f - tint_strength) +
+                    tint[0] * tint_strength,
+                material->albedo[1] * (1.0f - tint_strength) +
+                    tint[1] * tint_strength,
+                material->albedo[2] * (1.0f - tint_strength) +
+                    tint[2] * tint_strength,
+                material->emission};
             const float ao = mesh.texcoords.size() > uv + 1
                                  ? mesh.texcoords[uv + 1] : 1.0f;
-            vertex.orm = {ao, 0.7f, 0.0f, 1.0f};
+            vertex.orm = {material->roughness, material->metallic, ao,
+                          material_id >= 0 ? material_id / 255.0f : 0.0f};
+            if (material->groundTilesetSlot >= 0) {
+                static bool warned_texture_material = false;
+                if (!warned_texture_material) {
+                    std::fprintf(stderr,
+                        "Vulkan milestone: ground material texture sampling is "
+                        "not available; using authored texture-independent "
+                        "base color/ORM/emission\n");
+                    warned_texture_material = true;
+                }
+            }
             part.vertices.push_back(vertex);
         }
     }
@@ -3210,6 +3314,18 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     if (!impl_->vk_scene->cull_stats(cull, err)) return false;
     const auto build_end = std::chrono::steady_clock::now();
     const auto draw_start = std::chrono::steady_clock::now();
+    viewer::VkSceneLighting lighting{};
+    lighting.sun_direction = {impl_->manifest.lights.sun_dir[0],
+                              impl_->manifest.lights.sun_dir[1],
+                              impl_->manifest.lights.sun_dir[2]};
+    lighting.sun_intensity = 1.0f;
+    lighting.sun_color = {impl_->manifest.lights.sun_color[0],
+                          impl_->manifest.lights.sun_color[1],
+                          impl_->manifest.lights.sun_color[2]};
+    lighting.sky_color = {impl_->manifest.lights.sky_color[0],
+                          impl_->manifest.lights.sky_color[1],
+                          impl_->manifest.lights.sky_color[2]};
+    impl_->vk_scene->set_lighting(lighting);
     if (!impl_->vk_scene->render_gbuffer_and_composite(
             frame.extent.width, frame.extent.height, err) ||
         !impl_->vk_scene->record_composite_to_swapchain(frame, err))
@@ -3267,6 +3383,7 @@ bool WorldSession::readback_swapchain_rgba8(
 }
 #endif
 
+#ifndef MATTER_VULKAN_ONLY
 void WorldSession::render(const CameraDesc& cam, int fb_width, int fb_height,
                           const RenderOptions& opts) {
     if (!impl_->connected) return;
@@ -3560,6 +3677,11 @@ void WorldSession::render(const CameraDesc& cam, int fb_width, int fb_height,
         }
     }
 }
+#else
+void WorldSession::render(const CameraDesc&, int, int, const RenderOptions&) {
+    // The Windows milestone artifact intentionally contains no legacy GL path.
+}
+#endif
 
 bool WorldSession::poll_event(Event& out) {
     // Phase B: worker thread pushes into `events` under events_mutex; the

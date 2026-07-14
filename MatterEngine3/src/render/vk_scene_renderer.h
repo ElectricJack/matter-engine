@@ -113,6 +113,16 @@ struct VkRasterPixel {
     float depth = 1.0f;
 };
 
+struct VkSceneLighting {
+    // Direction from the sun toward the scene, matching WorldLights.
+    matter::Float3 sun_direction{-0.45f, -0.80f, -0.35f};
+    float sun_intensity = 1.0f;
+    matter::Float3 sun_color{2.2f, 2.05f, 1.8f};
+    float pad0 = 0.0f;
+    matter::Float3 sky_color{0.38f, 0.43f, 0.52f};
+    float pad1 = 0.0f;
+};
+
 class VkSceneRenderer {
 public:
     struct RtInstance {
@@ -139,6 +149,7 @@ public:
                                   std::string& error);
     bool render_gbuffer_and_composite(uint32_t width, uint32_t height,
                                       std::string& error);
+    void set_lighting(const VkSceneLighting& lighting) { lighting_ = lighting; }
     // Blit the real HDR world composite into the currently acquired swapchain
     // image, leaving it ready for UI dynamic rendering.
     bool record_composite_to_swapchain(const matter::VulkanFrame& frame,
@@ -314,6 +325,7 @@ private:
     std::string poison_reason_;
     DeviceLimits limits_{};
     DeviceLimits physical_limits_{};
+    VkSceneLighting lighting_{};
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     DeviceLimits test_limits_{};
     bool use_test_limits_ = false;

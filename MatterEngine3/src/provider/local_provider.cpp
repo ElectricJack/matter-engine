@@ -11,8 +11,10 @@
 #include "blas_manager.hpp"
 #include "tlas_manager.hpp"
 #include "tileset_phase.h"
+#ifndef MATTER_VULKAN_ONLY
 #include "tileset_bake_gpu.h"  // TilesetPhaseOpts
 #include "tileset_provider.h"
+#endif
 #include "material_registry.h"
 
 #if defined(MATTER_HAVE_AUTOREMESHER)
@@ -195,7 +197,9 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     // for a different world doesn't inherit stale atlases. Also reset the
     // material-16 (DIRT) binding so the shader sees -1 (unbound) until the
     // new bake installs a fresh slot.
+#ifndef MATTER_VULKAN_ONLY
     viewer::tileset_provider::unload_all();
+#endif
     MaterialRegistrySetGroundTilesetSlot(16, -1);
     baked_tileset_count_ = 0;
 
@@ -589,11 +593,12 @@ bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
     //
     // Guard: fail-closed BEFORE any GL/disk work if the manifest declares more
     // tileset roots than we have sampler-array slots.
-    if ((int)tileset_indices_.size() > viewer::tileset_provider::max_slots()) {
+    constexpr int kTilesetSlots = 4;
+    if ((int)tileset_indices_.size() > kTilesetSlots) {
         err = "LocalProvider: manifest declares " +
               std::to_string(tileset_indices_.size()) +
               " tileset roots but only " +
-              std::to_string(viewer::tileset_provider::max_slots()) +
+              std::to_string(kTilesetSlots) +
               " slots are available";
         return false;
     }
@@ -768,6 +773,7 @@ bool LocalProvider::run_tileset_deferred(
             continue;
         }
 
+#ifndef MATTER_VULKAN_ONLY
         // GL available: settle on the worker (CPU-only, cache-wired), then GPU bake on GL thread.
         const bool dump_png = std::getenv("MATTER_TILESET_DUMP_PNG") != nullptr;
 
@@ -827,6 +833,10 @@ bool LocalProvider::run_tileset_deferred(
 
         if (on_tileset_part)
             on_tileset_part(idx + 1, total, root_module.c_str());
+#else
+        err = "LocalProvider: Vulkan-only build cannot enter GL tileset bake path";
+        return false;
+#endif
     }
     return true;
 #else
@@ -1040,7 +1050,9 @@ bool LocalProvider::restore_from_cache(
 {
 #if defined(MATTER_HAVE_SCRIPT_HOST)
     // Reset mutable state (mirrors the preamble of install_graph()).
+#ifndef MATTER_VULKAN_ONLY
     viewer::tileset_provider::unload_all();
+#endif
     MaterialRegistrySetGroundTilesetSlot(16, -1);
     baked_tileset_count_ = 0;
     baked_count_  = 0;

@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include <vulkan/vulkan.h>
+
 #include "matter/camera.h"
 
 struct GLFWwindow;
@@ -86,7 +88,7 @@ public:
                std::string& error);
     void shutdown();
     void begin_frame();
-    void end_frame(const matter::VulkanFrame& frame);
+    bool end_frame(const matter::VulkanFrame& frame, std::string& error);
     void draw_debug_panel(ViewerStats& stats);
     // MSL-style orbit/zoom controls: navigate the view without locking the cursor
     // or using WASD (works over remote desktop). Mutates the camera in place.
@@ -97,9 +99,12 @@ public:
     void draw_lighting_panel(ViewerStats& stats);
 
 private:
+    bool initialize_vulkan_backend(VkFormat format, std::uint32_t image_count,
+                                   std::string& error);
     matter::VulkanDevice* vulkan_ = nullptr;
     std::uint64_t descriptor_pool_ = 0;
     std::uint32_t image_count_ = 0;
+    VkFormat swapchain_format_ = VK_FORMAT_UNDEFINED;
     bool imgui_context_initialized_ = false;
     bool glfw_backend_initialized_ = false;
     bool vulkan_backend_initialized_ = false;

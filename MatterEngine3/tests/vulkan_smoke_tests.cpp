@@ -180,6 +180,30 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
               center.hdr.z > background.hdr.z,
           "composite samples G-buffer into HDR output");
 
+    viewer::VkSceneLighting dark{};
+    dark.sun_intensity = 0.0f;
+    dark.sky_color = {0.0f, 0.0f, 0.0f};
+    renderer.set_lighting(dark);
+    CHECK(renderer.render_gbuffer_and_composite(width, height, error),
+          error.empty() ? "render authored dark lighting" : error.c_str());
+    viewer::VkRasterPixel dark_center{};
+    CHECK(renderer.readback_raster_pixel(width / 2, height / 2, dark_center,
+                                         error),
+          error.empty() ? "read authored dark lighting" : error.c_str());
+    viewer::VkSceneLighting bright = dark;
+    bright.sky_color = {2.0f, 2.0f, 2.0f};
+    renderer.set_lighting(bright);
+    CHECK(renderer.render_gbuffer_and_composite(width, height, error),
+          error.empty() ? "render authored bright sky" : error.c_str());
+    viewer::VkRasterPixel bright_center{};
+    CHECK(renderer.readback_raster_pixel(width / 2, height / 2, bright_center,
+                                         error),
+          error.empty() ? "read authored bright sky" : error.c_str());
+    CHECK(bright_center.hdr.x > dark_center.hdr.x &&
+              bright_center.hdr.y > dark_center.hdr.y &&
+              bright_center.hdr.z > dark_center.hdr.z,
+          "authored world sky lighting changes raster pixels");
+
     const VkImage old_albedo = attachments.albedo.image;
     const VkDeviceSize initial_vertex_capacity =
         renderer.raster_vertex_buffer_size();
@@ -201,11 +225,11 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
               error.empty() ? "dispatch re-added raster part"
                             : error.c_str());
         CHECK(renderer.raster_vertex_buffer_size() == initial_vertex_capacity,
-              "release/re-add churn does not grow raster vertex capacity");
+              "streaming eviction/reload keeps raster vertex residency bounded");
         if (hash != 906) {
             renderer.release_part(hash);
             CHECK(renderer.raster_vertex_count() == 0,
-                  "raster churn release reclaims vertices");
+                  "streaming eviction releases raster vertex residency");
         }
     }
     CHECK(renderer.render_gbuffer_and_composite(96, 64, error),
@@ -631,14 +655,14 @@ void run_cull_region_and_lifecycle_tests(matter::VulkanDevice& vulkan) {
         CHECK(churn_commands_exact,
               "churn preserves exact command buckets and transforms");
         CHECK(renderer.cluster_count() == 4,
-              "release and re-add does not grow historical clusters");
+              "streaming eviction/reload keeps cluster residency bounded");
         CHECK(renderer.draw_command_count() == 4 * viewer::kVkMaxLod,
-              "release and re-add does not grow historical commands");
+              "streaming eviction/reload keeps command residency bounded");
         CHECK(renderer.cluster_buffer_size() == stable_cluster_bytes &&
                   renderer.command_buffer_size() == stable_command_bytes &&
                   renderer.draw_transform_buffer_size() ==
                       stable_transform_bytes,
-              "release and re-add keeps scene buffer capacities stable");
+              "streaming eviction/reload re-uploads into stable scene buffers");
     }
 
     renderer.reset();

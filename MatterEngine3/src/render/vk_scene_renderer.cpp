@@ -141,6 +141,7 @@ struct RasterRecord {
     VkBuffer indirect_buffer;
     uint32_t indirect_count;
     const uint8_t* command_enabled;
+    VkSceneLighting lighting;
 };
 
 void record_raster(VkCommandBuffer command_buffer, void* user_data) {
@@ -255,6 +256,9 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             record.composite_layout, 0, 1,
                             &record.composite_set, 0, nullptr);
+    vkCmdPushConstants(command_buffer, record.composite_layout,
+                       VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof(record.lighting), &record.lighting);
     vkCmdDraw(command_buffer, 3, 1, 0, 0);
     vkCmdEndRendering(command_buffer);
 }
@@ -654,6 +658,11 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
         VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     composite_layout.setLayoutCount = 1;
     composite_layout.pSetLayouts = &composite_set_layout_;
+    VkPushConstantRange lighting_range{};
+    lighting_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    lighting_range.size = sizeof(VkSceneLighting);
+    composite_layout.pushConstantRangeCount = 1;
+    composite_layout.pPushConstantRanges = &lighting_range;
     result = vkCreatePipelineLayout(device, &composite_layout, nullptr,
                                     &composite_pipeline_layout_);
     if (result != VK_SUCCESS)
@@ -1709,7 +1718,8 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
                         vertices_.buffer,
                         commands_.buffer,
                         uploaded_command_count_,
-                        uploaded_raster_command_enabled_.data()};
+                        uploaded_raster_command_enabled_.data(),
+                        lighting_};
     std::vector<std::shared_ptr<void>> dependencies{
         albedo_.lifetime, normal_.lifetime, orm_.lifetime, depth_.lifetime,
         hdr_.lifetime, vertices_.lifetime, commands_.lifetime,

@@ -35,8 +35,42 @@ function Assert-Png([string]$Path, [int]$ExpectedWidth, [int]$ExpectedHeight) {
         if ($colors.Count -lt 8) {
             throw "screenshot has only $($colors.Count) sampled colors: $Path"
         }
+        $x0 = [int]($bitmap.Width * 0.25); $x1 = [int]($bitmap.Width * 0.75)
+        $y0 = [int]($bitmap.Height * 0.15); $y1 = [int]($bitmap.Height * 0.90)
+        $world = 0; $nonblack = 0; $red = 0; $green = 0; $gray = 0
+        for ($y = $y0; $y -lt $y1; $y += 2) {
+            for ($x = $x0; $x -lt $x1; $x += 2) {
+                $p = $bitmap.GetPixel($x, $y); ++$world
+                if (($p.R + $p.G + $p.B) -gt 45) { ++$nonblack }
+                if ($p.R -gt ($p.G * 1.35) -and $p.R -gt ($p.B * 1.35) -and $p.R -gt 35) { ++$red }
+                if ($p.G -gt ($p.R * 1.25) -and $p.G -gt ($p.B * 1.25) -and $p.G -gt 30) { ++$green }
+                if ([Math]::Abs($p.R-$p.G) -lt 18 -and
+                    [Math]::Abs($p.G-$p.B) -lt 18 -and $p.R -gt 35) { ++$gray }
+            }
+        }
+        if ($nonblack -lt ($world * 0.20)) { throw "insufficient nonblack world coverage: $Path" }
+        if ($red -lt ($world * 0.015)) { throw "red Cornell region missing: $Path" }
+        if ($green -lt ($world * 0.015)) { throw "green Cornell region missing: $Path" }
+        if ($gray -lt ($world * 0.04)) { throw "gray Cornell region missing: $Path" }
     } finally {
         $bitmap.Dispose()
+    }
+    $hash = (Get-FileHash -Algorithm SHA256 $Path).Hash
+    if (-not $hash -or $hash -match '^0+$') { throw "invalid PNG hash: $Path" }
+    Write-Output "PNG SHA256 $hash"
+}
+
+function Assert-PeImports([string]$Path) {
+    $objdump = @('C:\msys64\ucrt64\bin\objdump.exe',
+                 'C:\msys64\usr\bin\objdump.exe') |
+        Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $objdump) { throw 'objdump unavailable for PE import inspection' }
+    $imports = (& $objdump -p $Path 2>&1 | Out-String)
+    foreach ($forbidden in @('opengl32','ChoosePixelFormat','SetPixelFormat',
+                              'SwapBuffers','cuGraphicsGL')) {
+        if ($imports -match [regex]::Escape($forbidden)) {
+            throw "forbidden PE import/symbol ${forbidden}: $Path"
+        }
     }
 }
 
@@ -71,12 +105,29 @@ function Invoke-ViewerCase([string]$Name, [bool]$Resize,
 
 $saved = @{}
 foreach ($name in @('MATTER_WORLD','MATTER_SCREENSHOT','MATTER_TEST_RESIZE',
-                    'VK_LOADER_LAYERS_DISABLE')) {
+                    'VK_LAYER_PATH','PATH')) {
     $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 try {
-    if (-not $env:VK_LOADER_LAYERS_DISABLE) {
-        $env:VK_LOADER_LAYERS_DISABLE = '~implicit~'
+    $layerCandidates = @()
+    if ($env:VULKAN_SDK) { $layerCandidates += (Join-Path $env:VULKAN_SDK 'Bin') }
+    $layerCandidates += 'C:\msys64\ucrt64\bin'
+    $layerCandidates += 'C:\msys64\ucrt64\share\vulkan\explicit_layer.d'
+    $layerDir = $layerCandidates | Where-Object {
+        Test-Path (Join-Path $_ 'VkLayer_khronos_validation.json')
+    } | Select-Object -First 1
+    if (-not $layerDir) {
+        throw 'Vulkan validation layer unavailable; install MSYS2 vulkan-validation-layers'
+    }
+    $env:VK_LAYER_PATH = $layerDir
+    $msysBin = 'C:\msys64\ucrt64\bin'
+    if (Test-Path $msysBin) { $env:PATH = "$msysBin;$env:PATH" }
+    Assert-PeImports $ViewerPath
+    $features = Join-Path (Split-Path $ViewerPath) 'build\windows\build_features.txt'
+    if (-not (Test-Path $features)) { $features = Join-Path $root 'MatterViewer\build\windows\build_features.txt' }
+    $manifest = Get-Content -Raw $features
+    foreach ($feature in @('VULKAN=1','CUDA=1','OPTIX=1','OPENGL=0')) {
+        if (-not $manifest.Contains($feature)) { throw "feature manifest missing $feature" }
     }
     Invoke-ViewerCase 'cornell' $false 1280 720
     Invoke-ViewerCase 'cornell-resize' $true 960 540

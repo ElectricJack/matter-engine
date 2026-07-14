@@ -29,6 +29,9 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#else
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #endif
 
 namespace {
@@ -182,8 +185,8 @@ int main() {
     stats.world_current = initial_world;
     stats.gpu_cull_active = true;
     stats.connected = true;
-    if (const char* value = std::getenv("MATTER_HIZ"))
-        stats.hiz_enabled = value[0] != '0';
+    if (std::getenv("MATTER_HIZ"))
+        std::printf("MATTER_HIZ: not available in Vulkan milestone; ignored\n");
     float active_radius = 64.0f;
     float min_projected_size = 0.0f;
     apply_world_resolver_defaults(worlds[initial_world].world_name,
@@ -221,11 +224,16 @@ int main() {
     const char* screenshot_env = std::getenv("MATTER_SCREENSHOT");
     const std::string screenshot_path = screenshot_env ? screenshot_env : "";
     int screenshot_settle = 0;
+    int screenshot_failures = 0;
     bool bake_ready = false;
     const bool test_resize = std::getenv("MATTER_TEST_RESIZE") != nullptr;
     bool resize_exercised = false;
 
     int cmd_fd = -1;
+#ifdef _WIN32
+    HANDLE cmd_handle = INVALID_HANDLE_VALUE;
+    LARGE_INTEGER cmd_offset{};
+#endif
     std::string cmd_buffer;
     const char* fifo_path = std::getenv("MATTER_CMD_FIFO");
 #ifndef _WIN32
@@ -238,8 +246,20 @@ int main() {
             std::printf("MATTER_CMD_FIFO: failed to open %s\n", fifo_path);
     }
 #else
-    if (fifo_path)
-        std::printf("MATTER_CMD_FIFO not supported on Windows; ignoring\n");
+    if (fifo_path) {
+        // Windows has no POSIX FIFO. Poll an append-only command file so the
+        // documented command stream remains practical and nonblocking.
+        cmd_handle = CreateFileA(fifo_path, GENERIC_READ,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                     FILE_SHARE_DELETE,
+                                 nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                                 nullptr);
+        if (cmd_handle != INVALID_HANDLE_VALUE)
+            std::printf("MATTER_CMD_FIFO: polling command file %s\n", fifo_path);
+        else
+            std::printf("MATTER_CMD_FIFO: failed to open command file %s\n",
+                        fifo_path);
+    }
 #endif
     std::string shot_path;
     std::string stats_label;
@@ -257,7 +277,8 @@ int main() {
             camera_capture = !camera_capture;
             camera_controller.set_capture(window, camera_capture);
         }
-        if (key_pressed(window, GLFW_KEY_F9, f9_down)) wireframe = !wireframe;
+        if (key_pressed(window, GLFW_KEY_F9, f9_down))
+            std::printf("wireframe: not available in Vulkan milestone\n");
         camera_controller.update(window, dt, camera);
 
 #ifndef _WIN32
@@ -266,6 +287,27 @@ int main() {
             ssize_t count = 0;
             while ((count = read(cmd_fd, bytes, sizeof(bytes))) > 0)
                 cmd_buffer.append(bytes, static_cast<size_t>(count));
+        }
+#else
+        if (cmd_handle != INVALID_HANDLE_VALUE) {
+            LARGE_INTEGER size{};
+            if (GetFileSizeEx(cmd_handle, &size) &&
+                size.QuadPart < cmd_offset.QuadPart)
+                cmd_offset.QuadPart = 0;
+            if (size.QuadPart > cmd_offset.QuadPart) {
+                SetFilePointerEx(cmd_handle, cmd_offset, nullptr, FILE_BEGIN);
+                char bytes[512];
+                DWORD count = 0;
+                while (ReadFile(cmd_handle, bytes, sizeof(bytes), &count,
+                                nullptr) && count > 0) {
+                    cmd_buffer.append(bytes, static_cast<size_t>(count));
+                    cmd_offset.QuadPart += count;
+                    if (count < sizeof(bytes)) break;
+                }
+            }
+        }
+#endif
+        {
             size_t newline = 0;
             while ((newline = cmd_buffer.find('\n')) != std::string::npos) {
                 std::string line = cmd_buffer.substr(0, newline);
@@ -283,13 +325,13 @@ int main() {
                 } else if (std::sscanf(line.c_str(), "budget %f", &c[0]) == 1) {
                     stats.pixel_budget = std::max(0.05f, std::min(4.0f, c[0]));
                 } else if (std::sscanf(line.c_str(), "hiz %255s", word) == 1) {
-                    stats.hiz_enabled = std::strcmp(word, "on") == 0;
+                    std::printf("hiz: not available in Vulkan milestone\n");
                 } else if (line == "reload") {
                     stats.reload_requested = true;
                 } else if (line == "wireframe" || line == "wireframe toggle") {
-                    wireframe = !wireframe;
+                    std::printf("wireframe: not available in Vulkan milestone\n");
                 } else if (line == "wireframe on" || line == "wireframe off") {
-                    wireframe = line == "wireframe on";
+                    std::printf("wireframe: not available in Vulkan milestone\n");
                 } else if (line == "quit") {
                     quit_requested = true;
                 } else if (!line.empty()) {
@@ -297,7 +339,6 @@ int main() {
                 }
             }
         }
-#endif
 
         const float focus[3] = {camera.position.x, camera.position.y,
                                 camera.position.z};
@@ -339,8 +380,8 @@ int main() {
         options.resolver = stats.resolver_choice == 1
                                ? matter::ResolverKind::SectorLod
                                : matter::ResolverKind::PassThrough;
-        options.wireframe = wireframe;
-        options.hiz_occlusion = stats.hiz_enabled;
+        options.wireframe = false;
+        options.hiz_occlusion = false;
         options.pixel_budget = stats.pixel_budget;
         options.active_radius = active_radius;
         options.min_projected_size = min_projected_size;
@@ -376,7 +417,10 @@ int main() {
         ui.draw_worlds_panel(worlds, stats);
         ui.draw_camera_panel(camera);
         ui.draw_lighting_panel(stats);
-        ui.end_frame(frame);
+        if (!ui.end_frame(frame, error)) {
+            std::fprintf(stderr, "FATAL: ImGui Vulkan backend: %s\n", error.c_str());
+            fatal_error = true;
+        }
 
         bool capture = false;
         std::string capture_path;
@@ -389,8 +433,16 @@ int main() {
         }
         std::vector<uint8_t> rgba;
         if (capture && !session->readback_swapchain_rgba8(frame, rgba, error)) {
-            std::fprintf(stderr, "FATAL: screenshot readback: %s\n", error.c_str());
-            fatal_error = true;
+            ++screenshot_failures;
+            std::fprintf(stderr, "screenshot readback retry %d/5: %s\n",
+                         screenshot_failures, error.c_str());
+            capture = false;
+            if (capture_path == screenshot_path) screenshot_settle = 1;
+            else shot_settle = 2;
+            if (screenshot_failures >= 5) {
+                std::fprintf(stderr, "FATAL: screenshot readback exhausted retries\n");
+                fatal_error = true;
+            }
         }
         if (!vulkan->end_frame(frame, error)) {
             std::fprintf(stderr, "FATAL: end_frame: %s\n", error.c_str());
@@ -401,6 +453,7 @@ int main() {
                 std::fprintf(stderr, "screenshot FAILED %s\n", capture_path.c_str());
                 fatal_error = true;
             } else {
+                screenshot_failures = 0;
                 std::printf("screenshot written to %s\n", capture_path.c_str());
 #ifndef _WIN32
                 if (capture_path == shot_path) {
@@ -445,6 +498,11 @@ int main() {
     if (fifo_path) unlink(fifo_path);
 #endif
     if (camera_capture) camera_controller.set_capture(window, false);
+#ifndef _WIN32
+    if (cmd_fd >= 0) close(cmd_fd);
+#else
+    if (cmd_handle != INVALID_HANDLE_VALUE) CloseHandle(cmd_handle);
+#endif
     session.reset();
     ui.shutdown();
     engine.reset();

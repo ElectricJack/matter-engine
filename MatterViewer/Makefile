@@ -128,22 +128,20 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/part_cluster.cpp \
               $(ME3_DIR)/src/tileset_placement.cpp $(ME3_DIR)/src/tileset_layout.cpp \
               $(ME3_DIR)/src/tileset_torus_bvh.cpp \
-              $(ME3_DIR)/src/tileset_gtex.cpp $(ME3_DIR)/src/tileset_bake_gpu.cpp \
+              $(ME3_DIR)/src/tileset_gtex.cpp \
               $(ME3_DIR)/src/sector_grid.cpp $(ME3_DIR)/src/lod_select.cpp \
               $(ME3_DIR)/src/world_lights.cpp $(ME3_DIR)/src/probe_volume.cpp \
               $(ME3_DIR)/src/world_tracer.cpp $(ME3_DIR)/src/probe_bake.cpp \
               $(ME3_DIR)/src/shader_source.cpp \
-              $(ME3_DIR)/src/tileset_phase.cpp $(ME3_DIR)/src/tileset_phase_gpu.cpp \
+              $(ME3_DIR)/src/tileset_phase.cpp \
               $(ME3_DIR)/src/tileset_bake.cpp $(ME3_DIR)/src/tileset_settle.cpp \
               $(ME3_DIR)/src/tileset_collider.cpp $(ME3_DIR)/src/tileset_part_collider.cpp \
-              $(ME3_DIR)/src/tileset_bake_primary.cpp $(ME3_DIR)/src/tileset_bake_ao.cpp \
-              $(ME3_DIR)/src/render/renderer.cpp $(ME3_DIR)/src/render/raster_composer.cpp \
+              \
               $(ME3_DIR)/src/render/raster_mesh.cpp $(ME3_DIR)/src/render/part_store.cpp \
-              $(ME3_DIR)/src/render/world_composer.cpp $(ME3_DIR)/src/render/world_state.cpp \
-              $(ME3_DIR)/src/render/gpu_culler.cpp $(ME3_DIR)/src/render/probe_texture.cpp \
-              $(ME3_DIR)/src/render/tileset_provider.cpp $(ME3_DIR)/src/render/tileset_gl_ctx.cpp \
+              $(ME3_DIR)/src/render/world_state.cpp \
               $(ME3_DIR)/src/render/vk_context.cpp $(ME3_DIR)/src/render/vk_resources.cpp \
               $(ME3_DIR)/src/render/vk_pipeline.cpp $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+              $(ME3_DIR)/src/render/vulkan_only_compat.cpp \
               $(ME3_DIR)/src/render/frame_matrices.cpp $(ME3_DIR)/src/render/matrix_math.cpp \
               $(ME3_DIR)/src/provider/local_provider.cpp $(ME3_DIR)/src/provider/resolvers.cpp \
               $(ME3_DIR)/src/modifier_apply.cpp $(ME3_DIR)/src/retopo_blacklist.cpp \
@@ -164,10 +162,6 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               ../ParticleFlowLib/src/pf_sim.cpp \
               ../ParticleFlowLib/src/pf_fields.cpp \
               ../ParticleFlowLib/src/pf_path_recorder.cpp
-
-ifeq ($(HAVE_CUDA),1)
-  WIN_ME3_CPP += $(ME3_DIR)/src/render/rt_lighting.cpp
-endif
 
 WIN_MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
               $(MSL_DIR)/src/mesh_simplifier.cpp $(MSL_DIR)/src/mesh_indexed.cpp \
@@ -209,7 +203,7 @@ IMGUI_SRC_WIN = $(IMGUI_CORE_SRC) \
 # Windows: full direct-source compile (APP_SRC + WIN_ME3_CPP + WIN_MSL_CPP + IMGUI_SRC).
 CXX_FLAGS_BUILD_COMMON = $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -MMD -MP
 # Windows is the release build path for now: -DNDEBUG disables assert().
-CXX_FLAGS_BUILD_WIN_COMMON = $(CFLAGS) -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST -DMATTER_VULKAN_VIEWER -DTILESET_GTEX_USE_RAYLIB_STB $(WIN_INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -ffunction-sections -fdata-sections -MMD -MP
+CXX_FLAGS_BUILD_WIN_COMMON = $(CFLAGS) -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST -DMATTER_VULKAN_VIEWER -DMATTER_VULKAN_ONLY $(WIN_INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -ffunction-sections -fdata-sections -MMD -MP
 ifeq ($(HAVE_CUDA),1)
   CXX_FLAGS_BUILD_WIN_COMMON += -DMATTER_HAVE_OPTIX -I"$(CUDA_PATH)/include" -I"$(OPTIX_PATH)/include" -fpermissive
 endif
@@ -334,7 +328,6 @@ mingw-box3d:
 WIN_CXX     ?= /ucrt64/bin/g++
 WIN_CC      = x86_64-w64-mingw32-gcc
 WIN_AR      ?= /ucrt64/bin/ar
-WIN_RAYLIB  = ../Libraries/raylib/build/windows-native/libraylib.a
 GLSLC ?= /ucrt64/bin/glslc
 VULKAN_INCLUDE ?= /ucrt64/include
 VULKAN_LIB_DIR ?= /ucrt64/lib
@@ -342,7 +335,8 @@ VULKAN_RUNTIME_DIR ?= $(shell cygpath -m /ucrt64/bin)
 WIN_FEATURES = build/windows/build_features.txt
 # Win32 import libs raylib depends on; MUST come AFTER libraylib.a on the link
 # line so the static linker can resolve raylib's __imp_* references.
-WIN_LIBS    = -lopengl32 -lgdi32 -lwinmm $(BOX3D_DIR)/build-mingw/libbox3d.a -lwinpthread
+WIN_LIBS    = $(BOX3D_DIR)/build-mingw/libbox3d.a -lwinpthread
+WIN_SYSTEM_LIBS = -lgdi32 -lwinmm -luser32 -lshell32
 ifeq ($(HAVE_CUDA),1)
   WIN_LIBS += -Wl,--defsym,cuDevicePrimaryCtxRelease=cuDevicePrimaryCtxRelease_v2 \
               ../Libraries/cuda-mingw/libnvcuda.dll.a -lcfgmgr32
@@ -364,16 +358,22 @@ $(WIN_FEATURES): vulkan-preflight
 GLFW_SRC_DIR = ../Libraries/raylib/src/external/glfw/src
 GLFW_WIN_SRC = context.c egl_context.c init.c input.c monitor.c null_init.c \
                null_joystick.c null_monitor.c null_window.c osmesa_context.c \
-               platform.c vulkan.c wgl_context.c win32_init.c win32_joystick.c \
+               platform.c vulkan.c win32_init.c win32_joystick.c \
                win32_module.c win32_monitor.c win32_thread.c win32_time.c \
                win32_window.c window.c
 GLFW_WIN_OBJ = $(addprefix build/windows/glfw/,$(GLFW_WIN_SRC:.c=.o))
+GLFW_WIN_OBJ += build/windows/glfw/glfw_vulkan_only_context.o
 GLFW_WIN_LIB = build/windows/libglfw3.a
 
 build/windows/glfw/%.o: $(GLFW_SRC_DIR)/%.c
 	@mkdir -p $(dir $@)
 	$(WIN_CC) -c $< -o $@ -D_GLFW_WIN32 \
 	    -I../Libraries/raylib/src/external/glfw/include
+
+build/windows/glfw/glfw_vulkan_only_context.o: glfw_vulkan_only_context.c
+	@mkdir -p $(dir $@)
+	$(WIN_CC) -c $< -o $@ -D_GLFW_WIN32 \
+	    -I$(GLFW_SRC_DIR) -I../Libraries/raylib/src/external/glfw/include
 
 $(GLFW_WIN_LIB): $(GLFW_WIN_OBJ)
 	$(WIN_AR) rcs $@ $^
@@ -447,7 +447,11 @@ $(W_PIPC_OBJ): $(W_DIR)/%.o: $(MSL_DIR)/src/%.c | $(W_DIR)
 $(W_CPP_OBJ): | embedded-shaders
 
 windows: $(WIN_FEATURES) $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) win-shaders-gpu $(W_ALL_OBJ)
-	$(WIN_CXX) $(W_ALL_OBJ) -o viewer.exe $(CFLAGS) -static -s -Wl,--gc-sections $(WIN_RAYLIB) $(WIN_LIBS) $(GLFW_WIN_LIB) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 -Wl,-Bstatic
+	$(WIN_CXX) $(W_ALL_OBJ) -o viewer.exe $(CFLAGS) -static -s -Wl,--gc-sections $(WIN_LIBS) $(GLFW_WIN_LIB) $(WIN_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 -Wl,-Bstatic
+	@imports="$$($(WIN_CXX) -print-prog-name=objdump -p viewer.exe)"; \
+	 for forbidden in opengl32 ChoosePixelFormat SetPixelFormat SwapBuffers cuGraphicsGL; do \
+	   echo "$$imports" | grep -qi "$$forbidden" && { echo "ERROR: forbidden PE import/symbol $$forbidden"; exit 1; } || true; \
+	 done
 
 .PHONY: vulkan-viewer-gate
 vulkan-viewer-gate:

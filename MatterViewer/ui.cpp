@@ -84,17 +84,31 @@ bool Ui::setup(GLFWwindow* window, matter::VulkanDevice& vulkan,
         return false;
     }
     glfw_backend_initialized_ = true;
-    const VkFormat color_format = vulkan.swapchain_format();
+    if (!initialize_vulkan_backend(vulkan.swapchain_format(), image_count_, error)) {
+        shutdown();
+        return false;
+    }
+    return true;
+}
+
+bool Ui::initialize_vulkan_backend(VkFormat color_format,
+                                   std::uint32_t image_count,
+                                   std::string& error) {
+    if (!vulkan_ || descriptor_pool_ == 0 || image_count == 0 ||
+        color_format == VK_FORMAT_UNDEFINED) {
+        error = "invalid ImGui Vulkan backend configuration";
+        return false;
+    }
     ImGui_ImplVulkan_InitInfo init{};
     init.ApiVersion = VK_API_VERSION_1_3;
-    init.Instance = vulkan.instance();
-    init.PhysicalDevice = vulkan.physical_device();
-    init.Device = vulkan.device();
-    init.QueueFamily = vulkan.graphics_queue_family();
-    init.Queue = vulkan.graphics_queue();
-    init.DescriptorPool = descriptor_pool;
-    init.MinImageCount = image_count_;
-    init.ImageCount = image_count_;
+    init.Instance = vulkan_->instance();
+    init.PhysicalDevice = vulkan_->physical_device();
+    init.Device = vulkan_->device();
+    init.QueueFamily = vulkan_->graphics_queue_family();
+    init.Queue = vulkan_->graphics_queue();
+    init.DescriptorPool = reinterpret_cast<VkDescriptorPool>(descriptor_pool_);
+    init.MinImageCount = image_count;
+    init.ImageCount = image_count;
     init.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
     init.UseDynamicRendering = true;
     init.PipelineRenderingCreateInfo = {
@@ -103,10 +117,11 @@ bool Ui::setup(GLFWwindow* window, matter::VulkanDevice& vulkan,
     init.PipelineRenderingCreateInfo.pColorAttachmentFormats = &color_format;
     if (!ImGui_ImplVulkan_Init(&init)) {
         error = "ImGui Vulkan initialization failed";
-        shutdown();
         return false;
     }
     vulkan_backend_initialized_ = true;
+    swapchain_format_ = color_format;
+    image_count_ = image_count;
     return true;
 }
 
@@ -132,6 +147,7 @@ void Ui::shutdown() {
     }
     descriptor_pool_ = 0;
     image_count_ = 0;
+    swapchain_format_ = VK_FORMAT_UNDEFINED;
     vulkan_ = nullptr;
 }
 
@@ -141,9 +157,18 @@ void Ui::begin_frame() {
     ImGui::NewFrame();
 }
 
-void Ui::end_frame(const matter::VulkanFrame& frame) {
+bool Ui::end_frame(const matter::VulkanFrame& frame, std::string& error) {
     ImGui::Render();
-    if (frame.swapchain_recreated || frame.image_count != image_count_) {
+    if (frame.swapchain_format != swapchain_format_) {
+        vulkan_->wait_idle();
+        if (vulkan_backend_initialized_) {
+            ImGui_ImplVulkan_Shutdown();
+            vulkan_backend_initialized_ = false;
+        }
+        if (!initialize_vulkan_backend(frame.swapchain_format,
+                                       frame.image_count, error))
+            return false;
+    } else if (frame.swapchain_recreated || frame.image_count != image_count_) {
         image_count_ = frame.image_count;
         ImGui_ImplVulkan_SetMinImageCount(image_count_);
     }
@@ -161,6 +186,7 @@ void Ui::end_frame(const matter::VulkanFrame& frame) {
     vkCmdBeginRendering(frame.command_buffer, &rendering);
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), frame.command_buffer);
     vkCmdEndRendering(frame.command_buffer);
+    return true;
 }
 
 void Ui::draw_debug_panel(ViewerStats& s) {
@@ -187,7 +213,9 @@ void Ui::draw_debug_panel(ViewerStats& s) {
     if (s.gpu_cull_active) {
         ImGui::Text("GPU cull: emitted %d  frustum %d  hiz %d",
                     s.gpu_emitted, s.gpu_culled, s.gpu_culled_hiz);
-        ImGui::Checkbox("HiZ occlusion", &s.hiz_enabled);
+        ImGui::TextDisabled("HiZ occlusion: not available in Vulkan milestone");
+        ImGui::TextDisabled("Wireframe: not available in Vulkan milestone");
+        ImGui::TextDisabled("Render path: Vulkan raster only");
     }
     if (s.probe_dims[0] > 0)
         ImGui::Text("Probes: %dx%dx%d", s.probe_dims[0], s.probe_dims[1], s.probe_dims[2]);
