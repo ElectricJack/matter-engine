@@ -1776,10 +1776,12 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
         std::memcpy(&cached_stats_, selected.stats.mapped,
                     sizeof(cached_stats_));
     }
+    // A slot becomes publishable only when this frame records culling
+    // successfully. A later record failure must not publish the cleared buffer.
+    selected.stats_valid = false;
     std::memset(selected.stats.mapped, 0, sizeof(VkCullStats));
     if (!matter::flush_buffer(selected.stats, 0, sizeof(VkCullStats), error))
         return poison(error);
-    selected.stats_valid = true;
     active_frame_index_ = frame.frame_slot;
     std::vector<std::shared_ptr<void>> resources{
         clusters_.lifetime,
@@ -1883,6 +1885,7 @@ bool VkSceneRenderer::record_cull_and_render(
                         lighting_};
     record_raster(frame.command_buffer, &record);
     raster_attachments_ready_ = true;
+    selected.stats_valid = true;
     (void)matrices;
     (void)camera_eye;
     (void)pixel_budget;
@@ -2333,6 +2336,8 @@ void VkSceneRenderer::reset() {
     raster_draw_command_count_ = 0;
     uploaded_raster_draw_command_count_ = 0;
     uploaded_rt_instances_.clear();
+    cached_stats_ = {};
+    for (FrameResources& frame : frames_) frame.stats_valid = false;
     raster_attachments_ready_ = false;
     ++static_generation_;
     ++instance_generation_;

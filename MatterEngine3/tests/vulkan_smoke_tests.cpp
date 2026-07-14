@@ -872,7 +872,7 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
           error.empty() ? "submit asynchronous Vulkan record frame"
                         : error.c_str());
 
-    const viewer::VkCullStats stats_before = renderer.cached_cull_stats();
+    (void)renderer.cached_cull_stats();
     CHECK(matter::immediate_submit_count() == immediate_before,
           "cached cull stats query performs no immediate submission");
     const uint32_t recorded_slot = frame.frame_slot;
@@ -887,10 +887,43 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
               error.empty() ? "submit deferred cull stats frame" : error.c_str());
     } while (frame.frame_slot != recorded_slot);
     const viewer::VkCullStats stats_after = renderer.cached_cull_stats();
-    CHECK(stats_after.emitted >= stats_before.emitted,
-          "completed frame publishes deferred culling statistics");
+    CHECK(stats_after.emitted == 4 && stats_after.frustum_culled == 0 &&
+              stats_after.hiz_culled == 0 && stats_after.overflowed == 0,
+          "completed frame publishes the known deferred culling statistics");
     CHECK(matter::immediate_submit_count() == immediate_before,
           "deferred cull stats publication remains asynchronous");
+
+    renderer.set_test_device_limits(4096, 4096, 4096, 1024, 0);
+    CHECK(vulkan.begin_frame(frame, error) &&
+              renderer.prepare_frame(frame, scene.frame, scene.eye, 1.0f,
+                                     error) &&
+              !renderer.record_cull_and_render(frame, scene.frame, scene.eye,
+                                               1.0f, error) &&
+              error.find("maxDrawIndirectCount") != std::string::npos,
+          "failed cull recording leaves its deferred stats unpublished");
+    const uint32_t failed_slot = frame.frame_slot;
+    CHECK(vulkan.end_frame(frame, error),
+          error.empty() ? "submit failed-recording Vulkan frame" : error.c_str());
+    renderer.clear_test_device_limits(error);
+    do {
+        CHECK(vulkan.begin_frame(frame, error) &&
+                  renderer.prepare_frame(frame, scene.frame, scene.eye, 1.0f,
+                                         error),
+              error.empty() ? "reuse deferred cull stats slot" : error.c_str());
+        if (frame.frame_slot == failed_slot) {
+            const viewer::VkCullStats after_failed = renderer.cached_cull_stats();
+            CHECK(after_failed.emitted == 4 &&
+                      after_failed.frustum_culled == 0 &&
+                      after_failed.hiz_culled == 0 &&
+                      after_failed.overflowed == 0,
+                  "failed recording does not publish zeroed culling statistics");
+        }
+        CHECK(renderer.record_cull_and_render(frame, scene.frame, scene.eye,
+                                              1.0f, error) &&
+                  vulkan.end_frame(frame, error),
+              error.empty() ? "submit deferred cull stats reuse frame"
+                            : error.c_str());
+    } while (frame.frame_slot != failed_slot);
 
     renderer.set_test_device_limits(4096, 4096, 4096, 1024, 3);
     CHECK(vulkan.begin_frame(frame, error) &&
@@ -919,6 +952,11 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
           "capped grouped ranges cover each active part contiguously");
     CHECK(vulkan.end_frame(frame, error),
           error.empty() ? "submit capped grouped indirect ranges" : error.c_str());
+    renderer.reset();
+    const viewer::VkCullStats reset_stats = renderer.cached_cull_stats();
+    CHECK(reset_stats.emitted == 0 && reset_stats.frustum_culled == 0 &&
+              reset_stats.hiz_culled == 0 && reset_stats.overflowed == 0,
+          "renderer reset clears cached culling statistics");
 }
 
 void run_frame_resource_recovery_tests(matter::VulkanDevice& vulkan) {
