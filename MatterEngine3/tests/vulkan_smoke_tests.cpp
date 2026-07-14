@@ -40,6 +40,23 @@ matter::Mat4f identity_matrix() {
     return result;
 }
 
+bool gpu_matrix_equal(const viewer::GpuMat4& actual,
+                      const matter::Mat4f& expected) {
+    const viewer::GpuMat4 packed = viewer::pack_glsl_mat4(expected);
+    for (size_t i = 0; i < 16; ++i) {
+        if (!(std::fabs(actual.elements[i] - packed.elements[i]) < 1e-5f))
+            return false;
+    }
+    return true;
+}
+
+bool rt_matrix_equal(const float actual[16], const matter::Mat4f& expected) {
+    for (size_t i = 0; i < 16; ++i) {
+        if (!(std::fabs(actual[i] - expected.m[i]) < 1e-5f)) return false;
+    }
+    return true;
+}
+
 viewer::VkScenePart fixed_part(uint64_t hash, matter::Float3 minimum,
                                matter::Float3 maximum, uint32_t first_vertex) {
     viewer::VkSceneCluster cluster{};
@@ -127,10 +144,14 @@ CullResult run_cpu_cull(const FixedCullScene& scene) {
     CullResult result{};
     result.commands.resize(scene.parts.size() * viewer::kVkMaxLod);
     for (size_t i = 0; i < scene.parts.size(); ++i) {
-        auto& command = result.commands[i * viewer::kVkMaxLod];
+        const size_t base = i * viewer::kVkMaxLod;
+        auto& command = result.commands[base];
         command.vertex_count = scene.parts[i].clusters[0].lods[0].vertex_count;
         command.first_vertex = scene.parts[i].clusters[0].lods[0].first_vertex;
         command.first_instance = static_cast<uint32_t>(i);
+        for (uint32_t lod = 1; lod < viewer::kVkMaxLod; ++lod)
+            result.commands[base + lod].first_instance =
+                static_cast<uint32_t>(i + 1);
         if (clip_aabb_visible(scene, scene.parts[i], scene.instances[i])) {
             command.instance_count = 1;
             ++result.stats.emitted;
@@ -245,12 +266,46 @@ void run_cull_region_and_lifecycle_tests(matter::VulkanDevice& vulkan) {
     const VkDeviceSize initial_transform_bytes =
         renderer.draw_transform_buffer_size();
 
+    const viewer::VkSceneInstance second_near{
+        77, viewer::mat4_translation({0.0f, 0.0f, -2.2f})};
+    CHECK(renderer.update_instances(
+              {near_instance, second_near, far_instance}, error),
+          error.empty() ? "stage transform-region overflow" : error.c_str());
+    CHECK(renderer.set_test_command_first_instance(1, 1, error),
+          error.empty() ? "shrink first transform bucket" : error.c_str());
+    CHECK(!renderer.set_test_command_first_instance(
+              1, std::numeric_limits<uint32_t>::max(), error) &&
+              error.find("transform region") != std::string::npos,
+          "renderer rejects an invalid command transform offset");
+    CHECK(!renderer.set_test_command_first_instance(2, 0, error) &&
+              error.find("monotonic") != std::string::npos,
+          "renderer rejects a bounded decreasing command transform offset");
+    CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f, error),
+          error.empty() ? "dispatch reduced-capacity culling" : error.c_str());
+    CHECK(renderer.readback_commands(commands, error),
+          error.empty() ? "read reduced-capacity commands" : error.c_str());
+    CHECK(renderer.readback_draw_transforms(transforms, error),
+          error.empty() ? "read reduced-capacity transforms" : error.c_str());
+    viewer::VkCullStats overflow_stats{};
+    CHECK(renderer.cull_stats(overflow_stats, error),
+          error.empty() ? "read reduced-capacity stats" : error.c_str());
+    CHECK(commands[0].instance_count == 1 && commands[1].instance_count == 1,
+          "reduced command region counts only successful writes");
+    CHECK(overflow_stats.emitted == 2 && overflow_stats.overflowed == 1,
+          "reduced region reports deterministic overflow without spill");
+    CHECK(std::fabs(transforms[commands[1].first_instance].elements[14] + 5.0f) <
+              1e-5f,
+          "overflow cannot overwrite adjacent bucket transform");
     renderer.release_part(77);
     std::vector<viewer::VkSceneRenderer::RtInstance> rt_instances;
     CHECK(renderer.fill_rt_instances(rt_instances) == 0,
           "release removes RT instances");
     CHECK(renderer.ensure_part(part, error) >= 0,
           error.empty() ? "re-add part without reset" : error.c_str());
+    CHECK(renderer.update_instances({near_instance}, error),
+          error.empty() ? "stage re-added part" : error.c_str());
+    CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f, error),
+          error.empty() ? "dispatch re-added part" : error.c_str());
     CHECK(renderer.draw_command_count() == viewer::kVkMaxLod,
           "re-add without reset reclaims command storage");
 
@@ -261,8 +316,6 @@ void run_cull_region_and_lifecycle_tests(matter::VulkanDevice& vulkan) {
           error.empty() ? "ensure mixed-size part" : error.c_str());
     CHECK(renderer.cluster_count() == 4,
           "mixed live scene has only active clusters");
-    CHECK(renderer.draw_command_count() == 4 * viewer::kVkMaxLod,
-          "mixed live scene command count is bounded by active clusters");
 
     const viewer::VkSceneInstance mixed_instance{
         88, viewer::mat4_translation({0.0f, 0.0f, -3.0f})};
@@ -270,6 +323,8 @@ void run_cull_region_and_lifecycle_tests(matter::VulkanDevice& vulkan) {
           error.empty() ? "upload mixed-size instances" : error.c_str());
     CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f, error),
           error.empty() ? "dispatch mixed-size culling" : error.c_str());
+    CHECK(renderer.draw_command_count() == 4 * viewer::kVkMaxLod,
+          "mixed live scene command count is bounded by active clusters");
     viewer::VkCullStats mixed_stats{};
     CHECK(renderer.cull_stats(mixed_stats, error),
           error.empty() ? "read mixed-size stats" : error.c_str());
@@ -288,8 +343,6 @@ void run_cull_region_and_lifecycle_tests(matter::VulkanDevice& vulkan) {
         renderer.release_part(77);
         CHECK(renderer.cluster_count() == 3,
               "release compacts active cluster records");
-        CHECK(renderer.draw_command_count() == 3 * viewer::kVkMaxLod,
-              "release compacts active command records");
         CHECK(renderer.ensure_part(part, error) >= 0,
               error.empty() ? "re-add churn part" : error.c_str());
         CHECK(renderer.update_instances({mixed_instance, near_instance}, error),
@@ -300,6 +353,38 @@ void run_cull_region_and_lifecycle_tests(matter::VulkanDevice& vulkan) {
               error.empty() ? "read churn stats" : error.c_str());
         CHECK(mixed_stats.emitted == 4,
               "slot remapping preserves culling after release and re-add");
+        CHECK(renderer.readback_commands(commands, error),
+              error.empty() ? "read churn commands" : error.c_str());
+        CHECK(renderer.readback_draw_transforms(transforms, error),
+              error.empty() ? "read churn transforms" : error.c_str());
+        std::vector<viewer::VkSceneRenderer::RtInstance> churn_rt;
+        CHECK(renderer.fill_rt_instances(churn_rt) == 2 &&
+                  churn_rt[0].part_hash == 88 && churn_rt[1].part_hash == 77 &&
+                  rt_matrix_equal(churn_rt[0].transform,
+                                  mixed_instance.object_to_world) &&
+                  rt_matrix_equal(churn_rt[1].transform,
+                                  near_instance.object_to_world),
+              "churn preserves exact surviving RT instances");
+        const uint32_t expected_buckets[] = {1, 9, 19, 27};
+        bool churn_commands_exact = commands.size() == 4 * viewer::kVkMaxLod;
+        for (size_t bucket = 0; bucket < commands.size(); ++bucket) {
+            bool expected = false;
+            for (uint32_t expected_bucket : expected_buckets)
+                expected = expected || bucket == expected_bucket;
+            churn_commands_exact =
+                churn_commands_exact &&
+                commands[bucket].instance_count == (expected ? 1u : 0u);
+            if (expected) {
+                churn_commands_exact =
+                    churn_commands_exact &&
+                    gpu_matrix_equal(
+                        transforms[commands[bucket].first_instance],
+                        bucket == 27 ? near_instance.object_to_world
+                                     : mixed_instance.object_to_world);
+            }
+        }
+        CHECK(churn_commands_exact,
+              "churn preserves exact command buckets and transforms");
         CHECK(renderer.cluster_count() == 4,
               "release and re-add does not grow historical clusters");
         CHECK(renderer.draw_command_count() == 4 * viewer::kVkMaxLod,
@@ -352,26 +437,106 @@ void run_vk_scene_checked_size_tests(matter::VulkanDevice& vulkan) {
               std::numeric_limits<uint32_t>::max(), groups, error),
           "checked dispatch sizing rejects group-count narrowing");
 
+    int public_count = 0;
+    CHECK(viewer::vk_scene_detail::checked_size_to_int(
+              static_cast<size_t>(std::numeric_limits<int>::max()),
+              public_count, "RT instance count", error) &&
+              public_count == std::numeric_limits<int>::max(),
+          "public count conversion accepts INT_MAX");
+    CHECK(!viewer::vk_scene_detail::checked_size_to_int(
+              static_cast<size_t>(std::numeric_limits<int>::max()) + 1u,
+              public_count, "RT instance count", error) &&
+              error.find("INT_MAX") != std::string::npos,
+          "public count conversion rejects INT_MAX plus one");
+
     {
         viewer::VkSceneRenderer renderer(vulkan);
-        renderer.set_test_device_limits(64, 4096, 4096, 1024);
+        renderer.set_test_device_limits(64, 4096, 4096, 1024, 1024);
         CHECK(!renderer.init(error) &&
                   error.find("storage buffer range") != std::string::npos,
               "renderer rejects forced maxStorageBufferRange before allocation");
     }
     {
         viewer::VkSceneRenderer renderer(vulkan);
-        renderer.set_test_device_limits(4096, 128, 4096, 1024);
+        renderer.set_test_device_limits(4096, 128, 4096, 1024, 1024);
         CHECK(!renderer.init(error) &&
                   error.find("uniform buffer range") != std::string::npos,
               "renderer rejects forced maxUniformBufferRange before allocation");
     }
     {
         viewer::VkSceneRenderer renderer(vulkan);
-        renderer.set_test_device_limits(4096, 4096, 64, 1024);
+        renderer.set_test_device_limits(4096, 4096, 64, 1024, 1024);
         CHECK(!renderer.init(error) &&
                   error.find("Vulkan device limit") != std::string::npos,
               "renderer rejects forced maxBufferSize before allocation");
+    }
+
+    const FixedCullScene scene = make_fixed_cull_scene();
+    {
+        viewer::VkSceneRenderer renderer(vulkan);
+        CHECK(renderer.init(error), "init renderer before post-init limit faults");
+        CHECK(renderer.ensure_part(scene.parts[0], error) >= 0,
+              "ensure baseline part before growth fault");
+        CHECK(renderer.update_instances({scene.instances[0]}, error),
+              "stage baseline instance before growth fault");
+        CHECK(renderer.dispatch_culling(scene.frame, scene.eye, 1.0f, error),
+              "dispatch baseline before growth fault");
+        const VkBuffer old_indirect = renderer.indirect_buffer();
+        const VkDeviceSize old_cluster_bytes = renderer.cluster_buffer_size();
+        const VkDeviceSize old_command_bytes = renderer.command_buffer_size();
+        const VkDeviceSize old_transform_bytes =
+            renderer.draw_transform_buffer_size();
+        std::vector<viewer::DrawCommand> baseline_commands;
+        CHECK(renderer.readback_commands(baseline_commands, error),
+              "read baseline commands before growth fault");
+        CHECK(renderer.ensure_part(scene.parts[1], error) >= 0,
+              "stage larger scene under normal limits");
+        CHECK(renderer.update_instances({scene.instances[0], scene.instances[1]},
+                                        error),
+              "stage larger instance set under normal limits");
+        renderer.set_test_device_limits(256, 4096, 4096, 1024, 1024);
+        CHECK(!renderer.dispatch_culling(scene.frame, scene.eye, 1.0f, error) &&
+                  error.find("maxStorageBufferRange") != std::string::npos,
+              "post-init storage limit rejects actual scene-buffer growth");
+        CHECK(renderer.indirect_buffer() == old_indirect &&
+                  renderer.cluster_buffer_size() == old_cluster_bytes &&
+                  renderer.command_buffer_size() == old_command_bytes &&
+                  renderer.draw_transform_buffer_size() == old_transform_bytes,
+              "failed growth preserves prior renderer buffers");
+        renderer.clear_test_device_limits(error);
+        CHECK(renderer.draw_command_count() == baseline_commands.size(),
+              "failed growth preserves uploaded indirect command count");
+        std::vector<viewer::DrawCommand> preserved_commands;
+        CHECK(renderer.readback_commands(preserved_commands, error) &&
+                  preserved_commands == baseline_commands,
+              "failed growth preserves uploaded indirect command contents");
+
+        renderer.set_test_device_limits(4096, 4096, 256, 1024, 1024);
+        CHECK(!renderer.dispatch_culling(scene.frame, scene.eye, 1.0f, error) &&
+                  error.find("maxBufferSize") != std::string::npos,
+              "post-init maxBufferSize rejects actual scene-buffer growth");
+        CHECK(renderer.indirect_buffer() == old_indirect &&
+                  renderer.command_buffer_size() == old_command_bytes &&
+                  renderer.draw_command_count() == baseline_commands.size(),
+              "failed maxBufferSize growth preserves prior renderer state");
+        renderer.clear_test_device_limits(error);
+        CHECK(renderer.dispatch_culling(scene.frame, scene.eye, 1.0f, error),
+              error.empty() ? "renderer recovers after failed growth"
+                            : error.c_str());
+        CHECK(renderer.command_buffer_size() > old_command_bytes,
+              "recovered dispatch performs deferred buffer growth");
+
+        renderer.set_test_device_limits(4096, 4096, 4096, 0, 1024);
+        CHECK(!renderer.dispatch_culling(scene.frame, scene.eye, 1.0f, error) &&
+                  error.find("maxComputeWorkGroupCount") != std::string::npos,
+              "dispatch_culling enforces forced compute group limit");
+        renderer.clear_test_device_limits(error);
+
+        renderer.set_test_device_limits(4096, 4096, 4096, 1024, 1);
+        CHECK(!renderer.dispatch_culling(scene.frame, scene.eye, 1.0f, error) &&
+                  error.find("maxDrawIndirectCount") != std::string::npos,
+              "dispatch_culling enforces forced indirect command limit");
+        renderer.clear_test_device_limits(error);
     }
 }
 

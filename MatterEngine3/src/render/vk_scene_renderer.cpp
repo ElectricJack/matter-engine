@@ -23,7 +23,7 @@ struct alignas(16) FrameConstants {
 
 static_assert(sizeof(FrameConstants) == 208,
               "FrameConstants must match the std140 shader block");
-static_assert(sizeof(VkCullStats) == 12,
+static_assert(sizeof(VkCullStats) == 16,
               "VkCullStats must match the std430 stats block");
 
 bool fail_vk(const char* operation, VkResult result, std::string& error) {
@@ -149,6 +149,17 @@ bool checked_dispatch_groups(uint32_t instance_count,
         return false;
     }
     groups = static_cast<uint32_t>(group_count);
+    return true;
+}
+
+bool checked_size_to_int(size_t count, int& result, const char* label,
+                         std::string& error) {
+    error.clear();
+    if (count > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        error = std::string(label) + " exceeds INT_MAX";
+        return false;
+    }
+    result = static_cast<int>(count);
     return true;
 }
 
@@ -326,13 +337,16 @@ bool VkSceneRenderer::load_device_limits(std::string& error) {
     properties2.pNext = &maintenance4;
     vkGetPhysicalDeviceProperties2(vulkan_->physical_device(), &properties2);
     const VkPhysicalDeviceLimits& vk_limits = properties2.properties.limits;
-    limits_.max_storage_buffer_range = vk_limits.maxStorageBufferRange;
-    limits_.max_uniform_buffer_range = vk_limits.maxUniformBufferRange;
-    limits_.max_dispatch_group_count_x = vk_limits.maxComputeWorkGroupCount[0];
-    limits_.max_draw_indirect_count = vk_limits.maxDrawIndirectCount;
-    limits_.max_buffer_size = maintenance4.maxBufferSize;
-    if (limits_.max_buffer_size == 0)
-        limits_.max_buffer_size = std::numeric_limits<VkDeviceSize>::max();
+    physical_limits_.max_storage_buffer_range = vk_limits.maxStorageBufferRange;
+    physical_limits_.max_uniform_buffer_range = vk_limits.maxUniformBufferRange;
+    physical_limits_.max_dispatch_group_count_x =
+        vk_limits.maxComputeWorkGroupCount[0];
+    physical_limits_.max_draw_indirect_count = vk_limits.maxDrawIndirectCount;
+    physical_limits_.max_buffer_size = maintenance4.maxBufferSize;
+    if (physical_limits_.max_buffer_size == 0)
+        physical_limits_.max_buffer_size =
+            std::numeric_limits<VkDeviceSize>::max();
+    limits_ = physical_limits_;
     if (limits_.max_storage_buffer_range == 0 ||
         limits_.max_uniform_buffer_range == 0 ||
         limits_.max_dispatch_group_count_x == 0 ||
@@ -361,6 +375,9 @@ bool VkSceneRenderer::load_device_limits(std::string& error) {
         limits_.max_dispatch_group_count_x = std::min(
             limits_.max_dispatch_group_count_x,
             test_limits_.max_dispatch_group_count_x);
+        limits_.max_draw_indirect_count = std::min(
+            limits_.max_draw_indirect_count,
+            test_limits_.max_draw_indirect_count);
     }
 #endif
     return true;
@@ -370,12 +387,58 @@ bool VkSceneRenderer::load_device_limits(std::string& error) {
 void VkSceneRenderer::set_test_device_limits(
     VkDeviceSize max_storage_buffer_range,
     VkDeviceSize max_uniform_buffer_range, VkDeviceSize max_buffer_size,
-    uint32_t max_dispatch_group_count_x) {
+    uint32_t max_dispatch_group_count_x,
+    uint32_t max_draw_indirect_count) {
     test_limits_.max_storage_buffer_range = max_storage_buffer_range;
     test_limits_.max_uniform_buffer_range = max_uniform_buffer_range;
     test_limits_.max_buffer_size = max_buffer_size;
     test_limits_.max_dispatch_group_count_x = max_dispatch_group_count_x;
+    test_limits_.max_draw_indirect_count = max_draw_indirect_count;
     use_test_limits_ = true;
+    if (initialized_) {
+        limits_.max_storage_buffer_range = std::min(
+            physical_limits_.max_storage_buffer_range,
+            test_limits_.max_storage_buffer_range);
+        limits_.max_uniform_buffer_range = std::min(
+            physical_limits_.max_uniform_buffer_range,
+            test_limits_.max_uniform_buffer_range);
+        limits_.max_buffer_size = std::min(physical_limits_.max_buffer_size,
+                                           test_limits_.max_buffer_size);
+        limits_.max_dispatch_group_count_x = std::min(
+            physical_limits_.max_dispatch_group_count_x,
+            test_limits_.max_dispatch_group_count_x);
+        limits_.max_draw_indirect_count = std::min(
+            physical_limits_.max_draw_indirect_count,
+            test_limits_.max_draw_indirect_count);
+    }
+}
+
+void VkSceneRenderer::clear_test_device_limits(std::string& error) {
+    error.clear();
+    use_test_limits_ = false;
+    limits_ = physical_limits_;
+}
+
+bool VkSceneRenderer::set_test_command_first_instance(
+    uint32_t command_index, uint32_t first_instance, std::string& error) {
+    error.clear();
+    if (command_index >= command_template_.size()) {
+        error = "test command index is outside the command table";
+        return false;
+    }
+    std::vector<DrawCommand> candidate = command_template_;
+    candidate[command_index].first_instance = first_instance;
+    uint32_t previous = 0;
+    for (size_t i = 0; i < candidate.size(); ++i) {
+        const uint32_t offset = candidate[i].first_instance;
+        if ((i != 0 && offset < previous) || offset > draw_transform_slots_) {
+            error = "draw command transform regions must be monotonic and bounded";
+            return false;
+        }
+        previous = offset;
+    }
+    command_template_ = std::move(candidate);
+    return true;
 }
 #endif
 
@@ -562,10 +625,18 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
 bool VkSceneRenderer::update_instances(
     const std::vector<VkSceneInstance>& instances, std::string& error) {
     error.clear();
-    if (instances.size() > std::numeric_limits<uint32_t>::max()) {
-        error = "VkSceneInstance count exceeds uint32_t shader capacity";
+    int public_count = 0;
+    if (!vk_scene_detail::checked_size_to_int(
+            instances.size(), public_count, "VkSceneInstance count", error)) {
         return false;
     }
+    (void)public_count;
+    auto old_instances = std::move(instance_staging_);
+    auto old_slots = std::move(instance_part_slots_);
+    auto old_rt = std::move(rt_instances_);
+    auto old_commands = std::move(command_template_);
+    const uint32_t old_max_clusters = max_clusters_per_instance_;
+    const uint32_t old_transform_slots = draw_transform_slots_;
     instance_staging_.clear();
     instance_part_slots_.clear();
     rt_instances_.clear();
@@ -589,12 +660,12 @@ bool VkSceneRenderer::update_instances(
         rt_instances_.push_back(rt);
     }
     if (!rebuild_command_template(error)) {
-        instance_staging_.clear();
-        instance_part_slots_.clear();
-        rt_instances_.clear();
-        max_clusters_per_instance_ = 0;
-        command_template_.clear();
-        draw_transform_slots_ = 0;
+        instance_staging_ = std::move(old_instances);
+        instance_part_slots_ = std::move(old_slots);
+        rt_instances_ = std::move(old_rt);
+        command_template_ = std::move(old_commands);
+        max_clusters_per_instance_ = old_max_clusters;
+        draw_transform_slots_ = old_transform_slots;
         return false;
     }
     return true;
@@ -669,18 +740,20 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
          ++cluster_index) {
         const GpuCluster& cluster = cluster_staging_[cluster_index];
         const auto& lods = cluster_lods_[cluster_index];
-        for (size_t lod = 0; lod < lods.size(); ++lod) {
+        for (size_t lod = 0; lod < kVkMaxLod; ++lod) {
             DrawCommand& command =
                 command_template_[cluster_index * kVkMaxLod + lod];
-            command.vertex_count = lods[lod].vertex_count;
-            command.first_vertex = lods[lod].first_vertex;
             command.first_instance = command_first_instance;
-            if (!checked_u32_add(command_first_instance,
-                                 per_part[cluster.part_slot],
-                                 command_first_instance,
-                                 "draw transform slots", error)) {
-                command_template_.clear();
-                return false;
+            if (lod < lods.size()) {
+                command.vertex_count = lods[lod].vertex_count;
+                command.first_vertex = lods[lod].first_vertex;
+                if (!checked_u32_add(command_first_instance,
+                                     per_part[cluster.part_slot],
+                                     command_first_instance,
+                                     "draw transform slots", error)) {
+                    command_template_.clear();
+                    return false;
+                }
             }
         }
     }
@@ -707,7 +780,24 @@ bool VkSceneRenderer::upload_scene_buffers(std::string& error) {
             "draw-transform buffer", error)) {
         return false;
     }
-    if (!ensure_buffer(clusters_, cluster_bytes,
+    const auto storage_size_ok = [&](VkDeviceSize size, const char* label) {
+        const VkDeviceSize required = std::max<VkDeviceSize>(size, 1);
+        if (required > limits_.max_storage_buffer_range) {
+            error = std::string(label) +
+                    " exceeds Vulkan maxStorageBufferRange";
+            return false;
+        }
+        if (required > limits_.max_buffer_size) {
+            error = std::string(label) + " exceeds Vulkan maxBufferSize";
+            return false;
+        }
+        return true;
+    };
+    if (!storage_size_ok(cluster_bytes, "cluster buffer") ||
+        !storage_size_ok(instance_bytes, "instance buffer") ||
+        !storage_size_ok(command_bytes, "draw-command buffer") ||
+        !storage_size_ok(transform_bytes, "draw-transform buffer") ||
+        !ensure_buffer(clusters_, cluster_bytes,
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 1, 0, error) ||
         !ensure_buffer(instances_, instance_bytes,
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 1, 1, error) ||
@@ -720,17 +810,24 @@ bool VkSceneRenderer::upload_scene_buffers(std::string& error) {
         return false;
     }
     const VkCullStats zero_stats{};
-    return (cluster_bytes == 0 ||
-            matter::upload_buffer(*vulkan_, clusters_, cluster_staging_.data(),
-                                  cluster_bytes, 0, error)) &&
-           (instance_bytes == 0 ||
-            matter::upload_buffer(*vulkan_, instances_, instance_staging_.data(),
-                                  instance_bytes, 0, error)) &&
-           (command_bytes == 0 ||
-            matter::upload_buffer(*vulkan_, commands_, command_template_.data(),
-                                  command_bytes, 0, error)) &&
-           matter::upload_buffer(*vulkan_, stats_, &zero_stats,
-                                 sizeof(zero_stats), 0, error);
+    const bool uploaded =
+        (cluster_bytes == 0 ||
+         matter::upload_buffer(*vulkan_, clusters_, cluster_staging_.data(),
+                               cluster_bytes, 0, error)) &&
+        (instance_bytes == 0 ||
+         matter::upload_buffer(*vulkan_, instances_, instance_staging_.data(),
+                               instance_bytes, 0, error)) &&
+        (command_bytes == 0 ||
+         matter::upload_buffer(*vulkan_, commands_, command_template_.data(),
+                               command_bytes, 0, error)) &&
+        matter::upload_buffer(*vulkan_, stats_, &zero_stats,
+                              sizeof(zero_stats), 0, error);
+    if (uploaded) {
+        uploaded_command_count_ =
+            static_cast<uint32_t>(command_template_.size());
+        uploaded_transform_slots_ = draw_transform_slots_;
+    }
+    return uploaded;
 }
 
 bool VkSceneRenderer::dispatch_culling(const FrameMatrices& frame,
@@ -739,6 +836,27 @@ bool VkSceneRenderer::dispatch_culling(const FrameMatrices& frame,
                                        std::string& error) {
     error.clear();
     if (!initialized_ && !init(error)) return false;
+    if (command_template_.size() > limits_.max_draw_indirect_count) {
+        error = "draw-command count exceeds Vulkan maxDrawIndirectCount";
+        return false;
+    }
+    uint32_t previous_first = 0;
+    for (size_t i = 0; i < command_template_.size(); ++i) {
+        const uint32_t first = command_template_[i].first_instance;
+        if ((i != 0 && first < previous_first) ||
+            first > draw_transform_slots_) {
+            error = "draw command transform regions must be monotonic and bounded";
+            return false;
+        }
+        previous_first = first;
+    }
+    uint32_t group_count = 0;
+    if (!vk_scene_detail::checked_dispatch_groups(
+            static_cast<uint32_t>(instance_staging_.size()),
+            max_clusters_per_instance_, limits_.max_dispatch_group_count_x,
+            group_count, error)) {
+        return false;
+    }
     if (!upload_scene_buffers(error)) return false;
     FrameConstants constants{};
     constants.world_to_clip = pack_glsl_mat4(frame.world_to_clip);
@@ -760,13 +878,6 @@ bool VkSceneRenderer::dispatch_culling(const FrameMatrices& frame,
     }
     if (instance_staging_.empty() || max_clusters_per_instance_ == 0)
         return true;
-    uint32_t group_count = 0;
-    if (!vk_scene_detail::checked_dispatch_groups(
-            static_cast<uint32_t>(instance_staging_.size()),
-            max_clusters_per_instance_, limits_.max_dispatch_group_count_x,
-            group_count, error)) {
-        return false;
-    }
     CullDispatchRecord dispatch{pipeline_, pipeline_layout_,
                                 {descriptor_sets_[0], descriptor_sets_[1]},
                                 group_count};
@@ -788,7 +899,7 @@ bool VkSceneRenderer::cull_stats(VkCullStats& stats,
 
 bool VkSceneRenderer::readback_commands(
     std::vector<DrawCommand>& commands, std::string& error) {
-    commands.resize(command_template_.size());
+    commands.resize(uploaded_command_count_);
     if (commands.empty()) return true;
     VkDeviceSize bytes = 0;
     if (!vk_scene_detail::checked_mul_to_device_size(
@@ -801,7 +912,7 @@ bool VkSceneRenderer::readback_commands(
 
 bool VkSceneRenderer::readback_draw_transforms(
     std::vector<GpuMat4>& transforms, std::string& error) {
-    transforms.resize(draw_transform_slots_);
+    transforms.resize(uploaded_transform_slots_);
     if (transforms.empty()) return true;
     VkDeviceSize bytes = 0;
     if (!vk_scene_detail::checked_mul_to_device_size(
@@ -814,8 +925,15 @@ bool VkSceneRenderer::readback_draw_transforms(
 
 int VkSceneRenderer::fill_rt_instances(
     std::vector<RtInstance>& output) const {
+    int count = 0;
+    std::string error;
+    if (!vk_scene_detail::checked_size_to_int(rt_instances_.size(), count,
+                                               "RT instance count", error)) {
+        output.clear();
+        return 0;
+    }
     output = rt_instances_;
-    return static_cast<int>(output.size());
+    return count;
 }
 
 void VkSceneRenderer::reset() {
@@ -829,6 +947,8 @@ void VkSceneRenderer::reset() {
     rt_instances_.clear();
     max_clusters_per_instance_ = 0;
     draw_transform_slots_ = 0;
+    uploaded_command_count_ = 0;
+    uploaded_transform_slots_ = 0;
 }
 
 }  // namespace viewer

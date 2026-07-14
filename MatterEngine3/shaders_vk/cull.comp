@@ -56,12 +56,17 @@ layout(set = 1, binding = 4, std430) buffer Stats {
     uint frustum_culled;
     uint hiz_culled;
     uint emitted;
+    uint overflowed;
 };
 
 bool reserve_transform_slot(uint bucket, out uint slot) {
     const uint first = commands[bucket].first_instance;
-    if (first >= frame.capacities.w) return false;
-    const uint available = frame.capacities.w - first;
+    if (first > frame.capacities.w) return false;
+    const uint end = bucket + 1u < frame.capacities.z
+                         ? commands[bucket + 1u].first_instance
+                         : frame.capacities.w;
+    if (end < first || end > frame.capacities.w) return false;
+    const uint available = end - first;
     for (;;) {
         const uint current = atomicAdd(commands[bucket].instance_count, 0u);
         if (current >= available) return false;
@@ -145,7 +150,10 @@ void main() {
     const uint bucket = cluster_index * MAX_LOD + lod;
     if (bucket >= frame.capacities.z) return;
     uint slot = 0u;
-    if (!reserve_transform_slot(bucket, slot)) return;
+    if (!reserve_transform_slot(bucket, slot)) {
+        atomicAdd(overflowed, 1u);
+        return;
+    }
     const uint first = commands[bucket].first_instance;
     if (first >= frame.capacities.w || slot >= frame.capacities.w - first)
         return;

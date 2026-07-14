@@ -33,6 +33,8 @@ bool checked_dispatch_groups(uint32_t instance_count,
                              uint32_t max_clusters_per_instance,
                              uint32_t max_group_count_x, uint32_t& groups,
                              std::string& error);
+bool checked_size_to_int(size_t count, int& result, const char* label,
+                         std::string& error);
 }  // namespace vk_scene_detail
 
 static_assert(sizeof(DrawCommand) == sizeof(VkDrawIndirectCommand),
@@ -73,6 +75,7 @@ struct VkCullStats {
     uint32_t frustum_culled = 0;
     uint32_t hiz_culled = 0;
     uint32_t emitted = 0;
+    uint32_t overflowed = 0;
 };
 
 class VkSceneRenderer {
@@ -105,13 +108,18 @@ public:
     void set_test_device_limits(VkDeviceSize max_storage_buffer_range,
                                 VkDeviceSize max_uniform_buffer_range,
                                 VkDeviceSize max_buffer_size,
-                                uint32_t max_dispatch_group_count_x);
+                                uint32_t max_dispatch_group_count_x,
+                                uint32_t max_draw_indirect_count);
+    void clear_test_device_limits(std::string& error);
+    bool set_test_command_first_instance(uint32_t command_index,
+                                         uint32_t first_instance,
+                                         std::string& error);
 #endif
 
     VkBuffer indirect_buffer() const { return commands_.buffer; }
     VkBuffer draw_transform_buffer() const { return draw_transforms_.buffer; }
     uint32_t draw_command_count() const {
-        return static_cast<uint32_t>(command_template_.size());
+        return uploaded_command_count_;
     }
     uint32_t cluster_count() const {
         return static_cast<uint32_t>(cluster_staging_.size());
@@ -197,7 +205,10 @@ private:
     std::vector<RtInstance> rt_instances_;
     uint32_t max_clusters_per_instance_ = 0;
     uint32_t draw_transform_slots_ = 0;
+    uint32_t uploaded_command_count_ = 0;
+    uint32_t uploaded_transform_slots_ = 0;
     DeviceLimits limits_{};
+    DeviceLimits physical_limits_{};
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     DeviceLimits test_limits_{};
     bool use_test_limits_ = false;
