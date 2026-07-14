@@ -15,6 +15,7 @@
 #include "matter/math_types.h"
 #include "vk_draw_command.h"
 #include "vk_resources.h"
+#include "vk_temporal.h"
 
 namespace matter {
 class VulkanDevice;
@@ -98,6 +99,9 @@ struct VkScenePart {
 struct VkSceneInstance {
     uint64_t part_hash = 0;
     matter::Mat4f object_to_world{};
+    // Stable identity within the owning world session. Zero selects the
+    // renderer's deterministic input-order fallback for legacy callers.
+    uint64_t instance_id = 0;
 };
 
 struct VkCullStats {
@@ -116,6 +120,7 @@ struct VkRasterAttachments {
     VkRasterAttachment albedo{};
     VkRasterAttachment normal{};
     VkRasterAttachment orm{};
+    VkRasterAttachment velocity{};
     VkRasterAttachment depth{};
     // R16G16B16A16_SFLOAT is the explicit linear HDR composite format.
     VkRasterAttachment hdr{};
@@ -126,6 +131,7 @@ struct VkRasterPixel {
     matter::Float4 albedo{};
     matter::Float4 normal{};
     matter::Float4 orm{};
+    matter::Float3 velocity{};
     matter::Float4 hdr{};
     float depth = 1.0f;
 };
@@ -171,6 +177,7 @@ public:
     void release_part(uint64_t part_hash);
     bool update_instances(const std::vector<VkSceneInstance>& instances,
                           std::string& error);
+    void set_temporal_frame(const TemporalFrame& frame) { temporal_frame_ = frame; }
     bool prepare_frame(const matter::VulkanFrame& frame,
                        const FrameMatrices& matrices,
                        matter::Float3 camera_eye, float pixel_budget,
@@ -287,13 +294,23 @@ private:
     };
     struct GpuInstance {
         GpuMat4 object_to_world;
+        GpuMat4 previous_object_to_world;
         uint32_t part_slot;
         uint32_t base_lod;
         uint32_t cluster_start;
         uint32_t cluster_count;
+        uint32_t history_valid;
+        uint32_t pad[3];
+    };
+    struct GpuDrawTransform {
+        GpuMat4 current;
+        GpuMat4 previous;
+        uint32_t history_valid;
+        uint32_t pad[3];
     };
     static_assert(sizeof(GpuCluster) == 128);
-    static_assert(sizeof(GpuInstance) == 80);
+    static_assert(sizeof(GpuInstance) == 160);
+    static_assert(sizeof(GpuDrawTransform) == 144);
 
     struct PartRecord {
         uint64_t hash = 0;
@@ -378,6 +395,7 @@ private:
     matter::VkImageResource albedo_;
     matter::VkImageResource normal_;
     matter::VkImageResource orm_;
+    matter::VkImageResource velocity_;
     matter::VkImageResource depth_;
     matter::VkImageResource hdr_;
     VkExtent2D raster_extent_{};
@@ -410,6 +428,7 @@ private:
     DeviceLimits limits_{};
     DeviceLimits physical_limits_{};
     VkSceneLighting lighting_{};
+    TemporalFrame temporal_frame_{};
     uint64_t instance_generation_ = 1;
     uint64_t static_generation_ = 1;
     uint64_t command_generation_ = 1;

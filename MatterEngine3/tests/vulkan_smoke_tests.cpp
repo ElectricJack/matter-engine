@@ -17,6 +17,7 @@
 #include "render/gpu_matrix_pack.h"
 #include "render/matrix_math.h"
 #include "render/streamline_bridge.h"
+#include "render/vk_temporal.h"
 #include "render/vk_cuda_interop.h"
 #include "render/vk_device_internal.h"
 #include "render/vk_instance_cache.h"
@@ -301,6 +302,96 @@ matter::Mat4f identity_matrix() {
     return result;
 }
 
+void run_vulkan_temporal_tests() {
+    viewer::TemporalState temporal;
+    viewer::FrameMatrices camera{};
+    camera.world_to_view = identity_matrix();
+    camera.view_to_clip = identity_matrix();
+    camera.world_to_clip = identity_matrix();
+    camera.clip_to_world = identity_matrix();
+    const viewer::TemporalInstance still{7, identity_matrix()};
+
+    viewer::TemporalFrame first = temporal.begin(
+        camera, {100, 80}, {100, 80}, {still}, {});
+    CHECK(first.reset && !first.instances[0].history_valid,
+          "first temporal frame resets invalid history");
+    CHECK(temporal.commit_presented(first.attempt_token),
+          "successful presentation commits temporal candidate");
+
+    viewer::TemporalFrame static_frame = temporal.begin(
+        camera, {100, 80}, {100, 80}, {still}, {});
+    const matter::Float3 static_velocity =
+        viewer::temporal_velocity_pixels(static_frame, 7, {0.0f, 0.0f, 0.0f});
+    CHECK(!static_frame.reset && static_frame.instances[0].history_valid &&
+              std::fabs(static_velocity.x) < 1e-6f &&
+              std::fabs(static_velocity.y) < 1e-6f,
+          "static camera and rigid instance produce zero temporal velocity");
+    CHECK(temporal.commit_presented(static_frame.attempt_token),
+          "second successful presentation advances temporal history");
+
+    viewer::FrameMatrices moved_camera = camera;
+    moved_camera.view_to_clip = viewer::mat4_translation({-0.2f, 0.0f, 0.0f});
+    moved_camera.world_to_clip = viewer::mat4_translation({-0.2f, 0.0f, 0.0f});
+    moved_camera.clip_to_world = viewer::mat4_translation({0.2f, 0.0f, 0.0f});
+    viewer::TemporalFrame camera_motion = temporal.begin(
+        moved_camera, {100, 80}, {100, 80}, {still}, {});
+    const matter::Float3 camera_velocity = viewer::temporal_velocity_pixels(
+        camera_motion, 7, {0.0f, 0.0f, 0.0f});
+    CHECK(std::fabs(camera_velocity.x + 10.0f) < 1e-5f &&
+              std::fabs(camera_velocity.y) < 1e-5f,
+          "known camera translation produces exact current-to-previous pixels");
+    CHECK(temporal.commit_presented(camera_motion.attempt_token),
+          "camera-motion candidate commits");
+
+    const viewer::TemporalInstance moved_object{
+        7, viewer::mat4_translation({0.4f, 0.0f, 0.0f})};
+    viewer::TemporalFrame object_motion = temporal.begin(
+        moved_camera, {100, 80}, {100, 80}, {moved_object}, {});
+    const matter::Float3 object_velocity = viewer::temporal_velocity_pixels(
+        object_motion, 7, {0.0f, 0.0f, 0.0f});
+    CHECK(std::fabs(object_velocity.x - 20.0f) < 1e-5f &&
+              std::fabs(object_velocity.y) < 1e-5f,
+          "known rigid-instance translation produces exact current-to-previous pixels");
+    CHECK(temporal.commit_presented(object_motion.attempt_token),
+          "object-motion candidate commits");
+
+    const auto expect_one_reset = [&](VkExtent2D internal,
+                                      viewer::TemporalInvalidation invalidation,
+                                      std::vector<viewer::TemporalInstance> instances,
+                                      const char* label) {
+        viewer::TemporalFrame reset = temporal.begin(
+            moved_camera, internal, {100, 80}, instances, invalidation);
+        CHECK(reset.reset, label);
+        CHECK(temporal.commit_presented(reset.attempt_token), label);
+        viewer::TemporalFrame stable = temporal.begin(
+            moved_camera, internal, {100, 80}, instances, {});
+        CHECK(!stable.reset, "temporal invalidation resets exactly one frame");
+        CHECK(temporal.commit_presented(stable.attempt_token),
+              "post-reset candidate commits");
+    };
+    expect_one_reset({120, 80}, {}, {moved_object}, "resize resets temporal history");
+    expect_one_reset({120, 80}, {.camera_cut = true}, {moved_object},
+                     "camera cut resets temporal history");
+    expect_one_reset({120, 80}, {.world_reload = true}, {moved_object},
+                     "world reload resets temporal history");
+    expect_one_reset({120, 80}, {.renderer_reset = true}, {moved_object},
+                     "renderer recovery resets temporal history");
+    expect_one_reset({120, 80}, {}, {{99, identity_matrix()}},
+                     "missing previous rigid instance resets temporal history");
+
+    viewer::TemporalFrame failed = temporal.begin(
+        moved_camera, {120, 80}, {100, 80}, {{99, identity_matrix()}}, {});
+    const uint64_t failed_token = failed.attempt_token;
+    CHECK(temporal.discard_failed_attempt(failed_token),
+          "failed presentation discards uncommitted candidate");
+    viewer::TemporalFrame after_failure = temporal.begin(
+        moved_camera, {120, 80}, {100, 80}, {{99, identity_matrix()}}, {});
+    CHECK(after_failure.reset && after_failure.attempt_token > failed_token,
+          "failed presentation forces reset and never reuses attempt token");
+    CHECK(!temporal.commit_presented(failed_token),
+          "stale failed attempt token cannot commit temporal history");
+}
+
 void run_vulkan_instance_cache_tests() {
     viewer::ResolvedInstance a{};
     a.part_hash = 11;
@@ -455,6 +546,8 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
           "normal attachment format");
     CHECK(attachments.orm.format == VK_FORMAT_R8G8B8A8_UNORM,
           "ORM attachment format");
+    CHECK(attachments.velocity.format == VK_FORMAT_R16G16_SFLOAT,
+          "sampled velocity attachment format");
     CHECK(attachments.depth.format == VK_FORMAT_D32_SFLOAT,
           "depth attachment format");
     CHECK(attachments.hdr.format == VK_FORMAT_R16G16B16A16_SFLOAT,
@@ -494,6 +587,11 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
           "negative-height viewport preserves top-left framebuffer convention");
     CHECK(background.albedo.w < 0.01f && background.depth >= 0.999f,
           "background color and depth remain clear");
+    CHECK(std::fabs(center.velocity.x) < 1e-6f &&
+              std::fabs(center.velocity.y) < 1e-6f &&
+              std::fabs(background.velocity.x) < 1e-6f &&
+              std::fabs(background.velocity.y) < 1e-6f,
+          "invalid first-frame history and background write zero velocity");
     CHECK(std::isfinite(background.hdr.x) &&
               std::isfinite(background.hdr.y) &&
               std::isfinite(background.hdr.z) &&
@@ -505,6 +603,41 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
               center.hdr.y > background.hdr.y &&
               center.hdr.z > background.hdr.z,
           "composite samples G-buffer into HDR output");
+
+    viewer::TemporalFrame rigid_motion{};
+    rigid_motion.current_jittered = frame;
+    rigid_motion.previous_jittered = frame;
+    rigid_motion.internal_extent = {width, height};
+    rigid_motion.reset = false;
+    rigid_motion.attempt_token = 1;
+    rigid_motion.instances = {
+        {1, identity, identity, true},
+        {2, viewer::mat4_translation({0.2f, 0.0f, 0.0f}), identity, true}};
+    renderer.set_temporal_frame(rigid_motion);
+    CHECK(renderer.update_instances(
+              {{900, identity, 1},
+               {901, viewer::mat4_translation({0.2f, 0.0f, 0.0f}), 2}},
+              error) &&
+              renderer.dispatch_culling(frame, camera.position, 1.0f, error) &&
+              renderer.render_gbuffer_and_composite(width, height, error),
+          error.empty() ? "render exact rigid velocity" : error.c_str());
+    viewer::VkRasterPixel moving_center{};
+    CHECK(renderer.readback_raster_pixel(width / 2, height / 2,
+                                         moving_center, error),
+          error.empty() ? "read exact rigid velocity" : error.c_str());
+    CHECK(std::fabs(moving_center.velocity.x - 16.0f) < 0.02f &&
+              std::fabs(moving_center.velocity.y) < 0.002f,
+          "velocity attachment stores exact current-to-previous input pixels");
+
+    viewer::TemporalFrame restored_temporal = rigid_motion;
+    restored_temporal.instances = {{1, identity, identity, true},
+                                   {2, identity, identity, true}};
+    renderer.set_temporal_frame(restored_temporal);
+    CHECK(renderer.update_instances({{900, identity, 1}, {901, identity, 2}},
+                                    error) &&
+              renderer.dispatch_culling(frame, camera.position, 1.0f, error),
+          error.empty() ? "restore static temporal raster scene"
+                        : error.c_str());
 
     viewer::VkSceneLighting dark{};
     dark.sun_intensity = 0.0f;
@@ -685,6 +818,7 @@ void run_raster_submission_fault(matter::VulkanDevice& vulkan) {
     CHECK(hidden.albedo.image == VK_NULL_HANDLE &&
               hidden.normal.image == VK_NULL_HANDLE &&
               hidden.orm.image == VK_NULL_HANDLE &&
+              hidden.velocity.image == VK_NULL_HANDLE &&
               hidden.depth.image == VK_NULL_HANDLE &&
               hidden.hdr.image == VK_NULL_HANDLE &&
               hidden.extent.width == 0 && hidden.extent.height == 0,
@@ -1670,6 +1804,7 @@ void run_outlive_resources(std::unique_ptr<matter::VulkanDevice>& vulkan,
 
 int main() {
     run_vulkan_instance_cache_tests();
+    run_vulkan_temporal_tests();
     run_streamline_bridge_fallback_tests();
 #ifdef MATTER_VK_TEST_LAYER_PATH
     // MSYS2 installs validation-layer manifests outside the Windows registry.

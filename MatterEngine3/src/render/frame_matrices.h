@@ -12,6 +12,9 @@ struct FrameMatrices {
     matter::Mat4f view_to_clip;
     matter::Mat4f world_to_clip;
     matter::Mat4f clip_to_world;
+    // Sub-pixel projection offset in internal-render pixels. Unjittered
+    // matrices keep this at zero; temporal candidates fill it explicitly.
+    float jitter_pixels[2]{};
     float frustum_planes[6][4]{};
 };
 

@@ -86,6 +86,9 @@ public:
 
     bool render(const CameraDesc& cam, const VulkanFrame& frame,
                 const RenderOptions& opts, std::string& err);
+    // Resolve the temporal candidate recorded by render(). Call exactly once
+    // with the result returned by VulkanDevice::end_frame.
+    void finish_vulkan_frame(uint64_t frame_serial, bool presented);
 
     bool readback_swapchain_rgba8(const VulkanFrame& frame,
                                   std::vector<uint8_t>& rgba,

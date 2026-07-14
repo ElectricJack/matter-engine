@@ -16,13 +16,15 @@ namespace {
 
 struct alignas(16) FrameConstants {
     GpuMat4 world_to_clip;
+    GpuMat4 previous_world_to_clip;
     float frustum_planes[6][4];
     float camera_eye_pixel_budget[4];
     uint32_t counts[4];
     uint32_t capacities[4];
+    uint32_t temporal[4];
 };
 
-static_assert(sizeof(FrameConstants) == 208,
+static_assert(sizeof(FrameConstants) == 272,
               "FrameConstants must match the std140 shader block");
 static_assert(sizeof(VkCullStats) == 16,
               "VkCullStats must match the std430 stats block");
@@ -139,6 +141,7 @@ struct RasterRecord {
     matter::VkImageResource* albedo;
     matter::VkImageResource* normal;
     matter::VkImageResource* orm;
+    matter::VkImageResource* velocity;
     matter::VkImageResource* depth;
     matter::VkImageResource* hdr;
     VkExtent2D extent;
@@ -160,7 +163,7 @@ struct RasterRecord {
 void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     const auto& record = *static_cast<RasterRecord*>(user_data);
     matter::VkImageResource* colors[] = {
-        record.albedo, record.normal, record.orm};
+        record.albedo, record.normal, record.orm, record.velocity};
     for (auto* color : colors) {
         transition_for_use(command_buffer, *color,
                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -181,8 +184,8 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
                        VK_IMAGE_ASPECT_COLOR_BIT);
 
     const VkClearValue clear_color{{{0.0f, 0.0f, 0.0f, 0.0f}}};
-    VkRenderingAttachmentInfo color_attachments[3]{};
-    for (size_t i = 0; i < 3; ++i) {
+    VkRenderingAttachmentInfo color_attachments[4]{};
+    for (size_t i = 0; i < 4; ++i) {
         color_attachments[i].sType =
             VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
         color_attachments[i].imageView = colors[i]->view;
@@ -202,7 +205,7 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
     rendering.renderArea.extent = record.extent;
     rendering.layerCount = 1;
-    rendering.colorAttachmentCount = 3;
+    rendering.colorAttachmentCount = 4;
     rendering.pColorAttachments = color_attachments;
     rendering.pDepthAttachment = &depth_attachment;
     vkCmdBeginRendering(command_buffer, &rendering);
@@ -254,6 +257,13 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT);
     }
+    matter::record_image_transition(
+        command_buffer, *record.depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+            VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
 
     VkRenderingAttachmentInfo hdr_attachment{
         VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
@@ -287,8 +297,8 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
 struct RasterReadbackRecord {
-    matter::VkImageResource* images[5];
-    VkImageAspectFlags aspects[5];
+    matter::VkImageResource* images[6];
+    VkImageAspectFlags aspects[6];
     VkBuffer destination;
     uint32_t x;
     uint32_t y;
@@ -297,8 +307,8 @@ struct RasterReadbackRecord {
 void record_raster_readback(VkCommandBuffer command_buffer, void* user_data) {
     const auto& record = *static_cast<RasterReadbackRecord*>(user_data);
     // Each offset is aligned to its format's texel-block size (4 or 8 bytes).
-    constexpr VkDeviceSize offsets[5] = {0, 8, 16, 20, 24};
-    for (size_t i = 0; i < 5; ++i) {
+    constexpr VkDeviceSize offsets[6] = {0, 8, 16, 20, 24, 28};
+    for (size_t i = 0; i < 6; ++i) {
         transition_for_use(command_buffer, *record.images[i],
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
@@ -599,7 +609,7 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     depth_stencil.depthTestEnable = VK_TRUE;
     depth_stencil.depthWriteEnable = VK_TRUE;
     depth_stencil.depthCompareOp = VK_COMPARE_OP_LESS;
-    VkPipelineColorBlendAttachmentState blend_attachments[3]{};
+    VkPipelineColorBlendAttachmentState blend_attachments[4]{};
     for (auto& blend : blend_attachments) {
         blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
                                VK_COLOR_COMPONENT_G_BIT |
@@ -608,7 +618,7 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     }
     VkPipelineColorBlendStateCreateInfo color_blend{
         VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    color_blend.attachmentCount = 3;
+    color_blend.attachmentCount = 4;
     color_blend.pAttachments = blend_attachments;
     const VkDynamicState dynamic_values[] = {VK_DYNAMIC_STATE_VIEWPORT,
                                               VK_DYNAMIC_STATE_SCISSOR};
@@ -618,10 +628,10 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     dynamic.pDynamicStates = dynamic_values;
     const VkFormat gbuffer_formats[] = {
         VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16B16A16_SFLOAT,
-        VK_FORMAT_R8G8B8A8_UNORM};
+        VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16_SFLOAT};
     VkPipelineRenderingCreateInfo rendering{
         VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    rendering.colorAttachmentCount = 3;
+    rendering.colorAttachmentCount = 4;
     rendering.pColorAttachmentFormats = gbuffer_formats;
     rendering.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
     VkGraphicsPipelineCreateInfo raster_create{
@@ -918,7 +928,7 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
                 frame.commands, sizeof(DrawCommand),
                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                     VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT) ||
-            !ensure_candidate_buffer(frame.draw_transforms, sizeof(GpuMat4),
+            !ensure_candidate_buffer(frame.draw_transforms, sizeof(GpuDrawTransform),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
             !ensure_candidate_buffer(frame.stats, sizeof(VkCullStats),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
@@ -1139,6 +1149,7 @@ bool VkSceneRenderer::init(std::string& error) {
         albedo_.reset();
         normal_.reset();
         orm_.reset();
+        velocity_.reset();
         depth_.reset();
         hdr_.reset();
         raster_extent_ = {};
@@ -1369,12 +1380,29 @@ bool VkSceneRenderer::update_instances(
     candidate_slots.reserve(instances.size());
     candidate_rt.reserve(instances.size());
     uint32_t candidate_max_clusters = 0;
-    for (const VkSceneInstance& source : instances) {
+    for (size_t source_index = 0; source_index < instances.size();
+         ++source_index) {
+        const VkSceneInstance& source = instances[source_index];
         const auto found = slot_of_.find(source.part_hash);
         if (found == slot_of_.end()) continue;
         const PartRecord& part = parts_[found->second];
         GpuInstance instance{};
         instance.object_to_world = pack_glsl_mat4(source.object_to_world);
+        instance.previous_object_to_world = instance.object_to_world;
+        const uint64_t stable_id = source.instance_id != 0
+                                       ? source.instance_id
+                                       : static_cast<uint64_t>(source_index + 1);
+        const auto temporal = std::find_if(
+            temporal_frame_.instances.begin(), temporal_frame_.instances.end(),
+            [stable_id](const TemporalInstanceFrame& item) {
+                return item.instance_id == stable_id;
+            });
+        if (!temporal_frame_.reset && temporal != temporal_frame_.instances.end() &&
+            temporal->history_valid) {
+            instance.previous_object_to_world =
+                pack_glsl_mat4(temporal->previous_object_to_world);
+            instance.history_valid = 1;
+        }
         instance.part_slot = static_cast<uint32_t>(found->second);
         instance.cluster_start = part.cluster_start;
         instance.cluster_count = part.cluster_count;
@@ -1555,7 +1583,7 @@ bool VkSceneRenderer::upload_scene_buffers(FrameResources& frame,
             command_template_.size(), sizeof(DrawCommand), command_bytes,
             "draw-command buffer", error) ||
         !vk_scene_detail::checked_mul_to_device_size(
-            draw_transform_slots_, sizeof(GpuMat4), transform_bytes,
+            draw_transform_slots_, sizeof(GpuDrawTransform), transform_bytes,
             "draw-transform buffer", error) ||
         !vk_scene_detail::checked_mul_to_device_size(
             vertex_staging_.size(), sizeof(VkRasterVertex), vertex_bytes,
@@ -1733,6 +1761,10 @@ bool VkSceneRenderer::upload_frame_constants(FrameResources& frame,
                                               std::string& error) {
     FrameConstants constants{};
     constants.world_to_clip = pack_glsl_mat4(matrices.world_to_clip);
+    constants.previous_world_to_clip = pack_glsl_mat4(
+        temporal_frame_.attempt_token != 0
+            ? temporal_frame_.previous_jittered.world_to_clip
+            : matrices.world_to_clip);
     std::memcpy(constants.frustum_planes, matrices.frustum_planes,
                 sizeof(constants.frustum_planes));
     constants.camera_eye_pixel_budget[0] = camera_eye.x;
@@ -1745,6 +1777,13 @@ bool VkSceneRenderer::upload_frame_constants(FrameResources& frame,
     constants.capacities[1] = static_cast<uint32_t>(instance_staging_.size());
     constants.capacities[2] = static_cast<uint32_t>(command_template_.size());
     constants.capacities[3] = draw_transform_slots_;
+    constants.temporal[0] = matrices.jitter_pixels[0] != 0.0f ||
+                                    matrices.jitter_pixels[1] != 0.0f
+                                ? 1u
+                                : 0u;
+    constants.temporal[1] = temporal_frame_.reset ? 1u : 0u;
+    constants.temporal[2] = temporal_frame_.internal_extent.width;
+    constants.temporal[3] = temporal_frame_.internal_extent.height;
     return matter::upload_buffer(*vulkan_, frame.frame_constants, &constants,
                                  sizeof(constants), 0, error);
 }
@@ -1844,8 +1883,8 @@ bool VkSceneRenderer::record_cull_and_render(
     // created/replaced attachments are retained here before commands reference
     // them, preserving the frame-lifetime contract.
     std::vector<std::shared_ptr<void>> attachments{
-        albedo_.lifetime, normal_.lifetime, orm_.lifetime, depth_.lifetime,
-        hdr_.lifetime};
+        albedo_.lifetime, normal_.lifetime, orm_.lifetime, velocity_.lifetime,
+        depth_.lifetime, hdr_.lifetime};
     if (!vulkan_->retain_for_frame(frame, std::move(attachments), error))
         return false;
 
@@ -1867,6 +1906,7 @@ bool VkSceneRenderer::record_cull_and_render(
     RasterRecord record{&albedo_,
                         &normal_,
                         &orm_,
+                        &velocity_,
                         &depth_,
                         &hdr_,
                         raster_extent_,
@@ -1982,15 +2022,21 @@ bool VkSceneRenderer::readback_draw_transforms(
     if (transforms.empty()) return true;
     VkDeviceSize bytes = 0;
     if (!vk_scene_detail::checked_mul_to_device_size(
-            transforms.size(), sizeof(GpuMat4), bytes,
+            transforms.size(), sizeof(GpuDrawTransform), bytes,
             "draw-transform readback", error)) return false;
     if (frames_.empty()) {
         error = "Vulkan draw transforms are unavailable before frame preparation";
         return false;
     }
-    return matter::readback_buffer(
-        *vulkan_, frames_[active_frame_index_].draw_transforms, transforms.data(),
-        bytes, 0, error);
+    std::vector<GpuDrawTransform> packed(transforms.size());
+    if (!matter::readback_buffer(
+            *vulkan_, frames_[active_frame_index_].draw_transforms,
+            packed.data(), bytes, 0, error)) {
+        return false;
+    }
+    for (size_t index = 0; index < transforms.size(); ++index)
+        transforms[index] = packed[index].current;
+    return true;
 }
 
 #endif
@@ -2004,12 +2050,13 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     if (raster_extent_.width == width && raster_extent_.height == height &&
         albedo_.image != VK_NULL_HANDLE && normal_.image != VK_NULL_HANDLE &&
         orm_.image != VK_NULL_HANDLE && depth_.image != VK_NULL_HANDLE &&
-        hdr_.image != VK_NULL_HANDLE) {
+        velocity_.image != VK_NULL_HANDLE && hdr_.image != VK_NULL_HANDLE) {
         return true;
     }
     matter::VkImageResource albedo;
     matter::VkImageResource normal;
     matter::VkImageResource orm;
+    matter::VkImageResource velocity;
     matter::VkImageResource depth;
     matter::VkImageResource hdr;
     const VkExtent3D extent{width, height, 1};
@@ -2031,10 +2078,16 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
                               gbuffer_usage, VK_IMAGE_ASPECT_COLOR_BIT,
                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, orm,
                               error) ||
+        !matter::create_image(*vulkan_, VK_IMAGE_TYPE_2D,
+                              VK_FORMAT_R16G16_SFLOAT, extent,
+                              gbuffer_usage, VK_IMAGE_ASPECT_COLOR_BIT,
+                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, velocity,
+                              error) ||
         !matter::create_image(
             *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_D32_SFLOAT, extent,
             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                VK_IMAGE_USAGE_SAMPLED_BIT,
             VK_IMAGE_ASPECT_DEPTH_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
             depth, error) ||
         !matter::create_image(
@@ -2050,6 +2103,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     albedo_ = std::move(albedo);
     normal_ = std::move(normal);
     orm_ = std::move(orm);
+    velocity_ = std::move(velocity);
     depth_ = std::move(depth);
     hdr_ = std::move(hdr);
     raster_extent_ = {width, height};
@@ -2099,6 +2153,7 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
     RasterRecord record{&albedo_,
                         &normal_,
                         &orm_,
+                        &velocity_,
                         &depth_,
                         &hdr_,
                         raster_extent_,
@@ -2116,8 +2171,8 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
                         nullptr,
                         lighting_};
     std::vector<std::shared_ptr<void>> dependencies{
-        albedo_.lifetime, normal_.lifetime, orm_.lifetime, depth_.lifetime,
-        hdr_.lifetime, vertices_.lifetime, selected.commands.lifetime,
+        albedo_.lifetime, normal_.lifetime, orm_.lifetime, velocity_.lifetime,
+        depth_.lifetime, hdr_.lifetime, vertices_.lifetime, selected.commands.lifetime,
         selected.frame_constants.lifetime, selected.draw_transforms.lifetime};
     raster_attachments_ready_ = false;
     if (!matter::submit_immediate(
@@ -2203,6 +2258,7 @@ VkRasterAttachments VkSceneRenderer::raster_attachments() const {
     return {{albedo_.image, albedo_.format},
             {normal_.image, normal_.format},
             {orm_.image, orm_.format},
+            {velocity_.image, velocity_.format},
             {depth_.image, depth_.format},
             {hdr_.image, hdr_.format},
             raster_extent_};
@@ -2226,7 +2282,7 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
         return false;
     }
     matter::VkBufferResource staging;
-    constexpr VkDeviceSize readback_size = 32;
+    constexpr VkDeviceSize readback_size = 36;
     if (!matter::create_buffer(
             *vulkan_, readback_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
@@ -2235,8 +2291,9 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
             staging, error)) {
         return false;
     }
-    RasterReadbackRecord record{{&albedo_, &normal_, &orm_, &depth_, &hdr_},
+    RasterReadbackRecord record{{&albedo_, &normal_, &orm_, &velocity_, &depth_, &hdr_},
                                 {VK_IMAGE_ASPECT_COLOR_BIT,
+                                 VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_DEPTH_BIT,
@@ -2245,8 +2302,8 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
                                 x,
                                 y};
     std::vector<std::shared_ptr<void>> dependencies{
-        albedo_.lifetime, normal_.lifetime, orm_.lifetime, depth_.lifetime,
-        hdr_.lifetime, staging.lifetime};
+        albedo_.lifetime, normal_.lifetime, orm_.lifetime, velocity_.lifetime,
+        depth_.lifetime, hdr_.lifetime, staging.lifetime};
     if (!matter::submit_immediate(
             *vulkan_, record_raster_readback, &record, error,
             matter::ImmediateSubmitPhase::compute_dispatch,
@@ -2269,12 +2326,16 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
     uint16_t normal_half[4]{};
     uint16_t hdr_half[4]{};
     std::memcpy(normal_half, bytes.data() + 8, sizeof(normal_half));
-    std::memcpy(&pixel.depth, bytes.data() + 20, sizeof(pixel.depth));
-    std::memcpy(hdr_half, bytes.data() + 24, sizeof(hdr_half));
+    uint16_t velocity_half[2]{};
+    std::memcpy(velocity_half, bytes.data() + 20, sizeof(velocity_half));
+    std::memcpy(&pixel.depth, bytes.data() + 24, sizeof(pixel.depth));
+    std::memcpy(hdr_half, bytes.data() + 28, sizeof(hdr_half));
     pixel.normal = {half_to_float(normal_half[0]),
                     half_to_float(normal_half[1]),
                     half_to_float(normal_half[2]),
                     half_to_float(normal_half[3])};
+    pixel.velocity = {half_to_float(velocity_half[0]),
+                      half_to_float(velocity_half[1]), 0.0f};
     pixel.hdr = {half_to_float(hdr_half[0]), half_to_float(hdr_half[1]),
                  half_to_float(hdr_half[2]), half_to_float(hdr_half[3])};
     return true;
@@ -2309,6 +2370,7 @@ void VkSceneRenderer::reset() {
         albedo_.reset();
         normal_.reset();
         orm_.reset();
+        velocity_.reset();
         depth_.reset();
         hdr_.reset();
         raster_extent_ = {};

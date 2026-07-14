@@ -30,6 +30,7 @@
 #ifdef MATTER_VULKAN_VIEWER
 #include "matter/vulkan_device.h"
 #include "render/vk_instance_cache.h"
+#include "render/vk_temporal.h"
 #include "render/vk_resources.h"
 #include "render/vk_scene_renderer.h"
 #include "render/matrix_math.h"
@@ -214,6 +215,9 @@ struct WorldSession::Impl {
 #ifdef MATTER_VULKAN_VIEWER
     std::unique_ptr<viewer::VkSceneRenderer> vk_scene;
     viewer::VulkanInstanceCache vk_instance_cache;
+    viewer::TemporalState vk_temporal;
+    uint64_t vk_temporal_serial = 0;
+    uint64_t vk_temporal_token = 0;
 #endif
     lod_select::PartLodTable                lods;
 
@@ -3015,6 +3019,9 @@ void WorldSession::request_bake() {
     // executes the pipeline; progress arrives via poll_event() and GL work
     // runs in pump_gpu_jobs() on the app/GL thread. Supersession is handled
     // inside CommandQueue::push (cancels in-flight token + clears pending).
+#ifdef MATTER_VULKAN_VIEWER
+    impl_->vk_temporal.invalidate();
+#endif
     impl_->ensure_worker_started();
     matter_async::Command c;
     c.kind = matter_async::CommandKind::BakeAll;
@@ -3025,6 +3032,9 @@ void WorldSession::reload() {
     // Phase B: identical shape to request_bake(), but kind = Reload so the
     // worker will additionally reset the GPU culler at the top of execute_bake
     // (mirroring old reload() semantics).
+#ifdef MATTER_VULKAN_VIEWER
+    impl_->vk_temporal.invalidate();
+#endif
     impl_->ensure_worker_started();
     matter_async::Command c;
     c.kind = matter_async::CommandKind::Reload;
@@ -3038,6 +3048,9 @@ void WorldSession::regenerate(uint64_t world_seed) {
     // constructs the LocalProvider. Full supersession semantics: if a bake is
     // already in flight, the Reload cancels it at the next between-parts
     // checkpoint and starts fresh with the new seed.
+#ifdef MATTER_VULKAN_VIEWER
+    impl_->vk_temporal.invalidate();
+#endif
     {
         std::lock_guard<std::mutex> lk(impl_->seed_mutex);
         char buf[64];
@@ -3464,14 +3477,35 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     }
 
     const auto build_start = std::chrono::steady_clock::now();
-    if (!impl_->vk_scene->update_instances(instances, err)) return false;
-    viewer::FrameMatrices matrices{};
+    viewer::FrameMatrices unjittered{};
     if (!viewer::build_frame_matrices(cam, frame.extent.width,
-                                      frame.extent.height, matrices, err))
+                                      frame.extent.height, unjittered, err))
         return false;
+    std::vector<viewer::TemporalInstance> temporal_instances;
+    temporal_instances.reserve(instances.size());
+    for (size_t index = 0; index < instances.size(); ++index) {
+        temporal_instances.push_back(
+            {instances[index].instance_id != 0
+                 ? instances[index].instance_id
+                 : static_cast<uint64_t>(index + 1),
+             instances[index].object_to_world});
+    }
+    const viewer::TemporalFrame temporal = impl_->vk_temporal.begin(
+        unjittered, frame.extent, frame.extent, temporal_instances,
+        {.camera_cut = frame.swapchain_recreated});
+    impl_->vk_temporal_serial = frame.serial;
+    impl_->vk_temporal_token = temporal.attempt_token;
+    impl_->vk_scene->set_temporal_frame(temporal);
+    if (!impl_->vk_scene->update_instances(instances, err)) {
+        impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
+        return false;
+    }
+    const viewer::FrameMatrices& matrices = temporal.current_jittered;
     if (!impl_->vk_scene->prepare_frame(frame, matrices, cam.position, budget,
-                                        err))
+                                        err)) {
+        impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
         return false;
+    }
     viewer::VkSceneLighting lighting{};
     lighting.sun_direction = {impl_->manifest.lights.sun_dir[0],
                               impl_->manifest.lights.sun_dir[1],
@@ -3488,8 +3522,10 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     const auto draw_start = std::chrono::steady_clock::now();
     if (!impl_->vk_scene->record_cull_and_render(
             frame, matrices, cam.position, budget, err) ||
-        !impl_->vk_scene->record_composite_to_swapchain(frame, err))
+        !impl_->vk_scene->record_composite_to_swapchain(frame, err)) {
+        impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
         return false;
+    }
     const auto draw_end = std::chrono::steady_clock::now();
 
     impl_->stats.resolve_ms =
@@ -3517,6 +3553,20 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.instances_total = static_cast<uint32_t>(impl_->state.entries().size());
     impl_->stats.triangles = 0;
     return true;
+}
+
+void WorldSession::finish_vulkan_frame(uint64_t frame_serial, bool presented) {
+    if (!impl_ || frame_serial != impl_->vk_temporal_serial ||
+        impl_->vk_temporal_token == 0) {
+        return;
+    }
+    if (presented)
+        (void)impl_->vk_temporal.commit_presented(impl_->vk_temporal_token);
+    else
+        (void)impl_->vk_temporal.discard_failed_attempt(
+            impl_->vk_temporal_token);
+    impl_->vk_temporal_serial = 0;
+    impl_->vk_temporal_token = 0;
 }
 
 bool WorldSession::readback_swapchain_rgba8(

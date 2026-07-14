@@ -597,6 +597,7 @@ int main() {
             }
         }
         const bool frame_presented = vulkan->end_frame(frame, error);
+        session->finish_vulkan_frame(frame.serial, frame_presented && !fatal_error);
         // end_frame() records the queue submit and present boundary. Keep this
         // separate from stats.frame_ms, which intentionally remains the local
         // CPU render-recording time shown by the interactive HUD.

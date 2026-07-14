@@ -19,10 +19,24 @@ struct ClusterMeta {
 
 struct GpuInstance {
     mat4 transform;
+    mat4 previous_transform;
     uint part_slot;
     uint base_lod;
     uint cluster_start;
     uint cluster_count;
+    uint history_valid;
+    uint pad0;
+    uint pad1;
+    uint pad2;
+};
+
+struct DrawTransform {
+    mat4 current;
+    mat4 previous;
+    uint history_valid;
+    uint pad0;
+    uint pad1;
+    uint pad2;
 };
 
 struct DrawCommand {
@@ -34,10 +48,12 @@ struct DrawCommand {
 
 layout(set = 0, binding = 0, std140) uniform FrameConstants {
     mat4 world_to_clip;
+    mat4 previous_world_to_clip;
     vec4 frustum_planes[6];
     vec4 camera_eye_pixel_budget;
     uvec4 counts;
     uvec4 capacities;
+    uvec4 temporal;
 } frame;
 
 layout(set = 1, binding = 0, std430) readonly buffer ClusterMetas {
@@ -50,7 +66,7 @@ layout(set = 1, binding = 2, std430) buffer DrawCommands {
     DrawCommand commands[];
 };
 layout(set = 1, binding = 3, std430) writeonly buffer DrawTransforms {
-    mat4 draw_transforms[];
+    DrawTransform draw_transforms[];
 };
 layout(set = 1, binding = 4, std430) buffer Stats {
     uint frustum_culled;
@@ -157,6 +173,8 @@ void main() {
     const uint first = commands[bucket].first_instance;
     if (first >= frame.capacities.w || slot >= frame.capacities.w - first)
         return;
-    draw_transforms[first + slot] = instance.transform;
+    draw_transforms[first + slot].current = instance.transform;
+    draw_transforms[first + slot].previous = instance.previous_transform;
+    draw_transforms[first + slot].history_valid = instance.history_valid;
     atomicAdd(emitted, 1u);
 }
