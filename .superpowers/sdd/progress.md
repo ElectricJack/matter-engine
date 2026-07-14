@@ -1,150 +1,100 @@
-# Phase C SDD Progress Ledger
-Branch: feature/phase-c-explorer-demo | Plan: docs/superpowers/plans/2026-07-09-phase-c-explorer-demo.md
-BASE at start: 7a1c9d3
+# Phase 2 RT Lighting SDD Progress Ledger
+Branch: feature/rt-lighting-phase2 | Plan: docs/superpowers/plans/2026-07-12-rt-lighting-phase2.md
+BASE at start: da85bfd
 
-Task 1: complete (commits 7a1c9d3..c62f187, review clean)
-  - Noted (non-blocking, for Task 2 visual + final review): ridge noise fbm2 at x*0.35 scale ⇒ ~114-unit wavelength, few ridge features per band; tune if valley shot looks poor (terrain_noise.js:165,218)
-  - Minor: band-radius comments assume worldSize=816; test-binary early-exit leak paths; inline slope literals
-Task 2: complete (commits c62f187..042f1df + fix e1cebc7, review clean after 1 fix round)
-  - Engine fixes ride along: b3HeightField tileset ground (mesh DFS overflow), hull null guard, headless tileset skip keyed on gl_loaded()
-  - MEASURED: cold valley bake 703s, parts_baked=5225 (2601 coarse + 2601 full EAGER + variants); instances 70,701; warm 350s
-  - OPEN QUESTION for gate: where does geometry bake happen (install vs publish loop)? Determines if Task 3 sort delivers 60s silhouette or plan gap
-  - Watch: tileset settle runs every bake (no settle cache) — Task 12 gate implication
-  - Minor (final review triage): rock sink uses 2 rng draws (drift from 0.15*s intent); valley test SIGSEGV handler ~50 lines; third-run determinism compares warm-vs-third not cold; headless-skip stderr print; gl46_available comment ambiguity (pre-existing)
-Task 3: complete (commits e1cebc7..f814e93, review clean; opus reviewer's one Important resolved via emit-site comment f814e93)
-  - Delivered: set_bake_focus(pos[3]) API + focus-distance stable_sort of publish order; module backfill for expanded children (LocalProvider graph-snapshot map); [bake-timing] stderr rider (install/compose/publish/total) to attribute the 350s warm bake before Task 12
-  - ANSWERED (open question from Task 2): geometry bakes in install_graph, BEFORE publish loop — publish sorting alone cannot deliver the 60s cold gate while full-res bakes eagerly. A/B/C escalation to Jack pending (A recommended: lazy full-res, Meadow requires coarse only)
-  - Minor (final review triage): comparator does double hash map lookup; min-dist map uses operator[] not emplace; timing rider also fires on cancelled bake path
-  - REMINDER: engine matrices ROW-major, translation at [3],[7],[11] (plan text saying 12/13/14 is wrong) — bind into Task 4/6 dispatches
-Task 5: complete (commits f814e93..0da3f01; review found 1 Important — BLAS leak in PartStore::release — fixed 0da3f01, re-review approved)
-  - Delivered: PartStore::release (frees CPU meshes + all BLAS handles, unknown-hash no-op), GpuCuller::release_part (VAO/VBO delete, cluster lod_count zeroed CPU+SSBO range, slot_of_ erase, dead-slot holes, fresh slot on re-ensure), BLASManager::live_count(), release_part_tests 37/37 + run-gpucull 31/31
-  - Minor (final review triage): SSBO patch verified via CPU mirror + glGetError only (no glGetBufferSubData readback); fast-path cull() reuse of expanded_ with dead slot is safe but undocumented
-DECISION (Jack, 2026-07-09): Option C — demand-driven bake. Split PartGraph::install into resolve-only pass (hashes/snapshot/placements, no geometry bake); publish loop becomes ensure-baked → ensure-flattened → upload, focus-ordered; refine loop = publishing the full-res variant on demand (subsumes A/B). requires keeps both res variants (no longer implies bake-now). Also need settle cache or async tileset phase (350s/bake wall, separate from C). Plan Tasks 4/6/12 being rewritten + 2-3 new engine tasks inserted.
-Task 7 (regenerate): implementer died at 401 auth mid-run leaving ~236 uncommitted lines (impl complete-looking: regenerate API, root_params_json seam, Meadow function-requires, 2 test cases; untested, uncommitted). Fresh finisher dispatched to verify/test/commit — orthogonal to C decision.
-Task 7: complete (commits 0da3f01..d98ee77, review clean; original implementer died at 401 auth, fresh finisher verified/tested/committed)
-  - Delivered: WorldSession::regenerate(uint64_t) via root-params override (seed_mutex + seed_root_params_json Impl, LocalProviderConfig::root_params_json, merge at manifest roots local_provider.cpp:347-354); Meadow.js function-form requires routes worldSeed to Terrain only (scatter stays seed-free/cache-stable); asyncbake case l + valley case c (parts_baked=5203, cache_hits=22)
-  - Minor (final review triage): local_provider.h:63 comment says root_params_json "not used by execute_rebake_cone" — inaccurate; cone inherits it via persistent cfg (behavior correct, comment misleads)
-PLAN REVISION committed 00b9f7e: Option C tasks 13/14/15 added; Tasks 4/6/9/12 + Global Constraints adjusted. Execution order 13→14→15→4→6→8→9→10→11→12.
-Task 13: complete (commits 00b9f7e..95b3bf4; review found 3 Important — unknown-hash silent success, on_part counter not wired in test b, undocumented deferred-failure semantic — fixed 95b3bf4, re-review approved)
-  - Delivered: BakePolicy::{All,RootsOnly}; InstallResult.bake_plan (BakeInputs per node); snapshot fill moved to post-resolve; shared host_baker_ member; ensure_part_baked (post-order DFS, top-level unknown hash fails w/ err) + ensure_part_flattened (moved flatten_one body); demand_bake_tests 4/4 (run-demandbake) + run-asyncbake 12/12 unchanged
-  - Minor (final review triage): std::system calls without error checks in demand_bake_tests; bake_err ref not reset between calls in ensure_part_baked; host_baker_ gated on install vs unconditional public API; plan-size assert uses >= not ==
-Task 14: committed 0066bb8 (feat) + 3b1da13 (valley env-gate) — review pending
-  - Implementer died mid-valley-monitor; finisher verified: demandbake 5/5 (incl. never-placed-not-baked e2e), asyncbake ALL PASS, cold valley 179s (was 703s), warm ~150s
-  - BUG DISCOVERED (pre-existing, G6 era): parametric placeChild lookup key (raw JS_JSONStringify: insertion order, ES number format) never matches name2hash key (params_to_json: sorted, %.17g) -> silent module-only fallback -> ALL 2,601 terrain tiles share ONE hash. Valley has been one repeated tile all along; Task 2's 703s baked ~5,180 never-referenced nodes; parts_baked>=2601 assertions were counting graph bakes, not placed parts. Fix = new Task 16 (lookup-side normalization via params_from_json+params_to_json; fixes both name2hash sites script_host.cpp:854,1393).
-  - DECISION (Jack, 2026-07-09): fix bug now (Task 16, small-world tests only); NO headless full-valley bakes until camera-driven publish (Task 6) — valley bake cases env-gated (MATTER_VALLEY_FULL_BAKE=1); Jack tests live at that point. Execution order now 13->14->16->15->4->6->8-12.
-Task 14: complete (commits 95b3bf4..3b1da13 + fix 685a6ed; opus review: spec PASS incl. Jack's Step-4/5 supersession, quality approved; 4 Important doc/label findings fixed 685a6ed, re-review approved; 5th Important — focus-sort of ref-streamed publish tail — DEFERRED to Task 6 by reviewer+controller, must appear in Task 6 dispatch)
-  - Minor (final review triage): events.h wording; size_t->int cast; uint32_t next_id wrap; `goto summary` style; needless std::move(cfg2); BakePartDone.module="" for ref-streamed children (label-only, honest comment now)
-  - Cannot-verify items accepted: valley cold wall time (env-gated per Jack), superseded-bake mid-publish (no integration test), asyncbake (k) live-edit numbers
-Task 16: complete (commits b5c029c..cbdd022, opus review clean: spec PASS, approved, 0 Critical/Important)
-  - Delivered: normalize_params_json (dsl_bindings.cpp) round-trips raw JS_JSONStringify through params_from_json->params_to_json before composite lookup, applied at all 4 lookup sites (j_placeChild, place_one_instance, j_ts_layer, j_ts_dropChild — brief's single lookup_child_hash chokepoint missed the tileset paths); with-params miss = bake error, NO module fallback; without-params unchanged; part_graph.h exposes serializers; demandbake 7/7 (new f: 3 distinct hashes incl unsorted float params; g: undeclared params fails w/ module named); asyncbake ALL PASS re-verified by controller (exit 0)
-  - Schema audit: all 9 placeChild-with-params sites verified; none relied on fallback; Meadow Terrain now resolves 2,601 distinct tile hashes (end-to-end proof deferred to Jack's live test at Task 6 per test-scope decision)
-  - Minor (final review triage): test f unused p1/p2/p3 constants + inaccurate "merged with defaults" comment; params_from_json flat-only — nested array/object params would silently garbage (audit: no schema does; follow-up: fail-closed); dsl_state.h lookup_child_hash doc block still describes pre-fix fallback (stale)
-Task 15: complete (commits e7b9b6f..27edad2 + fix 75a2f09; opus review: spec PASS; 3 Important — settle ran on GL thread, connect() failure silently non-fatal, cache loader trusted on-disk counts — fixed 75a2f09, re-review approved)
-  - Delivered: settle_cache_key/load/save (FNV-1a input key: script_source_hash + sorted child hashes + engine/box3d versions; atomic tmp->rename; fail-closed bounds-checked loader + corrupt-file tests); compose_world skips tileset inline; run_tileset_deferred (worker-thread settle w/ cache, GL job = atlas+load_slot only, between-root cancel checkpoints); publish_pipeline step 9 post-BakeFinished non-fatal (comment) vs connect() sync fatal (restored); BakePartDone phase="tileset" may follow BakeFinished (events.h doc); tilesetgpu 99/99, demandbake a-i, asyncbake ALL PASS, run-valley SKIPPED+ALL PASS
-  - Minor (final review triage): test (h) tileset_after>0 satisfied by pre-settle start event (weak assert); execute_rebake_cone never re-runs tileset phase (no provider_ref at step 9 — pre-existing scope?); std::rename overwrite differs on Windows (packaging risk, Task 11 watch); one event per root — no mid-settle HUD progress; CV4: mid-settle cancellation completes current root, untested
-  - Warm-rebake <120s assert lives inside env-gated valley case; real timing proof at Jack's live test (Task 6)
-Task 4: complete (commits 75a2f09..275f787 + fix 2970b24; review: spec PASS, approved; 2 Important — 3D-distance eviction radius undocumented, malformed Terrain node could corrupt tile (0,0) — fixed 2970b24, re-review approved)
-  - Delivered: refine_controller.h/.cpp (span/GraphNode/InstanceRef/TileRecord/RefineController; canonical-JSON string-scan of tx/tz/res; nearest-to-focus next(), farthest-first evict_beyond(), malformed-node skip); refine_controller_tests 9/9 (run-refinectl, default flavor); snapshot struct already carried module+params_json (no producer change)
-  - FOR TASK 6 DISPATCH: evict_beyond/next distances are 3D — camera height shrinks effective XZ radius to sqrt(r^2-H^2); Task 6 must account for focus height when calibrating; ALSO Task 6 owns focus-sort of the ref-streamed publish tail (deferred from Task 14 review)
-  - Minor (final review triage): part_graph_snapshot.cpp linked into refinectl target unnecessarily; half-tile records undocumented; test index mapping assumes std::map order without comment
-Task 6: complete (commits dff2d57..9220550 + fix 0b287f7; opus review: spec PASS; 4 Important — mark(Full) before swap job ran, test (a) missing focus-order assert, GpuJob posted for null full_hash, run-refineloop missing d3d12 — fixed 0b287f7, re-review approved)
-  - Delivered: RefineTileDone (end of EventType, +tile_tx/tile_tz fields appended); CommandQueue::pop_wait(50ms); worker refine mode (commands always win; one step per idle timeout); execute_refine_step (evict_beyond first, then nearest upgrade via ensure_part_baked/flattened + GL swap job; Queued guard prevents double-post; atomic release/acquire outcome handoff, worker owns all mark()); controller built from bake_plan NOT snapshot (snapshot collapses variants by module — reviewer adjudicated deviation CORRECT); streamed publish tail now focus-sorted (Task 14 follow-up); focus projected to y=0 (Task 4 follow-up); refine_loop_tests 3/3 MiniValley 3x3 (run-refineloop, d3d12); valley phase-2 assertions inside env-gated case
-  - DISCOVERED (fix round): DSL placeChild silently IGNORES a 3rd matrix argument (dsl binding reads module+params only) — original MiniValley scaffold had all 9 tiles at origin; schema-author footgun, candidate for a fail-loud follow-up (relates to feedback_dsl_session_polymorphism instincts)
-  - Minor (final review triage): 5 minors in task-6-review.md; MATTER_REFINE_RADIUS read once at Impl init (test seam)
-Task 8: complete (commits eeffc0f..f02287e, review clean after 1 Important fix: spawn 48→heightAt(408,408)+8=8.0f)
-  Minors for final triage: smoke env secs=0/absent guard; secs-3 underflow (secs<3); ExplorerDemo Makefile lacks -j; HUD labels instances_drawn as "inst:"; camera_rig init() beyond brief interface (benign).
-  DISCOVERED (blocker for Jack live-test milestone): warm-cache run SIGSEGV "GpuCuller slot 50" when 50+ unique part geometries load fast (Task 5/6 release/slot-hole path suspected at valley scale) — investigate before asking Jack to test.
-  NOTE: Meadow JS install/resolve phase ~173s EVERY run (not cached) — cold 90s smoke = black frame (correct); build-all.sh warm smoke is liveness-only; demo UX concern, candidate follow-up (cache install placement table).
-  USER-DIRECTED (2026-07-09, mid-task): add clear color + backface culling — RenderOptions::cull_backfaces (default false) plumbed to RasterComposer; ExplorerDemo sets true + app-side ClearBackground(96,118,143) covering pre-connect frames; refine_controller.cpp re-added to MatterViewer Makefile WIN_ME3_CPP after user restructure dropped it.
-Crash fix (post-Task-8, pre-live-test): complete (commits 63ff68f..0f70ac4, review clean after 1 fix loop)
-- 63ff68f: GpuCuller kInitialRegionCap 4096->16 (memory pathology: 2601 single-instance valley tiles); Performance::Profiler mutex (cross-thread map race GL thread vs refine worker was the ACTUAL SIGSEGV, found via ASAN); MatterViewer Makefile: refine_controller.cpp in WIN_ME3_CPP. MSL read-only exception invoked for profiler.hpp — surface to Jack as scope decision.
-- 0f70ac4: begin_frame timestamp captured before lock (consistency). Gates: run-refineloop 3/3, run-releasepart 37/37.
-- Minor for final triage: SSBO growth telemetry not captured in fix report.
-- ASAN verification at HEAD (0f70ac4): explorer_asan rebuilt with instrumented engine lib; 600s warm-cache smoke exit 0, 0 ASAN reports, 13313 frames (pre-fix binary aborted ~4min with Profiler heap-UAF). Fix confirmed under ASAN.
-Task 11: complete (commit b6c3ce8, review clean — Approved, 0 Critical/Important)
-- explorer.exe 7.7MB (mingw -static), dist/MeadowValley-Explorer-20260709.zip 2.8MB; EXPLORER_DATA_DIR + ./WorldData default + dev fallback; Step 4 (Jack's Windows double-click test) PENDING.
-- Minors for final triage: dead #ifdef _WIN32 in main.cpp:35-39; package_explorer.sh python-zipfile fallback untested (zip-binary path verified; zip structure verified via python3 -m zipfile -l); no cache/ placeholder in zip (Windows CWD gotcha, watch in Step 4).
-- Info: ExplorerDemo windows list includes retopo_blacklist.cpp — MatterViewer's WIN_ME3_CPP lacks it (latent viewer link gap, pre-existing, viewer Makefile untouched per brief).
-- New task pulled in by Jack 2026-07-09: cache resolved placement/manifest table for instant warm relaunch (~173s JS resolve per launch).
-Task 17 (pulled in by Jack): resolve/manifest cache — complete (commits e691b95..cba3252, review clean after 1 fix loop)
-- New resolve_cache.{h,cpp}: <cache_root>/cache/<world>.resolve v2, key=fnv1a64(world.manifest+seed+schemas+shared-lib+kEngineBakeVersion), payload=instances+lights+snapshot+bake_plan(+source dedup)+retopo_by_hash_; fail-closed, atomic write, live-edit bypass.
-- Meadow warm relaunch: install+compose 163s -> 0s; total 240s -> 90s (remaining 90s = throttled disk->GPU publish; follow-up candidate: raise pump budget / parallel loads during initial assemble).
-- Fix loop: retopo_by_hash_ restore (I-1) + gate evidence (asyncbake/refineloop/releasepart ALL PASS, viewer link OK).
-- Minors for final triage: f.close() eof-check idiom; source dedup table order non-deterministic across saves (load-correct); brief's empty-payload test absent.
-Task 11 Step 4 (Jack's Windows test, 2026-07-09): DONE — "It works but it's still pretty slow and I suspect there are some bugs we can work through later." Perf + suspected bugs deferred; revisit at Task 12 / final review.
-Controller fix dfdffe3: resolve_cache.cpp added to ExplorerDemo+MatterViewer windows lists (both mingw links were silently broken — tail pipe masked exit codes); viewer also gains missing retopo_blacklist.cpp. All windows artifacts rebuilt 20:39, zip repackaged.
-Task 9: complete (commit a72cb34, review Approved). Minors for final triage: toast expire_time==0.0f sentinel (hud.cpp:197); shot1->2 camera cut not blend (staged_camera.cpp:971); mid-queue toast expiry gaps (negligible).
-Task 10: complete (commits 66acbf6..51e2633, review Approved after C1 fix — real/synthetic input unified into FrameInput). Minors for final triage: hint text overlaps Quit highlight ~10px (menu.cpp); close() leaves selected_ stale (harmless, open() resets); gamepad_start local could inline.
-Merge main (e2eff66) into branch: complete (merge commit 5775948; retopo deletion reconciled — resolve cache v3, retopo stripped from provider/cache/tests; Meadow boulders ported 14→140; pf sources synced into both Windows Makefiles; engine+tests+explorer+viewer builds green)
-Task 12 progress: harness rewritten + committed (a3d44c2); Windows binaries clean-rebuilt + zip repackaged; full sweep run (SWEEP_EXIT=1). Triage: meadow_bake_tests/meadow_bake_check/tileset_load_tests were stale main-era expectations — fixed + verified green (commit b02ae5a: heights +-130 banded, children 70841, variants 2629, cfg.gl_available=true). Tree failures (run-graph-integration 6 FAILs, run-example load_v2 TreeGallery) reproduce on MAIN checkout = pre-existing (majestic-oak hybrid Tree), not merge regressions. viewer-logic/treebake main-checkout classification in flight. Timed runs: cold silhouette >260s, warm >80s vs <=60s gate (GPU-throttled publish); both runs ended early via WindowShouldClose — asked Jack if he closed them.
-Task 12 sweep triage COMPLETE: fixed suites (run-meadow, run-meadow-check, tileset-load-tests) green at b02ae5a. Pre-existing on MAIN (identical FAIL sets, same TreeGallery hash 1bf67cd66e765e3b): run-graph-integration (6 Leaf FAILs), run-example (load_v2 TreeGallery), run-viewer-logic (flat tree child table, exit 2). run-treebake green both sides (hybrid-Tree line is informational). Cause: main's majestic-oak hybrid Tree (ea579ba era) — NOT merge regressions; documented, not fixed in Phase C. Remaining for Jack: timed-run window-close question, warm gate >80s vs <=60s, cold gate adjudication, re-sweep decision.
+Task 1: complete (commits da85bfd..d0e613d, review clean)
+  - Minor: per-frame material table upload in draw_gpu_driven_gbuffer (no dirty flag); 64-slot buffer vs MAX_MATERIALS=32
+  - Minor: sunDir uploaded but unused in gbuffer shader (parity with raster.fs per spec)
 
-=== INFINITE-WORLD PLAN (2026-07-10) ===
-Plan: docs/superpowers/plans/2026-07-10-phase-c-infinite-world.md (12 tasks)
-BASE at start: 1900675 | Old-plan tasks above are the retired 51x51 world (superseded)
-IW Task 1: complete (commits d947f6f + fix d97fb15, review Approved after 1 fix round)
-  - Delivered: ScriptHost::fold_sources_cached keyed fnv1a64(source,0xff,shared_lib_root), hits/misses counters, clear_fold_cache; all 5 fold_sources call sites migrated (brief said 4; eval_tileset was the 5th); set_shared_lib_root invalidates; reload safe by construction (install_graph recreates ScriptHost) — documented in header
-  - Controller fix a44e2ab (NOT part of task diff): pre-existing run-script qjs-flavor break since old Task 16 — params_from_json was guarded under MATTER_HAVE_SCRIPT_HOST + part_graph.cpp missing from SCRIPT_CPP; moved parser to always-compiled section, added part_graph.cpp; run-script/modbake/tilesetdsl all build+pass
-  - Minor (final review triage): hit/miss counters are cumulative-lifetime, not reset by clear_fold_cache (test-locked, documented)
-IW Task 2: complete (commits c51a625..26c7f2a, review approved after 3 fix rounds)
-  - fixes: RecordingBaker forwarding (00c6e0f); demand-bake set_baking_module + restore_from_cache set_transient + load_flat scratch-first (c62108d); ensure_part_flattened scratch root (26c7f2a)
-  - 8bca839 (haiku fixer) swept in junk (logs, pf_tests bin, Meadow.js local mod) — rewritten to 26c7f2a; Meadow.js stays uncommitted
-  - run-demandbake segfault verified PRE-EXISTING at BASE d97fb15 (autoremesher, known)
-  - minors deferred to final triage: std::system("mkdir -p") in set_transient_modules; test cleanup-before-check ordering
-  - NOTE for Tasks 8/9: flatten_part reads all parts from ONE root — transient part with cache-resident children would fail dirname-swap; fine for leaf transients (Terrain). set_baking_module seam is stateful — fragile under concurrent bakes on shared HostBaker.
-IW Task 3: complete (commit 673f2aa, review Approved after test-gap fix 3bad78e+5c1040f)
-  - Delivered: terrain_field.h/.cpp — FieldProgram::parse (const/noise2/ridge2/warp2/add/mul/min/max/clamp/blend/smoothstep ops, directives height/moisture/relief/seaLevel/biome), FieldRuntime (height_at/density_at/slope_at/moisture_at/relief_at/biome_at/material_at/sea_level), hash (fnv1a64 over canonical text); value_noise + fbm2 (ridged variant); kMaxOps=64 + forward-ref rejection
-  - Test gaps closed: forward-ref rejection test, >64-register rejection test, hash-test programs fixed to use valid backward-only register refs with parse-success assertion (3bad78e+5c1040f)
-  - Production code clean, test-only edits
-IW Task 4: complete (commit 643d351, review Approved after fix 6ac0234)
-  - Delivered: ScriptHost::eval_world — evaluates `class X extends World { field() {...} biomes() {...} }`, collects field-program op lines from JS builder API, returns WorldEvalResult (field_program, biomes_json, sector_size, y_min, y_max); 'world' manifest kind in publish pipeline; eval_world_tests covering basic roundtrip + param defaults
-  - Fix 6ac0234: eval_world folds shared-lib sources (mirroring eval_part_publish_class) + overlays static params defaults (Finding 2)
-IW Task 5: complete (commit 0dcb764, fix 67efd37)
-  - Delivered: terrain_mesher.h/.cpp — mesh_sector (native surface-nets per sector tile, 4 material IDs, terrain_field::FieldRuntime density queries); terrainVolume DSL verb (dsl_bindings.cpp) binding tx/tz/rung/materialIDs to mesh_sector + emit via fill/beginShape/vertex
-  - Fix 67efd37: terrainVolume emits via standard fill→beginShape→vertex→endShape path, removed push_with_normals (sole caller was the verb; declaration+definition in triangle_emit.hpp/.cpp deleted)
-  - DEFERRED finding for Jack: terrain_mesher.cpp uses full Y slab [y_min, y_max] instead of brief's height_at-scanned slab — implementer chose for Y-lattice seam alignment at sector boundaries; rung-3 pays ~4x meshing cost vs height-scan slab. Engineering tradeoff, not a bug.
-IW Task 6: complete (commit 3dbe644, review Approved)
-  - Delivered: shared-lib/scatter_grid.js — candidatesInRect (deterministic cross-sector Poisson-ish scatter, spatial hash seeded by world seed + kind index + cell coords, min-distance spacing, rotation/u/v per candidate); test in shared_lib_tests.cpp including cross-sector partition assertion
-  - Minor: system("mkdir -p") in shared_lib_tests.cpp:326; part_graph.cpp added to SHLIB_CPP
-IW Task 7: complete (commit e9518fb, test gap closed 3bad78e+5c1040f)
-  - Delivered: WorldSector.js — terrainVolume at rung-gated detail, biome-table scatter (dense: rocks/pebbles/grass per-sector rng; spaced: trees + boulders via candidatesInRect), assetVariants() static requires (28 variants); world query verbs heightAt/slopeAt/biomeAt bound through dsl_bindings.cpp to FieldRuntime
-  - Test gap closed: ground-geometry file-size assertion + scatter bake with full 28-variant composite-key child table (canonicalized via params_from_json→params_to_json, dummy hashes, all land biomes)
-IW Task 8: complete (commit 7388478, test gap closed 3bad78e+5c1040f)
-  - Delivered: sector_streamer.h/.cpp — SectorStreamer (Config: rings 48/120/300/800 rung 3/2/1/0, hysteresis 16, max_inflight 8, sector_size 16, fail_cooldown 3); update/next_request/on_published/on_failed/take_evictions/clear/resident_count; hysteresis: demotion frozen until dist > ring+hysteresis, eviction only beyond outer+hysteresis; promote immediate (finer detail, no delay); publish-then-evict (rung swap)
-  - Test gap closed: hysteresis oscillation test — warm-up 8 iterations (initial boundary promotions are legitimate refinement), then 12 measured iterations asserting zero evictions + no lost residents
-  - Minors: clear() leaves undrained evictions; inflight_ clamp at 0
-IW Task 9: complete (commits 5a950b6+27f8d9d)
-  - Delivered: world-kind session engine wiring — install_world (eval_world + FieldRuntime + child asset bake), execute_sector_stream_step (focus mutex + streamer.update + drain evictions + per-sector bake_source with fresh ScriptHost + GL publish/evict jobs + WorldDelta add/remove + BakeFinished gate), regenerate(seed) clearing + re-install, clean shutdown
-  - Bug fix 27f8d9d: publish_pipeline replaces PartStore losing transient scratch_dir — re-apply after swap; frame_stats().resident_sectors updated eagerly from streamer
-  - Test fixture: replaced production schema symlinks with simple test-only schemas (no autoremesher/retopo), removed Tree entirely (pre-existing fixHoleWithQuads abort); test waits for 2 BakeFinished events (install + streaming)
-  - Gates: api_tests PASS, world_stream_tests ALL PASSED (80 sectors/140K tris/sea_level/focus-move/regenerate), terrain_field/sector_bake/sector_streamer ALL PASS; demandbake+refineloop segfault PRE-EXISTING (autoremesher/TBB, verified pre-Phase-C)
-IW Task 10: complete (commits ce7a10a + fix cdcf290, review Approved)
-  - Delivered: MeadowWorld.js (field program: relief/moisture/plains/mounts/seaLevel:0, biome table: meadow/foothills/mountains/ocean), world.manifest (world kind), ExplorerDemo → MeadowWorld (world_name, spawn at origin, orbit at origin), water plane (translucent 1600x1600 quad at sea level, camera-following, rlDisableBackfaceCulling), camera Y floor clamp (sl+0.5), sectors: N in HUD stats
-  - Engine fix: install_world child bake failures now non-fatal (skip + BakeError event + continue); prevents Tree's missing TreeBranch sub-dependency from aborting the entire world install
-  - Fix cdcf290: removed Tree from WorldSector.js assetVariants (27 variants) since install_world can't resolve sub-dependencies (TreeBranch→Twig→Leaf); tree placement code stays gated by counts.trees; MeadowWorld biomes updated; sector_bake_tests 28→27
-  - Windows Makefiles: terrain_field/terrain_mesher/sector_streamer added to ExplorerDemo + MatterViewer WIN_ME3_CPP; explorer.exe link clean
-  - Gates: sector_bake ALL PASS (27 variants), api_tests PASS, world_stream_tests ALL PASSED, smoke 120s 60fps 1318 sectors, zero BakeError lines
-  - Minors for final triage: terrain near origin mostly underwater (plains add(-6) below sea_level 0; mountain ridges visible at horizon); instances_total=0 in world-kind path (counter only set by old expand path)
+Task 2: complete (commits d0e613d..b639169, review clean)
+  - Minor: duplicate HitGroupRecord local struct in rebuild_hitgroup_sbt + trace_shadows (consolidate at final review)
+  - Minor: MATERIAL_FLOATS_PER_DEF hardcoded as 12 in upload_material_table
+  - Minor: unregister_part doesn't reclaim sbt index slots (latent, current usage never unregisters)
 
-=== RT LIGHTING PHASE 1 (2026-07-12) ===
-Plan: docs/superpowers/plans/2026-07-11-rt-lighting-phase1.md (5 tasks)
-BASE at start: e22bd84
+Task 3: complete (commits b639169..9d3d1d6, review clean)
+  - Fix needed: shadow_miss_pg leaked — store in member, destroy in shutdown
+  - Fix needed: reflection branch checks roughness<0.3 but not metallic>0.1 (plan bug, comment says both)
+  - Minor: sky constants duplicated between lighting_miss.cu and lighting_raygen.cu
+  - Minor: GI bounce shadow origin is approximated (50-unit offset instead of actual hit distance)
+  - Minor: is_sky detection via dot(normal, dir)>0.99 is fragile (could use 7th payload register)
+  - Implementer correctly fixed: optixGetRayTmax() in raygen context → 50.0f; added cuda_fp16.h
 
-Task 1: complete (commit a8c2df9, pre-existing — CUDA driver API init + OptiX context)
-Task 2: complete (commit 5c71e38, review Approved)
-  - Delivered: nvcuda.def + libnvcuda.dll.a (14KB, committed), embed_rt_shaders.py (both tools/ and MatterEngine3/tools/), ME3 Makefile PTX embed rule with wildcard prereq, rt_lighting.cpp cuda_runtime.h→cudaGL.h, MatterViewer Linux -lcuda -L/usr/lib/wsl/lib, Windows HAVE_CUDA gate (WIN_ME3_CPP + CXX_FLAGS + WIN_LIBS)
-  - Minor (final review triage): wildcard prereq+recipe duplication (use $^ instead); c_escape trailing newline; libnvcuda.dll.a 14KB vs spec ~2-3KB estimate
-Task 3: complete (commit 7408ac8, review Approved)
-  - Delivered: RtBlas struct (uint64_t opaque handles), register_part (vertex upload + compacted BLAS build), unregister_part (free), shutdown cleanup; test_rt_blas.cpp (SKIP in WSL2)
-  - Important (deferred, not blocking): no error checking on OptiX/CUDA calls inside register_part — spec skeleton shares this gap; address at final integration
-  - Minor (final review triage): d_compacted_size could use pinned host alloc; RtBlas public struct exposure; test has no post-register assertion
-Task 4: complete (commit 5ea4303, review Approved)
-  - Delivered: InstanceInput struct, update_instances (row-major→3x4 OptiX transform, TLAS build with ALLOW_UPDATE flag, d_instances growth policy), tlas_handle() accessor, shutdown cleanup; test_rt_tlas.cpp (SKIP in WSL2)
-  - Minor (final review triage): instance_cap_ no-shrink (intentional); instanceId gaps on skip; ALLOW_UPDATE set without UPDATE codepath; no error checking (inherited from Task 3)
-Task 5: complete (commits fd74865 + fix 7640ec9, review Approved after 1 fix)
-  - Delivered: rt_params.h (unsigned long long for driver-API surface objects), shadow_raygen/miss/hit.cu (PTX shaders), depth_linearize.comp + rt_composite.vs/fs (GL shaders), full pipeline build + SBT, CUDA-GL interop (depth R32F + shadow R32F), resize/prepare_depth/trace_shadows/composite, ensure_depth_blit on GpuCuller, rt_shadows in RenderOptions, viewer render loop integration with lazy init, main.cpp rt_shadows=true
-  - Fix 7640ec9: init retry spam — added rt_lighting_failed flag to prevent per-frame retry+printf when OptiX unavailable (WSL2)
-  - Known API adaptations: shader_text() API mismatch fixed, invert4x4 added (no viewer::invert16), sun_dir negated
-  - Minor (final review triage): per-frame BLAS re-registration loop; link_program lambda inconsistency; missing glLinkProgram status checks; probe_bricks.cpp scope creep in WIN_ME3_CPP
-Final review fix: cdaf470 — DISABLE_ANYHIT flags removed (shadows would have been invisible), invert4x4 return guarded, duplicate tools/embed_rt_shaders.py removed
-Final review: Approved with fixes applied. Remaining minor: resize() height check gap; shadow_strength hardcoded 0.7f; ALLOW_UPDATE without UPDATE path; per-frame BLAS re-registration loop; missing GL link status checks
+Task 4: complete (commits 9d3d1d6..b95b018, review clean)
+  - Minor: u_albedo sampler declared+bound but not read in rt_lighting_composite.fs (intentional per spec, reserved for future)
+  - Minor: link_program result unchecked (pre-existing pattern in compile_gl_shaders)
+
+Task 5: complete (commits b95b018..7246a73, review clean)
+  - Fix needed (deferred): optixDenoiserSetup called with null scratch ptr (plan bug, inert while denoiser is no-op)
+  - Minor: denoiser guide buffers allocated once, not resized (inert while denoise() is no-op)
+  - Minor: d_current_buffer_ allocated but never written (scaffolding for future accumulation)
+
+ALL 5 TASKS COMPLETE. Proceeding to final whole-branch review.
+
+Final review: 2 Critical + 2 Important fixed in e1dc9d1:
+  - FIXED: Phase 1 shadow trace guarded with !opts.rt_full_lighting (was double-tracing + visual corruption)
+  - FIXED: RT init guard widened to (rt_shadows || rt_full_lighting) (was init-coupling bug)
+  - FIXED: shadow_miss_pg stored in member + destroyed in shutdown (was leaked)
+  - FIXED: Removed wasted SSS trace_radiance call (back_hit was unused)
+
+Deferred to follow-up:
+  - optixDenoiserSetup null scratch ordering (inert while denoiser is no-op)
+  - Reflection roughness gate (current behavior more physically correct than plan)
+  - Duplicate HitGroupRecord local struct (consolidation, no correctness risk)
+  - GI bounce shadow origin 50.0f approximation (use payload register 6 for hit distance)
+  - Sky model duplication between raygen and miss
+
+BRANCH READY TO MERGE: 6 commits, 14 files, +1503/-38 lines.
+
+---
+
+# Vulkan and Canonical Matrices Phase 1 SDD Progress Ledger
+Branch: feature/rt-lighting-phase2 | Plan: docs/superpowers/plans/2026-07-13-vulkan-matrix-phase1.md
+BASE at start: ff3a71f
+
+No tasks complete yet. Resume at Task 1.
+
+Task 1: complete (commits ff3a71f..fbdd131, review clean)
+  - Environment gate: CUDA 13.3 and OptiX 8.1 found; Vulkan headers, import library, and glslc absent.
+  - Minor: default CUDA/OptiX paths use machine-specific Windows 8.3 aliases; overrides are supported.
+
+Task 2: complete (commits fbdd131..89d764d, review clean)
+  - Minor: CameraDesc FOV range is not explicitly validated; required error cases are covered.
+
+Task 3: complete (commits 89d764d..47f6c7b, review clean after fix)
+  - Fixed review finding: both OptiX raygen kernels now unproject Vulkan [0,1] depth directly.
+  - Environment: focused builds and CUDA PTX compile passed; legacy native test targets remain limited by POSIX/link assumptions.
+
+Task 4: complete (commits 47f6c7b..894d90e, review clean after fix)
+  - Public WorldSession camera API now uses CameraDesc; raylib camera types remain only behind an explicit internal compatibility conversion.
+  - Fixed review findings: pitch is clamped before pole crossing and combined movement is normalized.
+  - Environment: focused controller tests and staged-snapshot C++ compiles passed; the broad viewer-logic target remains limited by its hardcoded C compiler temp-path behavior under MSYS2.
+
+Task 5: complete (commits 894d90e..4aad2a7, review clean after three fix passes)
+  - Vulkan 1.3 device/swapchain smoke runs on RTX 4090 with CUDA/OptiX enabled and zero validation errors.
+  - Timeline Win32 interop, swapchain-maintenance present fences, resize/minimize handling, and terminal failure ownership are validated.
+  - Windows Vulkan headers, loader, shader compiler, and validation layers were installed in MSYS2; HAVE_CUDA=1 preflight passes.
+
+Task 6: complete (commits 4aad2a7..482e4ca, review clean after three fix passes)
+  - Vulkan RAII resources, compute pipelines, descriptors, transitions, upload/readback, and deterministic SPIR-V embedding are implemented.
+  - CPU/GPU canonical matrix transform matches exactly on RTX 4090; validation remains zero through teardown.
+  - Ambiguous submits retain every dependency, moved wrappers use stable lifetime tokens, and wrappers may safely outlive the VulkanDevice.
+
+Task 7: complete (commits 482e4ca..54f6cd5, review clean after lifecycle/transaction fixes)
+  - Vulkan scene upload and GPU culling match the independent CPU oracle across canonical Vulkan-ZO cases.
+  - Multi-LOD regions, streaming compaction, device-limit checks, per-bucket shader bounds, and RT snapshot remapping are covered.
+  - Recoverable failures preserve a coherent uploaded snapshot; partial Vulkan mutations fail closed until safe reset/reinit.
+
+Task 8: complete (commits 54f6cd5..5d341ca, review clean after feature/fault fixes)
+  - Dynamic-rendering G-buffer and HDR composite produce verified albedo, normal, ORM, depth, and finite background pixels.
+  - Negative-height viewport, nonzero firstInstance, vertex ownership/compaction, resize readback, and raster fault handling are covered.
+  - RTX raster/cull/default/fault modes pass with zero Vulkan validation errors.
+
+Task 9: complete (commits 5d341ca..6221b79, final review approved/demoable)
+  - MatterViewer now owns a direct GLFW/Vulkan frame loop with Vulkan ImGui, real world streaming, presentation, screenshots, resize, and FIFO commands.
+  - Clean-cache Cornell normal/resize/material-override smokes pass with authored material IDs/tints, finite HDR emission, and zero validation errors.
+  - Windows HAVE_CUDA=1 build is Vulkan-only with no OpenGL/CUDA-GL imports; CUDA/OptiX are truthfully marked available but inactive before Task 10.
+
+Task 10: in progress (initial implementation commit 37f6b47; review fixes pending)
+  - CUDA-Vulkan external memory and timeline-semaphore interop is operational and the 100-cycle live smoke produced the expected pixel with zero validation errors.
+  - Review blockers to fix before approval: safe post-launch failure cleanup, caller CUDA-context restoration, complete export-handle lifecycle assertions, viewer feature-gate update, and Windows LUID node-mask validation.
+  - The review-driven test scaffold is preserved in stash `wip: task10 interop review tests` while the working tree is cleaned.
