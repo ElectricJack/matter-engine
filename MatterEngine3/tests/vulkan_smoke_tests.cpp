@@ -68,13 +68,14 @@ viewer::VkScenePart fixed_part(uint64_t hash, matter::Float3 minimum,
                                matter::Float3 maximum,
                                uint32_t first_vertex);
 
-viewer::VkScenePart known_raster_triangle(uint64_t hash) {
+viewer::VkScenePart known_raster_triangle(uint64_t hash,
+                                          float emission = 5.0f) {
     viewer::VkScenePart part = fixed_part(
         hash, {-0.75f, -0.75f, -2.0f}, {0.75f, 0.75f, -2.0f}, 0);
     const matter::Float3 normal{0.0f, 1.0f, 0.0f};
     const matter::Float4 albedo{0.25f, 0.5f, 0.75f, 1.0f};
     const matter::Float4 orm{0.2f, 0.7f, 0.4f,
-                             viewer::vulkan_encode_emission(5.0f)};
+                             viewer::vulkan_encode_emission(emission)};
     part.vertices = {
         {{-0.75f, -0.75f, -2.0f}, normal, albedo, orm},
         {{0.75f, -0.75f, -2.0f}, normal, albedo, orm},
@@ -88,6 +89,29 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     constexpr uint32_t height = 160;
     std::string error;
     viewer::VkSceneRenderer renderer(vulkan);
+    const auto half_roundtrip = [](float value) {
+        if (value == 0.0f) return 0.0f;
+        int exponent = 0;
+        const float mantissa = std::frexp(value, &exponent);
+        return std::ldexp(std::round(std::ldexp(mantissa, 11)),
+                          exponent - 11);
+    };
+    const auto decoded_emission = [&](float emission) {
+        const float encoded = half_roundtrip(
+            viewer::vulkan_encode_emission(emission));
+        return std::exp2(std::fmin(encoded,
+                                   viewer::kVkMaxEncodedEmission)) - 1.0f;
+    };
+    const float decoded_five = decoded_emission(5.0f);
+    const float decoded_thousand = decoded_emission(1000.0f);
+    const float decoded_max =
+        decoded_emission(std::numeric_limits<float>::max());
+    CHECK(std::fabs(decoded_five - 5.0f) < 0.02f,
+          "emission 5 survives CPU half-float quantization");
+    CHECK(std::fabs(decoded_thousand - 1000.0f) < 4.0f,
+          "emission 1000 survives CPU half-float quantization");
+    CHECK(std::isfinite(decoded_max) && decoded_max > decoded_thousand,
+          "FLT_MAX emission half roundtrip saturates finite and monotonic");
     CHECK(viewer::vulkan_material_uses_unsupported_texture(2.0f) &&
               !viewer::vulkan_material_uses_unsupported_texture(-1.0f) &&
               !viewer::vulkan_material_uses_unsupported_texture(
@@ -161,12 +185,15 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
           error.empty() ? "read raster background" : error.c_str());
     CHECK(close4(center.albedo, {0.25f, 0.5f, 0.75f, 1.0f}, 6e-3f),
           "known center albedo");
-    CHECK(close4(center.normal, {0.0f, 1.0f, 0.0f, 1.0f}, 2e-3f),
-          "known center normal");
+    CHECK(close4(center.normal,
+                 {0.0f, 1.0f, 0.0f,
+                  viewer::vulkan_encode_emission(5.0f)},
+                 4e-3f),
+          "known center normal xyz and half-float emission payload");
     CHECK(close4(center.orm,
-                 {0.2f, 0.7f, 0.4f, viewer::vulkan_encode_emission(5.0f)},
+                 {0.2f, 0.7f, 0.4f, 1.0f},
                  6e-3f),
-          "known center ORM");
+          "known center ORM with reserved alpha default");
     CHECK(std::isfinite(center.depth) && center.depth >= 0.0f &&
               center.depth <= 1.0f,
           "known center Vulkan depth range");
@@ -203,6 +230,38 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
               std::fabs(dark_center.hdr.y - 2.50f) < 0.05f &&
               std::fabs(dark_center.hdr.z - 3.75f) < 0.06f,
           "material emission 5 survives UNORM G-buffer and HDR composite");
+
+    renderer.release_part(901);
+    CHECK(renderer.ensure_part(known_raster_triangle(901, 1000.0f), error) >= 0 &&
+              renderer.update_instances({{900, identity}, {901, identity}}, error) &&
+              renderer.dispatch_culling(frame, camera.position, 1.0f, error) &&
+              renderer.render_gbuffer_and_composite(width, height, error),
+          error.empty() ? "render emission 1000" : error.c_str());
+    viewer::VkRasterPixel thousand_center{};
+    CHECK(renderer.readback_raster_pixel(width / 2, height / 2,
+                                         thousand_center, error),
+          error.empty() ? "read emission 1000" : error.c_str());
+    CHECK(std::isfinite(thousand_center.hdr.x) &&
+              thousand_center.hdr.x > dark_center.hdr.x * 100.0f,
+          "GPU composite keeps emission 1000 finite and above emission 5");
+
+    renderer.release_part(901);
+    CHECK(renderer.ensure_part(known_raster_triangle(
+              901, std::numeric_limits<float>::max()), error) >= 0 &&
+              renderer.update_instances({{900, identity}, {901, identity}}, error) &&
+              renderer.dispatch_culling(frame, camera.position, 1.0f, error) &&
+              renderer.render_gbuffer_and_composite(width, height, error),
+          error.empty() ? "render FLT_MAX emission" : error.c_str());
+    viewer::VkRasterPixel max_center{};
+    CHECK(renderer.readback_raster_pixel(width / 2, height / 2, max_center,
+                                         error),
+          error.empty() ? "read FLT_MAX emission" : error.c_str());
+    CHECK(std::isfinite(max_center.hdr.x) && max_center.hdr.x > 0.0f &&
+              max_center.hdr.x >= thousand_center.hdr.x,
+          "GPU composite saturates FLT_MAX emission finite monotonic nonzero");
+    std::printf("emission HDR: five=%.5f thousand=%.5f max=%.5f\n",
+                dark_center.hdr.x, thousand_center.hdr.x, max_center.hdr.x);
+
     viewer::VkSceneLighting bright = dark;
     bright.sky_color = {2.0f, 2.0f, 2.0f};
     renderer.set_lighting(bright);

@@ -245,7 +245,9 @@ int main() {
     bool bake_ready = false;
     bool selected_world_reported = false;
     const bool test_resize = std::getenv("MATTER_TEST_RESIZE") != nullptr;
+    const bool hide_ui = std::getenv("MATTER_HIDE_UI") != nullptr;
     bool resize_exercised = false;
+    if (hide_ui) std::printf("viewer: UI hidden by MATTER_HIDE_UI\n");
 
     int cmd_fd = -1;
 #ifdef _WIN32
@@ -443,7 +445,7 @@ int main() {
             std::fprintf(stderr, "FATAL: ImGui Vulkan prepare: %s\n",
                          error.c_str());
             fatal_error = true;
-        } else {
+        } else if (!hide_ui) {
             ui.draw_debug_panel(stats);
             ui.draw_worlds_panel(worlds, stats);
             ui.draw_camera_panel(camera);

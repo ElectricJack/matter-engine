@@ -19,7 +19,12 @@
 - Keep camera matrices unjittered. Motion vectors and jitter belong to Phase 2.
 - Keep HiZ disabled by default and outside this migration's debugging scope.
 - Reset/bypass temporal history during camera motion until Phase 2 validates dense motion vectors.
-- The final build command must specify `HAVE_CUDA=1` and log `VULKAN=1 CUDA=1 OPTIX=1 OPENGL=0`.
+- Every Windows build command must specify `HAVE_CUDA=1`. Through Task 9 (before
+  Task 10 interop exists), the manifest is exactly `VULKAN=1`, `OPENGL=0`,
+  `CUDA_AVAILABLE=1`, `OPTIX_AVAILABLE=1`, `CUDA_ACTIVE=0`, and
+  `OPTIX_ACTIVE=0`. Task 10 activates CUDA interop; Task 11 activates OptiX;
+  the Task 13 final gate therefore requires both `CUDA_ACTIVE=1` and
+  `OPTIX_ACTIVE=1`.
 - Preserve unrelated working-tree changes and stage only each task's files.
 
 ---
@@ -119,7 +124,7 @@ vulkan-preflight:
 
 $(WIN_FEATURES):
 	@mkdir -p $(dir $@)
-	@printf 'VULKAN=1\nCUDA=1\nOPTIX=1\nOPENGL=0\n' > $@
+	@printf 'VULKAN=1\nOPENGL=0\nCUDA_AVAILABLE=1\nOPTIX_AVAILABLE=1\nCUDA_ACTIVE=0\nOPTIX_ACTIVE=0\n' > $@
 ```
 
 - [ ] **Step 3: Verify**
@@ -132,7 +137,8 @@ make -C MatterViewer build/windows/build_features.txt HAVE_CUDA=1
 cat MatterViewer/build/windows/build_features.txt
 ```
 
-Expected: preflight succeeds and the manifest contains exactly the four declared feature lines.
+Expected: preflight succeeds and the pre-Task-10 manifest contains exactly the
+six declared availability/activity lines above.
 
 - [ ] **Step 4: Commit**
 
@@ -685,6 +691,8 @@ git commit -m "feat(viewer): switch window UI and presentation to Vulkan"
 
 **Interfaces:**
 - Produces: device matching, exported shared images, imported CUDA arrays/surfaces, exported semaphores.
+- Updates the feature manifest to `CUDA_ACTIVE=1` while `OPTIX_ACTIVE=0` until
+  Task 11 consumes the interop path.
 
 - [ ] **Step 1: Add an interop round-trip test before changing OptiX**
 
@@ -708,7 +716,9 @@ Use opaque Win32 external-memory handles, `vkGetMemoryWin32HandleKHR`, `cuImport
 Run: `make -C MatterViewer vulkan-smoke HAVE_CUDA=1`, then
 `powershell.exe -NoProfile -Command '$env:MATTER_VK_SMOKE_MODE="interop"; $env:MATTER_VK_SMOKE_RESIZES="100"; & .\MatterViewer\build\windows\vulkan_smoke_tests.exe'`.
 
-Expected: 100 cycles pass, zero validation errors, process handle count returns within two handles of baseline.
+Expected: 100 cycles pass, zero validation errors, process handle count returns
+within two handles of baseline, and the manifest reports `CUDA_ACTIVE=1` and
+`OPTIX_ACTIVE=0`.
 
 ```sh
 git add MatterEngine3/src/render/vk_cuda_interop.h MatterEngine3/src/render/vk_cuda_interop.cpp \
@@ -778,7 +788,8 @@ powershell.exe -NoProfile -Command 'foreach($mode in "rt-init","rt-blas","rt-tla
 x86_64-w64-mingw32-nm MatterViewer/viewer.exe | grep -E 'glFinish|cuGraphicsGL' && exit 1 || true
 ```
 
-Expected: OptiX initializes, TLAS transforms pass, Vulkan samples RT output, no CUDA-GL symbols.
+Expected: OptiX initializes, TLAS transforms pass, Vulkan samples RT output, no
+CUDA-GL symbols, and the manifest reports `CUDA_ACTIVE=1` and `OPTIX_ACTIVE=1`.
 
 ```sh
 git add MatterEngine3/src/render/rt_lighting.h MatterEngine3/src/render/rt_lighting.cpp \
@@ -897,7 +908,9 @@ cat MatterViewer/build/windows/build_features.txt
 x86_64-w64-mingw32-objdump -p MatterViewer/viewer.exe | grep -Ei 'vulkan-1.dll|nvcuda.dll|opengl32.dll'
 ```
 
-Expected: manifest is `VULKAN=1 CUDA=1 OPTIX=1 OPENGL=0`; Vulkan and CUDA DLLs appear; OpenGL does not.
+Expected: manifest is exactly `VULKAN=1`, `OPENGL=0`, `CUDA_AVAILABLE=1`,
+`OPTIX_AVAILABLE=1`, `CUDA_ACTIVE=1`, and `OPTIX_ACTIVE=1`; Vulkan and CUDA
+DLLs appear; OpenGL does not.
 
 - [ ] **Step 5: Run the complete gate**
 
@@ -930,7 +943,10 @@ git commit -m "test(vulkan): add motion and CUDA acceptance gates"
 - CUDA/Vulkan external memory and semaphore stress tests pass.
 - OptiX lighting works through Vulkan and resets history during camera motion.
 - Forward/back, strafe, and yaw/pitch captures show no reversed flow or invented temporal edges.
-- Clean `make -C MatterViewer windows HAVE_CUDA=1` succeeds and reports `VULKAN=1 CUDA=1 OPTIX=1 OPENGL=0`.
+- Clean `make -C MatterViewer windows HAVE_CUDA=1` succeeds and, after the
+  Task 10/11 activation work, reports `VULKAN=1`, `OPENGL=0`,
+  `CUDA_AVAILABLE=1`, `OPTIX_AVAILABLE=1`, `CUDA_ACTIVE=1`, and
+  `OPTIX_ACTIVE=1`.
 - Relevant headless MatterEngine3 tests pass.
 
 After this gate, create separate plans in order:

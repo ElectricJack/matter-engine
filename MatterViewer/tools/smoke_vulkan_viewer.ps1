@@ -24,17 +24,8 @@ function Assert-Png([string]$Path, [int]$ExpectedWidth, [int]$ExpectedHeight) {
         if ($bitmap.Width -ne $ExpectedWidth -or $bitmap.Height -ne $ExpectedHeight) {
             throw "unexpected PNG dimensions $($bitmap.Width)x$($bitmap.Height): $Path"
         }
-        $colors = [System.Collections.Generic.HashSet[int]]::new()
-        $stepX = [Math]::Max(1, [int]($bitmap.Width / 64))
-        $stepY = [Math]::Max(1, [int]($bitmap.Height / 64))
-        for ($y = 0; $y -lt $bitmap.Height; $y += $stepY) {
-            for ($x = 0; $x -lt $bitmap.Width; $x += $stepX) {
-                [void]$colors.Add($bitmap.GetPixel($x, $y).ToArgb())
-            }
-        }
-        if ($colors.Count -lt 8) {
-            throw "screenshot has only $($colors.Count) sampled colors: $Path"
-        }
+        # Scene diversity is asserted below by independent nonblack, red,
+        # green, and gray coverage.  Do not count UI colors as scene content.
         $x0 = [int]($bitmap.Width * 0.25); $x1 = [int]($bitmap.Width * 0.75)
         $y0 = [int]($bitmap.Height * 0.15); $y1 = [int]($bitmap.Height * 0.90)
         $world = 0; $nonblack = 0; $red = 0; $green = 0; $gray = 0
@@ -60,6 +51,34 @@ function Assert-Png([string]$Path, [int]$ExpectedWidth, [int]$ExpectedHeight) {
     Write-Output "PNG SHA256 $hash"
 }
 
+function Assert-UiOverlay([string]$Path, [bool]$ExpectedVisible) {
+    $bitmap = [System.Drawing.Bitmap]::FromFile($Path)
+    try {
+        # ImGui's blue-gray selected rows are a stable marker in the upper-left
+        # panels and do not overlap the Cornell geometry in a hidden-UI frame.
+        $markers = 0
+        for ($y = 15; $y -lt [Math]::Min(310, $bitmap.Height); $y += 2) {
+            for ($x = 15; $x -lt [Math]::Min(230, $bitmap.Width); $x += 2) {
+                $p = $bitmap.GetPixel($x, $y)
+                if ($p.R -ge 50 -and $p.R -le 105 -and
+                    $p.G -ge 70 -and $p.G -le 130 -and
+                    $p.B -ge 90 -and $p.B -le 155 -and
+                    ($p.B - $p.R) -ge 25 -and ($p.B - $p.G) -ge 12) {
+                    ++$markers
+                }
+            }
+        }
+        if ($ExpectedVisible -and $markers -lt 100) {
+            throw "expected debug UI overlay is absent: $Path"
+        }
+        if (-not $ExpectedVisible -and $markers -ge 100) {
+            throw "debug UI overlay obscures scene verification: $Path"
+        }
+    } finally {
+        $bitmap.Dispose()
+    }
+}
+
 function Assert-PeImports([string]$Path) {
     $objdump = @('C:\msys64\ucrt64\bin\objdump.exe',
                  'C:\msys64\usr\bin\objdump.exe') |
@@ -75,15 +94,25 @@ function Assert-PeImports([string]$Path) {
 }
 
 function Invoke-ViewerCase([string]$Name, [bool]$Resize,
-                           [int]$Width, [int]$Height) {
+                           [int]$Width, [int]$Height, [bool]$TextureOverride,
+                           [bool]$HideUi, [bool]$AssertMaterials) {
     $png = Join-Path $OutputDir "$Name.png"
     Remove-Item -Force $png -ErrorAction SilentlyContinue
     $env:MATTER_WORLD = 'CornellBox'
     $env:MATTER_CACHE_ROOT = Join-Path $OutputDir "cache-$Name"
+    $env:MATTER_VK_DIAGNOSTIC_MATERIALS = '1'
     Remove-Item -Recurse -Force $env:MATTER_CACHE_ROOT -ErrorAction SilentlyContinue
     $env:MATTER_SCREENSHOT = $png
     if ($Resize) { $env:MATTER_TEST_RESIZE = '1' }
     else { Remove-Item Env:MATTER_TEST_RESIZE -ErrorAction SilentlyContinue }
+    if ($HideUi) { $env:MATTER_HIDE_UI = '1' }
+    else { Remove-Item Env:MATTER_HIDE_UI -ErrorAction SilentlyContinue }
+    if ($TextureOverride) {
+        $env:MATTER_VK_DIAGNOSTIC_GROUND_TILESET_MATERIAL = '8'
+    } else {
+        Remove-Item Env:MATTER_VK_DIAGNOSTIC_GROUND_TILESET_MATERIAL `
+            -ErrorAction SilentlyContinue
+    }
     $savedErrorAction = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
@@ -104,13 +133,43 @@ function Invoke-ViewerCase([string]$Name, [bool]$Resize,
     if ($joined -notmatch 'selected world CornellBox hash ([0-9a-fA-F]{16})') {
         throw "$Name did not report selected world CornellBox hash"
     }
-    Assert-Png $png $Width $Height
+    if ($joined -notmatch
+            'Vulkan material diagnostic:.*ids=[1-9][0-9]*.*tinted=[1-9][0-9]*.*red=[1-9][0-9]*.*green=[1-9][0-9]*') {
+        throw "$Name did not preserve Cornell material IDs and red/green tints through RasterMeshData"
+    }
+    if ($TextureOverride) {
+        $warning = 'Vulkan milestone: ground material texture sampling is not available'
+        if (-not $joined.Contains($warning)) {
+            throw "$Name did not exercise the rendered packed-material warning"
+        }
+        if (-not $joined.Contains(
+                'Vulkan diagnostic: reset ground tileset override for material 8')) {
+            throw "$Name did not reset the diagnostic material override"
+        }
+    }
+    if ($AssertMaterials) { Assert-Png $png $Width $Height }
+    else {
+        if (-not (Test-Path $png)) { throw "screenshot was not written: $png" }
+        $bitmap = [System.Drawing.Bitmap]::FromFile($png)
+        try {
+            if ($bitmap.Width -ne $Width -or $bitmap.Height -ne $Height) {
+                throw "unexpected PNG dimensions $($bitmap.Width)x$($bitmap.Height): $png"
+            }
+        } finally {
+            $bitmap.Dispose()
+        }
+    }
+    Assert-UiOverlay $png (-not $HideUi)
     Write-Output "$Name PASS: $Width x $Height, validation errors 0"
 }
 
 $saved = @{}
 foreach ($name in @('MATTER_WORLD','MATTER_SCREENSHOT','MATTER_TEST_RESIZE',
-                    'MATTER_CACHE_ROOT','VK_LAYER_PATH','PATH')) {
+                    'MATTER_HIDE_UI',
+                    'MATTER_CACHE_ROOT',
+                    'MATTER_VK_DIAGNOSTIC_MATERIALS',
+                    'MATTER_VK_DIAGNOSTIC_GROUND_TILESET_MATERIAL',
+                    'VK_LAYER_PATH','PATH')) {
     $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 try {
@@ -135,8 +194,10 @@ try {
                             'CUDA_ACTIVE=0','OPTIX_ACTIVE=0','OPENGL=0')) {
         if (-not $manifest.Contains($feature)) { throw "feature manifest missing $feature" }
     }
-    Invoke-ViewerCase 'cornell' $false 1280 720
-    Invoke-ViewerCase 'cornell-resize' $true 960 540
+    Invoke-ViewerCase 'cornell-demo' $false 1280 720 $false $false $false
+    Invoke-ViewerCase 'cornell-materials' $false 1280 720 $false $true $true
+    Invoke-ViewerCase 'cornell-resize' $true 960 540 $false $true $true
+    Invoke-ViewerCase 'cornell-override' $false 1280 720 $true $true $true
     Write-Output 'vulkan-viewer runtime smoke: PASS'
 } finally {
     foreach ($name in $saved.Keys) {

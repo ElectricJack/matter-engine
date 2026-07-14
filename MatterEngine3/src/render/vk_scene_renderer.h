@@ -25,12 +25,16 @@ namespace viewer {
 
 constexpr uint32_t kVkMaxLod = 9;
 
-// R8G8B8A8_UNORM cannot carry authored HDR emission directly. This bounded,
-// monotonic mapping reserves ORM alpha for an invertible emission strength.
+// Emission is stored as log2(1 + strength) in the alpha channel of the
+// R16G16B16A16_SFLOAT normal attachment. 15.875 is exactly representable in
+// binary16 and decodes to about 60096, leaving headroom below binary16's 65504
+// maximum for the remaining composite terms. Larger finite authored values
+// saturate monotonically at that finite HDR strength; invalid/non-positive
+// values are defined as zero.
+constexpr float kVkMaxEncodedEmission = 15.875f;
 inline float vulkan_encode_emission(float emission) {
     if (!(emission > 0.0f) || !std::isfinite(emission)) return 0.0f;
-    return emission <= 1.0f ? emission / (1.0f + emission)
-                            : 1.0f - 1.0f / (1.0f + emission);
+    return std::fmin(std::log2(1.0f + emission), kVkMaxEncodedEmission);
 }
 
 inline bool vulkan_material_uses_unsupported_texture(float packed_slot) {

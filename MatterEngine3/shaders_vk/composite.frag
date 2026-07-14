@@ -18,7 +18,8 @@ layout(push_constant) uniform SceneLighting {
 
 void main() {
     vec4 albedo = texture(albedo_texture, in_uv);
-    vec3 normal_sample = texture(normal_texture, in_uv).xyz;
+    vec4 normal_payload = texture(normal_texture, in_uv);
+    vec3 normal_sample = normal_payload.xyz;
     float normal_length_squared = dot(normal_sample, normal_sample);
     vec3 normal = normal_length_squared > 1e-20
                     ? normal_sample * inversesqrt(normal_length_squared)
@@ -32,11 +33,11 @@ void main() {
     vec3 diffuse = albedo.rgb * (1.0 - metallic);
     vec3 ambient = diffuse * lighting.sky_color * ao;
     vec3 sun = diffuse * lighting.sun_color * direct * lighting.sun_intensity;
-    float encoded_emission = orm.w;
+    float encoded_emission = normal_payload.w;
     float emission_strength =
         !isnan(encoded_emission) && !isinf(encoded_emission) &&
-        encoded_emission >= 0.0 && encoded_emission < 1.0
-            ? encoded_emission / (1.0 - encoded_emission)
+        encoded_emission > 0.0
+            ? exp2(min(encoded_emission, 15.875)) - 1.0
             : 0.0;
     vec3 emission = albedo.rgb * emission_strength;
     vec3 linear_hdr = ambient + sun * mix(1.0, 0.65, roughness) + emission;

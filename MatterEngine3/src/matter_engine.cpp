@@ -3118,6 +3118,37 @@ void record_vulkan_clear(const VulkanFrame& frame, const float color[3]) {
     vkCmdEndRendering(frame.command_buffer);
 }
 
+struct VulkanDiagnosticMaterialOverride {
+    int material_id = -1;
+
+    explicit VulkanDiagnosticMaterialOverride(int material_count) {
+        const char* value =
+            std::getenv("MATTER_VK_DIAGNOSTIC_GROUND_TILESET_MATERIAL");
+        if (!value || !*value) return;
+        char* end = nullptr;
+        const long parsed = std::strtol(value, &end, 10);
+        if (!end || *end != '\0' || parsed < 0 || parsed >= material_count) {
+            std::fprintf(stderr,
+                "Vulkan diagnostic: invalid ground tileset material '%s'\n",
+                value);
+            return;
+        }
+        material_id = static_cast<int>(parsed);
+        MaterialRegistrySetGroundTilesetSlot(material_id, 0);
+        std::fprintf(stderr,
+            "Vulkan diagnostic: applied ground tileset slot 0 to material %d\n",
+            material_id);
+    }
+
+    ~VulkanDiagnosticMaterialOverride() {
+        if (material_id < 0) return;
+        MaterialRegistrySetGroundTilesetSlot(material_id, -1);
+        std::fprintf(stderr,
+            "Vulkan diagnostic: reset ground tileset override for material %d\n",
+            material_id);
+    }
+};
+
 bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                         uint64_t part_hash, const viewer::LoadedPart& loaded,
                         bool& drawable, std::string& error) {
@@ -3126,12 +3157,45 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
     viewer::VkScenePart part;
     part.part_hash = part_hash;
     const int material_count = MaterialRegistryCount();
+    VulkanDiagnosticMaterialOverride diagnostic_override(material_count);
     std::vector<float> packed_materials(
         static_cast<size_t>(material_count) * MATERIAL_FLOATS_PER_DEF);
     MaterialRegistryPackForGPU(packed_materials.data());
     std::vector<uint32_t> mesh_offsets(loaded.lod_mesh_data.size(), UINT32_MAX);
     for (size_t mi = 0; mi < loaded.lod_mesh_data.size(); ++mi) {
         const auto& mesh = loaded.lod_mesh_data[mi];
+        if (std::getenv("MATTER_VK_DIAGNOSTIC_MATERIALS")) {
+            std::vector<bool> seen(static_cast<size_t>(material_count), false);
+            int distinct_ids = 0;
+            int tinted_vertices = 0;
+            int red_tint_vertices = 0;
+            int green_tint_vertices = 0;
+            for (int vi = 0; vi < mesh.vertex_count; ++vi) {
+                const size_t uv = static_cast<size_t>(vi) * 2;
+                const size_t c = static_cast<size_t>(vi) * 4;
+                if (mesh.texcoords.size() > uv) {
+                    int id = static_cast<int>(mesh.texcoords[uv] + 0.5f);
+                    if (id >= 1000000) id -= 1000000;
+                    if (id >= 0 && id < material_count && !seen[id]) {
+                        seen[id] = true;
+                        ++distinct_ids;
+                    }
+                }
+                if (mesh.colors.size() >= c + 4) {
+                    tinted_vertices += mesh.colors[c + 3] > 0;
+                    red_tint_vertices += mesh.colors[c] > 150 &&
+                                         mesh.colors[c + 1] < 80;
+                    green_tint_vertices += mesh.colors[c + 1] > 150 &&
+                                           mesh.colors[c] < 80;
+                }
+            }
+            std::fprintf(stderr,
+                "Vulkan material diagnostic: part=%016llx mesh=%zu "
+                "registry=%d ids=%d tinted=%d red=%d green=%d\n",
+                static_cast<unsigned long long>(part_hash), mi,
+                material_count, distinct_ids, tinted_vertices,
+                red_tint_vertices, green_tint_vertices);
+        }
         if (mesh.vertex_count <= 0 ||
             mesh.vertices.size() < static_cast<size_t>(mesh.vertex_count) * 3)
             continue;
