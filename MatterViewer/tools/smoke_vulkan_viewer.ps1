@@ -109,8 +109,11 @@ function Invoke-ViewerCase([string]$Name, [bool]$Resize,
     else { Remove-Item Env:MATTER_HIDE_UI -ErrorAction SilentlyContinue }
     if ($TextureOverride) {
         $env:MATTER_VK_DIAGNOSTIC_GROUND_TILESET_MATERIAL = '8'
+        $env:MATTER_VK_DIAGNOSTIC_GROUND_TILESET_PRIOR_SLOT = '2'
     } else {
         Remove-Item Env:MATTER_VK_DIAGNOSTIC_GROUND_TILESET_MATERIAL `
+            -ErrorAction SilentlyContinue
+        Remove-Item Env:MATTER_VK_DIAGNOSTIC_GROUND_TILESET_PRIOR_SLOT `
             -ErrorAction SilentlyContinue
     }
     $savedErrorAction = $ErrorActionPreference
@@ -143,8 +146,12 @@ function Invoke-ViewerCase([string]$Name, [bool]$Resize,
             throw "$Name did not exercise the rendered packed-material warning"
         }
         if (-not $joined.Contains(
-                'Vulkan diagnostic: reset ground tileset override for material 8')) {
-            throw "$Name did not reset the diagnostic material override"
+                'Vulkan diagnostic: seeded ground tileset material 8 prior packed slot 2')) {
+            throw "$Name did not seed a non-default packed prior material slot"
+        }
+        if (-not $joined.Contains(
+                'Vulkan diagnostic: restored ground tileset material 8 to packed slot 2')) {
+            throw "$Name did not restore the exact packed prior material slot"
         }
     }
     if ($AssertMaterials) { Assert-Png $png $Width $Height }
@@ -169,6 +176,7 @@ foreach ($name in @('MATTER_WORLD','MATTER_SCREENSHOT','MATTER_TEST_RESIZE',
                     'MATTER_CACHE_ROOT',
                     'MATTER_VK_DIAGNOSTIC_MATERIALS',
                     'MATTER_VK_DIAGNOSTIC_GROUND_TILESET_MATERIAL',
+                    'MATTER_VK_DIAGNOSTIC_GROUND_TILESET_PRIOR_SLOT',
                     'VK_LAYER_PATH','PATH')) {
     $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }

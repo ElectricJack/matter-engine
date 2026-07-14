@@ -3120,6 +3120,8 @@ void record_vulkan_clear(const VulkanFrame& frame, const float color[3]) {
 
 struct VulkanDiagnosticMaterialOverride {
     int material_id = -1;
+    int prior_packed_slot = -1;
+    std::vector<float> packed_registry;
 
     explicit VulkanDiagnosticMaterialOverride(int material_count) {
         const char* value =
@@ -3133,7 +3135,44 @@ struct VulkanDiagnosticMaterialOverride {
                 value);
             return;
         }
-        material_id = static_cast<int>(parsed);
+        const int selected_material = static_cast<int>(parsed);
+        const char* prior_value = std::getenv(
+            "MATTER_VK_DIAGNOSTIC_GROUND_TILESET_PRIOR_SLOT");
+        if (prior_value && *prior_value) {
+            char* prior_end = nullptr;
+            const long prior = std::strtol(prior_value, &prior_end, 10);
+            if (!prior_end || *prior_end != '\0' || prior < -1 || prior > 3) {
+                std::fprintf(stderr,
+                    "Vulkan diagnostic: invalid prior ground tileset slot '%s'\n",
+                    prior_value);
+                return;
+            }
+            MaterialRegistrySetGroundTilesetSlot(selected_material,
+                                                  static_cast<int>(prior));
+            std::fprintf(stderr,
+                "Vulkan diagnostic: seeded ground tileset material %d "
+                "prior packed slot %ld\n",
+                selected_material, prior);
+        }
+
+        packed_registry.resize(static_cast<size_t>(material_count) *
+                               MATERIAL_FLOATS_PER_DEF);
+        MaterialRegistryPackForGPU(packed_registry.data());
+        const float packed_slot = packed_registry[
+            static_cast<size_t>(selected_material) * MATERIAL_FLOATS_PER_DEF +
+            11];
+        const float rounded_slot = std::round(packed_slot);
+        if (!std::isfinite(packed_slot) ||
+            std::fabs(packed_slot - rounded_slot) > 1e-6f ||
+            rounded_slot < -1.0f || rounded_slot > 3.0f) {
+            std::fprintf(stderr,
+                "Vulkan diagnostic: invalid packed ground tileset slot %.9g "
+                "for material %d\n",
+                packed_slot, selected_material);
+            return;
+        }
+        material_id = selected_material;
+        prior_packed_slot = static_cast<int>(rounded_slot);
         MaterialRegistrySetGroundTilesetSlot(material_id, 0);
         std::fprintf(stderr,
             "Vulkan diagnostic: applied ground tileset slot 0 to material %d\n",
@@ -3142,10 +3181,21 @@ struct VulkanDiagnosticMaterialOverride {
 
     ~VulkanDiagnosticMaterialOverride() {
         if (material_id < 0) return;
-        MaterialRegistrySetGroundTilesetSlot(material_id, -1);
-        std::fprintf(stderr,
-            "Vulkan diagnostic: reset ground tileset override for material %d\n",
-            material_id);
+        MaterialRegistrySetGroundTilesetSlot(material_id, prior_packed_slot);
+        MaterialRegistryPackForGPU(packed_registry.data());
+        const float restored = packed_registry[
+            static_cast<size_t>(material_id) * MATERIAL_FLOATS_PER_DEF + 11];
+        if (restored == static_cast<float>(prior_packed_slot)) {
+            std::fprintf(stderr,
+                "Vulkan diagnostic: restored ground tileset material %d "
+                "to packed slot %d\n",
+                material_id, prior_packed_slot);
+        } else {
+            std::fprintf(stderr,
+                "Vulkan diagnostic: failed to restore ground tileset material "
+                "%d: expected packed slot %d, observed %.9g\n",
+                material_id, prior_packed_slot, restored);
+        }
     }
 };
 

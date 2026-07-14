@@ -256,12 +256,22 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     CHECK(renderer.readback_raster_pixel(width / 2, height / 2, max_center,
                                          error),
           error.empty() ? "read FLT_MAX emission" : error.c_str());
-    CHECK(std::isfinite(max_center.hdr.x) && max_center.hdr.x > 0.0f &&
-              max_center.hdr.x >= thousand_center.hdr.x,
-          "GPU composite saturates FLT_MAX emission finite monotonic nonzero");
+    CHECK(std::isfinite(max_center.hdr.x) &&
+              max_center.hdr.x > thousand_center.hdr.x &&
+              max_center.hdr.x > 14000.0f &&
+              max_center.hdr.x < 16000.0f,
+          "GPU composite saturates FLT_MAX emission finite, strictly "
+          "monotonic, and in the encoded saturation band");
     std::printf("emission HDR: five=%.5f thousand=%.5f max=%.5f\n",
                 dark_center.hdr.x, thousand_center.hdr.x, max_center.hdr.x);
 
+    renderer.release_part(901);
+    CHECK(renderer.ensure_part(known_raster_triangle(901, 5.0f), error) >= 0 &&
+              renderer.update_instances({{900, identity}, {901, identity}},
+                                        error) &&
+              renderer.dispatch_culling(frame, camera.position, 1.0f, error),
+          error.empty() ? "restore emission 5 before authored bright sky"
+                        : error.c_str());
     viewer::VkSceneLighting bright = dark;
     bright.sky_color = {2.0f, 2.0f, 2.0f};
     renderer.set_lighting(bright);
@@ -271,6 +281,11 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     CHECK(renderer.readback_raster_pixel(width / 2, height / 2, bright_center,
                                          error),
           error.empty() ? "read authored bright sky" : error.c_str());
+    CHECK(close4(bright_center.albedo, dark_center.albedo, 1e-5f) &&
+              close4(bright_center.normal, dark_center.normal, 1e-5f) &&
+              close4(bright_center.orm, dark_center.orm, 1e-5f) &&
+              std::fabs(bright_center.depth - dark_center.depth) < 1e-6f,
+          "dark and bright sky samples keep identical G-buffer inputs");
     CHECK(bright_center.hdr.x > dark_center.hdr.x &&
               bright_center.hdr.y > dark_center.hdr.y &&
               bright_center.hdr.z > dark_center.hdr.z,

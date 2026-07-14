@@ -9,6 +9,7 @@ $vkContext = Get-Content -Raw (Join-Path $root 'MatterEngine3\src\render\vk_cont
 $vkScene = Get-Content -Raw (Join-Path $root 'MatterEngine3\src\render\vk_scene_renderer.cpp')
 $vkSceneHeader = Get-Content -Raw (Join-Path $root 'MatterEngine3\src\render\vk_scene_renderer.h')
 $engineImpl = Get-Content -Raw (Join-Path $root 'MatterEngine3\src\matter_engine.cpp')
+$vkSmoke = Get-Content -Raw (Join-Path $root 'MatterEngine3\tests\vulkan_smoke_tests.cpp')
 $compositeShader = Get-Content -Raw (Join-Path $root 'MatterEngine3\shaders_vk\composite.frag')
 $compat = Get-Content -Raw (Join-Path $root 'MatterEngine3\src\render\vulkan_only_compat.cpp')
 $cell = Get-Content -Raw (Join-Path $root 'MatterSurfaceLib\src\cell.cpp')
@@ -109,8 +110,16 @@ Forbid-Text $ui 'ImGui::Begin("RT Lighting")' 'active no-op RT lighting panel'
 Require-Text $engineImpl 'MaterialRegistryPackForGPU' 'packed runtime material lookup'
 Require-Text $engineImpl 'vulkan_material_uses_unsupported_texture' 'runtime texture override detection'
 Require-Text $engineImpl 'ground material texture sampling is' 'unsupported texture warning'
+Require-Text $engineImpl 'MATTER_VK_DIAGNOSTIC_GROUND_TILESET_PRIOR_SLOT' 'diagnostic prior-slot seed'
+Require-Text $engineImpl 'prior_packed_slot' 'packed material slot snapshot'
+Require-Text $engineImpl 'restored ground tileset material' 'exact packed material restoration log'
 Require-Text $engineImpl 'vulkan_encode_emission' 'half-float authored emission encoding'
 Require-Text $compositeShader 'normal_payload.w' 'normal-alpha authored emission decode'
+Require-Text $vkSmoke 'max_center.hdr.x > thousand_center.hdr.x' 'strict saturated emission separation'
+Require-Text $vkSmoke 'max_center.hdr.x > 14000.0f' 'saturated emission lower bound'
+Require-Text $vkSmoke 'max_center.hdr.x < 16000.0f' 'saturated emission upper bound'
+Require-Text $vkSmoke 'restore emission 5 before authored bright sky' 'identical-material sky-light comparison'
+Require-Text $vkSmoke 'dark and bright sky samples keep identical G-buffer' 'identical sky-light test inputs'
 Forbid-Text $compositeShader 'albedo.rgb * albedo.a' 'clamped albedo-alpha emission'
 Forbid-Text $compositeShader 'orm.w' 'R8 ORM-alpha emission decode'
 Require-Text $runtimeSmoke 'VK_LAYER_PATH' 'explicit validation layer discovery'
@@ -120,8 +129,11 @@ Require-Text $runtimeSmoke 'green Cornell region' 'Cornell material assertion'
 Require-Text $runtimeSmoke 'gray Cornell region' 'Cornell material assertion'
 Require-Text $runtimeSmoke 'Vulkan material diagnostic:' 'bake-to-RasterMeshData material assertion'
 Require-Text $runtimeSmoke 'MATTER_VK_DIAGNOSTIC_GROUND_TILESET_MATERIAL' 'rendered packed-material override'
+Require-Text $runtimeSmoke 'MATTER_VK_DIAGNOSTIC_GROUND_TILESET_PRIOR_SLOT' 'non-default prior packed-material slot'
+Require-Text $runtimeSmoke 'seeded ground tileset material 8 prior packed slot 2' 'prior-slot seed assertion'
+Require-Text $runtimeSmoke 'restored ground tileset material 8 to packed slot 2' 'exact packed-slot restoration assertion'
 Require-Text $runtimeSmoke 'did not exercise the rendered packed-material warning' 'end-to-end texture warning assertion'
-Require-Text $runtimeSmoke 'did not reset the diagnostic material override' 'diagnostic override reset assertion'
+Require-Text $runtimeSmoke 'did not restore the exact packed prior material slot' 'diagnostic exact restoration assertion'
 Require-Text $runtimeSmoke 'Get-FileHash' 'PNG hash assertion'
 Require-Text $main 'CreateFile' 'Windows command file reader'
 Forbid-Text $main 'MATTER_CMD_FIFO not supported on Windows' 'ignored Windows command interface'
