@@ -30,6 +30,7 @@
 #ifdef MATTER_VULKAN_VIEWER
 #include "matter/vulkan_device.h"
 #include "render/vk_instance_cache.h"
+#include "render/vk_resources.h"
 #include "render/vk_scene_renderer.h"
 #include "render/matrix_math.h"
 #endif
@@ -3498,11 +3499,20 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.draw_ms =
         std::chrono::duration<float, std::milli>(draw_end - draw_start).count();
     impl_->stats.instances_resolved = static_cast<uint32_t>(instances.size());
-    // Culling results are intentionally GPU-owned until the frame completes.
-    // Reading these values here would reintroduce a submission/wait boundary.
-    impl_->stats.instances_drawn = 0;
-    impl_->stats.clusters_culled = 0;
-    impl_->stats.hiz_culled = 0;
+    const viewer::VkCullStats cull_stats = impl_->vk_scene->cached_cull_stats();
+    impl_->stats.instances_drawn = cull_stats.emitted;
+    impl_->stats.clusters_culled = cull_stats.frustum_culled;
+    impl_->stats.hiz_culled = cull_stats.hiz_culled;
+    const viewer::VkSceneUploadCounters upload_counters =
+        impl_->vk_scene->upload_counters();
+    impl_->stats.vk_instance_cache_expansions =
+        impl_->vk_instance_cache.expansion_count();
+    impl_->stats.vk_vertex_uploads = upload_counters.vertex_uploads;
+    impl_->stats.vk_cluster_uploads = upload_counters.cluster_uploads;
+    impl_->stats.vk_instance_uploads = upload_counters.instance_uploads;
+    impl_->stats.vk_command_layout_rebuilds =
+        upload_counters.command_layout_rebuilds;
+    impl_->stats.vk_immediate_submits = matter::immediate_submit_count();
     impl_->stats.parts_baked = static_cast<uint32_t>(impl_->store->loaded_count());
     impl_->stats.instances_total = static_cast<uint32_t>(impl_->state.entries().size());
     impl_->stats.triangles = 0;

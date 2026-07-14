@@ -185,6 +185,7 @@ public:
     VkSceneUploadCounters upload_counters() const noexcept {
         return upload_counters_;
     }
+    VkCullStats cached_cull_stats() const noexcept { return cached_stats_; }
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     // Immediate submit/readback diagnostics are intentionally test-only. The
     // production path records through record_cull_and_render above.
@@ -339,7 +340,8 @@ private:
     bool ensure_frame_resources(uint32_t frame_slot_count,
                                 std::string& error);
     void update_frame_descriptors(FrameResources& frame);
-    bool upload_scene_buffers(FrameResources& frame, std::string& error);
+    bool upload_scene_buffers(FrameResources& frame, bool reset_stats,
+                              std::string& error);
     bool upload_frame_constants(FrameResources& frame,
                                 const FrameMatrices& matrices,
                                 matter::Float3 camera_eye,
@@ -413,6 +415,7 @@ private:
     uint64_t command_generation_ = 1;
     bool static_upload_dirty_ = true;
     VkSceneUploadCounters upload_counters_{};
+    VkCullStats cached_stats_{};
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     DeviceLimits test_limits_{};
     bool use_test_limits_ = false;

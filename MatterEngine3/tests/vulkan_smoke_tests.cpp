@@ -872,6 +872,26 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
           error.empty() ? "submit asynchronous Vulkan record frame"
                         : error.c_str());
 
+    const viewer::VkCullStats stats_before = renderer.cached_cull_stats();
+    CHECK(matter::immediate_submit_count() == immediate_before,
+          "cached cull stats query performs no immediate submission");
+    const uint32_t recorded_slot = frame.frame_slot;
+    do {
+        CHECK(vulkan.begin_frame(frame, error),
+              error.empty() ? "begin deferred cull stats frame" : error.c_str());
+        if (frame.command_buffer == VK_NULL_HANDLE) return;
+        CHECK(renderer.prepare_frame(frame, scene.frame, scene.eye, 1.0f, error) &&
+                  renderer.record_cull_and_render(frame, scene.frame, scene.eye,
+                                                  1.0f, error) &&
+                  vulkan.end_frame(frame, error),
+              error.empty() ? "submit deferred cull stats frame" : error.c_str());
+    } while (frame.frame_slot != recorded_slot);
+    const viewer::VkCullStats stats_after = renderer.cached_cull_stats();
+    CHECK(stats_after.emitted >= stats_before.emitted,
+          "completed frame publishes deferred culling statistics");
+    CHECK(matter::immediate_submit_count() == immediate_before,
+          "deferred cull stats publication remains asynchronous");
+
     renderer.set_test_device_limits(4096, 4096, 4096, 1024, 3);
     CHECK(vulkan.begin_frame(frame, error) &&
               renderer.prepare_frame(frame, scene.frame, scene.eye, 1.0f,

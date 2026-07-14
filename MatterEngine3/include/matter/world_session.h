@@ -58,6 +58,13 @@ struct FrameStats {
     uint32_t resident_sectors = 0;
     // Phase C Task 5: resident probe bricks (streamed world); 0 for closed-world.
     uint32_t probe_bricks = 0;
+    // Vulkan GPU-driven path diagnostics (cumulative CPU-side counters).
+    uint64_t vk_instance_cache_expansions = 0;
+    uint64_t vk_vertex_uploads = 0;
+    uint64_t vk_cluster_uploads = 0;
+    uint64_t vk_instance_uploads = 0;
+    uint64_t vk_command_layout_rebuilds = 0;
+    uint64_t vk_immediate_submits = 0;
 };
 
 class WorldSession {

@@ -1538,6 +1538,7 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
 }
 
 bool VkSceneRenderer::upload_scene_buffers(FrameResources& frame,
+                                           bool reset_stats,
                                            std::string& error) {
     VkDeviceSize cluster_bytes = 0;
     VkDeviceSize instance_bytes = 0;
@@ -1712,9 +1713,11 @@ bool VkSceneRenderer::upload_scene_buffers(FrameResources& frame,
     if (!upload(frame.commands, command_template_.data(), command_bytes))
         return false;
     if (command_bytes != 0) ++upload_counters_.command_uploads;
-    const VkCullStats zero_stats{};
-    if (!upload(frame.stats, &zero_stats, sizeof(zero_stats))) return false;
-    frame.stats_valid = false;
+    if (reset_stats) {
+        const VkCullStats zero_stats{};
+        if (!upload(frame.stats, &zero_stats, sizeof(zero_stats))) return false;
+        frame.stats_valid = false;
+    }
     uploaded_command_count_ = static_cast<uint32_t>(command_template_.size());
     uploaded_transform_slots_ = draw_transform_slots_;
     uploaded_raster_command_enabled_ = raster_command_enabled_;
@@ -1759,11 +1762,24 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     }
     if (!ensure_frame_resources(frame.frame_slot_count, error)) return false;
     FrameResources& selected = frames_[frame.frame_slot];
-    if (!upload_scene_buffers(selected, error) ||
+    if (!upload_scene_buffers(selected, false, error) ||
         !upload_frame_constants(selected, matrices, camera_eye, pixel_budget,
                                 error)) {
         return false;
     }
+    if (!matter::map_buffer(selected.stats, error)) return poison(error);
+    if (selected.stats_valid) {
+        if (!matter::invalidate_buffer(selected.stats, 0, sizeof(VkCullStats),
+                                       error)) {
+            return poison(error);
+        }
+        std::memcpy(&cached_stats_, selected.stats.mapped,
+                    sizeof(cached_stats_));
+    }
+    std::memset(selected.stats.mapped, 0, sizeof(VkCullStats));
+    if (!matter::flush_buffer(selected.stats, 0, sizeof(VkCullStats), error))
+        return poison(error);
+    selected.stats_valid = true;
     active_frame_index_ = frame.frame_slot;
     std::vector<std::shared_ptr<void>> resources{
         clusters_.lifetime,
@@ -1896,7 +1912,7 @@ bool VkSceneRenderer::dispatch_culling(const FrameMatrices& frame,
     }
     if (!ensure_frame_resources(1, error)) return false;
     FrameResources& selected = frames_[0];
-    if (!upload_scene_buffers(selected, error)) return false;
+    if (!upload_scene_buffers(selected, true, error)) return false;
     if (!upload_frame_constants(selected, frame, camera_eye, pixel_budget,
                                 error))
         return poison(error);
