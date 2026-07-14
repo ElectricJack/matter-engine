@@ -71,10 +71,25 @@ constexpr PresentResultState present_result_state(VkResult result) {
     }
 }
 
+constexpr bool should_recreate_swapchain_after_present(
+    VkResult result, bool acquired_suboptimal) {
+    return present_result_state(result) ==
+               PresentResultState::completed_or_trackable &&
+           (result == VK_ERROR_OUT_OF_DATE_KHR ||
+            result == VK_SUBOPTIMAL_KHR || acquired_suboptimal);
+}
+
 static_assert(present_result_state(VK_ERROR_OUT_OF_HOST_MEMORY) ==
               PresentResultState::unchanged);
 static_assert(present_result_state(VK_ERROR_DEVICE_LOST) ==
               PresentResultState::ambiguous);
+static_assert(should_recreate_swapchain_after_present(VK_SUCCESS, true));
+static_assert(should_recreate_swapchain_after_present(
+    VK_ERROR_OUT_OF_DATE_KHR, false));
+static_assert(!should_recreate_swapchain_after_present(VK_ERROR_DEVICE_LOST,
+                                                       true));
+static_assert(!should_recreate_swapchain_after_present(
+    VK_ERROR_OUT_OF_HOST_MEMORY, true));
 
 constexpr bool destruction_safe_after_wait(VkResult result) {
     return result == VK_SUCCESS || result == VK_ERROR_DEVICE_LOST;
@@ -1298,23 +1313,24 @@ struct VulkanDevice::Impl {
         frame_active = false;
         frame_slot = (frame_slot + 1) % kFramesInFlight;
 
-        if (present_result == VK_ERROR_OUT_OF_DATE_KHR ||
-            present_result == VK_SUBOPTIMAL_KHR || acquired_suboptimal) {
-            acquired_suboptimal = false;
-            return recreate_swapchain(error);
-        }
-        acquired_suboptimal = false;
-        if (present_state == PresentResultState::unchanged) {
-            vk_ok(present_result, "vkQueuePresentKHR", error);
-            recover_submitted_without_present(slot, input.image_index, error);
-            return false;
-        }
         if (present_state == PresentResultState::ambiguous) {
             vk_ok(present_result, "vkQueuePresentKHR", error);
             wsi_completion_ambiguous = true;
             return poison_device(
                 error, "presentation result left resource ownership ambiguous");
         }
+        if (present_state == PresentResultState::unchanged) {
+            acquired_suboptimal = false;
+            vk_ok(present_result, "vkQueuePresentKHR", error);
+            recover_submitted_without_present(slot, input.image_index, error);
+            return false;
+        }
+        if (should_recreate_swapchain_after_present(present_result,
+                                                    acquired_suboptimal)) {
+            acquired_suboptimal = false;
+            return recreate_swapchain(error);
+        }
+        acquired_suboptimal = false;
         return vk_ok(present_result, "vkQueuePresentKHR", error);
     }
 
