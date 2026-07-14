@@ -176,7 +176,9 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
     }
     output << std::fixed << std::setprecision(6)
            << "{\"world\":\"" << world << "\",\"frames\":"
-           << frame_times.size() << ",\"median_fps\":" << median_fps
+           << frame_times.size() << ",\"frame_metric\":\"end_to_end_cadence\""
+           << ",\"median_frame_ms\":" << median_frame_ms
+           << ",\"median_fps\":" << median_fps
            << ",\"p95_frame_ms\":" << p95_frame_ms
            << ",\"static_vertex_upload_delta\":"
            << (finish.vertex_uploads - start.vertex_uploads)
@@ -403,6 +405,9 @@ int main() {
     auto previous_time = std::chrono::steady_clock::now();
 
     while (!glfwWindowShouldClose(window) && !quit_requested && !fatal_error) {
+        // This starts before event polling and begin_frame(), whose fence wait and
+        // swapchain acquire are part of the user-visible frame cadence.
+        const auto perf_frame_start = std::chrono::steady_clock::now();
         glfwPollEvents();
         const auto now = std::chrono::steady_clock::now();
         const float dt = std::chrono::duration<float>(now - previous_time).count();
@@ -591,7 +596,13 @@ int main() {
                 fatal_error = true;
             }
         }
-        if (!vulkan->end_frame(frame, error)) {
+        const bool frame_presented = vulkan->end_frame(frame, error);
+        // end_frame() records the queue submit and present boundary. Keep this
+        // separate from stats.frame_ms, which intentionally remains the local
+        // CPU render-recording time shown by the interactive HUD.
+        const double perf_frame_cadence_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - perf_frame_start).count();
+        if (!frame_presented) {
             std::fprintf(stderr, "FATAL: end_frame: %s\n", error.c_str());
             fatal_error = true;
         } else if (capture) {
@@ -631,7 +642,7 @@ int main() {
                 std::printf("perf: sampling for %.3f seconds\n",
                             perf.sample_seconds);
             } else if (perf_phase == PerfPhase::Sampling) {
-                perf_frame_times.push_back(stats.frame_ms);
+                perf_frame_times.push_back(perf_frame_cadence_ms);
                 if (std::chrono::duration<double>(perf_now - perf_phase_start)
                         .count() >= perf.sample_seconds) {
                     const PerfCounters perf_finish_counters =

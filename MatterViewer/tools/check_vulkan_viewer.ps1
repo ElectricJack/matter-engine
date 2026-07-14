@@ -152,10 +152,27 @@ Require-Text $runtimeSmoke 'selected world CornellBox hash' 'selected world hash
     Require-Text $main $_ 'performance environment contract'
     Require-Text $perfScript $_ 'performance harness environment'
 }
-@('median_fps', 'p95_frame_ms', 'static_vertex_upload_delta',
+@('frame_metric', 'median_frame_ms', 'median_fps', 'p95_frame_ms', 'static_vertex_upload_delta',
   'static_cluster_upload_delta', 'stable_instance_upload_delta',
   'immediate_submit_delta', 'validation_errors') | ForEach-Object {
     Require-Text $main $_ 'performance JSON counter'
+}
+Require-Text $main 'end_to_end_cadence' 'end-to-end performance metric label'
+Require-Text $main 'perf_frame_cadence_ms' 'end-to-end performance frame sample'
+Forbid-Text $main 'perf_frame_times.push_back(stats.frame_ms)' 'CPU-only render timing sample'
+$perfFrameStart = $main.IndexOf('const auto perf_frame_start = std::chrono::steady_clock::now();')
+$pollEvents = $main.IndexOf('glfwPollEvents();')
+$endFrame = $main.IndexOf('vulkan->end_frame(frame, error)')
+$perfFrameSample = $main.IndexOf('perf_frame_times.push_back(perf_frame_cadence_ms)')
+if ($perfFrameStart -lt 0 -or $pollEvents -lt 0 -or $endFrame -lt 0 -or
+    $perfFrameSample -lt 0 -or $perfFrameStart -gt $pollEvents -or
+    $perfFrameSample -lt $endFrame) {
+    $failures.Add('performance samples must span viewer pacing, begin_frame, and end_frame/present')
+}
+@('Get-ChildItem Env:', "Name -like 'MATTER_*'", 'MATTER_CACHE_ROOT',
+  'finally', 'Remove-Item -LiteralPath $runRoot',
+  'Write-Output (("Vulkan instancing performance:') | ForEach-Object {
+    Require-Text $perfScript $_ 'isolated performance harness state'
 }
 Require-Text $makefile 'vulkan-instancing-perf: windows' 'performance Make target'
 Require-Text $vkScene 'multi_draw_indirect_enabled' 'grouped indirect feature gate'
