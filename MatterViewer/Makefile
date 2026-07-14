@@ -477,6 +477,7 @@ $(W_PIPC_OBJ): $(W_DIR)/%.o: $(MSL_DIR)/src/%.c | $(W_DIR)
 # Order-only: the header must exist before shader_source.cpp compiles, but its
 # regeneration must not force object rebuilds (embedded-shaders is phony).
 $(W_CPP_OBJ): | embedded-shaders
+$(W_DIR)/vk_cuda_interop.o: CXX_FLAGS_BUILD_WIN_COMMON += -DVK_USE_PLATFORM_WIN32_KHR
 $(W_DIR)/vk_cuda_interop.o: $(CUDA_INTEROP_HEADER)
 
 windows: $(WIN_FEATURES) $(VK_EMBEDDED_HEADER) $(CUDA_INTEROP_HEADER) $(GLFW_WIN_LIB) win-shaders-gpu $(W_ALL_OBJ)
