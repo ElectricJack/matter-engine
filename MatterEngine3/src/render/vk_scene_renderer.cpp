@@ -438,6 +438,7 @@ void VkSceneRenderer::destroy_pipeline() {
     descriptor_pool_ = VK_NULL_HANDLE;
     frames_.clear();
     active_frame_index_ = 0;
+    frame_resource_slot_capacity_ = 0;
     initialized_ = false;
 }
 
@@ -825,61 +826,91 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         error = "Vulkan frame reports zero frame slots";
         return false;
     }
-    if (frames_.size() >= frame_slot_count) return true;
-    if (descriptor_pool_ == VK_NULL_HANDLE) {
-        const VkDescriptorPoolSize pool_sizes[] = {
-            {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count},
-            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 5}};
-        VkDescriptorPoolCreateInfo pool{
-            VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        pool.maxSets = frame_slot_count * 2;
-        pool.poolSizeCount = 2;
-        pool.pPoolSizes = pool_sizes;
-        const VkResult result = vkCreateDescriptorPool(
-            vulkan_->device(), &pool, nullptr, &descriptor_pool_);
-        if (result != VK_SUCCESS)
-            return fail_vk("vkCreateDescriptorPool(cull)", result, error);
+    if (frames_.size() >= frame_slot_count &&
+        frame_resource_slot_capacity_ >= frame_slot_count) {
+        return true;
     }
-    const size_t old_size = frames_.size();
-    frames_.resize(frame_slot_count);
+    const VkDescriptorPoolSize pool_sizes[] = {
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 5}};
+    VkDescriptorPoolCreateInfo pool{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pool.maxSets = frame_slot_count * 2;
+    pool.poolSizeCount = 2;
+    pool.pPoolSizes = pool_sizes;
+    VkDescriptorPool next_pool = VK_NULL_HANDLE;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (test_fail_after_frame_resource_allocations_ == 0) {
+        error = "forced frame resource allocation failure";
+        return false;
+    }
+#endif
+    VkResult result =
+        vkCreateDescriptorPool(vulkan_->device(), &pool, nullptr, &next_pool);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateDescriptorPool(cull)", result, error);
+    std::vector<FrameResources> next_frames(frame_slot_count);
     std::vector<VkDescriptorSetLayout> layouts;
-    layouts.reserve((frame_slot_count - old_size) * 2);
-    for (size_t index = old_size; index < frame_slot_count; ++index) {
+    layouts.reserve(frame_slot_count * 2);
+    for (size_t index = 0; index < frame_slot_count; ++index) {
         layouts.push_back(set_layouts_[0]);
         layouts.push_back(set_layouts_[1]);
     }
     std::vector<VkDescriptorSet> sets(layouts.size());
     VkDescriptorSetAllocateInfo allocate{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    allocate.descriptorPool = descriptor_pool_;
+    allocate.descriptorPool = next_pool;
     allocate.descriptorSetCount = static_cast<uint32_t>(sets.size());
     allocate.pSetLayouts = layouts.data();
-    const VkResult result =
-        vkAllocateDescriptorSets(vulkan_->device(), &allocate, sets.data());
+    result = vkAllocateDescriptorSets(vulkan_->device(), &allocate, sets.data());
     if (result != VK_SUCCESS) {
-        frames_.resize(old_size);
+        vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
         return fail_vk("vkAllocateDescriptorSets(cull)", result, error);
     }
-    for (size_t index = old_size; index < frame_slot_count; ++index) {
-        FrameResources& frame = frames_[index];
-        frame.descriptor_sets[0] = sets[(index - old_size) * 2];
-        frame.descriptor_sets[1] = sets[(index - old_size) * 2 + 1];
-        if (!ensure_buffer(frame.frame_constants, sizeof(FrameConstants),
-                           VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, error) ||
-            !ensure_buffer(frame.instances, sizeof(GpuInstance),
-                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error) ||
-            !ensure_buffer(frame.commands, sizeof(DrawCommand),
-                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                               VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-                           error) ||
-            !ensure_buffer(frame.draw_transforms, sizeof(GpuMat4),
-                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error) ||
-            !ensure_buffer(frame.stats, sizeof(VkCullStats),
-                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error)) {
+    uint32_t allocations = 1;
+    const auto ensure_candidate_buffer = [&](matter::VkBufferResource& buffer,
+                                             VkDeviceSize size,
+                                             VkBufferUsageFlags usage) {
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+        if (allocations == test_fail_after_frame_resource_allocations_) {
+            error = "forced frame resource allocation failure";
+            return false;
+        }
+#endif
+        if (!ensure_buffer(buffer, size, usage, error)) return false;
+        ++allocations;
+        return true;
+    };
+    for (size_t index = 0; index < frame_slot_count; ++index) {
+        FrameResources& frame = next_frames[index];
+        frame.descriptor_sets[0] = sets[index * 2];
+        frame.descriptor_sets[1] = sets[index * 2 + 1];
+        if (!ensure_candidate_buffer(frame.frame_constants,
+                                     sizeof(FrameConstants),
+                                     VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
+            !ensure_candidate_buffer(frame.instances, sizeof(GpuInstance),
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+            !ensure_candidate_buffer(
+                frame.commands, sizeof(DrawCommand),
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                    VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT) ||
+            !ensure_candidate_buffer(frame.draw_transforms, sizeof(GpuMat4),
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+            !ensure_candidate_buffer(frame.stats, sizeof(VkCullStats),
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
+            vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
             return false;
         }
         update_frame_descriptors(frame);
     }
+    if (descriptor_pool_ != VK_NULL_HANDLE) {
+        vulkan_->wait_idle();
+        vkDestroyDescriptorPool(vulkan_->device(), descriptor_pool_, nullptr);
+    }
+    frames_ = std::move(next_frames);
+    descriptor_pool_ = next_pool;
+    frame_resource_slot_capacity_ = frame_slot_count;
+    active_frame_index_ = 0;
     return true;
 }
 
@@ -1048,6 +1079,12 @@ void VkSceneRenderer::set_test_scene_failure(
     if (poisoned()) return;
     test_fail_after_replacements_ = fail_after_replacements;
     test_fail_after_uploads_ = fail_after_uploads;
+}
+
+void VkSceneRenderer::set_test_frame_resource_failure(
+    uint32_t fail_after_allocations) {
+    if (poisoned()) return;
+    test_fail_after_frame_resource_allocations_ = fail_after_allocations;
 }
 #endif
 
@@ -2147,6 +2184,8 @@ void VkSceneRenderer::reset() {
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     test_fail_after_replacements_ = std::numeric_limits<uint32_t>::max();
     test_fail_after_uploads_ = std::numeric_limits<uint32_t>::max();
+    test_fail_after_frame_resource_allocations_ =
+        std::numeric_limits<uint32_t>::max();
 #endif
 }
 

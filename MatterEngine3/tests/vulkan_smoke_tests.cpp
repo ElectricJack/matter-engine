@@ -833,6 +833,35 @@ void run_frame_upload_tests(matter::VulkanDevice& vulkan) {
           "camera-only frame leaves scene uploads and command layout intact");
 }
 
+void run_frame_resource_recovery_tests(matter::VulkanDevice& vulkan) {
+    std::string error;
+    const FixedCullScene scene = make_fixed_cull_scene();
+    viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.ensure_part(scene.parts[0], error) >= 0 &&
+              renderer.update_instances({scene.instances[0]}, error) &&
+              renderer.dispatch_culling(scene.frame, scene.eye, 1.0f, error),
+          error.empty() ? "prepare one-slot legacy Vulkan resources"
+                        : error.c_str());
+
+    matter::VulkanFrame frame{};
+    CHECK(vulkan.begin_frame(frame, error),
+          error.empty() ? "begin multi-slot Vulkan frame" : error.c_str());
+    if (frame.command_buffer == VK_NULL_HANDLE) return;
+    renderer.set_test_frame_resource_failure(2);
+    CHECK(!renderer.prepare_frame(frame, scene.frame, scene.eye, 1.0f, error) &&
+              error.find("forced frame resource allocation failure") !=
+                  std::string::npos,
+          "partial frame-resource allocation fails before committing slots");
+    renderer.set_test_frame_resource_failure(
+        std::numeric_limits<uint32_t>::max());
+    CHECK(renderer.prepare_frame(frame, scene.frame, scene.eye, 1.0f, error),
+          error.empty() ? "frame-resource allocation retry succeeds"
+                        : error.c_str());
+    CHECK(vulkan.end_frame(frame, error),
+          error.empty() ? "end recovered multi-slot Vulkan frame"
+                        : error.c_str());
+}
+
 void run_cull_parity(matter::VulkanDevice& vulkan) {
     const FixedCullScene scene = make_fixed_cull_scene();
     const CullResult cpu = run_cpu_cull(scene);
@@ -1523,6 +1552,7 @@ int main() {
         }
         if (smoke_mode && std::string(smoke_mode) == "cull") {
             run_frame_upload_tests(*vulkan);
+            run_frame_resource_recovery_tests(*vulkan);
             run_vk_scene_checked_size_tests(*vulkan);
             run_cull_parity(*vulkan);
             run_cull_region_and_lifecycle_tests(*vulkan);
@@ -1598,6 +1628,7 @@ int main() {
 
         uint32_t retained_probe_destroyed = 0;
         run_frame_upload_tests(*vulkan);
+        run_frame_resource_recovery_tests(*vulkan);
         for (int i = 0; i < 3; ++i) {
             matter::VulkanFrame frame{};
             const bool began = vulkan->begin_frame(frame, error);

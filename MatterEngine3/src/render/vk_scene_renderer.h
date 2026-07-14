@@ -206,6 +206,7 @@ public:
                                          std::string& error);
     void set_test_scene_failure(uint32_t fail_after_replacements,
                                 uint32_t fail_after_uploads);
+    void set_test_frame_resource_failure(uint32_t fail_after_allocations);
 #endif
 
     VkBuffer indirect_buffer() const {
@@ -350,6 +351,7 @@ private:
     matter::VkBufferResource vertices_;
     std::vector<FrameResources> frames_;
     uint32_t active_frame_index_ = 0;
+    uint32_t frame_resource_slot_capacity_ = 0;
 
     matter::VkImageResource albedo_;
     matter::VkImageResource normal_;
@@ -394,6 +396,8 @@ private:
     uint32_t test_fail_after_replacements_ =
         std::numeric_limits<uint32_t>::max();
     uint32_t test_fail_after_uploads_ =
+        std::numeric_limits<uint32_t>::max();
+    uint32_t test_fail_after_frame_resource_allocations_ =
         std::numeric_limits<uint32_t>::max();
 #endif
 };
