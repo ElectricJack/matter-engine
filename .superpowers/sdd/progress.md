@@ -94,7 +94,14 @@ Task 9: complete (commits 5d341ca..6221b79, final review approved/demoable)
   - Clean-cache Cornell normal/resize/material-override smokes pass with authored material IDs/tints, finite HDR emission, and zero validation errors.
   - Windows HAVE_CUDA=1 build is Vulkan-only with no OpenGL/CUDA-GL imports; CUDA/OptiX are truthfully marked available but inactive before Task 10.
 
-Task 10: in progress (initial implementation commit 37f6b47; review fixes pending)
-  - CUDA-Vulkan external memory and timeline-semaphore interop is operational and the 100-cycle live smoke produced the expected pixel with zero validation errors.
-  - Review blockers to fix before approval: safe post-launch failure cleanup, caller CUDA-context restoration, complete export-handle lifecycle assertions, viewer feature-gate update, and Windows LUID node-mask validation.
-  - The review-driven test scaffold is preserved in stash `wip: task10 interop review tests` while the working tree is cleaned.
+Task 10: complete (commits 37f6b47..7609c5c, final review approved)
+  - CUDA-Vulkan external memory and timeline-semaphore interop is operational; 100 cycles produced the expected pixel with zero steady handle growth and zero validation errors.
+  - Failure cleanup, caller CUDA-context restoration, export-handle accounting, CUDA_ACTIVE gates, and Windows LUID/node-mask validation are covered by six timeout-bounded fresh-process fault modes.
+
+---
+
+# Vulkan GPU Instancing Parity SDD Progress Ledger
+Branch: feature/rt-lighting-phase2 | Plan: docs/superpowers/plans/2026-07-14-vulkan-gpu-instancing-parity.md
+BASE at start: 8b8c7d7
+
+No tasks complete yet. Resume at Task 1.
