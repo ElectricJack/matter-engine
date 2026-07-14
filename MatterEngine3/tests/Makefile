@@ -1300,6 +1300,12 @@ resolve-cache-tests: $(call obj_list,def,$(RESOLVECACHE_CPP)) $(call obj_list,ms
 run-resolvecache: resolve-cache-tests
 	./resolve_cache_tests
 
+# The Vulkan smoke executable is a Windows artifact built with the standalone
+# vendored GLFW archive owned by MatterViewer's cross-build rules.
+.PHONY: vulkan-smoke
+vulkan-smoke:
+	$(MAKE) -C ../../MatterViewer vulkan-smoke HAVE_CUDA=1
+
 # ---------------------------------------------------------------------------
 # Clean: remove OBJDIR and all binaries (test-binary-name list, since they
 # aren't $(TARGET)-style variables in every case).

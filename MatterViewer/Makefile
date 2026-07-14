@@ -321,10 +321,12 @@ mingw-box3d:
 # the .exe is self-contained.
 WIN_CXX     ?= /ucrt64/bin/g++
 WIN_CC      = x86_64-w64-mingw32-gcc
+WIN_AR      ?= /ucrt64/bin/ar
 WIN_RAYLIB  = ../Libraries/raylib/build/windows-native/libraylib.a
 GLSLC ?= /ucrt64/bin/glslc
 VULKAN_INCLUDE ?= /ucrt64/include
 VULKAN_LIB_DIR ?= /ucrt64/lib
+VULKAN_RUNTIME_DIR ?= $(shell cygpath -m /ucrt64/bin)
 WIN_FEATURES = build/windows/build_features.txt
 # Win32 import libs raylib depends on; MUST come AFTER libraylib.a on the link
 # line so the static linker can resolve raylib's __imp_* references.
@@ -343,6 +345,43 @@ vulkan-preflight:
 $(WIN_FEATURES): vulkan-preflight
 	@mkdir -p $(dir $@)
 	@printf 'VULKAN=1\nCUDA=1\nOPTIX=1\nOPENGL=0\n' > $@
+
+# Standalone GLFW archive for Vulkan smoke tests.  Keep this separate from
+# raylib's GLFW objects so the existing OpenGL viewer path is unchanged.
+GLFW_SRC_DIR = ../Libraries/raylib/src/external/glfw/src
+GLFW_WIN_SRC = context.c egl_context.c init.c input.c monitor.c null_init.c \
+               null_joystick.c null_monitor.c null_window.c osmesa_context.c \
+               platform.c vulkan.c wgl_context.c win32_init.c win32_joystick.c \
+               win32_module.c win32_monitor.c win32_thread.c win32_time.c \
+               win32_window.c window.c
+GLFW_WIN_OBJ = $(addprefix build/windows/glfw/,$(GLFW_WIN_SRC:.c=.o))
+GLFW_WIN_LIB = build/windows/libglfw3.a
+
+build/windows/glfw/%.o: $(GLFW_SRC_DIR)/%.c
+	@mkdir -p $(dir $@)
+	$(WIN_CC) -c $< -o $@ -D_GLFW_WIN32 \
+	    -I../Libraries/raylib/src/external/glfw/include
+
+$(GLFW_WIN_LIB): $(GLFW_WIN_OBJ)
+	$(WIN_AR) rcs $@ $^
+
+build/windows/vulkan_smoke_tests.exe: \
+        $(ME3_DIR)/tests/vulkan_smoke_tests.cpp \
+        $(ME3_DIR)/src/render/vk_context.cpp $(GLFW_WIN_LIB)
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) $(ME3_DIR)/tests/vulkan_smoke_tests.cpp \
+	    $(ME3_DIR)/src/render/vk_context.cpp $(GLFW_WIN_LIB) -o $@ \
+	    -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers \
+	    -static \
+	    -DMATTER_VK_TEST_LAYER_PATH='"$(VULKAN_RUNTIME_DIR)"' \
+	    -I$(ME3_DIR)/include -I$(ME3_DIR)/tests \
+	    -I../Libraries/raylib/src/external/glfw/include \
+	    -I$(VULKAN_INCLUDE) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 \
+	    -lgdi32 -luser32 -lshell32 -Wl,-Bstatic
+
+.PHONY: vulkan-smoke
+vulkan-smoke: vulkan-preflight $(GLFW_WIN_LIB) \
+              build/windows/vulkan_smoke_tests.exe
 
 # ---- Windows compile rules
 $(W_CPP_OBJ): $(W_DIR)/%.o: %.cpp | $(W_DIR)
