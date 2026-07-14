@@ -1449,6 +1449,8 @@ int main() {
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
             if (preserve_process) {
+                CHECK(vulkan->validation_error_count() == 0,
+                      "unproven completion reports no Vulkan validation errors");
                 const int result = check_summary();
                 std::fflush(stdout);
                 std::fflush(stderr);
