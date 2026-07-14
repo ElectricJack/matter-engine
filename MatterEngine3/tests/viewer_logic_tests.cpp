@@ -48,6 +48,13 @@ static bool camera_close3(matter::Float3 a, matter::Float3 b, float epsilon) {
            std::fabs(a.z - b.z) <= epsilon;
 }
 
+static float camera_distance3(matter::Float3 a, matter::Float3 b) {
+    const float x = a.x - b.x;
+    const float y = a.y - b.y;
+    const float z = a.z - b.z;
+    return std::sqrt(x * x + y * y + z * z);
+}
+
 static void test_forward_moves_along_camera_forward() {
     constexpr float kQuarterPi = 0.78539816339f;
     matter::CameraDesc camera{{0, 0, 5}, {0, 0, 0}, {0, 1, 0},
@@ -70,6 +77,36 @@ static void test_yaw_turns_camera_analytically() {
     CHECK(camera_close3(camera.position, {0, 0, 0}, 1e-5f), "yaw position unchanged");
     CHECK(camera_close3(camera.target, {5, 0, 0}, 1e-5f), "yaw target");
     printf("  test_yaw_turns_camera_analytically OK\n");
+}
+
+static void test_huge_pitch_delta_stops_before_crossing_pole() {
+    constexpr float kPi = 3.14159265359f;
+    constexpr float kRadiansPerPixel = 0.002f;
+    matter::CameraDesc camera{{0, 0, 0}, {0, 0, -5}, {0, 1, 0},
+                              0.78539816339f, 1, 5000};
+    viewer::CameraInput input{};
+    input.pitch_pixels = -kPi / kRadiansPerPixel;
+    viewer::apply_camera_input(camera, input, 1.0f, 0.0f, kRadiansPerPixel);
+    CHECK(camera.target.y > 4.9f, "huge pitch stops near upper pole");
+    CHECK(camera.target.z < 0.0f, "huge pitch does not cross upper pole");
+    CHECK(std::fabs(camera_distance3(camera.position, camera.target) - 5.0f) < 1e-5f,
+          "huge pitch preserves target distance");
+    printf("  test_huge_pitch_delta_stops_before_crossing_pole OK\n");
+}
+
+static void test_combined_camera_movement_has_axial_speed() {
+    matter::CameraDesc camera{{0, 0, 5}, {0, 0, 0}, {0, 1, 0},
+                              0.78539816339f, 1, 5000};
+    viewer::CameraInput input{};
+    input.forward = 1.0f;
+    input.right = 1.0f;
+    input.up = 1.0f;
+    viewer::apply_camera_input(camera, input, 1.0f, 2.0f, 0.002f);
+    CHECK(std::fabs(camera_distance3(camera.position, {0, 0, 5}) - 2.0f) < 1e-5f,
+          "combined movement uses axial speed");
+    CHECK(std::fabs(camera_distance3(camera.position, camera.target) - 5.0f) < 1e-5f,
+          "combined movement preserves target distance");
+    printf("  test_combined_camera_movement_has_axial_speed OK\n");
 }
 
 static viewer::WorldManifestEntry mk_entry(uint32_t id, uint64_t hash, float x) {
@@ -1422,6 +1459,8 @@ static void test_install_phase_on_part_progress() {
 int main() {
     test_forward_moves_along_camera_forward();
     test_yaw_turns_camera_analytically();
+    test_huge_pitch_delta_stops_before_crossing_pole();
+    test_combined_camera_movement_has_axial_speed();
     test_cull_transform_convention();
     test_world_state_version();
     test_world_state_delta();

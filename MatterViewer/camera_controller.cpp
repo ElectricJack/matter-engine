@@ -59,18 +59,22 @@ void apply_camera_input(matter::CameraDesc& camera, const CameraInput& input,
                                      -input.yaw_pixels * radians_per_pixel);
     right = normalized(cross(forward, world_up), right);
     if (input.pitch_pixels != 0.0f) {
-        const matter::Float3 pitched = rotate_around_axis(
-            forward, right, -input.pitch_pixels * radians_per_pixel);
-        // Keep a small margin from the poles so the right vector remains stable.
-        if (std::fabs(dot(pitched, world_up)) < 0.99985f) forward = pitched;
+        constexpr float kPoleDotLimit = 0.99985f;
+        const float current_up_dot = std::fmax(-1.0f, std::fmin(1.0f, dot(forward, world_up)));
+        const float current_pitch = std::asin(current_up_dot);
+        const float max_pitch = std::asin(kPoleDotLimit);
+        const float requested_pitch = current_pitch - input.pitch_pixels * radians_per_pixel;
+        const float clamped_pitch = std::fmax(-max_pitch, std::fmin(max_pitch, requested_pitch));
+        forward = rotate_around_axis(forward, right, clamped_pitch - current_pitch);
     }
 
     camera.target = add(camera.position, mul(forward, view_length > 1e-6f ? view_length : 1.0f));
 
     const float distance = speed * dt * (input.speed_boost ? 4.0f : 1.0f);
-    const matter::Float3 movement = add(add(mul(forward, input.forward),
-                                            mul(right, input.right)),
-                                        mul(world_up, input.up));
+    const matter::Float3 movement = normalized(
+        add(add(mul(forward, input.forward), mul(right, input.right)),
+            mul(world_up, input.up)),
+        {0.0f, 0.0f, 0.0f});
     const matter::Float3 delta = mul(movement, distance);
     camera.position = add(camera.position, delta);
     camera.target = add(camera.target, delta);
