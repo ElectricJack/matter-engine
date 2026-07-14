@@ -32,11 +32,16 @@ legacy OpenGL path; the Vulkan viewer must not depend on CUDA-GL interop.
 ### Temporal opaque-world contract
 
 `WorldSession` owns a `VulkanTemporalState` that advances only after a frame
-is successfully recorded. It contains current and previous canonical
+is successfully submitted and presented. It contains current and previous canonical
 Vulkan-ZO camera matrices, Halton-sequence jitter in input pixels, prior
 render extent, a monotonic frame index, and reset state. Resize, world load,
 camera cut, renderer reset, or a missing previous transform invalidates
 history for exactly one frame.
+
+Failed command recording, UI recording, submission, acquire, or presentation
+never publishes the candidate frame as history. The next successful frame uses
+the last presented state or forces a reset; it cannot consume a transform,
+jitter, or DLSS frame token from a failed frame.
 
 The current and previous object-to-world transforms are tracked by stable
 resolved-instance identity. A newly visible or changed-topology instance gets
@@ -56,22 +61,59 @@ disabled, unavailable, rejected by Streamline, or the feature is not supported
 by the current adapter, internal and output extent are equal and the Vulkan
 composite presents directly.
 
+For every recorded frame, `VulkanTemporalState` produces an explicit
+`sl::Constants` payload and a `sl::FrameToken` whose frame number advances in
+the same order as successfully presented frames. Constants use Streamline's
+required row-major, **unjittered** current/previous clip transforms,
+`clipToPrevClip`, inverse transforms, input-pixel jitter offsets,
+`mvecScale = (1 / internal_width, 1 / internal_height)`, depth-inverted flag,
+camera-motion flag, `motionVectorsJittered = true`, and the reset flag. The
+raster velocity shader deliberately uses jittered current/previous projections;
+the matching flag prevents Streamline from applying a second jitter correction.
+
 ### Streamline and DLSS SR
 
-Streamline is a Windows-only optional runtime dependency. It is initialized
-before Vulkan device creation so its queried required Vulkan instance/device
-extensions, feature bits, and queue requirements participate in physical-device
-selection and logical-device creation. The executable ships the legally
-obtained Streamline and DLSS SR runtime artifacts next to the viewer; source
-builds remain possible without those artifacts and select the native fallback.
+Streamline is a Windows-only optional runtime dependency. This renderer uses
+the **native Vulkan/manual-hooking** integration, not the global interposer
+creation path: `slInit` with `eUseManualHooking` and requested DLSS SR feature
+occurs before any Vulkan instance, device, surface, swapchain, acquire, or
+presentation call. `vk_context.cpp` queries `slGetFeatureRequirements` before
+physical-device selection, unions every requested instance/device extension,
+Vulkan 1.2/1.3 feature chain, and additional queue count with the engine's
+requirements, then creates the native instance/device. It calls
+`slSetVulkanInfo` immediately after native device/queue creation.
 
-After opaque rendering and before UI, the renderer tags the HDR color,
-nonlinear depth, motion vectors, jitter offsets, render/output extents,
-exposure, and reset flag. It evaluates DLSS SR on the acquired Vulkan command
-buffer at the correct Streamline marker. A feature query selects the requested
-quality preset and supplies the internal extent. Runtime failures disable DLSS
-for the session, preserve the direct-composite fallback, and expose a clear
-diagnostic rather than aborting rendering.
+The manual integration securely loads Streamline's Vulkan dispatch and routes
+all required proxy entry points (`vkCreateSwapchainKHR`,
+`vkDestroySwapchainKHR`, `vkGetSwapchainImagesKHR`, `vkAcquireNextImageKHR`,
+`vkQueuePresentKHR`, surface creation/destruction, and device wait idle) through
+the Streamline proxy only when Streamline is active. The presentation path is
+single-funnel and invokes the common plugin `presentCommon()` exactly once per
+active frame, including resize transitions. Test-only Vulkan instances bypass
+Streamline and retain their existing direct loader path.
+
+The executable ships legally obtained, signature-verified Streamline and DLSS
+SR runtime artifacts next to the viewer. Source builds remain possible without
+those artifacts and select the native fallback.
+
+Each in-flight frame slot owns a DLSS input HDR image at the internal extent
+and a distinct full-output-extent `R16G16B16A16_SFLOAT` DLSS output image.
+Both have the image usages Streamline requires plus sampled/transfer access for
+engine composition. Depth is created with a sampled depth view in addition to
+its attachment view; velocity is a sampled `R16G16_SFLOAT` image. The renderer
+retains all five DLSS images/views (HDR input, depth, velocity, output, and
+exposure when enabled) until that frame slot fence is observed complete.
+
+After opaque rendering and RT composite, command recording transitions tagged
+inputs and the output to the exact layouts/accesses declared in their
+`sl::Resource` tags, sets the constants/frame token, tags HDR color, nonlinear
+depth, motion vectors, jitter, render/output extents, exposure, and reset, then
+evaluates DLSS SR on the acquired Vulkan command buffer. It restores command
+buffer state and transitions the output to sampled/transfer source for a
+full-resolution composite/copy to the swapchain before UI. A feature query
+selects the requested quality preset and supplies the internal extent. Runtime
+failures disable DLSS for the session, preserve the direct-composite fallback,
+and expose a clear diagnostic rather than aborting rendering.
 
 The first supported mode is DLSS Super Resolution only. The UI reports
 `Native`, `DLSS Quality`, `Balanced`, and `Performance`; a selected but
@@ -81,16 +123,26 @@ availability.
 
 ### Native Vulkan ray tracing
 
-The Vulkan renderer enables and validates the KHR acceleration-structure,
-deferred-host-operations, buffer-device-address, ray-tracing-pipeline, and
-SPIR-V ray-tracing capability set. If any required feature is absent, raster
-plus DLSS/native fallback remains functional.
+The Vulkan renderer enables and validates `VK_KHR_acceleration_structure`,
+`VK_KHR_ray_tracing_pipeline`, `VK_KHR_deferred_host_operations`,
+`VK_KHR_spirv_1_4`, and `VK_KHR_shader_float_controls`, plus buffer device
+address. Its device feature chain includes
+`VkPhysicalDeviceBufferDeviceAddressFeatures`,
+`VkPhysicalDeviceAccelerationStructureFeaturesKHR`, and
+`VkPhysicalDeviceRayTracingPipelineFeaturesKHR`. Pipeline creation reads
+`VkPhysicalDeviceRayTracingPipelinePropertiesKHR` and obeys its shader-group
+handle size, handle alignment, base alignment, recursion depth, and stride
+limits when creating the SBT. If any requirement is absent, raster plus
+DLSS/native fallback remains functional.
 
-BLAS objects are built per immutable uploaded part mesh and retained until that
-part is released. TLAS instances are rebuilt or updated from the resolved
+BLAS objects are built from **per-part pinned device-addressable geometry
+buffers**, not the renderer's re-growable shared raster vertex buffer. A part's
+geometry address remains valid until its BLAS is destroyed; releasing or
+reuploading a part retires its BLAS and pinned buffers only after the relevant
+frame-slot fence. TLAS instances are rebuilt or updated from the resolved
 instance transforms using the same stable part hashes and transform convention
-as raster. All acceleration-structure scratch, build, and retained resources
-obey the existing per-frame-slot fence lifetime contract.
+as raster. All acceleration-structure scratch, build, SBT, and retained
+resources obey the existing per-frame-slot fence lifetime contract.
 
 The first ray pipeline has a ray-generation shader, miss shader, and
 shadow-any-hit/closest-hit behavior sufficient to produce an internal-
@@ -105,12 +157,14 @@ motion vectors, temporal history, or Streamline tagging.
 
 For each frame, command recording order is:
 
-1. Acquire frame slot and derive jittered current/previous temporal state.
+1. Acquire frame slot and derive candidate jittered current/previous temporal
+   state without publishing it.
 2. Record compute culling and barrier into opaque G-buffer rasterization.
 3. Record acceleration-structure update/build barriers as needed.
 4. Record native RT shadow pass and barrier into HDR composite.
 5. Tag/evaluate DLSS SR or record direct native composite.
-6. Record UI over the output image, then submit/present.
+6. Record UI over the output image, then submit/present through the Streamline
+   presentation funnel and publish the candidate temporal state only on success.
 
 No CPU readback, immediate submit, or wait is introduced between culling,
 raster, RT, DLSS, and presentation. All history transitions and images remain
