@@ -41,6 +41,22 @@ int main() {
 
     if (vulkan) {
         const char* smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
+        if (smoke_mode && std::string(smoke_mode) == "retention-fault") {
+            _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS", "1");
+            matter::Float4 output{};
+            const bool probe_ran = matter::run_transform_probe(
+                *vulkan, viewer::pack_glsl_mat4(viewer::mat4_identity()),
+                {1.0f, 2.0f, 3.0f, 1.0f}, output);
+            _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS", "");
+            CHECK(!probe_ran,
+                  "fault injection makes immediate completion ambiguous");
+            CHECK(vulkan->validation_error_count() == 0,
+                  "ambiguous submit retains all referenced resources");
+            vulkan.reset();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
         if (smoke_mode && std::string(smoke_mode) == "transform") {
             const matter::Mat4f matrix = viewer::mat4_mul(
                 viewer::mat4_translation({3.0f, 4.0f, 5.0f}),
@@ -55,8 +71,9 @@ int main() {
                        std::fabs(a.z - b.z) <= epsilon &&
                        std::fabs(a.w - b.w) <= epsilon;
             };
-            matter::run_transform_probe(
+            const bool probe_ran = matter::run_transform_probe(
                 *vulkan, viewer::pack_glsl_mat4(matrix), input, output);
+            CHECK(probe_ran, "run Vulkan transform probe");
             CHECK(close4(output, expected, 1e-5f),
                   "CPU GPU transform parity");
             std::printf("transform CPU: %.8f %.8f %.8f %.8f\n", expected.x,

@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <sstream>
@@ -265,6 +266,7 @@ struct VulkanDevice::Impl {
     bool swapchain_recreate_required = false;
     bool device_poisoned = false;
     bool wsi_completion_ambiguous = false;
+    VulkanRetainedResource* retained_resources = nullptr;
     std::string poison_error;
     VulkanFrame active_frame{};
 
@@ -1398,6 +1400,12 @@ struct VulkanDevice::Impl {
                              "without further completion waits\n");
             }
         }
+        while (retained_resources) {
+            VulkanRetainedResource* resource = retained_resources;
+            retained_resources = resource->next_;
+            resource->next_ = nullptr;
+            delete resource;
+        }
         for (FrameSlot& frame : frames) {
             if (frame.fence != VK_NULL_HANDLE)
                 vkDestroyFence(device, frame.fence, nullptr);
@@ -1485,6 +1493,15 @@ bool VulkanDevice::submit_and_wait(VkCommandBuffer command_buffer,
         return impl_->poison_device(error, "immediate queue submission failed");
     }
     completion_proven = false;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    const char* force_ambiguous =
+        std::getenv("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS");
+    if (force_ambiguous && std::strcmp(force_ambiguous, "1") == 0) {
+        error = "forced ambiguous immediate completion for retention test";
+        return impl_->poison_device(
+            error, "immediate submission completion is unproven");
+    }
+#endif
     const VkResult waited = vkWaitForFences(
         impl_->device, 1, &fence, VK_TRUE,
         std::numeric_limits<uint64_t>::max());
@@ -1495,6 +1512,13 @@ bool VulkanDevice::submit_and_wait(VkCommandBuffer command_buffer,
     }
     completion_proven = true;
     return true;
+}
+
+void VulkanDevice::retain_until_device_cleanup(
+    std::unique_ptr<VulkanRetainedResource> resource) noexcept {
+    if (!resource) return;
+    resource->next_ = impl_->retained_resources;
+    impl_->retained_resources = resource.release();
 }
 
 void VulkanDevice::wait_idle() {

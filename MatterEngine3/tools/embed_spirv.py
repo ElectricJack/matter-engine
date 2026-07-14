@@ -11,9 +11,13 @@ from pathlib import Path
 
 def identifier(name: str) -> str:
     value = re.sub(r"[^A-Za-z0-9_]", "_", name)
-    if not value or value[0].isdigit():
-        value = "spirv_" + value
-    return value
+    value = re.sub(r"_+", "_", value).strip("_") or "data"
+    return "matter_spirv_" + value
+
+
+def cpp_string_literal(value: str) -> str:
+    """Return an execution-encoding-independent C++ literal for a filename."""
+    return '"' + "".join(f"\\x{byte:02x}" for byte in value.encode("utf-8")) + '"'
 
 
 def render(inputs: list[Path]) -> str:
@@ -27,9 +31,14 @@ def render(inputs: list[Path]) -> str:
                 f"{path}: SPIR-V byte length {len(data)} is not divisible by 4"
             )
         name = path.name
-        symbol = identifier(name)
-        if name in names or symbol in identifiers:
-            raise ValueError(f"duplicate embedded SPIR-V name or symbol: {name}")
+        symbol_base = identifier(name)
+        symbol = symbol_base
+        suffix = 2
+        while symbol in identifiers:
+            symbol = f"{symbol_base}_{suffix}"
+            suffix += 1
+        if name in names:
+            raise ValueError(f"duplicate embedded SPIR-V lookup name: {name}")
         names.add(name)
         identifiers.add(symbol)
         words = struct.unpack(f"<{len(data) // 4}I", data)
@@ -59,7 +68,8 @@ def render(inputs: list[Path]) -> str:
     lines.append("inline EmbeddedSpirvView find_spirv(std::string_view name) {")
     for name, symbol, _ in entries:
         lines.append(
-            f'    if (name == "{name}") return {{{symbol}, sizeof({symbol}) / sizeof({symbol}[0])}};'
+            f"    if (name == {cpp_string_literal(name)}) return "
+            f"{{{symbol}, sizeof({symbol}) / sizeof({symbol}[0])}};"
         )
     lines.extend(["    return {nullptr, 0};", "}", "", "}  // namespace matter", ""])
     return "\n".join(lines)

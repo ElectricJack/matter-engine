@@ -1,5 +1,6 @@
 #include "vk_pipeline.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdio>
 #include <utility>
@@ -22,6 +23,33 @@ struct DispatchRecord {
     uint32_t x;
     uint32_t y;
     uint32_t z;
+};
+
+class PipelineDependencies final : public ImmediateDependencies {
+public:
+    explicit PipelineDependencies(VkComputePipelineResource& pipeline)
+        : borrowed_pipeline_(&pipeline) {
+        for (const auto& reference : pipeline.referenced_buffers) {
+            if (std::find(borrowed_buffers_.begin(), borrowed_buffers_.end(),
+                          reference.second) == borrowed_buffers_.end()) {
+                borrowed_buffers_.push_back(reference.second);
+            }
+        }
+        owned_buffers_.resize(borrowed_buffers_.size());
+    }
+
+    void abandon() noexcept override {
+        for (size_t i = 0; i < borrowed_buffers_.size(); ++i) {
+            owned_buffers_[i] = std::move(*borrowed_buffers_[i]);
+        }
+        owned_pipeline_ = std::move(*borrowed_pipeline_);
+    }
+
+private:
+    VkComputePipelineResource* borrowed_pipeline_ = nullptr;
+    std::vector<VkBufferResource*> borrowed_buffers_;
+    VkComputePipelineResource owned_pipeline_{};
+    std::vector<VkBufferResource> owned_buffers_;
 };
 
 void record_dispatch(VkCommandBuffer command_buffer, void* user_data) {
@@ -87,6 +115,7 @@ VkComputePipelineResource& VkComputePipelineResource::operator=(
     pipeline = std::exchange(other.pipeline, VK_NULL_HANDLE);
     descriptor_pool = std::exchange(other.descriptor_pool, VK_NULL_HANDLE);
     descriptor_set = std::exchange(other.descriptor_set, VK_NULL_HANDLE);
+    referenced_buffers = std::move(other.referenced_buffers);
     return *this;
 }
 
@@ -110,6 +139,7 @@ void VkComputePipelineResource::reset() {
     pipeline = VK_NULL_HANDLE;
     descriptor_pool = VK_NULL_HANDLE;
     descriptor_set = VK_NULL_HANDLE;
+    referenced_buffers.clear();
 }
 
 bool create_compute_pipeline(
@@ -213,7 +243,7 @@ bool create_compute_pipeline(
 
 void write_storage_buffer_descriptor(VkComputePipelineResource& pipeline,
                                      uint32_t binding,
-                                     const VkBufferResource& buffer,
+                                     VkBufferResource& buffer,
                                      VkDeviceSize offset,
                                      VkDeviceSize range) {
     VkDescriptorBufferInfo buffer_info{buffer.buffer, offset, range};
@@ -224,10 +254,18 @@ void write_storage_buffer_descriptor(VkComputePipelineResource& pipeline,
     write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     write.pBufferInfo = &buffer_info;
     vkUpdateDescriptorSets(pipeline.device, 1, &write, 0, nullptr);
+    const auto existing = std::find_if(
+        pipeline.referenced_buffers.begin(), pipeline.referenced_buffers.end(),
+        [binding](const auto& reference) { return reference.first == binding; });
+    if (existing == pipeline.referenced_buffers.end()) {
+        pipeline.referenced_buffers.emplace_back(binding, &buffer);
+    } else {
+        existing->second = &buffer;
+    }
 }
 
 bool dispatch_compute(VulkanDevice& vulkan,
-                      const VkComputePipelineResource& pipeline,
+                      VkComputePipelineResource& pipeline,
                       uint32_t group_count_x, uint32_t group_count_y,
                       uint32_t group_count_z, std::string& error) {
     if (group_count_x == 0 || group_count_y == 0 || group_count_z == 0) {
@@ -236,7 +274,9 @@ bool dispatch_compute(VulkanDevice& vulkan,
     }
     DispatchRecord dispatch{&pipeline, group_count_x, group_count_y,
                             group_count_z};
-    return submit_immediate(vulkan, record_dispatch, &dispatch, error);
+    auto dependencies = std::make_unique<PipelineDependencies>(pipeline);
+    return submit_immediate(vulkan, record_dispatch, &dispatch, error,
+                            std::move(dependencies));
 }
 
 bool run_transform_probe(VulkanDevice& vulkan,

@@ -4,11 +4,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 
-namespace matter {
+#include "matter/vulkan_device.h"
 
-class VulkanDevice;
+namespace matter {
 
 struct VkBufferResource {
     VkDevice device = VK_NULL_HANDLE;
@@ -102,7 +103,12 @@ bool transition_image(VulkanDevice& vulkan, VkImageResource& image,
                       VkImageAspectFlags aspect, std::string& error);
 
 using ImmediateRecordFn = void (*)(VkCommandBuffer, void*);
+class ImmediateDependencies : public VulkanRetainedResource {
+public:
+    virtual void abandon() noexcept = 0;
+};
 bool submit_immediate(VulkanDevice& vulkan, ImmediateRecordFn record,
-                      void* user_data, std::string& error);
+                      void* user_data, std::string& error,
+                      std::unique_ptr<ImmediateDependencies> dependencies = {});
 
 }  // namespace matter

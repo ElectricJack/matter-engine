@@ -4,6 +4,7 @@
 
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "gpu_matrix_pack.h"
@@ -21,6 +22,7 @@ struct VkComputePipelineResource {
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
     VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
+    std::vector<std::pair<uint32_t, VkBufferResource*>> referenced_buffers;
 
     VkComputePipelineResource() = default;
     ~VkComputePipelineResource();
@@ -39,12 +41,12 @@ bool create_compute_pipeline(
 
 void write_storage_buffer_descriptor(VkComputePipelineResource& pipeline,
                                      uint32_t binding,
-                                     const VkBufferResource& buffer,
+                                     VkBufferResource& buffer,
                                      VkDeviceSize offset,
                                      VkDeviceSize range);
 
 bool dispatch_compute(VulkanDevice& vulkan,
-                      const VkComputePipelineResource& pipeline,
+                      VkComputePipelineResource& pipeline,
                       uint32_t group_count_x, uint32_t group_count_y,
                       uint32_t group_count_z, std::string& error);
 

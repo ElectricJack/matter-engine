@@ -13,6 +13,15 @@ struct GLFWwindow;
 
 namespace matter {
 
+class VulkanRetainedResource {
+public:
+    virtual ~VulkanRetainedResource() = default;
+
+private:
+    VulkanRetainedResource* next_ = nullptr;
+    friend class VulkanDevice;
+};
+
 struct VulkanFrame {
     VkCommandBuffer command_buffer = VK_NULL_HANDLE;
     uint32_t image_index = 0;
@@ -35,6 +44,8 @@ public:
     bool end_frame(const VulkanFrame& frame, std::string& error);
     bool submit_and_wait(VkCommandBuffer command_buffer, VkFence fence,
                          bool& completion_proven, std::string& error);
+    void retain_until_device_cleanup(
+        std::unique_ptr<VulkanRetainedResource> resource) noexcept;
     void wait_idle();
 
     VkInstance instance() const;

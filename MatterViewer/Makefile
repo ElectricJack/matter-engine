@@ -396,6 +396,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(GLFW_WIN_LIB) -o $@ \
 	    -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers \
 	    -static \
+	    -DMATTER_VK_TEST_FAULT_INJECTION \
 	    -DMATTER_VK_TEST_LAYER_PATH='"$(VULKAN_RUNTIME_DIR)"' \
 	    -I$(ME3_DIR) -I$(ME3_DIR)/include -I$(ME3_DIR)/src \
 	    -I$(ME3_DIR)/tests \
