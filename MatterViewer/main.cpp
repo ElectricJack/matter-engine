@@ -21,6 +21,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <memory>
 #include <string>
 #include <vector>
@@ -91,9 +93,116 @@ std::string shared_lib_root() {
     return "../MatterEngine3/shared-lib";
 }
 
+struct PerfRunConfig {
+    bool enabled = false;
+    std::string output_path;
+    double warmup_seconds = 0.0;
+    double sample_seconds = 0.0;
+};
+
+struct PerfCounters {
+    uint64_t vertex_uploads = 0;
+    uint64_t cluster_uploads = 0;
+    uint64_t instance_uploads = 0;
+    uint64_t immediate_submits = 0;
+};
+
+bool parse_perf_seconds(const char* value, const char* name, double& result,
+                        std::string& error) {
+    char* end = nullptr;
+    result = std::strtod(value, &end);
+    if (end == value || *end != '\0' || !std::isfinite(result) || result < 0.0) {
+        error = std::string(name) + " must be a finite non-negative number";
+        return false;
+    }
+    return true;
+}
+
+bool read_perf_run_config(PerfRunConfig& config, std::string& error) {
+    const char* output = std::getenv("MATTER_PERF_OUTPUT");
+    const char* warmup = std::getenv("MATTER_PERF_WARMUP_SECONDS");
+    const char* sample = std::getenv("MATTER_PERF_SAMPLE_SECONDS");
+    if (!output && !warmup && !sample) return true;
+    if (!output || !*output || !warmup || !*warmup || !sample || !*sample) {
+        error = "MATTER_PERF_OUTPUT, MATTER_PERF_WARMUP_SECONDS, and "
+                "MATTER_PERF_SAMPLE_SECONDS must be set together";
+        return false;
+    }
+    config.enabled = true;
+    config.output_path = output;
+    if (!parse_perf_seconds(warmup, "MATTER_PERF_WARMUP_SECONDS",
+                            config.warmup_seconds, error) ||
+        !parse_perf_seconds(sample, "MATTER_PERF_SAMPLE_SECONDS",
+                            config.sample_seconds, error)) {
+        return false;
+    }
+    if (!(config.sample_seconds > 0.0)) {
+        error = "MATTER_PERF_SAMPLE_SECONDS must be greater than zero";
+        return false;
+    }
+    return true;
+}
+
+PerfCounters capture_perf_counters(const matter::FrameStats& stats) {
+    return {stats.vk_vertex_uploads, stats.vk_cluster_uploads,
+            stats.vk_instance_uploads, stats.vk_immediate_submits};
+}
+
+double median_of_sorted(const std::vector<double>& sorted) {
+    const size_t middle = sorted.size() / 2;
+    return (sorted.size() & 1) != 0
+               ? sorted[middle]
+               : (sorted[middle - 1] + sorted[middle]) * 0.5;
+}
+
+bool write_perf_result(const PerfRunConfig& config, const std::string& world,
+                       std::vector<double> frame_times, const PerfCounters& start,
+                       const PerfCounters& finish, uint32_t validation_errors,
+                       std::string& error) {
+    if (frame_times.empty()) {
+        error = "no performance frames were sampled";
+        return false;
+    }
+    std::sort(frame_times.begin(), frame_times.end());
+    const double median_frame_ms = median_of_sorted(frame_times);
+    const size_t p95_index = static_cast<size_t>(
+        std::ceil(static_cast<double>(frame_times.size()) * 0.95)) - 1;
+    const double p95_frame_ms = frame_times[p95_index];
+    const double median_fps = median_frame_ms > 0.0 ? 1000.0 / median_frame_ms : 0.0;
+    std::ofstream output(config.output_path, std::ios::out | std::ios::trunc);
+    if (!output) {
+        error = "could not write MATTER_PERF_OUTPUT '" + config.output_path + "'";
+        return false;
+    }
+    output << std::fixed << std::setprecision(6)
+           << "{\"world\":\"" << world << "\",\"frames\":"
+           << frame_times.size() << ",\"median_fps\":" << median_fps
+           << ",\"p95_frame_ms\":" << p95_frame_ms
+           << ",\"static_vertex_upload_delta\":"
+           << (finish.vertex_uploads - start.vertex_uploads)
+           << ",\"static_cluster_upload_delta\":"
+           << (finish.cluster_uploads - start.cluster_uploads)
+           << ",\"stable_instance_upload_delta\":"
+           << (finish.instance_uploads - start.instance_uploads)
+           << ",\"immediate_submit_delta\":"
+           << (finish.immediate_submits - start.immediate_submits)
+           << ",\"validation_errors\":" << validation_errors << "}\n";
+    if (!output) {
+        error = "failed while writing MATTER_PERF_OUTPUT '" + config.output_path + "'";
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 int main() {
+    PerfRunConfig perf;
+    std::string perf_error;
+    if (!read_perf_run_config(perf, perf_error)) {
+        std::fprintf(stderr, "FATAL: %s\n", perf_error.c_str());
+        return 1;
+    }
     if (!glfwInit()) {
         std::fprintf(stderr, "FATAL: glfwInit failed\n");
         return 1;
@@ -286,6 +395,11 @@ int main() {
     int shot_settle = 0;
     bool quit_requested = false;
     bool fatal_error = false;
+    enum class PerfPhase { WaitingForBake, Warming, Sampling, Complete };
+    PerfPhase perf_phase = PerfPhase::WaitingForBake;
+    std::chrono::steady_clock::time_point perf_phase_start{};
+    PerfCounters perf_start_counters{};
+    std::vector<double> perf_frame_times;
     auto previous_time = std::chrono::steady_clock::now();
 
     while (!glfwWindowShouldClose(window) && !quit_requested && !fatal_error) {
@@ -495,6 +609,55 @@ int main() {
                 }
 #endif
                 if (capture_path == screenshot_path) quit_requested = true;
+            }
+        }
+
+        if (perf.enabled && perf_phase != PerfPhase::Complete && !fatal_error) {
+            const auto perf_now = std::chrono::steady_clock::now();
+            if (perf_phase == PerfPhase::WaitingForBake) {
+                if (bake_ready && frame_stats.instances_drawn > 0) {
+                    perf_phase = PerfPhase::Warming;
+                    perf_phase_start = perf_now;
+                    std::printf("perf: bake ready; warming for %.3f seconds\n",
+                                perf.warmup_seconds);
+                }
+            } else if (perf_phase == PerfPhase::Warming &&
+                       std::chrono::duration<double>(perf_now - perf_phase_start)
+                               .count() >= perf.warmup_seconds) {
+                perf_phase = PerfPhase::Sampling;
+                perf_phase_start = perf_now;
+                perf_start_counters = capture_perf_counters(frame_stats);
+                perf_frame_times.clear();
+                std::printf("perf: sampling for %.3f seconds\n",
+                            perf.sample_seconds);
+            } else if (perf_phase == PerfPhase::Sampling) {
+                perf_frame_times.push_back(stats.frame_ms);
+                if (std::chrono::duration<double>(perf_now - perf_phase_start)
+                        .count() >= perf.sample_seconds) {
+                    const PerfCounters perf_finish_counters =
+                        capture_perf_counters(frame_stats);
+                    const uint32_t validation_errors =
+                        vulkan->validation_error_count();
+                    if (!write_perf_result(
+                            perf, worlds[stats.world_current].world_name,
+                            perf_frame_times, perf_start_counters,
+                            perf_finish_counters, validation_errors, perf_error)) {
+                        std::fprintf(stderr, "FATAL: perf: %s\n",
+                                     perf_error.c_str());
+                        fatal_error = true;
+                    } else if (validation_errors != 0) {
+                        std::fprintf(stderr,
+                                     "FATAL: perf observed %u Vulkan validation errors\n",
+                                     validation_errors);
+                        fatal_error = true;
+                    } else {
+                        std::printf("perf: wrote %zu frames to %s\n",
+                                    perf_frame_times.size(),
+                                    perf.output_path.c_str());
+                        quit_requested = true;
+                    }
+                    perf_phase = PerfPhase::Complete;
+                }
             }
         }
 

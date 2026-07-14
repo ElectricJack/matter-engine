@@ -15,6 +15,8 @@ $compat = Get-Content -Raw (Join-Path $root 'MatterEngine3\src\render\vulkan_onl
 $cell = Get-Content -Raw (Join-Path $root 'MatterSurfaceLib\src\cell.cpp')
 $runtimeSmokePath = Join-Path $root 'MatterViewer\tools\smoke_vulkan_viewer.ps1'
 $runtimeSmoke = if (Test-Path $runtimeSmokePath) { Get-Content -Raw $runtimeSmokePath } else { '' }
+$perfScriptPath = Join-Path $root 'MatterViewer\tools\perf_vulkan_instancing.ps1'
+$perfScript = if (Test-Path $perfScriptPath) { Get-Content -Raw $perfScriptPath } else { '' }
 $failures = [System.Collections.Generic.List[string]]::new()
 
 function Require-Text([string]$Text, [string]$Needle, [string]$Label) {
@@ -141,6 +143,34 @@ Require-Text $main 'FATAL: MATTER_WORLD' 'explicit missing world failure'
 Require-Text $main 'selected world' 'selected world identity report'
 Require-Text $runtimeSmoke 'MATTER_CACHE_ROOT' 'isolated clean cache smoke'
 Require-Text $runtimeSmoke 'selected world CornellBox hash' 'selected world hash assertion'
+
+# GPU-instancing parity performance contract. The viewer owns the deterministic
+# interval sampling and the PowerShell harness enforces its measured output;
+# retain every counter field so a future change cannot silently drop a guard.
+@('MATTER_PERF_OUTPUT', 'MATTER_PERF_WARMUP_SECONDS',
+  'MATTER_PERF_SAMPLE_SECONDS') | ForEach-Object {
+    Require-Text $main $_ 'performance environment contract'
+    Require-Text $perfScript $_ 'performance harness environment'
+}
+@('median_fps', 'p95_frame_ms', 'static_vertex_upload_delta',
+  'static_cluster_upload_delta', 'stable_instance_upload_delta',
+  'immediate_submit_delta', 'validation_errors') | ForEach-Object {
+    Require-Text $main $_ 'performance JSON counter'
+}
+Require-Text $makefile 'vulkan-instancing-perf: windows' 'performance Make target'
+Require-Text $vkScene 'multi_draw_indirect_enabled' 'grouped indirect feature gate'
+Require-Text $vkScene 'range.command_count' 'grouped indirect draw ranges'
+Require-Text $vkScene 'vkCmdDrawIndirect(command_buffer, record.indirect_buffer' 'grouped indirect recording'
+$recordStart = $vkScene.IndexOf('bool VkSceneRenderer::record_cull_and_render(')
+$recordEnd = if ($recordStart -ge 0) {
+    $vkScene.IndexOf('#ifdef MATTER_VK_TEST_FAULT_INJECTION', $recordStart)
+} else { -1 }
+if ($recordStart -lt 0 -or $recordEnd -lt $recordStart) {
+    $failures.Add('could not isolate the production Vulkan world-render record path')
+} else {
+    $recordPath = $vkScene.Substring($recordStart, $recordEnd - $recordStart)
+    Forbid-Text $recordPath 'submit_immediate(' 'production Vulkan world-render submission'
+}
 
 # Vulkan-only compatibility must own CPU cleanup and may not pretend unsupported
 # GPU operations succeeded through empty bodies.

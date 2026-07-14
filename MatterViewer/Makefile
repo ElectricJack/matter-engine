@@ -491,6 +491,12 @@ windows: $(WIN_FEATURES) $(VK_EMBEDDED_HEADER) $(CUDA_INTEROP_HEADER) $(GLFW_WIN
 vulkan-viewer-gate:
 	powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/check_vulkan_viewer.ps1
 
+.PHONY: vulkan-instancing-perf
+vulkan-instancing-perf: windows
+	VK_LAYER_PATH="$(VULKAN_RUNTIME_DIR)" PATH="$(VULKAN_RUNTIME_DIR);$$PATH" \
+	    powershell.exe -NoProfile -ExecutionPolicy Bypass -File \
+	    tools/perf_vulkan_instancing.ps1
+
 -include $(W_ALL_OBJ:.o=.d)
 
 # win-shaders: removed — all runtime shaders are now embedded at build time via
@@ -513,4 +519,4 @@ win-shaders-gpu:
 clean:
 	rm -rf viewer viewer.exe build
 
-.PHONY: viewer windows clean shaders shaders_gpu_link win-shaders-gpu regen-processed-shader mingw-box3d embedded-shaders build-engine-lib
+.PHONY: viewer windows clean shaders shaders_gpu_link win-shaders-gpu regen-processed-shader mingw-box3d embedded-shaders build-engine-lib vulkan-instancing-perf
