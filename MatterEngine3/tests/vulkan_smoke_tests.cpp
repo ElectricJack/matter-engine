@@ -833,6 +833,74 @@ void run_frame_upload_tests(matter::VulkanDevice& vulkan) {
           "camera-only frame leaves scene uploads and command layout intact");
 }
 
+void run_frame_record_tests(matter::VulkanDevice& vulkan) {
+    std::string error;
+    viewer::VkSceneRenderer renderer(vulkan);
+    const matter::Mat4f identity = identity_matrix();
+    const viewer::VkScenePart first = known_raster_triangle(972);
+    const viewer::VkScenePart second = known_raster_triangle(973);
+    CHECK(renderer.ensure_part(first, error) >= 0 &&
+              renderer.ensure_part(second, error) >= 0 &&
+              renderer.update_instances(
+                  {{972, identity}, {972, identity}, {973, identity},
+                   {973, identity}},
+                  error),
+          error.empty() ? "stage two active Vulkan raster parts" : error.c_str());
+
+    const FixedCullScene scene = make_fixed_cull_scene();
+    matter::VulkanFrame frame{};
+    CHECK(vulkan.begin_frame(frame, error),
+          error.empty() ? "begin asynchronous Vulkan record frame"
+                        : error.c_str());
+    if (frame.command_buffer == VK_NULL_HANDLE) return;
+    CHECK(renderer.prepare_frame(frame, scene.frame, scene.eye, 1.0f, error),
+          error.empty() ? "prepare asynchronous Vulkan record frame"
+                        : error.c_str());
+    const uint64_t immediate_before = matter::immediate_submit_count();
+    CHECK(renderer.record_cull_and_render(frame, scene.frame, scene.eye, 1.0f,
+                                          error),
+          error.empty() ? "record Vulkan cull and raster" : error.c_str());
+    CHECK(matter::immediate_submit_count() == immediate_before,
+          "production Vulkan record path performs no immediate submissions");
+    const auto ranges = renderer.test_recorded_draw_ranges();
+    CHECK(ranges.size() == 2,
+          "one grouped indirect range per active part");
+    CHECK(ranges.size() == 2 && ranges[0].command_count > 1 &&
+              ranges[1].command_count > 1,
+          "cluster LOD commands are grouped instead of submitted individually");
+    CHECK(vulkan.end_frame(frame, error),
+          error.empty() ? "submit asynchronous Vulkan record frame"
+                        : error.c_str());
+
+    renderer.set_test_device_limits(4096, 4096, 4096, 1024, 3);
+    CHECK(vulkan.begin_frame(frame, error) &&
+              renderer.prepare_frame(frame, scene.frame, scene.eye, 1.0f,
+                                     error) &&
+              renderer.record_cull_and_render(frame, scene.frame, scene.eye,
+                                              1.0f, error),
+          error.empty() ? "record capped grouped indirect ranges" : error.c_str());
+    const auto capped_ranges = renderer.test_recorded_draw_ranges();
+    bool capped_and_contiguous = !capped_ranges.empty();
+    uint32_t first_offset = std::numeric_limits<uint32_t>::max();
+    uint32_t second_offset = std::numeric_limits<uint32_t>::max();
+    for (const auto& range : capped_ranges) {
+        capped_and_contiguous = capped_and_contiguous &&
+                                range.command_count <= 3;
+        uint32_t& expected =
+            range.part_slot == 0 ? first_offset : second_offset;
+        if (expected == std::numeric_limits<uint32_t>::max())
+            expected = range.first_command;
+        capped_and_contiguous = capped_and_contiguous &&
+                                range.first_command == expected;
+        expected += range.command_count;
+    }
+    CHECK(capped_and_contiguous && first_offset == viewer::kVkMaxLod &&
+              second_offset == 2 * viewer::kVkMaxLod,
+          "capped grouped ranges cover each active part contiguously");
+    CHECK(vulkan.end_frame(frame, error),
+          error.empty() ? "submit capped grouped indirect ranges" : error.c_str());
+}
+
 void run_frame_resource_recovery_tests(matter::VulkanDevice& vulkan) {
     std::string error;
     const FixedCullScene scene = make_fixed_cull_scene();
@@ -1489,6 +1557,8 @@ int main() {
     if (vulkan) {
         CHECK(vulkan->draw_indirect_first_instance_enabled(),
               "drawIndirectFirstInstance is enabled on the logical device");
+        CHECK(vulkan->multi_draw_indirect_enabled(),
+              "multiDrawIndirect is enabled on the logical device");
         const char* smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
         if (smoke_mode &&
             (std::string(smoke_mode) == "outlive-resources" ||
@@ -1552,6 +1622,7 @@ int main() {
         }
         if (smoke_mode && std::string(smoke_mode) == "cull") {
             run_frame_upload_tests(*vulkan);
+            run_frame_record_tests(*vulkan);
             run_frame_resource_recovery_tests(*vulkan);
             run_vk_scene_checked_size_tests(*vulkan);
             run_cull_parity(*vulkan);
@@ -1628,6 +1699,7 @@ int main() {
 
         uint32_t retained_probe_destroyed = 0;
         run_frame_upload_tests(*vulkan);
+        run_frame_record_tests(*vulkan);
         run_frame_resource_recovery_tests(*vulkan);
         for (int i = 0; i < 3; ++i) {
             matter::VulkanFrame frame{};

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -64,6 +65,10 @@ protected:
 };
 
 }  // namespace detail
+
+namespace {
+std::atomic<uint64_t> g_immediate_submit_count{0};
+}  // namespace
 namespace {
 
 const char* result_name(VkResult result) {
@@ -432,6 +437,7 @@ bool submit_immediate(VulkanDevice& vulkan, ImmediateRecordFn record,
                       void* user_data, std::string& error,
                       ImmediateSubmitPhase phase,
                       std::vector<std::shared_ptr<void>> dependencies) {
+    g_immediate_submit_count.fetch_add(1, std::memory_order_relaxed);
     if (!record) {
         error = "submit_immediate requires a record callback";
         return false;
@@ -524,6 +530,10 @@ bool submit_immediate(VulkanDevice& vulkan, ImmediateRecordFn record,
 #endif
     cleanup();
     return result_ok;
+}
+
+uint64_t immediate_submit_count() noexcept {
+    return g_immediate_submit_count.load(std::memory_order_relaxed);
 }
 
 bool upload_buffer(VulkanDevice& vulkan, VkBufferResource& destination,

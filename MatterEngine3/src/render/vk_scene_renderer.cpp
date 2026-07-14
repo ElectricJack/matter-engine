@@ -95,34 +95,45 @@ struct CullDispatchRecord {
     uint32_t group_count;
 };
 
-void record_cull_dispatch(VkCommandBuffer command_buffer, void* user_data) {
-    const auto& dispatch = *static_cast<CullDispatchRecord*>(user_data);
+void record_cull_dispatch_commands(VkCommandBuffer command_buffer,
+                                   const CullDispatchRecord& dispatch) {
     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                       dispatch.pipeline);
     vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                             dispatch.layout, 0, 2, dispatch.sets, 0, nullptr);
     vkCmdDispatch(command_buffer, dispatch.group_count, 1, 1);
 
-    VkMemoryBarrier2 barriers[2]{};
-    barriers[0].sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-    barriers[0].srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    barriers[0].srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-    barriers[0].dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT |
-                               VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
-    barriers[0].dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT |
-                                VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
-    barriers[1].sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-    barriers[1].srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    barriers[1].srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-    barriers[1].dstStageMask =
-        VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-    barriers[1].dstAccessMask =
-        VK_ACCESS_2_HOST_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT;
+    VkMemoryBarrier2 memory{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    memory.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    memory.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    memory.dstStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT |
+                          VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+    memory.dstAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT |
+                           VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
     VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    dependency.memoryBarrierCount = 2;
-    dependency.pMemoryBarriers = barriers;
+    dependency.memoryBarrierCount = 1;
+    dependency.pMemoryBarriers = &memory;
     vkCmdPipelineBarrier2(command_buffer, &dependency);
 }
+
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+void record_cull_dispatch(VkCommandBuffer command_buffer, void* user_data) {
+    const auto& dispatch = *static_cast<CullDispatchRecord*>(user_data);
+    record_cull_dispatch_commands(command_buffer, dispatch);
+
+    VkMemoryBarrier2 readback{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    readback.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    readback.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    readback.dstStageMask =
+        VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    readback.dstAccessMask =
+        VK_ACCESS_2_HOST_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT;
+    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dependency.memoryBarrierCount = 1;
+    dependency.pMemoryBarriers = &readback;
+    vkCmdPipelineBarrier2(command_buffer, &dependency);
+}
+#endif
 
 struct RasterRecord {
     matter::VkImageResource* albedo;
@@ -139,8 +150,10 @@ struct RasterRecord {
     VkDescriptorSet composite_set;
     VkBuffer vertex_buffer;
     VkBuffer indirect_buffer;
-    uint32_t indirect_count;
-    const uint8_t* command_enabled;
+    const PartCommandRange* draw_ranges;
+    uint32_t draw_range_count;
+    uint32_t max_draw_indirect_count;
+    std::vector<PartCommandRange>* recorded_draw_ranges;
     VkSceneLighting lighting;
 };
 
@@ -211,15 +224,24 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     const VkDeviceSize vertex_offset = 0;
     vkCmdBindVertexBuffers(command_buffer, 0, 1, &record.vertex_buffer,
                            &vertex_offset);
-    // multiDrawIndirect is not required by VulkanDevice. Submit each Task 7
-    // command independently, so maxDrawIndirectCount applies to drawCount=1
-    // for every call rather than to the size of the command table. Any future
-    // multi-draw path must validate its per-call drawCount against that limit.
-    for (uint32_t i = 0; i < record.indirect_count; ++i) {
-        if (record.command_enabled[i] == 0) continue;
-        vkCmdDrawIndirect(command_buffer, record.indirect_buffer,
-                          static_cast<VkDeviceSize>(i) * sizeof(DrawCommand),
-                          1, sizeof(DrawCommand));
+    for (uint32_t i = 0; i < record.draw_range_count; ++i) {
+        const PartCommandRange& range = record.draw_ranges[i];
+        uint32_t remaining = range.command_count;
+        uint32_t first = range.first_command;
+        while (remaining != 0) {
+            const uint32_t count =
+                std::min(remaining, record.max_draw_indirect_count);
+            vkCmdDrawIndirect(command_buffer, record.indirect_buffer,
+                              static_cast<VkDeviceSize>(first) *
+                                  sizeof(DrawCommand),
+                              count, sizeof(DrawCommand));
+            if (record.recorded_draw_ranges) {
+                record.recorded_draw_ranges->push_back(
+                    {first, count, range.part_slot});
+            }
+            first += count;
+            remaining -= count;
+        }
     }
     vkCmdEndRendering(command_buffer);
 
@@ -263,6 +285,7 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     vkCmdEndRendering(command_buffer);
 }
 
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
 struct RasterReadbackRecord {
     matter::VkImageResource* images[5];
     VkImageAspectFlags aspects[5];
@@ -314,6 +337,7 @@ float half_to_float(uint16_t value) {
     return sign * std::ldexp(1.0f + static_cast<float>(mantissa) / 1024.0f,
                              static_cast<int>(exponent) - 15);
 }
+#endif
 
 }  // namespace
 
@@ -1314,7 +1338,9 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
     if (!rebuild_command_template(ignored_error)) {
         instance_staging_.clear();
         instance_part_slots_.clear();
+        part_instance_counts_.clear();
         command_template_.clear();
+        part_command_ranges_.clear();
         raster_command_enabled_.clear();
         raster_draw_command_count_ = 0;
         draw_transform_slots_ = 0;
@@ -1377,6 +1403,8 @@ bool VkSceneRenderer::update_instances(
     auto old_rt = std::move(rt_instances_);
     auto old_commands = std::move(command_template_);
     auto old_raster_enabled = std::move(raster_command_enabled_);
+    auto old_part_counts = std::move(part_instance_counts_);
+    auto old_part_ranges = std::move(part_command_ranges_);
     const uint32_t old_raster_count = raster_draw_command_count_;
     const uint32_t old_max_clusters = max_clusters_per_instance_;
     const uint32_t old_transform_slots = draw_transform_slots_;
@@ -1390,6 +1418,8 @@ bool VkSceneRenderer::update_instances(
         rt_instances_ = std::move(old_rt);
         command_template_ = std::move(old_commands);
         raster_command_enabled_ = std::move(old_raster_enabled);
+        part_instance_counts_ = std::move(old_part_counts);
+        part_command_ranges_ = std::move(old_part_ranges);
         raster_draw_command_count_ = old_raster_count;
         max_clusters_per_instance_ = old_max_clusters;
         draw_transform_slots_ = old_transform_slots;
@@ -1460,6 +1490,17 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
 
     command_template_.assign(static_cast<size_t>(command_count), {});
     raster_command_enabled_.assign(static_cast<size_t>(command_count), 0);
+    std::vector<PartCommandRange> next_part_ranges;
+    next_part_ranges.reserve(parts_.size());
+    for (uint32_t slot = 0; slot < parts_.size(); ++slot) {
+        const PartRecord& part = parts_[slot];
+        if (!part.live || per_part[slot] == 0 || part.cluster_count == 0 ||
+            part.vertex_count == 0)
+            continue;
+        next_part_ranges.push_back(
+            {part.cluster_start * kVkMaxLod,
+             part.cluster_count * kVkMaxLod, slot});
+    }
     raster_draw_command_count_ = 0;
     uint32_t command_first_instance = 0;
     for (size_t cluster_index = 0; cluster_index < cluster_staging_.size();
@@ -1491,6 +1532,8 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
         }
     }
     draw_transform_slots_ = first_instance;
+    part_instance_counts_ = std::move(per_part);
+    part_command_ranges_ = std::move(next_part_ranges);
     return true;
 }
 
@@ -1542,6 +1585,9 @@ bool VkSceneRenderer::upload_scene_buffers(FrameResources& frame,
         return false;
     }
     uint32_t replacements = 0;
+#ifndef MATTER_VK_TEST_FAULT_INJECTION
+    (void)replacements;
+#endif
     uint32_t uploads = 0;
     const auto allow_replacement = [&] {
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
@@ -1735,6 +1781,99 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     return vulkan_->retain_for_frame(frame, std::move(resources), error);
 }
 
+bool VkSceneRenderer::validate_draw_command_regions(std::string& error) const {
+    uint32_t previous_first = 0;
+    for (size_t i = 0; i < command_template_.size(); ++i) {
+        const uint32_t first = command_template_[i].first_instance;
+        if ((i != 0 && first < previous_first) ||
+            first > draw_transform_slots_) {
+            error = "draw command transform regions must be monotonic and bounded";
+            return false;
+        }
+        previous_first = first;
+    }
+    return true;
+}
+
+bool VkSceneRenderer::record_cull_and_render(
+    const matter::VulkanFrame& frame, const FrameMatrices& matrices,
+    matter::Float3 camera_eye, float pixel_budget, std::string& error) {
+    error.clear();
+    recorded_draw_ranges_.clear();
+    if (fail_if_poisoned(error)) return false;
+    if (!initialized_ && !init(error)) return false;
+    if (!vulkan_->multi_draw_indirect_enabled()) {
+        error = "Vulkan multiDrawIndirect is required for grouped scene rasterization";
+        return false;
+    }
+    if (frame.command_buffer == VK_NULL_HANDLE ||
+        frame.frame_slot >= frame.frame_slot_count ||
+        frame.frame_slot >= frames_.size() ||
+        frame.frame_slot != active_frame_index_) {
+        error = "record_cull_and_render requires prepared acquired frame resources";
+        return false;
+    }
+    if (limits_.max_draw_indirect_count < 1) {
+        error = "Vulkan maxDrawIndirectCount cannot support grouped indirect draws";
+        return false;
+    }
+    if (!validate_draw_command_regions(error)) return false;
+    if (!ensure_raster_targets(frame.extent.width, frame.extent.height, error))
+        return false;
+
+    FrameResources& selected = frames_[frame.frame_slot];
+    // prepare_frame owns the existing scene resources for this slot. Newly
+    // created/replaced attachments are retained here before commands reference
+    // them, preserving the frame-lifetime contract.
+    std::vector<std::shared_ptr<void>> attachments{
+        albedo_.lifetime, normal_.lifetime, orm_.lifetime, depth_.lifetime,
+        hdr_.lifetime};
+    if (!vulkan_->retain_for_frame(frame, std::move(attachments), error))
+        return false;
+
+    uint32_t group_count = 0;
+    if (!vk_scene_detail::checked_dispatch_groups(
+            static_cast<uint32_t>(instance_staging_.size()),
+            max_clusters_per_instance_, limits_.max_dispatch_group_count_x,
+            group_count, error)) {
+        return false;
+    }
+    if (group_count != 0) {
+        const CullDispatchRecord dispatch{
+            pipeline_, pipeline_layout_,
+            {selected.descriptor_sets[0], selected.descriptor_sets[1]},
+            group_count};
+        record_cull_dispatch_commands(frame.command_buffer, dispatch);
+    }
+
+    RasterRecord record{&albedo_,
+                        &normal_,
+                        &orm_,
+                        &depth_,
+                        &hdr_,
+                        raster_extent_,
+                        raster_pipeline_,
+                        pipeline_layout_,
+                        {selected.descriptor_sets[0], selected.descriptor_sets[1]},
+                        composite_pipeline_,
+                        composite_pipeline_layout_,
+                        composite_descriptor_set_,
+                        vertices_.buffer,
+                        selected.commands.buffer,
+                        part_command_ranges_.data(),
+                        static_cast<uint32_t>(part_command_ranges_.size()),
+                        limits_.max_draw_indirect_count,
+                        &recorded_draw_ranges_,
+                        lighting_};
+    record_raster(frame.command_buffer, &record);
+    raster_attachments_ready_ = true;
+    (void)matrices;
+    (void)camera_eye;
+    (void)pixel_budget;
+    return true;
+}
+
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
 bool VkSceneRenderer::dispatch_culling(const FrameMatrices& frame,
                                        matter::Float3 camera_eye,
                                        float pixel_budget,
@@ -1747,16 +1886,7 @@ bool VkSceneRenderer::dispatch_culling(const FrameMatrices& frame,
             "Vulkan maxDrawIndirectCount cannot support per-call drawCount=1";
         return false;
     }
-    uint32_t previous_first = 0;
-    for (size_t i = 0; i < command_template_.size(); ++i) {
-        const uint32_t first = command_template_[i].first_instance;
-        if ((i != 0 && first < previous_first) ||
-            first > draw_transform_slots_) {
-            error = "draw command transform regions must be monotonic and bounded";
-            return false;
-        }
-        previous_first = first;
-    }
+    if (!validate_draw_command_regions(error)) return false;
     uint32_t group_count = 0;
     if (!vk_scene_detail::checked_dispatch_groups(
             static_cast<uint32_t>(instance_staging_.size()),
@@ -1844,6 +1974,8 @@ bool VkSceneRenderer::readback_draw_transforms(
         bytes, 0, error);
 }
 
+#endif
+
 bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
                                             std::string& error) {
     if (width == 0 || height == 0) {
@@ -1923,6 +2055,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     return true;
 }
 
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
 bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
                                                    uint32_t height,
                                                    std::string& error) {
@@ -1958,8 +2091,10 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
                         composite_descriptor_set_,
                         vertices_.buffer,
                         selected.commands.buffer,
-                        uploaded_command_count_,
-                        uploaded_raster_command_enabled_.data(),
+                        part_command_ranges_.data(),
+                        static_cast<uint32_t>(part_command_ranges_.size()),
+                        limits_.max_draw_indirect_count,
+                        nullptr,
                         lighting_};
     std::vector<std::shared_ptr<void>> dependencies{
         albedo_.lifetime, normal_.lifetime, orm_.lifetime, depth_.lifetime,
@@ -1975,6 +2110,8 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
     raster_attachments_ready_ = true;
     return true;
 }
+
+#endif
 
 bool VkSceneRenderer::record_composite_to_swapchain(
     const matter::VulkanFrame& frame, std::string& error) {
@@ -2052,6 +2189,7 @@ VkRasterAttachments VkSceneRenderer::raster_attachments() const {
             raster_extent_};
 }
 
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
 bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
                                             VkRasterPixel& pixel,
                                             std::string& error) {
@@ -2123,6 +2261,8 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
     return true;
 }
 
+#endif
+
 int VkSceneRenderer::fill_rt_instances(
     std::vector<RtInstance>& output) const {
     if (poisoned()) {
@@ -2160,7 +2300,10 @@ void VkSceneRenderer::reset() {
     cluster_lods_.clear();
     instance_staging_.clear();
     instance_part_slots_.clear();
+    part_instance_counts_.clear();
     command_template_.clear();
+    part_command_ranges_.clear();
+    recorded_draw_ranges_.clear();
     raster_command_enabled_.clear();
     uploaded_raster_command_enabled_.clear();
     rt_instances_.clear();

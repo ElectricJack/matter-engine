@@ -289,6 +289,7 @@ struct VulkanDevice::Impl {
     VkQueue graphics_queue = VK_NULL_HANDLE;
     uint32_t graphics_queue_family = std::numeric_limits<uint32_t>::max();
     bool draw_indirect_first_instance_enabled = false;
+    bool multi_draw_indirect_enabled = false;
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     VkFormat swapchain_format = VK_FORMAT_UNDEFINED;
     VkExtent2D swapchain_extent{};
@@ -563,6 +564,9 @@ struct VulkanDevice::Impl {
             missing.emplace_back(
                 "VkPhysicalDeviceFeatures::drawIndirectFirstInstance");
         }
+        if (!features2.features.multiDrawIndirect) {
+            missing.emplace_back("VkPhysicalDeviceFeatures::multiDrawIndirect");
+        }
         if (!features12.timelineSemaphore) {
             missing.emplace_back(
                 "VkPhysicalDeviceVulkan12Features::timelineSemaphore");
@@ -792,6 +796,7 @@ struct VulkanDevice::Impl {
         VkPhysicalDeviceFeatures2 features2{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         features2.features.drawIndirectFirstInstance = VK_TRUE;
+        features2.features.multiDrawIndirect = VK_TRUE;
         features2.pNext = &features12;
 
         VkDeviceCreateInfo create{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
@@ -805,6 +810,7 @@ struct VulkanDevice::Impl {
             return false;
         }
         draw_indirect_first_instance_enabled = true;
+        multi_draw_indirect_enabled = true;
         device_lifetime =
             std::make_shared<detail::DeviceAccessToken>(device);
         vkGetDeviceQueue(device, graphics_queue_family, 0, &graphics_queue);
@@ -1953,6 +1959,9 @@ uint32_t VulkanDevice::swapchain_image_count() const {
 }
 bool VulkanDevice::draw_indirect_first_instance_enabled() const {
     return impl_->draw_indirect_first_instance_enabled;
+}
+bool VulkanDevice::multi_draw_indirect_enabled() const {
+    return impl_->multi_draw_indirect_enabled;
 }
 uint32_t VulkanDevice::validation_error_count() const {
     return impl_->validation_errors.load(std::memory_order_relaxed);

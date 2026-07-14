@@ -63,6 +63,7 @@ public:
     VkFormat swapchain_format() const;
     uint32_t swapchain_image_count() const;
     bool draw_indirect_first_instance_enabled() const;
+    bool multi_draw_indirect_enabled() const;
     uint32_t validation_error_count() const;
     // External API work may outlive every completion primitive we can safely
     // query. In that terminal case, preserve the logical device and children.

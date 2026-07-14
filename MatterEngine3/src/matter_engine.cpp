@@ -3468,12 +3468,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     if (!viewer::build_frame_matrices(cam, frame.extent.width,
                                       frame.extent.height, matrices, err))
         return false;
-    if (!impl_->vk_scene->dispatch_culling(matrices, cam.position, budget, err))
+    if (!impl_->vk_scene->prepare_frame(frame, matrices, cam.position, budget,
+                                        err))
         return false;
-    viewer::VkCullStats cull{};
-    if (!impl_->vk_scene->cull_stats(cull, err)) return false;
-    const auto build_end = std::chrono::steady_clock::now();
-    const auto draw_start = std::chrono::steady_clock::now();
     viewer::VkSceneLighting lighting{};
     lighting.sun_direction = {impl_->manifest.lights.sun_dir[0],
                               impl_->manifest.lights.sun_dir[1],
@@ -3486,8 +3483,10 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                           impl_->manifest.lights.sky_color[1],
                           impl_->manifest.lights.sky_color[2]};
     impl_->vk_scene->set_lighting(lighting);
-    if (!impl_->vk_scene->render_gbuffer_and_composite(
-            frame.extent.width, frame.extent.height, err) ||
+    const auto build_end = std::chrono::steady_clock::now();
+    const auto draw_start = std::chrono::steady_clock::now();
+    if (!impl_->vk_scene->record_cull_and_render(
+            frame, matrices, cam.position, budget, err) ||
         !impl_->vk_scene->record_composite_to_swapchain(frame, err))
         return false;
     const auto draw_end = std::chrono::steady_clock::now();
@@ -3499,22 +3498,14 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.draw_ms =
         std::chrono::duration<float, std::milli>(draw_end - draw_start).count();
     impl_->stats.instances_resolved = static_cast<uint32_t>(instances.size());
-    impl_->stats.instances_drawn = cull.emitted;
-    impl_->stats.clusters_culled = cull.frustum_culled;
-    impl_->stats.hiz_culled = cull.hiz_culled;
+    // Culling results are intentionally GPU-owned until the frame completes.
+    // Reading these values here would reintroduce a submission/wait boundary.
+    impl_->stats.instances_drawn = 0;
+    impl_->stats.clusters_culled = 0;
+    impl_->stats.hiz_culled = 0;
     impl_->stats.parts_baked = static_cast<uint32_t>(impl_->store->loaded_count());
     impl_->stats.instances_total = static_cast<uint32_t>(impl_->state.entries().size());
-    std::vector<viewer::DrawCommand> commands;
-    if (impl_->vk_scene->readback_commands(commands, err)) {
-        uint64_t triangles = 0;
-        for (const auto& command : commands)
-            triangles += static_cast<uint64_t>(command.vertex_count / 3) *
-                         command.instance_count;
-        impl_->stats.triangles = static_cast<uint32_t>(
-            std::min<uint64_t>(triangles, UINT32_MAX));
-    } else {
-        return false;
-    }
+    impl_->stats.triangles = 0;
     return true;
 }
 

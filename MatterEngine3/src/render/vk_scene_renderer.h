@@ -148,6 +148,12 @@ struct VkSceneUploadCounters {
     uint64_t command_layout_rebuilds = 0;
 };
 
+struct PartCommandRange {
+    uint32_t first_command = 0;
+    uint32_t command_count = 0;
+    uint32_t part_slot = 0;
+};
+
 class VkSceneRenderer {
 public:
     struct RtInstance {
@@ -169,9 +175,19 @@ public:
                        const FrameMatrices& matrices,
                        matter::Float3 camera_eye, float pixel_budget,
                        std::string& error);
+    bool record_cull_and_render(const matter::VulkanFrame& frame,
+                                const FrameMatrices& matrices,
+                                matter::Float3 camera_eye,
+                                float pixel_budget, std::string& error);
+    const std::vector<PartCommandRange>& test_recorded_draw_ranges() const {
+        return recorded_draw_ranges_;
+    }
     VkSceneUploadCounters upload_counters() const noexcept {
         return upload_counters_;
     }
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    // Immediate submit/readback diagnostics are intentionally test-only. The
+    // production path records through record_cull_and_render above.
     bool dispatch_culling(const FrameMatrices& frame, matter::Float3 camera_eye,
                           float pixel_budget, std::string& error);
     bool cull_stats(VkCullStats& stats, std::string& error);
@@ -181,14 +197,17 @@ public:
                                   std::string& error);
     bool render_gbuffer_and_composite(uint32_t width, uint32_t height,
                                       std::string& error);
+#endif
     void set_lighting(const VkSceneLighting& lighting) { lighting_ = lighting; }
     // Blit the real HDR world composite into the currently acquired swapchain
     // image, leaving it ready for UI dynamic rendering.
     bool record_composite_to_swapchain(const matter::VulkanFrame& frame,
                                        std::string& error);
     VkRasterAttachments raster_attachments() const;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
     bool readback_raster_pixel(uint32_t x, uint32_t y,
                                VkRasterPixel& pixel, std::string& error);
+#endif
     int fill_rt_instances(std::vector<RtInstance>& output) const;
     // A poisoned renderer fails closed. reset() then performs a full GPU
     // resource/pipeline teardown, clears the poison, and requires re-init
@@ -325,6 +344,7 @@ private:
                                 const FrameMatrices& matrices,
                                 matter::Float3 camera_eye,
                                 float pixel_budget, std::string& error);
+    bool validate_draw_command_regions(std::string& error) const;
     void note_command_layout_rebuild();
     bool rebuild_command_template(std::string& error);
     bool load_device_limits(std::string& error);
@@ -367,7 +387,10 @@ private:
     std::vector<std::vector<VkSceneLod>> cluster_lods_;
     std::vector<GpuInstance> instance_staging_;
     std::vector<uint32_t> instance_part_slots_;
+    std::vector<uint32_t> part_instance_counts_;
     std::vector<DrawCommand> command_template_;
+    std::vector<PartCommandRange> part_command_ranges_;
+    std::vector<PartCommandRange> recorded_draw_ranges_;
     std::vector<uint8_t> raster_command_enabled_;
     std::vector<uint8_t> uploaded_raster_command_enabled_;
     std::vector<RtInstance> rt_instances_;

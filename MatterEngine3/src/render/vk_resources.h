@@ -111,6 +111,7 @@ bool transition_image(VulkanDevice& vulkan, VkImageResource& image,
                       VkImageAspectFlags aspect, std::string& error);
 
 using ImmediateRecordFn = void (*)(VkCommandBuffer, void*);
+uint64_t immediate_submit_count() noexcept;
 enum class ImmediateSubmitPhase {
     staging_upload,
     staging_readback,
