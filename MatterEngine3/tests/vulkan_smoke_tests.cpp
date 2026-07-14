@@ -25,6 +25,11 @@ namespace {
 
 bool close4(matter::Float4 actual, matter::Float4 expected, float epsilon);
 
+struct RetainProbe {
+    uint32_t* destroyed = nullptr;
+    ~RetainProbe() { ++*destroyed; }
+};
+
 void run_cuda_vulkan_interop(matter::VulkanDevice& vulkan) {
     std::string error;
     auto interop = matter::CudaVulkanInterop::create(vulkan, error);
@@ -1475,11 +1480,32 @@ int main() {
             return check_summary();
         }
 
+        uint32_t retained_probe_destroyed = 0;
         for (int i = 0; i < 3; ++i) {
             matter::VulkanFrame frame{};
             const bool began = vulkan->begin_frame(frame, error);
             CHECK(began, error.empty() ? "begin frame" : error.c_str());
             if (!began) break;
+
+            if (i == 0) {
+                CHECK(frame.frame_slot_count == 2,
+                      "Vulkan frame reports the configured two slots in flight");
+                CHECK(frame.frame_slot < frame.frame_slot_count,
+                      "Vulkan frame slot identity is in range");
+
+                auto probe = std::make_shared<RetainProbe>();
+                probe->destroyed = &retained_probe_destroyed;
+                std::vector<std::shared_ptr<void>> retained{probe};
+                CHECK(vulkan->retain_for_frame(frame, std::move(retained), error),
+                      error.empty() ? "retain active-frame dependency"
+                                    : error.c_str());
+                probe.reset();
+                CHECK(retained_probe_destroyed == 0,
+                      "active frame owns retained dependency");
+            } else if (i == 2) {
+                CHECK(retained_probe_destroyed == 1,
+                      "retained dependency releases when its frame slot is reused");
+            }
 
             const bool ended = vulkan->end_frame(frame, error);
             CHECK(ended, error.empty() ? "end frame" : error.c_str());

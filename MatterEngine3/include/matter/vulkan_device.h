@@ -24,6 +24,8 @@ struct VulkanFrame {
     VkFormat swapchain_format = VK_FORMAT_UNDEFINED;
     uint32_t image_index = 0;
     uint32_t image_count = 0;
+    uint32_t frame_slot = 0;
+    uint32_t frame_slot_count = 0;
     VkExtent2D extent{};
     uint64_t serial = 0;
     bool swapchain_recreated = false;
@@ -41,6 +43,9 @@ public:
 
     bool begin_frame(VulkanFrame& frame, std::string& error);
     bool end_frame(const VulkanFrame& frame, std::string& error);
+    bool retain_for_frame(const VulkanFrame& frame,
+                          std::vector<std::shared_ptr<void>> resources,
+                          std::string& error);
     // Records a copy of the fully composed swapchain image. The destination is
     // populated by end_frame after GPU completion and normalized to RGBA8.
     bool readback_swapchain_rgba8(const VulkanFrame& frame,

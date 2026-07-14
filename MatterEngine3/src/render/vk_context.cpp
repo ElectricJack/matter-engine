@@ -273,6 +273,7 @@ struct VulkanDevice::Impl {
         VkFence acquire_fence = VK_NULL_HANDLE;
         bool acquire_fence_pending = false;
         VkFence fence = VK_NULL_HANDLE;
+        std::vector<std::shared_ptr<void>> retained;
     };
 
     GLFWwindow* window = nullptr;
@@ -1144,6 +1145,7 @@ struct VulkanDevice::Impl {
                     "vkWaitForFences", error)) {
             return poison_device(error, "frame fence wait failed");
         }
+        slot.retained.clear();
 
         uint32_t image_index = 0;
         if (!vk_ok(vkResetFences(device, 1, &slot.acquire_fence),
@@ -1235,12 +1237,38 @@ struct VulkanDevice::Impl {
         output.swapchain_format = swapchain_format;
         output.image_index = image_index;
         output.image_count = static_cast<uint32_t>(swapchain_images.size());
+        output.frame_slot = frame_slot;
+        output.frame_slot_count = static_cast<uint32_t>(frames.size());
         output.extent = swapchain_extent;
         output.serial = next_serial++;
         output.swapchain_recreated = report_recreated;
         report_recreated = false;
         active_frame = output;
         frame_active = true;
+        return true;
+    }
+
+    bool retain_for_frame(const VulkanFrame& input,
+                          std::vector<std::shared_ptr<void>> resources,
+                          std::string& error) {
+        error.clear();
+        if (!ensure_healthy(error)) return false;
+        const uint32_t slot_count = static_cast<uint32_t>(frames.size());
+        if (input.frame_slot_count != slot_count ||
+            input.frame_slot >= slot_count) {
+            error = "retain_for_frame received an out-of-range frame slot";
+            return false;
+        }
+        if (!frame_active || input.serial != active_frame.serial ||
+            input.command_buffer != active_frame.command_buffer ||
+            input.frame_slot != active_frame.frame_slot) {
+            error = "retain_for_frame requires the active VulkanFrame";
+            return false;
+        }
+        FrameSlot& slot = frames[frame_slot];
+        for (std::shared_ptr<void>& resource : resources) {
+            if (resource) slot.retained.push_back(std::move(resource));
+        }
         return true;
     }
 
@@ -1786,6 +1814,12 @@ bool VulkanDevice::begin_frame(VulkanFrame& frame, std::string& error) {
 
 bool VulkanDevice::end_frame(const VulkanFrame& frame, std::string& error) {
     return impl_->end_frame(frame, error);
+}
+
+bool VulkanDevice::retain_for_frame(
+    const VulkanFrame& frame, std::vector<std::shared_ptr<void>> resources,
+    std::string& error) {
+    return impl_->retain_for_frame(frame, std::move(resources), error);
 }
 
 bool VulkanDevice::readback_swapchain_rgba8(const VulkanFrame& frame,
