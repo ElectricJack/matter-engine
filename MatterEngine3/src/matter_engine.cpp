@@ -3398,14 +3398,25 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         err = "WorldSession received an invalid VulkanFrame";
         return false;
     }
+    impl_->vk_scene->set_dlss_mode(opts.dlss_mode);
+    const VkExtent2D internal_extent =
+        impl_->vk_scene->dlss_internal_extent(frame.extent);
+    impl_->stats.dlss_selected_mode = impl_->vk_scene->selected_dlss_mode();
+    impl_->stats.dlss_active_mode = impl_->vk_scene->active_dlss_mode();
+    impl_->stats.dlss_internal_width = internal_extent.width;
+    impl_->stats.dlss_internal_height = internal_extent.height;
+    impl_->stats.dlss_output_width = frame.extent.width;
+    impl_->stats.dlss_output_height = frame.extent.height;
+    impl_->stats.dlss_reset_count = impl_->vk_scene->dlss_reset_count();
+    impl_->stats.dlss_reason = impl_->vk_scene->dlss_reason();
     viewer::FrameMatrices unjittered{};
-    if (!viewer::build_frame_matrices(cam, frame.extent.width,
-                                      frame.extent.height, unjittered, err))
+    if (!viewer::build_frame_matrices(cam, internal_extent.width,
+                                      internal_extent.height, unjittered, err))
         return false;
     const auto begin_temporal =
         [&](const std::vector<viewer::TemporalInstance>& temporal_instances) {
             const viewer::TemporalFrame temporal = impl_->vk_temporal.begin(
-                unjittered, frame.extent, frame.extent, temporal_instances,
+                unjittered, internal_extent, frame.extent, temporal_instances,
                 {.camera_cut = frame.swapchain_recreated});
             impl_->vk_temporal_serial = frame.serial;
             impl_->vk_temporal_token = temporal.attempt_token;
@@ -3533,6 +3544,8 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
         return false;
     }
+    if (impl_->vk_scene->consume_dlss_history_reset())
+        impl_->vk_temporal.invalidate();
     const auto draw_end = std::chrono::steady_clock::now();
 
     impl_->stats.resolve_ms =
@@ -3556,6 +3569,14 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.vk_command_layout_rebuilds =
         upload_counters.command_layout_rebuilds;
     impl_->stats.vk_immediate_submits = matter::immediate_submit_count();
+    impl_->stats.dlss_selected_mode = impl_->vk_scene->selected_dlss_mode();
+    impl_->stats.dlss_active_mode = impl_->vk_scene->active_dlss_mode();
+    impl_->stats.dlss_internal_width = internal_extent.width;
+    impl_->stats.dlss_internal_height = internal_extent.height;
+    impl_->stats.dlss_output_width = frame.extent.width;
+    impl_->stats.dlss_output_height = frame.extent.height;
+    impl_->stats.dlss_reset_count = impl_->vk_scene->dlss_reset_count();
+    impl_->stats.dlss_reason = impl_->vk_scene->dlss_reason();
     impl_->stats.parts_baked = static_cast<uint32_t>(impl_->store->loaded_count());
     impl_->stats.instances_total = static_cast<uint32_t>(impl_->state.entries().size());
     impl_->stats.triangles = 0;

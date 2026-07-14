@@ -7,7 +7,9 @@
 #include <cmath>
 #include <map>
 #include <limits>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "frame_matrices.h"
@@ -19,6 +21,8 @@
 
 namespace matter {
 class VulkanDevice;
+class StreamlineBridge;
+enum class DlssMode : uint8_t;
 struct VulkanFrame;
 }
 
@@ -179,6 +183,13 @@ public:
     bool update_instances(const std::vector<VkSceneInstance>& instances,
                           std::string& error);
     void set_temporal_frame(const TemporalFrame& frame) { temporal_frame_ = frame; }
+    void set_dlss_mode(matter::DlssMode mode) { selected_dlss_mode_ = mode; }
+    VkExtent2D dlss_internal_extent(VkExtent2D output_extent) const;
+    matter::DlssMode selected_dlss_mode() const { return selected_dlss_mode_; }
+    matter::DlssMode active_dlss_mode() const;
+    const std::string& dlss_reason() const;
+    uint64_t dlss_reset_count() const { return dlss_reset_count_; }
+    bool consume_dlss_history_reset();
     bool prepare_frame(const matter::VulkanFrame& frame,
                        const FrameMatrices& matrices,
                        matter::Float3 camera_eye, float pixel_budget,
@@ -195,6 +206,12 @@ public:
     }
     VkCullStats cached_cull_stats() const noexcept { return cached_stats_; }
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+    void set_test_dlss_bridge(matter::StreamlineBridge bridge);
+    VkImage test_dlss_output_image(uint32_t frame_slot) const {
+        return frame_slot < frames_.size()
+                   ? frames_[frame_slot].dlss_output.image
+                   : VK_NULL_HANDLE;
+    }
     // Immediate submit/readback diagnostics are intentionally test-only. The
     // production path records through record_cull_and_render above.
     bool dispatch_culling(const FrameMatrices& frame, matter::Float3 camera_eye,
@@ -336,6 +353,8 @@ private:
         matter::VkBufferResource commands;
         matter::VkBufferResource draw_transforms;
         matter::VkBufferResource stats;
+        matter::VkImageResource dlss_output;
+        VkExtent2D dlss_output_extent{};
         VkDescriptorSet descriptor_sets[2]{};
         uint64_t static_generation = 0;
         uint64_t instance_generation = 0;
@@ -347,6 +366,8 @@ private:
     bool create_raster_pipelines(std::string& error);
     bool ensure_raster_targets(uint32_t width, uint32_t height,
                                std::string& error);
+    bool ensure_dlss_output(FrameResources& frame, VkExtent2D output_extent,
+                            std::string& error);
     bool ensure_vertex_buffer(VkDeviceSize required_size,
                               std::string& error, bool* replaced = nullptr);
     bool ensure_buffer(matter::VkBufferResource& buffer,
@@ -374,6 +395,10 @@ private:
     void destroy_pipeline();
 
     matter::VulkanDevice* vulkan_ = nullptr;
+    std::unique_ptr<matter::StreamlineBridge> dlss_bridge_;
+    matter::DlssMode selected_dlss_mode_ = static_cast<matter::DlssMode>(0);
+    bool dlss_history_reset_pending_ = false;
+    uint64_t dlss_reset_count_ = 0;
     VkDescriptorSetLayout set_layouts_[2]{};
     VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;

@@ -348,6 +348,14 @@ int main() {
     bool camera_capture = false;
     bool tab_down = false;
     bool f9_down = false;
+    bool f8_down = false;
+    bool dlss_modes_supported = false;
+    matter::DlssMode selected_dlss_mode = matter::DlssMode::Native;
+    matter::DlssMode reported_selected_dlss_mode =
+        static_cast<matter::DlssMode>(255);
+    matter::DlssMode reported_active_dlss_mode =
+        static_cast<matter::DlssMode>(255);
+    uint64_t reported_dlss_resets = UINT64_MAX;
     viewer::CameraController camera_controller;
     const char* screenshot_env = std::getenv("MATTER_SCREENSHOT");
     const std::string screenshot_path = screenshot_env ? screenshot_env : "";
@@ -418,6 +426,28 @@ int main() {
         }
         if (key_pressed(window, GLFW_KEY_F9, f9_down))
             std::printf("wireframe: not available in Vulkan milestone\n");
+        if (key_pressed(window, GLFW_KEY_F8, f8_down)) {
+            if (!dlss_modes_supported) {
+                selected_dlss_mode = matter::DlssMode::Native;
+                std::printf("DLSS: Native (%s)\n",
+                            vulkan->dlss_unavailable_reason().c_str());
+            } else {
+                switch (selected_dlss_mode) {
+                    case matter::DlssMode::Native:
+                        selected_dlss_mode = matter::DlssMode::Quality;
+                        break;
+                    case matter::DlssMode::Quality:
+                        selected_dlss_mode = matter::DlssMode::Balanced;
+                        break;
+                    case matter::DlssMode::Balanced:
+                        selected_dlss_mode = matter::DlssMode::Performance;
+                        break;
+                    case matter::DlssMode::Performance:
+                        selected_dlss_mode = matter::DlssMode::Native;
+                        break;
+                }
+            }
+        }
         camera_controller.update(window, dt, camera);
 
 #ifndef _WIN32
@@ -532,12 +562,32 @@ int main() {
         options.pixel_budget = stats.pixel_budget;
         options.active_radius = active_radius;
         options.min_projected_size = min_projected_size;
+        options.dlss_mode = selected_dlss_mode;
         const auto render_start = std::chrono::steady_clock::now();
         if (!session->render(camera, frame, options, error)) {
             std::fprintf(stderr, "FATAL: render: %s\n", error.c_str());
             fatal_error = true;
         }
         const matter::FrameStats& frame_stats = session->frame_stats();
+        dlss_modes_supported = vulkan->dlss_available() &&
+                               frame_stats.dlss_reason.empty();
+        if (reported_selected_dlss_mode != frame_stats.dlss_selected_mode ||
+            reported_active_dlss_mode != frame_stats.dlss_active_mode ||
+            reported_dlss_resets != frame_stats.dlss_reset_count) {
+            std::printf(
+                "DLSS selected=%s active=%s internal=%ux%u output=%ux%u resets=%llu reason=%s\n",
+                matter::dlss_mode_name(frame_stats.dlss_selected_mode),
+                matter::dlss_mode_name(frame_stats.dlss_active_mode),
+                frame_stats.dlss_internal_width,
+                frame_stats.dlss_internal_height,
+                frame_stats.dlss_output_width, frame_stats.dlss_output_height,
+                static_cast<unsigned long long>(frame_stats.dlss_reset_count),
+                frame_stats.dlss_reason.empty() ? "none"
+                                                : frame_stats.dlss_reason.c_str());
+            reported_selected_dlss_mode = frame_stats.dlss_selected_mode;
+            reported_active_dlss_mode = frame_stats.dlss_active_mode;
+            reported_dlss_resets = frame_stats.dlss_reset_count;
+        }
         stats.frame_ms = std::chrono::duration<float, std::milli>(
                              std::chrono::steady_clock::now() - render_start).count();
         stats.fps = stats.frame_ms > 0.0f ? 1000.0f / stats.frame_ms : 0.0f;

@@ -56,6 +56,92 @@ void run_streamline_bridge_fallback_tests() {
           "Streamline extension merge preserves first-seen order");
 }
 
+void run_dlss_bridge_contract_tests() {
+    const auto image = [](uintptr_t value) {
+        return reinterpret_cast<VkImage>(value);
+    };
+    matter::DlssConstants constants{};
+    for (uint32_t index = 0; index < 16; ++index) {
+        constants.camera_view_to_clip[index] = static_cast<float>(index + 1);
+        constants.clip_to_camera_view[index] = static_cast<float>(index + 17);
+        constants.clip_to_prev_clip[index] = static_cast<float>(index + 33);
+        constants.prev_clip_to_clip[index] = static_cast<float>(index + 49);
+    }
+    constants.jitter_offset = {0.25f, -0.125f};
+    constants.motion_vector_scale = {1.0f / 1280.0f, 1.0f / 720.0f};
+    constants.motion_vectors_jittered = true;
+    constants.reset = true;
+    constants.internal_extent = {1280, 720};
+    constants.output_extent = {1920, 1080};
+
+    matter::DlssResources resources{};
+    resources.hdr = {image(1), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    resources.depth = {image(2), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    resources.velocity = {image(3), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    resources.output = {image(4), VK_IMAGE_LAYOUT_GENERAL};
+
+    matter::StreamlineBridge native = matter::StreamlineBridge::native_fallback(
+        "test native fallback");
+    std::string error;
+    matter::DlssConstants native_constants = constants;
+    native_constants.output_extent = native_constants.internal_extent;
+    CHECK(native.evaluate_dlss(VK_NULL_HANDLE, 1, matter::DlssMode::Native,
+                               native_constants, resources, error) &&
+              native_constants.internal_extent.width ==
+                  native_constants.output_extent.width &&
+              native_constants.internal_extent.height ==
+                  native_constants.output_extent.height &&
+              native.test_dlss_evaluation_count() == 0,
+          "Native mode keeps equal extents and never evaluates Streamline");
+
+    bool received = false;
+    matter::StreamlineBridge fake = matter::StreamlineBridge::test_fake_dlss(
+        [&](VkCommandBuffer command_buffer, uint64_t token,
+            matter::DlssMode mode, const matter::DlssConstants& captured,
+            const matter::DlssResources& tagged, std::string&) {
+            received = command_buffer == VK_NULL_HANDLE && token == 77 &&
+                       mode == matter::DlssMode::Quality &&
+                       captured.camera_view_to_clip[0] == 1.0f &&
+                       captured.camera_view_to_clip[15] == 16.0f &&
+                       captured.motion_vector_scale.x == 1.0f / 1280.0f &&
+                       captured.motion_vector_scale.y == 1.0f / 720.0f &&
+                       captured.motion_vectors_jittered && captured.reset &&
+                       tagged.hdr.image != tagged.depth.image &&
+                       tagged.hdr.image != tagged.velocity.image &&
+                       tagged.hdr.image != tagged.output.image &&
+                       tagged.hdr.layout ==
+                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
+                       tagged.depth.layout ==
+                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
+                       tagged.velocity.layout ==
+                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
+                       tagged.output.layout == VK_IMAGE_LAYOUT_GENERAL;
+            return true;
+        });
+    CHECK(fake.evaluate_dlss(VK_NULL_HANDLE, 77, matter::DlssMode::Quality,
+                             constants, resources, error) && received &&
+              fake.test_dlss_evaluation_count() == 1 &&
+              fake.active_dlss_mode() == matter::DlssMode::Quality,
+          "fake Quality receives exact constants, distinct tagged resources, and output");
+
+    matter::StreamlineBridge failing = matter::StreamlineBridge::test_fake_dlss(
+        [](VkCommandBuffer, uint64_t, matter::DlssMode,
+           const matter::DlssConstants&, const matter::DlssResources&,
+           std::string& evaluation_error) {
+            evaluation_error = "injected DLSS evaluation failure";
+            return false;
+        });
+    CHECK(!failing.evaluate_dlss(VK_NULL_HANDLE, 78,
+                                 matter::DlssMode::Quality, constants,
+                                 resources, error) &&
+              failing.active_dlss_mode() == matter::DlssMode::Native &&
+              failing.consume_dlss_history_reset() &&
+              !failing.consume_dlss_history_reset() &&
+              failing.dlss_unavailable_reason().find("injected") !=
+                  std::string::npos,
+          "evaluation error selects Native and resets exactly the following history");
+}
+
 void run_streamline_presentation_funnel_tests(matter::VulkanDevice& vulkan) {
     CHECK(matter::VulkanDevice::test_present_result_was_presented(VK_SUCCESS) &&
               matter::VulkanDevice::test_present_result_was_presented(VK_SUBOPTIMAL_KHR) &&
@@ -1112,6 +1198,32 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
           error.empty() ? "begin asynchronous Vulkan record frame"
                         : error.c_str());
     if (frame.command_buffer == VK_NULL_HANDLE) return;
+    bool dlss_output_evaluated = false;
+    renderer.set_test_dlss_bridge(matter::StreamlineBridge::test_fake_dlss(
+        [&](VkCommandBuffer command_buffer, uint64_t token,
+            matter::DlssMode mode, const matter::DlssConstants& constants,
+            const matter::DlssResources& resources, std::string&) {
+            dlss_output_evaluated =
+                command_buffer == frame.command_buffer && token == 100 &&
+                mode == matter::DlssMode::Quality &&
+                constants.motion_vectors_jittered && constants.reset &&
+                constants.internal_extent.width < constants.output_extent.width &&
+                resources.hdr.image != resources.depth.image &&
+                resources.hdr.image != resources.velocity.image &&
+                resources.hdr.image != resources.output.image;
+            return true;
+        }));
+    renderer.set_dlss_mode(matter::DlssMode::Quality);
+    viewer::TemporalFrame dlss_temporal{};
+    dlss_temporal.current_unjittered = scene.frame;
+    dlss_temporal.previous_unjittered = scene.frame;
+    dlss_temporal.current_jittered = scene.frame;
+    dlss_temporal.previous_jittered = scene.frame;
+    dlss_temporal.internal_extent = renderer.dlss_internal_extent(frame.extent);
+    dlss_temporal.output_extent = frame.extent;
+    dlss_temporal.reset = true;
+    dlss_temporal.attempt_token = 100;
+    renderer.set_temporal_frame(dlss_temporal);
     CHECK(renderer.prepare_frame(frame, scene.frame, scene.eye, 1.0f, error),
           error.empty() ? "prepare asynchronous Vulkan record frame"
                         : error.c_str());
@@ -1119,6 +1231,15 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
     CHECK(renderer.record_cull_and_render(frame, scene.frame, scene.eye, 1.0f,
                                           error),
           error.empty() ? "record Vulkan cull and raster" : error.c_str());
+    CHECK(renderer.record_composite_to_swapchain(frame, error) &&
+              dlss_output_evaluated &&
+              renderer.active_dlss_mode() == matter::DlssMode::Quality,
+          error.empty() ? "fake DLSS output composites before presentation"
+                        : error.c_str());
+    const VkImage first_dlss_output =
+        renderer.test_dlss_output_image(frame.frame_slot);
+    CHECK(first_dlss_output != VK_NULL_HANDLE,
+          "DLSS output exists for the acquired frame slot");
     CHECK(matter::immediate_submit_count() == immediate_before,
           "production Vulkan record path performs no immediate submissions");
     const auto ranges = renderer.test_recorded_draw_ranges();
@@ -1142,8 +1263,16 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
         CHECK(renderer.prepare_frame(frame, scene.frame, scene.eye, 1.0f, error) &&
                   renderer.record_cull_and_render(frame, scene.frame, scene.eye,
                                                   1.0f, error) &&
+                  renderer.record_composite_to_swapchain(frame, error) &&
                   vulkan.end_frame(frame, error),
               error.empty() ? "submit deferred cull stats frame" : error.c_str());
+        if (frame.frame_slot != recorded_slot) {
+            CHECK(renderer.test_dlss_output_image(frame.frame_slot) !=
+                      VK_NULL_HANDLE &&
+                      renderer.test_dlss_output_image(frame.frame_slot) !=
+                          first_dlss_output,
+                  "each in-flight frame slot owns a distinct DLSS output");
+        }
     } while (frame.frame_slot != recorded_slot);
     const viewer::VkCullStats stats_after = renderer.cached_cull_stats();
     CHECK(stats_after.emitted == 4 && stats_after.frustum_culled == 0 &&
@@ -1850,6 +1979,7 @@ int main() {
     run_vulkan_instance_cache_tests();
     run_vulkan_temporal_tests();
     run_streamline_bridge_fallback_tests();
+    run_dlss_bridge_contract_tests();
 #ifdef MATTER_VK_TEST_LAYER_PATH
     // MSYS2 installs validation-layer manifests outside the Windows registry.
     // Point this standalone test at that installed development package and let
@@ -1877,8 +2007,11 @@ int main() {
         run_streamline_presentation_funnel_tests(*vulkan);
         CHECK(!vulkan->dlss_available(),
               "Vulkan device reports DLSS unavailable without Streamline");
-        CHECK(vulkan->dlss_unavailable_reason().find("not found") !=
-                  std::string::npos,
+        std::printf("DLSS fallback: %s\n",
+                    vulkan->dlss_unavailable_reason().c_str());
+        CHECK(!vulkan->dlss_unavailable_reason().empty() &&
+                  vulkan->dlss_unavailable_reason().find("Streamline") !=
+                      std::string::npos,
               "Vulkan device exposes the Streamline fallback reason");
         CHECK(vulkan->draw_indirect_first_instance_enabled(),
               "drawIndirectFirstInstance is enabled on the logical device");

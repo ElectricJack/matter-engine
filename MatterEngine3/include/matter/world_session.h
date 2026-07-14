@@ -24,6 +24,9 @@ struct WorldDesc {
 
 enum class RenderPath { GpuDriven, Raytrace };
 enum class ResolverKind { SectorLod, PassThrough };
+enum class DlssMode : uint8_t { Native, Quality, Balanced, Performance };
+
+const char* dlss_mode_name(DlssMode mode) noexcept;
 
 struct RenderOptions {
     RenderPath   path     = RenderPath::GpuDriven;
@@ -38,6 +41,7 @@ struct RenderOptions {
                                       // is not guaranteed for all part kinds)
     bool  rt_shadows      = false;   // Task 5: OptiX shadow ray tracing (requires CUDA)
     bool  rt_full_lighting = false;  // Phase 2: full RT PBR (G-buffer + RT lighting)
+    DlssMode dlss_mode = DlssMode::Native;
 };
 
 struct FrameStats {
@@ -65,6 +69,14 @@ struct FrameStats {
     uint64_t vk_instance_uploads = 0;
     uint64_t vk_command_layout_rebuilds = 0;
     uint64_t vk_immediate_submits = 0;
+    DlssMode dlss_selected_mode = DlssMode::Native;
+    DlssMode dlss_active_mode = DlssMode::Native;
+    uint32_t dlss_internal_width = 0;
+    uint32_t dlss_internal_height = 0;
+    uint32_t dlss_output_width = 0;
+    uint32_t dlss_output_height = 0;
+    uint64_t dlss_reset_count = 0;
+    std::string dlss_reason;
 };
 
 class WorldSession {

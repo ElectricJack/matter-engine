@@ -198,6 +198,86 @@ StreamlineBridge StreamlineBridge::native_fallback(std::string reason) {
     return bridge;
 }
 
+const char* dlss_mode_name(DlssMode mode) noexcept {
+    switch (mode) {
+        case DlssMode::Native: return "Native";
+        case DlssMode::Quality: return "Quality";
+        case DlssMode::Balanced: return "Balanced";
+        case DlssMode::Performance: return "Performance";
+    }
+    return "Native";
+}
+
+bool StreamlineBridge::evaluate_dlss(
+    VkCommandBuffer command_buffer, uint64_t attempt_token, DlssMode mode,
+    const DlssConstants& constants, const DlssResources& resources,
+    std::string& error) {
+    error.clear();
+    if (mode == DlssMode::Native) {
+        active_dlss_mode_ = DlssMode::Native;
+        return true;
+    }
+    const bool valid_extents = constants.internal_extent.width != 0 &&
+                               constants.internal_extent.height != 0 &&
+                               constants.output_extent.width != 0 &&
+                               constants.output_extent.height != 0;
+    const bool distinct_resources =
+        resources.hdr.image != VK_NULL_HANDLE &&
+        resources.depth.image != VK_NULL_HANDLE &&
+        resources.velocity.image != VK_NULL_HANDLE &&
+        resources.output.image != VK_NULL_HANDLE &&
+        resources.hdr.image != resources.depth.image &&
+        resources.hdr.image != resources.velocity.image &&
+        resources.hdr.image != resources.output.image &&
+        resources.depth.image != resources.velocity.image &&
+        resources.depth.image != resources.output.image &&
+        resources.velocity.image != resources.output.image;
+    if (!dlss_available_ || !valid_extents || !distinct_resources ||
+        !constants.motion_vectors_jittered) {
+        error = dlss_available_
+                    ? "DLSS evaluation received invalid constants or resources"
+                    : dlss_unavailable_reason_;
+    } else {
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+        if (test_dlss_evaluator_) {
+            ++test_dlss_evaluation_count_;
+            if (test_dlss_evaluator_(command_buffer, attempt_token, mode,
+                                     constants, resources, error)) {
+                active_dlss_mode_ = mode;
+                return true;
+            }
+        } else
+#endif
+        {
+            error = "Streamline DLSS evaluation is unavailable in this build";
+        }
+    }
+    if (error.empty()) error = "DLSS evaluation failed";
+    active_dlss_mode_ = DlssMode::Native;
+    dlss_history_reset_pending_ = true;
+    dlss_available_ = false;
+    dlss_requested_ = false;
+    dlss_unavailable_reason_ = error;
+    return false;
+}
+
+bool StreamlineBridge::consume_dlss_history_reset() {
+    const bool reset = dlss_history_reset_pending_;
+    dlss_history_reset_pending_ = false;
+    return reset;
+}
+
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+StreamlineBridge StreamlineBridge::test_fake_dlss(TestDlssEvaluator evaluator) {
+    StreamlineBridge bridge;
+    bridge.initialized_ = true;
+    bridge.dlss_requested_ = true;
+    bridge.dlss_available_ = true;
+    bridge.test_dlss_evaluator_ = std::move(evaluator);
+    return bridge;
+}
+#endif
+
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
 void StreamlineBridge::record_test_presentation_event(const char* event) {
     test_presentation_events_.emplace_back(event);

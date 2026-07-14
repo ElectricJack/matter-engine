@@ -6,10 +6,43 @@
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
+#include "matter/world_session.h"
+
 namespace matter {
+
+struct DlssFloat2 {
+    float x = 0.0f;
+    float y = 0.0f;
+};
+
+struct DlssConstants {
+    float camera_view_to_clip[16]{};
+    float clip_to_camera_view[16]{};
+    float clip_to_prev_clip[16]{};
+    float prev_clip_to_clip[16]{};
+    DlssFloat2 jitter_offset{};
+    DlssFloat2 motion_vector_scale{};
+    bool motion_vectors_jittered = true;
+    bool reset = true;
+    VkExtent2D internal_extent{};
+    VkExtent2D output_extent{};
+};
+
+struct DlssResource {
+    VkImage image = VK_NULL_HANDLE;
+    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+};
+
+struct DlssResources {
+    DlssResource hdr{};
+    DlssResource depth{};
+    DlssResource velocity{};
+    DlssResource output{};
+};
 
 // Keeps the proprietary Streamline SDK at one optional boundary.  The default
 // build intentionally has no Streamline headers, libraries, or runtime files.
@@ -25,6 +58,14 @@ public:
         return dlss_unavailable_reason_;
     }
     bool proxy_dispatch_used() const { return proxy_dispatch_used_; }
+    bool supports_dlss_mode(DlssMode mode) const {
+        return mode == DlssMode::Native || dlss_available_;
+    }
+    DlssMode active_dlss_mode() const { return active_dlss_mode_; }
+    bool evaluate_dlss(VkCommandBuffer command_buffer, uint64_t attempt_token,
+                       DlssMode mode, const DlssConstants& constants,
+                       const DlssResources& resources, std::string& error);
+    bool consume_dlss_history_reset();
 
     // Merges the second sequence after the first, preserving first-seen order.
     static std::vector<const char*> merge_extensions(
@@ -91,6 +132,13 @@ public:
                          const VkAllocationCallbacks* allocator);
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+    using TestDlssEvaluator = std::function<bool(
+        VkCommandBuffer, uint64_t, DlssMode, const DlssConstants&,
+        const DlssResources&, std::string&)>;
+    static StreamlineBridge test_fake_dlss(TestDlssEvaluator evaluator);
+    uint64_t test_dlss_evaluation_count() const {
+        return test_dlss_evaluation_count_;
+    }
     const std::vector<std::string>& test_presentation_events() const {
         return test_presentation_events_;
     }
@@ -109,6 +157,8 @@ private:
     bool proxy_object_created_ = false;
     bool streamline_initialized_ = false;
     bool present_common_pending_ = false;
+    bool dlss_history_reset_pending_ = false;
+    DlssMode active_dlss_mode_ = DlssMode::Native;
     uint64_t present_common_serial_ = 0;
     std::string dlss_unavailable_reason_;
     std::vector<const char*> instance_extensions_;
@@ -138,6 +188,8 @@ private:
     PFN_vkDestroySurfaceKHR destroy_surface_proxy_ = nullptr;
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+    TestDlssEvaluator test_dlss_evaluator_;
+    uint64_t test_dlss_evaluation_count_ = 0;
     std::vector<std::string> test_presentation_events_;
     uint64_t last_present_common_serial_ = 0;
     void record_test_presentation_event(const char* event);
