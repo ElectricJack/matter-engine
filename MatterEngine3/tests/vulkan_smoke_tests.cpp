@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <string>
 #include <thread>
 #include <vector>
@@ -239,17 +240,139 @@ void run_cull_region_and_lifecycle_tests(matter::VulkanDevice& vulkan) {
     CHECK(std::fabs(transforms[commands[1].first_instance].elements[14] + 5.0f) <
               1e-5f,
           "coarse LOD transform retained");
+    const VkDeviceSize initial_cluster_bytes = renderer.cluster_buffer_size();
+    const VkDeviceSize initial_command_bytes = renderer.command_buffer_size();
+    const VkDeviceSize initial_transform_bytes =
+        renderer.draw_transform_buffer_size();
 
     renderer.release_part(77);
     std::vector<viewer::VkSceneRenderer::RtInstance> rt_instances;
     CHECK(renderer.fill_rt_instances(rt_instances) == 0,
           "release removes RT instances");
-    renderer.reset();
-    CHECK(renderer.draw_command_count() == 0, "reset reclaims command tombstones");
     CHECK(renderer.ensure_part(part, error) >= 0,
-          error.empty() ? "re-add part after reset" : error.c_str());
+          error.empty() ? "re-add part without reset" : error.c_str());
     CHECK(renderer.draw_command_count() == viewer::kVkMaxLod,
-          "re-add after reset uses bounded command storage");
+          "re-add without reset reclaims command storage");
+
+    viewer::VkScenePart mixed{88, {cluster, cluster, cluster}};
+    mixed.clusters[1].lods.resize(1);
+    mixed.clusters[2].lods.push_back({6, 3, -1.0f});
+    CHECK(renderer.ensure_part(mixed, error) >= 0,
+          error.empty() ? "ensure mixed-size part" : error.c_str());
+    CHECK(renderer.cluster_count() == 4,
+          "mixed live scene has only active clusters");
+    CHECK(renderer.draw_command_count() == 4 * viewer::kVkMaxLod,
+          "mixed live scene command count is bounded by active clusters");
+
+    const viewer::VkSceneInstance mixed_instance{
+        88, viewer::mat4_translation({0.0f, 0.0f, -3.0f})};
+    CHECK(renderer.update_instances({near_instance, mixed_instance}, error),
+          error.empty() ? "upload mixed-size instances" : error.c_str());
+    CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f, error),
+          error.empty() ? "dispatch mixed-size culling" : error.c_str());
+    viewer::VkCullStats mixed_stats{};
+    CHECK(renderer.cull_stats(mixed_stats, error),
+          error.empty() ? "read mixed-size stats" : error.c_str());
+    CHECK(mixed_stats.emitted == 4,
+          "all mixed-size live clusters cull and emit correctly");
+    const VkDeviceSize stable_cluster_bytes = renderer.cluster_buffer_size();
+    const VkDeviceSize stable_command_bytes = renderer.command_buffer_size();
+    const VkDeviceSize stable_transform_bytes =
+        renderer.draw_transform_buffer_size();
+    CHECK(stable_cluster_bytes > initial_cluster_bytes &&
+              stable_command_bytes > initial_command_bytes &&
+              stable_transform_bytes > initial_transform_bytes,
+          "scene buffers grow safely across reallocations");
+
+    for (int cycle = 0; cycle < 4; ++cycle) {
+        renderer.release_part(77);
+        CHECK(renderer.cluster_count() == 3,
+              "release compacts active cluster records");
+        CHECK(renderer.draw_command_count() == 3 * viewer::kVkMaxLod,
+              "release compacts active command records");
+        CHECK(renderer.ensure_part(part, error) >= 0,
+              error.empty() ? "re-add churn part" : error.c_str());
+        CHECK(renderer.update_instances({mixed_instance, near_instance}, error),
+              error.empty() ? "upload churn instances" : error.c_str());
+        CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f, error),
+              error.empty() ? "dispatch churn culling" : error.c_str());
+        CHECK(renderer.cull_stats(mixed_stats, error),
+              error.empty() ? "read churn stats" : error.c_str());
+        CHECK(mixed_stats.emitted == 4,
+              "slot remapping preserves culling after release and re-add");
+        CHECK(renderer.cluster_count() == 4,
+              "release and re-add does not grow historical clusters");
+        CHECK(renderer.draw_command_count() == 4 * viewer::kVkMaxLod,
+              "release and re-add does not grow historical commands");
+        CHECK(renderer.cluster_buffer_size() == stable_cluster_bytes &&
+                  renderer.command_buffer_size() == stable_command_bytes &&
+                  renderer.draw_transform_buffer_size() ==
+                      stable_transform_bytes,
+              "release and re-add keeps scene buffer capacities stable");
+    }
+
+    renderer.reset();
+    CHECK(renderer.draw_command_count() == 0, "reset clears command storage");
+}
+
+void run_vk_scene_checked_size_tests(matter::VulkanDevice& vulkan) {
+    std::string error;
+    VkDeviceSize bytes = 0;
+    CHECK(viewer::vk_scene_detail::checked_mul_to_device_size(
+              7, sizeof(uint32_t), bytes, "test values", error) &&
+              bytes == 7 * sizeof(uint32_t),
+          "checked byte sizing accepts a small product");
+    CHECK(!viewer::vk_scene_detail::checked_mul_to_device_size(
+              std::numeric_limits<size_t>::max(), 2, bytes,
+              "overflow values", error) &&
+              error.find("overflow values") != std::string::npos,
+          "checked byte sizing rejects multiplication overflow");
+
+    VkDeviceSize capacity = 0;
+    CHECK(viewer::vk_scene_detail::checked_grown_capacity(
+              16, 65, 100, capacity, "test storage", error) &&
+              capacity == 100,
+          "buffer growth caps the final allocation at the device limit");
+    CHECK(!viewer::vk_scene_detail::checked_grown_capacity(
+              16, 101, 100, capacity, "test storage", error) &&
+              error.find("device limit") != std::string::npos,
+          "buffer growth rejects a required range beyond the device limit");
+
+    uint32_t groups = 0;
+    CHECK(viewer::vk_scene_detail::checked_dispatch_groups(
+              128, 33, 100, groups, error) && groups == 66,
+          "checked dispatch sizing accepts a bounded mixed product");
+    CHECK(!viewer::vk_scene_detail::checked_dispatch_groups(
+              128, 33, 65, groups, error) &&
+              error.find("maxComputeWorkGroupCount") != std::string::npos,
+          "checked dispatch sizing rejects a forced small group limit");
+    CHECK(!viewer::vk_scene_detail::checked_dispatch_groups(
+              std::numeric_limits<uint32_t>::max(),
+              std::numeric_limits<uint32_t>::max(),
+              std::numeric_limits<uint32_t>::max(), groups, error),
+          "checked dispatch sizing rejects group-count narrowing");
+
+    {
+        viewer::VkSceneRenderer renderer(vulkan);
+        renderer.set_test_device_limits(64, 4096, 4096, 1024);
+        CHECK(!renderer.init(error) &&
+                  error.find("storage buffer range") != std::string::npos,
+              "renderer rejects forced maxStorageBufferRange before allocation");
+    }
+    {
+        viewer::VkSceneRenderer renderer(vulkan);
+        renderer.set_test_device_limits(4096, 128, 4096, 1024);
+        CHECK(!renderer.init(error) &&
+                  error.find("uniform buffer range") != std::string::npos,
+              "renderer rejects forced maxUniformBufferRange before allocation");
+    }
+    {
+        viewer::VkSceneRenderer renderer(vulkan);
+        renderer.set_test_device_limits(4096, 4096, 64, 1024);
+        CHECK(!renderer.init(error) &&
+                  error.find("Vulkan device limit") != std::string::npos,
+              "renderer rejects forced maxBufferSize before allocation");
+    }
 }
 
 void finish_vulkan_test(std::unique_ptr<matter::VulkanDevice>& vulkan) {
@@ -477,6 +600,7 @@ int main() {
             return check_summary();
         }
         if (smoke_mode && std::string(smoke_mode) == "cull") {
+            run_vk_scene_checked_size_tests(*vulkan);
             run_cull_parity(*vulkan);
             run_cull_region_and_lifecycle_tests(*vulkan);
             std::printf("validation errors: %u\n",

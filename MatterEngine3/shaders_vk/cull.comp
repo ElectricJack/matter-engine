@@ -37,6 +37,7 @@ layout(set = 0, binding = 0, std140) uniform FrameConstants {
     vec4 frustum_planes[6];
     vec4 camera_eye_pixel_budget;
     uvec4 counts;
+    uvec4 capacities;
 } frame;
 
 layout(set = 1, binding = 0, std430) readonly buffer ClusterMetas {
@@ -57,17 +58,37 @@ layout(set = 1, binding = 4, std430) buffer Stats {
     uint emitted;
 };
 
+bool reserve_transform_slot(uint bucket, out uint slot) {
+    const uint first = commands[bucket].first_instance;
+    if (first >= frame.capacities.w) return false;
+    const uint available = frame.capacities.w - first;
+    for (;;) {
+        const uint current = atomicAdd(commands[bucket].instance_count, 0u);
+        if (current >= available) return false;
+        const uint observed = atomicCompSwap(commands[bucket].instance_count,
+                                             current, current + 1u);
+        if (observed == current) {
+            slot = current;
+            return true;
+        }
+    }
+}
+
 void main() {
     const uint tid = gl_GlobalInvocationID.x;
+    if (frame.counts.y == 0u) return;
     const uint instance_index = tid / frame.counts.y;
     const uint local_cluster = tid % frame.counts.y;
-    if (instance_index >= frame.counts.x) return;
+    if (instance_index >= frame.counts.x ||
+        instance_index >= frame.capacities.y) return;
     const GpuInstance instance = instances[instance_index];
     if (local_cluster >= instance.cluster_count) return;
 
+    if (instance.cluster_start >= frame.capacities.x ||
+        local_cluster >= frame.capacities.x - instance.cluster_start) return;
     const uint cluster_index = instance.cluster_start + local_cluster;
     const ClusterMeta cluster = clusters[cluster_index];
-    if (cluster.lod_count == 0u) return;
+    if (cluster.lod_count == 0u || cluster.lod_count > MAX_LOD) return;
 
     vec3 world_corners[8];
     for (int i = 0; i < 8; ++i) {
@@ -120,8 +141,14 @@ void main() {
         }
     }
 
+    if (cluster_index > (0xffffffffu - lod) / MAX_LOD) return;
     const uint bucket = cluster_index * MAX_LOD + lod;
-    const uint slot = atomicAdd(commands[bucket].instance_count, 1u);
-    draw_transforms[commands[bucket].first_instance + slot] = instance.transform;
+    if (bucket >= frame.capacities.z) return;
+    uint slot = 0u;
+    if (!reserve_transform_slot(bucket, slot)) return;
+    const uint first = commands[bucket].first_instance;
+    if (first >= frame.capacities.w || slot >= frame.capacities.w - first)
+        return;
+    draw_transforms[first + slot] = instance.transform;
     atomicAdd(emitted, 1u);
 }
