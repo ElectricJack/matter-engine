@@ -142,3 +142,7 @@ BASE at start: 41b5a5e
 Task 1: complete (commits 60ac19a + 86321f7 + 361297e, review clean)
   - Optional Streamline manual-hooking bootstrap is native-fallback safe and retains proxy dispatch/lifetime for every proxy-created Vulkan object.
   - Build/test evidence is limited to diff checks, shell syntax, and fallback Make dry-run because the sandbox cannot execute the MSYS CUDA/Vulkan child process and no Streamline SDK is installed.
+
+Task 2: complete (commits 97609b1 + a02708d + c940aaf, review clean)
+  - Swapchain/acquire/resize/present operations use one manual-hook funnel; proxy lifetime extends through Vulkan teardown and successful frames enforce acquire-before-common-present directly adjacent to the sole present.
+  - Real VulkanDevice fault and resize seams cover no-handoff failures and recovery. Executable smoke remains environment-blocked by the silent MinGW exit; enabled SDK behavior still requires legal Streamline runtime artifacts.
