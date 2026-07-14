@@ -15,12 +15,95 @@
 #include "matter/vulkan_device.h"
 #include "render/gpu_matrix_pack.h"
 #include "render/matrix_math.h"
+#include "render/vk_cuda_interop.h"
 #include "render/vk_device_internal.h"
 #include "render/vk_pipeline.h"
 #include "render/vk_resources.h"
 #include "render/vk_scene_renderer.h"
 
 namespace {
+
+bool close4(matter::Float4 actual, matter::Float4 expected, float epsilon);
+
+void run_cuda_vulkan_interop(matter::VulkanDevice& vulkan) {
+    std::string error;
+    auto interop = matter::CudaVulkanInterop::create(vulkan, error);
+    CHECK(interop != nullptr,
+          error.empty() ? "create CUDA Vulkan interop" : error.c_str());
+    if (!interop) return;
+
+    CHECK(!matter::cuda_vulkan_device_ids_match_for_test(
+              interop->vulkan_uuid(), interop->cuda_uuid(), true),
+          "UUID mismatch test seam rejects different adapters");
+
+    const char* cycles_text = std::getenv("MATTER_VK_SMOKE_RESIZES");
+    const unsigned long parsed = cycles_text ? std::strtoul(cycles_text, nullptr, 10) : 100;
+    const uint32_t cycles = parsed > 0 && parsed <= 10000
+                                ? static_cast<uint32_t>(parsed)
+                                : 100;
+    matter::CudaVulkanInteropPixel pixel{};
+    for (uint32_t warmup = 0; warmup < 2; ++warmup) {
+        const VkExtent2D extent = warmup == 0 ? VkExtent2D{64, 64}
+                                              : VkExtent2D{96, 80};
+        CHECK(interop->round_trip(extent, warmup + 1, pixel, error),
+              error.empty() ? "CUDA Vulkan interop size-class warm-up"
+                            : error.c_str());
+    }
+    CHECK(!interop->round_trip({64, 64}, 2, pixel, error) &&
+              error.find("strictly increasing") != std::string::npos,
+          "interop rejects repeated timeline serials");
+    error.clear();
+    const uint32_t baseline_handles = matter::win32_process_handle_count();
+    for (uint32_t cycle = 0; cycle < cycles; ++cycle) {
+        const VkExtent2D extent = (cycle & 1u) == 0 ? VkExtent2D{64, 64}
+                                                    : VkExtent2D{96, 80};
+        CHECK(interop->round_trip(extent, cycle + 3, pixel, error),
+              error.empty() ? "CUDA Vulkan interop round trip" : error.c_str());
+        CHECK(close4({pixel.r, pixel.g, pixel.b, pixel.a},
+                     {0.0f, 1.0f, 1.0f, 1.0f}, 1e-3f),
+              "CUDA imported surface contains exact cyan pixel");
+        if (!error.empty()) break;
+    }
+    const uint32_t steady_handles = matter::win32_process_handle_count();
+    CHECK(steady_handles <= baseline_handles + 2,
+          "100 interop operations keep steady-state handle count within two");
+    interop.reset();
+    const uint32_t final_handles = matter::win32_process_handle_count();
+    std::printf("interop cycles: %u\n", cycles);
+    std::printf("interop pixel: %.6f %.6f %.6f %.6f\n", pixel.r, pixel.g,
+                pixel.b, pixel.a);
+    std::printf("interop handles steady: %u -> %u; after teardown: %u\n",
+                baseline_handles, steady_handles, final_handles);
+}
+
+void run_vulkan_only_handle_diagnostic(matter::VulkanDevice& vulkan) {
+    std::string error;
+    const auto trace = [](const char* label) {
+        std::printf("HANDLE_DIAG %-38s count=%u result=0 sync=n/a\n", label,
+                    matter::win32_process_handle_count());
+    };
+    trace("Vulkan-only baseline");
+    matter::VkImageResource image;
+    CHECK(matter::create_image(
+              vulkan, VK_IMAGE_TYPE_2D, VK_FORMAT_R16G16B16A16_SFLOAT,
+              {64, 64, 1},
+              VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                  VK_IMAGE_USAGE_SAMPLED_BIT,
+              VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+              image, error),
+          error.empty() ? "Vulkan-only diagnostic image" : error.c_str());
+    trace("Vulkan-only create image+memory");
+    CHECK(matter::transition_image(
+              vulkan, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+              VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+              VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+              VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
+              error),
+          error.empty() ? "Vulkan-only diagnostic submit" : error.c_str());
+    trace("Vulkan-only submit+fence wait");
+    image.reset();
+    trace("Vulkan-only image destroy");
+}
 
 struct FixedCullScene {
     viewer::FrameMatrices frame{};
@@ -1255,6 +1338,22 @@ int main() {
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
             vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "interop") {
+            run_cuda_vulkan_interop(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "handle-diag-vulkan") {
+            run_vulkan_only_handle_diagnostic(*vulkan);
             finish_vulkan_test(vulkan);
             if (window) glfwDestroyWindow(window);
             glfwTerminate();

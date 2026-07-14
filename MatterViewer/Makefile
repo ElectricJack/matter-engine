@@ -57,6 +57,8 @@ LDLIBS  = ../Libraries/raylib/build/linux/libraylib.a
 HAVE_CUDA ?= 1
 CUDA_PATH ?= /c/PROGRA~1/NVIDIA~2/CUDA/v13.3
 OPTIX_PATH ?= /c/PROGRA~3/NVIDIA~1/OPTIXS~1.0
+CUDA_HOST_COMPILER ?= $(shell powershell.exe -NoProfile -Command \
+  "(Get-ChildItem 'C:\Program Files\Microsoft Visual Studio\2022' -Recurse -Filter cl.exe | Where-Object FullName -Like '*Hostx64*x64*' | Sort-Object FullName | Select-Object -Last 1).DirectoryName")
 ifeq ($(HAVE_CUDA),1)
   LDFLAGS += -L/usr/lib/wsl/lib -lcuda -ldl
 endif
@@ -141,6 +143,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/render/world_state.cpp \
               $(ME3_DIR)/src/render/vk_context.cpp $(ME3_DIR)/src/render/vk_resources.cpp \
               $(ME3_DIR)/src/render/vk_pipeline.cpp $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+              $(ME3_DIR)/src/render/vk_cuda_interop.cpp \
               $(ME3_DIR)/src/render/vulkan_only_compat.cpp \
               $(ME3_DIR)/src/render/frame_matrices.cpp $(ME3_DIR)/src/render/matrix_math.cpp \
               $(ME3_DIR)/src/provider/local_provider.cpp $(ME3_DIR)/src/provider/resolvers.cpp \
@@ -347,7 +350,7 @@ vulkan-preflight:
 
 $(WIN_FEATURES): vulkan-preflight
 	@mkdir -p $(dir $@)
-	@printf 'VULKAN=1\nOPENGL=0\nCUDA_AVAILABLE=1\nOPTIX_AVAILABLE=1\nCUDA_ACTIVE=0\nOPTIX_ACTIVE=0\n' > $@
+	@printf 'VULKAN=1\nOPENGL=0\nCUDA_AVAILABLE=1\nOPTIX_AVAILABLE=1\nCUDA_ACTIVE=1\nOPTIX_ACTIVE=0\n' > $@
 
 # Standalone GLFW archive for Vulkan smoke tests.  Keep this separate from
 # raylib's GLFW objects so the existing OpenGL viewer path is unchanged.
@@ -381,6 +384,8 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/composite.vert.spv \
          build/shaders_vk/composite.frag.spv
 VK_EMBEDDED_HEADER = $(ME3_DIR)/shaders_gen/embedded_spirv.h
+CUDA_INTEROP_PTX = build/shaders_cuda/vk_cuda_invert.ptx
+CUDA_INTEROP_HEADER = $(ME3_DIR)/shaders_gen/embedded_cuda_interop_ptx.h
 
 build/shaders_vk/%.spv: $(ME3_DIR)/shaders_vk/%
 	@mkdir -p $(dir $@)
@@ -388,6 +393,14 @@ build/shaders_vk/%.spv: $(ME3_DIR)/shaders_vk/%
 
 $(VK_EMBEDDED_HEADER): $(VK_SPV) $(ME3_DIR)/tools/embed_spirv.py
 	python3 $(ME3_DIR)/tools/embed_spirv.py $@ $(VK_SPV)
+
+$(CUDA_INTEROP_PTX): $(ME3_DIR)/src/render/shaders_rt/vk_cuda_invert.cu
+	@mkdir -p $(dir $@)
+	"$(CUDA_PATH)/bin/nvcc.exe" --ptx --machine 64 -arch=compute_75 -O2 \
+	    -ccbin "$(CUDA_HOST_COMPILER)" $< -o $@
+
+$(CUDA_INTEROP_HEADER): $(CUDA_INTEROP_PTX) $(ME3_DIR)/tools/embed_cuda_interop_ptx.py
+	python3 $(ME3_DIR)/tools/embed_cuda_interop_ptx.py $< $@
 
 build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/tests/vulkan_smoke_tests.cpp \
@@ -399,19 +412,22 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_resources.h \
         $(ME3_DIR)/src/render/vk_pipeline.h \
         $(ME3_DIR)/src/render/vk_scene_renderer.h \
+        $(ME3_DIR)/src/render/vk_cuda_interop.h \
+        $(ME3_DIR)/src/render/vk_cuda_interop.cpp \
         $(ME3_DIR)/src/render/vk_context.cpp \
         $(ME3_DIR)/src/render/vk_resources.cpp \
         $(ME3_DIR)/src/render/vk_pipeline.cpp \
         $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
         $(ME3_DIR)/src/render/frame_matrices.cpp \
         $(ME3_DIR)/src/render/matrix_math.cpp \
-        $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB)
+        $(VK_EMBEDDED_HEADER) $(CUDA_INTEROP_HEADER) $(GLFW_WIN_LIB)
 	@mkdir -p $(dir $@)
 	$(WIN_CXX) $(ME3_DIR)/tests/vulkan_smoke_tests.cpp \
 	    $(ME3_DIR)/src/render/vk_context.cpp \
 	    $(ME3_DIR)/src/render/vk_resources.cpp \
 	    $(ME3_DIR)/src/render/vk_pipeline.cpp \
 	    $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+	    $(ME3_DIR)/src/render/vk_cuda_interop.cpp \
 	    $(ME3_DIR)/src/render/frame_matrices.cpp \
 	    $(ME3_DIR)/src/render/matrix_math.cpp \
 	    $(GLFW_WIN_LIB) -o $@ \
@@ -423,6 +439,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    -I$(ME3_DIR) -I$(ME3_DIR)/include -I$(ME3_DIR)/src \
 	    -I$(ME3_DIR)/tests \
 	    -I../Libraries/raylib/src/external/glfw/include \
+	    -I"$(CUDA_PATH)/include" \
 	    -I$(VULKAN_INCLUDE) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 \
 	    -lgdi32 -luser32 -lshell32 -Wl,-Bstatic
 
@@ -451,8 +468,9 @@ $(W_PIPC_OBJ): $(W_DIR)/%.o: $(MSL_DIR)/src/%.c | $(W_DIR)
 # Order-only: the header must exist before shader_source.cpp compiles, but its
 # regeneration must not force object rebuilds (embedded-shaders is phony).
 $(W_CPP_OBJ): | embedded-shaders
+$(W_DIR)/vk_cuda_interop.o: $(CUDA_INTEROP_HEADER)
 
-windows: $(WIN_FEATURES) $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) win-shaders-gpu $(W_ALL_OBJ)
+windows: $(WIN_FEATURES) $(VK_EMBEDDED_HEADER) $(CUDA_INTEROP_HEADER) $(GLFW_WIN_LIB) win-shaders-gpu $(W_ALL_OBJ)
 	$(WIN_CXX) $(W_ALL_OBJ) -o viewer.exe $(CFLAGS) -static -s -Wl,--gc-sections $(WIN_LIBS) $(GLFW_WIN_LIB) $(WIN_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 -Wl,-Bstatic
 	@imports="$$($(WIN_CXX) -print-prog-name=objdump -p viewer.exe)"; \
 	 for forbidden in opengl32 ChoosePixelFormat SetPixelFormat SwapBuffers cuGraphicsGL nvcuda cuDevice; do \
