@@ -7,19 +7,27 @@
 
 #include "matter/vulkan_device.h"
 #include "shaders_gen/embedded_spirv.h"
+#include "vk_device_internal.h"
 #include "vk_resources.h"
 
 namespace matter {
 namespace detail {
 
-struct VkComputePipelineAllocation {
-    VkDevice device = VK_NULL_HANDLE;
+struct VkComputePipelineAllocation final : DeviceLifetimeControl {
+    explicit VkComputePipelineAllocation(
+        std::shared_ptr<DeviceAccessToken> device_access)
+        : DeviceLifetimeControl(std::move(device_access)) {}
+
     VkDescriptorSetLayout descriptor_set_layout = VK_NULL_HANDLE;
     VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
 
-    ~VkComputePipelineAllocation() {
+    ~VkComputePipelineAllocation() override { release_device_objects(); }
+
+protected:
+    void release_device_objects() noexcept override {
+        const VkDevice device = live_device();
         if (device != VK_NULL_HANDLE && pipeline != VK_NULL_HANDLE)
             vkDestroyPipeline(device, pipeline, nullptr);
         if (device != VK_NULL_HANDLE && pipeline_layout != VK_NULL_HANDLE)
@@ -28,6 +36,10 @@ struct VkComputePipelineAllocation {
             vkDestroyDescriptorPool(device, descriptor_pool, nullptr);
         if (device != VK_NULL_HANDLE && descriptor_set_layout != VK_NULL_HANDLE)
             vkDestroyDescriptorSetLayout(device, descriptor_set_layout, nullptr);
+        descriptor_set_layout = VK_NULL_HANDLE;
+        pipeline_layout = VK_NULL_HANDLE;
+        pipeline = VK_NULL_HANDLE;
+        descriptor_pool = VK_NULL_HANDLE;
     }
 };
 
@@ -233,8 +245,8 @@ bool create_compute_pipeline(
         }
     }
     candidate.lifetime =
-        std::make_shared<detail::VkComputePipelineAllocation>();
-    candidate.lifetime->device = candidate.device;
+        std::make_shared<detail::VkComputePipelineAllocation>(
+            detail::DeviceLifetimeAccess::token(vulkan));
     candidate.lifetime->descriptor_set_layout = candidate.descriptor_set_layout;
     candidate.lifetime->pipeline_layout = candidate.pipeline_layout;
     candidate.lifetime->pipeline = candidate.pipeline;

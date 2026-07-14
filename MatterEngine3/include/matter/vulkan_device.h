@@ -15,6 +15,7 @@ namespace matter {
 
 namespace detail {
 class DeviceRetentionAccess;
+class DeviceLifetimeAccess;
 class DeviceSubmitAccess;
 }  // namespace detail
 
@@ -55,6 +56,7 @@ public:
 private:
     VulkanDevice();
     friend class detail::DeviceRetentionAccess;
+    friend class detail::DeviceLifetimeAccess;
     friend class detail::DeviceSubmitAccess;
     bool submit_and_wait_for_phase(VkCommandBuffer command_buffer,
                                    VkFence fence, bool& completion_proven,

@@ -12,35 +12,53 @@
 namespace matter {
 namespace detail {
 
-struct VkBufferAllocation {
-    VkDevice device = VK_NULL_HANDLE;
+struct VkBufferAllocation final : DeviceLifetimeControl {
+    explicit VkBufferAllocation(std::shared_ptr<DeviceAccessToken> device_access)
+        : DeviceLifetimeControl(std::move(device_access)) {}
+
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     void* mapped = nullptr;
 
-    ~VkBufferAllocation() {
+    ~VkBufferAllocation() override { release_device_objects(); }
+
+protected:
+    void release_device_objects() noexcept override {
+        const VkDevice device = live_device();
         if (device != VK_NULL_HANDLE && mapped && memory != VK_NULL_HANDLE)
             vkUnmapMemory(device, memory);
         if (device != VK_NULL_HANDLE && buffer != VK_NULL_HANDLE)
             vkDestroyBuffer(device, buffer, nullptr);
         if (device != VK_NULL_HANDLE && memory != VK_NULL_HANDLE)
             vkFreeMemory(device, memory, nullptr);
+        buffer = VK_NULL_HANDLE;
+        memory = VK_NULL_HANDLE;
+        mapped = nullptr;
     }
 };
 
-struct VkImageAllocation {
-    VkDevice device = VK_NULL_HANDLE;
+struct VkImageAllocation final : DeviceLifetimeControl {
+    explicit VkImageAllocation(std::shared_ptr<DeviceAccessToken> device_access)
+        : DeviceLifetimeControl(std::move(device_access)) {}
+
     VkImage image = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
 
-    ~VkImageAllocation() {
+    ~VkImageAllocation() override { release_device_objects(); }
+
+protected:
+    void release_device_objects() noexcept override {
+        const VkDevice device = live_device();
         if (device != VK_NULL_HANDLE && view != VK_NULL_HANDLE)
             vkDestroyImageView(device, view, nullptr);
         if (device != VK_NULL_HANDLE && image != VK_NULL_HANDLE)
             vkDestroyImage(device, image, nullptr);
         if (device != VK_NULL_HANDLE && memory != VK_NULL_HANDLE)
             vkFreeMemory(device, memory, nullptr);
+        image = VK_NULL_HANDLE;
+        view = VK_NULL_HANDLE;
+        memory = VK_NULL_HANDLE;
     }
 };
 
@@ -330,8 +348,8 @@ bool create_buffer(VulkanDevice& vulkan, VkDeviceSize size,
             return false;
         }
     }
-    candidate.lifetime = std::make_shared<detail::VkBufferAllocation>();
-    candidate.lifetime->device = candidate.device;
+    candidate.lifetime = std::make_shared<detail::VkBufferAllocation>(
+        detail::DeviceLifetimeAccess::token(vulkan));
     candidate.lifetime->buffer = candidate.buffer;
     candidate.lifetime->memory = candidate.memory;
     candidate.lifetime->mapped = candidate.mapped;
@@ -611,8 +629,8 @@ bool create_image(VulkanDevice& vulkan, VkImageType type, VkFormat format,
     view.subresourceRange.layerCount = 1;
     result = vkCreateImageView(candidate.device, &view, nullptr, &candidate.view);
     if (result != VK_SUCCESS) return fail_result("vkCreateImageView", result, error);
-    candidate.lifetime = std::make_shared<detail::VkImageAllocation>();
-    candidate.lifetime->device = candidate.device;
+    candidate.lifetime = std::make_shared<detail::VkImageAllocation>(
+        detail::DeviceLifetimeAccess::token(vulkan));
     candidate.lifetime->image = candidate.image;
     candidate.lifetime->view = candidate.view;
     candidate.lifetime->memory = candidate.memory;

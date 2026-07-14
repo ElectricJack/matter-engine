@@ -23,6 +23,7 @@ namespace {
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
 std::atomic<uint32_t> g_test_validation_error_total{0};
+std::atomic<uint32_t> g_test_resource_destroy_call_total{0};
 #endif
 
 constexpr uint32_t kFramesInFlight = 2;
@@ -252,6 +253,7 @@ struct VulkanDevice::Impl {
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     VkPhysicalDevice physical_device = VK_NULL_HANDLE;
     VkDevice device = VK_NULL_HANDLE;
+    std::shared_ptr<detail::DeviceAccessToken> device_lifetime;
     PFN_vkReleaseSwapchainImagesEXT release_swapchain_images = nullptr;
     VkQueue graphics_queue = VK_NULL_HANDLE;
     uint32_t graphics_queue_family = std::numeric_limits<uint32_t>::max();
@@ -737,6 +739,8 @@ struct VulkanDevice::Impl {
                    "vkCreateDevice", error)) {
             return false;
         }
+        device_lifetime =
+            std::make_shared<detail::DeviceAccessToken>(device);
         vkGetDeviceQueue(device, graphics_queue_family, 0, &graphics_queue);
         release_swapchain_images =
             reinterpret_cast<PFN_vkReleaseSwapchainImagesEXT>(
@@ -1351,7 +1355,17 @@ struct VulkanDevice::Impl {
 
     void cleanup() {
         if (device != VK_NULL_HANDLE) {
-            const VkResult idle = vkDeviceWaitIdle(device);
+            VkResult idle = VK_SUCCESS;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+            const char* force_unproven =
+                std::getenv("MATTER_VK_TEST_FORCE_CLEANUP_UNPROVEN");
+            if (force_unproven && std::strcmp(force_unproven, "1") == 0) {
+                idle = VK_TIMEOUT;
+            } else
+#endif
+            {
+                idle = vkDeviceWaitIdle(device);
+            }
             bool device_lost = idle == VK_ERROR_DEVICE_LOST;
             if (!destruction_safe_after_wait(idle)) {
                 std::fprintf(stderr,
@@ -1359,6 +1373,7 @@ struct VulkanDevice::Impl {
                              "logical device, WSI resources, and their parents "
                              "after %s; completion is unproven\n",
                              result_name(idle));
+                if (device_lifetime) device_lifetime->invalidate();
                 return;
             }
             if (wsi_completion_ambiguous && !device_lost) {
@@ -1367,6 +1382,7 @@ struct VulkanDevice::Impl {
                     "Vulkan cleanup intentionally preserving the logical "
                     "device, ambiguous presentation resources, and their "
                     "parents; vkQueuePresentKHR completion is unproven\n");
+                if (device_lifetime) device_lifetime->invalidate();
                 return;
             }
             for (FrameSlot& frame : frames) {
@@ -1386,6 +1402,7 @@ struct VulkanDevice::Impl {
                                      "their parents after %s while waiting for "
                                      "acquisition; completion is unproven\n",
                                      result_name(waited));
+                        if (device_lifetime) device_lifetime->invalidate();
                         return;
                     }
                     frame.acquire_fence_pending = false;
@@ -1404,6 +1421,7 @@ struct VulkanDevice::Impl {
                         "parents after present completion failed: %s\n",
                         wait_error.empty() ? result_name(waited)
                                            : wait_error.c_str());
+                    if (device_lifetime) device_lifetime->invalidate();
                     return;
                 }
             }
@@ -1419,6 +1437,8 @@ struct VulkanDevice::Impl {
             resource->next = nullptr;
             delete resource;
         }
+        if (device_lifetime)
+            device_lifetime->destroy_registered_resources();
         for (FrameSlot& frame : frames) {
             if (frame.fence != VK_NULL_HANDLE)
                 vkDestroyFence(device, frame.fence, nullptr);
@@ -1438,7 +1458,10 @@ struct VulkanDevice::Impl {
         }
         if (swapchain != VK_NULL_HANDLE)
             vkDestroySwapchainKHR(device, swapchain, nullptr);
-        if (device != VK_NULL_HANDLE) vkDestroyDevice(device, nullptr);
+        if (device != VK_NULL_HANDLE) {
+            if (device_lifetime) device_lifetime->invalidate();
+            vkDestroyDevice(device, nullptr);
+        }
         if (surface != VK_NULL_HANDLE)
             vkDestroySurfaceKHR(instance, surface, nullptr);
         if (debug_messenger != VK_NULL_HANDLE) {
@@ -1452,6 +1475,54 @@ struct VulkanDevice::Impl {
         if (instance != VK_NULL_HANDLE) vkDestroyInstance(instance, nullptr);
     }
 };
+
+detail::DeviceLifetimeControl::DeviceLifetimeControl(
+    std::shared_ptr<DeviceAccessToken> device_access) noexcept
+    : device_access_(std::move(device_access)) {
+    if (device_access_) device_access_->register_control(*this);
+}
+
+detail::DeviceLifetimeControl::~DeviceLifetimeControl() {
+    if (device_access_) device_access_->unregister_control(*this);
+}
+
+VkDevice detail::DeviceLifetimeControl::live_device() const noexcept {
+    const VkDevice device =
+        device_access_ ? device_access_->device() : VK_NULL_HANDLE;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (device != VK_NULL_HANDLE) {
+        g_test_resource_destroy_call_total.fetch_add(1,
+                                                     std::memory_order_relaxed);
+    }
+#endif
+    return device;
+}
+
+void detail::DeviceAccessToken::register_control(
+    DeviceLifetimeControl& control) noexcept {
+    control.next_ = controls_;
+    if (controls_) controls_->previous_ = &control;
+    controls_ = &control;
+}
+
+void detail::DeviceAccessToken::unregister_control(
+    DeviceLifetimeControl& control) noexcept {
+    if (control.previous_) {
+        control.previous_->next_ = control.next_;
+    } else if (controls_ == &control) {
+        controls_ = control.next_;
+    }
+    if (control.next_) control.next_->previous_ = control.previous_;
+    control.previous_ = nullptr;
+    control.next_ = nullptr;
+}
+
+void detail::DeviceAccessToken::destroy_registered_resources() noexcept {
+    for (DeviceLifetimeControl* control = controls_; control;
+         control = control->next_) {
+        control->release_device_objects();
+    }
+}
 
 VulkanDevice::VulkanDevice() : impl_(std::make_unique<Impl>()) {}
 
@@ -1547,6 +1618,21 @@ void detail::DeviceRetentionAccess::retain(
     resource->next = owner.impl_->retained_resources;
     owner.impl_->retained_resources = resource.release();
 }
+
+std::shared_ptr<detail::DeviceAccessToken>
+detail::DeviceLifetimeAccess::token(VulkanDevice& owner) {
+    return owner.impl_->device_lifetime;
+}
+
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+void detail::DeviceLifetimeAccess::reset_test_destroy_call_count() {
+    g_test_resource_destroy_call_total.store(0, std::memory_order_relaxed);
+}
+
+uint32_t detail::DeviceLifetimeAccess::test_destroy_call_count() {
+    return g_test_resource_destroy_call_total.load(std::memory_order_relaxed);
+}
+#endif
 
 bool detail::DeviceSubmitAccess::submit_and_wait(
     VulkanDevice& owner, VkCommandBuffer command_buffer, VkFence fence,

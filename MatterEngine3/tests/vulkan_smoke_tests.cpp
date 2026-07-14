@@ -14,6 +14,7 @@
 #include "matter/vulkan_device.h"
 #include "render/gpu_matrix_pack.h"
 #include "render/matrix_math.h"
+#include "render/vk_device_internal.h"
 #include "render/vk_pipeline.h"
 #include "render/vk_resources.h"
 
@@ -104,6 +105,57 @@ bool run_retention_fault(matter::VulkanDevice& vulkan,
     return result;
 }
 
+void run_outlive_resources(std::unique_ptr<matter::VulkanDevice>& vulkan,
+                           std::string& error, bool force_unproven_cleanup) {
+    matter::VkBufferResource buffer;
+    matter::VkImageResource image;
+    matter::VkComputePipelineResource pipeline;
+    CHECK(matter::create_buffer(
+              *vulkan, 64,
+              VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                  VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, buffer, error),
+          error.empty() ? "create outliving buffer" : error.c_str());
+    CHECK(matter::create_image(
+              *vulkan, VK_IMAGE_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM,
+              {1, 1, 1},
+              VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+              VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+              image, error),
+          error.empty() ? "create outliving image" : error.c_str());
+    VkDescriptorSetLayoutBinding binding{};
+    binding.binding = 0;
+    binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    binding.descriptorCount = 1;
+    binding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    CHECK(matter::create_compute_pipeline(
+              *vulkan, "transform_probe.comp.spv", {binding}, pipeline, error),
+          error.empty() ? "create outliving pipeline" : error.c_str());
+
+    matter::VkBufferResource moved_buffer(std::move(buffer));
+    matter::VkImageResource moved_image(std::move(image));
+    matter::VkComputePipelineResource moved_pipeline(std::move(pipeline));
+    CHECK(buffer.buffer == VK_NULL_HANDLE && !buffer.lifetime,
+          "moved-from buffer releases lifetime control");
+    CHECK(image.image == VK_NULL_HANDLE && !image.lifetime,
+          "moved-from image releases lifetime control");
+    CHECK(pipeline.pipeline == VK_NULL_HANDLE && !pipeline.lifetime,
+          "moved-from pipeline releases lifetime control");
+
+    CHECK(vulkan->validation_error_count() == 0,
+          "no validation errors before outlive device teardown");
+    if (force_unproven_cleanup) {
+        matter::detail::DeviceLifetimeAccess::reset_test_destroy_call_count();
+        _putenv_s("MATTER_VK_TEST_FORCE_CLEANUP_UNPROVEN", "1");
+    }
+    vulkan.reset();
+    _putenv_s("MATTER_VK_TEST_FORCE_CLEANUP_UNPROVEN", "");
+    moved_buffer.reset();
+    // The moved image and pipeline intentionally use their destructors after
+    // their VulkanDevice owner has already been destroyed.
+}
+
 }  // namespace
 
 int main() {
@@ -132,6 +184,23 @@ int main() {
 
     if (vulkan) {
         const char* smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
+        if (smoke_mode &&
+            (std::string(smoke_mode) == "outlive-resources" ||
+             std::string(smoke_mode) == "outlive-unproven")) {
+            const bool force_unproven =
+                std::string(smoke_mode) == "outlive-unproven";
+            run_outlive_resources(vulkan, error, force_unproven);
+            if (force_unproven) {
+                CHECK(matter::detail::DeviceLifetimeAccess::
+                          test_destroy_call_count() == 0,
+                      "unproven cleanup blocks late child destruction");
+            }
+            CHECK(matter::VulkanDevice::test_validation_error_total() == 0,
+                  "outliving resource teardown has no validation errors");
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
         if (smoke_mode &&
             std::string(smoke_mode).rfind("retention-fault-", 0) == 0) {
             const std::string phase = std::string(smoke_mode).substr(16);
