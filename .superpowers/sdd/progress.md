@@ -61,6 +61,10 @@ Task 2: complete (commit 0ea1b5d, review clean)
   - Vulkan resolved-instance expansion now uses the OpenGL FNV contract: part hash, transform bytes, and segment; lod level is intentionally excluded.
   - Stable roots reuse the expanded Vulkan instances before hierarchy traversal; CUDA 13.3 default smoke passed with zero validation errors.
 
+Task 3: complete (commits d792d05 + 78370c6, review clean)
+  - Static scene buffers persist while instances, commands, transforms, stats, and descriptors are isolated per Vulkan frame slot.
+  - Descriptor-pool sizing and frame-resource setup are transactional; strict CUDA 13.3, focused cull, and default smokes passed with zero validation errors.
+
 Task 1: complete (commits ff3a71f..fbdd131, review clean)
   - Environment gate: CUDA 13.3 and OptiX 8.1 found; Vulkan headers, import library, and glslc absent.
   - Minor: default CUDA/OptiX paths use machine-specific Windows 8.3 aliases; overrides are supported.
