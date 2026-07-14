@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <utility>
@@ -25,6 +26,8 @@ static_assert(sizeof(FrameConstants) == 208,
               "FrameConstants must match the std140 shader block");
 static_assert(sizeof(VkCullStats) == 16,
               "VkCullStats must match the std430 stats block");
+static_assert(sizeof(VkRasterVertex) == 56,
+              "VkRasterVertex must match raster vertex bindings");
 
 bool fail_vk(const char* operation, VkResult result, std::string& error) {
     error = std::string(operation) + " failed with VkResult " +
@@ -43,13 +46,46 @@ bool checked_u32_add(uint32_t a, uint32_t b, uint32_t& result,
 }
 
 VkDescriptorSetLayoutBinding descriptor_binding(
-    uint32_t binding, VkDescriptorType type) {
+    uint32_t binding, VkDescriptorType type, VkShaderStageFlags stages) {
     VkDescriptorSetLayoutBinding result{};
     result.binding = binding;
     result.descriptorType = type;
     result.descriptorCount = 1;
-    result.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    result.stageFlags = stages;
     return result;
+}
+
+bool create_shader_module(VkDevice device, const char* name,
+                          VkShaderModule& shader, std::string& error) {
+    const matter::EmbeddedSpirvView spirv = matter::find_spirv(name);
+    if (!spirv.words || spirv.word_count == 0) {
+        error = std::string("embedded SPIR-V not found: ") + name;
+        return false;
+    }
+    VkShaderModuleCreateInfo create{
+        VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    create.codeSize = spirv.word_count * sizeof(uint32_t);
+    create.pCode = spirv.words;
+    const VkResult result =
+        vkCreateShaderModule(device, &create, nullptr, &shader);
+    return result == VK_SUCCESS ||
+           fail_vk("vkCreateShaderModule", result, error);
+}
+
+void transition_for_use(VkCommandBuffer command_buffer,
+                        matter::VkImageResource& image,
+                        VkImageLayout new_layout,
+                        VkPipelineStageFlags2 destination_stage,
+                        VkAccessFlags2 destination_access,
+                        VkImageAspectFlags aspect) {
+    const bool undefined = image.layout == VK_IMAGE_LAYOUT_UNDEFINED;
+    matter::record_image_transition(
+        command_buffer, image, new_layout,
+        undefined ? VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT
+                  : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        undefined ? 0 : VK_ACCESS_2_MEMORY_READ_BIT |
+                            VK_ACCESS_2_MEMORY_WRITE_BIT,
+        destination_stage, destination_access, aspect);
 }
 
 struct CullDispatchRecord {
@@ -86,6 +122,191 @@ void record_cull_dispatch(VkCommandBuffer command_buffer, void* user_data) {
     dependency.memoryBarrierCount = 2;
     dependency.pMemoryBarriers = barriers;
     vkCmdPipelineBarrier2(command_buffer, &dependency);
+}
+
+struct RasterRecord {
+    matter::VkImageResource* albedo;
+    matter::VkImageResource* normal;
+    matter::VkImageResource* orm;
+    matter::VkImageResource* depth;
+    matter::VkImageResource* hdr;
+    VkExtent2D extent;
+    VkPipeline raster_pipeline;
+    VkPipelineLayout raster_layout;
+    VkDescriptorSet raster_sets[2];
+    VkPipeline composite_pipeline;
+    VkPipelineLayout composite_layout;
+    VkDescriptorSet composite_set;
+    VkBuffer vertex_buffer;
+    VkBuffer indirect_buffer;
+    uint32_t indirect_count;
+    const uint8_t* command_enabled;
+};
+
+void record_raster(VkCommandBuffer command_buffer, void* user_data) {
+    const auto& record = *static_cast<RasterRecord*>(user_data);
+    matter::VkImageResource* colors[] = {
+        record.albedo, record.normal, record.orm};
+    for (auto* color : colors) {
+        transition_for_use(command_buffer, *color,
+                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                           VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                           VK_IMAGE_ASPECT_COLOR_BIT);
+    }
+    transition_for_use(command_buffer, *record.depth,
+                       VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                           VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                       VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                       VK_IMAGE_ASPECT_DEPTH_BIT);
+    transition_for_use(command_buffer, *record.hdr,
+                       VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                       VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT);
+
+    const VkClearValue clear_color{{{0.0f, 0.0f, 0.0f, 0.0f}}};
+    VkRenderingAttachmentInfo color_attachments[3]{};
+    for (size_t i = 0; i < 3; ++i) {
+        color_attachments[i].sType =
+            VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        color_attachments[i].imageView = colors[i]->view;
+        color_attachments[i].imageLayout =
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        color_attachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        color_attachments[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        color_attachments[i].clearValue = clear_color;
+    }
+    VkRenderingAttachmentInfo depth_attachment{
+        VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    depth_attachment.imageView = record.depth->view;
+    depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    depth_attachment.clearValue.depthStencil = {1.0f, 0};
+    VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    rendering.renderArea.extent = record.extent;
+    rendering.layerCount = 1;
+    rendering.colorAttachmentCount = 3;
+    rendering.pColorAttachments = color_attachments;
+    rendering.pDepthAttachment = &depth_attachment;
+    vkCmdBeginRendering(command_buffer, &rendering);
+
+    // A negative height preserves the engine's top-left framebuffer
+    // convention without flipping the canonical Vulkan-ZO projection.
+    const VkViewport raster_viewport{
+        0.0f, static_cast<float>(record.extent.height),
+        static_cast<float>(record.extent.width),
+        -static_cast<float>(record.extent.height), 0.0f, 1.0f};
+    const VkRect2D scissor{{0, 0}, record.extent};
+    vkCmdSetViewport(command_buffer, 0, 1, &raster_viewport);
+    vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+    vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      record.raster_pipeline);
+    vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            record.raster_layout, 0, 2,
+                            record.raster_sets, 0, nullptr);
+    const VkDeviceSize vertex_offset = 0;
+    vkCmdBindVertexBuffers(command_buffer, 0, 1, &record.vertex_buffer,
+                           &vertex_offset);
+    // multiDrawIndirect is not required by VulkanDevice.  Submit each Task 7
+    // command independently so this path also works when that feature is off.
+    for (uint32_t i = 0; i < record.indirect_count; ++i) {
+        if (record.command_enabled[i] == 0) continue;
+        vkCmdDrawIndirect(command_buffer, record.indirect_buffer,
+                          static_cast<VkDeviceSize>(i) * sizeof(DrawCommand),
+                          1, sizeof(DrawCommand));
+    }
+    vkCmdEndRendering(command_buffer);
+
+    for (auto* color : colors) {
+        matter::record_image_transition(
+            command_buffer, *color, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT);
+    }
+
+    VkRenderingAttachmentInfo hdr_attachment{
+        VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    hdr_attachment.imageView = record.hdr->view;
+    hdr_attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    hdr_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    hdr_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    hdr_attachment.clearValue = clear_color;
+    VkRenderingInfo composite{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    composite.renderArea.extent = record.extent;
+    composite.layerCount = 1;
+    composite.colorAttachmentCount = 1;
+    composite.pColorAttachments = &hdr_attachment;
+    vkCmdBeginRendering(command_buffer, &composite);
+    const VkViewport composite_viewport{
+        0.0f, 0.0f, static_cast<float>(record.extent.width),
+        static_cast<float>(record.extent.height), 0.0f, 1.0f};
+    vkCmdSetViewport(command_buffer, 0, 1, &composite_viewport);
+    vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+    vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      record.composite_pipeline);
+    vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            record.composite_layout, 0, 1,
+                            &record.composite_set, 0, nullptr);
+    vkCmdDraw(command_buffer, 3, 1, 0, 0);
+    vkCmdEndRendering(command_buffer);
+}
+
+struct RasterReadbackRecord {
+    matter::VkImageResource* images[5];
+    VkImageAspectFlags aspects[5];
+    VkBuffer destination;
+    uint32_t x;
+    uint32_t y;
+};
+
+void record_raster_readback(VkCommandBuffer command_buffer, void* user_data) {
+    const auto& record = *static_cast<RasterReadbackRecord*>(user_data);
+    // Each offset is aligned to its format's texel-block size (4 or 8 bytes).
+    constexpr VkDeviceSize offsets[5] = {0, 8, 16, 20, 24};
+    for (size_t i = 0; i < 5; ++i) {
+        transition_for_use(command_buffer, *record.images[i],
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                           VK_ACCESS_2_TRANSFER_READ_BIT, record.aspects[i]);
+        VkBufferImageCopy copy{};
+        copy.bufferOffset = offsets[i];
+        copy.imageSubresource.aspectMask = record.aspects[i];
+        copy.imageSubresource.layerCount = 1;
+        copy.imageOffset = {static_cast<int32_t>(record.x),
+                            static_cast<int32_t>(record.y), 0};
+        copy.imageExtent = {1, 1, 1};
+        vkCmdCopyImageToBuffer(command_buffer, record.images[i]->image,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               record.destination, 1, &copy);
+    }
+    VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dependency.memoryBarrierCount = 1;
+    dependency.pMemoryBarriers = &barrier;
+    vkCmdPipelineBarrier2(command_buffer, &dependency);
+}
+
+float half_to_float(uint16_t value) {
+    const float sign = (value & 0x8000u) ? -1.0f : 1.0f;
+    const uint32_t exponent = (value >> 10) & 0x1fu;
+    const uint32_t mantissa = value & 0x3ffu;
+    if (exponent == 0)
+        return sign * std::ldexp(static_cast<float>(mantissa), -24);
+    if (exponent == 31)
+        return mantissa == 0 ? sign * std::numeric_limits<float>::infinity()
+                             : std::numeric_limits<float>::quiet_NaN();
+    return sign * std::ldexp(1.0f + static_cast<float>(mantissa) / 1024.0f,
+                             static_cast<int>(exponent) - 15);
 }
 
 }  // namespace
@@ -176,6 +397,18 @@ VkSceneRenderer::~VkSceneRenderer() {
 void VkSceneRenderer::destroy_pipeline() {
     if (!vulkan_) return;
     const VkDevice device = vulkan_->device();
+    if (composite_sampler_ != VK_NULL_HANDLE)
+        vkDestroySampler(device, composite_sampler_, nullptr);
+    if (composite_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device, composite_pipeline_, nullptr);
+    if (composite_pipeline_layout_ != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device, composite_pipeline_layout_, nullptr);
+    if (composite_descriptor_pool_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorPool(device, composite_descriptor_pool_, nullptr);
+    if (composite_set_layout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(device, composite_set_layout_, nullptr);
+    if (raster_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device, raster_pipeline_, nullptr);
     if (pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, pipeline_, nullptr);
     if (pipeline_layout_ != VK_NULL_HANDLE)
@@ -188,6 +421,13 @@ void VkSceneRenderer::destroy_pipeline() {
         layout = VK_NULL_HANDLE;
     }
     pipeline_ = VK_NULL_HANDLE;
+    raster_pipeline_ = VK_NULL_HANDLE;
+    composite_set_layout_ = VK_NULL_HANDLE;
+    composite_pipeline_layout_ = VK_NULL_HANDLE;
+    composite_pipeline_ = VK_NULL_HANDLE;
+    composite_descriptor_pool_ = VK_NULL_HANDLE;
+    composite_descriptor_set_ = VK_NULL_HANDLE;
+    composite_sampler_ = VK_NULL_HANDLE;
     pipeline_layout_ = VK_NULL_HANDLE;
     descriptor_pool_ = VK_NULL_HANDLE;
     descriptor_sets_[0] = descriptor_sets_[1] = VK_NULL_HANDLE;
@@ -197,7 +437,9 @@ void VkSceneRenderer::destroy_pipeline() {
 bool VkSceneRenderer::create_pipeline(std::string& error) {
     const VkDevice device = vulkan_->device();
     const VkDescriptorSetLayoutBinding frame_binding =
-        descriptor_binding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+        descriptor_binding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                           VK_SHADER_STAGE_COMPUTE_BIT |
+                               VK_SHADER_STAGE_VERTEX_BIT);
     VkDescriptorSetLayoutCreateInfo frame_layout{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     frame_layout.bindingCount = 1;
@@ -210,7 +452,9 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     std::array<VkDescriptorSetLayoutBinding, 5> scene_bindings{};
     for (uint32_t i = 0; i < scene_bindings.size(); ++i)
         scene_bindings[i] =
-            descriptor_binding(i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+            descriptor_binding(i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                               VK_SHADER_STAGE_COMPUTE_BIT |
+                                   (i == 3 ? VK_SHADER_STAGE_VERTEX_BIT : 0));
     VkDescriptorSetLayoutCreateInfo scene_layout{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     scene_layout.bindingCount =
@@ -276,8 +520,232 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     allocate.descriptorSetCount = 2;
     allocate.pSetLayouts = set_layouts_;
     result = vkAllocateDescriptorSets(device, &allocate, descriptor_sets_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkAllocateDescriptorSets(cull)", result, error);
+    return create_raster_pipelines(error);
+}
+
+bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
+    const VkDevice device = vulkan_->device();
+    VkShaderModule raster_vertex = VK_NULL_HANDLE;
+    VkShaderModule raster_fragment = VK_NULL_HANDLE;
+    if (!create_shader_module(device, "raster.vert.spv", raster_vertex,
+                              error) ||
+        !create_shader_module(device, "gbuffer.frag.spv", raster_fragment,
+                              error)) {
+        if (raster_vertex != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device, raster_vertex, nullptr);
+        return false;
+    }
+    VkPipelineShaderStageCreateInfo raster_stages[2]{};
+    raster_stages[0].sType =
+        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    raster_stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    raster_stages[0].module = raster_vertex;
+    raster_stages[0].pName = "main";
+    raster_stages[1].sType =
+        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    raster_stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    raster_stages[1].module = raster_fragment;
+    raster_stages[1].pName = "main";
+    VkVertexInputBindingDescription vertex_binding{
+        0, sizeof(VkRasterVertex), VK_VERTEX_INPUT_RATE_VERTEX};
+    const VkVertexInputAttributeDescription attributes[] = {
+        {0, 0, VK_FORMAT_R32G32B32_SFLOAT,
+         static_cast<uint32_t>(offsetof(VkRasterVertex, position))},
+        {1, 0, VK_FORMAT_R32G32B32_SFLOAT,
+         static_cast<uint32_t>(offsetof(VkRasterVertex, normal))},
+        {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
+         static_cast<uint32_t>(offsetof(VkRasterVertex, albedo))},
+        {3, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
+         static_cast<uint32_t>(offsetof(VkRasterVertex, orm))}};
+    VkPipelineVertexInputStateCreateInfo vertex_input{
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    vertex_input.vertexBindingDescriptionCount = 1;
+    vertex_input.pVertexBindingDescriptions = &vertex_binding;
+    vertex_input.vertexAttributeDescriptionCount = 4;
+    vertex_input.pVertexAttributeDescriptions = attributes;
+    VkPipelineInputAssemblyStateCreateInfo input_assembly{
+        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo viewport_state{
+        VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    viewport_state.viewportCount = 1;
+    viewport_state.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo rasterization{
+        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rasterization.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterization.cullMode = VK_CULL_MODE_NONE;
+    rasterization.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterization.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo multisample{
+        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineDepthStencilStateCreateInfo depth_stencil{
+        VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    depth_stencil.depthTestEnable = VK_TRUE;
+    depth_stencil.depthWriteEnable = VK_TRUE;
+    depth_stencil.depthCompareOp = VK_COMPARE_OP_LESS;
+    VkPipelineColorBlendAttachmentState blend_attachments[3]{};
+    for (auto& blend : blend_attachments) {
+        blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
+                               VK_COLOR_COMPONENT_G_BIT |
+                               VK_COLOR_COMPONENT_B_BIT |
+                               VK_COLOR_COMPONENT_A_BIT;
+    }
+    VkPipelineColorBlendStateCreateInfo color_blend{
+        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    color_blend.attachmentCount = 3;
+    color_blend.pAttachments = blend_attachments;
+    const VkDynamicState dynamic_values[] = {VK_DYNAMIC_STATE_VIEWPORT,
+                                              VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic{
+        VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dynamic.dynamicStateCount = 2;
+    dynamic.pDynamicStates = dynamic_values;
+    const VkFormat gbuffer_formats[] = {
+        VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16B16A16_SFLOAT,
+        VK_FORMAT_R8G8B8A8_UNORM};
+    VkPipelineRenderingCreateInfo rendering{
+        VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    rendering.colorAttachmentCount = 3;
+    rendering.pColorAttachmentFormats = gbuffer_formats;
+    rendering.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
+    VkGraphicsPipelineCreateInfo raster_create{
+        VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    raster_create.pNext = &rendering;
+    raster_create.stageCount = 2;
+    raster_create.pStages = raster_stages;
+    raster_create.pVertexInputState = &vertex_input;
+    raster_create.pInputAssemblyState = &input_assembly;
+    raster_create.pViewportState = &viewport_state;
+    raster_create.pRasterizationState = &rasterization;
+    raster_create.pMultisampleState = &multisample;
+    raster_create.pDepthStencilState = &depth_stencil;
+    raster_create.pColorBlendState = &color_blend;
+    raster_create.pDynamicState = &dynamic;
+    raster_create.layout = pipeline_layout_;
+    VkResult result = vkCreateGraphicsPipelines(
+        device, VK_NULL_HANDLE, 1, &raster_create, nullptr, &raster_pipeline_);
+    vkDestroyShaderModule(device, raster_fragment, nullptr);
+    vkDestroyShaderModule(device, raster_vertex, nullptr);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateGraphicsPipelines(raster)", result, error);
+
+    std::array<VkDescriptorSetLayoutBinding, 3> sampled_bindings{};
+    for (uint32_t i = 0; i < sampled_bindings.size(); ++i) {
+        sampled_bindings[i] = descriptor_binding(
+            i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            VK_SHADER_STAGE_FRAGMENT_BIT);
+    }
+    VkDescriptorSetLayoutCreateInfo sampled_layout{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    sampled_layout.bindingCount =
+        static_cast<uint32_t>(sampled_bindings.size());
+    sampled_layout.pBindings = sampled_bindings.data();
+    result = vkCreateDescriptorSetLayout(device, &sampled_layout, nullptr,
+                                         &composite_set_layout_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateDescriptorSetLayout(composite)", result,
+                       error);
+    VkPipelineLayoutCreateInfo composite_layout{
+        VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    composite_layout.setLayoutCount = 1;
+    composite_layout.pSetLayouts = &composite_set_layout_;
+    result = vkCreatePipelineLayout(device, &composite_layout, nullptr,
+                                    &composite_pipeline_layout_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreatePipelineLayout(composite)", result, error);
+
+    VkShaderModule composite_vertex = VK_NULL_HANDLE;
+    VkShaderModule composite_fragment = VK_NULL_HANDLE;
+    if (!create_shader_module(device, "composite.vert.spv", composite_vertex,
+                              error) ||
+        !create_shader_module(device, "composite.frag.spv",
+                              composite_fragment, error)) {
+        if (composite_vertex != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device, composite_vertex, nullptr);
+        return false;
+    }
+    VkPipelineShaderStageCreateInfo composite_stages[2]{};
+    composite_stages[0].sType =
+        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    composite_stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    composite_stages[0].module = composite_vertex;
+    composite_stages[0].pName = "main";
+    composite_stages[1].sType =
+        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    composite_stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    composite_stages[1].module = composite_fragment;
+    composite_stages[1].pName = "main";
+    VkPipelineVertexInputStateCreateInfo no_vertex_input{
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineColorBlendAttachmentState hdr_blend{};
+    hdr_blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
+                               VK_COLOR_COMPONENT_G_BIT |
+                               VK_COLOR_COMPONENT_B_BIT |
+                               VK_COLOR_COMPONENT_A_BIT;
+    VkPipelineColorBlendStateCreateInfo hdr_color_blend{
+        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    hdr_color_blend.attachmentCount = 1;
+    hdr_color_blend.pAttachments = &hdr_blend;
+    const VkFormat hdr_format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    VkPipelineRenderingCreateInfo hdr_rendering{
+        VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    hdr_rendering.colorAttachmentCount = 1;
+    hdr_rendering.pColorAttachmentFormats = &hdr_format;
+    VkGraphicsPipelineCreateInfo composite_create{
+        VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    composite_create.pNext = &hdr_rendering;
+    composite_create.stageCount = 2;
+    composite_create.pStages = composite_stages;
+    composite_create.pVertexInputState = &no_vertex_input;
+    composite_create.pInputAssemblyState = &input_assembly;
+    composite_create.pViewportState = &viewport_state;
+    composite_create.pRasterizationState = &rasterization;
+    composite_create.pMultisampleState = &multisample;
+    composite_create.pColorBlendState = &hdr_color_blend;
+    composite_create.pDynamicState = &dynamic;
+    composite_create.layout = composite_pipeline_layout_;
+    result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
+                                       &composite_create, nullptr,
+                                       &composite_pipeline_);
+    vkDestroyShaderModule(device, composite_fragment, nullptr);
+    vkDestroyShaderModule(device, composite_vertex, nullptr);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateGraphicsPipelines(composite)", result, error);
+
+    VkDescriptorPoolSize sampled_pool{
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3};
+    VkDescriptorPoolCreateInfo pool{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pool.maxSets = 1;
+    pool.poolSizeCount = 1;
+    pool.pPoolSizes = &sampled_pool;
+    result = vkCreateDescriptorPool(device, &pool, nullptr,
+                                    &composite_descriptor_pool_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateDescriptorPool(composite)", result, error);
+    VkDescriptorSetAllocateInfo allocate{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    allocate.descriptorPool = composite_descriptor_pool_;
+    allocate.descriptorSetCount = 1;
+    allocate.pSetLayouts = &composite_set_layout_;
+    result = vkAllocateDescriptorSets(device, &allocate,
+                                      &composite_descriptor_set_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkAllocateDescriptorSets(composite)", result, error);
+    VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    sampler.magFilter = VK_FILTER_NEAREST;
+    sampler.minFilter = VK_FILTER_NEAREST;
+    sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sampler.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler.maxLod = 0.0f;
+    result = vkCreateSampler(device, &sampler, nullptr, &composite_sampler_);
     return result == VK_SUCCESS ||
-           fail_vk("vkAllocateDescriptorSets(cull)", result, error);
+           fail_vk("vkCreateSampler(composite)", result, error);
 }
 
 void VkSceneRenderer::update_descriptor(
@@ -327,6 +795,35 @@ bool VkSceneRenderer::ensure_buffer(matter::VkBufferResource& buffer,
     }
     buffer = std::move(replacement);
     update_descriptor(set_index, binding, buffer);
+    if (replaced) *replaced = true;
+    return true;
+}
+
+bool VkSceneRenderer::ensure_vertex_buffer(VkDeviceSize required_size,
+                                           std::string& error,
+                                           bool* replaced) {
+    if (replaced) *replaced = false;
+    required_size = std::max<VkDeviceSize>(required_size, 1);
+    if (vertices_.size >= required_size) return true;
+    VkDeviceSize capacity = 0;
+    if (!vk_scene_detail::checked_grown_capacity(
+            vertices_.size, required_size, limits_.max_buffer_size, capacity,
+            "vertex buffer", error)) {
+        return false;
+    }
+    matter::VkBufferResource replacement;
+    if (!matter::create_buffer(
+            *vulkan_, capacity,
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+            replacement, error)) {
+        return false;
+    }
+    vertices_ = std::move(replacement);
     if (replaced) *replaced = true;
     return true;
 }
@@ -495,7 +992,8 @@ bool VkSceneRenderer::init(std::string& error) {
         ensure_buffer(draw_transforms_, sizeof(GpuMat4),
                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 1, 3, error) &&
         ensure_buffer(stats_, sizeof(VkCullStats),
-                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 1, 4, error);
+                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 1, 4, error) &&
+        ensure_vertex_buffer(sizeof(VkRasterVertex), error);
     if (!initialized_) {
         destroy_pipeline();
         frame_constants_.reset();
@@ -504,6 +1002,13 @@ bool VkSceneRenderer::init(std::string& error) {
         commands_.reset();
         draw_transforms_.reset();
         stats_.reset();
+        vertices_.reset();
+        albedo_.reset();
+        normal_.reset();
+        orm_.reset();
+        depth_.reset();
+        hdr_.reset();
+        raster_extent_ = {};
     }
     return initialized_;
 }
@@ -532,17 +1037,39 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
         error = "VkScenePart exceeds uint32_t draw-command capacity";
         return -1;
     }
+    if (part.vertices.size() > std::numeric_limits<uint32_t>::max() ||
+        vertex_staging_.size() > std::numeric_limits<uint32_t>::max() -
+                                     part.vertices.size()) {
+        error = "VkScenePart exceeds uint32_t raster vertex capacity";
+        return -1;
+    }
     for (const auto& cluster : part.clusters) {
         if (cluster.lods.empty() || cluster.lods.size() > kVkMaxLod) {
             error = "VkSceneCluster LOD count must be in [1, kVkMaxLod]";
             return -1;
         }
+        if (!part.vertices.empty()) {
+            for (const auto& lod : cluster.lods) {
+                if (lod.first_vertex > part.vertices.size() ||
+                    lod.vertex_count >
+                        part.vertices.size() - lod.first_vertex) {
+                    error = "VkSceneCluster LOD exceeds part-local vertices";
+                    return -1;
+                }
+            }
+        }
     }
+    const uint32_t vertex_base =
+        static_cast<uint32_t>(vertex_staging_.size());
+    vertex_staging_.insert(vertex_staging_.end(), part.vertices.begin(),
+                           part.vertices.end());
     const int slot = static_cast<int>(parts_.size());
     PartRecord record{};
     record.hash = part.part_hash;
     record.cluster_start = static_cast<uint32_t>(cluster_staging_.size());
     record.cluster_count = static_cast<uint32_t>(part.clusters.size());
+    record.vertex_start = vertex_base;
+    record.vertex_count = static_cast<uint32_t>(part.vertices.size());
     record.live = true;
     for (size_t i = 0; i < part.clusters.size(); ++i) {
         const auto& source = part.clusters[i];
@@ -565,7 +1092,11 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
             cluster.lod_mesh_idx[lod] = lod;
         }
         cluster_staging_.push_back(cluster);
-        cluster_lods_.push_back(source.lods);
+        std::vector<VkSceneLod> lods = source.lods;
+        if (!part.vertices.empty()) {
+            for (auto& lod : lods) lod.first_vertex += vertex_base;
+        }
+        cluster_lods_.push_back(std::move(lods));
     }
     parts_.push_back(record);
     slot_of_[part.part_hash] = slot;
@@ -574,6 +1105,7 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
         parts_.pop_back();
         cluster_staging_.resize(record.cluster_start);
         cluster_lods_.resize(record.cluster_start);
+        vertex_staging_.resize(vertex_base);
         std::string ignored_error;
         rebuild_command_template(ignored_error);
         return -1;
@@ -591,11 +1123,14 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
     std::vector<PartRecord> compact_parts;
     std::vector<GpuCluster> compact_clusters;
     std::vector<std::vector<VkSceneLod>> compact_lods;
+    std::vector<VkRasterVertex> compact_vertices;
     std::map<uint64_t, int> compact_slots;
     compact_parts.reserve(parts_.size() - 1);
     compact_clusters.reserve(cluster_staging_.size() -
                              parts_[released_slot].cluster_count);
     compact_lods.reserve(compact_clusters.capacity());
+    compact_vertices.reserve(vertex_staging_.size() -
+                             parts_[released_slot].vertex_count);
     for (uint32_t old_slot = 0; old_slot < parts_.size(); ++old_slot) {
         if (old_slot == released_slot) continue;
         const PartRecord& old_part = parts_[old_slot];
@@ -603,13 +1138,30 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
         remap[old_slot] = new_slot;
         PartRecord new_part = old_part;
         new_part.cluster_start = static_cast<uint32_t>(compact_clusters.size());
+        new_part.vertex_start = static_cast<uint32_t>(compact_vertices.size());
+        if (old_part.vertex_count != 0) {
+            compact_vertices.insert(
+                compact_vertices.end(),
+                vertex_staging_.begin() + old_part.vertex_start,
+                vertex_staging_.begin() + old_part.vertex_start +
+                    old_part.vertex_count);
+        }
         new_part.live = true;
         for (uint32_t i = 0; i < old_part.cluster_count; ++i) {
             GpuCluster cluster =
                 cluster_staging_[old_part.cluster_start + i];
             cluster.part_slot = new_slot;
             compact_clusters.push_back(cluster);
-            compact_lods.push_back(cluster_lods_[old_part.cluster_start + i]);
+            std::vector<VkSceneLod> lods =
+                cluster_lods_[old_part.cluster_start + i];
+            if (old_part.vertex_count != 0) {
+                for (auto& lod : lods) {
+                    lod.first_vertex =
+                        new_part.vertex_start +
+                        (lod.first_vertex - old_part.vertex_start);
+                }
+            }
+            compact_lods.push_back(std::move(lods));
         }
         compact_slots[new_part.hash] = static_cast<int>(new_slot);
         compact_parts.push_back(new_part);
@@ -633,6 +1185,7 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
     slot_of_ = std::move(compact_slots);
     cluster_staging_ = std::move(compact_clusters);
     cluster_lods_ = std::move(compact_lods);
+    vertex_staging_ = std::move(compact_vertices);
     instance_staging_ = std::move(kept_instances);
     instance_part_slots_ = std::move(kept_slots);
     rt_instances_.erase(
@@ -650,6 +1203,8 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
         instance_staging_.clear();
         instance_part_slots_.clear();
         command_template_.clear();
+        raster_command_enabled_.clear();
+        raster_draw_command_count_ = 0;
         draw_transform_slots_ = 0;
     }
 }
@@ -668,6 +1223,8 @@ bool VkSceneRenderer::update_instances(
     auto old_slots = std::move(instance_part_slots_);
     auto old_rt = std::move(rt_instances_);
     auto old_commands = std::move(command_template_);
+    auto old_raster_enabled = std::move(raster_command_enabled_);
+    const uint32_t old_raster_count = raster_draw_command_count_;
     const uint32_t old_max_clusters = max_clusters_per_instance_;
     const uint32_t old_transform_slots = draw_transform_slots_;
     instance_staging_.clear();
@@ -697,6 +1254,8 @@ bool VkSceneRenderer::update_instances(
         instance_part_slots_ = std::move(old_slots);
         rt_instances_ = std::move(old_rt);
         command_template_ = std::move(old_commands);
+        raster_command_enabled_ = std::move(old_raster_enabled);
+        raster_draw_command_count_ = old_raster_count;
         max_clusters_per_instance_ = old_max_clusters;
         draw_transform_slots_ = old_transform_slots;
         return false;
@@ -768,6 +1327,8 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
     }
 
     command_template_.assign(static_cast<size_t>(command_count), {});
+    raster_command_enabled_.assign(static_cast<size_t>(command_count), 0);
+    raster_draw_command_count_ = 0;
     uint32_t command_first_instance = 0;
     for (size_t cluster_index = 0; cluster_index < cluster_staging_.size();
          ++cluster_index) {
@@ -780,11 +1341,18 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
             if (lod < lods.size()) {
                 command.vertex_count = lods[lod].vertex_count;
                 command.first_vertex = lods[lod].first_vertex;
+                if (parts_[cluster.part_slot].vertex_count != 0) {
+                    raster_command_enabled_[cluster_index * kVkMaxLod + lod] =
+                        1;
+                    ++raster_draw_command_count_;
+                }
                 if (!checked_u32_add(command_first_instance,
                                      per_part[cluster.part_slot],
                                      command_first_instance,
                                      "draw transform slots", error)) {
                     command_template_.clear();
+                    raster_command_enabled_.clear();
+                    raster_draw_command_count_ = 0;
                     return false;
                 }
             }
@@ -799,6 +1367,7 @@ bool VkSceneRenderer::upload_scene_buffers(std::string& error) {
     VkDeviceSize instance_bytes = 0;
     VkDeviceSize command_bytes = 0;
     VkDeviceSize transform_bytes = 0;
+    VkDeviceSize vertex_bytes = 0;
     if (!vk_scene_detail::checked_mul_to_device_size(
             cluster_staging_.size(), sizeof(GpuCluster), cluster_bytes,
             "cluster buffer", error) ||
@@ -810,7 +1379,10 @@ bool VkSceneRenderer::upload_scene_buffers(std::string& error) {
             "draw-command buffer", error) ||
         !vk_scene_detail::checked_mul_to_device_size(
             draw_transform_slots_, sizeof(GpuMat4), transform_bytes,
-            "draw-transform buffer", error)) {
+            "draw-transform buffer", error) ||
+        !vk_scene_detail::checked_mul_to_device_size(
+            vertex_staging_.size(), sizeof(VkRasterVertex), vertex_bytes,
+            "vertex buffer", error)) {
         return false;
     }
     const auto storage_size_ok = [&](VkDeviceSize size, const char* label) {
@@ -832,7 +1404,15 @@ bool VkSceneRenderer::upload_scene_buffers(std::string& error) {
         !storage_size_ok(transform_bytes, "draw-transform buffer")) {
         return false;
     }
+    if (std::max<VkDeviceSize>(vertex_bytes, 1) > limits_.max_buffer_size) {
+        error = "vertex buffer exceeds Vulkan maxBufferSize";
+        return false;
+    }
     std::vector<RtInstance> candidate_rt_instances = rt_instances_;
+    std::vector<uint8_t> candidate_raster_commands =
+        raster_command_enabled_;
+    const uint32_t candidate_raster_draw_count =
+        raster_draw_command_count_;
     const uint32_t candidate_cluster_count =
         static_cast<uint32_t>(cluster_staging_.size());
     bool gpu_mutated = false;
@@ -868,6 +1448,10 @@ bool VkSceneRenderer::upload_scene_buffers(std::string& error) {
                              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 3)) {
         return false;
     }
+    bool vertex_replaced = false;
+    if (!ensure_vertex_buffer(vertex_bytes, error, &vertex_replaced))
+        return gpu_mutated ? poison(error) : false;
+    if (vertex_replaced) gpu_mutated = true;
     const VkCullStats zero_stats{};
     uint32_t uploads = 0;
     const auto upload_scene_buffer = [&](matter::VkBufferResource& buffer,
@@ -889,12 +1473,18 @@ bool VkSceneRenderer::upload_scene_buffers(std::string& error) {
         upload_scene_buffer(clusters_, cluster_staging_.data(), cluster_bytes) &&
         upload_scene_buffer(instances_, instance_staging_.data(), instance_bytes) &&
         upload_scene_buffer(commands_, command_template_.data(), command_bytes) &&
+        upload_scene_buffer(vertices_, vertex_staging_.data(), vertex_bytes) &&
         upload_scene_buffer(stats_, &zero_stats, sizeof(zero_stats));
     if (uploaded) {
         uploaded_command_count_ =
             static_cast<uint32_t>(command_template_.size());
         uploaded_transform_slots_ = draw_transform_slots_;
         uploaded_cluster_count_ = candidate_cluster_count;
+        uploaded_vertex_count_ =
+            static_cast<uint32_t>(vertex_staging_.size());
+        uploaded_raster_command_enabled_ =
+            std::move(candidate_raster_commands);
+        uploaded_raster_draw_command_count_ = candidate_raster_draw_count;
         uploaded_rt_instances_ = std::move(candidate_rt_instances);
     }
     return uploaded;
@@ -1006,6 +1596,205 @@ bool VkSceneRenderer::readback_draw_transforms(
         bytes, 0, error);
 }
 
+bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
+                                            std::string& error) {
+    if (width == 0 || height == 0) {
+        error = "raster attachment extent must be nonzero";
+        return false;
+    }
+    if (raster_extent_.width == width && raster_extent_.height == height &&
+        albedo_.image != VK_NULL_HANDLE && normal_.image != VK_NULL_HANDLE &&
+        orm_.image != VK_NULL_HANDLE && depth_.image != VK_NULL_HANDLE &&
+        hdr_.image != VK_NULL_HANDLE) {
+        return true;
+    }
+    matter::VkImageResource albedo;
+    matter::VkImageResource normal;
+    matter::VkImageResource orm;
+    matter::VkImageResource depth;
+    matter::VkImageResource hdr;
+    const VkExtent3D extent{width, height, 1};
+    const VkImageUsageFlags gbuffer_usage =
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    if (!matter::create_image(*vulkan_, VK_IMAGE_TYPE_2D,
+                              VK_FORMAT_R8G8B8A8_UNORM, extent,
+                              gbuffer_usage, VK_IMAGE_ASPECT_COLOR_BIT,
+                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, albedo,
+                              error) ||
+        !matter::create_image(*vulkan_, VK_IMAGE_TYPE_2D,
+                              VK_FORMAT_R16G16B16A16_SFLOAT, extent,
+                              gbuffer_usage, VK_IMAGE_ASPECT_COLOR_BIT,
+                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, normal,
+                              error) ||
+        !matter::create_image(*vulkan_, VK_IMAGE_TYPE_2D,
+                              VK_FORMAT_R8G8B8A8_UNORM, extent,
+                              gbuffer_usage, VK_IMAGE_ASPECT_COLOR_BIT,
+                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, orm,
+                              error) ||
+        !matter::create_image(
+            *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_D32_SFLOAT, extent,
+            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            VK_IMAGE_ASPECT_DEPTH_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            depth, error) ||
+        !matter::create_image(
+            *vulkan_, VK_IMAGE_TYPE_2D,
+            VK_FORMAT_R16G16B16A16_SFLOAT, extent,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                VK_IMAGE_USAGE_SAMPLED_BIT |
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            hdr, error)) {
+        return false;
+    }
+    albedo_ = std::move(albedo);
+    normal_ = std::move(normal);
+    orm_ = std::move(orm);
+    depth_ = std::move(depth);
+    hdr_ = std::move(hdr);
+    raster_extent_ = {width, height};
+
+    matter::VkImageResource* sampled[] = {&albedo_, &normal_, &orm_};
+    VkDescriptorImageInfo image_infos[3]{};
+    VkWriteDescriptorSet writes[3]{};
+    for (uint32_t i = 0; i < 3; ++i) {
+        image_infos[i].sampler = composite_sampler_;
+        image_infos[i].imageView = sampled[i]->view;
+        image_infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet = composite_descriptor_set_;
+        writes[i].dstBinding = i;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType =
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i].pImageInfo = &image_infos[i];
+    }
+    vkUpdateDescriptorSets(vulkan_->device(), 3, writes, 0, nullptr);
+    return true;
+}
+
+bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
+                                                   uint32_t height,
+                                                   std::string& error) {
+    error.clear();
+    if (fail_if_poisoned(error)) return false;
+    if (!initialized_ && !init(error)) return false;
+    if (uploaded_command_count_ == 0 || uploaded_vertex_count_ == 0) {
+        error = "raster render requires uploaded draw commands and vertices";
+        return false;
+    }
+    if (uploaded_raster_command_enabled_.size() !=
+        uploaded_command_count_) {
+        error = "uploaded raster command mask is inconsistent";
+        return false;
+    }
+    if (!ensure_raster_targets(width, height, error)) return false;
+    RasterRecord record{&albedo_,
+                        &normal_,
+                        &orm_,
+                        &depth_,
+                        &hdr_,
+                        raster_extent_,
+                        raster_pipeline_,
+                        pipeline_layout_,
+                        {descriptor_sets_[0], descriptor_sets_[1]},
+                        composite_pipeline_,
+                        composite_pipeline_layout_,
+                        composite_descriptor_set_,
+                        vertices_.buffer,
+                        commands_.buffer,
+                        uploaded_command_count_,
+                        uploaded_raster_command_enabled_.data()};
+    std::vector<std::shared_ptr<void>> dependencies{
+        albedo_.lifetime, normal_.lifetime, orm_.lifetime, depth_.lifetime,
+        hdr_.lifetime, vertices_.lifetime, commands_.lifetime,
+        frame_constants_.lifetime, draw_transforms_.lifetime};
+    if (!matter::submit_immediate(
+            *vulkan_, record_raster, &record, error,
+            matter::ImmediateSubmitPhase::compute_dispatch,
+            std::move(dependencies))) {
+        return poison(error);
+    }
+    return true;
+}
+
+VkRasterAttachments VkSceneRenderer::raster_attachments() const {
+    return {{albedo_.image, albedo_.format},
+            {normal_.image, normal_.format},
+            {orm_.image, orm_.format},
+            {depth_.image, depth_.format},
+            {hdr_.image, hdr_.format},
+            raster_extent_};
+}
+
+bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
+                                            VkRasterPixel& pixel,
+                                            std::string& error) {
+    error.clear();
+    pixel = {};
+    pixel.depth = 1.0f;
+    if (fail_if_poisoned(error)) return false;
+    if (x >= raster_extent_.width || y >= raster_extent_.height ||
+        albedo_.image == VK_NULL_HANDLE) {
+        error = "raster readback pixel is outside the rendered extent";
+        return false;
+    }
+    matter::VkBufferResource staging;
+    constexpr VkDeviceSize readback_size = 32;
+    if (!matter::create_buffer(
+            *vulkan_, readback_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+            staging, error)) {
+        return false;
+    }
+    RasterReadbackRecord record{{&albedo_, &normal_, &orm_, &depth_, &hdr_},
+                                {VK_IMAGE_ASPECT_COLOR_BIT,
+                                 VK_IMAGE_ASPECT_COLOR_BIT,
+                                 VK_IMAGE_ASPECT_COLOR_BIT,
+                                 VK_IMAGE_ASPECT_DEPTH_BIT,
+                                 VK_IMAGE_ASPECT_COLOR_BIT},
+                                staging.buffer,
+                                x,
+                                y};
+    std::vector<std::shared_ptr<void>> dependencies{
+        albedo_.lifetime, normal_.lifetime, orm_.lifetime, depth_.lifetime,
+        hdr_.lifetime, staging.lifetime};
+    if (!matter::submit_immediate(
+            *vulkan_, record_raster_readback, &record, error,
+            matter::ImmediateSubmitPhase::compute_dispatch,
+            std::move(dependencies))) {
+        return poison(error);
+    }
+    std::array<uint8_t, readback_size> bytes{};
+    if (!matter::readback_buffer(*vulkan_, staging, bytes.data(), bytes.size(),
+                                 0, error)) {
+        return false;
+    }
+    const auto unorm4 = [&](size_t offset) {
+        return matter::Float4{bytes[offset] / 255.0f,
+                              bytes[offset + 1] / 255.0f,
+                              bytes[offset + 2] / 255.0f,
+                              bytes[offset + 3] / 255.0f};
+    };
+    pixel.albedo = unorm4(0);
+    pixel.orm = unorm4(16);
+    uint16_t normal_half[4]{};
+    uint16_t hdr_half[4]{};
+    std::memcpy(normal_half, bytes.data() + 8, sizeof(normal_half));
+    std::memcpy(&pixel.depth, bytes.data() + 20, sizeof(pixel.depth));
+    std::memcpy(hdr_half, bytes.data() + 24, sizeof(hdr_half));
+    pixel.normal = {half_to_float(normal_half[0]),
+                    half_to_float(normal_half[1]),
+                    half_to_float(normal_half[2]),
+                    half_to_float(normal_half[3])};
+    pixel.hdr = {half_to_float(hdr_half[0]), half_to_float(hdr_half[1]),
+                 half_to_float(hdr_half[2]), half_to_float(hdr_half[3])};
+    return true;
+}
+
 int VkSceneRenderer::fill_rt_instances(
     std::vector<RtInstance>& output) const {
     if (poisoned()) {
@@ -1034,6 +1823,13 @@ void VkSceneRenderer::reset() {
         commands_.reset();
         draw_transforms_.reset();
         stats_.reset();
+        vertices_.reset();
+        albedo_.reset();
+        normal_.reset();
+        orm_.reset();
+        depth_.reset();
+        hdr_.reset();
+        raster_extent_ = {};
     }
     parts_.clear();
     slot_of_.clear();
@@ -1042,12 +1838,18 @@ void VkSceneRenderer::reset() {
     instance_staging_.clear();
     instance_part_slots_.clear();
     command_template_.clear();
+    raster_command_enabled_.clear();
+    uploaded_raster_command_enabled_.clear();
     rt_instances_.clear();
+    vertex_staging_.clear();
     max_clusters_per_instance_ = 0;
     draw_transform_slots_ = 0;
     uploaded_command_count_ = 0;
     uploaded_transform_slots_ = 0;
     uploaded_cluster_count_ = 0;
+    uploaded_vertex_count_ = 0;
+    raster_draw_command_count_ = 0;
+    uploaded_raster_draw_command_count_ = 0;
     uploaded_rt_instances_.clear();
     poison_reason_.clear();
 #ifdef MATTER_VK_TEST_FAULT_INJECTION

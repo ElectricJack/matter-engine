@@ -57,6 +57,178 @@ bool rt_matrix_equal(const float actual[16], const matter::Mat4f& expected) {
     return true;
 }
 
+bool close4(matter::Float4 actual, matter::Float4 expected, float epsilon) {
+    return std::fabs(actual.x - expected.x) <= epsilon &&
+           std::fabs(actual.y - expected.y) <= epsilon &&
+           std::fabs(actual.z - expected.z) <= epsilon &&
+           std::fabs(actual.w - expected.w) <= epsilon;
+}
+
+viewer::VkScenePart fixed_part(uint64_t hash, matter::Float3 minimum,
+                               matter::Float3 maximum,
+                               uint32_t first_vertex);
+
+viewer::VkScenePart known_raster_triangle(uint64_t hash) {
+    viewer::VkScenePart part = fixed_part(
+        hash, {-0.75f, -0.75f, -2.0f}, {0.75f, 0.75f, -2.0f}, 0);
+    const matter::Float3 normal{0.0f, 1.0f, 0.0f};
+    const matter::Float4 albedo{0.25f, 0.5f, 0.75f, 1.0f};
+    const matter::Float4 orm{0.2f, 0.7f, 0.4f, 1.0f};
+    part.vertices = {
+        {{-0.75f, -0.75f, -2.0f}, normal, albedo, orm},
+        {{0.75f, -0.75f, -2.0f}, normal, albedo, orm},
+        {{0.0f, 0.75f, -2.0f}, normal, albedo, orm},
+    };
+    return part;
+}
+
+void run_raster_path(matter::VulkanDevice& vulkan) {
+    constexpr uint32_t width = 160;
+    constexpr uint32_t height = 160;
+    std::string error;
+    viewer::VkSceneRenderer renderer(vulkan);
+
+    // The first part reserves transform slot zero.  The known triangle then
+    // draws with firstInstance=1, catching any raster shader that incorrectly
+    // adds gl_BaseInstance to gl_InstanceIndex a second time.
+    const viewer::VkScenePart dummy = fixed_part(
+        900, {-0.1f, -0.1f, -2.1f}, {0.1f, 0.1f, -1.9f}, 0);
+    const viewer::VkScenePart triangle = known_raster_triangle(901);
+    CHECK(renderer.ensure_part(dummy, error) >= 0,
+          error.empty() ? "ensure raster dummy part" : error.c_str());
+    CHECK(renderer.ensure_part(triangle, error) >= 0,
+          error.empty() ? "ensure known raster triangle" : error.c_str());
+
+    const matter::Mat4f identity = identity_matrix();
+    CHECK(renderer.update_instances({{900, identity}, {901, identity}}, error),
+          error.empty() ? "upload raster instances" : error.c_str());
+
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.57079632679f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 10.0f;
+    viewer::FrameMatrices frame{};
+    CHECK(viewer::build_frame_matrices(camera, width, height, frame, error),
+          error.empty() ? "build raster frame matrices" : error.c_str());
+    CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f, error),
+          error.empty() ? "dispatch raster culling" : error.c_str());
+    std::vector<viewer::DrawCommand> raster_commands;
+    CHECK(renderer.readback_commands(raster_commands, error),
+          error.empty() ? "read raster indirect commands" : error.c_str());
+    CHECK(renderer.raster_draw_command_count() == 1,
+          "visible cull-only parts cannot issue raster indirect draws");
+    CHECK(raster_commands.size() > viewer::kVkMaxLod &&
+              raster_commands[viewer::kVkMaxLod].first_instance == 1,
+          "known triangle uses nonzero firstInstance transform region");
+    CHECK(renderer.render_gbuffer_and_composite(width, height, error),
+          error.empty() ? "render G-buffer and composite" : error.c_str());
+
+    const viewer::VkRasterAttachments attachments =
+        renderer.raster_attachments();
+    CHECK(attachments.albedo.format == VK_FORMAT_R8G8B8A8_UNORM,
+          "albedo attachment format");
+    CHECK(attachments.normal.format == VK_FORMAT_R16G16B16A16_SFLOAT,
+          "normal attachment format");
+    CHECK(attachments.orm.format == VK_FORMAT_R8G8B8A8_UNORM,
+          "ORM attachment format");
+    CHECK(attachments.depth.format == VK_FORMAT_D32_SFLOAT,
+          "depth attachment format");
+    CHECK(attachments.hdr.format == VK_FORMAT_R16G16B16A16_SFLOAT,
+          "HDR attachment format");
+    CHECK(attachments.extent.width == width &&
+              attachments.extent.height == height,
+          "raster attachment extent");
+
+    viewer::VkRasterPixel center{};
+    viewer::VkRasterPixel lower_right_inside{};
+    viewer::VkRasterPixel background{};
+    CHECK(renderer.readback_raster_pixel(width / 2, height / 2, center,
+                                         error),
+          error.empty() ? "read raster center" : error.c_str());
+    CHECK(renderer.readback_raster_pixel(103, 100, lower_right_inside, error),
+          error.empty() ? "read asymmetric raster structural pixel"
+                        : error.c_str());
+    CHECK(renderer.readback_raster_pixel(4, 4, background, error),
+          error.empty() ? "read raster background" : error.c_str());
+    CHECK(close4(center.albedo, {0.25f, 0.5f, 0.75f, 1.0f}, 6e-3f),
+          "known center albedo");
+    CHECK(close4(center.normal, {0.0f, 1.0f, 0.0f, 1.0f}, 2e-3f),
+          "known center normal");
+    CHECK(close4(center.orm, {0.2f, 0.7f, 0.4f, 1.0f}, 6e-3f),
+          "known center ORM");
+    CHECK(std::isfinite(center.depth) && center.depth >= 0.0f &&
+              center.depth <= 1.0f,
+          "known center Vulkan depth range");
+    CHECK(std::fabs(center.depth - 0.959596f) <= 2e-3f,
+          "known center projected depth");
+    CHECK(lower_right_inside.albedo.w > 0.99f,
+          "negative-height viewport preserves top-left framebuffer convention");
+    CHECK(background.albedo.w < 0.01f && background.depth >= 0.999f,
+          "background color and depth remain clear");
+    CHECK(center.hdr.x > background.hdr.x &&
+              center.hdr.y > background.hdr.y &&
+              center.hdr.z > background.hdr.z,
+          "composite samples G-buffer into HDR output");
+
+    const VkImage old_albedo = attachments.albedo.image;
+    const VkDeviceSize initial_vertex_capacity =
+        renderer.raster_vertex_buffer_size();
+    renderer.release_part(901);
+    CHECK(renderer.raster_vertex_count() == 0,
+          "releasing a raster part reclaims its vertices");
+    CHECK(renderer.uploaded_raster_draw_command_count() == 1,
+          "staging release preserves the last uploaded raster mask");
+    for (uint64_t hash = 902; hash <= 906; ++hash) {
+        CHECK(renderer.ensure_part(known_raster_triangle(hash), error) >= 0 &&
+                  renderer.raster_vertex_count() == 3,
+              error.empty()
+                  ? "re-adding raster part reuses compact vertex storage"
+                  : error.c_str());
+        CHECK(renderer.update_instances({{900, identity}, {hash, identity}},
+                                        error) &&
+                  renderer.dispatch_culling(frame, camera.position, 1.0f,
+                                             error),
+              error.empty() ? "dispatch re-added raster part"
+                            : error.c_str());
+        CHECK(renderer.raster_vertex_buffer_size() == initial_vertex_capacity,
+              "release/re-add churn does not grow raster vertex capacity");
+        if (hash != 906) {
+            renderer.release_part(hash);
+            CHECK(renderer.raster_vertex_count() == 0,
+                  "raster churn release reclaims vertices");
+        }
+    }
+    CHECK(renderer.render_gbuffer_and_composite(96, 64, error),
+          error.empty() ? "recreate resized raster attachments"
+                        : error.c_str());
+    const viewer::VkRasterAttachments resized = renderer.raster_attachments();
+    CHECK(resized.extent.width == 96 && resized.extent.height == 64,
+          "raster attachments resize");
+    CHECK(resized.albedo.image != VK_NULL_HANDLE &&
+              resized.albedo.image != old_albedo,
+          "raster resize recreates attachments");
+    viewer::VkRasterPixel resized_center{};
+    CHECK(renderer.readback_raster_pixel(48, 32, resized_center, error) &&
+              resized_center.albedo.w > 0.99f,
+          error.empty() ? "resized raster attachment contains geometry"
+                        : error.c_str());
+
+    std::printf(
+        "raster center: albedo=%.5f %.5f %.5f normal=%.5f %.5f %.5f "
+        "orm=%.5f %.5f %.5f depth=%.6f hdr=%.5f %.5f %.5f\n",
+        center.albedo.x, center.albedo.y, center.albedo.z, center.normal.x,
+        center.normal.y, center.normal.z, center.orm.x, center.orm.y,
+        center.orm.z, center.depth, center.hdr.x, center.hdr.y, center.hdr.z);
+    std::printf("raster background: albedo=%.5f %.5f %.5f depth=%.6f "
+                "hdr=%.5f %.5f %.5f\n",
+                background.albedo.x, background.albedo.y,
+                background.albedo.z, background.depth, background.hdr.x,
+                background.hdr.y, background.hdr.z);
+}
+
 viewer::VkScenePart fixed_part(uint64_t hash, matter::Float3 minimum,
                                matter::Float3 maximum, uint32_t first_vertex) {
     viewer::VkSceneCluster cluster{};
@@ -868,6 +1040,16 @@ int main() {
             run_vk_scene_checked_size_tests(*vulkan);
             run_cull_parity(*vulkan);
             run_cull_region_and_lifecycle_tests(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "raster") {
+            run_raster_path(*vulkan);
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
             vulkan->wait_idle();

@@ -366,7 +366,11 @@ $(GLFW_WIN_LIB): $(GLFW_WIN_OBJ)
 	$(WIN_AR) rcs $@ $^
 
 VK_SPV = build/shaders_vk/transform_probe.comp.spv \
-         build/shaders_vk/cull.comp.spv
+         build/shaders_vk/cull.comp.spv \
+         build/shaders_vk/raster.vert.spv \
+         build/shaders_vk/gbuffer.frag.spv \
+         build/shaders_vk/composite.vert.spv \
+         build/shaders_vk/composite.frag.spv
 VK_EMBEDDED_HEADER = $(ME3_DIR)/shaders_gen/embedded_spirv.h
 
 build/shaders_vk/%.spv: $(ME3_DIR)/shaders_vk/%

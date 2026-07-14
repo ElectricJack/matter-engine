@@ -62,9 +62,19 @@ struct VkSceneCluster {
     std::vector<VkSceneLod> lods;
 };
 
+struct VkRasterVertex {
+    matter::Float3 position{};
+    matter::Float3 normal{};
+    matter::Float4 albedo{};
+    matter::Float4 orm{};
+};
+
 struct VkScenePart {
     uint64_t part_hash = 0;
     std::vector<VkSceneCluster> clusters;
+    // Cluster LOD first_vertex values are local to this array.  Parts without
+    // raster vertices retain the Task 7 absolute first_vertex contract.
+    std::vector<VkRasterVertex> vertices;
 };
 
 struct VkSceneInstance {
@@ -77,6 +87,29 @@ struct VkCullStats {
     uint32_t hiz_culled = 0;
     uint32_t emitted = 0;
     uint32_t overflowed = 0;
+};
+
+struct VkRasterAttachment {
+    VkImage image = VK_NULL_HANDLE;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+};
+
+struct VkRasterAttachments {
+    VkRasterAttachment albedo{};
+    VkRasterAttachment normal{};
+    VkRasterAttachment orm{};
+    VkRasterAttachment depth{};
+    // R16G16B16A16_SFLOAT is the explicit linear HDR composite format.
+    VkRasterAttachment hdr{};
+    VkExtent2D extent{};
+};
+
+struct VkRasterPixel {
+    matter::Float4 albedo{};
+    matter::Float4 normal{};
+    matter::Float4 orm{};
+    matter::Float4 hdr{};
+    float depth = 1.0f;
 };
 
 class VkSceneRenderer {
@@ -103,6 +136,11 @@ public:
                            std::string& error);
     bool readback_draw_transforms(std::vector<GpuMat4>& transforms,
                                   std::string& error);
+    bool render_gbuffer_and_composite(uint32_t width, uint32_t height,
+                                      std::string& error);
+    VkRasterAttachments raster_attachments() const;
+    bool readback_raster_pixel(uint32_t x, uint32_t y,
+                               VkRasterPixel& pixel, std::string& error);
     int fill_rt_instances(std::vector<RtInstance>& output) const;
     // A poisoned renderer fails closed. reset() then performs a full GPU
     // resource/pipeline teardown, clears the poison, and requires re-init
@@ -143,6 +181,19 @@ public:
     VkDeviceSize draw_transform_buffer_size() const {
         return poisoned() ? 0 : draw_transforms_.size;
     }
+    uint32_t raster_vertex_count() const {
+        return poisoned() ? 0
+                          : static_cast<uint32_t>(vertex_staging_.size());
+    }
+    VkDeviceSize raster_vertex_buffer_size() const {
+        return poisoned() ? 0 : vertices_.size;
+    }
+    uint32_t raster_draw_command_count() const {
+        return poisoned() ? 0 : raster_draw_command_count_;
+    }
+    uint32_t uploaded_raster_draw_command_count() const {
+        return poisoned() ? 0 : uploaded_raster_draw_command_count_;
+    }
 
 private:
     struct GpuCluster {
@@ -171,6 +222,8 @@ private:
         uint64_t hash = 0;
         uint32_t cluster_start = 0;
         uint32_t cluster_count = 0;
+        uint32_t vertex_start = 0;
+        uint32_t vertex_count = 0;
         bool live = false;
     };
 
@@ -183,6 +236,11 @@ private:
     };
 
     bool create_pipeline(std::string& error);
+    bool create_raster_pipelines(std::string& error);
+    bool ensure_raster_targets(uint32_t width, uint32_t height,
+                               std::string& error);
+    bool ensure_vertex_buffer(VkDeviceSize required_size,
+                              std::string& error, bool* replaced = nullptr);
     bool ensure_buffer(matter::VkBufferResource& buffer,
                        VkDeviceSize required_size, VkBufferUsageFlags usage,
                        uint32_t set_index, uint32_t binding,
@@ -201,6 +259,13 @@ private:
     VkDescriptorSetLayout set_layouts_[2]{};
     VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
+    VkPipeline raster_pipeline_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout composite_set_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout composite_pipeline_layout_ = VK_NULL_HANDLE;
+    VkPipeline composite_pipeline_ = VK_NULL_HANDLE;
+    VkDescriptorPool composite_descriptor_pool_ = VK_NULL_HANDLE;
+    VkDescriptorSet composite_descriptor_set_ = VK_NULL_HANDLE;
+    VkSampler composite_sampler_ = VK_NULL_HANDLE;
     VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
     VkDescriptorSet descriptor_sets_[2]{};
     bool initialized_ = false;
@@ -211,6 +276,14 @@ private:
     matter::VkBufferResource commands_;
     matter::VkBufferResource draw_transforms_;
     matter::VkBufferResource stats_;
+    matter::VkBufferResource vertices_;
+
+    matter::VkImageResource albedo_;
+    matter::VkImageResource normal_;
+    matter::VkImageResource orm_;
+    matter::VkImageResource depth_;
+    matter::VkImageResource hdr_;
+    VkExtent2D raster_extent_{};
 
     std::vector<PartRecord> parts_;
     std::map<uint64_t, int> slot_of_;
@@ -219,7 +292,13 @@ private:
     std::vector<GpuInstance> instance_staging_;
     std::vector<uint32_t> instance_part_slots_;
     std::vector<DrawCommand> command_template_;
+    std::vector<uint8_t> raster_command_enabled_;
+    std::vector<uint8_t> uploaded_raster_command_enabled_;
     std::vector<RtInstance> rt_instances_;
+    std::vector<VkRasterVertex> vertex_staging_;
+    uint32_t uploaded_vertex_count_ = 0;
+    uint32_t raster_draw_command_count_ = 0;
+    uint32_t uploaded_raster_draw_command_count_ = 0;
     uint32_t max_clusters_per_instance_ = 0;
     uint32_t draw_transform_slots_ = 0;
     uint32_t uploaded_command_count_ = 0;
