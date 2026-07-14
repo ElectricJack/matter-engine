@@ -64,6 +64,8 @@ public:
     uint32_t swapchain_image_count() const;
     bool draw_indirect_first_instance_enabled() const;
     bool multi_draw_indirect_enabled() const;
+    bool dlss_available() const;
+    const std::string& dlss_unavailable_reason() const;
     uint32_t validation_error_count() const;
     // External API work may outlive every completion primitive we can safely
     // query. In that terminal case, preserve the logical device and children.
@@ -73,7 +75,8 @@ public:
 #endif
 
 private:
-    VulkanDevice();
+    struct Impl;
+    explicit VulkanDevice(std::unique_ptr<Impl> impl);
     friend class detail::DeviceRetentionAccess;
     friend class detail::DeviceLifetimeAccess;
     friend class detail::DeviceSubmitAccess;
@@ -81,7 +84,6 @@ private:
                                    VkFence fence, bool& completion_proven,
                                    const char* fault_phase,
                                    std::string& error);
-    struct Impl;
     std::unique_ptr<Impl> impl_;
 };
 

@@ -7,6 +7,9 @@ set -eu
 : "${GLSLC:=/ucrt64/bin/glslc}"
 : "${CUDA_PATH:=/c/PROGRA~1/NVIDIA~2/CUDA/v13.3}"
 : "${OPTIX_PATH:=/c/PROGRA~3/NVIDIA~1/OPTIXS~1.0}"
+: "${HAVE_STREAMLINE:=0}"
+: "${STREAMLINE_PATH:=}"
+: "${STREAMLINE_DLL_DIR:=$STREAMLINE_PATH/bin/x64}"
 
 missing=0
 require_command() {
@@ -28,6 +31,21 @@ require_file 'Vulkan header' "$VULKAN_INCLUDE/vulkan/vulkan.h"
 require_file 'Vulkan import library' "$VULKAN_LIB_DIR/libvulkan-1.dll.a"
 require_file 'CUDA header' "$CUDA_PATH/include/cuda.h"
 require_file 'OptiX header' "$OPTIX_PATH/include/optix.h"
+case "$HAVE_STREAMLINE" in
+    0) ;;
+    1)
+        require_file 'Streamline header' "$STREAMLINE_PATH/include/sl.h"
+        require_file 'Streamline Vulkan helper header' \
+            "$STREAMLINE_PATH/include/sl_helpers_vk.h"
+        require_file 'signed Streamline interposer DLL' \
+            "$STREAMLINE_DLL_DIR/sl.interposer.dll"
+        ;;
+    *)
+        printf 'ERROR: HAVE_STREAMLINE must be 0 or 1, got: %s\n' \
+            "$HAVE_STREAMLINE" >&2
+        missing=1
+        ;;
+esac
 test "$missing" -eq 0 || exit 1
 
 src=

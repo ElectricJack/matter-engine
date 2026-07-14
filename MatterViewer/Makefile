@@ -55,6 +55,11 @@ LDFLAGS = -lGL -lm -lpthread -ldl -lrt -lX11
 LDLIBS  = ../Libraries/raylib/build/linux/libraylib.a
 
 HAVE_CUDA ?= 1
+HAVE_STREAMLINE ?= 0
+# Point this at a locally installed, licensed Streamline SDK.  Nothing from the
+# SDK is checked into this repository; HAVE_STREAMLINE=0 is the default.
+STREAMLINE_PATH ?=
+STREAMLINE_DLL_DIR ?= $(STREAMLINE_PATH)/bin/x64
 CUDA_PATH ?= /c/PROGRA~1/NVIDIA~2/CUDA/v13.3
 OPTIX_PATH ?= /c/PROGRA~3/NVIDIA~1/OPTIXS~1.0
 CUDA_HOST_COMPILER ?= $(shell powershell.exe -NoProfile -Command \
@@ -141,6 +146,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               \
               $(ME3_DIR)/src/render/raster_mesh.cpp $(ME3_DIR)/src/render/part_store.cpp \
               $(ME3_DIR)/src/render/world_state.cpp \
+              $(ME3_DIR)/src/render/streamline_bridge.cpp \
               $(ME3_DIR)/src/render/vk_context.cpp $(ME3_DIR)/src/render/vk_resources.cpp \
               $(ME3_DIR)/src/render/vk_pipeline.cpp $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
               $(ME3_DIR)/src/render/vk_instance_cache.cpp \
@@ -208,6 +214,10 @@ IMGUI_SRC_WIN = $(IMGUI_CORE_SRC) \
 CXX_FLAGS_BUILD_COMMON = $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -MMD -MP
 # Windows is the release build path for now: -DNDEBUG disables assert().
 CXX_FLAGS_BUILD_WIN_COMMON = $(CFLAGS) -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST -DMATTER_VULKAN_VIEWER -DMATTER_VULKAN_ONLY $(WIN_INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -ffunction-sections -fdata-sections -MMD -MP
+CXX_FLAGS_BUILD_WIN_COMMON += -DMATTER_HAVE_STREAMLINE=$(HAVE_STREAMLINE)
+ifeq ($(HAVE_STREAMLINE),1)
+  CXX_FLAGS_BUILD_WIN_COMMON += -I"$(STREAMLINE_PATH)/include"
+endif
 ifeq ($(HAVE_CUDA),1)
   CXX_FLAGS_BUILD_WIN_COMMON += -DMATTER_HAVE_OPTIX -I"$(CUDA_PATH)/include" -I"$(OPTIX_PATH)/include" -fpermissive
 endif
@@ -347,7 +357,9 @@ vulkan-preflight:
 	@test "$(HAVE_CUDA)" = "1" || (echo "ERROR: Phase 1 requires HAVE_CUDA=1"; exit 1)
 	@WIN_CXX="$(WIN_CXX)" VULKAN_INCLUDE="$(VULKAN_INCLUDE)" \
 	 VULKAN_LIB_DIR="$(VULKAN_LIB_DIR)" GLSLC="$(GLSLC)" \
-	 CUDA_PATH="$(CUDA_PATH)" OPTIX_PATH="$(OPTIX_PATH)" sh tools/check_vulkan_toolchain.sh
+	 CUDA_PATH="$(CUDA_PATH)" OPTIX_PATH="$(OPTIX_PATH)" \
+	 HAVE_STREAMLINE="$(HAVE_STREAMLINE)" STREAMLINE_PATH="$(STREAMLINE_PATH)" \
+	 STREAMLINE_DLL_DIR="$(STREAMLINE_DLL_DIR)" sh tools/check_vulkan_toolchain.sh
 
 $(WIN_FEATURES): vulkan-preflight
 	@mkdir -p $(dir $@)
@@ -417,6 +429,8 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_instance_cache.cpp \
         $(ME3_DIR)/src/render/vk_cuda_interop.h \
         $(ME3_DIR)/src/render/vk_cuda_interop.cpp \
+        $(ME3_DIR)/src/render/streamline_bridge.h \
+        $(ME3_DIR)/src/render/streamline_bridge.cpp \
         $(ME3_DIR)/src/render/vk_context.cpp \
         $(ME3_DIR)/src/render/vk_resources.cpp \
         $(ME3_DIR)/src/render/vk_pipeline.cpp \
@@ -426,6 +440,7 @@ build/windows/vulkan_smoke_tests.exe: \
         $(VK_EMBEDDED_HEADER) $(CUDA_INTEROP_HEADER) $(GLFW_WIN_LIB)
 	@mkdir -p $(dir $@)
 	$(WIN_CXX) $(ME3_DIR)/tests/vulkan_smoke_tests.cpp \
+	    $(ME3_DIR)/src/render/streamline_bridge.cpp \
 	    $(ME3_DIR)/src/render/vk_context.cpp \
 	    $(ME3_DIR)/src/render/vk_resources.cpp \
 	    $(ME3_DIR)/src/render/vk_pipeline.cpp \
@@ -439,11 +454,13 @@ build/windows/vulkan_smoke_tests.exe: \
 	    -static \
 	    -DVK_USE_PLATFORM_WIN32_KHR \
 	    -DMATTER_VK_TEST_FAULT_INJECTION \
+	    -DMATTER_HAVE_STREAMLINE=$(HAVE_STREAMLINE) \
 	    -DMATTER_VK_TEST_LAYER_PATH='"$(VULKAN_RUNTIME_DIR)"' \
 	    -I$(ME3_DIR) -I$(ME3_DIR)/include -I$(ME3_DIR)/src \
 	    -I../MatterSurfaceLib/include \
 	    -I$(ME3_DIR)/tests \
 	    -I../Libraries/raylib/src/external/glfw/include \
+	    $(if $(filter 1,$(HAVE_STREAMLINE)),-I"$(STREAMLINE_PATH)/include") \
 	    -I"$(CUDA_PATH)/include" \
 	    -I$(VULKAN_INCLUDE) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 \
 	    -lgdi32 -luser32 -lshell32 -Wl,-Bstatic
@@ -482,6 +499,7 @@ $(W_DIR)/vk_cuda_interop.o: $(CUDA_INTEROP_HEADER)
 
 windows: $(WIN_FEATURES) $(VK_EMBEDDED_HEADER) $(CUDA_INTEROP_HEADER) $(GLFW_WIN_LIB) win-shaders-gpu $(W_ALL_OBJ)
 	$(WIN_CXX) $(W_ALL_OBJ) -o viewer.exe $(CFLAGS) -static -s -Wl,--gc-sections $(WIN_LIBS) $(GLFW_WIN_LIB) $(WIN_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 -Wl,-Bstatic
+	@if [ "$(HAVE_STREAMLINE)" = "1" ]; then cp -f "$(STREAMLINE_DLL_DIR)"/*.dll .; fi
 	@imports="$$($(WIN_CXX) -print-prog-name=objdump -p viewer.exe)"; \
 	 for forbidden in opengl32 ChoosePixelFormat SetPixelFormat SwapBuffers cuGraphicsGL nvcuda cuDevice; do \
 	   echo "$$imports" | grep -qi "$$forbidden" && { echo "ERROR: forbidden PE import/symbol $$forbidden"; exit 1; } || true; \

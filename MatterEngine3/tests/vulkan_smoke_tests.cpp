@@ -15,6 +15,7 @@
 #include "matter/vulkan_device.h"
 #include "render/gpu_matrix_pack.h"
 #include "render/matrix_math.h"
+#include "render/streamline_bridge.h"
 #include "render/vk_cuda_interop.h"
 #include "render/vk_device_internal.h"
 #include "render/vk_instance_cache.h"
@@ -31,6 +32,27 @@ struct RetainProbe {
     uint32_t* destroyed = nullptr;
     ~RetainProbe() { ++*destroyed; }
 };
+
+void run_streamline_bridge_fallback_tests() {
+    const matter::StreamlineBridge bridge =
+        matter::StreamlineBridge::initialize_before_vulkan();
+    CHECK(bridge.initialized(),
+          "Streamline bridge fallback initialization succeeds without SDK");
+    CHECK(!bridge.dlss_requested(),
+          "Streamline bridge does not request DLSS when the SDK is absent");
+    CHECK(bridge.dlss_unavailable_reason().find("not found") !=
+              std::string::npos,
+          "Streamline bridge reports that the SDK was not found");
+    CHECK(!bridge.proxy_dispatch_used(),
+          "Streamline fallback never dispatches through a proxy");
+
+    const std::vector<const char*> merged =
+        matter::StreamlineBridge::merge_extensions({"A", "B"},
+                                                    {"B", "C"});
+    CHECK(merged.size() == 3 && std::string(merged[0]) == "A" &&
+              std::string(merged[1]) == "B" && std::string(merged[2]) == "C",
+          "Streamline extension merge preserves first-seen order");
+}
 
 void run_cuda_vulkan_interop(matter::VulkanDevice& vulkan) {
     std::string error;
@@ -1589,6 +1611,7 @@ void run_outlive_resources(std::unique_ptr<matter::VulkanDevice>& vulkan,
 
 int main() {
     run_vulkan_instance_cache_tests();
+    run_streamline_bridge_fallback_tests();
 #ifdef MATTER_VK_TEST_LAYER_PATH
     // MSYS2 installs validation-layer manifests outside the Windows registry.
     // Point this standalone test at that installed development package and let
@@ -1613,6 +1636,11 @@ int main() {
     CHECK(vulkan != nullptr, error.empty() ? "create Vulkan device" : error.c_str());
 
     if (vulkan) {
+        CHECK(!vulkan->dlss_available(),
+              "Vulkan device reports DLSS unavailable without Streamline");
+        CHECK(vulkan->dlss_unavailable_reason().find("not found") !=
+                  std::string::npos,
+              "Vulkan device exposes the Streamline fallback reason");
         CHECK(vulkan->draw_indirect_first_instance_enabled(),
               "drawIndirectFirstInstance is enabled on the logical device");
         CHECK(vulkan->multi_draw_indirect_enabled(),
