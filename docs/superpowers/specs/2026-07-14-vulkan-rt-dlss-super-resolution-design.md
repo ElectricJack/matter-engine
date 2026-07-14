@@ -62,8 +62,12 @@ by the current adapter, internal and output extent are equal and the Vulkan
 composite presents directly.
 
 For every recorded frame, `VulkanTemporalState` produces an explicit
-`sl::Constants` payload and a `sl::FrameToken` whose frame number advances in
-the same order as successfully presented frames. Constants use Streamline's
+`sl::Constants` payload and the Streamline bridge allocates a unique,
+never-reused attempt `sl::FrameToken` before DLSS evaluation. This token is
+independent of the temporal state: an evaluation followed by failed UI
+recording, submission, acquire, or presentation consumes/drops its token,
+does not publish its temporal candidate, and forces the next DLSS frame to
+reset history. Constants use Streamline's
 required row-major, **unjittered** current/previous clip transforms,
 `clipToPrevClip`, inverse transforms, input-pixel jitter offsets,
 `mvecScale = (1 / internal_width, 1 / internal_height)`, depth-inverted flag,
