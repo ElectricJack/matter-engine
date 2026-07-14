@@ -54,6 +54,36 @@ bool vk_ok(VkResult result, const char* operation, std::string& error) {
     return false;
 }
 
+enum class PresentResultState { completed_or_trackable, unchanged, ambiguous };
+
+constexpr PresentResultState present_result_state(VkResult result) {
+    switch (result) {
+        case VK_SUCCESS:
+        case VK_SUBOPTIMAL_KHR:
+        case VK_ERROR_OUT_OF_DATE_KHR:
+        case VK_ERROR_SURFACE_LOST_KHR:
+            return PresentResultState::completed_or_trackable;
+        case VK_ERROR_OUT_OF_HOST_MEMORY:
+        case VK_ERROR_OUT_OF_DEVICE_MEMORY:
+            return PresentResultState::unchanged;
+        default:
+            return PresentResultState::ambiguous;
+    }
+}
+
+static_assert(present_result_state(VK_ERROR_OUT_OF_HOST_MEMORY) ==
+              PresentResultState::unchanged);
+static_assert(present_result_state(VK_ERROR_DEVICE_LOST) ==
+              PresentResultState::ambiguous);
+
+constexpr bool destruction_safe_after_wait(VkResult result) {
+    return result == VK_SUCCESS || result == VK_ERROR_DEVICE_LOST;
+}
+
+static_assert(destruction_safe_after_wait(VK_SUCCESS));
+static_assert(destruction_safe_after_wait(VK_ERROR_DEVICE_LOST));
+static_assert(!destruction_safe_after_wait(VK_TIMEOUT));
+
 std::string join(const std::vector<std::string>& values, const char* separator) {
     std::ostringstream out;
     for (size_t i = 0; i < values.size(); ++i) {
@@ -219,8 +249,55 @@ struct VulkanDevice::Impl {
     bool report_recreated = false;
     bool swapchain_recreate_required = false;
     bool device_poisoned = false;
+    bool wsi_completion_ambiguous = false;
     std::string poison_error;
     VulkanFrame active_frame{};
+
+    bool poison_device(std::string& error, const char* reason) {
+        if (!device_poisoned) {
+            poison_error = "Vulkan device disabled: ";
+            poison_error += reason;
+            if (!error.empty()) poison_error += ": " + error;
+            device_poisoned = true;
+            frame_active = false;
+            acquired_suboptimal = false;
+            swapchain_recreate_required = true;
+        }
+        error = poison_error;
+        return false;
+    }
+
+    bool ensure_healthy(std::string& error) {
+        if (!device_poisoned) return true;
+        error = poison_error;
+        return false;
+    }
+
+    bool ensure_frame_resources(std::string& error) {
+        if (!ensure_healthy(error)) return false;
+        const size_t image_count = swapchain_images.size();
+        bool complete = swapchain != VK_NULL_HANDLE && image_count != 0 &&
+                        render_finished.size() == image_count &&
+                        present_fences.size() == image_count &&
+                        present_fence_pending.size() == image_count &&
+                        swapchain_image_initialized.size() == image_count;
+        for (size_t i = 0; complete && i < image_count; ++i) {
+            complete = render_finished[i] != VK_NULL_HANDLE &&
+                       present_fences[i] != VK_NULL_HANDLE;
+        }
+        if (frame_slot >= frames.size()) complete = false;
+        if (complete) {
+            const FrameSlot& slot = frames[frame_slot];
+            complete = slot.command_pool != VK_NULL_HANDLE &&
+                       slot.command_buffer != VK_NULL_HANDLE &&
+                       slot.image_available != VK_NULL_HANDLE &&
+                       slot.acquire_fence != VK_NULL_HANDLE &&
+                       slot.fence != VK_NULL_HANDLE;
+        }
+        if (complete) return true;
+        error = "internal Vulkan frame resources are incomplete";
+        return poison_device(error, "frame resource invariant failed");
+    }
 
     static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback(
         VkDebugUtilsMessageSeverityFlagBitsEXT severity,
@@ -759,46 +836,76 @@ struct VulkanDevice::Impl {
     }
 
     bool create_swapchain_sync(std::string& error) {
-        for (VkSemaphore semaphore : render_finished) {
-            vkDestroySemaphore(device, semaphore, nullptr);
-        }
-        for (VkFence fence : present_fences) {
-            vkDestroyFence(device, fence, nullptr);
-        }
-        render_finished.assign(swapchain_images.size(), VK_NULL_HANDLE);
-        present_fences.assign(swapchain_images.size(), VK_NULL_HANDLE);
-        present_fence_pending.assign(swapchain_images.size(), false);
+        std::vector<VkSemaphore> replacement_semaphores(
+            swapchain_images.size(), VK_NULL_HANDLE);
+        std::vector<VkFence> replacement_fences(swapchain_images.size(),
+                                                VK_NULL_HANDLE);
         VkSemaphoreCreateInfo create{
             VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         VkFenceCreateInfo fence_create{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-        for (size_t i = 0; i < render_finished.size(); ++i) {
+        bool allocated = true;
+        for (size_t i = 0; i < replacement_semaphores.size(); ++i) {
             if (!vk_ok(vkCreateSemaphore(device, &create, nullptr,
-                                         &render_finished[i]),
+                                         &replacement_semaphores[i]),
                         "vkCreateSemaphore(render finished)", error)) {
-                return false;
+                allocated = false;
+                break;
             }
             if (!vk_ok(vkCreateFence(device, &fence_create, nullptr,
-                                     &present_fences[i]),
+                                     &replacement_fences[i]),
                        "vkCreateFence(present completion)", error)) {
-                return false;
+                allocated = false;
+                break;
             }
         }
+        if (!allocated) {
+            for (VkSemaphore semaphore : replacement_semaphores) {
+                if (semaphore != VK_NULL_HANDLE)
+                    vkDestroySemaphore(device, semaphore, nullptr);
+            }
+            for (VkFence fence : replacement_fences) {
+                if (fence != VK_NULL_HANDLE)
+                    vkDestroyFence(device, fence, nullptr);
+            }
+            return false;
+        }
+        for (VkSemaphore semaphore : render_finished) {
+            if (semaphore != VK_NULL_HANDLE)
+                vkDestroySemaphore(device, semaphore, nullptr);
+        }
+        for (VkFence fence : present_fences) {
+            if (fence != VK_NULL_HANDLE) vkDestroyFence(device, fence, nullptr);
+        }
+        render_finished = std::move(replacement_semaphores);
+        present_fences = std::move(replacement_fences);
+        present_fence_pending.assign(swapchain_images.size(), false);
         return true;
     }
 
-    bool wait_for_present_completion(std::string& error) {
+    VkResult wait_for_present_completion(std::string& error) {
+        if (present_fences.size() != present_fence_pending.size()) {
+            error = "present completion tracking vectors are inconsistent";
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
         std::vector<VkFence> pending;
         for (size_t i = 0; i < present_fences.size(); ++i) {
-            if (present_fence_pending[i]) pending.push_back(present_fences[i]);
+            if (!present_fence_pending[i]) continue;
+            if (present_fences[i] == VK_NULL_HANDLE) {
+                error = "pending present completion fence is null";
+                return VK_ERROR_INITIALIZATION_FAILED;
+            }
+            pending.push_back(present_fences[i]);
         }
-        if (pending.empty()) return true;
-        return vk_ok(vkWaitForFences(device, static_cast<uint32_t>(pending.size()),
-                                     pending.data(), VK_TRUE,
-                                     std::numeric_limits<uint64_t>::max()),
-                     "vkWaitForFences(present completion)", error);
+        if (pending.empty()) return VK_SUCCESS;
+        const VkResult result = vkWaitForFences(
+            device, static_cast<uint32_t>(pending.size()), pending.data(), VK_TRUE,
+            std::numeric_limits<uint64_t>::max());
+        vk_ok(result, "vkWaitForFences(present completion)", error);
+        return result;
     }
 
     bool recreate_swapchain(std::string& error) {
+        swapchain_recreate_required = true;
         int width = 0;
         int height = 0;
         glfwGetFramebufferSize(window, &width, &height);
@@ -808,13 +915,16 @@ struct VulkanDevice::Impl {
             return false;
         }
         if (!vk_ok(vkDeviceWaitIdle(device), "vkDeviceWaitIdle", error)) {
-            return false;
+            return poison_device(error,
+                                 "swapchain recreation could not establish idle");
         }
-        if (!wait_for_present_completion(error)) return false;
-        if (!create_swapchain(swapchain, error) ||
-            !create_swapchain_sync(error)) {
-            return false;
-        }
+        if (wait_for_present_completion(error) != VK_SUCCESS)
+            return poison_device(
+                error, "swapchain recreation could not establish present completion");
+        if (!create_swapchain(swapchain, error)) return false;
+        if (!create_swapchain_sync(error))
+            return poison_device(
+                error, "replacement swapchain synchronization allocation failed");
         report_recreated = true;
         swapchain_recreate_required = false;
         acquired_suboptimal = false;
@@ -869,15 +979,11 @@ struct VulkanDevice::Impl {
     bool begin_frame(VulkanFrame& output, std::string& error) {
         error.clear();
         output = {};
+        if (!ensure_healthy(error)) return false;
         if (frame_active) {
             error = "begin_frame called while a frame is already active";
             return false;
         }
-        if (device_poisoned) {
-            error = poison_error;
-            return false;
-        }
-
         int framebuffer_width = 0;
         int framebuffer_height = 0;
         glfwGetFramebufferSize(window, &framebuffer_width, &framebuffer_height);
@@ -894,12 +1000,13 @@ struct VulkanDevice::Impl {
             desired_extent.height != swapchain_extent.height) {
             if (!recreate_swapchain(error)) return false;
         }
+        if (!ensure_frame_resources(error)) return false;
 
         FrameSlot& slot = frames[frame_slot];
         if (!vk_ok(vkWaitForFences(device, 1, &slot.fence, VK_TRUE,
                                    std::numeric_limits<uint64_t>::max()),
-                   "vkWaitForFences", error)) {
-            return false;
+                    "vkWaitForFences", error)) {
+            return poison_device(error, "frame fence wait failed");
         }
 
         uint32_t image_index = 0;
@@ -928,12 +1035,8 @@ struct VulkanDevice::Impl {
                        device, 1, &slot.acquire_fence, VK_TRUE,
                        std::numeric_limits<uint64_t>::max()),
                    "vkWaitForFences(acquire completion)", error)) {
-            device_poisoned = true;
-            poison_error = error +
-                           "; Vulkan device disabled because acquisition "
-                           "completion could not be established";
-            error = poison_error;
-            return false;
+            return poison_device(
+                error, "acquisition completion could not be established");
         }
         slot.acquire_fence_pending = false;
         acquired_suboptimal = acquire == VK_SUBOPTIMAL_KHR;
@@ -942,9 +1045,10 @@ struct VulkanDevice::Impl {
             if (!vk_ok(vkWaitForFences(
                            device, 1, &present_fences[image_index], VK_TRUE,
                            std::numeric_limits<uint64_t>::max()),
-                       "vkWaitForFences(previous present)", error)) {
+                        "vkWaitForFences(previous present)", error)) {
                 recover_unsubmitted_acquire(slot, image_index, error);
-                return false;
+                return poison_device(
+                    error, "previous present completion could not be established");
             }
             present_fence_pending[image_index] = false;
         }
@@ -1021,40 +1125,54 @@ struct VulkanDevice::Impl {
                      "vkReleaseSwapchainImagesEXT", error);
     }
 
-    void recover_unsubmitted_acquire(FrameSlot& slot, uint32_t image_index,
+    bool recover_unsubmitted_acquire(FrameSlot& slot, uint32_t image_index,
                                      std::string& error) {
+        bool recovered = true;
         std::string recovery_error;
         if (!release_acquired_image(image_index, recovery_error)) {
             append_recovery_error(error, recovery_error);
+            recovered = false;
         }
-        vkDestroySemaphore(device, slot.image_available, nullptr);
+        if (slot.image_available != VK_NULL_HANDLE)
+            vkDestroySemaphore(device, slot.image_available, nullptr);
         slot.image_available = VK_NULL_HANDLE;
         VkSemaphoreCreateInfo create{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
         recovery_error.clear();
         if (!vk_ok(vkCreateSemaphore(device, &create, nullptr,
                                      &slot.image_available),
-                   "vkCreateSemaphore(image available recovery)",
-                   recovery_error)) {
+                    "vkCreateSemaphore(image available recovery)",
+                    recovery_error)) {
             append_recovery_error(error, recovery_error);
+            recovered = false;
         }
         swapchain_recreate_required = true;
+        if (!recovered)
+            return poison_device(
+                error, "unsubmitted acquisition recovery failed");
+        return true;
     }
 
-    void recover_submitted_without_present(FrameSlot& slot,
+    bool recover_submitted_without_present(FrameSlot& slot,
                                            uint32_t image_index,
                                            std::string& error) {
         std::string recovery_error;
         if (!vk_ok(vkWaitForFences(device, 1, &slot.fence, VK_TRUE,
                                    std::numeric_limits<uint64_t>::max()),
-                   "vkWaitForFences(abandoned submission)", recovery_error)) {
+                    "vkWaitForFences(abandoned submission)", recovery_error)) {
             append_recovery_error(error, recovery_error);
-        } else {
-            recovery_error.clear();
-            if (!release_acquired_image(image_index, recovery_error)) {
-                append_recovery_error(error, recovery_error);
-            }
+            swapchain_recreate_required = true;
+            return poison_device(
+                error, "abandoned submission completion could not be established");
+        }
+        recovery_error.clear();
+        if (!release_acquired_image(image_index, recovery_error)) {
+            append_recovery_error(error, recovery_error);
+            swapchain_recreate_required = true;
+            return poison_device(error,
+                                 "submitted image release recovery failed");
         }
         swapchain_recreate_required = true;
+        return true;
     }
 
     bool restore_signaled_frame_fence(FrameSlot& slot, std::string& error) {
@@ -1066,13 +1184,14 @@ struct VulkanDevice::Impl {
         if (!vk_ok(vkCreateFence(device, &create, nullptr, &slot.fence),
                    "vkCreateFence(frame recovery)", fence_error)) {
             append_recovery_error(error, fence_error);
-            return false;
+            return poison_device(error, "frame fence restoration failed");
         }
         return true;
     }
 
     bool end_frame(const VulkanFrame& input, std::string& error) {
         error.clear();
+        if (!ensure_healthy(error)) return false;
         if (!frame_active) {
             error = "end_frame called without an active frame";
             return false;
@@ -1083,6 +1202,7 @@ struct VulkanDevice::Impl {
             error = "end_frame received a frame other than the active frame";
             return false;
         }
+        if (!ensure_frame_resources(error)) return false;
         FrameSlot& slot = frames[frame_slot];
         VkImageMemoryBarrier2 to_present{
             VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
@@ -1139,7 +1259,11 @@ struct VulkanDevice::Impl {
         }
         if (!vk_ok(vkQueueSubmit2(graphics_queue, 1, &submit, slot.fence),
                     "vkQueueSubmit2", error)) {
-            restore_signaled_frame_fence(slot, error);
+            if (!restore_signaled_frame_fence(slot, error)) {
+                recover_unsubmitted_acquire(slot, input.image_index, error);
+                abandon_active_frame();
+                return false;
+            }
             recover_unsubmitted_acquire(slot, input.image_index, error);
             abandon_active_frame();
             return false;
@@ -1165,9 +1289,9 @@ struct VulkanDevice::Impl {
         present.pImageIndices = &input.image_index;
         const VkResult present_result =
             vkQueuePresentKHR(graphics_queue, &present);
-        if (present_result == VK_SUCCESS || present_result == VK_SUBOPTIMAL_KHR ||
-            present_result == VK_ERROR_OUT_OF_DATE_KHR ||
-            present_result == VK_ERROR_SURFACE_LOST_KHR) {
+        const PresentResultState present_state =
+            present_result_state(present_result);
+        if (present_state == PresentResultState::completed_or_trackable) {
             present_fence_pending[input.image_index] = true;
         }
         swapchain_image_initialized[input.image_index] = true;
@@ -1180,9 +1304,16 @@ struct VulkanDevice::Impl {
             return recreate_swapchain(error);
         }
         acquired_suboptimal = false;
-        if (present_result == VK_ERROR_OUT_OF_HOST_MEMORY ||
-            present_result == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+        if (present_state == PresentResultState::unchanged) {
+            vk_ok(present_result, "vkQueuePresentKHR", error);
             recover_submitted_without_present(slot, input.image_index, error);
+            return false;
+        }
+        if (present_state == PresentResultState::ambiguous) {
+            vk_ok(present_result, "vkQueuePresentKHR", error);
+            wsi_completion_ambiguous = true;
+            return poison_device(
+                error, "presentation result left resource ownership ambiguous");
         }
         return vk_ok(present_result, "vkQueuePresentKHR", error);
     }
@@ -1190,30 +1321,66 @@ struct VulkanDevice::Impl {
     void cleanup() {
         if (device != VK_NULL_HANDLE) {
             const VkResult idle = vkDeviceWaitIdle(device);
-            if (idle != VK_SUCCESS) {
+            bool device_lost = idle == VK_ERROR_DEVICE_LOST;
+            if (!destruction_safe_after_wait(idle)) {
                 std::fprintf(stderr,
-                             "Vulkan cleanup stopped after %s; preserving "
-                             "potentially in-use device children\n",
+                             "Vulkan cleanup intentionally preserving the "
+                             "logical device, WSI resources, and their parents "
+                             "after %s; completion is unproven\n",
                              result_name(idle));
                 return;
             }
+            if (wsi_completion_ambiguous && !device_lost) {
+                std::fprintf(
+                    stderr,
+                    "Vulkan cleanup intentionally preserving the logical "
+                    "device, ambiguous presentation resources, and their "
+                    "parents; vkQueuePresentKHR completion is unproven\n");
+                return;
+            }
             for (FrameSlot& frame : frames) {
+                if (device_lost) break;
                 if (frame.acquire_fence_pending) {
                     const VkResult waited = vkWaitForFences(
                         device, 1, &frame.acquire_fence, VK_TRUE,
                         std::numeric_limits<uint64_t>::max());
+                    if (waited == VK_ERROR_DEVICE_LOST) {
+                        device_lost = true;
+                        break;
+                    }
                     if (waited != VK_SUCCESS) {
                         std::fprintf(stderr,
-                                     "Vulkan cleanup stopped after %s; "
-                                     "preserving pending acquisition objects\n",
+                                     "Vulkan cleanup intentionally preserving "
+                                     "the logical device, WSI resources, and "
+                                     "their parents after %s while waiting for "
+                                     "acquisition; completion is unproven\n",
                                      result_name(waited));
                         return;
                     }
                     frame.acquire_fence_pending = false;
                 }
             }
-            std::string ignored_error;
-            wait_for_present_completion(ignored_error);
+            if (!device_lost) {
+                std::string wait_error;
+                const VkResult waited = wait_for_present_completion(wait_error);
+                if (waited == VK_ERROR_DEVICE_LOST) {
+                    device_lost = true;
+                } else if (waited != VK_SUCCESS) {
+                    std::fprintf(
+                        stderr,
+                        "Vulkan cleanup intentionally preserving the logical "
+                        "device, present fences/semaphores, swapchain, and their "
+                        "parents after present completion failed: %s\n",
+                        wait_error.empty() ? result_name(waited)
+                                           : wait_error.c_str());
+                    return;
+                }
+            }
+            if (device_lost) {
+                std::fprintf(stderr,
+                             "Vulkan device was lost; destroying device objects "
+                             "without further completion waits\n");
+            }
         }
         for (FrameSlot& frame : frames) {
             if (frame.fence != VK_NULL_HANDLE)
@@ -1275,7 +1442,18 @@ bool VulkanDevice::end_frame(const VulkanFrame& frame, std::string& error) {
 }
 
 void VulkanDevice::wait_idle() {
-    if (impl_->device != VK_NULL_HANDLE) vkDeviceWaitIdle(impl_->device);
+    if (impl_->device == VK_NULL_HANDLE) return;
+    if (impl_->device_poisoned) {
+        std::fprintf(stderr, "%s\n", impl_->poison_error.c_str());
+        return;
+    }
+    const VkResult result = vkDeviceWaitIdle(impl_->device);
+    if (result != VK_SUCCESS) {
+        std::string error;
+        vk_ok(result, "vkDeviceWaitIdle", error);
+        impl_->poison_device(error, "wait_idle failed");
+        std::fprintf(stderr, "%s\n", error.c_str());
+    }
 }
 
 VkInstance VulkanDevice::instance() const { return impl_->instance; }

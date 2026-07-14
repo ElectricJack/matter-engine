@@ -46,35 +46,51 @@ int main() {
             if (!ended) break;
         }
 
+        int original_width = 0;
+        int original_height = 0;
+        glfwGetFramebufferSize(window, &original_width, &original_height);
         glfwSetWindowSize(window, 480, 270);
         int resized_width = 0;
         int resized_height = 0;
-        for (int i = 0; i < 50; ++i) {
+        bool framebuffer_changed = false;
+        for (int i = 0; i < 200; ++i) {
             glfwPollEvents();
             glfwGetFramebufferSize(window, &resized_width, &resized_height);
-            if (resized_width != 320 || resized_height != 200) break;
+            framebuffer_changed = resized_width != original_width ||
+                                  resized_height != original_height;
+            if (framebuffer_changed) break;
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
-        matter::VulkanFrame resized{};
-        const bool began_resized = vulkan->begin_frame(resized, error);
-        CHECK(began_resized,
-              error.empty() ? "begin resized frame" : error.c_str());
-        if (began_resized) {
-            CHECK(resized.swapchain_recreated,
-                  "resize recreates the swapchain once");
-            CHECK(vulkan->end_frame(resized, error),
-                  error.empty() ? "end resized frame" : error.c_str());
-        }
+        CHECK(framebuffer_changed,
+              "framebuffer size changes before resize recreation assertion");
+        if (framebuffer_changed) {
+            matter::VulkanFrame resized{};
+            const bool began_resized = vulkan->begin_frame(resized, error);
+            CHECK(began_resized,
+                  error.empty() ? "begin resized frame" : error.c_str());
+            if (began_resized) {
+                CHECK(resized.swapchain_recreated,
+                      "resize recreates the swapchain once");
+                const bool ended_resized = vulkan->end_frame(resized, error);
+                CHECK(ended_resized,
+                      error.empty() ? "end resized frame" : error.c_str());
 
-        matter::VulkanFrame stable{};
-        const bool began_stable = vulkan->begin_frame(stable, error);
-        CHECK(began_stable,
-              error.empty() ? "begin stable resized frame" : error.c_str());
-        if (began_stable) {
-            CHECK(!stable.swapchain_recreated,
-                  "stable framebuffer does not recreate perpetually");
-            CHECK(vulkan->end_frame(stable, error),
-                  error.empty() ? "end stable resized frame" : error.c_str());
+                if (ended_resized) {
+                    matter::VulkanFrame stable{};
+                    const bool began_stable = vulkan->begin_frame(stable, error);
+                    CHECK(
+                        began_stable,
+                        error.empty() ? "begin stable resized frame"
+                                      : error.c_str());
+                    if (began_stable) {
+                        CHECK(!stable.swapchain_recreated,
+                              "stable framebuffer does not recreate perpetually");
+                        CHECK(vulkan->end_frame(stable, error),
+                              error.empty() ? "end stable resized frame"
+                                            : error.c_str());
+                    }
+                }
+            }
         }
 
         glfwShowWindow(window);
