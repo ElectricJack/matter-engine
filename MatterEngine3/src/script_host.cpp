@@ -1310,7 +1310,9 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                 MeshIndexed done = modifier_apply::apply_stack(std::move(welded),
                                                                regions[ri].stack, rlabel);
                 if (done.positions.empty() || done.indices.empty()) continue;
-                TriEx proto{}; if (!region_e[ri].empty()) proto = region_e[ri][0];
+                TriEx proto{};
+                proto.tint = make_float4(1.0f, 1.0f, 1.0f, 0.0f);
+                if (!region_e[ri].empty()) proto = region_e[ri][0];
                 ensure_triex(done, proto);
                 std::vector<Tri> tris; std::vector<TriEx> triex;
                 to_tri(done, tris, triex);
