@@ -140,6 +140,14 @@ struct VkSceneLighting {
     float pad1 = 0.0f;
 };
 
+struct VkSceneUploadCounters {
+    uint64_t vertex_uploads = 0;
+    uint64_t cluster_uploads = 0;
+    uint64_t instance_uploads = 0;
+    uint64_t command_uploads = 0;
+    uint64_t command_layout_rebuilds = 0;
+};
+
 class VkSceneRenderer {
 public:
     struct RtInstance {
@@ -157,6 +165,13 @@ public:
     void release_part(uint64_t part_hash);
     bool update_instances(const std::vector<VkSceneInstance>& instances,
                           std::string& error);
+    bool prepare_frame(const matter::VulkanFrame& frame,
+                       const FrameMatrices& matrices,
+                       matter::Float3 camera_eye, float pixel_budget,
+                       std::string& error);
+    VkSceneUploadCounters upload_counters() const noexcept {
+        return upload_counters_;
+    }
     bool dispatch_culling(const FrameMatrices& frame, matter::Float3 camera_eye,
                           float pixel_budget, std::string& error);
     bool cull_stats(VkCullStats& stats, std::string& error);
@@ -194,10 +209,14 @@ public:
 #endif
 
     VkBuffer indirect_buffer() const {
-        return poisoned() ? VK_NULL_HANDLE : commands_.buffer;
+        return poisoned() || frames_.empty()
+                   ? VK_NULL_HANDLE
+                   : frames_[active_frame_index_].commands.buffer;
     }
     VkBuffer draw_transform_buffer() const {
-        return poisoned() ? VK_NULL_HANDLE : draw_transforms_.buffer;
+        return poisoned() || frames_.empty()
+                   ? VK_NULL_HANDLE
+                   : frames_[active_frame_index_].draw_transforms.buffer;
     }
     uint32_t draw_command_count() const {
         return poisoned() ? 0 : uploaded_command_count_;
@@ -209,10 +228,14 @@ public:
         return poisoned() ? 0 : clusters_.size;
     }
     VkDeviceSize command_buffer_size() const {
-        return poisoned() ? 0 : commands_.size;
+        return poisoned() || frames_.empty()
+                   ? 0
+                   : frames_[active_frame_index_].commands.size;
     }
     VkDeviceSize draw_transform_buffer_size() const {
-        return poisoned() ? 0 : draw_transforms_.size;
+        return poisoned() || frames_.empty()
+                   ? 0
+                   : frames_[active_frame_index_].draw_transforms.size;
     }
     uint32_t raster_vertex_count() const {
         return poisoned() ? 0
@@ -268,6 +291,19 @@ private:
         uint32_t max_draw_indirect_count = 0;
     };
 
+    struct FrameResources {
+        matter::VkBufferResource frame_constants;
+        matter::VkBufferResource instances;
+        matter::VkBufferResource commands;
+        matter::VkBufferResource draw_transforms;
+        matter::VkBufferResource stats;
+        VkDescriptorSet descriptor_sets[2]{};
+        uint64_t static_generation = 0;
+        uint64_t instance_generation = 0;
+        uint64_t command_generation = 0;
+        bool stats_valid = false;
+    };
+
     bool create_pipeline(std::string& error);
     bool create_raster_pipelines(std::string& error);
     bool ensure_raster_targets(uint32_t width, uint32_t height,
@@ -276,11 +312,19 @@ private:
                               std::string& error, bool* replaced = nullptr);
     bool ensure_buffer(matter::VkBufferResource& buffer,
                        VkDeviceSize required_size, VkBufferUsageFlags usage,
-                       uint32_t set_index, uint32_t binding,
                        std::string& error, bool* replaced = nullptr);
-    void update_descriptor(uint32_t set_index, uint32_t binding,
+    void update_descriptor(VkDescriptorSet set, uint32_t binding,
+                           VkDescriptorType type,
                            const matter::VkBufferResource& buffer);
-    bool upload_scene_buffers(std::string& error);
+    bool ensure_frame_resources(uint32_t frame_slot_count,
+                                std::string& error);
+    void update_frame_descriptors(FrameResources& frame);
+    bool upload_scene_buffers(FrameResources& frame, std::string& error);
+    bool upload_frame_constants(FrameResources& frame,
+                                const FrameMatrices& matrices,
+                                matter::Float3 camera_eye,
+                                float pixel_budget, std::string& error);
+    void note_command_layout_rebuild();
     bool rebuild_command_template(std::string& error);
     bool load_device_limits(std::string& error);
     bool fail_if_poisoned(std::string& error) const;
@@ -300,16 +344,12 @@ private:
     VkDescriptorSet composite_descriptor_set_ = VK_NULL_HANDLE;
     VkSampler composite_sampler_ = VK_NULL_HANDLE;
     VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
-    VkDescriptorSet descriptor_sets_[2]{};
     bool initialized_ = false;
 
-    matter::VkBufferResource frame_constants_;
     matter::VkBufferResource clusters_;
-    matter::VkBufferResource instances_;
-    matter::VkBufferResource commands_;
-    matter::VkBufferResource draw_transforms_;
-    matter::VkBufferResource stats_;
     matter::VkBufferResource vertices_;
+    std::vector<FrameResources> frames_;
+    uint32_t active_frame_index_ = 0;
 
     matter::VkImageResource albedo_;
     matter::VkImageResource normal_;
@@ -343,6 +383,11 @@ private:
     DeviceLimits limits_{};
     DeviceLimits physical_limits_{};
     VkSceneLighting lighting_{};
+    uint64_t instance_generation_ = 1;
+    uint64_t static_generation_ = 1;
+    uint64_t command_generation_ = 1;
+    bool static_upload_dirty_ = true;
+    VkSceneUploadCounters upload_counters_{};
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     DeviceLimits test_limits_{};
     bool use_test_limits_ = false;

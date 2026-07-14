@@ -751,6 +751,88 @@ CullResult run_vk_cull(matter::VulkanDevice& vulkan,
     return result;
 }
 
+void run_frame_upload_tests(matter::VulkanDevice& vulkan) {
+    std::string error;
+    viewer::VkSceneRenderer renderer(vulkan);
+    const matter::Mat4f identity = identity_matrix();
+    const viewer::VkScenePart first = known_raster_triangle(970);
+    const viewer::VkScenePart second = known_raster_triangle(971);
+    CHECK(renderer.ensure_part(first, error) >= 0,
+          error.empty() ? "ensure persistent Vulkan part" : error.c_str());
+    std::vector<viewer::VkSceneInstance> instances{{970, identity},
+                                                    {970, identity}};
+    CHECK(renderer.update_instances(instances, error),
+          error.empty() ? "upload persistent Vulkan instances" : error.c_str());
+
+    const FixedCullScene scene = make_fixed_cull_scene();
+    const auto prepare = [&](const viewer::FrameMatrices& matrices) {
+        matter::VulkanFrame frame{};
+        if (!vulkan.begin_frame(frame, error)) return false;
+        const bool prepared = renderer.prepare_frame(frame, matrices, scene.eye,
+                                                     1.0f, error);
+        const bool ended = vulkan.end_frame(frame, error);
+        return prepared && ended;
+    };
+
+    CHECK(prepare(scene.frame),
+          error.empty() ? "prepare initial persistent Vulkan frame"
+                        : error.c_str());
+    const viewer::VkSceneUploadCounters warm = renderer.upload_counters();
+
+    // Warm the second slot. Reusing the first slot below must leave all
+    // scene uploads unchanged for identical CPU scene data.
+    CHECK(renderer.update_instances(instances, error) && prepare(scene.frame),
+          error.empty() ? "prepare second persistent Vulkan slot"
+                        : error.c_str());
+    CHECK(renderer.update_instances(instances, error) && prepare(scene.frame),
+          error.empty() ? "prepare stable Vulkan frame" : error.c_str());
+    const viewer::VkSceneUploadCounters stable = renderer.upload_counters();
+    CHECK(stable.vertex_uploads == warm.vertex_uploads,
+          "stable frame does not upload vertices");
+    CHECK(stable.cluster_uploads == warm.cluster_uploads,
+          "stable frame does not upload clusters");
+    CHECK(stable.instance_uploads == warm.instance_uploads + 1,
+          "second slot uploads instances once before stable slot reuse");
+    CHECK(stable.command_layout_rebuilds == warm.command_layout_rebuilds,
+          "stable frame does not rebuild command layout");
+
+    instances[1].object_to_world.m[12] = 0.25f;
+    CHECK(renderer.update_instances(instances, error) && prepare(scene.frame),
+          error.empty() ? "prepare transformed Vulkan frame" : error.c_str());
+    const viewer::VkSceneUploadCounters transformed = renderer.upload_counters();
+    CHECK(transformed.instance_uploads == stable.instance_uploads + 1,
+          "changed transform uploads one instance generation");
+    CHECK(transformed.vertex_uploads == stable.vertex_uploads &&
+              transformed.cluster_uploads == stable.cluster_uploads &&
+              transformed.command_layout_rebuilds ==
+                  stable.command_layout_rebuilds,
+          "changed transform leaves static scene and command layout intact");
+
+    CHECK(renderer.ensure_part(second, error) >= 0 && prepare(scene.frame),
+          error.empty() ? "prepare Vulkan frame after static scene change"
+                        : error.c_str());
+    const viewer::VkSceneUploadCounters static_changed =
+        renderer.upload_counters();
+    CHECK(static_changed.vertex_uploads == transformed.vertex_uploads + 1 &&
+              static_changed.cluster_uploads == transformed.cluster_uploads + 1 &&
+              static_changed.command_layout_rebuilds ==
+                  transformed.command_layout_rebuilds + 1,
+          "new part uploads static buffers and rebuilds command layout once");
+
+    viewer::FrameMatrices moved_camera = scene.frame;
+    moved_camera.world_to_clip.m[0] *= 0.95f;
+    CHECK(prepare(moved_camera),
+          error.empty() ? "prepare camera-only Vulkan frame" : error.c_str());
+    const viewer::VkSceneUploadCounters camera_changed =
+        renderer.upload_counters();
+    CHECK(camera_changed.instance_uploads == static_changed.instance_uploads &&
+              camera_changed.vertex_uploads == static_changed.vertex_uploads &&
+              camera_changed.cluster_uploads == static_changed.cluster_uploads &&
+              camera_changed.command_layout_rebuilds ==
+                  static_changed.command_layout_rebuilds,
+          "camera-only frame leaves scene uploads and command layout intact");
+}
+
 void run_cull_parity(matter::VulkanDevice& vulkan) {
     const FixedCullScene scene = make_fixed_cull_scene();
     const CullResult cpu = run_cpu_cull(scene);
@@ -1440,6 +1522,7 @@ int main() {
             return check_summary();
         }
         if (smoke_mode && std::string(smoke_mode) == "cull") {
+            run_frame_upload_tests(*vulkan);
             run_vk_scene_checked_size_tests(*vulkan);
             run_cull_parity(*vulkan);
             run_cull_region_and_lifecycle_tests(*vulkan);
@@ -1514,6 +1597,7 @@ int main() {
         }
 
         uint32_t retained_probe_destroyed = 0;
+        run_frame_upload_tests(*vulkan);
         for (int i = 0; i < 3; ++i) {
             matter::VulkanFrame frame{};
             const bool began = vulkan->begin_frame(frame, error);

@@ -436,7 +436,8 @@ void VkSceneRenderer::destroy_pipeline() {
     composite_sampler_ = VK_NULL_HANDLE;
     pipeline_layout_ = VK_NULL_HANDLE;
     descriptor_pool_ = VK_NULL_HANDLE;
-    descriptor_sets_[0] = descriptor_sets_[1] = VK_NULL_HANDLE;
+    frames_.clear();
+    active_frame_index_ = 0;
     initialized_ = false;
 }
 
@@ -509,25 +510,6 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     if (result != VK_SUCCESS)
         return fail_vk("vkCreateComputePipelines(cull)", result, error);
 
-    const VkDescriptorPoolSize pool_sizes[] = {
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5}};
-    VkDescriptorPoolCreateInfo pool{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool.maxSets = 2;
-    pool.poolSizeCount = 2;
-    pool.pPoolSizes = pool_sizes;
-    result = vkCreateDescriptorPool(device, &pool, nullptr, &descriptor_pool_);
-    if (result != VK_SUCCESS)
-        return fail_vk("vkCreateDescriptorPool(cull)", result, error);
-    VkDescriptorSetAllocateInfo allocate{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    allocate.descriptorPool = descriptor_pool_;
-    allocate.descriptorSetCount = 2;
-    allocate.pSetLayouts = set_layouts_;
-    result = vkAllocateDescriptorSets(device, &allocate, descriptor_sets_);
-    if (result != VK_SUCCESS)
-        return fail_vk("vkAllocateDescriptorSets(cull)", result, error);
     return create_raster_pipelines(error);
 }
 
@@ -760,28 +742,27 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
 }
 
 void VkSceneRenderer::update_descriptor(
-    uint32_t set_index, uint32_t binding,
+    VkDescriptorSet set, uint32_t binding, VkDescriptorType type,
     const matter::VkBufferResource& buffer) {
     VkDescriptorBufferInfo info{buffer.buffer, 0, buffer.size};
     VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    write.dstSet = descriptor_sets_[set_index];
+    write.dstSet = set;
     write.dstBinding = binding;
     write.descriptorCount = 1;
-    write.descriptorType = set_index == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
-                                          : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    write.descriptorType = type;
     write.pBufferInfo = &info;
     vkUpdateDescriptorSets(vulkan_->device(), 1, &write, 0, nullptr);
 }
 
 bool VkSceneRenderer::ensure_buffer(matter::VkBufferResource& buffer,
-                                    VkDeviceSize required_size,
-                                    VkBufferUsageFlags usage,
-                                    uint32_t set_index, uint32_t binding,
-                                    std::string& error, bool* replaced) {
+                                     VkDeviceSize required_size,
+                                     VkBufferUsageFlags usage,
+                                     std::string& error, bool* replaced) {
     if (replaced) *replaced = false;
+    const bool uniform = (usage & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) != 0;
     const VkDeviceSize descriptor_limit =
-        set_index == 0 ? limits_.max_uniform_buffer_range
-                       : limits_.max_storage_buffer_range;
+        uniform ? limits_.max_uniform_buffer_range
+                : limits_.max_storage_buffer_range;
     const VkDeviceSize limit =
         std::min(descriptor_limit, limits_.max_buffer_size);
     required_size = std::max<VkDeviceSize>(required_size, 1);
@@ -789,7 +770,7 @@ bool VkSceneRenderer::ensure_buffer(matter::VkBufferResource& buffer,
     VkDeviceSize capacity = 0;
     if (!vk_scene_detail::checked_grown_capacity(
             buffer.size, required_size, limit, capacity,
-            set_index == 0 ? "uniform buffer range" : "storage buffer range",
+            uniform ? "uniform buffer range" : "storage buffer range",
             error)) {
         return false;
     }
@@ -805,7 +786,6 @@ bool VkSceneRenderer::ensure_buffer(matter::VkBufferResource& buffer,
         return false;
     }
     buffer = std::move(replacement);
-    update_descriptor(set_index, binding, buffer);
     if (replaced) *replaced = true;
     return true;
 }
@@ -837,6 +817,92 @@ bool VkSceneRenderer::ensure_vertex_buffer(VkDeviceSize required_size,
     vertices_ = std::move(replacement);
     if (replaced) *replaced = true;
     return true;
+}
+
+bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
+                                             std::string& error) {
+    if (frame_slot_count == 0) {
+        error = "Vulkan frame reports zero frame slots";
+        return false;
+    }
+    if (frames_.size() >= frame_slot_count) return true;
+    if (descriptor_pool_ == VK_NULL_HANDLE) {
+        const VkDescriptorPoolSize pool_sizes[] = {
+            {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count},
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 5}};
+        VkDescriptorPoolCreateInfo pool{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        pool.maxSets = frame_slot_count * 2;
+        pool.poolSizeCount = 2;
+        pool.pPoolSizes = pool_sizes;
+        const VkResult result = vkCreateDescriptorPool(
+            vulkan_->device(), &pool, nullptr, &descriptor_pool_);
+        if (result != VK_SUCCESS)
+            return fail_vk("vkCreateDescriptorPool(cull)", result, error);
+    }
+    const size_t old_size = frames_.size();
+    frames_.resize(frame_slot_count);
+    std::vector<VkDescriptorSetLayout> layouts;
+    layouts.reserve((frame_slot_count - old_size) * 2);
+    for (size_t index = old_size; index < frame_slot_count; ++index) {
+        layouts.push_back(set_layouts_[0]);
+        layouts.push_back(set_layouts_[1]);
+    }
+    std::vector<VkDescriptorSet> sets(layouts.size());
+    VkDescriptorSetAllocateInfo allocate{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    allocate.descriptorPool = descriptor_pool_;
+    allocate.descriptorSetCount = static_cast<uint32_t>(sets.size());
+    allocate.pSetLayouts = layouts.data();
+    const VkResult result =
+        vkAllocateDescriptorSets(vulkan_->device(), &allocate, sets.data());
+    if (result != VK_SUCCESS) {
+        frames_.resize(old_size);
+        return fail_vk("vkAllocateDescriptorSets(cull)", result, error);
+    }
+    for (size_t index = old_size; index < frame_slot_count; ++index) {
+        FrameResources& frame = frames_[index];
+        frame.descriptor_sets[0] = sets[(index - old_size) * 2];
+        frame.descriptor_sets[1] = sets[(index - old_size) * 2 + 1];
+        if (!ensure_buffer(frame.frame_constants, sizeof(FrameConstants),
+                           VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, error) ||
+            !ensure_buffer(frame.instances, sizeof(GpuInstance),
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error) ||
+            !ensure_buffer(frame.commands, sizeof(DrawCommand),
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                               VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                           error) ||
+            !ensure_buffer(frame.draw_transforms, sizeof(GpuMat4),
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error) ||
+            !ensure_buffer(frame.stats, sizeof(VkCullStats),
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error)) {
+            return false;
+        }
+        update_frame_descriptors(frame);
+    }
+    return true;
+}
+
+void VkSceneRenderer::update_frame_descriptors(FrameResources& frame) {
+    update_descriptor(frame.descriptor_sets[0], 0,
+                      VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                      frame.frame_constants);
+    update_descriptor(frame.descriptor_sets[1], 0,
+                      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, clusters_);
+    update_descriptor(frame.descriptor_sets[1], 1,
+                      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.instances);
+    update_descriptor(frame.descriptor_sets[1], 2,
+                      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.commands);
+    update_descriptor(frame.descriptor_sets[1], 3,
+                      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                      frame.draw_transforms);
+    update_descriptor(frame.descriptor_sets[1], 4,
+                      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.stats);
+}
+
+void VkSceneRenderer::note_command_layout_rebuild() {
+    ++command_generation_;
+    ++upload_counters_.command_layout_rebuilds;
 }
 
 bool VkSceneRenderer::fail_if_poisoned(std::string& error) const {
@@ -973,6 +1039,7 @@ bool VkSceneRenderer::set_test_command_first_instance(
         previous = offset;
     }
     command_template_ = std::move(candidate);
+    ++command_generation_;
     return true;
 }
 
@@ -994,30 +1061,19 @@ bool VkSceneRenderer::init(std::string& error) {
         destroy_pipeline();
         return false;
     }
+    if (sizeof(FrameConstants) >
+        std::min(limits_.max_uniform_buffer_range, limits_.max_buffer_size)) {
+        error = "uniform buffer range exceeds Vulkan device limit";
+        destroy_pipeline();
+        return false;
+    }
     initialized_ =
-        ensure_buffer(frame_constants_, sizeof(FrameConstants),
-                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 0, 0, error) &&
         ensure_buffer(clusters_, sizeof(GpuCluster),
-                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 1, 0, error) &&
-        ensure_buffer(instances_, sizeof(GpuInstance),
-                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 1, 1, error) &&
-        ensure_buffer(commands_, sizeof(DrawCommand),
-                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                          VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-                      1, 2, error) &&
-        ensure_buffer(draw_transforms_, sizeof(GpuMat4),
-                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 1, 3, error) &&
-        ensure_buffer(stats_, sizeof(VkCullStats),
-                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 1, 4, error) &&
+                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error) &&
         ensure_vertex_buffer(sizeof(VkRasterVertex), error);
     if (!initialized_) {
         destroy_pipeline();
-        frame_constants_.reset();
         clusters_.reset();
-        instances_.reset();
-        commands_.reset();
-        draw_transforms_.reset();
-        stats_.reset();
         vertices_.reset();
         albedo_.reset();
         normal_.reset();
@@ -1126,6 +1182,9 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
         rebuild_command_template(ignored_error);
         return -1;
     }
+    ++static_generation_;
+    static_upload_dirty_ = true;
+    note_command_layout_rebuild();
     return slot;
 }
 
@@ -1222,6 +1281,11 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
         raster_command_enabled_.clear();
         raster_draw_command_count_ = 0;
         draw_transform_slots_ = 0;
+    } else {
+        ++static_generation_;
+        ++instance_generation_;
+        static_upload_dirty_ = true;
+        note_command_layout_rebuild();
     }
 }
 
@@ -1235,18 +1299,13 @@ bool VkSceneRenderer::update_instances(
         return false;
     }
     (void)public_count;
-    auto old_instances = std::move(instance_staging_);
-    auto old_slots = std::move(instance_part_slots_);
-    auto old_rt = std::move(rt_instances_);
-    auto old_commands = std::move(command_template_);
-    auto old_raster_enabled = std::move(raster_command_enabled_);
-    const uint32_t old_raster_count = raster_draw_command_count_;
-    const uint32_t old_max_clusters = max_clusters_per_instance_;
-    const uint32_t old_transform_slots = draw_transform_slots_;
-    instance_staging_.clear();
-    instance_part_slots_.clear();
-    rt_instances_.clear();
-    max_clusters_per_instance_ = 0;
+    std::vector<GpuInstance> candidate_instances;
+    std::vector<uint32_t> candidate_slots;
+    std::vector<RtInstance> candidate_rt;
+    candidate_instances.reserve(instances.size());
+    candidate_slots.reserve(instances.size());
+    candidate_rt.reserve(instances.size());
+    uint32_t candidate_max_clusters = 0;
     for (const VkSceneInstance& source : instances) {
         const auto found = slot_of_.find(source.part_hash);
         if (found == slot_of_.end()) continue;
@@ -1256,16 +1315,39 @@ bool VkSceneRenderer::update_instances(
         instance.part_slot = static_cast<uint32_t>(found->second);
         instance.cluster_start = part.cluster_start;
         instance.cluster_count = part.cluster_count;
-        instance_staging_.push_back(instance);
-        instance_part_slots_.push_back(instance.part_slot);
-        max_clusters_per_instance_ =
-            std::max(max_clusters_per_instance_, part.cluster_count);
+        candidate_instances.push_back(instance);
+        candidate_slots.push_back(instance.part_slot);
+        candidate_max_clusters =
+            std::max(candidate_max_clusters, part.cluster_count);
         RtInstance rt{};
         rt.part_hash = source.part_hash;
         std::memcpy(rt.transform, source.object_to_world.m, sizeof(rt.transform));
-        rt_instances_.push_back(rt);
+        candidate_rt.push_back(rt);
     }
-    if (!rebuild_command_template(error)) {
+    const bool identical =
+        candidate_instances.size() == instance_staging_.size() &&
+        candidate_slots == instance_part_slots_ &&
+        std::equal(candidate_instances.begin(), candidate_instances.end(),
+                   instance_staging_.begin(),
+                   [](const GpuInstance& left, const GpuInstance& right) {
+                       return std::memcmp(&left, &right, sizeof(left)) == 0;
+                   });
+    if (identical) return true;
+
+    const bool layout_changed = candidate_slots != instance_part_slots_;
+    auto old_instances = std::move(instance_staging_);
+    auto old_slots = std::move(instance_part_slots_);
+    auto old_rt = std::move(rt_instances_);
+    auto old_commands = std::move(command_template_);
+    auto old_raster_enabled = std::move(raster_command_enabled_);
+    const uint32_t old_raster_count = raster_draw_command_count_;
+    const uint32_t old_max_clusters = max_clusters_per_instance_;
+    const uint32_t old_transform_slots = draw_transform_slots_;
+    instance_staging_ = std::move(candidate_instances);
+    instance_part_slots_ = std::move(candidate_slots);
+    rt_instances_ = std::move(candidate_rt);
+    max_clusters_per_instance_ = candidate_max_clusters;
+    if (layout_changed && !rebuild_command_template(error)) {
         instance_staging_ = std::move(old_instances);
         instance_part_slots_ = std::move(old_slots);
         rt_instances_ = std::move(old_rt);
@@ -1276,6 +1358,8 @@ bool VkSceneRenderer::update_instances(
         draw_transform_slots_ = old_transform_slots;
         return false;
     }
+    ++instance_generation_;
+    if (layout_changed) note_command_layout_rebuild();
     return true;
 }
 
@@ -1373,7 +1457,8 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
     return true;
 }
 
-bool VkSceneRenderer::upload_scene_buffers(std::string& error) {
+bool VkSceneRenderer::upload_scene_buffers(FrameResources& frame,
+                                           std::string& error) {
     VkDeviceSize cluster_bytes = 0;
     VkDeviceSize instance_bytes = 0;
     VkDeviceSize command_bytes = 0;
@@ -1419,54 +1504,19 @@ bool VkSceneRenderer::upload_scene_buffers(std::string& error) {
         error = "vertex buffer exceeds Vulkan maxBufferSize";
         return false;
     }
-    std::vector<RtInstance> candidate_rt_instances = rt_instances_;
-    std::vector<uint8_t> candidate_raster_commands =
-        raster_command_enabled_;
-    const uint32_t candidate_raster_draw_count =
-        raster_draw_command_count_;
-    const uint32_t candidate_cluster_count =
-        static_cast<uint32_t>(cluster_staging_.size());
-    bool gpu_mutated = false;
     uint32_t replacements = 0;
-    const auto ensure_scene_buffer = [&](matter::VkBufferResource& buffer,
-                                         VkDeviceSize size,
-                                         VkBufferUsageFlags usage,
-                                         uint32_t binding) {
+    uint32_t uploads = 0;
+    const auto allow_replacement = [&] {
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
         if (replacements == test_fail_after_replacements_) {
             error = "forced scene buffer replacement failure";
-            return gpu_mutated ? poison(error) : false;
+            return replacements == 0 ? false : poison(error);
         }
 #endif
-        bool replaced = false;
-        if (!ensure_buffer(buffer, size, usage, 1, binding, error, &replaced))
-            return gpu_mutated ? poison(error) : false;
-        if (replaced) {
-            gpu_mutated = true;
-            ++replacements;
-        }
         return true;
     };
-    if (!ensure_scene_buffer(clusters_, cluster_bytes,
-                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 0) ||
-        !ensure_scene_buffer(instances_, instance_bytes,
-                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 1) ||
-        !ensure_scene_buffer(commands_, command_bytes,
-                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                                 VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-                             2) ||
-        !ensure_scene_buffer(draw_transforms_, transform_bytes,
-                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, 3)) {
-        return false;
-    }
-    bool vertex_replaced = false;
-    if (!ensure_vertex_buffer(vertex_bytes, error, &vertex_replaced))
-        return gpu_mutated ? poison(error) : false;
-    if (vertex_replaced) gpu_mutated = true;
-    const VkCullStats zero_stats{};
-    uint32_t uploads = 0;
-    const auto upload_scene_buffer = [&](matter::VkBufferResource& buffer,
-                                         const void* data, VkDeviceSize size) {
+    const auto upload = [&](matter::VkBufferResource& buffer, const void* data,
+                            VkDeviceSize size) {
         if (size == 0) return true;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
         if (uploads == test_fail_after_uploads_) {
@@ -1474,31 +1524,178 @@ bool VkSceneRenderer::upload_scene_buffers(std::string& error) {
             return poison(error);
         }
 #endif
-        gpu_mutated = true;
         if (!matter::upload_buffer(*vulkan_, buffer, data, size, 0, error))
             return poison(error);
         ++uploads;
         return true;
     };
-    const bool uploaded =
-        upload_scene_buffer(clusters_, cluster_staging_.data(), cluster_bytes) &&
-        upload_scene_buffer(instances_, instance_staging_.data(), instance_bytes) &&
-        upload_scene_buffer(commands_, command_template_.data(), command_bytes) &&
-        upload_scene_buffer(vertices_, vertex_staging_.data(), vertex_bytes) &&
-        upload_scene_buffer(stats_, &zero_stats, sizeof(zero_stats));
-    if (uploaded) {
-        uploaded_command_count_ =
-            static_cast<uint32_t>(command_template_.size());
-        uploaded_transform_slots_ = draw_transform_slots_;
-        uploaded_cluster_count_ = candidate_cluster_count;
+    if (static_upload_dirty_) {
+        const auto replacement_capacity = [&](VkDeviceSize current,
+                                              VkDeviceSize required,
+                                              const char* label,
+                                              VkDeviceSize& capacity) {
+            required = std::max<VkDeviceSize>(required, 1);
+            if (current >= required) {
+                capacity = current;
+                return true;
+            }
+            return vk_scene_detail::checked_grown_capacity(
+                current, required, limits_.max_buffer_size, capacity, label,
+                error);
+        };
+        VkDeviceSize cluster_capacity = 0;
+        VkDeviceSize vertex_capacity = 0;
+        if (!replacement_capacity(clusters_.size, cluster_bytes, "cluster buffer",
+                                  cluster_capacity) ||
+            !replacement_capacity(vertices_.size, vertex_bytes, "vertex buffer",
+                                  vertex_capacity)) {
+            return false;
+        }
+        matter::VkBufferResource next_clusters;
+        matter::VkBufferResource next_vertices;
+        if (!allow_replacement()) return false;
+        if (!matter::create_buffer(
+                *vulkan_, cluster_capacity, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                    VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+                next_clusters, error)) {
+            return false;
+        }
+        ++replacements;
+        if (!allow_replacement()) return false;
+        if (!matter::create_buffer(
+                *vulkan_, vertex_capacity,
+                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                    VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+                next_vertices, error)) {
+            return false;
+        }
+        ++replacements;
+        if (!upload(next_clusters, cluster_staging_.data(), cluster_bytes) ||
+            !upload(next_vertices, vertex_staging_.data(), vertex_bytes)) {
+            return false;
+        }
+        clusters_ = std::move(next_clusters);
+        vertices_ = std::move(next_vertices);
+        static_upload_dirty_ = false;
+        if (cluster_bytes != 0) ++upload_counters_.cluster_uploads;
+        if (vertex_bytes != 0) ++upload_counters_.vertex_uploads;
+        uploaded_cluster_count_ =
+            static_cast<uint32_t>(cluster_staging_.size());
         uploaded_vertex_count_ =
             static_cast<uint32_t>(vertex_staging_.size());
-        uploaded_raster_command_enabled_ =
-            std::move(candidate_raster_commands);
-        uploaded_raster_draw_command_count_ = candidate_raster_draw_count;
-        uploaded_rt_instances_ = std::move(candidate_rt_instances);
     }
-    return uploaded;
+
+    if (frame.static_generation != static_generation_) {
+        update_descriptor(frame.descriptor_sets[1], 0,
+                          VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, clusters_);
+        frame.static_generation = static_generation_;
+    }
+    bool descriptors_changed = false;
+    bool replaced = false;
+    if (!ensure_buffer(frame.instances, instance_bytes,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error, &replaced))
+        return poison(error);
+    descriptors_changed |= replaced;
+    if (!ensure_buffer(frame.commands, command_bytes,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                           VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+                       error, &replaced))
+        return poison(error);
+    descriptors_changed |= replaced;
+    if (!ensure_buffer(frame.draw_transforms, transform_bytes,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error, &replaced))
+        return poison(error);
+    descriptors_changed |= replaced;
+    if (!ensure_buffer(frame.stats, sizeof(VkCullStats),
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error, &replaced))
+        return poison(error);
+    descriptors_changed |= replaced;
+    if (descriptors_changed) update_frame_descriptors(frame);
+
+    if (frame.instance_generation != instance_generation_) {
+        if (!upload(frame.instances, instance_staging_.data(), instance_bytes))
+            return false;
+        if (instance_bytes != 0) ++upload_counters_.instance_uploads;
+        frame.instance_generation = instance_generation_;
+    }
+    if (frame.command_generation != command_generation_)
+        frame.command_generation = command_generation_;
+    if (!upload(frame.commands, command_template_.data(), command_bytes))
+        return false;
+    if (command_bytes != 0) ++upload_counters_.command_uploads;
+    const VkCullStats zero_stats{};
+    if (!upload(frame.stats, &zero_stats, sizeof(zero_stats))) return false;
+    frame.stats_valid = false;
+    uploaded_command_count_ = static_cast<uint32_t>(command_template_.size());
+    uploaded_transform_slots_ = draw_transform_slots_;
+    uploaded_raster_command_enabled_ = raster_command_enabled_;
+    uploaded_raster_draw_command_count_ = raster_draw_command_count_;
+    uploaded_rt_instances_ = rt_instances_;
+    return true;
+}
+
+bool VkSceneRenderer::upload_frame_constants(FrameResources& frame,
+                                              const FrameMatrices& matrices,
+                                              matter::Float3 camera_eye,
+                                              float pixel_budget,
+                                              std::string& error) {
+    FrameConstants constants{};
+    constants.world_to_clip = pack_glsl_mat4(matrices.world_to_clip);
+    std::memcpy(constants.frustum_planes, matrices.frustum_planes,
+                sizeof(constants.frustum_planes));
+    constants.camera_eye_pixel_budget[0] = camera_eye.x;
+    constants.camera_eye_pixel_budget[1] = camera_eye.y;
+    constants.camera_eye_pixel_budget[2] = camera_eye.z;
+    constants.camera_eye_pixel_budget[3] = pixel_budget;
+    constants.counts[0] = static_cast<uint32_t>(instance_staging_.size());
+    constants.counts[1] = max_clusters_per_instance_;
+    constants.capacities[0] = static_cast<uint32_t>(cluster_staging_.size());
+    constants.capacities[1] = static_cast<uint32_t>(instance_staging_.size());
+    constants.capacities[2] = static_cast<uint32_t>(command_template_.size());
+    constants.capacities[3] = draw_transform_slots_;
+    return matter::upload_buffer(*vulkan_, frame.frame_constants, &constants,
+                                 sizeof(constants), 0, error);
+}
+
+bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
+                                    const FrameMatrices& matrices,
+                                    matter::Float3 camera_eye,
+                                    float pixel_budget, std::string& error) {
+    error.clear();
+    if (fail_if_poisoned(error)) return false;
+    if (!initialized_ && !init(error)) return false;
+    if (frame.frame_slot >= frame.frame_slot_count) {
+        error = "Vulkan frame slot is outside its reported slot count";
+        return false;
+    }
+    if (!ensure_frame_resources(frame.frame_slot_count, error)) return false;
+    FrameResources& selected = frames_[frame.frame_slot];
+    if (!upload_scene_buffers(selected, error) ||
+        !upload_frame_constants(selected, matrices, camera_eye, pixel_budget,
+                                error)) {
+        return false;
+    }
+    active_frame_index_ = frame.frame_slot;
+    std::vector<std::shared_ptr<void>> resources{
+        clusters_.lifetime,
+        vertices_.lifetime,
+        selected.frame_constants.lifetime,
+        selected.instances.lifetime,
+        selected.commands.lifetime,
+        selected.draw_transforms.lifetime,
+        selected.stats.lifetime,
+        albedo_.lifetime,
+        normal_.lifetime,
+        orm_.lifetime,
+        depth_.lifetime,
+        hdr_.lifetime};
+    return vulkan_->retain_for_frame(frame, std::move(resources), error);
 }
 
 bool VkSceneRenderer::dispatch_culling(const FrameMatrices& frame,
@@ -1530,33 +1727,23 @@ bool VkSceneRenderer::dispatch_culling(const FrameMatrices& frame,
             group_count, error)) {
         return false;
     }
-    if (!upload_scene_buffers(error)) return false;
-    FrameConstants constants{};
-    constants.world_to_clip = pack_glsl_mat4(frame.world_to_clip);
-    std::memcpy(constants.frustum_planes, frame.frustum_planes,
-                sizeof(constants.frustum_planes));
-    constants.camera_eye_pixel_budget[0] = camera_eye.x;
-    constants.camera_eye_pixel_budget[1] = camera_eye.y;
-    constants.camera_eye_pixel_budget[2] = camera_eye.z;
-    constants.camera_eye_pixel_budget[3] = pixel_budget;
-    constants.counts[0] = static_cast<uint32_t>(instance_staging_.size());
-    constants.counts[1] = max_clusters_per_instance_;
-    constants.capacities[0] = static_cast<uint32_t>(cluster_staging_.size());
-    constants.capacities[1] = static_cast<uint32_t>(instance_staging_.size());
-    constants.capacities[2] = static_cast<uint32_t>(command_template_.size());
-    constants.capacities[3] = draw_transform_slots_;
-    if (!matter::upload_buffer(*vulkan_, frame_constants_, &constants,
-                               sizeof(constants), 0, error)) {
+    if (!ensure_frame_resources(1, error)) return false;
+    FrameResources& selected = frames_[0];
+    if (!upload_scene_buffers(selected, error)) return false;
+    if (!upload_frame_constants(selected, frame, camera_eye, pixel_budget,
+                                error))
         return poison(error);
-    }
+    active_frame_index_ = 0;
     if (instance_staging_.empty() || max_clusters_per_instance_ == 0)
         return true;
     CullDispatchRecord dispatch{pipeline_, pipeline_layout_,
-                                {descriptor_sets_[0], descriptor_sets_[1]},
+                                {selected.descriptor_sets[0],
+                                 selected.descriptor_sets[1]},
                                 group_count};
     std::vector<std::shared_ptr<void>> dependencies{
-        frame_constants_.lifetime, clusters_.lifetime, instances_.lifetime,
-        commands_.lifetime, draw_transforms_.lifetime, stats_.lifetime};
+        selected.frame_constants.lifetime, clusters_.lifetime,
+        selected.instances.lifetime, selected.commands.lifetime,
+        selected.draw_transforms.lifetime, selected.stats.lifetime};
     if (!matter::submit_immediate(
         *vulkan_, record_cull_dispatch, &dispatch, error,
         matter::ImmediateSubmitPhase::compute_dispatch,
@@ -1570,7 +1757,11 @@ bool VkSceneRenderer::cull_stats(VkCullStats& stats,
                                  std::string& error) {
     stats = {};
     if (fail_if_poisoned(error)) return false;
-    return matter::readback_buffer(*vulkan_, stats_,
+    if (frames_.empty()) {
+        error = "Vulkan cull stats are unavailable before frame preparation";
+        return false;
+    }
+    return matter::readback_buffer(*vulkan_, frames_[active_frame_index_].stats,
                                    &stats, sizeof(stats), 0, error);
 }
 
@@ -1586,8 +1777,12 @@ bool VkSceneRenderer::readback_commands(
     if (!vk_scene_detail::checked_mul_to_device_size(
             commands.size(), sizeof(DrawCommand), bytes,
             "draw-command readback", error)) return false;
+    if (frames_.empty()) {
+        error = "Vulkan draw commands are unavailable before frame preparation";
+        return false;
+    }
     return matter::readback_buffer(
-        *vulkan_, commands_,
+        *vulkan_, frames_[active_frame_index_].commands,
         commands.data(), bytes, 0, error);
 }
 
@@ -1603,8 +1798,12 @@ bool VkSceneRenderer::readback_draw_transforms(
     if (!vk_scene_detail::checked_mul_to_device_size(
             transforms.size(), sizeof(GpuMat4), bytes,
             "draw-transform readback", error)) return false;
+    if (frames_.empty()) {
+        error = "Vulkan draw transforms are unavailable before frame preparation";
+        return false;
+    }
     return matter::readback_buffer(
-        *vulkan_, draw_transforms_, transforms.data(),
+        *vulkan_, frames_[active_frame_index_].draw_transforms, transforms.data(),
         bytes, 0, error);
 }
 
@@ -1703,6 +1902,11 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
         return false;
     }
     if (!ensure_raster_targets(width, height, error)) return false;
+    if (frames_.empty()) {
+        error = "raster render requires prepared frame resources";
+        return false;
+    }
+    FrameResources& selected = frames_[active_frame_index_];
     RasterRecord record{&albedo_,
                         &normal_,
                         &orm_,
@@ -1711,19 +1915,19 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
                         raster_extent_,
                         raster_pipeline_,
                         pipeline_layout_,
-                        {descriptor_sets_[0], descriptor_sets_[1]},
+                        {selected.descriptor_sets[0], selected.descriptor_sets[1]},
                         composite_pipeline_,
                         composite_pipeline_layout_,
                         composite_descriptor_set_,
                         vertices_.buffer,
-                        commands_.buffer,
+                        selected.commands.buffer,
                         uploaded_command_count_,
                         uploaded_raster_command_enabled_.data(),
                         lighting_};
     std::vector<std::shared_ptr<void>> dependencies{
         albedo_.lifetime, normal_.lifetime, orm_.lifetime, depth_.lifetime,
-        hdr_.lifetime, vertices_.lifetime, commands_.lifetime,
-        frame_constants_.lifetime, draw_transforms_.lifetime};
+        hdr_.lifetime, vertices_.lifetime, selected.commands.lifetime,
+        selected.frame_constants.lifetime, selected.draw_transforms.lifetime};
     raster_attachments_ready_ = false;
     if (!matter::submit_immediate(
             *vulkan_, record_raster, &record, error,
@@ -1904,12 +2108,7 @@ void VkSceneRenderer::reset() {
     if (full_reset) {
         if (vulkan_) vulkan_->wait_idle();
         destroy_pipeline();
-        frame_constants_.reset();
         clusters_.reset();
-        instances_.reset();
-        commands_.reset();
-        draw_transforms_.reset();
-        stats_.reset();
         vertices_.reset();
         albedo_.reset();
         normal_.reset();
@@ -1939,6 +2138,11 @@ void VkSceneRenderer::reset() {
     uploaded_raster_draw_command_count_ = 0;
     uploaded_rt_instances_.clear();
     raster_attachments_ready_ = false;
+    ++static_generation_;
+    ++instance_generation_;
+    static_upload_dirty_ = true;
+    std::string ignored_error;
+    if (rebuild_command_template(ignored_error)) note_command_layout_rebuild();
     poison_reason_.clear();
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     test_fail_after_replacements_ = std::numeric_limits<uint32_t>::max();
