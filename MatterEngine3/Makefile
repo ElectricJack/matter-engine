@@ -234,7 +234,8 @@ shaders_gen/embedded_shaders.h: tools/embed_shaders.py $(SHADER_FILES)
 	python3 tools/embed_shaders.py $@ . $(SHADER_LOGICAL)
 
 GLSLC ?= glslc
-VK_SPV = build/shaders_vk/transform_probe.comp.spv
+VK_SPV = build/shaders_vk/transform_probe.comp.spv \
+         build/shaders_vk/cull.comp.spv
 
 build/shaders_vk/%.spv: shaders_vk/%
 	@mkdir -p $(dir $@)

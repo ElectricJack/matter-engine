@@ -365,7 +365,8 @@ build/windows/glfw/%.o: $(GLFW_SRC_DIR)/%.c
 $(GLFW_WIN_LIB): $(GLFW_WIN_OBJ)
 	$(WIN_AR) rcs $@ $^
 
-VK_SPV = build/shaders_vk/transform_probe.comp.spv
+VK_SPV = build/shaders_vk/transform_probe.comp.spv \
+         build/shaders_vk/cull.comp.spv
 VK_EMBEDDED_HEADER = $(ME3_DIR)/shaders_gen/embedded_spirv.h
 
 build/shaders_vk/%.spv: $(ME3_DIR)/shaders_vk/%
@@ -379,12 +380,17 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/tests/vulkan_smoke_tests.cpp \
         $(ME3_DIR)/include/matter/vulkan_device.h \
         $(ME3_DIR)/src/render/gpu_matrix_pack.h \
+        $(ME3_DIR)/src/render/vk_draw_command.h \
+        $(ME3_DIR)/src/render/frame_matrices.h \
         $(ME3_DIR)/src/render/matrix_math.h \
         $(ME3_DIR)/src/render/vk_resources.h \
         $(ME3_DIR)/src/render/vk_pipeline.h \
+        $(ME3_DIR)/src/render/vk_scene_renderer.h \
         $(ME3_DIR)/src/render/vk_context.cpp \
         $(ME3_DIR)/src/render/vk_resources.cpp \
         $(ME3_DIR)/src/render/vk_pipeline.cpp \
+        $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+        $(ME3_DIR)/src/render/frame_matrices.cpp \
         $(ME3_DIR)/src/render/matrix_math.cpp \
         $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB)
 	@mkdir -p $(dir $@)
@@ -393,6 +399,8 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/vk_resources.cpp \
 	    $(ME3_DIR)/src/render/vk_pipeline.cpp \
 	    $(ME3_DIR)/src/render/matrix_math.cpp \
+	    $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+	    $(ME3_DIR)/src/render/frame_matrices.cpp \
 	    $(GLFW_WIN_LIB) -o $@ \
 	    -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers \
 	    -static \

@@ -17,8 +17,240 @@
 #include "render/vk_device_internal.h"
 #include "render/vk_pipeline.h"
 #include "render/vk_resources.h"
+#include "render/vk_scene_renderer.h"
 
 namespace {
+
+struct FixedCullScene {
+    viewer::FrameMatrices frame{};
+    matter::Float3 eye{};
+    std::vector<viewer::VkScenePart> parts;
+    std::vector<viewer::VkSceneInstance> instances;
+};
+
+struct CullResult {
+    viewer::VkCullStats stats{};
+    std::vector<viewer::DrawCommand> commands;
+};
+
+matter::Mat4f identity_matrix() {
+    matter::Mat4f result{};
+    result.m[0] = result.m[5] = result.m[10] = result.m[15] = 1.0f;
+    return result;
+}
+
+viewer::VkScenePart fixed_part(uint64_t hash, matter::Float3 minimum,
+                               matter::Float3 maximum, uint32_t first_vertex) {
+    viewer::VkSceneCluster cluster{};
+    cluster.aabb_min = minimum;
+    cluster.aabb_max = maximum;
+    const float dx = maximum.x - minimum.x;
+    const float dy = maximum.y - minimum.y;
+    const float dz = maximum.z - minimum.z;
+    cluster.radius = 0.5f * std::sqrt(dx * dx + dy * dy + dz * dz);
+    cluster.lods.push_back({first_vertex, 3, 0.0f});
+    return {hash, {cluster}};
+}
+
+FixedCullScene make_fixed_cull_scene() {
+    FixedCullScene scene{};
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.57079632679f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 10.0f;
+    std::string error;
+    CHECK(viewer::build_frame_matrices(camera, 320, 320, scene.frame, error),
+          error.empty() ? "build fixed cull matrices" : error.c_str());
+    scene.eye = camera.position;
+
+    scene.parts.push_back(fixed_part(1, {-0.5f, -0.5f, -2.5f},
+                                     {0.5f, 0.5f, -1.5f}, 0));
+    scene.parts.push_back(fixed_part(2, {-0.5f, -0.5f, 1.5f},
+                                     {0.5f, 0.5f, 2.5f}, 3));
+    scene.parts.push_back(fixed_part(3, {-0.2f, -0.2f, -0.2f},
+                                     {0.2f, 0.2f, 0.05f}, 6));
+    scene.parts.push_back(fixed_part(4, {-0.5f, -0.5f, -12.5f},
+                                     {0.5f, 0.5f, -11.5f}, 9));
+    scene.parts.push_back(fixed_part(5, {-0.25f, -0.25f, -0.25f},
+                                     {0.25f, 0.25f, 0.25f}, 12));
+    for (uint64_t hash = 1; hash <= 5; ++hash) {
+        viewer::VkSceneInstance instance{};
+        instance.part_hash = hash;
+        instance.object_to_world = identity_matrix();
+        if (hash == 5) {
+            instance.object_to_world =
+                viewer::mat4_translation({1.0f, 0.0f, -3.0f});
+        }
+        scene.instances.push_back(instance);
+    }
+    return scene;
+}
+
+bool clip_aabb_visible(const FixedCullScene& scene,
+                       const viewer::VkScenePart& part,
+                       const viewer::VkSceneInstance& instance) {
+    const auto& cluster = part.clusters.front();
+    matter::Mat4f object_to_clip = viewer::mat4_mul(
+        scene.frame.world_to_clip, instance.object_to_world);
+    matter::Float4 clip[8]{};
+    for (int i = 0; i < 8; ++i) {
+        const matter::Float4 point{
+            (i & 4) ? cluster.aabb_max.x : cluster.aabb_min.x,
+            (i & 2) ? cluster.aabb_max.y : cluster.aabb_min.y,
+            (i & 1) ? cluster.aabb_max.z : cluster.aabb_min.z, 1.0f};
+        clip[i] = viewer::transform(object_to_clip, point);
+    }
+    for (int plane = 0; plane < 6; ++plane) {
+        bool all_outside = true;
+        for (const auto& c : clip) {
+            const bool inside = plane == 0 ? c.x >= -c.w
+                                : plane == 1 ? c.x <= c.w
+                                : plane == 2 ? c.y >= -c.w
+                                : plane == 3 ? c.y <= c.w
+                                : plane == 4 ? c.z >= 0.0f
+                                             : c.z <= c.w;
+            if (inside) {
+                all_outside = false;
+                break;
+            }
+        }
+        if (all_outside) return false;
+    }
+    return true;
+}
+
+CullResult run_cpu_cull(const FixedCullScene& scene) {
+    CullResult result{};
+    result.commands.resize(scene.parts.size() * viewer::kVkMaxLod);
+    for (size_t i = 0; i < scene.parts.size(); ++i) {
+        auto& command = result.commands[i * viewer::kVkMaxLod];
+        command.vertex_count = scene.parts[i].clusters[0].lods[0].vertex_count;
+        command.first_vertex = scene.parts[i].clusters[0].lods[0].first_vertex;
+        command.first_instance = static_cast<uint32_t>(i);
+        if (clip_aabb_visible(scene, scene.parts[i], scene.instances[i])) {
+            command.instance_count = 1;
+            ++result.stats.emitted;
+        } else {
+            ++result.stats.frustum_culled;
+        }
+    }
+    return result;
+}
+
+CullResult run_vk_cull(matter::VulkanDevice& vulkan,
+                       const FixedCullScene& scene) {
+    CullResult result{};
+    viewer::VkSceneRenderer renderer(vulkan);
+    std::string error;
+    CHECK(renderer.init(error), error.empty() ? "init Vulkan scene renderer"
+                                              : error.c_str());
+    for (const auto& part : scene.parts) {
+        CHECK(renderer.ensure_part(part, error) >= 0,
+              error.empty() ? "ensure Vulkan scene part" : error.c_str());
+    }
+    CHECK(renderer.update_instances(scene.instances, error),
+          error.empty() ? "upload Vulkan scene instances" : error.c_str());
+    CHECK(renderer.dispatch_culling(scene.frame, scene.eye, 1.0f, error),
+          error.empty() ? "dispatch Vulkan scene culling" : error.c_str());
+    CHECK(renderer.cull_stats(result.stats, error),
+          error.empty() ? "read Vulkan cull stats" : error.c_str());
+    CHECK(renderer.readback_commands(result.commands, error),
+          error.empty() ? "read Vulkan draw commands" : error.c_str());
+    return result;
+}
+
+void run_cull_parity(matter::VulkanDevice& vulkan) {
+    const FixedCullScene scene = make_fixed_cull_scene();
+    const CullResult cpu = run_cpu_cull(scene);
+    const CullResult gpu = run_vk_cull(vulkan, scene);
+    CHECK(gpu.stats.emitted == cpu.stats.emitted, "emitted parity");
+    CHECK(gpu.stats.frustum_culled == cpu.stats.frustum_culled,
+          "culled parity");
+    CHECK(gpu.commands == cpu.commands, "command parity");
+    CHECK(gpu.stats.emitted == 3, "front near-intersection and translated visible");
+    CHECK(gpu.stats.frustum_culled == 2, "behind and far rejected");
+    const char* case_names[] = {"front", "behind", "near-intersection", "far",
+                                "translated"};
+    const uint32_t expected_instances[] = {1, 0, 1, 0, 1};
+    for (size_t i = 0; i < scene.parts.size(); ++i) {
+        const uint32_t cpu_instances =
+            cpu.commands[i * viewer::kVkMaxLod].instance_count;
+        const uint32_t gpu_instances =
+            gpu.commands[i * viewer::kVkMaxLod].instance_count;
+        CHECK(gpu_instances == expected_instances[i], case_names[i]);
+        std::printf("cull case %-17s CPU=%u GPU=%u\n", case_names[i],
+                    cpu_instances, gpu_instances);
+    }
+    std::printf("cull CPU: emitted=%u frustum_culled=%u\n", cpu.stats.emitted,
+                cpu.stats.frustum_culled);
+    std::printf("cull GPU: emitted=%u frustum_culled=%u\n", gpu.stats.emitted,
+                gpu.stats.frustum_culled);
+}
+
+void run_cull_region_and_lifecycle_tests(matter::VulkanDevice& vulkan) {
+    viewer::VkSceneCluster cluster{};
+    cluster.aabb_min = {-0.25f, -0.25f, -0.25f};
+    cluster.aabb_max = {0.25f, 0.25f, 0.25f};
+    cluster.radius = 0.5f;
+    cluster.lods = {{0, 3, 0.2f}, {3, 3, 0.0f}};
+    const viewer::VkScenePart part{77, {cluster}};
+    viewer::VkSceneInstance near_instance{77, viewer::mat4_translation(
+                                                  {0.0f, 0.0f, -2.0f})};
+    viewer::VkSceneInstance far_instance{77, viewer::mat4_translation(
+                                                 {0.0f, 0.0f, -5.0f})};
+
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.57079632679f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 10.0f;
+    viewer::FrameMatrices frame{};
+    std::string error;
+    CHECK(viewer::build_frame_matrices(camera, 320, 320, frame, error),
+          error.empty() ? "build multi-LOD matrices" : error.c_str());
+
+    viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.init(error), error.empty() ? "init multi-LOD renderer"
+                                              : error.c_str());
+    CHECK(renderer.ensure_part(part, error) >= 0,
+          error.empty() ? "ensure multi-LOD part" : error.c_str());
+    CHECK(renderer.update_instances({near_instance, far_instance}, error),
+          error.empty() ? "upload multi-LOD instances" : error.c_str());
+    CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f, error),
+          error.empty() ? "dispatch multi-LOD culling" : error.c_str());
+    std::vector<viewer::DrawCommand> commands;
+    std::vector<viewer::GpuMat4> transforms;
+    CHECK(renderer.readback_commands(commands, error),
+          error.empty() ? "read multi-LOD commands" : error.c_str());
+    CHECK(renderer.readback_draw_transforms(transforms, error),
+          error.empty() ? "read multi-LOD transforms" : error.c_str());
+    CHECK(commands[0].instance_count == 1, "near instance selects fine LOD");
+    CHECK(commands[1].instance_count == 1, "far instance selects coarse LOD");
+    CHECK(commands[0].first_instance != commands[1].first_instance,
+          "multi-LOD transform regions do not overlap");
+    CHECK(std::fabs(transforms[commands[0].first_instance].elements[14] + 2.0f) <
+              1e-5f,
+          "fine LOD transform retained");
+    CHECK(std::fabs(transforms[commands[1].first_instance].elements[14] + 5.0f) <
+              1e-5f,
+          "coarse LOD transform retained");
+
+    renderer.release_part(77);
+    std::vector<viewer::VkSceneRenderer::RtInstance> rt_instances;
+    CHECK(renderer.fill_rt_instances(rt_instances) == 0,
+          "release removes RT instances");
+    renderer.reset();
+    CHECK(renderer.draw_command_count() == 0, "reset reclaims command tombstones");
+    CHECK(renderer.ensure_part(part, error) >= 0,
+          error.empty() ? "re-add part after reset" : error.c_str());
+    CHECK(renderer.draw_command_count() == viewer::kVkMaxLod,
+          "re-add after reset uses bounded command storage");
+}
 
 void finish_vulkan_test(std::unique_ptr<matter::VulkanDevice>& vulkan) {
     CHECK(vulkan->validation_error_count() == 0,
@@ -236,6 +468,17 @@ int main() {
                         expected.y, expected.z, expected.w);
             std::printf("transform GPU: %.8f %.8f %.8f %.8f\n", output.x,
                         output.y, output.z, output.w);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "cull") {
+            run_cull_parity(*vulkan);
+            run_cull_region_and_lifecycle_tests(*vulkan);
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
             vulkan->wait_idle();

@@ -2,6 +2,7 @@
 #define VIEWER_GPU_CULL_TYPES_H
 #include "gpu_matrix_pack.h"
 #include "part_store.h"
+#include "vk_draw_command.h"
 #include <cstdint>
 #include <cstring>
 
