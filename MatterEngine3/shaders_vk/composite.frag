@@ -23,7 +23,7 @@ void main() {
     vec3 normal = normal_length_squared > 1e-20
                     ? normal_sample * inversesqrt(normal_length_squared)
                     : vec3(0.0);
-    vec3 orm = texture(orm_texture, in_uv).xyz;
+    vec4 orm = texture(orm_texture, in_uv);
     vec3 to_sun = normalize(-lighting.sun_direction);
     float direct = max(dot(normal, to_sun), 0.0);
     float roughness = orm.x;
@@ -32,7 +32,13 @@ void main() {
     vec3 diffuse = albedo.rgb * (1.0 - metallic);
     vec3 ambient = diffuse * lighting.sky_color * ao;
     vec3 sun = diffuse * lighting.sun_color * direct * lighting.sun_intensity;
-    vec3 emission = albedo.rgb * albedo.a;
+    float encoded_emission = orm.w;
+    float emission_strength =
+        !isnan(encoded_emission) && !isinf(encoded_emission) &&
+        encoded_emission >= 0.0 && encoded_emission < 1.0
+            ? encoded_emission / (1.0 - encoded_emission)
+            : 0.0;
+    vec3 emission = albedo.rgb * emission_strength;
     vec3 linear_hdr = ambient + sun * mix(1.0, 0.65, roughness) + emission;
     out_hdr = vec4(linear_hdr, 1.0);
 }

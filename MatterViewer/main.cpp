@@ -117,7 +117,8 @@ int main() {
         return 1;
     }
     matter::EngineDesc engine_desc;
-    engine_desc.cache_root = "cache";
+    const char* cache_root_env = std::getenv("MATTER_CACHE_ROOT");
+    engine_desc.cache_root = cache_root_env ? cache_root_env : "cache";
     engine_desc.render_device = vulkan.get();
     auto engine = matter::EngineContext::create(engine_desc, error);
     if (!engine) {
@@ -173,11 +174,27 @@ int main() {
         std::string wanted(value);
         std::transform(wanted.begin(), wanted.end(), wanted.begin(),
                        [](unsigned char c) { return std::tolower(c); });
+        bool found = false;
         for (size_t i = 0; i < worlds.size(); ++i) {
             std::string candidate = worlds[i].world_name;
             std::transform(candidate.begin(), candidate.end(), candidate.begin(),
                            [](unsigned char c) { return std::tolower(c); });
-            if (candidate == wanted) { initial_world = static_cast<int>(i); break; }
+            if (candidate == wanted) {
+                initial_world = static_cast<int>(i);
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            std::fprintf(stderr,
+                         "FATAL: MATTER_WORLD '%s' is not a committed world\n",
+                         value);
+            ui.shutdown();
+            engine.reset();
+            vulkan.reset();
+            glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
         }
     }
 
@@ -226,6 +243,7 @@ int main() {
     int screenshot_settle = 0;
     int screenshot_failures = 0;
     bool bake_ready = false;
+    bool selected_world_reported = false;
     const bool test_resize = std::getenv("MATTER_TEST_RESIZE") != nullptr;
     bool resize_exercised = false;
 
@@ -353,6 +371,14 @@ int main() {
             else if (event.type == matter::EventType::BakeFinished) {
                 std::printf("bake finished (%d errors)\n", event.errors);
                 bake_ready = event.errors == 0;
+                matter::InstanceInfo selected{};
+                if (bake_ready && !selected_world_reported &&
+                    session->instance_info(0, selected)) {
+                    std::printf("selected world %s hash %016llx\n",
+                                worlds[stats.world_current].world_name.c_str(),
+                                static_cast<unsigned long long>(selected.part_hash));
+                    selected_world_reported = true;
+                }
                 if (fifo_path) std::printf("viewer: bake ready\n");
             } else if (event.type == matter::EventType::BakeError)
                 std::printf("bake error [%s]: %s\n", event.module.c_str(),
@@ -412,12 +438,17 @@ int main() {
         std::memcpy(stats.probe_dims, frame_stats.probe_dims,
                     sizeof(stats.probe_dims));
 
-        ui.begin_frame();
-        ui.draw_debug_panel(stats);
-        ui.draw_worlds_panel(worlds, stats);
-        ui.draw_camera_panel(camera);
-        ui.draw_lighting_panel(stats);
-        if (!ui.end_frame(frame, error)) {
+        const bool ui_frame_ready = ui.begin_frame(frame, error);
+        if (!ui_frame_ready) {
+            std::fprintf(stderr, "FATAL: ImGui Vulkan prepare: %s\n",
+                         error.c_str());
+            fatal_error = true;
+        } else {
+            ui.draw_debug_panel(stats);
+            ui.draw_worlds_panel(worlds, stats);
+            ui.draw_camera_panel(camera);
+        }
+        if (ui_frame_ready && !ui.end_frame(frame, error)) {
             std::fprintf(stderr, "FATAL: ImGui Vulkan backend: %s\n", error.c_str());
             fatal_error = true;
         }
@@ -486,6 +517,7 @@ int main() {
             session = open_world(worlds[selected]);
             if (!session) { fatal_error = true; continue; }
             stats.world_current = selected;
+            selected_world_reported = false;
             bake_ready = false; screenshot_settle = 0;
             apply_world_resolver_defaults(worlds[selected].world_name,
                                           active_radius,

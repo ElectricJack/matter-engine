@@ -73,7 +73,8 @@ viewer::VkScenePart known_raster_triangle(uint64_t hash) {
         hash, {-0.75f, -0.75f, -2.0f}, {0.75f, 0.75f, -2.0f}, 0);
     const matter::Float3 normal{0.0f, 1.0f, 0.0f};
     const matter::Float4 albedo{0.25f, 0.5f, 0.75f, 1.0f};
-    const matter::Float4 orm{0.2f, 0.7f, 0.4f, 1.0f};
+    const matter::Float4 orm{0.2f, 0.7f, 0.4f,
+                             viewer::vulkan_encode_emission(5.0f)};
     part.vertices = {
         {{-0.75f, -0.75f, -2.0f}, normal, albedo, orm},
         {{0.75f, -0.75f, -2.0f}, normal, albedo, orm},
@@ -87,6 +88,11 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     constexpr uint32_t height = 160;
     std::string error;
     viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(viewer::vulkan_material_uses_unsupported_texture(2.0f) &&
+              !viewer::vulkan_material_uses_unsupported_texture(-1.0f) &&
+              !viewer::vulkan_material_uses_unsupported_texture(
+                  std::numeric_limits<float>::quiet_NaN()),
+          "packed runtime texture override triggers Vulkan warning path");
 
     // The first part reserves transform slot zero.  The known triangle then
     // draws with firstInstance=1, catching any raster shader that incorrectly
@@ -157,7 +163,9 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
           "known center albedo");
     CHECK(close4(center.normal, {0.0f, 1.0f, 0.0f, 1.0f}, 2e-3f),
           "known center normal");
-    CHECK(close4(center.orm, {0.2f, 0.7f, 0.4f, 1.0f}, 6e-3f),
+    CHECK(close4(center.orm,
+                 {0.2f, 0.7f, 0.4f, viewer::vulkan_encode_emission(5.0f)},
+                 6e-3f),
           "known center ORM");
     CHECK(std::isfinite(center.depth) && center.depth >= 0.0f &&
               center.depth <= 1.0f,
@@ -190,6 +198,11 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     CHECK(renderer.readback_raster_pixel(width / 2, height / 2, dark_center,
                                          error),
           error.empty() ? "read authored dark lighting" : error.c_str());
+    CHECK(std::isfinite(dark_center.hdr.x) &&
+              std::fabs(dark_center.hdr.x - 1.25f) < 0.04f &&
+              std::fabs(dark_center.hdr.y - 2.50f) < 0.05f &&
+              std::fabs(dark_center.hdr.z - 3.75f) < 0.06f,
+          "material emission 5 survives UNORM G-buffer and HDR composite");
     viewer::VkSceneLighting bright = dark;
     bright.sky_color = {2.0f, 2.0f, 2.0f};
     renderer.set_lighting(bright);

@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 #include <map>
 #include <limits>
 #include <string>
@@ -23,6 +24,18 @@ struct VulkanFrame;
 namespace viewer {
 
 constexpr uint32_t kVkMaxLod = 9;
+
+// R8G8B8A8_UNORM cannot carry authored HDR emission directly. This bounded,
+// monotonic mapping reserves ORM alpha for an invertible emission strength.
+inline float vulkan_encode_emission(float emission) {
+    if (!(emission > 0.0f) || !std::isfinite(emission)) return 0.0f;
+    return emission <= 1.0f ? emission / (1.0f + emission)
+                            : 1.0f - 1.0f / (1.0f + emission);
+}
+
+inline bool vulkan_material_uses_unsupported_texture(float packed_slot) {
+    return std::isfinite(packed_slot) && packed_slot >= 0.0f;
+}
 
 namespace vk_scene_detail {
 bool checked_mul_to_device_size(size_t count, size_t element_size,

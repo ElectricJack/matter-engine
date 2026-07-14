@@ -151,27 +151,38 @@ void Ui::shutdown() {
     vulkan_ = nullptr;
 }
 
-void Ui::begin_frame() {
-    ImGui_ImplVulkan_NewFrame();
-    ImGui_ImplGlfw_NewFrame();
-    ImGui::NewFrame();
-}
-
-bool Ui::end_frame(const matter::VulkanFrame& frame, std::string& error) {
-    ImGui::Render();
+bool Ui::prepare_vulkan_backend(const matter::VulkanFrame& frame,
+                                std::string& error) {
     if (frame.swapchain_format != swapchain_format_) {
+        // Pipeline and font texture descriptors belong to the Vulkan backend.
+        // Tear them down before any draw data can reference them, while keeping
+        // the ImGui context and GLFW input backend alive.
         vulkan_->wait_idle();
         if (vulkan_backend_initialized_) {
             ImGui_ImplVulkan_Shutdown();
             vulkan_backend_initialized_ = false;
         }
-        if (!initialize_vulkan_backend(frame.swapchain_format,
-                                       frame.image_count, error))
-            return false;
-    } else if (frame.swapchain_recreated || frame.image_count != image_count_) {
+        return initialize_vulkan_backend(frame.swapchain_format,
+                                         frame.image_count, error);
+    }
+    if (frame.swapchain_recreated || frame.image_count != image_count_) {
         image_count_ = frame.image_count;
         ImGui_ImplVulkan_SetMinImageCount(image_count_);
     }
+    return true;
+}
+
+bool Ui::begin_frame(const matter::VulkanFrame& frame, std::string& error) {
+    if (!prepare_vulkan_backend(frame, error)) return false;
+    ImGui_ImplVulkan_NewFrame();
+    ImGui_ImplGlfw_NewFrame();
+    ImGui::NewFrame();
+    return true;
+}
+
+bool Ui::end_frame(const matter::VulkanFrame& frame, std::string& error) {
+    (void)error;
+    ImGui::Render();
     VkRenderingAttachmentInfo attachment{
         VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     attachment.imageView = frame.swapchain_image_view;
@@ -305,16 +316,6 @@ void Ui::draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& s
         if (is_current) ImGui::EndDisabled();
     }
 
-    ImGui::End();
-}
-
-void Ui::draw_lighting_panel(ViewerStats& stats) {
-    ImGui::SetNextWindowPos(ImVec2(20.0f, 380.0f), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(250, 0), ImGuiCond_FirstUseEver);
-    ImGui::Begin("RT Lighting");
-    ImGui::SliderAngle("Sun Azimuth", &stats.sun_azimuth, -180.0f, 180.0f);
-    ImGui::SliderAngle("Sun Elevation", &stats.sun_elevation, -90.0f, 90.0f);
-    ImGui::SliderFloat("Sun Brightness", &stats.sun_brightness, 0.0f, 5.0f, "%.2f");
     ImGui::End();
 }
 

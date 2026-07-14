@@ -10,6 +10,8 @@ $vkScene = Get-Content -Raw (Join-Path $root 'MatterEngine3\src\render\vk_scene_
 $vkSceneHeader = Get-Content -Raw (Join-Path $root 'MatterEngine3\src\render\vk_scene_renderer.h')
 $engineImpl = Get-Content -Raw (Join-Path $root 'MatterEngine3\src\matter_engine.cpp')
 $compositeShader = Get-Content -Raw (Join-Path $root 'MatterEngine3\shaders_vk\composite.frag')
+$compat = Get-Content -Raw (Join-Path $root 'MatterEngine3\src\render\vulkan_only_compat.cpp')
+$cell = Get-Content -Raw (Join-Path $root 'MatterSurfaceLib\src\cell.cpp')
 $runtimeSmokePath = Join-Path $root 'MatterViewer\tools\smoke_vulkan_viewer.ps1'
 $runtimeSmoke = if (Test-Path $runtimeSmokePath) { Get-Content -Raw $runtimeSmokePath } else { '' }
 $failures = [System.Collections.Generic.List[string]]::new()
@@ -93,6 +95,18 @@ Require-Text $ui 'frame.swapchain_format != swapchain_format_' 'ImGui format-cha
 Require-Text $ui 'ImGui_ImplVulkan_Shutdown' 'ImGui format-change teardown'
 Require-Text $ui 'ImGui_ImplVulkan_Init' 'ImGui format-change rebuild'
 Require-Text $ui 'ImGui_ImplVulkan_SetMinImageCount' 'ImGui min image count update'
+$preparePos = $ui.IndexOf('prepare_vulkan_backend(frame')
+$newFramePos = $ui.IndexOf('ImGui_ImplVulkan_NewFrame')
+if ($preparePos -lt 0 -or $newFramePos -lt 0 -or $preparePos -gt $newFramePos) {
+    $failures.Add('ImGui Vulkan backend must be prepared before NewFrame creates draw data')
+}
+Forbid-Text $ui 'ImGui::Begin("RT Lighting")' 'active no-op RT lighting panel'
+Require-Text $engineImpl 'MaterialRegistryPackForGPU' 'packed runtime material lookup'
+Require-Text $engineImpl 'vulkan_material_uses_unsupported_texture' 'runtime texture override detection'
+Require-Text $engineImpl 'ground material texture sampling is' 'unsupported texture warning'
+Require-Text $engineImpl 'vulkan_encode_emission' 'bounded authored emission encoding'
+Require-Text $compositeShader 'encoded_emission' 'bounded authored emission decode'
+Forbid-Text $compositeShader 'albedo.rgb * albedo.a' 'clamped albedo-alpha emission'
 Require-Text $runtimeSmoke 'VK_LAYER_PATH' 'explicit validation layer discovery'
 Forbid-Text $runtimeSmoke 'VK_LOADER_LAYERS_DISABLE' 'validation layer disable override'
 Require-Text $runtimeSmoke 'red Cornell region' 'Cornell material assertion'
@@ -101,6 +115,28 @@ Require-Text $runtimeSmoke 'gray Cornell region' 'Cornell material assertion'
 Require-Text $runtimeSmoke 'Get-FileHash' 'PNG hash assertion'
 Require-Text $main 'CreateFile' 'Windows command file reader'
 Forbid-Text $main 'MATTER_CMD_FIFO not supported on Windows' 'ignored Windows command interface'
+Require-Text $main 'FATAL: MATTER_WORLD' 'explicit missing world failure'
+Require-Text $main 'selected world' 'selected world identity report'
+Require-Text $runtimeSmoke 'MATTER_CACHE_ROOT' 'isolated clean cache smoke'
+Require-Text $runtimeSmoke 'selected world CornellBox hash' 'selected world hash assertion'
+
+# Vulkan-only compatibility must own CPU cleanup and may not pretend unsupported
+# GPU operations succeeded through empty bodies.
+foreach ($field in @('vertices','texcoords','texcoords2','normals','tangents',
+                      'colors','indices','animVertices','animNormals','boneIds',
+                      'boneWeights','boneMatrices','vboId')) {
+    Require-Text $compat "mesh.$field" "Mesh CPU cleanup for $field"
+}
+Forbid-Text $compat 'void UploadMesh(Mesh*, bool) {}' 'silent UploadMesh stub'
+Forbid-Text $compat 'Texture2D LoadTextureFromImage(Image) { return Texture2D{}; }' 'silent texture stub'
+Forbid-Text $compat 'int GetShaderLocation(Shader, const char*) { return -1; }' 'silent shader stub'
+Require-Text $cell '#ifndef MATTER_VULKAN_ONLY' 'Vulkan-only UploadMesh exclusion'
+
+foreach ($feature in @('CUDA_AVAILABLE=1','OPTIX_AVAILABLE=1','CUDA_ACTIVE=0',
+                        'OPTIX_ACTIVE=0','VULKAN=1','OPENGL=0')) {
+    Require-Text $makefile $feature 'truthful feature manifest'
+}
+Forbid-Text $makefile 'cuDevicePrimaryCtxRelease' 'artificial CUDA retention symbol'
 
 if ($failures.Count -ne 0) {
     [Console]::Error.WriteLine('vulkan-viewer gate: FAIL')

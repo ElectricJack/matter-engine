@@ -398,7 +398,9 @@ void Cell::commit_group_mesh(GroupMeshResult& result, BLASManager& blas_manager)
     uint32_t group_id = result.group_id;
 
     material_meshes[group_id] = result.mesh;
+#ifndef MATTER_VULKAN_ONLY
     UploadMesh(&material_meshes[group_id], false);
+#endif
 
     try {
         std::vector<Tri>& triangles = result.triangles;

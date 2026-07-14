@@ -67,7 +67,7 @@ function Assert-PeImports([string]$Path) {
     if (-not $objdump) { throw 'objdump unavailable for PE import inspection' }
     $imports = (& $objdump -p $Path 2>&1 | Out-String)
     foreach ($forbidden in @('opengl32','ChoosePixelFormat','SetPixelFormat',
-                              'SwapBuffers','cuGraphicsGL')) {
+                              'SwapBuffers','cuGraphicsGL','nvcuda','cuDevice')) {
         if ($imports -match [regex]::Escape($forbidden)) {
             throw "forbidden PE import/symbol ${forbidden}: $Path"
         }
@@ -79,6 +79,8 @@ function Invoke-ViewerCase([string]$Name, [bool]$Resize,
     $png = Join-Path $OutputDir "$Name.png"
     Remove-Item -Force $png -ErrorAction SilentlyContinue
     $env:MATTER_WORLD = 'CornellBox'
+    $env:MATTER_CACHE_ROOT = Join-Path $OutputDir "cache-$Name"
+    Remove-Item -Recurse -Force $env:MATTER_CACHE_ROOT -ErrorAction SilentlyContinue
     $env:MATTER_SCREENSHOT = $png
     if ($Resize) { $env:MATTER_TEST_RESIZE = '1' }
     else { Remove-Item Env:MATTER_TEST_RESIZE -ErrorAction SilentlyContinue }
@@ -99,13 +101,16 @@ function Invoke-ViewerCase([string]$Name, [bool]$Resize,
     if ($joined -notmatch 'screenshot written to') {
         throw "$Name did not confirm screenshot completion"
     }
+    if ($joined -notmatch 'selected world CornellBox hash ([0-9a-fA-F]{16})') {
+        throw "$Name did not report selected world CornellBox hash"
+    }
     Assert-Png $png $Width $Height
     Write-Output "$Name PASS: $Width x $Height, validation errors 0"
 }
 
 $saved = @{}
 foreach ($name in @('MATTER_WORLD','MATTER_SCREENSHOT','MATTER_TEST_RESIZE',
-                    'VK_LAYER_PATH','PATH')) {
+                    'MATTER_CACHE_ROOT','VK_LAYER_PATH','PATH')) {
     $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 try {
@@ -126,7 +131,8 @@ try {
     $features = Join-Path (Split-Path $ViewerPath) 'build\windows\build_features.txt'
     if (-not (Test-Path $features)) { $features = Join-Path $root 'MatterViewer\build\windows\build_features.txt' }
     $manifest = Get-Content -Raw $features
-    foreach ($feature in @('VULKAN=1','CUDA=1','OPTIX=1','OPENGL=0')) {
+    foreach ($feature in @('VULKAN=1','CUDA_AVAILABLE=1','OPTIX_AVAILABLE=1',
+                            'CUDA_ACTIVE=0','OPTIX_ACTIVE=0','OPENGL=0')) {
         if (-not $manifest.Contains($feature)) { throw "feature manifest missing $feature" }
     }
     Invoke-ViewerCase 'cornell' $false 1280 720

@@ -87,7 +87,7 @@ public:
     bool setup(GLFWwindow* window, matter::VulkanDevice& vulkan,
                std::string& error);
     void shutdown();
-    void begin_frame();
+    bool begin_frame(const matter::VulkanFrame& frame, std::string& error);
     bool end_frame(const matter::VulkanFrame& frame, std::string& error);
     void draw_debug_panel(ViewerStats& stats);
     // MSL-style orbit/zoom controls: navigate the view without locking the cursor
@@ -96,11 +96,12 @@ public:
     // Standalone panel listing available worlds as buttons. Clicking a non-current
     // world sets stats.world_switch_requested; main handles the swap next frame.
     void draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& stats);
-    void draw_lighting_panel(ViewerStats& stats);
 
 private:
     bool initialize_vulkan_backend(VkFormat format, std::uint32_t image_count,
                                    std::string& error);
+    bool prepare_vulkan_backend(const matter::VulkanFrame& frame,
+                                std::string& error);
     matter::VulkanDevice* vulkan_ = nullptr;
     std::uint64_t descriptor_pool_ = 0;
     std::uint32_t image_count_ = 0;

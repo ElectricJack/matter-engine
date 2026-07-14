@@ -3125,6 +3125,10 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
     if (loaded.lod_mesh_data.empty()) return true;
     viewer::VkScenePart part;
     part.part_hash = part_hash;
+    const int material_count = MaterialRegistryCount();
+    std::vector<float> packed_materials(
+        static_cast<size_t>(material_count) * MATERIAL_FLOATS_PER_DEF);
+    MaterialRegistryPackForGPU(packed_materials.data());
     std::vector<uint32_t> mesh_offsets(loaded.lod_mesh_data.size(), UINT32_MAX);
     for (size_t mi = 0; mi < loaded.lod_mesh_data.size(); ++mi) {
         const auto& mesh = loaded.lod_mesh_data[mi];
@@ -3149,25 +3153,46 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                                   : -1;
             if (material_id >= 1000000) material_id -= 1000000;
             const MaterialDef* material = MaterialRegistryGet(material_id);
+            const bool packed_material =
+                material_id >= 0 && material_id < material_count;
+            const size_t material_base = packed_material
+                ? static_cast<size_t>(material_id) * MATERIAL_FLOATS_PER_DEF
+                : 0;
             float tint[4] = {1.0f, 1.0f, 1.0f, 0.0f};
             if (mesh.colors.size() >= c + 4) {
                 for (int channel = 0; channel < 4; ++channel)
                     tint[channel] = mesh.colors[c + channel] / 255.0f;
             }
             const float tint_strength = tint[3];
+            const float base_r = packed_material
+                ? packed_materials[material_base] : material->albedo[0];
+            const float base_g = packed_material
+                ? packed_materials[material_base + 1] : material->albedo[1];
+            const float base_b = packed_material
+                ? packed_materials[material_base + 2] : material->albedo[2];
+            const float roughness = packed_material
+                ? packed_materials[material_base + 3] : material->roughness;
+            const float metallic = packed_material
+                ? packed_materials[material_base + 4] : material->metallic;
+            const float emission = packed_material
+                ? packed_materials[material_base + 5] : material->emission;
+            const float ground_tileset_slot = packed_material
+                ? packed_materials[material_base + 11]
+                : static_cast<float>(material->groundTilesetSlot);
             vertex.albedo = {
-                material->albedo[0] * (1.0f - tint_strength) +
+                base_r * (1.0f - tint_strength) +
                     tint[0] * tint_strength,
-                material->albedo[1] * (1.0f - tint_strength) +
+                base_g * (1.0f - tint_strength) +
                     tint[1] * tint_strength,
-                material->albedo[2] * (1.0f - tint_strength) +
+                base_b * (1.0f - tint_strength) +
                     tint[2] * tint_strength,
-                material->emission};
+                1.0f};
             const float ao = mesh.texcoords.size() > uv + 1
                                  ? mesh.texcoords[uv + 1] : 1.0f;
-            vertex.orm = {material->roughness, material->metallic, ao,
-                          material_id >= 0 ? material_id / 255.0f : 0.0f};
-            if (material->groundTilesetSlot >= 0) {
+            vertex.orm = {roughness, metallic, ao,
+                          viewer::vulkan_encode_emission(emission)};
+            if (viewer::vulkan_material_uses_unsupported_texture(
+                    ground_tileset_slot)) {
                 static bool warned_texture_material = false;
                 if (!warned_texture_material) {
                     std::fprintf(stderr,

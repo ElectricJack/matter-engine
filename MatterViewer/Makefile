@@ -337,10 +337,6 @@ WIN_FEATURES = build/windows/build_features.txt
 # line so the static linker can resolve raylib's __imp_* references.
 WIN_LIBS    = $(BOX3D_DIR)/build-mingw/libbox3d.a -lwinpthread
 WIN_SYSTEM_LIBS = -lgdi32 -lwinmm -luser32 -lshell32
-ifeq ($(HAVE_CUDA),1)
-  WIN_LIBS += -Wl,--defsym,cuDevicePrimaryCtxRelease=cuDevicePrimaryCtxRelease_v2 \
-              ../Libraries/cuda-mingw/libnvcuda.dll.a -lcfgmgr32
-endif
 
 .PHONY: vulkan-preflight
 vulkan-preflight:
@@ -351,7 +347,7 @@ vulkan-preflight:
 
 $(WIN_FEATURES): vulkan-preflight
 	@mkdir -p $(dir $@)
-	@printf 'VULKAN=1\nCUDA=1\nOPTIX=1\nOPENGL=0\n' > $@
+	@printf 'VULKAN=1\nOPENGL=0\nCUDA_AVAILABLE=1\nOPTIX_AVAILABLE=1\nCUDA_ACTIVE=0\nOPTIX_ACTIVE=0\n' > $@
 
 # Standalone GLFW archive for Vulkan smoke tests.  Keep this separate from
 # raylib's GLFW objects so the existing OpenGL viewer path is unchanged.
@@ -432,7 +428,17 @@ build/windows/vulkan_smoke_tests.exe: \
 
 .PHONY: vulkan-smoke
 vulkan-smoke: vulkan-preflight $(GLFW_WIN_LIB) \
-              build/windows/vulkan_smoke_tests.exe
+              build/windows/vulkan_smoke_tests.exe \
+              build/windows/vulkan_compat_tests.exe
+
+build/windows/vulkan_compat_tests.exe: \
+        $(ME3_DIR)/tests/vulkan_compat_tests.cpp \
+        $(ME3_DIR)/src/render/vulkan_only_compat.cpp
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) $^ -o $@ -std=c++17 -Wall -Wextra -Werror -static \
+	    -DMATTER_VULKAN_COMPAT_TESTING \
+	    -I$(ME3_DIR)/include -I$(ME3_DIR)/src \
+	    -I../Libraries/raylib/src
 
 # ---- Windows compile rules
 $(W_CPP_OBJ): $(W_DIR)/%.o: %.cpp | $(W_DIR)
@@ -449,7 +455,7 @@ $(W_CPP_OBJ): | embedded-shaders
 windows: $(WIN_FEATURES) $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) win-shaders-gpu $(W_ALL_OBJ)
 	$(WIN_CXX) $(W_ALL_OBJ) -o viewer.exe $(CFLAGS) -static -s -Wl,--gc-sections $(WIN_LIBS) $(GLFW_WIN_LIB) $(WIN_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 -Wl,-Bstatic
 	@imports="$$($(WIN_CXX) -print-prog-name=objdump -p viewer.exe)"; \
-	 for forbidden in opengl32 ChoosePixelFormat SetPixelFormat SwapBuffers cuGraphicsGL; do \
+	 for forbidden in opengl32 ChoosePixelFormat SetPixelFormat SwapBuffers cuGraphicsGL nvcuda cuDevice; do \
 	   echo "$$imports" | grep -qi "$$forbidden" && { echo "ERROR: forbidden PE import/symbol $$forbidden"; exit 1; } || true; \
 	 done
 
