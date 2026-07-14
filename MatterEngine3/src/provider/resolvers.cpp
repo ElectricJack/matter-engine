@@ -8,9 +8,19 @@
 
 namespace viewer {
 
+static uint64_t child_stable_id(uint64_t parent, uint64_t part_hash,
+                                uint32_t ordinal) {
+    uint64_t hash = parent ^ (part_hash + 0x9e3779b97f4a7c15ull +
+                              (parent << 6) + (parent >> 2));
+    hash ^= static_cast<uint64_t>(ordinal) + 0x9e3779b97f4a7c15ull +
+            (hash << 6) + (hash >> 2);
+    return hash == 0 ? 1 : hash;
+}
+
 static ResolvedInstance to_resolved(const WorldManifestEntry& e, int lod) {
     ResolvedInstance r;
     r.part_hash = e.part_hash;
+    r.stable_id = e.instance_id;
     r.lod_level = lod;
     std::memcpy(r.transform, e.transform, sizeof(r.transform));
     return r;
@@ -39,6 +49,7 @@ SectorLodResolver::resolve(const WorldState& state,
         for (const auto& e : state.entries()) {
             world_flatten::FlatInstance fi;
             fi.resolved_hash = e.part_hash;
+            fi.stable_id = e.instance_id;
             std::memcpy(fi.world.cell, e.transform, sizeof(fi.world.cell));  // mat4::cell[16]
             flat.push_back(fi);
         }
@@ -75,13 +86,19 @@ SectorLodResolver::resolve(const WorldState& state,
             if (pl && pl->inline_cutover > 0.0f && ps >= pl->inline_cutover) {
                 ResolvedInstance r;
                 r.part_hash = inst.resolved_hash;
+                r.stable_id = inst.stable_id;
                 r.lod_level = lod;
                 r.segment = 0;
                 std::memcpy(r.transform, inst.world.cell, sizeof(r.transform));
                 out.push_back(r);
-                for (const auto& ref : pl->refs) {
+                for (size_t ref_index = 0; ref_index < pl->refs.size();
+                     ++ref_index) {
+                    const auto& ref = pl->refs[ref_index];
                     ResolvedInstance cr;
                     cr.part_hash = ref.child_hash;
+                    cr.stable_id = child_stable_id(
+                        inst.stable_id, ref.child_hash,
+                        static_cast<uint32_t>(ref_index + 1));
                     cr.segment = 1;
                     matter::Mat4f parent{};
                     matter::Mat4f relative{};
@@ -103,6 +120,7 @@ SectorLodResolver::resolve(const WorldState& state,
             }
             ResolvedInstance r;
             r.part_hash = inst.resolved_hash;
+            r.stable_id = inst.stable_id;
             r.lod_level = lod;
             r.segment = 1;
             std::memcpy(r.transform, inst.world.cell, sizeof(r.transform));

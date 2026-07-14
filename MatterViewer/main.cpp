@@ -596,14 +596,17 @@ int main() {
                 fatal_error = true;
             }
         }
-        const bool frame_presented = vulkan->end_frame(frame, error);
-        session->finish_vulkan_frame(frame.serial, frame_presented && !fatal_error);
+        bool frame_presented = false;
+        const bool frame_completed =
+            vulkan->end_frame(frame, frame_presented, error);
+        session->finish_vulkan_frame(
+            frame.serial, frame_presented && !fatal_error);
         // end_frame() records the queue submit and present boundary. Keep this
         // separate from stats.frame_ms, which intentionally remains the local
         // CPU render-recording time shown by the interactive HUD.
         const double perf_frame_cadence_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - perf_frame_start).count();
-        if (!frame_presented) {
+        if (!frame_completed) {
             std::fprintf(stderr, "FATAL: end_frame: %s\n", error.c_str());
             fatal_error = true;
         } else if (capture) {

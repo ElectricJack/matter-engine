@@ -43,6 +43,8 @@ public:
 
     bool begin_frame(VulkanFrame& frame, std::string& error);
     bool end_frame(const VulkanFrame& frame, std::string& error);
+    bool end_frame(const VulkanFrame& frame, bool& presented,
+                   std::string& error);
     bool retain_for_frame(const VulkanFrame& frame,
                           std::vector<std::shared_ptr<void>> resources,
                           std::string& error);
@@ -71,6 +73,7 @@ public:
     // query. In that terminal case, preserve the logical device and children.
     void preserve_after_unproven_external_work() noexcept;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+    static bool test_present_result_was_presented(VkResult result);
     static uint32_t test_validation_error_total();
     const std::vector<std::string>& test_presentation_events() const;
     void test_clear_presentation_events();

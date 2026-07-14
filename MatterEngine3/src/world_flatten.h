@@ -23,6 +23,7 @@ using PartGraph = std::map<uint64_t, std::vector<ChildInstance>>;
 struct FlatInstance {
     uint64_t resolved_hash;
     mat4     world;
+    uint64_t stable_id = 0;
 };
 
 struct FlattenLimits {

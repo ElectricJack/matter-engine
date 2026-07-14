@@ -95,6 +95,10 @@ constexpr bool should_recreate_swapchain_after_present(
             result == VK_SUBOPTIMAL_KHR || acquired_suboptimal);
 }
 
+constexpr bool present_result_was_presented(VkResult result) {
+    return result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR;
+}
+
 static_assert(present_result_state(VK_ERROR_OUT_OF_HOST_MEMORY) ==
               PresentResultState::unchanged);
 static_assert(present_result_state(VK_ERROR_DEVICE_LOST) ==
@@ -1555,8 +1559,10 @@ struct VulkanDevice::Impl {
         return true;
     }
 
-    bool end_frame(const VulkanFrame& input, std::string& error) {
+    bool end_frame(const VulkanFrame& input, bool& presented,
+                   std::string& error) {
         error.clear();
+        presented = false;
         if (!ensure_healthy(error)) return false;
         if (!frame_active) {
             error = "end_frame called without an active frame";
@@ -1705,6 +1711,7 @@ struct VulkanDevice::Impl {
         }
         const VkResult present_result =
             streamline.queue_present(graphics_queue, &present);
+        presented = present_result_was_presented(present_result);
         const PresentResultState present_state =
             present_result_state(present_result);
         if (present_state == PresentResultState::completed_or_trackable) {
@@ -1970,7 +1977,13 @@ bool VulkanDevice::begin_frame(VulkanFrame& frame, std::string& error) {
 }
 
 bool VulkanDevice::end_frame(const VulkanFrame& frame, std::string& error) {
-    return impl_->end_frame(frame, error);
+    bool presented = false;
+    return impl_->end_frame(frame, presented, error);
+}
+
+bool VulkanDevice::end_frame(const VulkanFrame& frame, bool& presented,
+                             std::string& error) {
+    return impl_->end_frame(frame, presented, error);
 }
 
 bool VulkanDevice::retain_for_frame(
@@ -2130,6 +2143,10 @@ void VulkanDevice::preserve_after_unproven_external_work() noexcept {
     impl_->preserve_external_work = true;
 }
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+bool VulkanDevice::test_present_result_was_presented(VkResult result) {
+    return present_result_was_presented(result);
+}
+
 uint32_t VulkanDevice::test_validation_error_total() {
     return g_test_validation_error_total.load(std::memory_order_relaxed);
 }

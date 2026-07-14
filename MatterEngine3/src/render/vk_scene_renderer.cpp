@@ -24,7 +24,7 @@ struct alignas(16) FrameConstants {
     uint32_t temporal[4];
 };
 
-static_assert(sizeof(FrameConstants) == 272,
+static_assert(sizeof(FrameConstants) == 288,
               "FrameConstants must match the std140 shader block");
 static_assert(sizeof(VkCullStats) == 16,
               "VkCullStats must match the std430 stats block");
@@ -307,7 +307,7 @@ struct RasterReadbackRecord {
 void record_raster_readback(VkCommandBuffer command_buffer, void* user_data) {
     const auto& record = *static_cast<RasterReadbackRecord*>(user_data);
     // Each offset is aligned to its format's texel-block size (4 or 8 bytes).
-    constexpr VkDeviceSize offsets[6] = {0, 8, 16, 20, 24, 28};
+    constexpr VkDeviceSize offsets[6] = {0, 8, 16, 20, 24, 32};
     for (size_t i = 0; i < 6; ++i) {
         transition_for_use(command_buffer, *record.images[i],
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -352,6 +352,10 @@ float half_to_float(uint16_t value) {
 }  // namespace
 
 namespace vk_scene_detail {
+
+size_t frame_constants_size_for_test() noexcept {
+    return sizeof(FrameConstants);
+}
 
 bool checked_mul_to_device_size(size_t count, size_t element_size,
                                 VkDeviceSize& result, const char* label,
@@ -1389,9 +1393,7 @@ bool VkSceneRenderer::update_instances(
         GpuInstance instance{};
         instance.object_to_world = pack_glsl_mat4(source.object_to_world);
         instance.previous_object_to_world = instance.object_to_world;
-        const uint64_t stable_id = source.instance_id != 0
-                                       ? source.instance_id
-                                       : static_cast<uint64_t>(source_index + 1);
+        const uint64_t stable_id = source.instance_id;
         const auto temporal = std::find_if(
             temporal_frame_.instances.begin(), temporal_frame_.instances.end(),
             [stable_id](const TemporalInstanceFrame& item) {
@@ -2282,7 +2284,7 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
         return false;
     }
     matter::VkBufferResource staging;
-    constexpr VkDeviceSize readback_size = 36;
+    constexpr VkDeviceSize readback_size = 40;
     if (!matter::create_buffer(
             *vulkan_, readback_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
@@ -2329,7 +2331,7 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
     uint16_t velocity_half[2]{};
     std::memcpy(velocity_half, bytes.data() + 20, sizeof(velocity_half));
     std::memcpy(&pixel.depth, bytes.data() + 24, sizeof(pixel.depth));
-    std::memcpy(hdr_half, bytes.data() + 28, sizeof(hdr_half));
+    std::memcpy(hdr_half, bytes.data() + 32, sizeof(hdr_half));
     pixel.normal = {half_to_float(normal_half[0]),
                     half_to_float(normal_half[1]),
                     half_to_float(normal_half[2]),

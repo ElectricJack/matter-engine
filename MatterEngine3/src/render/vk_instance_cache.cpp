@@ -16,6 +16,7 @@ uint64_t fingerprint_resolved_instances(
     };
     for (const ResolvedInstance& instance : resolved) {
         fold(&instance.part_hash, sizeof(instance.part_hash));
+        fold(&instance.stable_id, sizeof(instance.stable_id));
         fold(instance.transform, sizeof(instance.transform));
         fold(&instance.segment, sizeof(instance.segment));
     }

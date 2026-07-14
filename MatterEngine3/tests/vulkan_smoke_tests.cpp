@@ -57,6 +57,13 @@ void run_streamline_bridge_fallback_tests() {
 }
 
 void run_streamline_presentation_funnel_tests(matter::VulkanDevice& vulkan) {
+    CHECK(matter::VulkanDevice::test_present_result_was_presented(VK_SUCCESS) &&
+              matter::VulkanDevice::test_present_result_was_presented(VK_SUBOPTIMAL_KHR) &&
+              !matter::VulkanDevice::test_present_result_was_presented(
+                  VK_ERROR_OUT_OF_DATE_KHR) &&
+              !matter::VulkanDevice::test_present_result_was_presented(
+                  VK_ERROR_SURFACE_LOST_KHR),
+          "end-frame outcome distinguishes actual presentation from recreation");
     std::string error;
     const auto has_common_present = [&]() {
         const auto& events = vulkan.test_presentation_events();
@@ -90,7 +97,9 @@ void run_streamline_presentation_funnel_tests(matter::VulkanDevice& vulkan) {
     vulkan.test_clear_presentation_events();
     CHECK(vulkan.begin_frame(submitted, error),
           error.empty() ? "begin successful presentation frame" : error.c_str());
-    CHECK(vulkan.end_frame(submitted, error),
+    bool actually_presented = false;
+    CHECK(vulkan.end_frame(submitted, actually_presented, error) &&
+              actually_presented,
           error.empty() ? "end successful presentation frame" : error.c_str());
     const auto& successful_events = vulkan.test_presentation_events();
     const auto acquire = std::find(successful_events.begin(),
@@ -326,6 +335,11 @@ void run_vulkan_temporal_tests() {
               std::fabs(static_velocity.x) < 1e-6f &&
               std::fabs(static_velocity.y) < 1e-6f,
           "static camera and rigid instance produce zero temporal velocity");
+    CHECK(std::fabs(static_frame.current_jittered.world_to_clip.m[3] -
+                    static_frame.previous_jittered.world_to_clip.m[3]) < 1e-6f &&
+              std::fabs(static_frame.current_jittered.world_to_clip.m[7] -
+                        static_frame.previous_jittered.world_to_clip.m[7]) < 1e-6f,
+          "current and previous projections use the candidate Halton jitter convention");
     CHECK(temporal.commit_presented(static_frame.attempt_token),
           "second successful presentation advances temporal history");
 
@@ -390,15 +404,45 @@ void run_vulkan_temporal_tests() {
           "failed presentation forces reset and never reuses attempt token");
     CHECK(!temporal.commit_presented(failed_token),
           "stale failed attempt token cannot commit temporal history");
+
+    viewer::TemporalState stable_ids;
+    const uint64_t a_id = viewer::temporal_instance_id(41, 1001, 0);
+    const uint64_t b_id = viewer::temporal_instance_id(42, 1002, 0);
+    viewer::TemporalFrame two = stable_ids.begin(
+        camera, {100, 80}, {100, 80},
+        {{a_id, identity_matrix()}, {b_id, identity_matrix()}}, {});
+    CHECK(stable_ids.commit_presented(two.attempt_token),
+          "two-instance temporal baseline commits");
+    viewer::TemporalFrame only_b = stable_ids.begin(
+        camera, {100, 80}, {100, 80}, {{b_id, identity_matrix()}}, {});
+    CHECK(!only_b.reset && only_b.instances.size() == 1 &&
+              only_b.instances[0].instance_id == b_id &&
+              only_b.instances[0].history_valid,
+          "stable rigid identity survives [A,B] to [B] compaction");
+    CHECK(stable_ids.commit_presented(only_b.attempt_token),
+          "single surviving instance commits");
+    viewer::TemporalFrame empty = stable_ids.begin(
+        camera, {100, 80}, {100, 80}, {}, {});
+    CHECK(stable_ids.commit_presented(empty.attempt_token),
+          "presented clear frame advances empty temporal history");
+    viewer::TemporalFrame returning_b = stable_ids.begin(
+        camera, {100, 80}, {100, 80}, {{b_id, identity_matrix()}}, {});
+    CHECK(returning_b.reset && !returning_b.instances[0].history_valid,
+          "instance returning after presented clear frame resets history");
+
+    CHECK(viewer::vk_scene_detail::frame_constants_size_for_test() == 288,
+          "C++ FrameConstants matches final std140 uvec4 padding and size");
 }
 
 void run_vulkan_instance_cache_tests() {
     viewer::ResolvedInstance a{};
     a.part_hash = 11;
+    a.stable_id = 41;
     a.segment = 0;
     a.transform[0] = a.transform[5] = a.transform[10] = a.transform[15] = 1.0f;
     viewer::ResolvedInstance b = a;
     b.part_hash = 12;
+    b.stable_id = 42;
     std::vector<viewer::ResolvedInstance> roots{a, b};
 
     viewer::VulkanInstanceCache cache;

@@ -13,6 +13,7 @@ namespace viewer {
 // An instance the composer should record this frame, with its chosen LOD level.
 struct ResolvedInstance {
     uint64_t part_hash  = 0;
+    uint64_t stable_id  = 0;          // authoritative world/path identity
     int      lod_level  = 0;          // index into the part's LOD levels
     int      segment    = 1;          // 0 = fine (trunk only), 1 = coarse/merged (default)
     float    transform[16] = {0};     // row-major world placement

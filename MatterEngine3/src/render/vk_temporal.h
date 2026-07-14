@@ -55,7 +55,6 @@ public:
 private:
     struct PresentedState {
         FrameMatrices unjittered{};
-        FrameMatrices jittered{};
         VkExtent2D internal_extent{};
         VkExtent2D output_extent{};
         std::map<std::uint64_t, matter::Mat4f> transforms;
@@ -78,5 +77,8 @@ private:
 matter::Float3 temporal_velocity_pixels(const TemporalFrame& frame,
                                         std::uint64_t instance_id,
                                         matter::Float3 local_position);
+std::uint64_t temporal_instance_id(std::uint64_t source_instance_id,
+                                   std::uint64_t part_hash,
+                                   std::uint32_t child_ordinal);
 
 }  // namespace viewer

@@ -55,6 +55,7 @@ bool checked_dispatch_groups(uint32_t instance_count,
                              std::string& error);
 bool checked_size_to_int(size_t count, int& result, const char* label,
                          std::string& error);
+size_t frame_constants_size_for_test() noexcept;
 }  // namespace vk_scene_detail
 
 static_assert(sizeof(DrawCommand) == sizeof(VkDrawIndirectCommand),

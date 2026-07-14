@@ -112,7 +112,6 @@ bool TemporalState::commit_presented(std::uint64_t attempt_token) {
     if (!has_candidate_ || candidate_.frame.attempt_token != attempt_token)
         return false;
     presented_.unjittered = candidate_.frame.current_unjittered;
-    presented_.jittered = candidate_.frame.current_jittered;
     presented_.internal_extent = candidate_.frame.internal_extent;
     presented_.output_extent = candidate_.frame.output_extent;
     presented_.transforms = std::move(candidate_.transforms);
@@ -165,6 +164,21 @@ matter::Float3 temporal_velocity_pixels(const TemporalFrame& frame,
              previous_clip.y / previous_clip.w) *
                 0.5f * static_cast<float>(frame.internal_extent.height),
             0.0f};
+}
+
+std::uint64_t temporal_instance_id(std::uint64_t source_instance_id,
+                                   std::uint64_t part_hash,
+                                   std::uint32_t child_ordinal) {
+    std::uint64_t hash = 1469598103934665603ull;
+    const auto fold = [&hash](const void* bytes, std::size_t size) {
+        const auto* input = static_cast<const unsigned char*>(bytes);
+        for (std::size_t index = 0; index < size; ++index)
+            hash = (hash ^ input[index]) * 1099511628211ull;
+    };
+    fold(&source_instance_id, sizeof(source_instance_id));
+    fold(&part_hash, sizeof(part_hash));
+    fold(&child_ordinal, sizeof(child_ordinal));
+    return hash == 0 ? 1 : hash;
 }
 
 }  // namespace viewer
