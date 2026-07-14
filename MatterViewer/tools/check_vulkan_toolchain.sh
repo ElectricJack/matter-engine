@@ -37,6 +37,8 @@ case "$HAVE_STREAMLINE" in
         require_file 'Streamline header' "$STREAMLINE_PATH/include/sl.h"
         require_file 'Streamline Vulkan helper header' \
             "$STREAMLINE_PATH/include/sl_helpers_vk.h"
+        require_file 'Streamline security header' \
+            "$STREAMLINE_PATH/include/sl_security.h"
         require_file 'signed Streamline interposer DLL' \
             "$STREAMLINE_DLL_DIR/sl.interposer.dll"
         ;;

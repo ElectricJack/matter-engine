@@ -4,6 +4,7 @@
 #include <array>
 #include <cstring>
 #include <sstream>
+#include <utility>
 
 #if defined(MATTER_HAVE_STREAMLINE) && MATTER_HAVE_STREAMLINE
 #include <windows.h>
@@ -33,6 +34,22 @@ void merge_feature_bits(Features& destination, const Features& source) {
                                   ? VK_TRUE
                                   : VK_FALSE;
     }
+}
+
+template <typename Features>
+bool required_feature_bits_supported(const Features& required,
+                                    const Features& supported) {
+    constexpr size_t kFirstFeature = sizeof(VkBaseOutStructure);
+    const auto* required_bits = reinterpret_cast<const VkBool32*>(
+        reinterpret_cast<const unsigned char*>(&required) + kFirstFeature);
+    const auto* supported_bits = reinterpret_cast<const VkBool32*>(
+        reinterpret_cast<const unsigned char*>(&supported) + kFirstFeature);
+    constexpr size_t kFeatureCount =
+        (sizeof(Features) - kFirstFeature) / sizeof(VkBool32);
+    for (size_t i = 0; i < kFeatureCount; ++i) {
+        if (required_bits[i] && !supported_bits[i]) return false;
+    }
+    return true;
 }
 
 #if defined(MATTER_HAVE_STREAMLINE) && MATTER_HAVE_STREAMLINE
@@ -110,6 +127,22 @@ StreamlineBridge StreamlineBridge::initialize_before_vulkan() {
         bridge.streamline_module_ = nullptr;
         return bridge;
     }
+    bridge.get_instance_proc_addr_proxy_ =
+        reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+            GetProcAddress(module, "vkGetInstanceProcAddr"));
+    bridge.get_device_proc_addr_proxy_ = reinterpret_cast<PFN_vkGetDeviceProcAddr>(
+        GetProcAddress(module, "vkGetDeviceProcAddr"));
+    if (!bridge.get_instance_proc_addr_proxy_ ||
+        !bridge.get_device_proc_addr_proxy_) {
+        bridge.disable("Streamline SDK is missing Vulkan manual-hook dispatchers");
+        return bridge;
+    }
+    bridge.create_instance_proxy_ = reinterpret_cast<PFN_vkCreateInstance>(
+        bridge.get_instance_proc_addr_proxy_(VK_NULL_HANDLE, "vkCreateInstance"));
+    if (!bridge.create_instance_proxy_) {
+        bridge.disable("Streamline SDK could not provide vkCreateInstance proxy");
+        return bridge;
+    }
 
     const std::array<sl::Feature, 1> features = {sl::kFeatureDLSS};
     sl::Preferences preferences{};
@@ -121,7 +154,7 @@ StreamlineBridge StreamlineBridge::initialize_before_vulkan() {
     const sl::Result init_result =
         reinterpret_cast<SlInitFn>(bridge.sl_init_)(preferences, sl::kSDKVersion);
     if (init_result != sl::Result::eOk) {
-        bridge.dlss_unavailable_reason_ = result_reason("slInit", init_result);
+        bridge.disable(result_reason("slInit", init_result));
         return bridge;
     }
     bridge.streamline_initialized_ = true;
@@ -131,8 +164,8 @@ StreamlineBridge StreamlineBridge::initialize_before_vulkan() {
         reinterpret_cast<SlGetFeatureRequirementsFn>(
             bridge.sl_get_feature_requirements_)(sl::kFeatureDLSS, requirements);
     if (requirements_result != sl::Result::eOk) {
-        bridge.dlss_unavailable_reason_ =
-            result_reason("slGetFeatureRequirements(DLSS)", requirements_result);
+        bridge.disable(
+            result_reason("slGetFeatureRequirements(DLSS)", requirements_result));
         return bridge;
     }
 
@@ -150,11 +183,30 @@ StreamlineBridge StreamlineBridge::initialize_before_vulkan() {
         requirements.vkNumFeatures13, requirements.vkFeatures13);
     bridge.additional_graphics_queues_ = requirements.vkNumGraphicsQueuesRequired;
     bridge.additional_compute_queues_ = requirements.vkNumComputeQueuesRequired;
+    bridge.use_proxy_dispatch_ = true;
 #else
     bridge.dlss_unavailable_reason_ =
         "Streamline SDK not found: build with HAVE_STREAMLINE=1 to enable DLSS";
 #endif
     return bridge;
+}
+
+bool StreamlineBridge::validate_requirements(
+    const VkPhysicalDeviceVulkan12Features& supported_features12,
+    const VkPhysicalDeviceVulkan13Features& supported_features13,
+    std::string& error) const {
+    if (!dlss_requested_) return true;
+    if (!required_feature_bits_supported(required_features12_,
+                                         supported_features12)) {
+        error = "Streamline requires unavailable Vulkan 1.2 feature bits";
+        return false;
+    }
+    if (!required_feature_bits_supported(required_features13_,
+                                         supported_features13)) {
+        error = "Streamline requires unavailable Vulkan 1.3 feature bits";
+        return false;
+    }
+    return true;
 }
 
 std::vector<const char*> StreamlineBridge::merge_extensions(
@@ -206,9 +258,8 @@ bool StreamlineBridge::set_vulkan_info(
     const sl::Result result =
         reinterpret_cast<SlSetVulkanInfoFn>(sl_set_vulkan_info_)(info);
     if (result == sl::Result::eOk) return true;
-    dlss_available_ = false;
-    dlss_unavailable_reason_ = result_reason("slSetVulkanInfo", result);
-    return false;
+    disable(result_reason("slSetVulkanInfo", result));
+    return true;
 #else
     (void)instance;
     (void)physical_device;
@@ -218,6 +269,29 @@ bool StreamlineBridge::set_vulkan_info(
     (void)compute_queue_family;
     (void)compute_queue_index;
     return true;
+#endif
+}
+
+void StreamlineBridge::disable(std::string reason) {
+    dlss_requested_ = false;
+    dlss_available_ = false;
+    use_proxy_dispatch_ = false;
+    dlss_unavailable_reason_ = std::move(reason);
+    instance_extensions_.clear();
+    device_extensions_.clear();
+    required_features12_ = {};
+    required_features13_ = {};
+    additional_graphics_queues_ = 0;
+    additional_compute_queues_ = 0;
+#if defined(MATTER_HAVE_STREAMLINE) && MATTER_HAVE_STREAMLINE
+    if (streamline_initialized_ && sl_shutdown_) {
+        reinterpret_cast<SlShutdownFn>(sl_shutdown_)();
+        streamline_initialized_ = false;
+    }
+    if (streamline_module_) {
+        FreeLibrary(static_cast<HMODULE>(streamline_module_));
+        streamline_module_ = nullptr;
+    }
 #endif
 }
 
@@ -234,12 +308,40 @@ void StreamlineBridge::shutdown() {
 #endif
 }
 
+bool StreamlineBridge::populate_instance_proxies(VkInstance instance) {
+    if (!get_instance_proc_addr_proxy_) return false;
+    create_device_proxy_ = reinterpret_cast<PFN_vkCreateDevice>(
+        get_instance_proc_addr_proxy_(instance, "vkCreateDevice"));
+    return create_device_proxy_ != nullptr;
+}
+
+bool StreamlineBridge::populate_device_proxies(VkDevice device) {
+    if (!get_device_proc_addr_proxy_) return false;
+    queue_present_proxy_ = reinterpret_cast<PFN_vkQueuePresentKHR>(
+        get_device_proc_addr_proxy_(device, "vkQueuePresentKHR"));
+    create_swapchain_proxy_ = reinterpret_cast<PFN_vkCreateSwapchainKHR>(
+        get_device_proc_addr_proxy_(device, "vkCreateSwapchainKHR"));
+    destroy_swapchain_proxy_ = reinterpret_cast<PFN_vkDestroySwapchainKHR>(
+        get_device_proc_addr_proxy_(device, "vkDestroySwapchainKHR"));
+    acquire_next_image_proxy_ = reinterpret_cast<PFN_vkAcquireNextImageKHR>(
+        get_device_proc_addr_proxy_(device, "vkAcquireNextImageKHR"));
+    device_wait_idle_proxy_ = reinterpret_cast<PFN_vkDeviceWaitIdle>(
+        get_device_proc_addr_proxy_(device, "vkDeviceWaitIdle"));
+    return queue_present_proxy_ && create_swapchain_proxy_ &&
+           destroy_swapchain_proxy_ && acquire_next_image_proxy_ &&
+           device_wait_idle_proxy_;
+}
+
 VkResult StreamlineBridge::create_instance(
     const VkInstanceCreateInfo* create, const VkAllocationCallbacks* allocator,
     VkInstance* instance) {
     if (use_proxy_dispatch_ && create_instance_proxy_) {
         proxy_dispatch_used_ = true;
-        return create_instance_proxy_(create, allocator, instance);
+        const VkResult result = create_instance_proxy_(create, allocator, instance);
+        if (result == VK_SUCCESS && !populate_instance_proxies(*instance)) {
+            disable("Streamline SDK could not provide vkCreateDevice proxy");
+        }
+        return result;
     }
     return vkCreateInstance(create, allocator, instance);
 }
@@ -249,7 +351,12 @@ VkResult StreamlineBridge::create_device(
     const VkAllocationCallbacks* allocator, VkDevice* device) {
     if (use_proxy_dispatch_ && create_device_proxy_) {
         proxy_dispatch_used_ = true;
-        return create_device_proxy_(physical_device, create, allocator, device);
+        const VkResult result =
+            create_device_proxy_(physical_device, create, allocator, device);
+        if (result == VK_SUCCESS && !populate_device_proxies(*device)) {
+            disable("Streamline SDK could not provide required Vulkan manual hooks");
+        }
+        return result;
     }
     return vkCreateDevice(physical_device, create, allocator, device);
 }

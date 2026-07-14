@@ -36,12 +36,19 @@ public:
                              VkPhysicalDeviceVulkan13Features& features13,
                              uint32_t& graphics_queue_count,
                              uint32_t& compute_queue_count) const;
+    bool validate_requirements(
+        const VkPhysicalDeviceVulkan12Features& supported_features12,
+        const VkPhysicalDeviceVulkan13Features& supported_features13,
+        std::string& error) const;
 
     bool set_vulkan_info(VkInstance instance, VkPhysicalDevice physical_device,
                          VkDevice device, uint32_t graphics_queue_family,
                          uint32_t graphics_queue_index,
                          uint32_t compute_queue_family,
                          uint32_t compute_queue_index);
+    // Disabling Streamline is always fail-open: the caller continues through
+    // the native Vulkan path with no residual feature or queue requirements.
+    void disable(std::string reason);
     void shutdown();
 
     // All Vulkan calls pass through these wrappers.  They use native Vulkan
@@ -85,12 +92,17 @@ private:
     void* sl_set_vulkan_info_ = nullptr;
     void* sl_shutdown_ = nullptr;
     PFN_vkCreateInstance create_instance_proxy_ = nullptr;
+    PFN_vkGetInstanceProcAddr get_instance_proc_addr_proxy_ = nullptr;
+    PFN_vkGetDeviceProcAddr get_device_proc_addr_proxy_ = nullptr;
     PFN_vkCreateDevice create_device_proxy_ = nullptr;
     PFN_vkQueuePresentKHR queue_present_proxy_ = nullptr;
     PFN_vkCreateSwapchainKHR create_swapchain_proxy_ = nullptr;
     PFN_vkDestroySwapchainKHR destroy_swapchain_proxy_ = nullptr;
     PFN_vkAcquireNextImageKHR acquire_next_image_proxy_ = nullptr;
     PFN_vkDeviceWaitIdle device_wait_idle_proxy_ = nullptr;
+
+    bool populate_instance_proxies(VkInstance instance);
+    bool populate_device_proxies(VkDevice device);
 };
 
 }  // namespace matter

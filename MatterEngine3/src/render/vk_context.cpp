@@ -576,12 +576,6 @@ struct VulkanDevice::Impl {
         queue = find_graphics_present_queue(candidate, surface);
         if (queue.family == std::numeric_limits<uint32_t>::max()) {
             missing.emplace_back("graphics+present queue family");
-        } else if (required_graphics_queues > queue.queue_count) {
-            missing.emplace_back("enough graphics queues for Streamline");
-        }
-        if (required_compute_queues != 0) {
-            missing.emplace_back(
-                "dedicated Streamline compute queue family is not implemented");
         }
 
         VkPhysicalDeviceFeatures2 features2{
@@ -594,6 +588,11 @@ struct VulkanDevice::Impl {
         features12.pNext = &features13;
         features13.pNext = &maintenance1;
         vkGetPhysicalDeviceFeatures2(candidate, &features2);
+        std::string streamline_feature_error;
+        if (!streamline.validate_requirements(features12, features13,
+                                              streamline_feature_error)) {
+            missing.emplace_back(streamline_feature_error);
+        }
         if (!features2.features.drawIndirectFirstInstance) {
             missing.emplace_back(
                 "VkPhysicalDeviceFeatures::drawIndirectFirstInstance");
@@ -810,9 +809,29 @@ struct VulkanDevice::Impl {
         streamline.append_requirements(
             streamline_instance_extensions, extensions, features12, features13,
             graphics_queue_count, compute_queue_count);
-        if (compute_queue_count != 0) {
-            error = "Streamline requested a dedicated compute queue family, which is unavailable in this Vulkan backend";
-            return false;
+        uint32_t queue_family_count = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(physical_device,
+                                                 &queue_family_count, nullptr);
+        std::vector<VkQueueFamilyProperties> queue_families(queue_family_count);
+        vkGetPhysicalDeviceQueueFamilyProperties(physical_device,
+                                                 &queue_family_count,
+                                                 queue_families.data());
+        if (compute_queue_count != 0 ||
+            graphics_queue_family >= queue_families.size() ||
+            graphics_queue_count >
+                queue_families[graphics_queue_family].queueCount) {
+            streamline.disable(
+                "Streamline queue requirements are unavailable; using native Vulkan fallback");
+            extensions = {
+                VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+                VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,
+                VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME,
+                VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME,
+            };
+            features12 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+            features13 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+            graphics_queue_count = 1;
+            compute_queue_count = 0;
         }
         std::vector<float> priorities(graphics_queue_count, 1.0f);
         VkDeviceQueueCreateInfo queue_create{
@@ -859,11 +878,9 @@ struct VulkanDevice::Impl {
             std::make_shared<detail::DeviceAccessToken>(device);
         vkGetDeviceQueue(device, graphics_queue_family, 0, &graphics_queue);
         if (!streamline.set_vulkan_info(
-                instance, physical_device, device, graphics_queue_family, 1,
-                graphics_queue_family, graphics_queue_count)) {
-            error = streamline.dlss_unavailable_reason();
+                instance, physical_device, device, graphics_queue_family, 0,
+                graphics_queue_family, 0))
             return false;
-        }
         release_swapchain_images =
             reinterpret_cast<PFN_vkReleaseSwapchainImagesEXT>(
                 vkGetDeviceProcAddr(device, "vkReleaseSwapchainImagesEXT"));
