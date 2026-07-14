@@ -3,6 +3,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "matter/camera.h"
 
@@ -10,6 +11,8 @@
 #include "matter/query.h"
 
 namespace matter {
+
+struct VulkanFrame;
 
 struct WorldDesc {
     const char* schemas_dir    = nullptr;
@@ -73,6 +76,13 @@ public:
     // currently bound framebuffer. Requires a live GL context on this thread.
     void render(const CameraDesc& cam, int fb_width, int fb_height,
                 const RenderOptions& opts);
+
+    bool render(const CameraDesc& cam, const VulkanFrame& frame,
+                const RenderOptions& opts, std::string& err);
+
+    bool readback_swapchain_rgba8(const VulkanFrame& frame,
+                                  std::vector<uint8_t>& rgba,
+                                  std::string& err);
 
     // Phase B: run queued GL-thread bake work for up to ms_budget milliseconds.
     // Call once per frame on the thread that owns the GL context. Whole jobs

@@ -1,3 +1,6 @@
+#if defined(_WIN32) && !defined(VK_USE_PLATFORM_WIN32_KHR)
+#define VK_USE_PLATFORM_WIN32_KHR
+#endif
 #include "matter/vulkan_device.h"
 
 #define GLFW_INCLUDE_NONE
@@ -233,6 +236,33 @@ VkSurfaceFormatKHR choose_surface_format(
     return formats.front();
 }
 
+std::vector<std::string> missing_presentation_blit_features(
+    VkPhysicalDevice device, VkFormat swapchain_format) {
+    VkFormatProperties2 hdr{VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2};
+    VkFormatProperties2 present{VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2};
+    vkGetPhysicalDeviceFormatProperties2(
+        device, VK_FORMAT_R16G16B16A16_SFLOAT, &hdr);
+    vkGetPhysicalDeviceFormatProperties2(device, swapchain_format, &present);
+
+    std::vector<std::string> missing;
+    const VkFormatFeatureFlags hdr_required =
+        VK_FORMAT_FEATURE_BLIT_SRC_BIT |
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+    if ((hdr.formatProperties.optimalTilingFeatures & hdr_required) !=
+        hdr_required) {
+        missing.emplace_back(
+            "VK_FORMAT_R16G16B16A16_SFLOAT optimal-tiling "
+            "VK_FORMAT_FEATURE_BLIT_SRC_BIT+"
+            "VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT");
+    }
+    if ((present.formatProperties.optimalTilingFeatures &
+         VK_FORMAT_FEATURE_BLIT_DST_BIT) == 0) {
+        missing.emplace_back(
+            "swapchain format optimal-tiling VK_FORMAT_FEATURE_BLIT_DST_BIT");
+    }
+    return missing;
+}
+
 }  // namespace
 
 struct VulkanDevice::Impl {
@@ -262,6 +292,7 @@ struct VulkanDevice::Impl {
     VkFormat swapchain_format = VK_FORMAT_UNDEFINED;
     VkExtent2D swapchain_extent{};
     std::vector<VkImage> swapchain_images;
+    std::vector<VkImageView> swapchain_image_views;
     std::vector<bool> swapchain_image_initialized;
     std::vector<VkSemaphore> render_finished;
     std::vector<VkFence> present_fences;
@@ -278,6 +309,23 @@ struct VulkanDevice::Impl {
     detail::DeviceRetainedResource* retained_resources = nullptr;
     std::string poison_error;
     VulkanFrame active_frame{};
+    VkBuffer readback_buffer = VK_NULL_HANDLE;
+    VkDeviceMemory readback_memory = VK_NULL_HANDLE;
+    VkDeviceSize readback_size = 0;
+    std::vector<uint8_t>* readback_output = nullptr;
+    VkFormat readback_format = VK_FORMAT_UNDEFINED;
+
+    void clear_readback() {
+        if (readback_buffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device, readback_buffer, nullptr);
+        if (readback_memory != VK_NULL_HANDLE)
+            vkFreeMemory(device, readback_memory, nullptr);
+        readback_buffer = VK_NULL_HANDLE;
+        readback_memory = VK_NULL_HANDLE;
+        readback_size = 0;
+        readback_output = nullptr;
+        readback_format = VK_FORMAT_UNDEFINED;
+    }
 
     bool poison_device(std::string& error, const char* reason) {
         if (!device_poisoned) {
@@ -616,6 +664,11 @@ struct VulkanDevice::Impl {
             } else {
                 if (support.formats.empty()) {
                     missing.emplace_back("nonempty surface format list");
+                } else {
+                    auto format_missing = missing_presentation_blit_features(
+                        candidate, choose_surface_format(support.formats).format);
+                    missing.insert(missing.end(), format_missing.begin(),
+                                   format_missing.end());
                 }
                 if (support.present_modes.empty()) {
                     missing.emplace_back("nonempty present mode list");
@@ -813,6 +866,13 @@ struct VulkanDevice::Impl {
         }
         const VkSurfaceFormatKHR format =
             choose_surface_format(support.formats);
+        const auto format_missing =
+            missing_presentation_blit_features(physical_device, format.format);
+        if (!format_missing.empty()) {
+            error = "presentation blit format capabilities missing: " +
+                    join(format_missing, ", ");
+            return false;
+        }
         uint32_t image_count = support.capabilities.minImageCount + 1;
         if (support.capabilities.maxImageCount != 0) {
             image_count =
@@ -827,7 +887,16 @@ struct VulkanDevice::Impl {
         create.imageColorSpace = format.colorSpace;
         create.imageExtent = extent;
         create.imageArrayLayers = 1;
-        create.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        const VkImageUsageFlags required_usage =
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        if ((support.capabilities.supportedUsageFlags & required_usage) !=
+            required_usage) {
+            error = "swapchain lacks color/transfer-src/transfer-dst image usage";
+            return false;
+        }
+        create.imageUsage = required_usage;
         create.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
         create.preTransform = support.capabilities.currentTransform;
         constexpr std::array<VkCompositeAlphaFlagBitsKHR, 4> composite_modes = {
@@ -869,13 +938,34 @@ struct VulkanDevice::Impl {
             vkDestroySwapchainKHR(device, replacement, nullptr);
             return vk_ok(result, "vkGetSwapchainImagesKHR", error);
         }
-        if (old_swapchain != VK_NULL_HANDLE) {
-            vkDestroySwapchainKHR(device, old_swapchain, nullptr);
+        std::vector<VkImageView> views(actual_count, VK_NULL_HANDLE);
+        for (uint32_t i = 0; i < actual_count; ++i) {
+            VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+            view.image = images[i];
+            view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            view.format = format.format;
+            view.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            view.subresourceRange.levelCount = 1;
+            view.subresourceRange.layerCount = 1;
+            if (!vk_ok(vkCreateImageView(device, &view, nullptr, &views[i]),
+                       "vkCreateImageView(swapchain)", error)) {
+                for (VkImageView created : views)
+                    if (created != VK_NULL_HANDLE)
+                        vkDestroyImageView(device, created, nullptr);
+                vkDestroySwapchainKHR(device, replacement, nullptr);
+                return false;
+            }
         }
+        for (VkImageView old_view : swapchain_image_views)
+            if (old_view != VK_NULL_HANDLE)
+                vkDestroyImageView(device, old_view, nullptr);
+        if (old_swapchain != VK_NULL_HANDLE)
+            vkDestroySwapchainKHR(device, old_swapchain, nullptr);
         swapchain = replacement;
         swapchain_format = format.format;
         swapchain_extent = extent;
         swapchain_images = std::move(images);
+        swapchain_image_views = std::move(views);
         swapchain_image_initialized.assign(swapchain_images.size(), false);
         return true;
     }
@@ -1139,13 +1229,111 @@ struct VulkanDevice::Impl {
         vkCmdPipelineBarrier2(slot.command_buffer, &to_color_dependency);
 
         output.command_buffer = slot.command_buffer;
+        output.swapchain_image = swapchain_images[image_index];
+        output.swapchain_image_view = swapchain_image_views[image_index];
+        output.swapchain_format = swapchain_format;
         output.image_index = image_index;
+        output.image_count = static_cast<uint32_t>(swapchain_images.size());
         output.extent = swapchain_extent;
         output.serial = next_serial++;
         output.swapchain_recreated = report_recreated;
         report_recreated = false;
         active_frame = output;
         frame_active = true;
+        return true;
+    }
+
+    bool queue_readback(const VulkanFrame& input, std::vector<uint8_t>& rgba,
+                        std::string& error) {
+        if (!frame_active || input.serial != active_frame.serial ||
+            input.image_index != active_frame.image_index) {
+            error = "swapchain readback requires the active VulkanFrame";
+            return false;
+        }
+        if (readback_output) {
+            error = "only one swapchain readback may be queued per frame";
+            return false;
+        }
+        if (swapchain_format != VK_FORMAT_B8G8R8A8_UNORM &&
+            swapchain_format != VK_FORMAT_B8G8R8A8_SRGB &&
+            swapchain_format != VK_FORMAT_R8G8B8A8_UNORM &&
+            swapchain_format != VK_FORMAT_R8G8B8A8_SRGB) {
+            error = "unsupported swapchain readback format";
+            return false;
+        }
+        clear_readback();
+        readback_size = static_cast<VkDeviceSize>(swapchain_extent.width) *
+                        swapchain_extent.height * 4u;
+        VkBufferCreateInfo buffer{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        buffer.size = readback_size;
+        buffer.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        if (!vk_ok(vkCreateBuffer(device, &buffer, nullptr, &readback_buffer),
+                   "vkCreateBuffer(swapchain readback)", error)) return false;
+        VkMemoryRequirements requirements{};
+        vkGetBufferMemoryRequirements(device, readback_buffer, &requirements);
+        VkPhysicalDeviceMemoryProperties properties{};
+        vkGetPhysicalDeviceMemoryProperties(physical_device, &properties);
+        uint32_t memory_type = UINT32_MAX;
+        for (uint32_t i = 0; i < properties.memoryTypeCount; ++i) {
+            if ((requirements.memoryTypeBits & (1u << i)) == 0) continue;
+            const auto flags = properties.memoryTypes[i].propertyFlags;
+            if ((flags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                          VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
+                (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) {
+                memory_type = i;
+                break;
+            }
+        }
+        if (memory_type == UINT32_MAX) {
+            error = "no host-coherent memory for swapchain readback";
+            clear_readback();
+            return false;
+        }
+        VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        allocate.allocationSize = requirements.size;
+        allocate.memoryTypeIndex = memory_type;
+        if (!vk_ok(vkAllocateMemory(device, &allocate, nullptr,
+                                    &readback_memory),
+                   "vkAllocateMemory(swapchain readback)", error) ||
+            !vk_ok(vkBindBufferMemory(device, readback_buffer,
+                                      readback_memory, 0),
+                   "vkBindBufferMemory(swapchain readback)", error)) {
+            clear_readback();
+            return false;
+        }
+        VkImageMemoryBarrier2 to_transfer{
+            VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+        to_transfer.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        to_transfer.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+        to_transfer.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        to_transfer.dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
+        to_transfer.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        to_transfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        to_transfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        to_transfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        to_transfer.image = swapchain_images[input.image_index];
+        to_transfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        to_transfer.subresourceRange.levelCount = 1;
+        to_transfer.subresourceRange.layerCount = 1;
+        VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dependency.imageMemoryBarrierCount = 1;
+        dependency.pImageMemoryBarriers = &to_transfer;
+        vkCmdPipelineBarrier2(input.command_buffer, &dependency);
+        VkBufferImageCopy copy{};
+        copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copy.imageSubresource.layerCount = 1;
+        copy.imageExtent = {swapchain_extent.width, swapchain_extent.height, 1};
+        vkCmdCopyImageToBuffer(input.command_buffer,
+                               swapchain_images[input.image_index],
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               readback_buffer, 1, &copy);
+        std::swap(to_transfer.srcStageMask, to_transfer.dstStageMask);
+        std::swap(to_transfer.srcAccessMask, to_transfer.dstAccessMask);
+        std::swap(to_transfer.oldLayout, to_transfer.newLayout);
+        vkCmdPipelineBarrier2(input.command_buffer, &dependency);
+        readback_output = &rgba;
+        readback_format = swapchain_format;
         return true;
     }
 
@@ -1314,6 +1502,33 @@ struct VulkanDevice::Impl {
             return false;
         }
 
+        if (readback_output) {
+            if (!vk_ok(vkWaitForFences(device, 1, &slot.fence, VK_TRUE,
+                                       std::numeric_limits<uint64_t>::max()),
+                       "vkWaitForFences(swapchain readback)", error)) {
+                clear_readback();
+                abandon_active_frame();
+                return false;
+            }
+            void* mapped = nullptr;
+            if (!vk_ok(vkMapMemory(device, readback_memory, 0, readback_size, 0,
+                                   &mapped),
+                       "vkMapMemory(swapchain readback)", error)) {
+                clear_readback();
+                abandon_active_frame();
+                return false;
+            }
+            readback_output->assign(static_cast<uint8_t*>(mapped),
+                                    static_cast<uint8_t*>(mapped) + readback_size);
+            vkUnmapMemory(device, readback_memory);
+            if (readback_format == VK_FORMAT_B8G8R8A8_UNORM ||
+                readback_format == VK_FORMAT_B8G8R8A8_SRGB) {
+                for (size_t i = 0; i < readback_output->size(); i += 4)
+                    std::swap((*readback_output)[i], (*readback_output)[i + 2]);
+            }
+            clear_readback();
+        }
+
         if (!vk_ok(vkResetFences(device, 1,
                                  &present_fences[input.image_index]),
                    "vkResetFences(present completion)", error)) {
@@ -1467,6 +1682,10 @@ struct VulkanDevice::Impl {
         for (VkFence fence : present_fences) {
             if (fence != VK_NULL_HANDLE) vkDestroyFence(device, fence, nullptr);
         }
+        clear_readback();
+        for (VkImageView view : swapchain_image_views) {
+            if (view != VK_NULL_HANDLE) vkDestroyImageView(device, view, nullptr);
+        }
         if (swapchain != VK_NULL_HANDLE)
             vkDestroySwapchainKHR(device, swapchain, nullptr);
         if (device != VK_NULL_HANDLE) {
@@ -1558,6 +1777,12 @@ bool VulkanDevice::begin_frame(VulkanFrame& frame, std::string& error) {
 
 bool VulkanDevice::end_frame(const VulkanFrame& frame, std::string& error) {
     return impl_->end_frame(frame, error);
+}
+
+bool VulkanDevice::readback_swapchain_rgba8(const VulkanFrame& frame,
+                                            std::vector<uint8_t>& rgba,
+                                            std::string& error) {
+    return impl_->queue_readback(frame, rgba, error);
 }
 
 bool VulkanDevice::submit_and_wait(VkCommandBuffer command_buffer,
@@ -1676,6 +1901,12 @@ VkDevice VulkanDevice::device() const { return impl_->device; }
 VkQueue VulkanDevice::graphics_queue() const { return impl_->graphics_queue; }
 uint32_t VulkanDevice::graphics_queue_family() const {
     return impl_->graphics_queue_family;
+}
+
+VkFormat VulkanDevice::swapchain_format() const { return impl_->swapchain_format; }
+
+uint32_t VulkanDevice::swapchain_image_count() const {
+    return static_cast<uint32_t>(impl_->swapchain_images.size());
 }
 bool VulkanDevice::draw_indirect_first_instance_enabled() const {
     return impl_->draw_indirect_first_instance_enabled;

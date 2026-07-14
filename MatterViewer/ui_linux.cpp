@@ -1,4 +1,4 @@
-#include "ui.h"
+#include "ui_linux.h"
 
 #include <cmath>
 #include <algorithm>
@@ -7,8 +7,7 @@
 
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
-#include "imgui_impl_vulkan.h"
-#include "matter/vulkan_device.h"
+#include "imgui_impl_opengl3.h"
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -50,117 +49,29 @@ std::vector<WorldEntry> scan_worlds(const std::string& examples_root) {
     return out;
 }
 
-bool Ui::setup(GLFWwindow* window, matter::VulkanDevice& vulkan,
-               std::string& error) {
-    vulkan_ = &vulkan;
-    image_count_ = vulkan.swapchain_image_count();
-    const VkDescriptorPoolSize pool_sizes[] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 128},
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 128},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 128},
-    };
-    VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    pool.maxSets = 384;
-    pool.poolSizeCount = 3;
-    pool.pPoolSizes = pool_sizes;
-    VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
-    const VkResult pool_result = vkCreateDescriptorPool(
-        vulkan.device(), &pool, nullptr, &descriptor_pool);
-    if (pool_result != VK_SUCCESS) {
-        error = "vkCreateDescriptorPool(ImGui) failed with VkResult " +
-                std::to_string(static_cast<int>(pool_result));
-        vulkan_ = nullptr;
-        return false;
-    }
-    descriptor_pool_ = reinterpret_cast<std::uint64_t>(descriptor_pool);
+void Ui::setup() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    imgui_context_initialized_ = true;
     ImGui::StyleColorsDark();
-    if (!ImGui_ImplGlfw_InitForVulkan(window, true)) {
-        error = "ImGui GLFW Vulkan initialization failed";
-        shutdown();
-        return false;
-    }
-    glfw_backend_initialized_ = true;
-    const VkFormat color_format = vulkan.swapchain_format();
-    ImGui_ImplVulkan_InitInfo init{};
-    init.ApiVersion = VK_API_VERSION_1_3;
-    init.Instance = vulkan.instance();
-    init.PhysicalDevice = vulkan.physical_device();
-    init.Device = vulkan.device();
-    init.QueueFamily = vulkan.graphics_queue_family();
-    init.Queue = vulkan.graphics_queue();
-    init.DescriptorPool = descriptor_pool;
-    init.MinImageCount = image_count_;
-    init.ImageCount = image_count_;
-    init.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
-    init.UseDynamicRendering = true;
-    init.PipelineRenderingCreateInfo = {
-        VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR};
-    init.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
-    init.PipelineRenderingCreateInfo.pColorAttachmentFormats = &color_format;
-    if (!ImGui_ImplVulkan_Init(&init)) {
-        error = "ImGui Vulkan initialization failed";
-        shutdown();
-        return false;
-    }
-    vulkan_backend_initialized_ = true;
-    return true;
+    ImGui_ImplGlfw_InitForOpenGL(glfwGetCurrentContext(), true);
+    ImGui_ImplOpenGL3_Init("#version 330");
 }
 
 void Ui::shutdown() {
-    if (!vulkan_) return;
-    vulkan_->wait_idle();
-    if (vulkan_backend_initialized_) {
-        ImGui_ImplVulkan_Shutdown();
-        vulkan_backend_initialized_ = false;
-    }
-    if (glfw_backend_initialized_) {
-        ImGui_ImplGlfw_Shutdown();
-        glfw_backend_initialized_ = false;
-    }
-    if (imgui_context_initialized_) {
-        ImGui::DestroyContext();
-        imgui_context_initialized_ = false;
-    }
-    if (descriptor_pool_ != 0) {
-        vkDestroyDescriptorPool(
-            vulkan_->device(),
-            reinterpret_cast<VkDescriptorPool>(descriptor_pool_), nullptr);
-    }
-    descriptor_pool_ = 0;
-    image_count_ = 0;
-    vulkan_ = nullptr;
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
 }
 
 void Ui::begin_frame() {
-    ImGui_ImplVulkan_NewFrame();
+    ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
 }
 
-void Ui::end_frame(const matter::VulkanFrame& frame) {
+void Ui::end_frame() {
     ImGui::Render();
-    if (frame.swapchain_recreated || frame.image_count != image_count_) {
-        image_count_ = frame.image_count;
-        ImGui_ImplVulkan_SetMinImageCount(image_count_);
-    }
-    VkRenderingAttachmentInfo attachment{
-        VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    attachment.imageView = frame.swapchain_image_view;
-    attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-    attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
-    rendering.renderArea.extent = frame.extent;
-    rendering.layerCount = 1;
-    rendering.colorAttachmentCount = 1;
-    rendering.pColorAttachments = &attachment;
-    vkCmdBeginRendering(frame.command_buffer, &rendering);
-    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), frame.command_buffer);
-    vkCmdEndRendering(frame.command_buffer);
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
 
 void Ui::draw_debug_panel(ViewerStats& s) {
@@ -277,16 +188,6 @@ void Ui::draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& s
         if (is_current) ImGui::EndDisabled();
     }
 
-    ImGui::End();
-}
-
-void Ui::draw_lighting_panel(ViewerStats& stats) {
-    ImGui::SetNextWindowPos(ImVec2(20.0f, 380.0f), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(250, 0), ImGuiCond_FirstUseEver);
-    ImGui::Begin("RT Lighting");
-    ImGui::SliderAngle("Sun Azimuth", &stats.sun_azimuth, -180.0f, 180.0f);
-    ImGui::SliderAngle("Sun Elevation", &stats.sun_elevation, -90.0f, 90.0f);
-    ImGui::SliderFloat("Sun Brightness", &stats.sun_brightness, 0.0f, 5.0f, "%.2f");
     ImGui::End();
 }
 

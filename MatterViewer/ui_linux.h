@@ -7,9 +7,6 @@
 
 #include "matter/camera.h"
 
-struct GLFWwindow;
-namespace matter { class VulkanDevice; struct VulkanFrame; }
-
 namespace viewer {
 
 // One available world for the runtime picker. Populated by scan_worlds at
@@ -73,20 +70,14 @@ struct ViewerStats {
     // `world_switch_requested` (index into the enumerated worlds list, -1 = none).
     int      world_current = 0;
     int      world_switch_requested = -1;
-    // RT lighting debug: sun direction (azimuth/elevation) and brightness.
-    float    sun_azimuth   = 0.0f;   // radians, computed from manifest on world load
-    float    sun_elevation = 0.0f;   // radians
-    float    sun_brightness = 1.0f;  // multiplier on sun_color (0 = no sun)
-    bool     sun_override_init = false;  // set true once azimuth/elevation computed
 };
 
 class Ui {
 public:
-    bool setup(GLFWwindow* window, matter::VulkanDevice& vulkan,
-               std::string& error);
+    void setup();        // after InitWindow
     void shutdown();
     void begin_frame();
-    void end_frame(const matter::VulkanFrame& frame);
+    void end_frame();
     void draw_debug_panel(ViewerStats& stats);
     // MSL-style orbit/zoom controls: navigate the view without locking the cursor
     // or using WASD (works over remote desktop). Mutates the camera in place.
@@ -94,15 +85,6 @@ public:
     // Standalone panel listing available worlds as buttons. Clicking a non-current
     // world sets stats.world_switch_requested; main handles the swap next frame.
     void draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& stats);
-    void draw_lighting_panel(ViewerStats& stats);
-
-private:
-    matter::VulkanDevice* vulkan_ = nullptr;
-    std::uint64_t descriptor_pool_ = 0;
-    std::uint32_t image_count_ = 0;
-    bool imgui_context_initialized_ = false;
-    bool glfw_backend_initialized_ = false;
-    bool vulkan_backend_initialized_ = false;
 };
 
 } // namespace viewer

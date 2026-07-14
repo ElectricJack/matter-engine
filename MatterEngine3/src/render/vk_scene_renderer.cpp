@@ -1725,6 +1725,72 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
     return true;
 }
 
+bool VkSceneRenderer::record_composite_to_swapchain(
+    const matter::VulkanFrame& frame, std::string& error) {
+    error.clear();
+    if (fail_if_poisoned(error)) return false;
+    if (!raster_attachments_ready_ || hdr_.image == VK_NULL_HANDLE) {
+        error = "world composite is unavailable for presentation";
+        return false;
+    }
+    if (frame.command_buffer == VK_NULL_HANDLE ||
+        frame.swapchain_image == VK_NULL_HANDLE ||
+        frame.extent.width == 0 || frame.extent.height == 0) {
+        error = "invalid acquired swapchain frame";
+        return false;
+    }
+
+    matter::record_image_transition(
+        frame.command_buffer, hdr_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT);
+    VkImageMemoryBarrier2 swap_to_transfer{
+        VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    swap_to_transfer.srcStageMask =
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    swap_to_transfer.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    swap_to_transfer.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    swap_to_transfer.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    swap_to_transfer.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    swap_to_transfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    swap_to_transfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    swap_to_transfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    swap_to_transfer.image = frame.swapchain_image;
+    swap_to_transfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    swap_to_transfer.subresourceRange.levelCount = 1;
+    swap_to_transfer.subresourceRange.layerCount = 1;
+    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dependency.imageMemoryBarrierCount = 1;
+    dependency.pImageMemoryBarriers = &swap_to_transfer;
+    vkCmdPipelineBarrier2(frame.command_buffer, &dependency);
+
+    VkImageBlit blit{};
+    blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blit.srcSubresource.layerCount = 1;
+    blit.srcOffsets[1] = {static_cast<int32_t>(raster_extent_.width),
+                          static_cast<int32_t>(raster_extent_.height), 1};
+    blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blit.dstSubresource.layerCount = 1;
+    blit.dstOffsets[1] = {static_cast<int32_t>(frame.extent.width),
+                          static_cast<int32_t>(frame.extent.height), 1};
+    vkCmdBlitImage(frame.command_buffer, hdr_.image,
+                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   frame.swapchain_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   1, &blit, VK_FILTER_LINEAR);
+
+    std::swap(swap_to_transfer.srcStageMask, swap_to_transfer.dstStageMask);
+    std::swap(swap_to_transfer.srcAccessMask, swap_to_transfer.dstAccessMask);
+    swap_to_transfer.dstStageMask =
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    swap_to_transfer.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
+                                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    std::swap(swap_to_transfer.oldLayout, swap_to_transfer.newLayout);
+    vkCmdPipelineBarrier2(frame.command_buffer, &dependency);
+    return true;
+}
+
 VkRasterAttachments VkSceneRenderer::raster_attachments() const {
     if (poisoned() || !raster_attachments_ready_) return {};
     return {{albedo_.image, albedo_.format},

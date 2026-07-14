@@ -1,13 +1,11 @@
 #pragma once
 
-#if defined(_WIN32) && !defined(VK_USE_PLATFORM_WIN32_KHR)
-#define VK_USE_PLATFORM_WIN32_KHR
-#endif
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 struct GLFWwindow;
 
@@ -21,7 +19,11 @@ class DeviceSubmitAccess;
 
 struct VulkanFrame {
     VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+    VkImage swapchain_image = VK_NULL_HANDLE;
+    VkImageView swapchain_image_view = VK_NULL_HANDLE;
+    VkFormat swapchain_format = VK_FORMAT_UNDEFINED;
     uint32_t image_index = 0;
+    uint32_t image_count = 0;
     VkExtent2D extent{};
     uint64_t serial = 0;
     bool swapchain_recreated = false;
@@ -39,6 +41,11 @@ public:
 
     bool begin_frame(VulkanFrame& frame, std::string& error);
     bool end_frame(const VulkanFrame& frame, std::string& error);
+    // Records a copy of the fully composed swapchain image. The destination is
+    // populated by end_frame after GPU completion and normalized to RGBA8.
+    bool readback_swapchain_rgba8(const VulkanFrame& frame,
+                                  std::vector<uint8_t>& rgba,
+                                  std::string& error);
     bool submit_and_wait(VkCommandBuffer command_buffer, VkFence fence,
                          bool& completion_proven, std::string& error);
     void wait_idle();
@@ -48,6 +55,8 @@ public:
     VkDevice device() const;
     VkQueue graphics_queue() const;
     uint32_t graphics_queue_family() const;
+    VkFormat swapchain_format() const;
+    uint32_t swapchain_image_count() const;
     bool draw_indirect_first_instance_enabled() const;
     uint32_t validation_error_count() const;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION

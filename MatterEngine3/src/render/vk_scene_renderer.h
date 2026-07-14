@@ -17,6 +17,7 @@
 
 namespace matter {
 class VulkanDevice;
+struct VulkanFrame;
 }
 
 namespace viewer {
@@ -138,6 +139,10 @@ public:
                                   std::string& error);
     bool render_gbuffer_and_composite(uint32_t width, uint32_t height,
                                       std::string& error);
+    // Blit the real HDR world composite into the currently acquired swapchain
+    // image, leaving it ready for UI dynamic rendering.
+    bool record_composite_to_swapchain(const matter::VulkanFrame& frame,
+                                       std::string& error);
     VkRasterAttachments raster_attachments() const;
     bool readback_raster_pixel(uint32_t x, uint32_t y,
                                VkRasterPixel& pixel, std::string& error);

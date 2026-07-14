@@ -6,10 +6,13 @@
 
 namespace matter {
 
+class VulkanDevice;
+
 struct EngineDesc {
     const char* cache_root = "cache";  // .part cache location (parts/<hash>.part)
     const char* shader_dir = nullptr;  // nullptr = embedded (MATTER_SHADER_DIR env overrides)
     bool allow_gl_lt_46 = false;       // true only for the ray-traced fallback path
+    VulkanDevice* render_device = nullptr; // non-owning; app owns window/device
 };
 
 class EngineContext {

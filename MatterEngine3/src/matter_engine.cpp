@@ -25,6 +25,11 @@
 #include "gl46.h"
 #include "shader_source.h"   // matter::set_shader_override_dir (Task 1 header)
 #include "world_tracer.h"    // WorldTracer — lazy CPU BVH for query API
+#ifdef MATTER_VULKAN_VIEWER
+#include "matter/vulkan_device.h"
+#include "render/vk_scene_renderer.h"
+#include "render/matrix_math.h"
+#endif
 
 // Task 10: live-edit watcher + production seams.
 #include "live_edit.h"
@@ -172,6 +177,7 @@ static BakeErrorCode classify_error(const std::string& err) {
 struct EngineContext::Impl {
     std::string cache_root;
     bool gl46 = false;
+    VulkanDevice* render_device = nullptr;
 };
 
 // ---------------------------------------------------------------------------
@@ -195,6 +201,9 @@ struct WorldSession::Impl {
     std::unique_ptr<viewer::PartStore>      store;
     std::unique_ptr<viewer::WorldComposer>  composer;
     std::unique_ptr<viewer::RasterComposer> raster;
+#ifdef MATTER_VULKAN_VIEWER
+    std::unique_ptr<viewer::VkSceneRenderer> vk_scene;
+#endif
     lod_select::PartLodTable                lods;
 
     // Probe textures (released before recreating on reconnect/shutdown).
@@ -1004,9 +1013,14 @@ void WorldSession::Impl::publish_pipeline(
         connected.store(false, std::memory_order_release);
 
         viewer::release_probe_textures(probe_tex);
+#ifdef MATTER_VULKAN_VIEWER
+        if (vk_scene) vk_scene->reset();
+#endif
         reset_out->new_raster = std::make_unique<viewer::RasterComposer>();
         auto& raster_local = reset_out->new_raster;
-        if (!engine->gl46) {
+        if (engine->render_device) {
+            // VkSceneRenderer uploads genuine LoadedPart data lazily in render().
+        } else if (!engine->gl46) {
             renderer.set_lights(new_manifest.lights);
         } else {
             std::string rerr;
@@ -2758,6 +2772,12 @@ EngineContext::~EngineContext() = default;
 
 std::unique_ptr<EngineContext> EngineContext::create(const EngineDesc& desc,
                                                      std::string& err) {
+#ifndef MATTER_VULKAN_VIEWER
+    if (desc.render_device) {
+        err = "this MatterEngine3 build does not include Vulkan viewer support";
+        return nullptr;
+    }
+#endif
     // Register the calling thread as the GL thread so assert_gl_thread guards
     // are armed in debug builds. Must be called before any GL work begins.
     matter_async::register_gl_thread();
@@ -2767,8 +2787,9 @@ std::unique_ptr<EngineContext> EngineContext::create(const EngineDesc& desc,
 
     auto impl = std::make_unique<Impl>();
     impl->cache_root = desc.cache_root ? desc.cache_root : "cache";
+    impl->render_device = desc.render_device;
 
-    if (!desc.allow_gl_lt_46) {
+    if (!desc.render_device && !desc.allow_gl_lt_46) {
         // GL 4.6 gate (main.cpp lines ~95–113). When allow_gl_lt_46 is set
         // (RT path) we skip the check and leave impl->gl46 = false.
         std::string why;
@@ -2827,6 +2848,13 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
     // Construct provider. No bake here — caller must call request_bake().
     simpl->provider = std::make_shared<viewer::LocalProvider>(simpl->cfg);
 
+#ifdef MATTER_VULKAN_VIEWER
+    if (impl_->render_device) {
+        simpl->vk_scene =
+            std::make_unique<viewer::VkSceneRenderer>(*impl_->render_device);
+    }
+#endif
+
     // Always init the camera; sets defaults used in both RT and raster modes.
     simpl->renderer.init_camera();
 
@@ -2859,6 +2887,10 @@ WorldSession::~WorldSession() {
     // Phase C Task 5: join probe thread in case the worker exited without
     // calling probe_thread_join() (e.g., session never baked a world).
     impl_->probe_thread_join();
+
+#ifdef MATTER_VULKAN_VIEWER
+    impl_->vk_scene.reset();
+#endif
 
     viewer::release_probe_textures(impl_->probe_tex);
     impl_->raster.reset();
@@ -2985,6 +3017,255 @@ void WorldSession::tick() {
     }
 #endif // __linux__
 }
+
+#ifdef MATTER_VULKAN_VIEWER
+namespace {
+
+void record_vulkan_clear(const VulkanFrame& frame, const float color[3]) {
+    VkRenderingAttachmentInfo attachment{
+        VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    attachment.imageView = frame.swapchain_image_view;
+    attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachment.clearValue.color = {{color[0], color[1], color[2], 1.0f}};
+    VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    rendering.renderArea.extent = frame.extent;
+    rendering.layerCount = 1;
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachments = &attachment;
+    vkCmdBeginRendering(frame.command_buffer, &rendering);
+    vkCmdEndRendering(frame.command_buffer);
+}
+
+bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
+                        uint64_t part_hash, const viewer::LoadedPart& loaded,
+                        bool& drawable, std::string& error) {
+    drawable = false;
+    if (loaded.lod_mesh_data.empty()) return true;
+    viewer::VkScenePart part;
+    part.part_hash = part_hash;
+    std::vector<uint32_t> mesh_offsets(loaded.lod_mesh_data.size(), UINT32_MAX);
+    for (size_t mi = 0; mi < loaded.lod_mesh_data.size(); ++mi) {
+        const auto& mesh = loaded.lod_mesh_data[mi];
+        if (mesh.vertex_count <= 0 ||
+            mesh.vertices.size() < static_cast<size_t>(mesh.vertex_count) * 3)
+            continue;
+        mesh_offsets[mi] = static_cast<uint32_t>(part.vertices.size());
+        for (int vi = 0; vi < mesh.vertex_count; ++vi) {
+            viewer::VkRasterVertex vertex{};
+            const size_t p = static_cast<size_t>(vi) * 3;
+            vertex.position = {mesh.vertices[p], mesh.vertices[p + 1],
+                               mesh.vertices[p + 2]};
+            if (mesh.normals.size() >= p + 3)
+                vertex.normal = {mesh.normals[p], mesh.normals[p + 1],
+                                 mesh.normals[p + 2]};
+            else
+                vertex.normal = {0.0f, 1.0f, 0.0f};
+            const size_t c = static_cast<size_t>(vi) * 4;
+            if (mesh.colors.size() >= c + 4)
+                vertex.albedo = {mesh.colors[c] / 255.0f,
+                                 mesh.colors[c + 1] / 255.0f,
+                                 mesh.colors[c + 2] / 255.0f, 1.0f};
+            else
+                vertex.albedo = {1.0f, 1.0f, 1.0f, 1.0f};
+            const size_t uv = static_cast<size_t>(vi) * 2;
+            const float ao = mesh.texcoords.size() > uv + 1
+                                 ? mesh.texcoords[uv + 1] : 1.0f;
+            vertex.orm = {ao, 0.7f, 0.0f, 1.0f};
+            part.vertices.push_back(vertex);
+        }
+    }
+    if (part.vertices.empty()) return true;
+
+    if (!loaded.clusters.empty()) {
+        for (const auto& source : loaded.clusters) {
+            viewer::VkSceneCluster cluster;
+            cluster.aabb_min = {source.aabb_min[0], source.aabb_min[1],
+                                source.aabb_min[2]};
+            cluster.aabb_max = {source.aabb_max[0], source.aabb_max[1],
+                                source.aabb_max[2]};
+            cluster.radius = source.radius;
+            const size_t lod_count = std::min(source.lod_mesh.size(),
+                                               source.thresholds.size());
+            for (size_t li = 0; li < lod_count; ++li) {
+                const int mesh_index = source.lod_mesh[li];
+                if (mesh_index < 0 ||
+                    static_cast<size_t>(mesh_index) >= mesh_offsets.size() ||
+                    mesh_offsets[mesh_index] == UINT32_MAX) continue;
+                const auto& mesh = loaded.lod_mesh_data[mesh_index];
+                cluster.lods.push_back({mesh_offsets[mesh_index],
+                                        static_cast<uint32_t>(mesh.vertex_count),
+                                        source.thresholds[li]});
+            }
+            if (!cluster.lods.empty()) part.clusters.push_back(std::move(cluster));
+        }
+    } else {
+        viewer::VkSceneCluster cluster;
+        const float radius = std::max(loaded.bound_radius, 0.001f);
+        cluster.aabb_min = {-radius, -radius, -radius};
+        cluster.aabb_max = { radius,  radius,  radius};
+        cluster.radius = radius;
+        for (size_t li = 0; li < loaded.lod_mesh_data.size(); ++li) {
+            if (mesh_offsets[li] == UINT32_MAX) continue;
+            const auto& mesh = loaded.lod_mesh_data[li];
+            const float threshold = li < loaded.thresholds.size()
+                                        ? loaded.thresholds[li] : 0.0f;
+            cluster.lods.push_back({mesh_offsets[li],
+                                    static_cast<uint32_t>(mesh.vertex_count),
+                                    threshold});
+        }
+        if (!cluster.lods.empty()) part.clusters.push_back(std::move(cluster));
+    }
+    if (part.clusters.empty()) return true;
+    drawable = renderer.ensure_part(part, error) >= 0;
+    return drawable || error.empty();
+}
+
+} // anonymous namespace
+
+bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
+                          const RenderOptions& opts, std::string& err) {
+    err.clear();
+    if (!impl_->engine->render_device || !impl_->vk_scene) {
+        err = "WorldSession has no Vulkan render device";
+        return false;
+    }
+    if (frame.command_buffer == VK_NULL_HANDLE ||
+        frame.swapchain_image_view == VK_NULL_HANDLE) {
+        err = "WorldSession received an invalid VulkanFrame";
+        return false;
+    }
+    if (!impl_->connected || !impl_->store) {
+        record_vulkan_clear(frame, impl_->sky_clear);
+        return true;
+    }
+
+    float budget = opts.pixel_budget == 0.0f ? 1.0f : opts.pixel_budget;
+    budget = std::max(0.05f, std::min(4.0f, budget));
+    float active_radius = opts.active_radius == 0.0f ? 64.0f
+                                                     : opts.active_radius;
+    impl_->sec.set_active_radius(active_radius);
+    impl_->sec.set_min_projected_size(opts.min_projected_size);
+    impl_->sec.set_pixel_budget(budget);
+    viewer::SectorResolver& resolver =
+        opts.resolver == ResolverKind::SectorLod
+            ? static_cast<viewer::SectorResolver&>(impl_->sec)
+            : static_cast<viewer::SectorResolver&>(impl_->pass);
+    const float3 camera_pos =
+        make_float3(cam.position.x, cam.position.y, cam.position.z);
+    const auto resolve_start = std::chrono::steady_clock::now();
+    const auto resolved = resolver.resolve(impl_->state, impl_->lods, camera_pos);
+    const auto resolve_end = std::chrono::steady_clock::now();
+
+    std::vector<viewer::VkSceneInstance> instances;
+    instances.reserve(resolved.size() * 2);
+    for (const auto& source : resolved) {
+        const viewer::LoadedPart* root = impl_->store->get_or_load(source.part_hash);
+        if (!root) continue;
+        if (!root->expansion.empty()) {
+            for (const auto& node : root->expansion) {
+                const viewer::LoadedPart* loaded =
+                    impl_->store->get_or_load(node.part_hash);
+                if (!loaded) continue;
+                bool drawable = false;
+                if (!ensure_vulkan_part(*impl_->vk_scene, node.part_hash,
+                                        *loaded, drawable, err)) return false;
+                if (!drawable) continue;
+                Mat4f root_transform{};
+                Mat4f relative{};
+                std::memcpy(root_transform.m, source.transform,
+                            sizeof(root_transform.m));
+                std::memcpy(relative.m, node.rel_transform, sizeof(relative.m));
+                instances.push_back(
+                    {node.part_hash, viewer::mat4_mul(root_transform, relative)});
+            }
+        } else {
+            bool drawable = false;
+            if (!ensure_vulkan_part(*impl_->vk_scene, source.part_hash,
+                                    *root, drawable, err)) return false;
+            if (!drawable) continue;
+            viewer::VkSceneInstance instance;
+            instance.part_hash = source.part_hash;
+            std::memcpy(instance.object_to_world.m, source.transform,
+                        sizeof(instance.object_to_world.m));
+            instances.push_back(instance);
+        }
+    }
+    if (instances.empty()) {
+        impl_->stats.instances_resolved = 0;
+        record_vulkan_clear(frame, impl_->sky_clear);
+        return true;
+    }
+
+    const auto build_start = std::chrono::steady_clock::now();
+    if (!impl_->vk_scene->update_instances(instances, err)) return false;
+    viewer::FrameMatrices matrices{};
+    if (!viewer::build_frame_matrices(cam, frame.extent.width,
+                                      frame.extent.height, matrices, err))
+        return false;
+    if (!impl_->vk_scene->dispatch_culling(matrices, cam.position, budget, err))
+        return false;
+    viewer::VkCullStats cull{};
+    if (!impl_->vk_scene->cull_stats(cull, err)) return false;
+    const auto build_end = std::chrono::steady_clock::now();
+    const auto draw_start = std::chrono::steady_clock::now();
+    if (!impl_->vk_scene->render_gbuffer_and_composite(
+            frame.extent.width, frame.extent.height, err) ||
+        !impl_->vk_scene->record_composite_to_swapchain(frame, err))
+        return false;
+    const auto draw_end = std::chrono::steady_clock::now();
+
+    impl_->stats.resolve_ms =
+        std::chrono::duration<float, std::milli>(resolve_end - resolve_start).count();
+    impl_->stats.build_ms =
+        std::chrono::duration<float, std::milli>(build_end - build_start).count();
+    impl_->stats.draw_ms =
+        std::chrono::duration<float, std::milli>(draw_end - draw_start).count();
+    impl_->stats.instances_resolved = static_cast<uint32_t>(instances.size());
+    impl_->stats.instances_drawn = cull.emitted;
+    impl_->stats.clusters_culled = cull.frustum_culled;
+    impl_->stats.hiz_culled = cull.hiz_culled;
+    impl_->stats.parts_baked = static_cast<uint32_t>(impl_->store->loaded_count());
+    impl_->stats.instances_total = static_cast<uint32_t>(impl_->state.entries().size());
+    std::vector<viewer::DrawCommand> commands;
+    if (impl_->vk_scene->readback_commands(commands, err)) {
+        uint64_t triangles = 0;
+        for (const auto& command : commands)
+            triangles += static_cast<uint64_t>(command.vertex_count / 3) *
+                         command.instance_count;
+        impl_->stats.triangles = static_cast<uint32_t>(
+            std::min<uint64_t>(triangles, UINT32_MAX));
+    } else {
+        return false;
+    }
+    return true;
+}
+
+bool WorldSession::readback_swapchain_rgba8(
+    const VulkanFrame& frame, std::vector<uint8_t>& rgba, std::string& err) {
+    if (!impl_->engine->render_device) {
+        err = "WorldSession has no Vulkan render device";
+        return false;
+    }
+    return impl_->engine->render_device->readback_swapchain_rgba8(frame, rgba,
+                                                                  err);
+}
+#endif
+
+#ifndef MATTER_VULKAN_VIEWER
+bool WorldSession::render(const CameraDesc&, const VulkanFrame&,
+                          const RenderOptions&, std::string& err) {
+    err = "this MatterEngine3 build does not include Vulkan viewer support";
+    return false;
+}
+
+bool WorldSession::readback_swapchain_rgba8(
+    const VulkanFrame&, std::vector<uint8_t>&, std::string& err) {
+    err = "this MatterEngine3 build does not include Vulkan viewer support";
+    return false;
+}
+#endif
 
 void WorldSession::render(const CameraDesc& cam, int fb_width, int fb_height,
                           const RenderOptions& opts) {

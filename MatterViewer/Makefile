@@ -21,7 +21,7 @@ MAKEFLAGS += -j$(JOBS)
 
 CC = g++
 CFLAGS = -std=c++17 -O2 -Wall -Wno-missing-braces -Wno-unused-variable \
-         -DPLATFORM_DESKTOP -DGRAPHICS_API_OPENGL_43
+         -DPLATFORM_DESKTOP
 
 RAYLIB_PATH = ../Libraries/raylib/src
 IMGUI_PATH  = ../Libraries/imgui
@@ -43,6 +43,8 @@ INCLUDE_PATHS = -I$(ME3_DIR)/include \
 # Windows direct-source build also needs private ME3 src/ headers since it
 # compiles all engine sources directly (no .a).
 WIN_INCLUDE_PATHS = $(INCLUDE_PATHS) \
+                    -I$(ME3_DIR) \
+                    -I$(VULKAN_INCLUDE) \
                     -I$(ME3_DIR)/src \
                     -I$(ME3_DIR)/src/render \
                     -I$(ME3_DIR)/src/provider \
@@ -52,9 +54,10 @@ WIN_INCLUDE_PATHS = $(INCLUDE_PATHS) \
 LDFLAGS = -lGL -lm -lpthread -ldl -lrt -lX11
 LDLIBS  = ../Libraries/raylib/build/linux/libraylib.a
 
+HAVE_CUDA ?= 1
 CUDA_PATH ?= /c/PROGRA~1/NVIDIA~2/CUDA/v13.3
 OPTIX_PATH ?= /c/PROGRA~3/NVIDIA~1/OPTIXS~1.0
-ifdef HAVE_CUDA
+ifeq ($(HAVE_CUDA),1)
   LDFLAGS += -L/usr/lib/wsl/lib -lcuda -ldl
 endif
 BOX3D_LIB = $(BOX3D_DIR)/libbox3d.a
@@ -100,12 +103,15 @@ else
   AR_CORE_LDFLAGS :=
 endif
 
-# ---- Linux viewer: main.cpp + ui.cpp + imgui ONLY; links libmatter_engine3.a ----
+# ---- Linux viewer: preserved legacy GL entry/UI + imgui; links libmatter_engine3.a ----
 # libmatter_engine3.a contains the full engine: ME3 pipeline, MSL backend, QJS.
 # The library is (re)built as a prerequisite of the viewer target so it picks up
 # MATTER_HAVE_AUTOREMESHER when autoremesher is present.
 
-# Application entry points (GL + imgui; no engine logic).
+# Task 9 switches the Windows application to Vulkan. Keep the existing Linux
+# application/backend as an explicit compatibility path until the later engine
+# OpenGL-removal task can migrate or retire it without breaking the default target.
+LINUX_APP_SRC = main_linux.cpp ui_linux.cpp camera_controller.cpp
 APP_SRC = main.cpp ui.cpp camera_controller.cpp
 
 # Windows direct-source compile: ME3 pipeline + MSL + QJS (mirrors old viewer).
@@ -136,6 +142,9 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/render/world_composer.cpp $(ME3_DIR)/src/render/world_state.cpp \
               $(ME3_DIR)/src/render/gpu_culler.cpp $(ME3_DIR)/src/render/probe_texture.cpp \
               $(ME3_DIR)/src/render/tileset_provider.cpp $(ME3_DIR)/src/render/tileset_gl_ctx.cpp \
+              $(ME3_DIR)/src/render/vk_context.cpp $(ME3_DIR)/src/render/vk_resources.cpp \
+              $(ME3_DIR)/src/render/vk_pipeline.cpp $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+              $(ME3_DIR)/src/render/frame_matrices.cpp $(ME3_DIR)/src/render/matrix_math.cpp \
               $(ME3_DIR)/src/provider/local_provider.cpp $(ME3_DIR)/src/provider/resolvers.cpp \
               $(ME3_DIR)/src/modifier_apply.cpp $(ME3_DIR)/src/retopo_blacklist.cpp \
               $(ME3_DIR)/src/async_bake.cpp \
@@ -156,7 +165,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               ../ParticleFlowLib/src/pf_fields.cpp \
               ../ParticleFlowLib/src/pf_path_recorder.cpp
 
-ifdef HAVE_CUDA
+ifeq ($(HAVE_CUDA),1)
   WIN_ME3_CPP += $(ME3_DIR)/src/render/rt_lighting.cpp
 endif
 
@@ -181,10 +190,13 @@ WIN_PIPELINE_C = $(MSL_DIR)/src/surface.c $(MSL_DIR)/src/open_particle_surface.c
 QJS_C   = $(QJS_DIR)/quickjs.c $(QJS_DIR)/libregexp.c $(QJS_DIR)/libunicode.c \
           $(QJS_DIR)/cutils.c $(QJS_DIR)/xsum.c
 
-IMGUI_SRC = $(IMGUI_PATH)/imgui.cpp $(IMGUI_PATH)/imgui_draw.cpp \
+IMGUI_CORE_SRC = $(IMGUI_PATH)/imgui.cpp $(IMGUI_PATH)/imgui_draw.cpp \
             $(IMGUI_PATH)/imgui_tables.cpp $(IMGUI_PATH)/imgui_widgets.cpp \
-            $(IMGUI_PATH)/backends/imgui_impl_glfw.cpp \
+            $(IMGUI_PATH)/backends/imgui_impl_glfw.cpp
+IMGUI_SRC_LINUX = $(IMGUI_CORE_SRC) \
             $(IMGUI_PATH)/backends/imgui_impl_opengl3.cpp
+IMGUI_SRC_WIN = $(IMGUI_CORE_SRC) \
+            $(IMGUI_PATH)/backends/imgui_impl_vulkan.cpp
 
 # ---- Per-object lists (one .o per TU, in a platform build dir, so `make -j`
 # can compile them concurrently). Basenames are unique across all source dirs,
@@ -197,17 +209,17 @@ IMGUI_SRC = $(IMGUI_PATH)/imgui.cpp $(IMGUI_PATH)/imgui_draw.cpp \
 # Windows: full direct-source compile (APP_SRC + WIN_ME3_CPP + WIN_MSL_CPP + IMGUI_SRC).
 CXX_FLAGS_BUILD_COMMON = $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -MMD -MP
 # Windows is the release build path for now: -DNDEBUG disables assert().
-CXX_FLAGS_BUILD_WIN_COMMON = $(CFLAGS) -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB $(WIN_INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -ffunction-sections -fdata-sections -MMD -MP
-ifdef HAVE_CUDA
-  CXX_FLAGS_BUILD_WIN_COMMON += -DMATTER_HAVE_OPTIX -I$(CUDA_PATH)/include -I$(OPTIX_PATH)/include
+CXX_FLAGS_BUILD_WIN_COMMON = $(CFLAGS) -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST -DMATTER_VULKAN_VIEWER -DTILESET_GTEX_USE_RAYLIB_STB $(WIN_INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -ffunction-sections -fdata-sections -MMD -MP
+ifeq ($(HAVE_CUDA),1)
+  CXX_FLAGS_BUILD_WIN_COMMON += -DMATTER_HAVE_OPTIX -I"$(CUDA_PATH)/include" -I"$(OPTIX_PATH)/include" -fpermissive
 endif
 
 # Linux object set: ONLY app + imgui.
-L_CPP_SRC = $(APP_SRC) $(IMGUI_SRC)
+L_CPP_SRC = $(LINUX_APP_SRC) $(IMGUI_SRC_LINUX)
 CPP_NAMES = $(notdir $(L_CPP_SRC))
 
 # Windows object set: full direct-source compile.
-WIN_ALL_CPP_SRC = $(APP_SRC) $(WIN_ME3_CPP) $(WIN_MSL_CPP) $(IMGUI_SRC)
+WIN_ALL_CPP_SRC = $(APP_SRC) $(WIN_ME3_CPP) $(WIN_MSL_CPP) $(IMGUI_SRC_WIN)
 CPP_NAMES_WIN_ALL = $(notdir $(WIN_ALL_CPP_SRC))
 QJS_NAMES = $(notdir $(QJS_C))
 PIPC_NAMES_WIN = $(notdir $(WIN_PIPELINE_C))
@@ -331,8 +343,9 @@ WIN_FEATURES = build/windows/build_features.txt
 # Win32 import libs raylib depends on; MUST come AFTER libraylib.a on the link
 # line so the static linker can resolve raylib's __imp_* references.
 WIN_LIBS    = -lopengl32 -lgdi32 -lwinmm $(BOX3D_DIR)/build-mingw/libbox3d.a -lwinpthread
-ifdef HAVE_CUDA
-  WIN_LIBS += ../Libraries/cuda-mingw/libnvcuda.dll.a -lcfgmgr32
+ifeq ($(HAVE_CUDA),1)
+  WIN_LIBS += -Wl,--defsym,cuDevicePrimaryCtxRelease=cuDevicePrimaryCtxRelease_v2 \
+              ../Libraries/cuda-mingw/libnvcuda.dll.a -lcfgmgr32
 endif
 
 .PHONY: vulkan-preflight
@@ -402,12 +415,13 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/vk_context.cpp \
 	    $(ME3_DIR)/src/render/vk_resources.cpp \
 	    $(ME3_DIR)/src/render/vk_pipeline.cpp \
-	    $(ME3_DIR)/src/render/matrix_math.cpp \
 	    $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
 	    $(ME3_DIR)/src/render/frame_matrices.cpp \
+	    $(ME3_DIR)/src/render/matrix_math.cpp \
 	    $(GLFW_WIN_LIB) -o $@ \
 	    -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers \
 	    -static \
+	    -DVK_USE_PLATFORM_WIN32_KHR \
 	    -DMATTER_VK_TEST_FAULT_INJECTION \
 	    -DMATTER_VK_TEST_LAYER_PATH='"$(VULKAN_RUNTIME_DIR)"' \
 	    -I$(ME3_DIR) -I$(ME3_DIR)/include -I$(ME3_DIR)/src \
@@ -432,8 +446,12 @@ $(W_PIPC_OBJ): $(W_DIR)/%.o: $(MSL_DIR)/src/%.c | $(W_DIR)
 # regeneration must not force object rebuilds (embedded-shaders is phony).
 $(W_CPP_OBJ): | embedded-shaders
 
-windows: win-shaders-gpu $(W_ALL_OBJ)
-	$(WIN_CXX) $(W_ALL_OBJ) -o viewer.exe $(CFLAGS) -static -s -Wl,--gc-sections $(WIN_RAYLIB) $(WIN_LIBS)
+windows: $(WIN_FEATURES) $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) win-shaders-gpu $(W_ALL_OBJ)
+	$(WIN_CXX) $(W_ALL_OBJ) -o viewer.exe $(CFLAGS) -static -s -Wl,--gc-sections $(WIN_RAYLIB) $(WIN_LIBS) $(GLFW_WIN_LIB) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 -Wl,-Bstatic
+
+.PHONY: vulkan-viewer-gate
+vulkan-viewer-gate:
+	powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/check_vulkan_viewer.ps1
 
 -include $(W_ALL_OBJ:.o=.d)
 
