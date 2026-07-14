@@ -1284,8 +1284,10 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                         e.uv0=s.uv0; e.uv1=s.uv1; e.uv2=s.uv2;
                         e.N0=s.N0; e.N1=s.N1; e.N2=s.N2;
                         e.materialId=s.materialId;
+                        e.tint=s.tint;
+                    } else {
+                        e.tint = make_float4(1.0f, 1.0f, 1.0f, 0.0f);
                     }
-                    e.tint = make_float4(1.0f, 1.0f, 1.0f, 0.0f);
                     e.ao0 = e.ao1 = e.ao2 = 1.0f;
                     normEx[i]=e;
                 }
@@ -1326,7 +1328,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                     normEx[i].uv0 = s.uv0; normEx[i].uv1 = s.uv1; normEx[i].uv2 = s.uv2;
                     normEx[i].N0  = s.N0;  normEx[i].N1  = s.N1;  normEx[i].N2  = s.N2;
                     normEx[i].materialId = s.materialId;
-                    normEx[i].tint = make_float4(1.0f, 1.0f, 1.0f, 0.0f);
+                    normEx[i].tint = s.tint;
                     normEx[i].ao0 = 1.0f; normEx[i].ao1 = 1.0f; normEx[i].ao2 = 1.0f;
                 }
                 BLASHandle h = blas.register_triangles(norm, normEx);
