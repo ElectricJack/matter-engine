@@ -91,22 +91,13 @@ public:
                          const VkAllocationCallbacks* allocator);
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
-    enum class PresentationEvent {
-        acquire,
-        present_common,
-        present,
-        create_swapchain,
-        destroy_swapchain,
-    };
-
-    // Deterministic Vulkan-free dispatchers let the smoke suite exercise the
-    // manual presentation contract without an installed Streamline runtime.
-    static StreamlineBridge fake_active_for_tests();
-    static StreamlineBridge fake_fallback_for_tests();
-    const std::vector<PresentationEvent>& test_presentation_events() const {
+    const std::vector<std::string>& test_presentation_events() const {
         return test_presentation_events_;
     }
     void clear_test_presentation_events() { test_presentation_events_.clear(); }
+    uint64_t test_last_present_common_serial() const {
+        return last_present_common_serial_;
+    }
 #endif
 
 private:
@@ -147,9 +138,9 @@ private:
     PFN_vkDestroySurfaceKHR destroy_surface_proxy_ = nullptr;
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
-    bool test_fake_dispatch_ = false;
-    std::vector<PresentationEvent> test_presentation_events_;
-    void record_test_presentation_event(PresentationEvent event);
+    std::vector<std::string> test_presentation_events_;
+    uint64_t last_present_common_serial_ = 0;
+    void record_test_presentation_event(const char* event);
 #endif
 
     bool populate_instance_proxies(VkInstance instance);

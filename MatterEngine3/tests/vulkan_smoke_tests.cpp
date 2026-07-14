@@ -3,6 +3,7 @@
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -54,54 +55,57 @@ void run_streamline_bridge_fallback_tests() {
           "Streamline extension merge preserves first-seen order");
 }
 
-void run_streamline_presentation_funnel_tests() {
-    matter::StreamlineBridge active =
-        matter::StreamlineBridge::fake_active_for_tests();
-    uint32_t image_index = 0;
-    CHECK(active.acquire_next_image(VK_NULL_HANDLE, VK_NULL_HANDLE, 0,
-                                    VK_NULL_HANDLE, VK_NULL_HANDLE,
-                                    &image_index) == VK_SUCCESS,
-          "active bridge acquires through its presentation wrapper");
-    CHECK(active.present_common(41),
-          "active bridge accepts the submitted frame's common-present handoff");
-    CHECK(active.queue_present(VK_NULL_HANDLE, nullptr) == VK_SUCCESS,
-          "active bridge presents through its presentation wrapper");
-    CHECK(active.test_presentation_events() ==
-              std::vector<matter::StreamlineBridge::PresentationEvent>{
-                  matter::StreamlineBridge::PresentationEvent::acquire,
-                  matter::StreamlineBridge::PresentationEvent::present_common,
-                  matter::StreamlineBridge::PresentationEvent::present},
-          "active presentation order is acquire, one common present, present");
+void run_streamline_presentation_funnel_tests(matter::VulkanDevice& vulkan) {
+    std::string error;
+    const auto has_common_present = [&]() {
+        const auto& events = vulkan.test_presentation_events();
+        return std::find(events.begin(), events.end(), "present_common") !=
+               events.end();
+    };
 
-    active.clear_test_presentation_events();
-    active.destroy_swapchain(VK_NULL_HANDLE, VK_NULL_HANDLE, nullptr);
-    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
-    CHECK(active.create_swapchain(VK_NULL_HANDLE, nullptr, nullptr,
-                                  &swapchain) == VK_SUCCESS,
-          "active bridge recreates the swapchain through its wrapper");
-    CHECK(active.test_presentation_events() ==
-              std::vector<matter::StreamlineBridge::PresentationEvent>{
-                  matter::StreamlineBridge::PresentationEvent::destroy_swapchain,
-                  matter::StreamlineBridge::PresentationEvent::create_swapchain},
-          "resize routes swapchain destruction and creation through the bridge");
+    matter::VulkanFrame record_failure{};
+    vulkan.test_clear_presentation_events();
+    CHECK(vulkan.begin_frame(record_failure, error),
+          error.empty() ? "begin record-failure presentation frame" : error.c_str());
+    _putenv_s("MATTER_VK_TEST_END_FRAME_FAULT", "record");
+    CHECK(!vulkan.end_frame(record_failure, error),
+          "record failure aborts presentation before the common plugin handoff");
+    _putenv_s("MATTER_VK_TEST_END_FRAME_FAULT", "");
+    CHECK(!has_common_present(),
+          "record failure has no common-present handoff");
 
-    active.clear_test_presentation_events();
-    CHECK(active.queue_present(VK_NULL_HANDLE, nullptr) == VK_ERROR_INITIALIZATION_FAILED,
-          "active bridge rejects a present without a submitted common-present handoff");
-    CHECK(active.test_presentation_events() ==
-              std::vector<matter::StreamlineBridge::PresentationEvent>{},
-          "record or submit failures do not invoke common present");
+    matter::VulkanFrame submit_failure{};
+    vulkan.test_clear_presentation_events();
+    CHECK(vulkan.begin_frame(submit_failure, error),
+          error.empty() ? "begin submit-failure presentation frame" : error.c_str());
+    _putenv_s("MATTER_VK_TEST_END_FRAME_FAULT", "submit");
+    CHECK(!vulkan.end_frame(submit_failure, error),
+          "submit failure aborts presentation before the common plugin handoff");
+    _putenv_s("MATTER_VK_TEST_END_FRAME_FAULT", "");
+    CHECK(!has_common_present(),
+          "submit failure has no common-present handoff");
 
-    matter::StreamlineBridge fallback =
-        matter::StreamlineBridge::fake_fallback_for_tests();
-    CHECK(fallback.acquire_next_image(VK_NULL_HANDLE, VK_NULL_HANDLE, 0,
-                                      VK_NULL_HANDLE, VK_NULL_HANDLE,
-                                      &image_index) == VK_SUCCESS &&
-              fallback.present_common(42) &&
-              fallback.queue_present(VK_NULL_HANDLE, nullptr) == VK_SUCCESS,
-          "fallback presentation path remains usable");
-    CHECK(fallback.test_presentation_events().empty(),
-          "fallback presentation path has no proxy calls");
+    matter::VulkanFrame submitted{};
+    vulkan.test_clear_presentation_events();
+    CHECK(vulkan.begin_frame(submitted, error),
+          error.empty() ? "begin successful presentation frame" : error.c_str());
+    CHECK(vulkan.end_frame(submitted, error),
+          error.empty() ? "end successful presentation frame" : error.c_str());
+    const auto& successful_events = vulkan.test_presentation_events();
+    const auto acquire = std::find(successful_events.begin(),
+                                   successful_events.end(), "acquire");
+    const auto common_present = std::find(
+        acquire, successful_events.end(), "present_common");
+    const auto present = std::find(common_present, successful_events.end(),
+                                   "present");
+    CHECK(acquire != successful_events.end() &&
+              common_present != successful_events.end() &&
+              present != successful_events.end() &&
+              std::count(successful_events.begin(), successful_events.end(),
+                         "present_common") == 1,
+          "VulkanDevice funnels successful acquire, one common-present, and present");
+    CHECK(vulkan.test_last_present_common_serial() == submitted.serial,
+          "common-present handoff exposes the submitted frame serial");
 }
 
 void run_cuda_vulkan_interop(matter::VulkanDevice& vulkan) {
@@ -1662,7 +1666,6 @@ void run_outlive_resources(std::unique_ptr<matter::VulkanDevice>& vulkan,
 int main() {
     run_vulkan_instance_cache_tests();
     run_streamline_bridge_fallback_tests();
-    run_streamline_presentation_funnel_tests();
 #ifdef MATTER_VK_TEST_LAYER_PATH
     // MSYS2 installs validation-layer manifests outside the Windows registry.
     // Point this standalone test at that installed development package and let
@@ -1687,6 +1690,7 @@ int main() {
     CHECK(vulkan != nullptr, error.empty() ? "create Vulkan device" : error.c_str());
 
     if (vulkan) {
+        run_streamline_presentation_funnel_tests(*vulkan);
         CHECK(!vulkan->dlss_available(),
               "Vulkan device reports DLSS unavailable without Streamline");
         CHECK(vulkan->dlss_unavailable_reason().find("not found") !=
@@ -1888,6 +1892,7 @@ int main() {
               "framebuffer size changes before resize recreation assertion");
         if (framebuffer_changed) {
             matter::VulkanFrame resized{};
+            vulkan->test_clear_presentation_events();
             const bool began_resized = vulkan->begin_frame(resized, error);
             CHECK(began_resized,
                   error.empty() ? "begin resized frame" : error.c_str());
@@ -1897,6 +1902,16 @@ int main() {
                 const bool ended_resized = vulkan->end_frame(resized, error);
                 CHECK(ended_resized,
                       error.empty() ? "end resized frame" : error.c_str());
+
+                const auto& resize_events = vulkan->test_presentation_events();
+                const auto contains_resize_event = [&resize_events](const char* event) {
+                    return std::find(resize_events.begin(), resize_events.end(),
+                                     event) != resize_events.end();
+                };
+                CHECK(contains_resize_event("device_wait_idle") &&
+                          contains_resize_event("destroy_swapchain") &&
+                          contains_resize_event("create_swapchain"),
+                      "actual resize routes idle and swapchain recreation through bridge");
 
                 if (ended_resized) {
                     matter::VulkanFrame stable{};

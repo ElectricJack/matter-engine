@@ -1592,7 +1592,15 @@ struct VulkanDevice::Impl {
         to_present_dependency.imageMemoryBarrierCount = 1;
         to_present_dependency.pImageMemoryBarriers = &to_present;
         vkCmdPipelineBarrier2(slot.command_buffer, &to_present_dependency);
-        if (!vk_ok(vkEndCommandBuffer(slot.command_buffer),
+        VkResult end_command_buffer = vkEndCommandBuffer(slot.command_buffer);
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+        const char* end_frame_fault = std::getenv("MATTER_VK_TEST_END_FRAME_FAULT");
+        if (end_command_buffer == VK_SUCCESS && end_frame_fault &&
+            std::strcmp(end_frame_fault, "record") == 0) {
+            end_command_buffer = VK_ERROR_INITIALIZATION_FAILED;
+        }
+#endif
+        if (!vk_ok(end_command_buffer,
                     "vkEndCommandBuffer", error)) {
             recover_unsubmitted_acquire(slot, input.image_index, error);
             abandon_active_frame();
@@ -1623,7 +1631,16 @@ struct VulkanDevice::Impl {
             abandon_active_frame();
             return false;
         }
-        if (!vk_ok(vkQueueSubmit2(graphics_queue, 1, &submit, slot.fence),
+        VkResult submit_result = VK_SUCCESS;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+        if (end_frame_fault && std::strcmp(end_frame_fault, "submit") == 0) {
+            submit_result = VK_ERROR_OUT_OF_HOST_MEMORY;
+        } else
+#endif
+        {
+            submit_result = vkQueueSubmit2(graphics_queue, 1, &submit, slot.fence);
+        }
+        if (!vk_ok(submit_result,
                     "vkQueueSubmit2", error)) {
             if (!restore_signaled_frame_fence(slot, error)) {
                 recover_unsubmitted_acquire(slot, input.image_index, error);
@@ -1839,8 +1856,6 @@ struct VulkanDevice::Impl {
             streamline.destroy_surface(instance, surface, nullptr);
             surface = VK_NULL_HANDLE;
         }
-        // All proxy-routed objects are gone before the interposer unloads.
-        streamline.shutdown();
         if (device != VK_NULL_HANDLE) {
             if (device_lifetime) device_lifetime->invalidate();
             vkDestroyDevice(device, nullptr);
@@ -1854,6 +1869,11 @@ struct VulkanDevice::Impl {
                 destroy_debug(instance, debug_messenger, nullptr);
         }
         if (instance != VK_NULL_HANDLE) vkDestroyInstance(instance, nullptr);
+        // Keep the Streamline interposer and every proxy entry point resident
+        // through all Vulkan object destruction, including the raw device and
+        // instance teardown calls.  Only unload after the final proxy-created
+        // object has gone away.
+        streamline.shutdown();
     }
 };
 
@@ -2112,6 +2132,18 @@ void VulkanDevice::preserve_after_unproven_external_work() noexcept {
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
 uint32_t VulkanDevice::test_validation_error_total() {
     return g_test_validation_error_total.load(std::memory_order_relaxed);
+}
+
+const std::vector<std::string>& VulkanDevice::test_presentation_events() const {
+    return impl_->streamline.test_presentation_events();
+}
+
+void VulkanDevice::test_clear_presentation_events() {
+    impl_->streamline.clear_test_presentation_events();
+}
+
+uint64_t VulkanDevice::test_last_present_common_serial() const {
+    return impl_->streamline.test_last_present_common_serial();
 }
 #endif
 

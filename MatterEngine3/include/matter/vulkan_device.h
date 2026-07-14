@@ -72,6 +72,9 @@ public:
     void preserve_after_unproven_external_work() noexcept;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     static uint32_t test_validation_error_total();
+    const std::vector<std::string>& test_presentation_events() const;
+    void test_clear_presentation_events();
+    uint64_t test_last_present_common_serial() const;
 #endif
 
 private:
