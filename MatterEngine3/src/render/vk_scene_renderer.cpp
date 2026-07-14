@@ -210,8 +210,10 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     const VkDeviceSize vertex_offset = 0;
     vkCmdBindVertexBuffers(command_buffer, 0, 1, &record.vertex_buffer,
                            &vertex_offset);
-    // multiDrawIndirect is not required by VulkanDevice.  Submit each Task 7
-    // command independently so this path also works when that feature is off.
+    // multiDrawIndirect is not required by VulkanDevice. Submit each Task 7
+    // command independently, so maxDrawIndirectCount applies to drawCount=1
+    // for every call rather than to the size of the command table. Any future
+    // multi-draw path must validate its per-call drawCount against that limit.
     for (uint32_t i = 0; i < record.indirect_count; ++i) {
         if (record.command_enabled[i] == 0) continue;
         vkCmdDrawIndirect(command_buffer, record.indirect_buffer,
@@ -835,6 +837,7 @@ bool VkSceneRenderer::fail_if_poisoned(std::string& error) const {
 }
 
 bool VkSceneRenderer::poison(std::string& error) {
+    raster_attachments_ready_ = false;
     if (!poisoned()) {
         const std::string cause =
             error.empty() ? "unknown Vulkan scene mutation failure" : error;
@@ -863,10 +866,14 @@ bool VkSceneRenderer::load_device_limits(std::string& error) {
         physical_limits_.max_buffer_size =
             std::numeric_limits<VkDeviceSize>::max();
     limits_ = physical_limits_;
+    if (limits_.max_draw_indirect_count < 1) {
+        error =
+            "Vulkan maxDrawIndirectCount cannot support per-call drawCount=1";
+        return false;
+    }
     if (limits_.max_storage_buffer_range == 0 ||
         limits_.max_uniform_buffer_range == 0 ||
-        limits_.max_dispatch_group_count_x == 0 ||
-        limits_.max_draw_indirect_count == 0) {
+        limits_.max_dispatch_group_count_x == 0) {
         error = "Vulkan device reports unusable scene buffer or dispatch limits";
         return false;
     }
@@ -1284,11 +1291,6 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
         error = "draw-command buffer exceeds Vulkan storage descriptor limit";
         return false;
     }
-    if (limits_.max_draw_indirect_count != 0 &&
-        command_count > limits_.max_draw_indirect_count) {
-        error = "draw-command count exceeds Vulkan maxDrawIndirectCount";
-        return false;
-    }
     std::vector<uint32_t> per_part(parts_.size(), 0);
     for (uint32_t slot : instance_part_slots_) {
         if (slot >= per_part.size() || per_part[slot] ==
@@ -1497,8 +1499,9 @@ bool VkSceneRenderer::dispatch_culling(const FrameMatrices& frame,
     error.clear();
     if (fail_if_poisoned(error)) return false;
     if (!initialized_ && !init(error)) return false;
-    if (command_template_.size() > limits_.max_draw_indirect_count) {
-        error = "draw-command count exceeds Vulkan maxDrawIndirectCount";
+    if (limits_.max_draw_indirect_count < 1) {
+        error =
+            "Vulkan maxDrawIndirectCount cannot support per-call drawCount=1";
         return false;
     }
     uint32_t previous_first = 0;
@@ -1654,6 +1657,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     depth_ = std::move(depth);
     hdr_ = std::move(hdr);
     raster_extent_ = {width, height};
+    raster_attachments_ready_ = false;
 
     matter::VkImageResource* sampled[] = {&albedo_, &normal_, &orm_};
     VkDescriptorImageInfo image_infos[3]{};
@@ -1710,16 +1714,19 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
         albedo_.lifetime, normal_.lifetime, orm_.lifetime, depth_.lifetime,
         hdr_.lifetime, vertices_.lifetime, commands_.lifetime,
         frame_constants_.lifetime, draw_transforms_.lifetime};
+    raster_attachments_ready_ = false;
     if (!matter::submit_immediate(
             *vulkan_, record_raster, &record, error,
-            matter::ImmediateSubmitPhase::compute_dispatch,
+            matter::ImmediateSubmitPhase::raster_submission,
             std::move(dependencies))) {
         return poison(error);
     }
+    raster_attachments_ready_ = true;
     return true;
 }
 
 VkRasterAttachments VkSceneRenderer::raster_attachments() const {
+    if (poisoned() || !raster_attachments_ready_) return {};
     return {{albedo_.image, albedo_.format},
             {normal_.image, normal_.format},
             {orm_.image, orm_.format},
@@ -1735,6 +1742,10 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
     pixel = {};
     pixel.depth = 1.0f;
     if (fail_if_poisoned(error)) return false;
+    if (!raster_attachments_ready_) {
+        error = "raster attachments are unavailable until a render completes";
+        return false;
+    }
     if (x >= raster_extent_.width || y >= raster_extent_.height ||
         albedo_.image == VK_NULL_HANDLE) {
         error = "raster readback pixel is outside the rendered extent";
@@ -1851,6 +1862,7 @@ void VkSceneRenderer::reset() {
     raster_draw_command_count_ = 0;
     uploaded_raster_draw_command_count_ = 0;
     uploaded_rt_instances_.clear();
+    raster_attachments_ready_ = false;
     poison_reason_.clear();
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     test_fail_after_replacements_ = std::numeric_limits<uint32_t>::max();

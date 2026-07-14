@@ -48,6 +48,7 @@ public:
     VkDevice device() const;
     VkQueue graphics_queue() const;
     uint32_t graphics_queue_family() const;
+    bool draw_indirect_first_instance_enabled() const;
     uint32_t validation_error_count() const;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     static uint32_t test_validation_error_total();

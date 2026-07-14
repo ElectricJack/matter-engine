@@ -284,6 +284,7 @@ private:
     matter::VkImageResource depth_;
     matter::VkImageResource hdr_;
     VkExtent2D raster_extent_{};
+    bool raster_attachments_ready_ = false;
 
     std::vector<PartRecord> parts_;
     std::map<uint64_t, int> slot_of_;

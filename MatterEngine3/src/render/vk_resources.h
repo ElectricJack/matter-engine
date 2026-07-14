@@ -116,6 +116,7 @@ enum class ImmediateSubmitPhase {
     staging_readback,
     image_transition,
     compute_dispatch,
+    raster_submission,
 };
 bool submit_immediate(VulkanDevice& vulkan, ImmediateRecordFn record,
                       void* user_data, std::string& error,

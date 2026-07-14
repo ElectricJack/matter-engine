@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <utility>
@@ -485,13 +486,24 @@ bool submit_immediate(VulkanDevice& vulkan, ImmediateRecordFn record,
         return fail_result("vkCreateFence", result, error);
     }
     bool completion_proven = false;
-    const char* phase_name = phase == ImmediateSubmitPhase::staging_upload
-                                 ? "staging-upload"
-                             : phase == ImmediateSubmitPhase::staging_readback
-                                 ? "staging-readback"
-                             : phase == ImmediateSubmitPhase::image_transition
-                                 ? "image-transition"
-                                 : "dispatch-moved-buffer";
+    const char* phase_name = nullptr;
+    switch (phase) {
+        case ImmediateSubmitPhase::staging_upload:
+            phase_name = "staging-upload";
+            break;
+        case ImmediateSubmitPhase::staging_readback:
+            phase_name = "staging-readback";
+            break;
+        case ImmediateSubmitPhase::image_transition:
+            phase_name = "image-transition";
+            break;
+        case ImmediateSubmitPhase::compute_dispatch:
+            phase_name = "dispatch-moved-buffer";
+            break;
+        case ImmediateSubmitPhase::raster_submission:
+            phase_name = "raster-submission";
+            break;
+    }
     const bool submitted = detail::DeviceSubmitAccess::submit_and_wait(
         vulkan, command_buffer, fence, completion_proven, phase_name, error);
     if (!completion_proven) {
@@ -500,8 +512,18 @@ bool submit_immediate(VulkanDevice& vulkan, ImmediateRecordFn record,
         retained->abandon(pool, fence);
         detail::DeviceRetentionAccess::retain(vulkan, std::move(retained));
     }
+    bool result_ok = submitted;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    const char* force_completed_failure =
+        std::getenv("MATTER_VK_TEST_FORCE_IMMEDIATE_COMPLETED_FAILURE");
+    if (submitted && completion_proven && force_completed_failure &&
+        std::strcmp(force_completed_failure, phase_name) == 0) {
+        error = "forced completed immediate failure for raster fault test";
+        result_ok = false;
+    }
+#endif
     cleanup();
-    return submitted;
+    return result_ok;
 }
 
 bool upload_buffer(VulkanDevice& vulkan, VkBufferResource& destination,

@@ -257,6 +257,7 @@ struct VulkanDevice::Impl {
     PFN_vkReleaseSwapchainImagesEXT release_swapchain_images = nullptr;
     VkQueue graphics_queue = VK_NULL_HANDLE;
     uint32_t graphics_queue_family = std::numeric_limits<uint32_t>::max();
+    bool draw_indirect_first_instance_enabled = false;
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     VkFormat swapchain_format = VK_FORMAT_UNDEFINED;
     VkExtent2D swapchain_extent{};
@@ -508,6 +509,10 @@ struct VulkanDevice::Impl {
         features12.pNext = &features13;
         features13.pNext = &maintenance1;
         vkGetPhysicalDeviceFeatures2(candidate, &features2);
+        if (!features2.features.drawIndirectFirstInstance) {
+            missing.emplace_back(
+                "VkPhysicalDeviceFeatures::drawIndirectFirstInstance");
+        }
         if (!features12.timelineSemaphore) {
             missing.emplace_back(
                 "VkPhysicalDeviceVulkan12Features::timelineSemaphore");
@@ -729,8 +734,13 @@ struct VulkanDevice::Impl {
         features12.runtimeDescriptorArray = VK_TRUE;
         features12.bufferDeviceAddress = VK_TRUE;
 
+        VkPhysicalDeviceFeatures2 features2{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        features2.features.drawIndirectFirstInstance = VK_TRUE;
+        features2.pNext = &features12;
+
         VkDeviceCreateInfo create{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
-        create.pNext = &features12;
+        create.pNext = &features2;
         create.queueCreateInfoCount = 1;
         create.pQueueCreateInfos = &queue_create;
         create.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
@@ -739,6 +749,7 @@ struct VulkanDevice::Impl {
                    "vkCreateDevice", error)) {
             return false;
         }
+        draw_indirect_first_instance_enabled = true;
         device_lifetime =
             std::make_shared<detail::DeviceAccessToken>(device);
         vkGetDeviceQueue(device, graphics_queue_family, 0, &graphics_queue);
@@ -1665,6 +1676,9 @@ VkDevice VulkanDevice::device() const { return impl_->device; }
 VkQueue VulkanDevice::graphics_queue() const { return impl_->graphics_queue; }
 uint32_t VulkanDevice::graphics_queue_family() const {
     return impl_->graphics_queue_family;
+}
+bool VulkanDevice::draw_indirect_first_instance_enabled() const {
+    return impl_->draw_indirect_first_instance_enabled;
 }
 uint32_t VulkanDevice::validation_error_count() const {
     return impl_->validation_errors.load(std::memory_order_relaxed);

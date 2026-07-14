@@ -168,6 +168,13 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
           "negative-height viewport preserves top-left framebuffer convention");
     CHECK(background.albedo.w < 0.01f && background.depth >= 0.999f,
           "background color and depth remain clear");
+    CHECK(std::isfinite(background.hdr.x) &&
+              std::isfinite(background.hdr.y) &&
+              std::isfinite(background.hdr.z) &&
+              std::isfinite(background.hdr.w),
+          "cleared background produces finite HDR");
+    CHECK(close4(background.hdr, {0.0f, 0.0f, 0.0f, 1.0f}, 2e-3f),
+          "cleared background produces deterministic black HDR");
     CHECK(center.hdr.x > background.hdr.x &&
               center.hdr.y > background.hdr.y &&
               center.hdr.z > background.hdr.z,
@@ -227,6 +234,73 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
                 background.albedo.x, background.albedo.y,
                 background.albedo.z, background.depth, background.hdr.x,
                 background.hdr.y, background.hdr.z);
+}
+
+void run_raster_submission_fault(matter::VulkanDevice& vulkan) {
+    constexpr uint32_t width = 64;
+    constexpr uint32_t height = 64;
+    std::string error;
+    viewer::VkSceneRenderer renderer(vulkan);
+    const viewer::VkScenePart triangle = known_raster_triangle(950);
+    const matter::Mat4f identity = identity_matrix();
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.57079632679f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 10.0f;
+    viewer::FrameMatrices frame{};
+    CHECK(viewer::build_frame_matrices(camera, width, height, frame, error),
+          error.empty() ? "build raster fault frame matrices" : error.c_str());
+    const auto prepare_scene = [&]() {
+        return renderer.ensure_part(triangle, error) >= 0 &&
+               renderer.update_instances({{950, identity}}, error) &&
+               renderer.dispatch_culling(frame, camera.position, 1.0f, error);
+    };
+    CHECK(prepare_scene(),
+          error.empty() ? "prepare raster submission fault scene"
+                        : error.c_str());
+    CHECK(renderer.render_gbuffer_and_composite(width, height, error),
+          error.empty() ? "establish raster attachment baseline"
+                        : error.c_str());
+    CHECK(renderer.raster_attachments().hdr.image != VK_NULL_HANDLE,
+          "completed raster submission exposes attachments");
+
+    _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_COMPLETED_FAILURE",
+              "raster-submission");
+    const bool rendered =
+        renderer.render_gbuffer_and_composite(width, height, error);
+    _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_COMPLETED_FAILURE", "");
+    CHECK(!rendered &&
+              error.find("poisoned after partial GPU mutation") !=
+                  std::string::npos &&
+              error.find("forced completed immediate failure") !=
+                  std::string::npos,
+          "actual raster submission failure poisons renderer");
+    const std::string poison_reason = error;
+    const viewer::VkRasterAttachments hidden = renderer.raster_attachments();
+    CHECK(hidden.albedo.image == VK_NULL_HANDLE &&
+              hidden.normal.image == VK_NULL_HANDLE &&
+              hidden.orm.image == VK_NULL_HANDLE &&
+              hidden.depth.image == VK_NULL_HANDLE &&
+              hidden.hdr.image == VK_NULL_HANDLE &&
+              hidden.extent.width == 0 && hidden.extent.height == 0,
+          "poisoned renderer exposes no raster attachments");
+    viewer::VkRasterPixel pixel{};
+    CHECK(!renderer.readback_raster_pixel(0, 0, pixel, error) &&
+              error == poison_reason,
+          "poisoned raster readback fails with stable diagnostic");
+
+    renderer.reset();
+    CHECK(renderer.raster_attachments().hdr.image == VK_NULL_HANDLE,
+          "reset renderer keeps attachments hidden until re-render");
+    CHECK(renderer.init(error) && prepare_scene() &&
+              renderer.raster_attachments().hdr.image == VK_NULL_HANDLE &&
+              renderer.render_gbuffer_and_composite(width, height, error) &&
+              renderer.raster_attachments().hdr.image != VK_NULL_HANDLE,
+          error.empty() ? "reset and reinit restore raster attachments only after render"
+                        : error.c_str());
 }
 
 viewer::VkScenePart fixed_part(uint64_t hash, matter::Float3 minimum,
@@ -714,9 +788,14 @@ void run_vk_scene_checked_size_tests(matter::VulkanDevice& vulkan) {
         renderer.clear_test_device_limits(error);
 
         renderer.set_test_device_limits(4096, 4096, 4096, 1024, 1);
+        CHECK(renderer.dispatch_culling(scene.frame, scene.eye, 1.0f, error),
+              error.empty()
+                  ? "per-call drawCount=1 accepts maxDrawIndirectCount=1"
+                  : error.c_str());
+        renderer.set_test_device_limits(4096, 4096, 4096, 1024, 0);
         CHECK(!renderer.dispatch_culling(scene.frame, scene.eye, 1.0f, error) &&
                   error.find("maxDrawIndirectCount") != std::string::npos,
-              "dispatch_culling enforces forced indirect command limit");
+              "drawCount=1 rejects maxDrawIndirectCount=0");
         renderer.clear_test_device_limits(error);
     }
 
@@ -975,6 +1054,8 @@ int main() {
     CHECK(vulkan != nullptr, error.empty() ? "create Vulkan device" : error.c_str());
 
     if (vulkan) {
+        CHECK(vulkan->draw_indirect_first_instance_enabled(),
+              "drawIndirectFirstInstance is enabled on the logical device");
         const char* smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
         if (smoke_mode &&
             (std::string(smoke_mode) == "outlive-resources" ||
@@ -1050,6 +1131,16 @@ int main() {
         }
         if (smoke_mode && std::string(smoke_mode) == "raster") {
             run_raster_path(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "raster-fault") {
+            run_raster_submission_fault(*vulkan);
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
             vulkan->wait_idle();
