@@ -53,6 +53,10 @@ BASE at start: ff3a71f
 
 No tasks complete yet. Resume at Task 1.
 
+Task 1: complete (commit f294ffe, review clean)
+  - VulkanFrame now identifies its two frame slots; resources retained for an active frame release only after that slot's fence is next observed complete.
+  - CUDA 13.3 build and default RTX 4090 smoke passed with zero validation errors.
+
 Task 1: complete (commits ff3a71f..fbdd131, review clean)
   - Environment gate: CUDA 13.3 and OptiX 8.1 found; Vulkan headers, import library, and glslc absent.
   - Minor: default CUDA/OptiX paths use machine-specific Windows 8.3 aliases; overrides are supported.
