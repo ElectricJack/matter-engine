@@ -17,9 +17,11 @@
 #include "render/matrix_math.h"
 #include "render/vk_cuda_interop.h"
 #include "render/vk_device_internal.h"
+#include "render/vk_instance_cache.h"
 #include "render/vk_pipeline.h"
 #include "render/vk_resources.h"
 #include "render/vk_scene_renderer.h"
+#include "provider/sector_resolver.h"
 
 namespace {
 
@@ -216,6 +218,36 @@ matter::Mat4f identity_matrix() {
     matter::Mat4f result{};
     result.m[0] = result.m[5] = result.m[10] = result.m[15] = 1.0f;
     return result;
+}
+
+void run_vulkan_instance_cache_tests() {
+    viewer::ResolvedInstance a{};
+    a.part_hash = 11;
+    a.segment = 0;
+    a.transform[0] = a.transform[5] = a.transform[10] = a.transform[15] = 1.0f;
+    viewer::ResolvedInstance b = a;
+    b.part_hash = 12;
+    std::vector<viewer::ResolvedInstance> roots{a, b};
+
+    viewer::VulkanInstanceCache cache;
+    CHECK(!cache.matches(roots), "empty Vulkan instance cache misses");
+    std::vector<viewer::VkSceneInstance> expanded(2);
+    expanded[0].part_hash = 21;
+    expanded[1].part_hash = 22;
+    cache.store(roots, std::move(expanded));
+    CHECK(cache.matches(roots), "unchanged resolved roots hit Vulkan cache");
+    CHECK(cache.instances().size() == 2 && cache.expansion_count() == 1,
+          "Vulkan cache retains expanded instances and counts one expansion");
+
+    roots[1].lod_level = 3;
+    CHECK(cache.matches(roots), "LOD change preserves Vulkan cache hit");
+    roots[1].segment = 1;
+    CHECK(!cache.matches(roots), "segment change invalidates Vulkan cache");
+    roots[1].segment = 0;
+    roots[1].transform[3] = 1.0f;
+    CHECK(!cache.matches(roots), "transform change invalidates Vulkan cache");
+    cache.invalidate();
+    CHECK(cache.instances().empty(), "cache invalidation releases expansion");
 }
 
 bool gpu_matrix_equal(const viewer::GpuMat4& actual,
@@ -1319,6 +1351,7 @@ void run_outlive_resources(std::unique_ptr<matter::VulkanDevice>& vulkan,
 }  // namespace
 
 int main() {
+    run_vulkan_instance_cache_tests();
 #ifdef MATTER_VK_TEST_LAYER_PATH
     // MSYS2 installs validation-layer manifests outside the Windows registry.
     // Point this standalone test at that installed development package and let

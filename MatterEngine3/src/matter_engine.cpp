@@ -29,6 +29,7 @@
 #include "world_tracer.h"    // WorldTracer — lazy CPU BVH for query API
 #ifdef MATTER_VULKAN_VIEWER
 #include "matter/vulkan_device.h"
+#include "render/vk_instance_cache.h"
 #include "render/vk_scene_renderer.h"
 #include "render/matrix_math.h"
 #endif
@@ -211,6 +212,7 @@ struct WorldSession::Impl {
 #endif
 #ifdef MATTER_VULKAN_VIEWER
     std::unique_ptr<viewer::VkSceneRenderer> vk_scene;
+    viewer::VulkanInstanceCache vk_instance_cache;
 #endif
     lod_select::PartLodTable                lods;
 
@@ -1034,6 +1036,7 @@ void WorldSession::Impl::publish_pipeline(
 
 #ifdef MATTER_VULKAN_VIEWER
         if (vk_scene) vk_scene->reset();
+        vk_instance_cache.invalidate();
 #endif
 #ifndef MATTER_VULKAN_ONLY
         viewer::release_probe_textures(probe_tex);
@@ -1813,7 +1816,10 @@ void WorldSession::Impl::execute_refine_step() {
                 if (culler_ready) gpu_culler.release_part(full_hash_e);
 #endif
 #ifdef MATTER_VULKAN_VIEWER
-                if (vk_scene)     vk_scene->release_part(full_hash_e);
+                if (vk_scene) {
+                    vk_scene->release_part(full_hash_e);
+                    vk_instance_cache.invalidate();
+                }
 #endif
                 if (store)        store->release(full_hash_e);
                 return true;
@@ -2178,7 +2184,10 @@ void WorldSession::Impl::drain_sector_evictions() {
             if (culler_ready) gpu_culler.release_part(part_hash);
 #endif
 #ifdef MATTER_VULKAN_VIEWER
-            if (vk_scene) vk_scene->release_part(part_hash);
+            if (vk_scene) {
+                vk_scene->release_part(part_hash);
+                vk_instance_cache.invalidate();
+            }
 #endif
             if (store) store->release(part_hash);
             if (provider) provider->release_transient(part_hash);
@@ -2247,7 +2256,10 @@ void WorldSession::Impl::execute_sector_stream_step() {
                     if (culler_ready) gpu_culler.release_part(part_hash);
 #endif
 #ifdef MATTER_VULKAN_VIEWER
-                    if (vk_scene) vk_scene->release_part(part_hash);
+                    if (vk_scene) {
+                        vk_scene->release_part(part_hash);
+                        vk_instance_cache.invalidate();
+                    }
 #endif
                     if (store) store->release(part_hash);
                     if (provider) provider->release_transient(part_hash);
@@ -2965,6 +2977,7 @@ WorldSession::~WorldSession() {
     impl_->probe_thread_join();
 
 #ifdef MATTER_VULKAN_VIEWER
+    impl_->vk_instance_cache.invalidate();
     impl_->vk_scene.reset();
 #endif
 
@@ -3401,40 +3414,48 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     const auto resolved = resolver.resolve(impl_->state, impl_->lods, camera_pos);
     const auto resolve_end = std::chrono::steady_clock::now();
 
-    std::vector<viewer::VkSceneInstance> instances;
-    instances.reserve(resolved.size() * 2);
-    for (const auto& source : resolved) {
-        const viewer::LoadedPart* root = impl_->store->get_or_load(source.part_hash);
-        if (!root) continue;
-        if (!root->expansion.empty()) {
-            for (const auto& node : root->expansion) {
-                const viewer::LoadedPart* loaded =
-                    impl_->store->get_or_load(node.part_hash);
-                if (!loaded) continue;
+    const bool instances_dirty = !impl_->vk_instance_cache.matches(resolved);
+    if (instances_dirty) {
+        std::vector<viewer::VkSceneInstance> rebuilt;
+        rebuilt.reserve(resolved.size() * 2);
+        for (const auto& source : resolved) {
+            const viewer::LoadedPart* root =
+                impl_->store->get_or_load(source.part_hash);
+            if (!root) continue;
+            if (!root->expansion.empty()) {
+                for (const auto& node : root->expansion) {
+                    const viewer::LoadedPart* loaded =
+                        impl_->store->get_or_load(node.part_hash);
+                    if (!loaded) continue;
+                    bool drawable = false;
+                    if (!ensure_vulkan_part(*impl_->vk_scene, node.part_hash,
+                                            *loaded, drawable, err)) return false;
+                    if (!drawable) continue;
+                    Mat4f root_transform{};
+                    Mat4f relative{};
+                    std::memcpy(root_transform.m, source.transform,
+                                sizeof(root_transform.m));
+                    std::memcpy(relative.m, node.rel_transform,
+                                sizeof(relative.m));
+                    rebuilt.push_back(
+                        {node.part_hash,
+                         viewer::mat4_mul(root_transform, relative)});
+                }
+            } else {
                 bool drawable = false;
-                if (!ensure_vulkan_part(*impl_->vk_scene, node.part_hash,
-                                        *loaded, drawable, err)) return false;
+                if (!ensure_vulkan_part(*impl_->vk_scene, source.part_hash,
+                                        *root, drawable, err)) return false;
                 if (!drawable) continue;
-                Mat4f root_transform{};
-                Mat4f relative{};
-                std::memcpy(root_transform.m, source.transform,
-                            sizeof(root_transform.m));
-                std::memcpy(relative.m, node.rel_transform, sizeof(relative.m));
-                instances.push_back(
-                    {node.part_hash, viewer::mat4_mul(root_transform, relative)});
+                viewer::VkSceneInstance instance;
+                instance.part_hash = source.part_hash;
+                std::memcpy(instance.object_to_world.m, source.transform,
+                            sizeof(instance.object_to_world.m));
+                rebuilt.push_back(instance);
             }
-        } else {
-            bool drawable = false;
-            if (!ensure_vulkan_part(*impl_->vk_scene, source.part_hash,
-                                    *root, drawable, err)) return false;
-            if (!drawable) continue;
-            viewer::VkSceneInstance instance;
-            instance.part_hash = source.part_hash;
-            std::memcpy(instance.object_to_world.m, source.transform,
-                        sizeof(instance.object_to_world.m));
-            instances.push_back(instance);
         }
+        impl_->vk_instance_cache.store(resolved, std::move(rebuilt));
     }
+    const auto& instances = impl_->vk_instance_cache.instances();
     if (instances.empty()) {
         impl_->stats.instances_resolved = 0;
         record_vulkan_clear(frame, impl_->sky_clear);

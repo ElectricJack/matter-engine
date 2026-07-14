@@ -143,6 +143,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/render/world_state.cpp \
               $(ME3_DIR)/src/render/vk_context.cpp $(ME3_DIR)/src/render/vk_resources.cpp \
               $(ME3_DIR)/src/render/vk_pipeline.cpp $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+              $(ME3_DIR)/src/render/vk_instance_cache.cpp \
               $(ME3_DIR)/src/render/vk_cuda_interop.cpp \
               $(ME3_DIR)/src/render/vulkan_only_compat.cpp \
               $(ME3_DIR)/src/render/frame_matrices.cpp $(ME3_DIR)/src/render/matrix_math.cpp \
@@ -412,6 +413,8 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_resources.h \
         $(ME3_DIR)/src/render/vk_pipeline.h \
         $(ME3_DIR)/src/render/vk_scene_renderer.h \
+        $(ME3_DIR)/src/render/vk_instance_cache.h \
+        $(ME3_DIR)/src/render/vk_instance_cache.cpp \
         $(ME3_DIR)/src/render/vk_cuda_interop.h \
         $(ME3_DIR)/src/render/vk_cuda_interop.cpp \
         $(ME3_DIR)/src/render/vk_context.cpp \
@@ -427,6 +430,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/vk_resources.cpp \
 	    $(ME3_DIR)/src/render/vk_pipeline.cpp \
 	    $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+	    $(ME3_DIR)/src/render/vk_instance_cache.cpp \
 	    $(ME3_DIR)/src/render/vk_cuda_interop.cpp \
 	    $(ME3_DIR)/src/render/frame_matrices.cpp \
 	    $(ME3_DIR)/src/render/matrix_math.cpp \
@@ -437,6 +441,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    -DMATTER_VK_TEST_FAULT_INJECTION \
 	    -DMATTER_VK_TEST_LAYER_PATH='"$(VULKAN_RUNTIME_DIR)"' \
 	    -I$(ME3_DIR) -I$(ME3_DIR)/include -I$(ME3_DIR)/src \
+	    -I../MatterSurfaceLib/include \
 	    -I$(ME3_DIR)/tests \
 	    -I../Libraries/raylib/src/external/glfw/include \
 	    -I"$(CUDA_PATH)/include" \
