@@ -146,3 +146,8 @@ Task 1: complete (commits 60ac19a + 86321f7 + 361297e, review clean)
 Task 2: complete (commits 97609b1 + a02708d + c940aaf, review clean)
   - Swapchain/acquire/resize/present operations use one manual-hook funnel; proxy lifetime extends through Vulkan teardown and successful frames enforce acquire-before-common-present directly adjacent to the sole present.
   - Real VulkanDevice fault and resize seams cover no-handoff failures and recovery. Executable smoke remains environment-blocked by the silent MinGW exit; enabled SDK behavior still requires legal Streamline runtime artifacts.
+
+Task 3: complete (commits 297abd2 + bd8c4da, review clean)
+  - Canonical temporal candidates, never-reused attempt tokens, stable production rigid IDs, publication/reset/empty-frame invalidation, and actual-present-only history commits are implemented.
+  - Opaque velocity is sampled R16G16_SFLOAT with sampled depth, exact CPU/GPU vector coverage, aligned readback, and shader compilation passing. Full C++/Vulkan runtime smoke remains blocked by the silent MinGW compiler failure.
+  - Minor: VkSceneInstance retains a stale comment describing the removed input-order ID fallback; production behavior and tests require stable nonzero IDs.
