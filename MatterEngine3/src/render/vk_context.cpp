@@ -1680,6 +1680,12 @@ struct VulkanDevice::Impl {
         present.swapchainCount = 1;
         present.pSwapchains = &swapchain;
         present.pImageIndices = &input.image_index;
+        if (!streamline.present_common(input.serial)) {
+            error = "Streamline common present was already handed off for this frame";
+            recover_submitted_without_present(slot, input.image_index, error);
+            abandon_active_frame();
+            return false;
+        }
         const VkResult present_result =
             streamline.queue_present(graphics_queue, &present);
         const PresentResultState present_state =
@@ -1913,8 +1919,15 @@ std::unique_ptr<VulkanDevice> VulkanDevice::create(GLFWwindow* window,
         return std::unique_ptr<VulkanDevice>(
             new VulkanDevice(std::make_unique<Impl>(std::move(bridge))));
     };
-    std::unique_ptr<VulkanDevice> result =
-        make_device(StreamlineBridge::initialize_before_vulkan());
+    std::unique_ptr<VulkanDevice> result;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    // The smoke executable validates native Vulkan behavior and must not bind
+    // to a user-installed Streamline runtime or its presentation proxies.
+    result = make_device(StreamlineBridge::native_fallback(
+        "Streamline disabled for Vulkan test device"));
+#else
+    result = make_device(StreamlineBridge::initialize_before_vulkan());
+#endif
     if (result->impl_->initialize(window, enable_validation, error)) {
         return result;
     }

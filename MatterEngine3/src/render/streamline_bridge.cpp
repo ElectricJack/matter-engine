@@ -198,6 +198,28 @@ StreamlineBridge StreamlineBridge::native_fallback(std::string reason) {
     return bridge;
 }
 
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+StreamlineBridge StreamlineBridge::fake_active_for_tests() {
+    StreamlineBridge bridge;
+    bridge.initialized_ = true;
+    bridge.dlss_requested_ = true;
+    bridge.dlss_available_ = true;
+    bridge.use_proxy_dispatch_ = true;
+    bridge.test_fake_dispatch_ = true;
+    return bridge;
+}
+
+StreamlineBridge StreamlineBridge::fake_fallback_for_tests() {
+    StreamlineBridge bridge = native_fallback("test native fallback");
+    bridge.test_fake_dispatch_ = true;
+    return bridge;
+}
+
+void StreamlineBridge::record_test_presentation_event(PresentationEvent event) {
+    if (use_proxy_dispatch_) test_presentation_events_.push_back(event);
+}
+#endif
+
 bool StreamlineBridge::validate_requirements(
     const VkPhysicalDeviceVulkan12Features& supported_features12,
     const VkPhysicalDeviceVulkan13Features& supported_features13,
@@ -408,6 +430,20 @@ VkResult StreamlineBridge::get_swapchain_images(
 
 VkResult StreamlineBridge::queue_present(VkQueue queue,
                                          const VkPresentInfoKHR* present) {
+    if (use_proxy_dispatch_ &&
+        (!present_common_pending_ || present_common_serial_ == 0)) {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    if (use_proxy_dispatch_) {
+        present_common_pending_ = false;
+        present_common_serial_ = 0;
+    }
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (test_fake_dispatch_) {
+        record_test_presentation_event(PresentationEvent::present);
+        return VK_SUCCESS;
+    }
+#endif
     if (use_proxy_dispatch_ && queue_present_proxy_) {
         proxy_dispatch_used_ = true;
         return queue_present_proxy_(queue, present);
@@ -415,9 +451,29 @@ VkResult StreamlineBridge::queue_present(VkQueue queue,
     return vkQueuePresentKHR(queue, present);
 }
 
+bool StreamlineBridge::present_common(uint64_t frame_serial) {
+    if (!use_proxy_dispatch_) return true;
+    if (frame_serial == 0 || present_common_pending_) return false;
+    // vkQueuePresentKHR is one of Streamline's required Vulkan hooks.  Its
+    // proxy enters the common plugin's presentCommon() implementation.
+    present_common_pending_ = true;
+    present_common_serial_ = frame_serial;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    record_test_presentation_event(PresentationEvent::present_common);
+#endif
+    return true;
+}
+
 VkResult StreamlineBridge::create_swapchain(
     VkDevice device, const VkSwapchainCreateInfoKHR* create,
     const VkAllocationCallbacks* allocator, VkSwapchainKHR* swapchain) {
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (test_fake_dispatch_) {
+        record_test_presentation_event(PresentationEvent::create_swapchain);
+        if (swapchain) *swapchain = VK_NULL_HANDLE;
+        return VK_SUCCESS;
+    }
+#endif
     if (use_proxy_dispatch_ && create_swapchain_proxy_) {
         proxy_dispatch_used_ = true;
         return create_swapchain_proxy_(device, create, allocator, swapchain);
@@ -428,6 +484,12 @@ VkResult StreamlineBridge::create_swapchain(
 void StreamlineBridge::destroy_swapchain(
     VkDevice device, VkSwapchainKHR swapchain,
     const VkAllocationCallbacks* allocator) {
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (test_fake_dispatch_) {
+        record_test_presentation_event(PresentationEvent::destroy_swapchain);
+        return;
+    }
+#endif
     if (use_proxy_dispatch_ && destroy_swapchain_proxy_) {
         proxy_dispatch_used_ = true;
         destroy_swapchain_proxy_(device, swapchain, allocator);
@@ -439,6 +501,13 @@ void StreamlineBridge::destroy_swapchain(
 VkResult StreamlineBridge::acquire_next_image(
     VkDevice device, VkSwapchainKHR swapchain, uint64_t timeout,
     VkSemaphore semaphore, VkFence fence, uint32_t* image_index) {
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (test_fake_dispatch_) {
+        record_test_presentation_event(PresentationEvent::acquire);
+        if (image_index) *image_index = 0;
+        return VK_SUCCESS;
+    }
+#endif
     if (use_proxy_dispatch_ && acquire_next_image_proxy_) {
         proxy_dispatch_used_ = true;
         return acquire_next_image_proxy_(device, swapchain, timeout, semaphore,

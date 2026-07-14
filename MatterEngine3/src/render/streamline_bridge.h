@@ -65,6 +65,10 @@ public:
                            const VkAllocationCallbacks* allocator,
                            VkDevice* device);
     VkResult queue_present(VkQueue queue, const VkPresentInfoKHR* present);
+    // The intercepted present call is where Streamline's common plugin runs
+    // presentCommon().  Record the completed frame immediately before that
+    // call so the manual-hook path can enforce one handoff per frame.
+    bool present_common(uint64_t frame_serial);
     VkResult create_swapchain(VkDevice device,
                               const VkSwapchainCreateInfoKHR* create,
                               const VkAllocationCallbacks* allocator,
@@ -86,6 +90,25 @@ public:
     void destroy_surface(VkInstance instance, VkSurfaceKHR surface,
                          const VkAllocationCallbacks* allocator);
 
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    enum class PresentationEvent {
+        acquire,
+        present_common,
+        present,
+        create_swapchain,
+        destroy_swapchain,
+    };
+
+    // Deterministic Vulkan-free dispatchers let the smoke suite exercise the
+    // manual presentation contract without an installed Streamline runtime.
+    static StreamlineBridge fake_active_for_tests();
+    static StreamlineBridge fake_fallback_for_tests();
+    const std::vector<PresentationEvent>& test_presentation_events() const {
+        return test_presentation_events_;
+    }
+    void clear_test_presentation_events() { test_presentation_events_.clear(); }
+#endif
+
 private:
     bool initialized_ = false;
     bool dlss_requested_ = false;
@@ -94,6 +117,8 @@ private:
     bool use_proxy_dispatch_ = false;
     bool proxy_object_created_ = false;
     bool streamline_initialized_ = false;
+    bool present_common_pending_ = false;
+    uint64_t present_common_serial_ = 0;
     std::string dlss_unavailable_reason_;
     std::vector<const char*> instance_extensions_;
     std::vector<const char*> device_extensions_;
@@ -120,6 +145,12 @@ private:
     PFN_vkCreateWin32SurfaceKHR create_win32_surface_proxy_ = nullptr;
 #endif
     PFN_vkDestroySurfaceKHR destroy_surface_proxy_ = nullptr;
+
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    bool test_fake_dispatch_ = false;
+    std::vector<PresentationEvent> test_presentation_events_;
+    void record_test_presentation_event(PresentationEvent event);
+#endif
 
     bool populate_instance_proxies(VkInstance instance);
     bool populate_device_proxies(VkDevice device);

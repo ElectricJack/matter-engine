@@ -54,6 +54,56 @@ void run_streamline_bridge_fallback_tests() {
           "Streamline extension merge preserves first-seen order");
 }
 
+void run_streamline_presentation_funnel_tests() {
+    matter::StreamlineBridge active =
+        matter::StreamlineBridge::fake_active_for_tests();
+    uint32_t image_index = 0;
+    CHECK(active.acquire_next_image(VK_NULL_HANDLE, VK_NULL_HANDLE, 0,
+                                    VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                    &image_index) == VK_SUCCESS,
+          "active bridge acquires through its presentation wrapper");
+    CHECK(active.present_common(41),
+          "active bridge accepts the submitted frame's common-present handoff");
+    CHECK(active.queue_present(VK_NULL_HANDLE, nullptr) == VK_SUCCESS,
+          "active bridge presents through its presentation wrapper");
+    CHECK(active.test_presentation_events() ==
+              std::vector<matter::StreamlineBridge::PresentationEvent>{
+                  matter::StreamlineBridge::PresentationEvent::acquire,
+                  matter::StreamlineBridge::PresentationEvent::present_common,
+                  matter::StreamlineBridge::PresentationEvent::present},
+          "active presentation order is acquire, one common present, present");
+
+    active.clear_test_presentation_events();
+    active.destroy_swapchain(VK_NULL_HANDLE, VK_NULL_HANDLE, nullptr);
+    VkSwapchainKHR swapchain = VK_NULL_HANDLE;
+    CHECK(active.create_swapchain(VK_NULL_HANDLE, nullptr, nullptr,
+                                  &swapchain) == VK_SUCCESS,
+          "active bridge recreates the swapchain through its wrapper");
+    CHECK(active.test_presentation_events() ==
+              std::vector<matter::StreamlineBridge::PresentationEvent>{
+                  matter::StreamlineBridge::PresentationEvent::destroy_swapchain,
+                  matter::StreamlineBridge::PresentationEvent::create_swapchain},
+          "resize routes swapchain destruction and creation through the bridge");
+
+    active.clear_test_presentation_events();
+    CHECK(active.queue_present(VK_NULL_HANDLE, nullptr) == VK_ERROR_INITIALIZATION_FAILED,
+          "active bridge rejects a present without a submitted common-present handoff");
+    CHECK(active.test_presentation_events() ==
+              std::vector<matter::StreamlineBridge::PresentationEvent>{},
+          "record or submit failures do not invoke common present");
+
+    matter::StreamlineBridge fallback =
+        matter::StreamlineBridge::fake_fallback_for_tests();
+    CHECK(fallback.acquire_next_image(VK_NULL_HANDLE, VK_NULL_HANDLE, 0,
+                                      VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                      &image_index) == VK_SUCCESS &&
+              fallback.present_common(42) &&
+              fallback.queue_present(VK_NULL_HANDLE, nullptr) == VK_SUCCESS,
+          "fallback presentation path remains usable");
+    CHECK(fallback.test_presentation_events().empty(),
+          "fallback presentation path has no proxy calls");
+}
+
 void run_cuda_vulkan_interop(matter::VulkanDevice& vulkan) {
     std::string error;
     auto interop = matter::CudaVulkanInterop::create(vulkan, error);
@@ -1612,6 +1662,7 @@ void run_outlive_resources(std::unique_ptr<matter::VulkanDevice>& vulkan,
 int main() {
     run_vulkan_instance_cache_tests();
     run_streamline_bridge_fallback_tests();
+    run_streamline_presentation_funnel_tests();
 #ifdef MATTER_VK_TEST_LAYER_PATH
     // MSYS2 installs validation-layer manifests outside the Windows registry.
     // Point this standalone test at that installed development package and let
