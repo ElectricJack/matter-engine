@@ -1,0 +1,51 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+
+#define RT_SURFACE_HIT_SHADER 1
+#include "rt_surface_common.glsl"
+
+struct VisibilityPayload {
+    vec3 visibility;
+    uint layers;
+};
+
+layout(location = 0) rayPayloadInEXT VisibilityPayload payload;
+hitAttributeEXT vec2 hit_barycentrics;
+
+const uint MATERIAL_ALPHA_TESTED = 1u << 2u;
+
+void main() {
+    RtSurface surface = load_rt_surface(hit_barycentrics);
+    if ((surface.flags & RT_SURFACE_VALID) == 0u) {
+        payload.visibility = vec3(0.0);
+        terminateRayEXT;
+        return;
+    }
+    if (surface.material_index >= rt_materials.length()) {
+        payload.visibility = vec3(0.0);
+        terminateRayEXT;
+        return;
+    }
+    RtMaterialGpu material = rt_materials[surface.material_index];
+    float opacity = clamp(material.metal_opacity_spec_coat.y, 0.0, 1.0);
+    float alpha_cutoff = clamp(material.scattering_shape.z, 0.0, 1.0);
+    if ((material.flags_misc.x & MATERIAL_ALPHA_TESTED) != 0u &&
+        opacity < alpha_cutoff) {
+        ignoreIntersectionEXT;
+        return;
+    }
+
+    vec3 transmission_tint = clamp(material.base_roughness.rgb *
+                                   material.transmission.x, 0.0, 1.0);
+    float shadow_opacity =
+        clamp(material.scattering_shape.w, 0.0, 1.0);
+    payload.visibility *= mix(vec3(1.0), transmission_tint, shadow_opacity);
+    ++payload.layers;
+    if (payload.layers >= 32u ||
+        max(payload.visibility.r,
+            max(payload.visibility.g, payload.visibility.b)) < 0.01)
+        terminateRayEXT;
+    else
+        ignoreIntersectionEXT;
+}

@@ -36,6 +36,36 @@ static_assert(sizeof(VkCullStats) == 16,
 static_assert(sizeof(VkRasterVertex) == 72,
               "VkRasterVertex must match raster vertex bindings");
 
+bool rt_material_is_opaque(const MaterialGpuRecord& material) {
+    return material.metal_opacity_spec_coat[1] >= 1.0f &&
+           material.scattering_shape[3] >= 1.0f &&
+           (material.flags_misc[0] & MATERIAL_ALPHA_TESTED) == 0u &&
+           material.transmission[0] <= 0.0f;
+}
+
+bool rt_material_ids_are_opaque(
+    const std::vector<MaterialGpuRecord>& materials,
+    const std::vector<uint32_t>& material_ids) {
+    return std::all_of(material_ids.begin(), material_ids.end(),
+                       [&](uint32_t material_id) {
+                           return material_id < materials.size() &&
+                                  rt_material_is_opaque(
+                                      materials[material_id]);
+                       });
+}
+
+bool rt_vertices_are_opaque(
+    const std::vector<MaterialGpuRecord>& materials,
+    const std::vector<VkRasterVertex>& vertices) {
+    return std::all_of(vertices.begin(), vertices.end(),
+                       [&](const VkRasterVertex& vertex) {
+                           return vertex.material_index == UINT32_MAX ||
+                                  (vertex.material_index < materials.size() &&
+                                   rt_material_is_opaque(
+                                       materials[vertex.material_index]));
+                       });
+}
+
 bool fail_vk(const char* operation, VkResult result, std::string& error) {
     error = std::string(operation) + " failed with VkResult " +
             std::to_string(static_cast<int>(result));
@@ -742,11 +772,14 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
         descriptor_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                            VK_SHADER_STAGE_RAYGEN_BIT_KHR),
         descriptor_binding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                           VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR),
+                           VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+                               VK_SHADER_STAGE_ANY_HIT_BIT_KHR),
         descriptor_binding(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                           VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR),
+                           VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+                               VK_SHADER_STAGE_ANY_HIT_BIT_KHR),
         descriptor_binding(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                           VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR),
+                           VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+                               VK_SHADER_STAGE_ANY_HIT_BIT_KHR),
         descriptor_binding(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                            VK_SHADER_STAGE_RAYGEN_BIT_KHR)};
     VkDescriptorSetLayoutCreateInfo set_info{
@@ -772,16 +805,19 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     if (result != VK_SUCCESS)
         return fail_vk("vkCreatePipelineLayout(ray tracing)", result, error);
     const char* names[] = {"rt_shadow.rgen.spv", "rt_surface_test.rgen.spv",
-                           "rt_shadow.rmiss.spv", "rt_radiance.rmiss.spv",
-                           "rt_shadow.rchit.spv", "rt_surface.rchit.spv"};
+                           "rt_visibility.rmiss.spv", "rt_radiance.rmiss.spv",
+                           "rt_visibility.rchit.spv",
+                           "rt_visibility.rahit.spv",
+                           "rt_surface.rchit.spv"};
     const VkShaderStageFlagBits stages_bits[] = {
         VK_SHADER_STAGE_RAYGEN_BIT_KHR, VK_SHADER_STAGE_RAYGEN_BIT_KHR,
         VK_SHADER_STAGE_MISS_BIT_KHR, VK_SHADER_STAGE_MISS_BIT_KHR,
         VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
+        VK_SHADER_STAGE_ANY_HIT_BIT_KHR,
         VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR};
-    VkShaderModule modules[6]{};
-    VkPipelineShaderStageCreateInfo stages[6]{};
-    for (uint32_t i = 0; i < 6; ++i) {
+    VkShaderModule modules[7]{};
+    VkPipelineShaderStageCreateInfo stages[7]{};
+    for (uint32_t i = 0; i < 7; ++i) {
         if (!create_shader_module(device, names[i], modules[i], error)) {
             for (VkShaderModule module : modules)
                 if (module) vkDestroyShaderModule(device, module, nullptr);
@@ -810,11 +846,12 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     groups[3].generalShader = 3;
     groups[4].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
     groups[4].closestHitShader = 4;
+    groups[4].anyHitShader = 5;
     groups[5].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
-    groups[5].closestHitShader = 5;
+    groups[5].closestHitShader = 6;
     VkRayTracingPipelineCreateInfoKHR create{
         VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR};
-    create.stageCount = 6;
+    create.stageCount = 7;
     create.pStages = stages;
     create.groupCount = 6;
     create.pGroups = groups;
@@ -1678,7 +1715,10 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
             VkAccelerationStructureGeometryKHR geometry{
                 VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
             geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-            geometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+            geometry.flags =
+                rt_vertices_are_opaque(material_staging_, part.vertices)
+                    ? VK_GEOMETRY_OPAQUE_BIT_KHR
+                    : 0;
             geometry.geometry.triangles = triangles;
             VkAccelerationStructureBuildGeometryInfoKHR build{
                 VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
@@ -1805,25 +1845,18 @@ bool VkSceneRenderer::update_materials(
         return false;
     }
 
-    if (!first_upload && geometry_changed) {
-        const auto alpha_classification = [](const MaterialGpuRecord& record) {
-            return record.flags_misc[0] & MATERIAL_ALPHA_TESTED;
-        };
+    // Defensively compare the aggregate RT class for every material update.
+    // The upstream geometry revision tracks topology-facing flags, while live
+    // opacity, shadow-opacity, or transmission edits may also cross this BLAS
+    // geometry-flag boundary.
+    if (!first_upload && data_changed) {
         for (PartRecord& part : parts_) {
-            for (uint32_t material_id : part.material_ids) {
-                const uint32_t old_class =
-                    material_id < material_staging_.size()
-                        ? alpha_classification(material_staging_[material_id])
-                        : 0;
-                const uint32_t new_class =
-                    material_id < records.size()
-                        ? alpha_classification(records[material_id])
-                        : 0;
-                if (old_class != new_class) {
-                    part.rt_geometry_classification_dirty = true;
-                    break;
-                }
-            }
+            const bool old_opaque = rt_material_ids_are_opaque(
+                material_staging_, part.material_ids);
+            const bool new_opaque =
+                rt_material_ids_are_opaque(records, part.material_ids);
+            if (old_opaque != new_opaque)
+                part.rt_geometry_classification_dirty = true;
         }
     }
     material_staging_ = records;
@@ -2030,6 +2063,7 @@ void VkSceneRenderer::finish_ray_tracing_frame(uint64_t frame_serial,
     for (auto& part : parts_) {
         if (part.rt_blas_candidate_serial != frame_serial) continue;
         part.rt_blas_built = succeeded;
+        if (succeeded) part.rt_geometry_classification_dirty = false;
         part.rt_blas_candidate_serial = 0;
     }
 }
@@ -2754,6 +2788,17 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         return false;
     }
     FrameResources& selected = frames_[frame.frame_slot];
+    const bool retiring_classified_blas = std::any_of(
+        parts_.begin(), parts_.end(), [&](const PartRecord& part) {
+            if (!part.live || !part.rt_blas_built ||
+                !part.rt_geometry_classification_dirty)
+                return false;
+            return std::any_of(rt_instances_.begin(), rt_instances_.end(),
+                               [&](const RtInstance& instance) {
+                                   return instance.part_hash == part.hash;
+                               });
+        });
+    if (retiring_classified_blas) vulkan_->wait_idle();
     VkDeviceSize scratch_size = 1;
     struct PendingBlas {
         PartRecord* part;
@@ -2763,7 +2808,9 @@ bool VkSceneRenderer::record_ray_traced_shadows(
     };
     std::vector<PendingBlas> pending;
     for (auto& part : parts_) {
-        if (!part.live || part.rt_blas_built ||
+        if (!part.live ||
+            (part.rt_blas_built &&
+             !part.rt_geometry_classification_dirty) ||
             part.rt_blas_candidate_serial != 0 || !part.rt_geometry ||
             !part.rt_blas || part.rt_primitive_count == 0) continue;
         const bool active = std::any_of(
@@ -2785,14 +2832,16 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         item.geometry.sType =
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
         item.geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-        item.geometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+        item.geometry.flags = rt_material_ids_are_opaque(
+                                  material_staging_, part.material_ids)
+                                  ? VK_GEOMETRY_OPAQUE_BIT_KHR
+                                  : 0;
         item.build.sType =
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
         item.build.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
         item.build.flags =
             VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
         item.build.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
-        item.build.dstAccelerationStructure = part.rt_blas->handle;
         item.build.geometryCount = 1;
         item.build.pGeometries = &item.geometry;
         item.range.primitiveCount = part.rt_primitive_count;
@@ -2801,6 +2850,17 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         get_sizes(vulkan_->device(),
                   VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
                   &item.build, &item.range.primitiveCount, &sizes);
+        if (part.rt_geometry_classification_dirty) {
+            auto replacement = std::make_shared<
+                matter::VkAccelerationStructureResource>();
+            if (!matter::create_acceleration_structure(
+                    *vulkan_, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+                    sizes.accelerationStructureSize, *replacement, error))
+                return false;
+            part.rt_blas = std::move(replacement);
+            part.rt_blas_built = false;
+        }
+        item.build.dstAccelerationStructure = part.rt_blas->handle;
         scratch_size = std::max(scratch_size, sizes.buildScratchSize);
         pending.push_back(item);
     }
@@ -2849,7 +2909,9 @@ bool VkSceneRenderer::record_ray_traced_shadows(
                 instance.transform.matrix[row][col] =
                     source.transform[row * 4 + col];
         instance.instanceCustomIndex = static_cast<uint32_t>(found->second);
-        instance.mask = 0xff;
+        const bool opaque = rt_material_ids_are_opaque(
+            material_staging_, part.material_ids);
+        instance.mask = opaque ? 0x01 : 0x02;
         instance.instanceShaderBindingTableRecordOffset = 0;
         instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
         instance.accelerationStructureReference = part.rt_blas->address;

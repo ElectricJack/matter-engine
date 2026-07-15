@@ -14,7 +14,12 @@ layout(push_constant) uniform ShadowConstants {
     uint debug_view;
 } constants;
 
-layout(location = 0) rayPayloadEXT float visibility;
+struct VisibilityPayload {
+    vec3 visibility;
+    uint layers;
+};
+
+layout(location = 0) rayPayloadEXT VisibilityPayload payload;
 
 void main() {
     ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
@@ -44,12 +49,19 @@ void main() {
                        0.002 * sqrt(float(sample_index) + 0.5);
         vec3 direction = normalize(sun + radius *
             (cos(a) * tangent + sin(a) * bitangent));
-        visibility = 1.0;
+        payload.visibility = vec3(1.0);
+        payload.layers = 0u;
         traceRayEXT(scene, gl_RayFlagsTerminateOnFirstHitEXT |
                             gl_RayFlagsOpaqueEXT,
-                    0xff, 0, 0, 0, world + sun * constants.bias,
+                    0x01, 0, 0, 0, world + sun * constants.bias,
                     constants.bias, direction, constants.max_distance, 0);
-        sum += visibility;
+        if (max(payload.visibility.r,
+                max(payload.visibility.g, payload.visibility.b)) >= 0.01) {
+            traceRayEXT(scene, gl_RayFlagsNoneEXT, 0x02, 0, 0, 0,
+                        world + sun * constants.bias, constants.bias,
+                        direction, constants.max_distance, 0);
+        }
+        sum += dot(payload.visibility, vec3(1.0 / 3.0));
     }
     imageStore(visibility_image, pixel,
                vec4(sum / float(sample_count)));

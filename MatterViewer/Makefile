@@ -400,6 +400,9 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/rt_shadow.rgen.spv \
          build/shaders_vk/rt_shadow.rmiss.spv \
          build/shaders_vk/rt_shadow.rchit.spv \
+         build/shaders_vk/rt_visibility.rmiss.spv \
+         build/shaders_vk/rt_visibility.rchit.spv \
+         build/shaders_vk/rt_visibility.rahit.spv \
          build/shaders_vk/rt_radiance.rmiss.spv \
          build/shaders_vk/rt_surface.rchit.spv \
          build/shaders_vk/rt_surface_test.rgen.spv
@@ -414,7 +417,8 @@ build/shaders_vk/%.spv: $(ME3_DIR)/shaders_vk/%
 build/shaders_vk/raster.vert.spv build/shaders_vk/gbuffer.frag.spv: \
     $(ME3_DIR)/shaders_vk/material_common.glsl
 
-build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_radiance.rmiss.spv \
+build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_visibility.rahit.spv \
+    build/shaders_vk/rt_radiance.rmiss.spv \
     build/shaders_vk/rt_surface_test.rgen.spv: \
     $(ME3_DIR)/shaders_vk/rt_surface_common.glsl
 
