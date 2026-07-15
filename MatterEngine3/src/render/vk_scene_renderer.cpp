@@ -645,7 +645,12 @@ void VkSceneRenderer::destroy_pipeline() {
     rt_set_layout_ = VK_NULL_HANDLE;
     rt_descriptor_sets_.clear();
     rt_sbt_address_ = 0;
+    rt_sbt_test_raygen_address_ = 0;
+    rt_sbt_miss_address_ = 0;
+    rt_sbt_hit_address_ = 0;
     rt_sbt_stride_ = 0;
+    rt_sbt_miss_size_ = 0;
+    rt_sbt_hit_size_ = 0;
     pipeline_layout_ = VK_NULL_HANDLE;
     descriptor_pool_ = VK_NULL_HANDLE;
     frames_.clear();
@@ -741,10 +746,12 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
         descriptor_binding(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                            VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR),
         descriptor_binding(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                           VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)};
+                           VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR),
+        descriptor_binding(6, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                           VK_SHADER_STAGE_RAYGEN_BIT_KHR)};
     VkDescriptorSetLayoutCreateInfo set_info{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    set_info.bindingCount = 6;
+    set_info.bindingCount = 7;
     set_info.pBindings = bindings;
     VkResult result = vkCreateDescriptorSetLayout(device, &set_info, nullptr,
                                                    &rt_set_layout_);
@@ -764,16 +771,17 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
                                     &rt_pipeline_layout_);
     if (result != VK_SUCCESS)
         return fail_vk("vkCreatePipelineLayout(ray tracing)", result, error);
-    const char* names[] = {"rt_shadow.rgen.spv", "rt_shadow.rmiss.spv",
-                           "rt_shadow.rchit.spv", "rt_radiance.rmiss.spv",
-                           "rt_surface.rchit.spv"};
+    const char* names[] = {"rt_shadow.rgen.spv", "rt_surface_test.rgen.spv",
+                           "rt_shadow.rmiss.spv", "rt_radiance.rmiss.spv",
+                           "rt_shadow.rchit.spv", "rt_surface.rchit.spv"};
     const VkShaderStageFlagBits stages_bits[] = {
-        VK_SHADER_STAGE_RAYGEN_BIT_KHR, VK_SHADER_STAGE_MISS_BIT_KHR,
-        VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, VK_SHADER_STAGE_MISS_BIT_KHR,
+        VK_SHADER_STAGE_RAYGEN_BIT_KHR, VK_SHADER_STAGE_RAYGEN_BIT_KHR,
+        VK_SHADER_STAGE_MISS_BIT_KHR, VK_SHADER_STAGE_MISS_BIT_KHR,
+        VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR,
         VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR};
-    VkShaderModule modules[5]{};
-    VkPipelineShaderStageCreateInfo stages[5]{};
-    for (uint32_t i = 0; i < 5; ++i) {
+    VkShaderModule modules[6]{};
+    VkPipelineShaderStageCreateInfo stages[6]{};
+    for (uint32_t i = 0; i < 6; ++i) {
         if (!create_shader_module(device, names[i], modules[i], error)) {
             for (VkShaderModule module : modules)
                 if (module) vkDestroyShaderModule(device, module, nullptr);
@@ -784,7 +792,7 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
         stages[i].module = modules[i];
         stages[i].pName = "main";
     }
-    VkRayTracingShaderGroupCreateInfoKHR groups[5]{};
+    VkRayTracingShaderGroupCreateInfoKHR groups[6]{};
     for (auto& group : groups) {
         group.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
         group.generalShader = VK_SHADER_UNUSED_KHR;
@@ -796,17 +804,19 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     groups[0].generalShader = 0;
     groups[1].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
     groups[1].generalShader = 1;
-    groups[2].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
-    groups[2].closestHitShader = 2;
+    groups[2].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+    groups[2].generalShader = 2;
     groups[3].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
     groups[3].generalShader = 3;
     groups[4].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
     groups[4].closestHitShader = 4;
+    groups[5].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+    groups[5].closestHitShader = 5;
     VkRayTracingPipelineCreateInfoKHR create{
         VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR};
-    create.stageCount = 5;
+    create.stageCount = 6;
     create.pStages = stages;
-    create.groupCount = 5;
+    create.groupCount = 6;
     create.pGroups = groups;
     create.maxPipelineRayRecursionDepth = 1;
     create.layout = rt_pipeline_layout_;
@@ -844,16 +854,21 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
         error = "ray tracing SBT stride exceeds maxShaderGroupStride";
         return false;
     }
-    const VkDeviceSize region_stride =
-        (handle_stride + props.shader_group_base_alignment - 1) /
-        props.shader_group_base_alignment * props.shader_group_base_alignment;
-    std::vector<uint8_t> handles(static_cast<size_t>(5 * handle_size));
-    result = get_handles(device, rt_pipeline_, 0, 5, handles.size(),
+    std::vector<uint8_t> handles(static_cast<size_t>(6 * handle_size));
+    result = get_handles(device, rt_pipeline_, 0, 6, handles.size(),
                          handles.data());
     if (result != VK_SUCCESS)
         return fail_vk("vkGetRayTracingShaderGroupHandlesKHR", result, error);
+    const VkDeviceSize category_size = 2 * handle_stride;
+    const VkDeviceSize category_span =
+        (category_size + props.shader_group_base_alignment - 1) /
+        props.shader_group_base_alignment * props.shader_group_base_alignment;
+    const VkDeviceSize raygen_record_stride =
+        (handle_stride + props.shader_group_base_alignment - 1) /
+        props.shader_group_base_alignment * props.shader_group_base_alignment;
+    const VkDeviceSize raygen_span = 2 * raygen_record_stride;
     if (!matter::create_buffer(
-            *vulkan_, 5 * region_stride +
+            *vulkan_, raygen_span + 2 * category_span +
                            props.shader_group_base_alignment - 1,
             VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR |
                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -864,16 +879,30 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
         (rt_sbt_.address + props.shader_group_base_alignment - 1) /
         props.shader_group_base_alignment * props.shader_group_base_alignment;
     rt_sbt_stride_ = handle_stride;
+    rt_sbt_test_raygen_address_ = rt_sbt_address_ + raygen_record_stride;
+    rt_sbt_miss_address_ = rt_sbt_address_ + raygen_span;
+    rt_sbt_hit_address_ = rt_sbt_miss_address_ + category_span;
+    rt_sbt_miss_size_ = category_size;
+    rt_sbt_hit_size_ = category_size;
     const VkDeviceSize mapped_offset = rt_sbt_address_ - rt_sbt_.address;
     std::memset(static_cast<uint8_t*>(rt_sbt_.mapped) + mapped_offset, 0,
-                static_cast<size_t>(5 * region_stride));
-    for (uint32_t i = 0; i < 5; ++i)
+                static_cast<size_t>(raygen_span + 2 * category_span));
+    for (uint32_t i = 0; i < 2; ++i) {
         std::memcpy(static_cast<uint8_t*>(rt_sbt_.mapped) + mapped_offset +
-                        i * region_stride,
+                        i * raygen_record_stride,
                     handles.data() + i * handle_size,
                     static_cast<size_t>(handle_size));
-    return matter::flush_buffer(rt_sbt_, mapped_offset, 5 * region_stride,
-                                error);
+        std::memcpy(static_cast<uint8_t*>(rt_sbt_.mapped) + mapped_offset +
+                        raygen_span + i * handle_stride,
+                    handles.data() + (2 + i) * handle_size,
+                    static_cast<size_t>(handle_size));
+        std::memcpy(static_cast<uint8_t*>(rt_sbt_.mapped) + mapped_offset +
+                        raygen_span + category_span + i * handle_stride,
+                    handles.data() + (4 + i) * handle_size,
+                    static_cast<size_t>(handle_size));
+    }
+    return matter::flush_buffer(rt_sbt_, mapped_offset,
+                                raygen_span + 2 * category_span, error);
 }
 
 bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
@@ -1286,6 +1315,8 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             !ensure_candidate_buffer(frame.rt_parts, sizeof(GpuRtPartRecord),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
             !ensure_candidate_buffer(frame.rt_error_counter, sizeof(uint32_t),
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+            !ensure_candidate_buffer(frame.rt_test_output, 18 * sizeof(uint32_t),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
             vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
             return false;
@@ -1306,7 +1337,7 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, frame_slot_count},
             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, frame_slot_count},
             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count},
-            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 3}};
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 4}};
         VkDescriptorPoolCreateInfo rt_pool{
             VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         rt_pool.maxSets = frame_slot_count;
@@ -1827,121 +1858,143 @@ VkDeviceAddress VkSceneRenderer::test_rt_geometry_address(
     return part.rt_geometry ? part.rt_geometry->address : 0;
 }
 
-bool VkSceneRenderer::test_trace_surface_ray(
-    matter::Float3 origin, matter::Float3 direction, RtSurfaceHit& hit,
-    std::string& error) const {
+bool VkSceneRenderer::record_test_surface_ray(
+    const matter::VulkanFrame& frame, matter::Float3 origin,
+    matter::Float3 direction, uint32_t invalid_part_slot,
+    std::string& error) {
     error.clear();
-    hit = {};
-    const auto subtract = [](matter::Float3 a, matter::Float3 b) {
-        return matter::Float3{a.x - b.x, a.y - b.y, a.z - b.z};
-    };
-    const auto add_scaled = [](matter::Float3 a, matter::Float3 b, float scale) {
-        return matter::Float3{a.x + b.x * scale, a.y + b.y * scale,
-                              a.z + b.z * scale};
-    };
-    const auto dot = [](matter::Float3 a, matter::Float3 b) {
-        return a.x * b.x + a.y * b.y + a.z * b.z;
-    };
-    const auto cross = [](matter::Float3 a, matter::Float3 b) {
-        return matter::Float3{a.y * b.z - a.z * b.y,
-                              a.z * b.x - a.x * b.z,
-                              a.x * b.y - a.y * b.x};
-    };
-    const auto normalize = [&](matter::Float3 value) {
-        const float length_squared = dot(value, value);
-        if (!(length_squared > 1e-12f)) return matter::Float3{};
-        const float inverse = 1.0f / std::sqrt(length_squared);
-        return matter::Float3{value.x * inverse, value.y * inverse,
-                              value.z * inverse};
-    };
-    direction = normalize(direction);
-    if (dot(direction, direction) == 0.0f) {
-        error = "surface-query direction must be non-zero";
+    if (!vulkan_->ray_tracing_available() || rt_pipeline_ == VK_NULL_HANDLE ||
+        frame.command_buffer == VK_NULL_HANDLE ||
+        frame.frame_slot >= frames_.size() ||
+        frame.frame_slot >= rt_descriptor_sets_.size()) {
+        error = "test surface ray requires an active native RT frame";
         return false;
     }
-    float closest = std::numeric_limits<float>::max();
-    for (const RtInstance& instance : rt_instances_) {
-        const auto found = slot_of_.find(instance.part_hash);
-        if (found == slot_of_.end()) continue;
-        const uint32_t slot = static_cast<uint32_t>(found->second);
-        const PartRecord& part = parts_[slot];
-        if (!part.live || !part.rt_geometry || !part.rt_geometry->mapped)
-            continue;
-        matter::Mat4f object_to_world{};
-        std::memcpy(object_to_world.m, instance.transform,
-                    sizeof(object_to_world.m));
-        matter::Mat4f world_to_object{};
-        if (!mat4_inverse(object_to_world, world_to_object)) continue;
-        const auto* vertices =
-            static_cast<const VkRasterVertex*>(part.rt_geometry->mapped);
-        for (uint32_t primitive = 0; primitive < part.rt_primitive_count;
-             ++primitive) {
-            const VkRasterVertex& v0 = vertices[primitive * 3];
-            const VkRasterVertex& v1 = vertices[primitive * 3 + 1];
-            const VkRasterVertex& v2 = vertices[primitive * 3 + 2];
-            const matter::Float3 p0 =
-                transform_point(object_to_world, v0.position);
-            const matter::Float3 p1 =
-                transform_point(object_to_world, v1.position);
-            const matter::Float3 p2 =
-                transform_point(object_to_world, v2.position);
-            const matter::Float3 edge1 = subtract(p1, p0);
-            const matter::Float3 edge2 = subtract(p2, p0);
-            const matter::Float3 pvec = cross(direction, edge2);
-            const float determinant = dot(edge1, pvec);
-            if (std::fabs(determinant) < 1e-7f) continue;
-            const float inverse_determinant = 1.0f / determinant;
-            const matter::Float3 tvec = subtract(origin, p0);
-            const float bary1 = dot(tvec, pvec) * inverse_determinant;
-            if (bary1 < 0.0f || bary1 > 1.0f) continue;
-            const matter::Float3 qvec = cross(tvec, edge1);
-            const float bary2 = dot(direction, qvec) * inverse_determinant;
-            if (bary2 < 0.0f || bary1 + bary2 > 1.0f) continue;
-            const float distance = dot(edge2, qvec) * inverse_determinant;
-            if (!(distance >= 0.0f) || distance >= closest) continue;
-            const float bary0 = 1.0f - bary1 - bary2;
-            const matter::Float3 object_normal{
-                v0.normal.x * bary0 + v1.normal.x * bary1 +
-                    v2.normal.x * bary2,
-                v0.normal.y * bary0 + v1.normal.y * bary1 +
-                    v2.normal.y * bary2,
-                v0.normal.z * bary0 + v1.normal.z * bary1 +
-                    v2.normal.z * bary2};
-            matter::Float3 world_normal = normalize({
-                world_to_object.m[0] * object_normal.x +
-                    world_to_object.m[4] * object_normal.y +
-                    world_to_object.m[8] * object_normal.z,
-                world_to_object.m[1] * object_normal.x +
-                    world_to_object.m[5] * object_normal.y +
-                    world_to_object.m[9] * object_normal.z,
-                world_to_object.m[2] * object_normal.x +
-                    world_to_object.m[6] * object_normal.y +
-                    world_to_object.m[10] * object_normal.z});
-            if (dot(world_normal, direction) > 0.0f) {
-                world_normal = {-world_normal.x, -world_normal.y,
-                                -world_normal.z};
-            }
-            closest = distance;
-            hit.valid = true;
-            hit.part_slot = slot;
-            hit.primitive = primitive;
-            hit.material_index = v0.material_index;
-            hit.position = add_scaled(origin, direction, distance);
-            hit.normal = world_normal;
-            hit.tint = {
-                v0.tint.x * bary0 + v1.tint.x * bary1 + v2.tint.x * bary2,
-                v0.tint.y * bary0 + v1.tint.y * bary1 + v2.tint.y * bary2,
-                v0.tint.z * bary0 + v1.tint.z * bary1 + v2.tint.z * bary2,
-                v0.tint.w * bary0 + v1.tint.w * bary1 + v2.tint.w * bary2};
-            hit.uv[0] = v0.surface.x * bary0 + v1.surface.x * bary1 +
-                        v2.surface.x * bary2;
-            hit.uv[1] = v0.surface.y * bary0 + v1.surface.y * bary1 +
-                        v2.surface.y * bary2;
-            hit.baked_ao = v0.surface.z * bary0 + v1.surface.z * bary1 +
-                           v2.surface.z * bary2;
-            hit.hit_t = distance;
-        }
+    const float direction_length = std::sqrt(
+        direction.x * direction.x + direction.y * direction.y +
+        direction.z * direction.z);
+    if (!(direction_length > 0.0f)) {
+        error = "test surface ray direction must be non-zero";
+        return false;
     }
+    FrameResources& selected = frames_[frame.frame_slot];
+    if (invalid_part_slot != UINT32_MAX) {
+        if (invalid_part_slot >= parts_.size() ||
+            selected.rt_parts.mapped == nullptr) {
+            error = "invalid test part-table slot";
+            return false;
+        }
+        auto* records =
+            static_cast<GpuRtPartRecord*>(selected.rt_parts.mapped);
+        records[invalid_part_slot].valid = 0;
+        if (!matter::flush_buffer(
+                selected.rt_parts,
+                invalid_part_slot * sizeof(GpuRtPartRecord),
+                sizeof(GpuRtPartRecord), error)) return false;
+    }
+    struct alignas(16) SurfaceTestConstants {
+        float origin_tmin[4];
+        float direction_tmax[4];
+    } constants{};
+    constants.origin_tmin[0] = origin.x;
+    constants.origin_tmin[1] = origin.y;
+    constants.origin_tmin[2] = origin.z;
+    constants.origin_tmin[3] = 0.001f;
+    constants.direction_tmax[0] = direction.x;
+    constants.direction_tmax[1] = direction.y;
+    constants.direction_tmax[2] = direction.z;
+    constants.direction_tmax[3] = 10000.0f;
+    transition_for_use(frame.command_buffer, visibility_,
+                       VK_IMAGE_LAYOUT_GENERAL,
+                       VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                       VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT);
+    vkCmdBindPipeline(frame.command_buffer,
+                      VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt_pipeline_);
+    const VkDescriptorSet descriptor_set =
+        rt_descriptor_sets_[frame.frame_slot];
+    vkCmdBindDescriptorSets(frame.command_buffer,
+                            VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
+                            rt_pipeline_layout_, 0, 1, &descriptor_set, 0,
+                            nullptr);
+    vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
+                       VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(constants),
+                       &constants);
+    const auto trace = reinterpret_cast<PFN_vkCmdTraceRaysKHR>(
+        vkGetDeviceProcAddr(vulkan_->device(), "vkCmdTraceRaysKHR"));
+    if (!trace) {
+        error = "vkCmdTraceRaysKHR unavailable for test surface ray";
+        return false;
+    }
+    const VkStridedDeviceAddressRegionKHR raygen{
+        rt_sbt_test_raygen_address_, rt_sbt_stride_, rt_sbt_stride_};
+    const VkStridedDeviceAddressRegionKHR miss{
+        rt_sbt_miss_address_, rt_sbt_stride_, rt_sbt_miss_size_};
+    const VkStridedDeviceAddressRegionKHR hit{
+        rt_sbt_hit_address_, rt_sbt_stride_, rt_sbt_hit_size_};
+    const VkStridedDeviceAddressRegionKHR callable{};
+    trace(frame.command_buffer, &raygen, &miss, &hit, &callable, 1, 1, 1);
+    matter::record_image_transition(
+        frame.command_buffer, visibility_,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+        VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    VkMemoryBarrier2 ray_to_host{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    ray_to_host.srcStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+    ray_to_host.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    ray_to_host.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+    ray_to_host.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dependency.memoryBarrierCount = 1;
+    dependency.pMemoryBarriers = &ray_to_host;
+    vkCmdPipelineBarrier2(frame.command_buffer, &dependency);
+    ++test_surface_trace_dispatches_;
+    return true;
+}
+
+bool VkSceneRenderer::readback_test_surface_hit(
+    uint32_t frame_slot, RtSurfaceHit& hit, uint32_t& invalid_count,
+    std::string& error) {
+    error.clear();
+    hit = {};
+    invalid_count = 0;
+    if (frame_slot >= frames_.size()) {
+        error = "test surface readback frame slot is out of range";
+        return false;
+    }
+    FrameResources& selected = frames_[frame_slot];
+    if (!matter::map_buffer(selected.rt_test_output, error) ||
+        !matter::map_buffer(selected.rt_error_counter, error) ||
+        !matter::invalidate_buffer(selected.rt_test_output, 0,
+                                   18 * sizeof(uint32_t), error) ||
+        !matter::invalidate_buffer(selected.rt_error_counter, 0,
+                                   sizeof(uint32_t), error)) return false;
+    const auto* words =
+        static_cast<const uint32_t*>(selected.rt_test_output.mapped);
+    const auto as_float = [](uint32_t bits) {
+        float value = 0.0f;
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    };
+    hit.flags = words[0];
+    hit.valid = (hit.flags & kRtSurfaceValid) != 0;
+    hit.part_slot = words[1];
+    hit.primitive = words[2];
+    hit.material_index = words[3];
+    hit.position = {as_float(words[4]), as_float(words[5]),
+                    as_float(words[6])};
+    hit.hit_t = as_float(words[7]);
+    hit.normal = {as_float(words[8]), as_float(words[9]),
+                  as_float(words[10])};
+    hit.baked_ao = as_float(words[11]);
+    hit.tint = {as_float(words[12]), as_float(words[13]),
+                as_float(words[14]), as_float(words[15])};
+    hit.uv[0] = as_float(words[16]);
+    hit.uv[1] = as_float(words[17]);
+    invalid_count =
+        *static_cast<const uint32_t*>(selected.rt_error_counter.mapped);
     return true;
 }
 
@@ -2794,7 +2847,7 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         for (uint32_t row = 0; row < 3; ++row)
             for (uint32_t col = 0; col < 4; ++col)
                 instance.transform.matrix[row][col] =
-                    source.transform[col * 4 + row];
+                    source.transform[row * 4 + col];
         instance.instanceCustomIndex = static_cast<uint32_t>(found->second);
         instance.mask = 0xff;
         instance.instanceShaderBindingTableRecordOffset = 0;
@@ -2915,7 +2968,9 @@ bool VkSceneRenderer::record_ray_traced_shadows(
                                          selected.materials.size};
     VkDescriptorBufferInfo error_info{selected.rt_error_counter.buffer, 0,
                                       selected.rt_error_counter.size};
-    VkWriteDescriptorSet writes[6]{};
+    VkDescriptorBufferInfo test_output_info{selected.rt_test_output.buffer, 0,
+                                            selected.rt_test_output.size};
+    VkWriteDescriptorSet writes[7]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].pNext = &as_write;
     writes[0].dstSet = rt_descriptor_sets_[frame.frame_slot];
@@ -2933,8 +2988,8 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         writes[i].pImageInfo = i == 1 ? &depth_info : &visibility_info;
     }
     const VkDescriptorBufferInfo* rt_buffers[] = {
-        &part_info, &material_info, &error_info};
-    for (uint32_t i = 3; i < 6; ++i) {
+        &part_info, &material_info, &error_info, &test_output_info};
+    for (uint32_t i = 3; i < 7; ++i) {
         writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet = rt_descriptor_sets_[frame.frame_slot];
         writes[i].dstBinding = i;
@@ -2942,7 +2997,7 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[i].pBufferInfo = rt_buffers[i - 3];
     }
-    vkUpdateDescriptorSets(vulkan_->device(), 6, writes, 0, nullptr);
+    vkUpdateDescriptorSets(vulkan_->device(), 7, writes, 0, nullptr);
     struct alignas(16) ShadowConstants {
         GpuMat4 clip_to_world;
         float to_sun_max_distance[4];
@@ -2978,15 +3033,13 @@ bool VkSceneRenderer::record_ray_traced_shadows(
     const VkDeviceSize handle_stride =
         (props.shader_group_handle_size + props.shader_group_handle_alignment - 1) /
         props.shader_group_handle_alignment * props.shader_group_handle_alignment;
-    const VkDeviceSize region_stride =
-        (handle_stride + props.shader_group_base_alignment - 1) /
-        props.shader_group_base_alignment * props.shader_group_base_alignment;
     const VkStridedDeviceAddressRegionKHR raygen{rt_sbt_address_, handle_stride,
                                                   handle_stride};
-    const VkStridedDeviceAddressRegionKHR miss{rt_sbt_address_ + region_stride,
-                                                handle_stride, handle_stride};
-    const VkStridedDeviceAddressRegionKHR hit{rt_sbt_address_ + 2 * region_stride,
-                                               handle_stride, handle_stride};
+    const VkStridedDeviceAddressRegionKHR miss{rt_sbt_miss_address_,
+                                                handle_stride,
+                                                rt_sbt_miss_size_};
+    const VkStridedDeviceAddressRegionKHR hit{rt_sbt_hit_address_, handle_stride,
+                                               rt_sbt_hit_size_};
     const VkStridedDeviceAddressRegionKHR callable{};
     cmd_trace(frame.command_buffer, &raygen, &miss, &hit, &callable,
               trace_extent.width, trace_extent.height, 1);
@@ -3005,7 +3058,7 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         selected.rt_tlas_scratch.lifetime,
         selected.rt_tlas.lifetime, selected.rt_parts.lifetime,
         selected.rt_error_counter.lifetime, selected.materials.lifetime,
-        rt_sbt_.lifetime};
+        selected.rt_test_output.lifetime, rt_sbt_.lifetime};
     for (const auto& part : parts_) {
         if (part.rt_geometry) retained.push_back(part.rt_geometry->lifetime);
         if (part.rt_blas) retained.push_back(part.rt_blas->lifetime);

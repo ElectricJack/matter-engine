@@ -1269,19 +1269,81 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                             : error.c_str());
         const matter::Float3 expected_world_normal{
             0.24253563f, 0.0f, 0.97014250f};
+        matter::CameraDesc query_camera{};
+        query_camera.position = {0.0f, 0.5f, 1.0f};
+        query_camera.target = {0.0f, 0.5f, -3.0f};
+        query_camera.up = {0.0f, 1.0f, 0.0f};
+        query_camera.vertical_fov_radians = 1.0f;
+        query_camera.near_plane = 0.1f;
+        query_camera.far_plane = 20.0f;
+        viewer::FrameMatrices query_matrices{};
+        CHECK(viewer::build_frame_matrices(query_camera, 64, 64,
+                                           query_matrices, error),
+              error.empty() ? "build surface-query matrices" : error.c_str());
+        matter::VulkanRayTracingSettings query_settings{};
+        query_settings.enabled = true;
+        query_settings.max_distance = 100.0f;
+        surface_query.set_ray_tracing_settings(query_settings);
+        const auto trace_surface = [&](matter::Float3 origin,
+                                       matter::Float3 direction,
+                                       uint32_t invalid_part_slot,
+                                       viewer::RtSurfaceHit& hit,
+                                       uint32_t& invalid_count) {
+            matter::VulkanFrame query_frame{};
+            if (!vulkan.begin_frame(query_frame, error)) return false;
+            const bool recorded = surface_query.prepare_frame(
+                                      query_frame, query_matrices,
+                                      query_camera.position, 1.0f, error) &&
+                                  surface_query.record_cull_and_render(
+                                      query_frame, query_matrices,
+                                      query_camera.position, 1.0f, error) &&
+                                  surface_query.record_composite_to_swapchain(
+                                      query_frame, error) &&
+                                  surface_query.record_test_surface_ray(
+                                      query_frame, origin, direction,
+                                      invalid_part_slot, error);
+            const bool submitted = recorded && vulkan.end_frame(query_frame, error);
+            surface_query.finish_ray_tracing_frame(query_frame.serial,
+                                                    submitted);
+            if (!submitted) return false;
+            vulkan.wait_idle();
+            return surface_query.readback_test_surface_hit(
+                query_frame.frame_slot, hit, invalid_count, error);
+        };
         viewer::RtSurfaceHit hit0{};
         viewer::RtSurfaceHit hit1{};
-        CHECK(surface_query.test_trace_surface_ray(
-                  {-2.0f, 0.25f, 0.0f}, {0.0f, 0.0f, -1.0f}, hit0, error) &&
-                  surface_query.test_trace_surface_ray(
+        uint32_t invalid_count0 = UINT32_MAX;
+        uint32_t invalid_count1 = UINT32_MAX;
+        CHECK(trace_surface({-2.0f, 0.25f, 0.0f}, {0.0f, 0.0f, -1.0f},
+                            UINT32_MAX, hit0, invalid_count0) &&
+                  trace_surface(
                       {2.0f + expected_world_normal.x * 3.0f,
                        1.0f / 3.0f,
                        -3.0f + expected_world_normal.z * 3.0f},
                       {-expected_world_normal.x, 0.0f,
                        -expected_world_normal.z},
-                      hit1, error),
-              error.empty() ? "trace secondary surface-query rays"
+                      UINT32_MAX, hit1, invalid_count1),
+              error.empty() ? "trace GPU secondary surface-query rays"
                             : error.c_str());
+        CHECK(surface_query.test_rt_miss_region_size() ==
+                      2 * surface_query.test_rt_sbt_stride() &&
+                  surface_query.test_rt_hit_region_size() ==
+                      2 * surface_query.test_rt_sbt_stride() &&
+                  surface_query.test_rt_sbt_address() %
+                          properties.shader_group_base_alignment ==
+                      0 &&
+                  surface_query.test_rt_test_raygen_address() %
+                          properties.shader_group_base_alignment ==
+                      0 &&
+                  surface_query.test_rt_miss_address() %
+                          properties.shader_group_base_alignment ==
+                      0 &&
+                  surface_query.test_rt_hit_address() %
+                          properties.shader_group_base_alignment ==
+                      0,
+              "shadow and radiance SBT records occupy aligned category regions");
+        CHECK(surface_query.test_surface_trace_dispatches() == 2,
+              "test raygen dispatches radiance miss and surface hit index one");
         CHECK(hit0.valid && hit0.part_slot == static_cast<uint32_t>(slot0) &&
                   hit0.primitive == 0,
               "first ray identifies part and primitive");
@@ -1293,6 +1355,34 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
               "inverse-transpose normal is correct");
         CHECK(std::fabs(hit1.baked_ao - 0.5f) < 1e-4f,
               "secondary barycentric AO matches raster data");
+        CHECK(close4(hit1.tint, {0.4f, 0.6f, 0.8f, 1.0f}, 1e-4f) &&
+                  std::fabs(hit1.uv[0] - 0.5f) < 1e-4f &&
+                  std::fabs(hit1.uv[1] - 1.0f / 3.0f) < 1e-4f &&
+                  (hit1.flags & viewer::kRtSurfaceFrontFace) != 0 &&
+                  invalid_count0 == 0 && invalid_count1 == 0,
+              "GPU surface query returns tint UV front-face and clean counter");
+        viewer::RtSurfaceHit miss_hit{};
+        uint32_t miss_invalid_count = UINT32_MAX;
+        CHECK(trace_surface({0.0f, 10.0f, 0.0f}, {0.0f, 1.0f, 0.0f},
+                            UINT32_MAX, miss_hit, miss_invalid_count) &&
+                  !miss_hit.valid && miss_hit.part_slot == UINT32_MAX &&
+                  miss_invalid_count == 0 &&
+                  close4(miss_hit.tint, {1.0f, 0.0f, 1.0f, 1.0f}, 1e-6f),
+              error.empty() ? "radiance miss index one returns invalid surface"
+                            : error.c_str());
+        viewer::RtSurfaceHit invalid_hit{};
+        uint32_t invalid_count = 0;
+        CHECK(trace_surface(
+                  {2.0f + expected_world_normal.x * 3.0f, 1.0f / 3.0f,
+                   -3.0f + expected_world_normal.z * 3.0f},
+                  {-expected_world_normal.x, 0.0f,
+                   -expected_world_normal.z},
+                  static_cast<uint32_t>(slot1), invalid_hit, invalid_count) &&
+                  !invalid_hit.valid && invalid_count == 1 &&
+                  surface_query.test_surface_trace_dispatches() == 4 &&
+                  close4(invalid_hit.tint, {1.0f, 0.0f, 1.0f, 1.0f}, 1e-6f),
+              error.empty() ? "invalid GPU part record reports debug surface"
+                            : error.c_str());
         surface_query.release_part(912);
         CHECK(surface_query.ensure_part(second, error) == slot1,
               "live RT part slot remains stable while an earlier slot retires");

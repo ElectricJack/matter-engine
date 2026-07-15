@@ -12,6 +12,14 @@ struct RtSurface {
     uint flags;
 };
 
+struct RtSurfacePayload {
+    RtSurface surface;
+    uint part_slot;
+    uint primitive;
+    uint pad0;
+    uint pad1;
+};
+
 struct GpuRtPartRecord {
     uvec2 vertex_address;
     uint vertex_stride;

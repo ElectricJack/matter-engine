@@ -1,0 +1,46 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "rt_surface_common.glsl"
+
+layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
+layout(set = 0, binding = 6, std430) buffer SurfaceTestOutput {
+    uint output_words[];
+};
+
+layout(push_constant) uniform SurfaceTestConstants {
+    vec4 origin_tmin;
+    vec4 direction_tmax;
+} constants;
+
+layout(location = 1) rayPayloadEXT RtSurfacePayload surface_payload;
+
+void main() {
+    surface_payload.surface = invalid_rt_surface();
+    surface_payload.part_slot = 0xffffffffu;
+    surface_payload.primitive = 0xffffffffu;
+    traceRayEXT(scene, gl_RayFlagsOpaqueEXT, 0xff, 1, 0, 1,
+                constants.origin_tmin.xyz, constants.origin_tmin.w,
+                normalize(constants.direction_tmax.xyz),
+                constants.direction_tmax.w, 1);
+    RtSurface surface = surface_payload.surface;
+    output_words[0] = surface.flags;
+    output_words[1] = surface_payload.part_slot;
+    output_words[2] = surface_payload.primitive;
+    output_words[3] = surface.material_index;
+    output_words[4] = floatBitsToUint(surface.position.x);
+    output_words[5] = floatBitsToUint(surface.position.y);
+    output_words[6] = floatBitsToUint(surface.position.z);
+    output_words[7] = floatBitsToUint(surface.hit_t);
+    output_words[8] = floatBitsToUint(surface.normal.x);
+    output_words[9] = floatBitsToUint(surface.normal.y);
+    output_words[10] = floatBitsToUint(surface.normal.z);
+    output_words[11] = floatBitsToUint(surface.baked_ao);
+    output_words[12] = floatBitsToUint(surface.tint.x);
+    output_words[13] = floatBitsToUint(surface.tint.y);
+    output_words[14] = floatBitsToUint(surface.tint.z);
+    output_words[15] = floatBitsToUint(surface.tint.w);
+    output_words[16] = floatBitsToUint(surface.uv.x);
+    output_words[17] = floatBitsToUint(surface.uv.y);
+}

@@ -4,6 +4,10 @@
 
 #include "rt_surface_common.glsl"
 
-layout(location = 1) rayPayloadInEXT RtSurface surface_payload;
+layout(location = 1) rayPayloadInEXT RtSurfacePayload surface_payload;
 
-void main() { surface_payload = invalid_rt_surface(); }
+void main() {
+    surface_payload.surface = invalid_rt_surface();
+    surface_payload.part_slot = 0xffffffffu;
+    surface_payload.primitive = 0xffffffffu;
+}

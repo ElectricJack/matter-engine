@@ -162,6 +162,8 @@ struct VkRasterPixel {
 };
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+constexpr uint32_t kRtSurfaceValid = 1u;
+constexpr uint32_t kRtSurfaceFrontFace = 2u;
 struct RtSurfaceHit {
     bool valid = false;
     uint32_t part_slot = UINT32_MAX;
@@ -173,6 +175,7 @@ struct RtSurfaceHit {
     float uv[2]{};
     float baked_ao = 1.0f;
     float hit_t = 0.0f;
+    uint32_t flags = 0;
 };
 #endif
 
@@ -318,13 +321,28 @@ public:
                    : 0;
     }
     VkDeviceAddress test_rt_geometry_address(uint64_t part_hash) const;
-    bool test_trace_surface_ray(matter::Float3 origin,
-                                matter::Float3 direction,
-                                RtSurfaceHit& hit, std::string& error) const;
+    bool record_test_surface_ray(const matter::VulkanFrame& frame,
+                                 matter::Float3 origin,
+                                 matter::Float3 direction,
+                                 uint32_t invalid_part_slot,
+                                 std::string& error);
+    bool readback_test_surface_hit(uint32_t frame_slot, RtSurfaceHit& hit,
+                                   uint32_t& invalid_count,
+                                   std::string& error);
     bool test_rt_blas_built(uint64_t part_hash) const;
     uint64_t test_rt_blas_candidate_serial(uint64_t part_hash) const;
     VkDeviceAddress test_rt_sbt_address() const { return rt_sbt_address_; }
+    VkDeviceAddress test_rt_test_raygen_address() const {
+        return rt_sbt_test_raygen_address_;
+    }
     VkDeviceSize test_rt_sbt_stride() const { return rt_sbt_stride_; }
+    VkDeviceAddress test_rt_miss_address() const { return rt_sbt_miss_address_; }
+    VkDeviceAddress test_rt_hit_address() const { return rt_sbt_hit_address_; }
+    VkDeviceSize test_rt_miss_region_size() const { return rt_sbt_miss_size_; }
+    VkDeviceSize test_rt_hit_region_size() const { return rt_sbt_hit_size_; }
+    uint32_t test_surface_trace_dispatches() const {
+        return test_surface_trace_dispatches_;
+    }
     VkDeviceAddress test_rt_scratch_address(uint32_t frame_slot) const;
     uint32_t test_last_rt_samples() const { return last_rt_samples_; }
     bool test_last_rt_debug_view() const { return last_rt_debug_view_; }
@@ -472,6 +490,7 @@ private:
         matter::VkAccelerationStructureResource rt_tlas;
         matter::VkBufferResource rt_parts;
         matter::VkBufferResource rt_error_counter;
+        matter::VkBufferResource rt_test_output;
         VkExtent2D dlss_output_extent{};
         VkDescriptorSet descriptor_sets[2]{};
         VkDescriptorSet composite_descriptor_set = VK_NULL_HANDLE;
@@ -565,7 +584,12 @@ private:
     VkImageUsageFlags visibility_usage_ = 0;
     matter::VkBufferResource rt_sbt_;
     VkDeviceAddress rt_sbt_address_ = 0;
+    VkDeviceAddress rt_sbt_test_raygen_address_ = 0;
+    VkDeviceAddress rt_sbt_miss_address_ = 0;
+    VkDeviceAddress rt_sbt_hit_address_ = 0;
     VkDeviceSize rt_sbt_stride_ = 0;
+    VkDeviceSize rt_sbt_miss_size_ = 0;
+    VkDeviceSize rt_sbt_hit_size_ = 0;
     VkExtent2D raster_extent_{};
     bool raster_attachments_ready_ = false;
 
@@ -616,6 +640,7 @@ private:
     VkSceneUploadCounters upload_counters_{};
     VkCullStats cached_stats_{};
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+    uint32_t test_surface_trace_dispatches_ = 0;
     DeviceLimits test_limits_{};
     bool use_test_limits_ = false;
     uint32_t test_fail_after_replacements_ =
