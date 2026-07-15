@@ -1,4 +1,5 @@
 #include "part_flatten.h"
+#include "matter/lod_contract.h"
 
 #include "part_asset_v2.h"   // load_v2/save_flat_v3, cache_path_*, load_lod_sidecar
 #include "lod_bake.h"        // decimate_to_error
@@ -11,6 +12,7 @@
 #include "mat_math.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cfloat>    // FLT_MAX (segmented error-budget sentinel)
 #include <cmath>
 #include <cstdio>
@@ -30,6 +32,135 @@
 namespace part_flatten {
 
 namespace {
+
+struct PositionKey {
+    uint32_t x = 0, y = 0, z = 0;
+    bool operator==(const PositionKey& other) const {
+        return x == other.x && y == other.y && z == other.z;
+    }
+};
+
+struct PositionKeyHash {
+    size_t operator()(const PositionKey& key) const {
+        size_t h = static_cast<size_t>(key.x) * 73856093u;
+        h ^= static_cast<size_t>(key.y) * 19349663u;
+        h ^= static_cast<size_t>(key.z) * 83492791u;
+        return h;
+    }
+};
+
+static PositionKey position_key(const float3& position) {
+    PositionKey key;
+    std::memcpy(&key.x, &position.x, sizeof(key.x));
+    std::memcpy(&key.y, &position.y, sizeof(key.y));
+    std::memcpy(&key.z, &position.z, sizeof(key.z));
+    return key;
+}
+
+static float3 normalized_or_up(const float3& normal) {
+    const float length = std::sqrt(normal.x * normal.x + normal.y * normal.y +
+                                   normal.z * normal.z);
+    if (length <= 1e-12f) return make_float3(0, 1, 0);
+    return normal * (1.0f / length);
+}
+
+struct BoundaryNormalSample {
+    float3 first = make_float3(0, 1, 0);
+    float3 sum = make_float3(0, 0, 0);
+    size_t sample_count = 0;
+    size_t cluster_count = 0;
+    size_t last_cluster = std::numeric_limits<size_t>::max();
+    bool source_smooth = true;
+};
+
+using BoundaryNormalSamples =
+    std::unordered_map<PositionKey, BoundaryNormalSample, PositionKeyHash>;
+using CanonicalBoundaryNormals =
+    std::unordered_map<PositionKey, float3, PositionKeyHash>;
+
+// Collect normals only from open-edge vertices of a source cluster. Those are
+// the positions the QEM boundary lock preserves in every derived LOD. A
+// position is eligible for cross-cluster canonicalization only when every
+// source normal at that position agrees closely; hard-edge splits therefore
+// remain separate even though their positions coincide.
+static void collect_source_boundary_normals(const std::vector<Tri>& tris,
+                                            const std::vector<TriEx>& triex,
+                                            size_t cluster_index,
+                                            BoundaryNormalSamples& samples) {
+    if (tris.empty() || triex.size() != tris.size()) return;
+    MeshIndexed source = from_tri(tris, &triex);
+    std::unordered_map<uint64_t, uint32_t> edge_counts;
+    edge_counts.reserve(source.indices.size());
+    auto edge_key = [](uint32_t a, uint32_t b) {
+        const uint32_t lo = std::min(a, b), hi = std::max(a, b);
+        return (static_cast<uint64_t>(lo) << 32) | hi;
+    };
+    for (size_t triangle = 0; triangle < source.indices.size() / 3; ++triangle) {
+        const uint32_t i0 = source.indices[triangle * 3 + 0];
+        const uint32_t i1 = source.indices[triangle * 3 + 1];
+        const uint32_t i2 = source.indices[triangle * 3 + 2];
+        ++edge_counts[edge_key(i0, i1)];
+        ++edge_counts[edge_key(i1, i2)];
+        ++edge_counts[edge_key(i2, i0)];
+    }
+    std::vector<uint8_t> boundary(source.positions.size(), 0);
+    for (const auto& [edge, count] : edge_counts) {
+        if (count != 1) continue;
+        boundary[static_cast<uint32_t>(edge >> 32)] = 1;
+        boundary[static_cast<uint32_t>(edge)] = 1;
+    }
+    constexpr float kSourceSmoothDot = 0.999f;
+    for (size_t triangle = 0; triangle < source.indices.size() / 3; ++triangle) {
+        const TriEx& ex = source.triex[triangle];
+        const float3 normals[3] = {ex.N0, ex.N1, ex.N2};
+        for (size_t corner = 0; corner < 3; ++corner) {
+            const uint32_t vertex = source.indices[triangle * 3 + corner];
+            if (!boundary[vertex]) continue;
+            const float3 normal = normalized_or_up(normals[corner]);
+            BoundaryNormalSample& sample = samples[position_key(source.positions[vertex])];
+            if (sample.sample_count == 0) sample.first = normal;
+            else {
+                const float agreement = sample.first.x * normal.x +
+                                        sample.first.y * normal.y +
+                                        sample.first.z * normal.z;
+                if (agreement < kSourceSmoothDot) sample.source_smooth = false;
+            }
+            sample.sum = sample.sum + normal;
+            ++sample.sample_count;
+            if (sample.last_cluster != cluster_index) {
+                sample.last_cluster = cluster_index;
+                ++sample.cluster_count;
+            }
+        }
+    }
+}
+
+static CanonicalBoundaryNormals canonical_boundary_normals(
+    const BoundaryNormalSamples& samples) {
+    CanonicalBoundaryNormals canonical;
+    canonical.reserve(samples.size());
+    for (const auto& [position, sample] : samples) {
+        if (sample.cluster_count < 2 || !sample.source_smooth) continue;
+        canonical.emplace(position, normalized_or_up(sample.sum));
+    }
+    return canonical;
+}
+
+static void apply_canonical_boundary_normals(
+    const CanonicalBoundaryNormals& canonical,
+    const std::vector<Tri>& tris, std::vector<TriEx>& triex) {
+    if (canonical.empty() || triex.size() != tris.size()) return;
+    for (size_t triangle = 0; triangle < tris.size(); ++triangle) {
+        const float3 positions[3] = {tris[triangle].vertex0, tris[triangle].vertex1,
+                                     tris[triangle].vertex2};
+        float3* normals[3] = {&triex[triangle].N0, &triex[triangle].N1,
+                              &triex[triangle].N2};
+        for (size_t corner = 0; corner < 3; ++corner) {
+            const auto found = canonical.find(position_key(positions[corner]));
+            if (found != canonical.end()) *normals[corner] = found->second;
+        }
+    }
+}
 
 // Bake-hardening #3: peak-RSS measurement helper. Returns process peak resident
 // set size in bytes (0 if unsupported). On Linux ru_maxrss is in KB; on macOS
@@ -546,7 +677,8 @@ static FlattenResult flatten_budget_ladder(const std::string& cache_root,
 
     // Cap levels: `1u << i` is UB for i >= 32; schemas have no upper bound on
     // lodBudgets.size(), so enforce a safe maximum here.
-    const size_t n = std::min(v.hashes.size(), (size_t)16);
+    const size_t n = std::min(v.hashes.size(),
+                              matter::kMaxSerializedLodLevels);
     for (size_t i = 0; i < n; ++i) {
         // Perf fix: const-ref the root-level data when the variant hash matches
         // the root (avoids copying ~10 MB of Tri/TriEx per LOD level). Non-root
@@ -942,6 +1074,7 @@ static FlattenResult flatten_segmented(const std::string& cache_root,
     //    continuity. Shares the blas/register/threshold-fill machinery with the
     //    classic path.
     struct LevelMeta { float eps; uint32_t blas_idx; };
+
     bool seg_error = false;
     auto build_segment = [&](const std::vector<Tri>& tris,
                              const std::vector<TriEx>& triex,
@@ -994,6 +1127,7 @@ static FlattenResult flatten_segmented(const std::string& cache_root,
             size_t prev_count = ctris.size();
             size_t last_kept_count = ctris.size();
             for (int di = div_lo; di < div_hi; ++di) {
+                if (level_metas.size() >= matter::kMaxSerializedLodLevels) break;
                 const float eps_total = radius / targets.radius_divisor[di];
                 const float eps_qem = eps_total - eps_base;
                 if (eps_qem <= 0.0f) continue;   // skip: budget already spent by child
@@ -1227,6 +1361,27 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
     // same BLAS registration order, same thresholds, same cluster order.
     struct LevelMeta { float eps; uint32_t blas_idx; };
 
+    // Source pass: establish one canonical normal for each genuinely smooth
+    // position shared by multiple cluster boundaries. The pass retains only
+    // boundary-position samples and releases each materialized cluster before
+    // the LOD ladder pass, preserving the streaming memory bound.
+    BoundaryNormalSamples boundary_samples;
+    for (size_t cluster_index = 0; cluster_index < clusters.size();
+         ++cluster_index) {
+        const auto& cluster = clusters[cluster_index];
+        std::vector<Tri> source_tris;
+        std::vector<TriEx> source_triex;
+        float source_min[3], source_max[3];
+        g.materialize_range(order, cluster.first_tri,
+                            cluster.first_tri + cluster.tri_count,
+                            source_tris, source_triex, source_min, source_max);
+        collect_source_boundary_normals(source_tris, source_triex,
+                                        cluster_index, boundary_samples);
+    }
+    const CanonicalBoundaryNormals canonical_normals =
+        canonical_boundary_normals(boundary_samples);
+    BoundaryNormalSamples().swap(boundary_samples);
+
     // Register a decimated level's triangles (or the raw cluster for level 0).
     // Returns false and sets res.error on BLAS registration failure.
     auto register_level = [&](const std::vector<Tri>& tris,
@@ -1257,6 +1412,7 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
         float cl_min[3], cl_max[3];
         g.materialize_range(order, cl.first_tri, cl.first_tri + cl.tri_count,
                             ctris, ctriex, cl_min, cl_max);
+        apply_canonical_boundary_normals(canonical_normals, ctris, ctriex);
 
         // Build per-cluster LOD ladder. Level 0 (the raw cluster) is registered
         // FIRST — same order the old implementation used, which is what makes
@@ -1267,6 +1423,7 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
         size_t prev_count = ctris.size();
         size_t last_kept_count = ctris.size();
         for (float div : targets.radius_divisor) {
+            if (level_metas.size() >= matter::kMaxSerializedLodLevels) break;
             // Use global radius so epsilon is consistent across clusters.
             const float eps = radius / div;
             // use_aabb_bounds=false: only topological boundary lock (open edges =
@@ -1291,6 +1448,7 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
                 std::vector<Tri> tgt_tris_ignored;
                 to_tri(tgt_m, tgt_tris_ignored, ex);
             }
+            apply_canonical_boundary_normals(canonical_normals, geo, ex);
             if (!register_level(geo, ex, eps, level_metas)) return res;
             prev_count = geo.size();
             last_kept_count = geo.size();

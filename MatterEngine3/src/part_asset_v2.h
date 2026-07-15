@@ -23,8 +23,9 @@ constexpr uint32_t kFormatVersionV3 = 3u;
 // Flat-artifact bake version: bump whenever FlattenTargets defaults change so
 // stale flats regenerate automatically (Stage 2 ladder retune bumped 3 -> 4;
 // bake-hardening #2 bumped 4 -> 5 to add the instance_refs trailer;
-// lod-instanced-children bumped 5 -> 6 to add segment tag + inline_cutover).
-constexpr uint32_t kFormatVersionFlat = 6u;
+// lod-instanced-children bumped 5 -> 6 to add segment tag + inline_cutover;
+// the shared nine-level serialized/render capacity bumped 6 -> 7).
+constexpr uint32_t kFormatVersionFlat = 7u;
 
 // Content-addressed identity for a part. All three inputs are OPAQUE byte ranges
 // to SP-1 (script source, params, child resolved-hashes). child_hashes need NOT be

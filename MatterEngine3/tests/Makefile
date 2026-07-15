@@ -480,6 +480,10 @@ GRASSLOD_CPP = grass_lod_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP
 STRESSFOREST_TARGET = stress_forest_tests
 STRESSFOREST_CPP = stress_forest_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 
+LIGHTING_GARDEN_TARGET = lighting_garden_tests
+LIGHTING_GARDEN_CPP = lighting_garden_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
+LIGHTING_GARDEN_C = $(COMMON_MSL_C)
+
 # ===== Task 9: live-edit production seams ==================================
 LIVEPROD_TARGET = live_edit_prod_tests
 LIVEPROD_CPP = live_edit_prod_tests.cpp \
@@ -713,6 +717,7 @@ sh_CPP_SRCS := $(sort \
     $(ROCKPROF_CPP) \
     $(GRASSLOD_CPP) \
     $(STRESSFOREST_CPP) \
+    $(LIGHTING_GARDEN_CPP) \
     $(TILESETBAKE_CPP) \
     $(LIVEPROD_CPP))
 
@@ -809,6 +814,8 @@ TREEBAKE_OBJS = $(call obj_list,sh,$(TREEBAKE_CPP)) $(call obj_list,mslc,$(EXAMP
 ROCKPROF_OBJS = $(call obj_list,sh,$(ROCKPROF_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 GRASSLOD_OBJS = $(call obj_list,sh,$(GRASSLOD_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 STRESSFOREST_OBJS = $(call obj_list,sh,$(STRESSFOREST_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
+LIGHTING_GARDEN_OBJS = $(call obj_list,sh,$(LIGHTING_GARDEN_CPP)) \
+                       $(call obj_list,mslc,$(LIGHTING_GARDEN_C)) $(qjsc_C_OBJS)
 TILESETBAKE_OBJS = $(call obj_list,sh,$(TILESETBAKE_CPP)) $(call obj_list,mslc,$(TILESETBAKE_C)) $(qjsc_C_OBJS)
 LIVEPROD_OBJS    = $(call obj_list,sh,$(LIVEPROD_CPP)) $(call obj_list,mslc,$(LIVEPROD_C)) $(qjsc_C_OBJS)
 
@@ -823,7 +830,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-partv2 run-partstore run-script run-foldcache run-evalworld run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-probebrick
+.PHONY: clean run-matrix run-partv2 run-partstore run-script run-foldcache run-evalworld run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-probebrick
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -841,6 +848,13 @@ $(PARTV2_TARGET): $(PARTV2_OBJS)
 
 run-partv2: $(PARTV2_TARGET)
 	./$(PARTV2_TARGET)
+
+$(LIGHTING_GARDEN_TARGET): $(LIGHTING_GARDEN_OBJS)
+	$(CC) $(LIGHTING_GARDEN_OBJS) -o $@ \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(LDFLAGS)
+
+run-lighting-garden: $(LIGHTING_GARDEN_TARGET)
+	./$(LIGHTING_GARDEN_TARGET)
 
 # Script host (QuickJS-ng) + DSL/CSG bake tests.
 $(SCRIPT_TARGET): $(SCRIPT_OBJS)
@@ -1315,7 +1329,7 @@ clean:
 	rm -f $(PARTV2_TARGET) $(SCRIPT_TARGET) $(GRAPH_TARGET) $(GRAPH_INT_TARGET) \
 	      $(TRIVAR_TARGET) $(SHLIB_TARGET) $(COMP_TARGET) $(DEV_TARGET) \
 	      $(EXAMPLE_TARGET) $(VIEWER_LOGIC_TARGET) $(TREEBAKE_TARGET) \
-	      $(GRASSLOD_TARGET) $(STRESSFOREST_TARGET) \
+	      $(GRASSLOD_TARGET) $(STRESSFOREST_TARGET) $(LIGHTING_GARDEN_TARGET) \
 	      $(TILESETMEADOWMANIFEST_TARGET) $(RETOPO_INT_TARGET) $(SHADER_SOURCE_TARGET) \
 	      $(POLYTRI_TARGET) $(ISO_TARGET) $(FLATTEN_TARGET) $(LIGHTING_TARGET) \
 	      $(TILESETTORUSBVH_TARGET) $(TILESETDSL_TARGET) $(TILESETBAKE_TARGET) \

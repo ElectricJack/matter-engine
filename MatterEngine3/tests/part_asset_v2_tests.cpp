@@ -519,8 +519,38 @@ static void test_cache_artifact_compatibility_probe() {
     std::vector<FlatCluster> clusters;
     CHECK(save_flat_v3(flat_path, blas, tlas, clusters, flat_hash),
           "compat probe flat fixture saved");
+    CHECK(kFormatVersionFlat == 7u,
+          "flat compatibility version invalidates pre-LOD-cap artifacts");
     CHECK(is_cache_artifact_compatible(flat_path, flat_hash, kFormatVersionFlat),
           "compat probe accepts current flat artifact");
+    std::vector<uint8_t> current_flat = read_file(flat_path);
+    std::vector<uint8_t> stale_v6 = current_flat;
+    const uint32_t v6 = 6u;
+    const uint64_t v6_hash_guard = flat_hash ^ static_cast<uint64_t>(v6);
+    memcpy(stale_v6.data() + 4, &v6, sizeof(v6));
+    memcpy(stale_v6.data() + 8, &v6_hash_guard, sizeof(v6_hash_guard));
+    write_file(flat_path, stale_v6);
+    CHECK(!is_cache_artifact_compatible(flat_path, flat_hash, kFormatVersionFlat),
+          "compat probe rejects stale v6 flat artifact");
+    BLASManager stale_blas; TLASManager stale_tlas(64);
+    std::vector<FlatCluster> stale_clusters;
+    CHECK(!load_flat_v3(flat_path, flat_hash, stale_blas, stale_tlas,
+                        stale_clusters),
+          "flat loader rejects stale v6 artifact");
+
+    FlatCluster oversized_cluster{};
+    for (size_t i = 0; i < 10; ++i) {
+        LodLevel level;
+        level.blas_indices.push_back(0u);
+        oversized_cluster.lods.push_back(std::move(level));
+    }
+    const char* oversized_path = "test_oversized_lod.flat.part";
+    CHECK(!save_flat_v3(oversized_path, blas, tlas,
+                        std::vector<FlatCluster>{oversized_cluster}, flat_hash),
+          "flat serializer rejects clusters above the shared nine-LOD capacity");
+
+    CHECK(save_flat_v3(flat_path, blas, tlas, clusters, flat_hash),
+          "stale v6 flat regenerates through atomic save");
     std::vector<uint8_t> stale_flat = read_file(flat_path);
     patch_body_u32_and_rehash(stale_flat, 0,
                               MaterialRegistrySchemaVersion() - 1u);
@@ -564,6 +594,7 @@ static void test_cache_artifact_compatibility_probe() {
     remove(v2_path);
     remove(large_path);
     remove(flat_path);
+    remove(oversized_path);
     remove(truncated_path);
 }
 

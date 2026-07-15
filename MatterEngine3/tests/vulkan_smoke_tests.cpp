@@ -1084,6 +1084,30 @@ viewer::VkScenePart known_raster_triangle(uint64_t hash,
     return part;
 }
 
+void run_rt_lod_payload_contract_tests() {
+    viewer::VkScenePart part{};
+    part.part_hash = 0x4c4f4452u;
+    part.clusters = {
+        {{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}, 20.0f,
+         {{0, 6, 1.0f}, {6, 3, 0.0f}}},
+        {{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}, 1.0f,
+         {{9, 6, 1.0f}, {15, 3, 0.0f}}},
+    };
+    part.vertices.resize(18);
+    const auto selected = viewer::vk_scene_detail::select_rt_instance_geometry(
+        part, identity_matrix(), {0.0f, 0.0f, 10.0f}, 1.0f);
+    CHECK(selected.size() == 2 &&
+              selected[0].cluster_index == 0 &&
+              selected[0].lod_index == 0 &&
+              selected[0].first_vertex == 0 &&
+              selected[0].vertex_count == 6 &&
+              selected[1].cluster_index == 1 &&
+              selected[1].lod_index == 1 &&
+              selected[1].first_vertex == 15 &&
+              selected[1].vertex_count == 3,
+          "RT instance payload contains exactly one raster-selected LOD per cluster");
+}
+
 void run_raster_path(matter::VulkanDevice& vulkan) {
     constexpr uint32_t width = 160;
     constexpr uint32_t height = 160;
@@ -2630,14 +2654,13 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
         CHECK(unblocked_probes_ok && unblocked_sun_delta > 0.05f,
               "unblocked secondary hit responds to increased sun intensity");
         viewer::VkScenePart sun_blocker = horizontal(
-            924, 0.5f, 20.0f, {0.0f, -1.0f, 0.0f}, 0, 1.0f);
-        sun_blocker.clusters[0].lods[0].vertex_count = 0;
+            924, 2.0f, 20.0f, {0.0f, -1.0f, 0.0f}, 0, 1.0f);
         CHECK(renderer.ensure_part(sun_blocker, error) >= 0 &&
                   renderer.update_instances({{920, identity_matrix()},
                                              {921, identity_matrix()},
                                              {924, identity_matrix()}},
                                             error),
-              error.empty() ? "add RT-only secondary-sun blocker"
+              error.empty() ? "add secondary-sun blocker"
                             : error.c_str());
         matter::Float4 blocked_sun_zero{};
         matter::Float4 blocked_sun_high{};
@@ -4388,6 +4411,7 @@ int main() {
     test_viewer_lighting_controls();
     run_vulkan_gi_math_tests();
     run_raster_mesh_material_contract_tests();
+    run_rt_lod_payload_contract_tests();
     run_ray_tracing_capability_contract_tests();
     run_vulkan_instance_cache_tests();
     run_vulkan_temporal_tests();

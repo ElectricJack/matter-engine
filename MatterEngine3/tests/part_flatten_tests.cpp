@@ -18,16 +18,20 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <set>
 #include <string>
 #include <vector>
-#include <sys/stat.h>
 
 #include "check.h"
 
-static const char* kCacheRoot = "/tmp/part_flatten_tests_cache";
+namespace fs = std::filesystem;
+
+static const std::string kCacheRootStorage =
+    (fs::temp_directory_path() / "part_flatten_tests_cache").string();
+static const char* kCacheRoot = kCacheRootStorage.c_str();
 
 static const uint64_t kChildHash  = 0x1111000011110000ull;
 static const uint64_t kParentHash = 0x2222000022220000ull;
@@ -96,8 +100,7 @@ static void set_translate(float m[16], float x, float y, float z) {
 // (quad, material 7) at +10x and +20x. Child carries TWO LOD levels (full quad +
 // a single-tri coarse level) so the flatten must pick only level 0.
 static bool write_fixtures() {
-    mkdir(kCacheRoot, 0755);
-    mkdir((std::string(kCacheRoot) + "/parts").c_str(), 0755);
+    fs::create_directories(fs::path(kCacheRoot) / "parts");
 
     std::vector<Tri> quad = quad_tris();
     std::vector<Tri> coarse(quad.begin(), quad.begin() + 1);   // 1 tri "LOD1"
@@ -1479,7 +1482,7 @@ static void test_flat_version_bump() {
 
     // New flats carry the bumped version.
     assert(part_asset::peek_format_version(p) == part_asset::kFormatVersionFlat);
-    assert(part_asset::kFormatVersionFlat == 6u);
+    assert(part_asset::kFormatVersionFlat == 7u);
 
     // Patch the version field back to 3 (a pre-retune bake): loader must reject.
     // Header layout: magic (u32) then format_version (u32) — verify the write

@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -22,9 +23,15 @@ static int g_failures = 0;
 static void test_partstore_segmented_loading() {
     printf("=== test_partstore_segmented_loading ===\n");
 
-    const std::string root = "/tmp/me3_segmented_load_test";
-    ::system(("rm -rf " + root).c_str());
-    ::system(("mkdir -p " + root + "/parts").c_str());
+    namespace fs = std::filesystem;
+    const fs::path root_path = fs::temp_directory_path() / "me3_segmented_load_test";
+    const std::string root = root_path.string();
+    struct Cleanup {
+        fs::path path;
+        ~Cleanup() { std::error_code ignored; fs::remove_all(path, ignored); }
+    } cleanup{root_path};
+    fs::remove_all(root_path);
+    fs::create_directories(root_path / "parts");
 
     auto make_tris = [](float ox, float oy, float oz) -> std::vector<Tri> {
         std::vector<Tri> t(2);
@@ -58,7 +65,7 @@ static void test_partstore_segmented_loading() {
         std::string child_flat = root + "/" + part_asset::cache_path_flat(child_hash);
         bool cok = part_asset::save_flat_v3(child_flat, cblas, ctlas, cclusters, child_hash);
         CHECK(cok, "segmented test: child flat saved");
-        if (!cok) { ::system(("rm -rf " + root).c_str()); return; }
+        if (!cok) return;
     }
 
     const uint64_t parent_hash = 0xAAAAAAAA22222222ull;
@@ -108,18 +115,18 @@ static void test_partstore_segmented_loading() {
         std::string parent_flat = root + "/" + part_asset::cache_path_flat(parent_hash);
         bool pok = part_asset::save_flat_v3(parent_flat, pblas, ptlas, clusters, refs, parent_hash);
         CHECK(pok, "segmented test: parent flat saved");
-        if (!pok) { ::system(("rm -rf " + root).c_str()); return; }
+        if (!pok) return;
     }
 
     {
         viewer::PartStore ps(root);
         bool loaded = (ps.get_or_load(parent_hash) != nullptr);
         CHECK(loaded, "segmented test: parent flat loads");
-        if (!loaded) { ::system(("rm -rf " + root).c_str()); return; }
+        if (!loaded) return;
 
         const viewer::LoadedPart* lp = ps.find(parent_hash);
         CHECK(lp != nullptr, "segmented test: find(parent_hash) non-null");
-        if (!lp) { ::system(("rm -rf " + root).c_str()); return; }
+        if (!lp) return;
 
         CHECK(lp->fine_cluster_count == 1, "segmented: fine_cluster_count == 1");
 
@@ -168,7 +175,6 @@ static void test_partstore_segmented_loading() {
         }
     }
 
-    ::system(("rm -rf " + root).c_str());
     printf("  test_partstore_segmented_loading OK\n");
 }
 

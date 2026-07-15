@@ -16,6 +16,7 @@
 
 #include "frame_matrices.h"
 #include "gpu_matrix_pack.h"
+#include "matter/lod_contract.h"
 #include "matter/math_types.h"
 #include "material_registry.h"
 #include "vk_gi_contract.h"
@@ -32,7 +33,10 @@ struct VulkanFrame;
 
 namespace viewer {
 
-constexpr uint32_t kVkMaxLod = 9;
+constexpr uint32_t kVkMaxLod =
+    static_cast<uint32_t>(matter::kMaxSerializedLodLevels);
+static_assert(kVkMaxLod == 9u,
+              "update shaders_vk/cull.comp MAX_LOD with the shared capacity");
 
 inline uint32_t vulkan_history_token(uint64_t instance_id) {
     const uint32_t folded = static_cast<uint32_t>(instance_id) ^
@@ -119,6 +123,23 @@ struct VkScenePart {
     // raster vertices retain the Task 7 absolute first_vertex contract.
     std::vector<VkRasterVertex> vertices;
 };
+
+namespace vk_scene_detail {
+struct RtGeometrySelection {
+    uint32_t cluster_index = 0;
+    uint32_t lod_index = 0;
+    uint32_t first_vertex = 0;
+    uint32_t vertex_count = 0;
+};
+
+uint32_t select_scene_cluster_lod(const VkSceneCluster& cluster,
+                                  const matter::Mat4f& object_to_world,
+                                  matter::Float3 camera_eye,
+                                  float pixel_budget) noexcept;
+std::vector<RtGeometrySelection> select_rt_instance_geometry(
+    const VkScenePart& part, const matter::Mat4f& object_to_world,
+    matter::Float3 camera_eye, float pixel_budget);
+}  // namespace vk_scene_detail
 
 struct VkSceneInstance {
     uint64_t part_hash = 0;
@@ -319,6 +340,8 @@ public:
                                 float pixel_budget, std::string& error);
     bool record_ray_traced_shadows(const matter::VulkanFrame& frame,
                                    const FrameMatrices& matrices,
+                                   matter::Float3 camera_eye,
+                                   float pixel_budget,
                                    VkExtent2D trace_extent,
                                    std::string& error);
     void finish_ray_tracing_frame(uint64_t frame_serial, bool succeeded);
@@ -557,6 +580,20 @@ private:
     static_assert(sizeof(GpuInstance) == 160);
     static_assert(sizeof(GpuDrawTransform) == 144);
 
+    struct RtLodRecord {
+        uint32_t cluster_index = 0;
+        uint32_t lod_index = 0;
+        uint32_t first_vertex = 0;
+        uint32_t vertex_count = 0;
+        uint32_t primitive_count = 0;
+        std::shared_ptr<matter::VkAccelerationStructureResource> blas;
+        std::shared_ptr<matter::VkAccelerationStructureResource> candidate;
+        bool built = false;
+        bool geometry_opaque = false;
+        bool candidate_opaque = false;
+        uint64_t candidate_serial = 0;
+    };
+
     struct PartRecord {
         uint64_t hash = 0;
         uint32_t cluster_start = 0;
@@ -565,12 +602,7 @@ private:
         uint32_t vertex_count = 0;
         bool live = false;
         std::shared_ptr<matter::VkBufferResource> rt_geometry;
-        std::shared_ptr<matter::VkAccelerationStructureResource> rt_blas;
-        std::shared_ptr<matter::VkAccelerationStructureResource>
-            rt_blas_candidate;
-        uint32_t rt_primitive_count = 0;
-        bool rt_blas_built = false;
-        uint64_t rt_blas_candidate_serial = 0;
+        std::vector<RtLodRecord> rt_lods;
         std::vector<uint32_t> material_ids;
         bool rt_geometry_classification_dirty = false;
     };

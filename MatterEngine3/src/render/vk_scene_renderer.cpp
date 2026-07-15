@@ -75,18 +75,6 @@ bool rt_material_ids_are_opaque(
                        });
 }
 
-bool rt_vertices_are_opaque(
-    const std::vector<MaterialGpuRecord>& materials,
-    const std::vector<VkRasterVertex>& vertices) {
-    return std::all_of(vertices.begin(), vertices.end(),
-                       [&](const VkRasterVertex& vertex) {
-                           return vertex.material_index == UINT32_MAX ||
-                                  (vertex.material_index < materials.size() &&
-                                   rt_material_is_opaque(
-                                       materials[vertex.material_index]));
-                       });
-}
-
 bool fail_vk(const char* operation, VkResult result, std::string& error) {
     error = std::string(operation) + " failed with VkResult " +
             std::to_string(static_cast<int>(result));
@@ -271,6 +259,8 @@ struct RasterRecord {
     VkSceneRenderer* renderer;
     const matter::VulkanFrame* frame;
     const FrameMatrices* matrices;
+    matter::Float3 camera_eye;
+    float pixel_budget;
     std::string* error;
     bool* ray_trace_ok;
 };
@@ -389,7 +379,8 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
 
     if (record.renderer) {
         *record.ray_trace_ok = record.renderer->record_ray_traced_shadows(
-            *record.frame, *record.matrices, record.extent, *record.error);
+            *record.frame, *record.matrices, record.camera_eye,
+            record.pixel_budget, record.extent, *record.error);
         if (!*record.ray_trace_ok) return;
     } else {
         transition_for_use(command_buffer, *record.visibility,
@@ -547,6 +538,64 @@ uint16_t float_to_half(float value) {
 }  // namespace
 
 namespace vk_scene_detail {
+
+uint32_t select_scene_cluster_lod(const VkSceneCluster& cluster,
+                                  const matter::Mat4f& object_to_world,
+                                  matter::Float3 camera_eye,
+                                  float pixel_budget) noexcept {
+    if (cluster.lods.empty()) return 0;
+    const matter::Float3 x_basis{object_to_world.m[0], object_to_world.m[4],
+                                 object_to_world.m[8]};
+    const matter::Float3 y_basis{object_to_world.m[1], object_to_world.m[5],
+                                 object_to_world.m[9]};
+    const matter::Float3 z_basis{object_to_world.m[2], object_to_world.m[6],
+                                 object_to_world.m[10]};
+    const auto length = [](matter::Float3 value) {
+        return std::sqrt(value.x * value.x + value.y * value.y +
+                         value.z * value.z);
+    };
+    const float scale =
+        (length(x_basis) + length(y_basis) + length(z_basis)) / 3.0f;
+    const matter::Float3 local_center{
+        (cluster.aabb_min.x + cluster.aabb_max.x) * 0.5f,
+        (cluster.aabb_min.y + cluster.aabb_max.y) * 0.5f,
+        (cluster.aabb_min.z + cluster.aabb_max.z) * 0.5f};
+    const matter::Float3 world_center =
+        transform_point(object_to_world, local_center);
+    const float dx = world_center.x - camera_eye.x;
+    const float dy = world_center.y - camera_eye.y;
+    const float dz = world_center.z - camera_eye.z;
+    const float distance =
+        std::max(std::sqrt(dx * dx + dy * dy + dz * dz), 0.01f);
+    const float projected_size =
+        cluster.radius * scale / distance * pixel_budget;
+    uint32_t selected = static_cast<uint32_t>(cluster.lods.size() - 1);
+    for (uint32_t lod = 0; lod < cluster.lods.size(); ++lod) {
+        if (projected_size >= cluster.lods[lod].threshold) {
+            selected = lod;
+            break;
+        }
+    }
+    return selected;
+}
+
+std::vector<RtGeometrySelection> select_rt_instance_geometry(
+    const VkScenePart& part, const matter::Mat4f& object_to_world,
+    matter::Float3 camera_eye, float pixel_budget) {
+    std::vector<RtGeometrySelection> result;
+    result.reserve(part.clusters.size());
+    for (uint32_t cluster_index = 0; cluster_index < part.clusters.size();
+         ++cluster_index) {
+        const VkSceneCluster& cluster = part.clusters[cluster_index];
+        if (cluster.lods.empty()) continue;
+        const uint32_t lod_index = select_scene_cluster_lod(
+            cluster, object_to_world, camera_eye, pixel_budget);
+        const VkSceneLod& lod = cluster.lods[lod_index];
+        result.push_back(
+            {cluster_index, lod_index, lod.first_vertex, lod.vertex_count});
+    }
+    return result;
+}
 
 VkShaderStageFlags scene_binding_stage_flags(uint32_t binding) noexcept {
     if (binding == 5)
@@ -2122,8 +2171,6 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
         }
     }
     std::shared_ptr<matter::VkBufferResource> rt_geometry;
-    std::shared_ptr<matter::VkAccelerationStructureResource> rt_blas;
-    uint32_t rt_primitive_count = 0;
     if (vulkan_->ray_tracing_available() && !part.vertices.empty()) {
         rt_geometry = std::make_shared<matter::VkBufferResource>();
         const VkDeviceSize bytes =
@@ -2141,48 +2188,6 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
         std::memcpy(rt_geometry->mapped, part.vertices.data(),
                     static_cast<size_t>(bytes));
         if (!matter::flush_buffer(*rt_geometry, 0, bytes, error)) return -1;
-        rt_primitive_count = static_cast<uint32_t>(part.vertices.size() / 3);
-        if (rt_primitive_count != 0) {
-            VkAccelerationStructureGeometryTrianglesDataKHR triangles{
-                VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR};
-            triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
-            triangles.vertexData.deviceAddress = rt_geometry->address;
-            triangles.vertexStride = sizeof(VkRasterVertex);
-            triangles.maxVertex = static_cast<uint32_t>(part.vertices.size() - 1);
-            triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
-            VkAccelerationStructureGeometryKHR geometry{
-                VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
-            geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-            geometry.flags =
-                rt_vertices_are_opaque(material_staging_, part.vertices)
-                    ? VK_GEOMETRY_OPAQUE_BIT_KHR
-                    : 0;
-            geometry.geometry.triangles = triangles;
-            VkAccelerationStructureBuildGeometryInfoKHR build{
-                VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
-            build.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-            build.flags =
-                VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
-            build.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
-            build.geometryCount = 1;
-            build.pGeometries = &geometry;
-            VkAccelerationStructureBuildSizesInfoKHR sizes{
-                VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
-            const auto get_sizes = reinterpret_cast<
-                PFN_vkGetAccelerationStructureBuildSizesKHR>(vkGetDeviceProcAddr(
-                vulkan_->device(), "vkGetAccelerationStructureBuildSizesKHR"));
-            if (!get_sizes) {
-                error = "vkGetAccelerationStructureBuildSizesKHR unavailable";
-                return -1;
-            }
-            get_sizes(vulkan_->device(),
-                      VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
-                      &build, &rt_primitive_count, &sizes);
-            rt_blas = std::make_shared<matter::VkAccelerationStructureResource>();
-            if (!matter::create_acceleration_structure(
-                    *vulkan_, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
-                    sizes.accelerationStructureSize, *rt_blas, error)) return -1;
-        }
     }
     const uint32_t vertex_base =
         static_cast<uint32_t>(vertex_staging_.size());
@@ -2197,8 +2202,17 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     record.vertex_count = static_cast<uint32_t>(part.vertices.size());
     record.live = true;
     record.rt_geometry = std::move(rt_geometry);
-    record.rt_blas = std::move(rt_blas);
-    record.rt_primitive_count = rt_primitive_count;
+    for (uint32_t cluster_index = 0; cluster_index < part.clusters.size();
+         ++cluster_index) {
+        const auto& cluster = part.clusters[cluster_index];
+        for (uint32_t lod_index = 0; lod_index < cluster.lods.size();
+             ++lod_index) {
+            const auto& lod = cluster.lods[lod_index];
+            record.rt_lods.push_back(
+                {cluster_index, lod_index, lod.first_vertex,
+                 lod.vertex_count, lod.vertex_count / 3});
+        }
+    }
     record.material_ids.reserve(part.vertices.size());
     for (const VkRasterVertex& vertex : part.vertices) {
         if (vertex.material_index != UINT32_MAX)
@@ -2510,8 +2524,10 @@ bool VkSceneRenderer::readback_test_surface_hit(
 
 bool VkSceneRenderer::test_rt_blas_built(uint64_t part_hash) const {
     const auto found = slot_of_.find(part_hash);
-    return found != slot_of_.end() &&
-           parts_[static_cast<size_t>(found->second)].rt_blas_built;
+    if (found == slot_of_.end()) return false;
+    const PartRecord& part = parts_[static_cast<size_t>(found->second)];
+    return std::any_of(part.rt_lods.begin(), part.rt_lods.end(),
+                       [](const RtLodRecord& lod) { return lod.built; });
 }
 
 std::weak_ptr<void> VkSceneRenderer::test_rt_blas_lifetime(
@@ -2519,8 +2535,11 @@ std::weak_ptr<void> VkSceneRenderer::test_rt_blas_lifetime(
     const auto found = slot_of_.find(part_hash);
     if (found == slot_of_.end()) return {};
     const PartRecord& part = parts_[static_cast<size_t>(found->second)];
-    return part.rt_blas
-               ? std::weak_ptr<void>(part.rt_blas->lifetime)
+    const auto built = std::find_if(
+        part.rt_lods.begin(), part.rt_lods.end(),
+        [](const RtLodRecord& lod) { return lod.blas != nullptr; });
+    return built != part.rt_lods.end()
+               ? std::weak_ptr<void>(built->blas->lifetime)
                : std::weak_ptr<void>{};
 }
 
@@ -2568,10 +2587,12 @@ bool VkSceneRenderer::test_readback_reflection_sample_counts(
 uint64_t VkSceneRenderer::test_rt_blas_candidate_serial(
     uint64_t part_hash) const {
     const auto found = slot_of_.find(part_hash);
-    return found == slot_of_.end()
-               ? 0
-               : parts_[static_cast<size_t>(found->second)]
-                     .rt_blas_candidate_serial;
+    if (found == slot_of_.end()) return 0;
+    const auto& lods = parts_[static_cast<size_t>(found->second)].rt_lods;
+    const auto candidate = std::find_if(
+        lods.begin(), lods.end(),
+        [](const RtLodRecord& lod) { return lod.candidate_serial != 0; });
+    return candidate == lods.end() ? 0 : candidate->candidate_serial;
 }
 
 VkDeviceAddress VkSceneRenderer::test_rt_scratch_address(
@@ -3393,20 +3414,33 @@ void VkSceneRenderer::finish_ray_tracing_frame(uint64_t frame_serial,
         gi_candidate_attempt_token_ = 0;
     }
     for (auto& part : parts_) {
-        if (part.rt_blas_candidate_serial != frame_serial) continue;
-        if (part.rt_blas_candidate) {
-            if (succeeded) {
-                part.rt_blas = std::move(part.rt_blas_candidate);
-                part.rt_blas_built = true;
-                part.rt_geometry_classification_dirty = false;
+        bool finished_candidate = false;
+        for (auto& lod : part.rt_lods) {
+            if (lod.candidate_serial != frame_serial) continue;
+            finished_candidate = true;
+            if (lod.candidate) {
+                if (succeeded) {
+                    lod.blas = std::move(lod.candidate);
+                    lod.built = true;
+                    lod.geometry_opaque = lod.candidate_opaque;
+                } else {
+                    lod.candidate.reset();
+                }
             } else {
-                part.rt_blas_candidate.reset();
+                lod.built = succeeded;
+                if (succeeded) lod.geometry_opaque = lod.candidate_opaque;
             }
-        } else {
-            part.rt_blas_built = succeeded;
-            if (succeeded) part.rt_geometry_classification_dirty = false;
+            lod.candidate_serial = 0;
         }
-        part.rt_blas_candidate_serial = 0;
+        if (succeeded && finished_candidate) {
+            const bool desired = rt_material_ids_are_opaque(
+                material_staging_, part.material_ids);
+            part.rt_geometry_classification_dirty = std::any_of(
+                part.rt_lods.begin(), part.rt_lods.end(),
+                [desired](const RtLodRecord& lod) {
+                    return lod.built && lod.geometry_opaque != desired;
+                });
+        }
     }
 }
 
@@ -4099,6 +4133,7 @@ bool VkSceneRenderer::validate_draw_command_regions(std::string& error) const {
 
 bool VkSceneRenderer::record_ray_traced_shadows(
     const matter::VulkanFrame& frame, const FrameMatrices& matrices,
+    matter::Float3 camera_eye, float pixel_budget,
     VkExtent2D trace_extent, std::string& error) {
     auto clear_visibility = [&]() {
         transition_for_use(frame.command_buffer, visibility_,
@@ -4183,41 +4218,86 @@ bool VkSceneRenderer::record_ray_traced_shadows(
     }
     FrameResources& selected = frames_[frame.frame_slot];
     VkDeviceSize scratch_size = 1;
+    struct SelectedGeometry {
+        PartRecord* part = nullptr;
+        RtLodRecord* lod = nullptr;
+        const RtInstance* source = nullptr;
+        bool opaque = false;
+    };
+    std::vector<SelectedGeometry> selected_geometry;
+    for (const RtInstance& source : rt_instances_) {
+        const auto found = slot_of_.find(source.part_hash);
+        if (found == slot_of_.end()) continue;
+        PartRecord& part = parts_[static_cast<size_t>(found->second)];
+        matter::Mat4f object_to_world{};
+        std::memcpy(object_to_world.m, source.transform,
+                    sizeof(object_to_world.m));
+        const bool opaque = rt_material_ids_are_opaque(
+            material_staging_, part.material_ids);
+        for (uint32_t cluster_index = 0;
+             cluster_index < part.cluster_count; ++cluster_index) {
+            const uint32_t global_cluster =
+                part.cluster_start + cluster_index;
+            const GpuCluster& gpu_cluster = cluster_staging_[global_cluster];
+            VkSceneCluster cluster{};
+            cluster.aabb_min = {gpu_cluster.aabb_min[0], gpu_cluster.aabb_min[1],
+                                gpu_cluster.aabb_min[2]};
+            cluster.aabb_max = {gpu_cluster.aabb_max[0], gpu_cluster.aabb_max[1],
+                                gpu_cluster.aabb_max[2]};
+            cluster.radius = gpu_cluster.radius;
+            cluster.lods = cluster_lods_[global_cluster];
+            const uint32_t lod_index =
+                vk_scene_detail::select_scene_cluster_lod(
+                    cluster, object_to_world, camera_eye, pixel_budget);
+            const auto record = std::find_if(
+                part.rt_lods.begin(), part.rt_lods.end(),
+                [cluster_index, lod_index](const RtLodRecord& lod) {
+                    return lod.cluster_index == cluster_index &&
+                           lod.lod_index == lod_index;
+                });
+            if (record != part.rt_lods.end() &&
+                record->primitive_count != 0)
+                selected_geometry.push_back(
+                    {&part, &*record, &source, opaque});
+        }
+    }
     struct PendingBlas {
         PartRecord* part;
+        RtLodRecord* lod;
         VkAccelerationStructureGeometryKHR geometry;
         VkAccelerationStructureBuildGeometryInfoKHR build;
         VkAccelerationStructureBuildRangeInfoKHR range;
         std::shared_ptr<matter::VkAccelerationStructureResource> target;
     };
     std::vector<PendingBlas> pending;
-    for (auto& part : parts_) {
-        if (!part.live ||
-            (part.rt_blas_built &&
-             !part.rt_geometry_classification_dirty) ||
-            part.rt_blas_candidate_serial != 0 || !part.rt_geometry ||
-            !part.rt_blas || part.rt_primitive_count == 0) continue;
-        const bool active = std::any_of(
-            rt_instances_.begin(), rt_instances_.end(),
-            [&](const RtInstance& instance) {
-                return instance.part_hash == part.hash;
-            });
-        if (!active) continue;
+    for (const SelectedGeometry& selected_lod : selected_geometry) {
+        PartRecord& part = *selected_lod.part;
+        RtLodRecord& lod = *selected_lod.lod;
+        if (!part.rt_geometry || lod.candidate_serial != 0 ||
+            (lod.built && lod.geometry_opaque == selected_lod.opaque) ||
+            std::any_of(pending.begin(), pending.end(),
+                        [&lod](const PendingBlas& item) {
+                            return item.lod == &lod;
+                        }))
+            continue;
         PendingBlas item{};
         item.part = &part;
+        item.lod = &lod;
         auto& triangles = item.geometry.geometry.triangles;
         triangles.sType =
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
         triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
-        triangles.vertexData.deviceAddress = part.rt_geometry->address;
+        triangles.vertexData.deviceAddress =
+            part.rt_geometry->address +
+            static_cast<VkDeviceSize>(lod.first_vertex) *
+                sizeof(VkRasterVertex);
         triangles.vertexStride = sizeof(VkRasterVertex);
-        triangles.maxVertex = part.rt_primitive_count * 3 - 1;
+        triangles.maxVertex = lod.vertex_count - 1;
         triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
         item.geometry.sType =
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
         item.geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-        item.geometry.flags = rt_material_ids_are_opaque(
-                                  material_staging_, part.material_ids)
+        item.geometry.flags = selected_lod.opaque
                                   ? VK_GEOMETRY_OPAQUE_BIT_KHR
                                   : 0;
         item.build.sType =
@@ -4228,24 +4308,34 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         item.build.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
         item.build.geometryCount = 1;
         item.build.pGeometries = &item.geometry;
-        item.range.primitiveCount = part.rt_primitive_count;
+        item.range.primitiveCount = lod.primitive_count;
         VkAccelerationStructureBuildSizesInfoKHR sizes{
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
         get_sizes(vulkan_->device(),
                   VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
                   &item.build, &item.range.primitiveCount, &sizes);
-        if (part.rt_geometry_classification_dirty && part.rt_blas_built) {
+        if (lod.built) {
             auto replacement = std::make_shared<
                 matter::VkAccelerationStructureResource>();
             if (!matter::create_acceleration_structure(
                     *vulkan_, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
                     sizes.accelerationStructureSize, *replacement, error))
                 return false;
-            part.rt_blas_candidate = std::move(replacement);
-            item.target = part.rt_blas_candidate;
+            lod.candidate = std::move(replacement);
+            item.target = lod.candidate;
         } else {
-            item.target = part.rt_blas;
+            if (!lod.blas) {
+                lod.blas = std::make_shared<
+                    matter::VkAccelerationStructureResource>();
+                if (!matter::create_acceleration_structure(
+                        *vulkan_,
+                        VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+                        sizes.accelerationStructureSize, *lod.blas, error))
+                    return false;
+            }
+            item.target = lod.blas;
         }
+        lod.candidate_opaque = selected_lod.opaque;
         item.build.dstAccelerationStructure = item.target->handle;
         scratch_size = std::max(scratch_size, sizes.buildScratchSize);
         pending.push_back(item);
@@ -4283,28 +4373,41 @@ bool VkSceneRenderer::record_ray_traced_shadows(
     }
 
     std::vector<VkAccelerationStructureInstanceKHR> instances;
-    instances.reserve(rt_instances_.size());
-    for (const RtInstance& source : rt_instances_) {
-        const auto found = slot_of_.find(source.part_hash);
-        if (found == slot_of_.end()) continue;
-        const PartRecord& part = parts_[static_cast<size_t>(found->second)];
-        const auto& traced_blas = part.rt_blas_candidate
-                                      ? part.rt_blas_candidate
-                                      : part.rt_blas;
+    std::vector<GpuRtPartRecord> part_records;
+    instances.reserve(selected_geometry.size());
+    part_records.reserve(selected_geometry.size());
+    for (const SelectedGeometry& selected_lod : selected_geometry) {
+        const PartRecord& part = *selected_lod.part;
+        const RtLodRecord& lod = *selected_lod.lod;
+        const RtInstance& source = *selected_lod.source;
+        const auto& traced_blas = lod.candidate ? lod.candidate : lod.blas;
         if (!traced_blas) continue;
+        if (part_records.size() >= (1u << 24)) {
+            error = "RT geometry table exceeds TLAS custom-index capacity";
+            return false;
+        }
         VkAccelerationStructureInstanceKHR instance{};
         for (uint32_t row = 0; row < 3; ++row)
             for (uint32_t col = 0; col < 4; ++col)
                 instance.transform.matrix[row][col] =
                     source.transform[row * 4 + col];
-        instance.instanceCustomIndex = static_cast<uint32_t>(found->second);
-        const bool opaque = rt_material_ids_are_opaque(
-            material_staging_, part.material_ids);
-        instance.mask = opaque ? 0x01 : 0x02;
+        instance.instanceCustomIndex =
+            static_cast<uint32_t>(part_records.size());
+        instance.mask = selected_lod.opaque ? 0x01 : 0x02;
         instance.instanceShaderBindingTableRecordOffset = 0;
         instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
         instance.accelerationStructureReference = traced_blas->address;
         instances.push_back(instance);
+        GpuRtPartRecord record{};
+        record.vertex_address =
+            part.rt_geometry->address +
+            static_cast<VkDeviceSize>(lod.first_vertex) *
+                sizeof(VkRasterVertex);
+        record.vertex_stride = sizeof(VkRasterVertex);
+        record.vertex_count = lod.vertex_count;
+        record.primitive_count = lod.primitive_count;
+        record.valid = 1;
+        part_records.push_back(record);
     }
     if (instances.empty()) {
         clear_visibility();
@@ -4407,18 +4510,6 @@ bool VkSceneRenderer::record_ray_traced_shadows(
             VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
             VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
-    }
-    std::vector<GpuRtPartRecord> part_records(parts_.size());
-    for (size_t slot = 0; slot < parts_.size(); ++slot) {
-        const PartRecord& part = parts_[slot];
-        GpuRtPartRecord& record = part_records[slot];
-        if (!part.live || !part.rt_geometry || part.rt_primitive_count == 0)
-            continue;
-        record.vertex_address = part.rt_geometry->address;
-        record.vertex_stride = sizeof(VkRasterVertex);
-        record.vertex_count = part.vertex_count;
-        record.primitive_count = part.rt_primitive_count;
-        record.valid = 1;
     }
     const VkDeviceSize part_bytes = std::max<VkDeviceSize>(
         sizeof(GpuRtPartRecord),
@@ -4687,15 +4778,17 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         selected.rt_test_output.lifetime, rt_sbt_.lifetime};
     for (const auto& part : parts_) {
         if (part.rt_geometry) retained.push_back(part.rt_geometry->lifetime);
-        if (part.rt_blas_candidate)
-            retained.push_back(part.rt_blas_candidate->lifetime);
-        else if (part.rt_blas)
-            retained.push_back(part.rt_blas->lifetime);
+        for (const auto& lod : part.rt_lods) {
+            if (lod.candidate)
+                retained.push_back(lod.candidate->lifetime);
+            else if (lod.blas)
+                retained.push_back(lod.blas->lifetime);
+        }
     }
     if (!vulkan_->retain_for_frame(frame, std::move(retained), error))
         return false;
     for (auto& item : pending)
-        item.part->rt_blas_candidate_serial = frame.serial;
+        item.lod->candidate_serial = frame.serial;
     return true;
 }
 
@@ -4841,14 +4934,14 @@ bool VkSceneRenderer::record_cull_and_render(
                         this,
                         &frame,
                         &matrices,
+                        camera_eye,
+                        pixel_budget,
                         &error,
                         &ray_trace_ok};
     record_raster(frame.command_buffer, &record);
     if (!ray_trace_ok) return false;
     raster_attachments_ready_ = true;
     selected.stats_valid = true;
-    (void)camera_eye;
-    (void)pixel_budget;
     return true;
 }
 
@@ -5238,6 +5331,8 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
                         nullptr,
                         nullptr,
                         nullptr,
+                        {},
+                        1.0f,
                         nullptr,
                         nullptr};
     std::vector<std::shared_ptr<void>> dependencies{

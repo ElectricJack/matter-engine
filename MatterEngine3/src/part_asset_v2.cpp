@@ -1,4 +1,5 @@
 #include "part_asset_v2.h"
+#include "matter/lod_contract.h"
 
 #include <cstdio>
 #include <cstring>
@@ -586,10 +587,12 @@ bool save_flat_v3(const std::string& path, const BLASManager& blas,
                   const std::vector<FlatCluster>& clusters,
                   const std::vector<FlatInstanceRef>& instance_refs,
                   uint64_t resolved_hash) {
+    for (const auto& cluster : clusters)
+        if (cluster.lods.size() > matter::kMaxSerializedLodLevels) return false;
+
     std::vector<uint8_t> body;
     std::unordered_map<BLASHandle, uint32_t> h2i;
-    // v6 body = common body (children=empty, top-lods=empty) + cluster table
-    //          + instance_refs trailer (may be empty).
+    // v7 body = v6 layout plus the enforced shared LOD capacity.
     if (!append_common_body(body, blas, tlas, nullptr, 0, LodLevels{}, h2i))
         return false;
 
@@ -675,6 +678,7 @@ bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
         fc.segment = r.get<uint32_t>();                        // v6: segment tag
         const uint32_t level_count = r.get<uint32_t>();
         if (!r.ok) return false;
+        if (level_count > matter::kMaxSerializedLodLevels) return false;
         fc.lods.reserve(level_count);
         for (uint32_t li = 0; li < level_count; ++li) {
             LodLevel lvl;

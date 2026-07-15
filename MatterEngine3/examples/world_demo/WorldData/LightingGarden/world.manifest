@@ -1,0 +1,4 @@
+# Walkable dusk material-interaction matrix and visual RT red/green fixture.
+LightingGarden
+light sun  -0.55 -0.35 -0.75  0.45 0.24 0.12
+light sky   0.055 0.075 0.16

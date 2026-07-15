@@ -1,6 +1,7 @@
 #ifndef VIEWER_GPU_CULL_TYPES_H
 #define VIEWER_GPU_CULL_TYPES_H
 #include "gpu_matrix_pack.h"
+#include "matter/lod_contract.h"
 #include "part_store.h"
 #include "vk_draw_command.h"
 #include <cstdint>
@@ -8,7 +9,8 @@
 
 namespace viewer {
 
-constexpr int kMaxLod = 9;   // ratio-2 ladder max rung count (frame-time package Stage 2)
+constexpr int kMaxLod = static_cast<int>(matter::kMaxSerializedLodLevels);
+static_assert(kMaxLod == 9, "update cull.comp MAX_LOD with the shared capacity");
 
 // std430 mirror of cull.comp's ClusterMeta. 128 B; field order must match the GLSL.
 struct GpuClusterMeta {
