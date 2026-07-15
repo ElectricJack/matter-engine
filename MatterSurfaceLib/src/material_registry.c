@@ -14,10 +14,10 @@ enum {
                      TRANSMIT,ER,EG,EB,AR,AG,AB,ADIST,THICK,SUBSURFACE,SR,SG,SB,SDIST,ANISO,FLAGS) \
     {{R,G,B}, ROUGH, METAL, EMIT, TRANSLUCENT, IOR, FLAT, GROUP, MESHER, SLOT, \
      1.0f, TRANSMIT, {ER,EG,EB}, {AR,AG,AB}, ADIST, THICK, SUBSURFACE, {SR,SG,SB}, \
-     SDIST, ANISO, 0.0f, 0.0f, 1.0f, {0.0f,0.0f,0.0f}, 0.0f, 1.0f, FLAGS}
+     SDIST, ANISO, 0.0f, 0.0f, 1.0f, {1.0f,1.0f,1.0f}, 0.0f, 1.0f, FLAGS}
 
 static const MaterialDef g_materials[] = {
-    /* 0 */ MATERIAL_DEF(0.8f,0.2f,0.2f, 0.2f,0.6f,0.1f,0.0f,1.0f,1,GROUP_RED,0,-1, 0.0f,0,0,0, 0,0,0,0,0, 0,0,0,0,0,0, MATERIAL_SURFACE_NONE),
+    /* 0 */ MATERIAL_DEF(0.8f,0.2f,0.2f, 0.2f,0.6f,0.1f,0.0f,1.0f,1,GROUP_RED,0,-1, 0.0f,0.8f,0.2f,0.2f, 0,0,0,0,0, 0,0,0,0,0,0, MATERIAL_SURFACE_NONE),
     /* 1 */ MATERIAL_DEF(0.2f,0.3f,0.8f, 0.7f,0.1f,0.0f,0.0f,1.0f,0,GROUP_BLUE,0,-1, 0.0f,0,0,0, 0,0,0,0,0, 0,0,0,0,0,0, MATERIAL_SURFACE_NONE),
     /* 2 */ MATERIAL_DEF(0.3f,0.7f,0.3f, 0.9f,0.0f,0.0f,0.0f,1.0f,1,GROUP_GROUND,0,-1, 0.0f,0,0,0, 0,0,0,0,0, 0,0,0,0,0,0, MATERIAL_SURFACE_NONE),
     /* 3 */ MATERIAL_DEF(0.8f,0.7f,0.3f, 0.05f,1.0f,0.0f,0.0f,1.0f,0,GROUP_METAL,0,-1, 0.0f,0,0,0, 0,0,0,0,0, 0,0,0,0,0,0, MATERIAL_SURFACE_NONE),

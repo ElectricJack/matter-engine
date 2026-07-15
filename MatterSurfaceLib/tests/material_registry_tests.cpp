@@ -1,6 +1,7 @@
 #include "material_registry.h"
 #include "../../MatterEngine3/src/render/vk_gi_contract.h"
 #include <cassert>
+#include <cstddef>
 #include <cstdio>
 #include <cmath>
 
@@ -36,7 +37,34 @@ int main() {
     MaterialGpuRecord records[64]{};
     MaterialRegistryPackRtForGPU(records);
     CHECK(sizeof(MaterialGpuRecord) == 144, "RTX material record is 9x vec4");
+    CHECK(offsetof(MaterialGpuRecord, base_roughness) == 0,
+          "RTX base/roughness vec4 begins at byte 0");
+    CHECK(offsetof(MaterialGpuRecord, metal_opacity_spec_coat) == 16,
+          "RTX metal/opacity/specular/coat vec4 begins at byte 16");
+    CHECK(offsetof(MaterialGpuRecord, specular_tint_coat_roughness) == 32,
+          "RTX specular tint/coat roughness vec4 begins at byte 32");
+    CHECK(offsetof(MaterialGpuRecord, emission_strength) == 48,
+          "RTX emission/strength vec4 begins at byte 48");
+    CHECK(offsetof(MaterialGpuRecord, transmission) == 64,
+          "RTX transmission vec4 begins at byte 64");
+    CHECK(offsetof(MaterialGpuRecord, absorption_pad) == 80,
+          "RTX absorption vec4 begins at byte 80");
+    CHECK(offsetof(MaterialGpuRecord, scattering) == 96,
+          "RTX scattering vec4 begins at byte 96");
+    CHECK(offsetof(MaterialGpuRecord, scattering_shape) == 112,
+          "RTX scattering shape vec4 begins at byte 112");
+    CHECK(offsetof(MaterialGpuRecord, flags_misc) == 128,
+          "RTX flags uvec4 begins at byte 128");
     CHECK(MaterialRegistrySchemaVersion() == 2u, "material schema version is 2");
+    CHECK(records[1].specular_tint_coat_roughness[0] > 0.99f &&
+          records[1].specular_tint_coat_roughness[1] > 0.99f &&
+          records[1].specular_tint_coat_roughness[2] > 0.99f,
+          "ordinary dielectric uses neutral white specular tint");
+    CHECK(fabsf(records[0].emission_strength[0] - records[0].base_roughness[0]) < 1e-6f &&
+          fabsf(records[0].emission_strength[1] - records[0].base_roughness[1]) < 1e-6f &&
+          fabsf(records[0].emission_strength[2] - records[0].base_roughness[2]) < 1e-6f &&
+          fabsf(records[0].emission_strength[3] - 0.1f) < 1e-6f,
+          "legacy emissive material preserves albedo-colored RTX radiance inputs");
     CHECK(records[4].transmission[0] > 0.0f, "glass opts into transmission");
     CHECK((records[4].flags_misc[0] & MATERIAL_VOLUME_BOUNDARY) != 0,
           "glass is a closed volume");
