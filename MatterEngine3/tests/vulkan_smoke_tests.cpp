@@ -68,6 +68,13 @@ void run_raster_mesh_material_contract_tests() {
 }
 
 void run_ray_tracing_capability_contract_tests() {
+    CHECK(viewer::vk_scene_detail::scene_binding_stage_flags(5) ==
+              (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT),
+          "material binding is visible only to raster shader stages");
+    CHECK(viewer::vk_scene_detail::scene_storage_limits_supported(5, 6) &&
+              !viewer::vk_scene_detail::scene_storage_limits_supported(4, 6) &&
+              !viewer::vk_scene_detail::scene_storage_limits_supported(5, 5),
+          "scene capability accounting requires five compute and six set buffers");
     matter::VulkanRayTracingCapabilities unsupported{};
     unsupported.buffer_device_address = true;
     std::string reason;
@@ -799,18 +806,19 @@ viewer::VkScenePart fixed_part(uint64_t hash, matter::Float3 minimum,
                                matter::Float3 maximum,
                                uint32_t first_vertex);
 
-viewer::VkScenePart known_raster_triangle(uint64_t hash) {
+viewer::VkScenePart known_raster_triangle(uint64_t hash,
+                                          uint32_t material_index = 7u) {
     viewer::VkScenePart part = fixed_part(
         hash, {-0.75f, -0.75f, -2.0f}, {0.75f, 1.5f, -2.0f}, 0);
     const matter::Float3 normal{0.0f, 1.0f, 0.0f};
     const matter::Float4 tint{0.9f, 0.1f, 0.3f, 0.0f};
     part.vertices = {
         {{-0.75f, -0.75f, -2.0f}, normal, tint,
-         {0.1f, 0.2f, 0.2f, 1.0f}, 7u, {}},
+         {0.1f, 0.2f, 0.2f, 1.0f}, material_index, {}},
         {{0.75f, -0.75f, -2.0f}, normal, tint,
-         {0.3f, 0.4f, 0.5f, 1.0f}, 7u, {}},
+         {0.3f, 0.4f, 0.5f, 1.0f}, material_index, {}},
         {{0.0f, 1.5f, -2.0f}, normal, tint,
-         {0.5f, 0.6f, 0.8f, 1.0f}, 7u, {}},
+         {0.5f, 0.6f, 0.8f, 1.0f}, material_index, {}},
     };
     return part;
 }
@@ -820,7 +828,7 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     constexpr uint32_t height = 160;
     std::string error;
     viewer::VkSceneRenderer renderer(vulkan);
-    std::vector<MaterialGpuRecord> materials(8);
+    std::vector<MaterialGpuRecord> materials(9);
     materials[7].base_roughness[0] = 0.25f;
     materials[7].base_roughness[1] = 0.5f;
     materials[7].base_roughness[2] = 0.75f;
@@ -828,6 +836,8 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     materials[7].metal_opacity_spec_coat[0] = 0.7f;
     materials[7].metal_opacity_spec_coat[1] = 1.0f;
     materials[7].emission_strength[3] = 5.0f;
+    materials[8] = materials[7];
+    materials[8].base_roughness[0] = 0.8f;
     CHECK(renderer.update_materials(materials, 1, 1, error),
           error.empty() ? "stage shared raster materials" : error.c_str());
     const auto half_roundtrip = [](float value) {
@@ -865,10 +875,14 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     const viewer::VkScenePart dummy = fixed_part(
         900, {-0.1f, -0.1f, -2.1f}, {0.1f, 0.1f, -1.9f}, 0);
     const viewer::VkScenePart triangle = known_raster_triangle(901);
+    const viewer::VkScenePart unaffected = known_raster_triangle(902, 8u);
     CHECK(renderer.ensure_part(dummy, error) >= 0,
           error.empty() ? "ensure raster dummy part" : error.c_str());
     CHECK(renderer.ensure_part(triangle, error) >= 0,
           error.empty() ? "ensure known raster triangle" : error.c_str());
+    CHECK(renderer.ensure_part(unaffected, error) >= 0,
+          error.empty() ? "ensure unaffected material triangle"
+                        : error.c_str());
 
     const matter::Mat4f identity = identity_matrix();
     CHECK(renderer.update_instances({{900, identity, 111},
@@ -890,7 +904,9 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     std::vector<viewer::DrawCommand> raster_commands;
     CHECK(renderer.readback_commands(raster_commands, error),
           error.empty() ? "read raster indirect commands" : error.c_str());
-    CHECK(renderer.raster_draw_command_count() == 1,
+    CHECK(renderer.raster_draw_command_count() == 2 &&
+              raster_commands.size() > 2 * viewer::kVkMaxLod &&
+              raster_commands[2 * viewer::kVkMaxLod].instance_count == 0,
           "visible cull-only parts cannot issue raster indirect draws");
     CHECK(raster_commands.size() > viewer::kVkMaxLod &&
               raster_commands[viewer::kVkMaxLod].first_instance == 1,
@@ -957,6 +973,9 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
           "negative-height viewport preserves top-left framebuffer convention");
     CHECK(background.albedo.w < 0.01f && background.depth >= 0.999f,
           "background color and depth remain clear");
+    CHECK(background.material_index == UINT32_MAX &&
+              background.instance_token == UINT32_MAX,
+          "background material and instance channels clear to invalid");
     CHECK(std::fabs(center.velocity.x) < 1e-6f &&
               std::fabs(center.velocity.y) < 1e-6f &&
               std::fabs(background.velocity.x) < 1e-6f &&
@@ -1005,8 +1024,11 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
                         : error.c_str());
     CHECK(renderer.rt_geometry_classification_dirty(901),
           "classification-changing material revision dirties affected RT part");
+    CHECK(!renderer.rt_geometry_classification_dirty(902),
+          "classification-changing revision leaves other material parts clean");
     CHECK(renderer.consume_gi_history_reset(),
           "geometry material revision requests GI history reset");
+    renderer.release_part(902);
 
     viewer::TemporalFrame rigid_motion{};
     rigid_motion.current_jittered = frame;
@@ -1681,6 +1703,11 @@ void run_frame_upload_tests(matter::VulkanDevice& vulkan) {
     const matter::Mat4f identity = identity_matrix();
     const viewer::VkScenePart first = known_raster_triangle(970);
     const viewer::VkScenePart second = known_raster_triangle(971);
+    std::vector<MaterialGpuRecord> materials(8);
+    materials[7].base_roughness[0] = 0.25f;
+    materials[7].metal_opacity_spec_coat[1] = 1.0f;
+    CHECK(renderer.update_materials(materials, 1, 1, error),
+          error.empty() ? "stage persistent frame materials" : error.c_str());
     CHECK(renderer.ensure_part(first, error) >= 0,
           error.empty() ? "ensure persistent Vulkan part" : error.c_str());
     std::vector<viewer::VkSceneInstance> instances{{970, identity},
@@ -1689,25 +1716,49 @@ void run_frame_upload_tests(matter::VulkanDevice& vulkan) {
           error.empty() ? "upload persistent Vulkan instances" : error.c_str());
 
     const FixedCullScene scene = make_fixed_cull_scene();
-    const auto prepare = [&](const viewer::FrameMatrices& matrices) {
+    const auto prepare = [&](const viewer::FrameMatrices& matrices,
+                             uint32_t* frame_slot = nullptr) {
         matter::VulkanFrame frame{};
         if (!vulkan.begin_frame(frame, error)) return false;
+        if (frame_slot) *frame_slot = frame.frame_slot;
         const bool prepared = renderer.prepare_frame(frame, matrices, scene.eye,
                                                      1.0f, error);
         const bool ended = vulkan.end_frame(frame, error);
         return prepared && ended;
     };
 
-    CHECK(prepare(scene.frame),
+    const uint64_t immediate_before_material = matter::immediate_submit_count();
+    uint32_t first_material_slot = UINT32_MAX;
+    CHECK(prepare(scene.frame, &first_material_slot),
           error.empty() ? "prepare initial persistent Vulkan frame"
                         : error.c_str());
+    CHECK(renderer.test_material_upload_record_count(first_material_slot) == 1 &&
+              (renderer.test_material_buffer_memory(first_material_slot) &
+               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0 &&
+              (renderer.test_material_buffer_memory(first_material_slot) &
+               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0 &&
+              (renderer.test_material_staging_memory(first_material_slot) &
+               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0 &&
+              matter::immediate_submit_count() == immediate_before_material,
+          "material upload records staging copy into acquired frame");
     const viewer::VkSceneUploadCounters warm = renderer.upload_counters();
 
     // Warm the second slot. Reusing the first slot below must leave all
     // scene uploads unchanged for identical CPU scene data.
-    CHECK(renderer.update_instances(instances, error) && prepare(scene.frame),
+    materials[7].absorption_pad[0] = 0.625f;
+    CHECK(renderer.update_materials(materials, 2, 1, error),
+          error.empty() ? "stage second-slot material revision"
+                        : error.c_str());
+    uint32_t second_material_slot = UINT32_MAX;
+    CHECK(renderer.update_instances(instances, error) &&
+              prepare(scene.frame, &second_material_slot),
           error.empty() ? "prepare second persistent Vulkan slot"
                         : error.c_str());
+    CHECK(second_material_slot != first_material_slot &&
+              renderer.test_material_upload_record_count(
+                  second_material_slot) == 1 &&
+              matter::immediate_submit_count() == immediate_before_material,
+          "material revision records independently into second in-flight slot");
     CHECK(renderer.update_instances(instances, error) && prepare(scene.frame),
           error.empty() ? "prepare stable Vulkan frame" : error.c_str());
     const viewer::VkSceneUploadCounters stable = renderer.upload_counters();

@@ -55,6 +55,9 @@ inline bool vulkan_material_uses_unsupported_texture(float packed_slot) {
 }
 
 namespace vk_scene_detail {
+VkShaderStageFlags scene_binding_stage_flags(uint32_t binding) noexcept;
+bool scene_storage_limits_supported(uint32_t max_per_stage,
+                                    uint32_t max_per_set) noexcept;
 bool checked_mul_to_device_size(size_t count, size_t element_size,
                                 VkDeviceSize& result, const char* label,
                                 std::string& error);
@@ -281,6 +284,23 @@ public:
                                VkRasterPixel& pixel, std::string& error);
     bool readback_materials(std::vector<MaterialGpuRecord>& records,
                             std::string& error);
+    uint64_t test_material_upload_record_count(uint32_t frame_slot) const {
+        return frame_slot < frames_.size()
+                   ? frames_[frame_slot].material_upload_record_count
+                   : 0;
+    }
+    VkMemoryPropertyFlags test_material_buffer_memory(
+        uint32_t frame_slot) const {
+        return frame_slot < frames_.size()
+                   ? frames_[frame_slot].materials.memory_properties
+                   : 0;
+    }
+    VkMemoryPropertyFlags test_material_staging_memory(
+        uint32_t frame_slot) const {
+        return frame_slot < frames_.size()
+                   ? frames_[frame_slot].material_upload.memory_properties
+                   : 0;
+    }
     VkDeviceAddress test_rt_geometry_address(uint64_t part_hash) const;
     bool test_rt_blas_built(uint64_t part_hash) const;
     uint64_t test_rt_blas_candidate_serial(uint64_t part_hash) const;
@@ -424,6 +444,7 @@ private:
         matter::VkBufferResource commands;
         matter::VkBufferResource draw_transforms;
         matter::VkBufferResource stats;
+        matter::VkBufferResource material_upload;
         matter::VkBufferResource materials;
         matter::VkImageResource dlss_output;
         matter::VkBufferResource rt_instances;
@@ -437,6 +458,8 @@ private:
         uint64_t instance_generation = 0;
         uint64_t command_generation = 0;
         uint64_t material_generation = 0;
+        uint64_t material_upload_record_count = 0;
+        VkDeviceSize pending_material_bytes = 0;
         bool stats_valid = false;
     };
 
@@ -462,8 +485,11 @@ private:
                                 std::string& error);
     void update_frame_descriptors(FrameResources& frame);
     void update_composite_descriptor(FrameResources& frame);
-    bool upload_scene_buffers(FrameResources& frame, bool reset_stats,
-                              std::string& error);
+    bool upload_scene_buffers(FrameResources& frame,
+                              VkCommandBuffer material_command_buffer,
+                              bool reset_stats, std::string& error);
+    void record_material_upload(VkCommandBuffer command_buffer,
+                                FrameResources& frame);
     bool upload_frame_constants(FrameResources& frame,
                                 const FrameMatrices& matrices,
                                 matter::Float3 camera_eye,

@@ -3401,8 +3401,10 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             impl_->vk_material_records.size(), material_records.size());
         for (size_t index = 0; index < common_count; ++index) {
             geometry_changed |=
-                impl_->vk_material_records[index].flags_misc[0] !=
-                material_records[index].flags_misc[0];
+                (impl_->vk_material_records[index].flags_misc[0] &
+                 MATERIAL_ALPHA_TESTED) !=
+                (material_records[index].flags_misc[0] &
+                 MATERIAL_ALPHA_TESTED);
         }
         impl_->vk_material_records = material_records;
         ++impl_->vk_material_shading_revision;

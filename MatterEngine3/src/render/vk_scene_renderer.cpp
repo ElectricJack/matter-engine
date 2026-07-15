@@ -100,7 +100,36 @@ struct CullDispatchRecord {
     VkPipelineLayout layout;
     VkDescriptorSet sets[2];
     uint32_t group_count;
+    VkBuffer material_upload = VK_NULL_HANDLE;
+    VkBuffer materials = VK_NULL_HANDLE;
+    VkDeviceSize material_bytes = 0;
+    uint64_t* material_upload_record_count = nullptr;
 };
+
+void record_material_upload_commands(VkCommandBuffer command_buffer,
+                                     VkBuffer source, VkBuffer destination,
+                                     VkDeviceSize size) {
+    if (size == 0) return;
+    const VkBufferCopy copy{0, 0, size};
+    vkCmdCopyBuffer(command_buffer, source, destination, 1, &copy);
+
+    VkBufferMemoryBarrier2 barrier{
+        VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                           VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.buffer = destination;
+    barrier.offset = 0;
+    barrier.size = size;
+    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dependency.bufferMemoryBarrierCount = 1;
+    dependency.pBufferMemoryBarriers = &barrier;
+    vkCmdPipelineBarrier2(command_buffer, &dependency);
+}
 
 void record_cull_dispatch_commands(VkCommandBuffer command_buffer,
                                    const CullDispatchRecord& dispatch) {
@@ -126,6 +155,13 @@ void record_cull_dispatch_commands(VkCommandBuffer command_buffer,
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
 void record_cull_dispatch(VkCommandBuffer command_buffer, void* user_data) {
     const auto& dispatch = *static_cast<CullDispatchRecord*>(user_data);
+    record_material_upload_commands(
+        command_buffer, dispatch.material_upload, dispatch.materials,
+        dispatch.material_bytes);
+    if (dispatch.material_bytes != 0 &&
+        dispatch.material_upload_record_count != nullptr) {
+        ++*dispatch.material_upload_record_count;
+    }
     record_cull_dispatch_commands(command_buffer, dispatch);
 
     VkMemoryBarrier2 readback{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
@@ -401,6 +437,18 @@ float half_to_float(uint16_t value) {
 
 namespace vk_scene_detail {
 
+VkShaderStageFlags scene_binding_stage_flags(uint32_t binding) noexcept {
+    if (binding == 5)
+        return VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    return VK_SHADER_STAGE_COMPUTE_BIT |
+           (binding == 3 ? VK_SHADER_STAGE_VERTEX_BIT : 0);
+}
+
+bool scene_storage_limits_supported(uint32_t max_per_stage,
+                                    uint32_t max_per_set) noexcept {
+    return max_per_stage >= 5 && max_per_set >= 6;
+}
+
 size_t frame_constants_size_for_test() noexcept {
     return sizeof(FrameConstants);
 }
@@ -625,11 +673,7 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     for (uint32_t i = 0; i < scene_bindings.size(); ++i)
         scene_bindings[i] =
             descriptor_binding(i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                               VK_SHADER_STAGE_COMPUTE_BIT |
-                                   (i == 3 ? VK_SHADER_STAGE_VERTEX_BIT : 0) |
-                                   (i == 5 ? VK_SHADER_STAGE_VERTEX_BIT |
-                                                 VK_SHADER_STAGE_FRAGMENT_BIT
-                                           : 0));
+                               vk_scene_detail::scene_binding_stage_flags(i));
     VkDescriptorSetLayoutCreateInfo scene_layout{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     scene_layout.bindingCount =
@@ -1213,11 +1257,20 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
             !ensure_candidate_buffer(frame.stats, sizeof(VkCullStats),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
-            !ensure_candidate_buffer(
-                frame.materials,
-                std::max<size_t>(material_staging_.size(), 1) *
-                    sizeof(MaterialGpuRecord),
-                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
+            !matter::create_buffer(
+                *vulkan_, sizeof(MaterialGpuRecord),
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                    VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+                frame.material_upload, error) ||
+            !matter::create_buffer(
+                *vulkan_, sizeof(MaterialGpuRecord),
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, frame.materials,
+                error)) {
             vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
             return false;
         }
@@ -1360,8 +1413,9 @@ bool VkSceneRenderer::load_device_limits(std::string& error) {
     if (vk_limits.maxBoundDescriptorSets < 2 ||
         vk_limits.maxPerStageDescriptorUniformBuffers < 1 ||
         vk_limits.maxDescriptorSetUniformBuffers < 1 ||
-        vk_limits.maxPerStageDescriptorStorageBuffers < 6 ||
-        vk_limits.maxDescriptorSetStorageBuffers < 6) {
+        !vk_scene_detail::scene_storage_limits_supported(
+            vk_limits.maxPerStageDescriptorStorageBuffers,
+            vk_limits.maxDescriptorSetStorageBuffers)) {
         error = "Vulkan device descriptor limits cannot support scene culling";
         return false;
     }
@@ -2107,9 +2161,9 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
     return true;
 }
 
-bool VkSceneRenderer::upload_scene_buffers(FrameResources& frame,
-                                           bool reset_stats,
-                                           std::string& error) {
+bool VkSceneRenderer::upload_scene_buffers(
+    FrameResources& frame, VkCommandBuffer material_command_buffer,
+    bool reset_stats, std::string& error) {
     VkDeviceSize cluster_bytes = 0;
     VkDeviceSize instance_bytes = 0;
     VkDeviceSize command_bytes = 0;
@@ -2188,19 +2242,60 @@ bool VkSceneRenderer::upload_scene_buffers(FrameResources& frame,
         ++uploads;
         return true;
     };
+    frame.pending_material_bytes = 0;
     if (frame.material_generation != material_generation_) {
+        const VkDeviceSize required =
+            std::max<VkDeviceSize>(material_bytes, 1);
+        VkDeviceSize material_capacity = frame.materials.size;
+        VkDeviceSize upload_capacity = frame.material_upload.size;
+        if (!vk_scene_detail::checked_grown_capacity(
+                material_capacity, required, limits_.max_buffer_size,
+                material_capacity, "material buffer", error) ||
+            !vk_scene_detail::checked_grown_capacity(
+                upload_capacity, required, limits_.max_buffer_size,
+                upload_capacity, "material upload buffer", error)) {
+            return false;
+        }
         bool material_replaced = false;
-        if (!ensure_buffer(frame.materials, material_bytes,
-                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error,
-                           &material_replaced) ||
-            !upload(frame.materials, material_staging_.data(), material_bytes)) {
+        if (frame.materials.size < required) {
+            matter::VkBufferResource replacement;
+            if (!matter::create_buffer(
+                    *vulkan_, material_capacity,
+                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                        VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, replacement,
+                    error)) {
+                return false;
+            }
+            frame.materials = std::move(replacement);
+            material_replaced = true;
+        }
+        if (frame.material_upload.size < required) {
+            matter::VkBufferResource replacement;
+            if (!matter::create_buffer(
+                    *vulkan_, upload_capacity,
+                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                        VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+                    replacement, error)) {
+                return false;
+            }
+            frame.material_upload = std::move(replacement);
+        }
+        if (!upload(frame.material_upload, material_staging_.data(),
+                    material_bytes)) {
             return false;
         }
         if (material_replaced)
             update_descriptor(frame.descriptor_sets[1], 5,
                               VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                               frame.materials);
+        frame.pending_material_bytes = material_bytes;
         frame.material_generation = material_generation_;
+        if (material_command_buffer != VK_NULL_HANDLE)
+            record_material_upload(material_command_buffer, frame);
     }
     if (static_upload_dirty_) {
         const auto replacement_capacity = [&](VkDeviceSize current,
@@ -2315,6 +2410,16 @@ bool VkSceneRenderer::upload_scene_buffers(FrameResources& frame,
     return true;
 }
 
+void VkSceneRenderer::record_material_upload(VkCommandBuffer command_buffer,
+                                             FrameResources& frame) {
+    record_material_upload_commands(command_buffer,
+                                    frame.material_upload.buffer,
+                                    frame.materials.buffer,
+                                    frame.pending_material_bytes);
+    if (frame.pending_material_bytes != 0)
+        ++frame.material_upload_record_count;
+}
+
 bool VkSceneRenderer::upload_frame_constants(FrameResources& frame,
                                               const FrameMatrices& matrices,
                                               matter::Float3 camera_eye,
@@ -2363,7 +2468,7 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     }
     if (!ensure_frame_resources(frame.frame_slot_count, error)) return false;
     FrameResources& selected = frames_[frame.frame_slot];
-    if (!upload_scene_buffers(selected, false, error) ||
+    if (!upload_scene_buffers(selected, frame.command_buffer, false, error) ||
         !upload_frame_constants(selected, matrices, camera_eye, pixel_budget,
                                 error)) {
         return false;
@@ -2392,6 +2497,7 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
         selected.commands.lifetime,
         selected.draw_transforms.lifetime,
         selected.stats.lifetime,
+        selected.material_upload.lifetime,
         selected.materials.lifetime,
         albedo_.lifetime,
         normal_.lifetime,
@@ -2879,7 +2985,8 @@ bool VkSceneRenderer::dispatch_culling(const FrameMatrices& frame,
     }
     if (!ensure_frame_resources(1, error)) return false;
     FrameResources& selected = frames_[0];
-    if (!upload_scene_buffers(selected, true, error)) return false;
+    if (!upload_scene_buffers(selected, VK_NULL_HANDLE, true, error))
+        return false;
     if (!upload_frame_constants(selected, frame, camera_eye, pixel_budget,
                                 error))
         return poison(error);
@@ -2889,12 +2996,16 @@ bool VkSceneRenderer::dispatch_culling(const FrameMatrices& frame,
     CullDispatchRecord dispatch{pipeline_, pipeline_layout_,
                                 {selected.descriptor_sets[0],
                                  selected.descriptor_sets[1]},
-                                group_count};
+                                group_count,
+                                selected.material_upload.buffer,
+                                selected.materials.buffer,
+                                selected.pending_material_bytes,
+                                &selected.material_upload_record_count};
     std::vector<std::shared_ptr<void>> dependencies{
         selected.frame_constants.lifetime, clusters_.lifetime,
         selected.instances.lifetime, selected.commands.lifetime,
         selected.draw_transforms.lifetime, selected.stats.lifetime,
-        selected.materials.lifetime};
+        selected.material_upload.lifetime, selected.materials.lifetime};
     if (!matter::submit_immediate(
         *vulkan_, record_cull_dispatch, &dispatch, error,
         matter::ImmediateSubmitPhase::compute_dispatch,
