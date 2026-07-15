@@ -242,7 +242,9 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/composite.frag.spv \
          build/shaders_vk/rt_shadow.rgen.spv \
          build/shaders_vk/rt_shadow.rmiss.spv \
-         build/shaders_vk/rt_shadow.rchit.spv
+         build/shaders_vk/rt_shadow.rchit.spv \
+         build/shaders_vk/rt_radiance.rmiss.spv \
+         build/shaders_vk/rt_surface.rchit.spv
 
 build/shaders_vk/%.spv: shaders_vk/%
 	@mkdir -p $(dir $@)
@@ -250,6 +252,9 @@ build/shaders_vk/%.spv: shaders_vk/%
 
 build/shaders_vk/raster.vert.spv build/shaders_vk/gbuffer.frag.spv: \
     shaders_vk/material_common.glsl
+
+build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_radiance.rmiss.spv: \
+    shaders_vk/rt_surface_common.glsl
 
 shaders_gen/embedded_spirv.h: $(VK_SPV) tools/embed_spirv.py
 	python3 tools/embed_spirv.py $@ $(VK_SPV)

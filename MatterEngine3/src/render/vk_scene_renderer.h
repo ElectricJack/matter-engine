@@ -17,6 +17,7 @@
 #include "gpu_matrix_pack.h"
 #include "matter/math_types.h"
 #include "material_registry.h"
+#include "vk_gi_contract.h"
 #include "vk_draw_command.h"
 #include "vk_resources.h"
 #include "vk_temporal.h"
@@ -160,6 +161,21 @@ struct VkRasterPixel {
     float visibility = 1.0f;
 };
 
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+struct RtSurfaceHit {
+    bool valid = false;
+    uint32_t part_slot = UINT32_MAX;
+    uint32_t primitive = UINT32_MAX;
+    uint32_t material_index = UINT32_MAX;
+    matter::Float3 position{};
+    matter::Float3 normal{};
+    matter::Float4 tint{};
+    float uv[2]{};
+    float baked_ao = 1.0f;
+    float hit_t = 0.0f;
+};
+#endif
+
 struct VkSceneLighting {
     // Direction from the sun toward the scene, matching WorldLights.
     matter::Float3 sun_direction{-0.45f, -0.80f, -0.35f};
@@ -302,6 +318,9 @@ public:
                    : 0;
     }
     VkDeviceAddress test_rt_geometry_address(uint64_t part_hash) const;
+    bool test_trace_surface_ray(matter::Float3 origin,
+                                matter::Float3 direction,
+                                RtSurfaceHit& hit, std::string& error) const;
     bool test_rt_blas_built(uint64_t part_hash) const;
     uint64_t test_rt_blas_candidate_serial(uint64_t part_hash) const;
     VkDeviceAddress test_rt_sbt_address() const { return rt_sbt_address_; }
@@ -451,6 +470,8 @@ private:
         matter::VkBufferResource rt_scratch;
         matter::VkBufferResource rt_tlas_scratch;
         matter::VkAccelerationStructureResource rt_tlas;
+        matter::VkBufferResource rt_parts;
+        matter::VkBufferResource rt_error_counter;
         VkExtent2D dlss_output_extent{};
         VkDescriptorSet descriptor_sets[2]{};
         VkDescriptorSet composite_descriptor_set = VK_NULL_HANDLE;

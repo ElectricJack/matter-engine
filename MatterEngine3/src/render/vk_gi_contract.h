@@ -27,6 +27,19 @@ typedef struct VulkanGiCounters {
 } VulkanGiCounters;
 
 #ifdef __cplusplus
+typedef struct alignas(16) GpuRtPartRecord {
+#else
+typedef struct GpuRtPartRecord {
+#endif
+    uint64_t vertex_address;
+    uint32_t vertex_stride;
+    uint32_t vertex_count;
+    uint32_t primitive_count;
+    uint32_t valid;
+    uint32_t pad[2];
+} GpuRtPartRecord;
+
+#ifdef __cplusplus
 #include <cstddef>
 #include <type_traits>
 
@@ -52,4 +65,8 @@ static_assert(offsetof(MaterialGpuRecord, scattering_shape) == 112,
               "MaterialGpuRecord scattering_shape must be vec4 7");
 static_assert(offsetof(MaterialGpuRecord, flags_misc) == 128,
               "MaterialGpuRecord flags_misc must be uvec4 8");
+static_assert(std::is_standard_layout<GpuRtPartRecord>::value,
+              "GpuRtPartRecord must remain a standard-layout GPU record");
+static_assert(sizeof(GpuRtPartRecord) == 32,
+              "GpuRtPartRecord must remain exactly two vec4 records");
 #endif

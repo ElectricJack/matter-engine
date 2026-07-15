@@ -735,10 +735,16 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
         descriptor_binding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                            VK_SHADER_STAGE_RAYGEN_BIT_KHR),
         descriptor_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                           VK_SHADER_STAGE_RAYGEN_BIT_KHR)};
+                           VK_SHADER_STAGE_RAYGEN_BIT_KHR),
+        descriptor_binding(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                           VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR),
+        descriptor_binding(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                           VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR),
+        descriptor_binding(5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                           VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR)};
     VkDescriptorSetLayoutCreateInfo set_info{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    set_info.bindingCount = 3;
+    set_info.bindingCount = 6;
     set_info.pBindings = bindings;
     VkResult result = vkCreateDescriptorSetLayout(device, &set_info, nullptr,
                                                    &rt_set_layout_);
@@ -759,13 +765,15 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     if (result != VK_SUCCESS)
         return fail_vk("vkCreatePipelineLayout(ray tracing)", result, error);
     const char* names[] = {"rt_shadow.rgen.spv", "rt_shadow.rmiss.spv",
-                           "rt_shadow.rchit.spv"};
+                           "rt_shadow.rchit.spv", "rt_radiance.rmiss.spv",
+                           "rt_surface.rchit.spv"};
     const VkShaderStageFlagBits stages_bits[] = {
         VK_SHADER_STAGE_RAYGEN_BIT_KHR, VK_SHADER_STAGE_MISS_BIT_KHR,
+        VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR, VK_SHADER_STAGE_MISS_BIT_KHR,
         VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR};
-    VkShaderModule modules[3]{};
-    VkPipelineShaderStageCreateInfo stages[3]{};
-    for (uint32_t i = 0; i < 3; ++i) {
+    VkShaderModule modules[5]{};
+    VkPipelineShaderStageCreateInfo stages[5]{};
+    for (uint32_t i = 0; i < 5; ++i) {
         if (!create_shader_module(device, names[i], modules[i], error)) {
             for (VkShaderModule module : modules)
                 if (module) vkDestroyShaderModule(device, module, nullptr);
@@ -776,7 +784,7 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
         stages[i].module = modules[i];
         stages[i].pName = "main";
     }
-    VkRayTracingShaderGroupCreateInfoKHR groups[3]{};
+    VkRayTracingShaderGroupCreateInfoKHR groups[5]{};
     for (auto& group : groups) {
         group.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
         group.generalShader = VK_SHADER_UNUSED_KHR;
@@ -790,11 +798,15 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     groups[1].generalShader = 1;
     groups[2].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
     groups[2].closestHitShader = 2;
+    groups[3].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+    groups[3].generalShader = 3;
+    groups[4].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+    groups[4].closestHitShader = 4;
     VkRayTracingPipelineCreateInfoKHR create{
         VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR};
-    create.stageCount = 3;
+    create.stageCount = 5;
     create.pStages = stages;
-    create.groupCount = 3;
+    create.groupCount = 5;
     create.pGroups = groups;
     create.maxPipelineRayRecursionDepth = 1;
     create.layout = rt_pipeline_layout_;
@@ -835,13 +847,13 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     const VkDeviceSize region_stride =
         (handle_stride + props.shader_group_base_alignment - 1) /
         props.shader_group_base_alignment * props.shader_group_base_alignment;
-    std::vector<uint8_t> handles(static_cast<size_t>(3 * handle_size));
-    result = get_handles(device, rt_pipeline_, 0, 3, handles.size(),
+    std::vector<uint8_t> handles(static_cast<size_t>(5 * handle_size));
+    result = get_handles(device, rt_pipeline_, 0, 5, handles.size(),
                          handles.data());
     if (result != VK_SUCCESS)
         return fail_vk("vkGetRayTracingShaderGroupHandlesKHR", result, error);
     if (!matter::create_buffer(
-            *vulkan_, 3 * region_stride +
+            *vulkan_, 5 * region_stride +
                            props.shader_group_base_alignment - 1,
             VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR |
                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -854,13 +866,13 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     rt_sbt_stride_ = handle_stride;
     const VkDeviceSize mapped_offset = rt_sbt_address_ - rt_sbt_.address;
     std::memset(static_cast<uint8_t*>(rt_sbt_.mapped) + mapped_offset, 0,
-                static_cast<size_t>(3 * region_stride));
-    for (uint32_t i = 0; i < 3; ++i)
+                static_cast<size_t>(5 * region_stride));
+    for (uint32_t i = 0; i < 5; ++i)
         std::memcpy(static_cast<uint8_t*>(rt_sbt_.mapped) + mapped_offset +
                         i * region_stride,
                     handles.data() + i * handle_size,
                     static_cast<size_t>(handle_size));
-    return matter::flush_buffer(rt_sbt_, mapped_offset, 3 * region_stride,
+    return matter::flush_buffer(rt_sbt_, mapped_offset, 5 * region_stride,
                                 error);
 }
 
@@ -1270,7 +1282,11 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
                     VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, frame.materials,
-                error)) {
+                error) ||
+            !ensure_candidate_buffer(frame.rt_parts, sizeof(GpuRtPartRecord),
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+            !ensure_candidate_buffer(frame.rt_error_counter, sizeof(uint32_t),
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
             vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
             return false;
         }
@@ -1289,11 +1305,12 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         const VkDescriptorPoolSize rt_sizes[] = {
             {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, frame_slot_count},
             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, frame_slot_count},
-            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count}};
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count},
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 3}};
         VkDescriptorPoolCreateInfo rt_pool{
             VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         rt_pool.maxSets = frame_slot_count;
-        rt_pool.poolSizeCount = 3;
+        rt_pool.poolSizeCount = 4;
         rt_pool.pPoolSizes = rt_sizes;
         VkResult rt_result = vkCreateDescriptorPool(
             vulkan_->device(), &rt_pool, nullptr, &rt_descriptor_pool_);
@@ -1810,6 +1827,124 @@ VkDeviceAddress VkSceneRenderer::test_rt_geometry_address(
     return part.rt_geometry ? part.rt_geometry->address : 0;
 }
 
+bool VkSceneRenderer::test_trace_surface_ray(
+    matter::Float3 origin, matter::Float3 direction, RtSurfaceHit& hit,
+    std::string& error) const {
+    error.clear();
+    hit = {};
+    const auto subtract = [](matter::Float3 a, matter::Float3 b) {
+        return matter::Float3{a.x - b.x, a.y - b.y, a.z - b.z};
+    };
+    const auto add_scaled = [](matter::Float3 a, matter::Float3 b, float scale) {
+        return matter::Float3{a.x + b.x * scale, a.y + b.y * scale,
+                              a.z + b.z * scale};
+    };
+    const auto dot = [](matter::Float3 a, matter::Float3 b) {
+        return a.x * b.x + a.y * b.y + a.z * b.z;
+    };
+    const auto cross = [](matter::Float3 a, matter::Float3 b) {
+        return matter::Float3{a.y * b.z - a.z * b.y,
+                              a.z * b.x - a.x * b.z,
+                              a.x * b.y - a.y * b.x};
+    };
+    const auto normalize = [&](matter::Float3 value) {
+        const float length_squared = dot(value, value);
+        if (!(length_squared > 1e-12f)) return matter::Float3{};
+        const float inverse = 1.0f / std::sqrt(length_squared);
+        return matter::Float3{value.x * inverse, value.y * inverse,
+                              value.z * inverse};
+    };
+    direction = normalize(direction);
+    if (dot(direction, direction) == 0.0f) {
+        error = "surface-query direction must be non-zero";
+        return false;
+    }
+    float closest = std::numeric_limits<float>::max();
+    for (const RtInstance& instance : rt_instances_) {
+        const auto found = slot_of_.find(instance.part_hash);
+        if (found == slot_of_.end()) continue;
+        const uint32_t slot = static_cast<uint32_t>(found->second);
+        const PartRecord& part = parts_[slot];
+        if (!part.live || !part.rt_geometry || !part.rt_geometry->mapped)
+            continue;
+        matter::Mat4f object_to_world{};
+        std::memcpy(object_to_world.m, instance.transform,
+                    sizeof(object_to_world.m));
+        matter::Mat4f world_to_object{};
+        if (!mat4_inverse(object_to_world, world_to_object)) continue;
+        const auto* vertices =
+            static_cast<const VkRasterVertex*>(part.rt_geometry->mapped);
+        for (uint32_t primitive = 0; primitive < part.rt_primitive_count;
+             ++primitive) {
+            const VkRasterVertex& v0 = vertices[primitive * 3];
+            const VkRasterVertex& v1 = vertices[primitive * 3 + 1];
+            const VkRasterVertex& v2 = vertices[primitive * 3 + 2];
+            const matter::Float3 p0 =
+                transform_point(object_to_world, v0.position);
+            const matter::Float3 p1 =
+                transform_point(object_to_world, v1.position);
+            const matter::Float3 p2 =
+                transform_point(object_to_world, v2.position);
+            const matter::Float3 edge1 = subtract(p1, p0);
+            const matter::Float3 edge2 = subtract(p2, p0);
+            const matter::Float3 pvec = cross(direction, edge2);
+            const float determinant = dot(edge1, pvec);
+            if (std::fabs(determinant) < 1e-7f) continue;
+            const float inverse_determinant = 1.0f / determinant;
+            const matter::Float3 tvec = subtract(origin, p0);
+            const float bary1 = dot(tvec, pvec) * inverse_determinant;
+            if (bary1 < 0.0f || bary1 > 1.0f) continue;
+            const matter::Float3 qvec = cross(tvec, edge1);
+            const float bary2 = dot(direction, qvec) * inverse_determinant;
+            if (bary2 < 0.0f || bary1 + bary2 > 1.0f) continue;
+            const float distance = dot(edge2, qvec) * inverse_determinant;
+            if (!(distance >= 0.0f) || distance >= closest) continue;
+            const float bary0 = 1.0f - bary1 - bary2;
+            const matter::Float3 object_normal{
+                v0.normal.x * bary0 + v1.normal.x * bary1 +
+                    v2.normal.x * bary2,
+                v0.normal.y * bary0 + v1.normal.y * bary1 +
+                    v2.normal.y * bary2,
+                v0.normal.z * bary0 + v1.normal.z * bary1 +
+                    v2.normal.z * bary2};
+            matter::Float3 world_normal = normalize({
+                world_to_object.m[0] * object_normal.x +
+                    world_to_object.m[4] * object_normal.y +
+                    world_to_object.m[8] * object_normal.z,
+                world_to_object.m[1] * object_normal.x +
+                    world_to_object.m[5] * object_normal.y +
+                    world_to_object.m[9] * object_normal.z,
+                world_to_object.m[2] * object_normal.x +
+                    world_to_object.m[6] * object_normal.y +
+                    world_to_object.m[10] * object_normal.z});
+            if (dot(world_normal, direction) > 0.0f) {
+                world_normal = {-world_normal.x, -world_normal.y,
+                                -world_normal.z};
+            }
+            closest = distance;
+            hit.valid = true;
+            hit.part_slot = slot;
+            hit.primitive = primitive;
+            hit.material_index = v0.material_index;
+            hit.position = add_scaled(origin, direction, distance);
+            hit.normal = world_normal;
+            hit.tint = {
+                v0.tint.x * bary0 + v1.tint.x * bary1 + v2.tint.x * bary2,
+                v0.tint.y * bary0 + v1.tint.y * bary1 + v2.tint.y * bary2,
+                v0.tint.z * bary0 + v1.tint.z * bary1 + v2.tint.z * bary2,
+                v0.tint.w * bary0 + v1.tint.w * bary1 + v2.tint.w * bary2};
+            hit.uv[0] = v0.surface.x * bary0 + v1.surface.x * bary1 +
+                        v2.surface.x * bary2;
+            hit.uv[1] = v0.surface.y * bary0 + v1.surface.y * bary1 +
+                        v2.surface.y * bary2;
+            hit.baked_ao = v0.surface.z * bary0 + v1.surface.z * bary1 +
+                           v2.surface.z * bary2;
+            hit.hit_t = distance;
+        }
+    }
+    return true;
+}
+
 bool VkSceneRenderer::test_rt_blas_built(uint64_t part_hash) const {
     const auto found = slot_of_.find(part_hash);
     return found != slot_of_.end() &&
@@ -1851,54 +1986,47 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
     const auto found = slot_of_.find(part_hash);
     if (found == slot_of_.end()) return;
     const uint32_t released_slot = static_cast<uint32_t>(found->second);
-    std::vector<uint32_t> remap(parts_.size(),
-                                std::numeric_limits<uint32_t>::max());
-    std::vector<PartRecord> compact_parts;
     std::vector<GpuCluster> compact_clusters;
     std::vector<std::vector<VkSceneLod>> compact_lods;
     std::vector<VkRasterVertex> compact_vertices;
-    std::map<uint64_t, int> compact_slots;
-    compact_parts.reserve(parts_.size() - 1);
     compact_clusters.reserve(cluster_staging_.size() -
                              parts_[released_slot].cluster_count);
     compact_lods.reserve(compact_clusters.capacity());
     compact_vertices.reserve(vertex_staging_.size() -
                              parts_[released_slot].vertex_count);
     for (uint32_t old_slot = 0; old_slot < parts_.size(); ++old_slot) {
-        if (old_slot == released_slot) continue;
-        const PartRecord& old_part = parts_[old_slot];
-        const uint32_t new_slot = static_cast<uint32_t>(compact_parts.size());
-        remap[old_slot] = new_slot;
-        PartRecord new_part = old_part;
-        new_part.cluster_start = static_cast<uint32_t>(compact_clusters.size());
-        new_part.vertex_start = static_cast<uint32_t>(compact_vertices.size());
-        if (old_part.vertex_count != 0) {
+        if (old_slot == released_slot || !parts_[old_slot].live) continue;
+        PartRecord& part = parts_[old_slot];
+        const uint32_t old_cluster_start = part.cluster_start;
+        const uint32_t old_vertex_start = part.vertex_start;
+        part.cluster_start = static_cast<uint32_t>(compact_clusters.size());
+        part.vertex_start = static_cast<uint32_t>(compact_vertices.size());
+        const uint32_t vertex_delta = part.vertex_start;
+        if (part.vertex_count != 0) {
             compact_vertices.insert(
                 compact_vertices.end(),
-                vertex_staging_.begin() + old_part.vertex_start,
-                vertex_staging_.begin() + old_part.vertex_start +
-                    old_part.vertex_count);
+                vertex_staging_.begin() + old_vertex_start,
+                vertex_staging_.begin() + old_vertex_start +
+                    part.vertex_count);
         }
-        new_part.live = true;
-        for (uint32_t i = 0; i < old_part.cluster_count; ++i) {
+        for (uint32_t i = 0; i < part.cluster_count; ++i) {
             GpuCluster cluster =
-                cluster_staging_[old_part.cluster_start + i];
-            cluster.part_slot = new_slot;
+                cluster_staging_[old_cluster_start + i];
+            cluster.part_slot = old_slot;
             compact_clusters.push_back(cluster);
             std::vector<VkSceneLod> lods =
-                cluster_lods_[old_part.cluster_start + i];
-            if (old_part.vertex_count != 0) {
+                cluster_lods_[old_cluster_start + i];
+            if (part.vertex_count != 0) {
                 for (auto& lod : lods) {
-                    lod.first_vertex =
-                        new_part.vertex_start +
-                        (lod.first_vertex - old_part.vertex_start);
+                    lod.first_vertex = vertex_delta +
+                                       (lod.first_vertex - old_vertex_start);
                 }
             }
             compact_lods.push_back(std::move(lods));
         }
-        compact_slots[new_part.hash] = static_cast<int>(new_slot);
-        compact_parts.push_back(new_part);
     }
+    slot_of_.erase(found);
+    parts_[released_slot] = {};
     std::vector<GpuInstance> kept_instances;
     std::vector<uint32_t> kept_slots;
     kept_instances.reserve(instance_staging_.size());
@@ -1906,16 +2034,12 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
     for (size_t i = 0; i < instance_staging_.size(); ++i) {
         const uint32_t old_slot = instance_part_slots_[i];
         if (old_slot == released_slot) continue;
-        const uint32_t new_slot = remap[old_slot];
         GpuInstance instance = instance_staging_[i];
-        instance.part_slot = new_slot;
-        instance.cluster_start = compact_parts[new_slot].cluster_start;
-        instance.cluster_count = compact_parts[new_slot].cluster_count;
+        instance.cluster_start = parts_[old_slot].cluster_start;
+        instance.cluster_count = parts_[old_slot].cluster_count;
         kept_instances.push_back(instance);
-        kept_slots.push_back(new_slot);
+        kept_slots.push_back(old_slot);
     }
-    parts_ = std::move(compact_parts);
-    slot_of_ = std::move(compact_slots);
     cluster_staging_ = std::move(compact_clusters);
     cluster_lods_ = std::move(compact_lods);
     vertex_staging_ = std::move(compact_vertices);
@@ -2749,6 +2873,34 @@ bool VkSceneRenderer::record_ray_traced_shadows(
                        VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
                        VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                        VK_IMAGE_ASPECT_COLOR_BIT);
+    std::vector<GpuRtPartRecord> part_records(parts_.size());
+    for (size_t slot = 0; slot < parts_.size(); ++slot) {
+        const PartRecord& part = parts_[slot];
+        GpuRtPartRecord& record = part_records[slot];
+        if (!part.live || !part.rt_geometry || part.rt_primitive_count == 0)
+            continue;
+        record.vertex_address = part.rt_geometry->address;
+        record.vertex_stride = sizeof(VkRasterVertex);
+        record.vertex_count = part.vertex_count;
+        record.primitive_count = part.rt_primitive_count;
+        record.valid = 1;
+    }
+    const VkDeviceSize part_bytes = std::max<VkDeviceSize>(
+        sizeof(GpuRtPartRecord),
+        part_records.size() * sizeof(GpuRtPartRecord));
+    if (!ensure_buffer(selected.rt_parts, part_bytes,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error) ||
+        !matter::map_buffer(selected.rt_parts, error) ||
+        !matter::map_buffer(selected.rt_error_counter, error)) return false;
+    std::memset(selected.rt_parts.mapped, 0,
+                static_cast<size_t>(part_bytes));
+    if (!part_records.empty())
+        std::memcpy(selected.rt_parts.mapped, part_records.data(),
+                    part_records.size() * sizeof(GpuRtPartRecord));
+    *static_cast<uint32_t*>(selected.rt_error_counter.mapped) = 0;
+    if (!matter::flush_buffer(selected.rt_parts, 0, part_bytes, error) ||
+        !matter::flush_buffer(selected.rt_error_counter, 0, sizeof(uint32_t),
+                              error)) return false;
     VkWriteDescriptorSetAccelerationStructureKHR as_write{
         VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
     as_write.accelerationStructureCount = 1;
@@ -2757,7 +2909,13 @@ bool VkSceneRenderer::record_ray_traced_shadows(
                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo visibility_info{VK_NULL_HANDLE, visibility_.view,
                                           VK_IMAGE_LAYOUT_GENERAL};
-    VkWriteDescriptorSet writes[3]{};
+    VkDescriptorBufferInfo part_info{selected.rt_parts.buffer, 0,
+                                     selected.rt_parts.size};
+    VkDescriptorBufferInfo material_info{selected.materials.buffer, 0,
+                                         selected.materials.size};
+    VkDescriptorBufferInfo error_info{selected.rt_error_counter.buffer, 0,
+                                      selected.rt_error_counter.size};
+    VkWriteDescriptorSet writes[6]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].pNext = &as_write;
     writes[0].dstSet = rt_descriptor_sets_[frame.frame_slot];
@@ -2774,7 +2932,17 @@ bool VkSceneRenderer::record_ray_traced_shadows(
             : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         writes[i].pImageInfo = i == 1 ? &depth_info : &visibility_info;
     }
-    vkUpdateDescriptorSets(vulkan_->device(), 3, writes, 0, nullptr);
+    const VkDescriptorBufferInfo* rt_buffers[] = {
+        &part_info, &material_info, &error_info};
+    for (uint32_t i = 3; i < 6; ++i) {
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet = rt_descriptor_sets_[frame.frame_slot];
+        writes[i].dstBinding = i;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[i].pBufferInfo = rt_buffers[i - 3];
+    }
+    vkUpdateDescriptorSets(vulkan_->device(), 6, writes, 0, nullptr);
     struct alignas(16) ShadowConstants {
         GpuMat4 clip_to_world;
         float to_sun_max_distance[4];
@@ -2835,7 +3003,9 @@ bool VkSceneRenderer::record_ray_traced_shadows(
     std::vector<std::shared_ptr<void>> retained{visibility_.lifetime,
         selected.rt_instances.lifetime, selected.rt_scratch.lifetime,
         selected.rt_tlas_scratch.lifetime,
-        selected.rt_tlas.lifetime, rt_sbt_.lifetime};
+        selected.rt_tlas.lifetime, selected.rt_parts.lifetime,
+        selected.rt_error_counter.lifetime, selected.materials.lifetime,
+        rt_sbt_.lifetime};
     for (const auto& part : parts_) {
         if (part.rt_geometry) retained.push_back(part.rt_geometry->lifetime);
         if (part.rt_blas) retained.push_back(part.rt_blas->lifetime);

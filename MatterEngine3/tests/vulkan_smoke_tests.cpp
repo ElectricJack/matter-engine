@@ -1241,6 +1241,63 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
 
     std::string error;
     {
+        viewer::VkSceneRenderer surface_query(vulkan);
+        viewer::VkScenePart first = known_raster_triangle(912);
+        viewer::VkScenePart second = fixed_part(
+            913, {-1.0f, 0.0f, -1.0f}, {1.0f, 1.0f, 1.0f}, 0);
+        const matter::Float3 local_normal{0.70710678f, 0.0f, 0.70710678f};
+        second.vertices = {
+            {{-1.0f, 0.0f, 1.0f}, local_normal, {0.2f, 0.4f, 0.6f, 1.0f},
+             {0.0f, 0.0f, 0.2f, 1.0f}, 7},
+            {{1.0f, 0.0f, -1.0f}, local_normal, {0.4f, 0.6f, 0.8f, 1.0f},
+             {1.0f, 0.0f, 0.5f, 1.0f}, 7},
+            {{0.0f, 1.0f, 0.0f}, local_normal, {0.6f, 0.8f, 1.0f, 1.0f},
+             {0.5f, 1.0f, 0.8f, 1.0f}, 7}};
+        matter::Mat4f first_transform =
+            viewer::mat4_translation({-2.0f, 0.0f, -3.0f});
+        matter::Mat4f second_transform = identity_matrix();
+        second_transform.m[0] = 2.0f;
+        second_transform.m[10] = 0.5f;
+        second_transform.m[3] = 2.0f;
+        second_transform.m[11] = -3.0f;
+        const int slot0 = surface_query.ensure_part(first, error);
+        const int slot1 = surface_query.ensure_part(second, error);
+        CHECK(slot0 >= 0 && slot1 >= 0 &&
+                  surface_query.update_instances(
+                      {{912, first_transform}, {913, second_transform}}, error),
+              error.empty() ? "prepare secondary surface-query fixture"
+                            : error.c_str());
+        const matter::Float3 expected_world_normal{
+            0.24253563f, 0.0f, 0.97014250f};
+        viewer::RtSurfaceHit hit0{};
+        viewer::RtSurfaceHit hit1{};
+        CHECK(surface_query.test_trace_surface_ray(
+                  {-2.0f, 0.25f, 0.0f}, {0.0f, 0.0f, -1.0f}, hit0, error) &&
+                  surface_query.test_trace_surface_ray(
+                      {2.0f + expected_world_normal.x * 3.0f,
+                       1.0f / 3.0f,
+                       -3.0f + expected_world_normal.z * 3.0f},
+                      {-expected_world_normal.x, 0.0f,
+                       -expected_world_normal.z},
+                      hit1, error),
+              error.empty() ? "trace secondary surface-query rays"
+                            : error.c_str());
+        CHECK(hit0.valid && hit0.part_slot == static_cast<uint32_t>(slot0) &&
+                  hit0.primitive == 0,
+              "first ray identifies part and primitive");
+        CHECK(hit1.valid && hit1.material_index == 7,
+              "second ray fetches material from pinned geometry");
+        CHECK(std::fabs(hit1.normal.x - expected_world_normal.x) < 1e-4f &&
+                  std::fabs(hit1.normal.y - expected_world_normal.y) < 1e-4f &&
+                  std::fabs(hit1.normal.z - expected_world_normal.z) < 1e-4f,
+              "inverse-transpose normal is correct");
+        CHECK(std::fabs(hit1.baked_ao - 0.5f) < 1e-4f,
+              "secondary barycentric AO matches raster data");
+        surface_query.release_part(912);
+        CHECK(surface_query.ensure_part(second, error) == slot1,
+              "live RT part slot remains stable while an earlier slot retires");
+    }
+    {
         viewer::VkSceneRenderer pinning(vulkan);
         const viewer::VkScenePart receiver = known_raster_triangle(910);
         CHECK(pinning.ensure_part(receiver, error) >= 0,
