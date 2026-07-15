@@ -3382,6 +3382,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     }
     impl_->vk_scene->set_dlss_mode(opts.dlss_mode);
     impl_->vk_scene->set_ray_tracing_settings(opts.vulkan_ray_tracing);
+    impl_->vk_scene->set_gi_settings(opts.vulkan_gi);
     const int material_count = MaterialRegistryCount();
     std::vector<MaterialGpuRecord> material_records(
         static_cast<size_t>(material_count));

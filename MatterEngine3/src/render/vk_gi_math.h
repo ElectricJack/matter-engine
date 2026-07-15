@@ -12,6 +12,9 @@ struct VulkanCosineSample {
 };
 
 uint32_t vulkan_gi_pcg_hash(uint32_t value) noexcept;
+uint32_t vulkan_gi_seed(uint32_t pixel_x, uint32_t pixel_y,
+                        uint32_t presented_frame_index,
+                        uint32_t bounce) noexcept;
 VulkanCosineSample vulkan_cosine_sample(matter::Float3 normal, float u1,
                                         float u2) noexcept;
 

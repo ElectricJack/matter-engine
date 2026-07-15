@@ -442,6 +442,8 @@ struct RasterReadbackRecord {
     VkBuffer destination;
     uint32_t x;
     uint32_t y;
+    uint32_t raw_x;
+    uint32_t raw_y;
 };
 
 void record_raster_readback(VkCommandBuffer command_buffer, void* user_data) {
@@ -457,8 +459,10 @@ void record_raster_readback(VkCommandBuffer command_buffer, void* user_data) {
         copy.bufferOffset = offsets[i];
         copy.imageSubresource.aspectMask = record.aspects[i];
         copy.imageSubresource.layerCount = 1;
-        copy.imageOffset = {static_cast<int32_t>(record.x),
-                            static_cast<int32_t>(record.y), 0};
+        const uint32_t copy_x = i == 8 ? record.raw_x : record.x;
+        const uint32_t copy_y = i == 8 ? record.raw_y : record.y;
+        copy.imageOffset = {static_cast<int32_t>(copy_x),
+                            static_cast<int32_t>(copy_y), 0};
         copy.imageExtent = {1, 1, 1};
         vkCmdCopyImageToBuffer(command_buffer, record.images[i]->image,
                                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -1988,10 +1992,21 @@ bool VkSceneRenderer::record_test_surface_ray(
                        VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                        VK_IMAGE_ASPECT_COLOR_BIT);
     transition_for_use(frame.command_buffer, raw_diffuse_,
-                       VK_IMAGE_LAYOUT_GENERAL,
-                       VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
-                       VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                       VK_ACCESS_2_TRANSFER_WRITE_BIT,
                        VK_IMAGE_ASPECT_COLOR_BIT);
+    const VkClearColorValue raw_zero{{0.0f, 0.0f, 0.0f, 0.0f}};
+    const VkImageSubresourceRange raw_range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0,
+                                             1};
+    vkCmdClearColorImage(frame.command_buffer, raw_diffuse_.image,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &raw_zero, 1,
+                         &raw_range);
+    matter::record_image_transition(
+        frame.command_buffer, raw_diffuse_, VK_IMAGE_LAYOUT_GENERAL,
+        VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+        VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
     vkCmdBindPipeline(frame.command_buffer,
                       VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt_pipeline_);
     const VkDescriptorSet descriptor_set =
@@ -3260,13 +3275,30 @@ bool VkSceneRenderer::record_ray_traced_shadows(
     cmd_trace(frame.command_buffer, &raygen, &miss, &hit, &callable,
               trace_extent.width, trace_extent.height, 1);
     if (gi_settings_.enabled) {
+        transition_for_use(frame.command_buffer, raw_diffuse_,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                           VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           VK_IMAGE_ASPECT_COLOR_BIT);
+        const VkClearColorValue dispatch_zero{{0.0f, 0.0f, 0.0f, 0.0f}};
+        const VkImageSubresourceRange dispatch_range{
+            VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdClearColorImage(frame.command_buffer, raw_diffuse_.image,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                             &dispatch_zero, 1, &dispatch_range);
+        matter::record_image_transition(
+            frame.command_buffer, raw_diffuse_, VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT);
         struct alignas(16) GiConstants {
             GpuMat4 clip_to_world;
             float to_sun_intensity[4];
             float sun_color_bias[4];
             float sky_color_distance[4];
-            uint32_t temporal_token;
-            uint32_t samples;
+            uint32_t presented_frame_index;
+            uint32_t bounce;
             float diffuse_multiplier;
             uint32_t enabled;
         } gi{};
@@ -3283,8 +3315,9 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         gi.sky_color_distance[1] = lighting_.sky_color.y;
         gi.sky_color_distance[2] = lighting_.sky_color.z;
         gi.sky_color_distance[3] = ray_tracing_settings_.max_distance;
-        gi.temporal_token = static_cast<uint32_t>(temporal_frame_.attempt_token);
-        gi.samples = gi_settings_.samples_per_pixel;
+        gi.presented_frame_index =
+            static_cast<uint32_t>(temporal_frame_.presented_frame_index);
+        gi.bounce = 1u;
         gi.diffuse_multiplier = gi_settings_.diffuse_multiplier;
         gi.enabled = 1u;
         vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
@@ -3292,7 +3325,7 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         const VkStridedDeviceAddressRegionKHR gi_raygen{
             rt_sbt_lighting_raygen_address_, handle_stride, handle_stride};
         cmd_trace(frame.command_buffer, &gi_raygen, &miss, &hit, &callable,
-                  trace_extent.width, trace_extent.height, 1);
+                  raw_diffuse_extent_.width, raw_diffuse_extent_.height, 1);
         ++last_rt_trace_dispatches_;
     }
     VkMemoryBarrier2 counters_to_host{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
@@ -3587,7 +3620,13 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
         error = "raster attachment extent must be nonzero";
         return false;
     }
+    const uint32_t raw_width = std::max(
+        1u, static_cast<uint32_t>(std::ceil(width * gi_settings_.trace_scale)));
+    const uint32_t raw_height = std::max(
+        1u, static_cast<uint32_t>(std::ceil(height * gi_settings_.trace_scale)));
     if (raster_extent_.width == width && raster_extent_.height == height &&
+        raw_diffuse_extent_.width == raw_width &&
+        raw_diffuse_extent_.height == raw_height &&
         albedo_.image != VK_NULL_HANDLE && normal_.image != VK_NULL_HANDLE &&
         orm_.image != VK_NULL_HANDLE && depth_.image != VK_NULL_HANDLE &&
         velocity_.image != VK_NULL_HANDLE &&
@@ -3607,6 +3646,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     matter::VkImageResource visibility;
     matter::VkImageResource raw_diffuse;
     const VkExtent3D extent{width, height, 1};
+    const VkExtent3D raw_extent{raw_width, raw_height, 1};
     VkImageUsageFlags visibility_usage =
         VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
         VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
@@ -3663,7 +3703,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
             visibility, error) ||
         !matter::create_image(
             *vulkan_, VK_IMAGE_TYPE_2D,
-            VK_FORMAT_R16G16B16A16_SFLOAT, extent,
+            VK_FORMAT_R16G16B16A16_SFLOAT, raw_extent,
             visibility_usage,
             VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
             raw_diffuse, error)) {
@@ -3678,6 +3718,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     hdr_ = std::move(hdr);
     visibility_ = std::move(visibility);
     raw_diffuse_ = std::move(raw_diffuse);
+    raw_diffuse_extent_ = {raw_width, raw_height};
     visibility_usage_ = visibility_usage;
     raster_extent_ = {width, height};
     raster_attachments_ready_ = false;
@@ -4052,7 +4093,13 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
                                  VK_IMAGE_ASPECT_COLOR_BIT},
                                 staging.buffer,
                                 x,
-                                y};
+                                y,
+                                std::min(raw_diffuse_extent_.width - 1,
+                                         x * raw_diffuse_extent_.width /
+                                             raster_extent_.width),
+                                std::min(raw_diffuse_extent_.height - 1,
+                                         y * raw_diffuse_extent_.height /
+                                             raster_extent_.height)};
     std::vector<std::shared_ptr<void>> dependencies{
         albedo_.lifetime, normal_.lifetime, orm_.lifetime, velocity_.lifetime,
         depth_.lifetime, hdr_.lifetime, visibility_.lifetime,

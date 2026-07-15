@@ -12,6 +12,15 @@ uint32_t vulkan_gi_pcg_hash(uint32_t value) noexcept {
     return (word >> 22u) ^ word;
 }
 
+uint32_t vulkan_gi_seed(uint32_t pixel_x, uint32_t pixel_y,
+                        uint32_t presented_frame_index,
+                        uint32_t bounce) noexcept {
+    uint32_t seed = pixel_x ^ (pixel_y * 0x9e3779b9u) ^
+                    (presented_frame_index * 0x85ebca6bu) ^
+                    (bounce * 0xc2b2ae35u);
+    return vulkan_gi_pcg_hash(seed);
+}
+
 VulkanCosineSample vulkan_cosine_sample(matter::Float3 normal, float u1,
                                         float u2) noexcept {
     const auto normalize = [](matter::Float3 v) {

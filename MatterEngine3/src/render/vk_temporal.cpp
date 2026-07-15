@@ -62,6 +62,7 @@ TemporalFrame TemporalState::begin(
     frame.internal_extent = internal_extent;
     frame.output_extent = output_extent;
     frame.attempt_token = next_attempt_token_++;
+    frame.presented_frame_index = presented_frame_index_;
     const std::uint64_t jitter_index = presented_frame_index_ + 1;
     frame.jitter_pixels[0] = halton(jitter_index, 2) - 0.5f;
     frame.jitter_pixels[1] = halton(jitter_index, 3) - 0.5f;

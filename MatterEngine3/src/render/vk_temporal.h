@@ -40,6 +40,9 @@ struct TemporalFrame {
     float jitter_pixels[2]{};
     bool reset = true;
     std::uint64_t attempt_token = 0;
+    // Count of frames that were successfully presented before this candidate.
+    // Failed/retried attempts therefore keep the same stochastic frame seed.
+    std::uint64_t presented_frame_index = 0;
 };
 
 class TemporalState {

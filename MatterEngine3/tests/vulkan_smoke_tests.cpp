@@ -61,6 +61,11 @@ void run_vulkan_gi_math_tests() {
     CHECK(first == viewer::vulkan_gi_pcg_hash(0x12345678u) &&
               first != viewer::vulkan_gi_pcg_hash(0x12345679u),
           "GI PCG hash is fixed-seed deterministic and input-sensitive");
+    const uint32_t retry_seed = viewer::vulkan_gi_seed(17, 23, 9, 1);
+    CHECK(retry_seed == viewer::vulkan_gi_seed(17, 23, 9, 1) &&
+              retry_seed != viewer::vulkan_gi_seed(17, 23, 9, 0) &&
+              retry_seed != viewer::vulkan_gi_seed(17, 23, 10, 1),
+          "GI seed uses committed frame identity and explicit bounce component");
 }
 
 void run_raster_mesh_material_contract_tests() {
@@ -659,6 +664,8 @@ void run_vulkan_temporal_tests() {
         camera, {100, 80}, {100, 80}, {still}, {});
     CHECK(first.reset && !first.instances[0].history_valid,
           "first temporal frame resets invalid history");
+    CHECK(first.presented_frame_index == 0,
+          "first candidate seeds from zero successfully presented frames");
     CHECK(temporal.commit_presented(first.attempt_token),
           "successful presentation commits temporal candidate");
 
@@ -747,6 +754,8 @@ void run_vulkan_temporal_tests() {
           "failed presentation forces reset without advancing presented jitter");
     CHECK(!temporal.commit_presented(failed_token),
           "stale failed attempt token cannot commit temporal history");
+    CHECK(after_failure.presented_frame_index == failed.presented_frame_index,
+          "retry retains committed frame identity despite a new attempt token");
 
     viewer::TemporalState stable_ids;
     const uint64_t a_id = viewer::temporal_instance_id(41, 1001, 0);
@@ -865,6 +874,10 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     constexpr uint32_t height = 160;
     std::string error;
     viewer::VkSceneRenderer renderer(vulkan);
+    matter::VulkanGiSettings scaled_gi{};
+    scaled_gi.samples_per_pixel = 16;
+    scaled_gi.trace_scale = 0.5f;
+    renderer.set_gi_settings(scaled_gi);
     std::vector<MaterialGpuRecord> materials(9);
     materials[7].base_roughness[0] = 0.25f;
     materials[7].base_roughness[1] = 0.5f;
@@ -971,6 +984,10 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     CHECK(renderer.test_raw_diffuse_format() ==
               VK_FORMAT_R16G16B16A16_SFLOAT,
           "raw diffuse GI attachment format");
+    CHECK(renderer.test_gi_samples_per_pixel() == 1u &&
+              renderer.test_raw_diffuse_extent().width == width / 2 &&
+              renderer.test_raw_diffuse_extent().height == height / 2,
+          "GI enforces one continuation sample and allocates at trace scale");
     CHECK(attachments.extent.width == width &&
               attachments.extent.height == height,
           "raster attachment extent");
@@ -1689,16 +1706,18 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
     const auto horizontal = [](uint64_t hash, float y, float radius,
                                matter::Float3 normal, uint32_t material_index,
                                float baked_ao) {
+        const float front_z = radius > 5.0f ? 10.0f : -1.0f;
+        const float back_z = radius > 5.0f ? -30.0f : -3.5f;
         viewer::VkScenePart part = fixed_part(
-            hash, {-radius, y - 0.01f, -3.5f},
-            {radius, y + 0.01f, -1.0f}, 0);
+            hash, {-radius, y - 0.01f, back_z},
+            {radius, y + 0.01f, front_z}, 0);
         const matter::Float4 albedo{1.0f, 1.0f, 1.0f, 0.0f};
         const matter::Float4 orm{0.5f, 0.0f, baked_ao, 1.0f};
-        part.vertices = {{{-radius, y, -1.0f}, normal, albedo, orm,
+        part.vertices = {{{-radius, y, front_z}, normal, albedo, orm,
                           material_index, {}},
-                         {{radius, y, -1.0f}, normal, albedo, orm,
+                         {{radius, y, front_z}, normal, albedo, orm,
                           material_index, {}},
-                         {{0.0f, y, -3.5f}, normal, albedo, orm,
+                         {{0.0f, y, back_z}, normal, albedo, orm,
                           material_index, {}}};
         return part;
     };
@@ -1714,7 +1733,7 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
     gi_materials[1].metal_opacity_spec_coat[1] = 1.0f;
     gi_materials[1].scattering_shape[3] = 1.0f;
     CHECK(renderer.update_materials(gi_materials, 1, 1, error) &&
-              renderer.ensure_part(horizontal(920, -1.0f, 2.0f,
+              renderer.ensure_part(horizontal(920, -1.0f, 20.0f,
                                               {0.0f, 1.0f, 0.0f}, 0, 1.0f),
                                    error) >= 0 &&
               renderer.ensure_part(horizontal(921, 0.0f, 0.55f,
@@ -1741,7 +1760,10 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
     renderer.set_ray_tracing_settings(enabled);
     matter::VulkanGiSettings gi{};
     gi.samples_per_pixel = 16;
+    gi.trace_scale = 0.5f;
     renderer.set_gi_settings(gi);
+    CHECK(renderer.test_gi_samples_per_pixel() == 1u,
+          "RT-active GI clamps authored sample count to one continuation");
     viewer::VkSceneLighting lighting{};
     lighting.sun_direction = {0.0f, -1.0f, 0.0f};
     renderer.set_lighting(lighting);
@@ -1760,6 +1782,16 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
     viewer::FrameMatrices matrices{};
     CHECK(viewer::build_frame_matrices(camera, 320, 200, matrices, error),
           error.empty() ? "build native RT frame matrices" : error.c_str());
+    viewer::TemporalFrame gi_temporal{};
+    gi_temporal.current_unjittered = matrices;
+    gi_temporal.previous_unjittered = matrices;
+    gi_temporal.current_jittered = matrices;
+    gi_temporal.previous_jittered = matrices;
+    gi_temporal.internal_extent = {320, 200};
+    gi_temporal.output_extent = {320, 200};
+    gi_temporal.attempt_token = 101;
+    gi_temporal.presented_frame_index = 7;
+    renderer.set_temporal_frame(gi_temporal);
     const uint64_t immediate_before = matter::immediate_submit_count();
     matter::VulkanFrame frame{};
     CHECK(vulkan.begin_frame(frame, error),
@@ -1797,10 +1829,30 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
               "native RT frame records without immediate submit");
         CHECK(vulkan.end_frame(frame, error),
               error.empty() ? "submit native RT frame" : error.c_str());
+        vulkan.wait_idle();
+        bool failed_receiver_seen = false;
+        uint32_t retry_x = 0;
+        uint32_t retry_y = 0;
+        matter::Float4 failed_raw{};
+        for (uint32_t y = 20; y < 200 && !failed_receiver_seen; y += 20) {
+            for (uint32_t x = 20; x < 320; x += 20) {
+                viewer::VkRasterPixel pixel{};
+                if (renderer.readback_raster_pixel(x, y, pixel, error) &&
+                    pixel.material_index == 1u) {
+                    failed_receiver_seen = true;
+                    retry_x = x;
+                    retry_y = y;
+                    failed_raw = pixel.raw_diffuse;
+                    break;
+                }
+            }
+        }
         renderer.finish_ray_tracing_frame(frame.serial, false);
         CHECK(!renderer.test_rt_blas_built(920) &&
                   renderer.test_rt_blas_candidate_serial(920) == 0,
               "failed frame rolls back candidate BLAS state");
+        gi_temporal.attempt_token = 202;
+        renderer.set_temporal_frame(gi_temporal);
         CHECK(vulkan.begin_frame(frame, error) &&
                   renderer.prepare_frame(frame, matrices, camera.position,
                                          1.0f, error) &&
@@ -1811,6 +1863,58 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
               error.empty() ? "retry rolled-back native RT frame"
                             : error.c_str());
         renderer.finish_ray_tracing_frame(frame.serial, true);
+        viewer::VkRasterPixel retry_pixel{};
+        CHECK(failed_receiver_seen &&
+                  renderer.readback_raster_pixel(retry_x, retry_y, retry_pixel,
+                                                 error) &&
+                  retry_pixel.material_index == 1u &&
+                  close4(retry_pixel.raw_diffuse, failed_raw, 1e-6f),
+              "failed-attempt retry keeps GPU GI deterministic from committed frame identity");
+        viewer::VkScenePart sun_blocker = horizontal(
+            924, 0.5f, 20.0f, {0.0f, -1.0f, 0.0f}, 0, 1.0f);
+        sun_blocker.clusters[0].lods[0].vertex_count = 0;
+        CHECK(renderer.ensure_part(sun_blocker, error) >= 0 &&
+                  renderer.update_instances({{920, identity_matrix()},
+                                             {921, identity_matrix()},
+                                             {924, identity_matrix()}},
+                                            error),
+              error.empty() ? "add RT-only secondary-sun blocker"
+                            : error.c_str());
+        const auto render_sun_probe = [&](float intensity,
+                                          uint64_t attempt_token,
+                                          matter::Float4& raw) {
+            viewer::VkSceneLighting probe_lighting = lighting;
+            probe_lighting.sun_intensity = intensity;
+            renderer.set_lighting(probe_lighting);
+            gi_temporal.attempt_token = attempt_token;
+            renderer.set_temporal_frame(gi_temporal);
+            matter::VulkanFrame probe_frame{};
+            const bool rendered = vulkan.begin_frame(probe_frame, error) &&
+                renderer.prepare_frame(probe_frame, matrices, camera.position,
+                                       1.0f, error) &&
+                renderer.record_cull_and_render(
+                    probe_frame, matrices, camera.position, 1.0f, error) &&
+                renderer.record_composite_to_swapchain(probe_frame, error) &&
+                vulkan.end_frame(probe_frame, error);
+            renderer.finish_ray_tracing_frame(probe_frame.serial, rendered);
+            viewer::VkRasterPixel pixel{};
+            const bool read = rendered && renderer.readback_raster_pixel(
+                                              retry_x, retry_y, pixel, error);
+            raw = pixel.raw_diffuse;
+            return read && pixel.material_index == 1u;
+        };
+        matter::Float4 blocked_sun_zero{};
+        matter::Float4 blocked_sun_high{};
+        CHECK(render_sun_probe(0.0f, 301, blocked_sun_zero) &&
+                  render_sun_probe(100.0f, 302, blocked_sun_high) &&
+                  close4(blocked_sun_zero, blocked_sun_high, 2e-3f),
+              "secondary-hit sun is visibility tested without unshadowed leakage");
+        renderer.release_part(924);
+        renderer.set_lighting(lighting);
+        CHECK(renderer.update_instances(
+                  {{920, identity_matrix()}, {921, identity_matrix()}}, error),
+              error.empty() ? "remove RT-only secondary-sun blocker"
+                            : error.c_str());
         CHECK(renderer.test_rt_blas_built(920) &&
                   renderer.test_rt_blas_candidate_serial(920) == 0,
               "successful retry publishes candidate BLAS state");
@@ -1818,7 +1922,8 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
         float maximum_visibility = 0.0f;
         bool visibility_reads_ok = true;
         bool debug_output_matches = true;
-        matter::Float4 strongest_raw{};
+        matter::Float4 strongest_receiver_raw{};
+        bool receiver_seen = false;
         for (uint32_t y = 20; y < 200; y += 20) {
             for (uint32_t x = 20; x < 320; x += 20) {
                 viewer::VkRasterPixel pixel{};
@@ -1835,8 +1940,11 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                     std::fabs(pixel.hdr.x - pixel.visibility.x) < 0.01f &&
                     std::fabs(pixel.hdr.y - pixel.visibility.y) < 0.01f &&
                     std::fabs(pixel.hdr.z - pixel.visibility.z) < 0.01f;
-                if (pixel.raw_diffuse.x > strongest_raw.x)
-                    strongest_raw = pixel.raw_diffuse;
+                if (pixel.material_index == 1u) {
+                    receiver_seen = true;
+                    if (pixel.raw_diffuse.x > strongest_receiver_raw.x)
+                        strongest_receiver_raw = pixel.raw_diffuse;
+                }
             }
             if (!visibility_reads_ok) break;
         }
@@ -1847,11 +1955,15 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                   : error.c_str());
         CHECK(debug_output_matches,
               "RT debug view composites grayscale visibility");
-        CHECK(std::isfinite(strongest_raw.x) &&
-                  std::isfinite(strongest_raw.y) &&
-                  std::isfinite(strongest_raw.z) &&
-                  strongest_raw.x > 0.01f &&
-                  strongest_raw.x > strongest_raw.y * 1.25f,
+        CHECK(receiver_seen &&
+                  renderer.test_raw_diffuse_extent().width == 160u &&
+                  renderer.test_raw_diffuse_extent().height == 100u &&
+                  std::isfinite(strongest_receiver_raw.x) &&
+                  std::isfinite(strongest_receiver_raw.y) &&
+                  std::isfinite(strongest_receiver_raw.z) &&
+                  strongest_receiver_raw.x > 0.01f &&
+                  strongest_receiver_raw.x >
+                      strongest_receiver_raw.y * 1.25f,
               "white receiver above red floor gains positive red indirect radiance");
         renderer.release_part(921);
         CHECK(renderer.ensure_part(horizontal(922, 0.0f, 0.55f,
@@ -1903,6 +2015,61 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
         CHECK(ao_receiver_seen && ao_zero_max_raw < 1e-5f &&
                   ao_min_visibility < 1.0f && ao_max_visibility == 1.0f,
               "baked AO zero suppresses raw indirect diffuse without changing direct visibility");
+        renderer.release_part(922);
+        CHECK(renderer.ensure_part(horizontal(923, 0.0f, 0.55f,
+                                              {0.0f, -1.0f, 0.0f}, 1, 1.0f),
+                                   error) >= 0 &&
+                  renderer.update_instances(
+                      {{920, identity_matrix()}, {923, identity_matrix()}},
+                      error),
+              error.empty() ? "restore authored-AO receiver for GI disable test"
+                            : error.c_str());
+        matter::VulkanGiSettings disabled_gi = gi;
+        disabled_gi.enabled = 0;
+        renderer.set_gi_settings(disabled_gi);
+        matter::VulkanFrame disabled_gi_frame{};
+        CHECK(vulkan.begin_frame(disabled_gi_frame, error) &&
+                  renderer.prepare_frame(disabled_gi_frame, matrices,
+                                         camera.position, 1.0f, error) &&
+                  renderer.record_cull_and_render(
+                      disabled_gi_frame, matrices, camera.position, 1.0f,
+                      error) &&
+                  renderer.record_composite_to_swapchain(disabled_gi_frame,
+                                                         error) &&
+                  vulkan.end_frame(disabled_gi_frame, error),
+              error.empty() ? "render RT-active GI-disabled fixture"
+                            : error.c_str());
+        renderer.finish_ray_tracing_frame(disabled_gi_frame.serial, true);
+        bool disabled_receiver_seen = false;
+        float disabled_receiver_raw = 0.0f;
+        float disabled_min_visibility = 1.0f;
+        float disabled_max_visibility = 0.0f;
+        for (uint32_t y = 20; y < 200; y += 20) {
+            for (uint32_t x = 20; x < 320; x += 20) {
+                viewer::VkRasterPixel pixel{};
+                CHECK(renderer.readback_raster_pixel(x, y, pixel, error),
+                      error.empty() ? "read RT-active GI-disabled pixel"
+                                    : error.c_str());
+                disabled_min_visibility =
+                    std::min(disabled_min_visibility, pixel.visibility.x);
+                disabled_max_visibility =
+                    std::max(disabled_max_visibility, pixel.visibility.x);
+                if (pixel.material_index == 1u) {
+                    disabled_receiver_seen = true;
+                    disabled_receiver_raw = std::max(
+                        disabled_receiver_raw,
+                        std::max(pixel.raw_diffuse.x,
+                                 std::max(pixel.raw_diffuse.y,
+                                          pixel.raw_diffuse.z)));
+                }
+            }
+        }
+        CHECK(renderer.rt_effective_observed() &&
+                  renderer.rt_trace_dispatches_observed() == 1u &&
+                  disabled_receiver_seen && disabled_receiver_raw < 1e-5f &&
+                  disabled_min_visibility < 1.0f &&
+                  disabled_max_visibility == 1.0f,
+              "RT-active GI disable preserves direct visibility and clears receiver raw diffuse");
         std::printf("RT visibility range: %.3f .. %.3f\n",
                     minimum_visibility, maximum_visibility);
     }

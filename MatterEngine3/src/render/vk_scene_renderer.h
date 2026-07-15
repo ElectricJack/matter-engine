@@ -305,8 +305,7 @@ public:
     void set_gi_settings(const matter::VulkanGiSettings& settings) {
         gi_settings_ = settings;
         gi_settings_.max_bounces = 1u;
-        gi_settings_.samples_per_pixel =
-            std::max(1u, std::min(settings.samples_per_pixel, 16u));
+        gi_settings_.samples_per_pixel = 1u;
         gi_settings_.trace_scale = std::max(0.125f, std::min(settings.trace_scale, 1.0f));
     }
     // Blit the real HDR world composite into the currently acquired swapchain
@@ -371,6 +370,10 @@ public:
     }
     VkFormat test_visibility_format() const { return visibility_.format; }
     VkFormat test_raw_diffuse_format() const { return raw_diffuse_.format; }
+    VkExtent2D test_raw_diffuse_extent() const { return raw_diffuse_extent_; }
+    uint32_t test_gi_samples_per_pixel() const {
+        return gi_settings_.samples_per_pixel;
+    }
     float test_shadow_visibility_for_ray(bool occluded) const {
         return ray_tracing_settings_.enabled && occluded ? 0.0f : 1.0f;
     }
@@ -606,6 +609,7 @@ private:
     matter::VkImageResource hdr_;
     matter::VkImageResource visibility_;
     matter::VkImageResource raw_diffuse_;
+    VkExtent2D raw_diffuse_extent_{};
     VkImageUsageFlags visibility_usage_ = 0;
     matter::VkBufferResource rt_sbt_;
     VkDeviceAddress rt_sbt_address_ = 0;
