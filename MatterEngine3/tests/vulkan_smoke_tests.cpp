@@ -58,9 +58,12 @@ void run_ray_tracing_capability_contract_tests() {
     CHECK(!matter::supports_native_ray_tracing(complete, reason) &&
               reason.find("R8_UNORM") != std::string::npos,
           "missing R8 storage support cleanly disables native ray tracing");
-    CHECK((viewer::vk_scene_detail::ray_depth_destination_stages() &
+    CHECK((viewer::vk_scene_detail::ray_depth_destination_stages(true) &
            VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR) != 0,
           "depth barrier includes ray tracing shader reads");
+    CHECK((viewer::vk_scene_detail::ray_depth_destination_stages(false) &
+           VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR) == 0,
+          "fallback depth barrier excludes unavailable RT stages");
 }
 
 struct RetainProbe {
@@ -1170,6 +1173,85 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
         std::printf("RT visibility range: %.3f .. %.3f\n",
                     minimum_visibility, maximum_visibility);
     }
+}
+
+void run_forced_ray_tracing_unavailable_path(matter::VulkanDevice& vulkan) {
+    CHECK(!vulkan.ray_tracing_available(),
+          "test fixture forces native ray tracing unavailable");
+    CHECK(vulkan.ray_tracing_unavailable_reason().find("forced") !=
+              std::string::npos,
+          "forced native RT fallback exposes its reason");
+
+    std::string error;
+    viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.ensure_part(known_raster_triangle(930), error) >= 0 &&
+              renderer.update_instances({{930, identity_matrix()}}, error),
+          error.empty() ? "prepare forced-unavailable raster fixture"
+                        : error.c_str());
+    matter::VulkanRayTracingSettings settings{};
+    settings.enabled = true;
+    renderer.set_ray_tracing_settings(settings);
+
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.57079632679f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 10.0f;
+
+    const VkExtent2D extents[] = {{160, 100}, {96, 64}};
+    for (uint32_t index = 0; index < 2; ++index) {
+        viewer::FrameMatrices matrices{};
+        CHECK(viewer::build_frame_matrices(camera, extents[index].width,
+                                           extents[index].height, matrices,
+                                           error),
+              error.empty() ? "build forced-unavailable frame matrices"
+                            : error.c_str());
+        viewer::TemporalFrame temporal{};
+        temporal.current_jittered = matrices;
+        temporal.previous_jittered = matrices;
+        temporal.internal_extent = extents[index];
+        temporal.reset = index == 0;
+        temporal.attempt_token = index + 1;
+        renderer.set_temporal_frame(temporal);
+
+        matter::VulkanFrame frame{};
+        const bool began = vulkan.begin_frame(frame, error);
+        CHECK(began, error.empty() ? "begin forced-unavailable frame"
+                                   : error.c_str());
+        if (!began) break;
+        const bool recorded =
+            renderer.prepare_frame(frame, matrices, camera.position, 1.0f,
+                                   error) &&
+            renderer.record_cull_and_render(frame, matrices, camera.position,
+                                            1.0f, error) &&
+            renderer.record_composite_to_swapchain(frame, error);
+        CHECK(recorded,
+              error.empty() ? "record forced-unavailable fallback frame"
+                            : error.c_str());
+        CHECK(recorded && vulkan.end_frame(frame, error),
+              error.empty() ? "submit forced-unavailable fallback frame"
+                            : error.c_str());
+        if (!recorded) break;
+        vulkan.wait_idle();
+        const viewer::VkRasterAttachments attachments =
+            renderer.raster_attachments();
+        CHECK(attachments.extent.width == extents[index].width &&
+                  attachments.extent.height == extents[index].height,
+              "forced-unavailable fallback follows current internal extent");
+        const VkImageUsageFlags expected_visibility_usage =
+            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        CHECK(renderer.test_visibility_usage() == expected_visibility_usage,
+              "forced-unavailable visibility excludes storage usage");
+    }
+
+    viewer::VkRasterPixel center{};
+    CHECK(renderer.readback_raster_pixel(48, 32, center, error) &&
+              center.visibility == 1.0f,
+          error.empty() ? "fallback resize preserves raster visibility"
+                        : error.c_str());
 }
 
 void run_raster_submission_fault(matter::VulkanDevice& vulkan) {
@@ -2310,6 +2392,12 @@ int main() {
         glfwCreateWindow(320, 200, "vk-smoke", nullptr, nullptr);
     CHECK(window != nullptr, "create hidden GLFW window");
 
+    const char* requested_smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
+    if (requested_smoke_mode &&
+        std::string(requested_smoke_mode) == "rt-unavailable") {
+        _putenv_s("MATTER_VK_TEST_FORCE_RT_UNAVAILABLE", "1");
+    }
+
     std::string error;
     auto vulkan =
         window ? matter::VulkanDevice::create(window, true, error) : nullptr;
@@ -2330,6 +2418,16 @@ int main() {
         CHECK(vulkan->multi_draw_indirect_enabled(),
               "multiDrawIndirect is enabled on the logical device");
         const char* smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
+        if (smoke_mode && std::string(smoke_mode) == "rt-unavailable") {
+            run_forced_ray_tracing_unavailable_path(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
         if (smoke_mode &&
             (std::string(smoke_mode) == "outlive-resources" ||
              std::string(smoke_mode) == "outlive-unproven")) {

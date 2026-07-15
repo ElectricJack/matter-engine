@@ -61,7 +61,8 @@ bool checked_dispatch_groups(uint32_t instance_count,
 bool checked_size_to_int(size_t count, int& result, const char* label,
                          std::string& error);
 size_t frame_constants_size_for_test() noexcept;
-VkPipelineStageFlags2 ray_depth_destination_stages() noexcept;
+VkPipelineStageFlags2 ray_depth_destination_stages(
+    bool native_ray_tracing_available) noexcept;
 }  // namespace vk_scene_detail
 
 static_assert(sizeof(DrawCommand) == sizeof(VkDrawIndirectCommand),
@@ -203,6 +204,7 @@ public:
                                 float pixel_budget, std::string& error);
     bool record_ray_traced_shadows(const matter::VulkanFrame& frame,
                                    const FrameMatrices& matrices,
+                                   VkExtent2D trace_extent,
                                    std::string& error);
     void finish_ray_tracing_frame(uint64_t frame_serial, bool succeeded);
     const std::vector<PartCommandRange>& test_recorded_draw_ranges() const {
@@ -257,6 +259,9 @@ public:
     VkDeviceAddress test_rt_scratch_address(uint32_t frame_slot) const;
     uint32_t test_last_rt_samples() const { return last_rt_samples_; }
     bool test_last_rt_debug_view() const { return last_rt_debug_view_; }
+    VkImageUsageFlags test_visibility_usage() const {
+        return visibility_usage_;
+    }
     float test_shadow_visibility_for_ray(bool occluded) const {
         return ray_tracing_settings_.enabled && occluded ? 0.0f : 1.0f;
     }
@@ -470,6 +475,7 @@ private:
     matter::VkImageResource depth_;
     matter::VkImageResource hdr_;
     matter::VkImageResource visibility_;
+    VkImageUsageFlags visibility_usage_ = 0;
     matter::VkBufferResource rt_sbt_;
     VkDeviceAddress rt_sbt_address_ = 0;
     VkDeviceSize rt_sbt_stride_ = 0;

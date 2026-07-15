@@ -164,6 +164,7 @@ struct RasterRecord {
     uint32_t max_draw_indirect_count;
     std::vector<PartCommandRange>* recorded_draw_ranges;
     VkSceneLighting lighting;
+    bool native_ray_tracing_available;
     VkSceneRenderer* renderer;
     const matter::VulkanFrame* frame;
     const FrameMatrices* matrices;
@@ -278,12 +279,13 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
         VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
             VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-        vk_scene_detail::ray_depth_destination_stages(),
+        vk_scene_detail::ray_depth_destination_stages(
+            record.native_ray_tracing_available),
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
 
     if (record.renderer) {
         *record.ray_trace_ok = record.renderer->record_ray_traced_shadows(
-            *record.frame, *record.matrices, *record.error);
+            *record.frame, *record.matrices, record.extent, *record.error);
         if (!*record.ray_trace_ok) return;
     } else {
         transition_for_use(command_buffer, *record.visibility,
@@ -399,10 +401,13 @@ size_t frame_constants_size_for_test() noexcept {
     return sizeof(FrameConstants);
 }
 
-VkPipelineStageFlags2 ray_depth_destination_stages() noexcept {
-    return VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-           VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+VkPipelineStageFlags2 ray_depth_destination_stages(
+    bool native_ray_tracing_available) noexcept {
+    VkPipelineStageFlags2 stages = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    if (native_ray_tracing_available)
+        stages |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+    return stages;
 }
 
 bool checked_mul_to_device_size(size_t count, size_t element_size,
@@ -2233,14 +2238,6 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     }
     if (!ensure_frame_resources(frame.frame_slot_count, error)) return false;
     FrameResources& selected = frames_[frame.frame_slot];
-    const auto& rt_properties = vulkan_->ray_tracing_properties();
-    const uint64_t dispatch_invocations =
-        static_cast<uint64_t>(raster_extent_.width) * raster_extent_.height;
-    if (dispatch_invocations >
-        rt_properties.max_ray_dispatch_invocation_count) {
-        error = "ray tracing dispatch exceeds maxRayDispatchInvocationCount";
-        return false;
-    }
     if (!upload_scene_buffers(selected, false, error) ||
         !upload_frame_constants(selected, matrices, camera_eye, pixel_budget,
                                 error)) {
@@ -2294,7 +2291,7 @@ bool VkSceneRenderer::validate_draw_command_regions(std::string& error) const {
 
 bool VkSceneRenderer::record_ray_traced_shadows(
     const matter::VulkanFrame& frame, const FrameMatrices& matrices,
-    std::string& error) {
+    VkExtent2D trace_extent, std::string& error) {
     auto clear_visibility = [&]() {
         transition_for_use(frame.command_buffer, visibility_,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -2316,10 +2313,19 @@ bool VkSceneRenderer::record_ray_traced_shadows(
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT);
     };
-    if (!ray_tracing_settings_.enabled ||
-        !vulkan_->ray_tracing_available() || rt_instances_.empty()) {
+    const bool native_trace_enabled =
+        ray_tracing_settings_.enabled && vulkan_->ray_tracing_available();
+    if (!native_trace_enabled || rt_instances_.empty()) {
         clear_visibility();
         return true;
+    }
+    const auto& rt_properties = vulkan_->ray_tracing_properties();
+    const uint64_t dispatch_invocations =
+        static_cast<uint64_t>(trace_extent.width) * trace_extent.height;
+    if (dispatch_invocations >
+        rt_properties.max_ray_dispatch_invocation_count) {
+        error = "ray tracing dispatch exceeds maxRayDispatchInvocationCount";
+        return false;
     }
     if (frame.frame_slot >= frames_.size() ||
         frame.frame_slot >= rt_descriptor_sets_.size()) {
@@ -2583,7 +2589,7 @@ bool VkSceneRenderer::record_ray_traced_shadows(
                                                handle_stride, handle_stride};
     const VkStridedDeviceAddressRegionKHR callable{};
     cmd_trace(frame.command_buffer, &raygen, &miss, &hit, &callable,
-              raster_extent_.width, raster_extent_.height, 1);
+              trace_extent.width, trace_extent.height, 1);
     matter::record_image_transition(
         frame.command_buffer, visibility_,
         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -2690,6 +2696,7 @@ bool VkSceneRenderer::record_cull_and_render(
                         limits_.max_draw_indirect_count,
                         &recorded_draw_ranges_,
                         frame_lighting,
+                        vulkan_->ray_tracing_available(),
                         this,
                         &frame,
                         &matrices,
@@ -2834,6 +2841,11 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     matter::VkImageResource hdr;
     matter::VkImageResource visibility;
     const VkExtent3D extent{width, height, 1};
+    VkImageUsageFlags visibility_usage =
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    if (vulkan_->ray_tracing_available())
+        visibility_usage |= VK_IMAGE_USAGE_STORAGE_BIT;
     const VkImageUsageFlags gbuffer_usage =
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
         VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
@@ -2874,10 +2886,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
             hdr, error) ||
         !matter::create_image(
             *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_R8_UNORM, extent,
-            (vulkan_->ray_tracing_available() ? VK_IMAGE_USAGE_STORAGE_BIT : 0) |
-                VK_IMAGE_USAGE_SAMPLED_BIT |
-                VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            visibility_usage,
             VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
             visibility, error)) {
         return false;
@@ -2889,6 +2898,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     depth_ = std::move(depth);
     hdr_ = std::move(hdr);
     visibility_ = std::move(visibility);
+    visibility_usage_ = visibility_usage;
     raster_extent_ = {width, height};
     raster_attachments_ready_ = false;
 
@@ -2983,6 +2993,7 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
                         limits_.max_draw_indirect_count,
                         nullptr,
                         lighting_,
+                        false,
                         nullptr,
                         nullptr,
                         nullptr,

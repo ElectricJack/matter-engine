@@ -916,6 +916,15 @@ struct VulkanDevice::Impl {
              VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0;
         ray_tracing_enabled =
             supports_native_ray_tracing(rt_capabilities, ray_tracing_reason);
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+        const char* force_rt_unavailable =
+            std::getenv("MATTER_VK_TEST_FORCE_RT_UNAVAILABLE");
+        if (force_rt_unavailable && std::string(force_rt_unavailable) == "1") {
+            ray_tracing_enabled = false;
+            ray_tracing_reason =
+                "native ray tracing forced unavailable by test fixture";
+        }
+#endif
         if (ray_tracing_enabled) {
             extensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
             extensions.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
