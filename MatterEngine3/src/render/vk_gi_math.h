@@ -26,5 +26,11 @@ VulkanGiUv vulkan_gi_source_uv(uint32_t raw_x, uint32_t raw_y,
                                uint32_t source_height) noexcept;
 VulkanCosineSample vulkan_cosine_sample(matter::Float3 normal, float u1,
                                         float u2) noexcept;
+matter::Float3 vulkan_schlick_fresnel(matter::Float3 f0,
+                                      float view_half_cosine) noexcept;
+float vulkan_ggx_reflection_pdf(float normal_half_cosine,
+                                float view_half_cosine,
+                                float roughness) noexcept;
+float vulkan_clearcoat_selection_probability(float clearcoat) noexcept;
 
 }  // namespace viewer

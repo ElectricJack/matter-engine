@@ -252,6 +252,7 @@ struct RasterRecord {
     matter::VkImageResource* hdr;
     matter::VkImageResource* visibility;
     matter::VkImageResource* raw_diffuse;
+    matter::VkImageResource* raw_specular;
     VkExtent2D extent;
     VkPipeline raster_pipeline;
     VkPipelineLayout raster_layout;
@@ -410,23 +411,25 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
             VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT);
-        transition_for_use(command_buffer, *record.raw_diffuse,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                           VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                           VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                           VK_IMAGE_ASPECT_COLOR_BIT);
-        const VkClearColorValue zero{{0.0f, 0.0f, 0.0f, 0.0f}};
-        vkCmdClearColorImage(command_buffer, record.raw_diffuse->image,
-                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1,
-                             &range);
-        matter::record_image_transition(
-            command_buffer, *record.raw_diffuse,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-            VK_IMAGE_ASPECT_COLOR_BIT);
+        for (auto* signal : {record.raw_diffuse, record.raw_specular}) {
+            transition_for_use(command_buffer, *signal,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                               VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                               VK_IMAGE_ASPECT_COLOR_BIT);
+            const VkClearColorValue zero{{0.0f, 0.0f, 0.0f, 0.0f}};
+            vkCmdClearColorImage(command_buffer, signal->image,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero,
+                                 1, &range);
+            matter::record_image_transition(
+                command_buffer, *signal,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT);
+        }
     }
 
     VkRenderingAttachmentInfo hdr_attachment{
@@ -461,8 +464,8 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
 struct RasterReadbackRecord {
-    matter::VkImageResource* images[10];
-    VkImageAspectFlags aspects[10];
+    matter::VkImageResource* images[12];
+    VkImageAspectFlags aspects[12];
     VkBuffer destination;
     uint32_t x;
     uint32_t y;
@@ -473,9 +476,9 @@ struct RasterReadbackRecord {
 void record_raster_readback(VkCommandBuffer command_buffer, void* user_data) {
     const auto& record = *static_cast<RasterReadbackRecord*>(user_data);
     // Each offset is aligned to its format's texel-block size (4 or 8 bytes).
-    constexpr VkDeviceSize offsets[10] = {0, 8, 16, 20, 24,
-                                          32, 40, 48, 56, 64};
-    for (size_t i = 0; i < 10; ++i) {
+    constexpr VkDeviceSize offsets[12] = {0, 8, 16, 20, 24, 32,
+                                          40, 48, 56, 64, 72, 80};
+    for (size_t i = 0; i < 12; ++i) {
         transition_for_use(command_buffer, *record.images[i],
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
@@ -737,15 +740,21 @@ void VkSceneRenderer::destroy_pipeline() {
     rt_sbt_.reset();
     visibility_.reset();
     raw_diffuse_.reset();
+    raw_specular_.reset();
+    raw_specular_aux_.reset();
     for (auto& image : gi_atrous_) image.reset();
-    for (auto& history : gi_history_) {
-        history.radiance.reset();
-        history.moments.reset();
-        history.history_length.reset();
-        history.depth.reset();
-        history.normal.reset();
-        history.identity.reset();
-        history.rejection.reset();
+    for (auto& image : gi_spec_atrous_) image.reset();
+    for (auto* histories : {&gi_history_, &gi_spec_history_}) {
+        for (auto& history : *histories) {
+            history.radiance.reset();
+            history.moments.reset();
+            history.history_length.reset();
+            history.depth.reset();
+            history.normal.reset();
+            history.identity.reset();
+            history.rejection.reset();
+            history.aux.reset();
+        }
     }
     if (gi_temporal_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, gi_temporal_pipeline_, nullptr);
@@ -898,15 +907,23 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
 
 bool VkSceneRenderer::create_gi_temporal_pipeline(std::string& error) {
     const VkDevice device = vulkan_->device();
-    std::array<VkDescriptorSetLayoutBinding, 18> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 21> bindings{};
     for (uint32_t binding = 0; binding <= 10; ++binding)
         bindings[binding] = descriptor_binding(
             binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             VK_SHADER_STAGE_COMPUTE_BIT);
-    for (uint32_t binding = 11; binding < bindings.size(); ++binding)
+    bindings[18] = descriptor_binding(18,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings[19] = descriptor_binding(19,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        VK_SHADER_STAGE_COMPUTE_BIT);
+    for (uint32_t binding = 11; binding <= 17; ++binding)
         bindings[binding] = descriptor_binding(
             binding, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
             VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings[20] = descriptor_binding(20, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                      VK_SHADER_STAGE_COMPUTE_BIT);
     VkDescriptorSetLayoutCreateInfo set_create{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     set_create.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -950,7 +967,7 @@ bool VkSceneRenderer::create_gi_temporal_pipeline(std::string& error) {
 
 bool VkSceneRenderer::create_gi_atrous_pipeline(std::string& error) {
     const VkDevice device = vulkan_->device();
-    std::array<VkDescriptorSetLayoutBinding, 8> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 9> bindings{};
     for (uint32_t binding = 0; binding < 6; ++binding)
         bindings[binding] = descriptor_binding(
             binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -959,6 +976,9 @@ bool VkSceneRenderer::create_gi_atrous_pipeline(std::string& error) {
                                      VK_SHADER_STAGE_COMPUTE_BIT);
     bindings[7] = descriptor_binding(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                      VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings[8] = descriptor_binding(8,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        VK_SHADER_STAGE_COMPUTE_BIT);
     VkDescriptorSetLayoutCreateInfo set_create{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     set_create.bindingCount = static_cast<uint32_t>(bindings.size());
@@ -1028,10 +1048,16 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
         descriptor_binding(9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                            VK_SHADER_STAGE_RAYGEN_BIT_KHR),
         descriptor_binding(10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                           VK_SHADER_STAGE_RAYGEN_BIT_KHR),
+        descriptor_binding(11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                           VK_SHADER_STAGE_RAYGEN_BIT_KHR),
+        descriptor_binding(12, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                           VK_SHADER_STAGE_RAYGEN_BIT_KHR),
+        descriptor_binding(13, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                            VK_SHADER_STAGE_RAYGEN_BIT_KHR)};
     VkDescriptorSetLayoutCreateInfo set_info{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    set_info.bindingCount = 11;
+    set_info.bindingCount = 14;
     set_info.pBindings = bindings;
     VkResult result = vkCreateDescriptorSetLayout(device, &set_info, nullptr,
                                                    &rt_set_layout_);
@@ -1306,7 +1332,7 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     if (result != VK_SUCCESS)
         return fail_vk("vkCreateGraphicsPipelines(raster)", result, error);
 
-    std::array<VkDescriptorSetLayoutBinding, 5> sampled_bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 6> sampled_bindings{};
     for (uint32_t i = 0; i < sampled_bindings.size(); ++i) {
         sampled_bindings[i] = descriptor_binding(
             i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -1519,13 +1545,13 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     }
     const VkDescriptorPoolSize pool_sizes[] = {
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 9},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 12},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-         frame_slot_count * 34},
-        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 10}};
+         frame_slot_count * 74},
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 22}};
     VkDescriptorPoolCreateInfo pool{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool.maxSets = frame_slot_count * 7;
+    pool.maxSets = frame_slot_count * 11;
     pool.poolSizeCount = 4;
     pool.pPoolSizes = pool_sizes;
     VkDescriptorPool next_pool = VK_NULL_HANDLE;
@@ -1541,15 +1567,15 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         return fail_vk("vkCreateDescriptorPool(cull)", result, error);
     std::vector<FrameResources> next_frames(frame_slot_count);
     std::vector<VkDescriptorSetLayout> layouts;
-    layouts.reserve(frame_slot_count * 7);
+    layouts.reserve(frame_slot_count * 11);
     for (size_t index = 0; index < frame_slot_count; ++index) {
         layouts.push_back(set_layouts_[0]);
         layouts.push_back(set_layouts_[1]);
         layouts.push_back(composite_set_layout_);
         layouts.push_back(gi_temporal_set_layout_);
-        layouts.push_back(gi_atrous_set_layout_);
-        layouts.push_back(gi_atrous_set_layout_);
-        layouts.push_back(gi_atrous_set_layout_);
+        layouts.push_back(gi_temporal_set_layout_);
+        for (uint32_t i = 0; i < 6; ++i)
+            layouts.push_back(gi_atrous_set_layout_);
     }
     std::vector<VkDescriptorSet> sets(layouts.size());
     VkDescriptorSetAllocateInfo allocate{
@@ -1578,13 +1604,13 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     };
     for (size_t index = 0; index < frame_slot_count; ++index) {
         FrameResources& frame = next_frames[index];
-        frame.descriptor_sets[0] = sets[index * 7];
-        frame.descriptor_sets[1] = sets[index * 7 + 1];
-        frame.composite_descriptor_set = sets[index * 7 + 2];
-        frame.gi_temporal_descriptor_set = sets[index * 7 + 3];
-        frame.gi_atrous_descriptor_sets[0] = sets[index * 7 + 4];
-        frame.gi_atrous_descriptor_sets[1] = sets[index * 7 + 5];
-        frame.gi_atrous_descriptor_sets[2] = sets[index * 7 + 6];
+        frame.descriptor_sets[0] = sets[index * 11];
+        frame.descriptor_sets[1] = sets[index * 11 + 1];
+        frame.composite_descriptor_set = sets[index * 11 + 2];
+        frame.gi_temporal_descriptor_sets[0] = sets[index * 11 + 3];
+        frame.gi_temporal_descriptor_sets[1] = sets[index * 11 + 4];
+        for (uint32_t i = 0; i < 6; ++i)
+            frame.gi_atrous_descriptor_sets[i] = sets[index * 11 + 5 + i];
         if (!ensure_candidate_buffer(frame.frame_constants,
                                      sizeof(FrameConstants),
                                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
@@ -1639,8 +1665,8 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
                                     nullptr);
         const VkDescriptorPoolSize rt_sizes[] = {
             {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, frame_slot_count},
-            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, frame_slot_count * 4},
-            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 2},
+            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, frame_slot_count * 5},
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 4},
             {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 4}};
         VkDescriptorPoolCreateInfo rt_pool{
             VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -1698,11 +1724,16 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
                    : &gi_history_[gi_composite_history_index_].radiance)
             : &raw_diffuse_;
     last_composite_used_gi_temporal_ = diffuse != &raw_diffuse_;
+    matter::VkImageResource* specular =
+        gi_settings_.enabled && gi_candidate_frame_serial_ != 0
+            ? (gi_filtered_valid_ ? &gi_spec_atrous_[gi_filtered_index_]
+                                  : &gi_spec_history_[gi_composite_history_index_].radiance)
+            : &raw_specular_;
     matter::VkImageResource* sampled[] = {&albedo_, &normal_, &orm_,
-                                          &visibility_, diffuse};
-    VkDescriptorImageInfo image_infos[5]{};
-    VkWriteDescriptorSet writes[5]{};
-    for (uint32_t i = 0; i < 5; ++i) {
+                                          &visibility_, diffuse, specular};
+    VkDescriptorImageInfo image_infos[6]{};
+    VkWriteDescriptorSet writes[6]{};
+    for (uint32_t i = 0; i < 6; ++i) {
         image_infos[i].sampler = composite_sampler_;
         image_infos[i].imageView = sampled[i]->view;
         image_infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -1714,7 +1745,7 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[i].pImageInfo = &image_infos[i];
     }
-    vkUpdateDescriptorSets(vulkan_->device(), 5, writes, 0, nullptr);
+    vkUpdateDescriptorSets(vulkan_->device(), 6, writes, 0, nullptr);
 }
 
 void VkSceneRenderer::note_command_layout_rebuild() {
@@ -2232,6 +2263,12 @@ bool VkSceneRenderer::record_test_surface_ray(
         VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
         VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
         VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    for (auto* image : {&raw_specular_, &raw_specular_aux_})
+        transition_for_use(frame.command_buffer, *image,
+                           VK_IMAGE_LAYOUT_GENERAL,
+                           VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                           VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                           VK_IMAGE_ASPECT_COLOR_BIT);
     vkCmdBindPipeline(frame.command_buffer,
                       VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt_pipeline_);
     const VkDescriptorSet descriptor_set =
@@ -2271,6 +2308,16 @@ bool VkSceneRenderer::record_test_surface_ray(
         VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    for (auto* image : {&raw_specular_, &raw_specular_aux_})
+        matter::record_image_transition(
+            frame.command_buffer, *image,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT);
     VkMemoryBarrier2 ray_to_host{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     ray_to_host.srcStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
     ray_to_host.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
@@ -2830,13 +2877,24 @@ bool VkSceneRenderer::test_dispatch_gi_atrous_fixture(
 
 bool VkSceneRenderer::record_gi_temporal(const matter::VulkanFrame& frame,
                                          std::string& error, bool retain) {
+    return record_gi_temporal_signal(frame, 0u, error, retain) &&
+           record_gi_temporal_signal(frame, 1u, error, retain);
+}
+
+bool VkSceneRenderer::record_gi_temporal_signal(
+    const matter::VulkanFrame& frame, uint32_t signal_mode,
+    std::string& error, bool retain) {
     if (frame.frame_slot >= frames_.size() ||
         gi_temporal_pipeline_ == VK_NULL_HANDLE)
         return true;
     const uint32_t previous_index = gi_presented_history_index_;
     const uint32_t candidate_index = previous_index ^ 1u;
-    GiHistorySet& previous = gi_history_[previous_index];
-    GiHistorySet& candidate = gi_history_[candidate_index];
+    GiHistorySet* histories = signal_mode == 0u ? gi_history_ : gi_spec_history_;
+    GiHistorySet& previous = histories[previous_index];
+    GiHistorySet& candidate = histories[candidate_index];
+    matter::VkImageResource& raw_signal =
+        signal_mode == 0u ? raw_diffuse_ : raw_specular_;
+    matter::VkImageResource& raw_aux = raw_specular_aux_;
     const auto sampled = [&](matter::VkImageResource& image) {
         transition_for_use(frame.command_buffer, image,
                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -2850,7 +2908,12 @@ bool VkSceneRenderer::record_gi_temporal(const matter::VulkanFrame& frame,
                            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                            VK_IMAGE_ASPECT_COLOR_BIT);
     };
-    transition_for_use(frame.command_buffer, raw_diffuse_,
+    transition_for_use(frame.command_buffer, raw_signal,
+                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                       VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT);
+    transition_for_use(frame.command_buffer, raw_aux,
                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
@@ -2861,6 +2924,7 @@ bool VkSceneRenderer::record_gi_temporal(const matter::VulkanFrame& frame,
     sampled(previous.depth);
     sampled(previous.normal);
     sampled(previous.identity);
+    sampled(previous.aux);
     storage(candidate.radiance);
     storage(candidate.moments);
     storage(candidate.history_length);
@@ -2868,14 +2932,15 @@ bool VkSceneRenderer::record_gi_temporal(const matter::VulkanFrame& frame,
     storage(candidate.normal);
     storage(candidate.identity);
     storage(candidate.rejection);
+    storage(candidate.aux);
 
-    VkDescriptorImageInfo infos[18]{};
+    VkDescriptorImageInfo infos[21]{};
     const auto combined = [&](uint32_t binding,
                               const matter::VkImageResource& image) {
         infos[binding] = {composite_sampler_, image.view,
                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     };
-    combined(0, raw_diffuse_);
+    combined(0, raw_signal);
     combined(1, velocity_);
     combined(2, depth_);
     combined(3, normal_);
@@ -2886,6 +2951,8 @@ bool VkSceneRenderer::record_gi_temporal(const matter::VulkanFrame& frame,
     combined(8, previous.depth);
     combined(9, previous.normal);
     combined(10, previous.identity);
+    combined(18, raw_aux);
+    combined(19, previous.aux);
     matter::VkImageResource* outputs[] = {
         &candidate.radiance, &candidate.moments, &candidate.history_length,
         &candidate.depth, &candidate.normal, &candidate.identity,
@@ -2893,19 +2960,23 @@ bool VkSceneRenderer::record_gi_temporal(const matter::VulkanFrame& frame,
     for (uint32_t binding = 11; binding < 18; ++binding)
         infos[binding] = {VK_NULL_HANDLE, outputs[binding - 11]->view,
                           VK_IMAGE_LAYOUT_GENERAL};
-    VkWriteDescriptorSet writes[18]{};
+    infos[20] = {VK_NULL_HANDLE, candidate.aux.view, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet writes[21]{};
     FrameResources& resources = frames_[frame.frame_slot];
-    for (uint32_t binding = 0; binding < 18; ++binding) {
+    const VkDescriptorSet temporal_set =
+        resources.gi_temporal_descriptor_sets[signal_mode];
+    for (uint32_t binding = 0; binding < 21; ++binding) {
         writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[binding].dstSet = resources.gi_temporal_descriptor_set;
+        writes[binding].dstSet = temporal_set;
         writes[binding].dstBinding = binding;
         writes[binding].descriptorCount = 1;
-        writes[binding].descriptorType = binding <= 10
-                                             ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
-                                             : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[binding].descriptorType =
+            binding <= 10 || binding == 18 || binding == 19
+                ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+                : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         writes[binding].pImageInfo = &infos[binding];
     }
-    vkUpdateDescriptorSets(vulkan_->device(), 18, writes, 0, nullptr);
+    vkUpdateDescriptorSets(vulkan_->device(), 21, writes, 0, nullptr);
     VulkanGiTemporalConstants constants{};
     constants.temporal_extent[0] = raw_diffuse_extent_.width;
     constants.temporal_extent[1] = raw_diffuse_extent_.height;
@@ -2918,11 +2989,12 @@ bool VkSceneRenderer::record_gi_temporal(const matter::VulkanFrame& frame,
         static_cast<uint32_t>(temporal_frame_.attempt_token);
     constants.presented_attempt_token_lo =
         static_cast<uint32_t>(gi_presented_attempt_token_);
+    constants.signal_mode = signal_mode;
     vkCmdBindPipeline(frame.command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                       gi_temporal_pipeline_);
     vkCmdBindDescriptorSets(frame.command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                             gi_temporal_pipeline_layout_, 0, 1,
-                            &resources.gi_temporal_descriptor_set, 0, nullptr);
+                            &temporal_set, 0, nullptr);
     vkCmdPushConstants(frame.command_buffer, gi_temporal_pipeline_layout_,
                        VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(constants),
                        &constants);
@@ -2943,7 +3015,7 @@ bool VkSceneRenderer::record_gi_temporal(const matter::VulkanFrame& frame,
     gi_candidate_attempt_token_ = temporal_frame_.attempt_token;
     update_composite_descriptor(resources);
     std::vector<std::shared_ptr<void>> retained{
-        raw_diffuse_.lifetime, velocity_.lifetime, depth_.lifetime,
+        raw_signal.lifetime, raw_aux.lifetime, velocity_.lifetime, depth_.lifetime,
         normal_.lifetime, material_instance_.lifetime};
     for (GiHistorySet* set : {&previous, &candidate}) {
         retained.push_back(set->radiance.lifetime);
@@ -2953,6 +3025,7 @@ bool VkSceneRenderer::record_gi_temporal(const matter::VulkanFrame& frame,
         retained.push_back(set->normal.lifetime);
         retained.push_back(set->identity.lifetime);
         retained.push_back(set->rejection.lifetime);
+        retained.push_back(set->aux.lifetime);
     }
     return !retain ||
            vulkan_->retain_for_frame(frame, std::move(retained), error);
@@ -2961,11 +3034,26 @@ bool VkSceneRenderer::record_gi_temporal(const matter::VulkanFrame& frame,
 bool VkSceneRenderer::record_gi_atrous(const matter::VulkanFrame& frame,
                                        std::string& error, bool retain) {
     gi_filtered_valid_ = false;
+    if (!record_gi_atrous_signal(frame, 0u, error, retain) ||
+        !record_gi_atrous_signal(frame, 1u, error, retain))
+        return false;
+    gi_filtered_valid_ = true;
+    update_composite_descriptor(frames_[frame.frame_slot]);
+    return true;
+}
+
+bool VkSceneRenderer::record_gi_atrous_signal(
+    const matter::VulkanFrame& frame, uint32_t signal_mode,
+    std::string& error, bool retain) {
     if (frame.frame_slot >= frames_.size() ||
         gi_atrous_pipeline_ == VK_NULL_HANDLE ||
         gi_candidate_frame_serial_ == 0)
         return true;
-    GiHistorySet& guide = gi_history_[gi_composite_history_index_];
+    GiHistorySet& guide =
+        (signal_mode == 0u ? gi_history_ : gi_spec_history_)
+            [gi_composite_history_index_];
+    matter::VkImageResource* filtered =
+        signal_mode == 0u ? gi_atrous_ : gi_spec_atrous_;
     const auto sampled = [&](matter::VkImageResource& image) {
         transition_for_use(frame.command_buffer, image,
                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -2979,30 +3067,34 @@ bool VkSceneRenderer::record_gi_atrous(const matter::VulkanFrame& frame,
     sampled(guide.normal);
     sampled(guide.identity);
     sampled(guide.history_length);
-    for (auto& output : gi_atrous_)
+    sampled(guide.aux);
+    for (uint32_t output_index = 0; output_index < 2; ++output_index) {
+        auto& output = filtered[output_index];
         transition_for_use(frame.command_buffer, output,
                            VK_IMAGE_LAYOUT_GENERAL,
                            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                            VK_IMAGE_ASPECT_COLOR_BIT);
+    }
 
     FrameResources& resources = frames_[frame.frame_slot];
     matter::VkImageResource* inputs[3] = {
-        &guide.radiance, &gi_atrous_[0], &gi_atrous_[1]};
+        &guide.radiance, &filtered[0], &filtered[1]};
     matter::VkImageResource* outputs[3] = {
-        &gi_atrous_[0], &gi_atrous_[1], &gi_atrous_[0]};
+        &filtered[0], &filtered[1], &filtered[0]};
     for (uint32_t set_index = 0; set_index < 3; ++set_index) {
+        const uint32_t descriptor_index = signal_mode * 3u + set_index;
         matter::VkImageResource* sampled_images[6] = {
             inputs[set_index], &guide.moments, &guide.depth,
             &guide.normal, &guide.identity, &guide.history_length};
         VkDescriptorImageInfo infos[7]{};
-        VkWriteDescriptorSet writes[8]{};
+        VkWriteDescriptorSet writes[9]{};
         for (uint32_t binding = 0; binding < 6; ++binding) {
             infos[binding] = {composite_sampler_, sampled_images[binding]->view,
                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
             writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[binding].dstSet =
-                resources.gi_atrous_descriptor_sets[set_index];
+                resources.gi_atrous_descriptor_sets[descriptor_index];
             writes[binding].dstBinding = binding;
             writes[binding].descriptorCount = 1;
             writes[binding].descriptorType =
@@ -3012,7 +3104,7 @@ bool VkSceneRenderer::record_gi_atrous(const matter::VulkanFrame& frame,
         infos[6] = {VK_NULL_HANDLE, outputs[set_index]->view,
                     VK_IMAGE_LAYOUT_GENERAL};
         writes[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[6].dstSet = resources.gi_atrous_descriptor_sets[set_index];
+        writes[6].dstSet = resources.gi_atrous_descriptor_sets[descriptor_index];
         writes[6].dstBinding = 6;
         writes[6].descriptorCount = 1;
         writes[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -3021,22 +3113,31 @@ bool VkSceneRenderer::record_gi_atrous(const matter::VulkanFrame& frame,
             resources.gi_atrous_markers.buffer, 0,
             5 * sizeof(uint32_t)};
         writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[7].dstSet = resources.gi_atrous_descriptor_sets[set_index];
+        writes[7].dstSet = resources.gi_atrous_descriptor_sets[descriptor_index];
         writes[7].dstBinding = 7;
         writes[7].descriptorCount = 1;
         writes[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[7].pBufferInfo = &marker_info;
-        vkUpdateDescriptorSets(vulkan_->device(), 8, writes, 0, nullptr);
+        VkDescriptorImageInfo aux_info{composite_sampler_, guide.aux.view,
+                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        writes[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[8].dstSet = resources.gi_atrous_descriptor_sets[descriptor_index];
+        writes[8].dstBinding = 8;
+        writes[8].descriptorCount = 1;
+        writes[8].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[8].pImageInfo = &aux_info;
+        vkUpdateDescriptorSets(vulkan_->device(), 9, writes, 0, nullptr);
     }
 
     constexpr uint32_t steps[5] = {1, 2, 4, 8, 16};
     vkCmdBindPipeline(frame.command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                       gi_atrous_pipeline_);
-    for (uint32_t iteration = 0; iteration < 5; ++iteration) {
+    const uint32_t iteration_count = signal_mode == 0u ? 5u : 3u;
+    for (uint32_t iteration = 0; iteration < iteration_count; ++iteration) {
         const uint32_t set_index = iteration == 0 ? 0 :
                                    (iteration & 1u ? 1u : 2u);
         if (iteration >= 2) {
-            matter::VkImageResource& output = gi_atrous_[iteration & 1u];
+            matter::VkImageResource& output = filtered[iteration & 1u];
             transition_for_use(frame.command_buffer, output,
                                VK_IMAGE_LAYOUT_GENERAL,
                                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -3044,7 +3145,7 @@ bool VkSceneRenderer::record_gi_atrous(const matter::VulkanFrame& frame,
                                VK_IMAGE_ASPECT_COLOR_BIT);
         }
         const VkDescriptorSet set =
-            resources.gi_atrous_descriptor_sets[set_index];
+            resources.gi_atrous_descriptor_sets[signal_mode * 3u + set_index];
         vkCmdBindDescriptorSets(frame.command_buffer,
                                 VK_PIPELINE_BIND_POINT_COMPUTE,
                                 gi_atrous_pipeline_layout_, 0, 1, &set, 0,
@@ -3053,8 +3154,8 @@ bool VkSceneRenderer::record_gi_atrous(const matter::VulkanFrame& frame,
         constants.extent[0] = raw_diffuse_extent_.width;
         constants.extent[1] = raw_diffuse_extent_.height;
         constants.step_width = steps[iteration];
-        constants.signal_mode = 0;
-        constants.kernel_radius = 2;
+        constants.signal_mode = signal_mode;
+        constants.kernel_radius = signal_mode == 0u ? 2u : 1u;
         constants.phi_luminance = 4.0f;
         constants.phi_depth = 0.02f;
         constants.normal_power = 64.0f;
@@ -3065,27 +3166,26 @@ bool VkSceneRenderer::record_gi_atrous(const matter::VulkanFrame& frame,
         vkCmdDispatch(frame.command_buffer,
                       (raw_diffuse_extent_.width + 7u) / 8u,
                       (raw_diffuse_extent_.height + 7u) / 8u, 1);
-        matter::VkImageResource& written = gi_atrous_[iteration & 1u];
+        matter::VkImageResource& written = filtered[iteration & 1u];
         matter::record_image_transition(
             frame.command_buffer, written,
             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                (iteration == 4 ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT : 0),
+                (iteration + 1u == iteration_count
+                    ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT : 0),
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT);
     }
-    gi_filtered_index_ = 0;
-    gi_filtered_valid_ = true;
-    update_composite_descriptor(resources);
+    gi_filtered_index_ = (iteration_count - 1u) & 1u;
     if (!retain) return true;
     return vulkan_->retain_for_frame(
         frame,
         {guide.radiance.lifetime, guide.moments.lifetime,
          guide.depth.lifetime, guide.normal.lifetime,
          guide.identity.lifetime, guide.history_length.lifetime,
-         gi_atrous_[0].lifetime, gi_atrous_[1].lifetime,
+         guide.aux.lifetime, filtered[0].lifetime, filtered[1].lifetime,
          resources.gi_atrous_markers.lifetime},
         error);
 }
@@ -3811,25 +3911,28 @@ bool VkSceneRenderer::record_ray_traced_shadows(
             VK_IMAGE_ASPECT_COLOR_BIT);
     };
     auto clear_raw_diffuse = [&]() {
-        transition_for_use(frame.command_buffer, raw_diffuse_,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                           VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                           VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                           VK_IMAGE_ASPECT_COLOR_BIT);
         const VkClearColorValue zero{{0.0f, 0.0f, 0.0f, 0.0f}};
         const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1,
                                              0, 1};
-        vkCmdClearColorImage(frame.command_buffer, raw_diffuse_.image,
-                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1,
-                             &range);
-        matter::record_image_transition(
-            frame.command_buffer, raw_diffuse_,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-            VK_IMAGE_ASPECT_COLOR_BIT);
+        for (auto* image : {&raw_diffuse_, &raw_specular_,
+                            &raw_specular_aux_}) {
+            transition_for_use(frame.command_buffer, *image,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                               VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                               VK_IMAGE_ASPECT_COLOR_BIT);
+            vkCmdClearColorImage(frame.command_buffer, image->image,
+                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero,
+                                 1, &range);
+            matter::record_image_transition(
+                frame.command_buffer, *image,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT);
+        }
     };
     const bool native_trace_enabled =
         ray_tracing_settings_.enabled && vulkan_->ray_tracing_available();
@@ -4075,6 +4178,21 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
         VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
         VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    for (auto* specular_image : {&raw_specular_, &raw_specular_aux_}) {
+        transition_for_use(frame.command_buffer, *specular_image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                           VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           VK_IMAGE_ASPECT_COLOR_BIT);
+        vkCmdClearColorImage(frame.command_buffer, specular_image->image,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &gi_zero, 1,
+                             &gi_range);
+        matter::record_image_transition(
+            frame.command_buffer, *specular_image, VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    }
     std::vector<GpuRtPartRecord> part_records(parts_.size());
     for (size_t slot = 0; slot < parts_.size(); ++slot) {
         const PartRecord& part = parts_[slot];
@@ -4120,6 +4238,13 @@ bool VkSceneRenderer::record_ray_traced_shadows(
                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo orm_info{composite_sampler_, orm_.view,
                                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo identity_info{composite_sampler_, material_instance_.view,
+                                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo raw_specular_info{VK_NULL_HANDLE, raw_specular_.view,
+                                            VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo raw_specular_aux_info{VK_NULL_HANDLE,
+                                                raw_specular_aux_.view,
+                                                VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorBufferInfo part_info{selected.rt_parts.buffer, 0,
                                      selected.rt_parts.size};
     VkDescriptorBufferInfo material_info{selected.materials.buffer, 0,
@@ -4128,7 +4253,7 @@ bool VkSceneRenderer::record_ray_traced_shadows(
                                       selected.rt_error_counter.size};
     VkDescriptorBufferInfo test_output_info{selected.rt_test_output.buffer, 0,
                                             selected.rt_test_output.size};
-    VkWriteDescriptorSet writes[11]{};
+    VkWriteDescriptorSet writes[14]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].pNext = &as_write;
     writes[0].dstSet = rt_descriptor_sets_[frame.frame_slot];
@@ -4170,7 +4295,19 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[i].pImageInfo = gi_inputs[i - 8];
     }
-    vkUpdateDescriptorSets(vulkan_->device(), 11, writes, 0, nullptr);
+    VkDescriptorImageInfo* extra_infos[] = {
+        &identity_info, &raw_specular_info, &raw_specular_aux_info};
+    for (uint32_t i = 11; i < 14; ++i) {
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet = rt_descriptor_sets_[frame.frame_slot];
+        writes[i].dstBinding = i;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = i == 11
+            ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+            : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[i].pImageInfo = extra_infos[i - 11];
+    }
+    vkUpdateDescriptorSets(vulkan_->device(), 14, writes, 0, nullptr);
     struct alignas(16) ShadowConstants {
         GpuMat4 clip_to_world;
         float to_sun_max_distance[4];
@@ -4240,9 +4377,9 @@ bool VkSceneRenderer::record_ray_traced_shadows(
             float sun_color_bias[4];
             float sky_color_distance[4];
             uint32_t presented_frame_index;
-            uint32_t bounce;
+            float max_reflection_roughness;
             float diffuse_multiplier;
-            uint32_t enabled;
+            float reflection_multiplier;
         } gi{};
         gi.clip_to_world = pack_glsl_mat4(matrices.clip_to_world);
         gi.to_sun_intensity[0] = constants.to_sun_max_distance[0];
@@ -4259,9 +4396,10 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         gi.sky_color_distance[3] = ray_tracing_settings_.max_distance;
         gi.presented_frame_index =
             static_cast<uint32_t>(temporal_frame_.presented_frame_index);
-        gi.bounce = 1u;
+        gi.max_reflection_roughness =
+            std::clamp(gi_settings_.max_reflection_roughness, 0.02f, 1.0f);
         gi.diffuse_multiplier = gi_settings_.diffuse_multiplier;
-        gi.enabled = 1u;
+        gi.reflection_multiplier = gi_settings_.reflection_multiplier;
         vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
                            VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(gi), &gi);
         const VkStridedDeviceAddressRegionKHR gi_raygen{
@@ -4303,8 +4441,17 @@ bool VkSceneRenderer::record_ray_traced_shadows(
                              : VK_ACCESS_2_TRANSFER_WRITE_BIT,
         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    matter::VkImageResource& composite_specular =
+        gi_settings_.enabled && gi_filtered_valid_
+            ? gi_spec_atrous_[gi_filtered_index_] : raw_specular_;
+    transition_for_use(frame.command_buffer, composite_specular,
+                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                       VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT);
     std::vector<std::shared_ptr<void>> retained{visibility_.lifetime,
-        raw_diffuse_.lifetime,
+        raw_diffuse_.lifetime, raw_specular_.lifetime,
+        raw_specular_aux_.lifetime, composite_specular.lifetime,
         selected.rt_instances.lifetime, selected.rt_scratch.lifetime,
         selected.rt_tlas_scratch.lifetime,
         selected.rt_tlas.lifetime, selected.rt_parts.lifetime,
@@ -4376,7 +4523,22 @@ bool VkSceneRenderer::record_cull_and_render(
         albedo_.lifetime, normal_.lifetime, orm_.lifetime, velocity_.lifetime,
         material_instance_.lifetime, selected.materials.lifetime,
         depth_.lifetime, hdr_.lifetime,
-        visibility_.lifetime, raw_diffuse_.lifetime};
+        visibility_.lifetime, raw_diffuse_.lifetime,
+        raw_specular_.lifetime, raw_specular_aux_.lifetime,
+        gi_atrous_[0].lifetime, gi_atrous_[1].lifetime,
+        gi_spec_atrous_[0].lifetime, gi_spec_atrous_[1].lifetime};
+    for (auto* histories : {&gi_history_, &gi_spec_history_}) {
+        for (auto& history : *histories) {
+            attachments.push_back(history.radiance.lifetime);
+            attachments.push_back(history.moments.lifetime);
+            attachments.push_back(history.history_length.lifetime);
+            attachments.push_back(history.depth.lifetime);
+            attachments.push_back(history.normal.lifetime);
+            attachments.push_back(history.identity.lifetime);
+            attachments.push_back(history.rejection.lifetime);
+            attachments.push_back(history.aux.lifetime);
+        }
+    }
     if (!vulkan_->retain_for_frame(frame, std::move(attachments), error))
         return false;
 
@@ -4416,6 +4578,7 @@ bool VkSceneRenderer::record_cull_and_render(
                         &hdr_,
                         &visibility_,
                         &raw_diffuse_,
+                        &raw_specular_,
                         raster_extent_,
                         raster_pipeline_,
                         pipeline_layout_,
@@ -4580,6 +4743,8 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
         hdr_.image != VK_NULL_HANDLE &&
         visibility_.image != VK_NULL_HANDLE &&
         raw_diffuse_.image != VK_NULL_HANDLE &&
+        raw_specular_.image != VK_NULL_HANDLE &&
+        raw_specular_aux_.image != VK_NULL_HANDLE &&
         gi_history_[0].radiance.image != VK_NULL_HANDLE &&
         gi_history_[1].radiance.image != VK_NULL_HANDLE &&
         gi_atrous_[0].image != VK_NULL_HANDLE &&
@@ -4595,8 +4760,12 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     matter::VkImageResource hdr;
     matter::VkImageResource visibility;
     matter::VkImageResource raw_diffuse;
+    matter::VkImageResource raw_specular;
+    matter::VkImageResource raw_specular_aux;
     GiHistorySet history[2];
+    GiHistorySet spec_history[2];
     matter::VkImageResource atrous[2];
+    matter::VkImageResource spec_atrous[2];
     const VkExtent3D extent{width, height, 1};
     const VkExtent3D raw_extent{raw_width, raw_height, 1};
     VkImageUsageFlags visibility_usage =
@@ -4659,13 +4828,23 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
             VK_FORMAT_R16G16B16A16_SFLOAT, raw_extent,
             visibility_usage,
             VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            raw_diffuse, error)) {
+            raw_diffuse, error) ||
+        !matter::create_image(
+            *vulkan_, VK_IMAGE_TYPE_2D,
+            VK_FORMAT_R16G16B16A16_SFLOAT, raw_extent, visibility_usage,
+            VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            raw_specular, error) ||
+        !matter::create_image(
+            *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_R16G16_SFLOAT, raw_extent,
+            visibility_usage, VK_IMAGE_ASPECT_COLOR_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, raw_specular_aux, error)) {
         return false;
     }
     const VkImageUsageFlags history_usage =
         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
         VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    for (auto& set : history) {
+    for (auto* sets : {&history, &spec_history}) {
+        for (auto& set : *sets) {
         const auto make = [&](VkFormat format,
                               matter::VkImageResource& resource) {
             return matter::create_image(
@@ -4679,10 +4858,20 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
             !make(VK_FORMAT_R32_SFLOAT, set.depth) ||
             !make(VK_FORMAT_R16G16B16A16_SFLOAT, set.normal) ||
             !make(VK_FORMAT_R32G32_UINT, set.identity) ||
-            !make(VK_FORMAT_R32_UINT, set.rejection))
+            !make(VK_FORMAT_R32_UINT, set.rejection) ||
+            !make(VK_FORMAT_R16G16_SFLOAT, set.aux))
             return false;
+        }
     }
     for (auto& image : atrous) {
+        if (!matter::create_image(
+                *vulkan_, VK_IMAGE_TYPE_2D,
+                VK_FORMAT_R16G16B16A16_SFLOAT, raw_extent, history_usage,
+                VK_IMAGE_ASPECT_COLOR_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, error))
+            return false;
+    }
+    for (auto& image : spec_atrous) {
         if (!matter::create_image(
                 *vulkan_, VK_IMAGE_TYPE_2D,
                 VK_FORMAT_R16G16B16A16_SFLOAT, raw_extent, history_usage,
@@ -4699,10 +4888,16 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     hdr_ = std::move(hdr);
     visibility_ = std::move(visibility);
     raw_diffuse_ = std::move(raw_diffuse);
+    raw_specular_ = std::move(raw_specular);
+    raw_specular_aux_ = std::move(raw_specular_aux);
     gi_history_[0] = std::move(history[0]);
     gi_history_[1] = std::move(history[1]);
+    gi_spec_history_[0] = std::move(spec_history[0]);
+    gi_spec_history_[1] = std::move(spec_history[1]);
     gi_atrous_[0] = std::move(atrous[0]);
     gi_atrous_[1] = std::move(atrous[1]);
+    gi_spec_atrous_[0] = std::move(spec_atrous[0]);
+    gi_spec_atrous_[1] = std::move(spec_atrous[1]);
     gi_filtered_index_ = 0;
     gi_filtered_valid_ = false;
     gi_presented_history_index_ = 0;
@@ -4780,6 +4975,7 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
                         &hdr_,
                         &visibility_,
                         &raw_diffuse_,
+                        &raw_specular_,
                         raster_extent_,
                         raster_pipeline_,
                         pipeline_layout_,
@@ -5065,7 +5261,7 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
         return false;
     }
     matter::VkBufferResource staging;
-    constexpr VkDeviceSize readback_size = 72;
+    constexpr VkDeviceSize readback_size = 88;
     if (!matter::create_buffer(
             *vulkan_, readback_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
@@ -5077,15 +5273,23 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
     matter::VkImageResource& accumulated_diffuse =
         gi_filtered_valid_ ? gi_atrous_[gi_filtered_index_]
                            : gi_history_[gi_composite_history_index_].radiance;
+    matter::VkImageResource& accumulated_specular =
+        gi_filtered_valid_ ? gi_spec_atrous_[gi_filtered_index_]
+        : gi_candidate_frame_serial_ != 0
+            ? gi_spec_history_[gi_composite_history_index_].radiance
+            : raw_specular_;
     RasterReadbackRecord record{{&albedo_, &normal_, &orm_, &velocity_, &depth_,
                                  &hdr_, &visibility_, &material_instance_,
                                  &raw_diffuse_,
-                                 &accumulated_diffuse},
+                                 &accumulated_diffuse, &raw_specular_,
+                                 &accumulated_specular},
                                 {VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_DEPTH_BIT,
+                                 VK_IMAGE_ASPECT_COLOR_BIT,
+                                 VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
@@ -5105,6 +5309,7 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
         depth_.lifetime, hdr_.lifetime, visibility_.lifetime,
         material_instance_.lifetime, raw_diffuse_.lifetime,
         accumulated_diffuse.lifetime,
+        raw_specular_.lifetime, accumulated_specular.lifetime,
         staging.lifetime};
     if (!matter::submit_immediate(
             *vulkan_, record_raster_readback, &record, error,
@@ -5162,6 +5367,22 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
         half_to_float(accumulated_half[1]),
         half_to_float(accumulated_half[2]),
         half_to_float(accumulated_half[3])};
+    uint16_t raw_specular_half[4]{};
+    std::memcpy(raw_specular_half, bytes.data() + 72,
+                sizeof(raw_specular_half));
+    pixel.raw_specular = {
+        half_to_float(raw_specular_half[0]),
+        half_to_float(raw_specular_half[1]),
+        half_to_float(raw_specular_half[2]),
+        half_to_float(raw_specular_half[3])};
+    uint16_t accumulated_specular_half[4]{};
+    std::memcpy(accumulated_specular_half, bytes.data() + 80,
+                sizeof(accumulated_specular_half));
+    pixel.accumulated_specular = {
+        half_to_float(accumulated_specular_half[0]),
+        half_to_float(accumulated_specular_half[1]),
+        half_to_float(accumulated_specular_half[2]),
+        half_to_float(accumulated_specular_half[3])};
     return true;
 }
 

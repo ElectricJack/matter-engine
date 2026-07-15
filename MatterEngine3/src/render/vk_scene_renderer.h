@@ -164,6 +164,8 @@ struct VkRasterPixel {
     matter::Float3 visibility{1.0f, 1.0f, 1.0f};
     matter::Float4 raw_diffuse{};
     matter::Float4 accumulated_diffuse{};
+    matter::Float4 raw_specular{};
+    matter::Float4 accumulated_specular{};
 };
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
@@ -582,8 +584,8 @@ private:
         VkExtent2D dlss_output_extent{};
         VkDescriptorSet descriptor_sets[2]{};
         VkDescriptorSet composite_descriptor_set = VK_NULL_HANDLE;
-        VkDescriptorSet gi_temporal_descriptor_set = VK_NULL_HANDLE;
-        VkDescriptorSet gi_atrous_descriptor_sets[3]{};
+        VkDescriptorSet gi_temporal_descriptor_sets[2]{};
+        VkDescriptorSet gi_atrous_descriptor_sets[6]{};
         uint64_t static_generation = 0;
         uint64_t instance_generation = 0;
         uint64_t command_generation = 0;
@@ -604,8 +606,14 @@ private:
                             std::string& error);
     bool record_gi_temporal(const matter::VulkanFrame& frame,
                             std::string& error, bool retain = true);
+    bool record_gi_temporal_signal(const matter::VulkanFrame& frame,
+                                   uint32_t signal_mode,
+                                   std::string& error, bool retain);
     bool record_gi_atrous(const matter::VulkanFrame& frame,
                           std::string& error, bool retain = true);
+    bool record_gi_atrous_signal(const matter::VulkanFrame& frame,
+                                 uint32_t signal_mode,
+                                 std::string& error, bool retain);
     bool ensure_vertex_buffer(VkDeviceSize required_size,
                               std::string& error, bool* replaced = nullptr);
     bool ensure_buffer(matter::VkBufferResource& buffer,
@@ -684,6 +692,8 @@ private:
     matter::VkImageResource hdr_;
     matter::VkImageResource visibility_;
     matter::VkImageResource raw_diffuse_;
+    matter::VkImageResource raw_specular_;
+    matter::VkImageResource raw_specular_aux_;
     VkExtent2D raw_diffuse_extent_{};
     struct GiHistorySet {
         matter::VkImageResource radiance;
@@ -693,8 +703,11 @@ private:
         matter::VkImageResource normal;
         matter::VkImageResource identity;
         matter::VkImageResource rejection;
+        matter::VkImageResource aux;
     } gi_history_[2];
+    GiHistorySet gi_spec_history_[2];
     matter::VkImageResource gi_atrous_[2];
+    matter::VkImageResource gi_spec_atrous_[2];
     uint32_t gi_filtered_index_ = 0;
     bool gi_filtered_valid_ = false;
     uint32_t gi_presented_history_index_ = 0;

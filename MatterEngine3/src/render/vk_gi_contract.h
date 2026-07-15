@@ -13,6 +13,7 @@ typedef struct VulkanGiSettings {
     float trace_scale = 1.0f;
     float diffuse_multiplier = 1.0f;
     float reflection_multiplier = 1.0f;
+    float max_reflection_roughness = 1.0f;
     float transmission_multiplier = 1.0f;
     float scattering_multiplier = 1.0f;
 #else
@@ -23,6 +24,7 @@ typedef struct VulkanGiSettings {
     float trace_scale;
     float diffuse_multiplier;
     float reflection_multiplier;
+    float max_reflection_roughness;
     float transmission_multiplier;
     float scattering_multiplier;
 #endif
@@ -53,7 +55,7 @@ typedef struct VulkanGiTemporalConstants {
     uint32_t reset;
     uint32_t attempt_token_lo;
     uint32_t presented_attempt_token_lo;
-    uint32_t pad;
+    uint32_t signal_mode;
 } VulkanGiTemporalConstants;
 
 #ifdef __cplusplus

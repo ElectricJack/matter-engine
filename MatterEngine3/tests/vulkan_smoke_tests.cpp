@@ -39,6 +39,7 @@ void run_vulkan_gi_math_tests() {
               defaults.samples_per_pixel == 1u && defaults.trace_scale == 1.0f &&
               defaults.diffuse_multiplier == 1.0f &&
               defaults.reflection_multiplier == 1.0f &&
+              defaults.max_reflection_roughness == 1.0f &&
               defaults.transmission_multiplier == 1.0f &&
               defaults.scattering_multiplier == 1.0f,
           "Vulkan GI defaults enable one full-resolution diffuse bounce");
@@ -71,6 +72,29 @@ void run_vulkan_gi_math_tests() {
     CHECK(std::fabs(source_uv.x - 21.5f / 160.0f) < 1e-7f &&
               std::fabs(source_uv.y - 11.5f / 80.0f) < 1e-7f,
           "scaled GI reconstruction uses the selected source texel center");
+
+    const matter::Float3 f0{0.04f, 0.1f, 0.8f};
+    const matter::Float3 normal_fresnel =
+        viewer::vulkan_schlick_fresnel(f0, 1.0f);
+    const matter::Float3 grazing_fresnel =
+        viewer::vulkan_schlick_fresnel(f0, 0.0f);
+    CHECK(std::fabs(normal_fresnel.x - f0.x) < 1e-6f &&
+              std::fabs(normal_fresnel.y - f0.y) < 1e-6f &&
+              std::fabs(normal_fresnel.z - f0.z) < 1e-6f &&
+              std::fabs(grazing_fresnel.x - 1.0f) < 1e-6f &&
+              std::fabs(grazing_fresnel.y - 1.0f) < 1e-6f &&
+              std::fabs(grazing_fresnel.z - 1.0f) < 1e-6f,
+          "Schlick Fresnel equals F0 at normal incidence and one at grazing");
+    for (const float roughness : {0.02f, 0.1f, 0.5f, 1.0f}) {
+        const float pdf = viewer::vulkan_ggx_reflection_pdf(
+            0.8f, 0.65f, roughness);
+        CHECK(std::isfinite(pdf) && pdf >= 0.0f,
+              "GGX reflection PDF remains finite across authored roughness");
+    }
+    CHECK(viewer::vulkan_clearcoat_selection_probability(0.0f) == 0.0f &&
+              std::fabs(viewer::vulkan_clearcoat_selection_probability(1.0f) -
+                        0.5f) < 1e-6f,
+          "zero clearcoat launches no coat samples and full coat normalizes lobe selection");
 }
 
 void run_raster_mesh_material_contract_tests() {
@@ -1835,7 +1859,14 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
     gi_materials[1].base_roughness[0] = 1.0f;
     gi_materials[1].base_roughness[1] = 1.0f;
     gi_materials[1].base_roughness[2] = 1.0f;
+    gi_materials[1].base_roughness[3] = 0.02f;
+    gi_materials[1].metal_opacity_spec_coat[0] = 0.0f;
     gi_materials[1].metal_opacity_spec_coat[1] = 1.0f;
+    gi_materials[1].metal_opacity_spec_coat[2] = 1.0f;
+    gi_materials[1].specular_tint_coat_roughness[0] = 1.0f;
+    gi_materials[1].specular_tint_coat_roughness[1] = 1.0f;
+    gi_materials[1].specular_tint_coat_roughness[2] = 1.0f;
+    gi_materials[1].specular_tint_coat_roughness[3] = 0.08f;
     gi_materials[1].scattering_shape[3] = 1.0f;
     CHECK(renderer.update_materials(gi_materials, 1, 1, error) &&
               renderer.ensure_part(horizontal(920, -1.0f, 20.0f,
@@ -2284,19 +2315,22 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                 composite_pixel.albedo.x * diffuse_scale * lighting.sun_color.x *
                     sun_base * composite_pixel.visibility.x +
                 composite_pixel.albedo.x * emission_strength +
-                composite_pixel.accumulated_diffuse.x,
+                composite_pixel.accumulated_diffuse.x +
+                composite_pixel.accumulated_specular.x,
             composite_pixel.albedo.y * diffuse_scale * lighting.sky_color.y *
                     composite_pixel.orm.z +
                 composite_pixel.albedo.y * diffuse_scale * lighting.sun_color.y *
                     sun_base * composite_pixel.visibility.y +
                 composite_pixel.albedo.y * emission_strength +
-                composite_pixel.accumulated_diffuse.y,
+                composite_pixel.accumulated_diffuse.y +
+                composite_pixel.accumulated_specular.y,
             composite_pixel.albedo.z * diffuse_scale * lighting.sky_color.z *
                     composite_pixel.orm.z +
                 composite_pixel.albedo.z * diffuse_scale * lighting.sun_color.z *
                     sun_base * composite_pixel.visibility.z +
                 composite_pixel.albedo.z * emission_strength +
-                composite_pixel.accumulated_diffuse.z};
+                composite_pixel.accumulated_diffuse.z +
+                composite_pixel.accumulated_specular.z};
         CHECK(renderer.test_composite_uses_gi_temporal() &&
                   std::fabs(composite_pixel.hdr.x - expected_composite.x) < 0.04f &&
                   std::fabs(composite_pixel.hdr.y - expected_composite.y) < 0.04f &&
@@ -2378,6 +2412,7 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
         bool visibility_reads_ok = true;
         bool debug_output_matches = true;
         matter::Float4 strongest_receiver_raw{};
+        matter::Float4 strongest_receiver_specular{};
         bool receiver_seen = false;
         float receiver_min_visibility = 1.0f;
         float receiver_max_visibility = 0.0f;
@@ -2405,6 +2440,8 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                         std::max(receiver_max_visibility, pixel.visibility.x);
                     if (pixel.raw_diffuse.x > strongest_receiver_raw.x)
                         strongest_receiver_raw = pixel.raw_diffuse;
+                    if (pixel.raw_specular.x > strongest_receiver_specular.x)
+                        strongest_receiver_specular = pixel.raw_specular;
                 }
             }
             if (!visibility_reads_ok) break;
@@ -2426,6 +2463,114 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                   strongest_receiver_raw.x >
                       strongest_receiver_raw.y * 1.25f,
               "white receiver above red floor gains positive red indirect radiance");
+        CHECK(std::isfinite(strongest_receiver_specular.x) &&
+                  std::isfinite(strongest_receiver_specular.y) &&
+                  std::isfinite(strongest_receiver_specular.z),
+              "separate raw specular target stays finite on diffuse receiver");
+        renderer.release_part(921);
+        CHECK(renderer.ensure_part(horizontal(925, 0.0f, 0.55f,
+                                              {0.0f, -0.3162278f, 0.9486833f},
+                                              1, 1.0f), error) >= 0 &&
+                  renderer.update_instances(
+                      {{920, identity_matrix()}, {925, identity_matrix()}},
+                      error) &&
+                  render_temporal_control(304),
+              error.empty() ? "render tilted mirror colored-target fixture"
+                            : error.c_str());
+        matter::Float4 mirror_specular{};
+        for (uint32_t y = 20; y < 200; y += 10)
+            for (uint32_t x = 20; x < 320; x += 10) {
+                viewer::VkRasterPixel pixel{};
+                if (renderer.readback_raster_pixel(x, y, pixel, error) &&
+                    pixel.material_index == 1u &&
+                    pixel.raw_specular.x > mirror_specular.x)
+                    mirror_specular = pixel.raw_specular;
+            }
+        CHECK(std::isfinite(mirror_specular.x) &&
+                  std::isfinite(mirror_specular.y) &&
+                  std::isfinite(mirror_specular.z) &&
+                  mirror_specular.x > 0.001f &&
+                  mirror_specular.x > mirror_specular.y * 1.2f,
+              "GGX mirror receiver reflects the colored target with finite energy");
+        const auto specular_coverage = [&]() {
+            uint32_t count = 0;
+            matter::Float4 peak{};
+            for (uint32_t sy = 20; sy < 200; sy += 10)
+                for (uint32_t sx = 20; sx < 320; sx += 10) {
+                    viewer::VkRasterPixel pixel{};
+                    if (!renderer.readback_raster_pixel(sx, sy, pixel, error) ||
+                        pixel.material_index != 1u)
+                        continue;
+                    const float energy = std::max(pixel.raw_specular.x,
+                        std::max(pixel.raw_specular.y, pixel.raw_specular.z));
+                    if (energy > 0.001f) ++count;
+                    if (energy > std::max(peak.x, std::max(peak.y, peak.z)))
+                        peak = pixel.raw_specular;
+                }
+            return std::pair<uint32_t, matter::Float4>{count, peak};
+        };
+        const auto mirror_stats = specular_coverage();
+        gi_materials[1].metal_opacity_spec_coat[0] = 1.0f;
+        gi_materials[1].base_roughness[3] = 0.65f;
+        CHECK(renderer.update_materials(gi_materials, 2, 1, error) &&
+                  render_temporal_control(305),
+              error.empty() ? "render rough-metal broadening fixture"
+                            : error.c_str());
+        const auto rough_metal_stats = specular_coverage();
+        CHECK(rough_metal_stats.first >= mirror_stats.first &&
+                  std::isfinite(rough_metal_stats.second.x) &&
+                  std::isfinite(rough_metal_stats.second.y) &&
+                  std::isfinite(rough_metal_stats.second.z),
+              "rough metal broadens the finite reflected signal");
+        gi_materials[1].metal_opacity_spec_coat[0] = 0.0f;
+        gi_materials[1].base_roughness[3] = 0.35f;
+        gi_materials[1].specular_tint_coat_roughness[0] = 0.01f;
+        gi_materials[1].specular_tint_coat_roughness[1] = 1.0f;
+        gi_materials[1].specular_tint_coat_roughness[2] = 0.01f;
+        CHECK(renderer.update_materials(gi_materials, 3, 1, error) &&
+                  render_temporal_control(306),
+              error.empty() ? "render tinted dielectric fixture"
+                            : error.c_str());
+        const auto tinted_stats = specular_coverage();
+        const float mirror_red_green = mirror_stats.second.x /
+            std::max(mirror_stats.second.y, 1e-6f);
+        const float tinted_red_green = tinted_stats.second.x /
+            std::max(tinted_stats.second.y, 1e-6f);
+        CHECK(tinted_stats.first > 0u && tinted_stats.second.y > 0.0f &&
+                  tinted_red_green < mirror_red_green,
+              "dielectric GGX uses authored specular tint");
+        gi_materials[1].specular_tint_coat_roughness[0] = 1.0f;
+        gi_materials[1].specular_tint_coat_roughness[1] = 1.0f;
+        gi_materials[1].specular_tint_coat_roughness[2] = 1.0f;
+        gi_materials[1].base_roughness[3] = 0.8f;
+        CHECK(renderer.update_materials(gi_materials, 4, 1, error) &&
+                  render_temporal_control(307),
+              error.empty() ? "render rough dielectric F0 fixture"
+                            : error.c_str());
+        const auto rough_dielectric_stats = specular_coverage();
+        CHECK(rough_dielectric_stats.first > 0u &&
+                  std::isfinite(rough_dielectric_stats.second.x),
+              "rough dielectric retains finite nonmetal F0 response");
+        gi_materials[1].metal_opacity_spec_coat[3] = 1.0f;
+        gi_materials[1].specular_tint_coat_roughness[3] = 0.08f;
+        CHECK(renderer.update_materials(gi_materials, 5, 1, error) &&
+                  render_temporal_control(308),
+              error.empty() ? "render clearcoat second-lobe fixture"
+                            : error.c_str());
+        const auto coat_stats = specular_coverage();
+        CHECK(coat_stats.first > 0u &&
+                  coat_stats.second.x > 0.0f && coat_stats.second.y > 0.0f &&
+                  coat_stats.second.z > 0.0f,
+              "clearcoat adds a finite untinted dielectric highlight");
+        renderer.release_part(925);
+        CHECK(renderer.ensure_part(horizontal(921, 0.0f, 0.55f,
+                                              {0.0f, -1.0f, 0.0f}, 1, 1.0f),
+                                   error) >= 0 &&
+                  renderer.update_instances(
+                      {{920, identity_matrix()}, {921, identity_matrix()}},
+                      error),
+              error.empty() ? "restore diffuse receiver after mirror fixture"
+                            : error.c_str());
         renderer.release_part(921);
         CHECK(renderer.ensure_part(horizontal(922, 0.0f, 0.55f,
                                               {0.0f, -1.0f, 0.0f}, 1, 0.0f),

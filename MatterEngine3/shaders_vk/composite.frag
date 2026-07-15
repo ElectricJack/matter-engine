@@ -8,6 +8,7 @@ layout(set = 0, binding = 1) uniform sampler2D normal_texture;
 layout(set = 0, binding = 2) uniform sampler2D orm_texture;
 layout(set = 0, binding = 3) uniform sampler2D visibility_texture;
 layout(set = 0, binding = 4) uniform sampler2D raw_diffuse_texture;
+layout(set = 0, binding = 5) uniform sampler2D specular_texture;
 
 layout(push_constant) uniform SceneLighting {
     vec3 sun_direction;
@@ -49,7 +50,8 @@ void main() {
             : 0.0;
     vec3 emission = albedo.rgb * emission_strength;
     vec3 raw_diffuse = texture(raw_diffuse_texture, in_uv).rgb * lighting.pad0;
+    vec3 specular = texture(specular_texture, in_uv).rgb;
     vec3 linear_hdr = ambient + sun * mix(1.0, 0.65, roughness) + emission +
-                      raw_diffuse;
+                      raw_diffuse + specular;
     out_hdr = vec4(linear_hdr, 1.0);
 }

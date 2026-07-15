@@ -20,6 +20,9 @@ layout(r32f, set = 0, binding = 14) uniform writeonly image2D outDepth;
 layout(rgba16f, set = 0, binding = 15) uniform writeonly image2D outNormal;
 layout(rg32ui, set = 0, binding = 16) uniform writeonly uimage2D outIdentity;
 layout(r32ui, set = 0, binding = 17) uniform writeonly uimage2D outRejection;
+layout(set = 0, binding = 18) uniform sampler2D rawAux;
+layout(set = 0, binding = 19) uniform sampler2D previousAux;
+layout(rg16f, set = 0, binding = 20) uniform writeonly image2D outAux;
 
 layout(push_constant) uniform TemporalConstants {
     uvec2 temporalExtent;
@@ -27,7 +30,7 @@ layout(push_constant) uniform TemporalConstants {
     uint reset;
     uint attemptTokenLo;
     uint presentedAttemptTokenLo;
-    uint pad;
+    uint signalMode;
 } pc;
 
 const uint REJECT_BOUNDS = 1u;
@@ -36,6 +39,7 @@ const uint REJECT_NORMAL = 4u;
 const uint REJECT_MATERIAL = 8u;
 const uint REJECT_INSTANCE = 16u;
 const uint REJECT_RESET = 32u;
+const uint REJECT_HIT_DISTANCE = 64u;
 
 float luminance(vec3 value) {
     return dot(value, vec3(0.2126, 0.7152, 0.0722));
@@ -60,6 +64,7 @@ void main() {
     ivec2 sourcePixel = clamp(ivec2(uv * vec2(pc.gbufferExtent)), ivec2(0),
                               ivec2(pc.gbufferExtent) - 1);
     vec3 raw = texelFetch(rawSignal, pixel, 0).rgb;
+    vec2 aux = texelFetch(rawAux, pixel, 0).rg;
     float depth = texelFetch(depthTex, sourcePixel, 0).r;
     vec3 normal = normalize(texelFetch(normalTex, sourcePixel, 0).xyz);
     uvec2 identity = texelFetch(identityTex, sourcePixel, 0).rg;
@@ -91,6 +96,12 @@ void main() {
             rejection = REJECT_MATERIAL;
         else if (identity.y != oldIdentity.y)
             rejection = REJECT_INSTANCE;
+        else if (pc.signalMode == 1u) {
+            vec2 oldAux = texelFetch(previousAux, previousPixel, 0).rg;
+            float threshold = max(0.05, 0.1 * max(aux.x, oldAux.x));
+            if (abs(aux.x - oldAux.x) > threshold)
+                rejection = REJECT_HIT_DISTANCE;
+        }
     }
     if (rejection == 0u) {
         vec3 neighborhoodMin = vec3(1e30);
@@ -107,7 +118,10 @@ void main() {
             rgbToYCoCg(texelFetch(previousRadiance, previousPixel, 0).rgb),
             neighborhoodMin, neighborhoodMax));
         vec2 oldMoments = texelFetch(previousMoments, previousPixel, 0).rg;
-        historyLength = min(32u, texelFetch(previousHistory, previousPixel, 0).r + 1u);
+        uint maxHistory = pc.signalMode == 0u ? 32u :
+            uint(round(mix(4.0, 16.0, clamp(aux.y, 0.0, 1.0))));
+        historyLength = min(maxHistory,
+            texelFetch(previousHistory, previousPixel, 0).r + 1u);
         float alpha = max(1.0 / float(historyLength), 0.05);
         accumulated = mix(oldRadiance, raw, alpha);
         firstMoment = mix(oldMoments.x, firstMoment, alpha);
@@ -120,4 +134,5 @@ void main() {
     imageStore(outNormal, pixel, vec4(normal, 0.0));
     imageStore(outIdentity, pixel, uvec4(identity, 0u, 0u));
     imageStore(outRejection, pixel, uvec4(rejection));
+    imageStore(outAux, pixel, vec4(aux, 0.0, 0.0));
 }

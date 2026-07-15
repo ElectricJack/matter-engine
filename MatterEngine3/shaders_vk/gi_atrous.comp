@@ -12,6 +12,7 @@ layout(rgba16f, set = 0, binding = 6) uniform writeonly image2D outSignal;
 layout(std430, set = 0, binding = 7) buffer PassMarkers {
     uint observedStepWidth[5];
 } markers;
+layout(set = 0, binding = 8) uniform sampler2D auxTex;
 
 layout(push_constant) uniform AtrousConstants {
     uvec2 extent;
@@ -46,7 +47,9 @@ void main() {
     vec3 centerNormal = texelFetch(normalTex, pixel, 0).xyz;
     uvec2 centerIdentity = texelFetch(identityTex, pixel, 0).rg;
     uint centerHistory = texelFetch(historyTex, pixel, 0).r;
-    if (pc.signalMode != 0u || pc.kernelRadius != 2u ||
+    if (pc.signalMode > 1u ||
+        (pc.signalMode == 0u && pc.kernelRadius != 2u) ||
+        (pc.signalMode == 1u && pc.kernelRadius != 1u) ||
         centerHistory == 0u || centerIdentity.x == 0xffffffffu ||
         !finite3(centerSignal.rgb) || isnan(centerDepth) || isinf(centerDepth) ||
         dot(centerNormal, centerNormal) < 1e-12) {
@@ -61,8 +64,10 @@ void main() {
     const float kernel[3] = float[3](0.375, 0.25, 0.0625);
     vec3 sum = vec3(0.0);
     float weightSum = 0.0;
-    for (int y = -2; y <= 2; ++y) {
-        for (int x = -2; x <= 2; ++x) {
+    int radius = int(pc.kernelRadius);
+    vec2 centerAux = texelFetch(auxTex, pixel, 0).rg;
+    for (int y = -radius; y <= radius; ++y) {
+        for (int x = -radius; x <= radius; ++x) {
             ivec2 q = pixel + ivec2(x, y) * int(pc.stepWidth);
             if (any(lessThan(q, ivec2(0))) ||
                 any(greaterThanEqual(q, ivec2(pc.extent)))) continue;
@@ -84,7 +89,14 @@ void main() {
             float wd = exp(-abs(depth - centerDepth) / depthScale);
             float wn = pow(max(dot(centerNormal, normal), 0.0),
                            pc.normalPower);
-            float weight = spatial * wl * wd * wn;
+            float wh = 1.0;
+            if (pc.signalMode == 1u) {
+                vec2 aux = texelFetch(auxTex, q, 0).rg;
+                float hitScale = max(0.05, 0.1 * max(centerAux.x, aux.x));
+                wh = exp(-abs(centerAux.x - aux.x) / hitScale) *
+                     exp(-abs(centerAux.y - aux.y) * 8.0);
+            }
+            float weight = spatial * wl * wd * wn * wh;
             sum += signal * weight;
             weightSum += weight;
         }

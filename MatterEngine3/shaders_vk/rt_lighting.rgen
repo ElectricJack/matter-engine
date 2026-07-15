@@ -10,6 +10,9 @@ layout(set = 0, binding = 7, rgba16f) uniform image2D raw_diffuse_image;
 layout(set = 0, binding = 8) uniform sampler2D albedo_texture;
 layout(set = 0, binding = 9) uniform sampler2D normal_texture;
 layout(set = 0, binding = 10) uniform sampler2D orm_texture;
+layout(set = 0, binding = 11) uniform usampler2D identity_texture;
+layout(set = 0, binding = 12, rgba16f) uniform image2D raw_specular_image;
+layout(set = 0, binding = 13, rg16f) uniform image2D raw_specular_aux_image;
 
 layout(push_constant) uniform GiConstants {
     mat4 clip_to_world;
@@ -20,9 +23,9 @@ layout(push_constant) uniform GiConstants {
     vec3 sky_color;
     float max_distance;
     uint presented_frame_index;
-    uint bounce;
+    float max_reflection_roughness;
     float diffuse_multiplier;
-    uint enabled;
+    float reflection_multiplier;
 } constants;
 
 layout(location = 1) rayPayloadEXT RtSurfacePayload hit;
@@ -55,6 +58,52 @@ vec3 cosine_direction(vec3 normal, inout uint seed) {
                      normal * sqrt(max(0.0, 1.0 - r * r)));
 }
 
+vec3 schlick_fresnel(vec3 f0, float v_dot_h) {
+    float f = pow(1.0 - clamp(v_dot_h, 0.0, 1.0), 5.0);
+    return f0 + (vec3(1.0) - f0) * f;
+}
+
+float ggx_d(float n_dot_h, float roughness) {
+    float alpha = max(roughness * roughness, 0.0004);
+    float a2 = alpha * alpha;
+    float d = n_dot_h * n_dot_h * (a2 - 1.0) + 1.0;
+    return a2 / max(3.14159265359 * d * d, 1e-8);
+}
+
+float ggx_g1(float n_dot_v, float roughness) {
+    float alpha = max(roughness * roughness, 0.0004);
+    float a2 = alpha * alpha;
+    return 2.0 * n_dot_v /
+        max(n_dot_v + sqrt(a2 + (1.0 - a2) * n_dot_v * n_dot_v), 1e-6);
+}
+
+// Heitz isotropic visible-normal sampler. Sampling the VNDF avoids rejected
+// below-surface half vectors and keeps the reflection estimator finite.
+vec3 sample_ggx_vndf(vec3 view_local, float roughness, vec2 u) {
+    float alpha = max(roughness * roughness, 0.02 * 0.02);
+    vec3 vh = normalize(vec3(alpha * view_local.xy, view_local.z));
+    float lensq = dot(vh.xy, vh.xy);
+    vec3 t1 = lensq > 0.0 ? vec3(-vh.y, vh.x, 0.0) / sqrt(lensq)
+                           : vec3(1.0, 0.0, 0.0);
+    vec3 t2 = cross(vh, t1);
+    float r = sqrt(u.x);
+    float phi = 6.28318530718 * u.y;
+    float p1 = r * cos(phi);
+    float p2 = r * sin(phi);
+    float s = 0.5 * (1.0 + vh.z);
+    p2 = (1.0 - s) * sqrt(max(0.0, 1.0 - p1 * p1)) + s * p2;
+    vec3 nh = p1 * t1 + p2 * t2 +
+              sqrt(max(0.0, 1.0 - p1 * p1 - p2 * p2)) * vh;
+    return normalize(vec3(alpha * nh.xy, max(0.0, nh.z)));
+}
+
+void basis(vec3 n, out vec3 t, out vec3 b) {
+    vec3 helper = abs(n.z) < 0.999 ? vec3(0.0, 0.0, 1.0)
+                                   : vec3(1.0, 0.0, 0.0);
+    t = normalize(cross(helper, n));
+    b = cross(n, t);
+}
+
 vec3 environment(vec3 direction) {
     float horizon = clamp(direction.y * 0.5 + 0.5, 0.0, 1.0);
     vec3 sky = constants.sky_color * mix(0.2, 1.25, horizon);
@@ -81,10 +130,6 @@ vec3 hit_radiance(RtSurface surface, out vec3 base) {
 
 void main() {
     ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
-    if (constants.enabled == 0u) {
-        imageStore(raw_diffuse_image, pixel, vec4(0.0));
-        return;
-    }
     float depth;
     vec4 albedo;
     ivec2 source_extent = textureSize(depth_texture, 0);
@@ -98,8 +143,11 @@ void main() {
     vec3 normal_sample = texelFetch(normal_texture, source_pixel, 0).xyz;
     float normal_length_squared = dot(normal_sample, normal_sample);
     vec3 orm = texelFetch(orm_texture, source_pixel, 0).xyz;
+    uvec2 identity = texelFetch(identity_texture, source_pixel, 0).rg;
     if (depth >= 1.0 || albedo.a <= 0.0 || normal_length_squared < 0.5) {
         imageStore(raw_diffuse_image, pixel, vec4(0.0));
+        imageStore(raw_specular_image, pixel, vec4(0.0));
+        imageStore(raw_specular_aux_image, pixel, vec4(0.0));
         return;
     }
     vec3 normal = normal_sample * inversesqrt(normal_length_squared);
@@ -110,7 +158,7 @@ void main() {
     uint seed = pcg_hash(uint(source_pixel.x) ^
                          (uint(source_pixel.y) * 0x9e3779b9u) ^
                          (constants.presented_frame_index * 0x85ebca6bu) ^
-                         (constants.bounce * 0xc2b2ae35u));
+                         0xc2b2ae35u);
     vec3 direction = cosine_direction(normal, seed);
     hit.surface = invalid_rt_surface();
     hit.part_slot = hit.primitive = 0xffffffffu;
@@ -150,4 +198,73 @@ void main() {
     vec3 raw = primary_diffuse * bounce * orm.z *
                constants.diffuse_multiplier;
     imageStore(raw_diffuse_image, pixel, vec4(raw, 1.0));
+
+    vec3 specular = vec3(0.0);
+    vec2 specular_aux = vec2(0.0, orm.x);
+    if (identity.x < rt_materials.length() && orm.x <=
+        constants.max_reflection_roughness) {
+        RtMaterialGpu primary = rt_materials[identity.x];
+        vec3 base_color = mix(primary.base_roughness.rgb, albedo.rgb,
+                              clamp(albedo.a, 0.0, 1.0));
+        float base_roughness = clamp(primary.base_roughness.w, 0.02, 1.0);
+        float coat = clamp(primary.metal_opacity_spec_coat.w, 0.0, 1.0);
+        float coat_probability = coat / (1.0 + coat);
+        bool choose_coat = coat > 0.0 && random_float(seed) < coat_probability;
+        float lobe_probability = choose_coat ? coat_probability
+                                             : (1.0 - coat_probability);
+        float roughness = choose_coat
+            ? clamp(primary.specular_tint_coat_roughness.w, 0.02, 1.0)
+            : base_roughness;
+        vec3 f0 = choose_coat ? vec3(0.04) :
+            mix(vec3(0.04) * max(primary.metal_opacity_spec_coat.z, 0.0) *
+                    max(primary.specular_tint_coat_roughness.rgb, vec3(0.0)),
+                base_color, clamp(primary.metal_opacity_spec_coat.x, 0.0, 1.0));
+        vec4 near_h = constants.clip_to_world *
+            vec4(source_uv.x * 2.0 - 1.0, 1.0 - source_uv.y * 2.0, 0.0, 1.0);
+        vec3 near_world = near_h.xyz / near_h.w;
+        vec3 view = normalize(near_world - world);
+        vec3 tangent, bitangent;
+        basis(normal, tangent, bitangent);
+        vec3 view_local = vec3(dot(view, tangent), dot(view, bitangent),
+                               max(dot(view, normal), 1e-4));
+        vec3 half_local = sample_ggx_vndf(view_local, roughness,
+            vec2(random_float(seed), random_float(seed)));
+        vec3 half_vector = normalize(tangent * half_local.x +
+                                     bitangent * half_local.y +
+                                     normal * half_local.z);
+        vec3 reflected = reflect(-view, half_vector);
+        float n_dot_v = max(dot(normal, view), 1e-4);
+        float n_dot_l = max(dot(normal, reflected), 0.0);
+        float n_dot_h = max(dot(normal, half_vector), 0.0);
+        float v_dot_h = max(dot(view, half_vector), 1e-4);
+        float pdf = ggx_d(n_dot_h, roughness) * ggx_g1(n_dot_v, roughness) /
+                    max(4.0 * n_dot_v, 1e-6);
+        if (n_dot_l > 0.0 && pdf > 1e-8 && lobe_probability > 1e-6) {
+            hit.surface = invalid_rt_surface();
+            hit.part_slot = hit.primitive = 0xffffffffu;
+            traceRayEXT(scene, gl_RayFlagsOpaqueEXT, 0xff, 1, 0, 1,
+                        world + normal * constants.bias, constants.bias,
+                        reflected, constants.max_distance, 1);
+            vec3 spec_hit_base;
+            vec3 incoming = (hit.surface.flags & RT_SURFACE_VALID) != 0u
+                ? hit_radiance(hit.surface, spec_hit_base) : environment(reflected);
+            float g = ggx_g1(n_dot_v, roughness) *
+                      ggx_g1(n_dot_l, roughness);
+            vec3 brdf = schlick_fresnel(f0, v_dot_h) *
+                        ggx_d(n_dot_h, roughness) * g /
+                        max(4.0 * n_dot_v * n_dot_l, 1e-6);
+            float base_energy = choose_coat ? 1.0 :
+                (1.0 - coat * max(max(schlick_fresnel(vec3(0.04),
+                                                      v_dot_h).r, 0.0), 0.0));
+            specular = incoming * brdf * n_dot_l * base_energy /
+                       max(pdf * lobe_probability, 1e-6) *
+                       constants.reflection_multiplier;
+            specular_aux = vec2((hit.surface.flags & RT_SURFACE_VALID) != 0u
+                                    ? hit.surface.hit_t : constants.max_distance,
+                                roughness);
+        }
+    }
+    if (any(isnan(specular)) || any(isinf(specular))) specular = vec3(0.0);
+    imageStore(raw_specular_image, pixel, vec4(specular, 1.0));
+    imageStore(raw_specular_aux_image, pixel, vec4(specular_aux, 0.0, 0.0));
 }

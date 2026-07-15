@@ -81,4 +81,32 @@ VulkanCosineSample vulkan_cosine_sample(matter::Float3 normal, float u1,
     return {direction, cosine * 0.31830988618379067154f};
 }
 
+matter::Float3 vulkan_schlick_fresnel(matter::Float3 f0,
+                                      float view_half_cosine) noexcept {
+    const float one_minus = 1.0f - std::clamp(view_half_cosine, 0.0f, 1.0f);
+    const float factor = one_minus * one_minus * one_minus * one_minus *
+                         one_minus;
+    return {f0.x + (1.0f - f0.x) * factor,
+            f0.y + (1.0f - f0.y) * factor,
+            f0.z + (1.0f - f0.z) * factor};
+}
+
+float vulkan_ggx_reflection_pdf(float normal_half_cosine,
+                                float view_half_cosine,
+                                float roughness) noexcept {
+    const float n_dot_h = std::clamp(normal_half_cosine, 0.0f, 1.0f);
+    const float v_dot_h = std::max(std::fabs(view_half_cosine), 1e-6f);
+    const float alpha = std::max(roughness * roughness, 0.0004f);
+    const float alpha2 = alpha * alpha;
+    const float denominator = n_dot_h * n_dot_h * (alpha2 - 1.0f) + 1.0f;
+    const float distribution = alpha2 /
+        (3.14159265358979323846f * denominator * denominator);
+    return distribution * n_dot_h / (4.0f * v_dot_h);
+}
+
+float vulkan_clearcoat_selection_probability(float clearcoat) noexcept {
+    const float weight = std::clamp(clearcoat, 0.0f, 1.0f);
+    return weight / (1.0f + weight);
+}
+
 }  // namespace viewer
