@@ -11,6 +11,12 @@
 #include <unordered_map>
 #include <algorithm>
 #include <sys/stat.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOGDI
+#define NOUSER
+#include <windows.h>
+#endif
 
 // Pin the consumed (read-only) TriEx layout the serializer depends on. The TriEx
 // write path below copies only the first kTriExPad (92) named-member bytes into a
@@ -48,12 +54,18 @@ struct Reader {
     bool ok = true;
     template <class T> T get() {
         T v{};
-        if (p + sizeof(T) > end) { ok = false; return v; }
+        if (p > end || static_cast<size_t>(end - p) < sizeof(T)) {
+            ok = false;
+            return v;
+        }
         std::memcpy(&v, p, sizeof(T)); p += sizeof(T);
         return v;
     }
     const uint8_t* take(size_t n) {
-        if (p + n > end) { ok = false; return nullptr; }
+        if (p > end || static_cast<size_t>(end - p) < n) {
+            ok = false;
+            return nullptr;
+        }
         const uint8_t* r = p; p += n; return r;
     }
 };
@@ -263,16 +275,10 @@ static bool write_file_atomic(const std::string& path,
         std::remove(tmp.c_str());
         return false;
     }
-    // POSIX rename() atomically overwrites a same-name target file; Windows
-    // rename() FAILS with EEXIST if the target already exists.  For the .part
-    // cache the target is content-addressed by resolved_hash so overwriting is
-    // safe and expected on legitimate re-bakes.  Delete-then-rename gives us
-    // that semantic on Windows; on POSIX the extra remove is a no-op if the
-    // target doesn't exist (rename would have overwritten anyway).
-    std::remove(path.c_str());
-    if (std::rename(tmp.c_str(), path.c_str()) != 0) {
-        std::fprintf(stderr, "  save_v2: rename('%s' -> '%s') failed: errno=%d (%s)\n",
+    if (!replace_file_atomic(tmp, path)) {
+        std::fprintf(stderr, "  save_v2: atomic replace('%s' -> '%s') failed: errno=%d (%s)\n",
                      tmp.c_str(), path.c_str(), errno, std::strerror(errno));
+        std::remove(tmp.c_str());
         return false;
     }
     return true;
@@ -306,41 +312,84 @@ static uint32_t read_and_validate_header(Reader& r,
     return version;
 }
 
-bool is_cache_artifact_compatible(const std::string& path,
-                                  uint64_t expected_resolved_hash,
-                                  uint32_t expected_format_version) {
+bool is_cache_artifact_compatible(
+    const std::string& path, uint64_t expected_resolved_hash,
+    uint32_t expected_format_version, CacheArtifactProbeStats* stats) {
+    if (stats) *stats = CacheArtifactProbeStats{};
     FILE* f = std::fopen(path.c_str(), "rb");
     if (!f) return false;
-    std::fseek(f, 0, SEEK_END);
-    const long size = std::ftell(f);
-    std::fseek(f, 0, SEEK_SET);
-    if (size < 40) {
+    uint8_t header[40];
+    if (std::fread(header, 1, sizeof(header), f) != sizeof(header)) {
         std::fclose(f);
         return false;
     }
-    std::vector<uint8_t> bytes(static_cast<size_t>(size));
-    const bool read_ok =
-        std::fread(bytes.data(), 1, bytes.size(), f) == bytes.size();
-    std::fclose(f);
-    if (!read_ok) return false;
-
-    Reader reader{bytes.data(), bytes.data() + bytes.size()};
+    Reader reader{header, header + sizeof(header)};
     uint64_t content_hash = 0;
     if (!read_and_validate_header(reader, expected_resolved_hash,
-                                  expected_format_version, content_hash))
+                                  expected_format_version, content_hash)) {
+        std::fclose(f);
         return false;
-    if (fnv1a64(reader.p, static_cast<size_t>(reader.end - reader.p)) !=
-        content_hash)
+    }
+
+    constexpr size_t kReadChunk = 64u * 1024u;
+    const size_t material_prefix_size =
+        2u * sizeof(uint32_t) +
+        static_cast<size_t>(MaterialRegistryCount()) * sizeof(MaterialDef);
+    std::vector<uint8_t> material_prefix;
+    material_prefix.reserve(material_prefix_size);
+    uint8_t chunk[kReadChunk];
+    uint64_t computed_hash = 1469598103934665603ull;
+    while (true) {
+        const size_t got = std::fread(chunk, 1, kReadChunk, f);
+        if (got == 0) {
+            if (std::ferror(f)) {
+                std::fclose(f);
+                return false;
+            }
+            break;
+        }
+        if (stats) {
+            stats->max_read_chunk = std::max(stats->max_read_chunk, got);
+            stats->body_bytes += got;
+        }
+        if (material_prefix.size() < material_prefix_size) {
+            const size_t retain = std::min(
+                got, material_prefix_size - material_prefix.size());
+            material_prefix.insert(material_prefix.end(), chunk, chunk + retain);
+        }
+        for (size_t i = 0; i < got; ++i) {
+            computed_hash ^= chunk[i];
+            computed_hash *= 1099511628211ull;
+        }
+        if (got < kReadChunk) {
+            if (std::ferror(f)) {
+                std::fclose(f);
+                return false;
+            }
+            break;
+        }
+    }
+    if (std::ferror(f)) {
+        std::fclose(f);
+        return false;
+    }
+    std::fclose(f);
+    if (stats) stats->retained_material_bytes = material_prefix.size();
+    if (computed_hash != content_hash ||
+        material_prefix.size() != material_prefix_size)
         return false;
 
-    const uint32_t material_schema = reader.get<uint32_t>();
-    const uint32_t material_count = reader.get<uint32_t>();
-    if (!reader.ok || material_schema != MaterialRegistrySchemaVersion() ||
+    Reader material_reader{material_prefix.data(),
+                           material_prefix.data() + material_prefix.size()};
+    const uint32_t material_schema = material_reader.get<uint32_t>();
+    const uint32_t material_count = material_reader.get<uint32_t>();
+    if (!material_reader.ok ||
+        material_schema != MaterialRegistrySchemaVersion() ||
         material_count != static_cast<uint32_t>(MaterialRegistryCount()))
         return false;
     for (uint32_t i = 0; i < material_count; ++i) {
-        const uint8_t* serialized = reader.take(sizeof(MaterialDef));
-        if (!reader.ok ||
+        const uint8_t* serialized = material_reader.take(sizeof(MaterialDef));
+        if (!material_reader.ok ||
             std::memcmp(serialized, MaterialRegistryGet(static_cast<int>(i)),
                         sizeof(MaterialDef)) != 0)
             return false;
@@ -464,6 +513,16 @@ static bool read_common_body(Reader& r,
 // ─────────────────────────────────────────────────────────────────────────────
 // Public API
 // ─────────────────────────────────────────────────────────────────────────────
+
+bool replace_file_atomic(const std::string& source_path,
+                         const std::string& target_path) {
+#ifdef _WIN32
+    return MoveFileExA(source_path.c_str(), target_path.c_str(),
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+#else
+    return std::rename(source_path.c_str(), target_path.c_str()) == 0;
+#endif
+}
 
 bool save_v2(const std::string& path, const BLASManager& blas,
              const TLASManager& tlas,

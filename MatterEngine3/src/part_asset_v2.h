@@ -99,6 +99,11 @@ bool save_v2(const std::string& path, const BLASManager& blas,
              const LodLevels& lods,
              uint64_t resolved_hash);
 
+// Atomically publish source_path at target_path, replacing an existing target
+// without deleting it first. Failure leaves the previous target intact.
+bool replace_file_atomic(const std::string& source_path,
+                         const std::string& target_path);
+
 // Reconstruct managers from a v2 file; returns the child table and LOD levels to the
 // caller (passive — no backend action). Returns false (caller regenerates) on any
 // header/layout/material/corruption mismatch, format_version != 2, or I/O failure.
@@ -168,9 +173,15 @@ bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
 // common header, body content hash, and complete serialized material table
 // without reconstructing BLAS/TLAS state. False means regenerate; the existing
 // file remains in place until the normal atomic save replaces it.
-bool is_cache_artifact_compatible(const std::string& path,
-                                  uint64_t expected_resolved_hash,
-                                  uint32_t expected_format_version);
+struct CacheArtifactProbeStats {
+    size_t max_read_chunk = 0;
+    size_t retained_material_bytes = 0;
+    uint64_t body_bytes = 0;
+};
+bool is_cache_artifact_compatible(
+    const std::string& path, uint64_t expected_resolved_hash,
+    uint32_t expected_format_version,
+    CacheArtifactProbeStats* stats = nullptr);
 
 // Header sniff without a full load: returns the format_version field (0 on any
 // read/magic failure). The provider uses this to spot stale v2 flats.

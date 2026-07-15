@@ -141,6 +141,34 @@ static void write_file(const char* path, const std::vector<uint8_t>& b) {
     FILE* f = fopen(path, "wb"); fwrite(b.data(),1,b.size(),f); fclose(f);
 }
 
+static void write_text_file(const char* path, const char* text) {
+    FILE* f = fopen(path, "wb");
+    fwrite(text, 1, strlen(text), f);
+    fclose(f);
+}
+
+static void test_atomic_replace_preserves_target_on_failure() {
+    using namespace part_asset;
+    const char* target = "test_atomic_replace.target";
+    const char* source = "test_atomic_replace.source";
+    remove(target); remove(source);
+    write_text_file(target, "old");
+    CHECK(!replace_file_atomic(source, target),
+          "atomic replace reports missing-source failure");
+    std::vector<uint8_t> old = read_file(target);
+    CHECK(std::string(old.begin(), old.end()) == "old",
+          "failed atomic replace preserves old target bytes");
+
+    write_text_file(source, "new");
+    CHECK(replace_file_atomic(source, target),
+          "atomic replace succeeds over existing target");
+    std::vector<uint8_t> replaced = read_file(target);
+    CHECK(std::string(replaced.begin(), replaced.end()) == "new",
+          "successful atomic replace publishes complete new bytes");
+    CHECK(read_file(source).empty(), "successful atomic replace consumes source");
+    remove(target); remove(source);
+}
+
 static void test_save_v2_header() {
     using namespace part_asset;
     BLASManager blas; TLASManager tlas(64);
@@ -425,8 +453,40 @@ static void test_cache_artifact_compatibility_probe() {
     remove(v2_path);
     CHECK(save_v2(v2_path, blas, tlas, kids.data(), kids.size(), lods, v2_hash),
           "compat probe v2 fixture saved");
-    CHECK(is_cache_artifact_compatible(v2_path, v2_hash, kFormatVersionV2),
+    CacheArtifactProbeStats stats{};
+    CHECK(is_cache_artifact_compatible(v2_path, v2_hash, kFormatVersionV2,
+                                       &stats),
           "compat probe accepts current v2 artifact");
+    CHECK(stats.max_read_chunk <= 64u * 1024u,
+          "compat probe reads body in bounded chunks");
+    CHECK(stats.retained_material_bytes ==
+              8u + static_cast<size_t>(MaterialRegistryCount()) * sizeof(MaterialDef),
+          "compat probe retains only fixed material prefix");
+
+    const char* large_path = "test_large_compat.part";
+    BLASManager large_blas; TLASManager large_tlas(64);
+    std::vector<Tri> large_tris(2048);
+    for (size_t i = 0; i < large_tris.size(); ++i)
+        large_tris[i] = ptri(static_cast<float>(i % 64),
+                             static_cast<float>(i / 64));
+    large_blas.register_triangles(large_tris.data(),
+                                  static_cast<int>(large_tris.size()), nullptr);
+    LodLevels large_lods(1);
+    large_lods[0].blas_indices = {0u};
+    CHECK(save_v2(large_path, large_blas, large_tlas, nullptr, 0,
+                  large_lods, v2_hash + 1u),
+          "large compatibility fixture saved");
+    CacheArtifactProbeStats large_stats{};
+    CHECK(is_cache_artifact_compatible(large_path, v2_hash + 1u,
+                                       kFormatVersionV2, &large_stats),
+          "large artifact compatibility probe succeeds");
+    CHECK(large_stats.body_bytes > 2u * 64u * 1024u,
+          "large compatibility fixture spans multiple chunks");
+    CHECK(large_stats.max_read_chunk == 64u * 1024u,
+          "large artifact body reads stay at the fixed chunk bound");
+    CHECK(large_stats.retained_material_bytes ==
+              8u + static_cast<size_t>(MaterialRegistryCount()) * sizeof(MaterialDef),
+          "large probe retains no geometry bytes");
 
     std::vector<uint8_t> current_v2 = read_file(v2_path);
     std::vector<uint8_t> stale_schema = current_v2;
@@ -479,8 +539,32 @@ static void test_cache_artifact_compatibility_probe() {
                                        kFormatVersionFlat),
           "second flat compatibility pass is warm");
 
+    // Malicious/truncated material prefixes must fail closed without pointer
+    // arithmetic wrapping or out-of-bounds reads. Each body hash is valid.
+    const char* truncated_path = "test_truncated_prefix.part";
+    for (size_t body_size : {size_t(0), size_t(4), size_t(8), size_t(12)}) {
+        std::vector<uint8_t> truncated(current_v2.begin(), current_v2.begin() + 40);
+        truncated.insert(truncated.end(), current_v2.begin() + 40,
+                         current_v2.begin() + 40 + body_size);
+        const uint64_t truncated_hash =
+            fnv1a64(truncated.data() + 40, truncated.size() - 40);
+        memcpy(truncated.data() + 32, &truncated_hash, sizeof(truncated_hash));
+        write_file(truncated_path, truncated);
+        CHECK(!is_cache_artifact_compatible(truncated_path, v2_hash,
+                                            kFormatVersionV2),
+              "compat probe rejects truncated material prefix");
+        BLASManager truncated_blas; TLASManager truncated_tlas(4);
+        std::vector<ChildInstance> truncated_children;
+        LodLevels truncated_lods;
+        CHECK(!load_v2(truncated_path, v2_hash, truncated_blas,
+                       truncated_tlas, truncated_children, truncated_lods),
+              "full loader rejects malicious truncated prefix safely");
+    }
+
     remove(v2_path);
+    remove(large_path);
     remove(flat_path);
+    remove(truncated_path);
 }
 
 static void test_new_materials() {
@@ -536,6 +620,7 @@ static void test_flatten_hints_round_trip() {
 }
 
 int main() {
+    test_atomic_replace_preserves_target_on_failure();
     test_cache_path_resolved();
     test_resolved_hash();
     test_save_v2_header();

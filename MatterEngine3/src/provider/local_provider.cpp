@@ -496,14 +496,7 @@ bool LocalProvider::ensure_part_flattened(uint64_t part_hash) {
     // Identical logic to compose_world's flatten_one lambda (moved here verbatim
     // as a member; compose_world delegates to this function).
     // Transient parts live in scratch; their flats belong there too (never the cache).
-    std::string root = abs_cache_root_;
-    if (!transient_dir_.empty()) {
-        const std::string scratch_part =
-            transient_dir_ + "/" + part_asset::cache_path_resolved(part_hash);
-        if (part_asset::is_cache_artifact_compatible(
-                scratch_part, part_hash, part_asset::kFormatVersionV2))
-            root = transient_dir_;
-    }
+    const std::string root = artifact_root(part_hash);
     const std::string flat_abs_path =
         root + "/" + part_asset::cache_path_flat(part_hash);
     if (part_asset::is_cache_artifact_compatible(
@@ -521,6 +514,17 @@ bool LocalProvider::ensure_part_flattened(uint64_t part_hash) {
                (unsigned long long)part_hash, fr.error.c_str());
         return false;
     }
+}
+
+std::string LocalProvider::artifact_root(uint64_t part_hash) const {
+    if (!transient_dir_.empty()) {
+        const std::string scratch_part =
+            transient_dir_ + "/" + part_asset::cache_path_resolved(part_hash);
+        if (part_asset::is_cache_artifact_compatible(
+                scratch_part, part_hash, part_asset::kFormatVersionV2))
+            return transient_dir_;
+    }
+    return abs_cache_root_;
 }
 
 bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
@@ -565,7 +569,8 @@ bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
         // Task 7: skip roots that failed during install (root_hash == 0 → failed).
         if (ir_.root_hashes[k] == 0) continue;
         if (expand_flags_[i]) {
-            if (!append_expanded_children(abs_cache_root_, ir_.root_hashes[k],
+            if (!append_expanded_children(artifact_root(ir_.root_hashes[k]),
+                                          ir_.root_hashes[k],
                                           next_id, out.instances, err))
                 return false;
         } else {
@@ -886,8 +891,8 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
             for (uint64_t ph : to_process) {
                 visited.insert(ph);
                 ensure_part_flattened(ph);
-                const std::string flat_abs_path =
-                    abs_cache_root_ + "/" + part_asset::cache_path_flat(ph);
+                const std::string flat_abs_path = artifact_root(ph) + "/" +
+                    part_asset::cache_path_flat(ph);
                 if (!part_asset::is_cache_artifact_compatible(
                         flat_abs_path, ph, part_asset::kFormatVersionFlat))
                     continue;

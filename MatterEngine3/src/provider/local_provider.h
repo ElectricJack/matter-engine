@@ -201,6 +201,10 @@ private:
     std::string abs_shared_lib_;
     std::string abs_cache_root_;
 
+    // Select scratch for a transient hash only when its current .part is
+    // compatible; all flat probe/load/expansion paths must reuse this decision.
+    std::string artifact_root(uint64_t part_hash) const;
+
     // install_graph() output: roots split by kind, install result
     std::vector<part_graph::ChildRequest> roots_;           // all manifest roots
     std::vector<bool>                     expand_flags_;

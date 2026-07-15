@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <set>
@@ -32,16 +33,38 @@ static bool file_exists(const std::string& p) {
     return ::stat(p.c_str(), &st) == 0;
 }
 
+static std::vector<uint8_t> read_bytes(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    return std::vector<uint8_t>(std::istreambuf_iterator<char>(in), {});
+}
+
+static void write_bytes(const std::string& path,
+                        const std::vector<uint8_t>& bytes) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+}
+
+static void make_prior_schema(std::vector<uint8_t>& bytes) {
+    const uint32_t prior = MaterialRegistrySchemaVersion() - 1u;
+    std::memcpy(bytes.data() + 40, &prior, sizeof(prior));
+    const uint64_t body_hash =
+        part_asset::fnv1a64(bytes.data() + 40, bytes.size() - 40);
+    std::memcpy(bytes.data() + 32, &body_hash, sizeof(body_hash));
+}
+
 // Build a sandbox with transient (Terrain) and persistent (Rock) modules.
 // Terrain: transient leaf part (no requires)
 // Rock: persistent leaf part (no requires)
 static bool build_transient_sandbox(const std::string& root) {
-    // Clean up and create dirs
-    std::system(("rm -rf " + root).c_str());
-    std::system(("mkdir -p " + root + "/schemas").c_str());
-    std::system(("mkdir -p " + root + "/world_data/Demo").c_str());
-    std::system(("mkdir -p " + root + "/shared-lib").c_str());
-    std::system(("mkdir -p " + root + "/cache/parts").c_str());
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    ec.clear();
+    fs::create_directories(root + "/schemas", ec);
+    fs::create_directories(root + "/world_data/Demo", ec);
+    fs::create_directories(root + "/shared-lib", ec);
+    fs::create_directories(root + "/cache/parts", ec);
+    if (ec) return false;
 
     // Terrain — transient leaf (no requires)
     {
@@ -103,7 +126,8 @@ static std::unique_ptr<viewer::LocalProvider> make_provider(
 
 // Main test: fixtures and assertions from the brief
 int main() {
-    std::string sandbox = "/tmp/transient_test_" + std::to_string(getpid());
+    std::string sandbox = std::filesystem::absolute(
+        "transient_test_" + std::to_string(getpid())).string();
 
     // Arrange a provider exactly the way demand_bake_tests.cpp does
     if (!build_transient_sandbox(sandbox)) {
@@ -157,33 +181,116 @@ int main() {
           "Terrain .part does NOT exist under cache dir");
     printf("  Terrain transient file: %s\n", scratch_terrain.c_str());
 
-    // 3. Test ensure_part_flattened for transient Terrain (flatten from scratch root)
+    const std::string scratch_flat = prov->transient_dir() + "/" +
+                                     part_asset::cache_path_flat(terrain_hash);
+    const std::string cache_flat = cache_root + "/" +
+                                   part_asset::cache_path_flat(terrain_hash);
+
+    // 3. Create the first transient flat, then turn both scratch and cache copies
+    // into valid-hash prior-schema artifacts. Scratch must remain the selected
+    // root; the stale persistent copy must never win.
     {
         bool ok = prov->ensure_part_flattened(terrain_hash);
-        CHECK(ok, "ensure_part_flattened(terrain_hash) returns true");
+        CHECK(ok, "initial transient flatten succeeds");
+        std::vector<uint8_t> stale = read_bytes(scratch_flat);
+        CHECK(stale.size() >= 44, "transient flat fixture has material prefix");
+        if (stale.size() >= 44) {
+            make_prior_schema(stale);
+            write_bytes(scratch_flat, stale);
+            write_bytes(cache_flat, stale);
+        }
+        CHECK(!part_asset::is_cache_artifact_compatible(
+                  scratch_flat, terrain_hash, part_asset::kFormatVersionFlat),
+              "scratch flat is deliberately incompatible");
+        CHECK(!part_asset::is_cache_artifact_compatible(
+                  cache_flat, terrain_hash, part_asset::kFormatVersionFlat),
+              "cache flat is deliberately incompatible");
+
+        ok = prov->ensure_part_flattened(terrain_hash);
+        CHECK(ok, "incompatible transient flat automatically regenerates");
+        CHECK(part_asset::is_cache_artifact_compatible(
+                  scratch_flat, terrain_hash, part_asset::kFormatVersionFlat),
+              "regenerated transient flat is current");
+        CHECK(!part_asset::is_cache_artifact_compatible(
+                  cache_flat, terrain_hash, part_asset::kFormatVersionFlat),
+              "stale persistent flat remains untouched when scratch is selected");
+
+        BLASManager loaded_blas; TLASManager loaded_tlas(16);
+        std::vector<part_asset::FlatCluster> loaded_clusters;
+        std::vector<part_asset::FlatInstanceRef> loaded_refs;
+        CHECK(part_asset::load_flat_v3(scratch_flat, terrain_hash,
+                                       loaded_blas, loaded_tlas,
+                                       loaded_clusters, loaded_refs),
+              "regenerated transient flat loads successfully");
+
+        const std::vector<uint8_t> warm_before = read_bytes(scratch_flat);
+        CHECK(prov->ensure_part_flattened(terrain_hash),
+              "second transient ensure succeeds");
+        CHECK(read_bytes(scratch_flat) == warm_before,
+              "second transient ensure is warm and does not rewrite flat");
     }
 
     // 4. Verify Terrain's .flat.part exists in scratch, NOT in cache
     {
-        const std::string scratch_flat = prov->transient_dir() + "/" +
-                                         part_asset::cache_path_flat(terrain_hash);
-        const std::string cache_flat = cache_root + "/" +
-                                       part_asset::cache_path_flat(terrain_hash);
-
-        CHECK(part_asset::peek_format_version(scratch_flat) == part_asset::kFormatVersionFlat,
+        CHECK(part_asset::is_cache_artifact_compatible(
+                  scratch_flat, terrain_hash, part_asset::kFormatVersionFlat),
               "Terrain .flat.part exists in scratch (valid format)");
-        CHECK(part_asset::peek_format_version(cache_flat) == 0,
-              "Terrain .flat.part does NOT exist in cache (peek_format_version returns 0)");
+        CHECK(!part_asset::is_cache_artifact_compatible(
+                  cache_flat, terrain_hash, part_asset::kFormatVersionFlat),
+              "stale Terrain cache flat was not selected");
         printf("  Terrain flat in scratch: %s\n", scratch_flat.c_str());
     }
 
-    // 5. Test ensure_part_flattened for persistent Rock (flatten to cache root)
+    // 5. Put one boundary ref in the current scratch flat. connect() must load
+    // refs from that same selected root (not the stale persistent flat) and
+    // expand the referenced Rock into an additional manifest instance.
+    {
+        BLASManager flat_blas; TLASManager flat_tlas(16);
+        std::vector<part_asset::FlatCluster> clusters;
+        std::vector<part_asset::FlatInstanceRef> refs;
+        CHECK(part_asset::load_flat_v3(scratch_flat, terrain_hash, flat_blas,
+                                       flat_tlas, clusters, refs),
+              "scratch flat loads before adding boundary ref");
+        part_asset::FlatInstanceRef ref{};
+        ref.child_resolved_hash = rock_hash;
+        for (int i = 0; i < 16; ++i) ref.transform[i] = (i % 5 == 0) ? 1.0f : 0.0f;
+        refs.push_back(ref);
+        CHECK(part_asset::save_flat_v3(scratch_flat, flat_blas, flat_tlas,
+                                       clusters, refs, terrain_hash),
+              "scratch flat with boundary ref saved");
+        BLASManager verify_blas; TLASManager verify_tlas(16);
+        std::vector<part_asset::FlatCluster> verify_clusters;
+        std::vector<part_asset::FlatInstanceRef> verify_refs;
+        CHECK(part_asset::load_flat_v3(scratch_flat, terrain_hash, verify_blas,
+                                       verify_tlas, verify_clusters, verify_refs) &&
+                  verify_refs.size() == 1,
+              "scratch flat persists one boundary ref before connect");
+
+        viewer::WorldManifest manifest;
+        std::string connect_err;
+        CHECK(prov->connect(manifest, connect_err),
+              "connect succeeds with scratch flat boundary ref");
+        size_t rock_instances = 0;
+        for (const auto& instance : manifest.instances)
+            if (instance.part_hash == rock_hash) ++rock_instances;
+        CHECK(rock_instances >= 2,
+              "scratch flat boundary ref expands into an additional Rock instance");
+        BLASManager post_blas; TLASManager post_tlas(16);
+        std::vector<part_asset::FlatCluster> post_clusters;
+        std::vector<part_asset::FlatInstanceRef> post_refs;
+        CHECK(part_asset::load_flat_v3(scratch_flat, terrain_hash, post_blas,
+                                       post_tlas, post_clusters, post_refs) &&
+                  post_refs.size() == 1,
+              "connect keeps selected scratch flat and its boundary ref warm");
+    }
+
+    // 6. Test ensure_part_flattened for persistent Rock (flatten to cache root)
     {
         bool ok = prov->ensure_part_flattened(rock_hash);
         CHECK(ok, "ensure_part_flattened(rock_hash) returns true");
     }
 
-    // 6. Verify Rock's .flat.part exists in cache, NOT in scratch
+    // 7. Verify Rock's .flat.part exists in cache, NOT in scratch
     {
         const std::string cache_flat = cache_root + "/" +
                                        part_asset::cache_path_flat(rock_hash);
@@ -197,7 +304,7 @@ int main() {
         printf("  Rock flat in cache: %s\n", cache_flat.c_str());
     }
 
-    // 7. Verify PartStore::get_or_load finds Terrain via scratch lookup
+    // 8. Verify PartStore::get_or_load finds Terrain via scratch lookup
     // Create a test PartStore with the scratch dir configured
     viewer::PartStore store(cache_root);
     store.set_scratch_dir(prov->transient_dir());
@@ -213,13 +320,13 @@ int main() {
         return 1;
     }
 
-    // 8. Release Terrain and verify scratch files are gone
+    // 9. Release Terrain and verify scratch files are gone
     prov->release_transient(terrain_hash);
     CHECK(!file_exists(scratch_terrain),
           "Terrain scratch .part file deleted after release_transient");
     printf("  Terrain scratch file deleted\n");
 
-    // 9. Verify Rock's artifact IS in cache (unchanged for persistent modules)
+    // 10. Verify Rock's artifact IS in cache (unchanged for persistent modules)
     const std::string cache_rock = cache_root + "/" +
                                    part_asset::cache_path_resolved(rock_hash);
     CHECK(file_exists(cache_rock),
@@ -227,7 +334,8 @@ int main() {
     printf("  Rock cache file: %s\n", cache_rock.c_str());
 
     // Cleanup
-    std::system(("rm -rf " + sandbox).c_str());
+    std::error_code cleanup_ec;
+    std::filesystem::remove_all(sandbox, cleanup_ec);
 
     printf("ALL TESTS PASSED\n");
     return check_summary();
