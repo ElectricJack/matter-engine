@@ -3589,6 +3589,8 @@ void WorldSession::finish_vulkan_frame(uint64_t frame_serial, bool presented) {
         impl_->vk_temporal_token == 0) {
         return;
     }
+    if (impl_->vk_scene)
+        impl_->vk_scene->finish_ray_tracing_frame(frame_serial, presented);
     if (presented)
         (void)impl_->vk_temporal.commit_presented(impl_->vk_temporal_token);
     else

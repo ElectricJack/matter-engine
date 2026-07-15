@@ -14,7 +14,7 @@ layout(push_constant) uniform SceneLighting {
     vec3 sun_color;
     float pad0;
     vec3 sky_color;
-    float pad1;
+    float debug_view;
 } lighting;
 
 void main() {
@@ -34,6 +34,10 @@ void main() {
     vec3 diffuse = albedo.rgb * (1.0 - metallic);
     vec3 ambient = diffuse * lighting.sky_color * ao;
     float visibility = texture(visibility_texture, in_uv).r;
+    if (lighting.debug_view > 0.5) {
+        out_hdr = vec4(vec3(visibility), 1.0);
+        return;
+    }
     vec3 sun = diffuse * lighting.sun_color * direct * lighting.sun_intensity *
                visibility;
     float encoded_emission = normal_payload.w;

@@ -28,11 +28,29 @@ void main() {
     vec4 world_h = constants.clip_to_world *
                    vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
     vec3 world = world_h.xyz / world_h.w;
-    visibility = 1.0;
-    traceRayEXT(scene, gl_RayFlagsTerminateOnFirstHitEXT |
-                        gl_RayFlagsOpaqueEXT,
-                0xff, 0, 0, 0, world + constants.to_sun * constants.bias,
-                constants.bias, normalize(constants.to_sun),
-                constants.max_distance, 0);
-    imageStore(visibility_image, pixel, vec4(visibility));
+    vec3 sun = normalize(constants.to_sun);
+    vec3 tangent = normalize(abs(sun.y) < 0.99
+                                 ? cross(sun, vec3(0.0, 1.0, 0.0))
+                                 : cross(sun, vec3(1.0, 0.0, 0.0)));
+    vec3 bitangent = cross(sun, tangent);
+    uint sample_count = clamp(constants.samples, 1u, 16u);
+    float sum = 0.0;
+    for (uint sample_index = 0; sample_index < sample_count; ++sample_index) {
+        uint seed = uint(pixel.x) * 1973u + uint(pixel.y) * 9277u +
+                    sample_index * 26699u + 911u;
+        seed = (seed << 13u) ^ seed;
+        float a = float(seed & 0xffffu) / 65535.0 * 6.28318530718;
+        float radius = sample_count == 1u ? 0.0 :
+                       0.002 * sqrt(float(sample_index) + 0.5);
+        vec3 direction = normalize(sun + radius *
+            (cos(a) * tangent + sin(a) * bitangent));
+        visibility = 1.0;
+        traceRayEXT(scene, gl_RayFlagsTerminateOnFirstHitEXT |
+                            gl_RayFlagsOpaqueEXT,
+                    0xff, 0, 0, 0, world + sun * constants.bias,
+                    constants.bias, direction, constants.max_distance, 0);
+        sum += visibility;
+    }
+    imageStore(visibility_image, pixel,
+               vec4(sum / float(sample_count)));
 }

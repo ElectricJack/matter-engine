@@ -20,6 +20,8 @@ struct VulkanRayTracingCapabilities {
     bool buffer_device_address = false;
     bool acceleration_structure = false;
     bool ray_tracing_pipeline = false;
+    bool storage_image_r8 = false;
+    bool shader_storage_image_extended_formats = false;
 };
 
 struct VulkanRayTracingProperties {
@@ -28,6 +30,8 @@ struct VulkanRayTracingProperties {
     uint32_t shader_group_base_alignment = 0;
     uint32_t max_ray_recursion_depth = 0;
     uint32_t min_acceleration_structure_scratch_offset_alignment = 0;
+    uint32_t max_shader_group_stride = 0;
+    uint32_t max_ray_dispatch_invocation_count = 0;
 };
 
 struct VulkanRayTracingSettings {

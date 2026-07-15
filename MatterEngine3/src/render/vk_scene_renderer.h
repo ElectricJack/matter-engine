@@ -2,6 +2,7 @@
 
 #include <vulkan/vulkan.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
@@ -60,6 +61,7 @@ bool checked_dispatch_groups(uint32_t instance_count,
 bool checked_size_to_int(size_t count, int& result, const char* label,
                          std::string& error);
 size_t frame_constants_size_for_test() noexcept;
+VkPipelineStageFlags2 ray_depth_destination_stages() noexcept;
 }  // namespace vk_scene_detail
 
 static_assert(sizeof(DrawCommand) == sizeof(VkDrawIndirectCommand),
@@ -202,6 +204,7 @@ public:
     bool record_ray_traced_shadows(const matter::VulkanFrame& frame,
                                    const FrameMatrices& matrices,
                                    std::string& error);
+    void finish_ray_tracing_frame(uint64_t frame_serial, bool succeeded);
     const std::vector<PartCommandRange>& test_recorded_draw_ranges() const {
         return recorded_draw_ranges_;
     }
@@ -235,6 +238,8 @@ public:
     void set_ray_tracing_settings(
         const matter::VulkanRayTracingSettings& settings) {
         ray_tracing_settings_ = settings;
+        ray_tracing_settings_.samples =
+            std::max(1u, std::min(settings.samples, 16u));
     }
     // Blit the real HDR world composite into the currently acquired swapchain
     // image, leaving it ready for UI dynamic rendering.
@@ -245,6 +250,13 @@ public:
     bool readback_raster_pixel(uint32_t x, uint32_t y,
                                VkRasterPixel& pixel, std::string& error);
     VkDeviceAddress test_rt_geometry_address(uint64_t part_hash) const;
+    bool test_rt_blas_built(uint64_t part_hash) const;
+    uint64_t test_rt_blas_candidate_serial(uint64_t part_hash) const;
+    VkDeviceAddress test_rt_sbt_address() const { return rt_sbt_address_; }
+    VkDeviceSize test_rt_sbt_stride() const { return rt_sbt_stride_; }
+    VkDeviceAddress test_rt_scratch_address(uint32_t frame_slot) const;
+    uint32_t test_last_rt_samples() const { return last_rt_samples_; }
+    bool test_last_rt_debug_view() const { return last_rt_debug_view_; }
     float test_shadow_visibility_for_ray(bool occluded) const {
         return ray_tracing_settings_.enabled && occluded ? 0.0f : 1.0f;
     }
@@ -356,6 +368,7 @@ private:
         std::shared_ptr<matter::VkAccelerationStructureResource> rt_blas;
         uint32_t rt_primitive_count = 0;
         bool rt_blas_built = false;
+        uint64_t rt_blas_candidate_serial = 0;
     };
 
     struct DeviceLimits {
@@ -375,7 +388,7 @@ private:
         matter::VkImageResource dlss_output;
         matter::VkBufferResource rt_instances;
         matter::VkBufferResource rt_scratch;
-        matter::VkBufferResource sbt;
+        matter::VkBufferResource rt_tlas_scratch;
         matter::VkAccelerationStructureResource rt_tlas;
         VkExtent2D dlss_output_extent{};
         VkDescriptorSet descriptor_sets[2]{};
@@ -388,7 +401,6 @@ private:
     bool create_pipeline(std::string& error);
     bool create_raster_pipelines(std::string& error);
     bool create_ray_tracing_pipeline(std::string& error);
-    bool ensure_rt_visibility(VkExtent2D extent, std::string& error);
     bool ensure_raster_targets(uint32_t width, uint32_t height,
                                std::string& error);
     bool ensure_dlss_output(FrameResources& frame, VkExtent2D output_extent,
@@ -398,6 +410,9 @@ private:
     bool ensure_buffer(matter::VkBufferResource& buffer,
                        VkDeviceSize required_size, VkBufferUsageFlags usage,
                        std::string& error, bool* replaced = nullptr);
+    bool ensure_build_buffer(matter::VkBufferResource& buffer,
+                             VkDeviceSize required_size,
+                             VkBufferUsageFlags usage, std::string& error);
     void update_descriptor(VkDescriptorSet set, uint32_t binding,
                            VkDescriptorType type,
                            const matter::VkBufferResource& buffer);
@@ -456,6 +471,8 @@ private:
     matter::VkImageResource hdr_;
     matter::VkImageResource visibility_;
     matter::VkBufferResource rt_sbt_;
+    VkDeviceAddress rt_sbt_address_ = 0;
+    VkDeviceSize rt_sbt_stride_ = 0;
     VkExtent2D raster_extent_{};
     bool raster_attachments_ready_ = false;
 
@@ -487,6 +504,8 @@ private:
     DeviceLimits physical_limits_{};
     VkSceneLighting lighting_{};
     matter::VulkanRayTracingSettings ray_tracing_settings_{};
+    uint32_t last_rt_samples_ = 1;
+    bool last_rt_debug_view_ = false;
     TemporalFrame temporal_frame_{};
     uint64_t instance_generation_ = 1;
     uint64_t static_generation_ = 1;

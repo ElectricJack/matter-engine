@@ -294,6 +294,10 @@ bool supports_native_ray_tracing(
          "VkPhysicalDeviceAccelerationStructureFeaturesKHR::accelerationStructure"},
         {capabilities.ray_tracing_pipeline,
          "VkPhysicalDeviceRayTracingPipelineFeaturesKHR::rayTracingPipeline"},
+        {capabilities.storage_image_r8,
+         "VK_FORMAT_R8_UNORM storage image support"},
+        {capabilities.shader_storage_image_extended_formats,
+         "VkPhysicalDeviceFeatures::shaderStorageImageExtendedFormats"},
     };
     for (const auto& requirement : requirements) {
         if (!requirement.present) {
@@ -900,6 +904,16 @@ struct VulkanDevice::Impl {
         rt_capabilities.buffer_device_address = rt_features12.bufferDeviceAddress;
         rt_capabilities.acceleration_structure = rt_as_features.accelerationStructure;
         rt_capabilities.ray_tracing_pipeline = rt_pipeline_features.rayTracingPipeline;
+        rt_capabilities.shader_storage_image_extended_formats =
+            rt_features2.features.shaderStorageImageExtendedFormats;
+        VkFormatProperties2 r8_properties{
+            VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2};
+        vkGetPhysicalDeviceFormatProperties2(physical_device,
+                                             VK_FORMAT_R8_UNORM,
+                                             &r8_properties);
+        rt_capabilities.storage_image_r8 =
+            (r8_properties.formatProperties.optimalTilingFeatures &
+             VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0;
         ray_tracing_enabled =
             supports_native_ray_tracing(rt_capabilities, ray_tracing_reason);
         if (ray_tracing_enabled) {
@@ -961,6 +975,8 @@ struct VulkanDevice::Impl {
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         features2.features.drawIndirectFirstInstance = VK_TRUE;
         features2.features.multiDrawIndirect = VK_TRUE;
+        features2.features.shaderStorageImageExtendedFormats =
+            ray_tracing_enabled ? VK_TRUE : VK_FALSE;
         features2.pNext = &features12;
 
         VkDeviceCreateInfo create{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
@@ -993,6 +1009,10 @@ struct VulkanDevice::Impl {
                 pipeline_properties.shaderGroupBaseAlignment;
             ray_tracing_properties.max_ray_recursion_depth =
                 pipeline_properties.maxRayRecursionDepth;
+            ray_tracing_properties.max_shader_group_stride =
+                pipeline_properties.maxShaderGroupStride;
+            ray_tracing_properties.max_ray_dispatch_invocation_count =
+                pipeline_properties.maxRayDispatchInvocationCount;
             ray_tracing_properties
                 .min_acceleration_structure_scratch_offset_alignment =
                 as_properties.minAccelerationStructureScratchOffsetAlignment;

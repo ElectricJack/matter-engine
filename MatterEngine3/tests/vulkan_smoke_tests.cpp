@@ -49,9 +49,18 @@ void run_ray_tracing_capability_contract_tests() {
     complete.buffer_device_address = true;
     complete.acceleration_structure = true;
     complete.ray_tracing_pipeline = true;
+    complete.storage_image_r8 = true;
+    complete.shader_storage_image_extended_formats = true;
     CHECK(matter::supports_native_ray_tracing(complete, reason) &&
               reason.empty(),
           "complete fake RTX capability set enables native ray tracing");
+    complete.storage_image_r8 = false;
+    CHECK(!matter::supports_native_ray_tracing(complete, reason) &&
+              reason.find("R8_UNORM") != std::string::npos,
+          "missing R8 storage support cleanly disables native ray tracing");
+    CHECK((viewer::vk_scene_detail::ray_depth_destination_stages() &
+           VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR) != 0,
+          "depth barrier includes ray tracing shader reads");
 }
 
 struct RetainProbe {
@@ -809,6 +818,8 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
           "cleared background produces finite HDR");
     CHECK(close4(background.hdr, {0.0f, 0.0f, 0.0f, 1.0f}, 2e-3f),
           "cleared background produces deterministic black HDR");
+    CHECK(center.visibility == 1.0f && background.visibility == 1.0f,
+          "disabled RT GPU clear writes full visibility");
     CHECK(center.hdr.x > background.hdr.x &&
               center.hdr.y > background.hdr.y &&
               center.hdr.z > background.hdr.z,
@@ -999,7 +1010,9 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
               properties.shader_group_base_alignment != 0 &&
               properties.shader_group_handle_size != 0 &&
               properties.shader_group_base_alignment >=
-                  properties.shader_group_handle_alignment,
+                  properties.shader_group_handle_alignment &&
+              properties.max_shader_group_stride != 0 &&
+              properties.max_ray_dispatch_invocation_count >= 320u * 200u,
           "queried SBT handle and base alignments are retained");
 
     std::string error;
@@ -1054,7 +1067,8 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
     enabled.enabled = true;
     enabled.max_distance = 100.0f;
     enabled.bias = 0.001f;
-    enabled.samples = 1;
+    enabled.samples = 4;
+    enabled.debug_view = true;
     renderer.set_ray_tracing_settings(enabled);
     viewer::VkSceneLighting lighting{};
     lighting.sun_direction = {0.0f, -1.0f, 0.0f};
@@ -1086,13 +1100,47 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                   renderer.record_composite_to_swapchain(frame, error),
               error.empty() ? "record BLAS TLAS native shadow trace"
                             : error.c_str());
+        CHECK(!renderer.test_rt_blas_built(920) &&
+                  renderer.test_rt_blas_candidate_serial(920) == frame.serial,
+              "BLAS build stays candidate-only until frame success");
+        CHECK(renderer.test_rt_sbt_address() %
+                      properties.shader_group_base_alignment == 0 &&
+                  renderer.test_rt_sbt_stride() <=
+                      properties.max_shader_group_stride,
+              "SBT device address and stride obey queried limits");
+        CHECK(renderer.test_rt_scratch_address(frame.frame_slot) %
+                      properties
+                          .min_acceleration_structure_scratch_offset_alignment ==
+                  0,
+              "AS scratch address obeys queried minimum alignment");
+        CHECK(renderer.test_last_rt_samples() == 4 &&
+                  renderer.test_last_rt_debug_view(),
+              "ray generation records sample and debug settings");
         CHECK(matter::immediate_submit_count() == immediate_before,
               "native RT frame records without immediate submit");
         CHECK(vulkan.end_frame(frame, error),
               error.empty() ? "submit native RT frame" : error.c_str());
+        renderer.finish_ray_tracing_frame(frame.serial, false);
+        CHECK(!renderer.test_rt_blas_built(920) &&
+                  renderer.test_rt_blas_candidate_serial(920) == 0,
+              "failed frame rolls back candidate BLAS state");
+        CHECK(vulkan.begin_frame(frame, error) &&
+                  renderer.prepare_frame(frame, matrices, camera.position,
+                                         1.0f, error) &&
+                  renderer.record_cull_and_render(
+                      frame, matrices, camera.position, 1.0f, error) &&
+                  renderer.record_composite_to_swapchain(frame, error) &&
+                  vulkan.end_frame(frame, error),
+              error.empty() ? "retry rolled-back native RT frame"
+                            : error.c_str());
+        renderer.finish_ray_tracing_frame(frame.serial, true);
+        CHECK(renderer.test_rt_blas_built(920) &&
+                  renderer.test_rt_blas_candidate_serial(920) == 0,
+              "successful retry publishes candidate BLAS state");
         float minimum_visibility = 1.0f;
         float maximum_visibility = 0.0f;
         bool visibility_reads_ok = true;
+        bool debug_output_matches = true;
         for (uint32_t y = 20; y < 200; y += 20) {
             for (uint32_t x = 20; x < 320; x += 20) {
                 viewer::VkRasterPixel pixel{};
@@ -1104,6 +1152,11 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                     std::min(minimum_visibility, pixel.visibility);
                 maximum_visibility =
                     std::max(maximum_visibility, pixel.visibility);
+                debug_output_matches =
+                    debug_output_matches &&
+                    std::fabs(pixel.hdr.x - pixel.visibility) < 0.01f &&
+                    std::fabs(pixel.hdr.y - pixel.visibility) < 0.01f &&
+                    std::fabs(pixel.hdr.z - pixel.visibility) < 0.01f;
             }
             if (!visibility_reads_ok) break;
         }
@@ -1112,6 +1165,8 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
               error.empty()
                   ? "native two-triangle visibility contains shadowed and open pixels"
                   : error.c_str());
+        CHECK(debug_output_matches,
+              "RT debug view composites grayscale visibility");
         std::printf("RT visibility range: %.3f .. %.3f\n",
                     minimum_visibility, maximum_visibility);
     }
@@ -2350,7 +2405,9 @@ int main() {
             glfwTerminate();
             return check_summary();
         }
-        if (smoke_mode && std::string(smoke_mode) == "raster") {
+        if (smoke_mode &&
+            (std::string(smoke_mode) == "raster" ||
+             std::string(smoke_mode) == "rt-disabled")) {
             run_raster_path(*vulkan);
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
