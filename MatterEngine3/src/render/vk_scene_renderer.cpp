@@ -2590,6 +2590,9 @@ bool VkSceneRenderer::record_ray_traced_shadows(
     const VkStridedDeviceAddressRegionKHR callable{};
     cmd_trace(frame.command_buffer, &raygen, &miss, &hit, &callable,
               trace_extent.width, trace_extent.height, 1);
+    last_rt_effective_ = true;
+    ++last_rt_trace_dispatches_;
+    last_rt_fallback_reason_.clear();
     matter::record_image_transition(
         frame.command_buffer, visibility_,
         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -2617,6 +2620,16 @@ bool VkSceneRenderer::record_cull_and_render(
     matter::Float3 camera_eye, float pixel_budget, std::string& error) {
     error.clear();
     recorded_draw_ranges_.clear();
+    last_rt_available_ = vulkan_->ray_tracing_available();
+    last_rt_effective_ = false;
+    last_rt_trace_dispatches_ = 0;
+    if (!ray_tracing_settings_.enabled) {
+        last_rt_fallback_reason_ = "disabled by render options";
+    } else if (!last_rt_available_) {
+        last_rt_fallback_reason_ = vulkan_->ray_tracing_unavailable_reason();
+    } else {
+        last_rt_fallback_reason_ = "no traceable RT instances";
+    }
     if (fail_if_poisoned(error)) return false;
     if (!initialized_ && !init(error)) return false;
     if (!vulkan_->multi_draw_indirect_enabled()) {

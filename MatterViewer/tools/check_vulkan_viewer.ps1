@@ -16,6 +16,7 @@ $compat = Get-Content -Raw (Join-Path $root 'MatterEngine3\src\render\vulkan_onl
 $cell = Get-Content -Raw (Join-Path $root 'MatterSurfaceLib\src\cell.cpp')
 $runtimeSmokePath = Join-Path $root 'MatterViewer\tools\smoke_vulkan_viewer.ps1'
 $runtimeSmoke = if (Test-Path $runtimeSmokePath) { Get-Content -Raw $runtimeSmokePath } else { '' }
+$interopSmoke = Get-Content -Raw (Join-Path $root 'MatterViewer\tools\smoke_vulkan_interop_faults.ps1')
 $perfScriptPath = Join-Path $root 'MatterViewer\tools\perf_vulkan_instancing.ps1'
 $perfScript = if (Test-Path $perfScriptPath) { Get-Content -Raw $perfScriptPath } else { '' }
 $failures = [System.Collections.Generic.List[string]]::new()
@@ -101,6 +102,16 @@ if ($commonPresent -lt 0 -or $queuePresent -lt 0 -or $commonPresent -gt $queuePr
 Require-Text $streamline 'sl.interposer.dll is missing beside the executable' 'truthful Streamline runtime absence'
 Require-Text $runtimeSmoke 'DLSS selected=Native active=Native' 'runtime Native fallback assertion'
 Require-Text $runtimeSmoke 'MATTER_DISABLE_VK_RT' 'runtime RT toggle assertion'
+foreach ($mode in @("'rt'", "'rt-disabled'", "'rt-unavailable'")) {
+    Require-Text $interopSmoke $mode 'executable final RT smoke mode'
+}
+@('vk_rt_available', 'vk_rt_effective', 'vk_rt_trace_dispatches',
+  'vk_rt_fallback_reason') | ForEach-Object {
+    Require-Text $world $_ 'renderer-observed RT FrameStats'
+    Require-Text $main $_ 'renderer-observed RT JSON evidence'
+    Require-Text $perfScript $_ 'renderer-observed RT performance gate'
+}
+Require-Text $runtimeSmoke 'Vulkan RT observed effective=' 'renderer-observed viewer smoke assertion'
 
 # Task 9 completion review: Vulkan world rendering must consume authored
 # materials/lights and must not expose controls that are active no-ops.

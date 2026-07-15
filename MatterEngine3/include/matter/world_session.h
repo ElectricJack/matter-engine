@@ -79,6 +79,12 @@ struct FrameStats {
     uint32_t dlss_output_height = 0;
     uint64_t dlss_reset_count = 0;
     std::string dlss_reason;
+    bool vk_rt_available = false;
+    bool vk_rt_effective = false;
+    uint32_t vk_rt_trace_dispatches = 0;
+    uint32_t vk_rt_samples = 1;
+    bool vk_rt_debug_view = false;
+    std::string vk_rt_fallback_reason;
 };
 
 class WorldSession {

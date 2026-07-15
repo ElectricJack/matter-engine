@@ -43,11 +43,13 @@ Native/Native fallback with the runtime reason:
 - Active mode/extent: selected Native, active Native, 1280x720 -> 1280x720
 - Resize evidence: selected Native, active Native, 960x540 -> 960x540
 - RT: available=true; enabled=true and enabled=false viewer cases both verified
-- RT settings in performance JSON: samples=1, debug_view=false
+- Renderer-observed RT: available=true, effective=true, trace dispatches=1,
+  fallback reason empty; disabled/unavailable executable cases observe zero
+  dispatches and explicit reasons
 - Persistent DLSS resets during stable sample: 0
 - Static vertex/cluster/stable-instance upload deltas: 0/0/0
 - Immediate-submit delta: 0
-- Cornell cadence: 95 frames, 32.03 FPS, median 31.22 ms, p95 31.95 ms
+- Cornell cadence: 180 frames, 60.01 FPS, median 16.66 ms, p95 16.70 ms
 - Vulkan validation errors: 0
 
 Commands and results:
@@ -57,7 +59,8 @@ make -C MatterViewer windows HAVE_CUDA=1 CUDA_PATH=/c/PROGRA~1/NVIDIA~2/CUDA/v13
 PASS (CUDA=1, OptiX=1, Vulkan-only Windows viewer)
 
 make -C MatterViewer vulkan-smoke HAVE_CUDA=1 CUDA_PATH=/c/PROGRA~1/NVIDIA~2/CUDA/v13.3 -j1
-PASS (all six interop fault modes, validation errors 0)
+PASS (six interop fault modes plus RT enabled/disabled/unavailable; every
+process bounded, exit 0, ALL PASS, validation errors 0)
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File MatterViewer/tools/check_vulkan_viewer.ps1
 PASS
@@ -66,7 +69,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File MatterViewer/tools/smoke
 PASS (five viewer cases, Native fallback, resize, RT toggle, validation errors 0)
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File MatterViewer/tools/perf_vulkan_instancing.ps1 -World CornellBox -WarmupSeconds 1 -SampleSeconds 3 -MinimumFps 0
-PASS (95 frames; truthful JSON evidence above)
+PASS (180 frames; renderer-observed RT JSON evidence above)
 ```
 
 The requested StressForest50k command reaches the known pre-existing content
@@ -96,5 +99,24 @@ checker binds the following evidence to source or executable coverage:
   errors.
 
 Independent reviewer dispatch was attempted but the agent thread limit was
-already reached. A complete self-review of `git diff 41b5a5e` and the Task 6
-working tree found no Critical or Important issue. No renderer change was needed.
+already reached. The initial self-review of `git diff 41b5a5e` and the Task 6
+working tree did not identify the evidence gaps found by the later independent
+review. The required review fix pass is recorded below.
+
+## Review Fix Pass
+
+The subsequent independent review found two Important evidence gaps. Both are
+fixed with regression coverage:
+
+1. `make vulkan-smoke` previously launched only the six CUDA/Vulkan interop
+   fault modes. Its PowerShell aggregate now also launches `rt`, `rt-disabled`,
+   and `rt-unavailable` as separate bounded processes and requires exit 0,
+   `ALL PASS`, and `validation errors: 0` from each. The RT executable tests
+   assert a real trace dispatch for enabled RT, no dispatch plus the disabled
+   reason, and no dispatch plus the forced-unavailable reason.
+2. Viewer/performance RT evidence previously serialized requested settings.
+   `VkSceneRenderer` now publishes per-frame observed availability, effective
+   execution, trace-dispatch count, samples/debug state, and fallback reason
+   through `FrameStats`. Runtime and performance gates require effective RT to
+   have at least one trace dispatch and no fallback reason; inactive RT must
+   have zero dispatches and an explicit reason.

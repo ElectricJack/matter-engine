@@ -148,6 +148,16 @@ function Invoke-ViewerCase([string]$Name, [bool]$Resize,
     if ($joined -notmatch "Vulkan RT available=true enabled=$expectedRtEnabled reason=.+") {
         throw "$Name did not report expected Vulkan RT enabled state $expectedRtEnabled"
     }
+    if ($DisableRt) {
+        if ($joined -notmatch
+                'Vulkan RT observed effective=false dispatches=0 reason=disabled by render options' -or
+            $joined -match 'Vulkan RT observed effective=true') {
+            throw "$Name did not observe an RT-disabled renderer frame"
+        }
+    } elseif ($joined -notmatch
+            'Vulkan RT observed effective=true dispatches=[1-9][0-9]* reason=none') {
+        throw "$Name did not observe a native RT trace dispatch"
+    }
     if ($joined -notmatch
             'Vulkan material diagnostic:.*ids=[1-9][0-9]*.*tinted=[1-9][0-9]*.*red=[1-9][0-9]*.*green=[1-9][0-9]*') {
         throw "$Name did not preserve Cornell material IDs and red/green tints through RasterMeshData"

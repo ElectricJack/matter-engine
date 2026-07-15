@@ -3501,6 +3501,20 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     const auto& instances = impl_->vk_instance_cache.instances();
     if (instances.empty()) {
         impl_->stats.instances_resolved = 0;
+        impl_->stats.vk_rt_available =
+            impl_->engine->render_device->ray_tracing_available();
+        impl_->stats.vk_rt_effective = false;
+        impl_->stats.vk_rt_trace_dispatches = 0;
+        impl_->stats.vk_rt_samples =
+            std::max(1u, opts.vulkan_ray_tracing.samples);
+        impl_->stats.vk_rt_debug_view = opts.vulkan_ray_tracing.debug_view;
+        impl_->stats.vk_rt_fallback_reason =
+            !opts.vulkan_ray_tracing.enabled
+                ? "disabled by render options"
+                : (!impl_->stats.vk_rt_available
+                       ? impl_->engine->render_device
+                             ->ray_tracing_unavailable_reason()
+                       : "no drawable instances");
         (void)begin_temporal({});
         record_vulkan_clear(frame, impl_->sky_clear);
         return true;
@@ -3578,6 +3592,14 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.dlss_output_height = frame.extent.height;
     impl_->stats.dlss_reset_count = impl_->vk_scene->dlss_reset_count();
     impl_->stats.dlss_reason = impl_->vk_scene->dlss_reason();
+    impl_->stats.vk_rt_available = impl_->vk_scene->rt_available_observed();
+    impl_->stats.vk_rt_effective = impl_->vk_scene->rt_effective_observed();
+    impl_->stats.vk_rt_trace_dispatches =
+        impl_->vk_scene->rt_trace_dispatches_observed();
+    impl_->stats.vk_rt_samples = impl_->vk_scene->rt_samples_observed();
+    impl_->stats.vk_rt_debug_view = impl_->vk_scene->rt_debug_view_observed();
+    impl_->stats.vk_rt_fallback_reason =
+        impl_->vk_scene->rt_fallback_reason_observed();
     impl_->stats.parts_baked = static_cast<uint32_t>(impl_->store->loaded_count());
     impl_->stats.instances_total = static_cast<uint32_t>(impl_->state.entries().size());
     impl_->stats.triangles = 0;

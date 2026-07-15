@@ -193,6 +193,16 @@ public:
     matter::DlssMode active_dlss_mode() const;
     const std::string& dlss_reason() const;
     uint64_t dlss_reset_count() const { return dlss_reset_count_; }
+    bool rt_available_observed() const { return last_rt_available_; }
+    bool rt_effective_observed() const { return last_rt_effective_; }
+    uint32_t rt_trace_dispatches_observed() const {
+        return last_rt_trace_dispatches_;
+    }
+    uint32_t rt_samples_observed() const { return last_rt_samples_; }
+    bool rt_debug_view_observed() const { return last_rt_debug_view_; }
+    const std::string& rt_fallback_reason_observed() const {
+        return last_rt_fallback_reason_;
+    }
     bool consume_dlss_history_reset();
     bool prepare_frame(const matter::VulkanFrame& frame,
                        const FrameMatrices& matrices,
@@ -512,6 +522,10 @@ private:
     matter::VulkanRayTracingSettings ray_tracing_settings_{};
     uint32_t last_rt_samples_ = 1;
     bool last_rt_debug_view_ = false;
+    bool last_rt_available_ = false;
+    bool last_rt_effective_ = false;
+    uint32_t last_rt_trace_dispatches_ = 0;
+    std::string last_rt_fallback_reason_;
     TemporalFrame temporal_frame_{};
     uint64_t instance_generation_ = 1;
     uint64_t static_generation_ = 1;

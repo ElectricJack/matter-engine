@@ -1000,6 +1000,29 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
                 background.albedo.x, background.albedo.y,
                 background.albedo.z, background.depth, background.hdr.x,
                 background.hdr.y, background.hdr.z);
+    matter::VulkanRayTracingSettings disabled_rt{};
+    disabled_rt.enabled = false;
+    renderer.set_ray_tracing_settings(disabled_rt);
+    matter::VulkanFrame acquired{};
+    CHECK(vulkan.begin_frame(acquired, error),
+          error.empty() ? "begin RT-disabled production frame" : error.c_str());
+    if (acquired.command_buffer != VK_NULL_HANDLE) {
+        CHECK(renderer.prepare_frame(acquired, frame, camera.position, 1.0f,
+                                     error) &&
+                  renderer.record_cull_and_render(
+                      acquired, frame, camera.position, 1.0f, error) &&
+                  renderer.record_composite_to_swapchain(acquired, error),
+              error.empty() ? "record RT-disabled production frame"
+                            : error.c_str());
+        CHECK(!renderer.rt_effective_observed() &&
+                  renderer.rt_trace_dispatches_observed() == 0 &&
+                  renderer.rt_fallback_reason_observed() ==
+                      "disabled by render options",
+              "RT-disabled production frame observes no dispatch and its reason");
+        CHECK(vulkan.end_frame(acquired, error),
+              error.empty() ? "submit RT-disabled production frame"
+                            : error.c_str());
+    }
 }
 
 void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
@@ -1119,6 +1142,11 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
         CHECK(renderer.test_last_rt_samples() == 4 &&
                   renderer.test_last_rt_debug_view(),
               "ray generation records sample and debug settings");
+        CHECK(renderer.rt_available_observed() &&
+                  renderer.rt_effective_observed() &&
+                  renderer.rt_trace_dispatches_observed() == 1 &&
+                  renderer.rt_fallback_reason_observed().empty(),
+              "native RT frame observes one effective trace dispatch");
         CHECK(matter::immediate_submit_count() == immediate_before,
               "native RT frame records without immediate submit");
         CHECK(vulkan.end_frame(frame, error),
@@ -1233,6 +1261,12 @@ void run_forced_ray_tracing_unavailable_path(matter::VulkanDevice& vulkan) {
         CHECK(recorded && vulkan.end_frame(frame, error),
               error.empty() ? "submit forced-unavailable fallback frame"
                             : error.c_str());
+        CHECK(!renderer.rt_available_observed() &&
+                  !renderer.rt_effective_observed() &&
+                  renderer.rt_trace_dispatches_observed() == 0 &&
+                  renderer.rt_fallback_reason_observed().find("forced") !=
+                      std::string::npos,
+              "forced-unavailable frame observes no dispatch and its reason");
         if (!recorded) break;
         vulkan.wait_idle();
         const viewer::VkRasterAttachments attachments =

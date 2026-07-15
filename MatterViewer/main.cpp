@@ -182,8 +182,7 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
                        std::vector<double> frame_times, const PerfCounters& start,
                        const PerfCounters& finish,
                        const matter::FrameStats& frame_stats,
-                       uint64_t dlss_reset_start, bool rt_available,
-                       const matter::VulkanRayTracingSettings& rt_settings,
+                       uint64_t dlss_reset_start,
                        uint32_t validation_errors,
                        std::string& error) {
     if (frame_times.empty()) {
@@ -227,12 +226,21 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            << (frame_stats.dlss_reset_count >= dlss_reset_start
                    ? frame_stats.dlss_reset_count - dlss_reset_start
                    : frame_stats.dlss_reset_count)
-           << ",\"rt_available\":" << (rt_available ? "true" : "false")
+           << ",\"rt_available\":"
+           << (frame_stats.vk_rt_available ? "true" : "false")
            << ",\"rt_enabled\":"
-           << (rt_settings.enabled && rt_available ? "true" : "false")
-           << ",\"rt_samples\":" << rt_settings.samples
+           << (frame_stats.vk_rt_effective ? "true" : "false")
+           << ",\"rt_samples\":" << frame_stats.vk_rt_samples
            << ",\"rt_debug_view\":"
-           << (rt_settings.debug_view ? "true" : "false")
+           << (frame_stats.vk_rt_debug_view ? "true" : "false")
+           << ",\"vk_rt_available\":"
+           << (frame_stats.vk_rt_available ? "true" : "false")
+           << ",\"vk_rt_effective\":"
+           << (frame_stats.vk_rt_effective ? "true" : "false")
+           << ",\"vk_rt_trace_dispatches\":"
+           << frame_stats.vk_rt_trace_dispatches
+           << ",\"vk_rt_fallback_reason\":\""
+           << json_string(frame_stats.vk_rt_fallback_reason) << "\""
            << ",\"fallback_reason\":\""
            << json_string(frame_stats.dlss_reason) << "\""
            << ",\"validation_errors\":" << validation_errors << "}\n";
@@ -418,6 +426,10 @@ int main() {
     uint32_t reported_dlss_output_width = UINT32_MAX;
     uint32_t reported_dlss_output_height = UINT32_MAX;
     uint64_t reported_dlss_resets = UINT64_MAX;
+    bool reported_vk_rt_effective = false;
+    uint32_t reported_vk_rt_dispatches = UINT32_MAX;
+    std::string reported_vk_rt_reason;
+    bool reported_vk_rt_once = false;
     viewer::CameraController camera_controller;
     const char* screenshot_env = std::getenv("MATTER_SCREENSHOT");
     const std::string screenshot_path = screenshot_env ? screenshot_env : "";
@@ -661,6 +673,26 @@ int main() {
             reported_dlss_output_height = frame_stats.dlss_output_height;
             reported_dlss_resets = frame_stats.dlss_reset_count;
         }
+        const bool vk_rt_observation_valid =
+            frame_stats.vk_rt_effective ||
+            !frame_stats.vk_rt_fallback_reason.empty();
+        if (vk_rt_observation_valid &&
+            (!reported_vk_rt_once ||
+             reported_vk_rt_effective != frame_stats.vk_rt_effective ||
+             reported_vk_rt_dispatches != frame_stats.vk_rt_trace_dispatches ||
+             reported_vk_rt_reason != frame_stats.vk_rt_fallback_reason)) {
+            std::printf(
+                "Vulkan RT observed effective=%s dispatches=%u reason=%s\n",
+                frame_stats.vk_rt_effective ? "true" : "false",
+                frame_stats.vk_rt_trace_dispatches,
+                frame_stats.vk_rt_fallback_reason.empty()
+                    ? "none"
+                    : frame_stats.vk_rt_fallback_reason.c_str());
+            reported_vk_rt_effective = frame_stats.vk_rt_effective;
+            reported_vk_rt_dispatches = frame_stats.vk_rt_trace_dispatches;
+            reported_vk_rt_reason = frame_stats.vk_rt_fallback_reason;
+            reported_vk_rt_once = true;
+        }
         stats.frame_ms = std::chrono::duration<float, std::milli>(
                              std::chrono::steady_clock::now() - render_start).count();
         stats.fps = stats.frame_ms > 0.0f ? 1000.0f / stats.frame_ms : 0.0f;
@@ -782,9 +814,7 @@ int main() {
                             perf_frame_times, perf_start_counters,
                             perf_finish_counters, frame_stats,
                             perf_start_dlss_resets,
-                            vulkan->ray_tracing_available(),
-                            options.vulkan_ray_tracing, validation_errors,
-                            perf_error)) {
+                            validation_errors, perf_error)) {
                         std::fprintf(stderr, "FATAL: perf: %s\n",
                                      perf_error.c_str());
                         fatal_error = true;

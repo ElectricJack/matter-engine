@@ -63,7 +63,9 @@ try {
                           'dlss_internal_width','dlss_internal_height',
                           'dlss_output_width','dlss_output_height',
                           'dlss_reset_delta','rt_available','rt_enabled',
-                          'rt_samples','rt_debug_view','fallback_reason')) {
+                          'rt_samples','rt_debug_view','fallback_reason',
+                          'vk_rt_available','vk_rt_effective',
+                          'vk_rt_trace_dispatches','vk_rt_fallback_reason')) {
         if ($null -eq $sample.PSObject.Properties[$field]) {
             throw "performance JSON missing RTX/DLSS field '$field'"
         }
@@ -98,6 +100,27 @@ try {
     if ($sample.rt_enabled -and -not $sample.rt_available) {
         throw 'ray tracing was reported enabled while unavailable'
     }
+    if ($sample.rt_available -ne $sample.vk_rt_available -or
+        $sample.rt_enabled -ne $sample.vk_rt_effective) {
+        throw 'legacy RT fields disagree with renderer-observed RT state'
+    }
+    if ($sample.vk_rt_effective) {
+        if ($sample.vk_rt_trace_dispatches -lt 1) {
+            throw 'effective renderer RT reported no trace dispatch'
+        }
+        if (-not [string]::IsNullOrWhiteSpace(
+                [string]$sample.vk_rt_fallback_reason)) {
+            throw 'effective renderer RT reported a fallback reason'
+        }
+    } else {
+        if ($sample.vk_rt_trace_dispatches -ne 0) {
+            throw 'inactive renderer RT reported a trace dispatch'
+        }
+        if ([string]::IsNullOrWhiteSpace(
+                [string]$sample.vk_rt_fallback_reason)) {
+            throw 'inactive renderer RT omitted its fallback reason'
+        }
+    }
     if ($sample.rt_samples -lt 1) {
         throw "invalid ray tracing sample count $($sample.rt_samples)"
     }
@@ -106,14 +129,15 @@ try {
     }
     Write-Output (("Vulkan instancing performance: {0:N2} FPS, median {1:N2} ms, " +
                    "p95 {2:N2} ms, DLSS {3}/{4} {5}x{6}->{7}x{8}, " +
-                   "RT available={9} enabled={10} samples={11}, fallback='{12}'") -f
+                   "RT available={9} effective={10} dispatches={11}, " +
+                   "fallback='{12}'") -f
                    $sample.median_fps, $sample.median_frame_ms,
                    $sample.p95_frame_ms, $sample.selected_dlss_mode,
                    $sample.active_dlss_mode, $sample.dlss_internal_width,
                    $sample.dlss_internal_height, $sample.dlss_output_width,
                    $sample.dlss_output_height, $sample.rt_available,
-                   $sample.rt_enabled, $sample.rt_samples,
-                   $sample.fallback_reason)
+                   $sample.vk_rt_effective, $sample.vk_rt_trace_dispatches,
+                   $sample.vk_rt_fallback_reason)
 } finally {
     @((Get-ChildItem Env:) | Where-Object { $_.Name -like 'MATTER_*' }) |
         ForEach-Object { Remove-Item -LiteralPath ("Env:" + $_.Name) }
