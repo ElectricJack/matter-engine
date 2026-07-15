@@ -9,6 +9,9 @@ layout(set = 0, binding = 3) uniform sampler2D normalTex;
 layout(set = 0, binding = 4) uniform usampler2D identityTex;
 layout(set = 0, binding = 5) uniform usampler2D historyTex;
 layout(rgba16f, set = 0, binding = 6) uniform writeonly image2D outSignal;
+layout(std430, set = 0, binding = 7) buffer PassMarkers {
+    uint observedStepWidth[5];
+} markers;
 
 layout(push_constant) uniform AtrousConstants {
     uvec2 extent;
@@ -18,6 +21,10 @@ layout(push_constant) uniform AtrousConstants {
     float phiLuminance;
     float phiDepth;
     float normalPower;
+    uint passIndex;
+    uint pad0;
+    uint pad1;
+    uint pad2;
 } pc;
 
 float luminance(vec3 value) {
@@ -31,6 +38,8 @@ bool finite3(vec3 value) {
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
     if (any(greaterThanEqual(pixel, ivec2(pc.extent)))) return;
+    if (all(equal(pixel, ivec2(0))) && pc.passIndex < 5u)
+        markers.observedStepWidth[pc.passIndex] = pc.stepWidth;
 
     vec4 centerSignal = texelFetch(signalTex, pixel, 0);
     float centerDepth = texelFetch(depthTex, pixel, 0).r;

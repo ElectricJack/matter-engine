@@ -229,7 +229,8 @@ struct GiAtrousGpuFixture {
 
 struct GiAtrousGpuResult {
     std::vector<matter::Float4> filtered;
-    std::array<uint32_t, 5> step_widths{};
+    std::vector<matter::Float4> penultimate;
+    std::array<uint32_t, 5> gpu_step_widths{};
 };
 #endif
 
@@ -577,6 +578,7 @@ private:
         matter::VkBufferResource rt_parts;
         matter::VkBufferResource rt_error_counter;
         matter::VkBufferResource rt_test_output;
+        matter::VkBufferResource gi_atrous_markers;
         VkExtent2D dlss_output_extent{};
         VkDescriptorSet descriptor_sets[2]{};
         VkDescriptorSet composite_descriptor_set = VK_NULL_HANDLE;

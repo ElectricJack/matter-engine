@@ -52,8 +52,10 @@ struct alignas(16) VulkanGiAtrousConstants {
     float phi_luminance;
     float phi_depth;
     float normal_power;
+    uint32_t pass_index;
+    uint32_t pad[3];
 };
-static_assert(sizeof(VulkanGiAtrousConstants) == 32);
+static_assert(sizeof(VulkanGiAtrousConstants) == 48);
 
 bool rt_material_is_opaque(const MaterialGpuRecord& material) {
     return material.metal_opacity_spec_coat[1] >= 1.0f &&
@@ -948,12 +950,14 @@ bool VkSceneRenderer::create_gi_temporal_pipeline(std::string& error) {
 
 bool VkSceneRenderer::create_gi_atrous_pipeline(std::string& error) {
     const VkDevice device = vulkan_->device();
-    std::array<VkDescriptorSetLayoutBinding, 7> bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 8> bindings{};
     for (uint32_t binding = 0; binding < 6; ++binding)
         bindings[binding] = descriptor_binding(
             binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             VK_SHADER_STAGE_COMPUTE_BIT);
     bindings[6] = descriptor_binding(6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                     VK_SHADER_STAGE_COMPUTE_BIT);
+    bindings[7] = descriptor_binding(7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                      VK_SHADER_STAGE_COMPUTE_BIT);
     VkDescriptorSetLayoutCreateInfo set_create{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
@@ -1515,7 +1519,7 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     }
     const VkDescriptorPoolSize pool_sizes[] = {
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 6},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 9},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
          frame_slot_count * 34},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 10}};
@@ -1614,6 +1618,9 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
                                      sizeof(GpuRtCounters),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
             !ensure_candidate_buffer(frame.rt_test_output, 18 * sizeof(uint32_t),
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+            !ensure_candidate_buffer(frame.gi_atrous_markers,
+                                     5 * sizeof(uint32_t),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
             vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
             return false;
@@ -2604,20 +2611,21 @@ bool VkSceneRenderer::test_dispatch_gi_atrous_fixture(
     result = {};
     const size_t pixel_count =
         static_cast<size_t>(fixture.extent.width) * fixture.extent.height;
-    if (fixture.extent.width != 9 || fixture.extent.height != 9 ||
+    if (fixture.extent.width < 33 || fixture.extent.height == 0 ||
         fixture.signal.size() != pixel_count ||
         fixture.moments.size() != pixel_count ||
         fixture.depth.size() != pixel_count ||
         fixture.normal.size() != pixel_count ||
         fixture.material_index.size() != pixel_count ||
         fixture.history_length.size() != pixel_count) {
-        error = "GI A-trous GPU fixture requires complete 9x9 inputs";
+        error = "GI A-trous GPU fixture requires complete inputs at least 33 pixels wide";
         return false;
     }
     vulkan_->wait_idle();
     const float saved_scale = gi_settings_.trace_scale;
     gi_settings_.trace_scale = 1.0f;
-    if (!ensure_raster_targets(9, 9, error)) {
+    if (!ensure_raster_targets(fixture.extent.width, fixture.extent.height,
+                               error)) {
         gi_settings_.trace_scale = saved_scale;
         return false;
     }
@@ -2637,7 +2645,7 @@ bool VkSceneRenderer::test_dispatch_gi_atrous_fixture(
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, upload, error) ||
         !matter::create_buffer(
-            *vulkan_, pixel_count * 8, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            *vulkan_, pixel_count * 16, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
             VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
                 VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
@@ -2678,11 +2686,12 @@ bool VkSceneRenderer::test_dispatch_gi_atrous_fixture(
         VkBuffer upload;
         VkBuffer readback;
         VkDeviceSize offsets[6];
+        VkExtent2D extent;
         bool ok = true;
         std::string* error;
     } record{this, upload.buffer, readback.buffer,
              {signal_offset, moments_offset, depth_offset, normal_offset,
-              identity_offset, history_offset}, true, &error};
+              identity_offset, history_offset}, fixture.extent, true, &error};
     const uint64_t saved_candidate_serial = gi_candidate_frame_serial_;
     const uint32_t saved_composite_index = gi_composite_history_index_;
     const bool saved_filtered_valid = gi_filtered_valid_;
@@ -2707,7 +2716,7 @@ bool VkSceneRenderer::test_dispatch_gi_atrous_fixture(
             copy.bufferOffset = item.offsets[index];
             copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
             copy.imageSubresource.layerCount = 1;
-            copy.imageExtent = {9, 9, 1};
+            copy.imageExtent = {item.extent.width, item.extent.height, 1};
             vkCmdCopyBufferToImage(command_buffer, item.upload,
                                    images[index]->image,
                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
@@ -2719,22 +2728,60 @@ bool VkSceneRenderer::test_dispatch_gi_atrous_fixture(
         fake.frame_slot_count =
             static_cast<uint32_t>(renderer.frames_.size());
         fake.serial = 0x4154524fu;
+        FrameResources& resources = renderer.frames_[fake.frame_slot];
+        vkCmdFillBuffer(command_buffer, resources.gi_atrous_markers.buffer,
+                        0, 5 * sizeof(uint32_t), 0);
+        VkBufferMemoryBarrier2 clear_to_compute{
+            VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+        clear_to_compute.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        clear_to_compute.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        clear_to_compute.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        clear_to_compute.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        clear_to_compute.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        clear_to_compute.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        clear_to_compute.buffer = resources.gi_atrous_markers.buffer;
+        clear_to_compute.offset = 0;
+        clear_to_compute.size = 5 * sizeof(uint32_t);
+        VkDependencyInfo clear_dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        clear_dependency.bufferMemoryBarrierCount = 1;
+        clear_dependency.pBufferMemoryBarriers = &clear_to_compute;
+        vkCmdPipelineBarrier2(command_buffer, &clear_dependency);
         item.ok = renderer.record_gi_atrous(fake, *item.error, false);
         if (!item.ok) return;
-        matter::VkImageResource& output =
-            renderer.gi_atrous_[renderer.gi_filtered_index_];
-        transition_for_use(command_buffer, output,
-                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                           VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                           VK_ACCESS_2_TRANSFER_READ_BIT,
-                           VK_IMAGE_ASPECT_COLOR_BIT);
-        VkBufferImageCopy copy{};
-        copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        copy.imageSubresource.layerCount = 1;
-        copy.imageExtent = {9, 9, 1};
-        vkCmdCopyImageToBuffer(command_buffer, output.image,
+        matter::VkImageResource* outputs[2] = {
+            &renderer.gi_atrous_[renderer.gi_filtered_index_],
+            &renderer.gi_atrous_[renderer.gi_filtered_index_ ^ 1u]};
+        for (uint32_t index = 0; index < 2; ++index) {
+            transition_for_use(command_buffer, *outputs[index],
                                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                               item.readback, 1, &copy);
+                               VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                               VK_ACCESS_2_TRANSFER_READ_BIT,
+                               VK_IMAGE_ASPECT_COLOR_BIT);
+            VkBufferImageCopy copy{};
+            copy.bufferOffset = static_cast<VkDeviceSize>(index) *
+                                item.extent.width * item.extent.height * 8;
+            copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            copy.imageSubresource.layerCount = 1;
+            copy.imageExtent = {item.extent.width, item.extent.height, 1};
+            vkCmdCopyImageToBuffer(command_buffer, outputs[index]->image,
+                                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                   item.readback, 1, &copy);
+        }
+        VkBufferMemoryBarrier2 markers_to_host{
+            VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+        markers_to_host.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        markers_to_host.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        markers_to_host.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+        markers_to_host.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+        markers_to_host.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        markers_to_host.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        markers_to_host.buffer = resources.gi_atrous_markers.buffer;
+        markers_to_host.offset = 0;
+        markers_to_host.size = 5 * sizeof(uint32_t);
+        VkDependencyInfo marker_dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        marker_dependency.bufferMemoryBarrierCount = 1;
+        marker_dependency.pBufferMemoryBarriers = &markers_to_host;
+        vkCmdPipelineBarrier2(command_buffer, &marker_dependency);
     };
     const bool submitted = matter::submit_immediate(
         *vulkan_, callback, &record, error,
@@ -2746,24 +2793,37 @@ bool VkSceneRenderer::test_dispatch_gi_atrous_fixture(
          gi_history_[gi_composite_history_index_].normal.lifetime,
          gi_history_[gi_composite_history_index_].identity.lifetime,
          gi_history_[gi_composite_history_index_].history_length.lifetime,
-         gi_atrous_[0].lifetime, gi_atrous_[1].lifetime});
+         gi_atrous_[0].lifetime, gi_atrous_[1].lifetime,
+         frames_[active_frame_index_].gi_atrous_markers.lifetime});
     gi_candidate_frame_serial_ = saved_candidate_serial;
     gi_composite_history_index_ = saved_composite_index;
     gi_filtered_valid_ = saved_filtered_valid;
     gi_filtered_index_ = saved_filtered_index;
     if (!submitted || !record.ok) return false;
-    std::vector<uint16_t> packed(pixel_count * 4);
+    std::vector<uint16_t> packed(pixel_count * 8);
     if (!matter::readback_buffer(*vulkan_, readback, packed.data(),
                                  packed.size() * sizeof(uint16_t), 0, error))
         return false;
     result.filtered.resize(pixel_count);
-    for (size_t i = 0; i < pixel_count; ++i)
+    result.penultimate.resize(pixel_count);
+    for (size_t i = 0; i < pixel_count; ++i) {
         result.filtered[i] = {
             half_to_float(packed[i * 4]),
             half_to_float(packed[i * 4 + 1]),
             half_to_float(packed[i * 4 + 2]),
             half_to_float(packed[i * 4 + 3])};
-    result.step_widths = {1, 2, 4, 8, 16};
+        const size_t offset = pixel_count * 4 + i * 4;
+        result.penultimate[i] = {
+            half_to_float(packed[offset]),
+            half_to_float(packed[offset + 1]),
+            half_to_float(packed[offset + 2]),
+            half_to_float(packed[offset + 3])};
+    }
+    if (!matter::readback_buffer(
+            *vulkan_, frames_[active_frame_index_].gi_atrous_markers,
+            result.gpu_step_widths.data(),
+            result.gpu_step_widths.size() * sizeof(uint32_t), 0, error))
+        return false;
     return true;
 }
 #endif
@@ -2936,7 +2996,7 @@ bool VkSceneRenderer::record_gi_atrous(const matter::VulkanFrame& frame,
             inputs[set_index], &guide.moments, &guide.depth,
             &guide.normal, &guide.identity, &guide.history_length};
         VkDescriptorImageInfo infos[7]{};
-        VkWriteDescriptorSet writes[7]{};
+        VkWriteDescriptorSet writes[8]{};
         for (uint32_t binding = 0; binding < 6; ++binding) {
             infos[binding] = {composite_sampler_, sampled_images[binding]->view,
                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -2957,7 +3017,16 @@ bool VkSceneRenderer::record_gi_atrous(const matter::VulkanFrame& frame,
         writes[6].descriptorCount = 1;
         writes[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         writes[6].pImageInfo = &infos[6];
-        vkUpdateDescriptorSets(vulkan_->device(), 7, writes, 0, nullptr);
+        const VkDescriptorBufferInfo marker_info{
+            resources.gi_atrous_markers.buffer, 0,
+            5 * sizeof(uint32_t)};
+        writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[7].dstSet = resources.gi_atrous_descriptor_sets[set_index];
+        writes[7].dstBinding = 7;
+        writes[7].descriptorCount = 1;
+        writes[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[7].pBufferInfo = &marker_info;
+        vkUpdateDescriptorSets(vulkan_->device(), 8, writes, 0, nullptr);
     }
 
     constexpr uint32_t steps[5] = {1, 2, 4, 8, 16};
@@ -2989,6 +3058,7 @@ bool VkSceneRenderer::record_gi_atrous(const matter::VulkanFrame& frame,
         constants.phi_luminance = 4.0f;
         constants.phi_depth = 0.02f;
         constants.normal_power = 64.0f;
+        constants.pass_index = iteration;
         vkCmdPushConstants(frame.command_buffer, gi_atrous_pipeline_layout_,
                            VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(constants),
                            &constants);
@@ -3015,7 +3085,8 @@ bool VkSceneRenderer::record_gi_atrous(const matter::VulkanFrame& frame,
         {guide.radiance.lifetime, guide.moments.lifetime,
          guide.depth.lifetime, guide.normal.lifetime,
          guide.identity.lifetime, guide.history_length.lifetime,
-         gi_atrous_[0].lifetime, gi_atrous_[1].lifetime},
+         gi_atrous_[0].lifetime, gi_atrous_[1].lifetime,
+         resources.gi_atrous_markers.lifetime},
         error);
 }
 
