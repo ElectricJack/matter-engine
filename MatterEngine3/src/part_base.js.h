@@ -4,6 +4,11 @@ globalThis.MAT = {
   bark: 14, leaf: 15, dirt: 16, snow: 17,
   grass: 2, stone: 8, stoneDark: 9, rock: 11,
   sand: 13, water: 7, metal: 3, glass: 4, light: 5,
+  greenGlass: 6,
+  plaster: 18, charcoal: 19, chrome: 20, goldRough: 21,
+  copper: 22, ceramic: 23, lacquerRed: 24,
+  lightCool: 25, lightWarmLow: 26, glassSmoke: 27,
+  wax: 28, foliageThin: 29,
 };
 globalThis.SHAPE = { triangles: 0, strip: 1, fan: 2, polygon: 3 };
 globalThis.JOIN = { miter: 0, bevel: 1, round: 2 };

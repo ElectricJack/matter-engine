@@ -1,12 +1,30 @@
 #include "material_registry.h"
 #include "../../MatterEngine3/src/render/vk_gi_contract.h"
+#include "../../MatterEngine3/src/part_base.js.h"
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cmath>
+#include <cstring>
+#include <initializer_list>
 
 static int failures = 0;
 #define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); ++failures; } } while (0)
+
+static bool nearf(float a, float b, float eps = 1e-6f) {
+    return std::fabs(a - b) <= eps;
+}
+
+static uint64_t fnv1a64(const void* data, size_t size) {
+    const auto* bytes = static_cast<const unsigned char*>(data);
+    uint64_t hash = 1469598103934665603ull;
+    for (size_t i = 0; i < size; ++i) {
+        hash ^= bytes[i];
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
 
 int main() {
     // Glass (id 4 in the ported table) is translucent; steel-like metal (id 3) is not.
@@ -55,7 +73,77 @@ int main() {
           "RTX scattering shape vec4 begins at byte 112");
     CHECK(offsetof(MaterialGpuRecord, flags_misc) == 128,
           "RTX flags uvec4 begins at byte 128");
-    CHECK(MaterialRegistrySchemaVersion() == 2u, "material schema version is 2");
+    CHECK(MaterialRegistryCount() == 30, "garden registry has stable count 30");
+    CHECK(MaterialRegistrySchemaVersion() == 3u, "material schema version is 3");
+    CHECK(fnv1a64(buf, 18u * MATERIAL_FLOATS_PER_DEF * sizeof(float)) ==
+              0x69c22a3502ba9490ull,
+          "legacy IDs 0-17 keep byte-identical 12-float packing");
+
+    struct ExpectedBase { int id; float r,g,b,rough,metal; };
+    const ExpectedBase expected[] = {
+        {18,0.82f,0.78f,0.72f,0.92f,0.0f},
+        {19,0.035f,0.04f,0.05f,0.75f,0.0f},
+        {20,0.62f,0.65f,0.70f,0.03f,1.0f},
+        {21,0.83f,0.57f,0.17f,0.36f,1.0f},
+        {22,0.90f,0.32f,0.12f,0.18f,1.0f},
+        {23,0.82f,0.86f,0.90f,0.22f,0.0f},
+        {24,0.45f,0.015f,0.02f,0.38f,0.0f},
+        {25,0.35f,0.65f,1.00f,1.00f,0.0f},
+        {26,1.00f,0.50f,0.15f,1.00f,0.0f},
+        {27,0.16f,0.18f,0.22f,0.04f,0.0f},
+        {28,0.85f,0.42f,0.24f,0.62f,0.0f},
+        {29,0.12f,0.32f,0.08f,0.75f,0.0f},
+    };
+    for (const auto& e : expected) {
+        const MaterialDef* m = MaterialRegistryGet(e.id);
+        CHECK(nearf(m->albedo[0], e.r) && nearf(m->albedo[1], e.g) &&
+                  nearf(m->albedo[2], e.b), "garden material base color");
+        CHECK(nearf(m->roughness, e.rough), "garden material roughness");
+        CHECK(nearf(m->metallic, e.metal), "garden material metallic");
+        CHECK(MaterialMergeGroup(e.id) == e.id - 4,
+              "garden material stable merge group 14-25");
+    }
+
+    CHECK(nearf(records[23].metal_opacity_spec_coat[3], 1.0f) &&
+              nearf(records[23].specular_tint_coat_roughness[3], 0.04f),
+          "ceramic packs clearcoat lobe");
+    CHECK(nearf(records[24].metal_opacity_spec_coat[3], 0.85f) &&
+              nearf(records[24].specular_tint_coat_roughness[3], 0.08f),
+          "lacquer packs rough clearcoat lobe");
+    CHECK(nearf(records[25].emission_strength[0], 0.25f) &&
+              nearf(records[25].emission_strength[1], 0.55f) &&
+              nearf(records[25].emission_strength[2], 1.0f) &&
+              nearf(records[25].emission_strength[3], 6.0f),
+          "cool light packs colored emission");
+    CHECK(nearf(records[26].emission_strength[3], 1.5f),
+          "low warm light packs authored strength");
+    CHECK(nearf(records[27].transmission[0], 0.85f) &&
+              nearf(records[27].transmission[1], 1.48f) &&
+              nearf(records[27].transmission[2], 1.0f) &&
+              nearf(records[27].transmission[3], 1.5f) &&
+              (records[27].flags_misc[0] & MATERIAL_VOLUME_BOUNDARY) != 0,
+          "smoke glass packs future volume transport");
+    CHECK(MaterialIsTransparent(27) != 0,
+          "smoke glass participates in current nonopaque classification");
+    CHECK(nearf(records[28].scattering[3], 0.80f) &&
+              nearf(records[28].scattering_shape[0], 0.35f),
+          "wax packs future scattering");
+    CHECK(nearf(records[29].scattering[3], 0.85f) &&
+              (records[29].flags_misc[0] &
+               (MATERIAL_THIN_WALLED | MATERIAL_DOUBLE_SIDED)) ==
+                  (MATERIAL_THIN_WALLED | MATERIAL_DOUBLE_SIDED),
+          "thin foliage packs future thin scattering");
+    CHECK(MaterialIsTransparent(28) == 0 && MaterialIsTransparent(29) == 0,
+          "scattering materials do not become carve volumes");
+
+    for (const char* mapping : {
+             "greenGlass: 6", "plaster: 18", "charcoal: 19", "chrome: 20",
+             "goldRough: 21", "copper: 22", "ceramic: 23", "lacquerRed: 24",
+             "lightCool: 25", "lightWarmLow: 26", "glassSmoke: 27",
+             "wax: 28", "foliageThin: 29"}) {
+        CHECK(std::strstr(kPartBaseJS, mapping) != nullptr,
+              "Part DSL exposes stable garden material name");
+    }
     CHECK(records[1].specular_tint_coat_roughness[0] > 0.99f &&
           records[1].specular_tint_coat_roughness[1] > 0.99f &&
           records[1].specular_tint_coat_roughness[2] > 0.99f,

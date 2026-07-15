@@ -568,7 +568,8 @@ static void test_cache_artifact_compatibility_probe() {
 }
 
 static void test_new_materials() {
-    CHECK(MaterialRegistryCount() == 18, "registry has 18 materials through snow");
+    CHECK(MaterialRegistryCount() == 30,
+          "registry has 30 materials through the garden presets");
     const MaterialDef* bark = MaterialRegistryGet(14);
     CHECK(bark->albedo[0] > 0.30f && bark->albedo[2] < 0.20f, "material 14 is brown bark");
     const MaterialDef* leaf = MaterialRegistryGet(15);

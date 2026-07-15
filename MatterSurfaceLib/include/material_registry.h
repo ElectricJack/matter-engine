@@ -17,7 +17,7 @@ typedef enum MaterialSurfaceFlags {
     MATERIAL_VOLUME_BOUNDARY = 1u << 3
 } MaterialSurfaceFlags;
 
-enum { MATERIAL_SCHEMA_VERSION = 2 };
+enum { MATERIAL_SCHEMA_VERSION = 3 };
 
 typedef struct {
     float albedo[3];      // base color
