@@ -407,6 +407,7 @@ private:
         matter::VkAccelerationStructureResource rt_tlas;
         VkExtent2D dlss_output_extent{};
         VkDescriptorSet descriptor_sets[2]{};
+        VkDescriptorSet composite_descriptor_set = VK_NULL_HANDLE;
         uint64_t static_generation = 0;
         uint64_t instance_generation = 0;
         uint64_t command_generation = 0;
@@ -434,6 +435,7 @@ private:
     bool ensure_frame_resources(uint32_t frame_slot_count,
                                 std::string& error);
     void update_frame_descriptors(FrameResources& frame);
+    void update_composite_descriptor(FrameResources& frame);
     bool upload_scene_buffers(FrameResources& frame, bool reset_stats,
                               std::string& error);
     bool upload_frame_constants(FrameResources& frame,
@@ -461,8 +463,6 @@ private:
     VkDescriptorSetLayout composite_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout composite_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline composite_pipeline_ = VK_NULL_HANDLE;
-    VkDescriptorPool composite_descriptor_pool_ = VK_NULL_HANDLE;
-    VkDescriptorSet composite_descriptor_set_ = VK_NULL_HANDLE;
     VkSampler composite_sampler_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout rt_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout rt_pipeline_layout_ = VK_NULL_HANDLE;

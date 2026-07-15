@@ -85,15 +85,9 @@ TemporalFrame TemporalState::begin(
 
     frame.previous_unjittered =
         frame.reset ? frame.current_unjittered : presented_.unjittered;
-    // Project both current and previous geometry through the candidate's
-    // Halton offset. This keeps static rigid geometry at exactly zero while
-    // retaining a jittered motion-vector convention for Streamline.
     frame.previous_jittered = frame.reset
                                   ? frame.current_jittered
-                                  : jitter_frame(presented_.unjittered,
-                                                 frame.jitter_pixels[0],
-                                                 frame.jitter_pixels[1],
-                                                 internal_extent);
+                                  : presented_.jittered;
     frame.instances.reserve(instances.size());
     for (const TemporalInstance& instance : instances) {
         const auto previous = presented_.transforms.find(instance.instance_id);
@@ -112,6 +106,7 @@ bool TemporalState::commit_presented(std::uint64_t attempt_token) {
     if (!has_candidate_ || candidate_.frame.attempt_token != attempt_token)
         return false;
     presented_.unjittered = candidate_.frame.current_unjittered;
+    presented_.jittered = candidate_.frame.current_jittered;
     presented_.internal_extent = candidate_.frame.internal_extent;
     presented_.output_extent = candidate_.frame.output_extent;
     presented_.transforms = std::move(candidate_.transforms);

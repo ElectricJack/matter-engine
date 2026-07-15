@@ -55,6 +55,7 @@ public:
 private:
     struct PresentedState {
         FrameMatrices unjittered{};
+        FrameMatrices jittered{};
         VkExtent2D internal_extent{};
         VkExtent2D output_extent{};
         std::map<std::uint64_t, matter::Mat4f> transforms;

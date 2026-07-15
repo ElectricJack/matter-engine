@@ -217,3 +217,74 @@ Generate independent review package from pre-Task-1 through HEAD; fix every Crit
 
     git add MatterViewer/tools/check_vulkan_viewer.ps1 MatterViewer/tools/smoke_vulkan_viewer.ps1 MatterViewer/tools/perf_vulkan_instancing.ps1 .superpowers/sdd/progress.md
     git commit -m "test(vulkan): verify RTX and DLSS SR viewer"
+
+---
+
+### Task 7: Preserve Presented Temporal Jitter
+
+**Files:**
+- Modify: `MatterEngine3/src/render/vk_temporal.h`
+- Modify: `MatterEngine3/src/render/vk_temporal.cpp`
+- Test: `MatterEngine3/tests/vulkan_smoke_tests.cpp`
+
+**Interfaces:** `TemporalState::begin` consumes the last successfully presented
+candidate; `TemporalState::commit_presented` publishes both its unjittered and
+jittered matrices.
+
+- [ ] **Step 1: Write the failing temporal test**
+
+Change the static-frame assertion to require the second Halton sample relative
+to the actually presented first sample: velocity `(-0.25, 1.0 / 3.0)` pixels,
+and require `previous_jittered` to equal the first committed projection.
+
+- [ ] **Step 2: Run the executable smoke and verify RED**
+
+Run the strict CUDA Vulkan smoke executable. Expected: the static velocity and
+previous-presented projection assertions fail because both projections use the
+candidate jitter.
+
+- [ ] **Step 3: Retain and consume presented jittered matrices**
+
+Add a jittered matrix to `PresentedState`, assign it only in
+`commit_presented`, and use it for non-reset `previous_jittered` frames. Keep
+failed/discarded candidates from advancing history.
+
+- [ ] **Step 4: Run the focused smoke and verify GREEN**
+
+Run the same executable mode. Expected: Halton-delta, failed-present, and
+successful-present temporal assertions pass.
+
+---
+
+### Task 8: Retain Fallback Visibility Per Submitted Frame
+
+**Files:**
+- Modify: `MatterEngine3/src/render/vk_scene_renderer.cpp`
+- Test: `MatterEngine3/tests/vulkan_smoke_tests.cpp`
+- Create: `.superpowers/sdd/final-review-fix-report.md`
+
+**Interfaces:** `VkSceneRenderer::record_cull_and_render` retains every sampled
+raster attachment through `VulkanDevice::retain_for_frame`, independent of RT
+mode or availability.
+
+- [ ] **Step 1: Write the failing two-frame fallback test**
+
+Submit an RT-unavailable frame at `160x100`, then an RT-disabled frame at
+`96x64` on a second frame slot without `wait_idle`; require the extent/mode
+transition and zero validation errors.
+
+- [ ] **Step 2: Run `rt-unavailable` and verify RED**
+
+Expected: replacing the first frame's unretained visibility image while it is
+in flight produces a validation failure or failed hazard assertion.
+
+- [ ] **Step 3: Retain visibility unconditionally**
+
+Include `visibility_.lifetime` in the attachment retention performed after
+`ensure_raster_targets`; keep RT-specific AS/SBT retention unchanged.
+
+- [ ] **Step 4: Verify and report**
+
+Run the strict CUDA build, temporal/RT unavailable smoke, all nine Vulkan smoke
+modes, static gate, and `git diff --check`. Record RED/GREEN evidence in the
+required final-review report, then commit the focused fix set.

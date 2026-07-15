@@ -566,8 +566,6 @@ void VkSceneRenderer::destroy_pipeline() {
         vkDestroyPipeline(device, composite_pipeline_, nullptr);
     if (composite_pipeline_layout_ != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(device, composite_pipeline_layout_, nullptr);
-    if (composite_descriptor_pool_ != VK_NULL_HANDLE)
-        vkDestroyDescriptorPool(device, composite_descriptor_pool_, nullptr);
     if (composite_set_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device, composite_set_layout_, nullptr);
     if (raster_pipeline_ != VK_NULL_HANDLE)
@@ -588,8 +586,6 @@ void VkSceneRenderer::destroy_pipeline() {
     composite_set_layout_ = VK_NULL_HANDLE;
     composite_pipeline_layout_ = VK_NULL_HANDLE;
     composite_pipeline_ = VK_NULL_HANDLE;
-    composite_descriptor_pool_ = VK_NULL_HANDLE;
-    composite_descriptor_set_ = VK_NULL_HANDLE;
     composite_sampler_ = VK_NULL_HANDLE;
     rt_pipeline_ = VK_NULL_HANDLE;
     rt_pipeline_layout_ = VK_NULL_HANDLE;
@@ -1012,26 +1008,6 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     if (result != VK_SUCCESS)
         return fail_vk("vkCreateGraphicsPipelines(composite)", result, error);
 
-    VkDescriptorPoolSize sampled_pool{
-        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4};
-    VkDescriptorPoolCreateInfo pool{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool.maxSets = 1;
-    pool.poolSizeCount = 1;
-    pool.pPoolSizes = &sampled_pool;
-    result = vkCreateDescriptorPool(device, &pool, nullptr,
-                                    &composite_descriptor_pool_);
-    if (result != VK_SUCCESS)
-        return fail_vk("vkCreateDescriptorPool(composite)", result, error);
-    VkDescriptorSetAllocateInfo allocate{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    allocate.descriptorPool = composite_descriptor_pool_;
-    allocate.descriptorSetCount = 1;
-    allocate.pSetLayouts = &composite_set_layout_;
-    result = vkAllocateDescriptorSets(device, &allocate,
-                                      &composite_descriptor_set_);
-    if (result != VK_SUCCESS)
-        return fail_vk("vkAllocateDescriptorSets(composite)", result, error);
     VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     sampler.magFilter = VK_FILTER_NEAREST;
     sampler.minFilter = VK_FILTER_NEAREST;
@@ -1157,11 +1133,13 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     }
     const VkDescriptorPoolSize pool_sizes[] = {
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 5}};
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 5},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+         frame_slot_count * 4}};
     VkDescriptorPoolCreateInfo pool{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool.maxSets = frame_slot_count * 2;
-    pool.poolSizeCount = 2;
+    pool.maxSets = frame_slot_count * 3;
+    pool.poolSizeCount = 3;
     pool.pPoolSizes = pool_sizes;
     VkDescriptorPool next_pool = VK_NULL_HANDLE;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
@@ -1176,10 +1154,11 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         return fail_vk("vkCreateDescriptorPool(cull)", result, error);
     std::vector<FrameResources> next_frames(frame_slot_count);
     std::vector<VkDescriptorSetLayout> layouts;
-    layouts.reserve(frame_slot_count * 2);
+    layouts.reserve(frame_slot_count * 3);
     for (size_t index = 0; index < frame_slot_count; ++index) {
         layouts.push_back(set_layouts_[0]);
         layouts.push_back(set_layouts_[1]);
+        layouts.push_back(composite_set_layout_);
     }
     std::vector<VkDescriptorSet> sets(layouts.size());
     VkDescriptorSetAllocateInfo allocate{
@@ -1208,8 +1187,9 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     };
     for (size_t index = 0; index < frame_slot_count; ++index) {
         FrameResources& frame = next_frames[index];
-        frame.descriptor_sets[0] = sets[index * 2];
-        frame.descriptor_sets[1] = sets[index * 2 + 1];
+        frame.descriptor_sets[0] = sets[index * 3];
+        frame.descriptor_sets[1] = sets[index * 3 + 1];
+        frame.composite_descriptor_set = sets[index * 3 + 2];
         if (!ensure_candidate_buffer(frame.frame_constants,
                                      sizeof(FrameConstants),
                                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
@@ -1286,6 +1266,26 @@ void VkSceneRenderer::update_frame_descriptors(FrameResources& frame) {
                       frame.draw_transforms);
     update_descriptor(frame.descriptor_sets[1], 4,
                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.stats);
+}
+
+void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
+    matter::VkImageResource* sampled[] = {&albedo_, &normal_, &orm_,
+                                          &visibility_};
+    VkDescriptorImageInfo image_infos[4]{};
+    VkWriteDescriptorSet writes[4]{};
+    for (uint32_t i = 0; i < 4; ++i) {
+        image_infos[i].sampler = composite_sampler_;
+        image_infos[i].imageView = sampled[i]->view;
+        image_infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet = frame.composite_descriptor_set;
+        writes[i].dstBinding = i;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType =
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i].pImageInfo = &image_infos[i];
+    }
+    vkUpdateDescriptorSets(vulkan_->device(), 4, writes, 0, nullptr);
 }
 
 void VkSceneRenderer::note_command_layout_rebuild() {
@@ -2659,12 +2659,13 @@ bool VkSceneRenderer::record_cull_and_render(
         return false;
 
     FrameResources& selected = frames_[frame.frame_slot];
+    update_composite_descriptor(selected);
     // prepare_frame owns the existing scene resources for this slot. Newly
     // created/replaced attachments are retained here before commands reference
     // them, preserving the frame-lifetime contract.
     std::vector<std::shared_ptr<void>> attachments{
         albedo_.lifetime, normal_.lifetime, orm_.lifetime, velocity_.lifetime,
-        depth_.lifetime, hdr_.lifetime};
+        depth_.lifetime, hdr_.lifetime, visibility_.lifetime};
     if (!vulkan_->retain_for_frame(frame, std::move(attachments), error))
         return false;
 
@@ -2703,7 +2704,7 @@ bool VkSceneRenderer::record_cull_and_render(
                         {selected.descriptor_sets[0], selected.descriptor_sets[1]},
                         composite_pipeline_,
                         composite_pipeline_layout_,
-                        composite_descriptor_set_,
+                        selected.composite_descriptor_set,
                         vertices_.buffer,
                         selected.commands.buffer,
                         part_command_ranges_.data(),
@@ -2917,23 +2918,6 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     raster_extent_ = {width, height};
     raster_attachments_ready_ = false;
 
-    matter::VkImageResource* sampled[] = {&albedo_, &normal_, &orm_,
-                                          &visibility_};
-    VkDescriptorImageInfo image_infos[4]{};
-    VkWriteDescriptorSet writes[4]{};
-    for (uint32_t i = 0; i < 4; ++i) {
-        image_infos[i].sampler = composite_sampler_;
-        image_infos[i].imageView = sampled[i]->view;
-        image_infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[i].dstSet = composite_descriptor_set_;
-        writes[i].dstBinding = i;
-        writes[i].descriptorCount = 1;
-        writes[i].descriptorType =
-            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[i].pImageInfo = &image_infos[i];
-    }
-    vkUpdateDescriptorSets(vulkan_->device(), 4, writes, 0, nullptr);
     return true;
 }
 
@@ -2987,6 +2971,7 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
         return false;
     }
     FrameResources& selected = frames_[active_frame_index_];
+    update_composite_descriptor(selected);
     RasterRecord record{&albedo_,
                         &normal_,
                         &orm_,
@@ -3000,7 +2985,7 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
                         {selected.descriptor_sets[0], selected.descriptor_sets[1]},
                         composite_pipeline_,
                         composite_pipeline_layout_,
-                        composite_descriptor_set_,
+                        selected.composite_descriptor_set,
                         vertices_.buffer,
                         selected.commands.buffer,
                         part_command_ranges_.data(),

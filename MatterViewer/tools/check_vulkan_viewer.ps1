@@ -92,11 +92,12 @@ $queuePresent = $vkContext.IndexOf('streamline.queue_present(graphics_queue')
 if ($commonPresent -lt 0 -or $queuePresent -lt 0 -or $commonPresent -gt $queuePresent) {
     $failures.Add('common-present must immediately precede the sole proxied queue-present')
 }
-@('static camera and rigid instance produce zero temporal velocity',
+@('static camera and rigid instance preserve the known Halton delta',
   'velocity attachment stores exact current-to-previous input pixels',
   'dlss_output_evaluated', 'first_dlss_output',
   'test_rt_geometry_address(910) == pinned',
-  'test_rt_blas_candidate_serial(920) == frame.serial') | ForEach-Object {
+  'test_rt_blas_candidate_serial(920) == frame.serial',
+  'two-frame fallback extent/mode transition retains visibility') | ForEach-Object {
     Require-Text $vkSmoke $_ 'RTX/DLSS executable evidence hook'
 }
 Require-Text $streamline 'sl.interposer.dll is missing beside the executable' 'truthful Streamline runtime absence'

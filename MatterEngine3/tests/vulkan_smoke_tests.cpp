@@ -510,14 +510,18 @@ void run_vulkan_temporal_tests() {
     const matter::Float3 static_velocity =
         viewer::temporal_velocity_pixels(static_frame, 7, {0.0f, 0.0f, 0.0f});
     CHECK(!static_frame.reset && static_frame.instances[0].history_valid &&
-              std::fabs(static_velocity.x) < 1e-6f &&
-              std::fabs(static_velocity.y) < 1e-6f,
-          "static camera and rigid instance produce zero temporal velocity");
-    CHECK(std::fabs(static_frame.current_jittered.world_to_clip.m[3] -
-                    static_frame.previous_jittered.world_to_clip.m[3]) < 1e-6f &&
-              std::fabs(static_frame.current_jittered.world_to_clip.m[7] -
-                        static_frame.previous_jittered.world_to_clip.m[7]) < 1e-6f,
-          "current and previous projections use the candidate Halton jitter convention");
+              std::fabs(static_velocity.x + 0.25f) < 1e-6f &&
+              std::fabs(static_velocity.y - 1.0f / 3.0f) < 1e-6f,
+          "static camera and rigid instance preserve the known Halton delta");
+    CHECK(std::fabs(static_frame.previous_jittered.world_to_clip.m[3] -
+                    first.current_jittered.world_to_clip.m[3]) < 1e-6f &&
+              std::fabs(static_frame.previous_jittered.world_to_clip.m[7] -
+                        first.current_jittered.world_to_clip.m[7]) < 1e-6f &&
+              std::fabs(static_frame.previous_jittered.jitter_pixels[0] -
+                        first.jitter_pixels[0]) < 1e-6f &&
+              std::fabs(static_frame.previous_jittered.jitter_pixels[1] -
+                        first.jitter_pixels[1]) < 1e-6f,
+          "previous projection retains the last actually presented jitter");
     CHECK(temporal.commit_presented(static_frame.attempt_token),
           "second successful presentation advances temporal history");
 
@@ -529,9 +533,9 @@ void run_vulkan_temporal_tests() {
         moved_camera, {100, 80}, {100, 80}, {still}, {});
     const matter::Float3 camera_velocity = viewer::temporal_velocity_pixels(
         camera_motion, 7, {0.0f, 0.0f, 0.0f});
-    CHECK(std::fabs(camera_velocity.x + 10.0f) < 1e-5f &&
-              std::fabs(camera_velocity.y) < 1e-5f,
-          "known camera translation produces exact current-to-previous pixels");
+    CHECK(std::fabs(camera_velocity.x + 9.5f) < 1e-5f &&
+              std::fabs(camera_velocity.y + 5.0f / 9.0f) < 1e-5f,
+          "known camera translation includes the presented Halton delta");
     CHECK(temporal.commit_presented(camera_motion.attempt_token),
           "camera-motion candidate commits");
 
@@ -541,9 +545,9 @@ void run_vulkan_temporal_tests() {
         moved_camera, {100, 80}, {100, 80}, {moved_object}, {});
     const matter::Float3 object_velocity = viewer::temporal_velocity_pixels(
         object_motion, 7, {0.0f, 0.0f, 0.0f});
-    CHECK(std::fabs(object_velocity.x - 20.0f) < 1e-5f &&
-              std::fabs(object_velocity.y) < 1e-5f,
-          "known rigid-instance translation produces exact current-to-previous pixels");
+    CHECK(std::fabs(object_velocity.x - 19.375f) < 1e-5f &&
+              std::fabs(object_velocity.y - 1.0f / 3.0f) < 1e-5f,
+          "known rigid-instance translation includes the presented Halton delta");
     CHECK(temporal.commit_presented(object_motion.attempt_token),
           "object-motion candidate commits");
 
@@ -578,8 +582,12 @@ void run_vulkan_temporal_tests() {
           "failed presentation discards uncommitted candidate");
     viewer::TemporalFrame after_failure = temporal.begin(
         moved_camera, {120, 80}, {100, 80}, {{99, identity_matrix()}}, {});
-    CHECK(after_failure.reset && after_failure.attempt_token > failed_token,
-          "failed presentation forces reset and never reuses attempt token");
+    CHECK(after_failure.reset && after_failure.attempt_token > failed_token &&
+              std::fabs(after_failure.jitter_pixels[0] -
+                        failed.jitter_pixels[0]) < 1e-6f &&
+              std::fabs(after_failure.jitter_pixels[1] -
+                        failed.jitter_pixels[1]) < 1e-6f,
+          "failed presentation forces reset without advancing presented jitter");
     CHECK(!temporal.commit_presented(failed_token),
           "stale failed attempt token cannot commit temporal history");
 
@@ -1217,8 +1225,6 @@ void run_forced_ray_tracing_unavailable_path(matter::VulkanDevice& vulkan) {
           error.empty() ? "prepare forced-unavailable raster fixture"
                         : error.c_str());
     matter::VulkanRayTracingSettings settings{};
-    settings.enabled = true;
-    renderer.set_ray_tracing_settings(settings);
 
     matter::CameraDesc camera{};
     camera.position = {0.0f, 0.0f, 0.0f};
@@ -1229,7 +1235,10 @@ void run_forced_ray_tracing_unavailable_path(matter::VulkanDevice& vulkan) {
     camera.far_plane = 10.0f;
 
     const VkExtent2D extents[] = {{160, 100}, {96, 64}};
+    uint32_t first_frame_slot = UINT32_MAX;
     for (uint32_t index = 0; index < 2; ++index) {
+        settings.enabled = index == 0;
+        renderer.set_ray_tracing_settings(settings);
         viewer::FrameMatrices matrices{};
         CHECK(viewer::build_frame_matrices(camera, extents[index].width,
                                            extents[index].height, matrices,
@@ -1249,6 +1258,14 @@ void run_forced_ray_tracing_unavailable_path(matter::VulkanDevice& vulkan) {
         CHECK(began, error.empty() ? "begin forced-unavailable frame"
                                    : error.c_str());
         if (!began) break;
+        CHECK(frame.frame_slot_count >= 2,
+              "fallback transition exposes at least two frames in flight");
+        if (index == 0) {
+            first_frame_slot = frame.frame_slot;
+        } else {
+            CHECK(frame.frame_slot != first_frame_slot,
+                  "fallback extent/mode transition uses a second frame slot");
+        }
         const bool recorded =
             renderer.prepare_frame(frame, matrices, camera.position, 1.0f,
                                    error) &&
@@ -1264,11 +1281,11 @@ void run_forced_ray_tracing_unavailable_path(matter::VulkanDevice& vulkan) {
         CHECK(!renderer.rt_available_observed() &&
                   !renderer.rt_effective_observed() &&
                   renderer.rt_trace_dispatches_observed() == 0 &&
-                  renderer.rt_fallback_reason_observed().find("forced") !=
+                  renderer.rt_fallback_reason_observed().find(
+                      index == 0 ? "forced" : "disabled") !=
                       std::string::npos,
-              "forced-unavailable frame observes no dispatch and its reason");
+              "fallback transition observes no dispatch and its current reason");
         if (!recorded) break;
-        vulkan.wait_idle();
         const viewer::VkRasterAttachments attachments =
             renderer.raster_attachments();
         CHECK(attachments.extent.width == extents[index].width &&
@@ -1280,6 +1297,13 @@ void run_forced_ray_tracing_unavailable_path(matter::VulkanDevice& vulkan) {
         CHECK(renderer.test_visibility_usage() == expected_visibility_usage,
               "forced-unavailable visibility excludes storage usage");
     }
+
+    // Both submissions must overlap the attachment replacement above. Waiting
+    // only after the transition lets validation prove the first visibility
+    // image and descriptor remain alive through their submitted frame.
+    vulkan.wait_idle();
+    CHECK(vulkan.validation_error_count() == 0,
+          "two-frame fallback extent/mode transition retains visibility");
 
     viewer::VkRasterPixel center{};
     CHECK(renderer.readback_raster_pixel(48, 32, center, error) &&
