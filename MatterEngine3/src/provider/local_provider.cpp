@@ -500,12 +500,14 @@ bool LocalProvider::ensure_part_flattened(uint64_t part_hash) {
     if (!transient_dir_.empty()) {
         const std::string scratch_part =
             transient_dir_ + "/" + part_asset::cache_path_resolved(part_hash);
-        if (part_asset::peek_format_version(scratch_part) != 0)
+        if (part_asset::is_cache_artifact_compatible(
+                scratch_part, part_hash, part_asset::kFormatVersionV2))
             root = transient_dir_;
     }
     const std::string flat_abs_path =
         root + "/" + part_asset::cache_path_flat(part_hash);
-    if (part_asset::peek_format_version(flat_abs_path) == part_asset::kFormatVersionFlat)
+    if (part_asset::is_cache_artifact_compatible(
+            flat_abs_path, part_hash, part_asset::kFormatVersionFlat))
         return true;
     part_flatten::FlattenResult fr =
         part_flatten::flatten_part(root, part_hash);
@@ -886,8 +888,9 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
                 ensure_part_flattened(ph);
                 const std::string flat_abs_path =
                     abs_cache_root_ + "/" + part_asset::cache_path_flat(ph);
-                if (part_asset::peek_format_version(flat_abs_path) !=
-                    part_asset::kFormatVersionFlat) continue;
+                if (!part_asset::is_cache_artifact_compatible(
+                        flat_abs_path, ph, part_asset::kFormatVersionFlat))
+                    continue;
                 BLASManager scratch_blas;
                 TLASManager scratch_tlas(4);
                 std::vector<part_asset::FlatCluster> clusters_ignored;

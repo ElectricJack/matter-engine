@@ -15,6 +15,8 @@
 #include "part_asset_v2.h"     // cache_path_resolved
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -378,8 +380,77 @@ static void test_lod_variant_sidecar() {
     printf("  test_lod_variant_sidecar OK\n");
 }
 
-int main() {
+static void test_stale_material_cache_migrates() {
     using namespace part_graph;
+    namespace fs = std::filesystem;
+
+    const fs::path root = fs::absolute("part_graph_cache_migration_test");
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(root / "schemas", ec);
+    fs::create_directories(root / "parts", ec);
+    CHECK(!ec, "cache migration sandbox created");
+    if (ec) return;
+
+    write_file((root / "schemas" / "CacheBox.js").string(),
+        "class CacheBox extends Part {"
+        " build(p){ this.beginVoxels(0.25); this.fill(MAT.stone);"
+        " this.box([0,0,0],[0.5,0.5,0.5]); this.endVoxels(); } }");
+
+    script_host::ScriptHost host;
+    FileModuleResolver resolver(host, (root / "schemas").string());
+    HostBaker baker(host, root.string());
+    PartGraph graph(resolver, baker);
+
+    InstallResult first = graph.install({ChildRequest{"CacheBox", Params{}}});
+    CHECK(first.ok && first.baked.size() == 1,
+          "cache migration fixture bakes once");
+    if (!first.ok || first.baked.size() != 1) {
+        fs::remove_all(root, ec);
+        return;
+    }
+
+    const uint64_t hash = first.baked[0];
+    const std::string path =
+        (root / part_asset::cache_path_resolved(hash)).string();
+    std::string stale = read_file(path);
+    CHECK(stale.size() >= 44, "stale-schema fixture has common body");
+    if (stale.size() >= 44) {
+        const uint32_t prior_schema = MaterialRegistrySchemaVersion() - 1u;
+        std::memcpy(stale.data() + 40, &prior_schema, sizeof(prior_schema));
+        const uint64_t body_hash =
+            part_asset::fnv1a64(stale.data() + 40, stale.size() - 40);
+        std::memcpy(stale.data() + 32, &body_hash, sizeof(body_hash));
+        write_file(path, stale);
+
+        CHECK(!baker.cached(hash),
+              "HostBaker rejects valid-header prior-schema .part");
+        InstallResult migrated =
+            graph.install({ChildRequest{"CacheBox", Params{}}});
+        CHECK(migrated.ok && migrated.baked.size() == 1 &&
+                  migrated.baked[0] == hash,
+              "stale-schema .part automatically rebakes");
+
+        BLASManager blas; TLASManager tlas(16);
+        std::vector<part_asset::ChildInstance> children;
+        part_asset::LodLevels lods;
+        CHECK(part_asset::load_v2(path, hash, blas, tlas, children, lods),
+              "rebaked .part loads successfully");
+
+        InstallResult warm =
+            graph.install({ChildRequest{"CacheBox", Params{}}});
+        CHECK(warm.ok && warm.baked.empty() && warm.hits == 1,
+              "second pass after stale-schema migration is warm");
+    }
+    fs::remove_all(root, ec);
+}
+
+int main(int argc, char** argv) {
+    using namespace part_graph;
+
+    test_stale_material_cache_migrates();
+    if (argc == 2 && std::strcmp(argv[1], "--cache-migration-only") == 0)
+        return g_failures == 0 ? 0 : 1;
 
     // Resolve the demo schemas + shared-lib to ABSOLUTE paths NOW, before any test
     // chdir()s into a sandbox, so test_demo_tree_has_leaves can find the real files

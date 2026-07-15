@@ -164,6 +164,14 @@ bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
                   BLASManager& blas, TLASManager& tlas,
                   std::vector<FlatCluster>& clusters_out);
 
+// Lightweight cache-hit validation shared by bakers/providers. Validates the
+// common header, body content hash, and complete serialized material table
+// without reconstructing BLAS/TLAS state. False means regenerate; the existing
+// file remains in place until the normal atomic save replaces it.
+bool is_cache_artifact_compatible(const std::string& path,
+                                  uint64_t expected_resolved_hash,
+                                  uint32_t expected_format_version);
+
 // Header sniff without a full load: returns the format_version field (0 on any
 // read/magic failure). The provider uses this to spot stale v2 flats.
 uint32_t peek_format_version(const std::string& path);

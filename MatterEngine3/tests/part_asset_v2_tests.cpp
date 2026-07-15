@@ -405,6 +405,84 @@ static void test_material_schema_guard() {
     remove(path);
 }
 
+static void patch_body_u32_and_rehash(std::vector<uint8_t>& bytes,
+                                      size_t body_offset, uint32_t value) {
+    memcpy(bytes.data() + 40 + body_offset, &value, sizeof(value));
+    const uint64_t content_hash =
+        part_asset::fnv1a64(bytes.data() + 40, bytes.size() - 40);
+    memcpy(bytes.data() + 32, &content_hash, sizeof(content_hash));
+}
+
+static void test_cache_artifact_compatibility_probe() {
+    using namespace part_asset;
+    BLASManager blas; TLASManager tlas(64);
+    BLASHandle hA, hB; build_scene(blas, tlas, hA, hB);
+    auto kids = sample_children();
+    auto lods = sample_lods();
+
+    const uint64_t v2_hash = 0x76543210u;
+    const char* v2_path = "test_v2_compat.part";
+    remove(v2_path);
+    CHECK(save_v2(v2_path, blas, tlas, kids.data(), kids.size(), lods, v2_hash),
+          "compat probe v2 fixture saved");
+    CHECK(is_cache_artifact_compatible(v2_path, v2_hash, kFormatVersionV2),
+          "compat probe accepts current v2 artifact");
+
+    std::vector<uint8_t> current_v2 = read_file(v2_path);
+    std::vector<uint8_t> stale_schema = current_v2;
+    patch_body_u32_and_rehash(stale_schema, 0,
+                              MaterialRegistrySchemaVersion() - 1u);
+    write_file(v2_path, stale_schema);
+    CHECK(!is_cache_artifact_compatible(v2_path, v2_hash, kFormatVersionV2),
+          "compat probe rejects prior-schema v2 artifact with valid content hash");
+
+    std::vector<uint8_t> stale_definition = current_v2;
+    // Common body: schema u32, material count u32, then MaterialDef bytes.
+    stale_definition[40 + 8 + sizeof(MaterialDef) / 2] ^= 0x01;
+    const uint64_t definition_hash =
+        fnv1a64(stale_definition.data() + 40, stale_definition.size() - 40);
+    memcpy(stale_definition.data() + 32, &definition_hash, sizeof(definition_hash));
+    write_file(v2_path, stale_definition);
+    CHECK(!is_cache_artifact_compatible(v2_path, v2_hash, kFormatVersionV2),
+          "compat probe rejects changed material definition with valid content hash");
+
+    write_file(v2_path, current_v2);
+    std::vector<uint8_t> corrupt_v2 = current_v2;
+    corrupt_v2.back() ^= 0x01;
+    write_file(v2_path, corrupt_v2);
+    CHECK(!is_cache_artifact_compatible(v2_path, v2_hash, kFormatVersionV2),
+          "compat probe rejects corrupt v2 content hash");
+
+    const uint64_t flat_hash = 0x12345678u;
+    const char* flat_path = "test_flat_compat.flat.part";
+    remove(flat_path);
+    std::vector<FlatCluster> clusters;
+    CHECK(save_flat_v3(flat_path, blas, tlas, clusters, flat_hash),
+          "compat probe flat fixture saved");
+    CHECK(is_cache_artifact_compatible(flat_path, flat_hash, kFormatVersionFlat),
+          "compat probe accepts current flat artifact");
+    std::vector<uint8_t> stale_flat = read_file(flat_path);
+    patch_body_u32_and_rehash(stale_flat, 0,
+                              MaterialRegistrySchemaVersion() - 1u);
+    write_file(flat_path, stale_flat);
+    CHECK(!is_cache_artifact_compatible(flat_path, flat_hash, kFormatVersionFlat),
+          "compat probe rejects prior-schema flat artifact with valid content hash");
+
+    CHECK(save_flat_v3(flat_path, blas, tlas, clusters, flat_hash),
+          "stale flat regenerates through atomic save");
+    BLASManager flat_blas; TLASManager flat_tlas(64);
+    std::vector<FlatCluster> loaded_clusters;
+    CHECK(load_flat_v3(flat_path, flat_hash, flat_blas, flat_tlas,
+                       loaded_clusters),
+          "regenerated flat loads successfully");
+    CHECK(is_cache_artifact_compatible(flat_path, flat_hash,
+                                       kFormatVersionFlat),
+          "second flat compatibility pass is warm");
+
+    remove(v2_path);
+    remove(flat_path);
+}
+
 static void test_new_materials() {
     CHECK(MaterialRegistryCount() == 18, "registry has 18 materials through snow");
     const MaterialDef* bark = MaterialRegistryGet(14);
@@ -466,6 +544,7 @@ int main() {
     test_round_trip_no_children();
     test_v2_guards();
     test_material_schema_guard();
+    test_cache_artifact_compatibility_probe();
     test_new_materials();
     test_flatten_hints_round_trip();
     if (g_failures == 0) printf("All part_asset_v2 tests passed\n");

@@ -306,6 +306,48 @@ static uint32_t read_and_validate_header(Reader& r,
     return version;
 }
 
+bool is_cache_artifact_compatible(const std::string& path,
+                                  uint64_t expected_resolved_hash,
+                                  uint32_t expected_format_version) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::fseek(f, 0, SEEK_END);
+    const long size = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    if (size < 40) {
+        std::fclose(f);
+        return false;
+    }
+    std::vector<uint8_t> bytes(static_cast<size_t>(size));
+    const bool read_ok =
+        std::fread(bytes.data(), 1, bytes.size(), f) == bytes.size();
+    std::fclose(f);
+    if (!read_ok) return false;
+
+    Reader reader{bytes.data(), bytes.data() + bytes.size()};
+    uint64_t content_hash = 0;
+    if (!read_and_validate_header(reader, expected_resolved_hash,
+                                  expected_format_version, content_hash))
+        return false;
+    if (fnv1a64(reader.p, static_cast<size_t>(reader.end - reader.p)) !=
+        content_hash)
+        return false;
+
+    const uint32_t material_schema = reader.get<uint32_t>();
+    const uint32_t material_count = reader.get<uint32_t>();
+    if (!reader.ok || material_schema != MaterialRegistrySchemaVersion() ||
+        material_count != static_cast<uint32_t>(MaterialRegistryCount()))
+        return false;
+    for (uint32_t i = 0; i < material_count; ++i) {
+        const uint8_t* serialized = reader.take(sizeof(MaterialDef));
+        if (!reader.ok ||
+            std::memcmp(serialized, MaterialRegistryGet(static_cast<int>(i)),
+                        sizeof(MaterialDef)) != 0)
+            return false;
+    }
+    return true;
+}
+
 // Read the common body sections (materials, BLAS, instances, children, lods)
 // from a Reader that is positioned just past the header. Populates the managers
 // and out-params; returns false on any corruption.

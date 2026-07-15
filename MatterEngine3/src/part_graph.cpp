@@ -564,22 +564,8 @@ bool HostBaker::cached(uint64_t resolved_hash) {
     auto check_path = [resolved_hash](const std::string& base_dir) -> bool {
         if (base_dir.empty()) return false;
         std::string path = base_dir + "/" + part_asset::cache_path_resolved(resolved_hash);
-        std::ifstream in(path, std::ios::binary);
-        if (!in.good()) return false;
-        // Validate the header: magic must be 'TRAP', version 2, and the embedded
-        // resolved_hash must match `resolved_hash`. Otherwise the file is stale
-        // (a previous bake with the SAME filename hash-key but DIFFERENT resolved
-        // hash — happens when a schema is edited between runs and the old .part
-        // was left behind).  Treat mismatch as cache miss so we re-bake.
-        // Header layout (see part_asset_v2.cpp:write_file_atomic):
-        //   [0..4)  magic uint32   ('TRAP' little-endian = 0x50415254)
-        //   [4..8)  version uint32 (currently 2)
-        //   [8..16) resolved_hash XOR version (uint64, obfuscation)
-        struct { uint32_t magic; uint32_t version; uint64_t hash_xor; } hdr{};
-        in.read(reinterpret_cast<char*>(&hdr), sizeof(hdr));
-        if (!in.good()) return false;
-        if (hdr.magic != 0x50415254u || hdr.version != 2u) return false;
-        return hdr.hash_xor == (resolved_hash ^ (uint64_t)hdr.version);
+        return part_asset::is_cache_artifact_compatible(
+            path, resolved_hash, part_asset::kFormatVersionV2);
     };
 
     // Check scratch first (if transient_dir_ is configured)
