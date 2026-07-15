@@ -281,7 +281,7 @@ matter::Float3 temporal_velocity_pixels(const TemporalFrame& frame,
                 0.5f * static_cast<float>(frame.internal_extent.width),
             (current_clip.y / current_clip.w -
              previous_clip.y / previous_clip.w) *
-                0.5f * static_cast<float>(frame.internal_extent.height),
+                -0.5f * static_cast<float>(frame.internal_extent.height),
             0.0f};
 }
 

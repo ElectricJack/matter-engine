@@ -55,7 +55,7 @@ void main() {
     out_velocity_valid = vec3(
         valid ? (current_clip.xy / current_clip.w -
                  previous_clip.xy / previous_clip.w) * 0.5 *
-                vec2(frame.temporal.zw)
+                vec2(float(frame.temporal.z), -float(frame.temporal.w))
               : vec2(0.0),
         valid ? 1.0 : 0.0);
     out_normal = normalize(mat3(model) * in_normal);

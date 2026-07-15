@@ -48,5 +48,51 @@ build/windows/vulkan_smoke_tests.exe
 
 ## Concerns for Review
 
-- The GPU rejection image is produced and retained for later debug-view/counter work (Task 11); Task 6 validates exact rejection reasons through the CPU shader-contract mirror rather than adding a production synchronous readback.
 - The temporal resources are allocated whenever raster targets are created, including RT-unavailable mode, so mode changes do not need a separate allocation path.
+
+## Review-Fix Verification
+
+The first review identified five Important gaps; all were addressed with focused RED/GREEN tests:
+
+- The temporal dispatch now refreshes the acquired frame-slot composite descriptor after selecting the candidate output. A real RTX pixel reads back accumulated radiance and final HDR; reconstructing the composite equation matches only when the accumulated term is included.
+- Motion vectors now use the negative-height viewport's top-left pixel convention on both CPU and GPU. The real raster attachment proves `(+8,-8)` for simultaneous positive X/Y object motion, and the real temporal shader proves a `(1,1)` current-to-previous velocity selects `(x-1,y-1)` via a patched GPU history texel.
+- G-buffer producer transitions now expose albedo/normal/ORM to RT, normal and material/instance identity to temporal compute, and velocity to compute, while retaining fragment consumers. GPU validation remains zero.
+- A test-only real `gi_temporal.comp` fixture covers XY reprojection, history length, moments, 3x3 clipping, and exact bounds/depth/normal/material/instance/reset rejection values. Its immediate submission/wait is compiled only under `MATTER_VK_TEST_FAULT_INJECTION`; production still records exclusively on acquired frame command buffers.
+- RT disable/re-enable, Quality/Native selection through a fake Streamline bridge, and subsequent stable frames prove reset counts advance exactly once. Streamline's later reset notification is suppressed only when an actually recorded GI candidate already consumed the same mode reset; transitions without a GI candidate still propagate to `TemporalState`.
+
+Review-fix RED evidence:
+
+```text
+strict smoke compile
+error: gbuffer_sampled_stages_for_test is not a member
+error: VkSceneRenderer has no member test_composite_uses_gi_temporal
+error: VkSceneRenderer has no member test_gi_history_reset_count
+```
+
+```text
+strict smoke link
+undefined reference to VkSceneRenderer::test_dispatch_gi_temporal_fixture(...)
+```
+
+The first GPU-fixture execution intentionally exposed its missing test harness synchronization: descriptor-set-in-use VUID `03047` and four sampled-image layout mismatches. The fixture now recycles the test frame slot and transitions its synthetic inputs before dispatch. This wait is test-only. The corrected run has zero validation errors.
+
+Final commands and results:
+
+```text
+C:\msys64\usr\bin\make.exe build/windows/vulkan_smoke_tests.exe -j1
+C:\msys64\usr\bin\make.exe vulkan-spirv matter_engine.o vk_temporal.o -j2
+C:\msys64\usr\bin\make.exe build/windows/vk_scene_renderer.o -j1
+```
+
+- PASS. Strict smoke uses `-Wall -Wextra -Werror`; production objects and both updated shaders compile/embed.
+
+```text
+MATTER_VK_SMOKE_MODE=rt
+MATTER_VK_SMOKE_MODE=rt-unavailable
+MATTER_VK_SMOKE_MODE=rt-disabled
+MATTER_VK_SMOKE_MODE=raster
+default Native/fake-DLSS
+```
+
+- Every mode exits 0 with `ALL PASS` and `validation errors: 0`.
+- `HAVE_STREAMLINE=1` remains SDK-header blocked and is not claimed; all final builds truthfully report `MATTER_HAVE_STREAMLINE=0`.

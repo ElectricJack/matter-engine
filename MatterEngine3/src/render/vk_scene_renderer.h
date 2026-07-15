@@ -74,6 +74,8 @@ bool checked_size_to_int(size_t count, int& result, const char* label,
 size_t frame_constants_size_for_test() noexcept;
 VkPipelineStageFlags2 ray_depth_destination_stages(
     bool native_ray_tracing_available) noexcept;
+VkPipelineStageFlags2 gbuffer_sampled_stages_for_test(
+    uint32_t attachment_index, bool native_ray_tracing_available) noexcept;
 }  // namespace vk_scene_detail
 
 static_assert(sizeof(DrawCommand) == sizeof(VkDrawIndirectCommand),
@@ -160,6 +162,7 @@ struct VkRasterPixel {
     float depth = 1.0f;
     matter::Float3 visibility{1.0f, 1.0f, 1.0f};
     matter::Float4 raw_diffuse{};
+    matter::Float4 accumulated_diffuse{};
 };
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
@@ -185,6 +188,32 @@ struct RtSurfaceHit {
     float baked_ao = 1.0f;
     float hit_t = 0.0f;
     uint32_t flags = 0;
+};
+
+struct GiTemporalGpuFixture {
+    matter::Float4 raw{0.25f, 0.5f, 0.75f, 1.0f};
+    matter::Float3 velocity{};
+    float depth = 0.5f;
+    matter::Float4 normal{0.0f, 0.0f, 1.0f, 0.0f};
+    uint32_t material_index = 7;
+    uint32_t instance_token = 41;
+    matter::Float4 previous_radiance{0.25f, 0.5f, 0.75f, 1.0f};
+    matter::Float3 previous_moments{};
+    uint32_t previous_history_length = 3;
+    float previous_depth = 0.5f;
+    matter::Float4 previous_normal{0.0f, 0.0f, 1.0f, 0.0f};
+    uint32_t previous_material_index = 7;
+    uint32_t previous_instance_token = 41;
+    GiPixelCoord output_pixel{3, 3};
+    GiPixelCoord history_patch_pixel{3, 3};
+    bool reset = false;
+};
+
+struct GiTemporalGpuResult {
+    matter::Float4 radiance{};
+    matter::Float3 moments{};
+    uint32_t history_length = 0;
+    uint32_t rejection_bits = 0;
 };
 #endif
 
@@ -297,11 +326,7 @@ public:
 #endif
     void set_lighting(const VkSceneLighting& lighting) { lighting_ = lighting; }
     void set_ray_tracing_settings(
-        const matter::VulkanRayTracingSettings& settings) {
-        ray_tracing_settings_ = settings;
-        ray_tracing_settings_.samples =
-            std::max(1u, std::min(settings.samples, 16u));
-    }
+        const matter::VulkanRayTracingSettings& settings);
     void set_gi_settings(const matter::VulkanGiSettings& settings) {
         gi_settings_ = settings;
         gi_settings_.max_bounces = 1u;
@@ -347,6 +372,9 @@ public:
     bool readback_rt_trace_counters(uint32_t frame_slot,
                                     RtTraceCounters& counters,
                                     std::string& error);
+    bool test_dispatch_gi_temporal_fixture(
+        const GiTemporalGpuFixture& fixture, GiTemporalGpuResult& result,
+        std::string& error);
     bool test_rt_blas_built(uint64_t part_hash) const;
     uint64_t test_rt_blas_candidate_serial(uint64_t part_hash) const;
     std::weak_ptr<void> test_rt_blas_lifetime(uint64_t part_hash) const;
@@ -376,6 +404,12 @@ public:
     }
     uint32_t test_gi_candidate_history_index() const {
         return gi_candidate_history_index_;
+    }
+    bool test_composite_uses_gi_temporal() const {
+        return last_composite_used_gi_temporal_;
+    }
+    uint64_t test_gi_history_reset_count() const {
+        return gi_history_reset_count_;
     }
     uint32_t test_gi_samples_per_pixel() const {
         return gi_settings_.samples_per_pixel;
@@ -546,7 +580,7 @@ private:
     bool ensure_dlss_output(FrameResources& frame, VkExtent2D output_extent,
                             std::string& error);
     bool record_gi_temporal(const matter::VulkanFrame& frame,
-                            std::string& error);
+                            std::string& error, bool retain = true);
     bool ensure_vertex_buffer(VkDeviceSize required_size,
                               std::string& error, bool* replaced = nullptr);
     bool ensure_buffer(matter::VkBufferResource& buffer,
@@ -638,6 +672,9 @@ private:
     uint64_t gi_candidate_frame_serial_ = 0;
     uint64_t gi_candidate_attempt_token_ = 0;
     uint64_t gi_presented_attempt_token_ = 0;
+    uint64_t gi_history_reset_count_ = 0;
+    bool gi_candidate_was_reset_ = false;
+    bool last_composite_used_gi_temporal_ = false;
     VkImageUsageFlags visibility_usage_ = 0;
     matter::VkBufferResource rt_sbt_;
     VkDeviceAddress rt_sbt_address_ = 0;

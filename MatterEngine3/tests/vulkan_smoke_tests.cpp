@@ -680,7 +680,7 @@ void run_vulkan_temporal_tests() {
         viewer::temporal_velocity_pixels(static_frame, 7, {0.0f, 0.0f, 0.0f});
     CHECK(!static_frame.reset && static_frame.instances[0].history_valid &&
               std::fabs(static_velocity.x + 0.25f) < 1e-6f &&
-              std::fabs(static_velocity.y - 1.0f / 3.0f) < 1e-6f,
+              std::fabs(static_velocity.y + 1.0f / 3.0f) < 1e-6f,
           "static camera and rigid instance preserve the known Halton delta");
     CHECK(std::fabs(static_frame.previous_jittered.world_to_clip.m[3] -
                     first.current_jittered.world_to_clip.m[3]) < 1e-6f &&
@@ -703,7 +703,7 @@ void run_vulkan_temporal_tests() {
     const matter::Float3 camera_velocity = viewer::temporal_velocity_pixels(
         camera_motion, 7, {0.0f, 0.0f, 0.0f});
     CHECK(std::fabs(camera_velocity.x + 9.5f) < 1e-5f &&
-              std::fabs(camera_velocity.y + 5.0f / 9.0f) < 1e-5f,
+              std::fabs(camera_velocity.y - 5.0f / 9.0f) < 1e-5f,
           "known camera translation includes the presented Halton delta");
     CHECK(temporal.commit_presented(camera_motion.attempt_token),
           "camera-motion candidate commits");
@@ -715,7 +715,7 @@ void run_vulkan_temporal_tests() {
     const matter::Float3 object_velocity = viewer::temporal_velocity_pixels(
         object_motion, 7, {0.0f, 0.0f, 0.0f});
     CHECK(std::fabs(object_velocity.x - 19.375f) < 1e-5f &&
-              std::fabs(object_velocity.y - 1.0f / 3.0f) < 1e-5f,
+              std::fabs(object_velocity.y + 1.0f / 3.0f) < 1e-5f,
           "known rigid-instance translation includes the presented Halton delta");
     CHECK(temporal.commit_presented(object_motion.attempt_token),
           "object-motion candidate commits");
@@ -1200,11 +1200,11 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     rigid_motion.attempt_token = 1;
     rigid_motion.instances = {
         {1, identity, identity, true},
-        {2, viewer::mat4_translation({0.2f, 0.0f, 0.0f}), identity, true}};
+        {2, viewer::mat4_translation({0.2f, 0.2f, 0.0f}), identity, true}};
     renderer.set_temporal_frame(rigid_motion);
     const bool rigid_updated = renderer.update_instances(
         {{900, identity, 1},
-         {901, viewer::mat4_translation({0.2f, 0.0f, 0.0f}), 2}},
+         {901, viewer::mat4_translation({0.2f, 0.2f, 0.0f}), 2}},
         error);
     const bool rigid_dispatched =
         rigid_updated &&
@@ -1219,10 +1219,20 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     const matter::Float3 expected_velocity =
         viewer::temporal_velocity_pixels(rigid_motion, 2, {0.0f, 0.0f, -2.0f});
     CHECK(std::fabs(expected_velocity.x - 8.0f) < 1e-5f &&
-              std::fabs(expected_velocity.y) < 1e-5f &&
+              std::fabs(expected_velocity.y + 8.0f) < 1e-5f &&
               std::fabs(moving_center.velocity.x - expected_velocity.x) < 0.02f &&
               std::fabs(moving_center.velocity.y - expected_velocity.y) < 0.002f,
           "velocity attachment stores exact current-to-previous input pixels");
+
+    const VkPipelineStageFlags2 rt_compute_fragment =
+        VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR |
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    CHECK(viewer::vk_scene_detail::gbuffer_sampled_stages_for_test(1, true) ==
+              rt_compute_fragment &&
+              viewer::vk_scene_detail::gbuffer_sampled_stages_for_test(4, true) ==
+                  VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+          "normal and identity producers synchronize with temporal compute and RT consumers");
 
     viewer::TemporalFrame restored_temporal = rigid_motion;
     restored_temporal.instances = {{1, identity, identity, true},
@@ -1923,6 +1933,8 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                   renderer.rt_trace_dispatches_observed() == 2 &&
                   renderer.rt_fallback_reason_observed().empty(),
               "native RT frame observes direct-shadow and diffuse-GI dispatches");
+        CHECK(renderer.test_composite_uses_gi_temporal(),
+              "same-frame composite descriptor samples accumulated GI output");
         CHECK(matter::immediate_submit_count() == immediate_before,
               "native RT frame records without immediate submit");
         CHECK(vulkan.end_frame(frame, error),
@@ -1965,6 +1977,8 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
         renderer.finish_ray_tracing_frame(frame.serial, true);
         CHECK(renderer.test_gi_presented_history_index() == 1u,
               "successful presentation publishes candidate GI history");
+        CHECK(renderer.test_gi_history_reset_count() == 1u,
+              "first successfully presented temporal GI frame resets once");
         viewer::VkRasterPixel retry_pixel{};
         CHECK(failed_receiver_seen &&
                   renderer.readback_raster_pixel(retry_x, retry_y, retry_pixel,
@@ -1972,6 +1986,185 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                   retry_pixel.material_index == 1u &&
                   close4(retry_pixel.raw_diffuse, failed_raw, 1e-6f),
               "failed-attempt retry keeps GPU GI deterministic from committed frame identity");
+        viewer::GiTemporalGpuFixture temporal_fixture{};
+        const float fixture_luminance =
+            0.2126f * temporal_fixture.raw.x +
+            0.7152f * temporal_fixture.raw.y +
+            0.0722f * temporal_fixture.raw.z;
+        temporal_fixture.previous_moments =
+            {fixture_luminance, fixture_luminance * fixture_luminance, 0.0f};
+        temporal_fixture.velocity = {1.0f, 1.0f, 0.0f};
+        temporal_fixture.history_patch_pixel = {2, 2};
+        viewer::GiTemporalGpuResult temporal_result{};
+        CHECK(renderer.test_dispatch_gi_temporal_fixture(
+                  temporal_fixture, temporal_result, error) &&
+                  temporal_result.history_length == 4u &&
+                  temporal_result.rejection_bits == 0u &&
+                  std::fabs(temporal_result.moments.x - fixture_luminance) <
+                      0.002f,
+              error.empty()
+                  ? "GPU temporal shader reprojects X and top-left Y and accumulates moments"
+                  : error.c_str());
+
+        const auto gpu_rejection = [&](viewer::GiTemporalGpuFixture changed,
+                                       uint32_t expected,
+                                       const char* label) {
+            viewer::GiTemporalGpuResult rejected{};
+            CHECK(renderer.test_dispatch_gi_temporal_fixture(
+                      changed, rejected, error) &&
+                      rejected.history_length == 1u &&
+                      rejected.rejection_bits == expected,
+                  error.empty() ? label : error.c_str());
+        };
+        temporal_fixture.velocity = {20.0f, 20.0f, 0.0f};
+        gpu_rejection(temporal_fixture, viewer::kGiRejectBounds,
+                      "GPU temporal shader emits bounds rejection");
+        temporal_fixture.velocity = {};
+        temporal_fixture.history_patch_pixel = temporal_fixture.output_pixel;
+        auto changed_temporal = temporal_fixture;
+        changed_temporal.depth = 0.8f;
+        gpu_rejection(changed_temporal, viewer::kGiRejectDepth,
+                      "GPU temporal shader emits depth rejection");
+        changed_temporal = temporal_fixture;
+        changed_temporal.normal = {1.0f, 0.0f, 0.0f, 0.0f};
+        gpu_rejection(changed_temporal, viewer::kGiRejectNormal,
+                      "GPU temporal shader emits normal rejection");
+        changed_temporal = temporal_fixture;
+        changed_temporal.material_index++;
+        gpu_rejection(changed_temporal, viewer::kGiRejectMaterial,
+                      "GPU temporal shader emits material rejection");
+        changed_temporal = temporal_fixture;
+        changed_temporal.instance_token++;
+        gpu_rejection(changed_temporal, viewer::kGiRejectInstance,
+                      "GPU temporal shader emits instance rejection");
+        changed_temporal = temporal_fixture;
+        changed_temporal.reset = true;
+        gpu_rejection(changed_temporal, viewer::kGiRejectReset,
+                      "GPU temporal shader emits reset rejection");
+        changed_temporal = temporal_fixture;
+        changed_temporal.previous_radiance = {100.0f, 50.0f, 25.0f, 1.0f};
+        CHECK(renderer.test_dispatch_gi_temporal_fixture(
+                  changed_temporal, temporal_result, error) &&
+                  close4(temporal_result.radiance, changed_temporal.raw,
+                         0.003f),
+              error.empty() ? "GPU temporal 3x3 clip rejects radiance outlier"
+                            : error.c_str());
+        const auto render_temporal_control = [&](uint64_t attempt_token,
+                                                 bool reset = false) {
+            gi_temporal.attempt_token = attempt_token;
+            gi_temporal.reset = reset;
+            renderer.set_temporal_frame(gi_temporal);
+            matter::VulkanFrame control{};
+            const bool rendered = vulkan.begin_frame(control, error) &&
+                renderer.prepare_frame(control, matrices, camera.position,
+                                       1.0f, error) &&
+                renderer.record_cull_and_render(
+                    control, matrices, camera.position, 1.0f, error) &&
+                renderer.record_composite_to_swapchain(control, error) &&
+                vulkan.end_frame(control, error);
+            renderer.finish_ray_tracing_frame(control.serial, rendered);
+            return rendered;
+        };
+        matter::VulkanRayTracingSettings rt_disabled = enabled;
+        rt_disabled.enabled = false;
+        renderer.set_ray_tracing_settings(rt_disabled);
+        CHECK(render_temporal_control(240) &&
+                  renderer.test_gi_history_reset_count() == 1u,
+              error.empty() ? "RT disable preserves pending stale-history invalidation"
+                            : error.c_str());
+        renderer.set_ray_tracing_settings(enabled);
+        CHECK(render_temporal_control(241) &&
+                  renderer.test_gi_history_reset_count() == 2u,
+              error.empty() ? "RT re-enable resets stale GI history once"
+                            : error.c_str());
+        CHECK(render_temporal_control(242) &&
+                  renderer.test_gi_history_reset_count() == 2u,
+              error.empty() ? "stable RT frame does not repeat re-enable reset"
+                            : error.c_str());
+        renderer.set_test_dlss_bridge(matter::StreamlineBridge::test_fake_dlss(
+            [](VkCommandBuffer, uint64_t, const matter::DlssOptions&,
+               const matter::DlssConstants&, const matter::DlssResources&,
+               matter::DlssEvaluationOutput& output, std::string&) {
+                output.output_written = true;
+                output.layout = VK_IMAGE_LAYOUT_GENERAL;
+                output.stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                output.access = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+                return true;
+            }));
+        renderer.set_dlss_mode(matter::DlssMode::Quality);
+        CHECK(render_temporal_control(243) &&
+                  renderer.test_gi_history_reset_count() == 3u &&
+                  !renderer.consume_dlss_history_reset(),
+              error.empty() ? "Quality mode transition applies one GI reset"
+                            : error.c_str());
+        CHECK(render_temporal_control(244) &&
+                  renderer.test_gi_history_reset_count() == 3u &&
+                  !renderer.consume_dlss_history_reset(),
+              error.empty() ? "stable Quality mode does not repeat GI reset"
+                            : error.c_str());
+        renderer.set_dlss_mode(matter::DlssMode::Native);
+        const bool native_transition_rendered = render_temporal_control(245);
+        const uint64_t native_transition_reset_count =
+            renderer.test_gi_history_reset_count();
+        const bool native_transition_invalidated =
+            renderer.consume_dlss_history_reset();
+        CHECK(native_transition_rendered &&
+                  native_transition_reset_count == 4u &&
+                  !native_transition_invalidated,
+              error.empty() ? "Native mode transition applies one GI reset"
+                            : error.c_str());
+        CHECK(render_temporal_control(246) &&
+                  renderer.test_gi_history_reset_count() == 4u &&
+                  !renderer.consume_dlss_history_reset(),
+              error.empty() ? "stable Native mode does not repeat GI reset"
+                            : error.c_str());
+        matter::VulkanRayTracingSettings non_debug_rt = enabled;
+        non_debug_rt.debug_view = false;
+        renderer.set_ray_tracing_settings(non_debug_rt);
+        CHECK(render_temporal_control(247),
+              error.empty() ? "render accumulated-GI composite proof frame"
+                            : error.c_str());
+        viewer::VkRasterPixel composite_pixel{};
+        CHECK(renderer.readback_raster_pixel(retry_x, retry_y,
+                                             composite_pixel, error),
+              error.empty() ? "read accumulated-GI composite proof pixel"
+                            : error.c_str());
+        const matter::Float3 to_sun{0.0f, 1.0f, 0.0f};
+        const float direct = std::max(
+            0.0f, composite_pixel.normal.x * to_sun.x +
+                      composite_pixel.normal.y * to_sun.y +
+                      composite_pixel.normal.z * to_sun.z);
+        const float diffuse_scale = 1.0f - composite_pixel.orm.y;
+        const float sun_base = direct * lighting.sun_intensity *
+            (1.0f + (0.65f - 1.0f) * composite_pixel.orm.x);
+        const float emission_strength =
+            std::exp2(std::min(composite_pixel.normal.w,
+                               viewer::kVkMaxEncodedEmission)) - 1.0f;
+        const matter::Float3 expected_composite{
+            composite_pixel.albedo.x * diffuse_scale * lighting.sky_color.x *
+                    composite_pixel.orm.z +
+                composite_pixel.albedo.x * diffuse_scale * lighting.sun_color.x *
+                    sun_base * composite_pixel.visibility.x +
+                composite_pixel.albedo.x * emission_strength +
+                composite_pixel.accumulated_diffuse.x,
+            composite_pixel.albedo.y * diffuse_scale * lighting.sky_color.y *
+                    composite_pixel.orm.z +
+                composite_pixel.albedo.y * diffuse_scale * lighting.sun_color.y *
+                    sun_base * composite_pixel.visibility.y +
+                composite_pixel.albedo.y * emission_strength +
+                composite_pixel.accumulated_diffuse.y,
+            composite_pixel.albedo.z * diffuse_scale * lighting.sky_color.z *
+                    composite_pixel.orm.z +
+                composite_pixel.albedo.z * diffuse_scale * lighting.sun_color.z *
+                    sun_base * composite_pixel.visibility.z +
+                composite_pixel.albedo.z * emission_strength +
+                composite_pixel.accumulated_diffuse.z};
+        CHECK(renderer.test_composite_uses_gi_temporal() &&
+                  std::fabs(composite_pixel.hdr.x - expected_composite.x) < 0.04f &&
+                  std::fabs(composite_pixel.hdr.y - expected_composite.y) < 0.04f &&
+                  std::fabs(composite_pixel.hdr.z - expected_composite.z) < 0.04f,
+              "GPU composite equation samples accumulated temporal radiance");
+        renderer.set_ray_tracing_settings(enabled);
         const auto render_sun_probe = [&](float intensity,
                                           uint64_t attempt_token,
                                           matter::Float4& raw) {
