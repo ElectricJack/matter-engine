@@ -66,6 +66,11 @@ void run_vulkan_gi_math_tests() {
               retry_seed != viewer::vulkan_gi_seed(17, 23, 9, 0) &&
               retry_seed != viewer::vulkan_gi_seed(17, 23, 10, 1),
           "GI seed uses committed frame identity and explicit bounce component");
+    const auto source_uv =
+        viewer::vulkan_gi_source_uv(10, 5, 80, 40, 160, 80);
+    CHECK(std::fabs(source_uv.x - 21.5f / 160.0f) < 1e-7f &&
+              std::fabs(source_uv.y - 11.5f / 80.0f) < 1e-7f,
+          "scaled GI reconstruction uses the selected source texel center");
 }
 
 void run_raster_mesh_material_contract_tests() {
@@ -1870,16 +1875,6 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                   retry_pixel.material_index == 1u &&
                   close4(retry_pixel.raw_diffuse, failed_raw, 1e-6f),
               "failed-attempt retry keeps GPU GI deterministic from committed frame identity");
-        viewer::VkScenePart sun_blocker = horizontal(
-            924, 0.5f, 20.0f, {0.0f, -1.0f, 0.0f}, 0, 1.0f);
-        sun_blocker.clusters[0].lods[0].vertex_count = 0;
-        CHECK(renderer.ensure_part(sun_blocker, error) >= 0 &&
-                  renderer.update_instances({{920, identity_matrix()},
-                                             {921, identity_matrix()},
-                                             {924, identity_matrix()}},
-                                            error),
-              error.empty() ? "add RT-only secondary-sun blocker"
-                            : error.c_str());
         const auto render_sun_probe = [&](float intensity,
                                           uint64_t attempt_token,
                                           matter::Float4& raw) {
@@ -1903,11 +1898,39 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
             raw = pixel.raw_diffuse;
             return read && pixel.material_index == 1u;
         };
+        const auto rgb_delta = [](matter::Float4 a, matter::Float4 b) {
+            return std::max(std::fabs(a.x - b.x),
+                            std::max(std::fabs(a.y - b.y),
+                                     std::fabs(a.z - b.z)));
+        };
+        matter::Float4 unblocked_sun_zero{};
+        matter::Float4 unblocked_sun_high{};
+        const bool unblocked_probes_ok =
+            render_sun_probe(0.0f, 299, unblocked_sun_zero) &&
+            render_sun_probe(100.0f, 300, unblocked_sun_high);
+        const float unblocked_sun_delta =
+            rgb_delta(unblocked_sun_zero, unblocked_sun_high);
+        CHECK(unblocked_probes_ok && unblocked_sun_delta > 0.05f,
+              "unblocked secondary hit responds to increased sun intensity");
+        viewer::VkScenePart sun_blocker = horizontal(
+            924, 0.5f, 20.0f, {0.0f, -1.0f, 0.0f}, 0, 1.0f);
+        sun_blocker.clusters[0].lods[0].vertex_count = 0;
+        CHECK(renderer.ensure_part(sun_blocker, error) >= 0 &&
+                  renderer.update_instances({{920, identity_matrix()},
+                                             {921, identity_matrix()},
+                                             {924, identity_matrix()}},
+                                            error),
+              error.empty() ? "add RT-only secondary-sun blocker"
+                            : error.c_str());
         matter::Float4 blocked_sun_zero{};
         matter::Float4 blocked_sun_high{};
-        CHECK(render_sun_probe(0.0f, 301, blocked_sun_zero) &&
-                  render_sun_probe(100.0f, 302, blocked_sun_high) &&
-                  close4(blocked_sun_zero, blocked_sun_high, 2e-3f),
+        const bool blocked_probes_ok =
+            render_sun_probe(0.0f, 301, blocked_sun_zero) &&
+            render_sun_probe(100.0f, 302, blocked_sun_high);
+        const float blocked_sun_delta =
+            rgb_delta(blocked_sun_zero, blocked_sun_high);
+        CHECK(blocked_probes_ok && blocked_sun_delta < 2e-3f &&
+                  blocked_sun_delta < unblocked_sun_delta * 0.05f,
               "secondary-hit sun is visibility tested without unshadowed leakage");
         renderer.release_part(924);
         renderer.set_lighting(lighting);
@@ -1915,6 +1938,10 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                   {{920, identity_matrix()}, {921, identity_matrix()}}, error),
               error.empty() ? "remove RT-only secondary-sun blocker"
                             : error.c_str());
+        matter::Float4 restored_unblocked_raw{};
+        CHECK(render_sun_probe(lighting.sun_intensity, 303,
+                               restored_unblocked_raw),
+              "rerender unblocked receiver before visibility comparison");
         CHECK(renderer.test_rt_blas_built(920) &&
                   renderer.test_rt_blas_candidate_serial(920) == 0,
               "successful retry publishes candidate BLAS state");
@@ -1924,6 +1951,8 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
         bool debug_output_matches = true;
         matter::Float4 strongest_receiver_raw{};
         bool receiver_seen = false;
+        float receiver_min_visibility = 1.0f;
+        float receiver_max_visibility = 0.0f;
         for (uint32_t y = 20; y < 200; y += 20) {
             for (uint32_t x = 20; x < 320; x += 20) {
                 viewer::VkRasterPixel pixel{};
@@ -1942,6 +1971,10 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                     std::fabs(pixel.hdr.z - pixel.visibility.z) < 0.01f;
                 if (pixel.material_index == 1u) {
                     receiver_seen = true;
+                    receiver_min_visibility =
+                        std::min(receiver_min_visibility, pixel.visibility.x);
+                    receiver_max_visibility =
+                        std::max(receiver_max_visibility, pixel.visibility.x);
                     if (pixel.raw_diffuse.x > strongest_receiver_raw.x)
                         strongest_receiver_raw = pixel.raw_diffuse;
                 }
@@ -1995,12 +2028,12 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                 CHECK(renderer.readback_raster_pixel(x, y, pixel, error),
                       error.empty() ? "read baked-AO-zero GI pixel"
                                     : error.c_str());
-                ao_min_visibility =
-                    std::min(ao_min_visibility, pixel.visibility.x);
-                ao_max_visibility =
-                    std::max(ao_max_visibility, pixel.visibility.x);
                 if (pixel.material_index == 1u) {
                     ao_receiver_seen = true;
+                    ao_min_visibility =
+                        std::min(ao_min_visibility, pixel.visibility.x);
+                    ao_max_visibility =
+                        std::max(ao_max_visibility, pixel.visibility.x);
                     ao_zero_max_raw = std::max(
                         ao_zero_max_raw,
                         std::max(pixel.raw_diffuse.x,
@@ -2012,8 +2045,11 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
         std::printf("AO-zero GI: seen=%u raw=%.6f visibility=%.3f..%.3f\n",
                     ao_receiver_seen ? 1u : 0u, ao_zero_max_raw,
                     ao_min_visibility, ao_max_visibility);
-        CHECK(ao_receiver_seen && ao_zero_max_raw < 1e-5f &&
-                  ao_min_visibility < 1.0f && ao_max_visibility == 1.0f,
+        CHECK(ao_receiver_seen && receiver_seen && ao_zero_max_raw < 1e-5f &&
+                  std::fabs(ao_min_visibility - receiver_min_visibility) <
+                      1e-6f &&
+                  std::fabs(ao_max_visibility - receiver_max_visibility) <
+                      1e-6f,
               "baked AO zero suppresses raw indirect diffuse without changing direct visibility");
         renderer.release_part(922);
         CHECK(renderer.ensure_part(horizontal(923, 0.0f, 0.55f,

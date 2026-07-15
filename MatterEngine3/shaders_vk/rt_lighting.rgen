@@ -88,9 +88,11 @@ void main() {
     float depth;
     vec4 albedo;
     ivec2 source_extent = textureSize(depth_texture, 0);
-    vec2 uv = (vec2(pixel) + vec2(0.5)) / vec2(gl_LaunchSizeEXT.xy);
-    ivec2 source_pixel = clamp(ivec2(uv * vec2(source_extent)), ivec2(0),
+    vec2 launch_uv = (vec2(pixel) + vec2(0.5)) / vec2(gl_LaunchSizeEXT.xy);
+    ivec2 source_pixel = clamp(ivec2(launch_uv * vec2(source_extent)), ivec2(0),
                                source_extent - ivec2(1));
+    vec2 source_uv = (vec2(source_pixel) + vec2(0.5)) /
+                     vec2(source_extent);
     depth = texelFetch(depth_texture, source_pixel, 0).x;
     albedo = texelFetch(albedo_texture, source_pixel, 0);
     vec3 normal_sample = texelFetch(normal_texture, source_pixel, 0).xyz;
@@ -102,7 +104,8 @@ void main() {
     }
     vec3 normal = normal_sample * inversesqrt(normal_length_squared);
     vec4 world_h = constants.clip_to_world *
-                   vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
+                   vec4(source_uv.x * 2.0 - 1.0,
+                        1.0 - source_uv.y * 2.0, depth, 1.0);
     vec3 world = world_h.xyz / world_h.w;
     uint seed = pcg_hash(uint(source_pixel.x) ^
                          (uint(source_pixel.y) * 0x9e3779b9u) ^

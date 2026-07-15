@@ -11,10 +11,19 @@ struct VulkanCosineSample {
     float pdf = 0.0f;
 };
 
+struct VulkanGiUv {
+    float x = 0.0f;
+    float y = 0.0f;
+};
+
 uint32_t vulkan_gi_pcg_hash(uint32_t value) noexcept;
 uint32_t vulkan_gi_seed(uint32_t pixel_x, uint32_t pixel_y,
                         uint32_t presented_frame_index,
                         uint32_t bounce) noexcept;
+VulkanGiUv vulkan_gi_source_uv(uint32_t raw_x, uint32_t raw_y,
+                               uint32_t raw_width, uint32_t raw_height,
+                               uint32_t source_width,
+                               uint32_t source_height) noexcept;
 VulkanCosineSample vulkan_cosine_sample(matter::Float3 normal, float u1,
                                         float u2) noexcept;
 

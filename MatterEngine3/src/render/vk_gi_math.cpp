@@ -21,6 +21,30 @@ uint32_t vulkan_gi_seed(uint32_t pixel_x, uint32_t pixel_y,
     return vulkan_gi_pcg_hash(seed);
 }
 
+VulkanGiUv vulkan_gi_source_uv(uint32_t raw_x, uint32_t raw_y,
+                               uint32_t raw_width, uint32_t raw_height,
+                               uint32_t source_width,
+                               uint32_t source_height) noexcept {
+    if (raw_width == 0 || raw_height == 0 || source_width == 0 ||
+        source_height == 0) {
+        return {};
+    }
+    const float launch_u = (static_cast<float>(raw_x) + 0.5f) /
+                           static_cast<float>(raw_width);
+    const float launch_v = (static_cast<float>(raw_y) + 0.5f) /
+                           static_cast<float>(raw_height);
+    const uint32_t source_x = std::min(
+        static_cast<uint32_t>(launch_u * static_cast<float>(source_width)),
+        source_width - 1);
+    const uint32_t source_y = std::min(
+        static_cast<uint32_t>(launch_v * static_cast<float>(source_height)),
+        source_height - 1);
+    return {(static_cast<float>(source_x) + 0.5f) /
+                static_cast<float>(source_width),
+            (static_cast<float>(source_y) + 0.5f) /
+                static_cast<float>(source_height)};
+}
+
 VulkanCosineSample vulkan_cosine_sample(matter::Float3 normal, float u1,
                                         float u2) noexcept {
     const auto normalize = [](matter::Float3 v) {
