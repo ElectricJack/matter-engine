@@ -155,9 +155,36 @@ double median_of_sorted(const std::vector<double>& sorted) {
                : (sorted[middle - 1] + sorted[middle]) * 0.5;
 }
 
+std::string json_string(const std::string& value) {
+    std::string escaped;
+    escaped.reserve(value.size());
+    for (const unsigned char c : value) {
+        switch (c) {
+            case '\"': escaped += "\\\""; break;
+            case '\\': escaped += "\\\\"; break;
+            case '\n': escaped += "\\n"; break;
+            case '\r': escaped += "\\r"; break;
+            case '\t': escaped += "\\t"; break;
+            default:
+                if (c < 0x20) {
+                    char encoded[7]{};
+                    std::snprintf(encoded, sizeof(encoded), "\\u%04x", c);
+                    escaped += encoded;
+                } else {
+                    escaped += static_cast<char>(c);
+                }
+        }
+    }
+    return escaped;
+}
+
 bool write_perf_result(const PerfRunConfig& config, const std::string& world,
                        std::vector<double> frame_times, const PerfCounters& start,
-                       const PerfCounters& finish, uint32_t validation_errors,
+                       const PerfCounters& finish,
+                       const matter::FrameStats& frame_stats,
+                       uint64_t dlss_reset_start, bool rt_available,
+                       const matter::VulkanRayTracingSettings& rt_settings,
+                       uint32_t validation_errors,
                        std::string& error) {
     if (frame_times.empty()) {
         error = "no performance frames were sampled";
@@ -188,6 +215,26 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            << (finish.instance_uploads - start.instance_uploads)
            << ",\"immediate_submit_delta\":"
            << (finish.immediate_submits - start.immediate_submits)
+           << ",\"selected_dlss_mode\":\""
+           << matter::dlss_mode_name(frame_stats.dlss_selected_mode) << "\""
+           << ",\"active_dlss_mode\":\""
+           << matter::dlss_mode_name(frame_stats.dlss_active_mode) << "\""
+           << ",\"dlss_internal_width\":" << frame_stats.dlss_internal_width
+           << ",\"dlss_internal_height\":" << frame_stats.dlss_internal_height
+           << ",\"dlss_output_width\":" << frame_stats.dlss_output_width
+           << ",\"dlss_output_height\":" << frame_stats.dlss_output_height
+           << ",\"dlss_reset_delta\":"
+           << (frame_stats.dlss_reset_count >= dlss_reset_start
+                   ? frame_stats.dlss_reset_count - dlss_reset_start
+                   : frame_stats.dlss_reset_count)
+           << ",\"rt_available\":" << (rt_available ? "true" : "false")
+           << ",\"rt_enabled\":"
+           << (rt_settings.enabled && rt_available ? "true" : "false")
+           << ",\"rt_samples\":" << rt_settings.samples
+           << ",\"rt_debug_view\":"
+           << (rt_settings.debug_view ? "true" : "false")
+           << ",\"fallback_reason\":\""
+           << json_string(frame_stats.dlss_reason) << "\""
            << ",\"validation_errors\":" << validation_errors << "}\n";
     if (!output) {
         error = "failed while writing MATTER_PERF_OUTPUT '" + config.output_path + "'";
@@ -227,6 +274,17 @@ int main() {
         glfwTerminate();
         return 1;
     }
+    const bool disable_vulkan_rt =
+        std::getenv("MATTER_DISABLE_VK_RT") != nullptr;
+    std::printf("Vulkan RT available=%s enabled=%s reason=%s\n",
+                vulkan->ray_tracing_available() ? "true" : "false",
+                vulkan->ray_tracing_available() && !disable_vulkan_rt
+                    ? "true"
+                    : "false",
+                vulkan->ray_tracing_available()
+                    ? (disable_vulkan_rt ? "disabled by MATTER_DISABLE_VK_RT"
+                                         : "none")
+                    : vulkan->ray_tracing_unavailable_reason().c_str());
     matter::EngineDesc engine_desc;
     const char* cache_root_env = std::getenv("MATTER_CACHE_ROOT");
     engine_desc.cache_root = cache_root_env ? cache_root_env : "cache";
@@ -355,6 +413,10 @@ int main() {
         static_cast<matter::DlssMode>(255);
     matter::DlssMode reported_active_dlss_mode =
         static_cast<matter::DlssMode>(255);
+    uint32_t reported_dlss_internal_width = UINT32_MAX;
+    uint32_t reported_dlss_internal_height = UINT32_MAX;
+    uint32_t reported_dlss_output_width = UINT32_MAX;
+    uint32_t reported_dlss_output_height = UINT32_MAX;
     uint64_t reported_dlss_resets = UINT64_MAX;
     viewer::CameraController camera_controller;
     const char* screenshot_env = std::getenv("MATTER_SCREENSHOT");
@@ -409,6 +471,7 @@ int main() {
     PerfPhase perf_phase = PerfPhase::WaitingForBake;
     std::chrono::steady_clock::time_point perf_phase_start{};
     PerfCounters perf_start_counters{};
+    uint64_t perf_start_dlss_resets = 0;
     std::vector<double> perf_frame_times;
     auto previous_time = std::chrono::steady_clock::now();
 
@@ -564,7 +627,7 @@ int main() {
         options.min_projected_size = min_projected_size;
         options.dlss_mode = selected_dlss_mode;
         options.vulkan_ray_tracing.enabled =
-            vulkan->ray_tracing_available();
+            vulkan->ray_tracing_available() && !disable_vulkan_rt;
         const auto render_start = std::chrono::steady_clock::now();
         if (!session->render(camera, frame, options, error)) {
             std::fprintf(stderr, "FATAL: render: %s\n", error.c_str());
@@ -575,6 +638,10 @@ int main() {
                                frame_stats.dlss_reason.empty();
         if (reported_selected_dlss_mode != frame_stats.dlss_selected_mode ||
             reported_active_dlss_mode != frame_stats.dlss_active_mode ||
+            reported_dlss_internal_width != frame_stats.dlss_internal_width ||
+            reported_dlss_internal_height != frame_stats.dlss_internal_height ||
+            reported_dlss_output_width != frame_stats.dlss_output_width ||
+            reported_dlss_output_height != frame_stats.dlss_output_height ||
             reported_dlss_resets != frame_stats.dlss_reset_count) {
             std::printf(
                 "DLSS selected=%s active=%s internal=%ux%u output=%ux%u resets=%llu reason=%s\n",
@@ -588,6 +655,10 @@ int main() {
                                                 : frame_stats.dlss_reason.c_str());
             reported_selected_dlss_mode = frame_stats.dlss_selected_mode;
             reported_active_dlss_mode = frame_stats.dlss_active_mode;
+            reported_dlss_internal_width = frame_stats.dlss_internal_width;
+            reported_dlss_internal_height = frame_stats.dlss_internal_height;
+            reported_dlss_output_width = frame_stats.dlss_output_width;
+            reported_dlss_output_height = frame_stats.dlss_output_height;
             reported_dlss_resets = frame_stats.dlss_reset_count;
         }
         stats.frame_ms = std::chrono::duration<float, std::milli>(
@@ -694,6 +765,7 @@ int main() {
                 perf_phase = PerfPhase::Sampling;
                 perf_phase_start = perf_now;
                 perf_start_counters = capture_perf_counters(frame_stats);
+                perf_start_dlss_resets = frame_stats.dlss_reset_count;
                 perf_frame_times.clear();
                 std::printf("perf: sampling for %.3f seconds\n",
                             perf.sample_seconds);
@@ -708,7 +780,11 @@ int main() {
                     if (!write_perf_result(
                             perf, worlds[stats.world_current].world_name,
                             perf_frame_times, perf_start_counters,
-                            perf_finish_counters, validation_errors, perf_error)) {
+                            perf_finish_counters, frame_stats,
+                            perf_start_dlss_resets,
+                            vulkan->ray_tracing_available(),
+                            options.vulkan_ray_tracing, validation_errors,
+                            perf_error)) {
                         std::fprintf(stderr, "FATAL: perf: %s\n",
                                      perf_error.c_str());
                         fatal_error = true;

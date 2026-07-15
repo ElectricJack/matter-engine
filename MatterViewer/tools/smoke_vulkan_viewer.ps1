@@ -95,7 +95,8 @@ function Assert-PeImports([string]$Path) {
 
 function Invoke-ViewerCase([string]$Name, [bool]$Resize,
                            [int]$Width, [int]$Height, [bool]$TextureOverride,
-                           [bool]$HideUi, [bool]$AssertMaterials) {
+                           [bool]$HideUi, [bool]$AssertMaterials,
+                           [bool]$DisableRt = $false) {
     $png = Join-Path $OutputDir "$Name.png"
     Remove-Item -Force $png -ErrorAction SilentlyContinue
     $env:MATTER_WORLD = 'CornellBox'
@@ -107,6 +108,8 @@ function Invoke-ViewerCase([string]$Name, [bool]$Resize,
     else { Remove-Item Env:MATTER_TEST_RESIZE -ErrorAction SilentlyContinue }
     if ($HideUi) { $env:MATTER_HIDE_UI = '1' }
     else { Remove-Item Env:MATTER_HIDE_UI -ErrorAction SilentlyContinue }
+    if ($DisableRt) { $env:MATTER_DISABLE_VK_RT = '1' }
+    else { Remove-Item Env:MATTER_DISABLE_VK_RT -ErrorAction SilentlyContinue }
     if ($TextureOverride) {
         $env:MATTER_VK_DIAGNOSTIC_GROUND_TILESET_MATERIAL = '8'
         $env:MATTER_VK_DIAGNOSTIC_GROUND_TILESET_PRIOR_SLOT = '2'
@@ -135,6 +138,15 @@ function Invoke-ViewerCase([string]$Name, [bool]$Resize,
     }
     if ($joined -notmatch 'selected world CornellBox hash ([0-9a-fA-F]{16})') {
         throw "$Name did not report selected world CornellBox hash"
+    }
+    $escapedExtent = "${Width}x${Height}"
+    if ($joined -notmatch
+            "DLSS selected=Native active=Native internal=$escapedExtent output=$escapedExtent resets=[0-9]+ reason=(?!none)(.+)") {
+        throw "$Name did not truthfully report Native DLSS fallback, extents, and reason"
+    }
+    $expectedRtEnabled = if ($DisableRt) { 'false' } else { 'true' }
+    if ($joined -notmatch "Vulkan RT available=true enabled=$expectedRtEnabled reason=.+") {
+        throw "$Name did not report expected Vulkan RT enabled state $expectedRtEnabled"
     }
     if ($joined -notmatch
             'Vulkan material diagnostic:.*ids=[1-9][0-9]*.*tinted=[1-9][0-9]*.*red=[1-9][0-9]*.*green=[1-9][0-9]*') {
@@ -177,6 +189,7 @@ foreach ($name in @('MATTER_WORLD','MATTER_SCREENSHOT','MATTER_TEST_RESIZE',
                     'MATTER_VK_DIAGNOSTIC_MATERIALS',
                     'MATTER_VK_DIAGNOSTIC_GROUND_TILESET_MATERIAL',
                     'MATTER_VK_DIAGNOSTIC_GROUND_TILESET_PRIOR_SLOT',
+                    'MATTER_DISABLE_VK_RT',
                     'VK_LAYER_PATH','PATH')) {
     $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
@@ -206,6 +219,7 @@ try {
     Invoke-ViewerCase 'cornell-materials' $false 1280 720 $false $true $true
     Invoke-ViewerCase 'cornell-resize' $true 960 540 $false $true $true
     Invoke-ViewerCase 'cornell-override' $false 1280 720 $true $true $true
+    Invoke-ViewerCase 'cornell-rt-disabled' $false 1280 720 $false $true $true $true
     Write-Output 'vulkan-viewer runtime smoke: PASS'
 } finally {
     foreach ($name in $saved.Keys) {

@@ -161,3 +161,11 @@ Task 5: complete (commits 85379d9 + 09a76fb + 58022ba, review clean)
   - Native KHR RT capability gating, pinned per-part BLAS geometry, per-frame TLAS, aligned SBT/scratch, functional shadow samples/debug output, and internal-resolution sun-shadow composite are implemented.
   - BLAS publication is transactional across failed frames; forced RT-unavailable two-frame/resize fallback avoids storage usage and unsupported RT stages. RTX, unavailable, default/resize, raster/fault, strict CUDA, and full viewer gates pass with validation errors 0.
   - BLAS compaction flags were removed because deferred compact-query/copy is not implemented; build-sized BLAS storage is used truthfully.
+
+Task 6: complete (final viewer gates and evidence)
+  - Static gates require early Streamline manual hooking, the proxy funnel, exactly one common-present/queue-present site, temporal velocity, distinct DLSS output, pinned RT geometry/transactional BLAS publication, and no production immediate submit.
+  - Runtime viewer smoke reports truthful Native/Native fallback at 1280x720 and resized 960x540, exercises Vulkan RT enabled/disabled, and passes on NVIDIA GeForce RTX 4090 with validation errors 0.
+  - Performance JSON now records selected/active DLSS mode, internal/output extents, stable reset delta, RT availability/enabled/samples/debug state, fallback reason, upload/immediate-submit deltas, and validation count. Gates reject mislabeled fallback, invalid Native extents, persistent history resets, impossible RT state, and validation errors.
+  - Legal Streamline SDK/runtime artifacts are absent (`STREAMLINE_PATH` unset and no `sl.interposer.dll`); live DLSS evaluation is explicitly unavailable and not claimed. Native fallback reason: `Streamline SDK not found: build with HAVE_STREAMLINE=1 to enable DLSS`.
+  - CUDA 13.3 Windows build, six interop fault smokes, static checker, and five-case viewer smoke pass. Fresh final CornellBox cadence evidence: 95 frames, 32.03 FPS, median 31.22 ms, p95 31.95 ms, Native/Native 1280x720, RT available/enabled with 1 sample, reset delta 0, validation errors 0.
+  - Per user direction, StressForest50k performance is not a Task 6 sign-off gate. Its known pre-existing fixture failure remains before sampling: `VkSceneCluster LOD count must be in [1, kVkMaxLod]`; no StressForest FPS is claimed.

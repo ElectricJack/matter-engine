@@ -10,6 +10,7 @@ $vkScene = Get-Content -Raw (Join-Path $root 'MatterEngine3\src\render\vk_scene_
 $vkSceneHeader = Get-Content -Raw (Join-Path $root 'MatterEngine3\src\render\vk_scene_renderer.h')
 $engineImpl = Get-Content -Raw (Join-Path $root 'MatterEngine3\src\matter_engine.cpp')
 $vkSmoke = Get-Content -Raw (Join-Path $root 'MatterEngine3\tests\vulkan_smoke_tests.cpp')
+$streamline = Get-Content -Raw (Join-Path $root 'MatterEngine3\src\render\streamline_bridge.cpp')
 $compositeShader = Get-Content -Raw (Join-Path $root 'MatterEngine3\shaders_vk\composite.frag')
 $compat = Get-Content -Raw (Join-Path $root 'MatterEngine3\src\render\vulkan_only_compat.cpp')
 $cell = Get-Content -Raw (Join-Path $root 'MatterSurfaceLib\src\cell.cpp')
@@ -65,6 +66,41 @@ Require-Text $runtimeSmoke 'MATTER_HIDE_UI' 'UI-hidden scene verification'
 Require-Text $runtimeSmoke 'PNG signature' 'runtime PNG signature validation'
 Require-Text $runtimeSmoke 'GetPixel' 'runtime nontrivial pixel validation'
 Require-Text $runtimeSmoke 'validation errors' 'runtime validation-clean assertion'
+
+# RTX/DLSS final evidence: initialization must happen before Vulkan object
+# creation, every presentation operation stays in the proxy funnel, and the
+# exact temporal/output/RT ownership contracts retain executable coverage.
+$deviceCreate = $vkContext.IndexOf('VulkanDevice::create(GLFWwindow* window')
+$streamlineInit = $vkContext.IndexOf('StreamlineBridge::initialize_before_vulkan()', $deviceCreate)
+$vulkanInit = $vkContext.IndexOf('result->impl_->initialize(window, enable_validation, error)', $deviceCreate)
+if ($streamlineInit -lt 0 -or $vulkanInit -lt 0 -or $streamlineInit -gt $vulkanInit) {
+    $failures.Add('Streamline manual hooking must initialize before Vulkan objects')
+}
+foreach ($hook in @('streamline.create_instance(', 'streamline.create_device(',
+                     'streamline.create_swapchain(', 'streamline.get_swapchain_images(',
+                     'streamline.acquire_next_image(', 'streamline.present_common(',
+                     'streamline.queue_present(', 'streamline.destroy_swapchain(')) {
+    Require-Text $vkContext $hook 'Streamline proxy funnel'
+}
+if (([regex]::Matches($vkContext, 'streamline\.present_common\(input\.serial\)')).Count -ne 1 -or
+    ([regex]::Matches($vkContext, 'streamline\.queue_present\(graphics_queue')).Count -ne 1) {
+    $failures.Add('successful frame must have exactly one common-present and one queue-present site')
+}
+$commonPresent = $vkContext.IndexOf('streamline.present_common(input.serial)')
+$queuePresent = $vkContext.IndexOf('streamline.queue_present(graphics_queue')
+if ($commonPresent -lt 0 -or $queuePresent -lt 0 -or $commonPresent -gt $queuePresent) {
+    $failures.Add('common-present must immediately precede the sole proxied queue-present')
+}
+@('static camera and rigid instance produce zero temporal velocity',
+  'velocity attachment stores exact current-to-previous input pixels',
+  'dlss_output_evaluated', 'first_dlss_output',
+  'test_rt_geometry_address(910) == pinned',
+  'test_rt_blas_candidate_serial(920) == frame.serial') | ForEach-Object {
+    Require-Text $vkSmoke $_ 'RTX/DLSS executable evidence hook'
+}
+Require-Text $streamline 'sl.interposer.dll is missing beside the executable' 'truthful Streamline runtime absence'
+Require-Text $runtimeSmoke 'DLSS selected=Native active=Native' 'runtime Native fallback assertion'
+Require-Text $runtimeSmoke 'MATTER_DISABLE_VK_RT' 'runtime RT toggle assertion'
 
 # Task 9 completion review: Vulkan world rendering must consume authored
 # materials/lights and must not expose controls that are active no-ops.
@@ -157,12 +193,19 @@ Require-Text $runtimeSmoke 'selected world CornellBox hash' 'selected world hash
   'immediate_submit_delta', 'validation_errors') | ForEach-Object {
     Require-Text $main $_ 'performance JSON counter'
 }
+@('selected_dlss_mode', 'active_dlss_mode', 'dlss_internal_width',
+  'dlss_internal_height', 'dlss_output_width', 'dlss_output_height',
+  'dlss_reset_delta', 'rt_available', 'rt_enabled', 'rt_samples',
+  'rt_debug_view', 'fallback_reason') | ForEach-Object {
+    Require-Text $main $_ 'RTX/DLSS performance JSON evidence'
+    Require-Text $perfScript $_ 'RTX/DLSS performance gate'
+}
 Require-Text $main 'end_to_end_cadence' 'end-to-end performance metric label'
 Require-Text $main 'perf_frame_cadence_ms' 'end-to-end performance frame sample'
 Forbid-Text $main 'perf_frame_times.push_back(stats.frame_ms)' 'CPU-only render timing sample'
 $perfFrameStart = $main.IndexOf('const auto perf_frame_start = std::chrono::steady_clock::now();')
 $pollEvents = $main.IndexOf('glfwPollEvents();')
-$endFrame = $main.IndexOf('vulkan->end_frame(frame, error)')
+$endFrame = $main.IndexOf('vulkan->end_frame(frame, frame_presented, error)')
 $perfFrameSample = $main.IndexOf('perf_frame_times.push_back(perf_frame_cadence_ms)')
 if ($perfFrameStart -lt 0 -or $pollEvents -lt 0 -or $endFrame -lt 0 -or
     $perfFrameSample -lt 0 -or $perfFrameStart -gt $pollEvents -or
@@ -174,6 +217,7 @@ if ($perfFrameStart -lt 0 -or $pollEvents -lt 0 -or $endFrame -lt 0 -or
   'Write-Output (("Vulkan instancing performance:') | ForEach-Object {
     Require-Text $perfScript $_ 'isolated performance harness state'
 }
+Require-Text $perfScript 'VK_LAYER_PATH' 'performance validation layer discovery'
 Require-Text $makefile 'vulkan-instancing-perf: windows' 'performance Make target'
 Require-Text $vkScene 'multi_draw_indirect_enabled' 'grouped indirect feature gate'
 Require-Text $vkScene 'range.command_count' 'grouped indirect draw ranges'
