@@ -13,6 +13,9 @@ layout(set = 0, binding = 10) uniform sampler2D orm_texture;
 layout(set = 0, binding = 11) uniform usampler2D identity_texture;
 layout(set = 0, binding = 12, rgba16f) uniform image2D raw_specular_image;
 layout(set = 0, binding = 13, rg16f) uniform image2D raw_specular_aux_image;
+layout(set = 0, binding = 6, std430) buffer LightingTestOutput {
+    uint lighting_test_words[];
+};
 
 layout(push_constant) uniform GiConstants {
     mat4 clip_to_world;
@@ -201,6 +204,7 @@ void main() {
 
     vec3 specular = vec3(0.0);
     vec2 specular_aux = vec2(0.0, orm.x);
+    float selected_f0 = 0.0;
     if (identity.x < rt_materials.length() && orm.x <=
         constants.max_reflection_roughness) {
         RtMaterialGpu primary = rt_materials[identity.x];
@@ -210,6 +214,7 @@ void main() {
         float coat = clamp(primary.metal_opacity_spec_coat.w, 0.0, 1.0);
         float coat_probability = coat / (1.0 + coat);
         bool choose_coat = coat > 0.0 && random_float(seed) < coat_probability;
+        atomicAdd(lighting_test_words[choose_coat ? 19u : 18u], 1u);
         float lobe_probability = choose_coat ? coat_probability
                                              : (1.0 - coat_probability);
         float roughness = choose_coat
@@ -219,6 +224,7 @@ void main() {
             mix(vec3(0.04) * max(primary.metal_opacity_spec_coat.z, 0.0) *
                     max(primary.specular_tint_coat_roughness.rgb, vec3(0.0)),
                 base_color, clamp(primary.metal_opacity_spec_coat.x, 0.0, 1.0));
+        selected_f0 = dot(f0, vec3(0.3333333333));
         vec4 near_h = constants.clip_to_world *
             vec4(source_uv.x * 2.0 - 1.0, 1.0 - source_uv.y * 2.0, 0.0, 1.0);
         vec3 near_world = near_h.xyz / near_h.w;
@@ -265,6 +271,6 @@ void main() {
         }
     }
     if (any(isnan(specular)) || any(isinf(specular))) specular = vec3(0.0);
-    imageStore(raw_specular_image, pixel, vec4(specular, 1.0));
+    imageStore(raw_specular_image, pixel, vec4(specular, selected_f0));
     imageStore(raw_specular_aux_image, pixel, vec4(specular_aux, 0.0, 0.0));
 }

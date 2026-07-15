@@ -47,6 +47,7 @@ enum VulkanGiTemporalRejectionBits {
     VULKAN_GI_REJECT_MATERIAL = 1u << 3,
     VULKAN_GI_REJECT_INSTANCE = 1u << 4,
     VULKAN_GI_REJECT_RESET = 1u << 5,
+    VULKAN_GI_REJECT_HIT_DISTANCE = 1u << 6,
 };
 
 typedef struct VulkanGiTemporalConstants {

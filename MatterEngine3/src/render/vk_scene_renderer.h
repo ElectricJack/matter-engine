@@ -194,7 +194,9 @@ struct RtSurfaceHit {
 };
 
 struct GiTemporalGpuFixture {
+    uint32_t signal_mode = 0;
     matter::Float4 raw{0.25f, 0.5f, 0.75f, 1.0f};
+    matter::Float3 raw_aux{1.0f, 0.5f, 0.0f};
     matter::Float3 velocity{};
     float depth = 0.5f;
     matter::Float4 normal{0.0f, 0.0f, 1.0f, 0.0f};
@@ -207,6 +209,7 @@ struct GiTemporalGpuFixture {
     matter::Float4 previous_normal{0.0f, 0.0f, 1.0f, 0.0f};
     uint32_t previous_material_index = 7;
     uint32_t previous_instance_token = 41;
+    matter::Float3 previous_aux{1.0f, 0.5f, 0.0f};
     GiPixelCoord output_pixel{3, 3};
     GiPixelCoord history_patch_pixel{3, 3};
     bool reset = false;
@@ -217,6 +220,7 @@ struct GiTemporalGpuResult {
     matter::Float3 moments{};
     uint32_t history_length = 0;
     uint32_t rejection_bits = 0;
+    matter::Float3 aux{};
 };
 
 struct GiAtrousGpuFixture {
@@ -358,6 +362,9 @@ public:
                                        std::string& error);
     VkRasterAttachments raster_attachments() const;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+    void test_force_rt_unavailable(bool unavailable) {
+        test_force_rt_unavailable_ = unavailable;
+    }
     bool readback_raster_pixel(uint32_t x, uint32_t y,
                                VkRasterPixel& pixel, std::string& error);
     bool readback_materials(std::vector<MaterialGpuRecord>& records,
@@ -391,6 +398,9 @@ public:
     bool readback_rt_trace_counters(uint32_t frame_slot,
                                     RtTraceCounters& counters,
                                     std::string& error);
+    bool test_readback_reflection_sample_counts(uint32_t& base_samples,
+                                                uint32_t& coat_samples,
+                                                std::string& error);
     bool test_dispatch_gi_temporal_fixture(
         const GiTemporalGpuFixture& fixture, GiTemporalGpuResult& result,
         std::string& error);
@@ -651,6 +661,7 @@ private:
     matter::StreamlineBridge* dlss_bridge_ = nullptr;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     std::unique_ptr<matter::StreamlineBridge> test_dlss_bridge_override_;
+    bool test_force_rt_unavailable_ = false;
 #endif
     matter::DlssMode selected_dlss_mode_ = static_cast<matter::DlssMode>(0);
     bool dlss_history_reset_pending_ = false;

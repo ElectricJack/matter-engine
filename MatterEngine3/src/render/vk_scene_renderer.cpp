@@ -1643,7 +1643,7 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             !ensure_candidate_buffer(frame.rt_error_counter,
                                      sizeof(GpuRtCounters),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
-            !ensure_candidate_buffer(frame.rt_test_output, 18 * sizeof(uint32_t),
+            !ensure_candidate_buffer(frame.rt_test_output, 20 * sizeof(uint32_t),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
             !ensure_candidate_buffer(frame.gi_atrous_markers,
                                      5 * sizeof(uint32_t),
@@ -2411,6 +2411,27 @@ bool VkSceneRenderer::readback_rt_trace_counters(
     return true;
 }
 
+bool VkSceneRenderer::test_readback_reflection_sample_counts(
+    uint32_t& base_samples, uint32_t& coat_samples, std::string& error) {
+    base_samples = 0;
+    coat_samples = 0;
+    if (frames_.empty()) {
+        error = "reflection sample counters require an initialized frame";
+        return false;
+    }
+    FrameResources& frame = frames_[active_frame_index_];
+    if (!matter::map_buffer(frame.rt_test_output, error) ||
+        !matter::invalidate_buffer(frame.rt_test_output,
+                                   18 * sizeof(uint32_t),
+                                   2 * sizeof(uint32_t), error))
+        return false;
+    const auto* words =
+        static_cast<const uint32_t*>(frame.rt_test_output.mapped);
+    base_samples = words[18];
+    coat_samples = words[19];
+    return true;
+}
+
 uint64_t VkSceneRenderer::test_rt_blas_candidate_serial(
     uint64_t part_hash) const {
     const auto found = slot_of_.find(part_hash);
@@ -2502,7 +2523,14 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
         value.float32[1] = f.raw.y;
         value.float32[2] = f.raw.z;
         value.float32[3] = f.raw.w;
-        clear_color(renderer.raw_diffuse_, value);
+        matter::VkImageResource& raw_signal =
+            f.signal_mode == 0u ? renderer.raw_diffuse_
+                                : renderer.raw_specular_;
+        clear_color(raw_signal, value);
+        value = {};
+        value.float32[0] = f.raw_aux.x;
+        value.float32[1] = f.raw_aux.y;
+        clear_color(renderer.raw_specular_aux_, value);
         value = {};
         value.float32[0] = f.velocity.x;
         value.float32[1] = f.velocity.y;
@@ -2539,8 +2567,10 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
         sampled(renderer.normal_, VK_IMAGE_ASPECT_COLOR_BIT);
         sampled(renderer.material_instance_, VK_IMAGE_ASPECT_COLOR_BIT);
 
+        GiHistorySet* histories = f.signal_mode == 0u
+            ? renderer.gi_history_ : renderer.gi_spec_history_;
         GiHistorySet& previous =
-            renderer.gi_history_[renderer.gi_presented_history_index_];
+            histories[renderer.gi_presented_history_index_];
         value = {};
         value.float32[0] = f.previous_radiance.x;
         value.float32[1] = f.previous_radiance.y;
@@ -2564,6 +2594,10 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
         value.uint32[0] = f.previous_material_index;
         value.uint32[1] = f.previous_instance_token;
         clear_color(previous.identity, value);
+        value = {};
+        value.float32[0] = f.previous_aux.x;
+        value.float32[1] = f.previous_aux.y;
+        clear_color(previous.aux, value);
 
         transition_for_use(command_buffer, previous.history_length,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -2586,15 +2620,16 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
         fake.frame_slot_count =
             static_cast<uint32_t>(renderer.frames_.size());
         fake.serial = 0x54454d50u;
-        item.ok = renderer.record_gi_temporal(fake, *item.error, false);
+        item.ok = renderer.record_gi_temporal_signal(
+            fake, f.signal_mode, *item.error, false);
         if (!item.ok) return;
         GiHistorySet& output =
-            renderer.gi_history_[renderer.gi_candidate_history_index_];
+            histories[renderer.gi_candidate_history_index_];
         matter::VkImageResource* images[] = {
             &output.radiance, &output.moments, &output.history_length,
-            &output.rejection};
-        const VkDeviceSize offsets[] = {0, 8, 12, 16};
-        for (uint32_t index = 0; index < 4; ++index) {
+            &output.rejection, &output.aux};
+        const VkDeviceSize offsets[] = {0, 8, 12, 16, 20};
+        for (uint32_t index = 0; index < 5; ++index) {
             transition_for_use(command_buffer, *images[index],
                                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                VK_PIPELINE_STAGE_2_TRANSFER_BIT,
@@ -2615,16 +2650,33 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
         *vulkan_, callback, &record, error,
         matter::ImmediateSubmitPhase::compute_dispatch,
         {upload.lifetime, readback.lifetime, raw_diffuse_.lifetime,
+         raw_specular_.lifetime, raw_specular_aux_.lifetime,
          velocity_.lifetime, depth_.lifetime, normal_.lifetime,
          material_instance_.lifetime,
          gi_history_[0].radiance.lifetime, gi_history_[0].moments.lifetime,
          gi_history_[0].history_length.lifetime, gi_history_[0].depth.lifetime,
          gi_history_[0].normal.lifetime, gi_history_[0].identity.lifetime,
-         gi_history_[0].rejection.lifetime,
+         gi_history_[0].rejection.lifetime, gi_history_[0].aux.lifetime,
          gi_history_[1].radiance.lifetime, gi_history_[1].moments.lifetime,
          gi_history_[1].history_length.lifetime, gi_history_[1].depth.lifetime,
          gi_history_[1].normal.lifetime, gi_history_[1].identity.lifetime,
-         gi_history_[1].rejection.lifetime});
+         gi_history_[1].rejection.lifetime, gi_history_[1].aux.lifetime,
+         gi_spec_history_[0].radiance.lifetime,
+         gi_spec_history_[0].moments.lifetime,
+         gi_spec_history_[0].history_length.lifetime,
+         gi_spec_history_[0].depth.lifetime,
+         gi_spec_history_[0].normal.lifetime,
+         gi_spec_history_[0].identity.lifetime,
+         gi_spec_history_[0].rejection.lifetime,
+         gi_spec_history_[0].aux.lifetime,
+         gi_spec_history_[1].radiance.lifetime,
+         gi_spec_history_[1].moments.lifetime,
+         gi_spec_history_[1].history_length.lifetime,
+         gi_spec_history_[1].depth.lifetime,
+         gi_spec_history_[1].normal.lifetime,
+         gi_spec_history_[1].identity.lifetime,
+         gi_spec_history_[1].rejection.lifetime,
+         gi_spec_history_[1].aux.lifetime});
     gi_presented_attempt_token_ = saved_presented_token;
     gi_candidate_frame_serial_ = saved_candidate_serial;
     gi_candidate_attempt_token_ = saved_candidate_token;
@@ -2642,6 +2694,8 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
     std::memcpy(&history, bytes.data() + 12, sizeof(history));
     std::memcpy(&result.rejection_bits, bytes.data() + 16,
                 sizeof(result.rejection_bits));
+    uint16_t aux[2]{};
+    std::memcpy(aux, bytes.data() + 20, sizeof(aux));
     result.radiance = {half_to_float(radiance[0]),
                        half_to_float(radiance[1]),
                        half_to_float(radiance[2]),
@@ -2649,6 +2703,7 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
     result.moments = {half_to_float(moments[0]),
                       half_to_float(moments[1]), 0.0f};
     result.history_length = history;
+    result.aux = {half_to_float(aux[0]), half_to_float(aux[1]), 0.0f};
     return true;
 }
 
@@ -3935,7 +3990,11 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         }
     };
     const bool native_trace_enabled =
-        ray_tracing_settings_.enabled && vulkan_->ray_tracing_available();
+        ray_tracing_settings_.enabled && vulkan_->ray_tracing_available()
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+        && !test_force_rt_unavailable_
+#endif
+        ;
     if (!native_trace_enabled || rt_instances_.empty()) {
         clear_visibility();
         clear_raw_diffuse();
@@ -4211,17 +4270,25 @@ bool VkSceneRenderer::record_ray_traced_shadows(
     if (!ensure_buffer(selected.rt_parts, part_bytes,
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error) ||
         !matter::map_buffer(selected.rt_parts, error) ||
-        !matter::map_buffer(selected.rt_error_counter, error)) return false;
+        !matter::map_buffer(selected.rt_error_counter, error) ||
+        !matter::map_buffer(selected.rt_test_output, error)) return false;
     std::memset(selected.rt_parts.mapped, 0,
                 static_cast<size_t>(part_bytes));
     if (!part_records.empty())
         std::memcpy(selected.rt_parts.mapped, part_records.data(),
                     part_records.size() * sizeof(GpuRtPartRecord));
     std::memset(selected.rt_error_counter.mapped, 0, sizeof(GpuRtCounters));
+    auto* test_words =
+        static_cast<uint32_t*>(selected.rt_test_output.mapped);
+    test_words[18] = 0u;
+    test_words[19] = 0u;
     if (!matter::flush_buffer(selected.rt_parts, 0, part_bytes, error) ||
         !matter::flush_buffer(selected.rt_error_counter, 0,
                               sizeof(GpuRtCounters),
-                              error)) return false;
+                              error) ||
+        !matter::flush_buffer(selected.rt_test_output,
+                              18 * sizeof(uint32_t),
+                              2 * sizeof(uint32_t), error)) return false;
     VkWriteDescriptorSetAccelerationStructureKHR as_write{
         VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
     as_write.accelerationStructureCount = 1;
@@ -4515,6 +4582,22 @@ bool VkSceneRenderer::record_cull_and_render(
         return false;
 
     FrameResources& selected = frames_[frame.frame_slot];
+    const bool native_gi_effective = gi_settings_.enabled &&
+        ray_tracing_settings_.enabled && vulkan_->ray_tracing_available() &&
+        !rt_instances_.empty()
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+        && !test_force_rt_unavailable_
+#endif
+        ;
+    if (!native_gi_effective) {
+        // A previously filtered reflection must never remain bound when this
+        // frame cannot produce native RT lighting. Keep reset pending until a
+        // successful native candidate is presented again.
+        gi_filtered_valid_ = false;
+        gi_candidate_frame_serial_ = 0;
+        gi_candidate_attempt_token_ = 0;
+        gi_history_reset_pending_ = true;
+    }
     update_composite_descriptor(selected);
     // prepare_frame owns the existing scene resources for this slot. Newly
     // created/replaced attachments are retained here before commands reference
@@ -5271,13 +5354,10 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
         return false;
     }
     matter::VkImageResource& accumulated_diffuse =
-        gi_filtered_valid_ ? gi_atrous_[gi_filtered_index_]
-                           : gi_history_[gi_composite_history_index_].radiance;
+        gi_filtered_valid_ ? gi_atrous_[gi_filtered_index_] : raw_diffuse_;
     matter::VkImageResource& accumulated_specular =
         gi_filtered_valid_ ? gi_spec_atrous_[gi_filtered_index_]
-        : gi_candidate_frame_serial_ != 0
-            ? gi_spec_history_[gi_composite_history_index_].radiance
-            : raw_specular_;
+                           : raw_specular_;
     RasterReadbackRecord record{{&albedo_, &normal_, &orm_, &velocity_, &depth_,
                                  &hdr_, &visibility_, &material_instance_,
                                  &raw_diffuse_,

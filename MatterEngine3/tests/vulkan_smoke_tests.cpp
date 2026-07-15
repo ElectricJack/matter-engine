@@ -34,6 +34,8 @@ namespace {
 bool close4(matter::Float4 actual, matter::Float4 expected, float epsilon);
 
 void run_vulkan_gi_math_tests() {
+    CHECK(VULKAN_GI_REJECT_HIT_DISTANCE == (1u << 6),
+          "CPU and temporal shader reserve bit 6 for specular hit-distance rejection");
     const matter::VulkanGiSettings defaults{};
     CHECK(defaults.enabled && defaults.max_bounces == 1u &&
               defaults.samples_per_pixel == 1u && defaults.trace_scale == 1.0f &&
@@ -2081,6 +2083,44 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
               error.empty() ? "GPU temporal 3x3 clip rejects radiance outlier"
                             : error.c_str());
 
+        viewer::GiTemporalGpuFixture specular_temporal{};
+        specular_temporal.signal_mode = 1u;
+        specular_temporal.previous_history_length = 100u;
+        specular_temporal.raw_aux = {2.0f, 0.02f, 0.0f};
+        specular_temporal.previous_aux = specular_temporal.raw_aux;
+        specular_temporal.raw = {0.05f, 0.6f, 0.1f, 1.0f};
+        specular_temporal.previous_radiance = specular_temporal.raw;
+        specular_temporal.previous_moments = {0.45f, 0.21f, 0.0f};
+        viewer::GiTemporalGpuResult specular_temporal_result{};
+        CHECK(renderer.test_dispatch_gi_temporal_fixture(
+                  specular_temporal, specular_temporal_result, error) &&
+                  specular_temporal_result.history_length == 4u &&
+                  specular_temporal_result.rejection_bits == 0u &&
+                  close4(specular_temporal_result.radiance,
+                         specular_temporal.raw, 0.003f),
+              error.empty()
+                  ? "low-roughness specular uses a four-frame history without diffuse contamination"
+                  : error.c_str());
+        auto rough_specular_temporal = specular_temporal;
+        rough_specular_temporal.raw_aux.y = 1.0f;
+        rough_specular_temporal.previous_aux.y = 1.0f;
+        CHECK(renderer.test_dispatch_gi_temporal_fixture(
+                  rough_specular_temporal, specular_temporal_result, error) &&
+                  specular_temporal_result.history_length == 16u,
+              error.empty()
+                  ? "rough specular extends history to sixteen frames"
+                  : error.c_str());
+        auto disoccluded_specular = specular_temporal;
+        disoccluded_specular.raw_aux.x = 8.0f;
+        CHECK(renderer.test_dispatch_gi_temporal_fixture(
+                  disoccluded_specular, specular_temporal_result, error) &&
+                  specular_temporal_result.history_length == 1u &&
+                  specular_temporal_result.rejection_bits ==
+                      VULKAN_GI_REJECT_HIT_DISTANCE,
+              error.empty()
+                  ? "GPU temporal shader agrees with CPU hit-distance rejection bit"
+                  : error.c_str());
+
         viewer::GiAtrousGpuFixture atrous_fixture{};
         constexpr uint32_t atrous_width = 65;
         constexpr uint32_t atrous_height = 9;
@@ -2468,9 +2508,16 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                   std::isfinite(strongest_receiver_specular.z),
               "separate raw specular target stays finite on diffuse receiver");
         renderer.release_part(921);
+        gi_materials[1].metal_opacity_spec_coat[0] = 1.0f;
+        gi_materials[1].metal_opacity_spec_coat[3] = 0.0f;
+        gi_materials[1].base_roughness[3] = 0.02f;
+        gi_materials[1].specular_tint_coat_roughness[0] = 1.0f;
+        gi_materials[1].specular_tint_coat_roughness[1] = 1.0f;
+        gi_materials[1].specular_tint_coat_roughness[2] = 1.0f;
         CHECK(renderer.ensure_part(horizontal(925, 0.0f, 0.55f,
                                               {0.0f, -0.3162278f, 0.9486833f},
                                               1, 1.0f), error) >= 0 &&
+                  renderer.update_materials(gi_materials, 10, 1, error) &&
                   renderer.update_instances(
                       {{920, identity_matrix()}, {925, identity_matrix()}},
                       error) &&
@@ -2510,30 +2557,35 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
             return std::pair<uint32_t, matter::Float4>{count, peak};
         };
         const auto mirror_stats = specular_coverage();
-        gi_materials[1].metal_opacity_spec_coat[0] = 1.0f;
         gi_materials[1].base_roughness[3] = 0.65f;
-        CHECK(renderer.update_materials(gi_materials, 2, 1, error) &&
+        CHECK(renderer.update_materials(gi_materials, 11, 1, error) &&
                   render_temporal_control(305),
               error.empty() ? "render rough-metal broadening fixture"
                             : error.c_str());
         const auto rough_metal_stats = specular_coverage();
         CHECK(rough_metal_stats.first >= mirror_stats.first &&
+                  rough_metal_stats.second.x < mirror_stats.second.x * 0.95f &&
                   std::isfinite(rough_metal_stats.second.x) &&
                   std::isfinite(rough_metal_stats.second.y) &&
                   std::isfinite(rough_metal_stats.second.z),
               "rough metal broadens the finite reflected signal");
         gi_materials[1].metal_opacity_spec_coat[0] = 0.0f;
         gi_materials[1].base_roughness[3] = 0.35f;
+        CHECK(renderer.update_materials(gi_materials, 12, 1, error) &&
+                  render_temporal_control(306),
+              error.empty() ? "render untinted dielectric baseline"
+                            : error.c_str());
+        const auto untinted_dielectric_stats = specular_coverage();
         gi_materials[1].specular_tint_coat_roughness[0] = 0.01f;
         gi_materials[1].specular_tint_coat_roughness[1] = 1.0f;
         gi_materials[1].specular_tint_coat_roughness[2] = 0.01f;
-        CHECK(renderer.update_materials(gi_materials, 3, 1, error) &&
-                  render_temporal_control(306),
+        CHECK(renderer.update_materials(gi_materials, 13, 1, error) &&
+                  render_temporal_control(307),
               error.empty() ? "render tinted dielectric fixture"
                             : error.c_str());
         const auto tinted_stats = specular_coverage();
-        const float mirror_red_green = mirror_stats.second.x /
-            std::max(mirror_stats.second.y, 1e-6f);
+        const float mirror_red_green = untinted_dielectric_stats.second.x /
+            std::max(untinted_dielectric_stats.second.y, 1e-6f);
         const float tinted_red_green = tinted_stats.second.x /
             std::max(tinted_stats.second.y, 1e-6f);
         CHECK(tinted_stats.first > 0u && tinted_stats.second.y > 0.0f &&
@@ -2543,25 +2595,101 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
         gi_materials[1].specular_tint_coat_roughness[1] = 1.0f;
         gi_materials[1].specular_tint_coat_roughness[2] = 1.0f;
         gi_materials[1].base_roughness[3] = 0.8f;
-        CHECK(renderer.update_materials(gi_materials, 4, 1, error) &&
-                  render_temporal_control(307),
+        CHECK(renderer.update_materials(gi_materials, 14, 1, error) &&
+                  render_temporal_control(308),
               error.empty() ? "render rough dielectric F0 fixture"
                             : error.c_str());
         const auto rough_dielectric_stats = specular_coverage();
         CHECK(rough_dielectric_stats.first > 0u &&
-                  std::isfinite(rough_dielectric_stats.second.x),
-              "rough dielectric retains finite nonmetal F0 response");
+                  std::isfinite(rough_dielectric_stats.second.x) &&
+                  std::fabs(rough_dielectric_stats.second.w - 0.04f) < 0.002f,
+              "rough dielectric retains numeric nonmetal F0 near 0.04");
+        gi_materials[1].specular_tint_coat_roughness[0] = 1.0f;
+        gi_materials[1].specular_tint_coat_roughness[1] = 0.05f;
+        gi_materials[1].specular_tint_coat_roughness[2] = 0.05f;
+        gi_materials[1].metal_opacity_spec_coat[3] = 0.0f;
+        CHECK(renderer.update_materials(gi_materials, 15, 1, error) &&
+                  render_temporal_control(309),
+              error.empty() ? "render clearcoat-off red-base fixture"
+                            : error.c_str());
+        const auto coat_off_stats = specular_coverage();
+        uint32_t coat_off_base_samples = 0;
+        uint32_t coat_off_coat_samples = 0;
+        CHECK(renderer.test_readback_reflection_sample_counts(
+                  coat_off_base_samples, coat_off_coat_samples, error) &&
+                  coat_off_base_samples > 0u && coat_off_coat_samples == 0u,
+              error.empty()
+                  ? "clearcoat zero launches no GPU coat samples"
+                  : error.c_str());
         gi_materials[1].metal_opacity_spec_coat[3] = 1.0f;
         gi_materials[1].specular_tint_coat_roughness[3] = 0.08f;
-        CHECK(renderer.update_materials(gi_materials, 5, 1, error) &&
-                  render_temporal_control(308),
+        CHECK(renderer.update_materials(gi_materials, 16, 1, error) &&
+                  render_temporal_control(310),
               error.empty() ? "render clearcoat second-lobe fixture"
                             : error.c_str());
         const auto coat_stats = specular_coverage();
+        uint32_t coat_on_base_samples = 0;
+        uint32_t coat_on_coat_samples = 0;
+        CHECK(renderer.test_readback_reflection_sample_counts(
+                  coat_on_base_samples, coat_on_coat_samples, error) &&
+                  coat_on_base_samples > 0u && coat_on_coat_samples > 0u,
+              error.empty()
+                  ? "clearcoat one launches both normalized GPU lobes"
+                  : error.c_str());
+        const float coat_off_blue_ratio = coat_off_stats.second.z /
+            std::max(coat_off_stats.second.x, 1e-6f);
+        const float coat_on_blue_ratio = coat_stats.second.z /
+            std::max(coat_stats.second.x, 1e-6f);
         CHECK(coat_stats.first > 0u &&
                   coat_stats.second.x > 0.0f && coat_stats.second.y > 0.0f &&
-                  coat_stats.second.z > 0.0f,
-              "clearcoat adds a finite untinted dielectric highlight");
+                  coat_stats.second.z > 0.0f &&
+                  coat_on_blue_ratio > coat_off_blue_ratio,
+              "clearcoat adds a distinct untinted dielectric highlight over the tinted base");
+        const uint64_t fallback_reset_baseline =
+            renderer.test_gi_history_reset_count();
+        renderer.set_ray_tracing_settings(rt_disabled);
+        CHECK(render_temporal_control(320),
+              error.empty() ? "render disabled-RT stale-reflection fixture"
+                            : error.c_str());
+        const auto disabled_specular = specular_coverage();
+        CHECK(disabled_specular.first == 0u &&
+                  disabled_specular.second.x == 0.0f &&
+                  disabled_specular.second.y == 0.0f &&
+                  disabled_specular.second.z == 0.0f,
+              "RT disable clears raw and filtered reflection signals");
+        renderer.set_ray_tracing_settings(enabled);
+        CHECK(render_temporal_control(321) &&
+                  renderer.test_gi_history_reset_count() ==
+                      fallback_reset_baseline + 1u,
+              error.empty() ? "RT re-enable resets reflection history once"
+                            : error.c_str());
+        renderer.test_force_rt_unavailable(true);
+        CHECK(render_temporal_control(322),
+              error.empty() ? "render forced-RT-unavailable fallback"
+                            : error.c_str());
+        const auto unavailable_specular = specular_coverage();
+        CHECK(unavailable_specular.first == 0u,
+              "RT unavailable clears prior filtered reflection signal");
+        renderer.test_force_rt_unavailable(false);
+        CHECK(renderer.update_instances({}, error) &&
+                  render_temporal_control(323),
+              error.empty() ? "render empty-instance reflection fallback"
+                            : error.c_str());
+        viewer::VkRasterPixel empty_specular{};
+        CHECK(renderer.readback_raster_pixel(160, 100, empty_specular, error) &&
+                  close4(empty_specular.raw_specular, {}, 1e-6f) &&
+                  close4(empty_specular.accumulated_specular, {}, 1e-6f),
+              error.empty()
+                  ? "empty RT scene exposes zero raw and accumulated reflection"
+                  : error.c_str());
+        CHECK(renderer.update_instances(
+                  {{920, identity_matrix()}, {925, identity_matrix()}}, error) &&
+                  render_temporal_control(324) &&
+                  renderer.test_gi_history_reset_count() ==
+                      fallback_reset_baseline + 2u,
+              error.empty()
+                  ? "restoring RT instances resets stale reflection history once"
+                  : error.c_str());
         renderer.release_part(925);
         CHECK(renderer.ensure_part(horizontal(921, 0.0f, 0.55f,
                                               {0.0f, -1.0f, 0.0f}, 1, 1.0f),
