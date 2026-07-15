@@ -41,6 +41,7 @@ integration already established by the current renderer.
   Beer-Lambert absorption for glass, water, and other closed dielectrics.
 - Thin-walled forward/back scattering for leaves and similar foliage.
 - Emissive surfaces contributing at primary and secondary hits.
+- Environment/sky evaluation, sun disk, and distance-based atmospheric fog.
 - Existing baked per-vertex ambient occlusion, including at secondary hits.
 - Optional short-range ray AO only when baked AO is missing or explicitly
   requested.
@@ -126,6 +127,21 @@ Existing source materials remain valid by defaulting new lobe weights to zero,
 opacity and shadow opacity to one, IOR to the existing value or one, and flags
 to opaque non-volume behavior.
 
+Legacy `translucency` is currently overloaded: it drives both shading intent
+and CPU meshing/carving decisions. Migration must split those responsibilities
+explicitly:
+
+- Existing glass, green-glass, and water definitions map legacy translucency to
+  the new transmission weight and receive `VOLUME_BOUNDARY` where their
+  geometry represents a closed medium.
+- Leaves receive an explicitly authored subsurface/scattering weight and
+  `THIN_WALLED`; they do not become closed transmissive volumes.
+- CPU cross-group carving uses a dedicated structural/material classification,
+  not the subsurface weight. `MaterialIsTransparent` is updated deliberately
+  rather than inheriting an accidental field alias.
+- Other existing materials retain zero transmission and zero scattering unless
+  their registry definition opts in.
+
 `MaterialDef` is embedded in current part artifacts and compared byte-for-byte
 when loading. Expanding it therefore requires an explicit material-schema
 version/fingerprint change and a one-time safe invalidation/rebake of cached
@@ -137,6 +153,9 @@ The CPU authoring structure and GPU shading structure may have different
 physical layouts, but `MaterialRegistryPackForGPU` remains the single explicit
 conversion boundary. The GPU layout uses aligned `vec4`/`uvec4` records; shaders
 must not depend on C struct padding or reinterpret integer flags as floats.
+Both raster and ray-tracing shaders read this same packed table and share the
+same material-evaluation include. Vertex data carries tint/UV/identity inputs,
+not a second independently authoritative copy of the material definition.
 
 ### 4.3 Energy and lobe rules
 
@@ -231,6 +250,12 @@ the currently overloaded normal alpha when the new layout is introduced.
 Background pixels use an explicit invalid material/instance value and do not
 trace surface continuations.
 
+Material edits update one GPU table visible to both raster primary shading and
+secondary ray hits. If an edit changes geometry classification (for example,
+opaque to alpha-tested or volume-boundary), affected BLAS geometry is rebuilt
+or reclassified and temporal history is reset; scalar/color-only edits do not
+require scene geometry reupload.
+
 ## 7. Lighting Integrator
 
 ### 7.1 Primary work
@@ -320,6 +345,16 @@ without baked AO or when explicitly enabled. It is not an unconditional ray per
 pixel. Bent normals are a compatible future baker output but not required for
 this milestone.
 
+### 7.8 Environment and atmospheric fog
+
+Environment misses evaluate the authored sky plus a visible sun disk. Distance
+fog is retained from the legacy GLSL feature set but implemented once during
+HDR composition from camera depth and configurable atmosphere parameters,
+rather than being inconsistently mixed into individual material branches.
+Reflection and transmission misses still sample the environment normally; a
+future participating-media integrator may replace the simple post-lighting fog
+without changing surface materials.
+
 ## 8. Signal Outputs and Denoising
 
 Do not denoise one already-composited noisy color with a universal filter.
@@ -368,9 +403,9 @@ geometry contracts.
 ## 9. Composition and DLSS
 
 Filtered RTX signals are combined with raster surface response, direct
-lighting, emission, and baked AO into a pre-tonemap HDR scene at the internal
-render extent. DLSS Super Resolution runs after Monte Carlo denoising and before
-UI composition.
+lighting, emission, baked AO, environment, and atmospheric fog into a
+pre-tonemap HDR scene at the internal render extent. DLSS Super Resolution runs
+after Monte Carlo denoising and before UI composition.
 
 DLSS continues to receive color, depth, motion vectors, jitter, exposure, reset
 state, and the correct internal/output extents through Streamline. Reactive and
@@ -453,6 +488,8 @@ work.
 ### CPU and shader-contract tests
 
 - Material defaults preserve existing opaque materials.
+- Legacy glass/water/leaf migration produces the intended transmission or
+  thin-scattering classification without changing unrelated materials.
 - GPU packing round-trips every field and flag with explicit offsets.
 - Old part/material payloads fail with a clear rebake reason.
 - Fresnel limits, Snell refraction, total internal reflection, Beer-Lambert
@@ -517,4 +554,3 @@ required for temporal stability and material appearance.
   alpha-aware traversal, conservative bounce limits, and counters.
 - **A literal legacy port preserves old defects.** Validate behavior against
   reference scenes and equations, not byte-for-byte shader similarity.
-
