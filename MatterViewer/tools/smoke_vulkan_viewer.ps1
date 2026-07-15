@@ -127,6 +127,7 @@ function Invoke-ViewerCase([string]$Name, [bool]$Resize,
                            [bool]$DisableRt = $false) {
     $png = Join-Path $OutputDir "$Name.png"
     Remove-Item -Force $png -ErrorAction SilentlyContinue
+    $env:MATTER_VK_VALIDATION = '1'
     $env:MATTER_WORLD = 'CornellBox'
     $env:MATTER_CACHE_ROOT = Join-Path $OutputDir "cache-$Name"
     $env:MATTER_VK_DIAGNOSTIC_MATERIALS = '1'
@@ -224,6 +225,7 @@ $saved = @{}
 foreach ($name in @('MATTER_WORLD','MATTER_SCREENSHOT','MATTER_TEST_RESIZE',
                     'MATTER_HIDE_UI',
                     'MATTER_CACHE_ROOT',
+                    'MATTER_VK_VALIDATION',
                     'MATTER_VK_DIAGNOSTIC_MATERIALS',
                     'MATTER_VK_DIAGNOSTIC_GROUND_TILESET_MATERIAL',
                     'MATTER_VK_DIAGNOSTIC_GROUND_TILESET_PRIOR_SLOT',

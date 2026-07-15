@@ -275,7 +275,12 @@ int main() {
     }
 
     std::string error;
-    auto vulkan = matter::VulkanDevice::create(window, true, error);
+    // Validation layers are a development dependency; requesting them
+    // unconditionally makes viewer.exe fatal on machines without the Vulkan
+    // SDK installed. Opt in via MATTER_VK_VALIDATION=1 (test harnesses do).
+    const bool enable_validation =
+        std::getenv("MATTER_VK_VALIDATION") != nullptr;
+    auto vulkan = matter::VulkanDevice::create(window, enable_validation, error);
     if (!vulkan) {
         std::fprintf(stderr, "FATAL: %s\n", error.c_str());
         glfwDestroyWindow(window);

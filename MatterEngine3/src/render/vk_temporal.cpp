@@ -28,7 +28,10 @@ FrameMatrices jitter_frame(const FrameMatrices& source, float x_pixels,
     FrameMatrices result = source;
     if (extent.width == 0 || extent.height == 0) return result;
     const float x_ndc = 2.0f * x_pixels / static_cast<float>(extent.width);
-    const float y_ndc = 2.0f * y_pixels / static_cast<float>(extent.height);
+    // Negative-height raster viewport puts NDC +Y at the top of the screen, so
+    // screen-space (Y-down) jitter pixels need a sign flip here. DLSS receives
+    // jitter_pixels directly and expects the Y-down convention.
+    const float y_ndc = -2.0f * y_pixels / static_cast<float>(extent.height);
     for (std::size_t column = 0; column < 4; ++column) {
         result.view_to_clip.m[column] +=
             x_ndc * result.view_to_clip.m[12 + column];

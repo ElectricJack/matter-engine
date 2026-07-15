@@ -36,6 +36,7 @@ try {
     $msysBin = 'C:\msys64\ucrt64\bin'
     if (Test-Path $msysBin) { $env:PATH = "$msysBin;$env:PATH" }
     New-Item -ItemType Directory -Path $runRoot -Force | Out-Null
+    $env:MATTER_VK_VALIDATION = '1'
     $env:MATTER_WORLD = $World
     $env:MATTER_CAM = '0,18,45,0,8,0'
     $env:MATTER_CACHE_ROOT = Join-Path $runRoot 'cache'
