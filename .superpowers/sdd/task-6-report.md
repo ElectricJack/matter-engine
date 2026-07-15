@@ -128,10 +128,12 @@ accuracy issues. All are fixed:
 
 1. The aggregate executable smoke no longer uses `Start-Process`, which can
    throw when the inherited Windows environment contains both `Path` and
-   `PATH`. It now launches with `ProcessStartInfo`, rebuilds the child environment
-   with case-insensitive key deduplication, redirects both streams, preserves the
-   bounded timeout, and leaves the parent environment unchanged apart from the
-   existing `MATTER_VK_SMOKE_MODE` save/restore contract.
+   `PATH`. It now launches with `ProcessStartInfo` without accessing either
+   managed environment dictionary, allowing Windows to pass the raw environment
+   block through unchanged. The per-case mode is set on the current process and
+   restored in `finally`; redirected streams and the bounded timeout remain. A
+   Windows PowerShell 5.1 native-process regression with deliberate raw `Path`
+   and `PATH` entries passed all nine modes.
 2. Disconnected and missing-store clear-only frames now reset all renderer-
    observed RT statistics through the same per-frame helper used by empty-scene
    frames, with explicit unavailable reasons and zero trace dispatches.

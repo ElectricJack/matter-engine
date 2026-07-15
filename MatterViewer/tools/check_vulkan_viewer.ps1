@@ -106,8 +106,10 @@ foreach ($mode in @("'rt'", "'rt-disabled'", "'rt-unavailable'")) {
     Require-Text $interopSmoke $mode 'executable final RT smoke mode'
 }
 Require-Text $interopSmoke 'System.Diagnostics.ProcessStartInfo' 'duplicate-safe smoke process launch'
-Require-Text $interopSmoke 'EnvironmentVariables.Clear()' 'sanitized smoke environment'
-Require-Text $interopSmoke 'OrdinalIgnoreCase' 'case-insensitive smoke environment deduplication'
+Require-Text $interopSmoke "[Environment]::SetEnvironmentVariable('MATTER_VK_SMOKE_MODE'" 'explicit inherited smoke mode'
+Forbid-Text $interopSmoke '$startInfo.Environment' 'fragile managed process environment dictionary'
+Forbid-Text $interopSmoke 'EnvironmentVariables' 'fragile managed process environment dictionary'
+Forbid-Text $interopSmoke 'GetEnvironmentVariables' 'duplicate-key environment enumeration'
 Forbid-Text $interopSmoke 'Start-Process' 'duplicate-sensitive smoke process launch'
 @('vk_rt_available', 'vk_rt_effective', 'vk_rt_trace_dispatches',
   'vk_rt_fallback_reason') | ForEach-Object {

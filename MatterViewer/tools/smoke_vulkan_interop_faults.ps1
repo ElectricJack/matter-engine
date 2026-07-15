@@ -5,7 +5,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $TestPath = (Resolve-Path $TestPath).Path
-$savedMode = $env:MATTER_VK_SMOKE_MODE
+$savedMode = [Environment]::GetEnvironmentVariable(
+    'MATTER_VK_SMOKE_MODE', [EnvironmentVariableTarget]::Process)
 try {
     $modes = @(
         @{ Label = 'after-kernel-before-signal'; Mode = 'interop-fault-after-kernel-before-signal' },
@@ -19,7 +20,8 @@ try {
         @{ Label = 'rt-unavailable'; Mode = 'rt-unavailable' }
     )
     foreach ($case in $modes) {
-        $env:MATTER_VK_SMOKE_MODE = $case.Mode
+        [Environment]::SetEnvironmentVariable('MATTER_VK_SMOKE_MODE',
+            $case.Mode, [EnvironmentVariableTarget]::Process)
         Write-Output "CUDA/Vulkan executable smoke: $($case.Label)"
         $process = $null
         try {
@@ -30,22 +32,10 @@ try {
             $startInfo.RedirectStandardOutput = $true
             $startInfo.RedirectStandardError = $true
 
-            # Windows environment names are case-insensitive, but an inherited
-            # block can still contain both Path and PATH. The standard launcher with
-            # redirected streams can throw while copying such a block. Rebuild
-            # it with exactly one entry per case-insensitive name.
-            $startInfo.EnvironmentVariables.Clear()
-            $seenEnvironmentNames =
-                [System.Collections.Generic.HashSet[string]]::new(
-                    [System.StringComparer]::OrdinalIgnoreCase)
-            $inheritedEnvironment = [Environment]::GetEnvironmentVariables()
-            foreach ($rawName in $inheritedEnvironment.Keys) {
-                $name = [string]$rawName
-                if ($seenEnvironmentNames.Add($name)) {
-                    $startInfo.EnvironmentVariables[$name] =
-                        [string]$inheritedEnvironment[$rawName]
-                }
-            }
+            # Do not access either managed ProcessStartInfo environment
+            # dictionary. On Windows PowerShell 5.1 their initialization is
+            # fragile when the raw inherited block contains both Path and PATH.
+            # The child inherits that raw block and the per-case mode set above.
 
             $process = New-Object System.Diagnostics.Process
             $process.StartInfo = $startInfo
@@ -79,5 +69,6 @@ try {
     }
     Write-Output 'CUDA/Vulkan fault and RT smokes: PASS'
 } finally {
-    $env:MATTER_VK_SMOKE_MODE = $savedMode
+    [Environment]::SetEnvironmentVariable('MATTER_VK_SMOKE_MODE',
+        $savedMode, [EnvironmentVariableTarget]::Process)
 }
