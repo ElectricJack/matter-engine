@@ -1,4 +1,5 @@
 #include "material_registry.h"
+#include "../../MatterEngine3/src/render/vk_gi_contract.h"
 #include <cassert>
 #include <cstdio>
 #include <cmath>
@@ -31,6 +32,21 @@ int main() {
     // translucency is the 8th float (index 7) in each packed record (see MaterialRegistryPackForGPU).
     CHECK(fabsf(buf[4 * MATERIAL_FLOATS_PER_DEF + 7] - MaterialRegistryGet(4)->translucency) < 1e-6f,
           "packed translucency for material 4 must match the table");
+
+    MaterialGpuRecord records[64]{};
+    MaterialRegistryPackRtForGPU(records);
+    CHECK(sizeof(MaterialGpuRecord) == 144, "RTX material record is 9x vec4");
+    CHECK(MaterialRegistrySchemaVersion() == 2u, "material schema version is 2");
+    CHECK(records[4].transmission[0] > 0.0f, "glass opts into transmission");
+    CHECK((records[4].flags_misc[0] & MATERIAL_VOLUME_BOUNDARY) != 0,
+          "glass is a closed volume");
+    CHECK(records[7].transmission[1] > 1.32f &&
+          records[7].transmission[1] < 1.34f, "water IOR is preserved");
+    CHECK(records[15].scattering[3] > 0.0f &&
+          (records[15].flags_misc[0] & MATERIAL_THIN_WALLED) != 0,
+          "leaf opts into thin scattering");
+    CHECK(MaterialIsTransparent(15) == 0,
+          "subsurface leaf does not become a meshing carve volume");
 
     // Meshing algorithm defaults to 0 (marching cubes) for existing materials.
     CHECK(MaterialMeshingAlgorithm(0) == 0, "material 0 should default to marching cubes (0)");

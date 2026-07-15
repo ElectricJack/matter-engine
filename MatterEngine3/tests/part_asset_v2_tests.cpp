@@ -7,10 +7,25 @@
 #include <cstring>
 #include <vector>
 #include <sys/stat.h>
+#ifdef _WIN32
+#include <direct.h>
+#endif
 
 #include "check.h"
 
+#ifdef _WIN32
+static const char* kCacheRoot = "part_asset_v2_tests_cache";
+#else
 static const char* kCacheRoot = "/tmp/part_asset_v2_tests_cache";
+#endif
+
+static void make_test_dir(const char* path) {
+#ifdef _WIN32
+    _mkdir(path);
+#else
+    mkdir(path, 0755);
+#endif
+}
 
 static void test_resolved_hash() {
     using namespace part_asset;
@@ -356,8 +371,42 @@ static void test_v2_guards() {
     remove(path);
 }
 
+static void test_material_schema_guard() {
+    using namespace part_asset;
+    BLASManager blasA; TLASManager tlasA(64);
+    BLASHandle hA, hB; build_scene(blasA, tlasA, hA, hB);
+    auto kids = sample_children();
+    auto lods = sample_lods();
+
+    const char* path = "test_v2_material_schema.part";
+    remove(path);
+    CHECK(save_v2(path, blasA, tlasA, kids.data(), kids.size(), lods, 0x4321u),
+          "material-schema guard save ok");
+    std::vector<uint8_t> prior = read_file(path);
+    CHECK(prior.size() >= 44, "material-schema fixture contains common body");
+    if (prior.size() >= 44) {
+        const uint32_t old_schema = MaterialRegistrySchemaVersion() - 1u;
+        memcpy(prior.data() + 40, &old_schema, sizeof(old_schema));
+        const uint64_t content_hash = fnv1a64(prior.data() + 40, prior.size() - 40);
+        memcpy(prior.data() + 32, &content_hash, sizeof(content_hash));
+        write_file(path, prior);
+
+        BLASManager b; TLASManager t(64);
+        std::vector<ChildInstance> ko; LodLevels lo;
+        PartAssetLoadFailure failure = PartAssetLoadFailure::None;
+        std::string reason;
+        CHECK(!load_v2(path, 0x4321u, b, t, ko, lo, &failure, &reason),
+              "load_v2 rejects prior material schema");
+        CHECK(failure == PartAssetLoadFailure::MaterialSchema,
+              "prior material schema reports MaterialSchema failure");
+        CHECK(reason == "material schema mismatch; rebake",
+              "prior material schema reports rebake reason");
+    }
+    remove(path);
+}
+
 static void test_new_materials() {
-    CHECK(MaterialRegistryCount() == 17, "registry has 17 materials after bark/leaf/dirt");
+    CHECK(MaterialRegistryCount() == 18, "registry has 18 materials through snow");
     const MaterialDef* bark = MaterialRegistryGet(14);
     CHECK(bark->albedo[0] > 0.30f && bark->albedo[2] < 0.20f, "material 14 is brown bark");
     const MaterialDef* leaf = MaterialRegistryGet(15);
@@ -369,8 +418,8 @@ static void test_new_materials() {
 
 static void test_flatten_hints_round_trip() {
     // Ensure cache root and parts/ subdir exist.
-    mkdir(kCacheRoot, 0755);
-    mkdir((std::string(kCacheRoot) + "/parts").c_str(), 0755);
+    make_test_dir(kCacheRoot);
+    make_test_dir((std::string(kCacheRoot) + "/parts").c_str());
 
     const uint64_t h = 0xABCD0000ABCD0000ull;
     CHECK(part_asset::cache_path_hints(h) == "parts/abcd0000abcd0000.hints",
@@ -416,6 +465,7 @@ int main() {
     test_round_trip_degenerate_lod();
     test_round_trip_no_children();
     test_v2_guards();
+    test_material_schema_guard();
     test_new_materials();
     test_flatten_hints_round_trip();
     if (g_failures == 0) printf("All part_asset_v2 tests passed\n");

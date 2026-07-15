@@ -103,10 +103,14 @@ bool save_v2(const std::string& path, const BLASManager& blas,
 // caller (passive — no backend action). Returns false (caller regenerates) on any
 // header/layout/material/corruption mismatch, format_version != 2, or I/O failure.
 // expected_resolved_hash must equal the resolved hash the file was written with.
+enum class PartAssetLoadFailure { None, Header, MaterialSchema, CorruptBody };
+
 bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
              BLASManager& blas, TLASManager& tlas,
              std::vector<ChildInstance>& children_out,
-             LodLevels& lods_out);
+             LodLevels& lods_out,
+             PartAssetLoadFailure* failure = nullptr,
+             std::string* reason = nullptr);
 
 // One cluster of a v3 flat artifact: its vertex AABB and its own LOD ladder
 // (same LodLevel type; blas_indices point into the shared BLAS table).

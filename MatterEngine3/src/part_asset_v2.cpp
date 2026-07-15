@@ -153,7 +153,8 @@ static bool append_common_body(std::vector<uint8_t>& body,
                                const ChildInstance* children, size_t child_count,
                                const LodLevels& lods,
                                std::unordered_map<BLASHandle, uint32_t>& handle_to_index_out) {
-    // --- Materials --- (unchanged from v1)
+    // --- Materials ---
+    put<uint32_t>(body, MaterialRegistrySchemaVersion());
     const uint32_t mcount = static_cast<uint32_t>(MaterialRegistryCount());
     put<uint32_t>(body, mcount);
     for (uint32_t i = 0; i < mcount; ++i)
@@ -312,12 +313,21 @@ static bool read_common_body(Reader& r,
                              BLASManager& blas, TLASManager& tlas,
                              std::vector<ChildInstance>& children_out,
                              LodLevels& lods_out,
-                             std::vector<BLASHandle>& handles_out) {
+                             std::vector<BLASHandle>& handles_out,
+                             PartAssetLoadFailure* failure = nullptr,
+                             std::string* reason = nullptr) {
     children_out.clear();
     lods_out.clear();
     handles_out.clear();
 
     // --- Materials (validate against the live registry) ---
+    const uint32_t material_schema = r.get<uint32_t>();
+    if (!r.ok) return false;
+    if (material_schema != MaterialRegistrySchemaVersion()) {
+        if (failure) *failure = PartAssetLoadFailure::MaterialSchema;
+        if (reason) *reason = "material schema mismatch; rebake";
+        return false;
+    }
     const uint32_t mcount = r.get<uint32_t>();
     if (!r.ok) return false;
     if (static_cast<int>(mcount) != MaterialRegistryCount()) return false;
@@ -428,29 +438,46 @@ bool save_v2(const std::string& path, const BLASManager& blas,
 bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
              BLASManager& blas, TLASManager& tlas,
              std::vector<ChildInstance>& children_out,
-             LodLevels& lods_out) {
+             LodLevels& lods_out,
+             PartAssetLoadFailure* failure,
+             std::string* reason) {
     children_out.clear();
     lods_out.clear();
+    if (failure) *failure = PartAssetLoadFailure::None;
+    if (reason) reason->clear();
+
+    const auto fail = [failure, reason](PartAssetLoadFailure value, const char* message) {
+        if (failure) *failure = value;
+        if (reason) *reason = message;
+        return false;
+    };
 
     FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return false;
+    if (!f) return fail(PartAssetLoadFailure::Header, "invalid part header");
     std::fseek(f, 0, SEEK_END);
     long sz = std::ftell(f);
     std::fseek(f, 0, SEEK_SET);
-    if (sz < 40) { std::fclose(f); return false; } // 40-byte v2 header
+    if (sz < 40) { std::fclose(f); return fail(PartAssetLoadFailure::Header, "invalid part header"); } // 40-byte v2 header
     std::vector<uint8_t> buf(static_cast<size_t>(sz));
     bool read_ok = std::fread(buf.data(), 1, buf.size(), f) == buf.size();
     std::fclose(f);
-    if (!read_ok) return false;
+    if (!read_ok) return fail(PartAssetLoadFailure::Header, "invalid part header");
 
     Reader r{ buf.data(), buf.data() + buf.size() };
     uint64_t content_hash = 0;
     if (!read_and_validate_header(r, expected_resolved_hash, kFormatVersionV2, content_hash))
-        return false;
-    if (fnv1a64(r.p, static_cast<size_t>(r.end - r.p)) != content_hash) return false;
+        return fail(PartAssetLoadFailure::Header, "invalid part header");
+    if (fnv1a64(r.p, static_cast<size_t>(r.end - r.p)) != content_hash)
+        return fail(PartAssetLoadFailure::CorruptBody, "corrupt part body");
 
     std::vector<BLASHandle> handles;
-    return read_common_body(r, blas, tlas, children_out, lods_out, handles);
+    if (!read_common_body(r, blas, tlas, children_out, lods_out, handles, failure, reason)) {
+        if (failure && *failure == PartAssetLoadFailure::None)
+            *failure = PartAssetLoadFailure::CorruptBody;
+        if (reason && reason->empty()) *reason = "corrupt part body";
+        return false;
+    }
+    return true;
 }
 
 bool save_flat_v3(const std::string& path, const BLASManager& blas,

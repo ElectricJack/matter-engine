@@ -1,12 +1,24 @@
 #ifndef MATERIAL_REGISTRY_H
 #define MATERIAL_REGISTRY_H
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 // A single material definition. This is the ONE place materials are defined;
 // both the CPU (meshing decisions) and the GPU (shading) consume this table.
+typedef enum MaterialSurfaceFlags {
+    MATERIAL_SURFACE_NONE    = 0u,
+    MATERIAL_THIN_WALLED     = 1u << 0,
+    MATERIAL_DOUBLE_SIDED    = 1u << 1,
+    MATERIAL_ALPHA_TESTED    = 1u << 2,
+    MATERIAL_VOLUME_BOUNDARY = 1u << 3
+} MaterialSurfaceFlags;
+
+enum { MATERIAL_SCHEMA_VERSION = 2 };
+
 typedef struct {
     float albedo[3];      // base color
     float roughness;      // 0 = mirror, 1 = rough
@@ -21,10 +33,42 @@ typedef struct {
                              // For static registry entries this stays -1; the viewer runtime
                              // sets a live override via MaterialRegistrySetGroundTilesetSlot()
                              // after loading a world tileset atlas.
+    float opacity;
+    float transmission;
+    float emissionColor[3];
+    float absorptionColor[3];
+    float absorptionDistance;
+    float thickness;
+    float subsurface;
+    float scatteringColor[3];
+    float scatteringDistance;
+    float anisotropy;
+    float clearcoat;
+    float clearcoatRoughness;
+    float specularStrength;
+    float specularTint[3];
+    float alphaCutoff;
+    float shadowOpacity;
+    uint32_t surfaceFlags;
 } MaterialDef;
+
+typedef struct MaterialGpuRecord {
+    float base_roughness[4];
+    float metal_opacity_spec_coat[4];
+    float specular_tint_coat_roughness[4];
+    float emission_strength[4];
+    float transmission[4];
+    float absorption_pad[4];
+    float scattering[4];
+    float scattering_shape[4];
+    uint32_t flags_misc[4];
+} MaterialGpuRecord;
 
 // Number of defined materials.
 int MaterialRegistryCount(void);
+
+// Version of MaterialDef's serialized authoring schema.
+uint32_t MaterialRegistrySchemaVersion(void);
 
 // Returns the definition for materialId. Out-of-range ids return a default
 // gray opaque material (never NULL).
@@ -44,6 +88,9 @@ int MaterialIsTransparent(int materialId);
 // packed for GPU upload (see MATERIAL_FLOATS_PER_DEF). Used by the renderer.
 #define MATERIAL_FLOATS_PER_DEF 12
 void MaterialRegistryPackForGPU(float* out);
+
+// Packs the registry into the Vulkan ray-tracing material layout.
+void MaterialRegistryPackRtForGPU(MaterialGpuRecord* out);
 
 // Runtime override: bind material `materialId` to viewer tileset slot `slot`.
 // Pass slot < 0 to clear. Values persist for the life of the process and are
