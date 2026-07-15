@@ -7,6 +7,7 @@
 
 #include "matter/camera.h"
 #include "matter/vulkan_device.h"
+#include "render/vk_gi_contract.h"
 
 #include "matter/events.h"
 #include "matter/query.h"
@@ -44,6 +45,7 @@ struct RenderOptions {
     bool  rt_full_lighting = false;  // Phase 2: full RT PBR (G-buffer + RT lighting)
     DlssMode dlss_mode = DlssMode::Native;
     VulkanRayTracingSettings vulkan_ray_tracing{};
+    VulkanGiSettings vulkan_gi{};
 };
 
 struct FrameStats {

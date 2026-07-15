@@ -1,0 +1,110 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+
+#include "rt_surface_common.glsl"
+
+layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
+layout(set = 0, binding = 1) uniform sampler2D depth_texture;
+layout(set = 0, binding = 7, rgba16f) uniform image2D raw_diffuse_image;
+layout(set = 0, binding = 8) uniform sampler2D albedo_texture;
+layout(set = 0, binding = 9) uniform sampler2D normal_texture;
+layout(set = 0, binding = 10) uniform sampler2D orm_texture;
+
+layout(push_constant) uniform GiConstants {
+    mat4 clip_to_world;
+    vec3 to_sun;
+    float sun_intensity;
+    vec3 sun_color;
+    float bias;
+    vec3 sky_color;
+    float max_distance;
+    uint temporal_token;
+    uint samples;
+    float diffuse_multiplier;
+    uint enabled;
+} constants;
+
+layout(location = 1) rayPayloadEXT RtSurfacePayload hit;
+
+uint pcg_hash(uint value) {
+    uint state = value * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+float random_float(inout uint seed) {
+    seed = pcg_hash(seed);
+    return float(seed) * (1.0 / 4294967296.0);
+}
+
+vec3 cosine_direction(vec3 normal, inout uint seed) {
+    vec3 helper = abs(normal.z) < 0.999 ? vec3(0.0, 0.0, 1.0)
+                                       : vec3(1.0, 0.0, 0.0);
+    vec3 tangent = normalize(cross(helper, normal));
+    vec3 bitangent = cross(normal, tangent);
+    float r = sqrt(random_float(seed));
+    float phi = 6.28318530718 * random_float(seed);
+    return normalize(tangent * (r * cos(phi)) +
+                     bitangent * (r * sin(phi)) +
+                     normal * sqrt(max(0.0, 1.0 - r * r)));
+}
+
+vec3 environment(vec3 direction) {
+    float horizon = clamp(direction.y * 0.5 + 0.5, 0.0, 1.0);
+    vec3 sky = constants.sky_color * mix(0.2, 1.25, horizon);
+    float sun_disk = smoothstep(0.99975, 0.99995,
+                                dot(direction, normalize(constants.to_sun)));
+    return sky + constants.sun_color * constants.sun_intensity * sun_disk;
+}
+
+vec3 hit_radiance(RtSurface surface) {
+    if ((surface.flags & RT_SURFACE_VALID) == 0u) return vec3(0.0);
+    RtMaterialGpu material = rt_materials[surface.material_index];
+    vec3 base = mix(material.base_roughness.rgb, surface.tint.rgb,
+                    clamp(surface.tint.a, 0.0, 1.0));
+    vec3 emission = base * max(material.emission_strength.w, 0.0);
+    float ndotl = max(dot(surface.normal, normalize(constants.to_sun)), 0.0);
+    vec3 sun = constants.sun_color * constants.sun_intensity * ndotl;
+    return emission + (sun + environment(surface.normal)) * base;
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
+    if (constants.enabled == 0u) {
+        imageStore(raw_diffuse_image, pixel, vec4(0.0));
+        return;
+    }
+    float depth = texelFetch(depth_texture, pixel, 0).x;
+    vec4 albedo = texelFetch(albedo_texture, pixel, 0);
+    vec3 normal = normalize(texelFetch(normal_texture, pixel, 0).xyz);
+    vec3 orm = texelFetch(orm_texture, pixel, 0).xyz;
+    if (depth >= 1.0 || albedo.a <= 0.0 || dot(normal, normal) < 0.5) {
+        imageStore(raw_diffuse_image, pixel, vec4(0.0));
+        return;
+    }
+    vec2 uv = (vec2(pixel) + vec2(0.5)) / vec2(gl_LaunchSizeEXT.xy);
+    vec4 world_h = constants.clip_to_world *
+                   vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
+    vec3 world = world_h.xyz / world_h.w;
+    uint sample_count = clamp(constants.samples, 1u, 16u);
+    vec3 sum = vec3(0.0);
+    for (uint sample_index = 0u; sample_index < sample_count; ++sample_index) {
+        uint seed = pcg_hash(uint(pixel.x) ^ (uint(pixel.y) * 0x9e3779b9u) ^
+                             constants.temporal_token ^
+                             (sample_index * 0x85ebca6bu));
+        vec3 direction = cosine_direction(normal, seed);
+        hit.surface = invalid_rt_surface();
+        hit.part_slot = hit.primitive = 0xffffffffu;
+        traceRayEXT(scene, gl_RayFlagsOpaqueEXT, 0xff, 1, 0, 1,
+                    world + normal * constants.bias, constants.bias,
+                    direction, constants.max_distance, 1);
+        sum += (hit.surface.flags & RT_SURFACE_VALID) != 0u
+                   ? hit_radiance(hit.surface)
+                   : environment(direction);
+    }
+    vec3 primary_diffuse = albedo.rgb * (1.0 - orm.y);
+    vec3 raw = primary_diffuse * (sum / float(sample_count)) * orm.z *
+               constants.diffuse_multiplier;
+    imageStore(raw_diffuse_image, pixel, vec4(raw, 1.0));
+}

@@ -7,6 +7,7 @@ layout(set = 0, binding = 0) uniform sampler2D albedo_texture;
 layout(set = 0, binding = 1) uniform sampler2D normal_texture;
 layout(set = 0, binding = 2) uniform sampler2D orm_texture;
 layout(set = 0, binding = 3) uniform sampler2D visibility_texture;
+layout(set = 0, binding = 4) uniform sampler2D raw_diffuse_texture;
 
 layout(push_constant) uniform SceneLighting {
     vec3 sun_direction;
@@ -47,6 +48,8 @@ void main() {
             ? exp2(min(encoded_emission, 15.875)) - 1.0
             : 0.0;
     vec3 emission = albedo.rgb * emission_strength;
-    vec3 linear_hdr = ambient + sun * mix(1.0, 0.65, roughness) + emission;
+    vec3 raw_diffuse = texture(raw_diffuse_texture, in_uv).rgb * lighting.pad0;
+    vec3 linear_hdr = ambient + sun * mix(1.0, 0.65, roughness) + emission +
+                      raw_diffuse;
     out_hdr = vec4(linear_hdr, 1.0);
 }

@@ -159,6 +159,7 @@ struct VkRasterPixel {
     matter::Float4 hdr{};
     float depth = 1.0f;
     matter::Float3 visibility{1.0f, 1.0f, 1.0f};
+    matter::Float4 raw_diffuse{};
 };
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
@@ -301,6 +302,13 @@ public:
         ray_tracing_settings_.samples =
             std::max(1u, std::min(settings.samples, 16u));
     }
+    void set_gi_settings(const matter::VulkanGiSettings& settings) {
+        gi_settings_ = settings;
+        gi_settings_.max_bounces = 1u;
+        gi_settings_.samples_per_pixel =
+            std::max(1u, std::min(settings.samples_per_pixel, 16u));
+        gi_settings_.trace_scale = std::max(0.125f, std::min(settings.trace_scale, 1.0f));
+    }
     // Blit the real HDR world composite into the currently acquired swapchain
     // image, leaving it ready for UI dynamic rendering.
     bool record_composite_to_swapchain(const matter::VulkanFrame& frame,
@@ -362,6 +370,7 @@ public:
         return visibility_usage_;
     }
     VkFormat test_visibility_format() const { return visibility_.format; }
+    VkFormat test_raw_diffuse_format() const { return raw_diffuse_.format; }
     float test_shadow_visibility_for_ray(bool occluded) const {
         return ray_tracing_settings_.enabled && occluded ? 0.0f : 1.0f;
     }
@@ -596,10 +605,12 @@ private:
     matter::VkImageResource depth_;
     matter::VkImageResource hdr_;
     matter::VkImageResource visibility_;
+    matter::VkImageResource raw_diffuse_;
     VkImageUsageFlags visibility_usage_ = 0;
     matter::VkBufferResource rt_sbt_;
     VkDeviceAddress rt_sbt_address_ = 0;
     VkDeviceAddress rt_sbt_test_raygen_address_ = 0;
+    VkDeviceAddress rt_sbt_lighting_raygen_address_ = 0;
     VkDeviceAddress rt_sbt_miss_address_ = 0;
     VkDeviceAddress rt_sbt_hit_address_ = 0;
     VkDeviceSize rt_sbt_stride_ = 0;
@@ -641,6 +652,7 @@ private:
     DeviceLimits physical_limits_{};
     VkSceneLighting lighting_{};
     matter::VulkanRayTracingSettings ray_tracing_settings_{};
+    matter::VulkanGiSettings gi_settings_{};
     uint32_t last_rt_samples_ = 1;
     bool last_rt_debug_view_ = false;
     bool last_rt_available_ = false;

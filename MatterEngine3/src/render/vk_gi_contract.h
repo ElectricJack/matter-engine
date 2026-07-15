@@ -5,6 +5,17 @@
 #include <stdint.h>
 
 typedef struct VulkanGiSettings {
+#ifdef __cplusplus
+    uint32_t enabled = 1;
+    uint32_t max_bounces = 1;
+    uint32_t samples_per_pixel = 1;
+    uint32_t denoiser_iterations = 0;
+    float trace_scale = 1.0f;
+    float diffuse_multiplier = 1.0f;
+    float reflection_multiplier = 1.0f;
+    float transmission_multiplier = 1.0f;
+    float scattering_multiplier = 1.0f;
+#else
     uint32_t enabled;
     uint32_t max_bounces;
     uint32_t samples_per_pixel;
@@ -14,6 +25,7 @@ typedef struct VulkanGiSettings {
     float reflection_multiplier;
     float transmission_multiplier;
     float scattering_multiplier;
+#endif
 } VulkanGiSettings;
 
 typedef struct VulkanGiCounters {
@@ -69,4 +81,9 @@ static_assert(std::is_standard_layout<GpuRtPartRecord>::value,
               "GpuRtPartRecord must remain a standard-layout GPU record");
 static_assert(sizeof(GpuRtPartRecord) == 32,
               "GpuRtPartRecord must remain exactly two vec4 records");
+
+namespace matter {
+using VulkanGiSettings = ::VulkanGiSettings;
+using VulkanGiCounters = ::VulkanGiCounters;
+}
 #endif

@@ -20,6 +20,7 @@
 #include "render/raster_mesh.h"
 #include "render/streamline_bridge.h"
 #include "render/vk_temporal.h"
+#include "render/vk_gi_math.h"
 #include "render/vk_cuda_interop.h"
 #include "render/vk_device_internal.h"
 #include "render/vk_instance_cache.h"
@@ -31,6 +32,36 @@
 namespace {
 
 bool close4(matter::Float4 actual, matter::Float4 expected, float epsilon);
+
+void run_vulkan_gi_math_tests() {
+    const matter::VulkanGiSettings defaults{};
+    CHECK(defaults.enabled && defaults.max_bounces == 1u &&
+              defaults.samples_per_pixel == 1u && defaults.trace_scale == 1.0f &&
+              defaults.diffuse_multiplier == 1.0f &&
+              defaults.reflection_multiplier == 1.0f &&
+              defaults.transmission_multiplier == 1.0f &&
+              defaults.scattering_multiplier == 1.0f,
+          "Vulkan GI defaults enable one full-resolution diffuse bounce");
+
+    const matter::Float3 normal{0.26726124f, 0.53452248f, 0.80178373f};
+    const viewer::VulkanCosineSample sample =
+        viewer::vulkan_cosine_sample(normal, 0.25f, 0.75f);
+    const float direction_length = std::sqrt(
+        sample.direction.x * sample.direction.x +
+        sample.direction.y * sample.direction.y +
+        sample.direction.z * sample.direction.z);
+    const float cosine = sample.direction.x * normal.x +
+                         sample.direction.y * normal.y +
+                         sample.direction.z * normal.z;
+    CHECK(std::fabs(direction_length - 1.0f) < 1e-5f && cosine > 0.0f &&
+              std::fabs(sample.pdf - cosine / 3.14159265358979323846f) < 1e-6f,
+          "cosine sampler produces an orthonormal upper-hemisphere direction");
+
+    const uint32_t first = viewer::vulkan_gi_pcg_hash(0x12345678u);
+    CHECK(first == viewer::vulkan_gi_pcg_hash(0x12345678u) &&
+              first != viewer::vulkan_gi_pcg_hash(0x12345679u),
+          "GI PCG hash is fixed-seed deterministic and input-sensitive");
+}
 
 void run_raster_mesh_material_contract_tests() {
     Tri triangle{};
@@ -937,6 +968,9 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
           "depth attachment format");
     CHECK(attachments.hdr.format == VK_FORMAT_R16G16B16A16_SFLOAT,
           "HDR attachment format");
+    CHECK(renderer.test_raw_diffuse_format() ==
+              VK_FORMAT_R16G16B16A16_SFLOAT,
+          "raw diffuse GI attachment format");
     CHECK(attachments.extent.width == width &&
               attachments.extent.height == height,
           "raster attachment extent");
@@ -983,6 +1017,8 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     CHECK(background.material_index == UINT32_MAX &&
               background.instance_token == UINT32_MAX,
           "background material and instance channels clear to invalid");
+    CHECK(close4(center.raw_diffuse, {0.0f, 0.0f, 0.0f, 0.0f}, 1e-6f),
+          "disabled RT produces zero raw diffuse GI");
     CHECK(std::fabs(center.velocity.x) < 1e-6f &&
               std::fabs(center.velocity.y) < 1e-6f &&
               std::fabs(background.velocity.x) < 1e-6f &&
@@ -1298,6 +1334,9 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
         query_settings.enabled = true;
         query_settings.max_distance = 100.0f;
         surface_query.set_ray_tracing_settings(query_settings);
+        matter::VulkanGiSettings disabled_query_gi{};
+        disabled_query_gi.enabled = 0;
+        surface_query.set_gi_settings(disabled_query_gi);
         const auto trace_surface = [&](matter::Float3 origin,
                                        matter::Float3 direction,
                                        uint32_t invalid_part_slot,
@@ -1647,20 +1686,40 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
     }
 
     viewer::VkSceneRenderer renderer(vulkan);
-    const auto horizontal = [](uint64_t hash, float y, float radius) {
+    const auto horizontal = [](uint64_t hash, float y, float radius,
+                               matter::Float3 normal, uint32_t material_index,
+                               float baked_ao) {
         viewer::VkScenePart part = fixed_part(
             hash, {-radius, y - 0.01f, -3.5f},
             {radius, y + 0.01f, -1.0f}, 0);
-        const matter::Float3 normal{0.0f, 1.0f, 0.0f};
-        const matter::Float4 albedo{0.5f, 0.5f, 0.5f, 1.0f};
-        const matter::Float4 orm{0.5f, 0.0f, 1.0f, 0.0f};
-        part.vertices = {{{-radius, y, -1.0f}, normal, albedo, orm},
-                         {{radius, y, -1.0f}, normal, albedo, orm},
-                         {{0.0f, y, -3.5f}, normal, albedo, orm}};
+        const matter::Float4 albedo{1.0f, 1.0f, 1.0f, 0.0f};
+        const matter::Float4 orm{0.5f, 0.0f, baked_ao, 1.0f};
+        part.vertices = {{{-radius, y, -1.0f}, normal, albedo, orm,
+                          material_index, {}},
+                         {{radius, y, -1.0f}, normal, albedo, orm,
+                          material_index, {}},
+                         {{0.0f, y, -3.5f}, normal, albedo, orm,
+                          material_index, {}}};
         return part;
     };
-    CHECK(renderer.ensure_part(horizontal(920, -1.0f, 2.0f), error) >= 0 &&
-              renderer.ensure_part(horizontal(921, 0.0f, 0.55f), error) >= 0 &&
+    std::vector<MaterialGpuRecord> gi_materials(2);
+    gi_materials[0].base_roughness[0] = 1.0f;
+    gi_materials[0].base_roughness[1] = 0.02f;
+    gi_materials[0].base_roughness[2] = 0.02f;
+    gi_materials[0].metal_opacity_spec_coat[1] = 1.0f;
+    gi_materials[0].scattering_shape[3] = 1.0f;
+    gi_materials[1].base_roughness[0] = 1.0f;
+    gi_materials[1].base_roughness[1] = 1.0f;
+    gi_materials[1].base_roughness[2] = 1.0f;
+    gi_materials[1].metal_opacity_spec_coat[1] = 1.0f;
+    gi_materials[1].scattering_shape[3] = 1.0f;
+    CHECK(renderer.update_materials(gi_materials, 1, 1, error) &&
+              renderer.ensure_part(horizontal(920, -1.0f, 2.0f,
+                                              {0.0f, 1.0f, 0.0f}, 0, 1.0f),
+                                   error) >= 0 &&
+              renderer.ensure_part(horizontal(921, 0.0f, 0.55f,
+                                              {0.0f, -1.0f, 0.0f}, 1, 1.0f),
+                                   error) >= 0 &&
               renderer.update_instances(
                   {{920, identity_matrix()}, {921, identity_matrix()}},
                   error),
@@ -1680,6 +1739,9 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
     enabled.samples = 4;
     enabled.debug_view = true;
     renderer.set_ray_tracing_settings(enabled);
+    matter::VulkanGiSettings gi{};
+    gi.samples_per_pixel = 16;
+    renderer.set_gi_settings(gi);
     viewer::VkSceneLighting lighting{};
     lighting.sun_direction = {0.0f, -1.0f, 0.0f};
     renderer.set_lighting(lighting);
@@ -1728,9 +1790,9 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
               "ray generation records sample and debug settings");
         CHECK(renderer.rt_available_observed() &&
                   renderer.rt_effective_observed() &&
-                  renderer.rt_trace_dispatches_observed() == 1 &&
+                  renderer.rt_trace_dispatches_observed() == 2 &&
                   renderer.rt_fallback_reason_observed().empty(),
-              "native RT frame observes one effective trace dispatch");
+              "native RT frame observes direct-shadow and diffuse-GI dispatches");
         CHECK(matter::immediate_submit_count() == immediate_before,
               "native RT frame records without immediate submit");
         CHECK(vulkan.end_frame(frame, error),
@@ -1756,6 +1818,7 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
         float maximum_visibility = 0.0f;
         bool visibility_reads_ok = true;
         bool debug_output_matches = true;
+        matter::Float4 strongest_raw{};
         for (uint32_t y = 20; y < 200; y += 20) {
             for (uint32_t x = 20; x < 320; x += 20) {
                 viewer::VkRasterPixel pixel{};
@@ -1772,6 +1835,8 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                     std::fabs(pixel.hdr.x - pixel.visibility.x) < 0.01f &&
                     std::fabs(pixel.hdr.y - pixel.visibility.y) < 0.01f &&
                     std::fabs(pixel.hdr.z - pixel.visibility.z) < 0.01f;
+                if (pixel.raw_diffuse.x > strongest_raw.x)
+                    strongest_raw = pixel.raw_diffuse;
             }
             if (!visibility_reads_ok) break;
         }
@@ -1782,6 +1847,62 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                   : error.c_str());
         CHECK(debug_output_matches,
               "RT debug view composites grayscale visibility");
+        CHECK(std::isfinite(strongest_raw.x) &&
+                  std::isfinite(strongest_raw.y) &&
+                  std::isfinite(strongest_raw.z) &&
+                  strongest_raw.x > 0.01f &&
+                  strongest_raw.x > strongest_raw.y * 1.25f,
+              "white receiver above red floor gains positive red indirect radiance");
+        renderer.release_part(921);
+        CHECK(renderer.ensure_part(horizontal(922, 0.0f, 0.55f,
+                                              {0.0f, -1.0f, 0.0f}, 1, 0.0f),
+                                   error) >= 0 &&
+                  renderer.update_instances(
+                      {{920, identity_matrix()}, {922, identity_matrix()}},
+                      error),
+              error.empty() ? "replace GI receiver with baked-AO-zero fixture"
+                            : error.c_str());
+        matter::VulkanFrame ao_frame{};
+        CHECK(vulkan.begin_frame(ao_frame, error) &&
+                  renderer.prepare_frame(ao_frame, matrices, camera.position,
+                                         1.0f, error) &&
+                  renderer.record_cull_and_render(
+                      ao_frame, matrices, camera.position, 1.0f, error) &&
+                  renderer.record_composite_to_swapchain(ao_frame, error) &&
+                  vulkan.end_frame(ao_frame, error),
+              error.empty() ? "render baked-AO-zero GI fixture"
+                            : error.c_str());
+        renderer.finish_ray_tracing_frame(ao_frame.serial, true);
+        float ao_zero_max_raw = 0.0f;
+        float ao_min_visibility = 1.0f;
+        float ao_max_visibility = 0.0f;
+        bool ao_receiver_seen = false;
+        for (uint32_t y = 20; y < 200; y += 20) {
+            for (uint32_t x = 20; x < 320; x += 20) {
+                viewer::VkRasterPixel pixel{};
+                CHECK(renderer.readback_raster_pixel(x, y, pixel, error),
+                      error.empty() ? "read baked-AO-zero GI pixel"
+                                    : error.c_str());
+                ao_min_visibility =
+                    std::min(ao_min_visibility, pixel.visibility.x);
+                ao_max_visibility =
+                    std::max(ao_max_visibility, pixel.visibility.x);
+                if (pixel.material_index == 1u) {
+                    ao_receiver_seen = true;
+                    ao_zero_max_raw = std::max(
+                        ao_zero_max_raw,
+                        std::max(pixel.raw_diffuse.x,
+                                 std::max(pixel.raw_diffuse.y,
+                                          pixel.raw_diffuse.z)));
+                }
+            }
+        }
+        std::printf("AO-zero GI: seen=%u raw=%.6f visibility=%.3f..%.3f\n",
+                    ao_receiver_seen ? 1u : 0u, ao_zero_max_raw,
+                    ao_min_visibility, ao_max_visibility);
+        CHECK(ao_receiver_seen && ao_zero_max_raw < 1e-5f &&
+                  ao_min_visibility < 1.0f && ao_max_visibility == 1.0f,
+              "baked AO zero suppresses raw indirect diffuse without changing direct visibility");
         std::printf("RT visibility range: %.3f .. %.3f\n",
                     minimum_visibility, maximum_visibility);
     }
@@ -3063,6 +3184,7 @@ void run_outlive_resources(std::unique_ptr<matter::VulkanDevice>& vulkan,
 }  // namespace
 
 int main() {
+    run_vulkan_gi_math_tests();
     run_raster_mesh_material_contract_tests();
     run_ray_tracing_capability_contract_tests();
     run_vulkan_instance_cache_tests();
