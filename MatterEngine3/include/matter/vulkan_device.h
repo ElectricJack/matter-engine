@@ -11,6 +11,36 @@ struct GLFWwindow;
 
 namespace matter {
 
+struct VulkanRayTracingCapabilities {
+    bool acceleration_structure_extension = false;
+    bool ray_tracing_pipeline_extension = false;
+    bool deferred_host_operations_extension = false;
+    bool spirv_1_4_extension = false;
+    bool shader_float_controls_extension = false;
+    bool buffer_device_address = false;
+    bool acceleration_structure = false;
+    bool ray_tracing_pipeline = false;
+};
+
+struct VulkanRayTracingProperties {
+    uint32_t shader_group_handle_size = 0;
+    uint32_t shader_group_handle_alignment = 0;
+    uint32_t shader_group_base_alignment = 0;
+    uint32_t max_ray_recursion_depth = 0;
+    uint32_t min_acceleration_structure_scratch_offset_alignment = 0;
+};
+
+struct VulkanRayTracingSettings {
+    bool enabled = false;
+    float max_distance = 10000.0f;
+    float bias = 0.001f;
+    uint32_t samples = 1;
+    bool debug_view = false;
+};
+
+bool supports_native_ray_tracing(const VulkanRayTracingCapabilities& capabilities,
+                                 std::string& reason);
+
 namespace detail {
 class DeviceRetentionAccess;
 class DeviceLifetimeAccess;
@@ -68,6 +98,9 @@ public:
     bool multi_draw_indirect_enabled() const;
     bool dlss_available() const;
     const std::string& dlss_unavailable_reason() const;
+    bool ray_tracing_available() const;
+    const std::string& ray_tracing_unavailable_reason() const;
+    const VulkanRayTracingProperties& ray_tracing_properties() const;
     uint32_t validation_error_count() const;
     // External API work may outlive every completion primitive we can safely
     // query. In that terminal case, preserve the logical device and children.

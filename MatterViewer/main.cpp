@@ -563,6 +563,8 @@ int main() {
         options.active_radius = active_radius;
         options.min_projected_size = min_projected_size;
         options.dlss_mode = selected_dlss_mode;
+        options.vulkan_ray_tracing.enabled =
+            vulkan->ray_tracing_available();
         const auto render_start = std::chrono::steady_clock::now();
         if (!session->render(camera, frame, options, error)) {
             std::fprintf(stderr, "FATAL: render: %s\n", error.c_str());

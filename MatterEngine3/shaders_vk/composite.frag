@@ -6,6 +6,7 @@ layout(location = 0) out vec4 out_hdr;
 layout(set = 0, binding = 0) uniform sampler2D albedo_texture;
 layout(set = 0, binding = 1) uniform sampler2D normal_texture;
 layout(set = 0, binding = 2) uniform sampler2D orm_texture;
+layout(set = 0, binding = 3) uniform sampler2D visibility_texture;
 
 layout(push_constant) uniform SceneLighting {
     vec3 sun_direction;
@@ -32,7 +33,9 @@ void main() {
     float ao = orm.z;
     vec3 diffuse = albedo.rgb * (1.0 - metallic);
     vec3 ambient = diffuse * lighting.sky_color * ao;
-    vec3 sun = diffuse * lighting.sun_color * direct * lighting.sun_intensity;
+    float visibility = texture(visibility_texture, in_uv).r;
+    vec3 sun = diffuse * lighting.sun_color * direct * lighting.sun_intensity *
+               visibility;
     float encoded_emission = normal_payload.w;
     float emission_strength =
         !isnan(encoded_emission) && !isinf(encoded_emission) &&

@@ -3399,6 +3399,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         return false;
     }
     impl_->vk_scene->set_dlss_mode(opts.dlss_mode);
+    impl_->vk_scene->set_ray_tracing_settings(opts.vulkan_ray_tracing);
     const VkExtent2D internal_extent =
         impl_->vk_scene->dlss_internal_extent(frame.extent);
     impl_->stats.dlss_selected_mode = impl_->vk_scene->selected_dlss_mode();

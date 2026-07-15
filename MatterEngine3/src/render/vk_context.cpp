@@ -275,6 +275,37 @@ std::vector<std::string> missing_presentation_blit_features(
 
 }  // namespace
 
+bool supports_native_ray_tracing(
+    const VulkanRayTracingCapabilities& capabilities, std::string& reason) {
+    struct Requirement { bool present; const char* name; };
+    const Requirement requirements[] = {
+        {capabilities.acceleration_structure_extension,
+         VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME},
+        {capabilities.ray_tracing_pipeline_extension,
+         VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME},
+        {capabilities.deferred_host_operations_extension,
+         VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME},
+        {capabilities.spirv_1_4_extension, VK_KHR_SPIRV_1_4_EXTENSION_NAME},
+        {capabilities.shader_float_controls_extension,
+         VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME},
+        {capabilities.buffer_device_address,
+         "VkPhysicalDeviceVulkan12Features::bufferDeviceAddress"},
+        {capabilities.acceleration_structure,
+         "VkPhysicalDeviceAccelerationStructureFeaturesKHR::accelerationStructure"},
+        {capabilities.ray_tracing_pipeline,
+         "VkPhysicalDeviceRayTracingPipelineFeaturesKHR::rayTracingPipeline"},
+    };
+    for (const auto& requirement : requirements) {
+        if (!requirement.present) {
+            reason = std::string("native ray tracing unavailable: missing ") +
+                     requirement.name;
+            return false;
+        }
+    }
+    reason.clear();
+    return true;
+}
+
 struct VulkanDevice::Impl {
     explicit Impl(StreamlineBridge input_streamline)
         : streamline(std::move(input_streamline)) {}
@@ -306,6 +337,9 @@ struct VulkanDevice::Impl {
     uint32_t graphics_queue_family = std::numeric_limits<uint32_t>::max();
     bool draw_indirect_first_instance_enabled = false;
     bool multi_draw_indirect_enabled = false;
+    bool ray_tracing_enabled = false;
+    std::string ray_tracing_reason;
+    VulkanRayTracingProperties ray_tracing_properties{};
     VkSwapchainKHR swapchain = VK_NULL_HANDLE;
     VkFormat swapchain_format = VK_FORMAT_UNDEFINED;
     VkExtent2D swapchain_extent{};
@@ -836,6 +870,45 @@ struct VulkanDevice::Impl {
         streamline.append_requirements(
             streamline_instance_extensions, extensions, features12, features13,
             graphics_queue_count, compute_queue_count);
+        const auto available_extensions = device_extensions(physical_device);
+        VulkanRayTracingCapabilities rt_capabilities{};
+        rt_capabilities.acceleration_structure_extension =
+            available_extensions.count(
+                VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) != 0;
+        rt_capabilities.ray_tracing_pipeline_extension =
+            available_extensions.count(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME) != 0;
+        rt_capabilities.deferred_host_operations_extension =
+            available_extensions.count(
+                VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME) != 0;
+        rt_capabilities.spirv_1_4_extension =
+            available_extensions.count(VK_KHR_SPIRV_1_4_EXTENSION_NAME) != 0;
+        rt_capabilities.shader_float_controls_extension =
+            available_extensions.count(
+                VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME) != 0;
+        VkPhysicalDeviceAccelerationStructureFeaturesKHR rt_as_features{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+        VkPhysicalDeviceRayTracingPipelineFeaturesKHR rt_pipeline_features{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR};
+        VkPhysicalDeviceVulkan12Features rt_features12{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+        VkPhysicalDeviceFeatures2 rt_features2{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        rt_features2.pNext = &rt_features12;
+        rt_features12.pNext = &rt_as_features;
+        rt_as_features.pNext = &rt_pipeline_features;
+        vkGetPhysicalDeviceFeatures2(physical_device, &rt_features2);
+        rt_capabilities.buffer_device_address = rt_features12.bufferDeviceAddress;
+        rt_capabilities.acceleration_structure = rt_as_features.accelerationStructure;
+        rt_capabilities.ray_tracing_pipeline = rt_pipeline_features.rayTracingPipeline;
+        ray_tracing_enabled =
+            supports_native_ray_tracing(rt_capabilities, ray_tracing_reason);
+        if (ray_tracing_enabled) {
+            extensions.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+            extensions.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
+            extensions.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+            extensions.push_back(VK_KHR_SPIRV_1_4_EXTENSION_NAME);
+            extensions.push_back(VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME);
+        }
         uint32_t queue_family_count = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(physical_device,
                                                  &queue_family_count, nullptr);
@@ -865,6 +938,16 @@ struct VulkanDevice::Impl {
         maintenance1.swapchainMaintenance1 = VK_TRUE;
         features12.pNext = &features13;
         features13.pNext = &maintenance1;
+        VkPhysicalDeviceAccelerationStructureFeaturesKHR enabled_as{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
+        VkPhysicalDeviceRayTracingPipelineFeaturesKHR enabled_pipeline{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR};
+        if (ray_tracing_enabled) {
+            maintenance1.pNext = &enabled_as;
+            enabled_as.pNext = &enabled_pipeline;
+            enabled_as.accelerationStructure = VK_TRUE;
+            enabled_pipeline.rayTracingPipeline = VK_TRUE;
+        }
         features12.timelineSemaphore = VK_TRUE;
         features12.descriptorIndexing = VK_TRUE;
         features12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
@@ -892,6 +975,28 @@ struct VulkanDevice::Impl {
         }
         draw_indirect_first_instance_enabled = true;
         multi_draw_indirect_enabled = true;
+        if (ray_tracing_enabled) {
+            VkPhysicalDeviceRayTracingPipelinePropertiesKHR pipeline_properties{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
+            VkPhysicalDeviceAccelerationStructurePropertiesKHR as_properties{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
+            VkPhysicalDeviceProperties2 properties2{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+            properties2.pNext = &pipeline_properties;
+            pipeline_properties.pNext = &as_properties;
+            vkGetPhysicalDeviceProperties2(physical_device, &properties2);
+            ray_tracing_properties.shader_group_handle_size =
+                pipeline_properties.shaderGroupHandleSize;
+            ray_tracing_properties.shader_group_handle_alignment =
+                pipeline_properties.shaderGroupHandleAlignment;
+            ray_tracing_properties.shader_group_base_alignment =
+                pipeline_properties.shaderGroupBaseAlignment;
+            ray_tracing_properties.max_ray_recursion_depth =
+                pipeline_properties.maxRayRecursionDepth;
+            ray_tracing_properties
+                .min_acceleration_structure_scratch_offset_alignment =
+                as_properties.minAccelerationStructureScratchOffsetAlignment;
+        }
         device_lifetime =
             std::make_shared<detail::DeviceAccessToken>(device);
         vkGetDeviceQueue(device, graphics_queue_family, 0, &graphics_queue);
@@ -2134,6 +2239,18 @@ bool VulkanDevice::dlss_available() const {
 
 const std::string& VulkanDevice::dlss_unavailable_reason() const {
     return impl_->streamline.dlss_unavailable_reason();
+}
+
+bool VulkanDevice::ray_tracing_available() const {
+    return impl_->ray_tracing_enabled;
+}
+
+const std::string& VulkanDevice::ray_tracing_unavailable_reason() const {
+    return impl_->ray_tracing_reason;
+}
+
+const VulkanRayTracingProperties& VulkanDevice::ray_tracing_properties() const {
+    return impl_->ray_tracing_properties;
 }
 uint32_t VulkanDevice::validation_error_count() const {
     return impl_->validation_errors.load(std::memory_order_relaxed);

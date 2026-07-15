@@ -149,6 +149,7 @@ struct RasterRecord {
     matter::VkImageResource* velocity;
     matter::VkImageResource* depth;
     matter::VkImageResource* hdr;
+    matter::VkImageResource* visibility;
     VkExtent2D extent;
     VkPipeline raster_pipeline;
     VkPipelineLayout raster_layout;
@@ -163,6 +164,11 @@ struct RasterRecord {
     uint32_t max_draw_indirect_count;
     std::vector<PartCommandRange>* recorded_draw_ranges;
     VkSceneLighting lighting;
+    VkSceneRenderer* renderer;
+    const matter::VulkanFrame* frame;
+    const FrameMatrices* matrices;
+    std::string* error;
+    bool* ray_trace_ok;
 };
 
 void record_raster(VkCommandBuffer command_buffer, void* user_data) {
@@ -276,6 +282,32 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
 
+    if (record.renderer) {
+        *record.ray_trace_ok = record.renderer->record_ray_traced_shadows(
+            *record.frame, *record.matrices, *record.error);
+        if (!*record.ray_trace_ok) return;
+    } else {
+        transition_for_use(command_buffer, *record.visibility,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                           VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           VK_IMAGE_ASPECT_COLOR_BIT);
+        const VkClearColorValue one{{1.0f, 1.0f, 1.0f, 1.0f}};
+        const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1,
+                                             0, 1};
+        vkCmdClearColorImage(command_buffer, record.visibility->image,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &one, 1,
+                             &range);
+        matter::record_image_transition(
+            command_buffer, *record.visibility,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT);
+    }
+
     VkRenderingAttachmentInfo hdr_attachment{
         VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     hdr_attachment.imageView = record.hdr->view;
@@ -308,8 +340,8 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
 struct RasterReadbackRecord {
-    matter::VkImageResource* images[6];
-    VkImageAspectFlags aspects[6];
+    matter::VkImageResource* images[7];
+    VkImageAspectFlags aspects[7];
     VkBuffer destination;
     uint32_t x;
     uint32_t y;
@@ -318,8 +350,8 @@ struct RasterReadbackRecord {
 void record_raster_readback(VkCommandBuffer command_buffer, void* user_data) {
     const auto& record = *static_cast<RasterReadbackRecord*>(user_data);
     // Each offset is aligned to its format's texel-block size (4 or 8 bytes).
-    constexpr VkDeviceSize offsets[6] = {0, 8, 16, 20, 24, 32};
-    for (size_t i = 0; i < 6; ++i) {
+    constexpr VkDeviceSize offsets[7] = {0, 8, 16, 20, 24, 32, 40};
+    for (size_t i = 0; i < 7; ++i) {
         transition_for_use(command_buffer, *record.images[i],
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
@@ -508,6 +540,16 @@ VkSceneRenderer::~VkSceneRenderer() {
 void VkSceneRenderer::destroy_pipeline() {
     if (!vulkan_) return;
     const VkDevice device = vulkan_->device();
+    rt_sbt_.reset();
+    visibility_.reset();
+    if (rt_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device, rt_pipeline_, nullptr);
+    if (rt_pipeline_layout_ != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device, rt_pipeline_layout_, nullptr);
+    if (rt_descriptor_pool_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorPool(device, rt_descriptor_pool_, nullptr);
+    if (rt_set_layout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(device, rt_set_layout_, nullptr);
     if (composite_sampler_ != VK_NULL_HANDLE)
         vkDestroySampler(device, composite_sampler_, nullptr);
     if (composite_pipeline_ != VK_NULL_HANDLE)
@@ -539,6 +581,11 @@ void VkSceneRenderer::destroy_pipeline() {
     composite_descriptor_pool_ = VK_NULL_HANDLE;
     composite_descriptor_set_ = VK_NULL_HANDLE;
     composite_sampler_ = VK_NULL_HANDLE;
+    rt_pipeline_ = VK_NULL_HANDLE;
+    rt_pipeline_layout_ = VK_NULL_HANDLE;
+    rt_descriptor_pool_ = VK_NULL_HANDLE;
+    rt_set_layout_ = VK_NULL_HANDLE;
+    rt_descriptor_sets_.clear();
     pipeline_layout_ = VK_NULL_HANDLE;
     descriptor_pool_ = VK_NULL_HANDLE;
     frames_.clear();
@@ -616,7 +663,125 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     if (result != VK_SUCCESS)
         return fail_vk("vkCreateComputePipelines(cull)", result, error);
 
-    return create_raster_pipelines(error);
+    if (!create_raster_pipelines(error)) return false;
+    return !vulkan_->ray_tracing_available() ||
+           create_ray_tracing_pipeline(error);
+}
+
+bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
+    const VkDevice device = vulkan_->device();
+    const VkDescriptorSetLayoutBinding bindings[] = {
+        descriptor_binding(0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+                           VK_SHADER_STAGE_RAYGEN_BIT_KHR),
+        descriptor_binding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                           VK_SHADER_STAGE_RAYGEN_BIT_KHR),
+        descriptor_binding(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                           VK_SHADER_STAGE_RAYGEN_BIT_KHR)};
+    VkDescriptorSetLayoutCreateInfo set_info{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    set_info.bindingCount = 3;
+    set_info.pBindings = bindings;
+    VkResult result = vkCreateDescriptorSetLayout(device, &set_info, nullptr,
+                                                   &rt_set_layout_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateDescriptorSetLayout(ray tracing)", result,
+                       error);
+    VkPushConstantRange push{};
+    push.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+    push.size = 96;
+    VkPipelineLayoutCreateInfo layout_info{
+        VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    layout_info.setLayoutCount = 1;
+    layout_info.pSetLayouts = &rt_set_layout_;
+    layout_info.pushConstantRangeCount = 1;
+    layout_info.pPushConstantRanges = &push;
+    result = vkCreatePipelineLayout(device, &layout_info, nullptr,
+                                    &rt_pipeline_layout_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreatePipelineLayout(ray tracing)", result, error);
+    const char* names[] = {"rt_shadow.rgen.spv", "rt_shadow.rmiss.spv",
+                           "rt_shadow.rchit.spv"};
+    const VkShaderStageFlagBits stages_bits[] = {
+        VK_SHADER_STAGE_RAYGEN_BIT_KHR, VK_SHADER_STAGE_MISS_BIT_KHR,
+        VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR};
+    VkShaderModule modules[3]{};
+    VkPipelineShaderStageCreateInfo stages[3]{};
+    for (uint32_t i = 0; i < 3; ++i) {
+        if (!create_shader_module(device, names[i], modules[i], error)) {
+            for (VkShaderModule module : modules)
+                if (module) vkDestroyShaderModule(device, module, nullptr);
+            return false;
+        }
+        stages[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[i].stage = stages_bits[i];
+        stages[i].module = modules[i];
+        stages[i].pName = "main";
+    }
+    VkRayTracingShaderGroupCreateInfoKHR groups[3]{};
+    for (auto& group : groups) {
+        group.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+        group.generalShader = VK_SHADER_UNUSED_KHR;
+        group.closestHitShader = VK_SHADER_UNUSED_KHR;
+        group.anyHitShader = VK_SHADER_UNUSED_KHR;
+        group.intersectionShader = VK_SHADER_UNUSED_KHR;
+    }
+    groups[0].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+    groups[0].generalShader = 0;
+    groups[1].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+    groups[1].generalShader = 1;
+    groups[2].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+    groups[2].closestHitShader = 2;
+    VkRayTracingPipelineCreateInfoKHR create{
+        VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR};
+    create.stageCount = 3;
+    create.pStages = stages;
+    create.groupCount = 3;
+    create.pGroups = groups;
+    create.maxPipelineRayRecursionDepth = 1;
+    create.layout = rt_pipeline_layout_;
+    const auto create_pipeline = reinterpret_cast<PFN_vkCreateRayTracingPipelinesKHR>(
+        vkGetDeviceProcAddr(device, "vkCreateRayTracingPipelinesKHR"));
+    const auto get_handles = reinterpret_cast<PFN_vkGetRayTracingShaderGroupHandlesKHR>(
+        vkGetDeviceProcAddr(device, "vkGetRayTracingShaderGroupHandlesKHR"));
+    if (!create_pipeline || !get_handles) {
+        error = "native ray tracing pipeline entry points are unavailable";
+        result = VK_ERROR_EXTENSION_NOT_PRESENT;
+    } else {
+        result = create_pipeline(device, VK_NULL_HANDLE, VK_NULL_HANDLE, 1,
+                                 &create, nullptr, &rt_pipeline_);
+    }
+    for (VkShaderModule module : modules)
+        vkDestroyShaderModule(device, module, nullptr);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateRayTracingPipelinesKHR", result, error);
+
+    const auto& props = vulkan_->ray_tracing_properties();
+    const VkDeviceSize handle_size = props.shader_group_handle_size;
+    const VkDeviceSize handle_stride =
+        (handle_size + props.shader_group_handle_alignment - 1) /
+        props.shader_group_handle_alignment *
+        props.shader_group_handle_alignment;
+    const VkDeviceSize region_stride =
+        (handle_stride + props.shader_group_base_alignment - 1) /
+        props.shader_group_base_alignment * props.shader_group_base_alignment;
+    std::vector<uint8_t> handles(static_cast<size_t>(3 * handle_size));
+    result = get_handles(device, rt_pipeline_, 0, 3, handles.size(),
+                         handles.data());
+    if (result != VK_SUCCESS)
+        return fail_vk("vkGetRayTracingShaderGroupHandlesKHR", result, error);
+    if (!matter::create_buffer(
+            *vulkan_, 3 * region_stride,
+            VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR |
+                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, rt_sbt_, error) ||
+        !matter::map_buffer(rt_sbt_, error)) return false;
+    std::memset(rt_sbt_.mapped, 0, static_cast<size_t>(rt_sbt_.size));
+    for (uint32_t i = 0; i < 3; ++i)
+        std::memcpy(static_cast<uint8_t*>(rt_sbt_.mapped) + i * region_stride,
+                    handles.data() + i * handle_size,
+                    static_cast<size_t>(handle_size));
+    return matter::flush_buffer(rt_sbt_, 0, rt_sbt_.size, error);
 }
 
 bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
@@ -726,7 +891,7 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     if (result != VK_SUCCESS)
         return fail_vk("vkCreateGraphicsPipelines(raster)", result, error);
 
-    std::array<VkDescriptorSetLayoutBinding, 3> sampled_bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 4> sampled_bindings{};
     for (uint32_t i = 0; i < sampled_bindings.size(); ++i) {
         sampled_bindings[i] = descriptor_binding(
             i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -815,7 +980,7 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
         return fail_vk("vkCreateGraphicsPipelines(composite)", result, error);
 
     VkDescriptorPoolSize sampled_pool{
-        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3};
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4};
     VkDescriptorPoolCreateInfo pool{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pool.maxSets = 1;
@@ -1014,6 +1179,38 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     }
     frames_ = std::move(next_frames);
     descriptor_pool_ = next_pool;
+    if (vulkan_->ray_tracing_available()) {
+        if (rt_descriptor_pool_ != VK_NULL_HANDLE)
+            vkDestroyDescriptorPool(vulkan_->device(), rt_descriptor_pool_,
+                                    nullptr);
+        const VkDescriptorPoolSize rt_sizes[] = {
+            {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, frame_slot_count},
+            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, frame_slot_count},
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count}};
+        VkDescriptorPoolCreateInfo rt_pool{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        rt_pool.maxSets = frame_slot_count;
+        rt_pool.poolSizeCount = 3;
+        rt_pool.pPoolSizes = rt_sizes;
+        VkResult rt_result = vkCreateDescriptorPool(
+            vulkan_->device(), &rt_pool, nullptr, &rt_descriptor_pool_);
+        if (rt_result != VK_SUCCESS)
+            return fail_vk("vkCreateDescriptorPool(ray tracing)", rt_result,
+                           error);
+        rt_descriptor_sets_.resize(frame_slot_count);
+        std::vector<VkDescriptorSetLayout> rt_layouts(frame_slot_count,
+                                                       rt_set_layout_);
+        VkDescriptorSetAllocateInfo rt_allocate{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        rt_allocate.descriptorPool = rt_descriptor_pool_;
+        rt_allocate.descriptorSetCount = frame_slot_count;
+        rt_allocate.pSetLayouts = rt_layouts.data();
+        rt_result = vkAllocateDescriptorSets(vulkan_->device(), &rt_allocate,
+                                             rt_descriptor_sets_.data());
+        if (rt_result != VK_SUCCESS)
+            return fail_vk("vkAllocateDescriptorSets(ray tracing)", rt_result,
+                           error);
+    }
     frame_resource_slot_capacity_ = frame_slot_count;
     active_frame_index_ = 0;
     return true;
@@ -1274,6 +1471,66 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
             }
         }
     }
+    std::shared_ptr<matter::VkBufferResource> rt_geometry;
+    std::shared_ptr<matter::VkAccelerationStructureResource> rt_blas;
+    uint32_t rt_primitive_count = 0;
+    if (vulkan_->ray_tracing_available() && !part.vertices.empty()) {
+        rt_geometry = std::make_shared<matter::VkBufferResource>();
+        const VkDeviceSize bytes =
+            static_cast<VkDeviceSize>(part.vertices.size()) *
+            sizeof(VkRasterVertex);
+        if (!matter::create_buffer(
+                *vulkan_, bytes,
+                VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, *rt_geometry, error) ||
+            !matter::map_buffer(*rt_geometry, error)) {
+            return -1;
+        }
+        std::memcpy(rt_geometry->mapped, part.vertices.data(),
+                    static_cast<size_t>(bytes));
+        if (!matter::flush_buffer(*rt_geometry, 0, bytes, error)) return -1;
+        rt_primitive_count = static_cast<uint32_t>(part.vertices.size() / 3);
+        if (rt_primitive_count != 0) {
+            VkAccelerationStructureGeometryTrianglesDataKHR triangles{
+                VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR};
+            triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+            triangles.vertexData.deviceAddress = rt_geometry->address;
+            triangles.vertexStride = sizeof(VkRasterVertex);
+            triangles.maxVertex = static_cast<uint32_t>(part.vertices.size() - 1);
+            triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
+            VkAccelerationStructureGeometryKHR geometry{
+                VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+            geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+            geometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+            geometry.geometry.triangles = triangles;
+            VkAccelerationStructureBuildGeometryInfoKHR build{
+                VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+            build.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+            build.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
+                          VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR;
+            build.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+            build.geometryCount = 1;
+            build.pGeometries = &geometry;
+            VkAccelerationStructureBuildSizesInfoKHR sizes{
+                VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+            const auto get_sizes = reinterpret_cast<
+                PFN_vkGetAccelerationStructureBuildSizesKHR>(vkGetDeviceProcAddr(
+                vulkan_->device(), "vkGetAccelerationStructureBuildSizesKHR"));
+            if (!get_sizes) {
+                error = "vkGetAccelerationStructureBuildSizesKHR unavailable";
+                return -1;
+            }
+            get_sizes(vulkan_->device(),
+                      VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+                      &build, &rt_primitive_count, &sizes);
+            rt_blas = std::make_shared<matter::VkAccelerationStructureResource>();
+            if (!matter::create_acceleration_structure(
+                    *vulkan_, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
+                    sizes.accelerationStructureSize, *rt_blas, error)) return -1;
+        }
+    }
     const uint32_t vertex_base =
         static_cast<uint32_t>(vertex_staging_.size());
     vertex_staging_.insert(vertex_staging_.end(), part.vertices.begin(),
@@ -1286,6 +1543,9 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     record.vertex_start = vertex_base;
     record.vertex_count = static_cast<uint32_t>(part.vertices.size());
     record.live = true;
+    record.rt_geometry = std::move(rt_geometry);
+    record.rt_blas = std::move(rt_blas);
+    record.rt_primitive_count = rt_primitive_count;
     for (size_t i = 0; i < part.clusters.size(); ++i) {
         const auto& source = part.clusters[i];
         GpuCluster cluster{};
@@ -1330,6 +1590,16 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     note_command_layout_rebuild();
     return slot;
 }
+
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+VkDeviceAddress VkSceneRenderer::test_rt_geometry_address(
+    uint64_t part_hash) const {
+    const auto found = slot_of_.find(part_hash);
+    if (found == slot_of_.end()) return 0;
+    const PartRecord& part = parts_[static_cast<size_t>(found->second)];
+    return part.rt_geometry ? part.rt_geometry->address : 0;
+}
+#endif
 
 void VkSceneRenderer::release_part(uint64_t part_hash) {
     if (poisoned()) return;
@@ -1929,6 +2199,295 @@ bool VkSceneRenderer::validate_draw_command_regions(std::string& error) const {
     return true;
 }
 
+bool VkSceneRenderer::record_ray_traced_shadows(
+    const matter::VulkanFrame& frame, const FrameMatrices& matrices,
+    std::string& error) {
+    auto clear_visibility = [&]() {
+        transition_for_use(frame.command_buffer, visibility_,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                           VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           VK_IMAGE_ASPECT_COLOR_BIT);
+        const VkClearColorValue one{{1.0f, 1.0f, 1.0f, 1.0f}};
+        const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1,
+                                             0, 1};
+        vkCmdClearColorImage(frame.command_buffer, visibility_.image,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &one, 1,
+                             &range);
+        matter::record_image_transition(
+            frame.command_buffer, visibility_,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+            VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT);
+    };
+    if (!ray_tracing_settings_.enabled ||
+        !vulkan_->ray_tracing_available() || rt_instances_.empty()) {
+        clear_visibility();
+        return true;
+    }
+    if (frame.frame_slot >= frames_.size() ||
+        frame.frame_slot >= rt_descriptor_sets_.size()) {
+        error = "ray tracing requires prepared per-frame resources";
+        return false;
+    }
+    const auto get_sizes = reinterpret_cast<
+        PFN_vkGetAccelerationStructureBuildSizesKHR>(vkGetDeviceProcAddr(
+        vulkan_->device(), "vkGetAccelerationStructureBuildSizesKHR"));
+    const auto cmd_build = reinterpret_cast<PFN_vkCmdBuildAccelerationStructuresKHR>(
+        vkGetDeviceProcAddr(vulkan_->device(),
+                            "vkCmdBuildAccelerationStructuresKHR"));
+    const auto cmd_trace = reinterpret_cast<PFN_vkCmdTraceRaysKHR>(
+        vkGetDeviceProcAddr(vulkan_->device(), "vkCmdTraceRaysKHR"));
+    if (!get_sizes || !cmd_build || !cmd_trace) {
+        error = "native ray tracing command entry points are unavailable";
+        return false;
+    }
+    FrameResources& selected = frames_[frame.frame_slot];
+    VkDeviceSize scratch_size = 1;
+    struct PendingBlas {
+        PartRecord* part;
+        VkAccelerationStructureGeometryKHR geometry;
+        VkAccelerationStructureBuildGeometryInfoKHR build;
+        VkAccelerationStructureBuildRangeInfoKHR range;
+    };
+    std::vector<PendingBlas> pending;
+    for (auto& part : parts_) {
+        if (!part.live || part.rt_blas_built || !part.rt_geometry ||
+            !part.rt_blas || part.rt_primitive_count == 0) continue;
+        PendingBlas item{};
+        item.part = &part;
+        auto& triangles = item.geometry.geometry.triangles;
+        triangles.sType =
+            VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+        triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+        triangles.vertexData.deviceAddress = part.rt_geometry->address;
+        triangles.vertexStride = sizeof(VkRasterVertex);
+        triangles.maxVertex = part.rt_primitive_count * 3 - 1;
+        triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
+        item.geometry.sType =
+            VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+        item.geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+        item.geometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+        item.build.sType =
+            VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+        item.build.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+        item.build.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
+                           VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR;
+        item.build.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+        item.build.dstAccelerationStructure = part.rt_blas->handle;
+        item.build.geometryCount = 1;
+        item.build.pGeometries = &item.geometry;
+        item.range.primitiveCount = part.rt_primitive_count;
+        VkAccelerationStructureBuildSizesInfoKHR sizes{
+            VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+        get_sizes(vulkan_->device(),
+                  VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+                  &item.build, &item.range.primitiveCount, &sizes);
+        scratch_size = std::max(scratch_size, sizes.buildScratchSize);
+        pending.push_back(item);
+    }
+    if (!ensure_buffer(selected.rt_scratch, scratch_size,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                       error)) return false;
+    for (auto& item : pending) {
+        item.build.pGeometries = &item.geometry;
+        item.build.scratchData.deviceAddress = selected.rt_scratch.address;
+        const VkAccelerationStructureBuildRangeInfoKHR* range = &item.range;
+        cmd_build(frame.command_buffer, 1, &item.build, &range);
+        VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+        barrier.srcStageMask =
+            VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        barrier.srcAccessMask =
+            VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        barrier.dstStageMask =
+            VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        barrier.dstAccessMask =
+            VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR |
+            VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dependency.memoryBarrierCount = 1;
+        dependency.pMemoryBarriers = &barrier;
+        vkCmdPipelineBarrier2(frame.command_buffer, &dependency);
+        item.part->rt_blas_built = true;
+    }
+
+    std::vector<VkAccelerationStructureInstanceKHR> instances;
+    instances.reserve(rt_instances_.size());
+    for (const RtInstance& source : rt_instances_) {
+        const auto found = slot_of_.find(source.part_hash);
+        if (found == slot_of_.end()) continue;
+        const PartRecord& part = parts_[static_cast<size_t>(found->second)];
+        if (!part.rt_blas) continue;
+        VkAccelerationStructureInstanceKHR instance{};
+        for (uint32_t row = 0; row < 3; ++row)
+            for (uint32_t col = 0; col < 4; ++col)
+                instance.transform.matrix[row][col] =
+                    source.transform[col * 4 + row];
+        instance.instanceCustomIndex = static_cast<uint32_t>(found->second);
+        instance.mask = 0xff;
+        instance.instanceShaderBindingTableRecordOffset = 0;
+        instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+        instance.accelerationStructureReference = part.rt_blas->address;
+        instances.push_back(instance);
+    }
+    if (instances.empty()) {
+        clear_visibility();
+        return true;
+    }
+    const VkDeviceSize instance_bytes =
+        instances.size() * sizeof(VkAccelerationStructureInstanceKHR);
+    if (!ensure_buffer(selected.rt_instances, instance_bytes,
+                       VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                       error) ||
+        !matter::map_buffer(selected.rt_instances, error)) return false;
+    std::memcpy(selected.rt_instances.mapped, instances.data(),
+                static_cast<size_t>(instance_bytes));
+    if (!matter::flush_buffer(selected.rt_instances, 0, instance_bytes, error))
+        return false;
+    VkAccelerationStructureGeometryInstancesDataKHR instance_data{
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR};
+    instance_data.data.deviceAddress = selected.rt_instances.address;
+    VkAccelerationStructureGeometryKHR tlas_geometry{
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+    tlas_geometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+    tlas_geometry.geometry.instances = instance_data;
+    VkAccelerationStructureBuildGeometryInfoKHR tlas_build{
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+    tlas_build.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+    tlas_build.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    tlas_build.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    tlas_build.geometryCount = 1;
+    tlas_build.pGeometries = &tlas_geometry;
+    const uint32_t instance_count = static_cast<uint32_t>(instances.size());
+    VkAccelerationStructureBuildSizesInfoKHR tlas_sizes{
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+    get_sizes(vulkan_->device(), VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+              &tlas_build, &instance_count, &tlas_sizes);
+    if (selected.rt_tlas.size < tlas_sizes.accelerationStructureSize) {
+        selected.rt_tlas.reset();
+        if (!matter::create_acceleration_structure(
+                *vulkan_, VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
+                tlas_sizes.accelerationStructureSize, selected.rt_tlas,
+                error)) return false;
+    }
+    if (!ensure_buffer(selected.rt_scratch, tlas_sizes.buildScratchSize,
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                       error)) return false;
+    tlas_build.dstAccelerationStructure = selected.rt_tlas.handle;
+    tlas_build.scratchData.deviceAddress = selected.rt_scratch.address;
+    VkAccelerationStructureBuildRangeInfoKHR tlas_range{};
+    tlas_range.primitiveCount = instance_count;
+    const VkAccelerationStructureBuildRangeInfoKHR* tlas_range_ptr = &tlas_range;
+    cmd_build(frame.command_buffer, 1, &tlas_build, &tlas_range_ptr);
+    VkMemoryBarrier2 as_to_ray{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    as_to_ray.srcStageMask =
+        VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+    as_to_ray.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+    as_to_ray.dstStageMask = VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+    as_to_ray.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+    VkDependencyInfo as_dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    as_dependency.memoryBarrierCount = 1;
+    as_dependency.pMemoryBarriers = &as_to_ray;
+    vkCmdPipelineBarrier2(frame.command_buffer, &as_dependency);
+
+    transition_for_use(frame.command_buffer, visibility_, VK_IMAGE_LAYOUT_GENERAL,
+                       VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                       VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT);
+    VkWriteDescriptorSetAccelerationStructureKHR as_write{
+        VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
+    as_write.accelerationStructureCount = 1;
+    as_write.pAccelerationStructures = &selected.rt_tlas.handle;
+    VkDescriptorImageInfo depth_info{composite_sampler_, depth_.view,
+                                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo visibility_info{VK_NULL_HANDLE, visibility_.view,
+                                          VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet writes[3]{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].pNext = &as_write;
+    writes[0].dstSet = rt_descriptor_sets_[frame.frame_slot];
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    for (uint32_t i = 1; i < 3; ++i) {
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet = rt_descriptor_sets_[frame.frame_slot];
+        writes[i].dstBinding = i;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = i == 1
+            ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+            : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[i].pImageInfo = i == 1 ? &depth_info : &visibility_info;
+    }
+    vkUpdateDescriptorSets(vulkan_->device(), 3, writes, 0, nullptr);
+    struct alignas(16) ShadowConstants {
+        GpuMat4 clip_to_world;
+        float to_sun_max_distance[4];
+        float bias;
+        uint32_t samples;
+        uint32_t debug_view;
+        uint32_t pad;
+    } constants{};
+    constants.clip_to_world = pack_glsl_mat4(matrices.clip_to_world);
+    const float x = -lighting_.sun_direction.x;
+    const float y = -lighting_.sun_direction.y;
+    const float z = -lighting_.sun_direction.z;
+    const float length = std::sqrt(x*x + y*y + z*z);
+    constants.to_sun_max_distance[0] = length > 0 ? x / length : 0;
+    constants.to_sun_max_distance[1] = length > 0 ? y / length : 1;
+    constants.to_sun_max_distance[2] = length > 0 ? z / length : 0;
+    constants.to_sun_max_distance[3] = ray_tracing_settings_.max_distance;
+    constants.bias = ray_tracing_settings_.bias;
+    constants.samples = std::max(1u, ray_tracing_settings_.samples);
+    constants.debug_view = ray_tracing_settings_.debug_view ? 1u : 0u;
+    vkCmdBindPipeline(frame.command_buffer,
+                      VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt_pipeline_);
+    const VkDescriptorSet rt_set = rt_descriptor_sets_[frame.frame_slot];
+    vkCmdBindDescriptorSets(frame.command_buffer,
+                            VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR,
+                            rt_pipeline_layout_, 0, 1, &rt_set, 0, nullptr);
+    vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
+                       VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(constants),
+                       &constants);
+    const auto& props = vulkan_->ray_tracing_properties();
+    const VkDeviceSize handle_stride =
+        (props.shader_group_handle_size + props.shader_group_handle_alignment - 1) /
+        props.shader_group_handle_alignment * props.shader_group_handle_alignment;
+    const VkDeviceSize region_stride =
+        (handle_stride + props.shader_group_base_alignment - 1) /
+        props.shader_group_base_alignment * props.shader_group_base_alignment;
+    const VkStridedDeviceAddressRegionKHR raygen{rt_sbt_.address, handle_stride,
+                                                  handle_stride};
+    const VkStridedDeviceAddressRegionKHR miss{rt_sbt_.address + region_stride,
+                                                handle_stride, handle_stride};
+    const VkStridedDeviceAddressRegionKHR hit{rt_sbt_.address + 2 * region_stride,
+                                               handle_stride, handle_stride};
+    const VkStridedDeviceAddressRegionKHR callable{};
+    cmd_trace(frame.command_buffer, &raygen, &miss, &hit, &callable,
+              raster_extent_.width, raster_extent_.height, 1);
+    matter::record_image_transition(
+        frame.command_buffer, visibility_,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+        VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    std::vector<std::shared_ptr<void>> retained{visibility_.lifetime,
+        selected.rt_instances.lifetime, selected.rt_scratch.lifetime,
+        selected.rt_tlas.lifetime, rt_sbt_.lifetime};
+    for (const auto& part : parts_) {
+        if (part.rt_geometry) retained.push_back(part.rt_geometry->lifetime);
+        if (part.rt_blas) retained.push_back(part.rt_blas->lifetime);
+    }
+    return vulkan_->retain_for_frame(frame, std::move(retained), error);
+}
+
 bool VkSceneRenderer::record_cull_and_render(
     const matter::VulkanFrame& frame, const FrameMatrices& matrices,
     matter::Float3 camera_eye, float pixel_budget, std::string& error) {
@@ -1985,12 +2544,14 @@ bool VkSceneRenderer::record_cull_and_render(
         record_cull_dispatch_commands(frame.command_buffer, dispatch);
     }
 
+    bool ray_trace_ok = true;
     RasterRecord record{&albedo_,
                         &normal_,
                         &orm_,
                         &velocity_,
                         &depth_,
                         &hdr_,
+                        &visibility_,
                         raster_extent_,
                         raster_pipeline_,
                         pipeline_layout_,
@@ -2004,11 +2565,16 @@ bool VkSceneRenderer::record_cull_and_render(
                         static_cast<uint32_t>(part_command_ranges_.size()),
                         limits_.max_draw_indirect_count,
                         &recorded_draw_ranges_,
-                        lighting_};
+                        lighting_,
+                        this,
+                        &frame,
+                        &matrices,
+                        &error,
+                        &ray_trace_ok};
     record_raster(frame.command_buffer, &record);
+    if (!ray_trace_ok) return false;
     raster_attachments_ready_ = true;
     selected.stats_valid = true;
-    (void)matrices;
     (void)camera_eye;
     (void)pixel_budget;
     return true;
@@ -2141,6 +2707,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     matter::VkImageResource velocity;
     matter::VkImageResource depth;
     matter::VkImageResource hdr;
+    matter::VkImageResource visibility;
     const VkExtent3D extent{width, height, 1};
     const VkImageUsageFlags gbuffer_usage =
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
@@ -2179,7 +2746,14 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
                 VK_IMAGE_USAGE_SAMPLED_BIT |
                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            hdr, error)) {
+            hdr, error) ||
+        !matter::create_image(
+            *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_R8_UNORM, extent,
+            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            visibility, error)) {
         return false;
     }
     albedo_ = std::move(albedo);
@@ -2188,13 +2762,15 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     velocity_ = std::move(velocity);
     depth_ = std::move(depth);
     hdr_ = std::move(hdr);
+    visibility_ = std::move(visibility);
     raster_extent_ = {width, height};
     raster_attachments_ready_ = false;
 
-    matter::VkImageResource* sampled[] = {&albedo_, &normal_, &orm_};
-    VkDescriptorImageInfo image_infos[3]{};
-    VkWriteDescriptorSet writes[3]{};
-    for (uint32_t i = 0; i < 3; ++i) {
+    matter::VkImageResource* sampled[] = {&albedo_, &normal_, &orm_,
+                                          &visibility_};
+    VkDescriptorImageInfo image_infos[4]{};
+    VkWriteDescriptorSet writes[4]{};
+    for (uint32_t i = 0; i < 4; ++i) {
         image_infos[i].sampler = composite_sampler_;
         image_infos[i].imageView = sampled[i]->view;
         image_infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -2206,7 +2782,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[i].pImageInfo = &image_infos[i];
     }
-    vkUpdateDescriptorSets(vulkan_->device(), 3, writes, 0, nullptr);
+    vkUpdateDescriptorSets(vulkan_->device(), 4, writes, 0, nullptr);
     return true;
 }
 
@@ -2266,6 +2842,7 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
                         &velocity_,
                         &depth_,
                         &hdr_,
+                        &visibility_,
                         raster_extent_,
                         raster_pipeline_,
                         pipeline_layout_,
@@ -2279,10 +2856,16 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
                         static_cast<uint32_t>(part_command_ranges_.size()),
                         limits_.max_draw_indirect_count,
                         nullptr,
-                        lighting_};
+                        lighting_,
+                        nullptr,
+                        nullptr,
+                        nullptr,
+                        nullptr,
+                        nullptr};
     std::vector<std::shared_ptr<void>> dependencies{
         albedo_.lifetime, normal_.lifetime, orm_.lifetime, velocity_.lifetime,
-        depth_.lifetime, hdr_.lifetime, vertices_.lifetime, selected.commands.lifetime,
+        depth_.lifetime, hdr_.lifetime, visibility_.lifetime,
+        vertices_.lifetime, selected.commands.lifetime,
         selected.frame_constants.lifetime, selected.draw_transforms.lifetime};
     raster_attachments_ready_ = false;
     if (!matter::submit_immediate(
@@ -2473,6 +3056,7 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
     error.clear();
     pixel = {};
     pixel.depth = 1.0f;
+    pixel.visibility = 1.0f;
     if (fail_if_poisoned(error)) return false;
     if (!raster_attachments_ready_) {
         error = "raster attachments are unavailable until a render completes";
@@ -2484,7 +3068,7 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
         return false;
     }
     matter::VkBufferResource staging;
-    constexpr VkDeviceSize readback_size = 40;
+    constexpr VkDeviceSize readback_size = 41;
     if (!matter::create_buffer(
             *vulkan_, readback_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
@@ -2493,19 +3077,22 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
             staging, error)) {
         return false;
     }
-    RasterReadbackRecord record{{&albedo_, &normal_, &orm_, &velocity_, &depth_, &hdr_},
+    RasterReadbackRecord record{{&albedo_, &normal_, &orm_, &velocity_, &depth_,
+                                 &hdr_, &visibility_},
                                 {VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_DEPTH_BIT,
+                                 VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT},
                                 staging.buffer,
                                 x,
                                 y};
     std::vector<std::shared_ptr<void>> dependencies{
         albedo_.lifetime, normal_.lifetime, orm_.lifetime, velocity_.lifetime,
-        depth_.lifetime, hdr_.lifetime, staging.lifetime};
+        depth_.lifetime, hdr_.lifetime, visibility_.lifetime,
+        staging.lifetime};
     if (!matter::submit_immediate(
             *vulkan_, record_raster_readback, &record, error,
             matter::ImmediateSubmitPhase::compute_dispatch,
@@ -2540,6 +3127,7 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
                       half_to_float(velocity_half[1]), 0.0f};
     pixel.hdr = {half_to_float(hdr_half[0]), half_to_float(hdr_half[1]),
                  half_to_float(hdr_half[2]), half_to_float(hdr_half[3])};
+    pixel.visibility = bytes[40] / 255.0f;
     return true;
 }
 

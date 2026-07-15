@@ -31,6 +31,29 @@ namespace {
 
 bool close4(matter::Float4 actual, matter::Float4 expected, float epsilon);
 
+void run_ray_tracing_capability_contract_tests() {
+    matter::VulkanRayTracingCapabilities unsupported{};
+    unsupported.buffer_device_address = true;
+    std::string reason;
+    CHECK(!matter::supports_native_ray_tracing(unsupported, reason) &&
+              reason.find(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) !=
+                  std::string::npos,
+          "unsupported fake device cleanly disables native ray tracing");
+
+    matter::VulkanRayTracingCapabilities complete{};
+    complete.acceleration_structure_extension = true;
+    complete.ray_tracing_pipeline_extension = true;
+    complete.deferred_host_operations_extension = true;
+    complete.spirv_1_4_extension = true;
+    complete.shader_float_controls_extension = true;
+    complete.buffer_device_address = true;
+    complete.acceleration_structure = true;
+    complete.ray_tracing_pipeline = true;
+    CHECK(matter::supports_native_ray_tracing(complete, reason) &&
+              reason.empty(),
+          "complete fake RTX capability set enables native ray tracing");
+}
+
 struct RetainProbe {
     uint32_t* destroyed = nullptr;
     ~RetainProbe() { ++*destroyed; }
@@ -963,6 +986,135 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
                 background.albedo.x, background.albedo.y,
                 background.albedo.z, background.depth, background.hdr.x,
                 background.hdr.y, background.hdr.z);
+}
+
+void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
+    CHECK(vulkan.ray_tracing_available(),
+          vulkan.ray_tracing_unavailable_reason().empty()
+              ? "native ray tracing available"
+              : vulkan.ray_tracing_unavailable_reason().c_str());
+    if (!vulkan.ray_tracing_available()) return;
+    const auto& properties = vulkan.ray_tracing_properties();
+    CHECK(properties.shader_group_handle_alignment != 0 &&
+              properties.shader_group_base_alignment != 0 &&
+              properties.shader_group_handle_size != 0 &&
+              properties.shader_group_base_alignment >=
+                  properties.shader_group_handle_alignment,
+          "queried SBT handle and base alignments are retained");
+
+    std::string error;
+    {
+        viewer::VkSceneRenderer pinning(vulkan);
+        const viewer::VkScenePart receiver = known_raster_triangle(910);
+        CHECK(pinning.ensure_part(receiver, error) >= 0,
+              error.empty() ? "build receiver BLAS" : error.c_str());
+        const VkDeviceAddress pinned = pinning.test_rt_geometry_address(910);
+        viewer::VkScenePart growth = known_raster_triangle(911);
+        growth.vertices.reserve(3 * 4096);
+        for (uint32_t i = 1; i < 4096; ++i) {
+            const auto triangle = known_raster_triangle(911 + i).vertices;
+            growth.vertices.insert(growth.vertices.end(), triangle.begin(),
+                                   triangle.end());
+        }
+        CHECK(pinning.ensure_part(growth, error) >= 0 && pinned != 0 &&
+                  pinning.test_rt_geometry_address(910) == pinned,
+              error.empty()
+                  ? "BLAS input geometry stays pinned across raster growth"
+                  : error.c_str());
+    }
+
+    viewer::VkSceneRenderer renderer(vulkan);
+    const auto horizontal = [](uint64_t hash, float y, float radius) {
+        viewer::VkScenePart part = fixed_part(
+            hash, {-radius, y - 0.01f, -3.5f},
+            {radius, y + 0.01f, -1.0f}, 0);
+        const matter::Float3 normal{0.0f, 1.0f, 0.0f};
+        const matter::Float4 albedo{0.5f, 0.5f, 0.5f, 1.0f};
+        const matter::Float4 orm{0.5f, 0.0f, 1.0f, 0.0f};
+        part.vertices = {{{-radius, y, -1.0f}, normal, albedo, orm},
+                         {{radius, y, -1.0f}, normal, albedo, orm},
+                         {{0.0f, y, -3.5f}, normal, albedo, orm}};
+        return part;
+    };
+    CHECK(renderer.ensure_part(horizontal(920, -1.0f, 2.0f), error) >= 0 &&
+              renderer.ensure_part(horizontal(921, 0.0f, 0.55f), error) >= 0 &&
+              renderer.update_instances(
+                  {{920, identity_matrix()}, {921, identity_matrix()}},
+                  error),
+          error.empty() ? "prepare native RT two-triangle fixture"
+                        : error.c_str());
+
+    matter::VulkanRayTracingSettings disabled{};
+    disabled.enabled = false;
+    renderer.set_ray_tracing_settings(disabled);
+    CHECK(renderer.test_shadow_visibility_for_ray(false) == 1.0f &&
+              renderer.test_shadow_visibility_for_ray(true) == 1.0f,
+          "disabled ray tracing deterministically produces full visibility");
+    matter::VulkanRayTracingSettings enabled{};
+    enabled.enabled = true;
+    enabled.max_distance = 100.0f;
+    enabled.bias = 0.001f;
+    enabled.samples = 1;
+    renderer.set_ray_tracing_settings(enabled);
+    viewer::VkSceneLighting lighting{};
+    lighting.sun_direction = {0.0f, -1.0f, 0.0f};
+    renderer.set_lighting(lighting);
+    const float open = renderer.test_shadow_visibility_for_ray(false);
+    const float blocked = renderer.test_shadow_visibility_for_ray(true);
+    CHECK(open == 1.0f && std::isfinite(blocked) && blocked < 1.0f,
+          "two-triangle shadow contract is deterministic for open and blocked rays");
+
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 1.5f, 1.0f};
+    camera.target = {0.0f, -0.75f, -2.2f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.57079632679f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 10.0f;
+    viewer::FrameMatrices matrices{};
+    CHECK(viewer::build_frame_matrices(camera, 320, 200, matrices, error),
+          error.empty() ? "build native RT frame matrices" : error.c_str());
+    const uint64_t immediate_before = matter::immediate_submit_count();
+    matter::VulkanFrame frame{};
+    CHECK(vulkan.begin_frame(frame, error),
+          error.empty() ? "begin native RT frame" : error.c_str());
+    if (frame.command_buffer != VK_NULL_HANDLE) {
+        CHECK(renderer.prepare_frame(frame, matrices, camera.position, 1.0f,
+                                     error) &&
+                  renderer.record_cull_and_render(
+                      frame, matrices, camera.position, 1.0f, error) &&
+                  renderer.record_composite_to_swapchain(frame, error),
+              error.empty() ? "record BLAS TLAS native shadow trace"
+                            : error.c_str());
+        CHECK(matter::immediate_submit_count() == immediate_before,
+              "native RT frame records without immediate submit");
+        CHECK(vulkan.end_frame(frame, error),
+              error.empty() ? "submit native RT frame" : error.c_str());
+        float minimum_visibility = 1.0f;
+        float maximum_visibility = 0.0f;
+        bool visibility_reads_ok = true;
+        for (uint32_t y = 20; y < 200; y += 20) {
+            for (uint32_t x = 20; x < 320; x += 20) {
+                viewer::VkRasterPixel pixel{};
+                if (!renderer.readback_raster_pixel(x, y, pixel, error)) {
+                    visibility_reads_ok = false;
+                    break;
+                }
+                minimum_visibility =
+                    std::min(minimum_visibility, pixel.visibility);
+                maximum_visibility =
+                    std::max(maximum_visibility, pixel.visibility);
+            }
+            if (!visibility_reads_ok) break;
+        }
+        CHECK(visibility_reads_ok && std::isfinite(minimum_visibility) &&
+                  minimum_visibility < 1.0f && maximum_visibility == 1.0f,
+              error.empty()
+                  ? "native two-triangle visibility contains shadowed and open pixels"
+                  : error.c_str());
+        std::printf("RT visibility range: %.3f .. %.3f\n",
+                    minimum_visibility, maximum_visibility);
+    }
 }
 
 void run_raster_submission_fault(matter::VulkanDevice& vulkan) {
@@ -2080,6 +2232,7 @@ void run_outlive_resources(std::unique_ptr<matter::VulkanDevice>& vulkan,
 }  // namespace
 
 int main() {
+    run_ray_tracing_capability_contract_tests();
     run_vulkan_instance_cache_tests();
     run_vulkan_temporal_tests();
     run_streamline_bridge_fallback_tests();
@@ -2199,6 +2352,16 @@ int main() {
         }
         if (smoke_mode && std::string(smoke_mode) == "raster") {
             run_raster_path(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "rt") {
+            run_native_ray_tracing_path(*vulkan);
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
             vulkan->wait_idle();

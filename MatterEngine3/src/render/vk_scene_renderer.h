@@ -139,6 +139,7 @@ struct VkRasterPixel {
     matter::Float3 velocity{};
     matter::Float4 hdr{};
     float depth = 1.0f;
+    float visibility = 1.0f;
 };
 
 struct VkSceneLighting {
@@ -198,6 +199,9 @@ public:
                                 const FrameMatrices& matrices,
                                 matter::Float3 camera_eye,
                                 float pixel_budget, std::string& error);
+    bool record_ray_traced_shadows(const matter::VulkanFrame& frame,
+                                   const FrameMatrices& matrices,
+                                   std::string& error);
     const std::vector<PartCommandRange>& test_recorded_draw_ranges() const {
         return recorded_draw_ranges_;
     }
@@ -228,6 +232,10 @@ public:
                                       std::string& error);
 #endif
     void set_lighting(const VkSceneLighting& lighting) { lighting_ = lighting; }
+    void set_ray_tracing_settings(
+        const matter::VulkanRayTracingSettings& settings) {
+        ray_tracing_settings_ = settings;
+    }
     // Blit the real HDR world composite into the currently acquired swapchain
     // image, leaving it ready for UI dynamic rendering.
     bool record_composite_to_swapchain(const matter::VulkanFrame& frame,
@@ -236,6 +244,10 @@ public:
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     bool readback_raster_pixel(uint32_t x, uint32_t y,
                                VkRasterPixel& pixel, std::string& error);
+    VkDeviceAddress test_rt_geometry_address(uint64_t part_hash) const;
+    float test_shadow_visibility_for_ray(bool occluded) const {
+        return ray_tracing_settings_.enabled && occluded ? 0.0f : 1.0f;
+    }
 #endif
     int fill_rt_instances(std::vector<RtInstance>& output) const;
     // A poisoned renderer fails closed. reset() then performs a full GPU
@@ -340,6 +352,10 @@ private:
         uint32_t vertex_start = 0;
         uint32_t vertex_count = 0;
         bool live = false;
+        std::shared_ptr<matter::VkBufferResource> rt_geometry;
+        std::shared_ptr<matter::VkAccelerationStructureResource> rt_blas;
+        uint32_t rt_primitive_count = 0;
+        bool rt_blas_built = false;
     };
 
     struct DeviceLimits {
@@ -357,6 +373,10 @@ private:
         matter::VkBufferResource draw_transforms;
         matter::VkBufferResource stats;
         matter::VkImageResource dlss_output;
+        matter::VkBufferResource rt_instances;
+        matter::VkBufferResource rt_scratch;
+        matter::VkBufferResource sbt;
+        matter::VkAccelerationStructureResource rt_tlas;
         VkExtent2D dlss_output_extent{};
         VkDescriptorSet descriptor_sets[2]{};
         uint64_t static_generation = 0;
@@ -367,6 +387,8 @@ private:
 
     bool create_pipeline(std::string& error);
     bool create_raster_pipelines(std::string& error);
+    bool create_ray_tracing_pipeline(std::string& error);
+    bool ensure_rt_visibility(VkExtent2D extent, std::string& error);
     bool ensure_raster_targets(uint32_t width, uint32_t height,
                                std::string& error);
     bool ensure_dlss_output(FrameResources& frame, VkExtent2D output_extent,
@@ -412,6 +434,11 @@ private:
     VkDescriptorPool composite_descriptor_pool_ = VK_NULL_HANDLE;
     VkDescriptorSet composite_descriptor_set_ = VK_NULL_HANDLE;
     VkSampler composite_sampler_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout rt_set_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout rt_pipeline_layout_ = VK_NULL_HANDLE;
+    VkPipeline rt_pipeline_ = VK_NULL_HANDLE;
+    VkDescriptorPool rt_descriptor_pool_ = VK_NULL_HANDLE;
+    std::vector<VkDescriptorSet> rt_descriptor_sets_;
     VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
     bool initialized_ = false;
 
@@ -427,6 +454,8 @@ private:
     matter::VkImageResource velocity_;
     matter::VkImageResource depth_;
     matter::VkImageResource hdr_;
+    matter::VkImageResource visibility_;
+    matter::VkBufferResource rt_sbt_;
     VkExtent2D raster_extent_{};
     bool raster_attachments_ready_ = false;
 
@@ -457,6 +486,7 @@ private:
     DeviceLimits limits_{};
     DeviceLimits physical_limits_{};
     VkSceneLighting lighting_{};
+    matter::VulkanRayTracingSettings ray_tracing_settings_{};
     TemporalFrame temporal_frame_{};
     uint64_t instance_generation_ = 1;
     uint64_t static_generation_ = 1;

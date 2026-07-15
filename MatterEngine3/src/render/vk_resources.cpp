@@ -64,6 +64,26 @@ protected:
     }
 };
 
+struct VkAccelerationStructureAllocation final : DeviceLifetimeControl {
+    explicit VkAccelerationStructureAllocation(
+        std::shared_ptr<DeviceAccessToken> device_access)
+        : DeviceLifetimeControl(std::move(device_access)) {}
+    VkAccelerationStructureKHR handle = VK_NULL_HANDLE;
+    std::shared_ptr<void> storage;
+    ~VkAccelerationStructureAllocation() override { release_device_objects(); }
+protected:
+    void release_device_objects() noexcept override {
+        const VkDevice device = live_device();
+        if (device != VK_NULL_HANDLE && handle != VK_NULL_HANDLE) {
+            const auto destroy = reinterpret_cast<PFN_vkDestroyAccelerationStructureKHR>(
+                vkGetDeviceProcAddr(device, "vkDestroyAccelerationStructureKHR"));
+            if (destroy) destroy(device, handle, nullptr);
+        }
+        handle = VK_NULL_HANDLE;
+        storage.reset();
+    }
+};
+
 }  // namespace detail
 
 namespace {
@@ -255,6 +275,80 @@ void VkImageResource::reset() {
     format = VK_FORMAT_UNDEFINED;
     extent = {};
     layout = VK_IMAGE_LAYOUT_UNDEFINED;
+}
+
+VkAccelerationStructureResource::~VkAccelerationStructureResource() { reset(); }
+VkAccelerationStructureResource::VkAccelerationStructureResource(
+    VkAccelerationStructureResource&& other) noexcept { *this = std::move(other); }
+VkAccelerationStructureResource& VkAccelerationStructureResource::operator=(
+    VkAccelerationStructureResource&& other) noexcept {
+    if (this == &other) return *this;
+    reset();
+    device = std::exchange(other.device, VK_NULL_HANDLE);
+    handle = std::exchange(other.handle, VK_NULL_HANDLE);
+    address = std::exchange(other.address, 0);
+    size = std::exchange(other.size, 0);
+    lifetime = std::move(other.lifetime);
+    return *this;
+}
+void VkAccelerationStructureResource::reset() {
+    lifetime.reset();
+    device = VK_NULL_HANDLE;
+    handle = VK_NULL_HANDLE;
+    address = 0;
+    size = 0;
+}
+
+bool create_acceleration_structure(
+    VulkanDevice& vulkan, VkAccelerationStructureTypeKHR type,
+    VkDeviceSize size, VkAccelerationStructureResource& output,
+    std::string& error) {
+    if (!vulkan.ray_tracing_available()) {
+        error = vulkan.ray_tracing_unavailable_reason();
+        return false;
+    }
+    auto storage = std::make_shared<VkBufferResource>();
+    if (!create_buffer(vulkan, size,
+                       VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, *storage,
+                       error)) return false;
+    const auto create = reinterpret_cast<PFN_vkCreateAccelerationStructureKHR>(
+        vkGetDeviceProcAddr(vulkan.device(), "vkCreateAccelerationStructureKHR"));
+    const auto get_address =
+        reinterpret_cast<PFN_vkGetAccelerationStructureDeviceAddressKHR>(
+            vkGetDeviceProcAddr(vulkan.device(),
+                                "vkGetAccelerationStructureDeviceAddressKHR"));
+    if (!create || !get_address) {
+        error = "native ray tracing entry points are unavailable";
+        return false;
+    }
+    VkAccelerationStructureResource candidate;
+    candidate.device = vulkan.device();
+    candidate.size = size;
+    VkAccelerationStructureCreateInfoKHR info{
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};
+    info.buffer = storage->buffer;
+    info.size = size;
+    info.type = type;
+    VkResult result = create(candidate.device, &info, nullptr, &candidate.handle);
+    if (result != VK_SUCCESS)
+        return fail_result("vkCreateAccelerationStructureKHR", result, error);
+    candidate.lifetime =
+        std::make_shared<detail::VkAccelerationStructureAllocation>(
+            detail::DeviceLifetimeAccess::token(vulkan));
+    candidate.lifetime->handle = candidate.handle;
+    candidate.lifetime->storage = storage->lifetime;
+    VkAccelerationStructureDeviceAddressInfoKHR address_info{
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR};
+    address_info.accelerationStructure = candidate.handle;
+    candidate.address = get_address(candidate.device, &address_info);
+    if (candidate.address == 0) {
+        error = "vkGetAccelerationStructureDeviceAddressKHR returned zero";
+        return false;
+    }
+    output = std::move(candidate);
+    return true;
 }
 
 bool find_memory_type(VkPhysicalDevice physical_device,

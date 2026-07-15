@@ -239,7 +239,10 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/raster.vert.spv \
          build/shaders_vk/gbuffer.frag.spv \
          build/shaders_vk/composite.vert.spv \
-         build/shaders_vk/composite.frag.spv
+         build/shaders_vk/composite.frag.spv \
+         build/shaders_vk/rt_shadow.rgen.spv \
+         build/shaders_vk/rt_shadow.rmiss.spv \
+         build/shaders_vk/rt_shadow.rchit.spv
 
 build/shaders_vk/%.spv: shaders_vk/%
 	@mkdir -p $(dir $@)

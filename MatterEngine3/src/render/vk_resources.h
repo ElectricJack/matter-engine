@@ -15,6 +15,7 @@ namespace matter {
 namespace detail {
 struct VkBufferAllocation;
 struct VkImageAllocation;
+struct VkAccelerationStructureAllocation;
 }  // namespace detail
 
 struct VkBufferResource {
@@ -60,6 +61,22 @@ struct VkImageResource {
     void reset();
 };
 
+struct VkAccelerationStructureResource {
+    VkDevice device = VK_NULL_HANDLE;
+    VkAccelerationStructureKHR handle = VK_NULL_HANDLE;
+    VkDeviceAddress address = 0;
+    VkDeviceSize size = 0;
+    std::shared_ptr<detail::VkAccelerationStructureAllocation> lifetime;
+
+    VkAccelerationStructureResource() = default;
+    ~VkAccelerationStructureResource();
+    VkAccelerationStructureResource(const VkAccelerationStructureResource&) = delete;
+    VkAccelerationStructureResource& operator=(const VkAccelerationStructureResource&) = delete;
+    VkAccelerationStructureResource(VkAccelerationStructureResource&& other) noexcept;
+    VkAccelerationStructureResource& operator=(VkAccelerationStructureResource&& other) noexcept;
+    void reset();
+};
+
 bool find_memory_type(VkPhysicalDevice physical_device,
                       uint32_t allowed_type_bits,
                       VkMemoryPropertyFlags required,
@@ -92,6 +109,11 @@ bool create_image(VulkanDevice& vulkan, VkImageType type, VkFormat format,
                   VkImageAspectFlags aspect,
                   VkMemoryPropertyFlags required_memory,
                   VkImageResource& output, std::string& error);
+
+bool create_acceleration_structure(
+    VulkanDevice& vulkan, VkAccelerationStructureTypeKHR type,
+    VkDeviceSize size, VkAccelerationStructureResource& output,
+    std::string& error);
 
 void record_image_transition(VkCommandBuffer command_buffer,
                              VkImageResource& image,

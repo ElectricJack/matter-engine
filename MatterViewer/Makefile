@@ -396,7 +396,10 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/raster.vert.spv \
          build/shaders_vk/gbuffer.frag.spv \
          build/shaders_vk/composite.vert.spv \
-         build/shaders_vk/composite.frag.spv
+         build/shaders_vk/composite.frag.spv \
+         build/shaders_vk/rt_shadow.rgen.spv \
+         build/shaders_vk/rt_shadow.rmiss.spv \
+         build/shaders_vk/rt_shadow.rchit.spv
 VK_EMBEDDED_HEADER = $(ME3_DIR)/shaders_gen/embedded_spirv.h
 CUDA_INTEROP_PTX = build/shaders_cuda/vk_cuda_invert.ptx
 CUDA_INTEROP_HEADER = $(ME3_DIR)/shaders_gen/embedded_cuda_interop_ptx.h
