@@ -245,10 +245,15 @@ struct VkSceneLighting {
     matter::Float3 sun_direction{-0.45f, -0.80f, -0.35f};
     float sun_intensity = 1.0f;
     matter::Float3 sun_color{2.2f, 2.05f, 1.8f};
-    float pad0 = 0.0f;
+    float diffuse_rt_multiplier = 0.0f;
     matter::Float3 sky_color{0.38f, 0.43f, 0.52f};
+    float emission_multiplier = 1.0f;
+    float debug_view = 0.0f;
+    float pad0 = 0.0f;
     float pad1 = 0.0f;
+    float pad2 = 0.0f;
 };
+static_assert(sizeof(VkSceneLighting) == 64);
 
 struct VkSceneUploadCounters {
     uint64_t vertex_uploads = 0;
@@ -347,7 +352,8 @@ public:
     bool render_gbuffer_and_composite(uint32_t width, uint32_t height,
                                       std::string& error);
 #endif
-    void set_lighting(const VkSceneLighting& lighting) { lighting_ = lighting; }
+    void set_lighting(const VkSceneLighting& lighting);
+    void set_display_exposure(float exposure_ev);
     void set_ray_tracing_settings(
         const matter::VulkanRayTracingSettings& settings);
     void set_gi_settings(const matter::VulkanGiSettings& settings) {
@@ -775,6 +781,8 @@ private:
     DeviceLimits limits_{};
     DeviceLimits physical_limits_{};
     VkSceneLighting lighting_{};
+    bool lighting_initialized_ = false;
+    float display_exposure_ev_ = -2.0f;
     matter::VulkanRayTracingSettings ray_tracing_settings_{};
     matter::VulkanGiSettings gi_settings_{};
     uint32_t last_rt_samples_ = 1;

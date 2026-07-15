@@ -14,9 +14,13 @@ layout(push_constant) uniform SceneLighting {
     vec3 sun_direction;
     float sun_intensity;
     vec3 sun_color;
-    float pad0;
+    float diffuse_rt_multiplier;
     vec3 sky_color;
+    float emission_multiplier;
     float debug_view;
+    float pad0;
+    float pad1;
+    float pad2;
 } lighting;
 
 void main() {
@@ -48,8 +52,9 @@ void main() {
         encoded_emission > 0.0
             ? exp2(min(encoded_emission, 15.875)) - 1.0
             : 0.0;
-    vec3 emission = albedo.rgb * emission_strength;
-    vec3 raw_diffuse = texture(raw_diffuse_texture, in_uv).rgb * lighting.pad0;
+    vec3 emission = albedo.rgb * emission_strength * lighting.emission_multiplier;
+    vec3 raw_diffuse = texture(raw_diffuse_texture, in_uv).rgb *
+                       lighting.diffuse_rt_multiplier;
     vec3 specular = texture(specular_texture, in_uv).rgb;
     vec3 linear_hdr = ambient + sun * mix(1.0, 0.65, roughness) + emission +
                       raw_diffuse + specular;

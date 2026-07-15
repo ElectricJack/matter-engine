@@ -2292,7 +2292,8 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
         CHECK(constant_identity,
               "constant-color A-trous input is an identity operation");
         const auto render_temporal_control = [&](uint64_t attempt_token,
-                                                 bool reset = false) {
+                                                 bool reset = false,
+                                                 bool presented = true) {
             gi_temporal.attempt_token = attempt_token;
             gi_temporal.reset = reset;
             renderer.set_temporal_frame(gi_temporal);
@@ -2304,7 +2305,8 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                     control, matrices, camera.position, 1.0f, error) &&
                 renderer.record_composite_to_swapchain(control, error) &&
                 vulkan.end_frame(control, error);
-            renderer.finish_ray_tracing_frame(control.serial, rendered);
+            renderer.finish_ray_tracing_frame(control.serial,
+                                               rendered && presented);
             return rendered;
         };
         matter::VulkanRayTracingSettings rt_disabled = enabled;
@@ -2360,10 +2362,45 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                   !renderer.consume_dlss_history_reset(),
               error.empty() ? "stable Native mode does not repeat GI reset"
                             : error.c_str());
+        const uint64_t lighting_reset_baseline =
+            renderer.test_gi_history_reset_count();
+        viewer::VkSceneLighting changed_source = lighting;
+        changed_source.sky_color.x *= 0.5f;
+        renderer.set_lighting(changed_source);
+        CHECK(render_temporal_control(247, false, false) &&
+                  renderer.test_gi_history_reset_count() ==
+                      lighting_reset_baseline,
+              error.empty() ? "failed presentation retains pending lighting reset"
+                            : error.c_str());
+        CHECK(render_temporal_control(248) &&
+                  renderer.test_gi_history_reset_count() ==
+                      lighting_reset_baseline + 1u,
+              error.empty() ? "source lighting change resets GI history once"
+                            : error.c_str());
+        CHECK(render_temporal_control(249) &&
+                  renderer.test_gi_history_reset_count() ==
+                      lighting_reset_baseline + 1u,
+              error.empty() ? "stable source lighting does not repeat GI reset"
+                            : error.c_str());
+        std::printf("lighting reset counts: before=%llu changed=%llu stable=%llu\n",
+                    static_cast<unsigned long long>(lighting_reset_baseline),
+                    static_cast<unsigned long long>(lighting_reset_baseline + 1u),
+                    static_cast<unsigned long long>(
+                        renderer.test_gi_history_reset_count()));
+        renderer.set_display_exposure(1.0f);
+        CHECK(render_temporal_control(250) &&
+                  renderer.test_gi_history_reset_count() ==
+                      lighting_reset_baseline + 1u,
+              error.empty() ? "exposure-only change preserves GI history"
+                            : error.c_str());
+        renderer.set_lighting(lighting);
+        CHECK(render_temporal_control(251),
+              error.empty() ? "restore authored lighting after reset proof"
+                            : error.c_str());
         matter::VulkanRayTracingSettings non_debug_rt = enabled;
         non_debug_rt.debug_view = false;
         renderer.set_ray_tracing_settings(non_debug_rt);
-        CHECK(render_temporal_control(247),
+        CHECK(render_temporal_control(252),
               error.empty() ? "render accumulated-GI composite proof frame"
                             : error.c_str());
         viewer::VkRasterPixel composite_pixel{};
@@ -2409,6 +2446,79 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                   std::fabs(composite_pixel.hdr.y - expected_composite.y) < 0.04f &&
                   std::fabs(composite_pixel.hdr.z - expected_composite.z) < 0.04f,
               "GPU composite equation samples accumulated temporal radiance");
+        auto emissive_materials = gi_materials;
+        emissive_materials[0].emission_strength[3] = 4.0f;
+        CHECK(renderer.update_materials(emissive_materials, 2, 1, error),
+              error.empty() ? "install isolated emissive source"
+                            : error.c_str());
+        uint32_t emitter_x = 0;
+        uint32_t emitter_y = 0;
+        bool emitter_seen = false;
+        for (uint32_t y = 10; y < 200 && !emitter_seen; y += 10) {
+            for (uint32_t x = 10; x < 320; x += 10) {
+                viewer::VkRasterPixel pixel{};
+                if (renderer.readback_raster_pixel(x, y, pixel, error) &&
+                    pixel.material_index == 0u) {
+                    emitter_x = x;
+                    emitter_y = y;
+                    emitter_seen = true;
+                    break;
+                }
+            }
+        }
+        const auto render_emission_probe = [&](float multiplier,
+                                               uint64_t attempt_token,
+                                               viewer::VkRasterPixel& emitter,
+                                               viewer::VkRasterPixel& receiver) {
+            viewer::VkSceneLighting isolated = lighting;
+            isolated.sun_color = {};
+            isolated.sky_color = {};
+            isolated.emission_multiplier = multiplier;
+            renderer.set_lighting(isolated);
+            const bool rendered = render_temporal_control(attempt_token);
+            return rendered && emitter_seen &&
+                renderer.readback_raster_pixel(emitter_x, emitter_y, emitter,
+                                               error) &&
+                renderer.readback_raster_pixel(retry_x, retry_y, receiver,
+                                               error);
+        };
+        viewer::VkRasterPixel zero_emission{};
+        viewer::VkRasterPixel zero_receiver{};
+        viewer::VkRasterPixel half_emission{};
+        viewer::VkRasterPixel half_receiver{};
+        viewer::VkRasterPixel full_emission{};
+        viewer::VkRasterPixel full_receiver{};
+        const bool emission_probes_ok =
+            render_emission_probe(0.0f, 253, zero_emission, zero_receiver) &&
+            render_emission_probe(0.5f, 254, half_emission, half_receiver) &&
+            render_emission_probe(1.0f, 255, full_emission, full_receiver);
+        const auto luminance = [](matter::Float4 value) {
+            return 0.2126f * value.x + 0.7152f * value.y + 0.0722f * value.z;
+        };
+        const auto relative_error = [](float actual, float expected) {
+            return std::fabs(actual - expected) /
+                std::max(std::fabs(expected), 1e-5f);
+        };
+        const float primary_half = luminance(half_emission.hdr);
+        const float primary_full = luminance(full_emission.hdr);
+        const float secondary_half = luminance(half_receiver.raw_diffuse);
+        const float secondary_full = luminance(full_receiver.raw_diffuse);
+        std::printf("emission ratios: primary=%.3f secondary=%.3f\n",
+                    primary_half > 0.0f ? primary_full / primary_half : 0.0f,
+                    secondary_half > 0.0f ? secondary_full / secondary_half
+                                          : 0.0f);
+        CHECK(emission_probes_ok &&
+                  luminance(zero_emission.hdr) < primary_half &&
+                  relative_error(primary_full, 2.0f * primary_half) < 0.05f,
+              "primary emission follows authored multiplier");
+        CHECK(emission_probes_ok &&
+                  luminance(zero_receiver.raw_diffuse) < secondary_half &&
+                  relative_error(secondary_full, 2.0f * secondary_half) < 0.10f,
+              "secondary emissive bounce follows authored multiplier");
+        CHECK(renderer.update_materials(gi_materials, 3, 1, error),
+              error.empty() ? "restore non-emissive RT material fixture"
+                            : error.c_str());
+        renderer.set_lighting(lighting);
         renderer.set_ray_tracing_settings(enabled);
         const auto render_sun_probe = [&](float intensity,
                                           uint64_t attempt_token,

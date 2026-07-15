@@ -33,6 +33,7 @@
 #include "render/vk_temporal.h"
 #include "render/vk_resources.h"
 #include "render/vk_scene_renderer.h"
+#include "render/vk_lighting_controls.h"
 #include "render/matrix_math.h"
 #endif
 
@@ -3566,17 +3567,23 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         return false;
     }
     viewer::VkSceneLighting lighting{};
+    const auto controls =
+        viewer::sanitize_vulkan_lighting_overrides(opts.vulkan_lighting);
     lighting.sun_direction = {impl_->manifest.lights.sun_dir[0],
                               impl_->manifest.lights.sun_dir[1],
                               impl_->manifest.lights.sun_dir[2]};
     lighting.sun_intensity = 1.0f;
-    lighting.sun_color = {impl_->manifest.lights.sun_color[0],
-                          impl_->manifest.lights.sun_color[1],
-                          impl_->manifest.lights.sun_color[2]};
-    lighting.sky_color = {impl_->manifest.lights.sky_color[0],
-                          impl_->manifest.lights.sky_color[1],
-                          impl_->manifest.lights.sky_color[2]};
+    lighting.sun_color = {
+        impl_->manifest.lights.sun_color[0] * controls.sun_multiplier,
+        impl_->manifest.lights.sun_color[1] * controls.sun_multiplier,
+        impl_->manifest.lights.sun_color[2] * controls.sun_multiplier};
+    lighting.sky_color = {
+        impl_->manifest.lights.sky_color[0] * controls.sky_multiplier,
+        impl_->manifest.lights.sky_color[1] * controls.sky_multiplier,
+        impl_->manifest.lights.sky_color[2] * controls.sky_multiplier};
+    lighting.emission_multiplier = controls.emission_multiplier;
     impl_->vk_scene->set_lighting(lighting);
+    impl_->vk_scene->set_display_exposure(controls.exposure_ev);
     const auto build_end = std::chrono::steady_clock::now();
     const auto draw_start = std::chrono::steady_clock::now();
     if (!impl_->vk_scene->record_cull_and_render(

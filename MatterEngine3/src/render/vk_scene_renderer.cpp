@@ -1066,7 +1066,7 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
                        error);
     VkPushConstantRange push{};
     push.stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
-    push.size = 128;
+    push.size = 144;
     VkPipelineLayoutCreateInfo layout_info{
         VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     layout_info.setLayoutCount = 1;
@@ -3277,6 +3277,29 @@ void VkSceneRenderer::finish_ray_tracing_frame(uint64_t frame_serial,
     }
 }
 
+void VkSceneRenderer::set_lighting(const VkSceneLighting& lighting) {
+    const bool source_changed =
+        lighting.sun_direction.x != lighting_.sun_direction.x ||
+        lighting.sun_direction.y != lighting_.sun_direction.y ||
+        lighting.sun_direction.z != lighting_.sun_direction.z ||
+        lighting.sun_intensity != lighting_.sun_intensity ||
+        lighting.sun_color.x != lighting_.sun_color.x ||
+        lighting.sun_color.y != lighting_.sun_color.y ||
+        lighting.sun_color.z != lighting_.sun_color.z ||
+        lighting.sky_color.x != lighting_.sky_color.x ||
+        lighting.sky_color.y != lighting_.sky_color.y ||
+        lighting.sky_color.z != lighting_.sky_color.z ||
+        lighting.emission_multiplier != lighting_.emission_multiplier;
+    if (lighting_initialized_ && source_changed)
+        gi_history_reset_pending_ = true;
+    lighting_ = lighting;
+    lighting_initialized_ = true;
+}
+
+void VkSceneRenderer::set_display_exposure(float exposure_ev) {
+    display_exposure_ev_ = exposure_ev;
+}
+
 void VkSceneRenderer::release_part(uint64_t part_hash) {
     if (poisoned()) return;
     const auto found = slot_of_.find(part_hash);
@@ -4447,6 +4470,10 @@ bool VkSceneRenderer::record_ray_traced_shadows(
             float max_reflection_roughness;
             float diffuse_multiplier;
             float reflection_multiplier;
+            float emission_multiplier;
+            float pad0;
+            float pad1;
+            float pad2;
         } gi{};
         gi.clip_to_world = pack_glsl_mat4(matrices.clip_to_world);
         gi.to_sun_intensity[0] = constants.to_sun_max_distance[0];
@@ -4467,6 +4494,7 @@ bool VkSceneRenderer::record_ray_traced_shadows(
             std::clamp(gi_settings_.max_reflection_roughness, 0.02f, 1.0f);
         gi.diffuse_multiplier = gi_settings_.diffuse_multiplier;
         gi.reflection_multiplier = gi_settings_.reflection_multiplier;
+        gi.emission_multiplier = lighting_.emission_multiplier;
         vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
                            VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(gi), &gi);
         const VkStridedDeviceAddressRegionKHR gi_raygen{
@@ -4642,12 +4670,12 @@ bool VkSceneRenderer::record_cull_and_render(
 
     bool ray_trace_ok = true;
     VkSceneLighting frame_lighting = lighting_;
-    frame_lighting.pad0 = gi_settings_.enabled &&
+    frame_lighting.diffuse_rt_multiplier = gi_settings_.enabled &&
                                   ray_tracing_settings_.enabled &&
                                   vulkan_->ray_tracing_available()
                               ? 1.0f
                               : 0.0f;
-    frame_lighting.pad1 =
+    frame_lighting.debug_view =
         ray_tracing_settings_.enabled && vulkan_->ray_tracing_available() &&
                 ray_tracing_settings_.debug_view
             ? 1.0f
