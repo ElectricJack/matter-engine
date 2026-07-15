@@ -30,6 +30,13 @@ enum class DlssMode : uint8_t { Native, Quality, Balanced, Performance };
 
 const char* dlss_mode_name(DlssMode mode) noexcept;
 
+struct VulkanLightingOverrides {
+    float sun_multiplier = 1.0f;
+    float sky_multiplier = 1.0f;
+    float emission_multiplier = 1.0f;
+    float exposure_ev = -2.0f;
+};
+
 struct RenderOptions {
     RenderPath   path     = RenderPath::GpuDriven;
     ResolverKind resolver = ResolverKind::SectorLod;
@@ -46,6 +53,7 @@ struct RenderOptions {
     DlssMode dlss_mode = DlssMode::Native;
     VulkanRayTracingSettings vulkan_ray_tracing{};
     VulkanGiSettings vulkan_gi{};
+    VulkanLightingOverrides vulkan_lighting{};
 };
 
 struct FrameStats {

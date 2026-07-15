@@ -24,6 +24,7 @@
 #include "render/vk_cuda_interop.h"
 #include "render/vk_device_internal.h"
 #include "render/vk_instance_cache.h"
+#include "render/vk_lighting_controls.h"
 #include "render/vk_pipeline.h"
 #include "render/vk_resources.h"
 #include "render/vk_scene_renderer.h"
@@ -32,6 +33,38 @@
 namespace {
 
 bool close4(matter::Float4 actual, matter::Float4 expected, float epsilon);
+
+static void test_vulkan_lighting_override_contract() {
+    matter::VulkanLightingOverrides defaults{};
+    CHECK(defaults.sun_multiplier == 1.0f, "sun override defaults to one");
+    CHECK(defaults.sky_multiplier == 1.0f, "sky override defaults to one");
+    CHECK(defaults.emission_multiplier == 1.0f,
+          "emission override defaults to one");
+    CHECK(defaults.exposure_ev == -2.0f, "display exposure defaults to -2 EV");
+
+    matter::VulkanLightingOverrides bad{};
+    bad.sun_multiplier = -4.0f;
+    bad.sky_multiplier = 9.0f;
+    bad.emission_multiplier = std::numeric_limits<float>::infinity();
+    bad.exposure_ev = std::numeric_limits<float>::quiet_NaN();
+    const auto clean = viewer::sanitize_vulkan_lighting_overrides(bad);
+    CHECK(clean.sun_multiplier == 0.0f, "sun override clamps low");
+    CHECK(clean.sky_multiplier == 4.0f, "sky override clamps high");
+    CHECK(clean.emission_multiplier == 1.0f,
+          "invalid emission override uses default");
+    CHECK(clean.exposure_ev == -2.0f, "invalid exposure uses default");
+    CHECK(std::fabs(viewer::vulkan_exposure_scale(-2.0f) - 0.25f) < 1e-6f,
+          "-2 EV maps to quarter exposure");
+
+    auto exposure_only = defaults;
+    exposure_only.exposure_ev = 1.0f;
+    CHECK(!viewer::vulkan_source_lighting_changed(defaults, exposure_only),
+          "exposure-only change preserves lighting history");
+    auto source_change = defaults;
+    source_change.emission_multiplier = 0.5f;
+    CHECK(viewer::vulkan_source_lighting_changed(defaults, source_change),
+          "emission change invalidates lighting history");
+}
 
 void run_vulkan_gi_math_tests() {
     CHECK(VULKAN_GI_REJECT_HIT_DISTANCE == (1u << 6),
@@ -4088,6 +4121,7 @@ void run_outlive_resources(std::unique_ptr<matter::VulkanDevice>& vulkan,
 }  // namespace
 
 int main() {
+    test_vulkan_lighting_override_contract();
     run_vulkan_gi_math_tests();
     run_raster_mesh_material_contract_tests();
     run_ray_tracing_capability_contract_tests();

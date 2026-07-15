@@ -154,6 +154,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/render/vulkan_only_compat.cpp \
               $(ME3_DIR)/src/render/frame_matrices.cpp $(ME3_DIR)/src/render/matrix_math.cpp \
               $(ME3_DIR)/src/render/vk_temporal.cpp $(ME3_DIR)/src/render/vk_gi_math.cpp \
+              $(ME3_DIR)/src/render/vk_lighting_controls.cpp \
               $(ME3_DIR)/src/provider/local_provider.cpp $(ME3_DIR)/src/provider/resolvers.cpp \
               $(ME3_DIR)/src/modifier_apply.cpp $(ME3_DIR)/src/retopo_blacklist.cpp \
               $(ME3_DIR)/src/async_bake.cpp \
@@ -450,6 +451,7 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_scene_renderer.h \
         $(ME3_DIR)/src/render/vk_instance_cache.h \
         $(ME3_DIR)/src/render/vk_instance_cache.cpp \
+        $(ME3_DIR)/src/render/vk_lighting_controls.h \
         $(ME3_DIR)/src/render/vk_cuda_interop.h \
         $(ME3_DIR)/src/render/vk_cuda_interop.cpp \
         $(ME3_DIR)/src/render/streamline_bridge.h \
@@ -462,6 +464,7 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/frame_matrices.cpp \
         $(ME3_DIR)/src/render/vk_temporal.cpp \
         $(ME3_DIR)/src/render/vk_gi_math.cpp \
+        $(ME3_DIR)/src/render/vk_lighting_controls.cpp \
         $(ME3_DIR)/src/render/matrix_math.cpp \
         $(VK_EMBEDDED_HEADER) $(CUDA_INTEROP_HEADER) $(GLFW_WIN_LIB)
 	@mkdir -p $(dir $@)
@@ -477,6 +480,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/frame_matrices.cpp \
 	    $(ME3_DIR)/src/render/vk_temporal.cpp \
 	    $(ME3_DIR)/src/render/vk_gi_math.cpp \
+	    $(ME3_DIR)/src/render/vk_lighting_controls.cpp \
 	    $(ME3_DIR)/src/render/matrix_math.cpp \
 	    $(GLFW_WIN_LIB) -o $@ \
 	    -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers \
