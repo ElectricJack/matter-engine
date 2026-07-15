@@ -38,6 +38,24 @@ typedef struct VulkanGiCounters {
     uint64_t any_hit_layers;
 } VulkanGiCounters;
 
+enum VulkanGiTemporalRejectionBits {
+    VULKAN_GI_REJECT_BOUNDS = 1u << 0,
+    VULKAN_GI_REJECT_DEPTH = 1u << 1,
+    VULKAN_GI_REJECT_NORMAL = 1u << 2,
+    VULKAN_GI_REJECT_MATERIAL = 1u << 3,
+    VULKAN_GI_REJECT_INSTANCE = 1u << 4,
+    VULKAN_GI_REJECT_RESET = 1u << 5,
+};
+
+typedef struct VulkanGiTemporalConstants {
+    uint32_t temporal_extent[2];
+    uint32_t gbuffer_extent[2];
+    uint32_t reset;
+    uint32_t attempt_token_lo;
+    uint32_t presented_attempt_token_lo;
+    uint32_t pad;
+} VulkanGiTemporalConstants;
+
 #ifdef __cplusplus
 typedef struct alignas(16) GpuRtPartRecord {
 #else
@@ -81,6 +99,8 @@ static_assert(std::is_standard_layout<GpuRtPartRecord>::value,
               "GpuRtPartRecord must remain a standard-layout GPU record");
 static_assert(sizeof(GpuRtPartRecord) == 32,
               "GpuRtPartRecord must remain exactly two vec4 records");
+static_assert(sizeof(VulkanGiTemporalConstants) == 32,
+              "GI temporal push constants must remain two uvec4 records");
 
 namespace matter {
 using VulkanGiSettings = ::VulkanGiSettings;

@@ -648,6 +648,12 @@ VkExtent2D VkSceneRenderer::dlss_internal_extent(
     return output_extent;
 }
 
+void VkSceneRenderer::set_dlss_mode(matter::DlssMode mode) {
+    if (selected_dlss_mode_ == mode) return;
+    selected_dlss_mode_ = mode;
+    gi_history_reset_pending_ = true;
+}
+
 bool VkSceneRenderer::consume_dlss_history_reset() {
     const bool pending = dlss_history_reset_pending_;
     dlss_history_reset_pending_ = false;
@@ -665,6 +671,21 @@ void VkSceneRenderer::destroy_pipeline() {
     rt_sbt_.reset();
     visibility_.reset();
     raw_diffuse_.reset();
+    for (auto& history : gi_history_) {
+        history.radiance.reset();
+        history.moments.reset();
+        history.history_length.reset();
+        history.depth.reset();
+        history.normal.reset();
+        history.identity.reset();
+        history.rejection.reset();
+    }
+    if (gi_temporal_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device, gi_temporal_pipeline_, nullptr);
+    if (gi_temporal_pipeline_layout_ != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device, gi_temporal_pipeline_layout_, nullptr);
+    if (gi_temporal_set_layout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(device, gi_temporal_set_layout_, nullptr);
     if (rt_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, rt_pipeline_, nullptr);
     if (rt_pipeline_layout_ != VK_NULL_HANDLE)
@@ -700,6 +721,9 @@ void VkSceneRenderer::destroy_pipeline() {
     composite_pipeline_layout_ = VK_NULL_HANDLE;
     composite_pipeline_ = VK_NULL_HANDLE;
     composite_sampler_ = VK_NULL_HANDLE;
+    gi_temporal_pipeline_ = VK_NULL_HANDLE;
+    gi_temporal_pipeline_layout_ = VK_NULL_HANDLE;
+    gi_temporal_set_layout_ = VK_NULL_HANDLE;
     rt_pipeline_ = VK_NULL_HANDLE;
     rt_pipeline_layout_ = VK_NULL_HANDLE;
     rt_descriptor_pool_ = VK_NULL_HANDLE;
@@ -789,9 +813,62 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     if (result != VK_SUCCESS)
         return fail_vk("vkCreateComputePipelines(cull)", result, error);
 
-    if (!create_raster_pipelines(error)) return false;
+    if (!create_raster_pipelines(error) || !create_gi_temporal_pipeline(error))
+        return false;
     return !vulkan_->ray_tracing_available() ||
            create_ray_tracing_pipeline(error);
+}
+
+bool VkSceneRenderer::create_gi_temporal_pipeline(std::string& error) {
+    const VkDevice device = vulkan_->device();
+    std::array<VkDescriptorSetLayoutBinding, 18> bindings{};
+    for (uint32_t binding = 0; binding <= 10; ++binding)
+        bindings[binding] = descriptor_binding(
+            binding, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            VK_SHADER_STAGE_COMPUTE_BIT);
+    for (uint32_t binding = 11; binding < bindings.size(); ++binding)
+        bindings[binding] = descriptor_binding(
+            binding, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+            VK_SHADER_STAGE_COMPUTE_BIT);
+    VkDescriptorSetLayoutCreateInfo set_create{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    set_create.bindingCount = static_cast<uint32_t>(bindings.size());
+    set_create.pBindings = bindings.data();
+    VkResult result = vkCreateDescriptorSetLayout(
+        device, &set_create, nullptr, &gi_temporal_set_layout_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateDescriptorSetLayout(GI temporal)", result,
+                       error);
+    VkPushConstantRange range{};
+    range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    range.size = sizeof(VulkanGiTemporalConstants);
+    VkPipelineLayoutCreateInfo layout_create{
+        VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    layout_create.setLayoutCount = 1;
+    layout_create.pSetLayouts = &gi_temporal_set_layout_;
+    layout_create.pushConstantRangeCount = 1;
+    layout_create.pPushConstantRanges = &range;
+    result = vkCreatePipelineLayout(device, &layout_create, nullptr,
+                                    &gi_temporal_pipeline_layout_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreatePipelineLayout(GI temporal)", result, error);
+    VkShaderModule shader = VK_NULL_HANDLE;
+    if (!create_shader_module(device, "gi_temporal.comp.spv", shader, error))
+        return false;
+    VkPipelineShaderStageCreateInfo stage{
+        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stage.module = shader;
+    stage.pName = "main";
+    VkComputePipelineCreateInfo create{
+        VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    create.stage = stage;
+    create.layout = gi_temporal_pipeline_layout_;
+    result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &create,
+                                      nullptr, &gi_temporal_pipeline_);
+    vkDestroyShaderModule(device, shader, nullptr);
+    return result == VK_SUCCESS ||
+           fail_vk("vkCreateComputePipelines(GI temporal)", result, error);
 }
 
 bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
@@ -1315,11 +1392,12 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 6},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-         frame_slot_count * 5}};
+         frame_slot_count * 16},
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 7}};
     VkDescriptorPoolCreateInfo pool{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool.maxSets = frame_slot_count * 3;
-    pool.poolSizeCount = 3;
+    pool.maxSets = frame_slot_count * 4;
+    pool.poolSizeCount = 4;
     pool.pPoolSizes = pool_sizes;
     VkDescriptorPool next_pool = VK_NULL_HANDLE;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
@@ -1334,11 +1412,12 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         return fail_vk("vkCreateDescriptorPool(cull)", result, error);
     std::vector<FrameResources> next_frames(frame_slot_count);
     std::vector<VkDescriptorSetLayout> layouts;
-    layouts.reserve(frame_slot_count * 3);
+    layouts.reserve(frame_slot_count * 4);
     for (size_t index = 0; index < frame_slot_count; ++index) {
         layouts.push_back(set_layouts_[0]);
         layouts.push_back(set_layouts_[1]);
         layouts.push_back(composite_set_layout_);
+        layouts.push_back(gi_temporal_set_layout_);
     }
     std::vector<VkDescriptorSet> sets(layouts.size());
     VkDescriptorSetAllocateInfo allocate{
@@ -1367,9 +1446,10 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     };
     for (size_t index = 0; index < frame_slot_count; ++index) {
         FrameResources& frame = next_frames[index];
-        frame.descriptor_sets[0] = sets[index * 3];
-        frame.descriptor_sets[1] = sets[index * 3 + 1];
-        frame.composite_descriptor_set = sets[index * 3 + 2];
+        frame.descriptor_sets[0] = sets[index * 4];
+        frame.descriptor_sets[1] = sets[index * 4 + 1];
+        frame.composite_descriptor_set = sets[index * 4 + 2];
+        frame.gi_temporal_descriptor_set = sets[index * 4 + 3];
         if (!ensure_candidate_buffer(frame.frame_constants,
                                      sizeof(FrameConstants),
                                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
@@ -1473,8 +1553,12 @@ void VkSceneRenderer::update_frame_descriptors(FrameResources& frame) {
 }
 
 void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
+    matter::VkImageResource* diffuse =
+        gi_settings_.enabled && gi_candidate_frame_serial_ != 0
+            ? &gi_history_[gi_composite_history_index_].radiance
+            : &raw_diffuse_;
     matter::VkImageResource* sampled[] = {&albedo_, &normal_, &orm_,
-                                          &visibility_, &raw_diffuse_};
+                                          &visibility_, diffuse};
     VkDescriptorImageInfo image_infos[5]{};
     VkWriteDescriptorSet writes[5]{};
     for (uint32_t i = 0; i < 5; ++i) {
@@ -2159,9 +2243,145 @@ VkDeviceAddress VkSceneRenderer::test_rt_scratch_address(
 }
 #endif
 
+bool VkSceneRenderer::record_gi_temporal(const matter::VulkanFrame& frame,
+                                         std::string& error) {
+    if (frame.frame_slot >= frames_.size() ||
+        gi_temporal_pipeline_ == VK_NULL_HANDLE)
+        return true;
+    const uint32_t previous_index = gi_presented_history_index_;
+    const uint32_t candidate_index = previous_index ^ 1u;
+    GiHistorySet& previous = gi_history_[previous_index];
+    GiHistorySet& candidate = gi_history_[candidate_index];
+    const auto sampled = [&](matter::VkImageResource& image) {
+        transition_for_use(frame.command_buffer, image,
+                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                           VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                           VK_IMAGE_ASPECT_COLOR_BIT);
+    };
+    const auto storage = [&](matter::VkImageResource& image) {
+        transition_for_use(frame.command_buffer, image, VK_IMAGE_LAYOUT_GENERAL,
+                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                           VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                           VK_IMAGE_ASPECT_COLOR_BIT);
+    };
+    transition_for_use(frame.command_buffer, raw_diffuse_,
+                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                       VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT);
+    sampled(previous.radiance);
+    sampled(previous.moments);
+    sampled(previous.history_length);
+    sampled(previous.depth);
+    sampled(previous.normal);
+    sampled(previous.identity);
+    storage(candidate.radiance);
+    storage(candidate.moments);
+    storage(candidate.history_length);
+    storage(candidate.depth);
+    storage(candidate.normal);
+    storage(candidate.identity);
+    storage(candidate.rejection);
+
+    VkDescriptorImageInfo infos[18]{};
+    const auto combined = [&](uint32_t binding,
+                              const matter::VkImageResource& image) {
+        infos[binding] = {composite_sampler_, image.view,
+                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    };
+    combined(0, raw_diffuse_);
+    combined(1, velocity_);
+    combined(2, depth_);
+    combined(3, normal_);
+    combined(4, material_instance_);
+    combined(5, previous.radiance);
+    combined(6, previous.moments);
+    combined(7, previous.history_length);
+    combined(8, previous.depth);
+    combined(9, previous.normal);
+    combined(10, previous.identity);
+    matter::VkImageResource* outputs[] = {
+        &candidate.radiance, &candidate.moments, &candidate.history_length,
+        &candidate.depth, &candidate.normal, &candidate.identity,
+        &candidate.rejection};
+    for (uint32_t binding = 11; binding < 18; ++binding)
+        infos[binding] = {VK_NULL_HANDLE, outputs[binding - 11]->view,
+                          VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet writes[18]{};
+    FrameResources& resources = frames_[frame.frame_slot];
+    for (uint32_t binding = 0; binding < 18; ++binding) {
+        writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[binding].dstSet = resources.gi_temporal_descriptor_set;
+        writes[binding].dstBinding = binding;
+        writes[binding].descriptorCount = 1;
+        writes[binding].descriptorType = binding <= 10
+                                             ? VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+                                             : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[binding].pImageInfo = &infos[binding];
+    }
+    vkUpdateDescriptorSets(vulkan_->device(), 18, writes, 0, nullptr);
+    VulkanGiTemporalConstants constants{};
+    constants.temporal_extent[0] = raw_diffuse_extent_.width;
+    constants.temporal_extent[1] = raw_diffuse_extent_.height;
+    constants.gbuffer_extent[0] = raster_extent_.width;
+    constants.gbuffer_extent[1] = raster_extent_.height;
+    constants.reset = temporal_frame_.reset || gi_history_reset_pending_ ||
+                      gi_presented_attempt_token_ == 0;
+    constants.attempt_token_lo =
+        static_cast<uint32_t>(temporal_frame_.attempt_token);
+    constants.presented_attempt_token_lo =
+        static_cast<uint32_t>(gi_presented_attempt_token_);
+    vkCmdBindPipeline(frame.command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                      gi_temporal_pipeline_);
+    vkCmdBindDescriptorSets(frame.command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            gi_temporal_pipeline_layout_, 0, 1,
+                            &resources.gi_temporal_descriptor_set, 0, nullptr);
+    vkCmdPushConstants(frame.command_buffer, gi_temporal_pipeline_layout_,
+                       VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(constants),
+                       &constants);
+    vkCmdDispatch(frame.command_buffer,
+                  (raw_diffuse_extent_.width + 7u) / 8u,
+                  (raw_diffuse_extent_.height + 7u) / 8u, 1);
+    matter::record_image_transition(
+        frame.command_buffer, candidate.radiance,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    gi_candidate_history_index_ = candidate_index;
+    gi_composite_history_index_ = candidate_index;
+    gi_candidate_frame_serial_ = frame.serial;
+    gi_candidate_attempt_token_ = temporal_frame_.attempt_token;
+    std::vector<std::shared_ptr<void>> retained{
+        raw_diffuse_.lifetime, velocity_.lifetime, depth_.lifetime,
+        normal_.lifetime, material_instance_.lifetime};
+    for (GiHistorySet* set : {&previous, &candidate}) {
+        retained.push_back(set->radiance.lifetime);
+        retained.push_back(set->moments.lifetime);
+        retained.push_back(set->history_length.lifetime);
+        retained.push_back(set->depth.lifetime);
+        retained.push_back(set->normal.lifetime);
+        retained.push_back(set->identity.lifetime);
+        retained.push_back(set->rejection.lifetime);
+    }
+    return vulkan_->retain_for_frame(frame, std::move(retained), error);
+}
+
 void VkSceneRenderer::finish_ray_tracing_frame(uint64_t frame_serial,
                                                bool succeeded) {
     if (frame_serial == 0) return;
+    if (gi_candidate_frame_serial_ == frame_serial) {
+        if (succeeded) {
+            gi_presented_history_index_ = gi_candidate_history_index_;
+            gi_presented_attempt_token_ = gi_candidate_attempt_token_;
+            gi_history_reset_pending_ = false;
+        }
+        gi_candidate_frame_serial_ = 0;
+        gi_candidate_attempt_token_ = 0;
+    }
     for (auto& part : parts_) {
         if (part.rt_blas_candidate_serial != frame_serial) continue;
         if (part.rt_blas_candidate) {
@@ -3328,6 +3548,7 @@ bool VkSceneRenderer::record_ray_traced_shadows(
                   raw_diffuse_extent_.width, raw_diffuse_extent_.height, 1);
         ++last_rt_trace_dispatches_;
     }
+    if (gi_settings_.enabled && !record_gi_temporal(frame, error)) return false;
     VkMemoryBarrier2 counters_to_host{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     counters_to_host.srcStageMask =
         VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
@@ -3351,9 +3572,9 @@ bool VkSceneRenderer::record_ray_traced_shadows(
     matter::record_image_transition(
         frame.command_buffer, raw_diffuse_,
         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        gi_settings_.enabled ? VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR
+        gi_settings_.enabled ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
                              : VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-        gi_settings_.enabled ? VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+        gi_settings_.enabled ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
                              : VK_ACCESS_2_TRANSFER_WRITE_BIT,
         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
@@ -3633,7 +3854,9 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
         material_instance_.image != VK_NULL_HANDLE &&
         hdr_.image != VK_NULL_HANDLE &&
         visibility_.image != VK_NULL_HANDLE &&
-        raw_diffuse_.image != VK_NULL_HANDLE) {
+        raw_diffuse_.image != VK_NULL_HANDLE &&
+        gi_history_[0].radiance.image != VK_NULL_HANDLE &&
+        gi_history_[1].radiance.image != VK_NULL_HANDLE) {
         return true;
     }
     matter::VkImageResource albedo;
@@ -3645,6 +3868,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     matter::VkImageResource hdr;
     matter::VkImageResource visibility;
     matter::VkImageResource raw_diffuse;
+    GiHistorySet history[2];
     const VkExtent3D extent{width, height, 1};
     const VkExtent3D raw_extent{raw_width, raw_height, 1};
     VkImageUsageFlags visibility_usage =
@@ -3709,6 +3933,26 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
             raw_diffuse, error)) {
         return false;
     }
+    const VkImageUsageFlags history_usage =
+        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    for (auto& set : history) {
+        const auto make = [&](VkFormat format,
+                              matter::VkImageResource& resource) {
+            return matter::create_image(
+                *vulkan_, VK_IMAGE_TYPE_2D, format, raw_extent, history_usage,
+                VK_IMAGE_ASPECT_COLOR_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, resource, error);
+        };
+        if (!make(VK_FORMAT_R16G16B16A16_SFLOAT, set.radiance) ||
+            !make(VK_FORMAT_R16G16_SFLOAT, set.moments) ||
+            !make(VK_FORMAT_R16_UINT, set.history_length) ||
+            !make(VK_FORMAT_R32_SFLOAT, set.depth) ||
+            !make(VK_FORMAT_R16G16B16A16_SFLOAT, set.normal) ||
+            !make(VK_FORMAT_R32G32_UINT, set.identity) ||
+            !make(VK_FORMAT_R32_UINT, set.rejection))
+            return false;
+    }
     albedo_ = std::move(albedo);
     normal_ = std::move(normal);
     orm_ = std::move(orm);
@@ -3718,6 +3962,15 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     hdr_ = std::move(hdr);
     visibility_ = std::move(visibility);
     raw_diffuse_ = std::move(raw_diffuse);
+    gi_history_[0] = std::move(history[0]);
+    gi_history_[1] = std::move(history[1]);
+    gi_presented_history_index_ = 0;
+    gi_candidate_history_index_ = 1;
+    gi_composite_history_index_ = 1;
+    gi_candidate_frame_serial_ = 0;
+    gi_candidate_attempt_token_ = 0;
+    gi_presented_attempt_token_ = 0;
+    gi_history_reset_pending_ = true;
     raw_diffuse_extent_ = {raw_width, raw_height};
     visibility_usage_ = visibility_usage;
     raster_extent_ = {width, height};

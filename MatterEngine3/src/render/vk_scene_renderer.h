@@ -235,7 +235,7 @@ public:
     bool update_instances(const std::vector<VkSceneInstance>& instances,
                           std::string& error);
     void set_temporal_frame(const TemporalFrame& frame) { temporal_frame_ = frame; }
-    void set_dlss_mode(matter::DlssMode mode) { selected_dlss_mode_ = mode; }
+    void set_dlss_mode(matter::DlssMode mode);
     VkExtent2D dlss_internal_extent(VkExtent2D output_extent) const;
     matter::DlssMode selected_dlss_mode() const { return selected_dlss_mode_; }
     matter::DlssMode active_dlss_mode() const;
@@ -371,6 +371,12 @@ public:
     VkFormat test_visibility_format() const { return visibility_.format; }
     VkFormat test_raw_diffuse_format() const { return raw_diffuse_.format; }
     VkExtent2D test_raw_diffuse_extent() const { return raw_diffuse_extent_; }
+    uint32_t test_gi_presented_history_index() const {
+        return gi_presented_history_index_;
+    }
+    uint32_t test_gi_candidate_history_index() const {
+        return gi_candidate_history_index_;
+    }
     uint32_t test_gi_samples_per_pixel() const {
         return gi_settings_.samples_per_pixel;
     }
@@ -521,6 +527,7 @@ private:
         VkExtent2D dlss_output_extent{};
         VkDescriptorSet descriptor_sets[2]{};
         VkDescriptorSet composite_descriptor_set = VK_NULL_HANDLE;
+        VkDescriptorSet gi_temporal_descriptor_set = VK_NULL_HANDLE;
         uint64_t static_generation = 0;
         uint64_t instance_generation = 0;
         uint64_t command_generation = 0;
@@ -533,9 +540,12 @@ private:
     bool create_pipeline(std::string& error);
     bool create_raster_pipelines(std::string& error);
     bool create_ray_tracing_pipeline(std::string& error);
+    bool create_gi_temporal_pipeline(std::string& error);
     bool ensure_raster_targets(uint32_t width, uint32_t height,
                                std::string& error);
     bool ensure_dlss_output(FrameResources& frame, VkExtent2D output_extent,
+                            std::string& error);
+    bool record_gi_temporal(const matter::VulkanFrame& frame,
                             std::string& error);
     bool ensure_vertex_buffer(VkDeviceSize required_size,
                               std::string& error, bool* replaced = nullptr);
@@ -586,6 +596,9 @@ private:
     VkPipelineLayout composite_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline composite_pipeline_ = VK_NULL_HANDLE;
     VkSampler composite_sampler_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout gi_temporal_set_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout gi_temporal_pipeline_layout_ = VK_NULL_HANDLE;
+    VkPipeline gi_temporal_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout rt_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout rt_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline rt_pipeline_ = VK_NULL_HANDLE;
@@ -610,6 +623,21 @@ private:
     matter::VkImageResource visibility_;
     matter::VkImageResource raw_diffuse_;
     VkExtent2D raw_diffuse_extent_{};
+    struct GiHistorySet {
+        matter::VkImageResource radiance;
+        matter::VkImageResource moments;
+        matter::VkImageResource history_length;
+        matter::VkImageResource depth;
+        matter::VkImageResource normal;
+        matter::VkImageResource identity;
+        matter::VkImageResource rejection;
+    } gi_history_[2];
+    uint32_t gi_presented_history_index_ = 0;
+    uint32_t gi_candidate_history_index_ = 1;
+    uint32_t gi_composite_history_index_ = 1;
+    uint64_t gi_candidate_frame_serial_ = 0;
+    uint64_t gi_candidate_attempt_token_ = 0;
+    uint64_t gi_presented_attempt_token_ = 0;
     VkImageUsageFlags visibility_usage_ = 0;
     matter::VkBufferResource rt_sbt_;
     VkDeviceAddress rt_sbt_address_ = 0;

@@ -45,6 +45,73 @@ struct TemporalFrame {
     std::uint64_t presented_frame_index = 0;
 };
 
+enum GiTemporalRejection : std::uint32_t {
+    kGiRejectBounds = 1u << 0,
+    kGiRejectDepth = 1u << 1,
+    kGiRejectNormal = 1u << 2,
+    kGiRejectMaterial = 1u << 3,
+    kGiRejectInstance = 1u << 4,
+    kGiRejectReset = 1u << 5,
+};
+
+struct GiPixelCoord {
+    int x = 0;
+    int y = 0;
+};
+
+struct GiTemporalSurface {
+    matter::Float3 radiance{};
+    float depth = 1.0f;
+    matter::Float3 normal{};
+    std::uint32_t material_index = UINT32_MAX;
+    std::uint32_t instance_token = UINT32_MAX;
+};
+
+struct GiTemporalResult {
+    matter::Float3 radiance{};
+    float first_moment = 0.0f;
+    float second_moment = 0.0f;
+    std::uint32_t history_length = 1;
+    std::uint32_t rejection_bits = kGiRejectReset;
+    GiPixelCoord previous_pixel{};
+};
+
+// CPU mirror of gi_temporal.comp's candidate/commit rules. Besides making the
+// shader contract deterministic in tests, this owns the presentation token
+// semantics used to select the renderer's ping-pong history set.
+class GiTemporalState {
+public:
+    GiTemporalResult accumulate(const GiTemporalSurface& current,
+                                matter::Float3 velocity_pixels,
+                                VkExtent2D extent, GiPixelCoord pixel,
+                                bool reset, std::uint64_t attempt_token);
+    bool commit_presented(std::uint64_t attempt_token);
+    bool discard_failed_attempt(std::uint64_t attempt_token);
+    void invalidate() noexcept;
+    std::uint32_t presented_index() const noexcept { return presented_index_; }
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    void seed_presented_for_test(VkExtent2D extent, GiPixelCoord pixel,
+                                 const GiTemporalSurface& surface,
+                                 std::uint32_t history_length);
+#endif
+
+private:
+    struct HistoryPixel {
+        GiTemporalSurface surface{};
+        GiTemporalResult result{};
+        GiPixelCoord pixel{};
+        bool valid = false;
+    };
+    HistoryPixel presented_{};
+    HistoryPixel candidate_{};
+    VkExtent2D presented_extent_{};
+    VkExtent2D candidate_extent_{};
+    std::uint64_t candidate_token_ = 0;
+    std::uint32_t presented_index_ = 0;
+    bool has_candidate_ = false;
+    bool force_reset_ = true;
+};
+
 class TemporalState {
 public:
     TemporalFrame begin(const FrameMatrices& current_unjittered,

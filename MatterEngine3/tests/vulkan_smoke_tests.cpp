@@ -791,6 +791,96 @@ void run_vulkan_temporal_tests() {
           "C++ FrameConstants matches final std140 uvec4 padding and size");
 }
 
+void run_vulkan_gi_temporal_sequence_tests() {
+    viewer::GiTemporalState history;
+    const viewer::GiTemporalSurface stable{
+        {1.0f, 0.25f, 0.125f}, 0.5f, {0.0f, 0.0f, 1.0f}, 7u, 41u};
+
+    auto present = [&](viewer::GiTemporalSurface surface,
+                       matter::Float3 velocity, bool reset,
+                       uint64_t attempt) {
+        const viewer::GiTemporalResult result = history.accumulate(
+            surface, velocity, {4, 4}, {2, 2}, reset, attempt);
+        CHECK(history.commit_presented(attempt),
+              "presented GI candidate commits its ping-pong history");
+        return result;
+    };
+
+    const auto first = present(stable, {}, true, 1);
+    const auto second = present(stable, {}, false, 2);
+    const auto third = present(stable, {}, false, 3);
+    CHECK(first.history_length == 1u && second.history_length == 2u &&
+              third.history_length == 3u && third.rejection_bits == 0u,
+          "static GI pixel reaches history length three");
+
+    history.seed_presented_for_test({4, 4}, {1, 2}, stable, 3u);
+    const auto translated = history.accumulate(
+        stable, {1.0f, 0.0f, 0.0f}, {4, 4}, {2, 2}, false, 4);
+    CHECK(translated.previous_pixel.x == 1 &&
+              translated.previous_pixel.y == 2 &&
+              translated.history_length == 4u,
+          "current-to-previous pixel velocity samples current minus velocity");
+    CHECK(history.commit_presented(4), "translated GI candidate commits");
+
+    const auto expect_rejection = [&](viewer::GiTemporalSurface changed,
+                                      uint32_t expected_bit,
+                                      uint64_t attempt,
+                                      const char* label) {
+        history.seed_presented_for_test({4, 4}, {2, 2}, stable, 3u);
+        const auto rejected = history.accumulate(
+            changed, {}, {4, 4}, {2, 2}, false, attempt);
+        CHECK(rejected.history_length == 1u &&
+                  rejected.rejection_bits == expected_bit,
+              label);
+        CHECK(history.commit_presented(attempt), label);
+    };
+    auto changed = stable;
+    changed.depth += 0.2f;
+    expect_rejection(changed, viewer::kGiRejectDepth, 5,
+                     "depth discontinuity has unique GI rejection bit");
+    changed = stable;
+    changed.normal = {1.0f, 0.0f, 0.0f};
+    expect_rejection(changed, viewer::kGiRejectNormal, 6,
+                     "normal discontinuity has unique GI rejection bit");
+    changed = stable;
+    changed.material_index++;
+    expect_rejection(changed, viewer::kGiRejectMaterial, 7,
+                     "material discontinuity has unique GI rejection bit");
+    changed = stable;
+    changed.instance_token++;
+    expect_rejection(changed, viewer::kGiRejectInstance, 8,
+                     "instance discontinuity has unique GI rejection bit");
+
+    history.seed_presented_for_test({4, 4}, {2, 2}, stable, 3u);
+    const auto failed = history.accumulate(stable, {}, {4, 4}, {2, 2}, false, 9);
+    CHECK(failed.history_length == 4u && history.discard_failed_attempt(9),
+          "failed GI attempt discards candidate history");
+    const auto retry = history.accumulate(stable, {}, {4, 4}, {2, 2}, false, 10);
+    CHECK(retry.history_length == 4u,
+          "failed presentation cannot become future GI history");
+    CHECK(history.commit_presented(10), "retried GI candidate commits");
+
+    const auto reset_once = [&](VkExtent2D extent, uint64_t first_attempt,
+                                const char* label) {
+        const auto reset = history.accumulate(
+            stable, {}, extent, {1, 1}, true, first_attempt);
+        CHECK(reset.history_length == 1u &&
+                  reset.rejection_bits == viewer::kGiRejectReset,
+              label);
+        CHECK(history.commit_presented(first_attempt), label);
+        const auto stable_again = history.accumulate(
+            stable, {}, extent, {1, 1}, false, first_attempt + 1);
+        CHECK(stable_again.history_length == 2u &&
+                  stable_again.rejection_bits == 0u,
+              "GI invalidation resets exactly one presented frame");
+        CHECK(history.commit_presented(first_attempt + 1), label);
+    };
+    reset_once({8, 8}, 11, "resize resets GI history once");
+    reset_once({8, 8}, 13, "camera cut resets GI history once");
+    reset_once({8, 8}, 15, "world reload resets GI history once");
+    reset_once({8, 8}, 17, "Native/DLSS mode change resets GI history once");
+}
+
 void run_vulkan_instance_cache_tests() {
     viewer::ResolvedInstance a{};
     a.part_hash = 11;
@@ -1822,6 +1912,9 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                           .min_acceleration_structure_scratch_offset_alignment ==
                   0,
               "AS scratch address obeys queried minimum alignment");
+        CHECK(renderer.test_gi_presented_history_index() == 0u &&
+                  renderer.test_gi_candidate_history_index() == 1u,
+              "GI temporal dispatch records into the non-presented ping-pong set");
         CHECK(renderer.test_last_rt_samples() == 4 &&
                   renderer.test_last_rt_debug_view(),
               "ray generation records sample and debug settings");
@@ -1853,6 +1946,8 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
             }
         }
         renderer.finish_ray_tracing_frame(frame.serial, false);
+        CHECK(renderer.test_gi_presented_history_index() == 0u,
+              "failed presentation does not publish candidate GI history");
         CHECK(!renderer.test_rt_blas_built(920) &&
                   renderer.test_rt_blas_candidate_serial(920) == 0,
               "failed frame rolls back candidate BLAS state");
@@ -1868,6 +1963,8 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
               error.empty() ? "retry rolled-back native RT frame"
                             : error.c_str());
         renderer.finish_ray_tracing_frame(frame.serial, true);
+        CHECK(renderer.test_gi_presented_history_index() == 1u,
+              "successful presentation publishes candidate GI history");
         viewer::VkRasterPixel retry_pixel{};
         CHECK(failed_receiver_seen &&
                   renderer.readback_raster_pixel(retry_x, retry_y, retry_pixel,
@@ -3392,6 +3489,7 @@ int main() {
     run_ray_tracing_capability_contract_tests();
     run_vulkan_instance_cache_tests();
     run_vulkan_temporal_tests();
+    run_vulkan_gi_temporal_sequence_tests();
     run_streamline_bridge_fallback_tests();
     run_dlss_bridge_contract_tests();
 #ifdef MATTER_VK_TEST_LAYER_PATH

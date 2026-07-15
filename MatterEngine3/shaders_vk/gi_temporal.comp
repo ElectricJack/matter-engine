@@ -1,0 +1,123 @@
+#version 460
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D rawSignal;
+layout(set = 0, binding = 1) uniform sampler2D velocityTex;
+layout(set = 0, binding = 2) uniform sampler2D depthTex;
+layout(set = 0, binding = 3) uniform sampler2D normalTex;
+layout(set = 0, binding = 4) uniform usampler2D identityTex;
+layout(set = 0, binding = 5) uniform sampler2D previousRadiance;
+layout(set = 0, binding = 6) uniform sampler2D previousMoments;
+layout(set = 0, binding = 7) uniform usampler2D previousHistory;
+layout(set = 0, binding = 8) uniform sampler2D previousDepth;
+layout(set = 0, binding = 9) uniform sampler2D previousNormal;
+layout(set = 0, binding = 10) uniform usampler2D previousIdentity;
+layout(rgba16f, set = 0, binding = 11) uniform writeonly image2D outRadiance;
+layout(rg16f, set = 0, binding = 12) uniform writeonly image2D outMoments;
+layout(r16ui, set = 0, binding = 13) uniform writeonly uimage2D outHistory;
+layout(r32f, set = 0, binding = 14) uniform writeonly image2D outDepth;
+layout(rgba16f, set = 0, binding = 15) uniform writeonly image2D outNormal;
+layout(rg32ui, set = 0, binding = 16) uniform writeonly uimage2D outIdentity;
+layout(r32ui, set = 0, binding = 17) uniform writeonly uimage2D outRejection;
+
+layout(push_constant) uniform TemporalConstants {
+    uvec2 temporalExtent;
+    uvec2 gbufferExtent;
+    uint reset;
+    uint attemptTokenLo;
+    uint presentedAttemptTokenLo;
+    uint pad;
+} pc;
+
+const uint REJECT_BOUNDS = 1u;
+const uint REJECT_DEPTH = 2u;
+const uint REJECT_NORMAL = 4u;
+const uint REJECT_MATERIAL = 8u;
+const uint REJECT_INSTANCE = 16u;
+const uint REJECT_RESET = 32u;
+
+float luminance(vec3 value) {
+    return dot(value, vec3(0.2126, 0.7152, 0.0722));
+}
+
+vec3 rgbToYCoCg(vec3 value) {
+    return vec3(0.25 * value.r + 0.5 * value.g + 0.25 * value.b,
+                0.5 * value.r - 0.5 * value.b,
+                -0.25 * value.r + 0.5 * value.g - 0.25 * value.b);
+}
+
+vec3 yCoCgToRgb(vec3 value) {
+    return vec3(value.x + value.y - value.z,
+                value.x + value.z,
+                value.x - value.y - value.z);
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, ivec2(pc.temporalExtent)))) return;
+    vec2 uv = (vec2(pixel) + 0.5) / vec2(pc.temporalExtent);
+    ivec2 sourcePixel = clamp(ivec2(uv * vec2(pc.gbufferExtent)), ivec2(0),
+                              ivec2(pc.gbufferExtent) - 1);
+    vec3 raw = texelFetch(rawSignal, pixel, 0).rgb;
+    float depth = texelFetch(depthTex, sourcePixel, 0).r;
+    vec3 normal = normalize(texelFetch(normalTex, sourcePixel, 0).xyz);
+    uvec2 identity = texelFetch(identityTex, sourcePixel, 0).rg;
+    vec2 velocity = texelFetch(velocityTex, sourcePixel, 0).xy *
+                    vec2(pc.temporalExtent) / vec2(pc.gbufferExtent);
+    ivec2 previousPixel = ivec2(round(vec2(pixel) - velocity));
+
+    uint rejection = 0u;
+    if (pc.reset != 0u || pc.presentedAttemptTokenLo == 0u)
+        rejection = REJECT_RESET;
+    else if (any(lessThan(previousPixel, ivec2(0))) ||
+             any(greaterThanEqual(previousPixel, ivec2(pc.temporalExtent))))
+        rejection = REJECT_BOUNDS;
+
+    vec3 accumulated = raw;
+    float firstMoment = luminance(raw);
+    float secondMoment = firstMoment * firstMoment;
+    uint historyLength = 1u;
+    if (rejection == 0u) {
+        float oldDepth = texelFetch(previousDepth, previousPixel, 0).r;
+        vec3 oldNormal = normalize(texelFetch(previousNormal, previousPixel, 0).xyz);
+        uvec2 oldIdentity = texelFetch(previousIdentity, previousPixel, 0).rg;
+        float depthThreshold = max(0.01, 0.02 * max(abs(depth), abs(oldDepth)));
+        if (abs(depth - oldDepth) > depthThreshold)
+            rejection = REJECT_DEPTH;
+        else if (dot(normal, oldNormal) < 0.85)
+            rejection = REJECT_NORMAL;
+        else if (identity.x != oldIdentity.x)
+            rejection = REJECT_MATERIAL;
+        else if (identity.y != oldIdentity.y)
+            rejection = REJECT_INSTANCE;
+    }
+    if (rejection == 0u) {
+        vec3 neighborhoodMin = vec3(1e30);
+        vec3 neighborhoodMax = vec3(-1e30);
+        for (int y = -1; y <= 1; ++y)
+            for (int x = -1; x <= 1; ++x) {
+                ivec2 q = clamp(pixel + ivec2(x, y), ivec2(0),
+                                ivec2(pc.temporalExtent) - 1);
+                vec3 value = rgbToYCoCg(texelFetch(rawSignal, q, 0).rgb);
+                neighborhoodMin = min(neighborhoodMin, value);
+                neighborhoodMax = max(neighborhoodMax, value);
+            }
+        vec3 oldRadiance = yCoCgToRgb(clamp(
+            rgbToYCoCg(texelFetch(previousRadiance, previousPixel, 0).rgb),
+            neighborhoodMin, neighborhoodMax));
+        vec2 oldMoments = texelFetch(previousMoments, previousPixel, 0).rg;
+        historyLength = min(32u, texelFetch(previousHistory, previousPixel, 0).r + 1u);
+        float alpha = max(1.0 / float(historyLength), 0.05);
+        accumulated = mix(oldRadiance, raw, alpha);
+        firstMoment = mix(oldMoments.x, firstMoment, alpha);
+        secondMoment = mix(oldMoments.y, secondMoment, alpha);
+    }
+    imageStore(outRadiance, pixel, vec4(accumulated, 1.0));
+    imageStore(outMoments, pixel, vec4(firstMoment, secondMoment, 0.0, 0.0));
+    imageStore(outHistory, pixel, uvec4(historyLength));
+    imageStore(outDepth, pixel, vec4(depth));
+    imageStore(outNormal, pixel, vec4(normal, 0.0));
+    imageStore(outIdentity, pixel, uvec4(identity, 0u, 0u));
+    imageStore(outRejection, pixel, uvec4(rejection));
+}

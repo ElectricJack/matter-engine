@@ -47,6 +47,129 @@ FrameMatrices jitter_frame(const FrameMatrices& source, float x_pixels,
 
 }  // namespace
 
+GiTemporalResult GiTemporalState::accumulate(
+    const GiTemporalSurface& current, matter::Float3 velocity_pixels,
+    VkExtent2D extent, GiPixelCoord pixel, bool reset,
+    std::uint64_t attempt_token) {
+    if (has_candidate_) force_reset_ = true;
+    has_candidate_ = true;
+    candidate_token_ = attempt_token;
+    candidate_extent_ = extent;
+    candidate_ = {};
+    candidate_.valid = true;
+    candidate_.pixel = pixel;
+    candidate_.surface = current;
+
+    GiTemporalResult& result = candidate_.result;
+    result.radiance = current.radiance;
+    result.previous_pixel = {
+        static_cast<int>(std::floor(static_cast<float>(pixel.x) -
+                                    velocity_pixels.x + 0.5f)),
+        static_cast<int>(std::floor(static_cast<float>(pixel.y) -
+                                    velocity_pixels.y + 0.5f))};
+    const float luminance = 0.2126f * current.radiance.x +
+                            0.7152f * current.radiance.y +
+                            0.0722f * current.radiance.z;
+    result.first_moment = luminance;
+    result.second_moment = luminance * luminance;
+    result.history_length = 1;
+
+    const bool extent_changed = extent.width != presented_extent_.width ||
+                                extent.height != presented_extent_.height;
+    if (reset || force_reset_ || extent_changed || !presented_.valid) {
+        result.rejection_bits = kGiRejectReset;
+        return result;
+    }
+    if (result.previous_pixel.x < 0 || result.previous_pixel.y < 0 ||
+        result.previous_pixel.x >= static_cast<int>(extent.width) ||
+        result.previous_pixel.y >= static_cast<int>(extent.height) ||
+        result.previous_pixel.x != presented_.pixel.x ||
+        result.previous_pixel.y != presented_.pixel.y) {
+        result.rejection_bits = kGiRejectBounds;
+        return result;
+    }
+    const float depth_threshold =
+        std::max(0.01f, 0.02f * std::max(std::fabs(current.depth),
+                                        std::fabs(presented_.surface.depth)));
+    if (std::fabs(current.depth - presented_.surface.depth) > depth_threshold) {
+        result.rejection_bits = kGiRejectDepth;
+        return result;
+    }
+    const float normal_dot = current.normal.x * presented_.surface.normal.x +
+                             current.normal.y * presented_.surface.normal.y +
+                             current.normal.z * presented_.surface.normal.z;
+    if (normal_dot < 0.85f) {
+        result.rejection_bits = kGiRejectNormal;
+        return result;
+    }
+    if (current.material_index != presented_.surface.material_index) {
+        result.rejection_bits = kGiRejectMaterial;
+        return result;
+    }
+    if (current.instance_token != presented_.surface.instance_token) {
+        result.rejection_bits = kGiRejectInstance;
+        return result;
+    }
+
+    result.rejection_bits = 0;
+    result.history_length = std::min(32u, presented_.result.history_length + 1u);
+    const float alpha = std::max(1.0f / static_cast<float>(result.history_length),
+                                 0.05f);
+    const auto blend = [alpha](float previous, float value) {
+        return previous + alpha * (value - previous);
+    };
+    result.radiance = {blend(presented_.result.radiance.x, current.radiance.x),
+                       blend(presented_.result.radiance.y, current.radiance.y),
+                       blend(presented_.result.radiance.z, current.radiance.z)};
+    result.first_moment = blend(presented_.result.first_moment, luminance);
+    result.second_moment =
+        blend(presented_.result.second_moment, luminance * luminance);
+    return result;
+}
+
+bool GiTemporalState::commit_presented(std::uint64_t attempt_token) {
+    if (!has_candidate_ || candidate_token_ != attempt_token) return false;
+    presented_ = candidate_;
+    presented_extent_ = candidate_extent_;
+    has_candidate_ = false;
+    force_reset_ = false;
+    presented_index_ ^= 1u;
+    return true;
+}
+
+bool GiTemporalState::discard_failed_attempt(std::uint64_t attempt_token) {
+    if (!has_candidate_ || candidate_token_ != attempt_token) return false;
+    has_candidate_ = false;
+    return true;
+}
+
+void GiTemporalState::invalidate() noexcept {
+    has_candidate_ = false;
+    force_reset_ = true;
+}
+
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+void GiTemporalState::seed_presented_for_test(
+    VkExtent2D extent, GiPixelCoord pixel, const GiTemporalSurface& surface,
+    std::uint32_t history_length) {
+    presented_ = {};
+    presented_.valid = true;
+    presented_.pixel = pixel;
+    presented_.surface = surface;
+    presented_.result.radiance = surface.radiance;
+    const float luminance = 0.2126f * surface.radiance.x +
+                            0.7152f * surface.radiance.y +
+                            0.0722f * surface.radiance.z;
+    presented_.result.first_moment = luminance;
+    presented_.result.second_moment = luminance * luminance;
+    presented_.result.history_length = std::min(32u, history_length);
+    presented_.result.rejection_bits = 0;
+    presented_extent_ = extent;
+    has_candidate_ = false;
+    force_reset_ = false;
+}
+#endif
+
 TemporalFrame TemporalState::begin(
     const FrameMatrices& current_unjittered, VkExtent2D internal_extent,
     VkExtent2D output_extent, const std::vector<TemporalInstance>& instances,
