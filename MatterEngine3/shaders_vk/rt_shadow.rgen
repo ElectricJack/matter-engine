@@ -3,7 +3,7 @@
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
 layout(set = 0, binding = 1) uniform sampler2D depth_texture;
-layout(set = 0, binding = 2, r8) uniform image2D visibility_image;
+layout(set = 0, binding = 2, rgba16f) uniform image2D visibility_image;
 
 layout(push_constant) uniform ShadowConstants {
     mat4 clip_to_world;
@@ -39,7 +39,7 @@ void main() {
                                  : cross(sun, vec3(1.0, 0.0, 0.0)));
     vec3 bitangent = cross(sun, tangent);
     uint sample_count = clamp(constants.samples, 1u, 16u);
-    float sum = 0.0;
+    vec3 sum = vec3(0.0);
     for (uint sample_index = 0; sample_index < sample_count; ++sample_index) {
         uint seed = uint(pixel.x) * 1973u + uint(pixel.y) * 9277u +
                     sample_index * 26699u + 911u;
@@ -61,8 +61,8 @@ void main() {
                         world + sun * constants.bias, constants.bias,
                         direction, constants.max_distance, 0);
         }
-        sum += dot(payload.visibility, vec3(1.0 / 3.0));
+        sum += payload.visibility;
     }
     imageStore(visibility_image, pixel,
-               vec4(sum / float(sample_count)));
+               vec4(sum / float(sample_count), 1.0));
 }

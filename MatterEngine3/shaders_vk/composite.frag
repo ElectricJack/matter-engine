@@ -33,9 +33,9 @@ void main() {
     float ao = orm.z;
     vec3 diffuse = albedo.rgb * (1.0 - metallic);
     vec3 ambient = diffuse * lighting.sky_color * ao;
-    float visibility = texture(visibility_texture, in_uv).r;
+    vec3 visibility = texture(visibility_texture, in_uv).rgb;
     if (lighting.debug_view > 0.5) {
-        out_hdr = vec4(vec3(visibility), 1.0);
+        out_hdr = vec4(visibility, 1.0);
         return;
     }
     vec3 sun = diffuse * lighting.sun_color * direct * lighting.sun_intensity *

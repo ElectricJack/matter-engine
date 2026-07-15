@@ -802,6 +802,12 @@ bool close4(matter::Float4 actual, matter::Float4 expected, float epsilon) {
            std::fabs(actual.w - expected.w) <= epsilon;
 }
 
+bool close3(matter::Float3 actual, matter::Float3 expected, float epsilon) {
+    return std::fabs(actual.x - expected.x) <= epsilon &&
+           std::fabs(actual.y - expected.y) <= epsilon &&
+           std::fabs(actual.z - expected.z) <= epsilon;
+}
+
 viewer::VkScenePart fixed_part(uint64_t hash, matter::Float3 minimum,
                                matter::Float3 maximum,
                                uint32_t first_vertex);
@@ -989,7 +995,8 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
           "cleared background produces finite HDR");
     CHECK(close4(background.hdr, {0.0f, 0.0f, 0.0f, 1.0f}, 2e-3f),
           "cleared background produces deterministic black HDR");
-    CHECK(center.visibility == 1.0f && background.visibility == 1.0f,
+    CHECK(close3(center.visibility, {1.0f, 1.0f, 1.0f}, 1e-6f) &&
+              close3(background.visibility, {1.0f, 1.0f, 1.0f}, 1e-6f),
           "disabled RT GPU clear writes full visibility");
     CHECK(center.hdr.x > background.hdr.x &&
               center.hdr.y > background.hdr.y &&
@@ -1422,9 +1429,17 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
             for (auto& vertex : part.vertices) vertex.position.z = z;
             return part;
         };
+        struct VisibilityResult {
+            matter::Float3 visibility{-1.0f, -1.0f, -1.0f};
+            matter::Float3 composite{-1.0f, -1.0f, -1.0f};
+            viewer::RtTraceCounters counters{};
+            VkFormat format = VK_FORMAT_UNDEFINED;
+        };
         const auto trace_visibility = [&](uint64_t hash_base,
                                           MaterialGpuRecord blocker,
-                                          uint32_t layer_count) {
+                                          uint32_t layer_count,
+                                          bool test_reclassification) {
+            VisibilityResult result{};
             viewer::VkSceneRenderer visibility(vulkan);
             std::vector<MaterialGpuRecord> materials(2);
             materials[0].metal_opacity_spec_coat[1] = 1.0f;
@@ -1433,7 +1448,7 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
             if (!visibility.update_materials(materials, 1, 1, error) ||
                 visibility.ensure_part(
                     aligned_triangle(hash_base, -2.0f, 0), error) < 0)
-                return -1.0f;
+                return result;
             std::vector<viewer::VkSceneInstance> instances{
                 {hash_base, identity_matrix()}};
             for (uint32_t layer = 0; layer < layer_count; ++layer) {
@@ -1441,15 +1456,16 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                 if (visibility.ensure_part(aligned_triangle(
                         hash, -3.0f - static_cast<float>(layer), 1),
                         error) < 0)
-                    return -1.0f;
+                    return result;
                 instances.push_back({hash, identity_matrix()});
             }
-            if (!visibility.update_instances(instances, error)) return -1.0f;
+            if (!visibility.update_instances(instances, error)) return result;
 
             matter::VulkanRayTracingSettings settings{};
             settings.enabled = true;
             settings.max_distance = 100.0f;
             settings.bias = 0.001f;
+            settings.debug_view = true;
             visibility.set_ray_tracing_settings(settings);
             viewer::VkSceneLighting lighting{};
             lighting.sun_direction = {0.0f, 0.0f, 1.0f};
@@ -1464,7 +1480,7 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
             viewer::FrameMatrices matrices{};
             if (!viewer::build_frame_matrices(camera, 320, 200, matrices,
                                                error))
-                return -1.0f;
+                return result;
             matter::VulkanFrame frame{};
             const bool began = vulkan.begin_frame(frame, error);
             const bool recorded =
@@ -1476,22 +1492,33 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                 visibility.record_composite_to_swapchain(frame, error);
             const bool submitted = recorded && vulkan.end_frame(frame, error);
             visibility.finish_ray_tracing_frame(frame.serial, submitted);
-            if (!submitted) return -1.0f;
-            vulkan.wait_idle();
+            if (!submitted) return result;
             viewer::VkRasterPixel center{};
             if (!visibility.readback_raster_pixel(160, 100, center, error))
-                return -1.0f;
-            if (hash_base == 940) {
+                return result;
+            result.visibility = center.visibility;
+            result.composite = {center.hdr.x, center.hdr.y, center.hdr.z};
+            result.format = visibility.test_visibility_format();
+            if (!visibility.readback_rt_trace_counters(
+                    frame.frame_slot, result.counters, error))
+                return VisibilityResult{};
+            if (test_reclassification) {
+                const uint32_t original_slot = frame.frame_slot;
+                const std::weak_ptr<void> old_blas =
+                    visibility.test_rt_blas_lifetime(hash_base + 1);
                 materials[1].metal_opacity_spec_coat[1] = 0.25f;
                 materials[1].scattering_shape[2] = 0.5f;
                 materials[1].flags_misc[0] = MATERIAL_ALPHA_TESTED;
                 if (!visibility.update_materials(materials, 1, 2, error))
-                    return -1.0f;
+                    return VisibilityResult{};
                 CHECK(visibility.rt_geometry_classification_dirty(
                           hash_base + 1) &&
                           !visibility.rt_geometry_classification_dirty(
                               hash_base),
                       "geometry revision dirties only the reclassified BLAS");
+                vulkan.test_clear_presentation_events();
+                const uint64_t immediate_before =
+                    matter::immediate_submit_count();
                 matter::VulkanFrame rebuild_frame{};
                 const bool rebuild_began =
                     vulkan.begin_frame(rebuild_frame, error);
@@ -1508,17 +1535,50 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                     rebuild_recorded && vulkan.end_frame(rebuild_frame, error);
                 visibility.finish_ray_tracing_frame(rebuild_frame.serial,
                                                     rebuild_submitted);
-                if (!rebuild_submitted) return -1.0f;
-                vulkan.wait_idle();
+                if (!rebuild_submitted) return VisibilityResult{};
+                const auto& replacement_events =
+                    vulkan.test_presentation_events();
+                CHECK(std::find(replacement_events.begin(),
+                                replacement_events.end(),
+                                "device_wait_idle") ==
+                          replacement_events.end() &&
+                          matter::immediate_submit_count() == immediate_before,
+                      "BLAS replacement records without global wait or immediate submit");
+                CHECK(!old_blas.expired(),
+                      "published replacement retains old BLAS until its frame slot completes");
                 viewer::VkRasterPixel rebuilt_center{};
                 CHECK(visibility.readback_raster_pixel(
                           160, 100, rebuilt_center, error) &&
-                          rebuilt_center.visibility == 1.0f &&
+                          close3(rebuilt_center.visibility,
+                                 {1.0f, 1.0f, 1.0f}, 1e-6f) &&
                           !visibility.rt_geometry_classification_dirty(
                               hash_base + 1),
                       "classification rebuild routes the affected BLAS through any-hit");
+                matter::VulkanFrame recycle{};
+                do {
+                    CHECK(vulkan.begin_frame(recycle, error),
+                          error.empty() ? "begin BLAS lifetime recycle frame"
+                                        : error.c_str());
+                    if (recycle.command_buffer == VK_NULL_HANDLE)
+                        return VisibilityResult{};
+                    if (recycle.frame_slot == original_slot)
+                        CHECK(old_blas.expired(),
+                              "completed frame slot releases replaced BLAS lifetime");
+                    CHECK(visibility.prepare_frame(
+                              recycle, matrices, camera.position, 1.0f,
+                              error) &&
+                              visibility.record_cull_and_render(
+                                  recycle, matrices, camera.position, 1.0f,
+                                  error) &&
+                              visibility.record_composite_to_swapchain(recycle,
+                                                                     error) &&
+                              vulkan.end_frame(recycle, error),
+                          error.empty() ? "submit BLAS lifetime recycle frame"
+                                        : error.c_str());
+                    visibility.finish_ray_tracing_frame(recycle.serial, true);
+                } while (recycle.frame_slot != original_slot);
             }
-            return center.visibility;
+            return result;
         };
 
         MaterialGpuRecord opaque{};
@@ -1533,18 +1593,57 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
         glass.base_roughness[1] = 1.0f;
         glass.base_roughness[2] = 1.0f;
         glass.transmission[0] = 0.5f;
-        const float opaque_visibility = trace_visibility(940, opaque, 1);
-        const float cutout_visibility = trace_visibility(950, cutout, 1);
-        const float glass_visibility = trace_visibility(960, glass, 2);
+        MaterialGpuRecord colored_glass = opaque;
+        colored_glass.base_roughness[0] = 0.8f;
+        colored_glass.base_roughness[1] = 0.4f;
+        colored_glass.base_roughness[2] = 0.2f;
+        colored_glass.transmission[0] = 1.0f;
+        MaterialGpuRecord cap_glass = opaque;
+        cap_glass.base_roughness[0] = 1.0f;
+        cap_glass.base_roughness[1] = 1.0f;
+        cap_glass.base_roughness[2] = 1.0f;
+        cap_glass.transmission[0] = 1.0f;
+        const VisibilityResult opaque_visibility =
+            trace_visibility(940, opaque, 1, true);
+        const VisibilityResult cutout_visibility =
+            trace_visibility(950, cutout, 1, false);
+        const VisibilityResult glass_visibility =
+            trace_visibility(960, glass, 2, false);
+        const VisibilityResult colored_visibility =
+            trace_visibility(970, colored_glass, 1, false);
+        const VisibilityResult capped_visibility =
+            trace_visibility(980, cap_glass, 32, false);
         std::printf("aligned visibility: opaque=%.5f cutout=%.5f "
-                    "glass=%.5f\n",
-                    opaque_visibility, cutout_visibility, glass_visibility);
-        CHECK(opaque_visibility == 0.0f,
+                    "glass=%.5f colored=%.5f/%.5f/%.5f\n",
+                    opaque_visibility.visibility.x,
+                    cutout_visibility.visibility.x,
+                    glass_visibility.visibility.x,
+                    colored_visibility.visibility.x,
+                    colored_visibility.visibility.y,
+                    colored_visibility.visibility.z);
+        CHECK(close3(opaque_visibility.visibility, {0.0f, 0.0f, 0.0f},
+                     1e-6f) &&
+                  opaque_visibility.counters.any_hit_invocations == 0,
               "opaque aligned layer terminates visibility");
-        CHECK(cutout_visibility == 1.0f,
+        CHECK(close3(cutout_visibility.visibility, {1.0f, 1.0f, 1.0f},
+                     1e-6f) &&
+                  cutout_visibility.counters.any_hit_invocations > 0,
               "alpha-cutout layer below cutoff preserves visibility");
-        CHECK(std::fabs(glass_visibility - 0.25f) < 0.02f,
+        CHECK(close3(glass_visibility.visibility, {0.25f, 0.25f, 0.25f},
+                     0.02f) &&
+                  glass_visibility.counters.any_hit_layers > 0,
               "two half-shadow glass layers retain quarter visibility");
+        CHECK(close3(colored_visibility.visibility, {0.8f, 0.4f, 0.2f},
+                     0.01f) &&
+                  close3(colored_visibility.composite,
+                         {0.8f, 0.4f, 0.2f}, 0.01f),
+              "colored transmission preserves unequal RGB visibility");
+        CHECK(capped_visibility.counters.capped_rays > 0 &&
+                  capped_visibility.counters.any_hit_layers >= 32,
+              "pathological transparent stack terminates at 32 layers");
+        CHECK(opaque_visibility.format ==
+                  VK_FORMAT_R16G16B16A16_SFLOAT,
+              "visibility target preserves RGB in a float format");
     }
 
     viewer::VkSceneRenderer renderer(vulkan);
@@ -1665,14 +1764,14 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                     break;
                 }
                 minimum_visibility =
-                    std::min(minimum_visibility, pixel.visibility);
+                    std::min(minimum_visibility, pixel.visibility.x);
                 maximum_visibility =
-                    std::max(maximum_visibility, pixel.visibility);
+                    std::max(maximum_visibility, pixel.visibility.x);
                 debug_output_matches =
                     debug_output_matches &&
-                    std::fabs(pixel.hdr.x - pixel.visibility) < 0.01f &&
-                    std::fabs(pixel.hdr.y - pixel.visibility) < 0.01f &&
-                    std::fabs(pixel.hdr.z - pixel.visibility) < 0.01f;
+                    std::fabs(pixel.hdr.x - pixel.visibility.x) < 0.01f &&
+                    std::fabs(pixel.hdr.y - pixel.visibility.y) < 0.01f &&
+                    std::fabs(pixel.hdr.z - pixel.visibility.z) < 0.01f;
             }
             if (!visibility_reads_ok) break;
         }
@@ -1784,7 +1883,7 @@ void run_forced_ray_tracing_unavailable_path(matter::VulkanDevice& vulkan) {
 
     viewer::VkRasterPixel center{};
     CHECK(renderer.readback_raster_pixel(48, 32, center, error) &&
-              center.visibility == 1.0f,
+              close3(center.visibility, {1.0f, 1.0f, 1.0f}, 1e-6f),
           error.empty() ? "fallback resize preserves raster visibility"
                         : error.c_str());
 }

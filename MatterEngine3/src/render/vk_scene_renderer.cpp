@@ -36,6 +36,14 @@ static_assert(sizeof(VkCullStats) == 16,
 static_assert(sizeof(VkRasterVertex) == 72,
               "VkRasterVertex must match raster vertex bindings");
 
+struct GpuRtCounters {
+    uint32_t invalid_part_records;
+    uint32_t any_hit_invocations;
+    uint32_t any_hit_layers;
+    uint32_t capped_rays;
+};
+static_assert(sizeof(GpuRtCounters) == 16);
+
 bool rt_material_is_opaque(const MaterialGpuRecord& material) {
     return material.metal_opacity_spec_coat[1] >= 1.0f &&
            material.scattering_shape[3] >= 1.0f &&
@@ -1351,7 +1359,8 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
                 error) ||
             !ensure_candidate_buffer(frame.rt_parts, sizeof(GpuRtPartRecord),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
-            !ensure_candidate_buffer(frame.rt_error_counter, sizeof(uint32_t),
+            !ensure_candidate_buffer(frame.rt_error_counter,
+                                     sizeof(GpuRtCounters),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
             !ensure_candidate_buffer(frame.rt_test_output, 18 * sizeof(uint32_t),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
@@ -2003,7 +2012,7 @@ bool VkSceneRenderer::readback_test_surface_hit(
         !matter::invalidate_buffer(selected.rt_test_output, 0,
                                    18 * sizeof(uint32_t), error) ||
         !matter::invalidate_buffer(selected.rt_error_counter, 0,
-                                   sizeof(uint32_t), error)) return false;
+                                   sizeof(GpuRtCounters), error)) return false;
     const auto* words =
         static_cast<const uint32_t*>(selected.rt_test_output.mapped);
     const auto as_float = [](uint32_t bits) {
@@ -2037,6 +2046,36 @@ bool VkSceneRenderer::test_rt_blas_built(uint64_t part_hash) const {
            parts_[static_cast<size_t>(found->second)].rt_blas_built;
 }
 
+std::weak_ptr<void> VkSceneRenderer::test_rt_blas_lifetime(
+    uint64_t part_hash) const {
+    const auto found = slot_of_.find(part_hash);
+    if (found == slot_of_.end()) return {};
+    const PartRecord& part = parts_[static_cast<size_t>(found->second)];
+    return part.rt_blas
+               ? std::weak_ptr<void>(part.rt_blas->lifetime)
+               : std::weak_ptr<void>{};
+}
+
+bool VkSceneRenderer::readback_rt_trace_counters(
+    uint32_t frame_slot, RtTraceCounters& counters, std::string& error) {
+    error.clear();
+    counters = {};
+    if (frame_slot >= frames_.size()) {
+        error = "RT counter readback frame slot is out of range";
+        return false;
+    }
+    FrameResources& selected = frames_[frame_slot];
+    if (!matter::map_buffer(selected.rt_error_counter, error) ||
+        !matter::invalidate_buffer(selected.rt_error_counter, 0,
+                                   sizeof(GpuRtCounters), error))
+        return false;
+    const auto* gpu =
+        static_cast<const GpuRtCounters*>(selected.rt_error_counter.mapped);
+    counters = {gpu->invalid_part_records, gpu->any_hit_invocations,
+                gpu->any_hit_layers, gpu->capped_rays};
+    return true;
+}
+
 uint64_t VkSceneRenderer::test_rt_blas_candidate_serial(
     uint64_t part_hash) const {
     const auto found = slot_of_.find(part_hash);
@@ -2062,8 +2101,18 @@ void VkSceneRenderer::finish_ray_tracing_frame(uint64_t frame_serial,
     if (frame_serial == 0) return;
     for (auto& part : parts_) {
         if (part.rt_blas_candidate_serial != frame_serial) continue;
-        part.rt_blas_built = succeeded;
-        if (succeeded) part.rt_geometry_classification_dirty = false;
+        if (part.rt_blas_candidate) {
+            if (succeeded) {
+                part.rt_blas = std::move(part.rt_blas_candidate);
+                part.rt_blas_built = true;
+                part.rt_geometry_classification_dirty = false;
+            } else {
+                part.rt_blas_candidate.reset();
+            }
+        } else {
+            part.rt_blas_built = succeeded;
+            if (succeeded) part.rt_geometry_classification_dirty = false;
+        }
         part.rt_blas_candidate_serial = 0;
     }
 }
@@ -2788,23 +2837,13 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         return false;
     }
     FrameResources& selected = frames_[frame.frame_slot];
-    const bool retiring_classified_blas = std::any_of(
-        parts_.begin(), parts_.end(), [&](const PartRecord& part) {
-            if (!part.live || !part.rt_blas_built ||
-                !part.rt_geometry_classification_dirty)
-                return false;
-            return std::any_of(rt_instances_.begin(), rt_instances_.end(),
-                               [&](const RtInstance& instance) {
-                                   return instance.part_hash == part.hash;
-                               });
-        });
-    if (retiring_classified_blas) vulkan_->wait_idle();
     VkDeviceSize scratch_size = 1;
     struct PendingBlas {
         PartRecord* part;
         VkAccelerationStructureGeometryKHR geometry;
         VkAccelerationStructureBuildGeometryInfoKHR build;
         VkAccelerationStructureBuildRangeInfoKHR range;
+        std::shared_ptr<matter::VkAccelerationStructureResource> target;
     };
     std::vector<PendingBlas> pending;
     for (auto& part : parts_) {
@@ -2850,17 +2889,19 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         get_sizes(vulkan_->device(),
                   VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
                   &item.build, &item.range.primitiveCount, &sizes);
-        if (part.rt_geometry_classification_dirty) {
+        if (part.rt_geometry_classification_dirty && part.rt_blas_built) {
             auto replacement = std::make_shared<
                 matter::VkAccelerationStructureResource>();
             if (!matter::create_acceleration_structure(
                     *vulkan_, VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
                     sizes.accelerationStructureSize, *replacement, error))
                 return false;
-            part.rt_blas = std::move(replacement);
-            part.rt_blas_built = false;
+            part.rt_blas_candidate = std::move(replacement);
+            item.target = part.rt_blas_candidate;
+        } else {
+            item.target = part.rt_blas;
         }
-        item.build.dstAccelerationStructure = part.rt_blas->handle;
+        item.build.dstAccelerationStructure = item.target->handle;
         scratch_size = std::max(scratch_size, sizes.buildScratchSize);
         pending.push_back(item);
     }
@@ -2902,7 +2943,10 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         const auto found = slot_of_.find(source.part_hash);
         if (found == slot_of_.end()) continue;
         const PartRecord& part = parts_[static_cast<size_t>(found->second)];
-        if (!part.rt_blas) continue;
+        const auto& traced_blas = part.rt_blas_candidate
+                                      ? part.rt_blas_candidate
+                                      : part.rt_blas;
+        if (!traced_blas) continue;
         VkAccelerationStructureInstanceKHR instance{};
         for (uint32_t row = 0; row < 3; ++row)
             for (uint32_t col = 0; col < 4; ++col)
@@ -2914,7 +2958,7 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         instance.mask = opaque ? 0x01 : 0x02;
         instance.instanceShaderBindingTableRecordOffset = 0;
         instance.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
-        instance.accelerationStructureReference = part.rt_blas->address;
+        instance.accelerationStructureReference = traced_blas->address;
         instances.push_back(instance);
     }
     if (instances.empty()) {
@@ -3012,9 +3056,10 @@ bool VkSceneRenderer::record_ray_traced_shadows(
     if (!part_records.empty())
         std::memcpy(selected.rt_parts.mapped, part_records.data(),
                     part_records.size() * sizeof(GpuRtPartRecord));
-    *static_cast<uint32_t*>(selected.rt_error_counter.mapped) = 0;
+    std::memset(selected.rt_error_counter.mapped, 0, sizeof(GpuRtCounters));
     if (!matter::flush_buffer(selected.rt_parts, 0, part_bytes, error) ||
-        !matter::flush_buffer(selected.rt_error_counter, 0, sizeof(uint32_t),
+        !matter::flush_buffer(selected.rt_error_counter, 0,
+                              sizeof(GpuRtCounters),
                               error)) return false;
     VkWriteDescriptorSetAccelerationStructureKHR as_write{
         VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
@@ -3105,6 +3150,16 @@ bool VkSceneRenderer::record_ray_traced_shadows(
     const VkStridedDeviceAddressRegionKHR callable{};
     cmd_trace(frame.command_buffer, &raygen, &miss, &hit, &callable,
               trace_extent.width, trace_extent.height, 1);
+    VkMemoryBarrier2 counters_to_host{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    counters_to_host.srcStageMask =
+        VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
+    counters_to_host.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    counters_to_host.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+    counters_to_host.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+    VkDependencyInfo counters_dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    counters_dependency.memoryBarrierCount = 1;
+    counters_dependency.pMemoryBarriers = &counters_to_host;
+    vkCmdPipelineBarrier2(frame.command_buffer, &counters_dependency);
     last_rt_effective_ = true;
     ++last_rt_trace_dispatches_;
     last_rt_fallback_reason_.clear();
@@ -3123,7 +3178,10 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         selected.rt_test_output.lifetime, rt_sbt_.lifetime};
     for (const auto& part : parts_) {
         if (part.rt_geometry) retained.push_back(part.rt_geometry->lifetime);
-        if (part.rt_blas) retained.push_back(part.rt_blas->lifetime);
+        if (part.rt_blas_candidate)
+            retained.push_back(part.rt_blas_candidate->lifetime);
+        else if (part.rt_blas)
+            retained.push_back(part.rt_blas->lifetime);
     }
     if (!vulkan_->retain_for_frame(frame, std::move(retained), error))
         return false;
@@ -3435,7 +3493,8 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
             VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
             hdr, error) ||
         !matter::create_image(
-            *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_R8_UNORM, extent,
+            *vulkan_, VK_IMAGE_TYPE_2D,
+            VK_FORMAT_R16G16B16A16_SFLOAT, extent,
             visibility_usage,
             VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
             visibility, error)) {
@@ -3787,7 +3846,7 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
     error.clear();
     pixel = {};
     pixel.depth = 1.0f;
-    pixel.visibility = 1.0f;
+    pixel.visibility = {1.0f, 1.0f, 1.0f};
     if (fail_if_poisoned(error)) return false;
     if (!raster_attachments_ready_) {
         error = "raster attachments are unavailable until a render completes";
@@ -3860,7 +3919,12 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
                       half_to_float(velocity_half[1]), 0.0f};
     pixel.hdr = {half_to_float(hdr_half[0]), half_to_float(hdr_half[1]),
                  half_to_float(hdr_half[2]), half_to_float(hdr_half[3])};
-    pixel.visibility = bytes[40] / 255.0f;
+    uint16_t visibility_half[4]{};
+    std::memcpy(visibility_half, bytes.data() + 40,
+                sizeof(visibility_half));
+    pixel.visibility = {half_to_float(visibility_half[0]),
+                        half_to_float(visibility_half[1]),
+                        half_to_float(visibility_half[2])};
     std::memcpy(&pixel.material_index, bytes.data() + 48,
                 sizeof(pixel.material_index));
     std::memcpy(&pixel.instance_token, bytes.data() + 52,

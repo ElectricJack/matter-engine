@@ -16,6 +16,7 @@ hitAttributeEXT vec2 hit_barycentrics;
 const uint MATERIAL_ALPHA_TESTED = 1u << 2u;
 
 void main() {
+    atomicAdd(any_hit_invocations, 1u);
     RtSurface surface = load_rt_surface(hit_barycentrics);
     if ((surface.flags & RT_SURFACE_VALID) == 0u) {
         payload.visibility = vec3(0.0);
@@ -41,10 +42,13 @@ void main() {
     float shadow_opacity =
         clamp(material.scattering_shape.w, 0.0, 1.0);
     payload.visibility *= mix(vec3(1.0), transmission_tint, shadow_opacity);
+    atomicAdd(any_hit_layers, 1u);
     ++payload.layers;
-    if (payload.layers >= 32u ||
-        max(payload.visibility.r,
-            max(payload.visibility.g, payload.visibility.b)) < 0.01)
+    if (payload.layers >= 32u) {
+        atomicAdd(capped_rays, 1u);
+        terminateRayEXT;
+    } else if (max(payload.visibility.r,
+                   max(payload.visibility.g, payload.visibility.b)) < 0.01)
         terminateRayEXT;
     else
         ignoreIntersectionEXT;

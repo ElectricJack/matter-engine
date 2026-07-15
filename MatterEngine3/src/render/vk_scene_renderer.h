@@ -158,10 +158,18 @@ struct VkRasterPixel {
     uint32_t instance_token = UINT32_MAX;
     matter::Float4 hdr{};
     float depth = 1.0f;
-    float visibility = 1.0f;
+    matter::Float3 visibility{1.0f, 1.0f, 1.0f};
 };
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+struct RtTraceCounters {
+    uint32_t invalid_part_records = 0;
+    uint32_t any_hit_invocations = 0;
+    uint32_t any_hit_layers = 0;
+    uint32_t capped_rays = 0;
+};
+static_assert(sizeof(RtTraceCounters) == 16);
+
 constexpr uint32_t kRtSurfaceValid = 1u;
 constexpr uint32_t kRtSurfaceFrontFace = 2u;
 struct RtSurfaceHit {
@@ -329,8 +337,12 @@ public:
     bool readback_test_surface_hit(uint32_t frame_slot, RtSurfaceHit& hit,
                                    uint32_t& invalid_count,
                                    std::string& error);
+    bool readback_rt_trace_counters(uint32_t frame_slot,
+                                    RtTraceCounters& counters,
+                                    std::string& error);
     bool test_rt_blas_built(uint64_t part_hash) const;
     uint64_t test_rt_blas_candidate_serial(uint64_t part_hash) const;
+    std::weak_ptr<void> test_rt_blas_lifetime(uint64_t part_hash) const;
     VkDeviceAddress test_rt_sbt_address() const { return rt_sbt_address_; }
     VkDeviceAddress test_rt_test_raygen_address() const {
         return rt_sbt_test_raygen_address_;
@@ -349,6 +361,7 @@ public:
     VkImageUsageFlags test_visibility_usage() const {
         return visibility_usage_;
     }
+    VkFormat test_visibility_format() const { return visibility_.format; }
     float test_shadow_visibility_for_ray(bool occluded) const {
         return ray_tracing_settings_.enabled && occluded ? 0.0f : 1.0f;
     }
@@ -460,6 +473,8 @@ private:
         bool live = false;
         std::shared_ptr<matter::VkBufferResource> rt_geometry;
         std::shared_ptr<matter::VkAccelerationStructureResource> rt_blas;
+        std::shared_ptr<matter::VkAccelerationStructureResource>
+            rt_blas_candidate;
         uint32_t rt_primitive_count = 0;
         bool rt_blas_built = false;
         uint64_t rt_blas_candidate_serial = 0;

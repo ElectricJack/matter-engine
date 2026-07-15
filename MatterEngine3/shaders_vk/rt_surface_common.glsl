@@ -68,6 +68,9 @@ layout(set = 0, binding = 4, std430) readonly buffer RtMaterialTable {
 
 layout(set = 0, binding = 5, std430) buffer RtErrorCounter {
     uint invalid_part_records;
+    uint any_hit_invocations;
+    uint any_hit_layers;
+    uint capped_rays;
 };
 
 const uint RT_SURFACE_VALID = 1u;
