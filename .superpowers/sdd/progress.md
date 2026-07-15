@@ -156,3 +156,8 @@ Task 4: complete (commits 1574fcd + e90e3b4, review clean)
   - Truthful Native fallback, fake DLSS Quality contract, exact resource/options/optimal-settings metadata, compute-visible depth/velocity, distinct per-slot output, evaluation-failure reset, and pre-UI composite are implemented.
   - Fixed transform-only command-template loss discovered by raster verification. CUDA 13.3 strict build, all six interop faults, and default/cull/raster modes pass with validation errors 0.
   - No legal Streamline SDK/runtime is installed, so live DLSS evaluation is intentionally unavailable and not claimed.
+
+Task 5: complete (commits 85379d9 + 09a76fb + 58022ba, review clean)
+  - Native KHR RT capability gating, pinned per-part BLAS geometry, per-frame TLAS, aligned SBT/scratch, functional shadow samples/debug output, and internal-resolution sun-shadow composite are implemented.
+  - BLAS publication is transactional across failed frames; forced RT-unavailable two-frame/resize fallback avoids storage usage and unsupported RT stages. RTX, unavailable, default/resize, raster/fault, strict CUDA, and full viewer gates pass with validation errors 0.
+  - BLAS compaction flags were removed because deferred compact-query/copy is not implemented; build-sized BLAS storage is used truthfully.
