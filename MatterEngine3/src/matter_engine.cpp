@@ -3427,6 +3427,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.dlss_output_height = frame.extent.height;
     impl_->stats.dlss_reset_count = impl_->vk_scene->dlss_reset_count();
     impl_->stats.dlss_reason = impl_->vk_scene->dlss_reason();
+    const bool temporal_jitter_enabled =
+        internal_extent.width < frame.extent.width ||
+        internal_extent.height < frame.extent.height;
     viewer::FrameMatrices unjittered{};
     if (!viewer::build_frame_matrices(cam, internal_extent.width,
                                       internal_extent.height, unjittered, err))
@@ -3435,6 +3438,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         [&](const std::vector<viewer::TemporalInstance>& temporal_instances) {
             const viewer::TemporalFrame temporal = impl_->vk_temporal.begin(
                 unjittered, internal_extent, frame.extent, temporal_instances,
+                temporal_jitter_enabled && !temporal_instances.empty(),
                 {.camera_cut = frame.swapchain_recreated});
             impl_->vk_temporal_serial = frame.serial;
             impl_->vk_temporal_token = temporal.attempt_token;

@@ -51,7 +51,7 @@ BRANCH READY TO MERGE: 6 commits, 14 files, +1503/-38 lines.
 Branch: feature/rt-lighting-phase2 | Plan: docs/superpowers/plans/2026-07-13-vulkan-matrix-phase1.md
 BASE at start: ff3a71f
 
-No tasks complete yet. Resume at Task 1.
+Resume at Task 5.
 
 Task 1: complete (commits ff3a71f..fbdd131, review clean)
   - Environment gate: CUDA 13.3 and OptiX 8.1 found; Vulkan headers, import library, and glslc absent.
@@ -104,7 +104,7 @@ Task 10: complete (commits 37f6b47..7609c5c, final review approved)
 Branch: feature/rt-lighting-phase2 | Plan: docs/superpowers/plans/2026-07-14-vulkan-gpu-instancing-parity.md
 BASE at start: 8b8c7d7
 
-No tasks complete yet. Resume at Task 1.
+Resume at Task 8.
 
 Task 1: complete (commit f294ffe, review clean)
   - VulkanFrame now identifies its two frame slots; resources retained for an active frame release only after that slot's fence is next observed complete.
@@ -171,3 +171,103 @@ Task 6: complete (final viewer gates and evidence)
   - Per user direction, StressForest50k performance is not a Task 6 sign-off gate. Its known pre-existing fixture failure remains before sampling: `VkSceneCluster LOD count must be in [1, kVkMaxLod]`; no StressForest FPS is claimed.
   - Final review Important findings fixed: `vulkan-smoke` now executes RT enabled/disabled/unavailable with timeout/exit/validation assertions, and `FrameStats`/JSON/runtime gates use renderer-observed RT availability/effectiveness/fallback/dispatch evidence rather than requested intent.
   - Final re-review fixes: the aggregate smoke uses `ProcessStartInfo` without touching its duplicate-key-fragile managed environment dictionaries (verified with deliberate raw `Path`/`PATH` entries), clear-only disconnected/missing-store frames publish truthful zero-dispatch RT observations, and per-call samples/debug observations reset from current settings.
+
+---
+
+# Vulkan Hybrid GI and Material-Driven Ray Tracing SDD Progress Ledger
+Branch: feature/rt-lighting-phase2 | Plan: docs/superpowers/plans/2026-07-14-vulkan-hybrid-gi-materials.md
+BASE at start: 0e1cbd2
+
+No tasks complete yet. Resume at Task 1.
+
+Baseline:
+  - MatterSurfaceLib material registry test passes under UCRT64.
+  - MatterEngine3 part_asset_v2 test has a pre-existing UCRT64 compile failure at POSIX `mkdir(path, 0755)`; Task 1 already modifies this test and must make the fixture portable while preserving Linux behavior.
+
+Task 1: complete (commits 0e1cbd2..1e48f77, review clean)
+  - Added value-driven RTX material properties and exact 144-byte nine-vec4/uvec4 GPU ABI while preserving the legacy 12-float OpenGL pack.
+  - Old material payloads fail before enlarged records are read, with the exact rebake diagnostic.
+  - Review fixes preserve neutral dielectric F0 and legacy material-0 emission; all GPU-record member offsets are guarded and tested.
+  - UCRT64 material registry and part_asset_v2 suites pass with Windows-native raylib/link overrides.
+
+Task 2: complete (commits 1e48f77..b0372b8, review clean with one Minor deferred)
+  - Raster and future RT consumers now share exact material identity and the 144-byte material table; OpenGL's legacy material/AO channel is preserved.
+  - Stable instance-derived history tokens and an R32G32_UINT material/instance G-buffer attachment are validated.
+  - Material revisions upload staging-to-device-local through the acquired frame command buffer, with per-slot descriptor/lifetime safety and no immediate submit/wait.
+  - Binding 5 is vertex/fragment-only; capability accounting preserves five compute storage buffers per stage and six per set.
+  - All 11 HAVE_STREAMLINE=0 Vulkan smoke modes pass with zero validation errors; HAVE_STREAMLINE=1 remains environment-blocked by missing STREAMLINE_PATH/sl.h.
+  - Minor for final review: test-only dispatch_culling can mark material generation current before an empty-scene path submits the pending copy; production prepare_frame is unaffected.
+
+Task 3: complete (commits b0372b8..da142a7, review clean)
+  - Added exact 32-byte device-address part records and reusable secondary RtSurface reconstruction for material/tint/UV/AO/normal/front-face data.
+  - Repacked SBT category-contiguously as raygen [shadow,test], miss [shadow,radiance], hit [shadow,surface] while preserving production shadow record zero.
+  - Added a real one-ray GPU surface-query readback covering hit, miss, invalid-record counter, transformed TLAS instance, primitive/barycentric attributes, and material identity.
+  - Avoided new shaderInt64/scalar-layout requirements through uvec2 addresses and raw 32-bit word fetches.
+  - Strict fallback build, SPIR-V validation, RT enabled/unavailable, raster, and resize smokes pass with zero validation errors.
+
+Task 4: complete (commits da142a7..c2da65a, review clean)
+  - Added opaque/nonopaque traversal classification, alpha rejection, RGB transmitting any-hit visibility, and a 32-layer safety cap.
+  - Visibility is RGBA16F end-to-end so colored glass survives through composite; GPU fixtures cover opaque 0, cutout 1, neutral two-layer glass 0.25, and unequal RGB tint.
+  - GPU counters prove opaque rays invoke no any-hit and nonopaque/capped rays do.
+  - Classified BLAS replacement is transactional and frame-fence retained with no production wait_idle or immediate submit.
+  - Strict build, SPIR-V, RT enabled/disabled/unavailable, raster, and resize smokes pass with zero validation errors.
+
+Task 5: complete (commits c2da65a..b904e6a, review clean)
+  - Added deterministic one-continuation diffuse GI with environment misses, visibility-tested secondary sun, baked-AO-only indirect modulation, and a scaled RGBA16F raw diffuse target.
+  - Production GI options are forwarded; RNG uses successfully presented frame identity plus bounce; every RT dispatch clears raw diffuse; material lookup and source-texel reconstruction are bounded and exact.
+  - GPU fixtures isolate white-receiver red bounce, positive/unblocked then blocked secondary sun, receiver-only AO/direct visibility, RT-active GI disable, trace scaling, and retry determinism.
+  - Strict build, aggregate SPIR-V/native objects, native RTX and fallback modes pass with zero validation errors; HAVE_STREAMLINE=1 remains blocked by absent SDK headers.
+
+Task 6: complete (commits b904e6a..79da597, review approved with one Minor deferred)
+  - Added present-gated ping-pong GI radiance, moments, history, previous geometry/identity, exact rejection bits, and YCoCg neighborhood clipping with a 32-frame cap.
+  - Corrected top-left Vulkan X/Y motion reprojection, compute/RT G-buffer visibility, temporal composite ordering, and exact-once Native/Quality/RT-toggle reset integration.
+  - Real-shader GPU fixtures cover both motion axes, all six rejection values, history/moments/clipping, and a pixel-level final composite equation; native/fallback/raster/fake-DLSS suites pass with zero validation errors.
+  - Minor for final review: consume_dlss_history_reset should require a current candidate serial before suppressing notification from gi_candidate_was_reset_.
+
+Task 7: complete (commits 79da597..f85274a, review clean)
+  - Added five-pass variance-guided A-trous diffuse denoising with retained RGBA16F ping-pong targets, steps 1/2/4/8/16, depth-plane/normal/material/variance weights, and final composite integration.
+  - Real-GPU evidence uses GPU-written pass markers, nonzero moments, >25% variance-reduction requirements, a material-boundary leakage fixture below 2%, and a width-16 effect delta of 0.044922.
+  - Strict/SPIR-V/native/fallback/raster/default suites pass with zero validation errors; the newly supplied Streamline 2.12 SDK also passes HAVE_CUDA=1/HAVE_STREAMLINE=1 preflight, enabled compilation, and full Windows viewer build.
+
+Task 8: complete (commits f85274a..5c7da8b, review clean after fixes)
+  - GGX dielectric/metal reflections and clearcoat use separate temporal history, hit-distance rejection bit 6, roughness caps, and diffuse/specular signal isolation.
+  - Fallback, empty, RT-disabled, and RT-unavailable paths clear stale reflections; re-enable requests one reset.
+  - Controlled GPU material fixtures verify dielectric F0, roughness broadening, tint, clearcoat counters, history caps, and disocclusion behavior.
+  - Fresh Streamline/CUDA strict and production builds plus RT/fallback/raster/default smokes pass with zero validation errors.
+
+---
+
+# Vulkan Lighting and Exposure Controls SDD Progress Ledger
+Branch: feature/rt-lighting-phase2 | Plan: docs/superpowers/plans/2026-07-15-vulkan-lighting-exposure-controls.md
+BASE at start: e6b73c5
+
+No tasks complete yet. Resume at Lighting Task 1.
+
+Lighting Task 1: complete (commits e6b73c5..b5d65b8, review clean)
+  - Added the public Vulkan lighting override contract, finite-before-clamp sanitizer, EV conversion, and source-change classifier.
+  - Streamline/CUDA enabled build and raster smoke pass with zero validation errors.
+  - Minor deferred: contract tests sample non-finite fallback by field rather than the full NaN/infinity cross-product; generic implementation covers every field.
+  - Later-task verification remains: reset lifecycle, exact-once temporal invalidation, display ordering, and fallback consistency.
+
+Lighting Task 2: complete (commits b5d65b8..c4e8d23, review clean)
+  - Manifest-relative sun/sky and matching primary/secondary emission controls use explicit 64-byte scene and 144-byte RT push ABIs.
+  - Failed-present retention, one successful retry reset, stable frames, and exposure-only preservation are covered; evidence reset 4->5->5 and emission 2.000/2.000.
+  - Strict Streamline/CUDA build, full Windows viewer build, and RT/unavailable/disabled/raster/default smokes pass with zero validation errors.
+  - Minor for final review: fallback modes rely on production gating and broad mode smokes rather than dedicated source-control energy assertions.
+
+Lighting Task 3: complete (commits c4e8d23..df2aaaf, focused review/verification accepted by user)
+  - Post-DLSS ACES display transform, temporary Viewer controls, and world-reset wiring are implemented.
+  - Focused default and all 11 enabled smoke modes passed with zero validation errors; exhaustive screenshot automation was user-waived.
+
+---
+
+# Lighting Sculpture Garden SDD Progress Ledger
+Branch: feature/rt-lighting-phase2 | Plan: docs/superpowers/plans/2026-07-15-lighting-sculpture-garden.md
+BASE at start: 42f48b8
+
+No garden tasks complete yet. Resume at Garden Task 1.
+
+Garden Task 1: complete (commits 42f48b8..e39e491, review clean)
+  - Registry schema 3 adds stable IDs 18-29 and DSL names while IDs 0-17 retain legacy FNV pack hash 69c22a3502ba9490.
+  - RTX packing covers clearcoat, colored emission, smoke-glass volume fields, wax, and thin foliage.
+  - UCRT64 run-reg and run-partv2 pass; the stale part-asset expected count was updated from 18 to 30.

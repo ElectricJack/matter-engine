@@ -108,6 +108,7 @@ public:
                        const DlssConstants& constants,
                        const DlssResources& resources,
                        DlssEvaluationOutput& output, std::string& error);
+    bool free_dlss_resources(std::string& error);
     bool consume_dlss_history_reset();
 
     // Merges the second sequence after the first, preserving first-seen order.
@@ -190,6 +191,9 @@ public:
     uint64_t test_dlss_evaluation_count() const {
         return test_dlss_evaluation_count_;
     }
+    uint64_t test_dlss_resource_free_count() const {
+        return test_dlss_resource_free_count_;
+    }
     const std::vector<std::string>& test_presentation_events() const {
         return test_presentation_events_;
     }
@@ -211,6 +215,7 @@ private:
     bool streamline_initialized_ = false;
     bool present_common_pending_ = false;
     bool dlss_history_reset_pending_ = false;
+    bool dlss_resources_allocated_ = false;
     DlssMode active_dlss_mode_ = DlssMode::Native;
     uint64_t present_common_serial_ = 0;
     std::string dlss_unavailable_reason_;
@@ -231,6 +236,7 @@ private:
     void* sl_set_constants_ = nullptr;
     void* sl_get_feature_function_ = nullptr;
     void* sl_get_new_frame_token_ = nullptr;
+    void* sl_free_resources_ = nullptr;
     void* sl_dlss_get_optimal_settings_ = nullptr;
     void* sl_dlss_set_options_ = nullptr;
     PFN_vkGetInstanceProcAddr get_instance_proc_addr_proxy_ = nullptr;
@@ -250,6 +256,7 @@ private:
     TestDlssEvaluator test_dlss_evaluator_;
     TestDlssOptimalEvaluator test_dlss_optimal_evaluator_;
     uint64_t test_dlss_evaluation_count_ = 0;
+    uint64_t test_dlss_resource_free_count_ = 0;
     std::vector<std::string> test_presentation_events_;
     uint64_t last_present_common_serial_ = 0;
     enum class TestProxyFault { None, Instance, Device };

@@ -173,7 +173,7 @@ void GiTemporalState::seed_presented_for_test(
 TemporalFrame TemporalState::begin(
     const FrameMatrices& current_unjittered, VkExtent2D internal_extent,
     VkExtent2D output_extent, const std::vector<TemporalInstance>& instances,
-    TemporalInvalidation invalidation) {
+    bool jitter_enabled, TemporalInvalidation invalidation) {
     if (has_candidate_) {
         has_candidate_ = false;
         force_reset_ = true;
@@ -186,12 +186,16 @@ TemporalFrame TemporalState::begin(
     frame.output_extent = output_extent;
     frame.attempt_token = next_attempt_token_++;
     frame.presented_frame_index = presented_frame_index_;
-    const std::uint64_t jitter_index = presented_frame_index_ + 1;
-    frame.jitter_pixels[0] = halton(jitter_index, 2) - 0.5f;
-    frame.jitter_pixels[1] = halton(jitter_index, 3) - 0.5f;
-    frame.current_jittered = jitter_frame(
-        current_unjittered, frame.jitter_pixels[0], frame.jitter_pixels[1],
-        internal_extent);
+    if (jitter_enabled) {
+        const std::uint64_t jitter_index = presented_frame_index_ + 1;
+        frame.jitter_pixels[0] = halton(jitter_index, 2) - 0.5f;
+        frame.jitter_pixels[1] = halton(jitter_index, 3) - 0.5f;
+        frame.current_jittered = jitter_frame(
+            current_unjittered, frame.jitter_pixels[0], frame.jitter_pixels[1],
+            internal_extent);
+    } else {
+        frame.current_jittered = current_unjittered;
+    }
 
     bool missing_transform = false;
     for (const TemporalInstance& instance : instances) {

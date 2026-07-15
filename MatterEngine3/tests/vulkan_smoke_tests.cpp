@@ -503,6 +503,10 @@ void run_dlss_bridge_contract_tests() {
               fake.active_dlss_mode() == matter::DlssMode::Quality &&
               mode_transitions == expected_mode_transitions,
           "fake DLSS bridge observes the complete Quality Native Quality transition");
+    CHECK(fake.free_dlss_resources(error) &&
+              fake.test_dlss_resource_free_count() == 1 &&
+              fake.active_dlss_mode() == matter::DlssMode::Native,
+          "DLSS resize releases viewport resources before tagged images change");
 
     matter::StreamlineBridge failing = matter::StreamlineBridge::test_fake_dlss(
         [](VkCommandBuffer, uint64_t, const matter::DlssOptions&,
@@ -785,8 +789,18 @@ void run_vulkan_temporal_tests() {
     camera.clip_to_world = identity_matrix();
     const viewer::TemporalInstance still{7, identity_matrix()};
 
+    viewer::TemporalState native_temporal;
+    viewer::TemporalFrame native_frame = native_temporal.begin(
+        camera, {100, 80}, {100, 80}, {still}, false, {});
+    CHECK(native_frame.jitter_pixels[0] == 0.0f &&
+              native_frame.jitter_pixels[1] == 0.0f &&
+              std::equal(std::begin(native_frame.current_jittered.world_to_clip.m),
+                         std::end(native_frame.current_jittered.world_to_clip.m),
+                         std::begin(native_frame.current_unjittered.world_to_clip.m)),
+          "native rendering uses the exact unjittered projection");
+
     viewer::TemporalFrame first = temporal.begin(
-        camera, {100, 80}, {100, 80}, {still}, {});
+        camera, {100, 80}, {100, 80}, {still}, true, {});
     CHECK(first.reset && !first.instances[0].history_valid,
           "first temporal frame resets invalid history");
     CHECK(first.presented_frame_index == 0,
@@ -795,7 +809,7 @@ void run_vulkan_temporal_tests() {
           "successful presentation commits temporal candidate");
 
     viewer::TemporalFrame static_frame = temporal.begin(
-        camera, {100, 80}, {100, 80}, {still}, {});
+        camera, {100, 80}, {100, 80}, {still}, true, {});
     const matter::Float3 static_velocity =
         viewer::temporal_velocity_pixels(static_frame, 7, {0.0f, 0.0f, 0.0f});
     CHECK(!static_frame.reset && static_frame.instances[0].history_valid &&
@@ -819,7 +833,7 @@ void run_vulkan_temporal_tests() {
     moved_camera.world_to_clip = viewer::mat4_translation({-0.2f, 0.0f, 0.0f});
     moved_camera.clip_to_world = viewer::mat4_translation({0.2f, 0.0f, 0.0f});
     viewer::TemporalFrame camera_motion = temporal.begin(
-        moved_camera, {100, 80}, {100, 80}, {still}, {});
+        moved_camera, {100, 80}, {100, 80}, {still}, true, {});
     const matter::Float3 camera_velocity = viewer::temporal_velocity_pixels(
         camera_motion, 7, {0.0f, 0.0f, 0.0f});
     CHECK(std::fabs(camera_velocity.x + 9.5f) < 1e-5f &&
@@ -831,7 +845,7 @@ void run_vulkan_temporal_tests() {
     const viewer::TemporalInstance moved_object{
         7, viewer::mat4_translation({0.4f, 0.0f, 0.0f})};
     viewer::TemporalFrame object_motion = temporal.begin(
-        moved_camera, {100, 80}, {100, 80}, {moved_object}, {});
+        moved_camera, {100, 80}, {100, 80}, {moved_object}, true, {});
     const matter::Float3 object_velocity = viewer::temporal_velocity_pixels(
         object_motion, 7, {0.0f, 0.0f, 0.0f});
     CHECK(std::fabs(object_velocity.x - 19.375f) < 1e-5f &&
@@ -845,11 +859,11 @@ void run_vulkan_temporal_tests() {
                                       std::vector<viewer::TemporalInstance> instances,
                                       const char* label) {
         viewer::TemporalFrame reset = temporal.begin(
-            moved_camera, internal, {100, 80}, instances, invalidation);
+            moved_camera, internal, {100, 80}, instances, true, invalidation);
         CHECK(reset.reset, label);
         CHECK(temporal.commit_presented(reset.attempt_token), label);
         viewer::TemporalFrame stable = temporal.begin(
-            moved_camera, internal, {100, 80}, instances, {});
+            moved_camera, internal, {100, 80}, instances, true, {});
         CHECK(!stable.reset, "temporal invalidation resets exactly one frame");
         CHECK(temporal.commit_presented(stable.attempt_token),
               "post-reset candidate commits");
@@ -865,12 +879,12 @@ void run_vulkan_temporal_tests() {
                      "missing previous rigid instance resets temporal history");
 
     viewer::TemporalFrame failed = temporal.begin(
-        moved_camera, {120, 80}, {100, 80}, {{99, identity_matrix()}}, {});
+        moved_camera, {120, 80}, {100, 80}, {{99, identity_matrix()}}, true, {});
     const uint64_t failed_token = failed.attempt_token;
     CHECK(temporal.discard_failed_attempt(failed_token),
           "failed presentation discards uncommitted candidate");
     viewer::TemporalFrame after_failure = temporal.begin(
-        moved_camera, {120, 80}, {100, 80}, {{99, identity_matrix()}}, {});
+        moved_camera, {120, 80}, {100, 80}, {{99, identity_matrix()}}, true, {});
     CHECK(after_failure.reset && after_failure.attempt_token > failed_token &&
               std::fabs(after_failure.jitter_pixels[0] -
                         failed.jitter_pixels[0]) < 1e-6f &&
@@ -887,11 +901,11 @@ void run_vulkan_temporal_tests() {
     const uint64_t b_id = viewer::temporal_instance_id(42, 1002, 0);
     viewer::TemporalFrame two = stable_ids.begin(
         camera, {100, 80}, {100, 80},
-        {{a_id, identity_matrix()}, {b_id, identity_matrix()}}, {});
+        {{a_id, identity_matrix()}, {b_id, identity_matrix()}}, true, {});
     CHECK(stable_ids.commit_presented(two.attempt_token),
           "two-instance temporal baseline commits");
     viewer::TemporalFrame only_b = stable_ids.begin(
-        camera, {100, 80}, {100, 80}, {{b_id, identity_matrix()}}, {});
+        camera, {100, 80}, {100, 80}, {{b_id, identity_matrix()}}, true, {});
     CHECK(!only_b.reset && only_b.instances.size() == 1 &&
               only_b.instances[0].instance_id == b_id &&
               only_b.instances[0].history_valid,
@@ -899,11 +913,11 @@ void run_vulkan_temporal_tests() {
     CHECK(stable_ids.commit_presented(only_b.attempt_token),
           "single surviving instance commits");
     viewer::TemporalFrame empty = stable_ids.begin(
-        camera, {100, 80}, {100, 80}, {}, {});
+        camera, {100, 80}, {100, 80}, {}, true, {});
     CHECK(stable_ids.commit_presented(empty.attempt_token),
           "presented clear frame advances empty temporal history");
     viewer::TemporalFrame returning_b = stable_ids.begin(
-        camera, {100, 80}, {100, 80}, {{b_id, identity_matrix()}}, {});
+        camera, {100, 80}, {100, 80}, {{b_id, identity_matrix()}}, true, {});
     CHECK(returning_b.reset && !returning_b.instances[0].history_valid,
           "instance returning after presented clear frame resets history");
 
@@ -1106,6 +1120,21 @@ void run_rt_lod_payload_contract_tests() {
               selected[1].first_vertex == 15 &&
               selected[1].vertex_count == 3,
           "RT instance payload contains exactly one raster-selected LOD per cluster");
+    const auto offsets = viewer::vk_scene_detail::dense_rt_lod_offsets(part);
+    uint32_t record_index = UINT32_MAX;
+    CHECK(offsets == std::vector<uint32_t>({0, 2, 4}) &&
+              viewer::vk_scene_detail::dense_rt_lod_index(
+                  offsets, 1, 1, record_index) &&
+              record_index == 3 &&
+              !viewer::vk_scene_detail::dense_rt_lod_index(
+                  offsets, 1, 2, record_index),
+          "dense RT LOD offsets provide bounded O(1) cluster/LOD indexing");
+    const float thresholds[] = {1.0f, 0.0f};
+    CHECK(viewer::vk_scene_detail::select_cluster_lod_view(
+              part.clusters[1].aabb_min, part.clusters[1].aabb_max,
+              part.clusters[1].radius, thresholds, 2, identity_matrix(),
+              {0.0f, 0.0f, 10.0f}, 1.0f) == 1,
+          "non-owning RT LOD view matches raster threshold selection");
 }
 
 void run_raster_path(matter::VulkanDevice& vulkan) {
@@ -1539,7 +1568,130 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     }
 }
 
+void run_native_multilod_rt_mapping(matter::VulkanDevice& vulkan) {
+    if (!vulkan.ray_tracing_available()) return;
+    std::string error;
+    viewer::VkSceneRenderer renderer(vulkan);
+    std::vector<MaterialGpuRecord> materials(2);
+    for (auto& material : materials) {
+        material.metal_opacity_spec_coat[1] = 1.0f;
+        material.scattering_shape[3] = 1.0f;
+    }
+    materials[0].base_roughness[0] = 0.8f;
+    materials[1].base_roughness[1] = 0.8f;
+    viewer::VkScenePart part{};
+    part.part_hash = 0x4d554c54494c4f44ull;
+    part.clusters = {
+        {{-2.0f, -1.0f, -3.0f}, {0.0f, 1.0f, -1.0f}, 20.0f,
+         {{0, 3, 1.0f}, {3, 3, 0.0f}}},
+        {{0.0f, -1.0f, -3.0f}, {2.0f, 1.0f, -1.0f}, 1.0f,
+         {{6, 3, 1.0f}, {9, 3, 0.0f}}},
+    };
+    const matter::Float3 normal{0.0f, 0.0f, 1.0f};
+    const matter::Float4 tint{1.0f, 1.0f, 1.0f, 0.0f};
+    const matter::Float4 surface{0.5f, 0.0f, 1.0f, 1.0f};
+    const auto vertex = [&](float x, float y, float z, uint32_t material) {
+        return viewer::VkRasterVertex{{x, y, z}, normal, tint, surface,
+                                      material, {}};
+    };
+    part.vertices = {
+        vertex(-1.8f, -0.8f, -2.0f, 0), vertex(-0.2f, -0.8f, -2.0f, 0),
+        vertex(-1.0f, 0.8f, -2.0f, 0),
+        vertex(-1.8f, -0.8f, -4.0f, 1), vertex(-0.2f, -0.8f, -4.0f, 1),
+        vertex(-1.0f, 0.8f, -4.0f, 1),
+        vertex(0.2f, -0.8f, -2.0f, 0), vertex(1.8f, -0.8f, -2.0f, 0),
+        vertex(1.0f, 0.8f, -2.0f, 0),
+        vertex(0.2f, -0.8f, -4.0f, 1), vertex(1.8f, -0.8f, -4.0f, 1),
+        vertex(1.0f, 0.8f, -4.0f, 1),
+    };
+    CHECK(renderer.update_materials(materials, 1, 1, error) &&
+              renderer.ensure_part(part, error) >= 0 &&
+              renderer.update_instances({{part.part_hash, identity_matrix()}},
+                                        error),
+          error.empty() ? "prepare native multi-LOD RT mapping fixture"
+                        : error.c_str());
+    matter::VulkanRayTracingSettings rt{};
+    rt.enabled = true;
+    renderer.set_ray_tracing_settings(rt);
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 10.0f};
+    camera.target = {0.0f, 0.0f, -2.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.0f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 30.0f;
+    viewer::FrameMatrices matrices{};
+    CHECK(viewer::build_frame_matrices(camera, 320, 200, matrices, error),
+          error.empty() ? "build multi-LOD RT matrices" : error.c_str());
+    auto render = [&](uint64_t attempt,
+                      std::vector<viewer::RtGeometryDebugRecord>&
+                          records,
+                      uint32_t& builds) {
+        viewer::TemporalFrame temporal{};
+        temporal.current_unjittered = matrices;
+        temporal.previous_unjittered = matrices;
+        temporal.current_jittered = matrices;
+        temporal.previous_jittered = matrices;
+        temporal.internal_extent = {320, 200};
+        temporal.output_extent = {320, 200};
+        temporal.attempt_token = attempt;
+        renderer.set_temporal_frame(temporal);
+        matter::VulkanFrame frame{};
+        const bool began = vulkan.begin_frame(frame, error);
+        const bool recorded = began &&
+            renderer.prepare_frame(frame, matrices, camera.position, 1.0f,
+                                   error) &&
+            renderer.record_cull_and_render(frame, matrices, camera.position,
+                                            1.0f, error) &&
+            renderer.record_composite_to_swapchain(frame, error);
+        records = renderer.test_last_rt_geometry_records();
+        builds = renderer.test_last_rt_blas_build_count();
+        const bool submitted = recorded && vulkan.end_frame(frame, error);
+        renderer.finish_ray_tracing_frame(frame.serial, submitted);
+        vulkan.wait_idle();
+        return submitted;
+    };
+    std::vector<viewer::RtGeometryDebugRecord> first;
+    uint32_t first_builds = 0;
+    CHECK(render(1, first, first_builds),
+          error.empty() ? "record first multi-LOD RT frame" : error.c_str());
+    const VkDeviceAddress base =
+        renderer.test_rt_geometry_address(part.part_hash);
+    CHECK(first.size() == 2 && first_builds == 2 &&
+              first[0].cluster_index == 0 && first[0].lod_index == 0 &&
+              first[0].custom_index == 0 && first[0].first_vertex == 0 &&
+              first[0].vertex_address == base && first[0].built_this_frame &&
+              first[1].cluster_index == 1 && first[1].lod_index == 1 &&
+              first[1].custom_index == 1 && first[1].first_vertex == 9 &&
+              first[1].vertex_address ==
+                  base + 9 * sizeof(viewer::VkRasterVertex) &&
+              first[1].built_this_frame &&
+              first[0].blas_address != first[1].blas_address,
+          "native TLAS uses dense custom indices and selected per-LOD BLAS ranges");
+    std::vector<viewer::RtGeometryDebugRecord> reused;
+    uint32_t reuse_builds = UINT32_MAX;
+    CHECK(render(2, reused, reuse_builds) && reused.size() == 2 &&
+              reuse_builds == 0 &&
+              reused[0].blas_address == first[0].blas_address &&
+              reused[1].blas_address == first[1].blas_address,
+          "selected per-LOD BLAS records are reused without rebuilding");
+    materials[1].metal_opacity_spec_coat[1] = 0.25f;
+    CHECK(renderer.update_materials(materials, 2, 2, error),
+          error.empty() ? "change only selected LOD1 opacity class"
+                        : error.c_str());
+    std::vector<viewer::RtGeometryDebugRecord> replaced;
+    uint32_t replacement_builds = UINT32_MAX;
+    CHECK(render(3, replaced, replacement_builds) && replaced.size() == 2 &&
+              replacement_builds == 1 &&
+              replaced[0].blas_address == first[0].blas_address &&
+              replaced[0].opaque &&
+              replaced[1].blas_address != first[1].blas_address &&
+              !replaced[1].opaque,
+          "per-LOD opacity change replaces only the affected selected BLAS");
+}
+
 void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
+    run_native_multilod_rt_mapping(vulkan);
     CHECK(vulkan.ray_tracing_available(),
           vulkan.ray_tracing_unavailable_reason().empty()
               ? "native ray tracing available"
@@ -3560,6 +3712,12 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
                 options.mode == matter::DlssMode::Quality &&
                 constants.motion_vectors_jittered && constants.reset &&
                 constants.internal_extent.width < constants.output_extent.width &&
+                std::fabs(constants.jitter_offset.x) < 0.5f &&
+                std::fabs(constants.jitter_offset.y) < 0.5f &&
+                constants.motion_vector_scale.x ==
+                    -1.0f / constants.internal_extent.width &&
+                constants.motion_vector_scale.y ==
+                    -1.0f / constants.internal_extent.height &&
                 resources.hdr.image != resources.depth.image &&
                 resources.hdr.image != resources.velocity.image &&
                 resources.hdr.image != resources.output.image;

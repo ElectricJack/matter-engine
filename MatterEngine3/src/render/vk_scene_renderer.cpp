@@ -544,6 +544,23 @@ uint32_t select_scene_cluster_lod(const VkSceneCluster& cluster,
                                   matter::Float3 camera_eye,
                                   float pixel_budget) noexcept {
     if (cluster.lods.empty()) return 0;
+    std::array<float, kVkMaxLod> thresholds{};
+    for (uint32_t i = 0; i < cluster.lods.size(); ++i)
+        thresholds[i] = cluster.lods[i].threshold;
+    return select_cluster_lod_view(
+        cluster.aabb_min, cluster.aabb_max, cluster.radius,
+        thresholds.data(), static_cast<uint32_t>(cluster.lods.size()),
+        object_to_world, camera_eye, pixel_budget);
+}
+
+uint32_t select_cluster_lod_view(const matter::Float3& aabb_min,
+                                 const matter::Float3& aabb_max,
+                                 float radius, const float* thresholds,
+                                 uint32_t lod_count,
+                                 const matter::Mat4f& object_to_world,
+                                 matter::Float3 camera_eye,
+                                 float pixel_budget) noexcept {
+    if (lod_count == 0 || thresholds == nullptr) return 0;
     const matter::Float3 x_basis{object_to_world.m[0], object_to_world.m[4],
                                  object_to_world.m[8]};
     const matter::Float3 y_basis{object_to_world.m[1], object_to_world.m[5],
@@ -557,9 +574,9 @@ uint32_t select_scene_cluster_lod(const VkSceneCluster& cluster,
     const float scale =
         (length(x_basis) + length(y_basis) + length(z_basis)) / 3.0f;
     const matter::Float3 local_center{
-        (cluster.aabb_min.x + cluster.aabb_max.x) * 0.5f,
-        (cluster.aabb_min.y + cluster.aabb_max.y) * 0.5f,
-        (cluster.aabb_min.z + cluster.aabb_max.z) * 0.5f};
+        (aabb_min.x + aabb_max.x) * 0.5f,
+        (aabb_min.y + aabb_max.y) * 0.5f,
+        (aabb_min.z + aabb_max.z) * 0.5f};
     const matter::Float3 world_center =
         transform_point(object_to_world, local_center);
     const float dx = world_center.x - camera_eye.x;
@@ -568,15 +585,38 @@ uint32_t select_scene_cluster_lod(const VkSceneCluster& cluster,
     const float distance =
         std::max(std::sqrt(dx * dx + dy * dy + dz * dz), 0.01f);
     const float projected_size =
-        cluster.radius * scale / distance * pixel_budget;
-    uint32_t selected = static_cast<uint32_t>(cluster.lods.size() - 1);
-    for (uint32_t lod = 0; lod < cluster.lods.size(); ++lod) {
-        if (projected_size >= cluster.lods[lod].threshold) {
+        radius * scale / distance * pixel_budget;
+    uint32_t selected = lod_count - 1;
+    for (uint32_t lod = 0; lod < lod_count; ++lod) {
+        if (projected_size >= thresholds[lod]) {
             selected = lod;
             break;
         }
     }
     return selected;
+}
+
+std::vector<uint32_t> dense_rt_lod_offsets(const VkScenePart& part) {
+    std::vector<uint32_t> offsets;
+    offsets.reserve(part.clusters.size() + 1);
+    uint32_t total = 0;
+    offsets.push_back(total);
+    for (const VkSceneCluster& cluster : part.clusters) {
+        total += static_cast<uint32_t>(cluster.lods.size());
+        offsets.push_back(total);
+    }
+    return offsets;
+}
+
+bool dense_rt_lod_index(const std::vector<uint32_t>& offsets,
+                        uint32_t cluster_index, uint32_t lod_index,
+                        uint32_t& record_index) noexcept {
+    if (cluster_index + 1 >= offsets.size()) return false;
+    const uint32_t begin = offsets[cluster_index];
+    const uint32_t end = offsets[cluster_index + 1];
+    if (lod_index >= end - begin) return false;
+    record_index = begin + lod_index;
+    return true;
 }
 
 std::vector<RtGeometrySelection> select_rt_instance_geometry(
@@ -779,7 +819,11 @@ bool VkSceneRenderer::consume_dlss_history_reset() {
 }
 
 VkSceneRenderer::~VkSceneRenderer() {
-    if (vulkan_) vulkan_->wait_idle();
+    if (vulkan_) {
+        vulkan_->wait_idle();
+        std::string ignored_error;
+        (void)dlss_bridge_->free_dlss_resources(ignored_error);
+    }
     destroy_pipeline();
 }
 
@@ -2202,15 +2246,37 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     record.vertex_count = static_cast<uint32_t>(part.vertices.size());
     record.live = true;
     record.rt_geometry = std::move(rt_geometry);
+    record.rt_cluster_lod_offsets =
+        vk_scene_detail::dense_rt_lod_offsets(part);
     for (uint32_t cluster_index = 0; cluster_index < part.clusters.size();
          ++cluster_index) {
         const auto& cluster = part.clusters[cluster_index];
         for (uint32_t lod_index = 0; lod_index < cluster.lods.size();
              ++lod_index) {
             const auto& lod = cluster.lods[lod_index];
-            record.rt_lods.push_back(
-                {cluster_index, lod_index, lod.first_vertex,
-                 lod.vertex_count, lod.vertex_count / 3});
+            RtLodRecord rt_lod{};
+            rt_lod.cluster_index = cluster_index;
+            rt_lod.lod_index = lod_index;
+            rt_lod.first_vertex = lod.first_vertex;
+            rt_lod.vertex_count = lod.vertex_count;
+            rt_lod.primitive_count = lod.vertex_count / 3;
+            if (!part.vertices.empty()) {
+                for (uint32_t vertex_index = 0;
+                     vertex_index < lod.vertex_count; ++vertex_index) {
+                    const uint32_t material =
+                        part.vertices[lod.first_vertex + vertex_index]
+                            .material_index;
+                    if (material != UINT32_MAX)
+                        rt_lod.material_ids.push_back(material);
+                }
+            }
+            std::sort(rt_lod.material_ids.begin(),
+                      rt_lod.material_ids.end());
+            rt_lod.material_ids.erase(
+                std::unique(rt_lod.material_ids.begin(),
+                            rt_lod.material_ids.end()),
+                rt_lod.material_ids.end());
+            record.rt_lods.push_back(std::move(rt_lod));
         }
     }
     record.material_ids.reserve(part.vertices.size());
@@ -2297,19 +2363,19 @@ bool VkSceneRenderer::update_materials(
         return false;
     }
 
-    // Defensively compare the aggregate RT class for every material update.
-    // The upstream geometry revision tracks topology-facing flags, while live
-    // opacity, shadow-opacity, or transmission edits may also cross this BLAS
-    // geometry-flag boundary.
-    if (!first_upload && data_changed) {
-        for (PartRecord& part : parts_) {
-            const bool old_opaque = rt_material_ids_are_opaque(
-                material_staging_, part.material_ids);
-            const bool new_opaque =
-                rt_material_ids_are_opaque(records, part.material_ids);
-            if (old_opaque != new_opaque)
-                part.rt_geometry_classification_dirty = true;
-        }
+    // Recompute rather than only setting this bit. A material can change class
+    // and then change back before a replacement BLAS is submitted.
+    for (PartRecord& part : parts_) {
+        part.rt_geometry_classification_dirty = std::any_of(
+            part.rt_lods.begin(), part.rt_lods.end(),
+            [&](const RtLodRecord& lod) {
+                const bool desired = rt_material_ids_are_opaque(
+                    records, lod.material_ids);
+                const bool previous_desired = rt_material_ids_are_opaque(
+                    material_staging_, lod.material_ids);
+                return desired != previous_desired ||
+                       (lod.built && lod.geometry_opaque != desired);
+            });
     }
     material_staging_ = records;
     material_shading_revision_ = shading_revision;
@@ -3433,12 +3499,12 @@ void VkSceneRenderer::finish_ray_tracing_frame(uint64_t frame_serial,
             lod.candidate_serial = 0;
         }
         if (succeeded && finished_candidate) {
-            const bool desired = rt_material_ids_are_opaque(
-                material_staging_, part.material_ids);
             part.rt_geometry_classification_dirty = std::any_of(
                 part.rt_lods.begin(), part.rt_lods.end(),
-                [desired](const RtLodRecord& lod) {
-                    return lod.built && lod.geometry_opaque != desired;
+                [&](const RtLodRecord& lod) {
+                    return lod.built && lod.geometry_opaque !=
+                        rt_material_ids_are_opaque(material_staging_,
+                                                   lod.material_ids);
                 });
         }
     }
@@ -4078,6 +4144,10 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     }
     if (!ensure_frame_resources(frame.frame_slot_count, error)) return false;
     FrameResources& selected = frames_[frame.frame_slot];
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    test_last_rt_geometry_records_.clear();
+    test_last_rt_blas_build_count_ = 0;
+#endif
     if (!upload_scene_buffers(selected, frame.command_buffer, false, error) ||
         !upload_frame_constants(selected, matrices, camera_eye, pixel_budget,
                                 error)) {
@@ -4232,33 +4302,31 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         matter::Mat4f object_to_world{};
         std::memcpy(object_to_world.m, source.transform,
                     sizeof(object_to_world.m));
-        const bool opaque = rt_material_ids_are_opaque(
-            material_staging_, part.material_ids);
         for (uint32_t cluster_index = 0;
              cluster_index < part.cluster_count; ++cluster_index) {
             const uint32_t global_cluster =
                 part.cluster_start + cluster_index;
             const GpuCluster& gpu_cluster = cluster_staging_[global_cluster];
-            VkSceneCluster cluster{};
-            cluster.aabb_min = {gpu_cluster.aabb_min[0], gpu_cluster.aabb_min[1],
-                                gpu_cluster.aabb_min[2]};
-            cluster.aabb_max = {gpu_cluster.aabb_max[0], gpu_cluster.aabb_max[1],
-                                gpu_cluster.aabb_max[2]};
-            cluster.radius = gpu_cluster.radius;
-            cluster.lods = cluster_lods_[global_cluster];
-            const uint32_t lod_index =
-                vk_scene_detail::select_scene_cluster_lod(
-                    cluster, object_to_world, camera_eye, pixel_budget);
-            const auto record = std::find_if(
-                part.rt_lods.begin(), part.rt_lods.end(),
-                [cluster_index, lod_index](const RtLodRecord& lod) {
-                    return lod.cluster_index == cluster_index &&
-                           lod.lod_index == lod_index;
-                });
-            if (record != part.rt_lods.end() &&
-                record->primitive_count != 0)
+            const uint32_t lod_index = vk_scene_detail::select_cluster_lod_view(
+                {gpu_cluster.aabb_min[0], gpu_cluster.aabb_min[1],
+                 gpu_cluster.aabb_min[2]},
+                {gpu_cluster.aabb_max[0], gpu_cluster.aabb_max[1],
+                 gpu_cluster.aabb_max[2]},
+                gpu_cluster.radius, gpu_cluster.thresholds,
+                gpu_cluster.lod_count, object_to_world, camera_eye,
+                pixel_budget);
+            uint32_t record_index = 0;
+            if (!vk_scene_detail::dense_rt_lod_index(
+                    part.rt_cluster_lod_offsets, cluster_index, lod_index,
+                    record_index))
+                continue;
+            RtLodRecord& record = part.rt_lods[record_index];
+            if (record.primitive_count != 0) {
+                const bool opaque = rt_material_ids_are_opaque(
+                    material_staging_, record.material_ids);
                 selected_geometry.push_back(
-                    {&part, &*record, &source, opaque});
+                    {&part, &record, &source, opaque});
+            }
         }
     }
     struct PendingBlas {
@@ -4371,6 +4439,9 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         dependency.pMemoryBarriers = &barrier;
         vkCmdPipelineBarrier2(frame.command_buffer, &dependency);
     }
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    test_last_rt_blas_build_count_ = static_cast<uint32_t>(pending.size());
+#endif
 
     std::vector<VkAccelerationStructureInstanceKHR> instances;
     std::vector<GpuRtPartRecord> part_records;
@@ -4408,6 +4479,17 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         record.primitive_count = lod.primitive_count;
         record.valid = 1;
         part_records.push_back(record);
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+        const bool built_this_frame = std::any_of(
+            pending.begin(), pending.end(), [&lod](const PendingBlas& item) {
+                return item.lod == &lod;
+            });
+        test_last_rt_geometry_records_.push_back(
+            {part.hash, lod.cluster_index, lod.lod_index,
+             instance.instanceCustomIndex, lod.first_vertex, lod.vertex_count,
+             record.vertex_address, traced_blas->address,
+             selected_lod.opaque, built_this_frame});
+#endif
     }
     if (instances.empty()) {
         clear_visibility();
@@ -5088,6 +5170,10 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
         gi_atrous_[1].image != VK_NULL_HANDLE) {
         return true;
     }
+    if (raster_extent_.width != 0 || raster_extent_.height != 0) {
+        vulkan_->wait_idle();
+        if (!dlss_bridge_->free_dlss_resources(error)) return false;
+    }
     matter::VkImageResource albedo;
     matter::VkImageResource normal;
     matter::VkImageResource orm;
@@ -5477,8 +5563,8 @@ bool VkSceneRenderer::record_composite_to_swapchain(
         constants.jitter_offset = {temporal_frame_.jitter_pixels[0],
                                    temporal_frame_.jitter_pixels[1]};
         constants.motion_vector_scale = {
-            1.0f / static_cast<float>(raster_extent_.width),
-            1.0f / static_cast<float>(raster_extent_.height)};
+            -1.0f / static_cast<float>(raster_extent_.width),
+            -1.0f / static_cast<float>(raster_extent_.height)};
         matter::Mat4f view_to_world{};
         if (mat4_inverse(temporal_frame_.current_unjittered.world_to_view,
                          view_to_world)) {

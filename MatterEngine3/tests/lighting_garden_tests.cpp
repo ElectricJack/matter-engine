@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -232,6 +233,17 @@ int main() {
             CHECK(material == kCells[i].material,
                   "every raw sculpture cell contains only its expected material");
         }
+        const size_t triangles = raw_surface_stats[i].triangles;
+        const bool kind_matches =
+            std::strcmp(kCells[i].kind, "cube") == 0
+                ? triangles == 10
+                : std::strcmp(kCells[i].kind, "sphere") == 0
+                    ? triangles >= 220 && triangles <= 240
+                    : std::strcmp(kCells[i].kind, "water") == 0
+                        ? triangles >= 370 && triangles <= 400
+                        : triangles >= 12000;
+        CHECK(kind_matches,
+              "each grid cell bakes the authored geometry family, not only its material");
     }
     for (size_t cell : {size_t(5), size_t(14), size_t(19), size_t(23)})
         print_surface_stats("raw", 0, cell, raw_surface_stats[cell]);

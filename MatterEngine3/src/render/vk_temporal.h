@@ -117,6 +117,7 @@ public:
     TemporalFrame begin(const FrameMatrices& current_unjittered,
                         VkExtent2D internal_extent, VkExtent2D output_extent,
                         const std::vector<TemporalInstance>& instances,
+                        bool jitter_enabled,
                         TemporalInvalidation invalidation);
     bool commit_presented(std::uint64_t attempt_token);
     bool discard_failed_attempt(std::uint64_t attempt_token);

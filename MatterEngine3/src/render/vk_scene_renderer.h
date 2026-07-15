@@ -136,6 +136,17 @@ uint32_t select_scene_cluster_lod(const VkSceneCluster& cluster,
                                   const matter::Mat4f& object_to_world,
                                   matter::Float3 camera_eye,
                                   float pixel_budget) noexcept;
+uint32_t select_cluster_lod_view(const matter::Float3& aabb_min,
+                                 const matter::Float3& aabb_max,
+                                 float radius, const float* thresholds,
+                                 uint32_t lod_count,
+                                 const matter::Mat4f& object_to_world,
+                                 matter::Float3 camera_eye,
+                                 float pixel_budget) noexcept;
+std::vector<uint32_t> dense_rt_lod_offsets(const VkScenePart& part);
+bool dense_rt_lod_index(const std::vector<uint32_t>& offsets,
+                        uint32_t cluster_index, uint32_t lod_index,
+                        uint32_t& record_index) noexcept;
 std::vector<RtGeometrySelection> select_rt_instance_geometry(
     const VkScenePart& part, const matter::Mat4f& object_to_world,
     matter::Float3 camera_eye, float pixel_budget);
@@ -190,6 +201,18 @@ struct VkRasterPixel {
 };
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+    struct RtGeometryDebugRecord {
+        uint64_t part_hash = 0;
+        uint32_t cluster_index = 0;
+        uint32_t lod_index = 0;
+        uint32_t custom_index = 0;
+        uint32_t first_vertex = 0;
+        uint32_t vertex_count = 0;
+        VkDeviceAddress vertex_address = 0;
+        VkDeviceAddress blas_address = 0;
+        bool opaque = false;
+        bool built_this_frame = false;
+    };
 struct RtTraceCounters {
     uint32_t invalid_part_records = 0;
     uint32_t any_hit_invocations = 0;
@@ -353,6 +376,13 @@ public:
     }
     VkCullStats cached_cull_stats() const noexcept { return cached_stats_; }
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+    const std::vector<RtGeometryDebugRecord>&
+    test_last_rt_geometry_records() const {
+        return test_last_rt_geometry_records_;
+    }
+    uint32_t test_last_rt_blas_build_count() const {
+        return test_last_rt_blas_build_count_;
+    }
     void set_test_dlss_bridge(matter::StreamlineBridge bridge);
     bool test_uses_device_streamline_bridge() const;
     VkImage test_dlss_output_image(uint32_t frame_slot) const {
@@ -592,6 +622,7 @@ private:
         bool geometry_opaque = false;
         bool candidate_opaque = false;
         uint64_t candidate_serial = 0;
+        std::vector<uint32_t> material_ids;
     };
 
     struct PartRecord {
@@ -603,6 +634,7 @@ private:
         bool live = false;
         std::shared_ptr<matter::VkBufferResource> rt_geometry;
         std::vector<RtLodRecord> rt_lods;
+        std::vector<uint32_t> rt_cluster_lod_offsets;
         std::vector<uint32_t> material_ids;
         bool rt_geometry_classification_dirty = false;
     };
@@ -706,6 +738,8 @@ private:
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     std::unique_ptr<matter::StreamlineBridge> test_dlss_bridge_override_;
     bool test_force_rt_unavailable_ = false;
+    std::vector<RtGeometryDebugRecord> test_last_rt_geometry_records_;
+    uint32_t test_last_rt_blas_build_count_ = 0;
 #endif
     matter::DlssMode selected_dlss_mode_ = static_cast<matter::DlssMode>(0);
     bool dlss_history_reset_pending_ = false;

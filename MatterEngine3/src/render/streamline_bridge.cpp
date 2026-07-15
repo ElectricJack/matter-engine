@@ -94,6 +94,7 @@ using SlSetTagForFrameFn = PFun_slSetTagForFrame*;
 using SlSetConstantsFn = PFun_slSetConstants*;
 using SlGetFeatureFunctionFn = PFun_slGetFeatureFunction*;
 using SlGetNewFrameTokenFn = PFun_slGetNewFrameToken*;
+using SlFreeResourcesFn = PFun_slFreeResources*;
 using SlDlssGetOptimalSettingsFn = PFun_slDLSSGetOptimalSettings*;
 using SlDlssSetOptionsFn = PFun_slDLSSSetOptions*;
 
@@ -196,11 +197,14 @@ StreamlineBridge StreamlineBridge::initialize_before_vulkan() {
     bridge.sl_get_new_frame_token_ = reinterpret_cast<void*>(
         streamline_function<SlGetNewFrameTokenFn>(module,
                                                    "slGetNewFrameToken"));
+    bridge.sl_free_resources_ = reinterpret_cast<void*>(
+        streamline_function<SlFreeResourcesFn>(module, "slFreeResources"));
     if (!bridge.sl_init_ || !bridge.sl_get_feature_requirements_ ||
         !bridge.sl_set_vulkan_info_ || !bridge.sl_shutdown_ ||
         !bridge.sl_is_feature_supported_ || !bridge.sl_evaluate_feature_ ||
         !bridge.sl_set_tag_for_frame_ || !bridge.sl_set_constants_ ||
-        !bridge.sl_get_feature_function_ || !bridge.sl_get_new_frame_token_) {
+        !bridge.sl_get_feature_function_ || !bridge.sl_get_new_frame_token_ ||
+        !bridge.sl_free_resources_) {
         bridge.dlss_unavailable_reason_ =
             "Streamline SDK is missing a required exported entry point";
         FreeLibrary(module);
@@ -462,6 +466,7 @@ bool StreamlineBridge::evaluate_dlss(
                 output.stage != VK_PIPELINE_STAGE_2_NONE &&
                 output.access != VK_ACCESS_2_NONE) {
                 active_dlss_mode_ = options.mode;
+                dlss_resources_allocated_ = true;
                 return true;
             }
         } else
@@ -616,6 +621,7 @@ bool StreamlineBridge::evaluate_dlss(
                               VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                               VK_ACCESS_2_MEMORY_WRITE_BIT};
                     active_dlss_mode_ = options.mode;
+                    dlss_resources_allocated_ = true;
                     return true;
                 }
                 error = result_reason("Streamline DLSS evaluation", result);
@@ -632,6 +638,34 @@ bool StreamlineBridge::evaluate_dlss(
     dlss_requested_ = false;
     dlss_unavailable_reason_ = error;
     return false;
+}
+
+bool StreamlineBridge::free_dlss_resources(std::string& error) {
+    error.clear();
+    if (!dlss_resources_allocated_) return true;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (test_dlss_evaluator_) {
+        ++test_dlss_resource_free_count_;
+    } else
+#endif
+    {
+#if defined(MATTER_HAVE_STREAMLINE) && MATTER_HAVE_STREAMLINE
+        if (!sl_free_resources_) {
+            error = "Streamline SDK is missing slFreeResources";
+            return false;
+        }
+        const sl::Result result = reinterpret_cast<SlFreeResourcesFn>(
+            sl_free_resources_)(sl::kFeatureDLSS, sl::ViewportHandle(0u));
+        if (result != sl::Result::eOk) {
+            error = result_reason("slFreeResources(DLSS)", result);
+            return false;
+        }
+#endif
+    }
+    dlss_resources_allocated_ = false;
+    active_dlss_mode_ = DlssMode::Native;
+    dlss_history_reset_pending_ = true;
+    return true;
 }
 
 bool StreamlineBridge::consume_dlss_history_reset() {
