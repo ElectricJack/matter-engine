@@ -151,3 +151,8 @@ Task 3: complete (commits 297abd2 + bd8c4da, review clean)
   - Canonical temporal candidates, never-reused attempt tokens, stable production rigid IDs, publication/reset/empty-frame invalidation, and actual-present-only history commits are implemented.
   - Opaque velocity is sampled R16G16_SFLOAT with sampled depth, exact CPU/GPU vector coverage, aligned readback, and shader compilation passing. Full C++/Vulkan runtime smoke remains blocked by the silent MinGW compiler failure.
   - Minor: VkSceneInstance retains a stale comment describing the removed input-order ID fallback; production behavior and tests require stable nonzero IDs.
+
+Task 4: complete (commits 1574fcd + e90e3b4, review clean)
+  - Truthful Native fallback, fake DLSS Quality contract, exact resource/options/optimal-settings metadata, compute-visible depth/velocity, distinct per-slot output, evaluation-failure reset, and pre-UI composite are implemented.
+  - Fixed transform-only command-template loss discovered by raster verification. CUDA 13.3 strict build, all six interop faults, and default/cull/raster modes pass with validation errors 0.
+  - No legal Streamline SDK/runtime is installed, so live DLSS evaluation is intentionally unavailable and not claimed.
