@@ -208,19 +208,56 @@ const char* dlss_mode_name(DlssMode mode) noexcept {
     return "Native";
 }
 
+bool StreamlineBridge::query_dlss_optimal_settings(
+    const DlssOptions& options, DlssOptimalSettings& settings,
+    std::string& error) const {
+    error.clear();
+    settings = {};
+    if (options.output_extent.width == 0 || options.output_extent.height == 0) {
+        error = "DLSS optimal settings require a nonzero output extent";
+        return false;
+    }
+    if (options.mode == DlssMode::Native) {
+        settings.render_extent = options.output_extent;
+        return true;
+    }
+    if (!dlss_available_) {
+        error = dlss_unavailable_reason_;
+        return false;
+    }
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (test_dlss_optimal_evaluator_ &&
+        test_dlss_optimal_evaluator_(options, settings, error) &&
+        settings.render_extent.width != 0 &&
+        settings.render_extent.height != 0) {
+        return true;
+    }
+#endif
+    if (error.empty())
+        error = "Streamline DLSS optimal settings are unavailable in this build";
+    settings = {};
+    return false;
+}
+
 bool StreamlineBridge::evaluate_dlss(
-    VkCommandBuffer command_buffer, uint64_t attempt_token, DlssMode mode,
-    const DlssConstants& constants, const DlssResources& resources,
+    VkCommandBuffer command_buffer, uint64_t attempt_token,
+    const DlssOptions& options, const DlssConstants& constants,
+    const DlssResources& resources, DlssEvaluationOutput& output,
     std::string& error) {
     error.clear();
-    if (mode == DlssMode::Native) {
+    output = {};
+    if (options.mode == DlssMode::Native) {
         active_dlss_mode_ = DlssMode::Native;
         return true;
     }
     const bool valid_extents = constants.internal_extent.width != 0 &&
                                constants.internal_extent.height != 0 &&
                                constants.output_extent.width != 0 &&
-                               constants.output_extent.height != 0;
+                               constants.output_extent.height != 0 &&
+                               constants.output_extent.width ==
+                                   options.output_extent.width &&
+                               constants.output_extent.height ==
+                                   options.output_extent.height;
     const bool distinct_resources =
         resources.hdr.image != VK_NULL_HANDLE &&
         resources.depth.image != VK_NULL_HANDLE &&
@@ -232,8 +269,34 @@ bool StreamlineBridge::evaluate_dlss(
         resources.depth.image != resources.velocity.image &&
         resources.depth.image != resources.output.image &&
         resources.velocity.image != resources.output.image;
+    const bool exact_resource_contract =
+        resources.hdr.format == VK_FORMAT_R16G16B16A16_SFLOAT &&
+        resources.depth.format == VK_FORMAT_D32_SFLOAT &&
+        resources.velocity.format == VK_FORMAT_R16G16_SFLOAT &&
+        resources.output.format == VK_FORMAT_R16G16B16A16_SFLOAT &&
+        resources.hdr.extent.width == constants.internal_extent.width &&
+        resources.hdr.extent.height == constants.internal_extent.height &&
+        resources.depth.extent.width == constants.internal_extent.width &&
+        resources.depth.extent.height == constants.internal_extent.height &&
+        resources.velocity.extent.width == constants.internal_extent.width &&
+        resources.velocity.extent.height == constants.internal_extent.height &&
+        resources.output.extent.width == options.output_extent.width &&
+        resources.output.extent.height == options.output_extent.height &&
+        resources.hdr.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
+        resources.depth.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
+        resources.velocity.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
+        resources.output.layout == VK_IMAGE_LAYOUT_GENERAL &&
+        resources.hdr.stage == VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT &&
+        resources.depth.stage == VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT &&
+        resources.velocity.stage == VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT &&
+        resources.output.stage == VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT &&
+        resources.hdr.access == VK_ACCESS_2_SHADER_SAMPLED_READ_BIT &&
+        resources.depth.access == VK_ACCESS_2_SHADER_SAMPLED_READ_BIT &&
+        resources.velocity.access == VK_ACCESS_2_SHADER_SAMPLED_READ_BIT &&
+        resources.output.access == VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
     if (!dlss_available_ || !valid_extents || !distinct_resources ||
-        !constants.motion_vectors_jittered) {
+        !exact_resource_contract || !constants.motion_vectors_jittered ||
+        !options.color_buffers_hdr || options.use_auto_exposure) {
         error = dlss_available_
                     ? "DLSS evaluation received invalid constants or resources"
                     : dlss_unavailable_reason_;
@@ -241,9 +304,13 @@ bool StreamlineBridge::evaluate_dlss(
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
         if (test_dlss_evaluator_) {
             ++test_dlss_evaluation_count_;
-            if (test_dlss_evaluator_(command_buffer, attempt_token, mode,
-                                     constants, resources, error)) {
-                active_dlss_mode_ = mode;
+            if (test_dlss_evaluator_(command_buffer, attempt_token, options,
+                                     constants, resources, output, error) &&
+                output.output_written &&
+                output.layout != VK_IMAGE_LAYOUT_UNDEFINED &&
+                output.stage != VK_PIPELINE_STAGE_2_NONE &&
+                output.access != VK_ACCESS_2_NONE) {
+                active_dlss_mode_ = options.mode;
                 return true;
             }
         } else
@@ -268,12 +335,15 @@ bool StreamlineBridge::consume_dlss_history_reset() {
 }
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
-StreamlineBridge StreamlineBridge::test_fake_dlss(TestDlssEvaluator evaluator) {
+StreamlineBridge StreamlineBridge::test_fake_dlss(
+    TestDlssEvaluator evaluator,
+    TestDlssOptimalEvaluator optimal_evaluator) {
     StreamlineBridge bridge;
     bridge.initialized_ = true;
     bridge.dlss_requested_ = true;
     bridge.dlss_available_ = true;
     bridge.test_dlss_evaluator_ = std::move(evaluator);
+    bridge.test_dlss_optimal_evaluator_ = std::move(optimal_evaluator);
     return bridge;
 }
 #endif

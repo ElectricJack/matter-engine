@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -79,14 +80,36 @@ void run_dlss_bridge_contract_tests() {
     resources.depth = {image(2), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     resources.velocity = {image(3), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     resources.output = {image(4), VK_IMAGE_LAYOUT_GENERAL};
+    resources.hdr.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    resources.hdr.extent = {1280, 720};
+    resources.hdr.stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    resources.hdr.access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    resources.depth.format = VK_FORMAT_D32_SFLOAT;
+    resources.depth.extent = {1280, 720};
+    resources.depth.stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    resources.depth.access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    resources.velocity.format = VK_FORMAT_R16G16_SFLOAT;
+    resources.velocity.extent = {1280, 720};
+    resources.velocity.stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    resources.velocity.access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    resources.output.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    resources.output.extent = {1920, 1080};
+    resources.output.stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    resources.output.access = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    const matter::DlssOptions options{matter::DlssMode::Quality,
+                                      {1920, 1080}, true, false};
 
     matter::StreamlineBridge native = matter::StreamlineBridge::native_fallback(
         "test native fallback");
     std::string error;
     matter::DlssConstants native_constants = constants;
     native_constants.output_extent = native_constants.internal_extent;
-    CHECK(native.evaluate_dlss(VK_NULL_HANDLE, 1, matter::DlssMode::Native,
-                               native_constants, resources, error) &&
+    matter::DlssEvaluationOutput evaluation_output{};
+    CHECK(native.evaluate_dlss(VK_NULL_HANDLE, 1,
+                               {matter::DlssMode::Native, {1280, 720}, true,
+                                false},
+                               native_constants, resources,
+                               evaluation_output, error) &&
               native_constants.internal_extent.width ==
                   native_constants.output_extent.width &&
               native_constants.internal_extent.height ==
@@ -97,10 +120,16 @@ void run_dlss_bridge_contract_tests() {
     bool received = false;
     matter::StreamlineBridge fake = matter::StreamlineBridge::test_fake_dlss(
         [&](VkCommandBuffer command_buffer, uint64_t token,
-            matter::DlssMode mode, const matter::DlssConstants& captured,
-            const matter::DlssResources& tagged, std::string&) {
+            const matter::DlssOptions& captured_options,
+            const matter::DlssConstants& captured,
+            const matter::DlssResources& tagged,
+            matter::DlssEvaluationOutput& output, std::string&) {
             received = command_buffer == VK_NULL_HANDLE && token == 77 &&
-                       mode == matter::DlssMode::Quality &&
+                       captured_options.mode == matter::DlssMode::Quality &&
+                       captured_options.output_extent.width == 1920 &&
+                       captured_options.output_extent.height == 1080 &&
+                       captured_options.color_buffers_hdr &&
+                       !captured_options.use_auto_exposure &&
                        captured.camera_view_to_clip[0] == 1.0f &&
                        captured.camera_view_to_clip[15] == 16.0f &&
                        captured.motion_vector_scale.x == 1.0f / 1280.0f &&
@@ -115,25 +144,53 @@ void run_dlss_bridge_contract_tests() {
                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
                        tagged.velocity.layout ==
                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
-                       tagged.output.layout == VK_IMAGE_LAYOUT_GENERAL;
+                       tagged.output.layout == VK_IMAGE_LAYOUT_GENERAL &&
+                       tagged.depth.stage ==
+                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT &&
+                       tagged.depth.access ==
+                           VK_ACCESS_2_SHADER_SAMPLED_READ_BIT &&
+                       tagged.velocity.stage ==
+                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT &&
+                       tagged.velocity.access ==
+                           VK_ACCESS_2_SHADER_SAMPLED_READ_BIT &&
+                       tagged.output.access ==
+                           VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+            output = {true, VK_IMAGE_LAYOUT_GENERAL,
+                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                      VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT};
+            return true;
+        },
+        [](const matter::DlssOptions& queried,
+           matter::DlssOptimalSettings& optimal, std::string&) {
+            if (queried.mode != matter::DlssMode::Quality ||
+                queried.output_extent.width != 1920 ||
+                queried.output_extent.height != 1080)
+                return false;
+            optimal = {{1280, 720}, 0.0f};
             return true;
         });
-    CHECK(fake.evaluate_dlss(VK_NULL_HANDLE, 77, matter::DlssMode::Quality,
-                             constants, resources, error) && received &&
+    matter::DlssOptimalSettings optimal{};
+    CHECK(fake.query_dlss_optimal_settings(options, optimal, error) &&
+              optimal.render_extent.width == 1280 &&
+              optimal.render_extent.height == 720 &&
+              optimal.sharpness == 0.0f,
+          "fake Quality returns exact optimal settings for requested output");
+    CHECK(fake.evaluate_dlss(VK_NULL_HANDLE, 77, options, constants,
+                             resources, evaluation_output, error) && received &&
+              evaluation_output.output_written &&
               fake.test_dlss_evaluation_count() == 1 &&
               fake.active_dlss_mode() == matter::DlssMode::Quality,
           "fake Quality receives exact constants, distinct tagged resources, and output");
 
     matter::StreamlineBridge failing = matter::StreamlineBridge::test_fake_dlss(
-        [](VkCommandBuffer, uint64_t, matter::DlssMode,
+        [](VkCommandBuffer, uint64_t, const matter::DlssOptions&,
            const matter::DlssConstants&, const matter::DlssResources&,
-           std::string& evaluation_error) {
+           matter::DlssEvaluationOutput&, std::string& evaluation_error) {
             evaluation_error = "injected DLSS evaluation failure";
             return false;
         });
-    CHECK(!failing.evaluate_dlss(VK_NULL_HANDLE, 78,
-                                 matter::DlssMode::Quality, constants,
-                                 resources, error) &&
+    CHECK(!failing.evaluate_dlss(VK_NULL_HANDLE, 78, options, constants,
+                                 resources, evaluation_output, error) &&
               failing.active_dlss_mode() == matter::DlssMode::Native &&
               failing.consume_dlss_history_reset() &&
               !failing.consume_dlss_history_reset() &&
@@ -744,19 +801,26 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
         {1, identity, identity, true},
         {2, viewer::mat4_translation({0.2f, 0.0f, 0.0f}), identity, true}};
     renderer.set_temporal_frame(rigid_motion);
-    CHECK(renderer.update_instances(
-              {{900, identity, 1},
-               {901, viewer::mat4_translation({0.2f, 0.0f, 0.0f}), 2}},
-              error) &&
-              renderer.dispatch_culling(frame, camera.position, 1.0f, error) &&
+    const bool rigid_updated = renderer.update_instances(
+        {{900, identity, 1},
+         {901, viewer::mat4_translation({0.2f, 0.0f, 0.0f}), 2}},
+        error);
+    const bool rigid_dispatched =
+        rigid_updated &&
+        renderer.dispatch_culling(frame, camera.position, 1.0f, error);
+    CHECK(rigid_dispatched &&
               renderer.render_gbuffer_and_composite(width, height, error),
           error.empty() ? "render exact rigid velocity" : error.c_str());
     viewer::VkRasterPixel moving_center{};
     CHECK(renderer.readback_raster_pixel(width / 2, height / 2,
                                          moving_center, error),
           error.empty() ? "read exact rigid velocity" : error.c_str());
-    CHECK(std::fabs(moving_center.velocity.x - 16.0f) < 0.02f &&
-              std::fabs(moving_center.velocity.y) < 0.002f,
+    const matter::Float3 expected_velocity =
+        viewer::temporal_velocity_pixels(rigid_motion, 2, {0.0f, 0.0f, -2.0f});
+    CHECK(std::fabs(expected_velocity.x - 8.0f) < 1e-5f &&
+              std::fabs(expected_velocity.y) < 1e-5f &&
+              std::fabs(moving_center.velocity.x - expected_velocity.x) < 0.02f &&
+              std::fabs(moving_center.velocity.y - expected_velocity.y) < 0.002f,
           "velocity attachment stores exact current-to-previous input pixels");
 
     viewer::TemporalFrame restored_temporal = rigid_motion;
@@ -1201,16 +1265,33 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
     bool dlss_output_evaluated = false;
     renderer.set_test_dlss_bridge(matter::StreamlineBridge::test_fake_dlss(
         [&](VkCommandBuffer command_buffer, uint64_t token,
-            matter::DlssMode mode, const matter::DlssConstants& constants,
-            const matter::DlssResources& resources, std::string&) {
+            const matter::DlssOptions& options,
+            const matter::DlssConstants& constants,
+            const matter::DlssResources& resources,
+            matter::DlssEvaluationOutput& output, std::string&) {
             dlss_output_evaluated =
                 command_buffer == frame.command_buffer && token == 100 &&
-                mode == matter::DlssMode::Quality &&
+                options.mode == matter::DlssMode::Quality &&
                 constants.motion_vectors_jittered && constants.reset &&
                 constants.internal_extent.width < constants.output_extent.width &&
                 resources.hdr.image != resources.depth.image &&
                 resources.hdr.image != resources.velocity.image &&
                 resources.hdr.image != resources.output.image;
+            const VkClearColorValue clear{{1.0f, 0.0f, 0.0f, 1.0f}};
+            const VkImageSubresourceRange range{
+                VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            vkCmdClearColorImage(command_buffer, resources.output.image,
+                                 VK_IMAGE_LAYOUT_GENERAL, &clear, 1, &range);
+            output = {true, VK_IMAGE_LAYOUT_GENERAL,
+                      VK_PIPELINE_STAGE_2_CLEAR_BIT,
+                      VK_ACCESS_2_TRANSFER_WRITE_BIT};
+            return true;
+        },
+        [](const matter::DlssOptions& options,
+           matter::DlssOptimalSettings& settings, std::string&) {
+            settings = {{(options.output_extent.width * 2 + 2) / 3,
+                         (options.output_extent.height * 2 + 2) / 3},
+                        0.0f};
             return true;
         }));
     renderer.set_dlss_mode(matter::DlssMode::Quality);
@@ -1240,6 +1321,20 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
         renderer.test_dlss_output_image(frame.frame_slot);
     CHECK(first_dlss_output != VK_NULL_HANDLE,
           "DLSS output exists for the acquired frame slot");
+    const std::weak_ptr<void> first_dlss_lifetime =
+        renderer.test_dlss_output_lifetime(frame.frame_slot);
+    CHECK(renderer.test_replace_dlss_output(
+              frame.frame_slot,
+              {frame.extent.width + 8, frame.extent.height + 8}, error) &&
+              renderer.test_dlss_output_image(frame.frame_slot) !=
+                  first_dlss_output &&
+              !first_dlss_lifetime.expired(),
+          error.empty()
+              ? "replaced DLSS output stays retained while frame is pending"
+              : error.c_str());
+    std::vector<uint8_t> dlss_composite_rgba;
+    CHECK(vulkan.readback_swapchain_rgba8(frame, dlss_composite_rgba, error),
+          error.empty() ? "queue fake DLSS output readback" : error.c_str());
     CHECK(matter::immediate_submit_count() == immediate_before,
           "production Vulkan record path performs no immediate submissions");
     const auto ranges = renderer.test_recorded_draw_ranges();
@@ -1251,6 +1346,11 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
     CHECK(vulkan.end_frame(frame, error),
           error.empty() ? "submit asynchronous Vulkan record frame"
                         : error.c_str());
+    CHECK(dlss_composite_rgba.size() >= 4 && dlss_composite_rgba[0] > 240 &&
+              dlss_composite_rgba[1] < 10 && dlss_composite_rgba[2] < 10,
+          "fake evaluator writes the image actually composited to swapchain");
+    CHECK(!first_dlss_lifetime.expired(),
+          "completed submission keeps replaced output until slot recycle");
 
     (void)renderer.cached_cull_stats();
     CHECK(matter::immediate_submit_count() == immediate_before,
@@ -1260,6 +1360,10 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
         CHECK(vulkan.begin_frame(frame, error),
               error.empty() ? "begin deferred cull stats frame" : error.c_str());
         if (frame.command_buffer == VK_NULL_HANDLE) return;
+        if (frame.frame_slot == recorded_slot) {
+            CHECK(first_dlss_lifetime.expired(),
+                  "slot recycle releases the replaced DLSS output");
+        }
         CHECK(renderer.prepare_frame(frame, scene.frame, scene.eye, 1.0f, error) &&
                   renderer.record_cull_and_render(frame, scene.frame, scene.eye,
                                                   1.0f, error) &&

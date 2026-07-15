@@ -35,6 +35,10 @@ struct DlssConstants {
 struct DlssResource {
     VkImage image = VK_NULL_HANDLE;
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkFormat format = VK_FORMAT_UNDEFINED;
+    VkExtent2D extent{};
+    VkPipelineStageFlags2 stage = VK_PIPELINE_STAGE_2_NONE;
+    VkAccessFlags2 access = VK_ACCESS_2_NONE;
 };
 
 struct DlssResources {
@@ -42,6 +46,25 @@ struct DlssResources {
     DlssResource depth{};
     DlssResource velocity{};
     DlssResource output{};
+};
+
+struct DlssOptions {
+    DlssMode mode = DlssMode::Native;
+    VkExtent2D output_extent{};
+    bool color_buffers_hdr = true;
+    bool use_auto_exposure = false;
+};
+
+struct DlssOptimalSettings {
+    VkExtent2D render_extent{};
+    float sharpness = 0.0f;
+};
+
+struct DlssEvaluationOutput {
+    bool output_written = false;
+    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkPipelineStageFlags2 stage = VK_PIPELINE_STAGE_2_NONE;
+    VkAccessFlags2 access = VK_ACCESS_2_NONE;
 };
 
 // Keeps the proprietary Streamline SDK at one optional boundary.  The default
@@ -62,9 +85,14 @@ public:
         return mode == DlssMode::Native || dlss_available_;
     }
     DlssMode active_dlss_mode() const { return active_dlss_mode_; }
+    bool query_dlss_optimal_settings(const DlssOptions& options,
+                                     DlssOptimalSettings& settings,
+                                     std::string& error) const;
     bool evaluate_dlss(VkCommandBuffer command_buffer, uint64_t attempt_token,
-                       DlssMode mode, const DlssConstants& constants,
-                       const DlssResources& resources, std::string& error);
+                       const DlssOptions& options,
+                       const DlssConstants& constants,
+                       const DlssResources& resources,
+                       DlssEvaluationOutput& output, std::string& error);
     bool consume_dlss_history_reset();
 
     // Merges the second sequence after the first, preserving first-seen order.
@@ -133,9 +161,13 @@ public:
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     using TestDlssEvaluator = std::function<bool(
-        VkCommandBuffer, uint64_t, DlssMode, const DlssConstants&,
-        const DlssResources&, std::string&)>;
-    static StreamlineBridge test_fake_dlss(TestDlssEvaluator evaluator);
+        VkCommandBuffer, uint64_t, const DlssOptions&, const DlssConstants&,
+        const DlssResources&, DlssEvaluationOutput&, std::string&)>;
+    using TestDlssOptimalEvaluator = std::function<bool(
+        const DlssOptions&, DlssOptimalSettings&, std::string&)>;
+    static StreamlineBridge test_fake_dlss(
+        TestDlssEvaluator evaluator,
+        TestDlssOptimalEvaluator optimal_evaluator = {});
     uint64_t test_dlss_evaluation_count() const {
         return test_dlss_evaluation_count_;
     }
@@ -189,6 +221,7 @@ private:
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     TestDlssEvaluator test_dlss_evaluator_;
+    TestDlssOptimalEvaluator test_dlss_optimal_evaluator_;
     uint64_t test_dlss_evaluation_count_ = 0;
     std::vector<std::string> test_presentation_events_;
     uint64_t last_present_common_serial_ = 0;

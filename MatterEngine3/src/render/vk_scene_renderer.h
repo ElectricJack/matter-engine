@@ -212,6 +212,9 @@ public:
                    ? frames_[frame_slot].dlss_output.image
                    : VK_NULL_HANDLE;
     }
+    std::weak_ptr<void> test_dlss_output_lifetime(uint32_t frame_slot) const;
+    bool test_replace_dlss_output(uint32_t frame_slot, VkExtent2D extent,
+                                  std::string& error);
     // Immediate submit/readback diagnostics are intentionally test-only. The
     // production path records through record_cull_and_render above.
     bool dispatch_culling(const FrameMatrices& frame, matter::Float3 camera_eye,

@@ -254,11 +254,16 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     vkCmdEndRendering(command_buffer);
 
     for (auto* color : colors) {
+        const VkPipelineStageFlags2 sampled_stages =
+            color == record.velocity
+                ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT
+                : VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
         matter::record_image_transition(
             command_buffer, *color, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
             VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            sampled_stages,
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT);
     }
@@ -267,7 +272,8 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
         VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
             VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
 
     VkRenderingAttachmentInfo hdr_attachment{
@@ -456,31 +462,35 @@ void VkSceneRenderer::set_test_dlss_bridge(matter::StreamlineBridge bridge) {
     dlss_bridge_ =
         std::make_unique<matter::StreamlineBridge>(std::move(bridge));
 }
+
+std::weak_ptr<void> VkSceneRenderer::test_dlss_output_lifetime(
+    uint32_t frame_slot) const {
+    return frame_slot < frames_.size()
+               ? std::weak_ptr<void>(frames_[frame_slot].dlss_output.lifetime)
+               : std::weak_ptr<void>{};
+}
+
+bool VkSceneRenderer::test_replace_dlss_output(uint32_t frame_slot,
+                                               VkExtent2D extent,
+                                               std::string& error) {
+    if (frame_slot >= frames_.size()) {
+        error = "test DLSS output frame slot is out of range";
+        return false;
+    }
+    return ensure_dlss_output(frames_[frame_slot], extent, error);
+}
 #endif
 
 VkExtent2D VkSceneRenderer::dlss_internal_extent(
     VkExtent2D output_extent) const {
     if (!dlss_bridge_->supports_dlss_mode(selected_dlss_mode_))
         return output_extent;
-    const auto scaled = [](uint32_t value, uint32_t numerator,
-                           uint32_t denominator) {
-        return std::max(1u, static_cast<uint32_t>(
-                                (static_cast<uint64_t>(value) * numerator +
-                                 denominator - 1) /
-                                denominator));
-    };
-    switch (selected_dlss_mode_) {
-        case matter::DlssMode::Quality:
-            return {scaled(output_extent.width, 2, 3),
-                    scaled(output_extent.height, 2, 3)};
-        case matter::DlssMode::Balanced:
-            return {scaled(output_extent.width, 10, 17),
-                    scaled(output_extent.height, 10, 17)};
-        case matter::DlssMode::Performance:
-            return {scaled(output_extent.width, 1, 2),
-                    scaled(output_extent.height, 1, 2)};
-        case matter::DlssMode::Native: return output_extent;
-    }
+    matter::DlssOptimalSettings settings{};
+    std::string ignored_error;
+    if (dlss_bridge_->query_dlss_optimal_settings(
+            {selected_dlss_mode_, output_extent, true, false}, settings,
+            ignored_error))
+        return settings.render_extent;
     return output_extent;
 }
 
@@ -1485,6 +1495,14 @@ bool VkSceneRenderer::update_instances(
     if (identical) return true;
 
     const bool layout_changed = candidate_slots != instance_part_slots_;
+    if (!layout_changed) {
+        instance_staging_ = std::move(candidate_instances);
+        instance_part_slots_ = std::move(candidate_slots);
+        rt_instances_ = std::move(candidate_rt);
+        max_clusters_per_instance_ = candidate_max_clusters;
+        ++instance_generation_;
+        return true;
+    }
     auto old_instances = std::move(instance_staging_);
     auto old_slots = std::move(instance_part_slots_);
     auto old_rt = std::move(rt_instances_);
@@ -2209,7 +2227,8 @@ bool VkSceneRenderer::ensure_dlss_output(FrameResources& frame,
             *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_R16G16B16A16_SFLOAT,
             {output_extent.width, output_extent.height, 1},
             VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                VK_IMAGE_USAGE_TRANSFER_DST_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
             replacement, error)) {
         return false;
@@ -2294,6 +2313,10 @@ bool VkSceneRenderer::record_composite_to_swapchain(
     }
 
     matter::VkImageResource* composite_source = &hdr_;
+    VkPipelineStageFlags2 composite_source_stage =
+        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkAccessFlags2 composite_source_access =
+        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
     if (selected_dlss_mode_ != matter::DlssMode::Native &&
         dlss_bridge_->supports_dlss_mode(selected_dlss_mode_) &&
         frame.frame_slot < frames_.size()) {
@@ -2347,34 +2370,43 @@ bool VkSceneRenderer::record_composite_to_swapchain(
         constants.internal_extent = raster_extent_;
         constants.output_extent = frame.extent;
         const matter::DlssResources resources{
-            {hdr_.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-            {depth_.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-            {velocity_.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-            {slot.dlss_output.image, VK_IMAGE_LAYOUT_GENERAL}};
+            {hdr_.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, hdr_.format,
+             raster_extent_, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT},
+            {depth_.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+             depth_.format, raster_extent_,
+             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT},
+            {velocity_.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+             velocity_.format, raster_extent_,
+             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT},
+            {slot.dlss_output.image, VK_IMAGE_LAYOUT_GENERAL,
+             slot.dlss_output.format, frame.extent,
+             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT}};
         std::string evaluation_error;
+        matter::DlssEvaluationOutput evaluation_output{};
         if (dlss_bridge_->evaluate_dlss(
                 frame.command_buffer, temporal_frame_.attempt_token,
-                selected_dlss_mode_, constants, resources, evaluation_error)) {
+                {selected_dlss_mode_, frame.extent, true, false}, constants,
+                resources, evaluation_output, evaluation_error)) {
             composite_source = &slot.dlss_output;
+            slot.dlss_output.layout = evaluation_output.layout;
+            composite_source_stage = evaluation_output.stage;
+            composite_source_access = evaluation_output.access;
         } else {
+            composite_source_stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            composite_source_access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
             dlss_history_reset_pending_ =
                 dlss_bridge_->consume_dlss_history_reset();
             if (dlss_history_reset_pending_) ++dlss_reset_count_;
         }
     }
-    const bool hdr_was_tagged_for_dlss =
-        composite_source == &hdr_ &&
-        hdr_.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     matter::record_image_transition(
         frame.command_buffer, *composite_source,
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        composite_source == &hdr_ && !hdr_was_tagged_for_dlss
-            ? VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT
-            : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-        composite_source == &hdr_
-            ? (hdr_was_tagged_for_dlss ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT
-                                       : VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT)
-            : VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        composite_source_stage, composite_source_access,
         VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
         VK_IMAGE_ASPECT_COLOR_BIT);
     VkImageMemoryBarrier2 swap_to_transfer{
