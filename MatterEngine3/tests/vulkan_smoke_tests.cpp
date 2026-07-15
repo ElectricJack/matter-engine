@@ -83,6 +83,9 @@ void run_streamline_bridge_fallback_tests() {
           "Streamline bridge reports that the SDK was not found");
     CHECK(!bridge.proxy_dispatch_used(),
           "Streamline fallback never dispatches through a proxy");
+    CHECK(!matter::StreamlineBridge::requires_explicit_vulkan_info(true) &&
+              matter::StreamlineBridge::requires_explicit_vulkan_info(false),
+          "proxy-created Vulkan devices are not registered with Streamline twice");
 
     const std::vector<const char*> merged =
         matter::StreamlineBridge::merge_extensions({"A", "B"},
@@ -95,6 +98,12 @@ void run_streamline_bridge_fallback_tests() {
 void run_dlss_bridge_contract_tests() {
     const auto image = [](uintptr_t value) {
         return reinterpret_cast<VkImage>(value);
+    };
+    const auto view = [](uintptr_t value) {
+        return reinterpret_cast<VkImageView>(value);
+    };
+    const auto memory = [](uintptr_t value) {
+        return reinterpret_cast<VkDeviceMemory>(value);
     };
     matter::DlssConstants constants{};
     for (uint32_t index = 0; index < 16; ++index) {
@@ -131,6 +140,31 @@ void run_dlss_bridge_contract_tests() {
     resources.output.extent = {1920, 1080};
     resources.output.stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     resources.output.access = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    resources.hdr.view = view(11);
+    resources.hdr.memory = memory(21);
+    resources.hdr.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                          VK_IMAGE_USAGE_SAMPLED_BIT |
+                          VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    resources.hdr.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+    resources.depth.view = view(12);
+    resources.depth.memory = memory(22);
+    resources.depth.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                            VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                            VK_IMAGE_USAGE_SAMPLED_BIT;
+    resources.depth.aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+    resources.velocity.view = view(13);
+    resources.velocity.memory = memory(23);
+    resources.velocity.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                               VK_IMAGE_USAGE_SAMPLED_BIT |
+                               VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    resources.velocity.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+    resources.output.view = view(14);
+    resources.output.memory = memory(24);
+    resources.output.usage = VK_IMAGE_USAGE_STORAGE_BIT |
+                             VK_IMAGE_USAGE_SAMPLED_BIT |
+                             VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                             VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    resources.output.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
     const matter::DlssOptions options{matter::DlssMode::Quality,
                                       {1920, 1080}, true, false};
 
@@ -189,7 +223,18 @@ void run_dlss_bridge_contract_tests() {
                        tagged.velocity.access ==
                            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT &&
                        tagged.output.access ==
-                           VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+                           VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT &&
+                       tagged.hdr.view == view(11) &&
+                       tagged.hdr.memory == memory(21) &&
+                       tagged.hdr.aspect == VK_IMAGE_ASPECT_COLOR_BIT &&
+                       tagged.depth.view == view(12) &&
+                       tagged.depth.memory == memory(22) &&
+                       tagged.depth.aspect == VK_IMAGE_ASPECT_DEPTH_BIT &&
+                       tagged.velocity.view == view(13) &&
+                       tagged.velocity.memory == memory(23) &&
+                       tagged.output.view == view(14) &&
+                       tagged.output.memory == memory(24) &&
+                       (tagged.output.usage & VK_IMAGE_USAGE_STORAGE_BIT) != 0;
             output = {true, VK_IMAGE_LAYOUT_GENERAL,
                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                       VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT};
@@ -204,6 +249,18 @@ void run_dlss_bridge_contract_tests() {
             optimal = {{1280, 720}, 0.0f};
             return true;
         });
+    std::vector<const char*> instance_extensions;
+    std::vector<const char*> device_extensions;
+    VkPhysicalDeviceVulkan12Features required12{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    VkPhysicalDeviceVulkan13Features required13{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    uint32_t graphics_queues = 1;
+    uint32_t compute_queues = 0;
+    fake.append_requirements(instance_extensions, device_extensions, required12,
+                             required13, graphics_queues, compute_queues);
+    CHECK(required13.privateData == VK_TRUE,
+          "active Streamline bridge explicitly enables Vulkan 1.3 privateData");
     matter::DlssOptimalSettings optimal{};
     CHECK(fake.query_dlss_optimal_settings(options, optimal, error) &&
               optimal.render_extent.width == 1280 &&
@@ -2462,6 +2519,11 @@ int main() {
     CHECK(vulkan != nullptr, error.empty() ? "create Vulkan device" : error.c_str());
 
     if (vulkan) {
+        {
+            viewer::VkSceneRenderer device_bridge_renderer(*vulkan);
+            CHECK(device_bridge_renderer.test_uses_device_streamline_bridge(),
+                  "scene renderer uses the Vulkan device-owned Streamline bridge");
+        }
         run_streamline_presentation_funnel_tests(*vulkan);
         CHECK(!vulkan->dlss_available(),
               "Vulkan device reports DLSS unavailable without Streamline");

@@ -59,7 +59,7 @@ HAVE_STREAMLINE ?= 0
 # Point this at a locally installed, licensed Streamline SDK.  Nothing from the
 # SDK is checked into this repository; HAVE_STREAMLINE=0 is the default.
 STREAMLINE_PATH ?=
-STREAMLINE_DLL_DIR ?= $(STREAMLINE_PATH)/bin/x64
+STREAMLINE_DLL_DIR ?= $(STREAMLINE_PATH)/bin/x64/development
 CUDA_PATH ?= /c/PROGRA~1/NVIDIA~2/CUDA/v13.3
 OPTIX_PATH ?= /c/PROGRA~3/NVIDIA~1/OPTIXS~1.0
 CUDA_HOST_COMPILER ?= $(shell powershell.exe -NoProfile -Command \

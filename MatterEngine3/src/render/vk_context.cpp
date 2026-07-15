@@ -1997,6 +1997,10 @@ struct VulkanDevice::Impl {
             streamline.destroy_surface(instance, surface, nullptr);
             surface = VK_NULL_HANDLE;
         }
+        // In the native-device manual-hooking path Streamline owns Vulkan
+        // children which slShutdown must release while device and instance are
+        // still valid. All intercepted WSI objects have been destroyed above.
+        streamline.shutdown();
         if (device != VK_NULL_HANDLE) {
             if (device_lifetime) device_lifetime->invalidate();
             vkDestroyDevice(device, nullptr);
@@ -2010,11 +2014,6 @@ struct VulkanDevice::Impl {
                 destroy_debug(instance, debug_messenger, nullptr);
         }
         if (instance != VK_NULL_HANDLE) vkDestroyInstance(instance, nullptr);
-        // Keep the Streamline interposer and every proxy entry point resident
-        // through all Vulkan object destruction, including the raw device and
-        // instance teardown calls.  Only unload after the final proxy-created
-        // object has gone away.
-        streamline.shutdown();
     }
 };
 
@@ -2268,6 +2267,14 @@ bool VulkanDevice::dlss_available() const {
 
 const std::string& VulkanDevice::dlss_unavailable_reason() const {
     return impl_->streamline.dlss_unavailable_reason();
+}
+
+StreamlineBridge& VulkanDevice::streamline_bridge() {
+    return impl_->streamline;
+}
+
+const StreamlineBridge& VulkanDevice::streamline_bridge() const {
+    return impl_->streamline;
 }
 
 bool VulkanDevice::ray_tracing_available() const {

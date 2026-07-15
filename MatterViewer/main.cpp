@@ -417,6 +417,17 @@ int main() {
     bool f8_down = false;
     bool dlss_modes_supported = false;
     matter::DlssMode selected_dlss_mode = matter::DlssMode::Native;
+    if (const char* initial_dlss_mode = std::getenv("MATTER_DLSS_MODE")) {
+        if (std::strcmp(initial_dlss_mode, "quality") == 0)
+            selected_dlss_mode = matter::DlssMode::Quality;
+        else if (std::strcmp(initial_dlss_mode, "balanced") == 0)
+            selected_dlss_mode = matter::DlssMode::Balanced;
+        else if (std::strcmp(initial_dlss_mode, "performance") == 0)
+            selected_dlss_mode = matter::DlssMode::Performance;
+        else if (std::strcmp(initial_dlss_mode, "native") != 0)
+            std::fprintf(stderr,
+                         "MATTER_DLSS_MODE: expected native, quality, balanced, or performance; using native\n");
+    }
     matter::DlssMode reported_selected_dlss_mode =
         static_cast<matter::DlssMode>(255);
     matter::DlssMode reported_active_dlss_mode =

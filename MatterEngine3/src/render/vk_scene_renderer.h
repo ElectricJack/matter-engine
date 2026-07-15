@@ -226,6 +226,7 @@ public:
     VkCullStats cached_cull_stats() const noexcept { return cached_stats_; }
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     void set_test_dlss_bridge(matter::StreamlineBridge bridge);
+    bool test_uses_device_streamline_bridge() const;
     VkImage test_dlss_output_image(uint32_t frame_slot) const {
         return frame_slot < frames_.size()
                    ? frames_[frame_slot].dlss_output.image
@@ -452,7 +453,10 @@ private:
     void destroy_pipeline();
 
     matter::VulkanDevice* vulkan_ = nullptr;
-    std::unique_ptr<matter::StreamlineBridge> dlss_bridge_;
+    matter::StreamlineBridge* dlss_bridge_ = nullptr;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    std::unique_ptr<matter::StreamlineBridge> test_dlss_bridge_override_;
+#endif
     matter::DlssMode selected_dlss_mode_ = static_cast<matter::DlssMode>(0);
     bool dlss_history_reset_pending_ = false;
     uint64_t dlss_reset_count_ = 0;

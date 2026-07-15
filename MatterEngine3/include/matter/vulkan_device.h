@@ -11,6 +11,8 @@ struct GLFWwindow;
 
 namespace matter {
 
+class StreamlineBridge;
+
 struct VulkanRayTracingCapabilities {
     bool acceleration_structure_extension = false;
     bool ray_tracing_pipeline_extension = false;
@@ -102,6 +104,10 @@ public:
     bool multi_draw_indirect_enabled() const;
     bool dlss_available() const;
     const std::string& dlss_unavailable_reason() const;
+    // Non-owning access for render passes which record Streamline work on this
+    // device's command buffers. VulkanDevice remains the sole bridge owner.
+    StreamlineBridge& streamline_bridge();
+    const StreamlineBridge& streamline_bridge() const;
     bool ray_tracing_available() const;
     const std::string& ray_tracing_unavailable_reason() const;
     const VulkanRayTracingProperties& ray_tracing_properties() const;

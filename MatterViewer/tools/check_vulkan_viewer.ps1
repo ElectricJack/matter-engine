@@ -199,6 +199,7 @@ Require-Text $main 'CreateFile' 'Windows command file reader'
 Forbid-Text $main 'MATTER_CMD_FIFO not supported on Windows' 'ignored Windows command interface'
 Require-Text $main 'FATAL: MATTER_WORLD' 'explicit missing world failure'
 Require-Text $main 'selected world' 'selected world identity report'
+Require-Text $main 'MATTER_DLSS_MODE' 'deterministic DLSS mode selection'
 Require-Text $runtimeSmoke 'MATTER_CACHE_ROOT' 'isolated clean cache smoke'
 Require-Text $runtimeSmoke 'selected world CornellBox hash' 'selected world hash assertion'
 

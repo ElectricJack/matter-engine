@@ -484,12 +484,7 @@ bool checked_size_to_int(size_t count, int& result, const char* label,
 }  // namespace vk_scene_detail
 
 VkSceneRenderer::VkSceneRenderer(matter::VulkanDevice& vulkan)
-    : vulkan_(&vulkan),
-      dlss_bridge_(std::make_unique<matter::StreamlineBridge>(
-          matter::StreamlineBridge::native_fallback(
-              vulkan.dlss_available()
-                  ? "Streamline runtime detected, but this build has no linked DLSS evaluation adapter"
-                  : vulkan.dlss_unavailable_reason()))) {}
+    : vulkan_(&vulkan), dlss_bridge_(&vulkan.streamline_bridge()) {}
 
 matter::DlssMode VkSceneRenderer::active_dlss_mode() const {
     return dlss_bridge_->active_dlss_mode();
@@ -501,8 +496,13 @@ const std::string& VkSceneRenderer::dlss_reason() const {
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
 void VkSceneRenderer::set_test_dlss_bridge(matter::StreamlineBridge bridge) {
-    dlss_bridge_ =
+    test_dlss_bridge_override_ =
         std::make_unique<matter::StreamlineBridge>(std::move(bridge));
+    dlss_bridge_ = test_dlss_bridge_override_.get();
+}
+
+bool VkSceneRenderer::test_uses_device_streamline_bridge() const {
+    return vulkan_ && dlss_bridge_ == &vulkan_->streamline_bridge();
 }
 
 std::weak_ptr<void> VkSceneRenderer::test_dlss_output_lifetime(
@@ -3085,6 +3085,31 @@ bool VkSceneRenderer::record_composite_to_swapchain(
         constants.motion_vector_scale = {
             1.0f / static_cast<float>(raster_extent_.width),
             1.0f / static_cast<float>(raster_extent_.height)};
+        matter::Mat4f view_to_world{};
+        if (mat4_inverse(temporal_frame_.current_unjittered.world_to_view,
+                         view_to_world)) {
+            constants.camera_position[0] = view_to_world.m[3];
+            constants.camera_position[1] = view_to_world.m[7];
+            constants.camera_position[2] = view_to_world.m[11];
+            constants.camera_right[0] = view_to_world.m[0];
+            constants.camera_right[1] = view_to_world.m[4];
+            constants.camera_right[2] = view_to_world.m[8];
+            constants.camera_up[0] = view_to_world.m[1];
+            constants.camera_up[1] = view_to_world.m[5];
+            constants.camera_up[2] = view_to_world.m[9];
+            constants.camera_forward[0] = -view_to_world.m[2];
+            constants.camera_forward[1] = -view_to_world.m[6];
+            constants.camera_forward[2] = -view_to_world.m[10];
+        }
+        const matter::Mat4f& projection =
+            temporal_frame_.current_unjittered.view_to_clip;
+        constants.camera_near = projection.m[11] / projection.m[10];
+        constants.camera_far =
+            projection.m[11] / (projection.m[10] + 1.0f);
+        constants.camera_fov = 2.0f * std::atan(1.0f / projection.m[5]);
+        constants.camera_aspect_ratio = projection.m[5] / projection.m[0];
+        constants.depth_inverted = false;
+        constants.camera_motion_included = true;
         constants.motion_vectors_jittered = true;
         constants.reset = temporal_frame_.reset;
         constants.internal_extent = raster_extent_;
@@ -3092,19 +3117,34 @@ bool VkSceneRenderer::record_composite_to_swapchain(
         const matter::DlssResources resources{
             {hdr_.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, hdr_.format,
              raster_extent_, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT},
+             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, hdr_.view, hdr_.memory,
+             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                 VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+             VK_IMAGE_ASPECT_COLOR_BIT},
             {depth_.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
              depth_.format, raster_extent_,
              VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT},
+             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, depth_.view, depth_.memory,
+             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+             VK_IMAGE_ASPECT_DEPTH_BIT},
             {velocity_.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
              velocity_.format, raster_extent_,
              VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT},
+             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, velocity_.view,
+             velocity_.memory,
+             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                 VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+             VK_IMAGE_ASPECT_COLOR_BIT},
             {slot.dlss_output.image, VK_IMAGE_LAYOUT_GENERAL,
              slot.dlss_output.format, frame.extent,
              VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT}};
+             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, slot.dlss_output.view,
+             slot.dlss_output.memory,
+             VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                 VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+             VK_IMAGE_ASPECT_COLOR_BIT}};
         std::string evaluation_error;
         matter::DlssEvaluationOutput evaluation_output{};
         if (dlss_bridge_->evaluate_dlss(

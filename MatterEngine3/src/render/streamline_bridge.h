@@ -26,6 +26,16 @@ struct DlssConstants {
     float prev_clip_to_clip[16]{};
     DlssFloat2 jitter_offset{};
     DlssFloat2 motion_vector_scale{};
+    float camera_position[3]{};
+    float camera_up[3]{};
+    float camera_right[3]{};
+    float camera_forward[3]{};
+    float camera_near = 0.0f;
+    float camera_far = 0.0f;
+    float camera_fov = 0.0f;
+    float camera_aspect_ratio = 0.0f;
+    bool depth_inverted = false;
+    bool camera_motion_included = true;
     bool motion_vectors_jittered = true;
     bool reset = true;
     VkExtent2D internal_extent{};
@@ -39,6 +49,10 @@ struct DlssResource {
     VkExtent2D extent{};
     VkPipelineStageFlags2 stage = VK_PIPELINE_STAGE_2_NONE;
     VkAccessFlags2 access = VK_ACCESS_2_NONE;
+    VkImageView view = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkImageUsageFlags usage = 0;
+    VkImageAspectFlags aspect = 0;
 };
 
 struct DlssResources {
@@ -99,6 +113,9 @@ public:
     static std::vector<const char*> merge_extensions(
         const std::vector<const char*>& first,
         const std::vector<const char*>& second);
+    static bool requires_explicit_vulkan_info(bool proxy_object_created) {
+        return !proxy_object_created;
+    }
 
     // Applies requirements returned by slGetFeatureRequirements before Vulkan
     // availability checks and device creation.  The existing 1.2/1.3 feature
@@ -187,6 +204,7 @@ private:
     bool proxy_dispatch_used_ = false;
     bool use_proxy_dispatch_ = false;
     bool proxy_object_created_ = false;
+    bool device_created_by_proxy_ = false;
     bool streamline_initialized_ = false;
     bool present_common_pending_ = false;
     bool dlss_history_reset_pending_ = false;
@@ -204,10 +222,16 @@ private:
     void* sl_get_feature_requirements_ = nullptr;
     void* sl_set_vulkan_info_ = nullptr;
     void* sl_shutdown_ = nullptr;
-    PFN_vkCreateInstance create_instance_proxy_ = nullptr;
+    void* sl_is_feature_supported_ = nullptr;
+    void* sl_evaluate_feature_ = nullptr;
+    void* sl_set_tag_for_frame_ = nullptr;
+    void* sl_set_constants_ = nullptr;
+    void* sl_get_feature_function_ = nullptr;
+    void* sl_get_new_frame_token_ = nullptr;
+    void* sl_dlss_get_optimal_settings_ = nullptr;
+    void* sl_dlss_set_options_ = nullptr;
     PFN_vkGetInstanceProcAddr get_instance_proc_addr_proxy_ = nullptr;
     PFN_vkGetDeviceProcAddr get_device_proc_addr_proxy_ = nullptr;
-    PFN_vkCreateDevice create_device_proxy_ = nullptr;
     PFN_vkQueuePresentKHR queue_present_proxy_ = nullptr;
     PFN_vkCreateSwapchainKHR create_swapchain_proxy_ = nullptr;
     PFN_vkGetSwapchainImagesKHR get_swapchain_images_proxy_ = nullptr;
@@ -228,7 +252,6 @@ private:
     void record_test_presentation_event(const char* event);
 #endif
 
-    bool populate_instance_proxies(VkInstance instance);
     bool populate_device_proxies(VkDevice device);
 };
 

@@ -9,7 +9,7 @@ set -eu
 : "${OPTIX_PATH:=/c/PROGRA~3/NVIDIA~1/OPTIXS~1.0}"
 : "${HAVE_STREAMLINE:=0}"
 : "${STREAMLINE_PATH:=}"
-: "${STREAMLINE_DLL_DIR:=$STREAMLINE_PATH/bin/x64}"
+: "${STREAMLINE_DLL_DIR:=$STREAMLINE_PATH/bin/x64/development}"
 
 missing=0
 require_command() {
@@ -37,10 +37,20 @@ case "$HAVE_STREAMLINE" in
         require_file 'Streamline header' "$STREAMLINE_PATH/include/sl.h"
         require_file 'Streamline Vulkan helper header' \
             "$STREAMLINE_PATH/include/sl_helpers_vk.h"
+        require_file 'Streamline core API header' \
+            "$STREAMLINE_PATH/include/sl_core_api.h"
+        require_file 'Streamline constants header' \
+            "$STREAMLINE_PATH/include/sl_consts.h"
+        require_file 'Streamline DLSS header' \
+            "$STREAMLINE_PATH/include/sl_dlss.h"
         require_file 'Streamline security header' \
             "$STREAMLINE_PATH/include/sl_security.h"
         require_file 'signed Streamline interposer DLL' \
             "$STREAMLINE_DLL_DIR/sl.interposer.dll"
+        require_file 'Streamline DLSS plugin DLL' \
+            "$STREAMLINE_DLL_DIR/sl.dlss.dll"
+        require_file 'NVIDIA DLSS runtime DLL' \
+            "$STREAMLINE_DLL_DIR/nvngx_dlss.dll"
         ;;
     *)
         printf 'ERROR: HAVE_STREAMLINE must be 0 or 1, got: %s\n' \
