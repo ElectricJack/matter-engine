@@ -105,6 +105,10 @@ Require-Text $runtimeSmoke 'MATTER_DISABLE_VK_RT' 'runtime RT toggle assertion'
 foreach ($mode in @("'rt'", "'rt-disabled'", "'rt-unavailable'")) {
     Require-Text $interopSmoke $mode 'executable final RT smoke mode'
 }
+Require-Text $interopSmoke 'System.Diagnostics.ProcessStartInfo' 'duplicate-safe smoke process launch'
+Require-Text $interopSmoke 'EnvironmentVariables.Clear()' 'sanitized smoke environment'
+Require-Text $interopSmoke 'OrdinalIgnoreCase' 'case-insensitive smoke environment deduplication'
+Forbid-Text $interopSmoke 'Start-Process' 'duplicate-sensitive smoke process launch'
 @('vk_rt_available', 'vk_rt_effective', 'vk_rt_trace_dispatches',
   'vk_rt_fallback_reason') | ForEach-Object {
     Require-Text $world $_ 'renderer-observed RT FrameStats'
@@ -112,6 +116,10 @@ foreach ($mode in @("'rt'", "'rt-disabled'", "'rt-unavailable'")) {
     Require-Text $perfScript $_ 'renderer-observed RT performance gate'
 }
 Require-Text $runtimeSmoke 'Vulkan RT observed effective=' 'renderer-observed viewer smoke assertion'
+Require-Text $engineImpl 'world session disconnected' 'disconnected-frame RT fallback reason'
+Require-Text $engineImpl 'world part store unavailable' 'missing-store RT fallback reason'
+Require-Text $vkScene 'last_rt_samples_ = ray_tracing_settings_.samples' 'per-frame observed RT sample reset'
+Require-Text $vkScene 'last_rt_debug_view_ = ray_tracing_settings_.debug_view' 'per-frame observed RT debug reset'
 
 # Task 9 completion review: Vulkan world rendering must consume authored
 # materials/lights and must not expose controls that are active no-ops.

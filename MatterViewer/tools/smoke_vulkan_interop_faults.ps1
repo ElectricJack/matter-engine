@@ -21,22 +21,47 @@ try {
     foreach ($case in $modes) {
         $env:MATTER_VK_SMOKE_MODE = $case.Mode
         Write-Output "CUDA/Vulkan executable smoke: $($case.Label)"
-        $stdout = Join-Path $env:TEMP ("matter-vk-smoke-" + [guid]::NewGuid().ToString('N') + '.out')
-        $stderr = "$stdout.err"
+        $process = $null
         try {
-            $process = Start-Process -FilePath $TestPath -NoNewWindow -PassThru `
-                -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-            # Materialize the process handle before waiting; Windows PowerShell can
-            # otherwise lose ExitCode when a short-lived child exits immediately.
-            $null = $process.Handle
+            $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+            $startInfo.FileName = $TestPath
+            $startInfo.UseShellExecute = $false
+            $startInfo.CreateNoWindow = $true
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+
+            # Windows environment names are case-insensitive, but an inherited
+            # block can still contain both Path and PATH. The standard launcher with
+            # redirected streams can throw while copying such a block. Rebuild
+            # it with exactly one entry per case-insensitive name.
+            $startInfo.EnvironmentVariables.Clear()
+            $seenEnvironmentNames =
+                [System.Collections.Generic.HashSet[string]]::new(
+                    [System.StringComparer]::OrdinalIgnoreCase)
+            $inheritedEnvironment = [Environment]::GetEnvironmentVariables()
+            foreach ($rawName in $inheritedEnvironment.Keys) {
+                $name = [string]$rawName
+                if ($seenEnvironmentNames.Add($name)) {
+                    $startInfo.EnvironmentVariables[$name] =
+                        [string]$inheritedEnvironment[$rawName]
+                }
+            }
+
+            $process = New-Object System.Diagnostics.Process
+            $process.StartInfo = $startInfo
+            if (-not $process.Start()) {
+                throw "$($case.Label) process did not start"
+            }
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
             if (-not $process.WaitForExit($TimeoutMilliseconds)) {
                 $process.Kill()
+                $process.WaitForExit()
                 throw "$($case.Label) exceeded the bounded $TimeoutMilliseconds ms gate"
             }
-            $process.Refresh()
-            $log = @()
-            if (Test-Path $stdout) { $log += Get-Content $stdout }
-            if (Test-Path $stderr) { $log += Get-Content $stderr }
+            $log = @(($stdoutTask.Result -split "`r?`n") +
+                     ($stderrTask.Result -split "`r?`n")) |
+                Where-Object { $_ -ne '' }
             $log | ForEach-Object { Write-Output $_ }
             $joined = $log -join "`n"
             if ($process.ExitCode -ne 0) {
@@ -49,7 +74,7 @@ try {
                 throw "$($case.Label) did not report ALL PASS"
             }
         } finally {
-            Remove-Item -LiteralPath $stdout,$stderr -Force -ErrorAction SilentlyContinue
+            if ($process) { $process.Dispose() }
         }
     }
     Write-Output 'CUDA/Vulkan fault and RT smokes: PASS'

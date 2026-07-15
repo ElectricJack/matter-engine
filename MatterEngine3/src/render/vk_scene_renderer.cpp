@@ -2623,6 +2623,8 @@ bool VkSceneRenderer::record_cull_and_render(
     last_rt_available_ = vulkan_->ray_tracing_available();
     last_rt_effective_ = false;
     last_rt_trace_dispatches_ = 0;
+    last_rt_samples_ = ray_tracing_settings_.samples;
+    last_rt_debug_view_ = ray_tracing_settings_.debug_view;
     if (!ray_tracing_settings_.enabled) {
         last_rt_fallback_reason_ = "disabled by render options";
     } else if (!last_rt_available_) {

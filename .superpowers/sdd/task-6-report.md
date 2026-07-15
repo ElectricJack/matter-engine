@@ -4,9 +4,9 @@
 
 Task 6 is complete. The final gates now make the viewer report and verify actual
 DLSS mode/extents, Vulkan RT state, history-reset stability, fallback reason,
-steady upload/submit behavior, and validation count. No renderer implementation
-was changed; the only C++ change is viewer-side evidence production in
-`MatterViewer/main.cpp`.
+steady upload/submit behavior, and validation count. Viewer evidence plumbing
+and minimal renderer observation state were changed so those gates report
+executed behavior; the rendering algorithm itself is unchanged.
 
 Live DLSS is explicitly unavailable on this machine because legal Streamline
 artifacts are absent. `STREAMLINE_PATH` is unset and neither the repository root
@@ -120,3 +120,22 @@ fixed with regression coverage:
    through `FrameStats`. Runtime and performance gates require effective RT to
    have at least one trace dispatch and no fallback reason; inactive RT must
    have zero dispatches and an explicit reason.
+
+## Re-review Fix Pass
+
+The final re-review found one Important launcher defect and three small evidence
+accuracy issues. All are fixed:
+
+1. The aggregate executable smoke no longer uses `Start-Process`, which can
+   throw when the inherited Windows environment contains both `Path` and
+   `PATH`. It now launches with `ProcessStartInfo`, rebuilds the child environment
+   with case-insensitive key deduplication, redirects both streams, preserves the
+   bounded timeout, and leaves the parent environment unchanged apart from the
+   existing `MATTER_VK_SMOKE_MODE` save/restore contract.
+2. Disconnected and missing-store clear-only frames now reset all renderer-
+   observed RT statistics through the same per-frame helper used by empty-scene
+   frames, with explicit unavailable reasons and zero trace dispatches.
+3. `VkSceneRenderer` now resets observed samples/debug state from the current
+   settings on every recording call, preventing stale values after a toggle.
+4. This report now accurately records the minimal renderer observation changes
+   made for Task 6.

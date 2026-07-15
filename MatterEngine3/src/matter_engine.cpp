@@ -3423,7 +3423,21 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             impl_->vk_temporal_token = temporal.attempt_token;
             return temporal;
         };
+    const auto reset_vk_rt_observation =
+        [&](bool available, std::string reason) {
+            impl_->stats.vk_rt_available = available;
+            impl_->stats.vk_rt_effective = false;
+            impl_->stats.vk_rt_trace_dispatches = 0;
+            impl_->stats.vk_rt_samples = std::max(
+                1u, std::min(opts.vulkan_ray_tracing.samples, 16u));
+            impl_->stats.vk_rt_debug_view =
+                opts.vulkan_ray_tracing.debug_view;
+            impl_->stats.vk_rt_fallback_reason = std::move(reason);
+        };
     if (!impl_->connected || !impl_->store) {
+        reset_vk_rt_observation(
+            false, !impl_->connected ? "world session disconnected"
+                                     : "world part store unavailable");
         (void)begin_temporal({});
         record_vulkan_clear(frame, impl_->sky_clear);
         return true;
@@ -3501,20 +3515,16 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     const auto& instances = impl_->vk_instance_cache.instances();
     if (instances.empty()) {
         impl_->stats.instances_resolved = 0;
-        impl_->stats.vk_rt_available =
+        const bool rt_available =
             impl_->engine->render_device->ray_tracing_available();
-        impl_->stats.vk_rt_effective = false;
-        impl_->stats.vk_rt_trace_dispatches = 0;
-        impl_->stats.vk_rt_samples =
-            std::max(1u, opts.vulkan_ray_tracing.samples);
-        impl_->stats.vk_rt_debug_view = opts.vulkan_ray_tracing.debug_view;
-        impl_->stats.vk_rt_fallback_reason =
+        reset_vk_rt_observation(
+            rt_available,
             !opts.vulkan_ray_tracing.enabled
                 ? "disabled by render options"
-                : (!impl_->stats.vk_rt_available
+                : (!rt_available
                        ? impl_->engine->render_device
                              ->ray_tracing_unavailable_reason()
-                       : "no drawable instances");
+                       : "no drawable instances"));
         (void)begin_temporal({});
         record_vulkan_clear(frame, impl_->sky_clear);
         return true;
