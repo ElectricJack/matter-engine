@@ -1,0 +1,85 @@
+#version 460
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D signalTex;
+layout(set = 0, binding = 1) uniform sampler2D momentsTex;
+layout(set = 0, binding = 2) uniform sampler2D depthTex;
+layout(set = 0, binding = 3) uniform sampler2D normalTex;
+layout(set = 0, binding = 4) uniform usampler2D identityTex;
+layout(set = 0, binding = 5) uniform usampler2D historyTex;
+layout(rgba16f, set = 0, binding = 6) uniform writeonly image2D outSignal;
+
+layout(push_constant) uniform AtrousConstants {
+    uvec2 extent;
+    uint stepWidth;
+    uint signalMode;
+    uint kernelRadius;
+    float phiLuminance;
+    float phiDepth;
+    float normalPower;
+} pc;
+
+float luminance(vec3 value) {
+    return dot(value, vec3(0.2126, 0.7152, 0.0722));
+}
+
+bool finite3(vec3 value) {
+    return !any(isnan(value)) && !any(isinf(value));
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, ivec2(pc.extent)))) return;
+
+    vec4 centerSignal = texelFetch(signalTex, pixel, 0);
+    float centerDepth = texelFetch(depthTex, pixel, 0).r;
+    vec3 centerNormal = texelFetch(normalTex, pixel, 0).xyz;
+    uvec2 centerIdentity = texelFetch(identityTex, pixel, 0).rg;
+    uint centerHistory = texelFetch(historyTex, pixel, 0).r;
+    if (pc.signalMode != 0u || pc.kernelRadius != 2u ||
+        centerHistory == 0u || centerIdentity.x == 0xffffffffu ||
+        !finite3(centerSignal.rgb) || isnan(centerDepth) || isinf(centerDepth) ||
+        dot(centerNormal, centerNormal) < 1e-12) {
+        imageStore(outSignal, pixel, centerSignal);
+        return;
+    }
+
+    centerNormal = normalize(centerNormal);
+    vec2 moments = texelFetch(momentsTex, pixel, 0).rg;
+    float variance = max(moments.y - moments.x * moments.x, 0.0);
+    float sigma = max(pc.phiLuminance * sqrt(variance + 1e-4), 1e-3);
+    const float kernel[3] = float[3](0.375, 0.25, 0.0625);
+    vec3 sum = vec3(0.0);
+    float weightSum = 0.0;
+    for (int y = -2; y <= 2; ++y) {
+        for (int x = -2; x <= 2; ++x) {
+            ivec2 q = pixel + ivec2(x, y) * int(pc.stepWidth);
+            if (any(lessThan(q, ivec2(0))) ||
+                any(greaterThanEqual(q, ivec2(pc.extent)))) continue;
+            uvec2 identity = texelFetch(identityTex, q, 0).rg;
+            if (identity.x != centerIdentity.x) continue;
+            vec3 signal = texelFetch(signalTex, q, 0).rgb;
+            float depth = texelFetch(depthTex, q, 0).r;
+            vec3 normal = texelFetch(normalTex, q, 0).xyz;
+            uint history = texelFetch(historyTex, q, 0).r;
+            if (history == 0u || !finite3(signal) || isnan(depth) || isinf(depth) ||
+                dot(normal, normal) < 1e-12) continue;
+            normal = normalize(normal);
+            float spatial = kernel[abs(x)] * kernel[abs(y)];
+            float wl = exp(-abs(luminance(signal) -
+                               luminance(centerSignal.rgb)) / sigma);
+            float planeDistance = max(
+                length(vec2(x, y)) * float(pc.stepWidth), 1.0);
+            float depthScale = max(pc.phiDepth * planeDistance, 1e-5);
+            float wd = exp(-abs(depth - centerDepth) / depthScale);
+            float wn = pow(max(dot(centerNormal, normal), 0.0),
+                           pc.normalPower);
+            float weight = spatial * wl * wd * wn;
+            sum += signal * weight;
+            weightSum += weight;
+        }
+    }
+    vec3 filtered = weightSum > 1e-8 ? sum / weightSum : centerSignal.rgb;
+    imageStore(outSignal, pixel, vec4(filtered, centerSignal.a));
+}

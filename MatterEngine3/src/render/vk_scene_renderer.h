@@ -3,6 +3,7 @@
 #include <vulkan/vulkan.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
@@ -215,6 +216,21 @@ struct GiTemporalGpuResult {
     uint32_t history_length = 0;
     uint32_t rejection_bits = 0;
 };
+
+struct GiAtrousGpuFixture {
+    VkExtent2D extent{9, 9};
+    std::vector<matter::Float4> signal;
+    std::vector<matter::Float3> moments;
+    std::vector<float> depth;
+    std::vector<matter::Float4> normal;
+    std::vector<uint32_t> material_index;
+    std::vector<uint32_t> history_length;
+};
+
+struct GiAtrousGpuResult {
+    std::vector<matter::Float4> filtered;
+    std::array<uint32_t, 5> step_widths{};
+};
 #endif
 
 struct VkSceneLighting {
@@ -374,6 +390,9 @@ public:
                                     std::string& error);
     bool test_dispatch_gi_temporal_fixture(
         const GiTemporalGpuFixture& fixture, GiTemporalGpuResult& result,
+        std::string& error);
+    bool test_dispatch_gi_atrous_fixture(
+        const GiAtrousGpuFixture& fixture, GiAtrousGpuResult& result,
         std::string& error);
     bool test_rt_blas_built(uint64_t part_hash) const;
     uint64_t test_rt_blas_candidate_serial(uint64_t part_hash) const;
@@ -562,6 +581,7 @@ private:
         VkDescriptorSet descriptor_sets[2]{};
         VkDescriptorSet composite_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet gi_temporal_descriptor_set = VK_NULL_HANDLE;
+        VkDescriptorSet gi_atrous_descriptor_sets[3]{};
         uint64_t static_generation = 0;
         uint64_t instance_generation = 0;
         uint64_t command_generation = 0;
@@ -575,12 +595,15 @@ private:
     bool create_raster_pipelines(std::string& error);
     bool create_ray_tracing_pipeline(std::string& error);
     bool create_gi_temporal_pipeline(std::string& error);
+    bool create_gi_atrous_pipeline(std::string& error);
     bool ensure_raster_targets(uint32_t width, uint32_t height,
                                std::string& error);
     bool ensure_dlss_output(FrameResources& frame, VkExtent2D output_extent,
                             std::string& error);
     bool record_gi_temporal(const matter::VulkanFrame& frame,
                             std::string& error, bool retain = true);
+    bool record_gi_atrous(const matter::VulkanFrame& frame,
+                          std::string& error, bool retain = true);
     bool ensure_vertex_buffer(VkDeviceSize required_size,
                               std::string& error, bool* replaced = nullptr);
     bool ensure_buffer(matter::VkBufferResource& buffer,
@@ -633,6 +656,9 @@ private:
     VkDescriptorSetLayout gi_temporal_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout gi_temporal_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline gi_temporal_pipeline_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout gi_atrous_set_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout gi_atrous_pipeline_layout_ = VK_NULL_HANDLE;
+    VkPipeline gi_atrous_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout rt_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout rt_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline rt_pipeline_ = VK_NULL_HANDLE;
@@ -666,6 +692,9 @@ private:
         matter::VkImageResource identity;
         matter::VkImageResource rejection;
     } gi_history_[2];
+    matter::VkImageResource gi_atrous_[2];
+    uint32_t gi_filtered_index_ = 0;
+    bool gi_filtered_valid_ = false;
     uint32_t gi_presented_history_index_ = 0;
     uint32_t gi_candidate_history_index_ = 1;
     uint32_t gi_composite_history_index_ = 1;

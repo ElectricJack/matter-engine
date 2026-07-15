@@ -2049,6 +2049,100 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                          0.003f),
               error.empty() ? "GPU temporal 3x3 clip rejects radiance outlier"
                             : error.c_str());
+
+        viewer::GiAtrousGpuFixture atrous_fixture{};
+        atrous_fixture.extent = {9, 9};
+        atrous_fixture.signal.resize(81);
+        atrous_fixture.moments.resize(81);
+        atrous_fixture.depth.resize(81);
+        atrous_fixture.normal.resize(81);
+        atrous_fixture.material_index.resize(81);
+        atrous_fixture.history_length.resize(81, 8u);
+        for (uint32_t y = 0; y < 9; ++y) {
+            for (uint32_t x = 0; x < 9; ++x) {
+                const size_t i = y * 9 + x;
+                const bool left = x < 4;
+                const float noise = ((x * 17u + y * 29u) & 1u) ? 0.35f : -0.35f;
+                const float value = std::max(0.0f, (left ? 1.0f : 0.15f) + noise);
+                atrous_fixture.signal[i] = {value, value, value, 1.0f};
+                atrous_fixture.moments[i] = {value, value * value, 0.0f};
+                atrous_fixture.depth[i] = left ? 0.25f : 0.75f;
+                atrous_fixture.normal[i] = left
+                    ? matter::Float4{0.0f, 1.0f, 0.0f, 0.0f}
+                    : matter::Float4{1.0f, 0.0f, 0.0f, 0.0f};
+                atrous_fixture.material_index[i] = left ? 3u : 7u;
+            }
+        }
+        atrous_fixture.history_length[0] = 0u;
+        atrous_fixture.material_index[80] = UINT32_MAX;
+        viewer::GiAtrousGpuResult atrous_result{};
+        CHECK(renderer.test_dispatch_gi_atrous_fixture(
+                  atrous_fixture, atrous_result, error),
+              error.empty() ? "dispatch real-GPU 9x9 A-trous fixture"
+                            : error.c_str());
+        const auto region_variance = [](const std::vector<matter::Float4>& values,
+                                        uint32_t begin_x, uint32_t end_x) {
+            double sum = 0.0, sum2 = 0.0;
+            uint32_t count = 0;
+            for (uint32_t y = 0; y < 9; ++y)
+                for (uint32_t x = begin_x; x < end_x; ++x) {
+                    const float value = values[y * 9 + x].x;
+                    sum += value;
+                    sum2 += value * value;
+                    ++count;
+                }
+            const double mean = sum / count;
+            return sum2 / count - mean * mean;
+        };
+        const std::array<uint32_t, 5> expected_atrous_steps{
+            1u, 2u, 4u, 8u, 16u};
+        CHECK(atrous_result.step_widths == expected_atrous_steps &&
+                  region_variance(atrous_result.filtered, 0, 4) <
+                      region_variance(atrous_fixture.signal, 0, 4) &&
+                  region_variance(atrous_result.filtered, 4, 9) <
+                      region_variance(atrous_fixture.signal, 4, 9),
+              "five A-trous passes reduce variance within both regions");
+        double boundary_leak = 0.0, source_energy = 0.0;
+        for (uint32_t y = 0; y < 9; ++y)
+            for (uint32_t x = 0; x < 9; ++x) {
+                const size_t i = y * 9 + x;
+                CHECK(std::isfinite(atrous_result.filtered[i].x) &&
+                          std::isfinite(atrous_result.filtered[i].y) &&
+                          std::isfinite(atrous_result.filtered[i].z),
+                      "A-trous readback contains only finite values");
+                if (x < 4) source_energy += atrous_fixture.signal[i].x;
+                else boundary_leak += std::max(
+                    0.0f, atrous_result.filtered[i].x -
+                              atrous_fixture.signal[i].x);
+            }
+        CHECK(boundary_leak < source_energy * 0.02,
+              "depth normal and exact material weights keep boundary crossing below 2 percent");
+        CHECK(close4(atrous_result.filtered[0], atrous_fixture.signal[0],
+                     0.001f) &&
+                  close4(atrous_result.filtered[80], atrous_fixture.signal[80],
+                         0.001f),
+              "invalid history and background pixels pass through unchanged");
+
+        viewer::GiAtrousGpuFixture constant_fixture = atrous_fixture;
+        std::fill(constant_fixture.signal.begin(), constant_fixture.signal.end(),
+                  matter::Float4{0.375f, 0.25f, 0.125f, 1.0f});
+        std::fill(constant_fixture.moments.begin(), constant_fixture.moments.end(),
+                  matter::Float3{0.285125f, 0.0812963f, 0.0f});
+        std::fill(constant_fixture.depth.begin(), constant_fixture.depth.end(), 0.5f);
+        std::fill(constant_fixture.normal.begin(), constant_fixture.normal.end(),
+                  matter::Float4{0.0f, 1.0f, 0.0f, 0.0f});
+        std::fill(constant_fixture.material_index.begin(),
+                  constant_fixture.material_index.end(), 11u);
+        CHECK(renderer.test_dispatch_gi_atrous_fixture(
+                  constant_fixture, atrous_result, error),
+              error.empty() ? "dispatch constant-color A-trous fixture"
+                            : error.c_str());
+        bool constant_identity = atrous_result.filtered.size() == 81;
+        for (const auto& value : atrous_result.filtered)
+            constant_identity = constant_identity &&
+                close4(value, {0.375f, 0.25f, 0.125f, 1.0f}, 0.001f);
+        CHECK(constant_identity,
+              "constant-color A-trous input is an identity operation");
         const auto render_temporal_control = [&](uint64_t attempt_token,
                                                  bool reset = false) {
             gi_temporal.attempt_token = attempt_token;
