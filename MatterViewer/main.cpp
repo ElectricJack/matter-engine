@@ -660,6 +660,7 @@ int main() {
         options.active_radius = active_radius;
         options.min_projected_size = min_projected_size;
         options.dlss_mode = selected_dlss_mode;
+        options.vulkan_lighting = stats.lighting;
         options.vulkan_ray_tracing.enabled =
             vulkan->ray_tracing_available() && !disable_vulkan_rt;
         const auto render_start = std::chrono::steady_clock::now();
@@ -867,15 +868,20 @@ int main() {
         if (stats.reload_requested) {
             stats.reload_requested = false;
             bake_ready = false; screenshot_settle = 0;
+            viewer::prepare_world_reload(stats);
             session->reload();
         }
         if (stats.world_switch_requested >= 0 &&
             stats.world_switch_requested < static_cast<int>(worlds.size())) {
             const int selected = stats.world_switch_requested;
             stats.world_switch_requested = -1;
-            session.reset();
-            session = open_world(worlds[selected]);
-            if (!session) { fatal_error = true; continue; }
+            auto next_session = open_world(worlds[selected]);
+            if (!next_session) {
+                viewer::complete_world_switch(stats, false);
+                continue;
+            }
+            session = std::move(next_session);
+            viewer::complete_world_switch(stats, true);
             stats.world_current = selected;
             selected_world_reported = false;
             bake_ready = false; screenshot_settle = 0;

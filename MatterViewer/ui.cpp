@@ -15,6 +15,18 @@
 
 namespace viewer {
 
+void reset_lighting_controls(ViewerStats& stats) {
+    stats.lighting = matter::VulkanLightingOverrides{};
+}
+
+void prepare_world_reload(ViewerStats& stats) {
+    reset_lighting_controls(stats);
+}
+
+void complete_world_switch(ViewerStats& stats, bool succeeded) {
+    if (succeeded) reset_lighting_controls(stats);
+}
+
 std::vector<WorldEntry> scan_worlds(const std::string& examples_root) {
     namespace fs = std::filesystem;
     std::vector<WorldEntry> out;
@@ -238,6 +250,17 @@ void Ui::draw_debug_panel(ViewerStats& s) {
     const char* resolvers[] = { "PassThrough", "SectorLod" };
     ImGui::Combo("Resolver", &s.resolver_choice, resolvers, 2);
     if (ImGui::Button("Reload world")) s.reload_requested = true;
+
+    ImGui::SeparatorText("Lighting");
+    ImGui::SliderFloat("Exposure (EV)", &s.lighting.exposure_ev, -6.0f, 6.0f,
+                       "%.2f");
+    ImGui::SliderFloat("Sun", &s.lighting.sun_multiplier, 0.0f, 4.0f,
+                       "%.2f");
+    ImGui::SliderFloat("Sky", &s.lighting.sky_multiplier, 0.0f, 4.0f,
+                       "%.2f");
+    ImGui::SliderFloat("Emission", &s.lighting.emission_multiplier, 0.0f,
+                       4.0f, "%.2f");
+    if (ImGui::Button("Reset to World")) reset_lighting_controls(s);
 
     ImGui::End();
 }

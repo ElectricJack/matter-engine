@@ -8,6 +8,7 @@
 #include <vulkan/vulkan.h>
 
 #include "matter/camera.h"
+#include "matter/world_session.h"
 
 struct GLFWwindow;
 namespace matter { class VulkanDevice; struct VulkanFrame; }
@@ -75,12 +76,12 @@ struct ViewerStats {
     // `world_switch_requested` (index into the enumerated worlds list, -1 = none).
     int      world_current = 0;
     int      world_switch_requested = -1;
-    // RT lighting debug: sun direction (azimuth/elevation) and brightness.
-    float    sun_azimuth   = 0.0f;   // radians, computed from manifest on world load
-    float    sun_elevation = 0.0f;   // radians
-    float    sun_brightness = 1.0f;  // multiplier on sun_color (0 = no sun)
-    bool     sun_override_init = false;  // set true once azimuth/elevation computed
+    matter::VulkanLightingOverrides lighting{};
 };
+
+void reset_lighting_controls(ViewerStats& stats);
+void prepare_world_reload(ViewerStats& stats);
+void complete_world_switch(ViewerStats& stats, bool succeeded);
 
 class Ui {
 public:

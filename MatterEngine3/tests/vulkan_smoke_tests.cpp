@@ -29,10 +29,71 @@
 #include "render/vk_resources.h"
 #include "render/vk_scene_renderer.h"
 #include "provider/sector_resolver.h"
+#include "../../MatterViewer/ui.h"
 
 namespace {
 
 bool close4(matter::Float4 actual, matter::Float4 expected, float epsilon);
+
+static matter::Float3 aces_reference(matter::Float3 hdr, float exposure_ev) {
+    const float scale = std::exp2(exposure_ev);
+    const auto map = [scale](float value) {
+        const float x = std::max(value * scale, 0.0f);
+        return std::clamp((x * (2.51f * x + 0.03f)) /
+                              (x * (2.43f * x + 0.59f) + 0.14f),
+                          0.0f, 1.0f);
+    };
+    return {map(hdr.x), map(hdr.y), map(hdr.z)};
+}
+
+static int display_unorm_code(float linear, VkFormat swapchain_format) {
+    const bool srgb = swapchain_format == VK_FORMAT_R8G8B8A8_SRGB ||
+                      swapchain_format == VK_FORMAT_B8G8R8A8_SRGB;
+    const float encoded = !srgb ? linear
+        : linear <= 0.0031308f ? linear * 12.92f
+        : 1.055f * std::pow(linear, 1.0f / 2.4f) - 0.055f;
+    return static_cast<int>(std::lround(std::clamp(encoded, 0.0f, 1.0f) *
+                                        255.0f));
+}
+
+static void test_viewer_lighting_controls() {
+    viewer::ViewerStats stats{};
+    stats.lighting.sun_multiplier = 0.25f;
+    stats.lighting.sky_multiplier = 0.5f;
+    stats.lighting.emission_multiplier = 0.75f;
+    stats.lighting.exposure_ev = 3.0f;
+    viewer::reset_lighting_controls(stats);
+    CHECK(stats.lighting.sun_multiplier == 1.0f,
+          "world reset restores authored sun multiplier");
+    CHECK(stats.lighting.sky_multiplier == 1.0f,
+          "world reset restores authored sky multiplier");
+    CHECK(stats.lighting.emission_multiplier == 1.0f,
+          "world reset restores authored emission multiplier");
+    CHECK(stats.lighting.exposure_ev == -2.0f,
+          "world reset restores default display exposure");
+
+    stats.lighting = {0.25f, 0.5f, 0.75f, 3.0f};
+    viewer::prepare_world_reload(stats);
+    CHECK(stats.lighting.sun_multiplier == 1.0f &&
+              stats.lighting.sky_multiplier == 1.0f &&
+              stats.lighting.emission_multiplier == 1.0f &&
+              stats.lighting.exposure_ev == -2.0f,
+          "reload seam resets all Viewer lighting controls");
+
+    stats.lighting = {0.25f, 0.5f, 0.75f, 3.0f};
+    viewer::complete_world_switch(stats, false);
+    CHECK(stats.lighting.sun_multiplier == 0.25f &&
+              stats.lighting.sky_multiplier == 0.5f &&
+              stats.lighting.emission_multiplier == 0.75f &&
+              stats.lighting.exposure_ev == 3.0f,
+          "failed world-switch seam preserves Viewer lighting controls");
+    viewer::complete_world_switch(stats, true);
+    CHECK(stats.lighting.sun_multiplier == 1.0f &&
+              stats.lighting.sky_multiplier == 1.0f &&
+              stats.lighting.emission_multiplier == 1.0f &&
+              stats.lighting.exposure_ev == -2.0f,
+          "successful world-switch seam resets all Viewer lighting controls");
+}
 
 static void test_vulkan_lighting_override_contract() {
     matter::VulkanLightingOverrides defaults{};
@@ -2393,14 +2454,25 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                       lighting_reset_baseline + 1u,
               error.empty() ? "exposure-only change preserves GI history"
                             : error.c_str());
+        const uint64_t world_transition_reset_baseline =
+            renderer.test_gi_history_reset_count();
         renderer.set_lighting(lighting);
-        CHECK(render_temporal_control(251),
-              error.empty() ? "restore authored lighting after reset proof"
-                            : error.c_str());
+        CHECK(render_temporal_control(251, true) &&
+                  renderer.test_gi_history_reset_count() ==
+                      world_transition_reset_baseline + 1u,
+              error.empty()
+                  ? "world transition plus lighting reset invalidates history once"
+                  : error.c_str());
+        CHECK(render_temporal_control(252) &&
+                  renderer.test_gi_history_reset_count() ==
+                      world_transition_reset_baseline + 1u,
+              error.empty()
+                  ? "first post-transition frame does not double-reset history"
+                  : error.c_str());
         matter::VulkanRayTracingSettings non_debug_rt = enabled;
         non_debug_rt.debug_view = false;
         renderer.set_ray_tracing_settings(non_debug_rt);
-        CHECK(render_temporal_control(252),
+        CHECK(render_temporal_control(253),
               error.empty() ? "render accumulated-GI composite proof frame"
                             : error.c_str());
         viewer::VkRasterPixel composite_pixel{};
@@ -3362,6 +3434,73 @@ void run_frame_upload_tests(matter::VulkanDevice& vulkan) {
           "camera-only frame leaves scene uploads and command layout intact");
 }
 
+void run_display_transform_tests(matter::VulkanDevice& vulkan) {
+    std::string error;
+    viewer::VkSceneRenderer renderer(vulkan);
+    const matter::Mat4f identity = identity_matrix();
+    const viewer::VkScenePart part = known_raster_triangle(971);
+    CHECK(renderer.ensure_part(part, error) >= 0 &&
+              renderer.update_instances({{971, identity}}, error),
+          error.empty() ? "stage native display-transform scene"
+                        : error.c_str());
+    const FixedCullScene scene = make_fixed_cull_scene();
+    const float hdr_values[] = {0.0f, 1.0f, 5.0f, 65504.0f};
+    const float exposure_values[] = {-2.0f, 0.0f, 2.0f};
+    float previous_response[3] = {-1.0f, -1.0f, -1.0f};
+    for (float hdr_value : hdr_values) {
+        for (size_t exposure_index = 0;
+             exposure_index < std::size(exposure_values);
+             ++exposure_index) {
+            matter::VulkanFrame frame{};
+            CHECK(vulkan.begin_frame(frame, error),
+                  error.empty() ? "begin native display-transform frame"
+                                : error.c_str());
+            if (frame.command_buffer == VK_NULL_HANDLE) return;
+            renderer.set_display_exposure(exposure_values[exposure_index]);
+            CHECK(renderer.prepare_frame(frame, scene.frame, scene.eye, 1.0f,
+                                         error) &&
+                      renderer.record_cull_and_render(
+                          frame, scene.frame, scene.eye, 1.0f, error) &&
+                      renderer.test_record_hdr_constant(
+                          frame, {hdr_value, hdr_value, hdr_value}, error) &&
+                      renderer.record_composite_to_swapchain(frame, error),
+                  error.empty() ? "record native display transform"
+                                : error.c_str());
+            std::vector<uint8_t> rgba;
+            CHECK(vulkan.readback_swapchain_rgba8(frame, rgba, error),
+                  error.empty() ? "queue native display-transform readback"
+                                : error.c_str());
+            CHECK(vulkan.end_frame(frame, error),
+                  error.empty() ? "submit native display-transform frame"
+                                : error.c_str());
+            const matter::Float3 expected = aces_reference(
+                {hdr_value, hdr_value, hdr_value},
+                exposure_values[exposure_index]);
+            const int expected_code =
+                display_unorm_code(expected.x, frame.swapchain_format);
+            const bool finite_unit = std::isfinite(expected.x) &&
+                                     expected.x >= 0.0f && expected.x <= 1.0f;
+            const bool matches = rgba.size() >= 4 &&
+                                 std::abs(static_cast<int>(rgba[0]) -
+                                          expected_code) <= 2 &&
+                                 std::abs(static_cast<int>(rgba[1]) -
+                                          expected_code) <= 2 &&
+                                 std::abs(static_cast<int>(rgba[2]) -
+                                          expected_code) <= 2;
+            if (!matches && rgba.size() >= 4) {
+                std::printf("display curve mismatch: hdr=%.1f ev=%.1f actual=%u,%u,%u expected=%d\n",
+                            hdr_value, exposure_values[exposure_index],
+                            rgba[0], rgba[1], rgba[2], expected_code);
+            }
+            CHECK(finite_unit && matches,
+                  "native HDR display follows finite ACES reference curve");
+            CHECK(expected.x + 1e-6f >= previous_response[exposure_index],
+                  "native ACES response is monotonic at each exposure");
+            previous_response[exposure_index] = expected.x;
+        }
+    }
+}
+
 void run_frame_record_tests(matter::VulkanDevice& vulkan) {
     std::string error;
     viewer::VkSceneRenderer renderer(vulkan);
@@ -3383,6 +3522,7 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
                         : error.c_str());
     if (frame.command_buffer == VK_NULL_HANDLE) return;
     bool dlss_output_evaluated = false;
+    bool dlss_input_is_linear_hdr = false;
     std::vector<matter::DlssMode> dlss_mode_transitions;
     renderer.set_test_dlss_bridge(matter::StreamlineBridge::test_fake_dlss(
         [&](VkCommandBuffer command_buffer, uint64_t token,
@@ -3400,7 +3540,10 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
                 resources.hdr.image != resources.depth.image &&
                 resources.hdr.image != resources.velocity.image &&
                 resources.hdr.image != resources.output.image;
-            const VkClearColorValue clear{{1.0f, 0.0f, 0.0f, 1.0f}};
+            dlss_input_is_linear_hdr =
+                resources.hdr.image == renderer.raster_attachments().hdr.image &&
+                resources.hdr.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            const VkClearColorValue clear{{5.0f, 0.5f, 1.0f, 1.0f}};
             const VkImageSubresourceRange range{
                 VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
             vkCmdClearColorImage(command_buffer, resources.output.image,
@@ -3436,7 +3579,7 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
                                           error),
           error.empty() ? "record Vulkan cull and raster" : error.c_str());
     CHECK(renderer.record_composite_to_swapchain(frame, error) &&
-              dlss_output_evaluated &&
+              dlss_output_evaluated && dlss_input_is_linear_hdr &&
               renderer.active_dlss_mode() == matter::DlssMode::Quality,
           error.empty() ? "fake DLSS output composites before presentation"
                         : error.c_str());
@@ -3469,9 +3612,19 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
     CHECK(vulkan.end_frame(frame, error),
           error.empty() ? "submit asynchronous Vulkan record frame"
                         : error.c_str());
-    CHECK(dlss_composite_rgba.size() >= 4 && dlss_composite_rgba[0] > 240 &&
-              dlss_composite_rgba[1] < 10 && dlss_composite_rgba[2] < 10,
-          "fake evaluator writes the image actually composited to swapchain");
+    const matter::Float3 expected_dlss =
+        aces_reference({5.0f, 0.5f, 1.0f}, -2.0f);
+    CHECK(dlss_composite_rgba.size() >= 4 &&
+              std::abs(static_cast<int>(dlss_composite_rgba[0]) -
+                       display_unorm_code(expected_dlss.x,
+                                          frame.swapchain_format)) <= 2 &&
+              std::abs(static_cast<int>(dlss_composite_rgba[1]) -
+                       display_unorm_code(expected_dlss.y,
+                                          frame.swapchain_format)) <= 2 &&
+              std::abs(static_cast<int>(dlss_composite_rgba[2]) -
+                       display_unorm_code(expected_dlss.z,
+                                          frame.swapchain_format)) <= 2,
+          "fake DLSS HDR output is tone mapped after evaluation");
     CHECK(!first_dlss_lifetime.expired(),
           "completed submission keeps replaced output until slot recycle");
 
@@ -4232,6 +4385,7 @@ void run_outlive_resources(std::unique_ptr<matter::VulkanDevice>& vulkan,
 
 int main() {
     test_vulkan_lighting_override_contract();
+    test_viewer_lighting_controls();
     run_vulkan_gi_math_tests();
     run_raster_mesh_material_contract_tests();
     run_ray_tracing_capability_contract_tests();
@@ -4276,6 +4430,9 @@ int main() {
                   "scene renderer uses the Vulkan device-owned Streamline bridge");
         }
         run_streamline_presentation_funnel_tests(*vulkan);
+        if (!requested_smoke_mode ||
+            std::string(requested_smoke_mode) == "default")
+            run_display_transform_tests(*vulkan);
         CHECK(!vulkan->dlss_available(),
               "Vulkan device reports DLSS unavailable without Streamline");
         std::printf("DLSS fallback: %s\n",

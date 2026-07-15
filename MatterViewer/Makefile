@@ -398,6 +398,7 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/gbuffer.frag.spv \
          build/shaders_vk/composite.vert.spv \
          build/shaders_vk/composite.frag.spv \
+         build/shaders_vk/display_transform.frag.spv \
          build/shaders_vk/rt_shadow.rgen.spv \
          build/shaders_vk/rt_shadow.rmiss.spv \
          build/shaders_vk/rt_shadow.rchit.spv \
@@ -441,6 +442,7 @@ $(CUDA_INTEROP_HEADER): $(CUDA_INTEROP_PTX) $(ME3_DIR)/tools/embed_cuda_interop_
 
 build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/tests/vulkan_smoke_tests.cpp \
+        ui.cpp ui.h $(IMGUI_SRC_WIN) \
         $(ME3_DIR)/include/matter/vulkan_device.h \
         $(ME3_DIR)/src/render/gpu_matrix_pack.h \
         $(ME3_DIR)/src/render/vk_draw_command.h \
@@ -468,7 +470,8 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/matrix_math.cpp \
         $(VK_EMBEDDED_HEADER) $(CUDA_INTEROP_HEADER) $(GLFW_WIN_LIB)
 	@mkdir -p $(dir $@)
-	$(WIN_CXX) $(ME3_DIR)/tests/vulkan_smoke_tests.cpp \
+	$(WIN_CXX) $(ME3_DIR)/tests/vulkan_smoke_tests.cpp ui.cpp \
+	    $(IMGUI_SRC_WIN) \
 	    $(ME3_DIR)/src/render/streamline_bridge.cpp \
 	    $(ME3_DIR)/src/render/vk_context.cpp \
 	    $(ME3_DIR)/src/render/vk_resources.cpp \
@@ -484,6 +487,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/matrix_math.cpp \
 	    $(GLFW_WIN_LIB) -o $@ \
 	    -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers \
+	    -ffunction-sections -Wl,--gc-sections \
 	    -static \
 	    -DVK_USE_PLATFORM_WIN32_KHR \
 	    -DMATTER_VK_TEST_FAULT_INJECTION \
@@ -494,6 +498,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    -I../MatterSurfaceLib/include \
 	    -I$(ME3_DIR)/tests \
 	    -I../Libraries/raylib/src/external/glfw/include \
+	    -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends \
 	    $(if $(filter 1,$(HAVE_STREAMLINE)),-I"$(STREAMLINE_PATH)/include") \
 	    -I"$(CUDA_PATH)/include" \
 	    -I$(VULKAN_INCLUDE) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 \
@@ -506,7 +511,8 @@ vulkan-smoke: vulkan-preflight $(GLFW_WIN_LIB) \
 	/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe \
 	    -NoProfile -ExecutionPolicy Bypass -File \
 	    tools/smoke_vulkan_interop_faults.ps1 \
-	    -TestPath build/windows/vulkan_smoke_tests.exe
+	    -TestPath build/windows/vulkan_smoke_tests.exe \
+	    -TimeoutMilliseconds 30000
 
 build/windows/vulkan_compat_tests.exe: \
         $(ME3_DIR)/tests/vulkan_compat_tests.cpp \

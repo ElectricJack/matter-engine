@@ -413,6 +413,9 @@ public:
     bool test_dispatch_gi_atrous_fixture(
         const GiAtrousGpuFixture& fixture, GiAtrousGpuResult& result,
         std::string& error);
+    bool test_record_hdr_constant(const matter::VulkanFrame& frame,
+                                  matter::Float3 color,
+                                  std::string& error);
     bool test_rt_blas_built(uint64_t part_hash) const;
     uint64_t test_rt_blas_candidate_serial(uint64_t part_hash) const;
     std::weak_ptr<void> test_rt_blas_lifetime(uint64_t part_hash) const;
@@ -600,6 +603,7 @@ private:
         VkExtent2D dlss_output_extent{};
         VkDescriptorSet descriptor_sets[2]{};
         VkDescriptorSet composite_descriptor_set = VK_NULL_HANDLE;
+        VkDescriptorSet display_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet gi_temporal_descriptor_sets[2]{};
         VkDescriptorSet gi_atrous_descriptor_sets[6]{};
         uint64_t static_generation = 0;
@@ -613,6 +617,7 @@ private:
 
     bool create_pipeline(std::string& error);
     bool create_raster_pipelines(std::string& error);
+    bool create_display_pipeline(std::string& error);
     bool create_ray_tracing_pipeline(std::string& error);
     bool create_gi_temporal_pipeline(std::string& error);
     bool create_gi_atrous_pipeline(std::string& error);
@@ -645,6 +650,7 @@ private:
                                 std::string& error);
     void update_frame_descriptors(FrameResources& frame);
     void update_composite_descriptor(FrameResources& frame);
+    void update_display_descriptor(VkDescriptorSet set, VkImageView view);
     bool upload_scene_buffers(FrameResources& frame,
                               VkCommandBuffer material_command_buffer,
                               bool reset_stats, std::string& error);
@@ -680,6 +686,10 @@ private:
     VkPipelineLayout composite_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline composite_pipeline_ = VK_NULL_HANDLE;
     VkSampler composite_sampler_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout display_set_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout display_pipeline_layout_ = VK_NULL_HANDLE;
+    VkPipeline display_pipeline_ = VK_NULL_HANDLE;
+    VkFormat display_pipeline_format_ = VK_FORMAT_UNDEFINED;
     VkDescriptorSetLayout gi_temporal_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout gi_temporal_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline gi_temporal_pipeline_ = VK_NULL_HANDLE;

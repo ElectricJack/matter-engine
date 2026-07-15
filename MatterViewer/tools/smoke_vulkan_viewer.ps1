@@ -29,20 +29,48 @@ function Assert-Png([string]$Path, [int]$ExpectedWidth, [int]$ExpectedHeight) {
         $x0 = [int]($bitmap.Width * 0.25); $x1 = [int]($bitmap.Width * 0.75)
         $y0 = [int]($bitmap.Height * 0.15); $y1 = [int]($bitmap.Height * 0.90)
         $world = 0; $nonblack = 0; $red = 0; $green = 0; $gray = 0
-        for ($y = $y0; $y -lt $y1; $y += 2) {
-            for ($x = $x0; $x -lt $x1; $x += 2) {
+        $shadowGray = 0; $litGray = 0
+        for ($y = $y0; $y -lt $y1; $y += 6) {
+            for ($x = $x0; $x -lt $x1; $x += 6) {
                 $p = $bitmap.GetPixel($x, $y); ++$world
                 if (($p.R + $p.G + $p.B) -gt 45) { ++$nonblack }
                 if ($p.R -gt ($p.G * 1.35) -and $p.R -gt ($p.B * 1.35) -and $p.R -gt 35) { ++$red }
                 if ($p.G -gt ($p.R * 1.25) -and $p.G -gt ($p.B * 1.25) -and $p.G -gt 30) { ++$green }
                 if ([Math]::Abs($p.R-$p.G) -lt 18 -and
-                    [Math]::Abs($p.G-$p.B) -lt 18 -and $p.R -gt 35) { ++$gray }
+                    [Math]::Abs($p.G-$p.B) -lt 18 -and $p.R -gt 35) {
+                    ++$gray
+                    if ($p.R -lt 165) { ++$shadowGray }
+                    if ($p.R -gt 190) { ++$litGray }
+                }
             }
         }
         if ($nonblack -lt ($world * 0.20)) { throw "insufficient nonblack world coverage: $Path" }
         if ($red -lt ($world * 0.015)) { throw "red Cornell region missing: $Path" }
         if ($green -lt ($world * 0.015)) { throw "green Cornell region missing: $Path" }
         if ($gray -lt ($world * 0.04)) { throw "gray Cornell region missing: $Path" }
+        if ($shadowGray -lt ($world * 0.003) -or
+            $litGray -lt ($world * 0.02)) {
+            throw "Cornell shadow/lit separation missing after tone mapping: $Path"
+        }
+
+        # At the authored -2 EV default, the ceiling emitter must remain a
+        # bounded bright polygon against the surrounding black ceiling rather
+        # than expanding into a clipped white band.
+        $emitterBright = 0; $emitterDark = 0
+        $ex0 = [int]($bitmap.Width * 0.40); $ex1 = [int]($bitmap.Width * 0.62)
+        $ey0 = [int]($bitmap.Height * 0.10); $ey1 = [int]($bitmap.Height * 0.21)
+        for ($y = $ey0; $y -lt $ey1; $y += 6) {
+            for ($x = $ex0; $x -lt $ex1; $x += 6) {
+                $p = $bitmap.GetPixel($x, $y)
+                if ($p.R -gt 225 -and $p.G -gt 225 -and $p.B -gt 225) {
+                    ++$emitterBright
+                }
+                if (($p.R + $p.G + $p.B) -lt 45) { ++$emitterDark }
+            }
+        }
+        if ($emitterBright -lt 12 -or $emitterDark -lt 30) {
+            throw "bounded Cornell ceiling emitter missing at -2 EV: $Path"
+        }
     } finally {
         $bitmap.Dispose()
     }
@@ -57,8 +85,8 @@ function Assert-UiOverlay([string]$Path, [bool]$ExpectedVisible) {
         # ImGui's blue-gray selected rows are a stable marker in the upper-left
         # panels and do not overlap the Cornell geometry in a hidden-UI frame.
         $markers = 0
-        for ($y = 15; $y -lt [Math]::Min(310, $bitmap.Height); $y += 2) {
-            for ($x = 15; $x -lt [Math]::Min(230, $bitmap.Width); $x += 2) {
+        for ($y = 15; $y -lt [Math]::Min(310, $bitmap.Height); $y += 4) {
+            for ($x = 15; $x -lt [Math]::Min(230, $bitmap.Width); $x += 4) {
                 $p = $bitmap.GetPixel($x, $y)
                 if ($p.R -ge 50 -and $p.R -le 105 -and
                     $p.G -ge 70 -and $p.G -le 130 -and
@@ -68,10 +96,10 @@ function Assert-UiOverlay([string]$Path, [bool]$ExpectedVisible) {
                 }
             }
         }
-        if ($ExpectedVisible -and $markers -lt 100) {
+        if ($ExpectedVisible -and $markers -lt 25) {
             throw "expected debug UI overlay is absent: $Path"
         }
-        if (-not $ExpectedVisible -and $markers -ge 100) {
+        if (-not $ExpectedVisible -and $markers -ge 25) {
             throw "debug UI overlay obscures scene verification: $Path"
         }
     } finally {

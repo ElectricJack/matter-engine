@@ -778,6 +778,12 @@ void VkSceneRenderer::destroy_pipeline() {
         vkDestroyDescriptorSetLayout(device, rt_set_layout_, nullptr);
     if (composite_sampler_ != VK_NULL_HANDLE)
         vkDestroySampler(device, composite_sampler_, nullptr);
+    if (display_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device, display_pipeline_, nullptr);
+    if (display_pipeline_layout_ != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device, display_pipeline_layout_, nullptr);
+    if (display_set_layout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(device, display_set_layout_, nullptr);
     if (composite_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, composite_pipeline_, nullptr);
     if (composite_pipeline_layout_ != VK_NULL_HANDLE)
@@ -803,6 +809,10 @@ void VkSceneRenderer::destroy_pipeline() {
     composite_pipeline_layout_ = VK_NULL_HANDLE;
     composite_pipeline_ = VK_NULL_HANDLE;
     composite_sampler_ = VK_NULL_HANDLE;
+    display_set_layout_ = VK_NULL_HANDLE;
+    display_pipeline_layout_ = VK_NULL_HANDLE;
+    display_pipeline_ = VK_NULL_HANDLE;
+    display_pipeline_format_ = VK_FORMAT_UNDEFINED;
     gi_temporal_pipeline_ = VK_NULL_HANDLE;
     gi_temporal_pipeline_layout_ = VK_NULL_HANDLE;
     gi_temporal_set_layout_ = VK_NULL_HANDLE;
@@ -898,7 +908,8 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     if (result != VK_SUCCESS)
         return fail_vk("vkCreateComputePipelines(cull)", result, error);
 
-    if (!create_raster_pipelines(error) || !create_gi_temporal_pipeline(error) ||
+    if (!create_raster_pipelines(error) || !create_display_pipeline(error) ||
+        !create_gi_temporal_pipeline(error) ||
         !create_gi_atrous_pipeline(error))
         return false;
     return !vulkan_->ray_tracing_available() ||
@@ -1433,6 +1444,111 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
            fail_vk("vkCreateSampler(composite)", result, error);
 }
 
+bool VkSceneRenderer::create_display_pipeline(std::string& error) {
+    const VkDevice device = vulkan_->device();
+    const VkDescriptorSetLayoutBinding binding = descriptor_binding(
+        0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        VK_SHADER_STAGE_FRAGMENT_BIT);
+    VkDescriptorSetLayoutCreateInfo set_create{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    set_create.bindingCount = 1;
+    set_create.pBindings = &binding;
+    VkResult result = vkCreateDescriptorSetLayout(
+        device, &set_create, nullptr, &display_set_layout_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateDescriptorSetLayout(display)", result, error);
+
+    VkPushConstantRange exposure_range{};
+    exposure_range.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    exposure_range.size = sizeof(float);
+    VkPipelineLayoutCreateInfo layout_create{
+        VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    layout_create.setLayoutCount = 1;
+    layout_create.pSetLayouts = &display_set_layout_;
+    layout_create.pushConstantRangeCount = 1;
+    layout_create.pPushConstantRanges = &exposure_range;
+    result = vkCreatePipelineLayout(device, &layout_create, nullptr,
+                                    &display_pipeline_layout_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreatePipelineLayout(display)", result, error);
+
+    VkShaderModule vertex = VK_NULL_HANDLE;
+    VkShaderModule fragment = VK_NULL_HANDLE;
+    if (!create_shader_module(device, "composite.vert.spv", vertex, error) ||
+        !create_shader_module(device, "display_transform.frag.spv", fragment,
+                              error)) {
+        if (vertex != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device, vertex, nullptr);
+        return false;
+    }
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vertex;
+    stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fragment;
+    stages[1].pName = "main";
+    VkPipelineVertexInputStateCreateInfo vertex_input{
+        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineInputAssemblyStateCreateInfo input_assembly{
+        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo viewport_state{
+        VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    viewport_state.viewportCount = 1;
+    viewport_state.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo rasterization{
+        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    rasterization.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterization.cullMode = VK_CULL_MODE_NONE;
+    rasterization.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterization.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo multisample{
+        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineColorBlendAttachmentState blend{};
+    blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
+                           VK_COLOR_COMPONENT_G_BIT |
+                           VK_COLOR_COMPONENT_B_BIT |
+                           VK_COLOR_COMPONENT_A_BIT;
+    VkPipelineColorBlendStateCreateInfo color_blend{
+        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    color_blend.attachmentCount = 1;
+    color_blend.pAttachments = &blend;
+    const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT,
+                                             VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic{
+        VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dynamic.dynamicStateCount = 2;
+    dynamic.pDynamicStates = dynamic_states;
+    display_pipeline_format_ = vulkan_->swapchain_format();
+    VkPipelineRenderingCreateInfo rendering{
+        VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachmentFormats = &display_pipeline_format_;
+    VkGraphicsPipelineCreateInfo create{
+        VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    create.pNext = &rendering;
+    create.stageCount = 2;
+    create.pStages = stages;
+    create.pVertexInputState = &vertex_input;
+    create.pInputAssemblyState = &input_assembly;
+    create.pViewportState = &viewport_state;
+    create.pRasterizationState = &rasterization;
+    create.pMultisampleState = &multisample;
+    create.pColorBlendState = &color_blend;
+    create.pDynamicState = &dynamic;
+    create.layout = display_pipeline_layout_;
+    result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &create,
+                                       nullptr, &display_pipeline_);
+    vkDestroyShaderModule(device, fragment, nullptr);
+    vkDestroyShaderModule(device, vertex, nullptr);
+    return result == VK_SUCCESS ||
+           fail_vk("vkCreateGraphicsPipelines(display)", result, error);
+}
+
 void VkSceneRenderer::update_descriptor(
     VkDescriptorSet set, uint32_t binding, VkDescriptorType type,
     const matter::VkBufferResource& buffer) {
@@ -1547,11 +1663,11 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 12},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-         frame_slot_count * 74},
+         frame_slot_count * 75},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 22}};
     VkDescriptorPoolCreateInfo pool{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool.maxSets = frame_slot_count * 11;
+    pool.maxSets = frame_slot_count * 12;
     pool.poolSizeCount = 4;
     pool.pPoolSizes = pool_sizes;
     VkDescriptorPool next_pool = VK_NULL_HANDLE;
@@ -1567,11 +1683,12 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         return fail_vk("vkCreateDescriptorPool(cull)", result, error);
     std::vector<FrameResources> next_frames(frame_slot_count);
     std::vector<VkDescriptorSetLayout> layouts;
-    layouts.reserve(frame_slot_count * 11);
+    layouts.reserve(frame_slot_count * 12);
     for (size_t index = 0; index < frame_slot_count; ++index) {
         layouts.push_back(set_layouts_[0]);
         layouts.push_back(set_layouts_[1]);
         layouts.push_back(composite_set_layout_);
+        layouts.push_back(display_set_layout_);
         layouts.push_back(gi_temporal_set_layout_);
         layouts.push_back(gi_temporal_set_layout_);
         for (uint32_t i = 0; i < 6; ++i)
@@ -1604,13 +1721,14 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     };
     for (size_t index = 0; index < frame_slot_count; ++index) {
         FrameResources& frame = next_frames[index];
-        frame.descriptor_sets[0] = sets[index * 11];
-        frame.descriptor_sets[1] = sets[index * 11 + 1];
-        frame.composite_descriptor_set = sets[index * 11 + 2];
-        frame.gi_temporal_descriptor_sets[0] = sets[index * 11 + 3];
-        frame.gi_temporal_descriptor_sets[1] = sets[index * 11 + 4];
+        frame.descriptor_sets[0] = sets[index * 12];
+        frame.descriptor_sets[1] = sets[index * 12 + 1];
+        frame.composite_descriptor_set = sets[index * 12 + 2];
+        frame.display_descriptor_set = sets[index * 12 + 3];
+        frame.gi_temporal_descriptor_sets[0] = sets[index * 12 + 4];
+        frame.gi_temporal_descriptor_sets[1] = sets[index * 12 + 5];
         for (uint32_t i = 0; i < 6; ++i)
-            frame.gi_atrous_descriptor_sets[i] = sets[index * 11 + 5 + i];
+            frame.gi_atrous_descriptor_sets[i] = sets[index * 12 + 6 + i];
         if (!ensure_candidate_buffer(frame.frame_constants,
                                      sizeof(FrameConstants),
                                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
@@ -1746,6 +1864,21 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
         writes[i].pImageInfo = &image_infos[i];
     }
     vkUpdateDescriptorSets(vulkan_->device(), 6, writes, 0, nullptr);
+}
+
+void VkSceneRenderer::update_display_descriptor(VkDescriptorSet set,
+                                                VkImageView view) {
+    VkDescriptorImageInfo image_info{};
+    image_info.sampler = composite_sampler_;
+    image_info.imageView = view;
+    image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstSet = set;
+    write.dstBinding = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &image_info;
+    vkUpdateDescriptorSets(vulkan_->device(), 1, &write, 0, nullptr);
 }
 
 void VkSceneRenderer::note_command_layout_rebuild() {
@@ -5127,6 +5260,36 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
 
 #endif
 
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+bool VkSceneRenderer::test_record_hdr_constant(
+    const matter::VulkanFrame& frame, matter::Float3 color,
+    std::string& error) {
+    error.clear();
+    if (!raster_attachments_ready_ || hdr_.image == VK_NULL_HANDLE ||
+        frame.command_buffer == VK_NULL_HANDLE) {
+        error = "HDR test target is unavailable";
+        return false;
+    }
+    VkClearValue clear{};
+    clear.color = {{color.x, color.y, color.z, 1.0f}};
+    VkRenderingAttachmentInfo attachment{
+        VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    attachment.imageView = hdr_.view;
+    attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachment.clearValue = clear;
+    VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    rendering.renderArea.extent = {hdr_.extent.width, hdr_.extent.height};
+    rendering.layerCount = 1;
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachments = &attachment;
+    vkCmdBeginRendering(frame.command_buffer, &rendering);
+    vkCmdEndRendering(frame.command_buffer);
+    return true;
+}
+#endif
+
 bool VkSceneRenderer::record_composite_to_swapchain(
     const matter::VulkanFrame& frame, std::string& error) {
     error.clear();
@@ -5137,8 +5300,19 @@ bool VkSceneRenderer::record_composite_to_swapchain(
     }
     if (frame.command_buffer == VK_NULL_HANDLE ||
         frame.swapchain_image == VK_NULL_HANDLE ||
+        frame.swapchain_image_view == VK_NULL_HANDLE ||
         frame.extent.width == 0 || frame.extent.height == 0) {
         error = "invalid acquired swapchain frame";
+        return false;
+    }
+    if (frame.frame_slot >= frames_.size()) {
+        error = "acquired frame slot has no display descriptor";
+        return false;
+    }
+    if (display_pipeline_ == VK_NULL_HANDLE ||
+        display_pipeline_layout_ == VK_NULL_HANDLE ||
+        display_pipeline_format_ != frame.swapchain_format) {
+        error = "display pipeline is unavailable for the acquired swapchain format";
         return false;
     }
 
@@ -5170,9 +5344,6 @@ bool VkSceneRenderer::record_composite_to_swapchain(
         frame.frame_slot < frames_.size()) {
         FrameResources& slot = frames_[frame.frame_slot];
         if (!ensure_dlss_output(slot, frame.extent, error)) return false;
-        if (!vulkan_->retain_for_frame(frame, {slot.dlss_output.lifetime}, error))
-            return false;
-
         matter::record_image_transition(
             frame.command_buffer, hdr_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -5289,55 +5460,48 @@ bool VkSceneRenderer::record_composite_to_swapchain(
             consume_bridge_reset();
         }
     }
+    if (!vulkan_->retain_for_frame(frame, {composite_source->lifetime}, error))
+        return false;
     matter::record_image_transition(
         frame.command_buffer, *composite_source,
-        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-        composite_source_stage, composite_source_access,
-        VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
-        VK_IMAGE_ASPECT_COLOR_BIT);
-    VkImageMemoryBarrier2 swap_to_transfer{
-        VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-    swap_to_transfer.srcStageMask =
-        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    swap_to_transfer.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-    swap_to_transfer.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-    swap_to_transfer.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    swap_to_transfer.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    swap_to_transfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    swap_to_transfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    swap_to_transfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    swap_to_transfer.image = frame.swapchain_image;
-    swap_to_transfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    swap_to_transfer.subresourceRange.levelCount = 1;
-    swap_to_transfer.subresourceRange.layerCount = 1;
-    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    dependency.imageMemoryBarrierCount = 1;
-    dependency.pImageMemoryBarriers = &swap_to_transfer;
-    vkCmdPipelineBarrier2(frame.command_buffer, &dependency);
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, composite_source_stage,
+        composite_source_access, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    FrameResources& frame_slot = frames_[frame.frame_slot];
+    update_display_descriptor(frame_slot.display_descriptor_set,
+                              composite_source->view);
 
-    VkImageBlit blit{};
-    blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    blit.srcSubresource.layerCount = 1;
-    blit.srcOffsets[1] = {
-        static_cast<int32_t>(composite_source->extent.width),
-        static_cast<int32_t>(composite_source->extent.height), 1};
-    blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    blit.dstSubresource.layerCount = 1;
-    blit.dstOffsets[1] = {static_cast<int32_t>(frame.extent.width),
-                          static_cast<int32_t>(frame.extent.height), 1};
-    vkCmdBlitImage(frame.command_buffer, composite_source->image,
-                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                   frame.swapchain_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                   1, &blit, VK_FILTER_LINEAR);
-
-    std::swap(swap_to_transfer.srcStageMask, swap_to_transfer.dstStageMask);
-    std::swap(swap_to_transfer.srcAccessMask, swap_to_transfer.dstAccessMask);
-    swap_to_transfer.dstStageMask =
-        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    swap_to_transfer.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
-                                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-    std::swap(swap_to_transfer.oldLayout, swap_to_transfer.newLayout);
-    vkCmdPipelineBarrier2(frame.command_buffer, &dependency);
+    VkClearValue clear{};
+    VkRenderingAttachmentInfo attachment{
+        VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    attachment.imageView = frame.swapchain_image_view;
+    attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachment.clearValue = clear;
+    VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    rendering.renderArea.extent = frame.extent;
+    rendering.layerCount = 1;
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachments = &attachment;
+    vkCmdBeginRendering(frame.command_buffer, &rendering);
+    VkViewport viewport{0.0f, 0.0f,
+                        static_cast<float>(frame.extent.width),
+                        static_cast<float>(frame.extent.height), 0.0f, 1.0f};
+    const VkRect2D scissor{{0, 0}, frame.extent};
+    vkCmdSetViewport(frame.command_buffer, 0, 1, &viewport);
+    vkCmdSetScissor(frame.command_buffer, 0, 1, &scissor);
+    vkCmdBindPipeline(frame.command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      display_pipeline_);
+    vkCmdBindDescriptorSets(frame.command_buffer,
+                            VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            display_pipeline_layout_, 0, 1,
+                            &frame_slot.display_descriptor_set, 0, nullptr);
+    vkCmdPushConstants(frame.command_buffer, display_pipeline_layout_,
+                       VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float),
+                       &display_exposure_ev_);
+    vkCmdDraw(frame.command_buffer, 3, 1, 0, 0);
+    vkCmdEndRendering(frame.command_buffer);
     return true;
 }
 
