@@ -1,8 +1,14 @@
 #ifndef VIEWER_RASTER_MESH_H
 #define VIEWER_RASTER_MESH_H
-#include "raylib.h"
 #include "bvh.h"           // Tri, TriEx (MatterSurfaceLib)
+#include <cstdint>
 #include <vector>
+
+#if defined(VK_USE_PLATFORM_WIN32_KHR) || defined(MATTER_VULKAN_ONLY)
+struct Matrix;
+#else
+#include "raylib.h"
+#endif
 
 namespace viewer {
 
@@ -14,6 +20,9 @@ struct RasterMeshData {
     std::vector<float>         normals;
     std::vector<unsigned char> colors;
     std::vector<float>         texcoords;
+    std::vector<float>         surface_uvs;
+    std::vector<uint32_t>      material_ids;
+    std::vector<float>         baked_ao;
     int vertex_count = 0;
 };
 

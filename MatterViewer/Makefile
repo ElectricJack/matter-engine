@@ -406,7 +406,10 @@ CUDA_INTEROP_HEADER = $(ME3_DIR)/shaders_gen/embedded_cuda_interop_ptx.h
 
 build/shaders_vk/%.spv: $(ME3_DIR)/shaders_vk/%
 	@mkdir -p $(dir $@)
-	$(GLSLC) --target-env=vulkan1.3 -O $< -o $@
+	$(GLSLC) --target-env=vulkan1.3 -O -I$(ME3_DIR)/shaders_vk $< -o $@
+
+build/shaders_vk/raster.vert.spv build/shaders_vk/gbuffer.frag.spv: \
+    $(ME3_DIR)/shaders_vk/material_common.glsl
 
 $(VK_EMBEDDED_HEADER): $(VK_SPV) $(ME3_DIR)/tools/embed_spirv.py
 	python3 $(ME3_DIR)/tools/embed_spirv.py $@ $(VK_SPV)
@@ -439,6 +442,7 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_resources.cpp \
         $(ME3_DIR)/src/render/vk_pipeline.cpp \
         $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+        $(ME3_DIR)/src/render/raster_mesh.cpp \
         $(ME3_DIR)/src/render/frame_matrices.cpp \
         $(ME3_DIR)/src/render/vk_temporal.cpp \
         $(ME3_DIR)/src/render/matrix_math.cpp \
@@ -450,6 +454,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/vk_resources.cpp \
 	    $(ME3_DIR)/src/render/vk_pipeline.cpp \
 	    $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+	    $(ME3_DIR)/src/render/raster_mesh.cpp \
 	    $(ME3_DIR)/src/render/vk_instance_cache.cpp \
 	    $(ME3_DIR)/src/render/vk_cuda_interop.cpp \
 	    $(ME3_DIR)/src/render/frame_matrices.cpp \
@@ -463,6 +468,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    -DMATTER_HAVE_STREAMLINE=$(HAVE_STREAMLINE) \
 	    -DMATTER_VK_TEST_LAYER_PATH='"$(VULKAN_RUNTIME_DIR)"' \
 	    -I$(ME3_DIR) -I$(ME3_DIR)/include -I$(ME3_DIR)/src \
+	    -I../Libraries/raylib/src \
 	    -I../MatterSurfaceLib/include \
 	    -I$(ME3_DIR)/tests \
 	    -I../Libraries/raylib/src/external/glfw/include \

@@ -1,3 +1,4 @@
+#include "raylib.h"
 #include "raster_mesh.h"
 #include <cstring>
 
@@ -14,6 +15,9 @@ RasterMeshData build_raster_mesh_data(const Tri* tris, const TriEx* triex, int t
     d.vertex_count = tri_count * 3;
     d.vertices.reserve(d.vertex_count * 3);  d.normals.reserve(d.vertex_count * 3);
     d.colors.reserve(d.vertex_count * 4);    d.texcoords.reserve(d.vertex_count * 2);
+    d.surface_uvs.reserve(d.vertex_count * 2);
+    d.material_ids.reserve(d.vertex_count);
+    d.baked_ao.reserve(d.vertex_count);
 
     for (int i = 0; i < tri_count; ++i) {
         const Tri& t = tris[i];
@@ -29,6 +33,12 @@ RasterMeshData build_raster_mesh_data(const Tri* tris, const TriEx* triex, int t
                                triex ? triex[i].ao1 : 1.0f,
                                triex ? triex[i].ao2 : 1.0f };
         const float mat_id = triex ? (float)triex[i].materialId : default_mat_id;
+        const float2 uvs[3] = {triex ? triex[i].uv0 : make_float2(0.0f),
+                               triex ? triex[i].uv1 : make_float2(0.0f),
+                               triex ? triex[i].uv2 : make_float2(0.0f)};
+        const uint32_t material_id = triex
+                                         ? static_cast<uint32_t>(triex[i].materialId)
+                                         : UINT32_MAX;
         unsigned char rgba[4] = { 255, 255, 255, 0 };            // neutral tint
         if (triex) {
             rgba[0] = to_u8(triex[i].tint.x); rgba[1] = to_u8(triex[i].tint.y);
@@ -40,6 +50,9 @@ RasterMeshData build_raster_mesh_data(const Tri* tris, const TriEx* triex, int t
             d.colors.push_back(rgba[0]); d.colors.push_back(rgba[1]);
             d.colors.push_back(rgba[2]); d.colors.push_back(rgba[3]);
             d.texcoords.push_back(mat_id); d.texcoords.push_back(aos[v]);
+            d.surface_uvs.push_back(uvs[v].x); d.surface_uvs.push_back(uvs[v].y);
+            d.material_ids.push_back(material_id);
+            d.baked_ao.push_back(aos[v]);
         }
     }
     return d;

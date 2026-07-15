@@ -16,6 +16,7 @@
 #include "frame_matrices.h"
 #include "gpu_matrix_pack.h"
 #include "matter/math_types.h"
+#include "material_registry.h"
 #include "vk_draw_command.h"
 #include "vk_resources.h"
 #include "vk_temporal.h"
@@ -30,6 +31,12 @@ struct VulkanFrame;
 namespace viewer {
 
 constexpr uint32_t kVkMaxLod = 9;
+
+inline uint32_t vulkan_history_token(uint64_t instance_id) {
+    const uint32_t folded = static_cast<uint32_t>(instance_id) ^
+                            static_cast<uint32_t>(instance_id >> 32);
+    return folded != 0 ? folded : 1u;
+}
 
 // Emission is stored as log2(1 + strength) in the alpha channel of the
 // R16G16B16A16_SFLOAT normal attachment. 15.875 is exactly representable in
@@ -92,8 +99,10 @@ struct VkSceneCluster {
 struct VkRasterVertex {
     matter::Float3 position{};
     matter::Float3 normal{};
-    matter::Float4 albedo{};
-    matter::Float4 orm{};
+    matter::Float4 tint{};
+    matter::Float4 surface{};
+    uint32_t material_index = UINT32_MAX;
+    uint32_t pad[3]{};
 };
 
 struct VkScenePart {
@@ -129,6 +138,7 @@ struct VkRasterAttachments {
     VkRasterAttachment normal{};
     VkRasterAttachment orm{};
     VkRasterAttachment velocity{};
+    VkRasterAttachment material_instance{};
     VkRasterAttachment depth{};
     // R16G16B16A16_SFLOAT is the explicit linear HDR composite format.
     VkRasterAttachment hdr{};
@@ -140,6 +150,8 @@ struct VkRasterPixel {
     matter::Float4 normal{};
     matter::Float4 orm{};
     matter::Float3 velocity{};
+    uint32_t material_index = UINT32_MAX;
+    uint32_t instance_token = UINT32_MAX;
     matter::Float4 hdr{};
     float depth = 1.0f;
     float visibility = 1.0f;
@@ -183,6 +195,11 @@ public:
 
     bool init(std::string& error);
     int ensure_part(const VkScenePart& part, std::string& error);
+    bool update_materials(const std::vector<MaterialGpuRecord>& records,
+                          uint64_t shading_revision,
+                          uint64_t geometry_revision, std::string& error);
+    bool consume_gi_history_reset();
+    bool rt_geometry_classification_dirty(uint64_t part_hash) const;
     void release_part(uint64_t part_hash);
     bool update_instances(const std::vector<VkSceneInstance>& instances,
                           std::string& error);
@@ -262,6 +279,8 @@ public:
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     bool readback_raster_pixel(uint32_t x, uint32_t y,
                                VkRasterPixel& pixel, std::string& error);
+    bool readback_materials(std::vector<MaterialGpuRecord>& records,
+                            std::string& error);
     VkDeviceAddress test_rt_geometry_address(uint64_t part_hash) const;
     bool test_rt_blas_built(uint64_t part_hash) const;
     uint64_t test_rt_blas_candidate_serial(uint64_t part_hash) const;
@@ -361,13 +380,15 @@ private:
         uint32_t cluster_start;
         uint32_t cluster_count;
         uint32_t history_valid;
-        uint32_t pad[3];
+        uint32_t instance_token;
+        uint32_t pad[2];
     };
     struct GpuDrawTransform {
         GpuMat4 current;
         GpuMat4 previous;
         uint32_t history_valid;
-        uint32_t pad[3];
+        uint32_t instance_token;
+        uint32_t pad[2];
     };
     static_assert(sizeof(GpuCluster) == 128);
     static_assert(sizeof(GpuInstance) == 160);
@@ -385,6 +406,8 @@ private:
         uint32_t rt_primitive_count = 0;
         bool rt_blas_built = false;
         uint64_t rt_blas_candidate_serial = 0;
+        std::vector<uint32_t> material_ids;
+        bool rt_geometry_classification_dirty = false;
     };
 
     struct DeviceLimits {
@@ -401,6 +424,7 @@ private:
         matter::VkBufferResource commands;
         matter::VkBufferResource draw_transforms;
         matter::VkBufferResource stats;
+        matter::VkBufferResource materials;
         matter::VkImageResource dlss_output;
         matter::VkBufferResource rt_instances;
         matter::VkBufferResource rt_scratch;
@@ -412,6 +436,7 @@ private:
         uint64_t static_generation = 0;
         uint64_t instance_generation = 0;
         uint64_t command_generation = 0;
+        uint64_t material_generation = 0;
         bool stats_valid = false;
     };
 
@@ -486,6 +511,7 @@ private:
     matter::VkImageResource normal_;
     matter::VkImageResource orm_;
     matter::VkImageResource velocity_;
+    matter::VkImageResource material_instance_;
     matter::VkImageResource depth_;
     matter::VkImageResource hdr_;
     matter::VkImageResource visibility_;
@@ -510,6 +536,11 @@ private:
     std::vector<uint8_t> uploaded_raster_command_enabled_;
     std::vector<RtInstance> rt_instances_;
     std::vector<VkRasterVertex> vertex_staging_;
+    std::vector<MaterialGpuRecord> material_staging_;
+    uint64_t material_shading_revision_ = 0;
+    uint64_t material_geometry_revision_ = 0;
+    uint64_t material_generation_ = 1;
+    bool gi_history_reset_pending_ = false;
     uint32_t uploaded_vertex_count_ = 0;
     uint32_t raster_draw_command_count_ = 0;
     uint32_t uploaded_raster_draw_command_count_ = 0;

@@ -33,7 +33,7 @@ static_assert(sizeof(FrameConstants) == 288,
               "FrameConstants must match the std140 shader block");
 static_assert(sizeof(VkCullStats) == 16,
               "VkCullStats must match the std430 stats block");
-static_assert(sizeof(VkRasterVertex) == 56,
+static_assert(sizeof(VkRasterVertex) == 72,
               "VkRasterVertex must match raster vertex bindings");
 
 bool fail_vk(const char* operation, VkResult result, std::string& error) {
@@ -147,6 +147,7 @@ struct RasterRecord {
     matter::VkImageResource* normal;
     matter::VkImageResource* orm;
     matter::VkImageResource* velocity;
+    matter::VkImageResource* material_instance;
     matter::VkImageResource* depth;
     matter::VkImageResource* hdr;
     matter::VkImageResource* visibility;
@@ -174,8 +175,9 @@ struct RasterRecord {
 
 void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     const auto& record = *static_cast<RasterRecord*>(user_data);
-    matter::VkImageResource* colors[] = {
-        record.albedo, record.normal, record.orm, record.velocity};
+    matter::VkImageResource* colors[] = {record.albedo, record.normal,
+                                         record.orm, record.velocity,
+                                         record.material_instance};
     for (auto* color : colors) {
         transition_for_use(command_buffer, *color,
                            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -196,8 +198,8 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
                        VK_IMAGE_ASPECT_COLOR_BIT);
 
     const VkClearValue clear_color{{{0.0f, 0.0f, 0.0f, 0.0f}}};
-    VkRenderingAttachmentInfo color_attachments[4]{};
-    for (size_t i = 0; i < 4; ++i) {
+    VkRenderingAttachmentInfo color_attachments[5]{};
+    for (size_t i = 0; i < 5; ++i) {
         color_attachments[i].sType =
             VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
         color_attachments[i].imageView = colors[i]->view;
@@ -207,6 +209,8 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
         color_attachments[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         color_attachments[i].clearValue = clear_color;
     }
+    color_attachments[4].clearValue.color.uint32[0] = UINT32_MAX;
+    color_attachments[4].clearValue.color.uint32[1] = UINT32_MAX;
     VkRenderingAttachmentInfo depth_attachment{
         VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     depth_attachment.imageView = record.depth->view;
@@ -217,7 +221,7 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
     rendering.renderArea.extent = record.extent;
     rendering.layerCount = 1;
-    rendering.colorAttachmentCount = 4;
+    rendering.colorAttachmentCount = 5;
     rendering.pColorAttachments = color_attachments;
     rendering.pDepthAttachment = &depth_attachment;
     vkCmdBeginRendering(command_buffer, &rendering);
@@ -341,8 +345,8 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
 struct RasterReadbackRecord {
-    matter::VkImageResource* images[7];
-    VkImageAspectFlags aspects[7];
+    matter::VkImageResource* images[8];
+    VkImageAspectFlags aspects[8];
     VkBuffer destination;
     uint32_t x;
     uint32_t y;
@@ -351,8 +355,8 @@ struct RasterReadbackRecord {
 void record_raster_readback(VkCommandBuffer command_buffer, void* user_data) {
     const auto& record = *static_cast<RasterReadbackRecord*>(user_data);
     // Each offset is aligned to its format's texel-block size (4 or 8 bytes).
-    constexpr VkDeviceSize offsets[7] = {0, 8, 16, 20, 24, 32, 40};
-    for (size_t i = 0; i < 7; ++i) {
+    constexpr VkDeviceSize offsets[8] = {0, 8, 16, 20, 24, 32, 40, 48};
+    for (size_t i = 0; i < 8; ++i) {
         transition_for_use(command_buffer, *record.images[i],
                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
@@ -617,12 +621,15 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     if (result != VK_SUCCESS)
         return fail_vk("vkCreateDescriptorSetLayout(frame)", result, error);
 
-    std::array<VkDescriptorSetLayoutBinding, 5> scene_bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 6> scene_bindings{};
     for (uint32_t i = 0; i < scene_bindings.size(); ++i)
         scene_bindings[i] =
             descriptor_binding(i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                VK_SHADER_STAGE_COMPUTE_BIT |
-                                   (i == 3 ? VK_SHADER_STAGE_VERTEX_BIT : 0));
+                                   (i == 3 ? VK_SHADER_STAGE_VERTEX_BIT : 0) |
+                                   (i == 5 ? VK_SHADER_STAGE_VERTEX_BIT |
+                                                 VK_SHADER_STAGE_FRAGMENT_BIT
+                                           : 0));
     VkDescriptorSetLayoutCreateInfo scene_layout{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     scene_layout.bindingCount =
@@ -844,14 +851,16 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
         {1, 0, VK_FORMAT_R32G32B32_SFLOAT,
          static_cast<uint32_t>(offsetof(VkRasterVertex, normal))},
         {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
-         static_cast<uint32_t>(offsetof(VkRasterVertex, albedo))},
+         static_cast<uint32_t>(offsetof(VkRasterVertex, tint))},
         {3, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
-         static_cast<uint32_t>(offsetof(VkRasterVertex, orm))}};
+         static_cast<uint32_t>(offsetof(VkRasterVertex, surface))},
+        {4, 0, VK_FORMAT_R32_UINT,
+         static_cast<uint32_t>(offsetof(VkRasterVertex, material_index))}};
     VkPipelineVertexInputStateCreateInfo vertex_input{
         VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     vertex_input.vertexBindingDescriptionCount = 1;
     vertex_input.pVertexBindingDescriptions = &vertex_binding;
-    vertex_input.vertexAttributeDescriptionCount = 4;
+    vertex_input.vertexAttributeDescriptionCount = 5;
     vertex_input.pVertexAttributeDescriptions = attributes;
     VkPipelineInputAssemblyStateCreateInfo input_assembly{
         VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
@@ -874,7 +883,7 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     depth_stencil.depthTestEnable = VK_TRUE;
     depth_stencil.depthWriteEnable = VK_TRUE;
     depth_stencil.depthCompareOp = VK_COMPARE_OP_LESS;
-    VkPipelineColorBlendAttachmentState blend_attachments[4]{};
+    VkPipelineColorBlendAttachmentState blend_attachments[5]{};
     for (auto& blend : blend_attachments) {
         blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
                                VK_COLOR_COMPONENT_G_BIT |
@@ -883,7 +892,7 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     }
     VkPipelineColorBlendStateCreateInfo color_blend{
         VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    color_blend.attachmentCount = 4;
+    color_blend.attachmentCount = 5;
     color_blend.pAttachments = blend_attachments;
     const VkDynamicState dynamic_values[] = {VK_DYNAMIC_STATE_VIEWPORT,
                                               VK_DYNAMIC_STATE_SCISSOR};
@@ -893,10 +902,11 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     dynamic.pDynamicStates = dynamic_values;
     const VkFormat gbuffer_formats[] = {
         VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16B16A16_SFLOAT,
-        VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16_SFLOAT};
+        VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16_SFLOAT,
+        VK_FORMAT_R32G32_UINT};
     VkPipelineRenderingCreateInfo rendering{
         VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    rendering.colorAttachmentCount = 4;
+    rendering.colorAttachmentCount = 5;
     rendering.pColorAttachmentFormats = gbuffer_formats;
     rendering.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
     VkGraphicsPipelineCreateInfo raster_create{
@@ -1133,7 +1143,7 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     }
     const VkDescriptorPoolSize pool_sizes[] = {
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 5},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 6},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
          frame_slot_count * 4}};
     VkDescriptorPoolCreateInfo pool{
@@ -1202,7 +1212,12 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             !ensure_candidate_buffer(frame.draw_transforms, sizeof(GpuDrawTransform),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
             !ensure_candidate_buffer(frame.stats, sizeof(VkCullStats),
-                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+            !ensure_candidate_buffer(
+                frame.materials,
+                std::max<size_t>(material_staging_.size(), 1) *
+                    sizeof(MaterialGpuRecord),
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
             vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
             return false;
         }
@@ -1266,6 +1281,8 @@ void VkSceneRenderer::update_frame_descriptors(FrameResources& frame) {
                       frame.draw_transforms);
     update_descriptor(frame.descriptor_sets[1], 4,
                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.stats);
+    update_descriptor(frame.descriptor_sets[1], 5,
+                      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.materials);
 }
 
 void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
@@ -1343,8 +1360,8 @@ bool VkSceneRenderer::load_device_limits(std::string& error) {
     if (vk_limits.maxBoundDescriptorSets < 2 ||
         vk_limits.maxPerStageDescriptorUniformBuffers < 1 ||
         vk_limits.maxDescriptorSetUniformBuffers < 1 ||
-        vk_limits.maxPerStageDescriptorStorageBuffers < 5 ||
-        vk_limits.maxDescriptorSetStorageBuffers < 5) {
+        vk_limits.maxPerStageDescriptorStorageBuffers < 6 ||
+        vk_limits.maxDescriptorSetStorageBuffers < 6) {
         error = "Vulkan device descriptor limits cannot support scene culling";
         return false;
     }
@@ -1473,6 +1490,7 @@ bool VkSceneRenderer::init(std::string& error) {
         normal_.reset();
         orm_.reset();
         velocity_.reset();
+        material_instance_.reset();
         depth_.reset();
         hdr_.reset();
         raster_extent_ = {};
@@ -1601,6 +1619,15 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     record.rt_geometry = std::move(rt_geometry);
     record.rt_blas = std::move(rt_blas);
     record.rt_primitive_count = rt_primitive_count;
+    record.material_ids.reserve(part.vertices.size());
+    for (const VkRasterVertex& vertex : part.vertices) {
+        if (vertex.material_index != UINT32_MAX)
+            record.material_ids.push_back(vertex.material_index);
+    }
+    std::sort(record.material_ids.begin(), record.material_ids.end());
+    record.material_ids.erase(
+        std::unique(record.material_ids.begin(), record.material_ids.end()),
+        record.material_ids.end());
     for (size_t i = 0; i < part.clusters.size(); ++i) {
         const auto& source = part.clusters[i];
         GpuCluster cluster{};
@@ -1644,6 +1671,80 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     static_upload_dirty_ = true;
     note_command_layout_rebuild();
     return slot;
+}
+
+bool VkSceneRenderer::update_materials(
+    const std::vector<MaterialGpuRecord>& records, uint64_t shading_revision,
+    uint64_t geometry_revision, std::string& error) {
+    error.clear();
+    if (fail_if_poisoned(error)) return false;
+    if (records.empty()) {
+        error = "Vulkan material table must contain at least one record";
+        return false;
+    }
+    if (shading_revision < material_shading_revision_ ||
+        geometry_revision < material_geometry_revision_) {
+        error = "Vulkan material revisions must be monotonic";
+        return false;
+    }
+    const bool first_upload = material_staging_.empty();
+    const bool shading_changed =
+        shading_revision != material_shading_revision_;
+    const bool geometry_changed =
+        geometry_revision != material_geometry_revision_;
+    const bool data_changed =
+        records.size() != material_staging_.size() ||
+        (records.size() == material_staging_.size() &&
+         std::memcmp(records.data(), material_staging_.data(),
+                     records.size() * sizeof(MaterialGpuRecord)) != 0);
+    if (!shading_changed && !geometry_changed && !data_changed) return true;
+    if (!first_upload && data_changed && !shading_changed && !geometry_changed) {
+        error = "Vulkan material data changed without a new revision";
+        return false;
+    }
+
+    if (!first_upload && geometry_changed) {
+        const auto alpha_classification = [](const MaterialGpuRecord& record) {
+            return record.flags_misc[0] & MATERIAL_ALPHA_TESTED;
+        };
+        for (PartRecord& part : parts_) {
+            for (uint32_t material_id : part.material_ids) {
+                const uint32_t old_class =
+                    material_id < material_staging_.size()
+                        ? alpha_classification(material_staging_[material_id])
+                        : 0;
+                const uint32_t new_class =
+                    material_id < records.size()
+                        ? alpha_classification(records[material_id])
+                        : 0;
+                if (old_class != new_class) {
+                    part.rt_geometry_classification_dirty = true;
+                    break;
+                }
+            }
+        }
+    }
+    material_staging_ = records;
+    material_shading_revision_ = shading_revision;
+    material_geometry_revision_ = geometry_revision;
+    ++material_generation_;
+    if (!first_upload && (shading_changed || geometry_changed))
+        gi_history_reset_pending_ = true;
+    return true;
+}
+
+bool VkSceneRenderer::consume_gi_history_reset() {
+    const bool pending = gi_history_reset_pending_;
+    gi_history_reset_pending_ = false;
+    return pending;
+}
+
+bool VkSceneRenderer::rt_geometry_classification_dirty(
+    uint64_t part_hash) const {
+    const auto found = slot_of_.find(part_hash);
+    return found != slot_of_.end() &&
+           parts_[static_cast<size_t>(found->second)]
+               .rt_geometry_classification_dirty;
 }
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
@@ -1821,6 +1922,10 @@ bool VkSceneRenderer::update_instances(
         instance.object_to_world = pack_glsl_mat4(source.object_to_world);
         instance.previous_object_to_world = instance.object_to_world;
         const uint64_t stable_id = source.instance_id;
+        instance.instance_token =
+            stable_id != 0
+                ? vulkan_history_token(stable_id)
+                : static_cast<uint32_t>(source_index) + 1u;
         const auto temporal = std::find_if(
             temporal_frame_.instances.begin(), temporal_frame_.instances.end(),
             [stable_id](const TemporalInstanceFrame& item) {
@@ -2010,6 +2115,7 @@ bool VkSceneRenderer::upload_scene_buffers(FrameResources& frame,
     VkDeviceSize command_bytes = 0;
     VkDeviceSize transform_bytes = 0;
     VkDeviceSize vertex_bytes = 0;
+    VkDeviceSize material_bytes = 0;
     if (!vk_scene_detail::checked_mul_to_device_size(
             cluster_staging_.size(), sizeof(GpuCluster), cluster_bytes,
             "cluster buffer", error) ||
@@ -2024,7 +2130,10 @@ bool VkSceneRenderer::upload_scene_buffers(FrameResources& frame,
             "draw-transform buffer", error) ||
         !vk_scene_detail::checked_mul_to_device_size(
             vertex_staging_.size(), sizeof(VkRasterVertex), vertex_bytes,
-            "vertex buffer", error)) {
+            "vertex buffer", error) ||
+        !vk_scene_detail::checked_mul_to_device_size(
+            material_staging_.size(), sizeof(MaterialGpuRecord),
+            material_bytes, "material buffer", error)) {
         return false;
     }
     const auto storage_size_ok = [&](VkDeviceSize size, const char* label) {
@@ -2043,7 +2152,8 @@ bool VkSceneRenderer::upload_scene_buffers(FrameResources& frame,
     if (!storage_size_ok(cluster_bytes, "cluster buffer") ||
         !storage_size_ok(instance_bytes, "instance buffer") ||
         !storage_size_ok(command_bytes, "draw-command buffer") ||
-        !storage_size_ok(transform_bytes, "draw-transform buffer")) {
+        !storage_size_ok(transform_bytes, "draw-transform buffer") ||
+        !storage_size_ok(material_bytes, "material buffer")) {
         return false;
     }
     if (std::max<VkDeviceSize>(vertex_bytes, 1) > limits_.max_buffer_size) {
@@ -2078,6 +2188,20 @@ bool VkSceneRenderer::upload_scene_buffers(FrameResources& frame,
         ++uploads;
         return true;
     };
+    if (frame.material_generation != material_generation_) {
+        bool material_replaced = false;
+        if (!ensure_buffer(frame.materials, material_bytes,
+                           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error,
+                           &material_replaced) ||
+            !upload(frame.materials, material_staging_.data(), material_bytes)) {
+            return false;
+        }
+        if (material_replaced)
+            update_descriptor(frame.descriptor_sets[1], 5,
+                              VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                              frame.materials);
+        frame.material_generation = material_generation_;
+    }
     if (static_upload_dirty_) {
         const auto replacement_capacity = [&](VkDeviceSize current,
                                               VkDeviceSize required,
@@ -2210,6 +2334,7 @@ bool VkSceneRenderer::upload_frame_constants(FrameResources& frame,
     constants.camera_eye_pixel_budget[3] = pixel_budget;
     constants.counts[0] = static_cast<uint32_t>(instance_staging_.size());
     constants.counts[1] = max_clusters_per_instance_;
+    constants.counts[2] = static_cast<uint32_t>(material_staging_.size());
     constants.capacities[0] = static_cast<uint32_t>(cluster_staging_.size());
     constants.capacities[1] = static_cast<uint32_t>(instance_staging_.size());
     constants.capacities[2] = static_cast<uint32_t>(command_template_.size());
@@ -2267,6 +2392,7 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
         selected.commands.lifetime,
         selected.draw_transforms.lifetime,
         selected.stats.lifetime,
+        selected.materials.lifetime,
         albedo_.lifetime,
         normal_.lifetime,
         orm_.lifetime,
@@ -2665,7 +2791,9 @@ bool VkSceneRenderer::record_cull_and_render(
     // them, preserving the frame-lifetime contract.
     std::vector<std::shared_ptr<void>> attachments{
         albedo_.lifetime, normal_.lifetime, orm_.lifetime, velocity_.lifetime,
-        depth_.lifetime, hdr_.lifetime, visibility_.lifetime};
+        material_instance_.lifetime, selected.materials.lifetime,
+        depth_.lifetime, hdr_.lifetime,
+        visibility_.lifetime};
     if (!vulkan_->retain_for_frame(frame, std::move(attachments), error))
         return false;
 
@@ -2695,6 +2823,7 @@ bool VkSceneRenderer::record_cull_and_render(
                         &normal_,
                         &orm_,
                         &velocity_,
+                        &material_instance_,
                         &depth_,
                         &hdr_,
                         &visibility_,
@@ -2764,7 +2893,8 @@ bool VkSceneRenderer::dispatch_culling(const FrameMatrices& frame,
     std::vector<std::shared_ptr<void>> dependencies{
         selected.frame_constants.lifetime, clusters_.lifetime,
         selected.instances.lifetime, selected.commands.lifetime,
-        selected.draw_transforms.lifetime, selected.stats.lifetime};
+        selected.draw_transforms.lifetime, selected.stats.lifetime,
+        selected.materials.lifetime};
     if (!matter::submit_immediate(
         *vulkan_, record_cull_dispatch, &dispatch, error,
         matter::ImmediateSubmitPhase::compute_dispatch,
@@ -2845,7 +2975,9 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     if (raster_extent_.width == width && raster_extent_.height == height &&
         albedo_.image != VK_NULL_HANDLE && normal_.image != VK_NULL_HANDLE &&
         orm_.image != VK_NULL_HANDLE && depth_.image != VK_NULL_HANDLE &&
-        velocity_.image != VK_NULL_HANDLE && hdr_.image != VK_NULL_HANDLE &&
+        velocity_.image != VK_NULL_HANDLE &&
+        material_instance_.image != VK_NULL_HANDLE &&
+        hdr_.image != VK_NULL_HANDLE &&
         visibility_.image != VK_NULL_HANDLE) {
         return true;
     }
@@ -2853,6 +2985,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     matter::VkImageResource normal;
     matter::VkImageResource orm;
     matter::VkImageResource velocity;
+    matter::VkImageResource material_instance;
     matter::VkImageResource depth;
     matter::VkImageResource hdr;
     matter::VkImageResource visibility;
@@ -2885,6 +3018,11 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
                               gbuffer_usage, VK_IMAGE_ASPECT_COLOR_BIT,
                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, velocity,
                               error) ||
+        !matter::create_image(*vulkan_, VK_IMAGE_TYPE_2D,
+                              VK_FORMAT_R32G32_UINT, extent,
+                              gbuffer_usage, VK_IMAGE_ASPECT_COLOR_BIT,
+                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                              material_instance, error) ||
         !matter::create_image(
             *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_D32_SFLOAT, extent,
             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
@@ -2911,6 +3049,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     normal_ = std::move(normal);
     orm_ = std::move(orm);
     velocity_ = std::move(velocity);
+    material_instance_ = std::move(material_instance);
     depth_ = std::move(depth);
     hdr_ = std::move(hdr);
     visibility_ = std::move(visibility);
@@ -2976,6 +3115,7 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
                         &normal_,
                         &orm_,
                         &velocity_,
+                        &material_instance_,
                         &depth_,
                         &hdr_,
                         &visibility_,
@@ -3001,9 +3141,11 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
                         nullptr};
     std::vector<std::shared_ptr<void>> dependencies{
         albedo_.lifetime, normal_.lifetime, orm_.lifetime, velocity_.lifetime,
-        depth_.lifetime, hdr_.lifetime, visibility_.lifetime,
+        material_instance_.lifetime, depth_.lifetime, hdr_.lifetime,
+        visibility_.lifetime,
         vertices_.lifetime, selected.commands.lifetime,
-        selected.frame_constants.lifetime, selected.draw_transforms.lifetime};
+        selected.frame_constants.lifetime, selected.draw_transforms.lifetime,
+        selected.materials.lifetime};
     raster_attachments_ready_ = false;
     if (!matter::submit_immediate(
             *vulkan_, record_raster, &record, error,
@@ -3236,6 +3378,7 @@ VkRasterAttachments VkSceneRenderer::raster_attachments() const {
             {normal_.image, normal_.format},
             {orm_.image, orm_.format},
             {velocity_.image, velocity_.format},
+            {material_instance_.image, material_instance_.format},
             {depth_.image, depth_.format},
             {hdr_.image, hdr_.format},
             raster_extent_};
@@ -3260,7 +3403,7 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
         return false;
     }
     matter::VkBufferResource staging;
-    constexpr VkDeviceSize readback_size = 41;
+    constexpr VkDeviceSize readback_size = 56;
     if (!matter::create_buffer(
             *vulkan_, readback_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
@@ -3270,12 +3413,13 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
         return false;
     }
     RasterReadbackRecord record{{&albedo_, &normal_, &orm_, &velocity_, &depth_,
-                                 &hdr_, &visibility_},
+                                 &hdr_, &visibility_, &material_instance_},
                                 {VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_DEPTH_BIT,
+                                 VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT,
                                  VK_IMAGE_ASPECT_COLOR_BIT},
                                 staging.buffer,
@@ -3284,6 +3428,7 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
     std::vector<std::shared_ptr<void>> dependencies{
         albedo_.lifetime, normal_.lifetime, orm_.lifetime, velocity_.lifetime,
         depth_.lifetime, hdr_.lifetime, visibility_.lifetime,
+        material_instance_.lifetime,
         staging.lifetime};
     if (!matter::submit_immediate(
             *vulkan_, record_raster_readback, &record, error,
@@ -3320,7 +3465,27 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
     pixel.hdr = {half_to_float(hdr_half[0]), half_to_float(hdr_half[1]),
                  half_to_float(hdr_half[2]), half_to_float(hdr_half[3])};
     pixel.visibility = bytes[40] / 255.0f;
+    std::memcpy(&pixel.material_index, bytes.data() + 48,
+                sizeof(pixel.material_index));
+    std::memcpy(&pixel.instance_token, bytes.data() + 52,
+                sizeof(pixel.instance_token));
     return true;
+}
+
+bool VkSceneRenderer::readback_materials(
+    std::vector<MaterialGpuRecord>& records, std::string& error) {
+    error.clear();
+    records.clear();
+    if (fail_if_poisoned(error)) return false;
+    if (material_staging_.empty() || frames_.empty() ||
+        frames_[active_frame_index_].materials.buffer == VK_NULL_HANDLE) {
+        error = "Vulkan material buffer is unavailable before frame preparation";
+        return false;
+    }
+    records.resize(material_staging_.size());
+    return matter::readback_buffer(
+        *vulkan_, frames_[active_frame_index_].materials, records.data(),
+        records.size() * sizeof(MaterialGpuRecord), 0, error);
 }
 
 #endif
@@ -3353,6 +3518,7 @@ void VkSceneRenderer::reset() {
         normal_.reset();
         orm_.reset();
         velocity_.reset();
+        material_instance_.reset();
         depth_.reset();
         hdr_.reset();
         raster_extent_ = {};

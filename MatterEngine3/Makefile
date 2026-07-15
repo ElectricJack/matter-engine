@@ -246,7 +246,10 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
 
 build/shaders_vk/%.spv: shaders_vk/%
 	@mkdir -p $(dir $@)
-	$(GLSLC) --target-env=vulkan1.3 -O $< -o $@
+	$(GLSLC) --target-env=vulkan1.3 -O -Ishaders_vk $< -o $@
+
+build/shaders_vk/raster.vert.spv build/shaders_vk/gbuffer.frag.spv: \
+    shaders_vk/material_common.glsl
 
 shaders_gen/embedded_spirv.h: $(VK_SPV) tools/embed_spirv.py
 	python3 tools/embed_spirv.py $@ $(VK_SPV)

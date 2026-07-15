@@ -25,7 +25,7 @@ struct GpuInstance {
     uint cluster_start;
     uint cluster_count;
     uint history_valid;
-    uint pad0;
+    uint instance_token;
     uint pad1;
     uint pad2;
 };
@@ -34,7 +34,7 @@ struct DrawTransform {
     mat4 current;
     mat4 previous;
     uint history_valid;
-    uint pad0;
+    uint instance_token;
     uint pad1;
     uint pad2;
 };
@@ -176,5 +176,6 @@ void main() {
     draw_transforms[first + slot].current = instance.transform;
     draw_transforms[first + slot].previous = instance.previous_transform;
     draw_transforms[first + slot].history_valid = instance.history_valid;
+    draw_transforms[first + slot].instance_token = instance.instance_token;
     atomicAdd(emitted, 1u);
 }

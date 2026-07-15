@@ -17,6 +17,7 @@
 #include "matter/vulkan_device.h"
 #include "render/gpu_matrix_pack.h"
 #include "render/matrix_math.h"
+#include "render/raster_mesh.h"
 #include "render/streamline_bridge.h"
 #include "render/vk_temporal.h"
 #include "render/vk_cuda_interop.h"
@@ -30,6 +31,41 @@
 namespace {
 
 bool close4(matter::Float4 actual, matter::Float4 expected, float epsilon);
+
+void run_raster_mesh_material_contract_tests() {
+    Tri triangle{};
+    triangle.vertex0 = make_float3(-1.0f, 0.0f, 0.0f);
+    triangle.vertex1 = make_float3(1.0f, 0.0f, 0.0f);
+    triangle.vertex2 = make_float3(0.0f, 1.0f, 0.0f);
+    TriEx surface{};
+    surface.uv0 = make_float2(0.1f, 0.2f);
+    surface.uv1 = make_float2(0.3f, 0.4f);
+    surface.uv2 = make_float2(0.5f, 0.6f);
+    surface.N0 = surface.N1 = surface.N2 = make_float3(0.0f, 0.0f, 1.0f);
+    surface.materialId = 7;
+    surface.tint = make_float4(0.2f, 0.4f, 0.6f, 0.75f);
+    surface.ao0 = 0.2f;
+    surface.ao1 = 0.5f;
+    surface.ao2 = 0.8f;
+
+    const viewer::RasterMeshData mesh =
+        viewer::build_raster_mesh_data(&triangle, &surface, 1);
+    CHECK(mesh.surface_uvs ==
+              std::vector<float>({0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f}),
+          "raster mesh retains Vulkan source UVs");
+    CHECK(mesh.material_ids == std::vector<uint32_t>({7u, 7u, 7u}),
+          "raster mesh retains exact Vulkan material ids");
+    CHECK(mesh.baked_ao == std::vector<float>({0.2f, 0.5f, 0.8f}),
+          "raster mesh retains baked AO source values");
+
+    const viewer::RasterMeshData fallback =
+        viewer::build_raster_mesh_data(&triangle, nullptr, 1);
+    CHECK(fallback.surface_uvs == std::vector<float>(6, 0.0f) &&
+              fallback.material_ids ==
+                  std::vector<uint32_t>(3, 0xffffffffu) &&
+              fallback.baked_ao == std::vector<float>(3, 1.0f),
+          "raster mesh supplies neutral Vulkan sources without TriEx");
+}
 
 void run_ray_tracing_capability_contract_tests() {
     matter::VulkanRayTracingCapabilities unsupported{};
@@ -763,18 +799,18 @@ viewer::VkScenePart fixed_part(uint64_t hash, matter::Float3 minimum,
                                matter::Float3 maximum,
                                uint32_t first_vertex);
 
-viewer::VkScenePart known_raster_triangle(uint64_t hash,
-                                          float emission = 5.0f) {
+viewer::VkScenePart known_raster_triangle(uint64_t hash) {
     viewer::VkScenePart part = fixed_part(
-        hash, {-0.75f, -0.75f, -2.0f}, {0.75f, 0.75f, -2.0f}, 0);
+        hash, {-0.75f, -0.75f, -2.0f}, {0.75f, 1.5f, -2.0f}, 0);
     const matter::Float3 normal{0.0f, 1.0f, 0.0f};
-    const matter::Float4 albedo{0.25f, 0.5f, 0.75f, 1.0f};
-    const matter::Float4 orm{0.2f, 0.7f, 0.4f,
-                             viewer::vulkan_encode_emission(emission)};
+    const matter::Float4 tint{0.9f, 0.1f, 0.3f, 0.0f};
     part.vertices = {
-        {{-0.75f, -0.75f, -2.0f}, normal, albedo, orm},
-        {{0.75f, -0.75f, -2.0f}, normal, albedo, orm},
-        {{0.0f, 0.75f, -2.0f}, normal, albedo, orm},
+        {{-0.75f, -0.75f, -2.0f}, normal, tint,
+         {0.1f, 0.2f, 0.2f, 1.0f}, 7u, {}},
+        {{0.75f, -0.75f, -2.0f}, normal, tint,
+         {0.3f, 0.4f, 0.5f, 1.0f}, 7u, {}},
+        {{0.0f, 1.5f, -2.0f}, normal, tint,
+         {0.5f, 0.6f, 0.8f, 1.0f}, 7u, {}},
     };
     return part;
 }
@@ -784,6 +820,16 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     constexpr uint32_t height = 160;
     std::string error;
     viewer::VkSceneRenderer renderer(vulkan);
+    std::vector<MaterialGpuRecord> materials(8);
+    materials[7].base_roughness[0] = 0.25f;
+    materials[7].base_roughness[1] = 0.5f;
+    materials[7].base_roughness[2] = 0.75f;
+    materials[7].base_roughness[3] = 0.2f;
+    materials[7].metal_opacity_spec_coat[0] = 0.7f;
+    materials[7].metal_opacity_spec_coat[1] = 1.0f;
+    materials[7].emission_strength[3] = 5.0f;
+    CHECK(renderer.update_materials(materials, 1, 1, error),
+          error.empty() ? "stage shared raster materials" : error.c_str());
     const auto half_roundtrip = [](float value) {
         if (value == 0.0f) return 0.0f;
         int exponent = 0;
@@ -825,7 +871,8 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
           error.empty() ? "ensure known raster triangle" : error.c_str());
 
     const matter::Mat4f identity = identity_matrix();
-    CHECK(renderer.update_instances({{900, identity}, {901, identity}}, error),
+    CHECK(renderer.update_instances({{900, identity, 111},
+                                     {901, identity, 222}}, error),
           error.empty() ? "upload raster instances" : error.c_str());
 
     matter::CameraDesc camera{};
@@ -861,6 +908,8 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
           "ORM attachment format");
     CHECK(attachments.velocity.format == VK_FORMAT_R16G16_SFLOAT,
           "sampled velocity attachment format");
+    CHECK(attachments.material_instance.format == VK_FORMAT_R32G32_UINT,
+          "integer material and instance attachment format");
     CHECK(attachments.depth.format == VK_FORMAT_D32_SFLOAT,
           "depth attachment format");
     CHECK(attachments.hdr.format == VK_FORMAT_R16G16B16A16_SFLOAT,
@@ -888,9 +937,17 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
                  4e-3f),
           "known center normal xyz and half-float emission payload");
     CHECK(close4(center.orm,
-                 {0.2f, 0.7f, 0.4f, 1.0f},
+                 {0.2f, 0.7f, 0.5f, 1.0f},
                  6e-3f),
-          "known center ORM with reserved alpha default");
+          "known center ORM retains interpolated baked AO");
+    CHECK(center.material_index == 7u,
+          "G-buffer retains exact material id");
+    CHECK(center.instance_token != 0u,
+          "draw writes stable instance history token");
+    CHECK(center.instance_token == viewer::vulkan_history_token(222),
+          "draw writes token derived from stable instance identity");
+    CHECK(std::fabs(center.orm.z - 0.5f) < 0.01f,
+          "baked AO survives interpolation");
     CHECK(std::isfinite(center.depth) && center.depth >= 0.0f &&
               center.depth <= 1.0f,
           "known center Vulkan depth range");
@@ -918,6 +975,38 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
               center.hdr.y > background.hdr.y &&
               center.hdr.z > background.hdr.z,
           "composite samples G-buffer into HDR output");
+
+    const viewer::VkSceneUploadCounters before_material_update =
+        renderer.upload_counters();
+    materials[7].absorption_pad[0] = 0.875f;
+    CHECK(renderer.update_materials(materials, 2, 1, error),
+          error.empty() ? "update shading-only material revision"
+                        : error.c_str());
+    CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f, error),
+          error.empty() ? "upload shading-only material revision"
+                        : error.c_str());
+    std::vector<MaterialGpuRecord> uploaded_materials;
+    CHECK(renderer.readback_materials(uploaded_materials, error) &&
+              uploaded_materials.size() == materials.size() &&
+              uploaded_materials[7].absorption_pad[0] == 0.875f,
+          error.empty() ? "shared material buffer changes in place"
+                        : error.c_str());
+    CHECK(renderer.upload_counters().vertex_uploads ==
+              before_material_update.vertex_uploads,
+          "shading-only material update skips part geometry upload");
+    CHECK(renderer.consume_gi_history_reset(),
+          "shading-only material update requests one GI history reset");
+    CHECK(!renderer.consume_gi_history_reset(),
+          "GI history reset request is one-shot");
+
+    materials[7].flags_misc[0] |= MATERIAL_ALPHA_TESTED;
+    CHECK(renderer.update_materials(materials, 2, 2, error),
+          error.empty() ? "update geometry material revision"
+                        : error.c_str());
+    CHECK(renderer.rt_geometry_classification_dirty(901),
+          "classification-changing material revision dirties affected RT part");
+    CHECK(renderer.consume_gi_history_reset(),
+          "geometry material revision requests GI history reset");
 
     viewer::TemporalFrame rigid_motion{};
     rigid_motion.current_jittered = frame;
@@ -977,9 +1066,8 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
               std::fabs(dark_center.hdr.z - 3.75f) < 0.06f,
           "material emission 5 survives UNORM G-buffer and HDR composite");
 
-    renderer.release_part(901);
-    CHECK(renderer.ensure_part(known_raster_triangle(901, 1000.0f), error) >= 0 &&
-              renderer.update_instances({{900, identity}, {901, identity}}, error) &&
+    materials[7].emission_strength[3] = 1000.0f;
+    CHECK(renderer.update_materials(materials, 3, 2, error) &&
               renderer.dispatch_culling(frame, camera.position, 1.0f, error) &&
               renderer.render_gbuffer_and_composite(width, height, error),
           error.empty() ? "render emission 1000" : error.c_str());
@@ -991,10 +1079,9 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
               thousand_center.hdr.x > dark_center.hdr.x * 100.0f,
           "GPU composite keeps emission 1000 finite and above emission 5");
 
-    renderer.release_part(901);
-    CHECK(renderer.ensure_part(known_raster_triangle(
-              901, std::numeric_limits<float>::max()), error) >= 0 &&
-              renderer.update_instances({{900, identity}, {901, identity}}, error) &&
+    materials[7].emission_strength[3] =
+        std::numeric_limits<float>::max();
+    CHECK(renderer.update_materials(materials, 4, 2, error) &&
               renderer.dispatch_culling(frame, camera.position, 1.0f, error) &&
               renderer.render_gbuffer_and_composite(width, height, error),
           error.empty() ? "render FLT_MAX emission" : error.c_str());
@@ -1011,10 +1098,8 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     std::printf("emission HDR: five=%.5f thousand=%.5f max=%.5f\n",
                 dark_center.hdr.x, thousand_center.hdr.x, max_center.hdr.x);
 
-    renderer.release_part(901);
-    CHECK(renderer.ensure_part(known_raster_triangle(901, 5.0f), error) >= 0 &&
-              renderer.update_instances({{900, identity}, {901, identity}},
-                                        error) &&
+    materials[7].emission_strength[3] = 5.0f;
+    CHECK(renderer.update_materials(materials, 5, 2, error) &&
               renderer.dispatch_culling(frame, camera.position, 1.0f, error),
           error.empty() ? "restore emission 5 before authored bright sky"
                         : error.c_str());
@@ -2541,6 +2626,7 @@ void run_outlive_resources(std::unique_ptr<matter::VulkanDevice>& vulkan,
 }  // namespace
 
 int main() {
+    run_raster_mesh_material_contract_tests();
     run_ray_tracing_capability_contract_tests();
     run_vulkan_instance_cache_tests();
     run_vulkan_temporal_tests();

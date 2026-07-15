@@ -218,6 +218,9 @@ struct WorldSession::Impl {
     viewer::TemporalState vk_temporal;
     uint64_t vk_temporal_serial = 0;
     uint64_t vk_temporal_token = 0;
+    std::vector<MaterialGpuRecord> vk_material_records;
+    uint64_t vk_material_shading_revision = 0;
+    uint64_t vk_material_geometry_revision = 0;
 #endif
     lod_select::PartLodTable                lods;
 
@@ -3227,9 +3230,6 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
     part.part_hash = part_hash;
     const int material_count = MaterialRegistryCount();
     VulkanDiagnosticMaterialOverride diagnostic_override(material_count);
-    std::vector<float> packed_materials(
-        static_cast<size_t>(material_count) * MATERIAL_FLOATS_PER_DEF);
-    MaterialRegistryPackForGPU(packed_materials.data());
     std::vector<uint32_t> mesh_offsets(loaded.lod_mesh_data.size(), UINT32_MAX);
     for (size_t mi = 0; mi < loaded.lod_mesh_data.size(); ++mi) {
         const auto& mesh = loaded.lod_mesh_data[mi];
@@ -3281,49 +3281,31 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                 vertex.normal = {0.0f, 1.0f, 0.0f};
             const size_t c = static_cast<size_t>(vi) * 4;
             const size_t uv = static_cast<size_t>(vi) * 2;
-            int material_id = mesh.texcoords.size() > uv
-                                  ? static_cast<int>(mesh.texcoords[uv] + 0.5f)
-                                  : -1;
-            if (material_id >= 1000000) material_id -= 1000000;
-            const MaterialDef* material = MaterialRegistryGet(material_id);
-            const bool packed_material =
-                material_id >= 0 && material_id < material_count;
-            const size_t material_base = packed_material
-                ? static_cast<size_t>(material_id) * MATERIAL_FLOATS_PER_DEF
-                : 0;
             float tint[4] = {1.0f, 1.0f, 1.0f, 0.0f};
             if (mesh.colors.size() >= c + 4) {
                 for (int channel = 0; channel < 4; ++channel)
                     tint[channel] = mesh.colors[c + channel] / 255.0f;
             }
-            const float tint_strength = tint[3];
-            const float base_r = packed_material
-                ? packed_materials[material_base] : material->albedo[0];
-            const float base_g = packed_material
-                ? packed_materials[material_base + 1] : material->albedo[1];
-            const float base_b = packed_material
-                ? packed_materials[material_base + 2] : material->albedo[2];
-            const float roughness = packed_material
-                ? packed_materials[material_base + 3] : material->roughness;
-            const float metallic = packed_material
-                ? packed_materials[material_base + 4] : material->metallic;
-            const float emission = packed_material
-                ? packed_materials[material_base + 5] : material->emission;
-            const float ground_tileset_slot = packed_material
-                ? packed_materials[material_base + 11]
-                : static_cast<float>(material->groundTilesetSlot);
-            vertex.albedo = {
-                base_r * (1.0f - tint_strength) +
-                    tint[0] * tint_strength,
-                base_g * (1.0f - tint_strength) +
-                    tint[1] * tint_strength,
-                base_b * (1.0f - tint_strength) +
-                    tint[2] * tint_strength,
-                1.0f};
-            const float ao = mesh.texcoords.size() > uv + 1
-                                 ? mesh.texcoords[uv + 1] : 1.0f;
-            vertex.orm = {roughness, metallic, ao,
-                          viewer::vulkan_encode_emission(emission)};
+            vertex.tint = {tint[0], tint[1], tint[2], tint[3]};
+            const uint32_t material_id =
+                static_cast<size_t>(vi) < mesh.material_ids.size()
+                    ? mesh.material_ids[static_cast<size_t>(vi)]
+                    : UINT32_MAX;
+            const float ao = static_cast<size_t>(vi) < mesh.baked_ao.size()
+                                 ? mesh.baked_ao[static_cast<size_t>(vi)]
+                                 : 1.0f;
+            vertex.surface = {
+                mesh.surface_uvs.size() > uv ? mesh.surface_uvs[uv] : 0.0f,
+                mesh.surface_uvs.size() > uv + 1 ? mesh.surface_uvs[uv + 1]
+                                                 : 0.0f,
+                ao, material_id != UINT32_MAX ? 1.0f : 0.0f};
+            vertex.material_index = material_id;
+            const MaterialDef* material = MaterialRegistryGet(
+                material_id < static_cast<uint32_t>(material_count)
+                    ? static_cast<int>(material_id)
+                    : -1);
+            const float ground_tileset_slot =
+                static_cast<float>(material->groundTilesetSlot);
             if (viewer::vulkan_material_uses_unsupported_texture(
                     ground_tileset_slot)) {
                 static bool warned_texture_material = false;
@@ -3400,6 +3382,37 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     }
     impl_->vk_scene->set_dlss_mode(opts.dlss_mode);
     impl_->vk_scene->set_ray_tracing_settings(opts.vulkan_ray_tracing);
+    const int material_count = MaterialRegistryCount();
+    std::vector<MaterialGpuRecord> material_records(
+        static_cast<size_t>(material_count));
+    MaterialRegistryPackRtForGPU(material_records.data());
+    if (impl_->vk_material_records.empty()) {
+        impl_->vk_material_records = material_records;
+        impl_->vk_material_shading_revision = 1;
+        impl_->vk_material_geometry_revision = 1;
+    } else if (impl_->vk_material_records.size() != material_records.size() ||
+               std::memcmp(impl_->vk_material_records.data(),
+                           material_records.data(),
+                           material_records.size() *
+                               sizeof(MaterialGpuRecord)) != 0) {
+        bool geometry_changed =
+            impl_->vk_material_records.size() != material_records.size();
+        const size_t common_count = std::min(
+            impl_->vk_material_records.size(), material_records.size());
+        for (size_t index = 0; index < common_count; ++index) {
+            geometry_changed |=
+                impl_->vk_material_records[index].flags_misc[0] !=
+                material_records[index].flags_misc[0];
+        }
+        impl_->vk_material_records = material_records;
+        ++impl_->vk_material_shading_revision;
+        if (geometry_changed) ++impl_->vk_material_geometry_revision;
+    }
+    if (!impl_->vk_scene->update_materials(
+            impl_->vk_material_records,
+            impl_->vk_material_shading_revision,
+            impl_->vk_material_geometry_revision, err))
+        return false;
     const VkExtent2D internal_extent =
         impl_->vk_scene->dlss_internal_extent(frame.extent);
     impl_->stats.dlss_selected_mode = impl_->vk_scene->selected_dlss_mode();
