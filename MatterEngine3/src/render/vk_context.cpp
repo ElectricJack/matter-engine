@@ -2081,10 +2081,20 @@ std::unique_ptr<VulkanDevice> VulkanDevice::create(GLFWwindow* window,
     };
     std::unique_ptr<VulkanDevice> result;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
-    // The smoke executable validates native Vulkan behavior and must not bind
-    // to a user-installed Streamline runtime or its presentation proxies.
-    result = make_device(StreamlineBridge::native_fallback(
-        "Streamline disabled for Vulkan test device"));
+    const char* smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
+    if (smoke_mode &&
+        std::strcmp(smoke_mode, "streamline-missing-instance-proxy") == 0) {
+        result = make_device(StreamlineBridge::test_missing_proxy("instance"));
+    } else if (smoke_mode &&
+               std::strcmp(smoke_mode,
+                           "streamline-missing-device-proxy") == 0) {
+        result = make_device(StreamlineBridge::test_missing_proxy("device"));
+    } else {
+        // Ordinary smoke cases must not bind to a user-installed Streamline
+        // runtime or its presentation proxies.
+        result = make_device(StreamlineBridge::native_fallback(
+            "Streamline disabled for Vulkan test device"));
+    }
 #else
     result = make_device(StreamlineBridge::initialize_before_vulkan());
 #endif
@@ -2092,7 +2102,8 @@ std::unique_ptr<VulkanDevice> VulkanDevice::create(GLFWwindow* window,
         return result;
     }
     const bool retry_native = result->impl_->streamline.dlss_requested() ||
-                              result->impl_->streamline.proxy_dispatch_used();
+                              result->impl_->streamline.proxy_dispatch_used() ||
+                              result->impl_->streamline.native_retry_required();
     if (!retry_native) return nullptr;
 
     result.reset();  // Teardown keeps proxy dispatch alive through destruction.

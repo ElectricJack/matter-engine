@@ -581,6 +581,17 @@ int main() {
                     stats.pixel_budget = std::max(0.05f, std::min(4.0f, c[0]));
                 } else if (std::sscanf(line.c_str(), "hiz %255s", word) == 1) {
                     std::printf("hiz: not available in Vulkan milestone\n");
+                } else if (std::sscanf(line.c_str(), "dlss %255s", word) == 1) {
+                    if (std::strcmp(word, "native") == 0)
+                        selected_dlss_mode = matter::DlssMode::Native;
+                    else if (std::strcmp(word, "quality") == 0)
+                        selected_dlss_mode = matter::DlssMode::Quality;
+                    else if (std::strcmp(word, "balanced") == 0)
+                        selected_dlss_mode = matter::DlssMode::Balanced;
+                    else if (std::strcmp(word, "performance") == 0)
+                        selected_dlss_mode = matter::DlssMode::Performance;
+                    else
+                        std::printf("dlss: expected native, quality, balanced, or performance\n");
                 } else if (line == "reload") {
                     stats.reload_requested = true;
                 } else if (line == "wireframe" || line == "wireframe toggle") {

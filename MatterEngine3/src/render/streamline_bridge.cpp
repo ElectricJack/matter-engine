@@ -246,6 +246,7 @@ StreamlineBridge StreamlineBridge::initialize_before_vulkan() {
     }
     bridge.dlss_requested_ = true;
     bridge.dlss_available_ = true;
+    bridge.native_retry_required_ = true;
     bridge.instance_extensions_.assign(
         requirements.vkInstanceExtensions,
         requirements.vkInstanceExtensions + requirements.vkNumInstanceExtensions);
@@ -340,7 +341,47 @@ bool StreamlineBridge::evaluate_dlss(
     error.clear();
     output = {};
     if (options.mode == DlssMode::Native) {
+        if (active_dlss_mode_ == DlssMode::Native) return true;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+        if (test_dlss_evaluator_) {
+            ++test_dlss_evaluation_count_;
+            if (!test_dlss_evaluator_(command_buffer, attempt_token, options,
+                                      constants, resources, output, error)) {
+                if (error.empty()) error = "DLSS Native transition failed";
+                active_dlss_mode_ = DlssMode::Native;
+                dlss_history_reset_pending_ = true;
+                dlss_available_ = false;
+                dlss_requested_ = false;
+                dlss_unavailable_reason_ = error;
+                return false;
+            }
+        } else
+#endif
+        {
+#if defined(MATTER_HAVE_STREAMLINE) && MATTER_HAVE_STREAMLINE
+            if (dlss_available_ && sl_dlss_set_options_) {
+                const sl::DLSSOptions streamline_options =
+                    streamline_dlss_options(options);
+                const sl::Result result =
+                    reinterpret_cast<SlDlssSetOptionsFn>(
+                        sl_dlss_set_options_)(sl::ViewportHandle(0u),
+                                              streamline_options);
+                if (result != sl::Result::eOk) {
+                    error = result_reason("slDLSSSetOptions(eOff)", result);
+                    active_dlss_mode_ = DlssMode::Native;
+                    dlss_history_reset_pending_ = true;
+                    dlss_available_ = false;
+                    dlss_requested_ = false;
+                    dlss_unavailable_reason_ = error;
+                    return false;
+                }
+            }
+#endif
+        }
+        // Retain feature/output allocations for fast toggles. They remain
+        // device-owned and are released during normal renderer/SL teardown.
         active_dlss_mode_ = DlssMode::Native;
+        dlss_history_reset_pending_ = true;
         return true;
     }
     const bool valid_extents = constants.internal_extent.width != 0 &&
@@ -406,7 +447,7 @@ bool StreamlineBridge::evaluate_dlss(
     if (!dlss_available_ || !valid_extents || !distinct_resources ||
         !exact_resource_contract || !complete_vulkan_resources ||
         !constants.motion_vectors_jittered ||
-        !options.color_buffers_hdr || options.use_auto_exposure) {
+        !options.color_buffers_hdr || !options.use_auto_exposure) {
         error = dlss_available_
                     ? "DLSS evaluation received invalid constants or resources"
                     : dlss_unavailable_reason_;
@@ -502,19 +543,27 @@ bool StreamlineBridge::evaluate_dlss(
                 sl::Resource dlss_output = make_resource(resources.output);
                 sl::SubresourceRange hdr_range{};
                 hdr_range.aspectMask = resources.hdr.aspect;
+                hdr_range.baseMipLevel = 0;
                 hdr_range.levelCount = 1;
+                hdr_range.baseArrayLayer = 0;
                 hdr_range.layerCount = 1;
                 sl::SubresourceRange depth_range{};
                 depth_range.aspectMask = resources.depth.aspect;
+                depth_range.baseMipLevel = 0;
                 depth_range.levelCount = 1;
+                depth_range.baseArrayLayer = 0;
                 depth_range.layerCount = 1;
                 sl::SubresourceRange velocity_range{};
                 velocity_range.aspectMask = resources.velocity.aspect;
+                velocity_range.baseMipLevel = 0;
                 velocity_range.levelCount = 1;
+                velocity_range.baseArrayLayer = 0;
                 velocity_range.layerCount = 1;
                 sl::SubresourceRange output_range{};
                 output_range.aspectMask = resources.output.aspect;
+                output_range.baseMipLevel = 0;
                 output_range.levelCount = 1;
+                output_range.baseArrayLayer = 0;
                 output_range.layerCount = 1;
                 hdr.next = &hdr_range;
                 depth.next = &depth_range;
@@ -601,6 +650,20 @@ StreamlineBridge StreamlineBridge::test_fake_dlss(
     bridge.dlss_available_ = true;
     bridge.test_dlss_evaluator_ = std::move(evaluator);
     bridge.test_dlss_optimal_evaluator_ = std::move(optimal_evaluator);
+    return bridge;
+}
+
+StreamlineBridge StreamlineBridge::test_missing_proxy(const char* stage) {
+    StreamlineBridge bridge;
+    bridge.initialized_ = true;
+    bridge.dlss_requested_ = true;
+    bridge.dlss_available_ = true;
+    bridge.use_proxy_dispatch_ = true;
+    bridge.native_retry_required_ = true;
+    if (stage && std::strcmp(stage, "instance") == 0)
+        bridge.test_proxy_fault_ = TestProxyFault::Instance;
+    else if (stage && std::strcmp(stage, "device") == 0)
+        bridge.test_proxy_fault_ = TestProxyFault::Device;
     return bridge;
 }
 #endif
@@ -808,7 +871,18 @@ VkResult StreamlineBridge::create_instance(
     if (use_proxy_dispatch_) {
         const VkResult result = vkCreateInstance(create, allocator, instance);
         if (result == VK_SUCCESS) {
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+            if (test_proxy_fault_ == TestProxyFault::Instance) {
+                disable("injected missing Streamline instance proxy");
+                return VK_ERROR_INITIALIZATION_FAILED;
+            }
+            if (test_proxy_fault_ == TestProxyFault::Device) return result;
+#endif
 #ifdef _WIN32
+            if (!get_instance_proc_addr_proxy_) {
+                disable("Streamline SDK is missing the instance manual-hook dispatcher");
+                return VK_ERROR_INITIALIZATION_FAILED;
+            }
             create_win32_surface_proxy_ =
                 reinterpret_cast<PFN_vkCreateWin32SurfaceKHR>(
                     get_instance_proc_addr_proxy_(*instance,
@@ -834,6 +908,12 @@ VkResult StreamlineBridge::create_device(
             vkCreateDevice(physical_device, create, allocator, device);
         if (result == VK_SUCCESS) {
             device_created_by_proxy_ = false;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+            if (test_proxy_fault_ == TestProxyFault::Device) {
+                disable("injected missing Streamline device proxy");
+                return VK_ERROR_INITIALIZATION_FAILED;
+            }
+#endif
             if (!populate_device_proxies(*device)) {
                 disable("Streamline SDK could not provide required Vulkan manual hooks");
                 return VK_ERROR_INITIALIZATION_FAILED;

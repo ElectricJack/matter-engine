@@ -530,7 +530,7 @@ VkExtent2D VkSceneRenderer::dlss_internal_extent(
     matter::DlssOptimalSettings settings{};
     std::string ignored_error;
     if (dlss_bridge_->query_dlss_optimal_settings(
-            {selected_dlss_mode_, output_extent, true, false}, settings,
+            {selected_dlss_mode_, output_extent, true, true}, settings,
             ignored_error))
         return settings.render_extent;
     return output_extent;
@@ -3037,6 +3037,23 @@ bool VkSceneRenderer::record_composite_to_swapchain(
         VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkAccessFlags2 composite_source_access =
         VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    const auto consume_bridge_reset = [this]() {
+        if (!dlss_bridge_->consume_dlss_history_reset()) return;
+        if (!dlss_history_reset_pending_) ++dlss_reset_count_;
+        dlss_history_reset_pending_ = true;
+    };
+    if (selected_dlss_mode_ == matter::DlssMode::Native) {
+        matter::DlssEvaluationOutput ignored_output{};
+        matter::DlssConstants ignored_constants{};
+        matter::DlssResources ignored_resources{};
+        std::string transition_error;
+        (void)dlss_bridge_->evaluate_dlss(
+            frame.command_buffer, temporal_frame_.attempt_token,
+            {matter::DlssMode::Native, frame.extent, true, true},
+            ignored_constants, ignored_resources, ignored_output,
+            transition_error);
+        consume_bridge_reset();
+    }
     if (selected_dlss_mode_ != matter::DlssMode::Native &&
         dlss_bridge_->supports_dlss_mode(selected_dlss_mode_) &&
         frame.frame_slot < frames_.size()) {
@@ -3149,7 +3166,7 @@ bool VkSceneRenderer::record_composite_to_swapchain(
         matter::DlssEvaluationOutput evaluation_output{};
         if (dlss_bridge_->evaluate_dlss(
                 frame.command_buffer, temporal_frame_.attempt_token,
-                {selected_dlss_mode_, frame.extent, true, false}, constants,
+                {selected_dlss_mode_, frame.extent, true, true}, constants,
                 resources, evaluation_output, evaluation_error)) {
             composite_source = &slot.dlss_output;
             slot.dlss_output.layout = evaluation_output.layout;
@@ -3158,9 +3175,7 @@ bool VkSceneRenderer::record_composite_to_swapchain(
         } else {
             composite_source_stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
             composite_source_access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-            dlss_history_reset_pending_ =
-                dlss_bridge_->consume_dlss_history_reset();
-            if (dlss_history_reset_pending_) ++dlss_reset_count_;
+            consume_bridge_reset();
         }
     }
     matter::record_image_transition(

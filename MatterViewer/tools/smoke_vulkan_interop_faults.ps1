@@ -9,6 +9,8 @@ $savedMode = [Environment]::GetEnvironmentVariable(
     'MATTER_VK_SMOKE_MODE', [EnvironmentVariableTarget]::Process)
 try {
     $modes = @(
+        @{ Label = 'Streamline missing instance proxy'; Mode = 'streamline-missing-instance-proxy' },
+        @{ Label = 'Streamline missing device proxy'; Mode = 'streamline-missing-device-proxy' },
         @{ Label = 'after-kernel-before-signal'; Mode = 'interop-fault-after-kernel-before-signal' },
         @{ Label = 'signal-enqueue-failure'; Mode = 'interop-fault-signal-enqueue-failure' },
         @{ Label = 'after-signal-before-vk-wait'; Mode = 'interop-fault-after-signal-before-vk-wait' },

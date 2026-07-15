@@ -66,7 +66,7 @@ struct DlssOptions {
     DlssMode mode = DlssMode::Native;
     VkExtent2D output_extent{};
     bool color_buffers_hdr = true;
-    bool use_auto_exposure = false;
+    bool use_auto_exposure = true;
 };
 
 struct DlssOptimalSettings {
@@ -95,6 +95,7 @@ public:
         return dlss_unavailable_reason_;
     }
     bool proxy_dispatch_used() const { return proxy_dispatch_used_; }
+    bool native_retry_required() const { return native_retry_required_; }
     bool supports_dlss_mode(DlssMode mode) const {
         return mode == DlssMode::Native || dlss_available_;
     }
@@ -141,8 +142,8 @@ public:
     void disable(std::string reason);
     void shutdown();
 
-    // All Vulkan calls pass through these wrappers.  They use native Vulkan
-    // unless a future presentation path explicitly opts into SL proxies.
+    // Vulkan creation remains native. Required WSI calls use Streamline's
+    // manual-hook proxies after they have been acquired successfully.
     VkResult create_instance(const VkInstanceCreateInfo* create,
                              const VkAllocationCallbacks* allocator,
                              VkInstance* instance);
@@ -185,6 +186,7 @@ public:
     static StreamlineBridge test_fake_dlss(
         TestDlssEvaluator evaluator,
         TestDlssOptimalEvaluator optimal_evaluator = {});
+    static StreamlineBridge test_missing_proxy(const char* stage);
     uint64_t test_dlss_evaluation_count() const {
         return test_dlss_evaluation_count_;
     }
@@ -204,6 +206,7 @@ private:
     bool proxy_dispatch_used_ = false;
     bool use_proxy_dispatch_ = false;
     bool proxy_object_created_ = false;
+    bool native_retry_required_ = false;
     bool device_created_by_proxy_ = false;
     bool streamline_initialized_ = false;
     bool present_common_pending_ = false;
@@ -249,6 +252,8 @@ private:
     uint64_t test_dlss_evaluation_count_ = 0;
     std::vector<std::string> test_presentation_events_;
     uint64_t last_present_common_serial_ = 0;
+    enum class TestProxyFault { None, Instance, Device };
+    TestProxyFault test_proxy_fault_ = TestProxyFault::None;
     void record_test_presentation_event(const char* event);
 #endif
 

@@ -200,6 +200,7 @@ Forbid-Text $main 'MATTER_CMD_FIFO not supported on Windows' 'ignored Windows co
 Require-Text $main 'FATAL: MATTER_WORLD' 'explicit missing world failure'
 Require-Text $main 'selected world' 'selected world identity report'
 Require-Text $main 'MATTER_DLSS_MODE' 'deterministic DLSS mode selection'
+Require-Text $main 'dlss %255s' 'runtime DLSS command selection'
 Require-Text $runtimeSmoke 'MATTER_CACHE_ROOT' 'isolated clean cache smoke'
 Require-Text $runtimeSmoke 'selected world CornellBox hash' 'selected world hash assertion'
 

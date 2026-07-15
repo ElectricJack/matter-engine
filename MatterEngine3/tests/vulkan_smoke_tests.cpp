@@ -86,6 +86,11 @@ void run_streamline_bridge_fallback_tests() {
     CHECK(!matter::StreamlineBridge::requires_explicit_vulkan_info(true) &&
               matter::StreamlineBridge::requires_explicit_vulkan_info(false),
           "proxy-created Vulkan devices are not registered with Streamline twice");
+    CHECK(matter::StreamlineBridge::test_missing_proxy("instance")
+                  .native_retry_required() &&
+              matter::StreamlineBridge::test_missing_proxy("device")
+                  .native_retry_required(),
+          "missing Streamline proxy acquisition preserves native retry intent");
 
     const std::vector<const char*> merged =
         matter::StreamlineBridge::merge_extensions({"A", "B"},
@@ -166,7 +171,7 @@ void run_dlss_bridge_contract_tests() {
                              VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     resources.output.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
     const matter::DlssOptions options{matter::DlssMode::Quality,
-                                      {1920, 1080}, true, false};
+                                      {1920, 1080}, true, true};
 
     matter::StreamlineBridge native = matter::StreamlineBridge::native_fallback(
         "test native fallback");
@@ -187,18 +192,22 @@ void run_dlss_bridge_contract_tests() {
           "Native mode keeps equal extents and never evaluates Streamline");
 
     bool received = false;
+    std::vector<matter::DlssMode> mode_transitions;
     matter::StreamlineBridge fake = matter::StreamlineBridge::test_fake_dlss(
         [&](VkCommandBuffer command_buffer, uint64_t token,
             const matter::DlssOptions& captured_options,
             const matter::DlssConstants& captured,
             const matter::DlssResources& tagged,
             matter::DlssEvaluationOutput& output, std::string&) {
-            received = command_buffer == VK_NULL_HANDLE && token == 77 &&
+            mode_transitions.push_back(captured_options.mode);
+            if (captured_options.mode == matter::DlssMode::Native) return true;
+            received = command_buffer == VK_NULL_HANDLE &&
+                       (token == 77 || token == 79) &&
                        captured_options.mode == matter::DlssMode::Quality &&
                        captured_options.output_extent.width == 1920 &&
                        captured_options.output_extent.height == 1080 &&
                        captured_options.color_buffers_hdr &&
-                       !captured_options.use_auto_exposure &&
+                       captured_options.use_auto_exposure &&
                        captured.camera_view_to_clip[0] == 1.0f &&
                        captured.camera_view_to_clip[15] == 16.0f &&
                        captured.motion_vector_scale.x == 1.0f / 1280.0f &&
@@ -273,6 +282,23 @@ void run_dlss_bridge_contract_tests() {
               fake.test_dlss_evaluation_count() == 1 &&
               fake.active_dlss_mode() == matter::DlssMode::Quality,
           "fake Quality receives exact constants, distinct tagged resources, and output");
+    matter::DlssOptions native_options{matter::DlssMode::Native,
+                                       {1920, 1080}, true, true};
+    CHECK(fake.evaluate_dlss(VK_NULL_HANDLE, 78, native_options, constants,
+                             resources, evaluation_output, error) &&
+              fake.active_dlss_mode() == matter::DlssMode::Native &&
+              fake.consume_dlss_history_reset() &&
+              !fake.consume_dlss_history_reset(),
+          "Quality to Native sends eOff and requests exactly one history reset");
+    received = false;
+    const std::vector<matter::DlssMode> expected_mode_transitions{
+        matter::DlssMode::Quality, matter::DlssMode::Native,
+        matter::DlssMode::Quality};
+    CHECK(fake.evaluate_dlss(VK_NULL_HANDLE, 79, options, constants, resources,
+                             evaluation_output, error) && received &&
+              fake.active_dlss_mode() == matter::DlssMode::Quality &&
+              mode_transitions == expected_mode_transitions,
+          "fake DLSS bridge observes the complete Quality Native Quality transition");
 
     matter::StreamlineBridge failing = matter::StreamlineBridge::test_fake_dlss(
         [](VkCommandBuffer, uint64_t, const matter::DlssOptions&,
@@ -1667,12 +1693,15 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
                         : error.c_str());
     if (frame.command_buffer == VK_NULL_HANDLE) return;
     bool dlss_output_evaluated = false;
+    std::vector<matter::DlssMode> dlss_mode_transitions;
     renderer.set_test_dlss_bridge(matter::StreamlineBridge::test_fake_dlss(
         [&](VkCommandBuffer command_buffer, uint64_t token,
             const matter::DlssOptions& options,
             const matter::DlssConstants& constants,
             const matter::DlssResources& resources,
             matter::DlssEvaluationOutput& output, std::string&) {
+            dlss_mode_transitions.push_back(options.mode);
+            if (options.mode == matter::DlssMode::Native) return true;
             dlss_output_evaluated =
                 command_buffer == frame.command_buffer && token == 100 &&
                 options.mode == matter::DlssMode::Quality &&
@@ -1760,10 +1789,15 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
     CHECK(matter::immediate_submit_count() == immediate_before,
           "cached cull stats query performs no immediate submission");
     const uint32_t recorded_slot = frame.frame_slot;
+    bool submitted_native_frame = false;
+    std::vector<uint8_t> native_composite_rgba;
     do {
         CHECK(vulkan.begin_frame(frame, error),
               error.empty() ? "begin deferred cull stats frame" : error.c_str());
         if (frame.command_buffer == VK_NULL_HANDLE) return;
+        renderer.set_dlss_mode(submitted_native_frame
+                                   ? matter::DlssMode::Quality
+                                   : matter::DlssMode::Native);
         if (frame.frame_slot == recorded_slot) {
             CHECK(first_dlss_lifetime.expired(),
                   "slot recycle releases the replaced DLSS output");
@@ -1771,17 +1805,40 @@ void run_frame_record_tests(matter::VulkanDevice& vulkan) {
         CHECK(renderer.prepare_frame(frame, scene.frame, scene.eye, 1.0f, error) &&
                   renderer.record_cull_and_render(frame, scene.frame, scene.eye,
                                                   1.0f, error) &&
-                  renderer.record_composite_to_swapchain(frame, error) &&
-                  vulkan.end_frame(frame, error),
+                  renderer.record_composite_to_swapchain(frame, error),
               error.empty() ? "submit deferred cull stats frame" : error.c_str());
-        if (frame.frame_slot != recorded_slot) {
-            CHECK(renderer.test_dlss_output_image(frame.frame_slot) !=
-                      VK_NULL_HANDLE &&
+        if (!submitted_native_frame) {
+            CHECK(renderer.active_dlss_mode() == matter::DlssMode::Native &&
+                      renderer.test_dlss_output_image(frame.frame_slot) ==
+                          VK_NULL_HANDLE &&
+                      renderer.dlss_reset_count() == 1 &&
+                      renderer.consume_dlss_history_reset() &&
+                      !renderer.consume_dlss_history_reset(),
+                  "Native transition sends eOff, resets once, and allocates no DLSS output");
+            CHECK(vulkan.readback_swapchain_rgba8(frame, native_composite_rgba,
+                                                  error),
+                  error.empty() ? "queue Native direct composite readback"
+                                : error.c_str());
+        } else if (frame.frame_slot == recorded_slot) {
+            CHECK(renderer.active_dlss_mode() == matter::DlssMode::Quality &&
                       renderer.test_dlss_output_image(frame.frame_slot) !=
-                          first_dlss_output,
-                  "each in-flight frame slot owns a distinct DLSS output");
+                          VK_NULL_HANDLE,
+                  "return to Quality recreates a valid per-slot DLSS output");
         }
+        CHECK(vulkan.end_frame(frame, error),
+              error.empty() ? "submit deferred cull stats frame" : error.c_str());
+        submitted_native_frame = true;
     } while (frame.frame_slot != recorded_slot);
+    const std::vector<matter::DlssMode> expected_dlss_transitions{
+        matter::DlssMode::Quality, matter::DlssMode::Native,
+        matter::DlssMode::Quality};
+    CHECK(dlss_mode_transitions == expected_dlss_transitions,
+          "renderer routes Quality Native Quality through its Streamline bridge");
+    CHECK(native_composite_rgba.size() >= 4 &&
+              !(native_composite_rgba[0] > 240 &&
+                native_composite_rgba[1] < 10 &&
+                native_composite_rgba[2] < 10),
+          "Native frame composites HDR directly instead of stale DLSS output");
     const viewer::VkCullStats stats_after = renderer.cached_cull_stats();
     CHECK(stats_after.emitted == 4 && stats_after.frustum_culled == 0 &&
               stats_after.hiz_culled == 0 && stats_after.overflowed == 0,
@@ -2533,6 +2590,20 @@ int main() {
                   vulkan->dlss_unavailable_reason().find("Streamline") !=
                       std::string::npos,
               "Vulkan device exposes the Streamline fallback reason");
+        const std::string active_smoke_mode =
+            requested_smoke_mode ? requested_smoke_mode : "";
+        if (active_smoke_mode == "streamline-missing-instance-proxy" ||
+            active_smoke_mode == "streamline-missing-device-proxy") {
+            CHECK(vulkan->dlss_unavailable_reason().find("retried native") !=
+                      std::string::npos,
+                  "missing Streamline proxy tears down and retries native Vulkan");
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
         CHECK(vulkan->draw_indirect_first_instance_enabled(),
               "drawIndirectFirstInstance is enabled on the logical device");
         CHECK(vulkan->multi_draw_indirect_enabled(),

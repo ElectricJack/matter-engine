@@ -95,3 +95,42 @@ For deterministic demos and automation, `MATTER_DLSS_MODE` accepts `native`,
   process.
 - The SDK is intentionally external and is not committed to the repository.
 - RT resolution scaling and BLAS compaction were explicitly outside this task.
+
+## Post-review state-machine hardening
+
+Whole-branch review found two additional transition/fallback gaps and one
+resource-contract inconsistency. They were fixed with new regressions before
+the implementation was accepted:
+
+- Every selected mode now passes through `StreamlineBridge`. A live
+  Quality-to-Native transition calls `slDLSSSetOptions` with `eOff`, updates
+  the active mode to Native, direct-composites HDR, and requests exactly one
+  temporal reset. Returning to Quality evaluates DLSS again. Renderer-owned
+  output images and Streamline feature allocations are deliberately retained
+  until normal renderer/Streamline teardown so rapid toggles do not perform
+  unsafe in-flight destruction or allocation churn.
+- Streamline initialization preserves an explicit native-retry requirement.
+  Injected missing instance-dispatch and device-dispatch cases both tear down
+  the partially created native Vulkan stack and successfully restart with the
+  Native backend. Both report zero validation errors.
+- Since the renderer does not provide a dedicated exposure texture, DLSS now
+  consistently enables auto exposure. This live path exposed that SDK
+  `sl::SubresourceRange` scalar fields are not zeroed by its default
+  constructor; all aspect, mip, layer-base, and count fields are now assigned
+  explicitly.
+
+The fake renderer regression observes the exact Quality, Native, Quality
+sequence, verifies Native does not allocate a DLSS output for its frame slot,
+checks direct HDR composite rather than stale upscaled output, and verifies the
+single reset/output lifecycle. The signed live gate observed:
+
+```text
+DLSS selected=Quality active=Quality internal=853x480 output=1280x720 resets=0 reason=none
+DLSS selected=Native active=Native internal=1280x720 output=1280x720 resets=1 reason=none
+DLSS selected=Quality active=Quality internal=853x480 output=1280x720 resets=1 reason=none
+```
+
+RTX remained effective with one dispatch, the final screenshot completed, and
+the run emitted zero Vulkan validation or fatal diagnostics. The disabled
+strict suite now contains eleven bounded modes: the two proxy-retry cases, six
+CUDA ownership-fault cases, and the three native-RT availability modes.
