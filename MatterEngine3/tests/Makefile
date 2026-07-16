@@ -364,7 +364,7 @@ TERRAINVERB_CPP = terrain_verb_tests.cpp ../src/part_graph.cpp \
                   ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                   ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                   ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
-                  ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                  ../src/modifier_apply.cpp ../src/part_ao_bake.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
                   ../src/terrain_field.cpp ../src/terrain_mesher.cpp \
                   ../src/pf_bindings.cpp \
                   ../../ParticleFlowLib/src/pf_math.cpp ../../ParticleFlowLib/src/pf_sim.cpp \
@@ -378,7 +378,7 @@ SECTORBAKE_CPP = sector_bake_tests.cpp ../src/part_graph.cpp \
                  ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                  ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                  ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
-                 ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                 ../src/modifier_apply.cpp ../src/part_ao_bake.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
                  $(TERRAIN_SRC) \
                  $(PF_CPP) \
                  $(COMMON_MSL_FULL_SRC)
@@ -405,6 +405,7 @@ SCRIPT_CPP = script_host_tests.cpp ../src/part_graph.cpp ../src/script_host.cpp 
              ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
              ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
              ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+             ../src/part_ao_bake.cpp \
              $(TERRAIN_SRC) \
              ../src/pf_bindings.cpp \
              ../../ParticleFlowLib/src/pf_math.cpp ../../ParticleFlowLib/src/pf_sim.cpp \
@@ -435,7 +436,7 @@ GRAPH_INT_CPP = part_graph_integration_tests.cpp ../src/part_graph.cpp \
                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
-                ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                ../src/modifier_apply.cpp ../src/part_ao_bake.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
                 $(TERRAIN_SRC) \
                 $(PF_CPP) \
                 $(COMMON_MSL_FULL_SRC)
@@ -450,7 +451,7 @@ EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp \
               ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
               ../src/part_cluster.cpp \
               ../src/sector_grid.cpp ../src/lod_select.cpp \
-              ../src/modifier_apply.cpp $(MSL)/mesh_smooth.cpp \
+              ../src/modifier_apply.cpp ../src/part_ao_bake.cpp $(MSL)/mesh_smooth.cpp \
               $(MSL)/mesh_transform.cpp \
               $(TERRAIN_SRC) \
               $(PF_CPP) \
@@ -494,7 +495,7 @@ TILESETBAKE_CPP = tileset_bake_tests.cpp ../src/part_graph.cpp \
                   ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \
                   ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                   ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
-                  ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                  ../src/modifier_apply.cpp ../src/part_ao_bake.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
                   $(TERRAIN_SRC) \
                   $(PF_CPP) \
                   $(COMMON_MSL_FULL_SRC)
@@ -516,7 +517,7 @@ EVALWORLD_CPP = eval_world_tests.cpp ../src/part_graph.cpp \
                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
-                ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                ../src/modifier_apply.cpp ../src/part_ao_bake.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
                 $(TERRAIN_SRC) \
                 ../src/pf_bindings.cpp \
                 ../../ParticleFlowLib/src/pf_math.cpp ../../ParticleFlowLib/src/pf_sim.cpp \
@@ -530,7 +531,7 @@ FOLDCACHE_CPP = fold_cache_tests.cpp ../src/part_graph.cpp \
                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
-                ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                ../src/modifier_apply.cpp ../src/part_ao_bake.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
                 $(TERRAIN_SRC) \
                 ../src/pf_bindings.cpp \
                 ../../ParticleFlowLib/src/pf_math.cpp ../../ParticleFlowLib/src/pf_sim.cpp \
@@ -544,7 +545,7 @@ SHLIB_CPP = shared_lib_tests.cpp ../src/module_resolver.cpp ../src/script_rng_bi
             ../src/part_graph.cpp \
             ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \
             ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
-            ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+            ../src/modifier_apply.cpp ../src/part_ao_bake.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
             $(TERRAIN_SRC) \
             $(PF_CPP) \
             $(COMMON_MSL_FULL_SRC)
@@ -587,7 +588,7 @@ RETOPO_INT_CPP = retopo_integration_tests.cpp \
                  ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                  ../src/part_flatten.cpp ../src/part_cluster.cpp \
                  ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
-                 ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp \
+                 ../src/modifier_apply.cpp ../src/part_ao_bake.cpp ../src/retopo_blacklist.cpp \
                  $(MSL)/mesh_retopo.cpp \
                  $(MSL)/mesh_smooth.cpp \
                  $(MSL)/mesh_transform.cpp \
@@ -643,7 +644,7 @@ GPU_PIPELINE_CPP = \
     ../src/tileset_bake.cpp ../src/tileset_settle.cpp \
     ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
     ../src/tileset_bake_primary.cpp ../src/tileset_bake_ao.cpp \
-    ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+    ../src/modifier_apply.cpp ../src/part_ao_bake.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
     $(TERRAIN_SRC) \
     $(PF_CPP)
 
