@@ -271,3 +271,32 @@ Garden Task 1: complete (commits 42f48b8..e39e491, review clean)
   - Registry schema 3 adds stable IDs 18-29 and DSL names while IDs 0-17 retain legacy FNV pack hash 69c22a3502ba9490.
   - RTX packing covers clearcoat, colored emission, smoke-glass volume fields, wax, and thin foliage.
   - UCRT64 run-reg and run-partv2 pass; the stale part-asset expected count was updated from 18 to 30.
+
+---
+
+# Vulkan Branch Tech-Debt Queue Ledger
+Branch: feature/rt-lighting-phase2 | Source: .superpowers/sdd/2026-07-15-vulkan-branch-review.md
+Workflow since 2026-07-15: sonnet subagents execute, opus subagents review each diff before commit.
+
+Queue status:
+  1. Jitter + validation fixes: complete (d5f97aa)
+  2. CUDA/OptiX deletion: complete (d23da33)
+  8. ODE removal: complete (53737b9)
+  3. Test atomics out of rt_lighting.rgen: complete (3ff8e50)
+  4. Batched BLAS builds, per-build scratch: complete (95b1be8)
+  5. Acquire-fence deferral (begin_frame stall): complete (0db1a40)
+  6. GI accuracy (sun-bounce 1/pi, reflection sun prefilter, disocclusion variance floor): complete (5f7c0ca)
+  9. Viewer-logic flat-tree failure: complete (05d05e9) — root cause: demo manifest root changed Tree->TreeGallery in e2eff66 (main), so the Tree stopped being a placed root with a flat artifact; test retargeted at the real manifest root. run-viewer-logic green.
+  7. Structural cleanup: IN PROGRESS
+     - §12 clear_color_image_for_use helper: complete (123a045)
+     - §8 record_ray_traced_shadows split into build_ray_geometry/emit_ray_instances/record_ray_trace_dispatch: complete (eaab38f)
+     - §13 shared luminance via gi_common.glsl + Makefile dep corrections: complete (99c8f29)
+     - §9 run_native_ray_tracing_path split into ten rt_scenario_* functions: complete (2c25b83)
+     - §15 named constants (GI test tokens, history cap, 24-bit custom-index bound): complete (2b3c400)
+     - world_session.h include check: no change needed — vulkan_device.h/vk_gi_contract.h types are value members of RenderOptions.
+     - §14 push-constant layout sharing: ON HOLD until the owed Windows rebuild validates the current shader stack (no local glslc; don't pile unverifiable shader restructuring on unvalidated shader commits).
+     - §7 god-class split, §16 FrameResources/naming, §10/§11 test-harness facade: PENDING — recommend running the owed MSYS2 clean rebuild + vulkan-smoke first to validate the 12-commit stack before the largest structural change.
+  Owed to Jack (MSYS2): clear MatterViewer/build/windows objects, then
+  make -C MatterViewer windows -j2 HAVE_STREAMLINE=1 STREAMLINE_PATH=/d/SDKs/streamline-sdk-v2.12.0 STREAMLINE_DLL_DIR=/d/SDKs/streamline-sdk-v2.12.0/bin/x64/development
+  then make -C MatterViewer vulkan-smoke (same flags). Regenerates embedded_spirv.h for 3ff8e50/5f7c0ca/99c8f29.
+  Note: the 1/pi GI fix dims sun-lit indirect ~3.14x — diffuse_multiplier may want a re-tune after visual check.
