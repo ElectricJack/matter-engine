@@ -17,6 +17,10 @@ layout(set = 0, binding = 6, std430) buffer LightingTestOutput {
     uint lighting_test_words[];
 };
 
+// Test-only lobe-selection counters; drivers fold the false branch out of the
+// production pipeline at vkCreateRayTracingPipelinesKHR time.
+layout(constant_id = 0) const uint count_reflection_lobe_samples = 0u;
+
 layout(push_constant) uniform GiConstants {
     mat4 clip_to_world;
     vec3 to_sun;
@@ -219,7 +223,8 @@ void main() {
         float coat = clamp(primary.metal_opacity_spec_coat.w, 0.0, 1.0);
         float coat_probability = coat / (1.0 + coat);
         bool choose_coat = coat > 0.0 && random_float(seed) < coat_probability;
-        atomicAdd(lighting_test_words[choose_coat ? 19u : 18u], 1u);
+        if (count_reflection_lobe_samples != 0u)
+            atomicAdd(lighting_test_words[choose_coat ? 19u : 18u], 1u);
         float lobe_probability = choose_coat ? coat_probability
                                              : (1.0 - coat_probability);
         float roughness = choose_coat

@@ -1207,6 +1207,15 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
         stages[i].module = modules[i];
         stages[i].pName = "main";
     }
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    const uint32_t count_lobe_samples = 1u;
+#else
+    const uint32_t count_lobe_samples = 0u;
+#endif
+    const VkSpecializationMapEntry lobe_count_entry{0, 0, sizeof(uint32_t)};
+    const VkSpecializationInfo lighting_specialization{
+        1, &lobe_count_entry, sizeof(uint32_t), &count_lobe_samples};
+    stages[2].pSpecializationInfo = &lighting_specialization;
     VkRayTracingShaderGroupCreateInfoKHR groups[7]{};
     for (auto& group : groups) {
         group.sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
@@ -4599,25 +4608,27 @@ bool VkSceneRenderer::record_ray_traced_shadows(
     if (!ensure_buffer(selected.rt_parts, part_bytes,
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error) ||
         !matter::map_buffer(selected.rt_parts, error) ||
-        !matter::map_buffer(selected.rt_error_counter, error) ||
-        !matter::map_buffer(selected.rt_test_output, error)) return false;
+        !matter::map_buffer(selected.rt_error_counter, error)) return false;
     std::memset(selected.rt_parts.mapped, 0,
                 static_cast<size_t>(part_bytes));
     if (!part_records.empty())
         std::memcpy(selected.rt_parts.mapped, part_records.data(),
                     part_records.size() * sizeof(GpuRtPartRecord));
     std::memset(selected.rt_error_counter.mapped, 0, sizeof(GpuRtCounters));
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (!matter::map_buffer(selected.rt_test_output, error)) return false;
     auto* test_words =
         static_cast<uint32_t*>(selected.rt_test_output.mapped);
     test_words[18] = 0u;
     test_words[19] = 0u;
+    if (!matter::flush_buffer(selected.rt_test_output,
+                              18 * sizeof(uint32_t),
+                              2 * sizeof(uint32_t), error)) return false;
+#endif
     if (!matter::flush_buffer(selected.rt_parts, 0, part_bytes, error) ||
         !matter::flush_buffer(selected.rt_error_counter, 0,
                               sizeof(GpuRtCounters),
-                              error) ||
-        !matter::flush_buffer(selected.rt_test_output,
-                              18 * sizeof(uint32_t),
-                              2 * sizeof(uint32_t), error)) return false;
+                              error)) return false;
     VkWriteDescriptorSetAccelerationStructureKHR as_write{
         VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
     as_write.accelerationStructureCount = 1;
