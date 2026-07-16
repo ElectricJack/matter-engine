@@ -29,6 +29,8 @@ layout(set = 0, binding = 7, std430) readonly buffer RtMaterialTable {
     RtMaterialGpu rt_materials[];
 };
 
+layout(set = 0, binding = 8) uniform sampler2D transmission_texture;
+
 layout(push_constant) uniform SceneLighting {
     vec3 sun_direction;
     float sun_intensity;
@@ -81,7 +83,10 @@ void main() {
     vec3 raw_diffuse = texture(raw_diffuse_texture, in_uv).rgb *
                        lighting.diffuse_rt_multiplier;
     vec3 specular = texture(specular_texture, in_uv).rgb;
-    vec3 linear_hdr = ambient + sun * mix(1.0, 0.65, roughness) + emission +
-                      raw_diffuse + specular;
+    vec4 transmission = texture(transmission_texture, in_uv);
+    float transmission_coverage = clamp(transmission.a, 0.0, 1.0);
+    vec3 linear_hdr = (ambient + sun * mix(1.0, 0.65, roughness) +
+                       raw_diffuse) * (1.0 - transmission_coverage) +
+                      emission + specular + transmission.rgb;
     out_hdr = vec4(linear_hdr, 1.0);
 }

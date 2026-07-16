@@ -829,6 +829,7 @@ private:
     matter::VkImageResource raw_diffuse_;
     matter::VkImageResource raw_specular_;
     matter::VkImageResource raw_specular_aux_;
+    matter::VkImageResource raw_transmission_;
     VkExtent2D raw_diffuse_extent_{};
     struct GiHistorySet {
         matter::VkImageResource radiance;

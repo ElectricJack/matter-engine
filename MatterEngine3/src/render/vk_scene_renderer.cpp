@@ -278,6 +278,7 @@ struct RasterRecord {
     matter::VkImageResource* visibility;
     matter::VkImageResource* raw_diffuse;
     matter::VkImageResource* raw_specular;
+    matter::VkImageResource* raw_transmission;
     VkExtent2D extent;
     VkPipeline raster_pipeline;
     VkPipelineLayout raster_layout;
@@ -426,7 +427,8 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
                                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         const VkClearColorValue zero{{0.0f, 0.0f, 0.0f, 0.0f}};
-        for (auto* signal : {record.raw_diffuse, record.raw_specular})
+        for (auto* signal : {record.raw_diffuse, record.raw_specular,
+                             record.raw_transmission})
             clear_color_image_for_use(
                 command_buffer, *signal, zero,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -846,6 +848,7 @@ void VkSceneRenderer::destroy_pipeline() {
     raw_diffuse_.reset();
     raw_specular_.reset();
     raw_specular_aux_.reset();
+    raw_transmission_.reset();
     for (auto& image : gi_atrous_) image.reset();
     for (auto& image : gi_spec_atrous_) image.reset();
     for (auto* histories : {&gi_history_, &gi_spec_history_}) {
@@ -1169,10 +1172,12 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
         descriptor_binding(12, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                            VK_SHADER_STAGE_RAYGEN_BIT_KHR),
         descriptor_binding(13, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                           VK_SHADER_STAGE_RAYGEN_BIT_KHR),
+        descriptor_binding(14, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                            VK_SHADER_STAGE_RAYGEN_BIT_KHR)};
     VkDescriptorSetLayoutCreateInfo set_info{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    set_info.bindingCount = 14;
+    set_info.bindingCount = 15;
     set_info.pBindings = bindings;
     VkResult result = vkCreateDescriptorSetLayout(device, &set_info, nullptr,
                                                    &rt_set_layout_);
@@ -1456,7 +1461,7 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     if (result != VK_SUCCESS)
         return fail_vk("vkCreateGraphicsPipelines(raster)", result, error);
 
-    std::array<VkDescriptorSetLayoutBinding, 8> sampled_bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 9> sampled_bindings{};
     for (uint32_t i = 0; i < 7; ++i) {
         sampled_bindings[i] = descriptor_binding(
             i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -1464,6 +1469,9 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     }
     sampled_bindings[7] = descriptor_binding(
         7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT);
+    sampled_bindings[8] = descriptor_binding(
+        8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        VK_SHADER_STAGE_FRAGMENT_BIT);
     VkDescriptorSetLayoutCreateInfo sampled_layout{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     sampled_layout.bindingCount =
@@ -1778,7 +1786,7 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 13},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-         frame_slot_count * 76},
+         frame_slot_count * 77},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 22}};
     VkDescriptorPoolCreateInfo pool{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -1899,7 +1907,7 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         const VkDescriptorPoolSize rt_sizes[] = {
             {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, frame_slot_count},
             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, frame_slot_count * 5},
-            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 4},
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 5},
             {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 4}};
         VkDescriptorPoolCreateInfo rt_pool{
             VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -1964,16 +1972,18 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
             : &raw_specular_;
     matter::VkImageResource* sampled[] = {&albedo_, &normal_, &orm_,
                                           &visibility_, diffuse, specular,
-                                          &material_instance_};
-    VkDescriptorImageInfo image_infos[7]{};
-    VkWriteDescriptorSet writes[8]{};
-    for (uint32_t i = 0; i < 7; ++i) {
+                                          &material_instance_,
+                                          &raw_transmission_};
+    const uint32_t sampled_slots[] = {0, 1, 2, 3, 4, 5, 6, 8};
+    VkDescriptorImageInfo image_infos[8]{};
+    VkWriteDescriptorSet writes[9]{};
+    for (uint32_t i = 0; i < 8; ++i) {
         image_infos[i].sampler = composite_sampler_;
         image_infos[i].imageView = sampled[i]->view;
         image_infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet = frame.composite_descriptor_set;
-        writes[i].dstBinding = i;
+        writes[i].dstBinding = sampled_slots[i];
         writes[i].descriptorCount = 1;
         writes[i].descriptorType =
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -1981,13 +1991,13 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
     }
     VkDescriptorBufferInfo material_info{frame.materials.buffer, 0,
                                          frame.materials.size};
-    writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[7].dstSet = frame.composite_descriptor_set;
-    writes[7].dstBinding = 7;
-    writes[7].descriptorCount = 1;
-    writes[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[7].pBufferInfo = &material_info;
-    vkUpdateDescriptorSets(vulkan_->device(), 8, writes, 0, nullptr);
+    writes[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[8].dstSet = frame.composite_descriptor_set;
+    writes[8].dstBinding = 7;
+    writes[8].descriptorCount = 1;
+    writes[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[8].pBufferInfo = &material_info;
+    vkUpdateDescriptorSets(vulkan_->device(), 9, writes, 0, nullptr);
 }
 
 void VkSceneRenderer::update_display_descriptor(VkDescriptorSet set,
@@ -4235,7 +4245,7 @@ bool VkSceneRenderer::record_ray_traced_shadows(
     auto clear_raw_diffuse = [&]() {
         const VkClearColorValue zero{{0.0f, 0.0f, 0.0f, 0.0f}};
         for (auto* image : {&raw_diffuse_, &raw_specular_,
-                            &raw_specular_aux_}) {
+                            &raw_specular_aux_, &raw_transmission_}) {
             clear_color_image_for_use(
                 frame.command_buffer, *image, zero,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -4661,7 +4671,8 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
                               VK_IMAGE_LAYOUT_GENERAL,
                               VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
                               VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-    for (auto* specular_image : {&raw_specular_, &raw_specular_aux_}) {
+    for (auto* specular_image : {&raw_specular_, &raw_specular_aux_,
+                                 &raw_transmission_}) {
         clear_color_image_for_use(
             frame.command_buffer, *specular_image, gi_zero,
             VK_IMAGE_LAYOUT_GENERAL,
@@ -4691,6 +4702,9 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     VkDescriptorImageInfo raw_specular_aux_info{VK_NULL_HANDLE,
                                                 raw_specular_aux_.view,
                                                 VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo raw_transmission_info{VK_NULL_HANDLE,
+                                                raw_transmission_.view,
+                                                VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorBufferInfo part_info{selected.rt_parts.buffer, 0,
                                      selected.rt_parts.size};
     VkDescriptorBufferInfo material_info{selected.materials.buffer, 0,
@@ -4699,7 +4713,7 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
                                       selected.rt_error_counter.size};
     VkDescriptorBufferInfo test_output_info{selected.rt_test_output.buffer, 0,
                                             selected.rt_test_output.size};
-    VkWriteDescriptorSet writes[14]{};
+    VkWriteDescriptorSet writes[15]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].pNext = &as_write;
     writes[0].dstSet = rt_descriptor_sets_[frame.frame_slot];
@@ -4742,8 +4756,9 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         writes[i].pImageInfo = gi_inputs[i - 8];
     }
     VkDescriptorImageInfo* extra_infos[] = {
-        &identity_info, &raw_specular_info, &raw_specular_aux_info};
-    for (uint32_t i = 11; i < 14; ++i) {
+        &identity_info, &raw_specular_info, &raw_specular_aux_info,
+        &raw_transmission_info};
+    for (uint32_t i = 11; i < 15; ++i) {
         writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[i].dstSet = rt_descriptor_sets_[frame.frame_slot];
         writes[i].dstBinding = i;
@@ -4753,7 +4768,7 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
             : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         writes[i].pImageInfo = extra_infos[i - 11];
     }
-    vkUpdateDescriptorSets(vulkan_->device(), 14, writes, 0, nullptr);
+    vkUpdateDescriptorSets(vulkan_->device(), 15, writes, 0, nullptr);
     struct alignas(16) ShadowConstants {
         GpuMat4 clip_to_world;
         float to_sun_max_distance[4];
@@ -4889,9 +4904,15 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
                        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                        VK_IMAGE_ASPECT_COLOR_BIT);
+    transition_for_use(frame.command_buffer, raw_transmission_,
+                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                       VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT);
     std::vector<std::shared_ptr<void>> retained{visibility_.lifetime,
         raw_diffuse_.lifetime, raw_specular_.lifetime,
-        raw_specular_aux_.lifetime, composite_specular.lifetime,
+        raw_specular_aux_.lifetime, raw_transmission_.lifetime,
+        composite_specular.lifetime,
         selected.rt_instances.lifetime, selected.rt_scratch.lifetime,
         selected.rt_tlas_scratch.lifetime,
         selected.rt_tlas.lifetime, selected.rt_parts.lifetime,
@@ -4981,6 +5002,7 @@ bool VkSceneRenderer::record_cull_and_render(
         depth_.lifetime, hdr_.lifetime,
         visibility_.lifetime, raw_diffuse_.lifetime,
         raw_specular_.lifetime, raw_specular_aux_.lifetime,
+        raw_transmission_.lifetime,
         gi_atrous_[0].lifetime, gi_atrous_[1].lifetime,
         gi_spec_atrous_[0].lifetime, gi_spec_atrous_[1].lifetime};
     for (auto* histories : {&gi_history_, &gi_spec_history_}) {
@@ -5035,6 +5057,7 @@ bool VkSceneRenderer::record_cull_and_render(
                         &visibility_,
                         &raw_diffuse_,
                         &raw_specular_,
+                        &raw_transmission_,
                         raster_extent_,
                         raster_pipeline_,
                         pipeline_layout_,
@@ -5201,6 +5224,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
         raw_diffuse_.image != VK_NULL_HANDLE &&
         raw_specular_.image != VK_NULL_HANDLE &&
         raw_specular_aux_.image != VK_NULL_HANDLE &&
+        raw_transmission_.image != VK_NULL_HANDLE &&
         gi_history_[0].radiance.image != VK_NULL_HANDLE &&
         gi_history_[1].radiance.image != VK_NULL_HANDLE &&
         gi_atrous_[0].image != VK_NULL_HANDLE &&
@@ -5222,6 +5246,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     matter::VkImageResource raw_diffuse;
     matter::VkImageResource raw_specular;
     matter::VkImageResource raw_specular_aux;
+    matter::VkImageResource raw_transmission;
     GiHistorySet history[2];
     GiHistorySet spec_history[2];
     matter::VkImageResource atrous[2];
@@ -5297,7 +5322,12 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
         !matter::create_image(
             *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_R16G16_SFLOAT, raw_extent,
             visibility_usage, VK_IMAGE_ASPECT_COLOR_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, raw_specular_aux, error)) {
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, raw_specular_aux, error) ||
+        !matter::create_image(
+            *vulkan_, VK_IMAGE_TYPE_2D,
+            VK_FORMAT_R16G16B16A16_SFLOAT, raw_extent, visibility_usage,
+            VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            raw_transmission, error)) {
         return false;
     }
     const VkImageUsageFlags history_usage =
@@ -5350,6 +5380,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     raw_diffuse_ = std::move(raw_diffuse);
     raw_specular_ = std::move(raw_specular);
     raw_specular_aux_ = std::move(raw_specular_aux);
+    raw_transmission_ = std::move(raw_transmission);
     gi_history_[0] = std::move(history[0]);
     gi_history_[1] = std::move(history[1]);
     gi_spec_history_[0] = std::move(spec_history[0]);
@@ -5436,6 +5467,7 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
                         &visibility_,
                         &raw_diffuse_,
                         &raw_specular_,
+                        &raw_transmission_,
                         raster_extent_,
                         raster_pipeline_,
                         pipeline_layout_,
