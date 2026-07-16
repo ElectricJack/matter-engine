@@ -57,6 +57,22 @@ struct alignas(16) VulkanGiAtrousConstants {
 };
 static_assert(sizeof(VulkanGiAtrousConstants) == 48);
 
+// Named constants for values that appear as literals in this file.
+// kGiTestTemporalToken / kGiTestAtrousToken are sentinel serials injected by
+// test-fixture helpers so the GI temporal and A-trous shaders can be exercised
+// without a real swapchain frame.  The values are ASCII "TEMP" and "ATRO"
+// respectively — chosen to be visually distinctive in a debugger.  They have
+// no shader-side counterpart and do not need to match any GLSL literal.
+constexpr uint32_t kGiTestTemporalToken = 0x54454d50u;  // ASCII "TEMP"
+constexpr uint32_t kGiTestAtrousToken   = 0x4154524fu;  // ASCII "ATRO"
+// GI temporal history length is stored as uint16_t; this cap prevents
+// truncation when the CPU-side counter (uint32_t) exceeds the field width.
+constexpr uint32_t kGiHistoryLengthMax  = 65535u;       // UINT16_MAX
+// Vulkan instanceCustomIndex is a 24-bit field in the TLAS instance record;
+// part_records must stay below this limit.  Must match the Vulkan spec
+// (VkAccelerationStructureInstanceKHR::instanceCustomIndex is 24 bits).
+constexpr uint32_t kTlasCustomIndexMax  = 1u << 24;
+
 bool rt_material_is_opaque(const MaterialGpuRecord& material) {
     return material.metal_opacity_spec_coat[1] >= 1.0f &&
            material.scattering_shape[3] >= 1.0f &&
@@ -2693,7 +2709,7 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
         !matter::map_buffer(upload, error))
         return false;
     const uint16_t history_patch = static_cast<uint16_t>(
-        std::min(65535u, fixture.previous_history_length));
+        std::min(kGiHistoryLengthMax, fixture.previous_history_length));
     std::memcpy(upload.mapped, &history_patch, sizeof(history_patch));
     if (!matter::flush_buffer(upload, 0, 4, error)) return false;
 
@@ -2713,7 +2729,7 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
     const TemporalFrame saved_temporal = temporal_frame_;
     gi_presented_attempt_token_ = 1;
     temporal_frame_.reset = fixture.reset;
-    temporal_frame_.attempt_token = 0x54454d50u;
+    temporal_frame_.attempt_token = kGiTestTemporalToken;
     const auto callback = [](VkCommandBuffer command_buffer, void* opaque) {
         auto& item = *static_cast<FixtureRecord*>(opaque);
         VkSceneRenderer& renderer = *item.renderer;
@@ -2832,7 +2848,7 @@ bool VkSceneRenderer::test_dispatch_gi_temporal_fixture(
         fake.frame_slot = renderer.active_frame_index_;
         fake.frame_slot_count =
             static_cast<uint32_t>(renderer.frames_.size());
-        fake.serial = 0x54454d50u;
+        fake.serial = kGiTestTemporalToken;
         item.ok = renderer.record_gi_temporal_signal(
             fake, f.signal_mode, *item.error, false);
         if (!item.ok) return;
@@ -2984,7 +3000,7 @@ bool VkSceneRenderer::test_dispatch_gi_atrous_fixture(
             float_to_half(fixture.normal[i].w)};
         const uint32_t identity[2] = {fixture.material_index[i], 1u};
         const uint16_t history = static_cast<uint16_t>(
-            std::min(fixture.history_length[i], 65535u));
+            std::min(fixture.history_length[i], kGiHistoryLengthMax));
         std::memcpy(bytes + signal_offset + i * 8, signal, sizeof(signal));
         std::memcpy(bytes + moments_offset + i * 4, moments, sizeof(moments));
         std::memcpy(bytes + depth_offset + i * 4, &fixture.depth[i], 4);
@@ -3012,7 +3028,7 @@ bool VkSceneRenderer::test_dispatch_gi_atrous_fixture(
     const bool saved_filtered_valid = gi_filtered_valid_;
     const uint32_t saved_filtered_index = gi_filtered_index_;
     gi_composite_history_index_ = gi_candidate_history_index_;
-    gi_candidate_frame_serial_ = 0x4154524fu;
+    gi_candidate_frame_serial_ = kGiTestAtrousToken;
     const auto callback = [](VkCommandBuffer command_buffer, void* opaque) {
         auto& item = *static_cast<FixtureRecord*>(opaque);
         VkSceneRenderer& renderer = *item.renderer;
@@ -3042,7 +3058,7 @@ bool VkSceneRenderer::test_dispatch_gi_atrous_fixture(
         fake.frame_slot = renderer.active_frame_index_;
         fake.frame_slot_count =
             static_cast<uint32_t>(renderer.frames_.size());
-        fake.serial = 0x4154524fu;
+        fake.serial = kGiTestAtrousToken;
         FrameResources& resources = renderer.frames_[fake.frame_slot];
         vkCmdFillBuffer(command_buffer, resources.gi_atrous_markers.buffer,
                         0, 5 * sizeof(uint32_t), 0);
@@ -4483,7 +4499,7 @@ bool VkSceneRenderer::emit_ray_instances(
         const RtInstance& source = *selected_lod.source;
         const auto& traced_blas = lod.candidate ? lod.candidate : lod.blas;
         if (!traced_blas) continue;
-        if (part_records.size() >= (1u << 24)) {
+        if (part_records.size() >= kTlasCustomIndexMax) {
             error = "RT geometry table exceeds TLAS custom-index capacity";
             return false;
         }
