@@ -216,6 +216,19 @@ void Ui::draw_debug_panel(ViewerStats& s) {
     ImGui::Begin("Viewer Debug");
 
     ImGui::Text("FPS: %.1f  (%.2f ms)", s.fps, s.frame_ms);
+    if (s.gpu_timers_supported) {
+        const float sum = s.gpu_cull_ms + s.gpu_gbuffer_ms + s.gpu_blas_ms +
+                          s.gpu_tlas_ms + s.gpu_rt_ms + s.gpu_denoise_ms +
+                          s.gpu_dlss_ms + s.gpu_composite_ms;
+        const float unaccounted = s.gpu_total_ms - sum;
+        ImGui::Text("GPU %.1fms | Cull %.1f GBuf %.1f BLAS %.1f TLAS %.1f RT %.1f Den %.1f DLSS %.1f Comp %.1f (other %.1f)",
+                    s.gpu_total_ms, s.gpu_cull_ms,
+                    s.gpu_gbuffer_ms, s.gpu_blas_ms, s.gpu_tlas_ms, s.gpu_rt_ms,
+                    s.gpu_denoise_ms, s.gpu_dlss_ms, s.gpu_composite_ms,
+                    unaccounted);
+    } else {
+        ImGui::TextDisabled("GPU timers unavailable");
+    }
     ImGui::Text("CPU: resolve %.2f  build %.2f  draw %.2f ms",
                 s.resolve_ms, s.build_ms, s.draw_ms);
     ImGui::Text("Camera: %.1f, %.1f, %.1f", s.cam_pos[0], s.cam_pos[1], s.cam_pos[2]);

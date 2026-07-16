@@ -515,6 +515,24 @@ public:
     }
 #endif
     int fill_rt_instances(std::vector<RtInstance>& output) const;
+
+    // GPU timer results (ms, EMA-smoothed). Zones are non-overlapping;
+    // each begin is recorded after the previous zone's end.
+    // 0=total 1=cull 2=gbuffer 3=blas 4=tlas 5=rt 6=denoise 7=dlss 8=composite
+    static constexpr uint32_t kGpuZoneTotal        = 0;
+    static constexpr uint32_t kGpuZoneCull         = 1;
+    static constexpr uint32_t kGpuZoneGBuffer      = 2;
+    static constexpr uint32_t kGpuZoneBlas         = 3;
+    static constexpr uint32_t kGpuZoneTlas         = 4;
+    static constexpr uint32_t kGpuZoneRt           = 5;
+    static constexpr uint32_t kGpuZoneDenoise      = 6;
+    static constexpr uint32_t kGpuZoneDlss         = 7;
+    static constexpr uint32_t kGpuZoneComposite    = 8;
+    static constexpr uint32_t kGpuZoneCount        = 9;
+    bool gpu_timers_supported() const { return gpu_timers_supported_; }
+    float gpu_zone_ms(uint32_t zone) const {
+        return zone < kGpuZoneCount ? gpu_smoothed_ms_[zone] : 0.0f;
+    }
     // A poisoned renderer fails closed. reset() then performs a full GPU
     // resource/pipeline teardown, clears the poison, and requires re-init
     // (explicitly or through the next dispatch_culling call) before reuse.
@@ -679,6 +697,12 @@ private:
         uint64_t material_upload_record_count = 0;
         VkDeviceSize pending_material_bytes = 0;
         bool stats_valid = false;
+        // GPU timestamp query pool: 18 slots (9 zones × begin/end).
+        VkQueryPool ts_pool = VK_NULL_HANDLE;
+        // Per zone: bit 0 set when begin was written, bit 1 when end was.
+        uint8_t ts_written[kGpuZoneCount]{};
+        // True when the previous recording wrote at least the total zone.
+        bool ts_valid = false;
     };
 
     // Intermediate state shared between the record_ray_traced_shadows phases.
@@ -919,6 +943,14 @@ private:
     bool static_upload_dirty_ = true;
     VkSceneUploadCounters upload_counters_{};
     VkCullStats cached_stats_{};
+    // GPU timestamp support. Cached at init time from device properties.
+    bool gpu_timers_supported_ = false;
+    float timestamp_period_ns_ = 0.0f;
+    // EMA-smoothed per-zone GPU timings (ms). Updated each frame on readback.
+    float gpu_smoothed_ms_[kGpuZoneCount]{};
+    // Helper recorded per-frame to stamp the command buffer.
+    void write_gpu_timestamp(VkCommandBuffer cmd, uint32_t zone_id,
+                             bool is_end, FrameResources& frame);
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     uint32_t test_surface_trace_dispatches_ = 0;
     DeviceLimits test_limits_{};

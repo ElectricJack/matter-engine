@@ -104,6 +104,21 @@ bool fail_vk(const char* operation, VkResult result, std::string& error) {
     return false;
 }
 
+// Write a single timestamp query. Called from VkSceneRenderer methods below.
+// Query index = zone_id * 2 + (is_end ? 1 : 0).
+// Both begin and end use ALL_COMMANDS (drain) semantics: each stamp latches
+// when all prior GPU work completes, so a zone interval is drain-to-drain —
+// the zone's incremental wall-clock cost. With TOP_OF_PIPE begins, overlapping
+// passes each report the same wide window (begin latches at command parse,
+// end waits for full drain), double-counting shared time and summing past the
+// frame total.
+inline void write_ts(VkCommandBuffer cmd, VkQueryPool pool,
+                     uint32_t zone_id, bool is_end) {
+    const uint32_t query = zone_id * 2u + (is_end ? 1u : 0u);
+    vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, pool,
+                         query);
+}
+
 bool checked_u32_add(uint32_t a, uint32_t b, uint32_t& result,
                      const char* label, std::string& error) {
     if (b > std::numeric_limits<uint32_t>::max() - a) {
@@ -308,6 +323,11 @@ struct RasterRecord {
     float pixel_budget;
     std::string* error;
     bool* ray_trace_ok;
+    // GPU timestamp pool + written-bits for the GBuffer zone.
+    // Null when timers are disabled or pool is unavailable.
+    VkQueryPool ts_pool = VK_NULL_HANDLE;
+    uint8_t* ts_written = nullptr;
+    uint32_t gbuffer_zone = 0;
 };
 
 void record_raster(VkCommandBuffer command_buffer, void* user_data) {
@@ -334,6 +354,16 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
                        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                        VK_IMAGE_ASPECT_COLOR_BIT);
 
+    // A negative height preserves the engine's top-left framebuffer
+    // convention without flipping the canonical Vulkan-ZO projection.
+    const VkViewport raster_viewport{
+        0.0f, static_cast<float>(record.extent.height),
+        static_cast<float>(record.extent.width),
+        -static_cast<float>(record.extent.height), 0.0f, 1.0f};
+    const VkRect2D scissor{{0, 0}, record.extent};
+    const VkDeviceSize vertex_offset = 0;
+
+    // --- GBuffer pass: 5-color MRT + depth write ---
     const VkClearValue clear_color{{{0.0f, 0.0f, 0.0f, 0.0f}}};
     VkRenderingAttachmentInfo color_attachments[5]{};
     for (size_t i = 0; i < 5; ++i) {
@@ -361,15 +391,11 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     rendering.colorAttachmentCount = 5;
     rendering.pColorAttachments = color_attachments;
     rendering.pDepthAttachment = &depth_attachment;
+    if (record.ts_pool != VK_NULL_HANDLE && record.ts_written) {
+        write_ts(command_buffer, record.ts_pool, record.gbuffer_zone, false);
+        record.ts_written[record.gbuffer_zone] |= 1u;
+    }
     vkCmdBeginRendering(command_buffer, &rendering);
-
-    // A negative height preserves the engine's top-left framebuffer
-    // convention without flipping the canonical Vulkan-ZO projection.
-    const VkViewport raster_viewport{
-        0.0f, static_cast<float>(record.extent.height),
-        static_cast<float>(record.extent.width),
-        -static_cast<float>(record.extent.height), 0.0f, 1.0f};
-    const VkRect2D scissor{{0, 0}, record.extent};
     vkCmdSetViewport(command_buffer, 0, 1, &raster_viewport);
     vkCmdSetScissor(command_buffer, 0, 1, &scissor);
     vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -377,7 +403,6 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             record.raster_layout, 0, 2,
                             record.raster_sets, 0, nullptr);
-    const VkDeviceSize vertex_offset = 0;
     vkCmdBindVertexBuffers(command_buffer, 0, 1, &record.vertex_buffer,
                            &vertex_offset);
     for (uint32_t i = 0; i < record.draw_range_count; ++i) {
@@ -400,6 +425,10 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
         }
     }
     vkCmdEndRendering(command_buffer);
+    if (record.ts_pool != VK_NULL_HANDLE && record.ts_written) {
+        write_ts(command_buffer, record.ts_pool, record.gbuffer_zone, true);
+        record.ts_written[record.gbuffer_zone] |= 2u;
+    }
 
     for (uint32_t index = 0; index < 5; ++index) {
         auto* color = colors[index];
@@ -948,6 +977,12 @@ void VkSceneRenderer::destroy_pipeline() {
     rt_sbt_hit_size_ = 0;
     pipeline_layout_ = VK_NULL_HANDLE;
     descriptor_pool_ = VK_NULL_HANDLE;
+    for (auto& f : frames_) {
+        if (f.ts_pool != VK_NULL_HANDLE) {
+            vkDestroyQueryPool(device, f.ts_pool, nullptr);
+            f.ts_pool = VK_NULL_HANDLE;
+        }
+    }
     frames_.clear();
     active_frame_index_ = 0;
     frame_resource_slot_capacity_ = 0;
@@ -1416,11 +1451,19 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     VkPipelineMultisampleStateCreateInfo multisample{
         VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    const VkDynamicState dynamic_values[] = {VK_DYNAMIC_STATE_VIEWPORT,
+                                              VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic{
+        VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dynamic.dynamicStateCount = 2;
+    dynamic.pDynamicStates = dynamic_values;
+
+    // GBuffer pipeline: 5-color MRT + depth write.
     VkPipelineDepthStencilStateCreateInfo depth_stencil{
         VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    depth_stencil.depthTestEnable = VK_TRUE;
+    depth_stencil.depthTestEnable  = VK_TRUE;
     depth_stencil.depthWriteEnable = VK_TRUE;
-    depth_stencil.depthCompareOp = VK_COMPARE_OP_LESS;
+    depth_stencil.depthCompareOp   = VK_COMPARE_OP_LESS_OR_EQUAL;
     VkPipelineColorBlendAttachmentState blend_attachments[5]{};
     for (auto& blend : blend_attachments) {
         blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
@@ -1432,12 +1475,6 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
         VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     color_blend.attachmentCount = 5;
     color_blend.pAttachments = blend_attachments;
-    const VkDynamicState dynamic_values[] = {VK_DYNAMIC_STATE_VIEWPORT,
-                                              VK_DYNAMIC_STATE_SCISSOR};
-    VkPipelineDynamicStateCreateInfo dynamic{
-        VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-    dynamic.dynamicStateCount = 2;
-    dynamic.pDynamicStates = dynamic_values;
     const VkFormat gbuffer_formats[] = {
         VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16B16A16_SFLOAT,
         VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16_SFLOAT,
@@ -1900,10 +1937,27 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             return false;
         }
         update_frame_descriptors(frame);
+        if (gpu_timers_supported_) {
+            VkQueryPoolCreateInfo ts_info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+            ts_info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+            ts_info.queryCount = kGpuZoneCount * 2u;
+            const VkResult ts_result = vkCreateQueryPool(
+                vulkan_->device(), &ts_info, nullptr, &frame.ts_pool);
+            if (ts_result != VK_SUCCESS) {
+                // Soft-fail: disable timers rather than failing the whole init.
+                gpu_timers_supported_ = false;
+            }
+        }
     }
     if (descriptor_pool_ != VK_NULL_HANDLE) {
         vulkan_->wait_idle();
         vkDestroyDescriptorPool(vulkan_->device(), descriptor_pool_, nullptr);
+    }
+    for (auto& f : frames_) {
+        if (f.ts_pool != VK_NULL_HANDLE) {
+            vkDestroyQueryPool(vulkan_->device(), f.ts_pool, nullptr);
+            f.ts_pool = VK_NULL_HANDLE;
+        }
     }
     frames_ = std::move(next_frames);
     descriptor_pool_ = next_pool;
@@ -2186,6 +2240,15 @@ bool VkSceneRenderer::init(std::string& error) {
     if (initialized_) return true;
     if (pipeline_ != VK_NULL_HANDLE) destroy_pipeline();
     if (!load_device_limits(error)) return false;
+    // Cache timestamp support from device properties.
+    {
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(vulkan_->physical_device(), &props);
+        const bool has_ts = props.limits.timestampComputeAndGraphics &&
+                            props.limits.timestampPeriod > 0.0f;
+        gpu_timers_supported_ = has_ts;
+        timestamp_period_ns_ = has_ts ? props.limits.timestampPeriod : 0.0f;
+    }
     if (!create_pipeline(error)) {
         destroy_pipeline();
         return false;
@@ -4168,6 +4231,14 @@ bool VkSceneRenderer::upload_frame_constants(FrameResources& frame,
                                  sizeof(constants), 0, error);
 }
 
+void VkSceneRenderer::write_gpu_timestamp(VkCommandBuffer cmd, uint32_t zone_id,
+                                          bool is_end, FrameResources& frame) {
+    if (!gpu_timers_supported_ || frame.ts_pool == VK_NULL_HANDLE) return;
+    write_ts(cmd, frame.ts_pool, zone_id, is_end);
+    const uint8_t bit = is_end ? 2u : 1u;
+    frame.ts_written[zone_id] |= bit;
+}
+
 bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
                                     const FrameMatrices& matrices,
                                     matter::Float3 camera_eye,
@@ -4185,6 +4256,49 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     test_last_rt_geometry_records_.clear();
     test_last_rt_blas_build_count_ = 0;
 #endif
+    // GPU timestamp readback, reset, and begin of the 'total' zone.
+    // Must happen outside any render pass (vkCmdResetQueryPool requirement).
+    if (gpu_timers_supported_ && selected.ts_pool != VK_NULL_HANDLE) {
+        if (selected.ts_valid) {
+            // Non-blocking readback of the previous frame's timestamps.
+            constexpr uint32_t kQueryCount = kGpuZoneCount * 2u;
+            // Two uint64_t per query: value + availability.
+            uint64_t results[kQueryCount * 2]{};
+            const VkResult rb = vkGetQueryPoolResults(
+                vulkan_->device(), selected.ts_pool, 0, kQueryCount,
+                sizeof(results), results, sizeof(uint64_t) * 2,
+                VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+            // vkGetQueryPoolResults returns VK_NOT_READY when any query is unavailable;
+            // the per-query availability bits below gate each sample individually.
+            if (rb == VK_SUCCESS || rb == VK_NOT_READY) {
+                for (uint32_t z = 0; z < kGpuZoneCount; ++z) {
+                    const uint8_t written = selected.ts_written[z];
+                    if ((written & 3u) != 3u) {
+                        // Zone did not execute this frame — report 0 immediately.
+                        gpu_smoothed_ms_[z] = 0.0f;
+                        continue;
+                    }
+                    const uint64_t begin_val = results[z * 4 + 0];
+                    const uint64_t begin_avail = results[z * 4 + 1];
+                    const uint64_t end_val   = results[z * 4 + 2];
+                    const uint64_t end_avail = results[z * 4 + 3];
+                    if (!begin_avail || !end_avail) continue;
+                    const float ms = static_cast<float>(
+                        static_cast<double>(end_val - begin_val) *
+                        timestamp_period_ns_ / 1e6);
+                    gpu_smoothed_ms_[z] = gpu_smoothed_ms_[z] * 0.9f + ms * 0.1f;
+                }
+            }
+        }
+        // Reset all queries for this slot; must be outside a render pass.
+        vkCmdResetQueryPool(frame.command_buffer, selected.ts_pool,
+                            0, kGpuZoneCount * 2u);
+        std::memset(selected.ts_written, 0, sizeof(selected.ts_written));
+        selected.ts_valid = false;
+        // Begin the 'total' zone immediately after the reset.
+        write_ts(frame.command_buffer, selected.ts_pool, kGpuZoneTotal, false);
+        selected.ts_written[kGpuZoneTotal] |= 1u;
+    }
     if (!upload_scene_buffers(selected, frame.command_buffer, false, error) ||
         !upload_frame_constants(selected, matrices, camera_eye, pixel_budget,
                                 error)) {
@@ -4469,6 +4583,9 @@ bool VkSceneRenderer::build_ray_geometry(
     std::vector<VkAccelerationStructureBuildGeometryInfoKHR> batch_builds;
     std::vector<const VkAccelerationStructureBuildRangeInfoKHR*> batch_ranges;
     size_t batch_begin = 0;
+    const bool has_blas_work = !pending.empty();
+    if (has_blas_work)
+        write_gpu_timestamp(frame.command_buffer, kGpuZoneBlas, false, selected);
     for (const size_t batch_end : batch_ends) {
         if (batch_end == batch_begin) continue;
         batch_builds.clear();
@@ -4500,6 +4617,8 @@ bool VkSceneRenderer::build_ray_geometry(
         vkCmdPipelineBarrier2(frame.command_buffer, &dependency);
         batch_begin = batch_end;
     }
+    if (has_blas_work)
+        write_gpu_timestamp(frame.command_buffer, kGpuZoneBlas, true, selected);
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     test_last_rt_blas_build_count_ = static_cast<uint32_t>(pending.size());
 #endif
@@ -4620,8 +4739,10 @@ bool VkSceneRenderer::emit_ray_instances(
     VkAccelerationStructureBuildRangeInfoKHR tlas_range{};
     tlas_range.primitiveCount = instance_count;
     const VkAccelerationStructureBuildRangeInfoKHR* tlas_range_ptr = &tlas_range;
+    write_gpu_timestamp(frame.command_buffer, kGpuZoneTlas, false, selected);
     cmd_build(frame.command_buffer, 1, &tlas_build, &tlas_range_ptr);
     VkMemoryBarrier2 as_to_ray{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    write_gpu_timestamp(frame.command_buffer, kGpuZoneTlas, true, selected);
     as_to_ray.srcStageMask =
         VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
     as_to_ray.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
@@ -4819,6 +4940,8 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     const VkStridedDeviceAddressRegionKHR hit{rt_sbt_hit_address_, handle_stride,
                                                rt_sbt_hit_size_};
     const VkStridedDeviceAddressRegionKHR callable{};
+    FrameResources& rt_frame_slot = frames_[frame.frame_slot];
+    write_gpu_timestamp(frame.command_buffer, kGpuZoneRt, false, rt_frame_slot);
     cmd_trace(frame.command_buffer, &raygen, &miss, &hit, &callable,
               trace_extent.width, trace_extent.height, 1);
     if (gi_settings_.enabled) {
@@ -4870,10 +4993,15 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
                   raw_diffuse_extent_.width, raw_diffuse_extent_.height, 1);
         ++last_rt_trace_dispatches_;
     }
-    if (gi_settings_.enabled &&
-        (!record_gi_temporal(frame, error) ||
-         !record_gi_atrous(frame, error)))
-        return false;
+    write_gpu_timestamp(frame.command_buffer, kGpuZoneRt, true, rt_frame_slot);
+    if (gi_settings_.enabled) {
+        write_gpu_timestamp(frame.command_buffer, kGpuZoneDenoise, false,
+                            rt_frame_slot);
+        if (!record_gi_temporal(frame, error)) return false;
+        if (!record_gi_atrous(frame, error)) return false;
+        write_gpu_timestamp(frame.command_buffer, kGpuZoneDenoise, true,
+                            rt_frame_slot);
+    }
     VkMemoryBarrier2 counters_to_host{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     counters_to_host.srcStageMask =
         VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
@@ -5035,11 +5163,13 @@ bool VkSceneRenderer::record_cull_and_render(
         return false;
     }
     if (group_count != 0) {
+        write_gpu_timestamp(frame.command_buffer, kGpuZoneCull, false, selected);
         const CullDispatchRecord dispatch{
             pipeline_, pipeline_layout_,
             {selected.descriptor_sets[0], selected.descriptor_sets[1]},
             group_count};
         record_cull_dispatch_commands(frame.command_buffer, dispatch);
+        write_gpu_timestamp(frame.command_buffer, kGpuZoneCull, true, selected);
     }
 
     bool ray_trace_ok = true;
@@ -5086,7 +5216,10 @@ bool VkSceneRenderer::record_cull_and_render(
                         camera_eye,
                         pixel_budget,
                         &error,
-                        &ray_trace_ok};
+                        &ray_trace_ok,
+                        selected.ts_pool,
+                        selected.ts_written,
+                        kGpuZoneGBuffer};
     record_raster(frame.command_buffer, &record);
     if (!ray_trace_ok) return false;
     raster_attachments_ready_ = true;
@@ -5589,11 +5722,16 @@ bool VkSceneRenderer::record_composite_to_swapchain(
         matter::DlssConstants ignored_constants{};
         matter::DlssResources ignored_resources{};
         std::string transition_error;
+        FrameResources& dlss_slot_native = frames_[frame.frame_slot];
+        write_gpu_timestamp(frame.command_buffer, kGpuZoneDlss, false,
+                            dlss_slot_native);
         (void)dlss_bridge_->evaluate_dlss(
             frame.command_buffer, temporal_frame_.attempt_token,
             {matter::DlssMode::Native, frame.extent, true, true},
             ignored_constants, ignored_resources, ignored_output,
             transition_error);
+        write_gpu_timestamp(frame.command_buffer, kGpuZoneDlss, true,
+                            dlss_slot_native);
         consume_bridge_reset();
     }
     if (selected_dlss_mode_ != matter::DlssMode::Native &&
@@ -5703,15 +5841,18 @@ bool VkSceneRenderer::record_composite_to_swapchain(
              VK_IMAGE_ASPECT_COLOR_BIT}};
         std::string evaluation_error;
         matter::DlssEvaluationOutput evaluation_output{};
+        write_gpu_timestamp(frame.command_buffer, kGpuZoneDlss, false, slot);
         if (dlss_bridge_->evaluate_dlss(
                 frame.command_buffer, temporal_frame_.attempt_token,
                 {selected_dlss_mode_, frame.extent, true, true}, constants,
                 resources, evaluation_output, evaluation_error)) {
+            write_gpu_timestamp(frame.command_buffer, kGpuZoneDlss, true, slot);
             composite_source = &slot.dlss_output;
             slot.dlss_output.layout = evaluation_output.layout;
             composite_source_stage = evaluation_output.stage;
             composite_source_access = evaluation_output.access;
         } else {
+            write_gpu_timestamp(frame.command_buffer, kGpuZoneDlss, true, slot);
             composite_source_stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
             composite_source_access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
             consume_bridge_reset();
@@ -5741,6 +5882,8 @@ bool VkSceneRenderer::record_composite_to_swapchain(
     rendering.layerCount = 1;
     rendering.colorAttachmentCount = 1;
     rendering.pColorAttachments = &attachment;
+    write_gpu_timestamp(frame.command_buffer, kGpuZoneComposite, false,
+                        frame_slot);
     vkCmdBeginRendering(frame.command_buffer, &rendering);
     VkViewport viewport{0.0f, 0.0f,
                         static_cast<float>(frame.extent.width),
@@ -5759,6 +5902,18 @@ bool VkSceneRenderer::record_composite_to_swapchain(
                        &display_exposure_ev_);
     vkCmdDraw(frame.command_buffer, 3, 1, 0, 0);
     vkCmdEndRendering(frame.command_buffer);
+    write_gpu_timestamp(frame.command_buffer, kGpuZoneComposite, true,
+                        frame_slot);
+    // End the 'total' zone and mark timestamps valid for readback next frame.
+    if (gpu_timers_supported_ && frame.frame_slot < frames_.size()) {
+        FrameResources& slot = frames_[frame.frame_slot];
+        if (slot.ts_pool != VK_NULL_HANDLE &&
+            (slot.ts_written[kGpuZoneTotal] & 1u)) {
+            write_ts(frame.command_buffer, slot.ts_pool, kGpuZoneTotal, true);
+            slot.ts_written[kGpuZoneTotal] |= 2u;
+            slot.ts_valid = true;
+        }
+    }
     return true;
 }
 

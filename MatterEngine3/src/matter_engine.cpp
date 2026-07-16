@@ -3358,6 +3358,16 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.parts_baked = static_cast<uint32_t>(impl_->store->loaded_count());
     impl_->stats.instances_total = static_cast<uint32_t>(impl_->state.entries().size());
     impl_->stats.triangles = cull_stats.triangles;
+    impl_->stats.gpu_timers_supported    = impl_->vk_scene->gpu_timers_supported();
+    impl_->stats.gpu_total_ms            = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneTotal);
+    impl_->stats.gpu_cull_ms             = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneCull);
+    impl_->stats.gpu_gbuffer_ms          = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneGBuffer);
+    impl_->stats.gpu_blas_ms             = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneBlas);
+    impl_->stats.gpu_tlas_ms             = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneTlas);
+    impl_->stats.gpu_rt_ms               = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneRt);
+    impl_->stats.gpu_denoise_ms          = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneDenoise);
+    impl_->stats.gpu_dlss_ms             = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneDlss);
+    impl_->stats.gpu_composite_ms        = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneComposite);
     return true;
 }
 
