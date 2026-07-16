@@ -1300,6 +1300,12 @@ struct VulkanDevice::Impl {
         if (wait_for_present_completion(error) != VK_SUCCESS)
             return poison_device(
                 error, "swapchain recreation could not establish present completion");
+        for (FrameSlot& frame : frames) {
+            if (!settle_acquire_fence(frame, error))
+                return poison_device(error,
+                                     "swapchain recreation could not establish "
+                                     "acquisition completion");
+        }
         if (!create_swapchain(swapchain, error)) return false;
         if (!create_swapchain_sync(error))
             return poison_device(
@@ -1390,6 +1396,10 @@ struct VulkanDevice::Impl {
         slot.retained.clear();
 
         uint32_t image_index = 0;
+        if (!settle_acquire_fence(slot, error)) {
+            return poison_device(
+                error, "acquisition completion could not be established");
+        }
         if (!vk_ok(vkResetFences(device, 1, &slot.acquire_fence),
                    "vkResetFences(acquire completion)", error)) {
             return false;
@@ -1410,15 +1420,11 @@ struct VulkanDevice::Impl {
         if (acquire != VK_SUCCESS && acquire != VK_SUBOPTIMAL_KHR) {
             return vk_ok(acquire, "vkAcquireNextImageKHR", error);
         }
+        // Acquisition completion is proven lazily via settle_acquire_fence
+        // (slot reuse, recovery, swapchain retirement) and teardown instead of
+        // stalling here for up to a vsync in FIFO; GPU-side ordering is
+        // covered by the submit's image_available semaphore wait.
         slot.acquire_fence_pending = true;
-        if (!vk_ok(vkWaitForFences(
-                       device, 1, &slot.acquire_fence, VK_TRUE,
-                       std::numeric_limits<uint64_t>::max()),
-                   "vkWaitForFences(acquire completion)", error)) {
-            return poison_device(
-                error, "acquisition completion could not be established");
-        }
-        slot.acquire_fence_pending = false;
         acquired_suboptimal = acquire == VK_SUBOPTIMAL_KHR;
 
         if (present_fence_pending[image_index]) {
@@ -1619,6 +1625,21 @@ struct VulkanDevice::Impl {
         if (!recovery_error.empty()) error += "; additionally, " + recovery_error;
     }
 
+    // Blocks only until the presentation engine has released the image; on
+    // every call site the acquisition has long since completed (the frame was
+    // submitted, recovered, or the device was idled), so this returns
+    // immediately in practice.
+    bool settle_acquire_fence(FrameSlot& slot, std::string& error) {
+        if (!slot.acquire_fence_pending) return true;
+        if (!vk_ok(vkWaitForFences(device, 1, &slot.acquire_fence, VK_TRUE,
+                                   std::numeric_limits<uint64_t>::max()),
+                   "vkWaitForFences(acquire completion)", error)) {
+            return false;
+        }
+        slot.acquire_fence_pending = false;
+        return true;
+    }
+
     bool release_acquired_image(uint32_t image_index, std::string& error) {
         VkReleaseSwapchainImagesInfoEXT release{
             VK_STRUCTURE_TYPE_RELEASE_SWAPCHAIN_IMAGES_INFO_EXT};
@@ -1631,8 +1652,15 @@ struct VulkanDevice::Impl {
 
     bool recover_unsubmitted_acquire(FrameSlot& slot, uint32_t image_index,
                                      std::string& error) {
-        bool recovered = true;
         std::string recovery_error;
+        if (!settle_acquire_fence(slot, recovery_error)) {
+            append_recovery_error(error, recovery_error);
+            swapchain_recreate_required = true;
+            return poison_device(
+                error, "acquisition completion could not be established");
+        }
+        bool recovered = true;
+        recovery_error.clear();
         if (!release_acquired_image(image_index, recovery_error)) {
             append_recovery_error(error, recovery_error);
             recovered = false;
@@ -1667,6 +1695,13 @@ struct VulkanDevice::Impl {
             swapchain_recreate_required = true;
             return poison_device(
                 error, "abandoned submission completion could not be established");
+        }
+        recovery_error.clear();
+        if (!settle_acquire_fence(slot, recovery_error)) {
+            append_recovery_error(error, recovery_error);
+            swapchain_recreate_required = true;
+            return poison_device(
+                error, "acquisition completion could not be established");
         }
         recovery_error.clear();
         if (!release_acquired_image(image_index, recovery_error)) {
