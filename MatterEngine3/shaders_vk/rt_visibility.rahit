@@ -14,6 +14,7 @@ layout(location = 0) rayPayloadInEXT VisibilityPayload payload;
 hitAttributeEXT vec2 hit_barycentrics;
 
 const uint MATERIAL_ALPHA_TESTED = 1u << 2u;
+const uint MATERIAL_THIN_WALLED = 1u << 0u;
 
 void main() {
     atomicAdd(any_hit_invocations, 1u);
@@ -37,11 +38,21 @@ void main() {
         return;
     }
 
-    vec3 transmission_tint = clamp(material.base_roughness.rgb *
-                                   material.transmission.x, 0.0, 1.0);
-    float shadow_opacity =
-        clamp(material.scattering_shape.w, 0.0, 1.0);
-    payload.visibility *= mix(vec3(1.0), transmission_tint, shadow_opacity);
+    float subsurface = clamp(material.scattering.w, 0.0, 1.0);
+    if ((material.flags_misc.x & MATERIAL_THIN_WALLED) != 0u &&
+        subsurface > 0.0) {
+        // Thin scatterers author shadowOpacity = 1.0, which would fully
+        // block; the transmitted fraction is scattering color x subsurface.
+        payload.visibility *= clamp(material.scattering.rgb * subsurface,
+                                    0.0, 1.0);
+    } else {
+        vec3 transmission_tint = clamp(material.base_roughness.rgb *
+                                       material.transmission.x, 0.0, 1.0);
+        float shadow_opacity =
+            clamp(material.scattering_shape.w, 0.0, 1.0);
+        payload.visibility *= mix(vec3(1.0), transmission_tint,
+                                  shadow_opacity);
+    }
     atomicAdd(any_hit_layers, 1u);
     ++payload.layers;
     if (payload.layers >= 32u) {

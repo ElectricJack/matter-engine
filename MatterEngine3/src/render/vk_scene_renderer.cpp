@@ -74,10 +74,17 @@ constexpr uint32_t kGiHistoryLengthMax  = 65535u;       // UINT16_MAX
 constexpr uint32_t kTlasCustomIndexMax  = 1u << 24;
 
 bool rt_material_is_opaque(const MaterialGpuRecord& material) {
+    // Thin-walled scatterers must sit in the non-opaque TLAS layer even
+    // though they author shadowOpacity = 1.0: a backlit blob's sun ray
+    // starts inside its own geometry, and the opaque layer would
+    // self-shadow it to black instead of attenuating (rt_visibility.rahit).
+    const bool thin_scattering =
+        (material.flags_misc[0] & MATERIAL_THIN_WALLED) != 0u &&
+        material.scattering[3] > 0.0f;
     return material.metal_opacity_spec_coat[1] >= 1.0f &&
            material.scattering_shape[3] >= 1.0f &&
            (material.flags_misc[0] & MATERIAL_ALPHA_TESTED) == 0u &&
-           material.transmission[0] <= 0.0f;
+           material.transmission[0] <= 0.0f && !thin_scattering;
 }
 
 bool rt_material_ids_are_opaque(

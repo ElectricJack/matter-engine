@@ -29,6 +29,8 @@ layout(set = 0, binding = 7, std430) readonly buffer RtMaterialTable {
     RtMaterialGpu rt_materials[];
 };
 
+const uint MATERIAL_THIN_WALLED = 1u << 0u;
+
 layout(set = 0, binding = 8) uniform sampler2D transmission_texture;
 
 layout(push_constant) uniform SceneLighting {
@@ -65,7 +67,35 @@ void main() {
         out_hdr = vec4(visibility, 1.0);
         return;
     }
-    vec3 sun = diffuse * lighting.sun_color * direct * lighting.sun_intensity *
+    uint material_index = texelFetch(identity_texture,
+                                     ivec2(gl_FragCoord.xy), 0).r;
+    vec3 sun_response = diffuse * direct;
+    if (material_index < rt_materials.length()) {
+        RtMaterialGpu material = rt_materials[material_index];
+        float subsurface = clamp(material.scattering.w, 0.0, 1.0);
+        if (subsurface > 0.0) {
+            if ((material.flags_misc.x & MATERIAL_THIN_WALLED) != 0u) {
+                // Thin-walled backlight: view-independent wrapped term
+                // (composite has no camera position), sharpened by the
+                // authored anisotropy.
+                float backlit = clamp(-dot(normal, to_sun), 0.0, 1.0);
+                float aniso = clamp(material.scattering_shape.y, 0.0, 1.0);
+                backlit = pow(backlit, mix(1.0, 4.0, aniso));
+                float distance_falloff =
+                    clamp(material.scattering_shape.x * 4.0, 0.0, 1.0);
+                sun_response += material.scattering.rgb * subsurface *
+                                backlit * distance_falloff;
+            } else {
+                // Wax-style wrap: soften the terminator; the wrapped-in
+                // region is tinted by the scattering color.
+                float wrapped = clamp((dot(normal, to_sun) + subsurface) /
+                                      (1.0 + subsurface), 0.0, 1.0);
+                sun_response += diffuse * material.scattering.rgb *
+                                max(wrapped - direct, 0.0);
+            }
+        }
+    }
+    vec3 sun = sun_response * lighting.sun_color * lighting.sun_intensity *
                visibility;
     float encoded_emission = normal_payload.w;
     float emission_strength =
@@ -73,8 +103,6 @@ void main() {
         encoded_emission > 0.0
             ? exp2(min(encoded_emission, 15.875)) - 1.0
             : 0.0;
-    uint material_index = texelFetch(identity_texture,
-                                     ivec2(gl_FragCoord.xy), 0).r;
     vec3 emission_color = material_index < rt_materials.length()
         ? rt_materials[material_index].emission_strength.rgb
         : albedo.rgb;
