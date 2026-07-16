@@ -108,6 +108,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/script_rng_binding.cpp \
               $(ME3_DIR)/src/polygon_triangulate.cpp \
               $(ME3_DIR)/src/part_asset_v2.cpp $(ME3_DIR)/src/lod_bake.cpp \
+              $(ME3_DIR)/src/part_ao_bake.cpp \
               $(ME3_DIR)/src/world_flatten.cpp $(ME3_DIR)/src/part_flatten.cpp \
               $(ME3_DIR)/src/modifier_apply.cpp $(ME3_DIR)/src/retopo_blacklist.cpp \
               $(ME3_DIR)/src/triangle_emit.cpp \
