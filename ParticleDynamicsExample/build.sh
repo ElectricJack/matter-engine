@@ -26,8 +26,8 @@ HAS_MAKE=$(check_tool make && echo 1 || echo 0)
 if [ "$HAS_CMAKE" = "0" ] || [ "$HAS_GCC" = "0" ] || [ "$HAS_MAKE" = "0" ]; then
     echo ""
     echo "Missing build tools detected. Please install:"
-    echo "  - CMake (for building ODE)"
-    echo "  - GCC/MinGW (for compilation)"  
+    echo "  - CMake"
+    echo "  - GCC/MinGW (for compilation)"
     echo "  - Make (for build system)"
     echo ""
     echo "On Windows: choco install cmake mingw make"
@@ -69,30 +69,6 @@ void mem_pool_init() {
 EOF
 fi
 
-# Check for ODE
-if [ ! -d "../Libraries/ode" ]; then
-    echo "Downloading Open Dynamics Engine..."
-    mkdir -p ../Libraries
-    cd ../Libraries
-    git clone https://github.com/thomasmarsh/ODE.git ode
-    cd ../ParticleDynamicsExample
-else
-    echo "✓ ODE found at ../Libraries/ode"
-fi
-
-# Build ODE if CMake is available
-if [ "$HAS_CMAKE" = "1" ]; then
-    echo "Building ODE with CMake..."
-    mkdir -p ../Libraries/ode/build
-    cd ../Libraries/ode/build
-    cmake .. -DBUILD_SHARED_LIBS=OFF -DODE_WITH_DEMOS=OFF -DODE_WITH_TESTS=OFF -DCMAKE_BUILD_TYPE=Release
-    cmake --build . --config Release || make
-    cd ../../../ParticleDynamicsExample
-    echo "✓ ODE built successfully"
-else
-    echo "Skipping ODE build (CMake not available)"
-fi
-
 # Check for raylib
 if [ ! -d "../Libraries/raylib" ]; then
     echo "Warning: raylib not found at ../Libraries/raylib"
@@ -122,7 +98,7 @@ fi
 echo ""
 echo "=== Build Summary ==="
 echo "Project structure: ✓ Created"
-echo "Dependencies: $([ -d "../Libraries/ode" ] && echo "✓" || echo "✗") ODE, $([ -d "../Libraries/raylib" ] && echo "✓" || echo "✗") raylib"
+echo "Dependencies: $([ -d "../Libraries/raylib" ] && echo "✓" || echo "✗") raylib"
 echo "Source files: ✓ Generated"
 echo "Build tools: $([ "$HAS_CMAKE" = "1" ] && echo "✓" || echo "✗") CMake, $([ "$HAS_GCC" = "1" ] && echo "✓" || echo "✗") GCC, $([ "$HAS_MAKE" = "1" ] && echo "✓" || echo "✗") Make"
 echo ""
@@ -135,8 +111,7 @@ if [ "$HAS_CMAKE" = "1" ] && [ "$HAS_GCC" = "1" ] && [ "$HAS_MAKE" = "1" ]; then
 else
     echo "⚠ Install missing tools to enable building"
     echo "Project demonstrates:"
-    echo "  - ODE physics integration"
-    echo "  - Raylib graphics rendering" 
+    echo "  - Raylib graphics rendering"
     echo "  - Interactive particle simulation"
     echo "  - Windows-first build system (cross-platform)"
 fi 

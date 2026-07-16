@@ -19,7 +19,7 @@ MatterEngine2 follows a modular architecture where:
 
 The root directory contains:
 
-- `Libraries/` - Vendored third-party dependencies (raylib, imgui, ode)
+- `Libraries/` - Vendored third-party dependencies (raylib, imgui, box3d, quickjs-ng, autoremesher_core, Vulkan-Headers)
 - `Examples/` - Reference material (e.g., `bvh_article`)
 - `build-all.sh` - Top-level script that builds every project for the current platform; `./build-all.sh test` also runs headless test suites
 - `create_project.sh` - Bootstrap a new sub-project skeleton
