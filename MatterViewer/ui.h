@@ -45,9 +45,9 @@ struct ViewerStats {
     // Writable: 0 = PassThrough, 1 = SectorLod. Panel sets this; main swaps resolver.
     int      resolver_choice = 0;
     bool     reload_requested = false;   // panel sets; main clears after handling
-    // Raster-path counters (zero in RT mode). raster_batches / batch_cache_hit
-    // are legacy fields kept in the struct so the HUD layout stays put; the
-    // GPU-driven path always reports 0/false (there's no per-frame batch cache).
+    // GPU-path counters. The Vulkan GPU-driven path reports raster_batches (live
+    // indirect draw buckets) and raster_tris from the cull shader stats SSBO.
+    // batch_cache_hit remains legacy/always-false (no per-frame batch cache).
     int      raster_batches = 0;
     int      raster_tris = 0;
     int      culled_clusters = 0;

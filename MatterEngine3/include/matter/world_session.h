@@ -63,6 +63,7 @@ struct FrameStats {
     uint32_t clusters_culled   = 0;   // frustum-culled clusters
     uint32_t hiz_culled        = 0;   // HiZ-occlusion-culled clusters
     uint32_t triangles         = 0;   // rasterized triangle count
+    uint32_t draw_batches      = 0;   // indirect draw buckets with >=1 instance
     // world/bake census (filled by request_bake / reload)
     uint32_t instances_total = 0;
     uint32_t parts_baked = 0;         // cache misses last bake

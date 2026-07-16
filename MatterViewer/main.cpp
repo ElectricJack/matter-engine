@@ -502,6 +502,7 @@ int main() {
     uint64_t perf_start_dlss_resets = 0;
     std::vector<double> perf_frame_times;
     auto previous_time = std::chrono::steady_clock::now();
+    double hud_frame_ms = 0.0;
 
     while (!glfwWindowShouldClose(window) && !quit_requested && !fatal_error) {
         // This starts before event polling and begin_frame(), whose fence wait and
@@ -668,7 +669,6 @@ int main() {
         options.vulkan_lighting = stats.lighting;
         options.vulkan_ray_tracing.enabled =
             vulkan->ray_tracing_available() && !disable_vulkan_rt;
-        const auto render_start = std::chrono::steady_clock::now();
         if (!session->render(camera, frame, options, error)) {
             std::fprintf(stderr, "FATAL: render: %s\n", error.c_str());
             fatal_error = true;
@@ -721,9 +721,10 @@ int main() {
             reported_vk_rt_reason = frame_stats.vk_rt_fallback_reason;
             reported_vk_rt_once = true;
         }
-        stats.frame_ms = std::chrono::duration<float, std::milli>(
-                             std::chrono::steady_clock::now() - render_start).count();
-        stats.fps = stats.frame_ms > 0.0f ? 1000.0f / stats.frame_ms : 0.0f;
+        stats.frame_ms = static_cast<float>(hud_frame_ms);
+        stats.fps = hud_frame_ms > 0.0
+                        ? static_cast<float>(1000.0 / hud_frame_ms)
+                        : 0.0f;
         stats.cam_pos[0] = camera.position.x;
         stats.cam_pos[1] = camera.position.y;
         stats.cam_pos[2] = camera.position.z;
@@ -736,6 +737,7 @@ int main() {
         stats.gpu_culled_hiz = static_cast<int>(frame_stats.hiz_culled);
         stats.culled_clusters = stats.gpu_culled;
         stats.raster_tris = static_cast<int>(frame_stats.triangles);
+        stats.raster_batches = static_cast<int>(frame_stats.draw_batches);
         stats.instances_total = static_cast<int>(frame_stats.instances_total);
         stats.parts_baked = static_cast<int>(frame_stats.parts_baked);
         stats.cache_hits = static_cast<int>(frame_stats.cache_hits);
@@ -784,11 +786,13 @@ int main() {
             vulkan->end_frame(frame, frame_presented, error);
         session->finish_vulkan_frame(
             frame.serial, frame_presented && !fatal_error);
-        // end_frame() records the queue submit and present boundary. Keep this
-        // separate from stats.frame_ms, which intentionally remains the local
-        // CPU render-recording time shown by the interactive HUD.
+        // end_frame() records the queue submit and present boundary. The
+        // smoothed cadence below also feeds the HUD frame time on the next frame.
         const double perf_frame_cadence_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - perf_frame_start).count();
+        hud_frame_ms = hud_frame_ms <= 0.0
+                           ? perf_frame_cadence_ms
+                           : hud_frame_ms * 0.9 + perf_frame_cadence_ms * 0.1;
         if (!frame_completed) {
             std::fprintf(stderr, "FATAL: end_frame: %s\n", error.c_str());
             fatal_error = true;

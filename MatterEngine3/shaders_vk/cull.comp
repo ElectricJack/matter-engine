@@ -73,6 +73,8 @@ layout(set = 1, binding = 4, std430) buffer Stats {
     uint hiz_culled;
     uint emitted;
     uint overflowed;
+    uint triangles;
+    uint batches;
 };
 
 bool reserve_transform_slot(uint bucket, out uint slot) {
@@ -178,4 +180,6 @@ void main() {
     draw_transforms[first + slot].history_valid = instance.history_valid;
     draw_transforms[first + slot].instance_token = instance.instance_token;
     atomicAdd(emitted, 1u);
+    atomicAdd(triangles, commands[bucket].vertex_count / 3u);
+    if (slot == 0u) atomicAdd(batches, 1u);
 }

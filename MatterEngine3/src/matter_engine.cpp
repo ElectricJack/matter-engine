@@ -3606,6 +3606,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.instances_drawn = cull_stats.emitted;
     impl_->stats.clusters_culled = cull_stats.frustum_culled;
     impl_->stats.hiz_culled = cull_stats.hiz_culled;
+    impl_->stats.draw_batches = cull_stats.batches;
     const viewer::VkSceneUploadCounters upload_counters =
         impl_->vk_scene->upload_counters();
     impl_->stats.vk_instance_cache_expansions =
@@ -3634,7 +3635,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         impl_->vk_scene->rt_fallback_reason_observed();
     impl_->stats.parts_baked = static_cast<uint32_t>(impl_->store->loaded_count());
     impl_->stats.instances_total = static_cast<uint32_t>(impl_->state.entries().size());
-    impl_->stats.triangles = 0;
+    impl_->stats.triangles = cull_stats.triangles;
     return true;
 }
 

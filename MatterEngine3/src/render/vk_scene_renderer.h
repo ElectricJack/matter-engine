@@ -165,6 +165,8 @@ struct VkCullStats {
     uint32_t hiz_culled = 0;
     uint32_t emitted = 0;
     uint32_t overflowed = 0;
+    uint32_t triangles = 0;
+    uint32_t batches = 0;
 };
 
 struct VkRasterAttachment {

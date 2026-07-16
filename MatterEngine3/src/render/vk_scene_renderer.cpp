@@ -31,7 +31,7 @@ struct alignas(16) FrameConstants {
 
 static_assert(sizeof(FrameConstants) == 288,
               "FrameConstants must match the std140 shader block");
-static_assert(sizeof(VkCullStats) == 16,
+static_assert(sizeof(VkCullStats) == 24,
               "VkCullStats must match the std430 stats block");
 static_assert(sizeof(VkRasterVertex) == 72,
               "VkRasterVertex must match raster vertex bindings");
