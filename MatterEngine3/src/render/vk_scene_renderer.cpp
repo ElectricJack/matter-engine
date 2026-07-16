@@ -2371,6 +2371,7 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
         }
     }
     std::shared_ptr<matter::VkBufferResource> rt_geometry;
+    std::shared_ptr<matter::VkBufferResource> rt_index;
     if (vulkan_->ray_tracing_available() && !part.vertices.empty()) {
         rt_geometry = std::make_shared<matter::VkBufferResource>();
         const VkDeviceSize bytes =
@@ -2388,6 +2389,25 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
         std::memcpy(rt_geometry->mapped, part.vertices.data(),
                     static_cast<size_t>(bytes));
         if (!matter::flush_buffer(*rt_geometry, 0, bytes, error)) return -1;
+    }
+    if (vulkan_->ray_tracing_available() && !part.indices.empty()) {
+        rt_index = std::make_shared<matter::VkBufferResource>();
+        const VkDeviceSize index_bytes =
+            static_cast<VkDeviceSize>(part.indices.size()) * sizeof(uint32_t);
+        if (!matter::create_buffer(
+                *vulkan_, index_bytes,
+                VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+                    VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, *rt_index, error) ||
+            !matter::map_buffer(*rt_index, error)) {
+            return -1;
+        }
+        std::memcpy(rt_index->mapped, part.indices.data(),
+                    static_cast<size_t>(index_bytes));
+        if (!matter::flush_buffer(*rt_index, 0, index_bytes, error)) return -1;
     }
     const uint32_t vertex_base =
         static_cast<uint32_t>(vertex_staging_.size());
@@ -2408,6 +2428,7 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     record.index_count = static_cast<uint32_t>(part.indices.size());
     record.live = true;
     record.rt_geometry = std::move(rt_geometry);
+    record.rt_index = std::move(rt_index);
     record.rt_cluster_lod_offsets =
         vk_scene_detail::dense_rt_lod_offsets(part);
     for (uint32_t cluster_index = 0; cluster_index < part.clusters.size();
@@ -4585,7 +4606,8 @@ bool VkSceneRenderer::build_ray_geometry(
     for (const RtBuildSel& selected_lod : selected_geometry) {
         PartRecord& part = *selected_lod.part;
         RtLodRecord& lod = *selected_lod.lod;
-        if (!part.rt_geometry || lod.candidate_serial != 0 ||
+        if (!part.rt_geometry || !part.rt_index ||
+            lod.candidate_serial != 0 ||
             (lod.built && lod.geometry_opaque == selected_lod.opaque) ||
             std::any_of(pending.begin(), pending.end(),
                         [&lod](const RtBlasPending& item) {
@@ -4599,13 +4621,16 @@ bool VkSceneRenderer::build_ray_geometry(
         triangles.sType =
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
         triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
-        // Task 5 replaces this with indexed BLAS geometry using first_index and
-        // the index buffer.  For now, use vertex-offset 0 (soup fallback).
-        triangles.vertexData.deviceAddress = part.rt_geometry->address;
+        triangles.vertexData.deviceAddress = part.rt_geometry->address;   // part base, no LOD offset
         triangles.vertexStride = sizeof(VkRasterVertex);
-        triangles.maxVertex = static_cast<uint32_t>(
-            part.rt_geometry->size / sizeof(VkRasterVertex)) - 1;
-        triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
+        triangles.maxVertex = part.vertex_count - 1;
+        triangles.indexType = VK_INDEX_TYPE_UINT32;
+        // lod.first_index is global (rebased); subtract part.index_start to
+        // get the part-local offset within the per-part rt_index buffer.
+        triangles.indexData.deviceAddress =
+            part.rt_index->address +
+            static_cast<VkDeviceSize>(lod.first_index - part.index_start) *
+                sizeof(uint32_t);
         item.geometry.sType =
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
         item.geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
@@ -4744,7 +4769,7 @@ bool VkSceneRenderer::emit_ray_instances(
         const RtLodRecord& lod = *selected_lod.lod;
         const RtInstance& source = *selected_lod.source;
         const auto& traced_blas = lod.candidate ? lod.candidate : lod.blas;
-        if (!traced_blas) continue;
+        if (!traced_blas || !part.rt_geometry || !part.rt_index) continue;
         if (part_records.size() >= kTlasCustomIndexMax) {
             error = "RT geometry table exceeds TLAS custom-index capacity";
             return false;
@@ -4762,13 +4787,15 @@ bool VkSceneRenderer::emit_ray_instances(
         instance.accelerationStructureReference = traced_blas->address;
         instances.push_back(instance);
         GpuRtPartRecord record{};
-        // Task 5 replaces this with indexed vertex lookup via first_index.
-        record.vertex_address = part.rt_geometry->address;
-        record.vertex_stride = sizeof(VkRasterVertex);
-        record.vertex_count = static_cast<uint32_t>(
-            part.rt_geometry->size / sizeof(VkRasterVertex));
+        record.vertex_address = part.rt_geometry->address;    // part base
+        record.index_address =
+            part.rt_index->address +
+            static_cast<uint64_t>(lod.first_index - part.index_start) *
+                sizeof(uint32_t);
+        record.vertex_stride = sizeof(viewer::VkRasterVertex);
+        record.vertex_count = part.vertex_count;
         record.primitive_count = lod.primitive_count;
-        record.valid = 1;
+        record.valid = 1u;
         part_records.push_back(record);
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
         const bool built_this_frame = std::any_of(

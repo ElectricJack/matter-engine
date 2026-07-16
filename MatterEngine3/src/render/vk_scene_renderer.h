@@ -663,6 +663,7 @@ private:
         uint32_t index_count = 0;
         bool live = false;
         std::shared_ptr<matter::VkBufferResource> rt_geometry;
+        std::shared_ptr<matter::VkBufferResource> rt_index;
         std::vector<RtLodRecord> rt_lods;
         std::vector<uint32_t> rt_cluster_lod_offsets;
         std::vector<uint32_t> material_ids;

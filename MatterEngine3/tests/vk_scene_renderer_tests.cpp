@@ -1,16 +1,20 @@
 // vk_scene_renderer_tests.cpp — CPU-side tests for indexed VkScenePart assembly.
 //
-// Tests the invariants established by Task 3:
+// Tests the invariants established by Task 3 and Task 5:
 //   - VkSceneLod carries first_index/index_count (not first_vertex/vertex_count)
 //   - VkScenePart::indices holds part-local index values
 //   - RtGeometrySelection emits first_index/index_count
 //   - Out-of-range index validation detects bad parts
+//   - GpuRtPartRecord is exactly 48 bytes ("three vec4 records") with index_address
 //
 // These are pure CPU tests; no GPU/window required.
 
 #include "render/vk_scene_renderer.h"
+#include "render/vk_gi_contract.h"
 
+#include <cstddef>
 #include <cstdio>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -143,15 +147,61 @@ static void test_two_lod_rt_payload_indexed() {
 }
 
 // ---------------------------------------------------------------------------
+// test_gpu_rt_part_record_layout
+//
+// Validates the Task 5 GpuRtPartRecord layout: 48 bytes ("three vec4 records"),
+// with index_address field between vertex_address and vertex_stride.
+// ---------------------------------------------------------------------------
+static void test_gpu_rt_part_record_layout() {
+    printf("\n[test_gpu_rt_part_record_layout]\n");
+
+    CHECK(sizeof(GpuRtPartRecord) == 48,
+          "GpuRtPartRecord is exactly 48 bytes (three vec4 records)");
+    CHECK(offsetof(GpuRtPartRecord, vertex_address) == 0,
+          "vertex_address at byte 0");
+    CHECK(offsetof(GpuRtPartRecord, index_address) == 8,
+          "index_address at byte 8 (after 8-byte vertex_address)");
+    CHECK(offsetof(GpuRtPartRecord, vertex_stride) == 16,
+          "vertex_stride at byte 16 (after two 8-byte addresses)");
+    CHECK(offsetof(GpuRtPartRecord, vertex_count) == 20,
+          "vertex_count at byte 20");
+    CHECK(offsetof(GpuRtPartRecord, primitive_count) == 24,
+          "primitive_count at byte 24");
+    CHECK(offsetof(GpuRtPartRecord, valid) == 28,
+          "valid at byte 28");
+
+    // Verify that zero-init gives sensible defaults.
+    GpuRtPartRecord r{};
+    CHECK(r.vertex_address == 0 && r.index_address == 0 && r.valid == 0,
+          "zero-init GpuRtPartRecord has zero addresses and valid=0");
+
+    // Verify field assignment round-trips.
+    r.vertex_address = 0xDEADBEEF00000001ull;
+    r.index_address  = 0xCAFEBABE00000002ull;
+    r.vertex_stride  = 72u;
+    r.vertex_count   = 100u;
+    r.primitive_count = 33u;
+    r.valid = 1u;
+    CHECK(r.vertex_address == 0xDEADBEEF00000001ull, "vertex_address round-trips");
+    CHECK(r.index_address  == 0xCAFEBABE00000002ull, "index_address round-trips");
+    CHECK(r.vertex_stride  == 72u,  "vertex_stride holds 72");
+    CHECK(r.vertex_count   == 100u, "vertex_count round-trips");
+    CHECK(r.primitive_count == 33u, "primitive_count round-trips");
+    CHECK(r.valid == 1u, "valid round-trips");
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
     printf("vk_scene_renderer_tests: indexed VkScenePart assembly (CPU-only)\n");
-    printf("Validates Task 3 struct layout: first_index/index_count, part.indices.\n");
+    printf("Validates Task 3+5 struct layout: first_index/index_count, part.indices,\n");
+    printf("GpuRtPartRecord 48-byte layout with index_address.\n");
 
     test_vk_scene_lod_fields();
     test_rt_geometry_selection_fields();
     test_two_lod_rt_payload_indexed();
+    test_gpu_rt_part_record_layout();
 
     printf("\n--- Results: %d/%d passed", g_tests - g_failures, g_tests);
     if (g_failures == 0)

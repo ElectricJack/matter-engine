@@ -64,13 +64,14 @@ typedef struct alignas(16) GpuRtPartRecord {
 #else
 typedef struct GpuRtPartRecord {
 #endif
-    uint64_t vertex_address;
-    uint32_t vertex_stride;
-    uint32_t vertex_count;
-    uint32_t primitive_count;
+    uint64_t vertex_address;    // part-base VkRasterVertex buffer address
+    uint64_t index_address;     // this BLAS's first index (base + first_index*4)
+    uint32_t vertex_stride;     // 72
+    uint32_t vertex_count;      // part unique-vertex count
+    uint32_t primitive_count;   // index_count / 3 for this BLAS
     uint32_t valid;
-    uint32_t pad[2];
-} GpuRtPartRecord;
+    uint32_t pad0, pad1, pad2, pad3;
+} GpuRtPartRecord;              // 48 bytes: "three vec4 records"
 
 #ifdef __cplusplus
 #include <cstddef>
@@ -100,8 +101,8 @@ static_assert(offsetof(MaterialGpuRecord, flags_misc) == 128,
               "MaterialGpuRecord flags_misc must be uvec4 8");
 static_assert(std::is_standard_layout<GpuRtPartRecord>::value,
               "GpuRtPartRecord must remain a standard-layout GPU record");
-static_assert(sizeof(GpuRtPartRecord) == 32,
-              "GpuRtPartRecord must remain exactly two vec4 records");
+static_assert(sizeof(GpuRtPartRecord) == 48,
+              "GpuRtPartRecord must remain exactly three vec4 records");
 static_assert(sizeof(VulkanGiTemporalConstants) == 32,
               "GI temporal push constants must remain two uvec4 records");
 

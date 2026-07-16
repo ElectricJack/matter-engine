@@ -1521,11 +1521,12 @@ void run_native_multilod_rt_mapping(matter::VulkanDevice& vulkan) {
               first[0].vertex_address == base && first[0].built_this_frame &&
               first[1].cluster_index == 1 && first[1].lod_index == 1 &&
               first[1].custom_index == 1 && first[1].first_vertex == 9 &&
-              first[1].vertex_address ==
-                  base + 9 * sizeof(viewer::VkRasterVertex) &&
+              // Task 5: vertex_address is always the part base (no per-LOD
+              // vertex offset); index_address carries the per-LOD variation.
+              first[1].vertex_address == base &&
               first[1].built_this_frame &&
               first[0].blas_address != first[1].blas_address,
-          "native TLAS uses dense custom indices and selected per-LOD BLAS ranges");
+          "native TLAS uses dense custom indices and indexed BLAS; vertex_address always part base");
     std::vector<viewer::RtGeometryDebugRecord> reused;
     uint32_t reuse_builds = UINT32_MAX;
     CHECK(render(2, reused, reuse_builds) && reused.size() == 2 &&
