@@ -214,8 +214,8 @@ struct VkRasterPixel {
         uint32_t cluster_index = 0;
         uint32_t lod_index = 0;
         uint32_t custom_index = 0;
-        uint32_t first_vertex = 0;
-        uint32_t vertex_count = 0;
+        uint32_t first_index = 0;
+        uint32_t index_count = 0;
         VkDeviceAddress vertex_address = 0;
         VkDeviceAddress blas_address = 0;
         bool opaque = false;
@@ -519,6 +519,16 @@ public:
     float test_shadow_visibility_for_ray(bool occluded) const {
         return ray_tracing_settings_.enabled && occluded ? 0.0f : 1.0f;
     }
+    // Returns the first_index of rt_lods[rt_lod_index] for the given part hash,
+    // or UINT32_MAX if the part is not found or the index is out of range.
+    uint32_t test_rt_lod_first_index(uint64_t part_hash,
+                                     uint32_t rt_lod_index) const {
+        const auto found = slot_of_.find(part_hash);
+        if (found == slot_of_.end()) return UINT32_MAX;
+        const PartRecord& part = parts_[static_cast<size_t>(found->second)];
+        if (rt_lod_index >= part.rt_lods.size()) return UINT32_MAX;
+        return part.rt_lods[rt_lod_index].first_index;
+    }
 #endif
     int fill_rt_instances(std::vector<RtInstance>& output) const;
 
@@ -639,9 +649,10 @@ private:
     struct RtLodRecord {
         uint32_t cluster_index = 0;
         uint32_t lod_index = 0;
-        // first_index/index_count are global (rebased by ensure_part).
-        // Tasks 4-5 replace the BLAS build path to use indexed geometry.
-        uint32_t first_index = 0;    // global index into index_staging_
+        // first_index is part-local (NOT rebased; stored this way so compaction
+        // in release_part does not invalidate surviving parts' rt_lods).
+        // Consumers address the per-part rt_index buffer directly via this offset.
+        uint32_t first_index = 0;    // part-local index into rt_index buffer
         uint32_t index_count = 0;    // 3 × triangle count
         uint32_t primitive_count = 0;
         std::shared_ptr<matter::VkAccelerationStructureResource> blas;

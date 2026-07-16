@@ -2294,7 +2294,8 @@ bool VkSceneRenderer::init(std::string& error) {
     initialized_ =
         ensure_buffer(clusters_, sizeof(GpuCluster),
                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error) &&
-        ensure_vertex_buffer(sizeof(VkRasterVertex), error);
+        ensure_vertex_buffer(sizeof(VkRasterVertex), error) &&
+        ensure_index_buffer(sizeof(uint32_t), error);
     if (!initialized_) {
         destroy_pipeline();
         clusters_.reset();
@@ -2440,7 +2441,9 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
             RtLodRecord rt_lod{};
             rt_lod.cluster_index = cluster_index;
             rt_lod.lod_index = lod_index;
-            rt_lod.first_index = index_base + lod.first_index;
+            // Store part-local first_index; compaction does not touch rt_lods,
+            // so the part-local frame keeps consumers correct after release_part.
+            rt_lod.first_index = lod.first_index;
             rt_lod.index_count = lod.index_count;
             rt_lod.primitive_count = lod.index_count / 3;
             if (!part.indices.empty() && !part.vertices.empty()) {
@@ -4625,12 +4628,12 @@ bool VkSceneRenderer::build_ray_geometry(
         triangles.vertexStride = sizeof(VkRasterVertex);
         triangles.maxVertex = part.vertex_count - 1;
         triangles.indexType = VK_INDEX_TYPE_UINT32;
-        // lod.first_index is global (rebased); subtract part.index_start to
-        // get the part-local offset within the per-part rt_index buffer.
+        // lod.first_index is part-local (stored that way in RtLodRecord to
+        // remain compaction-invariant); use it directly as the byte offset
+        // into the per-part rt_index buffer.
         triangles.indexData.deviceAddress =
             part.rt_index->address +
-            static_cast<VkDeviceSize>(lod.first_index - part.index_start) *
-                sizeof(uint32_t);
+            static_cast<VkDeviceSize>(lod.first_index) * sizeof(uint32_t);
         item.geometry.sType =
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
         item.geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
@@ -4790,8 +4793,7 @@ bool VkSceneRenderer::emit_ray_instances(
         record.vertex_address = part.rt_geometry->address;    // part base
         record.index_address =
             part.rt_index->address +
-            static_cast<uint64_t>(lod.first_index - part.index_start) *
-                sizeof(uint32_t);
+            static_cast<uint64_t>(lod.first_index) * sizeof(uint32_t);
         record.vertex_stride = sizeof(viewer::VkRasterVertex);
         record.vertex_count = part.vertex_count;
         record.primitive_count = lod.primitive_count;
