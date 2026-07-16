@@ -334,12 +334,13 @@ static std::string read_file(const std::string& path) {
 }
 
 // Task 10 (updated for bake-time flattening): the PartStore serves parts two ways.
-//  - A PLACED ROOT (the Tree) has a flat artifact (<hash>.flat.part, written by
-//    LocalProvider::connect): loaded flat-preferred with its STORED LOD ladder and
-//    an EMPTY child table (the whole subtree is merged into the mesh).
-//  - A non-flattened part (TreeBranch, never placed as a root) loads through the
-//    compositional path and must KEEP its baked child-instance table for the
-//    WorldComposer to expand.
+//  - A PLACED ROOT (whatever the demo manifest places — currently TreeGallery)
+//    has a flat artifact (<hash>.flat.part, written by LocalProvider::connect):
+//    loaded flat-preferred with its STORED LOD ladder and an EMPTY child table
+//    (the whole subtree is merged into the mesh).
+//  - A non-flattened part (the Tree, never placed as a manifest root) loads
+//    through the compositional path and must KEEP its baked child-instance
+//    table for the WorldComposer to expand.
 static void test_partstore_keeps_children() {
     namespace pg = part_graph;
 
@@ -353,10 +354,10 @@ static void test_partstore_keeps_children() {
           "resolved demo schemas + shared-lib absolute paths");
     if (schemas.empty() || sharedlib.empty()) return;
 
-    // Reuse the warm cache already built by test_local_provider_cache. The Tree hash
-    // is identical (same shared_lib_root + same Leaf child), so HostBaker finds the
-    // .part on disk (cache hit, no re-bake) and install() completes without running
-    // the expensive voxel mesh build a second time in the same process.
+    // Reuse the warm cache already built by test_local_provider_cache. The gallery
+    // bakes seed-variant Trees, so the default-params Tree installed here is its own
+    // cache entry: cold-baked once on the first-ever run, a disk cache hit (no
+    // re-bake) on every run after that since /tmp/me3_viewer_cache_test persists.
     const std::string root = "/tmp/me3_viewer_cache_test";
     system(("mkdir -p " + root + "/parts").c_str());   // ensure exists (may already)
 
@@ -384,26 +385,38 @@ static void test_partstore_keeps_children() {
     uint64_t tree_hash = host.resolve_hash(read_file(schemas + "/Tree.js"), "{}",
                                            tree_kids, 1);
 
-    // Reuse the shared PartStore (already has Tree loaded) to avoid a second lod_bake
-    // pass on the large Tree geometry. The shared store points at the same cache root.
+    // Reuse the shared PartStore (already has the manifest root loaded) to avoid a
+    // second lod_bake pass. The shared store points at the same cache root.
     if (!g_shared_store) { CHECK(false, "keep-children: shared store not set"); if (prevcwd[0]) chdir(prevcwd); return; }
 
-    // Placed root -> flat-preferred: merged mesh, stored ladder, EMPTY child table.
-    const viewer::LoadedPart* tree = g_shared_store->get_or_load(tree_hash);
-    CHECK(tree != nullptr, "tree part loads from PartStore");
-    CHECK(tree && !tree->lod_blas.empty(), "flat tree carries LOD geometry");
-    CHECK(tree && tree->children.empty(), "flat tree has an empty child table");
+    // Placed root (from the manifest; LocalProvider::connect wrote its flat
+    // artifact) -> flat-preferred: merged mesh, stored ladder, EMPTY child table.
+    CHECK(!g_shared_manifest.instances.empty(), "shared manifest has a placed root");
+    const viewer::LoadedPart* root_part = g_shared_manifest.instances.empty()
+        ? nullptr
+        : g_shared_store->get_or_load(g_shared_manifest.instances[0].part_hash);
+    CHECK(root_part != nullptr, "placed root loads from PartStore");
+    CHECK(root_part && !root_part->lod_blas.empty(), "flat root carries LOD geometry");
+    CHECK(root_part && root_part->children.empty(), "flat root has an empty child table");
     // Task 12: v3 flat lod_mesh_data includes per-cluster entries AFTER the legacy
     // whole-part entries, so lod_mesh_data.size() >= lod_blas.size().
-    CHECK(tree && tree->lod_mesh_data.size() >= tree->lod_blas.size(), "raster data per LOD level (>= for v3)");
-    CHECK(tree && !tree->lod_mesh_data.empty() && tree->lod_mesh_data[0].vertex_count > 0, "LOD0 raster verts present");
-    if (tree) printf("  flat Tree: %zu LOD level(s), %zu children\n",
+    CHECK(root_part && root_part->lod_mesh_data.size() >= root_part->lod_blas.size(), "raster data per LOD level (>= for v3)");
+    CHECK(root_part && !root_part->lod_mesh_data.empty() && root_part->lod_mesh_data[0].vertex_count > 0, "LOD0 raster verts present");
+    if (root_part) printf("  flat root: %zu LOD level(s), %zu children\n",
+                          root_part->lod_blas.size(), root_part->children.size());
+
+    // Non-flattened part (the Tree — never placed as a manifest root, so no flat
+    // artifact) -> compositional path, which must KEEP the baked child-instance
+    // table for the WorldComposer to expand.
+    const viewer::LoadedPart* tree = g_shared_store->get_or_load(tree_hash);
+    CHECK(tree != nullptr, "tree part loads from PartStore");
+    CHECK(tree && !tree->lod_blas.empty(), "compositional tree carries LOD geometry");
+    CHECK(tree && !tree->children.empty(), "compositional tree keeps its child table");
+    if (tree) printf("  compositional Tree: %zu LOD level(s), %zu children\n",
                      tree->lod_blas.size(), tree->children.size());
 
-    // Non-flattened part (never placed as a root, so no flat artifact) ->
-    // compositional path. The branch itself may or may not place children as the
-    // schema iterates; the child-table behavior is covered by the synthetic
-    // fixture in test_compose_expands_children below.
+    // The branch loads compositionally too; child-table expansion mechanics are
+    // covered by the synthetic fixture in test_compose_expands_children below.
     const viewer::LoadedPart* branch = g_shared_store->get_or_load(branch_hash);
     CHECK(branch != nullptr, "branch part loads from PartStore");
 
