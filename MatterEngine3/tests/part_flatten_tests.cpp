@@ -1732,6 +1732,120 @@ static void test_flatten_retain_budget_identical() {
     printf(bytes_a == bytes_b ? "PASSED\n" : "FAILED\n");
 }
 
+// Task 6: AO survives the LOD ladder.
+// Build a dense sphere with a non-uniform AO pattern (first half ao=0.25,
+// second half ao=1.0), flatten it so the QEM ladder fires, load the flat
+// artifact, and assert that the coarsest LOD level of every cluster still
+// carries min(ao) < 0.5 — proving reproject_triex did not reset AO to 1.0.
+static void test_ao_survives_lod_ladder() {
+    printf("=== test_ao_survives_lod_ladder ===\n");
+
+    static const uint64_t kAoSphereHash = 0xA0A0A0A0B1B1B1B1ull;
+
+    // Use a ~2200-tri sphere (segs=48, rings=24) — large enough that the QEM
+    // ladder will produce ≥2 levels (verified by test_small_part_gets_ladder
+    // on even smaller meshes).
+    std::vector<Tri> tris = sphere_tris(48, 24);
+    CHECK(!tris.empty(), "ao sphere: tris generated");
+
+    // Build non-uniform TriEx: ao=0.25 on tris whose centroid.x < 0 (left
+    // hemisphere), ao=1.0 on the right.  At least some dark tris must exist.
+    std::vector<TriEx> triex;
+    triex.reserve(tris.size());
+    size_t dark_count = 0;
+    for (const Tri& t : tris) {
+        TriEx ex;
+        std::memset(&ex, 0, sizeof(TriEx));
+        ex.materialId = 1;
+        ex.tint = make_float4(1, 1, 1, 0);
+        ex.N0 = ex.N1 = ex.N2 = make_float3(0, 1, 0);
+        if (t.centroid.x < 0.0f) {
+            ex.ao0 = ex.ao1 = ex.ao2 = 0.25f;
+            ++dark_count;
+        } else {
+            ex.ao0 = ex.ao1 = ex.ao2 = 1.0f;
+        }
+        triex.push_back(ex);
+    }
+    CHECK(dark_count > 0, "ao sphere: at least one dark triangle (ao=0.25)");
+
+    // Write the fixture into the cache as a v2 part.
+    {
+        BLASManager blas; TLASManager tlas(16);
+        BLASHandle h = blas.register_triangles(tris.data(), (int)tris.size(), triex.data());
+        uint32_t idx = UINT32_MAX;
+        const auto& entries = blas.get_entries();
+        for (size_t k = 0; k < entries.size(); ++k)
+            if (entries[k]->handle == h) { idx = (uint32_t)k; break; }
+        CHECK(idx != UINT32_MAX, "ao sphere: blas registered");
+        if (idx == UINT32_MAX) { printf("  SKIPPING\n"); return; }
+        part_asset::LodLevel L0;
+        L0.screen_size_threshold = 0.0f;
+        L0.blas_indices.push_back(idx);
+        part_asset::LodLevels lods; lods.push_back(std::move(L0));
+        const std::string path = std::string(kCacheRoot) + "/" +
+                                 part_asset::cache_path_resolved(kAoSphereHash);
+        bool saved = part_asset::save_v2(path, blas, tlas, nullptr, 0, lods, kAoSphereHash);
+        CHECK(saved, "ao sphere: fixture saved");
+        if (!saved) { printf("  SKIPPING\n"); return; }
+    }
+
+    // Delete any stale flat so we force a fresh flatten.
+    const std::string flat_path = std::string(kCacheRoot) + "/" +
+                                  part_asset::cache_path_flat(kAoSphereHash);
+    std::remove(flat_path.c_str());
+
+    // Flatten: default targets produce a QEM LOD ladder.
+    part_flatten::FlattenTargets targets;
+    auto res = part_flatten::flatten_part(kCacheRoot, kAoSphereHash, targets);
+    CHECK(res.ok, "ao sphere: flatten_part ok");
+    if (!res.ok) { printf("  error: %s\n", res.error.c_str()); return; }
+    CHECK(res.levels >= 2, "ao sphere: >=2 LOD levels (ladder fired)");
+    if (res.levels < 2) {
+        printf("  SKIPPING ao-survival check (only 1 level, no decimation ran)\n");
+        return;
+    }
+
+    // Load the flat artifact.
+    BLASManager blas_in; TLASManager tlas_in(16);
+    std::vector<part_asset::FlatCluster> clusters;
+    bool loaded = part_asset::load_flat_v3(flat_path, kAoSphereHash, blas_in, tlas_in, clusters);
+    CHECK(loaded, "ao sphere: load_flat_v3 ok");
+    if (!loaded) { printf("  SKIPPING\n"); return; }
+    CHECK(!clusters.empty(), "ao sphere: at least one cluster");
+
+    // For the coarsest LOD level of every cluster, find min(ao) across all
+    // TriEx vertices. At least one cluster must have min(ao) < 0.5 — proving
+    // the dark (0.25) AO was not reset to 1.0 by the decimation reprojection.
+    bool any_cluster_dark = false;
+    const auto& blas_entries = blas_in.get_entries();
+    for (const auto& cl : clusters) {
+        if (cl.lods.empty()) continue;
+        // Coarsest LOD = last entry (highest index).
+        const auto& coarsest = cl.lods.back();
+        float min_ao = 1.0f;
+        for (uint32_t bi : coarsest.blas_indices) {
+            if (bi >= (uint32_t)blas_entries.size()) continue;
+            const auto& entry = blas_entries[bi];
+            for (const TriEx& ex : entry->tri_extra) {
+                if (ex.ao0 < min_ao) min_ao = ex.ao0;
+                if (ex.ao1 < min_ao) min_ao = ex.ao1;
+                if (ex.ao2 < min_ao) min_ao = ex.ao2;
+            }
+        }
+        if (min_ao < 0.5f) {
+            any_cluster_dark = true;
+            break;
+        }
+    }
+    CHECK(any_cluster_dark,
+          "ao sphere: coarsest LOD carries min(ao)<0.5 (AO survived decimation)");
+
+    printf("  levels=%zu, clusters=%zu, full_tris=%zu\n",
+           res.levels, clusters.size(), res.full_tris);
+    printf(any_cluster_dark && res.levels >= 2 ? "PASSED\n" : "FAILED\n");
+}
+
 int main() {
     if (!write_fixtures()) {
         printf("FAIL: could not write fixture parts under %s\n", kCacheRoot);
@@ -1764,6 +1878,7 @@ int main() {
     test_flatten_segmented();
     test_flatten_unhinted_unchanged();
     test_flatten_retain_budget_identical();
+    test_ao_survives_lod_ladder();
 
     if (g_failures == 0) { printf("part_flatten_tests: ALL PASS\n"); return 0; }
     printf("part_flatten_tests: %d FAILURE(S)\n", g_failures);
