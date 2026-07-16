@@ -3539,8 +3539,8 @@ CullResult run_cpu_cull(const FixedCullScene& scene) {
     for (size_t i = 0; i < scene.parts.size(); ++i) {
         const size_t base = i * viewer::kVkMaxLod;
         auto& command = result.commands[base];
-        command.vertex_count = scene.parts[i].clusters[0].lods[0].vertex_count;
-        command.first_vertex = scene.parts[i].clusters[0].lods[0].first_vertex;
+        command.vertex_count = scene.parts[i].clusters[0].lods[0].index_count;
+        command.first_vertex = scene.parts[i].clusters[0].lods[0].first_index;
         command.first_instance = static_cast<uint32_t>(i);
         for (uint32_t lod = 1; lod < viewer::kVkMaxLod; ++lod)
             result.commands[base + lod].first_instance =
@@ -4253,6 +4253,26 @@ void run_cull_region_and_lifecycle_tests(matter::VulkanDevice& vulkan) {
                   renderer.draw_transform_buffer_size() ==
                       stable_transform_bytes,
               "streaming eviction/reload re-uploads into stable scene buffers");
+    }
+
+    // Verify that ensure_part rejects a part whose index buffer references a
+    // vertex beyond the end of the vertex array (brief mandate: real ensure_part
+    // rejection exercised on the full renderer, not a mirrored local loop).
+    {
+        viewer::VkScenePart bad_part{};
+        bad_part.part_hash = 0xBAD0Cu;
+        bad_part.vertices.resize(3);
+        bad_part.indices = {0u, 1u, 99u};  // index 99 is out of range
+        viewer::VkSceneCluster bad_cluster{};
+        bad_cluster.aabb_min = {-1.0f, -1.0f, -1.0f};
+        bad_cluster.aabb_max = {1.0f, 1.0f, 1.0f};
+        bad_cluster.radius = 1.7f;
+        bad_cluster.lods.push_back({0u, 3u, 0.0f});
+        bad_part.clusters.push_back(bad_cluster);
+        std::string rejection_error;
+        const int result = renderer.ensure_part(bad_part, rejection_error);
+        CHECK(result < 0 && !rejection_error.empty(),
+              "ensure_part rejects out-of-range index with non-empty error");
     }
 
     renderer.reset();

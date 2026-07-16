@@ -73,27 +73,11 @@ static void test_vk_scene_lod_fields() {
     }
     CHECK(lod1_in_range, "LOD1 indices (4,5,6) are in-range for 7-vertex part");
 
-    // Verify out-of-range detection (the rejection case from the brief).
-    viewer::VkScenePart bad_part;
-    bad_part.part_hash = 0xBAD0Cull;
-    bad_part.vertices.resize(3);
-    bad_part.indices = {0u, 1u, 99u};   // index 99 > vertices.size()-1
-    viewer::VkSceneCluster bad_cluster;
-    bad_cluster.aabb_min = {-1,-1,-1};
-    bad_cluster.aabb_max = {1,1,1};
-    bad_cluster.radius = 1.7f;
-    bad_cluster.lods.push_back({0u, 3u, 0.0f});
-    bad_part.clusters.push_back(bad_cluster);
-
-    // Mirror ensure_part's validation loop.
-    bool out_of_range_detected = false;
-    for (uint32_t idx : bad_part.indices) {
-        if (idx >= static_cast<uint32_t>(bad_part.vertices.size())) {
-            out_of_range_detected = true;
-            break;
-        }
-    }
-    CHECK(out_of_range_detected, "out-of-range index 99 detected (ensure_part rejects)");
+    // The real ensure_part rejection test (out-of-range index → non-empty err,
+    // return < 0) is exercised against a live VkSceneRenderer in
+    // vulkan_smoke_tests.cpp::run_cull_region_and_lifecycle_tests.  This CPU-
+    // only binary cannot link the full renderer (Vulkan/GLFW deps absent), so
+    // only the struct-field and in-range checks are validated here.
 }
 
 // ---------------------------------------------------------------------------
