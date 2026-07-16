@@ -95,8 +95,10 @@ static_assert(offsetof(DrawCommand, first_instance) ==
               offsetof(VkDrawIndirectCommand, firstInstance));
 
 struct VkSceneLod {
-    uint32_t first_vertex = 0;
-    uint32_t vertex_count = 0;
+    // first_index/index_count are part-local (into VkScenePart::indices).
+    // ensure_part rebases first_index to the global index_staging_ offset.
+    uint32_t first_index = 0;   // into VkScenePart::indices (part-local until ensure_part rebases)
+    uint32_t index_count = 0;   // 3 × triangle count
     float threshold = 0.0f;
 };
 
@@ -119,17 +121,19 @@ struct VkRasterVertex {
 struct VkScenePart {
     uint64_t part_hash = 0;
     std::vector<VkSceneCluster> clusters;
-    // Cluster LOD first_vertex values are local to this array.  Parts without
-    // raster vertices retain the Task 7 absolute first_vertex contract.
-    std::vector<VkRasterVertex> vertices;
+    std::vector<VkRasterVertex> vertices;   // unique vertices, all LOD meshes concatenated
+    // Index buffer: values are PART-LOCAL (already include each mesh's vertex
+    // offset within the part).  Global vertex rebase is done by vertexOffset /
+    // base addresses (Tasks 4-5); ensure_part never rewrites these values.
+    std::vector<uint32_t> indices;
 };
 
 namespace vk_scene_detail {
 struct RtGeometrySelection {
     uint32_t cluster_index = 0;
     uint32_t lod_index = 0;
-    uint32_t first_vertex = 0;
-    uint32_t vertex_count = 0;
+    uint32_t first_index = 0;   // part-local index into VkScenePart::indices
+    uint32_t index_count = 0;   // 3 × triangle count
 };
 
 uint32_t select_scene_cluster_lod(const VkSceneCluster& cluster,
@@ -633,8 +637,10 @@ private:
     struct RtLodRecord {
         uint32_t cluster_index = 0;
         uint32_t lod_index = 0;
-        uint32_t first_vertex = 0;
-        uint32_t vertex_count = 0;
+        // first_index/index_count are global (rebased by ensure_part).
+        // Tasks 4-5 replace the BLAS build path to use indexed geometry.
+        uint32_t first_index = 0;    // global index into index_staging_
+        uint32_t index_count = 0;    // 3 × triangle count
         uint32_t primitive_count = 0;
         std::shared_ptr<matter::VkAccelerationStructureResource> blas;
         std::shared_ptr<matter::VkAccelerationStructureResource> candidate;
@@ -649,8 +655,10 @@ private:
         uint64_t hash = 0;
         uint32_t cluster_start = 0;
         uint32_t cluster_count = 0;
-        uint32_t vertex_start = 0;
+        uint32_t vertex_start = 0;   // kept for Task 4 vertexOffset; NOT folded into lod offsets
         uint32_t vertex_count = 0;
+        uint32_t index_start = 0;    // global offset into index_staging_
+        uint32_t index_count = 0;
         bool live = false;
         std::shared_ptr<matter::VkBufferResource> rt_geometry;
         std::vector<RtLodRecord> rt_lods;
@@ -908,6 +916,7 @@ private:
     std::vector<uint8_t> uploaded_raster_command_enabled_;
     std::vector<RtInstance> rt_instances_;
     std::vector<VkRasterVertex> vertex_staging_;
+    std::vector<uint32_t> index_staging_;   // CPU-side mirror; Task 4 uploads to GPU
     std::vector<MaterialGpuRecord> material_staging_;
     uint64_t material_shading_revision_ = 0;
     uint64_t material_geometry_revision_ = 0;

@@ -718,6 +718,7 @@ gpu_CPP_SRCS := $(sort \
     demand_bake_tests.cpp \
     transient_tests.cpp \
     release_part_tests.cpp \
+    vk_scene_renderer_tests.cpp \
     refine_loop_tests.cpp \
     world_stream_tests.cpp \
     $(GPU_ALL_CPP))
@@ -811,7 +812,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-partv2 run-partstore run-script run-foldcache run-evalworld run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream
+.PHONY: clean run-matrix run-partv2 run-partstore run-script run-foldcache run-evalworld run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1259,6 +1260,18 @@ release-part-tests: $(call obj_of,gpu,release_part_tests.cpp) $(GPU_SHARED_OBJS)
 
 run-releasepart: release-part-tests
 	GALLIUM_DRIVER=d3d12 ./release_part_tests
+
+# Alias matching the brief's exact target name.
+run-release-part: run-releasepart
+
+# Task 3 — indexed VkScenePart assembly (CPU-only; no GL/Vulkan runtime needed).
+# Compiles under the gpu flavor (needs Vulkan headers) but links only std libs.
+vk-scene-renderer-tests: $(call obj_of,gpu,vk_scene_renderer_tests.cpp) | ../shaders_gen/embedded_shaders.h
+	$(CC) $(call obj_of,gpu,vk_scene_renderer_tests.cpp) \
+	      -o vk_scene_renderer_tests $(FLAVOR_gpu_FLAGS) -lm -lpthread
+
+run-vk-scene-renderer: vk-scene-renderer-tests
+	./vk_scene_renderer_tests
 
 # GPU cull parity suite (gpu_cull_tests.cpp) — run target for task-gate use.
 run-gpucull: gpu-tests

@@ -681,7 +681,7 @@ std::vector<RtGeometrySelection> select_rt_instance_geometry(
             cluster, object_to_world, camera_eye, pixel_budget);
         const VkSceneLod& lod = cluster.lods[lod_index];
         result.push_back(
-            {cluster_index, lod_index, lod.first_vertex, lod.vertex_count});
+            {cluster_index, lod_index, lod.first_index, lod.index_count});
     }
     return result;
 }
@@ -2314,14 +2314,27 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
             error = "VkSceneCluster LOD count must be in [1, kVkMaxLod]";
             return -1;
         }
-        if (!part.vertices.empty()) {
+        if (!part.indices.empty()) {
             for (const auto& lod : cluster.lods) {
-                if (lod.first_vertex > part.vertices.size() ||
-                    lod.vertex_count >
-                        part.vertices.size() - lod.first_vertex) {
-                    error = "VkSceneCluster LOD exceeds part-local vertices";
+                if (lod.first_index > part.indices.size() ||
+                    lod.index_count >
+                        part.indices.size() - lod.first_index) {
+                    error = "VkSceneCluster LOD exceeds part-local indices";
                     return -1;
                 }
+                if (lod.index_count % 3 != 0) {
+                    error = "VkSceneCluster LOD index_count must be a multiple of 3";
+                    return -1;
+                }
+            }
+        }
+    }
+    // Validate that all index values are in-range for the vertex array (one pass).
+    if (!part.indices.empty() && !part.vertices.empty()) {
+        for (uint32_t idx : part.indices) {
+            if (idx >= part.vertices.size()) {
+                error = "VkScenePart index out of range for vertex array";
+                return -1;
             }
         }
     }
@@ -2348,13 +2361,19 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
         static_cast<uint32_t>(vertex_staging_.size());
     vertex_staging_.insert(vertex_staging_.end(), part.vertices.begin(),
                            part.vertices.end());
+    const uint32_t index_base =
+        static_cast<uint32_t>(index_staging_.size());
+    index_staging_.insert(index_staging_.end(), part.indices.begin(),
+                          part.indices.end());
     const int slot = static_cast<int>(parts_.size());
     PartRecord record{};
     record.hash = part.part_hash;
     record.cluster_start = static_cast<uint32_t>(cluster_staging_.size());
     record.cluster_count = static_cast<uint32_t>(part.clusters.size());
-    record.vertex_start = vertex_base;
+    record.vertex_start = vertex_base;   // kept for Task 4 vertexOffset
     record.vertex_count = static_cast<uint32_t>(part.vertices.size());
+    record.index_start = index_base;
+    record.index_count = static_cast<uint32_t>(part.indices.size());
     record.live = true;
     record.rt_geometry = std::move(rt_geometry);
     record.rt_cluster_lod_offsets =
@@ -2368,14 +2387,13 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
             RtLodRecord rt_lod{};
             rt_lod.cluster_index = cluster_index;
             rt_lod.lod_index = lod_index;
-            rt_lod.first_vertex = lod.first_vertex;
-            rt_lod.vertex_count = lod.vertex_count;
-            rt_lod.primitive_count = lod.vertex_count / 3;
-            if (!part.vertices.empty()) {
-                for (uint32_t vertex_index = 0;
-                     vertex_index < lod.vertex_count; ++vertex_index) {
+            rt_lod.first_index = index_base + lod.first_index;
+            rt_lod.index_count = lod.index_count;
+            rt_lod.primitive_count = lod.index_count / 3;
+            if (!part.indices.empty() && !part.vertices.empty()) {
+                for (uint32_t k = 0; k < lod.index_count; ++k) {
                     const uint32_t material =
-                        part.vertices[lod.first_vertex + vertex_index]
+                        part.vertices[part.indices[lod.first_index + k]]
                             .material_index;
                     if (material != UINT32_MAX)
                         rt_lod.material_ids.push_back(material);
@@ -2421,8 +2439,10 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
         }
         cluster_staging_.push_back(cluster);
         std::vector<VkSceneLod> lods = source.lods;
-        if (!part.vertices.empty()) {
-            for (auto& lod : lods) lod.first_vertex += vertex_base;
+        if (!part.indices.empty()) {
+            // Rebase part-local first_index to global index_staging_ offset.
+            // Index VALUES are part-local and are never rewritten here.
+            for (auto& lod : lods) lod.first_index += index_base;
         }
         cluster_lods_.push_back(std::move(lods));
     }
@@ -2434,6 +2454,7 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
         cluster_staging_.resize(record.cluster_start);
         cluster_lods_.resize(record.cluster_start);
         vertex_staging_.resize(vertex_base);
+        index_staging_.resize(index_base);
         std::string ignored_error;
         rebuild_command_template(ignored_error);
         return -1;
@@ -3641,19 +3662,23 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
     std::vector<GpuCluster> compact_clusters;
     std::vector<std::vector<VkSceneLod>> compact_lods;
     std::vector<VkRasterVertex> compact_vertices;
+    std::vector<uint32_t> compact_indices;
     compact_clusters.reserve(cluster_staging_.size() -
                              parts_[released_slot].cluster_count);
     compact_lods.reserve(compact_clusters.capacity());
     compact_vertices.reserve(vertex_staging_.size() -
                              parts_[released_slot].vertex_count);
+    compact_indices.reserve(index_staging_.size() -
+                            parts_[released_slot].index_count);
     for (uint32_t old_slot = 0; old_slot < parts_.size(); ++old_slot) {
         if (old_slot == released_slot || !parts_[old_slot].live) continue;
         PartRecord& part = parts_[old_slot];
         const uint32_t old_cluster_start = part.cluster_start;
         const uint32_t old_vertex_start = part.vertex_start;
+        const uint32_t old_index_start = part.index_start;
         part.cluster_start = static_cast<uint32_t>(compact_clusters.size());
+        // Vertex compaction: vertex_start adjusted, vertex VALUES untouched.
         part.vertex_start = static_cast<uint32_t>(compact_vertices.size());
-        const uint32_t vertex_delta = part.vertex_start;
         if (part.vertex_count != 0) {
             compact_vertices.insert(
                 compact_vertices.end(),
@@ -3661,6 +3686,16 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
                 vertex_staging_.begin() + old_vertex_start +
                     part.vertex_count);
         }
+        // Index compaction: index staging shifted, first_index rebased,
+        // index VALUES are part-local and are NOT rewritten.
+        const uint32_t index_delta = static_cast<uint32_t>(compact_indices.size());
+        if (part.index_count != 0) {
+            compact_indices.insert(
+                compact_indices.end(),
+                index_staging_.begin() + old_index_start,
+                index_staging_.begin() + old_index_start + part.index_count);
+        }
+        part.index_start = index_delta;
         for (uint32_t i = 0; i < part.cluster_count; ++i) {
             GpuCluster cluster =
                 cluster_staging_[old_cluster_start + i];
@@ -3668,10 +3703,10 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
             compact_clusters.push_back(cluster);
             std::vector<VkSceneLod> lods =
                 cluster_lods_[old_cluster_start + i];
-            if (part.vertex_count != 0) {
+            if (part.index_count != 0) {
                 for (auto& lod : lods) {
-                    lod.first_vertex = vertex_delta +
-                                       (lod.first_vertex - old_vertex_start);
+                    lod.first_index = index_delta +
+                                      (lod.first_index - old_index_start);
                 }
             }
             compact_lods.push_back(std::move(lods));
@@ -3695,6 +3730,7 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
     cluster_staging_ = std::move(compact_clusters);
     cluster_lods_ = std::move(compact_lods);
     vertex_staging_ = std::move(compact_vertices);
+    index_staging_ = std::move(compact_indices);
     instance_staging_ = std::move(kept_instances);
     instance_part_slots_ = std::move(kept_slots);
     rt_instances_.erase(
@@ -3912,8 +3948,9 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
                 command_template_[cluster_index * kVkMaxLod + lod];
             command.first_instance = command_first_instance;
             if (lod < lods.size()) {
-                command.vertex_count = lods[lod].vertex_count;
-                command.first_vertex = lods[lod].first_vertex;
+                // Task 4 replaces this with indexed draw (index_count, first_index).
+                command.vertex_count = lods[lod].index_count;
+                command.first_vertex = lods[lod].first_index;
                 if (parts_[cluster.part_slot].vertex_count != 0) {
                     raster_command_enabled_[cluster_index * kVkMaxLod + lod] =
                         1;
@@ -4500,12 +4537,12 @@ bool VkSceneRenderer::build_ray_geometry(
         triangles.sType =
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
         triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
-        triangles.vertexData.deviceAddress =
-            part.rt_geometry->address +
-            static_cast<VkDeviceSize>(lod.first_vertex) *
-                sizeof(VkRasterVertex);
+        // Task 5 replaces this with indexed BLAS geometry using first_index and
+        // the index buffer.  For now, use vertex-offset 0 (soup fallback).
+        triangles.vertexData.deviceAddress = part.rt_geometry->address;
         triangles.vertexStride = sizeof(VkRasterVertex);
-        triangles.maxVertex = lod.vertex_count - 1;
+        triangles.maxVertex = static_cast<uint32_t>(
+            part.rt_geometry->size / sizeof(VkRasterVertex)) - 1;
         triangles.indexType = VK_INDEX_TYPE_NONE_KHR;
         item.geometry.sType =
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
@@ -4663,12 +4700,11 @@ bool VkSceneRenderer::emit_ray_instances(
         instance.accelerationStructureReference = traced_blas->address;
         instances.push_back(instance);
         GpuRtPartRecord record{};
-        record.vertex_address =
-            part.rt_geometry->address +
-            static_cast<VkDeviceSize>(lod.first_vertex) *
-                sizeof(VkRasterVertex);
+        // Task 5 replaces this with indexed vertex lookup via first_index.
+        record.vertex_address = part.rt_geometry->address;
         record.vertex_stride = sizeof(VkRasterVertex);
-        record.vertex_count = lod.vertex_count;
+        record.vertex_count = static_cast<uint32_t>(
+            part.rt_geometry->size / sizeof(VkRasterVertex));
         record.primitive_count = lod.primitive_count;
         record.valid = 1;
         part_records.push_back(record);
@@ -4679,7 +4715,7 @@ bool VkSceneRenderer::emit_ray_instances(
             });
         test_last_rt_geometry_records_.push_back(
             {part.hash, lod.cluster_index, lod.lod_index,
-             instance.instanceCustomIndex, lod.first_vertex, lod.vertex_count,
+             instance.instanceCustomIndex, lod.first_index, lod.index_count,
              record.vertex_address, traced_blas->address,
              selected_lod.opaque, built_this_frame});
 #endif

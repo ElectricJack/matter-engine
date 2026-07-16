@@ -971,12 +971,12 @@ void run_rt_lod_payload_contract_tests() {
     CHECK(selected.size() == 2 &&
               selected[0].cluster_index == 0 &&
               selected[0].lod_index == 0 &&
-              selected[0].first_vertex == 0 &&
-              selected[0].vertex_count == 6 &&
+              selected[0].first_index == 0 &&
+              selected[0].index_count == 6 &&
               selected[1].cluster_index == 1 &&
               selected[1].lod_index == 1 &&
-              selected[1].first_vertex == 15 &&
-              selected[1].vertex_count == 3,
+              selected[1].first_index == 15 &&
+              selected[1].index_count == 3,
           "RT instance payload contains exactly one raster-selected LOD per cluster");
     const auto offsets = viewer::vk_scene_detail::dense_rt_lod_offsets(part);
     uint32_t record_index = UINT32_MAX;
