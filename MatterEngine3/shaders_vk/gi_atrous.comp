@@ -1,4 +1,7 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "gi_common.glsl"
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -27,10 +30,6 @@ layout(push_constant) uniform AtrousConstants {
     uint pad1;
     uint pad2;
 } pc;
-
-float luminance(vec3 value) {
-    return dot(value, vec3(0.2126, 0.7152, 0.0722));
-}
 
 bool finite3(vec3 value) {
     return !any(isnan(value)) && !any(isinf(value));

@@ -1,4 +1,7 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "gi_common.glsl"
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -40,10 +43,6 @@ const uint REJECT_MATERIAL = 8u;
 const uint REJECT_INSTANCE = 16u;
 const uint REJECT_RESET = 32u;
 const uint REJECT_HIT_DISTANCE = 64u;
-
-float luminance(vec3 value) {
-    return dot(value, vec3(0.2126, 0.7152, 0.0722));
-}
 
 vec3 rgbToYCoCg(vec3 value) {
     return vec3(0.25 * value.r + 0.5 * value.g + 0.25 * value.b,

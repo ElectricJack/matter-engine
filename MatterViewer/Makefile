@@ -414,9 +414,11 @@ build/shaders_vk/raster.vert.spv build/shaders_vk/gbuffer.frag.spv: \
 build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_visibility.rahit.spv \
     build/shaders_vk/rt_radiance.rmiss.spv \
     build/shaders_vk/rt_lighting.rgen.spv \
-    build/shaders_vk/gi_temporal.comp.spv \
     build/shaders_vk/rt_surface_test.rgen.spv: \
     $(ME3_DIR)/shaders_vk/rt_surface_common.glsl
+
+build/shaders_vk/gi_temporal.comp.spv build/shaders_vk/gi_atrous.comp.spv: \
+    $(ME3_DIR)/shaders_vk/gi_common.glsl
 
 $(VK_EMBEDDED_HEADER): $(VK_SPV) $(ME3_DIR)/tools/embed_spirv.py
 	python3 $(ME3_DIR)/tools/embed_spirv.py $@ $(VK_SPV)
