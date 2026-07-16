@@ -3539,8 +3539,8 @@ CullResult run_cpu_cull(const FixedCullScene& scene) {
     for (size_t i = 0; i < scene.parts.size(); ++i) {
         const size_t base = i * viewer::kVkMaxLod;
         auto& command = result.commands[base];
-        command.vertex_count = scene.parts[i].clusters[0].lods[0].index_count;
-        command.first_vertex = scene.parts[i].clusters[0].lods[0].first_index;
+        command.index_count = scene.parts[i].clusters[0].lods[0].index_count;
+        command.first_index = scene.parts[i].clusters[0].lods[0].first_index;
         command.first_instance = static_cast<uint32_t>(i);
         for (uint32_t lod = 1; lod < viewer::kVkMaxLod; ++lod)
             result.commands[base + lod].first_instance =

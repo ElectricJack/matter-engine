@@ -309,6 +309,7 @@ struct RasterRecord {
     VkPipelineLayout composite_layout;
     VkDescriptorSet composite_set;
     VkBuffer vertex_buffer;
+    VkBuffer index_buffer;
     VkBuffer indirect_buffer;
     const PartCommandRange* draw_ranges;
     uint32_t draw_range_count;
@@ -405,6 +406,8 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
                             record.raster_sets, 0, nullptr);
     vkCmdBindVertexBuffers(command_buffer, 0, 1, &record.vertex_buffer,
                            &vertex_offset);
+    vkCmdBindIndexBuffer(command_buffer, record.index_buffer, 0,
+                         VK_INDEX_TYPE_UINT32);
     for (uint32_t i = 0; i < record.draw_range_count; ++i) {
         const PartCommandRange& range = record.draw_ranges[i];
         uint32_t remaining = range.command_count;
@@ -412,10 +415,10 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
         while (remaining != 0) {
             const uint32_t count =
                 std::min(remaining, record.max_draw_indirect_count);
-            vkCmdDrawIndirect(command_buffer, record.indirect_buffer,
-                              static_cast<VkDeviceSize>(first) *
-                                  sizeof(DrawCommand),
-                              count, sizeof(DrawCommand));
+            vkCmdDrawIndexedIndirect(command_buffer, record.indirect_buffer,
+                                     static_cast<VkDeviceSize>(first) *
+                                         sizeof(DrawCommand),
+                                     count, sizeof(DrawCommand));
             if (record.recorded_draw_ranges) {
                 record.recorded_draw_ranges->push_back(
                     {first, count, range.part_slot});
@@ -1812,6 +1815,35 @@ bool VkSceneRenderer::ensure_vertex_buffer(VkDeviceSize required_size,
         return false;
     }
     vertices_ = std::move(replacement);
+    if (replaced) *replaced = true;
+    return true;
+}
+
+bool VkSceneRenderer::ensure_index_buffer(VkDeviceSize required_size,
+                                          std::string& error,
+                                          bool* replaced) {
+    if (replaced) *replaced = false;
+    required_size = std::max<VkDeviceSize>(required_size, 1);
+    if (indices_.size >= required_size) return true;
+    VkDeviceSize capacity = 0;
+    if (!vk_scene_detail::checked_grown_capacity(
+            indices_.size, required_size, limits_.max_buffer_size, capacity,
+            "index buffer", error)) {
+        return false;
+    }
+    matter::VkBufferResource replacement;
+    if (!matter::create_buffer(
+            *vulkan_, capacity,
+            VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+            replacement, error)) {
+        return false;
+    }
+    indices_ = std::move(replacement);
     if (replaced) *replaced = true;
     return true;
 }
@@ -3948,9 +3980,10 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
                 command_template_[cluster_index * kVkMaxLod + lod];
             command.first_instance = command_first_instance;
             if (lod < lods.size()) {
-                // Task 4 replaces this with indexed draw (index_count, first_index).
-                command.vertex_count = lods[lod].index_count;
-                command.first_vertex = lods[lod].first_index;
+                command.index_count = lods[lod].index_count;
+                command.first_index = lods[lod].first_index;      // already global (Task 3)
+                command.vertex_offset =
+                    static_cast<int32_t>(parts_[cluster.part_slot].vertex_start);
                 if (parts_[cluster.part_slot].vertex_count != 0) {
                     raster_command_enabled_[cluster_index * kVkMaxLod + lod] =
                         1;
@@ -3982,6 +4015,7 @@ bool VkSceneRenderer::upload_scene_buffers(
     VkDeviceSize command_bytes = 0;
     VkDeviceSize transform_bytes = 0;
     VkDeviceSize vertex_bytes = 0;
+    VkDeviceSize index_bytes = 0;
     VkDeviceSize material_bytes = 0;
     if (!vk_scene_detail::checked_mul_to_device_size(
             cluster_staging_.size(), sizeof(GpuCluster), cluster_bytes,
@@ -3998,6 +4032,9 @@ bool VkSceneRenderer::upload_scene_buffers(
         !vk_scene_detail::checked_mul_to_device_size(
             vertex_staging_.size(), sizeof(VkRasterVertex), vertex_bytes,
             "vertex buffer", error) ||
+        !vk_scene_detail::checked_mul_to_device_size(
+            index_staging_.size(), sizeof(uint32_t), index_bytes,
+            "index buffer", error) ||
         !vk_scene_detail::checked_mul_to_device_size(
             material_staging_.size(), sizeof(MaterialGpuRecord),
             material_bytes, "material buffer", error)) {
@@ -4025,6 +4062,10 @@ bool VkSceneRenderer::upload_scene_buffers(
     }
     if (std::max<VkDeviceSize>(vertex_bytes, 1) > limits_.max_buffer_size) {
         error = "vertex buffer exceeds Vulkan maxBufferSize";
+        return false;
+    }
+    if (std::max<VkDeviceSize>(index_bytes, 1) > limits_.max_buffer_size) {
+        error = "index buffer exceeds Vulkan maxBufferSize";
         return false;
     }
     uint32_t replacements = 0;
@@ -4126,14 +4167,18 @@ bool VkSceneRenderer::upload_scene_buffers(
         };
         VkDeviceSize cluster_capacity = 0;
         VkDeviceSize vertex_capacity = 0;
+        VkDeviceSize index_capacity = 0;
         if (!replacement_capacity(clusters_.size, cluster_bytes, "cluster buffer",
                                   cluster_capacity) ||
             !replacement_capacity(vertices_.size, vertex_bytes, "vertex buffer",
-                                  vertex_capacity)) {
+                                  vertex_capacity) ||
+            !replacement_capacity(indices_.size, index_bytes, "index buffer",
+                                  index_capacity)) {
             return false;
         }
         matter::VkBufferResource next_clusters;
         matter::VkBufferResource next_vertices;
+        matter::VkBufferResource next_indices;
         if (!allow_replacement()) return false;
         if (!matter::create_buffer(
                 *vulkan_, cluster_capacity, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -4157,12 +4202,27 @@ bool VkSceneRenderer::upload_scene_buffers(
             return false;
         }
         ++replacements;
+        if (!allow_replacement()) return false;
+        if (!matter::create_buffer(
+                *vulkan_, index_capacity,
+                VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                    VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+                next_indices, error)) {
+            return false;
+        }
+        ++replacements;
         if (!upload(next_clusters, cluster_staging_.data(), cluster_bytes) ||
-            !upload(next_vertices, vertex_staging_.data(), vertex_bytes)) {
+            !upload(next_vertices, vertex_staging_.data(), vertex_bytes) ||
+            !upload(next_indices, index_staging_.data(), index_bytes)) {
             return false;
         }
         clusters_ = std::move(next_clusters);
         vertices_ = std::move(next_vertices);
+        indices_ = std::move(next_indices);
         static_upload_dirty_ = false;
         if (cluster_bytes != 0) ++upload_counters_.cluster_uploads;
         if (vertex_bytes != 0) ++upload_counters_.vertex_uploads;
@@ -4170,6 +4230,8 @@ bool VkSceneRenderer::upload_scene_buffers(
             static_cast<uint32_t>(cluster_staging_.size());
         uploaded_vertex_count_ =
             static_cast<uint32_t>(vertex_staging_.size());
+        uploaded_index_count_ =
+            static_cast<uint32_t>(index_staging_.size());
     }
 
     if (frame.static_generation != static_generation_) {
@@ -5239,6 +5301,7 @@ bool VkSceneRenderer::record_cull_and_render(
                         composite_pipeline_layout_,
                         selected.composite_descriptor_set,
                         vertices_.buffer,
+                        indices_.buffer,
                         selected.commands.buffer,
                         part_command_ranges_.data(),
                         static_cast<uint32_t>(part_command_ranges_.size()),
@@ -5617,8 +5680,9 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
     error.clear();
     if (fail_if_poisoned(error)) return false;
     if (!initialized_ && !init(error)) return false;
-    if (uploaded_command_count_ == 0 || uploaded_vertex_count_ == 0) {
-        error = "raster render requires uploaded draw commands and vertices";
+    if (uploaded_command_count_ == 0 || uploaded_vertex_count_ == 0 ||
+        uploaded_index_count_ == 0) {
+        error = "raster render requires uploaded draw commands, vertices, and indices";
         return false;
     }
     if (uploaded_raster_command_enabled_.size() !=
@@ -5652,6 +5716,7 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
                         composite_pipeline_layout_,
                         selected.composite_descriptor_set,
                         vertices_.buffer,
+                        indices_.buffer,
                         selected.commands.buffer,
                         part_command_ranges_.data(),
                         static_cast<uint32_t>(part_command_ranges_.size()),
@@ -5670,7 +5735,7 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
         albedo_.lifetime, normal_.lifetime, orm_.lifetime, velocity_.lifetime,
         material_instance_.lifetime, depth_.lifetime, hdr_.lifetime,
         visibility_.lifetime, raw_diffuse_.lifetime,
-        vertices_.lifetime, selected.commands.lifetime,
+        vertices_.lifetime, indices_.lifetime, selected.commands.lifetime,
         selected.frame_constants.lifetime, selected.draw_transforms.lifetime,
         selected.materials.lifetime};
     raster_attachments_ready_ = false;
@@ -6148,6 +6213,7 @@ void VkSceneRenderer::reset() {
         destroy_pipeline();
         clusters_.reset();
         vertices_.reset();
+        indices_.reset();
         albedo_.reset();
         normal_.reset();
         orm_.reset();
@@ -6177,6 +6243,7 @@ void VkSceneRenderer::reset() {
     uploaded_transform_slots_ = 0;
     uploaded_cluster_count_ = 0;
     uploaded_vertex_count_ = 0;
+    uploaded_index_count_ = 0;
     raster_draw_command_count_ = 0;
     uploaded_raster_draw_command_count_ = 0;
     uploaded_rt_instances_.clear();

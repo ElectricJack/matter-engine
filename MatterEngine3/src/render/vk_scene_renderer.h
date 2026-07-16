@@ -83,16 +83,18 @@ VkPipelineStageFlags2 gbuffer_sampled_stages_for_test(
     uint32_t attachment_index, bool native_ray_tracing_available) noexcept;
 }  // namespace vk_scene_detail
 
-static_assert(sizeof(DrawCommand) == sizeof(VkDrawIndirectCommand),
-              "DrawCommand must match VkDrawIndirectCommand");
-static_assert(offsetof(DrawCommand, vertex_count) ==
-              offsetof(VkDrawIndirectCommand, vertexCount));
+static_assert(sizeof(DrawCommand) == sizeof(VkDrawIndexedIndirectCommand),
+              "DrawCommand must match VkDrawIndexedIndirectCommand");
+static_assert(offsetof(DrawCommand, index_count) ==
+              offsetof(VkDrawIndexedIndirectCommand, indexCount));
 static_assert(offsetof(DrawCommand, instance_count) ==
-              offsetof(VkDrawIndirectCommand, instanceCount));
-static_assert(offsetof(DrawCommand, first_vertex) ==
-              offsetof(VkDrawIndirectCommand, firstVertex));
+              offsetof(VkDrawIndexedIndirectCommand, instanceCount));
+static_assert(offsetof(DrawCommand, first_index) ==
+              offsetof(VkDrawIndexedIndirectCommand, firstIndex));
+static_assert(offsetof(DrawCommand, vertex_offset) ==
+              offsetof(VkDrawIndexedIndirectCommand, vertexOffset));
 static_assert(offsetof(DrawCommand, first_instance) ==
-              offsetof(VkDrawIndirectCommand, firstInstance));
+              offsetof(VkDrawIndexedIndirectCommand, firstInstance));
 
 struct VkSceneLod {
     // first_index/index_count are part-local (into VkScenePart::indices).
@@ -777,6 +779,8 @@ private:
                                  std::string& error, bool retain);
     bool ensure_vertex_buffer(VkDeviceSize required_size,
                               std::string& error, bool* replaced = nullptr);
+    bool ensure_index_buffer(VkDeviceSize required_size,
+                             std::string& error, bool* replaced = nullptr);
     bool ensure_buffer(matter::VkBufferResource& buffer,
                        VkDeviceSize required_size, VkBufferUsageFlags usage,
                        std::string& error, bool* replaced = nullptr);
@@ -848,6 +852,7 @@ private:
 
     matter::VkBufferResource clusters_;
     matter::VkBufferResource vertices_;
+    matter::VkBufferResource indices_;
     std::vector<FrameResources> frames_;
     uint32_t active_frame_index_ = 0;
     uint32_t frame_resource_slot_capacity_ = 0;
@@ -923,6 +928,7 @@ private:
     uint64_t material_generation_ = 1;
     bool gi_history_reset_pending_ = false;
     uint32_t uploaded_vertex_count_ = 0;
+    uint32_t uploaded_index_count_ = 0;
     uint32_t raster_draw_command_count_ = 0;
     uint32_t uploaded_raster_draw_command_count_ = 0;
     uint32_t max_clusters_per_instance_ = 0;
