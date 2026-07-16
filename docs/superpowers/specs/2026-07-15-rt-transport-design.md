@@ -80,10 +80,12 @@ transmission texture from §3.
 
 **Thin foliage** (`MATERIAL_THIN_WALLED` and `subsurface > 0`: foliageThin 29, leaf):
 - Front lighting: unchanged diffuse.
-- Back lighting: wrapped/forward term. `backlit = clamp(-NdotL, 0, 1)` sharpened
-  toward the sun by anisotropy (`scattering_shape.y` shaping
-  `dot(view, -to_sun)`), tinted `scattering_color * subsurface`, attenuated by a
-  falloff from `scattering_shape.x`, multiplied by the shadow visibility texture.
+- Back lighting: wrapped/forward term. `backlit = clamp(-NdotL, 0, 1)` shaped by
+  anisotropy as a falloff exponent — `pow(backlit, mix(1.0, 4.0, aniso))` with
+  `aniso = scattering_shape.y` — a view-independent approximation, since
+  `composite.frag` has no camera position to build a view vector from. Tinted
+  `scattering_color * subsurface`, attenuated by a falloff from
+  `scattering_shape.x`, multiplied by the shadow visibility texture.
 
 **Shadow reclassification** (the one structural change): `rt_material_is_opaque()`
 in `vk_scene_renderer.cpp` currently keys only on transmission, so thin-scattering
@@ -91,8 +93,10 @@ geometry sits in the opaque TLAS layer (mask 0x01); a backlit closed blob's sun
 ray starts inside its own geometry, self-hits, and reads fully shadowed. Fix:
 classify `THIN_WALLED && subsurface > 0` into the non-opaque layer (mask 0x02) and
 teach `rt_visibility.rahit` to attenuate such hits by
-`scattering_color * (1 - shadow_opacity)` instead of blocking. GI and reflection
-rays still treat foliage as a solid hit.
+`scattering_color * subsurface` instead of blocking. (foliageThin authors
+`shadowOpacity = 1.0`, so a `(1 - shadow_opacity)` formula would zero the
+backlight; scattering color x subsurface is the intended transmitted fraction.)
+GI and reflection rays still treat foliage as a solid hit.
 
 **Wax** (28: `subsurface > 0`, not thin-walled): stays opaque everywhere. Front
 wrap only: `NdotL_wrapped = (NdotL + w) / (1 + w)` with `w = subsurface`, the
