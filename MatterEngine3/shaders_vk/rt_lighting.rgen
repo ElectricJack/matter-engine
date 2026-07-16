@@ -200,17 +200,30 @@ void main() {
                          (uint(source_pixel.y) * 0x9e3779b9u) ^
                          (constants.presented_frame_index * 0x85ebca6bu) ^
                          0xc2b2ae35u);
-    vec3 direction = cosine_direction(normal, seed);
-    hit.surface = invalid_rt_surface();
-    hit.part_slot = hit.primitive = 0xffffffffu;
-    traceRayEXT(scene, gl_RayFlagsOpaqueEXT, 0xff, 1, 0, 1,
-                world + normal * constants.bias, constants.bias,
-                direction, constants.max_distance, 1);
-    vec3 bounce;
-    if ((hit.surface.flags & RT_SURFACE_VALID) != 0u) {
+    vec3 bounce = vec3(0.0);
+    vec3 throughput = vec3(1.0);
+    vec3 vertex_origin = world + normal * constants.bias;
+    vec3 vertex_normal = normal;
+    vec3 to_sun = normalize(constants.to_sun);
+    for (int vertex = 0; vertex < 2; ++vertex) {
+        vec3 direction = cosine_direction(vertex_normal, seed);
+        hit.surface = invalid_rt_surface();
+        hit.part_slot = hit.primitive = 0xffffffffu;
+        traceRayEXT(scene, gl_RayFlagsOpaqueEXT, 0xff, 1, 0, 1,
+                    vertex_origin, constants.bias, direction,
+                    constants.max_distance, 1);
+        if ((hit.surface.flags & RT_SURFACE_VALID) == 0u) {
+            bounce += throughput * environment(direction);
+            break;
+        }
         vec3 hit_base;
-        bounce = hit_radiance(hit.surface, hit_base);
-        vec3 to_sun = normalize(constants.to_sun);
+        bool final_vertex = vertex == 1;
+        // sky_irradiance approximates everything beyond the final vertex;
+        // adding it at the intermediate vertex too would double count the
+        // sky, so intermediate vertices contribute emission only.
+        bounce += throughput * (final_vertex
+                                    ? hit_radiance(hit.surface, hit_base)
+                                    : hit_emission(hit.surface, hit_base));
         float ndotl = max(dot(hit.surface.normal, to_sun), 0.0);
         if (ndotl > 0.0 && any(greaterThan(hit_base, vec3(0.0)))) {
             visibility_payload.visibility = vec3(1.0);
@@ -218,7 +231,8 @@ void main() {
             traceRayEXT(scene, gl_RayFlagsTerminateOnFirstHitEXT |
                                gl_RayFlagsOpaqueEXT,
                         0x01, 0, 0, 0,
-                        hit.surface.position + hit.surface.normal * constants.bias,
+                        hit.surface.position +
+                            hit.surface.normal * constants.bias,
                         constants.bias, to_sun, constants.max_distance, 0);
             if (max(visibility_payload.visibility.r,
                     max(visibility_payload.visibility.g,
@@ -226,17 +240,23 @@ void main() {
                 traceRayEXT(scene, gl_RayFlagsNoneEXT, 0x02, 0, 0, 0,
                             hit.surface.position +
                                 hit.surface.normal * constants.bias,
-                            constants.bias, to_sun, constants.max_distance, 0);
+                            constants.bias, to_sun,
+                            constants.max_distance, 0);
             }
             // Lambertian 1/pi keeps the sun-lit indirect component in
             // ratio with the sky component (whose pi cancels against the
             // cosine-sampling pdf).
-            bounce += hit_base * 0.31830988618 * constants.sun_color *
-                      constants.sun_intensity * ndotl *
+            bounce += throughput * hit_base * 0.31830988618 *
+                      constants.sun_color * constants.sun_intensity * ndotl *
                       visibility_payload.visibility;
         }
-    } else {
-        bounce = environment(direction);
+        if (final_vertex) break;
+        throughput *= hit_base;
+        if (max(throughput.r, max(throughput.g, throughput.b)) < 1e-3)
+            break;
+        vertex_origin = hit.surface.position +
+                        hit.surface.normal * constants.bias;
+        vertex_normal = hit.surface.normal;
     }
     vec3 primary_diffuse = albedo.rgb * (1.0 - orm.y);
     vec3 raw = primary_diffuse * bounce * orm.z *
