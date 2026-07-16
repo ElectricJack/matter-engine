@@ -388,3 +388,9 @@ Task 6: complete (commits 5e6cf4e..cd16497, review clean — opus verdict Approv
   - Step 5 (visual check): hand off to Jack to run viewer and confirm crevice/cavity darkening on parts under Vulkan; salt forces full cold rebake on first world load
 
 Final whole-branch review: complete (opus, package review-791d468..b85814f.diff). Verdict: "With fixes" — zero Critical/Important code issues; must-fix = stale probe docs/comments only. Fixed in 7369cdc (matter_engine.cpp comments x2, rendering.md probe section removed, architecture.md probe rows removed; controller verified comment/doc-only, make EXIT:0). All other deferred Minors triaged LEAVE (post-merge backlog: strengthen T5 salt-hash test, drop flight_smoke.sh dead probe grep). Branch ready to merge pending Jack: Windows clean rebuild (MSYS2) + visual AO check.
+
+AO quality follow-up (Jack visual review 2026-07-16, screenshot: seams + harshness):
+- Root cause 1: reproject_triex wholesale nearest-tri TriEx copy -> blocky AO + cluster-boundary seams on decimated rungs. Fixed: per-corner clamped-barycentric AO sampling, per-vertex cached (MSL mesh_transform.cpp, authorized genuine bug fix). Test: test_ao_gradient_survives_reprojection (RED->GREEN).
+- Root cause 2: ray budget charged on raw corners (tris*3) with 8M cap -> tree baked at 4 rays/vertex (blotchy). Fixed: budget on unique welded (pos,normal) keys, cap 32M. Test: test_budget_counts_unique_positions_not_corners (RED->GREEN).
+- kEngineBakeVersion 1->2 (one cold rebake).
+- Gates: mesh_transform_tests 6/6, run-partao 6/6, run-flatten EXIT 0, run-script EXIT 0. Full gate deferred until Jack approves the look (fix 3 smoothing/strength knobs held).
