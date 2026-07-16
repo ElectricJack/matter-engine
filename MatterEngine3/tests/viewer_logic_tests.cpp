@@ -554,25 +554,67 @@ static void test_raster_mesh_data() {
         ex[i].ao0 = 0.5f; ex[i].ao1 = 1.0f; ex[i].ao2 = 0.0f;
     }
     auto d = viewer::build_raster_mesh_data(t, ex, 2);
-    CHECK(d.vertex_count == 6, "6 verts from 2 tris");
+    // All 6 corners are at distinct positions (z=0 vs z=1), so no welding: unique verts = 6.
+    CHECK(d.vertex_count == 6, "6 unique verts from 2 non-sharing tris");
+    CHECK(d.indices.size() == 6, "6 indices for 2 tris");
     CHECK(d.vertices.size() == 18 && d.normals.size() == 18, "array sizes");
     CHECK(d.colors.size() == 24 && d.texcoords.size() == 12, "color/uv sizes");
-    CHECK(d.vertices[3] == 1.0f && d.vertices[4] == 0.0f, "v1 position");
-    CHECK(d.normals[2] == 1.0f, "N0.z passthrough");
-    CHECK(d.colors[0] == 127 || d.colors[0] == 128, "tint r quantized");
-    CHECK(d.colors[3] == 255, "tint alpha");
-    CHECK(d.texcoords[0] == 7.0f, "materialId in u");
-    CHECK(d.texcoords[1] == 0.5f && d.texcoords[5] == 0.0f, "per-vertex AO in v");
+    // Access per-vertex data via expand_indexed for soup-layout checks.
+    auto dsoup = viewer::expand_indexed(d);
+    CHECK(dsoup.vertices[3] == 1.0f && dsoup.vertices[4] == 0.0f, "v1 position");
+    CHECK(dsoup.normals[2] == 1.0f, "N0.z passthrough");
+    CHECK(dsoup.colors[0] == 127 || dsoup.colors[0] == 128, "tint r quantized");
+    CHECK(dsoup.colors[3] == 255, "tint alpha");
+    CHECK(dsoup.texcoords[0] == 7.0f, "materialId in u");
+    CHECK(dsoup.texcoords[1] == 0.5f && dsoup.texcoords[5] == 0.0f, "per-vertex AO in v");
 
     auto plain = viewer::build_raster_mesh_data(t, nullptr, 2);   // no TriEx: geometric fallback
+    // All 6 corners distinct; no TriEx means all share material_id=UINT32_MAX → 6 unique verts.
     CHECK(plain.vertex_count == 6, "plain verts");
-    CHECK(plain.normals[2] == 1.0f, "geometric normal +z");
-    CHECK(plain.texcoords[0] == -1.0f && plain.texcoords[1] == 1.0f, "sentinel mat, AO=1");
-    CHECK(plain.colors[3] == 0, "neutral tint alpha 0");
+    auto plainsoup = viewer::expand_indexed(plain);
+    CHECK(plainsoup.normals[2] == 1.0f, "geometric normal +z");
+    CHECK(plainsoup.texcoords[0] == -1.0f && plainsoup.texcoords[1] == 1.0f, "sentinel mat, AO=1");
+    CHECK(plainsoup.colors[3] == 0, "neutral tint alpha 0");
 
     float rm[16] = {1,0,0, 5,  0,1,0, 6,  0,0,1, 7,  0,0,0,1};    // row-major translate(5,6,7)
     Matrix m = viewer::row_major_to_matrix(rm);
     CHECK(m.m12 == 5.0f && m.m13 == 6.0f && m.m14 == 7.0f, "translation lands in m12..m14");
+}
+
+static void test_indexed_weld() {
+    // Two triangles sharing an edge, bit-identical shared corners, same TriEx.
+    Tri t[2]{}; TriEx ex[2]{};
+    float3 a = make_float3(0,0,0), b = make_float3(1,0,0),
+           c = make_float3(0,1,0), d = make_float3(1,1,0);
+    t[0].vertex0 = a; t[0].vertex1 = b; t[0].vertex2 = c;
+    t[1].vertex0 = b; t[1].vertex1 = d; t[1].vertex2 = c;
+    for (int i = 0; i < 2; ++i) {
+        ex[i].N0 = ex[i].N1 = ex[i].N2 = make_float3(0,0,1);
+        ex[i].tint = make_float4(1,1,1,1);
+        ex[i].ao0 = ex[i].ao1 = ex[i].ao2 = 1.0f;
+        ex[i].uv0 = ex[i].uv1 = ex[i].uv2 = make_float2(0.0f);
+        ex[i].materialId = 3;
+    }
+    auto m = viewer::build_raster_mesh_data(t, ex, 2);
+    CHECK(m.indices.size() == 6, "indexed: 2 tris -> 6 indices");
+    CHECK(m.vertex_count == 4, "indexed: shared edge welds 6 corners to 4 verts");
+    for (uint32_t idx : m.indices)
+        CHECK(idx < (uint32_t)m.vertex_count, "indexed: indices in range");
+
+    // Same geometry, different material per tri: shared corners MUST NOT weld.
+    ex[1].materialId = 4;
+    auto s = viewer::build_raster_mesh_data(t, ex, 2);
+    CHECK(s.vertex_count == 6, "indexed: material seam splits verts");
+
+    // Expansion round-trips to the legacy soup layout.
+    auto soup = viewer::expand_indexed(m);
+    CHECK(soup.vertex_count == 6 && soup.indices.empty(),
+          "expand_indexed: soup layout");
+    CHECK(soup.vertices.size() == 18 && soup.material_ids.size() == 6,
+          "expand_indexed: channel sizes");
+    // First corner of tri 1 is 'b' = (1,0,0).
+    CHECK(soup.vertices[9] == 1.0f && soup.vertices[10] == 0.0f,
+          "expand_indexed: triangle order preserved");
 }
 
 static void test_sector_lod_floor_cull() {
@@ -1300,6 +1342,7 @@ int main() {
     test_compose_expands_children();
     test_append_expanded_children();
     test_raster_mesh_data();
+    test_indexed_weld();
     test_sector_lod_floor_cull();
     // test_provider_bakes_probes and test_probe_quantization_roundtrip deleted in Task 2
     // (rt-lighting-phase2): probe bake system removed, Vulkan permanent.
