@@ -26,7 +26,7 @@ CHECK-RENDERER — run from `MatterEngine3/`:
 g++ -fsyntax-only -std=c++17 -Wall -Wno-missing-braces -Wno-unused-variable \
     -DPLATFORM_DESKTOP -DGRAPHICS_API_OPENGL_43 -DMATTER_HAVE_SCRIPT_HOST \
     -DTILESET_GTEX_USE_RAYLIB_STB \
-    -Iinclude -Isrc -Isrc/render -Isrc/provider \
+    -I. -Iinclude -Isrc -Isrc/render -Isrc/provider \
     -I../MatterSurfaceLib/include -I../MatterSurfaceLib/src \
     -I../Libraries/quickjs-ng -I../Libraries/raylib/src \
     -I../Libraries/box3d/include -I../ParticleFlowLib/include \
