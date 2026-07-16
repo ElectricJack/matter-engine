@@ -5,7 +5,6 @@
 #include "sector_resolver.h"
 #include "part_store.h"
 #include "raster_mesh.h"
-#include "probe_texture.h"
 #include "world_lights.h"
 
 #include <string>
@@ -55,9 +54,6 @@ public:
     // Store WorldLights; draw_gpu_driven() uploads them on the next dirty frame only.
     void set_lights(const world_lights::WorldLights& l) { lights_ = l; uniforms_dirty_ = true; }
 
-    // Store probe textures; draw_gpu_driven() binds them on the next dirty frame only.
-    void set_probes(const ProbeTextures& t) { probes_ = t; uniforms_dirty_ = true; }
-
     // Accessor for testing (verifies set_lights stores values correctly).
     const world_lights::WorldLights& lights() const { return lights_; }
 
@@ -76,22 +72,16 @@ public:
     void set_cull_backfaces(bool c) { cull_backfaces_ = c; }
 
 private:
-    // Upload sun/probe/material uniforms to a shader (used by draw_gpu_driven()).
+    // Upload sun/material uniforms to a shader (used by draw_gpu_driven()).
     void setup_frame_uniforms(Shader& sh,
                               int loc_sun, int loc_sun_col, int loc_amb,
-                              int loc_mat, int loc_cnt,
-                              int loc_pa, int loc_pd, int loc_po,
-                              int loc_pc, int loc_pdims, int loc_up);
+                              int loc_mat, int loc_cnt);
 
     Shader   shader_{};
     Material material_{};
     bool ready_ = false;
     int  loc_sun_dir_ = -1, loc_sun_color_ = -1, loc_ambient_ = -1,
          loc_mat_table_ = -1, loc_mat_count_ = -1;
-    // Probe-volume uniform locations.
-    int  loc_probe_ambient_  = -1, loc_probe_dominant_ = -1;
-    int  loc_probe_origin_   = -1, loc_probe_cell_     = -1;
-    int  loc_probe_dims_     = -1, loc_use_probes_     = -1;
 
     // GPU-driven shader (raster_gpu_driven.vs + patched raster.fs).
     Shader shader_gpu_{};
@@ -100,15 +90,11 @@ private:
     int    loc_gpu_mvp_         = -1;
     int    loc_gpu_sun_dir_     = -1, loc_gpu_sun_color_ = -1, loc_gpu_ambient_   = -1;
     int    loc_gpu_mat_table_   = -1, loc_gpu_mat_count_ = -1;
-    int    loc_gpu_probe_amb_   = -1, loc_gpu_probe_dom_ = -1;
-    int    loc_gpu_probe_orig_  = -1, loc_gpu_probe_cell_= -1;
-    int    loc_gpu_probe_dims_  = -1, loc_gpu_use_probes_= -1;
 
     float pixel_budget_ = 1.0f;            // runtime LOD quality/speed dial
     world_lights::WorldLights lights_{};   // defaults reproduce Phase-1 hardcoded values
-    ProbeTextures probes_{};               // default-constructed: valid() == false
 
-    // Dirty flag: set on set_lights / set_probes / reconnect; cleared after
+    // Dirty flag: set on set_lights / reconnect; cleared after
     // the first upload_frame_uniforms so the hot path skips per-frame uploads.
     bool uniforms_dirty_ = true;
 

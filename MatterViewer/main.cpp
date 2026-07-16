@@ -741,8 +741,6 @@ int main() {
         stats.instances_total = static_cast<int>(frame_stats.instances_total);
         stats.parts_baked = static_cast<int>(frame_stats.parts_baked);
         stats.cache_hits = static_cast<int>(frame_stats.cache_hits);
-        std::memcpy(stats.probe_dims, frame_stats.probe_dims,
-                    sizeof(stats.probe_dims));
 
         const bool ui_frame_ready = ui.begin_frame(frame, error);
         if (!ui_frame_ready) {

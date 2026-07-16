@@ -1,8 +1,9 @@
 #pragma once
-// GL-free CPU tracer over the placed world for the probe baker. Loads each unique
-// part hash ONCE (flat artifact preferred, compositional fallback expands children
-// into extra instances, depth cap 8), keeps the prebuilt BVHs from load_v2 alive in
-// owning scratch managers, and intersects through a custom int32 instance BVH.
+// GL-free CPU tracer over the placed world. Used by the raycast query API.
+// Loads each unique part hash ONCE (flat artifact preferred, compositional
+// fallback expands children into extra instances, depth cap 8), keeps the
+// prebuilt BVHs from load_v2 alive in owning scratch managers, and intersects
+// through a custom int32 instance BVH.
 // (MSL's TLAS packs instance index into 12 bits of instPrim and uses u16 node
 // links — too small for meadow scale, hence this instance layer.)
 #include <cstdint>

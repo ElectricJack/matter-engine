@@ -85,8 +85,8 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/retopo_blacklist.cpp \
           src/modifier_apply.cpp \
           src/sector_grid.cpp src/lod_select.cpp \
-          src/world_lights.cpp src/probe_volume.cpp src/probe_bricks.cpp \
-          src/world_tracer.cpp src/probe_bake.cpp \
+          src/world_lights.cpp \
+          src/world_tracer.cpp \
           src/part_cluster.cpp \
           src/tileset_layout.cpp src/tileset_collider.cpp src/tileset_settle.cpp \
           src/tileset_placement.cpp src/tileset_part_collider.cpp src/tileset_bake.cpp \
@@ -97,7 +97,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/render/renderer.cpp src/render/raster_composer.cpp src/render/raster_mesh.cpp \
           src/render/matrix_math.cpp src/render/frame_matrices.cpp src/render/vk_temporal.cpp src/render/vk_gi_math.cpp src/render/vk_lighting_controls.cpp \
           src/render/part_store.cpp src/render/world_composer.cpp src/render/world_state.cpp \
-          src/render/gpu_culler.cpp src/render/probe_texture.cpp \
+          src/render/gpu_culler.cpp \
           src/render/tileset_provider.cpp src/render/tileset_gl_ctx.cpp \
           src/provider/local_provider.cpp src/provider/resolvers.cpp \
           src/matter_engine.cpp \
@@ -144,8 +144,8 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           retopo_blacklist.o \
           modifier_apply.o \
           sector_grid.o lod_select.o \
-          world_lights.o probe_volume.o probe_bricks.o \
-          world_tracer.o probe_bake.o \
+          world_lights.o \
+          world_tracer.o \
           part_cluster.o \
           tileset_layout.o tileset_collider.o \
           tileset_settle.o tileset_placement.o tileset_part_collider.o tileset_bake.o \
@@ -154,7 +154,7 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           tileset_bake_ao.o tileset_bake_gpu.o shader_source.o \
           renderer.o raster_composer.o raster_mesh.o matrix_math.o frame_matrices.o vk_temporal.o vk_gi_math.o vk_lighting_controls.o \
           part_store.o world_composer.o world_state.o \
-          gpu_culler.o probe_texture.o tileset_provider.o tileset_gl_ctx.o \
+          gpu_culler.o tileset_provider.o tileset_gl_ctx.o \
           local_provider.o resolvers.o \
           matter_engine.o \
           refine_controller.o \

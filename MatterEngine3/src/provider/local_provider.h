@@ -148,13 +148,6 @@ public:
         const std::vector<uint64_t>&                      root_hashes,
         std::string& err);
 
-    // Phase C Task 17 — try to load cached probes for a pre-built manifest.
-    // Computes the same probe fingerprint compose_world would have used (from
-    // manifest instances + lights + default BakeParams), then calls
-    // probe_volume::load_probes. Assigns out.probes on success.
-    // Returns false (and leaves out.probes null) on any probe cache miss.
-    bool try_load_cached_probes(WorldManifest& m);
-
     // Task 7 fix: per-part load failures recorded during fetch_parts() when
     // get_or_load returns null (skip-and-continue; returns true even with failures).
     struct FetchFailed { std::string module; std::string error; };

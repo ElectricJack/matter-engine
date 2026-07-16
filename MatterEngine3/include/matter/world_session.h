@@ -68,11 +68,8 @@ struct FrameStats {
     uint32_t instances_total = 0;
     uint32_t parts_baked = 0;         // cache misses last bake
     uint32_t cache_hits  = 0;         // cache hits last bake
-    int probe_dims[3] = {0, 0, 0};    // probe grid (all zero = unavailable)
     // Phase C Task 9: world-kind sessions only; 0 for closed-world sessions.
     uint32_t resident_sectors = 0;
-    // Phase C Task 5: resident probe bricks (streamed world); 0 for closed-world.
-    uint32_t probe_bricks = 0;
     // Vulkan GPU-driven path diagnostics (cumulative CPU-side counters).
     uint64_t vk_instance_cache_expansions = 0;
     uint64_t vk_vertex_uploads = 0;
@@ -178,10 +175,6 @@ public:
     // ScriptError/Internal). Null clears the hook.
     // NOT part of the stable public API — for kernel-internal tests only.
     void set_test_fault_hook(std::function<void(int)> hook);
-
-    // Phase C Task 5 test seam: does the streamed-world probe store hold a brick
-    // for this sector column? Always false for closed-world sessions.
-    bool debug_probe_brick(int64_t tx, int64_t tz) const;
 
     struct Impl;
     explicit WorldSession(std::unique_ptr<Impl> impl);   // internal; use open_world

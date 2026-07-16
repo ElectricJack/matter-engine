@@ -240,10 +240,6 @@ void Ui::draw_debug_panel(ViewerStats& s) {
         ImGui::TextDisabled("Wireframe: not available in Vulkan milestone");
         ImGui::TextDisabled("Render path: Vulkan raster only");
     }
-    if (s.probe_dims[0] > 0)
-        ImGui::Text("Probes: %dx%dx%d", s.probe_dims[0], s.probe_dims[1], s.probe_dims[2]);
-    else
-        ImGui::TextDisabled("Probes: OFF");
     ImGui::Separator();
 
     ImGui::SliderFloat("Pixel budget", &s.pixel_budget, 0.1f, 2.0f, "%.2f");

@@ -107,13 +107,6 @@ bool RasterComposer::init(std::string& err) {
     loc_ambient_   = GetShaderLocation(shader_, "ambientColor");
     loc_mat_table_ = GetShaderLocation(shader_, "materialTable");
     loc_mat_count_ = GetShaderLocation(shader_, "materialCount");
-    // Probe-volume uniforms.
-    loc_probe_ambient_  = GetShaderLocation(shader_, "probeAmbient");
-    loc_probe_dominant_ = GetShaderLocation(shader_, "probeDominant");
-    loc_probe_origin_   = GetShaderLocation(shader_, "probeOrigin");
-    loc_probe_cell_     = GetShaderLocation(shader_, "probeCell");
-    loc_probe_dims_     = GetShaderLocation(shader_, "probeDims");
-    loc_use_probes_     = GetShaderLocation(shader_, "useProbes");
     material_ = LoadMaterialDefault();
     material_.shader = shader_;
     ready_ = true;
@@ -121,13 +114,12 @@ bool RasterComposer::init(std::string& err) {
 }
 
 // ---------------------------------------------------------------------------
-// setup_frame_uniforms — upload sun/probe/material uniforms to any shader.
+// setup_frame_uniforms — upload sun/material uniforms to any shader.
 // Called by draw_gpu_driven().
 // ---------------------------------------------------------------------------
 void RasterComposer::setup_frame_uniforms(Shader& sh,
     int loc_sun, int loc_sun_col, int loc_amb,
-    int loc_mat, int loc_cnt,
-    int loc_pa, int loc_pd, int loc_po, int loc_pc, int loc_pdims, int loc_up)
+    int loc_mat, int loc_cnt)
 {
     float table[64 * MATERIAL_FLOATS_PER_DEF] = {0};
     MaterialRegistryPackForGPU(table);
@@ -144,28 +136,6 @@ void RasterComposer::setup_frame_uniforms(Shader& sh,
     SetShaderValue(sh, loc_sun,     &sun_dir, SHADER_UNIFORM_VEC3);
     SetShaderValue(sh, loc_sun_col, &sun_col, SHADER_UNIFORM_VEC3);
     SetShaderValue(sh, loc_amb,     &ambient, SHADER_UNIFORM_VEC3);
-
-    if (probes_.valid()) {
-        glActiveTexture(GL_TEXTURE4);
-        glBindTexture(GL_TEXTURE_3D, probes_.tex_ambient);
-        glActiveTexture(GL_TEXTURE5);
-        glBindTexture(GL_TEXTURE_3D, probes_.tex_dominant);
-        glActiveTexture(GL_TEXTURE0);
-        int unit4 = 4, unit5 = 5;
-        SetShaderValue(sh, loc_pa, &unit4, SHADER_UNIFORM_INT);
-        SetShaderValue(sh, loc_pd, &unit5, SHADER_UNIFORM_INT);
-        Vector3 origin = (Vector3){ probes_.grid.origin[0], probes_.grid.origin[1], probes_.grid.origin[2] };
-        float cell = probes_.grid.cell;
-        Vector3 dims = (Vector3){ (float)probes_.grid.nx, (float)probes_.grid.ny, (float)probes_.grid.nz };
-        SetShaderValue(sh, loc_po,    &origin, SHADER_UNIFORM_VEC3);
-        SetShaderValue(sh, loc_pc,    &cell,   SHADER_UNIFORM_FLOAT);
-        SetShaderValue(sh, loc_pdims, &dims,   SHADER_UNIFORM_VEC3);
-        int use = 1;
-        SetShaderValue(sh, loc_up, &use, SHADER_UNIFORM_INT);
-    } else {
-        int use = 0;
-        SetShaderValue(sh, loc_up, &use, SHADER_UNIFORM_INT);
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -211,12 +181,6 @@ bool RasterComposer::init_gpu_driven(std::string& err) {
     loc_gpu_ambient_     = GetShaderLocation(shader_gpu_, "ambientColor");
     loc_gpu_mat_table_   = GetShaderLocation(shader_gpu_, "materialTable");
     loc_gpu_mat_count_   = GetShaderLocation(shader_gpu_, "materialCount");
-    loc_gpu_probe_amb_   = GetShaderLocation(shader_gpu_, "probeAmbient");
-    loc_gpu_probe_dom_   = GetShaderLocation(shader_gpu_, "probeDominant");
-    loc_gpu_probe_orig_  = GetShaderLocation(shader_gpu_, "probeOrigin");
-    loc_gpu_probe_cell_  = GetShaderLocation(shader_gpu_, "probeCell");
-    loc_gpu_probe_dims_  = GetShaderLocation(shader_gpu_, "probeDims");
-    loc_gpu_use_probes_  = GetShaderLocation(shader_gpu_, "useProbes");
 
     gpu_ready_ = true;
     return true;
@@ -230,16 +194,13 @@ int RasterComposer::draw_gpu_driven(GpuCuller& culler, PartStore& /*store*/,
                                      float near_z, float far_z) {
     if (!gpu_ready_) return 0;
 
-    // Upload frame uniforms to shader_gpu_ (sun/probes/material table) only when
-    // dirty (set_lights / set_probes / (re)connect set the flag; cleared here).
+    // Upload frame uniforms to shader_gpu_ (sun/material table) only when
+    // dirty (set_lights / (re)connect set the flag; cleared here).
     // The material registry is static once loaded, so this is safe to gate.
     if (uniforms_dirty_) {
         setup_frame_uniforms(shader_gpu_,
             loc_gpu_sun_dir_, loc_gpu_sun_color_, loc_gpu_ambient_,
-            loc_gpu_mat_table_, loc_gpu_mat_count_,
-            loc_gpu_probe_amb_, loc_gpu_probe_dom_,
-            loc_gpu_probe_orig_, loc_gpu_probe_cell_,
-            loc_gpu_probe_dims_, loc_gpu_use_probes_);
+            loc_gpu_mat_table_, loc_gpu_mat_count_);
         uniforms_dirty_ = false;
     }
 

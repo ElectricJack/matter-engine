@@ -284,14 +284,6 @@ FLATTEN_CPP = part_flatten_tests.cpp ../src/part_flatten.cpp ../src/lod_bake.cpp
               $(COMMON_MSL_BLAS_SRC)
 FLATTEN_C   = $(MSL)/material_registry.c
 
-LIGHTING_TARGET = lighting_tests
-LIGHTING_SOURCES = lighting_tests.cpp ../src/world_lights.cpp ../src/probe_volume.cpp \
-                   ../src/world_tracer.cpp ../src/probe_bake.cpp \
-                   ../src/part_graph.cpp ../src/part_asset_v2.cpp \
-                   $(MSL)/mesh_simplifier.cpp \
-                   $(COMMON_MSL_BLAS_SRC)
-LIGHTING_C   = $(MSL)/material_registry.c
-
 TILESETTORUSBVH_TARGET = tileset_torus_bvh_tests
 TILESETTORUSBVH_CPP    = tileset_torus_bvh_tests.cpp ../src/tileset_torus_bvh.cpp \
                          ../src/part_asset_v2.cpp \
@@ -351,12 +343,6 @@ MODAPPLY_TARGET = modifier_apply_tests
 MODAPPLY_CPP = modifier_apply_tests.cpp ../src/modifier_apply.cpp \
                ../src/retopo_blacklist.cpp \
                $(MSL)/mesh_smooth.cpp $(MSL)/mesh_simplifier.cpp $(MSL)/mesh_indexed.cpp
-
-# Phase C Task 3 — probe brick store + trilinear window compositor (pure CPU, no JS, no GL).
-PROBEBRICK_TARGET = probe_brick_tests
-PROBEBRICK_CPP    = probe_brick_tests.cpp ../src/probe_bricks.cpp ../src/probe_volume.cpp \
-                    $(COMMON_MSL_BLAS_SRC)
-PROBEBRICK_C      = $(MSL)/material_registry.c
 
 # Phase C Task 3 — terrain field program interpreter (pure CPU, no JS, no GL).
 TERRAINFIELD_TARGET = terrain_field_tests
@@ -577,8 +563,8 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../src/tileset_settle.cpp ../src/tileset_gtex.cpp \
               ../src/tileset_bake.cpp ../src/tileset_bake_gpu.cpp ../src/tileset_collider.cpp \
               ../src/tileset_part_collider.cpp ../src/tileset_torus_bvh.cpp \
-              ../src/world_lights.cpp ../src/probe_volume.cpp \
-              ../src/world_tracer.cpp ../src/probe_bake.cpp \
+              ../src/world_lights.cpp \
+              ../src/world_tracer.cpp \
               ../src/shader_source.cpp \
               $(VIEWER_PIPELINE_CPP)
 
@@ -619,7 +605,7 @@ GPU_RENDER_CPP = \
     ../src/render/renderer.cpp ../src/render/raster_composer.cpp \
     ../src/render/raster_mesh.cpp ../src/render/part_store.cpp \
     ../src/render/world_composer.cpp ../src/render/world_state.cpp \
-    ../src/render/gpu_culler.cpp ../src/render/probe_texture.cpp \
+    ../src/render/gpu_culler.cpp \
     ../src/render/tileset_provider.cpp ../src/render/tileset_gl_ctx.cpp \
     ../src/provider/local_provider.cpp ../src/provider/resolvers.cpp \
     ../src/matter_engine.cpp \
@@ -644,9 +630,8 @@ GPU_PIPELINE_CPP = \
     ../src/tileset_torus_bvh.cpp \
     ../src/tileset_gtex.cpp ../src/tileset_bake_gpu.cpp \
     ../src/sector_grid.cpp ../src/lod_select.cpp \
-    ../src/world_lights.cpp ../src/probe_volume.cpp \
-    ../src/probe_bricks.cpp \
-    ../src/world_tracer.cpp ../src/probe_bake.cpp \
+    ../src/world_lights.cpp \
+    ../src/world_tracer.cpp \
     ../src/shader_source.cpp \
     ../src/tileset_phase.cpp ../src/tileset_phase_gpu.cpp \
     ../src/tileset_bake.cpp ../src/tileset_settle.cpp \
@@ -681,7 +666,6 @@ def_CPP_SRCS := $(sort \
     $(TRIVAR_CPP) \
     $(COMP_CPP) \
     $(FLATTEN_CPP) \
-    $(LIGHTING_SOURCES) \
     $(TILESETTORUSBVH_CPP) \
     $(TILESETMEADOWMANIFEST_CPP) \
     $(ISO_CPP) \
@@ -696,7 +680,6 @@ def_CPP_SRCS := $(sort \
     $(MODAPPLY_CPP) \
     $(TERRAINFIELD_CPP) \
     $(TERRAINMESH_CPP) \
-    $(PROBEBRICK_CPP) \
     $(PARTSTORE_CPP))
 
 qjs_CPP_SRCS := $(sort \
@@ -740,7 +723,7 @@ gpu_CPP_SRCS := $(sort \
     $(GPU_ALL_CPP))
 
 # C-source flavors. Union across binaries that use them.
-mslc_C_SRCS := $(sort $(COMMON_MSL_C) $(PROBEBRICK_C))
+mslc_C_SRCS := $(sort $(COMMON_MSL_C))
 qjsc_C_SRCS := $(sort $(QJS_C))
 
 # Object lists per flavor.
@@ -780,7 +763,6 @@ GRAPH_OBJS  = $(call obj_list,def,$(GRAPH_SOURCES)) $(call obj_list,mslc,$(GRAPH
 TRIVAR_OBJS = $(call obj_list,def,$(TRIVAR_CPP)) $(call obj_list,mslc,$(TRIVAR_C))
 COMP_OBJS   = $(call obj_list,def,$(COMP_CPP)) $(call obj_list,mslc,$(COMP_C))
 FLATTEN_OBJS = $(call obj_list,def,$(FLATTEN_CPP)) $(call obj_list,mslc,$(FLATTEN_C))
-LIGHTING_OBJS = $(call obj_list,def,$(LIGHTING_SOURCES)) $(call obj_list,mslc,$(LIGHTING_C))
 TILESETTORUSBVH_OBJS = $(call obj_list,def,$(TILESETTORUSBVH_CPP)) $(call obj_list,mslc,$(TILESETTORUSBVH_C))
 TILESETMEADOWMANIFEST_OBJS = $(call obj_list,def,$(TILESETMEADOWMANIFEST_CPP)) $(call obj_list,mslc,$(TILESETMEADOWMANIFEST_C))
 ISO_OBJS = $(call obj_list,def,$(ISO_CPP)) $(call obj_list,mslc,$(ISO_C))
@@ -795,7 +777,6 @@ RESOLVECACHE_OBJS = $(call obj_list,def,$(RESOLVECACHE_CPP)) $(call obj_list,msl
 MODAPPLY_OBJS = $(call obj_list,def,$(MODAPPLY_CPP))
 TERRAINFIELD_OBJS = $(call obj_list,def,$(TERRAINFIELD_CPP))
 TERRAINMESH_OBJS  = $(call obj_list,def,$(TERRAINMESH_CPP))
-PROBEBRICK_OBJS   = $(call obj_list,def,$(PROBEBRICK_CPP)) $(call obj_list,mslc,$(PROBEBRICK_C))
 TERRAINVERB_OBJS  = $(call obj_list,sh,$(TERRAINVERB_CPP)) $(call obj_list,mslc,$(TERRAINVERB_C)) $(qjsc_C_OBJS)
 SECTORBAKE_OBJS   = $(call obj_list,sh,$(SECTORBAKE_CPP)) $(call obj_list,mslc,$(SECTORBAKE_C)) $(qjsc_C_OBJS)
 PARTSTORE_OBJS = $(call obj_list,def,$(PARTSTORE_CPP)) $(call obj_list,mslc,$(PARTSTORE_C))
@@ -830,7 +811,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-partv2 run-partstore run-script run-foldcache run-evalworld run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-probebrick
+.PHONY: clean run-matrix run-partv2 run-partstore run-script run-foldcache run-evalworld run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1019,13 +1000,6 @@ $(VIEWER_LOGIC_TARGET): $(VIEWER_LOGIC_OBJS) | ../shaders_gen/embedded_shaders.h
 
 run-viewer-logic: $(VIEWER_LOGIC_TARGET)
 	./$(VIEWER_LOGIC_TARGET)
-
-# Tasks 1-3 — World light list, ProbeVolume, WorldTracer.
-$(LIGHTING_TARGET): $(LIGHTING_OBJS)
-	$(CC) $(LIGHTING_OBJS) -o $@ $(CFLAGS) -pthread $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
-
-run-lighting: $(LIGHTING_TARGET)
-	./$(LIGHTING_TARGET)
 
 # Grass.js prefix-subset triangle-budget LOD contract (Stage 3).
 $(GRASSLOD_TARGET): $(GRASSLOD_OBJS)
@@ -1299,13 +1273,6 @@ refine-loop-tests: $(call obj_of,gpu,refine_loop_tests.cpp) $(GPU_SHARED_OBJS) |
 run-refineloop: refine-loop-tests
 	GALLIUM_DRIVER=d3d12 ./refine_loop_tests
 
-# Phase C Task 3 — probe brick store + trilinear window compositor (pure CPU, no GL).
-$(PROBEBRICK_TARGET): $(PROBEBRICK_OBJS)
-	$(CC) $(PROBEBRICK_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
-
-run-probebrick: $(PROBEBRICK_TARGET)
-	./$(PROBEBRICK_TARGET)
-
 # Phase C Task 17 — resolve/manifest cache round-trip (headless, no GL needed).
 resolve-cache-tests: $(call obj_list,def,$(RESOLVECACHE_CPP)) $(call obj_list,mslc,$(RESOLVECACHE_C))
 	$(CC) $(call obj_list,def,$(RESOLVECACHE_CPP)) $(call obj_list,mslc,$(RESOLVECACHE_C)) \
@@ -1331,7 +1298,7 @@ clean:
 	      $(EXAMPLE_TARGET) $(VIEWER_LOGIC_TARGET) $(TREEBAKE_TARGET) \
 	      $(GRASSLOD_TARGET) $(STRESSFOREST_TARGET) $(LIGHTING_GARDEN_TARGET) \
 	      $(TILESETMEADOWMANIFEST_TARGET) $(RETOPO_INT_TARGET) $(SHADER_SOURCE_TARGET) \
-	      $(POLYTRI_TARGET) $(ISO_TARGET) $(FLATTEN_TARGET) $(LIGHTING_TARGET) \
+	      $(POLYTRI_TARGET) $(ISO_TARGET) $(FLATTEN_TARGET) \
 	      $(TILESETTORUSBVH_TARGET) $(TILESETDSL_TARGET) $(TILESETBAKE_TARGET) \
 	      $(TILESETGTEX_TARGET) $(ASYNCQ_TARGET) $(GALLERY_TARGET) \
 	      $(LIVEPROD_TARGET) $(MODAPPLY_TARGET) $(MODBAKE_TARGET) $(PARTSTORE_TARGET) \
@@ -1349,5 +1316,4 @@ clean:
 	      tileset_load_tests api_tests async_bake_tests demand_bake_tests transient_tests release_part_tests \
 	      refine_loop_tests \
 	      resolve_cache_tests \
-	      world_stream_tests \
-	      $(PROBEBRICK_TARGET)
+	      world_stream_tests

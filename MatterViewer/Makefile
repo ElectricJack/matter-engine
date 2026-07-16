@@ -134,8 +134,8 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/tileset_torus_bvh.cpp \
               $(ME3_DIR)/src/tileset_gtex.cpp \
               $(ME3_DIR)/src/sector_grid.cpp $(ME3_DIR)/src/lod_select.cpp \
-              $(ME3_DIR)/src/world_lights.cpp $(ME3_DIR)/src/probe_volume.cpp \
-              $(ME3_DIR)/src/world_tracer.cpp $(ME3_DIR)/src/probe_bake.cpp \
+              $(ME3_DIR)/src/world_lights.cpp \
+              $(ME3_DIR)/src/world_tracer.cpp \
               $(ME3_DIR)/src/shader_source.cpp \
               $(ME3_DIR)/src/tileset_phase.cpp \
               $(ME3_DIR)/src/tileset_bake.cpp $(ME3_DIR)/src/tileset_settle.cpp \
@@ -163,7 +163,6 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/terrain_field.cpp \
               $(ME3_DIR)/src/terrain_mesher.cpp \
               $(ME3_DIR)/src/sector_streamer.cpp \
-              $(ME3_DIR)/src/probe_bricks.cpp \
               $(ME3_DIR)/src/matter_engine.cpp \
               $(ME3_DIR)/src/pf_bindings.cpp \
               ../ParticleFlowLib/src/pf_math.cpp \

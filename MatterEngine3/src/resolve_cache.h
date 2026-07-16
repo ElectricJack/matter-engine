@@ -25,7 +25,7 @@ namespace resolve_cache {
 // Opaque payload restored from a cache hit.
 // Caller populates LocalProvider internals and WorldManifest from these fields.
 struct ResolveCachePayload {
-    // WorldManifest fields (probes NOT serialised — has its own cache).
+    // WorldManifest fields.
     std::vector<viewer::WorldManifestEntry> instances;
     world_lights::WorldLights               lights;
 

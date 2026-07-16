@@ -343,7 +343,6 @@ int main() {
             stats.parts_baked     = (int)fs.parts_baked;
             stats.cache_hits      = (int)fs.cache_hits;
             stats.connected       = true;
-            memcpy(stats.probe_dims, fs.probe_dims, sizeof stats.probe_dims);
             ui.begin_frame();
             ui.draw_debug_panel(stats);
             ui.draw_worlds_panel(worlds, stats);
@@ -423,7 +422,6 @@ int main() {
                 stats.parts_baked = 0;
                 stats.cache_hits = 0;
                 stats.instances_total = 0;
-                memset(stats.probe_dims, 0, sizeof stats.probe_dims);
                 stats.connected = true;
             }
         }

@@ -1,4 +1,4 @@
-// world_tracer.cpp — GL-free CPU tracer over the placed world for the probe baker.
+// world_tracer.cpp — GL-free CPU tracer over the placed world (raycast query API).
 // See world_tracer.h for public API.
 #include "world_tracer.h"
 

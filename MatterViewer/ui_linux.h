@@ -50,8 +50,6 @@ struct ViewerStats {
     float    resolve_ms = 0.0f;   // SectorResolver::resolve
     float    build_ms   = 0.0f;   // GpuCuller::cull (upload + dispatch, no readback)
     float    draw_ms    = 0.0f;   // RasterComposer::draw_gpu_driven (CPU submit side)
-    // Probe status: dims[0..2] = nx,ny,nz from the grid (all zero = probes OFF/unavailable)
-    int      probe_dims[3] = {0,0,0};
     // GPU cull HUD (Task 7): active only when MATTER_GPU_CULL=1 + GL 4.6 ok.
     bool     gpu_cull_active = false;
     int      gpu_emitted = 0;   // clusters that passed the cull this frame

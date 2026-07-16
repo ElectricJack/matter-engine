@@ -7,7 +7,6 @@
 #include "../src/render/world_composer.h"
 #include "../src/render/raster_mesh.h"
 #include "../src/render/raster_cull.h"
-#include "../src/render/probe_texture.h"   // kProbeAmbientScale (previously via raster_composer.h)
 #include "../src/render/gpu_cull_types.h"
 #include "../src/render/frame_matrices.h"
 #include "../src/render/matrix_math.h"
@@ -16,7 +15,6 @@
 #include "part_asset_v2.h"
 #include "part_flatten.h"  // Task 11: flatten_part for regen sniff test
 #include "world_lights.h"
-#include "probe_volume.h"
 #include "../../MatterViewer/camera_controller.h"
 
 #include <cmath>
@@ -614,197 +612,12 @@ static bool file_exists(const std::string& path) {
     return ::stat(path.c_str(), &st) == 0;
 }
 
-// Test Task-5: LocalProvider bakes and caches probe volume keyed by fingerprint.
-//  1. connect() yields valid probes and writes the .probes cache file.
-//  2. A second connect() also yields valid probes but does NOT re-bake (same file bytes).
-//  3. A manifest with a different light line yields a DIFFERENT .probes file (re-bake).
-static void test_provider_bakes_probes() {
-    const std::string cache = "/tmp/me3_viewer_cache_test";   // reuse the warm cache
-    const std::string probes_path = cache + "/cache/Demo.probes";
-
-    // --- Part 1: connect() yields probes, .probes file exists. ---
-    {
-        viewer::LocalProviderConfig cfg;
-        cfg.schemas_dir    = "../examples/world_demo/schemas";
-        cfg.world_data_dir = "../examples/world_demo/WorldData";
-        cfg.world_name     = "Demo";
-        cfg.shared_lib_dir = "../shared-lib";
-        cfg.cache_root     = cache;
-
-        viewer::LocalProvider prov(cfg);
-        viewer::WorldManifest m; std::string err;
-        bool ok = prov.connect(m, err);
-        CHECK(ok, "probe test: connect() succeeds");
-        if (!ok) { printf("  connect error: %s\n", err.c_str()); return; }
-
-        CHECK(m.probes != nullptr, "connect yields non-null probes");
-        CHECK(m.probes && m.probes->valid(), "probes.valid() after connect");
-        CHECK(file_exists(probes_path), ".probes cache file written");
-    }
-
-    // --- Part 2: second connect (same fingerprint) -> no re-bake, identical bytes. ---
-    {
-        std::string bytes_before = read_file_bytes(probes_path);
-        CHECK(!bytes_before.empty(), ".probes file is non-empty before second connect");
-
-        viewer::LocalProviderConfig cfg;
-        cfg.schemas_dir    = "../examples/world_demo/schemas";
-        cfg.world_data_dir = "../examples/world_demo/WorldData";
-        cfg.world_name     = "Demo";
-        cfg.shared_lib_dir = "../shared-lib";
-        cfg.cache_root     = cache;
-
-        viewer::LocalProvider prov(cfg);
-        viewer::WorldManifest m; std::string err;
-        bool ok = prov.connect(m, err);
-        CHECK(ok, "probe test: second connect() succeeds");
-        CHECK(m.probes != nullptr, "second connect yields non-null probes");
-        CHECK(m.probes && m.probes->valid(), "second probes.valid()");
-
-        std::string bytes_after = read_file_bytes(probes_path);
-        CHECK(bytes_before == bytes_after,
-              "second connect did not re-bake (file bytes identical)");
-    }
-
-    // --- Part 3: different sky light -> different .probes content (fingerprint changed). ---
-    {
-        // Write a temporary manifest with an extra sky light line.
-        const std::string alt_world_data = "/tmp/me3_alt_world_data";
-        const std::string alt_manifest_dir = alt_world_data + "/Demo";
-        ::system(("mkdir -p " + alt_manifest_dir).c_str());
-        {
-            // Append "light sky 1 0 0" to the normal manifest content.
-            std::string orig_manifest;
-            {
-                std::ifstream f("../examples/world_demo/WorldData/Demo/world.manifest",
-                                std::ios::binary);
-                std::ostringstream ss; ss << f.rdbuf();
-                orig_manifest = ss.str();
-            }
-            std::ofstream out(alt_manifest_dir + "/world.manifest");
-            out << orig_manifest;
-            out << "\nlight sky 1 0 0\n";
-        }
-
-        // Also need the same schemas dir referenced by world_data_dir bake; copy the
-        // parts cache is shared. Use a separate cache dir for the alt world so the
-        // probes file doesn't collide with Demo's probes.
-        const std::string alt_cache = "/tmp/me3_alt_probes_cache";
-        ::system(("mkdir -p " + alt_cache + "/parts").c_str());
-        // Symlink/copy Demo parts from the main warm cache so bake is instant.
-        ::system(("cp -r " + cache + "/parts/. " + alt_cache + "/parts/ 2>/dev/null; true").c_str());
-        // Also copy the flat parts if they exist.
-        ::system(("for f in " + cache + "/*.flat.part; do [ -f \"$f\" ] && cp \"$f\" " + alt_cache + "/ 2>/dev/null; done; true").c_str());
-
-        const std::string alt_probes_path = alt_cache + "/cache/Demo.probes";
-
-        viewer::LocalProviderConfig cfg;
-        cfg.schemas_dir    = "../examples/world_demo/schemas";
-        cfg.world_data_dir = alt_world_data;
-        cfg.world_name     = "Demo";
-        cfg.shared_lib_dir = "../shared-lib";
-        cfg.cache_root     = alt_cache;
-
-        viewer::LocalProvider prov(cfg);
-        viewer::WorldManifest m; std::string err;
-        bool ok = prov.connect(m, err);
-        CHECK(ok, "alt-light connect() succeeds");
-        if (!ok) { printf("  alt-light error: %s\n", err.c_str()); return; }
-
-        CHECK(m.lights.sky_color[0] == 1.0f,
-              "alt manifest: sky_color[0] == 1.0f");
-        CHECK(m.probes != nullptr, "alt-light probes non-null");
-        CHECK(m.probes && m.probes->valid(), "alt-light probes valid");
-        CHECK(file_exists(alt_probes_path), "alt .probes file written");
-
-        // The content should differ from the default-light bake.
-        std::string default_bytes = read_file_bytes(probes_path);
-        std::string alt_bytes     = read_file_bytes(alt_probes_path);
-        CHECK(!alt_bytes.empty(), "alt .probes file is non-empty");
-        CHECK(default_bytes != alt_bytes,
-              "different lights -> different .probes content (fingerprint changed)");
-
-        // Cleanup alt dirs.
-        ::system(("rm -rf " + alt_world_data + " " + alt_cache).c_str());
-    }
-}
-
 // Task 12 deleted test_raster_composer_lights: RasterComposer now depends on
 // GpuCuller (GL) via draw_gpu_driven, so raster_composer.cpp is no longer
 // linked into the GL-free viewer_logic_tests binary. set_lights/lights() are
 // trivial getter/setter and are covered by the live viewer path.
-
-// Task 6: probe quantization round-trip.
-// probe_texture.cpp requires a GL context (GL calls in upload_probe_textures), so
-// the encode helper is not separable headlessly. We test the documented encoding math
-// directly per the brief: (uint8_t)(clamp(x,0,1)*255 + 0.5f), inverse = byte/255.
-// Ambient channels: encoded = clamp(v/kProbeAmbientScale,0,1)*255.
-// Dominant dir channel: encoded = clamp(v*0.5+0.5,0,1)*255.
-// Dominant intensity: encoded = clamp(v/kProbeAmbientScale,0,1)*255.
-// The round-trip error must be <= 1/255 for all tested values.
-static void test_probe_quantization_roundtrip() {
-    // Encode/decode lambdas matching probe_texture.cpp's staging loop.
-    auto encode_unit = [](float v) -> uint8_t {
-        float c = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
-        return (uint8_t)(c * 255.0f + 0.5f);
-    };
-    auto decode_unit = [](uint8_t b) -> float {
-        return b / 255.0f;
-    };
-
-    // --- Ambient RGB: v -> clamp(v/scale) -> encode -> decode -> * scale ---
-    const float scale = viewer::kProbeAmbientScale;
-    float test_ambients[] = { 0.0f, 0.38f, 1.0f, 2.05f, 3.9f, 4.0f };
-    for (float v : test_ambients) {
-        float normalized = v / scale;
-        uint8_t enc = encode_unit(normalized);
-        float decoded = decode_unit(enc) * scale;
-        float err = std::fabs(decoded - (v > scale ? scale : v));   // clamp input before comparing
-        char msg[128];
-        std::snprintf(msg, sizeof msg,
-            "probe quant roundtrip: ambient %.4f -> %.4f err=%.6f (<= 1/255)", v, decoded, err);
-        CHECK(err <= 1.0f / 255.0f * scale + 1e-7f, msg);
-    }
-
-    // --- sun_vis: stored in A.a, already in [0,1] ---
-    float test_vis[] = { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f };
-    for (float v : test_vis) {
-        uint8_t enc = encode_unit(v);
-        float decoded = decode_unit(enc);
-        float err = std::fabs(decoded - v);
-        char msg[128];
-        std::snprintf(msg, sizeof msg,
-            "probe quant roundtrip: sun_vis %.4f -> %.4f err=%.6f (<= 1/255)", v, decoded, err);
-        CHECK(err <= 1.0f / 255.0f + 1e-7f, msg);
-    }
-
-    // --- Dominant dir: dir*0.5+0.5 (each component in [-1,1] maps to [0,1]) ---
-    float test_dirs[] = { -1.0f, -0.5f, 0.0f, 0.5f, 1.0f };
-    for (float d : test_dirs) {
-        float mapped = d * 0.5f + 0.5f;
-        uint8_t enc = encode_unit(mapped);
-        float recovered = decode_unit(enc) * 2.0f - 1.0f;
-        float err = std::fabs(recovered - d);
-        char msg[128];
-        std::snprintf(msg, sizeof msg,
-            "probe quant roundtrip: dir component %.4f -> %.4f err=%.6f (<= 2/255)", d, recovered, err);
-        CHECK(err <= 2.0f / 255.0f + 1e-7f, msg);
-    }
-
-    // --- Dominant intensity: same as ambient channel (clamp(I/scale)) ---
-    float test_intensities[] = { 0.0f, 1.0f, 2.0f, 3.9f, 4.0f };
-    for (float v : test_intensities) {
-        float normalized = v / scale;
-        uint8_t enc = encode_unit(normalized);
-        float decoded = decode_unit(enc) * scale;
-        float clamped = v > scale ? scale : v;
-        float err = std::fabs(decoded - clamped);
-        char msg[128];
-        std::snprintf(msg, sizeof msg,
-            "probe quant roundtrip: intensity %.4f -> %.4f err=%.6f (<= scale/255)", v, decoded, err);
-        CHECK(err <= scale / 255.0f + 1e-7f, msg);
-    }
-}
+// Task 2 (Phase B rt-lighting): deleted test_provider_bakes_probes and
+// test_probe_quantization_roundtrip — probe bake system removed (Vulkan permanent).
 
 // Task 11 regen sniff: write a v2 flat artifact at the provider's flat path for
 // a simple synthetic part, then call connect() on a LocalProvider that would
@@ -1488,9 +1301,8 @@ int main() {
     test_append_expanded_children();
     test_raster_mesh_data();
     test_sector_lod_floor_cull();
-    test_provider_bakes_probes();
-    // test_raster_composer_lights deleted in Task 12 — see comment at definition.
-    test_probe_quantization_roundtrip();
+    // test_provider_bakes_probes and test_probe_quantization_roundtrip deleted in Task 2
+    // (rt-lighting-phase2): probe bake system removed, Vulkan permanent.
     test_provider_regen_stale_v2_flat();
     test_partstore_cluster_loading();
     // test_partstore_segmented_loading moved to partstore_tests.cpp (run-partstore)
