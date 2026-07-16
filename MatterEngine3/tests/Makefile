@@ -54,7 +54,7 @@ endif
 
 # Include directories: NEW MatterEngine3 headers, then consumed MatterSurfaceLib
 # headers, then raylib.
-INCLUDE_PATHS = -I../include -I../src -I../src/render -I../src/provider -I../../MatterSurfaceLib/include -I$(RAYLIB_PATH) -I../../Libraries/raylib/src -I../../ParticleFlowLib/include
+INCLUDE_PATHS = -I../include -I../src -I../src/render -I../src/provider -I../../MatterSurfaceLib/include -I$(RAYLIB_PATH) -I../../Libraries/raylib/src -I../../ParticleFlowLib/include -I../../Libraries/Vulkan-Headers/include
 
 # Library paths (match MatterSurfaceLib/tests; same depth).
 ifeq ($(UNAME_S),Linux)
@@ -1318,7 +1318,7 @@ run-resolvecache: resolve-cache-tests
 # vendored GLFW archive owned by MatterViewer's cross-build rules.
 .PHONY: vulkan-smoke
 vulkan-smoke:
-	$(MAKE) -C ../../MatterViewer vulkan-smoke HAVE_CUDA=1
+	$(MAKE) -C ../../MatterViewer vulkan-smoke
 
 # ---------------------------------------------------------------------------
 # Clean: remove OBJDIR and all binaries (test-binary-name list, since they

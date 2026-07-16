@@ -48,8 +48,6 @@ struct RenderOptions {
     bool  cull_backfaces  = false;    // GpuDriven path: skip backface triangles
                                       // (off by default: mesh-session winding
                                       // is not guaranteed for all part kinds)
-    bool  rt_shadows      = false;   // Task 5: OptiX shadow ray tracing (requires CUDA)
-    bool  rt_full_lighting = false;  // Phase 2: full RT PBR (G-buffer + RT lighting)
     DlssMode dlss_mode = DlssMode::Native;
     VulkanRayTracingSettings vulkan_ray_tracing{};
     VulkanGiSettings vulkan_gi{};

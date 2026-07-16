@@ -33,18 +33,23 @@ MSL_DIR     = ../MatterSurfaceLib
 
 # Linux app compile: only public engine API + imgui + raylib headers visible.
 # Private ME3 src/ headers are NOT exposed here; they are internal to the library.
+# -I$(ME3_DIR)/src: world_session.h currently includes the private
+# render/vk_gi_contract.h; drop this once the public API stops leaking it.
 INCLUDE_PATHS = -I$(ME3_DIR)/include \
+                -I$(ME3_DIR)/src \
                 -I$(MSL_DIR)/include \
                 -I$(RAYLIB_PATH) \
                 -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends \
                 -I$(RAYLIB_PATH)/external/glfw/include \
-                -I$(BOX3D_DIR)/include
+                -I$(BOX3D_DIR)/include \
+                -I../Libraries/Vulkan-Headers/include
 
 # Windows direct-source build also needs private ME3 src/ headers since it
-# compiles all engine sources directly (no .a).
-WIN_INCLUDE_PATHS = $(INCLUDE_PATHS) \
+# compiles all engine sources directly (no .a). $(VULKAN_INCLUDE) comes first
+# so the MSYS2 Vulkan headers win over the vendored copy.
+WIN_INCLUDE_PATHS = -I$(VULKAN_INCLUDE) \
+                    $(INCLUDE_PATHS) \
                     -I$(ME3_DIR) \
-                    -I$(VULKAN_INCLUDE) \
                     -I$(ME3_DIR)/src \
                     -I$(ME3_DIR)/src/render \
                     -I$(ME3_DIR)/src/provider \
@@ -54,19 +59,11 @@ WIN_INCLUDE_PATHS = $(INCLUDE_PATHS) \
 LDFLAGS = -lGL -lm -lpthread -ldl -lrt -lX11
 LDLIBS  = ../Libraries/raylib/build/linux/libraylib.a
 
-HAVE_CUDA ?= 1
 HAVE_STREAMLINE ?= 0
 # Point this at a locally installed, licensed Streamline SDK.  Nothing from the
 # SDK is checked into this repository; HAVE_STREAMLINE=0 is the default.
 STREAMLINE_PATH ?=
 STREAMLINE_DLL_DIR ?= $(STREAMLINE_PATH)/bin/x64/development
-CUDA_PATH ?= /c/PROGRA~1/NVIDIA~2/CUDA/v13.3
-OPTIX_PATH ?= /c/PROGRA~3/NVIDIA~1/OPTIXS~1.0
-CUDA_HOST_COMPILER ?= $(shell powershell.exe -NoProfile -Command \
-  "(Get-ChildItem 'C:\Program Files\Microsoft Visual Studio\2022' -Recurse -Filter cl.exe | Where-Object FullName -Like '*Hostx64*x64*' | Sort-Object FullName | Select-Object -Last 1).DirectoryName")
-ifeq ($(HAVE_CUDA),1)
-  LDFLAGS += -L/usr/lib/wsl/lib -lcuda -ldl
-endif
 BOX3D_LIB = $(BOX3D_DIR)/libbox3d.a
 LDLIBS   += $(BOX3D_LIB)
 
@@ -150,7 +147,6 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/render/vk_context.cpp $(ME3_DIR)/src/render/vk_resources.cpp \
               $(ME3_DIR)/src/render/vk_pipeline.cpp $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
               $(ME3_DIR)/src/render/vk_instance_cache.cpp \
-              $(ME3_DIR)/src/render/vk_cuda_interop.cpp \
               $(ME3_DIR)/src/render/vulkan_only_compat.cpp \
               $(ME3_DIR)/src/render/frame_matrices.cpp $(ME3_DIR)/src/render/matrix_math.cpp \
               $(ME3_DIR)/src/render/vk_temporal.cpp $(ME3_DIR)/src/render/vk_gi_math.cpp \
@@ -219,9 +215,6 @@ CXX_FLAGS_BUILD_WIN_COMMON = $(CFLAGS) -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST -DMATT
 CXX_FLAGS_BUILD_WIN_COMMON += -DMATTER_HAVE_STREAMLINE=$(HAVE_STREAMLINE)
 ifeq ($(HAVE_STREAMLINE),1)
   CXX_FLAGS_BUILD_WIN_COMMON += -I"$(STREAMLINE_PATH)/include"
-endif
-ifeq ($(HAVE_CUDA),1)
-  CXX_FLAGS_BUILD_WIN_COMMON += -DMATTER_HAVE_OPTIX -I"$(CUDA_PATH)/include" -I"$(OPTIX_PATH)/include" -fpermissive
 endif
 
 # Linux object set: ONLY app + imgui.
@@ -356,16 +349,14 @@ WIN_SYSTEM_LIBS = -lgdi32 -lwinmm -luser32 -lshell32
 
 .PHONY: vulkan-preflight
 vulkan-preflight:
-	@test "$(HAVE_CUDA)" = "1" || (echo "ERROR: Phase 1 requires HAVE_CUDA=1"; exit 1)
 	@WIN_CXX="$(WIN_CXX)" VULKAN_INCLUDE="$(VULKAN_INCLUDE)" \
 	 VULKAN_LIB_DIR="$(VULKAN_LIB_DIR)" GLSLC="$(GLSLC)" \
-	 CUDA_PATH="$(CUDA_PATH)" OPTIX_PATH="$(OPTIX_PATH)" \
 	 HAVE_STREAMLINE="$(HAVE_STREAMLINE)" STREAMLINE_PATH="$(STREAMLINE_PATH)" \
 	 STREAMLINE_DLL_DIR="$(STREAMLINE_DLL_DIR)" sh tools/check_vulkan_toolchain.sh
 
 $(WIN_FEATURES): vulkan-preflight
 	@mkdir -p $(dir $@)
-	@printf 'VULKAN=1\nOPENGL=0\nCUDA_AVAILABLE=1\nOPTIX_AVAILABLE=1\nCUDA_ACTIVE=1\nOPTIX_ACTIVE=0\n' > $@
+	@printf 'VULKAN=1\nOPENGL=0\n' > $@
 
 # Standalone GLFW archive for Vulkan smoke tests.  Keep this separate from
 # raylib's GLFW objects so the existing OpenGL viewer path is unchanged.
@@ -412,8 +403,6 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/rt_surface.rchit.spv \
          build/shaders_vk/rt_surface_test.rgen.spv
 VK_EMBEDDED_HEADER = $(ME3_DIR)/shaders_gen/embedded_spirv.h
-CUDA_INTEROP_PTX = build/shaders_cuda/vk_cuda_invert.ptx
-CUDA_INTEROP_HEADER = $(ME3_DIR)/shaders_gen/embedded_cuda_interop_ptx.h
 
 build/shaders_vk/%.spv: $(ME3_DIR)/shaders_vk/%
 	@mkdir -p $(dir $@)
@@ -432,14 +421,6 @@ build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_visibility.rahit.spv \
 $(VK_EMBEDDED_HEADER): $(VK_SPV) $(ME3_DIR)/tools/embed_spirv.py
 	python3 $(ME3_DIR)/tools/embed_spirv.py $@ $(VK_SPV)
 
-$(CUDA_INTEROP_PTX): $(ME3_DIR)/src/render/shaders_rt/vk_cuda_invert.cu
-	@mkdir -p $(dir $@)
-	"$(CUDA_PATH)/bin/nvcc.exe" --ptx --machine 64 -arch=compute_75 -O2 \
-	    -ccbin "$(CUDA_HOST_COMPILER)" $< -o $@
-
-$(CUDA_INTEROP_HEADER): $(CUDA_INTEROP_PTX) $(ME3_DIR)/tools/embed_cuda_interop_ptx.py
-	python3 $(ME3_DIR)/tools/embed_cuda_interop_ptx.py $< $@
-
 build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/tests/vulkan_smoke_tests.cpp \
         ui.cpp ui.h $(IMGUI_SRC_WIN) \
@@ -454,8 +435,6 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_instance_cache.h \
         $(ME3_DIR)/src/render/vk_instance_cache.cpp \
         $(ME3_DIR)/src/render/vk_lighting_controls.h \
-        $(ME3_DIR)/src/render/vk_cuda_interop.h \
-        $(ME3_DIR)/src/render/vk_cuda_interop.cpp \
         $(ME3_DIR)/src/render/streamline_bridge.h \
         $(ME3_DIR)/src/render/streamline_bridge.cpp \
         $(ME3_DIR)/src/render/vk_context.cpp \
@@ -468,7 +447,7 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_gi_math.cpp \
         $(ME3_DIR)/src/render/vk_lighting_controls.cpp \
         $(ME3_DIR)/src/render/matrix_math.cpp \
-        $(VK_EMBEDDED_HEADER) $(CUDA_INTEROP_HEADER) $(GLFW_WIN_LIB)
+        $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB)
 	@mkdir -p $(dir $@)
 	$(WIN_CXX) $(ME3_DIR)/tests/vulkan_smoke_tests.cpp ui.cpp \
 	    $(IMGUI_SRC_WIN) \
@@ -479,7 +458,6 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
 	    $(ME3_DIR)/src/render/raster_mesh.cpp \
 	    $(ME3_DIR)/src/render/vk_instance_cache.cpp \
-	    $(ME3_DIR)/src/render/vk_cuda_interop.cpp \
 	    $(ME3_DIR)/src/render/frame_matrices.cpp \
 	    $(ME3_DIR)/src/render/vk_temporal.cpp \
 	    $(ME3_DIR)/src/render/vk_gi_math.cpp \
@@ -500,7 +478,6 @@ build/windows/vulkan_smoke_tests.exe: \
 	    -I../Libraries/raylib/src/external/glfw/include \
 	    -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends \
 	    $(if $(filter 1,$(HAVE_STREAMLINE)),-I"$(STREAMLINE_PATH)/include") \
-	    -I"$(CUDA_PATH)/include" \
 	    -I$(VULKAN_INCLUDE) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 \
 	    -lgdi32 -luser32 -lshell32 -Wl,-Bstatic
 
@@ -510,7 +487,7 @@ vulkan-smoke: vulkan-preflight $(GLFW_WIN_LIB) \
               build/windows/vulkan_compat_tests.exe
 	/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe \
 	    -NoProfile -ExecutionPolicy Bypass -File \
-	    tools/smoke_vulkan_interop_faults.ps1 \
+	    tools/smoke_vulkan_faults.ps1 \
 	    -TestPath build/windows/vulkan_smoke_tests.exe \
 	    -TimeoutMilliseconds 30000
 
@@ -534,10 +511,8 @@ $(W_PIPC_OBJ): $(W_DIR)/%.o: $(MSL_DIR)/src/%.c | $(W_DIR)
 # Order-only: the header must exist before shader_source.cpp compiles, but its
 # regeneration must not force object rebuilds (embedded-shaders is phony).
 $(W_CPP_OBJ): | embedded-shaders
-$(W_DIR)/vk_cuda_interop.o: CXX_FLAGS_BUILD_WIN_COMMON += -DVK_USE_PLATFORM_WIN32_KHR
-$(W_DIR)/vk_cuda_interop.o: $(CUDA_INTEROP_HEADER)
 
-windows: $(WIN_FEATURES) $(VK_EMBEDDED_HEADER) $(CUDA_INTEROP_HEADER) $(GLFW_WIN_LIB) win-shaders-gpu $(W_ALL_OBJ)
+windows: $(WIN_FEATURES) $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) win-shaders-gpu $(W_ALL_OBJ)
 	$(WIN_CXX) $(W_ALL_OBJ) -o viewer.exe $(CFLAGS) -static -s -Wl,--gc-sections $(WIN_LIBS) $(GLFW_WIN_LIB) $(WIN_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 -Wl,-Bstatic
 	@if [ "$(HAVE_STREAMLINE)" = "1" ]; then cp -f "$(STREAMLINE_DLL_DIR)"/*.dll .; fi
 	@imports="$$($(WIN_CXX) -print-prog-name=objdump -p viewer.exe)"; \
@@ -555,7 +530,11 @@ vulkan-instancing-perf: windows
 	    powershell.exe -NoProfile -ExecutionPolicy Bypass -File \
 	    tools/perf_vulkan_instancing.ps1
 
+# Windows .d files contain D:/-style paths that break GNU make on Linux/WSL
+# ("multiple target patterns"), so only include them under MSYS2.
+ifdef MSYSTEM
 -include $(W_ALL_OBJ:.o=.d)
+endif
 
 # win-shaders: removed — all runtime shaders are now embedded at build time via
 # shaders_gen/embedded_shaders.h (Task 9). A Windows .exe no longer needs shader

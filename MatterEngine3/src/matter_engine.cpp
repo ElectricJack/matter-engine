@@ -19,7 +19,6 @@
 #include "probe_texture.h"
 #include "gpu_culler.h"
 #include "raster_cull.h"
-#include "rt_lighting.h"
 #include "gl46.h"
 #endif
 #include "sector_resolver.h"
@@ -249,10 +248,6 @@ struct WorldSession::Impl {
     bool             rt_shader_ready = false;
     bool             rt_warmed       = false;
 
-    // Task 5: OptiX shadow ray tracing (lazy init on first rt_shadows frame).
-    viewer::RtLighting rt_lighting;
-    bool               rt_lighting_ready = false;
-    bool               rt_lighting_failed = false;
 #endif
     bool              culler_ready = false;
 
@@ -3806,178 +3801,22 @@ void WorldSession::render(const CameraDesc& cam, int fb_width, int fb_height,
         impl_->stats.instances_total    = (uint32_t)resolved.size();
         impl_->stats.parts_baked        = (uint32_t)impl_->store->loaded_count();
 
-        // Clear + draw: Phase 2 G-buffer path or Phase 1 default path.
-        if (opts.rt_full_lighting && impl_->rt_lighting_ready && impl_->rt_lighting.available()) {
-            // Phase 2: draw into G-buffer FBO.
-            impl_->rt_lighting.begin_gbuffer(fb_width, fb_height);
-            auto d0 = std::chrono::steady_clock::now();
-            impl_->stats.triangles = (uint32_t)impl_->raster->draw_gpu_driven_gbuffer(
-                    impl_->gpu_culler, *impl_->store, legacy_camera, near_z, far_z);
-            impl_->rt_lighting.end_gbuffer();
-            impl_->stats.instances_drawn = (uint32_t)impl_->gpu_culler.emitted();
-            impl_->stats.clusters_culled = (uint32_t)impl_->gpu_culler.culled_clusters();
-            impl_->stats.hiz_culled      = (uint32_t)impl_->gpu_culler.culled_hiz();
-            impl_->stats.draw_ms = std::chrono::duration<float, std::milli>(
-                                       std::chrono::steady_clock::now() - d0).count();
+        glClearColor(impl_->sky_clear[0], impl_->sky_clear[1], impl_->sky_clear[2], 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-            // Depth linearize from G-buffer depth for RT reconstruction.
-            impl_->rt_lighting.prepare_depth(
-                impl_->rt_lighting.gbuffer_depth_tex(), fb_width, fb_height);
-
-            // GL→CUDA sync before OptiX launch.
-            glFinish();
-
-            // Build TLAS + register parts (same as Phase 1 shadow path).
-            std::vector<viewer::GpuCuller::RtInstance> culler_instances;
-            impl_->gpu_culler.fill_rt_instances(culler_instances);
-            for (auto& ci : culler_instances) {
-                auto* lp = impl_->store->get_or_load(ci.part_hash);
-                if (lp && !lp->lod_mesh_data.empty()) {
-                    auto& mesh = lp->lod_mesh_data[0];
-                    impl_->rt_lighting.register_part(ci.part_hash,
-                        mesh.vertices.data(), mesh.normals.data(),
-                        mesh.texcoords.data(), mesh.vertex_count);
-                }
-            }
-
-            std::vector<viewer::RtLighting::InstanceInput> rt_instances;
-            rt_instances.reserve(culler_instances.size());
-            for (auto& ci : culler_instances) {
-                viewer::RtLighting::InstanceInput inp;
-                inp.part_hash = ci.part_hash;
-                inp.lod_level = 0;
-                memcpy(inp.transform, ci.transform, sizeof(inp.transform));
-                rt_instances.push_back(inp);
-            }
-            impl_->rt_lighting.update_instances(rt_instances.data(),
-                                                (int)rt_instances.size());
-
-            float inv_vp[16];
-            if (invert4x4(vp, inv_vp)) {
-                const float* sd = impl_->manifest.lights.sun_dir;
-                float neg_sun[3] = {-sd[0], -sd[1], -sd[2]};
-                float sun_col[3] = {
-                    impl_->manifest.lights.sun_color[0],
-                    impl_->manifest.lights.sun_color[1],
-                    impl_->manifest.lights.sun_color[2]};
-                float sky_col[3] = {
-                    impl_->manifest.lights.sky_color[0],
-                    impl_->manifest.lights.sky_color[1],
-                    impl_->manifest.lights.sky_color[2]};
-
-                if (impl_->rt_lighting.trace_lighting(inv_vp, neg_sun, sun_col, sky_col,
-                                                       fb_width, fb_height)) {
-                    impl_->rt_lighting.accumulate_and_denoise(inv_vp);
-                    impl_->rt_lighting.composite_lighting(fb_width, fb_height);
-                }
-            }
-        } else {
-            // Phase 1: draw to default framebuffer (existing path).
-            glClearColor(impl_->sky_clear[0], impl_->sky_clear[1], impl_->sky_clear[2], 1.0f);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-            auto d0 = std::chrono::steady_clock::now();
-            impl_->stats.triangles = (uint32_t)impl_->raster->draw_gpu_driven(
-                    impl_->gpu_culler, *impl_->store, legacy_camera, near_z, far_z);
-            impl_->stats.instances_drawn    = (uint32_t)impl_->gpu_culler.emitted();
-            impl_->stats.clusters_culled    = (uint32_t)impl_->gpu_culler.culled_clusters();
-            impl_->stats.hiz_culled         = (uint32_t)impl_->gpu_culler.culled_hiz();
-            impl_->stats.draw_ms = std::chrono::duration<float, std::milli>(
-                                       std::chrono::steady_clock::now() - d0).count();
-        }
+        auto d0 = std::chrono::steady_clock::now();
+        impl_->stats.triangles = (uint32_t)impl_->raster->draw_gpu_driven(
+                impl_->gpu_culler, *impl_->store, legacy_camera, near_z, far_z);
+        impl_->stats.instances_drawn    = (uint32_t)impl_->gpu_culler.emitted();
+        impl_->stats.clusters_culled    = (uint32_t)impl_->gpu_culler.culled_clusters();
+        impl_->stats.hiz_culled         = (uint32_t)impl_->gpu_culler.culled_hiz();
+        impl_->stats.draw_ms = std::chrono::duration<float, std::milli>(
+                                   std::chrono::steady_clock::now() - d0).count();
 
         // Build HiZ depth max-pyramid for next-frame occlusion culling.
         // No-op when HiZ toggle is off.
         if (impl_->culler_ready)
             impl_->gpu_culler.build_hiz(fb_width, fb_height);
-
-        // Task 5: OptiX RT shadow tracing (after depth is available).
-        // Init block fires for either rt_shadows or rt_full_lighting so the CUDA/OptiX
-        // pipeline, G-buffer shader, and material table are ready for Phase 2 as well.
-        if ((opts.rt_shadows || opts.rt_full_lighting) && impl_->culler_ready && !impl_->rt_lighting_failed) {
-            if (!impl_->rt_lighting_ready) {
-                std::string rt_err;
-                if (impl_->rt_lighting.init(rt_err)) {
-                    impl_->rt_lighting_ready = true;
-                    printf("RT shadows enabled\n");
-                    std::string gbuf_err;
-                    if (!impl_->raster->init_gbuffer_shader(gbuf_err))
-                        printf("G-buffer shader failed: %s\n", gbuf_err.c_str());
-                    // Upload material table to device for RT closest-hit.
-                    {
-                        float mat_table[32 * MATERIAL_FLOATS_PER_DEF] = {0};
-                        MaterialRegistryPackForGPU(mat_table);
-                        int mat_count = MaterialRegistryCount();
-                        impl_->rt_lighting.upload_material_table(mat_table, mat_count);
-                    }
-                } else {
-                    printf("RT shadows unavailable: %s\n", rt_err.c_str());
-                    impl_->rt_lighting_failed = true;
-                }
-            }
-            if (impl_->rt_lighting_ready && impl_->rt_lighting.available()) {
-                // Use the GpuCuller's expanded instance list (includes children).
-                std::vector<viewer::GpuCuller::RtInstance> culler_instances;
-                impl_->gpu_culler.fill_rt_instances(culler_instances);
-
-                // Register BLASes for any parts not yet in the cache.
-                for (auto& ci : culler_instances) {
-                    auto* lp = impl_->store->get_or_load(ci.part_hash);
-                    if (lp && !lp->lod_mesh_data.empty()) {
-                        auto& mesh = lp->lod_mesh_data[0];
-                        impl_->rt_lighting.register_part(ci.part_hash,
-                            mesh.vertices.data(), mesh.normals.data(),
-                            mesh.texcoords.data(), mesh.vertex_count);
-                    }
-                }
-
-                // Build TLAS from culler's expanded instances.
-                std::vector<viewer::RtLighting::InstanceInput> rt_instances;
-                rt_instances.reserve(culler_instances.size());
-                for (auto& ci : culler_instances) {
-                    viewer::RtLighting::InstanceInput inp;
-                    inp.part_hash = ci.part_hash;
-                    inp.lod_level = 0;
-                    memcpy(inp.transform, ci.transform, sizeof(inp.transform));
-                    rt_instances.push_back(inp);
-                }
-                impl_->rt_lighting.update_instances(rt_instances.data(),
-                                                    (int)rt_instances.size());
-
-                // Ensure depth texture is current for GL-CUDA interop.
-                impl_->gpu_culler.ensure_depth_blit(fb_width, fb_height);
-                impl_->rt_lighting.prepare_depth(
-                    impl_->gpu_culler.depth_copy_tex(), fb_width, fb_height);
-
-                // GL must finish before CUDA maps the depth texture.
-                glFinish();
-
-                float inv_vp[16];
-                if (invert4x4(vp, inv_vp)) {
-                    const float* sd = impl_->manifest.lights.sun_dir;
-                    float neg_sun[3] = {-sd[0], -sd[1], -sd[2]};
-
-                    static bool rt_diag_once = false;
-                    if (!rt_diag_once) {
-                        rt_diag_once = true;
-                        printf("RT shadow diag: sun_dir=(%.3f,%.3f,%.3f) neg_sun=(%.3f,%.3f,%.3f)\n",
-                               sd[0], sd[1], sd[2], neg_sun[0], neg_sun[1], neg_sun[2]);
-                        printf("RT shadow diag: eye=(%.1f,%.1f,%.1f) near=%.1f far=%.1f\n",
-                               eye[0], eye[1], eye[2], near_z, far_z);
-                        printf("RT shadow diag: trace_res=%dx%d tlas_instances=%d\n",
-                               fb_width/2, fb_height/2, (int)rt_instances.size());
-                    }
-
-                    // Phase 1 shadow composite only runs when Phase 2 full lighting
-                    // is NOT active — Phase 2 composites its own output instead.
-                    if (!opts.rt_full_lighting) {
-                        if (impl_->rt_lighting.trace_shadows(inv_vp, neg_sun)) {
-                            impl_->rt_lighting.composite(fb_width, fb_height, 0.7f);
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 #else

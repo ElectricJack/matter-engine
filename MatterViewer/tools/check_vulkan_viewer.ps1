@@ -269,11 +269,9 @@ Forbid-Text $compat 'Texture2D LoadTextureFromImage(Image) { return Texture2D{};
 Forbid-Text $compat 'int GetShaderLocation(Shader, const char*) { return -1; }' 'silent shader stub'
 Require-Text $cell '#ifndef MATTER_VULKAN_ONLY' 'Vulkan-only UploadMesh exclusion'
 
-foreach ($feature in @('CUDA_AVAILABLE=1','OPTIX_AVAILABLE=1','CUDA_ACTIVE=1',
-                        'OPTIX_ACTIVE=0','VULKAN=1','OPENGL=0')) {
+foreach ($feature in @('VULKAN=1','OPENGL=0')) {
     Require-Text $makefile $feature 'truthful feature manifest'
 }
-Forbid-Text $makefile 'cuDevicePrimaryCtxRelease' 'artificial CUDA retention symbol'
 
 if ($failures.Count -ne 0) {
     [Console]::Error.WriteLine('vulkan-viewer gate: FAIL')

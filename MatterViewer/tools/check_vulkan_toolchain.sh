@@ -5,8 +5,6 @@ set -eu
 : "${VULKAN_INCLUDE:=/ucrt64/include}"
 : "${VULKAN_LIB_DIR:=/ucrt64/lib}"
 : "${GLSLC:=/ucrt64/bin/glslc}"
-: "${CUDA_PATH:=/c/PROGRA~1/NVIDIA~2/CUDA/v13.3}"
-: "${OPTIX_PATH:=/c/PROGRA~3/NVIDIA~1/OPTIXS~1.0}"
 : "${HAVE_STREAMLINE:=0}"
 : "${STREAMLINE_PATH:=}"
 : "${STREAMLINE_DLL_DIR:=$STREAMLINE_PATH/bin/x64/development}"
@@ -29,8 +27,6 @@ require_command 'Windows C++ compiler' "$WIN_CXX"
 require_command 'Vulkan shader compiler' "$GLSLC"
 require_file 'Vulkan header' "$VULKAN_INCLUDE/vulkan/vulkan.h"
 require_file 'Vulkan import library' "$VULKAN_LIB_DIR/libvulkan-1.dll.a"
-require_file 'CUDA header' "$CUDA_PATH/include/cuda.h"
-require_file 'OptiX header' "$OPTIX_PATH/include/optix.h"
 case "$HAVE_STREAMLINE" in
     0) ;;
     1)
@@ -67,4 +63,4 @@ src="$(mktemp --suffix=.cpp)"
 exe="$(mktemp --suffix=.exe)"
 printf '#include <vulkan/vulkan.h>\nint main(){return vkEnumerateInstanceVersion(0);}\n' > "$src"
 "$WIN_CXX" "$src" -I"$VULKAN_INCLUDE" -L"$VULKAN_LIB_DIR" -lvulkan-1 -o "$exe"
-printf 'vulkan-preflight: OK CUDA=1 OPTIX=1\n'
+printf 'vulkan-preflight: OK\n'

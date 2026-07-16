@@ -502,21 +502,6 @@ int GpuCuller::part_slot_of(uint64_t hash) const {
     return it != slot_of_.end() ? it->second : -1;
 }
 
-int GpuCuller::fill_rt_instances(std::vector<RtInstance>& out) const {
-    out.clear();
-    out.reserve(expanded_.size());
-    for (auto& ei : expanded_) {
-        if (ei.part_slot < 0 || ei.part_slot >= (int)parts_.size()) continue;
-        auto& pg = parts_[ei.part_slot];
-        if (!pg.vao) continue;
-        RtInstance ri;
-        ri.part_hash = pg.part_hash;
-        std::memcpy(ri.transform, ei.transform, sizeof ri.transform);
-        out.push_back(ri);
-    }
-    return (int)out.size();
-}
-
 // ---------------------------------------------------------------------------
 // release_part — evict a single part's GPU resources.
 //
@@ -995,32 +980,6 @@ void GpuCuller::reset() {
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_xforms_);
     glBufferData(GL_SHADER_STORAGE_BUFFER, 1, nullptr, GL_DYNAMIC_COPY);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-}
-
-// ---------------------------------------------------------------------------
-// ensure_depth_blit — Task 5 RT: ensure depth_copy_tex_ has a current copy of
-// the default framebuffer's depth. When HiZ is already enabled and sized, this
-// just blits depth; otherwise it forces a build_hiz pass to allocate textures.
-// ---------------------------------------------------------------------------
-void GpuCuller::ensure_depth_blit(int screen_w, int screen_h) {
-    if (screen_w <= 0 || screen_h <= 0) return;
-    if (!depth_copy_tex_ || hiz_w_ != screen_w || hiz_h_ != screen_h) {
-        // Need to allocate / reallocate depth textures via build_hiz().
-        bool was_enabled = hiz_enabled_;
-        hiz_enabled_ = true;
-        build_hiz(screen_w, screen_h);
-        hiz_enabled_ = was_enabled;
-        if (!was_enabled) hiz_valid_ = false;
-        return;
-    }
-    // Textures exist and are the right size; just blit.
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, depth_fbo_);
-    glBlitFramebuffer(0, 0, screen_w, screen_h,
-                      0, 0, screen_w, screen_h,
-                      GL_DEPTH_BUFFER_BIT, GL_NEAREST);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
 }
 
 // ---------------------------------------------------------------------------

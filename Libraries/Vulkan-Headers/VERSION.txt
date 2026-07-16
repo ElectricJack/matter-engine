@@ -1,0 +1,1 @@
+Khronos Vulkan-Headers v1.3.275 (C headers only; .hpp/.cppm bindings stripped)

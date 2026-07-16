@@ -251,8 +251,7 @@ try {
     $features = Join-Path (Split-Path $ViewerPath) 'build\windows\build_features.txt'
     if (-not (Test-Path $features)) { $features = Join-Path $root 'MatterViewer\build\windows\build_features.txt' }
     $manifest = Get-Content -Raw $features
-    foreach ($feature in @('VULKAN=1','CUDA_AVAILABLE=1','OPTIX_AVAILABLE=1',
-                            'CUDA_ACTIVE=1','OPTIX_ACTIVE=0','OPENGL=0')) {
+    foreach ($feature in @('VULKAN=1','OPENGL=0')) {
         if (-not $manifest.Contains($feature)) { throw "feature manifest missing $feature" }
     }
     Invoke-ViewerCase 'cornell-demo' $false 1280 720 $false $false $false

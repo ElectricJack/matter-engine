@@ -21,7 +21,6 @@
 #include "render/streamline_bridge.h"
 #include "render/vk_temporal.h"
 #include "render/vk_gi_math.h"
-#include "render/vk_cuda_interop.h"
 #include "render/vk_device_internal.h"
 #include "render/vk_instance_cache.h"
 #include "render/vk_lighting_controls.h"
@@ -590,147 +589,6 @@ void run_streamline_presentation_funnel_tests(matter::VulkanDevice& vulkan) {
           "VulkanDevice funnels acquire before adjacent sole common-present and present");
     CHECK(vulkan.test_last_present_common_serial() == submitted.serial,
           "common-present handoff exposes the submitted frame serial");
-}
-
-void run_cuda_vulkan_interop(matter::VulkanDevice& vulkan) {
-    std::string error;
-    auto interop = matter::CudaVulkanInterop::create(vulkan, error);
-    CHECK(interop != nullptr,
-          error.empty() ? "create CUDA Vulkan interop" : error.c_str());
-    if (!interop) return;
-    CHECK(matter::cuda_vulkan_application_export_handle_count() == 0,
-          "CUDA interop creation closes every application-owned export handle");
-
-    CHECK(!matter::cuda_vulkan_device_ids_match_for_test(
-              interop->vulkan_uuid(), interop->cuda_uuid(), true),
-          "UUID mismatch test seam rejects different adapters");
-    const std::array<uint8_t, VK_LUID_SIZE> vk_luid{{1,2,3,4,5,6,7,8}};
-    auto cuda_luid = vk_luid;
-    CHECK(matter::cuda_vulkan_luid_matches_for_test(
-              true, vk_luid, 1, true, cuda_luid, 1),
-          "matching Vulkan/CUDA LUID and node mask select the adapter");
-    cuda_luid[0] ^= 1;
-    CHECK(!matter::cuda_vulkan_luid_matches_for_test(
-              true, vk_luid, 1, true, cuda_luid, 1) &&
-              !matter::cuda_vulkan_luid_matches_for_test(
-                  true, vk_luid, 1, true, vk_luid, 2),
-          "LUID or node-mask mismatch rejects the CUDA adapter");
-    CHECK(!matter::cuda_vulkan_luid_matches_for_test(
-              true, vk_luid, 1, false, vk_luid, 1),
-          "valid Vulkan LUID requires successful cuDeviceGetLuid");
-    const std::string luid_error =
-        matter::cuda_vulkan_luid_failure_diagnostic_for_test(
-            "vk-name", interop->vulkan_uuid(), vk_luid, 3, "cuda-name",
-            interop->cuda_uuid(), 999);
-    CHECK(luid_error.find("CUresult 999") != std::string::npos &&
-              luid_error.find("vk-name") != std::string::npos &&
-              luid_error.find("cuda-name") != std::string::npos &&
-              luid_error.find("nodeMask=3") != std::string::npos &&
-              luid_error.find("luid=<unavailable>") != std::string::npos,
-          "cuDeviceGetLuid failure reports result, names, IDs, and masks");
-
-    const char* cycles_text = std::getenv("MATTER_VK_SMOKE_RESIZES");
-    const unsigned long parsed = cycles_text ? std::strtoul(cycles_text, nullptr, 10) : 100;
-    const uint32_t cycles = parsed > 0 && parsed <= 10000
-                                ? static_cast<uint32_t>(parsed)
-                                : 100;
-    matter::CudaVulkanInteropPixel pixel{};
-    for (uint32_t warmup = 0; warmup < 2; ++warmup) {
-        const VkExtent2D extent = warmup == 0 ? VkExtent2D{64, 64}
-                                              : VkExtent2D{96, 80};
-        CHECK(interop->round_trip(extent, warmup + 1, pixel, error),
-              error.empty() ? "CUDA Vulkan interop size-class warm-up"
-                            : error.c_str());
-        CHECK(matter::cuda_vulkan_application_export_handle_count() == 0,
-              "size-class import closes its application-owned export handle");
-    }
-    CHECK(!interop->round_trip({64, 64}, 2, pixel, error) &&
-              error.find("strictly increasing") != std::string::npos,
-          "interop rejects repeated timeline serials");
-    error.clear();
-    const uint32_t baseline_handles = matter::win32_process_handle_count();
-    for (uint32_t cycle = 0; cycle < cycles; ++cycle) {
-        const VkExtent2D extent = (cycle & 1u) == 0 ? VkExtent2D{64, 64}
-                                                    : VkExtent2D{96, 80};
-        CHECK(interop->round_trip(extent, cycle + 3, pixel, error),
-              error.empty() ? "CUDA Vulkan interop round trip" : error.c_str());
-        CHECK(close4({pixel.r, pixel.g, pixel.b, pixel.a},
-                     {0.0f, 1.0f, 1.0f, 1.0f}, 1e-3f),
-              "CUDA imported surface contains exact cyan pixel");
-        if (!error.empty()) break;
-    }
-    const uint32_t steady_handles = matter::win32_process_handle_count();
-    CHECK(steady_handles <= baseline_handles + 2,
-          "100 interop operations keep steady-state handle count within two");
-    interop.reset();
-    CHECK(matter::cuda_vulkan_application_export_handle_count() == 0,
-          "interop reset owns no exported Win32 handles");
-    const uint32_t final_handles = matter::win32_process_handle_count();
-    std::printf("interop cycles: %u\n", cycles);
-    std::printf("interop pixel: %.6f %.6f %.6f %.6f\n", pixel.r, pixel.g,
-                pixel.b, pixel.a);
-    std::printf("interop handles steady: %u -> %u; after teardown: %u\n",
-                baseline_handles, steady_handles, final_handles);
-}
-
-bool run_cuda_vulkan_interop_fault(matter::VulkanDevice& vulkan,
-                                   const char* fault) {
-    std::string error;
-    matter::cuda_vulkan_reset_test_destroy_call_count();
-    const uintptr_t caller_context =
-        matter::cuda_vulkan_create_caller_context_for_test(error);
-    CHECK(caller_context != 0,
-          error.empty() ? "create non-null caller CUDA context" : error.c_str());
-    std::string query_error;
-    CHECK(matter::cuda_vulkan_current_context_for_test(query_error) == caller_context,
-          query_error.empty() ? "caller CUDA context is current"
-                              : query_error.c_str());
-    auto interop = matter::CudaVulkanInterop::create(vulkan, error);
-    CHECK(interop != nullptr,
-          error.empty() ? "create fault-test CUDA Vulkan interop" : error.c_str());
-    CHECK(matter::cuda_vulkan_current_context_for_test(query_error) == caller_context,
-          query_error.empty() ? "interop create preserves caller CUDA current context"
-                              : query_error.c_str());
-    if (!interop) {
-        matter::cuda_vulkan_destroy_caller_context_for_test(caller_context);
-        return false;
-    }
-    _putenv_s("MATTER_VK_INTEROP_FAULT", fault);
-    matter::CudaVulkanInteropPixel pixel{};
-    const bool completed = interop->round_trip({64, 64}, 1, pixel, error);
-    _putenv_s("MATTER_VK_INTEROP_FAULT", "");
-    CHECK(!completed, "selected CUDA Vulkan interop fault aborts the round trip");
-    const std::string fault_name = fault;
-    std::string expected;
-    if (fault_name == "after-kernel-before-signal") expected = "after kernel launch";
-    else if (fault_name == "signal-enqueue-failure") expected = "cuSignalExternalSemaphoresAsync";
-    else if (fault_name == "after-signal-before-vk-wait") expected = "after CUDA signal";
-    else if (fault_name == "cuda-async-unproven") expected = "asynchronous CUDA";
-    else if (fault_name == "vk-wait-failure") expected = "Vulkan fence wait";
-    else if (fault_name == "vk-recovery-unproven") expected = "Vulkan timeline";
-    CHECK(!expected.empty() && error.find(expected) != std::string::npos,
-          "fault diagnostic identifies the selected ownership phase");
-    CHECK(interop->poisoned(), "post-launch failure poisons CUDA Vulkan interop");
-    const std::string poison = error;
-    CHECK(!interop->round_trip({64, 64}, 2, pixel, error) && error == poison,
-          "poisoned CUDA Vulkan interop fails closed with a stable diagnostic");
-    CHECK(matter::cuda_vulkan_current_context_for_test(query_error) == caller_context,
-          query_error.empty() ? "interop failure preserves caller CUDA current context"
-                              : query_error.c_str());
-    CHECK(matter::cuda_vulkan_application_export_handle_count() == 0,
-          "failure path owns no exported Win32 handles");
-    interop.reset();
-    CHECK(matter::cuda_vulkan_current_context_for_test(query_error) == caller_context,
-          query_error.empty() ? "interop reset preserves caller CUDA current context"
-                              : query_error.c_str());
-    const bool unproven = fault_name == "cuda-async-unproven" ||
-                          fault_name == "vk-recovery-unproven";
-    if (unproven) {
-        CHECK(matter::cuda_vulkan_test_destroy_call_count() == 0,
-              "unproven completion preserves all interop resources");
-    }
-    matter::cuda_vulkan_destroy_caller_context_for_test(caller_context);
-    return unproven;
 }
 
 void run_vulkan_only_handle_diagnostic(matter::VulkanDevice& vulkan) {
@@ -4754,40 +4612,6 @@ int main() {
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
             vulkan->wait_idle();
-            finish_vulkan_test(vulkan);
-            if (window) glfwDestroyWindow(window);
-            glfwTerminate();
-            return check_summary();
-        }
-        if (smoke_mode && std::string(smoke_mode) == "interop") {
-            run_cuda_vulkan_interop(*vulkan);
-            std::printf("validation errors: %u\n",
-                        vulkan->validation_error_count());
-            finish_vulkan_test(vulkan);
-            if (window) glfwDestroyWindow(window);
-            glfwTerminate();
-            return check_summary();
-        }
-        if (smoke_mode &&
-            std::string(smoke_mode).rfind("interop-fault-", 0) == 0) {
-            const bool preserve_process = run_cuda_vulkan_interop_fault(
-                *vulkan, std::string(smoke_mode).substr(14).c_str());
-            std::printf("validation errors: %u\n",
-                        vulkan->validation_error_count());
-            if (preserve_process) {
-                CHECK(vulkan->validation_error_count() == 0,
-                      "unproven completion reports no Vulkan validation errors");
-                const int result = check_summary();
-                std::fflush(stdout);
-                std::fflush(stderr);
-                // ExitProcess runs DLL detach and the NVIDIA driver may block
-                // trying to tear down the deliberately preserved live CUDA
-                // context. TerminateProcess is the test's explicit proof that
-                // OS cleanup, not unsafe API destruction, owns this terminal
-                // unproven-completion case.
-                TerminateProcess(GetCurrentProcess(), static_cast<UINT>(result));
-                std::abort();
-            }
             finish_vulkan_test(vulkan);
             if (window) glfwDestroyWindow(window);
             glfwTerminate();

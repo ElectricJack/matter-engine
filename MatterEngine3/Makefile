@@ -65,42 +65,8 @@ BOX3D_DIR     = ../Libraries/box3d
 INCLUDE_PATHS = -Iinclude -Isrc -Isrc/render -Isrc/provider \
                 -I$(MSL_DIR)/include -I$(MSL_DIR)/src \
                 -I$(QJS_DIR) -I$(RAYLIB_PATH) -I$(BOX3D_DIR)/include \
-                -I$(PFL_DIR)/include $(EXTRA_INCLUDE)
-
-# Ensure `all` is the default goal even when HAVE_CUDA defines earlier explicit
-# targets (the RT_EMBEDDED_HEADER rule would otherwise become the default goal).
-.DEFAULT_GOAL := all
-
-# --- CUDA / OptiX (optional, gated by HAVE_CUDA) ---
-CUDA_PATH  ?= /usr/local/cuda
-OPTIX_PATH ?= $(HOME)/NVIDIA-OptiX-SDK-7.7.0
-
-ifdef HAVE_CUDA
-  NVCC       = $(CUDA_PATH)/bin/nvcc
-  NVCC_FLAGS = --ptx --machine 64 -O2 -I$(OPTIX_PATH)/include -I$(CUDA_PATH)/include
-  CFLAGS    += -DMATTER_HAVE_OPTIX -I$(CUDA_PATH)/include -I$(OPTIX_PATH)/include
-  RT_CU_DIR  = src/render/shaders_rt
-  RT_PTX     = $(RT_CU_DIR)/shadow_raygen.ptx $(RT_CU_DIR)/shadow_miss.ptx $(RT_CU_DIR)/shadow_hit.ptx \
-               $(RT_CU_DIR)/lighting_raygen.ptx $(RT_CU_DIR)/lighting_closesthit.ptx $(RT_CU_DIR)/lighting_miss.ptx
-  RT_CPP     = src/render/rt_lighting.cpp
-  RT_OBJ     = rt_lighting.o
-
-$(RT_CU_DIR)/%.ptx: $(RT_CU_DIR)/%.cu
-	$(NVCC) $(NVCC_FLAGS) -o $@ $<
-
-RT_EMBEDDED_HEADER = shaders_gen/embedded_rt_shaders.h
-
-# $(RT_EMBEDDED_HEADER) depends on whatever PTX files currently exist on disk.
-# When no PTX exist yet (before Task 5 adds .cu sources), the wildcard list is
-# empty — the header is still regenerated (empty namespace) but make does not
-# error on missing prerequisites.
-$(RT_EMBEDDED_HEADER): $(wildcard $(RT_PTX))
-	mkdir -p shaders_gen
-	python3 tools/embed_rt_shaders.py $@ $(wildcard $(RT_PTX))
-
-rt_lighting.o: src/render/rt_lighting.cpp $(RT_EMBEDDED_HEADER)
-	$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDE_PATHS) -I$(CUDA_PATH)/include -I$(OPTIX_PATH)/include
-endif
+                -I$(PFL_DIR)/include \
+                -I../Libraries/Vulkan-Headers/include $(EXTRA_INCLUDE)
 
 # Vendored QuickJS-ng engine. v0.10.0 needs xsum.c (xsum_small_* symbols) beyond
 # the core four. Compiled via gcc (C) so the embedding symbols stay unmangled.
@@ -215,11 +181,7 @@ SHADER_LOGICAL := shaders/raster.vs shaders/raster.fs shaders/tileset_sampling.g
     shaders/materials.glsl shaders/bvh_tlas_common.glsl shaders/lighting.glsl \
     shaders_gpu/cull.comp shaders_gpu/hiz_downsample.comp \
     shaders_gpu/raster_gpu_driven.vs shaders_gpu/tileset_bake_primary.comp \
-    shaders_gpu/tileset_bake_ao.comp \
-    shaders_gpu/depth_linearize.comp \
-    shaders_gpu/rt_composite.vs shaders_gpu/rt_composite.fs \
-    shaders_gpu/raster_gbuffer.fs \
-    shaders_gpu/rt_lighting_composite.fs
+    shaders_gpu/tileset_bake_ao.comp
 # SHADER_FILES resolves logical paths into real filesystem paths under MatterEngine3/:
 # shaders/ is a symlink -> ../MatterSurfaceLib/shaders; shaders_gpu/ is a real dir.
 SHADER_FILES := $(SHADER_LOGICAL)
@@ -302,11 +264,6 @@ $(ME3_OBJ): shaders_gen/embedded_shaders.h
 $(ME3_OBJ) $(MSL_OBJ): .lib_flags
 %.o: %.cpp
 	$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDE_PATHS)
-
-ifdef HAVE_CUDA
-ME3_OBJ += $(RT_OBJ)
-$(LIB): $(RT_PTX)
-endif
 
 $(LIB): $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ)
 	ar rcs $(LIB) $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ)
