@@ -134,6 +134,27 @@ void transition_for_use(VkCommandBuffer command_buffer,
         destination_stage, destination_access, aspect);
 }
 
+void clear_color_image_for_use(VkCommandBuffer command_buffer,
+                               matter::VkImageResource& image,
+                               const VkClearColorValue& value,
+                               VkImageLayout next_layout,
+                               VkPipelineStageFlags2 next_stage,
+                               VkAccessFlags2 next_access) {
+    transition_for_use(command_buffer, image,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                       VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT);
+    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdClearColorImage(command_buffer, image.image,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &value, 1,
+                         &range);
+    matter::record_image_transition(command_buffer, image, next_layout,
+                                    VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                    VK_ACCESS_2_TRANSFER_WRITE_BIT, next_stage,
+                                    next_access, VK_IMAGE_ASPECT_COLOR_BIT);
+}
+
 VkPipelineStageFlags2 gbuffer_sampled_stages(
     uint32_t attachment_index, bool native_ray_tracing_available) {
     VkPipelineStageFlags2 stages = 0;
@@ -383,44 +404,18 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
             record.pixel_budget, record.extent, *record.error);
         if (!*record.ray_trace_ok) return;
     } else {
-        transition_for_use(command_buffer, *record.visibility,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                           VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                           VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                           VK_IMAGE_ASPECT_COLOR_BIT);
         const VkClearColorValue one{{1.0f, 1.0f, 1.0f, 1.0f}};
-        const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1,
-                                             0, 1};
-        vkCmdClearColorImage(command_buffer, record.visibility->image,
-                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &one, 1,
-                             &range);
-        matter::record_image_transition(
-            command_buffer, *record.visibility,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-            VK_IMAGE_ASPECT_COLOR_BIT);
-        for (auto* signal : {record.raw_diffuse, record.raw_specular}) {
-            transition_for_use(command_buffer, *signal,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                               VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                               VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                               VK_IMAGE_ASPECT_COLOR_BIT);
-            const VkClearColorValue zero{{0.0f, 0.0f, 0.0f, 0.0f}};
-            vkCmdClearColorImage(command_buffer, signal->image,
-                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero,
-                                 1, &range);
-            matter::record_image_transition(
-                command_buffer, *signal,
+        clear_color_image_for_use(command_buffer, *record.visibility, one,
+                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        const VkClearColorValue zero{{0.0f, 0.0f, 0.0f, 0.0f}};
+        for (auto* signal : {record.raw_diffuse, record.raw_specular})
+            clear_color_image_for_use(
+                command_buffer, *signal, zero,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                VK_ACCESS_2_TRANSFER_WRITE_BIT,
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                VK_IMAGE_ASPECT_COLOR_BIT);
-        }
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     }
 
     VkRenderingAttachmentInfo hdr_attachment{
@@ -2469,22 +2464,11 @@ bool VkSceneRenderer::record_test_surface_ray(
                        VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
                        VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                        VK_IMAGE_ASPECT_COLOR_BIT);
-    transition_for_use(frame.command_buffer, raw_diffuse_,
-                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                       VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                       VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                       VK_IMAGE_ASPECT_COLOR_BIT);
     const VkClearColorValue raw_zero{{0.0f, 0.0f, 0.0f, 0.0f}};
-    const VkImageSubresourceRange raw_range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0,
-                                             1};
-    vkCmdClearColorImage(frame.command_buffer, raw_diffuse_.image,
-                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &raw_zero, 1,
-                         &raw_range);
-    matter::record_image_transition(
-        frame.command_buffer, raw_diffuse_, VK_IMAGE_LAYOUT_GENERAL,
-        VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
-        VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    clear_color_image_for_use(frame.command_buffer, raw_diffuse_, raw_zero,
+                              VK_IMAGE_LAYOUT_GENERAL,
+                              VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                              VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
     for (auto* image : {&raw_specular_, &raw_specular_aux_})
         transition_for_use(frame.command_buffer, *image,
                            VK_IMAGE_LAYOUT_GENERAL,
@@ -4215,48 +4199,21 @@ bool VkSceneRenderer::record_ray_traced_shadows(
     matter::Float3 camera_eye, float pixel_budget,
     VkExtent2D trace_extent, std::string& error) {
     auto clear_visibility = [&]() {
-        transition_for_use(frame.command_buffer, visibility_,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                           VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                           VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                           VK_IMAGE_ASPECT_COLOR_BIT);
         const VkClearColorValue one{{1.0f, 1.0f, 1.0f, 1.0f}};
-        const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1,
-                                             0, 1};
-        vkCmdClearColorImage(frame.command_buffer, visibility_.image,
-                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &one, 1,
-                             &range);
-        matter::record_image_transition(
-            frame.command_buffer, visibility_,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-            VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-            VK_IMAGE_ASPECT_COLOR_BIT);
+        clear_color_image_for_use(frame.command_buffer, visibility_, one,
+                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                  VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                  VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     };
     auto clear_raw_diffuse = [&]() {
         const VkClearColorValue zero{{0.0f, 0.0f, 0.0f, 0.0f}};
-        const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1,
-                                             0, 1};
         for (auto* image : {&raw_diffuse_, &raw_specular_,
                             &raw_specular_aux_}) {
-            transition_for_use(frame.command_buffer, *image,
-                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                               VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                               VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                               VK_IMAGE_ASPECT_COLOR_BIT);
-            vkCmdClearColorImage(frame.command_buffer, image->image,
-                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero,
-                                 1, &range);
-            matter::record_image_transition(
-                frame.command_buffer, *image,
+            clear_color_image_for_use(
+                frame.command_buffer, *image, zero,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                VK_ACCESS_2_TRANSFER_WRITE_BIT,
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                VK_IMAGE_ASPECT_COLOR_BIT);
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         }
     };
     const bool native_trace_enabled =
@@ -4606,36 +4563,17 @@ bool VkSceneRenderer::record_ray_traced_shadows(
                        VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
                        VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                        VK_IMAGE_ASPECT_COLOR_BIT);
-    transition_for_use(frame.command_buffer, raw_diffuse_,
-                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                       VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                       VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                       VK_IMAGE_ASPECT_COLOR_BIT);
     const VkClearColorValue gi_zero{{0.0f, 0.0f, 0.0f, 0.0f}};
-    const VkImageSubresourceRange gi_range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0,
-                                            1};
-    vkCmdClearColorImage(frame.command_buffer, raw_diffuse_.image,
-                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &gi_zero, 1,
-                         &gi_range);
-    matter::record_image_transition(
-        frame.command_buffer, raw_diffuse_, VK_IMAGE_LAYOUT_GENERAL,
-        VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
-        VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+    clear_color_image_for_use(frame.command_buffer, raw_diffuse_, gi_zero,
+                              VK_IMAGE_LAYOUT_GENERAL,
+                              VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                              VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
     for (auto* specular_image : {&raw_specular_, &raw_specular_aux_}) {
-        transition_for_use(frame.command_buffer, *specular_image,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                           VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                           VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                           VK_IMAGE_ASPECT_COLOR_BIT);
-        vkCmdClearColorImage(frame.command_buffer, specular_image->image,
-                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &gi_zero, 1,
-                             &gi_range);
-        matter::record_image_transition(
-            frame.command_buffer, *specular_image, VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        clear_color_image_for_use(
+            frame.command_buffer, *specular_image, gi_zero,
+            VK_IMAGE_LAYOUT_GENERAL,
             VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
-            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
     }
     const VkDeviceSize part_bytes = std::max<VkDeviceSize>(
         sizeof(GpuRtPartRecord),
@@ -4796,23 +4734,12 @@ bool VkSceneRenderer::record_ray_traced_shadows(
     cmd_trace(frame.command_buffer, &raygen, &miss, &hit, &callable,
               trace_extent.width, trace_extent.height, 1);
     if (gi_settings_.enabled) {
-        transition_for_use(frame.command_buffer, raw_diffuse_,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                           VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                           VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                           VK_IMAGE_ASPECT_COLOR_BIT);
         const VkClearColorValue dispatch_zero{{0.0f, 0.0f, 0.0f, 0.0f}};
-        const VkImageSubresourceRange dispatch_range{
-            VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        vkCmdClearColorImage(frame.command_buffer, raw_diffuse_.image,
-                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                             &dispatch_zero, 1, &dispatch_range);
-        matter::record_image_transition(
-            frame.command_buffer, raw_diffuse_, VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        clear_color_image_for_use(
+            frame.command_buffer, raw_diffuse_, dispatch_zero,
+            VK_IMAGE_LAYOUT_GENERAL,
             VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
-            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-            VK_IMAGE_ASPECT_COLOR_BIT);
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
         struct alignas(16) GiConstants {
             GpuMat4 clip_to_world;
             float to_sun_intensity[4];
