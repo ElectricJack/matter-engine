@@ -1,81 +1,118 @@
-# Task 4 Report: AO Bake Core (`part_ao_bake`)
+# Task 4 Report: Indexed Indirect Draws — DrawCommand layout, cull.comp, index buffer, draw sites
 
-**Date:** 2026-07-15  
-**Branch:** feature/rt-lighting-phase2  
-**Commit:** f3d3cbc — "feat(bake): deterministic part-local AO baker (part_ao_bake)"
+**Date:** 2026-07-16  
+**Branch:** worktree-gpu-timers-hud  
+**Commit:** b133bc9 — "feat(vk): indexed indirect draws (DrawCommand -> VkDrawIndexedIndirectCommand)"
 
 ---
 
 ## What Was Implemented
 
-Created a standalone, deterministic CPU AO baker for part geometry:
+### Step 1: `vk_draw_command.h` — 5-field struct + updated static asserts + `operator==`
 
-- **`MatterEngine3/src/part_ao_bake.h`** — Public API: `AoBakeParams`, `AoBakeStats`, `bake_part_ao()`.
-- **`MatterEngine3/src/part_ao_bake.cpp`** — Implementation: spherical-Fibonacci cosine-weighted hemisphere sampling, Duff et al. branchless ONB, VertKey dedup cache, manual BVH/BvhMesh cleanup.
-- **`MatterEngine3/tests/part_ao_tests.cpp`** — 5 headless unit tests.
-- **`MatterEngine3/tests/Makefile`** — Added `AO_TARGET/AO_CPP/AO_OBJS`, added `AO_CPP` to `def_CPP_SRCS`, added `run-partao` build+run rule, added to `.PHONY` and `clean`.
-- **`MatterEngine3/Makefile`** — Added `src/part_ao_bake.cpp` to `ME3_CPP` and `part_ao_bake.o` to `ME3_OBJ`.
+Replaced the 4-field `VkDrawIndirectCommand`-compatible struct with the 5-field `VkDrawIndexedIndirectCommand`-compatible layout:
+- `index_count`, `instance_count`, `first_index`, `vertex_offset` (int32_t), `first_instance`
+- Size assert updated: `5 * sizeof(uint32_t)` = 20 bytes
+- `operator==` updated to compare all five fields
+
+### Step 2: `vk_scene_renderer.h` — offset static asserts replaced
+
+Old asserts against `VkDrawIndirectCommand` replaced with five asserts against `VkDrawIndexedIndirectCommand` (including `vertex_offset ↔ vertexOffset`). Added `indices_` GPU buffer member next to `vertices_`, `uploaded_index_count_` alongside `uploaded_vertex_count_`, and `ensure_index_buffer` declaration next to `ensure_vertex_buffer`.
+
+### Step 3: `cull.comp` — struct + stats line
+
+GLSL `DrawCommand` updated to 5-field indexed layout (`int vertex_offset` in 4th slot). Stats line `vertex_count / 3u` → `index_count / 3u`.
+
+### Step 4: `vk_scene_renderer.cpp` — command fill + index buffer + draw calls
+
+**Command fill** (rebuild_command_template area): replaced the `// Task 4 replaces this` block with:
+```cpp
+command.index_count   = lods[lod].index_count;
+command.first_index   = lods[lod].first_index;   // already global (Task 3)
+command.vertex_offset = static_cast<int32_t>(parts_[cluster.part_slot].vertex_start);
+```
+The old rebase block that folded vertex bases into `first_vertex` is deleted.
+
+**Index buffer** (`ensure_index_buffer`): mirrors `ensure_vertex_buffer` exactly with usage flags `VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT`.
+
+**Upload** (`upload_scene_buffers`): `index_staging_` computed to `index_bytes`, capped against `max_buffer_size`, allocated via `next_indices`, uploaded alongside vertices/clusters, `uploaded_index_count_` set.
+
+**Reset** (`reset()`): `indices_.reset()` in full-reset path; `uploaded_index_count_ = 0` in counter reset.
+
+**Guard** (`render_gbuffer_and_composite`): condition expanded to `|| uploaded_index_count_ == 0`.
+
+**RasterRecord**: added `VkBuffer index_buffer` field. Both `RasterRecord` initializations updated to pass `indices_.buffer`; second dependencies vector gains `indices_.lifetime`.
+
+**record_raster**: `vkCmdBindIndexBuffer(command_buffer, record.index_buffer, 0, VK_INDEX_TYPE_UINT32)` added after `vkCmdBindVertexBuffers`. Both `vkCmdDrawIndirect` calls replaced with `vkCmdDrawIndexedIndirect`.
+
+### Step 5: `vulkan_smoke_tests.cpp` — CPU cull reference updated
+
+`run_cpu_cull`: `command.vertex_count` → `command.index_count`, `command.first_vertex` → `command.first_index`.
 
 ---
 
 ## TDD Evidence
 
 ### RED Phase
-`make run-partao` before implementing the header/source:
-```
-/usr/bin/ld: cannot find build/def/part_ao_tests.cpp.o: file format not recognized
-/usr/bin/ld: cannot find build/def/up__src__part_ao_bake.cpp.o: file format not recognized
-collect2: error: ld returned 1 exit status
-make: *** [Makefile:954: part_ao_tests] Error 1
-```
-Confirmed: tests attempted to compile but failed (header/impl absent), link step failed.
+Immediately after updating `vk_draw_command.h` to the 5-field layout, `vulkan_smoke_tests.cpp`'s `run_cpu_cull` function would have failed to compile against the stale field names — confirmed by the old names (`vertex_count`, `first_vertex`) that were present in that file. The test file `vk_scene_renderer_tests.cpp` doesn't use DrawCommand literals so it doesn't provide RED signal for this step.
 
-### Intermediate (partial RED)
-After creating header + impl but before fixing `def_CPP_SRCS` to include `AO_CPP`, the Makefile had no compile rule for the new sources — objects were created as empty directories, link failed again. Fix: added `$(AO_CPP)` to `def_CPP_SRCS` in `tests/Makefile`.
-
-### First GREEN Attempt — 1 failure
-After the compile fix, one test failed:
+### GREEN Phase
 ```
-FAIL: floor under a close lid darkens
-1 FAILURE(S)
-```
-Root cause: brief's `test_overhang_darkens` used lid `half=1.0f` — same footprint as the floor. Corner-only quad vertices have ~25% hemisphere hit rate to a same-size lid → ao ≈ 0.8, failing `< 0.5` threshold. Fix: enlarged lid to `half=3.0f` so all floor corners are well-enclosed → ~100% hemisphere ray coverage → ao ≈ 0.1.
-
-### GREEN Phase — All pass
-```
-ALL PASS (5 tests)
+make -C MatterEngine3 -j8            → BUILD PASS (no errors)
+make -C MatterEngine3/tests run-vk-scene-renderer → 15/15 PASS --- ALL PASS
 ```
 
 ---
 
 ## Files Changed
 
-| File | Type | Notes |
-|------|------|-------|
-| `MatterEngine3/src/part_ao_bake.h` | New | Public API header |
-| `MatterEngine3/src/part_ao_bake.cpp` | New | Implementation (exact brief code) |
-| `MatterEngine3/tests/part_ao_tests.cpp` | New | 5 test cases; one fixture adjusted (lid half=3.0f) |
-| `MatterEngine3/tests/Makefile` | Modified | Added AO suite block + `def_CPP_SRCS` entry |
-| `MatterEngine3/Makefile` | Modified | Added `part_ao_bake.cpp`/`.o` to ME3 archive lists |
+| File | Notes |
+|------|-------|
+| `MatterEngine3/src/render/vk_draw_command.h` | Named in brief — 5-field struct |
+| `MatterEngine3/shaders_vk/cull.comp` | Named in brief — struct + stats |
+| `MatterEngine3/src/render/vk_scene_renderer.h` | Named in brief — asserts, members, ensure_index_buffer |
+| `MatterEngine3/src/render/vk_scene_renderer.cpp` | Named in brief — fill, buffer, draws, RasterRecord |
+| `MatterEngine3/tests/vulkan_smoke_tests.cpp` | **Extra, beyond 5 named** — run_cpu_cull uses DrawCommand fields; Windows-only, syntax-checked via `g++ -fsyntax-only`; only Windows-specific errors (\_putenv\_s, win32\_process\_handle\_count), no DrawCommand errors |
+| `MatterEngine3/tests/vk_scene_renderer_tests.cpp` | Unchanged — already Task-3-compatible, no DrawCommand literals |
+
+---
+
+## Greps: command-path `first_vertex` survivors
+
+No stale DrawCommand `first_vertex` on the command path. Legitimate survivors in other contexts:
+- `RtGeometryDebugRecord::first_vertex` (line 217, vk_scene_renderer.h) — RT debug struct, unrelated to draw commands
+- `fixed_part()` function parameter named `first_vertex` (vulkan_smoke_tests.cpp line 3454) — local function parameter, passed as `first_index` positionally to VkSceneLod brace-init
+
+## Greps: `/ 3` conversions found
+
+- `cull.comp` line 183: `commands[bucket].vertex_count / 3u` → `commands[bucket].index_count / 3u` (CHANGED)
+- `vk_scene_renderer.cpp` line 2392: `lod.index_count / 3` for RT `primitive_count` — already uses `index_count`, no change needed
+- No CPU-side `vertex_count / 3` on DrawCommand/stats path found
 
 ---
 
 ## Self-Review Findings
 
-1. **Implementation matches brief exactly** — all constants, formulas, memory management (`FREE64(bvhNode)`, `delete[] triIdx`, `FREE64(mesh.tri)`) from the brief are present verbatim.
+1. **`sizeof(DrawCommand) == 20`**: struct has 5 uint32_t-sized fields (including int32_t vertex_offset), 5 × 4 = 20 bytes. Static assert `5 * sizeof(uint32_t)` enforces this.
 
-2. **Determinism verified** — no RNG state, no time seeds, no iteration-order dependence in math. The cache is keyed by position+normal bits; each key's value is computed independently of insertion order.
+2. **Offset asserts**: All five fields asserted against `VkDrawIndexedIndirectCommand` counterparts.
 
-3. **BVH manual cleanup** — correctly matches the brief's "Consumes" notes: `FREE64(bvh.bvhNode); delete[] bvh.triIdx; FREE64(mesh.tri)`.
+3. **GLSL struct field order**: `index_count, instance_count, first_index, int vertex_offset, first_instance` — matches C++ exactly.
 
-4. **Fixture deviation** — `test_overhang_darkens` uses lid `half=3.0f` instead of the brief's `1.0f`. The brief's `1.0f` produces ~25% hemisphere hit rate from corner vertices, insufficient to cross the `< 0.5` threshold. The spirit of the test (lid darkens floor) is preserved and strengthened. Documented in code comment.
+4. **Index buffer usage flags**: `VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT` — exact match to brief 3c.
 
-5. **Warning eliminated** — replaced `std::memset` on non-trivial `TriEx` with value-init `TriEx{}` in test fixture.
+5. **Upload gated/reset**: `uploaded_index_count_` set at upload, reset to 0 in `reset()`, guard `|| uploaded_index_count_ == 0` added.
 
-6. **Main library compile** — `make part_ao_bake.o` in `MatterEngine3/` succeeds cleanly (no warnings).
+6. **`vkCmdBindIndexBuffer` placement**: added after `vkCmdBindVertexBuffers`, before the draw-range loop — correct.
+
+7. **Both `vkCmdDrawIndirect` calls replaced**: single `record_raster` function has only one loop; both draws within (chunked inner loop) now use `vkCmdDrawIndexedIndirect`.
+
+8. **Old rebase block deleted**: the `if (parts_[...].vertex_count != 0)` block that set `command.vertex_count`/`command.first_vertex` via old names is fully replaced — no old rebase adding vertex bases into `first_vertex`.
+
+9. **No stale `first_vertex` on command path**: grep confirms clean.
 
 ---
 
 ## Concerns
 
-**Minor:** The brief's `test_overhang_darkens` fixture used `quad(0, 0, 0.2f, 1.0f)` for the lid (same size as floor), which produces corner-only vertices that aren't sufficiently enclosed to meet the `< 0.5` AO threshold with default params (radius=2.0). I adjusted the lid to `half=3.0f`. This is a test fixture calibration issue, not an algorithmic error. Task 5 (wiring into bake pipeline) will exercise the baker with real part geometry.
+**Shader SPIR-V is stale (by design, documented Task 6 gate):** `cull.comp` was updated but `embedded_spirv.h` cannot be regenerated on Linux/WSL (no glslc). Any GPU-executing suite (vulkan_smoke_tests, gpu_cull_tests) that runs the cull shader will see a struct layout mismatch between the new C++ `DrawCommand` (20 bytes, 5 fields) and the stale SPIR-V (which still has the old 4-field 16-byte layout). This is the documented Task 6 gate — Jack's Windows MSYS2 rebuild regenerates the SPIR-V. CPU-only suite (vk_scene_renderer_tests) is fully green.

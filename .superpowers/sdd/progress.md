@@ -394,3 +394,41 @@ AO quality follow-up (Jack visual review 2026-07-16, screenshot: seams + harshne
 - Root cause 2: ray budget charged on raw corners (tris*3) with 8M cap -> tree baked at 4 rays/vertex (blotchy). Fixed: budget on unique welded (pos,normal) keys, cap 32M. Test: test_budget_counts_unique_positions_not_corners (RED->GREEN).
 - kEngineBakeVersion 1->2 (one cold rebake).
 - Gates: mesh_transform_tests 6/6, run-partao 6/6, run-flatten EXIT 0, run-script EXIT 0. Full gate deferred until Jack approves the look (fix 3 smoothing/strength knobs held).
+
+
+# Indexed Mesh Format Stage 1 SDD Progress Ledger
+Branch: worktree-gpu-timers-hud | Plan: docs/superpowers/plans/2026-07-16-indexed-mesh-format-stage1.md
+BASE at start: 41a1b09 (preamble: ff to AO-rollback 9025df5 + timer commit dbc25b0 + plan commit)
+
+Task 1: complete (commits 41a1b09..b6bbf2f, review clean — opus Approved)
+  - Minor: weld reserve tri_count*2 heuristic arbitrary (cosmetic)
+  - Minor: ordinal via d.material_ids.size() couples to one channel; local counter cleaner
+  - Minor: viewer_logic_tests.cpp:234 comment explains no-weld by material, real reason is distinct positions
+  - Noted: pre-existing cold-cache infra failure in test_compose_expands_children (missing /tmp dirs), pre-dates task
+
+Task 2: complete (commits b6bbf2f..f8c8c96, review clean — opus Approved)
+  - Scope deviation adjudicated OK: expand_indexed OOB guards for sparse optional channels (real crash fix exposed by shim)
+  - Minor: redundant !empty() in three guards (size check suffices)
+  - Minor: optional-channel guards skip instead of default-fill — partial input would yield non-parallel output (unreachable today; comment/symmetric fill wanted)
+  - Minor: report cites wrong makefile target names (cosmetic)
+
+Task 3: complete (commits f8c8c96..be6f1eb, review clean after fix round 1 — opus Approved)
+  - Fix round 1 (be6f1eb): stale VkSceneLod fields in Windows-only vulkan_smoke_tests.cpp run_cpu_cull (syntax-checked); ensure_part rejection now exercised for real in smoke suite, CPU-local mirror removed
+  - Minor: smoke rejection subtest assumes ensure_part validates before mutating state (fragile if refactored)
+  - Minor: fixed_part helper param still named first_vertex (cosmetic)
+  - Minor: TDD sequence compressed on Task 3 main commit (test written alongside impl)
+  - Interim stubs (by design): BLAS/TLAS record sites soup-stubbed pending Task 5; command fill mapped pending Task 4
+
+Task 4: complete (commits be6f1eb..b133bc9, review clean — opus Approved)
+  - Minor: ensure_index_buffer possibly dead code (mirrors pre-existing ensure_vertex_buffer asymmetry; upload path inlines create_buffer) — check at final review
+  - Minor: TDD RED evidence retrospective, not recorded
+  - Extra file (authorized, mechanical): vulkan_smoke_tests.cpp DrawCommand updates, syntax-checked
+  - Shader gate open: cull.comp edited; embedded_spirv.h stale until Task 6 Windows rebuild
+
+Task 5: complete (commits b133bc9..6ab38d5, review clean after fix round 1 — opus Approved)
+  - Deviation adjudicated CORRECT: rt indexData/index_address use (lod.first_index - part.index_start) because RtLodRecord.first_index is global post-rebase; brief snippet was wrong for non-first parts (real Task 3 inconsistency caught by implementer)
+  - Fix round 1 (6ab38d5): rt_index lifetime retained on in-flight frames at the sole parts_-iterating retention site (was a use-after-free window on release_part)
+  - Minor: smoke test could positively assert index_address frame semantics (needs RtGeometryDebugRecord plumbing)
+  - Minor: sizeof(viewer::VkRasterVertex) qualification inconsistency (style)
+Final review: complete (commits 41a1b09..2fdb7c4; 1 Critical + 1 Important + 1 Minor found, fixed in 2fdb7c4, opus re-review Approved — rt_lod.first_index now part-local/compaction-invariant, ensure_index_buffer wired into init, debug-record renames)
+Task 6 (partial): Linux sweep GREEN at 2fdb7c4 — viewer-logic PASS, vk-scene-renderer 29/29, release-part 37/37, gpucull (d3d12) 44/44, partstore ALL PASS, composition OK. Remaining: Windows clean rebuild (glslc/embedded_spirv.h) + Jack's demo-world visual/perf validation vs baseline GBuf 25.0 / RT 25.7 / total 77.6ms.

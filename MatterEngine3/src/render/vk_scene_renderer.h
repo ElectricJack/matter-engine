@@ -83,20 +83,24 @@ VkPipelineStageFlags2 gbuffer_sampled_stages_for_test(
     uint32_t attachment_index, bool native_ray_tracing_available) noexcept;
 }  // namespace vk_scene_detail
 
-static_assert(sizeof(DrawCommand) == sizeof(VkDrawIndirectCommand),
-              "DrawCommand must match VkDrawIndirectCommand");
-static_assert(offsetof(DrawCommand, vertex_count) ==
-              offsetof(VkDrawIndirectCommand, vertexCount));
+static_assert(sizeof(DrawCommand) == sizeof(VkDrawIndexedIndirectCommand),
+              "DrawCommand must match VkDrawIndexedIndirectCommand");
+static_assert(offsetof(DrawCommand, index_count) ==
+              offsetof(VkDrawIndexedIndirectCommand, indexCount));
 static_assert(offsetof(DrawCommand, instance_count) ==
-              offsetof(VkDrawIndirectCommand, instanceCount));
-static_assert(offsetof(DrawCommand, first_vertex) ==
-              offsetof(VkDrawIndirectCommand, firstVertex));
+              offsetof(VkDrawIndexedIndirectCommand, instanceCount));
+static_assert(offsetof(DrawCommand, first_index) ==
+              offsetof(VkDrawIndexedIndirectCommand, firstIndex));
+static_assert(offsetof(DrawCommand, vertex_offset) ==
+              offsetof(VkDrawIndexedIndirectCommand, vertexOffset));
 static_assert(offsetof(DrawCommand, first_instance) ==
-              offsetof(VkDrawIndirectCommand, firstInstance));
+              offsetof(VkDrawIndexedIndirectCommand, firstInstance));
 
 struct VkSceneLod {
-    uint32_t first_vertex = 0;
-    uint32_t vertex_count = 0;
+    // first_index/index_count are part-local (into VkScenePart::indices).
+    // ensure_part rebases first_index to the global index_staging_ offset.
+    uint32_t first_index = 0;   // into VkScenePart::indices (part-local until ensure_part rebases)
+    uint32_t index_count = 0;   // 3 × triangle count
     float threshold = 0.0f;
 };
 
@@ -119,17 +123,19 @@ struct VkRasterVertex {
 struct VkScenePart {
     uint64_t part_hash = 0;
     std::vector<VkSceneCluster> clusters;
-    // Cluster LOD first_vertex values are local to this array.  Parts without
-    // raster vertices retain the Task 7 absolute first_vertex contract.
-    std::vector<VkRasterVertex> vertices;
+    std::vector<VkRasterVertex> vertices;   // unique vertices, all LOD meshes concatenated
+    // Index buffer: values are PART-LOCAL (already include each mesh's vertex
+    // offset within the part).  Global vertex rebase is done by vertexOffset /
+    // base addresses (Tasks 4-5); ensure_part never rewrites these values.
+    std::vector<uint32_t> indices;
 };
 
 namespace vk_scene_detail {
 struct RtGeometrySelection {
     uint32_t cluster_index = 0;
     uint32_t lod_index = 0;
-    uint32_t first_vertex = 0;
-    uint32_t vertex_count = 0;
+    uint32_t first_index = 0;   // part-local index into VkScenePart::indices
+    uint32_t index_count = 0;   // 3 × triangle count
 };
 
 uint32_t select_scene_cluster_lod(const VkSceneCluster& cluster,
@@ -208,8 +214,8 @@ struct VkRasterPixel {
         uint32_t cluster_index = 0;
         uint32_t lod_index = 0;
         uint32_t custom_index = 0;
-        uint32_t first_vertex = 0;
-        uint32_t vertex_count = 0;
+        uint32_t first_index = 0;
+        uint32_t index_count = 0;
         VkDeviceAddress vertex_address = 0;
         VkDeviceAddress blas_address = 0;
         bool opaque = false;
@@ -513,8 +519,36 @@ public:
     float test_shadow_visibility_for_ray(bool occluded) const {
         return ray_tracing_settings_.enabled && occluded ? 0.0f : 1.0f;
     }
+    // Returns the first_index of rt_lods[rt_lod_index] for the given part hash,
+    // or UINT32_MAX if the part is not found or the index is out of range.
+    uint32_t test_rt_lod_first_index(uint64_t part_hash,
+                                     uint32_t rt_lod_index) const {
+        const auto found = slot_of_.find(part_hash);
+        if (found == slot_of_.end()) return UINT32_MAX;
+        const PartRecord& part = parts_[static_cast<size_t>(found->second)];
+        if (rt_lod_index >= part.rt_lods.size()) return UINT32_MAX;
+        return part.rt_lods[rt_lod_index].first_index;
+    }
 #endif
     int fill_rt_instances(std::vector<RtInstance>& output) const;
+
+    // GPU timer results (ms, EMA-smoothed). Zones are non-overlapping;
+    // each begin is recorded after the previous zone's end.
+    // 0=total 1=cull 2=gbuffer 3=blas 4=tlas 5=rt 6=denoise 7=dlss 8=composite
+    static constexpr uint32_t kGpuZoneTotal        = 0;
+    static constexpr uint32_t kGpuZoneCull         = 1;
+    static constexpr uint32_t kGpuZoneGBuffer      = 2;
+    static constexpr uint32_t kGpuZoneBlas         = 3;
+    static constexpr uint32_t kGpuZoneTlas         = 4;
+    static constexpr uint32_t kGpuZoneRt           = 5;
+    static constexpr uint32_t kGpuZoneDenoise      = 6;
+    static constexpr uint32_t kGpuZoneDlss         = 7;
+    static constexpr uint32_t kGpuZoneComposite    = 8;
+    static constexpr uint32_t kGpuZoneCount        = 9;
+    bool gpu_timers_supported() const { return gpu_timers_supported_; }
+    float gpu_zone_ms(uint32_t zone) const {
+        return zone < kGpuZoneCount ? gpu_smoothed_ms_[zone] : 0.0f;
+    }
     // A poisoned renderer fails closed. reset() then performs a full GPU
     // resource/pipeline teardown, clears the poison, and requires re-init
     // (explicitly or through the next dispatch_culling call) before reuse.
@@ -615,8 +649,11 @@ private:
     struct RtLodRecord {
         uint32_t cluster_index = 0;
         uint32_t lod_index = 0;
-        uint32_t first_vertex = 0;
-        uint32_t vertex_count = 0;
+        // first_index is part-local (NOT rebased; stored this way so compaction
+        // in release_part does not invalidate surviving parts' rt_lods).
+        // Consumers address the per-part rt_index buffer directly via this offset.
+        uint32_t first_index = 0;    // part-local index into rt_index buffer
+        uint32_t index_count = 0;    // 3 × triangle count
         uint32_t primitive_count = 0;
         std::shared_ptr<matter::VkAccelerationStructureResource> blas;
         std::shared_ptr<matter::VkAccelerationStructureResource> candidate;
@@ -631,10 +668,13 @@ private:
         uint64_t hash = 0;
         uint32_t cluster_start = 0;
         uint32_t cluster_count = 0;
-        uint32_t vertex_start = 0;
+        uint32_t vertex_start = 0;   // kept for Task 4 vertexOffset; NOT folded into lod offsets
         uint32_t vertex_count = 0;
+        uint32_t index_start = 0;    // global offset into index_staging_
+        uint32_t index_count = 0;
         bool live = false;
         std::shared_ptr<matter::VkBufferResource> rt_geometry;
+        std::shared_ptr<matter::VkBufferResource> rt_index;
         std::vector<RtLodRecord> rt_lods;
         std::vector<uint32_t> rt_cluster_lod_offsets;
         std::vector<uint32_t> material_ids;
@@ -679,6 +719,12 @@ private:
         uint64_t material_upload_record_count = 0;
         VkDeviceSize pending_material_bytes = 0;
         bool stats_valid = false;
+        // GPU timestamp query pool: 18 slots (9 zones × begin/end).
+        VkQueryPool ts_pool = VK_NULL_HANDLE;
+        // Per zone: bit 0 set when begin was written, bit 1 when end was.
+        uint8_t ts_written[kGpuZoneCount]{};
+        // True when the previous recording wrote at least the total zone.
+        bool ts_valid = false;
     };
 
     // Intermediate state shared between the record_ray_traced_shadows phases.
@@ -745,6 +791,8 @@ private:
                                  std::string& error, bool retain);
     bool ensure_vertex_buffer(VkDeviceSize required_size,
                               std::string& error, bool* replaced = nullptr);
+    bool ensure_index_buffer(VkDeviceSize required_size,
+                             std::string& error, bool* replaced = nullptr);
     bool ensure_buffer(matter::VkBufferResource& buffer,
                        VkDeviceSize required_size, VkBufferUsageFlags usage,
                        std::string& error, bool* replaced = nullptr);
@@ -816,6 +864,7 @@ private:
 
     matter::VkBufferResource clusters_;
     matter::VkBufferResource vertices_;
+    matter::VkBufferResource indices_;
     std::vector<FrameResources> frames_;
     uint32_t active_frame_index_ = 0;
     uint32_t frame_resource_slot_capacity_ = 0;
@@ -884,12 +933,14 @@ private:
     std::vector<uint8_t> uploaded_raster_command_enabled_;
     std::vector<RtInstance> rt_instances_;
     std::vector<VkRasterVertex> vertex_staging_;
+    std::vector<uint32_t> index_staging_;   // CPU-side mirror; Task 4 uploads to GPU
     std::vector<MaterialGpuRecord> material_staging_;
     uint64_t material_shading_revision_ = 0;
     uint64_t material_geometry_revision_ = 0;
     uint64_t material_generation_ = 1;
     bool gi_history_reset_pending_ = false;
     uint32_t uploaded_vertex_count_ = 0;
+    uint32_t uploaded_index_count_ = 0;
     uint32_t raster_draw_command_count_ = 0;
     uint32_t uploaded_raster_draw_command_count_ = 0;
     uint32_t max_clusters_per_instance_ = 0;
@@ -919,6 +970,14 @@ private:
     bool static_upload_dirty_ = true;
     VkSceneUploadCounters upload_counters_{};
     VkCullStats cached_stats_{};
+    // GPU timestamp support. Cached at init time from device properties.
+    bool gpu_timers_supported_ = false;
+    float timestamp_period_ns_ = 0.0f;
+    // EMA-smoothed per-zone GPU timings (ms). Updated each frame on readback.
+    float gpu_smoothed_ms_[kGpuZoneCount]{};
+    // Helper recorded per-frame to stamp the command buffer.
+    void write_gpu_timestamp(VkCommandBuffer cmd, uint32_t zone_id,
+                             bool is_end, FrameResources& frame);
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     uint32_t test_surface_trace_dispatches_ = 0;
     DeviceLimits test_limits_{};

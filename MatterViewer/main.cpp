@@ -741,6 +741,16 @@ int main() {
         stats.instances_total = static_cast<int>(frame_stats.instances_total);
         stats.parts_baked = static_cast<int>(frame_stats.parts_baked);
         stats.cache_hits = static_cast<int>(frame_stats.cache_hits);
+        stats.gpu_timers_supported   = frame_stats.gpu_timers_supported;
+        stats.gpu_total_ms           = frame_stats.gpu_total_ms;
+        stats.gpu_cull_ms            = frame_stats.gpu_cull_ms;
+        stats.gpu_gbuffer_ms         = frame_stats.gpu_gbuffer_ms;
+        stats.gpu_blas_ms            = frame_stats.gpu_blas_ms;
+        stats.gpu_tlas_ms            = frame_stats.gpu_tlas_ms;
+        stats.gpu_rt_ms              = frame_stats.gpu_rt_ms;
+        stats.gpu_denoise_ms         = frame_stats.gpu_denoise_ms;
+        stats.gpu_dlss_ms            = frame_stats.gpu_dlss_ms;
+        stats.gpu_composite_ms       = frame_stats.gpu_composite_ms;
 
         const bool ui_frame_ready = ui.begin_frame(frame, error);
         if (!ui_frame_ready) {

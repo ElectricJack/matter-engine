@@ -40,9 +40,10 @@ struct DrawTransform {
 };
 
 struct DrawCommand {
-    uint vertex_count;
+    uint index_count;
     uint instance_count;
-    uint first_vertex;
+    uint first_index;
+    int  vertex_offset;
     uint first_instance;
 };
 
@@ -180,6 +181,6 @@ void main() {
     draw_transforms[first + slot].history_valid = instance.history_valid;
     draw_transforms[first + slot].instance_token = instance.instance_token;
     atomicAdd(emitted, 1u);
-    atomicAdd(triangles, commands[bucket].vertex_count / 3u);
+    atomicAdd(triangles, commands[bucket].index_count / 3u);
     if (slot == 0u) atomicAdd(batches, 1u);
 }

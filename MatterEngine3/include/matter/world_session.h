@@ -91,6 +91,18 @@ struct FrameStats {
     uint32_t vk_rt_samples = 1;
     bool vk_rt_debug_view = false;
     std::string vk_rt_fallback_reason;
+    // GPU-side per-pass timings (ms), smoothed EMA (α = 0.1). Values are 0
+    // when the zone did not execute this frame or GPU timers are unsupported.
+    float gpu_total_ms          = 0;
+    float gpu_cull_ms           = 0;
+    float gpu_gbuffer_ms        = 0;
+    float gpu_blas_ms           = 0;
+    float gpu_tlas_ms           = 0;
+    float gpu_rt_ms             = 0;
+    float gpu_denoise_ms        = 0;
+    float gpu_dlss_ms           = 0;
+    float gpu_composite_ms      = 0;
+    bool  gpu_timers_supported  = false;
 };
 
 class WorldSession {

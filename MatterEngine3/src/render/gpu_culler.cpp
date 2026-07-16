@@ -11,6 +11,7 @@
 #include "async_bake.h"
 #include "gpu_culler.h"
 #include "matrix_math.h"
+#include "raster_mesh.h"
 
 // Raylib must come before glad to avoid double-definition of GL types.
 #include "raylib.h"
@@ -347,7 +348,9 @@ int GpuCuller::ensure_part(uint64_t part_hash, PartStore& store) {
     const int kStride = 36;
     std::vector<unsigned char> vbo_data;
 
-    for (const auto& md : lp->lod_mesh_data) {
+    for (const auto& md_src : lp->lod_mesh_data) {
+        const RasterMeshData md_expanded = expand_indexed(md_src);
+        const RasterMeshData& md = md_expanded;
         uint32_t first = (uint32_t)(vbo_data.size() / kStride);
         uint32_t n     = (uint32_t)md.vertex_count;
         pg.ranges.push_back(MeshRange{ first, n });

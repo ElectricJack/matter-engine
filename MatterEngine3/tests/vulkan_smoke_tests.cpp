@@ -937,7 +937,7 @@ bool close3(matter::Float3 actual, matter::Float3 expected, float epsilon) {
 
 viewer::VkScenePart fixed_part(uint64_t hash, matter::Float3 minimum,
                                matter::Float3 maximum,
-                               uint32_t first_vertex);
+                               uint32_t first_index);
 
 viewer::VkScenePart known_raster_triangle(uint64_t hash,
                                           uint32_t material_index = 7u) {
@@ -971,12 +971,12 @@ void run_rt_lod_payload_contract_tests() {
     CHECK(selected.size() == 2 &&
               selected[0].cluster_index == 0 &&
               selected[0].lod_index == 0 &&
-              selected[0].first_vertex == 0 &&
-              selected[0].vertex_count == 6 &&
+              selected[0].first_index == 0 &&
+              selected[0].index_count == 6 &&
               selected[1].cluster_index == 1 &&
               selected[1].lod_index == 1 &&
-              selected[1].first_vertex == 15 &&
-              selected[1].vertex_count == 3,
+              selected[1].first_index == 15 &&
+              selected[1].index_count == 3,
           "RT instance payload contains exactly one raster-selected LOD per cluster");
     const auto offsets = viewer::vk_scene_detail::dense_rt_lod_offsets(part);
     uint32_t record_index = UINT32_MAX;
@@ -1517,15 +1517,16 @@ void run_native_multilod_rt_mapping(matter::VulkanDevice& vulkan) {
         renderer.test_rt_geometry_address(part.part_hash);
     CHECK(first.size() == 2 && first_builds == 2 &&
               first[0].cluster_index == 0 && first[0].lod_index == 0 &&
-              first[0].custom_index == 0 && first[0].first_vertex == 0 &&
+              first[0].custom_index == 0 && first[0].first_index == 0 &&
               first[0].vertex_address == base && first[0].built_this_frame &&
               first[1].cluster_index == 1 && first[1].lod_index == 1 &&
-              first[1].custom_index == 1 && first[1].first_vertex == 9 &&
-              first[1].vertex_address ==
-                  base + 9 * sizeof(viewer::VkRasterVertex) &&
+              first[1].custom_index == 1 && first[1].first_index == 9 &&
+              // Task 5: vertex_address is always the part base (no per-LOD
+              // vertex offset); index_address carries the per-LOD variation.
+              first[1].vertex_address == base &&
               first[1].built_this_frame &&
               first[0].blas_address != first[1].blas_address,
-          "native TLAS uses dense custom indices and selected per-LOD BLAS ranges");
+          "native TLAS uses dense custom indices and indexed BLAS; vertex_address always part base");
     std::vector<viewer::RtGeometryDebugRecord> reused;
     uint32_t reuse_builds = UINT32_MAX;
     CHECK(render(2, reused, reuse_builds) && reused.size() == 2 &&
@@ -1546,6 +1547,70 @@ void run_native_multilod_rt_mapping(matter::VulkanDevice& vulkan) {
               replaced[1].blas_address != first[1].blas_address &&
               !replaced[1].opaque,
           "per-LOD opacity change replaces only the affected selected BLAS");
+}
+
+// ---------------------------------------------------------------------------
+// Regression test: rt_lod.first_index stays part-local after release_part
+// compacts index_staging_.  Registers two parts with non-trivial index layouts,
+// releases the first, and asserts that the survivor's rt_lod.first_index equals
+// the original part-local value (not corrupted by the compaction rebase of
+// part.index_start).
+// ---------------------------------------------------------------------------
+void run_rt_lod_compaction_invariant(matter::VulkanDevice& vulkan) {
+    if (!vulkan.ray_tracing_available()) return;
+    std::string error;
+    viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.init(error), error.empty() ? "init" : error.c_str());
+
+    const matter::Float3 norm{0.0f, 0.0f, 1.0f};
+    const matter::Float4 tint{1.0f, 1.0f, 1.0f, 0.0f};
+    const matter::Float4 surf{0.5f, 0.0f, 1.0f, 1.0f};
+    auto v = [&](float x, float y, float z) {
+        return viewer::VkRasterVertex{{x, y, z}, norm, tint, surf, 0u, {}};
+    };
+
+    // Part A: 2 vertices-per-cluster-lod layout, 6 indices (first_index=0/3).
+    viewer::VkScenePart partA{};
+    partA.part_hash = 0xAAAA0001ULL;
+    partA.clusters = {{{-1.f, -1.f, -3.f}, {1.f, 1.f, -1.f}, 2.0f, {{0u, 3u, 1.0f}, {3u, 3u, 0.0f}}}};
+    partA.vertices = {v(-1.f,0.f,-2.f), v(1.f,0.f,-2.f), v(0.f,1.f,-2.f),
+                      v(-1.f,0.f,-3.f), v(1.f,0.f,-3.f), v(0.f,1.f,-3.f)};
+    partA.indices  = {0u,1u,2u, 3u,4u,5u};
+
+    // Part B: single cluster, single LOD, first_index=0 (part-local).
+    viewer::VkScenePart partB{};
+    partB.part_hash = 0xBBBB0002ULL;
+    partB.clusters = {{{-2.f, -2.f, -5.f}, {2.f, 2.f, -3.f}, 3.0f, {{0u, 3u, 1.0f}}}};
+    partB.vertices = {v(-2.f,0.f,-4.f), v(2.f,0.f,-4.f), v(0.f,2.f,-4.f)};
+    partB.indices  = {0u,1u,2u};
+
+    // Capture B's expected part-local first_index BEFORE registration.
+    // cluster[0].lods[0].first_index in VkScenePart = 0.
+    const uint32_t expected_b_lod0_first_index = 0u;
+
+    std::vector<MaterialGpuRecord> materials(1);
+    materials[0].metal_opacity_spec_coat[1] = 1.0f;
+    materials[0].scattering_shape[3] = 1.0f;
+    CHECK(renderer.update_materials(materials, 1, 1, error) &&
+              renderer.ensure_part(partA, error) >= 0 &&
+              renderer.ensure_part(partB, error) >= 0,
+          error.empty() ? "register two indexed parts" : error.c_str());
+
+    // Before release: verify B's rt_lod.first_index is already part-local.
+    const uint32_t before_release =
+        renderer.test_rt_lod_first_index(partB.part_hash, 0);
+    CHECK(before_release == expected_b_lod0_first_index,
+          "partB rt_lod[0].first_index is part-local before release_part(A)");
+
+    // Release A — this compacts index_staging_ and rebases part.index_start.
+    renderer.release_part(partA.part_hash);
+
+    // After compaction: B's rt_lod.first_index must still equal the part-local
+    // value (0), NOT the old global frame corrupted by the now-stale index_start.
+    const uint32_t after_release =
+        renderer.test_rt_lod_first_index(partB.part_hash, 0);
+    CHECK(after_release == expected_b_lod0_first_index,
+          "partB rt_lod[0].first_index unchanged (part-local) after release_part(A) compaction");
 }
 
 // ---------------------------------------------------------------------------
@@ -3223,6 +3288,7 @@ static void rt_scenario_baked_ao_and_gi_disable(RtPathContext& ctx) {
 // ---------------------------------------------------------------------------
 void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
     run_native_multilod_rt_mapping(vulkan);
+    run_rt_lod_compaction_invariant(vulkan);
     CHECK(vulkan.ray_tracing_available(),
           vulkan.ray_tracing_unavailable_reason().empty()
               ? "native ray tracing available"
@@ -3451,7 +3517,7 @@ void run_raster_submission_fault(matter::VulkanDevice& vulkan) {
 }
 
 viewer::VkScenePart fixed_part(uint64_t hash, matter::Float3 minimum,
-                               matter::Float3 maximum, uint32_t first_vertex) {
+                               matter::Float3 maximum, uint32_t first_index) {
     viewer::VkSceneCluster cluster{};
     cluster.aabb_min = minimum;
     cluster.aabb_max = maximum;
@@ -3459,7 +3525,7 @@ viewer::VkScenePart fixed_part(uint64_t hash, matter::Float3 minimum,
     const float dy = maximum.y - minimum.y;
     const float dz = maximum.z - minimum.z;
     cluster.radius = 0.5f * std::sqrt(dx * dx + dy * dy + dz * dz);
-    cluster.lods.push_back({first_vertex, 3, 0.0f});
+    cluster.lods.push_back({first_index, 3, 0.0f});
     return {hash, {cluster}};
 }
 
@@ -3539,8 +3605,8 @@ CullResult run_cpu_cull(const FixedCullScene& scene) {
     for (size_t i = 0; i < scene.parts.size(); ++i) {
         const size_t base = i * viewer::kVkMaxLod;
         auto& command = result.commands[base];
-        command.vertex_count = scene.parts[i].clusters[0].lods[0].vertex_count;
-        command.first_vertex = scene.parts[i].clusters[0].lods[0].first_vertex;
+        command.index_count = scene.parts[i].clusters[0].lods[0].index_count;
+        command.first_index = scene.parts[i].clusters[0].lods[0].first_index;
         command.first_instance = static_cast<uint32_t>(i);
         for (uint32_t lod = 1; lod < viewer::kVkMaxLod; ++lod)
             result.commands[base + lod].first_instance =
@@ -4253,6 +4319,26 @@ void run_cull_region_and_lifecycle_tests(matter::VulkanDevice& vulkan) {
                   renderer.draw_transform_buffer_size() ==
                       stable_transform_bytes,
               "streaming eviction/reload re-uploads into stable scene buffers");
+    }
+
+    // Verify that ensure_part rejects a part whose index buffer references a
+    // vertex beyond the end of the vertex array (brief mandate: real ensure_part
+    // rejection exercised on the full renderer, not a mirrored local loop).
+    {
+        viewer::VkScenePart bad_part{};
+        bad_part.part_hash = 0xBAD0Cu;
+        bad_part.vertices.resize(3);
+        bad_part.indices = {0u, 1u, 99u};  // index 99 is out of range
+        viewer::VkSceneCluster bad_cluster{};
+        bad_cluster.aabb_min = {-1.0f, -1.0f, -1.0f};
+        bad_cluster.aabb_max = {1.0f, 1.0f, 1.0f};
+        bad_cluster.radius = 1.7f;
+        bad_cluster.lods.push_back({0u, 3u, 0.0f});
+        bad_part.clusters.push_back(bad_cluster);
+        std::string rejection_error;
+        const int result = renderer.ensure_part(bad_part, rejection_error);
+        CHECK(result < 0 && !rejection_error.empty(),
+              "ensure_part rejects out-of-range index with non-empty error");
     }
 
     renderer.reset();

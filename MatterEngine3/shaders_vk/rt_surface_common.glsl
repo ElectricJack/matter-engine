@@ -22,12 +22,12 @@ struct RtSurfacePayload {
 
 struct GpuRtPartRecord {
     uvec2 vertex_address;
+    uvec2 index_address;
     uint vertex_stride;
     uint vertex_count;
     uint primitive_count;
     uint valid;
-    uint pad0;
-    uint pad1;
+    uint pad0; uint pad1; uint pad2; uint pad3;
 };
 
 struct RtRasterVertex {
@@ -44,6 +44,11 @@ struct RtRasterVertex {
 layout(buffer_reference, buffer_reference_align = 4) readonly buffer
 RtVertexBuffer {
     uint words[];
+};
+
+layout(buffer_reference, buffer_reference_align = 4) readonly buffer
+RtIndexBuffer {
+    uint indices[];
 };
 
 layout(set = 0, binding = 3, std430) readonly buffer RtPartTable {
@@ -119,21 +124,25 @@ RtSurface invalid_rt_surface() {
 RtSurface load_rt_surface(vec2 hit_barycentrics) {
     uint part_slot = gl_InstanceCustomIndexEXT;
     GpuRtPartRecord part = rt_parts[part_slot];
-    uint first_vertex = gl_PrimitiveID * 3u;
     if (part.valid == 0u || all(equal(part.vertex_address, uvec2(0u))) ||
-        part.vertex_stride != 72u || gl_PrimitiveID >= part.primitive_count ||
-        first_vertex + 2u >= part.vertex_count) {
+        all(equal(part.index_address, uvec2(0u))) ||
+        part.vertex_stride != 72u || gl_PrimitiveID >= part.primitive_count) {
         atomicAdd(invalid_part_records, 1u);
         return invalid_rt_surface();
     }
-
+    RtIndexBuffer index_buffer = RtIndexBuffer(part.index_address);
+    uint tri = gl_PrimitiveID * 3u;
+    uint i0 = index_buffer.indices[tri];
+    uint i1 = index_buffer.indices[tri + 1u];
+    uint i2 = index_buffer.indices[tri + 2u];
+    if (max(i0, max(i1, i2)) >= part.vertex_count) {
+        atomicAdd(invalid_part_records, 1u);
+        return invalid_rt_surface();
+    }
     RtVertexBuffer geometry = RtVertexBuffer(part.vertex_address);
-    RtRasterVertex v0 = rt_load_vertex(geometry, first_vertex,
-                                       part.vertex_stride);
-    RtRasterVertex v1 = rt_load_vertex(geometry, first_vertex + 1u,
-                                       part.vertex_stride);
-    RtRasterVertex v2 = rt_load_vertex(geometry, first_vertex + 2u,
-                                       part.vertex_stride);
+    RtRasterVertex v0 = rt_load_vertex(geometry, i0, part.vertex_stride);
+    RtRasterVertex v1 = rt_load_vertex(geometry, i1, part.vertex_stride);
+    RtRasterVertex v2 = rt_load_vertex(geometry, i2, part.vertex_stride);
     vec3 weights = vec3(1.0 - hit_barycentrics.x - hit_barycentrics.y,
                         hit_barycentrics.x, hit_barycentrics.y);
     vec3 object_normal = normalize(v0.normal * weights.x +

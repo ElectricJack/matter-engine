@@ -191,6 +191,7 @@ static viewer::RasterMeshData make_one_tri_mesh() {
     md.normals   = { 0.0f, 0.0f, 1.0f,  0.0f, 0.0f, 1.0f,  0.0f, 0.0f, 1.0f };
     md.colors    = { 255, 255, 255, 255,  255, 255, 255, 255,  255, 255, 255, 255 };
     md.texcoords = { 0.0f, 0.0f,  1.0f, 0.0f,  0.0f, 1.0f };
+    md.indices   = { 0u, 1u, 2u };
     return md;
 }
 
@@ -267,6 +268,7 @@ static uint64_t build_fixture2(viewer::PartStore& store) {
     md2a.normals   = { 0.0f, 0.0f, 1.0f,  0.0f, 0.0f, 1.0f,  0.0f, 0.0f, 1.0f };
     md2a.colors    = { 128, 200, 100, 255, 128, 200, 100, 255, 128, 200, 100, 255 };
     md2a.texcoords = { 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f };
+    md2a.indices   = { 0u, 1u, 2u };
     lp.lod_mesh_data.push_back(md2a);  // index 0 – LOD 0
 
     viewer::RasterMeshData md2b;
@@ -275,6 +277,7 @@ static uint64_t build_fixture2(viewer::PartStore& store) {
     md2b.normals   = { 0.0f, 0.0f, 1.0f,  0.0f, 0.0f, 1.0f,  0.0f, 0.0f, 1.0f };
     md2b.colors    = { 100, 100, 200, 255, 100, 100, 200, 255, 100, 100, 200, 255 };
     md2b.texcoords = { 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f };
+    md2b.indices   = { 0u, 1u, 2u };
     lp.lod_mesh_data.push_back(md2b);  // index 1 – LOD 1
 
     lp.thresholds  = { 0.5f, 0.1f };

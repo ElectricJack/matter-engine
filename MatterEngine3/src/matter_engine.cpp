@@ -2949,6 +2949,7 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
     const int material_count = MaterialRegistryCount();
     VulkanDiagnosticMaterialOverride diagnostic_override(material_count);
     std::vector<uint32_t> mesh_offsets(loaded.lod_mesh_data.size(), UINT32_MAX);
+    std::vector<uint32_t> mesh_index_offsets(loaded.lod_mesh_data.size(), UINT32_MAX);
     for (size_t mi = 0; mi < loaded.lod_mesh_data.size(); ++mi) {
         const auto& mesh = loaded.lod_mesh_data[mi];
         if (std::getenv("MATTER_VK_DIAGNOSTIC_MATERIALS")) {
@@ -2984,7 +2985,8 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                 red_tint_vertices, green_tint_vertices);
         }
         if (mesh.vertex_count <= 0 ||
-            mesh.vertices.size() < static_cast<size_t>(mesh.vertex_count) * 3)
+            mesh.vertices.size() < static_cast<size_t>(mesh.vertex_count) * 3 ||
+            mesh.indices.empty())
             continue;
         mesh_offsets[mi] = static_cast<uint32_t>(part.vertices.size());
         for (int vi = 0; vi < mesh.vertex_count; ++vi) {
@@ -3037,6 +3039,11 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
             }
             part.vertices.push_back(vertex);
         }
+        // Append indices rebased by this mesh's vertex offset within the part.
+        // Index VALUES become part-local: already include mesh_offsets[mi].
+        mesh_index_offsets[mi] = static_cast<uint32_t>(part.indices.size());
+        for (uint32_t idx : mesh.indices)
+            part.indices.push_back(mesh_offsets[mi] + idx);
     }
     if (part.vertices.empty()) return true;
 
@@ -3054,10 +3061,11 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                 const int mesh_index = source.lod_mesh[li];
                 if (mesh_index < 0 ||
                     static_cast<size_t>(mesh_index) >= mesh_offsets.size() ||
-                    mesh_offsets[mesh_index] == UINT32_MAX) continue;
+                    mesh_offsets[mesh_index] == UINT32_MAX ||
+                    mesh_index_offsets[mesh_index] == UINT32_MAX) continue;
                 const auto& mesh = loaded.lod_mesh_data[mesh_index];
-                cluster.lods.push_back({mesh_offsets[mesh_index],
-                                        static_cast<uint32_t>(mesh.vertex_count),
+                cluster.lods.push_back({mesh_index_offsets[mesh_index],
+                                        static_cast<uint32_t>(mesh.indices.size()),
                                         source.thresholds[li]});
             }
             if (!cluster.lods.empty()) part.clusters.push_back(std::move(cluster));
@@ -3069,12 +3077,13 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
         cluster.aabb_max = { radius,  radius,  radius};
         cluster.radius = radius;
         for (size_t li = 0; li < loaded.lod_mesh_data.size(); ++li) {
-            if (mesh_offsets[li] == UINT32_MAX) continue;
+            if (mesh_offsets[li] == UINT32_MAX ||
+                mesh_index_offsets[li] == UINT32_MAX) continue;
             const auto& mesh = loaded.lod_mesh_data[li];
             const float threshold = li < loaded.thresholds.size()
                                         ? loaded.thresholds[li] : 0.0f;
-            cluster.lods.push_back({mesh_offsets[li],
-                                    static_cast<uint32_t>(mesh.vertex_count),
+            cluster.lods.push_back({mesh_index_offsets[li],
+                                    static_cast<uint32_t>(mesh.indices.size()),
                                     threshold});
         }
         if (!cluster.lods.empty()) part.clusters.push_back(std::move(cluster));
@@ -3358,6 +3367,16 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.parts_baked = static_cast<uint32_t>(impl_->store->loaded_count());
     impl_->stats.instances_total = static_cast<uint32_t>(impl_->state.entries().size());
     impl_->stats.triangles = cull_stats.triangles;
+    impl_->stats.gpu_timers_supported    = impl_->vk_scene->gpu_timers_supported();
+    impl_->stats.gpu_total_ms            = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneTotal);
+    impl_->stats.gpu_cull_ms             = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneCull);
+    impl_->stats.gpu_gbuffer_ms          = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneGBuffer);
+    impl_->stats.gpu_blas_ms             = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneBlas);
+    impl_->stats.gpu_tlas_ms             = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneTlas);
+    impl_->stats.gpu_rt_ms               = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneRt);
+    impl_->stats.gpu_denoise_ms          = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneDenoise);
+    impl_->stats.gpu_dlss_ms             = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneDlss);
+    impl_->stats.gpu_composite_ms        = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneComposite);
     return true;
 }
 
