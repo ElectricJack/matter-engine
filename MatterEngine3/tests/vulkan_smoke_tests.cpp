@@ -1548,26 +1548,66 @@ void run_native_multilod_rt_mapping(matter::VulkanDevice& vulkan) {
           "per-LOD opacity change replaces only the affected selected BLAS");
 }
 
-void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
-    run_native_multilod_rt_mapping(vulkan);
-    CHECK(vulkan.ray_tracing_available(),
-          vulkan.ray_tracing_unavailable_reason().empty()
-              ? "native ray tracing available"
-              : vulkan.ray_tracing_unavailable_reason().c_str());
-    if (!vulkan.ray_tracing_available()) return;
-    const auto& properties = vulkan.ray_tracing_properties();
-    CHECK(properties.shader_group_handle_alignment != 0 &&
-              properties.shader_group_base_alignment != 0 &&
-              properties.shader_group_handle_size != 0 &&
-              properties.shader_group_base_alignment >=
-                  properties.shader_group_handle_alignment &&
-              properties.max_shader_group_stride != 0 &&
-              properties.max_ray_dispatch_invocation_count >= 320u * 200u,
-          "queried SBT handle and base alignments are retained");
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Helper: build a horizontal triangle part used by the two-triangle RT fixture
+// ---------------------------------------------------------------------------
+static viewer::VkScenePart rt_horizontal_part(uint64_t hash, float y,
+                                               float radius,
+                                               matter::Float3 normal,
+                                               uint32_t material_index,
+                                               float baked_ao) {
+    const float front_z = radius > 5.0f ? 10.0f : -1.0f;
+    const float back_z  = radius > 5.0f ? -30.0f : -3.5f;
+    viewer::VkScenePart part = fixed_part(
+        hash, {-radius, y - 0.01f, back_z}, {radius, y + 0.01f, front_z}, 0);
+    const matter::Float4 albedo{1.0f, 1.0f, 1.0f, 0.0f};
+    const matter::Float4 orm{0.5f, 0.0f, baked_ao, 1.0f};
+    part.vertices = {{{-radius, y, front_z}, normal, albedo, orm,
+                      material_index, {}},
+                     {{radius, y, front_z}, normal, albedo, orm,
+                      material_index, {}},
+                     {{0.0f, y, back_z}, normal, albedo, orm,
+                      material_index, {}}};
+    return part;
+}
 
-    std::string error;
-    {
-        viewer::VkSceneRenderer surface_query(vulkan);
+// ---------------------------------------------------------------------------
+// Context struct holding shared mutable state across run_native_ray_tracing_path
+// sub-scenarios.  All members are references/values that live in the driver
+// function's stack frame and are passed by pointer into each scenario function.
+// ---------------------------------------------------------------------------
+struct RtPathContext {
+    matter::VulkanDevice&                                  vulkan;
+    const matter::VulkanRayTracingProperties&              properties;
+    std::string&                                           error;
+    viewer::VkSceneRenderer&                               renderer;
+    viewer::VkSceneLighting&                               lighting;
+    matter::VulkanRayTracingSettings&                      enabled;
+    matter::VulkanGiSettings&                              gi;
+    viewer::FrameMatrices&                                 matrices;
+    matter::CameraDesc&                                    camera;
+    viewer::TemporalFrame&                                 gi_temporal;
+    std::vector<MaterialGpuRecord>&                        gi_materials;
+    // Populated by rt_scenario_first_frame_and_blas_lifecycle, consumed later.
+    uint32_t& retry_x;
+    uint32_t& retry_y;
+    // Populated by rt_scenario_secondary_sun_visibility, consumed by later scenarios.
+    bool&     receiver_seen;
+    float&    minimum_visibility;
+    float&    maximum_visibility;
+    float&    receiver_min_visibility;
+    float&    receiver_max_visibility;
+};
+
+// ---------------------------------------------------------------------------
+// Scenario: secondary surface-query rays and SBT layout
+// ---------------------------------------------------------------------------
+static void rt_scenario_surface_query(
+        matter::VulkanDevice& vulkan,
+        const matter::VulkanRayTracingProperties& properties,
+        std::string& error) {
+    viewer::VkSceneRenderer surface_query(vulkan);
         viewer::VkScenePart first = known_raster_triangle(912);
         viewer::VkScenePart second = fixed_part(
             913, {-1.0f, 0.0f, -1.0f}, {1.0f, 1.0f, 1.0f}, 0);
@@ -1715,7 +1755,14 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
         surface_query.release_part(912);
         CHECK(surface_query.ensure_part(second, error) == slot1,
               "live RT part slot remains stable while an earlier slot retires");
-    }
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: BLAS input geometry stays pinned while the vertex buffer grows
+// ---------------------------------------------------------------------------
+static void rt_scenario_blas_pinning(
+        matter::VulkanDevice& vulkan,
+        std::string& error) {
     {
         viewer::VkSceneRenderer pinning(vulkan);
         const viewer::VkScenePart receiver = known_raster_triangle(910);
@@ -1735,7 +1782,14 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                   ? "BLAS input geometry stays pinned across raster growth"
                   : error.c_str());
     }
+}
 
+// ---------------------------------------------------------------------------
+// Scenario: per-material visibility classification and reclassification
+// ---------------------------------------------------------------------------
+static void rt_scenario_visibility_classification(
+        matter::VulkanDevice& vulkan,
+        std::string& error) {
     {
         const auto aligned_triangle = [](uint64_t hash, float z,
                                          uint32_t material_index) {
@@ -1960,27 +2014,23 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                   VK_FORMAT_R16G16B16A16_SFLOAT,
               "visibility target preserves RGB in a float format");
     }
+}
 
-    viewer::VkSceneRenderer renderer(vulkan);
-    const auto horizontal = [](uint64_t hash, float y, float radius,
-                               matter::Float3 normal, uint32_t material_index,
-                               float baked_ao) {
-        const float front_z = radius > 5.0f ? 10.0f : -1.0f;
-        const float back_z = radius > 5.0f ? -30.0f : -3.5f;
-        viewer::VkScenePart part = fixed_part(
-            hash, {-radius, y - 0.01f, back_z},
-            {radius, y + 0.01f, front_z}, 0);
-        const matter::Float4 albedo{1.0f, 1.0f, 1.0f, 0.0f};
-        const matter::Float4 orm{0.5f, 0.0f, baked_ao, 1.0f};
-        part.vertices = {{{-radius, y, front_z}, normal, albedo, orm,
-                          material_index, {}},
-                         {{radius, y, front_z}, normal, albedo, orm,
-                          material_index, {}},
-                         {{0.0f, y, back_z}, normal, albedo, orm,
-                          material_index, {}}};
-        return part;
-    };
-    std::vector<MaterialGpuRecord> gi_materials(2);
+// ---------------------------------------------------------------------------
+// Scenario: two-triangle shadow contract (disabled vs enabled RT)
+// Setup helper shared by subsequent scenarios.
+// ---------------------------------------------------------------------------
+static void rt_scenario_shadow_contract(RtPathContext& ctx) {
+    viewer::VkSceneRenderer& renderer = ctx.renderer;
+    viewer::VkSceneLighting& lighting = ctx.lighting;
+    matter::VulkanRayTracingSettings& enabled        = ctx.enabled;
+    viewer::FrameMatrices& matrices                  = ctx.matrices;
+    matter::CameraDesc& camera                       = ctx.camera;
+    viewer::TemporalFrame& gi_temporal               = ctx.gi_temporal;
+    matter::VulkanGiSettings& gi                     = ctx.gi;
+    std::vector<MaterialGpuRecord>& gi_materials     = ctx.gi_materials;
+    std::string& error                               = ctx.error;
+    gi_materials.assign(2, MaterialGpuRecord{});
     gi_materials[0].base_roughness[0] = 1.0f;
     gi_materials[0].base_roughness[1] = 0.02f;
     gi_materials[0].base_roughness[2] = 0.02f;
@@ -1999,10 +2049,10 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
     gi_materials[1].specular_tint_coat_roughness[3] = 0.08f;
     gi_materials[1].scattering_shape[3] = 1.0f;
     CHECK(renderer.update_materials(gi_materials, 1, 1, error) &&
-              renderer.ensure_part(horizontal(920, -1.0f, 20.0f,
+              renderer.ensure_part(rt_horizontal_part(920, -1.0f, 20.0f,
                                               {0.0f, 1.0f, 0.0f}, 0, 1.0f),
                                    error) >= 0 &&
-              renderer.ensure_part(horizontal(921, 0.0f, 0.55f,
+              renderer.ensure_part(rt_horizontal_part(921, 0.0f, 0.55f,
                                               {0.0f, -1.0f, 0.0f}, 1, 1.0f),
                                    error) >= 0 &&
               renderer.update_instances(
@@ -2017,20 +2067,20 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
     CHECK(renderer.test_shadow_visibility_for_ray(false) == 1.0f &&
               renderer.test_shadow_visibility_for_ray(true) == 1.0f,
           "disabled ray tracing deterministically produces full visibility");
-    matter::VulkanRayTracingSettings enabled{};
+    enabled = {};
     enabled.enabled = true;
     enabled.max_distance = 100.0f;
     enabled.bias = 0.001f;
     enabled.samples = 4;
     enabled.debug_view = true;
     renderer.set_ray_tracing_settings(enabled);
-    matter::VulkanGiSettings gi{};
+    gi = {};
     gi.samples_per_pixel = 16;
     gi.trace_scale = 0.5f;
     renderer.set_gi_settings(gi);
     CHECK(renderer.test_gi_samples_per_pixel() == 1u,
           "RT-active GI clamps authored sample count to one continuation");
-    viewer::VkSceneLighting lighting{};
+    lighting = {};
     lighting.sun_direction = {0.0f, -1.0f, 0.0f};
     renderer.set_lighting(lighting);
     const float open = renderer.test_shadow_visibility_for_ray(false);
@@ -2038,17 +2088,17 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
     CHECK(open == 1.0f && std::isfinite(blocked) && blocked < 1.0f,
           "two-triangle shadow contract is deterministic for open and blocked rays");
 
-    matter::CameraDesc camera{};
+    camera = {};
     camera.position = {0.0f, 1.5f, 1.0f};
     camera.target = {0.0f, -0.75f, -2.2f};
     camera.up = {0.0f, 1.0f, 0.0f};
     camera.vertical_fov_radians = 1.57079632679f;
     camera.near_plane = 0.1f;
     camera.far_plane = 10.0f;
-    viewer::FrameMatrices matrices{};
+    matrices = {};
     CHECK(viewer::build_frame_matrices(camera, 320, 200, matrices, error),
           error.empty() ? "build native RT frame matrices" : error.c_str());
-    viewer::TemporalFrame gi_temporal{};
+    gi_temporal = {};
     gi_temporal.current_unjittered = matrices;
     gi_temporal.previous_unjittered = matrices;
     gi_temporal.current_jittered = matrices;
@@ -2058,18 +2108,31 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
     gi_temporal.attempt_token = 101;
     gi_temporal.presented_frame_index = 7;
     renderer.set_temporal_frame(gi_temporal);
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: first native RT frame, BLAS candidate lifecycle, and GI determinism
+// ---------------------------------------------------------------------------
+static void rt_scenario_first_frame_and_blas_lifecycle(
+        RtPathContext& ctx, matter::VulkanFrame& frame) {
+    matter::VulkanDevice& vulkan      = ctx.vulkan;
+    viewer::VkSceneRenderer& renderer = ctx.renderer;
+    const matter::VulkanRayTracingProperties& properties = ctx.properties;
+    viewer::FrameMatrices& matrices   = ctx.matrices;
+    matter::CameraDesc& camera        = ctx.camera;
+    viewer::TemporalFrame& gi_temporal = ctx.gi_temporal;
+    std::string& error                = ctx.error;
+    uint32_t& retry_x                 = ctx.retry_x;
+    uint32_t& retry_y                 = ctx.retry_y;
+
     const uint64_t immediate_before = matter::immediate_submit_count();
-    matter::VulkanFrame frame{};
-    CHECK(vulkan.begin_frame(frame, error),
-          error.empty() ? "begin native RT frame" : error.c_str());
-    if (frame.command_buffer != VK_NULL_HANDLE) {
-        CHECK(renderer.prepare_frame(frame, matrices, camera.position, 1.0f,
-                                     error) &&
-                  renderer.record_cull_and_render(
-                      frame, matrices, camera.position, 1.0f, error) &&
-                  renderer.record_composite_to_swapchain(frame, error),
-              error.empty() ? "record BLAS TLAS native shadow trace"
-                            : error.c_str());
+    CHECK(renderer.prepare_frame(frame, matrices, camera.position, 1.0f,
+                                 error) &&
+              renderer.record_cull_and_render(
+                  frame, matrices, camera.position, 1.0f, error) &&
+              renderer.record_composite_to_swapchain(frame, error),
+          error.empty() ? "record BLAS TLAS native shadow trace"
+                        : error.c_str());
         CHECK(!renderer.test_rt_blas_built(920) &&
                   renderer.test_rt_blas_candidate_serial(920) == frame.serial,
               "BLAS build stays candidate-only until frame success");
@@ -2102,8 +2165,8 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
               error.empty() ? "submit native RT frame" : error.c_str());
         vulkan.wait_idle();
         bool failed_receiver_seen = false;
-        uint32_t retry_x = 0;
-        uint32_t retry_y = 0;
+        retry_x = 0;
+        retry_y = 0;
         matter::Float4 failed_raw{};
         for (uint32_t y = 20; y < 200 && !failed_receiver_seen; y += 20) {
             for (uint32_t x = 20; x < 320; x += 20) {
@@ -2248,6 +2311,14 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
               error.empty()
                   ? "GPU temporal shader agrees with CPU hit-distance rejection bit"
                   : error.c_str());
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: GPU A-trous denoising fixture (variance reduction, boundary, constant)
+// ---------------------------------------------------------------------------
+static void rt_scenario_atrous_denoising(RtPathContext& ctx) {
+    viewer::VkSceneRenderer& renderer = ctx.renderer;
+    std::string& error                = ctx.error;
 
         viewer::GiAtrousGpuFixture atrous_fixture{};
         constexpr uint32_t atrous_width = 65;
@@ -2386,6 +2457,23 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                 close4(value, {0.375f, 0.25f, 0.125f, 1.0f}, 0.001f);
         CHECK(constant_identity,
               "constant-color A-trous input is an identity operation");
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: GI history resets from RT/DLSS/lighting transitions and composite proof
+// ---------------------------------------------------------------------------
+static void rt_scenario_gi_history_resets(RtPathContext& ctx) {
+    matter::VulkanDevice& vulkan      = ctx.vulkan;
+    viewer::VkSceneRenderer& renderer = ctx.renderer;
+    viewer::VkSceneLighting& lighting = ctx.lighting;
+    matter::VulkanRayTracingSettings& enabled = ctx.enabled;
+    viewer::FrameMatrices& matrices           = ctx.matrices;
+    matter::CameraDesc& camera                = ctx.camera;
+    viewer::TemporalFrame& gi_temporal        = ctx.gi_temporal;
+    std::vector<MaterialGpuRecord>& gi_materials = ctx.gi_materials;
+    uint32_t& retry_x                         = ctx.retry_x;
+    uint32_t& retry_y                         = ctx.retry_y;
+    std::string& error                        = ctx.error;
         const auto render_temporal_control = [&](uint64_t attempt_token,
                                                  bool reset = false,
                                                  bool presented = true) {
@@ -2626,6 +2714,21 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                             : error.c_str());
         renderer.set_lighting(lighting);
         renderer.set_ray_tracing_settings(enabled);
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: secondary sun visibility (unblocked vs blocked secondary-hit ray)
+// ---------------------------------------------------------------------------
+static void rt_scenario_secondary_sun_visibility(RtPathContext& ctx) {
+    matter::VulkanDevice& vulkan      = ctx.vulkan;
+    viewer::VkSceneRenderer& renderer = ctx.renderer;
+    viewer::VkSceneLighting& lighting = ctx.lighting;
+    viewer::FrameMatrices& matrices           = ctx.matrices;
+    matter::CameraDesc& camera                = ctx.camera;
+    viewer::TemporalFrame& gi_temporal        = ctx.gi_temporal;
+    uint32_t& retry_x                         = ctx.retry_x;
+    uint32_t& retry_y                         = ctx.retry_y;
+    std::string& error                        = ctx.error;
         const auto render_sun_probe = [&](float intensity,
                                           uint64_t attempt_token,
                                           matter::Float4& raw) {
@@ -2663,7 +2766,7 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
             rgb_delta(unblocked_sun_zero, unblocked_sun_high);
         CHECK(unblocked_probes_ok && unblocked_sun_delta > 0.05f,
               "unblocked secondary hit responds to increased sun intensity");
-        viewer::VkScenePart sun_blocker = horizontal(
+        viewer::VkScenePart sun_blocker = rt_horizontal_part(
             924, 2.0f, 20.0f, {0.0f, -1.0f, 0.0f}, 0, 1.0f);
         CHECK(renderer.ensure_part(sun_blocker, error) >= 0 &&
                   renderer.update_instances({{920, identity_matrix()},
@@ -2695,15 +2798,20 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
         CHECK(renderer.test_rt_blas_built(920) &&
                   renderer.test_rt_blas_candidate_serial(920) == 0,
               "successful retry publishes candidate BLAS state");
-        float minimum_visibility = 1.0f;
-        float maximum_visibility = 0.0f;
+        float& minimum_visibility     = ctx.minimum_visibility;
+        float& maximum_visibility     = ctx.maximum_visibility;
+        bool&  receiver_seen          = ctx.receiver_seen;
+        float& receiver_min_visibility = ctx.receiver_min_visibility;
+        float& receiver_max_visibility = ctx.receiver_max_visibility;
+        minimum_visibility    = 1.0f;
+        maximum_visibility    = 0.0f;
+        receiver_seen         = false;
+        receiver_min_visibility = 1.0f;
+        receiver_max_visibility = 0.0f;
         bool visibility_reads_ok = true;
         bool debug_output_matches = true;
         matter::Float4 strongest_receiver_raw{};
         matter::Float4 strongest_receiver_specular{};
-        bool receiver_seen = false;
-        float receiver_min_visibility = 1.0f;
-        float receiver_max_visibility = 0.0f;
         for (uint32_t y = 20; y < 200; y += 20) {
             for (uint32_t x = 20; x < 320; x += 20) {
                 viewer::VkRasterPixel pixel{};
@@ -2755,6 +2863,38 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                   std::isfinite(strongest_receiver_specular.y) &&
                   std::isfinite(strongest_receiver_specular.z),
               "separate raw specular target stays finite on diffuse receiver");
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: GGX mirror, rough-metal, specular tint, and clearcoat lobes
+// ---------------------------------------------------------------------------
+static void rt_scenario_mirror_specular(RtPathContext& ctx) {
+    matter::VulkanDevice& vulkan      = ctx.vulkan;
+    viewer::VkSceneRenderer& renderer = ctx.renderer;
+    matter::VulkanRayTracingSettings& enabled        = ctx.enabled;
+    viewer::FrameMatrices& matrices                  = ctx.matrices;
+    matter::CameraDesc& camera                       = ctx.camera;
+    viewer::TemporalFrame& gi_temporal               = ctx.gi_temporal;
+    std::vector<MaterialGpuRecord>& gi_materials     = ctx.gi_materials;
+    std::string& error                               = ctx.error;
+    const auto render_temporal_control = [&](uint64_t attempt_token,
+                                             bool reset = false,
+                                             bool presented = true) {
+        gi_temporal.attempt_token = attempt_token;
+        gi_temporal.reset = reset;
+        renderer.set_temporal_frame(gi_temporal);
+        matter::VulkanFrame control{};
+        const bool rendered = vulkan.begin_frame(control, error) &&
+            renderer.prepare_frame(control, matrices, camera.position,
+                                   1.0f, error) &&
+            renderer.record_cull_and_render(
+                control, matrices, camera.position, 1.0f, error) &&
+            renderer.record_composite_to_swapchain(control, error) &&
+            vulkan.end_frame(control, error);
+        renderer.finish_ray_tracing_frame(control.serial,
+                                           rendered && presented);
+        return rendered;
+    };
         renderer.release_part(921);
         gi_materials[1].metal_opacity_spec_coat[0] = 1.0f;
         gi_materials[1].metal_opacity_spec_coat[3] = 0.0f;
@@ -2762,7 +2902,7 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
         gi_materials[1].specular_tint_coat_roughness[0] = 1.0f;
         gi_materials[1].specular_tint_coat_roughness[1] = 1.0f;
         gi_materials[1].specular_tint_coat_roughness[2] = 1.0f;
-        CHECK(renderer.ensure_part(horizontal(925, 0.0f, 0.55f,
+        CHECK(renderer.ensure_part(rt_horizontal_part(925, 0.0f, 0.55f,
                                               {0.0f, -0.3162278f, 0.9486833f},
                                               1, 1.0f), error) >= 0 &&
                   renderer.update_materials(gi_materials, 10, 1, error) &&
@@ -2895,6 +3035,8 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
               "clearcoat adds a distinct untinted dielectric highlight over the tinted base");
         const uint64_t fallback_reset_baseline =
             renderer.test_gi_history_reset_count();
+        matter::VulkanRayTracingSettings rt_disabled = enabled;
+        rt_disabled.enabled = false;
         renderer.set_ray_tracing_settings(rt_disabled);
         CHECK(render_temporal_control(320),
               error.empty() ? "render disabled-RT stale-reflection fixture"
@@ -2938,8 +3080,25 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
               error.empty()
                   ? "restoring RT instances resets stale reflection history once"
                   : error.c_str());
+}
+
+// ---------------------------------------------------------------------------
+// Scenario: baked-AO-zero GI suppression and GI disable with active RT
+// ---------------------------------------------------------------------------
+static void rt_scenario_baked_ao_and_gi_disable(RtPathContext& ctx) {
+    matter::VulkanDevice& vulkan      = ctx.vulkan;
+    viewer::VkSceneRenderer& renderer = ctx.renderer;
+    viewer::FrameMatrices& matrices   = ctx.matrices;
+    matter::CameraDesc& camera        = ctx.camera;
+    matter::VulkanGiSettings& gi      = ctx.gi;
+    bool&  receiver_seen              = ctx.receiver_seen;
+    float& receiver_min_visibility    = ctx.receiver_min_visibility;
+    float& receiver_max_visibility    = ctx.receiver_max_visibility;
+    float& minimum_visibility         = ctx.minimum_visibility;
+    float& maximum_visibility         = ctx.maximum_visibility;
+    std::string& error                = ctx.error;
         renderer.release_part(925);
-        CHECK(renderer.ensure_part(horizontal(921, 0.0f, 0.55f,
+        CHECK(renderer.ensure_part(rt_horizontal_part(921, 0.0f, 0.55f,
                                               {0.0f, -1.0f, 0.0f}, 1, 1.0f),
                                    error) >= 0 &&
                   renderer.update_instances(
@@ -2948,7 +3107,7 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
               error.empty() ? "restore diffuse receiver after mirror fixture"
                             : error.c_str());
         renderer.release_part(921);
-        CHECK(renderer.ensure_part(horizontal(922, 0.0f, 0.55f,
+        CHECK(renderer.ensure_part(rt_horizontal_part(922, 0.0f, 0.55f,
                                               {0.0f, -1.0f, 0.0f}, 1, 0.0f),
                                    error) >= 0 &&
                   renderer.update_instances(
@@ -3001,7 +3160,7 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
                       1e-6f,
               "baked AO zero suppresses raw indirect diffuse without changing direct visibility");
         renderer.release_part(922);
-        CHECK(renderer.ensure_part(horizontal(923, 0.0f, 0.55f,
+        CHECK(renderer.ensure_part(rt_horizontal_part(923, 0.0f, 0.55f,
                                               {0.0f, -1.0f, 0.0f}, 1, 1.0f),
                                    error) >= 0 &&
                   renderer.update_instances(
@@ -3057,6 +3216,68 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
               "RT-active GI disable preserves direct visibility and clears receiver raw diffuse");
         std::printf("RT visibility range: %.3f .. %.3f\n",
                     minimum_visibility, maximum_visibility);
+}
+
+// ---------------------------------------------------------------------------
+// Driver: run all native RT path scenarios in original order
+// ---------------------------------------------------------------------------
+void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
+    run_native_multilod_rt_mapping(vulkan);
+    CHECK(vulkan.ray_tracing_available(),
+          vulkan.ray_tracing_unavailable_reason().empty()
+              ? "native ray tracing available"
+              : vulkan.ray_tracing_unavailable_reason().c_str());
+    if (!vulkan.ray_tracing_available()) return;
+    const auto& properties = vulkan.ray_tracing_properties();
+    CHECK(properties.shader_group_handle_alignment != 0 &&
+              properties.shader_group_base_alignment != 0 &&
+              properties.shader_group_handle_size != 0 &&
+              properties.shader_group_base_alignment >=
+                  properties.shader_group_handle_alignment &&
+              properties.max_shader_group_stride != 0 &&
+              properties.max_ray_dispatch_invocation_count >= 320u * 200u,
+          "queried SBT handle and base alignments are retained");
+
+    std::string error;
+    rt_scenario_surface_query(vulkan, properties, error);
+    rt_scenario_blas_pinning(vulkan, error);
+    rt_scenario_visibility_classification(vulkan, error);
+
+    // Shared state for all renderer-based scenarios.
+    viewer::VkSceneRenderer renderer(vulkan);
+    viewer::VkSceneLighting lighting{};
+    matter::VulkanRayTracingSettings enabled{};
+    matter::VulkanGiSettings gi{};
+    viewer::FrameMatrices matrices{};
+    matter::CameraDesc camera{};
+    viewer::TemporalFrame gi_temporal{};
+    std::vector<MaterialGpuRecord> gi_materials;
+    uint32_t retry_x = 0;
+    uint32_t retry_y = 0;
+    bool     receiver_seen = false;
+    float    minimum_visibility = 1.0f;
+    float    maximum_visibility = 0.0f;
+    float    receiver_min_visibility = 1.0f;
+    float    receiver_max_visibility = 0.0f;
+
+    RtPathContext ctx{vulkan, properties, error, renderer, lighting, enabled,
+                      gi, matrices, camera, gi_temporal, gi_materials,
+                      retry_x, retry_y, receiver_seen,
+                      minimum_visibility, maximum_visibility,
+                      receiver_min_visibility, receiver_max_visibility};
+
+    rt_scenario_shadow_contract(ctx);
+
+    matter::VulkanFrame frame{};
+    CHECK(vulkan.begin_frame(frame, error),
+          error.empty() ? "begin native RT frame" : error.c_str());
+    if (frame.command_buffer != VK_NULL_HANDLE) {
+        rt_scenario_first_frame_and_blas_lifecycle(ctx, frame);
+        rt_scenario_atrous_denoising(ctx);
+        rt_scenario_gi_history_resets(ctx);
+        rt_scenario_secondary_sun_visibility(ctx);
+        rt_scenario_mirror_specular(ctx);
+        rt_scenario_baked_ao_and_gi_disable(ctx);
     }
 }
 
