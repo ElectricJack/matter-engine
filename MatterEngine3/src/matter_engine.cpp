@@ -333,7 +333,7 @@ struct WorldSession::Impl {
         // RebakeCone (culler already initialized by the prior full bake).
         bool init_culler = false;
         // Whether to emit verbose diagnostic prints inside the reset job
-        // (raster init error, probe-unavailable warning, sky-clear color).
+        // (raster init error, sky-clear color, GPU-driven shader init failure).
         // True for BakeAll/Reload; false for RebakeCone.
         bool verbose_reset_log = false;
         // Test fault hook, forwarded into each publish job lambda.
@@ -740,7 +740,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
 
     // Phase C Task 17: resolve/manifest cache — skip JS eval on warm launches.
     // Live-edit sessions bypass the cache (they need a live script host graph).
-    // Fail-closed: any anomaly (bad key, truncated file, probe miss) falls through
+    // Fail-closed: any anomaly (bad key, truncated file, failed restore) falls through
     // to the full install+compose path.
     bool resolve_cache_hit = false;
     uint64_t rc_cache_key  = 0;

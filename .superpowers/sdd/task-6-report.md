@@ -115,3 +115,31 @@ The report's "pre-existing" table was audited against baseline 791d468 (fresh wo
 Additionally found (missed by report): build-all.sh still invoked `run-lighting` and `run-probebrick`, whose targets Task 2 deleted (528762c) — "No rule to make target" contributed to the MatterEngine3 FAIL. Fixed by removing both from the suite loop in build-all.sh.
 
 Windows clean rebuild remains owed to Jack's MSYS2 environment (UCRT64 toolchain not invocable from WSL), as the report correctly states.
+
+---
+
+## Final-Review Fix Report
+
+**Date:** 2026-07-16
+**Commit:** (see below — `docs: remove stale probe-lighting references after probe system deletion`)
+
+### Files changed
+
+| File | What changed |
+|---|---|
+| `MatterEngine3/src/matter_engine.cpp` | **Comment-only.** Two stale probe mentions fixed: (1) `verbose_reset_log` doc comment at line 336 — removed "probe-unavailable warning" from the list of gates; replaced with the accurate survivors "sky-clear color, GPU-driven shader init failure". (2) Resolve-cache fail-closed comment at line 743 — replaced "probe miss" with "failed restore", which describes the actual fallback condition. |
+| `MatterEngine3/docs/rendering.md` | Deleted the entire "Phase-2 probe-volume lighting" section (~lines 120-137, describing `probe_bake.cpp`/`probe_texture.h`, PRB1 cache, 3D GL textures), the "Phase-3 lighting model" `useProbes` mode table (~lines 139-152), and the "Lighting path" column from the fallback matrix. Replaced with a brief "Lighting model" subsection: GL raster path uses sun + baked-AO ambient (`TriEx` ao0/ao1/ao2 via `part_ao_bake.cpp`). Also removed the `Probes: NxNxN / OFF` HUD stat line, and fixed `sun/probes/material table` → `sun/sky/material table` in the per-frame composition description. |
+| `MatterEngine3/docs/architecture.md` | Deleted two probe-pipeline lines from the pipeline-at-a-glance diagram (`probe_bake` and `probe_texture` stages) and the "Probe bake" row from the stage-responsibilities table. Updated the viewer line in the diagram from "probe-sampled forward lighting" to "sun + baked-AO ambient forward lighting". |
+
+### Make result
+
+`make -C MatterEngine3` (incremental, recompiling `matter_engine.cpp`):
+
+```
+g++ -c src/matter_engine.cpp -o matter_engine.o -std=c++17 ...
+src/matter_engine.cpp:114:13: warning: 'bool matter::invert4x4(...)' defined but not used [-Wunused-function]
+ar rcs libmatter_engine3.a ...
+EXIT:0
+```
+
+Only the pre-existing `invert4x4` unused-function warning; no errors. `git diff --stat` shows exactly three files changed (56 deletions, 16 insertions — doc removals dominate).

@@ -53,7 +53,7 @@ Every frame the compute pipeline runs:
    `DrawArraysCmd`'s `instance_count` (SSBO binding 2). `MATTER_HIZ_DEBUG`
    emits per-cluster HiZ probes for offline inspection.
 4. `RasterComposer::draw_gpu_driven` binds `shader_gpu_`, uploads frame
-   uniforms via `setup_frame_uniforms` (sun/probes/material table), computes
+   uniforms via `setup_frame_uniforms` (sun/sky/material table), computes
    MVP the raylib way (`rlGetMatrix*`), and issues one
    `glMultiDrawArraysIndirect` over the live command buffer. The vertex shader
    fetches its per-instance transform out of `DrawXforms` using
@@ -117,46 +117,26 @@ Missing lines produce defaults that reproduce the Phase-1 hardcoded look. The
 `WorldLights` struct is uploaded to the raster shader each frame (`sunDir`, `sunColor`,
 `ambientColor`) and to the ray-tracer (`wlSunDir`, `wlSunColor`, `wlSkyColor`).
 
-### Phase-2 probe-volume lighting (`src/probe_bake.cpp`, `viewer/probe_texture.h`)
+### Lighting model (`shaders/raster.vs`, `shaders/raster.fs`)
 
-On world load, `LocalProvider` bakes a CPU SH-L1 probe volume covering the scene:
+Lighting in the raster path is the Vulkan+RTX path for offline/reference rendering
+(`shaders_vk`); the GL raster forward shader applies sun and ambient from `WorldLights`:
 
-1. Grid is sized to the world AABB with `cell ≈ 4` world units.
-2. Per probe, ray bundles sample sky/sun visibility and accumulate ambient irradiance
-   (hemisphere-weighted sky + blocked sun) via the world tracer.
-3. Result cached as `cache/<world>.probes` (PRB1 format; fingerprint = lights hash).
-   Second run skips baking and loads from cache (no "baking probes" prints).
-4. Uploaded as two RGBA8 3D textures (GL units 4/5):
-   - `tex_ambient`: `rgb = clamp(irradiance / 4)`, `a = sun_vis [0,1]`
-   - `tex_dominant`: `rgb = dir * 0.5 + 0.5`, `a = clamp(intensity / 4)`
-5. Sampled in `raster.fs` with `useProbes=1`, trilinear, `CLAMP_TO_EDGE`.
-   Adds a dominant-direction cosine term to the ambient term.
-6. If probes are unavailable (file missing, world without geometry), the raster path
-   falls back to flat ambient using `sky_color` from the light list.
-
-Editing any `light` line changes the lights fingerprint → cache miss → re-bake.
-
-### Phase-3 lighting model (`shaders/raster.vs`, `shaders/raster.fs`)
-
-The raster fragment shader supports three ambient modes selected by `useProbes`:
-
-| Mode | When | Ambient term |
-|---|---|---|
-| `useProbes=1` | probes available | trilinear sample from 3D probe textures; dominant-direction cosine term added |
-| `useProbes=0` | probes OFF/missing | `ambientColor * ao` (flat ambient from `sky_color` uniform) |
-
-Sun lighting is always applied: `sunColor * max(dot(N, -sunDir), 0)`.
+- Sun: `sunColor * max(dot(N, -sunDir), 0)`.
+- Ambient: `ambientColor * ao`, where `ao` is the per-vertex baked ambient occlusion
+  stored in `TriEx` (fields `ao0`/`ao1`/`ao2`), baked at part-bake time by
+  `MatterEngine3/src/part_ao_bake.cpp`.
 
 Material albedo and emission from the material table uniform (64 materials × 12 floats).
 Reinhard tone-map + gamma 2.2 applied per fragment.
 
 ### Fallback matrix
 
-| Artifact present | Geometry path | Lighting path |
-|---|---|---|
-| `<hash>.flat.part` (v3, clusters) | per-cluster frustum cull + LOD select | probe sampling if probes valid, else flat ambient |
-| `<hash>.flat.part` (v2, whole-part) | whole-part LOD via `lod_mesh_data[level]` | probe sampling if probes valid, else flat ambient |
-| `<hash>.part` only (compositional) | recursive child expansion (depth ≤ 8) | probe sampling if probes valid, else flat ambient |
+| Artifact present | Geometry path |
+|---|---|
+| `<hash>.flat.part` (v3, clusters) | per-cluster frustum cull + LOD select |
+| `<hash>.flat.part` (v2, whole-part) | whole-part LOD via `lod_mesh_data[level]` |
+| `<hash>.part` only (compositional) | recursive child expansion (depth ≤ 8) |
 
 No v3 clusters → whole-part batch path (cluster_index = UINT32\_MAX). No flat artifact
 at all → compositional recursive expansion, always LOD0 for children.
@@ -195,7 +175,6 @@ The Viewer Debug panel shows:
 - `GPU cull: emitted=E / culled=C / hiz=H  tris=T` — total per-cluster
   instances the compute pass emitted, per-cluster frustum + LOD kills, HiZ
   kills, and the total triangles summed from live `DrawArraysCmd`s.
-- `Probes: NxNxN` or `Probes: OFF` — active probe grid dimensions, or fallback indicator.
 
 Background sky color is derived by tone-mapping `sky_color` from the light list
 (Reinhard + gamma 2.2) so it tracks the world's ambient hue.

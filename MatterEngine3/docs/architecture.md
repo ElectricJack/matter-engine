@@ -27,14 +27,12 @@ part_asset_v2: parts/<resolved_hash>.part        content-addressed artifact
 parts/<resolved_hash>.flat.part                  v3 format: cluster table + per-cluster LOD
    │
    ▼  world_lights: `light sun/sky/spot` lines in world.manifest → WorldLights
-   ▼  probe_bake: CPU SH-L1 probes (sky + sun + spots) → cache/<world>.probes (PRB1)
-   ▼  probe_texture: 2× RGBA8 3D textures (units 4/5) uploaded to raster.fs
    │
    ▼
 viewer: PartStore flat-preferred load (v3 cluster ladders or v2 whole-part)
         → GpuCuller (cull.comp) per-cluster frustum + HiZ + LOD select
         → RasterComposer::draw_gpu_driven (glMultiDrawArraysIndirect, SSBO instancing)
-        → probe-sampled forward lighting  (default; requires GL 4.6)
+        → sun + baked-AO ambient forward lighting  (default; requires GL 4.6)
         fallback: WorldComposer → TLAS → raytrace (MATTER_RT=1, ~60s warm-up)
 ```
 
@@ -51,7 +49,6 @@ viewer: PartStore flat-preferred load (v3 cluster ladders or v2 whole-part)
 | Flatten | `src/part_flatten.cpp` | Merge a root's whole subtree (transforms applied, TriEx carried, LOD0 of each part) into ONE mesh; build ε ladder (ε = radius/{256,64,16,4}, stop < 2000 tris); then invoke `split_clusters` to spatially partition into ~16k-tri clusters, bake a per-cluster ladder, and save as `<root>.flat.part` (v3) |
 | Clusters | `src/part_cluster.cpp` | k-d median spatial split of a flat merged mesh → `ClusterSet` (cluster AABB, mesh slice, per-cluster ε-ladder); basis for per-cluster frustum cull + projected-size LOD in the raster path |
 | World lights | `src/world_lights.cpp` | Parse `light sun/sky/spot` lines from `world.manifest`; produce `WorldLights` (sun dir/color, sky color, spot list). Defaults reproduce the Phase-1 hardcoded look for worlds without light lines |
-| Probe bake | `src/probe_bake.cpp` | CPU SH-L1 probe volume: traces ray bundles from a grid of probes across the scene to accumulate sky ambient and sun visibility per cell; cached as `cache/<world>.probes` (PRB1 format). Invalidated when the lights fingerprint changes. Uploaded as two RGBA8 3D textures (ambient + dominant) to the raster shader (units 4/5) |
 | PartGraph | `src/part_graph.cpp:96` | Dependency DAG: `static requires` discovery → memoized DFS with cycle detection → topo sort → children-first bake with cache hits |
 | Live edit | `src/live_edit.cpp`, `src/inotify_watcher.cpp` | Debounced file watch → changed parts → upward ancestor cone → topo re-bake → re-flatten roots. Fail-closed with last-good artifact |
 
