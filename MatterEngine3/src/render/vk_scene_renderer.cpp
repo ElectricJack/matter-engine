@@ -5180,6 +5180,7 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         selected.rt_test_output.lifetime, rt_sbt_.lifetime};
     for (const auto& part : parts_) {
         if (part.rt_geometry) retained.push_back(part.rt_geometry->lifetime);
+        if (part.rt_index) retained.push_back(part.rt_index->lifetime);
         for (const auto& lod : part.rt_lods) {
             if (lod.candidate)
                 retained.push_back(lod.candidate->lifetime);
