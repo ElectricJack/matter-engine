@@ -145,6 +145,15 @@ void MaterialRegistryPackRtForGPU(MaterialGpuRecord* out) {
         r->emission_strength[1] = m->emissionColor[1];
         r->emission_strength[2] = m->emissionColor[2];
         r->emission_strength[3] = m->emission;
+        /* Legacy emissive materials author emission > 0 with a black
+           emission color; normalize to albedo so shaders can read
+           emission_strength rgb unconditionally. */
+        if (m->emission > 0.0f && m->emissionColor[0] <= 0.0f &&
+            m->emissionColor[1] <= 0.0f && m->emissionColor[2] <= 0.0f) {
+            r->emission_strength[0] = m->albedo[0];
+            r->emission_strength[1] = m->albedo[1];
+            r->emission_strength[2] = m->albedo[2];
+        }
         r->transmission[0] = m->transmission;
         r->transmission[1] = m->ior;
         r->transmission[2] = m->thickness;

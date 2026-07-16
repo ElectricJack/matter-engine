@@ -1456,12 +1456,14 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     if (result != VK_SUCCESS)
         return fail_vk("vkCreateGraphicsPipelines(raster)", result, error);
 
-    std::array<VkDescriptorSetLayoutBinding, 6> sampled_bindings{};
-    for (uint32_t i = 0; i < sampled_bindings.size(); ++i) {
+    std::array<VkDescriptorSetLayoutBinding, 8> sampled_bindings{};
+    for (uint32_t i = 0; i < 7; ++i) {
         sampled_bindings[i] = descriptor_binding(
             i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             VK_SHADER_STAGE_FRAGMENT_BIT);
     }
+    sampled_bindings[7] = descriptor_binding(
+        7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT);
     VkDescriptorSetLayoutCreateInfo sampled_layout{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     sampled_layout.bindingCount =
@@ -1774,9 +1776,9 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     }
     const VkDescriptorPoolSize pool_sizes[] = {
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 12},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 13},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-         frame_slot_count * 75},
+         frame_slot_count * 76},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 22}};
     VkDescriptorPoolCreateInfo pool{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -1961,10 +1963,11 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
                                   : &gi_spec_history_[gi_composite_history_index_].radiance)
             : &raw_specular_;
     matter::VkImageResource* sampled[] = {&albedo_, &normal_, &orm_,
-                                          &visibility_, diffuse, specular};
-    VkDescriptorImageInfo image_infos[6]{};
-    VkWriteDescriptorSet writes[6]{};
-    for (uint32_t i = 0; i < 6; ++i) {
+                                          &visibility_, diffuse, specular,
+                                          &material_instance_};
+    VkDescriptorImageInfo image_infos[7]{};
+    VkWriteDescriptorSet writes[8]{};
+    for (uint32_t i = 0; i < 7; ++i) {
         image_infos[i].sampler = composite_sampler_;
         image_infos[i].imageView = sampled[i]->view;
         image_infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -1976,7 +1979,15 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[i].pImageInfo = &image_infos[i];
     }
-    vkUpdateDescriptorSets(vulkan_->device(), 6, writes, 0, nullptr);
+    VkDescriptorBufferInfo material_info{frame.materials.buffer, 0,
+                                         frame.materials.size};
+    writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[7].dstSet = frame.composite_descriptor_set;
+    writes[7].dstBinding = 7;
+    writes[7].descriptorCount = 1;
+    writes[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[7].pBufferInfo = &material_info;
+    vkUpdateDescriptorSets(vulkan_->device(), 8, writes, 0, nullptr);
 }
 
 void VkSceneRenderer::update_display_descriptor(VkDescriptorSet set,

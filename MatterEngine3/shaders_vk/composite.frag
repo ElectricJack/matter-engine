@@ -9,6 +9,25 @@ layout(set = 0, binding = 2) uniform sampler2D orm_texture;
 layout(set = 0, binding = 3) uniform sampler2D visibility_texture;
 layout(set = 0, binding = 4) uniform sampler2D raw_diffuse_texture;
 layout(set = 0, binding = 5) uniform sampler2D specular_texture;
+layout(set = 0, binding = 6) uniform usampler2D identity_texture;
+
+// Mirrors MaterialGpuRecord / rt_surface_common.glsl RtMaterialGpu; declared
+// locally because rt_surface_common.glsl claims set 0 bindings 3-5.
+struct RtMaterialGpu {
+    vec4 base_roughness;
+    vec4 metal_opacity_spec_coat;
+    vec4 specular_tint_coat_roughness;
+    vec4 emission_strength;
+    vec4 transmission;
+    vec4 absorption_pad;
+    vec4 scattering;
+    vec4 scattering_shape;
+    uvec4 flags_misc;
+};
+
+layout(set = 0, binding = 7, std430) readonly buffer RtMaterialTable {
+    RtMaterialGpu rt_materials[];
+};
 
 layout(push_constant) uniform SceneLighting {
     vec3 sun_direction;
@@ -52,7 +71,13 @@ void main() {
         encoded_emission > 0.0
             ? exp2(min(encoded_emission, 15.875)) - 1.0
             : 0.0;
-    vec3 emission = albedo.rgb * emission_strength * lighting.emission_multiplier;
+    uint material_index = texelFetch(identity_texture,
+                                     ivec2(gl_FragCoord.xy), 0).r;
+    vec3 emission_color = material_index < rt_materials.length()
+        ? rt_materials[material_index].emission_strength.rgb
+        : albedo.rgb;
+    vec3 emission = emission_color * emission_strength *
+                    lighting.emission_multiplier;
     vec3 raw_diffuse = texture(raw_diffuse_texture, in_uv).rgb *
                        lighting.diffuse_rt_multiplier;
     vec3 specular = texture(specular_texture, in_uv).rgb;
