@@ -60,6 +60,15 @@ void main() {
     centerNormal = normalize(centerNormal);
     vec2 moments = texelFetch(momentsTex, pixel, 0).rg;
     float variance = max(moments.y - moments.x * moments.x, 0.0);
+    // Fresh/disoccluded pixels have degenerate moments (one sample gives
+    // variance exactly 0), which collapses sigma and makes the luminance
+    // edge-stop reject every neighbor -- leaving 1-spp noise unfiltered
+    // precisely where filtering is needed most. Floor the variance
+    // relative to the mean until history rebuilds.
+    if (centerHistory < 4u) {
+        float boost = float(4u - centerHistory);
+        variance = max(variance, boost * moments.x * moments.x + 1e-3);
+    }
     float sigma = max(pc.phiLuminance * sqrt(variance + 1e-4), 1e-3);
     const float kernel[3] = float[3](0.375, 0.25, 0.0625);
     vec3 sum = vec3(0.0);

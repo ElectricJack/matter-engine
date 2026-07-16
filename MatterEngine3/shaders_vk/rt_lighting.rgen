@@ -115,12 +115,33 @@ void basis(vec3 n, out vec3 t, out vec3 b) {
     b = cross(n, t);
 }
 
-vec3 environment(vec3 direction) {
+vec3 sky_environment(vec3 direction) {
     float horizon = clamp(direction.y * 0.5 + 0.5, 0.0, 1.0);
-    vec3 sky = constants.sky_color * mix(0.2, 1.25, horizon);
+    return constants.sky_color * mix(0.2, 1.25, horizon);
+}
+
+vec3 environment(vec3 direction) {
     float sun_disk = smoothstep(0.99975, 0.99995,
                                 dot(direction, normalize(constants.to_sun)));
-    return sky + constants.sun_color * constants.sun_intensity * sun_disk;
+    return sky_environment(direction) +
+           constants.sun_color * constants.sun_intensity * sun_disk;
+}
+
+// Environment for 1-spp reflection rays: the analytic sun disk is scaled by
+// the disk/lobe solid-angle ratio, approximating roughness prefiltering.
+// Near-mirror lobes keep the full stable glint; rough lobes -- where a rare
+// disk hit used to produce a firefly -- get the physically tiny prefiltered
+// value instead.
+vec3 reflection_environment(vec3 direction, float roughness) {
+    const float sun_solid_angle = 9.42e-4;  // 2*pi*(1 - 0.99985)
+    float alpha = roughness * roughness;
+    float lobe_solid_angle = 3.14159265 * alpha * alpha;
+    float prefilter =
+        sun_solid_angle / max(lobe_solid_angle, sun_solid_angle);
+    float sun_disk = smoothstep(0.99975, 0.99995,
+                                dot(direction, normalize(constants.to_sun)));
+    return sky_environment(direction) + constants.sun_color *
+           constants.sun_intensity * sun_disk * prefilter;
 }
 
 vec3 sky_irradiance(vec3 normal) {
@@ -199,7 +220,10 @@ void main() {
                                 hit.surface.normal * constants.bias,
                             constants.bias, to_sun, constants.max_distance, 0);
             }
-            bounce += hit_base * constants.sun_color *
+            // Lambertian 1/pi keeps the sun-lit indirect component in
+            // ratio with the sky component (whose pi cancels against the
+            // cosine-sampling pdf).
+            bounce += hit_base * 0.31830988618 * constants.sun_color *
                       constants.sun_intensity * ndotl *
                       visibility_payload.visibility;
         }
@@ -263,7 +287,8 @@ void main() {
                         reflected, constants.max_distance, 1);
             vec3 spec_hit_base;
             vec3 incoming = (hit.surface.flags & RT_SURFACE_VALID) != 0u
-                ? hit_radiance(hit.surface, spec_hit_base) : environment(reflected);
+                ? hit_radiance(hit.surface, spec_hit_base)
+                : reflection_environment(reflected, roughness);
             float g = ggx_g1(n_dot_v, roughness) *
                       ggx_g1(n_dot_l, roughness);
             vec3 brdf = schlick_fresnel(f0, v_dot_h) *
