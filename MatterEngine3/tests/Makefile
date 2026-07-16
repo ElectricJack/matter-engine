@@ -284,12 +284,6 @@ FLATTEN_CPP = part_flatten_tests.cpp ../src/part_flatten.cpp ../src/lod_bake.cpp
               $(COMMON_MSL_BLAS_SRC)
 FLATTEN_C   = $(MSL)/material_registry.c
 
-# rt-lighting-phase2 Task 4 — deterministic part-local AO baker (CPU, BVH only).
-AO_TARGET = part_ao_tests
-AO_CPP    = part_ao_tests.cpp ../src/part_ao_bake.cpp \
-             $(COMMON_MSL_BLAS_SRC)
-AO_C      = $(MSL)/material_registry.c
-
 TILESETTORUSBVH_TARGET = tileset_torus_bvh_tests
 TILESETTORUSBVH_CPP    = tileset_torus_bvh_tests.cpp ../src/tileset_torus_bvh.cpp \
                          ../src/part_asset_v2.cpp \
@@ -364,7 +358,7 @@ TERRAINVERB_CPP = terrain_verb_tests.cpp ../src/part_graph.cpp \
                   ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                   ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                   ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
-                  ../src/modifier_apply.cpp ../src/part_ao_bake.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                  ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
                   ../src/terrain_field.cpp ../src/terrain_mesher.cpp \
                   ../src/pf_bindings.cpp \
                   ../../ParticleFlowLib/src/pf_math.cpp ../../ParticleFlowLib/src/pf_sim.cpp \
@@ -378,7 +372,7 @@ SECTORBAKE_CPP = sector_bake_tests.cpp ../src/part_graph.cpp \
                  ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                  ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                  ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
-                 ../src/modifier_apply.cpp ../src/part_ao_bake.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                 ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
                  $(TERRAIN_SRC) \
                  $(PF_CPP) \
                  $(COMMON_MSL_FULL_SRC)
@@ -405,7 +399,6 @@ SCRIPT_CPP = script_host_tests.cpp ../src/part_graph.cpp ../src/script_host.cpp 
              ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
              ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
              ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
-             ../src/part_ao_bake.cpp \
              $(TERRAIN_SRC) \
              ../src/pf_bindings.cpp \
              ../../ParticleFlowLib/src/pf_math.cpp ../../ParticleFlowLib/src/pf_sim.cpp \
@@ -436,7 +429,7 @@ GRAPH_INT_CPP = part_graph_integration_tests.cpp ../src/part_graph.cpp \
                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
-                ../src/modifier_apply.cpp ../src/part_ao_bake.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
                 $(TERRAIN_SRC) \
                 $(PF_CPP) \
                 $(COMMON_MSL_FULL_SRC)
@@ -451,7 +444,7 @@ EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp \
               ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
               ../src/part_cluster.cpp \
               ../src/sector_grid.cpp ../src/lod_select.cpp \
-              ../src/modifier_apply.cpp ../src/part_ao_bake.cpp $(MSL)/mesh_smooth.cpp \
+              ../src/modifier_apply.cpp $(MSL)/mesh_smooth.cpp \
               $(MSL)/mesh_transform.cpp \
               $(TERRAIN_SRC) \
               $(PF_CPP) \
@@ -495,7 +488,7 @@ TILESETBAKE_CPP = tileset_bake_tests.cpp ../src/part_graph.cpp \
                   ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \
                   ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                   ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
-                  ../src/modifier_apply.cpp ../src/part_ao_bake.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                  ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
                   $(TERRAIN_SRC) \
                   $(PF_CPP) \
                   $(COMMON_MSL_FULL_SRC)
@@ -517,7 +510,7 @@ EVALWORLD_CPP = eval_world_tests.cpp ../src/part_graph.cpp \
                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
-                ../src/modifier_apply.cpp ../src/part_ao_bake.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
                 $(TERRAIN_SRC) \
                 ../src/pf_bindings.cpp \
                 ../../ParticleFlowLib/src/pf_math.cpp ../../ParticleFlowLib/src/pf_sim.cpp \
@@ -531,7 +524,7 @@ FOLDCACHE_CPP = fold_cache_tests.cpp ../src/part_graph.cpp \
                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
-                ../src/modifier_apply.cpp ../src/part_ao_bake.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+                ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
                 $(TERRAIN_SRC) \
                 ../src/pf_bindings.cpp \
                 ../../ParticleFlowLib/src/pf_math.cpp ../../ParticleFlowLib/src/pf_sim.cpp \
@@ -545,7 +538,7 @@ SHLIB_CPP = shared_lib_tests.cpp ../src/module_resolver.cpp ../src/script_rng_bi
             ../src/part_graph.cpp \
             ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \
             ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
-            ../src/modifier_apply.cpp ../src/part_ao_bake.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+            ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
             $(TERRAIN_SRC) \
             $(PF_CPP) \
             $(COMMON_MSL_FULL_SRC)
@@ -588,7 +581,7 @@ RETOPO_INT_CPP = retopo_integration_tests.cpp \
                  ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                  ../src/part_flatten.cpp ../src/part_cluster.cpp \
                  ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
-                 ../src/modifier_apply.cpp ../src/part_ao_bake.cpp ../src/retopo_blacklist.cpp \
+                 ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp \
                  $(MSL)/mesh_retopo.cpp \
                  $(MSL)/mesh_smooth.cpp \
                  $(MSL)/mesh_transform.cpp \
@@ -644,7 +637,7 @@ GPU_PIPELINE_CPP = \
     ../src/tileset_bake.cpp ../src/tileset_settle.cpp \
     ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
     ../src/tileset_bake_primary.cpp ../src/tileset_bake_ao.cpp \
-    ../src/modifier_apply.cpp ../src/part_ao_bake.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
+    ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
     $(TERRAIN_SRC) \
     $(PF_CPP)
 
@@ -673,7 +666,6 @@ def_CPP_SRCS := $(sort \
     $(TRIVAR_CPP) \
     $(COMP_CPP) \
     $(FLATTEN_CPP) \
-    $(AO_CPP) \
     $(TILESETTORUSBVH_CPP) \
     $(TILESETMEADOWMANIFEST_CPP) \
     $(ISO_CPP) \
@@ -771,7 +763,6 @@ GRAPH_OBJS  = $(call obj_list,def,$(GRAPH_SOURCES)) $(call obj_list,mslc,$(GRAPH
 TRIVAR_OBJS = $(call obj_list,def,$(TRIVAR_CPP)) $(call obj_list,mslc,$(TRIVAR_C))
 COMP_OBJS   = $(call obj_list,def,$(COMP_CPP)) $(call obj_list,mslc,$(COMP_C))
 FLATTEN_OBJS = $(call obj_list,def,$(FLATTEN_CPP)) $(call obj_list,mslc,$(FLATTEN_C))
-AO_OBJS      = $(call obj_list,def,$(AO_CPP)) $(call obj_list,mslc,$(AO_C))
 TILESETTORUSBVH_OBJS = $(call obj_list,def,$(TILESETTORUSBVH_CPP)) $(call obj_list,mslc,$(TILESETTORUSBVH_C))
 TILESETMEADOWMANIFEST_OBJS = $(call obj_list,def,$(TILESETMEADOWMANIFEST_CPP)) $(call obj_list,mslc,$(TILESETMEADOWMANIFEST_C))
 ISO_OBJS = $(call obj_list,def,$(ISO_CPP)) $(call obj_list,mslc,$(ISO_C))
@@ -820,7 +811,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-partv2 run-partstore run-script run-foldcache run-evalworld run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-partao
+.PHONY: clean run-matrix run-partv2 run-partstore run-script run-foldcache run-evalworld run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -950,13 +941,6 @@ $(FLATTEN_TARGET): $(FLATTEN_OBJS)
 
 run-flatten: $(FLATTEN_TARGET)
 	./$(FLATTEN_TARGET)
-
-# rt-lighting-phase2 Task 4 — deterministic part-local AO baker.
-$(AO_TARGET): $(AO_OBJS)
-	$(CC) $(AO_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
-
-run-partao: $(AO_TARGET)
-	./$(AO_TARGET)
 
 # Phase 5 Task 14 — end-to-end retopo integration test.
 $(RETOPO_INT_TARGET): $(RETOPO_INT_OBJS)
@@ -1314,7 +1298,7 @@ clean:
 	      $(EXAMPLE_TARGET) $(VIEWER_LOGIC_TARGET) $(TREEBAKE_TARGET) \
 	      $(GRASSLOD_TARGET) $(STRESSFOREST_TARGET) $(LIGHTING_GARDEN_TARGET) \
 	      $(TILESETMEADOWMANIFEST_TARGET) $(RETOPO_INT_TARGET) $(SHADER_SOURCE_TARGET) \
-	      $(POLYTRI_TARGET) $(ISO_TARGET) $(FLATTEN_TARGET) $(AO_TARGET) \
+	      $(POLYTRI_TARGET) $(ISO_TARGET) $(FLATTEN_TARGET) \
 	      $(TILESETTORUSBVH_TARGET) $(TILESETDSL_TARGET) $(TILESETBAKE_TARGET) \
 	      $(TILESETGTEX_TARGET) $(ASYNCQ_TARGET) $(GALLERY_TARGET) \
 	      $(LIVEPROD_TARGET) $(MODAPPLY_TARGET) $(MODBAKE_TARGET) $(PARTSTORE_TARGET) \

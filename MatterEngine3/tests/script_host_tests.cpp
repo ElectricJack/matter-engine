@@ -1619,83 +1619,6 @@ static void test_placechild_instanced_flags() {
     CHECK(kids[2].inline_below_px == 32.0f, "C inline_below_px == 32");
 }
 
-// ---------------------------------------------------------------------------
-// rt-lighting-phase2 Task 5: bake_source AO integration tests
-// ---------------------------------------------------------------------------
-// Two voxel slabs: a floor at y=0 and a lid at y=0.3 (0.2 above floor top).
-// Interior face vertices on the floor slab are heavily occluded when AO is
-// active (ao < 0.9). With quality:0 the baker is skipped and all ao == 1.0.
-static const char* kAoSchema = R"JS(
-class AoPlates extends Part {
-  build(p) {
-    this.fill(1);
-    this.beginVoxels(0.05);
-    this.box([0, 0,    0], [1.0, 0.05, 1.0]);
-    this.box([0, 0.3,  0], [1.0, 0.05, 1.0]);
-    this.endVoxels();
-  }
-}
-)JS";
-
-static const char* kAoSchemaQ0 = R"JS(
-class AoPlates extends Part {
-  static ao = { quality: 0 };
-  build(p) {
-    this.fill(1);
-    this.beginVoxels(0.05);
-    this.box([0, 0,    0], [1.0, 0.05, 1.0]);
-    this.box([0, 0.3,  0], [1.0, 0.05, 1.0]);
-    this.endVoxels();
-  }
-}
-)JS";
-
-// Scan all BLAS entries in a loaded .part and return the minimum ao0 seen.
-static float min_ao_in_part(const std::string& path, uint64_t hash) {
-    BLASManager blas; TLASManager tlas(64);
-    std::vector<part_asset::ChildInstance> kids;
-    part_asset::LodLevels lods;
-    if (!part_asset::load_v2(path, hash, blas, tlas, kids, lods)) return 1.0f;
-    float min_ao = 1.0f;
-    for (const auto& entry : blas.get_entries()) {
-        if (!entry) continue;
-        for (const TriEx& e : entry->tri_extra) {
-            if (e.ao0 < min_ao) min_ao = e.ao0;
-            if (e.ao1 < min_ao) min_ao = e.ao1;
-            if (e.ao2 < min_ao) min_ao = e.ao2;
-        }
-    }
-    return min_ao;
-}
-
-static void test_ao_bake_integration() {
-    // (a) Default quality: baked AO, interior vertices must darken (ao < 0.9).
-    script_host::ScriptHost h1;
-    auto r1 = h1.bake_source(kAoSchema, "{}", {});
-    CHECK(r1.error.ok, "AoPlates bakes without error");
-    float min_ao = min_ao_in_part(r1.written_path, r1.resolved_hash);
-    CHECK(min_ao < 0.9f, "baked part contains occluded vertices (min_ao < 0.9)");
-
-    // (b) quality:0 disables the baker — all ao must stay at 1.0.
-    script_host::ScriptHost h2;
-    auto r2 = h2.bake_source(kAoSchemaQ0, "{}", {});
-    CHECK(r2.error.ok, "AoPlates quality:0 bakes without error");
-    float min_ao_q0 = min_ao_in_part(r2.written_path, r2.resolved_hash);
-    CHECK(min_ao_q0 == 1.0f, "ao quality:0 leaves all ao == 1.0");
-
-    // (c) Different sources produce different hashes.
-    CHECK(r1.resolved_hash != r2.resolved_hash,
-          "schema with/without ao knob produce different resolved hashes");
-
-    // (d) Determinism: re-baking the same source twice => byte-identical .part.
-    script_host::ScriptHost h3;
-    auto r3 = h3.bake_source(kAoSchema, "{}", {});
-    CHECK(r3.error.ok, "second AoPlates bake succeeds");
-    CHECK(r1.resolved_hash == r3.resolved_hash, "same source => same resolved_hash");
-    CHECK(read_all(r1.written_path) == read_all(r3.written_path),
-          "repeat bake of same source produces byte-identical .part");
-}
-
 int main() {
     test_embed_eval_1_plus_1();
     test_p5_round_mesh_dispatch();
@@ -1748,8 +1671,6 @@ int main() {
     test_raycast_sees_difference_cut();
     test_placechild_instanced_flags();
     test_bake_writes_flatten_hints();
-    // rt-lighting-phase2 Task 5: AO bake integration
-    test_ao_bake_integration();
     if (g_failures == 0) printf("ALL PASS\n");
     return g_failures ? 1 : 0;
 }

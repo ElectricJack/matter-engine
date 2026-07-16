@@ -27,13 +27,6 @@ constexpr uint32_t kFormatVersionV3 = 3u;
 // the shared nine-level serialized/render capacity bumped 6 -> 7).
 constexpr uint32_t kFormatVersionFlat = 7u;
 
-// Engine bake version: salts resolve_hash so bake-semantics changes invalidate
-// all cached .part files. Bump whenever the bake pipeline adds or changes the
-// content written into TriEx fields (v1: part-local AO baked into ao0/1/2;
-// v2: AO ray budget on unique welded vertices + per-corner AO reprojection
-// through the QEM ladder).
-constexpr uint64_t kEngineBakeVersion = 2u;
-
 // Content-addressed identity for a part. All three inputs are OPAQUE byte ranges
 // to SP-1 (script source, params, child resolved-hashes). child_hashes need NOT be
 // pre-sorted; the helper sorts a local copy before folding so the result is

@@ -12,7 +12,6 @@ extern "C" {
 #include "csg_lowering.h"   // NEW MatterEngine3 header
 #include "module_resolver.h" // SP-7 shared-lib fold + resolution
 #include "modifier_apply.h"  // Task 4: bake-time modifier region stack apply
-#include "part_ao_bake.h"    // rt-lighting-phase2 Task 5: part-local AO bake hook
 #include "mesh_indexed.hpp"  // Task 4: weld/unweld across cells for region path
 #include "tileset_layout.h"     // tile_colors (Task 5: variant hook)
 #include "tileset_placement.h"  // placement_seed (Task 5: variant rng)
@@ -620,8 +619,7 @@ uint64_t ScriptHost::resolve_hash(const std::string& source,
     return part_asset::compute_resolved_hash(
         src_bytes, src_len,
         canon.data(), canon.size(),
-        child_hashes, child_count)
-        ^ (part_asset::kEngineBakeVersion * 0x9E3779B97F4A7C15ull);
+        child_hashes, child_count);
 }
 
 // Guarantee one TriEx per triangle after a modifier stack. Retopo output has
@@ -865,11 +863,10 @@ static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
                 }
                 e.materialId=s.materialId;
                 // tint/ao: derive deterministically rather than copy the mesher's
-                // values. ao0/1/2 default to 1.0 (unoccluded) here; the part-local
-                // AO bake hook below save_v2 overwrites them via blas.get_entries()
-                // after all registration paths complete. Tint uses the authored
-                // per-material default (alpha 0 => use material albedo), keeping
-                // the saved asset independent of the mesher's per-triangle tint.
+                // values. AO is not baked in SP-2 (default 1.0 = unoccluded), and
+                // the authored per-material default tint (alpha 0 => use material
+                // albedo) is used. This keeps the saved asset independent of the
+                // mesher's per-triangle nearest-particle tint lookup.
                 e.tint = make_float4(1.0f, 1.0f, 1.0f, 0.0f);
                 e.ao0 = 1.0f; e.ao1 = 1.0f; e.ao2 = 1.0f;
                 normEx[i]=e;
@@ -938,9 +935,6 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                                    const std::string* child_modules,
                                    const std::string* child_params) {
     BakeResult r;
-    // AO quality read from the authored class's `static ao` knob; captured
-    // inside the JS eval block below and used by the bake hook before save_v2.
-    float ao_quality = 1.0f;
 
     // Hoist rt/ctx to outer scope so the catch handler can clean them up if
     // bad_alloc fires after QuickJS init. Both start null; the catch guard
@@ -1094,16 +1088,13 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             JS_FreeValue(ctx, overrides); JS_FreeValue(ctx, staticParams);
 
             // Compute resolved_hash (same inputs as the old double-RT path: folded
-            // source bytes, canonical merged params, child hashes). Salted with
-            // kEngineBakeVersion to invalidate caches on bake-semantics changes
-            // (must match resolve_hash, which applies the same XOR salt).
+            // source bytes, canonical merged params, child hashes).
             const char* src_bytes = fold.folded.empty() ? source.data() : fold.folded.data();
             size_t      src_len   = fold.folded.empty() ? source.size() : fold.folded.size();
             r.resolved_hash = part_asset::compute_resolved_hash(
                 src_bytes, src_len,
                 merged.data(), merged.size(),
-                child_hashes, child_count)
-                ^ (part_asset::kEngineBakeVersion * 0x9E3779B97F4A7C15ull);
+                child_hashes, child_count);
 
             // Seed the deterministic RNG and install the child-hash table now that
             // `merged` is available (deferred from the old pre-eval setup block).
@@ -1126,25 +1117,6 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             state.set_world(opts.world);
         }
         prof_merge = prof_lap();
-
-        // Read `static ao` from the authored class before freeing it.
-        // Schema knob: `static ao = { quality: <float> };` (absent => 1.0).
-        // Matches eval_lod_budgets pattern: read a named static off the class.
-        // ao_quality is declared at function scope above to be visible by the
-        // bake hook after the JS context block closes.
-        {
-            JSValue ao_val = JS_GetPropertyStr(ctx, authored, "ao");
-            if (!JS_IsUndefined(ao_val) && !JS_IsNull(ao_val)) {
-                JSValue q = JS_GetPropertyStr(ctx, ao_val, "quality");
-                if (JS_IsNumber(q)) {
-                    double d = 0.0;
-                    if (JS_ToFloat64(ctx, &d, q) == 0)
-                        ao_quality = (float)d;
-                }
-                JS_FreeValue(ctx, q);
-            }
-            JS_FreeValue(ctx, ao_val);
-        }
 
         JSValue inst = JS_CallConstructor(ctx, authored, 0, nullptr);
         JS_FreeValue(ctx, authored);
@@ -1387,25 +1359,6 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         std::string path = opts.parts_dir.empty()
                            ? rel_path
                            : opts.parts_dir + "/" + rel_path;
-        // Part-local AO: mutate TriEx in place across all registered BLAS entries.
-        // get_entries() returns const unique_ptrs; the pointees are mutable.
-        // All tlas.draw() sites above use tlas.load_identity() — verified for all
-        // three registration paths (voxel per-cell :877/:923, triangle-session
-        // :1296/:1338) — so entry geometry is already in part-local space.
-        {
-            std::vector<const std::vector<Tri>*> ao_tris;
-            std::vector<std::vector<TriEx>*> ao_triex;
-            for (const auto& entry : blas.get_entries()) {
-                if (!entry || entry->triangles.empty()) continue;
-                if (entry->tri_extra.size() != entry->triangles.size()) continue;
-                ao_tris.push_back(&entry->triangles);
-                ao_triex.push_back(&entry->tri_extra);
-            }
-            part_ao::AoBakeParams ao_params;
-            ao_params.quality = ao_quality;
-            part_ao::bake_part_ao(ao_tris, ao_triex, ao_params);
-        }
-
         part_asset::LodLevels lods{};   // SP-2 writes no LOD array.
         prof_mesh = prof_lap();
         bool ok = part_asset::save_v2(path, blas, tlas,

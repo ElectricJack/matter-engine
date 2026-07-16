@@ -150,54 +150,6 @@ void test_output_parallel_to_target() {
     assert(mats.count(7) == 1 || mats.count(9) == 1);
 }
 
-// --- Test 6: AO is interpolated per target corner, not copied per triangle ---
-// Source: a fine 8-column strip across x in [0,4] (XY plane) with a linear AO
-// gradient ao = x/4 at every corner. Target: two big triangles covering the
-// same quad. A wholesale nearest-triangle TriEx copy smears one small tri's
-// corner AO across the whole big triangle (corner at x=4 would read ~0.6);
-// per-corner reprojection must recover the gradient at each target corner.
-void test_ao_gradient_survives_reprojection() {
-    std::vector<Tri>   src_tris;
-    std::vector<TriEx> src_ex;
-    for (int i = 0; i < 8; ++i) {
-        float x0 = i * 0.5f, x1 = (i + 1) * 0.5f;
-        float3 a = make_float3(x0, 0.0f, 0.0f);
-        float3 b = make_float3(x1, 0.0f, 0.0f);
-        float3 c = make_float3(x1, 1.0f, 0.0f);
-        float3 d = make_float3(x0, 1.0f, 0.0f);
-        Tri t0 = make_tri(a, b, c);
-        Tri t1 = make_tri(a, c, d);
-        TriEx e0 = make_triex(1); e0.ao0 = a.x/4; e0.ao1 = b.x/4; e0.ao2 = c.x/4;
-        TriEx e1 = make_triex(1); e1.ao0 = a.x/4; e1.ao1 = c.x/4; e1.ao2 = d.x/4;
-        src_tris.push_back(t0); src_tris.push_back(t1);
-        src_ex.push_back(e0);   src_ex.push_back(e1);
-    }
-
-    std::vector<Tri> tgt_tris = {
-        make_tri(make_float3(0,0,0), make_float3(4,0,0), make_float3(4,1,0)),
-        make_tri(make_float3(0,0,0), make_float3(4,1,0), make_float3(0,1,0)),
-    };
-
-    MeshIndexed src = from_tri(src_tris, &src_ex);
-    MeshIndexed tgt = from_tri(tgt_tris, nullptr);
-    reproject_triex(src, tgt);
-
-    assert(tgt.triex.size() == 2);
-    for (size_t ti = 0; ti < 2; ++ti) {
-        const float aos[3] = { tgt.triex[ti].ao0, tgt.triex[ti].ao1,
-                               tgt.triex[ti].ao2 };
-        for (int v = 0; v < 3; ++v) {
-            const float3& p = tgt.positions[tgt.indices[ti * 3 + v]];
-            float expected = p.x / 4.0f;
-            if (!(std::fabs(aos[v] - expected) < 0.15f)) {
-                std::printf("  tri %zu corner %d at x=%.2f: ao=%.3f expected=%.3f\n",
-                            ti, v, p.x, aos[v], expected);
-                assert(false && "corner AO must follow the source gradient");
-            }
-        }
-    }
-}
-
 } // namespace
 
 int main() {
@@ -206,7 +158,6 @@ int main() {
     test_identity_single_material();
     test_two_materials_nearest_wins();
     test_output_parallel_to_target();
-    test_ao_gradient_survives_reprojection();
-    std::printf("mesh_transform_tests: OK (6/6)\n");
+    std::printf("mesh_transform_tests: OK (5/5)\n");
     return 0;
 }
