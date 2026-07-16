@@ -171,15 +171,17 @@ bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
                   std::vector<FlatCluster>& clusters_out);
 
 // Lightweight cache-hit validation shared by bakers/providers. Validates the
-// common header, body content hash, and complete serialized material table
-// without reconstructing BLAS/TLAS state. False means regenerate; the existing
-// file remains in place until the normal atomic save replaces it.
+// common header and the material-table prefix without reading or hashing the
+// geometry body. Body-content corruption is detected by the loaders (load_v2 /
+// load_flat_v3) which already validate fnv1a64(body) on every load.
+// False means regenerate; the existing file remains in place until the normal
+// atomic save replaces it.
 struct CacheArtifactProbeStats {
     size_t max_read_chunk = 0;
     size_t retained_material_bytes = 0;
     uint64_t body_bytes = 0;
 };
-bool is_cache_artifact_compatible(
+bool is_cache_artifact_header_compatible(
     const std::string& path, uint64_t expected_resolved_hash,
     uint32_t expected_format_version,
     CacheArtifactProbeStats* stats = nullptr);

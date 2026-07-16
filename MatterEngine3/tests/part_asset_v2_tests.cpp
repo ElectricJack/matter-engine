@@ -441,6 +441,19 @@ static void patch_body_u32_and_rehash(std::vector<uint8_t>& bytes,
     memcpy(bytes.data() + 32, &content_hash, sizeof(content_hash));
 }
 
+// Flip one byte at file offset `offset` in place (r+b).
+static void corrupt_byte_at(const char* path, size_t offset) {
+    FILE* f = fopen(path, "r+b");
+    if (!f) return;
+    fseek(f, static_cast<long>(offset), SEEK_SET);
+    int c = fgetc(f);
+    if (c != EOF) {
+        fseek(f, static_cast<long>(offset), SEEK_SET);
+        fputc(c ^ 0x01, f);
+    }
+    fclose(f);
+}
+
 static void test_cache_artifact_compatibility_probe() {
     using namespace part_asset;
     BLASManager blas; TLASManager tlas(64);
@@ -454,14 +467,17 @@ static void test_cache_artifact_compatibility_probe() {
     CHECK(save_v2(v2_path, blas, tlas, kids.data(), kids.size(), lods, v2_hash),
           "compat probe v2 fixture saved");
     CacheArtifactProbeStats stats{};
-    CHECK(is_cache_artifact_compatible(v2_path, v2_hash, kFormatVersionV2,
-                                       &stats),
-          "compat probe accepts current v2 artifact");
-    CHECK(stats.max_read_chunk <= 64u * 1024u,
-          "compat probe reads body in bounded chunks");
+    const size_t material_prefix_size =
+        2u * sizeof(uint32_t) +
+        static_cast<size_t>(MaterialRegistryCount()) * sizeof(MaterialDef);
+    CHECK(is_cache_artifact_header_compatible(v2_path, v2_hash, kFormatVersionV2,
+                                              &stats),
+          "header probe accepts current v2 artifact");
+    CHECK(stats.body_bytes <= material_prefix_size,
+          "header probe reads at most the material prefix past the header");
     CHECK(stats.retained_material_bytes ==
               8u + static_cast<size_t>(MaterialRegistryCount()) * sizeof(MaterialDef),
-          "compat probe retains only fixed material prefix");
+          "header probe retains only fixed material prefix");
 
     const char* large_path = "test_large_compat.part";
     BLASManager large_blas; TLASManager large_tlas(64);
@@ -477,24 +493,22 @@ static void test_cache_artifact_compatibility_probe() {
                   large_lods, v2_hash + 1u),
           "large compatibility fixture saved");
     CacheArtifactProbeStats large_stats{};
-    CHECK(is_cache_artifact_compatible(large_path, v2_hash + 1u,
-                                       kFormatVersionV2, &large_stats),
-          "large artifact compatibility probe succeeds");
-    CHECK(large_stats.body_bytes > 2u * 64u * 1024u,
-          "large compatibility fixture spans multiple chunks");
-    CHECK(large_stats.max_read_chunk == 64u * 1024u,
-          "large artifact body reads stay at the fixed chunk bound");
+    CHECK(is_cache_artifact_header_compatible(large_path, v2_hash + 1u,
+                                              kFormatVersionV2, &large_stats),
+          "large artifact header probe succeeds");
+    CHECK(large_stats.body_bytes <= material_prefix_size,
+          "header probe does not read geometry bytes from large artifact");
     CHECK(large_stats.retained_material_bytes ==
               8u + static_cast<size_t>(MaterialRegistryCount()) * sizeof(MaterialDef),
-          "large probe retains no geometry bytes");
+          "large header probe retains no geometry bytes");
 
     std::vector<uint8_t> current_v2 = read_file(v2_path);
     std::vector<uint8_t> stale_schema = current_v2;
     patch_body_u32_and_rehash(stale_schema, 0,
                               MaterialRegistrySchemaVersion() - 1u);
     write_file(v2_path, stale_schema);
-    CHECK(!is_cache_artifact_compatible(v2_path, v2_hash, kFormatVersionV2),
-          "compat probe rejects prior-schema v2 artifact with valid content hash");
+    CHECK(!is_cache_artifact_header_compatible(v2_path, v2_hash, kFormatVersionV2),
+          "header probe rejects prior-schema v2 artifact");
 
     std::vector<uint8_t> stale_definition = current_v2;
     // Common body: schema u32, material count u32, then MaterialDef bytes.
@@ -503,16 +517,27 @@ static void test_cache_artifact_compatibility_probe() {
         fnv1a64(stale_definition.data() + 40, stale_definition.size() - 40);
     memcpy(stale_definition.data() + 32, &definition_hash, sizeof(definition_hash));
     write_file(v2_path, stale_definition);
-    CHECK(!is_cache_artifact_compatible(v2_path, v2_hash, kFormatVersionV2),
-          "compat probe rejects changed material definition with valid content hash");
+    CHECK(!is_cache_artifact_header_compatible(v2_path, v2_hash, kFormatVersionV2),
+          "header probe rejects changed material definition in prefix");
+
+    // Corrupt a byte in the BODY PAST the material prefix: header probe must
+    // still accept (it does not hash the body); loader must reject it.
+    write_file(v2_path, current_v2);
+    std::vector<uint8_t> deep_corrupt = current_v2;
+    deep_corrupt.back() ^= 0x01;
+    write_file(v2_path, deep_corrupt);
+    CHECK(is_cache_artifact_header_compatible(v2_path, v2_hash, kFormatVersionV2),
+          "header probe ignores deep body corruption (loader's job)");
+    {
+        BLASManager corrupt_blas; TLASManager corrupt_tlas(4);
+        std::vector<ChildInstance> corrupt_children;
+        LodLevels corrupt_lods;
+        CHECK(!load_v2(v2_path, v2_hash, corrupt_blas, corrupt_tlas,
+                       corrupt_children, corrupt_lods),
+              "loader rejects body-corrupt artifact that header probe accepted");
+    }
 
     write_file(v2_path, current_v2);
-    std::vector<uint8_t> corrupt_v2 = current_v2;
-    corrupt_v2.back() ^= 0x01;
-    write_file(v2_path, corrupt_v2);
-    CHECK(!is_cache_artifact_compatible(v2_path, v2_hash, kFormatVersionV2),
-          "compat probe rejects corrupt v2 content hash");
-
     const uint64_t flat_hash = 0x12345678u;
     const char* flat_path = "test_flat_compat.flat.part";
     remove(flat_path);
@@ -521,8 +546,8 @@ static void test_cache_artifact_compatibility_probe() {
           "compat probe flat fixture saved");
     CHECK(kFormatVersionFlat == 7u,
           "flat compatibility version invalidates pre-LOD-cap artifacts");
-    CHECK(is_cache_artifact_compatible(flat_path, flat_hash, kFormatVersionFlat),
-          "compat probe accepts current flat artifact");
+    CHECK(is_cache_artifact_header_compatible(flat_path, flat_hash, kFormatVersionFlat),
+          "header probe accepts current flat artifact");
     std::vector<uint8_t> current_flat = read_file(flat_path);
     std::vector<uint8_t> stale_v6 = current_flat;
     const uint32_t v6 = 6u;
@@ -530,8 +555,8 @@ static void test_cache_artifact_compatibility_probe() {
     memcpy(stale_v6.data() + 4, &v6, sizeof(v6));
     memcpy(stale_v6.data() + 8, &v6_hash_guard, sizeof(v6_hash_guard));
     write_file(flat_path, stale_v6);
-    CHECK(!is_cache_artifact_compatible(flat_path, flat_hash, kFormatVersionFlat),
-          "compat probe rejects stale v6 flat artifact");
+    CHECK(!is_cache_artifact_header_compatible(flat_path, flat_hash, kFormatVersionFlat),
+          "header probe rejects stale v6 flat artifact");
     BLASManager stale_blas; TLASManager stale_tlas(64);
     std::vector<FlatCluster> stale_clusters;
     CHECK(!load_flat_v3(flat_path, flat_hash, stale_blas, stale_tlas,
@@ -555,8 +580,8 @@ static void test_cache_artifact_compatibility_probe() {
     patch_body_u32_and_rehash(stale_flat, 0,
                               MaterialRegistrySchemaVersion() - 1u);
     write_file(flat_path, stale_flat);
-    CHECK(!is_cache_artifact_compatible(flat_path, flat_hash, kFormatVersionFlat),
-          "compat probe rejects prior-schema flat artifact with valid content hash");
+    CHECK(!is_cache_artifact_header_compatible(flat_path, flat_hash, kFormatVersionFlat),
+          "header probe rejects prior-schema flat artifact");
 
     CHECK(save_flat_v3(flat_path, blas, tlas, clusters, flat_hash),
           "stale flat regenerates through atomic save");
@@ -565,12 +590,12 @@ static void test_cache_artifact_compatibility_probe() {
     CHECK(load_flat_v3(flat_path, flat_hash, flat_blas, flat_tlas,
                        loaded_clusters),
           "regenerated flat loads successfully");
-    CHECK(is_cache_artifact_compatible(flat_path, flat_hash,
-                                       kFormatVersionFlat),
-          "second flat compatibility pass is warm");
+    CHECK(is_cache_artifact_header_compatible(flat_path, flat_hash,
+                                              kFormatVersionFlat),
+          "second flat header probe is warm");
 
     // Malicious/truncated material prefixes must fail closed without pointer
-    // arithmetic wrapping or out-of-bounds reads. Each body hash is valid.
+    // arithmetic wrapping or out-of-bounds reads.
     const char* truncated_path = "test_truncated_prefix.part";
     for (size_t body_size : {size_t(0), size_t(4), size_t(8), size_t(12)}) {
         std::vector<uint8_t> truncated(current_v2.begin(), current_v2.begin() + 40);
@@ -580,9 +605,9 @@ static void test_cache_artifact_compatibility_probe() {
             fnv1a64(truncated.data() + 40, truncated.size() - 40);
         memcpy(truncated.data() + 32, &truncated_hash, sizeof(truncated_hash));
         write_file(truncated_path, truncated);
-        CHECK(!is_cache_artifact_compatible(truncated_path, v2_hash,
-                                            kFormatVersionV2),
-              "compat probe rejects truncated material prefix");
+        CHECK(!is_cache_artifact_header_compatible(truncated_path, v2_hash,
+                                                   kFormatVersionV2),
+              "header probe rejects truncated material prefix");
         BLASManager truncated_blas; TLASManager truncated_tlas(4);
         std::vector<ChildInstance> truncated_children;
         LodLevels truncated_lods;
@@ -596,6 +621,50 @@ static void test_cache_artifact_compatibility_probe() {
     remove(flat_path);
     remove(oversized_path);
     remove(truncated_path);
+}
+
+static void test_header_probe() {
+    using namespace part_asset;
+    BLASManager blas; TLASManager tlas(64);
+    BLASHandle hA, hB; build_scene(blas, tlas, hA, hB);
+    auto kids = sample_children();
+    auto lods = sample_lods();
+
+    const uint64_t v2_hash = 0x76543210u;
+    const char* v2_path = "test_header_probe.part";
+    remove(v2_path);
+    CHECK(save_v2(v2_path, blas, tlas, kids.data(), kids.size(), lods, v2_hash),
+          "header probe v2 fixture saved");
+
+    CacheArtifactProbeStats stats{};
+    CHECK(is_cache_artifact_header_compatible(
+              v2_path, v2_hash, kFormatVersionV2, &stats),
+          "header probe accepts valid artifact");
+    const size_t material_prefix =
+        2 * sizeof(uint32_t) + MaterialRegistryCount() * sizeof(MaterialDef);
+    CHECK(stats.body_bytes <= material_prefix,
+          "header probe reads at most the material prefix past the header");
+    CHECK(!is_cache_artifact_header_compatible(
+              v2_path, v2_hash + 1, kFormatVersionV2),
+          "header probe rejects wrong resolved hash");
+    CHECK(!is_cache_artifact_header_compatible(
+              v2_path, v2_hash, kFormatVersionV2 + 1),
+          "header probe rejects wrong format version");
+
+    // Corrupt one byte in the BODY PAST the material prefix: header probe must
+    // still accept (it does not hash the body)...
+    corrupt_byte_at(v2_path, 40 + material_prefix + 8);
+    CHECK(is_cache_artifact_header_compatible(
+              v2_path, v2_hash, kFormatVersionV2),
+          "header probe ignores deep body corruption");
+    // ...but the loader must reject it (existing fail-closed path).
+    BLASManager corrupt_blas; TLASManager corrupt_tlas(4);
+    std::vector<ChildInstance> corrupt_kids; LodLevels corrupt_lods;
+    CHECK(!load_v2(v2_path, v2_hash, corrupt_blas, corrupt_tlas,
+                   corrupt_kids, corrupt_lods),
+          "loader rejects corrupt body");
+
+    remove(v2_path);
 }
 
 static void test_new_materials() {
@@ -662,6 +731,7 @@ int main() {
     test_v2_guards();
     test_material_schema_guard();
     test_cache_artifact_compatibility_probe();
+    test_header_probe();
     test_new_materials();
     test_flatten_hints_round_trip();
     if (g_failures == 0) printf("All part_asset_v2 tests passed\n");

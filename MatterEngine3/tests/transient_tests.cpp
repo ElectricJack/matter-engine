@@ -199,19 +199,19 @@ int main() {
             write_bytes(scratch_flat, stale);
             write_bytes(cache_flat, stale);
         }
-        CHECK(!part_asset::is_cache_artifact_compatible(
+        CHECK(!part_asset::is_cache_artifact_header_compatible(
                   scratch_flat, terrain_hash, part_asset::kFormatVersionFlat),
               "scratch flat is deliberately incompatible");
-        CHECK(!part_asset::is_cache_artifact_compatible(
+        CHECK(!part_asset::is_cache_artifact_header_compatible(
                   cache_flat, terrain_hash, part_asset::kFormatVersionFlat),
               "cache flat is deliberately incompatible");
 
         ok = prov->ensure_part_flattened(terrain_hash);
         CHECK(ok, "incompatible transient flat automatically regenerates");
-        CHECK(part_asset::is_cache_artifact_compatible(
+        CHECK(part_asset::is_cache_artifact_header_compatible(
                   scratch_flat, terrain_hash, part_asset::kFormatVersionFlat),
               "regenerated transient flat is current");
-        CHECK(!part_asset::is_cache_artifact_compatible(
+        CHECK(!part_asset::is_cache_artifact_header_compatible(
                   cache_flat, terrain_hash, part_asset::kFormatVersionFlat),
               "stale persistent flat remains untouched when scratch is selected");
 
@@ -232,10 +232,10 @@ int main() {
 
     // 4. Verify Terrain's .flat.part exists in scratch, NOT in cache
     {
-        CHECK(part_asset::is_cache_artifact_compatible(
+        CHECK(part_asset::is_cache_artifact_header_compatible(
                   scratch_flat, terrain_hash, part_asset::kFormatVersionFlat),
               "Terrain .flat.part exists in scratch (valid format)");
-        CHECK(!part_asset::is_cache_artifact_compatible(
+        CHECK(!part_asset::is_cache_artifact_header_compatible(
                   cache_flat, terrain_hash, part_asset::kFormatVersionFlat),
               "stale Terrain cache flat was not selected");
         printf("  Terrain flat in scratch: %s\n", scratch_flat.c_str());

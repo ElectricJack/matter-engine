@@ -499,7 +499,7 @@ bool LocalProvider::ensure_part_flattened(uint64_t part_hash) {
     const std::string root = artifact_root(part_hash);
     const std::string flat_abs_path =
         root + "/" + part_asset::cache_path_flat(part_hash);
-    if (part_asset::is_cache_artifact_compatible(
+    if (part_asset::is_cache_artifact_header_compatible(
             flat_abs_path, part_hash, part_asset::kFormatVersionFlat))
         return true;
     part_flatten::FlattenResult fr =
@@ -520,7 +520,7 @@ std::string LocalProvider::artifact_root(uint64_t part_hash) const {
     if (!transient_dir_.empty()) {
         const std::string scratch_part =
             transient_dir_ + "/" + part_asset::cache_path_resolved(part_hash);
-        if (part_asset::is_cache_artifact_compatible(
+        if (part_asset::is_cache_artifact_header_compatible(
                 scratch_part, part_hash, part_asset::kFormatVersionV2))
             return transient_dir_;
     }
@@ -893,7 +893,7 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
                 ensure_part_flattened(ph);
                 const std::string flat_abs_path = artifact_root(ph) + "/" +
                     part_asset::cache_path_flat(ph);
-                if (!part_asset::is_cache_artifact_compatible(
+                if (!part_asset::is_cache_artifact_header_compatible(
                         flat_abs_path, ph, part_asset::kFormatVersionFlat))
                     continue;
                 BLASManager scratch_blas;

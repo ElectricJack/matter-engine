@@ -313,7 +313,7 @@ static uint32_t read_and_validate_header(Reader& r,
     return version;
 }
 
-bool is_cache_artifact_compatible(
+bool is_cache_artifact_header_compatible(
     const std::string& path, uint64_t expected_resolved_hash,
     uint32_t expected_format_version, CacheArtifactProbeStats* stats) {
     if (stats) *stats = CacheArtifactProbeStats{};
@@ -325,63 +325,26 @@ bool is_cache_artifact_compatible(
         return false;
     }
     Reader reader{header, header + sizeof(header)};
-    uint64_t content_hash = 0;
+    uint64_t content_hash_ignored = 0;
     if (!read_and_validate_header(reader, expected_resolved_hash,
-                                  expected_format_version, content_hash)) {
+                                  expected_format_version,
+                                  content_hash_ignored)) {
         std::fclose(f);
         return false;
     }
-
-    constexpr size_t kReadChunk = 64u * 1024u;
     const size_t material_prefix_size =
         2u * sizeof(uint32_t) +
         static_cast<size_t>(MaterialRegistryCount()) * sizeof(MaterialDef);
-    std::vector<uint8_t> material_prefix;
-    material_prefix.reserve(material_prefix_size);
-    uint8_t chunk[kReadChunk];
-    uint64_t computed_hash = 1469598103934665603ull;
-    while (true) {
-        const size_t got = std::fread(chunk, 1, kReadChunk, f);
-        if (got == 0) {
-            if (std::ferror(f)) {
-                std::fclose(f);
-                return false;
-            }
-            break;
-        }
-        if (stats) {
-            stats->max_read_chunk = std::max(stats->max_read_chunk, got);
-            stats->body_bytes += got;
-        }
-        if (material_prefix.size() < material_prefix_size) {
-            const size_t retain = std::min(
-                got, material_prefix_size - material_prefix.size());
-            material_prefix.insert(material_prefix.end(), chunk, chunk + retain);
-        }
-        for (size_t i = 0; i < got; ++i) {
-            computed_hash ^= chunk[i];
-            computed_hash *= 1099511628211ull;
-        }
-        if (got < kReadChunk) {
-            if (std::ferror(f)) {
-                std::fclose(f);
-                return false;
-            }
-            break;
-        }
-    }
-    if (std::ferror(f)) {
-        std::fclose(f);
-        return false;
-    }
+    std::vector<uint8_t> prefix(material_prefix_size);
+    const size_t got = std::fread(prefix.data(), 1, prefix.size(), f);
     std::fclose(f);
-    if (stats) stats->retained_material_bytes = material_prefix.size();
-    if (computed_hash != content_hash ||
-        material_prefix.size() != material_prefix_size)
-        return false;
-
-    Reader material_reader{material_prefix.data(),
-                           material_prefix.data() + material_prefix.size()};
+    if (stats) {
+        stats->max_read_chunk = std::max(sizeof(header), got);
+        stats->body_bytes = got;
+        stats->retained_material_bytes = got;
+    }
+    if (got != material_prefix_size) return false;
+    Reader material_reader{prefix.data(), prefix.data() + prefix.size()};
     const uint32_t material_schema = material_reader.get<uint32_t>();
     const uint32_t material_count = material_reader.get<uint32_t>();
     if (!material_reader.ok ||

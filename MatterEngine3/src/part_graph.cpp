@@ -564,7 +564,7 @@ bool HostBaker::cached(uint64_t resolved_hash) {
     auto check_path = [resolved_hash](const std::string& base_dir) -> bool {
         if (base_dir.empty()) return false;
         std::string path = base_dir + "/" + part_asset::cache_path_resolved(resolved_hash);
-        return part_asset::is_cache_artifact_compatible(
+        return part_asset::is_cache_artifact_header_compatible(
             path, resolved_hash, part_asset::kFormatVersionV2);
     };
 
