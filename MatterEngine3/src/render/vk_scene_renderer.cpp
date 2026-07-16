@@ -4252,15 +4252,45 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         error = "native ray tracing command entry points are unavailable";
         return false;
     }
+    std::vector<RtBuildSel> selected_geometry;
+    std::vector<RtBlasPending> pending;
+    const VkDeviceSize scratch_alignment = std::max<VkDeviceSize>(
+        1, vulkan_->ray_tracing_properties()
+               .min_acceleration_structure_scratch_offset_alignment);
+    if (!build_ray_geometry(frame, camera_eye, pixel_budget,
+                            get_sizes, cmd_build,
+                            selected_geometry, pending, error))
+        return false;
+    bool instances_empty = false;
+    if (!emit_ray_instances(frame, get_sizes, cmd_build, scratch_alignment,
+                            selected_geometry, pending,
+                            instances_empty, error))
+        return false;
+    if (instances_empty) {
+        clear_visibility();
+        return true;
+    }
+    if (!record_ray_trace_dispatch(frame, matrices, trace_extent,
+                                   cmd_trace, error))
+        return false;
+    for (auto& item : pending)
+        item.lod->candidate_serial = frame.serial;
+    return true;
+}
+
+bool VkSceneRenderer::build_ray_geometry(
+    const matter::VulkanFrame& frame,
+    matter::Float3 camera_eye, float pixel_budget,
+    PFN_vkGetAccelerationStructureBuildSizesKHR get_sizes,
+    PFN_vkCmdBuildAccelerationStructuresKHR cmd_build,
+    std::vector<RtBuildSel>& selected_geometry,
+    std::vector<RtBlasPending>& pending,
+    std::string& error) {
     FrameResources& selected = frames_[frame.frame_slot];
     VkDeviceSize scratch_size = 1;
-    struct SelectedGeometry {
-        PartRecord* part = nullptr;
-        RtLodRecord* lod = nullptr;
-        const RtInstance* source = nullptr;
-        bool opaque = false;
-    };
-    std::vector<SelectedGeometry> selected_geometry;
+    const VkDeviceSize scratch_alignment = std::max<VkDeviceSize>(
+        1, vulkan_->ray_tracing_properties()
+               .min_acceleration_structure_scratch_offset_alignment);
     for (const RtInstance& source : rt_instances_) {
         const auto found = slot_of_.find(source.part_hash);
         if (found == slot_of_.end()) continue;
@@ -4295,31 +4325,17 @@ bool VkSceneRenderer::record_ray_traced_shadows(
             }
         }
     }
-    struct PendingBlas {
-        PartRecord* part;
-        RtLodRecord* lod;
-        VkAccelerationStructureGeometryKHR geometry;
-        VkAccelerationStructureBuildGeometryInfoKHR build;
-        VkAccelerationStructureBuildRangeInfoKHR range;
-        std::shared_ptr<matter::VkAccelerationStructureResource> target;
-        VkDeviceSize scratch_size = 0;
-        VkDeviceSize scratch_offset = 0;
-    };
-    std::vector<PendingBlas> pending;
-    const VkDeviceSize scratch_alignment = std::max<VkDeviceSize>(
-        1, vulkan_->ray_tracing_properties()
-               .min_acceleration_structure_scratch_offset_alignment);
-    for (const SelectedGeometry& selected_lod : selected_geometry) {
+    for (const RtBuildSel& selected_lod : selected_geometry) {
         PartRecord& part = *selected_lod.part;
         RtLodRecord& lod = *selected_lod.lod;
         if (!part.rt_geometry || lod.candidate_serial != 0 ||
             (lod.built && lod.geometry_opaque == selected_lod.opaque) ||
             std::any_of(pending.begin(), pending.end(),
-                        [&lod](const PendingBlas& item) {
+                        [&lod](const RtBlasPending& item) {
                             return item.lod == &lod;
                         }))
             continue;
-        PendingBlas item{};
+        RtBlasPending item{};
         item.part = &part;
         item.lod = &lod;
         auto& triangles = item.geometry.geometry.triangles;
@@ -4414,7 +4430,7 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         batch_builds.clear();
         batch_ranges.clear();
         for (size_t i = batch_begin; i < batch_end; ++i) {
-            PendingBlas& item = pending[i];
+            RtBlasPending& item = pending[i];
             item.build.pGeometries = &item.geometry;
             item.build.scratchData.deviceAddress =
                 blas_scratch_address + item.scratch_offset;
@@ -4443,12 +4459,25 @@ bool VkSceneRenderer::record_ray_traced_shadows(
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     test_last_rt_blas_build_count_ = static_cast<uint32_t>(pending.size());
 #endif
+    return true;
+}
 
+bool VkSceneRenderer::emit_ray_instances(
+    const matter::VulkanFrame& frame,
+    PFN_vkGetAccelerationStructureBuildSizesKHR get_sizes,
+    PFN_vkCmdBuildAccelerationStructuresKHR cmd_build,
+    VkDeviceSize scratch_alignment,
+    const std::vector<RtBuildSel>& selected_geometry,
+    const std::vector<RtBlasPending>& pending,
+    bool& instances_empty,
+    std::string& error) {
+    instances_empty = false;
+    FrameResources& selected = frames_[frame.frame_slot];
     std::vector<VkAccelerationStructureInstanceKHR> instances;
     std::vector<GpuRtPartRecord> part_records;
     instances.reserve(selected_geometry.size());
     part_records.reserve(selected_geometry.size());
-    for (const SelectedGeometry& selected_lod : selected_geometry) {
+    for (const RtBuildSel& selected_lod : selected_geometry) {
         const PartRecord& part = *selected_lod.part;
         const RtLodRecord& lod = *selected_lod.lod;
         const RtInstance& source = *selected_lod.source;
@@ -4482,7 +4511,7 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         part_records.push_back(record);
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
         const bool built_this_frame = std::any_of(
-            pending.begin(), pending.end(), [&lod](const PendingBlas& item) {
+            pending.begin(), pending.end(), [&lod](const RtBlasPending& item) {
                 return item.lod == &lod;
             });
         test_last_rt_geometry_records_.push_back(
@@ -4493,7 +4522,7 @@ bool VkSceneRenderer::record_ray_traced_shadows(
 #endif
     }
     if (instances.empty()) {
-        clear_visibility();
+        instances_empty = true;
         return true;
     }
     const VkDeviceSize instance_bytes =
@@ -4559,22 +4588,6 @@ bool VkSceneRenderer::record_ray_traced_shadows(
     as_dependency.pMemoryBarriers = &as_to_ray;
     vkCmdPipelineBarrier2(frame.command_buffer, &as_dependency);
 
-    transition_for_use(frame.command_buffer, visibility_, VK_IMAGE_LAYOUT_GENERAL,
-                       VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
-                       VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                       VK_IMAGE_ASPECT_COLOR_BIT);
-    const VkClearColorValue gi_zero{{0.0f, 0.0f, 0.0f, 0.0f}};
-    clear_color_image_for_use(frame.command_buffer, raw_diffuse_, gi_zero,
-                              VK_IMAGE_LAYOUT_GENERAL,
-                              VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
-                              VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-    for (auto* specular_image : {&raw_specular_, &raw_specular_aux_}) {
-        clear_color_image_for_use(
-            frame.command_buffer, *specular_image, gi_zero,
-            VK_IMAGE_LAYOUT_GENERAL,
-            VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
-            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
-    }
     const VkDeviceSize part_bytes = std::max<VkDeviceSize>(
         sizeof(GpuRtPartRecord),
         part_records.size() * sizeof(GpuRtPartRecord));
@@ -4602,6 +4615,32 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         !matter::flush_buffer(selected.rt_error_counter, 0,
                               sizeof(GpuRtCounters),
                               error)) return false;
+    return true;
+}
+
+bool VkSceneRenderer::record_ray_trace_dispatch(
+    const matter::VulkanFrame& frame,
+    const FrameMatrices& matrices,
+    VkExtent2D trace_extent,
+    PFN_vkCmdTraceRaysKHR cmd_trace,
+    std::string& error) {
+    FrameResources& selected = frames_[frame.frame_slot];
+    transition_for_use(frame.command_buffer, visibility_, VK_IMAGE_LAYOUT_GENERAL,
+                       VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                       VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                       VK_IMAGE_ASPECT_COLOR_BIT);
+    const VkClearColorValue gi_zero{{0.0f, 0.0f, 0.0f, 0.0f}};
+    clear_color_image_for_use(frame.command_buffer, raw_diffuse_, gi_zero,
+                              VK_IMAGE_LAYOUT_GENERAL,
+                              VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+                              VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+    for (auto* specular_image : {&raw_specular_, &raw_specular_aux_}) {
+        clear_color_image_for_use(
+            frame.command_buffer, *specular_image, gi_zero,
+            VK_IMAGE_LAYOUT_GENERAL,
+            VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+    }
     VkWriteDescriptorSetAccelerationStructureKHR as_write{
         VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
     as_write.accelerationStructureCount = 1;
@@ -4842,8 +4881,6 @@ bool VkSceneRenderer::record_ray_traced_shadows(
     }
     if (!vulkan_->retain_for_frame(frame, std::move(retained), error))
         return false;
-    for (auto& item : pending)
-        item.lod->candidate_serial = frame.serial;
     return true;
 }
 

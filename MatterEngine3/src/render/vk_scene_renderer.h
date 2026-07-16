@@ -679,6 +679,48 @@ private:
         bool stats_valid = false;
     };
 
+    // Intermediate state shared between the record_ray_traced_shadows phases.
+    struct RtBuildSel {
+        PartRecord* part = nullptr;
+        RtLodRecord* lod = nullptr;
+        const RtInstance* source = nullptr;
+        bool opaque = false;
+    };
+    struct RtBlasPending {
+        PartRecord* part = nullptr;
+        RtLodRecord* lod = nullptr;
+        VkAccelerationStructureGeometryKHR geometry{};
+        VkAccelerationStructureBuildGeometryInfoKHR build{};
+        VkAccelerationStructureBuildRangeInfoKHR range{};
+        std::shared_ptr<matter::VkAccelerationStructureResource> target;
+        VkDeviceSize scratch_size = 0;
+        VkDeviceSize scratch_offset = 0;
+    };
+
+    bool build_ray_geometry(
+        const matter::VulkanFrame& frame,
+        matter::Float3 camera_eye, float pixel_budget,
+        PFN_vkGetAccelerationStructureBuildSizesKHR get_sizes,
+        PFN_vkCmdBuildAccelerationStructuresKHR cmd_build,
+        std::vector<RtBuildSel>& selected_geometry,
+        std::vector<RtBlasPending>& pending,
+        std::string& error);
+    bool emit_ray_instances(
+        const matter::VulkanFrame& frame,
+        PFN_vkGetAccelerationStructureBuildSizesKHR get_sizes,
+        PFN_vkCmdBuildAccelerationStructuresKHR cmd_build,
+        VkDeviceSize scratch_alignment,
+        const std::vector<RtBuildSel>& selected_geometry,
+        const std::vector<RtBlasPending>& pending,
+        bool& instances_empty,
+        std::string& error);
+    bool record_ray_trace_dispatch(
+        const matter::VulkanFrame& frame,
+        const FrameMatrices& matrices,
+        VkExtent2D trace_extent,
+        PFN_vkCmdTraceRaysKHR cmd_trace,
+        std::string& error);
+
     bool create_pipeline(std::string& error);
     bool create_raster_pipelines(std::string& error);
     bool create_display_pipeline(std::string& error);
