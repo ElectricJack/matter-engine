@@ -4345,8 +4345,13 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         VkAccelerationStructureBuildGeometryInfoKHR build;
         VkAccelerationStructureBuildRangeInfoKHR range;
         std::shared_ptr<matter::VkAccelerationStructureResource> target;
+        VkDeviceSize scratch_size = 0;
+        VkDeviceSize scratch_offset = 0;
     };
     std::vector<PendingBlas> pending;
+    const VkDeviceSize scratch_alignment = std::max<VkDeviceSize>(
+        1, vulkan_->ray_tracing_properties()
+               .min_acceleration_structure_scratch_offset_alignment);
     for (const SelectedGeometry& selected_lod : selected_geometry) {
         PartRecord& part = *selected_lod.part;
         RtLodRecord& lod = *selected_lod.lod;
@@ -4414,12 +4419,28 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         }
         lod.candidate_opaque = selected_lod.opaque;
         item.build.dstAccelerationStructure = item.target->handle;
-        scratch_size = std::max(scratch_size, sizes.buildScratchSize);
+        item.scratch_size =
+            (sizes.buildScratchSize + scratch_alignment - 1) /
+            scratch_alignment * scratch_alignment;
         pending.push_back(item);
     }
-    const VkDeviceSize scratch_alignment = std::max<VkDeviceSize>(
-        1, vulkan_->ray_tracing_properties()
-               .min_acceleration_structure_scratch_offset_alignment);
+    // Builds within a batch get disjoint scratch regions so the GPU can
+    // overlap them; the budget chunks first-load spikes into several batches
+    // instead of growing the scratch buffer without bound.
+    constexpr VkDeviceSize kBlasScratchBudget = 64ull << 20;
+    std::vector<size_t> batch_ends;
+    VkDeviceSize batch_offset = 0;
+    for (size_t i = 0; i < pending.size(); ++i) {
+        if (batch_offset > 0 &&
+            batch_offset + pending[i].scratch_size > kBlasScratchBudget) {
+            batch_ends.push_back(i);
+            batch_offset = 0;
+        }
+        pending[i].scratch_offset = batch_offset;
+        batch_offset += pending[i].scratch_size;
+        scratch_size = std::max(scratch_size, batch_offset);
+    }
+    batch_ends.push_back(pending.size());
     if (!ensure_build_buffer(
             selected.rt_scratch, scratch_size + scratch_alignment - 1,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
@@ -4428,11 +4449,24 @@ bool VkSceneRenderer::record_ray_traced_shadows(
     const VkDeviceAddress blas_scratch_address =
         (selected.rt_scratch.address + scratch_alignment - 1) /
         scratch_alignment * scratch_alignment;
-    for (auto& item : pending) {
-        item.build.pGeometries = &item.geometry;
-        item.build.scratchData.deviceAddress = blas_scratch_address;
-        const VkAccelerationStructureBuildRangeInfoKHR* range = &item.range;
-        cmd_build(frame.command_buffer, 1, &item.build, &range);
+    std::vector<VkAccelerationStructureBuildGeometryInfoKHR> batch_builds;
+    std::vector<const VkAccelerationStructureBuildRangeInfoKHR*> batch_ranges;
+    size_t batch_begin = 0;
+    for (const size_t batch_end : batch_ends) {
+        if (batch_end == batch_begin) continue;
+        batch_builds.clear();
+        batch_ranges.clear();
+        for (size_t i = batch_begin; i < batch_end; ++i) {
+            PendingBlas& item = pending[i];
+            item.build.pGeometries = &item.geometry;
+            item.build.scratchData.deviceAddress =
+                blas_scratch_address + item.scratch_offset;
+            batch_builds.push_back(item.build);
+            batch_ranges.push_back(&item.range);
+        }
+        cmd_build(frame.command_buffer,
+                  static_cast<uint32_t>(batch_builds.size()),
+                  batch_builds.data(), batch_ranges.data());
         VkMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
         barrier.srcStageMask =
             VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
@@ -4447,6 +4481,7 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         dependency.memoryBarrierCount = 1;
         dependency.pMemoryBarriers = &barrier;
         vkCmdPipelineBarrier2(frame.command_buffer, &dependency);
+        batch_begin = batch_end;
     }
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     test_last_rt_blas_build_count_ = static_cast<uint32_t>(pending.size());
