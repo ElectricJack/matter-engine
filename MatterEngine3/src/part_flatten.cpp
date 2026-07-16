@@ -462,7 +462,7 @@ public:
             const PartGeo* g = geos_[tk.geo_idx];
             const Context& c = contexts_[tk.ctx_idx];
             const Tri& s = g->tris[tk.local_tri_idx];
-            Tri t;
+            Tri t = {};  // zero-init so padding bytes in __m128 slots are deterministic
             t.vertex0 = xform_point(c.world, s.vertex0);
             t.vertex1 = xform_point(c.world, s.vertex1);
             t.vertex2 = xform_point(c.world, s.vertex2);
@@ -1361,10 +1361,28 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
     // same BLAS registration order, same thresholds, same cluster order.
     struct LevelMeta { float eps; uint32_t blas_idx; };
 
+    // Task 3: retain-budget — read env var fresh every call (not static) so
+    // that tests can change MATTER_FLATTEN_RETAIN_MB between calls and see the
+    // new value. Default: 512 MB; "0" disables retention entirely.
+    struct RetainedCluster {
+        std::vector<Tri> tris;
+        std::vector<TriEx> triex;
+        float mn[3], mx[3];
+        bool valid = false;
+    };
+    const char* retain_env = std::getenv("MATTER_FLATTEN_RETAIN_MB");
+    const size_t retain_budget =
+        (retain_env ? static_cast<size_t>(std::atoll(retain_env))
+                    : size_t{512}) * 1024u * 1024u;
+    std::vector<RetainedCluster> retained(clusters.size());
+    size_t retained_bytes = 0;
+
     // Source pass: establish one canonical normal for each genuinely smooth
     // position shared by multiple cluster boundaries. The pass retains only
     // boundary-position samples and releases each materialized cluster before
     // the LOD ladder pass, preserving the streaming memory bound.
+    // When the retain budget allows, we also keep the full Tri/TriEx data so
+    // the ladder pass can skip a second materialize_range call.
     BoundaryNormalSamples boundary_samples;
     for (size_t cluster_index = 0; cluster_index < clusters.size();
          ++cluster_index) {
@@ -1377,6 +1395,18 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
                             source_tris, source_triex, source_min, source_max);
         collect_source_boundary_normals(source_tris, source_triex,
                                         cluster_index, boundary_samples);
+        // Retain if budget permits.
+        const size_t cluster_bytes =
+            source_tris.size() * (sizeof(Tri) + sizeof(TriEx));
+        if (retain_budget > 0 && retained_bytes + cluster_bytes <= retain_budget) {
+            RetainedCluster& rc = retained[cluster_index];
+            rc.tris  = std::move(source_tris);
+            rc.triex = std::move(source_triex);
+            std::memcpy(rc.mn, source_min, sizeof(rc.mn));
+            std::memcpy(rc.mx, source_max, sizeof(rc.mx));
+            rc.valid = true;
+            retained_bytes += cluster_bytes;
+        }
     }
     const CanonicalBoundaryNormals canonical_normals =
         canonical_boundary_normals(boundary_samples);
@@ -1398,7 +1428,8 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
         return true;
     };
 
-    for (const auto& cl : clusters) {
+    for (size_t ci = 0; ci < clusters.size(); ++ci) {
+        const auto& cl = clusters[ci];
         // Bake-hardening #3: materialize this cluster's triangles from the
         // skeleton (tickets + centroids permutation). Fills ctris/ctriex in
         // permuted order and returns the per-cluster vertex AABB alongside —
@@ -1407,11 +1438,21 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
         // into split_clusters(): the DFS ordering of skeleton_gather() plus
         // the deterministic tie-break in split_centroids() produce the same
         // (child_hash, local_tri_idx, transform) sequence per cluster.
+        // Task 3: use the retained copy when available; otherwise re-materialize.
         std::vector<Tri>   ctris;
         std::vector<TriEx> ctriex;
         float cl_min[3], cl_max[3];
-        g.materialize_range(order, cl.first_tri, cl.first_tri + cl.tri_count,
-                            ctris, ctriex, cl_min, cl_max);
+        RetainedCluster& rc = retained[ci];
+        if (rc.valid) {
+            ctris  = std::move(rc.tris);
+            ctriex = std::move(rc.triex);
+            std::memcpy(cl_min, rc.mn, sizeof(cl_min));
+            std::memcpy(cl_max, rc.mx, sizeof(cl_max));
+            rc.valid = false;   // release memory immediately
+        } else {
+            g.materialize_range(order, cl.first_tri, cl.first_tri + cl.tri_count,
+                                ctris, ctriex, cl_min, cl_max);
+        }
         apply_canonical_boundary_normals(canonical_normals, ctris, ctriex);
 
         // Build per-cluster LOD ladder. Level 0 (the raw cluster) is registered

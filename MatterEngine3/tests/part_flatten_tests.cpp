@@ -1667,6 +1667,71 @@ static void test_flatten_unhinted_unchanged() {
     printf("  test_flatten_unhinted_unchanged OK\n");
 }
 
+// Task 3: retained vs re-materialised flatten must produce byte-identical artifacts.
+static void test_flatten_retain_budget_identical() {
+    printf("=== test_flatten_retain_budget_identical ===\n");
+
+    // Two separate cache roots so the two flatten runs don't share a cached flat.
+    const std::string root_a =
+        (fs::temp_directory_path() / "pftest_retain_a").string();
+    const std::string root_b =
+        (fs::temp_directory_path() / "pftest_retain_b").string();
+    fs::create_directories(fs::path(root_a) / "parts");
+    fs::create_directories(fs::path(root_b) / "parts");
+
+    // Write the same 40k-tri grid source .part into both cache roots.
+    const int NX = 200, NZ = 100;
+    static const uint64_t kRetainHash = 0x5050505050505050ull;
+    {
+        std::vector<Tri> big_tris = grid_sheet_tris(NX, NZ, 200.0f, 100.0f);
+        std::vector<TriEx> ex(big_tris.size(), make_triex(99));
+        for (const std::string& root : {root_a, root_b}) {
+            BLASManager blas; TLASManager tlas(16);
+            BLASHandle h = blas.register_triangles(big_tris.data(), (int)big_tris.size(), ex.data());
+            uint32_t idx = UINT32_MAX;
+            const auto& entries = blas.get_entries();
+            for (size_t k = 0; k < entries.size(); ++k)
+                if (entries[k]->handle == h) { idx = (uint32_t)k; break; }
+            part_asset::LodLevels lods;
+            part_asset::LodLevel L; L.screen_size_threshold = 0.0f; L.blas_indices.push_back(idx);
+            lods.push_back(L);
+            const std::string path = root + "/" + part_asset::cache_path_resolved(kRetainHash);
+            bool sv = part_asset::save_v2(path, blas, tlas, nullptr, 0, lods, kRetainHash);
+            CHECK(sv, "retain test: fixture written");
+            if (!sv) { printf("  SKIPPING\n"); return; }
+        }
+    }
+
+    part_flatten::FlattenTargets tgt;
+    tgt.cluster_target_tris = 16000;
+
+    // Run A: retention enabled (512 MB budget — takes the retained path).
+    setenv("MATTER_FLATTEN_RETAIN_MB", "512", 1);
+    const std::string flat_a = root_a + "/" + part_asset::cache_path_flat(kRetainHash);
+    std::remove(flat_a.c_str());
+    auto res_a = part_flatten::flatten_part(root_a, kRetainHash, tgt);
+    CHECK(res_a.ok, "retain test (budget=512): flatten ok");
+    if (!res_a.ok) { printf("  error: %s\n", res_a.error.c_str()); unsetenv("MATTER_FLATTEN_RETAIN_MB"); return; }
+    std::vector<char> bytes_a;
+    CHECK(read_bytes(flat_a, bytes_a), "retain test: flat_a readable");
+
+    // Run B: retention disabled (budget=0 — forces re-materialization).
+    setenv("MATTER_FLATTEN_RETAIN_MB", "0", 1);
+    const std::string flat_b = root_b + "/" + part_asset::cache_path_flat(kRetainHash);
+    std::remove(flat_b.c_str());
+    auto res_b = part_flatten::flatten_part(root_b, kRetainHash, tgt);
+    CHECK(res_b.ok, "retain test (budget=0): flatten ok");
+    if (!res_b.ok) { printf("  error: %s\n", res_b.error.c_str()); unsetenv("MATTER_FLATTEN_RETAIN_MB"); return; }
+    std::vector<char> bytes_b;
+    CHECK(read_bytes(flat_b, bytes_b), "retain test: flat_b readable");
+
+    unsetenv("MATTER_FLATTEN_RETAIN_MB");
+
+    CHECK(bytes_a == bytes_b,
+          "retained and streamed flatten artifacts are byte-identical");
+    printf(bytes_a == bytes_b ? "PASSED\n" : "FAILED\n");
+}
+
 int main() {
     if (!write_fixtures()) {
         printf("FAIL: could not write fixture parts under %s\n", kCacheRoot);
@@ -1698,6 +1763,7 @@ int main() {
     test_cutover_helpers();
     test_flatten_segmented();
     test_flatten_unhinted_unchanged();
+    test_flatten_retain_budget_identical();
 
     if (g_failures == 0) { printf("part_flatten_tests: ALL PASS\n"); return 0; }
     printf("part_flatten_tests: %d FAILURE(S)\n", g_failures);
