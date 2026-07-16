@@ -145,6 +145,53 @@ void reproject_triex(const MeshIndexed& source, MeshIndexed& target) {
         else { n.x = 0; n.y = 1; n.z = 0; }
     }
 
+    // Per-corner AO sampling: baked AO varies smoothly across the surface, so
+    // copying one source triangle's corner AO onto a (much larger) decimated
+    // triangle produces flat blocky patches and visible seams where adjacent
+    // clusters decimate differently. Sample AO at each target corner instead:
+    // nearest source triangle to the corner, clamped barycentric interpolation
+    // of its ao0/ao1/ao2 at the corner position. materialId/tint/uv stay
+    // nearest-triangle copies (piecewise-constant in practice).
+    auto ao_at_point = [&](const float3& p) -> float {
+        uint32_t si = nearest_src(p);
+        uint32_t s0 = source.indices[si * 3 + 0];
+        uint32_t s1 = source.indices[si * 3 + 1];
+        uint32_t s2 = source.indices[si * 3 + 2];
+        const float3& a = source.positions[s0];
+        const float3& b = source.positions[s1];
+        const float3& c = source.positions[s2];
+        const TriEx& ex = source.triex[si];
+        float3 v0 = make_float3(b.x - a.x, b.y - a.y, b.z - a.z);
+        float3 v1 = make_float3(c.x - a.x, c.y - a.y, c.z - a.z);
+        float3 v2 = make_float3(p.x - a.x, p.y - a.y, p.z - a.z);
+        float d00 = v0.x*v0.x + v0.y*v0.y + v0.z*v0.z;
+        float d01 = v0.x*v1.x + v0.y*v1.y + v0.z*v1.z;
+        float d11 = v1.x*v1.x + v1.y*v1.y + v1.z*v1.z;
+        float d20 = v2.x*v0.x + v2.y*v0.y + v2.z*v0.z;
+        float d21 = v2.x*v1.x + v2.y*v1.y + v2.z*v1.z;
+        float denom = d00 * d11 - d01 * d01;
+        if (fabsf(denom) < 1e-20f)   // degenerate source tri: average its AO
+            return (ex.ao0 + ex.ao1 + ex.ao2) / 3.0f;
+        float v = (d11 * d20 - d01 * d21) / denom;
+        float w = (d00 * d21 - d01 * d20) / denom;
+        float u = 1.0f - v - w;
+        // Clamp outside-the-triangle barycentrics (corner lies off the source
+        // tri's footprint), then renormalize so the weights still sum to 1.
+        u = fmaxf(u, 0.0f); v = fmaxf(v, 0.0f); w = fmaxf(w, 0.0f);
+        float sum = u + v + w;
+        if (sum < 1e-12f) return (ex.ao0 + ex.ao1 + ex.ao2) / 3.0f;
+        return (u * ex.ao0 + v * ex.ao1 + w * ex.ao2) / sum;
+    };
+
+    // Per-vertex AO cache: corner AO depends only on position, so shared target
+    // vertices sample once and stay continuous across their triangles.
+    std::vector<float> tgt_vert_ao(target.positions.size(), -1.0f);
+    auto vert_ao = [&](uint32_t vi) -> float {
+        if (tgt_vert_ao[vi] < 0.0f)
+            tgt_vert_ao[vi] = ao_at_point(target.positions[vi]);
+        return tgt_vert_ao[vi];
+    };
+
     target.triex.clear();
     target.triex.reserve(tgt_tri_count);
     for (size_t ti = 0; ti < tgt_tri_count; ++ti) {
@@ -159,10 +206,13 @@ void reproject_triex(const MeshIndexed& source, MeshIndexed& target) {
                                 (a.z + b.z + cc.z) / 3.0f);
 
         const TriEx& src = source.triex[nearest_src(tc)];
-        TriEx ex = src;   // materialId, tint, uv, AO carried from source
+        TriEx ex = src;   // materialId, tint, uv carried from source
         ex.N0 = tgt_vert_normals[i0];
         ex.N1 = tgt_vert_normals[i1];
         ex.N2 = tgt_vert_normals[i2];
+        ex.ao0 = vert_ao(i0);
+        ex.ao1 = vert_ao(i1);
+        ex.ao2 = vert_ao(i2);
         target.triex.push_back(ex);
     }
 }
