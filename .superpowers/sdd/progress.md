@@ -300,3 +300,89 @@ Queue status:
   make -C MatterViewer windows -j2 HAVE_STREAMLINE=1 STREAMLINE_PATH=/d/SDKs/streamline-sdk-v2.12.0 STREAMLINE_DLL_DIR=/d/SDKs/streamline-sdk-v2.12.0/bin/x64/development
   then make -C MatterViewer vulkan-smoke (same flags). Regenerates embedded_spirv.h for 3ff8e50/5f7c0ca/99c8f29.
   Note: the 1/pi GI fix dims sun-lit indirect ~3.14x — diffuse_multiplier may want a re-tune after visual check.
+
+# RT Material Transport SDD Progress Ledger
+Branch: feature/rt-lighting-phase2 | Plan: docs/superpowers/plans/2026-07-15-rt-transport.md
+BASE at start: a022ff2
+Workflow: sonnet implementers, adversarial opus reviewers, NO verification gates (only -fsyntax-only on touched C/C++ TUs; shaders static-review-only; Jack does MSYS2 build + runtime testing at end).
+
+No tasks complete yet. Resume at Task 1.
+
+Task 1: complete (commits a022ff2..f68e0f0, review clean)
+  - Plan CHECK-RENDERER command was missing -I. (embedded_spirv.h); fixed in plan file.
+  - Minor (tester note): background pixels clear material_instance to UINT32_MAX -> composite emission falls back to albedo.rgb (pre-existing behavior, no regression); confirm sky looks right.
+
+Task 2: complete (commits f68e0f0..0aade32, review clean)
+  - Minor: RasterRecord positional aggregate init (25+ fields) is a bug magnet; consider designated initializers in a follow-up.
+  - Minor: exit-ray hit_radiance treats a nested dielectric backface as opaque (spec-level simplification, nested media deferred per spec section 9).
+  - Minor (reviewer suggestion, invalid): "reuse existing view var" - that var is scoped inside the specular if-block; recompute was required.
+
+Task 3: complete (commits 0aade32..2166974, review clean)
+  - Minor (tuner notes): wax wrapped-minus-direct term adds a small scattering tint on fully lit regions too (soft terminator everywhere, additive-only); aniso=0 degenerates backlight to plain wrapped Lambertian; distance_falloff x4 literal flagged tunable in commit body.
+
+Task 4: complete (commits 2166974..972a35e, review clean)
+  - Minor: plan note "with one vertex the loop reproduces the old estimator" is loose phrasing - sky/emission is intentionally pushed one bounce deeper on hit; code correct per spec section 6.
+
+ALL 4 TASKS COMPLETE. Proceeding to final whole-branch review.
+
+Final whole-branch review (opus, a022ff2..972a35e): READY TO HAND OFF, no fixes required.
+  - Cross-task seams verified: shared to_sun, all 4 image stores on every rgen path, descriptor layout/pool/write triples on both sets, RasterRecord positional inits, composite combine matches spec section 3.
+  - Watch items for Jack's Windows run (validation log): UINT sampled image + nearest sampler on composite binding 6 (same pattern as proven RT binding 11); descriptor-write completeness warnings at first draw.
+  - Pre-existing gap (NOT this feature, file to tech-debt queue): materials-buffer upload barrier dstStageMask is VERTEX|FRAGMENT only, missing RAY_TRACING_SHADER even though rgen reads rt_materials.
+  - Minor deferred: composite RtMaterialTable block name would collide if rt_surface_common.glsl were ever included there (comment in place); wax wrap inherits mix(1,0.65,rough) sun factor (design choice, tune from feedback).
+
+FEATURE COMPLETE: 4 commits + plan doc, awaiting Jack's MSYS2 clean rebuild + garden runtime testing.
+
+HUD stats fix: complete (commit 2287c9c, opus review clean — 4 Minor observations, no fixes: STATS log frame_ms semantics changed vs old baselines; 1-frame EMA lag; verts/3 residual consistent with existing contract; dead defensive branch predates change)
+
+===============================================================
+# Bake Fixes + Part AO SDD Progress Ledger
+Branch: feature/rt-lighting-phase2 | Plan: docs/superpowers/plans/2026-07-15-vulkan-bake-fixes-and-part-ao.md
+BASE at start: 791d468
+Workflow: sonnet implementers, opus reviewers. Tests run per-task (sequential only, WSL2 OOM); full ./build-all.sh test + clean make windows = Task 6 final gates.
+
+No tasks complete yet. Resume at Task 1.
+Task 1: complete (commits 791d468..42ba3f0, review clean)
+  - Minor: max_read_chunk semantics changed (now bounded probe read, not streaming chunk); test covers the bound
+  - Minor: test corruption offset assumes body >= prefix+9 (fixture satisfies; defensive assert would harden)
+  - Note: transient suite compile-verified only — pre-existing TBB/autoremesher startup segfault (known, memory)
+Task 2: complete (commits 42ba3f0..891748d, review clean after 1 fix round)
+  - Fix round resolved: world_stream_tests dangling probe refs; ExplorerDemo Makefile deleted-file refs; MSL raster.fs probe uniforms/branch removed (spec-authorized MSL edit — flag to Jack)
+  - KNOWN-RED (pre-existing, verified at baseline 42ba3f0 via worktree): run-worldstream fails `tris > 0 after render`; was masked by an even earlier probe-bake assertion timeout at baseline. Fixture camera suspected (eye/target share XZ). NOT a regression; expect it red at Task 6 full gate. Surface to Jack.
+  - Minor (deferred to final review): stale comments matter_engine.cpp ~:336 and ~:743 mention probes; MatterEngine3/docs/rendering.md probe section stale; ExplorerDemo/tools/flight_smoke.sh greps dead "[probe] brick" log line
+Task 3: complete (commits 891748d..59d5490, review clean)
+  - BONUS FIX: `Tri t = {}` in materialize_range — uninitialized __m128 padding was hashed by calculate_hash AND serialized into flat artifacts (real latent nondeterminism; likely related to Phase B "bake cold-run nondeterminism" deferred finding). Padding-only, geometry bytes unchanged; pre-fix flat caches will hash-mismatch and regenerate.
+  - Minor: env-var unsetenv leaks on test early-return paths (currently last test, benign)
+  - Minor: budget counts Tri+TriEx payload only, excludes vector overhead (comment nit)
+Task 4: complete (commits 59d5490..f3d3cbc, review clean)
+  - Fixture deviation (justified, reviewer-verified): overhang test lid widened half=1->3; brief's same-size lid only yields ao~0.78 at corner verts
+  - Minor: part_ao_bake.h includes bvh.h unnecessarily (API needs only precomp.h) — move to .cpp at final review
+  - Minor: ray-budget estimator uses total*3 raw corners, ignores dedup — real bakes over-halve; tuning backlog
+  - Minor: no exception safety on manual frees (bad_alloc would leak) — future hardening
+
+Task 5: complete (commits f3d3cbc..5e6cf4e, review clean — opus verdict Approved)
+  - Reviewer's Important #1 resolved by controller verification: part_ao_bake.cpp:76 early-returns on quality <= 0 (contract holds; no call-site guard needed)
+  - Reviewer ⚠️ resolved: rays clamp(round(q*32),4,128) + budget halving verified at part_ao_bake.cpp:97-101; determinism covered by run-partv2 (part-asset suite)
+  - Minor (deferred to final review): salt-hash test compares two textually-different schemas — proves bytes differ, not that salt changed; stronger check = literal expected hash or salt-zeroed comparison bake
+  - Minor (deferred to final review): determinism test should CHECK(r1.written_path == r3.written_path) before byte-comparing, guards against false-pass on divergent paths
+  - kEngineBakeVersion = 1 in part_asset_v2.h; XOR salt applied identically in resolve_hash + bake_source
+  - ao_quality read from authored class static ao.quality property (follow eval_lod_budgets pattern)
+  - AO bake hook before save_v2 walks blas.get_entries() and calls bake_part_ao
+  - All tlas.draw() sites confirmed identity-transform; no geometry transform needed
+  - Integration test: AoPlates (floor + lid) baked with quality:1 → min_ao < 0.9; quality:0 → all ao == 1.0; hash diff; byte-determinism
+  - run-script: ALL PASS; run-partao: ALL PASS; run-partv2: ALL PASS
+  - Makefile: part_ao_bake.cpp added to SCRIPT_CPP + 9 other targets that link script_host.cpp directly
+
+Task 6: complete (commits 5e6cf4e..cd16497, review clean — opus verdict Approved)
+  - Proves AO survives QEM LOD ladder end-to-end: test_ao_survives_lod_ladder in part_flatten_tests.cpp
+  - 48x24 sphere (~2208 tris), ao=0.25 on centroid.x<0 hemisphere, 9 LOD levels; asserts min(ao)<0.5 on coarsest LOD
+  - No engine fix required: reproject_triex (MatterSurfaceLib/src/mesh_transform.cpp:162) already carries TriEx via struct copy
+  - Focused gate: run-flatten ALL PASS (levels=9, clusters=1, full_tris=2208); full gate ran, see verified failure audit below
+  - Minor (deferred to final review): res.levels is cross-cluster max, not per-cluster — comment nit for future multi-cluster fixtures; no fixture teardown (consistent with file)
+  - FULL-GATE FAILURE AUDIT (controller-verified vs fresh baseline-791d468 worktree; implementer's "pre-existing" table was partly wrong — details in task-6-report.md addendum):
+    * CONFIRMED pre-existing, identical at baseline: run-asyncbake, run-graph-integration + run-stressforest (Tree.js disabled), run-example (red at baseline too; Task 5 salt renamed the artifact hash as designed), ExplorerDemo (vulkan.h include path), MatterViewer grep-gate, retopo_integration_tests link (RETOPO_INT_CPP lacked part_graph.cpp since Phase C)
+    * MSL demo link failure = stale incremental objects, NOT code (baseline clean build links; MSL diff = raster.fs only); fixed via clean rebuild
+    * OUR MISS, FIXED: build-all.sh still invoked run-lighting/run-probebrick deleted by Task 2 (528762c) — removed from suite loop
+    * WATCH ITEM: run-tilesetload SEGV during the gate run only; baseline PASS, HEAD passes 4/4 consecutive in isolation. Intermittent TBB/autoremesher+d3d12 startup crash class (same family as run-transient/run-asyncbake known segfaults), likely full-gate memory pressure. Not attributed to feature code; surface to Jack.
+  - Windows CLEAN rebuild owed to Jack's MSYS2 (UCRT64 toolchain absent in WSL); headers changed this feature — full object purge required per policy
+  - Step 5 (visual check): hand off to Jack to run viewer and confirm crevice/cavity darkening on parts under Vulkan; salt forces full cold rebake on first world load

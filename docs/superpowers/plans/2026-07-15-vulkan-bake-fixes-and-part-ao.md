@@ -141,7 +141,8 @@ Delete `is_cache_artifact_compatible` entirely (impl + declaration). Update the 
 ### Task 2: Delete the SH-L1 probe lighting system
 
 **Files:**
-- Delete: `MatterEngine3/src/probe_bake.{h,cpp}`, `MatterEngine3/src/probe_volume.{h,cpp}`, `MatterEngine3/src/probe_bricks.{h,cpp}`, `MatterEngine3/src/render/probe_texture.{h,cpp}`, `MatterEngine3/src/world_tracer.{h,cpp}`, `MatterEngine3/include/matter/probe_volume.h`, `MatterEngine3/tests/lighting_tests.cpp`, `MatterEngine3/tests/probe_brick_tests.cpp`
+- Delete: `MatterEngine3/src/probe_bake.{h,cpp}`, `MatterEngine3/src/probe_volume.{h,cpp}`, `MatterEngine3/src/probe_bricks.{h,cpp}`, `MatterEngine3/src/render/probe_texture.{h,cpp}`, `MatterEngine3/include/matter/probe_volume.h`, `MatterEngine3/tests/lighting_tests.cpp`, `MatterEngine3/tests/probe_brick_tests.cpp`
+- KEEP `MatterEngine3/src/world_tracer.{h,cpp}` — verification found non-probe consumers: `WorldSession::raycast()`, `instance_count()`, `instance_info()` use the `tracer` member (matter_engine.cpp :294-297, :2806-2844, :3855-3904). Delete only the probe-thread's `probe_tracer` usage; the `tracer` member and `ensure_tracer()` stay.
 - Modify: `MatterEngine3/src/matter_engine.cpp` (includes :19,:51-53; `probe_tex` :227-229; `update_probe_dims` :345-350; probe thread block :493-515 and definitions :2432-2600s; publish `probes` upload :1029-1120; stats :1523-1526; teardown :2972-2990; tick consume :3755-3765)
 - Modify: `MatterEngine3/src/provider/local_provider.cpp` (probe bake + `.probes` cache :628-722; `try_load_cached_probes` :1146-1198; includes :8-9)
 - Modify: `MatterEngine3/src/provider/world_source.h:29` (`WorldManifest::probes`)
