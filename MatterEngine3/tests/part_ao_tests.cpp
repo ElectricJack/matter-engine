@@ -95,6 +95,33 @@ static void test_adaptive_budget_scales_down() {
     CHECK(s.rays_per_vertex == 128, "quality clamps at 128 rays/vertex");
 }
 
+static void test_budget_counts_unique_positions_not_corners() {
+    // 8x8 grid of quads on a flat plane, all normals +Y, adjacent quads sharing
+    // bitwise-identical corner coordinates: 128 tris = 384 raw corners but only
+    // 81 unique (position,normal) keys. Budget must be charged against the 81
+    // welded vertices actually raycast, not the 384 raw corners — otherwise a
+    // large welded part over-halves its rays/vertex into blotchy noise.
+    std::vector<Tri> tris;
+    std::vector<TriEx> triex;
+    for (int i = 0; i < 8; ++i)
+        for (int j = 0; j < 8; ++j) {
+            float3 a = make_float3(i * 0.5f,       0.0f, j * 0.5f);
+            float3 b = make_float3((i + 1) * 0.5f, 0.0f, j * 0.5f);
+            float3 c = make_float3((i + 1) * 0.5f, 0.0f, (j + 1) * 0.5f);
+            float3 d = make_float3(i * 0.5f,       0.0f, (j + 1) * 0.5f);
+            tris.push_back(make_tri(a, b, c)); triex.push_back(make_triex_up());
+            tris.push_back(make_tri(a, c, d)); triex.push_back(make_triex_up());
+        }
+
+    part_ao::AoBakeParams p;
+    p.max_total_rays = 3000;   // 384*32 > 3000 (raw would halve to 4);
+                               //  81*32 <= 3000 (unique keeps all 32)
+    part_ao::AoBakeStats s{};
+    part_ao::bake_part_ao({&tris}, {&triex}, p, &s);
+    CHECK(s.unique_positions == 81, "welded plane has 81 unique keys");
+    CHECK(s.rays_per_vertex == 32, "budget charged on unique positions");
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -105,9 +132,10 @@ int main() {
     test_determinism();
     test_quality_zero_disables();
     test_adaptive_budget_scales_down();
+    test_budget_counts_unique_positions_not_corners();
 
     if (g_failures == 0) {
-        printf("ALL PASS (%d tests)\n", 5);
+        printf("ALL PASS (%d tests)\n", 6);
         return 0;
     }
     printf("%d FAILURE(S)\n", g_failures);

@@ -93,16 +93,35 @@ void bake_part_ao(const std::vector<const std::vector<Tri>*>& group_tris,
     }
     BVH bvh(&mesh);   // ctor allocates + Build()s; centroids computed inside
 
-    const uint32_t vert_count = static_cast<uint32_t>(total * 3);
+    // Pass 1: count unique welded (position,normal) keys. The budget is charged
+    // against these — the vertices actually raycast — not the raw corner count,
+    // which is ~6x larger on welded meshes and used to over-halve rays/vertex
+    // into blotchy noise on big parts.
+    std::unordered_map<VertKey, float, VertKeyHash> cache;
+    cache.reserve(total * 3);
+    for (size_t gi = 0; gi < group_tris.size(); ++gi) {
+        const std::vector<Tri>& tris = *group_tris[gi];
+        const std::vector<TriEx>& triex = *group_triex[gi];
+        if (triex.size() != tris.size()) continue;
+        for (size_t ti = 0; ti < tris.size(); ++ti) {
+            const float3 ps[3] = {tris[ti].vertex0, tris[ti].vertex1,
+                                  tris[ti].vertex2};
+            const float3 ns[3] = {triex[ti].N0, triex[ti].N1, triex[ti].N2};
+            for (int c = 0; c < 3; ++c)
+                cache.emplace(key_of(ps[c], ns[c]), -1.0f);
+        }
+    }
+    const uint64_t unique_count = cache.size();
+    if (stats) stats->unique_positions = unique_count;
+
     uint32_t rays = static_cast<uint32_t>(
         std::clamp(std::lround(params.quality * 32.0f), 4l, 128l));
-    while (static_cast<uint64_t>(rays) * vert_count > params.max_total_rays &&
+    while (static_cast<uint64_t>(rays) * unique_count > params.max_total_rays &&
            rays > 4)
         rays /= 2;                                     // adaptive: halve to budget
     if (stats) stats->rays_per_vertex = rays;
 
-    std::unordered_map<VertKey, float, VertKeyHash> cache;
-    cache.reserve(vert_count);
+    // Pass 2: bake each unique vertex once; fan the value out to every corner.
     for (size_t gi = 0; gi < group_tris.size(); ++gi) {
         const std::vector<Tri>& tris = *group_tris[gi];
         std::vector<TriEx>& triex = *group_triex[gi];
@@ -115,18 +134,16 @@ void bake_part_ao(const std::vector<const std::vector<Tri>*>& group_tris,
             for (int c = 0; c < 3; ++c) {
                 const VertKey k = key_of(ps[c], ns[c]);
                 auto found = cache.find(k);
-                if (found == cache.end()) {
+                if (found->second < 0.0f) {
                     const uint32_t seed =
                         static_cast<uint32_t>(VertKeyHash{}(k));
-                    const float ao = ao_at(bvh, ps[c], ns[c], rays,
-                                           params.radius, seed);
-                    found = cache.emplace(k, ao).first;
+                    found->second = ao_at(bvh, ps[c], ns[c], rays,
+                                          params.radius, seed);
                 }
                 *aos[c] = found->second;
             }
         }
     }
-    if (stats) stats->unique_positions = cache.size();
 
     // BVH and BvhMesh have no destructors (bvh.h) — free what the ctor and we
     // allocated, or every part bake leaks its whole soup + node pool.

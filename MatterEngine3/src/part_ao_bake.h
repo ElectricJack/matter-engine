@@ -9,7 +9,9 @@ namespace part_ao {
 struct AoBakeParams {
     float quality = 1.0f;          // 0 disables; rays/vertex = clamp(quality*32, 4, 128)
     float radius = 2.0f;           // max occlusion reach (world units)
-    uint64_t max_total_rays = 8000000;  // adaptive cap: scales rays/vertex down
+    // Adaptive cap: rays/vertex halves until rays * unique_welded_vertices
+    // fits. Charged against unique (position,normal) keys, not raw corners.
+    uint64_t max_total_rays = 32000000;
 };
 
 struct AoBakeStats {
