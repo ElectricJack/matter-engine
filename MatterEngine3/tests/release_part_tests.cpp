@@ -76,6 +76,7 @@ static viewer::RasterMeshData make_one_tri_mesh() {
     md.normals   = { 0.0f, 0.0f, 1.0f,  0.0f, 0.0f, 1.0f,  0.0f, 0.0f, 1.0f };
     md.colors    = { 255, 255, 255, 255,  255, 255, 255, 255,  255, 255, 255, 255 };
     md.texcoords = { 0.0f, 0.0f,  1.0f, 0.0f,  0.0f, 1.0f };
+    md.indices   = { 0u, 1u, 2u };
     return md;
 }
 

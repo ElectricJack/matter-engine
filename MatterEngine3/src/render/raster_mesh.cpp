@@ -114,17 +114,32 @@ RasterMeshData expand_indexed(const RasterMeshData& in) {
     out.vertices.reserve(in.indices.size() * 3);
     for (uint32_t idx : in.indices) {
         const size_t p = (size_t)idx * 3, c = (size_t)idx * 4, uv = (size_t)idx * 2;
-        out.vertices.insert(out.vertices.end(),
-                            {in.vertices[p], in.vertices[p+1], in.vertices[p+2]});
-        out.normals.insert(out.normals.end(),
-                           {in.normals[p], in.normals[p+1], in.normals[p+2]});
-        out.colors.insert(out.colors.end(),
-                          {in.colors[c], in.colors[c+1], in.colors[c+2], in.colors[c+3]});
-        out.texcoords.insert(out.texcoords.end(), {in.texcoords[uv], in.texcoords[uv+1]});
-        out.surface_uvs.insert(out.surface_uvs.end(),
-                               {in.surface_uvs[uv], in.surface_uvs[uv+1]});
-        out.material_ids.push_back(in.material_ids[idx]);
-        out.baked_ao.push_back(in.baked_ao[idx]);
+        if (p + 2 < in.vertices.size())
+            out.vertices.insert(out.vertices.end(),
+                                {in.vertices[p], in.vertices[p+1], in.vertices[p+2]});
+        else
+            out.vertices.insert(out.vertices.end(), {0.0f, 0.0f, 0.0f});
+        if (p + 2 < in.normals.size())
+            out.normals.insert(out.normals.end(),
+                               {in.normals[p], in.normals[p+1], in.normals[p+2]});
+        else
+            out.normals.insert(out.normals.end(), {0.0f, 1.0f, 0.0f});
+        if (c + 3 < in.colors.size())
+            out.colors.insert(out.colors.end(),
+                              {in.colors[c], in.colors[c+1], in.colors[c+2], in.colors[c+3]});
+        else
+            out.colors.insert(out.colors.end(), {255, 255, 255, 255});
+        if (uv + 1 < in.texcoords.size())
+            out.texcoords.insert(out.texcoords.end(), {in.texcoords[uv], in.texcoords[uv+1]});
+        else
+            out.texcoords.insert(out.texcoords.end(), {0.0f, 0.0f});
+        if (!in.surface_uvs.empty() && uv + 1 < in.surface_uvs.size())
+            out.surface_uvs.insert(out.surface_uvs.end(),
+                                   {in.surface_uvs[uv], in.surface_uvs[uv+1]});
+        if (!in.material_ids.empty() && idx < in.material_ids.size())
+            out.material_ids.push_back(in.material_ids[idx]);
+        if (!in.baked_ao.empty() && idx < in.baked_ao.size())
+            out.baked_ao.push_back(in.baked_ao[idx]);
     }
     return out;
 }
