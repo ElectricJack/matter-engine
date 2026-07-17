@@ -1,3 +1,20 @@
+# Flecs ECS Foundation SDD Progress Ledger
+Branch: codex/flecs-ecs-foundation | Plan: docs/superpowers/plans/2026-07-17-flecs-ecs-foundation.md
+BASE at start: 476a42b
+
+No tasks complete yet. Resume at Task 1.
+
+Environment gate:
+  - WSL is installed without a Linux distribution.
+  - No native make, GCC, Clang, or MinGW compiler is available on PATH.
+  - User explicitly authorized implementation to proceed with compiled gates left unverified.
+
+Pre-flight resolutions approved by user:
+  - Built-in Flecs ChildOf ownership governs: parent destruction cascade-deletes descendants unless explicitly detached/reparented first.
+  - Frame contribution is clamped before dropped-step calculation; drop coverage uses 0.25/0.01/max=2 => 2 run, 23 dropped.
+
+---
+
 # Phase 2 RT Lighting SDD Progress Ledger
 Branch: feature/rt-lighting-phase2 | Plan: docs/superpowers/plans/2026-07-12-rt-lighting-phase2.md
 BASE at start: da85bfd

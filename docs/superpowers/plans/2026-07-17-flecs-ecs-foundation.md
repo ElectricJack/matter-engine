@@ -358,7 +358,7 @@ Add tests covering:
 - `reparent(child, new_parent)` changes the result and dirties the subtree;
 - `clear_parent(child)` preserves the local transform and recomputes it as a root;
 - `reparent(root, grandchild)` returns `false` and leaves the hierarchy unchanged;
-- destroying a parent removes the `ChildOf` target and leaves descendants valid, dirty, and root-relative.
+- destroying a parent uses Flecs' built-in `ChildOf` ownership semantics and cascade-deletes its descendants; callers must explicitly detach or reparent children they intend to preserve.
 
 Use approximate float checks with an epsilon of `1e-5f`.
 
@@ -383,7 +383,7 @@ In `transform_system.cpp`:
 
 - [ ] **Step 5: Register dirty observers and propagation systems**
 
-Register observers that mark the affected subtree dirty on `OnSet<LocalTransform>` and on parent removal/destruction. Register transform propagation in both `FixedPostUpdate` and `FrameUpdate`; dirty tags prevent duplicate work when both phases run in one frame.
+Register observers that mark the affected subtree dirty on `OnSet<LocalTransform>` and explicit parent removal. Parent destruction follows Flecs' built-in `ChildOf` cascade-delete policy. Register transform propagation in both `FixedPostUpdate` and `FrameUpdate`; dirty tags prevent duplicate work when both phases run in one frame.
 
 Propagation rules:
 
@@ -461,7 +461,8 @@ Also test:
 
 - half a fixed step runs only `FrameUpdate`;
 - two accumulated steps run the six fixed phases twice, then frame once;
-- `frame_delta_seconds=1.0`, `fixed_delta_seconds=0.1`, `max_fixed_steps=2` runs two, reports eight dropped complete steps, and preserves no whole step;
+- `frame_delta_seconds=1.0`, `fixed_delta_seconds=0.1`, `max_fixed_steps=2` clamps the contribution to `0.25`, runs two, reports zero dropped steps, and preserves a `0.05` fractional remainder;
+- `frame_delta_seconds=0.25`, `fixed_delta_seconds=0.01`, `max_fixed_steps=2` runs two, reports 23 dropped complete steps, and preserves no whole step;
 - a later `0.05 + 0.05` pair proves fractional remainder preservation;
 - negative/NaN frame delta, zero/NaN fixed delta, and zero max steps report invalid and run no systems;
 - contributed frame time clamps to `0.25f`.
