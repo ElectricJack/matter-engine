@@ -63,6 +63,7 @@ private:
     std::optional<matter_stream::Config> intended_profile_;
     uint64_t profile_revision_ = 0;
     std::optional<AnchorSample> intended_anchor_;
+    uint64_t anchor_reset_revision_ = 0;
     uint64_t restart_revision_ = 0;
     std::vector<Acknowledgement> acknowledgement_inbox_;
     Snapshot published_snapshot_{};
@@ -73,6 +74,7 @@ private:
     uint64_t last_issuance_ = 0;
     uint64_t applied_attachment_revision_ = 0;
     uint64_t applied_profile_revision_ = 0;
+    uint64_t applied_anchor_reset_revision_ = 0;
     uint64_t applied_restart_revision_ = 0;
     std::optional<AnchorSample> worker_anchor_;
     std::unique_ptr<matter_stream::SectorStreamer> streamer_;

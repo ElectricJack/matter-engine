@@ -71,6 +71,57 @@ int main() {
               "detach synchronously clears authoritative intended owner");
     }
 
+    // A clear boundary is durable even when a newer anchor sample is coalesced
+    // before the worker observes either intent.
+    {
+        Coordinator coordinator;
+        auto profile = tiny_profile();
+        profile.rings = {{24.0f, 1}};
+        profile.max_inflight = 4;
+        coordinator.set_profile(&profile);
+        CHECK(coordinator.attach(kOwnerA),
+              "coalesced-clear test attaches owner");
+        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.worker_step();
+        const auto active = coordinator.snapshot();
+        auto old_requests = drain_requests(coordinator);
+        CHECK(active.status.generation != 0 && old_requests.size() >= 2,
+              "coalesced-clear test starts issued old-generation work");
+        coordinator.acknowledge(old_requests.front(), true);
+        coordinator.worker_step();
+        CHECK(coordinator.snapshot().status.resident_sectors == 1,
+              "coalesced-clear test establishes old-generation residency");
+
+        coordinator.clear_anchor(kOwnerA);
+        TaggedRequest invalidated{};
+        CHECK(!coordinator.next_request(invalidated),
+              "clear return blocks old-generation request allocation");
+        coordinator.acknowledge(old_requests.back(), true);
+        coordinator.submit_anchor(kOwnerA, 168.0f, 24.0f);
+        coordinator.worker_step();
+
+        const auto restarted = coordinator.snapshot();
+        CHECK(restarted.owner == kOwnerA &&
+                  restarted.status.state == SectorStreamingState::Active &&
+                  restarted.status.generation == active.status.generation + 1 &&
+                  restarted.status.resident_sectors == 0,
+              "coalesced restore starts clean next generation in one worker step");
+        const auto evictions = coordinator.take_evictions();
+        CHECK(evictions.size() == 1 &&
+                  evictions.front().owner == kOwnerA &&
+                  evictions.front().generation == active.status.generation,
+              "coalesced clear emits tagged old-generation eviction");
+        const auto fresh_requests = drain_requests(coordinator);
+        bool all_fresh = !fresh_requests.empty();
+        for (const auto& request : fresh_requests) {
+            all_fresh = all_fresh && request.owner == kOwnerA &&
+                        request.generation == restarted.status.generation;
+        }
+        CHECK(all_fresh && fresh_requests.front().sector.tx == 10 &&
+                  fresh_requests.front().sector.tz == 1,
+              "restored anchor drives only fresh-generation requests");
+    }
+
     // Profile and anchor intents do not stream without an attached owner.
     {
         Coordinator coordinator;

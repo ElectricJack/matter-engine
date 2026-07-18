@@ -220,3 +220,60 @@ Fresh physics and pure streamer regressions printed `ALL PASS` (streamer long
 flight `peak=7997 end=7993`). The Phase 2 static checker printed
 `PASS: Box3D Phase 2 build contract`, and `git diff --check` exited 0. GNU Make
 availability is unchanged and no GNU success is claimed.
+
+## Fix Round 2: Durable Coalesced Transform-Loss Invalidation
+
+### Root cause
+
+Fix round 1 represented transform readiness only as the latest optional anchor.
+If `clear_anchor(owner)` was followed by `submit_anchor(owner, ...)` before the
+worker copied its inbox, the optional contained a value again. The worker could
+not observe the intervening loss boundary, so it retained the old streamer,
+generation, and issued-request identity.
+
+### RED evidence
+
+The focused coordinator regression established resident and issued work, then ran
+the exact coalescing sequence: clear, attempt old-generation allocation, enqueue a
+late old-generation acknowledgement, restore at a new position, and execute one
+worker step. The unchanged implementation compiled and failed with:
+
+```text
+FAIL: clear return blocks old-generation request allocation
+FAIL: coalesced restore starts clean next generation in one worker step
+2 FAILURE(S)
+```
+
+The eviction and new-position request assertions already passed, isolating the
+defect to lifecycle identity: invalidation was not durable and the restored work
+kept the old generation.
+
+### Minimal fix
+
+- Added monotonic `anchor_reset_revision_` intent state and worker-owned
+  `applied_anchor_reset_revision_`.
+- `clear_anchor` advances the revision only for the current intended owner on a
+  present-to-missing anchor boundary, then clears the latest anchor value.
+- `next_request` rejects allocation immediately while the reset revision is
+  unapplied, matching attachment-revision invalidation safety.
+- `worker_step` copies the reset revision and clears the old streamer, issued
+  requests, generation, and residency whenever it advanced. It then applies the
+  latest optional anchor, so a restored position can create the next generation
+  in the same step without allowing an old acknowledgement to match.
+- Repeated missing-transform sampling while the anchor is already absent does not
+  create extra reset boundaries. The existing worker-observed missing-transform
+  regression remains `PendingTransform` with generation and residency zero.
+
+### GREEN evidence
+
+The fresh focused coordinator executable printed `ALL PASS`. The regression
+confirms the old resident eviction retains the old owner/generation tag, the late
+acknowledgement cannot contaminate residency, the generation increments exactly
+once, and requests at restored `(168,24)` are fresh-generation requests centered
+on sector `(10,1)`.
+
+Fresh full MSVC C17/C++17 verification also printed `ALL PASS` for the ECS Runtime,
+physics Runtime, coordinator, and pure streamer executables (streamer long flight
+`peak=7997 end=7993`). The Phase 2 checker printed
+`PASS: Box3D Phase 2 build contract`, and `git diff --check` exited 0. GNU Make
+remains unavailable and no GNU result is claimed.

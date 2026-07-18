@@ -55,8 +55,9 @@ void Coordinator::submit_anchor(flecs::entity_t owner, float x, float z) {
 
 void Coordinator::clear_anchor(flecs::entity_t owner) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (owner == 0 || intended_owner_ != owner) return;
+    if (owner == 0 || intended_owner_ != owner || !intended_anchor_) return;
     intended_anchor_.reset();
+    ++anchor_reset_revision_;
 }
 
 void Coordinator::detach(flecs::entity_t owner) {
@@ -141,6 +142,7 @@ void Coordinator::worker_step() {
     flecs::entity_t intended_owner = 0;
     uint64_t attachment_revision = 0;
     uint64_t profile_revision = 0;
+    uint64_t anchor_reset_revision = 0;
     uint64_t restart_revision = 0;
     std::optional<matter_stream::Config> profile;
     std::optional<AnchorSample> anchor;
@@ -150,6 +152,7 @@ void Coordinator::worker_step() {
         intended_owner = intended_owner_;
         attachment_revision = attachment_revision_;
         profile_revision = profile_revision_;
+        anchor_reset_revision = anchor_reset_revision_;
         restart_revision = restart_revision_;
         profile = intended_profile_;
         anchor = intended_anchor_;
@@ -160,17 +163,20 @@ void Coordinator::worker_step() {
     const bool attachment_changed =
         applied_attachment_revision_ != attachment_revision;
     const bool profile_changed = applied_profile_revision_ != profile_revision;
+    const bool anchor_reset_requested =
+        applied_anchor_reset_revision_ != anchor_reset_revision;
     const bool restart_requested = applied_restart_revision_ != restart_revision;
     const bool anchor_lost = worker_anchor_.has_value() && !anchor.has_value();
 
     if (owner_changed || attachment_changed || profile_changed ||
-        restart_requested || anchor_lost) {
+        anchor_reset_requested || restart_requested || anchor_lost) {
         clear_worker_streamer();
     }
     worker_owner_ = intended_owner;
     worker_anchor_ = anchor;
     applied_attachment_revision_ = attachment_revision;
     applied_profile_revision_ = profile_revision;
+    applied_anchor_reset_revision_ = anchor_reset_revision;
     applied_restart_revision_ = restart_revision;
 
     if (worker_owner_ != 0 && profile && worker_anchor_) {
@@ -209,7 +215,8 @@ void Coordinator::worker_step() {
 bool Coordinator::next_request(TaggedRequest& out) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!streamer_ || intended_owner_ != worker_owner_ ||
-        attachment_revision_ != applied_attachment_revision_) {
+        attachment_revision_ != applied_attachment_revision_ ||
+        anchor_reset_revision_ != applied_anchor_reset_revision_) {
         return false;
     }
     matter_stream::SectorRequest sector{};
