@@ -6,6 +6,7 @@
 #include <cassert>
 #include <chrono>
 #include <cstdio>
+#include <exception>
 #include <thread>
 
 namespace matter_async {
@@ -89,7 +90,15 @@ int GpuJobQueue::pump(double ms_budget) {
             job_err = "cancelled";
             ok = false;
         } else {
-            ok = p->job.fn(job_err);
+            try {
+                ok = p->job.fn(job_err);
+            } catch (const std::exception& exception) {
+                job_err = exception.what();
+                ok = false;
+            } catch (...) {
+                job_err = "unknown GPU job failure";
+                ok = false;
+            }
         }
         ++ran;
 

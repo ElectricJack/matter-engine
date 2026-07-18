@@ -201,3 +201,85 @@ The product TU emitted only the previously recorded C4996 `getenv` and C4244
 conversion warnings. GNU Make and the GPU-linked world-stream executable remain
 unavailable on this host, so the new world integration cases are compile-proven
 but not claimed executed here.
+
+## Fix Round 2: FIFO Ownership, Durable Completion, and Terminal Progress
+
+### RED Evidence
+
+The second review round first extended the focused coordinator tests. A fresh
+MSVC C++17 compile failed on the intended missing contracts:
+
+```text
+static assertion failed: publication reservation must contain allocation failure
+static assertion failed: publication acknowledgement must report durable enqueue failure
+static assertion failed: publication acknowledgement must not throw through the GPU pump
+error C2039: apply_tag / abandon_noexcept
+error C2661: PublicationTransaction: no overload takes 3 arguments
+error C2039: active / begin_clear / finish_clear / abort_clear
+```
+
+After the first transaction implementation, the focused executable produced a
+second behavioral RED:
+
+```text
+FAIL: scope teardown retries true ack without changing its intent
+```
+
+That regression prevented a failed true acknowledgement from being converted
+by destructor fallback into rollback plus false acknowledgement.
+
+### FIFO and Publication Completion
+
+Inline publication rollback now calls `PendingEvictionBatch::apply_tag` with
+only its own full tag. It never snapshots, applies, or retires the lifecycle
+FIFO retained by the worker. The queue-order regression leaves movement and
+detach tags in their original issuance order after an inline publication
+rollback completes.
+
+Every issued sector reserves one of 32 fixed session completion slots before
+bake. A successful bake transfers its transient artifact into that durable slot
+before job construction or posting. The app job constructs a non-allocating
+function-pointer `PublicationTransaction` before `begin_publication`; begin is
+`noexcept`, acknowledgement is `noexcept` and reports enqueue failure, and the
+slot retains orphan cleanup plus true/false acknowledgement state until a later
+app pump completes it. Completed rollback is not repeated while a failed false
+acknowledgement retries. A failed true acknowledgement retains commit intent,
+including during destructor fallback. The shared GPU queue pump now contains
+throwing jobs so later FIFO cleanup work still executes.
+
+### Bounded Reload and Shutdown
+
+Profile clear is provisional. A reload makes one eviction-barrier attempt; on
+persistent failure it restores the prior profile, retains the old field and app
+state, reports one stream error, and aborts replacement. There is no worker
+cleanup retry loop.
+
+Shutdown invalidates attachment and gives cancellation/FIFO work 64 bounded
+full-drain passes. Queue shutdown then releases any blocking waiter. After join,
+one no-throw whole-owner fallback best-effort releases every resident entry and
+orphan transient, then clears the sector ledger, completion slots, lifecycle
+batch, activation gate, and coordinator intent. Persistent release failure can
+therefore no longer keep session destruction in an unbounded loop.
+
+### Fresh Round-2 GREEN Evidence
+
+All of the following used the final round-two sources:
+
+```text
+phase3-task4-round2-coord.exe    -> ALL PASS
+phase3-task4-round2-async.exe    -> ALL PASS
+phase3-task4-round2-ecs.exe      -> ALL PASS
+phase3-task4-round2-physics.exe  -> ALL PASS
+phase3-task4-round2-streamer.exe -> long flight peak=7997 end=7993; ALL PASS
+matter_engine.cpp product MSVC TU -> exit 0
+world_stream_tests.cpp product MSVC TU -> exit 0
+Box3D Phase 2 build-contract checker -> PASS
+Task 4 lifecycle audit -> PASS
+git diff --check -> PASS
+```
+
+The product compile emitted only the existing MSVC C4996 warnings for `getenv`
+and C4244 double-to-float conversion warnings. GNU Make/WSL and a supported
+GPU-linked world-stream execution path remain unavailable on this Windows host;
+therefore the expanded persistent reload/shutdown world cases are compile-proven
+but are not claimed executed here.

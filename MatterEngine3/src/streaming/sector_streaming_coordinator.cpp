@@ -38,6 +38,14 @@ uint32_t snapshot_count(size_t count) {
     return static_cast<uint32_t>(std::min(count, maximum));
 }
 
+void set_error_noexcept(std::string& error, const char* message) noexcept {
+    try {
+        if (error.empty()) error = message;
+    } catch (...) {
+        // Error text is diagnostic only. Retaining ownership is the contract.
+    }
+}
+
 } // namespace
 
 void PendingEvictionBatch::append(std::vector<TaggedEviction> evictions) {
@@ -56,28 +64,63 @@ void PendingEvictionBatch::append(std::vector<TaggedEviction> evictions) {
 
 bool PendingEvictionBatch::apply(
     const Endpoint& endpoint,
-    std::string& error) {
-    std::vector<TaggedEviction> snapshot;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        snapshot = pending_;
-    }
-    if (snapshot.empty()) return true;
-    if (!endpoint(snapshot, error)) return false;
+    std::string& error) noexcept {
+    try {
+        std::vector<TaggedEviction> snapshot;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            snapshot = pending_;
+        }
+        if (snapshot.empty()) return true;
+        if (!endpoint(snapshot, error)) return false;
 
-    std::lock_guard<std::mutex> lock(mutex_);
-    pending_.erase(
-        std::remove_if(
-            pending_.begin(), pending_.end(),
-            [&](const TaggedEviction& current) {
-                return std::any_of(
-                    snapshot.begin(), snapshot.end(),
-                    [&](const TaggedEviction& applied) {
-                        return same_eviction(current, applied);
-                    });
-            }),
-        pending_.end());
-    return true;
+        std::lock_guard<std::mutex> lock(mutex_);
+        pending_.erase(
+            std::remove_if(
+                pending_.begin(), pending_.end(),
+                [&](const TaggedEviction& current) {
+                    return std::any_of(
+                        snapshot.begin(), snapshot.end(),
+                        [&](const TaggedEviction& applied) {
+                            return same_eviction(current, applied);
+                        });
+                }),
+            pending_.end());
+        return true;
+    } catch (const std::exception& exception) {
+        set_error_noexcept(error, exception.what());
+    } catch (...) {
+        set_error_noexcept(error, "unknown eviction batch failure");
+    }
+    return false;
+}
+
+bool PendingEvictionBatch::apply_tag(
+    const TaggedEviction& eviction,
+    const Endpoint& endpoint,
+    std::string& error) noexcept {
+    try {
+        // Inline publication ownership is deliberately disjoint from the
+        // lifecycle FIFO retained in pending_. Its durable completion slot
+        // owns this tag until the endpoint reports success.
+        const std::vector<TaggedEviction> snapshot{eviction};
+        return endpoint(snapshot, error);
+    } catch (const std::exception& exception) {
+        set_error_noexcept(error, exception.what());
+    } catch (...) {
+        set_error_noexcept(error, "unknown tagged eviction failure");
+    }
+    return false;
+}
+
+void PendingEvictionBatch::abandon_noexcept() noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(mutex_);
+        pending_.clear();
+    } catch (...) {
+        // Called only after the worker is joined. A valid mutex does not fail;
+        // the catch preserves the terminal no-throw boundary defensively.
+    }
 }
 
 bool PendingEvictionBatch::empty() const {
@@ -91,45 +134,44 @@ size_t PendingEvictionBatch::size() const {
 }
 
 PublicationTransaction::PublicationTransaction(
+    void* context,
     Rollback rollback,
-    Acknowledge acknowledge)
-    : rollback_(std::move(rollback)),
-      acknowledge_(std::move(acknowledge)) {}
+    Acknowledge acknowledge) noexcept
+    : context_(context),
+      rollback_(rollback),
+      acknowledge_(acknowledge) {}
 
-PublicationTransaction::~PublicationTransaction() {
+PublicationTransaction::~PublicationTransaction() noexcept {
     if (!active_) return;
-    std::string ignored;
-    fail(ignored);
+    if (publish_intent_) {
+        commit();
+    } else {
+        std::string ignored;
+        fail(ignored);
+    }
 }
 
-bool PublicationTransaction::fail(std::string& error) {
+bool PublicationTransaction::fail(std::string& error) noexcept {
     if (!active_) return true;
-    bool rolled_back = false;
-    try {
-        rolled_back = rollback_(error);
-    } catch (const std::exception& exception) {
-        if (error.empty()) error = exception.what();
-    } catch (...) {
-        if (error.empty()) error = "unknown publication rollback failure";
+    if (!rollback_complete_) {
+        if (rollback_ && !rollback_(context_, error)) return false;
+        rollback_complete_ = true;
     }
-
-    bool acknowledged = true;
-    try {
-        acknowledge_(false);
-    } catch (const std::exception& exception) {
-        acknowledged = false;
-        if (error.empty()) error = exception.what();
-    } catch (...) {
-        acknowledged = false;
-        if (error.empty()) error = "unknown publication acknowledgement failure";
-    }
+    if (acknowledge_ && !acknowledge_(context_, false)) return false;
     active_ = false;
-    return rolled_back && acknowledged;
+    return true;
 }
 
-void PublicationTransaction::commit() {
-    acknowledge_(true);
+bool PublicationTransaction::commit() noexcept {
+    if (!active_) return true;
+    publish_intent_ = true;
+    if (acknowledge_ && !acknowledge_(context_, true)) return false;
     active_ = false;
+    return true;
+}
+
+bool PublicationTransaction::active() const noexcept {
+    return active_;
 }
 
 bool Coordinator::attach(flecs::entity_t owner) {
@@ -190,9 +232,16 @@ void Coordinator::restart_if_attached() {
     if (intended_owner_ != 0) ++restart_revision_;
 }
 
-void Coordinator::acknowledge(const TaggedRequest& request, bool published) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    acknowledgement_inbox_.push_back(Acknowledgement{request, published});
+bool Coordinator::acknowledge(
+    const TaggedRequest& request,
+    bool published) noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(mutex_);
+        acknowledgement_inbox_.push_back(Acknowledgement{request, published});
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
 
 Snapshot Coordinator::snapshot() const {
@@ -414,22 +463,29 @@ bool Coordinator::next_request(TaggedRequest& out) {
     return true;
 }
 
-bool Coordinator::begin_publication(const TaggedRequest& request) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (published_snapshot_.owner != request.owner ||
-        published_snapshot_.status.state != SectorStreamingState::Active ||
-        published_snapshot_.status.generation != request.generation) {
+bool Coordinator::begin_publication(
+    const TaggedRequest& request) noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (published_snapshot_.owner != request.owner ||
+            published_snapshot_.status.state != SectorStreamingState::Active ||
+            published_snapshot_.status.generation != request.generation) {
+            return false;
+        }
+        const auto candidate = std::find_if(
+            publication_candidates_.begin(), publication_candidates_.end(),
+            [&](const TaggedRequest& current) {
+                return same_request(current, request);
+            });
+        if (candidate == publication_candidates_.end()) return false;
+        // Copy before erasing. If allocation fails, the request remains a
+        // publication candidate and the caller can durably acknowledge false.
+        publishing_requests_.push_back(*candidate);
+        publication_candidates_.erase(candidate);
+        return true;
+    } catch (...) {
         return false;
     }
-    const auto candidate = std::find_if(
-        publication_candidates_.begin(), publication_candidates_.end(),
-        [&](const TaggedRequest& current) {
-            return same_request(current, request);
-        });
-    if (candidate == publication_candidates_.end()) return false;
-    publishing_requests_.push_back(*candidate);
-    publication_candidates_.erase(candidate);
-    return true;
 }
 
 std::vector<TaggedEviction> Coordinator::take_evictions() {
@@ -438,20 +494,77 @@ std::vector<TaggedEviction> Coordinator::take_evictions() {
     return result;
 }
 
+void Coordinator::terminal_clear() noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(mutex_);
+        intended_owner_ = 0;
+        intended_profile_.reset();
+        intended_profile_error_ = SectorStreamingErrorCode::None;
+        intended_anchor_.reset();
+        acknowledgement_inbox_.clear();
+        published_snapshot_ = Snapshot{};
+        worker_owner_ = 0;
+        worker_generation_ = 0;
+        worker_anchor_.reset();
+        streamer_.reset();
+        issued_requests_.clear();
+        publication_candidates_.clear();
+        publishing_requests_.clear();
+        resident_requests_.clear();
+        pending_evictions_.clear();
+    } catch (...) {
+        // This runs only after worker ownership has ended. Clearing these
+        // trivial/value containers is non-allocating on all supported STLs.
+    }
+}
+
 void ProfileActivationGate::stage(const matter_stream::Config& profile) {
     staged_ = profile;
 }
 
 void ProfileActivationGate::fail(Coordinator& coordinator) {
     staged_.reset();
+    active_.reset();
+    clearing_ = false;
     coordinator.set_profile(nullptr);
 }
 
 bool ProfileActivationGate::publish(Coordinator& coordinator) {
     if (!staged_) return false;
-    coordinator.set_profile(&*staged_);
+    try {
+        coordinator.set_profile(&*staged_);
+        active_ = std::move(staged_);
+        staged_.reset();
+        clearing_ = false;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+void ProfileActivationGate::begin_clear(Coordinator& coordinator) {
     staged_.reset();
-    return true;
+    clearing_ = true;
+    coordinator.set_profile(nullptr);
+}
+
+void ProfileActivationGate::finish_clear() noexcept {
+    staged_.reset();
+    active_.reset();
+    clearing_ = false;
+}
+
+bool ProfileActivationGate::abort_clear(Coordinator& coordinator) {
+    if (!clearing_) return true;
+    try {
+        if (active_) coordinator.set_profile(&*active_);
+        else coordinator.set_profile(nullptr);
+        staged_.reset();
+        clearing_ = false;
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
 
 bool ProfileActivationGate::pending() const noexcept {

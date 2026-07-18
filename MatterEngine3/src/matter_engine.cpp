@@ -62,6 +62,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -164,6 +165,16 @@ streaming::detail::TaggedEviction publication_eviction(
         request.generation,
         request.issuance,
         {request.sector.tx, request.sector.tz, request.sector.rung}};
+}
+
+void record_streaming_error(
+    std::string& error,
+    const char* message) noexcept {
+    try {
+        if (error.empty()) error = message;
+    } catch (...) {
+        // Diagnostics are best-effort; retained ownership carries the failure.
+    }
 }
 } // anonymous namespace
 
@@ -336,6 +347,37 @@ struct WorldSession::Impl {
     streaming::detail::ProfileActivationGate streaming_profile_activation;
     streaming::detail::PendingEvictionBatch pending_sector_evictions;
 
+    // A request owns one fixed completion slot before sector bake begins.
+    // max_inflight is 16; twice that capacity leaves room for acknowledgements
+    // retained across a coordinator generation transition without allocating.
+    enum class PublicationCompletionState : uint8_t {
+        Free,
+        Reserved,
+        Posted,
+        Running,
+        Retry
+    };
+    struct PublicationCompletion {
+        Impl* owner = nullptr;
+        size_t index = 0;
+        PublicationCompletionState state = PublicationCompletionState::Free;
+        streaming::detail::TaggedRequest request{};
+        uint64_t part_hash = 0;
+        std::shared_ptr<viewer::LocalProvider> provider_ref;
+        bool transient_artifact = false;
+        bool ledger_inserted = false;
+        bool rollback_complete = false;
+        bool acknowledge_pending = false;
+        bool acknowledge_complete = false;
+        bool acknowledge_value = false;
+    };
+    static constexpr size_t kPublicationCompletionCapacity = 32;
+    static constexpr size_t kNoPublicationCompletion =
+        kPublicationCompletionCapacity;
+    std::mutex publication_completion_mutex;
+    std::array<PublicationCompletion, kPublicationCompletionCapacity>
+        publication_completions{};
+
     // Phase B: async bake GPU work queue + command queue + worker thread.
     matter_async::GpuJobQueue gpu_jobs;
     matter_async::CommandQueue commands;
@@ -383,11 +425,37 @@ struct WorldSession::Impl {
                        std::string& err);
     // Phase C Task 9: drain sector evictions — release resources for evicted sectors.
     // Called on the worker thread (within a gpu_jobs.run_blocking context or inline).
+    struct SectorEntry;
     bool drain_sector_evictions(bool require_empty, std::string& err);
-    bool clear_streaming_profile(std::string& err);
+    bool clear_streaming_profile(
+        std::string& err,
+        bool restore_on_failure = true);
     bool apply_sector_evictions(
         const std::vector<streaming::detail::TaggedEviction>& evictions,
         std::string& err);
+    bool release_sector_entry(SectorEntry& entry, std::string& err) noexcept;
+    size_t reserve_publication_completion(
+        const streaming::detail::TaggedRequest& request,
+        const std::shared_ptr<viewer::LocalProvider>& provider_ref) noexcept;
+    bool mark_publication_artifact(
+        size_t index,
+        uint64_t part_hash) noexcept;
+    void mark_publication_for_retry(
+        size_t index,
+        bool rollback_complete,
+        bool published) noexcept;
+    PublicationCompletion* start_publication_completion(size_t index) noexcept;
+    void settle_publication_completion(
+        PublicationCompletion& completion,
+        bool complete) noexcept;
+    static bool rollback_publication_completion(
+        void* opaque,
+        std::string& err) noexcept;
+    static bool acknowledge_publication_completion(
+        void* opaque,
+        bool published) noexcept;
+    bool retry_publication_completions(std::string& err) noexcept;
+    void terminal_streaming_teardown_noexcept() noexcept;
     void publish_streaming_snapshot();
 
     // Parameters for publish_pipeline — the genuine differences between the
@@ -571,23 +639,29 @@ void WorldSession::Impl::worker_loop() {
         std::atomic<bool>& exited;
         ~ExitMarker() { exited.store(true, std::memory_order_release); }
     } exit_marker{worker_exited};
-    auto clear_streaming_with_retry = [this](
-        const std::shared_ptr<matter_async::CancelToken>& token) {
-        for (;;) {
-            std::string clear_error;
-            if (clear_streaming_profile(clear_error)) return true;
-
-            Event event;
-            event.type = EventType::BakeError;
-            event.code = BakeErrorCode::GpuError;
-            event.phase = "stream";
-            event.message = clear_error.empty()
-                ? "streaming eviction barrier failed"
-                : clear_error;
-            emit_event(std::move(event));
-            if (token && token->is_cancelled()) return false;
-            std::this_thread::yield();
+    auto clear_streaming_once = [this](bool restore_on_failure) {
+        std::string clear_error;
+        bool cleared = false;
+        try {
+            cleared = clear_streaming_profile(
+                clear_error, restore_on_failure);
+        } catch (const std::exception& exception) {
+            record_streaming_error(clear_error, exception.what());
+        } catch (...) {
+            record_streaming_error(
+                clear_error, "unknown streaming eviction barrier failure");
         }
+        if (cleared) return true;
+
+        Event event;
+        event.type = EventType::BakeError;
+        event.code = BakeErrorCode::GpuError;
+        event.phase = "stream";
+        event.message = clear_error.empty()
+            ? "streaming eviction barrier failed"
+            : clear_error;
+        emit_event(std::move(event));
+        return false;
     };
     // Phase C Task 6: refine loop.
     // After a bake finishes (bake_active = false) and a RefineController is live,
@@ -615,7 +689,7 @@ void WorldSession::Impl::worker_loop() {
                 refine_ctrl.reset();
                 refine_provider.reset();
                 refine_pending_upgrades_.clear();
-                clear_streaming_with_retry(nullptr);
+                clear_streaming_once(/*restore_on_failure=*/false);
                 return;
             }
 
@@ -625,7 +699,7 @@ void WorldSession::Impl::worker_loop() {
                     refine_ctrl.reset();
                     refine_provider.reset();
                     refine_pending_upgrades_.clear();
-                    clear_streaming_with_retry(nullptr);
+                    clear_streaming_once(/*restore_on_failure=*/false);
                     return;
                 }
                 // BakeAll/Reload: reset refine controller (will be rebuilt post-publish).
@@ -634,7 +708,7 @@ void WorldSession::Impl::worker_loop() {
                     refine_ctrl.reset();
                     refine_provider.reset();
                     refine_pending_upgrades_.clear();
-                    if (!clear_streaming_with_retry(cmd.token)) {
+                    if (!clear_streaming_once(/*restore_on_failure=*/true)) {
                         continue;
                     }
                     // The old profile has been cleared and every tagged app
@@ -2181,6 +2255,73 @@ bool WorldSession::Impl::install_world(
 // releases transient artifacts. Posts a blocking GL job to ensure all state
 // mutations happen on the GL thread. Called on the worker thread.
 // ---------------------------------------------------------------------------
+bool WorldSession::Impl::release_sector_entry(
+    SectorEntry& entry,
+    std::string& err) noexcept {
+    bool ok = true;
+    try {
+        if (cfg.test_fault_hook) cfg.test_fault_hook(-2);
+    } catch (const std::exception& exception) {
+        record_streaming_error(err, exception.what());
+        return false;
+    } catch (...) {
+        record_streaming_error(err, "unknown injected sector eviction failure");
+        return false;
+    }
+
+    auto release_attempt = [&](bool& attempted, auto&& release) {
+        if (!attempted) return;
+        try {
+            release();
+            attempted = false;
+        } catch (const std::exception& exception) {
+            ok = false;
+            record_streaming_error(err, exception.what());
+        } catch (...) {
+            ok = false;
+            record_streaming_error(err, "unknown sector eviction failure");
+        }
+    };
+
+    release_attempt(
+        entry.resources.world_state_attempted,
+        [&] {
+            viewer::WorldDelta delta;
+            delta.removed.push_back(entry.instance_id);
+            state.apply(delta);
+            tracer_dirty = true;
+            tracer.reset();
+        });
+
+#ifndef MATTER_VULKAN_ONLY
+    release_attempt(entry.resources.culler_attempted, [&] {
+        if (culler_ready) gpu_culler.release_part(entry.part_hash);
+    });
+#endif
+#ifdef MATTER_VULKAN_VIEWER
+    release_attempt(entry.resources.vulkan_attempted, [&] {
+        if (vk_scene) vk_scene->release_part(entry.part_hash);
+        vk_instance_cache.invalidate();
+        vk_temporal.invalidate();
+    });
+#endif
+    release_attempt(entry.resources.store_attempted, [&] {
+        if (store) store->release(entry.part_hash);
+    });
+    release_attempt(entry.resources.transient_artifact, [&] {
+        if (entry.provider_ref) {
+            entry.provider_ref->release_transient(entry.part_hash);
+        }
+    });
+
+    return ok &&
+        !entry.resources.world_state_attempted &&
+        !entry.resources.culler_attempted &&
+        !entry.resources.vulkan_attempted &&
+        !entry.resources.store_attempted &&
+        !entry.resources.transient_artifact;
+}
+
 bool WorldSession::Impl::apply_sector_evictions(
     const std::vector<streaming::detail::TaggedEviction>& evictions,
     std::string& err) {
@@ -2199,65 +2340,246 @@ bool WorldSession::Impl::apply_sector_evictions(
             continue;
         }
 
-        SectorEntry& entry = found->second;
-        bool entry_ok = true;
-        auto release_attempt = [&](bool& attempted, auto&& release) {
-            if (!attempted) return;
-            try {
-                release();
-                attempted = false;
-            } catch (const std::exception& exception) {
-                entry_ok = false;
-                if (err.empty()) err = exception.what();
-            } catch (...) {
-                entry_ok = false;
-                if (err.empty()) err = "unknown sector eviction failure";
-            }
-        };
-
-        release_attempt(
-            entry.resources.world_state_attempted,
-            [&] {
-                viewer::WorldDelta delta;
-                delta.removed.push_back(entry.instance_id);
-                state.apply(delta);
-                tracer_dirty = true;
-                tracer.reset();
-            });
-
-#ifndef MATTER_VULKAN_ONLY
-        release_attempt(entry.resources.culler_attempted, [&] {
-            if (culler_ready) gpu_culler.release_part(entry.part_hash);
-        });
-#endif
-#ifdef MATTER_VULKAN_VIEWER
-        release_attempt(entry.resources.vulkan_attempted, [&] {
-            if (vk_scene) vk_scene->release_part(entry.part_hash);
-            vk_instance_cache.invalidate();
-            vk_temporal.invalidate();
-        });
-#endif
-        release_attempt(entry.resources.store_attempted, [&] {
-            if (store) store->release(entry.part_hash);
-        });
-        release_attempt(entry.resources.transient_artifact, [&] {
-            if (entry.provider_ref) {
-                entry.provider_ref->release_transient(entry.part_hash);
-            }
-        });
-
-        if (entry_ok &&
-            !entry.resources.world_state_attempted &&
-            !entry.resources.culler_attempted &&
-            !entry.resources.vulkan_attempted &&
-            !entry.resources.store_attempted &&
-            !entry.resources.transient_artifact) {
+        if (release_sector_entry(found->second, err)) {
             sector_map.erase(found);
         } else {
             ok = false;
         }
     }
     return ok;
+}
+
+size_t WorldSession::Impl::reserve_publication_completion(
+    const streaming::detail::TaggedRequest& request,
+    const std::shared_ptr<viewer::LocalProvider>& provider_ref) noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(publication_completion_mutex);
+        for (size_t index = 0; index < publication_completions.size(); ++index) {
+            PublicationCompletion& completion = publication_completions[index];
+            if (completion.state != PublicationCompletionState::Free) continue;
+            completion.owner = this;
+            completion.index = index;
+            completion.state = PublicationCompletionState::Reserved;
+            completion.request = request;
+            completion.part_hash = 0;
+            completion.provider_ref = provider_ref;
+            completion.transient_artifact = false;
+            completion.ledger_inserted = false;
+            completion.rollback_complete = false;
+            completion.acknowledge_pending = false;
+            completion.acknowledge_complete = false;
+            completion.acknowledge_value = false;
+            return index;
+        }
+    } catch (...) {
+    }
+    return kNoPublicationCompletion;
+}
+
+bool WorldSession::Impl::mark_publication_artifact(
+    size_t index,
+    uint64_t part_hash) noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(publication_completion_mutex);
+        if (index >= publication_completions.size()) return false;
+        PublicationCompletion& completion = publication_completions[index];
+        if (completion.state != PublicationCompletionState::Reserved) {
+            return false;
+        }
+        completion.part_hash = part_hash;
+        completion.transient_artifact = true;
+        completion.state = PublicationCompletionState::Posted;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+void WorldSession::Impl::mark_publication_for_retry(
+    size_t index,
+    bool rollback_complete,
+    bool published) noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(publication_completion_mutex);
+        if (index >= publication_completions.size()) return;
+        PublicationCompletion& completion = publication_completions[index];
+        if (completion.state == PublicationCompletionState::Free) return;
+        completion.rollback_complete = rollback_complete;
+        completion.acknowledge_pending = true;
+        completion.acknowledge_complete = false;
+        completion.acknowledge_value = published;
+        completion.state = PublicationCompletionState::Retry;
+    } catch (...) {
+    }
+}
+
+WorldSession::Impl::PublicationCompletion*
+WorldSession::Impl::start_publication_completion(size_t index) noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(publication_completion_mutex);
+        if (index >= publication_completions.size()) return nullptr;
+        PublicationCompletion& completion = publication_completions[index];
+        if (completion.state != PublicationCompletionState::Posted) {
+            return nullptr;
+        }
+        completion.state = PublicationCompletionState::Running;
+        return &completion;
+    } catch (...) {
+        return nullptr;
+    }
+}
+
+void WorldSession::Impl::settle_publication_completion(
+    PublicationCompletion& completion,
+    bool complete) noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(publication_completion_mutex);
+        if (!complete) {
+            completion.state = PublicationCompletionState::Retry;
+            return;
+        }
+        completion.provider_ref.reset();
+        completion.state = PublicationCompletionState::Free;
+        completion.part_hash = 0;
+        completion.transient_artifact = false;
+        completion.ledger_inserted = false;
+        completion.rollback_complete = false;
+        completion.acknowledge_pending = false;
+        completion.acknowledge_complete = false;
+        completion.acknowledge_value = false;
+    } catch (...) {
+    }
+}
+
+bool WorldSession::Impl::rollback_publication_completion(
+    void* opaque,
+    std::string& err) noexcept {
+    try {
+        auto& completion = *static_cast<PublicationCompletion*>(opaque);
+        if (completion.rollback_complete) return true;
+        Impl& owner = *completion.owner;
+        if (completion.ledger_inserted) {
+            const bool released = owner.pending_sector_evictions.apply_tag(
+                publication_eviction(completion.request),
+                [&owner](
+                    const std::vector<streaming::detail::TaggedEviction>& evictions,
+                    std::string& endpoint_error) {
+                    return owner.apply_sector_evictions(evictions, endpoint_error);
+                },
+                err);
+            if (!released) return false;
+            completion.ledger_inserted = false;
+            completion.rollback_complete = true;
+            return true;
+        }
+
+        if (completion.transient_artifact && completion.provider_ref) {
+            completion.provider_ref->release_transient(completion.part_hash);
+            completion.transient_artifact = false;
+        }
+        completion.rollback_complete = true;
+        return true;
+    } catch (const std::exception& exception) {
+        record_streaming_error(err, exception.what());
+    } catch (...) {
+        record_streaming_error(
+            err, "unknown transient publication rollback failure");
+    }
+    return false;
+}
+
+bool WorldSession::Impl::acknowledge_publication_completion(
+    void* opaque,
+    bool published) noexcept {
+    auto& completion = *static_cast<PublicationCompletion*>(opaque);
+    completion.acknowledge_pending = true;
+    completion.acknowledge_complete = false;
+    completion.acknowledge_value = published;
+    if (!completion.owner->ecs_runtime.streaming_coordinator().acknowledge(
+            completion.request, published)) {
+        return false;
+    }
+    completion.acknowledge_pending = false;
+    completion.acknowledge_complete = true;
+    return true;
+}
+
+bool WorldSession::Impl::retry_publication_completions(
+    std::string& err) noexcept {
+    bool complete = true;
+    try {
+        std::lock_guard<std::mutex> lock(publication_completion_mutex);
+        for (PublicationCompletion& completion : publication_completions) {
+            if (completion.state != PublicationCompletionState::Retry) continue;
+            bool slot_complete = false;
+            if (completion.acknowledge_value) {
+                if (!completion.acknowledge_complete) {
+                    acknowledge_publication_completion(&completion, true);
+                }
+                slot_complete = completion.acknowledge_complete;
+            } else {
+                if (!completion.rollback_complete) {
+                    rollback_publication_completion(&completion, err);
+                }
+                if (completion.rollback_complete &&
+                    !completion.acknowledge_complete) {
+                    acknowledge_publication_completion(&completion, false);
+                }
+                slot_complete = completion.rollback_complete &&
+                    completion.acknowledge_complete;
+            }
+            if (slot_complete) {
+                completion.provider_ref.reset();
+                completion.state = PublicationCompletionState::Free;
+                completion.part_hash = 0;
+                completion.transient_artifact = false;
+                completion.ledger_inserted = false;
+                completion.rollback_complete = false;
+                completion.acknowledge_pending = false;
+                completion.acknowledge_complete = false;
+                completion.acknowledge_value = false;
+            } else {
+                complete = false;
+            }
+        }
+    } catch (...) {
+        record_streaming_error(err, "publication completion retry failed");
+        return false;
+    }
+    return complete;
+}
+
+void WorldSession::Impl::terminal_streaming_teardown_noexcept() noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(publication_completion_mutex);
+        for (PublicationCompletion& completion : publication_completions) {
+            if (completion.state == PublicationCompletionState::Free) continue;
+            if (completion.transient_artifact && completion.provider_ref) {
+                try {
+                    completion.provider_ref->release_transient(
+                        completion.part_hash);
+                } catch (...) {
+                }
+            }
+            completion.provider_ref.reset();
+            completion.state = PublicationCompletionState::Free;
+            completion.transient_artifact = false;
+            completion.ledger_inserted = false;
+            completion.rollback_complete = false;
+            completion.acknowledge_pending = false;
+            completion.acknowledge_complete = false;
+        }
+    } catch (...) {
+    }
+
+    std::string ignored;
+    for (auto& pair : sector_map) {
+        release_sector_entry(pair.second, ignored);
+    }
+    sector_map.clear();
+    pending_sector_evictions.abandon_noexcept();
+    streaming_profile_activation.finish_clear();
+    ecs_runtime.streaming_coordinator().terminal_clear();
 }
 
 bool WorldSession::Impl::drain_sector_evictions(
@@ -2295,18 +2617,46 @@ bool WorldSession::Impl::drain_sector_evictions(
         return !require_empty || endpoint(empty, err);
     }
 
-    do {
-        if (!pending_sector_evictions.apply(endpoint, err)) return false;
-    } while (require_empty && !pending_sector_evictions.empty());
-    return true;
+    if (!pending_sector_evictions.apply(endpoint, err)) return false;
+    return !require_empty || pending_sector_evictions.empty();
 }
 
 bool WorldSession::Impl::clear_streaming_profile(
-    std::string& err) {
+    std::string& err,
+    bool restore_on_failure) {
     auto& coordinator = ecs_runtime.streaming_coordinator();
-    streaming_profile_activation.fail(coordinator);
-    coordinator.worker_step();
-    return drain_sector_evictions(/*require_empty=*/true, err);
+    bool cleared = false;
+    try {
+        streaming_profile_activation.begin_clear(coordinator);
+        coordinator.worker_step();
+        cleared = drain_sector_evictions(/*require_empty=*/true, err);
+    } catch (const std::exception& exception) {
+        record_streaming_error(err, exception.what());
+    } catch (...) {
+        record_streaming_error(err, "unknown streaming profile clear failure");
+    }
+    if (cleared) {
+        streaming_profile_activation.finish_clear();
+        return true;
+    }
+
+    if (restore_on_failure) {
+        try {
+            if (!streaming_profile_activation.abort_clear(coordinator)) {
+                record_streaming_error(
+                    err, "failed to restore prior streaming profile");
+            }
+            coordinator.worker_step();
+        } catch (const std::exception& exception) {
+            record_streaming_error(err, exception.what());
+        } catch (...) {
+            record_streaming_error(
+                err, "unknown prior streaming profile restore failure");
+        }
+    } else {
+        streaming_profile_activation.finish_clear();
+    }
+    return false;
 }
 
 void WorldSession::Impl::publish_streaming_snapshot() {
@@ -2383,16 +2733,57 @@ void WorldSession::Impl::execute_sector_stream_step() {
 
         script_host::ScriptHost bake_host;
         bake_host.set_shared_lib_root(cfg.shared_lib_dir);
-        auto br = bake_host.bake_source(
-            world_sector_source, sector_params, opts,
-            sector_child_hashes.data(), sector_child_hashes.size(),
-            sector_child_modules.data(), sector_child_params.data());
+        const auto provider_ref = provider;
+        const size_t completion_index = reserve_publication_completion(
+            request, provider_ref);
+        if (completion_index == kNoPublicationCompletion) {
+            coordinator.acknowledge(request, false);
+            Event ev;
+            ev.type = EventType::BakeError;
+            ev.code = BakeErrorCode::GpuError;
+            ev.phase = "stream";
+            ev.message = "sector publication completion capacity exhausted";
+            emit_event(std::move(ev));
+            break;
+        }
+
+        script_host::BakeResult br;
+        try {
+            br = bake_host.bake_source(
+                world_sector_source, sector_params, opts,
+                sector_child_hashes.data(), sector_child_hashes.size(),
+                sector_child_modules.data(), sector_child_params.data());
+        } catch (const std::exception& exception) {
+            mark_publication_for_retry(
+                completion_index, /*rollback_complete=*/true,
+                /*published=*/false);
+            Event ev;
+            ev.type = EventType::BakeError;
+            ev.code = BakeErrorCode::ScriptError;
+            ev.phase = "stream";
+            ev.message = exception.what();
+            emit_event(std::move(ev));
+            continue;
+        } catch (...) {
+            mark_publication_for_retry(
+                completion_index, /*rollback_complete=*/true,
+                /*published=*/false);
+            Event ev;
+            ev.type = EventType::BakeError;
+            ev.code = BakeErrorCode::ScriptError;
+            ev.phase = "stream";
+            ev.message = "unknown sector bake failure";
+            emit_event(std::move(ev));
+            continue;
+        }
 
         if (!br.error.ok) {
             fprintf(stderr, "[stream] sector bake failed (%lld,%lld r%d): %s\n",
                     (long long)req.tx, (long long)req.tz, req.rung,
                     br.error.message.c_str());
-            coordinator.acknowledge(request, false);
+            mark_publication_for_retry(
+                completion_index, /*rollback_complete=*/true,
+                /*published=*/false);
 
             Event ev;
             ev.type    = EventType::BakeError;
@@ -2403,212 +2794,208 @@ void WorldSession::Impl::execute_sector_stream_step() {
             continue;
         }
 
-        uint64_t sector_hash = br.resolved_hash;
+        const uint64_t sector_hash = br.resolved_hash;
+        if (!mark_publication_artifact(completion_index, sector_hash)) {
+            mark_publication_for_retry(
+                completion_index, /*rollback_complete=*/false,
+                /*published=*/false);
+            Event ev;
+            ev.type = EventType::BakeError;
+            ev.code = BakeErrorCode::GpuError;
+            ev.phase = "stream";
+            ev.message = "sector publication artifact retention failed";
+            emit_event(std::move(ev));
+            continue;
+        }
 
         // 4. GL publish job: add this sector to the world.
         const float sector_size = world_sector_size;
-        const auto provider_ref = provider;
-        matter_async::GpuJob publish_job;
-        publish_job.name = "stream.publish";
-        publish_job.fn = [this, request, sector_hash, sector_size, provider_ref](
-                             std::string&) -> bool {
-            matter_async::assert_gl_thread("stream.publish");
+        try {
+            matter_async::GpuJob publish_job;
+            publish_job.name = "stream.publish";
+            publish_job.fn =
+                [this, request, sector_hash, sector_size, provider_ref,
+                 completion_index](std::string&) noexcept -> bool {
+                matter_async::assert_gl_thread("stream.publish");
+                PublicationCompletion* completion =
+                    start_publication_completion(completion_index);
+                if (!completion) return true;
 
-            auto& app_coordinator = ecs_runtime.streaming_coordinator();
-            const SectorKey key{
-                request.sector.tx,
-                request.sector.tz,
-                request.sector.rung};
-            bool ledger_inserted = false;
-            bool orphan_transient = true;
-            auto rollback = [this, request, sector_hash, provider_ref,
-                             &ledger_inserted, &orphan_transient](
-                                std::string& rollback_error) {
-                if (!ledger_inserted) {
-                    if (!orphan_transient || !provider_ref) return true;
+                // This guard is a fixed pointer-sized scope and exists before
+                // reservation or any app/GPU publication mutation.
+                streaming::detail::PublicationTransaction transaction(
+                    completion,
+                    &WorldSession::Impl::rollback_publication_completion,
+                    &WorldSession::Impl::acknowledge_publication_completion);
+
+                auto emit_publication_error =
+                    [this](const char* message,
+                           const std::string& detail) noexcept {
                     try {
-                        provider_ref->release_transient(sector_hash);
-                        orphan_transient = false;
-                        return true;
-                    } catch (const std::exception& exception) {
-                        rollback_error = exception.what();
-                        return false;
+                        Event event;
+                        event.type = EventType::BakeError;
+                        event.code = BakeErrorCode::GpuError;
+                        event.phase = "stream";
+                        event.message = message;
+                        if (!detail.empty()) {
+                            event.message += ": cleanup pending: ";
+                            event.message += detail;
+                        }
+                        emit_event(std::move(event));
                     } catch (...) {
-                        rollback_error =
-                            "unknown transient publication rollback failure";
-                        return false;
                     }
-                }
+                };
+                auto fail_publication =
+                    [&](const char* message) noexcept {
+                    std::string rollback_error;
+                    const bool complete = transaction.fail(rollback_error);
+                    settle_publication_completion(*completion, complete);
+                    emit_publication_error(message, rollback_error);
+                    return true;
+                };
 
-                pending_sector_evictions.append(
-                    {publication_eviction(request)});
-                return pending_sector_evictions.apply(
-                    [this](
-                        const std::vector<streaming::detail::TaggedEviction>&
-                            evictions,
-                        std::string& endpoint_error) {
-                        return apply_sector_evictions(evictions, endpoint_error);
-                    },
-                    rollback_error);
-            };
-            auto acknowledge = [&app_coordinator, request](bool published) {
-                app_coordinator.acknowledge(request, published);
-            };
-
-            if (!app_coordinator.begin_publication(request)) {
-                std::string release_error;
-                try {
-                    if (provider_ref) {
-                        provider_ref->release_transient(sector_hash);
-                    }
-                } catch (const std::exception& exception) {
-                    release_error = exception.what();
-                } catch (...) {
-                    release_error =
-                        "unknown stale publication transient release failure";
-                }
-                try {
-                    app_coordinator.acknowledge(request, false);
-                } catch (const std::exception& exception) {
-                    if (release_error.empty()) release_error = exception.what();
-                } catch (...) {
-                    if (release_error.empty()) {
-                        release_error =
-                            "unknown stale publication acknowledgement failure";
-                    }
-                }
-                if (!release_error.empty()) {
-                    Event event;
-                    event.type = EventType::BakeError;
-                    event.code = BakeErrorCode::GpuError;
-                    event.phase = "stream";
-                    event.message = release_error;
-                    emit_event(std::move(event));
-                }
-                return true;
-            }
-
-            streaming::detail::PublicationTransaction transaction(
-                std::move(rollback), std::move(acknowledge));
-            auto emit_publication_error = [this](const std::string& message) {
-                Event event;
-                event.type = EventType::BakeError;
-                event.code = BakeErrorCode::GpuError;
-                event.phase = "stream";
-                event.message = message;
-                emit_event(std::move(event));
-            };
-            auto fail_publication = [&](const std::string& message) {
-                std::string rollback_error;
-                const bool rollback_ok = transaction.fail(rollback_error);
-                std::string full_message = message;
-                if (!rollback_ok && !rollback_error.empty()) {
-                    full_message += ": rollback pending: " + rollback_error;
-                }
-                emit_publication_error(full_message);
-                return true;
-            };
-
-            try {
-                // Reject a stale same-tuple publication before PartStore can
-                // load or release content owned by the newer app resident.
-                if (sector_map.find(key) != sector_map.end()) {
+                auto& app_coordinator = ecs_runtime.streaming_coordinator();
+                if (!app_coordinator.begin_publication(request)) {
                     return fail_publication(
-                        "stale sector publication collided with app residency");
-                }
-                if (!store) {
-                    return fail_publication("sector PartStore is unavailable");
+                        "sector publication reservation failed");
                 }
 
-                SectorEntry entry;
-                entry.request = request;
-                entry.instance_id = sector_next_id++;
-                entry.part_hash = sector_hash;
-                entry.provider_ref = provider_ref;
-                entry.resources.transient_artifact = true;
-                auto inserted = sector_map.emplace(key, std::move(entry));
-                if (!inserted.second) {
-                    return fail_publication(
-                        "sector publication ledger insertion failed");
-                }
-                ledger_inserted = true;
-                orphan_transient = false;
-                SectorEntry& published = inserted.first->second;
+                try {
+                    const SectorKey key{
+                        request.sector.tx,
+                        request.sector.tz,
+                        request.sector.rung};
+                    // Reject a stale same-tuple publication before PartStore can
+                    // load or release content owned by the newer app resident.
+                    if (sector_map.find(key) != sector_map.end()) {
+                        return fail_publication(
+                            "stale sector publication collided with app residency");
+                    }
+                    if (!store) {
+                        return fail_publication(
+                            "sector PartStore is unavailable");
+                    }
 
-                // Mark every external call before attempting it. The release
-                // side is safe for a partial attempt and clears the bit only
-                // after cleanup returns successfully.
-                published.resources.store_attempted = true;
-                const viewer::LoadedPart* loaded =
-                    store->get_or_load(sector_hash);
-                if (!loaded) {
-                    return fail_publication("sector PartStore load failed");
-                }
+                    SectorEntry entry;
+                    entry.request = request;
+                    entry.instance_id = sector_next_id++;
+                    entry.part_hash = sector_hash;
+                    entry.provider_ref = provider_ref;
+                    entry.resources.transient_artifact = true;
+                    auto inserted = sector_map.emplace(key, std::move(entry));
+                    if (!inserted.second) {
+                        return fail_publication(
+                            "sector publication ledger insertion failed");
+                    }
+                    completion->ledger_inserted = true;
+                    completion->transient_artifact = false;
+                    SectorEntry& published = inserted.first->second;
 
-                viewer::WorldManifestEntry instance;
-                instance.instance_id = published.instance_id;
-                instance.part_hash = sector_hash;
-                instance.module = "WorldSector";
-                std::memset(instance.transform, 0, sizeof(instance.transform));
-                instance.transform[0] = 1.0f;
-                instance.transform[5] = 1.0f;
-                instance.transform[10] = 1.0f;
-                instance.transform[15] = 1.0f;
-                instance.transform[3] =
-                    static_cast<float>(request.sector.tx) * sector_size;
-                instance.transform[11] =
-                    static_cast<float>(request.sector.tz) * sector_size;
+                    // Mark every external call before attempting it. The release
+                    // side is safe for a partial attempt and clears the bit only
+                    // after cleanup returns successfully.
+                    published.resources.store_attempted = true;
+                    const viewer::LoadedPart* loaded =
+                        store->get_or_load(sector_hash);
+                    if (!loaded) {
+                        return fail_publication(
+                            "sector PartStore load failed");
+                    }
 
-                viewer::WorldDelta delta;
-                delta.added.push_back(instance);
-                published.resources.world_state_attempted = true;
-                state.apply(delta);
-                tracer_dirty = true;
-                tracer.reset();
+                    viewer::WorldManifestEntry instance;
+                    instance.instance_id = published.instance_id;
+                    instance.part_hash = sector_hash;
+                    instance.module = "WorldSector";
+                    std::memset(
+                        instance.transform, 0, sizeof(instance.transform));
+                    instance.transform[0] = 1.0f;
+                    instance.transform[5] = 1.0f;
+                    instance.transform[10] = 1.0f;
+                    instance.transform[15] = 1.0f;
+                    instance.transform[3] =
+                        static_cast<float>(request.sector.tx) * sector_size;
+                    instance.transform[11] =
+                        static_cast<float>(request.sector.tz) * sector_size;
+
+                    viewer::WorldDelta delta;
+                    delta.added.push_back(instance);
+                    published.resources.world_state_attempted = true;
+                    state.apply(delta);
+                    tracer_dirty = true;
+                    tracer.reset();
 
 #ifndef MATTER_VULKAN_ONLY
-                if (culler_ready) {
-                    published.resources.culler_attempted = true;
-                    if (gpu_culler.ensure_part(sector_hash, *store) < 0) {
-                        throw std::runtime_error(
-                            "sector GPU culler registration failed");
+                    if (culler_ready) {
+                        published.resources.culler_attempted = true;
+                        if (gpu_culler.ensure_part(sector_hash, *store) < 0) {
+                            throw std::runtime_error(
+                                "sector GPU culler registration failed");
+                        }
                     }
-                }
 #endif
 #ifdef MATTER_VULKAN_VIEWER
-                if (vk_scene) {
-                    published.resources.vulkan_attempted = true;
-                    bool drawable = false;
-                    std::string vulkan_error;
-                    if (!ensure_vulkan_part(
-                            *vk_scene, sector_hash, *loaded,
-                            drawable, vulkan_error)) {
-                        throw std::runtime_error(
-                            vulkan_error.empty()
-                                ? "sector Vulkan registration failed"
-                                : vulkan_error);
+                    if (vk_scene) {
+                        published.resources.vulkan_attempted = true;
+                        bool drawable = false;
+                        std::string vulkan_error;
+                        if (!ensure_vulkan_part(
+                                *vk_scene, sector_hash, *loaded,
+                                drawable, vulkan_error)) {
+                            throw std::runtime_error(
+                                vulkan_error.empty()
+                                    ? "sector Vulkan registration failed"
+                                    : vulkan_error);
+                        }
                     }
-                }
-                vk_instance_cache.invalidate();
-                vk_temporal.invalidate();
+                    vk_instance_cache.invalidate();
+                    vk_temporal.invalidate();
 #endif
 #ifndef MATTER_VULKAN_ONLY
-                if (composer) {
-                    const size_t capacity = state.entries().size() + 16;
-                    composer =
-                        std::make_unique<viewer::WorldComposer>(*store, capacity);
-                }
+                    if (composer) {
+                        const size_t capacity = state.entries().size() + 16;
+                        composer = std::make_unique<viewer::WorldComposer>(
+                            *store, capacity);
+                    }
 #endif
-                published.resident = true;
-                transaction.commit();
-                return true;
-            } catch (const std::exception& exception) {
-                return fail_publication(exception.what());
-            } catch (...) {
-                return fail_publication("unknown sector publication failure");
-            }
-        };
-        gpu_jobs.post(std::move(publish_job));
+                    published.resident = true;
+                    const bool committed = transaction.commit();
+                    settle_publication_completion(*completion, committed);
+                    if (!committed) {
+                        static const std::string no_detail;
+                        emit_publication_error(
+                            "sector publication acknowledgement pending",
+                            no_detail);
+                    }
+                    return true;
+                } catch (const std::exception& exception) {
+                    return fail_publication(exception.what());
+                } catch (...) {
+                    return fail_publication(
+                        "unknown sector publication failure");
+                }
+            };
+            gpu_jobs.post(std::move(publish_job));
+        } catch (const std::exception& exception) {
+            mark_publication_for_retry(
+                completion_index, /*rollback_complete=*/false,
+                /*published=*/false);
+            Event event;
+            event.type = EventType::BakeError;
+            event.code = BakeErrorCode::GpuError;
+            event.phase = "stream";
+            event.message = exception.what();
+            emit_event(std::move(event));
+        } catch (...) {
+            mark_publication_for_retry(
+                completion_index, /*rollback_complete=*/false,
+                /*published=*/false);
+            Event event;
+            event.type = EventType::BakeError;
+            event.code = BakeErrorCode::GpuError;
+            event.phase = "stream";
+            event.message = "unknown sector publication post failure";
+            emit_event(std::move(event));
+        }
     }
 
     // Process acknowledgements that arrived while baking/posting and publish a
@@ -3018,39 +3405,38 @@ WorldSession::~WorldSession() {
     if (owner != 0) coordinator.detach(owner);
     impl_->commands.shut_down();
 
-    // Keep the app/GPU owner pumping while cancellation unwinds any blocking
-    // job. Worker exit means its FIFO shutdown evictions have been posted.
+    // Give cancellation and FIFO clear a fixed number of full queue drains.
+    // If the worker is still blocked, queue shutdown releases run_blocking;
+    // terminal whole-owner teardown below does not depend on endpoint success.
+    bool gpu_queue_shutdown = false;
     if (impl_->worker.joinable()) {
-        while (!impl_->worker_exited.load(std::memory_order_acquire)) {
+        constexpr size_t kShutdownDrainPasses = 64;
+        for (size_t pass = 0;
+             pass < kShutdownDrainPasses &&
+             !impl_->worker_exited.load(std::memory_order_acquire);
+             ++pass) {
             impl_->gpu_jobs.pump(1e9);
+            std::string ignored;
+            impl_->retry_publication_completions(ignored);
             std::this_thread::yield();
+        }
+        if (!impl_->worker_exited.load(std::memory_order_acquire)) {
+            impl_->gpu_jobs.shut_down();
+            gpu_queue_shutdown = true;
         }
         impl_->worker.join();
     }
-    impl_->gpu_jobs.pump(1e9);
-
-    // The worker's blocking clear normally leaves both collections empty. Keep
-    // the same durable tagged barrier here as a fail-closed final check; queue
-    // teardown cannot advance while either pending tags or app residency remain.
-    while (!impl_->sector_map.empty() ||
-           !impl_->pending_sector_evictions.empty()) {
-        std::vector<streaming::detail::TaggedEviction> remaining;
-        remaining.reserve(impl_->sector_map.size());
-        for (const auto& pair : impl_->sector_map) {
-            remaining.push_back(publication_eviction(pair.second.request));
-        }
-        impl_->pending_sector_evictions.append(std::move(remaining));
-        std::string cleanup_error;
-        impl_->pending_sector_evictions.apply(
-            [this](
-                const std::vector<streaming::detail::TaggedEviction>& evictions,
-                std::string& endpoint_error) {
-                return impl_->apply_sector_evictions(evictions, endpoint_error);
-            },
-            cleanup_error);
-        std::this_thread::yield();
+    if (!gpu_queue_shutdown) {
+        impl_->gpu_jobs.pump(1e9);
+        std::string ignored;
+        impl_->retry_publication_completions(ignored);
     }
-    impl_->gpu_jobs.shut_down();
+
+    // One non-allocating, no-throw whole-owner fallback attempts every release
+    // once, then clears the app ledger, retained completions, FIFO tags, and
+    // coordinator intent so persistent cleanup faults cannot block destruction.
+    impl_->terminal_streaming_teardown_noexcept();
+    if (!gpu_queue_shutdown) impl_->gpu_jobs.shut_down();
 
 #ifdef MATTER_VULKAN_VIEWER
     impl_->vk_instance_cache.invalidate();
@@ -3925,6 +4311,19 @@ streaming::SectorStreamingStatus WorldSession::streaming_status() const {
 
 void WorldSession::pump_gpu_jobs(float ms_budget) {
     impl_->gpu_jobs.pump((double)ms_budget);
+    std::string completion_error;
+    if (!impl_->retry_publication_completions(completion_error) &&
+        !completion_error.empty()) {
+        try {
+            Event event;
+            event.type = EventType::BakeError;
+            event.code = BakeErrorCode::GpuError;
+            event.phase = "stream";
+            event.message = completion_error;
+            impl_->emit_event(std::move(event));
+        } catch (...) {
+        }
+    }
     impl_->publish_streaming_snapshot();
 }
 

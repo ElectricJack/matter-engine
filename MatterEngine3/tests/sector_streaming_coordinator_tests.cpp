@@ -109,6 +109,61 @@ struct FakePublicationLedger {
     }
 };
 
+struct TransactionProbe {
+    PublicationResources resources{};
+    int sequence = 0;
+    int rollback_order = 0;
+    int acknowledge_order = 0;
+    int rollback_calls = 0;
+    int acknowledge_calls = 0;
+    int rollback_failures = 0;
+    int acknowledge_failures = 0;
+    bool acknowledged_value = false;
+};
+
+static bool transaction_probe_rollback(
+    void* opaque,
+    std::string&) noexcept {
+    auto& probe = *static_cast<TransactionProbe*>(opaque);
+    ++probe.rollback_calls;
+    probe.rollback_order = ++probe.sequence;
+    if (probe.rollback_failures > 0) {
+        --probe.rollback_failures;
+        return false;
+    }
+    probe.resources = {};
+    return true;
+}
+
+static bool transaction_probe_acknowledge(
+    void* opaque,
+    bool published) noexcept {
+    auto& probe = *static_cast<TransactionProbe*>(opaque);
+    ++probe.acknowledge_calls;
+    probe.acknowledge_order = ++probe.sequence;
+    probe.acknowledged_value = published;
+    if (probe.acknowledge_failures > 0) {
+        --probe.acknowledge_failures;
+        return false;
+    }
+    return true;
+}
+
+static_assert(
+    noexcept(std::declval<Coordinator&>().begin_publication(
+        std::declval<const TaggedRequest&>())),
+    "publication reservation must contain allocation failure");
+static_assert(
+    std::is_same_v<
+        decltype(std::declval<Coordinator&>().acknowledge(
+            std::declval<const TaggedRequest&>(), false)),
+        bool>,
+    "publication acknowledgement must report durable enqueue failure");
+static_assert(
+    noexcept(std::declval<Coordinator&>().acknowledge(
+        std::declval<const TaggedRequest&>(), false)),
+    "publication acknowledgement must not throw through the GPU pump");
+
 int main() {
     // A failed app endpoint keeps the complete tagged batch durable. Work that
     // completed before a mid-batch fault is harmlessly seen again, and the tags
@@ -153,51 +208,157 @@ int main() {
               "retry is idempotent and clears tags only on full success");
     }
 
+    // Inline publication rollback owns only its own tag. Older lifecycle tags
+    // stay pending in FIFO order for the worker-enqueued blocking endpoint.
+    {
+        PendingEvictionBatch pending;
+        const TaggedEviction movement{
+            kOwnerA, 21, 201, matter_stream::Eviction{0, 0, 1}};
+        const TaggedEviction detach{
+            kOwnerA, 21, 202, matter_stream::Eviction{1, 0, 1}};
+        const TaggedEviction publication{
+            kOwnerA, 21, 203, matter_stream::Eviction{2, 0, 1}};
+        pending.append({movement, detach});
+
+        std::vector<uint64_t> applied;
+        std::string error;
+        CHECK(pending.apply_tag(
+                  publication,
+                  [&](const std::vector<TaggedEviction>& batch,
+                      std::string&) {
+                      for (const auto& eviction : batch) {
+                          applied.push_back(eviction.issuance);
+                      }
+                      return true;
+                  },
+                  error) &&
+                  applied == std::vector<uint64_t>{203} &&
+                  pending.size() == 2,
+              "publication rollback applies and retires only its own tag");
+        applied.clear();
+        CHECK(pending.apply(
+                  [&](const std::vector<TaggedEviction>& batch,
+                      std::string&) {
+                      for (const auto& eviction : batch) {
+                          applied.push_back(eviction.issuance);
+                      }
+                      return true;
+                  },
+                  error) &&
+                  applied.size() == 2 && applied[0] == 201 &&
+                  applied[1] == 202,
+              "worker lifecycle endpoint retains original FIFO ownership");
+    }
+
+    // Persistent endpoint failure is terminally abandonable for no-fail owner
+    // teardown; shutdown cannot spin forever on an unreleasable resource.
+    {
+        PendingEvictionBatch pending;
+        pending.append({TaggedEviction{
+            kOwnerA, 31, 301, matter_stream::Eviction{0, 0, 1}}});
+        std::string error;
+        CHECK(!pending.apply(
+                  [](const std::vector<TaggedEviction>&,
+                     std::string& endpoint_error) {
+                      endpoint_error = "persistent endpoint failure";
+                      return false;
+                  },
+                  error) && pending.size() == 1,
+              "persistent lifecycle failure remains pending before teardown");
+        pending.abandon_noexcept();
+        CHECK(pending.empty(),
+              "terminal no-fail teardown clears retained lifecycle tags");
+    }
+
     // The production publication guard owns rollback-before-false-ack ordering
     // for faults at every attempted resource stage.
     {
         for (int fail_stage = 0; fail_stage < 5; ++fail_stage) {
-            PublicationResources resources{};
-            std::vector<std::string> order;
+            TransactionProbe probe;
             PublicationTransaction transaction(
-                [&](std::string&) {
-                    order.push_back("rollback");
-                    resources = {};
-                    return true;
-                },
-                [&](bool published) {
-                    order.push_back(published ? "ack:true" : "ack:false");
-                });
+                &probe,
+                transaction_probe_rollback,
+                transaction_probe_acknowledge);
+            static_assert(noexcept(PublicationTransaction(
+                nullptr, nullptr, nullptr)),
+                "publication cleanup scope construction must not allocate/throw");
 
-            resources.transient_artifact = true;
-            if (fail_stage >= 1) resources.store_attempted = true;
-            if (fail_stage >= 2) resources.world_state_attempted = true;
-            if (fail_stage >= 3) resources.culler_attempted = true;
-            if (fail_stage >= 4) resources.vulkan_attempted = true;
+            probe.resources.transient_artifact = true;
+            if (fail_stage >= 1) probe.resources.store_attempted = true;
+            if (fail_stage >= 2) probe.resources.world_state_attempted = true;
+            if (fail_stage >= 3) probe.resources.culler_attempted = true;
+            if (fail_stage >= 4) probe.resources.vulkan_attempted = true;
             std::string error;
             CHECK(transaction.fail(error) &&
-                      order.size() == 2 && order[0] == "rollback" &&
-                      order[1] == "ack:false" &&
-                      !resources.transient_artifact &&
-                      !resources.store_attempted &&
-                      !resources.world_state_attempted &&
-                      !resources.culler_attempted &&
-                      !resources.vulkan_attempted,
+                      probe.rollback_order < probe.acknowledge_order &&
+                      !probe.acknowledged_value &&
+                      !probe.resources.transient_artifact &&
+                      !probe.resources.store_attempted &&
+                      !probe.resources.world_state_attempted &&
+                      !probe.resources.culler_attempted &&
+                      !probe.resources.vulkan_attempted,
                   "stage fault rolls back every attempted resource before false ack");
         }
 
-        std::vector<std::string> order;
+        TransactionProbe probe;
         PublicationTransaction transaction(
-            [&](std::string&) {
-                order.push_back("rollback");
-                return true;
-            },
-            [&](bool published) {
-                order.push_back(published ? "ack:true" : "ack:false");
-            });
-        transaction.commit();
-        CHECK(order == std::vector<std::string>{"ack:true"},
+            &probe,
+            transaction_probe_rollback,
+            transaction_probe_acknowledge);
+        CHECK(transaction.commit() && probe.acknowledged_value &&
+                  probe.rollback_calls == 0,
               "successful transaction acknowledges only after explicit commit");
+    }
+
+    // Reservation/ack/transient failures are contained by the no-throw scope.
+    // Failed completion remains active and is retryable without rerunning an
+    // already completed rollback.
+    {
+        TransactionProbe true_ack;
+        true_ack.acknowledge_failures = 1;
+        PublicationTransaction transaction(
+            &true_ack,
+            transaction_probe_rollback,
+            transaction_probe_acknowledge);
+        CHECK(!transaction.commit() && transaction.active() &&
+                  transaction.commit() && !transaction.active() &&
+                  true_ack.acknowledge_calls == 2 &&
+                  true_ack.rollback_calls == 0,
+              "true acknowledgement failure is retained and retried");
+
+        TransactionProbe destructor_ack;
+        destructor_ack.acknowledge_failures = 1;
+        {
+            PublicationTransaction guarded_commit(
+                &destructor_ack,
+                transaction_probe_rollback,
+                transaction_probe_acknowledge);
+            CHECK(!guarded_commit.commit() && guarded_commit.active(),
+                  "failed commit remains owned until scope teardown");
+        }
+        CHECK(destructor_ack.acknowledge_calls == 2 &&
+                  destructor_ack.acknowledged_value &&
+                  destructor_ack.rollback_calls == 0,
+              "scope teardown retries true ack without changing its intent");
+
+        TransactionProbe failed_publication;
+        failed_publication.rollback_failures = 1;
+        failed_publication.acknowledge_failures = 1;
+        PublicationTransaction failed(
+            &failed_publication,
+            transaction_probe_rollback,
+            transaction_probe_acknowledge);
+        std::string error;
+        CHECK(!failed.fail(error) && failed.active() &&
+                  failed_publication.acknowledge_calls == 0 &&
+                  !failed.fail(error) && failed.active() &&
+                  failed_publication.rollback_calls == 2 &&
+                  failed_publication.acknowledge_calls == 1 &&
+                  failed.fail(error) && !failed.active() &&
+                  failed_publication.rollback_calls == 2 &&
+                  failed_publication.acknowledge_calls == 2 &&
+                  !failed_publication.acknowledged_value,
+              "orphan cleanup and false ack failures retry in order without escape");
     }
 
     // A procedural profile is staged privately and cannot allocate sector work
@@ -226,6 +387,49 @@ int main() {
         CHECK(coordinator.snapshot().status.state == SectorStreamingState::Active &&
                   coordinator.next_request(request),
               "authored success publishes the staged procedural profile");
+    }
+
+    // Reload clearing is provisional. A persistent release failure aborts the
+    // replacement and restores the old active profile instead of retrying the
+    // barrier forever or leaving the session profile-less.
+    {
+        Coordinator coordinator;
+        ProfileActivationGate activation;
+        auto profile = tiny_profile();
+        CHECK(coordinator.attach(kOwnerA),
+              "reload-abort test attaches owner");
+        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        activation.stage(profile);
+        CHECK(activation.publish(coordinator),
+              "reload-abort test publishes initial profile");
+        coordinator.worker_step();
+        const auto old_generation =
+            coordinator.snapshot().status.generation;
+        CHECK(coordinator.snapshot().status.state ==
+                  SectorStreamingState::Active,
+              "reload-abort test begins from an active profile");
+
+        activation.begin_clear(coordinator);
+        coordinator.worker_step();
+        CHECK(coordinator.snapshot().status.state ==
+                  SectorStreamingState::PendingProfile,
+              "reload barrier provisionally clears coordinator profile");
+
+        const bool cleanup_succeeded = false;
+        bool replacement_installed = false;
+        if (cleanup_succeeded) {
+            activation.finish_clear();
+            replacement_installed = true;
+        } else {
+            activation.abort_clear(coordinator);
+        }
+        coordinator.worker_step();
+        const auto restored = coordinator.snapshot();
+        CHECK(!replacement_installed &&
+                  restored.status.state == SectorStreamingState::Active &&
+                  restored.status.generation != 0 &&
+                  restored.status.generation != old_generation,
+              "failed reload cleanup reuses old profile and aborts replacement");
     }
 
     // App resources precede a successful acknowledgement, while rollback and

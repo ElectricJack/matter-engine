@@ -70,6 +70,23 @@ static bool wait_for_fatal_bake_error(matter::WorldSession& s,
     return false;
 }
 
+static bool wait_for_stream_error(matter::WorldSession& s,
+                                  double timeout_s = 10.0) {
+    const double t0 = GetTime();
+    while (GetTime() - t0 < timeout_s) {
+        s.pump_gpu_jobs(16.0f);
+        s.tick({0.0f, 1.0f / 60.0f, 4});
+        matter::Event ev;
+        while (s.poll_event(ev)) {
+            if (ev.type == matter::EventType::BakeError &&
+                ev.phase == "stream") {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 static const matter::ecs::WorldRuntimeState& runtime_state(
     const matter::WorldSession& session) {
     return session.ecs().get<matter::ecs::WorldRuntimeState>();
@@ -322,6 +339,34 @@ int main() {
            runtime_state(*session).content_generation == 3 &&
            "regenerate publishes exactly one authored generation");
 
+    // A persistent app-release fault aborts this reload after one barrier
+    // attempt. The prior profile, field, authored generation, ECS state, and
+    // visible world state remain reusable; no retry loop monopolizes worker
+    // progress.
+    const uint64_t generation_before_failed_cleanup =
+        session->streaming_status().generation;
+    session->set_test_fault_hook([](int stage) {
+        if (stage == -2) {
+            throw std::runtime_error("injected persistent eviction failure");
+        }
+    });
+    session->reload();
+    assert(wait_for_stream_error(*session) &&
+           "persistent reload cleanup failure reports once without hanging");
+    for (int i = 0; i < 30; ++i) {
+        session->pump_gpu_jobs(16.0f);
+        session->tick({0.0f, 1.0f / 60.0f, 4});
+    }
+    assert(runtime_state(*session).content_generation == 3 &&
+           session->streaming_status().state ==
+               matter::streaming::SectorStreamingState::Active &&
+           session->streaming_status().generation != 0 &&
+           session->streaming_status().generation !=
+               generation_before_failed_cleanup &&
+           session->sea_level(sl) &&
+           "failed reload cleanup aborts replacement and reuses old world state");
+    session->set_test_fault_hook({});
+
     // 7. Removing activation during reload prevents the preserved entity from
     //    restarting after the replacement profile is installed.
     printf("reload() with latched streaming removal...\n");
@@ -376,6 +421,19 @@ int main() {
            "failed authored finalize leaves no profile, sector work, or residency");
     session->set_test_fault_hook({});
 
+    // Recover one live resident generation so the final destructor exercises
+    // its persistent-release terminal fallback rather than an empty session.
+    session->reload();
+    assert(wait_for_bake_finished(*session, 120.0) &&
+           wait_for_bake_finished(*session, 120.0) &&
+           "session recovers residency after the authored-finalize fault");
+    for (int i = 0; i < 30; ++i) {
+        session->pump_gpu_jobs(16.0f);
+        session->tick({0.0f, 1.0f / 60.0f, 4});
+    }
+    assert(session->streaming_status().resident_sectors > 0 &&
+           "shutdown fallback fixture owns resident streaming resources");
+
     // 9. A closed-world bake stays usable while activation reports the
     //    recoverable UnsupportedWorld error and streams zero sectors.
     matter::WorldDesc closed_wd = wd;
@@ -418,6 +476,11 @@ int main() {
     // 10. Destroy the successful session, then open a replacement whose bake
     // deterministically fails because its world directory does not exist.
     printf("destroying session...\n");
+    session->set_test_fault_hook([](int stage) {
+        if (stage == -2) {
+            throw std::runtime_error("injected persistent shutdown failure");
+        }
+    });
     session.reset();
     printf("session destroyed cleanly\n");
 

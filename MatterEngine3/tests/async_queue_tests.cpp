@@ -7,6 +7,7 @@
 #include <cassert>
 #include <chrono>
 #include <cstdio>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 #include <string>
@@ -125,6 +126,25 @@ static void test_shutdown_unblocks_waiter() {
     printf("ok shutdown_unblocks_waiter\n");
 }
 
+// A throwing fire-and-forget job is contained at the shared pump boundary, so
+// later cleanup/ack retry work in the same FIFO still runs.
+static void test_throwing_job_does_not_escape_pump() {
+    std::printf("[test_throwing_job_does_not_escape_pump]\n");
+    GpuJobQueue q;
+    bool tail_ran = false;
+    q.post({"throws", [](std::string&) -> bool {
+        throw std::runtime_error("injected publication callback failure");
+    }, nullptr});
+    q.post({"tail", [&tail_ran](std::string&) {
+        tail_ran = true;
+        return true;
+    }, nullptr});
+    const int ran = q.pump(1000.0);
+    CHECK(ran == 2 && tail_ran,
+          "throwing job is contained and FIFO pump reaches retry tail");
+    printf("ok throwing_job_does_not_escape_pump\n");
+}
+
 // ---------------------------------------------------------------------------
 // 6. bakeall_supersedes_pending_and_cancels_inflight
 //    Push RebakeCone x2, pop one (in-flight), push BakeAll; assert:
@@ -237,6 +257,7 @@ int main() {
     test_run_blocking_returns_result();
     test_cancelled_token_skips_job();
     test_shutdown_unblocks_waiter();
+    test_throwing_job_does_not_escape_pump();
     test_bakeall_supersedes_pending_and_cancels_inflight();
     test_command_shutdown_wakes_pop();
     test_push_after_shutdown_is_cancelled_and_not_queued();

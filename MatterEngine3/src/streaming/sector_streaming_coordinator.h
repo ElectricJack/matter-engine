@@ -49,7 +49,12 @@ public:
         const std::vector<TaggedEviction>&, std::string&)>;
 
     void append(std::vector<TaggedEviction> evictions);
-    bool apply(const Endpoint& endpoint, std::string& error);
+    bool apply(const Endpoint& endpoint, std::string& error) noexcept;
+    bool apply_tag(
+        const TaggedEviction& eviction,
+        const Endpoint& endpoint,
+        std::string& error) noexcept;
+    void abandon_noexcept() noexcept;
     bool empty() const;
     size_t size() const;
 
@@ -72,21 +77,28 @@ struct PublicationResources {
 // One guard owns rollback-before-false-ack ordering after begin_publication.
 class PublicationTransaction {
 public:
-    using Rollback = std::function<bool(std::string&)>;
-    using Acknowledge = std::function<void(bool)>;
+    using Rollback = bool (*)(void*, std::string&) noexcept;
+    using Acknowledge = bool (*)(void*, bool) noexcept;
 
-    PublicationTransaction(Rollback rollback, Acknowledge acknowledge);
-    ~PublicationTransaction();
+    PublicationTransaction(
+        void* context,
+        Rollback rollback,
+        Acknowledge acknowledge) noexcept;
+    ~PublicationTransaction() noexcept;
     PublicationTransaction(const PublicationTransaction&) = delete;
     PublicationTransaction& operator=(const PublicationTransaction&) = delete;
 
-    bool fail(std::string& error);
-    void commit();
+    bool fail(std::string& error) noexcept;
+    bool commit() noexcept;
+    bool active() const noexcept;
 
 private:
+    void* context_ = nullptr;
     Rollback rollback_;
     Acknowledge acknowledge_;
     bool active_ = true;
+    bool rollback_complete_ = false;
+    bool publish_intent_ = false;
 };
 
 class Coordinator {
@@ -103,10 +115,11 @@ public:
     void restart_if_attached();
     void worker_step();
     bool next_request(TaggedRequest& out);
-    bool begin_publication(const TaggedRequest& request);
+    bool begin_publication(const TaggedRequest& request) noexcept;
     std::vector<TaggedEviction> take_evictions();
-    void acknowledge(const TaggedRequest& request, bool published);
+    bool acknowledge(const TaggedRequest& request, bool published) noexcept;
     Snapshot snapshot() const;
+    void terminal_clear() noexcept;
 
 private:
     struct Acknowledgement {
@@ -160,10 +173,15 @@ public:
     void stage(const matter_stream::Config& profile);
     void fail(Coordinator& coordinator);
     bool publish(Coordinator& coordinator);
+    void begin_clear(Coordinator& coordinator);
+    void finish_clear() noexcept;
+    bool abort_clear(Coordinator& coordinator);
     bool pending() const noexcept;
 
 private:
     std::optional<matter_stream::Config> staged_;
+    std::optional<matter_stream::Config> active_;
+    bool clearing_ = false;
 };
 
 } // namespace matter::streaming::detail
