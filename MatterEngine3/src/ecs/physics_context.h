@@ -50,7 +50,7 @@ public:
     void mark_for_reconcile(flecs::entity_t entity) noexcept;
     void reconcile(flecs::world& world);
     void push(flecs::world& world, float fixed_delta);
-    void step(float fixed_delta);
+    void step(flecs::world& world, float fixed_delta);
     void pull(flecs::world& world);
 
     bool enqueue_teleport(
@@ -92,8 +92,12 @@ public:
     bool force_configuration_hash_for_test(
         flecs::entity_t entity,
         uint64_t hash) noexcept;
+    bool tombstone_event_participant_for_test(
+        flecs::entity_t entity) noexcept;
 
 private:
+    void capture_events(flecs::world& world);
+
     struct Impl;
 
     std::unique_ptr<Impl> impl_;

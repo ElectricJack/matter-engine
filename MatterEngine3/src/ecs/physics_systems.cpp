@@ -89,7 +89,8 @@ void register_physics_systems(flecs::world& world) {
                 size_t,
                 const detail::PhysicsContextRef& ref) {
                 if (ref.value != nullptr) {
-                    ref.value->step(iterator.delta_time());
+                    flecs::world world = iterator.world();
+                    ref.value->step(world, iterator.delta_time());
                 }
             });
     step.add<ecs::FixedPipelineSystem>();

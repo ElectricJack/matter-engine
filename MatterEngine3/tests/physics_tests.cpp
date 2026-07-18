@@ -4,6 +4,7 @@
 #include "ecs/physics_shapes.h"
 #include "matter/physics.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -845,6 +846,259 @@ std::vector<physics::detail::PhysicsCommandTraceEntry> commands_of_kind(
     return result;
 }
 
+struct EventReaderProbe {};
+struct EventReaderCreated {};
+
+bool sorted_pairs(const std::vector<physics::PhysicsPairEvent>& events) {
+    return std::is_sorted(
+        events.begin(), events.end(),
+        [](const auto& a, const auto& b) {
+            return a.first < b.first ||
+                   (a.first == b.first && a.second < b.second);
+        });
+}
+
+void test_engine_native_events_publish_before_post_physics_and_replace() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    physics::PhysicsSettings settings{};
+    settings.gravity = {};
+    world.set<physics::PhysicsSettings>(settings);
+
+    // Force a non-zero generation so event mapping must preserve the full ID.
+    const flecs::entity_t recycled_id = world.entity().id();
+    flecs::entity(world.c_ptr(), recycled_id).destruct();
+
+    ecs::LocalTransform floor_transform{};
+    floor_transform.translation = {0.0f, -0.5f, 0.0f};
+    physics::BoxCollider floor_shape{};
+    floor_shape.half_extents = {5.0f, 0.5f, 5.0f};
+    flecs::entity floor = world.entity()
+        .set<ecs::LocalTransform>(floor_transform)
+        .set<physics::RigidBody>({})
+        .set<physics::BoxCollider>(floor_shape);
+
+    ecs::LocalTransform falling_transform{};
+    falling_transform.translation = {0.0f, 2.0f, 0.0f};
+    physics::RigidBody falling_body{};
+    falling_body.type = physics::RigidBodyType::Dynamic;
+    falling_body.gravity_scale = 0.0f;
+    physics::SphereCollider falling_shape{};
+    falling_shape.properties.restitution = 0.8f;
+    falling_shape.properties.contact_events = true;
+    falling_shape.properties.hit_events = true;
+    flecs::entity falling = world.entity()
+        .set<ecs::LocalTransform>(falling_transform)
+        .set<physics::RigidBody>(falling_body)
+        .set<physics::SphereCollider>(falling_shape);
+
+    bool reader_saw_events = false;
+    bool reader_was_deferred = false;
+    world.entity().add<EventReaderProbe>();
+    flecs::system event_reader =
+        world.system<EventReaderProbe>("ReadPhysicsEventsInPostPhysics")
+        .kind<ecs::PostPhysics>()
+        .each([&](flecs::iter& iterator, size_t, EventReaderProbe&) {
+            flecs::world callback_world = iterator.world();
+            const auto& events = physics::physics_events(callback_world);
+            if (!events.contact_begin.empty() || !events.contact_hit.empty()) {
+                reader_saw_events = true;
+                const int32_t created_before =
+                    callback_world.count<EventReaderCreated>();
+                callback_world.entity().add<EventReaderCreated>();
+                reader_was_deferred =
+                    callback_world.count<EventReaderCreated>() == created_before;
+            }
+        });
+    event_reader.add<ecs::FixedPipelineSystem>();
+
+    runtime.tick({1.0f / 60.0f, 1.0f / 60.0f, 1});
+    CHECK(physics::physics_set_velocity(falling, {0.0f, -30.0f, 0.0f}, {}),
+          "event fixture queues a controlled high-speed impact");
+
+    physics::PhysicsEvents captured{};
+    for (int step = 0; step < 20 && captured.contact_hit.empty(); ++step) {
+        runtime.tick({1.0f / 60.0f, 1.0f / 60.0f, 1});
+        captured = physics::physics_events(world);
+    }
+
+    const flecs::entity_t first = std::min(floor.id(), falling.id());
+    const flecs::entity_t second = std::max(floor.id(), falling.id());
+    CHECK(floor.id() != flecs::strip_generation(floor.id()),
+          "event fixture uses a non-zero full generational entity ID");
+    CHECK(!captured.body.empty() &&
+              std::any_of(captured.body.begin(), captured.body.end(),
+                          [&](const auto& event) {
+                              return event.entity == falling.id() && event.awake;
+                          }),
+          "movement events expose the exact full entity ID and awake state");
+    CHECK(!captured.contact_begin.empty() &&
+              captured.contact_begin.front().first == first &&
+              captured.contact_begin.front().second == second &&
+              sorted_pairs(captured.contact_begin),
+          "contact begin events normalize and sort full entity pairs");
+    CHECK(!captured.contact_hit.empty() &&
+              captured.contact_hit.front().first == first &&
+              captured.contact_hit.front().second == second &&
+              std::isfinite(captured.contact_hit.front().position.y) &&
+              near(std::fabs(captured.contact_hit.front().normal.y), 1.0f, 0.1f) &&
+              captured.contact_hit.front().approach_speed > 1.0f,
+          "hit events copy mapped IDs, position, oriented normal, and speed");
+    CHECK(reader_saw_events,
+          "PostPhysics reads events published by the completed Box3D step");
+    CHECK(reader_was_deferred,
+          "PostPhysics structural creation remains deferred until the system exits");
+    CHECK(world.count<EventReaderCreated>() > 0,
+          "PostPhysics safely commits deferred structural creation");
+
+    CHECK(physics::physics_teleport(falling, {0.0f, 4.0f, 0.0f}, {}),
+          "contact fixture separates the touching pair");
+    runtime.tick({1.0f / 60.0f, 1.0f / 60.0f, 1});
+    const physics::PhysicsEvents ended = physics::physics_events(world);
+    CHECK(!ended.contact_end.empty() &&
+              ended.contact_end.front().first == first &&
+              ended.contact_end.front().second == second &&
+              sorted_pairs(ended.contact_end),
+          "contact end events normalize and sort full entity pairs");
+    runtime.tick({1.0f / 60.0f, 1.0f / 60.0f, 1});
+    const auto& replaced = physics::physics_events(world);
+    CHECK(replaced.contact_begin.empty() && replaced.contact_end.empty() &&
+              replaced.contact_hit.empty(),
+          "contact buffers are replaced rather than accumulated each completed tick");
+}
+
+void test_sensor_events_publish_normalized_pairs_and_replace() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    physics::PhysicsSettings settings{};
+    settings.gravity = {};
+    world.set<physics::PhysicsSettings>(settings);
+
+    physics::SphereCollider sensor_shape{};
+    sensor_shape.radius = 1.0f;
+    sensor_shape.properties.sensor = true;
+    flecs::entity sensor = world.entity()
+        .set<ecs::LocalTransform>({})
+        .set<physics::RigidBody>({})
+        .set<physics::SphereCollider>(sensor_shape);
+    flecs::entity visitor = make_sphere_body(
+        world, physics::RigidBodyType::Dynamic, {-3.0f, 0.0f, 0.0f});
+    runtime.tick({0.01f, 0.01f, 1});
+    CHECK(physics::physics_set_velocity(visitor, {6.0f, 0.0f, 0.0f}, {}),
+          "sensor fixture queues a controlled visitor velocity");
+
+    physics::PhysicsEvents begun{};
+    for (int step = 0; step < 80 && begun.sensor_begin.empty(); ++step) {
+        runtime.tick({1.0f / 60.0f, 1.0f / 60.0f, 1});
+        begun = physics::physics_events(world);
+    }
+    const flecs::entity_t first = std::min(sensor.id(), visitor.id());
+    const flecs::entity_t second = std::max(sensor.id(), visitor.id());
+    CHECK(!begun.sensor_begin.empty() &&
+              begun.sensor_begin.front().first == first &&
+              begun.sensor_begin.front().second == second &&
+              sorted_pairs(begun.sensor_begin),
+          "sensor begin events normalize and sort exact entity pairs");
+
+    physics::PhysicsEvents ended{};
+    for (int step = 0; step < 80 && ended.sensor_end.empty(); ++step) {
+        runtime.tick({1.0f / 60.0f, 1.0f / 60.0f, 1});
+        ended = physics::physics_events(world);
+    }
+    CHECK(!ended.sensor_end.empty() &&
+              ended.sensor_end.front().first == first &&
+              ended.sensor_end.front().second == second &&
+              sorted_pairs(ended.sensor_end),
+          "sensor end events normalize and sort exact entity pairs");
+    runtime.tick({1.0f / 60.0f, 1.0f / 60.0f, 1});
+    CHECK(physics::physics_events(world).sensor_end.empty(),
+          "sensor buffers are replaced on the next completed tick");
+}
+
+void test_stale_event_participant_is_dropped_and_counted() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    physics::PhysicsSettings settings{};
+    settings.gravity = {};
+    world.set<physics::PhysicsSettings>(settings);
+
+    ecs::LocalTransform floor_transform{};
+    floor_transform.translation = {0.0f, -0.5f, 0.0f};
+    physics::BoxCollider floor_shape{};
+    floor_shape.half_extents = {5.0f, 0.5f, 5.0f};
+    world.entity()
+        .set<ecs::LocalTransform>(floor_transform)
+        .set<physics::RigidBody>({})
+        .set<physics::BoxCollider>(floor_shape);
+
+    ecs::LocalTransform body_transform{};
+    body_transform.translation = {0.0f, 0.55f, 0.0f};
+    physics::RigidBody body_definition{};
+    body_definition.type = physics::RigidBodyType::Dynamic;
+    body_definition.gravity_scale = 0.0f;
+    physics::SphereCollider shape{};
+    shape.properties.contact_events = true;
+    shape.properties.hit_events = true;
+    flecs::entity participant = world.entity()
+        .set<ecs::LocalTransform>(body_transform)
+        .set<physics::RigidBody>(body_definition)
+        .set<physics::PhysicsVelocity>({{0.0f, -10.0f, 0.0f}, {}})
+        .set<physics::SphereCollider>(shape);
+
+    physics::detail::PhysicsContext& context =
+        physics::detail::context(world);
+    context.reconcile(world);
+    const uint64_t stale_before = physics::physics_stats(world).stale_events;
+    CHECK(context.tombstone_event_participant_for_test(participant.id()),
+          "stale-event seam arms an exact live full-ID participant");
+    runtime.tick({1.0f / 60.0f, 1.0f / 60.0f, 1});
+
+    const auto& events = physics::physics_events(world);
+    auto pair_mentions = [&](const auto& event) {
+        return event.first == participant.id() ||
+               event.second == participant.id();
+    };
+    CHECK(std::none_of(events.body.begin(), events.body.end(),
+                       [&](const auto& event) {
+                           return event.entity == participant.id();
+                       }) &&
+              std::none_of(events.contact_begin.begin(),
+                           events.contact_begin.end(), pair_mentions) &&
+              std::none_of(events.contact_hit.begin(),
+                           events.contact_hit.end(), pair_mentions),
+          "conversion drops every event containing the tombstoned participant");
+    CHECK(physics::physics_stats(world).stale_events > stale_before,
+          "each rejected stale event path increments stale-event accounting");
+}
+
+void test_body_event_reports_transition_to_sleep() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    ecs::LocalTransform floor_transform{};
+    floor_transform.translation = {0.0f, -0.5f, 0.0f};
+    physics::BoxCollider floor_shape{};
+    floor_shape.half_extents = {5.0f, 0.5f, 5.0f};
+    world.entity()
+        .set<ecs::LocalTransform>(floor_transform)
+        .set<physics::RigidBody>({})
+        .set<physics::BoxCollider>(floor_shape);
+    flecs::entity body = make_sphere_body(
+        world, physics::RigidBodyType::Dynamic, {0.0f, 0.6f, 0.0f});
+
+    bool saw_sleep = false;
+    for (int step = 0; step < 300 && !saw_sleep; ++step) {
+        runtime.tick({1.0f / 60.0f, 1.0f / 60.0f, 1});
+        const auto& body_events = physics::physics_events(world).body;
+        saw_sleep = std::any_of(
+            body_events.begin(), body_events.end(),
+            [&](const auto& event) {
+                return event.entity == body.id() && !event.awake;
+            });
+    }
+    CHECK(saw_sleep,
+          "body movement events report the exact entity when it falls asleep");
+}
+
 void test_dynamic_sphere_falls_onto_static_floor() {
     ecs_runtime::Runtime runtime;
     flecs::world& world = runtime.world();
@@ -1592,5 +1846,9 @@ int main() {
     test_staged_and_cross_runtime_commands_keep_real_world_identity();
     test_sleeping_teleport_only_pulls_into_ecs_after_next_step();
     test_invalid_ticks_retain_commands_and_push_revalidates_work();
+    test_engine_native_events_publish_before_post_physics_and_replace();
+    test_sensor_events_publish_normalized_pairs_and_replace();
+    test_stale_event_participant_is_dropped_and_counted();
+    test_body_event_reports_transition_to_sleep();
     return check_summary();
 }

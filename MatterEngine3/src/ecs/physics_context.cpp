@@ -17,6 +17,7 @@ namespace matter::physics::detail {
 namespace {
 
 struct BridgeRecord {
+    const flecs::world_t* owning_world = nullptr;
     flecs::entity_t entity = 0;
     b3BodyId body = b3_nullBodyId;
     b3ShapeId shape = b3_nullShapeId;
@@ -223,6 +224,7 @@ struct PhysicsContext::Impl {
     uint32_t configured_substeps = 1;
     uint32_t last_step_substeps = 0;
     std::vector<PhysicsSystemStage> fixed_step_trace;
+    flecs::entity_t tombstoned_event_participant_for_test = 0;
 };
 
 namespace {
@@ -553,6 +555,7 @@ void PhysicsContext::reconcile(flecs::world& world) {
         }
 
         auto replacement = std::make_unique<BridgeRecord>();
+        replacement->owning_world = ecs_get_world(world.c_ptr());
         replacement->entity = entity_id;
         replacement->type = validation.desired.body.type;
         replacement->configuration_hash =
@@ -743,7 +746,7 @@ void PhysicsContext::push(flecs::world& world, float fixed_delta) {
     }
 }
 
-void PhysicsContext::step(float fixed_delta) {
+void PhysicsContext::step(flecs::world& world, float fixed_delta) {
     if (!world_is_valid() || !std::isfinite(fixed_delta) ||
         fixed_delta <= 0.0f) {
         return;
@@ -752,8 +755,149 @@ void PhysicsContext::step(float fixed_delta) {
     const uint32_t substeps = impl_->configured_substeps;
     b3World_Step(
         impl_->world_id, fixed_delta, static_cast<int>(substeps));
+    capture_events(world);
     impl_->last_step_substeps = substeps;
     ++stats_.steps;
+}
+
+void PhysicsContext::capture_events(flecs::world& world) {
+    PhysicsEvents next;
+    const flecs::world_t* owning_world = ecs_get_world(world.c_ptr());
+    const flecs::entity_t tombstoned_participant =
+        impl_->tombstoned_event_participant_for_test;
+    impl_->tombstoned_event_participant_for_test = 0;
+
+    auto resolve_bridge = [&](b3ShapeId shape) -> BridgeRecord* {
+        if (!b3Shape_IsValid(shape)) {
+            ++stats_.stale_events;
+            return nullptr;
+        }
+        BridgeRecord* bridge =
+            static_cast<BridgeRecord*>(b3Shape_GetUserData(shape));
+        if (bridge == nullptr || bridge->owning_world != owning_world ||
+            bridge->entity == 0 || !bridge->live ||
+            bridge->entity == tombstoned_participant ||
+            !B3_ID_EQUALS(bridge->shape, shape)) {
+            ++stats_.stale_events;
+            return nullptr;
+        }
+        const auto found = impl_->bridges.find(bridge->entity);
+        if (found == impl_->bridges.end() ||
+            found->second.get() != bridge ||
+            !ecs_is_alive(owning_world, bridge->entity)) {
+            ++stats_.stale_events;
+            return nullptr;
+        }
+        return bridge;
+    };
+
+    auto append_pair = [&](auto& destination, b3ShapeId shape_a,
+                           b3ShapeId shape_b) {
+        BridgeRecord* first_bridge = resolve_bridge(shape_a);
+        BridgeRecord* second_bridge = resolve_bridge(shape_b);
+        if (first_bridge == nullptr || second_bridge == nullptr) {
+            return;
+        }
+        flecs::entity_t first = first_bridge->entity;
+        flecs::entity_t second = second_bridge->entity;
+        if (second < first) {
+            std::swap(first, second);
+        }
+        destination.push_back({first, second});
+    };
+
+    const b3BodyEvents body_events =
+        b3World_GetBodyEvents(impl_->world_id);
+    next.body.reserve(static_cast<size_t>(body_events.moveCount));
+    for (int index = 0; index < body_events.moveCount; ++index) {
+        const b3BodyMoveEvent& event = body_events.moveEvents[index];
+        BridgeRecord* bridge = static_cast<BridgeRecord*>(event.userData);
+        if (bridge == nullptr || bridge->owning_world != owning_world ||
+            bridge->entity == 0 || !bridge->live ||
+            bridge->entity == tombstoned_participant ||
+            !B3_ID_EQUALS(bridge->body, event.bodyId)) {
+            ++stats_.stale_events;
+            continue;
+        }
+        const auto found = impl_->bridges.find(bridge->entity);
+        if (found == impl_->bridges.end() || found->second.get() != bridge ||
+            !ecs_is_alive(owning_world, bridge->entity) ||
+            !b3Body_IsValid(bridge->body)) {
+            ++stats_.stale_events;
+            continue;
+        }
+        next.body.push_back(
+            {bridge->entity, b3Body_IsAwake(bridge->body)});
+    }
+
+    const b3ContactEvents contacts =
+        b3World_GetContactEvents(impl_->world_id);
+    next.contact_begin.reserve(static_cast<size_t>(contacts.beginCount));
+    next.contact_end.reserve(static_cast<size_t>(contacts.endCount));
+    next.contact_hit.reserve(static_cast<size_t>(contacts.hitCount));
+    for (int index = 0; index < contacts.beginCount; ++index) {
+        const b3ContactBeginTouchEvent& event = contacts.beginEvents[index];
+        append_pair(next.contact_begin, event.shapeIdA, event.shapeIdB);
+    }
+    for (int index = 0; index < contacts.endCount; ++index) {
+        const b3ContactEndTouchEvent& event = contacts.endEvents[index];
+        append_pair(next.contact_end, event.shapeIdA, event.shapeIdB);
+    }
+    for (int index = 0; index < contacts.hitCount; ++index) {
+        const b3ContactHitEvent& event = contacts.hitEvents[index];
+        BridgeRecord* first_bridge = resolve_bridge(event.shapeIdA);
+        BridgeRecord* second_bridge = resolve_bridge(event.shapeIdB);
+        if (first_bridge == nullptr || second_bridge == nullptr) {
+            continue;
+        }
+        flecs::entity_t first = first_bridge->entity;
+        flecs::entity_t second = second_bridge->entity;
+        Float3 normal = engine_vector(event.normal);
+        if (second < first) {
+            std::swap(first, second);
+            normal = {-normal.x, -normal.y, -normal.z};
+        }
+        next.contact_hit.push_back(
+            {first, second, engine_position(event.point), normal,
+             event.approachSpeed});
+    }
+
+    const b3SensorEvents sensors =
+        b3World_GetSensorEvents(impl_->world_id);
+    next.sensor_begin.reserve(static_cast<size_t>(sensors.beginCount));
+    next.sensor_end.reserve(static_cast<size_t>(sensors.endCount));
+    for (int index = 0; index < sensors.beginCount; ++index) {
+        const b3SensorBeginTouchEvent& event = sensors.beginEvents[index];
+        append_pair(next.sensor_begin, event.sensorShapeId,
+                    event.visitorShapeId);
+    }
+    for (int index = 0; index < sensors.endCount; ++index) {
+        const b3SensorEndTouchEvent& event = sensors.endEvents[index];
+        append_pair(next.sensor_end, event.sensorShapeId,
+                    event.visitorShapeId);
+    }
+
+    std::sort(next.body.begin(), next.body.end(),
+              [](const PhysicsBodyEvent& a, const PhysicsBodyEvent& b) {
+                  return a.entity < b.entity;
+              });
+    auto pair_less = [](const PhysicsPairEvent& a,
+                        const PhysicsPairEvent& b) {
+        return a.first < b.first ||
+               (a.first == b.first && a.second < b.second);
+    };
+    std::sort(next.contact_begin.begin(), next.contact_begin.end(), pair_less);
+    std::sort(next.contact_end.begin(), next.contact_end.end(), pair_less);
+    std::sort(next.sensor_begin.begin(), next.sensor_begin.end(), pair_less);
+    std::sort(next.sensor_end.begin(), next.sensor_end.end(), pair_less);
+    std::sort(
+        next.contact_hit.begin(), next.contact_hit.end(),
+        [](const PhysicsHitEvent& a, const PhysicsHitEvent& b) {
+            return a.first < b.first ||
+                   (a.first == b.first && a.second < b.second);
+        });
+
+    events_ = std::move(next);
 }
 
 void PhysicsContext::pull(flecs::world& world) {
@@ -894,6 +1038,20 @@ bool PhysicsContext::force_configuration_hash_for_test(
         return false;
     }
     found->second->configuration_hash = hash;
+    return true;
+}
+
+bool PhysicsContext::tombstone_event_participant_for_test(
+    flecs::entity_t entity) noexcept {
+    if (impl_ == nullptr || entity == 0) {
+        return false;
+    }
+    const auto found = impl_->bridges.find(entity);
+    if (found == impl_->bridges.end() || found->second == nullptr ||
+        found->second->entity != entity || !found->second->live) {
+        return false;
+    }
+    impl_->tombstoned_event_participant_for_test = entity;
     return true;
 }
 

@@ -39,7 +39,15 @@ Task 5: complete (review clean after fixes)
   - Review fixes bind admission to the exact owning PhysicsContextRef despite cross-runtime full-ID collision and wake teleport-only sleeping bodies for next-step ECS pullback.
   - Two fresh all-49 Box3D C17/Flecs C17 plus current-source physics/ECS C++17 builds print ALL PASS; static checker, Task 6+ scope scan, and diff check pass.
 
-Resume at Task 6.
+Task 6: complete (review clean)
+  - Box3D body movement/sleep, contact begin/end/hit, and sensor begin/end arrays are copied immediately after every completed step into engine-native PhysicsEvents.
+  - Stable bridge resolution requires exact owning real world, full generational ID liveness, current map identity, and valid matching Box3D handles; stale/cross-world participants are dropped and counted.
+  - Contact/sensor pairs normalize and sort by full IDs; swapped hit pairs invert the normal; complete buffers replace the previous tick before Pull/PostPhysics.
+  - Controlled fixtures cover awake/sleep body state, contact and sensor lifecycles, hit data, non-zero generations, replacement, stale tombstoning, and a PostPhysics reader with deferred structural creation.
+  - Two fresh all-49 Box3D C17/Flecs C17 plus current-source physics/ECS C++17 builds print ALL PASS; static checker, Task 7+ query scope scan, and diff check pass.
+  - Independent review returned PASS with no Critical, Important, or Minor findings.
+
+Resume at Task 7.
 
 Environment gate:
   - WSL is installed without a Linux distribution.
