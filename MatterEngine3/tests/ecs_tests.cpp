@@ -396,6 +396,146 @@ static void test_deferred_reparents_reject_pending_cycle() {
           "rejected deferred cycle is never queued");
 }
 
+static void test_onremove_reentrant_reparent_sees_pending_parent() {
+    bool callback_invoked = false;
+    bool callback_reparent_result = true;
+    flecs::entity_t child_id = 0;
+    flecs::entity_t future_parent_id = 0;
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+
+    const flecs::entity old_parent = world.entity("ReentrantOldParent");
+    const flecs::entity future_parent = world.entity("ReentrantFutureParent");
+    const flecs::entity child = world.entity("ReentrantChild");
+    child_id = child.id();
+    future_parent_id = future_parent.id();
+    CHECK(ecs::reparent(child, old_parent),
+          "reentrant OnRemove setup reparent succeeds");
+
+    world.observer("ReparentDuringChildOfRemove")
+        .event(flecs::OnRemove)
+        .with(flecs::ChildOf, flecs::Wildcard)
+        .each([&](flecs::entity entity) {
+            if (entity.id() == child_id && !callback_invoked) {
+                callback_invoked = true;
+                flecs::entity callback_child(
+                    entity.world().c_ptr(), child_id);
+                flecs::entity callback_parent(
+                    entity.world().c_ptr(), future_parent_id);
+                callback_reparent_result =
+                    ecs::reparent(callback_parent, callback_child);
+            }
+        });
+
+    world.defer([&]() {
+        CHECK(ecs::reparent(child, future_parent),
+              "outer defer queues supported reparent");
+    });
+
+    CHECK(callback_invoked,
+          "later user OnRemove observer runs during supported reparent merge");
+    CHECK(!callback_reparent_result,
+          "OnRemove callback sees pending future parent and rejects reverse edge");
+    CHECK(child.target(flecs::ChildOf).id() == future_parent.id(),
+          "supported reparent commits without a reentrant cycle");
+    CHECK(future_parent.target(flecs::ChildOf).id() == 0,
+          "rejected reentrant reverse edge is never queued");
+}
+
+static void test_intermediate_onadd_preserves_final_pending_parent() {
+    bool callback_invoked = false;
+    bool callback_reparent_result = true;
+    flecs::entity_t child_id = 0;
+    flecs::entity_t final_parent_id = 0;
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+
+    const flecs::entity old_parent = world.entity("QueuedOldParent");
+    const flecs::entity intermediate_parent =
+        world.entity("QueuedIntermediateParent");
+    const flecs::entity final_parent = world.entity("QueuedFinalParent");
+    const flecs::entity child = world.entity("QueuedReplacementChild");
+    child_id = child.id();
+    final_parent_id = final_parent.id();
+    CHECK(ecs::reparent(child, old_parent),
+          "queued replacement setup reparent succeeds");
+
+    world.observer("ReparentDuringIntermediateChildOfAdd")
+        .event(flecs::OnAdd)
+        .with(flecs::ChildOf, flecs::Wildcard)
+        .each([&](flecs::entity entity) {
+            if (entity.id() == child_id && !callback_invoked) {
+                callback_invoked = true;
+                flecs::entity callback_child(
+                    entity.world().c_ptr(), child_id);
+                flecs::entity callback_parent(
+                    entity.world().c_ptr(), final_parent_id);
+                callback_reparent_result =
+                    ecs::reparent(callback_parent, callback_child);
+            }
+        });
+
+    world.defer([&]() {
+        CHECK(ecs::reparent(child, intermediate_parent),
+              "outer defer queues intermediate parent");
+        CHECK(ecs::reparent(child, final_parent),
+              "outer defer queues final parent");
+    });
+
+    CHECK(callback_invoked,
+          "later user OnAdd observer runs for intermediate parent");
+    CHECK(!callback_reparent_result,
+          "intermediate OnAdd retains final pending target for validation");
+    CHECK(child.target(flecs::ChildOf).id() == final_parent.id(),
+          "last queued replacement becomes the committed parent");
+    CHECK(final_parent.target(flecs::ChildOf).id() == 0,
+          "intermediate event cannot queue a reverse edge");
+}
+
+static void test_onremove_reentrant_reparent_sees_pending_clear() {
+    bool callback_invoked = false;
+    bool callback_reparent_result = false;
+    flecs::entity_t child_id = 0;
+    flecs::entity_t old_parent_id = 0;
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+
+    const flecs::entity old_parent = world.entity("ClearedOldParent");
+    const flecs::entity child = world.entity("ClearedChild");
+    child_id = child.id();
+    old_parent_id = old_parent.id();
+    CHECK(ecs::reparent(child, old_parent),
+          "pending clear setup reparent succeeds");
+
+    world.observer("ReparentDuringExplicitChildOfRemove")
+        .event(flecs::OnRemove)
+        .with(flecs::ChildOf, flecs::Wildcard)
+        .each([&](flecs::entity entity) {
+            if (entity.id() == child_id && !callback_invoked) {
+                callback_invoked = true;
+                flecs::entity callback_child(
+                    entity.world().c_ptr(), child_id);
+                flecs::entity callback_old_parent(
+                    entity.world().c_ptr(), old_parent_id);
+                callback_reparent_result =
+                    ecs::reparent(callback_old_parent, callback_child);
+            }
+        });
+
+    world.defer([&]() {
+        ecs::clear_parent(child);
+    });
+
+    CHECK(callback_invoked,
+          "later user OnRemove observer runs during explicit clear merge");
+    CHECK(callback_reparent_result,
+          "OnRemove callback sees pending clear instead of stale old parent");
+    CHECK(child.target(flecs::ChildOf).id() == 0,
+          "explicit clear commits before reentrant supported reparent");
+    CHECK(old_parent.target(flecs::ChildOf).id() == child.id(),
+          "reentrant parent move commits without a cycle");
+}
+
 static void test_transform_propagates_once_across_fixed_and_frame_phases() {
     flecs::world world;
     world.import<ecs::CoreModule>();
@@ -519,5 +659,8 @@ int main() {
     test_direct_parent_removal_dirties_subtree();
     test_parent_destruction_cascade_deletes_descendants();
     test_deferred_reparents_reject_pending_cycle();
+    test_onremove_reentrant_reparent_sees_pending_parent();
+    test_intermediate_onadd_preserves_final_pending_parent();
+    test_onremove_reentrant_reparent_sees_pending_clear();
     return check_summary();
 }

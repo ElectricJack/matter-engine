@@ -13,6 +13,8 @@ struct HierarchyValidationState {
     std::unordered_map<flecs::entity_t, flecs::entity_t> pending_parents;
 };
 
+struct PendingParentRemovalCleanup {};
+
 const flecs::world_t* real_world(flecs::entity entity) {
     flecs::world_t* entity_world = entity.world().c_ptr();
     return entity_world != nullptr ? ecs_get_world(entity_world) : nullptr;
@@ -37,11 +39,51 @@ flecs::entity effective_parent(
     return flecs::entity(mutation_world, pending->second);
 }
 
-void clear_pending_parent(flecs::entity entity) {
+void clear_committed_pending_parent(flecs::entity entity) {
+    HierarchyValidationState* state = validation_state(entity);
+    if (state == nullptr) {
+        return;
+    }
+
+    const auto pending = state->pending_parents.find(entity.id());
+    if (pending == state->pending_parents.end() || pending->second == 0) {
+        return;
+    }
+
+    if (entity.target(flecs::ChildOf).id() == pending->second) {
+        state->pending_parents.erase(pending);
+    }
+}
+
+void schedule_pending_removal_cleanup(flecs::entity entity) {
+    HierarchyValidationState* state = validation_state(entity);
+    if (state == nullptr) {
+        return;
+    }
+    const auto pending = state->pending_parents.find(entity.id());
+    if (pending == state->pending_parents.end() || pending->second != 0) {
+        return;
+    }
+
+    flecs::world event_world = entity.world();
+    event_world.defer([entity]() {
+        entity.add<PendingParentRemovalCleanup>();
+    });
+}
+
+void finish_pending_removal(flecs::entity entity) {
     HierarchyValidationState* state = validation_state(entity);
     if (state != nullptr) {
-        state->pending_parents.erase(entity.id());
+        const auto pending = state->pending_parents.find(entity.id());
+        if (pending != state->pending_parents.end() && pending->second == 0) {
+            state->pending_parents.erase(pending);
+        }
     }
+
+    flecs::world event_world = entity.world();
+    event_world.defer([entity]() {
+        entity.remove<PendingParentRemovalCleanup>();
+    });
 }
 
 Mat4f multiply(const Mat4f& left, const Mat4f& right) {
@@ -214,6 +256,8 @@ void clear_parent(flecs::entity child) {
 
 void register_transform_systems(flecs::world& world) {
     world.component<HierarchyValidationState>("HierarchyValidationState");
+    world.component<PendingParentRemovalCleanup>(
+        "PendingParentRemovalCleanup");
     world.set<HierarchyValidationState>(HierarchyValidationState{});
 
     world.observer<LocalTransform>("MarkLocalTransformDirty")
@@ -226,7 +270,7 @@ void register_transform_systems(flecs::world& world) {
         .event(flecs::OnRemove)
         .with(flecs::ChildOf, flecs::Wildcard)
         .each([](flecs::entity entity) {
-            clear_pending_parent(entity);
+            schedule_pending_removal_cleanup(entity);
             mark_subtree_dirty(entity);
         });
 
@@ -234,7 +278,14 @@ void register_transform_systems(flecs::world& world) {
         .event(flecs::OnAdd)
         .with(flecs::ChildOf, flecs::Wildcard)
         .each([](flecs::entity entity) {
-            clear_pending_parent(entity);
+            clear_committed_pending_parent(entity);
+        });
+
+    world.observer("FinishPendingTransformParentRemoval")
+        .event(flecs::OnAdd)
+        .with<PendingParentRemovalCleanup>()
+        .each([](flecs::entity entity) {
+            finish_pending_removal(entity);
         });
 
     register_propagation_system<FixedPostUpdate, FixedPipelineSystem>(
