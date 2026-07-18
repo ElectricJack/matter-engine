@@ -534,16 +534,11 @@ void Ui::draw_sector_streaming_panel(matter::WorldSession& session,
     }
     ImGui::End();
 
-    matter_viewer::validate_anchor(streaming_anchor_, world);
-    if (streaming_anchor_.selected == 0 ||
-        streaming_anchor_.follow_editor_camera || viewport_width == 0 ||
-        viewport_height == 0) {
+    if (viewport_width == 0 || viewport_height == 0 ||
+        !matter_viewer::gizmo_translation_allowed(streaming_anchor_, world)) {
         return;
     }
     const flecs::entity anchor(world.c_ptr(), streaming_anchor_.selected);
-    if (anchor.has<matter::streaming::SectorStreaming>()) {
-        return;
-    }
     const matter::ecs::LocalTransform* transform =
         anchor.try_get<matter::ecs::LocalTransform>();
     if (transform == nullptr) {

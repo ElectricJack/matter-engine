@@ -540,10 +540,6 @@ int main() {
                 }
             }
         }
-        if (ui.camera_input_allowed()) {
-            camera_controller.update(window, dt, camera);
-        }
-
 #ifndef _WIN32
         if (cmd_fd >= 0) {
             char bytes[512];
@@ -614,6 +610,45 @@ int main() {
             }
         }
 
+        if (test_resize && bake_ready && !resize_exercised) {
+            glfwSetWindowSize(window, 960, 540);
+            glfwPollEvents();
+            screenshot_settle = 0;
+            resize_exercised = true;
+        }
+
+        matter::VulkanFrame frame{};
+        if (!vulkan->begin_frame(frame, error)) {
+            if (error.find("zero-sized") != std::string::npos) {
+                glfwWaitEventsTimeout(0.05);
+                continue;
+            }
+            std::fprintf(stderr, "FATAL: begin_frame: %s\n", error.c_str());
+            break;
+        }
+
+        matter_viewer::CurrentFrameInputOrder camera_input_order{};
+        const bool ui_frame_ready = ui.begin_frame(frame, error);
+        if (!ui_frame_ready) {
+            std::fprintf(stderr, "FATAL: ImGui Vulkan prepare: %s\n",
+                         error.c_str());
+            fatal_error = true;
+        } else {
+            camera_input_order.begin_ui();
+            if (!hide_ui) {
+                ui.draw_debug_panel(stats);
+                ui.draw_worlds_panel(worlds, stats);
+                ui.draw_camera_panel(camera);
+                ui.draw_sector_streaming_panel(
+                    *session, camera, frame.extent.width, frame.extent.height);
+            }
+            camera_input_order.build_ui();
+            camera_input_order.decide_capture(ui.camera_input_allowed());
+            if (camera_input_order.camera_update_allowed()) {
+                camera_controller.update(window, dt, camera);
+            }
+        }
+
         ui.update_sector_streaming(*session, camera);
         matter::TickDesc tick{};
         tick.frame_delta_seconds = dt;
@@ -640,23 +675,6 @@ int main() {
                 std::printf("bake error [%s]: %s\n", event.module.c_str(),
                             event.message.c_str());
         }
-        if (test_resize && bake_ready && !resize_exercised) {
-            glfwSetWindowSize(window, 960, 540);
-            glfwPollEvents();
-            screenshot_settle = 0;
-            resize_exercised = true;
-        }
-
-        matter::VulkanFrame frame{};
-        if (!vulkan->begin_frame(frame, error)) {
-            if (error.find("zero-sized") != std::string::npos) {
-                glfwWaitEventsTimeout(0.05);
-                continue;
-            }
-            std::fprintf(stderr, "FATAL: begin_frame: %s\n", error.c_str());
-            break;
-        }
-
         matter::RenderOptions options;
         options.path = matter::RenderPath::GpuDriven;
         options.resolver = stats.resolver_choice == 1
@@ -754,18 +772,6 @@ int main() {
         stats.gpu_dlss_ms            = frame_stats.gpu_dlss_ms;
         stats.gpu_composite_ms       = frame_stats.gpu_composite_ms;
 
-        const bool ui_frame_ready = ui.begin_frame(frame, error);
-        if (!ui_frame_ready) {
-            std::fprintf(stderr, "FATAL: ImGui Vulkan prepare: %s\n",
-                         error.c_str());
-            fatal_error = true;
-        } else if (!hide_ui) {
-            ui.draw_debug_panel(stats);
-            ui.draw_worlds_panel(worlds, stats);
-            ui.draw_camera_panel(camera);
-            ui.draw_sector_streaming_panel(*session, camera, frame.extent.width,
-                                           frame.extent.height);
-        }
         if (ui_frame_ready && !ui.end_frame(frame, error)) {
             std::fprintf(stderr, "FATAL: ImGui Vulkan backend: %s\n", error.c_str());
             fatal_error = true;

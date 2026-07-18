@@ -31,6 +31,25 @@ flecs::entity selected_anchor(flecs::world& world, flecs::entity_t selected) {
 
 } // namespace
 
+void CurrentFrameInputOrder::begin_ui() noexcept {
+    if (stage_ == Stage::AwaitingUi) stage_ = Stage::UiBegun;
+}
+
+void CurrentFrameInputOrder::build_ui() noexcept {
+    if (stage_ == Stage::UiBegun) stage_ = Stage::UiBuilt;
+}
+
+void CurrentFrameInputOrder::decide_capture(
+    bool camera_input_allowed) noexcept {
+    if (stage_ != Stage::UiBuilt) return;
+    camera_input_allowed_ = camera_input_allowed;
+    stage_ = Stage::CaptureDecided;
+}
+
+bool CurrentFrameInputOrder::camera_update_allowed() const noexcept {
+    return stage_ == Stage::CaptureDecided && camera_input_allowed_;
+}
+
 flecs::entity_t create_anchor(StreamingAnchorState& state, flecs::world& world) {
     const flecs::entity anchor =
         world.entity().set<matter::ecs::LocalTransform>({});
@@ -149,6 +168,16 @@ bool apply_gizmo_translation(StreamingAnchorState& state, flecs::world& world,
     anchor.set<matter::ecs::LocalTransform>(updated);
     anchor.add<matter::ecs::TransformDirty>();
     return true;
+}
+
+bool gizmo_translation_allowed(StreamingAnchorState& state,
+                               flecs::world& world) {
+    validate_anchor(state, world);
+    if (state.selected == 0 || state.follow_editor_camera) {
+        return false;
+    }
+    return selected_anchor(world, state.selected)
+        .has<matter::ecs::LocalTransform>();
 }
 
 matter::Mat4f local_transform_matrix(

@@ -67,3 +67,42 @@ While batching subsystem verification, I mistakenly invoked the existing
 streamer regression, whose output identifies an internal long-flight case.
 It passed and created no screenshot/flight artifacts, but it was outside this
 task's requested short gate set and was not run again.
+
+## Fix Round 1: Current-frame capture, detached gizmo, and smoke closure
+
+The camera input sequence now starts the current ImGui frame and constructs all
+panels plus `ImGuizmo::Manipulate` before reading current ImGui/ImGuizmo capture
+state. A production-consumed `CurrentFrameInputOrder` seam enforces
+`begin_ui -> build_ui -> decide_capture -> camera update`; camera follow, ECS
+tick, and render then consume the resulting current-frame camera. The render
+overlay is still recorded after world rendering.
+
+Detached gizmo eligibility now means a selected alive entity with
+`LocalTransform` and `follow_editor_camera == false`. It deliberately does not
+depend on whether `SectorStreaming` is attached, so a detached active owner can
+be translated without removing its streaming component.
+
+The Vulkan smoke target now lists and compiles
+`streaming_anchor_controller.cpp` exactly once, carries
+`-I$(IMGUIZMO_PATH)`, and links the existing dedicated C17 Flecs object required
+by the controller. ImGuizmo remains present once through `IMGUI_SRC_WIN` and
+all flattened source basenames are unique.
+
+### TDD and verification
+
+- RED: focused MSVC compilation failed because `CurrentFrameInputOrder` and
+  `gizmo_translation_allowed` did not exist.
+- GREEN: focused real-Flecs controller/ImGuizmo suite: `ALL PASS`.
+- Focused MSVC `ui.cpp` and `main.cpp` compile: `VIEWER COMPILE PASS`.
+- ECS regression: `ALL PASS`.
+- Sector coordinator regression: `ALL PASS`.
+- Box3D Phase 2 checker: `PASS: Box3D Phase 2 build contract`.
+- First-party `git diff --check`: exit 0.
+
+The actual MinGW smoke executable target was invoked directly without running
+the executable. It reached the unified compile/link command with ImGuizmo,
+the controller, its include paths, and Flecs present, then stopped on a
+pre-existing unrelated test-source defect:
+`matter::win32_process_handle_count` is referenced by
+`vulkan_smoke_tests.cpp:598` but has no declaration or definition anywhere in
+the repository. No screenshot, smoke runtime, or flight automation ran.

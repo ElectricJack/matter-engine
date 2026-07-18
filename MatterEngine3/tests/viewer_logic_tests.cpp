@@ -306,6 +306,23 @@ static void test_streaming_anchor_gizmo_rejects_missing_selection_or_transform()
           "streaming anchor gizmo does not mutate an entity without LocalTransform");
 }
 
+static void test_streaming_anchor_gizmo_allows_detached_streaming_owner() {
+    flecs::world world;
+    const flecs::entity anchor = world.entity()
+        .set<matter::ecs::LocalTransform>({})
+        .add<matter::streaming::SectorStreaming>();
+    matter_viewer::StreamingAnchorState state{};
+    state.selected = anchor.id();
+
+    CHECK(!matter_viewer::gizmo_translation_allowed(state, world),
+          "camera-following anchor does not expose translation gizmo");
+    matter_viewer::detach_follow(state, world);
+    CHECK(matter_viewer::gizmo_translation_allowed(state, world),
+          "detached anchor keeps translation gizmo while streaming is attached");
+    CHECK(anchor.has<matter::streaming::SectorStreaming>(),
+          "gizmo eligibility does not remove streaming component");
+}
+
 static void test_streaming_anchor_matrix_conversion_round_trip_and_translation() {
     matter::Mat4f engine{};
     for (int index = 0; index != 16; ++index)
@@ -388,6 +405,29 @@ static void test_streaming_anchor_camera_input_truth_table() {
           "camera input blocked while the gizmo is active");
     CHECK(!matter_viewer::camera_input_allowed(true, true, true, true),
           "camera input blocked by simultaneous ImGui and gizmo capture");
+}
+
+static void test_current_frame_camera_input_order() {
+    matter_viewer::CurrentFrameInputOrder order{};
+    order.decide_capture(true);
+    CHECK(!order.camera_update_allowed(),
+          "camera update cannot use capture before current UI frame");
+    order.begin_ui();
+    CHECK(!order.camera_update_allowed(),
+          "camera update waits for current panel and gizmo construction");
+    order.build_ui();
+    CHECK(!order.camera_update_allowed(),
+          "camera update waits for current capture decision");
+    order.decide_capture(true);
+    CHECK(order.camera_update_allowed(),
+          "camera update is allowed after begin UI gizmo and capture decision");
+
+    matter_viewer::CurrentFrameInputOrder captured{};
+    captured.begin_ui();
+    captured.build_ui();
+    captured.decide_capture(false);
+    CHECK(!captured.camera_update_allowed(),
+          "current-frame capture decision suppresses camera update");
 }
 
 static viewer::WorldManifestEntry mk_entry(uint32_t id, uint64_t hash, float x) {
@@ -1618,9 +1658,11 @@ int main() {
     test_streaming_anchor_rejects_dead_recycled_and_replaced_worlds();
     test_streaming_anchor_gizmo_uses_engine_matrix_translation();
     test_streaming_anchor_gizmo_rejects_missing_selection_or_transform();
+    test_streaming_anchor_gizmo_allows_detached_streaming_owner();
     test_streaming_anchor_matrix_conversion_round_trip_and_translation();
     test_streaming_anchor_frame_repositions_only_camera();
     test_streaming_anchor_camera_input_truth_table();
+    test_current_frame_camera_input_order();
     test_cull_transform_convention();
     test_world_state_version();
     test_world_state_delta();

@@ -442,7 +442,8 @@ $(VK_EMBEDDED_HEADER): $(VK_SPV) $(ME3_DIR)/tools/embed_spirv.py
 
 build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/tests/vulkan_smoke_tests.cpp \
-        ui.cpp ui.h $(IMGUI_SRC_WIN) \
+        ui.cpp ui.h streaming_anchor_controller.cpp \
+        streaming_anchor_controller.h $(IMGUI_SRC_WIN) \
         $(ME3_DIR)/include/matter/vulkan_device.h \
         $(ME3_DIR)/src/render/gpu_matrix_pack.h \
         $(ME3_DIR)/src/render/vk_draw_command.h \
@@ -466,9 +467,10 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_gi_math.cpp \
         $(ME3_DIR)/src/render/vk_lighting_controls.cpp \
         $(ME3_DIR)/src/render/matrix_math.cpp \
-        $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB)
+        $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(W_FLECS_OBJ)
 	@mkdir -p $(dir $@)
 	$(WIN_CXX) $(ME3_DIR)/tests/vulkan_smoke_tests.cpp ui.cpp \
+	    streaming_anchor_controller.cpp \
 	    $(IMGUI_SRC_WIN) \
 	    $(ME3_DIR)/src/render/streamline_bridge.cpp \
 	    $(ME3_DIR)/src/render/vk_context.cpp \
@@ -482,7 +484,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/vk_gi_math.cpp \
 	    $(ME3_DIR)/src/render/vk_lighting_controls.cpp \
 	    $(ME3_DIR)/src/render/matrix_math.cpp \
-	    $(GLFW_WIN_LIB) -o $@ \
+	    $(GLFW_WIN_LIB) $(W_FLECS_OBJ) -o $@ \
 	    -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers \
 	    -ffunction-sections -Wl,--gc-sections \
 	    -static \
@@ -495,7 +497,8 @@ build/windows/vulkan_smoke_tests.exe: \
 	    -I../MatterSurfaceLib/include \
 	    -I$(ME3_DIR)/tests \
 	    -I../Libraries/raylib/src/external/glfw/include \
-	    -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends \
+	    -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends -I$(IMGUIZMO_PATH) \
+	    -I$(FLECS_DIR) \
 	    $(if $(filter 1,$(HAVE_STREAMLINE)),-I"$(STREAMLINE_PATH)/include") \
 	    -I$(VULKAN_INCLUDE) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 \
 	    -lgdi32 -luser32 -lshell32 -Wl,-Bstatic
