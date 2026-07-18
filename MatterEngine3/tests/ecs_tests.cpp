@@ -1700,6 +1700,51 @@ static void test_sector_streaming_destroying_owner_detaches() {
           "destroyed owner stays detached after worker processing");
 }
 
+static void test_sector_streaming_unsupported_world_error_is_stable() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    runtime.streaming_coordinator().set_profile(
+        nullptr, streaming::SectorStreamingErrorCode::UnsupportedWorld);
+    const flecs::entity owner = world.entity("UnsupportedStreamingOwner")
+        .set<ecs::LocalTransform>({{8.0f, 0.0f, 8.0f}})
+        .add<streaming::SectorStreaming>();
+
+    runtime.tick({0.0f, 0.1f, 1});
+    runtime.streaming_coordinator().worker_step();
+    runtime.tick({0.0f, 0.1f, 1});
+    CHECK(owner.has<streaming::SectorStreamingError>() &&
+              owner.get<streaming::SectorStreamingError>().code ==
+                  streaming::SectorStreamingErrorCode::UnsupportedWorld,
+          "unsupported profile publishes its recoverable error");
+
+    int removals = 0;
+    world.observer<streaming::SectorStreamingError>(
+             "CountUnsupportedStreamingErrorRemovals")
+        .event(flecs::OnRemove)
+        .each([&](flecs::entity entity,
+                  streaming::SectorStreamingError&) {
+            if (entity.id() == owner.id()) ++removals;
+        });
+
+    for (int tick = 0; tick < 5; ++tick) {
+        runtime.tick({0.0f, 0.1f, 1});
+        runtime.streaming_coordinator().worker_step();
+        CHECK(owner.has<streaming::SectorStreamingError>() &&
+                  owner.get<streaming::SectorStreamingError>().code ==
+                      streaming::SectorStreamingErrorCode::UnsupportedWorld,
+              "unsupported error remains continuously present across ticks");
+    }
+    CHECK(removals == 0,
+          "generic snapshot publication does not churn unsupported error");
+
+    matter_stream::Config profile = tiny_streaming_profile();
+    runtime.streaming_coordinator().set_profile(&profile);
+    runtime.streaming_coordinator().worker_step();
+    runtime.tick({0.0f, 0.1f, 1});
+    CHECK(!owner.has<streaming::SectorStreamingError>() && removals == 1,
+          "real procedural profile clears unsupported error exactly once");
+}
+
 static void test_sector_streaming_runtime_teardown_fails_closed() {
     {
         ecs_runtime::Runtime runtime;
@@ -1761,6 +1806,7 @@ int main() {
     test_sector_streaming_transform_loss_clears_active_generation();
     test_sector_streaming_ignores_unrelated_camera_values();
     test_sector_streaming_destroying_owner_detaches();
+    test_sector_streaming_unsupported_world_error_is_stable();
     test_sector_streaming_runtime_teardown_fails_closed();
     return check_summary();
 }

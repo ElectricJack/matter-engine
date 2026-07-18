@@ -137,7 +137,16 @@ void publish_streaming_snapshot(
         remove_published_components(world, next.published_owner);
     }
     owner.set<SectorStreamingStatus>(snapshot.status);
-    owner.remove<SectorStreamingError>();
+    if (snapshot.error.code != SectorStreamingErrorCode::None) {
+        const SectorStreamingError* current =
+            owner.try_get<SectorStreamingError>();
+        if (current == nullptr || current->code != snapshot.error.code ||
+            current->active_owner != snapshot.error.active_owner) {
+            owner.set<SectorStreamingError>(snapshot.error);
+        }
+    } else {
+        owner.remove<SectorStreamingError>();
+    }
     next.published_owner = snapshot.owner;
     world.set<StreamingArbitration>(next);
 }

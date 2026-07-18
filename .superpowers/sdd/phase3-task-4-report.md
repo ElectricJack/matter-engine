@@ -103,3 +103,101 @@ claimed. Scope is limited to the public copied-status seam, private coordinator
 integration seams proven by tests, lifecycle integration, focused tests, and the
 closed-world fixture. The unrelated modified `.superpowers/sdd/progress.md` was
 preserved and excluded from this task's commit.
+
+## Fix Round 1: Failure-Path Hardening
+
+### Review Findings and Root Causes
+
+The initial integration had four related early-release boundaries. Coordinator
+evictions were moved directly into a one-shot GPU job, so a mid-batch failure
+lost the only cleanup tags. Publication used several ad-hoc exits instead of one
+transaction, recorded successful registrations rather than attempts, and loaded
+PartStore before collision rejection. Procedural install published its profile
+before authored app/GPU finalization. Finally, the generic ECS snapshot publisher
+removed every error before the session re-added `UnsupportedWorld`, causing
+observable remove/add churn on every tick.
+
+### RED Evidence
+
+Focused tests were added before the hardening implementation. The coordinator
+test translation unit failed on the absent production seams:
+
+```text
+error C2039: 'PendingEvictionBatch': is not a member of detail
+error C2039: 'PublicationTransaction': is not a member of detail
+error C2039: 'ProfileActivationGate': is not a member of detail
+```
+
+The ECS regression also targeted the absent
+`set_profile(nullptr, UnsupportedWorld)` overload. The updated GPU integration
+test specifies a `-1` authored-finalize fault and a deterministic same-app-thread
+component-removal latch through the existing fault hook.
+
+### Durable Eviction Barrier
+
+`PendingEvictionBatch` is the shared, mutex-protected production/test seam. It
+deduplicates full tags, applies a value snapshot without holding its mutex, and
+erases only the successfully completed snapshot. A one-shot injected endpoint
+failure after its first item proves the complete two-tag batch survives and the
+retry is idempotent. `WorldSession` now retains every coordinator eviction in
+this batch. Its single app helper clears individual resource-attempt bits only
+after release succeeds; a retained full batch can therefore safely revisit
+already-clean entries.
+
+Profile clear now uses a blocking FIFO app job, retries transient failures, and
+requires both the pending batch and the entire app resident ledger to be empty
+before field/provider replacement. Shutdown uses the same worker barrier and a
+final durable fail-closed check before GPU queue/resource teardown.
+
+### Publication Transaction
+
+One `PublicationTransaction` is created immediately after a successful
+`begin_publication`. It owns rollback-before-false-ack ordering and provides a
+destructor fallback. Same-sector collision is rejected before PartStore access.
+The app ledger is inserted before external publication calls, and shared
+`PublicationResources` bits are set before store load, WorldState insertion,
+culler registration, and Vulkan registration; transient ownership is recorded
+at insertion. Thus a call that partially mutates and then fails is still released
+by the same eviction helper. True acknowledgement occurs only at explicit commit
+after all required mutations. CPU stage-fault cases cover transient, store,
+WorldState, culler, and Vulkan attempt rollback plus the success-only commit path.
+
+### Profile Readiness and Stable UnsupportedWorld
+
+`ProfileActivationGate` privately stages the procedural config during
+`install_world` and publishes it only at the successful end of authored
+finalize/Ready and fatal tail work. Failure/cancellation leaves the coordinator
+with no profile, no requests, and zero residency. The world-stream regression
+injects a finalize failure and asserts `PendingProfile`, zero resident/inflight,
+and zero `FrameStats` residency.
+
+Coordinator snapshots now carry the stable recoverable profile error. The one
+generic ECS publisher sets or preserves it centrally and removes it only when a
+real profile publishes (or ownership disappears); the session no longer performs
+a second error mutation. A five-tick Runtime regression observes continuous
+`UnsupportedWorld`, zero OnRemove callbacks, then exactly one removal when a
+procedural profile replaces it.
+
+The reload-removal integration test no longer races the worker. Its existing
+fault hook removes `SectorStreaming` on the app thread at the finalize barrier;
+the subsequent profile commit sees no owner and cannot restart residency.
+
+### Fresh GREEN Evidence
+
+All binaries and translation units below were rebuilt or rerun from the final
+fix-round sources:
+
+```text
+phase3-task4-fix1-coordinator.exe -> ALL PASS
+phase3-task4-fix1-final-ecs.exe   -> ALL PASS
+phase3-task4-fix1-final-physics.exe -> ALL PASS
+sector_streamer_tests.exe -> long flight peak=7997 end=7993; ALL PASS
+matter_engine.cpp MSVC product TU -> exit 0
+world_stream_tests.cpp MSVC product TU -> exit 0
+Box3D Phase 2 checker -> PASS
+```
+
+The product TU emitted only the previously recorded C4996 `getenv` and C4244
+conversion warnings. GNU Make and the GPU-linked world-stream executable remain
+unavailable on this host, so the new world integration cases are compile-proven
+but not claimed executed here.

@@ -1,6 +1,7 @@
 #include "sector_streaming_coordinator.h"
 
 #include <algorithm>
+#include <exception>
 #include <limits>
 #include <utility>
 
@@ -9,6 +10,14 @@ namespace matter::streaming::detail {
 namespace {
 
 bool same_request(const TaggedRequest& lhs, const TaggedRequest& rhs) {
+    return lhs.owner == rhs.owner && lhs.generation == rhs.generation &&
+           lhs.issuance == rhs.issuance &&
+           lhs.sector.tx == rhs.sector.tx &&
+           lhs.sector.tz == rhs.sector.tz &&
+           lhs.sector.rung == rhs.sector.rung;
+}
+
+bool same_eviction(const TaggedEviction& lhs, const TaggedEviction& rhs) {
     return lhs.owner == rhs.owner && lhs.generation == rhs.generation &&
            lhs.issuance == rhs.issuance &&
            lhs.sector.tx == rhs.sector.tx &&
@@ -31,6 +40,98 @@ uint32_t snapshot_count(size_t count) {
 
 } // namespace
 
+void PendingEvictionBatch::append(std::vector<TaggedEviction> evictions) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& eviction : evictions) {
+        const auto duplicate = std::find_if(
+            pending_.begin(), pending_.end(),
+            [&](const TaggedEviction& current) {
+                return same_eviction(current, eviction);
+            });
+        if (duplicate == pending_.end()) {
+            pending_.push_back(std::move(eviction));
+        }
+    }
+}
+
+bool PendingEvictionBatch::apply(
+    const Endpoint& endpoint,
+    std::string& error) {
+    std::vector<TaggedEviction> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        snapshot = pending_;
+    }
+    if (snapshot.empty()) return true;
+    if (!endpoint(snapshot, error)) return false;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    pending_.erase(
+        std::remove_if(
+            pending_.begin(), pending_.end(),
+            [&](const TaggedEviction& current) {
+                return std::any_of(
+                    snapshot.begin(), snapshot.end(),
+                    [&](const TaggedEviction& applied) {
+                        return same_eviction(current, applied);
+                    });
+            }),
+        pending_.end());
+    return true;
+}
+
+bool PendingEvictionBatch::empty() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return pending_.empty();
+}
+
+size_t PendingEvictionBatch::size() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return pending_.size();
+}
+
+PublicationTransaction::PublicationTransaction(
+    Rollback rollback,
+    Acknowledge acknowledge)
+    : rollback_(std::move(rollback)),
+      acknowledge_(std::move(acknowledge)) {}
+
+PublicationTransaction::~PublicationTransaction() {
+    if (!active_) return;
+    std::string ignored;
+    fail(ignored);
+}
+
+bool PublicationTransaction::fail(std::string& error) {
+    if (!active_) return true;
+    bool rolled_back = false;
+    try {
+        rolled_back = rollback_(error);
+    } catch (const std::exception& exception) {
+        if (error.empty()) error = exception.what();
+    } catch (...) {
+        if (error.empty()) error = "unknown publication rollback failure";
+    }
+
+    bool acknowledged = true;
+    try {
+        acknowledge_(false);
+    } catch (const std::exception& exception) {
+        acknowledged = false;
+        if (error.empty()) error = exception.what();
+    } catch (...) {
+        acknowledged = false;
+        if (error.empty()) error = "unknown publication acknowledgement failure";
+    }
+    active_ = false;
+    return rolled_back && acknowledged;
+}
+
+void PublicationTransaction::commit() {
+    acknowledge_(true);
+    active_ = false;
+}
+
 bool Coordinator::attach(flecs::entity_t owner) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (owner == 0 || intended_owner_ != 0) return false;
@@ -45,10 +146,17 @@ flecs::entity_t Coordinator::intended_owner() const {
     return intended_owner_;
 }
 
-void Coordinator::set_profile(const matter_stream::Config* profile) {
+void Coordinator::set_profile(
+    const matter_stream::Config* profile,
+    SectorStreamingErrorCode profile_error) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (profile) intended_profile_ = *profile;
-    else intended_profile_.reset();
+    if (profile) {
+        intended_profile_ = *profile;
+        intended_profile_error_ = SectorStreamingErrorCode::None;
+    } else {
+        intended_profile_.reset();
+        intended_profile_error_ = profile_error;
+    }
     ++profile_revision_;
 }
 
@@ -160,9 +268,11 @@ void Coordinator::clear_worker_streamer() {
 
 void Coordinator::publish_snapshot(
     uint64_t attachment_revision,
-    const std::optional<matter_stream::Config>& profile) {
+    const std::optional<matter_stream::Config>& profile,
+    SectorStreamingErrorCode profile_error) {
     Snapshot next{};
     next.owner = worker_owner_;
+    next.error.code = profile_error;
     if (worker_owner_ == 0) {
         next.status.state = SectorStreamingState::Detached;
     } else if (!profile) {
@@ -187,6 +297,7 @@ void Coordinator::worker_step() {
     uint64_t anchor_reset_revision = 0;
     uint64_t restart_revision = 0;
     std::optional<matter_stream::Config> profile;
+    SectorStreamingErrorCode profile_error = SectorStreamingErrorCode::None;
     std::optional<AnchorSample> anchor;
     std::vector<Acknowledgement> acknowledgements;
     {
@@ -197,6 +308,7 @@ void Coordinator::worker_step() {
         anchor_reset_revision = anchor_reset_revision_;
         restart_revision = restart_revision_;
         profile = intended_profile_;
+        profile_error = intended_profile_error_;
         anchor = intended_anchor_;
         acknowledgements.swap(acknowledgement_inbox_);
     }
@@ -283,7 +395,7 @@ void Coordinator::worker_step() {
     }
 
     collect_streamer_evictions();
-    publish_snapshot(attachment_revision, profile);
+    publish_snapshot(attachment_revision, profile, profile_error);
 }
 
 bool Coordinator::next_request(TaggedRequest& out) {
@@ -324,6 +436,26 @@ std::vector<TaggedEviction> Coordinator::take_evictions() {
     std::vector<TaggedEviction> result;
     result.swap(pending_evictions_);
     return result;
+}
+
+void ProfileActivationGate::stage(const matter_stream::Config& profile) {
+    staged_ = profile;
+}
+
+void ProfileActivationGate::fail(Coordinator& coordinator) {
+    staged_.reset();
+    coordinator.set_profile(nullptr);
+}
+
+bool ProfileActivationGate::publish(Coordinator& coordinator) {
+    if (!staged_) return false;
+    coordinator.set_profile(&*staged_);
+    staged_.reset();
+    return true;
+}
+
+bool ProfileActivationGate::pending() const noexcept {
+    return staged_.has_value();
 }
 
 } // namespace matter::streaming::detail

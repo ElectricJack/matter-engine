@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <stdexcept>
 #include <vector>
 
 static bool wait_for_bake_finished(matter::WorldSession& s, double timeout_s = 120.0) {
@@ -323,9 +324,15 @@ int main() {
 
     // 7. Removing activation during reload prevents the preserved entity from
     //    restarting after the replacement profile is installed.
-    printf("reload() with streaming removal...\n");
+    printf("reload() with latched streaming removal...\n");
+    bool removed_at_finalize = false;
+    session->set_test_fault_hook([&](int stage) {
+        if (stage == -1 && !removed_at_finalize) {
+            removed_at_finalize = true;
+            streaming_anchor.remove<matter::streaming::SectorStreaming>();
+        }
+    });
     session->reload();
-    streaming_anchor.remove<matter::streaming::SectorStreaming>();
     if (!wait_for_bake_finished(*session, 120.0)) {
         printf("FAIL: removal-during-reload install did not complete\n");
         session.reset();
@@ -336,7 +343,8 @@ int main() {
         session->pump_gpu_jobs(16.0f);
         session->tick({0.0f, 1.0f / 60.0f, 4});
     }
-    assert(session->ecs().is_alive(streaming_anchor_id) &&
+    assert(removed_at_finalize &&
+           session->ecs().is_alive(streaming_anchor_id) &&
            !session->ecs().entity(streaming_anchor_id)
                 .has<matter::streaming::SectorStreaming>() &&
            session->streaming_status().state ==
@@ -345,7 +353,30 @@ int main() {
            session->frame_stats().resident_sectors == 0 &&
            "removal during reload prevents residency");
 
-    // 8. A closed-world bake stays usable while activation reports the
+    // 8. A fault in the authored finalize barrier cannot activate the staged
+    //    procedural profile or allocate any sector work.
+    streaming_anchor.add<matter::streaming::SectorStreaming>();
+    session->set_test_fault_hook([](int stage) {
+        if (stage == -1) {
+            throw std::runtime_error("injected authored finalize failure");
+        }
+    });
+    session->reload();
+    assert(wait_for_fatal_bake_error(*session, 120.0) &&
+           "injected finalize fault reports a fatal authored bake error");
+    for (int i = 0; i < 60; ++i) {
+        session->pump_gpu_jobs(16.0f);
+        session->tick({0.0f, 1.0f / 60.0f, 4});
+    }
+    assert(session->streaming_status().state ==
+               matter::streaming::SectorStreamingState::PendingProfile &&
+           session->streaming_status().resident_sectors == 0 &&
+           session->streaming_status().inflight_sectors == 0 &&
+           session->frame_stats().resident_sectors == 0 &&
+           "failed authored finalize leaves no profile, sector work, or residency");
+    session->set_test_fault_hook({});
+
+    // 9. A closed-world bake stays usable while activation reports the
     //    recoverable UnsupportedWorld error and streams zero sectors.
     matter::WorldDesc closed_wd = wd;
     closed_wd.world_name = "ClosedWorld";
@@ -384,7 +415,7 @@ int main() {
            "closed-world activation is recoverable and non-streaming");
     closed_session.reset();
 
-    // 9. Destroy the successful session, then open a replacement whose bake
+    // 10. Destroy the successful session, then open a replacement whose bake
     // deterministically fails because its world directory does not exist.
     printf("destroying session...\n");
     session.reset();

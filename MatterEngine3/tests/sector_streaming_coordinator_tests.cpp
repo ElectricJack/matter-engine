@@ -9,6 +9,10 @@
 
 using matter::streaming::SectorStreamingState;
 using matter::streaming::detail::Coordinator;
+using matter::streaming::detail::PendingEvictionBatch;
+using matter::streaming::detail::ProfileActivationGate;
+using matter::streaming::detail::PublicationResources;
+using matter::streaming::detail::PublicationTransaction;
 using matter::streaming::detail::TaggedEviction;
 using matter::streaming::detail::TaggedRequest;
 
@@ -106,6 +110,124 @@ struct FakePublicationLedger {
 };
 
 int main() {
+    // A failed app endpoint keeps the complete tagged batch durable. Work that
+    // completed before a mid-batch fault is harmlessly seen again, and the tags
+    // disappear only after the production batch seam reports full success.
+    {
+        PendingEvictionBatch pending;
+        const TaggedEviction first{
+            kOwnerA, 11, 101, matter_stream::Eviction{0, 0, 1}};
+        const TaggedEviction second{
+            kOwnerA, 11, 102, matter_stream::Eviction{1, 0, 1}};
+        pending.append({first, second});
+
+        int endpoint_calls = 0;
+        std::vector<uint64_t> cleaned;
+        std::string error;
+        CHECK(!pending.apply(
+                  [&](const std::vector<TaggedEviction>& batch,
+                      std::string& endpoint_error) {
+                      ++endpoint_calls;
+                      cleaned.push_back(batch.front().issuance);
+                      endpoint_error = "injected mid-batch eviction failure";
+                      return false;
+                  },
+                  error) &&
+                  pending.size() == 2,
+              "mid-batch failure retains every tagged eviction for retry");
+        CHECK(pending.apply(
+                  [&](const std::vector<TaggedEviction>& batch,
+                      std::string&) {
+                      ++endpoint_calls;
+                      for (const auto& eviction : batch) {
+                          if (std::find(cleaned.begin(), cleaned.end(),
+                                        eviction.issuance) == cleaned.end()) {
+                              cleaned.push_back(eviction.issuance);
+                          }
+                      }
+                      return true;
+                  },
+                  error) &&
+                  pending.empty() && endpoint_calls == 2 &&
+                  cleaned.size() == 2,
+              "retry is idempotent and clears tags only on full success");
+    }
+
+    // The production publication guard owns rollback-before-false-ack ordering
+    // for faults at every attempted resource stage.
+    {
+        for (int fail_stage = 0; fail_stage < 5; ++fail_stage) {
+            PublicationResources resources{};
+            std::vector<std::string> order;
+            PublicationTransaction transaction(
+                [&](std::string&) {
+                    order.push_back("rollback");
+                    resources = {};
+                    return true;
+                },
+                [&](bool published) {
+                    order.push_back(published ? "ack:true" : "ack:false");
+                });
+
+            resources.transient_artifact = true;
+            if (fail_stage >= 1) resources.store_attempted = true;
+            if (fail_stage >= 2) resources.world_state_attempted = true;
+            if (fail_stage >= 3) resources.culler_attempted = true;
+            if (fail_stage >= 4) resources.vulkan_attempted = true;
+            std::string error;
+            CHECK(transaction.fail(error) &&
+                      order.size() == 2 && order[0] == "rollback" &&
+                      order[1] == "ack:false" &&
+                      !resources.transient_artifact &&
+                      !resources.store_attempted &&
+                      !resources.world_state_attempted &&
+                      !resources.culler_attempted &&
+                      !resources.vulkan_attempted,
+                  "stage fault rolls back every attempted resource before false ack");
+        }
+
+        std::vector<std::string> order;
+        PublicationTransaction transaction(
+            [&](std::string&) {
+                order.push_back("rollback");
+                return true;
+            },
+            [&](bool published) {
+                order.push_back(published ? "ack:true" : "ack:false");
+            });
+        transaction.commit();
+        CHECK(order == std::vector<std::string>{"ack:true"},
+              "successful transaction acknowledges only after explicit commit");
+    }
+
+    // A procedural profile is staged privately and cannot allocate sector work
+    // when authored finalization fails before the gate is committed.
+    {
+        Coordinator coordinator;
+        ProfileActivationGate activation;
+        auto profile = tiny_profile();
+        CHECK(coordinator.attach(kOwnerA),
+              "profile-readiness test attaches owner");
+        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        activation.stage(profile);
+        activation.fail(coordinator);
+        coordinator.worker_step();
+        TaggedRequest request{};
+        CHECK(coordinator.snapshot().status.state ==
+                  SectorStreamingState::PendingProfile &&
+                  coordinator.snapshot().status.resident_sectors == 0 &&
+                  coordinator.snapshot().status.inflight_sectors == 0 &&
+                  !coordinator.next_request(request),
+              "failed authored finalize leaves zero profile work or residency");
+
+        activation.stage(profile);
+        activation.publish(coordinator);
+        coordinator.worker_step();
+        CHECK(coordinator.snapshot().status.state == SectorStreamingState::Active &&
+                  coordinator.next_request(request),
+              "authored success publishes the staged procedural profile");
+    }
+
     // App resources precede a successful acknowledgement, while rollback and
     // false acknowledgement can never create coordinator residency.
     {
