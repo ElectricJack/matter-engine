@@ -2,7 +2,13 @@
 Branch: codex/box3d-runtime-physics | Plan: docs/superpowers/plans/2026-07-18-box3d-runtime-physics.md
 BASE at start: 66c86d2
 
-Resume at Task 1.
+Task 1: complete (commits d923e4a..72ae69d, review clean after fixes)
+  - Added the public engine-native physics contract, reflection metadata, settings singleton, and refined physics phase graph.
+  - Dedicated contract target compiles Flecs as C17 and contains no Box3D dependency.
+  - Reviewer-requested non-creating metadata checks, complete collider/default coverage, and original phase-edge assertions are green.
+  - Focused MSVC physics contract and Phase 1 ECS suites print ALL PASS; GNU remains environment-blocked.
+
+Resume at Task 2.
 
 Environment gate:
   - WSL is installed without a Linux distribution.
