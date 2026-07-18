@@ -65,6 +65,56 @@ function Require-Count([string]$label, [string]$text, [string]$needle, [int]$exp
     }
 }
 
+function Remove-CppComments([string]$text) {
+    return [regex]::Replace($text, '(?s)/\*.*?\*/|//[^\r\n]*', '')
+}
+
+function Get-CppFunctionBody([string]$text, [string]$signaturePattern) {
+    $code = Remove-CppComments $text
+    $match = [regex]::Match($code, $signaturePattern)
+    if (-not $match.Success) { return '' }
+    $open = $code.IndexOf('{', $match.Index)
+    if ($open -lt 0) { return '' }
+    $depth = 0
+    for ($index = $open; $index -lt $code.Length; ++$index) {
+        if ($code[$index] -eq '{') { ++$depth }
+        elseif ($code[$index] -eq '}') {
+            --$depth
+            if ($depth -eq 0) { return $code.Substring($open, $index - $open + 1) }
+        }
+    }
+    return ''
+}
+
+function Test-FunctionBodyRegex([string]$text, [string]$signaturePattern,
+                                [string]$bodyPattern) {
+    $body = Get-CppFunctionBody $text $signaturePattern
+    return $body.Length -gt 0 -and $body -match $bodyPattern
+}
+
+function Require-FunctionBodyRegex([string]$label, [string]$text,
+                                   [string]$signaturePattern,
+                                   [string]$bodyPattern) {
+    if (-not (Test-FunctionBodyRegex $text $signaturePattern $bodyPattern)) {
+        $failures.Add("$label missing required statement in its implementation body")
+    }
+}
+
+function Require-FunctionBodyOrder([string]$label, [string]$text,
+                                   [string]$signaturePattern,
+                                   [string[]]$patterns) {
+    $body = Get-CppFunctionBody $text $signaturePattern
+    $cursor = -1
+    foreach ($pattern in $patterns) {
+        $match = [regex]::Match($body, $pattern)
+        if (-not $match.Success -or $match.Index -le $cursor) {
+            $failures.Add("$label missing ordered implementation contract /$pattern/")
+            return
+        }
+        $cursor = $match.Index
+    }
+}
+
 function Require-UniqueBasenames([string]$label, [string[]]$sources) {
     $basenames = foreach ($source in $sources) {
         [System.IO.Path]::GetFileNameWithoutExtension(($source -replace '/', '\\'))
@@ -85,6 +135,7 @@ $viewerMain = Read-RepoFile 'MatterViewer\main.cpp'
 $session = Read-RepoFile 'MatterEngine3\src\matter_engine.cpp'
 $coordinatorHeader = Read-RepoFile 'MatterEngine3\src\streaming\sector_streaming_coordinator.h'
 $coordinatorSource = Read-RepoFile 'MatterEngine3\src\streaming\sector_streaming_coordinator.cpp'
+$streamerSource = Read-RepoFile 'MatterEngine3\src\sector_streamer.cpp'
 $buildAll = Read-RepoFile 'build-all.sh'
 $gitignore = Read-RepoFile '.gitignore'
 
@@ -125,6 +176,8 @@ foreach ($appGraph in @('LINUX_APP_SRC', 'APP_SRC')) {
 Require-Count 'Viewer ImGuizmo include' $viewerUi '#include "ImGuizmo.h"' 1
 Require-Count 'Viewer ImGuizmo path include' (Get-AssignmentBlock $viewer 'INCLUDE_PATHS') '-I$(IMGUIZMO_PATH)' 1
 Require-Count 'Viewer ImGuizmo source' (Get-AssignmentBlock $viewer 'IMGUIZMO_SRC') '$(IMGUIZMO_PATH)/ImGuizmo.cpp' 1
+Require-Count 'Viewer Linux ImGuizmo source union' (Get-AssignmentBlock $viewer 'IMGUI_SRC_LINUX') '$(IMGUIZMO_SRC)' 1
+Require-Count 'Viewer Windows ImGuizmo source union' (Get-AssignmentBlock $viewer 'IMGUI_SRC_WIN') '$(IMGUIZMO_SRC)' 1
 Require-Count 'Viewer pinned ImGuizmo commit' $viewer 'dc25afb98bc3ebe00dfc9a23ba7235fead2ccb1d' 1
 $upstream = Read-RepoFile 'Libraries\ImGuizmo\UPSTREAM.md'
 $license = Read-RepoFile 'Libraries\ImGuizmo\LICENSE'
@@ -141,22 +194,43 @@ Require-UniqueBasenames 'Viewer flattened Windows source union' @(
 # Viewer must not drive streaming through a per-frame focus update.
 Require-Count 'MatterViewer per-frame bake focus' $viewerMain 'set_bake_focus' 0
 
-# Preserve Task 4's durable admission and lifecycle boundaries with source
-# contracts rather than re-running the behavioral fake-endpoint suite here.
-foreach ($contract in @(
-    @{ Label = 'durable completion capacity'; Text = $coordinatorHeader; Needle = 'class PublicationCompletionCapacity' },
-    @{ Label = 'non-allocating admission reserve'; Text = $coordinatorSource; Needle = 'PublicationCompletionCapacity::try_reserve' },
-    @{ Label = 'completion release'; Text = $coordinatorSource; Needle = 'PublicationCompletionCapacity::release' },
-    @{ Label = 'strong request tracking'; Text = $coordinatorHeader; Needle = 'RequestTrackingStage' },
-    @{ Label = 'noexcept request admission'; Text = $coordinatorHeader; Needle = 'RequestTrackingFault fault = nullptr) noexcept;' },
-    @{ Label = 'exact request cancellation'; Text = $coordinatorSource; Needle = 'streamer_->cancel_request(' },
-    @{ Label = 'durable eviction retention'; Text = $coordinatorHeader; Needle = 'class PendingEvictionBatch' },
-    @{ Label = 'profile lifecycle gate'; Text = $coordinatorHeader; Needle = 'class ProfileActivationGate' },
-    @{ Label = 'single app eviction helper'; Text = $session; Needle = 'WorldSession::Impl::apply_sector_evictions(' },
-    @{ Label = 'publication transaction'; Text = $session; Needle = 'streaming::detail::PublicationTransaction transaction(' }
-)) {
-    Require-Contains $contract.Label $contract.Text $contract.Needle
+# Preserve Task 4's durable admission and lifecycle boundaries with scoped,
+# comment-stripped implementation contracts rather than behavioral re-runs.
+$coordinatorNextRequest = '(?s)\bbool\s+Coordinator::next_request\s*\(\s*TaggedRequest&\s+out,\s*void\*\s+fault_context,\s*RequestTrackingFault\s+fault\s*\)\s*noexcept\s*\{'
+$streamerCancelRequest = '(?s)\bbool\s+SectorStreamer::cancel_request\s*\(\s*int64_t\s+tx,\s*int64_t\s+tz,\s*int\s+rung\s*\)\s*noexcept\s*\{'
+$streamStep = '(?s)\bvoid\s+WorldSession::Impl::execute_sector_stream_step\s*\(\s*\)\s*\{'
+$clearProfile = '(?s)\bbool\s+WorldSession::Impl::clear_streaming_profile\s*\(\s*std::string&\s+err,\s*bool\s+restore_on_failure\s*\)\s*\{'
+
+# Checker fixtures prove a comment cannot satisfy the body-aware cancellation
+# contract, while an executable statement in the intended body can.
+$commentOnlyFixture = 'bool Coordinator::next_request(TaggedRequest& out, void* fault_context, RequestTrackingFault fault) noexcept { // streamer_->cancel_request(sector.tx, sector.tz, sector.rung); return false; }'
+$liveFixture = 'bool Coordinator::next_request(TaggedRequest& out, void* fault_context, RequestTrackingFault fault) noexcept { streamer_->cancel_request(sector.tx, sector.tz, sector.rung); return false; }'
+$commentOnlyPasses = Test-FunctionBodyRegex $commentOnlyFixture $coordinatorNextRequest 'streamer_->cancel_request\s*\('
+$liveFixturePasses = Test-FunctionBodyRegex $liveFixture $coordinatorNextRequest 'streamer_->cancel_request\s*\('
+if ($commentOnlyPasses -or -not $liveFixturePasses) {
+    $failures.Add('Phase 3 checker self-test failed: comments must not satisfy lifecycle contracts')
 }
+
+Require-Regex 'durable completion capacity declaration' $coordinatorHeader '(?m)^class\s+PublicationCompletionCapacity\s*\{'
+Require-FunctionBodyRegex 'non-allocating admission reserve' $coordinatorSource '(?s)\bbool\s+PublicationCompletionCapacity::try_reserve\s*\(\s*size_t&\s+slot\s*\)\s*noexcept\s*\{' 'occupied_\[index\]\s*=\s*true'
+Require-FunctionBodyRegex 'completion release' $coordinatorSource '(?s)\bvoid\s+PublicationCompletionCapacity::release\s*\(\s*size_t\s+slot\s*\)\s*noexcept\s*\{' 'occupied_\[slot\]\s*=\s*false'
+Require-Regex 'strong request tracking declaration' $coordinatorHeader '(?m)^enum class\s+RequestTrackingStage\s*:\s*uint8_t\s*\{'
+Require-Regex 'noexcept request admission declaration' $coordinatorHeader '(?ms)^\s*bool\s+next_request\s*\(.*?RequestTrackingFault\s+fault\s*=\s*nullptr\)\s*noexcept\s*;'
+Require-FunctionBodyRegex 'Coordinator request admission reserves before streamer mutation' $coordinatorSource $coordinatorNextRequest 'issued_requests_\.reserve[\s\S]*publication_candidates_\.reserve[\s\S]*streamer_->next_request'
+Require-FunctionBodyRegex 'Coordinator exact request rollback' $coordinatorSource $coordinatorNextRequest 'streamer_->cancel_request\s*\(\s*sector\.tx,\s*sector\.tz,\s*sector\.rung\s*\)'
+Require-FunctionBodyRegex 'SectorStreamer exact cancellation clears matching inflight rung' $streamerSource $streamerCancelRequest 'inflight_rung\s*=\s*-1[\s\S]*--inflight_'
+Require-Regex 'durable eviction retention declaration' $coordinatorHeader '(?m)^class\s+PendingEvictionBatch\s*\{'
+Require-Regex 'profile lifecycle gate declaration' $coordinatorHeader '(?m)^class\s+ProfileActivationGate\s*\{'
+Require-FunctionBodyOrder 'session stream admission' $session $streamStep @(
+    'reserve_publication_completion\s*\(',
+    'coordinator\.next_request\s*\(',
+    'begin_publication\s*\(')
+Require-FunctionBodyOrder 'session lifecycle clear barrier' $session $clearProfile @(
+    'streaming_profile_activation\.begin_clear\s*\(',
+    'coordinator\.worker_step\s*\(',
+    'drain_sector_evictions\s*\(\s*true',
+    'streaming_profile_activation\.finish_clear\s*\(')
+Require-FunctionBodyRegex 'single app eviction helper' $session '(?s)\bbool\s+WorldSession::Impl::apply_sector_evictions\s*\(' 'matter_async::assert_gl_thread\s*\(\s*"stream\.apply_evictions"\s*\)'
 
 # Retirement checks use the tracked index (not filesystem state) and search only
 # active automation for build/runtime/package/smoke expectations. Historical docs
@@ -178,8 +252,8 @@ foreach ($file in Get-ChildItem -LiteralPath $root -Recurse -File |
     $activeAutomation += @{ Label = $relative; Text = [System.IO.File]::ReadAllText($file.FullName) }
 }
 foreach ($entry in $activeAutomation) {
-    if ($entry.Text -match '(?im)ExplorerDemo/(?:explorer|cache|shaders?|dist)|\bExplorerDemo\b.*\b(?:build|runtime|package|smoke)|\b(?:build|runtime|package|smoke)\b.*\bExplorerDemo\b') {
-        $failures.Add("$($entry.Label) retains an Explorer build/runtime/package/smoke expectation")
+    if ($entry.Text -match '(?i)ExplorerDemo[\\/]|\bExplorerDemo\b.*\b(?:build|runtime|package|smoke)|\b(?:build|runtime|package|smoke)\b.*\bExplorerDemo\b') {
+        $failures.Add("$($entry.Label) retains an Explorer path or build/runtime/package/smoke expectation")
     }
 }
 

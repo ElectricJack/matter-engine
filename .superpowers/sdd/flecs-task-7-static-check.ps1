@@ -111,7 +111,6 @@ function Require-UniqueBasenames([string]$label, [string[]]$sources) {
 $engine = Read-RepoFile 'MatterEngine3\Makefile'
 $tests = Read-RepoFile 'MatterEngine3\tests\Makefile'
 $viewer = Read-RepoFile 'MatterViewer\Makefile'
-$explorer = Read-RepoFile 'ExplorerDemo\Makefile'
 
 # MatterEngine3 archive contract.
 Require-Regex 'engine Flecs directory' $engine '(?m)^FLECS_DIR\s*=\s*\.\./Libraries/flecs\s*$'
@@ -124,7 +123,7 @@ Require-Regex 'engine Flecs C source' $engine '(?m)^FLECS_C\s*=\s*\$\(FLECS_DIR\
 Require-Regex 'engine Flecs object' $engine '(?m)^FLECS_OBJ\s*=\s*flecs\.o\s*$'
 Require-Regex 'engine C++ vpath' $engine '(?m)^vpath %\.cpp .*\bsrc/ecs\b'
 Require-Regex 'engine C vpath' $engine '(?m)^vpath %\.c .*\$\(FLECS_DIR\)'
-Require-Regex 'engine dedicated Flecs C rule' $engine '(?ms)^\$\(FLECS_OBJ\):\s*\$\(FLECS_C\)\s*\r?\n\s*gcc -c \$< -o \$@ -std=c99 -O2 -I\$\(FLECS_DIR\)\s*$'
+Require-Regex 'engine dedicated Flecs C rule' $engine '(?ms)^\$\(FLECS_OBJ\):\s*\$\(FLECS_C\)\s*\r?\n\s*gcc -c \$< -o \$@ -std=c17 -O2 -I\$\(FLECS_DIR\)\s*$'
 Require-Contains 'engine archive prerequisites' ([regex]::Match($engine, '(?m)^\$\(LIB\):.*$').Value) '$(FLECS_OBJ)'
 Require-Contains 'engine archive members' ([regex]::Match($engine, '(?m)^\s*ar rcs \$\(LIB\).*$').Value) '$(FLECS_OBJ)'
 Require-Contains 'engine clean' ([regex]::Match($engine, '(?m)^\s*rm -f \$\(LIB\).*$').Value) '$(FLECS_OBJ)'
@@ -147,7 +146,7 @@ Require-Count 'GPU_SHARED_OBJS Flecs membership' $gpuSharedObjects '$(flecsc_C_O
 Require-Count 'ECS_OBJS flecsc flavor membership' $ecsObjects '$(call obj_list,flecsc,$(ECS_C))' 1
 Require-Count 'flecsc source union' (Get-AssignmentBlock $tests 'flecsc_C_SRCS') '$(ECS_C)' 1
 Require-Regex 'flecsc uses gcc' $tests '(?m)^FLAVOR_flecsc_CC\s*:=\s*gcc\s*$'
-Require-Regex 'flecsc uses C99' $tests '(?m)^FLAVOR_flecsc_FLAGS\s*:=\s*-std=c99 -O2 -I\$\(FLECS_DIR\)\s*$'
+Require-Regex 'flecsc uses C17' $tests '(?m)^FLAVOR_flecsc_FLAGS\s*:=\s*-std=c17 -O2 -I\$\(FLECS_DIR\)\s*$'
 
 # matter_engine.cpp owns a Runtime, so its final test compile/link union must
 # contain both ECS implementation TUs in addition to the single Flecs C object.
@@ -163,8 +162,7 @@ Require-Count 'gpu_CPP_SRCS consumes complete GPU union' (Get-AssignmentBlock $t
 Require-Count 'GPU_SHARED_OBJS consumes complete GPU union' $gpuSharedObjects '$(call obj_list,gpu,$(GPU_ALL_CPP))' 1
 
 foreach ($entry in @(
-    @{ Label = 'MatterViewer'; Text = $viewer; AppVars = @('APP_SRC', 'WIN_ME3_CPP', 'WIN_MSL_CPP', 'IMGUI_CORE_SRC', 'IMGUI_SRC_WIN', 'WIN_PIPELINE_C', 'QJS_C', 'FLECS_C') },
-    @{ Label = 'ExplorerDemo'; Text = $explorer; AppVars = @('WIN_APP_SRC', 'WIN_ME3_CPP', 'WIN_MSL_CPP', 'WIN_PIPELINE_C', 'QJS_C', 'FLECS_C') }
+    @{ Label = 'MatterViewer'; Text = $viewer; AppVars = @('APP_SRC', 'WIN_ME3_CPP', 'WIN_MSL_CPP', 'IMGUI_CORE_SRC', 'IMGUI_SRC_WIN', 'WIN_PIPELINE_C', 'QJS_C', 'FLECS_C') }
 )) {
     $label = $entry.Label
     $text = $entry.Text
@@ -179,7 +177,7 @@ foreach ($entry in @(
     Require-Contains "$label C++ vpath" (Get-ContinuedLine $text '^vpath %\.cpp ') '$(ME3_DIR)/src/ecs'
     Require-Contains "$label C vpath" ([regex]::Match($text, '(?m)^vpath %\.c .*$').Value) '$(FLECS_DIR)'
     Require-Contains "$label W_ALL_OBJ" (Get-AssignmentBlock $text 'W_ALL_OBJ') '$(W_FLECS_OBJ)'
-    Require-Regex "$label dedicated Flecs C rule" $text '(?ms)^\$\(W_FLECS_OBJ\):\s*\$\(W_DIR\)/%\.o:\s*\$\(FLECS_DIR\)/%\.c \| \$\(W_DIR\)\s*\r?\n\s*\$\(WIN_CC\) -c \$< -o \$@ -std=c99 -O2 -I\$\(FLECS_DIR\).*$'
+    Require-Regex "$label dedicated Flecs C rule" $text '(?ms)^\$\(W_FLECS_OBJ\):\s*\$\(W_DIR\)/%\.o:\s*\$\(FLECS_DIR\)/%\.c \| \$\(W_DIR\)\s*\r?\n\s*\$\(WIN_CC\) -c \$< -o \$@ -std=c17 -O2 -I\$\(FLECS_DIR\).*$'
     Require-Count "$label C++ source union excludes Flecs C" (Get-AssignmentBlock $text 'WIN_ALL_CPP_SRC') '$(FLECS_C)' 0
     Require-Count "$label C++ compiler excludes Flecs rule" ([regex]::Match($text, '(?m)^.*\$\(WIN_CXX\).*$').Value) 'FLECS' 0
 
@@ -198,4 +196,4 @@ if ($failures.Count -gt 0) {
 Write-Host 'PASS: Flecs Task 7 build contract'
 Write-Host ' - MatterEngine3 archive has one C-compiled flecs.o plus both ECS C++ objects'
 Write-Host ' - every matter_engine.cpp test flavor links both ECS C++ objects and one flecsc object'
-Write-Host ' - Viewer and Explorer publish Flecs through shared includes and link one C Flecs source on Windows'
+Write-Host ' - Viewer publishes Flecs through shared includes and links one C Flecs source on Windows'

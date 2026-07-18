@@ -72,3 +72,51 @@ was run. GNU Make is unavailable on this host, so the canonical Make targets
 were not invoked; the available focused executables and MSVC compile-only gate
 were used instead. The unrelated pre-existing modification to
 `.superpowers/sdd/progress.md` remains unstaged and excluded from this commit.
+
+## Fix Round 1: Active-Checker and Lifecycle-Audit Hardening
+
+### RED Evidence
+
+The Phase 3 active-automation scan was first tightened to reject either slash
+form of an Explorer path. Before changing the older Flecs checker it failed as
+intended:
+
+```text
+FAIL: Sector streaming Phase 3 closure (1 issue(s))
+ - .superpowers\sdd\flecs-task-7-static-check.ps1 retains an Explorer path or build/runtime/package/smoke expectation
+```
+
+### Changes
+
+- `flecs-task-7-static-check.ps1` no longer reads `ExplorerDemo/Makefile` or
+  checks an Explorer source graph. Its engine/tests/Viewer Flecs closure is
+  retained and its now-stale C99 rules were updated to the current C17 rules.
+- The Phase 3 active-automation scan now rejects `ExplorerDemo[\\/]` in every
+  active checker/gate, catching both Windows and POSIX path forms.
+- Lifecycle/admission checks now strip C++ comments, extract balanced function
+  bodies from anchored implementation signatures, and require the relevant
+  statements inside `Coordinator::next_request`,
+  `SectorStreamer::cancel_request`, the session stream-admission step, the
+  clear/barrier function, and the app eviction helper. A built-in fixture proves
+  a commented-out cancellation token cannot satisfy the checker while a real
+  statement can.
+- The Viewer audit now requires `$(IMGUIZMO_SRC)` exactly once in each of
+  `IMGUI_SRC_LINUX` and `IMGUI_SRC_WIN` in addition to its standalone source
+  declaration.
+
+### Verification
+
+From both the repository root and a different current directory, all three
+path-robust checkers passed:
+
+```text
+PASS: Flecs Task 7 build contract
+PASS: Box3D Phase 2 build contract
+PASS: Sector streaming Phase 3 closure
+```
+
+Focused controller, ECS, and coordinator executables each printed `ALL PASS`.
+Both staged and unstaged `git diff --check` exited zero. No product source,
+GPU automation, screenshot, smoke, performance, package, or flight test was
+run. The ignored Task 7 brief scratch artifact remains available for review at
+`.superpowers/sdd/phase3-task-7-brief.md` and was not force-tracked.
