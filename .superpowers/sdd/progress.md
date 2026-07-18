@@ -16,7 +16,15 @@ Task 2: complete (commits 3b75ec9..569dc17, review clean with Minors deferred)
   - Minors for Task 8 checker hardening: discover new runtime-bearing assignments, prove link recipes consume archive variables, and scan all public headers.
   - GNU/MinGW product gates remain environment-blocked.
 
-Resume at Task 3.
+Task 3: complete (commits ba8e4c5..7745f88, review clean after fixes)
+  - Added pure validation and Box3D construction for sphere, capsule, oriented box, and convex hull bodies.
+  - Invalid configurations fail closed with exact recoverable PhysicsError codes; correction recreates bodies deterministically.
+  - Stable heap bridge records carry full generational IDs; entity/component removal, invalidation, and replacement retire handles safely.
+  - Reconciliation sorts full entity IDs, preserves dynamic state on replacement, and compares complete desired snapshots after the hash fast path.
+  - Review fixes enforce common-property validation before hull construction and prove forced hash collisions cannot retain stale configuration.
+  - Two fresh all-49 Box3D C17/Flecs C17 plus physics/ECS C++17 builds print ALL PASS; static checker passes.
+
+Resume at Task 4.
 
 Environment gate:
   - WSL is installed without a Linux distribution.
