@@ -1,9 +1,11 @@
 #include "check.h"
 #include "matter/ecs.h"
+#include "../src/ecs/ecs_runtime.h"
 
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <vector>
 
 using namespace matter;
 
@@ -39,6 +41,74 @@ bool has_world_translation(
 
 void progress_transforms(flecs::world& world) {
     world.progress(0.0f);
+}
+
+struct ScheduleProbe {};
+
+enum class RecordedPhase {
+    FixedPreUpdate,
+    FixedUpdate,
+    PrePhysics,
+    Physics,
+    PostPhysics,
+    FixedPostUpdate,
+    FrameUpdate
+};
+
+struct ScheduleRecording {
+    std::vector<RecordedPhase> phases;
+    std::vector<float> fixed_deltas;
+    std::vector<float> frame_deltas;
+};
+
+template <typename Phase, typename PipelineTag>
+void register_recording_system(
+    flecs::world& world,
+    ScheduleRecording& recording,
+    RecordedPhase phase,
+    bool fixed) {
+    flecs::system system = world.system<ScheduleProbe>()
+        .kind<Phase>()
+        .each([&recording, phase, fixed](
+            flecs::iter& iterator,
+            size_t,
+            ScheduleProbe&) {
+            recording.phases.push_back(phase);
+            if (fixed) {
+                recording.fixed_deltas.push_back(iterator.delta_time());
+            } else {
+                recording.frame_deltas.push_back(iterator.delta_time());
+            }
+        });
+    system.add<PipelineTag>();
+}
+
+void install_schedule_recorders(
+    matter::ecs_runtime::Runtime& runtime,
+    ScheduleRecording& recording) {
+    flecs::world& world = runtime.world();
+    world.component<ScheduleProbe>();
+    world.entity().add<ScheduleProbe>();
+    register_recording_system<ecs::FixedPreUpdate, ecs::FixedPipelineSystem>(
+        world, recording, RecordedPhase::FixedPreUpdate, true);
+    register_recording_system<ecs::FixedUpdate, ecs::FixedPipelineSystem>(
+        world, recording, RecordedPhase::FixedUpdate, true);
+    register_recording_system<ecs::PrePhysics, ecs::FixedPipelineSystem>(
+        world, recording, RecordedPhase::PrePhysics, true);
+    register_recording_system<ecs::Physics, ecs::FixedPipelineSystem>(
+        world, recording, RecordedPhase::Physics, true);
+    register_recording_system<ecs::PostPhysics, ecs::FixedPipelineSystem>(
+        world, recording, RecordedPhase::PostPhysics, true);
+    register_recording_system<ecs::FixedPostUpdate, ecs::FixedPipelineSystem>(
+        world, recording, RecordedPhase::FixedPostUpdate, true);
+    register_recording_system<ecs::FrameUpdate, ecs::FramePipelineSystem>(
+        world, recording, RecordedPhase::FrameUpdate, false);
+}
+
+bool phases_equal(
+    const std::vector<RecordedPhase>& actual,
+    std::initializer_list<RecordedPhase> expected) {
+    return actual == std::vector<RecordedPhase>(expected);
 }
 
 } // namespace
@@ -673,6 +743,272 @@ static void test_parent_destruction_cascade_deletes_descendants() {
           "ChildOf ownership cascade-deletes all descendants");
 }
 
+static void test_runtime_runs_fixed_phases_then_frame_phase() {
+    ecs_runtime::Runtime runtime;
+    ScheduleRecording recording;
+    install_schedule_recorders(runtime, recording);
+
+    const ecs_runtime::TickResult result = runtime.tick({0.1f, 0.1f, 4});
+
+    CHECK(!result.invalid, "valid runtime tick is accepted");
+    CHECK(result.fixed_steps == 1,
+          "one fixed interval runs exactly one fixed step");
+    CHECK(result.dropped_steps == 0,
+          "one fixed interval drops no fixed steps");
+    CHECK(phases_equal(recording.phases, {
+              RecordedPhase::FixedPreUpdate,
+              RecordedPhase::FixedUpdate,
+              RecordedPhase::PrePhysics,
+              RecordedPhase::Physics,
+              RecordedPhase::PostPhysics,
+              RecordedPhase::FixedPostUpdate,
+              RecordedPhase::FrameUpdate}),
+          "fixed phases run in order before the frame phase");
+    CHECK(recording.fixed_deltas.size() == 6,
+          "all six fixed systems receive a delta");
+    for (float delta : recording.fixed_deltas) {
+        CHECK(approx(delta, 0.1f),
+              "fixed systems receive exactly the configured fixed delta");
+    }
+    CHECK(recording.frame_deltas.size() == 1 &&
+              approx(recording.frame_deltas[0], 0.1f),
+          "frame system receives the contributed frame delta");
+}
+
+static void test_runtime_accumulates_fractional_fixed_time() {
+    ecs_runtime::Runtime runtime;
+    ScheduleRecording recording;
+    install_schedule_recorders(runtime, recording);
+
+    const ecs_runtime::TickResult first = runtime.tick({0.05f, 0.1f, 4});
+    CHECK(first.fixed_steps == 0 && !first.invalid,
+          "half a fixed interval runs no fixed step");
+    CHECK(phases_equal(recording.phases, {RecordedPhase::FrameUpdate}),
+          "half a fixed interval runs only the frame phase");
+
+    recording.phases.clear();
+    const ecs_runtime::TickResult second = runtime.tick({0.05f, 0.1f, 4});
+    CHECK(second.fixed_steps == 1 && second.dropped_steps == 0,
+          "a later half interval completes the preserved fixed step");
+    CHECK(phases_equal(recording.phases, {
+              RecordedPhase::FixedPreUpdate,
+              RecordedPhase::FixedUpdate,
+              RecordedPhase::PrePhysics,
+              RecordedPhase::Physics,
+              RecordedPhase::PostPhysics,
+              RecordedPhase::FixedPostUpdate,
+              RecordedPhase::FrameUpdate}),
+          "preserved fractional time runs fixed phases before frame");
+}
+
+static void test_runtime_runs_multiple_accumulated_steps_before_frame() {
+    ecs_runtime::Runtime runtime;
+    ScheduleRecording recording;
+    install_schedule_recorders(runtime, recording);
+
+    const ecs_runtime::TickResult result = runtime.tick({0.2f, 0.1f, 4});
+
+    CHECK(result.fixed_steps == 2 && result.dropped_steps == 0,
+          "two accumulated intervals run two fixed steps");
+    CHECK(phases_equal(recording.phases, {
+              RecordedPhase::FixedPreUpdate,
+              RecordedPhase::FixedUpdate,
+              RecordedPhase::PrePhysics,
+              RecordedPhase::Physics,
+              RecordedPhase::PostPhysics,
+              RecordedPhase::FixedPostUpdate,
+              RecordedPhase::FixedPreUpdate,
+              RecordedPhase::FixedUpdate,
+              RecordedPhase::PrePhysics,
+              RecordedPhase::Physics,
+              RecordedPhase::PostPhysics,
+              RecordedPhase::FixedPostUpdate,
+              RecordedPhase::FrameUpdate}),
+          "all accumulated fixed phases run before the single frame phase");
+}
+
+static void test_runtime_clamps_contribution_and_preserves_remainder() {
+    ecs_runtime::Runtime runtime;
+    ScheduleRecording recording;
+    install_schedule_recorders(runtime, recording);
+
+    const ecs_runtime::TickResult clamped = runtime.tick({1.0f, 0.1f, 2});
+    CHECK(clamped.fixed_steps == 2 && clamped.dropped_steps == 0,
+          "clamped quarter-second contribution runs two steps without dropping");
+    CHECK(recording.frame_deltas.size() == 1 &&
+              approx(recording.frame_deltas[0], 0.25f),
+          "frame pipeline receives the quarter-second clamped contribution");
+
+    recording.phases.clear();
+    const ecs_runtime::TickResult remainder = runtime.tick({0.05f, 0.1f, 2});
+    CHECK(remainder.fixed_steps == 1 && remainder.dropped_steps == 0,
+          "clamped tick preserves its fractional 0.05-second remainder");
+}
+
+static void test_runtime_drops_complete_excess_steps_only() {
+    ecs_runtime::Runtime runtime;
+    ScheduleRecording recording;
+    install_schedule_recorders(runtime, recording);
+
+    const ecs_runtime::TickResult overloaded = runtime.tick({0.25f, 0.01f, 2});
+    CHECK(overloaded.fixed_steps == 2,
+          "catch-up limit runs only two fixed steps");
+    CHECK(overloaded.dropped_steps == 23,
+          "catch-up policy reports all 23 excess complete steps");
+
+    recording.phases.clear();
+    const ecs_runtime::TickResult later_half = runtime.tick({0.005f, 0.01f, 2});
+    CHECK(later_half.fixed_steps == 0,
+          "drop policy preserves no hidden whole fixed step");
+    const ecs_runtime::TickResult completed_half = runtime.tick({0.005f, 0.01f, 2});
+    CHECK(completed_half.fixed_steps == 1,
+          "drop policy retains only the fractional remainder");
+}
+
+static void test_runtime_rejects_invalid_ticks_without_progress() {
+    struct InvalidCase {
+        TickDesc desc;
+        const char* message;
+    };
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const InvalidCase cases[] = {
+        {{-0.01f, 0.1f, 1}, "negative frame delta is invalid"},
+        {{nan, 0.1f, 1}, "NaN frame delta is invalid"},
+        {{0.1f, 0.0f, 1}, "zero fixed delta is invalid"},
+        {{0.1f, nan, 1}, "NaN fixed delta is invalid"},
+        {{0.1f, 0.1f, 0}, "zero fixed step limit is invalid"}
+    };
+
+    for (const InvalidCase& invalid_case : cases) {
+        ecs_runtime::Runtime runtime;
+        ScheduleRecording recording;
+        install_schedule_recorders(runtime, recording);
+        const ecs_runtime::TickResult result = runtime.tick(invalid_case.desc);
+        CHECK(result.invalid, invalid_case.message);
+        CHECK(result.fixed_steps == 0 && result.dropped_steps == 0,
+              "invalid tick reports no fixed or dropped steps");
+        CHECK(recording.phases.empty(),
+              "invalid tick progresses neither ECS pipeline");
+    }
+}
+
+static void test_hierarchy_queue_is_last_write_wins_per_child() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    const flecs::entity first_parent = world.entity("QueuedFirstParent");
+    const flecs::entity final_parent = world.entity("QueuedFinalParent");
+    const flecs::entity child = world.entity("QueuedLastWriteChild");
+    int child_of_adds = 0;
+    world.observer("CountQueuedChildOfAdds")
+        .event(flecs::OnAdd)
+        .with(flecs::ChildOf, flecs::Wildcard)
+        .each([&](flecs::entity entity) {
+            if (entity.id() == child.id()) {
+                ++child_of_adds;
+            }
+        });
+
+    ecs::enqueue_reparent(child, first_parent);
+    ecs::enqueue_clear_parent(child);
+    ecs::enqueue_reparent(child, final_parent);
+    CHECK(child.target(flecs::ChildOf).id() == 0,
+          "queued hierarchy requests do not mutate immediately");
+
+    runtime.tick({0.0f, 0.1f, 1});
+
+    CHECK(child.target(flecs::ChildOf).id() == final_parent.id(),
+          "queued hierarchy requests collapse to the final desired parent");
+    CHECK(child_of_adds == 1,
+          "last-write queue applies only one same-child Flecs mutation");
+}
+
+static void test_hierarchy_queue_waits_until_next_valid_tick() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    const flecs::entity parent = world.entity("ValidTickParent");
+    const flecs::entity child = world.entity("ValidTickChild");
+    ecs::enqueue_reparent(child, parent);
+
+    const ecs_runtime::TickResult invalid = runtime.tick({0.0f, 0.1f, 0});
+    CHECK(invalid.invalid && child.target(flecs::ChildOf).id() == 0,
+          "invalid tick neither drains nor applies hierarchy commands");
+
+    runtime.tick({0.0f, 0.1f, 1});
+    CHECK(child.target(flecs::ChildOf).id() == parent.id(),
+          "next valid tick drains the retained hierarchy command");
+}
+
+static void test_observer_enqueued_hierarchy_change_waits_one_tick() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    const flecs::entity old_parent = world.entity("ObserverOldParent");
+    const flecs::entity first_parent = world.entity("ObserverFirstParent");
+    const flecs::entity final_parent = world.entity("ObserverFinalParent");
+    const flecs::entity child = world.entity("ObserverQueuedChild");
+    CHECK(ecs::reparent(child, old_parent),
+          "observer queue setup establishes the old parent");
+
+    int removals = 0;
+    world.observer("QueueFinalParentDuringChildOfRemove")
+        .event(flecs::OnRemove)
+        .with(flecs::ChildOf, flecs::Wildcard)
+        .each([&](flecs::entity entity) {
+            if (entity.id() == child.id()) {
+                ++removals;
+                ecs::enqueue_clear_parent(entity);
+                ecs::enqueue_reparent(entity, final_parent);
+            }
+        });
+
+    ecs::enqueue_reparent(child, first_parent);
+    runtime.tick({0.0f, 0.1f, 1});
+
+    CHECK(removals == 1,
+          "first queued reparent performs one ChildOf removal sequence");
+    CHECK(child.target(flecs::ChildOf).id() == first_parent.id(),
+          "observer-enqueued replacement does not apply in the same merge sequence");
+
+    runtime.tick({0.0f, 0.1f, 1});
+    CHECK(removals == 2,
+          "observer replacement performs one mutation on the following tick");
+    CHECK(child.target(flecs::ChildOf).id() == final_parent.id(),
+          "temporarily pending observer command is retained with last-write semantics");
+}
+
+static void test_hierarchy_queue_discards_dead_and_cross_world_entities() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    flecs::world other_world;
+    other_world.import<ecs::CoreModule>();
+    const flecs::entity cross_world_parent =
+        other_world.entity("CrossWorldQueuedParent");
+    const flecs::entity valid_parent = world.entity("ValidQueuedParent");
+    const flecs::entity cross_world_child = world.entity("CrossWorldQueuedChild");
+    ecs::enqueue_reparent(cross_world_child, cross_world_parent);
+
+    flecs::entity dead_parent = world.entity("DeadQueuedParent");
+    const flecs::entity dead_parent_child = world.entity("DeadParentQueuedChild");
+    ecs::enqueue_reparent(dead_parent_child, dead_parent);
+    dead_parent.destruct();
+
+    flecs::entity dead_child = world.entity("DeadQueuedChild");
+    ecs::enqueue_reparent(dead_child, valid_parent);
+    dead_child.destruct();
+
+    runtime.tick({0.0f, 0.1f, 1});
+
+    CHECK(cross_world_child.target(flecs::ChildOf).id() == 0,
+          "cross-world queued parent is discarded");
+    CHECK(dead_parent_child.target(flecs::ChildOf).id() == 0,
+          "dead queued parent is discarded");
+    CHECK(!dead_child.is_alive(), "dead queued child remains discarded safely");
+
+    ecs::enqueue_reparent(cross_world_child, valid_parent);
+    runtime.tick({0.0f, 0.1f, 1});
+    CHECK(cross_world_child.target(flecs::ChildOf).id() == valid_parent.id(),
+          "discarded invalid command does not block a later valid request");
+}
+
 int main() {
     test_entity_lifecycle_and_components();
     test_deferred_structural_mutation();
@@ -693,5 +1029,15 @@ int main() {
     test_onremove_reentrant_reparent_sees_pending_parent();
     test_onremove_allows_one_pending_mutation_per_child();
     test_onremove_reentrant_reparent_sees_pending_clear();
+    test_runtime_runs_fixed_phases_then_frame_phase();
+    test_runtime_accumulates_fractional_fixed_time();
+    test_runtime_runs_multiple_accumulated_steps_before_frame();
+    test_runtime_clamps_contribution_and_preserves_remainder();
+    test_runtime_drops_complete_excess_steps_only();
+    test_runtime_rejects_invalid_ticks_without_progress();
+    test_hierarchy_queue_is_last_write_wins_per_child();
+    test_hierarchy_queue_waits_until_next_valid_tick();
+    test_observer_enqueued_hierarchy_change_waits_one_tick();
+    test_hierarchy_queue_discards_dead_and_cross_world_entities();
     return check_summary();
 }

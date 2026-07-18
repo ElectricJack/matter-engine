@@ -13,6 +13,16 @@ struct HierarchyValidationState {
     std::unordered_map<flecs::entity_t, flecs::entity_t> pending_parents;
 };
 
+struct QueuedHierarchyCommand {
+    flecs::entity_t parent = 0;
+    const flecs::world_t* parent_world = nullptr;
+    bool clear_parent = false;
+};
+
+struct HierarchyCommandQueue {
+    std::unordered_map<flecs::entity_t, QueuedHierarchyCommand> commands;
+};
+
 struct PendingParentRemovalCleanup {};
 
 const flecs::world_t* real_world(flecs::entity entity) {
@@ -23,6 +33,30 @@ const flecs::world_t* real_world(flecs::entity entity) {
 HierarchyValidationState* validation_state(flecs::entity entity) {
     flecs::world mutation_world = entity.world();
     return mutation_world.try_get_mut<HierarchyValidationState>();
+}
+
+HierarchyCommandQueue* hierarchy_command_queue(flecs::entity entity) {
+    flecs::world mutation_world = entity.world();
+    if (mutation_world.c_ptr() == nullptr) {
+        return nullptr;
+    }
+    return mutation_world.try_get_mut<HierarchyCommandQueue>();
+}
+
+bool hierarchy_mutation_pending(flecs::entity entity) {
+    const HierarchyValidationState* state = validation_state(entity);
+    return state != nullptr &&
+           state->pending_parents.find(entity.id()) !=
+               state->pending_parents.end();
+}
+
+void retain_if_not_replaced(
+    HierarchyCommandQueue& queue,
+    flecs::entity_t child,
+    const QueuedHierarchyCommand& command) {
+    if (queue.commands.find(child) == queue.commands.end()) {
+        queue.commands.emplace(child, command);
+    }
 }
 
 flecs::entity effective_parent(
@@ -266,11 +300,70 @@ void clear_parent(flecs::entity child) {
     });
 }
 
+void enqueue_reparent(flecs::entity child, flecs::entity parent) {
+    HierarchyCommandQueue* queue = hierarchy_command_queue(child);
+    if (queue == nullptr) {
+        return;
+    }
+    queue->commands[child.id()] = {
+        parent.id(), real_world(parent), false};
+}
+
+void enqueue_clear_parent(flecs::entity child) {
+    HierarchyCommandQueue* queue = hierarchy_command_queue(child);
+    if (queue == nullptr) {
+        return;
+    }
+    queue->commands[child.id()] = {0, nullptr, true};
+}
+
+void drain_hierarchy_commands(flecs::world& world) {
+    HierarchyCommandQueue* queue =
+        world.try_get_mut<HierarchyCommandQueue>();
+    if (queue == nullptr || queue->commands.empty()) {
+        return;
+    }
+
+    std::unordered_map<flecs::entity_t, QueuedHierarchyCommand> commands;
+    commands.swap(queue->commands);
+    const flecs::world_t* runtime_world = ecs_get_world(world.c_ptr());
+
+    for (const auto& entry : commands) {
+        const flecs::entity_t child_id = entry.first;
+        const QueuedHierarchyCommand& command = entry.second;
+        flecs::entity child(world.c_ptr(), child_id);
+        if (!child.is_alive()) {
+            continue;
+        }
+
+        if (hierarchy_mutation_pending(child)) {
+            retain_if_not_replaced(*queue, child_id, command);
+            continue;
+        }
+
+        if (command.clear_parent) {
+            clear_parent(child);
+            continue;
+        }
+        if (command.parent_world != runtime_world) {
+            continue;
+        }
+
+        flecs::entity parent(world.c_ptr(), command.parent);
+        if (!parent.is_alive()) {
+            continue;
+        }
+        reparent(child, parent);
+    }
+}
+
 void register_transform_systems(flecs::world& world) {
     world.component<HierarchyValidationState>("HierarchyValidationState");
+    world.component<HierarchyCommandQueue>("HierarchyCommandQueue");
     world.component<PendingParentRemovalCleanup>(
         "PendingParentRemovalCleanup");
     world.set<HierarchyValidationState>(HierarchyValidationState{});
+    world.set<HierarchyCommandQueue>(HierarchyCommandQueue{});
 
     world.observer<LocalTransform>("MarkLocalTransformDirty")
         .event(flecs::OnSet)

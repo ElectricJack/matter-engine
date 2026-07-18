@@ -1,4 +1,14 @@
-#include "matter/ecs.h"
+#include "ecs_runtime.h"
+
+#include <algorithm>
+#include <cmath>
+#include <limits>
+
+namespace matter::ecs {
+
+void drain_hierarchy_commands(flecs::world& world);
+
+} // namespace matter::ecs
 
 namespace matter::ecs {
 
@@ -75,3 +85,96 @@ CoreModule::CoreModule(flecs::world& world) {
 }
 
 } // namespace matter::ecs
+
+namespace matter::ecs_runtime {
+namespace {
+
+constexpr double kMaxFrameContributionSeconds = 0.25;
+constexpr double kStepComparisonTolerance = 1e-6;
+
+int compare_entity_ids(
+    flecs::entity_t first,
+    const void*,
+    flecs::entity_t second,
+    const void*) {
+    return (first > second) - (first < second);
+}
+
+template <typename PipelineTag>
+flecs::entity build_pipeline(flecs::world& world) {
+    return world.pipeline()
+        .with(flecs::System)
+        .with(flecs::Phase).src().cascade(flecs::DependsOn)
+        .with<PipelineTag>()
+        .with(flecs::Disabled).src().up(flecs::DependsOn).not_()
+        .with(flecs::Disabled).src().up(flecs::ChildOf).not_()
+        .order_by(
+            static_cast<flecs::entity_t>(0),
+            compare_entity_ids)
+        .build();
+}
+
+} // namespace
+
+Runtime::Runtime() {
+    world_.import<ecs::CoreModule>();
+    fixed_pipeline_ = build_pipeline<ecs::FixedPipelineSystem>(world_);
+    frame_pipeline_ = build_pipeline<ecs::FramePipelineSystem>(world_);
+}
+
+flecs::world& Runtime::world() noexcept {
+    return world_;
+}
+
+const flecs::world& Runtime::world() const noexcept {
+    return world_;
+}
+
+TickResult Runtime::tick(const TickDesc& desc) {
+    const double frame_delta = desc.frame_delta_seconds;
+    const double fixed_delta = desc.fixed_delta_seconds;
+    if (!std::isfinite(frame_delta) || frame_delta < 0.0 ||
+        !std::isfinite(fixed_delta) || fixed_delta <= 0.0 ||
+        desc.max_fixed_steps == 0) {
+        return {0, 0, true};
+    }
+
+    const double contributed_delta =
+        std::min(frame_delta, kMaxFrameContributionSeconds);
+    ecs::drain_hierarchy_commands(world_);
+    accumulator_seconds_ += contributed_delta;
+
+    TickResult result{};
+    const double comparison_epsilon =
+        fixed_delta * kStepComparisonTolerance;
+    while (result.fixed_steps < desc.max_fixed_steps &&
+           accumulator_seconds_ + comparison_epsilon >= fixed_delta) {
+        world_.run_pipeline(fixed_pipeline_, desc.fixed_delta_seconds);
+        accumulator_seconds_ -= fixed_delta;
+        if (accumulator_seconds_ < 0.0 &&
+            accumulator_seconds_ >= -comparison_epsilon) {
+            accumulator_seconds_ = 0.0;
+        }
+        ++result.fixed_steps;
+    }
+
+    const double complete_excess_steps =
+        std::floor((accumulator_seconds_ + comparison_epsilon) / fixed_delta);
+    if (complete_excess_steps > 0.0) {
+        const double max_reportable =
+            static_cast<double>(std::numeric_limits<uint32_t>::max());
+        result.dropped_steps = static_cast<uint32_t>(
+            std::min(complete_excess_steps, max_reportable));
+        accumulator_seconds_ -= complete_excess_steps * fixed_delta;
+        if (accumulator_seconds_ < 0.0 &&
+            accumulator_seconds_ >= -comparison_epsilon) {
+            accumulator_seconds_ = 0.0;
+        }
+    }
+
+    world_.run_pipeline(
+        frame_pipeline_, static_cast<float>(contributed_delta));
+    return result;
+}
+
+} // namespace matter::ecs_runtime

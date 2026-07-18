@@ -52,4 +52,10 @@ struct CoreModule {
 bool reparent(flecs::entity child, flecs::entity parent);
 void clear_parent(flecs::entity child);
 
+// Queue a final desired hierarchy state for the beginning of the next valid
+// runtime tick. Requests are last-write-wins per child and are safe to issue
+// while that child's immediate hierarchy mutation is still pending.
+void enqueue_reparent(flecs::entity child, flecs::entity parent);
+void enqueue_clear_parent(flecs::entity child);
+
 } // namespace matter::ecs

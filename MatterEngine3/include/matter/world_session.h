@@ -54,6 +54,12 @@ struct RenderOptions {
     VulkanLightingOverrides vulkan_lighting{};
 };
 
+struct TickDesc {
+    float frame_delta_seconds = 0.0f;
+    float fixed_delta_seconds = 1.0f / 60.0f;
+    uint32_t max_fixed_steps = 4;
+};
+
 struct FrameStats {
     // per-frame timings (ms)
     float resolve_ms = 0, build_ms = 0, draw_ms = 0;
@@ -103,6 +109,9 @@ struct FrameStats {
     float gpu_dlss_ms           = 0;
     float gpu_composite_ms      = 0;
     bool  gpu_timers_supported  = false;
+    uint64_t ecs_fixed_steps = 0;
+    uint64_t ecs_dropped_steps = 0;
+    uint64_t ecs_invalid_ticks = 0;
 };
 
 class WorldSession {
@@ -115,7 +124,7 @@ public:
     void request_bake();
 
     // Poll provider deltas and apply them to world state. Call once per frame.
-    void tick();
+    void tick(const TickDesc& tick);
 
     // Resolve -> cull -> clear (kernel-derived sky color) -> draw into the
     // currently bound framebuffer. Requires a live GL context on this thread.
