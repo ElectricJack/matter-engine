@@ -114,7 +114,8 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/resolve_cache.cpp \
           src/terrain_field.cpp \
           src/terrain_mesher.cpp \
-          src/sector_streamer.cpp
+          src/sector_streamer.cpp \
+          src/streaming/sector_streaming_coordinator.cpp
 
 # MatterSurfaceLib C++ backend sources compiled into the archive so MatterViewer
 # need not compile them directly (no libmsl.a). Same set as the old viewer's MSL_CPP
@@ -171,7 +172,8 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           resolve_cache.o \
           terrain_field.o \
           terrain_mesher.o \
-          sector_streamer.o
+          sector_streamer.o \
+          sector_streaming_coordinator.o
 
 # MSL C++ object names (basenames; same flat-object model as ME3_OBJ).
 MSL_OBJ = cluster.o cell.o mesh_simplifier.o mesh_indexed.o mesh_smooth.o mesh_transform.o \
@@ -248,7 +250,7 @@ vulkan-spirv: shaders_gen/embedded_spirv.h
 
 # Per-file pattern rules enable safe parallel compilation with `make -j`.
 # vpath directs Make to search source directories by basename.
-vpath %.cpp src src/render src/provider src/ecs $(MSL_DIR)/src $(PFL_DIR)/src
+vpath %.cpp src src/render src/provider src/ecs src/streaming $(MSL_DIR)/src $(PFL_DIR)/src
 vpath %.c $(QJS_DIR) $(MSL_DIR)/src $(FLECS_DIR)
 
 # Flecs C source (gcc C17, never g++).
