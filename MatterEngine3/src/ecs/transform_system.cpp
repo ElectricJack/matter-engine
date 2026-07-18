@@ -3,10 +3,46 @@
 #include "transform_math.h"
 
 #include <algorithm>
+#include <unordered_map>
 #include <vector>
 
 namespace matter::ecs {
 namespace {
+
+struct HierarchyValidationState {
+    std::unordered_map<flecs::entity_t, flecs::entity_t> pending_parents;
+};
+
+const flecs::world_t* real_world(flecs::entity entity) {
+    flecs::world_t* entity_world = entity.world().c_ptr();
+    return entity_world != nullptr ? ecs_get_world(entity_world) : nullptr;
+}
+
+HierarchyValidationState* validation_state(flecs::entity entity) {
+    flecs::world mutation_world = entity.world();
+    return mutation_world.try_get_mut<HierarchyValidationState>();
+}
+
+flecs::entity effective_parent(
+    flecs::entity entity,
+    const HierarchyValidationState& state,
+    flecs::world_t* mutation_world) {
+    const auto pending = state.pending_parents.find(entity.id());
+    if (pending == state.pending_parents.end()) {
+        return entity.target(flecs::ChildOf);
+    }
+    if (pending->second == 0) {
+        return flecs::entity{};
+    }
+    return flecs::entity(mutation_world, pending->second);
+}
+
+void clear_pending_parent(flecs::entity entity) {
+    HierarchyValidationState* state = validation_state(entity);
+    if (state != nullptr) {
+        state->pending_parents.erase(entity.id());
+    }
+}
 
 Mat4f multiply(const Mat4f& left, const Mat4f& right) {
     Mat4f result{};
@@ -103,8 +139,9 @@ void register_propagation_system(flecs::world& world, const char* name) {
     flecs::system system =
         world.system<const LocalTransform, const LocalTransform*>(name)
             .term_at(1).src().cascade(flecs::ChildOf)
-            .with<TransformDirty>().inout(flecs::InOut)
+            .with<TransformDirty>().inout(flecs::In)
             .write<WorldTransform>()
+            .write<TransformDirty>()
             .cached()
             .kind<Phase>()
             .each([](
@@ -120,9 +157,16 @@ void register_propagation_system(flecs::world& world, const char* name) {
 } // namespace
 
 bool reparent(flecs::entity child, flecs::entity parent) {
+    const flecs::world_t* child_real_world = real_world(child);
+    const flecs::world_t* parent_real_world = real_world(parent);
     if (!child.is_alive() || !parent.is_alive() ||
-        child.world().c_ptr() != parent.world().c_ptr() ||
+        child_real_world == nullptr || child_real_world != parent_real_world ||
         child.id() == parent.id()) {
+        return false;
+    }
+
+    HierarchyValidationState* state = validation_state(child);
+    if (state == nullptr) {
         return false;
     }
 
@@ -135,9 +179,11 @@ bool reparent(flecs::entity child, flecs::entity parent) {
             return false;
         }
         visited.push_back(ancestor.id());
-        ancestor = ancestor.target(flecs::ChildOf);
+        ancestor = effective_parent(
+            ancestor, *state, child.world().c_ptr());
     }
 
+    state->pending_parents[child.id()] = parent.id();
     flecs::world world = child.world();
     world.defer([child, parent]() {
         child.child_of(parent);
@@ -151,6 +197,14 @@ void clear_parent(flecs::entity child) {
         return;
     }
 
+    HierarchyValidationState* state = validation_state(child);
+    if (state == nullptr) {
+        return;
+    }
+    if (effective_parent(child, *state, child.world().c_ptr())) {
+        state->pending_parents[child.id()] = 0;
+    }
+
     flecs::world world = child.world();
     world.defer([child]() {
         child.remove(flecs::ChildOf, flecs::Wildcard);
@@ -159,6 +213,9 @@ void clear_parent(flecs::entity child) {
 }
 
 void register_transform_systems(flecs::world& world) {
+    world.component<HierarchyValidationState>("HierarchyValidationState");
+    world.set<HierarchyValidationState>(HierarchyValidationState{});
+
     world.observer<LocalTransform>("MarkLocalTransformDirty")
         .event(flecs::OnSet)
         .each([](flecs::entity entity, LocalTransform&) {
@@ -169,7 +226,15 @@ void register_transform_systems(flecs::world& world) {
         .event(flecs::OnRemove)
         .with(flecs::ChildOf, flecs::Wildcard)
         .each([](flecs::entity entity) {
+            clear_pending_parent(entity);
             mark_subtree_dirty(entity);
+        });
+
+    world.observer("CommitPendingTransformParent")
+        .event(flecs::OnAdd)
+        .with(flecs::ChildOf, flecs::Wildcard)
+        .each([](flecs::entity entity) {
+            clear_pending_parent(entity);
         });
 
     register_propagation_system<FixedPostUpdate, FixedPipelineSystem>(

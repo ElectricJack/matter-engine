@@ -373,6 +373,85 @@ static void test_cycle_and_invalid_reparent_requests_are_rejected() {
           "dead parent reparent is rejected");
 }
 
+static void test_deferred_reparents_reject_pending_cycle() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+
+    const flecs::entity first = world.entity("DeferredCycleFirst");
+    const flecs::entity second = world.entity("DeferredCycleSecond");
+    bool first_result = false;
+    bool second_result = true;
+
+    world.defer([&]() {
+        first_result = ecs::reparent(second, first);
+        second_result = ecs::reparent(first, second);
+    });
+
+    CHECK(first_result, "first deferred reparent succeeds");
+    CHECK(!second_result,
+          "second deferred reparent sees the pending parent and rejects a cycle");
+    CHECK(second.target(flecs::ChildOf).id() == first.id(),
+          "accepted deferred reparent is committed");
+    CHECK(first.target(flecs::ChildOf).id() == 0,
+          "rejected deferred cycle is never queued");
+}
+
+static void test_transform_propagates_once_across_fixed_and_frame_phases() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+
+    int world_transform_sets = 0;
+    flecs::entity_t root_id = 0;
+    world.observer<ecs::WorldTransform>("CountWorldTransformSets")
+        .event(flecs::OnSet)
+        .each([&](flecs::entity entity, ecs::WorldTransform&) {
+            if (entity.id() == root_id) {
+                ++world_transform_sets;
+            }
+        });
+    const flecs::entity root = world.entity("SinglePropagationRoot")
+        .set<ecs::LocalTransform>({{3.0f, 4.0f, 5.0f}, {}, {1, 1, 1}});
+    root_id = root.id();
+
+    world.progress(0.0f);
+
+    CHECK(world_transform_sets == 1,
+          "fixed propagation merges dirty removal before frame propagation");
+    CHECK(!root.has<ecs::TransformDirty>(),
+          "single propagation pass clears the dirty tag");
+}
+
+static void test_reparent_accepts_handles_from_same_world_stage() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+    world.set_stage_count(2);
+
+    const flecs::entity parent = world.entity("StagedParent");
+    const flecs::entity child = world.entity("StagedChild");
+    bool different_stages = false;
+    bool same_real_world = false;
+    bool reparented = false;
+    world.readonly_begin();
+    {
+        flecs::world stage = world.get_stage(0);
+        const flecs::entity staged_child = child.mut(stage);
+        different_stages =
+            staged_child.world().c_ptr() != parent.world().c_ptr();
+        same_real_world =
+            ecs_get_world(staged_child.world().c_ptr()) ==
+            ecs_get_world(parent.world().c_ptr());
+        reparented = ecs::reparent(staged_child, parent);
+    }
+    world.readonly_end();
+
+    CHECK(different_stages, "test uses handles from different stages");
+    CHECK(same_real_world,
+          "different-stage handles resolve to the same real world");
+    CHECK(reparented, "same-real-world different-stage reparent succeeds");
+    CHECK(child.target(flecs::ChildOf).id() == parent.id(),
+          "staged reparent commits through the originating stage");
+}
+
 static void test_direct_parent_removal_dirties_subtree() {
     flecs::world world;
     world.import<ecs::CoreModule>();
@@ -435,7 +514,10 @@ int main() {
     test_reparent_dirties_and_recomputes_subtree();
     test_clear_parent_preserves_local_transform();
     test_cycle_and_invalid_reparent_requests_are_rejected();
+    test_transform_propagates_once_across_fixed_and_frame_phases();
+    test_reparent_accepts_handles_from_same_world_stage();
     test_direct_parent_removal_dirties_subtree();
     test_parent_destruction_cascade_deletes_descendants();
+    test_deferred_reparents_reject_pending_cycle();
     return check_summary();
 }
