@@ -215,6 +215,10 @@ bool reparent(flecs::entity child, flecs::entity parent) {
         state->pending_parents.end()) {
         return false;
     }
+    if (effective_parent(child, *state, child.world().c_ptr()).id() ==
+        parent.id()) {
+        return true;
+    }
 
     std::vector<flecs::entity_t> visited;
     flecs::entity ancestor = parent;

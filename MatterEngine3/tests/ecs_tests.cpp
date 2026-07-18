@@ -329,6 +329,25 @@ static void test_clear_parent_preserves_local_transform() {
           "detached child recomputes its local transform as a root");
 }
 
+static void test_idempotent_reparent_does_not_leave_pending_mutation() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+
+    const flecs::entity current_parent =
+        world.entity("IdempotentCurrentParent");
+    const flecs::entity next_parent = world.entity("IdempotentNextParent");
+    const flecs::entity child = world.entity("IdempotentChild");
+    CHECK(ecs::reparent(child, current_parent),
+          "idempotent reparent setup succeeds");
+
+    CHECK(ecs::reparent(child, current_parent),
+          "reparenting to the current parent succeeds as a no-op");
+    CHECK(ecs::reparent(child, next_parent),
+          "different reparent succeeds after the idempotent no-op");
+    CHECK(child.target(flecs::ChildOf).id() == next_parent.id(),
+          "different reparent commits after the idempotent no-op");
+}
+
 static void test_cycle_and_invalid_reparent_requests_are_rejected() {
     flecs::world world;
     world.import<ecs::CoreModule>();
@@ -664,6 +683,7 @@ int main() {
     test_three_level_dirty_propagation();
     test_reparent_dirties_and_recomputes_subtree();
     test_clear_parent_preserves_local_transform();
+    test_idempotent_reparent_does_not_leave_pending_mutation();
     test_cycle_and_invalid_reparent_requests_are_rejected();
     test_transform_propagates_once_across_fixed_and_frame_phases();
     test_reparent_accepts_handles_from_same_world_stage();

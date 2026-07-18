@@ -308,3 +308,37 @@ wsl bash -lc 'cd "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.worktrees/fle
 ```
 
 It remains **BLOCKED BY ENVIRONMENT**, exiting 1 before Make because Windows Subsystem for Linux has no installed distributions. It is not reported as passing.
+
+## Final Review Fix: Idempotent Reparent
+
+The one-outstanding-mutation guard exposed an idempotency hole: `reparent(child, current_parent)` inserted pending state, but Flecs emitted no `OnAdd` for the already-present pair, so the pending entry never cleared. The minimal fix compares the child's effective current parent with the validated requested parent after the pending-entry check. An equal parent returns `true` immediately without recording pending state, queueing Flecs work, or dirtying the subtree. Null/root requests remain invalid for `reparent`; callers continue to use `clear_parent` to make an entity a root.
+
+### Idempotent Reparent RED
+
+The regression was added before production changes. It first attaches a child, calls `reparent` again with the same parent and expects a successful no-op, then reparents to a different parent and verifies that the later request commits. The exact complete MSVC compiler/link sequence documented under **Supplemental MSVC RED** was rerun with every `msvc_task4_red` build-directory occurrence replaced by `msvc_task4_idempotent_red`. Compilation and linking succeeded, then the executable exited 1 with the two expected stale-pending failures:
+
+```text
+flecs.c
+ecs_tests.cpp
+ecs_runtime.cpp
+transform_system.cpp
+FAIL: different reparent succeeds after the idempotent no-op
+FAIL: different reparent commits after the idempotent no-op
+2 FAILURE(S)
+```
+
+### Idempotent Reparent GREEN and Fresh Verification
+
+After the single early-return production change, the full C17/C++17 chain ran with build directory `msvc_task4_idempotent_green`. Exit 0:
+
+```text
+flecs.c
+ecs_tests.cpp
+ecs_runtime.cpp
+transform_system.cpp
+ALL PASS
+```
+
+The complete chain was rerun from the fresh `msvc_task4_idempotent_verify` directory immediately before commit. `flecs.c` used `/TC /std:c17 /W0`; all C++ translation units used `/std:c++17 /EHsc /W3`. Exit 0 with the same `ALL PASS` output.
+
+The exact required GNU command was rerun and remains **BLOCKED BY ENVIRONMENT**, exiting 1 before Make because Windows Subsystem for Linux has no installed distributions. It is not reported as passing.
