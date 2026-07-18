@@ -225,9 +225,9 @@ $(W_QJS_OBJ): $(W_DIR)/%.o: $(QJS_DIR)/%.c | $(W_DIR)
 $(W_PIPC_OBJ): $(W_DIR)/%.o: $(MSL_DIR)/src/%.c | $(W_DIR)
 	$(WIN_CC) -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(WIN_INCLUDE_PATHS) -MMD -MP
 
-# Flecs C99 compile rule; keep it outside the C++ source/object union.
+# Flecs C17 compile rule; keep it outside the C++ source/object union.
 $(W_FLECS_OBJ): $(W_DIR)/%.o: $(FLECS_DIR)/%.c | $(W_DIR)
-	$(WIN_CC) -c $< -o $@ -std=c99 -O2 -I$(FLECS_DIR) -MMD -MP
+	$(WIN_CC) -c $< -o $@ -std=c17 -O2 -I$(FLECS_DIR) -MMD -MP
 
 # win-shaders-gpu: ensure the shaders_gpu/ symlink resolves (runtime compute shaders).
 .PHONY: win-shaders-gpu

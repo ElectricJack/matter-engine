@@ -520,7 +520,7 @@ $(W_QJS_OBJ): $(W_DIR)/%.o: $(QJS_DIR)/%.c | $(W_DIR)
 $(W_PIPC_OBJ): $(W_DIR)/%.o: $(MSL_DIR)/src/%.c | $(W_DIR)
 	$(WIN_CC) -c $< -o $@ -O2 -DNDEBUG -DPLATFORM_DESKTOP $(WIN_INCLUDE_PATHS) -ffunction-sections -fdata-sections -MMD -MP
 $(W_FLECS_OBJ): $(W_DIR)/%.o: $(FLECS_DIR)/%.c | $(W_DIR)
-	$(WIN_CC) -c $< -o $@ -std=c99 -O2 -I$(FLECS_DIR) -DNDEBUG -ffunction-sections -fdata-sections -MMD -MP
+	$(WIN_CC) -c $< -o $@ -std=c17 -O2 -I$(FLECS_DIR) -DNDEBUG -ffunction-sections -fdata-sections -MMD -MP
 
 # Order-only: the header must exist before shader_source.cpp compiles, but its
 # regeneration must not force object rebuilds (embedded-shaders is phony).

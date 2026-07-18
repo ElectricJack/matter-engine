@@ -11,6 +11,8 @@
 
 #include "matter/engine_context.h"
 #include "matter/ecs.h"
+#include "matter/physics.h"
+#include "ecs/physics_context.h"
 #include "raylib.h"
 #include <cassert>
 #include <cmath>
@@ -99,6 +101,29 @@ int main() {
     const flecs::entity runtime_entity =
         ecs_world.entity("Task6PersistentRuntimeEntity");
     const flecs::entity_t runtime_entity_id = runtime_entity.id();
+
+    // Box3D Phase 2: runtime physics belongs to the session, not authored
+    // content. A live body and its context therefore survive content reloads.
+    matter::ecs::LocalTransform physics_transform{};
+    physics_transform.translation = {0.0f, 2.0f, 0.0f};
+    matter::physics::RigidBody physics_body{};
+    physics_body.type = matter::physics::RigidBodyType::Dynamic;
+    physics_body.gravity_scale = 0.0f;
+    const flecs::entity physics_entity =
+        ecs_world.entity("Task8PersistentPhysicsBody")
+            .set<matter::ecs::LocalTransform>(physics_transform)
+            .set<matter::physics::RigidBody>(physics_body)
+            .set<matter::physics::SphereCollider>({});
+    const flecs::entity_t physics_entity_id = physics_entity.id();
+    const auto* const physics_context =
+        &matter::physics::detail::context(session->ecs());
+    session->tick({1.0f / 60.0f, 1.0f / 60.0f, 4});
+    const matter::physics::PhysicsStats initial_physics_stats =
+        matter::physics::physics_stats(session->ecs());
+    assert(initial_physics_stats.live_bodies == 1 &&
+           initial_physics_stats.bodies_created == 1 &&
+           matter::physics::detail::context_world_is_valid(session->ecs()) &&
+           "session creates one persistent physics body in one valid context");
 
     // Set initial focus at origin.
     float focus0[3] = {0, 0, 0};
@@ -197,6 +222,14 @@ int main() {
     assert(session->ecs().is_alive(runtime_entity_id) &&
            session->ecs().lookup("Task6PersistentRuntimeEntity").id() == runtime_entity_id &&
            "runtime entity survives reload with the same ID");
+    const matter::physics::PhysicsStats reload_physics_stats =
+        matter::physics::physics_stats(session->ecs());
+    assert(&matter::physics::detail::context(session->ecs()) == physics_context &&
+           session->ecs().is_alive(physics_entity_id) &&
+           reload_physics_stats.live_bodies == 1 &&
+           reload_physics_stats.bodies_created == initial_physics_stats.bodies_created &&
+           reload_physics_stats.steps == initial_physics_stats.steps &&
+           "reload preserves the physics context, body, and accumulated stats");
     assert(runtime_state(*session).status == matter::ecs::WorldStatus::Ready &&
            runtime_state(*session).content_generation == 2 &&
            "reload publishes exactly one authored generation");
@@ -228,6 +261,14 @@ int main() {
     assert(session->ecs().is_alive(runtime_entity_id) &&
            session->ecs().lookup("Task6PersistentRuntimeEntity").id() == runtime_entity_id &&
            "runtime entity survives regenerate with the same ID");
+    const matter::physics::PhysicsStats regenerate_physics_stats =
+        matter::physics::physics_stats(session->ecs());
+    assert(&matter::physics::detail::context(session->ecs()) == physics_context &&
+           session->ecs().is_alive(physics_entity_id) &&
+           regenerate_physics_stats.live_bodies == 1 &&
+           regenerate_physics_stats.bodies_created == initial_physics_stats.bodies_created &&
+           regenerate_physics_stats.steps == reload_physics_stats.steps &&
+           "regenerate preserves the physics context, body, and accumulated stats");
     assert(runtime_state(*session).status == matter::ecs::WorldStatus::Ready &&
            runtime_state(*session).content_generation == 3 &&
            "regenerate publishes exactly one authored generation");
@@ -248,6 +289,10 @@ int main() {
     }
     assert(!replacement->ecs().is_alive(runtime_entity_id) &&
            "replacement session cannot resolve the old runtime entity ID");
+    assert(!replacement->ecs().is_alive(physics_entity_id) &&
+           matter::physics::physics_stats(replacement->ecs()).live_bodies == 0 &&
+           matter::physics::detail::context_world_is_valid(replacement->ecs()) &&
+           "replacement session owns a fresh empty physics context");
     const flecs::entity failed_runtime_entity =
         replacement->ecs().entity("Task6FailedBakeRuntimeEntity");
     const flecs::entity_t failed_runtime_entity_id = failed_runtime_entity.id();

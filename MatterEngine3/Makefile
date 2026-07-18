@@ -77,7 +77,7 @@ QJS_C   = $(QJS_DIR)/quickjs.c $(QJS_DIR)/libregexp.c \
           $(QJS_DIR)/libunicode.c $(QJS_DIR)/cutils.c $(QJS_DIR)/xsum.c
 QJS_OBJ = quickjs.o libregexp.o libunicode.o cutils.o xsum.o
 
-# Flecs is C99 and must never be compiled by the C++ rule below.
+# Flecs is C17 and must never be compiled by the C++ rule below.
 FLECS_C   = $(FLECS_DIR)/flecs.c
 FLECS_OBJ = flecs.o
 
@@ -251,9 +251,9 @@ vulkan-spirv: shaders_gen/embedded_spirv.h
 vpath %.cpp src src/render src/provider src/ecs $(MSL_DIR)/src $(PFL_DIR)/src
 vpath %.c $(QJS_DIR) $(MSL_DIR)/src $(FLECS_DIR)
 
-# Flecs C source (gcc C99, never g++).
+# Flecs C source (gcc C17, never g++).
 $(FLECS_OBJ): $(FLECS_C)
-	gcc -c $< -o $@ -std=c99 -O2 -I$(FLECS_DIR)
+	gcc -c $< -o $@ -std=c17 -O2 -I$(FLECS_DIR)
 
 # QuickJS C sources (gcc, extern "C" safe).
 %.o: $(QJS_DIR)/%.c
@@ -289,6 +289,7 @@ $(LIB): $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ) $(BOX3D_LIB)
 # Delegate to the test suite (headless, GL-free host + raylib-linked BLAS path).
 test:
 	$(MAKE) -C tests run-ecs
+	$(MAKE) -C tests run-physics
 	$(MAKE) -C tests run-partv2
 	$(MAKE) -C tests run-script
 

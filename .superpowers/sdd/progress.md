@@ -55,7 +55,16 @@ Task 7: complete (commits e38c7b9..b30fd14, review clean after fix)
   - Two fresh all-49 Box3D C17/Flecs C17 plus current physics/ECS C++17 builds printed `ALL PASS`; the review-fix covering build and static/scope gates also passed.
   - Independent re-review returned PASS with no Critical, Important, or Minor findings.
 
-Resume at Task 8.
+Task 8: complete (implementation/build closure; mandatory external gates pending)
+  - WorldSession coverage now creates a session-owned dynamic body and proves its exact context, body, and cumulative stats survive reload and regenerate; a replacement session has a valid fresh empty context and cannot resolve the old body ID.
+  - The static checker discovers every literal Runtime-bearing assignment and requires context/shapes/systems closure, one consumed platform archive per final runtime-bearing recipe, published Box3D includes, all-public-header opacity, C17 C dependencies, standard gate ordering, build-all coverage, and collision-free flattened Windows basenames.
+  - MatterEngine3 standard tests and build-all run ECS then physics exactly once before legacy suites; MatterEngine3/tests, engine, Viewer, and temporary Explorer compile Flecs as C17 while physics bridges remain C++17.
+  - Two fresh supplemental MSVC builds each compiled all 49 Box3D C sources and Flecs as C17, compiled current physics/ECS sources as C++17, and printed `ALL PASS` for both independent suites. The WorldSession test translation unit also compiles as C++17.
+  - Static checker and diff check pass. The linked WorldSession/GPU suite, GNU physics/ECS/tileset/standard/build-all gates, and MinGW Viewer/Explorer builds remain unavailable because WSL has no distribution and no native GNU/MinGW/GPU toolchain exists; none are claimed passed.
+  - Separate pre-existing Phase 1 non-blocking gap: reflection tests do not directly assert every `LocalTransform`/`WorldRuntimeState` member type and omit the redundant `Loading != Failed` inequality.
+  - Independent review Important fixes made build-all loop ordering and effective archive/object-union closure mutation-sensitive; final re-review is clean.
+
+Phase 2 implementation tasks are complete. Resume with final whole-branch review; mandatory external verification remains pending.
 
 Environment gate:
   - WSL is installed without a Linux distribution.

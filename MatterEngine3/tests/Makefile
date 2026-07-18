@@ -213,7 +213,7 @@ FLAVOR_mslc_FLAGS     := -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
 FLAVOR_qjsc_CC        := gcc
 FLAVOR_qjsc_FLAGS     := -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
 FLAVOR_flecsc_CC      := gcc
-FLAVOR_flecsc_FLAGS   := -std=c99 -O2 -I$(FLECS_DIR)
+FLAVOR_flecsc_FLAGS   := -std=c17 -O2 -I$(FLECS_DIR)
 FLAVOR_physicsc_CC    := gcc
 FLAVOR_physicsc_FLAGS := -std=c17 -O2 -I$(FLECS_DIR)
 

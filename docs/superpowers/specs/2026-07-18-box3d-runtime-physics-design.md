@@ -1,7 +1,7 @@
 # Box3D Runtime Physics — Phase 2 Design
 
 **Date:** 2026-07-18  
-**Status:** Approved for implementation  
+**Status:** Implementation complete; mandatory GNU/MinGW/GPU verification pending
 **Depends on:** `2026-07-17-flecs-ecs-foundation-design.md`
 
 ## Summary
