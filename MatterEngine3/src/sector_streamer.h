@@ -43,6 +43,11 @@ public:
     // Bake failed: drop from inflight, cool down before re-requesting.
     void on_failed(int64_t tx, int64_t tz, int rung);
 
+    // Caller could not retain bookkeeping for a request it just received.
+    // Drop that exact inflight marker without treating it as a bake failure or
+    // applying cooldown. Returns false when the tag is no longer inflight.
+    bool cancel_request(int64_t tx, int64_t tz, int rung) noexcept;
+
     // Drain sectors to unpublish + release (each was previously accepted).
     std::vector<Eviction> take_evictions();
 
@@ -74,7 +79,9 @@ private:
         tz = int64_t(int32_t(uint32_t(k & 0xFFFFFFFFu)));
     }
 
-    struct KeyHash { size_t operator()(uint64_t k) const { return k ^ (k >> 33); } };
+    struct KeyHash {
+        size_t operator()(uint64_t k) const noexcept { return k ^ (k >> 33); }
+    };
     std::unordered_map<uint64_t, SectorState, KeyHash> sectors_;
 
     std::vector<Eviction> evictions_;

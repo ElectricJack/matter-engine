@@ -216,6 +216,19 @@ void SectorStreamer::on_failed(int64_t tx, int64_t tz, int rung) {
     st.cooldown = cfg_.fail_cooldown_updates;
 }
 
+bool SectorStreamer::cancel_request(
+    int64_t tx,
+    int64_t tz,
+    int rung) noexcept {
+    const auto it = sectors_.find(key(tx, tz));
+    if (it == sectors_.end() || it->second.inflight_rung != rung) {
+        return false;
+    }
+    it->second.inflight_rung = -1;
+    --inflight_;
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // take_evictions()
 // ---------------------------------------------------------------------------

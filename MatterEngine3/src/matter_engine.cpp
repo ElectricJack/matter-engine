@@ -2739,13 +2739,7 @@ void WorldSession::Impl::execute_sector_stream_step() {
         if (!reserved) break;
 
         streaming::detail::TaggedRequest request;
-        bool have_request = false;
-        try {
-            have_request = coordinator.next_request(request);
-        } catch (...) {
-            release_reserved_publication_completion(*reserved);
-            throw;
-        }
+        const bool have_request = coordinator.next_request(request);
         if (!have_request) {
             release_reserved_publication_completion(*reserved);
             break;

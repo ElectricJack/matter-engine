@@ -482,20 +482,56 @@ void Coordinator::worker_step() {
     publish_snapshot(attachment_revision, profile, profile_error);
 }
 
-bool Coordinator::next_request(TaggedRequest& out) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!streamer_ || intended_owner_ != worker_owner_ ||
-        attachment_revision_ != applied_attachment_revision_ ||
-        anchor_reset_revision_ != applied_anchor_reset_revision_) {
+bool Coordinator::next_request(
+    TaggedRequest& out,
+    void* fault_context,
+    RequestTrackingFault fault) noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!streamer_ || intended_owner_ != worker_owner_ ||
+            attachment_revision_ != applied_attachment_revision_ ||
+            anchor_reset_revision_ != applied_anchor_reset_revision_) {
+            return false;
+        }
+
+        // Complete every allocation before SectorStreamer mutates inflight.
+        // TaggedRequest is trivially movable, so the two push_back calls cannot
+        // allocate or throw after these reserves succeed.
+        issued_requests_.reserve(issued_requests_.size() + 1);
+        publication_candidates_.reserve(publication_candidates_.size() + 1);
+
+        matter_stream::SectorRequest sector{};
+        if (!streamer_->next_request(sector)) return false;
+        const TaggedRequest request{
+            worker_owner_, worker_generation_, allocate_issuance(), sector};
+        out = request;
+
+        try {
+            if (fault) fault(fault_context, RequestTrackingStage::IssuedRequest);
+            issued_requests_.push_back(request);
+            if (fault) {
+                fault(fault_context, RequestTrackingStage::PublicationCandidate);
+            }
+            publication_candidates_.push_back(request);
+            return true;
+        } catch (...) {
+            const auto erase_request = [&](std::vector<TaggedRequest>& tracked) {
+                const auto match = std::find_if(
+                    tracked.begin(), tracked.end(),
+                    [&](const TaggedRequest& current) {
+                        return same_request(current, request);
+                    });
+                if (match != tracked.end()) tracked.erase(match);
+            };
+            erase_request(publication_candidates_);
+            erase_request(issued_requests_);
+            streamer_->cancel_request(
+                sector.tx, sector.tz, sector.rung);
+            return false;
+        }
+    } catch (...) {
         return false;
     }
-    matter_stream::SectorRequest sector{};
-    if (!streamer_->next_request(sector)) return false;
-    out = TaggedRequest{
-        worker_owner_, worker_generation_, allocate_issuance(), sector};
-    issued_requests_.push_back(out);
-    publication_candidates_.push_back(out);
-    return true;
 }
 
 bool Coordinator::begin_publication(

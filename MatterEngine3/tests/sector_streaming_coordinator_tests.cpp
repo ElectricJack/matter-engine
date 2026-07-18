@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -13,6 +14,7 @@ using matter::streaming::detail::PendingEvictionBatch;
 using matter::streaming::detail::PublicationCompletionCapacity;
 using matter::streaming::detail::ProfileActivationGate;
 using matter::streaming::detail::PublicationResources;
+using matter::streaming::detail::RequestTrackingStage;
 using matter::streaming::detail::PublicationTransaction;
 using matter::streaming::detail::TaggedEviction;
 using matter::streaming::detail::TaggedRequest;
@@ -150,6 +152,21 @@ static bool transaction_probe_acknowledge(
     return true;
 }
 
+struct RequestTrackingFaultProbe {
+    RequestTrackingStage fail_stage = RequestTrackingStage::IssuedRequest;
+    int calls = 0;
+};
+
+static void throw_request_tracking_fault(
+    void* opaque,
+    RequestTrackingStage stage) {
+    auto& probe = *static_cast<RequestTrackingFaultProbe*>(opaque);
+    ++probe.calls;
+    if (stage == probe.fail_stage) {
+        throw std::runtime_error("injected request tracking failure");
+    }
+}
+
 static_assert(
     noexcept(std::declval<Coordinator&>().begin_publication(
         std::declval<const TaggedRequest&>())),
@@ -164,6 +181,10 @@ static_assert(
     noexcept(std::declval<Coordinator&>().acknowledge(
         std::declval<const TaggedRequest&>(), false)),
     "publication acknowledgement must not throw through the GPU pump");
+static_assert(
+    noexcept(std::declval<Coordinator&>().next_request(
+        std::declval<TaggedRequest&>())),
+    "request allocation must contain tracking allocation failure");
 
 int main() {
     // A failed app endpoint keeps the complete tagged batch durable. Work that
@@ -430,6 +451,67 @@ int main() {
         CHECK(capacity.empty() &&
                   coordinator.snapshot().status.inflight_sectors == 0,
               "current false acknowledgement drains inflight state");
+    }
+
+    // Both tracking insertions occur after SectorStreamer marks a request
+    // inflight. A fault at either stage must cancel that exact request without
+    // cooldown, erase partial issued/candidate state, and return only after the
+    // caller's preclaimed completion capacity is safe to reuse.
+    {
+        for (const RequestTrackingStage fault_stage : {
+                 RequestTrackingStage::IssuedRequest,
+                 RequestTrackingStage::PublicationCandidate}) {
+            Coordinator coordinator;
+            PublicationCompletionCapacity capacity;
+            auto profile = tiny_profile();
+            profile.rings = {{1.0f, 1}};
+            profile.hysteresis = 0.0f;
+            profile.max_inflight = 1;
+            profile.fail_cooldown_updates = 8;
+            CHECK(coordinator.attach(kOwnerA),
+                  "tracking rollback test attaches owner");
+            coordinator.set_profile(&profile);
+            coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+            coordinator.worker_step();
+            const uint32_t baseline_inflight =
+                coordinator.snapshot().status.inflight_sectors;
+
+            size_t slot = PublicationCompletionCapacity::kCapacity;
+            CHECK(capacity.try_reserve(slot),
+                  "tracking rollback test preclaims completion capacity");
+            RequestTrackingFaultProbe fault{fault_stage};
+            TaggedRequest failed{};
+            CHECK(!coordinator.next_request(
+                      failed, &fault, throw_request_tracking_fault) &&
+                      failed.owner == kOwnerA && fault.calls >= 1,
+                  "tracking fault is contained after streamer mutation");
+            capacity.release(slot);
+            CHECK(capacity.try_reserve(slot),
+                  "capacity claim is reusable only after rollback returns");
+            CHECK(!coordinator.begin_publication(failed),
+                  "failed request leaves no publication candidate");
+
+            // A stale false ack would apply cooldown if a partial issued record
+            // survived. Immediate reissue proves both issued removal and the
+            // dedicated no-cooldown streamer cancellation.
+            CHECK(coordinator.acknowledge(failed, false),
+                  "failed request tag can be harmlessly acknowledged");
+            coordinator.worker_step();
+            CHECK(coordinator.snapshot().status.inflight_sectors ==
+                      baseline_inflight,
+                  "tracking fault restores baseline inflight count");
+
+            TaggedRequest recovered{};
+            CHECK(coordinator.next_request(recovered) &&
+                      coordinator.acknowledge(recovered, false),
+                  "later request allocates and completes after rollback");
+            capacity.release(slot);
+            coordinator.worker_step();
+            CHECK(capacity.empty() &&
+                      coordinator.snapshot().status.inflight_sectors ==
+                          baseline_inflight,
+                  "later false ack drains with reusable capacity");
+        }
     }
 
     // A procedural profile is staged privately and cannot allocate sector work

@@ -333,3 +333,62 @@ git diff --check -> PASS
 The product compile again emitted only the existing MSVC C4996 `getenv` and
 C4244 double-to-float warnings. GNU Make/WSL and the GPU-linked world-stream
 runtime remain unavailable, so no new GNU or GPU execution result is claimed.
+
+## Fix Round 4: Strong Request-Tracking Rollback
+
+`Coordinator::next_request` previously let `SectorStreamer::next_request`
+mark a sector inflight before the coordinator appended the corresponding
+issued-request and publication-candidate records. Allocation failure at either
+append could therefore leave an inflight sector without coordinator ownership.
+The session could then release its preclaimed publication-completion slot even
+though the request had not been rolled back.
+
+### RED and Exact Rollback
+
+The deterministic regression was written first and failed to compile at all
+three wished contract points:
+
+```text
+error: RequestTrackingStage was absent
+error: no matching three-argument Coordinator::next_request overload
+static assertion failed: Coordinator::next_request must be noexcept
+```
+
+The regression injects failure independently at `IssuedRequest` and
+`PublicationCandidate`. For each stage it proves the baseline streamer
+inflight count is restored, neither an issued record nor publication candidate
+survives, the preclaimed completion slot is reusable after the call returns,
+and a later request for the same sector completes normally. A stale false
+acknowledgement is also processed before the later request, proving that a
+partially appended issued record cannot add cooldown during rollback.
+
+Both coordinator vectors now reserve their required capacity before the
+streamer mutates inflight state. After mutation, either tracking append failure
+erases the exact request from both vectors and calls the streamer's dedicated
+exact-request cancellation path. Cancellation clears only the matching
+inflight rung and does not apply cooldown. `Coordinator::next_request` is
+`noexcept` and returns `false` only after that rollback completes; the session
+therefore releases its completion-capacity claim exactly once, after the
+rollback boundary.
+
+### Fresh Round-4 GREEN Evidence
+
+All of the following used the final round-four sources:
+
+```text
+phase3-task4-round4-coord.exe    -> ALL PASS
+phase3-task4-round4-async.exe    -> ALL PASS
+phase3-task4-round4-ecs.exe      -> ALL PASS
+phase3-task4-round4-physics.exe  -> ALL PASS
+phase3-task4-round4-streamer.exe -> long flight peak=7997 end=7993; ALL PASS
+matter_engine.cpp product MSVC TU -> exit 0
+world_stream_tests.cpp product MSVC TU -> exit 0
+Box3D Phase 2 build-contract checker -> PASS
+round-4 strong-exception audit -> PASS
+git diff --check -> PASS
+```
+
+The product compile emitted only the existing MSVC C4996 `getenv` and C4244
+double-to-float warnings. GNU Make/WSL and a supported GPU-linked world-stream
+execution path remain unavailable on this Windows host, so no GNU or
+GPU-linked runtime result is claimed.

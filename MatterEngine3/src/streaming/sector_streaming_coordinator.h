@@ -35,6 +35,13 @@ struct TaggedEviction {
     matter_stream::Eviction sector{};
 };
 
+enum class RequestTrackingStage : uint8_t {
+    IssuedRequest,
+    PublicationCandidate
+};
+
+using RequestTrackingFault = void (*)(void*, RequestTrackingStage);
+
 struct Snapshot {
     flecs::entity_t owner = 0;
     SectorStreamingStatus status{};
@@ -134,7 +141,10 @@ public:
     void detach(flecs::entity_t owner);
     void restart_if_attached();
     void worker_step();
-    bool next_request(TaggedRequest& out);
+    bool next_request(
+        TaggedRequest& out,
+        void* fault_context = nullptr,
+        RequestTrackingFault fault = nullptr) noexcept;
     bool begin_publication(const TaggedRequest& request) noexcept;
     std::vector<TaggedEviction> take_evictions();
     bool acknowledge(const TaggedRequest& request, bool published) noexcept;
