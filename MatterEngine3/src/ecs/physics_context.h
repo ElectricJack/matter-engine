@@ -39,6 +39,9 @@ public:
     bool set_body_state(
         flecs::entity_t entity,
         const PhysicsBodyState& state) noexcept;
+    bool force_configuration_hash_for_test(
+        flecs::entity_t entity,
+        uint64_t hash) noexcept;
 
 private:
     struct Impl;

@@ -32,6 +32,10 @@ struct ValidationResult {
 };
 
 ValidationResult validate_desired_body(flecs::entity entity);
+uint64_t hull_build_attempt_count() noexcept;
+bool same_configuration(
+    const DesiredBody& first,
+    const DesiredBody& second) noexcept;
 b3ShapeId create_shape(
     b3BodyId body,
     const DesiredBody& desired,

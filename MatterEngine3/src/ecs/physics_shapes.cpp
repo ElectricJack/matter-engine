@@ -1,5 +1,6 @@
 #include "physics_shapes.h"
 
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <memory>
@@ -9,6 +10,15 @@ namespace {
 
 constexpr uint64_t kFnvOffset = UINT64_C(14695981039346656037);
 constexpr uint64_t kFnvPrime = UINT64_C(1099511628211);
+std::atomic<uint64_t> g_hull_build_attempts{0};
+
+b3HullData* create_hull(
+    const b3Vec3* points,
+    int point_count,
+    int max_vertex_count) {
+    g_hull_build_attempts.fetch_add(1, std::memory_order_relaxed);
+    return b3CreateHull(points, point_count, max_vertex_count);
+}
 
 bool finite(float value) {
     return std::isfinite(value);
@@ -143,6 +153,28 @@ void hash_properties(uint64_t& hash, const ColliderProperties& value) {
     hash_value(hash, value.sensor);
     hash_value(hash, value.contact_events);
     hash_value(hash, value.hit_events);
+}
+
+bool same_float3(Float3 first, Float3 second) {
+    return first.x == second.x && first.y == second.y && first.z == second.z;
+}
+
+bool same_quaternion(Quaternion first, Quaternion second) {
+    return first.x == second.x && first.y == second.y &&
+           first.z == second.z && first.w == second.w;
+}
+
+bool same_properties(
+    const ColliderProperties& first,
+    const ColliderProperties& second) {
+    return first.density == second.density &&
+           first.friction == second.friction &&
+           first.restitution == second.restitution &&
+           first.category_bits == second.category_bits &&
+           first.mask_bits == second.mask_bits &&
+           first.sensor == second.sensor &&
+           first.contact_events == second.contact_events &&
+           first.hit_events == second.hit_events;
 }
 
 uint64_t configuration_hash(const DesiredBody& desired) {
@@ -308,24 +340,84 @@ ValidationResult validate_desired_body(flecs::entity entity) {
             result.error = PhysicsErrorCode::InvalidCollider;
             return result;
         }
-        b3Vec3 points[32]{};
-        for (uint32_t index = 0; index < hull->point_count; ++index) {
-            points[index] = box_vector(hull->points[index]);
-        }
-        std::unique_ptr<b3HullData, HullDeleter> validated(
-            b3CreateHull(points, static_cast<int>(hull->point_count), 32));
-        if (validated == nullptr) {
-            result.error = PhysicsErrorCode::HullBuildFailed;
-            return result;
-        }
     }
 
     if (!valid_properties(*collider_properties, result.desired.body.type)) {
         result.error = PhysicsErrorCode::InvalidCollider;
         return result;
     }
+    if (result.desired.shape_kind == DesiredShapeKind::Hull) {
+        b3Vec3 points[32]{};
+        for (uint32_t index = 0;
+             index < result.desired.hull.point_count;
+             ++index) {
+            points[index] = box_vector(result.desired.hull.points[index]);
+        }
+        std::unique_ptr<b3HullData, HullDeleter> validated(create_hull(
+            points, static_cast<int>(result.desired.hull.point_count), 32));
+        if (validated == nullptr) {
+            result.error = PhysicsErrorCode::HullBuildFailed;
+            return result;
+        }
+    }
     result.desired.configuration_hash = configuration_hash(result.desired);
     return result;
+}
+
+uint64_t hull_build_attempt_count() noexcept {
+    return g_hull_build_attempts.load(std::memory_order_relaxed);
+}
+
+bool same_configuration(
+    const DesiredBody& first,
+    const DesiredBody& second) noexcept {
+    if (first.body.type != second.body.type ||
+        first.body.linear_damping != second.body.linear_damping ||
+        first.body.angular_damping != second.body.angular_damping ||
+        first.body.gravity_scale != second.body.gravity_scale ||
+        first.body.sleep_threshold != second.body.sleep_threshold ||
+        first.body.enable_sleep != second.body.enable_sleep ||
+        first.body.continuous != second.body.continuous ||
+        first.shape_kind != second.shape_kind) {
+        return false;
+    }
+
+    switch (first.shape_kind) {
+        case DesiredShapeKind::Sphere:
+            return same_properties(
+                       first.sphere.properties, second.sphere.properties) &&
+                   same_float3(first.sphere.center, second.sphere.center) &&
+                   first.sphere.radius == second.sphere.radius;
+        case DesiredShapeKind::Capsule:
+            return same_properties(
+                       first.capsule.properties, second.capsule.properties) &&
+                   same_float3(
+                       first.capsule.point_a, second.capsule.point_a) &&
+                   same_float3(
+                       first.capsule.point_b, second.capsule.point_b) &&
+                   first.capsule.radius == second.capsule.radius;
+        case DesiredShapeKind::Box:
+            return same_properties(
+                       first.box.properties, second.box.properties) &&
+                   same_float3(first.box.center, second.box.center) &&
+                   same_quaternion(first.box.rotation, second.box.rotation) &&
+                   same_float3(
+                       first.box.half_extents, second.box.half_extents);
+        case DesiredShapeKind::Hull:
+            if (!same_properties(
+                    first.hull.properties, second.hull.properties) ||
+                first.hull.point_count != second.hull.point_count) {
+                return false;
+            }
+            for (uint32_t index = 0; index < first.hull.point_count; ++index) {
+                if (!same_float3(
+                        first.hull.points[index], second.hull.points[index])) {
+                    return false;
+                }
+            }
+            return true;
+    }
+    return false;
 }
 
 b3ShapeId create_shape(
@@ -374,7 +466,7 @@ b3ShapeId create_shape(
             for (uint32_t index = 0; index < desired.hull.point_count; ++index) {
                 points[index] = box_vector(desired.hull.points[index]);
             }
-            temporary_hull = b3CreateHull(
+            temporary_hull = create_hull(
                 points, static_cast<int>(desired.hull.point_count), 32);
             if (temporary_hull == nullptr) {
                 return b3_nullShapeId;

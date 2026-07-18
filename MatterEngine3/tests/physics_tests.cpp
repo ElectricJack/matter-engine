@@ -1,6 +1,7 @@
 #include "check.h"
 #include "ecs/ecs_runtime.h"
 #include "ecs/physics_context.h"
+#include "ecs/physics_shapes.h"
 #include "matter/physics.h"
 
 #include <array>
@@ -416,6 +417,7 @@ void test_validation_errors_recover_at_the_next_reconcile() {
         const char* name;
         physics::PhysicsErrorCode expected;
         Configure invalidate;
+        bool no_hull_build_expected = false;
     };
 
     const float nan = std::numeric_limits<float>::quiet_NaN();
@@ -547,12 +549,27 @@ void test_validation_errors_recover_at_the_next_reconcile() {
              hull.points[3] = {0.0f, 0.0f, 1.0e-8f};
              entity.set<physics::ConvexHullCollider>(hull);
          }},
+        {"invalid material on Box3D-rejected hull",
+         physics::PhysicsErrorCode::InvalidCollider,
+         [](flecs::world&, flecs::entity entity) {
+             entity.remove<physics::SphereCollider>();
+             physics::ConvexHullCollider hull{};
+             hull.properties.friction = -0.1f;
+             hull.point_count = 4;
+             hull.points[0] = {0.0f, 0.0f, 0.0f};
+             hull.points[1] = {1.0f, 0.0f, 0.0f};
+             hull.points[2] = {0.0f, 1.0f, 0.0f};
+             hull.points[3] = {0.0f, 0.0f, 1.0e-8f};
+             entity.set<physics::ConvexHullCollider>(hull);
+         }, true},
     };
 
     for (const ValidationCase& test : cases) {
         ecs_runtime::Runtime runtime;
         flecs::entity entity = make_valid_sphere(runtime.world());
         test.invalidate(runtime.world(), entity);
+        const uint64_t hull_builds_before =
+            physics::detail::hull_build_attempt_count();
         reconcile(runtime);
 
         const physics::PhysicsError* error =
@@ -562,6 +579,11 @@ void test_validation_errors_recover_at_the_next_reconcile() {
               (prefix + " reports the exact error").c_str());
         CHECK(physics::physics_stats(runtime.world()).live_bodies == 0,
               (prefix + " creates no Box3D body").c_str());
+        if (test.no_hull_build_expected) {
+            CHECK(physics::detail::hull_build_attempt_count() ==
+                      hull_builds_before,
+                  (prefix + " performs no Box3D hull build").c_str());
+        }
 
         repair_as_valid_sphere(entity);
         reconcile(runtime);
@@ -739,6 +761,33 @@ void test_dynamic_replacement_preserves_box3d_state() {
           "dynamic replacement publishes one new body and retires one old body");
 }
 
+void test_hash_collision_cannot_hide_configuration_change() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    flecs::entity entity = make_valid_sphere(world);
+    reconcile(runtime);
+
+    physics::SphereCollider changed{};
+    changed.radius = 1.25f;
+    entity.set<physics::SphereCollider>(changed);
+    const physics::detail::ValidationResult changed_validation =
+        physics::detail::validate_desired_body(entity);
+    CHECK(changed_validation.valid(),
+          "forced-collision replacement configuration validates");
+
+    physics::detail::PhysicsContext& context = physics::detail::context(world);
+    CHECK(context.force_configuration_hash_for_test(
+              entity.id(),
+              changed_validation.desired.configuration_hash),
+          "forced-collision seam aliases the stored fast hash");
+    reconcile(runtime);
+
+    const physics::PhysicsStats stats = physics::physics_stats(world);
+    CHECK(stats.bodies_created == 2 && stats.bodies_destroyed == 1 &&
+              stats.live_bodies == 1,
+          "complete desired comparison replaces colliding configurations");
+}
+
 } // namespace
 
 int main() {
@@ -749,5 +798,6 @@ int main() {
     test_all_four_shapes_create_and_fail_closed_on_invalidation();
     test_bridge_survives_unrelated_archetype_moves();
     test_dynamic_replacement_preserves_box3d_state();
+    test_hash_collision_cannot_hide_configuration_change();
     return check_summary();
 }

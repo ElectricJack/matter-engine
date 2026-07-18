@@ -19,6 +19,7 @@ struct BridgeRecord {
     b3ShapeId shape = b3_nullShapeId;
     RigidBodyType type = RigidBodyType::Static;
     uint64_t configuration_hash = 0;
+    DesiredBody desired{};
     bool live = false;
 };
 
@@ -251,7 +252,8 @@ void PhysicsContext::reconcile(flecs::world& world) {
             if (bridge.live && b3Body_IsValid(bridge.body) &&
                 b3Shape_IsValid(bridge.shape) &&
                 bridge.configuration_hash ==
-                    validation.desired.configuration_hash) {
+                    validation.desired.configuration_hash &&
+                same_configuration(bridge.desired, validation.desired)) {
                 remove_error(entity);
                 continue;
             }
@@ -270,6 +272,7 @@ void PhysicsContext::reconcile(flecs::world& world) {
         replacement->type = validation.desired.body.type;
         replacement->configuration_hash =
             validation.desired.configuration_hash;
+        replacement->desired = validation.desired;
 
         b3BodyDef body_definition = b3DefaultBodyDef();
         body_definition.type = box_body_type(validation.desired.body.type);
@@ -401,6 +404,20 @@ bool PhysicsContext::set_body_state(
         return false;
     }
     write_state(*found->second, state);
+    return true;
+}
+
+bool PhysicsContext::force_configuration_hash_for_test(
+    flecs::entity_t entity,
+    uint64_t hash) noexcept {
+    if (impl_ == nullptr) {
+        return false;
+    }
+    const auto found = impl_->bridges.find(entity);
+    if (found == impl_->bridges.end() || !found->second->live) {
+        return false;
+    }
+    found->second->configuration_hash = hash;
     return true;
 }
 

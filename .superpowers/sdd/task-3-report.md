@@ -88,6 +88,95 @@ PASS: Box3D Phase 2 build contract
 Box3D user data are `unique_ptr<BridgeRecord>::get()` results; no Flecs component
 or query pointer crosses the mutation boundary.
 
+## Review-Finding Fix Evidence
+
+### Collider validation precedence
+
+The combined invalid-material plus Box3D-rejected-hull regression was added before
+the fix. Recompiling and linking the focused executable, then running:
+
+```powershell
+MatterEngine3\tests\build\msvc-box3d-task3-green2\physics_tests_review_precedence_red.exe
+```
+
+exited 1 with the expected behavioral RED:
+
+```text
+FAIL: validation case invalid material on Box3D-rejected hull reports the exact error
+1 FAILURE(S)
+```
+
+After common collider properties were moved ahead of hull construction, the same
+focused build printed `ALL PASS`. A private atomic attempt-count seam was then
+requested from the test before it existed; MSVC failed with:
+
+```text
+error C2039: 'hull_build_attempt_count': is not a member of 'matter::physics::detail'
+```
+
+After the seam wrapped both internal hull-build call sites, the combined invalid
+case proved the count does not change and the focused executable printed:
+
+```text
+ALL PASS
+```
+
+### Collision-safe configuration equality
+
+The forced-collision regression first failed to compile on the wished-for seam:
+
+```text
+error C2039: 'force_configuration_hash_for_test': is not a member of
+'matter::physics::detail::PhysicsContext'
+```
+
+Adding only that seam produced the intended behavioral RED:
+
+```text
+FAIL: complete desired comparison replaces colliding configurations
+1 FAILURE(S)
+```
+
+Bridge records now retain the value-owned validated desired configuration. The hash
+remains a fast path, followed by explicit equality over every hashed body, material,
+filter, shape-kind, and geometry field. With the stored hash forcibly aliased to a
+changed sphere configuration, the focused executable rebuilt the body and printed:
+
+```text
+ALL PASS
+```
+
+### Final review verification
+
+A new absent-at-start directory,
+`MatterEngine3/tests/build/msvc-box3d-task3-review-final`, was built with:
+
+```powershell
+cl /nologo /std:c17 /O2 /I Libraries\box3d\include /I Libraries\box3d\src /c Libraries\box3d\src\*.c
+lib /nologo /OUT:box3d.lib box3d\*.obj
+cl /nologo /std:c17 /O2 /I Libraries\flecs /c Libraries\flecs\flecs.c
+cl /nologo /std:c++17 /EHsc /O2 /c MatterEngine3\src\ecs\ecs_runtime.cpp MatterEngine3\src\ecs\physics_context.cpp MatterEngine3\src\ecs\physics_shapes.cpp MatterEngine3\src\ecs\physics_systems.cpp MatterEngine3\src\ecs\transform_system.cpp MatterEngine3\tests\physics_tests.cpp MatterEngine3\tests\ecs_tests.cpp
+link /nologo /OUT:physics_tests.exe physics_tests.obj ecs_runtime.obj physics_context.obj physics_shapes.obj physics_systems.obj transform_system.obj flecs.obj box3d.lib
+link /nologo /OUT:ecs_tests.exe ecs_tests.obj ecs_runtime.obj physics_context.obj physics_shapes.obj physics_systems.obj transform_system.obj flecs.obj box3d.lib
+```
+
+All 49 pinned Box3D C files were compiled. Running both executables produced:
+
+```text
+ALL PASS
+ALL PASS
+```
+
+Final commands and results:
+
+```powershell
+& .superpowers\sdd\box3d-phase2-static-check.ps1
+# PASS: Box3D Phase 2 build contract
+
+git diff --check ba8e4c5
+# no output; exit 0
+```
+
 ## Self-Review
 
 - Opaque Box3D handles remain entirely private; no Box3D include reaches the
