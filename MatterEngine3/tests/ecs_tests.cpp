@@ -1,9 +1,47 @@
 #include "check.h"
 #include "matter/ecs.h"
 
+#include <cmath>
 #include <cstring>
+#include <limits>
 
 using namespace matter;
+
+namespace {
+
+constexpr float kTransformEpsilon = 1e-5f;
+
+bool approx(float actual, float expected) {
+    return std::fabs(actual - expected) <= kTransformEpsilon;
+}
+
+bool approx_matrix(const Mat4f& actual, const float (&expected)[16]) {
+    for (int i = 0; i < 16; ++i) {
+        if (!approx(actual.m[i], expected[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool has_world_translation(
+    flecs::entity entity,
+    float x,
+    float y,
+    float z) {
+    const ecs::WorldTransform* world_transform =
+        entity.try_get<ecs::WorldTransform>();
+    return world_transform != nullptr &&
+           approx(world_transform->matrix.m[3], x) &&
+           approx(world_transform->matrix.m[7], y) &&
+           approx(world_transform->matrix.m[11], z);
+}
+
+void progress_transforms(flecs::world& world) {
+    world.progress(0.0f);
+}
+
+} // namespace
 
 static void test_entity_lifecycle_and_components() {
     flecs::world world;
@@ -98,9 +136,306 @@ static void test_core_component_reflection() {
           "world runtime state reflects content generation");
 }
 
+static void test_root_trs_matrix() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+
+    const flecs::entity root = world.entity("RootTrs")
+        .set<ecs::LocalTransform>({
+            {1.0f, 2.0f, 3.0f},
+            {0.0f, 0.0f, 1.0f, 1.0f},
+            {2.0f, 3.0f, 4.0f}});
+
+    CHECK(root.has<ecs::TransformDirty>(),
+          "setting a local transform dirties a root");
+    progress_transforms(world);
+
+    const ecs::WorldTransform* world_transform =
+        root.try_get<ecs::WorldTransform>();
+    CHECK(world_transform != nullptr,
+          "transform propagation adds a root world transform");
+    const float expected[16] = {
+         0.0f, -3.0f, 0.0f, 1.0f,
+         2.0f,  0.0f, 0.0f, 2.0f,
+         0.0f,  0.0f, 4.0f, 3.0f,
+         0.0f,  0.0f, 0.0f, 1.0f
+    };
+    CHECK(world_transform != nullptr &&
+              approx_matrix(world_transform->matrix, expected),
+          "root TRS uses row-major storage and column-vector algebra");
+    CHECK(!root.has<ecs::TransformDirty>(),
+          "successful root propagation clears the dirty tag");
+}
+
+static void test_invalid_quaternion_uses_identity_rotation() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+
+    const flecs::entity zero_rotation = world.entity("ZeroRotation")
+        .set<ecs::LocalTransform>({
+            {1.0f, 2.0f, 3.0f},
+            {0.0f, 0.0f, 0.0f, 0.0f},
+            {2.0f, 3.0f, 4.0f}});
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const flecs::entity non_finite_rotation = world.entity("NonFiniteRotation")
+        .set<ecs::LocalTransform>({
+            {-1.0f, -2.0f, -3.0f},
+            {nan, 0.0f, 0.0f, 1.0f},
+            {1.0f, 1.0f, 1.0f}});
+
+    progress_transforms(world);
+
+    const float expected_zero[16] = {
+        2.0f, 0.0f, 0.0f, 1.0f,
+        0.0f, 3.0f, 0.0f, 2.0f,
+        0.0f, 0.0f, 4.0f, 3.0f,
+        0.0f, 0.0f, 0.0f, 1.0f
+    };
+    const float expected_non_finite[16] = {
+        1.0f, 0.0f, 0.0f, -1.0f,
+        0.0f, 1.0f, 0.0f, -2.0f,
+        0.0f, 0.0f, 1.0f, -3.0f,
+        0.0f, 0.0f, 0.0f,  1.0f
+    };
+    const ecs::WorldTransform* zero_world =
+        zero_rotation.try_get<ecs::WorldTransform>();
+    const ecs::WorldTransform* non_finite_world =
+        non_finite_rotation.try_get<ecs::WorldTransform>();
+    CHECK(zero_world != nullptr &&
+              approx_matrix(zero_world->matrix, expected_zero),
+          "zero-length quaternion falls back to identity rotation");
+    CHECK(non_finite_world != nullptr &&
+              approx_matrix(non_finite_world->matrix, expected_non_finite),
+          "non-finite quaternion falls back to identity rotation");
+}
+
+static void test_parent_child_world_transform() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+
+    const flecs::entity parent = world.entity("Parent")
+        .set<ecs::LocalTransform>({{10.0f, 0.0f, 0.0f}, {}, {1, 1, 1}});
+    const flecs::entity child = world.entity("Child")
+        .set<ecs::LocalTransform>({{0.0f, 2.0f, 0.0f}, {}, {1, 1, 1}});
+    CHECK(ecs::reparent(child, parent),
+          "valid parent-child relationship is accepted");
+
+    progress_transforms(world);
+
+    CHECK(has_world_translation(parent, 10.0f, 0.0f, 0.0f),
+          "parent world transform contains its local translation");
+    CHECK(has_world_translation(child, 10.0f, 2.0f, 0.0f),
+          "child world transform composes parent and local translation");
+}
+
+static void test_three_level_dirty_propagation() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+
+    const flecs::entity root = world.entity("Root")
+        .set<ecs::LocalTransform>({{1.0f, 0.0f, 0.0f}, {}, {1, 1, 1}});
+    const flecs::entity child = world.entity("Middle")
+        .set<ecs::LocalTransform>({{0.0f, 2.0f, 0.0f}, {}, {1, 1, 1}});
+    const flecs::entity grandchild = world.entity("Leaf")
+        .set<ecs::LocalTransform>({{0.0f, 0.0f, 3.0f}, {}, {1, 1, 1}});
+    CHECK(ecs::reparent(child, root), "three-level child reparent succeeds");
+    CHECK(ecs::reparent(grandchild, child),
+          "three-level grandchild reparent succeeds");
+    progress_transforms(world);
+    CHECK(has_world_translation(grandchild, 1.0f, 2.0f, 3.0f),
+          "three-level hierarchy initially composes root to leaf");
+
+    root.set<ecs::LocalTransform>({{5.0f, 0.0f, 0.0f}, {}, {1, 1, 1}});
+    CHECK(root.has<ecs::TransformDirty>(),
+          "local root change dirties the root");
+    CHECK(child.has<ecs::TransformDirty>(),
+          "local root change dirties the child");
+    CHECK(grandchild.has<ecs::TransformDirty>(),
+          "local root change dirties the grandchild");
+
+    progress_transforms(world);
+
+    CHECK(has_world_translation(grandchild, 5.0f, 2.0f, 3.0f),
+          "root change propagates through three hierarchy levels");
+    CHECK(!root.has<ecs::TransformDirty>() &&
+              !child.has<ecs::TransformDirty>() &&
+              !grandchild.has<ecs::TransformDirty>(),
+          "three-level propagation clears all processed dirty tags");
+}
+
+static void test_reparent_dirties_and_recomputes_subtree() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+
+    const flecs::entity first_parent = world.entity("FirstParent")
+        .set<ecs::LocalTransform>({{10.0f, 0.0f, 0.0f}, {}, {1, 1, 1}});
+    const flecs::entity second_parent = world.entity("SecondParent")
+        .set<ecs::LocalTransform>({{-4.0f, 0.0f, 0.0f}, {}, {1, 1, 1}});
+    const flecs::entity child = world.entity("ReparentedChild")
+        .set<ecs::LocalTransform>({{0.0f, 2.0f, 0.0f}, {}, {1, 1, 1}});
+    const flecs::entity grandchild = world.entity("ReparentedLeaf")
+        .set<ecs::LocalTransform>({{0.0f, 0.0f, 3.0f}, {}, {1, 1, 1}});
+    CHECK(ecs::reparent(child, first_parent), "initial reparent succeeds");
+    CHECK(ecs::reparent(grandchild, child),
+          "initial descendant reparent succeeds");
+    progress_transforms(world);
+    CHECK(has_world_translation(grandchild, 10.0f, 2.0f, 3.0f),
+          "initial parent affects descendant world transform");
+
+    CHECK(ecs::reparent(child, second_parent),
+          "reparent to a different valid parent succeeds");
+    CHECK(child.has<ecs::TransformDirty>(),
+          "reparent dirties the changed child");
+    CHECK(grandchild.has<ecs::TransformDirty>(),
+          "reparent dirties every current descendant");
+
+    progress_transforms(world);
+
+    CHECK(has_world_translation(child, -4.0f, 2.0f, 0.0f),
+          "reparent recomputes the changed child world transform");
+    CHECK(has_world_translation(grandchild, -4.0f, 2.0f, 3.0f),
+          "reparent recomputes the descendant world transform");
+}
+
+static void test_clear_parent_preserves_local_transform() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+
+    const flecs::entity parent = world.entity("DetachParent")
+        .set<ecs::LocalTransform>({{10.0f, 0.0f, 0.0f}, {}, {1, 1, 1}});
+    const flecs::entity child = world.entity("DetachChild")
+        .set<ecs::LocalTransform>({{0.0f, 2.0f, 0.0f}, {}, {1, 1, 1}});
+    CHECK(ecs::reparent(child, parent), "detach setup reparent succeeds");
+    progress_transforms(world);
+    CHECK(has_world_translation(child, 10.0f, 2.0f, 0.0f),
+          "attached child initially includes parent translation");
+
+    ecs::clear_parent(child);
+
+    const ecs::LocalTransform* local = child.try_get<ecs::LocalTransform>();
+    CHECK(child.target(flecs::ChildOf).id() == 0,
+          "clear_parent removes the ChildOf relationship");
+    CHECK(local != nullptr &&
+              approx(local->translation.x, 0.0f) &&
+              approx(local->translation.y, 2.0f) &&
+              approx(local->translation.z, 0.0f),
+          "clear_parent preserves the local transform");
+    CHECK(child.has<ecs::TransformDirty>(),
+          "clear_parent dirties the detached subtree root");
+
+    progress_transforms(world);
+
+    CHECK(has_world_translation(child, 0.0f, 2.0f, 0.0f),
+          "detached child recomputes its local transform as a root");
+}
+
+static void test_cycle_and_invalid_reparent_requests_are_rejected() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+    flecs::world other_world;
+    other_world.import<ecs::CoreModule>();
+
+    const flecs::entity root = world.entity("CycleRoot")
+        .set<ecs::LocalTransform>({{1.0f, 0.0f, 0.0f}, {}, {1, 1, 1}});
+    const flecs::entity child = world.entity("CycleChild")
+        .set<ecs::LocalTransform>({{0.0f, 2.0f, 0.0f}, {}, {1, 1, 1}});
+    const flecs::entity grandchild = world.entity("CycleLeaf")
+        .set<ecs::LocalTransform>({{0.0f, 0.0f, 3.0f}, {}, {1, 1, 1}});
+    CHECK(ecs::reparent(child, root), "cycle setup child reparent succeeds");
+    CHECK(ecs::reparent(grandchild, child),
+          "cycle setup grandchild reparent succeeds");
+    progress_transforms(world);
+
+    CHECK(!ecs::reparent(root, grandchild),
+          "reparenting a root beneath its descendant is rejected");
+    CHECK(root.target(flecs::ChildOf).id() == 0 &&
+              child.target(flecs::ChildOf).id() == root.id() &&
+              grandchild.target(flecs::ChildOf).id() == child.id(),
+          "cycle rejection leaves the hierarchy unchanged");
+    CHECK(has_world_translation(grandchild, 1.0f, 2.0f, 3.0f),
+          "cycle rejection leaves world transforms unchanged");
+
+    const flecs::entity other = other_world.entity("OtherWorldParent");
+    CHECK(!ecs::reparent(flecs::entity{}, root),
+          "null child reparent is rejected");
+    CHECK(!ecs::reparent(root, flecs::entity{}),
+          "null parent reparent is rejected");
+    CHECK(!ecs::reparent(root, root), "self-parent reparent is rejected");
+    CHECK(!ecs::reparent(root, other), "cross-world reparent is rejected");
+
+    flecs::entity dead_child = world.entity("DeadChild");
+    dead_child.destruct();
+    flecs::entity dead_parent = world.entity("DeadParent");
+    dead_parent.destruct();
+    CHECK(!ecs::reparent(dead_child, root),
+          "dead child reparent is rejected");
+    CHECK(!ecs::reparent(root, dead_parent),
+          "dead parent reparent is rejected");
+}
+
+static void test_direct_parent_removal_dirties_subtree() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+
+    const flecs::entity parent = world.entity("DirectDetachParent")
+        .set<ecs::LocalTransform>({{10.0f, 0.0f, 0.0f}, {}, {1, 1, 1}});
+    const flecs::entity child = world.entity("DirectDetachChild")
+        .set<ecs::LocalTransform>({{0.0f, 2.0f, 0.0f}, {}, {1, 1, 1}});
+    const flecs::entity grandchild = world.entity("DirectDetachLeaf")
+        .set<ecs::LocalTransform>({{0.0f, 0.0f, 3.0f}, {}, {1, 1, 1}});
+    CHECK(ecs::reparent(child, parent),
+          "direct parent removal setup reparent succeeds");
+    CHECK(ecs::reparent(grandchild, child),
+          "direct parent removal setup descendant succeeds");
+    progress_transforms(world);
+
+    child.remove(flecs::ChildOf, flecs::Wildcard);
+
+    CHECK(child.has<ecs::TransformDirty>(),
+          "direct ChildOf removal observer dirties the detached entity");
+    CHECK(grandchild.has<ecs::TransformDirty>(),
+          "direct ChildOf removal observer dirties descendants");
+    progress_transforms(world);
+    CHECK(has_world_translation(grandchild, 0.0f, 2.0f, 3.0f),
+          "directly detached subtree recomputes from its local root");
+}
+
+static void test_parent_destruction_cascade_deletes_descendants() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+
+    const flecs::entity parent = world.entity("OwnedParent");
+    const flecs::entity child = world.entity("OwnedChild");
+    const flecs::entity grandchild = world.entity("OwnedGrandchild");
+    CHECK(ecs::reparent(child, parent),
+          "owned child reparent succeeds before parent destruction");
+    CHECK(ecs::reparent(grandchild, child),
+          "owned grandchild reparent succeeds before parent destruction");
+    const flecs::entity_t parent_id = parent.id();
+    const flecs::entity_t child_id = child.id();
+    const flecs::entity_t grandchild_id = grandchild.id();
+
+    parent.destruct();
+
+    CHECK(!world.is_alive(parent_id), "destroyed parent is no longer alive");
+    CHECK(!world.is_alive(child_id),
+          "ChildOf ownership cascade-deletes the child");
+    CHECK(!world.is_alive(grandchild_id),
+          "ChildOf ownership cascade-deletes all descendants");
+}
+
 int main() {
     test_entity_lifecycle_and_components();
     test_deferred_structural_mutation();
     test_core_component_reflection();
+    test_root_trs_matrix();
+    test_invalid_quaternion_uses_identity_rotation();
+    test_parent_child_world_transform();
+    test_three_level_dirty_propagation();
+    test_reparent_dirties_and_recomputes_subtree();
+    test_clear_parent_preserves_local_transform();
+    test_cycle_and_invalid_reparent_requests_are_rejected();
+    test_direct_parent_removal_dirties_subtree();
+    test_parent_destruction_cascade_deletes_descendants();
     return check_summary();
 }
