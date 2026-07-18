@@ -40,7 +40,7 @@ PASS: standard test gate delegates run-ecs first
 | Task 7 build contract checker | PASS | One C Flecs object and both ECS C++ objects across engine/test/Windows build surfaces |
 | Flecs pin and hashes | PASS | v4.1.6; `flecs.h` and `flecs.c` SHA-256 values match `VERSION` |
 | ECS scope exclusions | PASS | No named networking, sector ECS, Box3D step, ImGuizmo, or Flecs REST symbols |
-| `git diff b56286a --name-only` review | PASS | 43 planned feature/build/dependency files plus SDD trace artifacts; no unrelated product subsystem |
+| `git diff b56286a --name-only` review | PASS | 45 files total: 25 planned feature/build/dependency/design files and 20 SDD trace artifacts; no unrelated product subsystem |
 | Viewer/Explorer caller MSVC TU probes | KNOWN PORTABILITY BLOCKERS | No old `tick()` arity error; see details below |
 | Focused GNU `run-ecs run-sectorstream run-worldstream` | BLOCKED BY ENVIRONMENT | WSL has no installed distribution |
 | `MatterEngine3 test` | BLOCKED BY ENVIRONMENT | WSL has no installed distribution |
