@@ -136,13 +136,32 @@ void write_state(const BridgeRecord& bridge, const PhysicsBodyState& state) {
 }
 
 uint32_t clamped_substeps(uint32_t substeps) {
-    constexpr uint32_t kMaxSubsteps = 64;
+    constexpr uint32_t kMaxSubsteps = 16;
     return std::max(1U, std::min(substeps, kMaxSubsteps));
 }
 
 bool finite(Float3 value) {
     return std::isfinite(value.x) && std::isfinite(value.y) &&
            std::isfinite(value.z);
+}
+
+bool normalize(Quaternion& value) {
+    const double length_squared =
+        static_cast<double>(value.x) * value.x +
+        static_cast<double>(value.y) * value.y +
+        static_cast<double>(value.z) * value.z +
+        static_cast<double>(value.w) * value.w;
+    if (!std::isfinite(length_squared) || length_squared <= 0.0) {
+        return false;
+    }
+    const float inverse_length =
+        static_cast<float>(1.0 / std::sqrt(length_squared));
+    value.x *= inverse_length;
+    value.y *= inverse_length;
+    value.z *= inverse_length;
+    value.w *= inverse_length;
+    return std::isfinite(value.x) && std::isfinite(value.y) &&
+           std::isfinite(value.z) && std::isfinite(value.w);
 }
 
 struct HullDeleter {
@@ -399,7 +418,10 @@ void PhysicsContext::push(flecs::world& world, float fixed_delta) {
         if (source == nullptr) {
             continue;
         }
-        const ecs::LocalTransform transform = *source;
+        ecs::LocalTransform transform = *source;
+        if (!normalize(transform.rotation)) {
+            continue;
+        }
         if (bridge.type == RigidBodyType::Static) {
             b3Body_SetTransform(
                 bridge.body, box_position(transform.translation),

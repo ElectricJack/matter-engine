@@ -46,17 +46,20 @@ The required GNU RED command could not execute because `make` is not installed.
   Every system carries `FixedPipelineSystem`; none carries
   `FramePipelineSystem`.
 - Push copies `PhysicsSettings`, applies finite gravity, clamps substeps to
-  `[1, 64]`, and visits private bridges in ascending full generational entity
+  `[1, 16]`, and visits private bridges in ascending full generational entity
   ID order.
-- Static bodies receive ECS transforms directly. Kinematic bodies receive a
-  `b3Body_SetTargetTransform` for the current fixed delta before stepping.
+- Static bodies receive ECS transforms directly. Static and kinematic push
+  normalize the current finite, nonzero ECS quaternion before any Box3D call;
+  kinematic bodies then receive a `b3Body_SetTargetTransform` for the current
+  fixed delta before stepping.
 - Step calls `b3World_Step` exactly once and increments `PhysicsStats::steps`
   only after that call.
 - Pull consumes only Box3D's private movement-event buffer. It validates each
   stable heap bridge pointer and full private body ID, copies all Box3D values,
   then writes dynamic `LocalTransform`, `PhysicsVelocity`, and
-  `TransformDirty`. No Flecs component/query pointer survives a structural
-  mutation.
+  `TransformDirty`. The Flecs system explicitly declares all three writes so
+  PostPhysics and FixedPostUpdate scheduling sees the mutations. No Flecs
+  component/query pointer survives a structural mutation.
 - Dynamic local transforms use unit scale. The existing `FixedPostUpdate`
   propagation system consumes the dirty root/subtree before the fixed pipeline
   ends, keeping descendants current.
@@ -85,6 +88,43 @@ production behavior:
 
 After those isolation corrections, the focused physics executable and existing
 ECS executable both printed `ALL PASS`.
+
+## Independent Review Fixes
+
+Three review regressions were added before their production fixes:
+
+- substeps `0` and `17` exercise the approved `[1, 16]` boundaries;
+- static and kinematic finite non-unit ECS quaternions exercise push safety;
+- a PostPhysics reader and a custom phase after `FixedPostUpdate` exercise
+  visibility of pull writes and descendant propagation while the root's old
+  `WorldTransform` is deliberately stale.
+
+Against unchanged production objects, the boundary and visibility executable
+exited 1 with:
+
+```text
+FAIL: requested substeps above the approved range clamp to sixteen
+FAIL: PostPhysics observes pull pose, velocity, and dirtiness
+FAIL: phase after FixedPostUpdate observes descendant from pulled local pose
+3 FAILURE(S)
+```
+
+With the quaternion regression enabled, the unchanged push passed the raw
+non-unit value into Box3D and triggered Box3D's quaternion-validity assertion,
+stalling the combined debug test process. This was isolated before editing
+production code.
+
+The fixes changed the substep ceiling to 16, normalize a copied current ECS
+rotation before static or kinematic Box3D calls, and add explicit Flecs write
+terms for `LocalTransform`, `PhysicsVelocity`, and `TransformDirty`. The
+expanded focused physics suite and the neighboring ECS suite then both printed
+`ALL PASS`.
+
+For final review verification, current `physics_context.cpp`,
+`physics_systems.cpp`, `physics_tests.cpp`, and `ecs_tests.cpp` were compiled as
+C++17 in an absent-at-start directory and linked against the second fresh Task
+4 Box3D/Flecs build. Both executables printed `ALL PASS`. The review build
+directory and generated PDB were removed afterward.
 
 ## Fresh Verification
 
@@ -130,6 +170,13 @@ The generated `vc140.pdb` was removed after verification.
 - a moved dynamic root's descendant world transform is current after
   `FixedPostUpdate`;
 - gravity and substeps update before the next step;
+- substeps clamp at both approved boundaries, including `0 -> 1` and
+  `17 -> 16`;
+- finite non-unit static and kinematic ECS rotations are normalized before
+  Box3D receives them;
+- PostPhysics observes pulled pose, velocity, and dirtiness, and a phase after
+  `FixedPostUpdate` observes the resulting descendant world transform even
+  when the root world transform was stale;
 - one-to-one step accounting includes a three-step catch-up;
 - valid zero-fixed-step and all invalid `TickDesc` cases perform no Box3D step;
 - explicit engine trace is exactly `Reconcile, Push, Step, Pull`.

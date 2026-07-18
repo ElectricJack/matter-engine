@@ -1033,6 +1033,150 @@ void test_physics_system_trace_matches_fixed_design_order() {
           "physics systems explicitly trace reconcile, push, step, pull order");
 }
 
+void test_substeps_clamp_to_approved_boundaries() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    make_sphere_body(world, physics::RigidBodyType::Dynamic, {});
+    physics::detail::PhysicsContext& context = physics::detail::context(world);
+
+    physics::PhysicsSettings settings = world.get<physics::PhysicsSettings>();
+    settings.gravity = {};
+    settings.substeps = 0;
+    world.set<physics::PhysicsSettings>(settings);
+    runtime.tick({0.1f, 0.1f, 1});
+    CHECK(context.last_step_substeps() == 1,
+          "zero requested substeps clamp to one");
+
+    settings.substeps = 17;
+    world.set<physics::PhysicsSettings>(settings);
+    runtime.tick({0.1f, 0.1f, 1});
+    CHECK(context.last_step_substeps() == 16,
+          "requested substeps above the approved range clamp to sixteen");
+}
+
+struct PhysicsVisibilityProbe {};
+struct AfterFixedPostPhysics {};
+
+void test_pull_writes_are_visible_through_fixed_post_update() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    physics::PhysicsSettings settings = world.get<physics::PhysicsSettings>();
+    settings.gravity = {};
+    world.set<physics::PhysicsSettings>(settings);
+
+    flecs::entity root = make_sphere_body(
+        world, physics::RigidBodyType::Dynamic, {});
+    ecs::LocalTransform child_local{};
+    child_local.translation = {1.0f, 2.0f, 3.0f};
+    flecs::entity child = world.entity()
+        .set<ecs::LocalTransform>(child_local)
+        .child_of(root);
+    runtime.tick({0.1f, 0.1f, 1});
+
+    ecs::WorldTransform stale_root{};
+    stale_root.matrix.m[3] = 100.0f;
+    stale_root.matrix.m[7] = 200.0f;
+    stale_root.matrix.m[11] = 300.0f;
+    stale_root.matrix.m[15] = 1.0f;
+    root.set<ecs::WorldTransform>(stale_root);
+
+    physics::detail::PhysicsBodyState seeded{};
+    seeded.position = {5.0f, 6.0f, 7.0f};
+    seeded.rotation = {};
+    seeded.linear_velocity = {1.0f, 0.0f, 0.0f};
+    seeded.awake = true;
+    CHECK(physics::detail::context(world).set_body_state(root.id(), seeded),
+          "visibility test seeds private dynamic state");
+
+    world.component<PhysicsVisibilityProbe>();
+    world.entity().add<PhysicsVisibilityProbe>();
+    int post_physics_hits = 0;
+    bool post_physics_saw_pull = false;
+    flecs::system post_probe =
+        world.system<PhysicsVisibilityProbe>("ObservePhysicsPullWrites")
+            .kind<ecs::PostPhysics>()
+            .read<ecs::LocalTransform>()
+            .read<physics::PhysicsVelocity>()
+            .read<ecs::TransformDirty>()
+            .each([&](PhysicsVisibilityProbe&) {
+                ++post_physics_hits;
+                const ecs::LocalTransform local =
+                    root.get<ecs::LocalTransform>();
+                const physics::PhysicsVelocity* velocity =
+                    root.try_get<physics::PhysicsVelocity>();
+                post_physics_saw_pull =
+                    near(local.translation, {5.1f, 6.0f, 7.0f}, 3.0e-3f) &&
+                    velocity != nullptr &&
+                    near(velocity->linear, {1.0f, 0.0f, 0.0f}, 3.0e-3f) &&
+                    root.has<ecs::TransformDirty>();
+            });
+    post_probe.add<ecs::FixedPipelineSystem>();
+
+    world.component<AfterFixedPostPhysics>()
+        .add(flecs::Phase)
+        .depends_on<ecs::FixedPostUpdate>();
+    int after_fixed_post_hits = 0;
+    bool descendant_current = false;
+    flecs::system fixed_post_probe =
+        world.system<PhysicsVisibilityProbe>("ObserveAfterFixedPostPhysics")
+            .kind<AfterFixedPostPhysics>()
+            .read<ecs::WorldTransform>()
+            .each([&](PhysicsVisibilityProbe&) {
+                ++after_fixed_post_hits;
+                const ecs::WorldTransform value =
+                    child.get<ecs::WorldTransform>();
+                descendant_current =
+                    near(value.matrix.m[3], 6.1f, 3.0e-3f) &&
+                    near(value.matrix.m[7], 8.0f, 3.0e-3f) &&
+                    near(value.matrix.m[11], 10.0f, 3.0e-3f);
+            });
+    fixed_post_probe.add<ecs::FixedPipelineSystem>();
+
+    runtime.tick({0.1f, 0.1f, 1});
+    CHECK(post_physics_hits == 1 && post_physics_saw_pull,
+          "PostPhysics observes pull pose, velocity, and dirtiness");
+    CHECK(after_fixed_post_hits == 1 && descendant_current,
+          "phase after FixedPostUpdate observes descendant from pulled local pose");
+}
+
+void test_static_and_kinematic_push_normalize_ecs_rotations() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    physics::PhysicsSettings settings = world.get<physics::PhysicsSettings>();
+    settings.gravity = {};
+    world.set<physics::PhysicsSettings>(settings);
+    flecs::entity static_body = make_sphere_body(
+        world, physics::RigidBodyType::Static, {});
+    flecs::entity kinematic_body = make_sphere_body(
+        world, physics::RigidBodyType::Kinematic, {});
+    const Quaternion static_expected =
+        {0.0f, 0.0f, 0.70710677f, 0.70710677f};
+    const Quaternion kinematic_expected =
+        {0.0f, 0.70710677f, 0.0f, 0.70710677f};
+    ecs::LocalTransform initial_kinematic{};
+    initial_kinematic.rotation = kinematic_expected;
+    kinematic_body.set<ecs::LocalTransform>(initial_kinematic);
+    runtime.tick({0.1f, 0.1f, 1});
+
+    ecs::LocalTransform static_transform{};
+    static_transform.rotation = {0.0f, 0.0f, 2.0f, 2.0f};
+    static_body.set<ecs::LocalTransform>(static_transform);
+    ecs::LocalTransform kinematic_transform{};
+    kinematic_transform.rotation = {0.0f, 4.0f, 0.0f, 4.0f};
+    kinematic_body.set<ecs::LocalTransform>(kinematic_transform);
+    runtime.tick({0.1f, 0.1f, 1});
+
+    physics::detail::PhysicsBodyState static_state{};
+    physics::detail::PhysicsBodyState kinematic_state{};
+    physics::detail::PhysicsContext& context = physics::detail::context(world);
+    CHECK(context.get_body_state(static_body.id(), static_state) &&
+              near(static_state.rotation, static_expected, 2.0e-3f),
+          "static push normalizes a finite non-unit ECS quaternion");
+    CHECK(context.get_body_state(kinematic_body.id(), kinematic_state) &&
+              near(kinematic_state.rotation, kinematic_expected, 2.0e-2f),
+          "kinematic push normalizes a finite non-unit ECS quaternion");
+}
+
 } // namespace
 
 int main() {
@@ -1049,5 +1193,8 @@ int main() {
     test_dynamic_pose_velocity_and_descendant_pull_before_fixed_post_update();
     test_settings_and_step_accounting_follow_fixed_ticks_only();
     test_physics_system_trace_matches_fixed_design_order();
+    test_substeps_clamp_to_approved_boundaries();
+    test_pull_writes_are_visible_through_fixed_post_update();
+    test_static_and_kinematic_push_normalize_ecs_rotations();
     return check_summary();
 }

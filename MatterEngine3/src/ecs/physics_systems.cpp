@@ -97,6 +97,9 @@ void register_physics_systems(flecs::world& world) {
     flecs::system pull =
         world.system<const detail::PhysicsContextRef>("MatterPhysicsPull")
             .term_at(0).src<detail::PhysicsContextRef>()
+            .write<ecs::LocalTransform>()
+            .write<PhysicsVelocity>()
+            .write<ecs::TransformDirty>()
             .kind<PhysicsPull>()
             .each([](
                 flecs::iter& iterator,
