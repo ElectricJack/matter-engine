@@ -540,7 +540,9 @@ int main() {
                 }
             }
         }
-        camera_controller.update(window, dt, camera);
+        if (ui.camera_input_allowed()) {
+            camera_controller.update(window, dt, camera);
+        }
 
 #ifndef _WIN32
         if (cmd_fd >= 0) {
@@ -612,9 +614,7 @@ int main() {
             }
         }
 
-        const float focus[3] = {camera.position.x, camera.position.y,
-                                camera.position.z};
-        session->set_bake_focus(focus);
+        ui.update_sector_streaming(*session, camera);
         matter::TickDesc tick{};
         tick.frame_delta_seconds = dt;
         session->tick(tick);
@@ -763,6 +763,8 @@ int main() {
             ui.draw_debug_panel(stats);
             ui.draw_worlds_panel(worlds, stats);
             ui.draw_camera_panel(camera);
+            ui.draw_sector_streaming_panel(*session, camera, frame.extent.width,
+                                           frame.extent.height);
         }
         if (ui_frame_ready && !ui.end_frame(frame, error)) {
             std::fprintf(stderr, "FATAL: ImGui Vulkan backend: %s\n", error.c_str());

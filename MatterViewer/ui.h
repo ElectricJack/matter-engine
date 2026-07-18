@@ -9,6 +9,7 @@
 
 #include "matter/camera.h"
 #include "matter/world_session.h"
+#include "streaming_anchor_controller.h"
 
 struct GLFWwindow;
 namespace matter { class VulkanDevice; struct VulkanFrame; }
@@ -107,6 +108,13 @@ public:
     // Standalone panel listing available worlds as buttons. Clicking a non-current
     // world sets stats.world_switch_requested; main handles the swap next frame.
     void draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& stats);
+    void update_sector_streaming(matter::WorldSession& session,
+                                 const matter::CameraDesc& camera);
+    void draw_sector_streaming_panel(matter::WorldSession& session,
+                                     matter::CameraDesc& camera,
+                                     std::uint32_t viewport_width,
+                                     std::uint32_t viewport_height);
+    bool camera_input_allowed() const;
 
 private:
     bool initialize_vulkan_backend(VkFormat format, std::uint32_t image_count,
@@ -120,6 +128,9 @@ private:
     bool imgui_context_initialized_ = false;
     bool glfw_backend_initialized_ = false;
     bool vulkan_backend_initialized_ = false;
+    matter_viewer::StreamingAnchorState streaming_anchor_{};
+    std::uint64_t anchor_id_input_ = 0;
+    std::uint64_t streaming_seed_ = 0;
 };
 
 } // namespace viewer

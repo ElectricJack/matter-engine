@@ -1,19 +1,48 @@
 #include "ui.h"
 
+#include <array>
 #include <cmath>
 #include <algorithm>
 #include <filesystem>
 #include <system_error>
 
 #include "imgui.h"
+#include "ImGuizmo.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
 #include "matter/vulkan_device.h"
+#include "render/frame_matrices.h"
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
 namespace viewer {
+namespace {
+
+const char* streaming_state_name(
+    matter::streaming::SectorStreamingState state) {
+    using State = matter::streaming::SectorStreamingState;
+    switch (state) {
+        case State::Detached: return "Detached";
+        case State::PendingProfile: return "PendingProfile";
+        case State::PendingTransform: return "PendingTransform";
+        case State::Active: return "Active";
+        case State::Detaching: return "Detaching";
+    }
+    return "Detached";
+}
+
+flecs::entity_t published_streaming_owner(flecs::world& world) {
+    flecs::entity_t owner = 0;
+    world.each<matter::streaming::SectorStreamingStatus>(
+        [&owner](flecs::entity entity,
+                 matter::streaming::SectorStreamingStatus&) {
+            if (owner == 0) owner = entity.id();
+        });
+    return owner;
+}
+
+} // namespace
 
 void reset_lighting_controls(ViewerStats& stats) {
     stats.lighting = matter::VulkanLightingOverrides{};
@@ -189,6 +218,7 @@ bool Ui::begin_frame(const matter::VulkanFrame& frame, std::string& error) {
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
+    ImGuizmo::BeginFrame();
     return true;
 }
 
@@ -349,6 +379,211 @@ void Ui::draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& s
     }
 
     ImGui::End();
+}
+
+void Ui::update_sector_streaming(matter::WorldSession& session,
+                                 const matter::CameraDesc& camera) {
+    flecs::world& world = session.ecs();
+    const flecs::entity_t selected_before = streaming_anchor_.selected;
+    matter_viewer::validate_anchor(streaming_anchor_, world);
+    if (selected_before != 0 && streaming_anchor_.selected == 0) {
+        anchor_id_input_ = 0;
+    }
+    const float camera_position[3] = {
+        camera.position.x, camera.position.y, camera.position.z};
+    matter_viewer::follow_camera(streaming_anchor_, world, camera_position);
+}
+
+void Ui::draw_sector_streaming_panel(matter::WorldSession& session,
+                                     matter::CameraDesc& camera,
+                                     std::uint32_t viewport_width,
+                                     std::uint32_t viewport_height) {
+    flecs::world& world = session.ecs();
+    const flecs::entity_t selected_before = streaming_anchor_.selected;
+    matter_viewer::validate_anchor(streaming_anchor_, world);
+    if (selected_before != 0 && streaming_anchor_.selected == 0) {
+        anchor_id_input_ = 0;
+    }
+
+    ImGui::SetNextWindowPos(ImVec2(20.0f, 160.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(360.0f, 0.0f), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Sector Streaming");
+
+    if (ImGui::Button("Create Anchor")) {
+        anchor_id_input_ = matter_viewer::create_anchor(streaming_anchor_, world);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Clear Selection")) {
+        matter_viewer::clear_anchor(streaming_anchor_);
+        anchor_id_input_ = 0;
+    }
+
+    ImGui::SetNextItemWidth(220.0f);
+    ImGui::InputScalar("Anchor ID", ImGuiDataType_U64, &anchor_id_input_);
+    ImGui::SameLine();
+    if (ImGui::Button("Select")) {
+        if (!matter_viewer::select_anchor(streaming_anchor_, world,
+                                          static_cast<flecs::entity_t>(
+                                              anchor_id_input_))) {
+            anchor_id_input_ = 0;
+        }
+    }
+
+    matter_viewer::validate_anchor(streaming_anchor_, world);
+    const bool has_selection = streaming_anchor_.selected != 0;
+    bool has_streaming = false;
+    if (has_selection) {
+        has_streaming =
+            flecs::entity(world.c_ptr(), streaming_anchor_.selected)
+                .has<matter::streaming::SectorStreaming>();
+    }
+
+    const bool attach_disabled = !has_selection || has_streaming;
+    if (attach_disabled) ImGui::BeginDisabled();
+    if (ImGui::Button("Attach Streaming")) {
+        matter_viewer::attach_streaming(streaming_anchor_, world);
+    }
+    if (attach_disabled) ImGui::EndDisabled();
+    ImGui::SameLine();
+    const bool remove_disabled = !has_selection || !has_streaming;
+    if (remove_disabled) ImGui::BeginDisabled();
+    if (ImGui::Button("Remove Streaming")) {
+        matter_viewer::remove_streaming(streaming_anchor_, world);
+        has_streaming = false;
+    }
+    if (remove_disabled) ImGui::EndDisabled();
+
+    bool follow = streaming_anchor_.follow_editor_camera;
+    if (!has_selection) ImGui::BeginDisabled();
+    if (ImGui::Checkbox("Follow editor camera", &follow)) {
+        if (follow) {
+            streaming_anchor_.follow_editor_camera = true;
+        } else {
+            matter_viewer::detach_follow(streaming_anchor_, world);
+        }
+    }
+    if (!has_selection) ImGui::EndDisabled();
+
+    ImGui::SameLine();
+    if (!has_selection || streaming_anchor_.follow_editor_camera)
+        ImGui::BeginDisabled();
+    if (ImGui::Button("Frame Anchor")) {
+        matter_viewer::frame_selected_anchor(streaming_anchor_, world, camera,
+                                             10.0f);
+    }
+    if (!has_selection || streaming_anchor_.follow_editor_camera)
+        ImGui::EndDisabled();
+
+    ImGui::Separator();
+    ImGui::SetNextItemWidth(220.0f);
+    ImGui::InputScalar("Seed", ImGuiDataType_U64, &streaming_seed_);
+    ImGui::SameLine();
+    if (ImGui::Button("Regenerate")) {
+        session.regenerate(streaming_seed_);
+    }
+
+    const matter::streaming::SectorStreamingStatus status =
+        session.streaming_status();
+    matter_viewer::validate_anchor(streaming_anchor_, world);
+    flecs::entity_t active_owner = published_streaming_owner(world);
+    const matter::streaming::SectorStreamingError* recoverable_error = nullptr;
+    if (streaming_anchor_.selected != 0) {
+        const flecs::entity selected(world.c_ptr(), streaming_anchor_.selected);
+        recoverable_error =
+            selected.try_get<matter::streaming::SectorStreamingError>();
+        if (recoverable_error != nullptr &&
+            recoverable_error->code ==
+                matter::streaming::SectorStreamingErrorCode::OwnerAlreadyClaimed &&
+            recoverable_error->active_owner != 0) {
+            active_owner = recoverable_error->active_owner;
+        } else if (active_owner == 0 &&
+                   selected.has<matter::streaming::SectorStreaming>()) {
+            active_owner = selected.id();
+        }
+    }
+    if (recoverable_error == nullptr && active_owner != 0 &&
+        world.is_alive(active_owner)) {
+        recoverable_error =
+            flecs::entity(world.c_ptr(), active_owner)
+                .try_get<matter::streaming::SectorStreamingError>();
+    }
+
+    ImGui::SeparatorText("Status");
+    ImGui::Text("Selected: %llu",
+                static_cast<unsigned long long>(streaming_anchor_.selected));
+    ImGui::Text("Active owner: %llu",
+                static_cast<unsigned long long>(active_owner));
+    ImGui::Text("State: %s", streaming_state_name(status.state));
+    ImGui::Text("Generation: %llu",
+                static_cast<unsigned long long>(status.generation));
+    ImGui::Text("Resident: %u", status.resident_sectors);
+    ImGui::Text("Inflight: %u", status.inflight_sectors);
+    if (recoverable_error == nullptr ||
+        recoverable_error->code ==
+            matter::streaming::SectorStreamingErrorCode::None) {
+        ImGui::Text("Recoverable error: None");
+    } else if (recoverable_error->code ==
+               matter::streaming::SectorStreamingErrorCode::UnsupportedWorld) {
+        ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
+                           "Recoverable error: UnsupportedWorld");
+    } else {
+        ImGui::TextColored(
+            ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
+            "Recoverable error: OwnerAlreadyClaimed (active owner %llu)",
+            static_cast<unsigned long long>(recoverable_error->active_owner));
+    }
+    ImGui::End();
+
+    matter_viewer::validate_anchor(streaming_anchor_, world);
+    if (streaming_anchor_.selected == 0 ||
+        streaming_anchor_.follow_editor_camera || viewport_width == 0 ||
+        viewport_height == 0) {
+        return;
+    }
+    const flecs::entity anchor(world.c_ptr(), streaming_anchor_.selected);
+    if (anchor.has<matter::streaming::SectorStreaming>()) {
+        return;
+    }
+    const matter::ecs::LocalTransform* transform =
+        anchor.try_get<matter::ecs::LocalTransform>();
+    if (transform == nullptr) {
+        return;
+    }
+
+    FrameMatrices frame{};
+    std::string matrix_error;
+    if (!build_frame_matrices(camera, viewport_width, viewport_height, frame,
+                              matrix_error)) {
+        return;
+    }
+    std::array<float, 16> view =
+        matter_viewer::to_imguizmo_matrix(frame.world_to_view);
+    std::array<float, 16> projection =
+        matter_viewer::to_imguizmo_matrix(frame.view_to_clip);
+    std::array<float, 16> model = matter_viewer::to_imguizmo_matrix(
+        matter_viewer::local_transform_matrix(*transform));
+
+    ImGuizmo::SetOrthographic(false);
+    ImGuizmo::SetDrawlist();
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGuizmo::SetRect(viewport->Pos.x, viewport->Pos.y, viewport->Size.x,
+                      viewport->Size.y);
+    if (ImGuizmo::Manipulate(view.data(), projection.data(),
+                             ImGuizmo::TRANSLATE, ImGuizmo::WORLD,
+                             model.data())) {
+        const matter::Mat4f engine_model =
+            matter_viewer::from_imguizmo_matrix(model.data());
+        matter_viewer::apply_gizmo_translation(streaming_anchor_, world,
+                                                engine_model.m);
+    }
+}
+
+bool Ui::camera_input_allowed() const {
+    if (ImGui::GetCurrentContext() == nullptr) return true;
+    const ImGuiIO& io = ImGui::GetIO();
+    return matter_viewer::camera_input_allowed(
+        io.WantCaptureMouse, io.WantCaptureKeyboard, ImGuizmo::IsOver(),
+        ImGuizmo::IsUsing());
 }
 
 } // namespace viewer

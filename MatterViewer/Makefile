@@ -25,6 +25,8 @@ CFLAGS = -std=c++17 -O2 -Wall -Wno-missing-braces -Wno-unused-variable \
 
 RAYLIB_PATH = ../Libraries/raylib/src
 IMGUI_PATH  = ../Libraries/imgui
+# Official ImGuizmo upstream commit: dc25afb98bc3ebe00dfc9a23ba7235fead2ccb1d
+IMGUIZMO_PATH = ../Libraries/ImGuizmo
 QJS_DIR     = ../Libraries/quickjs-ng
 QJS_INC     = -I$(QJS_DIR)
 BOX3D_DIR   = ../Libraries/box3d
@@ -43,6 +45,7 @@ INCLUDE_PATHS = -I$(ME3_DIR)/include \
                 -I$(MSL_DIR)/include \
                 -I$(RAYLIB_PATH) \
                 -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends \
+                -I$(IMGUIZMO_PATH) \
                 -I$(RAYLIB_PATH)/external/glfw/include \
                 -I$(BOX3D_DIR)/include \
                 -I$(FLECS_DIR) \
@@ -205,9 +208,10 @@ FLECS_C = $(FLECS_DIR)/flecs.c
 IMGUI_CORE_SRC = $(IMGUI_PATH)/imgui.cpp $(IMGUI_PATH)/imgui_draw.cpp \
             $(IMGUI_PATH)/imgui_tables.cpp $(IMGUI_PATH)/imgui_widgets.cpp \
             $(IMGUI_PATH)/backends/imgui_impl_glfw.cpp
-IMGUI_SRC_LINUX = $(IMGUI_CORE_SRC) \
+IMGUIZMO_SRC = $(IMGUIZMO_PATH)/ImGuizmo.cpp
+IMGUI_SRC_LINUX = $(IMGUI_CORE_SRC) $(IMGUIZMO_SRC) \
             $(IMGUI_PATH)/backends/imgui_impl_opengl3.cpp
-IMGUI_SRC_WIN = $(IMGUI_CORE_SRC) \
+IMGUI_SRC_WIN = $(IMGUI_CORE_SRC) $(IMGUIZMO_SRC) \
             $(IMGUI_PATH)/backends/imgui_impl_vulkan.cpp
 
 # ---- Per-object lists (one .o per TU, in a platform build dir, so `make -j`
@@ -240,6 +244,7 @@ FLECS_NAME = $(notdir $(FLECS_C))
 
 vpath %.cpp . $(ME3_DIR)/src $(ME3_DIR)/src/render $(ME3_DIR)/src/provider $(ME3_DIR)/src/ecs \
              $(MSL_DIR)/src $(IMGUI_PATH) $(IMGUI_PATH)/backends \
+             $(IMGUIZMO_PATH) \
              ../ParticleFlowLib/src
 vpath %.c $(MSL_DIR)/src $(QJS_DIR) $(FLECS_DIR)
 

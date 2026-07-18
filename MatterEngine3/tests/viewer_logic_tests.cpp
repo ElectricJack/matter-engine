@@ -36,6 +36,8 @@
 
 #include "check.h"
 
+#include <array>
+
 // Shared PartStore and WorldManifest populated once by test_local_provider_cache's cold run
 // and reused by subsequent tests that need loaded parts. This avoids re-running the
 // expensive lod_bake on the large Tree geometry more than once per process.
@@ -130,6 +132,51 @@ static void test_streaming_anchor_follow_copies_camera_xyz() {
           "streaming anchor follow preserves rotation and scale");
     CHECK(anchor.has<matter::ecs::TransformDirty>(),
           "streaming anchor follow marks transform dirty");
+}
+
+static void test_streaming_anchor_create_select_attach_remove() {
+    flecs::world world;
+    matter_viewer::StreamingAnchorState state{};
+    state.follow_editor_camera = false;
+
+    const flecs::entity_t created_id = matter_viewer::create_anchor(state, world);
+    CHECK(created_id != 0 && world.is_alive(created_id),
+          "streaming anchor create returns a live full ID");
+    const flecs::entity created(world.c_ptr(), created_id);
+    CHECK(created.has<matter::ecs::LocalTransform>(),
+          "streaming anchor create adds LocalTransform");
+    CHECK(state.selected == created_id && state.follow_editor_camera,
+          "streaming anchor create selects with follow enabled");
+
+    CHECK(matter_viewer::attach_streaming(state, world) &&
+              created.has<matter::streaming::SectorStreaming>(),
+          "streaming anchor attach sets SectorStreaming");
+    created.set<matter::streaming::SectorStreamingError>({
+        matter::streaming::SectorStreamingErrorCode::OwnerAlreadyClaimed, 42});
+    CHECK(matter_viewer::attach_streaming(state, world) &&
+              created.has<matter::streaming::SectorStreaming>() &&
+              created.has<matter::streaming::SectorStreamingError>(),
+          "duplicate streaming attach keeps its component and recoverable error");
+    CHECK(matter_viewer::remove_streaming(state, world) &&
+              !created.has<matter::streaming::SectorStreaming>(),
+          "streaming anchor remove clears only SectorStreaming");
+
+    const flecs::entity other = world.entity().set<matter::ecs::LocalTransform>({});
+    CHECK(matter_viewer::select_anchor(state, world, other.id()) &&
+              state.selected == other.id(),
+          "streaming anchor select accepts a live transformed entity");
+    matter_viewer::clear_anchor(state);
+    CHECK(state.selected == 0 && !state.follow_editor_camera,
+          "streaming anchor clear drops the full ID and follow state");
+
+    const flecs::entity invalid = world.entity();
+    CHECK(!matter_viewer::select_anchor(state, world, invalid.id()) &&
+              state.selected == 0,
+          "streaming anchor select rejects entities without LocalTransform");
+    invalid.destruct();
+    CHECK(!matter_viewer::select_anchor(state, world, invalid.id()) &&
+              state.selected == 0,
+          "streaming anchor select rejects dead full IDs");
 }
 
 static void test_streaming_anchor_detach_preserves_transform() {
@@ -259,14 +306,87 @@ static void test_streaming_anchor_gizmo_rejects_missing_selection_or_transform()
           "streaming anchor gizmo does not mutate an entity without LocalTransform");
 }
 
+static void test_streaming_anchor_matrix_conversion_round_trip_and_translation() {
+    matter::Mat4f engine{};
+    for (int index = 0; index != 16; ++index)
+        engine.m[index] = static_cast<float>(index + 1);
+
+    std::array<float, 16> gizmo = matter_viewer::to_imguizmo_matrix(engine);
+    for (int row = 0; row != 4; ++row) {
+        for (int column = 0; column != 4; ++column) {
+            CHECK(gizmo[column * 4 + row] == engine.m[row * 4 + column],
+                  "engine row-major matrix is explicitly transposed for ImGuizmo");
+        }
+    }
+    const matter::Mat4f round_trip =
+        matter_viewer::from_imguizmo_matrix(gizmo.data());
+    CHECK(std::memcmp(round_trip.m, engine.m, sizeof(engine.m)) == 0,
+          "ImGuizmo matrix conversion round trips exactly");
+
+    gizmo[12] = 101.0f;
+    gizmo[13] = -202.0f;
+    gizmo[14] = 303.0f;
+    const matter::Mat4f translated =
+        matter_viewer::from_imguizmo_matrix(gizmo.data());
+    CHECK(translated.m[3] == 101.0f && translated.m[7] == -202.0f &&
+              translated.m[11] == 303.0f,
+          "ImGuizmo column-major translation becomes engine row-major translation");
+
+    const matter::ecs::LocalTransform transform{
+        {4.0f, 5.0f, 6.0f}, {}, {2.0f, 3.0f, 4.0f}};
+    const matter::Mat4f model = matter_viewer::local_transform_matrix(transform);
+    CHECK(model.m[0] == 2.0f && model.m[5] == 3.0f && model.m[10] == 4.0f &&
+              model.m[3] == 4.0f && model.m[7] == 5.0f && model.m[11] == 6.0f &&
+              model.m[15] == 1.0f,
+          "local transform matrix includes scale and row-major translation");
+
+    const matter::ecs::LocalTransform non_unit_rotation{
+        {}, {0.0f, 0.0f, 1.0f, 1.0f}, {2.0f, 3.0f, 4.0f}};
+    const matter::Mat4f normalized_model =
+        matter_viewer::local_transform_matrix(non_unit_rotation);
+    CHECK(std::fabs(normalized_model.m[0]) < 1e-5f &&
+              std::fabs(normalized_model.m[1] + 3.0f) < 1e-5f &&
+              std::fabs(normalized_model.m[4] - 2.0f) < 1e-5f &&
+              std::fabs(normalized_model.m[5]) < 1e-5f &&
+              std::fabs(normalized_model.m[10] - 4.0f) < 1e-5f,
+          "local transform matrix normalizes quaternion like the engine");
+}
+
+static void test_streaming_anchor_frame_repositions_only_camera() {
+    flecs::world world;
+    const flecs::entity anchor = world.entity().set<matter::ecs::LocalTransform>({
+        {2.0f, 3.0f, 4.0f}, {0.1f, 0.2f, 0.3f, 0.4f}, {5.0f, 6.0f, 7.0f}});
+    matter_viewer::StreamingAnchorState state{};
+    state.selected = anchor.id();
+    state.follow_editor_camera = false;
+    matter::CameraDesc camera{{0.0f, 0.0f, 10.0f}, {0.0f, 0.0f, 0.0f},
+                              {0.0f, 1.0f, 0.0f}, 0.75f, 0.1f, 1000.0f};
+
+    CHECK(matter_viewer::frame_selected_anchor(state, world, camera, 10.0f),
+          "frame anchor accepts a live transformed selection");
+    CHECK(camera_close3(camera.target, {2.0f, 3.0f, 4.0f}, 1e-5f) &&
+              camera_close3(camera.position, {2.0f, 3.0f, 14.0f}, 1e-5f),
+          "frame anchor keeps view direction and uses requested distance");
+    const matter::ecs::LocalTransform unchanged =
+        anchor.get<matter::ecs::LocalTransform>();
+    CHECK(unchanged.translation.x == 2.0f && unchanged.translation.y == 3.0f &&
+              unchanged.translation.z == 4.0f && !state.follow_editor_camera &&
+              !anchor.has<matter::streaming::SectorStreaming>(),
+          "frame anchor changes neither anchor nor streaming state");
+}
+
 static void test_streaming_anchor_camera_input_truth_table() {
-    CHECK(matter_viewer::camera_input_allowed(false, false),
+    CHECK(matter_viewer::camera_input_allowed(false, false, false, false),
           "camera input allowed without ImGui or gizmo capture");
-    CHECK(!matter_viewer::camera_input_allowed(true, false),
-          "camera input blocked by ImGui capture");
-    CHECK(!matter_viewer::camera_input_allowed(false, true),
-          "camera input blocked while gizmo is active");
-    CHECK(!matter_viewer::camera_input_allowed(true, true),
+    CHECK(!matter_viewer::camera_input_allowed(true, false, false, false),
+          "camera input blocked by ImGui mouse capture");
+    CHECK(!matter_viewer::camera_input_allowed(false, true, false, false),
+          "camera input blocked by ImGui keyboard capture");
+    CHECK(!matter_viewer::camera_input_allowed(false, false, true, false),
+          "camera input blocked while the gizmo is hovered");
+    CHECK(!matter_viewer::camera_input_allowed(false, false, false, true),
+          "camera input blocked while the gizmo is active");
+    CHECK(!matter_viewer::camera_input_allowed(true, true, true, true),
           "camera input blocked by simultaneous ImGui and gizmo capture");
 }
 
@@ -1492,11 +1612,14 @@ int main() {
     test_yaw_turns_camera_analytically();
     test_huge_pitch_delta_stops_before_crossing_pole();
     test_combined_camera_movement_has_axial_speed();
+    test_streaming_anchor_create_select_attach_remove();
     test_streaming_anchor_follow_copies_camera_xyz();
     test_streaming_anchor_detach_preserves_transform();
     test_streaming_anchor_rejects_dead_recycled_and_replaced_worlds();
     test_streaming_anchor_gizmo_uses_engine_matrix_translation();
     test_streaming_anchor_gizmo_rejects_missing_selection_or_transform();
+    test_streaming_anchor_matrix_conversion_round_trip_and_translation();
+    test_streaming_anchor_frame_repositions_only_camera();
     test_streaming_anchor_camera_input_truth_table();
     test_cull_transform_convention();
     test_world_state_version();
