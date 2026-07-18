@@ -43,7 +43,13 @@ Task 7: complete (commits 7b4d2e2..9dd5c97, review clean after build-graph fixes
   - Enhanced static checker now models implementation closure, one-Flecs membership, and basename uniqueness.
   - Focused MSVC link/run passed twice; GNU archive/test and MinGW builds remain environment-blocked.
 
-Resume at Task 8.
+Task 8: complete (commits 9e32d06..5cf2de0, review clean)
+  - Migrated Viewer, Linux Viewer, Explorer, and three async WorldSession pumps to explicit TickDesc.
+  - Viewer/Explorer reuse existing seconds-based frame deltas; async provider pumps use zero frame time.
+  - Repository-wide search confirms remaining parameterless tick calls belong only to live-edit or particle-flow APIs.
+  - Focused ECS test passed; product builds remain environment-blocked.
+
+Resume at Task 9.
 
 Environment gate:
   - WSL is installed without a Linux distribution.
