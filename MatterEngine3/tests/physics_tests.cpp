@@ -2,6 +2,7 @@
 #include "matter/physics.h"
 
 #include <cstdint>
+#include <string>
 
 using namespace matter;
 
@@ -11,6 +12,9 @@ const ecs_member_t* member(
     flecs::world& world,
     flecs::entity component,
     const char* name) {
+    if (!component.is_alive()) {
+        return nullptr;
+    }
     return ecs_struct_get_member(world, component, name);
 }
 
@@ -25,9 +29,24 @@ bool has_member_of_type(
            reflected->count == count;
 }
 
-template <typename Type>
-bool is_fieldless(flecs::world& world) {
-    return ecs_struct_get_nth_member(world, world.component<Type>(), 0) == nullptr;
+flecs::entity physics_type(flecs::world& world, const char* name) {
+    const std::string path = std::string("matter::physics::") + name;
+    return world.lookup(path.c_str());
+}
+
+bool is_fieldless(flecs::world& world, flecs::entity type) {
+    return type.is_alive() && ecs_struct_get_nth_member(world, type, 0) == nullptr;
+}
+
+bool is_zero(Float3 value) {
+    return value.x == 0.0f && value.y == 0.0f && value.z == 0.0f;
+}
+
+bool has_default_properties(const physics::ColliderProperties& value) {
+    return value.density == 1.0f && value.friction == 0.6f &&
+           value.restitution == 0.0f && value.category_bits == 1 &&
+           value.mask_bits == UINT64_MAX && !value.sensor &&
+           value.contact_events && !value.hit_events;
 }
 
 void test_physics_contract_and_reflection() {
@@ -35,28 +54,39 @@ void test_physics_contract_and_reflection() {
     world.import<ecs::CoreModule>();
     world.import<physics::PhysicsModule>();
 
-    CHECK(world.component<physics::RigidBody>().is_alive(),
-          "RigidBody registered");
-    CHECK(world.component<physics::PhysicsVelocity>().is_alive(),
-          "PhysicsVelocity registered");
-    CHECK(world.component<physics::ColliderProperties>().is_alive(),
-          "ColliderProperties registered");
-    CHECK(world.component<physics::SphereCollider>().is_alive(),
-          "SphereCollider registered");
-    CHECK(world.component<physics::CapsuleCollider>().is_alive(),
-          "CapsuleCollider registered");
-    CHECK(world.component<physics::BoxCollider>().is_alive(),
-          "BoxCollider registered");
-    CHECK(world.component<physics::ConvexHullCollider>().is_alive(),
-          "ConvexHullCollider registered");
-    CHECK(world.component<physics::PhysicsSettings>().is_alive(),
-          "PhysicsSettings registered");
-    CHECK(world.component<physics::PhysicsError>().is_alive(),
-          "PhysicsError registered");
+    const flecs::entity rigid_body_type = physics_type(world, "RigidBodyType");
+    const flecs::entity rigid_body = physics_type(world, "RigidBody");
+    const flecs::entity velocity = physics_type(world, "PhysicsVelocity");
+    const flecs::entity properties = physics_type(world, "ColliderProperties");
+    const flecs::entity sphere = physics_type(world, "SphereCollider");
+    const flecs::entity capsule = physics_type(world, "CapsuleCollider");
+    const flecs::entity box = physics_type(world, "BoxCollider");
+    const flecs::entity hull = physics_type(world, "ConvexHullCollider");
+    const flecs::entity settings = physics_type(world, "PhysicsSettings");
+    const flecs::entity error_code = physics_type(world, "PhysicsErrorCode");
+    const flecs::entity error = physics_type(world, "PhysicsError");
+    const flecs::entity reconcile = physics_type(world, "PhysicsReconcile");
+    const flecs::entity push = physics_type(world, "PhysicsPush");
+    const flecs::entity pull = physics_type(world, "PhysicsPull");
+    const flecs::entity body_event = physics_type(world, "PhysicsBodyEvent");
+    const flecs::entity pair_event = physics_type(world, "PhysicsPairEvent");
+    const flecs::entity hit_event = physics_type(world, "PhysicsHitEvent");
+    const flecs::entity stats = physics_type(world, "PhysicsStats");
+    const flecs::entity ray_hit = physics_type(world, "PhysicsRayHit");
+    const flecs::entity registered_types[] = {
+        rigid_body_type, rigid_body, velocity, properties, sphere, capsule,
+        box, hull, settings, error_code, error, reconcile, push, pull,
+        body_event, pair_event, hit_event, stats, ray_hit
+    };
+    bool all_types_registered = true;
+    for (const flecs::entity type : registered_types) {
+        all_types_registered = all_types_registered && type.is_alive();
+    }
+    CHECK(all_types_registered,
+          "PhysicsModule registers every reflected public physics type");
 
-    const flecs::entity rigid_body = world.component<physics::RigidBody>();
     CHECK(has_member_of_type(world, rigid_body, "type",
-                             world.component<physics::RigidBodyType>().id()),
+                             rigid_body_type.id()),
           "RigidBody reflects type");
     CHECK(has_member_of_type(world, rigid_body, "linear_damping",
                              world.component<float>().id()),
@@ -77,7 +107,10 @@ void test_physics_contract_and_reflection() {
                              world.component<bool>().id()),
           "RigidBody reflects continuous flag");
 
-    const flecs::entity properties = world.component<physics::ColliderProperties>();
+    CHECK(has_member_of_type(world, velocity, "linear", world.component<Float3>().id()) &&
+              has_member_of_type(world, velocity, "angular", world.component<Float3>().id()),
+          "PhysicsVelocity reflects linear and angular velocity");
+
     CHECK(has_member_of_type(world, properties, "density", world.component<float>().id()),
           "ColliderProperties reflects density");
     CHECK(has_member_of_type(world, properties, "friction", world.component<float>().id()),
@@ -95,10 +128,6 @@ void test_physics_contract_and_reflection() {
     CHECK(has_member_of_type(world, properties, "hit_events", world.component<bool>().id()),
           "ColliderProperties reflects hit events");
 
-    const flecs::entity sphere = world.component<physics::SphereCollider>();
-    const flecs::entity capsule = world.component<physics::CapsuleCollider>();
-    const flecs::entity box = world.component<physics::BoxCollider>();
-    const flecs::entity hull = world.component<physics::ConvexHullCollider>();
     CHECK(has_member_of_type(world, sphere, "properties", properties.id()),
           "SphereCollider reflects properties");
     CHECK(has_member_of_type(world, sphere, "center", world.component<Float3>().id()),
@@ -111,6 +140,12 @@ void test_physics_contract_and_reflection() {
           "CapsuleCollider reflects point_b");
     CHECK(has_member_of_type(world, capsule, "radius", world.component<float>().id()),
           "CapsuleCollider reflects radius");
+    CHECK(has_member_of_type(world, capsule, "properties", properties.id()),
+          "CapsuleCollider reflects properties");
+    CHECK(has_member_of_type(world, box, "properties", properties.id()),
+          "BoxCollider reflects properties");
+    CHECK(has_member_of_type(world, box, "center", world.component<Float3>().id()),
+          "BoxCollider reflects center");
     CHECK(has_member_of_type(world, box, "rotation", world.component<Quaternion>().id()),
           "BoxCollider reflects rotation");
     CHECK(has_member_of_type(world, box, "half_extents", world.component<Float3>().id()),
@@ -119,21 +154,16 @@ void test_physics_contract_and_reflection() {
           "ConvexHullCollider reflects point count");
     CHECK(has_member_of_type(world, hull, "points", world.component<Float3>().id(), 32),
           "ConvexHullCollider reflects bounded points");
+    CHECK(has_member_of_type(world, hull, "properties", properties.id()),
+          "ConvexHullCollider reflects properties");
 
-    const flecs::entity settings = world.component<physics::PhysicsSettings>();
     CHECK(has_member_of_type(world, settings, "gravity", world.component<Float3>().id()),
           "PhysicsSettings reflects gravity");
     CHECK(has_member_of_type(world, settings, "substeps", world.component<uint32_t>().id()),
           "PhysicsSettings reflects substeps");
-    CHECK(has_member_of_type(world, world.component<physics::PhysicsError>(), "code",
-                             world.component<physics::PhysicsErrorCode>().id()),
+    CHECK(has_member_of_type(world, error, "code", error_code.id()),
           "PhysicsError reflects code");
 
-    const flecs::entity body_event = world.component<physics::PhysicsBodyEvent>();
-    const flecs::entity pair_event = world.component<physics::PhysicsPairEvent>();
-    const flecs::entity hit_event = world.component<physics::PhysicsHitEvent>();
-    const flecs::entity stats = world.component<physics::PhysicsStats>();
-    const flecs::entity ray_hit = world.component<physics::PhysicsRayHit>();
     const flecs::entity_t entity_id_type = world.component<flecs::entity_t>().id();
     CHECK(has_member_of_type(world, body_event, "entity", entity_id_type) &&
               has_member_of_type(world, body_event, "awake", world.component<bool>().id()),
@@ -176,52 +206,104 @@ void test_physics_contract_and_reflection() {
               world.to_entity(physics::PhysicsErrorCode::HullBuildFailed).is_alive(),
           "PhysicsErrorCode constants registered");
 
-    CHECK(world.component<physics::PhysicsReconcile>().has(flecs::Phase),
+    CHECK(reconcile.has(flecs::Phase),
           "PhysicsReconcile is a phase");
-    CHECK(world.component<physics::PhysicsPush>().has(flecs::Phase),
+    CHECK(push.has(flecs::Phase),
           "PhysicsPush is a phase");
-    CHECK(world.component<physics::PhysicsPull>().has(flecs::Phase),
+    CHECK(pull.has(flecs::Phase),
           "PhysicsPull is a phase");
-    CHECK(is_fieldless<physics::PhysicsReconcile>(world) &&
-              is_fieldless<physics::PhysicsPush>(world) &&
-              is_fieldless<physics::PhysicsPull>(world),
+    CHECK(is_fieldless(world, reconcile) && is_fieldless(world, push) &&
+              is_fieldless(world, pull),
           "physics phase tags remain fieldless metadata");
-    CHECK(world.component<physics::PhysicsReconcile>().has(
-              flecs::DependsOn, world.component<ecs::PrePhysics>()) &&
-              world.component<physics::PhysicsPush>().has(
-                  flecs::DependsOn,
-                  world.component<physics::PhysicsReconcile>()) &&
-              world.component<ecs::Physics>().has(
-                  flecs::DependsOn, world.component<physics::PhysicsPush>()) &&
-              world.component<physics::PhysicsPull>().has(
-                  flecs::DependsOn, world.component<ecs::Physics>()) &&
-              world.component<ecs::PostPhysics>().has(
-                  flecs::DependsOn, world.component<physics::PhysicsPull>()),
+    const flecs::entity pre_physics = world.component<ecs::PrePhysics>();
+    const flecs::entity physics_phase = world.component<ecs::Physics>();
+    const flecs::entity post_physics = world.component<ecs::PostPhysics>();
+    CHECK(reconcile.has(flecs::DependsOn, pre_physics) &&
+              push.has(flecs::DependsOn, reconcile) &&
+              physics_phase.has(flecs::DependsOn, push) &&
+              pull.has(flecs::DependsOn, physics_phase) &&
+              post_physics.has(flecs::DependsOn, pull),
           "physics phase dependencies refine the existing pipeline");
+    CHECK(physics_phase.has(flecs::DependsOn, pre_physics) &&
+              post_physics.has(flecs::DependsOn, physics_phase),
+          "physics phase refinement preserves the Phase 1 direct edges");
 
     const physics::RigidBody body{};
+    const physics::PhysicsVelocity velocity_value{};
     const physics::ColliderProperties collider{};
     const physics::SphereCollider sphere_value{};
     const physics::CapsuleCollider capsule_value{};
     const physics::BoxCollider box_value{};
+    const physics::ConvexHullCollider hull_value{};
     const physics::PhysicsSettings settings_value = world.get<physics::PhysicsSettings>();
+    const physics::PhysicsError error_value{};
+    const physics::PhysicsBodyEvent body_event_value{};
+    const physics::PhysicsPairEvent pair_event_value{};
+    const physics::PhysicsHitEvent hit_event_value{};
+    const physics::PhysicsEvents events_value{};
+    const physics::PhysicsStats stats_value{};
+    const physics::PhysicsRayHit ray_hit_value{};
     CHECK(body.type == physics::RigidBodyType::Static &&
               body.linear_damping == 0.0f && body.angular_damping == 0.0f &&
               body.gravity_scale == 1.0f && body.sleep_threshold == 0.05f &&
               body.enable_sleep && !body.continuous,
           "RigidBody defaults match the contract");
-    CHECK(collider.density == 1.0f && collider.friction == 0.6f &&
-              collider.restitution == 0.0f && collider.category_bits == 1 &&
-              collider.mask_bits == UINT64_MAX && !collider.sensor &&
-              collider.contact_events && !collider.hit_events,
+    CHECK(is_zero(velocity_value.linear) && is_zero(velocity_value.angular),
+          "PhysicsVelocity defaults match the contract");
+    CHECK(has_default_properties(collider),
           "ColliderProperties defaults match the contract");
-    CHECK(sphere_value.radius == 0.5f && capsule_value.point_a.y == -0.5f &&
-              capsule_value.point_b.y == 0.5f && capsule_value.radius == 0.5f &&
-              box_value.rotation.w == 1.0f && box_value.half_extents.x == 0.5f,
-          "collider defaults match the contract");
+    CHECK(has_default_properties(sphere_value.properties) &&
+              is_zero(sphere_value.center) && sphere_value.radius == 0.5f,
+          "SphereCollider defaults match the contract");
+    CHECK(has_default_properties(capsule_value.properties) &&
+              capsule_value.point_a.x == 0.0f &&
+              capsule_value.point_a.y == -0.5f &&
+              capsule_value.point_a.z == 0.0f &&
+              capsule_value.point_b.x == 0.0f &&
+              capsule_value.point_b.y == 0.5f &&
+              capsule_value.point_b.z == 0.0f &&
+              capsule_value.radius == 0.5f,
+          "CapsuleCollider defaults match the contract");
+    CHECK(has_default_properties(box_value.properties) &&
+              is_zero(box_value.center) && box_value.rotation.x == 0.0f &&
+              box_value.rotation.y == 0.0f && box_value.rotation.z == 0.0f &&
+              box_value.rotation.w == 1.0f &&
+              box_value.half_extents.x == 0.5f &&
+              box_value.half_extents.y == 0.5f &&
+              box_value.half_extents.z == 0.5f,
+          "BoxCollider defaults match the contract");
+    bool hull_points_default = true;
+    for (const Float3 point : hull_value.points) {
+        hull_points_default = hull_points_default && is_zero(point);
+    }
+    CHECK(has_default_properties(hull_value.properties) &&
+              hull_value.point_count == 0 && hull_points_default,
+          "ConvexHullCollider defaults match the contract");
     CHECK(settings_value.gravity.x == 0.0f && settings_value.gravity.y == -9.81f &&
               settings_value.gravity.z == 0.0f && settings_value.substeps == 4,
           "PhysicsSettings singleton defaults match the contract");
+    CHECK(error_value.code == physics::PhysicsErrorCode::None,
+          "PhysicsError defaults match the contract");
+    CHECK(body_event_value.entity == 0 && !body_event_value.awake &&
+              pair_event_value.first == 0 && pair_event_value.second == 0,
+          "body and pair event defaults match the contract");
+    CHECK(hit_event_value.first == 0 && hit_event_value.second == 0 &&
+              is_zero(hit_event_value.position) && is_zero(hit_event_value.normal) &&
+              hit_event_value.approach_speed == 0.0f,
+          "hit event defaults match the contract");
+    CHECK(events_value.body.empty() && events_value.contact_begin.empty() &&
+              events_value.contact_end.empty() && events_value.contact_hit.empty() &&
+              events_value.sensor_begin.empty() && events_value.sensor_end.empty(),
+          "PhysicsEvents defaults match the contract");
+    CHECK(stats_value.steps == 0 && stats_value.bodies_created == 0 &&
+              stats_value.bodies_destroyed == 0 &&
+              stats_value.rejected_configurations == 0 &&
+              stats_value.failed_commands == 0 && stats_value.stale_events == 0 &&
+              stats_value.live_bodies == 0,
+          "PhysicsStats defaults match the contract");
+    CHECK(ray_hit_value.entity == 0 && is_zero(ray_hit_value.position) &&
+              is_zero(ray_hit_value.normal) && ray_hit_value.fraction == 0.0f,
+          "PhysicsRayHit defaults match the contract");
 }
 
 } // namespace

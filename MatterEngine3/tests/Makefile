@@ -82,7 +82,7 @@ ECS_TARGET = ecs_tests
 ECS_CPP = ecs_tests.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/transform_system.cpp
 ECS_C = $(FLECS_C)
 
-PHYSICS_CONTRACT_TARGET = physics_contract_tests
+PHYSICS_CONTRACT_TARGET = physics-contract-tests
 PHYSICS_CONTRACT_CPP = physics_tests.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/transform_system.cpp
 PHYSICS_CONTRACT_C = $(FLECS_C)
 
@@ -213,11 +213,13 @@ FLAVOR_qjsc_CC        := gcc
 FLAVOR_qjsc_FLAGS     := -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
 FLAVOR_flecsc_CC      := gcc
 FLAVOR_flecsc_FLAGS   := -std=c99 -O2 -I$(FLECS_DIR)
+FLAVOR_physicsc_CC    := gcc
+FLAVOR_physicsc_FLAGS := -std=c17 -O2 -I$(FLECS_DIR)
 
 # C++ flavor list (compiled with $(CC) = g++). Order matters only for pattern-rule
 # generation; the alt-compile-cmd rules are all distinct.
 CPP_FLAVORS := def qjs sh sp2 vl retopo gpu
-C_FLAVORS   := mslc qjsc flecsc
+C_FLAVORS   := mslc qjsc flecsc physicsc
 ALL_FLAVORS := $(CPP_FLAVORS) $(C_FLAVORS)
 
 # ---------------------------------------------------------------------------
@@ -744,6 +746,7 @@ gpu_CPP_SRCS := $(sort \
 mslc_C_SRCS := $(sort $(COMMON_MSL_C))
 qjsc_C_SRCS := $(sort $(QJS_C))
 flecsc_C_SRCS := $(sort $(ECS_C))
+physicsc_C_SRCS := $(sort $(PHYSICS_CONTRACT_C))
 
 # Object lists per flavor.
 def_CPP_OBJS    := $(call obj_list,def,$(def_CPP_SRCS))
@@ -756,10 +759,11 @@ gpu_CPP_OBJS    := $(call obj_list,gpu,$(gpu_CPP_SRCS))
 mslc_C_OBJS     := $(call obj_list,mslc,$(mslc_C_SRCS))
 qjsc_C_OBJS     := $(call obj_list,qjsc,$(qjsc_C_SRCS))
 flecsc_C_OBJS   := $(call obj_list,flecsc,$(flecsc_C_SRCS))
+physicsc_C_OBJS := $(call obj_list,physicsc,$(physicsc_C_SRCS))
 
 ALL_OBJS := $(def_CPP_OBJS) $(qjs_CPP_OBJS) $(sh_CPP_OBJS) $(sp2_CPP_OBJS) \
             $(vl_CPP_OBJS) $(retopo_CPP_OBJS) $(gpu_CPP_OBJS) \
-            $(mslc_C_OBJS) $(qjsc_C_OBJS) $(flecsc_C_OBJS)
+            $(mslc_C_OBJS) $(qjsc_C_OBJS) $(flecsc_C_OBJS) $(physicsc_C_OBJS)
 
 # Instantiate per-source compile rules.
 $(foreach s,$(def_CPP_SRCS),$(eval $(call objrule_cpp,def,$(s))))
@@ -772,6 +776,7 @@ $(foreach s,$(gpu_CPP_SRCS),$(eval $(call objrule_cpp,gpu,$(s))))
 $(foreach s,$(mslc_C_SRCS),$(eval $(call objrule_c,mslc,$(s))))
 $(foreach s,$(qjsc_C_SRCS),$(eval $(call objrule_c,qjsc,$(s))))
 $(foreach s,$(flecsc_C_SRCS),$(eval $(call objrule_c,flecsc,$(s))))
+$(foreach s,$(physicsc_C_SRCS),$(eval $(call objrule_c,physicsc,$(s))))
 
 # Load dep files.
 -include $(wildcard $(OBJDIR)/*/*.d)
@@ -780,7 +785,7 @@ $(foreach s,$(flecsc_C_SRCS),$(eval $(call objrule_c,flecsc,$(s))))
 # Convenience: derived object-list helpers per binary (link-time inputs).
 # ---------------------------------------------------------------------------
 ECS_OBJS = $(call obj_list,def,$(ECS_CPP)) $(call obj_list,flecsc,$(ECS_C))
-PHYSICS_CONTRACT_OBJS = $(call obj_list,def,$(PHYSICS_CONTRACT_CPP)) $(call obj_list,flecsc,$(PHYSICS_CONTRACT_C))
+PHYSICS_CONTRACT_OBJS = $(call obj_list,def,$(PHYSICS_CONTRACT_CPP)) $(call obj_list,physicsc,$(PHYSICS_CONTRACT_C))
 PARTV2_OBJS = $(call obj_list,def,$(PARTV2_CPP)) $(call obj_list,mslc,$(PARTV2_C))
 GRAPH_OBJS  = $(call obj_list,def,$(GRAPH_SOURCES)) $(call obj_list,mslc,$(GRAPH_C))
 TRIVAR_OBJS = $(call obj_list,def,$(TRIVAR_CPP)) $(call obj_list,mslc,$(TRIVAR_C))
@@ -1359,6 +1364,7 @@ clean:
 	      $(EVALWORLD_TARGET) \
 	      $(MATRIX_TARGET) \
 	      $(ECS_TARGET) \
+	      $(PHYSICS_CONTRACT_TARGET) \
 	      tileset_physics_tests tileset_core_tests tileset_placement_tests \
 	      gpu_tests tileset_gpu_tests tileset_seam_tests tileset_provider_tests \
 	      tileset_load_tests api_tests async_bake_tests demand_bake_tests transient_tests release_part_tests \
