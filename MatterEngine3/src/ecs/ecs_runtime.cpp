@@ -1,5 +1,7 @@
 #include "ecs_runtime.h"
 #include "physics_context.h"
+#include "streaming_systems.h"
+#include "../streaming/sector_streaming_coordinator.h"
 #include "matter/physics.h"
 #include "matter/streaming.h"
 
@@ -229,6 +231,8 @@ StreamingModule::StreamingModule(flecs::world& world) {
         .add(flecs::Phase)
         .depends_on<ecs::FrameUpdate>();
 
+    detail::register_streaming_systems(world);
+
     world.set_scope(previous_scope.id());
 }
 
@@ -315,11 +319,19 @@ Runtime::Runtime() {
         world_.get<physics::PhysicsSettings>());
     world_.set<physics::detail::PhysicsContextRef>(
         physics::detail::PhysicsContextRef{physics_.get()});
+    streaming_ = std::make_unique<streaming::detail::Coordinator>();
+    world_.set<streaming::detail::StreamingContextRef>(
+        streaming::detail::StreamingContextRef{streaming_.get()});
     fixed_pipeline_ = build_pipeline<ecs::FixedPipelineSystem>(world_);
     frame_pipeline_ = build_pipeline<ecs::FramePipelineSystem>(world_);
 }
 
 Runtime::~Runtime() {
+    // Streaming teardown observers remain registered until world finalization.
+    // Null their private lookup before releasing the coordinator they target.
+    world_.set<streaming::detail::StreamingContextRef>({nullptr});
+    streaming_.reset();
+
     // Physics observers remain registered until Flecs teardown and OnRemove
     // callbacks are emitted during world finalization. Fail their context
     // lookup closed before the Box3D owner is released.
@@ -333,6 +345,15 @@ flecs::world& Runtime::world() noexcept {
 
 const flecs::world& Runtime::world() const noexcept {
     return world_;
+}
+
+streaming::detail::Coordinator& Runtime::streaming_coordinator() noexcept {
+    return *streaming_;
+}
+
+const streaming::detail::Coordinator&
+Runtime::streaming_coordinator() const noexcept {
+    return *streaming_;
 }
 
 void Runtime::enqueue_world_state(WorldStateCommand command) {

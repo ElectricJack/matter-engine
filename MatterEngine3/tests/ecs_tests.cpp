@@ -1,6 +1,8 @@
 #include "check.h"
+#include "matter/camera.h"
 #include "matter/ecs.h"
 #include "../src/ecs/ecs_runtime.h"
+#include "../src/streaming/sector_streaming_coordinator.h"
 
 #include <cmath>
 #include <cstring>
@@ -25,6 +27,26 @@ bool approx_matrix(const Mat4f& actual, const float (&expected)[16]) {
         }
     }
     return true;
+}
+
+matter_stream::Config tiny_streaming_profile() {
+    matter_stream::Config profile;
+    profile.sector_size = 16.0f;
+    profile.rings = {{1.0f, 1}};
+    profile.hysteresis = 0.0f;
+    profile.max_inflight = 4;
+    profile.fail_cooldown_updates = 1;
+    return profile;
+}
+
+std::vector<streaming::detail::TaggedRequest> drain_streaming_requests(
+    streaming::detail::Coordinator& coordinator) {
+    std::vector<streaming::detail::TaggedRequest> requests;
+    streaming::detail::TaggedRequest request{};
+    while (coordinator.next_request(request)) {
+        requests.push_back(request);
+    }
+    return requests;
 }
 
 bool has_world_translation(
@@ -1408,6 +1430,173 @@ static void test_sector_streaming_contract_defaults() {
           "SectorStreamingStatus has detached empty defaults");
 }
 
+static void test_sector_streaming_requires_an_activation_component() {
+    ecs_runtime::Runtime runtime;
+    runtime.streaming_coordinator().worker_step();
+
+    const streaming::detail::Snapshot snapshot =
+        runtime.streaming_coordinator().snapshot();
+    CHECK(snapshot.owner == 0 &&
+              snapshot.status.state == streaming::SectorStreamingState::Detached,
+          "runtime without SectorStreaming has no coordinator owner");
+}
+
+static void test_sector_streaming_claims_one_owner_and_rejects_duplicates() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    const flecs::entity first =
+        world.entity("FirstStreamingOwner").add<streaming::SectorStreaming>();
+    runtime.streaming_coordinator().worker_step();
+
+    CHECK(runtime.streaming_coordinator().snapshot().owner == first.id(),
+          "first SectorStreaming add claims the full owner ID");
+
+    const flecs::entity second =
+        world.entity("DuplicateStreamingOwner").add<streaming::SectorStreaming>();
+    const streaming::SectorStreamingError* duplicate_error =
+        second.try_get<streaming::SectorStreamingError>();
+    CHECK(second.has<streaming::SectorStreaming>(),
+          "rejected duplicate keeps its activation component");
+    CHECK(duplicate_error != nullptr &&
+              duplicate_error->code ==
+                  streaming::SectorStreamingErrorCode::OwnerAlreadyClaimed &&
+              duplicate_error->active_owner == first.id(),
+          "rejected duplicate reports the active full generational owner ID");
+
+    runtime.streaming_coordinator().worker_step();
+    CHECK(runtime.streaming_coordinator().snapshot().owner == first.id(),
+          "duplicate add preserves the original coordinator owner");
+}
+
+static void test_sector_streaming_duplicate_retries_only_after_remove_readd() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    const flecs::entity first =
+        world.entity("RemovableStreamingOwner").add<streaming::SectorStreaming>();
+    const flecs::entity second =
+        world.entity("RetryStreamingOwner").add<streaming::SectorStreaming>();
+    runtime.streaming_coordinator().worker_step();
+
+    first.remove<streaming::SectorStreaming>();
+    runtime.streaming_coordinator().worker_step();
+    CHECK(runtime.streaming_coordinator().snapshot().owner == 0,
+          "removing the active component detaches its owner");
+    CHECK(second.has<streaming::SectorStreaming>() &&
+              second.has<streaming::SectorStreamingError>(),
+          "rejected duplicate remains attached and is not auto-promoted");
+
+    second.remove<streaming::SectorStreaming>();
+    second.add<streaming::SectorStreaming>();
+    runtime.streaming_coordinator().worker_step();
+    CHECK(runtime.streaming_coordinator().snapshot().owner == second.id(),
+          "explicit duplicate remove and re-add retries ownership");
+}
+
+static void test_sector_streaming_missing_world_transform_is_pending() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    matter_stream::Config profile = tiny_streaming_profile();
+    runtime.streaming_coordinator().set_profile(&profile);
+    const flecs::entity owner =
+        world.entity("TransformPendingOwner").add<streaming::SectorStreaming>();
+
+    runtime.streaming_coordinator().worker_step();
+    runtime.tick({0.0f, 0.1f, 1});
+
+    const streaming::SectorStreamingStatus* status =
+        owner.try_get<streaming::SectorStreamingStatus>();
+    CHECK(status != nullptr &&
+              status->state == streaming::SectorStreamingState::PendingTransform,
+          "owner without resolved WorldTransform remains pending");
+    CHECK(!owner.has<streaming::SectorStreamingError>(),
+          "missing WorldTransform does not publish a streaming error");
+}
+
+static void test_sector_streaming_samples_resolved_parent_transform_xz() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    matter_stream::Config profile = tiny_streaming_profile();
+    runtime.streaming_coordinator().set_profile(&profile);
+    const flecs::entity parent = world.entity("StreamingAnchorParent")
+        .set<ecs::LocalTransform>({{0.0f, 0.0f, 0.0f}});
+    const flecs::entity anchor = world.entity("ChildStreamingAnchor")
+        .set<ecs::LocalTransform>({{8.0f, 0.0f, 8.0f}})
+        .child_of(parent)
+        .add<streaming::SectorStreaming>();
+
+    runtime.tick({0.0f, 0.1f, 1});
+    runtime.streaming_coordinator().worker_step();
+    const std::vector<streaming::detail::TaggedRequest> initial =
+        drain_streaming_requests(runtime.streaming_coordinator());
+    CHECK(initial.size() == 1 && initial[0].sector.tx == 0 &&
+              initial[0].sector.tz == 0,
+          "resolved child translation submits initial X/Z sector");
+
+    parent.set<ecs::LocalTransform>({{160.0f, 0.0f, 16.0f}});
+    runtime.tick({0.0f, 0.1f, 1});
+    CHECK(has_world_translation(anchor, 168.0f, 0.0f, 24.0f),
+          "frame propagation resolves parent-only motion before streaming");
+    runtime.streaming_coordinator().worker_step();
+    const std::vector<streaming::detail::TaggedRequest> moved =
+        drain_streaming_requests(runtime.streaming_coordinator());
+    CHECK(moved.size() == 1 && moved[0].sector.tx == 10 &&
+              moved[0].sector.tz == 1,
+          "streaming samples row-major WorldTransform indices 3 and 11");
+}
+
+static void test_sector_streaming_ignores_unrelated_camera_values() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    matter_stream::Config profile = tiny_streaming_profile();
+    runtime.streaming_coordinator().set_profile(&profile);
+    world.entity("CameraIndependentStreamingAnchor")
+        .set<ecs::LocalTransform>({{8.0f, 0.0f, 8.0f}})
+        .add<streaming::SectorStreaming>();
+    CameraDesc camera;
+    camera.position = {8.0f, 10.0f, 8.0f};
+
+    runtime.tick({0.0f, 0.1f, 1});
+    runtime.streaming_coordinator().worker_step();
+    const std::vector<streaming::detail::TaggedRequest> initial =
+        drain_streaming_requests(runtime.streaming_coordinator());
+    CHECK(initial.size() == 1,
+          "camera-independent anchor submits its resolved transform");
+
+    camera.position = {168.0f, 10.0f, 24.0f};
+    runtime.tick({0.0f, 0.1f, 1});
+    runtime.streaming_coordinator().worker_step();
+    CHECK(drain_streaming_requests(runtime.streaming_coordinator()).empty(),
+          "changing an unrelated CameraDesc has no coordinator effect");
+}
+
+static void test_sector_streaming_destroying_owner_detaches() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    flecs::entity owner =
+        world.entity("DestroyedStreamingOwner").add<streaming::SectorStreaming>();
+    runtime.streaming_coordinator().worker_step();
+    CHECK(runtime.streaming_coordinator().snapshot().owner == owner.id(),
+          "destruction test starts with an attached owner");
+
+    owner.destruct();
+    CHECK(runtime.streaming_coordinator().snapshot().owner == 0,
+          "destroying the active owner enqueues detach immediately");
+    runtime.streaming_coordinator().worker_step();
+    CHECK(runtime.streaming_coordinator().snapshot().owner == 0,
+          "destroyed owner stays detached after worker processing");
+}
+
+static void test_sector_streaming_runtime_teardown_fails_closed() {
+    {
+        ecs_runtime::Runtime runtime;
+        runtime.world().entity("TeardownStreamingOwner")
+            .add<streaming::SectorStreaming>();
+        runtime.streaming_coordinator().worker_step();
+    }
+    CHECK(true,
+          "Runtime teardown with an activation component does not call a dead coordinator");
+}
+
 int main() {
     test_entity_lifecycle_and_components();
     test_deferred_structural_mutation();
@@ -1448,5 +1637,13 @@ int main() {
     test_hierarchy_queue_discards_dead_and_cross_world_entities();
     test_hierarchy_queue_discards_stale_child_generation();
     test_sector_streaming_contract_defaults();
+    test_sector_streaming_requires_an_activation_component();
+    test_sector_streaming_claims_one_owner_and_rejects_duplicates();
+    test_sector_streaming_duplicate_retries_only_after_remove_readd();
+    test_sector_streaming_missing_world_transform_is_pending();
+    test_sector_streaming_samples_resolved_parent_transform_xz();
+    test_sector_streaming_ignores_unrelated_camera_values();
+    test_sector_streaming_destroying_owner_detaches();
+    test_sector_streaming_runtime_teardown_fails_closed();
     return check_summary();
 }

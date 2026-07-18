@@ -79,11 +79,11 @@ FLECS_DIR = ../../Libraries/flecs
 FLECS_C = $(FLECS_DIR)/flecs.c
 
 ECS_TARGET = ecs_tests
-ECS_CPP = ecs_tests.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/transform_system.cpp
+ECS_CPP = ecs_tests.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 ECS_C = $(FLECS_C)
 
 PHYSICS_TARGET = physics-tests
-PHYSICS_CPP = physics_tests.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/transform_system.cpp
+PHYSICS_CPP = physics_tests.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 PHYSICS_C = $(FLECS_C)
 
 # ---------------------------------------------------------------------------
@@ -680,7 +680,8 @@ GPU_MSL_C   = $(COMMON_MSL_C)
 GPU_ALL_CPP = $(GPU_PIPELINE_CPP) $(GPU_RENDER_CPP) $(GPU_MSL_CPP) \
               ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
               ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
-              ../src/ecs/transform_system.cpp
+              ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
+              ../src/streaming/sector_streaming_coordinator.cpp
 
 # ---------------------------------------------------------------------------
 # Enumerate the source-per-flavor sets and instantiate object rules.

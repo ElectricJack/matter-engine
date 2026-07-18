@@ -21,6 +21,12 @@ class PhysicsContext;
 
 } // namespace matter::physics::detail
 
+namespace matter::streaming::detail {
+
+class Coordinator;
+
+} // namespace matter::streaming::detail
+
 namespace matter::ecs_runtime {
 
 struct TickResult {
@@ -45,6 +51,10 @@ public:
 
     flecs::world& world() noexcept;
     const flecs::world& world() const noexcept;
+    // Internal test/session seam; this header is not part of MatterEngine's
+    // public include surface.
+    streaming::detail::Coordinator& streaming_coordinator() noexcept;
+    const streaming::detail::Coordinator& streaming_coordinator() const noexcept;
     void enqueue_world_state(WorldStateCommand command);
     TickResult tick(const TickDesc& desc);
 
@@ -53,6 +63,7 @@ private:
 
     flecs::world world_;
     std::unique_ptr<physics::detail::PhysicsContext> physics_;
+    std::unique_ptr<streaming::detail::Coordinator> streaming_;
     flecs::entity fixed_pipeline_;
     flecs::entity frame_pipeline_;
     double accumulator_seconds_ = 0.0;
