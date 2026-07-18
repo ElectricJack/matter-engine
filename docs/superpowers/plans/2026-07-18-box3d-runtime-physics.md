@@ -222,6 +222,10 @@ git commit -m "feat(physics): define reflected ECS physics contract"
 - Modify: `MatterEngine3/src/ecs/ecs_runtime.cpp`
 - Modify: `MatterEngine3/tests/physics_tests.cpp`
 - Modify: `MatterEngine3/tests/Makefile`
+- Modify: `MatterEngine3/Makefile`
+- Modify: `MatterViewer/Makefile`
+- Modify: `ExplorerDemo/Makefile`
+- Create: `.superpowers/sdd/box3d-phase2-static-check.ps1`
 
 **Interfaces:**
 - Consumes: `PhysicsModule`, `PhysicsSettings`, Box3D C API.
@@ -254,6 +258,11 @@ static void test_one_physics_world_per_runtime() {
 Replace the contract-only target with `physics-tests`/`run-physics`. Link
 `../src/ecs/physics_context.cpp`, all required ECS sources, and exactly one
 `$(BOX3D_DIR)/libbox3d.a`.
+
+Because `Runtime` will own `PhysicsContext` after this task, also add
+`physics_context.cpp` and exactly one platform-appropriate Box3D archive to every
+engine/test/Viewer/Explorer target that already contains `ecs_runtime.cpp`. Create
+the initial static checker to enforce that closure and shared Box3D include paths.
 
 Run: `make -C MatterEngine3/tests run-physics`
 
@@ -292,11 +301,17 @@ Run twice: `make -C MatterEngine3/tests run-physics`
 
 Expected twice: `ALL PASS` and no Box3D leak/assert output.
 
+Run: `& .\.superpowers\sdd\box3d-phase2-static-check.ps1`
+
+Expected: `PASS: Box3D Phase 2 build contract`.
+
 - [ ] **Step 5: Commit**
 
 ```bash
 git add MatterEngine3/src/ecs/physics_context.* MatterEngine3/src/ecs/ecs_runtime.* \
-  MatterEngine3/tests/physics_tests.cpp MatterEngine3/tests/Makefile
+  MatterEngine3/tests/physics_tests.cpp MatterEngine3/tests/Makefile \
+  MatterEngine3/Makefile MatterViewer/Makefile ExplorerDemo/Makefile \
+  .superpowers/sdd/box3d-phase2-static-check.ps1
 git commit -m "feat(physics): own one Box3D world per ECS runtime"
 ```
 
@@ -311,6 +326,10 @@ git commit -m "feat(physics): own one Box3D world per ECS runtime"
 - Modify: `MatterEngine3/src/ecs/physics_context.h/.cpp`
 - Modify: `MatterEngine3/tests/physics_tests.cpp`
 - Modify: `MatterEngine3/tests/Makefile`
+- Modify: `MatterEngine3/Makefile`
+- Modify: `MatterViewer/Makefile`
+- Modify: `ExplorerDemo/Makefile`
+- Modify: `.superpowers/sdd/box3d-phase2-static-check.ps1`
 
 **Interfaces:**
 - Consumes: public body/collider components and private context.
@@ -370,6 +389,11 @@ hash of the full desired configuration prevents rebuilding unchanged bodies. Whe
 replacing a valid dynamic body, snapshot pose, velocities, and awake state; publish
 the replacement before destroying the old body; then restore state.
 
+Add `physics_shapes.cpp` and `physics_systems.cpp` to every runtime-bearing source
+union at the same time they are created. Strengthen the static checker to require all
+three physics implementation files, preventing an intermediate broken archive or
+product link graph.
+
 - [ ] **Step 5: Run GREEN plus sanitizer/static lifetime checks**
 
 Run twice: `make -C MatterEngine3/tests run-physics`
@@ -384,7 +408,8 @@ originates from Flecs component/query memory.
 ```bash
 git add MatterEngine3/src/ecs/physics_shapes.* MatterEngine3/src/ecs/physics_systems.cpp \
   MatterEngine3/src/ecs/physics_context.* MatterEngine3/tests/physics_tests.cpp \
-  MatterEngine3/tests/Makefile
+  MatterEngine3/tests/Makefile MatterEngine3/Makefile MatterViewer/Makefile \
+  ExplorerDemo/Makefile .superpowers/sdd/box3d-phase2-static-check.ps1
 git commit -m "feat(physics): reconcile ECS bodies and convex colliders"
 ```
 
@@ -621,7 +646,7 @@ git commit -m "feat(physics): add ECS-safe physics queries"
 - Modify: `build-all.sh`
 - Modify: `MatterEngine3/tests/world_stream_tests.cpp`
 - Modify: `.superpowers/sdd/progress.md`
-- Create: `.superpowers/sdd/box3d-phase2-static-check.ps1`
+- Modify: `.superpowers/sdd/box3d-phase2-static-check.ps1`
 
 **Interfaces:**
 - Consumes: all Phase 2 sources and public APIs.
@@ -634,8 +659,8 @@ Extend `world_stream_tests.cpp` with a runtime body that survives `reload()` and
 replacement. Do not require rendering or GPU initialization beyond the existing
 fixture.
 
-Create a PowerShell static checker that parses engine/test/Viewer/Explorer Makefiles
-and asserts:
+Strengthen the existing PowerShell static checker so its final form parses
+engine/test/Viewer/Explorer Makefiles and asserts:
 
 - all three physics C++ implementation files are in every runtime-bearing target;
 - exactly one Box3D archive is linked by every final executable/test that contains
