@@ -128,6 +128,7 @@ private:
     bool imgui_context_initialized_ = false;
     bool glfw_backend_initialized_ = false;
     bool vulkan_backend_initialized_ = false;
+    bool gizmo_submitted_ = false;
     matter_viewer::StreamingAnchorState streaming_anchor_{};
     std::uint64_t anchor_id_input_ = 0;
     std::uint64_t streaming_seed_ = 0;

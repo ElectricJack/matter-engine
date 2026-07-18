@@ -215,6 +215,7 @@ bool Ui::prepare_vulkan_backend(const matter::VulkanFrame& frame,
 
 bool Ui::begin_frame(const matter::VulkanFrame& frame, std::string& error) {
     if (!prepare_vulkan_backend(frame, error)) return false;
+    gizmo_submitted_ = false;
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
@@ -563,6 +564,7 @@ void Ui::draw_sector_streaming_panel(matter::WorldSession& session,
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGuizmo::SetRect(viewport->Pos.x, viewport->Pos.y, viewport->Size.x,
                       viewport->Size.y);
+    gizmo_submitted_ = true;
     if (ImGuizmo::Manipulate(view.data(), projection.data(),
                              ImGuizmo::TRANSLATE, ImGuizmo::WORLD,
                              model.data())) {
@@ -576,9 +578,11 @@ void Ui::draw_sector_streaming_panel(matter::WorldSession& session,
 bool Ui::camera_input_allowed() const {
     if (ImGui::GetCurrentContext() == nullptr) return true;
     const ImGuiIO& io = ImGui::GetIO();
+    const bool gizmo_over =
+        gizmo_submitted_ && ImGuizmo::IsOver(ImGuizmo::TRANSLATE);
     return matter_viewer::camera_input_allowed(
         io.WantCaptureMouse, io.WantCaptureKeyboard,
-        ImGuizmo::IsOver(ImGuizmo::TRANSLATE), ImGuizmo::IsUsing());
+        gizmo_over, ImGuizmo::IsUsing());
 }
 
 } // namespace viewer
