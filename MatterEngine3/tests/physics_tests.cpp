@@ -1822,6 +1822,146 @@ void test_invalid_ticks_retain_commands_and_push_revalidates_work() {
           "swapped command queues drain rejected work exactly once");
 }
 
+flecs::entity make_query_sphere(
+    flecs::world& world,
+    Float3 position,
+    uint64_t category_bits,
+    float radius = 0.5f) {
+    physics::SphereCollider collider{};
+    collider.radius = radius;
+    collider.properties.category_bits = category_bits;
+    return world.entity()
+        .set<ecs::LocalTransform>({position})
+        .set<physics::RigidBody>({})
+        .set<physics::SphereCollider>(collider);
+}
+
+void test_ray_cast_is_closest_filtered_and_validated() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    flecs::entity near_body =
+        make_query_sphere(world, {2.0f, 0.0f, 0.0f}, 0x2U);
+    flecs::entity far_body =
+        make_query_sphere(world, {5.0f, 0.0f, 0.0f}, 0x4U);
+    reconcile(runtime);
+
+    physics::PhysicsRayHit hit{};
+    CHECK(physics::physics_ray_cast(
+              world, {}, {10.0f, 0.0f, 0.0f}, UINT64_MAX, hit) &&
+              hit.entity == near_body.id() && near(hit.fraction, 0.15f) &&
+              near(hit.position, {1.5f, 0.0f, 0.0f}) &&
+              near(hit.normal, {-1.0f, 0.0f, 0.0f}),
+          "ray query returns the closest mapped engine-native hit");
+
+    CHECK(physics::physics_ray_cast(
+              world, {}, {10.0f, 0.0f, 0.0f}, 0x4U, hit) &&
+              hit.entity == far_body.id(),
+          "ray query category mask filters shapes before callback delivery");
+    CHECK(!physics::physics_ray_cast(
+              world, {}, {0.0f, 10.0f, 0.0f}, UINT64_MAX, hit),
+          "ray query reports a miss without leaking a stale prior result");
+
+    const float infinity = std::numeric_limits<float>::infinity();
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    CHECK(!physics::physics_ray_cast(
+              world, {infinity, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f},
+              UINT64_MAX, hit) &&
+              !physics::physics_ray_cast(
+                  world, {}, {nan, 0.0f, 0.0f}, UINT64_MAX, hit) &&
+              !physics::physics_ray_cast(
+                  world, {}, {}, UINT64_MAX, hit),
+          "ray query rejects nonfinite input and zero translation");
+
+    physics::detail::PhysicsContext& context =
+        physics::detail::context(world);
+    CHECK(context.tombstone_query_participant_for_test(near_body.id()) &&
+              physics::physics_ray_cast(
+                  world, {}, {10.0f, 0.0f, 0.0f}, UINT64_MAX, hit) &&
+              hit.entity == far_body.id(),
+          "ray query ignores stale bridge user data and continues to a live hit");
+}
+
+void test_queries_require_exact_live_context_and_reject_while_stepping() {
+    ecs_runtime::Runtime first_runtime;
+    ecs_runtime::Runtime second_runtime;
+    flecs::world& first_world = first_runtime.world();
+    flecs::world& second_world = second_runtime.world();
+    make_query_sphere(first_world, {2.0f, 0.0f, 0.0f}, 1U);
+    make_query_sphere(second_world, {2.0f, 0.0f, 0.0f}, 1U);
+    reconcile(first_runtime);
+    reconcile(second_runtime);
+
+    physics::detail::PhysicsContext& first_context =
+        physics::detail::context(first_world);
+    physics::PhysicsRayHit hit{};
+    CHECK(!first_context.ray_cast(
+              second_world, {}, {10.0f, 0.0f, 0.0f}, UINT64_MAX, hit) &&
+              first_context.overlap_sphere(
+                  second_world, {}, 10.0f, UINT64_MAX).empty(),
+          "private query entry points reject a different owning real world");
+
+    first_context.set_stepping_for_test(true);
+    CHECK(!physics::physics_ray_cast(
+              first_world, {}, {10.0f, 0.0f, 0.0f}, UINT64_MAX, hit) &&
+              physics::physics_overlap_sphere(
+                  first_world, {}, 10.0f, UINT64_MAX).empty(),
+          "synchronous queries reject while Box3D is stepping");
+    first_context.set_stepping_for_test(false);
+
+    flecs::world contextless;
+    CHECK(!physics::physics_ray_cast(
+              contextless, {}, {10.0f, 0.0f, 0.0f}, UINT64_MAX, hit) &&
+              physics::physics_overlap_sphere(
+                  contextless, {}, 10.0f, UINT64_MAX).empty(),
+          "query APIs fail closed for worlds without a physics context");
+}
+
+void test_overlap_sphere_filters_deduplicates_and_sorts_full_ids() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    flecs::entity recycled = world.entity();
+    const flecs::entity_t recycled_id = recycled.id();
+    recycled.destruct();
+
+    flecs::entity generated =
+        make_query_sphere(world, {0.0f, 0.0f, 0.0f}, 0x2U);
+    flecs::entity second =
+        make_query_sphere(world, {1.0f, 0.0f, 0.0f}, 0x4U);
+    make_query_sphere(world, {20.0f, 0.0f, 0.0f}, 0x2U);
+    reconcile(runtime);
+    CHECK(flecs::strip_generation(generated.id()) ==
+              flecs::strip_generation(recycled_id) &&
+              generated.id() != recycled_id,
+          "overlap ordering fixture includes a non-zero full generation ID");
+
+    const std::vector<flecs::entity_t> all =
+        physics::physics_overlap_sphere(
+            world, {0.5f, 0.0f, 0.0f}, 2.0f, UINT64_MAX);
+    CHECK(all.size() == 2 && std::is_sorted(all.begin(), all.end()) &&
+              std::adjacent_find(all.begin(), all.end()) == all.end() &&
+              std::find(all.begin(), all.end(), generated.id()) != all.end() &&
+              std::find(all.begin(), all.end(), second.id()) != all.end(),
+          "sphere overlap returns unique ascending full generational IDs");
+
+    const std::vector<flecs::entity_t> filtered =
+        physics::physics_overlap_sphere(
+            world, {0.5f, 0.0f, 0.0f}, 2.0f, 0x4U);
+    CHECK(filtered.size() == 1 && filtered[0] == second.id(),
+          "sphere overlap applies the category mask");
+    CHECK(physics::physics_overlap_sphere(
+              world, {50.0f, 0.0f, 0.0f}, 1.0f, UINT64_MAX).empty(),
+          "sphere overlap returns no entities when no shapes overlap");
+
+    const float infinity = std::numeric_limits<float>::infinity();
+    CHECK(physics::physics_overlap_sphere(
+              world, {infinity, 0.0f, 0.0f}, 1.0f, UINT64_MAX).empty() &&
+              physics::physics_overlap_sphere(
+                  world, {}, 0.0f, UINT64_MAX).empty() &&
+              physics::physics_overlap_sphere(
+                  world, {}, -1.0f, UINT64_MAX).empty(),
+          "sphere overlap rejects nonfinite centers and nonpositive radii");
+}
+
 } // namespace
 
 int main() {
@@ -1850,5 +1990,8 @@ int main() {
     test_sensor_events_publish_normalized_pairs_and_replace();
     test_stale_event_participant_is_dropped_and_counted();
     test_body_event_reports_transition_to_sleep();
+    test_ray_cast_is_closest_filtered_and_validated();
+    test_queries_require_exact_live_context_and_reject_while_stepping();
+    test_overlap_sphere_filters_deduplicates_and_sorts_full_ids();
     return check_summary();
 }

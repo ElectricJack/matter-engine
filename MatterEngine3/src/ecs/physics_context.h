@@ -75,6 +75,18 @@ public:
         const flecs::world_t* originating_world,
         flecs::entity_t entity) noexcept;
 
+    bool ray_cast(
+        flecs::world& world,
+        Float3 origin,
+        Float3 translation,
+        uint64_t category_mask,
+        PhysicsRayHit& hit);
+    std::vector<flecs::entity_t> overlap_sphere(
+        flecs::world& world,
+        Float3 center,
+        float radius,
+        uint64_t category_mask);
+
     uint32_t last_step_substeps() const noexcept;
     const std::vector<PhysicsSystemStage>& fixed_step_trace() const noexcept;
     const std::vector<PhysicsCommandTraceEntry>&
@@ -94,6 +106,9 @@ public:
         uint64_t hash) noexcept;
     bool tombstone_event_participant_for_test(
         flecs::entity_t entity) noexcept;
+    bool tombstone_query_participant_for_test(
+        flecs::entity_t entity) noexcept;
+    void set_stepping_for_test(bool stepping) noexcept;
 
 private:
     void capture_events(flecs::world& world);

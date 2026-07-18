@@ -225,6 +225,8 @@ struct PhysicsContext::Impl {
     uint32_t last_step_substeps = 0;
     std::vector<PhysicsSystemStage> fixed_step_trace;
     flecs::entity_t tombstoned_event_participant_for_test = 0;
+    flecs::entity_t tombstoned_query_participant_for_test = 0;
+    bool stepping = false;
 };
 
 namespace {
@@ -320,6 +322,88 @@ std::vector<QueuedCommand> sorted_wake_commands(
             return first.entity < second.entity;
         });
     return sorted;
+}
+
+struct QueryBridgeContext {
+    const flecs::world_t* owning_world = nullptr;
+    const std::unordered_map<
+        flecs::entity_t, std::unique_ptr<BridgeRecord>>* bridges = nullptr;
+    flecs::entity_t tombstoned_participant = 0;
+};
+
+BridgeRecord* resolve_query_bridge(
+    const QueryBridgeContext& query,
+    b3ShapeId shape) {
+    if (query.owning_world == nullptr || query.bridges == nullptr ||
+        !b3Shape_IsValid(shape)) {
+        return nullptr;
+    }
+    BridgeRecord* bridge =
+        static_cast<BridgeRecord*>(b3Shape_GetUserData(shape));
+    if (bridge == nullptr || bridge->owning_world != query.owning_world ||
+        bridge->entity == 0 || !bridge->live ||
+        bridge->entity == query.tombstoned_participant ||
+        !B3_ID_EQUALS(bridge->shape, shape) ||
+        !b3Body_IsValid(bridge->body) ||
+        b3Body_GetUserData(bridge->body) != bridge) {
+        return nullptr;
+    }
+    const auto found = query.bridges->find(bridge->entity);
+    if (found == query.bridges->end() || found->second.get() != bridge ||
+        !ecs_is_alive(query.owning_world, bridge->entity)) {
+        return nullptr;
+    }
+    return bridge;
+}
+
+struct RayQueryContext {
+    QueryBridgeContext bridge;
+    PhysicsRayHit hit{};
+    bool found = false;
+};
+
+float ray_query_callback(
+    b3ShapeId shape,
+    b3Pos point,
+    b3Vec3 normal,
+    float fraction,
+    uint64_t,
+    int,
+    int,
+    void* opaque) {
+    RayQueryContext& query = *static_cast<RayQueryContext*>(opaque);
+    BridgeRecord* bridge = resolve_query_bridge(query.bridge, shape);
+    if (bridge == nullptr) {
+        return -1.0f;
+    }
+    if (!query.found || fraction < query.hit.fraction) {
+        query.hit = {
+            bridge->entity, engine_position(point), engine_vector(normal),
+            fraction};
+        query.found = true;
+    }
+    return query.hit.fraction;
+}
+
+struct OverlapQueryContext {
+    QueryBridgeContext bridge;
+    std::vector<flecs::entity_t> entities;
+    bool allocation_failed = false;
+};
+
+bool overlap_query_callback(b3ShapeId shape, void* opaque) {
+    OverlapQueryContext& query =
+        *static_cast<OverlapQueryContext*>(opaque);
+    BridgeRecord* bridge = resolve_query_bridge(query.bridge, shape);
+    if (bridge != nullptr) {
+        try {
+            query.entities.push_back(bridge->entity);
+        } catch (...) {
+            query.allocation_failed = true;
+            return false;
+        }
+    }
+    return true;
 }
 
 PhysicsCommandTraceEntry trace_entry(const QueuedCommand& command) {
@@ -753,11 +837,96 @@ void PhysicsContext::step(flecs::world& world, float fixed_delta) {
     }
     impl_->fixed_step_trace.push_back(PhysicsSystemStage::Step);
     const uint32_t substeps = impl_->configured_substeps;
+    impl_->stepping = true;
     b3World_Step(
         impl_->world_id, fixed_delta, static_cast<int>(substeps));
+    impl_->stepping = false;
     capture_events(world);
     impl_->last_step_substeps = substeps;
     ++stats_.steps;
+}
+
+bool PhysicsContext::ray_cast(
+    flecs::world& world,
+    Float3 origin,
+    Float3 translation,
+    uint64_t category_mask,
+    PhysicsRayHit& hit) {
+    hit = {};
+    if (impl_ == nullptr || impl_->stepping || !world_is_valid() ||
+        !finite(origin) || !finite(translation) ||
+        (translation.x == 0.0f && translation.y == 0.0f &&
+         translation.z == 0.0f)) {
+        return false;
+    }
+    const flecs::world_t* owning_world = ecs_get_world(world.c_ptr());
+    flecs::world normalized_world(const_cast<flecs::world_t*>(owning_world));
+    const PhysicsContextRef* owner =
+        owning_world != nullptr
+            ? normalized_world.try_get<PhysicsContextRef>()
+            : nullptr;
+    if (owner == nullptr || owner->value != this) {
+        return false;
+    }
+
+    RayQueryContext query{};
+    query.bridge = {
+        owning_world, &impl_->bridges,
+        impl_->tombstoned_query_participant_for_test};
+    impl_->tombstoned_query_participant_for_test = 0;
+    b3QueryFilter filter = b3DefaultQueryFilter();
+    filter.categoryBits = UINT64_MAX;
+    filter.maskBits = category_mask;
+    b3World_CastRay(
+        impl_->world_id, box_position(origin), box_vector(translation),
+        filter, ray_query_callback, &query);
+    if (!query.found) {
+        return false;
+    }
+    hit = query.hit;
+    return true;
+}
+
+std::vector<flecs::entity_t> PhysicsContext::overlap_sphere(
+    flecs::world& world,
+    Float3 center,
+    float radius,
+    uint64_t category_mask) {
+    if (impl_ == nullptr || impl_->stepping || !world_is_valid() ||
+        !finite(center) || !std::isfinite(radius) || radius <= 0.0f) {
+        return {};
+    }
+    const flecs::world_t* owning_world = ecs_get_world(world.c_ptr());
+    flecs::world normalized_world(const_cast<flecs::world_t*>(owning_world));
+    const PhysicsContextRef* owner =
+        owning_world != nullptr
+            ? normalized_world.try_get<PhysicsContextRef>()
+            : nullptr;
+    if (owner == nullptr || owner->value != this) {
+        return {};
+    }
+
+    OverlapQueryContext query{};
+    query.bridge = {
+        owning_world, &impl_->bridges,
+        impl_->tombstoned_query_participant_for_test};
+    impl_->tombstoned_query_participant_for_test = 0;
+    const b3Vec3 point{};
+    const b3ShapeProxy proxy{&point, 1, radius};
+    b3QueryFilter filter = b3DefaultQueryFilter();
+    filter.categoryBits = UINT64_MAX;
+    filter.maskBits = category_mask;
+    b3World_OverlapShape(
+        impl_->world_id, box_position(center), &proxy, filter,
+        overlap_query_callback, &query);
+    if (query.allocation_failed) {
+        return {};
+    }
+    std::sort(query.entities.begin(), query.entities.end());
+    query.entities.erase(
+        std::unique(query.entities.begin(), query.entities.end()),
+        query.entities.end());
+    return query.entities;
 }
 
 void PhysicsContext::capture_events(flecs::world& world) {
@@ -1055,6 +1224,26 @@ bool PhysicsContext::tombstone_event_participant_for_test(
     return true;
 }
 
+bool PhysicsContext::tombstone_query_participant_for_test(
+    flecs::entity_t entity) noexcept {
+    if (impl_ == nullptr || entity == 0) {
+        return false;
+    }
+    const auto found = impl_->bridges.find(entity);
+    if (found == impl_->bridges.end() || found->second == nullptr ||
+        found->second->entity != entity || !found->second->live) {
+        return false;
+    }
+    impl_->tombstoned_query_participant_for_test = entity;
+    return true;
+}
+
+void PhysicsContext::set_stepping_for_test(bool stepping) noexcept {
+    if (impl_ != nullptr) {
+        impl_->stepping = stepping;
+    }
+}
+
 PhysicsContext& context(flecs::world& world) {
     const PhysicsContext* value = try_context(world);
     if (value == nullptr) {
@@ -1176,6 +1365,47 @@ bool physics_wake(flecs::entity entity) {
     return resolve_command_target(entity, target) &&
            target.context->enqueue_wake(
                target.originating_world, target.entity);
+}
+
+bool physics_ray_cast(
+    flecs::world& world,
+    Float3 origin,
+    Float3 translation,
+    uint64_t category_mask,
+    PhysicsRayHit& hit) {
+    const flecs::world_t* real_world = ecs_get_world(world.c_ptr());
+    if (real_world == nullptr) {
+        hit = {};
+        return false;
+    }
+    flecs::world normalized_world(const_cast<flecs::world_t*>(real_world));
+    const detail::PhysicsContextRef* ref =
+        normalized_world.try_get<detail::PhysicsContextRef>();
+    if (ref == nullptr || ref->value == nullptr) {
+        hit = {};
+        return false;
+    }
+    return ref->value->ray_cast(
+        normalized_world, origin, translation, category_mask, hit);
+}
+
+std::vector<flecs::entity_t> physics_overlap_sphere(
+    flecs::world& world,
+    Float3 center,
+    float radius,
+    uint64_t category_mask) {
+    const flecs::world_t* real_world = ecs_get_world(world.c_ptr());
+    if (real_world == nullptr) {
+        return {};
+    }
+    flecs::world normalized_world(const_cast<flecs::world_t*>(real_world));
+    const detail::PhysicsContextRef* ref =
+        normalized_world.try_get<detail::PhysicsContextRef>();
+    if (ref == nullptr || ref->value == nullptr) {
+        return {};
+    }
+    return ref->value->overlap_sphere(
+        normalized_world, center, radius, category_mask);
 }
 
 } // namespace matter::physics
