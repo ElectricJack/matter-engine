@@ -25,7 +25,13 @@ Task 4: complete (commits 70b1396..dcacf82, review clean after four fix rounds)
   - Task 5 must add a last-write-wins post-merge hierarchy command queue for observer/gameplay callers needing a new final desired state.
   - Minor: hierarchy composition tests use translations only; add rotation/nonuniform scale coverage during final triage if warranted.
 
-Resume at Task 5.
+Task 5: complete (commits adce7ff..fb62340, review clean after fix)
+  - Added deterministic fixed/frame Flecs pipelines, TickDesc/stat declarations, double accumulator, clamp/catch-up/drop policy, and hierarchy command queue.
+  - Fixed broad-epsilon time invention/drop with a bounded half-float-ULP run-only snap and strict unsnapped drop floor.
+  - Queue coverage includes observer-next-tick isolation, real pending retention, invalid ticks, dead/cross-world entities, and stale generation reuse.
+  - Supplemental MSVC fresh build and two executions passed; GNU remains environment-blocked.
+
+Resume at Task 6.
 
 Environment gate:
   - WSL is installed without a Linux distribution.
