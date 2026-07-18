@@ -169,6 +169,7 @@ foreach ($entry in @(
     $label = $entry.Label
     $text = $entry.Text
     Require-Regex "$label Flecs directory" $text '(?m)^FLECS_DIR\s*=\s*\.\./Libraries/flecs\s*$'
+    Require-Contains "$label shared include paths" (Get-AssignmentBlock $text 'INCLUDE_PATHS') '-I$(FLECS_DIR)'
     Require-Contains "$label Windows include paths" (Get-AssignmentBlock $text 'WIN_INCLUDE_PATHS') '-I$(FLECS_DIR)'
     Require-Contains "$label engine C++ sources" (Get-AssignmentBlock $text 'WIN_ME3_CPP') '$(ME3_DIR)/src/ecs/ecs_runtime.cpp'
     Require-Contains "$label engine C++ sources" (Get-AssignmentBlock $text 'WIN_ME3_CPP') '$(ME3_DIR)/src/ecs/transform_system.cpp'
@@ -197,4 +198,4 @@ if ($failures.Count -gt 0) {
 Write-Host 'PASS: Flecs Task 7 build contract'
 Write-Host ' - MatterEngine3 archive has one C-compiled flecs.o plus both ECS C++ objects'
 Write-Host ' - every matter_engine.cpp test flavor links both ECS C++ objects and one flecsc object'
-Write-Host ' - Viewer and Explorer Windows unions have unique basenames and one C Flecs source'
+Write-Host ' - Viewer and Explorer publish Flecs through shared includes and link one C Flecs source on Windows'

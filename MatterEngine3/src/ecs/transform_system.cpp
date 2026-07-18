@@ -184,7 +184,12 @@ bool build_ancestor_chain(
     return true;
 }
 
-bool propagate_entity(flecs::iter& iterator, flecs::entity entity) {
+using WorldMatrixCache = std::unordered_map<flecs::entity_t, Mat4f>;
+
+bool propagate_entity(
+    flecs::iter& iterator,
+    flecs::entity entity,
+    WorldMatrixCache& computed) {
     std::vector<flecs::entity> chain;
     if (!build_ancestor_chain(entity, chain)) {
         return false;
@@ -193,6 +198,23 @@ bool propagate_entity(flecs::iter& iterator, flecs::entity entity) {
     Mat4f world_matrix{};
     bool has_matrix = false;
     for (flecs::entity member : chain) {
+        const auto cached = computed.find(member.id());
+        if (cached != computed.end()) {
+            world_matrix = cached->second;
+            has_matrix = true;
+            continue;
+        }
+
+        const bool dirty = member.has<TransformDirty>();
+        const WorldTransform* existing =
+            member.try_get<WorldTransform>();
+        if (!dirty && existing != nullptr) {
+            world_matrix = existing->matrix;
+            has_matrix = true;
+            computed.emplace(member.id(), world_matrix);
+            continue;
+        }
+
         const LocalTransform* local = member.try_get<LocalTransform>();
         if (local == nullptr) {
             return false;
@@ -204,9 +226,11 @@ bool propagate_entity(flecs::iter& iterator, flecs::entity entity) {
         has_matrix = true;
 
         member.mut(iterator).set<WorldTransform>({world_matrix});
+        if (dirty) {
+            member.mut(iterator).remove<TransformDirty>();
+        }
+        computed.emplace(member.id(), world_matrix);
     }
-
-    entity.mut(iterator).remove<TransformDirty>();
     return true;
 }
 
@@ -220,12 +244,14 @@ void register_propagation_system(flecs::world& world, const char* name) {
             .write<TransformDirty>()
             .cached()
             .kind<Phase>()
-            .each([](
-                flecs::iter& iterator,
-                size_t row,
-                const LocalTransform&,
-                const LocalTransform*) {
-                propagate_entity(iterator, iterator.entity(row));
+            .run([](flecs::iter& iterator) {
+                WorldMatrixCache computed;
+                while (iterator.next()) {
+                    for (size_t row : iterator) {
+                        propagate_entity(
+                            iterator, iterator.entity(row), computed);
+                    }
+                }
             });
     system.add<PipelineTag>();
 }
@@ -328,9 +354,15 @@ void drain_hierarchy_commands(flecs::world& world) {
     commands.swap(queue->commands);
     const flecs::world_t* runtime_world = ecs_get_world(world.c_ptr());
 
+    std::vector<flecs::entity_t> child_ids;
+    child_ids.reserve(commands.size());
     for (const auto& entry : commands) {
-        const flecs::entity_t child_id = entry.first;
-        const QueuedHierarchyCommand& command = entry.second;
+        child_ids.push_back(entry.first);
+    }
+    std::sort(child_ids.begin(), child_ids.end());
+
+    for (const flecs::entity_t child_id : child_ids) {
+        const QueuedHierarchyCommand& command = commands.at(child_id);
         flecs::entity child(world.c_ptr(), child_id);
         if (!child.is_alive()) {
             continue;

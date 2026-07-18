@@ -45,6 +45,7 @@ void progress_transforms(flecs::world& world) {
 }
 
 struct ScheduleProbe {};
+struct PostFrameProbe {};
 
 enum class RecordedPhase {
     FixedPreUpdate,
@@ -110,6 +111,31 @@ bool phases_equal(
     const std::vector<RecordedPhase>& actual,
     std::initializer_list<RecordedPhase> expected) {
     return actual == std::vector<RecordedPhase>(expected);
+}
+
+void count_post_frame(ecs_world_t*, void* context) {
+    ++*static_cast<int*>(context);
+}
+
+void install_post_frame_probe(
+    matter::ecs_runtime::Runtime& runtime,
+    int& frame_in_progress_calls,
+    int& post_frame_calls) {
+    flecs::world& world = runtime.world();
+    world.component<PostFrameProbe>();
+    world.entity().add<PostFrameProbe>();
+    ecs_world_t* raw_world = world.c_ptr();
+    flecs::system system = world.system<PostFrameProbe>()
+        .kind<ecs::FrameUpdate>()
+        .each([raw_world, &frame_in_progress_calls, &post_frame_calls](
+            PostFrameProbe&) {
+            if ((ecs_world_get_flags(raw_world) & EcsWorldFrameInProgress) != 0) {
+                ++frame_in_progress_calls;
+                ecs_run_post_frame(
+                    raw_world, count_post_frame, &post_frame_calls);
+            }
+        });
+    system.add<ecs::FramePipelineSystem>();
 }
 
 } // namespace
@@ -198,6 +224,50 @@ static void test_core_component_reflection() {
           "local transform JSON contains named rotation field");
     CHECK(std::strstr(json.c_str(), "\"scale\"") != nullptr,
           "local transform JSON contains named scale field");
+    ecs::LocalTransform json_value{};
+    const char* json_end = world.from_json(&json_value, json.c_str());
+    CHECK(json_end != nullptr && json_value.translation.x == 12.0f,
+          "local transform JSON preserves the written nested value");
+
+    const flecs::component<Mat4f> matrix = world.component<Mat4f>();
+    const ecs_member_t* matrix_values =
+        ecs_struct_get_member(world, matrix, "m");
+    CHECK(matrix_values != nullptr && matrix_values->count == 16 &&
+              matrix_values->type == world.component<float>().id(),
+          "Mat4f metadata exposes sixteen floating-point values");
+    const flecs::component<ecs::WorldTransform> world_transform =
+        world.component<ecs::WorldTransform>();
+    const ecs_member_t* world_matrix =
+        ecs_struct_get_member(world, world_transform, "matrix");
+    CHECK(world_matrix != nullptr && world_matrix->type == matrix.id(),
+          "WorldTransform metadata exposes its Mat4f matrix member");
+
+    const flecs::entity loading = world.to_entity(ecs::WorldStatus::Loading);
+    const flecs::entity ready = world.to_entity(ecs::WorldStatus::Ready);
+    const flecs::entity failed = world.to_entity(ecs::WorldStatus::Failed);
+    CHECK(loading.is_alive() && ready.is_alive() && failed.is_alive() &&
+              loading.id() != ready.id() && ready.id() != failed.id(),
+          "WorldStatus metadata registers Loading, Ready, and Failed constants");
+
+    const flecs::entity tags[] = {
+        world.component<ecs::TransformDirty>(),
+        world.component<ecs::FixedPreUpdate>(),
+        world.component<ecs::FixedUpdate>(),
+        world.component<ecs::PrePhysics>(),
+        world.component<ecs::Physics>(),
+        world.component<ecs::PostPhysics>(),
+        world.component<ecs::FixedPostUpdate>(),
+        world.component<ecs::FrameUpdate>(),
+        world.component<ecs::FixedPipelineSystem>(),
+        world.component<ecs::FramePipelineSystem>()
+    };
+    bool tags_are_fieldless = true;
+    for (const flecs::entity tag : tags) {
+        tags_are_fieldless = tags_are_fieldless &&
+            ecs_struct_get_nth_member(world, tag, 0) == nullptr;
+    }
+    CHECK(tags_are_fieldless,
+          "transform, phase, and pipeline tags remain fieldless metadata");
 
     const flecs::component<ecs::WorldRuntimeState> runtime_state =
         world.component<ecs::WorldRuntimeState>();
@@ -297,6 +367,39 @@ static void test_parent_child_world_transform() {
           "parent world transform contains its local translation");
     CHECK(has_world_translation(child, 10.0f, 2.0f, 0.0f),
           "child world transform composes parent and local translation");
+}
+
+static void test_hierarchy_composes_rotation_and_nonuniform_scale() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+
+    constexpr float half_sqrt_two = 0.7071067811865476f;
+    const flecs::entity parent = world.entity("ScaledRotatedParent")
+        .set<ecs::LocalTransform>({
+            {10.0f, 0.0f, 0.0f},
+            {0.0f, 0.0f, half_sqrt_two, half_sqrt_two},
+            {2.0f, 3.0f, 4.0f}});
+    const flecs::entity child = world.entity("ScaledRotatedChild")
+        .set<ecs::LocalTransform>({
+            {1.0f, 2.0f, 3.0f},
+            {},
+            {0.5f, 2.0f, 1.0f}});
+    CHECK(ecs::reparent(child, parent),
+          "rotation-scale hierarchy reparent succeeds");
+
+    progress_transforms(world);
+
+    const ecs::WorldTransform* child_world =
+        child.try_get<ecs::WorldTransform>();
+    const float expected[16] = {
+         0.0f, -6.0f, 0.0f,  4.0f,
+         1.0f,  0.0f, 0.0f,  2.0f,
+         0.0f,  0.0f, 4.0f, 12.0f,
+         0.0f,  0.0f, 0.0f,  1.0f
+    };
+    CHECK(child_world != nullptr &&
+              approx_matrix(child_world->matrix, expected),
+          "hierarchy composes parent rotation and nonuniform scale with child TRS");
 }
 
 static void test_three_level_dirty_propagation() {
@@ -662,6 +765,57 @@ static void test_transform_propagates_once_across_fixed_and_frame_phases() {
           "single propagation pass clears the dirty tag");
 }
 
+static void test_three_level_propagation_sets_each_world_transform_once() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+
+    flecs::entity_t root_id = 0;
+    flecs::entity_t child_id = 0;
+    flecs::entity_t grandchild_id = 0;
+    int root_sets = 0;
+    int child_sets = 0;
+    int grandchild_sets = 0;
+    world.observer<ecs::WorldTransform>("CountCascadeWorldTransformSets")
+        .event(flecs::OnSet)
+        .each([&](flecs::entity entity, ecs::WorldTransform&) {
+            if (entity.id() == root_id) {
+                ++root_sets;
+            } else if (entity.id() == child_id) {
+                ++child_sets;
+            } else if (entity.id() == grandchild_id) {
+                ++grandchild_sets;
+            }
+        });
+
+    const flecs::entity root = world.entity("OncePerCascadeRoot")
+        .set<ecs::LocalTransform>({{1.0f, 0.0f, 0.0f}, {}, {1, 1, 1}});
+    const flecs::entity child = world.entity("OncePerCascadeChild")
+        .set<ecs::LocalTransform>({{0.0f, 2.0f, 0.0f}, {}, {1, 1, 1}});
+    const flecs::entity grandchild = world.entity("OncePerCascadeLeaf")
+        .set<ecs::LocalTransform>({{0.0f, 0.0f, 3.0f}, {}, {1, 1, 1}});
+    root_id = root.id();
+    child_id = child.id();
+    grandchild_id = grandchild.id();
+    CHECK(ecs::reparent(child, root),
+          "observer-count child reparent succeeds");
+    CHECK(ecs::reparent(grandchild, child),
+          "observer-count grandchild reparent succeeds");
+    progress_transforms(world);
+
+    root_sets = 0;
+    child_sets = 0;
+    grandchild_sets = 0;
+    root.set<ecs::LocalTransform>({{5.0f, 0.0f, 0.0f}, {}, {1, 1, 1}});
+    progress_transforms(world);
+
+    CHECK(root_sets == 1 && child_sets == 1 && grandchild_sets == 1,
+          "one dirty cascade writes and notifies each affected entity once");
+    CHECK(has_world_translation(root, 5.0f, 0.0f, 0.0f) &&
+              has_world_translation(child, 5.0f, 2.0f, 0.0f) &&
+              has_world_translation(grandchild, 5.0f, 2.0f, 3.0f),
+          "once-only cascade preserves root, child, and grandchild propagation");
+}
+
 static void test_reparent_accepts_handles_from_same_world_stage() {
     flecs::world world;
     world.import<ecs::CoreModule>();
@@ -774,6 +928,56 @@ static void test_runtime_runs_fixed_phases_then_frame_phase() {
     CHECK(recording.frame_deltas.size() == 1 &&
               approx(recording.frame_deltas[0], 0.1f),
           "frame system receives the contributed frame delta");
+}
+
+static void test_runtime_wraps_pipeline_work_in_one_flecs_frame() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    int frame_in_progress_calls = 0;
+    int post_frame_calls = 0;
+    install_post_frame_probe(
+        runtime, frame_in_progress_calls, post_frame_calls);
+    const int64_t frame_count_before = world.get_info()->frame_count_total;
+
+    const ecs_runtime::TickResult result = runtime.tick({0.2f, 0.1f, 4});
+
+    CHECK(!result.invalid && result.fixed_steps == 2,
+          "lifecycle test runs multiple fixed steps in one valid tick");
+    CHECK(world.get_info()->frame_count_total == frame_count_before + 1,
+          "one valid runtime tick advances exactly one Flecs frame");
+    CHECK(frame_in_progress_calls == 1,
+          "frame pipeline runs inside the Flecs frame lifecycle");
+    CHECK(post_frame_calls == 1,
+          "valid runtime tick executes Flecs post-frame actions once");
+    CHECK(approx(world.get_info()->delta_time, 0.2f),
+          "Flecs frame info receives the contributed frame delta");
+}
+
+static void test_runtime_zero_delta_frame_is_explicit_not_measured() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    int frame_in_progress_calls = 0;
+    int post_frame_calls = 0;
+    install_post_frame_probe(
+        runtime, frame_in_progress_calls, post_frame_calls);
+    const int64_t frame_count_before = world.get_info()->frame_count_total;
+    const double world_time_before = world.get_info()->world_time_total;
+
+    const ecs_runtime::TickResult result = runtime.tick(TickDesc{0.0f});
+
+    CHECK(!result.invalid && result.fixed_steps == 0,
+          "explicit zero-delta tick remains a valid frame-only tick");
+    CHECK(world.get_info()->frame_count_total == frame_count_before + 1,
+          "zero-delta tick still advances exactly one Flecs frame");
+    CHECK(frame_in_progress_calls == 1,
+          "zero-delta frame pipeline runs inside the Flecs frame lifecycle");
+    CHECK(post_frame_calls == 1,
+          "zero-delta tick executes Flecs post-frame actions once");
+    CHECK(world.get_info()->delta_time_raw == 0.0f &&
+              world.get_info()->delta_time == 0.0f,
+          "zero-delta tick leaves Flecs raw and scaled frame deltas at zero");
+    CHECK(world.get_info()->world_time_total == world_time_before,
+          "zero-delta tick does not substitute measured wall time");
 }
 
 static void test_runtime_accumulates_fractional_fixed_time() {
@@ -928,12 +1132,26 @@ static void test_runtime_rejects_invalid_ticks_without_progress() {
         ecs_runtime::Runtime runtime;
         ScheduleRecording recording;
         install_schedule_recorders(runtime, recording);
+        int frame_in_progress_calls = 0;
+        int post_frame_calls = 0;
+        flecs::world& world = runtime.world();
+        install_post_frame_probe(
+            runtime, frame_in_progress_calls, post_frame_calls);
+        const int64_t frame_count_before = world.get_info()->frame_count_total;
+        const double world_time_before = world.get_info()->world_time_total;
         const ecs_runtime::TickResult result = runtime.tick(invalid_case.desc);
         CHECK(result.invalid, invalid_case.message);
         CHECK(result.fixed_steps == 0 && result.dropped_steps == 0,
               "invalid tick reports no fixed or dropped steps");
         CHECK(recording.phases.empty(),
               "invalid tick progresses neither ECS pipeline");
+        CHECK(world.get_info()->frame_count_total == frame_count_before &&
+                  world.get_info()->world_time_total == world_time_before,
+              "invalid tick does not begin or end a Flecs frame");
+        CHECK(post_frame_calls == 0,
+              "invalid tick does not execute Flecs post-frame actions");
+        CHECK(frame_in_progress_calls == 0,
+              "invalid tick never enters a Flecs frame lifecycle");
     }
 }
 
@@ -1009,6 +1227,34 @@ static void test_hierarchy_queue_is_last_write_wins_per_child() {
           "queued hierarchy requests collapse to the final desired parent");
     CHECK(child_of_adds == 1,
           "last-write queue applies only one same-child Flecs mutation");
+}
+
+static void test_hierarchy_queue_orders_cross_child_conflicts_by_full_id() {
+    auto lower_id_edge_survives = [](bool enqueue_lower_first) {
+        ecs_runtime::Runtime runtime;
+        flecs::world& world = runtime.world();
+        const flecs::entity a = world.entity("QueuedCycleA");
+        const flecs::entity b = world.entity("QueuedCycleB");
+        CHECK(a.id() < b.id(),
+              "queued cycle test creates A with the lower full entity ID");
+
+        if (enqueue_lower_first) {
+            ecs::enqueue_reparent(a, b);
+            ecs::enqueue_reparent(b, a);
+        } else {
+            ecs::enqueue_reparent(b, a);
+            ecs::enqueue_reparent(a, b);
+        }
+        runtime.tick(TickDesc{0.0f});
+
+        return a.target(flecs::ChildOf).id() == b.id() &&
+               b.target(flecs::ChildOf).id() == 0;
+    };
+
+    CHECK(lower_id_edge_survives(true),
+          "A-to-B survives the queued cross-child cycle conflict");
+    CHECK(lower_id_edge_survives(false),
+          "cross-child survivor is independent of enqueue/hash iteration order");
 }
 
 static void test_hierarchy_queue_waits_until_next_valid_tick() {
@@ -1149,12 +1395,14 @@ int main() {
     test_root_trs_matrix();
     test_invalid_quaternion_uses_identity_rotation();
     test_parent_child_world_transform();
+    test_hierarchy_composes_rotation_and_nonuniform_scale();
     test_three_level_dirty_propagation();
     test_reparent_dirties_and_recomputes_subtree();
     test_clear_parent_preserves_local_transform();
     test_idempotent_reparent_does_not_leave_pending_mutation();
     test_cycle_and_invalid_reparent_requests_are_rejected();
     test_transform_propagates_once_across_fixed_and_frame_phases();
+    test_three_level_propagation_sets_each_world_transform_once();
     test_reparent_accepts_handles_from_same_world_stage();
     test_direct_parent_removal_dirties_subtree();
     test_parent_destruction_cascade_deletes_descendants();
@@ -1163,6 +1411,8 @@ int main() {
     test_onremove_allows_one_pending_mutation_per_child();
     test_onremove_reentrant_reparent_sees_pending_clear();
     test_runtime_runs_fixed_phases_then_frame_phase();
+    test_runtime_wraps_pipeline_work_in_one_flecs_frame();
+    test_runtime_zero_delta_frame_is_explicit_not_measured();
     test_runtime_accumulates_fractional_fixed_time();
     test_runtime_runs_multiple_accumulated_steps_before_frame();
     test_runtime_clamps_contribution_and_preserves_remainder();
@@ -1171,6 +1421,7 @@ int main() {
     test_runtime_rejects_invalid_ticks_without_progress();
     test_runtime_applies_worker_world_state_commands_on_valid_ticks();
     test_hierarchy_queue_is_last_write_wins_per_child();
+    test_hierarchy_queue_orders_cross_child_conflicts_by_full_id();
     test_hierarchy_queue_waits_until_next_valid_tick();
     test_observer_enqueued_hierarchy_change_waits_one_tick();
     test_pending_hierarchy_command_survives_a_direct_drain();

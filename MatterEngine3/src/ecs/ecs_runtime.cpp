@@ -85,6 +85,33 @@ namespace {
 
 constexpr double kMaxFrameContributionSeconds = 0.25;
 
+float explicit_flecs_frame_delta(double contributed_delta) {
+    if (contributed_delta != 0.0) {
+        return static_cast<float>(contributed_delta);
+    }
+
+    // Pinned Flecs v4.1.6 uses a bitwise zero test: +0 requests measured wall
+    // time, while signed zero carries an explicit zero without advancing time.
+    return std::copysign(0.0f, -1.0f);
+}
+
+class FrameScope {
+public:
+    FrameScope(flecs::world& world, float delta) : world_(world) {
+        world_.frame_begin(delta);
+    }
+
+    ~FrameScope() {
+        world_.frame_end();
+    }
+
+    FrameScope(const FrameScope&) = delete;
+    FrameScope& operator=(const FrameScope&) = delete;
+
+private:
+    flecs::world& world_;
+};
+
 int compare_entity_ids(
     flecs::entity_t first,
     const void*,
@@ -184,6 +211,8 @@ TickResult Runtime::tick(const TickDesc& desc) {
 
     const double contributed_delta =
         std::min(frame_delta, kMaxFrameContributionSeconds);
+    const FrameScope frame(
+        world_, explicit_flecs_frame_delta(contributed_delta));
     drain_world_state_commands();
     ecs::drain_hierarchy_commands(world_);
     accumulator_seconds_ += contributed_delta;

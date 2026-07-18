@@ -43,6 +43,7 @@ INCLUDE_PATHS = -I$(ME3_DIR)/include \
                 -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends \
                 -I$(RAYLIB_PATH)/external/glfw/include \
                 -I$(BOX3D_DIR)/include \
+                -I$(FLECS_DIR) \
                 -I../Libraries/Vulkan-Headers/include
 
 # Windows direct-source build also needs private ME3 src/ headers since it

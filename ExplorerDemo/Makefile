@@ -26,6 +26,7 @@ FLECS_DIR   = ../Libraries/flecs
 
 # Linux include: only the public engine API.
 INCLUDE_PATHS = -I$(ME3_DIR)/include \
+                -I$(FLECS_DIR) \
                 -I$(RAYLIB_PATH)
 
 # Windows include: also expose ME3/MSL private src/ headers for direct compilation.
