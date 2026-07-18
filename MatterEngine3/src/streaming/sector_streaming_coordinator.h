@@ -21,6 +21,7 @@ struct AnchorSample {
 struct TaggedRequest {
     flecs::entity_t owner = 0;
     uint64_t generation = 0;
+    uint64_t issuance = 0;
     matter_stream::SectorRequest sector{};
 };
 
@@ -67,6 +68,8 @@ private:
     flecs::entity_t worker_owner_ = 0;
     uint64_t worker_generation_ = 0;
     uint64_t last_generation_ = 0;
+    uint64_t last_issuance_ = 0;
+    uint64_t applied_attachment_revision_ = 0;
     uint64_t applied_profile_revision_ = 0;
     uint64_t applied_restart_revision_ = 0;
     std::optional<AnchorSample> worker_anchor_;
@@ -75,6 +78,7 @@ private:
     std::vector<TaggedEviction> pending_evictions_;
 
     uint64_t allocate_generation();
+    uint64_t allocate_issuance();
     void clear_worker_streamer();
     void collect_streamer_evictions();
     void publish_snapshot(uint64_t attachment_revision,

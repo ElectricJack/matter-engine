@@ -10,6 +10,7 @@ namespace {
 
 bool same_request(const TaggedRequest& lhs, const TaggedRequest& rhs) {
     return lhs.owner == rhs.owner && lhs.generation == rhs.generation &&
+           lhs.issuance == rhs.issuance &&
            lhs.sector.tx == rhs.sector.tx &&
            lhs.sector.tz == rhs.sector.tz &&
            lhs.sector.rung == rhs.sector.rung;
@@ -77,6 +78,12 @@ uint64_t Coordinator::allocate_generation() {
     return last_generation_;
 }
 
+uint64_t Coordinator::allocate_issuance() {
+    ++last_issuance_;
+    if (last_issuance_ == 0) ++last_issuance_;
+    return last_issuance_;
+}
+
 void Coordinator::collect_streamer_evictions() {
     if (!streamer_) return;
     auto evictions = streamer_->take_evictions();
@@ -139,14 +146,18 @@ void Coordinator::worker_step() {
     }
 
     const bool owner_changed = worker_owner_ != intended_owner;
+    const bool attachment_changed =
+        applied_attachment_revision_ != attachment_revision;
     const bool profile_changed = applied_profile_revision_ != profile_revision;
     const bool restart_requested = applied_restart_revision_ != restart_revision;
 
-    if (owner_changed || profile_changed || restart_requested) {
+    if (owner_changed || attachment_changed || profile_changed ||
+        restart_requested) {
         clear_worker_streamer();
     }
     worker_owner_ = intended_owner;
     worker_anchor_ = anchor;
+    applied_attachment_revision_ = attachment_revision;
     applied_profile_revision_ = profile_revision;
     applied_restart_revision_ = restart_revision;
 
@@ -184,10 +195,15 @@ void Coordinator::worker_step() {
 }
 
 bool Coordinator::next_request(TaggedRequest& out) {
-    if (!streamer_) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!streamer_ || intended_owner_ != worker_owner_ ||
+        attachment_revision_ != applied_attachment_revision_) {
+        return false;
+    }
     matter_stream::SectorRequest sector{};
     if (!streamer_->next_request(sector)) return false;
-    out = TaggedRequest{worker_owner_, worker_generation_, sector};
+    out = TaggedRequest{
+        worker_owner_, worker_generation_, allocate_issuance(), sector};
     issued_requests_.push_back(out);
     return true;
 }

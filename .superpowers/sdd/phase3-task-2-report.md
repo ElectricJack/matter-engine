@@ -149,3 +149,85 @@ streamer executable passed, and the repository static build-contract checker
 passed. Because the existing public streaming header includes the Flecs C++ API,
 even this CPU-only test must link the vendored Flecs C17 object; it still performs
 no ECS/world or GPU work.
+
+## Round 1 Important Review Fixes
+
+### Root causes and changes
+
+1. Worker lifecycle reset compared only `worker_owner_` with the final intended
+   owner. A detach plus same-ID reattach between worker steps therefore hid the
+   detach boundary. `applied_attachment_revision_` now participates in the reset
+   condition, so every observed attachment boundary clears the old streamer,
+   issued work, and residency before creating one later generation.
+2. Worker-only `next_request()` allocated directly from the old streamer without
+   consulting attachment intent. It now holds the existing intent mutex while
+   validating intended owner and applied attachment revision, and keeps that lock
+   through streamer allocation. Thus a completed detach and an allocation have a
+   defined order: no allocation can begin from the invalidated generation after
+   detach returns.
+3. Request matching used only owner, generation, and sector tuple. A rejected
+   request and a later same-tuple request in one generation were indistinguishable.
+   `TaggedRequest` now carries a monotonic nonzero `uint64_t issuance`; issued
+   tracking and acknowledgement matching require that exact token.
+
+### RED evidence
+
+The three focused regressions were added before the production fix. The unchanged
+round-0 implementation compiled and ran, then failed with exactly the old
+behaviors:
+
+```text
+flecs.c
+sector_streaming_coordinator_tests.cpp
+sector_streaming_coordinator.cpp
+sector_streamer.cpp
+Generating Code...
+FAIL: same-owner detach boundary recreates an empty generation
+FAIL: same-owner detach boundary emits old-generation evictions
+FAIL: detach return prevents request allocation before worker clear
+FAIL: reissued tuple has a distinct issuance token
+FAIL: stale issuance cannot consume the later request
+5 FAILURE(S)
+```
+
+The regressions cover same-owner detach/reattach before a worker step,
+detach-between-step-and-request, and anchor-away/anchor-back reissue followed by
+an old acknowledgement.
+
+### GREEN evidence
+
+After the minimal lifecycle, synchronization, and issuance changes, the same
+focused MSVC C17/C++17 executable printed:
+
+```text
+flecs.c
+sector_streaming_coordinator_tests.cpp
+sector_streaming_coordinator.cpp
+sector_streamer.cpp
+Generating Code...
+ALL PASS
+```
+
+Fresh regression verification also compiled and ran the pure streamer:
+
+```text
+sector_streamer_tests.cpp
+sector_streamer.cpp
+Generating Code...
+  long flight: peak=7997 end=7993
+ALL PASS
+```
+
+The Phase 2 static checker again exited 0:
+
+```text
+PASS: Box3D Phase 2 build contract
+ - Runtime owns one opaque context after its Flecs world member
+ - every Runtime source graph includes context, shapes, and systems exactly once
+ - final test/application recipes consume exactly one selected Box3D archive
+ - every public header is Box3D-opaque and Windows flattened basenames are unique
+ - C17 C dependencies and independent standard physics gates are closed
+```
+
+`git diff --check` exited 0. No Make claims changed: GNU Make remains unavailable
+on this host.

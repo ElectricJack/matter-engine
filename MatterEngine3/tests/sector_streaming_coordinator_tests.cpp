@@ -2,6 +2,8 @@
 #include "../src/streaming/sector_streaming_coordinator.h"
 
 #include <cstdint>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 using matter::streaming::SectorStreamingState;
@@ -27,6 +29,22 @@ static bool same_sector(const TaggedRequest& lhs, const TaggedRequest& rhs) {
     return lhs.sector.tx == rhs.sector.tx &&
            lhs.sector.tz == rhs.sector.tz &&
            lhs.sector.rung == rhs.sector.rung;
+}
+
+template <typename Request, typename = void>
+struct has_issuance : std::false_type {};
+
+template <typename Request>
+struct has_issuance<Request,
+                    std::void_t<decltype(std::declval<Request>().issuance)>>
+    : std::true_type {};
+
+template <typename Request>
+static bool distinct_issuance(const Request& lhs, const Request& rhs) {
+    if constexpr (has_issuance<Request>::value) {
+        return lhs.issuance != rhs.issuance;
+    }
+    return false;
 }
 
 static std::vector<TaggedRequest> drain_requests(Coordinator& coordinator) {
@@ -238,6 +256,95 @@ int main() {
               "detach before restart step prevents recreation");
         CHECK(drain_requests(coordinator).empty(),
               "detached restart intent emits no requests");
+    }
+
+
+    // A detach boundary resets worker state even if the same full owner ID is
+    // reattached before the worker observes the intermediate detached intent.
+    {
+        Coordinator coordinator;
+        auto profile = tiny_profile();
+        coordinator.set_profile(&profile);
+        CHECK(coordinator.attach(kOwnerA), "same-owner boundary test attaches");
+        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.worker_step();
+        TaggedRequest resident{};
+        CHECK(coordinator.next_request(resident),
+              "same-owner boundary test obtains resident request");
+        coordinator.acknowledge(resident, true);
+        coordinator.worker_step();
+        const auto before = coordinator.snapshot();
+        CHECK(before.status.resident_sectors == 1,
+              "same-owner boundary test establishes residency");
+
+        coordinator.detach(kOwnerA);
+        CHECK(coordinator.attach(kOwnerA),
+              "same full owner ID reattaches before worker step");
+        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.worker_step();
+        const auto after = coordinator.snapshot();
+        CHECK(after.owner == kOwnerA &&
+                  after.status.generation == before.status.generation + 1 &&
+                  after.status.resident_sectors == 0,
+              "same-owner detach boundary recreates an empty generation");
+        const auto evictions = coordinator.take_evictions();
+        CHECK(evictions.size() == 1 && evictions.front().owner == kOwnerA &&
+                  evictions.front().generation == before.status.generation,
+              "same-owner detach boundary emits old-generation evictions");
+    }
+
+    // Once detach returns, the old worker generation cannot allocate more work
+    // while it waits for the next clearing worker step.
+    {
+        Coordinator coordinator;
+        auto profile = tiny_profile();
+        coordinator.set_profile(&profile);
+        CHECK(coordinator.attach(kOwnerA), "detach-allocation test attaches");
+        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.worker_step();
+        coordinator.detach(kOwnerA);
+        TaggedRequest request{};
+        CHECK(!coordinator.next_request(request),
+              "detach return prevents request allocation before worker clear");
+    }
+
+    // A request rejected after moving away may later be reissued for the same
+    // tuple. Its stale acknowledgement must not consume the newer issuance.
+    {
+        Coordinator coordinator;
+        auto profile = tiny_profile();
+        coordinator.set_profile(&profile);
+        CHECK(coordinator.attach(kOwnerA), "issuance ABA test attaches");
+        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.worker_step();
+        TaggedRequest old_request{};
+        CHECK(coordinator.next_request(old_request),
+              "issuance ABA test obtains original request");
+
+        coordinator.submit_anchor(kOwnerA, 1000.0f, 8.0f);
+        coordinator.acknowledge(old_request, true);
+        coordinator.worker_step();
+        CHECK(coordinator.snapshot().status.resident_sectors == 0,
+              "away anchor rejects original publication");
+        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.worker_step();
+        TaggedRequest new_request{};
+        CHECK(coordinator.next_request(new_request) &&
+                  same_sector(new_request, old_request),
+              "anchor return reissues the same sector tuple");
+        CHECK(distinct_issuance(old_request, new_request),
+              "reissued tuple has a distinct issuance token");
+
+        coordinator.acknowledge(old_request, true);
+        coordinator.worker_step();
+        const auto after_stale = coordinator.snapshot();
+        CHECK(after_stale.status.resident_sectors == 0 &&
+                  after_stale.status.inflight_sectors == 1,
+              "stale issuance cannot consume the later request");
+        coordinator.acknowledge(new_request, true);
+        coordinator.worker_step();
+        CHECK(coordinator.snapshot().status.resident_sectors == 1,
+              "current issuance acknowledgement publishes normally");
     }
 
     return check_summary();
