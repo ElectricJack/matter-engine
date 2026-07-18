@@ -47,7 +47,15 @@ Task 6: complete (review clean)
   - Two fresh all-49 Box3D C17/Flecs C17 plus current-source physics/ECS C++17 builds print ALL PASS; static checker, Task 7+ query scope scan, and diff check pass.
   - Independent review returned PASS with no Critical, Important, or Minor findings.
 
-Resume at Task 7.
+Task 7: complete (commits e38c7b9..b30fd14, review clean after fix)
+  - Added synchronous closest-ray and sphere-overlap queries guarded against active stepping, invalid numeric input, context-less worlds, and exact-world mismatches.
+  - Query callbacks validate stable bridge ownership, current map identity, live matching Box3D body/shape handles, and full generational entity liveness before copying engine-native results.
+  - Rays retain the minimum fraction and copied position/normal; overlaps filter categories and return sorted/deduplicated full entity IDs without leaking Box3D pointers or handles.
+  - Review fix added a private one-shot duplicate callback seam; removing `unique` now produces the expected focused failure and restoring it returns `ALL PASS`.
+  - Two fresh all-49 Box3D C17/Flecs C17 plus current physics/ECS C++17 builds printed `ALL PASS`; the review-fix covering build and static/scope gates also passed.
+  - Independent re-review returned PASS with no Critical, Important, or Minor findings.
+
+Resume at Task 8.
 
 Environment gate:
   - WSL is installed without a Linux distribution.
