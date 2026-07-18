@@ -24,7 +24,15 @@ Task 3: complete (commits ba8e4c5..7745f88, review clean after fixes)
   - Review fixes enforce common-property validation before hull construction and prove forced hash collisions cannot retain stale configuration.
   - Two fresh all-49 Box3D C17/Flecs C17 plus physics/ECS C++17 builds print ALL PASS; static checker passes.
 
-Resume at Task 4.
+Task 4: complete (commits 26ff737..53df070, review clean after fixes)
+  - Added the fixed-only Reconcile -> Push -> Step -> Pull pipeline with exactly one Box3D step per executed ECS fixed tick.
+  - Static and kinematic transforms push from ECS; dynamic pose and velocity pull before FixedPostUpdate with declared Flecs write barriers.
+  - Current gravity and substeps apply before the next step; substeps clamp to the approved [1,16] range.
+  - Dynamic hierarchy descendants observe current pulled transforms, including catch-up frames; zero/invalid ticks do not step.
+  - Review fixes normalized accepted static/kinematic rotations, hardened the substep ceiling, and proved PostPhysics/FixedPostUpdate visibility.
+  - Two fresh all-49 Box3D C17/Flecs C17 plus physics/ECS C++17 builds print ALL PASS; targeted fix verification and static checker pass.
+
+Resume at Task 5.
 
 Environment gate:
   - WSL is installed without a Linux distribution.
