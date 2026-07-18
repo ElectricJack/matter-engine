@@ -108,6 +108,8 @@ public:
         flecs::entity_t entity) noexcept;
     bool tombstone_query_participant_for_test(
         flecs::entity_t entity) noexcept;
+    bool duplicate_overlap_participant_for_test(
+        flecs::entity_t entity) noexcept;
     void set_stepping_for_test(bool stepping) noexcept;
 
 private:

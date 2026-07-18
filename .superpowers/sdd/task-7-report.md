@@ -38,7 +38,8 @@ MSVC C2039 errors reported absent `ray_cast`, `overlap_sphere`,
   Allocation failure is contained inside the C callback boundary and returns an
   empty result rather than unwinding through Box3D.
 - Private test seams model a stale query participant and the active-step state; no
-  Box3D handle or pointer enters the public engine header.
+  Box3D handle or pointer enters the public engine header. A one-shot overlap seam
+  duplicates one resolved full ID so the sort/unique behavior is observable.
 
 ## Verification
 
@@ -71,4 +72,12 @@ claimed verified.
 
 ## Independent Review
 
-Pending.
+The first review found one Important test-quality gap: the overlap test asserted
+uniqueness without producing a duplicate candidate. The fix began with an expected
+MSVC C2039 RED for the missing duplicate-participant seam, then added a private
+one-shot callback seam and retained the existing assertion that the final list
+contains each ID once. A fresh covering build again compiled all 49 Box3D C17
+sources and Flecs C17, then both the current physics and ECS C++17 suites printed
+`ALL PASS`. Removing only the `unique` operation produced exactly the expected
+`sphere overlap returns unique ascending full generational IDs` failure; restoring
+it returned the focused physics suite to `ALL PASS`. Re-review is recorded below.

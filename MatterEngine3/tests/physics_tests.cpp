@@ -1934,6 +1934,10 @@ void test_overlap_sphere_filters_deduplicates_and_sorts_full_ids() {
               generated.id() != recycled_id,
           "overlap ordering fixture includes a non-zero full generation ID");
 
+    physics::detail::PhysicsContext& context =
+        physics::detail::context(world);
+    CHECK(context.duplicate_overlap_participant_for_test(generated.id()),
+          "overlap deduplication fixture duplicates one callback result");
     const std::vector<flecs::entity_t> all =
         physics::physics_overlap_sphere(
             world, {0.5f, 0.0f, 0.0f}, 2.0f, UINT64_MAX);

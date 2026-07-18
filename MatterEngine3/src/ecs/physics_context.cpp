@@ -226,6 +226,7 @@ struct PhysicsContext::Impl {
     std::vector<PhysicsSystemStage> fixed_step_trace;
     flecs::entity_t tombstoned_event_participant_for_test = 0;
     flecs::entity_t tombstoned_query_participant_for_test = 0;
+    flecs::entity_t duplicate_overlap_participant_for_test = 0;
     bool stepping = false;
 };
 
@@ -388,6 +389,7 @@ float ray_query_callback(
 struct OverlapQueryContext {
     QueryBridgeContext bridge;
     std::vector<flecs::entity_t> entities;
+    flecs::entity_t duplicate_participant = 0;
     bool allocation_failed = false;
 };
 
@@ -398,6 +400,9 @@ bool overlap_query_callback(b3ShapeId shape, void* opaque) {
     if (bridge != nullptr) {
         try {
             query.entities.push_back(bridge->entity);
+            if (bridge->entity == query.duplicate_participant) {
+                query.entities.push_back(bridge->entity);
+            }
         } catch (...) {
             query.allocation_failed = true;
             return false;
@@ -911,6 +916,9 @@ std::vector<flecs::entity_t> PhysicsContext::overlap_sphere(
         owning_world, &impl_->bridges,
         impl_->tombstoned_query_participant_for_test};
     impl_->tombstoned_query_participant_for_test = 0;
+    query.duplicate_participant =
+        impl_->duplicate_overlap_participant_for_test;
+    impl_->duplicate_overlap_participant_for_test = 0;
     const b3Vec3 point{};
     const b3ShapeProxy proxy{&point, 1, radius};
     b3QueryFilter filter = b3DefaultQueryFilter();
@@ -1235,6 +1243,20 @@ bool PhysicsContext::tombstone_query_participant_for_test(
         return false;
     }
     impl_->tombstoned_query_participant_for_test = entity;
+    return true;
+}
+
+bool PhysicsContext::duplicate_overlap_participant_for_test(
+    flecs::entity_t entity) noexcept {
+    if (impl_ == nullptr || entity == 0) {
+        return false;
+    }
+    const auto found = impl_->bridges.find(entity);
+    if (found == impl_->bridges.end() || found->second == nullptr ||
+        found->second->entity != entity || !found->second->live) {
+        return false;
+    }
+    impl_->duplicate_overlap_participant_for_test = entity;
     return true;
 }
 
