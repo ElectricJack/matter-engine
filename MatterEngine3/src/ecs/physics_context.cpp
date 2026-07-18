@@ -213,6 +213,7 @@ struct PhysicsContext::Impl {
     b3WorldId world_id = b3_nullWorldId;
     std::unordered_map<flecs::entity_t, std::unique_ptr<BridgeRecord>> bridges;
     std::vector<flecs::entity_t> dirty_entities;
+    std::unordered_set<flecs::entity_t> physics_authored_transform_marks;
     std::mutex command_mutex;
     std::unordered_map<flecs::entity_t, QueuedCommand> teleports;
     std::unordered_map<flecs::entity_t, QueuedCommand> velocities;
@@ -227,6 +228,8 @@ struct PhysicsContext::Impl {
     flecs::entity_t tombstoned_event_participant_for_test = 0;
     flecs::entity_t tombstoned_query_participant_for_test = 0;
     flecs::entity_t duplicate_overlap_participant_for_test = 0;
+    bool fail_next_reconcile_mark_for_test = false;
+    bool full_reconcile_required = false;
     bool stepping = false;
 };
 
@@ -357,60 +360,6 @@ BridgeRecord* resolve_query_bridge(
     return bridge;
 }
 
-struct RayQueryContext {
-    QueryBridgeContext bridge;
-    PhysicsRayHit hit{};
-    bool found = false;
-};
-
-float ray_query_callback(
-    b3ShapeId shape,
-    b3Pos point,
-    b3Vec3 normal,
-    float fraction,
-    uint64_t,
-    int,
-    int,
-    void* opaque) {
-    RayQueryContext& query = *static_cast<RayQueryContext*>(opaque);
-    BridgeRecord* bridge = resolve_query_bridge(query.bridge, shape);
-    if (bridge == nullptr) {
-        return -1.0f;
-    }
-    if (!query.found || fraction < query.hit.fraction) {
-        query.hit = {
-            bridge->entity, engine_position(point), engine_vector(normal),
-            fraction};
-        query.found = true;
-    }
-    return query.hit.fraction;
-}
-
-struct OverlapQueryContext {
-    QueryBridgeContext bridge;
-    std::vector<flecs::entity_t> entities;
-    flecs::entity_t duplicate_participant = 0;
-    bool allocation_failed = false;
-};
-
-bool overlap_query_callback(b3ShapeId shape, void* opaque) {
-    OverlapQueryContext& query =
-        *static_cast<OverlapQueryContext*>(opaque);
-    BridgeRecord* bridge = resolve_query_bridge(query.bridge, shape);
-    if (bridge != nullptr) {
-        try {
-            query.entities.push_back(bridge->entity);
-            if (bridge->entity == query.duplicate_participant) {
-                query.entities.push_back(bridge->entity);
-            }
-        } catch (...) {
-            query.allocation_failed = true;
-            return false;
-        }
-    }
-    return true;
-}
-
 PhysicsCommandTraceEntry trace_entry(const QueuedCommand& command) {
     return {command.kind, command.entity, command.primary,
             command.secondary, command.rotation};
@@ -465,8 +414,56 @@ bool PhysicsContext::world_is_valid() const noexcept {
 }
 
 void PhysicsContext::mark_for_reconcile(flecs::entity_t entity) noexcept {
-    if (impl_ != nullptr && entity != 0) {
+    if (impl_ == nullptr || entity == 0) {
+        return;
+    }
+    try {
+        if (impl_->fail_next_reconcile_mark_for_test) {
+            impl_->fail_next_reconcile_mark_for_test = false;
+            throw std::bad_alloc();
+        }
         impl_->dirty_entities.push_back(entity);
+    } catch (...) {
+        // Losing a removal/invalidation mark could leave a live native body.
+        // A scalar fallback cannot allocate and forces the next pass to audit
+        // every declarative body and every published bridge.
+        impl_->full_reconcile_required = true;
+    }
+}
+
+void PhysicsContext::mark_transform_for_reconcile(
+    flecs::entity entity) noexcept {
+    if (impl_ == nullptr || !entity || entity.id() == 0) {
+        return;
+    }
+    const auto authored =
+        impl_->physics_authored_transform_marks.find(entity.id());
+    if (authored == impl_->physics_authored_transform_marks.end()) {
+        mark_for_reconcile(entity.id());
+        return;
+    }
+    impl_->physics_authored_transform_marks.erase(authored);
+
+    const auto found = impl_->bridges.find(entity.id());
+    const ecs::LocalTransform* transform =
+        entity.try_get<ecs::LocalTransform>();
+    if (found == impl_->bridges.end() || found->second == nullptr ||
+        transform == nullptr || !is_live_dynamic_bridge(*found->second)) {
+        mark_for_reconcile(entity.id());
+        return;
+    }
+    const b3Pos position = b3Body_GetPosition(found->second->body);
+    const b3Quat rotation = b3Body_GetRotation(found->second->body);
+    if (transform->translation.x != static_cast<float>(position.x) ||
+        transform->translation.y != static_cast<float>(position.y) ||
+        transform->translation.z != static_cast<float>(position.z) ||
+        transform->rotation.x != rotation.v.x ||
+        transform->rotation.y != rotation.v.y ||
+        transform->rotation.z != rotation.v.z ||
+        transform->rotation.w != rotation.s ||
+        transform->scale.x != 1.0f || transform->scale.y != 1.0f ||
+        transform->scale.z != 1.0f) {
+        mark_for_reconcile(entity.id());
     }
 }
 
@@ -574,18 +571,24 @@ bool PhysicsContext::enqueue_wake(
 void PhysicsContext::reconcile(flecs::world& world) {
     impl_->fixed_step_trace.clear();
     impl_->fixed_step_trace.push_back(PhysicsSystemStage::Reconcile);
+    impl_->physics_authored_transform_marks.clear();
     if (!world_is_valid()) {
         return;
     }
 
     std::vector<flecs::entity_t> candidates;
     candidates.swap(impl_->dirty_entities);
-    world.each<const RigidBody>(
-        [&candidates](flecs::entity entity, const RigidBody&) {
-            candidates.push_back(entity.id());
-        });
-    for (const auto& entry : impl_->bridges) {
-        candidates.push_back(entry.first);
+    if (impl_->full_reconcile_required) {
+        // Clear only after the candidate audit is fully materialized. If this
+        // function throws while allocating, the next call still fails closed.
+        world.each<const RigidBody>(
+            [&candidates](flecs::entity entity, const RigidBody&) {
+                candidates.push_back(entity.id());
+            });
+        for (const auto& entry : impl_->bridges) {
+            candidates.push_back(entry.first);
+        }
+        impl_->full_reconcile_required = false;
     }
     std::sort(candidates.begin(), candidates.end());
     candidates.erase(
@@ -874,21 +877,39 @@ bool PhysicsContext::ray_cast(
         return false;
     }
 
-    RayQueryContext query{};
-    query.bridge = {
+    const QueryBridgeContext query{
         owning_world, &impl_->bridges,
         impl_->tombstoned_query_participant_for_test};
     impl_->tombstoned_query_participant_for_test = 0;
-    b3QueryFilter filter = b3DefaultQueryFilter();
-    filter.categoryBits = UINT64_MAX;
-    filter.maskBits = category_mask;
-    b3World_CastRay(
-        impl_->world_id, box_position(origin), box_vector(translation),
-        filter, ray_query_callback, &query);
-    if (!query.found) {
+    bool found_hit = false;
+    PhysicsRayHit closest{};
+    for (const auto& entry : impl_->bridges) {
+        if (entry.second == nullptr) {
+            continue;
+        }
+        BridgeRecord* bridge = resolve_query_bridge(query, entry.second->shape);
+        if (bridge == nullptr ||
+            (b3Shape_GetFilter(bridge->shape).categoryBits & category_mask) == 0) {
+            continue;
+        }
+        const b3WorldCastOutput output = b3Shape_RayCast(
+            bridge->shape, box_position(origin), box_vector(translation));
+        if (!output.hit) {
+            continue;
+        }
+        if (!found_hit || output.fraction < closest.fraction ||
+            (output.fraction == closest.fraction &&
+             bridge->entity < closest.entity)) {
+            closest = {
+                bridge->entity, engine_position(output.point),
+                engine_vector(output.normal), output.fraction};
+            found_hit = true;
+        }
+    }
+    if (!found_hit) {
         return false;
     }
-    hit = query.hit;
+    hit = closest;
     return true;
 }
 
@@ -911,30 +932,46 @@ std::vector<flecs::entity_t> PhysicsContext::overlap_sphere(
         return {};
     }
 
-    OverlapQueryContext query{};
-    query.bridge = {
+    const QueryBridgeContext query{
         owning_world, &impl_->bridges,
         impl_->tombstoned_query_participant_for_test};
     impl_->tombstoned_query_participant_for_test = 0;
-    query.duplicate_participant =
+    const flecs::entity_t duplicate_participant =
         impl_->duplicate_overlap_participant_for_test;
     impl_->duplicate_overlap_participant_for_test = 0;
-    const b3Vec3 point{};
-    const b3ShapeProxy proxy{&point, 1, radius};
-    b3QueryFilter filter = b3DefaultQueryFilter();
-    filter.categoryBits = UINT64_MAX;
-    filter.maskBits = category_mask;
-    b3World_OverlapShape(
-        impl_->world_id, box_position(center), &proxy, filter,
-        overlap_query_callback, &query);
-    if (query.allocation_failed) {
+    std::vector<flecs::entity_t> entities;
+    try {
+        for (const auto& entry : impl_->bridges) {
+            if (entry.second == nullptr) {
+                continue;
+            }
+            BridgeRecord* bridge =
+                resolve_query_bridge(query, entry.second->shape);
+            if (bridge == nullptr ||
+                (b3Shape_GetFilter(bridge->shape).categoryBits &
+                 category_mask) == 0) {
+                continue;
+            }
+            const b3Vec3 closest = b3Shape_GetClosestPoint(
+                bridge->shape, box_vector(center));
+            const float dx = closest.x - center.x;
+            const float dy = closest.y - center.y;
+            const float dz = closest.z - center.z;
+            if (dx * dx + dy * dy + dz * dz > radius * radius) {
+                continue;
+            }
+            entities.push_back(bridge->entity);
+            if (bridge->entity == duplicate_participant) {
+                entities.push_back(bridge->entity);
+            }
+        }
+    } catch (...) {
         return {};
     }
-    std::sort(query.entities.begin(), query.entities.end());
-    query.entities.erase(
-        std::unique(query.entities.begin(), query.entities.end()),
-        query.entities.end());
-    return query.entities;
+    std::sort(entities.begin(), entities.end());
+    entities.erase(
+        std::unique(entities.begin(), entities.end()), entities.end());
+    return entities;
 }
 
 void PhysicsContext::capture_events(flecs::world& world) {
@@ -1120,6 +1157,14 @@ void PhysicsContext::pull(flecs::world& world) {
         velocity.angular = engine_vector(
             b3Body_GetAngularVelocity(bridge->body));
         const flecs::entity entity(world.c_ptr(), bridge->entity);
+        // Flecs may defer this OnSet observer until the system merge, so a
+        // scoped boolean cannot distinguish this write. Retain the full ID
+        // until the observer consumes it; allocation failure merely causes a
+        // conservative later reconcile rather than losing a user edit.
+        try {
+            impl_->physics_authored_transform_marks.insert(bridge->entity);
+        } catch (...) {
+        }
         entity.set<ecs::LocalTransform>(transform);
         entity.set<PhysicsVelocity>(velocity);
         entity.add<ecs::TransformDirty>();
@@ -1258,6 +1303,12 @@ bool PhysicsContext::duplicate_overlap_participant_for_test(
     }
     impl_->duplicate_overlap_participant_for_test = entity;
     return true;
+}
+
+void PhysicsContext::fail_next_reconcile_mark_for_test() noexcept {
+    if (impl_ != nullptr) {
+        impl_->fail_next_reconcile_mark_for_test = true;
+    }
 }
 
 void PhysicsContext::set_stepping_for_test(bool stepping) noexcept {

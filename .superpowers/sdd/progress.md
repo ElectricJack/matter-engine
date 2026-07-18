@@ -66,6 +66,21 @@ Task 8: complete (implementation/build closure; mandatory external gates pending
 
 Phase 2 implementation tasks are complete. Resume with final whole-branch review; mandatory external verification remains pending.
 
+Final whole-branch review fix round: implemented (commit pending re-review)
+  - Reconciliation is dirty-only; unchanged static and dynamic hulls perform no
+    later validation/build work, while descriptor, scale, hierarchy, and removal
+    changes still reconcile or retire fail closed.
+  - Physics-authored dynamic transform writes are distinguished across deferred
+    Flecs observer delivery with O(1) full-ID tracking; a later user edit is never
+    consumed as the engine write.
+  - A non-allocating full-audit fallback protects `noexcept` dirty marking, with a
+    forced allocation-failure retirement regression.
+  - Ray and sphere-overlap category masks are independent of simulation masks;
+    rays break equal-fraction ties by smaller full entity ID.
+  - Fresh all-49 Box3D C17/Flecs C17 plus current C++17 physics/ECS builds print
+    `ALL PASS`; focused current-source run and static checker pass. Awaiting the
+    required senior whole-branch re-review.
+
 Environment gate:
   - WSL is installed without a Linux distribution.
   - No native make, GCC, Clang, or MinGW compiler is available on PATH.

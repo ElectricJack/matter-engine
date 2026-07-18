@@ -48,6 +48,7 @@ public:
     PhysicsStats stats() const noexcept;
     bool world_is_valid() const noexcept;
     void mark_for_reconcile(flecs::entity_t entity) noexcept;
+    void mark_transform_for_reconcile(flecs::entity entity) noexcept;
     void reconcile(flecs::world& world);
     void push(flecs::world& world, float fixed_delta);
     void step(flecs::world& world, float fixed_delta);
@@ -110,6 +111,7 @@ public:
         flecs::entity_t entity) noexcept;
     bool duplicate_overlap_participant_for_test(
         flecs::entity_t entity) noexcept;
+    void fail_next_reconcile_mark_for_test() noexcept;
     void set_stepping_for_test(bool stepping) noexcept;
 
 private:

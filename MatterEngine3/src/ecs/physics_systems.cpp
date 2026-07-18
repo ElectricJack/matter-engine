@@ -39,7 +39,18 @@ void register_physics_systems(flecs::world& world) {
     observe_component<CapsuleCollider>(world, "ReconcileCapsuleChanges");
     observe_component<BoxCollider>(world, "ReconcileBoxChanges");
     observe_component<ConvexHullCollider>(world, "ReconcileHullChanges");
-    observe_component<ecs::LocalTransform>(world, "ReconcileTransformChanges");
+    world.observer<ecs::LocalTransform>("ReconcileTransformChanges")
+        .event(flecs::OnAdd)
+        .event(flecs::OnSet)
+        .event(flecs::OnRemove)
+        .each([](flecs::entity entity, ecs::LocalTransform&) {
+            flecs::world world = entity.world();
+            const detail::PhysicsContextRef* ref =
+                world.try_get<detail::PhysicsContextRef>();
+            if (ref != nullptr && ref->value != nullptr) {
+                ref->value->mark_transform_for_reconcile(entity);
+            }
+        });
 
     world.observer("ReconcileParentChanges")
         .event(flecs::OnAdd)

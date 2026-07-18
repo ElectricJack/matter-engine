@@ -200,6 +200,10 @@ Bodies are reconciled in ascending full Flecs entity-ID order. This makes creati
 destruction, validation, and conflict behavior independent of archetype iteration
 or hash-map order. Phase 2 targets deterministic ordering and repeatability for a
 fixed platform/build, not cross-platform bitwise-identical floating-point output.
+Normal fixed ticks reconcile only entities dirtied by relevant Flecs observers.
+If recording a dirty entity cannot allocate, the context sets a non-allocating
+fail-closed flag and audits all declarative bodies and live bridges on the next
+reconciliation boundary.
 
 ## Transform and State Authority
 
@@ -304,8 +308,11 @@ std::vector<flecs::entity_t> physics_overlap_sphere(
 
 Queries reject nonfinite inputs, cannot run during `b3World_Step`, discard stale
 bridges, and return deterministic entity ordering. Ray cast reports the closest
-accepted hit. Sphere overlap deduplicates entities before sorting because one body
-may later own more than one Box3D shape even though Phase 2 creates only one.
+accepted hit, breaking equal-fraction ties by the smaller full entity ID. The
+query `category_mask` selects collider category bits independently of the
+collider's simulation `mask_bits`; a collider with `mask_bits == 0` remains
+queryable. Sphere overlap deduplicates entities before sorting because one body may
+later own more than one Box3D shape even though Phase 2 creates only one.
 
 ## Configuration Changes and Lifecycle
 

@@ -786,6 +786,85 @@ void test_hash_collision_cannot_hide_configuration_change() {
           "complete desired comparison replaces colliding configurations");
 }
 
+void test_reconcile_only_revisits_dirty_bodies_and_fails_closed() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    physics::RigidBody dynamic_body{};
+    dynamic_body.type = physics::RigidBodyType::Dynamic;
+    flecs::entity static_hull = world.entity()
+        .set<ecs::LocalTransform>({})
+        .set<physics::RigidBody>({})
+        .set<physics::ConvexHullCollider>(tetrahedron_hull());
+    flecs::entity dynamic_hull = world.entity()
+        .set<ecs::LocalTransform>({{0.0f, 3.0f, 0.0f}})
+        .set<physics::RigidBody>(dynamic_body)
+        .set<physics::ConvexHullCollider>(tetrahedron_hull());
+
+    reconcile(runtime);
+    const uint64_t initial_builds =
+        physics::detail::hull_build_attempt_count();
+    runtime.tick({1.0f / 60.0f, 1.0f / 60.0f, 1});
+    runtime.tick({1.0f / 60.0f, 1.0f / 60.0f, 1});
+    CHECK(physics::detail::hull_build_attempt_count() == initial_builds,
+          "unchanged static and physics-authored dynamic hulls are not rebuilt "
+          "on later ticks");
+
+    physics::ConvexHullCollider changed = tetrahedron_hull();
+    changed.properties.friction = 0.25f;
+    static_hull.set<physics::ConvexHullCollider>(changed);
+    reconcile(runtime);
+    CHECK(physics::detail::hull_build_attempt_count() == initial_builds + 2 &&
+              physics::physics_stats(world).bodies_created == 3,
+          "an actual collider descriptor edit performs one validated replacement");
+
+    ecs::LocalTransform invalid_scale{};
+    invalid_scale.scale = {2.0f, 1.0f, 1.0f};
+    static_hull.set<ecs::LocalTransform>(invalid_scale);
+    reconcile(runtime);
+    CHECK(!physics::detail::context(world).body_is_valid(static_hull.id()),
+          "a dirty invalid scale retires its existing body");
+
+    bool authored_after_pull = false;
+    flecs::system post_pull_edit =
+        world.system<ecs::LocalTransform>("AuthorDynamicScaleAfterPhysicsPull")
+            .kind<ecs::FixedPostUpdate>()
+            .each([&](flecs::entity entity, ecs::LocalTransform&) {
+                if (!authored_after_pull && entity.id() == dynamic_hull.id()) {
+                    ecs::LocalTransform edited =
+                        entity.get<ecs::LocalTransform>();
+                    edited.scale = {2.0f, 1.0f, 1.0f};
+                    entity.set<ecs::LocalTransform>(edited);
+                    authored_after_pull = true;
+                }
+            });
+    post_pull_edit.add<ecs::FixedPipelineSystem>();
+    runtime.tick({1.0f / 60.0f, 1.0f / 60.0f, 1});
+    runtime.tick({1.0f / 60.0f, 1.0f / 60.0f, 1});
+    CHECK(authored_after_pull &&
+              !physics::detail::context(world).body_is_valid(dynamic_hull.id()),
+          "a user transform edit after Pull is not consumed as the physics-authored OnSet");
+
+    dynamic_hull.set<ecs::LocalTransform>({{0.0f, 3.0f, 0.0f}});
+    reconcile(runtime);
+
+    flecs::entity parent = world.entity();
+    dynamic_hull.child_of(parent);
+    reconcile(runtime);
+    CHECK(!physics::detail::context(world).body_is_valid(dynamic_hull.id()),
+          "a dirty parent relationship retires its existing body");
+
+    repair_as_valid_sphere(static_hull);
+    reconcile(runtime);
+    physics::detail::PhysicsContext& context =
+        physics::detail::context(world);
+    context.fail_next_reconcile_mark_for_test();
+    static_hull.remove<physics::RigidBody>();
+    reconcile(runtime);
+    CHECK(!context.body_is_valid(static_hull.id()),
+          "reconcile-mark allocation failure falls back to a fail-closed full "
+          "retirement pass");
+}
+
 bool near(float actual, float expected, float tolerance = 1.0e-3f) {
     return std::fabs(actual - expected) <= tolerance;
 }
@@ -1826,10 +1905,12 @@ flecs::entity make_query_sphere(
     flecs::world& world,
     Float3 position,
     uint64_t category_bits,
-    float radius = 0.5f) {
+    float radius = 0.5f,
+    uint64_t mask_bits = UINT64_MAX) {
     physics::SphereCollider collider{};
     collider.radius = radius;
     collider.properties.category_bits = category_bits;
+    collider.properties.mask_bits = mask_bits;
     return world.entity()
         .set<ecs::LocalTransform>({position})
         .set<physics::RigidBody>({})
@@ -1875,10 +1956,47 @@ void test_ray_cast_is_closest_filtered_and_validated() {
     physics::detail::PhysicsContext& context =
         physics::detail::context(world);
     CHECK(context.tombstone_query_participant_for_test(near_body.id()) &&
-              physics::physics_ray_cast(
+          physics::physics_ray_cast(
                   world, {}, {10.0f, 0.0f, 0.0f}, UINT64_MAX, hit) &&
               hit.entity == far_body.id(),
           "ray query ignores stale bridge user data and continues to a live hit");
+}
+
+void test_queries_filter_categories_independently_and_tie_by_full_id() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    flecs::entity smaller =
+        make_query_sphere(world, {2.0f, 0.0f, 0.0f}, 0x8U, 0.5f, 0U);
+    flecs::entity larger =
+        make_query_sphere(world, {2.0f, 0.0f, 0.0f}, 0x8U, 0.5f, 0U);
+    flecs::entity tie_smaller =
+        make_query_sphere(world, {2.0f, 3.0f, 0.0f}, 0x10U);
+    flecs::entity tie_larger =
+        make_query_sphere(world, {2.0f, 3.0f, 0.0f}, 0x10U);
+    reconcile(runtime);
+
+    physics::PhysicsRayHit hit{};
+    CHECK(physics::physics_ray_cast(
+              world, {}, {10.0f, 0.0f, 0.0f}, 0x8U, hit) &&
+              hit.entity == smaller.id(),
+          "category-only ray queries include mask-zero shapes and break "
+          "equal-fraction ties by full ID");
+    CHECK(physics::physics_ray_cast(
+              world, {0.0f, 3.0f, 0.0f}, {10.0f, 0.0f, 0.0f},
+              0x10U, hit) && hit.entity == tie_smaller.id() &&
+              tie_smaller.id() < tie_larger.id(),
+          "equal-fraction ray hits choose the smaller full entity ID");
+    const std::vector<flecs::entity_t> overlaps =
+        physics::physics_overlap_sphere(
+            world, {2.0f, 0.0f, 0.0f}, 1.0f, 0x8U);
+    CHECK(overlaps.size() == 2 && overlaps[0] == smaller.id() &&
+              overlaps[1] == larger.id(),
+          "category-only overlaps include mask-zero shapes in full-ID order");
+    CHECK(!physics::physics_ray_cast(
+              world, {}, {10.0f, 0.0f, 0.0f}, 0x4U, hit) &&
+              physics::physics_overlap_sphere(
+                  world, {2.0f, 0.0f, 0.0f}, 1.0f, 0x4U).empty(),
+          "category-only queries still reject nonmatching categories");
 }
 
 void test_queries_require_exact_live_context_and_reject_while_stepping() {
@@ -1977,6 +2095,7 @@ int main() {
     test_bridge_survives_unrelated_archetype_moves();
     test_dynamic_replacement_preserves_box3d_state();
     test_hash_collision_cannot_hide_configuration_change();
+    test_reconcile_only_revisits_dirty_bodies_and_fails_closed();
     test_dynamic_sphere_falls_onto_static_floor();
     test_static_and_kinematic_edits_push_before_step();
     test_dynamic_pose_velocity_and_descendant_pull_before_fixed_post_update();
@@ -1995,6 +2114,7 @@ int main() {
     test_stale_event_participant_is_dropped_and_counted();
     test_body_event_reports_transition_to_sleep();
     test_ray_cast_is_closest_filtered_and_validated();
+    test_queries_filter_categories_independently_and_tie_by_full_id();
     test_queries_require_exact_live_context_and_reject_while_stepping();
     test_overlap_sphere_filters_deduplicates_and_sorts_full_ids();
     return check_summary();
