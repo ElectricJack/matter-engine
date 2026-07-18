@@ -37,7 +37,13 @@ Task 6: complete (commits f41d89f..b15e89c, review clean with GPU gate blocked)
   - Focused MSVC ECS suite passed twice; world_stream_tests.cpp and matter_engine.cpp translation units compiled successfully.
   - Full GNU/GPU run-worldstream remains unavailable because the host has no WSL distribution.
 
-Resume at Task 7.
+Task 7: complete (commits 7b4d2e2..9dd5c97, review clean after build-graph fixes)
+  - Integrated one C-compiled Flecs object and both ECS C++ implementations into the engine archive, session-bearing tests, Viewer Windows, and temporary Explorer Windows builds.
+  - Fixed GPU test dependency closure and Windows flattened-source vpath reachability found by review.
+  - Enhanced static checker now models implementation closure, one-Flecs membership, and basename uniqueness.
+  - Focused MSVC link/run passed twice; GNU archive/test and MinGW builds remain environment-blocked.
+
+Resume at Task 8.
 
 Environment gate:
   - WSL is installed without a Linux distribution.
