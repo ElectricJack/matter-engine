@@ -239,6 +239,18 @@ std::vector<Eviction> SectorStreamer::take_evictions() {
     return out;
 }
 
+const std::vector<Eviction>& SectorStreamer::peek_evictions() const noexcept {
+    return evictions_;
+}
+
+bool SectorStreamer::commit_evictions(
+    const std::vector<Eviction>& source,
+    size_t count) noexcept {
+    if (&source != &evictions_ || count > evictions_.size()) return false;
+    evictions_.erase(evictions_.begin(), evictions_.begin() + count);
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // clear()
 // ---------------------------------------------------------------------------

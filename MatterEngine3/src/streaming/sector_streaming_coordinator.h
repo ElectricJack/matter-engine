@@ -35,6 +35,28 @@ struct TaggedEviction {
     matter_stream::Eviction sector{};
 };
 
+enum class EvictionTransferStage : uint8_t {
+    StreamerToCoordinatorReserve,
+    CoordinatorToPendingBatchReserve
+};
+
+using EvictionTransferFault = void (*)(void*, EvictionTransferStage);
+
+enum class IdleWorkerFailure : uint8_t {
+    OutOfMemory,
+    Internal
+};
+
+using IdleWorkerStep = void (*)(void*);
+using IdleWorkerFailureHandler =
+    void (*)(void*, IdleWorkerFailure, const char*);
+
+void run_idle_worker_step_noexcept(
+    void* step_context,
+    IdleWorkerStep step,
+    void* failure_context,
+    IdleWorkerFailureHandler failure_handler) noexcept;
+
 enum class RequestTrackingStage : uint8_t {
     IssuedRequest,
     PublicationCandidate
@@ -75,7 +97,10 @@ public:
     using Endpoint = std::function<bool(
         const std::vector<TaggedEviction>&, std::string&)>;
 
-    void append(std::vector<TaggedEviction> evictions);
+    bool append(
+        const std::vector<TaggedEviction>& evictions,
+        void* fault_context = nullptr,
+        EvictionTransferFault fault = nullptr) noexcept;
     bool apply(const Endpoint& endpoint, std::string& error) noexcept;
     bool apply_tag(
         const TaggedEviction& eviction,
@@ -140,12 +165,18 @@ public:
     void clear_anchor(flecs::entity_t owner);
     void detach(flecs::entity_t owner);
     void restart_if_attached();
-    void worker_step();
+    void worker_step(
+        void* fault_context = nullptr,
+        EvictionTransferFault fault = nullptr);
     bool next_request(
         TaggedRequest& out,
         void* fault_context = nullptr,
         RequestTrackingFault fault = nullptr) noexcept;
     bool begin_publication(const TaggedRequest& request) noexcept;
+    bool transfer_evictions(
+        PendingEvictionBatch& destination,
+        void* fault_context = nullptr,
+        EvictionTransferFault fault = nullptr) noexcept;
     std::vector<TaggedEviction> take_evictions();
     bool acknowledge(const TaggedRequest& request, bool published) noexcept;
     Snapshot snapshot() const;
@@ -189,8 +220,12 @@ private:
     uint64_t allocate_generation();
     uint64_t allocate_issuance();
     void invalidate_worker_publications();
-    void clear_worker_streamer();
-    void collect_streamer_evictions();
+    void clear_worker_streamer(
+        void* fault_context,
+        EvictionTransferFault fault);
+    void collect_streamer_evictions(
+        void* fault_context,
+        EvictionTransferFault fault);
     void publish_snapshot(uint64_t attachment_revision,
                           const std::optional<matter_stream::Config>& profile,
                           SectorStreamingErrorCode profile_error);

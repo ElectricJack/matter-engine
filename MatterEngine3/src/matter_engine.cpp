@@ -767,7 +767,27 @@ void WorldSession::Impl::worker_loop() {
             }
 
             // Timed out with no command — take ONE refine/stream step.
-            execute_sector_stream_step();
+            streaming::detail::run_idle_worker_step_noexcept(
+                this,
+                [](void* opaque) {
+                    static_cast<WorldSession::Impl*>(opaque)
+                        ->execute_sector_stream_step();
+                },
+                this,
+                [](void* opaque,
+                   streaming::detail::IdleWorkerFailure failure,
+                   const char* message) {
+                    auto& self = *static_cast<WorldSession::Impl*>(opaque);
+                    Event event;
+                    event.type = EventType::BakeError;
+                    event.code = failure ==
+                            streaming::detail::IdleWorkerFailure::OutOfMemory
+                        ? BakeErrorCode::OutOfMemory
+                        : BakeErrorCode::Internal;
+                    event.phase = "stream";
+                    event.message = message;
+                    self.emit_event(std::move(event));
+                });
             if (refine_ctrl) execute_refine_step();
             continue;
         }
@@ -2601,8 +2621,13 @@ void WorldSession::Impl::terminal_streaming_teardown_noexcept() noexcept {
 bool WorldSession::Impl::drain_sector_evictions(
     bool require_empty,
     std::string& err) {
-    pending_sector_evictions.append(
-        ecs_runtime.streaming_coordinator().take_evictions());
+    auto& coordinator = ecs_runtime.streaming_coordinator();
+    if (!coordinator.transfer_evictions(pending_sector_evictions)) {
+        if (err.empty()) {
+            err = "unable to retain streaming eviction batch";
+        }
+        return false;
+    }
 
     auto endpoint = [this, require_empty](
         const std::vector<streaming::detail::TaggedEviction>& evictions,

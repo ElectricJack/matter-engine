@@ -10,6 +10,8 @@
 
 using matter::streaming::SectorStreamingState;
 using matter::streaming::detail::Coordinator;
+using matter::streaming::detail::EvictionTransferStage;
+using matter::streaming::detail::IdleWorkerFailure;
 using matter::streaming::detail::PendingEvictionBatch;
 using matter::streaming::detail::PublicationCompletionCapacity;
 using matter::streaming::detail::ProfileActivationGate;
@@ -18,6 +20,7 @@ using matter::streaming::detail::RequestTrackingStage;
 using matter::streaming::detail::PublicationTransaction;
 using matter::streaming::detail::TaggedEviction;
 using matter::streaming::detail::TaggedRequest;
+using matter::streaming::detail::run_idle_worker_step_noexcept;
 
 static matter_stream::Config tiny_profile() {
     matter_stream::Config value;
@@ -167,6 +170,55 @@ static void throw_request_tracking_fault(
     }
 }
 
+struct EvictionTransferFaultProbe {
+    EvictionTransferStage fail_stage =
+        EvictionTransferStage::StreamerToCoordinatorReserve;
+    int calls = 0;
+};
+
+static void throw_eviction_transfer_fault(
+    void* opaque,
+    EvictionTransferStage stage) {
+    auto& probe = *static_cast<EvictionTransferFaultProbe*>(opaque);
+    ++probe.calls;
+    if (stage == probe.fail_stage) throw std::bad_alloc();
+}
+
+struct IdleWorkerProbe {
+    int step_calls = 0;
+    int failure_calls = 0;
+    IdleWorkerFailure failure = IdleWorkerFailure::Internal;
+    bool throw_from_handler = false;
+};
+
+static void throw_idle_worker_step(void* opaque) {
+    auto& probe = *static_cast<IdleWorkerProbe*>(opaque);
+    ++probe.step_calls;
+    throw std::bad_alloc();
+}
+
+static void complete_idle_worker_step(void* opaque) {
+    ++static_cast<IdleWorkerProbe*>(opaque)->step_calls;
+}
+
+static void throw_internal_idle_worker_step(void* opaque) {
+    auto& probe = *static_cast<IdleWorkerProbe*>(opaque);
+    ++probe.step_calls;
+    throw std::runtime_error("injected idle internal failure");
+}
+
+static void record_idle_worker_failure(
+    void* opaque,
+    IdleWorkerFailure failure,
+    const char*) {
+    auto& probe = *static_cast<IdleWorkerProbe*>(opaque);
+    ++probe.failure_calls;
+    probe.failure = failure;
+    if (probe.throw_from_handler) {
+        throw std::runtime_error("injected idle failure-handler failure");
+    }
+}
+
 static_assert(
     noexcept(std::declval<Coordinator&>().begin_publication(
         std::declval<const TaggedRequest&>())),
@@ -185,8 +237,159 @@ static_assert(
     noexcept(std::declval<Coordinator&>().next_request(
         std::declval<TaggedRequest&>())),
     "request allocation must contain tracking allocation failure");
+static_assert(
+    noexcept(run_idle_worker_step_noexcept(
+        nullptr, nullptr, nullptr, nullptr)),
+    "idle worker exception boundary must be noexcept");
 
 int main() {
+    // Streamer eviction ownership remains at the source when coordinator
+    // destination allocation fails. A later worker retry transfers the full
+    // batch exactly once and permits every app resource to be cleaned.
+    {
+        Coordinator coordinator;
+        FakePublicationLedger ledger;
+        auto profile = tiny_profile();
+        coordinator.set_profile(&profile);
+        CHECK(coordinator.attach(kOwnerA),
+              "streamer-transfer fault test owner attaches");
+        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.worker_step();
+        const auto residents = drain_requests(coordinator);
+        CHECK(residents.size() == 2,
+              "streamer-transfer test obtains two resident candidates");
+        for (const auto& request : residents) {
+            CHECK(ledger.publish(coordinator, request, true),
+                  "streamer-transfer test publishes resident resource");
+        }
+        coordinator.worker_step();
+        CHECK(coordinator.snapshot().status.resident_sectors == 2,
+              "streamer-transfer test establishes coordinator residency");
+
+        coordinator.detach(kOwnerA);
+        EvictionTransferFaultProbe fault{
+            EvictionTransferStage::StreamerToCoordinatorReserve};
+        bool allocation_failed = false;
+        try {
+            coordinator.worker_step(&fault, throw_eviction_transfer_fault);
+        } catch (const std::bad_alloc&) {
+            allocation_failed = true;
+        }
+        PendingEvictionBatch pending;
+        CHECK(allocation_failed && fault.calls == 1 &&
+                  coordinator.transfer_evictions(pending) && pending.empty(),
+              "failed streamer transfer leaves coordinator destination empty");
+
+        coordinator.worker_step();
+        CHECK(coordinator.transfer_evictions(pending) &&
+                  pending.size() == residents.size(),
+              "worker retry transfers every source eviction");
+        size_t cleaned = 0;
+        std::string error;
+        CHECK(pending.apply(
+                  [&](const std::vector<TaggedEviction>& evictions,
+                      std::string&) {
+                      cleaned += evictions.size();
+                      ledger.apply(evictions);
+                      return true;
+                  },
+                  error) &&
+                  cleaned == residents.size() && ledger.resident.empty() &&
+                  pending.empty(),
+              "streamer retry cleans every resource exactly once");
+        CHECK(coordinator.transfer_evictions(pending) && pending.empty() &&
+                  cleaned == residents.size(),
+              "committed streamer prefix is unavailable to duplicate retry");
+    }
+
+    // Coordinator eviction ownership remains at its source when the durable
+    // session batch cannot reserve. Retry transfers the whole batch once.
+    {
+        Coordinator coordinator;
+        FakePublicationLedger ledger;
+        auto profile = tiny_profile();
+        coordinator.set_profile(&profile);
+        CHECK(coordinator.attach(kOwnerA),
+              "pending-transfer fault test owner attaches");
+        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.worker_step();
+        const auto residents = drain_requests(coordinator);
+        CHECK(residents.size() == 2,
+              "pending-transfer test obtains two resident candidates");
+        for (const auto& request : residents) {
+            CHECK(ledger.publish(coordinator, request, true),
+                  "pending-transfer test publishes resident resource");
+        }
+        coordinator.worker_step();
+        coordinator.detach(kOwnerA);
+        coordinator.worker_step();
+
+        PendingEvictionBatch pending;
+        EvictionTransferFaultProbe fault{
+            EvictionTransferStage::CoordinatorToPendingBatchReserve};
+        CHECK(!coordinator.transfer_evictions(
+                  pending, &fault, throw_eviction_transfer_fault) &&
+                  fault.calls == 1 && pending.empty(),
+              "failed pending-batch reserve retains coordinator ownership");
+        CHECK(coordinator.transfer_evictions(pending) &&
+                  pending.size() == residents.size() &&
+                  coordinator.transfer_evictions(pending) &&
+                  pending.size() == residents.size(),
+              "pending-batch retry transfers the full batch without duplicates");
+        size_t cleaned = 0;
+        std::string error;
+        CHECK(pending.apply(
+                  [&](const std::vector<TaggedEviction>& evictions,
+                      std::string&) {
+                      cleaned += evictions.size();
+                      ledger.apply(evictions);
+                      return true;
+                  },
+                  error) &&
+                  cleaned == residents.size() && ledger.resident.empty() &&
+                  pending.empty(),
+              "pending-batch retry cleans every resource exactly once");
+    }
+
+    // The idle boundary contains both step exceptions and failures while
+    // reporting them, then remains callable for later worker progress.
+    {
+        IdleWorkerProbe probe;
+        run_idle_worker_step_noexcept(
+            &probe,
+            throw_idle_worker_step,
+            &probe,
+            record_idle_worker_failure);
+        CHECK(probe.step_calls == 1 && probe.failure_calls == 1 &&
+                  probe.failure == IdleWorkerFailure::OutOfMemory,
+              "idle wrapper reports allocation failure without escape");
+        run_idle_worker_step_noexcept(
+            &probe,
+            complete_idle_worker_step,
+            &probe,
+            record_idle_worker_failure);
+        CHECK(probe.step_calls == 2 && probe.failure_calls == 1,
+              "idle wrapper remains serviceable after step failure");
+
+        run_idle_worker_step_noexcept(
+            &probe,
+            throw_internal_idle_worker_step,
+            &probe,
+            record_idle_worker_failure);
+        CHECK(probe.step_calls == 3 && probe.failure_calls == 2 &&
+                  probe.failure == IdleWorkerFailure::Internal,
+              "idle wrapper reports standard exceptions as internal");
+
+        probe.throw_from_handler = true;
+        run_idle_worker_step_noexcept(
+            &probe,
+            throw_idle_worker_step,
+            &probe,
+            record_idle_worker_failure);
+        CHECK(probe.step_calls == 4 && probe.failure_calls == 3,
+              "idle wrapper contains failure-handler exceptions");
+    }
+
     // A failed app endpoint keeps the complete tagged batch durable. Work that
     // completed before a mid-batch fault is harmlessly seen again, and the tags
     // disappear only after the production batch seam reports full success.

@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <exception>
 #include <limits>
+#include <new>
+#include <type_traits>
 #include <utility>
 
 namespace matter::streaming::detail {
@@ -48,6 +50,30 @@ void set_error_noexcept(std::string& error, const char* message) noexcept {
 
 } // namespace
 
+void run_idle_worker_step_noexcept(
+    void* step_context,
+    IdleWorkerStep step,
+    void* failure_context,
+    IdleWorkerFailureHandler failure_handler) noexcept {
+    const auto report = [&](IdleWorkerFailure failure, const char* message) {
+        if (!failure_handler) return;
+        try {
+            failure_handler(failure_context, failure, message);
+        } catch (...) {
+            // Reporting is best-effort; it must never terminate the worker.
+        }
+    };
+    try {
+        if (step) step(step_context);
+    } catch (const std::bad_alloc&) {
+        report(IdleWorkerFailure::OutOfMemory, "std::bad_alloc");
+    } catch (const std::exception& exception) {
+        report(IdleWorkerFailure::Internal, exception.what());
+    } catch (...) {
+        report(IdleWorkerFailure::Internal, "unknown idle worker failure");
+    }
+}
+
 bool PublicationCompletionCapacity::try_reserve(size_t& slot) noexcept {
     if (size_ == kCapacity) return false;
     for (size_t index = 0; index < occupied_.size(); ++index) {
@@ -83,17 +109,50 @@ size_t PublicationCompletionCapacity::size() const noexcept {
     return size_;
 }
 
-void PendingEvictionBatch::append(std::vector<TaggedEviction> evictions) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    for (auto& eviction : evictions) {
-        const auto duplicate = std::find_if(
-            pending_.begin(), pending_.end(),
-            [&](const TaggedEviction& current) {
-                return same_eviction(current, eviction);
-            });
-        if (duplicate == pending_.end()) {
-            pending_.push_back(std::move(eviction));
+bool PendingEvictionBatch::append(
+    const std::vector<TaggedEviction>& evictions,
+    void* fault_context,
+    EvictionTransferFault fault) noexcept {
+    static_assert(
+        std::is_nothrow_copy_constructible_v<TaggedEviction>,
+        "reserved eviction copies must not throw");
+    try {
+        std::lock_guard<std::mutex> lock(mutex_);
+        size_t additions = 0;
+        for (size_t index = 0; index < evictions.size(); ++index) {
+            const auto& eviction = evictions[index];
+            const bool already_pending = std::any_of(
+                pending_.begin(), pending_.end(),
+                [&](const TaggedEviction& current) {
+                    return same_eviction(current, eviction);
+                });
+            const bool repeated_in_source = std::any_of(
+                evictions.begin(), evictions.begin() + index,
+                [&](const TaggedEviction& current) {
+                    return same_eviction(current, eviction);
+                });
+            if (!already_pending && !repeated_in_source) ++additions;
         }
+
+        if (additions > pending_.max_size() - pending_.size()) return false;
+        if (fault) {
+            fault(
+                fault_context,
+                EvictionTransferStage::CoordinatorToPendingBatchReserve);
+        }
+        pending_.reserve(pending_.size() + additions);
+        for (size_t index = 0; index < evictions.size(); ++index) {
+            const auto& eviction = evictions[index];
+            const bool duplicate = std::any_of(
+                pending_.begin(), pending_.end(),
+                [&](const TaggedEviction& current) {
+                    return same_eviction(current, eviction);
+                });
+            if (!duplicate) pending_.push_back(eviction);
+        }
+        return true;
+    } catch (...) {
+        return false;
     }
 }
 
@@ -296,9 +355,22 @@ uint64_t Coordinator::allocate_issuance() {
     return last_issuance_;
 }
 
-void Coordinator::collect_streamer_evictions() {
+void Coordinator::collect_streamer_evictions(
+    void* fault_context,
+    EvictionTransferFault fault) {
     if (!streamer_) return;
-    auto evictions = streamer_->take_evictions();
+    static_assert(
+        std::is_nothrow_copy_constructible_v<TaggedEviction>,
+        "reserved tagged eviction copies must not throw");
+    const auto& evictions = streamer_->peek_evictions();
+    const size_t source_count = evictions.size();
+    if (source_count == 0) return;
+    if (fault) {
+        fault(
+            fault_context,
+            EvictionTransferStage::StreamerToCoordinatorReserve);
+    }
+    const size_t destination_start = pending_evictions_.size();
     pending_evictions_.reserve(pending_evictions_.size() + evictions.size());
     for (const auto& eviction : evictions) {
         const auto resident = std::find_if(
@@ -312,9 +384,19 @@ void Coordinator::collect_streamer_evictions() {
         pending_evictions_.push_back(
             TaggedEviction{
                 worker_owner_, worker_generation_, issuance, eviction});
-        if (resident != resident_requests_.end()) {
-            resident_requests_.erase(resident);
-        }
+    }
+    if (!streamer_->commit_evictions(evictions, source_count)) {
+        pending_evictions_.resize(destination_start);
+        return;
+    }
+    for (auto first = pending_evictions_.begin() + destination_start;
+         first != pending_evictions_.end(); ++first) {
+        const auto resident = std::find_if(
+            resident_requests_.begin(), resident_requests_.end(),
+            [&](const TaggedRequest& request) {
+                return same_sector(request, first->sector);
+            });
+        if (resident != resident_requests_.end()) resident_requests_.erase(resident);
     }
 }
 
@@ -338,11 +420,13 @@ void Coordinator::invalidate_worker_publications() {
     publishing_requests_.clear();
 }
 
-void Coordinator::clear_worker_streamer() {
+void Coordinator::clear_worker_streamer(
+    void* fault_context,
+    EvictionTransferFault fault) {
     invalidate_worker_publications();
     if (streamer_) {
         streamer_->clear();
-        collect_streamer_evictions();
+        collect_streamer_evictions(fault_context, fault);
     }
     streamer_.reset();
     issued_requests_.clear();
@@ -374,7 +458,9 @@ void Coordinator::publish_snapshot(
     if (attachment_revision_ == attachment_revision) published_snapshot_ = next;
 }
 
-void Coordinator::worker_step() {
+void Coordinator::worker_step(
+    void* fault_context,
+    EvictionTransferFault fault) {
     flecs::entity_t intended_owner = 0;
     uint64_t attachment_revision = 0;
     uint64_t profile_revision = 0;
@@ -408,7 +494,7 @@ void Coordinator::worker_step() {
 
     if (owner_changed || attachment_changed || profile_changed ||
         anchor_reset_requested || restart_requested || anchor_lost) {
-        clear_worker_streamer();
+        clear_worker_streamer(fault_context, fault);
     }
     worker_owner_ = intended_owner;
     worker_anchor_ = anchor;
@@ -478,7 +564,7 @@ void Coordinator::worker_step() {
         }
     }
 
-    collect_streamer_evictions();
+    collect_streamer_evictions(fault_context, fault);
     publish_snapshot(attachment_revision, profile, profile_error);
 }
 
@@ -557,6 +643,17 @@ bool Coordinator::begin_publication(
     } catch (...) {
         return false;
     }
+}
+
+bool Coordinator::transfer_evictions(
+    PendingEvictionBatch& destination,
+    void* fault_context,
+    EvictionTransferFault fault) noexcept {
+    if (!destination.append(pending_evictions_, fault_context, fault)) {
+        return false;
+    }
+    pending_evictions_.clear();
+    return true;
 }
 
 std::vector<TaggedEviction> Coordinator::take_evictions() {

@@ -51,6 +51,14 @@ public:
     // Drain sectors to unpublish + release (each was previously accepted).
     std::vector<Eviction> take_evictions();
 
+    // Transactional ownership seam for durable consumers. peek_evictions()
+    // never drains; commit_evictions() removes only the validated prefix from
+    // that exact source vector after the destination has accepted every tag.
+    const std::vector<Eviction>& peek_evictions() const noexcept;
+    bool commit_evictions(
+        const std::vector<Eviction>& source,
+        size_t count) noexcept;
+
     // Reroll: every resident sector moves to the eviction queue; inflight
     // bookkeeping resets (their on_published will return false).
     void clear();
