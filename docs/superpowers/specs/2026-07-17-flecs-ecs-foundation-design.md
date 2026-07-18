@@ -1,7 +1,7 @@
 # MatterEngine3 Flecs ECS Foundation — Design Spec
 
 **Date:** 2026-07-17
-**Status:** Approved in design review; implementation plan pending written-spec review
+**Status:** Approved; Phase 1 implemented with mandatory GNU/MinGW regression and finite-world viewer verification pending
 
 ## Summary
 

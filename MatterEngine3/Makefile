@@ -284,6 +284,7 @@ $(LIB): $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ)
 
 # Delegate to the test suite (headless, GL-free host + raylib-linked BLAS path).
 test:
+	$(MAKE) -C tests run-ecs
 	$(MAKE) -C tests run-partv2
 	$(MAKE) -C tests run-script
 
