@@ -31,7 +31,13 @@ Task 5: complete (commits adce7ff..fb62340, review clean after fix)
   - Queue coverage includes observer-next-tick isolation, real pending retention, invalid ticks, dead/cross-world entities, and stale generation reuse.
   - Supplemental MSVC fresh build and two executions passed; GNU remains environment-blocked.
 
-Resume at Task 6.
+Task 6: complete (commits f41d89f..b15e89c, review clean with GPU gate blocked)
+  - WorldSession now value-owns exactly one Runtime, exposes mutable/const ecs(), accumulates ECS stats, and preserves provider/live-edit polling order.
+  - Plain-data Loading/Ready/Failed commands are cancellation-aware; Ready increments generation once after finalize; recoverable/sector errors do not misclassify or double-count.
+  - Focused MSVC ECS suite passed twice; world_stream_tests.cpp and matter_engine.cpp translation units compiled successfully.
+  - Full GNU/GPU run-worldstream remains unavailable because the host has no WSL distribution.
+
+Resume at Task 7.
 
 Environment gate:
   - WSL is installed without a Linux distribution.
