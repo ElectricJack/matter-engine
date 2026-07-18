@@ -107,7 +107,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/render/gpu_culler.cpp \
           src/render/tileset_provider.cpp src/render/tileset_gl_ctx.cpp \
           src/provider/local_provider.cpp src/provider/resolvers.cpp \
-          src/ecs/ecs_runtime.cpp src/ecs/physics_context.cpp src/ecs/transform_system.cpp \
+          src/ecs/ecs_runtime.cpp src/ecs/physics_context.cpp src/ecs/physics_shapes.cpp src/ecs/physics_systems.cpp src/ecs/transform_system.cpp \
           src/matter_engine.cpp \
           src/refine_controller.cpp \
           src/async_bake.cpp \
@@ -164,7 +164,7 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           part_store.o world_composer.o world_state.o \
           gpu_culler.o tileset_provider.o tileset_gl_ctx.o \
           local_provider.o resolvers.o \
-          ecs_runtime.o transform_system.o \
+          ecs_runtime.o physics_context.o physics_shapes.o physics_systems.o transform_system.o \
           matter_engine.o \
           refine_controller.o \
           async_bake.o \

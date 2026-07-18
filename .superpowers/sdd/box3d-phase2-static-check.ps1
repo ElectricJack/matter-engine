@@ -78,6 +78,8 @@ $runtimeHeader = Read-RepoFile 'MatterEngine3\src\ecs\ecs_runtime.h'
 $runtimeSource = Read-RepoFile 'MatterEngine3\src\ecs\ecs_runtime.cpp'
 $contextHeader = Read-RepoFile 'MatterEngine3\src\ecs\physics_context.h'
 $contextSource = Read-RepoFile 'MatterEngine3\src\ecs\physics_context.cpp'
+$shapesSource = Read-RepoFile 'MatterEngine3\src\ecs\physics_shapes.cpp'
+$systemsSource = Read-RepoFile 'MatterEngine3\src\ecs\physics_systems.cpp'
 $publicPhysics = Read-RepoFile 'MatterEngine3\include\matter\physics.h'
 
 # Box3D stays private and Runtime owns its context after the Flecs world member.
@@ -90,19 +92,26 @@ Require-Regex 'Runtime imports PhysicsModule' $runtimeSource 'world_\.import<phy
 Require-Regex 'Runtime publishes private context ref' $runtimeSource 'world_\.set<physics::detail::PhysicsContextRef>'
 
 # Every literal source list that owns ecs_runtime.cpp must also own exactly one
-# physics_context.cpp. This catches focused tests and the shared GPU graph.
+# copy of all three runtime physics implementations.
 foreach ($entry in @(
-    @{ Label = 'engine ME3_CPP'; Text = $engine; Name = 'ME3_CPP'; Runtime = 'src/ecs/ecs_runtime.cpp'; Context = 'src/ecs/physics_context.cpp' },
-    @{ Label = 'tests ECS_CPP'; Text = $tests; Name = 'ECS_CPP'; Runtime = '../src/ecs/ecs_runtime.cpp'; Context = '../src/ecs/physics_context.cpp' },
-    @{ Label = 'tests PHYSICS_CPP'; Text = $tests; Name = 'PHYSICS_CPP'; Runtime = '../src/ecs/ecs_runtime.cpp'; Context = '../src/ecs/physics_context.cpp' },
-    @{ Label = 'tests GPU_ALL_CPP'; Text = $tests; Name = 'GPU_ALL_CPP'; Runtime = '../src/ecs/ecs_runtime.cpp'; Context = '../src/ecs/physics_context.cpp' },
-    @{ Label = 'viewer WIN_ME3_CPP'; Text = $viewer; Name = 'WIN_ME3_CPP'; Runtime = '$(ME3_DIR)/src/ecs/ecs_runtime.cpp'; Context = '$(ME3_DIR)/src/ecs/physics_context.cpp' },
-    @{ Label = 'explorer WIN_ME3_CPP'; Text = $explorer; Name = 'WIN_ME3_CPP'; Runtime = '$(ME3_DIR)/src/ecs/ecs_runtime.cpp'; Context = '$(ME3_DIR)/src/ecs/physics_context.cpp' }
+    @{ Label = 'engine ME3_CPP'; Text = $engine; Name = 'ME3_CPP'; Runtime = 'src/ecs/ecs_runtime.cpp'; Context = 'src/ecs/physics_context.cpp'; Shapes = 'src/ecs/physics_shapes.cpp'; Systems = 'src/ecs/physics_systems.cpp' },
+    @{ Label = 'tests ECS_CPP'; Text = $tests; Name = 'ECS_CPP'; Runtime = '../src/ecs/ecs_runtime.cpp'; Context = '../src/ecs/physics_context.cpp'; Shapes = '../src/ecs/physics_shapes.cpp'; Systems = '../src/ecs/physics_systems.cpp' },
+    @{ Label = 'tests PHYSICS_CPP'; Text = $tests; Name = 'PHYSICS_CPP'; Runtime = '../src/ecs/ecs_runtime.cpp'; Context = '../src/ecs/physics_context.cpp'; Shapes = '../src/ecs/physics_shapes.cpp'; Systems = '../src/ecs/physics_systems.cpp' },
+    @{ Label = 'tests GPU_ALL_CPP'; Text = $tests; Name = 'GPU_ALL_CPP'; Runtime = '../src/ecs/ecs_runtime.cpp'; Context = '../src/ecs/physics_context.cpp'; Shapes = '../src/ecs/physics_shapes.cpp'; Systems = '../src/ecs/physics_systems.cpp' },
+    @{ Label = 'viewer WIN_ME3_CPP'; Text = $viewer; Name = 'WIN_ME3_CPP'; Runtime = '$(ME3_DIR)/src/ecs/ecs_runtime.cpp'; Context = '$(ME3_DIR)/src/ecs/physics_context.cpp'; Shapes = '$(ME3_DIR)/src/ecs/physics_shapes.cpp'; Systems = '$(ME3_DIR)/src/ecs/physics_systems.cpp' },
+    @{ Label = 'explorer WIN_ME3_CPP'; Text = $explorer; Name = 'WIN_ME3_CPP'; Runtime = '$(ME3_DIR)/src/ecs/ecs_runtime.cpp'; Context = '$(ME3_DIR)/src/ecs/physics_context.cpp'; Shapes = '$(ME3_DIR)/src/ecs/physics_shapes.cpp'; Systems = '$(ME3_DIR)/src/ecs/physics_systems.cpp' }
 )) {
     $block = Get-AssignmentBlock $entry.Text $entry.Name
     Require-Count "$($entry.Label) Runtime" $block $entry.Runtime 1
     Require-Count "$($entry.Label) PhysicsContext" $block $entry.Context 1
+    Require-Count "$($entry.Label) PhysicsShapes" $block $entry.Shapes 1
+    Require-Count "$($entry.Label) PhysicsSystems" $block $entry.Systems 1
 }
+
+$engineObjects = Get-AssignmentBlock $engine 'ME3_OBJ'
+Require-Count 'engine ME3_OBJ PhysicsContext' $engineObjects 'physics_context.o' 1
+Require-Count 'engine ME3_OBJ PhysicsShapes' $engineObjects 'physics_shapes.o' 1
+Require-Count 'engine ME3_OBJ PhysicsSystems' $engineObjects 'physics_systems.o' 1
 
 # Shared compiler include graphs must all see the pinned Box3D headers.
 foreach ($entry in @(
@@ -165,5 +174,5 @@ if ($failures.Count -gt 0) {
 
 Write-Host 'PASS: Box3D Phase 2 build contract'
 Write-Host ' - Runtime owns one opaque context after its Flecs world member'
-Write-Host ' - every Runtime source graph includes physics_context.cpp exactly once'
+Write-Host ' - every Runtime source graph includes context, shapes, and systems exactly once'
 Write-Host ' - engine, focused tests, GPU tests, Viewer, and Explorer select one platform archive'

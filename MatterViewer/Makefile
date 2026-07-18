@@ -167,6 +167,8 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/sector_streamer.cpp \
               $(ME3_DIR)/src/ecs/ecs_runtime.cpp \
               $(ME3_DIR)/src/ecs/physics_context.cpp \
+              $(ME3_DIR)/src/ecs/physics_shapes.cpp \
+              $(ME3_DIR)/src/ecs/physics_systems.cpp \
               $(ME3_DIR)/src/ecs/transform_system.cpp \
               $(ME3_DIR)/src/matter_engine.cpp \
               $(ME3_DIR)/src/pf_bindings.cpp \

@@ -3,8 +3,13 @@
 #include "ecs/physics_context.h"
 #include "matter/physics.h"
 
+#include <array>
+#include <cmath>
 #include <cstdint>
+#include <functional>
+#include <limits>
 #include <string>
+#include <vector>
 
 using namespace matter;
 
@@ -63,6 +68,58 @@ bool has_no_events(const physics::PhysicsEvents& value) {
     return value.body.empty() && value.contact_begin.empty() &&
            value.contact_end.empty() && value.contact_hit.empty() &&
            value.sensor_begin.empty() && value.sensor_end.empty();
+}
+
+void reconcile(ecs_runtime::Runtime& runtime) {
+    const ecs_runtime::TickResult result =
+        runtime.tick({1.0f / 60.0f, 1.0f / 60.0f, 1});
+    CHECK(!result.invalid && result.fixed_steps == 1,
+          "physics test reaches one fixed reconciliation boundary");
+}
+
+physics::ConvexHullCollider tetrahedron_hull() {
+    physics::ConvexHullCollider value{};
+    value.point_count = 4;
+    value.points[0] = {-1.0f, -1.0f, -1.0f};
+    value.points[1] = {1.0f, -1.0f, 1.0f};
+    value.points[2] = {-1.0f, 1.0f, 1.0f};
+    value.points[3] = {1.0f, 1.0f, -1.0f};
+    return value;
+}
+
+physics::ConvexHullCollider thirty_two_point_hull() {
+    physics::ConvexHullCollider value{};
+    value.point_count = 32;
+    constexpr float pi = 3.14159265358979323846f;
+    for (uint32_t ring = 0; ring < 4; ++ring) {
+        const float y = -0.9f + 0.6f * static_cast<float>(ring);
+        const float radius = ring == 0 || ring == 3 ? 0.7f : 1.0f;
+        const float offset = (ring & 1U) != 0U ? pi / 8.0f : 0.0f;
+        for (uint32_t side = 0; side < 8; ++side) {
+            const float angle = 2.0f * pi * static_cast<float>(side) / 8.0f + offset;
+            value.points[ring * 8 + side] = {
+                radius * std::cos(angle), y, radius * std::sin(angle)};
+        }
+    }
+    return value;
+}
+
+flecs::entity make_valid_sphere(flecs::world& world) {
+    return world.entity()
+        .set<ecs::LocalTransform>({})
+        .set<physics::RigidBody>({})
+        .set<physics::SphereCollider>({});
+}
+
+void repair_as_valid_sphere(flecs::entity entity) {
+    entity.remove(flecs::ChildOf, flecs::Wildcard);
+    entity.remove<physics::SphereCollider>();
+    entity.remove<physics::CapsuleCollider>();
+    entity.remove<physics::BoxCollider>();
+    entity.remove<physics::ConvexHullCollider>();
+    entity.set<ecs::LocalTransform>({});
+    entity.set<physics::RigidBody>({});
+    entity.set<physics::SphereCollider>({});
 }
 
 void test_physics_contract_and_reflection() {
@@ -353,11 +410,344 @@ void test_physics_accessors_fail_closed_without_runtime_context() {
           "physics_events fails closed for a world without PhysicsModule");
 }
 
+void test_validation_errors_recover_at_the_next_reconcile() {
+    using Configure = std::function<void(flecs::world&, flecs::entity)>;
+    struct ValidationCase {
+        const char* name;
+        physics::PhysicsErrorCode expected;
+        Configure invalidate;
+    };
+
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float infinity = std::numeric_limits<float>::infinity();
+    const std::vector<ValidationCase> cases{
+        {"missing transform", physics::PhysicsErrorCode::MissingTransform,
+         [](flecs::world&, flecs::entity entity) {
+             entity.remove<ecs::LocalTransform>();
+         }},
+        {"parented body", physics::PhysicsErrorCode::HasParent,
+         [](flecs::world& world, flecs::entity entity) {
+             entity.child_of(world.entity());
+         }},
+        {"nonunit scale", physics::PhysicsErrorCode::NonUnitScale,
+         [](flecs::world&, flecs::entity entity) {
+             ecs::LocalTransform transform{};
+             transform.scale = {1.0f, 2.0f, 1.0f};
+             entity.set<ecs::LocalTransform>(transform);
+         }},
+        {"nonfinite scale", physics::PhysicsErrorCode::NonUnitScale,
+         [nan](flecs::world&, flecs::entity entity) {
+             ecs::LocalTransform transform{};
+             transform.scale.z = nan;
+             entity.set<ecs::LocalTransform>(transform);
+         }},
+        {"missing collider", physics::PhysicsErrorCode::MissingCollider,
+         [](flecs::world&, flecs::entity entity) {
+             entity.remove<physics::SphereCollider>();
+         }},
+        {"multiple colliders", physics::PhysicsErrorCode::MultipleColliders,
+         [](flecs::world&, flecs::entity entity) {
+             entity.set<physics::CapsuleCollider>({});
+         }},
+        {"NaN body damping", physics::PhysicsErrorCode::InvalidBody,
+         [nan](flecs::world&, flecs::entity entity) {
+             physics::RigidBody body{};
+             body.linear_damping = nan;
+             entity.set<physics::RigidBody>(body);
+         }},
+        {"infinite gravity scale", physics::PhysicsErrorCode::InvalidBody,
+         [infinity](flecs::world&, flecs::entity entity) {
+             physics::RigidBody body{};
+             body.gravity_scale = infinity;
+             entity.set<physics::RigidBody>(body);
+         }},
+        {"negative sleep threshold", physics::PhysicsErrorCode::InvalidBody,
+         [](flecs::world&, flecs::entity entity) {
+             physics::RigidBody body{};
+             body.sleep_threshold = -0.01f;
+             entity.set<physics::RigidBody>(body);
+         }},
+        {"zero sphere radius", physics::PhysicsErrorCode::InvalidCollider,
+         [](flecs::world&, flecs::entity entity) {
+             physics::SphereCollider sphere{};
+             sphere.radius = 0.0f;
+             entity.set<physics::SphereCollider>(sphere);
+         }},
+        {"zero capsule radius", physics::PhysicsErrorCode::InvalidCollider,
+         [](flecs::world&, flecs::entity entity) {
+             entity.remove<physics::SphereCollider>();
+             physics::CapsuleCollider capsule{};
+             capsule.radius = 0.0f;
+             entity.set<physics::CapsuleCollider>(capsule);
+         }},
+        {"negative box extent", physics::PhysicsErrorCode::InvalidCollider,
+         [](flecs::world&, flecs::entity entity) {
+             entity.remove<physics::SphereCollider>();
+             physics::BoxCollider box{};
+             box.half_extents.y = -1.0f;
+             entity.set<physics::BoxCollider>(box);
+         }},
+        {"dynamic zero density", physics::PhysicsErrorCode::InvalidCollider,
+         [](flecs::world&, flecs::entity entity) {
+             physics::RigidBody body{};
+             body.type = physics::RigidBodyType::Dynamic;
+             entity.set<physics::RigidBody>(body);
+             physics::SphereCollider sphere{};
+             sphere.properties.density = 0.0f;
+             entity.set<physics::SphereCollider>(sphere);
+         }},
+        {"negative friction", physics::PhysicsErrorCode::InvalidCollider,
+         [](flecs::world&, flecs::entity entity) {
+             physics::SphereCollider sphere{};
+             sphere.properties.friction = -0.1f;
+             entity.set<physics::SphereCollider>(sphere);
+         }},
+        {"nonfinite restitution", physics::PhysicsErrorCode::InvalidCollider,
+         [nan](flecs::world&, flecs::entity entity) {
+             physics::SphereCollider sphere{};
+             sphere.properties.restitution = nan;
+             entity.set<physics::SphereCollider>(sphere);
+         }},
+        {"too-small hull", physics::PhysicsErrorCode::InvalidCollider,
+         [](flecs::world&, flecs::entity entity) {
+             entity.remove<physics::SphereCollider>();
+             physics::ConvexHullCollider hull{};
+             hull.point_count = 3;
+             hull.points[0] = {0.0f, 0.0f, 0.0f};
+             hull.points[1] = {1.0f, 0.0f, 0.0f};
+             hull.points[2] = {0.0f, 1.0f, 0.0f};
+             entity.set<physics::ConvexHullCollider>(hull);
+         }},
+        {"coplanar hull", physics::PhysicsErrorCode::InvalidCollider,
+         [](flecs::world&, flecs::entity entity) {
+             entity.remove<physics::SphereCollider>();
+             physics::ConvexHullCollider hull{};
+             hull.point_count = 4;
+             hull.points[0] = {0.0f, 0.0f, 0.0f};
+             hull.points[1] = {1.0f, 0.0f, 0.0f};
+             hull.points[2] = {0.0f, 1.0f, 0.0f};
+             hull.points[3] = {1.0f, 1.0f, 0.0f};
+             entity.set<physics::ConvexHullCollider>(hull);
+         }},
+        {"over-32 hull", physics::PhysicsErrorCode::InvalidCollider,
+         [](flecs::world&, flecs::entity entity) {
+             entity.remove<physics::SphereCollider>();
+             physics::ConvexHullCollider hull = thirty_two_point_hull();
+             hull.point_count = 33;
+             entity.set<physics::ConvexHullCollider>(hull);
+         }},
+        {"Box3D-rejected hull", physics::PhysicsErrorCode::HullBuildFailed,
+         [](flecs::world&, flecs::entity entity) {
+             entity.remove<physics::SphereCollider>();
+             physics::ConvexHullCollider hull{};
+             hull.point_count = 4;
+             hull.points[0] = {0.0f, 0.0f, 0.0f};
+             hull.points[1] = {1.0f, 0.0f, 0.0f};
+             hull.points[2] = {0.0f, 1.0f, 0.0f};
+             hull.points[3] = {0.0f, 0.0f, 1.0e-8f};
+             entity.set<physics::ConvexHullCollider>(hull);
+         }},
+    };
+
+    for (const ValidationCase& test : cases) {
+        ecs_runtime::Runtime runtime;
+        flecs::entity entity = make_valid_sphere(runtime.world());
+        test.invalidate(runtime.world(), entity);
+        reconcile(runtime);
+
+        const physics::PhysicsError* error =
+            entity.try_get<physics::PhysicsError>();
+        const std::string prefix = std::string("validation case ") + test.name;
+        CHECK(error != nullptr && error->code == test.expected,
+              (prefix + " reports the exact error").c_str());
+        CHECK(physics::physics_stats(runtime.world()).live_bodies == 0,
+              (prefix + " creates no Box3D body").c_str());
+
+        repair_as_valid_sphere(entity);
+        reconcile(runtime);
+        CHECK(!entity.has<physics::PhysicsError>(),
+              (prefix + " removes its error after correction").c_str());
+        CHECK(physics::physics_stats(runtime.world()).live_bodies == 1,
+              (prefix + " creates one body after correction").c_str());
+    }
+}
+
+void test_all_four_shapes_create_and_fail_closed_on_invalidation() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+
+    flecs::entity sphere = make_valid_sphere(world);
+
+    physics::RigidBody dynamic_body{};
+    dynamic_body.type = physics::RigidBodyType::Dynamic;
+    flecs::entity capsule = world.entity()
+        .set<ecs::LocalTransform>({})
+        .set<physics::RigidBody>(dynamic_body)
+        .set<physics::CapsuleCollider>({});
+
+    physics::BoxCollider oriented_box{};
+    oriented_box.center = {0.25f, -0.5f, 0.75f};
+    oriented_box.rotation = {0.0f, 0.38268343f, 0.0f, 0.92387953f};
+    flecs::entity box = world.entity()
+        .set<ecs::LocalTransform>({})
+        .set<physics::RigidBody>({})
+        .set<physics::BoxCollider>(oriented_box);
+
+    flecs::entity hull = world.entity()
+        .set<ecs::LocalTransform>({})
+        .set<physics::RigidBody>(dynamic_body)
+        .set<physics::ConvexHullCollider>(thirty_two_point_hull());
+
+    reconcile(runtime);
+    physics::PhysicsStats stats = physics::physics_stats(world);
+    physics::detail::PhysicsContext& context = physics::detail::context(world);
+    CHECK(stats.live_bodies == 4 && stats.bodies_created == 4,
+          "sphere, capsule, oriented box, and 32-point hull create bodies");
+    CHECK(context.body_is_valid(sphere.id()) &&
+              context.shape_is_valid(sphere.id()) &&
+              context.body_is_valid(capsule.id()) &&
+              context.shape_is_valid(capsule.id()) &&
+              context.body_is_valid(box.id()) &&
+              context.shape_is_valid(box.id()) &&
+              context.body_is_valid(hull.id()) &&
+              context.shape_is_valid(hull.id()),
+          "all supported shapes publish valid private body and shape handles");
+    CHECK(!sphere.has<physics::PhysicsError>() &&
+              !capsule.has<physics::PhysicsError>() &&
+              !box.has<physics::PhysicsError>() &&
+              !hull.has<physics::PhysicsError>(),
+          "all four supported shapes reconcile without errors");
+
+    const flecs::entity_t destroyed_id = sphere.id();
+    sphere.destruct();
+    capsule.remove<physics::RigidBody>();
+    box.remove<physics::BoxCollider>();
+    ecs::LocalTransform invalid_transform{};
+    invalid_transform.scale.x = 2.0f;
+    hull.set<ecs::LocalTransform>(invalid_transform);
+    reconcile(runtime);
+
+    stats = physics::physics_stats(world);
+    CHECK(!world.is_alive(destroyed_id) && stats.live_bodies == 0,
+          "delete, body removal, collider removal, and invalidation retire bodies");
+    CHECK(stats.bodies_destroyed == 4,
+          "each invalidated entity destroys exactly one body");
+    CHECK(!context.body_is_valid(destroyed_id) &&
+              !context.shape_is_valid(destroyed_id) &&
+              !context.body_is_valid(capsule.id()) &&
+              !context.shape_is_valid(capsule.id()) &&
+              !context.body_is_valid(box.id()) &&
+              !context.shape_is_valid(box.id()) &&
+              !context.body_is_valid(hull.id()) &&
+              !context.shape_is_valid(hull.id()),
+          "retirement invalidates every private body and shape handle");
+    CHECK(box.try_get<physics::PhysicsError>() != nullptr &&
+              box.get<physics::PhysicsError>().code ==
+                  physics::PhysicsErrorCode::MissingCollider &&
+              hull.try_get<physics::PhysicsError>() != nullptr &&
+              hull.get<physics::PhysicsError>().code ==
+                  physics::PhysicsErrorCode::NonUnitScale,
+          "surviving invalid entities expose exact recoverable errors");
+}
+
+struct ArchetypeMoveMarker {
+    int value = 0;
+};
+
+void test_bridge_survives_unrelated_archetype_moves() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    world.component<ArchetypeMoveMarker>();
+
+    flecs::entity entity = make_valid_sphere(world);
+    const flecs::entity_t original_id = entity.id();
+    reconcile(runtime);
+    entity.set<ArchetypeMoveMarker>({42});
+    entity.remove<ArchetypeMoveMarker>();
+    reconcile(runtime);
+
+    const physics::PhysicsStats stats = physics::physics_stats(world);
+    CHECK(entity.id() == original_id && stats.live_bodies == 1,
+          "unrelated archetype moves retain the full generational entity ID");
+    CHECK(stats.bodies_created == 1 && stats.bodies_destroyed == 0,
+          "unrelated archetype moves do not rebuild the stable bridge body");
+    CHECK(physics::detail::context(world).user_data_entity(original_id) ==
+              original_id,
+          "body and shape user data resolve the full original entity ID");
+}
+
+bool same(Float3 first, Float3 second) {
+    return first.x == second.x && first.y == second.y && first.z == second.z;
+}
+
+bool same(Quaternion first, Quaternion second) {
+    return first.x == second.x && first.y == second.y &&
+           first.z == second.z && first.w == second.w;
+}
+
+void test_dynamic_replacement_preserves_box3d_state() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    physics::RigidBody body{};
+    body.type = physics::RigidBodyType::Dynamic;
+    flecs::entity entity = world.entity()
+        .set<ecs::LocalTransform>({})
+        .set<physics::RigidBody>(body)
+        .set<physics::SphereCollider>({});
+    reconcile(runtime);
+
+    physics::detail::PhysicsBodyState desired{};
+    desired.position = {3.0f, 4.0f, 5.0f};
+    desired.rotation = {0.0f, 0.0f, 0.70710677f, 0.70710677f};
+    desired.linear_velocity = {6.0f, 7.0f, 8.0f};
+    desired.angular_velocity = {-1.0f, -2.0f, -3.0f};
+    desired.awake = true;
+    physics::detail::PhysicsContext& context = physics::detail::context(world);
+    CHECK(context.set_body_state(entity.id(), desired),
+          "replacement test seeds private Box3D state");
+
+    ecs::LocalTransform authored_pose{};
+    authored_pose.translation = {50.0f, 60.0f, 70.0f};
+    entity.set<ecs::LocalTransform>(authored_pose);
+    reconcile(runtime);
+    physics::detail::PhysicsBodyState after_authored_pose{};
+    const physics::PhysicsStats pose_stats = physics::physics_stats(world);
+    CHECK(context.get_body_state(entity.id(), after_authored_pose) &&
+              same(after_authored_pose.position, desired.position),
+          "ordinary dynamic ECS pose edits leave Box3D authority intact");
+    CHECK(pose_stats.bodies_created == 1 &&
+              pose_stats.bodies_destroyed == 0,
+          "dynamic pose revalidation does not rebuild an unchanged body");
+
+    physics::SphereCollider replacement{};
+    replacement.radius = 1.25f;
+    entity.set<physics::SphereCollider>(replacement);
+    reconcile(runtime);
+
+    physics::detail::PhysicsBodyState actual{};
+    CHECK(context.get_body_state(entity.id(), actual),
+          "replacement body remains readable");
+    CHECK(same(actual.position, desired.position) &&
+              same(actual.rotation, desired.rotation) &&
+              same(actual.linear_velocity, desired.linear_velocity) &&
+              same(actual.angular_velocity, desired.angular_velocity) &&
+              actual.awake == desired.awake,
+          "dynamic replacement preserves pose, velocities, and awake state");
+    const physics::PhysicsStats stats = physics::physics_stats(world);
+    CHECK(stats.bodies_created == 2 && stats.bodies_destroyed == 1 &&
+              stats.live_bodies == 1,
+          "dynamic replacement publishes one new body and retires one old body");
+}
+
 } // namespace
 
 int main() {
     test_physics_contract_and_reflection();
     test_one_physics_world_per_runtime();
     test_physics_accessors_fail_closed_without_runtime_context();
+    test_validation_errors_recover_at_the_next_reconcile();
+    test_all_four_shapes_create_and_fail_closed_on_invalidation();
+    test_bridge_survives_unrelated_archetype_moves();
+    test_dynamic_replacement_preserves_box3d_state();
     return check_summary();
 }

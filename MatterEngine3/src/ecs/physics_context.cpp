@@ -1,21 +1,148 @@
 #include "physics_context.h"
+#include "physics_shapes.h"
 
+#include <algorithm>
+#include <memory>
 #include <stdexcept>
+#include <unordered_map>
+#include <utility>
+#include <vector>
 
 #include <box3d/box3d.h>
 
 namespace matter::physics::detail {
 namespace {
 
+struct BridgeRecord {
+    flecs::entity_t entity = 0;
+    b3BodyId body = b3_nullBodyId;
+    b3ShapeId shape = b3_nullShapeId;
+    RigidBodyType type = RigidBodyType::Static;
+    uint64_t configuration_hash = 0;
+    bool live = false;
+};
+
 const PhysicsContext* try_context(const flecs::world& world) noexcept {
     const PhysicsContextRef* ref = world.try_get<PhysicsContextRef>();
     return ref != nullptr ? ref->value : nullptr;
 }
 
+b3BodyType box_body_type(RigidBodyType type) {
+    switch (type) {
+        case RigidBodyType::Static: return b3_staticBody;
+        case RigidBodyType::Kinematic: return b3_kinematicBody;
+        case RigidBodyType::Dynamic: return b3_dynamicBody;
+    }
+    return b3_staticBody;
+}
+
+b3Pos box_position(Float3 value) {
+    return {value.x, value.y, value.z};
+}
+
+b3Vec3 box_vector(Float3 value) {
+    return {value.x, value.y, value.z};
+}
+
+b3Quat box_quaternion(Quaternion value) {
+    return {{value.x, value.y, value.z}, value.w};
+}
+
+Float3 engine_position(b3Pos value) {
+    return {static_cast<float>(value.x), static_cast<float>(value.y),
+            static_cast<float>(value.z)};
+}
+
+Float3 engine_vector(b3Vec3 value) {
+    return {value.x, value.y, value.z};
+}
+
+Quaternion engine_quaternion(b3Quat value) {
+    return {value.v.x, value.v.y, value.v.z, value.s};
+}
+
+void clear_and_destroy_bridge(BridgeRecord& bridge, PhysicsStats& stats) {
+    if (!bridge.live) {
+        return;
+    }
+    if (b3Shape_IsValid(bridge.shape)) {
+        b3Shape_SetUserData(bridge.shape, nullptr);
+    }
+    if (b3Body_IsValid(bridge.body)) {
+        b3Body_SetUserData(bridge.body, nullptr);
+        b3DestroyBody(bridge.body);
+    }
+    bridge.shape = b3_nullShapeId;
+    bridge.body = b3_nullBodyId;
+    bridge.live = false;
+    ++stats.bodies_destroyed;
+    if (stats.live_bodies > 0) {
+        --stats.live_bodies;
+    }
+}
+
+void clear_partial_body(b3BodyId body, b3ShapeId shape) {
+    if (b3Shape_IsValid(shape)) {
+        b3Shape_SetUserData(shape, nullptr);
+    }
+    if (b3Body_IsValid(body)) {
+        b3Body_SetUserData(body, nullptr);
+        b3DestroyBody(body);
+    }
+}
+
+void set_error(flecs::entity entity, PhysicsErrorCode code) {
+    const PhysicsError* current = entity.try_get<PhysicsError>();
+    if (current == nullptr || current->code != code) {
+        entity.set<PhysicsError>({code});
+    }
+}
+
+void remove_error(flecs::entity entity) {
+    if (entity.has<PhysicsError>()) {
+        entity.remove<PhysicsError>();
+    }
+}
+
+bool read_state(const BridgeRecord& bridge, PhysicsBodyState& state) {
+    if (!bridge.live || !b3Body_IsValid(bridge.body)) {
+        return false;
+    }
+    state.position = engine_position(b3Body_GetPosition(bridge.body));
+    state.rotation = engine_quaternion(b3Body_GetRotation(bridge.body));
+    state.linear_velocity =
+        engine_vector(b3Body_GetLinearVelocity(bridge.body));
+    state.angular_velocity =
+        engine_vector(b3Body_GetAngularVelocity(bridge.body));
+    state.awake = b3Body_IsAwake(bridge.body);
+    return true;
+}
+
+void write_state(const BridgeRecord& bridge, const PhysicsBodyState& state) {
+    b3Body_SetTransform(
+        bridge.body, box_position(state.position),
+        box_quaternion(state.rotation));
+    b3Body_SetLinearVelocity(
+        bridge.body, box_vector(state.linear_velocity));
+    b3Body_SetAngularVelocity(
+        bridge.body, box_vector(state.angular_velocity));
+    b3Body_SetAwake(bridge.body, state.awake);
+}
+
+struct HullDeleter {
+    void operator()(b3HullData* hull) const {
+        if (hull != nullptr) {
+            b3DestroyHull(hull);
+        }
+    }
+};
+
 } // namespace
 
 struct PhysicsContext::Impl {
     b3WorldId world_id = b3_nullWorldId;
+    std::unordered_map<flecs::entity_t, std::unique_ptr<BridgeRecord>> bridges;
+    std::vector<flecs::entity_t> dirty_entities;
 };
 
 PhysicsContext::PhysicsContext(const PhysicsSettings& settings)
@@ -31,10 +158,24 @@ PhysicsContext::PhysicsContext(const PhysicsSettings& settings)
 }
 
 PhysicsContext::~PhysicsContext() {
-    if (impl_ != nullptr && b3World_IsValid(impl_->world_id)) {
+    if (impl_ == nullptr) {
+        return;
+    }
+    for (auto& entry : impl_->bridges) {
+        BridgeRecord& bridge = *entry.second;
+        if (b3Shape_IsValid(bridge.shape)) {
+            b3Shape_SetUserData(bridge.shape, nullptr);
+        }
+        if (b3Body_IsValid(bridge.body)) {
+            b3Body_SetUserData(bridge.body, nullptr);
+        }
+        bridge.live = false;
+    }
+    if (b3World_IsValid(impl_->world_id)) {
         b3DestroyWorld(impl_->world_id);
         impl_->world_id = b3_nullWorldId;
     }
+    impl_->bridges.clear();
 }
 
 const PhysicsEvents& PhysicsContext::events() const noexcept {
@@ -47,6 +188,220 @@ PhysicsStats PhysicsContext::stats() const noexcept {
 
 bool PhysicsContext::world_is_valid() const noexcept {
     return impl_ != nullptr && b3World_IsValid(impl_->world_id);
+}
+
+void PhysicsContext::mark_for_reconcile(flecs::entity_t entity) noexcept {
+    if (impl_ != nullptr && entity != 0) {
+        impl_->dirty_entities.push_back(entity);
+    }
+}
+
+void PhysicsContext::reconcile(flecs::world& world) {
+    if (!world_is_valid()) {
+        return;
+    }
+
+    std::vector<flecs::entity_t> candidates;
+    candidates.swap(impl_->dirty_entities);
+    world.each<const RigidBody>(
+        [&candidates](flecs::entity entity, const RigidBody&) {
+            candidates.push_back(entity.id());
+        });
+    for (const auto& entry : impl_->bridges) {
+        candidates.push_back(entry.first);
+    }
+    std::sort(candidates.begin(), candidates.end());
+    candidates.erase(
+        std::unique(candidates.begin(), candidates.end()), candidates.end());
+
+    for (flecs::entity_t entity_id : candidates) {
+        auto existing = impl_->bridges.find(entity_id);
+        const bool alive = world.is_alive(entity_id);
+        if (!alive) {
+            if (existing != impl_->bridges.end()) {
+                clear_and_destroy_bridge(*existing->second, stats_);
+                impl_->bridges.erase(existing);
+            }
+            continue;
+        }
+
+        flecs::entity entity(world.c_ptr(), entity_id);
+        if (!entity.has<RigidBody>()) {
+            if (existing != impl_->bridges.end()) {
+                clear_and_destroy_bridge(*existing->second, stats_);
+                impl_->bridges.erase(existing);
+            }
+            remove_error(entity);
+            continue;
+        }
+
+        const ValidationResult validation = validate_desired_body(entity);
+        if (!validation.valid()) {
+            if (existing != impl_->bridges.end()) {
+                clear_and_destroy_bridge(*existing->second, stats_);
+                impl_->bridges.erase(existing);
+            }
+            ++stats_.rejected_configurations;
+            set_error(entity, validation.error);
+            continue;
+        }
+
+        if (existing != impl_->bridges.end()) {
+            const BridgeRecord& bridge = *existing->second;
+            if (bridge.live && b3Body_IsValid(bridge.body) &&
+                b3Shape_IsValid(bridge.shape) &&
+                bridge.configuration_hash ==
+                    validation.desired.configuration_hash) {
+                remove_error(entity);
+                continue;
+            }
+        }
+
+        PhysicsBodyState preserved{};
+        bool preserve_dynamic_state = false;
+        if (existing != impl_->bridges.end() &&
+            existing->second->type == RigidBodyType::Dynamic &&
+            validation.desired.body.type == RigidBodyType::Dynamic) {
+            preserve_dynamic_state = read_state(*existing->second, preserved);
+        }
+
+        auto replacement = std::make_unique<BridgeRecord>();
+        replacement->entity = entity_id;
+        replacement->type = validation.desired.body.type;
+        replacement->configuration_hash =
+            validation.desired.configuration_hash;
+
+        b3BodyDef body_definition = b3DefaultBodyDef();
+        body_definition.type = box_body_type(validation.desired.body.type);
+        body_definition.position =
+            box_position(validation.desired.transform.translation);
+        body_definition.rotation =
+            box_quaternion(validation.desired.transform.rotation);
+        if (validation.desired.has_velocity) {
+            body_definition.linearVelocity =
+                box_vector(validation.desired.velocity.linear);
+            body_definition.angularVelocity =
+                box_vector(validation.desired.velocity.angular);
+        }
+        body_definition.linearDamping =
+            validation.desired.body.linear_damping;
+        body_definition.angularDamping =
+            validation.desired.body.angular_damping;
+        body_definition.gravityScale = validation.desired.body.gravity_scale;
+        body_definition.sleepThreshold =
+            validation.desired.body.sleep_threshold;
+        body_definition.enableSleep = validation.desired.body.enable_sleep;
+        body_definition.isBullet = validation.desired.body.continuous;
+        body_definition.userData = replacement.get();
+
+        replacement->body = b3CreateBody(impl_->world_id, &body_definition);
+        b3HullData* temporary_hull_raw = nullptr;
+        if (b3Body_IsValid(replacement->body)) {
+            replacement->shape = create_shape(
+                replacement->body, validation.desired, temporary_hull_raw);
+        }
+        std::unique_ptr<b3HullData, HullDeleter> temporary_hull(
+            temporary_hull_raw);
+
+        if (!b3Body_IsValid(replacement->body) ||
+            !b3Shape_IsValid(replacement->shape)) {
+            clear_partial_body(replacement->body, replacement->shape);
+            if (existing != impl_->bridges.end()) {
+                clear_and_destroy_bridge(*existing->second, stats_);
+                impl_->bridges.erase(existing);
+            }
+            ++stats_.rejected_configurations;
+            set_error(
+                entity,
+                validation.desired.shape_kind == DesiredShapeKind::Hull
+                    ? PhysicsErrorCode::HullBuildFailed
+                    : PhysicsErrorCode::InvalidCollider);
+            continue;
+        }
+
+        replacement->live = true;
+        b3Shape_SetUserData(replacement->shape, replacement.get());
+        std::unique_ptr<BridgeRecord> retired;
+        if (existing == impl_->bridges.end()) {
+            impl_->bridges.emplace(entity_id, std::move(replacement));
+        } else {
+            retired = std::move(existing->second);
+            existing->second = std::move(replacement);
+        }
+        BridgeRecord& published = *impl_->bridges.at(entity_id);
+        ++stats_.bodies_created;
+        ++stats_.live_bodies;
+
+        if (retired != nullptr) {
+            clear_and_destroy_bridge(*retired, stats_);
+        }
+        if (preserve_dynamic_state) {
+            write_state(published, preserved);
+        }
+        remove_error(entity);
+    }
+}
+
+bool PhysicsContext::body_is_valid(flecs::entity_t entity) const noexcept {
+    if (impl_ == nullptr) {
+        return false;
+    }
+    const auto found = impl_->bridges.find(entity);
+    return found != impl_->bridges.end() && found->second->live &&
+           b3Body_IsValid(found->second->body);
+}
+
+bool PhysicsContext::shape_is_valid(flecs::entity_t entity) const noexcept {
+    if (impl_ == nullptr) {
+        return false;
+    }
+    const auto found = impl_->bridges.find(entity);
+    return found != impl_->bridges.end() && found->second->live &&
+           b3Shape_IsValid(found->second->shape);
+}
+
+flecs::entity_t PhysicsContext::user_data_entity(
+    flecs::entity_t entity) const noexcept {
+    if (impl_ == nullptr) {
+        return 0;
+    }
+    const auto found = impl_->bridges.find(entity);
+    if (found == impl_->bridges.end() || !found->second->live ||
+        !b3Body_IsValid(found->second->body) ||
+        !b3Shape_IsValid(found->second->shape)) {
+        return 0;
+    }
+    const void* body_data = b3Body_GetUserData(found->second->body);
+    const void* shape_data = b3Shape_GetUserData(found->second->shape);
+    if (body_data != found->second.get() || shape_data != found->second.get()) {
+        return 0;
+    }
+    return found->second->entity;
+}
+
+bool PhysicsContext::get_body_state(
+    flecs::entity_t entity,
+    PhysicsBodyState& state) const noexcept {
+    if (impl_ == nullptr) {
+        return false;
+    }
+    const auto found = impl_->bridges.find(entity);
+    return found != impl_->bridges.end() && read_state(*found->second, state);
+}
+
+bool PhysicsContext::set_body_state(
+    flecs::entity_t entity,
+    const PhysicsBodyState& state) noexcept {
+    if (impl_ == nullptr) {
+        return false;
+    }
+    const auto found = impl_->bridges.find(entity);
+    if (found == impl_->bridges.end() || !found->second->live ||
+        !b3Body_IsValid(found->second->body)) {
+        return false;
+    }
+    write_state(*found->second, state);
+    return true;
 }
 
 PhysicsContext& context(flecs::world& world) {

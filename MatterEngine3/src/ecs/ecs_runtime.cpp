@@ -6,6 +6,12 @@
 #include <cmath>
 #include <limits>
 
+namespace matter::physics {
+
+void register_physics_systems(flecs::world& world);
+
+} // namespace matter::physics
+
 namespace matter::ecs {
 
 void register_transform_systems(flecs::world& world);
@@ -185,6 +191,8 @@ PhysicsModule::PhysicsModule(flecs::world& world) {
     world.component<ecs::PostPhysics>()
         .depends_on<PhysicsPull>();
 
+    register_physics_systems(world);
+
     world.set<PhysicsSettings>(PhysicsSettings{});
     world.set_scope(previous_scope.id());
 }
@@ -275,7 +283,13 @@ Runtime::Runtime() {
     frame_pipeline_ = build_pipeline<ecs::FramePipelineSystem>(world_);
 }
 
-Runtime::~Runtime() = default;
+Runtime::~Runtime() {
+    // Physics observers remain registered until Flecs teardown and OnRemove
+    // callbacks are emitted during world finalization. Fail their context
+    // lookup closed before the Box3D owner is released.
+    world_.set<physics::detail::PhysicsContextRef>({nullptr});
+    physics_.reset();
+}
 
 flecs::world& Runtime::world() noexcept {
     return world_;

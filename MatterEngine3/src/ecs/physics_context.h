@@ -6,6 +6,14 @@
 
 namespace matter::physics::detail {
 
+struct PhysicsBodyState {
+    Float3 position{};
+    Quaternion rotation{};
+    Float3 linear_velocity{};
+    Float3 angular_velocity{};
+    bool awake = false;
+};
+
 class PhysicsContext {
 public:
     explicit PhysicsContext(const PhysicsSettings& settings);
@@ -19,6 +27,18 @@ public:
     const PhysicsEvents& events() const noexcept;
     PhysicsStats stats() const noexcept;
     bool world_is_valid() const noexcept;
+    void mark_for_reconcile(flecs::entity_t entity) noexcept;
+    void reconcile(flecs::world& world);
+
+    bool body_is_valid(flecs::entity_t entity) const noexcept;
+    bool shape_is_valid(flecs::entity_t entity) const noexcept;
+    flecs::entity_t user_data_entity(flecs::entity_t entity) const noexcept;
+    bool get_body_state(
+        flecs::entity_t entity,
+        PhysicsBodyState& state) const noexcept;
+    bool set_body_state(
+        flecs::entity_t entity,
+        const PhysicsBodyState& state) noexcept;
 
 private:
     struct Impl;
