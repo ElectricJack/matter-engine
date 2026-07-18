@@ -28,6 +28,7 @@ struct TaggedRequest {
 struct TaggedEviction {
     flecs::entity_t owner = 0;
     uint64_t generation = 0;
+    uint64_t issuance = 0;
     matter_stream::Eviction sector{};
 };
 
@@ -47,6 +48,7 @@ public:
     void restart_if_attached();
     void worker_step();
     bool next_request(TaggedRequest& out);
+    bool begin_publication(const TaggedRequest& request);
     std::vector<TaggedEviction> take_evictions();
     void acknowledge(const TaggedRequest& request, bool published);
     Snapshot snapshot() const;
@@ -79,10 +81,14 @@ private:
     std::optional<AnchorSample> worker_anchor_;
     std::unique_ptr<matter_stream::SectorStreamer> streamer_;
     std::vector<TaggedRequest> issued_requests_;
+    std::vector<TaggedRequest> publication_candidates_;
+    std::vector<TaggedRequest> publishing_requests_;
+    std::vector<TaggedRequest> resident_requests_;
     std::vector<TaggedEviction> pending_evictions_;
 
     uint64_t allocate_generation();
     uint64_t allocate_issuance();
+    void invalidate_worker_publications();
     void clear_worker_streamer();
     void collect_streamer_evictions();
     void publish_snapshot(uint64_t attachment_revision,

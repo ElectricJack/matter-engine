@@ -12,6 +12,7 @@
 #include "matter/engine_context.h"
 #include "matter/ecs.h"
 #include "matter/physics.h"
+#include "matter/streaming.h"
 #include "ecs/physics_context.h"
 #include "raylib.h"
 #include <cassert>
@@ -101,6 +102,11 @@ int main() {
     const flecs::entity runtime_entity =
         ecs_world.entity("Task6PersistentRuntimeEntity");
     const flecs::entity_t runtime_entity_id = runtime_entity.id();
+    const flecs::entity streaming_anchor =
+        ecs_world.entity("Task4StreamingAnchor")
+            .set<matter::ecs::LocalTransform>(
+                {{8.0f, 0.0f, 8.0f}, {}, {1.0f, 1.0f, 1.0f}});
+    const flecs::entity_t streaming_anchor_id = streaming_anchor.id();
 
     // Box3D Phase 2: runtime physics belongs to the session, not authored
     // content. A live body and its context therefore survive content reloads.
@@ -132,9 +138,9 @@ int main() {
     // Use a small streaming ring for fast test.
     // (env MATTER_STREAM_RINGS is set by the run target to e.g. "32:3,80:2")
 
-    // 1. request_bake -> two BakeFinished events:
-    //    (a) install complete (empty manifest published)
-    //    (b) first sectors streamed in (from execute_sector_stream_step)
+    // 1. Procedural installation alone does not activate sector streaming.
+    //    The install emits one BakeFinished; the first streaming completion is
+    //    emitted only after an ECS entity explicitly adds SectorStreaming.
     session->request_bake();
     printf("waiting for BakeFinished #1 (install)...\n");
     if (!wait_for_bake_finished(*session, 120.0)) {
@@ -149,9 +155,22 @@ int main() {
     assert(runtime_state(*session).content_generation == 1 &&
            "initial authored publish increments content generation once");
 
-    printf("waiting for BakeFinished #2 (first sectors)...\n");
+    // Pump a few frames to prove profile readiness cannot stream by itself.
+    for (int i = 0; i < 30; ++i) {
+        session->pump_gpu_jobs(16.0f);
+        session->tick({0.0f, 1.0f / 60.0f, 4});
+    }
+    assert(session->streaming_status().state ==
+               matter::streaming::SectorStreamingState::Detached &&
+           session->streaming_status().resident_sectors == 0 &&
+           session->frame_stats().resident_sectors == 0 &&
+           "procedural profile without ECS activation streams zero sectors");
+
+    streaming_anchor.add<matter::streaming::SectorStreaming>();
+    session->tick({0.0f, 1.0f / 60.0f, 4});
+    printf("waiting for BakeFinished #2 (activated first sectors)...\n");
     if (!wait_for_bake_finished(*session, 120.0)) {
-        printf("FAIL: sector streaming did not complete within 120s\n");
+        printf("FAIL: activated sector streaming did not complete within 120s\n");
         session.reset();
         CloseWindow();
         return 1;
@@ -159,8 +178,6 @@ int main() {
     printf("BakeFinished #2 (streaming) received\n");
     assert(runtime_state(*session).content_generation == 1 &&
            "sector streaming completion does not double-increment generation");
-
-    // Pump a few more frames to let GL publish jobs land.
     for (int i = 0; i < 30; ++i) {
         session->pump_gpu_jobs(16.0f);
         session->tick({0.0f, 1.0f / 60.0f, 4});
@@ -168,7 +185,12 @@ int main() {
 
     uint32_t rs1 = session->frame_stats().resident_sectors;
     printf("resident_sectors after initial load: %u\n", rs1);
-    assert(rs1 > 0 && "resident_sectors > 0 after first stream cycle");
+    const matter::streaming::SectorStreamingStatus active_status =
+        session->streaming_status();
+    assert(rs1 > 0 && active_status.state ==
+               matter::streaming::SectorStreamingState::Active &&
+           active_status.resident_sectors == rs1 &&
+           "activation with transform and profile starts streaming");
 
     // 2. sea_level()
     float sl = -999.0f;
@@ -193,10 +215,22 @@ int main() {
     printf("triangles after render: %u\n", tris);
     assert(tris > 0 && "triangles > 0 after render");
 
-    // 4. Move focus +200 -> resident_sectors changes
+    // 4. Bake focus remains a public closed-world ordering control, but no
+    //    longer drives infinite sector streaming. Moving the ECS anchor does.
+    const uint64_t generation_before_focus =
+        session->streaming_status().generation;
     float focus_far[3] = {200.0f, 0.0f, 200.0f};
     session->set_bake_focus(focus_far);
-    // Let the streaming loop work for a few seconds.
+    for (int i = 0; i < 30; ++i) {
+        session->pump_gpu_jobs(16.0f);
+        session->tick({0.0f, 1.0f / 60.0f, 4});
+    }
+    assert(session->streaming_status().generation == generation_before_focus &&
+           "set_bake_focus does not restart infinite streaming");
+
+    streaming_anchor.set<matter::ecs::LocalTransform>(
+        {{200.0f, 0.0f, 200.0f}, {}, {1.0f, 1.0f, 1.0f}});
+    streaming_anchor.add<matter::ecs::TransformDirty>();
     {
         double t0 = GetTime();
         while (GetTime() - t0 < 5.0) {
@@ -205,9 +239,11 @@ int main() {
         }
     }
     uint32_t rs2 = session->frame_stats().resident_sectors;
-    printf("resident_sectors after focus move: %u (was %u)\n", rs2, rs1);
+    printf("resident_sectors after ECS anchor move: %u (was %u)\n", rs2, rs1);
     // rs2 may be equal if the rings are large enough, but should still be > 0.
-    assert(rs2 > 0 && "resident_sectors > 0 after focus move");
+    assert(rs2 > 0 && session->streaming_status().generation ==
+                          generation_before_focus &&
+           "moving the ECS anchor streams without an unnecessary restart");
 
     // 5. reload() preserves the ECS world and publishes one new generation.
     printf("reload()...\n");
@@ -222,6 +258,12 @@ int main() {
     assert(session->ecs().is_alive(runtime_entity_id) &&
            session->ecs().lookup("Task6PersistentRuntimeEntity").id() == runtime_entity_id &&
            "runtime entity survives reload with the same ID");
+    assert(session->ecs().is_alive(streaming_anchor_id) &&
+           session->ecs().entity(streaming_anchor_id)
+               .has<matter::streaming::SectorStreaming>() &&
+           session->streaming_status().state ==
+               matter::streaming::SectorStreamingState::Active &&
+           "reload preserves the same streaming entity and component");
     const matter::physics::PhysicsStats reload_physics_stats =
         matter::physics::physics_stats(session->ecs());
     assert(&matter::physics::detail::context(session->ecs()) == physics_context &&
@@ -261,6 +303,12 @@ int main() {
     assert(session->ecs().is_alive(runtime_entity_id) &&
            session->ecs().lookup("Task6PersistentRuntimeEntity").id() == runtime_entity_id &&
            "runtime entity survives regenerate with the same ID");
+    assert(session->ecs().is_alive(streaming_anchor_id) &&
+           session->ecs().entity(streaming_anchor_id)
+               .has<matter::streaming::SectorStreaming>() &&
+           session->streaming_status().state ==
+               matter::streaming::SectorStreamingState::Active &&
+           "regenerate preserves the same streaming entity and component");
     const matter::physics::PhysicsStats regenerate_physics_stats =
         matter::physics::physics_stats(session->ecs());
     assert(&matter::physics::detail::context(session->ecs()) == physics_context &&
@@ -273,7 +321,70 @@ int main() {
            runtime_state(*session).content_generation == 3 &&
            "regenerate publishes exactly one authored generation");
 
-    // 7. Destroy the successful session, then open a replacement whose bake
+    // 7. Removing activation during reload prevents the preserved entity from
+    //    restarting after the replacement profile is installed.
+    printf("reload() with streaming removal...\n");
+    session->reload();
+    streaming_anchor.remove<matter::streaming::SectorStreaming>();
+    if (!wait_for_bake_finished(*session, 120.0)) {
+        printf("FAIL: removal-during-reload install did not complete\n");
+        session.reset();
+        CloseWindow();
+        return 1;
+    }
+    for (int i = 0; i < 60; ++i) {
+        session->pump_gpu_jobs(16.0f);
+        session->tick({0.0f, 1.0f / 60.0f, 4});
+    }
+    assert(session->ecs().is_alive(streaming_anchor_id) &&
+           !session->ecs().entity(streaming_anchor_id)
+                .has<matter::streaming::SectorStreaming>() &&
+           session->streaming_status().state ==
+               matter::streaming::SectorStreamingState::Detached &&
+           session->streaming_status().resident_sectors == 0 &&
+           session->frame_stats().resident_sectors == 0 &&
+           "removal during reload prevents residency");
+
+    // 8. A closed-world bake stays usable while activation reports the
+    //    recoverable UnsupportedWorld error and streams zero sectors.
+    matter::WorldDesc closed_wd = wd;
+    closed_wd.world_name = "ClosedWorld";
+    auto closed_session = engine->open_world(closed_wd, err);
+    if (!closed_session) {
+        printf("FAIL closed-world open_world: %s\n", err.c_str());
+        session.reset();
+        CloseWindow();
+        return 1;
+    }
+    const flecs::entity closed_anchor =
+        closed_session->ecs().entity("Task4ClosedWorldAnchor")
+            .set<matter::ecs::LocalTransform>({})
+            .add<matter::streaming::SectorStreaming>();
+    closed_session->request_bake();
+    if (!wait_for_bake_finished(*closed_session, 120.0)) {
+        printf("FAIL: closed-world bake did not complete\n");
+        closed_session.reset();
+        session.reset();
+        CloseWindow();
+        return 1;
+    }
+    for (int i = 0; i < 30; ++i) {
+        closed_session->pump_gpu_jobs(16.0f);
+        closed_session->tick({0.0f, 1.0f / 60.0f, 4});
+    }
+    const auto* closed_error =
+        closed_anchor.try_get<matter::streaming::SectorStreamingError>();
+    assert(runtime_state(*closed_session).status ==
+               matter::ecs::WorldStatus::Ready &&
+           closed_error != nullptr &&
+           closed_error->code ==
+               matter::streaming::SectorStreamingErrorCode::UnsupportedWorld &&
+           closed_session->streaming_status().resident_sectors == 0 &&
+           closed_session->frame_stats().resident_sectors == 0 &&
+           "closed-world activation is recoverable and non-streaming");
+    closed_session.reset();
+
+    // 9. Destroy the successful session, then open a replacement whose bake
     // deterministically fails because its world directory does not exist.
     printf("destroying session...\n");
     session.reset();

@@ -1,6 +1,7 @@
 #include "check.h"
 #include "../src/streaming/sector_streaming_coordinator.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <type_traits>
 #include <utility>
@@ -8,6 +9,7 @@
 
 using matter::streaming::SectorStreamingState;
 using matter::streaming::detail::Coordinator;
+using matter::streaming::detail::TaggedEviction;
 using matter::streaming::detail::TaggedRequest;
 
 static matter_stream::Config tiny_profile() {
@@ -54,7 +56,183 @@ static std::vector<TaggedRequest> drain_requests(Coordinator& coordinator) {
     return requests;
 }
 
+static bool same_publication(
+    const TaggedRequest& request,
+    const TaggedEviction& eviction) {
+    return request.owner == eviction.owner &&
+           request.generation == eviction.generation &&
+           request.issuance == eviction.issuance &&
+           request.sector.tx == eviction.sector.tx &&
+           request.sector.tz == eviction.sector.tz &&
+           request.sector.rung == eviction.sector.rung;
+}
+
+// CPU-only stand-in for app-thread resource ownership. Coordinator behavior is
+// real; this ledger merely records whether a complete tagged publication would
+// exist on the app side and applies the coordinator's tagged evictions.
+struct FakePublicationLedger {
+    std::vector<TaggedRequest> resident;
+
+    bool publish(
+        Coordinator& coordinator,
+        const TaggedRequest& request,
+        bool resources_succeed) {
+        if (!coordinator.begin_publication(request)) {
+            coordinator.acknowledge(request, false);
+            return false;
+        }
+
+        resident.push_back(request); // provisional app mutation
+        if (!resources_succeed) {
+            resident.pop_back(); // complete rollback before false acknowledgement
+            coordinator.acknowledge(request, false);
+            return false;
+        }
+
+        coordinator.acknowledge(request, true);
+        return true;
+    }
+
+    void apply(const std::vector<TaggedEviction>& evictions) {
+        for (const auto& eviction : evictions) {
+            const auto match = std::find_if(
+                resident.begin(), resident.end(),
+                [&](const TaggedRequest& request) {
+                    return same_publication(request, eviction);
+                });
+            if (match != resident.end()) resident.erase(match);
+        }
+    }
+};
+
 int main() {
+    // App resources precede a successful acknowledgement, while rollback and
+    // false acknowledgement can never create coordinator residency.
+    {
+        Coordinator coordinator;
+        FakePublicationLedger ledger;
+        auto profile = tiny_profile();
+        coordinator.set_profile(&profile);
+        CHECK(coordinator.attach(kOwnerA),
+              "publication-order test attaches owner");
+        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.worker_step();
+
+        TaggedRequest successful{};
+        CHECK(coordinator.next_request(successful),
+              "publication-order test obtains successful request");
+        CHECK(coordinator.snapshot().status.resident_sectors == 0,
+              "request is not resident before app publication");
+        CHECK(ledger.publish(coordinator, successful, true) &&
+                  ledger.resident.size() == 1,
+              "successful fake endpoint mutates resources before acknowledgement");
+        CHECK(coordinator.snapshot().status.resident_sectors == 0,
+              "queued acknowledgement is not early residency");
+        coordinator.worker_step();
+        CHECK(coordinator.snapshot().status.resident_sectors == 1,
+              "successful publication becomes resident on the worker step");
+
+        TaggedRequest failed{};
+        CHECK(coordinator.next_request(failed),
+              "publication-order test obtains failing request");
+        CHECK(!ledger.publish(coordinator, failed, false) &&
+                  ledger.resident.size() == 1,
+              "failed endpoint rolls back its provisional app mutation");
+        coordinator.worker_step();
+        CHECK(coordinator.snapshot().status.resident_sectors == 1,
+              "failed publication cannot create phantom residency");
+    }
+
+    // Detach invalidates a publication in progress, emits FIFO cleanup with the
+    // complete issuance tag, and stale cleanup cannot erase a newer replacement.
+    {
+        Coordinator coordinator;
+        FakePublicationLedger ledger;
+        auto profile = tiny_profile();
+        coordinator.set_profile(&profile);
+        CHECK(coordinator.attach(kOwnerA),
+              "publication-detach test attaches owner");
+        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.worker_step();
+        TaggedRequest old_request{};
+        CHECK(coordinator.next_request(old_request) &&
+                  coordinator.begin_publication(old_request),
+              "publication-detach test reserves old tagged publication");
+        ledger.resident.push_back(old_request);
+
+        coordinator.detach(kOwnerA);
+        coordinator.worker_step();
+        const auto old_evictions = coordinator.take_evictions();
+        CHECK(old_evictions.size() == 1 &&
+                  same_publication(old_request, old_evictions.front()),
+              "detach emits cleanup for publication in progress");
+        ledger.apply(old_evictions);
+        CHECK(ledger.resident.empty() &&
+                  coordinator.snapshot().status.resident_sectors == 0,
+              "detach FIFO cleanup leaves no app or coordinator residency");
+
+        CHECK(coordinator.attach(kOwnerA),
+              "same owner reattaches after detach cleanup");
+        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.worker_step();
+        TaggedRequest replacement{};
+        CHECK(coordinator.next_request(replacement) &&
+                  ledger.publish(coordinator, replacement, true),
+              "fresh generation publishes replacement");
+        coordinator.worker_step();
+        CHECK(replacement.generation != old_request.generation &&
+                  replacement.issuance != old_request.issuance,
+              "replacement has fresh lifecycle and issuance identity");
+        ledger.apply(old_evictions);
+        CHECK(ledger.resident.size() == 1 &&
+                  ledger.resident.front().issuance == replacement.issuance,
+              "stale tagged eviction fails closed on newer replacement");
+    }
+
+    // Profile replacement keeps the same attachment and starts one fresh
+    // generation; removal while the profile is absent prevents any restart.
+    {
+        Coordinator coordinator;
+        auto profile = tiny_profile();
+        coordinator.set_profile(&profile);
+        CHECK(coordinator.attach(kOwnerA),
+              "profile-reload test attaches owner");
+        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.worker_step();
+        const uint64_t first_generation =
+            coordinator.snapshot().status.generation;
+
+        coordinator.set_profile(nullptr);
+        coordinator.worker_step();
+        CHECK(coordinator.intended_owner() == kOwnerA &&
+                  coordinator.snapshot().status.state ==
+                      SectorStreamingState::PendingProfile &&
+                  coordinator.snapshot().status.resident_sectors == 0,
+              "reload barrier preserves attachment with an empty profile");
+        coordinator.set_profile(&profile);
+        coordinator.worker_step();
+        const uint64_t reloaded_generation =
+            coordinator.snapshot().status.generation;
+        CHECK(coordinator.snapshot().status.state ==
+                  SectorStreamingState::Active &&
+                  reloaded_generation == first_generation + 1,
+              "profile reload starts exactly one fresh generation");
+        coordinator.worker_step();
+        CHECK(coordinator.snapshot().status.generation == reloaded_generation,
+              "profile reload does not restart twice");
+
+        coordinator.set_profile(nullptr);
+        coordinator.worker_step();
+        coordinator.detach(kOwnerA);
+        coordinator.set_profile(&profile);
+        coordinator.worker_step();
+        CHECK(coordinator.snapshot().status.state ==
+                  SectorStreamingState::Detached &&
+                  coordinator.snapshot().status.generation == 0 &&
+                  drain_requests(coordinator).empty(),
+              "owner removal during reload prevents restart");
+    }
+
     // Intended ownership is synchronously authoritative before worker snapshots.
     {
         Coordinator coordinator;

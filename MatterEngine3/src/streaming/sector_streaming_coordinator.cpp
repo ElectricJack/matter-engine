@@ -16,6 +16,14 @@ bool same_request(const TaggedRequest& lhs, const TaggedRequest& rhs) {
            lhs.sector.rung == rhs.sector.rung;
 }
 
+bool same_sector(
+    const TaggedRequest& request,
+    const matter_stream::Eviction& eviction) {
+    return request.sector.tx == eviction.tx &&
+           request.sector.tz == eviction.tz &&
+           request.sector.rung == eviction.rung;
+}
+
 uint32_t snapshot_count(size_t count) {
     const size_t maximum = std::numeric_limits<uint32_t>::max();
     return static_cast<uint32_t>(std::min(count, maximum));
@@ -101,18 +109,52 @@ void Coordinator::collect_streamer_evictions() {
     auto evictions = streamer_->take_evictions();
     pending_evictions_.reserve(pending_evictions_.size() + evictions.size());
     for (const auto& eviction : evictions) {
+        const auto resident = std::find_if(
+            resident_requests_.begin(), resident_requests_.end(),
+            [&](const TaggedRequest& request) {
+                return same_sector(request, eviction);
+            });
+        const uint64_t issuance = resident == resident_requests_.end()
+            ? 0
+            : resident->issuance;
         pending_evictions_.push_back(
-            TaggedEviction{worker_owner_, worker_generation_, eviction});
+            TaggedEviction{
+                worker_owner_, worker_generation_, issuance, eviction});
+        if (resident != resident_requests_.end()) {
+            resident_requests_.erase(resident);
+        }
     }
 }
 
+void Coordinator::invalidate_worker_publications() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& request : publishing_requests_) {
+        if (request.owner != worker_owner_ ||
+            request.generation != worker_generation_) {
+            continue;
+        }
+        pending_evictions_.push_back(TaggedEviction{
+            request.owner,
+            request.generation,
+            request.issuance,
+            matter_stream::Eviction{
+                request.sector.tx,
+                request.sector.tz,
+                request.sector.rung}});
+    }
+    publication_candidates_.clear();
+    publishing_requests_.clear();
+}
+
 void Coordinator::clear_worker_streamer() {
+    invalidate_worker_publications();
     if (streamer_) {
         streamer_->clear();
         collect_streamer_evictions();
     }
     streamer_.reset();
     issued_requests_.clear();
+    resident_requests_.clear();
     worker_generation_ = 0;
 }
 
@@ -199,10 +241,42 @@ void Coordinator::worker_step() {
             });
         if (issued == issued_requests_.end()) continue;
 
-        const auto sector = issued->sector;
+        const TaggedRequest completed = *issued;
+        const auto sector = completed.sector;
         issued_requests_.erase(issued);
+        bool began_publication = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const auto candidate = std::find_if(
+                publication_candidates_.begin(), publication_candidates_.end(),
+                [&](const TaggedRequest& request) {
+                    return same_request(request, completed);
+                });
+            if (candidate != publication_candidates_.end()) {
+                publication_candidates_.erase(candidate);
+            }
+            const auto publishing = std::find_if(
+                publishing_requests_.begin(), publishing_requests_.end(),
+                [&](const TaggedRequest& request) {
+                    return same_request(request, completed);
+                });
+            if (publishing != publishing_requests_.end()) {
+                began_publication = true;
+                publishing_requests_.erase(publishing);
+            }
+        }
         if (acknowledgement.published) {
-            streamer_->on_published(sector.tx, sector.tz, sector.rung);
+            if (streamer_->on_published(
+                    sector.tx, sector.tz, sector.rung)) {
+                resident_requests_.push_back(completed);
+            } else if (began_publication) {
+                pending_evictions_.push_back(TaggedEviction{
+                    completed.owner,
+                    completed.generation,
+                    completed.issuance,
+                    matter_stream::Eviction{
+                        sector.tx, sector.tz, sector.rung}});
+            }
         } else {
             streamer_->on_failed(sector.tx, sector.tz, sector.rung);
         }
@@ -224,6 +298,25 @@ bool Coordinator::next_request(TaggedRequest& out) {
     out = TaggedRequest{
         worker_owner_, worker_generation_, allocate_issuance(), sector};
     issued_requests_.push_back(out);
+    publication_candidates_.push_back(out);
+    return true;
+}
+
+bool Coordinator::begin_publication(const TaggedRequest& request) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (published_snapshot_.owner != request.owner ||
+        published_snapshot_.status.state != SectorStreamingState::Active ||
+        published_snapshot_.status.generation != request.generation) {
+        return false;
+    }
+    const auto candidate = std::find_if(
+        publication_candidates_.begin(), publication_candidates_.end(),
+        [&](const TaggedRequest& current) {
+            return same_request(current, request);
+        });
+    if (candidate == publication_candidates_.end()) return false;
+    publishing_requests_.push_back(*candidate);
+    publication_candidates_.erase(candidate);
     return true;
 }
 

@@ -7,6 +7,7 @@
 
 #include "matter/camera.h"
 #include "matter/ecs.h"
+#include "matter/streaming.h"
 #include "matter/vulkan_device.h"
 #include "render/vk_gi_contract.h"
 
@@ -161,6 +162,9 @@ public:
 
     bool poll_event(Event& out);       // drain one; loop until false
     const FrameStats& frame_stats() const;
+    // Copied coordinator state; no streamer or render-resource state crosses
+    // the worker/app boundary.
+    streaming::SectorStreamingStatus streaming_status() const;
 
     // Phase B: asynchronous — enqueues a bake and returns immediately. Progress
     // arrives via poll_event(); GL-side work runs inside pump_gpu_jobs(). A new

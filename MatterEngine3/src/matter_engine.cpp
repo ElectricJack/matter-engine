@@ -11,6 +11,7 @@
 
 #include "async_bake.h"
 #include "ecs/ecs_runtime.h"
+#include "ecs/streaming_systems.h"
 #include "local_provider.h"
 #include "part_store.h"   // LoadedPart, walk_part_tree
 #ifndef MATTER_VULKAN_ONLY
@@ -44,8 +45,8 @@
 // Phase C Task 6: camera-driven refine loop.
 #include "refine_controller.h"
 
-// Phase C Task 9: sector streamer.
-#include "sector_streamer.h"
+// Runtime-owned sector streaming coordinator and world profile.
+#include "streaming/sector_streaming_coordinator.h"
 #include "terrain_field.h"
 
 // Phase C Task 17: resolve/manifest cache for instant warm relaunch.
@@ -65,6 +66,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <fstream>
@@ -75,6 +77,7 @@
 #include <mutex>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -86,6 +89,13 @@ namespace matter {
 // Used as the FileWatcher argument for LiveEditSession constructed on the
 // worker thread (which uses rebuild(paths) directly, never tick()).
 namespace {
+#ifdef MATTER_VULKAN_VIEWER
+bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
+                        uint64_t part_hash,
+                        const viewer::LoadedPart& loaded,
+                        bool& drawable,
+                        std::string& error);
+#endif
 #ifndef MATTER_VULKAN_ONLY
 // Temporary compatibility boundary for the current OpenGL/raylib renderer.
 // Remove this when Renderer and RasterComposer consume CameraDesc directly.
@@ -109,6 +119,52 @@ public:
         return (long long)std::chrono::duration_cast<std::chrono::milliseconds>(t).count();
     }
 };
+
+matter_stream::Config make_streaming_profile(float sector_size) {
+    matter_stream::Config profile;
+    profile.sector_size = sector_size;
+    profile.rings = {
+        {3.0f * sector_size, 2},
+        {8.0f * sector_size, 1},
+        {40.0f * sector_size, 0}
+    };
+    const char* rings_env = std::getenv("MATTER_STREAM_RINGS");
+    if (rings_env) {
+        profile.rings.clear();
+        const char* cursor = rings_env;
+        while (*cursor) {
+            const float radius = std::atof(cursor);
+            while (*cursor && *cursor != ':') ++cursor;
+            if (*cursor == ':') ++cursor;
+            const int rung = std::atoi(cursor);
+            while (*cursor && *cursor != ',') ++cursor;
+            if (*cursor == ',') ++cursor;
+            if (radius > 0.0f) profile.rings.push_back({radius, rung});
+        }
+    }
+    profile.max_inflight = 16;
+    return profile;
+}
+
+bool same_publication_tag(
+    const streaming::detail::TaggedRequest& request,
+    const streaming::detail::TaggedEviction& eviction) {
+    return request.owner == eviction.owner &&
+           request.generation == eviction.generation &&
+           request.issuance == eviction.issuance &&
+           request.sector.tx == eviction.sector.tx &&
+           request.sector.tz == eviction.sector.tz &&
+           request.sector.rung == eviction.sector.rung;
+}
+
+streaming::detail::TaggedEviction publication_eviction(
+    const streaming::detail::TaggedRequest& request) {
+    return {
+        request.owner,
+        request.generation,
+        request.issuance,
+        {request.sector.tx, request.sector.tz, request.sector.rung}};
+}
 } // anonymous namespace
 
 // Task 5: standard cofactor-based 4x4 matrix inverse for RT depth unproject.
@@ -273,10 +329,24 @@ struct WorldSession::Impl {
 
     FrameStats stats{};
 
+    // App/UI readers consume only this value copy. The worker publishes into
+    // Coordinator; tick()/pump_gpu_jobs() copy it here and into Flecs.
+    mutable std::mutex streaming_status_mutex;
+    streaming::SectorStreamingStatus streaming_status_copy{};
+
+    enum class StreamingProfileKind : uint8_t {
+        Pending,
+        Procedural,
+        Unsupported
+    };
+    std::atomic<StreamingProfileKind> streaming_profile_kind{
+        StreamingProfileKind::Pending};
+
     // Phase B: async bake GPU work queue + command queue + worker thread.
     matter_async::GpuJobQueue gpu_jobs;
     matter_async::CommandQueue commands;
     std::thread                worker;
+    std::atomic<bool>          worker_exited{true};
     // Set to true while the worker is inside a command (BakeAll/Reload); read
     // by tick() to skip provider->poll_deltas() while the provider is being
     // torn down and rebuilt. Cheap insurance: LocalProvider::poll_deltas
@@ -310,8 +380,7 @@ struct WorldSession::Impl {
     // Phase C Task 6: execute one camera-driven refine step.
     // Called by worker_loop in the pop_wait timeout path when refine_ctrl is live.
     void execute_refine_step();
-    // Phase C Task 9: execute one sector-streamer step (world-kind sessions).
-    // Called by worker_loop in the pop_wait timeout path when sector_streamer is live.
+    // Execute one Runtime-coordinator streaming step on the existing worker.
     void execute_sector_stream_step();
     // Phase C Task 9: install world-kind field, set world binding on host_baker,
     // install sector child assets. Called from execute_bake after install_graph
@@ -320,7 +389,12 @@ struct WorldSession::Impl {
                        std::string& err);
     // Phase C Task 9: drain sector evictions — release resources for evicted sectors.
     // Called on the worker thread (within a gpu_jobs.run_blocking context or inline).
-    void drain_sector_evictions();
+    bool drain_sector_evictions(bool blocking, std::string& err);
+    bool clear_streaming_profile(bool blocking, std::string& err);
+    bool apply_sector_evictions(
+        const std::vector<streaming::detail::TaggedEviction>& evictions,
+        std::string& err);
+    void publish_streaming_snapshot();
 
     // Parameters for publish_pipeline — the genuine differences between the
     // BakeAll/Reload and RebakeCone publish flows.
@@ -401,12 +475,6 @@ struct WorldSession::Impl {
     // Worker thread only.
     size_t refine_tile_count = 0;
 
-    // --- Phase C Task 9: SectorStreamer world-kind loop ----------------------
-    // Non-null when the current session opened a world-kind manifest.
-    // Owned by the worker thread (created in publish_pipeline tail, cleared
-    // on supersession / shutdown). Null for closed-world sessions.
-    std::unique_ptr<matter_stream::SectorStreamer> sector_streamer;
-
     // World-kind field runtime (owned; lives for the session generation).
     // Null for closed-world sessions or before install completes.
     std::unique_ptr<terrain_field::FieldRuntime> world_field;
@@ -432,10 +500,18 @@ struct WorldSession::Impl {
 
     // Resident-sector map: (tx,tz,rung) → {instance_id, part_hash}.
     // Worker thread writes at publish; GL thread writes at evict (but the
-    // eviction apply also happens on the GL thread, so no data race if we
-    // restrict all sector_map writes/reads to the GL thread via the gpu_jobs
-    // queue).  To keep things simple we guard with sector_map_mutex.
-    struct SectorEntry { uint32_t instance_id; uint64_t part_hash; };
+    // Publication and eviction both execute on the app/GPU queue owner, so the
+    // resident ledger never crosses threads.
+    struct SectorEntry {
+        streaming::detail::TaggedRequest request{};
+        uint32_t instance_id = 0;
+        uint64_t part_hash = 0;
+        std::shared_ptr<viewer::LocalProvider> provider_ref;
+        bool state_added = false;
+        bool culler_registered = false;
+        bool vulkan_registered = false;
+        bool resident = false;
+    };
     struct SectorKey {
         int64_t tx, tz; int rung;
         bool operator==(const SectorKey& o) const { return tx==o.tx && tz==o.tz && rung==o.rung; }
@@ -449,7 +525,6 @@ struct WorldSession::Impl {
         }
     };
     std::unordered_map<SectorKey, SectorEntry, SectorKeyHash> sector_map;
-    std::mutex sector_map_mutex;
 
     // Next instance id for sector placements (separate from the publish-pipeline
     // next_manifest_id so the two don't collide; starts at 0x10000000 for sectors).
@@ -495,10 +570,15 @@ void WorldSession::Impl::emit_event(Event ev) {
 
 void WorldSession::Impl::ensure_worker_started() {
     if (worker.joinable()) return;
+    worker_exited.store(false, std::memory_order_release);
     worker = std::thread([this] { worker_loop(); });
 }
 
 void WorldSession::Impl::worker_loop() {
+    struct ExitMarker {
+        std::atomic<bool>& exited;
+        ~ExitMarker() { exited.store(true, std::memory_order_release); }
+    } exit_marker{worker_exited};
     // Phase C Task 6: refine loop.
     // After a bake finishes (bake_active = false) and a RefineController is live,
     // the worker uses pop_wait(50ms) instead of pop() so it can service one refine
@@ -511,17 +591,22 @@ void WorldSession::Impl::worker_loop() {
     for (;;) {
         // When a refine controller OR sector streamer is live, use timed pop so
         // idle slots drive refine/streaming steps.  Commands always win the pop.
-        if (refine_ctrl || sector_streamer) {
+        // Always use a timed pop: an ECS attachment can arrive while no refine
+        // controller or procedural profile is active, and it must not require
+        // another bake command to wake coordinator progress.
+        {
             matter_async::Command cmd;
             bool timed_out = false;
             bool got_cmd = commands.pop_wait(cmd, /*ms=*/50, timed_out);
 
             if (!got_cmd && !timed_out) {
-                // Shutdown + drained. Reset state and exit.
+                // Shutdown + drained. Detach was invalidated by the app thread;
+                // clear on this worker and queue FIFO app cleanup before exit.
                 refine_ctrl.reset();
                 refine_provider.reset();
                 refine_pending_upgrades_.clear();
-                sector_streamer.reset();
+                std::string clear_error;
+                clear_streaming_profile(/*blocking=*/false, clear_error);
                 return;
             }
 
@@ -531,7 +616,8 @@ void WorldSession::Impl::worker_loop() {
                     refine_ctrl.reset();
                     refine_provider.reset();
                     refine_pending_upgrades_.clear();
-                    sector_streamer.reset();
+                    std::string clear_error;
+                    clear_streaming_profile(/*blocking=*/false, clear_error);
                     return;
                 }
                 // BakeAll/Reload: reset refine controller (will be rebuilt post-publish).
@@ -540,12 +626,21 @@ void WorldSession::Impl::worker_loop() {
                     refine_ctrl.reset();
                     refine_provider.reset();
                     refine_pending_upgrades_.clear();
-                    // Phase C Task 9: drain sector evictions before destroying streamer.
-                    if (sector_streamer) {
-                        sector_streamer->clear();
-                        drain_sector_evictions();
+                    std::string clear_error;
+                    if (!clear_streaming_profile(
+                            /*blocking=*/true, clear_error)) {
+                        Event ev;
+                        ev.type = EventType::BakeError;
+                        ev.code = BakeErrorCode::GpuError;
+                        ev.phase = "stream";
+                        ev.message = clear_error.empty()
+                            ? "streaming eviction barrier failed"
+                            : clear_error;
+                        emit_event(std::move(ev));
+                        continue;
                     }
-                    sector_streamer.reset();
+                    // The old profile has been cleared and every tagged app
+                    // eviction completed before private field destruction.
                     world_field.reset();
                     world_initial_load_done = false;
                 }
@@ -594,57 +689,11 @@ void WorldSession::Impl::worker_loop() {
             }
 
             // Timed out with no command — take ONE refine/stream step.
-            if (refine_ctrl) {
-                execute_refine_step();
-            } else if (sector_streamer) {
-                execute_sector_stream_step();
-            }
+            execute_sector_stream_step();
+            if (refine_ctrl) execute_refine_step();
             continue;
         }
 
-        // No refine controller or sector streamer: block until next command.
-        matter_async::Command cmd;
-        if (!commands.pop(cmd)) return;   // shutdown + drained
-        if (cmd.kind == matter_async::CommandKind::Shutdown) return;
-
-        bake_active.store(true, std::memory_order_release);
-        try {
-            switch (cmd.kind) {
-                case matter_async::CommandKind::BakeAll:
-                    execute_bake(cmd, /*is_reload=*/false);
-                    break;
-                case matter_async::CommandKind::Reload:
-                    execute_bake(cmd, /*is_reload=*/true);
-                    break;
-                case matter_async::CommandKind::RebakeCone:
-                    execute_rebake_cone(cmd);
-                    break;
-                case matter_async::CommandKind::Shutdown:
-                    bake_active.store(false, std::memory_order_release);
-                    return;
-            }
-        } catch (std::bad_alloc&) {
-            if (!cmd.token || !cmd.token->is_cancelled()) {
-                ecs_runtime.enqueue_world_state(
-                    {ecs_runtime::WorldStateCommandKind::Failed});
-            }
-            Event ev;
-            ev.type    = EventType::BakeError;
-            ev.code    = BakeErrorCode::OutOfMemory;
-            ev.message = "std::bad_alloc";
-            emit_event(std::move(ev));
-        } catch (std::exception& e) {
-            if (!cmd.token || !cmd.token->is_cancelled()) {
-                ecs_runtime.enqueue_world_state(
-                    {ecs_runtime::WorldStateCommandKind::Failed});
-            }
-            Event ev;
-            ev.type    = EventType::BakeError;
-            ev.code    = BakeErrorCode::Internal;
-            ev.message = e.what();
-            emit_event(std::move(ev));
-        }
-        bake_active.store(false, std::memory_order_release);
     }
 }
 
@@ -788,6 +837,13 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
                                                  rc_payload.bake_plan,
                                                  rc_payload.root_hashes,
                                                  rc_err)) {
+                    // Procedural worlds never write this closed-world resolve
+                    // cache. Restore the recoverable non-streaming profile state
+                    // before the fast path returns.
+                    ecs_runtime.streaming_coordinator().set_profile(nullptr);
+                    streaming_profile_kind.store(
+                        StreamingProfileKind::Unsupported,
+                        std::memory_order_release);
                     // Populate new_manifest from cached instances + lights.
                     viewer::WorldManifest cached_manifest;
                     cached_manifest.instances = std::move(rc_payload.instances);
@@ -906,6 +962,13 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
                 install_ms, world_ms, publish_ms, total_ms);
         return;  // world-kind path complete — SectorStreamer built in publish_pipeline tail
     }
+
+    // Closed-world content remains fully usable, but cannot supply an infinite
+    // streaming profile. The app-thread publisher exposes this as a recoverable
+    // error on whichever full owner is currently attached.
+    ecs_runtime.streaming_coordinator().set_profile(nullptr);
+    streaming_profile_kind.store(
+        StreamingProfileKind::Unsupported, std::memory_order_release);
 
     // 3) compose_world on the worker (scatter/place; tileset GL marshaled) ----
     // NOTE: tileset phase runs inside compose_world and is not separable without
@@ -1624,40 +1687,16 @@ void WorldSession::Impl::publish_pipeline(
     if (p.provider_ref && !is_cancelled() && world_field) {
         refine_ctrl.reset();   // world sessions don't use refine
 
-        matter_stream::Config scfg;
-        scfg.sector_size = world_sector_size;
         // Scale default rings to the world's sector size.
-        float S = world_sector_size;
         // Rung is a pure SCATTER DETAIL TIER, not a mesh resolution: WorldSector
         // always meshes terrain at voxel rung 0, so the terrain mesh (and its
         // locked border rims) is identical at every tier — cross-rung terrain
         // stitching is still unsolved, and this keeps sector seams watertight.
         // Tier 2 (near) adds grass, tier 1 adds rocks/pebbles, tier 0 (far)
         // carries only trees + landmark boulders.
-        scfg.rings = {
-            {3.0f  * S, 2},
-            {8.0f  * S, 1},
-            {40.0f * S, 0}
-        };
         // Env override for tests: "r0:rung0,r1:rung1,..." e.g. "192:1,640:0"
-        const char* rings_env = std::getenv("MATTER_STREAM_RINGS");
-        if (rings_env) {
-            scfg.rings.clear();
-            const char* p2 = rings_env;
-            while (*p2) {
-                float r = std::atof(p2);
-                while (*p2 && *p2 != ':') ++p2;
-                if (*p2 == ':') ++p2;
-                int rg = std::atoi(p2);
-                while (*p2 && *p2 != ',') ++p2;
-                if (*p2 == ',') ++p2;
-                if (r > 0) scfg.rings.push_back({r, rg});
-            }
-        }
-        scfg.max_inflight = 16;
-        sector_streamer = std::make_unique<matter_stream::SectorStreamer>(scfg);
         refine_provider = p.provider_ref;  // extend provider lifetime
-        printf("[stream] SectorStreamer built for world-kind session\n");
+        printf("[stream] Runtime coordinator profile ready for world-kind session\n");
     }
 }
 
@@ -2116,6 +2155,11 @@ bool WorldSession::Impl::install_world(
             "field_hash=%s, sector_size=%.1f, sea_level=%.2f\n",
             sector_child_hashes.size(), world_field_hash.c_str(),
             world_sector_size, world_sea_level);
+    const matter_stream::Config profile =
+        make_streaming_profile(world_sector_size);
+    ecs_runtime.streaming_coordinator().set_profile(&profile);
+    streaming_profile_kind.store(
+        StreamingProfileKind::Procedural, std::memory_order_release);
     return true;
 }
 
@@ -2126,55 +2170,131 @@ bool WorldSession::Impl::install_world(
 // releases transient artifacts. Posts a blocking GL job to ensure all state
 // mutations happen on the GL thread. Called on the worker thread.
 // ---------------------------------------------------------------------------
-void WorldSession::Impl::drain_sector_evictions() {
-    if (!sector_streamer) return;
-    auto evs = sector_streamer->take_evictions();
-    if (evs.empty()) return;
+bool WorldSession::Impl::apply_sector_evictions(
+    const std::vector<streaming::detail::TaggedEviction>& evictions,
+    std::string& err) {
+    matter_async::assert_gl_thread("stream.apply_evictions");
+    bool ok = true;
+    for (const auto& eviction : evictions) {
+        const SectorKey key{
+            eviction.sector.tx,
+            eviction.sector.tz,
+            eviction.sector.rung};
+        const auto found = sector_map.find(key);
+        if (found == sector_map.end() ||
+            !same_publication_tag(found->second.request, eviction)) {
+            // A delayed old-generation/issuance eviction must never delete a
+            // newer replacement occupying the same sector tuple.
+            continue;
+        }
 
-    auto evs_shared = std::make_shared<std::vector<matter_stream::Eviction>>(std::move(evs));
-    matter_async::GpuJob ej;
-    ej.name = "stream.drain_evict";
-    ej.fn   = [this, evs_shared](std::string& /*err*/) -> bool {
-        matter_async::assert_gl_thread("stream.drain_evict");
-        for (const auto& ev : *evs_shared) {
-            SectorKey sk{ev.tx, ev.tz, ev.rung};
-            std::lock_guard<std::mutex> lk(sector_map_mutex);
-            auto it = sector_map.find(sk);
-            if (it == sector_map.end()) continue;
-
-            uint32_t inst_id   = it->second.instance_id;
-            uint64_t part_hash = it->second.part_hash;
-
-            viewer::WorldDelta d;
-            d.removed.push_back(inst_id);
-            state.apply(d);
+        try {
+            SectorEntry& entry = found->second;
+            if (entry.state_added) {
+                viewer::WorldDelta delta;
+                delta.removed.push_back(entry.instance_id);
+                state.apply(delta);
+            }
             tracer_dirty = true;
             tracer.reset();
 
 #ifndef MATTER_VULKAN_ONLY
-            if (culler_ready) gpu_culler.release_part(part_hash);
-#endif
-#ifdef MATTER_VULKAN_VIEWER
-            if (vk_scene) {
-                vk_scene->release_part(part_hash);
-                vk_instance_cache.invalidate();
+            if (entry.culler_registered && culler_ready) {
+                gpu_culler.release_part(entry.part_hash);
             }
 #endif
-            if (store) store->release(part_hash);
-            if (provider) provider->release_transient(part_hash);
-
-            sector_map.erase(it);
+#ifdef MATTER_VULKAN_VIEWER
+            if (entry.vulkan_registered && vk_scene) {
+                vk_scene->release_part(entry.part_hash);
+            }
+            vk_instance_cache.invalidate();
+            vk_temporal.invalidate();
+#endif
+            if (store) store->release(entry.part_hash);
+            if (entry.provider_ref) {
+                entry.provider_ref->release_transient(entry.part_hash);
+            }
+            sector_map.erase(found);
+        } catch (const std::exception& exception) {
+            ok = false;
+            if (err.empty()) err = exception.what();
+        } catch (...) {
+            ok = false;
+            if (err.empty()) err = "unknown sector eviction failure";
         }
-        return true;
+    }
+    return ok;
+}
+
+bool WorldSession::Impl::drain_sector_evictions(
+    bool blocking,
+    std::string& err) {
+    auto evictions = ecs_runtime.streaming_coordinator().take_evictions();
+    if (evictions.empty()) return true;
+
+    auto shared_evictions = std::make_shared<
+        std::vector<streaming::detail::TaggedEviction>>(
+            std::move(evictions));
+    matter_async::GpuJob job;
+    job.name = "stream.apply_evictions";
+    job.fn = [this, shared_evictions](std::string& job_error) {
+        return apply_sector_evictions(*shared_evictions, job_error);
     };
-    std::string eerr;
-    gpu_jobs.run_blocking(std::move(ej), eerr);
+    if (blocking) return gpu_jobs.run_blocking(std::move(job), err);
+    gpu_jobs.post(std::move(job));
+    return true;
+}
+
+bool WorldSession::Impl::clear_streaming_profile(
+    bool blocking,
+    std::string& err) {
+    streaming_profile_kind.store(
+        StreamingProfileKind::Pending, std::memory_order_release);
+    auto& coordinator = ecs_runtime.streaming_coordinator();
+    coordinator.set_profile(nullptr);
+    coordinator.worker_step();
+    return drain_sector_evictions(blocking, err);
+}
+
+void WorldSession::Impl::publish_streaming_snapshot() {
+    const streaming::detail::Snapshot snapshot =
+        ecs_runtime.streaming_coordinator().snapshot();
+    {
+        std::lock_guard<std::mutex> lock(streaming_status_mutex);
+        streaming_status_copy = snapshot.status;
+        stats.resident_sectors = snapshot.status.resident_sectors;
+    }
+
+    flecs::world& world = ecs_runtime.world();
+    streaming::detail::publish_streaming_snapshot(world, snapshot);
+
+    const flecs::entity_t owner =
+        ecs_runtime.streaming_coordinator().intended_owner();
+    if (owner == 0 || !world.is_alive(owner)) return;
+    flecs::entity entity = world.entity(owner);
+    if (!entity.has<streaming::SectorStreaming>()) return;
+
+    const StreamingProfileKind kind =
+        streaming_profile_kind.load(std::memory_order_acquire);
+    if (kind == StreamingProfileKind::Unsupported) {
+        entity.set<streaming::SectorStreamingError>({
+            streaming::SectorStreamingErrorCode::UnsupportedWorld,
+            0});
+        return;
+    }
+
+    const auto* current =
+        entity.try_get<streaming::SectorStreamingError>();
+    if (current && current->code ==
+            streaming::SectorStreamingErrorCode::UnsupportedWorld) {
+        entity.remove<streaming::SectorStreamingError>();
+    }
 }
 
 // ---------------------------------------------------------------------------
 // WorldSession::Impl::execute_sector_stream_step
 // Phase C Task 9: one sector-streaming step. Called by worker_loop in the
-// pop_wait timeout slot when sector_streamer is live and no command is pending.
+// pop_wait timeout slot when coordinator work is eligible and no command is pending.
 //
 // Per step:
 //   1. Update camera position on the streamer.
@@ -2184,68 +2304,26 @@ void WorldSession::Impl::drain_sector_evictions() {
 //   5. After first cycle with no remaining holes → emit BakeFinished.
 // ---------------------------------------------------------------------------
 void WorldSession::Impl::execute_sector_stream_step() {
-    if (!sector_streamer) return;
-    if (!provider) return;
-
-    // 1. Update camera position.
-    float fx, fz;
-    {
-        std::lock_guard<std::mutex> lk(focus_mutex);
-        fx = focus[0];
-        fz = focus[2];
+    auto& coordinator = ecs_runtime.streaming_coordinator();
+    coordinator.worker_step();
+    std::string eviction_error;
+    if (!drain_sector_evictions(/*blocking=*/true, eviction_error)) {
+        Event event;
+        event.type = EventType::BakeError;
+        event.code = BakeErrorCode::GpuError;
+        event.phase = "stream";
+        event.message = eviction_error.empty()
+            ? "sector eviction failed"
+            : eviction_error;
+        emit_event(std::move(event));
+        return;
     }
-    sector_streamer->update(fx, fz);
-
-    // 2. Drain evictions on a blocking GL job so world state is updated on the
-    //    GL thread (matches the pattern used by refine evictions).
-    {
-        auto evs = sector_streamer->take_evictions();
-        if (!evs.empty()) {
-            // Package eviction work into a blocking GL job.
-            auto evs_shared = std::make_shared<std::vector<matter_stream::Eviction>>(std::move(evs));
-            matter_async::GpuJob ej;
-            ej.name = "stream.evict";
-            ej.fn   = [this, evs_shared](std::string& /*err*/) -> bool {
-                matter_async::assert_gl_thread("stream.evict");
-                for (const auto& ev : *evs_shared) {
-                    SectorKey sk{ev.tx, ev.tz, ev.rung};
-                    std::lock_guard<std::mutex> lk(sector_map_mutex);
-                    auto it = sector_map.find(sk);
-                    if (it == sector_map.end()) continue;
-
-                    uint32_t inst_id   = it->second.instance_id;
-                    uint64_t part_hash = it->second.part_hash;
-
-                    viewer::WorldDelta d;
-                    d.removed.push_back(inst_id);
-                    state.apply(d);
-                    tracer_dirty = true;
-                    tracer.reset();
-
-#ifndef MATTER_VULKAN_ONLY
-                    if (culler_ready) gpu_culler.release_part(part_hash);
-#endif
-#ifdef MATTER_VULKAN_VIEWER
-                    if (vk_scene) {
-                        vk_scene->release_part(part_hash);
-                        vk_instance_cache.invalidate();
-                    }
-#endif
-                    if (store) store->release(part_hash);
-                    if (provider) provider->release_transient(part_hash);
-
-                    sector_map.erase(it);
-                }
-                return true;
-            };
-            std::string eerr;
-            gpu_jobs.run_blocking(std::move(ej), eerr);
-        }
-    }
+    if (!provider || !world_field) return;
 
     // 3. Service bake requests.
-    matter_stream::SectorRequest req;
-    while (sector_streamer->next_request(req)) {
+    streaming::detail::TaggedRequest request;
+    while (coordinator.next_request(request)) {
+        const matter_stream::SectorRequest& req = request.sector;
         // Build params JSON for WorldSector bake.
         // biomes_json needs to be escaped for embedding in a JSON string value.
         std::string biomes_escaped;
@@ -2283,7 +2361,7 @@ void WorldSession::Impl::execute_sector_stream_step() {
             fprintf(stderr, "[stream] sector bake failed (%lld,%lld r%d): %s\n",
                     (long long)req.tx, (long long)req.tz, req.rung,
                     br.error.message.c_str());
-            sector_streamer->on_failed(req.tx, req.tz, req.rung);
+            coordinator.acknowledge(request, false);
 
             Event ev;
             ev.type    = EventType::BakeError;
@@ -2297,85 +2375,167 @@ void WorldSession::Impl::execute_sector_stream_step() {
         uint64_t sector_hash = br.resolved_hash;
 
         // 4. GL publish job: add this sector to the world.
-        int64_t pub_tx = req.tx, pub_tz = req.tz;
-        int pub_rung = req.rung;
-        float S = world_sector_size;
-
-        matter_async::GpuJob pj;
-        pj.name = "stream.publish";
-        pj.fn = [this, pub_tx, pub_tz, pub_rung, sector_hash, S](std::string& /*err*/) -> bool {
+        const float sector_size = world_sector_size;
+        const auto provider_ref = provider;
+        matter_async::GpuJob publish_job;
+        publish_job.name = "stream.publish";
+        publish_job.fn = [this, request, sector_hash, sector_size, provider_ref](
+                             std::string&) -> bool {
             matter_async::assert_gl_thread("stream.publish");
 
-            if (!sector_streamer->on_published(pub_tx, pub_tz, pub_rung)) {
-                // No longer desired — discard.
-                if (provider) provider->release_transient(sector_hash);
+            auto& app_coordinator = ecs_runtime.streaming_coordinator();
+            if (!app_coordinator.begin_publication(request)) {
+                if (provider_ref) provider_ref->release_transient(sector_hash);
+                app_coordinator.acknowledge(request, false);
                 return true;
             }
 
-            // Load the part.
-            if (store && !store->get_or_load(sector_hash)) {
-                fprintf(stderr, "[stream] get_or_load failed for sector (%lld,%lld r%d)\n",
-                        (long long)pub_tx, (long long)pub_tz, pub_rung);
+            const SectorKey key{
+                request.sector.tx,
+                request.sector.tz,
+                request.sector.rung};
+            bool ledger_inserted = false;
+            auto emit_publication_error = [this](const std::string& message) {
+                Event event;
+                event.type = EventType::BakeError;
+                event.code = BakeErrorCode::GpuError;
+                event.phase = "stream";
+                event.message = message;
+                emit_event(std::move(event));
+            };
+            auto fail_publication = [&](const std::string& message) {
+                if (ledger_inserted) {
+                    std::string rollback_error;
+                    apply_sector_evictions(
+                        {publication_eviction(request)}, rollback_error);
+                } else if (provider_ref) {
+                    provider_ref->release_transient(sector_hash);
+                }
+                app_coordinator.acknowledge(request, false);
+                emit_publication_error(message);
                 return true;
-            }
+            };
 
-            // Assign instance id.
-            uint32_t inst_id;
-            {
-                std::lock_guard<std::mutex> lk(sector_map_mutex);
-                inst_id = sector_next_id++;
-            }
+            try {
+                if (!store) {
+                    return fail_publication("sector PartStore is unavailable");
+                }
+                const viewer::LoadedPart* loaded = store->get_or_load(sector_hash);
+                if (!loaded) {
+                    return fail_publication("sector PartStore load failed");
+                }
+                if (sector_map.find(key) != sector_map.end()) {
+                    // A stale publication must not touch a newer same-tuple
+                    // replacement or release its shared content hash.
+                    app_coordinator.acknowledge(request, false);
+                    emit_publication_error(
+                        "stale sector publication collided with app residency");
+                    return true;
+                }
 
-            // Build transform: ROW-major, translate at [3],[7],[11].
-            viewer::WorldManifestEntry we;
-            we.instance_id = inst_id;
-            we.part_hash   = sector_hash;
-            we.module      = "WorldSector";
-            // Identity + translation.
-            std::memset(we.transform, 0, sizeof(we.transform));
-            we.transform[0]  = 1.0f;
-            we.transform[5]  = 1.0f;
-            we.transform[10] = 1.0f;
-            we.transform[15] = 1.0f;
-            we.transform[3]  = (float)pub_tx * S;  // tx
-            we.transform[7]  = 0.0f;                // ty
-            we.transform[11] = (float)pub_tz * S;  // tz
+                SectorEntry entry;
+                entry.request = request;
+                entry.instance_id = sector_next_id++;
+                entry.part_hash = sector_hash;
+                entry.provider_ref = provider_ref;
+                auto inserted = sector_map.emplace(key, std::move(entry));
+                if (!inserted.second) {
+                    app_coordinator.acknowledge(request, false);
+                    emit_publication_error(
+                        "sector publication ledger insertion failed");
+                    return true;
+                }
+                ledger_inserted = true;
+                SectorEntry& published = inserted.first->second;
 
-            viewer::WorldDelta d;
-            d.added.push_back(we);
-            state.apply(d);
-            tracer_dirty = true;
-            tracer.reset();
+                viewer::WorldManifestEntry instance;
+                instance.instance_id = published.instance_id;
+                instance.part_hash = sector_hash;
+                instance.module = "WorldSector";
+                std::memset(instance.transform, 0, sizeof(instance.transform));
+                instance.transform[0] = 1.0f;
+                instance.transform[5] = 1.0f;
+                instance.transform[10] = 1.0f;
+                instance.transform[15] = 1.0f;
+                instance.transform[3] =
+                    static_cast<float>(request.sector.tx) * sector_size;
+                instance.transform[11] =
+                    static_cast<float>(request.sector.tz) * sector_size;
 
-            // Ensure GPU culler knows about this part.
+                viewer::WorldDelta delta;
+                delta.added.push_back(instance);
+                state.apply(delta);
+                published.state_added = true;
+                tracer_dirty = true;
+                tracer.reset();
+
 #ifndef MATTER_VULKAN_ONLY
-            if (culler_ready && store)
-                gpu_culler.ensure_part(sector_hash, *store);
+                if (culler_ready) {
+                    if (gpu_culler.ensure_part(sector_hash, *store) < 0) {
+                        throw std::runtime_error(
+                            "sector GPU culler registration failed");
+                    }
+                    published.culler_registered = true;
+                }
 #endif
-
-            // Record in sector_map.
-            {
-                std::lock_guard<std::mutex> lk(sector_map_mutex);
-                SectorKey sk{pub_tx, pub_tz, pub_rung};
-                sector_map[sk] = SectorEntry{inst_id, sector_hash};
-            }
-
+#ifdef MATTER_VULKAN_VIEWER
+                if (vk_scene) {
+                    bool drawable = false;
+                    std::string vulkan_error;
+                    if (!ensure_vulkan_part(
+                            *vk_scene, sector_hash, *loaded,
+                            drawable, vulkan_error)) {
+                        throw std::runtime_error(
+                            vulkan_error.empty()
+                                ? "sector Vulkan registration failed"
+                                : vulkan_error);
+                    }
+                    published.vulkan_registered = true;
+                }
+                vk_instance_cache.invalidate();
+                vk_temporal.invalidate();
+#endif
 #ifndef MATTER_VULKAN_ONLY
-            // Grow composer cap if needed.
-            if (composer && store) {
-                size_t cap_needed = state.entries().size() + 16;
-                composer = std::make_unique<viewer::WorldComposer>(*store, cap_needed);
-            }
+                if (composer) {
+                    const size_t capacity = state.entries().size() + 16;
+                    composer =
+                        std::make_unique<viewer::WorldComposer>(*store, capacity);
+                }
 #endif
-
-            return true;
+                published.resident = true;
+                app_coordinator.acknowledge(request, true);
+                return true;
+            } catch (const std::exception& exception) {
+                return fail_publication(exception.what());
+            } catch (...) {
+                return fail_publication("unknown sector publication failure");
+            }
         };
-        gpu_jobs.post(std::move(pj));
+        gpu_jobs.post(std::move(publish_job));
     }
 
-    // 5. After the first update+drain cycle with no remaining holes, emit BakeFinished.
-    if (!world_initial_load_done && sector_streamer->resident_count() > 0 &&
-        sector_streamer->inflight_count() == 0) {
+    // Process acknowledgements that arrived while baking/posting and publish a
+    // copied count after request allocation changed inflight state.
+    coordinator.worker_step();
+    eviction_error.clear();
+    if (!drain_sector_evictions(/*blocking=*/true, eviction_error)) {
+        Event event;
+        event.type = EventType::BakeError;
+        event.code = BakeErrorCode::GpuError;
+        event.phase = "stream";
+        event.message = eviction_error.empty()
+            ? "sector replacement eviction failed"
+            : eviction_error;
+        emit_event(std::move(event));
+        return;
+    }
+
+    // After the first cycle with no remaining holes, emit BakeFinished from the
+    // copied coordinator snapshot only.
+    const streaming::detail::Snapshot snapshot = coordinator.snapshot();
+    if (!world_initial_load_done &&
+        snapshot.status.resident_sectors > 0 &&
+        snapshot.status.inflight_sectors == 0) {
         world_initial_load_done = true;
         Event ev;
         ev.type   = EventType::BakeFinished;
@@ -2755,10 +2915,35 @@ WorldSession::~WorldSession() {
     //   5) existing GL teardown (raster -> composer
     //      -> store, then renderer.shutdown()) mirrors main.cpp lines
     //      ~549–557.
+    // Invalidate attachment before worker clear.
+    auto& coordinator = impl_->ecs_runtime.streaming_coordinator();
+    const flecs::entity_t owner = coordinator.intended_owner();
+    if (owner != 0) coordinator.detach(owner);
     impl_->commands.shut_down();
-    impl_->gpu_jobs.shut_down();
-    if (impl_->worker.joinable()) impl_->worker.join();
+
+    // Keep the app/GPU owner pumping while cancellation unwinds any blocking
+    // job. Worker exit means its FIFO shutdown evictions have been posted.
+    if (impl_->worker.joinable()) {
+        while (!impl_->worker_exited.load(std::memory_order_acquire)) {
+            impl_->gpu_jobs.pump(1e9);
+            std::this_thread::yield();
+        }
+        impl_->worker.join();
+    }
     impl_->gpu_jobs.pump(1e9);
+
+    // Normally empty; covers an acknowledgement that arrived during the final
+    // pump, using the same app-thread release path as every other lifecycle.
+    if (!impl_->sector_map.empty()) {
+        std::vector<streaming::detail::TaggedEviction> remaining;
+        remaining.reserve(impl_->sector_map.size());
+        for (const auto& pair : impl_->sector_map) {
+            remaining.push_back(publication_eviction(pair.second.request));
+        }
+        std::string cleanup_error;
+        impl_->apply_sector_evictions(remaining, cleanup_error);
+    }
+    impl_->gpu_jobs.shut_down();
 
 #ifdef MATTER_VULKAN_VIEWER
     impl_->vk_instance_cache.invalidate();
@@ -2898,11 +3083,13 @@ void WorldSession::tick(const TickDesc& desc) {
     const ecs_runtime::TickResult result = impl_->ecs_runtime.tick(desc);
     if (result.invalid) {
         ++impl_->stats.ecs_invalid_ticks;
+        impl_->publish_streaming_snapshot();
         return;
     }
     impl_->stats.ecs_fixed_steps += result.fixed_steps;
     impl_->stats.ecs_dropped_steps += result.dropped_steps;
     impl_->poll_runtime_sources();
+    impl_->publish_streaming_snapshot();
 }
 
 #ifdef MATTER_VULKAN_VIEWER
@@ -3495,10 +3682,6 @@ void WorldSession::render(const CameraDesc& cam, int fb_width, int fb_height,
                           const RenderOptions& opts) {
     if (!impl_->connected) return;
 
-    // Phase C Task 9: update resident_sectors stat each frame.
-    impl_->stats.resident_sectors = impl_->sector_streamer
-        ? (uint32_t)impl_->sector_streamer->resident_count() : 0;
-
     // Apply option defaults.
     float budget = opts.pixel_budget;
     if (budget == 0.0f) budget = 1.0f;
@@ -3625,13 +3808,17 @@ bool WorldSession::poll_event(Event& out) {
 }
 
 const FrameStats& WorldSession::frame_stats() const {
-    impl_->stats.resident_sectors = impl_->sector_streamer
-        ? (uint32_t)impl_->sector_streamer->resident_count() : 0;
     return impl_->stats;
+}
+
+streaming::SectorStreamingStatus WorldSession::streaming_status() const {
+    std::lock_guard<std::mutex> lock(impl_->streaming_status_mutex);
+    return impl_->streaming_status_copy;
 }
 
 void WorldSession::pump_gpu_jobs(float ms_budget) {
     impl_->gpu_jobs.pump((double)ms_budget);
+    impl_->publish_streaming_snapshot();
 }
 
 // ---------------------------------------------------------------------------
