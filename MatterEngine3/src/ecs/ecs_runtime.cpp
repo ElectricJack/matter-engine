@@ -1,4 +1,5 @@
 #include "ecs_runtime.h"
+#include "matter/physics.h"
 
 #include <algorithm>
 #include <cmath>
@@ -79,6 +80,115 @@ CoreModule::CoreModule(flecs::world& world) {
 }
 
 } // namespace matter::ecs
+
+namespace matter::physics {
+
+PhysicsModule::PhysicsModule(flecs::world& world) {
+    const flecs::entity module = world.module<PhysicsModule>();
+    const flecs::entity previous_scope = world.set_scope(module.parent().id());
+
+    world.component<RigidBodyType>()
+        .constant("Static", RigidBodyType::Static)
+        .constant("Kinematic", RigidBodyType::Kinematic)
+        .constant("Dynamic", RigidBodyType::Dynamic);
+    world.component<RigidBody>()
+        .member("type", &RigidBody::type)
+        .member("linear_damping", &RigidBody::linear_damping)
+        .member("angular_damping", &RigidBody::angular_damping)
+        .member("gravity_scale", &RigidBody::gravity_scale)
+        .member("sleep_threshold", &RigidBody::sleep_threshold)
+        .member("enable_sleep", &RigidBody::enable_sleep)
+        .member("continuous", &RigidBody::continuous);
+    world.component<PhysicsVelocity>()
+        .member("linear", &PhysicsVelocity::linear)
+        .member("angular", &PhysicsVelocity::angular);
+    world.component<ColliderProperties>()
+        .member("density", &ColliderProperties::density)
+        .member("friction", &ColliderProperties::friction)
+        .member("restitution", &ColliderProperties::restitution)
+        .member("category_bits", &ColliderProperties::category_bits)
+        .member("mask_bits", &ColliderProperties::mask_bits)
+        .member("sensor", &ColliderProperties::sensor)
+        .member("contact_events", &ColliderProperties::contact_events)
+        .member("hit_events", &ColliderProperties::hit_events);
+    world.component<SphereCollider>()
+        .member("properties", &SphereCollider::properties)
+        .member("center", &SphereCollider::center)
+        .member("radius", &SphereCollider::radius);
+    world.component<CapsuleCollider>()
+        .member("properties", &CapsuleCollider::properties)
+        .member("point_a", &CapsuleCollider::point_a)
+        .member("point_b", &CapsuleCollider::point_b)
+        .member("radius", &CapsuleCollider::radius);
+    world.component<BoxCollider>()
+        .member("properties", &BoxCollider::properties)
+        .member("center", &BoxCollider::center)
+        .member("rotation", &BoxCollider::rotation)
+        .member("half_extents", &BoxCollider::half_extents);
+    world.component<ConvexHullCollider>()
+        .member("properties", &ConvexHullCollider::properties)
+        .member("point_count", &ConvexHullCollider::point_count)
+        .member("points", &ConvexHullCollider::points);
+    world.component<PhysicsSettings>()
+        .member("gravity", &PhysicsSettings::gravity)
+        .member("substeps", &PhysicsSettings::substeps);
+    world.component<PhysicsErrorCode>()
+        .constant("None", PhysicsErrorCode::None)
+        .constant("MissingTransform", PhysicsErrorCode::MissingTransform)
+        .constant("HasParent", PhysicsErrorCode::HasParent)
+        .constant("NonUnitScale", PhysicsErrorCode::NonUnitScale)
+        .constant("MissingCollider", PhysicsErrorCode::MissingCollider)
+        .constant("MultipleColliders", PhysicsErrorCode::MultipleColliders)
+        .constant("InvalidBody", PhysicsErrorCode::InvalidBody)
+        .constant("InvalidCollider", PhysicsErrorCode::InvalidCollider)
+        .constant("HullBuildFailed", PhysicsErrorCode::HullBuildFailed);
+    world.component<PhysicsError>()
+        .member("code", &PhysicsError::code);
+    world.component<PhysicsBodyEvent>()
+        .member("entity", &PhysicsBodyEvent::entity)
+        .member("awake", &PhysicsBodyEvent::awake);
+    world.component<PhysicsPairEvent>()
+        .member("first", &PhysicsPairEvent::first)
+        .member("second", &PhysicsPairEvent::second);
+    world.component<PhysicsHitEvent>()
+        .member("first", &PhysicsHitEvent::first)
+        .member("second", &PhysicsHitEvent::second)
+        .member("position", &PhysicsHitEvent::position)
+        .member("normal", &PhysicsHitEvent::normal)
+        .member("approach_speed", &PhysicsHitEvent::approach_speed);
+    world.component<PhysicsStats>()
+        .member("steps", &PhysicsStats::steps)
+        .member("bodies_created", &PhysicsStats::bodies_created)
+        .member("bodies_destroyed", &PhysicsStats::bodies_destroyed)
+        .member("rejected_configurations", &PhysicsStats::rejected_configurations)
+        .member("failed_commands", &PhysicsStats::failed_commands)
+        .member("stale_events", &PhysicsStats::stale_events)
+        .member("live_bodies", &PhysicsStats::live_bodies);
+    world.component<PhysicsRayHit>()
+        .member("entity", &PhysicsRayHit::entity)
+        .member("position", &PhysicsRayHit::position)
+        .member("normal", &PhysicsRayHit::normal)
+        .member("fraction", &PhysicsRayHit::fraction);
+
+    world.component<PhysicsReconcile>()
+        .add(flecs::Phase)
+        .depends_on<ecs::PrePhysics>();
+    world.component<PhysicsPush>()
+        .add(flecs::Phase)
+        .depends_on<PhysicsReconcile>();
+    world.component<ecs::Physics>()
+        .depends_on<PhysicsPush>();
+    world.component<PhysicsPull>()
+        .add(flecs::Phase)
+        .depends_on<ecs::Physics>();
+    world.component<ecs::PostPhysics>()
+        .depends_on<PhysicsPull>();
+
+    world.set<PhysicsSettings>(PhysicsSettings{});
+    world.set_scope(previous_scope.id());
+}
+
+} // namespace matter::physics
 
 namespace matter::ecs_runtime {
 namespace {

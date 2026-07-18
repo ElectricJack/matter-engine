@@ -82,6 +82,10 @@ ECS_TARGET = ecs_tests
 ECS_CPP = ecs_tests.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/transform_system.cpp
 ECS_C = $(FLECS_C)
 
+PHYSICS_CONTRACT_TARGET = physics_contract_tests
+PHYSICS_CONTRACT_CPP = physics_tests.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/transform_system.cpp
+PHYSICS_CONTRACT_C = $(FLECS_C)
+
 # ---------------------------------------------------------------------------
 # Object-path mangling. Two DIFFERENT source paths must never map to the SAME
 # object path. Strategy: replace every '/' with '__' and every '..' with 'up'
@@ -673,6 +677,7 @@ GPU_ALL_CPP = $(GPU_PIPELINE_CPP) $(GPU_RENDER_CPP) $(GPU_MSL_CPP) \
 # Collect the sources compiled under each flavor.
 def_CPP_SRCS := $(sort \
     $(ECS_CPP) \
+    $(PHYSICS_CONTRACT_CPP) \
     $(PARTV2_CPP) \
     $(GRAPH_SOURCES) \
     $(TRIVAR_CPP) \
@@ -775,6 +780,7 @@ $(foreach s,$(flecsc_C_SRCS),$(eval $(call objrule_c,flecsc,$(s))))
 # Convenience: derived object-list helpers per binary (link-time inputs).
 # ---------------------------------------------------------------------------
 ECS_OBJS = $(call obj_list,def,$(ECS_CPP)) $(call obj_list,flecsc,$(ECS_C))
+PHYSICS_CONTRACT_OBJS = $(call obj_list,def,$(PHYSICS_CONTRACT_CPP)) $(call obj_list,flecsc,$(PHYSICS_CONTRACT_C))
 PARTV2_OBJS = $(call obj_list,def,$(PARTV2_CPP)) $(call obj_list,mslc,$(PARTV2_C))
 GRAPH_OBJS  = $(call obj_list,def,$(GRAPH_SOURCES)) $(call obj_list,mslc,$(GRAPH_C))
 TRIVAR_OBJS = $(call obj_list,def,$(TRIVAR_CPP)) $(call obj_list,mslc,$(TRIVAR_C))
@@ -828,7 +834,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-ecs run-partv2 run-partstore run-script run-foldcache run-evalworld run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream
+.PHONY: clean run-matrix run-ecs run-physics-contract run-partv2 run-partstore run-script run-foldcache run-evalworld run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -845,6 +851,12 @@ $(ECS_TARGET): $(ECS_OBJS)
 
 run-ecs: $(ECS_TARGET)
 	./$(ECS_TARGET)
+
+$(PHYSICS_CONTRACT_TARGET): $(PHYSICS_CONTRACT_OBJS)
+	$(CC) $(PHYSICS_CONTRACT_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS)
+
+run-physics-contract: $(PHYSICS_CONTRACT_TARGET)
+	./$(PHYSICS_CONTRACT_TARGET)
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests.
 $(PARTV2_TARGET): $(PARTV2_OBJS)
