@@ -1,3 +1,16 @@
+# Box3D Runtime Physics Phase 2 SDD Progress Ledger
+Branch: codex/box3d-runtime-physics | Plan: docs/superpowers/plans/2026-07-18-box3d-runtime-physics.md
+BASE at start: 66c86d2
+
+Resume at Task 1.
+
+Environment gate:
+  - WSL is installed without a Linux distribution.
+  - No native make, GCC, Clang, or MinGW compiler is available on PATH.
+  - Baseline Flecs static checker passes and fresh MSVC C17/C++17 ECS suite prints ALL PASS.
+
+---
+
 # Flecs ECS Foundation SDD Progress Ledger
 Branch: codex/flecs-ecs-foundation | Plan: docs/superpowers/plans/2026-07-17-flecs-ecs-foundation.md
 BASE at start: 476a42b
