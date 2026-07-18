@@ -186,6 +186,7 @@ It owns:
 - the Box3D world;
 - stable heap-allocated bridge records;
 - entity-to-body and body-to-bridge lookup tables;
+- a private category-filtered dynamic-tree query index;
 - the latest engine-native event buffer;
 - queued force, impulse, velocity, and teleport commands;
 - synchronous query scratch storage.
@@ -193,8 +194,9 @@ It owns:
 Opaque `b3BodyId` and `b3ShapeId` values live only in private components/source
 files. Box3D `userData` points to a stable bridge record, never to Flecs component
 storage. A bridge record contains the full generational `flecs::entity_t`, current
-opaque IDs, and a live/tombstone state. Destroying a body clears its Box3D user data
-before retiring the bridge record.
+opaque IDs, its private query proxy, a physics-transform-pending bit, and a
+live/tombstone state. Destroying a body removes its query proxy and clears its
+Box3D user data before retiring the bridge record.
 
 Bodies are reconciled in ascending full Flecs entity-ID order. This makes creation,
 destruction, validation, and conflict behavior independent of archetype iteration
@@ -222,6 +224,9 @@ still inherit the body's transform and may carry arbitrary local scale.
 Dynamic transform writes preserve unit scale, add `TransformDirty`, and are followed
 by the existing `FixedPostUpdate` hierarchy propagation. This makes descendants and
 the derived `WorldTransform` current before the fixed pipeline ends.
+The stable bridge's pending bit distinguishes the deferred physics-authored
+`LocalTransform` write without allocating per moved body; the observer still
+pose-compares before suppression so a later user edit remains visible.
 
 Explicit commands provide intentional dynamic-body mutation:
 
@@ -311,8 +316,12 @@ bridges, and return deterministic entity ordering. Ray cast reports the closest
 accepted hit, breaking equal-fraction ties by the smaller full entity ID. The
 query `category_mask` selects collider category bits independently of the
 collider's simulation `mask_bits`; a collider with `mask_bits == 0` remains
-queryable. Sphere overlap deduplicates entities before sorting because one body may
-later own more than one Box3D shape even though Phase 2 creates only one.
+queryable. A private dynamic tree indexes all live shapes by category and AABB, so
+queries precise-test only broadphase candidates rather than scanning all bridges.
+Proxies publish and retire transactionally with bridges and track static pushes,
+kinematic/dynamic body events, and teleports. Sphere overlap deduplicates entities
+before sorting because one body may later own more than one Box3D shape even though
+Phase 2 creates only one.
 
 ## Configuration Changes and Lifecycle
 

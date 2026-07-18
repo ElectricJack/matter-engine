@@ -24,6 +24,8 @@ struct BridgeRecord {
     RigidBodyType type = RigidBodyType::Static;
     uint64_t configuration_hash = 0;
     DesiredBody desired{};
+    int query_proxy = -1;
+    bool physics_transform_pending = false;
     bool live = false;
 };
 
@@ -102,9 +104,16 @@ Quaternion engine_quaternion(b3Quat value) {
     return {value.v.x, value.v.y, value.v.z, value.s};
 }
 
-void clear_and_destroy_bridge(BridgeRecord& bridge, PhysicsStats& stats) {
+void clear_and_destroy_bridge(
+    BridgeRecord& bridge,
+    b3DynamicTree& query_tree,
+    PhysicsStats& stats) {
     if (!bridge.live) {
         return;
+    }
+    if (bridge.query_proxy >= 0) {
+        b3DynamicTree_DestroyProxy(&query_tree, bridge.query_proxy);
+        bridge.query_proxy = -1;
     }
     if (b3Shape_IsValid(bridge.shape)) {
         b3Shape_SetUserData(bridge.shape, nullptr);
@@ -119,6 +128,16 @@ void clear_and_destroy_bridge(BridgeRecord& bridge, PhysicsStats& stats) {
     ++stats.bodies_destroyed;
     if (stats.live_bodies > 0) {
         --stats.live_bodies;
+    }
+}
+
+void update_query_proxy(
+    b3DynamicTree& query_tree,
+    const BridgeRecord& bridge) {
+    if (bridge.live && bridge.query_proxy >= 0 &&
+        b3Shape_IsValid(bridge.shape)) {
+        b3DynamicTree_MoveProxy(
+            &query_tree, bridge.query_proxy, b3Shape_GetAABB(bridge.shape));
     }
 }
 
@@ -211,9 +230,10 @@ struct HullDeleter {
 
 struct PhysicsContext::Impl {
     b3WorldId world_id = b3_nullWorldId;
+    b3DynamicTree query_tree{};
+    bool query_tree_valid = false;
     std::unordered_map<flecs::entity_t, std::unique_ptr<BridgeRecord>> bridges;
     std::vector<flecs::entity_t> dirty_entities;
-    std::unordered_set<flecs::entity_t> physics_authored_transform_marks;
     std::mutex command_mutex;
     std::unordered_map<flecs::entity_t, QueuedCommand> teleports;
     std::unordered_map<flecs::entity_t, QueuedCommand> velocities;
@@ -230,6 +250,9 @@ struct PhysicsContext::Impl {
     flecs::entity_t duplicate_overlap_participant_for_test = 0;
     bool fail_next_reconcile_mark_for_test = false;
     bool full_reconcile_required = false;
+    uint64_t physics_transform_marker_allocations_for_test = 0;
+    uint64_t ray_query_candidate_attempts_for_test = 0;
+    uint64_t overlap_query_candidate_attempts_for_test = 0;
     bool stepping = false;
 };
 
@@ -335,29 +358,113 @@ struct QueryBridgeContext {
     flecs::entity_t tombstoned_participant = 0;
 };
 
-BridgeRecord* resolve_query_bridge(
+BridgeRecord* resolve_indexed_query_bridge(
     const QueryBridgeContext& query,
-    b3ShapeId shape) {
+    int proxy_id,
+    uint64_t user_data) {
     if (query.owning_world == nullptr || query.bridges == nullptr ||
-        !b3Shape_IsValid(shape)) {
+        user_data == 0) {
         return nullptr;
     }
-    BridgeRecord* bridge =
-        static_cast<BridgeRecord*>(b3Shape_GetUserData(shape));
-    if (bridge == nullptr || bridge->owning_world != query.owning_world ||
-        bridge->entity == 0 || !bridge->live ||
+    const flecs::entity_t entity = static_cast<flecs::entity_t>(user_data);
+    const auto found = query.bridges->find(entity);
+    if (found == query.bridges->end() || found->second == nullptr) {
+        return nullptr;
+    }
+    BridgeRecord* bridge = found->second.get();
+    if (bridge->owning_world != query.owning_world || bridge->entity == 0 ||
+        bridge->entity != entity ||
+        !bridge->live || bridge->query_proxy != proxy_id ||
         bridge->entity == query.tombstoned_participant ||
-        !B3_ID_EQUALS(bridge->shape, shape) ||
-        !b3Body_IsValid(bridge->body) ||
-        b3Body_GetUserData(bridge->body) != bridge) {
+        !b3Body_IsValid(bridge->body) || !b3Shape_IsValid(bridge->shape) ||
+        b3Body_GetUserData(bridge->body) != bridge ||
+        b3Shape_GetUserData(bridge->shape) != bridge) {
         return nullptr;
     }
-    const auto found = query.bridges->find(bridge->entity);
-    if (found == query.bridges->end() || found->second.get() != bridge ||
-        !ecs_is_alive(query.owning_world, bridge->entity)) {
+    if (!ecs_is_alive(query.owning_world, bridge->entity)) {
         return nullptr;
     }
     return bridge;
+}
+
+struct IndexedRayQuery {
+    QueryBridgeContext bridge;
+    Float3 origin{};
+    Float3 translation{};
+    PhysicsRayHit hit{};
+    uint64_t* attempts = nullptr;
+    bool found = false;
+};
+
+float indexed_ray_callback(
+    const b3RayCastInput* input,
+    int proxy_id,
+    uint64_t user_data,
+    void* opaque) {
+    IndexedRayQuery& query = *static_cast<IndexedRayQuery*>(opaque);
+    BridgeRecord* bridge = resolve_indexed_query_bridge(
+        query.bridge, proxy_id, user_data);
+    if (bridge == nullptr) {
+        return input->maxFraction;
+    }
+    ++*query.attempts;
+    const b3WorldCastOutput output = b3Shape_RayCast(
+        bridge->shape, box_position(query.origin),
+        box_vector(query.translation));
+    if (!output.hit) {
+        return input->maxFraction;
+    }
+    if (!query.found || output.fraction < query.hit.fraction ||
+        (output.fraction == query.hit.fraction &&
+         bridge->entity < query.hit.entity)) {
+        query.hit = {
+            bridge->entity, engine_position(output.point),
+            engine_vector(output.normal), output.fraction};
+        query.found = true;
+    }
+    return query.hit.fraction;
+}
+
+struct IndexedOverlapQuery {
+    QueryBridgeContext bridge;
+    Float3 center{};
+    float radius = 0.0f;
+    flecs::entity_t duplicate_participant = 0;
+    uint64_t* attempts = nullptr;
+    std::vector<flecs::entity_t> entities;
+    bool allocation_failed = false;
+};
+
+bool indexed_overlap_callback(
+    int proxy_id,
+    uint64_t user_data,
+    void* opaque) {
+    IndexedOverlapQuery& query =
+        *static_cast<IndexedOverlapQuery*>(opaque);
+    BridgeRecord* bridge = resolve_indexed_query_bridge(
+        query.bridge, proxy_id, user_data);
+    if (bridge == nullptr) {
+        return true;
+    }
+    ++*query.attempts;
+    const b3Vec3 closest = b3Shape_GetClosestPoint(
+        bridge->shape, box_vector(query.center));
+    const float dx = closest.x - query.center.x;
+    const float dy = closest.y - query.center.y;
+    const float dz = closest.z - query.center.z;
+    if (dx * dx + dy * dy + dz * dz > query.radius * query.radius) {
+        return true;
+    }
+    try {
+        query.entities.push_back(bridge->entity);
+        if (bridge->entity == query.duplicate_participant) {
+            query.entities.push_back(bridge->entity);
+        }
+    } catch (...) {
+        query.allocation_failed = true;
+        return false;
+    }
+    return true;
 }
 
 PhysicsCommandTraceEntry trace_entry(const QueuedCommand& command) {
@@ -378,6 +485,8 @@ PhysicsContext::PhysicsContext(const PhysicsSettings& settings)
     if (!b3World_IsValid(impl_->world_id)) {
         throw std::runtime_error("Box3D failed to create a physics world");
     }
+    impl_->query_tree = b3DynamicTree_Create(16);
+    impl_->query_tree_valid = true;
 }
 
 PhysicsContext::~PhysicsContext() {
@@ -386,6 +495,11 @@ PhysicsContext::~PhysicsContext() {
     }
     for (auto& entry : impl_->bridges) {
         BridgeRecord& bridge = *entry.second;
+        if (impl_->query_tree_valid && bridge.query_proxy >= 0) {
+            b3DynamicTree_DestroyProxy(
+                &impl_->query_tree, bridge.query_proxy);
+            bridge.query_proxy = -1;
+        }
         if (b3Shape_IsValid(bridge.shape)) {
             b3Shape_SetUserData(bridge.shape, nullptr);
         }
@@ -399,6 +513,10 @@ PhysicsContext::~PhysicsContext() {
         impl_->world_id = b3_nullWorldId;
     }
     impl_->bridges.clear();
+    if (impl_->query_tree_valid) {
+        b3DynamicTree_Destroy(&impl_->query_tree);
+        impl_->query_tree_valid = false;
+    }
 }
 
 const PhysicsEvents& PhysicsContext::events() const noexcept {
@@ -436,19 +554,17 @@ void PhysicsContext::mark_transform_for_reconcile(
     if (impl_ == nullptr || !entity || entity.id() == 0) {
         return;
     }
-    const auto authored =
-        impl_->physics_authored_transform_marks.find(entity.id());
-    if (authored == impl_->physics_authored_transform_marks.end()) {
+    const auto found = impl_->bridges.find(entity.id());
+    if (found == impl_->bridges.end() || found->second == nullptr ||
+        !found->second->physics_transform_pending) {
         mark_for_reconcile(entity.id());
         return;
     }
-    impl_->physics_authored_transform_marks.erase(authored);
+    found->second->physics_transform_pending = false;
 
-    const auto found = impl_->bridges.find(entity.id());
     const ecs::LocalTransform* transform =
         entity.try_get<ecs::LocalTransform>();
-    if (found == impl_->bridges.end() || found->second == nullptr ||
-        transform == nullptr || !is_live_dynamic_bridge(*found->second)) {
+    if (transform == nullptr || !is_live_dynamic_bridge(*found->second)) {
         mark_for_reconcile(entity.id());
         return;
     }
@@ -571,7 +687,6 @@ bool PhysicsContext::enqueue_wake(
 void PhysicsContext::reconcile(flecs::world& world) {
     impl_->fixed_step_trace.clear();
     impl_->fixed_step_trace.push_back(PhysicsSystemStage::Reconcile);
-    impl_->physics_authored_transform_marks.clear();
     if (!world_is_valid()) {
         return;
     }
@@ -599,7 +714,8 @@ void PhysicsContext::reconcile(flecs::world& world) {
         const bool alive = world.is_alive(entity_id);
         if (!alive) {
             if (existing != impl_->bridges.end()) {
-                clear_and_destroy_bridge(*existing->second, stats_);
+                clear_and_destroy_bridge(
+                    *existing->second, impl_->query_tree, stats_);
                 impl_->bridges.erase(existing);
             }
             continue;
@@ -608,7 +724,8 @@ void PhysicsContext::reconcile(flecs::world& world) {
         flecs::entity entity(world.c_ptr(), entity_id);
         if (!entity.has<RigidBody>()) {
             if (existing != impl_->bridges.end()) {
-                clear_and_destroy_bridge(*existing->second, stats_);
+                clear_and_destroy_bridge(
+                    *existing->second, impl_->query_tree, stats_);
                 impl_->bridges.erase(existing);
             }
             remove_error(entity);
@@ -618,7 +735,8 @@ void PhysicsContext::reconcile(flecs::world& world) {
         const ValidationResult validation = validate_desired_body(entity);
         if (!validation.valid()) {
             if (existing != impl_->bridges.end()) {
-                clear_and_destroy_bridge(*existing->second, stats_);
+                clear_and_destroy_bridge(
+                    *existing->second, impl_->query_tree, stats_);
                 impl_->bridges.erase(existing);
             }
             ++stats_.rejected_configurations;
@@ -690,7 +808,8 @@ void PhysicsContext::reconcile(flecs::world& world) {
             !b3Shape_IsValid(replacement->shape)) {
             clear_partial_body(replacement->body, replacement->shape);
             if (existing != impl_->bridges.end()) {
-                clear_and_destroy_bridge(*existing->second, stats_);
+                clear_and_destroy_bridge(
+                    *existing->second, impl_->query_tree, stats_);
                 impl_->bridges.erase(existing);
             }
             ++stats_.rejected_configurations;
@@ -704,6 +823,10 @@ void PhysicsContext::reconcile(flecs::world& world) {
 
         replacement->live = true;
         b3Shape_SetUserData(replacement->shape, replacement.get());
+        replacement->query_proxy = b3DynamicTree_CreateProxy(
+            &impl_->query_tree, b3Shape_GetAABB(replacement->shape),
+            b3Shape_GetFilter(replacement->shape).categoryBits,
+            static_cast<uint64_t>(replacement->entity));
         std::unique_ptr<BridgeRecord> retired;
         if (existing == impl_->bridges.end()) {
             impl_->bridges.emplace(entity_id, std::move(replacement));
@@ -716,10 +839,12 @@ void PhysicsContext::reconcile(flecs::world& world) {
         ++stats_.live_bodies;
 
         if (retired != nullptr) {
-            clear_and_destroy_bridge(*retired, stats_);
+            clear_and_destroy_bridge(
+                *retired, impl_->query_tree, stats_);
         }
         if (preserve_dynamic_state) {
             write_state(published, preserved);
+            update_query_proxy(impl_->query_tree, published);
         }
         remove_error(entity);
     }
@@ -789,6 +914,7 @@ void PhysicsContext::push(flecs::world& world, float fixed_delta) {
             b3Body_SetTargetTransform(
                 bridge.body, box_transform(transform), fixed_delta, true);
         }
+        update_query_proxy(impl_->query_tree, bridge);
     }
 
     const flecs::world_t* runtime_world = ecs_get_world(world.c_ptr());
@@ -809,6 +935,7 @@ void PhysicsContext::push(flecs::world& world, float fixed_delta) {
                 bridge.body, box_position(command.primary),
                 box_quaternion(command.rotation));
             b3Body_SetAwake(bridge.body, true);
+            update_query_proxy(impl_->query_tree, bridge);
         });
     }
     for (const QueuedCommand& command : sorted_map_commands(velocities)) {
@@ -877,39 +1004,23 @@ bool PhysicsContext::ray_cast(
         return false;
     }
 
-    const QueryBridgeContext query{
+    IndexedRayQuery query{};
+    query.bridge = {
         owning_world, &impl_->bridges,
         impl_->tombstoned_query_participant_for_test};
+    query.origin = origin;
+    query.translation = translation;
+    query.attempts = &impl_->ray_query_candidate_attempts_for_test;
     impl_->tombstoned_query_participant_for_test = 0;
-    bool found_hit = false;
-    PhysicsRayHit closest{};
-    for (const auto& entry : impl_->bridges) {
-        if (entry.second == nullptr) {
-            continue;
-        }
-        BridgeRecord* bridge = resolve_query_bridge(query, entry.second->shape);
-        if (bridge == nullptr ||
-            (b3Shape_GetFilter(bridge->shape).categoryBits & category_mask) == 0) {
-            continue;
-        }
-        const b3WorldCastOutput output = b3Shape_RayCast(
-            bridge->shape, box_position(origin), box_vector(translation));
-        if (!output.hit) {
-            continue;
-        }
-        if (!found_hit || output.fraction < closest.fraction ||
-            (output.fraction == closest.fraction &&
-             bridge->entity < closest.entity)) {
-            closest = {
-                bridge->entity, engine_position(output.point),
-                engine_vector(output.normal), output.fraction};
-            found_hit = true;
-        }
-    }
-    if (!found_hit) {
+    const b3RayCastInput input{
+        box_vector(origin), box_vector(translation), 1.0f};
+    b3DynamicTree_RayCast(
+        &impl_->query_tree, &input, category_mask, false,
+        indexed_ray_callback, &query);
+    if (!query.found) {
         return false;
     }
-    hit = closest;
+    hit = query.hit;
     return true;
 }
 
@@ -932,46 +1043,32 @@ std::vector<flecs::entity_t> PhysicsContext::overlap_sphere(
         return {};
     }
 
-    const QueryBridgeContext query{
+    IndexedOverlapQuery query{};
+    query.bridge = {
         owning_world, &impl_->bridges,
         impl_->tombstoned_query_participant_for_test};
+    query.center = center;
+    query.radius = radius;
+    query.attempts = &impl_->overlap_query_candidate_attempts_for_test;
     impl_->tombstoned_query_participant_for_test = 0;
-    const flecs::entity_t duplicate_participant =
+    query.duplicate_participant =
         impl_->duplicate_overlap_participant_for_test;
     impl_->duplicate_overlap_participant_for_test = 0;
-    std::vector<flecs::entity_t> entities;
-    try {
-        for (const auto& entry : impl_->bridges) {
-            if (entry.second == nullptr) {
-                continue;
-            }
-            BridgeRecord* bridge =
-                resolve_query_bridge(query, entry.second->shape);
-            if (bridge == nullptr ||
-                (b3Shape_GetFilter(bridge->shape).categoryBits &
-                 category_mask) == 0) {
-                continue;
-            }
-            const b3Vec3 closest = b3Shape_GetClosestPoint(
-                bridge->shape, box_vector(center));
-            const float dx = closest.x - center.x;
-            const float dy = closest.y - center.y;
-            const float dz = closest.z - center.z;
-            if (dx * dx + dy * dy + dz * dz > radius * radius) {
-                continue;
-            }
-            entities.push_back(bridge->entity);
-            if (bridge->entity == duplicate_participant) {
-                entities.push_back(bridge->entity);
-            }
-        }
-    } catch (...) {
+    const b3Vec3 lower{
+        center.x - radius, center.y - radius, center.z - radius};
+    const b3Vec3 upper{
+        center.x + radius, center.y + radius, center.z + radius};
+    b3DynamicTree_Query(
+        &impl_->query_tree, {lower, upper}, category_mask, false,
+        indexed_overlap_callback, &query);
+    if (query.allocation_failed) {
         return {};
     }
-    std::sort(entities.begin(), entities.end());
-    entities.erase(
-        std::unique(entities.begin(), entities.end()), entities.end());
-    return entities;
+    std::sort(query.entities.begin(), query.entities.end());
+    query.entities.erase(
+        std::unique(query.entities.begin(), query.entities.end()),
+        query.entities.end());
+    return query.entities;
 }
 
 void PhysicsContext::capture_events(flecs::world& world) {
@@ -1028,7 +1125,6 @@ void PhysicsContext::capture_events(flecs::world& world) {
         BridgeRecord* bridge = static_cast<BridgeRecord*>(event.userData);
         if (bridge == nullptr || bridge->owning_world != owning_world ||
             bridge->entity == 0 || !bridge->live ||
-            bridge->entity == tombstoned_participant ||
             !B3_ID_EQUALS(bridge->body, event.bodyId)) {
             ++stats_.stale_events;
             continue;
@@ -1037,6 +1133,11 @@ void PhysicsContext::capture_events(flecs::world& world) {
         if (found == impl_->bridges.end() || found->second.get() != bridge ||
             !ecs_is_alive(owning_world, bridge->entity) ||
             !b3Body_IsValid(bridge->body)) {
+            ++stats_.stale_events;
+            continue;
+        }
+        update_query_proxy(impl_->query_tree, *bridge);
+        if (bridge->entity == tombstoned_participant) {
             ++stats_.stale_events;
             continue;
         }
@@ -1158,13 +1259,10 @@ void PhysicsContext::pull(flecs::world& world) {
             b3Body_GetAngularVelocity(bridge->body));
         const flecs::entity entity(world.c_ptr(), bridge->entity);
         // Flecs may defer this OnSet observer until the system merge, so a
-        // scoped boolean cannot distinguish this write. Retain the full ID
-        // until the observer consumes it; allocation failure merely causes a
-        // conservative later reconcile rather than losing a user edit.
-        try {
-            impl_->physics_authored_transform_marks.insert(bridge->entity);
-        } catch (...) {
-        }
+        // context-global scoped boolean cannot distinguish this write. The
+        // stable bridge carries the pending bit without allocating, and the
+        // transform observer consumes it only after comparing the final pose.
+        bridge->physics_transform_pending = true;
         entity.set<ecs::LocalTransform>(transform);
         entity.set<PhysicsVelocity>(velocity);
         entity.add<ecs::TransformDirty>();
@@ -1246,6 +1344,7 @@ bool PhysicsContext::set_body_state(
         return false;
     }
     write_state(*found->second, state);
+    update_query_proxy(impl_->query_tree, *found->second);
     return true;
 }
 
@@ -1309,6 +1408,23 @@ void PhysicsContext::fail_next_reconcile_mark_for_test() noexcept {
     if (impl_ != nullptr) {
         impl_->fail_next_reconcile_mark_for_test = true;
     }
+}
+
+uint64_t PhysicsContext::physics_transform_marker_allocations_for_test()
+    const noexcept {
+    return impl_ != nullptr
+        ? impl_->physics_transform_marker_allocations_for_test : 0;
+}
+
+uint64_t PhysicsContext::ray_query_candidate_attempts_for_test()
+    const noexcept {
+    return impl_ != nullptr ? impl_->ray_query_candidate_attempts_for_test : 0;
+}
+
+uint64_t PhysicsContext::overlap_query_candidate_attempts_for_test()
+    const noexcept {
+    return impl_ != nullptr
+        ? impl_->overlap_query_candidate_attempts_for_test : 0;
 }
 
 void PhysicsContext::set_stepping_for_test(bool stepping) noexcept {

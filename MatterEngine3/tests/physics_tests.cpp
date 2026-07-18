@@ -865,6 +865,28 @@ void test_reconcile_only_revisits_dirty_bodies_and_fails_closed() {
           "retirement pass");
 }
 
+void test_dynamic_pull_uses_bridge_owned_pending_state_without_allocations() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    world.set<physics::PhysicsSettings>({{0.0f, 0.0f, 0.0f}, 1});
+    physics::RigidBody body{};
+    body.type = physics::RigidBodyType::Dynamic;
+    for (int index = 0; index < 64; ++index) {
+        world.entity()
+            .set<ecs::LocalTransform>(
+                {{static_cast<float>(index) * 3.0f, 0.0f, 0.0f}})
+            .set<physics::RigidBody>(body)
+            .set<physics::SphereCollider>({})
+            .set<physics::PhysicsVelocity>({{1.0f, 0.0f, 0.0f}, {}});
+    }
+    physics::detail::PhysicsContext& context =
+        physics::detail::context(world);
+    runtime.tick({0.1f, 0.1f, 1});
+    runtime.tick({0.1f, 0.1f, 1});
+    CHECK(context.physics_transform_marker_allocations_for_test() == 0,
+          "dynamic Pull records deferred transform ownership without heap marker inserts");
+}
+
 bool near(float actual, float expected, float tolerance = 1.0e-3f) {
     return std::fabs(actual - expected) <= tolerance;
 }
@@ -1999,6 +2021,133 @@ void test_queries_filter_categories_independently_and_tie_by_full_id() {
           "category-only queries still reject nonmatching categories");
 }
 
+void test_category_query_index_prunes_and_tracks_shape_lifecycle() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    world.set<physics::PhysicsSettings>({{0.0f, 0.0f, 0.0f}, 1});
+    for (int index = 0; index < 256; ++index) {
+        make_query_sphere(
+            world, {static_cast<float>(index), 20.0f, 0.0f}, 0x40U);
+    }
+    flecs::entity target =
+        make_query_sphere(world, {2.0f, 0.0f, 0.0f}, 0x20U, 0.5f, 0U);
+    physics::RigidBody dynamic_target{};
+    dynamic_target.type = physics::RigidBodyType::Dynamic;
+    target.set<physics::RigidBody>(dynamic_target);
+    reconcile(runtime);
+    physics::detail::PhysicsContext& context =
+        physics::detail::context(world);
+
+    const uint64_t ray_before =
+        context.ray_query_candidate_attempts_for_test();
+    physics::PhysicsRayHit hit{};
+    CHECK(physics::physics_ray_cast(
+              world, {}, {10.0f, 0.0f, 0.0f}, 0x20U, hit) &&
+              hit.entity == target.id() &&
+              context.ray_query_candidate_attempts_for_test() - ray_before <= 2,
+          "category ray index avoids scanning irrelevant-category bridges");
+    const uint64_t overlap_before =
+        context.overlap_query_candidate_attempts_for_test();
+    CHECK(physics::physics_overlap_sphere(
+              world, {2.0f, 0.0f, 0.0f}, 1.0f, 0x20U) ==
+              std::vector<flecs::entity_t>{target.id()} &&
+              context.overlap_query_candidate_attempts_for_test() -
+                  overlap_before <= 2,
+          "category overlap index avoids scanning irrelevant-category bridges");
+
+    CHECK(physics::physics_teleport(
+              target, {20.0f, 0.0f, 0.0f},
+              {0.0f, 0.0f, 0.0f, 1.0f}),
+          "query-index movement fixture queues a public teleport");
+    runtime.tick({0.01f, 0.01f, 1});
+    CHECK(!physics::physics_ray_cast(
+              world, {}, {10.0f, 0.0f, 0.0f}, 0x20U, hit) &&
+              physics::physics_ray_cast(
+                  world, {15.0f, 0.0f, 0.0f}, {10.0f, 0.0f, 0.0f},
+                  0x20U, hit) && hit.entity == target.id(),
+          "query index follows an explicitly moved body");
+
+    physics::SphereCollider replacement{};
+    replacement.radius = 2.0f;
+    replacement.properties.category_bits = 0x20U;
+    replacement.properties.mask_bits = 0U;
+    target.set<physics::SphereCollider>(replacement);
+    reconcile(runtime);
+    CHECK(physics::physics_overlap_sphere(
+              world, {22.0f, 0.0f, 0.0f}, 0.25f, 0x20U) ==
+              std::vector<flecs::entity_t>{target.id()},
+          "query index transactionally replaces a collider proxy");
+    target.remove<physics::SphereCollider>();
+    reconcile(runtime);
+    CHECK(physics::physics_overlap_sphere(
+              world, {20.0f, 0.0f, 0.0f}, 3.0f, 0x20U).empty(),
+          "query index retires a removed collider proxy");
+
+    flecs::entity static_target =
+        make_query_sphere(world, {2.0f, 5.0f, 0.0f}, 0x80U, 0.5f, 0U);
+    reconcile(runtime);
+    static_target.set<ecs::LocalTransform>({{30.0f, 5.0f, 0.0f}});
+    runtime.tick({0.01f, 0.01f, 1});
+    CHECK(!physics::physics_ray_cast(
+              world, {0.0f, 5.0f, 0.0f}, {10.0f, 0.0f, 0.0f},
+              0x80U, hit) &&
+              physics::physics_ray_cast(
+                  world, {25.0f, 5.0f, 0.0f}, {10.0f, 0.0f, 0.0f},
+                  0x80U, hit) && hit.entity == static_target.id(),
+          "query index follows an ECS-authored static push");
+}
+
+void test_query_index_tracks_kinematic_and_simulated_dynamic_motion() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    world.set<physics::PhysicsSettings>({{0.0f, -10.0f, 0.0f}, 1});
+
+    physics::RigidBody dynamic_body{};
+    dynamic_body.type = physics::RigidBodyType::Dynamic;
+    physics::SphereCollider dynamic_collider{};
+    dynamic_collider.properties.category_bits = 0x200U;
+    dynamic_collider.properties.mask_bits = 0U;
+    flecs::entity dynamic = world.entity()
+        .set<ecs::LocalTransform>({{0.0f, 5.0f, 0.0f}})
+        .set<physics::RigidBody>(dynamic_body)
+        .set<physics::SphereCollider>(dynamic_collider);
+
+    physics::RigidBody kinematic_body{};
+    kinematic_body.type = physics::RigidBodyType::Kinematic;
+    physics::SphereCollider kinematic_collider{};
+    kinematic_collider.properties.category_bits = 0x400U;
+    kinematic_collider.properties.mask_bits = 0U;
+    flecs::entity kinematic = world.entity()
+        .set<ecs::LocalTransform>({{2.0f, 10.0f, 0.0f}})
+        .set<physics::RigidBody>(kinematic_body)
+        .set<physics::SphereCollider>(kinematic_collider);
+    reconcile(runtime);
+
+    kinematic.set<ecs::LocalTransform>({{30.0f, 10.0f, 0.0f}});
+    for (int step = 0; step < 10; ++step) {
+        runtime.tick({0.1f, 0.1f, 1});
+    }
+    const ecs::LocalTransform dynamic_pose =
+        dynamic.get<ecs::LocalTransform>();
+    const std::vector<flecs::entity_t> dynamic_at_new_pose =
+        physics::physics_overlap_sphere(
+            world, dynamic_pose.translation, 0.1f, 0x200U);
+    physics::PhysicsRayHit hit{};
+    CHECK(dynamic_pose.translation.y < 4.0f &&
+              dynamic_at_new_pose ==
+                  std::vector<flecs::entity_t>{dynamic.id()} &&
+              physics::physics_overlap_sphere(
+                  world, {0.0f, 5.0f, 0.0f}, 0.1f, 0x200U).empty(),
+          "query index follows gravity-driven dynamic body events");
+    CHECK(!physics::physics_ray_cast(
+              world, {0.0f, 10.0f, 0.0f}, {10.0f, 0.0f, 0.0f},
+              0x400U, hit) &&
+              physics::physics_ray_cast(
+                  world, {25.0f, 10.0f, 0.0f}, {10.0f, 0.0f, 0.0f},
+                  0x400U, hit) && hit.entity == kinematic.id(),
+          "query index follows a stepped kinematic target");
+}
+
 void test_queries_require_exact_live_context_and_reject_while_stepping() {
     ecs_runtime::Runtime first_runtime;
     ecs_runtime::Runtime second_runtime;
@@ -2096,6 +2245,7 @@ int main() {
     test_dynamic_replacement_preserves_box3d_state();
     test_hash_collision_cannot_hide_configuration_change();
     test_reconcile_only_revisits_dirty_bodies_and_fails_closed();
+    test_dynamic_pull_uses_bridge_owned_pending_state_without_allocations();
     test_dynamic_sphere_falls_onto_static_floor();
     test_static_and_kinematic_edits_push_before_step();
     test_dynamic_pose_velocity_and_descendant_pull_before_fixed_post_update();
@@ -2115,6 +2265,8 @@ int main() {
     test_body_event_reports_transition_to_sleep();
     test_ray_cast_is_closest_filtered_and_validated();
     test_queries_filter_categories_independently_and_tie_by_full_id();
+    test_category_query_index_prunes_and_tracks_shape_lifecycle();
+    test_query_index_tracks_kinematic_and_simulated_dynamic_motion();
     test_queries_require_exact_live_context_and_reject_while_stepping();
     test_overlap_sphere_filters_deduplicates_and_sorts_full_ids();
     return check_summary();

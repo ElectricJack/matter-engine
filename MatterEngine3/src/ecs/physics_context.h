@@ -112,6 +112,9 @@ public:
     bool duplicate_overlap_participant_for_test(
         flecs::entity_t entity) noexcept;
     void fail_next_reconcile_mark_for_test() noexcept;
+    uint64_t physics_transform_marker_allocations_for_test() const noexcept;
+    uint64_t ray_query_candidate_attempts_for_test() const noexcept;
+    uint64_t overlap_query_candidate_attempts_for_test() const noexcept;
     void set_stepping_for_test(bool stepping) noexcept;
 
 private:

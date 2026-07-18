@@ -81,6 +81,20 @@ Final whole-branch review fix round: implemented (commit pending re-review)
     `ALL PASS`; focused current-source run and static checker pass. Awaiting the
     required senior whole-branch re-review.
 
+Second whole-branch review fix round: implemented (commit pending re-review)
+  - Deferred transform ownership moved from a context `unordered_set` to a
+    non-allocating pending bit in each stable bridge; 64 moving dynamics prove
+    zero heap marker inserts while the post-Pull user-edit regression remains green.
+  - A private category/AABB dynamic tree indexes all live shapes, including
+    `mask_bits == 0`, and bounds precise ray/overlap attempts despite 256
+    irrelevant-category bodies.
+  - Query proxies create/replace/retire with bridge lifecycle and follow public
+    teleport, static push, stepped kinematic targets, and gravity-driven dynamic
+    body events.
+  - Focused current-source physics tests pass. A fresh full build compiled all 49
+    Box3D C17 sources, Flecs C17, and current physics/ECS C++17 sources; both suites
+    passed, followed by the expanded movement suite passing against that full link.
+
 Environment gate:
   - WSL is installed without a Linux distribution.
   - No native make, GCC, Clang, or MinGW compiler is available on PATH.
