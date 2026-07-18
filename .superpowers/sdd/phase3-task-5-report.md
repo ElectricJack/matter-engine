@@ -56,3 +56,20 @@ GNU Make is not installed on this Windows host, so
 claimed. MSVC compilation of the existing full Viewer logic translation unit
 also stops at its pre-existing `unistd.h` include; the real focused MSVC/Flecs
 executable was used for behavioral verification instead.
+
+## Fix Round 1: Gizmo Rejection and Recycled-ID Coverage
+
+Added canonical and focused assertions for `apply_gizmo_translation` with an
+empty selection and with a live selected entity that has no `LocalTransform`.
+Both return `false` and leave the target entity unchanged: no transform is
+created or edited and no `TransformDirty` tag is added. The focused MSVC/Flecs
+controller executable prints `ALL PASS`, so these regressions exposed no
+production bug and no controller code changed.
+
+The recycled-ID test now uses Flecs' supported `ECS_ENTITY_MASK` and
+`ECS_GENERATION` helpers. It destructs the anchor, retries allocation up to 16
+times until the same entity-number bits are reused, then proves the replacement
+has a different generation and is alive while the stale full ID is dead.
+`validate_anchor` clears the stale selection instead of selecting that
+replacement. ECS, coordinator, and physics regressions each printed `ALL PASS`;
+the Phase 2 static checker passed and `git diff --check` exited 0.

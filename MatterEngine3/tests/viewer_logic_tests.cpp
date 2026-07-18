@@ -159,12 +159,23 @@ static void test_streaming_anchor_rejects_dead_recycled_and_replaced_worlds() {
 
     matter_viewer::validate_anchor(state, world);
     anchor.destruct();
-    const flecs::entity replacement = world.entity()
-        .set<matter::ecs::LocalTransform>({});
+    flecs::entity_t replacement_id = 0;
+    for (int attempt = 0; attempt != 16; ++attempt) {
+        const flecs::entity candidate = world.entity();
+        if ((candidate.id() & ECS_ENTITY_MASK) == (dead_id & ECS_ENTITY_MASK)) {
+            candidate.set<matter::ecs::LocalTransform>({});
+            replacement_id = candidate.id();
+            break;
+        }
+        candidate.destruct();
+    }
     matter_viewer::validate_anchor(state, world);
 
-    CHECK(replacement.id() != dead_id && !world.is_alive(dead_id),
-          "streaming anchor test creates a recycled full ID");
+    CHECK(replacement_id != 0 &&
+              (replacement_id & ECS_ENTITY_MASK) == (dead_id & ECS_ENTITY_MASK) &&
+              ECS_GENERATION(replacement_id) != ECS_GENERATION(dead_id) &&
+              world.is_alive(replacement_id) && !world.is_alive(dead_id),
+          "streaming anchor test reuses an entity number with a new generation");
     CHECK(state.selected == 0 && !state.follow_editor_camera,
           "streaming anchor clears dead or recycled full ID");
 
@@ -214,6 +225,38 @@ static void test_streaming_anchor_gizmo_uses_engine_matrix_translation() {
           "streaming anchor gizmo rejects a dead selection");
     CHECK(state.selected == 0 && !state.follow_editor_camera,
           "streaming anchor gizmo clears a dead selection");
+}
+
+static void test_streaming_anchor_gizmo_rejects_missing_selection_or_transform() {
+    flecs::world world;
+    const flecs::entity anchor = world.entity()
+        .set<matter::ecs::LocalTransform>({
+            {7.0f, 8.0f, 9.0f}, {}, {1.0f, 1.0f, 1.0f}});
+    const float matrix[16] = {
+        1.0f, 0.0f, 0.0f, 10.0f,
+        0.0f, 1.0f, 0.0f, 11.0f,
+        0.0f, 0.0f, 1.0f, 12.0f,
+        0.0f, 0.0f, 0.0f, 1.0f};
+    matter_viewer::StreamingAnchorState empty_state{};
+
+    CHECK(!matter_viewer::apply_gizmo_translation(empty_state, world, matrix),
+          "streaming anchor gizmo rejects an empty selection");
+    const matter::ecs::LocalTransform unchanged = anchor.get<matter::ecs::LocalTransform>();
+    CHECK(unchanged.translation.x == 7.0f && unchanged.translation.y == 8.0f &&
+              unchanged.translation.z == 9.0f && !anchor.has<matter::ecs::TransformDirty>(),
+          "streaming anchor gizmo leaves an empty selection untouched");
+
+    const flecs::entity missing_transform = world.entity();
+    matter_viewer::StreamingAnchorState missing_transform_state{};
+    missing_transform_state.selected = missing_transform.id();
+
+    CHECK(!matter_viewer::apply_gizmo_translation(missing_transform_state, world, matrix),
+          "streaming anchor gizmo rejects a live entity without LocalTransform");
+    CHECK(missing_transform_state.selected == missing_transform.id() &&
+              missing_transform_state.follow_editor_camera &&
+              !missing_transform.has<matter::ecs::LocalTransform>() &&
+              !missing_transform.has<matter::ecs::TransformDirty>(),
+          "streaming anchor gizmo does not mutate an entity without LocalTransform");
 }
 
 static void test_streaming_anchor_camera_input_truth_table() {
@@ -1453,6 +1496,7 @@ int main() {
     test_streaming_anchor_detach_preserves_transform();
     test_streaming_anchor_rejects_dead_recycled_and_replaced_worlds();
     test_streaming_anchor_gizmo_uses_engine_matrix_translation();
+    test_streaming_anchor_gizmo_rejects_missing_selection_or_transform();
     test_streaming_anchor_camera_input_truth_table();
     test_cull_transform_convention();
     test_world_state_version();
