@@ -6,7 +6,7 @@ Plan: `docs/superpowers/plans/2026-07-17-flecs-ecs-foundation.md`
 
 ## Status
 
-All four Important final-review findings are resolved under focused TDD. The three low-risk deferred Minor test gaps are also closed. Two fresh focused MSVC C17/C++17 compile-link-run verifications and the strengthened static build-contract checker pass.
+All four Important final-review findings are resolved under focused TDD. Most low-risk deferred Minor coverage was added; one non-blocking reflection-metadata assertion gap remains. Two fresh focused MSVC C17/C++17 compile-link-run verifications and the strengthened static build-contract checker pass.
 
 The host still has no usable GNU, MinGW, or WSL Linux toolchain, and the GPU/manual product gates were outside this focused review-fix run. Those gates remain unverified and are not claimed here.
 
@@ -65,11 +65,12 @@ FAIL: cross-child survivor is independent of enqueue/hash iteration order
 FAIL: one dirty cascade writes and notifies each affected entity once
 ```
 
-## Deferred Minor test gaps closed
+## Deferred Minor test coverage
 
 - JSON reflection round-trip now verifies the nested written `translation.x` value.
 - Reflection tests assert `Mat4f::m` is a 16-float array, `WorldTransform::matrix` has `Mat4f` metadata, every `WorldStatus` enum constant is registered, and transform/phase/pipeline tags are fieldless.
 - Hierarchy composition now covers parent rotation and nonuniform scale combined with child translation and scale.
+- Remaining non-blocking gap from final re-review: the tests do not directly assert every `LocalTransform` and `WorldRuntimeState` member type, and omit the redundant `Loading != Failed` enum pairwise inequality.
 
 ## Focused verification
 

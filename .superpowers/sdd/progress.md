@@ -56,12 +56,13 @@ Task 9: complete (commits 48f8a0f..ada0298, review clean after report correction
   - Reviewer-requested scope evidence corrected to 45 files total: 25 non-SDD and 20 SDD.
   - Mandatory GNU/MinGW product gates and finite-world GPU smoke remain environment-blocked and are not claimed verified.
 
-Final review fixes: complete (four Important findings resolved; deferred Minor gaps closed)
+Final review fixes: complete (four Important findings resolved; one Minor metadata-assertion gap remains)
   - Viewer and Explorer now publish the vendored Flecs include directory through their shared include lists; the static build checker enforces that public contract.
   - Every valid Runtime tick owns exactly one Flecs frame lifecycle. Explicit zero uses the pinned v4.1.6 signed-zero sentinel, invalid ticks never enter a frame, and frame-info/post-frame behavior is covered.
   - Hierarchy commands drain in ascending full child-ID order, making cross-child cycle conflict resolution independent of enqueue and hash iteration order.
   - Transform propagation caches world matrices per system run so one dirty cascade writes/notifies each affected entity once while preserving final matrices.
-  - Final Minor coverage validates JSON nested values, reflection metadata completeness, and rotation plus nonuniform-scale hierarchy composition.
+  - Minor coverage now validates JSON nested values, key reflection array/tag/enum metadata, and rotation plus nonuniform-scale hierarchy composition.
+  - Remaining Minor: tests do not directly assert every LocalTransform and WorldRuntimeState member type (and omit one redundant enum pairwise inequality).
   - Two fresh MSVC C17/C++17 compile-link-run verifications and the strengthened static checker pass; see flecs-final-review-fix-report.md.
 
 Final-review Important findings are resolved. Mandatory GNU/MinGW product gates, finite-world GPU smoke, and manual product smoke remain environment-blocked and are not claimed verified.
