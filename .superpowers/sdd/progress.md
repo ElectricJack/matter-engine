@@ -18,7 +18,14 @@ Task 3: complete (commits 63edf69..1e7e4ce, review clean with Minors deferred)
   - Minor: JSON test checks top-level field names but not the written nested value.
   - Minor: tests do not directly assert Mat4f array count, WorldTransform matrix metadata, all enum constants, or tag fieldlessness.
 
-Resume at Task 4.
+Task 4: complete (commits 70b1396..dcacf82, review clean after four fix rounds)
+  - Added hierarchical TRS propagation, dirty observers, validated reparent/clear, staged dirty merge, and Flecs cascade-delete behavior.
+  - Fixed deferred cycle validation, same-real-world stage handling, observer pending-state lifecycle, and idempotent reparent locking.
+  - User-approved contract: one outstanding hierarchy mutation per child; additional immediate calls are rejected/ignored until merge.
+  - Task 5 must add a last-write-wins post-merge hierarchy command queue for observer/gameplay callers needing a new final desired state.
+  - Minor: hierarchy composition tests use translations only; add rotation/nonuniform scale coverage during final triage if warranted.
+
+Resume at Task 5.
 
 Environment gate:
   - WSL is installed without a Linux distribution.

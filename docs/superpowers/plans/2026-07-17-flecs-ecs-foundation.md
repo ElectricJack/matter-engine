@@ -378,6 +378,8 @@ In `transform_system.cpp`:
 - Walk `flecs::ChildOf` ancestors before mutation; never rely on a Flecs abort for cycle detection.
 - Apply `child.child_of(parent)` only after validation.
 - `clear_parent` removes the existing `(ChildOf, *)` pair.
+- Permit at most one outstanding hierarchy mutation per child until Flecs commits or clears it. While pending, another `reparent` returns `false` and `clear_parent` queues nothing. This conservative rule also applies inside `ChildOf` observers because Flecs v4.1.6 cannot safely merge multiple same-child relationship mutations from one observer sequence.
+- Treat `reparent(child, current_parent)` as an idempotent successful no-op that creates no pending state.
 - Mark the changed entity and every current descendant with `TransformDirty`.
 - Document `reparent`/`clear_parent` as the supported hierarchy mutation API; direct `ChildOf` edits bypass MatterEngine validation.
 
@@ -492,6 +494,8 @@ void enqueue_world_state(WorldStateCommand command);
 ```
 
 Build two Flecs pipelines. Fixed systems carry `FixedPipelineSystem`; frame systems carry `FramePipelineSystem`. Each system also uses its ordered custom phase via `kind(...)`. Run the fixed pipeline once per accumulator step with exactly `fixed_delta_seconds`, then the frame pipeline once with the clamped frame delta.
+
+Add public `matter::ecs::enqueue_reparent(child, parent)` and `enqueue_clear_parent(child)` helpers backed by a world-owned last-write-wins command map. They are the supported way to request a new final parent/root while an immediate hierarchy mutation is pending or from inside a `ChildOf` observer. `Runtime::tick()` drains these commands at the beginning of the next valid tick, before ECS pipelines run and after the previous Flecs merge has completed. Dead/cross-world entities are discarded; a command that is still temporarily pending remains queued for the next tick. Tests prove multiple queued requests for one child collapse to the last desired state and never perform two same-child Flecs mutations in one observer/merge sequence.
 
 - [ ] **Step 5: Implement validation, clamping, and drop policy**
 
