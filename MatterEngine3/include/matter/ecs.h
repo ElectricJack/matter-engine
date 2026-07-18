@@ -46,7 +46,9 @@ struct CoreModule {
 
 // These are MatterEngine's supported hierarchy mutation APIs. Direct ChildOf
 // edits bypass MatterEngine validation. Destroying a parent retains Flecs'
-// built-in ownership behavior and deletes descendants.
+// built-in ownership behavior and deletes descendants. Only one hierarchy
+// mutation may be outstanding per child: reparent returns false and
+// clear_parent does nothing while that child's earlier mutation is pending.
 bool reparent(flecs::entity child, flecs::entity parent);
 void clear_parent(flecs::entity child);
 

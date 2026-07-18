@@ -442,26 +442,30 @@ static void test_onremove_reentrant_reparent_sees_pending_parent() {
           "rejected reentrant reverse edge is never queued");
 }
 
-static void test_intermediate_onadd_preserves_final_pending_parent() {
+static void test_onremove_allows_one_pending_mutation_per_child() {
     bool callback_invoked = false;
-    bool callback_reparent_result = true;
+    bool callback_reparent_result = false;
+    bool rejected_reparent_result = true;
     flecs::entity_t child_id = 0;
-    flecs::entity_t final_parent_id = 0;
+    flecs::entity_t callback_parent_id = 0;
+    flecs::entity_t rejected_parent_id = 0;
     flecs::world world;
     world.import<ecs::CoreModule>();
 
-    const flecs::entity old_parent = world.entity("QueuedOldParent");
-    const flecs::entity intermediate_parent =
-        world.entity("QueuedIntermediateParent");
-    const flecs::entity final_parent = world.entity("QueuedFinalParent");
-    const flecs::entity child = world.entity("QueuedReplacementChild");
+    const flecs::entity old_parent = world.entity("GuardedOldParent");
+    const flecs::entity callback_parent =
+        world.entity("GuardedCallbackParent");
+    const flecs::entity rejected_parent =
+        world.entity("GuardedRejectedParent");
+    const flecs::entity child = world.entity("GuardedChild");
     child_id = child.id();
-    final_parent_id = final_parent.id();
+    callback_parent_id = callback_parent.id();
+    rejected_parent_id = rejected_parent.id();
     CHECK(ecs::reparent(child, old_parent),
-          "queued replacement setup reparent succeeds");
+          "pending mutation guard setup reparent succeeds");
 
-    world.observer("ReparentDuringIntermediateChildOfAdd")
-        .event(flecs::OnAdd)
+    world.observer("GuardHierarchyMutationDuringChildOfRemove")
+        .event(flecs::OnRemove)
         .with(flecs::ChildOf, flecs::Wildcard)
         .each([&](flecs::entity entity) {
             if (entity.id() == child_id && !callback_invoked) {
@@ -469,27 +473,34 @@ static void test_intermediate_onadd_preserves_final_pending_parent() {
                 flecs::entity callback_child(
                     entity.world().c_ptr(), child_id);
                 flecs::entity callback_parent(
-                    entity.world().c_ptr(), final_parent_id);
+                    entity.world().c_ptr(), callback_parent_id);
+                flecs::entity rejected_parent(
+                    entity.world().c_ptr(), rejected_parent_id);
                 callback_reparent_result =
-                    ecs::reparent(callback_parent, callback_child);
+                    ecs::reparent(callback_child, callback_parent);
+                ecs::clear_parent(callback_child);
+                rejected_reparent_result =
+                    ecs::reparent(callback_child, rejected_parent);
             }
         });
 
     world.defer([&]() {
-        CHECK(ecs::reparent(child, intermediate_parent),
-              "outer defer queues intermediate parent");
-        CHECK(ecs::reparent(child, final_parent),
-              "outer defer queues final parent");
+        child.remove(flecs::ChildOf, flecs::Wildcard);
     });
 
     CHECK(callback_invoked,
-          "later user OnAdd observer runs for intermediate parent");
-    CHECK(!callback_reparent_result,
-          "intermediate OnAdd retains final pending target for validation");
-    CHECK(child.target(flecs::ChildOf).id() == final_parent.id(),
-          "last queued replacement becomes the committed parent");
-    CHECK(final_parent.target(flecs::ChildOf).id() == 0,
-          "intermediate event cannot queue a reverse edge");
+          "user OnRemove observer runs during deferred direct removal");
+    CHECK(callback_reparent_result,
+          "first hierarchy mutation for the child is accepted");
+    CHECK(!rejected_reparent_result,
+          "second reparent is rejected while the child mutation is pending");
+    CHECK(child.target(flecs::ChildOf).id() == callback_parent.id(),
+          "pending clear is ignored and the first reparent commits");
+
+    CHECK(ecs::reparent(child, rejected_parent),
+          "post-merge hierarchy mutation succeeds after the guard clears");
+    CHECK(child.target(flecs::ChildOf).id() == rejected_parent.id(),
+          "post-merge reparent commits to the requested parent");
 }
 
 static void test_onremove_reentrant_reparent_sees_pending_clear() {
@@ -660,7 +671,7 @@ int main() {
     test_parent_destruction_cascade_deletes_descendants();
     test_deferred_reparents_reject_pending_cycle();
     test_onremove_reentrant_reparent_sees_pending_parent();
-    test_intermediate_onadd_preserves_final_pending_parent();
+    test_onremove_allows_one_pending_mutation_per_child();
     test_onremove_reentrant_reparent_sees_pending_clear();
     return check_summary();
 }

@@ -211,6 +211,10 @@ bool reparent(flecs::entity child, flecs::entity parent) {
     if (state == nullptr) {
         return false;
     }
+    if (state->pending_parents.find(child.id()) !=
+        state->pending_parents.end()) {
+        return false;
+    }
 
     std::vector<flecs::entity_t> visited;
     flecs::entity ancestor = parent;
@@ -241,6 +245,10 @@ void clear_parent(flecs::entity child) {
 
     HierarchyValidationState* state = validation_state(child);
     if (state == nullptr) {
+        return;
+    }
+    if (state->pending_parents.find(child.id()) !=
+        state->pending_parents.end()) {
         return;
     }
     if (effective_parent(child, *state, child.world().c_ptr())) {
