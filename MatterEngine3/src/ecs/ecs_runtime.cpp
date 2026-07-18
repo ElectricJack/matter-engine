@@ -1,6 +1,7 @@
 #include "ecs_runtime.h"
 #include "physics_context.h"
 #include "matter/physics.h"
+#include "matter/streaming.h"
 
 #include <algorithm>
 #include <cmath>
@@ -199,6 +200,40 @@ PhysicsModule::PhysicsModule(flecs::world& world) {
 
 } // namespace matter::physics
 
+namespace matter::streaming {
+
+StreamingModule::StreamingModule(flecs::world& world) {
+    const flecs::entity module = world.module<StreamingModule>();
+    const flecs::entity previous_scope = world.set_scope(module.parent().id());
+
+    world.component<SectorStreaming>();
+    world.component<SectorStreamingErrorCode>()
+        .constant("None", SectorStreamingErrorCode::None)
+        .constant("UnsupportedWorld", SectorStreamingErrorCode::UnsupportedWorld)
+        .constant("OwnerAlreadyClaimed", SectorStreamingErrorCode::OwnerAlreadyClaimed);
+    world.component<SectorStreamingError>()
+        .member("code", &SectorStreamingError::code)
+        .member("active_owner", &SectorStreamingError::active_owner);
+    world.component<SectorStreamingState>()
+        .constant("Detached", SectorStreamingState::Detached)
+        .constant("PendingProfile", SectorStreamingState::PendingProfile)
+        .constant("PendingTransform", SectorStreamingState::PendingTransform)
+        .constant("Active", SectorStreamingState::Active)
+        .constant("Detaching", SectorStreamingState::Detaching);
+    world.component<SectorStreamingStatus>()
+        .member("state", &SectorStreamingStatus::state)
+        .member("generation", &SectorStreamingStatus::generation)
+        .member("resident_sectors", &SectorStreamingStatus::resident_sectors)
+        .member("inflight_sectors", &SectorStreamingStatus::inflight_sectors);
+    world.component<StreamingUpdate>()
+        .add(flecs::Phase)
+        .depends_on<ecs::FrameUpdate>();
+
+    world.set_scope(previous_scope.id());
+}
+
+} // namespace matter::streaming
+
 namespace matter::ecs_runtime {
 namespace {
 
@@ -275,6 +310,7 @@ void snap_half_ulp_shortfall_to_fixed_boundary(
 Runtime::Runtime() {
     world_.import<ecs::CoreModule>();
     world_.import<physics::PhysicsModule>();
+    world_.import<streaming::StreamingModule>();
     physics_ = std::make_unique<physics::detail::PhysicsContext>(
         world_.get<physics::PhysicsSettings>());
     world_.set<physics::detail::PhysicsContextRef>(

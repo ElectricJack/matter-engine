@@ -16,7 +16,7 @@ SectorStreamer::SectorStreamer(Config cfg)
 float SectorStreamer::sector_dist(int64_t tx, int64_t tz) const {
     float cx = (float(tx) + 0.5f) * cfg_.sector_size;
     float cz = (float(tz) + 0.5f) * cfg_.sector_size;
-    float dx = cx - last_cam_x_, dz = cz - last_cam_z_;
+    float dx = cx - last_anchor_x_, dz = cz - last_anchor_z_;
     return std::sqrt(dx * dx + dz * dz);
 }
 
@@ -30,20 +30,20 @@ int SectorStreamer::desired_rung_for_dist(float d) const {
 // update()
 // ---------------------------------------------------------------------------
 
-void SectorStreamer::update(float cam_x, float cam_z) {
-    last_cam_x_ = cam_x;
-    last_cam_z_ = cam_z;
+void SectorStreamer::update(float anchor_x, float anchor_z) {
+    last_anchor_x_ = anchor_x;
+    last_anchor_z_ = anchor_z;
 
     // The outer ring radius is the last entry (rings are innermost-first).
     float outer = cfg_.rings.empty() ? 0.0f : cfg_.rings.back().radius;
     float S = cfg_.sector_size;
 
-    // Compute sector range covering the outer ring + hysteresis around cam.
+    // Compute sector range covering the outer ring + hysteresis around anchor.
     float margin = outer + cfg_.hysteresis;
-    int64_t tx_min = int64_t(std::floor((cam_x - margin) / S));
-    int64_t tx_max = int64_t(std::floor((cam_x + margin) / S));
-    int64_t tz_min = int64_t(std::floor((cam_z - margin) / S));
-    int64_t tz_max = int64_t(std::floor((cam_z + margin) / S));
+    int64_t tx_min = int64_t(std::floor((anchor_x - margin) / S));
+    int64_t tx_max = int64_t(std::floor((anchor_x + margin) / S));
+    int64_t tz_min = int64_t(std::floor((anchor_z - margin) / S));
+    int64_t tz_max = int64_t(std::floor((anchor_z + margin) / S));
 
     // --- Mark all existing tracked sectors as not-desired initially.
     //     We'll recompute desired_rung below.
@@ -57,7 +57,7 @@ void SectorStreamer::update(float cam_x, float cam_z) {
         st.dist = sector_dist(stx, stz);
     }
 
-    // --- Scan the camera square and set desired_rung.
+    // --- Scan the anchor square and set desired_rung.
     for (int64_t tz = tz_min; tz <= tz_max; ++tz) {
         for (int64_t tx = tx_min; tx <= tx_max; ++tx) {
             float d = sector_dist(tx, tz);
@@ -178,7 +178,7 @@ bool SectorStreamer::on_published(int64_t tx, int64_t tz, int rung) {
     uint64_t k = key(tx, tz);
     auto it = sectors_.find(k);
     if (it == sectors_.end()) {
-        // Entry was erased (camera moved on / clear()).
+        // Entry was erased (anchor moved on / clear()).
         return false;
     }
     auto& st = it->second;

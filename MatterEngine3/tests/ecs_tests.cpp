@@ -1388,6 +1388,26 @@ static void test_hierarchy_queue_discards_stale_child_generation() {
           "stale queued child generation cannot mutate its replacement");
 }
 
+static void test_sector_streaming_contract_defaults() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    const flecs::entity owner = world.entity("SectorStreamingOwner")
+        .add<streaming::SectorStreaming>();
+
+    const streaming::SectorStreamingError error{};
+    const streaming::SectorStreamingStatus status{};
+
+    CHECK(owner.has<streaming::SectorStreaming>(),
+          "SectorStreaming attaches as an ECS marker");
+    CHECK(error.code == streaming::SectorStreamingErrorCode::None &&
+              error.active_owner == 0,
+          "SectorStreamingError has recoverable no-error defaults");
+    CHECK(status.state == streaming::SectorStreamingState::Detached &&
+              status.generation == 0 && status.resident_sectors == 0 &&
+              status.inflight_sectors == 0,
+          "SectorStreamingStatus has detached empty defaults");
+}
+
 int main() {
     test_entity_lifecycle_and_components();
     test_deferred_structural_mutation();
@@ -1427,5 +1447,6 @@ int main() {
     test_pending_hierarchy_command_survives_a_direct_drain();
     test_hierarchy_queue_discards_dead_and_cross_world_entities();
     test_hierarchy_queue_discards_stale_child_generation();
+    test_sector_streaming_contract_defaults();
     return check_summary();
 }

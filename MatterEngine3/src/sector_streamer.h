@@ -10,7 +10,7 @@ struct Ring { float radius; int rung; };
 struct Config {
     float sector_size = 16.0f;
     // Innermost first. A sector's desired rung = the rung of the first ring
-    // whose radius covers the camera->sector-centre distance; beyond the last
+    // whose radius covers the anchor->sector-centre distance; beyond the last
     // ring the sector is not desired.
     std::vector<Ring> rings { {48.0f, 3}, {120.0f, 2}, {300.0f, 1}, {800.0f, 0} };
     float hysteresis = 16.0f;        // extra distance before demote/evict
@@ -25,8 +25,8 @@ class SectorStreamer {
 public:
     explicit SectorStreamer(Config cfg);
 
-    // Recompute the desired set for this camera position (call once per tick).
-    void update(float cam_x, float cam_z);
+    // Recompute the desired set for this anchor position (call once per tick).
+    void update(float anchor_x, float anchor_z);
 
     // Next bake to launch: holes (nothing resident) before upgrades, nearest
     // first within each class. Returns false when nothing is needed or
@@ -35,7 +35,7 @@ public:
 
     // Bake finished. Returns true if the streamer accepted it as resident
     // (the caller publishes). Returns false if it is no longer desired
-    // (camera moved on / clear() happened) — the caller must discard the
+    // (anchor moved on / clear() happened) — the caller must discard the
     // artifact WITHOUT publishing. On an accepted upgrade, the previously
     // resident rung is queued as an eviction (publish-then-evict: no hole).
     bool on_published(int64_t tx, int64_t tz, int rung);
@@ -60,7 +60,7 @@ private:
         int   resident_rung = -1;   // -1 = nothing resident
         int   inflight_rung = -1;   // -1 = no request outstanding
         int   desired_rung  = -1;   // recomputed each update(); -1 = not desired
-        float dist          = 0.0f; // camera distance at last update
+        float dist          = 0.0f; // anchor distance at last update
         int   cooldown      = 0;    // updates remaining before re-request allowed
     };
 
@@ -79,12 +79,12 @@ private:
 
     std::vector<Eviction> evictions_;
     int inflight_ = 0;
-    float last_cam_x_ = 0.0f;
-    float last_cam_z_ = 0.0f;
+    float last_anchor_x_ = 0.0f;
+    float last_anchor_z_ = 0.0f;
 
-    // desired_rung for a given camera distance
+    // desired_rung for a given anchor distance
     int desired_rung_for_dist(float d) const;
-    // camera-to-sector-centre distance
+    // anchor-to-sector-centre distance
     float sector_dist(int64_t tx, int64_t tz) const;
 };
 

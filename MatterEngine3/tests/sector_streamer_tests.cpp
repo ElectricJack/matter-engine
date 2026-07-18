@@ -171,6 +171,18 @@ int main() {
         CHECK(s.resident_count() == 0, "clear empties residency");
         CHECK(s.take_evictions().size() == res, "clear evicts everything");
     }
+    // --- clear(): late in-flight publish cannot restore residency ---------------
+    {
+        SectorStreamer s(cfg);
+        s.update(8.0f, 8.0f);
+        SectorRequest q;
+        CHECK(s.next_request(q), "clear late-publish test has an inflight request");
+        s.clear();
+        CHECK(!s.on_published(q.tx, q.tz, q.rung),
+              "clear rejects a late publish");
+        CHECK(s.resident_count() == 0 && s.inflight_count() == 0,
+              "late publish after clear leaves no resident or inflight sectors");
+    }
     // --- long flight: bounded residency, no monotonic growth ------------------
     {
         SectorStreamer s(cfg);

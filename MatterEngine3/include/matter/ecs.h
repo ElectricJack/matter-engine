@@ -4,6 +4,7 @@
 
 #include "flecs.h"
 #include "matter/math_types.h"
+#include "matter/streaming.h"
 
 namespace matter::ecs {
 
