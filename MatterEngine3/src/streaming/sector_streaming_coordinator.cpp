@@ -32,6 +32,11 @@ bool Coordinator::attach(flecs::entity_t owner) {
     return true;
 }
 
+flecs::entity_t Coordinator::intended_owner() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return intended_owner_;
+}
+
 void Coordinator::set_profile(const matter_stream::Config* profile) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (profile) intended_profile_ = *profile;
@@ -46,6 +51,12 @@ void Coordinator::submit_anchor(flecs::entity_t owner, float x, float z) {
         ? published_snapshot_.status.generation
         : 0;
     intended_anchor_ = AnchorSample{owner, generation, x, z};
+}
+
+void Coordinator::clear_anchor(flecs::entity_t owner) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (owner == 0 || intended_owner_ != owner) return;
+    intended_anchor_.reset();
 }
 
 void Coordinator::detach(flecs::entity_t owner) {
@@ -150,9 +161,10 @@ void Coordinator::worker_step() {
         applied_attachment_revision_ != attachment_revision;
     const bool profile_changed = applied_profile_revision_ != profile_revision;
     const bool restart_requested = applied_restart_revision_ != restart_revision;
+    const bool anchor_lost = worker_anchor_.has_value() && !anchor.has_value();
 
     if (owner_changed || attachment_changed || profile_changed ||
-        restart_requested) {
+        restart_requested || anchor_lost) {
         clear_worker_streamer();
     }
     worker_owner_ = intended_owner;

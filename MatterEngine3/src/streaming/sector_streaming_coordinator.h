@@ -39,8 +39,10 @@ struct Snapshot {
 class Coordinator {
 public:
     bool attach(flecs::entity_t owner);
+    flecs::entity_t intended_owner() const;
     void set_profile(const matter_stream::Config* profile);
     void submit_anchor(flecs::entity_t owner, float x, float z);
+    void clear_anchor(flecs::entity_t owner);
     void detach(flecs::entity_t owner);
     void restart_if_attached();
     void worker_step();

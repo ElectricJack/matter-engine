@@ -55,6 +55,22 @@ static std::vector<TaggedRequest> drain_requests(Coordinator& coordinator) {
 }
 
 int main() {
+    // Intended ownership is synchronously authoritative before worker snapshots.
+    {
+        Coordinator coordinator;
+        CHECK(coordinator.intended_owner() == 0,
+              "new coordinator has no intended owner");
+        CHECK(coordinator.attach(kOwnerA) &&
+                  coordinator.intended_owner() == kOwnerA,
+              "successful attach synchronously publishes intended owner");
+        CHECK(!coordinator.attach(kOwnerB) &&
+                  coordinator.intended_owner() == kOwnerA,
+              "rejected attach preserves authoritative intended owner");
+        coordinator.detach(kOwnerA);
+        CHECK(coordinator.intended_owner() == 0,
+              "detach synchronously clears authoritative intended owner");
+    }
+
     // Profile and anchor intents do not stream without an attached owner.
     {
         Coordinator coordinator;
@@ -236,6 +252,57 @@ int main() {
         coordinator.worker_step();
         CHECK(coordinator.snapshot().status.generation == restarted.status.generation,
               "restart does not recreate generation on later worker steps");
+    }
+
+    // Losing the resolved transform clears active worker state and a later
+    // sample creates a fresh generation.
+    {
+        Coordinator coordinator;
+        auto profile = tiny_profile();
+        profile.rings = {{24.0f, 1}};
+        coordinator.set_profile(&profile);
+        CHECK(coordinator.attach(kOwnerA), "anchor-clear test attaches");
+        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.worker_step();
+        const auto active = coordinator.snapshot();
+        auto requests = drain_requests(coordinator);
+        CHECK(requests.size() >= 2,
+              "anchor-clear test starts with multiple requests");
+        coordinator.acknowledge(requests.front(), true);
+        coordinator.worker_step();
+        CHECK(coordinator.snapshot().status.resident_sectors == 1,
+              "anchor-clear test establishes residency");
+
+        coordinator.clear_anchor(kOwnerB);
+        coordinator.worker_step();
+        CHECK(coordinator.snapshot().status.state == SectorStreamingState::Active,
+              "nonowner cannot clear the active anchor");
+
+        coordinator.clear_anchor(kOwnerA);
+        coordinator.acknowledge(requests.back(), true);
+        coordinator.worker_step();
+        const auto pending = coordinator.snapshot();
+        TaggedRequest stale{};
+        CHECK(pending.owner == kOwnerA &&
+                  pending.status.state == SectorStreamingState::PendingTransform &&
+                  pending.status.generation == 0 &&
+                  pending.status.resident_sectors == 0 &&
+                  pending.status.inflight_sectors == 0,
+              "anchor clear publishes empty pending-transform state");
+        CHECK(!coordinator.next_request(stale),
+              "anchor clear rejects stale request allocation");
+        const auto evictions = coordinator.take_evictions();
+        CHECK(evictions.size() == 1 &&
+                  evictions.front().owner == kOwnerA &&
+                  evictions.front().generation == active.status.generation,
+              "anchor clear emits old-generation resident eviction");
+
+        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.worker_step();
+        const auto restarted = coordinator.snapshot();
+        CHECK(restarted.status.state == SectorStreamingState::Active &&
+                  restarted.status.generation == active.status.generation + 1,
+              "new anchor after clear starts a fresh generation");
     }
 
     // A detach intent supersedes an unprocessed restart.

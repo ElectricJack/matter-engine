@@ -143,3 +143,80 @@ The host reports that `make` is not recognized. CMake is also unavailable, so th
 real Box3D C17 archive was built directly with MSVC `cl`/`lib`. No GNU recipe
 success is claimed; native linked behavior and the repository static build checker
 are the available gates.
+
+## Fix Round 1: Deferred Authority and Transform Loss
+
+### Binding failures
+
+1. Claim/release callbacks consulted `StreamingArbitration`, but its ECS singleton
+   writes can be staged. It therefore could not be the authority for a claim,
+   duplicate error owner, or same-batch detach/retry decision. The worker-published
+   snapshot was also too late to identify a just-attached owner.
+2. A missing `WorldTransform` caused the sampler to submit nothing, leaving the
+   coordinator's previous anchor, streamer, generation, requests, and residency
+   alive indefinitely.
+
+### RED evidence
+
+The full old Runtime was compiled and linked with real Flecs/Box3D after adding
+the transform-loss regression. It failed exactly on retained stale state:
+
+```text
+FAIL: losing WorldTransform clears stale generation and becomes pending
+FAIL: transform loss rejects stale request allocation
+FAIL: transform loss emits old-generation resident eviction
+FAIL: transform loss publishes pending status without an error
+FAIL: restoring WorldTransform starts a fresh streaming generation
+5 FAILURE(S)
+```
+
+Focused coordinator tests were then added for synchronous ownership authority and
+anchor clearing before either API existed. MSVC failed for the expected missing
+methods:
+
+```text
+error C2039: 'intended_owner': is not a member of Coordinator
+error C2039: 'clear_anchor': is not a member of Coordinator
+```
+
+The two required main-world `defer_begin`/`defer_end` regressions were also added:
+two adds retain the first full owner/error ID, and active removal followed by the
+rejected entity's remove/re-add claims only through that explicit retry. Flecs
+v4.1.6 happened to make their visible outcomes pass before the authority rewrite;
+the missing coordinator-authority API supplied the binding RED, and these cases
+now prevent future dependence on staged singleton visibility.
+
+### Minimal fix
+
+- Added mutex-protected `Coordinator::intended_owner() const`; the bool `attach`
+  API remains unchanged.
+- Claim callbacks always call `attach`, classify idempotent OnSet through the
+  authoritative intended owner, and source duplicate `active_owner` only from
+  that accessor. Release callbacks always call `detach`. Sampling and snapshot
+  matching also consult the coordinator, leaving `StreamingArbitration` copied
+  inspection/publication bookkeeping only.
+- Added mutex-protected `clear_anchor(owner)`. A missing resolved transform sends
+  that intent. `worker_step` detects present-to-missing anchor transition, clears
+  the streamer and issued requests, tags resident evictions with the old
+  generation, rejects queued late acknowledgements, and publishes empty
+  `PendingTransform`. A later sample allocates the next generation.
+- Coordinator calls do not nest its mutex or hold it across ECS mutation; no new
+  lock-order concern was introduced.
+
+### GREEN evidence
+
+Fresh MSVC focused coordinator and full Runtime ECS executables both printed:
+
+```text
+ALL PASS
+```
+
+The ECS case proves one resident plus inflight work is cleared on transform loss,
+the old-generation eviction is emitted, a late acknowledgement cannot restore
+residency, ECS publishes pending-without-error, and transform restoration advances
+the generation exactly once.
+
+Fresh physics and pure streamer regressions printed `ALL PASS` (streamer long
+flight `peak=7997 end=7993`). The Phase 2 static checker printed
+`PASS: Box3D Phase 2 build contract`, and `git diff --check` exited 0. GNU Make
+availability is unchanged and no GNU success is claimed.

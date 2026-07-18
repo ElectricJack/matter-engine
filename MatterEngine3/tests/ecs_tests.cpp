@@ -1492,6 +1492,52 @@ static void test_sector_streaming_duplicate_retries_only_after_remove_readd() {
           "explicit duplicate remove and re-add retries ownership");
 }
 
+static void test_sector_streaming_deferred_adds_keep_first_authoritative_owner() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    const flecs::entity first = world.entity("DeferredFirstStreamingOwner");
+    const flecs::entity second = world.entity("DeferredDuplicateStreamingOwner");
+
+    world.defer_begin();
+    first.add<streaming::SectorStreaming>();
+    second.add<streaming::SectorStreaming>();
+    world.defer_end();
+    runtime.streaming_coordinator().worker_step();
+
+    const streaming::SectorStreamingError* error =
+        second.try_get<streaming::SectorStreamingError>();
+    CHECK(runtime.streaming_coordinator().snapshot().owner == first.id(),
+          "two deferred adds retain the first coordinator owner");
+    CHECK(second.has<streaming::SectorStreaming>() && error != nullptr &&
+              error->code ==
+                  streaming::SectorStreamingErrorCode::OwnerAlreadyClaimed &&
+              error->active_owner == first.id(),
+          "deferred duplicate error names the authoritative first full ID");
+}
+
+static void test_sector_streaming_deferred_explicit_retry_claims_after_detach() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    const flecs::entity first = world.entity("DeferredRemovedStreamingOwner")
+        .add<streaming::SectorStreaming>();
+    const flecs::entity second = world.entity("DeferredRetryStreamingOwner")
+        .add<streaming::SectorStreaming>();
+    runtime.streaming_coordinator().worker_step();
+
+    world.defer_begin();
+    first.remove<streaming::SectorStreaming>();
+    second.remove<streaming::SectorStreaming>();
+    second.add<streaming::SectorStreaming>();
+    world.defer_end();
+    runtime.streaming_coordinator().worker_step();
+
+    CHECK(runtime.streaming_coordinator().snapshot().owner == second.id(),
+          "deferred remove and re-add claims only after active detach");
+    CHECK(second.has<streaming::SectorStreaming>() &&
+              !second.has<streaming::SectorStreamingError>(),
+          "successful deferred explicit retry clears duplicate error");
+}
+
 static void test_sector_streaming_missing_world_transform_is_pending() {
     ecs_runtime::Runtime runtime;
     flecs::world& world = runtime.world();
@@ -1542,6 +1588,74 @@ static void test_sector_streaming_samples_resolved_parent_transform_xz() {
     CHECK(moved.size() == 1 && moved[0].sector.tx == 10 &&
               moved[0].sector.tz == 1,
           "streaming samples row-major WorldTransform indices 3 and 11");
+}
+
+static void test_sector_streaming_transform_loss_clears_active_generation() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    matter_stream::Config profile = tiny_streaming_profile();
+    profile.rings = {{24.0f, 1}};
+    runtime.streaming_coordinator().set_profile(&profile);
+    const flecs::entity anchor = world.entity("TransformLossStreamingAnchor")
+        .set<ecs::LocalTransform>({{8.0f, 0.0f, 8.0f}})
+        .add<streaming::SectorStreaming>();
+
+    runtime.tick({0.0f, 0.1f, 1});
+    runtime.streaming_coordinator().worker_step();
+    const streaming::detail::Snapshot active =
+        runtime.streaming_coordinator().snapshot();
+    std::vector<streaming::detail::TaggedRequest> requests =
+        drain_streaming_requests(runtime.streaming_coordinator());
+    CHECK(active.status.state == streaming::SectorStreamingState::Active &&
+              active.status.generation != 0 && requests.size() >= 2,
+          "transform-loss test starts one active generation with inflight work");
+
+    runtime.streaming_coordinator().acknowledge(requests.front(), true);
+    runtime.streaming_coordinator().worker_step();
+    CHECK(runtime.streaming_coordinator().snapshot().status.resident_sectors == 1,
+          "transform-loss test establishes one resident sector");
+    const streaming::detail::TaggedRequest late = requests.back();
+
+    anchor.remove<ecs::WorldTransform>();
+    runtime.tick({0.0f, 0.1f, 1});
+    runtime.streaming_coordinator().acknowledge(late, true);
+    runtime.streaming_coordinator().worker_step();
+    const streaming::detail::Snapshot pending =
+        runtime.streaming_coordinator().snapshot();
+    streaming::detail::TaggedRequest stale_request{};
+    CHECK(pending.owner == anchor.id() &&
+              pending.status.state ==
+                  streaming::SectorStreamingState::PendingTransform &&
+              pending.status.generation == 0 &&
+              pending.status.resident_sectors == 0 &&
+              pending.status.inflight_sectors == 0,
+          "losing WorldTransform clears stale generation and becomes pending");
+    CHECK(!runtime.streaming_coordinator().next_request(stale_request),
+          "transform loss rejects stale request allocation");
+    const std::vector<streaming::detail::TaggedEviction> evictions =
+        runtime.streaming_coordinator().take_evictions();
+    CHECK(evictions.size() == 1 &&
+              evictions.front().owner == anchor.id() &&
+              evictions.front().generation == active.status.generation,
+          "transform loss emits old-generation resident eviction");
+
+    runtime.tick({0.0f, 0.1f, 1});
+    const streaming::SectorStreamingStatus* status =
+        anchor.try_get<streaming::SectorStreamingStatus>();
+    CHECK(status != nullptr &&
+              status->state == streaming::SectorStreamingState::PendingTransform &&
+              !anchor.has<streaming::SectorStreamingError>(),
+          "transform loss publishes pending status without an error");
+
+    const ecs::LocalTransform local = anchor.get<ecs::LocalTransform>();
+    anchor.set<ecs::LocalTransform>(local);
+    runtime.tick({0.0f, 0.1f, 1});
+    runtime.streaming_coordinator().worker_step();
+    const streaming::detail::Snapshot restarted =
+        runtime.streaming_coordinator().snapshot();
+    CHECK(restarted.status.state == streaming::SectorStreamingState::Active &&
+              restarted.status.generation == active.status.generation + 1,
+          "restoring WorldTransform starts a fresh streaming generation");
 }
 
 static void test_sector_streaming_ignores_unrelated_camera_values() {
@@ -1640,8 +1754,11 @@ int main() {
     test_sector_streaming_requires_an_activation_component();
     test_sector_streaming_claims_one_owner_and_rejects_duplicates();
     test_sector_streaming_duplicate_retries_only_after_remove_readd();
+    test_sector_streaming_deferred_adds_keep_first_authoritative_owner();
+    test_sector_streaming_deferred_explicit_retry_claims_after_detach();
     test_sector_streaming_missing_world_transform_is_pending();
     test_sector_streaming_samples_resolved_parent_transform_xz();
+    test_sector_streaming_transform_loss_clears_active_generation();
     test_sector_streaming_ignores_unrelated_camera_values();
     test_sector_streaming_destroying_owner_detaches();
     test_sector_streaming_runtime_teardown_fails_closed();

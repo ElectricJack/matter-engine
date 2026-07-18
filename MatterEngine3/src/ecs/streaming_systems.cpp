@@ -33,15 +33,9 @@ void claim_streaming_owner(flecs::entity entity) {
         return;
     }
 
-    if (current->active_owner == entity.id()) {
-        return;
-    }
-
-    if (current->active_owner != 0 || !ref->value->attach(entity.id())) {
-        flecs::entity_t active_owner = current->active_owner;
-        if (active_owner == 0) {
-            active_owner = ref->value->snapshot().owner;
-        }
+    const bool attached = ref->value->attach(entity.id());
+    const flecs::entity_t active_owner = ref->value->intended_owner();
+    if (!attached && active_owner != entity.id()) {
         entity.set<SectorStreamingError>({
             SectorStreamingErrorCode::OwnerAlreadyClaimed,
             active_owner});
@@ -49,7 +43,7 @@ void claim_streaming_owner(flecs::entity entity) {
     }
 
     world.set<StreamingArbitration>(
-        StreamingArbitration{entity.id(), current->published_owner});
+        StreamingArbitration{active_owner, current->published_owner});
     entity.remove<SectorStreamingError>();
 }
 
@@ -58,14 +52,15 @@ void release_streaming_owner(flecs::entity entity) {
     const StreamingContextRef* ref = world.try_get<StreamingContextRef>();
     const StreamingArbitration* current =
         world.try_get<StreamingArbitration>();
-    if (ref == nullptr || ref->value == nullptr || current == nullptr ||
-        current->active_owner != entity.id()) {
+    if (ref == nullptr || ref->value == nullptr || current == nullptr) {
         return;
     }
 
     ref->value->detach(entity.id());
     world.set<StreamingArbitration>(
-        StreamingArbitration{0, current->published_owner});
+        StreamingArbitration{
+            ref->value->intended_owner(),
+            current->published_owner});
 }
 
 void sample_streaming_anchor(
@@ -73,16 +68,22 @@ void sample_streaming_anchor(
     Coordinator& coordinator) {
     const StreamingArbitration* arbitration =
         world.try_get<StreamingArbitration>();
-    if (arbitration == nullptr || arbitration->active_owner == 0) {
+    if (arbitration == nullptr) {
+        return;
+    }
+
+    const flecs::entity_t owner = coordinator.intended_owner();
+    if (owner == 0) {
         publish_streaming_snapshot(world, coordinator.snapshot());
         return;
     }
 
-    const flecs::entity_t owner = arbitration->active_owner;
     if (!world.is_alive(owner)) {
         coordinator.detach(owner);
         world.set<StreamingArbitration>(
-            StreamingArbitration{0, arbitration->published_owner});
+            StreamingArbitration{
+                coordinator.intended_owner(),
+                arbitration->published_owner});
         publish_streaming_snapshot(world, coordinator.snapshot());
         return;
     }
@@ -95,6 +96,8 @@ void sample_streaming_anchor(
             owner,
             transform->matrix.m[3],
             transform->matrix.m[11]);
+    } else {
+        coordinator.clear_anchor(owner);
     }
     publish_streaming_snapshot(world, coordinator.snapshot());
 }
@@ -112,6 +115,7 @@ void publish_streaming_snapshot(
     }
 
     StreamingArbitration next = *current;
+    next.active_owner = ref->value->intended_owner();
     if (snapshot.owner == 0) {
         remove_published_components(world, next.published_owner);
         next.published_owner = 0;
@@ -119,7 +123,7 @@ void publish_streaming_snapshot(
         return;
     }
 
-    if (snapshot.owner != next.active_owner ||
+    if (snapshot.owner != ref->value->intended_owner() ||
         !world.is_alive(snapshot.owner)) {
         return;
     }
