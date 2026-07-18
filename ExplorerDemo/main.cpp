@@ -454,7 +454,9 @@ int main() {
         }
 
         // --- Tick world state ---
-        session->tick();
+        matter::TickDesc tick{};
+        tick.frame_delta_seconds = dt;
+        session->tick(tick);
 
         // --- Execute queued GL bake work (up to 4 ms per frame) ---
         session->pump_gpu_jobs(4.0f);

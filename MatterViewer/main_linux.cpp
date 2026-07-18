@@ -229,7 +229,8 @@ int main() {
             camera_controller.set_capture(glfw_window, camera_capture);
         }
         if (IsKeyPressed(KEY_F9)) wireframe = !wireframe;
-        camera_controller.update(glfw_window, GetFrameTime(), camera);
+        const float frame_delta_seconds = GetFrameTime();
+        camera_controller.update(glfw_window, frame_delta_seconds, camera);
 
         // FIFO command pump.
         if (cmd_fd >= 0) {
@@ -284,7 +285,9 @@ int main() {
         }
 
         // Tick world state (poll provider deltas).
-        session->tick();
+        matter::TickDesc tick{};
+        tick.frame_delta_seconds = frame_delta_seconds;
+        session->tick(tick);
 
         // Phase B: execute queued GL bake work (up to 4 ms per frame).
         session->pump_gpu_jobs(4.0f);

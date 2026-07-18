@@ -615,7 +615,9 @@ int main() {
         const float focus[3] = {camera.position.x, camera.position.y,
                                 camera.position.z};
         session->set_bake_focus(focus);
-        session->tick();
+        matter::TickDesc tick{};
+        tick.frame_delta_seconds = dt;
+        session->tick(tick);
         session->pump_gpu_jobs(4.0f);
         matter::Event event;
         while (session->poll_event(event)) {

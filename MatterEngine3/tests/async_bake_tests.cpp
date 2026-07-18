@@ -1060,7 +1060,7 @@ static bool test_live_edit_inotify_e2e(const std::string& sandbox) {
     {
         auto deadline = clk::now() + std::chrono::seconds(30);
         while (clk::now() < deadline && !saw_cone_finished) {
-            s->tick();
+            s->tick(matter::TickDesc{0.0f});
             s->pump_gpu_jobs(4.0f);
             matter::Event ev;
             while (s->poll_event(ev)) {
@@ -1109,7 +1109,7 @@ static bool test_live_edit_inotify_e2e(const std::string& sandbox) {
     {
         auto deadline = clk::now() + std::chrono::seconds(30);
         while (clk::now() < deadline && !saw_script_error) {
-            s->tick();
+            s->tick(matter::TickDesc{0.0f});
             s->pump_gpu_jobs(4.0f);
             matter::Event ev;
             while (s->poll_event(ev)) {
@@ -1164,7 +1164,7 @@ static bool test_live_edit_inotify_e2e(const std::string& sandbox) {
     {
         auto deadline = clk::now() + std::chrono::seconds(30);
         while (clk::now() < deadline && !saw_recovery) {
-            s->tick();
+            s->tick(matter::TickDesc{0.0f});
             s->pump_gpu_jobs(4.0f);
             matter::Event ev;
             while (s->poll_event(ev)) {
