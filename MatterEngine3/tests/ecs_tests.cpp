@@ -865,17 +865,61 @@ static void test_runtime_drops_complete_excess_steps_only() {
           "drop policy retains only the fractional remainder");
 }
 
+static void test_runtime_does_not_invent_near_boundary_steps() {
+    const float fixed_delta = 0.1f;
+    const float short_frame = std::nextafter(fixed_delta, 0.0f);
+    const float shortfall = fixed_delta - short_frame;
+    const double half_downward_float_ulp =
+        (static_cast<double>(fixed_delta) -
+         static_cast<double>(short_frame)) * 0.5;
+    const double approved_clamp_total =
+        0.25 - 2.0 * static_cast<double>(fixed_delta) +
+        static_cast<double>(0.05f);
+    CHECK(static_cast<double>(fixed_delta) - approved_clamp_total ==
+              half_downward_float_ulp,
+          "approved clamp remainder is exactly half a downward float ULP short");
+    CHECK(static_cast<double>(fixed_delta) -
+              static_cast<double>(short_frame) >
+              half_downward_float_ulp,
+          "nextafter frame is a full float ULP below the run boundary");
+    ecs_runtime::Runtime short_step_runtime;
+
+    const ecs_runtime::TickResult short_step =
+        short_step_runtime.tick({short_frame, fixed_delta, 4});
+    CHECK(short_step.fixed_steps == 0 && short_step.dropped_steps == 0,
+          "frame immediately below fixed delta does not invent a fixed step");
+    const ecs_runtime::TickResult completed_short_step =
+        short_step_runtime.tick({shortfall, fixed_delta, 4});
+    CHECK(completed_short_step.fixed_steps == 1 &&
+              completed_short_step.dropped_steps == 0,
+          "short accumulator is preserved until exact missing time arrives");
+
+    const float two_steps = 0.2f;
+    const float short_two_steps = std::nextafter(two_steps, 0.0f);
+    ecs_runtime::Runtime drop_boundary_runtime;
+    const ecs_runtime::TickResult drop_boundary =
+        drop_boundary_runtime.tick({short_two_steps, fixed_delta, 1});
+    CHECK(drop_boundary.fixed_steps == 1,
+          "frame immediately below two intervals runs one allowed fixed step");
+    CHECK(drop_boundary.dropped_steps == 0,
+          "fraction immediately below a complete excess step is not dropped");
+}
+
 static void test_runtime_rejects_invalid_ticks_without_progress() {
     struct InvalidCase {
         TickDesc desc;
         const char* message;
     };
     const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float infinity = std::numeric_limits<float>::infinity();
     const InvalidCase cases[] = {
         {{-0.01f, 0.1f, 1}, "negative frame delta is invalid"},
         {{nan, 0.1f, 1}, "NaN frame delta is invalid"},
+        {{infinity, 0.1f, 1}, "infinite frame delta is invalid"},
+        {{0.1f, -0.1f, 1}, "negative fixed delta is invalid"},
         {{0.1f, 0.0f, 1}, "zero fixed delta is invalid"},
         {{0.1f, nan, 1}, "NaN fixed delta is invalid"},
+        {{0.1f, infinity, 1}, "infinite fixed delta is invalid"},
         {{0.1f, 0.1f, 0}, "zero fixed step limit is invalid"}
     };
 
@@ -975,6 +1019,29 @@ static void test_observer_enqueued_hierarchy_change_waits_one_tick() {
           "temporarily pending observer command is retained with last-write semantics");
 }
 
+static void test_pending_hierarchy_command_survives_a_direct_drain() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    const flecs::entity pending_parent = world.entity("PendingDrainParent");
+    const flecs::entity final_parent = world.entity("RetainedDrainParent");
+    const flecs::entity child = world.entity("PendingDrainChild");
+
+    world.defer_begin();
+    CHECK(ecs::reparent(child, pending_parent),
+          "outer defer holds the immediate hierarchy mutation pending");
+    ecs::enqueue_reparent(child, final_parent);
+    ecs::drain_hierarchy_commands(world);
+    CHECK(child.target(flecs::ChildOf).id() == 0,
+          "private drain does not apply a command while the child is pending");
+    world.defer_end();
+
+    CHECK(child.target(flecs::ChildOf).id() == pending_parent.id(),
+          "ending the outer defer commits the first pending mutation");
+    runtime.tick({0.0f, 0.1f, 1});
+    CHECK(child.target(flecs::ChildOf).id() == final_parent.id(),
+          "retained final desired state applies on a later valid tick");
+}
+
 static void test_hierarchy_queue_discards_dead_and_cross_world_entities() {
     ecs_runtime::Runtime runtime;
     flecs::world& world = runtime.world();
@@ -1009,6 +1076,27 @@ static void test_hierarchy_queue_discards_dead_and_cross_world_entities() {
           "discarded invalid command does not block a later valid request");
 }
 
+static void test_hierarchy_queue_discards_stale_child_generation() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    const flecs::entity parent = world.entity("StaleGenerationParent");
+    flecs::entity stale_child = world.entity();
+    const flecs::entity_t stale_id = stale_child.id();
+    ecs::enqueue_reparent(stale_child, parent);
+    stale_child.destruct();
+
+    const flecs::entity replacement = world.entity();
+    CHECK(flecs::strip_generation(replacement.id()) ==
+              flecs::strip_generation(stale_id),
+          "stale generation test recycles the queued child index");
+    CHECK(replacement.id() != stale_id,
+          "recycled child index has a new Flecs generation");
+
+    runtime.tick({0.0f, 0.1f, 1});
+    CHECK(replacement.target(flecs::ChildOf).id() == 0,
+          "stale queued child generation cannot mutate its replacement");
+}
+
 int main() {
     test_entity_lifecycle_and_components();
     test_deferred_structural_mutation();
@@ -1034,10 +1122,13 @@ int main() {
     test_runtime_runs_multiple_accumulated_steps_before_frame();
     test_runtime_clamps_contribution_and_preserves_remainder();
     test_runtime_drops_complete_excess_steps_only();
+    test_runtime_does_not_invent_near_boundary_steps();
     test_runtime_rejects_invalid_ticks_without_progress();
     test_hierarchy_queue_is_last_write_wins_per_child();
     test_hierarchy_queue_waits_until_next_valid_tick();
     test_observer_enqueued_hierarchy_change_waits_one_tick();
+    test_pending_hierarchy_command_survives_a_direct_drain();
     test_hierarchy_queue_discards_dead_and_cross_world_entities();
+    test_hierarchy_queue_discards_stale_child_generation();
     return check_summary();
 }

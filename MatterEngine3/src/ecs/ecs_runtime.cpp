@@ -6,12 +6,6 @@
 
 namespace matter::ecs {
 
-void drain_hierarchy_commands(flecs::world& world);
-
-} // namespace matter::ecs
-
-namespace matter::ecs {
-
 void register_transform_systems(flecs::world& world);
 
 CoreModule::CoreModule(flecs::world& world) {
@@ -90,7 +84,6 @@ namespace matter::ecs_runtime {
 namespace {
 
 constexpr double kMaxFrameContributionSeconds = 0.25;
-constexpr double kStepComparisonTolerance = 1e-6;
 
 int compare_entity_ids(
     flecs::entity_t first,
@@ -112,6 +105,23 @@ flecs::entity build_pipeline(flecs::world& world) {
             static_cast<flecs::entity_t>(0),
             compare_entity_ids)
         .build();
+}
+
+void snap_half_ulp_shortfall_to_fixed_boundary(
+    double& accumulator,
+    float fixed_delta_input,
+    double fixed_delta) {
+    if (accumulator >= fixed_delta) {
+        return;
+    }
+
+    const double previous_fixed_float =
+        std::nextafter(fixed_delta_input, 0.0f);
+    const double half_downward_float_ulp =
+        (fixed_delta - previous_fixed_float) * 0.5;
+    if (fixed_delta - accumulator <= half_downward_float_ulp) {
+        accumulator = fixed_delta;
+    }
 }
 
 } // namespace
@@ -145,31 +155,25 @@ TickResult Runtime::tick(const TickDesc& desc) {
     accumulator_seconds_ += contributed_delta;
 
     TickResult result{};
-    const double comparison_epsilon =
-        fixed_delta * kStepComparisonTolerance;
-    while (result.fixed_steps < desc.max_fixed_steps &&
-           accumulator_seconds_ + comparison_epsilon >= fixed_delta) {
+    while (result.fixed_steps < desc.max_fixed_steps) {
+        snap_half_ulp_shortfall_to_fixed_boundary(
+            accumulator_seconds_, desc.fixed_delta_seconds, fixed_delta);
+        if (accumulator_seconds_ < fixed_delta) {
+            break;
+        }
         world_.run_pipeline(fixed_pipeline_, desc.fixed_delta_seconds);
         accumulator_seconds_ -= fixed_delta;
-        if (accumulator_seconds_ < 0.0 &&
-            accumulator_seconds_ >= -comparison_epsilon) {
-            accumulator_seconds_ = 0.0;
-        }
         ++result.fixed_steps;
     }
 
     const double complete_excess_steps =
-        std::floor((accumulator_seconds_ + comparison_epsilon) / fixed_delta);
+        std::floor(accumulator_seconds_ / fixed_delta);
     if (complete_excess_steps > 0.0) {
         const double max_reportable =
             static_cast<double>(std::numeric_limits<uint32_t>::max());
         result.dropped_steps = static_cast<uint32_t>(
             std::min(complete_excess_steps, max_reportable));
         accumulator_seconds_ -= complete_excess_steps * fixed_delta;
-        if (accumulator_seconds_ < 0.0 &&
-            accumulator_seconds_ >= -comparison_epsilon) {
-            accumulator_seconds_ = 0.0;
-        }
     }
 
     world_.run_pipeline(

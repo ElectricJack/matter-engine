@@ -3,6 +3,14 @@
 #include "matter/ecs.h"
 #include "matter/world_session.h"
 
+namespace matter::ecs {
+
+// Private Runtime tick seam. Exposed only from this internal header so tests
+// can verify command retention without running a pipeline inside an outer defer.
+void drain_hierarchy_commands(flecs::world& world);
+
+} // namespace matter::ecs
+
 namespace matter::ecs_runtime {
 
 struct TickResult {
