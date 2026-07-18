@@ -22,6 +22,7 @@ ME3_DIR     = ../MatterEngine3
 MSL_DIR     = ../MatterSurfaceLib
 QJS_DIR     = ../Libraries/quickjs-ng
 BOX3D_DIR   = ../Libraries/box3d
+FLECS_DIR   = ../Libraries/flecs
 
 # Linux include: only the public engine API.
 INCLUDE_PATHS = -I$(ME3_DIR)/include \
@@ -36,6 +37,7 @@ WIN_INCLUDE_PATHS = $(INCLUDE_PATHS) \
                     -I$(MSL_DIR)/src \
                     -I$(QJS_DIR) \
                     -I$(BOX3D_DIR)/include \
+                    -I$(FLECS_DIR) \
                     -I../ParticleFlowLib/include
 
 LDFLAGS = -lGL -lm -lpthread -ldl -lrt -lX11
@@ -139,6 +141,8 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/terrain_field.cpp \
               $(ME3_DIR)/src/terrain_mesher.cpp \
               $(ME3_DIR)/src/sector_streamer.cpp \
+              $(ME3_DIR)/src/ecs/ecs_runtime.cpp \
+              $(ME3_DIR)/src/ecs/transform_system.cpp \
               $(ME3_DIR)/src/matter_engine.cpp \
               $(ME3_DIR)/src/pf_bindings.cpp \
               ../ParticleFlowLib/src/pf_math.cpp \
@@ -167,6 +171,8 @@ WIN_PIPELINE_C = $(MSL_DIR)/src/surface.c $(MSL_DIR)/src/open_particle_surface.c
 QJS_C = $(QJS_DIR)/quickjs.c $(QJS_DIR)/libregexp.c $(QJS_DIR)/libunicode.c \
         $(QJS_DIR)/cutils.c $(QJS_DIR)/xsum.c
 
+FLECS_C = $(FLECS_DIR)/flecs.c
+
 # Application sources (no imgui for ExplorerDemo).
 WIN_APP_SRC = main.cpp camera_rig.cpp hud.cpp staged_camera.cpp menu.cpp
 
@@ -177,16 +183,18 @@ WIN_ALL_CPP_SRC  = $(WIN_APP_SRC) $(WIN_ME3_CPP) $(WIN_MSL_CPP)
 CPP_NAMES_WIN    = $(notdir $(WIN_ALL_CPP_SRC))
 QJS_NAMES        = $(notdir $(QJS_C))
 PIPC_NAMES_WIN   = $(notdir $(WIN_PIPELINE_C))
+FLECS_NAME       = $(notdir $(FLECS_C))
 
 W_CPP_OBJ  = $(addprefix $(W_DIR)/,$(CPP_NAMES_WIN:.cpp=.o))
 W_QJS_OBJ  = $(addprefix $(W_DIR)/,$(QJS_NAMES:.c=.o))
 W_PIPC_OBJ = $(addprefix $(W_DIR)/,$(PIPC_NAMES_WIN:.c=.o))
-W_ALL_OBJ  = $(W_CPP_OBJ) $(W_QJS_OBJ) $(W_PIPC_OBJ)
+W_FLECS_OBJ = $(W_DIR)/$(FLECS_NAME:.c=.o)
+W_ALL_OBJ  = $(W_CPP_OBJ) $(W_QJS_OBJ) $(W_PIPC_OBJ) $(W_FLECS_OBJ)
 
 # vpath lets the pattern rules find sources by basename.
 vpath %.cpp . $(ME3_DIR)/src $(ME3_DIR)/src/render $(ME3_DIR)/src/provider $(MSL_DIR)/src \
              ../ParticleFlowLib/src
-vpath %.c $(MSL_DIR)/src $(QJS_DIR)
+vpath %.c $(MSL_DIR)/src $(QJS_DIR) $(FLECS_DIR)
 
 $(W_DIR):
 	mkdir -p $@
@@ -210,6 +218,10 @@ $(W_QJS_OBJ): $(W_DIR)/%.o: $(QJS_DIR)/%.c | $(W_DIR)
 # Windows MSL pipeline C compile rule.
 $(W_PIPC_OBJ): $(W_DIR)/%.o: $(MSL_DIR)/src/%.c | $(W_DIR)
 	$(WIN_CC) -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(WIN_INCLUDE_PATHS) -MMD -MP
+
+# Flecs C99 compile rule; keep it outside the C++ source/object union.
+$(W_FLECS_OBJ): $(W_DIR)/%.o: $(FLECS_DIR)/%.c | $(W_DIR)
+	$(WIN_CC) -c $< -o $@ -std=c99 -O2 -I$(FLECS_DIR) -MMD -MP
 
 # win-shaders-gpu: ensure the shaders_gpu/ symlink resolves (runtime compute shaders).
 .PHONY: win-shaders-gpu

@@ -30,6 +30,7 @@ QJS_INC     = -I$(QJS_DIR)
 BOX3D_DIR   = ../Libraries/box3d
 ME3_DIR     = ../MatterEngine3
 MSL_DIR     = ../MatterSurfaceLib
+FLECS_DIR   = ../Libraries/flecs
 
 # Linux app compile: only public engine API + imgui + raylib headers visible.
 # Private ME3 src/ headers are NOT exposed here; they are internal to the library.
@@ -52,9 +53,10 @@ WIN_INCLUDE_PATHS = -I$(VULKAN_INCLUDE) \
                     -I$(ME3_DIR) \
                     -I$(ME3_DIR)/src \
                     -I$(ME3_DIR)/src/render \
-                    -I$(ME3_DIR)/src/provider \
-                    -I$(MSL_DIR)/src \
-                    -I../ParticleFlowLib/include
+                     -I$(ME3_DIR)/src/provider \
+                     -I$(MSL_DIR)/src \
+                     -I$(FLECS_DIR) \
+                     -I../ParticleFlowLib/include
 
 LDFLAGS = -lGL -lm -lpthread -ldl -lrt -lX11
 LDLIBS  = ../Libraries/raylib/build/linux/libraylib.a
@@ -163,6 +165,8 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/terrain_field.cpp \
               $(ME3_DIR)/src/terrain_mesher.cpp \
               $(ME3_DIR)/src/sector_streamer.cpp \
+              $(ME3_DIR)/src/ecs/ecs_runtime.cpp \
+              $(ME3_DIR)/src/ecs/transform_system.cpp \
               $(ME3_DIR)/src/matter_engine.cpp \
               $(ME3_DIR)/src/pf_bindings.cpp \
               ../ParticleFlowLib/src/pf_math.cpp \
@@ -190,6 +194,8 @@ WIN_PIPELINE_C = $(MSL_DIR)/src/surface.c $(MSL_DIR)/src/open_particle_surface.c
 
 QJS_C   = $(QJS_DIR)/quickjs.c $(QJS_DIR)/libregexp.c $(QJS_DIR)/libunicode.c \
           $(QJS_DIR)/cutils.c $(QJS_DIR)/xsum.c
+
+FLECS_C = $(FLECS_DIR)/flecs.c
 
 IMGUI_CORE_SRC = $(IMGUI_PATH)/imgui.cpp $(IMGUI_PATH)/imgui_draw.cpp \
             $(IMGUI_PATH)/imgui_tables.cpp $(IMGUI_PATH)/imgui_widgets.cpp \
@@ -225,11 +231,12 @@ WIN_ALL_CPP_SRC = $(APP_SRC) $(WIN_ME3_CPP) $(WIN_MSL_CPP) $(IMGUI_SRC_WIN)
 CPP_NAMES_WIN_ALL = $(notdir $(WIN_ALL_CPP_SRC))
 QJS_NAMES = $(notdir $(QJS_C))
 PIPC_NAMES_WIN = $(notdir $(WIN_PIPELINE_C))
+FLECS_NAME = $(notdir $(FLECS_C))
 
 vpath %.cpp . $(ME3_DIR)/src $(ME3_DIR)/src/render $(ME3_DIR)/src/provider \
              $(MSL_DIR)/src $(IMGUI_PATH) $(IMGUI_PATH)/backends \
              ../ParticleFlowLib/src
-vpath %.c $(MSL_DIR)/src $(QJS_DIR)
+vpath %.c $(MSL_DIR)/src $(QJS_DIR) $(FLECS_DIR)
 
 .DEFAULT_GOAL := viewer
 
@@ -243,7 +250,8 @@ W_DIR = build/windows
 W_CPP_OBJ  = $(addprefix $(W_DIR)/,$(CPP_NAMES_WIN_ALL:.cpp=.o))
 W_QJS_OBJ  = $(addprefix $(W_DIR)/,$(QJS_NAMES:.c=.o))
 W_PIPC_OBJ = $(addprefix $(W_DIR)/,$(PIPC_NAMES_WIN:.c=.o))
-W_ALL_OBJ  = $(W_CPP_OBJ) $(W_QJS_OBJ) $(W_PIPC_OBJ)
+W_FLECS_OBJ = $(W_DIR)/$(FLECS_NAME:.c=.o)
+W_ALL_OBJ  = $(W_CPP_OBJ) $(W_QJS_OBJ) $(W_PIPC_OBJ) $(W_FLECS_OBJ)
 
 $(L_DIR) $(W_DIR):
 	mkdir -p $@
@@ -508,6 +516,8 @@ $(W_QJS_OBJ): $(W_DIR)/%.o: $(QJS_DIR)/%.c | $(W_DIR)
 	$(WIN_CC) -c $< -o $@ -O2 -DNDEBUG -DCONFIG_VERSION='"0.10.0"' $(QJS_INC) -ffunction-sections -fdata-sections -MMD -MP
 $(W_PIPC_OBJ): $(W_DIR)/%.o: $(MSL_DIR)/src/%.c | $(W_DIR)
 	$(WIN_CC) -c $< -o $@ -O2 -DNDEBUG -DPLATFORM_DESKTOP $(WIN_INCLUDE_PATHS) -ffunction-sections -fdata-sections -MMD -MP
+$(W_FLECS_OBJ): $(W_DIR)/%.o: $(FLECS_DIR)/%.c | $(W_DIR)
+	$(WIN_CC) -c $< -o $@ -std=c99 -O2 -I$(FLECS_DIR) -DNDEBUG -ffunction-sections -fdata-sections -MMD -MP
 
 # Order-only: the header must exist before shader_source.cpp compiles, but its
 # regeneration must not force object rebuilds (embedded-shaders is phony).

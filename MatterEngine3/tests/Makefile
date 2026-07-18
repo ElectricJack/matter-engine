@@ -817,12 +817,12 @@ TILESETBAKE_OBJS = $(call obj_list,sh,$(TILESETBAKE_CPP)) $(call obj_list,mslc,$
 LIVEPROD_OBJS    = $(call obj_list,sh,$(LIVEPROD_CPP)) $(call obj_list,mslc,$(LIVEPROD_C)) $(qjsc_C_OBJS)
 
 SHLIB_OBJS = $(call obj_list,sp2,$(SHLIB_CPP)) $(call obj_list,mslc,$(SHLIB_C)) $(qjsc_C_OBJS)
-VIEWER_LOGIC_OBJS = $(call obj_list,vl,$(VIEWER_LOGIC_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
+VIEWER_LOGIC_OBJS = $(call obj_list,vl,$(VIEWER_LOGIC_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS) $(flecsc_C_OBJS)
 RETOPO_INT_OBJS = $(call obj_list,retopo,$(RETOPO_INT_CPP)) $(call obj_list,mslc,$(RETOPO_INT_C)) $(qjsc_C_OBJS)
 
 # GPU binaries reuse the same gpu-flavor object set. Each binary is:
 # <driver>.o + $(GPU_ALL_CPP) objects + mslc + qjsc.
-GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GPU_MSL_C)) $(qjsc_C_OBJS)
+GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GPU_MSL_C)) $(qjsc_C_OBJS) $(flecsc_C_OBJS)
 
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.

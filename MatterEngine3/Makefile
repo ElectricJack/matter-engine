@@ -57,6 +57,7 @@ endif
 RAYLIB_PATH = ../Libraries/raylib/src
 MSL_DIR     = ../MatterSurfaceLib
 PFL_DIR     = ../ParticleFlowLib
+FLECS_DIR   = ../Libraries/flecs
 
 # Include directories: NEW MatterEngine3 headers, consumed MatterSurfaceLib
 # headers, vendored QuickJS-ng, then raylib (for the BLAS/Tri/TriEx types).
@@ -66,6 +67,7 @@ INCLUDE_PATHS = -Iinclude -Isrc -Isrc/render -Isrc/provider \
                 -I$(MSL_DIR)/include -I$(MSL_DIR)/src \
                 -I$(QJS_DIR) -I$(RAYLIB_PATH) -I$(BOX3D_DIR)/include \
                 -I$(PFL_DIR)/include \
+                -I$(FLECS_DIR) \
                 -I../Libraries/Vulkan-Headers/include $(EXTRA_INCLUDE)
 
 # Vendored QuickJS-ng engine. v0.10.0 needs xsum.c (xsum_small_* symbols) beyond
@@ -73,6 +75,10 @@ INCLUDE_PATHS = -Iinclude -Isrc -Isrc/render -Isrc/provider \
 QJS_C   = $(QJS_DIR)/quickjs.c $(QJS_DIR)/libregexp.c \
           $(QJS_DIR)/libunicode.c $(QJS_DIR)/cutils.c $(QJS_DIR)/xsum.c
 QJS_OBJ = quickjs.o libregexp.o libunicode.o cutils.o xsum.o
+
+# Flecs is C99 and must never be compiled by the C++ rule below.
+FLECS_C   = $(FLECS_DIR)/flecs.c
+FLECS_OBJ = flecs.o
 
 # MatterEngine3 C++ sources: full pipeline — bake/script/DSL/CSG, part-graph,
 # LOD flatten/select, tileset pipeline, render, provider, and facade.
@@ -100,6 +106,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/render/gpu_culler.cpp \
           src/render/tileset_provider.cpp src/render/tileset_gl_ctx.cpp \
           src/provider/local_provider.cpp src/provider/resolvers.cpp \
+          src/ecs/ecs_runtime.cpp src/ecs/transform_system.cpp \
           src/matter_engine.cpp \
           src/refine_controller.cpp \
           src/async_bake.cpp \
@@ -156,6 +163,7 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           part_store.o world_composer.o world_state.o \
           gpu_culler.o tileset_provider.o tileset_gl_ctx.o \
           local_provider.o resolvers.o \
+          ecs_runtime.o transform_system.o \
           matter_engine.o \
           refine_controller.o \
           async_bake.o \
@@ -239,8 +247,12 @@ vulkan-spirv: shaders_gen/embedded_spirv.h
 
 # Per-file pattern rules enable safe parallel compilation with `make -j`.
 # vpath directs Make to search source directories by basename.
-vpath %.cpp src src/render src/provider $(MSL_DIR)/src $(PFL_DIR)/src
-vpath %.c $(QJS_DIR) $(MSL_DIR)/src
+vpath %.cpp src src/render src/provider src/ecs $(MSL_DIR)/src $(PFL_DIR)/src
+vpath %.c $(QJS_DIR) $(MSL_DIR)/src $(FLECS_DIR)
+
+# Flecs C source (gcc C99, never g++).
+$(FLECS_OBJ): $(FLECS_C)
+	gcc -c $< -o $@ -std=c99 -O2 -I$(FLECS_DIR)
 
 # QuickJS C sources (gcc, extern "C" safe).
 %.o: $(QJS_DIR)/%.c
@@ -267,8 +279,8 @@ $(ME3_OBJ) $(MSL_OBJ): .lib_flags
 %.o: %.cpp
 	$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDE_PATHS)
 
-$(LIB): $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ)
-	ar rcs $(LIB) $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ)
+$(LIB): $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ)
+	ar rcs $(LIB) $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ)
 
 # Delegate to the test suite (headless, GL-free host + raylib-linked BLAS path).
 test:
@@ -276,5 +288,5 @@ test:
 	$(MAKE) -C tests run-script
 
 clean:
-	rm -f $(LIB) $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) .lib_flags
+	rm -f $(LIB) $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ) .lib_flags
 	$(MAKE) -C tests clean
