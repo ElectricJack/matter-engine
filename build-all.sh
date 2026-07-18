@@ -37,7 +37,6 @@ SIMPLE_PROJECTS=(
     SpatialQueryLib
     MatterEngine3
     MatterViewer
-    ExplorerDemo
 )
 
 # Projects whose Makefile defaults to Windows cross-compile and need
@@ -262,16 +261,6 @@ if [ "$MODE" = "test" ]; then
         bash MatterEngine3/tools/meadow_forestfloor_shots.sh /tmp/build_all_ff_shots \
             || RESULT[MatterEngine3]="FAIL (meadow_forestfloor_shots)"
 
-        # ExplorerDemo warm-cache smoke test (15s; verifies the binary starts, renders,
-        # and exits cleanly). Guarded by binary existence so a build failure skips it
-        # cleanly. The Meadow install phase (~173s) means the scene may be black but
-        # the binary must exit 0 without crashing.
-        if [ -x "ExplorerDemo/explorer" ]; then
-            echo
-            echo "--- ExplorerDemo (warm-cache smoke, 15s) ---"
-            ( cd ExplorerDemo && GALLIUM_DRIVER=d3d12 EXPLORER_SMOKE="secs=15" ./explorer ) \
-                || RESULT[ExplorerDemo]="FAIL (smoke)"
-        fi
     else
         echo
         echo "--- MatterEngine3/tests GPU tests SKIPPED (needs GL 4.6 + GALLIUM_DRIVER=d3d12) ---"

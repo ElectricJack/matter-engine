@@ -126,7 +126,6 @@ function Require-Count([string]$label, [string]$text, [string]$needle, [int]$exp
 $engine = Read-RepoFile 'MatterEngine3\Makefile'
 $tests = Read-RepoFile 'MatterEngine3\tests\Makefile'
 $viewer = Read-RepoFile 'MatterViewer\Makefile'
-$explorer = Read-RepoFile 'ExplorerDemo\Makefile'
 $buildAll = Read-RepoFile 'build-all.sh'
 $runtimeHeader = Read-RepoFile 'MatterEngine3\src\ecs\ecs_runtime.h'
 $runtimeSource = Read-RepoFile 'MatterEngine3\src\ecs\ecs_runtime.cpp'
@@ -159,8 +158,7 @@ Require-Regex 'Runtime publishes private context ref' $runtimeSource 'world_\.se
 foreach ($entry in @(
     @{ Label = 'engine'; Text = $engine; Runtime = 'src/ecs/ecs_runtime.cpp'; Prefix = 'src/ecs/' },
     @{ Label = 'tests'; Text = $tests; Runtime = '../src/ecs/ecs_runtime.cpp'; Prefix = '../src/ecs/' },
-    @{ Label = 'viewer'; Text = $viewer; Runtime = '$(ME3_DIR)/src/ecs/ecs_runtime.cpp'; Prefix = '$(ME3_DIR)/src/ecs/' },
-    @{ Label = 'explorer'; Text = $explorer; Runtime = '$(ME3_DIR)/src/ecs/ecs_runtime.cpp'; Prefix = '$(ME3_DIR)/src/ecs/' }
+    @{ Label = 'viewer'; Text = $viewer; Runtime = '$(ME3_DIR)/src/ecs/ecs_runtime.cpp'; Prefix = '$(ME3_DIR)/src/ecs/' }
 )) {
     $owners = @(Get-AssignmentNamesContaining $entry.Text $entry.Runtime)
     if ($owners.Count -eq 0) {
@@ -192,8 +190,7 @@ Require-Count 'tests physics object graph consumes physics source union' `
 foreach ($entry in @(
     @{ Label = 'engine'; Text = $engine; Public = '-Iinclude' },
     @{ Label = 'tests'; Text = $tests; Public = '-I../include' },
-    @{ Label = 'viewer'; Text = $viewer; Public = '-I$(ME3_DIR)/include' },
-    @{ Label = 'explorer'; Text = $explorer; Public = '-I$(ME3_DIR)/include' }
+    @{ Label = 'viewer'; Text = $viewer; Public = '-I$(ME3_DIR)/include' }
 )) {
     $includeBlock = Get-AssignmentBlock $entry.Text 'INCLUDE_PATHS'
     Require-Count "$($entry.Label) shared Box3D include" $includeBlock '-I$(BOX3D_DIR)/include' 1
@@ -205,7 +202,6 @@ Require-Regex 'engine Flecs C17 rule' $engine '(?ms)^\$\(FLECS_OBJ\):.*?\n\s*gcc
 Require-Regex 'tests shared Flecs C17 flavor' $tests '(?m)^FLAVOR_flecsc_FLAGS\s*:=\s*-std=c17\b'
 Require-Regex 'tests focused Flecs C17 flavor' $tests '(?m)^FLAVOR_physicsc_FLAGS\s*:=\s*-std=c17\b'
 Require-Regex 'viewer Windows Flecs C17 rule' $viewer '(?ms)^\$\(W_FLECS_OBJ\):.*?\n\s*\$\(WIN_CC\).*?-std=c17\b'
-Require-Regex 'explorer Windows Flecs C17 rule' $explorer '(?ms)^\$\(W_FLECS_OBJ\):.*?\n\s*\$\(WIN_CC\).*?-std=c17\b'
 Require-Regex 'viewer Box3D C17 build' $viewer '\$\(MINGW_CC\) -std=c17\b'
 
 # The focused Runtime test binaries link exactly one native Box3D archive.
@@ -252,8 +248,7 @@ foreach ($match in $gpuRuleMatches) {
 Require-Regex 'engine native Box3D library' $engine '(?m)^BOX3D_LIB\s*=\s*\$\(BOX3D_DIR\)/libbox3d\.a\s*$'
 Require-Count 'engine archive Box3D prerequisite' (Get-RuleBlock $engine '^\$\(LIB\):') '$(BOX3D_LIB)' 1
 foreach ($entry in @(
-    @{ Label = 'viewer'; Text = $viewer },
-    @{ Label = 'explorer'; Text = $explorer }
+    @{ Label = 'viewer'; Text = $viewer }
 )) {
     Require-Regex "$($entry.Label) native Box3D library" $entry.Text '(?m)^BOX3D_LIB\s*=\s*\$\(BOX3D_DIR\)/libbox3d\.a\s*$'
     Require-Regex "$($entry.Label) MinGW Box3D library" $entry.Text '(?m)^WIN_BOX3D_LIB\s*=\s*\$\(BOX3D_DIR\)/build-mingw/libbox3d\.a\s*$'
@@ -267,7 +262,7 @@ foreach ($entry in @(
     Require-Count "$($entry.Label) final Windows object union consumes C++ objects" `
         (Get-AssignmentBlock $entry.Text 'W_ALL_OBJ') '$(W_CPP_OBJ)' 1
 
-    $linuxRule = Get-RuleBlock $entry.Text '^\$\((?:TARGET|APP_TARGET)\):|^(?:viewer|explorer):'
+    $linuxRule = Get-RuleBlock $entry.Text '^\$\((?:TARGET|APP_TARGET)\):|^viewer:'
     Require-Count "$($entry.Label) final Linux link consumes LDLIBS" $linuxRule '$(LDLIBS)' 1
     Require-Count "$($entry.Label) final Linux link has no direct native archive" $linuxRule '$(BOX3D_LIB)' 0
     Require-Count "$($entry.Label) final Linux link has no direct literal archive" $linuxRule '$(BOX3D_DIR)/libbox3d.a' 0
@@ -312,9 +307,6 @@ if ($engineSuiteLoops.Count -ne 1) {
 Require-UniqueBasenames 'MatterViewer Windows source union' @(
     Get-LiteralSources $viewer @('APP_SRC', 'WIN_ME3_CPP', 'WIN_MSL_CPP',
         'IMGUI_CORE_SRC', 'IMGUI_SRC_WIN', 'WIN_PIPELINE_C', 'QJS_C', 'FLECS_C'))
-Require-UniqueBasenames 'ExplorerDemo Windows source union' @(
-    Get-LiteralSources $explorer @('WIN_APP_SRC', 'WIN_ME3_CPP', 'WIN_MSL_CPP',
-        'WIN_PIPELINE_C', 'QJS_C', 'FLECS_C'))
 
 if ($failures.Count -gt 0) {
     Write-Host "FAIL: Box3D Phase 2 build contract ($($failures.Count) issue(s))"
