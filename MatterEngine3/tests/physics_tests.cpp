@@ -72,10 +72,7 @@ bool has_no_events(const physics::PhysicsEvents& value) {
 }
 
 void reconcile(ecs_runtime::Runtime& runtime) {
-    const ecs_runtime::TickResult result =
-        runtime.tick({1.0f / 60.0f, 1.0f / 60.0f, 1});
-    CHECK(!result.invalid && result.fixed_steps == 1,
-          "physics test reaches one fixed reconciliation boundary");
+    physics::detail::context(runtime.world()).reconcile(runtime.world());
 }
 
 physics::ConvexHullCollider tetrahedron_hull() {
@@ -788,6 +785,254 @@ void test_hash_collision_cannot_hide_configuration_change() {
           "complete desired comparison replaces colliding configurations");
 }
 
+bool near(float actual, float expected, float tolerance = 1.0e-3f) {
+    return std::fabs(actual - expected) <= tolerance;
+}
+
+bool near(Float3 actual, Float3 expected, float tolerance = 1.0e-3f) {
+    return near(actual.x, expected.x, tolerance) &&
+           near(actual.y, expected.y, tolerance) &&
+           near(actual.z, expected.z, tolerance);
+}
+
+bool near(Quaternion actual, Quaternion expected, float tolerance = 1.0e-3f) {
+    const bool same_sign =
+        near(actual.x, expected.x, tolerance) &&
+        near(actual.y, expected.y, tolerance) &&
+        near(actual.z, expected.z, tolerance) &&
+        near(actual.w, expected.w, tolerance);
+    const bool opposite_sign =
+        near(actual.x, -expected.x, tolerance) &&
+        near(actual.y, -expected.y, tolerance) &&
+        near(actual.z, -expected.z, tolerance) &&
+        near(actual.w, -expected.w, tolerance);
+    return same_sign || opposite_sign;
+}
+
+flecs::entity make_sphere_body(
+    flecs::world& world,
+    physics::RigidBodyType type,
+    Float3 translation) {
+    ecs::LocalTransform transform{};
+    transform.translation = translation;
+    physics::RigidBody body{};
+    body.type = type;
+    return world.entity()
+        .set<ecs::LocalTransform>(transform)
+        .set<physics::RigidBody>(body)
+        .set<physics::SphereCollider>({});
+}
+
+void test_dynamic_sphere_falls_onto_static_floor() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+
+    ecs::LocalTransform floor_transform{};
+    floor_transform.translation = {0.0f, -0.5f, 0.0f};
+    physics::BoxCollider floor_shape{};
+    floor_shape.half_extents = {5.0f, 0.5f, 5.0f};
+    world.entity()
+        .set<ecs::LocalTransform>(floor_transform)
+        .set<physics::RigidBody>({})
+        .set<physics::BoxCollider>(floor_shape);
+    flecs::entity sphere = make_sphere_body(
+        world, physics::RigidBodyType::Dynamic, {0.0f, 3.0f, 0.0f});
+
+    for (int step = 0; step < 180; ++step) {
+        const ecs_runtime::TickResult result =
+            runtime.tick({1.0f / 60.0f, 1.0f / 60.0f, 1});
+        CHECK(!result.invalid && result.fixed_steps == 1,
+              "falling-sphere tick runs one fixed step");
+    }
+
+    const ecs::LocalTransform transform = sphere.get<ecs::LocalTransform>();
+    const physics::PhysicsVelocity* velocity =
+        sphere.try_get<physics::PhysicsVelocity>();
+    CHECK(transform.translation.y > 0.35f &&
+              transform.translation.y < 0.7f,
+          "dynamic sphere falls and settles on the static floor");
+    CHECK(velocity != nullptr && std::fabs(velocity->linear.y) < 0.2f,
+          "settled dynamic sphere publishes its resting velocity");
+    CHECK(physics::physics_stats(world).steps == 180,
+          "falling-sphere simulation steps Box3D once per fixed tick");
+}
+
+void test_static_and_kinematic_edits_push_before_step() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    physics::PhysicsSettings settings = world.get<physics::PhysicsSettings>();
+    settings.gravity = {};
+    world.set<physics::PhysicsSettings>(settings);
+
+    flecs::entity static_body = make_sphere_body(
+        world, physics::RigidBodyType::Static, {});
+    flecs::entity kinematic_body = make_sphere_body(
+        world, physics::RigidBodyType::Kinematic, {});
+    runtime.tick({0.1f, 0.1f, 1});
+
+    ecs::LocalTransform static_target{};
+    static_target.translation = {3.0f, 4.0f, 5.0f};
+    static_target.rotation = {0.0f, 0.0f, 0.70710677f, 0.70710677f};
+    static_body.set<ecs::LocalTransform>(static_target);
+    ecs::LocalTransform kinematic_target{};
+    kinematic_target.translation = {-2.0f, 1.5f, 4.0f};
+    kinematic_target.rotation = {0.0f, 0.38268343f, 0.0f, 0.92387953f};
+    kinematic_body.set<ecs::LocalTransform>(kinematic_target);
+
+    runtime.tick({0.25f, 0.25f, 1});
+    physics::detail::PhysicsContext& context = physics::detail::context(world);
+    physics::detail::PhysicsBodyState static_state{};
+    physics::detail::PhysicsBodyState kinematic_state{};
+    CHECK(context.get_body_state(static_body.id(), static_state) &&
+              near(static_state.position, static_target.translation) &&
+              near(static_state.rotation, static_target.rotation),
+          "static ECS transform reaches Box3D during push");
+    CHECK(context.get_body_state(kinematic_body.id(), kinematic_state) &&
+              near(kinematic_state.position, kinematic_target.translation, 2.0e-3f) &&
+              near(kinematic_state.rotation, kinematic_target.rotation, 2.0e-2f),
+          "kinematic target reaches Box3D in the same fixed step");
+}
+
+void test_dynamic_pose_velocity_and_descendant_pull_before_fixed_post_update() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    physics::PhysicsSettings settings = world.get<physics::PhysicsSettings>();
+    settings.gravity = {};
+    world.set<physics::PhysicsSettings>(settings);
+
+    flecs::entity dynamic_body = make_sphere_body(
+        world, physics::RigidBodyType::Dynamic, {});
+    ecs::LocalTransform child_local{};
+    child_local.translation = {1.0f, 2.0f, 3.0f};
+    flecs::entity child = world.entity()
+        .set<ecs::LocalTransform>(child_local)
+        .child_of(dynamic_body);
+    runtime.tick({0.1f, 0.1f, 1});
+
+    physics::detail::PhysicsBodyState seeded{};
+    seeded.position = {5.0f, 6.0f, 7.0f};
+    seeded.rotation = {0.0f, 0.0f, 0.70710677f, 0.70710677f};
+    seeded.linear_velocity = {1.0f, -2.0f, 0.5f};
+    seeded.angular_velocity = {0.0f, 0.25f, 0.0f};
+    seeded.awake = true;
+    physics::detail::PhysicsContext& context = physics::detail::context(world);
+    CHECK(context.set_body_state(dynamic_body.id(), seeded),
+          "dynamic pull test seeds private Box3D state");
+
+    runtime.tick({0.1f, 0.1f, 1});
+    physics::detail::PhysicsBodyState actual{};
+    CHECK(context.get_body_state(dynamic_body.id(), actual),
+          "dynamic body remains readable after stepping");
+    const ecs::LocalTransform local =
+        dynamic_body.get<ecs::LocalTransform>();
+    const physics::PhysicsVelocity* velocity =
+        dynamic_body.try_get<physics::PhysicsVelocity>();
+    CHECK(near(local.translation, actual.position, 2.0e-3f) &&
+              near(local.rotation, actual.rotation, 2.0e-3f) &&
+              near(local.scale, {1.0f, 1.0f, 1.0f}),
+          "dynamic pose pulls into ECS with unit scale after step");
+    CHECK(velocity != nullptr &&
+              near(velocity->linear, actual.linear_velocity, 2.0e-3f) &&
+              near(velocity->angular, actual.angular_velocity, 2.0e-3f),
+          "dynamic linear and angular velocity pull into ECS after step");
+
+    const ecs::WorldTransform root_world =
+        dynamic_body.get<ecs::WorldTransform>();
+    const ecs::WorldTransform child_world = child.get<ecs::WorldTransform>();
+    const float expected_x = root_world.matrix.m[0] * child_local.translation.x +
+        root_world.matrix.m[1] * child_local.translation.y +
+        root_world.matrix.m[2] * child_local.translation.z +
+        root_world.matrix.m[3];
+    const float expected_y = root_world.matrix.m[4] * child_local.translation.x +
+        root_world.matrix.m[5] * child_local.translation.y +
+        root_world.matrix.m[6] * child_local.translation.z +
+        root_world.matrix.m[7];
+    const float expected_z = root_world.matrix.m[8] * child_local.translation.x +
+        root_world.matrix.m[9] * child_local.translation.y +
+        root_world.matrix.m[10] * child_local.translation.z +
+        root_world.matrix.m[11];
+    CHECK(near(child_world.matrix.m[3], expected_x, 3.0e-3f) &&
+              near(child_world.matrix.m[7], expected_y, 3.0e-3f) &&
+              near(child_world.matrix.m[11], expected_z, 3.0e-3f),
+          "dynamic descendant world transform is current after FixedPostUpdate");
+    CHECK(!dynamic_body.has<ecs::TransformDirty>() &&
+              !child.has<ecs::TransformDirty>(),
+          "FixedPostUpdate consumes pull dirtiness for the moved subtree");
+}
+
+void test_settings_and_step_accounting_follow_fixed_ticks_only() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    flecs::entity dynamic_body = make_sphere_body(
+        world, physics::RigidBodyType::Dynamic, {});
+    runtime.tick({0.1f, 0.1f, 1});
+
+    physics::detail::PhysicsBodyState reset{};
+    reset.awake = true;
+    physics::detail::PhysicsContext& context = physics::detail::context(world);
+    CHECK(context.set_body_state(dynamic_body.id(), reset),
+          "settings test resets dynamic Box3D state");
+    physics::PhysicsSettings settings{};
+    settings.gravity = {0.0f, -2.0f, 0.0f};
+    settings.substeps = 7;
+    world.set<physics::PhysicsSettings>(settings);
+
+    const uint64_t before_settings_step = physics::physics_stats(world).steps;
+    runtime.tick({0.2f, 0.2f, 1});
+    physics::detail::PhysicsBodyState after_settings{};
+    CHECK(context.get_body_state(dynamic_body.id(), after_settings) &&
+              near(after_settings.linear_velocity.y, -0.4f, 0.05f),
+          "updated gravity applies before the next Box3D step");
+    CHECK(physics::physics_stats(world).steps == before_settings_step + 1,
+          "settings update still performs exactly one Box3D step");
+    CHECK(context.last_step_substeps() == 7,
+          "updated substep count applies to the next Box3D step");
+
+    const uint64_t before_catch_up = physics::physics_stats(world).steps;
+    const ecs_runtime::TickResult catch_up =
+        runtime.tick({0.15f, 0.05f, 3});
+    CHECK(catch_up.fixed_steps == 3 &&
+              physics::physics_stats(world).steps == before_catch_up + 3,
+          "three-step catch-up performs exactly three Box3D steps");
+
+    const uint64_t before_zero = physics::physics_stats(world).steps;
+    const ecs_runtime::TickResult zero = runtime.tick({0.0f, 0.1f, 3});
+    CHECK(!zero.invalid && zero.fixed_steps == 0 &&
+              physics::physics_stats(world).steps == before_zero,
+          "valid zero-fixed-step tick performs no Box3D step");
+
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float infinity = std::numeric_limits<float>::infinity();
+    const TickDesc invalid_cases[] = {
+        {-0.01f, 0.1f, 1}, {nan, 0.1f, 1}, {infinity, 0.1f, 1},
+        {0.1f, -0.1f, 1}, {0.1f, 0.0f, 1}, {0.1f, nan, 1},
+        {0.1f, infinity, 1}, {0.1f, 0.1f, 0}};
+    for (const TickDesc& desc : invalid_cases) {
+        const uint64_t before_invalid = physics::physics_stats(world).steps;
+        const ecs_runtime::TickResult result = runtime.tick(desc);
+        CHECK(result.invalid && result.fixed_steps == 0 &&
+                  physics::physics_stats(world).steps == before_invalid,
+              "invalid TickDesc performs no Box3D step");
+    }
+}
+
+void test_physics_system_trace_matches_fixed_design_order() {
+    ecs_runtime::Runtime runtime;
+    make_sphere_body(
+        runtime.world(), physics::RigidBodyType::Dynamic, {});
+    runtime.tick({0.1f, 0.1f, 1});
+
+    const std::vector<physics::detail::PhysicsSystemStage>& trace =
+        physics::detail::context(runtime.world()).fixed_step_trace();
+    const std::vector<physics::detail::PhysicsSystemStage> expected{
+        physics::detail::PhysicsSystemStage::Reconcile,
+        physics::detail::PhysicsSystemStage::Push,
+        physics::detail::PhysicsSystemStage::Step,
+        physics::detail::PhysicsSystemStage::Pull};
+    CHECK(trace == expected,
+          "physics systems explicitly trace reconcile, push, step, pull order");
+}
+
 } // namespace
 
 int main() {
@@ -799,5 +1044,10 @@ int main() {
     test_bridge_survives_unrelated_archetype_moves();
     test_dynamic_replacement_preserves_box3d_state();
     test_hash_collision_cannot_hide_configuration_change();
+    test_dynamic_sphere_falls_onto_static_floor();
+    test_static_and_kinematic_edits_push_before_step();
+    test_dynamic_pose_velocity_and_descendant_pull_before_fixed_post_update();
+    test_settings_and_step_accounting_follow_fixed_ticks_only();
+    test_physics_system_trace_matches_fixed_design_order();
     return check_summary();
 }

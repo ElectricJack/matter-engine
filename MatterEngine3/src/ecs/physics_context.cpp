@@ -2,6 +2,7 @@
 #include "physics_shapes.h"
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <stdexcept>
 #include <unordered_map>
@@ -47,6 +48,10 @@ b3Vec3 box_vector(Float3 value) {
 
 b3Quat box_quaternion(Quaternion value) {
     return {{value.x, value.y, value.z}, value.w};
+}
+
+b3WorldTransform box_transform(const ecs::LocalTransform& value) {
+    return {box_position(value.translation), box_quaternion(value.rotation)};
 }
 
 Float3 engine_position(b3Pos value) {
@@ -130,6 +135,16 @@ void write_state(const BridgeRecord& bridge, const PhysicsBodyState& state) {
     b3Body_SetAwake(bridge.body, state.awake);
 }
 
+uint32_t clamped_substeps(uint32_t substeps) {
+    constexpr uint32_t kMaxSubsteps = 64;
+    return std::max(1U, std::min(substeps, kMaxSubsteps));
+}
+
+bool finite(Float3 value) {
+    return std::isfinite(value.x) && std::isfinite(value.y) &&
+           std::isfinite(value.z);
+}
+
 struct HullDeleter {
     void operator()(b3HullData* hull) const {
         if (hull != nullptr) {
@@ -144,6 +159,9 @@ struct PhysicsContext::Impl {
     b3WorldId world_id = b3_nullWorldId;
     std::unordered_map<flecs::entity_t, std::unique_ptr<BridgeRecord>> bridges;
     std::vector<flecs::entity_t> dirty_entities;
+    uint32_t configured_substeps = 1;
+    uint32_t last_step_substeps = 0;
+    std::vector<PhysicsSystemStage> fixed_step_trace;
 };
 
 PhysicsContext::PhysicsContext(const PhysicsSettings& settings)
@@ -152,6 +170,7 @@ PhysicsContext::PhysicsContext(const PhysicsSettings& settings)
     world_def.workerCount = 1;
     world_def.gravity = {settings.gravity.x, settings.gravity.y,
                          settings.gravity.z};
+    impl_->configured_substeps = clamped_substeps(settings.substeps);
     impl_->world_id = b3CreateWorld(&world_def);
     if (!b3World_IsValid(impl_->world_id)) {
         throw std::runtime_error("Box3D failed to create a physics world");
@@ -198,6 +217,8 @@ void PhysicsContext::mark_for_reconcile(flecs::entity_t entity) noexcept {
 }
 
 void PhysicsContext::reconcile(flecs::world& world) {
+    impl_->fixed_step_trace.clear();
+    impl_->fixed_step_trace.push_back(PhysicsSystemStage::Reconcile);
     if (!world_is_valid()) {
         return;
     }
@@ -343,6 +364,123 @@ void PhysicsContext::reconcile(flecs::world& world) {
         }
         remove_error(entity);
     }
+}
+
+void PhysicsContext::push(flecs::world& world, float fixed_delta) {
+    if (!world_is_valid()) {
+        return;
+    }
+    impl_->fixed_step_trace.push_back(PhysicsSystemStage::Push);
+
+    const PhysicsSettings settings = world.get<PhysicsSettings>();
+    if (finite(settings.gravity)) {
+        b3World_SetGravity(impl_->world_id, box_vector(settings.gravity));
+    }
+    impl_->configured_substeps = clamped_substeps(settings.substeps);
+
+    std::vector<flecs::entity_t> entity_ids;
+    entity_ids.reserve(impl_->bridges.size());
+    for (const auto& entry : impl_->bridges) {
+        entity_ids.push_back(entry.first);
+    }
+    std::sort(entity_ids.begin(), entity_ids.end());
+
+    for (const flecs::entity_t entity_id : entity_ids) {
+        BridgeRecord& bridge = *impl_->bridges.at(entity_id);
+        if (!bridge.live || !b3Body_IsValid(bridge.body) ||
+            bridge.type == RigidBodyType::Dynamic ||
+            !world.is_alive(entity_id)) {
+            continue;
+        }
+
+        const flecs::entity entity(world.c_ptr(), entity_id);
+        const ecs::LocalTransform* source =
+            entity.try_get<ecs::LocalTransform>();
+        if (source == nullptr) {
+            continue;
+        }
+        const ecs::LocalTransform transform = *source;
+        if (bridge.type == RigidBodyType::Static) {
+            b3Body_SetTransform(
+                bridge.body, box_position(transform.translation),
+                box_quaternion(transform.rotation));
+        } else if (fixed_delta > 0.0f && std::isfinite(fixed_delta)) {
+            b3Body_SetTargetTransform(
+                bridge.body, box_transform(transform), fixed_delta, true);
+        }
+    }
+}
+
+void PhysicsContext::step(float fixed_delta) {
+    if (!world_is_valid() || !std::isfinite(fixed_delta) ||
+        fixed_delta <= 0.0f) {
+        return;
+    }
+    impl_->fixed_step_trace.push_back(PhysicsSystemStage::Step);
+    const uint32_t substeps = impl_->configured_substeps;
+    b3World_Step(
+        impl_->world_id, fixed_delta, static_cast<int>(substeps));
+    impl_->last_step_substeps = substeps;
+    ++stats_.steps;
+}
+
+void PhysicsContext::pull(flecs::world& world) {
+    if (!world_is_valid()) {
+        return;
+    }
+    impl_->fixed_step_trace.push_back(PhysicsSystemStage::Pull);
+
+    const b3BodyEvents events = b3World_GetBodyEvents(impl_->world_id);
+    for (int event_index = 0; event_index < events.moveCount; ++event_index) {
+        const b3BodyMoveEvent event = events.moveEvents[event_index];
+        // Reconciliation is the only bridge-retirement point and precedes
+        // Step, so Box3D movement user data remains a live heap record through
+        // this Pull. Validate map identity before consuming the record state.
+        BridgeRecord* bridge = static_cast<BridgeRecord*>(event.userData);
+        if (bridge == nullptr) {
+            ++stats_.stale_events;
+            continue;
+        }
+        const auto found = impl_->bridges.find(bridge->entity);
+        if (found == impl_->bridges.end() ||
+            found->second.get() != bridge || !bridge->live) {
+            ++stats_.stale_events;
+            continue;
+        }
+        if (bridge->type != RigidBodyType::Dynamic) {
+            continue;
+        }
+        if (!B3_ID_EQUALS(bridge->body, event.bodyId) ||
+            !b3Body_IsValid(bridge->body) ||
+            !world.is_alive(bridge->entity)) {
+            ++stats_.stale_events;
+            continue;
+        }
+
+        ecs::LocalTransform transform{};
+        transform.translation = engine_position(event.transform.p);
+        transform.rotation = engine_quaternion(event.transform.q);
+        transform.scale = {1.0f, 1.0f, 1.0f};
+        PhysicsVelocity velocity{};
+        velocity.linear = engine_vector(
+            b3Body_GetLinearVelocity(bridge->body));
+        velocity.angular = engine_vector(
+            b3Body_GetAngularVelocity(bridge->body));
+        const flecs::entity entity(world.c_ptr(), bridge->entity);
+        entity.set<ecs::LocalTransform>(transform);
+        entity.set<PhysicsVelocity>(velocity);
+        entity.add<ecs::TransformDirty>();
+    }
+}
+
+uint32_t PhysicsContext::last_step_substeps() const noexcept {
+    return impl_ != nullptr ? impl_->last_step_substeps : 0;
+}
+
+const std::vector<PhysicsSystemStage>&
+PhysicsContext::fixed_step_trace() const noexcept {
+    static const std::vector<PhysicsSystemStage> empty;
+    return impl_ != nullptr ? impl_->fixed_step_trace : empty;
 }
 
 bool PhysicsContext::body_is_valid(flecs::entity_t entity) const noexcept {

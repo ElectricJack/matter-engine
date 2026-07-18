@@ -51,7 +51,7 @@ void register_physics_systems(flecs::world& world) {
 
     flecs::system reconcile =
         world.system<const detail::PhysicsContextRef>(
-                 "ReconcilePhysicsBodies")
+                 "MatterPhysicsReconcile")
             .term_at(0).src<detail::PhysicsContextRef>()
             .kind<PhysicsReconcile>()
             .each([](
@@ -64,6 +64,50 @@ void register_physics_systems(flecs::world& world) {
                 }
             });
     reconcile.add<ecs::FixedPipelineSystem>();
+
+    flecs::system push =
+        world.system<const detail::PhysicsContextRef>("MatterPhysicsPush")
+            .term_at(0).src<detail::PhysicsContextRef>()
+            .kind<PhysicsPush>()
+            .each([](
+                flecs::iter& iterator,
+                size_t,
+                const detail::PhysicsContextRef& ref) {
+                if (ref.value != nullptr) {
+                    flecs::world world = iterator.world();
+                    ref.value->push(world, iterator.delta_time());
+                }
+            });
+    push.add<ecs::FixedPipelineSystem>();
+
+    flecs::system step =
+        world.system<const detail::PhysicsContextRef>("MatterPhysicsStep")
+            .term_at(0).src<detail::PhysicsContextRef>()
+            .kind<ecs::Physics>()
+            .each([](
+                flecs::iter& iterator,
+                size_t,
+                const detail::PhysicsContextRef& ref) {
+                if (ref.value != nullptr) {
+                    ref.value->step(iterator.delta_time());
+                }
+            });
+    step.add<ecs::FixedPipelineSystem>();
+
+    flecs::system pull =
+        world.system<const detail::PhysicsContextRef>("MatterPhysicsPull")
+            .term_at(0).src<detail::PhysicsContextRef>()
+            .kind<PhysicsPull>()
+            .each([](
+                flecs::iter& iterator,
+                size_t,
+                const detail::PhysicsContextRef& ref) {
+                if (ref.value != nullptr) {
+                    flecs::world world = iterator.world();
+                    ref.value->pull(world);
+                }
+            });
+    pull.add<ecs::FixedPipelineSystem>();
 }
 
 } // namespace matter::physics

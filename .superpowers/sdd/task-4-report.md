@@ -1,118 +1,143 @@
-# Task 4 Report: Indexed Indirect Draws — DrawCommand layout, cull.comp, index buffer, draw sites
+# Task 4 Report: Fixed-Step Simulation and Transform Synchronization
 
-**Date:** 2026-07-16  
-**Branch:** worktree-gpu-timers-hud  
-**Commit:** b133bc9 — "feat(vk): indexed indirect draws (DrawCommand -> VkDrawIndexedIndirectCommand)"
+## Status
 
----
+Implemented Task 4 on reviewed Task 3 base `26ff737`. Each valid ECS fixed
+step now runs the private physics sequence `Reconcile -> Push -> Step -> Pull`
+exactly once. Static and kinematic transforms push from ECS, Box3D steps with
+the current reflected settings, and moved dynamic bodies pull pose and velocity
+back into ECS before fixed-post transform propagation.
 
-## What Was Implemented
+No public command queue, contact/sensor event publication, or physics query
+behavior was added.
 
-### Step 1: `vk_draw_command.h` — 5-field struct + updated static asserts + `operator==`
+## RED Evidence
 
-Replaced the 4-field `VkDrawIndirectCommand`-compatible struct with the 5-field `VkDrawIndexedIndirectCommand`-compatible layout:
-- `index_count`, `instance_count`, `first_index`, `vertex_offset` (int32_t), `first_instance`
-- Size assert updated: `5 * sizeof(uint32_t)` = 20 bytes
-- `operator==` updated to compare all five fields
+The simulation and accounting tests were added before production changes and
+compiled/linked against the unchanged Task 3 objects. The executable exited 1
+with 11 expected failures:
 
-### Step 2: `vk_scene_renderer.h` — offset static asserts replaced
-
-Old asserts against `VkDrawIndirectCommand` replaced with five asserts against `VkDrawIndexedIndirectCommand` (including `vertex_offset ↔ vertexOffset`). Added `indices_` GPU buffer member next to `vertices_`, `uploaded_index_count_` alongside `uploaded_vertex_count_`, and `ensure_index_buffer` declaration next to `ensure_vertex_buffer`.
-
-### Step 3: `cull.comp` — struct + stats line
-
-GLSL `DrawCommand` updated to 5-field indexed layout (`int vertex_offset` in 4th slot). Stats line `vertex_count / 3u` → `index_count / 3u`.
-
-### Step 4: `vk_scene_renderer.cpp` — command fill + index buffer + draw calls
-
-**Command fill** (rebuild_command_template area): replaced the `// Task 4 replaces this` block with:
-```cpp
-command.index_count   = lods[lod].index_count;
-command.first_index   = lods[lod].first_index;   // already global (Task 3)
-command.vertex_offset = static_cast<int32_t>(parts_[cluster.part_slot].vertex_start);
-```
-The old rebase block that folded vertex bases into `first_vertex` is deleted.
-
-**Index buffer** (`ensure_index_buffer`): mirrors `ensure_vertex_buffer` exactly with usage flags `VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT`.
-
-**Upload** (`upload_scene_buffers`): `index_staging_` computed to `index_bytes`, capped against `max_buffer_size`, allocated via `next_indices`, uploaded alongside vertices/clusters, `uploaded_index_count_` set.
-
-**Reset** (`reset()`): `indices_.reset()` in full-reset path; `uploaded_index_count_ = 0` in counter reset.
-
-**Guard** (`render_gbuffer_and_composite`): condition expanded to `|| uploaded_index_count_ == 0`.
-
-**RasterRecord**: added `VkBuffer index_buffer` field. Both `RasterRecord` initializations updated to pass `indices_.buffer`; second dependencies vector gains `indices_.lifetime`.
-
-**record_raster**: `vkCmdBindIndexBuffer(command_buffer, record.index_buffer, 0, VK_INDEX_TYPE_UINT32)` added after `vkCmdBindVertexBuffers`. Both `vkCmdDrawIndirect` calls replaced with `vkCmdDrawIndexedIndirect`.
-
-### Step 5: `vulkan_smoke_tests.cpp` — CPU cull reference updated
-
-`run_cpu_cull`: `command.vertex_count` → `command.index_count`, `command.first_vertex` → `command.first_index`.
-
----
-
-## TDD Evidence
-
-### RED Phase
-Immediately after updating `vk_draw_command.h` to the 5-field layout, `vulkan_smoke_tests.cpp`'s `run_cpu_cull` function would have failed to compile against the stale field names — confirmed by the old names (`vertex_count`, `first_vertex`) that were present in that file. The test file `vk_scene_renderer_tests.cpp` doesn't use DrawCommand literals so it doesn't provide RED signal for this step.
-
-### GREEN Phase
-```
-make -C MatterEngine3 -j8            → BUILD PASS (no errors)
-make -C MatterEngine3/tests run-vk-scene-renderer → 15/15 PASS --- ALL PASS
+```text
+FAIL: dynamic sphere falls and settles on the static floor
+FAIL: settled dynamic sphere publishes its resting velocity
+FAIL: falling-sphere simulation steps Box3D once per fixed tick
+FAIL: static ECS transform reaches Box3D during push
+FAIL: kinematic target reaches Box3D in the same fixed step
+FAIL: dynamic pose pulls into ECS with unit scale after step
+FAIL: dynamic linear and angular velocity pull into ECS after step
+FAIL: dynamic descendant world transform is current after FixedPostUpdate
+FAIL: updated gravity applies before the next Box3D step
+FAIL: settings update still performs exactly one Box3D step
+FAIL: three-step catch-up performs exactly three Box3D steps
+11 FAILURE(S)
 ```
 
----
+The explicit substep and internal phase-trace assertions were then added before
+their seams. MSVC compilation failed specifically because
+`PhysicsContext::last_step_substeps`, `PhysicsSystemStage`, and
+`PhysicsContext::fixed_step_trace` did not exist.
 
-## Files Changed
+The required GNU RED command could not execute because `make` is not installed.
 
-| File | Notes |
-|------|-------|
-| `MatterEngine3/src/render/vk_draw_command.h` | Named in brief — 5-field struct |
-| `MatterEngine3/shaders_vk/cull.comp` | Named in brief — struct + stats |
-| `MatterEngine3/src/render/vk_scene_renderer.h` | Named in brief — asserts, members, ensure_index_buffer |
-| `MatterEngine3/src/render/vk_scene_renderer.cpp` | Named in brief — fill, buffer, draws, RasterRecord |
-| `MatterEngine3/tests/vulkan_smoke_tests.cpp` | **Extra, beyond 5 named** — run_cpu_cull uses DrawCommand fields; Windows-only, syntax-checked via `g++ -fsyntax-only`; only Windows-specific errors (\_putenv\_s, win32\_process\_handle\_count), no DrawCommand errors |
-| `MatterEngine3/tests/vk_scene_renderer_tests.cpp` | Unchanged — already Task-3-compatible, no DrawCommand literals |
+## Implementation
 
----
+- Registered `MatterPhysicsReconcile`, `MatterPhysicsPush`,
+  `MatterPhysicsStep`, and `MatterPhysicsPull` in their refined fixed phases.
+  Every system carries `FixedPipelineSystem`; none carries
+  `FramePipelineSystem`.
+- Push copies `PhysicsSettings`, applies finite gravity, clamps substeps to
+  `[1, 64]`, and visits private bridges in ascending full generational entity
+  ID order.
+- Static bodies receive ECS transforms directly. Kinematic bodies receive a
+  `b3Body_SetTargetTransform` for the current fixed delta before stepping.
+- Step calls `b3World_Step` exactly once and increments `PhysicsStats::steps`
+  only after that call.
+- Pull consumes only Box3D's private movement-event buffer. It validates each
+  stable heap bridge pointer and full private body ID, copies all Box3D values,
+  then writes dynamic `LocalTransform`, `PhysicsVelocity`, and
+  `TransformDirty`. No Flecs component/query pointer survives a structural
+  mutation.
+- Dynamic local transforms use unit scale. The existing `FixedPostUpdate`
+  propagation system consumes the dirty root/subtree before the fixed pipeline
+  ends, keeping descendants current.
+- The private trace records the actual four engine systems, not merely phase
+  metadata, and resets at each reconciliation boundary.
 
-## Greps: command-path `first_vertex` survivors
+## GREEN and Root-Cause Evidence
 
-No stale DrawCommand `first_vertex` on the command path. Legitimate survivors in other contexts:
-- `RtGeometryDebugRecord::first_vertex` (line 217, vk_scene_renderer.h) — RT debug struct, unrelated to draw commands
-- `fixed_part()` function parameter named `first_vertex` (vulkan_smoke_tests.cpp line 3454) — local function parameter, passed as `first_index` positionally to VkSceneLod brace-init
+The first implementation run exposed test-layer assumptions rather than missing
+production behavior:
 
-## Greps: `/ 3` conversions found
+- Task 3's `reconcile` helper used a full runtime tick. Once Task 4 added real
+  stepping, that helper advanced gravity and velocity while testing replacement
+  state. It now calls the private reconciliation operation directly so Task 3
+  lifecycle tests continue to isolate reconciliation.
+- Runtime caps one frame's accumulator contribution at 0.25 seconds. Initial
+  0.5-second settings and 0.3-second catch-up cases therefore ran zero and two
+  fixed steps, respectively. The cases now use unclamped deltas while testing
+  the same one-step and three-step contracts.
+- Pinned Box3D documents kinematic target results as close rather than exact;
+  captured evidence showed exact translation and a small quaternion difference.
+  The rotation assertion uses an appropriate tolerance.
+- The descendant expectation originally assumed the seeded rotation stayed
+  fixed despite nonzero angular velocity. It now composes the child's local
+  translation with the actual fixed-post root matrix.
 
-- `cull.comp` line 183: `commands[bucket].vertex_count / 3u` → `commands[bucket].index_count / 3u` (CHANGED)
-- `vk_scene_renderer.cpp` line 2392: `lod.index_count / 3` for RT `primitive_count` — already uses `index_count`, no change needed
-- No CPU-side `vertex_count / 3` on DrawCommand/stats path found
+After those isolation corrections, the focused physics executable and existing
+ECS executable both printed `ALL PASS`.
 
----
+## Fresh Verification
 
-## Self-Review Findings
+Two independent absent-at-start directories were built:
 
-1. **`sizeof(DrawCommand) == 20`**: struct has 5 uint32_t-sized fields (including int32_t vertex_offset), 5 × 4 = 20 bytes. Static assert `5 * sizeof(uint32_t)` enforces this.
+- `MatterEngine3/tests/build/msvc-box3d-task4-green1`
+- `MatterEngine3/tests/build/msvc-box3d-task4-green2`
 
-2. **Offset asserts**: All five fields asserted against `VkDrawIndexedIndirectCommand` counterparts.
+Each build:
 
-3. **GLSL struct field order**: `index_count, instance_count, first_index, int vertex_offset, first_instance` — matches C++ exactly.
+1. compiled exactly all 49 pinned `Libraries/box3d/src/*.c` files as C17;
+2. archived a fresh `box3d.lib`;
+3. compiled vendored Flecs separately as C17;
+4. compiled `ecs_runtime.cpp`, `physics_context.cpp`, `physics_shapes.cpp`,
+   `physics_systems.cpp`, `transform_system.cpp`, `physics_tests.cpp`, and
+   `ecs_tests.cpp` as C++17;
+5. linked and ran independent physics and ECS executables.
 
-4. **Index buffer usage flags**: `VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT` — exact match to brief 3c.
+Both builds reported:
 
-5. **Upload gated/reset**: `uploaded_index_count_` set at upload, reset to 0 in `reset()`, guard `|| uploaded_index_count_ == 0` added.
+```text
+BOX3D_OBJECTS=49
+ALL PASS
+ALL PASS
+```
 
-6. **`vkCmdBindIndexBuffer` placement**: added after `vkCmdBindVertexBuffers`, before the draw-range loop — correct.
+Final focused gates:
 
-7. **Both `vkCmdDrawIndirect` calls replaced**: single `record_raster` function has only one loop; both draws within (chunked inner loop) now use `vkCmdDrawIndexedIndirect`.
+```text
+PASS: Box3D Phase 2 build contract
+PASS: no Task 5+ command/contact/sensor/query behavior
+git diff --check: clean
+```
 
-8. **Old rebase block deleted**: the `if (parts_[...].vertex_count != 0)` block that set `command.vertex_count`/`command.first_vertex` via old names is fully replaced — no old rebase adding vertex bases into `first_vertex`.
+The generated `vc140.pdb` was removed after verification.
 
-9. **No stale `first_vertex` on command path**: grep confirms clean.
+## Coverage
 
----
+- dynamic sphere settles on a static floor;
+- static edits and kinematic targets reach Box3D in the fixed step;
+- dynamic translation, quaternion, linear velocity, and angular velocity pull
+  back to ECS with unit scale;
+- a moved dynamic root's descendant world transform is current after
+  `FixedPostUpdate`;
+- gravity and substeps update before the next step;
+- one-to-one step accounting includes a three-step catch-up;
+- valid zero-fixed-step and all invalid `TickDesc` cases perform no Box3D step;
+- explicit engine trace is exactly `Reconcile, Push, Step, Pull`.
 
-## Concerns
+## Concerns / Blocked Gates
 
-**Shader SPIR-V is stale (by design, documented Task 6 gate):** `cull.comp` was updated but `embedded_spirv.h` cannot be regenerated on Linux/WSL (no glslc). Any GPU-executing suite (vulkan_smoke_tests, gpu_cull_tests) that runs the cull shader will see a struct layout mismatch between the new C++ `DrawCommand` (20 bytes, 5 fields) and the stale SPIR-V (which still has the old 4-field 16-byte layout). This is the documented Task 6 gate — Jack's Windows MSYS2 rebuild regenerates the SPIR-V. CPU-only suite (vk_scene_renderer_tests) is fully green.
+- GNU Make/GCC execution remains blocked because `make` is unavailable.
+- MinGW execution remains blocked because
+  `x86_64-w64-mingw32-g++-posix` is unavailable.
+- The fresh MSVC C17/C++17 evidence is supplemental and is not represented as a
+  substitute for those unavailable product-toolchain gates.

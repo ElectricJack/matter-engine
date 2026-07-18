@@ -1,10 +1,14 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
+#include <vector>
 
 #include "matter/physics.h"
 
 namespace matter::physics::detail {
+
+enum class PhysicsSystemStage : uint8_t { Reconcile, Push, Step, Pull };
 
 struct PhysicsBodyState {
     Float3 position{};
@@ -29,6 +33,12 @@ public:
     bool world_is_valid() const noexcept;
     void mark_for_reconcile(flecs::entity_t entity) noexcept;
     void reconcile(flecs::world& world);
+    void push(flecs::world& world, float fixed_delta);
+    void step(float fixed_delta);
+    void pull(flecs::world& world);
+
+    uint32_t last_step_substeps() const noexcept;
+    const std::vector<PhysicsSystemStage>& fixed_step_trace() const noexcept;
 
     bool body_is_valid(flecs::entity_t entity) const noexcept;
     bool shape_is_valid(flecs::entity_t entity) const noexcept;
