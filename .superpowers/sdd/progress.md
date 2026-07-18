@@ -32,7 +32,14 @@ Task 4: complete (commits 26ff737..53df070, review clean after fixes)
   - Review fixes normalized accepted static/kinematic rotations, hardened the substep ceiling, and proved PostPhysics/FixedPostUpdate visibility.
   - Two fresh all-49 Box3D C17/Flecs C17 plus physics/ECS C++17 builds print ALL PASS; targeted fix verification and static checker pass.
 
-Resume at Task 5.
+Task 5: complete (review clean after fixes)
+  - Added context-owned deterministic teleport, velocity, force, impulse, and wake queues that retain originating real-world identity, full generational IDs, and copied payloads.
+  - Teleport/velocity are last-write-wins and full-ID sorted; force/impulse retain enqueue order; wake is idempotent; all work swaps, revalidates, and applies in PhysicsPush before Step.
+  - Admission and drain reject context-less, dead, stale, cross-world, invalid, static, kinematic, and removed targets; rejected drained work increments failed_commands while invalid ticks retain queues.
+  - Review fixes bind admission to the exact owning PhysicsContextRef despite cross-runtime full-ID collision and wake teleport-only sleeping bodies for next-step ECS pullback.
+  - Two fresh all-49 Box3D C17/Flecs C17 plus current-source physics/ECS C++17 builds print ALL PASS; static checker, Task 6+ scope scan, and diff check pass.
+
+Resume at Task 6.
 
 Environment gate:
   - WSL is installed without a Linux distribution.

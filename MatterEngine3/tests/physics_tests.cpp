@@ -823,6 +823,28 @@ flecs::entity make_sphere_body(
         .set<physics::SphereCollider>({});
 }
 
+bool rejects_all_commands(flecs::entity entity) {
+    return !physics::physics_teleport(
+               entity, {1.0f, 2.0f, 3.0f}, {}) &&
+           !physics::physics_set_velocity(
+               entity, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}) &&
+           !physics::physics_apply_force(entity, {1.0f, 2.0f, 3.0f}) &&
+           !physics::physics_apply_impulse(entity, {3.0f, 2.0f, 1.0f}) &&
+           !physics::physics_wake(entity);
+}
+
+std::vector<physics::detail::PhysicsCommandTraceEntry> commands_of_kind(
+    const std::vector<physics::detail::PhysicsCommandTraceEntry>& trace,
+    physics::detail::PhysicsCommandKind kind) {
+    std::vector<physics::detail::PhysicsCommandTraceEntry> result;
+    for (const physics::detail::PhysicsCommandTraceEntry& command : trace) {
+        if (command.kind == kind) {
+            result.push_back(command);
+        }
+    }
+    return result;
+}
+
 void test_dynamic_sphere_falls_onto_static_floor() {
     ecs_runtime::Runtime runtime;
     flecs::world& world = runtime.world();
@@ -1177,6 +1199,375 @@ void test_static_and_kinematic_push_normalize_ecs_rotations() {
           "kinematic push normalizes a finite non-unit ECS quaternion");
 }
 
+void test_commands_are_lww_ordered_copied_and_applied_before_step() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    physics::PhysicsSettings settings = world.get<physics::PhysicsSettings>();
+    settings.gravity = {};
+    world.set<physics::PhysicsSettings>(settings);
+
+    flecs::entity first = make_sphere_body(
+        world, physics::RigidBodyType::Dynamic, {});
+    flecs::entity second = make_sphere_body(
+        world, physics::RigidBodyType::Dynamic, {});
+    runtime.tick({0.01f, 0.01f, 1});
+    CHECK(first.id() < second.id(),
+          "command ordering fixture has ascending full entity IDs");
+
+    physics::detail::PhysicsContext& context = physics::detail::context(world);
+    physics::detail::PhysicsBodyState reset{};
+    reset.awake = false;
+    CHECK(context.set_body_state(first.id(), reset) &&
+              context.set_body_state(second.id(), reset),
+          "command fixture starts both dynamic bodies from copied private state");
+
+    CHECK(physics::physics_teleport(
+              second, {-4.0f, 0.0f, 0.0f}, {}),
+          "second-entity teleport queues before lower-ID work");
+    CHECK(physics::physics_teleport(
+              first, {100.0f, 0.0f, 0.0f}, {}),
+          "first teleport value queues");
+    Float3 final_position{8.0f, 0.0f, 0.0f};
+    Quaternion final_rotation{0.0f, 0.0f, 0.70710677f, 0.70710677f};
+    CHECK(physics::physics_teleport(
+              first, final_position, final_rotation),
+          "last teleport value overwrites the first value");
+
+    CHECK(physics::physics_set_velocity(
+              second, {}, {}),
+          "second-entity velocity queues before lower-ID work");
+    CHECK(physics::physics_set_velocity(
+              first, {99.0f, 0.0f, 0.0f}, {}),
+          "first velocity value queues");
+    Float3 final_linear_velocity{3.0f, 0.0f, 0.0f};
+    Float3 final_angular_velocity{0.0f, 2.0f, 0.0f};
+    CHECK(physics::physics_set_velocity(
+              first, final_linear_velocity, final_angular_velocity),
+          "last velocity value overwrites the first value");
+
+    Float3 first_force{1.0f, 0.0f, 0.0f};
+    const Float3 second_force{0.0f, 2.0f, 0.0f};
+    const Float3 first_impulse{0.0f, 0.0f, 1.0f};
+    const Float3 second_impulse{2.0f, 0.0f, 0.0f};
+    CHECK(physics::physics_apply_force(second, first_force) &&
+              physics::physics_apply_force(second, second_force),
+          "forces accumulate as separate queued work");
+    CHECK(physics::physics_apply_impulse(second, first_impulse) &&
+              physics::physics_apply_impulse(second, second_impulse),
+          "impulses accumulate as separate queued work");
+    first_force = {1000.0f, 1000.0f, 1000.0f};
+    CHECK(physics::physics_wake(second) && physics::physics_wake(second),
+          "duplicate wake requests are accepted idempotently");
+
+    physics::detail::PhysicsBodyState before_first{};
+    physics::detail::PhysicsBodyState before_second{};
+    CHECK(context.get_body_state(first.id(), before_first) &&
+              context.get_body_state(second.id(), before_second) &&
+              near(before_first.position, {}) &&
+              near(before_first.linear_velocity, {}) &&
+              near(before_second.linear_velocity, {}),
+          "public commands remain queued until PhysicsPush");
+
+    const uint64_t steps_before = physics::physics_stats(world).steps;
+    runtime.tick({0.1f, 0.1f, 1});
+    CHECK(physics::physics_stats(world).steps == steps_before + 1,
+          "command tick still performs one Box3D step");
+
+    const auto& trace = context.last_command_trace();
+    const auto teleports = commands_of_kind(
+        trace, physics::detail::PhysicsCommandKind::Teleport);
+    const auto velocities = commands_of_kind(
+        trace, physics::detail::PhysicsCommandKind::Velocity);
+    const auto forces = commands_of_kind(
+        trace, physics::detail::PhysicsCommandKind::Force);
+    const auto impulses = commands_of_kind(
+        trace, physics::detail::PhysicsCommandKind::Impulse);
+    const auto wakes = commands_of_kind(
+        trace, physics::detail::PhysicsCommandKind::Wake);
+    CHECK(teleports.size() == 2 && teleports[0].entity == first.id() &&
+              teleports[1].entity == second.id() &&
+              same(teleports[0].primary, final_position) &&
+              same(teleports[0].rotation, final_rotation),
+          "teleports are last-write-wins and drain in full-ID order");
+    CHECK(velocities.size() == 2 && velocities[0].entity == first.id() &&
+              velocities[1].entity == second.id() &&
+              same(velocities[0].primary, final_linear_velocity) &&
+              same(velocities[0].secondary, final_angular_velocity),
+          "velocities are last-write-wins and drain in full-ID order");
+    CHECK(forces.size() == 2 && same(forces[0].primary, {1.0f, 0.0f, 0.0f}) &&
+              same(forces[1].primary, second_force),
+          "force payloads are copied and preserve enqueue order");
+    CHECK(impulses.size() == 2 &&
+              same(impulses[0].primary, first_impulse) &&
+              same(impulses[1].primary, second_impulse),
+          "impulse payloads are copied and preserve enqueue order");
+    CHECK(wakes.size() == 1 && wakes[0].entity == second.id(),
+          "wake work is idempotent");
+
+    physics::detail::PhysicsBodyState after_first{};
+    physics::detail::PhysicsBodyState after_second{};
+    CHECK(context.get_body_state(first.id(), after_first) &&
+              near(after_first.position.x, 8.3f, 2.0e-2f) &&
+              near(after_first.linear_velocity, final_linear_velocity, 2.0e-3f) &&
+              near(after_first.angular_velocity, final_angular_velocity, 2.0e-3f),
+          "teleport and final velocity affect the immediately following step");
+    CHECK(context.get_body_state(second.id(), after_second) &&
+              after_second.linear_velocity.x > 0.0f &&
+              after_second.linear_velocity.y > 0.0f &&
+              after_second.linear_velocity.z > 0.0f && after_second.awake,
+          "all queued forces, impulses, and wake affect the following step");
+}
+
+void test_command_admission_rejects_invalid_entities_and_numbers() {
+    flecs::world bare_world;
+    CHECK(rejects_all_commands(bare_world.entity()),
+          "context-less entities reject every physics command");
+
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    flecs::entity unreconciled = make_sphere_body(
+        world, physics::RigidBodyType::Dynamic, {});
+    CHECK(rejects_all_commands(unreconciled),
+          "dynamic declarations without a live bridge reject every command");
+
+    flecs::entity static_body = make_sphere_body(
+        world, physics::RigidBodyType::Static, {});
+    flecs::entity kinematic_body = make_sphere_body(
+        world, physics::RigidBodyType::Kinematic, {});
+    physics::SphereCollider invalid_shape{};
+    invalid_shape.radius = 0.0f;
+    physics::RigidBody dynamic{};
+    dynamic.type = physics::RigidBodyType::Dynamic;
+    flecs::entity invalid_body = world.entity()
+        .set<ecs::LocalTransform>({})
+        .set<physics::RigidBody>(dynamic)
+        .set<physics::SphereCollider>(invalid_shape);
+    runtime.tick({0.01f, 0.01f, 1});
+    CHECK(rejects_all_commands(static_body),
+          "static bodies reject every dynamic-body command");
+    CHECK(rejects_all_commands(kinematic_body),
+          "kinematic bodies reject every dynamic-body command");
+    CHECK(rejects_all_commands(invalid_body),
+          "invalid physics entities reject every command");
+
+    flecs::entity dead = unreconciled;
+    dead.destruct();
+    CHECK(rejects_all_commands(dead),
+          "dead entities reject every command");
+
+    flecs::entity stale = make_sphere_body(
+        world, physics::RigidBodyType::Dynamic, {});
+    runtime.tick({0.01f, 0.01f, 1});
+    const flecs::entity_t stale_id = stale.id();
+    stale.destruct();
+    flecs::entity replacement = make_sphere_body(
+        world, physics::RigidBodyType::Dynamic, {});
+    CHECK(flecs::strip_generation(replacement.id()) ==
+              flecs::strip_generation(stale_id) && replacement.id() != stale_id,
+          "command rejection fixture recycles an entity index generation");
+    CHECK(rejects_all_commands(stale),
+          "a stale generational handle rejects every command");
+
+    flecs::entity live = make_sphere_body(
+        world, physics::RigidBodyType::Dynamic, {});
+    runtime.tick({0.01f, 0.01f, 1});
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float infinity = std::numeric_limits<float>::infinity();
+    CHECK(!physics::physics_teleport(live, {nan, 0.0f, 0.0f}, {}) &&
+              !physics::physics_teleport(live, {}, {0.0f, 0.0f, 0.0f, 0.0f}) &&
+              !physics::physics_set_velocity(live, {infinity, 0.0f, 0.0f}, {}) &&
+              !physics::physics_apply_force(live, {0.0f, nan, 0.0f}) &&
+              !physics::physics_apply_impulse(live, {0.0f, 0.0f, infinity}),
+          "nonfinite vectors and invalid teleport rotations are rejected");
+}
+
+void test_staged_and_cross_runtime_commands_keep_real_world_identity() {
+    ecs_runtime::Runtime first_runtime;
+    ecs_runtime::Runtime second_runtime;
+    flecs::world& first_world = first_runtime.world();
+    flecs::world& second_world = second_runtime.world();
+    physics::PhysicsSettings settings{};
+    settings.gravity = {};
+    first_world.set<physics::PhysicsSettings>(settings);
+    second_world.set<physics::PhysicsSettings>(settings);
+    flecs::entity first_body = make_sphere_body(
+        first_world, physics::RigidBodyType::Dynamic, {});
+    flecs::entity second_body = make_sphere_body(
+        second_world, physics::RigidBodyType::Dynamic, {});
+    first_runtime.tick({0.01f, 0.01f, 1});
+    second_runtime.tick({0.01f, 0.01f, 1});
+
+    physics::detail::PhysicsContext& first_context =
+        physics::detail::context(first_world);
+    physics::detail::PhysicsContext& second_context =
+        physics::detail::context(second_world);
+    physics::detail::PhysicsBodyState reset{};
+    reset.awake = true;
+    CHECK(first_context.set_body_state(first_body.id(), reset) &&
+              second_context.set_body_state(second_body.id(), reset),
+          "world-identity fixture resets independent dynamic bodies");
+    const flecs::world_t* second_real_world =
+        ecs_get_world(second_world.c_ptr());
+    CHECK(first_body.id() == second_body.id(),
+          "cross-world admission fixture collides full entity IDs");
+    CHECK(!first_context.enqueue_velocity(
+              second_real_world, second_body.id(),
+              {99.0f, 0.0f, 0.0f}, {}),
+          "a context rejects a foreign real world even when the full ID collides");
+    CHECK(physics::physics_teleport(first_body, {5.0f, 0.0f, 0.0f}, {}),
+          "first runtime accepts its own body command");
+    second_runtime.tick({0.1f, 0.1f, 1});
+    physics::detail::PhysicsBodyState first_after_other_tick{};
+    CHECK(first_context.get_body_state(first_body.id(), first_after_other_tick) &&
+              near(first_after_other_tick.position, {}) &&
+              second_context.last_command_trace().empty(),
+          "a different real world cannot drain or apply the queued command");
+    first_runtime.tick({0.1f, 0.1f, 1});
+    physics::detail::PhysicsBodyState first_after_own_tick{};
+    CHECK(first_context.get_body_state(first_body.id(), first_after_own_tick) &&
+              near(first_after_own_tick.position, {5.0f, 0.0f, 0.0f}),
+          "the originating real world drains its retained command");
+
+    first_world.set_stage_count(2);
+    bool staged_accepted = false;
+    first_world.readonly_begin();
+    {
+        flecs::world stage = first_world.get_stage(0);
+        flecs::entity staged_body = first_body.mut(stage);
+        staged_accepted = physics::physics_set_velocity(
+            staged_body, {2.0f, 0.0f, 0.0f}, {});
+    }
+    first_world.readonly_end();
+    first_world.set_stage_count(1);
+    CHECK(staged_accepted,
+          "same-real-world staged entity keeps its full ID and queues safely");
+    first_runtime.tick({0.1f, 0.1f, 1});
+    physics::detail::PhysicsBodyState after_stage{};
+    CHECK(first_context.get_body_state(first_body.id(), after_stage) &&
+              near(after_stage.linear_velocity, {2.0f, 0.0f, 0.0f}, 2.0e-3f),
+          "staged command applies through the originating real world");
+}
+
+void test_sleeping_teleport_only_pulls_into_ecs_after_next_step() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    physics::PhysicsSettings settings{};
+    settings.gravity = {};
+    world.set<physics::PhysicsSettings>(settings);
+    flecs::entity body = make_sphere_body(
+        world, physics::RigidBodyType::Dynamic, {});
+    runtime.tick({0.01f, 0.01f, 1});
+
+    physics::detail::PhysicsContext& context = physics::detail::context(world);
+    physics::detail::PhysicsBodyState sleeping{};
+    sleeping.awake = false;
+    CHECK(context.set_body_state(body.id(), sleeping),
+          "teleport-only fixture starts with a sleeping dynamic body");
+    const Float3 target{6.0f, 7.0f, 8.0f};
+    const Quaternion rotation{0.0f, 0.0f, 0.70710677f, 0.70710677f};
+    CHECK(physics::physics_teleport(body, target, rotation),
+          "sleeping dynamic body accepts a teleport-only command");
+
+    runtime.tick({0.1f, 0.1f, 1});
+    physics::detail::PhysicsBodyState private_state{};
+    const ecs::LocalTransform local = body.get<ecs::LocalTransform>();
+    CHECK(context.get_body_state(body.id(), private_state) &&
+              near(private_state.position, target) &&
+              near(private_state.rotation, rotation),
+          "teleport-only command reaches the sleeping Box3D body");
+    CHECK(near(local.translation, target) && near(local.rotation, rotation),
+          "sleeping teleport-only command pulls into ECS after the next step");
+}
+
+void test_invalid_ticks_retain_commands_and_push_revalidates_work() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    physics::PhysicsSettings settings{};
+    settings.gravity = {};
+    world.set<physics::PhysicsSettings>(settings);
+    flecs::entity retained = make_sphere_body(
+        world, physics::RigidBodyType::Dynamic, {});
+    runtime.tick({0.01f, 0.01f, 1});
+
+    physics::detail::PhysicsContext& context = physics::detail::context(world);
+    physics::detail::PhysicsBodyState reset{};
+    reset.awake = true;
+    CHECK(context.set_body_state(retained.id(), reset) &&
+              physics::physics_set_velocity(retained, {4.0f, 0.0f, 0.0f}, {}),
+          "invalid-tick fixture queues valid velocity work");
+    const physics::PhysicsStats before_invalid = physics::physics_stats(world);
+    const ecs_runtime::TickResult invalid = runtime.tick({0.1f, 0.1f, 0});
+    physics::detail::PhysicsBodyState after_invalid{};
+    CHECK(invalid.invalid && context.get_body_state(retained.id(), after_invalid) &&
+              near(after_invalid.position, {}) &&
+              near(after_invalid.linear_velocity, {}) &&
+              physics::physics_stats(world).failed_commands ==
+                  before_invalid.failed_commands,
+          "invalid runtime tick neither drains nor rejects queued physics work");
+    runtime.tick({0.1f, 0.1f, 1});
+    physics::detail::PhysicsBodyState after_valid{};
+    CHECK(context.get_body_state(retained.id(), after_valid) &&
+              near(after_valid.position.x, 0.4f, 2.0e-2f) &&
+              near(after_valid.linear_velocity, {4.0f, 0.0f, 0.0f}, 2.0e-3f),
+          "next valid fixed tick applies the retained command before step");
+
+    flecs::entity stale = make_sphere_body(
+        world, physics::RigidBodyType::Dynamic, {-20.0f, 0.0f, 0.0f});
+    flecs::entity invalid_bridge = make_sphere_body(
+        world, physics::RigidBodyType::Dynamic, {-10.0f, 0.0f, 0.0f});
+    flecs::entity became_kinematic = make_sphere_body(
+        world, physics::RigidBodyType::Dynamic, {});
+    flecs::entity lost_body = make_sphere_body(
+        world, physics::RigidBodyType::Dynamic, {10.0f, 0.0f, 0.0f});
+    flecs::entity still_valid = make_sphere_body(
+        world, physics::RigidBodyType::Dynamic, {20.0f, 0.0f, 0.0f});
+    runtime.tick({0.01f, 0.01f, 1});
+    CHECK(physics::physics_teleport(stale, {50.0f, 0.0f, 0.0f}, {}) &&
+              physics::physics_apply_force(invalid_bridge, {1.0f, 0.0f, 0.0f}) &&
+              physics::physics_apply_impulse(became_kinematic, {1.0f, 0.0f, 0.0f}) &&
+              physics::physics_wake(lost_body) &&
+              physics::physics_set_velocity(still_valid, {1.0f, 0.0f, 0.0f}, {}),
+          "all revalidation commands are accepted against live dynamic bridges");
+
+    const flecs::entity_t stale_id = stale.id();
+    stale.destruct();
+    flecs::entity replacement = make_sphere_body(
+        world, physics::RigidBodyType::Dynamic, {});
+    CHECK(flecs::strip_generation(replacement.id()) ==
+              flecs::strip_generation(stale_id) && replacement.id() != stale_id,
+          "queued stale work fixture reuses the entity index at a new generation");
+    physics::SphereCollider broken{};
+    broken.radius = 0.0f;
+    invalid_bridge.set<physics::SphereCollider>(broken);
+    physics::RigidBody kinematic{};
+    kinematic.type = physics::RigidBodyType::Kinematic;
+    became_kinematic.set<physics::RigidBody>(kinematic);
+    lost_body.remove<physics::RigidBody>();
+
+    const uint64_t failed_before = physics::physics_stats(world).failed_commands;
+    runtime.tick({0.1f, 0.1f, 1});
+    const physics::PhysicsStats after_revalidation = physics::physics_stats(world);
+    CHECK(after_revalidation.failed_commands == failed_before + 4,
+          "PhysicsPush counts each stale, invalid, non-dynamic, or removed work item");
+    physics::detail::PhysicsBodyState valid_state{};
+    const bool valid_state_read =
+        context.get_body_state(still_valid.id(), valid_state);
+    CHECK(valid_state_read &&
+              near(valid_state.linear_velocity, {1.0f, 0.0f, 0.0f}, 2.0e-3f),
+          "rejected queued work does not block a valid command in the same push");
+    const auto& trace = context.last_command_trace();
+    CHECK(trace.size() == 1 &&
+              trace[0].kind == physics::detail::PhysicsCommandKind::Velocity &&
+              trace[0].entity == still_valid.id(),
+          "only revalidated live dynamic work reaches Box3D");
+
+    runtime.tick({0.1f, 0.1f, 1});
+    CHECK(physics::physics_stats(world).failed_commands ==
+              after_revalidation.failed_commands &&
+              context.last_command_trace().empty(),
+          "swapped command queues drain rejected work exactly once");
+}
+
 } // namespace
 
 int main() {
@@ -1196,5 +1587,10 @@ int main() {
     test_substeps_clamp_to_approved_boundaries();
     test_pull_writes_are_visible_through_fixed_post_update();
     test_static_and_kinematic_push_normalize_ecs_rotations();
+    test_commands_are_lww_ordered_copied_and_applied_before_step();
+    test_command_admission_rejects_invalid_entities_and_numbers();
+    test_staged_and_cross_runtime_commands_keep_real_world_identity();
+    test_sleeping_teleport_only_pulls_into_ecs_after_next_step();
+    test_invalid_ticks_retain_commands_and_push_revalidates_work();
     return check_summary();
 }

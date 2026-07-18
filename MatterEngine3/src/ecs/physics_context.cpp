@@ -4,8 +4,10 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -22,6 +24,38 @@ struct BridgeRecord {
     uint64_t configuration_hash = 0;
     DesiredBody desired{};
     bool live = false;
+};
+
+struct QueuedCommand {
+    const flecs::world_t* originating_world = nullptr;
+    flecs::entity_t entity = 0;
+    PhysicsCommandKind kind = PhysicsCommandKind::Wake;
+    Float3 primary{};
+    Float3 secondary{};
+    Quaternion rotation{};
+};
+
+struct QueuedCommandHash {
+    size_t operator()(const QueuedCommand& command) const noexcept {
+        const size_t world_hash =
+            std::hash<const flecs::world_t*>{}(command.originating_world);
+        const size_t entity_hash =
+            std::hash<flecs::entity_t>{}(command.entity);
+        const size_t kind_hash =
+            std::hash<uint8_t>{}(static_cast<uint8_t>(command.kind));
+        return world_hash ^ (entity_hash + 0x9e3779b9U +
+                             (world_hash << 6U) + (world_hash >> 2U)) ^
+               (kind_hash << 1U);
+    }
+};
+
+struct QueuedCommandEqual {
+    bool operator()(
+        const QueuedCommand& first,
+        const QueuedCommand& second) const noexcept {
+        return first.originating_world == second.originating_world &&
+               first.entity == second.entity && first.kind == second.kind;
+    }
 };
 
 const PhysicsContext* try_context(const flecs::world& world) noexcept {
@@ -178,10 +212,120 @@ struct PhysicsContext::Impl {
     b3WorldId world_id = b3_nullWorldId;
     std::unordered_map<flecs::entity_t, std::unique_ptr<BridgeRecord>> bridges;
     std::vector<flecs::entity_t> dirty_entities;
+    std::mutex command_mutex;
+    std::unordered_map<flecs::entity_t, QueuedCommand> teleports;
+    std::unordered_map<flecs::entity_t, QueuedCommand> velocities;
+    std::vector<QueuedCommand> forces;
+    std::vector<QueuedCommand> impulses;
+    std::unordered_set<
+        QueuedCommand, QueuedCommandHash, QueuedCommandEqual> wakes;
+    std::vector<PhysicsCommandTraceEntry> last_command_trace;
     uint32_t configured_substeps = 1;
     uint32_t last_step_substeps = 0;
     std::vector<PhysicsSystemStage> fixed_step_trace;
 };
+
+namespace {
+
+bool is_live_dynamic_bridge(const BridgeRecord& bridge) {
+    return bridge.live && bridge.type == RigidBodyType::Dynamic &&
+           bridge.entity != 0 && b3Body_IsValid(bridge.body) &&
+           b3Shape_IsValid(bridge.shape) &&
+           b3Body_GetType(bridge.body) == b3_dynamicBody &&
+           b3Body_GetUserData(bridge.body) == &bridge &&
+           b3Shape_GetUserData(bridge.shape) == &bridge;
+}
+
+bool can_enqueue_command(
+    const std::unordered_map<
+        flecs::entity_t, std::unique_ptr<BridgeRecord>>& bridges,
+    const PhysicsContext* expected_context,
+    const flecs::world_t* originating_world,
+    flecs::entity_t entity_id) {
+    if (expected_context == nullptr || originating_world == nullptr ||
+        entity_id == 0 || !ecs_is_alive(originating_world, entity_id)) {
+        return false;
+    }
+    flecs::world normalized_world(
+        const_cast<flecs::world_t*>(originating_world));
+    const PhysicsContextRef* owner =
+        normalized_world.try_get<PhysicsContextRef>();
+    if (owner == nullptr || owner->value != expected_context) {
+        return false;
+    }
+    const auto found = bridges.find(entity_id);
+    if (found == bridges.end() || found->second == nullptr ||
+        found->second->entity != entity_id ||
+        !is_live_dynamic_bridge(*found->second)) {
+        return false;
+    }
+    const flecs::entity entity(
+        const_cast<flecs::world_t*>(originating_world), entity_id);
+    const RigidBody* body = entity.try_get<RigidBody>();
+    return body != nullptr && body->type == RigidBodyType::Dynamic &&
+           !entity.has<PhysicsError>();
+}
+
+BridgeRecord* validate_queued_command(
+    const QueuedCommand& command,
+    const flecs::world_t* runtime_world,
+    flecs::world& world,
+    std::unordered_map<
+        flecs::entity_t, std::unique_ptr<BridgeRecord>>& bridges) {
+    if (command.originating_world == nullptr ||
+        command.originating_world != runtime_world || command.entity == 0 ||
+        !world.is_alive(command.entity)) {
+        return nullptr;
+    }
+    const auto found = bridges.find(command.entity);
+    if (found == bridges.end() || found->second == nullptr ||
+        found->second->entity != command.entity ||
+        !is_live_dynamic_bridge(*found->second)) {
+        return nullptr;
+    }
+
+    const flecs::entity entity(world.c_ptr(), command.entity);
+    const RigidBody* body = entity.try_get<RigidBody>();
+    if (body == nullptr || body->type != RigidBodyType::Dynamic ||
+        entity.has<PhysicsError>()) {
+        return nullptr;
+    }
+    return found->second.get();
+}
+
+std::vector<QueuedCommand> sorted_map_commands(
+    const std::unordered_map<flecs::entity_t, QueuedCommand>& commands) {
+    std::vector<QueuedCommand> sorted;
+    sorted.reserve(commands.size());
+    for (const auto& entry : commands) {
+        sorted.push_back(entry.second);
+    }
+    std::sort(
+        sorted.begin(), sorted.end(),
+        [](const QueuedCommand& first, const QueuedCommand& second) {
+            return first.entity < second.entity;
+        });
+    return sorted;
+}
+
+std::vector<QueuedCommand> sorted_wake_commands(
+    const std::unordered_set<
+        QueuedCommand, QueuedCommandHash, QueuedCommandEqual>& commands) {
+    std::vector<QueuedCommand> sorted(commands.begin(), commands.end());
+    std::sort(
+        sorted.begin(), sorted.end(),
+        [](const QueuedCommand& first, const QueuedCommand& second) {
+            return first.entity < second.entity;
+        });
+    return sorted;
+}
+
+PhysicsCommandTraceEntry trace_entry(const QueuedCommand& command) {
+    return {command.kind, command.entity, command.primary,
+            command.secondary, command.rotation};
+}
+
+} // namespace
 
 PhysicsContext::PhysicsContext(const PhysicsSettings& settings)
     : impl_(std::make_unique<Impl>()) {
@@ -232,6 +376,107 @@ bool PhysicsContext::world_is_valid() const noexcept {
 void PhysicsContext::mark_for_reconcile(flecs::entity_t entity) noexcept {
     if (impl_ != nullptr && entity != 0) {
         impl_->dirty_entities.push_back(entity);
+    }
+}
+
+bool PhysicsContext::enqueue_teleport(
+    const flecs::world_t* originating_world,
+    flecs::entity_t entity,
+    Float3 position,
+    Quaternion rotation) noexcept {
+    if (impl_ == nullptr || !finite(position) || !normalize(rotation) ||
+        !can_enqueue_command(
+            impl_->bridges, this, originating_world, entity)) {
+        return false;
+    }
+    try {
+        std::lock_guard<std::mutex> lock(impl_->command_mutex);
+        impl_->teleports[entity] = {
+            originating_world, entity, PhysicsCommandKind::Teleport,
+            position, {}, rotation};
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool PhysicsContext::enqueue_velocity(
+    const flecs::world_t* originating_world,
+    flecs::entity_t entity,
+    Float3 linear,
+    Float3 angular) noexcept {
+    if (impl_ == nullptr || !finite(linear) || !finite(angular) ||
+        !can_enqueue_command(
+            impl_->bridges, this, originating_world, entity)) {
+        return false;
+    }
+    try {
+        std::lock_guard<std::mutex> lock(impl_->command_mutex);
+        impl_->velocities[entity] = {
+            originating_world, entity, PhysicsCommandKind::Velocity,
+            linear, angular, {}};
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool PhysicsContext::enqueue_force(
+    const flecs::world_t* originating_world,
+    flecs::entity_t entity,
+    Float3 force) noexcept {
+    if (impl_ == nullptr || !finite(force) ||
+        !can_enqueue_command(
+            impl_->bridges, this, originating_world, entity)) {
+        return false;
+    }
+    try {
+        std::lock_guard<std::mutex> lock(impl_->command_mutex);
+        impl_->forces.push_back({
+            originating_world, entity, PhysicsCommandKind::Force,
+            force, {}, {}});
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool PhysicsContext::enqueue_impulse(
+    const flecs::world_t* originating_world,
+    flecs::entity_t entity,
+    Float3 impulse) noexcept {
+    if (impl_ == nullptr || !finite(impulse) ||
+        !can_enqueue_command(
+            impl_->bridges, this, originating_world, entity)) {
+        return false;
+    }
+    try {
+        std::lock_guard<std::mutex> lock(impl_->command_mutex);
+        impl_->impulses.push_back({
+            originating_world, entity, PhysicsCommandKind::Impulse,
+            impulse, {}, {}});
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool PhysicsContext::enqueue_wake(
+    const flecs::world_t* originating_world,
+    flecs::entity_t entity) noexcept {
+    if (impl_ == nullptr ||
+        !can_enqueue_command(
+            impl_->bridges, this, originating_world, entity)) {
+        return false;
+    }
+    try {
+        std::lock_guard<std::mutex> lock(impl_->command_mutex);
+        impl_->wakes.insert({
+            originating_world, entity, PhysicsCommandKind::Wake,
+            {}, {}, {}});
+        return true;
+    } catch (...) {
+        return false;
     }
 }
 
@@ -391,6 +636,25 @@ void PhysicsContext::push(flecs::world& world, float fixed_delta) {
     }
     impl_->fixed_step_trace.push_back(PhysicsSystemStage::Push);
 
+    std::unordered_map<flecs::entity_t, QueuedCommand> teleports;
+    std::unordered_map<flecs::entity_t, QueuedCommand> velocities;
+    std::vector<QueuedCommand> forces;
+    std::vector<QueuedCommand> impulses;
+    std::unordered_set<
+        QueuedCommand, QueuedCommandHash, QueuedCommandEqual> wakes;
+    {
+        std::lock_guard<std::mutex> lock(impl_->command_mutex);
+        teleports.swap(impl_->teleports);
+        velocities.swap(impl_->velocities);
+        forces.swap(impl_->forces);
+        impulses.swap(impl_->impulses);
+        wakes.swap(impl_->wakes);
+    }
+    impl_->last_command_trace.clear();
+    impl_->last_command_trace.reserve(
+        teleports.size() + velocities.size() + forces.size() +
+        impulses.size() + wakes.size());
+
     const PhysicsSettings settings = world.get<PhysicsSettings>();
     if (finite(settings.gravity)) {
         b3World_SetGravity(impl_->world_id, box_vector(settings.gravity));
@@ -430,6 +694,52 @@ void PhysicsContext::push(flecs::world& world, float fixed_delta) {
             b3Body_SetTargetTransform(
                 bridge.body, box_transform(transform), fixed_delta, true);
         }
+    }
+
+    const flecs::world_t* runtime_world = ecs_get_world(world.c_ptr());
+    auto apply_command = [&](const QueuedCommand& command, auto apply) {
+        BridgeRecord* bridge = validate_queued_command(
+            command, runtime_world, world, impl_->bridges);
+        if (bridge == nullptr) {
+            ++stats_.failed_commands;
+            return;
+        }
+        apply(*bridge);
+        impl_->last_command_trace.push_back(trace_entry(command));
+    };
+
+    for (const QueuedCommand& command : sorted_map_commands(teleports)) {
+        apply_command(command, [&](const BridgeRecord& bridge) {
+            b3Body_SetTransform(
+                bridge.body, box_position(command.primary),
+                box_quaternion(command.rotation));
+            b3Body_SetAwake(bridge.body, true);
+        });
+    }
+    for (const QueuedCommand& command : sorted_map_commands(velocities)) {
+        apply_command(command, [&](const BridgeRecord& bridge) {
+            b3Body_SetLinearVelocity(
+                bridge.body, box_vector(command.primary));
+            b3Body_SetAngularVelocity(
+                bridge.body, box_vector(command.secondary));
+        });
+    }
+    for (const QueuedCommand& command : forces) {
+        apply_command(command, [&](const BridgeRecord& bridge) {
+            b3Body_ApplyForceToCenter(
+                bridge.body, box_vector(command.primary), true);
+        });
+    }
+    for (const QueuedCommand& command : impulses) {
+        apply_command(command, [&](const BridgeRecord& bridge) {
+            b3Body_ApplyLinearImpulseToCenter(
+                bridge.body, box_vector(command.primary), true);
+        });
+    }
+    for (const QueuedCommand& command : sorted_wake_commands(wakes)) {
+        apply_command(command, [](const BridgeRecord& bridge) {
+            b3Body_SetAwake(bridge.body, true);
+        });
     }
 }
 
@@ -503,6 +813,12 @@ const std::vector<PhysicsSystemStage>&
 PhysicsContext::fixed_step_trace() const noexcept {
     static const std::vector<PhysicsSystemStage> empty;
     return impl_ != nullptr ? impl_->fixed_step_trace : empty;
+}
+
+const std::vector<PhysicsCommandTraceEntry>&
+PhysicsContext::last_command_trace() const noexcept {
+    static const std::vector<PhysicsCommandTraceEntry> empty;
+    return impl_ != nullptr ? impl_->last_command_trace : empty;
 }
 
 bool PhysicsContext::body_is_valid(flecs::entity_t entity) const noexcept {
@@ -605,6 +921,44 @@ bool context_world_is_valid(const flecs::world& world) {
 } // namespace matter::physics::detail
 
 namespace matter::physics {
+namespace {
+
+struct CommandTarget {
+    detail::PhysicsContext* context = nullptr;
+    const flecs::world_t* originating_world = nullptr;
+    flecs::entity_t entity = 0;
+};
+
+bool resolve_command_target(flecs::entity entity, CommandTarget& target) {
+    const flecs::entity_t entity_id = entity.id();
+    flecs::world caller_world = entity.world();
+    flecs::world_t* caller_world_pointer = caller_world.c_ptr();
+    if (caller_world_pointer == nullptr || entity_id == 0) {
+        return false;
+    }
+    const flecs::world_t* real_world = ecs_get_world(caller_world_pointer);
+    if (real_world == nullptr || !ecs_is_alive(real_world, entity_id)) {
+        return false;
+    }
+
+    const RigidBody* body = entity.try_get<RigidBody>();
+    if (body == nullptr || body->type != RigidBodyType::Dynamic ||
+        entity.has<PhysicsError>()) {
+        return false;
+    }
+
+    flecs::world normalized_world(
+        const_cast<flecs::world_t*>(real_world));
+    const detail::PhysicsContextRef* ref =
+        normalized_world.try_get<detail::PhysicsContextRef>();
+    if (ref == nullptr || ref->value == nullptr) {
+        return false;
+    }
+    target = {ref->value, real_world, entity_id};
+    return true;
+}
+
+} // namespace
 
 const PhysicsEvents& physics_events(const flecs::world& world) {
     static const PhysicsEvents empty;
@@ -623,6 +977,47 @@ PhysicsStats physics_stats(const flecs::world& world) {
         return {};
     }
     return ref->value->stats();
+}
+
+bool physics_teleport(
+    flecs::entity entity,
+    Float3 position,
+    Quaternion rotation) {
+    CommandTarget target;
+    return resolve_command_target(entity, target) &&
+           target.context->enqueue_teleport(
+               target.originating_world, target.entity, position, rotation);
+}
+
+bool physics_set_velocity(
+    flecs::entity entity,
+    Float3 linear,
+    Float3 angular) {
+    CommandTarget target;
+    return resolve_command_target(entity, target) &&
+           target.context->enqueue_velocity(
+               target.originating_world, target.entity, linear, angular);
+}
+
+bool physics_apply_force(flecs::entity entity, Float3 force) {
+    CommandTarget target;
+    return resolve_command_target(entity, target) &&
+           target.context->enqueue_force(
+               target.originating_world, target.entity, force);
+}
+
+bool physics_apply_impulse(flecs::entity entity, Float3 impulse) {
+    CommandTarget target;
+    return resolve_command_target(entity, target) &&
+           target.context->enqueue_impulse(
+               target.originating_world, target.entity, impulse);
+}
+
+bool physics_wake(flecs::entity entity) {
+    CommandTarget target;
+    return resolve_command_target(entity, target) &&
+           target.context->enqueue_wake(
+               target.originating_world, target.entity);
 }
 
 } // namespace matter::physics

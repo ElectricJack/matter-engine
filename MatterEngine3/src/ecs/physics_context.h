@@ -10,6 +10,22 @@ namespace matter::physics::detail {
 
 enum class PhysicsSystemStage : uint8_t { Reconcile, Push, Step, Pull };
 
+enum class PhysicsCommandKind : uint8_t {
+    Teleport,
+    Velocity,
+    Force,
+    Impulse,
+    Wake
+};
+
+struct PhysicsCommandTraceEntry {
+    PhysicsCommandKind kind = PhysicsCommandKind::Wake;
+    flecs::entity_t entity = 0;
+    Float3 primary{};
+    Float3 secondary{};
+    Quaternion rotation{};
+};
+
 struct PhysicsBodyState {
     Float3 position{};
     Quaternion rotation{};
@@ -37,8 +53,32 @@ public:
     void step(float fixed_delta);
     void pull(flecs::world& world);
 
+    bool enqueue_teleport(
+        const flecs::world_t* originating_world,
+        flecs::entity_t entity,
+        Float3 position,
+        Quaternion rotation) noexcept;
+    bool enqueue_velocity(
+        const flecs::world_t* originating_world,
+        flecs::entity_t entity,
+        Float3 linear,
+        Float3 angular) noexcept;
+    bool enqueue_force(
+        const flecs::world_t* originating_world,
+        flecs::entity_t entity,
+        Float3 force) noexcept;
+    bool enqueue_impulse(
+        const flecs::world_t* originating_world,
+        flecs::entity_t entity,
+        Float3 impulse) noexcept;
+    bool enqueue_wake(
+        const flecs::world_t* originating_world,
+        flecs::entity_t entity) noexcept;
+
     uint32_t last_step_substeps() const noexcept;
     const std::vector<PhysicsSystemStage>& fixed_step_trace() const noexcept;
+    const std::vector<PhysicsCommandTraceEntry>&
+    last_command_trace() const noexcept;
 
     bool body_is_valid(flecs::entity_t entity) const noexcept;
     bool shape_is_valid(flecs::entity_t entity) const noexcept;
