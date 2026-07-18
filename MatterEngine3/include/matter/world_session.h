@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "matter/camera.h"
+#include "matter/ecs.h"
 #include "matter/vulkan_device.h"
 #include "render/vk_gi_contract.h"
 
@@ -125,6 +126,11 @@ public:
 
     // Poll provider deltas and apply them to world state. Call once per frame.
     void tick(const TickDesc& tick);
+
+    // The session-owned Flecs world. Runtime entity IDs are local to this
+    // session and remain alive across authored-content reload/regeneration.
+    flecs::world& ecs();
+    const flecs::world& ecs() const;
 
     // Resolve -> cull -> clear (kernel-derived sky color) -> draw into the
     // currently bound framebuffer. Requires a live GL context on this thread.

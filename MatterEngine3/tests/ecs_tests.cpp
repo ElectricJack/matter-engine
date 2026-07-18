@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <thread>
 #include <vector>
 
 using namespace matter;
@@ -936,6 +937,50 @@ static void test_runtime_rejects_invalid_ticks_without_progress() {
     }
 }
 
+static void test_runtime_applies_worker_world_state_commands_on_valid_ticks() {
+    ecs_runtime::Runtime runtime;
+    flecs::world& world = runtime.world();
+    auto state = [&world]() -> const ecs::WorldRuntimeState& {
+        return world.get<ecs::WorldRuntimeState>();
+    };
+    CHECK(world.lookup("matter::ecs").is_alive(),
+          "runtime imports the matter.ecs module scope");
+    CHECK(state().status == ecs::WorldStatus::Loading &&
+              state().content_generation == 0,
+          "runtime state begins Loading at generation zero");
+
+    std::thread worker([&runtime] {
+        runtime.enqueue_world_state({ecs_runtime::WorldStateCommandKind::Ready});
+    });
+    worker.join();
+    CHECK(state().status == ecs::WorldStatus::Loading &&
+              state().content_generation == 0,
+          "worker command does not mutate Flecs before a tick-thread drain");
+
+    const ecs_runtime::TickResult invalid = runtime.tick({0.0f, 0.1f, 0});
+    CHECK(invalid.invalid && state().status == ecs::WorldStatus::Loading &&
+              state().content_generation == 0,
+          "invalid tick retains the queued world-state command without progress");
+
+    runtime.tick({0.0f, 0.1f, 1});
+    CHECK(state().status == ecs::WorldStatus::Ready &&
+              state().content_generation == 1,
+          "Ready applies on the tick thread and increments generation once");
+
+    runtime.enqueue_world_state({ecs_runtime::WorldStateCommandKind::Loading});
+    runtime.enqueue_world_state({ecs_runtime::WorldStateCommandKind::Failed});
+    runtime.tick({0.0f, 0.1f, 1});
+    CHECK(state().status == ecs::WorldStatus::Failed &&
+              state().content_generation == 1,
+          "Loading and Failed preserve generation and apply in queue order");
+
+    runtime.enqueue_world_state({ecs_runtime::WorldStateCommandKind::Ready});
+    runtime.tick({0.0f, 0.1f, 1});
+    CHECK(state().status == ecs::WorldStatus::Ready &&
+              state().content_generation == 2,
+          "a later successful publish increments exactly one further generation");
+}
+
 static void test_hierarchy_queue_is_last_write_wins_per_child() {
     ecs_runtime::Runtime runtime;
     flecs::world& world = runtime.world();
@@ -1124,6 +1169,7 @@ int main() {
     test_runtime_drops_complete_excess_steps_only();
     test_runtime_does_not_invent_near_boundary_steps();
     test_runtime_rejects_invalid_ticks_without_progress();
+    test_runtime_applies_worker_world_state_commands_on_valid_ticks();
     test_hierarchy_queue_is_last_write_wins_per_child();
     test_hierarchy_queue_waits_until_next_valid_tick();
     test_observer_enqueued_hierarchy_change_waits_one_tick();

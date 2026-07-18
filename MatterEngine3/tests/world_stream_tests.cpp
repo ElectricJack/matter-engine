@@ -2,15 +2,15 @@
 // GPU test (requires GALLIUM_DRIVER=d3d12). Runs from MatterViewer/ directory.
 //
 // Assertions:
-//   1. open_world + request_bake -> poll until BakeFinished: no fatal errors,
-//      resident_sectors > 0
-//   2. sea_level() returns true, value matches fixture's seaLevel (0.0)
-//   3. render one frame -> triangles > 0
-//   4. Move focus +200 -> resident_sectors changes
-//   5. regenerate(7) -> BakeFinished again, resident_sectors > 0
-//   6. Destroy -> clean shutdown
+//   1. Every session owns one ECS world with matter.ecs runtime state.
+//   2. Successful authored publishes advance content_generation exactly once.
+//   3. Runtime entities survive reload() and regenerate().
+//   4. Existing world streaming, sea-level, and render behavior remains intact.
+//   5. A fatal bake sets Failed without deleting runtime entities.
+//   6. A replacement session cannot resolve the prior session's entity ID.
 
 #include "matter/engine_context.h"
+#include "matter/ecs.h"
 #include "raylib.h"
 #include <cassert>
 #include <cmath>
@@ -23,9 +23,13 @@ static bool wait_for_bake_finished(matter::WorldSession& s, double timeout_s = 1
     bool finished = false;
     while (!finished && GetTime() - t0 < timeout_s) {
         s.pump_gpu_jobs(4.0f);
+        s.tick({0.0f, 1.0f / 60.0f, 4});
         matter::Event ev;
         while (s.poll_event(ev)) {
             if (ev.type == matter::EventType::BakeFinished) {
+                // Bake-state commands are worker-produced plain data and become
+                // visible only when the session progresses its ECS runtime.
+                s.tick({0.0f, 1.0f / 60.0f, 4});
                 finished = true;
                 break;
             }
@@ -41,6 +45,30 @@ static bool wait_for_bake_finished(matter::WorldSession& s, double timeout_s = 1
         }
     }
     return finished;
+}
+
+static bool wait_for_fatal_bake_error(matter::WorldSession& s,
+                                      double timeout_s = 120.0) {
+    const double t0 = GetTime();
+    while (GetTime() - t0 < timeout_s) {
+        s.pump_gpu_jobs(4.0f);
+        s.tick({0.0f, 1.0f / 60.0f, 4});
+        matter::Event ev;
+        while (s.poll_event(ev)) {
+            if (ev.type == matter::EventType::BakeError &&
+                ev.code != matter::BakeErrorCode::Cancelled &&
+                ev.phase != "stream") {
+                s.tick({0.0f, 1.0f / 60.0f, 4});
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+static const matter::ecs::WorldRuntimeState& runtime_state(
+    const matter::WorldSession& session) {
+    return session.ecs().get<matter::ecs::WorldRuntimeState>();
 }
 
 int main() {
@@ -61,6 +89,17 @@ int main() {
     auto session = engine->open_world(wd, err);
     if (!session) { printf("FAIL open_world: %s\n", err.c_str()); CloseWindow(); return 1; }
 
+    flecs::world& ecs_world = session->ecs();
+    assert(ecs_world.lookup("matter::ecs").is_alive() &&
+           "session ECS world resolves matter.ecs module scope");
+    assert(runtime_state(*session).status == matter::ecs::WorldStatus::Loading &&
+           "new session begins Loading");
+    assert(runtime_state(*session).content_generation == 0 &&
+           "new session begins before any authored generation");
+    const flecs::entity runtime_entity =
+        ecs_world.entity("Task6PersistentRuntimeEntity");
+    const flecs::entity_t runtime_entity_id = runtime_entity.id();
+
     // Set initial focus at origin.
     float focus0[3] = {0, 0, 0};
     session->set_bake_focus(focus0);
@@ -80,6 +119,10 @@ int main() {
         return 1;
     }
     printf("BakeFinished #1 (install) received\n");
+    assert(runtime_state(*session).status == matter::ecs::WorldStatus::Ready &&
+           "successful authored publish sets Ready");
+    assert(runtime_state(*session).content_generation == 1 &&
+           "initial authored publish increments content generation once");
 
     printf("waiting for BakeFinished #2 (first sectors)...\n");
     if (!wait_for_bake_finished(*session, 120.0)) {
@@ -89,11 +132,13 @@ int main() {
         return 1;
     }
     printf("BakeFinished #2 (streaming) received\n");
+    assert(runtime_state(*session).content_generation == 1 &&
+           "sector streaming completion does not double-increment generation");
 
     // Pump a few more frames to let GL publish jobs land.
     for (int i = 0; i < 30; ++i) {
         session->pump_gpu_jobs(16.0f);
-        session->tick();
+        session->tick({0.0f, 1.0f / 60.0f, 4});
     }
 
     uint32_t rs1 = session->frame_stats().resident_sectors;
@@ -131,7 +176,7 @@ int main() {
         double t0 = GetTime();
         while (GetTime() - t0 < 5.0) {
             session->pump_gpu_jobs(16.0f);
-            session->tick();
+            session->tick({0.0f, 1.0f / 60.0f, 4});
         }
     }
     uint32_t rs2 = session->frame_stats().resident_sectors;
@@ -139,7 +184,24 @@ int main() {
     // rs2 may be equal if the rings are large enough, but should still be > 0.
     assert(rs2 > 0 && "resident_sectors > 0 after focus move");
 
-    // 5. regenerate(7) -> two BakeFinished events again (install + streaming)
+    // 5. reload() preserves the ECS world and publishes one new generation.
+    printf("reload()...\n");
+    session->reload();
+    if (!wait_for_bake_finished(*session, 120.0) ||
+        !wait_for_bake_finished(*session, 120.0)) {
+        printf("FAIL: reload did not complete install + streaming\n");
+        session.reset();
+        CloseWindow();
+        return 1;
+    }
+    assert(session->ecs().is_alive(runtime_entity_id) &&
+           session->ecs().lookup("Task6PersistentRuntimeEntity").id() == runtime_entity_id &&
+           "runtime entity survives reload with the same ID");
+    assert(runtime_state(*session).status == matter::ecs::WorldStatus::Ready &&
+           runtime_state(*session).content_generation == 2 &&
+           "reload publishes exactly one authored generation");
+
+    // 6. regenerate(7) -> two BakeFinished events again (install + streaming)
     printf("regenerate(7)...\n");
     session->regenerate(7);
     if (!wait_for_bake_finished(*session, 120.0)) {
@@ -158,16 +220,49 @@ int main() {
     printf("regenerate streaming BakeFinished received\n");
     for (int i = 0; i < 30; ++i) {
         session->pump_gpu_jobs(16.0f);
-        session->tick();
+        session->tick({0.0f, 1.0f / 60.0f, 4});
     }
     uint32_t rs3 = session->frame_stats().resident_sectors;
     printf("resident_sectors after regenerate: %u\n", rs3);
     assert(rs3 > 0 && "resident_sectors > 0 after regenerate");
+    assert(session->ecs().is_alive(runtime_entity_id) &&
+           session->ecs().lookup("Task6PersistentRuntimeEntity").id() == runtime_entity_id &&
+           "runtime entity survives regenerate with the same ID");
+    assert(runtime_state(*session).status == matter::ecs::WorldStatus::Ready &&
+           runtime_state(*session).content_generation == 3 &&
+           "regenerate publishes exactly one authored generation");
 
-    // 6. Destroy -> clean shutdown
+    // 7. Destroy the successful session, then open a replacement whose bake
+    // deterministically fails because its world directory does not exist.
     printf("destroying session...\n");
     session.reset();
     printf("session destroyed cleanly\n");
+
+    matter::WorldDesc bad_wd = wd;
+    bad_wd.world_name = "Task6MissingWorldForFatalBake";
+    auto replacement = engine->open_world(bad_wd, err);
+    if (!replacement) {
+        printf("FAIL replacement open_world: %s\n", err.c_str());
+        CloseWindow();
+        return 1;
+    }
+    assert(!replacement->ecs().is_alive(runtime_entity_id) &&
+           "replacement session cannot resolve the old runtime entity ID");
+    const flecs::entity failed_runtime_entity =
+        replacement->ecs().entity("Task6FailedBakeRuntimeEntity");
+    const flecs::entity_t failed_runtime_entity_id = failed_runtime_entity.id();
+    replacement->request_bake();
+    assert(wait_for_fatal_bake_error(*replacement) &&
+           "missing world produces a fatal bake error");
+    assert(runtime_state(*replacement).status == matter::ecs::WorldStatus::Failed &&
+           "fatal bake error sets Failed");
+    assert(runtime_state(*replacement).content_generation == 0 &&
+           "fatal bake does not publish a content generation");
+    assert(replacement->ecs().is_alive(failed_runtime_entity_id) &&
+           replacement->ecs().lookup("Task6FailedBakeRuntimeEntity").id() ==
+               failed_runtime_entity_id &&
+           "fatal bake does not delete runtime entities");
+    replacement.reset();
 
     printf("ALL TESTS PASSED\n");
     CloseWindow();

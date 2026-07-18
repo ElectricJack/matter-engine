@@ -140,6 +140,39 @@ const flecs::world& Runtime::world() const noexcept {
     return world_;
 }
 
+void Runtime::enqueue_world_state(WorldStateCommand command) {
+    std::lock_guard<std::mutex> lock(world_state_mutex_);
+    world_state_commands_.push_back(command);
+}
+
+void Runtime::drain_world_state_commands() {
+    std::vector<WorldStateCommand> commands;
+    {
+        std::lock_guard<std::mutex> lock(world_state_mutex_);
+        commands.swap(world_state_commands_);
+    }
+    if (commands.empty()) {
+        return;
+    }
+
+    ecs::WorldRuntimeState state = world_.get<ecs::WorldRuntimeState>();
+    for (const WorldStateCommand command : commands) {
+        switch (command.kind) {
+            case WorldStateCommandKind::Loading:
+                state.status = ecs::WorldStatus::Loading;
+                break;
+            case WorldStateCommandKind::Ready:
+                state.status = ecs::WorldStatus::Ready;
+                ++state.content_generation;
+                break;
+            case WorldStateCommandKind::Failed:
+                state.status = ecs::WorldStatus::Failed;
+                break;
+        }
+    }
+    world_.set<ecs::WorldRuntimeState>(state);
+}
+
 TickResult Runtime::tick(const TickDesc& desc) {
     const double frame_delta = desc.frame_delta_seconds;
     const double fixed_delta = desc.fixed_delta_seconds;
@@ -151,6 +184,7 @@ TickResult Runtime::tick(const TickDesc& desc) {
 
     const double contributed_delta =
         std::min(frame_delta, kMaxFrameContributionSeconds);
+    drain_world_state_commands();
     ecs::drain_hierarchy_commands(world_);
     accumulator_seconds_ += contributed_delta;
 

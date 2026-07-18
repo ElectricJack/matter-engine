@@ -10,6 +10,7 @@
 #include "matter/world_session.h"
 
 #include "async_bake.h"
+#include "ecs/ecs_runtime.h"
 #include "local_provider.h"
 #include "part_store.h"   // LoadedPart, walk_part_tree
 #ifndef MATTER_VULKAN_ONLY
@@ -189,6 +190,7 @@ struct EngineContext::Impl {
 // ---------------------------------------------------------------------------
 struct WorldSession::Impl {
     EngineContext::Impl* engine = nullptr;   // non-owning
+    ecs_runtime::Runtime ecs_runtime;
 
     // Provider config and live provider instance.
     // Phase C Task 14: shared_ptr so publish job lambdas can capture a strong
@@ -299,6 +301,8 @@ struct WorldSession::Impl {
     void ensure_worker_started();
     // Worker thread entry point.
     void worker_loop();
+    // Existing provider/live-edit polling, called after each valid ECS tick.
+    void poll_runtime_sources();
     // Execute one BakeAll/Reload command. Called only on the worker thread.
     void execute_bake(matter_async::Command& cmd, bool is_reload);
     // Execute a RebakeCone command. Called only on the worker thread.
@@ -565,12 +569,20 @@ void WorldSession::Impl::worker_loop() {
                             return;
                     }
                 } catch (std::bad_alloc&) {
+                    if (!cmd.token || !cmd.token->is_cancelled()) {
+                        ecs_runtime.enqueue_world_state(
+                            {ecs_runtime::WorldStateCommandKind::Failed});
+                    }
                     Event ev;
                     ev.type    = EventType::BakeError;
                     ev.code    = BakeErrorCode::OutOfMemory;
                     ev.message = "std::bad_alloc";
                     emit_event(std::move(ev));
                 } catch (std::exception& e) {
+                    if (!cmd.token || !cmd.token->is_cancelled()) {
+                        ecs_runtime.enqueue_world_state(
+                            {ecs_runtime::WorldStateCommandKind::Failed});
+                    }
                     Event ev;
                     ev.type    = EventType::BakeError;
                     ev.code    = BakeErrorCode::Internal;
@@ -612,12 +624,20 @@ void WorldSession::Impl::worker_loop() {
                     return;
             }
         } catch (std::bad_alloc&) {
+            if (!cmd.token || !cmd.token->is_cancelled()) {
+                ecs_runtime.enqueue_world_state(
+                    {ecs_runtime::WorldStateCommandKind::Failed});
+            }
             Event ev;
             ev.type    = EventType::BakeError;
             ev.code    = BakeErrorCode::OutOfMemory;
             ev.message = "std::bad_alloc";
             emit_event(std::move(ev));
         } catch (std::exception& e) {
+            if (!cmd.token || !cmd.token->is_cancelled()) {
+                ecs_runtime.enqueue_world_state(
+                    {ecs_runtime::WorldStateCommandKind::Failed});
+            }
             Event ev;
             ev.type    = EventType::BakeError;
             ev.code    = BakeErrorCode::Internal;
@@ -641,6 +661,8 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     auto is_cancelled = [&] { return token && token->is_cancelled(); };
 
     // 1) BakeStarted -----------------------------------------------------------
+    ecs_runtime.enqueue_world_state(
+        {ecs_runtime::WorldStateCommandKind::Loading});
     {
         Event ev;
         ev.type = EventType::BakeStarted;
@@ -649,6 +671,10 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
 
     // Emit-a-BakeError helper (worker-side, so all call sites just tag phase).
     auto emit_error = [&](BakeErrorCode code, const char* phase, const std::string& msg) {
+        if (code != BakeErrorCode::Cancelled) {
+            ecs_runtime.enqueue_world_state(
+                {ecs_runtime::WorldStateCommandKind::Failed});
+        }
         Event ev;
         ev.type    = EventType::BakeError;
         ev.code    = code;
@@ -961,6 +987,10 @@ void WorldSession::Impl::publish_pipeline(
     auto is_cancelled = [&] { return token && token->is_cancelled(); };
 
     auto emit_error = [&](BakeErrorCode code, const char* phase, const std::string& msg) {
+        if (code != BakeErrorCode::Cancelled) {
+            ecs_runtime.enqueue_world_state(
+                {ecs_runtime::WorldStateCommandKind::Failed});
+        }
         Event ev;
         ev.type    = EventType::BakeError;
         ev.code    = code;
@@ -1484,6 +1514,13 @@ void WorldSession::Impl::publish_pipeline(
             return;
         }
     }
+    if (is_cancelled()) {
+        emit_error(BakeErrorCode::Cancelled, "gl", "cancelled");
+        return;
+    }
+
+    ecs_runtime.enqueue_world_state(
+        {ecs_runtime::WorldStateCommandKind::Ready});
 
     // Merge load-phase (publish-job) failures and bake-phase failures into count_errors.
     // run_blocking(finalize_job) above guarantees all publish jobs completed
@@ -2365,8 +2402,15 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
 
     if (is_cancelled()) return;
 
+    ecs_runtime.enqueue_world_state(
+        {ecs_runtime::WorldStateCommandKind::Loading});
+
     // Emit-error helper.
     auto emit_error = [&](BakeErrorCode code, const char* phase, const std::string& msg) {
+        if (code != BakeErrorCode::Cancelled) {
+            ecs_runtime.enqueue_world_state(
+                {ecs_runtime::WorldStateCommandKind::Failed});
+        }
         Event ev;
         ev.type    = EventType::BakeError;
         ev.code    = code;
@@ -2417,6 +2461,10 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
 
     if (!rep.succeeded) {
         // Fail-closed: emit structured errors, do NOT touch the rendered world.
+        if (!is_cancelled()) {
+            ecs_runtime.enqueue_world_state(
+                {ecs_runtime::WorldStateCommandKind::Failed});
+        }
         for (const auto& e : rep.errors) {
             BakeErrorCode code;
             if (e.cause == live_edit::LiveEditError::Cause::FlattenFailed)
@@ -2688,6 +2736,14 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
 WorldSession::WorldSession(std::unique_ptr<Impl> impl)
     : impl_(std::move(impl)) {}
 
+flecs::world& WorldSession::ecs() {
+    return impl_->ecs_runtime.world();
+}
+
+const flecs::world& WorldSession::ecs() const {
+    return impl_->ecs_runtime.world();
+}
+
 WorldSession::~WorldSession() {
     // Phase B destructor protocol (Task 6 brief):
     //   1) commands.shut_down() — cancels in-flight token, wakes worker.
@@ -2783,7 +2839,7 @@ bool WorldSession::sea_level(float& out) const {
     return true;
 }
 
-void WorldSession::tick() {
+void WorldSession::Impl::poll_runtime_sources() {
     // Poll provider deltas and apply to world state (main.cpp lines ~507–508).
     // Phase B: the worker may be tearing down or rebuilding provider under us;
     // skip poll_deltas while a bake command is active. LocalProvider::poll_deltas
@@ -2791,51 +2847,62 @@ void WorldSession::tick() {
     // shared_ptr/mutex promotion of `provider`. When a future provider grows a
     // live delta stream (e.g. NetworkProvider), promote provider under a small
     // mutex so tick() can hold a strong ref for the duration of poll_deltas.
-    if (impl_->bake_active.load(std::memory_order_acquire)) return;
-    if (!impl_->provider) return;
+    if (bake_active.load(std::memory_order_acquire)) return;
+    if (!provider) return;
     viewer::WorldDelta d;
-    if (impl_->provider->poll_deltas(d)) {
-        impl_->state.apply(d);
+    if (provider->poll_deltas(d)) {
+        state.apply(d);
         // World content changed — lazy tracer is stale.
-        impl_->tracer_dirty = true;
-        impl_->tracer.reset();
+        tracer_dirty = true;
+        tracer.reset();
     }
 
 #ifdef __linux__
     // Task 10: inotify watcher + 150 ms debounce (app thread only).
     // Only active when enable_live_edit was set in WorldDesc.
     // The watcher is created eagerly in open_world; we only poll here.
-    if (impl_->enable_live_edit && impl_->inotify_watching) {
+    if (enable_live_edit && inotify_watching) {
         // Drain newly observed events into the pending debounce set.
         std::vector<live_edit::FileEvent> evs;
-        impl_->inotify_watcher->poll(evs);
+        inotify_watcher->poll(evs);
         for (const auto& e : evs) {
-            impl_->le_pending_paths_.insert(e.path);
-            if (e.t_ms > impl_->le_last_event_ms_)
-                impl_->le_last_event_ms_ = e.t_ms;
-            impl_->le_have_pending_ = true;
+            le_pending_paths_.insert(e.path);
+            if (e.t_ms > le_last_event_ms_)
+                le_last_event_ms_ = e.t_ms;
+            le_have_pending_ = true;
         }
 
         // Fire once the quiet window has elapsed since the last event.
-        if (impl_->le_have_pending_) {
-            long long now = impl_->inotify_watcher->now_ms();
-            if (now - impl_->le_last_event_ms_ >= impl_->k_debounce_ms) {
+        if (le_have_pending_) {
+            long long now = inotify_watcher->now_ms();
+            if (now - le_last_event_ms_ >= k_debounce_ms) {
                 // Quiet window elapsed: push a RebakeCone command.
-                std::vector<std::string> paths(impl_->le_pending_paths_.begin(),
-                                               impl_->le_pending_paths_.end());
-                impl_->le_pending_paths_.clear();
-                impl_->le_have_pending_ = false;
-                impl_->le_last_event_ms_ = 0;
+                std::vector<std::string> paths(le_pending_paths_.begin(),
+                                               le_pending_paths_.end());
+                le_pending_paths_.clear();
+                le_have_pending_ = false;
+                le_last_event_ms_ = 0;
 
-                impl_->ensure_worker_started();
+                ensure_worker_started();
                 matter_async::Command c;
                 c.kind          = matter_async::CommandKind::RebakeCone;
                 c.changed_files = std::move(paths);
-                impl_->commands.push(std::move(c));
+                commands.push(std::move(c));
             }
         }
     }
 #endif // __linux__
+}
+
+void WorldSession::tick(const TickDesc& desc) {
+    const ecs_runtime::TickResult result = impl_->ecs_runtime.tick(desc);
+    if (result.invalid) {
+        ++impl_->stats.ecs_invalid_ticks;
+        return;
+    }
+    impl_->stats.ecs_fixed_steps += result.fixed_steps;
+    impl_->stats.ecs_dropped_steps += result.dropped_steps;
+    impl_->poll_runtime_sources();
 }
 
 #ifdef MATTER_VULKAN_VIEWER

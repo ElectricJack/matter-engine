@@ -1,5 +1,8 @@
 #pragma once
 
+#include <mutex>
+#include <vector>
+
 #include "matter/ecs.h"
 #include "matter/world_session.h"
 
@@ -19,6 +22,12 @@ struct TickResult {
     bool invalid = false;
 };
 
+enum class WorldStateCommandKind { Loading, Ready, Failed };
+
+struct WorldStateCommand {
+    WorldStateCommandKind kind;
+};
+
 class Runtime {
 public:
     Runtime();
@@ -28,13 +37,18 @@ public:
 
     flecs::world& world() noexcept;
     const flecs::world& world() const noexcept;
+    void enqueue_world_state(WorldStateCommand command);
     TickResult tick(const TickDesc& desc);
 
 private:
+    void drain_world_state_commands();
+
     flecs::world world_;
     flecs::entity fixed_pipeline_;
     flecs::entity frame_pipeline_;
     double accumulator_seconds_ = 0.0;
+    std::mutex world_state_mutex_;
+    std::vector<WorldStateCommand> world_state_commands_;
 };
 
 } // namespace matter::ecs_runtime
