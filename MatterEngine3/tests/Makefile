@@ -663,7 +663,8 @@ GPU_MSL_CPP = \
     $(GPU_AR_CORE_CPP)
 
 GPU_MSL_C   = $(COMMON_MSL_C)
-GPU_ALL_CPP = $(GPU_PIPELINE_CPP) $(GPU_RENDER_CPP) $(GPU_MSL_CPP)
+GPU_ALL_CPP = $(GPU_PIPELINE_CPP) $(GPU_RENDER_CPP) $(GPU_MSL_CPP) \
+              ../src/ecs/ecs_runtime.cpp ../src/ecs/transform_system.cpp
 
 # ---------------------------------------------------------------------------
 # Enumerate the source-per-flavor sets and instantiate object rules.

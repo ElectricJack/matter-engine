@@ -142,3 +142,66 @@ The actual GNU Make parsing/archive composition and MinGW Windows builds could
 not be executed in this environment. They must still be run on a host with the
 required GNU/MinGW toolchains. The static checker and MSVC run reduce risk but
 do not make those blocked gates pass.
+
+## Review-Fix Evidence
+
+Review of commit `641f78a` found two dependency-closure blockers that the first
+checker did not model: the GPU source union compiled `matter_engine.cpp` without
+the two ECS implementation translation units, and both Windows builds flattened
+the new ECS filenames without adding their directory to the C++ `vpath`.
+
+The checker was strengthened before any Makefile fix. It now identifies the
+only test source list that literally owns `matter_engine.cpp`, verifies that its
+complete GPU union includes `ecs_runtime.cpp` and `transform_system.cpp` exactly
+once, verifies that `gpu_CPP_SRCS` and `GPU_SHARED_OBJS` consume that complete
+union, and checks the continued C++ `vpath` in each Windows Makefile.
+
+RED command:
+
+```powershell
+& '.\.superpowers\sdd\flecs-task-7-static-check.ps1'
+```
+
+RED exit 1, exactly four failures:
+
+```text
+FAIL: Flecs Task 7 build contract (4 issue(s))
+ - GPU_ALL_CPP Runtime implementation expected 1 occurrence(s) of '../src/ecs/ecs_runtime.cpp', found 0
+ - GPU_ALL_CPP transform implementation expected 1 occurrence(s) of '../src/ecs/transform_system.cpp', found 0
+ - MatterViewer C++ vpath missing '$(ME3_DIR)/src/ecs'
+ - ExplorerDemo C++ vpath missing '$(ME3_DIR)/src/ecs'
+```
+
+The minimal production fix added both ECS C++ sources once to `GPU_ALL_CPP` and
+added `$(ME3_DIR)/src/ecs` to the Viewer and Explorer C++ `vpath` lines. No link
+rule, application caller, or runtime behavior changed.
+
+GREEN rerun exited 0:
+
+```text
+PASS: Flecs Task 7 build contract
+ - MatterEngine3 archive has one C-compiled flecs.o plus both ECS C++ objects
+ - every matter_engine.cpp test flavor links both ECS C++ objects and one flecsc object
+ - Viewer and Explorer Windows unions have unique basenames and one C Flecs source
+```
+
+`git diff --check` exited 0 with no output.
+
+Fresh supplemental MSVC verification used the previously absent directory
+`MatterEngine3/tests/build/msvc_task7_review_fix_verify`. Visual Studio 2022
+compiled `flecs.c` with `/TC /std:c17`, compiled `ecs_tests.cpp`,
+`ecs_runtime.cpp`, and `transform_system.cpp` with `/std:c++17 /EHsc /W3`,
+linked one Flecs object, and ran the executable twice. Exit 0:
+
+```text
+flecs.c
+ecs_tests.cpp
+ecs_runtime.cpp
+transform_system.cpp
+ALL PASS
+ALL PASS
+```
+
+The GNU/MinGW commands remain blocked by the unchanged no-WSL-distribution
+environment and are still not claimed passing. The supplemental MSVC suite does
+not replace those gates.

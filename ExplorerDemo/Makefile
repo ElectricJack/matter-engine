@@ -192,7 +192,7 @@ W_FLECS_OBJ = $(W_DIR)/$(FLECS_NAME:.c=.o)
 W_ALL_OBJ  = $(W_CPP_OBJ) $(W_QJS_OBJ) $(W_PIPC_OBJ) $(W_FLECS_OBJ)
 
 # vpath lets the pattern rules find sources by basename.
-vpath %.cpp . $(ME3_DIR)/src $(ME3_DIR)/src/render $(ME3_DIR)/src/provider $(MSL_DIR)/src \
+vpath %.cpp . $(ME3_DIR)/src $(ME3_DIR)/src/render $(ME3_DIR)/src/provider $(ME3_DIR)/src/ecs $(MSL_DIR)/src \
              ../ParticleFlowLib/src
 vpath %.c $(MSL_DIR)/src $(QJS_DIR) $(FLECS_DIR)
 
