@@ -1,4 +1,6 @@
 #include "check.h"
+#include "ecs/ecs_runtime.h"
+#include "ecs/physics_context.h"
 #include "matter/physics.h"
 
 #include <cstdint>
@@ -47,6 +49,20 @@ bool has_default_properties(const physics::ColliderProperties& value) {
            value.restitution == 0.0f && value.category_bits == 1 &&
            value.mask_bits == UINT64_MAX && !value.sensor &&
            value.contact_events && !value.hit_events;
+}
+
+bool has_zero_stats(const physics::PhysicsStats& value) {
+    return value.steps == 0 && value.bodies_created == 0 &&
+           value.bodies_destroyed == 0 &&
+           value.rejected_configurations == 0 &&
+           value.failed_commands == 0 && value.stale_events == 0 &&
+           value.live_bodies == 0;
+}
+
+bool has_no_events(const physics::PhysicsEvents& value) {
+    return value.body.empty() && value.contact_begin.empty() &&
+           value.contact_end.empty() && value.contact_hit.empty() &&
+           value.sensor_begin.empty() && value.sensor_end.empty();
 }
 
 void test_physics_contract_and_reflection() {
@@ -291,24 +307,57 @@ void test_physics_contract_and_reflection() {
               is_zero(hit_event_value.position) && is_zero(hit_event_value.normal) &&
               hit_event_value.approach_speed == 0.0f,
           "hit event defaults match the contract");
-    CHECK(events_value.body.empty() && events_value.contact_begin.empty() &&
-              events_value.contact_end.empty() && events_value.contact_hit.empty() &&
-              events_value.sensor_begin.empty() && events_value.sensor_end.empty(),
+    CHECK(has_no_events(events_value),
           "PhysicsEvents defaults match the contract");
-    CHECK(stats_value.steps == 0 && stats_value.bodies_created == 0 &&
-              stats_value.bodies_destroyed == 0 &&
-              stats_value.rejected_configurations == 0 &&
-              stats_value.failed_commands == 0 && stats_value.stale_events == 0 &&
-              stats_value.live_bodies == 0,
+    CHECK(has_zero_stats(stats_value),
           "PhysicsStats defaults match the contract");
     CHECK(ray_hit_value.entity == 0 && is_zero(ray_hit_value.position) &&
               is_zero(ray_hit_value.normal) && ray_hit_value.fraction == 0.0f,
           "PhysicsRayHit defaults match the contract");
 }
 
+void test_one_physics_world_per_runtime() {
+    ecs_runtime::Runtime first;
+    const flecs::world& const_first_world = first.world();
+    CHECK(&physics::detail::context(first.world()) ==
+              &physics::detail::context(const_first_world),
+          "mutable and const lookup resolve the runtime-owned context");
+    CHECK(physics::detail::context_world_is_valid(first.world()),
+          "first runtime owns a valid Box3D world");
+    CHECK(has_zero_stats(physics::physics_stats(first.world())),
+          "first runtime physics stats start at zero");
+
+    {
+        ecs_runtime::Runtime second;
+        CHECK(physics::detail::context_world_is_valid(second.world()),
+              "second runtime owns an independent valid Box3D world");
+        CHECK(has_zero_stats(physics::physics_stats(second.world())),
+              "second runtime physics stats start at zero");
+        CHECK(has_no_events(physics::physics_events(second.world())),
+              "second runtime physics events start empty");
+    }
+
+    CHECK(physics::detail::context_world_is_valid(first.world()),
+          "destroying one runtime leaves the other Box3D world valid");
+    CHECK(has_zero_stats(physics::physics_stats(first.world())),
+          "destroying one runtime does not affect the other stats");
+}
+
+void test_physics_accessors_fail_closed_without_runtime_context() {
+    flecs::world world;
+    CHECK(!physics::detail::context_world_is_valid(world),
+          "a bare Flecs world has no valid Box3D context");
+    CHECK(has_zero_stats(physics::physics_stats(world)),
+          "physics_stats fails closed for a world without PhysicsModule");
+    CHECK(has_no_events(physics::physics_events(world)),
+          "physics_events fails closed for a world without PhysicsModule");
+}
+
 } // namespace
 
 int main() {
     test_physics_contract_and_reflection();
+    test_one_physics_world_per_runtime();
+    test_physics_accessors_fail_closed_without_runtime_context();
     return check_summary();
 }

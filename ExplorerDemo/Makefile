@@ -22,11 +22,14 @@ ME3_DIR     = ../MatterEngine3
 MSL_DIR     = ../MatterSurfaceLib
 QJS_DIR     = ../Libraries/quickjs-ng
 BOX3D_DIR   = ../Libraries/box3d
+BOX3D_LIB   = $(BOX3D_DIR)/libbox3d.a
+WIN_BOX3D_LIB = $(BOX3D_DIR)/build-mingw/libbox3d.a
 FLECS_DIR   = ../Libraries/flecs
 
 # Linux include: only the public engine API.
 INCLUDE_PATHS = -I$(ME3_DIR)/include \
                 -I$(FLECS_DIR) \
+                -I$(BOX3D_DIR)/include \
                 -I$(RAYLIB_PATH)
 
 # Windows include: also expose ME3/MSL private src/ headers for direct compilation.
@@ -37,13 +40,12 @@ WIN_INCLUDE_PATHS = $(INCLUDE_PATHS) \
                     -I$(MSL_DIR)/include \
                     -I$(MSL_DIR)/src \
                     -I$(QJS_DIR) \
-                    -I$(BOX3D_DIR)/include \
                     -I$(FLECS_DIR) \
                     -I../ParticleFlowLib/include
 
 LDFLAGS = -lGL -lm -lpthread -ldl -lrt -lX11
 LDLIBS  = ../Libraries/raylib/build/linux/libraylib.a \
-          $(BOX3D_DIR)/libbox3d.a
+          $(BOX3D_LIB)
 
 # ---- Linux: main.cpp + camera_rig.cpp only; links libmatter_engine3.a ----
 
@@ -98,7 +100,7 @@ explorer: build-engine-lib shaders shaders_gpu_link $(CPP_OBJ)
 WIN_CXX    = x86_64-w64-mingw32-g++-posix
 WIN_CC     = x86_64-w64-mingw32-gcc
 WIN_RAYLIB = ../Libraries/raylib/build/windows-native/libraylib.a
-WIN_LIBS   = -lopengl32 -lgdi32 -lwinmm $(BOX3D_DIR)/build-mingw/libbox3d.a -lwinpthread
+WIN_LIBS   = -lopengl32 -lgdi32 -lwinmm $(WIN_BOX3D_LIB) -lwinpthread
 
 # Engine C++ sources for Windows direct compile.
 # Matches MatterEngine3/Makefile ME3_CPP list, plus retopo_blacklist.cpp,
@@ -143,6 +145,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/terrain_mesher.cpp \
               $(ME3_DIR)/src/sector_streamer.cpp \
               $(ME3_DIR)/src/ecs/ecs_runtime.cpp \
+              $(ME3_DIR)/src/ecs/physics_context.cpp \
               $(ME3_DIR)/src/ecs/transform_system.cpp \
               $(ME3_DIR)/src/matter_engine.cpp \
               $(ME3_DIR)/src/pf_bindings.cpp \

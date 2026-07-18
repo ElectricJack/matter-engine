@@ -63,6 +63,7 @@ FLECS_DIR   = ../Libraries/flecs
 # headers, vendored QuickJS-ng, then raylib (for the BLAS/Tri/TriEx types).
 QJS_DIR       = ../Libraries/quickjs-ng
 BOX3D_DIR     = ../Libraries/box3d
+BOX3D_LIB     = $(BOX3D_DIR)/libbox3d.a
 INCLUDE_PATHS = -Iinclude -Isrc -Isrc/render -Isrc/provider \
                 -I$(MSL_DIR)/include -I$(MSL_DIR)/src \
                 -I$(QJS_DIR) -I$(RAYLIB_PATH) -I$(BOX3D_DIR)/include \
@@ -106,7 +107,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/render/gpu_culler.cpp \
           src/render/tileset_provider.cpp src/render/tileset_gl_ctx.cpp \
           src/provider/local_provider.cpp src/provider/resolvers.cpp \
-          src/ecs/ecs_runtime.cpp src/ecs/transform_system.cpp \
+          src/ecs/ecs_runtime.cpp src/ecs/physics_context.cpp src/ecs/transform_system.cpp \
           src/matter_engine.cpp \
           src/refine_controller.cpp \
           src/async_bake.cpp \
@@ -279,7 +280,10 @@ $(ME3_OBJ) $(MSL_OBJ): .lib_flags
 %.o: %.cpp
 	$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDE_PATHS)
 
-$(LIB): $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ)
+$(BOX3D_LIB):
+	$(MAKE) -C $(BOX3D_DIR)
+
+$(LIB): $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ) $(BOX3D_LIB)
 	ar rcs $(LIB) $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ)
 
 # Delegate to the test suite (headless, GL-free host + raylib-linked BLAS path).

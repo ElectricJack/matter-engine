@@ -1,4 +1,5 @@
 #include "ecs_runtime.h"
+#include "physics_context.h"
 #include "matter/physics.h"
 
 #include <algorithm>
@@ -265,9 +266,16 @@ void snap_half_ulp_shortfall_to_fixed_boundary(
 
 Runtime::Runtime() {
     world_.import<ecs::CoreModule>();
+    world_.import<physics::PhysicsModule>();
+    physics_ = std::make_unique<physics::detail::PhysicsContext>(
+        world_.get<physics::PhysicsSettings>());
+    world_.set<physics::detail::PhysicsContextRef>(
+        physics::detail::PhysicsContextRef{physics_.get()});
     fixed_pipeline_ = build_pipeline<ecs::FixedPipelineSystem>(world_);
     frame_pipeline_ = build_pipeline<ecs::FramePipelineSystem>(world_);
 }
+
+Runtime::~Runtime() = default;
 
 flecs::world& Runtime::world() noexcept {
     return world_;

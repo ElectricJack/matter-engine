@@ -28,6 +28,8 @@ IMGUI_PATH  = ../Libraries/imgui
 QJS_DIR     = ../Libraries/quickjs-ng
 QJS_INC     = -I$(QJS_DIR)
 BOX3D_DIR   = ../Libraries/box3d
+BOX3D_LIB   = $(BOX3D_DIR)/libbox3d.a
+WIN_BOX3D_LIB = $(BOX3D_DIR)/build-mingw/libbox3d.a
 ME3_DIR     = ../MatterEngine3
 MSL_DIR     = ../MatterSurfaceLib
 FLECS_DIR   = ../Libraries/flecs
@@ -60,16 +62,13 @@ WIN_INCLUDE_PATHS = -I$(VULKAN_INCLUDE) \
                      -I../ParticleFlowLib/include
 
 LDFLAGS = -lGL -lm -lpthread -ldl -lrt -lX11
-LDLIBS  = ../Libraries/raylib/build/linux/libraylib.a
+LDLIBS  = ../Libraries/raylib/build/linux/libraylib.a $(BOX3D_LIB)
 
 HAVE_STREAMLINE ?= 0
 # Point this at a locally installed, licensed Streamline SDK.  Nothing from the
 # SDK is checked into this repository; HAVE_STREAMLINE=0 is the default.
 STREAMLINE_PATH ?=
 STREAMLINE_DLL_DIR ?= $(STREAMLINE_PATH)/bin/x64/development
-BOX3D_LIB = $(BOX3D_DIR)/libbox3d.a
-LDLIBS   += $(BOX3D_LIB)
-
 # ---- Phase 5 autoremesher_core (Task 15 wiring) ----
 # The vendored autoremesher_core static lib + its TBB dependency. Linux-only:
 # the library was built for Linux in Task 4 (Libraries/autoremesher_core/) and
@@ -167,6 +166,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/terrain_mesher.cpp \
               $(ME3_DIR)/src/sector_streamer.cpp \
               $(ME3_DIR)/src/ecs/ecs_runtime.cpp \
+              $(ME3_DIR)/src/ecs/physics_context.cpp \
               $(ME3_DIR)/src/ecs/transform_system.cpp \
               $(ME3_DIR)/src/matter_engine.cpp \
               $(ME3_DIR)/src/pf_bindings.cpp \
@@ -352,7 +352,7 @@ VULKAN_RUNTIME_DIR ?= $(shell cygpath -m /ucrt64/bin)
 WIN_FEATURES = build/windows/build_features.txt
 # Win32 import libs raylib depends on; MUST come AFTER libraylib.a on the link
 # line so the static linker can resolve raylib's __imp_* references.
-WIN_LIBS    = $(BOX3D_DIR)/build-mingw/libbox3d.a -lwinpthread
+WIN_LIBS    = $(WIN_BOX3D_LIB) -lwinpthread
 WIN_SYSTEM_LIBS = -lgdi32 -lwinmm -luser32 -lshell32
 
 .PHONY: vulkan-preflight

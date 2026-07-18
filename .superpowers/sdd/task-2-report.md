@@ -1,48 +1,164 @@
-# Task 2 Report: GL Legacy Path Soup Expansion Shim
+# Task 2 Report: Session-Owned Box3D Context
 
-## What Was Implemented
+## Status
 
-**Step 1 — Test fixtures updated to indexed invariant:**
-- `MatterEngine3/tests/gpu_cull_tests.cpp`: Added `md.indices = { 0u, 1u, 2u }` to `make_one_tri_mesh()` and to the inline `md2a`/`md2b` fixtures. All call sites (lines 215-217, 1077, 1080-1081, 1153-1156) are covered automatically through the factory function.
-- `MatterEngine3/tests/release_part_tests.cpp`: Added `md.indices = { 0u, 1u, 2u }` to `make_one_tri_mesh()`.
+Implemented Task 2 on top of reviewed Task 1 commit `3b75ec9`. Every
+`matter::ecs_runtime::Runtime` now owns one private Box3D world through an
+opaque `physics::detail::PhysicsContext`. The focused physics suite, the
+existing ECS suite, and the Phase 2 static build-contract checker pass under
+the available Windows verification path.
 
-**Step 3 — Shim in `gpu_culler.cpp`:**
-- Added `#include "raster_mesh.h"` (was not previously included).
-- Changed the concatenation loop from `for (const auto& md : lp->lod_mesh_data)` to `for (const auto& md_src : ...)` with `const RasterMeshData md_expanded = expand_indexed(md_src); const RasterMeshData& md = md_expanded;` prepended. Loop body is byte-for-byte unchanged.
+The required GNU Make/g++/gcc command remains **BLOCKED BY ENVIRONMENT**:
+PowerShell cannot resolve `make`. The MinGW cross compiler is also unavailable.
+Those gates are not reported as passing.
 
-**Bonus fix — `raster_mesh.cpp::expand_indexed` hardened:**
-- The Task 1 implementation of `expand_indexed` accessed `in.surface_uvs`, `in.material_ids`, and `in.baked_ao` unconditionally. Test fixtures (and any mesh that omits optional channels) caused a segfault. Added bounds/empty guards for all three optional channel arrays. This is a genuine bug fix on Task 1 code; it is outside the brief's explicit file list but was the proximate cause of the segfault after the shim was applied.
+## Implementation
 
-## Step 2 — Pre-Shim Observation
+- Added an internal, noncopyable `PhysicsContext` with PImpl storage so no
+  Box3D type or header crosses into `MatterEngine3/include` or the internal
+  context header.
+- Constructed the pinned Box3D world from `b3DefaultWorldDef`, forced one
+  worker, copied the reflected default `PhysicsSettings::gravity`, validated
+  the returned ID, and throw `std::runtime_error` on invalid creation.
+- Destroyed the private Box3D world from the context destructor and cleared
+  the ID after the single destroy call.
+- Declared `Runtime::world_` before its `std::unique_ptr<PhysicsContext>` and
+  moved `Runtime` destruction out of line. Reverse member destruction therefore
+  tears down Box3D before Flecs.
+- Imported `PhysicsModule`, created the context, and published only the private
+  `PhysicsContextRef` singleton pointer inside the Runtime-owned Flecs world.
+- Implemented mutable/const internal lookup, the world-validity test seam,
+  copied zero-state stats, const empty event buffers, and zero/empty fail-closed
+  public accessors for Flecs worlds without a Runtime context.
+- Did not add bodies, shapes, stepping, command behavior, event extraction,
+  queries, or any other Task 3+ physics behavior.
 
-The pre-shim build (background job, before shim changes landed) compiled and ran, completing with **exit code 0**. This is consistent with the brief: the culler ignores `indices` and uploads `vertex_count` unique vertices as if they were soup. For 1-triangle fixtures, unique count == corner count, so the ranges the tests assert are still correct and the suite passed.
+## TDD Evidence
 
-After implementing the shim, the first run segfaulted in `expand_indexed` because test fixtures lack `surface_uvs`, `material_ids`, and `baked_ao`. Fixed by guarding those optional channels in `expand_indexed`.
+### Static build-contract RED
+
+The initial `.superpowers/sdd/box3d-phase2-static-check.ps1` was written and
+run before build-graph or production changes. It exited 1 with 30 expected
+issues, including the missing context files, Runtime ownership/import/ref,
+missing source closure, missing shared include closure, old contract-only test
+target, and missing platform archive variables.
+
+### Context lifetime RED
+
+The lifetime/fail-closed tests and `physics-tests`/`run-physics` real-link
+target were added before `physics_context.h` or implementation code. The
+available MSVC C++17 compile exited 1 at:
+
+```text
+physics_tests.cpp(3): fatal error C1083: Cannot open include file:
+'ecs/physics_context.h': No such file or directory
+```
+
+The required RED command was also attempted:
+
+```powershell
+make -C MatterEngine3/tests run-physics
+```
+
+It was blocked before compilation because `make` is not installed.
+
+### Lookup contract RED/GREEN
+
+The mutable/const context lookup test was added with both definitions absent.
+MSVC C++17 compilation succeeded and link failed with exactly two expected
+`LNK2019` unresolved `physics::detail::context` overloads. After the minimal
+definitions were restored, the focused executable printed `ALL PASS`.
+
+### GREEN verification
+
+Two independent clean directories were used:
+
+- `MatterEngine3/tests/build/msvc-box3d-task2-green1`
+- `MatterEngine3/tests/build/msvc-box3d-task2-green2`
+
+For each verification, all 49 pinned `Libraries/box3d/src/*.c` files were
+compiled as C17 by MSVC and archived into a fresh `box3d.lib`; vendored
+`flecs.c` was compiled separately as C17; and `physics_tests.cpp`,
+`ecs_runtime.cpp`, `physics_context.cpp`, and `transform_system.cpp` were
+compiled as C++17, linked, and executed. Both runs exited 0 with:
+
+```text
+ALL PASS
+```
+
+There was no Box3D leak/assert output. The existing `ecs_tests.cpp` suite was
+also compiled and linked against the fresh second build's Runtime, context,
+Flecs, and Box3D objects; it exited 0 with `ALL PASS`.
+
+After adding the final mutable/const lookup regression, the entire chain was
+repeated once more from the previously absent
+`MatterEngine3/tests/build/msvc-box3d-task2-final` directory: all 49 Box3D C17
+objects, the Box3D archive, Flecs C17, both test translation units, and all
+three engine C++17 translation units were rebuilt. The focused physics and ECS
+executables both exited 0 and each printed `ALL PASS`.
+
+The required GREEN command was attempted twice after implementation and was
+blocked both times by the absent `make` command. The explicit MinGW compiler
+probe for `x86_64-w64-mingw32-g++-posix` was likewise not found.
+
+## Build-Graph Closure
+
+- `MatterEngine3/Makefile`: `ME3_CPP` now owns `physics_context.cpp`; shared
+  includes contain Box3D; the engine archive has one native Box3D readiness
+  prerequisite without incorrectly nesting the dependency archive.
+- `MatterEngine3/tests/Makefile`: every literal list containing
+  `ecs_runtime.cpp` (`ECS_CPP`, `PHYSICS_CPP`, `GPU_ALL_CPP`) also contains
+  `physics_context.cpp`; focused Runtime binaries link one native Box3D
+  archive; existing shared GPU Runtime links retain exactly one archive.
+- `MatterViewer/Makefile` and `ExplorerDemo/Makefile`: Windows direct-source
+  graphs contain both Runtime and context, shared include graphs contain the
+  Box3D headers, Linux links select `libbox3d.a`, and Windows links select the
+  one `build-mingw/libbox3d.a` archive.
+
+Final static-check result:
+
+```text
+PASS: Box3D Phase 2 build contract
+ - Runtime owns one opaque context after its Flecs world member
+ - every Runtime source graph includes physics_context.cpp exactly once
+ - engine, focused tests, GPU tests, Viewer, and Explorer select one platform archive
+```
 
 ## Files Changed
 
-- `MatterEngine3/src/render/gpu_culler.cpp` — added `#include "raster_mesh.h"`; shim loop binding
-- `MatterEngine3/tests/gpu_cull_tests.cpp` — `make_one_tri_mesh()` + `md2a`/`md2b` get `indices = {0u,1u,2u}`
-- `MatterEngine3/tests/release_part_tests.cpp` — `make_one_tri_mesh()` gets `indices = {0u,1u,2u}`
-- `MatterEngine3/src/render/raster_mesh.cpp` — `expand_indexed` hardened against empty optional channels
-
-## Test Results
-
-- `GALLIUM_DRIVER=d3d12 make -C MatterEngine3/tests run-gpucull`: **44/44 PASS**
-- `make -C MatterEngine3/tests run-releasepart`: **37/37 PASS**
-
-Pre-existing warnings (unchanged from before this task):
-- `matter_engine.cpp:114`: `invert4x4` defined but not used
-- `bvh.cpp:74`: `memset` over non-trivial type (MSL, read-only)
+- `MatterEngine3/src/ecs/physics_context.h`
+- `MatterEngine3/src/ecs/physics_context.cpp`
+- `MatterEngine3/src/ecs/ecs_runtime.h`
+- `MatterEngine3/src/ecs/ecs_runtime.cpp`
+- `MatterEngine3/tests/physics_tests.cpp`
+- `MatterEngine3/tests/Makefile`
+- `MatterEngine3/Makefile`
+- `MatterViewer/Makefile`
+- `ExplorerDemo/Makefile`
+- `.superpowers/sdd/box3d-phase2-static-check.ps1`
+- `.superpowers/sdd/task-2-report.md`
 
 ## Self-Review
 
-**Completeness:** All `RasterMeshData` construction sites grepped in both test files. Only `make_one_tri_mesh()`, `md2a`, `md2b` — all updated.
+- Box3D remains absent from the public engine include tree; the private header
+  also contains no `b3WorldId`.
+- The context pointer is stable for the full Runtime lifetime and is never
+  exposed through the public API.
+- Two live runtimes are covered simultaneously, destruction of the inner one
+  leaves the outer world valid, and both mutable/const lookup paths agree.
+- Stats cover every field at zero; events cover every buffer as empty; a bare
+  Flecs world exercises the null-safe fail-closed path.
+- Source closure is enforced for every literal Runtime-bearing list found in
+  the four requested Makefiles; archive choice is platform-specific.
+- `git diff --check` is clean.
+- No Critical or Important issue was found in local review. An independent
+  review subagent was requested, but the agent thread limit was already full;
+  this report does not claim an independent review.
 
-**Discipline:** Shim is exactly as specified by the brief. No restructuring of the culler.
+## Concerns / Blocked Gates
 
-**Concern:** `raster_mesh.cpp` is outside the brief's explicit file list. The fix adds defensive guards for empty optional channels in `expand_indexed` — a clear correctness bug, not a behavioral change for well-formed data. Alternative would have been to add `surface_uvs`/`material_ids`/`baked_ao` to all test fixtures, but the guard is the more robust fix.
-
-## Commit
-
-`f8c8c96 feat(mesh): GL legacy path expands indexed meshes at upload`
+- GNU Make/g++/gcc and MinGW source/link execution remain unverified in this
+  Windows environment. The static checker plus fresh MSVC C17/C++17 runs reduce
+  risk but do not replace those blocked gates.
+- Full Viewer/Explorer builds are outside the focused Task 2 gate and cannot be
+  run here without the absent GNU/MinGW toolchains.

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <mutex>
 #include <vector>
 
@@ -13,6 +14,12 @@ namespace matter::ecs {
 void drain_hierarchy_commands(flecs::world& world);
 
 } // namespace matter::ecs
+
+namespace matter::physics::detail {
+
+class PhysicsContext;
+
+} // namespace matter::physics::detail
 
 namespace matter::ecs_runtime {
 
@@ -31,6 +38,7 @@ struct WorldStateCommand {
 class Runtime {
 public:
     Runtime();
+    ~Runtime();
 
     Runtime(const Runtime&) = delete;
     Runtime& operator=(const Runtime&) = delete;
@@ -44,6 +52,7 @@ private:
     void drain_world_state_commands();
 
     flecs::world world_;
+    std::unique_ptr<physics::detail::PhysicsContext> physics_;
     flecs::entity fixed_pipeline_;
     flecs::entity frame_pipeline_;
     double accumulator_seconds_ = 0.0;
