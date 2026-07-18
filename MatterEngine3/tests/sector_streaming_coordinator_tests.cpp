@@ -10,6 +10,7 @@
 using matter::streaming::SectorStreamingState;
 using matter::streaming::detail::Coordinator;
 using matter::streaming::detail::PendingEvictionBatch;
+using matter::streaming::detail::PublicationCompletionCapacity;
 using matter::streaming::detail::ProfileActivationGate;
 using matter::streaming::detail::PublicationResources;
 using matter::streaming::detail::PublicationTransaction;
@@ -359,6 +360,76 @@ int main() {
                   failed_publication.acknowledge_calls == 2 &&
                   !failed_publication.acknowledged_value,
               "orphan cleanup and false ack failures retry in order without escape");
+    }
+
+    // Completion capacity is claimed before next_request. Retained completion
+    // work from many superseded generations may fill every fixed slot, but the
+    // next coordinator request is then left unallocated rather than orphaned.
+    // Once durable false acknowledgements enqueue, every claim is reusable and
+    // current-generation inflight state drains normally.
+    {
+        Coordinator coordinator;
+        PublicationCompletionCapacity capacity;
+        auto profile = tiny_profile();
+        profile.max_inflight = 1;
+        CHECK(coordinator.attach(kOwnerA),
+              "capacity regression attaches owner");
+        coordinator.set_profile(&profile);
+        coordinator.submit_anchor(kOwnerA, 8.0f, 8.0f);
+        coordinator.worker_step();
+
+        struct RetainedCompletion {
+            size_t slot = PublicationCompletionCapacity::kCapacity;
+            TaggedRequest request{};
+        };
+        std::vector<RetainedCompletion> retained;
+        retained.reserve(PublicationCompletionCapacity::kCapacity);
+
+        auto take_tracked_request = [&](RetainedCompletion& tracked) {
+            if (!capacity.try_reserve(tracked.slot)) return false;
+            if (!coordinator.next_request(tracked.request)) {
+                capacity.release(tracked.slot);
+                tracked.slot = PublicationCompletionCapacity::kCapacity;
+                return false;
+            }
+            return true;
+        };
+
+        for (size_t generation = 0;
+             generation < PublicationCompletionCapacity::kCapacity;
+             ++generation) {
+            RetainedCompletion tracked;
+            CHECK(take_tracked_request(tracked),
+                  "each available slot owns its request before restart");
+            retained.push_back(tracked);
+            coordinator.restart_if_attached();
+            coordinator.worker_step();
+        }
+
+        RetainedCompletion overflow;
+        CHECK(capacity.full() && !take_tracked_request(overflow) &&
+                  coordinator.snapshot().status.inflight_sectors == 0,
+              "full durable capacity stops before allocating an untracked request");
+
+        for (const auto& tracked : retained) {
+            CHECK(coordinator.acknowledge(tracked.request, false),
+                  "retained false acknowledgement durably enqueues");
+            capacity.release(tracked.slot);
+        }
+        coordinator.worker_step();
+        CHECK(capacity.empty() &&
+                  coordinator.snapshot().status.inflight_sectors == 0,
+              "stale-generation false acknowledgements and claims all drain");
+
+        RetainedCompletion current;
+        CHECK(take_tracked_request(current) &&
+                  coordinator.acknowledge(current.request, false),
+              "released capacity admits a new tracked request");
+        capacity.release(current.slot);
+        coordinator.worker_step();
+        CHECK(capacity.empty() &&
+                  coordinator.snapshot().status.inflight_sectors == 0,
+              "current false acknowledgement drains inflight state");
     }
 
     // A procedural profile is staged privately and cannot allocate sector work

@@ -3,6 +3,7 @@
 #include "../sector_streamer.h"
 #include "matter/streaming.h"
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -38,6 +39,25 @@ struct Snapshot {
     flecs::entity_t owner = 0;
     SectorStreamingStatus status{};
     SectorStreamingError error{};
+};
+
+// Fixed, non-allocating admission claims shared by WorldSession and focused
+// lifecycle tests. The session serializes calls with its completion mutex and
+// must acquire a claim before asking Coordinator for another request.
+class PublicationCompletionCapacity {
+public:
+    static constexpr size_t kCapacity = 32;
+
+    bool try_reserve(size_t& slot) noexcept;
+    void release(size_t slot) noexcept;
+    void clear() noexcept;
+    bool empty() const noexcept;
+    bool full() const noexcept;
+    size_t size() const noexcept;
+
+private:
+    std::array<bool, kCapacity> occupied_{};
+    size_t size_ = 0;
 };
 
 // Thread-safe session-owned retention for coordinator evictions after they

@@ -283,3 +283,53 @@ and C4244 double-to-float conversion warnings. GNU Make/WSL and a supported
 GPU-linked world-stream execution path remain unavailable on this Windows host;
 therefore the expanded persistent reload/shutdown world cases are compile-proven
 but are not claimed executed here.
+
+## Fix Round 3: Completion Capacity Admission
+
+The remaining exhaustion path called fallible `acknowledge(request, false)`
+after `next_request` had already allocated a coordinator request, then ignored a
+failed enqueue. Repeated generations could retain all 32 durable completion
+slots and leave the next issued request without terminal completion ownership.
+
+### RED and Invariant
+
+The focused regression was written first and failed to compile because the
+wished production seam did not exist:
+
+```text
+error C2039: 'PublicationCompletionCapacity' is not a member of detail
+```
+
+The regression retains one completion claim through each of 32 restarted
+generations. A 33rd admission must fail before calling `next_request`, with zero
+coordinator inflight requests. It then durably enqueues false acknowledgements
+for every retained tag, releases every claim, processes them on the worker, and
+proves a new current-generation request can be admitted and drained.
+
+`PublicationCompletionCapacity` is a fixed `std::array<bool, 32>` plus a count;
+reserve, release, clear, and queries are bounded and `noexcept`. `WorldSession`
+claims capacity under its existing completion mutex before `next_request`. Full
+capacity is backpressure: the worker allocates no coordinator request and emits
+no fallible acknowledgement. The claim is released only when no request was
+available, after durable true/false acknowledgement completion, or during
+terminal teardown. A stack guard turns any exception after a request is issued
+but before artifact handoff into retained false-ack completion work.
+
+### Fresh Round-3 GREEN Evidence
+
+```text
+phase3-task4-round3-coord.exe    -> ALL PASS
+phase3-task4-round3-async.exe    -> ALL PASS
+phase3-task4-round3-ecs.exe      -> ALL PASS
+phase3-task4-round3-physics.exe  -> ALL PASS
+phase3-task4-round3-streamer.exe -> long flight peak=7997 end=7993; ALL PASS
+matter_engine.cpp product MSVC TU -> exit 0
+world_stream_tests.cpp product MSVC TU -> exit 0
+Box3D Phase 2 build-contract checker -> PASS
+round-3 admission-order audit -> PASS
+git diff --check -> PASS
+```
+
+The product compile again emitted only the existing MSVC C4996 `getenv` and
+C4244 double-to-float warnings. GNU Make/WSL and the GPU-linked world-stream
+runtime remain unavailable, so no new GNU or GPU execution result is claimed.

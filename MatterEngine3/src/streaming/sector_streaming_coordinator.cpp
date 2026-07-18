@@ -48,6 +48,41 @@ void set_error_noexcept(std::string& error, const char* message) noexcept {
 
 } // namespace
 
+bool PublicationCompletionCapacity::try_reserve(size_t& slot) noexcept {
+    if (size_ == kCapacity) return false;
+    for (size_t index = 0; index < occupied_.size(); ++index) {
+        if (occupied_[index]) continue;
+        occupied_[index] = true;
+        ++size_;
+        slot = index;
+        return true;
+    }
+    return false;
+}
+
+void PublicationCompletionCapacity::release(size_t slot) noexcept {
+    if (slot >= occupied_.size() || !occupied_[slot]) return;
+    occupied_[slot] = false;
+    --size_;
+}
+
+void PublicationCompletionCapacity::clear() noexcept {
+    occupied_.fill(false);
+    size_ = 0;
+}
+
+bool PublicationCompletionCapacity::empty() const noexcept {
+    return size_ == 0;
+}
+
+bool PublicationCompletionCapacity::full() const noexcept {
+    return size_ == kCapacity;
+}
+
+size_t PublicationCompletionCapacity::size() const noexcept {
+    return size_;
+}
+
 void PendingEvictionBatch::append(std::vector<TaggedEviction> evictions) {
     std::lock_guard<std::mutex> lock(mutex_);
     for (auto& eviction : evictions) {

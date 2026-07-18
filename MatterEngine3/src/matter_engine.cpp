@@ -371,10 +371,13 @@ struct WorldSession::Impl {
         bool acknowledge_complete = false;
         bool acknowledge_value = false;
     };
-    static constexpr size_t kPublicationCompletionCapacity = 32;
+    static constexpr size_t kPublicationCompletionCapacity =
+        streaming::detail::PublicationCompletionCapacity::kCapacity;
     static constexpr size_t kNoPublicationCompletion =
         kPublicationCompletionCapacity;
     std::mutex publication_completion_mutex;
+    streaming::detail::PublicationCompletionCapacity
+        publication_completion_capacity;
     std::array<PublicationCompletion, kPublicationCompletionCapacity>
         publication_completions{};
 
@@ -434,9 +437,12 @@ struct WorldSession::Impl {
         const std::vector<streaming::detail::TaggedEviction>& evictions,
         std::string& err);
     bool release_sector_entry(SectorEntry& entry, std::string& err) noexcept;
-    size_t reserve_publication_completion(
-        const streaming::detail::TaggedRequest& request,
+    PublicationCompletion* reserve_publication_completion(
         const std::shared_ptr<viewer::LocalProvider>& provider_ref) noexcept;
+    void release_reserved_publication_completion(
+        PublicationCompletion& completion) noexcept;
+    void reset_publication_completion_locked(
+        PublicationCompletion& completion) noexcept;
     bool mark_publication_artifact(
         size_t index,
         uint64_t part_hash) noexcept;
@@ -2349,31 +2355,62 @@ bool WorldSession::Impl::apply_sector_evictions(
     return ok;
 }
 
-size_t WorldSession::Impl::reserve_publication_completion(
-    const streaming::detail::TaggedRequest& request,
+WorldSession::Impl::PublicationCompletion*
+WorldSession::Impl::reserve_publication_completion(
     const std::shared_ptr<viewer::LocalProvider>& provider_ref) noexcept {
     try {
         std::lock_guard<std::mutex> lock(publication_completion_mutex);
-        for (size_t index = 0; index < publication_completions.size(); ++index) {
-            PublicationCompletion& completion = publication_completions[index];
-            if (completion.state != PublicationCompletionState::Free) continue;
-            completion.owner = this;
-            completion.index = index;
-            completion.state = PublicationCompletionState::Reserved;
-            completion.request = request;
-            completion.part_hash = 0;
-            completion.provider_ref = provider_ref;
-            completion.transient_artifact = false;
-            completion.ledger_inserted = false;
-            completion.rollback_complete = false;
-            completion.acknowledge_pending = false;
-            completion.acknowledge_complete = false;
-            completion.acknowledge_value = false;
-            return index;
+        size_t index = kNoPublicationCompletion;
+        if (!publication_completion_capacity.try_reserve(index)) {
+            return nullptr;
+        }
+        PublicationCompletion& completion = publication_completions[index];
+        if (completion.state != PublicationCompletionState::Free) {
+            publication_completion_capacity.release(index);
+            return nullptr;
+        }
+        completion.owner = this;
+        completion.index = index;
+        completion.state = PublicationCompletionState::Reserved;
+        completion.request = {};
+        completion.part_hash = 0;
+        completion.provider_ref = provider_ref;
+        completion.transient_artifact = false;
+        completion.ledger_inserted = false;
+        completion.rollback_complete = false;
+        completion.acknowledge_pending = false;
+        completion.acknowledge_complete = false;
+        completion.acknowledge_value = false;
+        return &completion;
+    } catch (...) {
+    }
+    return nullptr;
+}
+
+void WorldSession::Impl::reset_publication_completion_locked(
+    PublicationCompletion& completion) noexcept {
+    publication_completion_capacity.release(completion.index);
+    completion.provider_ref.reset();
+    completion.state = PublicationCompletionState::Free;
+    completion.request = {};
+    completion.part_hash = 0;
+    completion.transient_artifact = false;
+    completion.ledger_inserted = false;
+    completion.rollback_complete = false;
+    completion.acknowledge_pending = false;
+    completion.acknowledge_complete = false;
+    completion.acknowledge_value = false;
+}
+
+void WorldSession::Impl::release_reserved_publication_completion(
+    PublicationCompletion& completion) noexcept {
+    try {
+        std::lock_guard<std::mutex> lock(publication_completion_mutex);
+        if (completion.state == PublicationCompletionState::Reserved) {
+            reset_publication_completion_locked(completion);
         }
     } catch (...) {
     }
-    return kNoPublicationCompletion;
 }
 
 bool WorldSession::Impl::mark_publication_artifact(
@@ -2438,15 +2475,7 @@ void WorldSession::Impl::settle_publication_completion(
             completion.state = PublicationCompletionState::Retry;
             return;
         }
-        completion.provider_ref.reset();
-        completion.state = PublicationCompletionState::Free;
-        completion.part_hash = 0;
-        completion.transient_artifact = false;
-        completion.ledger_inserted = false;
-        completion.rollback_complete = false;
-        completion.acknowledge_pending = false;
-        completion.acknowledge_complete = false;
-        completion.acknowledge_value = false;
+        reset_publication_completion_locked(completion);
     } catch (...) {
     }
 }
@@ -2529,15 +2558,7 @@ bool WorldSession::Impl::retry_publication_completions(
                     completion.acknowledge_complete;
             }
             if (slot_complete) {
-                completion.provider_ref.reset();
-                completion.state = PublicationCompletionState::Free;
-                completion.part_hash = 0;
-                completion.transient_artifact = false;
-                completion.ledger_inserted = false;
-                completion.rollback_complete = false;
-                completion.acknowledge_pending = false;
-                completion.acknowledge_complete = false;
-                completion.acknowledge_value = false;
+                reset_publication_completion_locked(completion);
             } else {
                 complete = false;
             }
@@ -2561,14 +2582,9 @@ void WorldSession::Impl::terminal_streaming_teardown_noexcept() noexcept {
                 } catch (...) {
                 }
             }
-            completion.provider_ref.reset();
-            completion.state = PublicationCompletionState::Free;
-            completion.transient_artifact = false;
-            completion.ledger_inserted = false;
-            completion.rollback_complete = false;
-            completion.acknowledge_pending = false;
-            completion.acknowledge_complete = false;
+            reset_publication_completion_locked(completion);
         }
+        publication_completion_capacity.clear();
     } catch (...) {
     }
 
@@ -2702,8 +2718,42 @@ void WorldSession::Impl::execute_sector_stream_step() {
     if (!provider || !world_field) return;
 
     // 3. Service bake requests.
-    streaming::detail::TaggedRequest request;
-    while (coordinator.next_request(request)) {
+    struct TrackedRequestGuard {
+        Impl* owner = nullptr;
+        size_t index = kNoPublicationCompletion;
+        bool armed = true;
+        ~TrackedRequestGuard() {
+            if (armed) {
+                owner->mark_publication_for_retry(
+                    index, /*rollback_complete=*/true,
+                    /*published=*/false);
+            }
+        }
+        void disarm() noexcept { armed = false; }
+    };
+
+    while (true) {
+        const auto provider_ref = provider;
+        PublicationCompletion* reserved =
+            reserve_publication_completion(provider_ref);
+        if (!reserved) break;
+
+        streaming::detail::TaggedRequest request;
+        bool have_request = false;
+        try {
+            have_request = coordinator.next_request(request);
+        } catch (...) {
+            release_reserved_publication_completion(*reserved);
+            throw;
+        }
+        if (!have_request) {
+            release_reserved_publication_completion(*reserved);
+            break;
+        }
+        reserved->request = request;
+        const size_t completion_index = reserved->index;
+        TrackedRequestGuard tracked_guard{this, completion_index};
+
         const matter_stream::SectorRequest& req = request.sector;
         // Build params JSON for WorldSector bake.
         // biomes_json needs to be escaped for embedding in a JSON string value.
@@ -2733,19 +2783,6 @@ void WorldSession::Impl::execute_sector_stream_step() {
 
         script_host::ScriptHost bake_host;
         bake_host.set_shared_lib_root(cfg.shared_lib_dir);
-        const auto provider_ref = provider;
-        const size_t completion_index = reserve_publication_completion(
-            request, provider_ref);
-        if (completion_index == kNoPublicationCompletion) {
-            coordinator.acknowledge(request, false);
-            Event ev;
-            ev.type = EventType::BakeError;
-            ev.code = BakeErrorCode::GpuError;
-            ev.phase = "stream";
-            ev.message = "sector publication completion capacity exhausted";
-            emit_event(std::move(ev));
-            break;
-        }
 
         script_host::BakeResult br;
         try {
@@ -2757,6 +2794,7 @@ void WorldSession::Impl::execute_sector_stream_step() {
             mark_publication_for_retry(
                 completion_index, /*rollback_complete=*/true,
                 /*published=*/false);
+            tracked_guard.disarm();
             Event ev;
             ev.type = EventType::BakeError;
             ev.code = BakeErrorCode::ScriptError;
@@ -2768,6 +2806,7 @@ void WorldSession::Impl::execute_sector_stream_step() {
             mark_publication_for_retry(
                 completion_index, /*rollback_complete=*/true,
                 /*published=*/false);
+            tracked_guard.disarm();
             Event ev;
             ev.type = EventType::BakeError;
             ev.code = BakeErrorCode::ScriptError;
@@ -2784,6 +2823,7 @@ void WorldSession::Impl::execute_sector_stream_step() {
             mark_publication_for_retry(
                 completion_index, /*rollback_complete=*/true,
                 /*published=*/false);
+            tracked_guard.disarm();
 
             Event ev;
             ev.type    = EventType::BakeError;
@@ -2799,6 +2839,7 @@ void WorldSession::Impl::execute_sector_stream_step() {
             mark_publication_for_retry(
                 completion_index, /*rollback_complete=*/false,
                 /*published=*/false);
+            tracked_guard.disarm();
             Event ev;
             ev.type = EventType::BakeError;
             ev.code = BakeErrorCode::GpuError;
@@ -2807,6 +2848,7 @@ void WorldSession::Impl::execute_sector_stream_step() {
             emit_event(std::move(ev));
             continue;
         }
+        tracked_guard.disarm();
 
         // 4. GL publish job: add this sector to the world.
         const float sector_size = world_sector_size;
