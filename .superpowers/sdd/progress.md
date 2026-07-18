@@ -49,7 +49,14 @@ Task 8: complete (commits 9e32d06..5cf2de0, review clean)
   - Repository-wide search confirms remaining parameterless tick calls belong only to live-edit or particle-flow APIs.
   - Focused ECS test passed; product builds remain environment-blocked.
 
-Resume at Task 9.
+Task 9: complete (commits 48f8a0f..ada0298, review clean after report correction)
+  - Standard MatterEngine3 test now delegates the independently invocable run-ecs suite exactly once and before existing suites.
+  - Two fresh MSVC C17/C++17 ECS compile-link-runs passed; engine and world-stream translation units compiled with their normal defines.
+  - Static build-contract, vendored-hash, excluded-scope, and caller-signature checks passed.
+  - Reviewer-requested scope evidence corrected to 45 files total: 25 non-SDD and 20 SDD.
+  - Mandatory GNU/MinGW product gates and finite-world GPU smoke remain environment-blocked and are not claimed verified.
+
+Resume at final whole-branch review.
 
 Environment gate:
   - WSL is installed without a Linux distribution.
