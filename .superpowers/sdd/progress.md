@@ -7,7 +7,12 @@ Task 1: complete (commits 5f66968..176fbd0, review clean)
   - Controller independently downloaded the official tag artifacts; header and source hashes matched byte-for-byte.
   - Historical pre-vendor absence is recorded in the implementer report but cannot be reconstructed after the commit.
 
-Resume at Task 2.
+Task 2: complete (commits db14a6e..78eab65, review clean)
+  - Added the public core ECS contract, Quaternion POD, CoreModule registration, behavioral tests, and dedicated Flecs C test flavor.
+  - Supplemental MSVC compile/link/test passed with ALL PASS; required GNU RED/GREEN gates remain environment-blocked and are not claimed.
+  - Flecs v4.1.6 uses world.import<T>(); the plan's illustrative import_ spelling was corrected to the pinned public API.
+
+Resume at Task 3.
 
 Environment gate:
   - WSL is installed without a Linux distribution.

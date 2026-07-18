@@ -115,3 +115,4 @@ MatterEngine3/parts
 parts
 .outrider
 .worktrees/
+.superpowers/sdd/review-*.diff
