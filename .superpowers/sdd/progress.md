@@ -12,7 +12,13 @@ Task 2: complete (commits db14a6e..78eab65, review clean)
   - Supplemental MSVC compile/link/test passed with ALL PASS; required GNU RED/GREEN gates remain environment-blocked and are not claimed.
   - Flecs v4.1.6 uses world.import<T>(); the plan's illustrative import_ spelling was corrected to the pinned public API.
 
-Resume at Task 3.
+Task 3: complete (commits 63edf69..1e7e4ce, review clean with Minors deferred)
+  - Registered core component/enum reflection and behavioral cursor/JSON coverage using pinned Flecs v4.1.6 APIs.
+  - Supplemental MSVC RED produced 11 expected failures; GREEN and fresh verification printed ALL PASS.
+  - Minor: JSON test checks top-level field names but not the written nested value.
+  - Minor: tests do not directly assert Mat4f array count, WorldTransform matrix metadata, all enum constants, or tag fieldlessness.
+
+Resume at Task 4.
 
 Environment gate:
   - WSL is installed without a Linux distribution.
