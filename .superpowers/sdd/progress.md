@@ -2,7 +2,12 @@
 Branch: codex/flecs-ecs-foundation | Plan: docs/superpowers/plans/2026-07-17-flecs-ecs-foundation.md
 BASE at start: 476a42b
 
-No tasks complete yet. Resume at Task 1.
+Task 1: complete (commits 5f66968..176fbd0, review clean)
+  - Vendored upstream Flecs v4.1.6 amalgamations and MIT license with a hash manifest.
+  - Controller independently downloaded the official tag artifacts; header and source hashes matched byte-for-byte.
+  - Historical pre-vendor absence is recorded in the implementer report but cannot be reconstructed after the commit.
+
+Resume at Task 2.
 
 Environment gate:
   - WSL is installed without a Linux distribution.
