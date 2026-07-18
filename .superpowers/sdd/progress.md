@@ -8,7 +8,15 @@ Task 1: complete (commits d923e4a..72ae69d, review clean after fixes)
   - Reviewer-requested non-creating metadata checks, complete collider/default coverage, and original phase-edge assertions are green.
   - Focused MSVC physics contract and Phase 1 ECS suites print ALL PASS; GNU remains environment-blocked.
 
-Resume at Task 2.
+Task 2: complete (commits 3b75ec9..569dc17, review clean with Minors deferred)
+  - Every Runtime now owns one private Box3D world/context that is destroyed before its Flecs world.
+  - Context-less accessors fail closed; independent runtimes have independent zero-state events/stats.
+  - Engine/tests/Viewer/Explorer link closure includes physics_context.cpp and exactly one platform Box3D archive.
+  - Two fresh MSVC builds compiled all 49 Box3D C files and Flecs as C17; physics and ECS C++17 suites print ALL PASS.
+  - Minors for Task 8 checker hardening: discover new runtime-bearing assignments, prove link recipes consume archive variables, and scan all public headers.
+  - GNU/MinGW product gates remain environment-blocked.
+
+Resume at Task 3.
 
 Environment gate:
   - WSL is installed without a Linux distribution.
