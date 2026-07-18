@@ -15,6 +15,13 @@ struct Float4 {
     float w = 0.0f;
 };
 
+struct Quaternion {
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    float w = 1.0f;
+};
+
 // Row-major storage with column-vector algebra.
 struct Mat4f {
     float m[16] = {};

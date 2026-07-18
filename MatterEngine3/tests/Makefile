@@ -55,6 +55,7 @@ endif
 # Include directories: NEW MatterEngine3 headers, then consumed MatterSurfaceLib
 # headers, then raylib.
 INCLUDE_PATHS = -I../include -I../src -I../src/render -I../src/provider -I../../MatterSurfaceLib/include -I$(RAYLIB_PATH) -I../../Libraries/raylib/src -I../../ParticleFlowLib/include -I../../Libraries/Vulkan-Headers/include
+INCLUDE_PATHS += -I$(FLECS_DIR)
 
 # Library paths (match MatterSurfaceLib/tests; same depth).
 ifeq ($(UNAME_S),Linux)
@@ -73,6 +74,13 @@ MATRIX_CPP = matrix_tests.cpp ../src/render/matrix_math.cpp ../src/render/frame_
 MATRIX_HEADERS = check.h ../include/matter/math_types.h ../include/matter/camera.h \
                  ../src/render/matrix_math.h ../src/render/frame_matrices.h \
                  ../src/render/gpu_matrix_pack.h
+
+FLECS_DIR = ../../Libraries/flecs
+FLECS_C = $(FLECS_DIR)/flecs.c
+
+ECS_TARGET = ecs_tests
+ECS_CPP = ecs_tests.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/transform_system.cpp
+ECS_C = $(FLECS_C)
 
 # ---------------------------------------------------------------------------
 # Object-path mangling. Two DIFFERENT source paths must never map to the SAME
@@ -199,11 +207,13 @@ FLAVOR_mslc_CC        := gcc
 FLAVOR_mslc_FLAGS     := -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
 FLAVOR_qjsc_CC        := gcc
 FLAVOR_qjsc_FLAGS     := -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
+FLAVOR_flecsc_CC      := gcc
+FLAVOR_flecsc_FLAGS   := -std=c99 -O2 -I$(FLECS_DIR)
 
 # C++ flavor list (compiled with $(CC) = g++). Order matters only for pattern-rule
 # generation; the alt-compile-cmd rules are all distinct.
 CPP_FLAVORS := def qjs sh sp2 vl retopo gpu
-C_FLAVORS   := mslc qjsc
+C_FLAVORS   := mslc qjsc flecsc
 ALL_FLAVORS := $(CPP_FLAVORS) $(C_FLAVORS)
 
 # ---------------------------------------------------------------------------
@@ -661,6 +671,7 @@ GPU_ALL_CPP = $(GPU_PIPELINE_CPP) $(GPU_RENDER_CPP) $(GPU_MSL_CPP)
 
 # Collect the sources compiled under each flavor.
 def_CPP_SRCS := $(sort \
+    $(ECS_CPP) \
     $(PARTV2_CPP) \
     $(GRAPH_SOURCES) \
     $(TRIVAR_CPP) \
@@ -726,6 +737,7 @@ gpu_CPP_SRCS := $(sort \
 # C-source flavors. Union across binaries that use them.
 mslc_C_SRCS := $(sort $(COMMON_MSL_C))
 qjsc_C_SRCS := $(sort $(QJS_C))
+flecsc_C_SRCS := $(sort $(ECS_C))
 
 # Object lists per flavor.
 def_CPP_OBJS    := $(call obj_list,def,$(def_CPP_SRCS))
@@ -737,10 +749,11 @@ retopo_CPP_OBJS := $(call obj_list,retopo,$(retopo_CPP_SRCS))
 gpu_CPP_OBJS    := $(call obj_list,gpu,$(gpu_CPP_SRCS))
 mslc_C_OBJS     := $(call obj_list,mslc,$(mslc_C_SRCS))
 qjsc_C_OBJS     := $(call obj_list,qjsc,$(qjsc_C_SRCS))
+flecsc_C_OBJS   := $(call obj_list,flecsc,$(flecsc_C_SRCS))
 
 ALL_OBJS := $(def_CPP_OBJS) $(qjs_CPP_OBJS) $(sh_CPP_OBJS) $(sp2_CPP_OBJS) \
             $(vl_CPP_OBJS) $(retopo_CPP_OBJS) $(gpu_CPP_OBJS) \
-            $(mslc_C_OBJS) $(qjsc_C_OBJS)
+            $(mslc_C_OBJS) $(qjsc_C_OBJS) $(flecsc_C_OBJS)
 
 # Instantiate per-source compile rules.
 $(foreach s,$(def_CPP_SRCS),$(eval $(call objrule_cpp,def,$(s))))
@@ -752,6 +765,7 @@ $(foreach s,$(retopo_CPP_SRCS),$(eval $(call objrule_cpp,retopo,$(s))))
 $(foreach s,$(gpu_CPP_SRCS),$(eval $(call objrule_cpp,gpu,$(s))))
 $(foreach s,$(mslc_C_SRCS),$(eval $(call objrule_c,mslc,$(s))))
 $(foreach s,$(qjsc_C_SRCS),$(eval $(call objrule_c,qjsc,$(s))))
+$(foreach s,$(flecsc_C_SRCS),$(eval $(call objrule_c,flecsc,$(s))))
 
 # Load dep files.
 -include $(wildcard $(OBJDIR)/*/*.d)
@@ -759,6 +773,7 @@ $(foreach s,$(qjsc_C_SRCS),$(eval $(call objrule_c,qjsc,$(s))))
 # ---------------------------------------------------------------------------
 # Convenience: derived object-list helpers per binary (link-time inputs).
 # ---------------------------------------------------------------------------
+ECS_OBJS = $(call obj_list,def,$(ECS_CPP)) $(call obj_list,flecsc,$(ECS_C))
 PARTV2_OBJS = $(call obj_list,def,$(PARTV2_CPP)) $(call obj_list,mslc,$(PARTV2_C))
 GRAPH_OBJS  = $(call obj_list,def,$(GRAPH_SOURCES)) $(call obj_list,mslc,$(GRAPH_C))
 TRIVAR_OBJS = $(call obj_list,def,$(TRIVAR_CPP)) $(call obj_list,mslc,$(TRIVAR_C))
@@ -812,7 +827,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-partv2 run-partstore run-script run-foldcache run-evalworld run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream
+.PHONY: clean run-matrix run-ecs run-partv2 run-partstore run-script run-foldcache run-evalworld run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -823,6 +838,12 @@ $(MATRIX_TARGET): $(MATRIX_CPP) $(MATRIX_HEADERS)
 
 run-matrix: $(MATRIX_TARGET)
 	./$(MATRIX_TARGET)
+
+$(ECS_TARGET): $(ECS_OBJS)
+	$(CC) $(ECS_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS)
+
+run-ecs: $(ECS_TARGET)
+	./$(ECS_TARGET)
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests.
 $(PARTV2_TARGET): $(PARTV2_OBJS)
@@ -1324,6 +1345,7 @@ clean:
 	      $(SECTORBAKE_TARGET) \
 	      $(EVALWORLD_TARGET) \
 	      $(MATRIX_TARGET) \
+	      $(ECS_TARGET) \
 	      tileset_physics_tests tileset_core_tests tileset_placement_tests \
 	      gpu_tests tileset_gpu_tests tileset_seam_tests tileset_provider_tests \
 	      tileset_load_tests api_tests async_bake_tests demand_bake_tests transient_tests release_part_tests \
