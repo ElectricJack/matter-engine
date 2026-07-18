@@ -577,8 +577,8 @@ bool Ui::camera_input_allowed() const {
     if (ImGui::GetCurrentContext() == nullptr) return true;
     const ImGuiIO& io = ImGui::GetIO();
     return matter_viewer::camera_input_allowed(
-        io.WantCaptureMouse, io.WantCaptureKeyboard, ImGuizmo::IsOver(),
-        ImGuizmo::IsUsing());
+        io.WantCaptureMouse, io.WantCaptureKeyboard,
+        ImGuizmo::IsOver(ImGuizmo::TRANSLATE), ImGuizmo::IsUsing());
 }
 
 } // namespace viewer

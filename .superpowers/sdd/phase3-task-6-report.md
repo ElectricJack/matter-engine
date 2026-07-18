@@ -106,3 +106,41 @@ pre-existing unrelated test-source defect:
 `matter::win32_process_handle_count` is referenced by
 `vulkan_smoke_tests.cpp:598` but has no declaration or definition anywhere in
 the repository. No screenshot, smoke runtime, or flight automation ran.
+
+## Fix Round 2: operation-aware capture and immutable frame camera
+
+The current-operation hover query now uses the pinned API explicitly:
+`ImGuizmo::IsOver(ImGuizmo::TRANSLATE)`, paired with `ImGuizmo::IsUsing()`
+after the current frame's `Manipulate` call. A compile probe includes the real
+vendored headers and links the real vendored source, while the static checker
+also confirms both the pinned declaration/definition and the production call.
+
+After all panel actions and gizmo work, `main.cpp` copies `camera` to an
+immutable `frame_camera`. Streaming follow, scene tick/render, UI submission,
+and frame statistics all consume that snapshot. The order seam now requires
+`begin/build/capture -> tick -> render -> end frame`; only then can uncaptured
+free-fly input update `camera` for the next frame. This also defines Frame
+Anchor precisely: its panel-time mutation is included in the snapshot used by
+the later gizmo and scene render.
+
+### TDD and verification
+
+- RED: focused compilation failed on the missing tick/render/end order stages;
+  the static checker rejected zero-argument `ImGuizmo::IsOver()` and the old
+  in-frame camera update.
+- Real vendored ImGuizmo compile/API probe plus focused controller behavior:
+  `ALL PASS`.
+- Task 6 production API/order static checker: `PASS`.
+- Focused MSVC `ui.cpp` and `main.cpp` compile: `VIEWER COMPILE PASS`.
+- ECS regression and sector coordinator regression: `ALL PASS`.
+- Box3D Phase 2 checker: `PASS: Box3D Phase 2 build contract`.
+- First-party `git diff --check`: exit 0.
+- The repository Vulkan checker still aborts at its pre-existing missing
+  `MatterViewer/tools/smoke_vulkan_interop_faults.ps1` input.
+- A fresh compile-only smoke invocation emitted the expected unified command
+  with ImGuizmo/controller/Flecs, but this sandbox run stopped before compiling
+  because MSYS could not create its global temporary file. Round 1 already
+  reached the known unrelated `win32_process_handle_count` source boundary.
+
+No screenshot, runtime smoke, long-flight, or heavy automation ran in this
+fix round.

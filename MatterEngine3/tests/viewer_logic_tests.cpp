@@ -419,13 +419,25 @@ static void test_current_frame_camera_input_order() {
     CHECK(!order.camera_update_allowed(),
           "camera update waits for current capture decision");
     order.decide_capture(true);
+    CHECK(!order.camera_update_allowed(),
+          "camera update waits while current frame still needs tick and render");
+    order.tick_scene();
+    CHECK(!order.camera_update_allowed(),
+          "camera update waits while current frame still needs render");
+    order.render_scene();
+    CHECK(!order.camera_update_allowed(),
+          "camera update waits until current scene and UI are presented");
+    order.end_frame();
     CHECK(order.camera_update_allowed(),
-          "camera update is allowed after begin UI gizmo and capture decision");
+          "camera update is allowed only for the next frame after presentation");
 
     matter_viewer::CurrentFrameInputOrder captured{};
     captured.begin_ui();
     captured.build_ui();
     captured.decide_capture(false);
+    captured.tick_scene();
+    captured.render_scene();
+    captured.end_frame();
     CHECK(!captured.camera_update_allowed(),
           "current-frame capture decision suppresses camera update");
 }

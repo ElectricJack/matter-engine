@@ -46,8 +46,20 @@ void CurrentFrameInputOrder::decide_capture(
     stage_ = Stage::CaptureDecided;
 }
 
+void CurrentFrameInputOrder::tick_scene() noexcept {
+    if (stage_ == Stage::CaptureDecided) stage_ = Stage::SceneTicked;
+}
+
+void CurrentFrameInputOrder::render_scene() noexcept {
+    if (stage_ == Stage::SceneTicked) stage_ = Stage::SceneRendered;
+}
+
+void CurrentFrameInputOrder::end_frame() noexcept {
+    if (stage_ == Stage::SceneRendered) stage_ = Stage::FrameEnded;
+}
+
 bool CurrentFrameInputOrder::camera_update_allowed() const noexcept {
-    return stage_ == Stage::CaptureDecided && camera_input_allowed_;
+    return stage_ == Stage::FrameEnded && camera_input_allowed_;
 }
 
 flecs::entity_t create_anchor(StreamingAnchorState& state, flecs::world& world) {

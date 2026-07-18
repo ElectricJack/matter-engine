@@ -22,6 +22,9 @@ public:
     void begin_ui() noexcept;
     void build_ui() noexcept;
     void decide_capture(bool camera_input_allowed) noexcept;
+    void tick_scene() noexcept;
+    void render_scene() noexcept;
+    void end_frame() noexcept;
     bool camera_update_allowed() const noexcept;
 
 private:
@@ -29,7 +32,10 @@ private:
         AwaitingUi,
         UiBegun,
         UiBuilt,
-        CaptureDecided
+        CaptureDecided,
+        SceneTicked,
+        SceneRendered,
+        FrameEnded
     };
     Stage stage_ = Stage::AwaitingUi;
     bool camera_input_allowed_ = false;

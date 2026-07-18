@@ -644,15 +644,17 @@ int main() {
             }
             camera_input_order.build_ui();
             camera_input_order.decide_capture(ui.camera_input_allowed());
-            if (camera_input_order.camera_update_allowed()) {
-                camera_controller.update(window, dt, camera);
-            }
         }
 
-        ui.update_sector_streaming(*session, camera);
+        // UI actions (including Frame Anchor) and the gizmo have finished. Keep
+        // this snapshot immutable through streaming, tick, scene render, and UI
+        // submission so every current-frame camera consumer agrees.
+        const matter::CameraDesc frame_camera = camera;
+        ui.update_sector_streaming(*session, frame_camera);
         matter::TickDesc tick{};
         tick.frame_delta_seconds = dt;
         session->tick(tick);
+        camera_input_order.tick_scene();
         session->pump_gpu_jobs(4.0f);
         matter::Event event;
         while (session->poll_event(event)) {
@@ -689,9 +691,11 @@ int main() {
         options.vulkan_lighting = stats.lighting;
         options.vulkan_ray_tracing.enabled =
             vulkan->ray_tracing_available() && !disable_vulkan_rt;
-        if (!session->render(camera, frame, options, error)) {
+        if (!session->render(frame_camera, frame, options, error)) {
             std::fprintf(stderr, "FATAL: render: %s\n", error.c_str());
             fatal_error = true;
+        } else {
+            camera_input_order.render_scene();
         }
         const matter::FrameStats& frame_stats = session->frame_stats();
         dlss_modes_supported = vulkan->dlss_available() &&
@@ -745,9 +749,9 @@ int main() {
         stats.fps = hud_frame_ms > 0.0
                         ? static_cast<float>(1000.0 / hud_frame_ms)
                         : 0.0f;
-        stats.cam_pos[0] = camera.position.x;
-        stats.cam_pos[1] = camera.position.y;
-        stats.cam_pos[2] = camera.position.z;
+        stats.cam_pos[0] = frame_camera.position.x;
+        stats.cam_pos[1] = frame_camera.position.y;
+        stats.cam_pos[2] = frame_camera.position.z;
         stats.resolve_ms = frame_stats.resolve_ms;
         stats.build_ms = frame_stats.build_ms;
         stats.draw_ms = frame_stats.draw_ms;
@@ -772,9 +776,14 @@ int main() {
         stats.gpu_dlss_ms            = frame_stats.gpu_dlss_ms;
         stats.gpu_composite_ms       = frame_stats.gpu_composite_ms;
 
-        if (ui_frame_ready && !ui.end_frame(frame, error)) {
-            std::fprintf(stderr, "FATAL: ImGui Vulkan backend: %s\n", error.c_str());
-            fatal_error = true;
+        bool ui_frame_completed = false;
+        if (ui_frame_ready) {
+            ui_frame_completed = ui.end_frame(frame, error);
+            if (!ui_frame_completed) {
+                std::fprintf(stderr, "FATAL: ImGui Vulkan backend: %s\n",
+                             error.c_str());
+                fatal_error = true;
+            }
         }
 
         bool capture = false;
@@ -814,21 +823,34 @@ int main() {
         if (!frame_completed) {
             std::fprintf(stderr, "FATAL: end_frame: %s\n", error.c_str());
             fatal_error = true;
-        } else if (capture) {
-            if (!write_png(capture_path, rgba, frame.extent.width,
-                           frame.extent.height)) {
-                std::fprintf(stderr, "screenshot FAILED %s\n", capture_path.c_str());
-                fatal_error = true;
-            } else {
-                screenshot_failures = 0;
-                std::printf("screenshot written to %s\n", capture_path.c_str());
-#ifndef _WIN32
-                if (capture_path == shot_path) {
-                    const std::string done = shot_path + ".done";
-                    if (FILE* file = std::fopen(done.c_str(), "w")) std::fclose(file);
+        } else {
+            if (ui_frame_completed && !fatal_error) {
+                camera_input_order.end_frame();
+                if (camera_input_order.camera_update_allowed()) {
+                    // Free-fly affects the next frame, after this frame's scene
+                    // and UI have been submitted at the presentation boundary.
+                    camera_controller.update(window, dt, camera);
                 }
+            }
+            if (capture) {
+                if (!write_png(capture_path, rgba, frame.extent.width,
+                               frame.extent.height)) {
+                    std::fprintf(stderr, "screenshot FAILED %s\n",
+                                 capture_path.c_str());
+                    fatal_error = true;
+                } else {
+                    screenshot_failures = 0;
+                    std::printf("screenshot written to %s\n",
+                                capture_path.c_str());
+#ifndef _WIN32
+                    if (capture_path == shot_path) {
+                        const std::string done = shot_path + ".done";
+                        if (FILE* file = std::fopen(done.c_str(), "w"))
+                            std::fclose(file);
+                    }
 #endif
-                if (capture_path == screenshot_path) quit_requested = true;
+                    if (capture_path == screenshot_path) quit_requested = true;
+                }
             }
         }
 
