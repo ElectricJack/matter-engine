@@ -117,8 +117,8 @@ endif
 # Task 9 switches the Windows application to Vulkan. Keep the existing Linux
 # application/backend as an explicit compatibility path until the later engine
 # OpenGL-removal task can migrate or retire it without breaking the default target.
-LINUX_APP_SRC = main_linux.cpp ui_linux.cpp camera_controller.cpp
-APP_SRC = main.cpp ui.cpp camera_controller.cpp
+LINUX_APP_SRC = main_linux.cpp ui_linux.cpp camera_controller.cpp streaming_anchor_controller.cpp
+APP_SRC = main.cpp ui.cpp camera_controller.cpp streaming_anchor_controller.cpp
 
 # Windows direct-source compile: ME3 pipeline + MSL + QJS (mirrors old viewer).
 # These are ONLY used by the Windows target; the Linux target links libmatter_engine3.a.

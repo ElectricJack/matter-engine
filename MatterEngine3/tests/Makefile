@@ -573,6 +573,7 @@ VIEWER_LOGIC_TARGET = viewer_logic_tests
 VIEWER_PIPELINE_CPP = $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../../MatterViewer/camera_controller.cpp \
+              ../../MatterViewer/streaming_anchor_controller.cpp \
               ../src/async_bake.cpp \
               ../src/render/matrix_math.cpp ../src/render/frame_matrices.cpp \
               ../src/render/world_state.cpp \

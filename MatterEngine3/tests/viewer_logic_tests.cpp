@@ -16,6 +16,8 @@
 #include "part_flatten.h"  // Task 11: flatten_part for regen sniff test
 #include "world_lights.h"
 #include "../../MatterViewer/camera_controller.h"
+#include "../../MatterViewer/streaming_anchor_controller.h"
+#include "matter/ecs.h"
 
 #include <cmath>
 #include <cstdio>
@@ -105,6 +107,124 @@ static void test_combined_camera_movement_has_axial_speed() {
     CHECK(std::fabs(camera_distance3(camera.position, camera.target) - 5.0f) < 1e-5f,
           "combined movement preserves target distance");
     printf("  test_combined_camera_movement_has_axial_speed OK\n");
+}
+
+static void test_streaming_anchor_follow_copies_camera_xyz() {
+    flecs::world world;
+    const flecs::entity anchor = world.entity()
+        .set<matter::ecs::LocalTransform>({
+            {1.0f, 2.0f, 3.0f}, {0.25f, -0.5f, 0.75f, 0.125f}, {2.0f, 3.0f, 4.0f}});
+    matter_viewer::StreamingAnchorState state{};
+    state.selected = anchor.id();
+    const float camera[3] = {10.0f, -20.0f, 30.0f};
+
+    matter_viewer::follow_camera(state, world, camera);
+
+    const matter::ecs::LocalTransform transform = anchor.get<matter::ecs::LocalTransform>();
+    CHECK(transform.translation.x == 10.0f && transform.translation.y == -20.0f &&
+              transform.translation.z == 30.0f,
+          "streaming anchor follow copies camera XYZ");
+    CHECK(transform.rotation.x == 0.25f && transform.rotation.y == -0.5f &&
+              transform.rotation.z == 0.75f && transform.rotation.w == 0.125f &&
+              transform.scale.x == 2.0f && transform.scale.y == 3.0f && transform.scale.z == 4.0f,
+          "streaming anchor follow preserves rotation and scale");
+    CHECK(anchor.has<matter::ecs::TransformDirty>(),
+          "streaming anchor follow marks transform dirty");
+}
+
+static void test_streaming_anchor_detach_preserves_transform() {
+    flecs::world world;
+    const flecs::entity anchor = world.entity()
+        .set<matter::ecs::LocalTransform>({
+            {4.0f, 5.0f, 6.0f}, {}, {1.0f, 1.0f, 1.0f}});
+    matter_viewer::StreamingAnchorState state{};
+    state.selected = anchor.id();
+
+    matter_viewer::detach_follow(state, world);
+
+    const matter::ecs::LocalTransform transform = anchor.get<matter::ecs::LocalTransform>();
+    CHECK(!state.follow_editor_camera, "streaming anchor detach disables camera follow");
+    CHECK(transform.translation.x == 4.0f && transform.translation.y == 5.0f &&
+              transform.translation.z == 6.0f,
+          "streaming anchor detach preserves translation");
+}
+
+static void test_streaming_anchor_rejects_dead_recycled_and_replaced_worlds() {
+    flecs::world world;
+    const flecs::entity anchor = world.entity()
+        .set<matter::ecs::LocalTransform>({});
+    const flecs::entity_t dead_id = anchor.id();
+    matter_viewer::StreamingAnchorState state{};
+    state.selected = dead_id;
+
+    matter_viewer::validate_anchor(state, world);
+    anchor.destruct();
+    const flecs::entity replacement = world.entity()
+        .set<matter::ecs::LocalTransform>({});
+    matter_viewer::validate_anchor(state, world);
+
+    CHECK(replacement.id() != dead_id && !world.is_alive(dead_id),
+          "streaming anchor test creates a recycled full ID");
+    CHECK(state.selected == 0 && !state.follow_editor_camera,
+          "streaming anchor clears dead or recycled full ID");
+
+    flecs::world first_world;
+    const flecs::entity first_anchor = first_world.entity()
+        .set<matter::ecs::LocalTransform>({});
+    matter_viewer::StreamingAnchorState session_state{};
+    session_state.selected = first_anchor.id();
+    matter_viewer::validate_anchor(session_state, first_world);
+
+    flecs::world replacement_world;
+    replacement_world.entity().set<matter::ecs::LocalTransform>({});
+    matter_viewer::validate_anchor(session_state, replacement_world);
+
+    CHECK(session_state.selected == 0 && !session_state.follow_editor_camera,
+          "streaming anchor clears selection when the Flecs world changes");
+}
+
+static void test_streaming_anchor_gizmo_uses_engine_matrix_translation() {
+    flecs::world world;
+    const flecs::entity anchor = world.entity()
+        .set<matter::ecs::LocalTransform>({
+            {1.0f, 2.0f, 3.0f}, {0.1f, 0.2f, 0.3f, 0.4f}, {5.0f, 6.0f, 7.0f}});
+    matter_viewer::StreamingAnchorState state{};
+    state.selected = anchor.id();
+    const float matrix[16] = {
+        1.0f, 0.0f, 0.0f, 11.0f,
+        0.0f, 1.0f, 0.0f, -12.0f,
+        0.0f, 0.0f, 1.0f, 13.0f,
+        101.0f, 102.0f, 103.0f, 1.0f};
+
+    CHECK(matter_viewer::apply_gizmo_translation(state, world, matrix),
+          "streaming anchor accepts a live gizmo selection");
+    const matter::ecs::LocalTransform transform = anchor.get<matter::ecs::LocalTransform>();
+    CHECK(transform.translation.x == 11.0f && transform.translation.y == -12.0f &&
+              transform.translation.z == 13.0f,
+          "streaming anchor gizmo reads row-major Mat4f translation");
+    CHECK(transform.rotation.x == 0.1f && transform.rotation.y == 0.2f &&
+              transform.rotation.z == 0.3f && transform.rotation.w == 0.4f &&
+              transform.scale.x == 5.0f && transform.scale.y == 6.0f && transform.scale.z == 7.0f,
+          "streaming anchor gizmo preserves rotation and scale");
+    CHECK(anchor.has<matter::ecs::TransformDirty>(),
+          "streaming anchor gizmo marks transform dirty");
+
+    anchor.destruct();
+    CHECK(!matter_viewer::apply_gizmo_translation(state, world, matrix),
+          "streaming anchor gizmo rejects a dead selection");
+    CHECK(state.selected == 0 && !state.follow_editor_camera,
+          "streaming anchor gizmo clears a dead selection");
+}
+
+static void test_streaming_anchor_camera_input_truth_table() {
+    CHECK(matter_viewer::camera_input_allowed(false, false),
+          "camera input allowed without ImGui or gizmo capture");
+    CHECK(!matter_viewer::camera_input_allowed(true, false),
+          "camera input blocked by ImGui capture");
+    CHECK(!matter_viewer::camera_input_allowed(false, true),
+          "camera input blocked while gizmo is active");
+    CHECK(!matter_viewer::camera_input_allowed(true, true),
+          "camera input blocked by simultaneous ImGui and gizmo capture");
 }
 
 static viewer::WorldManifestEntry mk_entry(uint32_t id, uint64_t hash, float x) {
@@ -1329,6 +1449,11 @@ int main() {
     test_yaw_turns_camera_analytically();
     test_huge_pitch_delta_stops_before_crossing_pole();
     test_combined_camera_movement_has_axial_speed();
+    test_streaming_anchor_follow_copies_camera_xyz();
+    test_streaming_anchor_detach_preserves_transform();
+    test_streaming_anchor_rejects_dead_recycled_and_replaced_worlds();
+    test_streaming_anchor_gizmo_uses_engine_matrix_translation();
+    test_streaming_anchor_camera_input_truth_table();
     test_cull_transform_convention();
     test_world_state_version();
     test_world_state_delta();
