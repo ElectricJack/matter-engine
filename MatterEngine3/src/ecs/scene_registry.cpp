@@ -124,6 +124,53 @@ const ComponentDescriptor* component_at(uint32_t index) {
 //   {"LocalTransform": {...}, "RigidBody": {...}}
 // ---------------------------------------------------------------------------
 
+// Extracts the raw JSON text of a top-level component's value object, e.g.
+// given `{"PartInstance": {"part": "props/crate"}}` and key "PartInstance",
+// returns `{"part": "props/crate"}`. Returns "" if the key/value is not an
+// object.
+static std::string extract_component_value_json(const std::string& json,
+                                                 const std::string& component_key) {
+    size_t pos = json.find("\"" + component_key + "\"");
+    if (pos == std::string::npos) return "";
+    pos = json.find(':', pos);
+    if (pos == std::string::npos) return "";
+    ++pos;
+    while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) ++pos;
+    if (pos >= json.size() || json[pos] != '{') return "";
+
+    size_t start = pos;
+    int depth = 1;
+    ++pos;
+    while (pos < json.size() && depth > 0) {
+        if (json[pos] == '{') ++depth;
+        else if (json[pos] == '}') --depth;
+        ++pos;
+    }
+    return json.substr(start, pos - start);
+}
+
+// Extracts a top-level string field's value from a JSON object fragment.
+// Returns false when the field is absent or not a string.
+static bool extract_string_field(const std::string& obj_json, const std::string& field,
+                                 std::string& out_value) {
+    size_t pos = obj_json.find("\"" + field + "\"");
+    if (pos == std::string::npos) return false;
+    pos = obj_json.find(':', pos);
+    if (pos == std::string::npos) return false;
+    ++pos;
+    while (pos < obj_json.size() && (obj_json[pos] == ' ' || obj_json[pos] == '\t')) ++pos;
+    if (pos >= obj_json.size() || obj_json[pos] != '"') return false;
+    ++pos;
+    size_t start = pos;
+    while (pos < obj_json.size() && obj_json[pos] != '"') {
+        if (obj_json[pos] == '\\') ++pos;
+        ++pos;
+    }
+    if (pos > obj_json.size()) return false;
+    out_value = obj_json.substr(start, pos - start);
+    return true;
+}
+
 static bool is_collider_kind(ComponentKind k) {
     return k == ComponentKind::SphereCollider ||
            k == ComponentKind::CapsuleCollider ||
@@ -207,7 +254,8 @@ static uint64_t hash_authored_id(const std::string& id) {
 // validate — checks a single RawEntityRecipe.
 // ---------------------------------------------------------------------------
 
-bool validate(const RawEntityRecipe& raw, EntityRecipe& out, RecipeError& err) {
+bool validate(const RawEntityRecipe& raw, EntityRecipe& out, RecipeError& err,
+             const PartResolver& resolve_part) {
     if (raw.authored_id.empty()) {
         err.message = "empty authored_id";
         err.authored_id = raw.authored_id;
@@ -216,6 +264,7 @@ bool validate(const RawEntityRecipe& raw, EntityRecipe& out, RecipeError& err) {
 
     auto keys = extract_top_keys(raw.components_json);
     int collider_count = 0;
+    uint64_t resolved_part_hash = 0;
 
     for (const auto& key : keys) {
         const ComponentDescriptor* desc = find_component(key.c_str());
@@ -234,9 +283,28 @@ bool validate(const RawEntityRecipe& raw, EntityRecipe& out, RecipeError& err) {
                 return false;
             }
         }
+        if (desc->kind == ComponentKind::PartInstance) {
+            std::string comp_json = extract_component_value_json(raw.components_json, key);
+            std::string module_name;
+            if (extract_string_field(comp_json, "part", module_name) && !module_name.empty()) {
+                uint64_t hash = 0;
+                if (!resolve_part || !resolve_part(module_name, hash)) {
+                    err.message = "missing part: " + module_name;
+                    err.authored_id = raw.authored_id;
+                    err.field_path = "PartInstance.part";
+                    return false;
+                }
+                resolved_part_hash = hash;
+            }
+        }
     }
 
-    out = raw;
+    out.authored_id = raw.authored_id;
+    out.display_name = raw.display_name;
+    out.parent_authored_id = raw.parent_authored_id;
+    out.components_json = raw.components_json;
+    out.part_hash = resolved_part_hash;
+    out.valid = true;
     return true;
 }
 
@@ -246,7 +314,8 @@ bool validate(const RawEntityRecipe& raw, EntityRecipe& out, RecipeError& err) {
 
 bool validate_batch(const std::vector<RawEntityRecipe>& recipes,
                     std::vector<EntityRecipe>& out,
-                    RecipeError& err) {
+                    RecipeError& err,
+                    const PartResolver& resolve_part) {
     out.clear();
     out.reserve(recipes.size());
 
@@ -255,7 +324,7 @@ bool validate_batch(const std::vector<RawEntityRecipe>& recipes,
 
     for (const auto& raw : recipes) {
         EntityRecipe validated;
-        if (!validate(raw, validated, err))
+        if (!validate(raw, validated, err, resolve_part))
             return false;
 
         if (ids.count(raw.authored_id)) {
@@ -359,9 +428,12 @@ bool instantiate(flecs::world& world,
             case ComponentKind::ConvexHullCollider:
                 e.set<physics::ConvexHullCollider>({});
                 break;
-            case ComponentKind::PartInstance:
-                e.set<PartInstance>({});
+            case ComponentKind::PartInstance: {
+                PartInstance pi{};
+                pi.part_hash = recipe.part_hash;
+                e.set<PartInstance>(pi);
                 break;
+            }
             case ComponentKind::SectorStreaming:
                 e.add<streaming::SectorStreaming>();
                 break;
@@ -384,6 +456,57 @@ bool instantiate(flecs::world& world,
     }
 
     gen.value++;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// normalize — validates raw recipes and packages a bootstrap candidate.
+// Performs no world mutation; callers apply the candidate separately.
+// ---------------------------------------------------------------------------
+
+SceneBootstrapCandidate normalize(const std::vector<RawEntityRecipe>& raw_recipes,
+                                  SceneGeneration target_generation,
+                                  const PartResolver& resolve_part,
+                                  RecipeError& err) {
+    SceneBootstrapCandidate candidate;
+    candidate.target_generation = target_generation;
+    candidate.success = validate_batch(raw_recipes, candidate.recipes, err, resolve_part);
+    if (!candidate.success)
+        candidate.recipes.clear();
+    return candidate;
+}
+
+// ---------------------------------------------------------------------------
+// bootstrap_transactional — atomically replaces the scene.
+// Validation happens before any world mutation, so a failed reload leaves
+// the prior scene entities and generation counter untouched.
+// ---------------------------------------------------------------------------
+
+bool bootstrap_transactional(flecs::world& world,
+                             const std::vector<RawEntityRecipe>& raw_recipes,
+                             SceneGeneration& gen,
+                             const PartResolver& resolve_part,
+                             RecipeError& err) {
+    SceneGeneration target{gen.value + 1};
+    SceneBootstrapCandidate candidate = normalize(raw_recipes, target, resolve_part, err);
+    if (!candidate.success)
+        return false; // prior scene and gen retained untouched.
+
+    // Only mutate the world once validation of the entire batch succeeded.
+    std::vector<flecs::entity> prior_entities;
+    world.each([&](flecs::entity e, const SceneEntityId&) { prior_entities.push_back(e); });
+    for (auto& e : prior_entities) e.destruct();
+
+    SceneGeneration new_gen = gen;
+    if (!instantiate(world, candidate.recipes.data(),
+                     (uint32_t)candidate.recipes.size(), new_gen, err)) {
+        // validate_batch already checked duplicate ids/unknown components, so
+        // this path should be unreachable in practice; still propagate the
+        // failure rather than silently leaving a half-built scene.
+        return false;
+    }
+
+    gen = new_gen;
     return true;
 }
 

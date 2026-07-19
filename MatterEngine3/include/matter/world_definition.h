@@ -51,7 +51,19 @@ struct RawEntityRecipe {
     std::string components_json = "{}";
 };
 
-using EntityRecipe = RawEntityRecipe;
+// EntityRecipe extends RawEntityRecipe with fields resolved during
+// SceneRegistry normalization (see scene_registry.h). It remains an
+// aggregate deriving from RawEntityRecipe so existing code that
+// constructs/reads authored_id/display_name/parent_authored_id/
+// components_json (including brace-init call sites) keeps working.
+struct EntityRecipe : RawEntityRecipe {
+    // Resolved part_hash for a PartInstance component's authored "part"
+    // module name. Zero when the recipe has no PartInstance component or
+    // the PartInstance carries no "part" reference.
+    std::uint64_t part_hash = 0;
+    // True once this recipe has passed SceneRegistry::validate/validate_batch.
+    bool valid = false;
+};
 
 struct WorldDefinition {
     std::vector<WorldRoot> roots;
