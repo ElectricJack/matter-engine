@@ -4,7 +4,7 @@
 **Worktree:** `.worktrees/phase4-runtime-scene-editor-bridge`  
 **Design:** `docs/superpowers/specs/2026-07-19-phase4-runtime-scene-editor-bridge-design.md`  
 **Plan:** `docs/superpowers/plans/2026-07-19-phase4-runtime-scene-editor-bridge.md`  
-**Current status:** Task 2 implementation in progress
+**Current status:** Task 3 implementation dispatch preparation
 
 ## Completed
 
@@ -32,14 +32,22 @@
 ## Active
 
 - Task 1 approved after implementation `fbe0def` and hardening `c284a44`.
-- Task 2: switch production runtime and MatterViewer discovery to project-root world
-  paths, retain only the documented temporary test seam, and verify cache identity.
+- Task 2 implementation committed as `1fec45e`; task review requires fixes for
+  per-import project/engine shared-library fallback, procedural settings propagation,
+  and tileset-root params/cache identity.
+- Task 2 fix commit `228e23a` resolved ordered fallback/snapshot/live-edit and
+  procedural settings. Re-review found one remaining Important gap: functional
+  `static requires(params)` still receives `{}` instead of authored tileset root params;
+  two stale cache comments are Minor cleanup.
+- Task 2 final fix `95c2a3c` resolved functional `requires(params)` and comment
+  cleanup; final full-task re-review approved with no findings.
+- Prepare Task 3 fixture/example migration and deletion brief.
 
 ## Pending task groups
 
 | Group | Deliverable | Status | Verification |
 |---|---|---|---|
-| A | World-as-JS hard-cut migration | In progress (Task 1/3 complete) | Task 1 focused + regression PASS |
+| A | World-as-JS hard-cut migration | In progress (Tasks 1-2/3 complete) | Tasks 1-2 focused suites + review PASS |
 | B | Public scene contract and bootstrap registry | Pending | Pending |
 | C | Declarative/DSL recipes and transactional ECS bootstrap | Pending | Pending |
 | D | Stable dynamic renderer slots and ECS render bridge | Pending | Pending |
@@ -59,6 +67,12 @@
 | 2026-07-19 | Task 1 scoped review | `930415f..fbe0def` packaged diff | NEEDS FIXES: 2 Important, 1 Minor |
 | 2026-07-19 | Task 1 fix verification | 11 focused RED cases; `world_definition_tests.exe`, `eval_world_tests.exe`, `script_host_tests.exe` from `MatterEngine3/tests` | PASS; existing ScriptHost geometry-warning noise remains |
 | 2026-07-19 | Task 1 re-review | `930415f..c284a44` packaged diff | APPROVED: no remaining findings |
+| 2026-07-19 | Task 2 implementation | `world_definition_tests` and `resolve_cache_tests` | PASS (162/162 cache); Viewer logic compile/link PASS, runtime duration not completed |
+| 2026-07-19 | Task 2 scoped review | `423af88..1fec45e` packaged diff | NEEDS FIXES: 3 Important |
+| 2026-07-19 | Task 2 fix verification | shared-lib, live-edit-prod, resolve-cache 168/168, world-definition, tileset-params; Viewer logic + `matter_engine.cpp` compile | PASS |
+| 2026-07-19 | Task 2 re-review | `423af88..228e23a` packaged diff | NEEDS FIXES: 1 Important, 2 Minor comments |
+| 2026-07-19 | Task 2 final verification | direct committed-head binaries: shared-lib, live-edit-prod, resolve-cache 168/168, world-definition, tileset-params | PASS |
+| 2026-07-19 | Task 2 final re-review | `423af88..95c2a3c` packaged diff | APPROVED: no findings |
 
 ## Blockers and deferred work
 
