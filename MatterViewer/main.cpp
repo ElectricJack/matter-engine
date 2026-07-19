@@ -637,8 +637,9 @@ int main() {
                 ui.draw_debug_panel(stats);
                 ui.draw_worlds_panel(worlds, stats);
                 ui.draw_camera_panel(camera);
-                ui.draw_sector_streaming_panel(
-                    *session, camera, frame.extent.width, frame.extent.height);
+                // draw_sector_streaming_panel retired in Phase 4 Task 12 — sector
+                // streaming editing now lives in the Properties panel via
+                // SpecializedEditors (MatterViewer/specialized_editors.h).
             }
             camera_input_order.build_ui();
             camera_input_order.decide_capture(ui.camera_input_allowed());

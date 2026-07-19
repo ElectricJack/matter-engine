@@ -108,10 +108,10 @@ public:
     void draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& stats);
     void update_sector_streaming(matter::WorldSession& session,
                                  const matter::CameraDesc& camera);
-    void draw_sector_streaming_panel(matter::WorldSession& session,
-                                     matter::CameraDesc& camera,
-                                     std::uint32_t viewport_width,
-                                     std::uint32_t viewport_height);
+    // draw_sector_streaming_panel retired in Phase 4 Task 12: sector streaming
+    // editing now lives in the Properties panel via SpecializedEditors
+    // (see MatterViewer/specialized_editors.h). update_sector_streaming above
+    // (the per-frame anchor/follow logic) is unaffected and stays here.
     bool camera_input_allowed() const;
 
 private:

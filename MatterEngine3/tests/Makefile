@@ -400,6 +400,14 @@ SIMULATION_CONTROL_CPP    = simulation_control_tests.cpp ../src/ecs/simulation_c
                             ../src/sector_streamer.cpp
 SIMULATION_CONTROL_C      = $(FLECS_C)
 
+# Phase 4 Task 12 — Specialized editors (pure CPU, no Flecs/GL).
+SPECIALIZED_EDITORS_TARGET = specialized_editors_tests
+SPECIALIZED_EDITORS_CPP    = specialized_editors_tests.cpp \
+                             ../../MatterViewer/specialized_editors.cpp \
+                             ../../MatterViewer/properties_registry.cpp \
+                             ../src/ecs/scene_registry.cpp
+SPECIALIZED_EDITORS_C      = $(FLECS_C)
+
 # Phase C Task 4 — RefineController tile-pairing + priority/eviction (pure CPU, def flavor).
 REFINECTL_TARGET = refine_controller_tests
 REFINECTL_CPP    = refine_controller_tests.cpp ../src/refine_controller.cpp \
@@ -773,6 +781,7 @@ def_CPP_SRCS := $(sort \
     $(EDITOR_MODEL_CPP) \
     $(PROPERTIES_REGISTRY_CPP) \
     $(SIMULATION_CONTROL_CPP) \
+    $(SPECIALIZED_EDITORS_CPP) \
     $(PARTV2_CPP) \
     $(GRAPH_SOURCES) \
     $(TRIVAR_CPP) \
@@ -889,6 +898,7 @@ DYNAMIC_BRIDGE_OBJS = $(call obj_list,def,$(DYNAMIC_BRIDGE_CPP)) $(call obj_list
 EDITOR_MODEL_OBJS = $(call obj_list,def,$(EDITOR_MODEL_CPP))
 PROPERTIES_REGISTRY_OBJS = $(call obj_list,def,$(PROPERTIES_REGISTRY_CPP)) $(call obj_list,flecsc,$(PROPERTIES_REGISTRY_C))
 SIMULATION_CONTROL_OBJS = $(call obj_list,def,$(SIMULATION_CONTROL_CPP)) $(call obj_list,flecsc,$(SIMULATION_CONTROL_C))
+SPECIALIZED_EDITORS_OBJS = $(call obj_list,def,$(SPECIALIZED_EDITORS_CPP)) $(call obj_list,flecsc,$(SPECIALIZED_EDITORS_C))
 PARTV2_OBJS = $(call obj_list,def,$(PARTV2_CPP)) $(call obj_list,mslc,$(PARTV2_C))
 GRAPH_OBJS  = $(call obj_list,def,$(GRAPH_SOURCES)) $(call obj_list,mslc,$(GRAPH_C))
 TRIVAR_OBJS = $(call obj_list,def,$(TRIVAR_CPP)) $(call obj_list,mslc,$(TRIVAR_C))
@@ -945,7 +955,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control
+.PHONY: clean run-matrix run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1022,6 +1032,13 @@ $(SIMULATION_CONTROL_TARGET): $(SIMULATION_CONTROL_OBJS) $(BOX3D_LIB)
 
 run-simulation-control: $(SIMULATION_CONTROL_TARGET)
 	./$(SIMULATION_CONTROL_TARGET)
+
+# Phase 4 Task 12 — Specialized editors (pure CPU, needs scene_registry).
+$(SPECIALIZED_EDITORS_TARGET): $(SPECIALIZED_EDITORS_OBJS)
+	$(CC) $(SPECIALIZED_EDITORS_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread -lws2_32 -ldbghelp -lwinmm
+
+run-specialized-editors: $(SPECIALIZED_EDITORS_TARGET)
+	./$(SPECIALIZED_EDITORS_TARGET)
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests.
 $(PARTV2_TARGET): $(PARTV2_OBJS)
