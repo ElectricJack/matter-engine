@@ -623,6 +623,7 @@ uint64_t settle_cache_key(uint64_t script_source_hash,
                           const std::string& canonical_root_params_json)
 {
     // FNV-1a over (script_source_hash u64 LE, sorted child hashes u64s LE,
+    //              canonical root params bytes + NUL,
     //              kEngineBakeVersion u32 LE, kBox3dVersion u32 LE).
     std::vector<uint8_t> buf;
     buf.resize(sizeof(uint64_t)

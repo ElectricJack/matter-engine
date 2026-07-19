@@ -150,7 +150,8 @@ static bool run_tileset_phase_impl(const std::string& schemas_dir,
     // -----------------------------------------------------------------------
     // 6. Settle: cache check → on miss, physics + placement → save.
     //    Cache key: FNV-1a over (script_source_hash, sorted child hashes,
-    //    kEngineBakeVersion, kBox3dVersion) — same as settle_cache_key().
+    //    canonical root params, kEngineBakeVersion, kBox3dVersion) — same as
+    //    settle_cache_key().
     // -----------------------------------------------------------------------
     BakeInputs bi;
     bi.parts_cache_dir = parts_cache_dir;

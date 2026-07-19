@@ -111,9 +111,9 @@ namespace resolve_cache {
 // ---------------------------------------------------------------------------
 
 // 'RC1\0' in little-endian: 0x00314352
-// Version 3: retopo_by_hash section removed (schema-level retopo deleted on
-// main, ea579ba). Older versions are treated as misses because
-// fmt_ver != kResolveCacheVersion.
+// Version 3 removed retopo_by_hash (schema-level retopo deleted on main,
+// ea579ba). Version 4 adds each node's selected shared_source_paths. Older
+// versions are treated as misses because fmt_ver != kResolveCacheVersion.
 static constexpr uint32_t kResolveCacheMagic   = 0x00314352u;
 static constexpr uint32_t kResolveCacheVersion = 4u;
 

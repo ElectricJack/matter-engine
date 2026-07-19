@@ -1,5 +1,6 @@
 #include "tileset_phase.h"
 #include "tileset_bake.h"
+#include "script_host.h"
 
 #include <cstdio>
 #include <filesystem>
@@ -41,6 +42,16 @@ class Pebble extends Part {
   }
 }
 )JS"), "tileset params: child fixture written");
+    CHECK(write_file(objects / "Stone.js", R"JS(
+class Stone extends Part {
+  static params = { seed: 0 };
+  build(p) {
+    this.beginShape(SHAPE.triangles);
+    this.vertex(0,0,0); this.vertex(1,0,0); this.vertex(0,1,0);
+    this.endShape();
+  }
+}
+)JS"), "tileset params: alternate child fixture written");
     CHECK(write_file(project_shared / "density.js", R"JS(
 import { engineBias } from 'shared-lib/engineOnly';
 export const adjustedDensity = value => value + engineBias;
@@ -51,28 +62,49 @@ export const adjustedDensity = value => value + engineBias;
     CHECK(write_file(engine_shared / "engineOnly.js",
                      "export const engineBias = 0;\n"),
           "tileset params: engine fallback helper written");
-    CHECK(write_file(objects / "ParamFloor.js", R"JS(
+    const std::string root_source = R"JS(
 import { adjustedDensity } from 'shared-lib/density';
 export default class ParamFloor extends Tileset {
-  static params = { density: 1 };
-  static requires = [{ module: 'Pebble' }];
+  static params = { child: 'Pebble', density: 1, childSeed: 0 };
+  static requires(p) {
+    return [{ module: p.child, params: { seed: p.childSeed } }];
+  }
   build(p) {
     this.tile({ size: 4.0, texelsPerMeter: 16, seed: 9 });
     this.base((x, z) => 0.0, 1);
-    this.layer('Pebble', {
+    this.layer(p.child, {
       density: adjustedDensity(p.density), physics: false
     });
   }
 }
-)JS"), "tileset params: root fixture written");
+)JS";
+    CHECK(write_file(objects / "ParamFloor.js", root_source),
+          "tileset params: root fixture written");
 
     const std::vector<std::string> shared_roots{
         project_shared.string(), engine_shared.string()};
+
+    script_host::ScriptHost requires_host;
+    requires_host.set_shared_lib_roots(shared_roots);
+    const auto pebble_required = requires_host.eval_requires(
+        root_source, "{\"child\":\"Pebble\",\"childSeed\":3,\"density\":1}");
+    const auto stone_required = requires_host.eval_requires(
+        root_source, "{\"child\":\"Stone\",\"childSeed\":7,\"density\":1}");
+    CHECK(pebble_required.size() == 1 &&
+              pebble_required[0].module_specifier == "Pebble" &&
+              pebble_required[0].params_json == "{\"seed\":3}",
+          "tileset functional requires receives first authored root params");
+    CHECK(stone_required.size() == 1 &&
+              stone_required[0].module_specifier == "Stone" &&
+              stone_required[0].params_json == "{\"seed\":7}",
+          "tileset functional requires receives changed authored root params");
+
     tileset::SettledTorus first;
     std::string err;
     CHECK(tileset::run_tileset_phase_from_objects(
               objects.string(), "ParamFloor",
-              "{\"density\":1}", cache.string(),
+              "{\"child\":\"Pebble\",\"childSeed\":3,\"density\":1}",
+              cache.string(),
               first, err, shared_roots),
           ("tileset params: first project run succeeds: " + err).c_str());
     CHECK(!first.report.from_cache,
@@ -81,7 +113,8 @@ export default class ParamFloor extends Tileset {
     tileset::SettledTorus warm;
     CHECK(tileset::run_tileset_phase_from_objects(
               objects.string(), "ParamFloor",
-              "{\"density\":1}", cache.string(),
+              "{\"child\":\"Pebble\",\"childSeed\":3,\"density\":1}",
+              cache.string(),
               warm, err, shared_roots),
           "tileset params: identical project run succeeds");
     CHECK(warm.report.from_cache,
@@ -90,7 +123,8 @@ export default class ParamFloor extends Tileset {
     tileset::SettledTorus changed;
     CHECK(tileset::run_tileset_phase_from_objects(
               objects.string(), "ParamFloor",
-              "{\"density\":4}", cache.string(),
+              "{\"child\":\"Stone\",\"childSeed\":7,\"density\":4}",
+              cache.string(),
               changed, err, shared_roots),
           "tileset params: changed project run succeeds");
     CHECK(!changed.report.from_cache,

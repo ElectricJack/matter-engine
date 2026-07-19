@@ -386,12 +386,14 @@ std::vector<RequiredChild> ScriptHost::eval_requires(const std::string& source,
     // Reuse the shared params-merge path so the params handed to `requires` are
     // the same canonical merged params build()/resolve_hash see.
     // Tileset classes extend Tileset (not Part directly), so merge_params_canonical
-    // returns "{}" with kNoPartClassMsg — accept the fallback (like eval_tileset does)
-    // and only fail-closed on a genuinely bad params_json parse or other errors.
+    // returns kNoPartClassMsg. In that expected case, retain the caller's canonical
+    // authored root params so functional static requires(params) sees the same value
+    // later passed to eval_tileset/build. Only fail closed on other merge errors.
     BakeError merr;
     std::string merged = merge_params_canonical(source, params_json, merr);
     if (!merr.ok && merr.message != kNoPartClassMsg) return out;
-    if (!merr.ok) merged = "{}";  // tileset fallback: no static params
+    if (!merr.ok)
+        merged = params_json.empty() ? "{}" : params_json;
 
     // Try Part class first; fall back to Tileset class name for tileset roots.
     bool is_tileset = false;
