@@ -1,5 +1,7 @@
 # MatterViewer Sector Streaming Manual Acceptance
 
+**Status:** Accepted by the user on 2026-07-18
+
 This checklist is intentionally manual, in-app acceptance for the MatterViewer
 editor workflow. It covers UI interaction, live Flecs ownership transitions,
 and visual/editor-camera independence that source checks and focused unit

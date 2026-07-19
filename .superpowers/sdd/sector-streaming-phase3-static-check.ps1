@@ -190,6 +190,8 @@ Require-UniqueBasenames 'Viewer flattened Windows source union' @(
     Get-LiteralSources $viewer @('APP_SRC', 'WIN_ME3_CPP', 'WIN_MSL_CPP',
         'IMGUI_CORE_SRC', 'IMGUIZMO_SRC', 'IMGUI_SRC_WIN', 'WIN_PIPELINE_C',
         'QJS_C', 'FLECS_C'))
+Require-Regex 'Viewer C++ vpath includes streaming sources' $viewer `
+    '(?ms)^vpath\s+%\.cpp[^\r\n]*(?:\\\r?\n[^\r\n]*)*\$\(ME3_DIR\)/src/streaming'
 
 # Hover capture is meaningful only when this frame submitted the detached
 # translation gizmo. Keep IsUsing unconditional so an in-progress operation
@@ -197,6 +199,9 @@ Require-UniqueBasenames 'Viewer flattened Windows source union' @(
 Require-Regex 'Viewer per-frame gizmo submission state' $viewerUiHeader '(?m)^\s*bool\s+gizmo_submitted_\s*=\s*false\s*;'
 Require-FunctionBodyRegex 'Viewer frame resets gizmo submission state' $viewerUi '(?s)\bbool\s+Ui::begin_frame\s*\([^)]*\)\s*\{' 'gizmo_submitted_\s*=\s*false\s*;'
 Require-FunctionBodyRegex 'Viewer gizmo submission precedes manipulation' $viewerUi '(?s)\bvoid\s+Ui::draw_sector_streaming_panel\s*\([^)]*\)\s*\{' 'gizmo_submitted_\s*=\s*true\s*;\s*if\s*\(\s*ImGuizmo::Manipulate\s*\('
+Require-Count 'Viewer gizmo retains BeginFrame full-screen drawlist' `
+    (Get-CppFunctionBody $viewerUi '(?s)\bvoid\s+Ui::draw_sector_streaming_panel\s*\([^)]*\)\s*\{') `
+    'ImGuizmo::SetDrawlist()' 0
 Require-FunctionBodyRegex 'Viewer hover capture requires this-frame gizmo submission' $viewerUi '(?s)\bbool\s+Ui::camera_input_allowed\s*\(\s*\)\s*const\s*\{' 'gizmo_submitted_\s*&&\s*ImGuizmo::IsOver\s*\(\s*ImGuizmo::TRANSLATE\s*\)'
 Require-FunctionBodyRegex 'Viewer capture retains safe gizmo use query' $viewerUi '(?s)\bbool\s+Ui::camera_input_allowed\s*\(\s*\)\s*const\s*\{' 'ImGuizmo::IsUsing\s*\(\s*\)'
 

@@ -557,10 +557,9 @@ void Ui::draw_sector_streaming_panel(matter::WorldSession& session,
     std::array<float, 16> projection =
         matter_viewer::to_imguizmo_matrix(frame.view_to_clip);
     std::array<float, 16> model = matter_viewer::to_imguizmo_matrix(
-        matter_viewer::local_transform_matrix(*transform));
+    matter_viewer::local_transform_matrix(*transform));
 
     ImGuizmo::SetOrthographic(false);
-    ImGuizmo::SetDrawlist();
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     ImGuizmo::SetRect(viewport->Pos.x, viewport->Pos.y, viewport->Size.x,
                       viewport->Size.y);

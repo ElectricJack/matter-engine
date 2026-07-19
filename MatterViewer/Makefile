@@ -243,6 +243,7 @@ PIPC_NAMES_WIN = $(notdir $(WIN_PIPELINE_C))
 FLECS_NAME = $(notdir $(FLECS_C))
 
 vpath %.cpp . $(ME3_DIR)/src $(ME3_DIR)/src/render $(ME3_DIR)/src/provider $(ME3_DIR)/src/ecs \
+             $(ME3_DIR)/src/streaming \
              $(MSL_DIR)/src $(IMGUI_PATH) $(IMGUI_PATH)/backends \
              $(IMGUIZMO_PATH) \
              ../ParticleFlowLib/src
@@ -362,7 +363,7 @@ WIN_FEATURES = build/windows/build_features.txt
 # Win32 import libs raylib depends on; MUST come AFTER libraylib.a on the link
 # line so the static linker can resolve raylib's __imp_* references.
 WIN_LIBS    = $(WIN_BOX3D_LIB) -lwinpthread
-WIN_SYSTEM_LIBS = -lgdi32 -lwinmm -luser32 -lshell32
+WIN_SYSTEM_LIBS = -lgdi32 -lwinmm -luser32 -lshell32 -lws2_32 -ldbghelp
 
 .PHONY: vulkan-preflight
 vulkan-preflight:

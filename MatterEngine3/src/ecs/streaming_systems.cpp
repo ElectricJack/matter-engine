@@ -156,16 +156,18 @@ void register_streaming_systems(flecs::world& world) {
     world.component<StreamingArbitration>("StreamingArbitration");
     world.set<StreamingArbitration>({});
 
-    world.observer<SectorStreaming>("ClaimSectorStreamingOwner")
+    world.observer("ClaimSectorStreamingOwner")
         .event(flecs::OnAdd)
         .event(flecs::OnSet)
-        .each([](flecs::entity entity, SectorStreaming&) {
+        .with<SectorStreaming>()
+        .each([](flecs::entity entity) {
             claim_streaming_owner(entity);
         });
 
-    world.observer<SectorStreaming>("ReleaseSectorStreamingOwner")
+    world.observer("ReleaseSectorStreamingOwner")
         .event(flecs::OnRemove)
-        .each([](flecs::entity entity, SectorStreaming&) {
+        .with<SectorStreaming>()
+        .each([](flecs::entity entity) {
             release_streaming_owner(entity);
         });
 
