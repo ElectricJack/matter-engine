@@ -4,7 +4,7 @@
 **Worktree:** `.worktrees/phase4-runtime-scene-editor-bridge`  
 **Design:** `docs/superpowers/specs/2026-07-19-phase4-runtime-scene-editor-bridge-design.md`  
 **Plan:** `docs/superpowers/plans/2026-07-19-phase4-runtime-scene-editor-bridge.md`  
-**Current status:** Task 3 implementation dispatch preparation
+**Current status:** Task 3 implementation in progress
 
 ## Completed
 
@@ -41,7 +41,8 @@
   two stale cache comments are Minor cleanup.
 - Task 2 final fix `95c2a3c` resolved functional `requires(params)` and comment
   cleanup; final full-task re-review approved with no findings.
-- Prepare Task 3 fixture/example migration and deletion brief.
+- Task 3: migrate example worlds and all fixtures to project-root JavaScript,
+  remove manifest parsing and the temporary descriptor fallback, and verify parity.
 
 ## Pending task groups
 
