@@ -8,6 +8,7 @@
 #include "tileset_bake.h"       // SettledTorus, BakeInputs
 #include "tileset_bake_gpu.h"   // TilesetPhaseOpts
 #include <string>
+#include <vector>
 
 namespace tileset {
 
@@ -37,6 +38,13 @@ bool run_tileset_phase_from_objects(const std::string& objects_dir,
                                     const std::string& parts_cache_dir,
                                     SettledTorus& out, std::string& err,
                                     const std::string& shared_lib_root = "");
+bool run_tileset_phase_from_objects(
+    const std::string& objects_dir,
+    const std::string& root_module,
+    const std::string& canonical_root_params_json,
+    const std::string& parts_cache_dir,
+    SettledTorus& out, std::string& err,
+    const std::vector<std::string>& shared_lib_roots);
 
 // New overload that also runs the GPU .gtex bake at the end of the phase.
 // The existing 6-arg run_tileset_phase (no opts) remains unchanged so all

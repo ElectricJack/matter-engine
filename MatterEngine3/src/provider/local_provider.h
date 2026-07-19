@@ -48,6 +48,19 @@ struct LocalProviderConfig {
             ? engine_shared_lib_dir
             : project_shared_lib_dir;
     }
+    std::vector<std::string> shared_lib_roots() const {
+        if (!uses_project_layout()) {
+            return shared_lib_dir.empty()
+                ? std::vector<std::string>{}
+                : std::vector<std::string>{shared_lib_dir};
+        }
+        std::vector<std::string> roots;
+        if (!project_shared_lib_dir.empty())
+            roots.push_back(project_shared_lib_dir);
+        if (!engine_shared_lib_dir.empty())
+            roots.push_back(engine_shared_lib_dir);
+        return roots;
+    }
 
     // Temporary Task-2 seam for direct LocalProvider tests. New callers use
     // for_project(); Task 3 migrates those fixtures and deletes these aliases.
@@ -122,6 +135,27 @@ struct ProviderWorldDefinition {
     world_lights::WorldLights lights;
     matter::WorldSettings settings;
 };
+
+struct ProceduralWorldProfile {
+    float sector_size = 16.0f;
+    float y_min = -64.0f;
+    float y_max = 192.0f;
+
+    template <typename WorldBinding>
+    void apply(WorldBinding& binding) const {
+        binding.sector_size = sector_size;
+        binding.y_min = y_min;
+        binding.y_max = y_max;
+    }
+};
+
+inline ProceduralWorldProfile select_procedural_world_profile(
+    bool project_layout,
+    const matter::WorldSettings& authored,
+    const matter::WorldSettings& legacy) {
+    const matter::WorldSettings& selected = project_layout ? authored : legacy;
+    return {selected.sector_size, selected.y_min, selected.y_max};
+}
 
 inline ProviderWorldDefinition adapt_world_definition(
     const matter::WorldDefinition& definition) {
@@ -278,6 +312,12 @@ public:
 
     // Access the transient scratch dir (for test assertions).
     const std::string& transient_dir() const { return transient_dir_; }
+    const std::vector<std::string>& shared_lib_roots() const {
+        return abs_shared_lib_roots_;
+    }
+    const matter::WorldSettings& world_settings() const {
+        return world_settings_;
+    }
 
     // Phase C Task 4: name of the module tagged `world` in world.manifest (empty
     // if no world-kind entry). Populated after install_graph(). Task 9 consumes it.
@@ -308,6 +348,7 @@ private:
     std::string abs_project_shared_lib_;
     std::string abs_engine_shared_lib_;
     std::string abs_shared_lib_;
+    std::vector<std::string> abs_shared_lib_roots_;
     std::string abs_cache_root_;
 
     // Select scratch for a transient hash only when its current .part is

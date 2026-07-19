@@ -75,6 +75,10 @@ void test_project_layout_derives_runtime_paths() {
         fixture.root.string(), "Demo", (fixture.root / "engine-shared").string());
     CHECK(cfg.project_shared_lib_dir == (fixture.root / "shared-lib").string(),
           "an existing project shared-lib is the preferred tier");
+    CHECK(cfg.shared_lib_roots() == std::vector<std::string>({
+              (fixture.root / "shared-lib").string(),
+              (fixture.root / "engine-shared").string()}),
+          "project shared roots preserve project-first engine-fallback order");
 }
 
 void test_rejects_non_world_base_with_location_and_property() {

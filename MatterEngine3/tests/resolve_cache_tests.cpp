@@ -153,6 +153,8 @@ static resolve_cache::ResolveCachePayload make_payload() {
         n.params_json = "{}";
         n.children    = {"Leg"};
         n.shared_imports = {"base"};
+        n.shared_source_paths = {"/project/shared-lib/base.js",
+                                 "/engine/shared-lib/noise.js"};
         n.resolved_hash  = 0xDEADBEEFCAFEBABEull;
         n.is_root = true;
         p.snapshot.nodes["Box"] = n;
@@ -272,6 +274,7 @@ static void test_round_trip_basic() {
         CHECK(it->second.params_json == kv.second.params_json);
         CHECK(it->second.children    == kv.second.children);
         CHECK(it->second.shared_imports == kv.second.shared_imports);
+        CHECK(it->second.shared_source_paths == kv.second.shared_source_paths);
         CHECK(it->second.resolved_hash  == kv.second.resolved_hash);
         CHECK(it->second.is_root        == kv.second.is_root);
     }
@@ -439,6 +442,42 @@ static void test_world_definition_adapter_preserves_runtime_semantics() {
     CHECK(adapted.settings.sector_size == 32.0f);
 }
 
+static void test_project_procedural_settings_drive_profile_and_binding() {
+    printf("[resolve_cache] project_procedural_settings\n");
+    matter::WorldSettings authored;
+    authored.sector_size = 37.0f;
+    authored.y_min = -23.0f;
+    authored.y_max = 141.0f;
+    matter::WorldSettings legacy;
+    legacy.sector_size = 16.0f;
+    legacy.y_min = -64.0f;
+    legacy.y_max = 192.0f;
+
+    const viewer::ProceduralWorldProfile profile =
+        viewer::select_procedural_world_profile(
+            /*project_layout=*/true, authored, legacy);
+    CHECK(profile.sector_size == 37.0f &&
+          profile.y_min == -23.0f && profile.y_max == 141.0f);
+
+    struct BindingProbe {
+        float sector_size = 0.0f;
+        float y_min = 0.0f;
+        float y_max = 0.0f;
+    } binding, bake_binding;
+    profile.apply(binding);
+    profile.apply(bake_binding);
+    CHECK(binding.sector_size == 37.0f && binding.y_min == -23.0f &&
+          binding.y_max == 141.0f);
+    CHECK(bake_binding.sector_size == 37.0f && bake_binding.y_min == -23.0f &&
+          bake_binding.y_max == 141.0f);
+
+    const viewer::ProceduralWorldProfile compatibility =
+        viewer::select_procedural_world_profile(
+            /*project_layout=*/false, authored, legacy);
+    CHECK(compatibility.sector_size == 16.0f &&
+          compatibility.y_min == -64.0f && compatibility.y_max == 192.0f);
+}
+
 static void test_key_changes_on_seed() {
     printf("[resolve_cache] key_changes_on_seed\n");
     const std::string root = sandbox_root("rc_test_keyseed");
@@ -573,6 +612,7 @@ int main() {
     test_snapshot_indices();
     test_project_sources_define_key_and_stale_manifest_is_ignored();
     test_world_definition_adapter_preserves_runtime_semantics();
+    test_project_procedural_settings_drive_profile_and_binding();
     test_key_changes_on_seed();
     test_truncated_load();
     test_bad_magic_rejected();

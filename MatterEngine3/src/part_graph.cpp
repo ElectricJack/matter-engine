@@ -335,6 +335,25 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots,
                 }
             }
 
+            // Resolve the complete import closure so snapshots record the exact
+            // project/engine file selected for direct and transitive imports.
+            for (const auto& selected : resolver_.shared_sources_for(n.source)) {
+                std::string imp = selected.first;
+                const std::string prefix = "shared-lib/";
+                if (imp.rfind(prefix, 0) == 0) imp.erase(0, prefix.size());
+                if (imp.size() >= 3 &&
+                    imp.compare(imp.size() - 3, 3, ".js") == 0)
+                    imp.resize(imp.size() - 3);
+                if (std::find(snode.shared_imports.begin(),
+                              snode.shared_imports.end(), imp) ==
+                    snode.shared_imports.end())
+                    snode.shared_imports.push_back(imp);
+                if (std::find(snode.shared_source_paths.begin(),
+                              snode.shared_source_paths.end(), selected.second) ==
+                    snode.shared_source_paths.end())
+                    snode.shared_source_paths.push_back(selected.second);
+            }
+
             // source_path: ask the resolver (FileModuleResolver overrides to return
             // <schemas_dir>/<module>.js; base class returns "").
             snode.source_path = resolver_.source_path_for(n.module);
@@ -347,6 +366,11 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots,
             part_graph_snapshot::Node& sn = kv2.second;
             if (!sn.source_path.empty()) {
                 auto& bfv = snap->by_file[sn.source_path];
+                if (std::find(bfv.begin(), bfv.end(), sn.module) == bfv.end())
+                    bfv.push_back(sn.module);
+            }
+            for (const auto& shared_path : sn.shared_source_paths) {
+                auto& bfv = snap->by_file[shared_path];
                 if (std::find(bfv.begin(), bfv.end(), sn.module) == bfv.end())
                     bfv.push_back(sn.module);
             }
@@ -548,6 +572,18 @@ bool FileModuleResolver::get_requires(const std::string& module, const Params& p
     for (const auto& k : kids)
         out.push_back(ChildRequest{ k.module_specifier, params_from_json(k.params_json) });
     return true;   // (a thrown `requires` surfaces as a host error -> empty + caller errors)
+}
+
+std::vector<std::pair<std::string, std::string>>
+FileModuleResolver::shared_sources_for(const std::string& source) {
+    module_resolver::FoldResult fold;
+    std::string err;
+    if (!host_.fold_sources_cached(source, fold, err)) return {};
+    std::vector<std::pair<std::string, std::string>> selected;
+    selected.reserve(fold.modules.size());
+    for (const auto& module : fold.modules)
+        selected.emplace_back(module.specifier, module.source_path);
+    return selected;
 }
 
 HostBaker::HostBaker(script_host::ScriptHost& host, std::string parts_dir)

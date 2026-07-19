@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <filesystem>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -14,18 +15,29 @@
 
 #include "check.h"
 
+namespace fs = std::filesystem;
+
 // ---- scratch shared-lib helpers (used by Task 4 + Task 6/8) ----------------
 std::string make_scratch_shared_lib(const std::string& src_root) {
-    std::string dir = std::string("scratch_shlib_") + std::to_string((unsigned long)rand());
-    std::string mk = "mkdir -p '" + dir + "'"; (void)system(mk.c_str());
-    std::string cp = "cp '" + src_root + "'/*.js '" + dir + "'/ 2>/dev/null"; (void)system(cp.c_str());
-    return dir;
+    const fs::path dir = fs::temp_directory_path() /
+        (std::string("scratch_shlib_") +
+         std::to_string(static_cast<unsigned long>(rand())));
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir);
+    for (const auto& entry : fs::directory_iterator(src_root)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".js")
+            fs::copy_file(entry.path(), dir / entry.path().filename(),
+                          fs::copy_options::overwrite_existing);
+    }
+    return dir.string();
 }
 void append_to_file(const std::string& path, const std::string& text) {
     std::ofstream f(path, std::ios::binary | std::ios::app); f << text;
 }
 void remove_scratch_shared_lib(const std::string& dir) {
-    std::string rm = "rm -rf '" + dir + "'"; (void)system(rm.c_str());
+    std::error_code ec;
+    fs::remove_all(dir, ec);
 }
 
 // ---- Task 1: import-specifier parsing -------------------------------------
@@ -100,6 +112,57 @@ static void test_fold_transitive_and_canonical() {
     module_resolver::FoldResult rbad;
     const std::string bad = "import { X } from 'shared-lib/nope';\n";
     CHECK(!module_resolver::fold_sources(bad, root, rbad, err), "missing module fails fold");
+}
+
+static void test_ordered_roots_shadow_and_transitive_fallback() {
+    const fs::path root = fs::temp_directory_path() / "me3_ordered_shared_roots";
+    const fs::path project = root / "project";
+    const fs::path engine = root / "engine";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(project);
+    fs::create_directories(engine);
+    auto write = [](const fs::path& path, const std::string& source) {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << source;
+        return out.good();
+    };
+    CHECK(write(project / "shadow.js", "export const VALUE = 'project';\n"),
+          "ordered roots: project shadow fixture written");
+    CHECK(write(engine / "shadow.js", "export const VALUE = 'engine';\n"),
+          "ordered roots: engine shadow fixture written");
+    CHECK(write(project / "top.js",
+                "import { FALLBACK } from 'shared-lib/fallback';\n"
+                "export const TOP = FALLBACK;\n"),
+          "ordered roots: transitive project fixture written");
+    CHECK(write(engine / "fallback.js", "export const FALLBACK = 17;\n"),
+          "ordered roots: engine fallback fixture written");
+
+    const std::string part =
+        "import { VALUE } from 'shared-lib/shadow';\n"
+        "import { TOP } from 'shared-lib/top';\n";
+    module_resolver::FoldResult folded;
+    std::string err;
+    const std::vector<std::string> roots{project.string(), engine.string()};
+    CHECK(module_resolver::fold_sources(part, roots, folded, err),
+          ("ordered roots fold succeeds: " + err).c_str());
+    CHECK(folded.modules.size() == 3,
+          "ordered roots gather direct and transitive imports");
+    auto chosen_path = [&](const std::string& specifier) {
+        for (const auto& module : folded.modules)
+            if (module.specifier == specifier) return module.source_path;
+        return std::string{};
+    };
+    CHECK(fs::equivalent(chosen_path("shared-lib/shadow"),
+                         project / "shadow.js"),
+          "project module shadows engine module");
+    CHECK(fs::equivalent(chosen_path("shared-lib/top"), project / "top.js"),
+          "project direct import resolves from project tier");
+    CHECK(fs::equivalent(chosen_path("shared-lib/fallback"),
+                         engine / "fallback.js"),
+          "transitive missing project import falls back to engine tier");
+
+    fs::remove_all(root, ec);
 }
 
 // ---- Task 4: folded source changes the resolved hash ----------------------
@@ -262,6 +325,40 @@ static void test_helper_pure_outputs() {
 #ifdef SP2_SCRIPT_HOST
 #include "script_host.h"   // SP-2
 
+static void test_script_host_ordered_roots_affect_hash_identity() {
+    const fs::path root = fs::temp_directory_path() / "me3_script_host_roots";
+    const fs::path project = root / "project";
+    const fs::path engine = root / "engine";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(project);
+    fs::create_directories(engine);
+    std::ofstream(project / "value.js") << "export const VALUE = 1;\n";
+    std::ofstream(engine / "value.js") << "export const VALUE = 2;\n";
+    std::ofstream(engine / "fallback.js") << "export const FALLBACK = 3;\n";
+    const std::string source =
+        "import { VALUE } from 'shared-lib/value';\n"
+        "import { FALLBACK } from 'shared-lib/fallback';\n"
+        "class OrderedRootPart extends Part { build() {} }\n";
+
+    script_host::ScriptHost project_first;
+    project_first.set_shared_lib_roots({project.string(), engine.string()});
+    const uint64_t project_hash = project_first.resolve_hash(source, "{}");
+    module_resolver::FoldResult project_fold;
+    std::string err;
+    CHECK(project_first.fold_sources_cached(source, project_fold, err),
+          "ScriptHost folds ordered roots");
+
+    script_host::ScriptHost engine_first;
+    engine_first.set_shared_lib_roots({engine.string(), project.string()});
+    const uint64_t engine_hash = engine_first.resolve_hash(source, "{}");
+    CHECK(project_hash != 0 && engine_hash != 0 && project_hash != engine_hash,
+          "ordered root precedence participates in ScriptHost hash identity");
+    CHECK(project_fold.modules.size() == 2,
+          "ScriptHost ordered roots include direct fallback module");
+    fs::remove_all(root, ec);
+}
+
 // Task 6: scatter_grid.js — deterministic cross-sector spaced scatter.
 // Bakes a tiny Part that imports scatter_grid, runs the contract assertions in
 // JS, and throws on any failure.  A clean bake means all assertions passed.
@@ -322,8 +419,10 @@ class ScatterCheck extends Part {
   }
 }
 )JS";
-    BakeOptions opts; opts.parts_dir = "/tmp/scatter_grid_test_parts";
-    system("mkdir -p /tmp/scatter_grid_test_parts");
+    BakeOptions opts;
+    opts.parts_dir =
+        (fs::temp_directory_path() / "scatter_grid_test_parts").string();
+    fs::create_directories(fs::path(opts.parts_dir) / "parts");
     BakeResult r = host.bake_source(part, "{}", opts);
     CHECK(r.error.ok, ("scatter_grid assertions failed: " + r.error.message).c_str());
 }
@@ -366,12 +465,16 @@ static void test_scatter_grid() {
 static void test_import_resolves_end_to_end() {
     printf("INFO: SP-2 ScriptHost not linked; end-to-end bake test skipped (compile with -DSP2_SCRIPT_HOST)\n");
 }
+static void test_script_host_ordered_roots_affect_hash_identity() {
+    printf("INFO: SP-2 ScriptHost not linked; ordered-root host test skipped\n");
+}
 #endif
 
 int main() {
     test_parse_imports();
     test_resolve_specifier();
     test_fold_transitive_and_canonical();
+    test_ordered_roots_shadow_and_transitive_fallback();
     test_fold_changes_resolved_hash();
     test_ordering_stability();
     test_rng_reference_stream();
@@ -379,6 +482,7 @@ int main() {
     test_helper_pure_outputs();
     test_scatter_grid();
     test_import_resolves_end_to_end();
+    test_script_host_ordered_roots_affect_hash_identity();
     if (g_failures == 0) printf("All shared_lib tests passed\n");
     return g_failures == 0 ? 0 : 1;
 }

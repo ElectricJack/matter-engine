@@ -43,6 +43,8 @@
 //       str[children_count] children
 //       u32  shared_imports_count
 //       str[shared_imports_count] shared_imports
+//       u32  shared_source_paths_count
+//       str[shared_source_paths_count] selected shared module paths
 //       u64  resolved_hash
 //       u8   is_root
 //     (by_file and by_import are reconstructed from nodes, not stored)
@@ -113,7 +115,7 @@ namespace resolve_cache {
 // main, ea579ba). Older versions are treated as misses because
 // fmt_ver != kResolveCacheVersion.
 static constexpr uint32_t kResolveCacheMagic   = 0x00314352u;
-static constexpr uint32_t kResolveCacheVersion = 3u;
+static constexpr uint32_t kResolveCacheVersion = 4u;
 
 // ---------------------------------------------------------------------------
 // Low-level binary read/write helpers (little-endian)
@@ -372,6 +374,10 @@ bool save(const std::string& cache_root,
             if (!write_le(f, sic)) return false;
             for (const auto& si : n.shared_imports)
                 if (!write_str(f, si)) return false;
+            uint32_t sspc = (uint32_t)n.shared_source_paths.size();
+            if (!write_le(f, sspc)) return false;
+            for (const auto& path : n.shared_source_paths)
+                if (!write_str(f, path)) return false;
             if (!write_le(f, n.resolved_hash)) return false;
             uint8_t ir = n.is_root ? 1u : 0u;
             if (!write_le(f, ir)) return false;
@@ -559,6 +565,11 @@ bool load(const std::string& cache_root,
             n.shared_imports.resize(sic);
             for (uint32_t j = 0; j < sic; ++j)
                 if (!read_str(f, n.shared_imports[j])) return false;
+            uint32_t sspc = 0;
+            if (!read_le(f, sspc)) return false;
+            n.shared_source_paths.resize(sspc);
+            for (uint32_t j = 0; j < sspc; ++j)
+                if (!read_str(f, n.shared_source_paths[j])) return false;
             if (!read_le(f, n.resolved_hash)) return false;
             uint8_t ir = 0;
             if (!read_le(f, ir)) return false;
@@ -567,6 +578,8 @@ bool load(const std::string& cache_root,
             // Reconstruct by_file and by_import indices.
             if (!n.source_path.empty())
                 snap.by_file[n.source_path].push_back(n.module);
+            for (const auto& path : n.shared_source_paths)
+                snap.by_file[path].push_back(n.module);
             for (const auto& si : n.shared_imports)
                 snap.by_import[si].push_back(n.module);
 

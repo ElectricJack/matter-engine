@@ -104,6 +104,14 @@ std::vector<std::string> parse_import_specifiers(const std::string& source) {
 
 bool resolve_specifier(const std::string& specifier, const std::string& shared_lib_root,
                        std::string& out_path, std::string& err) {
+    return resolve_specifier(specifier,
+                             std::vector<std::string>{shared_lib_root},
+                             out_path, err);
+}
+
+bool resolve_specifier(const std::string& specifier,
+                       const std::vector<std::string>& shared_lib_roots,
+                       std::string& out_path, std::string& err) {
     const std::string prefix = "shared-lib/";
     if (specifier.rfind(prefix, 0) != 0) { err = "specifier not under shared-lib/: " + specifier; return false; }
     std::string name = specifier.substr(prefix.size());
@@ -112,11 +120,20 @@ bool resolve_specifier(const std::string& specifier, const std::string& shared_l
     }
     if (name.size() >= 3 && name.compare(name.size() - 3, 3, ".js") == 0)
         name.resize(name.size() - 3);
-    std::string path = shared_lib_root + "/" + name + ".js";
-    std::ifstream f(path, std::ios::binary);
-    if (!f.good()) { err = "module not found: " + path; return false; }
-    out_path = path;
-    return true;
+    std::vector<std::string> attempted;
+    for (const std::string& root : shared_lib_roots) {
+        if (root.empty()) continue;
+        std::string path = root + "/" + name + ".js";
+        attempted.push_back(path);
+        std::ifstream f(path, std::ios::binary);
+        if (f.good()) {
+            out_path = path;
+            return true;
+        }
+    }
+    err = "module not found";
+    for (const std::string& path : attempted) err += ": " + path;
+    return false;
 }
 
 static bool read_file(const std::string& path, std::string& out) {
@@ -129,11 +146,23 @@ static bool read_file(const std::string& path, std::string& out) {
 
 bool fold_sources(const std::string& part_source, const std::string& shared_lib_root,
                   FoldResult& out, std::string& err) {
+    return fold_sources(part_source,
+                        std::vector<std::string>{shared_lib_root}, out, err);
+}
+
+bool fold_sources(const std::string& part_source,
+                  const std::vector<std::string>& shared_lib_roots,
+                  FoldResult& out, std::string& err) {
     // BFS/DFS over imports, keyed by RESOLVED SPECIFIER (e.g. "shared-lib/leaf"),
     // normalizing any trailing ".js" so "shared-lib/x" and "shared-lib/x.js" dedup.
     std::set<std::string> seen;                 // canonical specifiers visited
     std::vector<std::string> worklist = module_resolver::parse_import_specifiers(part_source);
-    std::vector<std::pair<std::string,std::string>> modules; // (canonical spec, source)
+    struct GatheredModule {
+        std::string specifier;
+        std::string source;
+        std::string source_path;
+    };
+    std::vector<GatheredModule> modules;
 
     auto canon = [](std::string s) {
         if (s.size() >= 3 && s.compare(s.size()-3,3,".js") == 0) s.resize(s.size()-3);
@@ -145,10 +174,10 @@ bool fold_sources(const std::string& part_source, const std::string& shared_lib_
         if (seen.count(spec)) continue;
         seen.insert(spec);
         std::string path;
-        if (!resolve_specifier(spec, shared_lib_root, path, err)) return false;
+        if (!resolve_specifier(spec, shared_lib_roots, path, err)) return false;
         std::string src;
         if (!read_file(path, src)) { err = "read failed: " + path; return false; }
-        modules.emplace_back(spec, src);
+        modules.push_back({spec, src, path});
         // enqueue this module's own imports (transitive)
         for (auto& dep : module_resolver::parse_import_specifiers(src))
             worklist.push_back(dep);
@@ -156,7 +185,9 @@ bool fold_sources(const std::string& part_source, const std::string& shared_lib_
 
     // Canonical ordering: sort modules by resolved specifier (lexicographic byte sort).
     std::sort(modules.begin(), modules.end(),
-              [](const auto& a, const auto& b){ return a.first < b.first; });
+              [](const auto& a, const auto& b){
+                  return a.specifier < b.specifier;
+              });
 
     // Build the fold buffer: part source, then each module source, NUL-separated.
     out.folded.assign(part_source.begin(), part_source.end());
@@ -164,9 +195,10 @@ bool fold_sources(const std::string& part_source, const std::string& shared_lib_
     out.modules.clear();
     for (auto& m : modules) {
         out.folded.push_back('\0');
-        out.folded.insert(out.folded.end(), m.second.begin(), m.second.end());
-        out.resolved_specifiers.push_back(m.first);
-        out.modules.push_back(ResolvedModule{m.first, m.second});
+        out.folded.insert(out.folded.end(), m.source.begin(), m.source.end());
+        out.resolved_specifiers.push_back(m.specifier);
+        out.modules.push_back(
+            ResolvedModule{m.specifier, m.source, m.source_path});
     }
     return true;
 }

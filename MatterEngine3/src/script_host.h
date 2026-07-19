@@ -144,8 +144,18 @@ public:
     // unaffected). Clearing fold_cache when the root changes ensures shared-lib
     // edits invalidate the cache (prevent stale folded sources).
     void set_shared_lib_root(const std::string& root) {
-        shared_lib_root_ = root;
-        clear_fold_cache();  // invalidate cache on root change
+        set_shared_lib_roots(root.empty()
+            ? std::vector<std::string>{}
+            : std::vector<std::string>{root});
+    }
+    void set_shared_lib_roots(std::vector<std::string> roots) {
+        shared_lib_roots_.clear();
+        for (std::string& root : roots)
+            if (!root.empty()) shared_lib_roots_.push_back(std::move(root));
+        clear_fold_cache();  // invalidate cache on root order/content change
+    }
+    const std::vector<std::string>& shared_lib_roots() const {
+        return shared_lib_roots_;
     }
 
     // Cached fold_sources: looks up (source, shared_lib_root) by FNV1a64 hash key.
@@ -177,13 +187,13 @@ private:
                                        const std::string& params_json,
                                        BakeError& err);
 
-    std::string shared_lib_root_;
+    std::vector<std::string> shared_lib_roots_;
     std::string last_merged_params_;
     bool last_build_ran_ = false;
     dsl::BuildBuffer last_buffer_;
     std::string last_ambient_probe_;
 
-    // Fold cache: (source, shared_lib_root) -> FoldResult (thread-safe).
+    // Fold cache: (source, ordered shared-lib roots) -> FoldResult (thread-safe).
     std::mutex fold_mu_;
     std::unordered_map<uint64_t, module_resolver::FoldResult> fold_cache_;
     uint64_t fold_hits_ = 0;

@@ -64,5 +64,8 @@ bool settle_cache_save(const std::string& cache_root, uint64_t key, const Settle
 // sorted_child_hashes must be sorted in ascending order by caller.
 uint64_t settle_cache_key(uint64_t script_source_hash,
                           const std::vector<uint64_t>& sorted_child_hashes);
+uint64_t settle_cache_key(uint64_t script_source_hash,
+                          const std::vector<uint64_t>& sorted_child_hashes,
+                          const std::string& canonical_root_params_json);
 
 } // namespace tileset

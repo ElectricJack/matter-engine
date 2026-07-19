@@ -21,10 +21,14 @@ std::vector<std::string> parse_import_specifiers(const std::string& source);
 // or a resolved path that does not exist as a readable file.
 bool resolve_specifier(const std::string& specifier, const std::string& shared_lib_root,
                        std::string& out_path, std::string& err);
+bool resolve_specifier(const std::string& specifier,
+                       const std::vector<std::string>& shared_lib_roots,
+                       std::string& out_path, std::string& err);
 
 struct ResolvedModule {
     std::string specifier;  // canonical resolved specifier, e.g. "shared-lib/leaf"
     std::string source;     // full module source as read from disk
+    std::string source_path;// selected project/engine source path
 };
 
 struct FoldResult {
@@ -48,6 +52,9 @@ struct FoldResult {
 // module, illegal specifier, or read failure (fail-closed). Cycles are handled by
 // visiting each resolved specifier at most once.
 bool fold_sources(const std::string& part_source, const std::string& shared_lib_root,
+                  FoldResult& out, std::string& err);
+bool fold_sources(const std::string& part_source,
+                  const std::vector<std::string>& shared_lib_roots,
                   FoldResult& out, std::string& err);
 
 } // namespace module_resolver

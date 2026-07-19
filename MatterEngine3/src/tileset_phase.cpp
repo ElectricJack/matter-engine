@@ -45,9 +45,10 @@ static bool read_file_str(const std::string& path, std::string& out) {
 
 static bool run_tileset_phase_impl(const std::string& schemas_dir,
                                    const std::string& root_module,
+                                   const std::string& canonical_root_params_json,
                                    const std::string& parts_cache_dir,
                                    SettledTorus& out, std::string& err,
-                                   const std::string& shared_lib_root)
+                                   const std::vector<std::string>& shared_lib_roots)
 {
     // -----------------------------------------------------------------------
     // 1. Load the tileset root's source.
@@ -71,9 +72,9 @@ static bool run_tileset_phase_impl(const std::string& schemas_dir,
     // (e.g. Pebble.js imports shared-lib/rng) can resolve their dependencies.
     // An empty shared_lib_root is a no-op (tileset children with no shared-lib
     // imports, or callers that don't need it).
-    if (!shared_lib_root.empty()) host.set_shared_lib_root(shared_lib_root);
+    host.set_shared_lib_roots(shared_lib_roots);
     std::vector<script_host::RequiredChild> required =
-        host.eval_requires(root_source, "{}");
+        host.eval_requires(root_source, canonical_root_params_json);
 
     // -----------------------------------------------------------------------
     // 3. Install the children through the real PartGraph.
@@ -132,7 +133,7 @@ static bool run_tileset_phase_impl(const std::string& schemas_dir,
     // 5. Evaluate the tileset script → TilesetSpec.
     // -----------------------------------------------------------------------
     script_host::TilesetEvalResult er = host.eval_tileset(
-        root_source, "{}",
+        root_source, canonical_root_params_json,
         script_host::BakeOptions{},
         child_hashes.empty()      ? nullptr : child_hashes.data(),
         child_hashes.size(),
@@ -162,7 +163,8 @@ static bool run_tileset_phase_impl(const std::string& schemas_dir,
     std::vector<uint64_t> sorted_hashes = child_hashes;
     std::sort(sorted_hashes.begin(), sorted_hashes.end());
 
-    const uint64_t cache_key = settle_cache_key(script_source_hash, sorted_hashes);
+    const uint64_t cache_key = settle_cache_key(
+        script_source_hash, sorted_hashes, canonical_root_params_json);
 
     // Try warm cache first; parts_cache_dir doubles as the cache root.
     if (settle_cache_load(parts_cache_dir, cache_key, out)) {
@@ -186,8 +188,11 @@ bool run_tileset_phase(const std::string& world_data_dir, const std::string& /*w
                        SettledTorus& out, std::string& err,
                        const std::string& shared_lib_root)
 {
+    const std::vector<std::string> roots = shared_lib_root.empty()
+        ? std::vector<std::string>{}
+        : std::vector<std::string>{shared_lib_root};
     return run_tileset_phase_impl(schemas_dir_for(world_data_dir), root_module,
-                                  parts_cache_dir, out, err, shared_lib_root);
+                                  "{}", parts_cache_dir, out, err, roots);
 }
 
 bool run_tileset_phase_from_objects(const std::string& objects_dir,
@@ -196,8 +201,25 @@ bool run_tileset_phase_from_objects(const std::string& objects_dir,
                                     SettledTorus& out, std::string& err,
                                     const std::string& shared_lib_root)
 {
-    return run_tileset_phase_impl(objects_dir, root_module, parts_cache_dir,
-                                  out, err, shared_lib_root);
+    const std::vector<std::string> roots = shared_lib_root.empty()
+        ? std::vector<std::string>{}
+        : std::vector<std::string>{shared_lib_root};
+    return run_tileset_phase_impl(objects_dir, root_module, "{}",
+                                  parts_cache_dir, out, err, roots);
+}
+
+bool run_tileset_phase_from_objects(
+    const std::string& objects_dir,
+    const std::string& root_module,
+    const std::string& canonical_root_params_json,
+    const std::string& parts_cache_dir,
+    SettledTorus& out, std::string& err,
+    const std::vector<std::string>& shared_lib_roots)
+{
+    return run_tileset_phase_impl(objects_dir, root_module,
+                                  canonical_root_params_json,
+                                  parts_cache_dir, out, err,
+                                  shared_lib_roots);
 }
 
 } // namespace tileset
@@ -218,6 +240,15 @@ bool run_tileset_phase(const std::string&, const std::string&,
 bool run_tileset_phase_from_objects(const std::string&, const std::string&,
                                     const std::string&, SettledTorus&,
                                     std::string& err, const std::string&)
+{
+    err = "tileset_phase: built without MATTER_HAVE_SCRIPT_HOST";
+    return false;
+}
+
+bool run_tileset_phase_from_objects(
+    const std::string&, const std::string&, const std::string&,
+    const std::string&, SettledTorus&, std::string& err,
+    const std::vector<std::string>&)
 {
     err = "tileset_phase: built without MATTER_HAVE_SCRIPT_HOST";
     return false;

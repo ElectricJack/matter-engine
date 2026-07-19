@@ -41,6 +41,9 @@ struct ModuleResolver {
     // Task 9: optional source path for snapshot recording. Default returns "".
     // FileModuleResolver overrides to return <schemas_dir>/<module>.js.
     virtual std::string source_path_for(const std::string& /*module*/) const { return {}; }
+    // Selected direct/transitive shared sources as {canonical specifier, path}.
+    virtual std::vector<std::pair<std::string, std::string>>
+    shared_sources_for(const std::string& /*source*/) { return {}; }
 };
 
 // Seam: how SP-3 bakes one part. Real impl (Task 12) delegates to SP-2 ScriptHost
@@ -208,6 +211,8 @@ public:
     std::string source_path_for(const std::string& module) const override {
         return schemas_dir_ + "/" + module + ".js";
     }
+    std::vector<std::pair<std::string, std::string>>
+    shared_sources_for(const std::string& source) override;
 private:
     script_host::ScriptHost& host_;
     std::string              schemas_dir_;

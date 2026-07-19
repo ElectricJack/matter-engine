@@ -213,6 +213,7 @@ bool LocalProvider::prepare_paths(std::string& err) {
     abs_cache_root_ = abspath(cfg_.cache_root);
     abs_schemas_ = abspath(cfg_.object_sources_dir());
     abs_shared_lib_.clear();
+    abs_shared_lib_roots_.clear();
     abs_project_shared_lib_.clear();
     abs_engine_shared_lib_.clear();
     if (cfg_.uses_project_layout()) {
@@ -228,6 +229,8 @@ bool LocalProvider::prepare_paths(std::string& err) {
     }
     if (!cfg_.effective_shared_lib_dir().empty())
         abs_shared_lib_ = abspath(cfg_.effective_shared_lib_dir());
+    for (const std::string& root : cfg_.shared_lib_roots())
+        abs_shared_lib_roots_.push_back(abspath(root));
     return true;
 }
 
@@ -348,7 +351,7 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     // it through BakeOptions.parts_dir so bake_source writes artifacts to absolute
     // paths (Task 3 Phase B: no chdir required).
     host_ = std::make_unique<script_host::ScriptHost>();
-    host_->set_shared_lib_root(abs_shared_lib_);
+    host_->set_shared_lib_roots(abs_shared_lib_roots_);
     resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_schemas_);
     // Task 13 (Phase C): create a shared HostBaker that persists beyond install_graph()
     // so ensure_part_baked() can reuse it without reconstructing a ScriptHost.
@@ -745,12 +748,13 @@ bool LocalProvider::run_tileset_deferred(
     };
 
     auto settle_tileset = [&](const std::string& root_module,
+                              const std::string& root_params_json,
                               tileset::SettledTorus& settled,
                               std::string& settle_err) -> bool {
         if (cfg_.uses_project_layout()) {
             return tileset::run_tileset_phase_from_objects(
-                abs_schemas_, root_module, abs_cache_root_, settled, settle_err,
-                abs_shared_lib_);
+                abs_schemas_, root_module, root_params_json, abs_cache_root_,
+                settled, settle_err, abs_shared_lib_roots_);
         }
         return tileset::run_tileset_phase(
             abs_world_data_, cfg_.world_name, root_module, abs_cache_root_,
@@ -765,6 +769,7 @@ bool LocalProvider::run_tileset_deferred(
 
         const size_t ti = tileset_indices_[(size_t)idx];
         const std::string root_module = roots_[ti].module;
+        const std::string root_params_json = params_to_json(roots_[ti].params);
 
         if (on_tileset_part)
             on_tileset_part(idx, total, root_module.c_str());
@@ -778,7 +783,7 @@ bool LocalProvider::run_tileset_deferred(
             fflush(stderr);
             std::string se;
             tileset::SettledTorus settled;
-            if (!settle_tileset(root_module, settled, se)) {
+            if (!settle_tileset(root_module, root_params_json, settled, se)) {
                 err = "LocalProvider: tileset '" + root_module +
                       "' settle failed (headless): " + se;
                 return false;
@@ -799,7 +804,7 @@ bool LocalProvider::run_tileset_deferred(
         tileset::SettledTorus settled;
         {
             std::string se;
-            if (!settle_tileset(root_module, settled, se)) {
+            if (!settle_tileset(root_module, root_params_json, settled, se)) {
                 err = "LocalProvider: tileset '" + root_module + "' settle failed: " + se;
                 return false;
             }
@@ -1095,7 +1100,7 @@ bool LocalProvider::restore_from_cache(
     // Initialise ScriptHost + HostBaker so ensure_part_baked() can re-bake
     // individual cache-miss parts without running a global resolve.
     host_ = std::make_unique<script_host::ScriptHost>();
-    host_->set_shared_lib_root(abs_shared_lib_);
+    host_->set_shared_lib_roots(abs_shared_lib_roots_);
     resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_schemas_);
     host_baker_ = std::make_unique<part_graph::HostBaker>(*host_, abs_cache_root_);
 

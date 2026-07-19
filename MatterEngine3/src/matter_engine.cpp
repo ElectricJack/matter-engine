@@ -599,6 +599,7 @@ struct WorldSession::Impl {
 
     // Sector size from the eval_world result (world units per sector tile).
     float world_sector_size = 16.0f;
+    viewer::ProceduralWorldProfile world_profile{};
 
     // Cached sector source text (WorldSector.js read once at install_world time).
     std::string world_sector_source;
@@ -2077,7 +2078,7 @@ bool WorldSession::Impl::install_world(
 
     // 2. eval_world with the root_params_json override.
     script_host::ScriptHost host;
-    host.set_shared_lib_root(cfg.effective_shared_lib_dir());
+    host.set_shared_lib_roots(provider->shared_lib_roots());
     std::string params_json = cfg.root_params_json.empty() ? "{}" : cfg.root_params_json;
     script_host::WorldEvalResult r = host.eval_world(world_source, params_json);
     if (!r.ok) { err = "install_world: eval_world failed: " + r.message; return false; }
@@ -2094,7 +2095,16 @@ bool WorldSession::Impl::install_world(
     // 4. Store world constants.
     world_sea_level    = world_field->sea_level();
     world_biomes_json  = r.biomes_json;
-    world_sector_size  = r.sector_size;
+    matter::WorldSettings legacy_settings;
+    legacy_settings.sector_size = r.sector_size;
+    legacy_settings.y_min = r.y_min;
+    legacy_settings.y_max = r.y_max;
+    const viewer::ProceduralWorldProfile runtime_profile =
+        viewer::select_procedural_world_profile(
+            cfg.uses_project_layout(), provider->world_settings(),
+            legacy_settings);
+    world_sector_size = runtime_profile.sector_size;
+    world_profile = runtime_profile;
     {
         char hbuf[32];
         std::snprintf(hbuf, sizeof(hbuf), "%016llx",
@@ -2119,9 +2129,7 @@ bool WorldSession::Impl::install_world(
     //    the field (terrainVolume / heightAt / biomeAt etc.).
     dsl::WorldBinding wb;
     wb.field       = world_field.get();
-    wb.sector_size = r.sector_size;
-    wb.y_min       = r.y_min;
-    wb.y_max       = r.y_max;
+    runtime_profile.apply(wb);
     provider->host_baker().set_world(wb);
 
     // 6. Mark WorldSector as transient so its artifacts go to scratch.
@@ -2805,12 +2813,10 @@ void WorldSession::Impl::execute_sector_stream_step() {
         script_host::BakeOptions opts;
         opts.parts_dir = provider->transient_dir();
         opts.world.field       = world_field.get();
-        opts.world.sector_size = world_sector_size;
-        opts.world.y_min       = -64.0f;
-        opts.world.y_max       = 192.0f;
+        world_profile.apply(opts.world);
 
         script_host::ScriptHost bake_host;
-        bake_host.set_shared_lib_root(cfg.effective_shared_lib_dir());
+        bake_host.set_shared_lib_roots(provider->shared_lib_roots());
 
         script_host::BakeResult br;
         try {
@@ -3152,11 +3158,24 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
 
     // Fresh ScriptHost for the rebake (shared-lib root from cfg).
     script_host::ScriptHost host;
-    host.set_shared_lib_root(cfg.effective_shared_lib_dir());
+    const std::vector<std::string> live_shared_roots = cfg.uses_project_layout()
+        ? provider->shared_lib_roots()
+        : cfg.shared_lib_roots();
+    host.set_shared_lib_roots(live_shared_roots);
 
-    live_edit_prod::ProdGraphResolver gr(snap, host,
-                                         cfg.object_sources_dir(),
-                                         cfg.effective_shared_lib_dir());
+    std::unique_ptr<live_edit_prod::ProdGraphResolver> gr;
+    if (cfg.uses_project_layout()) {
+        // Project snapshots record the exact selected project/engine source
+        // path for each import, so edits to a shadowed engine module must not
+        // invalidate project-owned parts.
+        gr = std::make_unique<live_edit_prod::ProdGraphResolver>(
+            snap, host, cfg.object_sources_dir(), live_shared_roots);
+    } else {
+        // Keep the legacy import-name fan-out behavior for the single-root
+        // world-data layout, whose older snapshots do not store source paths.
+        gr = std::make_unique<live_edit_prod::ProdGraphResolver>(
+            snap, host, cfg.object_sources_dir(), cfg.shared_lib_dir);
+    }
     live_edit_prod::ProdBaker         pb(snap, host, cfg.cache_root);
     live_edit_prod::ProdFlattener     pf(snap, host, cfg.cache_root);
 
@@ -3166,7 +3185,7 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
     } null_sink;
 
     NullWatcher nw;
-    live_edit::LiveEditSession sess(nw, gr, pb, pf, null_sink,
+    live_edit::LiveEditSession sess(nw, *gr, pb, pf, null_sink,
                                    live_edit::LiveEditConfig{/*debounce_ms=*/0,
                                                              /*bake_budget_ms=*/0});
 
