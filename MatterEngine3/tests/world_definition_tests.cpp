@@ -4,8 +4,10 @@
 #include "../src/script/world_definition_loader.h"
 
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <string>
 
 namespace fs = std::filesystem;
@@ -213,6 +215,128 @@ bool definition_is_cleared(const matter::WorldDefinition& definition) {
            definition.settings.y_max == 192.0f;
 }
 
+struct ExpectedExampleRoot {
+    const char* module;
+    bool expand;
+    bool tileset;
+};
+
+struct ExpectedExampleWorld {
+    const char* name;
+    std::initializer_list<ExpectedExampleRoot> roots;
+    matter::Float3 sun_direction{-0.45f, -0.80f, -0.35f};
+    matter::Float3 sun_color{2.2f, 2.05f, 1.8f};
+    matter::Float3 sky_color{0.38f, 0.43f, 0.52f};
+    float sector_size = 16.0f;
+    float y_min = -64.0f;
+    float y_max = 192.0f;
+};
+
+bool nearly_equal(float a, float b) {
+    return std::fabs(a - b) < 1e-5f;
+}
+
+void test_example_worlds_preserve_manifest_authoring() {
+    const fs::path project = fs::path("../examples/world_demo");
+    const ExpectedExampleWorld worlds[] = {
+        {"Demo", {{"TreeGallery", false, false}}},
+        {"Meadow", {{"Meadow", true, false},
+                    {"ForestFloor", false, true}}},
+        {"MeadowWorld", {},
+         {-0.45f, -0.80f, -0.35f}, {2.2f, 2.05f, 1.8f},
+         {0.38f, 0.43f, 0.52f}, 64.0f, -16.0f, 240.0f},
+        {"CornellBox", {{"CornellBox", false, false}},
+         {0.1003569f, -0.9834976f, -0.1505354f}, {3.0f, 3.0f, 3.0f},
+         {0.6f, 0.65f, 0.75f}},
+        {"LightingGarden", {{"LightingGarden", false, false}},
+         {-0.5534701f, -0.3522082f, -0.7547319f}, {0.45f, 0.24f, 0.12f},
+         {0.055f, 0.075f, 0.16f}},
+        {"FloorDemo", {{"FloorDemo", false, false},
+                       {"ForestFloor", false, true}}},
+        {"RockGallery", {{"RockGallery", true, false}}},
+        {"StressForest50k", {{"StressForest50k", true, false}}},
+        {"StressForest100k", {{"StressForest100k", true, false}}},
+        {"StressForest200k", {{"StressForest200k", true, false}}},
+        {"StressForest500k", {{"StressForest500k", true, false}}},
+    };
+    const float identity[16] = {
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1,
+    };
+
+    CHECK(fs::is_directory(project / "objects"),
+          "example project exposes object modules under objects/");
+    CHECK(!fs::exists(project / "schemas"),
+          "example project no longer exposes the legacy schemas/ directory");
+
+    for (const ExpectedExampleWorld& expected : worlds) {
+        CHECK(fs::is_regular_file(
+                  project / "worlds" / (std::string(expected.name) + ".js")),
+              (std::string(expected.name) + " remains a selectable identity").c_str());
+        matter::WorldLoadDesc desc;
+        desc.world_path =
+            (project / "worlds" / (std::string(expected.name) + ".js")).string();
+        desc.objects_dir = (project / "objects").string();
+        desc.project_shared_lib_dir = (project / "shared-lib").string();
+        desc.engine_shared_lib_dir = "../shared-lib";
+
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(matter::load_world_definition(desc, definition, error),
+              (std::string(expected.name) + ": " + error.message).c_str());
+        CHECK(definition.roots.size() == expected.roots.size(),
+              (std::string(expected.name) + " root count").c_str());
+        std::size_t index = 0;
+        for (const ExpectedExampleRoot& root : expected.roots) {
+            CHECK(fs::is_regular_file(
+                      project / "objects" / (std::string(root.module) + ".js")),
+                  (std::string(root.module) + " moved under objects/").c_str());
+            if (index >= definition.roots.size()) break;
+            const matter::WorldRoot& actual = definition.roots[index];
+            CHECK(actual.module == root.module,
+                  (std::string(expected.name) + " root order/module").c_str());
+            CHECK(actual.params_json == "{}",
+                  (std::string(expected.name) + " root params").c_str());
+            bool identity_matches = true;
+            for (std::size_t element = 0; element < 16; ++element)
+                identity_matches = identity_matches &&
+                    nearly_equal(actual.transform.m[element], identity[element]);
+            CHECK(identity_matches,
+                  (std::string(expected.name) + " root transform").c_str());
+            CHECK(actual.expand == root.expand && actual.tileset == root.tileset,
+                  (std::string(expected.name) + " root flags").c_str());
+            ++index;
+        }
+
+        CHECK(nearly_equal(definition.settings.sun_direction.x,
+                           expected.sun_direction.x) &&
+                  nearly_equal(definition.settings.sun_direction.y,
+                               expected.sun_direction.y) &&
+                  nearly_equal(definition.settings.sun_direction.z,
+                               expected.sun_direction.z) &&
+                  nearly_equal(definition.settings.sun_color.x,
+                               expected.sun_color.x) &&
+                  nearly_equal(definition.settings.sun_color.y,
+                               expected.sun_color.y) &&
+                  nearly_equal(definition.settings.sun_color.z,
+                               expected.sun_color.z) &&
+                  nearly_equal(definition.settings.sky_color.x,
+                               expected.sky_color.x) &&
+                  nearly_equal(definition.settings.sky_color.y,
+                               expected.sky_color.y) &&
+                  nearly_equal(definition.settings.sky_color.z,
+                               expected.sky_color.z),
+              (std::string(expected.name) + " authored lights").c_str());
+        CHECK(nearly_equal(definition.settings.sector_size,
+                           expected.sector_size) &&
+                  nearly_equal(definition.settings.y_min, expected.y_min) &&
+                  nearly_equal(definition.settings.y_max, expected.y_max),
+              (std::string(expected.name) + " procedural settings").c_str());
+    }
+}
+
 void test_authored_entity_override_cannot_intercept_collection() {
     Fixture fixture;
     const fs::path path = fixture.write("Override.js", R"JS(
@@ -303,6 +427,7 @@ class ThrowingWorld extends World {
 
 int main() {
     test_project_layout_derives_runtime_paths();
+    test_example_worlds_preserve_manifest_authoring();
     test_rejects_non_world_base_with_location_and_property();
     test_extracts_statics_without_calling_field_and_uses_project_override();
     test_engine_shared_fallback_and_no_entity_world();
