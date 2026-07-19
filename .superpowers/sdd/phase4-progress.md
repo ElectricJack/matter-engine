@@ -4,7 +4,7 @@
 **Worktree:** `.worktrees/phase4-runtime-scene-editor-bridge`  
 **Design:** `docs/superpowers/specs/2026-07-19-phase4-runtime-scene-editor-bridge-design.md`  
 **Plan:** `docs/superpowers/plans/2026-07-19-phase4-runtime-scene-editor-bridge.md`  
-**Current status:** Task 3B implementation in progress
+**Current status:** Task 3B ready to commit; git metadata approval blocked
 
 ## Completed
 
@@ -50,6 +50,11 @@
 - Task 3A example migration/parity committed as `83f171c`; scoped review pending.
 - Task 3A scoped review approved with no findings; committed-head world-definition
   parity independently rebuilt and passed. Prepare async fixture migration (3B).
+- Task 3B async fixture migration is complete in one modified test file; source
+  contract has zero legacy matches, `run-asyncbake` ends `ALL PASS`, and
+  `git diff --check` is clean. Commit/review is paused because both the subagent and
+  controller git-metadata escalation were rejected after the approval reviewer hit
+  its usage limit.
 
 ## Pending task groups
 
@@ -82,6 +87,7 @@
 | 2026-07-19 | Task 2 final verification | direct committed-head binaries: shared-lib, live-edit-prod, resolve-cache 168/168, world-definition, tileset-params | PASS |
 | 2026-07-19 | Task 2 final re-review | `423af88..95c2a3c` packaged diff | APPROVED: no findings |
 | 2026-07-19 | Task 3A example parity | `world_definition_tests` rebuilt/run from committed `83f171c`; `d69aef9..83f171c` review | PASS; APPROVED with no findings |
+| 2026-07-19 | Task 3B async fixtures | forbidden-source scan; `run-asyncbake`; `git diff --check` | PASS; ready to commit, approval blocked |
 
 ## Blockers and deferred work
 
