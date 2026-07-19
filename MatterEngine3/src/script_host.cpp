@@ -1421,14 +1421,6 @@ done:
     }
 }
 
-// Extract the authored class name from `class <Name> extends World`.
-static std::string find_world_class_name(const std::string& source) {
-    static const std::regex re("class\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s+extends\\s+World\\b");
-    std::smatch m;
-    if (std::regex_search(source, m, re)) return m[1].str();
-    return std::string();
-}
-
 // ---------------------------------------------------------------------------
 // eval_world: evaluate a World-definition class, return the field program text
 // and biome table JSON. Mirrors eval_requires/eval_tileset structurally.
@@ -1438,7 +1430,7 @@ WorldEvalResult ScriptHost::eval_world(const std::string& source,
     WorldEvalResult r;
 
     // 1. Find class name.
-    std::string className = find_world_class_name(source);
+    std::string className = matter::world_script_detail::find_world_class_name(source);
     if (className.empty()) {
         r.message = "no class extending World found";
         return r;

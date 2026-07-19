@@ -7,6 +7,7 @@
 #include "dsl_state.h"
 #include "tileset_spec.h"
 #include "module_resolver.h"
+#include "script/world_definition_loader.h"
 
 namespace script_host {
 
@@ -92,6 +93,14 @@ public:
     // Fail-closed: on any JS error ok=false with message set.
     WorldEvalResult eval_world(const std::string& source,
                                const std::string& params_json);
+
+    // Engine-owned World JavaScript statics boundary. Unlike eval_world(), this
+    // never executes field()/biomes(); it extracts owned load-time declarations.
+    bool eval_world_definition(const matter::WorldLoadDesc& desc,
+                               matter::WorldDefinition& definition,
+                               matter::WorldLoadError& error) {
+        return matter::load_world_definition(desc, definition, error);
+    }
 
     // Evaluate a Tileset root: fresh isolated context, records verbs into a TilesetSpec.
     // No geometry artifact is written. Fail-closed like bake_source.
