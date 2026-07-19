@@ -1,6 +1,7 @@
 #include "ecs_runtime.h"
 #include "physics_context.h"
 #include "streaming_systems.h"
+#include "scene_registry.h"
 #include "../streaming/sector_streaming_coordinator.h"
 #include "matter/physics.h"
 #include "matter/streaming.h"
@@ -372,15 +373,25 @@ void Runtime::drain_world_state_commands() {
     }
 
     ecs::WorldRuntimeState state = world_.get<ecs::WorldRuntimeState>();
-    for (const WorldStateCommand command : commands) {
+    for (auto& command : commands) {
         switch (command.kind) {
             case WorldStateCommandKind::Loading:
                 state.status = ecs::WorldStatus::Loading;
                 break;
-            case WorldStateCommandKind::Ready:
+            case WorldStateCommandKind::Ready: {
                 state.status = ecs::WorldStatus::Ready;
                 ++state.content_generation;
+                if (!command.entities.empty()) {
+                    scene::PartResolver resolver = [](const std::string&, uint64_t& out_hash) {
+                        out_hash = 0;
+                        return true;
+                    };
+                    scene::RecipeError err;
+                    scene::bootstrap_transactional(world_, command.entities,
+                                                  scene_generation_, resolver, err);
+                }
                 break;
+            }
             case WorldStateCommandKind::Failed:
                 state.status = ecs::WorldStatus::Failed;
                 break;

@@ -408,6 +408,19 @@ SPECIALIZED_EDITORS_CPP    = specialized_editors_tests.cpp \
                              ../src/ecs/scene_registry.cpp
 SPECIALIZED_EDITORS_C      = $(FLECS_C)
 
+# Phase 5 — entity -> ECS bridge (Ready world-state commands bootstrap Flecs
+# entities via scene::bootstrap_transactional). Needs the full Runtime, same
+# link set as SIMULATION_CONTROL.
+ECS_ENTITY_BRIDGE_TARGET = ecs_entity_bridge_tests
+ECS_ENTITY_BRIDGE_CPP    = ecs_entity_bridge_tests.cpp \
+                           ../src/ecs/scene_registry.cpp \
+                           ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
+                           ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
+                           ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
+                           ../src/streaming/sector_streaming_coordinator.cpp \
+                           ../src/sector_streamer.cpp
+ECS_ENTITY_BRIDGE_C      = $(FLECS_C)
+
 # Phase C Task 4 — RefineController tile-pairing + priority/eviction (pure CPU, def flavor).
 REFINECTL_TARGET = refine_controller_tests
 REFINECTL_CPP    = refine_controller_tests.cpp ../src/refine_controller.cpp \
@@ -788,6 +801,7 @@ def_CPP_SRCS := $(sort \
     $(PROPERTIES_REGISTRY_CPP) \
     $(SIMULATION_CONTROL_CPP) \
     $(SPECIALIZED_EDITORS_CPP) \
+    $(ECS_ENTITY_BRIDGE_CPP) \
     $(PARTV2_CPP) \
     $(GRAPH_SOURCES) \
     $(TRIVAR_CPP) \
@@ -906,6 +920,7 @@ EDITOR_MODEL_OBJS = $(call obj_list,def,$(EDITOR_MODEL_CPP))
 PROPERTIES_REGISTRY_OBJS = $(call obj_list,def,$(PROPERTIES_REGISTRY_CPP)) $(call obj_list,flecsc,$(PROPERTIES_REGISTRY_C))
 SIMULATION_CONTROL_OBJS = $(call obj_list,def,$(SIMULATION_CONTROL_CPP)) $(call obj_list,flecsc,$(SIMULATION_CONTROL_C))
 SPECIALIZED_EDITORS_OBJS = $(call obj_list,def,$(SPECIALIZED_EDITORS_CPP)) $(call obj_list,flecsc,$(SPECIALIZED_EDITORS_C))
+ECS_ENTITY_BRIDGE_OBJS = $(call obj_list,def,$(ECS_ENTITY_BRIDGE_CPP)) $(call obj_list,flecsc,$(ECS_ENTITY_BRIDGE_C))
 PARTV2_OBJS = $(call obj_list,def,$(PARTV2_CPP)) $(call obj_list,mslc,$(PARTV2_C))
 GRAPH_OBJS  = $(call obj_list,def,$(GRAPH_SOURCES)) $(call obj_list,mslc,$(GRAPH_C))
 TRIVAR_OBJS = $(call obj_list,def,$(TRIVAR_CPP)) $(call obj_list,mslc,$(TRIVAR_C))
@@ -963,7 +978,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors
+.PHONY: clean run-matrix run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1047,6 +1062,14 @@ $(SPECIALIZED_EDITORS_TARGET): $(SPECIALIZED_EDITORS_OBJS)
 
 run-specialized-editors: $(SPECIALIZED_EDITORS_TARGET)
 	./$(SPECIALIZED_EDITORS_TARGET)
+
+# Phase 5 — entity -> ECS bridge (Ready world-state commands bootstrap
+# Flecs entities via scene::bootstrap_transactional).
+$(ECS_ENTITY_BRIDGE_TARGET): $(ECS_ENTITY_BRIDGE_OBJS) $(BOX3D_LIB)
+	$(CC) $(ECS_ENTITY_BRIDGE_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) -lws2_32 -ldbghelp -lwinmm
+
+run-ecs-entity-bridge: $(ECS_ENTITY_BRIDGE_TARGET)
+	./$(ECS_ENTITY_BRIDGE_TARGET)
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests.
 $(PARTV2_TARGET): $(PARTV2_OBJS)

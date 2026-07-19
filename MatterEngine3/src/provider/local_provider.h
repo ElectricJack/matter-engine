@@ -304,6 +304,13 @@ public:
     // if no world-kind entry). Populated after install_graph(). Task 9 consumes it.
     const std::string& world_module() const { return world_module_; }
 
+    // Task: authored entities parsed from `static entities` / buildEntities()
+    // in the world script, populated by load_authored_world() and consumed
+    // by the ECS runtime to bootstrap Flecs entities.
+    const std::vector<matter::RawEntityRecipe>& authored_entities() const {
+        return authored_entities_;
+    }
+
 #if defined(MATTER_HAVE_SCRIPT_HOST)
     // Phase C Task 9: expose the shared HostBaker so install_world can set the
     // world binding and bake sector child assets through the same baker instance.
@@ -318,6 +325,7 @@ private:
     int                  install_bake_count_ = 0; // counter for install-phase on_part callbacks
     std::set<uint64_t>   baked_hashes_;  // hashes freshly baked by last install_graph()
     std::map<uint64_t, std::string> module_by_hash_; // hash -> module name (from manifest roots)
+    std::vector<matter::RawEntityRecipe> authored_entities_; // authored entity recipes from world script
     std::vector<FetchFailed> fetch_failed_; // Task 7 fix: per-part load failures from fetch_parts()
     part_graph_snapshot::Snapshot graph_snapshot_;  // Task 9: live-edit graph snapshot
 

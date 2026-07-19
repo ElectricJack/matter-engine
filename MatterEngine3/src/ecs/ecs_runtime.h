@@ -6,6 +6,8 @@
 
 #include "matter/ecs.h"
 #include "matter/world_session.h"
+#include "matter/world_definition.h"  // RawEntityRecipe
+#include "scene_registry.h"           // SceneGeneration, PartResolver
 
 namespace matter::ecs {
 
@@ -39,6 +41,7 @@ enum class WorldStateCommandKind { Loading, Ready, Failed };
 
 struct WorldStateCommand {
     WorldStateCommandKind kind;
+    std::vector<RawEntityRecipe> entities;  // populated for Ready commands
 };
 
 class Runtime {
@@ -69,6 +72,7 @@ private:
     double accumulator_seconds_ = 0.0;
     std::mutex world_state_mutex_;
     std::vector<WorldStateCommand> world_state_commands_;
+    scene::SceneGeneration scene_generation_{};
 };
 
 } // namespace matter::ecs_runtime

@@ -233,6 +233,7 @@ bool LocalProvider::load_authored_world(std::string& err) {
     world_module_.clear();
     authored_lights_ = world_lights::WorldLights{};
     world_settings_ = matter::WorldSettings{};
+    authored_entities_.clear();
 
 #if defined(MATTER_HAVE_SCRIPT_HOST)
     matter::WorldLoadDesc load_desc;
@@ -265,6 +266,7 @@ bool LocalProvider::load_authored_world(std::string& err) {
     tileset_flags_ = std::move(adapted.tileset_flags);
     authored_lights_ = std::move(adapted.lights);
     world_settings_ = adapted.settings;
+    authored_entities_ = definition.entities;
 
     // Field worlds retain the existing eval_world/streaming path. The statics
     // loader intentionally does not execute field(), so identify the authored

@@ -1691,8 +1691,12 @@ void WorldSession::Impl::publish_pipeline(
         return;
     }
 
-    ecs_runtime.enqueue_world_state(
-        {ecs_runtime::WorldStateCommandKind::Ready});
+    {
+        ecs_runtime::WorldStateCommand cmd;
+        cmd.kind = ecs_runtime::WorldStateCommandKind::Ready;
+        cmd.entities = provider->authored_entities();
+        ecs_runtime.enqueue_world_state(std::move(cmd));
+    }
 
     // Merge load-phase (publish-job) failures and bake-phase failures into count_errors.
     // run_blocking(finalize_job) above guarantees all publish jobs completed
