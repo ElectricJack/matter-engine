@@ -609,6 +609,12 @@ WORLD_DEFINITION_CPP = world_definition_tests.cpp \
                        ../src/script/world_definition_loader.cpp \
                        ../src/module_resolver.cpp
 
+# Phase 4 Task 13: PhysicsPlayground world and closure.
+PHYSICS_PLAYGROUND_TARGET = physics_playground_tests
+PHYSICS_PLAYGROUND_CPP    = physics_playground_tests.cpp \
+                            ../src/script/world_definition_loader.cpp \
+                            ../src/module_resolver.cpp
+
 # Phase C Task 4 — eval_world: World builder DSL + ScriptHost::eval_world (sh flavor).
 EVALWORLD_TARGET = eval_world_tests
 EVALWORLD_CPP = eval_world_tests.cpp ../src/part_graph.cpp \
@@ -809,7 +815,8 @@ qjs_CPP_SRCS := $(sort \
     $(MODBAKE_CPP) \
     $(TILESETDSL_CPP) \
     $(TERRAINNOISE_CPP) \
-    $(WORLD_DEFINITION_CPP))
+    $(WORLD_DEFINITION_CPP) \
+    $(PHYSICS_PLAYGROUND_CPP))
 
 sh_CPP_SRCS := $(sort \
     $(EVALWORLD_CPP) \
@@ -928,6 +935,7 @@ MODBAKE_OBJS = $(call obj_list,qjs,$(MODBAKE_CPP)) $(call obj_list,mslc,$(MODBAK
 TILESETDSL_OBJS = $(call obj_list,qjs,$(TILESETDSL_CPP)) $(call obj_list,mslc,$(SCRIPT_C)) $(qjsc_C_OBJS)
 TERRAINNOISE_OBJS = $(call obj_list,qjs,$(TERRAINNOISE_CPP)) $(qjsc_C_OBJS)
 WORLD_DEFINITION_OBJS = $(call obj_list,qjs,$(WORLD_DEFINITION_CPP)) $(qjsc_C_OBJS)
+PHYSICS_PLAYGROUND_OBJS = $(call obj_list,qjs,$(PHYSICS_PLAYGROUND_CPP)) $(qjsc_C_OBJS)
 EVALWORLD_OBJS = $(call obj_list,sh,$(EVALWORLD_CPP)) $(call obj_list,mslc,$(EVALWORLD_C)) $(qjsc_C_OBJS)
 FOLDCACHE_OBJS = $(call obj_list,sh,$(FOLDCACHE_CPP)) $(call obj_list,mslc,$(FOLDCACHE_C)) $(qjsc_C_OBJS)
 
@@ -955,7 +963,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors
+.PHONY: clean run-matrix run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1083,6 +1091,12 @@ $(WORLD_DEFINITION_TARGET): $(WORLD_DEFINITION_OBJS)
 
 run-world-definition: $(WORLD_DEFINITION_TARGET)
 	./$(WORLD_DEFINITION_TARGET)
+
+$(PHYSICS_PLAYGROUND_TARGET): $(PHYSICS_PLAYGROUND_OBJS)
+	$(CC) $(PHYSICS_PLAYGROUND_OBJS) -o $@ $(FLAVOR_qjs_FLAGS) -lm
+
+run-physics-playground: $(PHYSICS_PLAYGROUND_TARGET)
+	./$(PHYSICS_PLAYGROUND_TARGET)
 
 # Phase C Task 5 — terrain mesher (pure CPU, no JS, no GL).
 $(TERRAINMESH_TARGET): $(TERRAINMESH_OBJS)
@@ -1543,6 +1557,7 @@ vulkan-smoke:
 clean:
 	rm -rf $(OBJDIR)
 	rm -f $(PARTV2_TARGET) $(SCRIPT_TARGET) $(GRAPH_TARGET) $(GRAPH_INT_TARGET) $(WORLD_DEFINITION_TARGET) \
+	      $(PHYSICS_PLAYGROUND_TARGET) \
 	      $(TRIVAR_TARGET) $(SHLIB_TARGET) $(COMP_TARGET) $(DEV_TARGET) \
 	      $(EXAMPLE_TARGET) $(VIEWER_LOGIC_TARGET) $(TREEBAKE_TARGET) \
 	      $(GRASSLOD_TARGET) $(STRESSFOREST_TARGET) $(LIGHTING_GARDEN_TARGET) \
