@@ -97,7 +97,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/part_cluster.cpp \
           src/tileset_layout.cpp src/tileset_collider.cpp src/tileset_settle.cpp \
           src/tileset_placement.cpp src/tileset_part_collider.cpp src/tileset_bake.cpp \
-          src/tileset_phase.cpp src/tileset_phase_gpu.cpp \
+          src/tileset_phase.cpp \
           src/tileset_gtex.cpp src/tileset_torus_bvh.cpp \
           src/tileset_bake_primary.cpp src/tileset_bake_ao.cpp src/tileset_bake_gpu.cpp \
           src/shader_source.cpp \
@@ -158,7 +158,7 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           part_cluster.o \
           tileset_layout.o tileset_collider.o \
           tileset_settle.o tileset_placement.o tileset_part_collider.o tileset_bake.o \
-          tileset_phase.o tileset_phase_gpu.o \
+          tileset_phase.o \
           tileset_gtex.o tileset_torus_bvh.o tileset_bake_primary.o \
           tileset_bake_ao.o tileset_bake_gpu.o shader_source.o \
           renderer.o raster_composer.o raster_mesh.o matrix_math.o frame_matrices.o vk_temporal.o vk_gi_math.o vk_lighting_controls.o \
@@ -250,7 +250,7 @@ vulkan-spirv: shaders_gen/embedded_spirv.h
 
 # Per-file pattern rules enable safe parallel compilation with `make -j`.
 # vpath directs Make to search source directories by basename.
-vpath %.cpp src src/render src/provider src/ecs src/streaming $(MSL_DIR)/src $(PFL_DIR)/src
+vpath %.cpp src src/render src/provider src/script src/ecs src/streaming $(MSL_DIR)/src $(PFL_DIR)/src
 vpath %.c $(QJS_DIR) $(MSL_DIR)/src $(FLECS_DIR)
 
 # Flecs C source (gcc C17, never g++).
