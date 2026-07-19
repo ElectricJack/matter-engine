@@ -4,7 +4,7 @@
 **Worktree:** `.worktrees/phase4-runtime-scene-editor-bridge`  
 **Design:** `docs/superpowers/specs/2026-07-19-phase4-runtime-scene-editor-bridge-design.md`  
 **Plan:** `docs/superpowers/plans/2026-07-19-phase4-runtime-scene-editor-bridge.md`  
-**Current status:** Task 1 implementation in progress
+**Current status:** Task 2 implementation dispatch preparation
 
 ## Completed
 
@@ -27,14 +27,14 @@
 
 ## Active
 
-- Task 1: implement the world JavaScript statics contract with focused evaluator
-  tests, then run task-scoped review and root verification.
+- Task 1 approved after implementation `fbe0def` and hardening `c284a44`.
+- Prepare Task 2 hard-cut runtime path brief and dispatch its fresh implementer.
 
 ## Pending task groups
 
 | Group | Deliverable | Status | Verification |
 |---|---|---|---|
-| A | World-as-JS hard-cut migration | In progress (Task 1/3) | Pending |
+| A | World-as-JS hard-cut migration | In progress (Task 1/3 complete) | Task 1 focused + regression PASS |
 | B | Public scene contract and bootstrap registry | Pending | Pending |
 | C | Declarative/DSL recipes and transactional ECS bootstrap | Pending | Pending |
 | D | Stable dynamic renderer slots and ECS render bridge | Pending | Pending |
@@ -50,6 +50,10 @@
 |---|---|---|---|
 | 2026-07-19 | Phase 4 baseline | Flecs Task 7, Box3D Phase 2, Sector Streaming Phase 3 static closure scripts | PASS |
 | 2026-07-19 | Phase 4 plan self-review | Spec coverage, forbidden-placeholder scan, interface/dependency consistency, `git diff --check` | PASS |
+| 2026-07-19 | Task 1 implementation | `run-world-definition`, `run-evalworld`, `run-script` | PASS with pre-existing warning noise recorded |
+| 2026-07-19 | Task 1 scoped review | `930415f..fbe0def` packaged diff | NEEDS FIXES: 2 Important, 1 Minor |
+| 2026-07-19 | Task 1 fix verification | 11 focused RED cases; `world_definition_tests.exe`, `eval_world_tests.exe`, `script_host_tests.exe` from `MatterEngine3/tests` | PASS; existing ScriptHost geometry-warning noise remains |
+| 2026-07-19 | Task 1 re-review | `930415f..c284a44` packaged diff | APPROVED: no remaining findings |
 
 ## Blockers and deferred work
 
