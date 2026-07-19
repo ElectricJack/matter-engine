@@ -4,7 +4,7 @@
 **Worktree:** `.worktrees/phase4-runtime-scene-editor-bridge`  
 **Design:** `docs/superpowers/specs/2026-07-19-phase4-runtime-scene-editor-bridge-design.md`  
 **Plan:** `docs/superpowers/plans/2026-07-19-phase4-runtime-scene-editor-bridge.md`  
-**Current status:** Task 2 implementation dispatch preparation
+**Current status:** Task 2 implementation in progress
 
 ## Completed
 
@@ -32,7 +32,8 @@
 ## Active
 
 - Task 1 approved after implementation `fbe0def` and hardening `c284a44`.
-- Prepare Task 2 hard-cut runtime path brief and dispatch its fresh implementer.
+- Task 2: switch production runtime and MatterViewer discovery to project-root world
+  paths, retain only the documented temporary test seam, and verify cache identity.
 
 ## Pending task groups
 
