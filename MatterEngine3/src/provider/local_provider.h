@@ -2,16 +2,20 @@
 #define VIEWER_LOCAL_PROVIDER_H
 
 #include "world_source.h"
+#include "world_lights.h"
 #include "part_store.h"
 #include "part_graph.h"           // PartGraph, InstallResult, ChildRequest
 #include "part_graph_snapshot.h"  // Task 9: live-edit graph snapshot
+#include "matter/world_definition.h"
 
 #if defined(MATTER_HAVE_SCRIPT_HOST)
 #include "script_host.h"
 #endif
 
+#include <cmath>
 #include <cstdint>
 #include <functional>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <set>
@@ -22,6 +26,31 @@
 namespace viewer {
 
 struct LocalProviderConfig {
+    std::string project_dir;
+    std::string objects_dir;
+    std::string worlds_dir;
+    std::string world_path;
+    std::string project_shared_lib_dir;
+    std::string engine_shared_lib_dir;
+
+    static LocalProviderConfig for_project(
+        const std::string& project_dir,
+        const std::string& world_name,
+        const std::string& engine_shared_lib_dir);
+
+    bool uses_project_layout() const { return !project_dir.empty(); }
+    const std::string& object_sources_dir() const {
+        return uses_project_layout() ? objects_dir : schemas_dir;
+    }
+    const std::string& effective_shared_lib_dir() const {
+        if (!uses_project_layout()) return shared_lib_dir;
+        return project_shared_lib_dir.empty()
+            ? engine_shared_lib_dir
+            : project_shared_lib_dir;
+    }
+
+    // Temporary Task-2 seam for direct LocalProvider tests. New callers use
+    // for_project(); Task 3 migrates those fixtures and deletes these aliases.
     std::string schemas_dir;      // ../examples/world_demo/schemas
     std::string world_data_dir;   // ../examples/world_demo/WorldData
     std::string world_name;       // "Demo"
@@ -63,6 +92,90 @@ struct LocalProviderConfig {
     // rebuilds operate on a diff of changed files, not a full root-params change).
     std::string root_params_json;
 };
+
+inline LocalProviderConfig LocalProviderConfig::for_project(
+    const std::string& project_dir_value,
+    const std::string& world_name_value,
+    const std::string& engine_shared_lib_dir_value) {
+    namespace fs = std::filesystem;
+    LocalProviderConfig cfg;
+    const fs::path project(project_dir_value);
+    cfg.project_dir = project.string();
+    cfg.objects_dir = (project / "objects").string();
+    cfg.worlds_dir = (project / "worlds").string();
+    cfg.world_name = world_name_value;
+    cfg.world_path = (project / "worlds" / (world_name_value + ".js")).string();
+    const fs::path project_shared = project / "shared-lib";
+    std::error_code ec;
+    if (fs::is_directory(project_shared, ec))
+        cfg.project_shared_lib_dir = project_shared.string();
+    cfg.engine_shared_lib_dir = engine_shared_lib_dir_value;
+    cfg.cache_root = (project / ".cache" / world_name_value).string();
+    return cfg;
+}
+
+struct ProviderWorldDefinition {
+    std::vector<part_graph::ChildRequest> roots;
+    std::vector<matter::Mat4f> root_transforms;
+    std::vector<bool> expand_flags;
+    std::vector<bool> tileset_flags;
+    world_lights::WorldLights lights;
+    matter::WorldSettings settings;
+};
+
+inline ProviderWorldDefinition adapt_world_definition(
+    const matter::WorldDefinition& definition) {
+    ProviderWorldDefinition out;
+    out.roots.reserve(definition.roots.size());
+    out.root_transforms.reserve(definition.roots.size());
+    out.expand_flags.reserve(definition.roots.size());
+    out.tileset_flags.reserve(definition.roots.size());
+    for (const matter::WorldRoot& root : definition.roots) {
+        out.roots.push_back({root.module,
+                             part_graph::params_from_json(root.params_json)});
+        out.root_transforms.push_back(root.transform);
+        out.expand_flags.push_back(root.expand);
+        out.tileset_flags.push_back(root.tileset);
+    }
+
+    out.settings = definition.settings;
+    out.lights.sun_dir[0] = definition.settings.sun_direction.x;
+    out.lights.sun_dir[1] = definition.settings.sun_direction.y;
+    out.lights.sun_dir[2] = definition.settings.sun_direction.z;
+    out.lights.sun_color[0] = definition.settings.sun_color.x;
+    out.lights.sun_color[1] = definition.settings.sun_color.y;
+    out.lights.sun_color[2] = definition.settings.sun_color.z;
+    out.lights.sky_color[0] = definition.settings.sky_color.x;
+    out.lights.sky_color[1] = definition.settings.sky_color.y;
+    out.lights.sky_color[2] = definition.settings.sky_color.z;
+    out.lights.spots.reserve(definition.lights.size());
+    constexpr float kPiOver180 = 3.14159265358979323846f / 180.0f;
+    for (const matter::WorldLight& light : definition.lights) {
+        world_lights::SpotLight runtime{};
+        runtime.pos[0] = light.position.x;
+        runtime.pos[1] = light.position.y;
+        runtime.pos[2] = light.position.z;
+        runtime.dir[0] = light.direction.x;
+        runtime.dir[1] = light.direction.y;
+        runtime.dir[2] = light.direction.z;
+        const float length = std::sqrt(runtime.dir[0] * runtime.dir[0] +
+                                       runtime.dir[1] * runtime.dir[1] +
+                                       runtime.dir[2] * runtime.dir[2]);
+        if (length > 1e-8f) {
+            runtime.dir[0] /= length;
+            runtime.dir[1] /= length;
+            runtime.dir[2] /= length;
+        }
+        runtime.color[0] = light.color.x * light.intensity;
+        runtime.color[1] = light.color.y * light.intensity;
+        runtime.color[2] = light.color.z * light.intensity;
+        runtime.range = light.range;
+        runtime.cos_inner = std::cos(light.inner_cone_degrees * kPiOver180);
+        runtime.cos_outer = std::cos(light.outer_cone_degrees * kPiOver180);
+        out.lights.spots.push_back(runtime);
+    }
+    return out;
+}
 
 // Drives the SP-3 install path over a persistent content-addressed cache and
 // scatters the example world (terrain/trees/grass) into a WorldManifest. Same
@@ -191,6 +304,9 @@ private:
     // Valid only after a successful install_graph() call.
     std::string abs_schemas_;
     std::string abs_world_data_;
+    std::string abs_world_path_;
+    std::string abs_project_shared_lib_;
+    std::string abs_engine_shared_lib_;
     std::string abs_shared_lib_;
     std::string abs_cache_root_;
 
@@ -200,6 +316,7 @@ private:
 
     // install_graph() output: roots split by kind, install result
     std::vector<part_graph::ChildRequest> roots_;           // all manifest roots
+    std::vector<matter::Mat4f>            root_transforms_;
     std::vector<bool>                     expand_flags_;
     std::vector<bool>                     tileset_flags_;
     std::vector<part_graph::ChildRequest> roots_for_install_;
@@ -220,6 +337,11 @@ private:
 
     // Task 4: world-kind module name from manifest (empty if none).
     std::string world_module_;
+    world_lights::WorldLights authored_lights_;
+    matter::WorldSettings world_settings_;
+
+    bool prepare_paths(std::string& err);
+    bool load_authored_world(std::string& err);
 };
 
 // Expand an assembly root's baked child-instance table (from its .part in

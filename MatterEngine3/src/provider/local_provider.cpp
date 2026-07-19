@@ -1,4 +1,5 @@
 #include "local_provider.h"
+#include "script/world_definition_loader.h"
 
 #include "part_graph.h"        // -DMATTER_HAVE_SCRIPT_HOST pulls in script_host.h
 #include "part_asset_v2.h"     // cache_path_resolved, cache_path_flat, FlatInstanceRef
@@ -30,8 +31,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
 #include <memory>
 #include <new>         // std::bad_alloc (Task 7 fix: fetch_parts skip-and-continue)
+#include <regex>
 #include <set>
 #include <sstream>
 #include <stdexcept>   // std::exception (Task 7 fix: fetch_parts skip-and-continue)
@@ -57,10 +60,8 @@ namespace viewer {
 namespace {
 // Filesystem portability shim: MinGW mkdir and realpath have different names.
 #ifdef _WIN32
-int  fs_mkdir(const char* p)                       { return _mkdir(p); }
 bool fs_realpath(const char* in, char* out)        { return _fullpath(out, in, PATH_MAX) != nullptr; }
 #else
-int  fs_mkdir(const char* p)                       { return ::mkdir(p, 0755); }
 bool fs_realpath(const char* in, char* out)        { return realpath(in, out) != nullptr; }
 #endif
 struct Rng64 {
@@ -77,10 +78,20 @@ struct Rng64 {
         return a + (float)((next() >> 11) * (1.0 / 9007199254740992.0)) * (b - a);
     }
 };
-void set_translate(float m[16], float x, float y, float z) {
-    for (int i = 0; i < 16; ++i) m[i] = 0.0f;
-    m[0] = m[5] = m[10] = m[15] = 1.0f;
-    m[3] = x; m[7] = y; m[11] = z;
+matter::Mat4f identity_transform() {
+    matter::Mat4f result{};
+    result.m[0] = result.m[5] = result.m[10] = result.m[15] = 1.0f;
+    return result;
+}
+matter::Mat4f multiply_transform(const matter::Mat4f& a,
+                                 const matter::Mat4f& b) {
+    matter::Mat4f result{};
+    for (int row = 0; row < 4; ++row)
+        for (int col = 0; col < 4; ++col)
+            for (int k = 0; k < 4; ++k)
+                result.m[row * 4 + col] +=
+                    a.m[row * 4 + k] * b.m[k * 4 + col];
+    return result;
 }
 // Resolve a path (possibly relative to cwd) to an absolute path.
 std::string abspath(const std::string& rel) {
@@ -189,6 +200,103 @@ std::string class_name_from_source(const std::string& source) {
 
 LocalProvider::LocalProvider(LocalProviderConfig cfg) : cfg_(std::move(cfg)) {}
 
+bool LocalProvider::prepare_paths(std::string& err) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::create_directories(fs::path(cfg_.cache_root) / "parts", ec);
+    if (ec) {
+        err = "LocalProvider: cannot create cache root " + cfg_.cache_root +
+              ": " + ec.message();
+        return false;
+    }
+
+    abs_cache_root_ = abspath(cfg_.cache_root);
+    abs_schemas_ = abspath(cfg_.object_sources_dir());
+    abs_shared_lib_.clear();
+    abs_project_shared_lib_.clear();
+    abs_engine_shared_lib_.clear();
+    if (cfg_.uses_project_layout()) {
+        abs_world_data_.clear();
+        abs_world_path_ = abspath(cfg_.world_path);
+        if (!cfg_.project_shared_lib_dir.empty())
+            abs_project_shared_lib_ = abspath(cfg_.project_shared_lib_dir);
+        if (!cfg_.engine_shared_lib_dir.empty())
+            abs_engine_shared_lib_ = abspath(cfg_.engine_shared_lib_dir);
+    } else {
+        abs_world_path_.clear();
+        abs_world_data_ = abspath(cfg_.world_data_dir);
+    }
+    if (!cfg_.effective_shared_lib_dir().empty())
+        abs_shared_lib_ = abspath(cfg_.effective_shared_lib_dir());
+    return true;
+}
+
+bool LocalProvider::load_authored_world(std::string& err) {
+    roots_.clear();
+    root_transforms_.clear();
+    expand_flags_.clear();
+    tileset_flags_.clear();
+    world_module_.clear();
+    authored_lights_ = world_lights::WorldLights{};
+    world_settings_ = matter::WorldSettings{};
+
+    if (!cfg_.uses_project_layout()) {
+        if (!PartGraph::read_manifest(abs_world_data_, cfg_.world_name,
+                                      roots_, err, &expand_flags_,
+                                      &tileset_flags_, &world_module_))
+            return false;
+        root_transforms_.assign(roots_.size(), identity_transform());
+        return true;
+    }
+
+#if defined(MATTER_HAVE_SCRIPT_HOST)
+    matter::WorldLoadDesc load_desc;
+    load_desc.world_path = abs_world_path_;
+    load_desc.objects_dir = abs_schemas_;
+    load_desc.project_shared_lib_dir = abs_project_shared_lib_;
+    load_desc.engine_shared_lib_dir = abs_engine_shared_lib_;
+    load_desc.canonical_params_json = cfg_.root_params_json.empty()
+        ? "{}" : cfg_.root_params_json;
+    const Params canonical_params =
+        params_from_json(load_desc.canonical_params_json);
+    const auto seed = canonical_params.find("worldSeed");
+    if (seed != canonical_params.end() &&
+        seed->second.kind == ParamValue::Kind::Number)
+        load_desc.world_seed = static_cast<std::uint64_t>(seed->second.num);
+
+    matter::WorldDefinition definition;
+    matter::WorldLoadError load_error;
+    if (!matter::load_world_definition(load_desc, definition, load_error)) {
+        err = "load world definition " + abs_world_path_ + ": " +
+              load_error.message;
+        if (!load_error.property_path.empty())
+            err += " [" + load_error.property_path + "]";
+        return false;
+    }
+    ProviderWorldDefinition adapted = adapt_world_definition(definition);
+    roots_ = std::move(adapted.roots);
+    root_transforms_ = std::move(adapted.root_transforms);
+    expand_flags_ = std::move(adapted.expand_flags);
+    tileset_flags_ = std::move(adapted.tileset_flags);
+    authored_lights_ = std::move(adapted.lights);
+    world_settings_ = adapted.settings;
+
+    // Field worlds retain the existing eval_world/streaming path. The statics
+    // loader intentionally does not execute field(), so identify the authored
+    // method lexically and let install_world perform the established evaluation.
+    std::ifstream source_file(abs_world_path_, std::ios::binary);
+    std::ostringstream source_stream;
+    source_stream << source_file.rdbuf();
+    static const std::regex field_method("\\bfield\\s*\\(");
+    if (std::regex_search(source_stream.str(), field_method))
+        world_module_ = cfg_.world_name;
+    return true;
+#else
+    err = "project world loading requires MATTER_HAVE_SCRIPT_HOST";
+    return false;
+#endif
+}
+
 bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy policy) {
     // Reset all mutable state at entry so repeated install_graph() calls are
     // idempotent. Unload any previously-loaded tileset slots so a re-connect
@@ -208,6 +316,7 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
 
     // Clear cross-phase state
     roots_.clear();
+    root_transforms_.clear();
     expand_flags_.clear();
     tileset_flags_.clear();
     roots_for_install_.clear();
@@ -216,18 +325,7 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     ir_ = part_graph::InstallResult{};
     graph_snapshot_ = part_graph_snapshot::Snapshot{};  // Task 9: reset snapshot
 
-    // Ensure the persistent cache dir exists.
-    // All artifact writes are absolute-path (Task 3 Phase B: HostBaker::bake
-    // passes parts_dir to bake_source via BakeOptions so no chdir is needed).
-    fs_mkdir(cfg_.cache_root.c_str());
-    std::string parts_subdir = cfg_.cache_root + "/parts";
-    fs_mkdir(parts_subdir.c_str());
-
-    // Resolve all relative paths to absolute now (cache_root may itself be relative).
-    abs_schemas_    = abspath(cfg_.schemas_dir);
-    abs_world_data_ = abspath(cfg_.world_data_dir);
-    abs_shared_lib_ = abspath(cfg_.shared_lib_dir);
-    abs_cache_root_ = abspath(cfg_.cache_root);
+    if (!prepare_paths(err)) return false;
 
 #if defined(MATTER_HAVE_AUTOREMESHER)
     // Warm the TBB scheduler BEFORE any heap-heavy work (install() calls
@@ -315,13 +413,7 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     RecordingBaker baker(*shared_baker_ptr, cfg_ptr, install_bake_count_ptr);
     PartGraph graph(*resolver_, baker);
 
-    world_module_.clear();
-    bool manifest_ok = PartGraph::read_manifest(abs_world_data_, cfg_.world_name,
-                                                roots_, err, &expand_flags_, &tileset_flags_,
-                                                &world_module_);
-    if (!manifest_ok) {
-        return false;
-    }
+    if (!load_authored_world(err)) return false;
 
     // Tileset roots are installed by run_tileset_phase (it calls install() itself
     // on the tileset script's `static requires` children). Split them out here so
@@ -535,12 +627,13 @@ bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
     out.world_root_hash = 1;
     out.instances.clear();
     uint32_t next_id = 1;
-    auto place = [&](uint64_t h, float x, float y, float z, const std::string& mod = {}) {
+    auto place = [&](uint64_t h, const matter::Mat4f& transform,
+                     const std::string& mod = {}) {
         WorldManifestEntry e;
         e.instance_id = next_id++;
         e.part_hash   = h;
         e.module      = mod;
-        set_translate(e.transform, x, y, z);
+        std::memcpy(e.transform, transform.m, sizeof(e.transform));
         out.instances.push_back(e);
     };
 
@@ -567,12 +660,23 @@ bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
         // Task 7: skip roots that failed during install (root_hash == 0 → failed).
         if (ir_.root_hashes[k] == 0) continue;
         if (expand_flags_[i]) {
+            const size_t first_expanded = out.instances.size();
             if (!append_expanded_children(artifact_root(ir_.root_hashes[k]),
                                           ir_.root_hashes[k],
                                           next_id, out.instances, err))
                 return false;
+            for (size_t expanded = first_expanded;
+                 expanded < out.instances.size(); ++expanded) {
+                matter::Mat4f relative{};
+                std::memcpy(relative.m, out.instances[expanded].transform,
+                            sizeof(relative.m));
+                const matter::Mat4f combined =
+                    multiply_transform(root_transforms_[i], relative);
+                std::memcpy(out.instances[expanded].transform, combined.m,
+                            sizeof(combined.m));
+            }
         } else {
-            place(ir_.root_hashes[k], 0.0f, 0.0f, 0.0f, roots_[i].module);
+            place(ir_.root_hashes[k], root_transforms_[i], roots_[i].module);
         }
     }
     // Backfill module names for expanded children: append_expanded_children does
@@ -609,8 +713,10 @@ bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
     }
     // tileset roots placed/slotted later; baked_tileset_count_ stays 0 until deferred phase.
 
-    // --- Parse world lights ---
-    {
+    // --- Publish world lights ---
+    if (cfg_.uses_project_layout()) {
+        out.lights = authored_lights_;
+    } else {
         const std::string manifest_path = abs_world_data_ + "/" + cfg_.world_name + "/world.manifest";
         std::string lights_err;
         if (!world_lights::parse_lights(manifest_path, out.lights, lights_err)) {
@@ -638,6 +744,19 @@ bool LocalProvider::run_tileset_deferred(
         return fn(e);
     };
 
+    auto settle_tileset = [&](const std::string& root_module,
+                              tileset::SettledTorus& settled,
+                              std::string& settle_err) -> bool {
+        if (cfg_.uses_project_layout()) {
+            return tileset::run_tileset_phase_from_objects(
+                abs_schemas_, root_module, abs_cache_root_, settled, settle_err,
+                abs_shared_lib_);
+        }
+        return tileset::run_tileset_phase(
+            abs_world_data_, cfg_.world_name, root_module, abs_cache_root_,
+            settled, settle_err, abs_shared_lib_);
+    };
+
     for (int idx = 0; idx < total; ++idx) {
         if (is_cancelled && is_cancelled()) {
             err = "tileset deferred phase cancelled";
@@ -659,9 +778,7 @@ bool LocalProvider::run_tileset_deferred(
             fflush(stderr);
             std::string se;
             tileset::SettledTorus settled;
-            if (!tileset::run_tileset_phase(abs_world_data_, cfg_.world_name, root_module,
-                                            abs_cache_root_, settled, se,
-                                            abs_shared_lib_)) {
+            if (!settle_tileset(root_module, settled, se)) {
                 err = "LocalProvider: tileset '" + root_module +
                       "' settle failed (headless): " + se;
                 return false;
@@ -682,16 +799,16 @@ bool LocalProvider::run_tileset_deferred(
         tileset::SettledTorus settled;
         {
             std::string se;
-            if (!tileset::run_tileset_phase(abs_world_data_, cfg_.world_name, root_module,
-                                            abs_cache_root_, settled, se, abs_shared_lib_)) {
+            if (!settle_tileset(root_module, settled, se)) {
                 err = "LocalProvider: tileset '" + root_module + "' settle failed: " + se;
                 return false;
             }
         }
 
         // Compute script source hash on the worker (needed by bake_tileset_gpu for .gtex cache key).
-        const std::string root_js_path =
-            abs_world_data_ + "/../schemas/" + root_module + ".js";
+        const std::string root_js_path = cfg_.uses_project_layout()
+            ? abs_schemas_ + "/" + root_module + ".js"
+            : abs_world_data_ + "/../schemas/" + root_module + ".js";
         uint64_t script_source_hash = 0;
         {
             std::ifstream jf(root_js_path, std::ios::binary);
@@ -702,7 +819,9 @@ bool LocalProvider::run_tileset_deferred(
             }
             // If the file can't be read, hash stays 0 — bake_tileset_gpu will force-rebake.
         }
-        const std::string gtex_path = abs_world_data_ + "/" + root_module + ".gtex";
+        const std::string gtex_path = cfg_.uses_project_layout()
+            ? abs_cache_root_ + "/" + root_module + ".gtex"
+            : abs_world_data_ + "/" + root_module + ".gtex";
 
         // Step 2 (GL thread): GPU atlas bake + slot upload — GL required.
         std::string te;
@@ -962,6 +1081,7 @@ bool LocalProvider::restore_from_cache(
     install_bake_count_ = 0;
     baked_hashes_.clear();
     roots_.clear();
+    root_transforms_.clear();
     expand_flags_.clear();
     tileset_flags_.clear();
     roots_for_install_.clear();
@@ -970,14 +1090,7 @@ bool LocalProvider::restore_from_cache(
     ir_ = part_graph::InstallResult{};
     graph_snapshot_ = part_graph_snapshot::Snapshot{};
 
-    // Resolve absolute paths.
-    fs_mkdir(cfg_.cache_root.c_str());
-    std::string parts_subdir = cfg_.cache_root + "/parts";
-    fs_mkdir(parts_subdir.c_str());
-    abs_schemas_    = abspath(cfg_.schemas_dir);
-    abs_world_data_ = abspath(cfg_.world_data_dir);
-    abs_shared_lib_ = abspath(cfg_.shared_lib_dir);
-    abs_cache_root_ = abspath(cfg_.cache_root);
+    if (!prepare_paths(err)) return false;
 
     // Initialise ScriptHost + HostBaker so ensure_part_baked() can re-bake
     // individual cache-miss parts without running a global resolve.
@@ -991,15 +1104,13 @@ bool LocalProvider::restore_from_cache(
         host_baker_->set_transient(&transient_modules_, transient_dir_);
     }
 
-    // Read the world manifest to populate roots_/expand_flags_/tileset_flags_/
-    // tileset_indices_ so run_tileset_deferred() still operates correctly.
+    // Reload the authored world input to populate roots/flags for the cached
+    // compose and deferred-tileset paths. The cache key already validated the
+    // same world source and script tiers.
     {
         std::string merr;
-        world_module_.clear();
-        if (!PartGraph::read_manifest(abs_world_data_, cfg_.world_name,
-                                      roots_, merr, &expand_flags_, &tileset_flags_,
-                                      &world_module_)) {
-            err = "restore_from_cache: failed to read manifest: " + merr;
+        if (!load_authored_world(merr)) {
+            err = "restore_from_cache: failed to load world: " + merr;
             return false;
         }
         for (size_t i = 0; i < roots_.size(); ++i) {

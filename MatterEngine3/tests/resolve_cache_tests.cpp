@@ -15,6 +15,7 @@
 //                             source string are deduplicated in the file.
 
 #include "resolve_cache.h"
+#include "provider/local_provider.h"
 #include "part_graph.h"
 #include "part_graph_snapshot.h"
 #include "world_source.h"
@@ -25,10 +26,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
 #include <string>
 #include <sys/stat.h>
 #include <vector>
-#include <unistd.h>
+
+namespace fs = std::filesystem;
 
 // ---------------------------------------------------------------------------
 // Minimal test framework (mirrors async_bake_tests.cpp convention)
@@ -58,7 +61,20 @@ static int g_tests_passed = 0;
 // ---------------------------------------------------------------------------
 // Sandbox helpers
 // ---------------------------------------------------------------------------
-static void run(const std::string& cmd) { std::system(cmd.c_str()); }
+static std::string sandbox_root(const char* name) {
+    return (fs::temp_directory_path() / name).string();
+}
+
+static void reset_dir(const std::string& root) {
+    std::error_code ignored;
+    fs::remove_all(root, ignored);
+    fs::create_directories(root);
+}
+
+static void remove_dir(const std::string& root) {
+    std::error_code ignored;
+    fs::remove_all(root, ignored);
+}
 
 static bool write_file(const std::string& path, const std::string& body) {
     std::ofstream f(path, std::ios::trunc);
@@ -68,18 +84,23 @@ static bool write_file(const std::string& path, const std::string& body) {
 }
 
 // Build a minimal directory tree under root for key-computation tests.
-// schemas/: Box.js, Tree.js
+// objects/: Box.js, nested/Tree.js
 // shared-lib/: base.js
+// engine-shared/: engine.js
 static bool build_key_sandbox(const std::string& root) {
-    run("rm -rf " + root);
-    run("mkdir -p " + root + "/schemas");
-    run("mkdir -p " + root + "/shared-lib");
-    run("mkdir -p " + root + "/WorldData/TestWorld");
-    run("mkdir -p " + root + "/cache");
+    reset_dir(root);
+    fs::create_directories(root + "/objects/nested");
+    fs::create_directories(root + "/worlds");
+    fs::create_directories(root + "/shared-lib");
+    fs::create_directories(root + "/engine-shared");
+    fs::create_directories(root + "/WorldData/TestWorld");
+    fs::create_directories(root + "/.cache/TestWorld/cache");
 
-    if (!write_file(root + "/schemas/Box.js", "class Box extends Part { static build() {} }")) return false;
-    if (!write_file(root + "/schemas/Tree.js", "class Tree extends Part { static build() {} }")) return false;
+    if (!write_file(root + "/objects/Box.js", "class Box extends Part { static build() {} }")) return false;
+    if (!write_file(root + "/objects/nested/Tree.js", "class Tree extends Part { static build() {} }")) return false;
+    if (!write_file(root + "/worlds/TestWorld.js", "class TestWorld extends World { static roots = [{module: 'Box'}]; }")) return false;
     if (!write_file(root + "/shared-lib/base.js", "export const BASE = 1;")) return false;
+    if (!write_file(root + "/engine-shared/engine.js", "export const ENGINE = 1;")) return false;
     if (!write_file(root + "/WorldData/TestWorld/world.manifest", "Box\nTree\n")) return false;
     return true;
 }
@@ -198,9 +219,9 @@ static resolve_cache::ResolveCachePayload make_payload() {
 
 static void test_round_trip_basic() {
     printf("[resolve_cache] round_trip_basic\n");
-    const std::string root = "/tmp/rc_test_roundtrip";
-    run("rm -rf " + root);
-    run("mkdir -p " + root + "/cache");
+    const std::string root = sandbox_root("rc_test_roundtrip");
+    reset_dir(root);
+    fs::create_directories(root + "/cache");
 
     const uint64_t KEY = 0x0102030405060708ull;
     auto p = make_payload();
@@ -289,14 +310,14 @@ static void test_round_trip_basic() {
     // root_hashes
     CHECK(out.root_hashes == p.root_hashes);
 
-    run("rm -rf " + root);
+    remove_dir(root);
 }
 
 static void test_snapshot_indices() {
     printf("[resolve_cache] snapshot_indices\n");
-    const std::string root = "/tmp/rc_test_indices";
-    run("rm -rf " + root);
-    run("mkdir -p " + root + "/cache");
+    const std::string root = sandbox_root("rc_test_indices");
+    reset_dir(root);
+    fs::create_directories(root + "/cache");
 
     const uint64_t KEY = 0xABCDABCDABCDABCDull;
     auto p = make_payload();
@@ -325,42 +346,111 @@ static void test_snapshot_indices() {
             CHECK(it->second == std::vector<std::string>{"Box"});
     }
 
-    run("rm -rf " + root);
+    remove_dir(root);
 }
 
-static void test_key_changes_on_file() {
-    printf("[resolve_cache] key_changes_on_file\n");
-    const std::string root = "/tmp/rc_test_keyfile";
+static void test_project_sources_define_key_and_stale_manifest_is_ignored() {
+    printf("[resolve_cache] project_sources_define_key\n");
+    const std::string root = sandbox_root("rc_test_project_sources");
     REQUIRE(build_key_sandbox(root));
 
-    const std::string manifest = root + "/WorldData/TestWorld/world.manifest";
+    const std::string world = root + "/worlds/TestWorld.js";
     uint64_t k1 = resolve_cache::compute_key(
-        manifest, "", root + "/schemas", root + "/shared-lib");
+        world, "{}", root + "/objects", root + "/shared-lib",
+        root + "/engine-shared");
     CHECK(k1 != 0);
 
-    // Modify a schema file.
-    REQUIRE(write_file(root + "/schemas/Box.js",
+    REQUIRE(write_file(root + "/objects/Box.js",
                        "class Box extends Part { static build() { box(2,2,2); } }"));
-
     uint64_t k2 = resolve_cache::compute_key(
-        manifest, "", root + "/schemas", root + "/shared-lib");
+        world, "{}", root + "/objects", root + "/shared-lib",
+        root + "/engine-shared");
     CHECK(k1 != k2);
 
-    run("rm -rf " + root);
+    REQUIRE(write_file(root + "/shared-lib/base.js", "export const BASE = 2;"));
+    uint64_t k3 = resolve_cache::compute_key(
+        world, "{}", root + "/objects", root + "/shared-lib",
+        root + "/engine-shared");
+    CHECK(k2 != k3);
+
+    REQUIRE(write_file(root + "/engine-shared/engine.js", "export const ENGINE = 2;"));
+    uint64_t k4 = resolve_cache::compute_key(
+        world, "{}", root + "/objects", root + "/shared-lib",
+        root + "/engine-shared");
+    CHECK(k3 != k4);
+
+    REQUIRE(write_file(world,
+        "class TestWorld extends World { static roots = [{module: 'Tree'}]; }"));
+    uint64_t k5 = resolve_cache::compute_key(
+        world, "{}", root + "/objects", root + "/shared-lib",
+        root + "/engine-shared");
+    CHECK(k4 != k5);
+
+    REQUIRE(write_file(root + "/WorldData/TestWorld/world.manifest",
+                       "This stale manifest must never enter the key\n"));
+    uint64_t k6 = resolve_cache::compute_key(
+        world, "{}", root + "/objects", root + "/shared-lib",
+        root + "/engine-shared");
+    CHECK(k5 == k6);
+
+    remove_dir(root);
+}
+
+static void test_world_definition_adapter_preserves_runtime_semantics() {
+    printf("[resolve_cache] world_definition_adapter\n");
+    matter::WorldDefinition definition;
+    matter::WorldRoot first;
+    first.module = "Box";
+    first.params_json = "{\"a\":1,\"z\":2}";
+    first.transform.m[3] = 4.0f;
+    first.transform.m[7] = 5.0f;
+    first.transform.m[11] = 6.0f;
+    first.expand = true;
+    definition.roots.push_back(first);
+    matter::WorldRoot second;
+    second.module = "TileRoot";
+    second.tileset = true;
+    definition.roots.push_back(second);
+    matter::WorldLight light;
+    light.position = {1.0f, 2.0f, 3.0f};
+    light.color = {0.5f, 0.6f, 0.7f};
+    light.intensity = 2.5f;
+    light.range = 42.0f;
+    definition.lights.push_back(light);
+    definition.settings.sector_size = 32.0f;
+
+    const viewer::ProviderWorldDefinition adapted =
+        viewer::adapt_world_definition(definition);
+    CHECK(adapted.roots.size() == 2 &&
+          adapted.roots[0].module == "Box" &&
+          part_graph::params_to_json(adapted.roots[0].params) ==
+              "{\"a\":1,\"z\":2}");
+    CHECK(adapted.root_transforms.size() == 2 &&
+          adapted.root_transforms[0].m[3] == 4.0f &&
+          adapted.root_transforms[0].m[7] == 5.0f &&
+          adapted.root_transforms[0].m[11] == 6.0f);
+    CHECK(adapted.expand_flags == std::vector<bool>({true, false}) &&
+          adapted.tileset_flags == std::vector<bool>({false, true}));
+    CHECK(adapted.lights.spots.size() == 1 &&
+          adapted.lights.spots[0].color[0] == 1.25f &&
+          adapted.lights.spots[0].color[1] == 1.5f &&
+          adapted.lights.spots[0].color[2] == 1.75f &&
+          adapted.lights.spots[0].range == 42.0f);
+    CHECK(adapted.settings.sector_size == 32.0f);
 }
 
 static void test_key_changes_on_seed() {
     printf("[resolve_cache] key_changes_on_seed\n");
-    const std::string root = "/tmp/rc_test_keyseed";
+    const std::string root = sandbox_root("rc_test_keyseed");
     REQUIRE(build_key_sandbox(root));
 
-    const std::string manifest = root + "/WorldData/TestWorld/world.manifest";
+    const std::string world = root + "/worlds/TestWorld.js";
     uint64_t k1 = resolve_cache::compute_key(
-        manifest, "", root + "/schemas", root + "/shared-lib");
+        world, "{}", root + "/objects", root + "/shared-lib", root + "/engine-shared");
     uint64_t k2 = resolve_cache::compute_key(
-        manifest, "{\"worldSeed\":42}", root + "/schemas", root + "/shared-lib");
+        world, "{\"worldSeed\":42}", root + "/objects", root + "/shared-lib", root + "/engine-shared");
     uint64_t k3 = resolve_cache::compute_key(
-        manifest, "{\"worldSeed\":99}", root + "/schemas", root + "/shared-lib");
+        world, "{\"worldSeed\":99}", root + "/objects", root + "/shared-lib", root + "/engine-shared");
 
     CHECK(k1 != k2);
     CHECK(k1 != k3);
@@ -368,17 +458,17 @@ static void test_key_changes_on_seed() {
 
     // Same seed -> same key.
     uint64_t k2b = resolve_cache::compute_key(
-        manifest, "{\"worldSeed\":42}", root + "/schemas", root + "/shared-lib");
+        world, "{\"worldSeed\":42}", root + "/objects", root + "/shared-lib", root + "/engine-shared");
     CHECK(k2 == k2b);
 
-    run("rm -rf " + root);
+    remove_dir(root);
 }
 
 static void test_truncated_load() {
     printf("[resolve_cache] truncated_load\n");
-    const std::string root = "/tmp/rc_test_trunc";
-    run("rm -rf " + root);
-    run("mkdir -p " + root + "/cache");
+    const std::string root = sandbox_root("rc_test_trunc");
+    reset_dir(root);
+    fs::create_directories(root + "/cache");
 
     const uint64_t KEY = 0x1111222233334444ull;
     auto p = make_payload();
@@ -396,14 +486,14 @@ static void test_truncated_load() {
     resolve_cache::ResolveCachePayload out;
     CHECK(!resolve_cache::load(root, "TestWorld", KEY, out));
 
-    run("rm -rf " + root);
+    remove_dir(root);
 }
 
 static void test_bad_magic_rejected() {
     printf("[resolve_cache] bad_magic_rejected\n");
-    const std::string root = "/tmp/rc_test_magic";
-    run("rm -rf " + root);
-    run("mkdir -p " + root + "/cache");
+    const std::string root = sandbox_root("rc_test_magic");
+    reset_dir(root);
+    fs::create_directories(root + "/cache");
 
     const uint64_t KEY = 0xAAAABBBBCCCCDDDDull;
     auto p = make_payload();
@@ -422,14 +512,14 @@ static void test_bad_magic_rejected() {
     resolve_cache::ResolveCachePayload out;
     CHECK(!resolve_cache::load(root, "TestWorld", KEY, out));
 
-    run("rm -rf " + root);
+    remove_dir(root);
 }
 
 static void test_bad_key_rejected() {
     printf("[resolve_cache] bad_key_rejected\n");
-    const std::string root = "/tmp/rc_test_badkey";
-    run("rm -rf " + root);
-    run("mkdir -p " + root + "/cache");
+    const std::string root = sandbox_root("rc_test_badkey");
+    reset_dir(root);
+    fs::create_directories(root + "/cache");
 
     const uint64_t KEY_SAVE = 0x1234567890ABCDEFull;
     const uint64_t KEY_LOAD = 0xFEDCBA9876543210ull;
@@ -439,14 +529,14 @@ static void test_bad_key_rejected() {
     resolve_cache::ResolveCachePayload out;
     CHECK(!resolve_cache::load(root, "TestWorld", KEY_LOAD, out));
 
-    run("rm -rf " + root);
+    remove_dir(root);
 }
 
 static void test_multi_source_dedup() {
     printf("[resolve_cache] multi_source_dedup\n");
-    const std::string root = "/tmp/rc_test_dedup";
-    run("rm -rf " + root);
-    run("mkdir -p " + root + "/cache");
+    const std::string root = sandbox_root("rc_test_dedup");
+    reset_dir(root);
+    fs::create_directories(root + "/cache");
 
     const uint64_t KEY = 0xDEDEDEDEDEDEDEDEull;
     auto p = make_payload();
@@ -470,7 +560,7 @@ static void test_multi_source_dedup() {
     CHECK(it1->second.source == SHARED_SRC);
     CHECK(it2->second.source == SHARED_SRC);
 
-    run("rm -rf " + root);
+    remove_dir(root);
 }
 
 // ---------------------------------------------------------------------------
@@ -481,7 +571,8 @@ int main() {
 
     test_round_trip_basic();
     test_snapshot_indices();
-    test_key_changes_on_file();
+    test_project_sources_define_key_and_stale_manifest_is_ignored();
+    test_world_definition_adapter_preserves_runtime_semantics();
     test_key_changes_on_seed();
     test_truncated_load();
     test_bad_magic_rejected();

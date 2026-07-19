@@ -71,6 +71,7 @@
 #include <cstring>
 #include <deque>
 #include <fstream>
+#include <filesystem>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -917,17 +918,21 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     // to the full install+compose path.
     bool resolve_cache_hit = false;
     uint64_t rc_cache_key  = 0;
-    if (!enable_live_edit && !cfg.schemas_dir.empty() && !cfg.world_data_dir.empty()) {
-        const std::string world_manifest_path =
-            cfg.world_data_dir + "/" + cfg.world_name + "/world.manifest";
+    if (!enable_live_edit && !cfg.object_sources_dir().empty()) {
+        const std::string world_source_path = cfg.uses_project_layout()
+            ? cfg.world_path
+            : cfg.world_data_dir + "/" + cfg.world_name + "/world.manifest";
         rc_cache_key = resolve_cache::compute_key(
-            world_manifest_path,
+            world_source_path,
             cfg.root_params_json,
-            cfg.schemas_dir,
-            cfg.shared_lib_dir);
+            cfg.object_sources_dir(),
+            cfg.uses_project_layout() ? cfg.project_shared_lib_dir
+                                      : cfg.shared_lib_dir,
+            cfg.uses_project_layout() ? cfg.engine_shared_lib_dir
+                                      : std::string{});
         if (rc_cache_key != 0) {
             resolve_cache::ResolveCachePayload rc_payload;
-            if (resolve_cache::load(engine->cache_root, cfg.world_name,
+            if (resolve_cache::load(cfg.cache_root, cfg.world_name,
                                     rc_cache_key, rc_payload)) {
                 // Cache header valid — try to restore provider state.
                 std::string rc_err;
@@ -1094,7 +1099,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         rc_save.snapshot    = provider->graph_snapshot();
         rc_save.bake_plan   = provider->install_result().bake_plan;
         rc_save.root_hashes = provider->install_result().root_hashes;
-        if (!resolve_cache::save(engine->cache_root, cfg.world_name,
+        if (!resolve_cache::save(cfg.cache_root, cfg.world_name,
                                  rc_cache_key, rc_save)) {
             fprintf(stderr, "resolve cache: save failed (non-fatal)\n");
         } else {
@@ -1456,7 +1461,7 @@ void WorldSession::Impl::publish_pipeline(
         // visible to the upcoming GPU job's `added` snapshot build.
         if (!part_bake_failed) {
             // Only attempt ref streaming when the flat is available (demand or eager).
-            const std::string flat_abs = engine->cache_root + "/" +
+            const std::string flat_abs = cfg.cache_root + "/" +
                                          part_asset::cache_path_flat(h);
             if (part_asset::peek_format_version(flat_abs) ==
                     part_asset::kFormatVersionFlat) {
@@ -2061,7 +2066,9 @@ bool WorldSession::Impl::install_world(
     // 1. Read world source: <schemas_dir>/<world_module>.js
     std::string world_source;
     {
-        const std::string world_js = cfg.schemas_dir + "/" + wmod + ".js";
+        const std::string world_js = cfg.uses_project_layout()
+            ? cfg.world_path
+            : cfg.schemas_dir + "/" + wmod + ".js";
         std::ifstream in(world_js, std::ios::binary);
         if (!in) { err = "install_world: cannot read " + world_js; return false; }
         std::ostringstream ss; ss << in.rdbuf();
@@ -2070,7 +2077,7 @@ bool WorldSession::Impl::install_world(
 
     // 2. eval_world with the root_params_json override.
     script_host::ScriptHost host;
-    host.set_shared_lib_root(cfg.shared_lib_dir);
+    host.set_shared_lib_root(cfg.effective_shared_lib_dir());
     std::string params_json = cfg.root_params_json.empty() ? "{}" : cfg.root_params_json;
     script_host::WorldEvalResult r = host.eval_world(world_source, params_json);
     if (!r.ok) { err = "install_world: eval_world failed: " + r.message; return false; }
@@ -2123,7 +2130,8 @@ bool WorldSession::Impl::install_world(
 
     // 7. Read sector source: <schemas_dir>/WorldSector.js
     {
-        const std::string sector_js = cfg.schemas_dir + "/WorldSector.js";
+        const std::string sector_js =
+            cfg.object_sources_dir() + "/WorldSector.js";
         std::ifstream in(sector_js, std::ios::binary);
         if (!in) { err = "install_world: cannot read " + sector_js; return false; }
         std::ostringstream ss; ss << in.rdbuf();
@@ -2167,7 +2175,8 @@ bool WorldSession::Impl::install_world(
 
         std::string source;
         {
-            const std::string child_js = cfg.schemas_dir + "/" + module + ".js";
+            const std::string child_js =
+                cfg.object_sources_dir() + "/" + module + ".js";
             std::ifstream in(child_js, std::ios::binary);
             if (!in) {
                 fprintf(stderr, "install_world: cannot read child %s (skipping)\n", child_js.c_str());
@@ -2801,7 +2810,7 @@ void WorldSession::Impl::execute_sector_stream_step() {
         opts.world.y_max       = 192.0f;
 
         script_host::ScriptHost bake_host;
-        bake_host.set_shared_lib_root(cfg.shared_lib_dir);
+        bake_host.set_shared_lib_root(cfg.effective_shared_lib_dir());
 
         script_host::BakeResult br;
         try {
@@ -3143,13 +3152,13 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
 
     // Fresh ScriptHost for the rebake (shared-lib root from cfg).
     script_host::ScriptHost host;
-    host.set_shared_lib_root(cfg.shared_lib_dir);
+    host.set_shared_lib_root(cfg.effective_shared_lib_dir());
 
     live_edit_prod::ProdGraphResolver gr(snap, host,
-                                         cfg.schemas_dir,
-                                         cfg.shared_lib_dir);
-    live_edit_prod::ProdBaker         pb(snap, host, engine->cache_root);
-    live_edit_prod::ProdFlattener     pf(snap, host, engine->cache_root);
+                                         cfg.object_sources_dir(),
+                                         cfg.effective_shared_lib_dir());
+    live_edit_prod::ProdBaker         pb(snap, host, cfg.cache_root);
+    live_edit_prod::ProdFlattener     pf(snap, host, cfg.cache_root);
 
     // NullSink: we convert errors to BakeError events below.
     struct NullSink : live_edit::ErrorSink {
@@ -3307,7 +3316,7 @@ bool WorldSession::Impl::ensure_tracer() const {
 
     tracer = std::make_unique<world_tracer::WorldTracer>();
     std::string err;
-    if (!tracer->build(engine->cache_root, trace_instances, err)) {
+    if (!tracer->build(cfg.cache_root, trace_instances, err)) {
         std::fprintf(stderr, "WorldSession: tracer build failed: %s\n", err.c_str());
         tracer.reset();
         return false;
@@ -3381,24 +3390,59 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
     auto simpl = std::make_unique<WorldSession::Impl>();
     simpl->engine = impl_.get();
 
-    // Fill provider config from WorldDesc + engine cache_root.
-    simpl->cfg.schemas_dir    = desc.schemas_dir    ? desc.schemas_dir    : "";
-    simpl->cfg.world_data_dir = desc.world_data_dir ? desc.world_data_dir : "";
-    simpl->cfg.world_name     = desc.world_name     ? desc.world_name     : "";
-    simpl->cfg.shared_lib_dir = desc.shared_lib_dir ? desc.shared_lib_dir : "";
-    simpl->cfg.cache_root     = impl_->cache_root;
+    if (desc.project_dir != nullptr) {
+        namespace fs = std::filesystem;
+        if (desc.world_name == nullptr || desc.world_name[0] == '\0') {
+            err = "open_world: world_name is required with project_dir";
+            return nullptr;
+        }
+        simpl->cfg = viewer::LocalProviderConfig::for_project(
+            desc.project_dir, desc.world_name,
+            desc.engine_shared_lib_dir ? desc.engine_shared_lib_dir : "");
+        std::error_code ec;
+        if (!fs::is_directory(simpl->cfg.objects_dir, ec)) {
+            err = "open_world: objects directory not found: " +
+                  simpl->cfg.objects_dir;
+            return nullptr;
+        }
+        ec.clear();
+        if (!fs::is_regular_file(simpl->cfg.world_path, ec)) {
+            err = "open_world: world source not found: " + simpl->cfg.world_path;
+            return nullptr;
+        }
+    } else {
+        // Temporary Task-2 test seam. Task 3 migrates the remaining fixtures
+        // and deletes this entire branch with the legacy descriptor fields.
+        simpl->cfg.schemas_dir = desc.schemas_dir ? desc.schemas_dir : "";
+        simpl->cfg.world_data_dir =
+            desc.world_data_dir ? desc.world_data_dir : "";
+        simpl->cfg.world_name = desc.world_name ? desc.world_name : "";
+        simpl->cfg.shared_lib_dir =
+            desc.shared_lib_dir ? desc.shared_lib_dir : "";
+        simpl->cfg.cache_root = impl_->cache_root;
+    }
 
     // Task 10: live-edit opt-in. On Linux, eagerly create and register the
     // inotify watcher so events during and after the initial bake are captured.
 #ifdef __linux__
     simpl->enable_live_edit = desc.enable_live_edit;
-    if (desc.enable_live_edit && !simpl->cfg.schemas_dir.empty()) {
+    if (desc.enable_live_edit && !simpl->cfg.object_sources_dir().empty()) {
         simpl->inotify_watcher = std::make_unique<live_edit::InotifyWatcher>();
-        simpl->inotify_watcher->add_watch(simpl->cfg.schemas_dir);
-        if (!simpl->cfg.shared_lib_dir.empty())
+        simpl->inotify_watcher->add_watch(simpl->cfg.object_sources_dir());
+        if (simpl->cfg.uses_project_layout()) {
+            simpl->inotify_watcher->add_watch(simpl->cfg.worlds_dir);
+            if (!simpl->cfg.project_shared_lib_dir.empty())
+                simpl->inotify_watcher->add_watch(
+                    simpl->cfg.project_shared_lib_dir);
+            if (!simpl->cfg.engine_shared_lib_dir.empty())
+                simpl->inotify_watcher->add_watch(
+                    simpl->cfg.engine_shared_lib_dir);
+        } else if (!simpl->cfg.shared_lib_dir.empty()) {
             simpl->inotify_watcher->add_watch(simpl->cfg.shared_lib_dir);
+        }
         simpl->inotify_watching = true;
-        printf("live-edit: watching %s\n", simpl->cfg.schemas_dir.c_str());
+        printf("live-edit: watching %s\n",
+               simpl->cfg.object_sources_dir().c_str());
     }
 #else
     if (desc.enable_live_edit)

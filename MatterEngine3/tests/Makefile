@@ -586,6 +586,7 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../src/provider/resolvers.cpp \
               ../src/render/part_store.cpp \
               ../src/provider/local_provider.cpp \
+              ../src/script/world_definition_loader.cpp \
               ../src/render/world_composer.cpp \
               ../src/render/raster_mesh.cpp \
               ../src/render/tileset_provider.cpp ../src/render/tileset_gl_ctx.cpp \
@@ -650,7 +651,7 @@ GPU_RENDER_CPP = \
 
 GPU_PIPELINE_CPP = \
     ../src/part_graph.cpp \
-    ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp \
+    ../src/script_host.cpp ../src/script/world_definition_loader.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp \
     ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp \
     ../src/script_rng_binding.cpp \
     ../src/polygon_triangulate.cpp \

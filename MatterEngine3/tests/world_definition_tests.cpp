@@ -1,5 +1,6 @@
 // Phase 4 Task 1: engine-owned World JavaScript statics contract.
 #include "check.h"
+#include "../src/provider/local_provider.h"
 #include "../src/script/world_definition_loader.h"
 
 #include <chrono>
@@ -48,6 +49,33 @@ struct Fixture {
         return result;
     }
 };
+
+void test_project_layout_derives_runtime_paths() {
+    Fixture fixture;
+    fs::create_directories(fixture.root / "worlds");
+
+    auto cfg = viewer::LocalProviderConfig::for_project(
+        fixture.root.string(), "Demo", (fixture.root / "engine-shared").string());
+
+    CHECK(cfg.project_dir == fixture.root.string(),
+          "project root is retained for runtime reloads");
+    CHECK(cfg.objects_dir == (fixture.root / "objects").string(),
+          "object modules come from <project>/objects");
+    CHECK(cfg.world_path == (fixture.root / "worlds" / "Demo.js").string(),
+          "world source is <project>/worlds/<name>.js");
+    CHECK(cfg.cache_root == (fixture.root / ".cache" / "Demo").string(),
+          "all generated output is rooted under <project>/.cache/<name>");
+    CHECK(cfg.project_shared_lib_dir.empty(),
+          "a missing project shared-lib is an empty optional tier");
+    CHECK(cfg.engine_shared_lib_dir == (fixture.root / "engine-shared").string(),
+          "engine shared-lib remains the fallback tier");
+
+    fs::create_directories(fixture.root / "shared-lib");
+    cfg = viewer::LocalProviderConfig::for_project(
+        fixture.root.string(), "Demo", (fixture.root / "engine-shared").string());
+    CHECK(cfg.project_shared_lib_dir == (fixture.root / "shared-lib").string(),
+          "an existing project shared-lib is the preferred tier");
+}
 
 void test_rejects_non_world_base_with_location_and_property() {
     Fixture fixture;
@@ -136,6 +164,7 @@ class FixtureWorld extends World {
               definition.settings.y_min == -12.0f &&
               definition.settings.y_max == 88.0f,
           "world settings extracted");
+
     CHECK(definition.entities.size() == 2,
           "declarative and buildEntities records share one stream");
     if (definition.entities.size() == 2) {
@@ -269,6 +298,7 @@ class ThrowingWorld extends World {
 } // namespace
 
 int main() {
+    test_project_layout_derives_runtime_paths();
     test_rejects_non_world_base_with_location_and_property();
     test_extracts_statics_without_calling_field_and_uses_project_override();
     test_engine_shared_fallback_and_no_entity_world();

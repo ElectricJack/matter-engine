@@ -324,9 +324,8 @@ int main() {
     auto worlds = viewer::scan_worlds(examples_root());
     std::printf("worlds available (%d):\n", static_cast<int>(worlds.size()));
     for (size_t i = 0; i < worlds.size(); ++i)
-        std::printf("  [%zu] %s  (%s / %s)\n", i, worlds[i].label.c_str(),
-                    worlds[i].schemas_dir.c_str(),
-                    worlds[i].world_data_dir.c_str());
+        std::printf("  [%zu] %s  (%s)\n", i, worlds[i].label.c_str(),
+                    worlds[i].project_dir.c_str());
     if (worlds.empty()) {
         std::fprintf(stderr, "FATAL: no worlds found under %s\n",
                      examples_root().c_str());
@@ -395,10 +394,9 @@ int main() {
     const std::string shared_lib = shared_lib_root();
     auto open_world = [&](const viewer::WorldEntry& entry) {
         matter::WorldDesc desc;
-        desc.schemas_dir = entry.schemas_dir.c_str();
-        desc.world_data_dir = entry.world_data_dir.c_str();
+        desc.project_dir = entry.project_dir.c_str();
         desc.world_name = entry.world_name.c_str();
-        desc.shared_lib_dir = shared_lib.c_str();
+        desc.engine_shared_lib_dir = shared_lib.c_str();
         desc.enable_live_edit = std::getenv("MATTER_LIVE_EDIT") != nullptr;
         std::string world_error;
         auto result = engine->open_world(desc, world_error);

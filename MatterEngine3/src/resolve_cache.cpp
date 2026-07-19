@@ -248,17 +248,18 @@ static uint64_t fold_u32(uint64_t h, uint32_t v) {
 // Public API
 // ---------------------------------------------------------------------------
 
-uint64_t compute_key(const std::string& world_manifest_path,
+uint64_t compute_key(const std::string& world_path,
                      const std::string& root_params_json,
-                     const std::string& schemas_dir,
-                     const std::string& shared_lib_dir) {
+                     const std::string& objects_dir,
+                     const std::string& project_shared_lib_dir,
+                     const std::string& engine_shared_lib_dir) {
     // Start with FNV-1a offset basis.
     uint64_t h = 14695981039346656037ull;
 
-    // 1. World manifest file bytes.
+    // 1. World JavaScript source bytes.
     {
-        auto bytes = read_file_bytes(world_manifest_path);
-        if (bytes.empty()) return 0;  // can't compute key without manifest
+        auto bytes = read_file_bytes(world_path);
+        if (bytes.empty()) return 0;  // can't compute key without world source
         uint64_t mh = part_asset::fnv1a64(bytes.data(), bytes.size());
         h ^= mh;
         h *= 0x00000100000001B3ull;
@@ -267,10 +268,16 @@ uint64_t compute_key(const std::string& world_manifest_path,
     // 2. root_params_json seed override (empty string when unset).
     h = fold_str(h, root_params_json);
 
-    // 3. Every file under schemas_dir, then shared_lib_dir: sorted rel path +
-    //    fnv1a64(file bytes). Two separate sorted-walks so schemas always come
-    //    before shared-lib files (order is part of the key spec).
-    for (const std::string* dir_ptr : {&schemas_dir, &shared_lib_dir}) {
+    // 3. Every file under the object and both shared-library tiers. Fold an
+    //    explicit tier tag so identical relative names cannot alias tiers.
+    const std::pair<const char*, const std::string*> tiers[] = {
+        {"objects", &objects_dir},
+        {"project-shared", &project_shared_lib_dir},
+        {"engine-shared", &engine_shared_lib_dir},
+    };
+    for (const auto& tier : tiers) {
+        h = fold_str(h, tier.first);
+        const std::string* dir_ptr = tier.second;
         if (dir_ptr->empty()) continue;
         std::vector<std::string> rel_files;
         collect_files_sorted(*dir_ptr, "", rel_files);

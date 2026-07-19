@@ -61,29 +61,31 @@ std::vector<WorldEntry> scan_worlds(const std::string& examples_root) {
     std::vector<WorldEntry> out;
     std::error_code ec;
 
-    // examples_root/<demo>/
-    for (auto it = fs::directory_iterator(examples_root, ec);
-         !ec && it != fs::directory_iterator(); it.increment(ec)) {
-        const fs::path demo = it->path();
-        if (!fs::is_directory(demo, ec)) continue;
-
-        const fs::path schemas   = demo / "schemas";
-        const fs::path world_data = demo / "WorldData";
-        if (!fs::is_directory(schemas, ec) || !fs::is_directory(world_data, ec)) continue;
-
-        // examples_root/<demo>/WorldData/<world_name>/
-        std::error_code ec2;
-        for (auto wit = fs::directory_iterator(world_data, ec2);
-             !ec2 && wit != fs::directory_iterator(); wit.increment(ec2)) {
-            const fs::path world_dir = wit->path();
-            if (!fs::is_directory(world_dir, ec2)) continue;
+    auto scan_project = [&](const fs::path& project) {
+        std::error_code project_ec;
+        const fs::path objects = project / "objects";
+        const fs::path worlds = project / "worlds";
+        if (!fs::is_directory(objects, project_ec) ||
+            !fs::is_directory(worlds, project_ec)) return;
+        for (auto wit = fs::directory_iterator(worlds, project_ec);
+             !project_ec && wit != fs::directory_iterator();
+             wit.increment(project_ec)) {
+            const fs::path world_file = wit->path();
+            if (!fs::is_regular_file(world_file, project_ec) ||
+                world_file.extension() != ".js") continue;
             WorldEntry e;
-            e.label          = world_dir.filename().string();
-            e.schemas_dir    = schemas.string();
-            e.world_data_dir = world_data.string();
-            e.world_name     = world_dir.filename().string();
+            e.label = world_file.stem().string();
+            e.project_dir = project.string();
+            e.world_name = world_file.stem().string();
             out.push_back(std::move(e));
         }
+    };
+
+    const fs::path root(examples_root);
+    scan_project(root);
+    for (auto it = fs::directory_iterator(root, ec);
+         !ec && it != fs::directory_iterator(); it.increment(ec)) {
+        if (fs::is_directory(it->path(), ec)) scan_project(it->path());
     }
 
     std::sort(out.begin(), out.end(),

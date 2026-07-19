@@ -91,9 +91,9 @@ int main() {
     auto worlds = viewer::scan_worlds("../MatterEngine3/examples");
     printf("worlds available (%d):\n", (int)worlds.size());
     for (size_t i = 0; i < worlds.size(); ++i) {
-        printf("  [%zu] %s  (%s / %s)\n",
+        printf("  [%zu] %s  (%s)\n",
                i, worlds[i].label.c_str(),
-               worlds[i].schemas_dir.c_str(), worlds[i].world_data_dir.c_str());
+               worlds[i].project_dir.c_str());
     }
     if (worlds.empty()) {
         printf("FATAL: no worlds found under ../MatterEngine3/examples\n");
@@ -166,10 +166,9 @@ int main() {
     // the per-frame poll_event() drain; GPU work runs inside pump_gpu_jobs() each frame.
     auto open_world_and_start_bake = [&](const viewer::WorldEntry& w) -> std::unique_ptr<matter::WorldSession> {
         matter::WorldDesc wd;
-        wd.schemas_dir    = w.schemas_dir.c_str();
-        wd.world_data_dir = w.world_data_dir.c_str();
+        wd.project_dir    = w.project_dir.c_str();
         wd.world_name     = w.world_name.c_str();
-        wd.shared_lib_dir = "../MatterEngine3/shared-lib";
+        wd.engine_shared_lib_dir = "../MatterEngine3/shared-lib";
         // Task 10: MATTER_LIVE_EDIT=1 opts in to inotify live-edit (Linux only;
         // ignored with a notice on other platforms).
         wd.enable_live_edit = (getenv("MATTER_LIVE_EDIT") != nullptr);

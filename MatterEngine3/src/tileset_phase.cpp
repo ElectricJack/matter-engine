@@ -43,18 +43,17 @@ static bool read_file_str(const std::string& path, std::string& out) {
     return true;
 }
 
-bool run_tileset_phase(const std::string& world_data_dir, const std::string& /*world*/,
-                       const std::string& root_module,
-                       const std::string& parts_cache_dir,
-                       SettledTorus& out, std::string& err,
-                       const std::string& shared_lib_root)
+static bool run_tileset_phase_impl(const std::string& schemas_dir,
+                                   const std::string& root_module,
+                                   const std::string& parts_cache_dir,
+                                   SettledTorus& out, std::string& err,
+                                   const std::string& shared_lib_root)
 {
     // -----------------------------------------------------------------------
     // 1. Load the tileset root's source.
     //    The root is NOT a Part (no .part output) — we only read its source to
     //    discover children and evaluate the tileset spec.
     // -----------------------------------------------------------------------
-    const std::string schemas_dir = schemas_dir_for(world_data_dir);
     const std::string root_path   = schemas_dir + "/" + root_module + ".js";
 
     std::string root_source;
@@ -181,6 +180,26 @@ bool run_tileset_phase(const std::string& world_data_dir, const std::string& /*w
     return true;
 }
 
+bool run_tileset_phase(const std::string& world_data_dir, const std::string& /*world*/,
+                       const std::string& root_module,
+                       const std::string& parts_cache_dir,
+                       SettledTorus& out, std::string& err,
+                       const std::string& shared_lib_root)
+{
+    return run_tileset_phase_impl(schemas_dir_for(world_data_dir), root_module,
+                                  parts_cache_dir, out, err, shared_lib_root);
+}
+
+bool run_tileset_phase_from_objects(const std::string& objects_dir,
+                                    const std::string& root_module,
+                                    const std::string& parts_cache_dir,
+                                    SettledTorus& out, std::string& err,
+                                    const std::string& shared_lib_root)
+{
+    return run_tileset_phase_impl(objects_dir, root_module, parts_cache_dir,
+                                  out, err, shared_lib_root);
+}
+
 } // namespace tileset
 
 #else // !MATTER_HAVE_SCRIPT_HOST
@@ -189,7 +208,16 @@ namespace tileset {
 
 bool run_tileset_phase(const std::string&, const std::string&,
                        const std::string&, const std::string&,
-                       SettledTorus&, std::string& err)
+                       SettledTorus&, std::string& err,
+                       const std::string&)
+{
+    err = "tileset_phase: built without MATTER_HAVE_SCRIPT_HOST";
+    return false;
+}
+
+bool run_tileset_phase_from_objects(const std::string&, const std::string&,
+                                    const std::string&, SettledTorus&,
+                                    std::string& err, const std::string&)
 {
     err = "tileset_phase: built without MATTER_HAVE_SCRIPT_HOST";
     return false;

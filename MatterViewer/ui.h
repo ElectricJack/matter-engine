@@ -19,15 +19,13 @@ namespace viewer {
 // One available world for the runtime picker. Populated by scan_worlds at
 // startup; consumed by draw_worlds_panel and the main-loop switch handler.
 struct WorldEntry {
-    std::string label;           // display name (WorldData/ subdir name)
-    std::string schemas_dir;     // e.g. "../examples/world_demo/schemas"
-    std::string world_data_dir;  // e.g. "../examples/world_demo/WorldData"
-    std::string world_name;      // e.g. "Demo"
+    std::string label;        // display name (world .js filename stem)
+    std::string project_dir;  // project containing objects/ and worlds/
+    std::string world_name;   // e.g. "Demo"
 };
 
-// Scan a root like "../examples" for available worlds. Every subdirectory
-// <demo>/ that contains both schemas/ and WorldData/ contributes one entry
-// per subdirectory of WorldData/. Sorted by label.
+// Scan a root like "../examples" for projects containing objects/ + worlds/.
+// Every regular worlds/*.js file contributes one entry, sorted by label.
 std::vector<WorldEntry> scan_worlds(const std::string& examples_root);
 
 // Read-only stats the HUD displays each frame; the resolver selector is the one

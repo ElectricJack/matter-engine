@@ -30,6 +30,14 @@ bool run_tileset_phase(const std::string& world_data_dir, const std::string& wor
                        SettledTorus& out, std::string& err,
                        const std::string& shared_lib_root = "");
 
+// Project-layout entry point. Module sources are read directly from objects_dir;
+// no legacy WorldData/../schemas path convention is applied.
+bool run_tileset_phase_from_objects(const std::string& objects_dir,
+                                    const std::string& root_module,
+                                    const std::string& parts_cache_dir,
+                                    SettledTorus& out, std::string& err,
+                                    const std::string& shared_lib_root = "");
+
 // New overload that also runs the GPU .gtex bake at the end of the phase.
 // The existing 6-arg run_tileset_phase (no opts) remains unchanged so all
 // existing call-sites still compile. opts controls cache-hit skip and PNG dump.

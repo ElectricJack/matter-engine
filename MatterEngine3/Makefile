@@ -85,7 +85,7 @@ FLECS_OBJ = flecs.o
 # LOD flatten/select, tileset pipeline, render, provider, and facade.
 ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/dsl_triangle.cpp src/triangle_emit.cpp src/polygon_triangulate.cpp \
-          src/csg_lowering.cpp src/module_resolver.cpp src/script_rng_binding.cpp \
+          src/csg_lowering.cpp src/module_resolver.cpp src/script/world_definition_loader.cpp src/script_rng_binding.cpp \
           src/part_asset_v2.cpp src/part_graph.cpp src/part_graph_snapshot.cpp \
           src/live_edit.cpp src/live_edit_prod.cpp src/inotify_watcher.cpp \
           src/lod_bake.cpp src/world_flatten.cpp src/part_flatten.cpp \
@@ -146,7 +146,7 @@ MSL_C_OBJ = surface.o open_particle_surface.o spatial_hash.o \
 ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           pf_math.o pf_sim.o pf_fields.o pf_path_recorder.o pf_bindings.o \
           dsl_triangle.o triangle_emit.o polygon_triangulate.o \
-          csg_lowering.o module_resolver.o script_rng_binding.o \
+          csg_lowering.o module_resolver.o world_definition_loader.o script_rng_binding.o \
           part_asset_v2.o part_graph.o part_graph_snapshot.o \
           live_edit.o live_edit_prod.o inotify_watcher.o \
           lod_bake.o world_flatten.o part_flatten.o \

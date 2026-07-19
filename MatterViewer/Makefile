@@ -129,6 +129,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/script_host.cpp $(ME3_DIR)/src/dsl_state.cpp \
               $(ME3_DIR)/src/dsl_triangle.cpp $(ME3_DIR)/src/dsl_bindings.cpp \
               $(ME3_DIR)/src/csg_lowering.cpp $(ME3_DIR)/src/module_resolver.cpp \
+              $(ME3_DIR)/src/script/world_definition_loader.cpp \
               $(ME3_DIR)/src/script_rng_binding.cpp \
               $(ME3_DIR)/src/polygon_triangulate.cpp \
               $(ME3_DIR)/src/part_asset_v2.cpp $(ME3_DIR)/src/lod_bake.cpp \

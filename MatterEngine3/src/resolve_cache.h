@@ -38,16 +38,18 @@ struct ResolveCachePayload {
 };
 
 // Compute the cache key by folding:
-//   - bytes of the world.manifest file
+//   - bytes of worlds/<name>.js
 //   - root_params_json string (empty when unset)
-//   - for every file under schemas_dir and shared_lib_dir: sorted relative
+//   - for every file under objects_dir, project_shared_lib_dir, and
+//     engine_shared_lib_dir: sorted relative
 //     path + fnv1a64(file bytes) pairs
 //   - kEngineBakeVersion (from tileset_gtex.h)
 // Returns 0 on any filesystem error (caller treats as a miss).
-uint64_t compute_key(const std::string& world_manifest_path,
+uint64_t compute_key(const std::string& world_path,
                      const std::string& root_params_json,
-                     const std::string& schemas_dir,
-                     const std::string& shared_lib_dir);
+                     const std::string& objects_dir,
+                     const std::string& project_shared_lib_dir,
+                     const std::string& engine_shared_lib_dir);
 
 // Save a resolved payload to <cache_root>/cache/<world_name>.resolve.
 // Writes to a .tmp then renames (atomic on POSIX).

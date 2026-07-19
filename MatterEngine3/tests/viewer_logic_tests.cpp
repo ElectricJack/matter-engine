@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <set>
@@ -43,6 +44,30 @@
 // expensive lod_bake on the large Tree geometry more than once per process.
 static viewer::PartStore* g_shared_store = nullptr;
 static viewer::WorldManifest g_shared_manifest;
+
+static std::string test_tmp(const char* name) {
+    return (std::filesystem::temp_directory_path() / name).string();
+}
+
+static void reset_test_dir(const std::string& root, bool with_parts = false) {
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    ec.clear();
+    std::filesystem::create_directories(
+        with_parts ? std::filesystem::path(root) / "parts"
+                   : std::filesystem::path(root),
+        ec);
+}
+
+static void ensure_parts_dir(const std::string& root) {
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(root) / "parts", ec);
+}
+
+static void remove_test_dir(const std::string& root) {
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+}
 
 static bool camera_close3(matter::Float3 a, matter::Float3 b, float epsilon) {
     return std::fabs(a.x - b.x) <= epsilon &&
@@ -542,13 +567,13 @@ static void test_resolvers() {
 }
 
 static void test_part_store_missing() {
-    viewer::PartStore store("/tmp/me3_viewer_test_cache_empty");
+    viewer::PartStore store(test_tmp("me3_viewer_test_cache_empty"));
     CHECK(!store.has(0xDEADBEEFULL), "fresh store reports unknown hash as absent");
     CHECK(store.loaded_count() == 0, "fresh store has nothing loaded");
 }
 
 static void test_local_provider_cache() {
-    const std::string cache = "/tmp/me3_viewer_cache_test";
+    const std::string cache = test_tmp("me3_viewer_cache_test");
 
     // Resolve committed example assets relative to MatterEngine3/tests (cwd).
     viewer::LocalProviderConfig cfg;
@@ -679,10 +704,12 @@ static void test_partstore_keeps_children() {
 
     // Resolve the demo schemas + shared-lib to ABSOLUTE paths BEFORE we chdir, so
     // they still resolve from inside the sandbox (they are repo-relative to tests/).
-    std::string schemas, sharedlib;
-    { char abs[4096];
-      if (realpath("../examples/world_demo/schemas", abs)) schemas = abs;
-      if (realpath("../shared-lib", abs)) sharedlib = abs; }
+    std::error_code path_error;
+    std::string schemas = std::filesystem::absolute(
+        "../examples/world_demo/schemas", path_error).string();
+    path_error.clear();
+    std::string sharedlib = std::filesystem::absolute(
+        "../shared-lib", path_error).string();
     CHECK(!schemas.empty() && !sharedlib.empty(),
           "resolved demo schemas + shared-lib absolute paths");
     if (schemas.empty() || sharedlib.empty()) return;
@@ -690,9 +717,9 @@ static void test_partstore_keeps_children() {
     // Reuse the warm cache already built by test_local_provider_cache. The gallery
     // bakes seed-variant Trees, so the default-params Tree installed here is its own
     // cache entry: cold-baked once on the first-ever run, a disk cache hit (no
-    // re-bake) on every run after that since /tmp/me3_viewer_cache_test persists.
-    const std::string root = "/tmp/me3_viewer_cache_test";
-    system(("mkdir -p " + root + "/parts").c_str());   // ensure exists (may already)
+    // re-bake) on every run after that since the test cache persists.
+    const std::string root = test_tmp("me3_viewer_cache_test");
+    ensure_parts_dir(root);   // ensure exists (may already)
 
     char prevcwd[4096]; if (!getcwd(prevcwd, sizeof prevcwd)) prevcwd[0] = '\0';
     CHECK(chdir(root.c_str()) == 0, "chdir into keep-children sandbox");
@@ -762,8 +789,8 @@ static void test_partstore_keeps_children() {
 // composer must recursively expand it (parent + 2 children = 3 instances).
 // Independent of demo-schema iteration (whether TreeBranch places leaves etc).
 static void test_compose_expands_children() {
-    const std::string root = "/tmp/me3_viewer_synth_cache";
-    system(("mkdir -p " + root + "/parts").c_str());
+    const std::string root = test_tmp("me3_viewer_synth_cache");
+    reset_test_dir(root, true);
     const uint64_t child_hash  = 0xAAAA0000AAAA0001ull;
     const uint64_t parent_hash = 0xBBBB0000BBBB0001ull;
 
@@ -835,13 +862,12 @@ static void test_compose_expands_children() {
     // remains valid for any future GL-free assertion added here.
     (void)child_hash;
 
-    system(("rm -rf " + root).c_str());
+    remove_test_dir(root);
 }
 
 static void test_append_expanded_children() {
-    const std::string root = "/tmp/me3_expand_test";
-    system(("rm -rf " + root).c_str());
-    system(("mkdir -p " + root + "/parts").c_str());
+    const std::string root = test_tmp("me3_expand_test");
+    reset_test_dir(root, true);
 
     // Synthetic assembly root: no geometry, two children with distinct transforms.
     BLASManager blas; TLASManager tlas(256);
@@ -1005,9 +1031,8 @@ static void test_provider_regen_stale_v2_flat() {
 
     // Use a dedicated temp cache (not the shared warm one) so we can plant a v2
     // flat without disturbing the tree cache used by other tests.
-    const std::string regen_cache = "/tmp/me3_regen_sniff_cache";
-    ::system(("rm -rf " + regen_cache).c_str());
-    ::system(("mkdir -p " + regen_cache + "/parts").c_str());
+    const std::string regen_cache = test_tmp("me3_regen_sniff_cache");
+    reset_test_dir(regen_cache, true);
 
     // Build a tiny synthetic part: one quad, no children. Write as v2 .part.
     const uint64_t kRegenHash = 0xABCD1234ABCD5678ull;
@@ -1059,7 +1084,7 @@ static void test_provider_regen_stale_v2_flat() {
     CHECK(pv == part_asset::kFormatVersionFlat, "regen sniff: flat is now current bake version after regeneration");
     CHECK(fr.clusters >= 1, "regen sniff: result reports clusters");
 
-    ::system(("rm -rf " + regen_cache).c_str());
+    remove_test_dir(regen_cache);
     printf(pv == part_asset::kFormatVersionFlat ? "PASSED\n" : "FAILED\n");
 }
 
@@ -1077,9 +1102,8 @@ static void test_partstore_cluster_loading() {
 
     // ---- Helper: build two quads (distinct positions) as v3 flat artifact. ----
     // We write TWO clusters, each with ONE LOD level, to test the cluster path.
-    const std::string root = "/tmp/me3_cluster_load_test";
-    ::system(("rm -rf " + root).c_str());
-    ::system(("mkdir -p " + root + "/parts").c_str());
+    const std::string root = test_tmp("me3_cluster_load_test");
+    reset_test_dir(root, true);
 
     // Helper lambda: make a pair of tris forming a quad at a given offset.
     auto make_tris = [](float ox, float oy, float oz) -> std::vector<Tri> {
@@ -1251,7 +1275,7 @@ static void test_partstore_cluster_loading() {
         }
     }
 
-    ::system(("rm -rf " + root).c_str());
+    remove_test_dir(root);
     printf("=== test_partstore_cluster_loading DONE ===\n");
 }
 
@@ -1592,9 +1616,8 @@ static void test_build_expansion_leaf_and_children() {
 static void test_install_phase_on_part_progress() {
 #if defined(MATTER_HAVE_SCRIPT_HOST)
     // Wipe a small throwaway cache so install_graph always bakes from scratch.
-    const std::string cold_cache = "/tmp/me3_install_progress_test";
-    system(("rm -rf " + cold_cache).c_str());
-    system(("mkdir -p " + cold_cache + "/parts").c_str());
+    const std::string cold_cache = test_tmp("me3_install_progress_test");
+    reset_test_dir(cold_cache, true);
 
     // Records (done, total) pairs from all on_part callbacks in order.
     std::vector<std::pair<int,int>> callbacks;
@@ -1653,7 +1676,7 @@ static void test_install_phase_on_part_progress() {
 
     printf("  install_phase_progress: install callbacks=%zu (total==0), fetch callbacks=%zu\n",
            install_cb_count, callbacks.size() - install_cb_count);
-    system(("rm -rf " + cold_cache).c_str());
+    remove_test_dir(cold_cache);
 #else
     printf("  test_install_phase_on_part_progress: MATTER_HAVE_SCRIPT_HOST not defined, skip\n");
 #endif
