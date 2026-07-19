@@ -22,49 +22,118 @@
 
 #include <chrono>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <new>
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <sys/stat.h>
 #include <thread>
-#include <unistd.h>
 #include <vector>
 
 #include "check.h"
 
 using clk = std::chrono::steady_clock;
+namespace fs = std::filesystem;
 
 // --- Sandbox helpers ------------------------------------------------------
 
-static void run(const std::string& cmd) { std::system(cmd.c_str()); }
-
-static bool write_file(const std::string& path, const std::string& body) {
-    std::ofstream f(path);
+static bool write_file(const fs::path& path, const std::string& body) {
+    std::error_code ec;
+    fs::create_directories(path.parent_path(), ec);
+    if (ec) return false;
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
     if (!f) return false;
     f << body;
-    return true;
+    return f.good();
 }
 
-// Build a minimal Box world sandbox under `root`. Schema Box.js is a trivial
-// voxel part (a single 0.6 m box brush at origin). world.manifest places Box
+static void remove_tree(const fs::path& path) {
+    std::error_code ignored;
+    fs::remove_all(path, ignored);
+}
+
+static bool reset_project(const fs::path& root,
+                          const std::string& world_name) {
+    remove_tree(root);
+    std::error_code ec;
+    fs::create_directories(root / "objects", ec);
+    if (ec) return false;
+    fs::create_directories(root / "worlds", ec);
+    if (ec) return false;
+    fs::create_directories(root / "shared-lib", ec);
+    if (ec) return false;
+    fs::create_directories(root / ".cache" / world_name / "parts", ec);
+    return !ec;
+}
+
+static bool reset_cache(const fs::path& root,
+                        const std::string& world_name) {
+    remove_tree(root / ".cache");
+    std::error_code ec;
+    fs::create_directories(root / ".cache" / world_name / "parts", ec);
+    return !ec;
+}
+
+static bool project_fixture_contract(const fs::path& root,
+                                     const std::string& world_name) {
+    const bool has_world_source =
+        fs::is_regular_file(root / "worlds" / (world_name + ".js"));
+    const bool has_no_legacy_world_data = !fs::exists(root / "world_data");
+    CHECK(has_world_source,
+          "project fixture provides worlds/<Name>.js");
+    CHECK(has_no_legacy_world_data,
+          "project fixture has no legacy manifest tree");
+    return has_world_source && has_no_legacy_world_data;
+}
+
+static std::string project_world_root(const std::string& module,
+                                      bool expand = false) {
+    std::ostringstream root;
+    root << "{ module: '" << module << "', "
+         << "transform: [1, 0, 0, 0, 0, 1, 0, 0, "
+         << "0, 0, 1, 0, 0, 0, 0, 1]";
+    if (expand) root << ", expand: true";
+    root << " }";
+    return root.str();
+}
+
+static bool write_project_world(const fs::path& root,
+                                const std::string& world_name,
+                                const std::vector<std::string>& roots) {
+    std::ostringstream source;
+    source << "class " << world_name << " extends World {\n"
+           << "  static roots = [\n";
+    for (const std::string& root_record : roots)
+        source << "    " << root_record << ",\n";
+    source << "  ];\n"
+           << "}\n";
+    return write_file(root / "worlds" / (world_name + ".js"), source.str()) &&
+           project_fixture_contract(root, world_name);
+}
+
+static matter::WorldDesc project_world_desc(const std::string& project_dir,
+                                            const char* world_name) {
+    return matter::WorldDesc{
+        project_dir.c_str(),
+        world_name,
+        "../shared-lib",
+    };
+}
+
+// Build a minimal Box project under `root`. Object Box.js is a trivial
+// voxel part (a single 0.6 m box brush at origin). Its World class places Box
 // three times (no flags -> each root lands at world origin per LocalProvider's
 // default placement, but three distinct instance_ids still exercise the
 // per-instance publish path). Empty shared-lib.
 static bool build_sandbox(const std::string& root) {
-    run("rm -rf " + root);
-    run("mkdir -p " + root + "/schemas");
-    run("mkdir -p " + root + "/world_data/Box");
-    run("mkdir -p " + root + "/shared-lib");
-    run("mkdir -p " + root + "/cache/parts");
+    if (!reset_project(root, "Box")) return false;
 
     // The tiniest mesh Part: a two-triangle floor quad, mirrors FloorDemo.js
     // shape (no voxel session, no shared-lib imports, no children).
-    if (!write_file(root + "/schemas/Box.js",
+    if (!write_file(fs::path(root) / "objects" / "Box.js",
         "class Box extends Part {\n"
         "  build(p) {\n"
         "    this.fill(MAT.stone);\n"
@@ -76,16 +145,13 @@ static bool build_sandbox(const std::string& root) {
         "  }\n"
         "}\n")) return false;
 
-    // Manifest: three placements of Box. LocalProvider places unflagged roots
-    // at the origin; three copies means three manifest instances → three
-    // publish steps for the single unique part_hash.
-    if (!write_file(root + "/world_data/Box/world.manifest",
-        "# Box world (async-bake tests fixture)\n"
-        "Box\n"
-        "Box\n"
-        "Box\n")) return false;
-
-    return true;
+    // Three unflagged roots preserve authoring order and produce three publish
+    // steps for the single unique part_hash.
+    return write_project_world(root, "Box", {
+        project_world_root("Box"),
+        project_world_root("Box"),
+        project_world_root("Box"),
+    });
 }
 
 // Snapshot format for determinism comparison.
@@ -146,14 +212,11 @@ static bool test_returns_immediately(const std::string& sandbox) {
     printf("-- (a) request_bake_returns_immediately\n");
     // Cache-cold: nuke any prior cache so this measures the async return path,
     // not a warm-cache short-circuit that would pass by accident.
-    run("rm -rf " + sandbox + "/cache && mkdir -p " + sandbox + "/cache/parts");
+    reset_cache(sandbox, "Box");
     std::string err;
     // Keep path strings alive across the create/open_world calls; EngineDesc /
     // WorldDesc hold const char* views, not std::string copies.
-    std::string cache_root_s = sandbox + "/cache";
-    std::string schemas_s    = sandbox + "/schemas";
-    std::string wdata_s      = sandbox + "/world_data";
-    std::string shlib_s      = sandbox + "/shared-lib";
+    std::string cache_root_s = (fs::path(sandbox) / ".cache").string();
     matter::EngineDesc ed;
     ed.cache_root      = cache_root_s.c_str();
     ed.allow_gl_lt_46  = true;   // headless: skip GL 4.6 gate, skip raster path
@@ -161,11 +224,7 @@ static bool test_returns_immediately(const std::string& sandbox) {
     CHECK(engine != nullptr, "engine created");
     if (!engine) { printf("  err: %s\n", err.c_str()); return false; }
 
-    matter::WorldDesc wd;
-    wd.schemas_dir    = schemas_s.c_str();
-    wd.world_data_dir = wdata_s.c_str();
-    wd.world_name     = "Box";
-    wd.shared_lib_dir = shlib_s.c_str();
+    matter::WorldDesc wd = project_world_desc(sandbox, "Box");
     auto s = engine->open_world(wd, err);
     CHECK(s != nullptr, "session opened");
     if (!s) { printf("  err: %s\n", err.c_str()); return false; }
@@ -209,13 +268,10 @@ static bool test_returns_immediately(const std::string& sandbox) {
 static bool test_completes_finished(const std::string& sandbox) {
     printf("-- (b) bake_completes_with_finished\n");
     // Fresh cache so we see BakePartDone events for freshly-fetched parts.
-    run("rm -rf " + sandbox + "/cache && mkdir -p " + sandbox + "/cache/parts");
+    reset_cache(sandbox, "Box");
 
     std::string err;
-    std::string cache_root_s = sandbox + "/cache";
-    std::string schemas_s    = sandbox + "/schemas";
-    std::string wdata_s      = sandbox + "/world_data";
-    std::string shlib_s      = sandbox + "/shared-lib";
+    std::string cache_root_s = (fs::path(sandbox) / ".cache").string();
     matter::EngineDesc ed;
     ed.cache_root     = cache_root_s.c_str();
     ed.allow_gl_lt_46 = true;
@@ -223,11 +279,7 @@ static bool test_completes_finished(const std::string& sandbox) {
     CHECK(engine != nullptr, "engine created");
     if (!engine) return false;
 
-    matter::WorldDesc wd;
-    wd.schemas_dir    = schemas_s.c_str();
-    wd.world_data_dir = wdata_s.c_str();
-    wd.world_name     = "Box";
-    wd.shared_lib_dir = shlib_s.c_str();
+    matter::WorldDesc wd = project_world_desc(sandbox, "Box");
     auto s = engine->open_world(wd, err);
     CHECK(s != nullptr, "session opened");
     if (!s) return false;
@@ -266,21 +318,14 @@ static bool test_completes_finished(const std::string& sandbox) {
 // Run against two fresh caches and diff the {type,module,done,total,phase}
 // sequences.
 static std::vector<EvRec> run_once_fresh(const std::string& sandbox) {
-    run("rm -rf " + sandbox + "/cache && mkdir -p " + sandbox + "/cache/parts");
+    reset_cache(sandbox, "Box");
     std::string err;
-    std::string cache_root_s = sandbox + "/cache";
-    std::string schemas_s    = sandbox + "/schemas";
-    std::string wdata_s      = sandbox + "/world_data";
-    std::string shlib_s      = sandbox + "/shared-lib";
+    std::string cache_root_s = (fs::path(sandbox) / ".cache").string();
     matter::EngineDesc ed;
     ed.cache_root     = cache_root_s.c_str();
     ed.allow_gl_lt_46 = true;
     auto engine = matter::EngineContext::create(ed, err);
-    matter::WorldDesc wd;
-    wd.schemas_dir    = schemas_s.c_str();
-    wd.world_data_dir = wdata_s.c_str();
-    wd.world_name     = "Box";
-    wd.shared_lib_dir = shlib_s.c_str();
+    matter::WorldDesc wd = project_world_desc(sandbox, "Box");
     auto s = engine->open_world(wd, err);
     std::vector<EvRec> log;
     if (!s) return log;
@@ -317,19 +362,12 @@ static bool test_reload_reenters(const std::string& sandbox) {
     printf("-- (d) reload_reenters\n");
     // Warm cache from (b)/(c) is fine; reload should still fire a full sequence.
     std::string err;
-    std::string cache_root_s = sandbox + "/cache";
-    std::string schemas_s    = sandbox + "/schemas";
-    std::string wdata_s      = sandbox + "/world_data";
-    std::string shlib_s      = sandbox + "/shared-lib";
+    std::string cache_root_s = (fs::path(sandbox) / ".cache").string();
     matter::EngineDesc ed;
     ed.cache_root     = cache_root_s.c_str();
     ed.allow_gl_lt_46 = true;
     auto engine = matter::EngineContext::create(ed, err);
-    matter::WorldDesc wd;
-    wd.schemas_dir    = schemas_s.c_str();
-    wd.world_data_dir = wdata_s.c_str();
-    wd.world_name     = "Box";
-    wd.shared_lib_dir = shlib_s.c_str();
+    matter::WorldDesc wd = project_world_desc(sandbox, "Box");
     auto s = engine->open_world(wd, err);
     CHECK(s != nullptr, "session opened");
     if (!s) return false;
@@ -355,20 +393,16 @@ static bool test_reload_reenters(const std::string& sandbox) {
 
 // --- Task 7 helpers / multi-part sandbox -----------------------------------
 
-// Build a sandbox with multiple distinct schemas (Part0..PartN-1) so we have
+// Build a project with multiple distinct objects (Part0..PartN-1) so we have
 // enough parts to make a cache-cold bake take measurable time.
-// world.manifest places each schema once (no flags).
+// The World class places each object once (no flags).
 static bool build_multi_sandbox(const std::string& root, int num_parts) {
-    run("rm -rf " + root);
-    run("mkdir -p " + root + "/schemas");
-    run("mkdir -p " + root + "/world_data/Multi");
-    run("mkdir -p " + root + "/shared-lib");
-    run("mkdir -p " + root + "/cache/parts");
+    if (!reset_project(root, "Multi")) return false;
 
-    std::string manifest_content = "# Multi-part world\n";
+    std::vector<std::string> roots;
     for (int i = 0; i < num_parts; ++i) {
         std::string name = "Part" + std::to_string(i);
-        // Each schema is distinct (uses i as a vertex offset so hashes differ).
+        // Each object is distinct (uses i as a vertex offset so hashes differ).
         std::ostringstream js;
         js << "class " << name << " extends Part {\n"
            << "  build(p) {\n"
@@ -380,11 +414,11 @@ static bool build_multi_sandbox(const std::string& root, int num_parts) {
            << "    this.endShape();\n"
            << "  }\n"
            << "}\n";
-        if (!write_file(root + "/schemas/" + name + ".js", js.str())) return false;
-        manifest_content += name + "\n";
+        if (!write_file(fs::path(root) / "objects" / (name + ".js"), js.str()))
+            return false;
+        roots.push_back(project_world_root(name));
     }
-    if (!write_file(root + "/world_data/Multi/world.manifest", manifest_content)) return false;
-    return true;
+    return write_project_world(root, "Multi", roots);
 }
 
 // Like drive_bake but tolerates BakeError events (skip-and-continue tests).
@@ -430,20 +464,13 @@ static std::unique_ptr<matter::WorldSession> open_session(
     const std::string& sandbox, std::string& err,
     std::unique_ptr<matter::EngineContext>& engine,
     const std::string& world_name = "Box") {
-    std::string cache_root_s = sandbox + "/cache";
-    std::string schemas_s    = sandbox + "/schemas";
-    std::string wdata_s      = sandbox + "/world_data";
-    std::string shlib_s      = sandbox + "/shared-lib";
+    std::string cache_root_s = (fs::path(sandbox) / ".cache").string();
     matter::EngineDesc ed;
     ed.cache_root     = cache_root_s.c_str();
     ed.allow_gl_lt_46 = true;
     engine = matter::EngineContext::create(ed, err);
     if (!engine) { printf("  engine create failed: %s\n", err.c_str()); return nullptr; }
-    matter::WorldDesc wd;
-    wd.schemas_dir    = schemas_s.c_str();
-    wd.world_data_dir = wdata_s.c_str();
-    wd.world_name     = world_name.c_str();
-    wd.shared_lib_dir = shlib_s.c_str();
+    matter::WorldDesc wd = project_world_desc(sandbox, world_name.c_str());
     auto s = engine->open_world(wd, err);
     if (!s) { printf("  open_world failed: %s\n", err.c_str()); return nullptr; }
     return s;
@@ -468,13 +495,13 @@ static bool test_supersede_cancels_inflight(const std::string& sandbox) {
     }
 
     // Nuke any prior cache so the bake is definitely cold.
-    run("rm -rf " + multi + "/cache && mkdir -p " + multi + "/cache/parts");
+    reset_cache(multi, "Multi");
 
     std::string err;
     std::unique_ptr<matter::EngineContext> engine;
     auto s = open_session(multi, err, engine, "Multi");
     CHECK(s != nullptr, "supersede: session opened");
-    if (!s) { run("rm -rf " + multi); return false; }
+    if (!s) { remove_tree(multi); return false; }
 
     s->request_bake();
 
@@ -544,7 +571,7 @@ done_supersede:
     bool cancellation_or_race = saw_cancelled || first_finished;
     CHECK(cancellation_or_race, "supersede: cancellation observed OR first bake finished before supersede");
 
-    run("rm -rf " + multi);
+    remove_tree(multi);
     return overall_ok && cancellation_or_race;
 }
 
@@ -554,7 +581,7 @@ done_supersede:
 static bool test_destructor_mid_bake_joins(const std::string& sandbox) {
     printf("-- (f) destructor_mid_bake_joins\n");
 
-    run("rm -rf " + sandbox + "/cache && mkdir -p " + sandbox + "/cache/parts");
+    reset_cache(sandbox, "Box");
 
     std::string err;
     std::unique_ptr<matter::EngineContext> engine;
@@ -607,13 +634,13 @@ static bool test_oom_injection_skips_part(const std::string& sandbox) {
         ++g_failures;
         return false;
     }
-    run("rm -rf " + multi + "/cache && mkdir -p " + multi + "/cache/parts");
+    reset_cache(multi, "Multi");
 
     std::string err;
     std::unique_ptr<matter::EngineContext> engine;
     auto s = open_session(multi, err, engine, "Multi");
     CHECK(s != nullptr, "oom_inject: session opened");
-    if (!s) { run("rm -rf " + multi); return false; }
+    if (!s) { remove_tree(multi); return false; }
 
     // Inject bad_alloc at part_index 1 (second bake in install phase).
     s->set_test_fault_hook([](int idx) {
@@ -642,7 +669,7 @@ static bool test_oom_injection_skips_part(const std::string& sandbox) {
     printf("  instance_count after OOM injection: %u\n", ic);
     CHECK(ic > 0, "oom_inject: surviving part has instances (instance_count > 0)");
 
-    run("rm -rf " + multi);
+    remove_tree(multi);
     return ok && oom_errors >= 1 && log.error_count == 1 && ic > 0;
 }
 
@@ -655,14 +682,10 @@ static bool test_broken_script_skips_part(const std::string& sandbox) {
 
     // Build a sandbox with Box.js (valid) + Broken.js (syntax error).
     const std::string broot = sandbox + "_broken";
-    run("rm -rf " + broot);
-    run("mkdir -p " + broot + "/schemas");
-    run("mkdir -p " + broot + "/world_data/Broken2");
-    run("mkdir -p " + broot + "/shared-lib");
-    run("mkdir -p " + broot + "/cache/parts");
+    if (!reset_project(broot, "Broken2")) return false;
 
     // Valid part: same box quad as the main sandbox.
-    if (!write_file(broot + "/schemas/ValidPart.js",
+    if (!write_file(fs::path(broot) / "objects" / "ValidPart.js",
         "class ValidPart extends Part {\n"
         "  build(p) {\n"
         "    this.fill(MAT.stone);\n"
@@ -672,25 +695,24 @@ static bool test_broken_script_skips_part(const std::string& sandbox) {
         "    this.vertex(S, 0, -S); this.vertex(-S, 0, S); this.vertex(S, 0, S);\n"
         "    this.endShape();\n"
         "  }\n"
-        "}\n")) { run("rm -rf " + broot); return false; }
+        "}\n")) { remove_tree(broot); return false; }
 
     // Broken part: JS syntax error (unmatched brace).
-    if (!write_file(broot + "/schemas/BrokenPart.js",
+    if (!write_file(fs::path(broot) / "objects" / "BrokenPart.js",
         "class BrokenPart extends Part {\n"
         "  build(p) { this.fill(MAT.stone;\n"  // missing closing paren
-        "}")) { run("rm -rf " + broot); return false; }
+        "}")) { remove_tree(broot); return false; }
 
-    // Manifest: one ValidPart, one BrokenPart.
-    if (!write_file(broot + "/world_data/Broken2/world.manifest",
-        "# broken_script test\n"
-        "ValidPart\n"
-        "BrokenPart\n")) { run("rm -rf " + broot); return false; }
+    if (!write_project_world(broot, "Broken2", {
+            project_world_root("ValidPart"),
+            project_world_root("BrokenPart"),
+        })) { remove_tree(broot); return false; }
 
     std::string err;
     std::unique_ptr<matter::EngineContext> engine;
     auto s = open_session(broot, err, engine, "Broken2");
     CHECK(s != nullptr, "broken_script: session opened");
-    if (!s) { run("rm -rf " + broot); return false; }
+    if (!s) { remove_tree(broot); return false; }
 
     s->request_bake();
 
@@ -716,7 +738,7 @@ static bool test_broken_script_skips_part(const std::string& sandbox) {
     printf("  instance_count after broken script: %u\n", ic);
     CHECK(ic > 0, "broken_script: ValidPart instances queryable (instance_count > 0)");
 
-    run("rm -rf " + broot);
+    remove_tree(broot);
     return ok && saw_script_error && log.error_count == 1 && ic > 0;
 }
 
@@ -743,13 +765,13 @@ static bool test_load_failure_skips_part(const std::string& sandbox) {
         ++g_failures;
         return false;
     }
-    run("rm -rf " + multi + "/cache && mkdir -p " + multi + "/cache/parts");
+    reset_cache(multi, "Multi");
 
     std::string err;
     std::unique_ptr<matter::EngineContext> engine;
     auto s = open_session(multi, err, engine, "Multi");
     CHECK(s != nullptr, "load_fail: session opened");
-    if (!s) { run("rm -rf " + multi); return false; }
+    if (!s) { remove_tree(multi); return false; }
 
     // Stateful hook: track visits to idx=1. First visit (install phase) passes;
     // second visit (publish phase) throws std::runtime_error → IoError.
@@ -790,25 +812,21 @@ static bool test_load_failure_skips_part(const std::string& sandbox) {
     printf("  instance_count after load failure: %u\n", ic);
     CHECK(ic > 0, "load_fail: surviving part has instances (instance_count > 0)");
 
-    run("rm -rf " + multi);
+    remove_tree(multi);
     return ok && parts_errors >= 1 && saw_io_error && log.error_count == 1 && ic > 0;
 }
 
 // --- Task 3 tests (Phase C): set_bake_focus + distance-ordered publish ------
 
-// Build a sandbox with three distinct leaf schemas (BoxA, BoxB, BoxC) and a
+// Build a sandbox with three distinct leaf objects (BoxA, BoxB, BoxC) and a
 // parent "World" that places them at (0,0,0), (100,0,0), (200,0,0) and is
-// flagged `expand` so the children become world manifest entries.
+// flagged `expand` so the children become world entries.
 // Focus near C (200,0,0) → BakePartDone order: C, B, A.
 // Focus near A (0,0,0)   → BakePartDone order: A, B, C.
 static bool build_focus_sandbox(const std::string& root) {
-    run("rm -rf " + root);
-    run("mkdir -p " + root + "/schemas");
-    run("mkdir -p " + root + "/world_data/FocusWorld");
-    run("mkdir -p " + root + "/shared-lib");
-    run("mkdir -p " + root + "/cache/parts");
+    if (!reset_project(root, "FocusWorld")) return false;
 
-    // Three distinct leaf schemas. Geometry is the same shape but the class
+    // Three distinct leaf objects. Geometry is the same shape but the class
     // name makes each one a unique module → distinct resolved hash.
     const char* leaf_tmpl =
         "class %s extends Part {\n"
@@ -825,14 +843,15 @@ static bool build_focus_sandbox(const std::string& root) {
     char buf[1024];
     for (const char* name : {"BoxA", "BoxB", "BoxC"}) {
         std::snprintf(buf, sizeof(buf), leaf_tmpl, name);
-        if (!write_file(root + "/schemas/" + name + ".js", std::string(buf)))
+        if (!write_file(fs::path(root) / "objects" / (std::string(name) + ".js"),
+                        std::string(buf)))
             return false;
     }
 
-    // Parent that places the three children at distinct X offsets so manifest
-    // entries carry different translations. `expand` in world.manifest promotes
+    // Parent that places the three children at distinct X offsets so world
+    // entries carry different translations. The root's `expand` flag promotes
     // each child to a first-class world instance with its placement transform.
-    if (!write_file(root + "/schemas/World.js",
+    if (!write_file(fs::path(root) / "objects" / "World.js",
         "class World extends Part {\n"
         "  static requires = [\n"
         "    { module: 'BoxA' },\n"
@@ -855,12 +874,10 @@ static bool build_focus_sandbox(const std::string& root) {
         "  }\n"
         "}\n")) return false;
 
-    // `expand` flag unpacks World's children into world manifest entries.
-    if (!write_file(root + "/world_data/FocusWorld/world.manifest",
-        "# Focus-order test world\n"
-        "World expand\n")) return false;
-
-    return true;
+    // `expand` preserves the former world-root semantics and child order.
+    return write_project_world(root, "FocusWorld", {
+        project_world_root("World", true),
+    });
 }
 
 // Collect BakePartDone module names (phase=="parts") in arrival order for one
@@ -907,13 +924,13 @@ static bool test_focus_orders_publish(const std::string& sandbox) {
     }
 
     // Fresh cache for the first run.
-    run("rm -rf " + froot + "/cache && mkdir -p " + froot + "/cache/parts");
+    reset_cache(froot, "FocusWorld");
 
     std::string err;
     std::unique_ptr<matter::EngineContext> engine;
     auto s = open_session(froot, err, engine, "FocusWorld");
     CHECK(s != nullptr, "focus: session opened");
-    if (!s) { run("rm -rf " + froot); return false; }
+    if (!s) { remove_tree(froot); return false; }
 
     // --- focus near C (200,0,0): expected order C,B,A -----------------------
     {
@@ -967,7 +984,7 @@ static bool test_focus_orders_publish(const std::string& sandbox) {
         }
     }
 
-    run("rm -rf " + froot);
+    remove_tree(froot);
     return true;
 }
 
@@ -987,13 +1004,10 @@ static bool test_live_edit_inotify_e2e(const std::string& sandbox) {
     printf("-- (j) live_edit_inotify_e2e\n");
 
     // Fresh cache.
-    run("rm -rf " + sandbox + "/cache && mkdir -p " + sandbox + "/cache/parts");
+    reset_cache(sandbox, "Box");
 
     std::string err;
-    std::string cache_root_s = sandbox + "/cache";
-    std::string schemas_s    = sandbox + "/schemas";
-    std::string wdata_s      = sandbox + "/world_data";
-    std::string shlib_s      = sandbox + "/shared-lib";
+    std::string cache_root_s = (fs::path(sandbox) / ".cache").string();
 
     matter::EngineDesc ed;
     ed.cache_root     = cache_root_s.c_str();
@@ -1002,11 +1016,7 @@ static bool test_live_edit_inotify_e2e(const std::string& sandbox) {
     CHECK(engine != nullptr, "live_edit_e2e: engine created");
     if (!engine) { printf("  err: %s\n", err.c_str()); return false; }
 
-    matter::WorldDesc wd;
-    wd.schemas_dir     = schemas_s.c_str();
-    wd.world_data_dir  = wdata_s.c_str();
-    wd.world_name      = "Box";
-    wd.shared_lib_dir  = shlib_s.c_str();
+    matter::WorldDesc wd = project_world_desc(sandbox, "Box");
     wd.enable_live_edit = true;
     auto s = engine->open_world(wd, err);
     CHECK(s != nullptr, "live_edit_e2e: session opened");
@@ -1042,7 +1052,7 @@ static bool test_live_edit_inotify_e2e(const std::string& sandbox) {
     printf("  part_hash before edit: %llu\n", (unsigned long long)hash_before);
 
     // 2) Rewrite Box.js with a different size (changes the resolved hash).
-    write_file(sandbox + "/schemas/Box.js",
+    write_file(fs::path(sandbox) / "objects" / "Box.js",
         "class Box extends Part {\n"
         "  build(p) {\n"
         "    this.fill(MAT.stone);\n"
@@ -1099,7 +1109,7 @@ static bool test_live_edit_inotify_e2e(const std::string& sandbox) {
 
     // 4) Fail-closed sub-case: write a syntax error.
     uint64_t hash_after_break = hash_after;
-    write_file(sandbox + "/schemas/Box.js",
+    write_file(fs::path(sandbox) / "objects" / "Box.js",
         "class Box extends Part {\n"
         "  build(p) { this.fill(MAT.stone;\n"  // syntax error: missing )
         "}\n");
@@ -1147,7 +1157,7 @@ static bool test_live_edit_inotify_e2e(const std::string& sandbox) {
     }
 
     // 5) Fix the file -> recovers.
-    write_file(sandbox + "/schemas/Box.js",
+    write_file(fs::path(sandbox) / "objects" / "Box.js",
         "class Box extends Part {\n"
         "  build(p) {\n"
         "    this.fill(MAT.stone);\n"
@@ -1201,6 +1211,8 @@ static bool test_live_edit_inotify_e2e(const std::string& sandbox) {
     return saw_cone_finished && saw_script_error && saw_recovery;
 }
 
+#endif // __linux__
+
 // --- (l) regenerate_seed_reroll -------------------------------------------
 // Task 7 (Phase C): WorldSession::regenerate(seed) — root-params override reload.
 //
@@ -1210,16 +1222,12 @@ static bool test_live_edit_inotify_e2e(const std::string& sandbox) {
 //   2. regenerate(2): new seed → cache miss → parts_baked >= 1.
 //   3. regenerate(2) again: same seed → warm reload → parts_baked == 0.
 static bool build_seed_sandbox(const std::string& root) {
-    run("rm -rf " + root);
-    run("mkdir -p " + root + "/schemas");
-    run("mkdir -p " + root + "/world_data/SeedBox");
-    run("mkdir -p " + root + "/shared-lib");
-    run("mkdir -p " + root + "/cache/parts");
+    if (!reset_project(root, "SeedBox")) return false;
 
     // Box.js: static params = {worldSeed: 1} so the hash differs per seed.
     // Geometry size is derived from worldSeed so different seeds produce
     // different hashes (merge_params_canonical folds params into the hash).
-    if (!write_file(root + "/schemas/Box.js",
+    if (!write_file(fs::path(root) / "objects" / "Box.js",
         "class Box extends Part {\n"
         "  static params = { worldSeed: 1 };\n"
         "  build(p) {\n"
@@ -1232,11 +1240,9 @@ static bool build_seed_sandbox(const std::string& root) {
         "  }\n"
         "}\n")) return false;
 
-    if (!write_file(root + "/world_data/SeedBox/world.manifest",
-        "# SeedBox world (regenerate test)\n"
-        "Box\n")) return false;
-
-    return true;
+    return write_project_world(root, "SeedBox", {
+        project_world_root("Box"),
+    });
 }
 
 static bool test_regenerate_seed_reroll(const std::string& sandbox) {
@@ -1250,13 +1256,13 @@ static bool test_regenerate_seed_reroll(const std::string& sandbox) {
     }
 
     // Cold cache: both seed=1 and seed=2 must be genuine misses initially.
-    run("rm -rf " + sroot + "/cache && mkdir -p " + sroot + "/cache/parts");
+    reset_cache(sroot, "SeedBox");
 
     std::string err;
     std::unique_ptr<matter::EngineContext> engine;
     auto s = open_session(sroot, err, engine, "SeedBox");
     CHECK(s != nullptr, "regenerate: session opened");
-    if (!s) { run("rm -rf " + sroot); return false; }
+    if (!s) { remove_tree(sroot); return false; }
 
     // 1) Initial bake (seed=1 from static params default).
     s->request_bake();
@@ -1287,17 +1293,22 @@ static bool test_regenerate_seed_reroll(const std::string& sandbox) {
     CHECK(pb3 == 0, "regenerate: same seed is a warm reload (parts_baked == 0)");
     CHECK(ch3 >= 1, "regenerate: same seed has cache_hits >= 1");
 
-    run("rm -rf " + sroot);
+    remove_tree(sroot);
     return ok1 && ok2 && ok3 && pb1 >= 1 && pb2 >= 1 && pb3 == 0 && ch3 >= 1;
 }
 
-#endif // __linux__
-
 int main() {
-    // Unique sandbox per pid so parallel test runs don't collide.
-    std::string sandbox = "/tmp/me3_asyncbake_" + std::to_string((int)getpid());
+    // Unique writable sandbox so parallel test runs do not collide.
+    const auto stamp = std::chrono::high_resolution_clock::now()
+                           .time_since_epoch().count();
+    std::string sandbox =
+        (fs::temp_directory_path() /
+         ("me3_asyncbake_" + std::to_string(stamp))).string();
     if (!build_sandbox(sandbox)) {
         printf("FAIL: build_sandbox\n");
+        return 1;
+    }
+    if (!project_fixture_contract(sandbox, "Box")) {
         return 1;
     }
 
@@ -1327,7 +1338,7 @@ int main() {
     test_regenerate_seed_reroll(sandbox);
 
     printf(g_failures ? "\n%d FAILURE(S)\n" : "\nALL PASS\n", g_failures);
-    // Best-effort cleanup so /tmp doesn't accumulate.
-    run("rm -rf " + sandbox);
+    // Best-effort cleanup of the writable temporary project.
+    remove_tree(sandbox);
     return g_failures ? 1 : 0;
 }
