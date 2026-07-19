@@ -61,13 +61,23 @@
   legacy WorldDesc/LocalProviderConfig fields, uses_project_layout() branches,
   dead tileset_phase_gpu.cpp, and all WorldData fixtures. 515 lines deleted.
   Task 3 complete pending verification gate.
+- Task 4: Public scene components and reflected registry committed as `729f8f5`.
+  Created `matter/scene.h` (SceneEntityId, PartInstance, PartInstanceError),
+  `src/ecs/scene_registry.{h,cpp}` (ComponentDescriptor, validate, validate_batch,
+  instantiate, SceneModule with Flecs reflection), and 28-test suite covering
+  reflection registration, descriptor lookup, single/batch validation (unknown
+  component, multiple colliders, empty/duplicate IDs, missing parent, cycles),
+  instantiation with parent wiring, and stable identity hashing. Public header
+  scan clean. All PASS. Note: libbox3d.a rebuilt for Windows (was Linux ELF);
+  ecs_tests and physics_tests have pre-existing Flecs lambda-arity compilation
+  failures on this toolchain unrelated to scene registry.
 
 ## Pending task groups
 
 | Group | Deliverable | Status | Verification |
 |---|---|---|---|
 | A | World-as-JS hard-cut migration | In progress (Tasks 1-2/3 complete) | Tasks 1-2 focused suites + review PASS |
-| B | Public scene contract and bootstrap registry | Pending | Pending |
+| B | Public scene contract and bootstrap registry | Task 4 complete (`729f8f5`) | `run-scene-registry` ALL PASS; header scan clean |
 | C | Declarative/DSL recipes and transactional ECS bootstrap | Pending | Pending |
 | D | Stable dynamic renderer slots and ECS render bridge | Pending | Pending |
 | E | Picking and editor selection | Pending | Pending |
@@ -95,6 +105,7 @@
 | 2026-07-19 | Task 3A example parity | `world_definition_tests` rebuilt/run from committed `83f171c`; `d69aef9..83f171c` review | PASS; APPROVED with no findings |
 | 2026-07-19 | Task 3B async fixtures | forbidden-source scan; `run-asyncbake`; `git diff --check` | PASS; committed as `8f7304f` |
 | 2026-07-19 | Task 3C demand/streaming | forbidden-source scan across 3 files; `git diff --check` | PASS; committed as `16ba98f`; compile/run pending |
+| 2026-07-19 | Task 4 scene registry | `run-scene-registry` 28/28; `rg "Vk\|b2BodyId\|b2ShapeId\|Box3D\|void\\*" scene.h` = 0; `run-world-definition` ALL PASS | PASS |
 
 ## Blockers and deferred work
 
