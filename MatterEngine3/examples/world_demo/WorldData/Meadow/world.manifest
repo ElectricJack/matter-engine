@@ -1,6 +1,0 @@
-# Meadow density world (showcase + raster benchmark). One assembly root; the
-# `expand` flag promotes its baked child-instance table (~45k placements) to
-# individual world instances, so per-child LOD selection, flattening, floor
-# cull, and instanced raster batching all apply.
-Meadow expand
-ForestFloor tileset

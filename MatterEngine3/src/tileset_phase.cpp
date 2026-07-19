@@ -29,12 +29,6 @@
 
 namespace tileset {
 
-// Convention: schemas live at <world_data_dir>/../schemas  (mirrors the
-// real-world layout where WorldData/ and schemas/ are siblings).
-static std::string schemas_dir_for(const std::string& world_data_dir) {
-    return world_data_dir + "/../schemas";
-}
-
 static bool read_file_str(const std::string& path, std::string& out) {
     std::ifstream f(path, std::ios::binary);
     if (!f) return false;
@@ -183,19 +177,6 @@ static bool run_tileset_phase_impl(const std::string& schemas_dir,
     return true;
 }
 
-bool run_tileset_phase(const std::string& world_data_dir, const std::string& /*world*/,
-                       const std::string& root_module,
-                       const std::string& parts_cache_dir,
-                       SettledTorus& out, std::string& err,
-                       const std::string& shared_lib_root)
-{
-    const std::vector<std::string> roots = shared_lib_root.empty()
-        ? std::vector<std::string>{}
-        : std::vector<std::string>{shared_lib_root};
-    return run_tileset_phase_impl(schemas_dir_for(world_data_dir), root_module,
-                                  "{}", parts_cache_dir, out, err, roots);
-}
-
 bool run_tileset_phase_from_objects(const std::string& objects_dir,
                                     const std::string& root_module,
                                     const std::string& parts_cache_dir,
@@ -228,15 +209,6 @@ bool run_tileset_phase_from_objects(
 #else // !MATTER_HAVE_SCRIPT_HOST
 
 namespace tileset {
-
-bool run_tileset_phase(const std::string&, const std::string&,
-                       const std::string&, const std::string&,
-                       SettledTorus&, std::string& err,
-                       const std::string&)
-{
-    err = "tileset_phase: built without MATTER_HAVE_SCRIPT_HOST";
-    return false;
-}
 
 bool run_tileset_phase_from_objects(const std::string&, const std::string&,
                                     const std::string&, SettledTorus&,

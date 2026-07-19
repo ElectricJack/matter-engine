@@ -25,11 +25,6 @@ struct WorldDesc {
     const char* world_name  = nullptr;
     const char* engine_shared_lib_dir = nullptr;
 
-    // Temporary Task-2 seam for still-unmigrated tests. Production callers
-    // must use project_dir; Task 3 removes these fields and the fallback.
-    const char* schemas_dir    = nullptr;
-    const char* world_data_dir = nullptr;
-    const char* shared_lib_dir = nullptr;  // shared .js library dir
     bool enable_live_edit = false;  // watch schemas/shared-lib dirs, cone-rebake on save (Linux inotify; no-op elsewhere)
 };
 

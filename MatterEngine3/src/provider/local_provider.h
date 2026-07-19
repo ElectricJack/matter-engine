@@ -38,22 +38,8 @@ struct LocalProviderConfig {
         const std::string& world_name,
         const std::string& engine_shared_lib_dir);
 
-    bool uses_project_layout() const { return !project_dir.empty(); }
-    const std::string& object_sources_dir() const {
-        return uses_project_layout() ? objects_dir : schemas_dir;
-    }
-    const std::string& effective_shared_lib_dir() const {
-        if (!uses_project_layout()) return shared_lib_dir;
-        return project_shared_lib_dir.empty()
-            ? engine_shared_lib_dir
-            : project_shared_lib_dir;
-    }
+    const std::string& object_sources_dir() const { return objects_dir; }
     std::vector<std::string> shared_lib_roots() const {
-        if (!uses_project_layout()) {
-            return shared_lib_dir.empty()
-                ? std::vector<std::string>{}
-                : std::vector<std::string>{shared_lib_dir};
-        }
         std::vector<std::string> roots;
         if (!project_shared_lib_dir.empty())
             roots.push_back(project_shared_lib_dir);
@@ -62,13 +48,8 @@ struct LocalProviderConfig {
         return roots;
     }
 
-    // Temporary Task-2 seam for direct LocalProvider tests. New callers use
-    // for_project(); Task 3 migrates those fixtures and deletes these aliases.
-    std::string schemas_dir;      // ../examples/world_demo/schemas
-    std::string world_data_dir;   // ../examples/world_demo/WorldData
-    std::string world_name;       // "Demo"
-    std::string shared_lib_dir;   // ../shared-lib
-    std::string cache_root;       // persistent parts/ cache (NOT a /tmp throwaway)
+    std::string world_name;
+    std::string cache_root;
 
     // Invoked during fetch_parts once per part processed (bake or cache hit):
     // module = part module name, done/total = progress through the want list.
@@ -343,11 +324,9 @@ private:
     // State produced by install_graph(), consumed by compose_world().
     // Valid only after a successful install_graph() call.
     std::string abs_schemas_;
-    std::string abs_world_data_;
     std::string abs_world_path_;
     std::string abs_project_shared_lib_;
     std::string abs_engine_shared_lib_;
-    std::string abs_shared_lib_;
     std::vector<std::string> abs_shared_lib_roots_;
     std::string abs_cache_root_;
 

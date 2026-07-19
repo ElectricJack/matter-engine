@@ -486,56 +486,6 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots,
     return result;
 }
 
-bool PartGraph::read_manifest(const std::string& world_data_dir, const std::string& world,
-                              std::vector<ChildRequest>& roots_out, std::string& error_out,
-                              std::vector<bool>* expand_out,
-                              std::vector<bool>* tileset_out,
-                              std::string* world_module_out) {
-    std::string path = world_data_dir + "/" + world + "/world.manifest";
-    std::ifstream in(path);
-    if (!in) {
-        error_out = "world manifest not found: " + path;
-        return false;
-    }
-    std::string line;
-    while (std::getline(in, line)) {
-        // trim leading/trailing whitespace
-        size_t b = line.find_first_not_of(" \t\r\n");
-        if (b == std::string::npos) continue;        // blank
-        size_t e = line.find_last_not_of(" \t\r\n");
-        std::string trimmed = line.substr(b, e - b + 1);
-        if (trimmed.empty() || trimmed[0] == '#') continue; // comment
-        std::istringstream tokens(trimmed);
-        std::string name, flag;
-        tokens >> name;
-        if (name == "light") continue;  // light lines are owned by world_lights::parse_lights
-        bool expand = false, tileset = false, is_world = false;
-        while (tokens >> flag) {
-            if (flag == "expand") expand = true;
-            else if (flag == "tileset") tileset = true;
-            else if (flag == "world") is_world = true;
-            else {
-                error_out = "unknown manifest flag '" + flag + "' for root " + name;
-                return false;
-            }
-        }
-        if (expand && tileset) {
-            error_out = "root " + name + " cannot be both tileset and expand";
-            return false;
-        }
-        // World-kind lines are NOT added to roots_out — the world module is never
-        // a graph root; it is evaluated separately by LocalProvider via eval_world.
-        if (is_world) {
-            if (world_module_out) *world_module_out = name;
-            continue;
-        }
-        roots_out.push_back(ChildRequest{ name, Params{} });
-        if (expand_out)  expand_out->push_back(expand);
-        if (tileset_out) tileset_out->push_back(tileset);
-    }
-    return true;
-}
-
 } // namespace part_graph
 
 #if defined(MATTER_HAVE_SCRIPT_HOST)

@@ -920,17 +920,12 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     bool resolve_cache_hit = false;
     uint64_t rc_cache_key  = 0;
     if (!enable_live_edit && !cfg.object_sources_dir().empty()) {
-        const std::string world_source_path = cfg.uses_project_layout()
-            ? cfg.world_path
-            : cfg.world_data_dir + "/" + cfg.world_name + "/world.manifest";
         rc_cache_key = resolve_cache::compute_key(
-            world_source_path,
+            cfg.world_path,
             cfg.root_params_json,
             cfg.object_sources_dir(),
-            cfg.uses_project_layout() ? cfg.project_shared_lib_dir
-                                      : cfg.shared_lib_dir,
-            cfg.uses_project_layout() ? cfg.engine_shared_lib_dir
-                                      : std::string{});
+            cfg.project_shared_lib_dir,
+            cfg.engine_shared_lib_dir);
         if (rc_cache_key != 0) {
             resolve_cache::ResolveCachePayload rc_payload;
             if (resolve_cache::load(cfg.cache_root, cfg.world_name,
@@ -2064,12 +2059,10 @@ bool WorldSession::Impl::install_world(
     const std::string& wmod = provider->world_module();
     if (wmod.empty()) { err = "install_world: no world module"; return false; }
 
-    // 1. Read world source: <schemas_dir>/<world_module>.js
+    // 1. Read world source
     std::string world_source;
     {
-        const std::string world_js = cfg.uses_project_layout()
-            ? cfg.world_path
-            : cfg.schemas_dir + "/" + wmod + ".js";
+        const std::string world_js = cfg.world_path;
         std::ifstream in(world_js, std::ios::binary);
         if (!in) { err = "install_world: cannot read " + world_js; return false; }
         std::ostringstream ss; ss << in.rdbuf();
@@ -2101,7 +2094,7 @@ bool WorldSession::Impl::install_world(
     legacy_settings.y_max = r.y_max;
     const viewer::ProceduralWorldProfile runtime_profile =
         viewer::select_procedural_world_profile(
-            cfg.uses_project_layout(), provider->world_settings(),
+            true, provider->world_settings(),
             legacy_settings);
     world_sector_size = runtime_profile.sector_size;
     world_profile = runtime_profile;
@@ -3158,24 +3151,11 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
 
     // Fresh ScriptHost for the rebake (shared-lib root from cfg).
     script_host::ScriptHost host;
-    const std::vector<std::string> live_shared_roots = cfg.uses_project_layout()
-        ? provider->shared_lib_roots()
-        : cfg.shared_lib_roots();
+    const std::vector<std::string> live_shared_roots = provider->shared_lib_roots();
     host.set_shared_lib_roots(live_shared_roots);
 
-    std::unique_ptr<live_edit_prod::ProdGraphResolver> gr;
-    if (cfg.uses_project_layout()) {
-        // Project snapshots record the exact selected project/engine source
-        // path for each import, so edits to a shadowed engine module must not
-        // invalidate project-owned parts.
-        gr = std::make_unique<live_edit_prod::ProdGraphResolver>(
-            snap, host, cfg.object_sources_dir(), live_shared_roots);
-    } else {
-        // Keep the legacy import-name fan-out behavior for the single-root
-        // world-data layout, whose older snapshots do not store source paths.
-        gr = std::make_unique<live_edit_prod::ProdGraphResolver>(
-            snap, host, cfg.object_sources_dir(), cfg.shared_lib_dir);
-    }
+    auto gr = std::make_unique<live_edit_prod::ProdGraphResolver>(
+        snap, host, cfg.object_sources_dir(), live_shared_roots);
     live_edit_prod::ProdBaker         pb(snap, host, cfg.cache_root);
     live_edit_prod::ProdFlattener     pf(snap, host, cfg.cache_root);
 
@@ -3409,12 +3389,16 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
     auto simpl = std::make_unique<WorldSession::Impl>();
     simpl->engine = impl_.get();
 
-    if (desc.project_dir != nullptr) {
+    if (desc.project_dir == nullptr || desc.project_dir[0] == '\0') {
+        err = "open_world: project_dir is required";
+        return nullptr;
+    }
+    if (desc.world_name == nullptr || desc.world_name[0] == '\0') {
+        err = "open_world: world_name is required";
+        return nullptr;
+    }
+    {
         namespace fs = std::filesystem;
-        if (desc.world_name == nullptr || desc.world_name[0] == '\0') {
-            err = "open_world: world_name is required with project_dir";
-            return nullptr;
-        }
         simpl->cfg = viewer::LocalProviderConfig::for_project(
             desc.project_dir, desc.world_name,
             desc.engine_shared_lib_dir ? desc.engine_shared_lib_dir : "");
@@ -3429,16 +3413,6 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
             err = "open_world: world source not found: " + simpl->cfg.world_path;
             return nullptr;
         }
-    } else {
-        // Temporary Task-2 test seam. Task 3 migrates the remaining fixtures
-        // and deletes this entire branch with the legacy descriptor fields.
-        simpl->cfg.schemas_dir = desc.schemas_dir ? desc.schemas_dir : "";
-        simpl->cfg.world_data_dir =
-            desc.world_data_dir ? desc.world_data_dir : "";
-        simpl->cfg.world_name = desc.world_name ? desc.world_name : "";
-        simpl->cfg.shared_lib_dir =
-            desc.shared_lib_dir ? desc.shared_lib_dir : "";
-        simpl->cfg.cache_root = impl_->cache_root;
     }
 
     // Task 10: live-edit opt-in. On Linux, eagerly create and register the
@@ -3448,17 +3422,13 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
     if (desc.enable_live_edit && !simpl->cfg.object_sources_dir().empty()) {
         simpl->inotify_watcher = std::make_unique<live_edit::InotifyWatcher>();
         simpl->inotify_watcher->add_watch(simpl->cfg.object_sources_dir());
-        if (simpl->cfg.uses_project_layout()) {
-            simpl->inotify_watcher->add_watch(simpl->cfg.worlds_dir);
-            if (!simpl->cfg.project_shared_lib_dir.empty())
-                simpl->inotify_watcher->add_watch(
-                    simpl->cfg.project_shared_lib_dir);
-            if (!simpl->cfg.engine_shared_lib_dir.empty())
-                simpl->inotify_watcher->add_watch(
-                    simpl->cfg.engine_shared_lib_dir);
-        } else if (!simpl->cfg.shared_lib_dir.empty()) {
-            simpl->inotify_watcher->add_watch(simpl->cfg.shared_lib_dir);
-        }
+        simpl->inotify_watcher->add_watch(simpl->cfg.worlds_dir);
+        if (!simpl->cfg.project_shared_lib_dir.empty())
+            simpl->inotify_watcher->add_watch(
+                simpl->cfg.project_shared_lib_dir);
+        if (!simpl->cfg.engine_shared_lib_dir.empty())
+            simpl->inotify_watcher->add_watch(
+                simpl->cfg.engine_shared_lib_dir);
         simpl->inotify_watching = true;
         printf("live-edit: watching %s\n",
                simpl->cfg.object_sources_dir().c_str());

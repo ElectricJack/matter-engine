@@ -212,23 +212,14 @@ bool LocalProvider::prepare_paths(std::string& err) {
 
     abs_cache_root_ = abspath(cfg_.cache_root);
     abs_schemas_ = abspath(cfg_.object_sources_dir());
-    abs_shared_lib_.clear();
     abs_shared_lib_roots_.clear();
     abs_project_shared_lib_.clear();
     abs_engine_shared_lib_.clear();
-    if (cfg_.uses_project_layout()) {
-        abs_world_data_.clear();
-        abs_world_path_ = abspath(cfg_.world_path);
-        if (!cfg_.project_shared_lib_dir.empty())
-            abs_project_shared_lib_ = abspath(cfg_.project_shared_lib_dir);
-        if (!cfg_.engine_shared_lib_dir.empty())
-            abs_engine_shared_lib_ = abspath(cfg_.engine_shared_lib_dir);
-    } else {
-        abs_world_path_.clear();
-        abs_world_data_ = abspath(cfg_.world_data_dir);
-    }
-    if (!cfg_.effective_shared_lib_dir().empty())
-        abs_shared_lib_ = abspath(cfg_.effective_shared_lib_dir());
+    abs_world_path_ = abspath(cfg_.world_path);
+    if (!cfg_.project_shared_lib_dir.empty())
+        abs_project_shared_lib_ = abspath(cfg_.project_shared_lib_dir);
+    if (!cfg_.engine_shared_lib_dir.empty())
+        abs_engine_shared_lib_ = abspath(cfg_.engine_shared_lib_dir);
     for (const std::string& root : cfg_.shared_lib_roots())
         abs_shared_lib_roots_.push_back(abspath(root));
     return true;
@@ -242,15 +233,6 @@ bool LocalProvider::load_authored_world(std::string& err) {
     world_module_.clear();
     authored_lights_ = world_lights::WorldLights{};
     world_settings_ = matter::WorldSettings{};
-
-    if (!cfg_.uses_project_layout()) {
-        if (!PartGraph::read_manifest(abs_world_data_, cfg_.world_name,
-                                      roots_, err, &expand_flags_,
-                                      &tileset_flags_, &world_module_))
-            return false;
-        root_transforms_.assign(roots_.size(), identity_transform());
-        return true;
-    }
 
 #if defined(MATTER_HAVE_SCRIPT_HOST)
     matter::WorldLoadDesc load_desc;
@@ -717,16 +699,7 @@ bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
     // tileset roots placed/slotted later; baked_tileset_count_ stays 0 until deferred phase.
 
     // --- Publish world lights ---
-    if (cfg_.uses_project_layout()) {
-        out.lights = authored_lights_;
-    } else {
-        const std::string manifest_path = abs_world_data_ + "/" + cfg_.world_name + "/world.manifest";
-        std::string lights_err;
-        if (!world_lights::parse_lights(manifest_path, out.lights, lights_err)) {
-            printf("LocalProvider: warning: light parse failed: %s\n", lights_err.c_str());
-            out.lights = world_lights::WorldLights{};  // keep defaults
-        }
-    }
+    out.lights = authored_lights_;
 
     return true;
 }
@@ -751,14 +724,9 @@ bool LocalProvider::run_tileset_deferred(
                               const std::string& root_params_json,
                               tileset::SettledTorus& settled,
                               std::string& settle_err) -> bool {
-        if (cfg_.uses_project_layout()) {
-            return tileset::run_tileset_phase_from_objects(
-                abs_schemas_, root_module, root_params_json, abs_cache_root_,
-                settled, settle_err, abs_shared_lib_roots_);
-        }
-        return tileset::run_tileset_phase(
-            abs_world_data_, cfg_.world_name, root_module, abs_cache_root_,
-            settled, settle_err, abs_shared_lib_);
+        return tileset::run_tileset_phase_from_objects(
+            abs_schemas_, root_module, root_params_json, abs_cache_root_,
+            settled, settle_err, abs_shared_lib_roots_);
     };
 
     for (int idx = 0; idx < total; ++idx) {
@@ -811,9 +779,7 @@ bool LocalProvider::run_tileset_deferred(
         }
 
         // Compute script source hash on the worker (needed by bake_tileset_gpu for .gtex cache key).
-        const std::string root_js_path = cfg_.uses_project_layout()
-            ? abs_schemas_ + "/" + root_module + ".js"
-            : abs_world_data_ + "/../schemas/" + root_module + ".js";
+        const std::string root_js_path = abs_schemas_ + "/" + root_module + ".js";
         uint64_t script_source_hash = 0;
         {
             std::ifstream jf(root_js_path, std::ios::binary);
@@ -824,9 +790,7 @@ bool LocalProvider::run_tileset_deferred(
             }
             // If the file can't be read, hash stays 0 — bake_tileset_gpu will force-rebake.
         }
-        const std::string gtex_path = cfg_.uses_project_layout()
-            ? abs_cache_root_ + "/" + root_module + ".gtex"
-            : abs_world_data_ + "/" + root_module + ".gtex";
+        const std::string gtex_path = abs_cache_root_ + "/" + root_module + ".gtex";
 
         // Step 2 (GL thread): GPU atlas bake + slot upload — GL required.
         std::string te;

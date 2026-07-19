@@ -1,5 +1,0 @@
-# CornellBox: classic raster validation scene with authored materials and an
-# emissive ceiling panel. Sun enters through the open top/front.
-CornellBox
-light sun  0.1 -0.98 -0.15  3.0 3.0 3.0
-light sky  0.6 0.65 0.75

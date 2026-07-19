@@ -103,18 +103,10 @@ in V). Non-indexed; 3 vertices per triangle. On the GPU-driven path,
 registration time; the vertex shader indexes them directly, so `UploadMesh`
 is not used and there is no VAO churn per frame.
 
-### Phase-2 world light list
+### World light list
 
-`world.manifest` may contain `light` lines parsed by `world_lights::parse_lights`:
-
-```
-light sun  <dx> <dy> <dz>  <r> <g> <b>         # sun direction + linear-RGB color
-light sky  <r> <g> <b>                           # sky ambient color
-light spot <px> <py> <pz>  <dx> <dy> <dz>  <r> <g> <b>  <range>  <inner_deg> <outer_deg>
-```
-
-Missing lines produce defaults that reproduce the Phase-1 hardcoded look. The
-`WorldLights` struct is uploaded to the raster shader each frame (`sunDir`, `sunColor`,
+World definitions declare lights via `static lights` in the World class JS source.
+The `WorldLights` struct is uploaded to the raster shader each frame (`sunDir`, `sunColor`,
 `ambientColor`) and to the ray-tracer (`wlSunDir`, `wlSunColor`, `wlSkyColor`).
 
 ### Lighting model (`shaders/raster.vs`, `shaders/raster.fs`)

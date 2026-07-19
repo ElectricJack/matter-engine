@@ -1,4 +1,0 @@
-# MeadowWorld: infinite streamed world (Phase C redesign). The `world` kind
-# binds the terrain field and streams WorldSector columns around the camera;
-# nothing is enumerated up front and sector artifacts are transient.
-MeadowWorld world
