@@ -110,7 +110,8 @@
 
 **Interfaces:**
 - Consumes: `load_world_definition` from Task 1.
-- Produces: `WorldDesc { project_dir, world_name, engine_shared_lib_dir, enable_live_edit }`; internal `LocalProviderConfig` paths derived as `objects/`, `worlds/`, `shared-lib/`, `.cache/<world>/`.
+- Produces: preferred `WorldDesc { project_dir, world_name, engine_shared_lib_dir, enable_live_edit }`; internal `LocalProviderConfig` paths derived as `objects/`, `worlds/`, `shared-lib/`, `.cache/<world>/`.
+- Transitional compile seam: retain the existing `schemas_dir`, `world_data_dir`, and `shared_lib_dir` members through Task 2 only, used solely when `project_dir == nullptr` by still-unmigrated tests. MatterViewer and every newly written test must use `project_dir`. Task 3 migrates the remaining fixtures and deletes the fields and fallback in the same commit, so no compatibility authoring path survives the migration stage.
 
 - [ ] **Step 1: Write failing path and cache-key tests.** Assert world source is `<project>/worlds/<name>.js`, object sources are `<project>/objects`, outputs are under `<project>/.cache/<name>`, project and engine shared libraries affect the cache fingerprint, and stale `WorldData/world.manifest` is ignored.
 
@@ -120,7 +121,7 @@
 
   Expected: failures showing legacy `schemas_dir/world_data_dir` routing.
 
-- [ ] **Step 3: Replace public path plumbing.** Update Viewer discovery to enumerate `.js` files directly in `worlds/`. Derive all project paths once in `open_world`; keep `engine_shared_lib_dir` as the engine support tier and treat missing project `shared-lib/` as empty.
+- [ ] **Step 3: Replace production path plumbing.** Update Viewer discovery to enumerate `.js` files directly in `worlds/`. Derive all project paths once in `open_world`; keep `engine_shared_lib_dir` as the engine support tier and treat missing project `shared-lib/` as empty. Add the explicitly temporary `project_dir == nullptr` test fallback described above without routing MatterViewer through it.
 
 - [ ] **Step 4: Replace provider manifest input with `WorldDefinition`.** Convert `WorldRoot` values to existing graph `ChildRequest` values and lights/settings to current runtime structures. Preserve root order, transforms, params, `expand`, and `tileset` semantics.
 
@@ -156,6 +157,7 @@
 **Interfaces:**
 - Consumes: hard-cut layout from Task 2.
 - Produces: zero active callers or definitions of `PartGraph::read_manifest`; migrated Demo, Meadow, MeadowWorld, CornellBox, LightingGarden, FloorDemo, RockGallery, and four StressForest worlds.
+- Produces: deletion of Task 2's transitional `WorldDesc` legacy fields and `project_dir == nullptr` fallback after every fixture is migrated.
 
 - [ ] **Step 1: Add parity assertions before deleting fixtures.** Encode the current root module, params, transform, flags, lights, and field settings as expected `WorldDefinition` values for every example world. Keep `Meadow` and `MeadowWorld` separate.
 
@@ -167,7 +169,7 @@
 
 - [ ] **Step 3: Move object sources and create world classes.** Each file exports one `class <Name> extends World` with declarative statics matching its old manifest and any existing field-world class behavior. Add `.cache/` to the example/project ignore rules.
 
-- [ ] **Step 4: Convert all temporary test sandboxes.** Fixture helpers create `objects/`, `worlds/Test.js`, optional `shared-lib/`, and `.cache/`; update `WorldDesc` construction to the Task 2 contract.
+- [ ] **Step 4: Convert all temporary test sandboxes.** Fixture helpers create `objects/`, `worlds/Test.js`, optional `shared-lib/`, and `.cache/`; update `WorldDesc` construction to the Task 2 contract. Then delete `schemas_dir`, `world_data_dir`, and `shared_lib_dir` from `WorldDesc`/provider configuration and remove the temporary fallback before running the task gates.
 
 - [ ] **Step 5: Remove manifest parser and legacy layout code.** Delete `read_manifest` and `parse_lights`, while retaining `WorldLights`, `SpotLight`, and `lights_fingerprint` for runtime rendering. Delete active `WorldData` fixtures and manifest-only test targets. Retain unrelated instance-record names such as `manifest_idx` only if they are internal indices with no authoring dependency; otherwise rename them to `root_idx`.
 

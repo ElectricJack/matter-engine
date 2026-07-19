@@ -24,6 +24,10 @@
   separate selectable identities during migration.
 - Pre-flight conflict scan corrected Task 3 to retain the runtime `WorldLights` data
   contract/fingerprint while deleting only manifest parsing.
+- Task 2 pre-flight found that deleting legacy `WorldDesc` fields before Task 3
+  migrates all fixtures would break intermediate compilation. The plan now permits a
+  test-only `project_dir == nullptr` transition seam in Task 2 and requires Task 3 to
+  delete it; MatterViewer switches to project-root discovery immediately.
 
 ## Active
 
