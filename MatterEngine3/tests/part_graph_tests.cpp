@@ -1,8 +1,6 @@
 #include "part_graph.h"
 #include "part_asset_v2.h"   // SP-1 (via -I../include): compute_resolved_hash
 #include <cstdio>
-#include <cstdlib>
-#include <fstream>
 #include <functional>
 #include <map>
 #include <set>
@@ -70,40 +68,6 @@ struct FakeBaker : Baker {
     }
 };
 
-static void test_read_manifest_expand_flag() {
-    system("mkdir -p /tmp/me3_manifest_test/W1");
-    {
-        std::ofstream f("/tmp/me3_manifest_test/W1/world.manifest");
-        f << "# comment line\n"
-          << "Tree\n"
-          << "Meadow expand\n"
-          << "\n";
-    }
-    std::vector<ChildRequest> roots;
-    std::vector<bool> flags;
-    std::string err;
-    bool ok = PartGraph::read_manifest("/tmp/me3_manifest_test", "W1", roots, err, &flags);
-    CHECK(ok, "manifest with expand flag parses");
-    CHECK(roots.size() == 2 && flags.size() == 2, "two roots with parallel flags");
-    CHECK(roots.size() == 2 && roots[0].module == "Tree" && !flags[0],
-          "unflagged root -> expand=false");
-    CHECK(roots.size() == 2 && roots[1].module == "Meadow" && flags[1],
-          "expand flag parsed for flagged root");
-
-    // 4-arg form still works (flags optional).
-    std::vector<ChildRequest> r2;
-    CHECK(PartGraph::read_manifest("/tmp/me3_manifest_test", "W1", r2, err) && r2.size() == 2,
-          "read_manifest without expand_out still parses");
-
-    // Unknown flag tokens are a hard error (fail-closed).
-    {
-        std::ofstream f("/tmp/me3_manifest_test/W1/world.manifest");
-        f << "Meadow explode\n";
-    }
-    std::vector<ChildRequest> r3;
-    CHECK(!PartGraph::read_manifest("/tmp/me3_manifest_test", "W1", r3, err),
-          "unknown manifest flag rejected");
-}
 
 int main() {
     using namespace part_graph;
@@ -343,83 +307,6 @@ int main() {
         bool root_baked = false;
         for (uint64_t h : baker.bake_order) if (h == root_hash) root_baked = true;
         CHECK(!root_baked, "parent is not baked after child bake failure");
-    }
-
-    // Task 11: world manifest root discovery.
-    {
-        // Write a temp world tree and parse the manifest.
-        std::string dir = "/tmp/pg_world_test";
-        std::string wdir = dir + "/WorldData/w1";
-        system(("rm -rf " + dir + " && mkdir -p " + wdir).c_str());
-        {
-            FILE* f = fopen((wdir + "/world.manifest").c_str(), "w");
-            fputs("# roots for w1\nTower\n\nBridge\n", f);
-            fclose(f);
-        }
-        std::vector<ChildRequest> roots;
-        std::string err;
-        bool ok = PartGraph::read_manifest(dir + "/WorldData", "w1", roots, err);
-        CHECK(ok, "manifest parse succeeds");
-        CHECK(roots.size() == 2, "manifest yields 2 roots (comments/blank lines ignored)");
-        CHECK(roots[0].module == "Tower" && roots[1].module == "Bridge",
-              "roots parsed in order");
-
-        // Missing manifest => hard error.
-        std::vector<ChildRequest> none;
-        std::string err2;
-        bool ok2 = PartGraph::read_manifest(dir + "/WorldData", "does_not_exist", none, err2);
-        CHECK(!ok2, "missing manifest is a hard error");
-        CHECK(!err2.empty(), "missing manifest reports an error message");
-        system(("rm -rf " + dir).c_str());
-    }
-
-    // Task 5: per-root expand flag in read_manifest.
-    test_read_manifest_expand_flag();
-
-    // Task 1: tileset flag in read_manifest.
-    {
-        // Arrange: manifest with a plain root, a tileset root, and a comment
-        std::string dir = "/tmp/me3_manifest_tileset_test";
-        system(("rm -rf " + dir + " && mkdir -p " + dir + "/TsFlag").c_str());
-        {
-            std::ofstream f(dir + "/TsFlag/world.manifest");
-            f << "# demo\n"
-              << "Meadow\n"
-              << "ForestFloor tileset\n";
-        }
-
-        std::vector<ChildRequest> roots;
-        std::vector<bool> expand, tileset;
-        std::string err;
-        bool ok = PartGraph::read_manifest(dir, "TsFlag", roots, err, &expand, &tileset);
-        CHECK(ok, "manifest: parses tileset flag");
-        CHECK(roots.size() == 2, "manifest: two roots");
-        CHECK(tileset.size() == 2 && !tileset[0] && tileset[1], "manifest: tileset flag on second root only");
-        CHECK(expand.size() == 2 && !expand[0] && !expand[1], "manifest: expand unset");
-
-        // Unknown flags still hard-error
-        system(("mkdir -p " + dir + "/TsBad").c_str());
-        {
-            std::ofstream f(dir + "/TsBad/world.manifest");
-            f << "Meadow frobnicate\n";
-        }
-        roots.clear(); err.clear();
-        ok = PartGraph::read_manifest(dir, "TsBad", roots, err);
-        CHECK(!ok && err.find("unknown manifest flag") != std::string::npos,
-              "manifest: unknown flag still errors");
-
-        // tileset + expand on one root errors
-        system(("mkdir -p " + dir + "/TsBoth").c_str());
-        {
-            std::ofstream f(dir + "/TsBoth/world.manifest");
-            f << "ForestFloor tileset expand\n";
-        }
-        roots.clear(); err.clear();
-        ok = PartGraph::read_manifest(dir, "TsBoth", roots, err);
-        CHECK(!ok && err.find("both") != std::string::npos,
-              "manifest: tileset+expand rejected");
-
-        system(("rm -rf " + dir).c_str());
     }
 
     if (g_failures == 0) printf("All part_graph tests passed\n");

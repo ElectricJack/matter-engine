@@ -19,10 +19,9 @@ int main() {
     if (!engine) { printf("FAIL create: %s\n", err.c_str()); return 1; }
 
     matter::WorldDesc wd;
-    wd.schemas_dir    = "../MatterEngine3/examples/primitive_demo/schemas";
-    wd.world_data_dir = "../MatterEngine3/examples/primitive_demo/WorldData";
-    wd.world_name     = "Primitives";
-    wd.shared_lib_dir = "../MatterEngine3/shared-lib";
+    wd.project_dir           = "../MatterEngine3/examples/primitive_demo";
+    wd.world_name            = "Primitives";
+    wd.engine_shared_lib_dir = "../MatterEngine3/shared-lib";
     auto session = engine->open_world(wd, err);
     if (!session) { printf("FAIL open_world: %s\n", err.c_str()); return 1; }
 

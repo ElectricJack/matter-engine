@@ -576,12 +576,9 @@ static void test_local_provider_cache() {
     const std::string cache = test_tmp("me3_viewer_cache_test");
 
     // Resolve committed example assets relative to MatterEngine3/tests (cwd).
-    viewer::LocalProviderConfig cfg;
-    cfg.schemas_dir    = "../examples/world_demo/schemas";
-    cfg.world_data_dir = "../examples/world_demo/WorldData";
-    cfg.world_name     = "Demo";
-    cfg.shared_lib_dir = "../shared-lib";
-    cfg.cache_root     = cache;
+    auto cfg = viewer::LocalProviderConfig::for_project(
+        "../examples/world_demo", "Demo", "../shared-lib");
+    cfg.cache_root = cache;
 
     // --- First connect: bake anything missing, then load into the shared store. ---
     // We do NOT wipe the cache before running. On the very first invocation the cache
@@ -706,7 +703,7 @@ static void test_partstore_keeps_children() {
     // they still resolve from inside the sandbox (they are repo-relative to tests/).
     std::error_code path_error;
     std::string schemas = std::filesystem::absolute(
-        "../examples/world_demo/schemas", path_error).string();
+        "../examples/world_demo/objects", path_error).string();
     path_error.clear();
     std::string sharedlib = std::filesystem::absolute(
         "../shared-lib", path_error).string();
@@ -1622,12 +1619,9 @@ static void test_install_phase_on_part_progress() {
     // Records (done, total) pairs from all on_part callbacks in order.
     std::vector<std::pair<int,int>> callbacks;
 
-    viewer::LocalProviderConfig cfg;
-    cfg.schemas_dir    = "../examples/world_demo/schemas";
-    cfg.world_data_dir = "../examples/world_demo/WorldData";
-    cfg.world_name     = "Demo";
-    cfg.shared_lib_dir = "../shared-lib";
-    cfg.cache_root     = cold_cache;
+    auto cfg = viewer::LocalProviderConfig::for_project(
+        "../examples/world_demo", "Demo", "../shared-lib");
+    cfg.cache_root = cold_cache;
     cfg.on_part = [&](const char* /*module*/, int done, int total) {
         callbacks.emplace_back(done, total);
     };

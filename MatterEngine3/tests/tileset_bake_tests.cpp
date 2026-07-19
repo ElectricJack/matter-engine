@@ -5,7 +5,7 @@
 // scale_fit, and fit_half_height.
 //
 // Task 8 appends: test_e2e_manifest_to_settled_torus — full pipeline from a
-// world.manifest on disk through run_tileset_phase to a SettledTorus.
+// world class on disk through run_tileset_phase_from_objects to a SettledTorus.
 //
 // Link recipe: mirrors run-graph-integration (full ScriptHost + QuickJS + MSL
 // backend) plus box3d objects (like run-tilesetphysics) and
@@ -23,23 +23,34 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
-#include <sys/stat.h>
-#include <unistd.h>
 
 #include "check.h"
 
-static bool file_exists(const std::string& p) {
-    struct stat st;
-    return stat(p.c_str(), &st) == 0;
+namespace fs = std::filesystem;
+
+static bool write_file(const fs::path& path, const std::string& body) {
+    std::error_code ec;
+    fs::create_directories(path.parent_path(), ec);
+    if (ec) return false;
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    if (!f) return false;
+    f << body;
+    return f.good();
 }
 
-static void write_file(const std::string& path, const std::string& body) {
-    std::ofstream f(path, std::ios::binary);
-    f << body;
+static void remove_tree(const fs::path& path) {
+    std::error_code ignored;
+    fs::remove_all(path, ignored);
+}
+
+static bool file_exists(const fs::path& p) {
+    std::error_code ec;
+    return fs::exists(p, ec);
 }
 
 // ---------------------------------------------------------------------------
@@ -375,19 +386,6 @@ static void test_scaled_collider_physics(const std::string& cache_dir,
     // We use a non-physics layer so y is analytically snapped and world x/z
     // come from the placement formula directly (no physics movement).
     {
-        // strip_occurrences(color=0, is_vertical=false) gives the horizontal-strip
-        // occurrences for color 0. We read them to know the expected lane/boundary.
-        // Rather than coupling to strip_occurrences here, we use a vertical-only
-        // layer with a known interior placement at a fixed tile-offset to verify
-        // the horizontal non-physics formula produces the same world coords.
-        //
-        // Simpler: place one horizontal strip placement at strip-local
-        //   pos = {along=0.8, y=0, across=0.1}
-        // and one vertical strip placement at
-        //   pos = {across=0.1, y=0, along=0.8}
-        // Both should produce the same set of world (x,z) coords per occurrence
-        // (because after the double-swap they resolve identically), confirming
-        // the convention is consistent between orientations.
         tileset::TilesetSpec s;
         s.tile_called = true;
         s.cfg.size = T; s.cfg.seed = 13;
@@ -420,22 +418,11 @@ static void test_scaled_collider_physics(const std::string& cache_dir,
               "hstrip: settle_tileset with h+v strips succeeds");
 
         // Both strip orientations produce 8 instances each (8 occurrences per color).
-        // Collect world (x,z) sets for vertical and horizontal instances and verify
-        // they cover the same multiset of fractional-tile positions — confirming that
-        // the across/along assignment is correct for horizontal strips (the double-swap
-        // lands at world_x = lane*T+along, world_z = boundary*T+across for horizontal,
-        // matching world_x = boundary*T+across, world_z = lane*T+along for vertical
-        // after the natural boundary<->lane role swap between orientations).
-        // The simplest cheap assertion: both produce exactly 8 instances each.
         CHECK(torus.instances.size() == 16,
               "hstrip: 8 vertical + 8 horizontal non-physics instances (8 occ each)");
 
         // Verify that horizontal instances are within the torus and have the
         // expected fractional along/across offsets embedded in their world coords.
-        // For color=0 vertical occurrences: boundary in {1,3}, lane in {0,1,2,3}.
-        // For color=0 horizontal occurrences: boundary in {1,3}, lane in {0,1,2,3}.
-        // In both cases across=0.1 and along=0.8 so the fractional residue of
-        // (world_x mod T) and (world_z mod T) should be 0.1 or 0.8.
         bool residues_ok = true;
         for (const auto& si : torus.instances) {
             float rx = std::fmod(si.pose.px, T);
@@ -451,17 +438,14 @@ static void test_scaled_collider_physics(const std::string& cache_dir,
 }
 
 // ---------------------------------------------------------------------------
-// Task 8: test_e2e_manifest_to_settled_torus
+// Task 8: test_e2e_to_settled_torus
 //
-// End-to-end test: writes a ForestFloor.js tileset root + world.manifest to
-// disk, then exercises run_tileset_phase all the way to a SettledTorus.
-// schemas_dir and world_data_dir are set up so that
-//   world_data_dir + "/../schemas" == schemas_dir
-// (matching the real-world WorldData/ / schemas/ sibling convention).
+// End-to-end test: writes a ForestFloor.js tileset root to the objects dir,
+// then exercises run_tileset_phase_from_objects all the way to a SettledTorus.
+// Uses the project-root layout: objects/ for module sources.
 // ---------------------------------------------------------------------------
-static void test_e2e_manifest_to_settled_torus(const std::string& schemas_dir,
-                                               const std::string& world_data_dir,
-                                               const std::string& cache_dir) {
+static void test_e2e_to_settled_torus(const fs::path& objects_dir,
+                                      const fs::path& cache_dir) {
     // ForestFloor tileset fixture (global-script syntax: no export default).
     // Pebble uses seed:0 as a required param; Twig has no overrides.
     // Both layers use physics:false so the e2e test is fast and convergence is
@@ -482,24 +466,15 @@ class ForestFloor extends Tileset {
 }
 )JS";
 
-    // Write the fixture files.
-    const std::string e2e_world_dir = world_data_dir + "/E2E";
-    system(("mkdir -p " + e2e_world_dir).c_str());
-    write_file(schemas_dir + "/ForestFloor.js", kFloorJs);
-    write_file(e2e_world_dir + "/world.manifest", "ForestFloor tileset\n");
+    // Write the fixture file into objects/.
+    write_file(objects_dir / "ForestFloor.js", kFloorJs);
 
-    // Manifest surfaces the tileset flag.
-    std::vector<part_graph::ChildRequest> roots;
-    std::vector<bool> expand, ts;
-    std::string err;
-    CHECK(part_graph::PartGraph::read_manifest(world_data_dir, "E2E", roots, err, &expand, &ts),
-          "e2e: manifest parses");
-    CHECK(roots.size() == 1 && !ts.empty() && ts[0], "e2e: root flagged tileset");
-
-    // Run the full tileset phase.
+    // Run the full tileset phase using the project-layout entry point.
     tileset::SettledTorus torus;
-    CHECK(tileset::run_tileset_phase(world_data_dir, "E2E", roots[0].module,
-                                     cache_dir, torus, err),
+    std::string err;
+    CHECK(tileset::run_tileset_phase_from_objects(
+              objects_dir.string(), "ForestFloor",
+              cache_dir.string(), torus, err),
           "e2e: tileset phase runs");
     if (!err.empty()) printf("  e2e phase err: %s\n", err.c_str());
     CHECK(torus.report.converged_all, "e2e: all layers converged");
@@ -508,23 +483,25 @@ class ForestFloor extends Tileset {
 
     // Determinism: run the phase a second time and compare pose hashes.
     tileset::SettledTorus torus2;
-    CHECK(tileset::run_tileset_phase(world_data_dir, "E2E", roots[0].module,
-                                     cache_dir, torus2, err),
+    CHECK(tileset::run_tileset_phase_from_objects(
+              objects_dir.string(), "ForestFloor",
+              cache_dir.string(), torus2, err),
           "e2e: second phase run");
     if (!err.empty()) printf("  e2e phase2 err: %s\n", err.c_str());
     CHECK(torus.report.pose_hash == torus2.report.pose_hash,
           "e2e: phase deterministic (pose_hash stable)");
 
-    // Fail-closed: missing child module → error, false return.
+    // Fail-closed: missing child module -> error, false return.
     static const char* kBadFloorJs =
         "class BadFloor extends Tileset {\n"
         "  static requires = [ { module: 'Nope' } ];\n"
         "  build() { this.tile({size:2.0, texelsPerMeter:64, seed:1});\n"
         "            this.layer('Nope', { density: 1 }); }\n}\n";
-    write_file(schemas_dir + "/BadFloor.js", kBadFloorJs);
+    write_file(objects_dir / "BadFloor.js", kBadFloorJs);
     tileset::SettledTorus t3;
-    bool bad_ok = !tileset::run_tileset_phase(world_data_dir, "E2E", "BadFloor",
-                                              cache_dir, t3, err)
+    bool bad_ok = !tileset::run_tileset_phase_from_objects(
+                      objects_dir.string(), "BadFloor",
+                      cache_dir.string(), t3, err)
                   && !err.empty();
     CHECK(bad_ok, "e2e: missing child module fails closed");
     if (!bad_ok) printf("  bad floor err was: '%s'\n", err.c_str());
@@ -540,25 +517,27 @@ int main()
 
     namespace pg = part_graph;
 
-    // Absolute paths before any chdir.
-    char prevcwd[4096] = {};
-    if (!getcwd(prevcwd, sizeof prevcwd)) prevcwd[0] = '\0';
+    // Store original working directory.
+    const fs::path prevcwd = fs::current_path();
 
     // Fresh temp sandbox.
-    const std::string root    = "/tmp/me3_tilesetbake_tests";
-    const std::string schemas = root + "/schemas";
-    const std::string parts   = root + "/parts";
-    system(("rm -rf " + root).c_str());
-    system(("mkdir -p " + schemas + " " + parts).c_str());
+    const fs::path root    = fs::temp_directory_path() / "me3_tilesetbake_tests";
+    const fs::path objects = root / "objects";
+    const fs::path parts   = root / "parts";
+    remove_tree(root);
+    fs::create_directories(objects);
+    fs::create_directories(parts);
 
-    write_file(schemas + "/Pebble.js", kPebbleJs);
-    write_file(schemas + "/Twig.js",   kTwigJs);
+    write_file(objects / "Pebble.js", kPebbleJs);
+    write_file(objects / "Twig.js",   kTwigJs);
 
     // chdir so HostBaker's relative "parts/<hash>.part" lands under <root>/parts.
-    CHECK(chdir(root.c_str()) == 0, "setup: chdir into sandbox");
+    std::error_code ec;
+    fs::current_path(root, ec);
+    CHECK(ec.value() == 0, "setup: chdir into sandbox");
 
     script_host::ScriptHost host;
-    pg::FileModuleResolver resolver(host, "schemas");
+    pg::FileModuleResolver resolver(host, "objects");
     pg::HostBaker baker(host, ".");
     pg::PartGraph graph(resolver, baker);
 
@@ -584,20 +563,14 @@ int main()
         printf("[hash] Twig   -> %016llx\n", (unsigned long long)twig_hash);
 
         // Confirm the .part files exist.
-        std::string pebble_path = parts + "/" +
-            std::string(part_asset::cache_path_resolved(pebble_hash)).substr(6); // strip "parts/"
-        std::string twig_path = parts + "/" +
-            std::string(part_asset::cache_path_resolved(twig_hash)).substr(6);
-        // Actually cache_path_resolved returns "parts/<hash>.part"; the baker
-        // writes to cwd-relative "parts/<hash>.part" and we chdir'd to root.
-        pebble_path = root + "/" + part_asset::cache_path_resolved(pebble_hash);
-        twig_path   = root + "/" + part_asset::cache_path_resolved(twig_hash);
+        fs::path pebble_path = root / part_asset::cache_path_resolved(pebble_hash);
+        fs::path twig_path   = root / part_asset::cache_path_resolved(twig_hash);
 
         CHECK(file_exists(pebble_path), "bake: Pebble .part exists on disk");
         CHECK(file_exists(twig_path),   "bake: Twig .part exists on disk");
 
         // cache_dir for collider_for_part: the directory that CONTAINS parts/.
-        test_collider_bridge(root, pebble_hash, twig_hash);
+        test_collider_bridge(root.string(), pebble_hash, twig_hash);
     }
 
     if (pebble_ir.ok && !pebble_ir.root_hashes.empty() &&
@@ -605,7 +578,7 @@ int main()
     {
         uint64_t pebble_hash = pebble_ir.root_hashes[0];
         uint64_t twig_hash   = twig_ir.root_hashes[0];
-        test_settle_tileset(root, pebble_hash, twig_hash);
+        test_settle_tileset(root.string(), pebble_hash, twig_hash);
     }
 
     if (pebble_ir.ok && !pebble_ir.root_hashes.empty() &&
@@ -613,22 +586,17 @@ int main()
     {
         uint64_t pebble_hash = pebble_ir.root_hashes[0];
         uint64_t twig_hash   = twig_ir.root_hashes[0];
-        test_scaled_collider_physics(root, pebble_hash, twig_hash);
+        test_scaled_collider_physics(root.string(), pebble_hash, twig_hash);
     }
 
-    // Task 8 e2e: world_data_dir is a WorldData/ subdir of root so that
-    //   world_data_dir + "/../schemas" resolves to root + "/schemas" (already written).
+    // Task 8 e2e: use project-layout with objects/ dir (already written).
+    // cache_dir = root (contains parts/); we are already chdir'd there.
     {
-        const std::string world_data_dir = root + "/WorldData";
-        system(("mkdir -p " + world_data_dir).c_str());
-        // cache_dir = root (contains parts/); we are already chdir'd there.
-        test_e2e_manifest_to_settled_torus(schemas /*= root+"/schemas"*/,
-                                           world_data_dir,
-                                           root /*cache_dir*/);
+        test_e2e_to_settled_torus(objects, root);
     }
 
-    if (prevcwd[0]) (void)chdir(prevcwd);
-    system(("rm -rf " + root).c_str());
+    fs::current_path(prevcwd, ec);
+    remove_tree(root);
 
     if (g_failures == 0)
         printf("\nAll tileset_bake_tests passed.\n");

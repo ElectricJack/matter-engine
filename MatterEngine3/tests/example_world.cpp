@@ -1,10 +1,10 @@
 // End-to-end MatterEngine3 example world: terrain, trees, and grass.
 //
 // Drives the WHOLE pipeline on committed assets under
-// ../examples/world_demo (schemas + world.manifest) and the shared script
+// ../examples/world_demo (objects + worlds/Demo.js) and the shared script
 // library under ../shared-lib:
 //
-//   SP-3  read_manifest -> PartGraph::install (walk + dedup + cache)
+//   SP-3  load_world_definition -> PartGraph::install (walk + dedup + cache)
 //   SP-2  ScriptHost bakes each part (voxel-CSG build) via HostBaker
 //   SP-7  Tree.js `import {rng} from 'shared-lib/rng'` (module resolution + fold)
 //   SP-1  load_v2 reads each baked .part back (geometry + LOD round-trip shape)
@@ -27,6 +27,8 @@
 #include "lod_select.h"
 #include "blas_manager.hpp"
 #include "tlas_manager.hpp"
+#include "script/world_definition_loader.h"
+#include "provider/local_provider.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -80,10 +82,10 @@ static std::string abspath(const std::string& rel) {
 
 int main() {
     // --- Resolve committed asset locations (run from MatterEngine3/tests). ---
-    const std::string schemas    = abspath("../examples/world_demo/schemas");
-    const std::string world_data = abspath("../examples/world_demo/WorldData");
+    const std::string project    = abspath("../examples/world_demo");
+    const std::string objects    = abspath("../examples/world_demo/objects");
     const std::string shared_lib = abspath("../shared-lib");
-    printf("schemas:    %s\n", schemas.c_str());
+    printf("objects:    %s\n", objects.c_str());
     printf("shared-lib: %s\n", shared_lib.c_str());
 
     // --- Fresh sandbox; bake writes the RELATIVE "parts/<hash>.part", so chdir. ---
@@ -95,16 +97,25 @@ int main() {
     // --- SP-2/SP-3/SP-7 wiring. set_shared_lib_root enables `import` resolution. ---
     script_host::ScriptHost host;
     host.set_shared_lib_root(shared_lib);
-    FileModuleResolver resolver(host, schemas);
+    FileModuleResolver resolver(host, objects);
     HostBaker baker(host, ".");            // parts_dir_ is PARENT of parts/ (== cwd)
     PartGraph graph(resolver, baker);
 
-    // --- SP-3: parse the manifest into root parts, then install (bake) them. ---
-    std::vector<ChildRequest> roots; std::string err;
-    if (!PartGraph::read_manifest(world_data, "Demo", roots, err)) {
-        printf("FAIL: read_manifest: %s\n", err.c_str());
+    // --- SP-3: load world definition into root parts, then install (bake) them. ---
+    matter::WorldLoadDesc load_desc;
+    load_desc.world_path = project + "/worlds/Demo.js";
+    load_desc.objects_dir = objects;
+    load_desc.engine_shared_lib_dir = shared_lib;
+    matter::WorldDefinition definition;
+    matter::WorldLoadError load_error;
+    if (!matter::load_world_definition(load_desc, definition, load_error)) {
+        printf("FAIL: load_world_definition: %s\n", load_error.message.c_str());
         return 1;
     }
+    viewer::ProviderWorldDefinition adapted =
+        viewer::adapt_world_definition(definition);
+    std::vector<ChildRequest> roots = std::move(adapted.roots);
+    std::string err;
     printf("\n[install] manifest roots: ");
     for (auto& r : roots) printf("%s ", r.module.c_str());
     printf("\n");
@@ -116,7 +127,7 @@ int main() {
     // --- Resolve each module's content hash (the host is the hash authority). ---
     std::map<std::string, uint64_t> hash_of;
     for (auto& r : roots) {
-        std::string src = read_file(schemas + "/" + r.module + ".js");
+        std::string src = read_file(objects + "/" + r.module + ".js");
         if (src.empty()) { printf("FAIL: missing schema %s\n", r.module.c_str()); return 1; }
         uint64_t h = host.resolve_hash(src, "{}");
         if (h == 0) { printf("FAIL: resolve_hash %s\n", r.module.c_str()); return 1; }

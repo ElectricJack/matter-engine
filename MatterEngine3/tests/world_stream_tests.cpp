@@ -103,10 +103,9 @@ int main() {
     if (!engine) { printf("FAIL create: %s\n", err.c_str()); CloseWindow(); return 1; }
 
     matter::WorldDesc wd;
-    wd.schemas_dir    = "../MatterEngine3/tests/fixtures/world_stream/schemas";
-    wd.world_data_dir = "../MatterEngine3/tests/fixtures/world_stream/WorldData";
-    wd.world_name     = "TestWorld";
-    wd.shared_lib_dir = "../MatterEngine3/shared-lib";
+    wd.project_dir           = "../MatterEngine3/tests/fixtures/world_stream";
+    wd.world_name            = "TestWorld";
+    wd.engine_shared_lib_dir = "../MatterEngine3/shared-lib";
     auto session = engine->open_world(wd, err);
     if (!session) { printf("FAIL open_world: %s\n", err.c_str()); CloseWindow(); return 1; }
 

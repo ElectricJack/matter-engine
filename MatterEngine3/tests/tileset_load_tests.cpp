@@ -1,13 +1,11 @@
 // tileset_load_tests.cpp — LocalProvider tileset-root wiring test.
 //
-// Fixture: a minimal WorldData/<world>/world.manifest with a `TrivialGround tileset`
-// line + a matching TrivialGround.js schema. Runs LocalProvider::connect() with a
-// hidden GL context and asserts:
+// Fixture: a minimal project-layout sandbox with worlds/<world>.js containing a
+// World class with a tileset root + a matching TrivialGround.js object. Runs
+// LocalProvider::connect() with a hidden GL context and asserts:
 //   * connect() returns true (no err)
 //   * baked_tileset_count() == 1
-//   * <world_data>/TrivialGround.gtex exists on disk
-//     (run_tileset_phase writes gtex to world_data_dir/<root_module>.gtex,
-//      not to the world subdir)
+//   * <cache_root>/TrivialGround.gtex exists on disk
 //   * viewer::tileset_provider::get_slot(0).valid == true after connect()
 //
 // The .gtex is baked via the GPU overload of run_tileset_phase, so the test
@@ -15,15 +13,17 @@
 
 #include "raylib.h"
 #include "gl46.h"
-#include "local_provider.h"
+#include "provider/local_provider.h"
 #include "tileset_provider.h"
 #include "world_source.h"
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <string>
-#include <sys/stat.h>
+
+namespace fs = std::filesystem;
 
 static int g_tests = 0, g_failures = 0;
 #define REQUIRE(cond) do { \
@@ -31,37 +31,44 @@ static int g_tests = 0, g_failures = 0;
     if (!(cond)) { std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); ++g_failures; } \
     } while (0)
 
-static bool file_exists(const std::string& p) {
-    struct stat st;
-    return stat(p.c_str(), &st) == 0;
-}
-
-static void write_file(const std::string& path, const std::string& content) {
-    std::ofstream f(path);
+static bool write_file(const fs::path& path, const std::string& content) {
+    std::error_code ec;
+    fs::create_directories(path.parent_path(), ec);
+    if (ec) return false;
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    if (!f) return false;
     f << content;
+    return f.good();
 }
 
-static void mkdirs(const std::string& p) {
-    // Depth-2 tree only in this test.
-    ::mkdir(p.c_str(), 0755);
+static void remove_tree(const fs::path& path) {
+    std::error_code ignored;
+    fs::remove_all(path, ignored);
+}
+
+static bool file_exists(const fs::path& p) {
+    std::error_code ec;
+    return fs::exists(p, ec);
 }
 
 static void test_local_provider_processes_tileset_root() {
-    const std::string root = "/tmp/me3_tileset_load";
-    ::system(("rm -rf " + root).c_str());
-    mkdirs(root);
-    mkdirs(root + "/schemas");
-    mkdirs(root + "/WorldData");
-    mkdirs(root + "/WorldData/TinyWorld");
-    mkdirs(root + "/cache");
-    mkdirs(root + "/shared-lib");
+    const fs::path root = fs::temp_directory_path() / "me3_tileset_load";
+    remove_tree(root);
+    fs::create_directories(root / "objects");
+    fs::create_directories(root / "worlds");
+    fs::create_directories(root / "shared-lib");
+    fs::create_directories(root / ".cache" / "TinyWorld");
 
-    // Minimal manifest: one tileset root.
-    write_file(root + "/WorldData/TinyWorld/world.manifest",
-               "TrivialGround tileset\n");
+    // World class: one tileset root.
+    write_file(root / "worlds" / "TinyWorld.js",
+        "class TinyWorld extends World {\n"
+        "  static roots = [\n"
+        "    { module: 'TrivialGround', transform: [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1], tileset: true },\n"
+        "  ];\n"
+        "}\n");
     // Minimal schema: flat 2m tile, one dirt fill layer via base(), no children.
     // Global-script syntax: no `export default` (tileset eval uses plain class form).
-    write_file(root + "/schemas/TrivialGround.js",
+    write_file(root / "objects" / "TrivialGround.js",
         "class TrivialGround extends Tileset {\n"
         "  static requires = [];\n"
         "  build() {\n"
@@ -70,13 +77,8 @@ static void test_local_provider_processes_tileset_root() {
         "  }\n"
         "}\n");
 
-    viewer::LocalProviderConfig cfg;
-    cfg.schemas_dir     = root + "/schemas";
-    cfg.world_data_dir  = root + "/WorldData";
-    cfg.world_name      = "TinyWorld";
-    cfg.shared_lib_dir  = root + "/shared-lib";
-    cfg.cache_root      = root + "/cache";
-    cfg.gl_available    = true;   // hidden raylib window is a real GL context
+    auto cfg = viewer::LocalProviderConfig::for_project(root.string(), "TinyWorld", "");
+    cfg.gl_available = true;   // hidden raylib window is a real GL context
 
     viewer::LocalProvider provider(cfg);
     viewer::WorldManifest wm;
@@ -86,48 +88,52 @@ static void test_local_provider_processes_tileset_root() {
     REQUIRE(ok);
 
     REQUIRE(provider.baked_tileset_count() == 1);
-    // run_tileset_phase writes gtex to world_data_dir/<root_module>.gtex (not world subdir).
-    REQUIRE(file_exists(root + "/WorldData/TrivialGround.gtex"));
+    // run_tileset_phase writes gtex into the cache root.
+    REQUIRE(file_exists(root / ".cache" / "TinyWorld" / "TrivialGround.gtex"));
     REQUIRE(viewer::tileset_provider::get_slot(0).valid);
 
     viewer::tileset_provider::unload_all();
-    ::system(("rm -rf " + root).c_str());
+    remove_tree(root);
 }
 
 // Optional second-pass fixture: run the REAL ForestFloor tileset from the
-// world_demo schemas dir through LocalProvider::connect(). Gated on the env
+// world_demo objects dir through LocalProvider::connect(). Gated on the env
 // var MATTER_USE_REAL_FOREST_FLOOR=1 because it depends on the on-disk
-// world_demo/schemas layout and produces artifacts inside /tmp. Combined with
+// world_demo layout and produces artifacts inside temp. Combined with
 // MATTER_TILESET_DUMP_PNG=1 (checked by LocalProvider itself) this is the way
 // to eyeball the actual atlas without launching the viewer window.
 static void test_local_provider_bakes_meadow_forestfloor() {
     // Relative to viewer/ (where the test binary is normally run from) OR
     // repo-root (build-all.sh) — try both.
-    std::string src_schemas = "../examples/world_demo/schemas";
-    struct stat st_probe;
-    if (stat(src_schemas.c_str(), &st_probe) != 0) {
-        src_schemas = "MatterEngine3/examples/world_demo/schemas";
+    std::string src_objects = "../examples/world_demo/objects";
+    std::error_code ec;
+    if (!fs::is_directory(src_objects, ec)) {
+        src_objects = "MatterEngine3/examples/world_demo/objects";
     }
-    const std::string root = "/tmp/me3_forestfloor_bake";
-    ::system(("rm -rf " + root).c_str());
-    mkdirs(root);
-    mkdirs(root + "/schemas");
-    mkdirs(root + "/WorldData");
-    mkdirs(root + "/WorldData/Sandbox");
-    mkdirs(root + "/cache");
+    if (!fs::is_directory(src_objects, ec)) {
+        // Try schemas as fallback for legacy layout.
+        src_objects = "../examples/world_demo/schemas";
+        if (!fs::is_directory(src_objects, ec))
+            src_objects = "MatterEngine3/examples/world_demo/schemas";
+    }
 
-    // Copy the production schemas verbatim — no scaled-down variant. With Rock
-    // as the only physics layer (~256 bodies over the 4x4 torus), the settle
-    // converges in seconds even at production density (Pebble/Twig/Leaf use
-    // physics: false and surface-snap algorithmically).
+    const fs::path root = fs::temp_directory_path() / "me3_forestfloor_bake";
+    remove_tree(root);
+    fs::create_directories(root / "objects");
+    fs::create_directories(root / "worlds");
+    fs::create_directories(root / ".cache" / "Sandbox");
+
+    // Copy the production schemas/objects verbatim.
     const char* needed[] = {
         "ForestFloor.js", "Pebble.js", "Rock.js", "Twig.js", "Leaf.js",
     };
     for (const char* fn : needed) {
-        std::string cp = "cp " + src_schemas + "/" + fn + " " + root + "/schemas/" + fn;
-        int rc = ::system(cp.c_str());
-        if (rc != 0) {
-            std::fprintf(stderr, "FAIL: could not stage %s (rc=%d)\n", fn, rc);
+        fs::path src = fs::path(src_objects) / fn;
+        fs::path dst = root / "objects" / fn;
+        std::error_code copy_ec;
+        fs::copy_file(src, dst, copy_ec);
+        if (copy_ec) {
+            std::fprintf(stderr, "FAIL: could not stage %s (%s)\n", fn, copy_ec.message().c_str());
             ++g_failures;
             return;
         }
@@ -135,29 +141,31 @@ static void test_local_provider_bakes_meadow_forestfloor() {
 
     // Copy the shared-lib (Pebble.js imports shared-lib/rng).
     std::string src_shared_lib = "../shared-lib";
-    struct stat st_sl;
-    if (stat(src_shared_lib.c_str(), &st_sl) != 0) {
+    if (!fs::is_directory(src_shared_lib, ec)) {
         src_shared_lib = "MatterEngine3/shared-lib";
     }
-    std::string cp_sl = "cp -r " + src_shared_lib + " " + root + "/shared-lib";
-    if (::system(cp_sl.c_str()) != 0) {
-        std::fprintf(stderr, "FAIL: could not stage shared-lib from %s\n",
-                     src_shared_lib.c_str());
-        ++g_failures;
-        return;
+    {
+        std::error_code copy_ec;
+        fs::copy(src_shared_lib, (root / "shared-lib").string(),
+                 fs::copy_options::recursive, copy_ec);
+        if (copy_ec) {
+            std::fprintf(stderr, "FAIL: could not stage shared-lib from %s (%s)\n",
+                         src_shared_lib.c_str(), copy_ec.message().c_str());
+            ++g_failures;
+            return;
+        }
     }
 
-    // Sandbox manifest: single tileset root.
-    write_file(root + "/WorldData/Sandbox/world.manifest",
-               "ForestFloor tileset\n");
+    // World class: single tileset root.
+    write_file(root / "worlds" / "Sandbox.js",
+        "class Sandbox extends World {\n"
+        "  static roots = [\n"
+        "    { module: 'ForestFloor', transform: [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1], tileset: true },\n"
+        "  ];\n"
+        "}\n");
 
-    viewer::LocalProviderConfig cfg;
-    cfg.schemas_dir     = root + "/schemas";
-    cfg.world_data_dir  = root + "/WorldData";
-    cfg.world_name      = "Sandbox";
-    cfg.shared_lib_dir  = root + "/shared-lib";
-    cfg.cache_root      = root + "/cache";
-    cfg.gl_available    = true;   // hidden raylib window is a real GL context
+    auto cfg = viewer::LocalProviderConfig::for_project(root.string(), "Sandbox", "");
+    cfg.gl_available = true;   // hidden raylib window is a real GL context
 
     viewer::LocalProvider provider(cfg);
     viewer::WorldManifest wm;
@@ -166,13 +174,13 @@ static void test_local_provider_bakes_meadow_forestfloor() {
     if (!ok) std::fprintf(stderr, "  ForestFloor connect err: %s\n", err.c_str());
     REQUIRE(ok);
     REQUIRE(provider.baked_tileset_count() == 1);
-    REQUIRE(file_exists(root + "/WorldData/ForestFloor.gtex"));
+    REQUIRE(file_exists(root / ".cache" / "Sandbox" / "ForestFloor.gtex"));
 
-    std::fprintf(stderr, "ForestFloor atlas + PNGs (if MATTER_TILESET_DUMP_PNG=1) at %s/WorldData/\n",
-                 root.c_str());
+    std::fprintf(stderr, "ForestFloor atlas + PNGs (if MATTER_TILESET_DUMP_PNG=1) at %s/.cache/Sandbox/\n",
+                 root.string().c_str());
 
     viewer::tileset_provider::unload_all();
-    // Do NOT rm -rf here — the caller may want to copy the PNGs out.
+    // Do NOT remove here — the caller may want to copy the PNGs out.
 }
 
 int main() {
