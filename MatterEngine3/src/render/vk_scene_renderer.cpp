@@ -6294,4 +6294,84 @@ void VkSceneRenderer::reset() {
 #endif
 }
 
+// Dynamic lane (Task 7): consumes CPU-side slot changes produced by
+// matter::render::DynamicInstanceSlots. Slot indices are stable across calls,
+// so dynamic_instance_staging_/dynamic_instance_part_slots_ are indexed
+// directly by DynamicSlotChange::slot_index, growing lazily as new slots are
+// bound. A part_slot value of UINT32_MAX marks an inactive (removed/unbound)
+// slot.
+bool VkSceneRenderer::update_dynamic_instances(
+    const matter::render::DynamicSlotChange* changes, uint32_t count,
+    uint64_t submit_serial, std::string& error) {
+    error.clear();
+    if (fail_if_poisoned(error)) return false;
+    dynamic_submit_serial_ = submit_serial;
+    if (count > 0 && changes == nullptr) {
+        error = "update_dynamic_instances: null changes with nonzero count";
+        return false;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        const matter::render::DynamicSlotChange& change = changes[i];
+        if (change.slot_index == UINT32_MAX) {
+            error = "update_dynamic_instances: invalid slot_index";
+            return false;
+        }
+        if (change.slot_index >= dynamic_instance_staging_.size()) {
+            dynamic_instance_staging_.resize(change.slot_index + 1, GpuInstance{});
+            dynamic_instance_part_slots_.resize(change.slot_index + 1, UINT32_MAX);
+        }
+        switch (change.kind) {
+            case matter::render::DynamicSlotChangeKind::Bind: {
+                const auto found = slot_of_.find(change.part_hash);
+                if (found == slot_of_.end()) {
+                    error = "update_dynamic_instances: unknown part_hash for Bind";
+                    return false;
+                }
+                const PartRecord& part = parts_[static_cast<size_t>(found->second)];
+                GpuInstance instance{};
+                instance.object_to_world = pack_glsl_mat4(change.object_to_world);
+                instance.previous_object_to_world = instance.object_to_world;
+                instance.part_slot = static_cast<uint32_t>(found->second);
+                instance.cluster_start = part.cluster_start;
+                instance.cluster_count = part.cluster_count;
+                instance.instance_token =
+                    vulkan_history_token(change.entity_id.value);
+                dynamic_instance_staging_[change.slot_index] = instance;
+                dynamic_instance_part_slots_[change.slot_index] = instance.part_slot;
+                dynamic_dirty_ = true;
+                break;
+            }
+            case matter::render::DynamicSlotChangeKind::Transform: {
+                if (dynamic_instance_part_slots_[change.slot_index] == UINT32_MAX) {
+                    error =
+                        "update_dynamic_instances: Transform on unbound slot";
+                    return false;
+                }
+                GpuInstance& instance = dynamic_instance_staging_[change.slot_index];
+                instance.previous_object_to_world = instance.object_to_world;
+                instance.object_to_world = pack_glsl_mat4(change.object_to_world);
+                dynamic_dirty_ = true;
+                break;
+            }
+            case matter::render::DynamicSlotChangeKind::Remove: {
+                dynamic_instance_staging_[change.slot_index] = GpuInstance{};
+                dynamic_instance_part_slots_[change.slot_index] = UINT32_MAX;
+                dynamic_dirty_ = true;
+                break;
+            }
+        }
+    }
+    uint32_t active = 0;
+    for (uint32_t part_slot : dynamic_instance_part_slots_) {
+        if (part_slot != UINT32_MAX) ++active;
+    }
+    dynamic_instance_count_ = active;
+    return true;
+}
+
+void VkSceneRenderer::finish_dynamic_frame(uint64_t completed_serial) {
+    dynamic_completed_serial_ =
+        std::max(dynamic_completed_serial_, completed_serial);
+}
+
 }  // namespace viewer

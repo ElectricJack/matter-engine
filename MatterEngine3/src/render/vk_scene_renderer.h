@@ -19,6 +19,7 @@
 #include "matter/lod_contract.h"
 #include "matter/math_types.h"
 #include "material_registry.h"
+#include "render/dynamic_instance_slots.h"
 #include "vk_gi_contract.h"
 #include "vk_draw_command.h"
 #include "vk_resources.h"
@@ -343,6 +344,16 @@ public:
     void release_part(uint64_t part_hash);
     bool update_instances(const std::vector<VkSceneInstance>& instances,
                           std::string& error);
+    // Dynamic lane (Task 7): consumes CPU-side slot changes produced by
+    // matter::render::DynamicInstanceSlots. submit_serial identifies the GPU
+    // frame this batch of changes will be submitted with; finish_dynamic_frame
+    // reports back the highest completed serial so callers can safely reuse
+    // retired slots.
+    bool update_dynamic_instances(const matter::render::DynamicSlotChange* changes,
+                                  uint32_t count,
+                                  uint64_t submit_serial,
+                                  std::string& error);
+    void finish_dynamic_frame(uint64_t completed_serial);
     void set_temporal_frame(const TemporalFrame& frame) { temporal_frame_ = frame; }
     void set_dlss_mode(matter::DlssMode mode);
     VkExtent2D dlss_internal_extent(VkExtent2D output_extent) const;
@@ -925,6 +936,15 @@ private:
     std::vector<std::vector<VkSceneLod>> cluster_lods_;
     std::vector<GpuInstance> instance_staging_;
     std::vector<uint32_t> instance_part_slots_;
+
+    // Dynamic lane state (Task 7)
+    std::vector<GpuInstance> dynamic_instance_staging_;
+    std::vector<uint32_t> dynamic_instance_part_slots_;
+    uint32_t dynamic_instance_count_ = 0;
+    uint64_t dynamic_submit_serial_ = 0;
+    uint64_t dynamic_completed_serial_ = 0;
+    bool dynamic_dirty_ = false;
+
     std::vector<uint32_t> part_instance_counts_;
     std::vector<DrawCommand> command_template_;
     std::vector<PartCommandRange> part_command_ranges_;
