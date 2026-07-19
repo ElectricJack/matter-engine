@@ -378,6 +378,17 @@ DYNAMIC_BRIDGE_C      = $(FLECS_C)
 EDITOR_MODEL_TARGET = editor_model_tests
 EDITOR_MODEL_CPP    = editor_model_tests.cpp ../../MatterViewer/editor_model.cpp
 
+# Phase 4 Task 10 — Properties registry (needs scene_registry for ComponentDescriptor).
+PROPERTIES_REGISTRY_TARGET = properties_registry_tests
+PROPERTIES_REGISTRY_CPP    = properties_registry_tests.cpp ../../MatterViewer/properties_registry.cpp \
+                             ../src/ecs/scene_registry.cpp \
+                             ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
+                             ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
+                             ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
+                             ../src/streaming/sector_streaming_coordinator.cpp \
+                             ../src/sector_streamer.cpp
+PROPERTIES_REGISTRY_C      = $(FLECS_C)
+
 # Phase C Task 4 — RefineController tile-pairing + priority/eviction (pure CPU, def flavor).
 REFINECTL_TARGET = refine_controller_tests
 REFINECTL_CPP    = refine_controller_tests.cpp ../src/refine_controller.cpp \
@@ -749,6 +760,7 @@ def_CPP_SRCS := $(sort \
     $(DYNAMIC_SLOTS_CPP) \
     $(DYNAMIC_BRIDGE_CPP) \
     $(EDITOR_MODEL_CPP) \
+    $(PROPERTIES_REGISTRY_CPP) \
     $(PARTV2_CPP) \
     $(GRAPH_SOURCES) \
     $(TRIVAR_CPP) \
@@ -863,6 +875,7 @@ ENTITY_RECIPE_OBJS = $(call obj_list,def,$(ENTITY_RECIPE_CPP)) $(call obj_list,f
 DYNAMIC_SLOTS_OBJS = $(call obj_list,def,$(DYNAMIC_SLOTS_CPP))
 DYNAMIC_BRIDGE_OBJS = $(call obj_list,def,$(DYNAMIC_BRIDGE_CPP)) $(call obj_list,flecsc,$(DYNAMIC_BRIDGE_C))
 EDITOR_MODEL_OBJS = $(call obj_list,def,$(EDITOR_MODEL_CPP))
+PROPERTIES_REGISTRY_OBJS = $(call obj_list,def,$(PROPERTIES_REGISTRY_CPP)) $(call obj_list,flecsc,$(PROPERTIES_REGISTRY_C))
 PARTV2_OBJS = $(call obj_list,def,$(PARTV2_CPP)) $(call obj_list,mslc,$(PARTV2_C))
 GRAPH_OBJS  = $(call obj_list,def,$(GRAPH_SOURCES)) $(call obj_list,mslc,$(GRAPH_C))
 TRIVAR_OBJS = $(call obj_list,def,$(TRIVAR_CPP)) $(call obj_list,mslc,$(TRIVAR_C))
@@ -919,7 +932,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model
+.PHONY: clean run-matrix run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -982,6 +995,13 @@ $(EDITOR_MODEL_TARGET): $(EDITOR_MODEL_OBJS)
 
 run-editor-model: $(EDITOR_MODEL_TARGET)
 	./$(EDITOR_MODEL_TARGET)
+
+# Phase 4 Task 10 — Properties registry (pure CPU, needs scene_registry).
+$(PROPERTIES_REGISTRY_TARGET): $(PROPERTIES_REGISTRY_OBJS) $(BOX3D_LIB)
+	$(CC) $(PROPERTIES_REGISTRY_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) -lws2_32 -ldbghelp -lwinmm
+
+run-properties-registry: $(PROPERTIES_REGISTRY_TARGET)
+	./$(PROPERTIES_REGISTRY_TARGET)
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests.
 $(PARTV2_TARGET): $(PARTV2_OBJS)
