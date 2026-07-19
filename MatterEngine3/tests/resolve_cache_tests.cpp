@@ -25,10 +25,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
 #include <filesystem>
+#include <fstream>
 #include <string>
-#include <sys/stat.h>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -93,7 +92,6 @@ static bool build_key_sandbox(const std::string& root) {
     fs::create_directories(root + "/worlds");
     fs::create_directories(root + "/shared-lib");
     fs::create_directories(root + "/engine-shared");
-    fs::create_directories(root + "/WorldData/TestWorld");
     fs::create_directories(root + "/.cache/TestWorld/cache");
 
     if (!write_file(root + "/objects/Box.js", "class Box extends Part { static build() {} }")) return false;
@@ -101,7 +99,6 @@ static bool build_key_sandbox(const std::string& root) {
     if (!write_file(root + "/worlds/TestWorld.js", "class TestWorld extends World { static roots = [{module: 'Box'}]; }")) return false;
     if (!write_file(root + "/shared-lib/base.js", "export const BASE = 1;")) return false;
     if (!write_file(root + "/engine-shared/engine.js", "export const ENGINE = 1;")) return false;
-    if (!write_file(root + "/WorldData/TestWorld/world.manifest", "Box\nTree\n")) return false;
     return true;
 }
 
