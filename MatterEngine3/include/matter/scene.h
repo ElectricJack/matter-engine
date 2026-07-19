@@ -32,4 +32,10 @@ struct SceneEditResult {
     SceneEntityId created_id{};  // set on create/duplicate
 };
 
+enum class SimulationMode : uint8_t {
+    Edit,
+    Play,
+    Pause
+};
+
 } // namespace matter::scene
