@@ -159,6 +159,22 @@
 - Produces: zero active callers or definitions of `PartGraph::read_manifest`; migrated Demo, Meadow, MeadowWorld, CornellBox, LightingGarden, FloorDemo, RockGallery, and four StressForest worlds.
 - Produces: deletion of Task 2's transitional `WorldDesc` legacy fields and `project_dir == nullptr` fallback after every fixture is migrated.
 
+**Execution subdivision:** Task 3 remains one atomic final hard cut but is executed
+through four sequential review gates because the legacy inventory spans 27 files.
+The parser and compatibility fallback remain intact through 3A-3C and are deleted only
+in 3D after all consumers compile on the new format.
+
+- **3A — Example parity:** move `schemas/` to `objects/`, create all 11 distinct
+  `worlds/*.js`, update ignore rules, and land the parity tests.
+- **3B — Async fixtures:** migrate `MatterEngine3/tests/async_bake_tests.cpp` only.
+- **3C — Demand/streaming fixtures:** migrate `demand_bake_tests.cpp`,
+  `refine_loop_tests.cpp`, and `transient_tests.cpp`.
+- **3D — Closure:** migrate the remaining smaller API/example/gallery/lighting/
+  tileset/viewer/world-stream/resolve-cache fixtures and Makefiles, then delete
+  `read_manifest`, `parse_lights`, legacy descriptor/provider fields, the temporary
+  fallback, active `WorldData`, and manifest-only targets. Run Task 3's full gates only
+  after 3D.
+
 - [ ] **Step 1: Add parity assertions before deleting fixtures.** Encode the current root module, params, transform, flags, lights, and field settings as expected `WorldDefinition` values for every example world. Keep `Meadow` and `MeadowWorld` separate.
 
 - [ ] **Step 2: Run parity tests red against not-yet-created world files.**

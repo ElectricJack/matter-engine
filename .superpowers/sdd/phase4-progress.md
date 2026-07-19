@@ -4,7 +4,7 @@
 **Worktree:** `.worktrees/phase4-runtime-scene-editor-bridge`  
 **Design:** `docs/superpowers/specs/2026-07-19-phase4-runtime-scene-editor-bridge-design.md`  
 **Plan:** `docs/superpowers/plans/2026-07-19-phase4-runtime-scene-editor-bridge.md`  
-**Current status:** Task 3 implementation in progress
+**Current status:** Task 3B implementation in progress
 
 ## Completed
 
@@ -43,6 +43,13 @@
   cleanup; final full-task re-review approved with no findings.
 - Task 3: migrate example worlds and all fixtures to project-root JavaScript,
   remove manifest parsing and the temporary descriptor fallback, and verify parity.
+- Inventory found 27 legacy-reference files, so Task 3 is split into sequential
+  review gates 3A examples, 3B async fixtures, 3C demand/streaming fixtures, and 3D
+  remaining fixtures plus final parser/fallback deletion. No implementation agents
+  run these groups in parallel.
+- Task 3A example migration/parity committed as `83f171c`; scoped review pending.
+- Task 3A scoped review approved with no findings; committed-head world-definition
+  parity independently rebuilt and passed. Prepare async fixture migration (3B).
 
 ## Pending task groups
 
@@ -74,6 +81,7 @@
 | 2026-07-19 | Task 2 re-review | `423af88..228e23a` packaged diff | NEEDS FIXES: 1 Important, 2 Minor comments |
 | 2026-07-19 | Task 2 final verification | direct committed-head binaries: shared-lib, live-edit-prod, resolve-cache 168/168, world-definition, tileset-params | PASS |
 | 2026-07-19 | Task 2 final re-review | `423af88..95c2a3c` packaged diff | APPROVED: no findings |
+| 2026-07-19 | Task 3A example parity | `world_definition_tests` rebuilt/run from committed `83f171c`; `d69aef9..83f171c` review | PASS; APPROVED with no findings |
 
 ## Blockers and deferred work
 
