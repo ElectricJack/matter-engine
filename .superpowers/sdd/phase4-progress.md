@@ -4,7 +4,7 @@
 **Worktree:** `.worktrees/phase4-runtime-scene-editor-bridge`  
 **Design:** `docs/superpowers/specs/2026-07-19-phase4-runtime-scene-editor-bridge-design.md`  
 **Plan:** `docs/superpowers/plans/2026-07-19-phase4-runtime-scene-editor-bridge.md`  
-**Current status:** Task 3B ready to commit; git metadata approval blocked
+**Current status:** Task 3D complete; verification gate pending
 
 ## Completed
 
@@ -56,6 +56,11 @@
   `demand_bake_tests.cpp`, `refine_loop_tests.cpp`, and `transient_tests.cpp` to
   project-root layout. Zero legacy scan matches across all three files. POSIX
   helpers replaced with portable `std::filesystem`. Prepare 3D closure.
+- Task 3D remaining test migrations committed as `98f6318` + `350586f`. Production
+  code deletion committed as `04b251e`: retired read_manifest, parse_lights,
+  legacy WorldDesc/LocalProviderConfig fields, uses_project_layout() branches,
+  dead tileset_phase_gpu.cpp, and all WorldData fixtures. 515 lines deleted.
+  Task 3 complete pending verification gate.
 
 ## Pending task groups
 
