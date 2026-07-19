@@ -337,6 +337,16 @@ ASYNCQ_CPP = async_queue_tests.cpp ../src/async_bake.cpp
 TILESETGTEX_TARGET = tileset_gtex_tests
 TILESETGTEX_CPP    = tileset_gtex_tests.cpp ../src/tileset_gtex.cpp
 
+# Phase 4 Task 4 — SceneRegistry reflected ECS validation + instantiation (def flavor).
+SCENE_REGISTRY_TARGET = scene_registry_tests
+SCENE_REGISTRY_CPP    = scene_registry_tests.cpp ../src/ecs/scene_registry.cpp \
+                        ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
+                        ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
+                        ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
+                        ../src/streaming/sector_streaming_coordinator.cpp \
+                        ../src/sector_streamer.cpp
+SCENE_REGISTRY_C      = $(FLECS_C)
+
 # Phase C Task 4 — RefineController tile-pairing + priority/eviction (pure CPU, def flavor).
 REFINECTL_TARGET = refine_controller_tests
 REFINECTL_CPP    = refine_controller_tests.cpp ../src/refine_controller.cpp \
@@ -703,6 +713,7 @@ GPU_ALL_CPP = $(GPU_PIPELINE_CPP) $(GPU_RENDER_CPP) $(GPU_MSL_CPP) \
 def_CPP_SRCS := $(sort \
     $(ECS_CPP) \
     $(PHYSICS_CPP) \
+    $(SCENE_REGISTRY_CPP) \
     $(PARTV2_CPP) \
     $(GRAPH_SOURCES) \
     $(TRIVAR_CPP) \
@@ -812,6 +823,7 @@ $(foreach s,$(physicsc_C_SRCS),$(eval $(call objrule_c,physicsc,$(s))))
 # ---------------------------------------------------------------------------
 ECS_OBJS = $(call obj_list,def,$(ECS_CPP)) $(call obj_list,flecsc,$(ECS_C))
 PHYSICS_OBJS = $(call obj_list,def,$(PHYSICS_CPP)) $(call obj_list,physicsc,$(PHYSICS_C))
+SCENE_REGISTRY_OBJS = $(call obj_list,def,$(SCENE_REGISTRY_CPP)) $(call obj_list,flecsc,$(SCENE_REGISTRY_C))
 PARTV2_OBJS = $(call obj_list,def,$(PARTV2_CPP)) $(call obj_list,mslc,$(PARTV2_C))
 GRAPH_OBJS  = $(call obj_list,def,$(GRAPH_SOURCES)) $(call obj_list,mslc,$(GRAPH_C))
 TRIVAR_OBJS = $(call obj_list,def,$(TRIVAR_CPP)) $(call obj_list,mslc,$(TRIVAR_C))
@@ -868,7 +880,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-ecs run-physics run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream
+.PHONY: clean run-matrix run-ecs run-physics run-scene-registry run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -891,6 +903,14 @@ $(PHYSICS_TARGET): $(PHYSICS_OBJS) $(BOX3D_LIB)
 
 run-physics: $(PHYSICS_TARGET)
 	./$(PHYSICS_TARGET)
+
+# Phase 4 Task 4 — Scene registry (reflected components, validation, instantiation).
+# Pure CPU test: no GL, no raylib — only box3d + flecs system deps.
+$(SCENE_REGISTRY_TARGET): $(SCENE_REGISTRY_OBJS) $(BOX3D_LIB)
+	$(CC) $(SCENE_REGISTRY_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) -lws2_32 -ldbghelp -lwinmm
+
+run-scene-registry: $(SCENE_REGISTRY_TARGET)
+	./$(SCENE_REGISTRY_TARGET)
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests.
 $(PARTV2_TARGET): $(PARTV2_OBJS)
@@ -1415,6 +1435,7 @@ clean:
 	      $(MATRIX_TARGET) \
 	      $(ECS_TARGET) \
 	      $(PHYSICS_TARGET) \
+	      $(SCENE_REGISTRY_TARGET) \
 	      tileset_physics_tests tileset_core_tests tileset_placement_tests \
 	      gpu_tests tileset_gpu_tests tileset_seam_tests tileset_provider_tests \
 	      tileset_load_tests api_tests async_bake_tests demand_bake_tests transient_tests release_part_tests \
