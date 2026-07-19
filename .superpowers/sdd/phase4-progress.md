@@ -4,7 +4,7 @@
 **Worktree:** `.worktrees/phase4-runtime-scene-editor-bridge`  
 **Design:** `docs/superpowers/specs/2026-07-19-phase4-runtime-scene-editor-bridge-design.md`  
 **Plan:** `docs/superpowers/plans/2026-07-19-phase4-runtime-scene-editor-bridge.md`  
-**Current status:** Task 1 dispatch preparation
+**Current status:** Task 1 implementation in progress
 
 ## Completed
 
@@ -27,14 +27,14 @@
 
 ## Active
 
-- Commit the implementation plan and this ledger, then dispatch Task 1 through the
-  implementer/reviewer/verification loop.
+- Task 1: implement the world JavaScript statics contract with focused evaluator
+  tests, then run task-scoped review and root verification.
 
 ## Pending task groups
 
 | Group | Deliverable | Status | Verification |
 |---|---|---|---|
-| A | World-as-JS hard-cut migration | Pending | Pending |
+| A | World-as-JS hard-cut migration | In progress (Task 1/3) | Pending |
 | B | Public scene contract and bootstrap registry | Pending | Pending |
 | C | Declarative/DSL recipes and transactional ECS bootstrap | Pending | Pending |
 | D | Stable dynamic renderer slots and ECS render bridge | Pending | Pending |
