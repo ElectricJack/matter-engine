@@ -144,10 +144,15 @@ JSContext* new_world_context(JSRuntime* runtime, bool modules) {
 std::string exception_message(JSContext* context) {
     JSValue exception = JS_GetException(context);
     JSValue stack = JS_GetPropertyStr(context, exception, "stack");
-    const char* text = JS_IsString(stack) ? JS_ToCString(context, stack) : nullptr;
-    if (!text) text = JS_ToCString(context, exception);
-    std::string result = text ? text : "JavaScript exception";
-    if (text) JS_FreeCString(context, text);
+    const char* exception_text = JS_ToCString(context, exception);
+    const char* stack_text = JS_IsString(stack) ? JS_ToCString(context, stack) : nullptr;
+    std::string result = exception_text ? exception_text : "JavaScript exception";
+    if (stack_text && result != stack_text) {
+        result += '\n';
+        result += stack_text;
+    }
+    if (stack_text) JS_FreeCString(context, stack_text);
+    if (exception_text) JS_FreeCString(context, exception_text);
     JS_FreeValue(context, stack);
     JS_FreeValue(context, exception);
     return result;
@@ -211,11 +216,22 @@ bool canonical_json(JSContext* context,
         JS_FreeValue(context, result);
         return false;
     }
+    if (!JS_IsString(result)) {
+        JS_FreeValue(context, result);
+        return false;
+    }
     const char* text = JS_ToCString(context, result);
     if (text) output = text;
     if (text) JS_FreeCString(context, text);
     JS_FreeValue(context, result);
     return text != nullptr;
+}
+
+bool has_property(JSContext* context, JSValueConst object, const char* name) {
+    JSAtom atom = JS_NewAtom(context, name);
+    const int result = JS_HasProperty(context, object, atom);
+    JS_FreeAtom(context, atom);
+    return result == 1;
 }
 
 bool optional_number(JSContext* context,
@@ -226,6 +242,27 @@ bool optional_number(JSContext* context,
     const bool ok = JS_IsUndefined(value) || number_value(context, value, output);
     JS_FreeValue(context, value);
     return ok;
+}
+
+JSValue append_entity(JSContext* context,
+                      JSValueConst,
+                      int argument_count,
+                      JSValueConst* arguments) {
+    if (argument_count < 1) {
+        return JS_ThrowTypeError(context, "entity(record) requires one record");
+    }
+    JSValue global = JS_GetGlobalObject(context);
+    JSValue entities = JS_GetPropertyStr(context, global, "__matter_entities");
+    JS_FreeValue(context, global);
+    std::uint32_t count = 0;
+    if (!array_length(context, entities, count)) {
+        JS_FreeValue(context, entities);
+        return JS_ThrowInternalError(context, "entity collection is unavailable");
+    }
+    const int result = JS_SetPropertyUint32(
+        context, entities, count, JS_DupValue(context, arguments[0]));
+    JS_FreeValue(context, entities);
+    return result < 0 ? JS_EXCEPTION : JS_UNDEFINED;
 }
 
 bool extract_settings_object(JSContext* context,
@@ -271,8 +308,9 @@ bool extract_roots(JSContext* context,
         }
         JS_FreeValue(context, module);
 
+        const bool params_present = has_property(context, entry, "params");
         JSValue params = JS_GetPropertyStr(context, entry, "params");
-        if (!JS_IsUndefined(params) &&
+        if (params_present &&
             !canonical_json(context, canonicalizer, params, root.params_json)) {
             JS_FreeValue(context, params);
             JS_FreeValue(context, entry);
@@ -548,8 +586,9 @@ bool extract_entities(JSContext* context,
                         "entity parent must be a string");
         }
         JS_FreeValue(context, parent);
+        const bool components_present = has_property(context, entry, "components");
         JSValue components = JS_GetPropertyStr(context, entry, "components");
-        if (JS_IsUndefined(components)) {
+        if (!components_present) {
             JS_FreeValue(context, components);
             components = JS_NewObject(context);
         }
@@ -611,9 +650,7 @@ bool load_world_definition(const WorldLoadDesc& desc,
     static constexpr const char* base_source = R"JS(
 globalThis.__matter_entities = [];
 Math.random = undefined;
-class World {
-  entity(record) { globalThis.__matter_entities.push(record); }
-}
+class World {}
 )JS";
     JSValue base = JS_Eval(context, base_source, std::strlen(base_source),
                            "<world-definition-base>", JS_EVAL_TYPE_GLOBAL);
@@ -720,10 +757,26 @@ class World {
     JS_FreeValue(context, global);
     JS_SetPropertyStr(context, instance, "params", bound_params);
     JS_SetPropertyStr(context, instance, "worldSeed", bound_seed);
+    // Own, non-writable and non-configurable: authored prototypes or instance
+    // assignment cannot intercept/suppress the bootstrap append operation.
+    JS_DefinePropertyValueStr(
+        context, instance, "entity",
+        JS_NewCFunction(context, append_entity, "entity", 1), 0);
 
     JSValue build = JS_GetPropertyStr(context, instance, "buildEntities");
+    if (JS_IsException(build)) {
+        const std::string message = exception_message(context);
+        definition = WorldDefinition{};
+        JS_FreeValue(context, build);
+        JS_FreeValue(context, instance);
+        JS_FreeValue(context, canonicalizer);
+        JS_FreeValue(context, world_class);
+        cleanup();
+        return fail(desc, error, "buildEntities", message);
+    }
     if (!JS_IsUndefined(build)) {
         if (!JS_IsFunction(context, build)) {
+            definition = WorldDefinition{};
             JS_FreeValue(context, build);
             JS_FreeValue(context, instance);
             JS_FreeValue(context, canonicalizer);
@@ -735,6 +788,7 @@ class World {
         JSValue result = JS_Call(context, build, instance, 0, nullptr);
         if (JS_IsException(result)) {
             const std::string message = exception_message(context);
+            definition = WorldDefinition{};
             JS_FreeValue(context, result);
             JS_FreeValue(context, build);
             JS_FreeValue(context, instance);

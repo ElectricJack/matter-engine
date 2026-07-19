@@ -172,11 +172,108 @@ class EmptyWorld extends World {
     CHECK(definition.entities.empty(), "worlds without entities remain valid");
 }
 
+bool definition_is_cleared(const matter::WorldDefinition& definition) {
+    return definition.roots.empty() && definition.lights.empty() &&
+           definition.entities.empty() &&
+           definition.settings.sector_size == 16.0f &&
+           definition.settings.y_min == -64.0f &&
+           definition.settings.y_max == 192.0f;
+}
+
+void test_authored_entity_override_cannot_intercept_collection() {
+    Fixture fixture;
+    const fs::path path = fixture.write("Override.js", R"JS(
+class OverrideWorld extends World {
+  entity(record) { throw new Error('authored entity override ran'); }
+  buildEntities() {
+    this.entity({ id: 'loader-owned', components: { Marker: true } });
+  }
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    CHECK(definition.entities.size() == 1 &&
+              definition.entities[0].authored_id == "loader-owned",
+          "loader-controlled entity dispatch cannot be shadowed by authored prototype");
+}
+
+void test_rejects_undefined_or_non_json_owned_values() {
+    Fixture fixture;
+    const fs::path params_path = fixture.write("BadParams.js", R"JS(
+class BadParamsWorld extends World {
+  static roots = [{ module: 'Root', params: () => 1 }];
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(!matter::load_world_definition(fixture.desc(params_path), definition, error),
+          "function-valued root params are rejected");
+    CHECK(error.property_path == "roots[0].params",
+          "non-JSON params report their contextual property");
+    CHECK(definition_is_cleared(definition),
+          "non-JSON params leave no partial definition");
+
+    const fs::path components_path = fixture.write("BadComponents.js", R"JS(
+class BadComponentsWorld extends World {
+  static entities = [{ id: 'bad', components: undefined }];
+}
+)JS");
+    CHECK(!matter::load_world_definition(fixture.desc(components_path),
+                                         definition, error),
+          "explicit undefined components are rejected");
+    CHECK(error.property_path == "entities[0].components",
+          "undefined components report their contextual property");
+    CHECK(definition_is_cleared(definition),
+          "undefined components leave no partial definition");
+}
+
+void test_build_entities_failures_clear_partial_definition() {
+    Fixture fixture;
+    const fs::path non_callable_path = fixture.write("NonCallable.js", R"JS(
+class NonCallableWorld extends World {
+  static roots = [{ module: 'Root' }];
+  static lights = [{ position: [1, 2, 3] }];
+  get buildEntities() { return 42; }
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(!matter::load_world_definition(fixture.desc(non_callable_path),
+                                         definition, error),
+          "non-callable buildEntities is rejected");
+    CHECK(error.property_path == "buildEntities",
+          "non-callable buildEntities reports its property");
+    CHECK(definition_is_cleared(definition),
+          "non-callable buildEntities clears extracted roots and lights");
+
+    const fs::path throwing_path = fixture.write("Throwing.js", R"JS(
+class ThrowingWorld extends World {
+  static roots = [{ module: 'Root' }];
+  static settings = { sectorSize: 64 };
+  buildEntities() { throw new Error('bootstrap failed'); }
+}
+)JS");
+    CHECK(!matter::load_world_definition(fixture.desc(throwing_path),
+                                         definition, error),
+          "throwing buildEntities is rejected");
+    CHECK(error.property_path == "buildEntities" &&
+              error.message.find("bootstrap failed") != std::string::npos,
+          "buildEntities exception retains contextual diagnostics");
+    CHECK(definition_is_cleared(definition),
+          "throwing buildEntities clears extracted roots and settings");
+}
+
 } // namespace
 
 int main() {
     test_rejects_non_world_base_with_location_and_property();
     test_extracts_statics_without_calling_field_and_uses_project_override();
     test_engine_shared_fallback_and_no_entity_world();
+    test_authored_entity_override_cannot_intercept_collection();
+    test_rejects_undefined_or_non_json_owned_values();
+    test_build_entities_failures_clear_partial_definition();
     return check_summary();
 }
