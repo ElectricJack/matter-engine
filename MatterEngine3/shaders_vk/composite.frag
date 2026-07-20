@@ -117,6 +117,18 @@ void main() {
     vec3 specular = texture(specular_texture, in_uv).rgb;
     vec4 transmission = texture(transmission_texture, in_uv);
     float transmission_coverage = clamp(transmission.a, 0.0, 1.0);
+    if (transmission_coverage < 0.01 && material_index < rt_materials.length()) {
+        RtMaterialGpu mat = rt_materials[material_index];
+        float mat_trans = clamp(mat.transmission.x, 0.0, 1.0);
+        if (mat_trans > 0.0) {
+            float ior = max(mat.transmission.y, 1.001);
+            float r0 = pow((1.0 - ior) / (1.0 + ior), 2.0);
+            float cos_i = clamp(abs(normal.z), 0.0, 1.0);
+            float fresnel = r0 + (1.0 - r0) * pow(1.0 - cos_i, 5.0);
+            transmission_coverage = mat_trans * (1.0 - fresnel);
+            transmission.rgb = lighting.sky_color * mat.absorption_pad.rgb * ao;
+        }
+    }
     vec3 linear_hdr = (ambient + sun * mix(1.0, 0.65, roughness) +
                        raw_diffuse) * (1.0 - transmission_coverage) +
                       emission + specular + transmission.rgb;
