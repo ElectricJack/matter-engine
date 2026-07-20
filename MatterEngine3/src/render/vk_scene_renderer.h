@@ -936,6 +936,7 @@ private:
     std::vector<std::vector<VkSceneLod>> cluster_lods_;
     std::vector<GpuInstance> instance_staging_;
     std::vector<uint32_t> instance_part_slots_;
+    size_t static_instance_count_ = 0;
 
     // Dynamic lane state (Task 7)
     std::vector<GpuInstance> dynamic_instance_staging_;
@@ -952,6 +953,7 @@ private:
     std::vector<uint8_t> raster_command_enabled_;
     std::vector<uint8_t> uploaded_raster_command_enabled_;
     std::vector<RtInstance> rt_instances_;
+    size_t static_rt_instance_count_ = 0;
     std::vector<VkRasterVertex> vertex_staging_;
     std::vector<uint32_t> index_staging_;   // CPU-side mirror; Task 4 uploads to GPU
     std::vector<MaterialGpuRecord> material_staging_;

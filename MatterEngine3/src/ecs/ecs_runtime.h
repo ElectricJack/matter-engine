@@ -42,6 +42,7 @@ enum class WorldStateCommandKind { Loading, Ready, Failed };
 struct WorldStateCommand {
     WorldStateCommandKind kind;
     std::vector<RawEntityRecipe> entities;  // populated for Ready commands
+    scene::PartResolver part_resolver;      // optional; resolves module name → hash
 };
 
 class Runtime {

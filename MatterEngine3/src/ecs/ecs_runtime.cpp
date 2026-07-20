@@ -382,10 +382,12 @@ void Runtime::drain_world_state_commands() {
                 state.status = ecs::WorldStatus::Ready;
                 ++state.content_generation;
                 if (!command.entities.empty()) {
-                    scene::PartResolver resolver = [](const std::string&, uint64_t& out_hash) {
-                        out_hash = 0;
-                        return true;
-                    };
+                    scene::PartResolver resolver = command.part_resolver
+                        ? command.part_resolver
+                        : scene::PartResolver([](const std::string&, uint64_t& out_hash) {
+                              out_hash = 0;
+                              return true;
+                          });
                     scene::RecipeError err;
                     scene::bootstrap_transactional(world_, command.entities,
                                                   scene_generation_, resolver, err);

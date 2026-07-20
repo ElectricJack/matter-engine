@@ -177,6 +177,8 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/ecs/transform_system.cpp \
               $(ME3_DIR)/src/ecs/scene_registry.cpp \
               $(ME3_DIR)/src/ecs/simulation_control.cpp \
+              $(ME3_DIR)/src/ecs/dynamic_scene_bridge.cpp \
+              $(ME3_DIR)/src/render/dynamic_instance_slots.cpp \
               $(ME3_DIR)/src/streaming/sector_streaming_coordinator.cpp \
               $(ME3_DIR)/src/matter_engine.cpp \
               $(ME3_DIR)/src/pf_bindings.cpp \

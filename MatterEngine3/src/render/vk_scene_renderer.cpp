@@ -3795,6 +3795,8 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
                            return instance.part_hash == part_hash;
                        }),
         rt_instances_.end());
+    static_instance_count_ = instance_staging_.size();
+    static_rt_instance_count_ = rt_instances_.size();
     max_clusters_per_instance_ = 0;
     for (const auto& instance : instance_staging_)
         max_clusters_per_instance_ =
@@ -3803,6 +3805,7 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
     if (!rebuild_command_template(ignored_error)) {
         instance_staging_.clear();
         instance_part_slots_.clear();
+        static_instance_count_ = 0;
         part_instance_counts_.clear();
         command_template_.clear();
         part_command_ranges_.clear();
@@ -3827,6 +3830,11 @@ bool VkSceneRenderer::update_instances(
         return false;
     }
     (void)public_count;
+    // Strip any dynamic tail appended by the previous prepare_frame().
+    if (instance_staging_.size() > static_instance_count_)
+        instance_staging_.resize(static_instance_count_);
+    if (rt_instances_.size() > static_rt_instance_count_)
+        rt_instances_.resize(static_rt_instance_count_);
     std::vector<GpuInstance> candidate_instances;
     std::vector<uint32_t> candidate_slots;
     std::vector<RtInstance> candidate_rt;
@@ -3887,6 +3895,8 @@ bool VkSceneRenderer::update_instances(
         instance_part_slots_ = std::move(candidate_slots);
         rt_instances_ = std::move(candidate_rt);
         max_clusters_per_instance_ = candidate_max_clusters;
+        static_instance_count_ = instance_staging_.size();
+        static_rt_instance_count_ = rt_instances_.size();
         ++instance_generation_;
         return true;
     }
@@ -3917,6 +3927,8 @@ bool VkSceneRenderer::update_instances(
         draw_transform_slots_ = old_transform_slots;
         return false;
     }
+    static_instance_count_ = instance_staging_.size();
+    static_rt_instance_count_ = rt_instances_.size();
     ++instance_generation_;
     if (layout_changed) note_command_layout_rebuild();
     return true;
@@ -4421,6 +4433,30 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
         // Begin the 'total' zone immediately after the reset.
         write_ts(frame.command_buffer, selected.ts_pool, kGpuZoneTotal, false);
         selected.ts_written[kGpuZoneTotal] |= 1u;
+    }
+    // Merge active dynamic instances into the static staging vectors so the
+    // upload, constants, and dispatch code all see one contiguous array.
+    // The dynamic tails are stripped at the start of the next update_instances().
+    if (dynamic_instance_count_ > 0) {
+        for (size_t i = 0; i < dynamic_instance_staging_.size(); ++i) {
+            if (dynamic_instance_part_slots_[i] != UINT32_MAX) {
+                const GpuInstance& inst = dynamic_instance_staging_[i];
+                instance_staging_.push_back(inst);
+                const uint32_t slot = dynamic_instance_part_slots_[i];
+                RtInstance rt{};
+                if (slot < parts_.size())
+                    rt.part_hash = parts_[slot].hash;
+                for (int r = 0; r < 4; ++r)
+                    for (int c = 0; c < 4; ++c)
+                        rt.transform[r * 4 + c] =
+                            inst.object_to_world.elements[c * 4 + r];
+                rt_instances_.push_back(rt);
+            }
+        }
+        if (dynamic_dirty_) {
+            ++instance_generation_;
+            dynamic_dirty_ = false;
+        }
     }
     if (!upload_scene_buffers(selected, frame.command_buffer, false, error) ||
         !upload_frame_constants(selected, matrices, camera_eye, pixel_budget,
@@ -6259,6 +6295,7 @@ void VkSceneRenderer::reset() {
     cluster_lods_.clear();
     instance_staging_.clear();
     instance_part_slots_.clear();
+    static_instance_count_ = 0;
     part_instance_counts_.clear();
     command_template_.clear();
     part_command_ranges_.clear();
@@ -6266,6 +6303,7 @@ void VkSceneRenderer::reset() {
     raster_command_enabled_.clear();
     uploaded_raster_command_enabled_.clear();
     rt_instances_.clear();
+    static_rt_instance_count_ = 0;
     vertex_staging_.clear();
     max_clusters_per_instance_ = 0;
     draw_transform_slots_ = 0;

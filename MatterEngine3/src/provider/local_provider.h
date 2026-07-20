@@ -311,6 +311,13 @@ public:
         return authored_entities_;
     }
 
+    bool resolve_module_hash(const std::string& module_name, uint64_t& out_hash) const {
+        for (const auto& kv : module_by_hash_) {
+            if (kv.second == module_name) { out_hash = kv.first; return true; }
+        }
+        return false;
+    }
+
 #if defined(MATTER_HAVE_SCRIPT_HOST)
     // Phase C Task 9: expose the shared HostBaker so install_world can set the
     // world binding and bake sector child assets through the same baker instance.

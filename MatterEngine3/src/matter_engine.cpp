@@ -11,6 +11,7 @@
 
 #include "async_bake.h"
 #include "ecs/ecs_runtime.h"
+#include "ecs/dynamic_scene_bridge.h"
 #include "ecs/streaming_systems.h"
 #include "local_provider.h"
 #include "part_store.h"   // LoadedPart, walk_part_tree
@@ -286,6 +287,7 @@ struct WorldSession::Impl {
     std::vector<MaterialGpuRecord> vk_material_records;
     uint64_t vk_material_shading_revision = 0;
     uint64_t vk_material_geometry_revision = 0;
+    matter::scene::DynamicSceneBridge dynamic_bridge{256};
 #endif
     lod_select::PartLodTable                lods;
 
@@ -1332,6 +1334,26 @@ void WorldSession::Impl::publish_pipeline(
             if (!seen.insert(e.part_hash).second) continue;
             publish_order.push_back(e.part_hash);
         }
+        for (const auto& ent : provider->authored_entities()) {
+            const auto& json = ent.components_json;
+            auto pi_pos = json.find("\"PartInstance\"");
+            if (pi_pos == std::string::npos) continue;
+            auto part_pos = json.find("\"part\"", pi_pos);
+            if (part_pos == std::string::npos) continue;
+            auto colon = json.find(':', part_pos + 6);
+            if (colon == std::string::npos) continue;
+            auto quote1 = json.find('"', colon + 1);
+            if (quote1 == std::string::npos) continue;
+            auto quote2 = json.find('"', quote1 + 1);
+            if (quote2 == std::string::npos) continue;
+            std::string module_name = json.substr(quote1 + 1, quote2 - quote1 - 1);
+            if (module_name.empty()) continue;
+            uint64_t entity_hash = 0;
+            if (!provider->resolve_module_hash(module_name, entity_hash)) continue;
+            if (entity_hash == 0) continue;
+            if (!seen.insert(entity_hash).second) continue;
+            publish_order.push_back(entity_hash);
+        }
     }
 
     // Phase C Task 3: distance-ordered publish.
@@ -1708,6 +1730,10 @@ void WorldSession::Impl::publish_pipeline(
         ecs_runtime::WorldStateCommand cmd;
         cmd.kind = ecs_runtime::WorldStateCommandKind::Ready;
         cmd.entities = provider->authored_entities();
+        auto prov = provider;
+        cmd.part_resolver = [prov](const std::string& name, uint64_t& out) {
+            return prov->resolve_module_hash(name, out);
+        };
         ecs_runtime.enqueue_world_state(std::move(cmd));
     }
 
@@ -4168,6 +4194,35 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
         return false;
     }
+    // Dynamic entity bridge: reconcile ECS entities with renderer slots.
+    {
+        matter::scene::BridgeErrorSink sink;
+        std::string bridge_err;
+        impl_->dynamic_bridge.reconcile(impl_->ecs_runtime.world(), sink, bridge_err);
+        auto changes = impl_->dynamic_bridge.drain();
+        if (!changes.empty()) {
+            // Ensure entity-referenced parts are registered with VkSceneRenderer
+            // before Bind changes reference them.
+            for (const auto& c : changes) {
+                if (c.kind != matter::render::DynamicSlotChangeKind::Bind) continue;
+                if (c.part_hash == 0) continue;
+                const viewer::LoadedPart* loaded =
+                    impl_->store->get_or_load(c.part_hash);
+                if (!loaded) continue;
+                bool drawable = false;
+                std::string part_err;
+                ensure_vulkan_part(*impl_->vk_scene, c.part_hash,
+                                   *loaded, drawable, part_err);
+            }
+            std::string dyn_err;
+            if (!impl_->vk_scene->update_dynamic_instances(
+                    changes.data(), static_cast<uint32_t>(changes.size()),
+                    impl_->vk_temporal_serial, dyn_err)) {
+                fprintf(stderr, "dynamic instance error (non-fatal): %s\n",
+                        dyn_err.c_str());
+            }
+        }
+    }
     const viewer::FrameMatrices& matrices = temporal.current_jittered;
     if (!impl_->vk_scene->prepare_frame(frame, matrices, cam.position, budget,
                                         err)) {
@@ -4263,8 +4318,11 @@ void WorldSession::finish_vulkan_frame(uint64_t frame_serial, bool presented) {
         impl_->vk_temporal_token == 0) {
         return;
     }
-    if (impl_->vk_scene)
+    if (impl_->vk_scene) {
         impl_->vk_scene->finish_ray_tracing_frame(frame_serial, presented);
+        impl_->vk_scene->finish_dynamic_frame(frame_serial);
+    }
+    impl_->dynamic_bridge.finish_frame(frame_serial);
     if (presented)
         (void)impl_->vk_temporal.commit_presented(impl_->vk_temporal_token);
     else
