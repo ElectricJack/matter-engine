@@ -172,8 +172,8 @@ void TriangleBuildBuffer::box(float3 center, float3 h, int material_id,
         return make_float3(xs[ix], ys[iy], zs[iz]);
     };
     auto quad = [&](float3 p0, float3 p1, float3 p2, float3 p3) {
-        emitTriangle(p0, p1, p2, material_id, transform, tint);
-        emitTriangle(p0, p2, p3, material_id, transform, tint);
+        emitTriangle(p0, p2, p1, material_id, transform, tint);
+        emitTriangle(p0, p3, p2, material_id, transform, tint);
     };
     // -X and +X
     quad(V(0,0,1), V(0,0,0), V(0,1,0), V(0,1,1));
