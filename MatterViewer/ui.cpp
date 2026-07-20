@@ -238,8 +238,8 @@ constexpr float kConsoleHeightFrac = 0.20f;
 
 ToolbarActions Ui::draw_toolbar(matter::scene::SimulationMode mode) {
     const ImVec2 display = ImGui::GetIO().DisplaySize;
-    ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(display.x, kToolbarHeight), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(display.x, kToolbarHeight), ImGuiCond_Always);
     ImGui::Begin("Toolbar", nullptr,
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_NoScrollbar);
@@ -256,7 +256,7 @@ void Ui::draw_scene_panel(EditorModel& editor, matter::WorldSession* session,
                           const std::unordered_set<uint64_t>* authored_entity_ids) {
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     const float scene_w = display.x * kSceneWidthFrac;
-    ImGui::SetNextWindowPos(ImVec2(0, kToolbarHeight), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2(0, kToolbarHeight), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(scene_w, display.y - kToolbarHeight),
                              ImGuiCond_FirstUseEver);
     ImGui::Begin("Scene");
@@ -276,7 +276,7 @@ void Ui::draw_properties_panel(const SelectionSet& selection, EditorModel& edito
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     const float props_w = display.x * kPropertiesWidthFrac;
     ImGui::SetNextWindowPos(ImVec2(display.x - props_w, kToolbarHeight),
-                            ImGuiCond_FirstUseEver);
+                            ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(props_w, display.y - kToolbarHeight),
                              ImGuiCond_FirstUseEver);
     ImGui::Begin("Properties");
@@ -291,12 +291,18 @@ void Ui::draw_console_panel(ConsoleLog& log) {
     const float scene_w = display.x * kSceneWidthFrac;
     const float props_w = display.x * kPropertiesWidthFrac;
     const float console_h = display.y * kConsoleHeightFrac;
-    ImGui::SetNextWindowPos(ImVec2(scene_w, display.y - console_h), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2(scene_w, display.y - console_h), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(display.x - scene_w - props_w, console_h),
                              ImGuiCond_FirstUseEver);
     ImGui::Begin("Console");
     draw_console_contents(console_state_, log);
     ImGui::End();
+}
+
+void Ui::reset_scene_tree_cache() {
+    scene_tree_state_.cached_graph_gen = UINT64_MAX;
+    scene_tree_state_.cached_snapshot = part_graph_snapshot::Snapshot{};
+    scene_tree_state_.selected_root_hash = 0;
 }
 
 void Ui::draw_debug_panel(ViewerStats& s) {

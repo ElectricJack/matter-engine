@@ -1334,25 +1334,10 @@ void WorldSession::Impl::publish_pipeline(
             if (!seen.insert(e.part_hash).second) continue;
             publish_order.push_back(e.part_hash);
         }
-        for (const auto& ent : provider->authored_entities()) {
-            const auto& json = ent.components_json;
-            auto pi_pos = json.find("\"PartInstance\"");
-            if (pi_pos == std::string::npos) continue;
-            auto part_pos = json.find("\"part\"", pi_pos);
-            if (part_pos == std::string::npos) continue;
-            auto colon = json.find(':', part_pos + 6);
-            if (colon == std::string::npos) continue;
-            auto quote1 = json.find('"', colon + 1);
-            if (quote1 == std::string::npos) continue;
-            auto quote2 = json.find('"', quote1 + 1);
-            if (quote2 == std::string::npos) continue;
-            std::string module_name = json.substr(quote1 + 1, quote2 - quote1 - 1);
-            if (module_name.empty()) continue;
-            uint64_t entity_hash = 0;
-            if (!provider->resolve_module_hash(module_name, entity_hash)) continue;
-            if (entity_hash == 0) continue;
-            if (!seen.insert(entity_hash).second) continue;
-            publish_order.push_back(entity_hash);
+        for (const auto& kv : provider->entity_part_hashes()) {
+            if (kv.second == 0) continue;
+            if (!seen.insert(kv.second).second) continue;
+            publish_order.push_back(kv.second);
         }
     }
 
@@ -4195,29 +4180,30 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         return false;
     }
     // Dynamic entity bridge: reconcile ECS entities with renderer slots.
+    // Drop Bind changes whose part can't be loaded yet (next frame retries).
     {
-        matter::scene::BridgeErrorSink sink;
+        scene::BridgeErrorSink sink{};
         std::string bridge_err;
         impl_->dynamic_bridge.reconcile(impl_->ecs_runtime.world(), sink, bridge_err);
         auto changes = impl_->dynamic_bridge.drain();
-        if (!changes.empty()) {
-            // Ensure entity-referenced parts are registered with VkSceneRenderer
-            // before Bind changes reference them.
-            for (const auto& c : changes) {
-                if (c.kind != matter::render::DynamicSlotChangeKind::Bind) continue;
-                if (c.part_hash == 0) continue;
-                const viewer::LoadedPart* loaded =
-                    impl_->store->get_or_load(c.part_hash);
-                if (!loaded) continue;
+        std::vector<render::DynamicSlotChange> valid;
+        valid.reserve(changes.size());
+        for (auto& c : changes) {
+            if (c.kind == render::DynamicSlotChangeKind::Bind) {
+                const viewer::LoadedPart* lp = impl_->store->get_or_load(c.part_hash);
+                if (!lp) continue;
                 bool drawable = false;
-                std::string part_err;
-                ensure_vulkan_part(*impl_->vk_scene, c.part_hash,
-                                   *loaded, drawable, part_err);
+                if (!ensure_vulkan_part(*impl_->vk_scene, c.part_hash, *lp, drawable, err))
+                    continue;
+                if (!drawable) continue;
             }
+            valid.push_back(std::move(c));
+        }
+        if (!valid.empty()) {
             std::string dyn_err;
             if (!impl_->vk_scene->update_dynamic_instances(
-                    changes.data(), static_cast<uint32_t>(changes.size()),
-                    impl_->vk_temporal_serial, dyn_err)) {
+                    valid.data(), static_cast<uint32_t>(valid.size()),
+                    frame.serial, dyn_err)) {
                 fprintf(stderr, "dynamic instance error (non-fatal): %s\n",
                         dyn_err.c_str());
             }

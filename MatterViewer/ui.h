@@ -159,6 +159,7 @@ public:
     // (see MatterViewer/specialized_editors.h). update_sector_streaming above
     // (the per-frame anchor/follow logic) is unaffected and stays here.
     bool camera_input_allowed() const;
+    void reset_scene_tree_cache();
 
 private:
     bool initialize_vulkan_backend(VkFormat format, std::uint32_t image_count,

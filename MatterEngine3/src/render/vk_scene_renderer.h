@@ -830,6 +830,7 @@ private:
     bool validate_draw_command_regions(std::string& error) const;
     void note_command_layout_rebuild();
     bool rebuild_command_template(std::string& error);
+    bool apply_dynamic_command_layout(std::string& error);
     bool load_device_limits(std::string& error);
     bool fail_if_poisoned(std::string& error) const;
     bool poison(std::string& error);
@@ -945,6 +946,7 @@ private:
     uint64_t dynamic_submit_serial_ = 0;
     uint64_t dynamic_completed_serial_ = 0;
     bool dynamic_dirty_ = false;
+    bool dynamic_command_layout_applied_ = false;
 
     std::vector<uint32_t> part_instance_counts_;
     std::vector<DrawCommand> command_template_;

@@ -3,6 +3,7 @@
 #include "imgui.h"
 #include "matter/ecs.h"
 #include "matter/query.h"
+#include "matter/scene.h"
 #include "matter/world_session.h"
 
 #include <cmath>
@@ -107,18 +108,20 @@ bool aabb_for_object(const SelectedObject& obj, matter::WorldSession& session,
         return false;
     }
 
-    flecs::world& world = session.ecs();
-    if (!world.is_alive(static_cast<flecs::entity_t>(obj.id))) return false;
-    flecs::entity e(world.c_ptr(), static_cast<flecs::entity_t>(obj.id));
-    const matter::ecs::LocalTransform* lt = e.try_get<matter::ecs::LocalTransform>();
-    if (!lt) return false;
-    aabb_min[0] = lt->translation.x - 0.5f;
-    aabb_min[1] = lt->translation.y - 0.5f;
-    aabb_min[2] = lt->translation.z - 0.5f;
-    aabb_max[0] = lt->translation.x + 0.5f;
-    aabb_max[1] = lt->translation.y + 0.5f;
-    aabb_max[2] = lt->translation.z + 0.5f;
-    return true;
+    bool found = false;
+    session.ecs().each(
+        [&](flecs::entity, const matter::scene::SceneEntityId& sid,
+            const matter::ecs::LocalTransform& lt) {
+            if (found || sid.value != obj.id) return;
+            found = true;
+            aabb_min[0] = lt.translation.x - 0.5f;
+            aabb_min[1] = lt.translation.y - 0.5f;
+            aabb_min[2] = lt.translation.z - 0.5f;
+            aabb_max[0] = lt.translation.x + 0.5f;
+            aabb_max[1] = lt.translation.y + 0.5f;
+            aabb_max[2] = lt.translation.z + 0.5f;
+        });
+    return found;
 }
 
 } // namespace

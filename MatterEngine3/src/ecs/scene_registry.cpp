@@ -4,6 +4,7 @@
 #include "matter/streaming.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <unordered_map>
 #include <unordered_set>
@@ -168,6 +169,43 @@ static bool extract_string_field(const std::string& obj_json, const std::string&
     }
     if (pos > obj_json.size()) return false;
     out_value = obj_json.substr(start, pos - start);
+    return true;
+}
+
+static bool extract_float_array(const std::string& json, const std::string& field,
+                                float* out, size_t count) {
+    size_t pos = json.find("\"" + field + "\"");
+    if (pos == std::string::npos) return false;
+    pos = json.find(':', pos);
+    if (pos == std::string::npos) return false;
+    ++pos;
+    while (pos < json.size() && json[pos] == ' ') ++pos;
+    if (pos >= json.size() || json[pos] != '[') return false;
+    ++pos;
+    for (size_t i = 0; i < count; ++i) {
+        while (pos < json.size() && (json[pos] == ' ' || json[pos] == ',')) ++pos;
+        if (pos >= json.size()) return false;
+        char* end = nullptr;
+        out[i] = std::strtof(json.c_str() + pos, &end);
+        if (end == json.c_str() + pos) return false;
+        pos = end - json.c_str();
+    }
+    return true;
+}
+
+static bool extract_float_field(const std::string& json, const std::string& field,
+                                float& out) {
+    size_t pos = json.find("\"" + field + "\"");
+    if (pos == std::string::npos) return false;
+    pos = json.find(':', pos);
+    if (pos == std::string::npos) return false;
+    ++pos;
+    while (pos < json.size() && json[pos] == ' ') ++pos;
+    if (pos >= json.size()) return false;
+    char* end = nullptr;
+    float val = std::strtof(json.c_str() + pos, &end);
+    if (end == json.c_str() + pos) return false;
+    out = val;
     return true;
 }
 
@@ -407,24 +445,80 @@ bool instantiate(flecs::world& world,
                 return false;
             }
             switch (desc->kind) {
-            case ComponentKind::Transform:
-                // Already set above; authored values would override.
+            case ComponentKind::Transform: {
+                std::string tj = extract_component_value_json(recipe.components_json, key);
+                ecs::LocalTransform lt{};
+                extract_float_array(tj, "translation", &lt.translation.x, 3);
+                float rot[4];
+                if (extract_float_array(tj, "rotation", rot, 4))
+                    lt.rotation = {rot[0], rot[1], rot[2], rot[3]};
+                float sc[3] = {1.0f, 1.0f, 1.0f};
+                if (extract_float_array(tj, "scale", sc, 3))
+                    lt.scale = {sc[0], sc[1], sc[2]};
+                e.set<ecs::LocalTransform>(lt);
                 break;
-            case ComponentKind::RigidBody:
-                e.set<physics::RigidBody>({});
+            }
+            case ComponentKind::RigidBody: {
+                std::string rj = extract_component_value_json(recipe.components_json, key);
+                physics::RigidBody rb{};
+                std::string type_str;
+                if (extract_string_field(rj, "type", type_str)) {
+                    if (type_str == "dynamic") rb.type = physics::RigidBodyType::Dynamic;
+                    else if (type_str == "kinematic") rb.type = physics::RigidBodyType::Kinematic;
+                    else rb.type = physics::RigidBodyType::Static;
+                }
+                float f;
+                if (extract_float_field(rj, "linearDamping", f)) rb.linear_damping = f;
+                if (extract_float_field(rj, "angularDamping", f)) rb.angular_damping = f;
+                if (extract_float_field(rj, "gravityScale", f)) rb.gravity_scale = f;
+                e.set<physics::RigidBody>(rb);
                 break;
-            case ComponentKind::Velocity:
-                e.set<physics::PhysicsVelocity>({});
+            }
+            case ComponentKind::Velocity: {
+                std::string vj = extract_component_value_json(recipe.components_json, key);
+                physics::PhysicsVelocity vel{};
+                extract_float_array(vj, "linear", &vel.linear.x, 3);
+                extract_float_array(vj, "angular", &vel.angular.x, 3);
+                e.set<physics::PhysicsVelocity>(vel);
                 break;
-            case ComponentKind::SphereCollider:
-                e.set<physics::SphereCollider>({});
+            }
+            case ComponentKind::SphereCollider: {
+                std::string sj = extract_component_value_json(recipe.components_json, key);
+                physics::SphereCollider sc{};
+                extract_float_array(sj, "center", &sc.center.x, 3);
+                float f;
+                if (extract_float_field(sj, "radius", f)) sc.radius = f;
+                if (extract_float_field(sj, "density", f)) sc.properties.density = f;
+                if (extract_float_field(sj, "friction", f)) sc.properties.friction = f;
+                if (extract_float_field(sj, "restitution", f)) sc.properties.restitution = f;
+                e.set<physics::SphereCollider>(sc);
                 break;
-            case ComponentKind::CapsuleCollider:
-                e.set<physics::CapsuleCollider>({});
+            }
+            case ComponentKind::CapsuleCollider: {
+                std::string cj = extract_component_value_json(recipe.components_json, key);
+                physics::CapsuleCollider cc{};
+                extract_float_array(cj, "pointA", &cc.point_a.x, 3);
+                extract_float_array(cj, "pointB", &cc.point_b.x, 3);
+                float f;
+                if (extract_float_field(cj, "radius", f)) cc.radius = f;
+                if (extract_float_field(cj, "density", f)) cc.properties.density = f;
+                if (extract_float_field(cj, "friction", f)) cc.properties.friction = f;
+                if (extract_float_field(cj, "restitution", f)) cc.properties.restitution = f;
+                e.set<physics::CapsuleCollider>(cc);
                 break;
-            case ComponentKind::BoxCollider:
-                e.set<physics::BoxCollider>({});
+            }
+            case ComponentKind::BoxCollider: {
+                std::string bj = extract_component_value_json(recipe.components_json, key);
+                physics::BoxCollider bc{};
+                extract_float_array(bj, "center", &bc.center.x, 3);
+                extract_float_array(bj, "halfExtents", &bc.half_extents.x, 3);
+                float f;
+                if (extract_float_field(bj, "density", f)) bc.properties.density = f;
+                if (extract_float_field(bj, "friction", f)) bc.properties.friction = f;
+                if (extract_float_field(bj, "restitution", f)) bc.properties.restitution = f;
+                e.set<physics::BoxCollider>(bc);
                 break;
+            }
             case ComponentKind::ConvexHullCollider:
                 e.set<physics::ConvexHullCollider>({});
                 break;

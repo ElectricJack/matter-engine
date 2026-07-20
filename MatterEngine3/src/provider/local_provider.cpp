@@ -284,6 +284,32 @@ bool LocalProvider::load_authored_world(std::string& err) {
 #endif
 }
 
+std::set<std::string> LocalProvider::collect_entity_part_modules(
+    const std::vector<matter::RawEntityRecipe>& entities) {
+    std::set<std::string> modules;
+    for (const auto& ent : entities) {
+        auto pi_pos = ent.components_json.find("\"PartInstance\"");
+        if (pi_pos == std::string::npos) continue;
+        auto colon = ent.components_json.find(':', pi_pos);
+        if (colon == std::string::npos) continue;
+        auto brace = ent.components_json.find('{', colon);
+        if (brace == std::string::npos) continue;
+        auto part_pos = ent.components_json.find("\"part\"", brace);
+        if (part_pos == std::string::npos) continue;
+        auto pcolon = ent.components_json.find(':', part_pos);
+        if (pcolon == std::string::npos) continue;
+        size_t p = pcolon + 1;
+        while (p < ent.components_json.size() && ent.components_json[p] == ' ') ++p;
+        if (p >= ent.components_json.size() || ent.components_json[p] != '"') continue;
+        ++p;
+        size_t start = p;
+        while (p < ent.components_json.size() && ent.components_json[p] != '"') ++p;
+        std::string mod = ent.components_json.substr(start, p - start);
+        if (!mod.empty()) modules.insert(std::move(mod));
+    }
+    return modules;
+}
+
 bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy policy) {
     // Reset all mutable state at entry so repeated install_graph() calls are
     // idempotent. Unload any previously-loaded tileset slots so a re-connect
@@ -410,6 +436,19 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
         else { roots_for_install_.push_back(roots_[i]); install_to_orig_.push_back(i); }
     }
 
+    // Entity-referenced modules: scan authored entities for PartInstance.part
+    // names and add them as extra roots so they get baked alongside world roots.
+    // compose_world() iterates roots_ (not roots_for_install_) so these extras
+    // won't be placed as static instances.
+    entity_part_root_start_ = roots_for_install_.size();
+    {
+        std::set<std::string> seen_roots;
+        for (const auto& r : roots_for_install_) seen_roots.insert(r.module);
+        for (const auto& mod : collect_entity_part_modules(authored_entities_))
+            if (seen_roots.insert(mod).second)
+                roots_for_install_.push_back({mod, {}});
+    }
+
     // Phase C Task 7: if a root_params_json override is set (e.g. {"worldSeed": 2}
     // from WorldSession::regenerate()), merge it into every root's params before
     // calling install() so merge_params_canonical (and hence the resolved hash)
@@ -421,9 +460,9 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     if (!cfg_.root_params_json.empty()) {
         Params override_params = params_from_json(cfg_.root_params_json);
         if (!override_params.empty()) {
-            for (auto& root : roots_for_install_)
+            for (size_t ri = 0; ri < entity_part_root_start_; ++ri)
                 for (const auto& kv : override_params)
-                    root.params[kv.first] = kv.second;
+                    roots_for_install_[ri].params[kv.first] = kv.second;
         }
     }
 
@@ -1106,6 +1145,16 @@ bool LocalProvider::restore_from_cache(
 
     // Restore graph snapshot.
     graph_snapshot_ = snapshot;
+
+    // Verify that all entity-referenced modules are in the cached snapshot.
+    // If any are missing, the cache predates entity-part baking and must be
+    // invalidated so install_graph can bake them.
+    for (const auto& mod : collect_entity_part_modules(authored_entities_)) {
+        if (graph_snapshot_.nodes.find(mod) == graph_snapshot_.nodes.end()) {
+            err = "resolve cache stale: entity part '" + mod + "' not in snapshot";
+            return false;
+        }
+    }
 
     // Build module_by_hash_ from snapshot nodes (for diagnostics / module labels).
     module_by_hash_.clear();

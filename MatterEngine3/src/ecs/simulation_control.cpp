@@ -67,17 +67,34 @@ void SimulationControl::capture_snapshot(flecs::world& world) {
         EntitySnapshot snap;
         snap.id = id;
         snap.transform = lt;
-        // Get parent if it has SceneEntityId
         if (e.parent().is_valid() && e.parent().has<SceneEntityId>()) {
             snap.parent_id = e.parent().get<SceneEntityId>();
         }
-        // Get name if set
         const char* n = e.name().c_str();
         if (n && n[0]) snap.name = n;
-        // Get PartInstance if present
         if (e.has<PartInstance>()) {
             snap.part_instance = e.get<PartInstance>();
             snap.has_part_instance = true;
+        }
+        if (const auto* rb = e.try_get<physics::RigidBody>()) {
+            snap.rigid_body = *rb;
+            snap.has_rigid_body = true;
+        }
+        if (const auto* v = e.try_get<physics::PhysicsVelocity>()) {
+            snap.velocity = *v;
+            snap.has_velocity = true;
+        }
+        if (const auto* bc = e.try_get<physics::BoxCollider>()) {
+            snap.box_collider = *bc;
+            snap.has_box_collider = true;
+        }
+        if (const auto* sc = e.try_get<physics::SphereCollider>()) {
+            snap.sphere_collider = *sc;
+            snap.has_sphere_collider = true;
+        }
+        if (const auto* cc = e.try_get<physics::CapsuleCollider>()) {
+            snap.capsule_collider = *cc;
+            snap.has_capsule_collider = true;
         }
         snapshot_.entities.push_back(std::move(snap));
     });
@@ -101,6 +118,11 @@ void SimulationControl::restore_snapshot(flecs::world& world) {
         e.set<ecs::LocalTransform>(snap.transform);
         e.set<ecs::WorldTransform>({});
         if (snap.has_part_instance) e.set<PartInstance>(snap.part_instance);
+        if (snap.has_rigid_body) e.set<physics::RigidBody>(snap.rigid_body);
+        if (snap.has_velocity) e.set<physics::PhysicsVelocity>(snap.velocity);
+        if (snap.has_box_collider) e.set<physics::BoxCollider>(snap.box_collider);
+        if (snap.has_sphere_collider) e.set<physics::SphereCollider>(snap.sphere_collider);
+        if (snap.has_capsule_collider) e.set<physics::CapsuleCollider>(snap.capsule_collider);
         if (!snap.name.empty()) e.set_name(snap.name.c_str());
         id_to_entity[snap.id.value] = e;
     }

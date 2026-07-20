@@ -19,15 +19,16 @@ class PhysicsPlayground extends World {
   ];
 
   buildEntities() {
+    const parts = ["Crate", "GlassCrate", "Crate", "GlassCrate", "Crate"];
     for (let i = 0; i < 5; ++i) {
       this.entity({
         id: "crate-" + i,
-        name: "Crate " + i,
+        name: (parts[i] === "GlassCrate" ? "Glass " : "") + "Crate " + i,
         components: {
-          LocalTransform: { translation: [i * 2 - 4, 5 + i * 2, 0] },
-          PartInstance: { part: "Crate" },
+          LocalTransform: { translation: [i * 1.5 - 3, 6 + i * 3, (i % 2) * 0.5] },
+          PartInstance: { part: parts[i] },
           RigidBody: { type: "dynamic" },
-          BoxCollider: { halfExtents: [0.5, 0.5, 0.5] },
+          BoxCollider: { halfExtents: [1.5, 1.5, 1.5] },
         },
       });
     }

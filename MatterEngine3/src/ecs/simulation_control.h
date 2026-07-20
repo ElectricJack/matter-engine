@@ -1,6 +1,7 @@
 #pragma once
 
 #include "matter/ecs.h"
+#include "matter/physics.h"
 #include "matter/scene.h"
 
 #include "flecs.h"
@@ -20,6 +21,16 @@ struct EntitySnapshot {
     ecs::LocalTransform transform{};
     PartInstance part_instance{};
     bool has_part_instance = false;
+    physics::RigidBody rigid_body{};
+    bool has_rigid_body = false;
+    physics::PhysicsVelocity velocity{};
+    bool has_velocity = false;
+    physics::BoxCollider box_collider{};
+    bool has_box_collider = false;
+    physics::SphereCollider sphere_collider{};
+    bool has_sphere_collider = false;
+    physics::CapsuleCollider capsule_collider{};
+    bool has_capsule_collider = false;
 };
 
 // Complete scene snapshot taken at Play transition.

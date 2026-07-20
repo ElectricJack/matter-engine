@@ -318,6 +318,14 @@ public:
         return false;
     }
 
+    std::map<std::string, uint64_t> entity_part_hashes() const {
+        std::map<std::string, uint64_t> out;
+        for (const auto& kv : graph_snapshot_.nodes)
+            if (kv.second.resolved_hash != 0)
+                out[kv.first] = kv.second.resolved_hash;
+        return out;
+    }
+
 #if defined(MATTER_HAVE_SCRIPT_HOST)
     // Phase C Task 9: expose the shared HostBaker so install_world can set the
     // world binding and bake sector child assets through the same baker instance.
@@ -357,7 +365,10 @@ private:
     std::vector<part_graph::ChildRequest> roots_for_install_;
     std::vector<size_t>                   install_to_orig_;
     std::vector<size_t>                   tileset_indices_;
+    size_t                                entity_part_root_start_ = 0;
     part_graph::InstallResult             ir_;
+    static std::set<std::string> collect_entity_part_modules(
+        const std::vector<matter::RawEntityRecipe>& entities);
 
 #if defined(MATTER_HAVE_SCRIPT_HOST)
     // Owned objects that span both phases.

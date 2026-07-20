@@ -1257,7 +1257,6 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         if (tb && !tb->triangles().empty()) {
             const std::vector<Tri>&   src_t = tb->triangles();
             const std::vector<TriEx>& src_e = tb->tri_extra();
-
             // Partition the direct-triangle stream into base + one bucket per
             // modifier region using each region's recorded [tri_begin, tri_end).
             // Single walk over the flat stream (regions are ordered/non-overlapping).
@@ -1277,7 +1276,6 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                     }
                 }
             }
-
             // Base direct-triangle path: register each triangle as-is.
             if (!base_t.empty()) {
                 std::vector<Tri>   norm(base_t.size());

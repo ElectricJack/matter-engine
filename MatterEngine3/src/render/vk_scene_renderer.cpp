@@ -3789,6 +3789,7 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
     index_staging_ = std::move(compact_indices);
     instance_staging_ = std::move(kept_instances);
     instance_part_slots_ = std::move(kept_slots);
+    static_instance_count_ = instance_staging_.size();
     rt_instances_.erase(
         std::remove_if(rt_instances_.begin(), rt_instances_.end(),
                        [part_hash](const RtInstance& instance) {
@@ -3824,6 +3825,10 @@ bool VkSceneRenderer::update_instances(
     const std::vector<VkSceneInstance>& instances, std::string& error) {
     error.clear();
     if (fail_if_poisoned(error)) return false;
+    // Strip any dynamic tail appended by the previous prepare_frame() so the
+    // identity comparison below only considers static instances.
+    if (instance_staging_.size() > static_instance_count_)
+        instance_staging_.resize(static_instance_count_);
     int public_count = 0;
     if (!vk_scene_detail::checked_size_to_int(
             instances.size(), public_count, "VkSceneInstance count", error)) {
@@ -4040,6 +4045,77 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
     draw_transform_slots_ = first_instance;
     part_instance_counts_ = std::move(per_part);
     part_command_ranges_ = std::move(next_part_ranges);
+    return true;
+}
+
+bool VkSceneRenderer::apply_dynamic_command_layout(std::string& error) {
+    if (command_template_.size() !=
+            cluster_staging_.size() * static_cast<size_t>(kVkMaxLod) ||
+        part_instance_counts_.size() != parts_.size()) {
+        error = "dynamic command layout requires a valid static command template";
+        return false;
+    }
+    std::vector<uint32_t> merged_counts = part_instance_counts_;
+    for (uint32_t part_slot : dynamic_instance_part_slots_) {
+        if (part_slot == UINT32_MAX) continue;
+        if (part_slot >= merged_counts.size()) {
+            error = "dynamic instance part bucket is outside the active part table";
+            return false;
+        }
+        if (!checked_u32_add(merged_counts[part_slot], 1u,
+                             merged_counts[part_slot],
+                             "dynamic instance part bucket", error)) {
+            return false;
+        }
+    }
+    uint32_t first_instance = 0;
+    for (size_t cluster_index = 0; cluster_index < cluster_staging_.size();
+         ++cluster_index) {
+        const GpuCluster& cluster = cluster_staging_[cluster_index];
+        const auto& lods = cluster_lods_[cluster_index];
+        if (cluster.part_slot >= merged_counts.size()) {
+            error = "cluster part bucket is outside the active part table";
+            return false;
+        }
+        for (size_t lod = 0; lod < kVkMaxLod; ++lod) {
+            DrawCommand& command =
+                command_template_[cluster_index * kVkMaxLod + lod];
+            command.first_instance = first_instance;
+            if (lod < lods.size() &&
+                !checked_u32_add(first_instance,
+                                 merged_counts[cluster.part_slot],
+                                 first_instance, "draw transform slots",
+                                 error)) {
+                return false;
+            }
+        }
+    }
+    VkDeviceSize transform_bytes = 0;
+    if (!vk_scene_detail::checked_mul_to_device_size(
+            first_instance, sizeof(GpuDrawTransform), transform_bytes,
+            "draw-transform buffer", error)) {
+        return false;
+    }
+    const VkDeviceSize storage_limit =
+        std::min(limits_.max_storage_buffer_range, limits_.max_buffer_size);
+    if (storage_limit != 0 && transform_bytes > storage_limit) {
+        error = "draw-transform buffer exceeds Vulkan storage descriptor limit";
+        return false;
+    }
+    draw_transform_slots_ = first_instance;
+    std::vector<PartCommandRange> next_part_ranges;
+    next_part_ranges.reserve(parts_.size());
+    for (uint32_t slot = 0; slot < parts_.size(); ++slot) {
+        const PartRecord& part = parts_[slot];
+        if (!part.live || merged_counts[slot] == 0 || part.cluster_count == 0 ||
+            part.vertex_count == 0)
+            continue;
+        next_part_ranges.push_back(
+            {part.cluster_start * kVkMaxLod,
+             part.cluster_count * kVkMaxLod, slot});
+    }
+    part_command_ranges_ = std::move(next_part_ranges);
+    ++command_generation_;
     return true;
 }
 
@@ -4436,12 +4512,20 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     }
     // Merge active dynamic instances into the static staging vectors so the
     // upload, constants, and dispatch code all see one contiguous array.
-    // The dynamic tails are stripped at the start of the next update_instances().
+    // The dynamic tails are stripped at the start of the next update_instances()
+    // and defensively here, so repeated prepare_frame() calls cannot stack
+    // duplicate tails.
+    if (instance_staging_.size() > static_instance_count_)
+        instance_staging_.resize(static_instance_count_);
+    if (rt_instances_.size() > static_rt_instance_count_)
+        rt_instances_.resize(static_rt_instance_count_);
     if (dynamic_instance_count_ > 0) {
         for (size_t i = 0; i < dynamic_instance_staging_.size(); ++i) {
             if (dynamic_instance_part_slots_[i] != UINT32_MAX) {
                 const GpuInstance& inst = dynamic_instance_staging_[i];
                 instance_staging_.push_back(inst);
+                max_clusters_per_instance_ =
+                    std::max(max_clusters_per_instance_, inst.cluster_count);
                 const uint32_t slot = dynamic_instance_part_slots_[i];
                 RtInstance rt{};
                 if (slot < parts_.size())
@@ -4457,6 +4541,10 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
             ++instance_generation_;
             dynamic_dirty_ = false;
         }
+    }
+    if (dynamic_instance_count_ > 0 || dynamic_command_layout_applied_) {
+        if (!apply_dynamic_command_layout(error)) return false;
+        dynamic_command_layout_applied_ = dynamic_instance_count_ > 0;
     }
     if (!upload_scene_buffers(selected, frame.command_buffer, false, error) ||
         !upload_frame_constants(selected, matrices, camera_eye, pixel_budget,
