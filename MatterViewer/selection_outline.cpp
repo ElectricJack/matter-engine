@@ -108,6 +108,8 @@ bool aabb_for_object(const SelectedObject& obj, matter::WorldSession& session,
         return false;
     }
 
+    // SelectedObject::Entity ids live in SceneEntityId space (the stable
+    // authored-id hash), matching the pick, tree, and validation code paths.
     bool found = false;
     session.ecs().each(
         [&](flecs::entity, const matter::scene::SceneEntityId& sid,

@@ -908,7 +908,6 @@ int main() {
                                   active_radius, min_projected_size, stats);
     bool wireframe = false;
 
-    viewer::ConsoleLog console_log;
     const std::string shared_lib = shared_lib_root();
     auto open_world = [&](const viewer::WorldEntry& entry) {
         matter::WorldDesc desc;
@@ -920,8 +919,6 @@ int main() {
         auto result = engine->open_world(desc, world_error);
         if (!result) {
             std::fprintf(stderr, "open_world: %s\n", world_error.c_str());
-            console_log.push(viewer::LogSeverity::Error,
-                             "open_world: " + world_error);
             return result;
         }
         result->request_bake();
@@ -937,6 +934,7 @@ int main() {
     viewer::EditorModel editor_model;
     viewer::SelectionSet selection_set;
     matter::scene::SimulationControl sim_control;
+    viewer::ConsoleLog console_log;
     console_log.push(viewer::LogSeverity::Info,
                       "Connected to " + worlds[initial_world].world_name);
 
@@ -1504,26 +1502,22 @@ int main() {
                 if (toolbar.play_clicked) {
                     std::string sim_err;
                     if (!sim_control.play(session->ecs(), sim_err))
-                        console_log.push(viewer::LogSeverity::Error,
-                                         "Play: " + sim_err);
+                        std::fprintf(stderr, "play: %s\n", sim_err.c_str());
                 }
                 if (toolbar.pause_clicked) {
                     std::string sim_err;
                     if (!sim_control.pause(sim_err))
-                        console_log.push(viewer::LogSeverity::Error,
-                                         "Pause: " + sim_err);
+                        std::fprintf(stderr, "pause: %s\n", sim_err.c_str());
                 }
                 if (toolbar.step_clicked) {
                     std::string sim_err;
                     if (!sim_control.step(sim_err))
-                        console_log.push(viewer::LogSeverity::Error,
-                                         "Step: " + sim_err);
+                        std::fprintf(stderr, "step: %s\n", sim_err.c_str());
                 }
                 if (toolbar.stop_clicked) {
                     std::string sim_err;
                     if (!sim_control.stop(session->ecs(), sim_err)) {
-                        console_log.push(viewer::LogSeverity::Error,
-                                         "Stop: " + sim_err);
+                        std::fprintf(stderr, "stop: %s\n", sim_err.c_str());
                     } else {
                         selection_set.clear();
                         editor_model.clear_selection();
@@ -1593,6 +1587,9 @@ int main() {
                     fb_width, fb_height, frame_camera, *session);
                 if (pick.hit) {
                     selection_set.replace(pick.object);
+                    // Keep the outliner's single-slot selection mirrored on
+                    // the primary pick (viewport and outliner share the same
+                    // selection).
                     if (pick.object.kind == viewer::SelectedObject::Entity) {
                         editor_model.select(
                             matter::scene::SceneEntityId{pick.object.id});
@@ -1616,6 +1613,10 @@ int main() {
                 }
                 return false;
             }
+            // Entity selections are keyed by SceneEntityId (the stable
+            // authored-id hash), not by flecs entity id — resolve through the
+            // SceneEntityId component so dynamic ECS entities stay selected
+            // across frames.
             return find_scene_entity(session->ecs(),
                                      matter::scene::SceneEntityId{obj.id})
                 .is_valid();
@@ -1624,23 +1625,14 @@ int main() {
         ui.update_sector_streaming(*session, frame_camera);
         matter::TickDesc tick{};
         tick.frame_delta_seconds = dt;
-        if (!sim_control.should_advance_fixed() &&
-            !sim_control.consume_pending_step()) {
-            tick.max_fixed_steps = 0;
-        }
         session->tick(tick);
         camera_input_order.tick_scene();
         session->pump_gpu_jobs(4.0f);
         matter::Event event;
         while (session->poll_event(event)) {
-            if (event.type == matter::EventType::BakePartDone) {
+            if (event.type == matter::EventType::BakePartDone)
                 std::printf("bake %d/%d %s\n", event.done, event.total,
                             event.module.c_str());
-                console_log.push(viewer::LogSeverity::Info,
-                                 "Bake " + std::to_string(event.done) + "/" +
-                                     std::to_string(event.total) + " " +
-                                     event.module);
-            }
             else if (event.type == matter::EventType::BakeFinished) {
                 std::printf("bake finished (%d errors)\n", event.errors);
                 bake_ready = event.errors == 0;
@@ -1916,7 +1908,6 @@ int main() {
             selection_set.clear();
             editor_model.clear_selection();
             sim_control = matter::scene::SimulationControl{};
-            ui.reset_scene_tree_cache();
             viewer::prepare_world_reload(stats);
             session->reload();
         }
@@ -1933,7 +1924,6 @@ int main() {
             selection_set.clear();
             editor_model.clear_selection();
             sim_control = matter::scene::SimulationControl{};
-            ui.reset_scene_tree_cache();
             viewer::complete_world_switch(stats, true);
             stats.world_current = selected;
             selected_world_reported = false;

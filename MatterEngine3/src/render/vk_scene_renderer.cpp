@@ -3789,7 +3789,6 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
     index_staging_ = std::move(compact_indices);
     instance_staging_ = std::move(kept_instances);
     instance_part_slots_ = std::move(kept_slots);
-    static_instance_count_ = instance_staging_.size();
     rt_instances_.erase(
         std::remove_if(rt_instances_.begin(), rt_instances_.end(),
                        [part_hash](const RtInstance& instance) {
@@ -3825,10 +3824,6 @@ bool VkSceneRenderer::update_instances(
     const std::vector<VkSceneInstance>& instances, std::string& error) {
     error.clear();
     if (fail_if_poisoned(error)) return false;
-    // Strip any dynamic tail appended by the previous prepare_frame() so the
-    // identity comparison below only considers static instances.
-    if (instance_staging_.size() > static_instance_count_)
-        instance_staging_.resize(static_instance_count_);
     int public_count = 0;
     if (!vk_scene_detail::checked_size_to_int(
             instances.size(), public_count, "VkSceneInstance count", error)) {
@@ -4048,6 +4043,22 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
     return true;
 }
 
+// Task 7 (dynamic lane): rebuild_command_template() sizes the per-bucket
+// transform regions and the per-part indirect draw ranges from STATIC
+// instances only (part_instance_counts_ is that baseline and is never
+// modified here). When prepare_frame() merges dynamic instances into
+// instance_staging_, the culler needs room in each bucket for them, or
+// reserve_transform_slot() in shaders_vk/cull.comp finds
+// `next.first_instance - this.first_instance` exhausted and drops the
+// instance (the "dynamic entities cast RT shadows but never rasterize" bug).
+// This re-derives, from the static baseline plus the active dynamic slots:
+//   - command_template_[].first_instance (per-bucket transform offsets)
+//   - draw_transform_slots_ (total transform-buffer slots / capacities.w)
+//   - part_command_ranges_ (a part with only dynamic instances must still
+//     record its indirect draws)
+// The recompute always starts from the static baseline, so it is idempotent
+// across frames and reproduces rebuild_command_template()'s exact output when
+// no dynamic instances are active (which restores the static layout).
 bool VkSceneRenderer::apply_dynamic_command_layout(std::string& error) {
     if (command_template_.size() !=
             cluster_staging_.size() * static_cast<size_t>(kVkMaxLod) ||
@@ -4524,6 +4535,10 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
             if (dynamic_instance_part_slots_[i] != UINT32_MAX) {
                 const GpuInstance& inst = dynamic_instance_staging_[i];
                 instance_staging_.push_back(inst);
+                // The cull dispatch fans out counts.y threads per instance;
+                // a dynamic-only part with more clusters than any static
+                // instance must widen the fan-out or its tail clusters are
+                // never visited.
                 max_clusters_per_instance_ =
                     std::max(max_clusters_per_instance_, inst.cluster_count);
                 const uint32_t slot = dynamic_instance_part_slots_[i];
@@ -4542,6 +4557,9 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
             dynamic_dirty_ = false;
         }
     }
+    // Re-derive the culler's transform regions and the per-part draw ranges
+    // for the merged instance set. Also runs once more after the last dynamic
+    // instance disappears to restore the static-only baseline.
     if (dynamic_instance_count_ > 0 || dynamic_command_layout_applied_) {
         if (!apply_dynamic_command_layout(error)) return false;
         dynamic_command_layout_applied_ = dynamic_instance_count_ > 0;

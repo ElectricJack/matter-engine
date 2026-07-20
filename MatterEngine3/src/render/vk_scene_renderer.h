@@ -947,6 +947,10 @@ private:
     uint64_t dynamic_submit_serial_ = 0;
     uint64_t dynamic_completed_serial_ = 0;
     bool dynamic_dirty_ = false;
+    // True while command_template_/part_command_ranges_/draw_transform_slots_
+    // carry per-frame offsets that include dynamic instances (see
+    // apply_dynamic_command_layout). Cleared once the static baseline is
+    // restored after the last dynamic instance disappears.
     bool dynamic_command_layout_applied_ = false;
 
     std::vector<uint32_t> part_instance_counts_;

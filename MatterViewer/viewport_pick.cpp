@@ -106,6 +106,10 @@ PickResult viewport_pick(float cursor_x, float cursor_y,
         }
     }
 
+    // Entities are identified by their stable SceneEntityId (authored-id
+    // hash), NOT the flecs entity id — the whole editor (scene tree,
+    // properties, gizmo, field commands, per-frame selection validation)
+    // resolves SelectedObject::Entity ids in SceneEntityId space.
     session.ecs().each(
         [&](flecs::entity, const matter::scene::SceneEntityId& sid,
             const matter::ecs::LocalTransform& lt) {
