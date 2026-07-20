@@ -6,6 +6,15 @@
 #include <vector>
 
 #include "matter/camera.h"
+#include "matter/world_session.h"
+#include "editor_model.h"
+#include "scene_tree_panel.h"
+#include "console_panel.h"
+#include "toolbar_panel.h"
+#include "properties_registry.h"
+#include "properties_panel.h"
+#include "selection_set.h"
+#include "gizmo.h"
 
 namespace viewer {
 
@@ -81,6 +90,48 @@ public:
     // Standalone panel listing available worlds as buttons. Clicking a non-current
     // world sets stats.world_switch_requested; main handles the swap next frame.
     void draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& stats);
+    // Manual docking-layout scaffolding (no ImGui docking branch vendored yet):
+    // fixed-position panels anchored to the display edges via
+    // ImGuiCond_FirstUseEver, so imgui.ini persistence still lets users move them.
+    ToolbarActions draw_toolbar(matter::scene::SimulationMode mode);
+    // Task 13: see ui.h (Vulkan viewer) for the fuller doc comment; behavior
+    // mirrors that build. All pointer params are nullable.
+    void draw_scene_panel(EditorModel& editor, matter::WorldSession* session,
+                          SceneCommands* commands, matter::scene::SimulationMode mode,
+                          matter::CameraDesc* camera, SelectionSet* selection,
+                          const FieldCommands* fields, ConsoleLog* console_log,
+                          const std::unordered_set<uint64_t>* authored_entity_ids = nullptr);
+    void draw_properties_panel(const SelectionSet& selection, EditorModel& editor,
+                               const PropertiesRegistry& registry,
+                               const FieldCommands& fields,
+                               const ComponentCommands& components,
+                               matter::scene::SimulationMode mode,
+                               const part_graph_snapshot::Snapshot* snapshot,
+                               SpecializedEditors& specialized,
+                               const matter::Float3& camera_position);
+    void draw_console_panel(ConsoleLog& log);
+    // Draws the ImGuizmo transform gizmo for the primary selection (Task 10).
+    // See ui.h (Vulkan viewer) for the fuller doc comment; behavior mirrors
+    // that build. Sets gizmo_submitted_ so camera_input_allowed() can
+    // suppress camera input while the gizmo is hovered/dragged.
+    void draw_gizmo(const SelectionSet& selection, const FieldCommands& fields,
+                    const matter::CameraDesc& camera,
+                    matter::scene::SimulationMode mode, float viewport_x,
+                    float viewport_y, float viewport_w, float viewport_h);
+    // Forwards to viewer::update_gizmo_hotkeys(gizmo_state_) — call only when
+    // !io.WantTextInput && !io.WantCaptureKeyboard.
+    void update_gizmo_hotkeys();
+    // True unless ImGui or the gizmo wants input this frame (mirrors the
+    // Vulkan viewer's Ui::camera_input_allowed()).
+    bool camera_input_allowed() const;
+
+private:
+    bool gizmo_submitted_ = false;
+    GizmoState gizmo_state_;
+    SceneTreeState scene_tree_state_;
+    ToolbarState toolbar_state_;
+    ConsolePanelState console_state_;
+    PropertiesPanelState properties_state_;
 };
 
 } // namespace viewer

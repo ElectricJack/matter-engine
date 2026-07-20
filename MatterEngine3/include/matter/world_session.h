@@ -10,6 +10,7 @@
 #include "matter/streaming.h"
 #include "matter/vulkan_device.h"
 #include "render/vk_gi_contract.h"
+#include "part_graph_snapshot.h"
 
 #include "matter/events.h"
 #include "matter/query.h"
@@ -179,6 +180,14 @@ public:
     // Returns true and sets `out` for world-kind sessions; returns false for
     // closed-world (expand/tileset) sessions (no water plane in those worlds).
     bool sea_level(float& out) const;
+
+    // Copy of the provider's part-graph snapshot. Refreshed after connect and
+    // live-edit reresolve. Returns false if no provider is connected.
+    bool graph_snapshot(part_graph_snapshot::Snapshot& out) const;
+
+    // Generation counter bumped on install/reresolve; callers cache the snapshot
+    // and re-query only when generation changes.
+    uint64_t graph_generation() const;
 
     // Phase C Task 7: enqueue a seed-driven world reroll. Stores
     // root_params_override = {"worldSeed": <world_seed>} and enqueues a Reload

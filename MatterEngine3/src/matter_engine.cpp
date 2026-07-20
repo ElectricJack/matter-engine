@@ -348,6 +348,18 @@ struct WorldSession::Impl {
     streaming::detail::ProfileActivationGate streaming_profile_activation;
     streaming::detail::PendingEvictionBatch pending_sector_evictions;
 
+    // Copy of the provider's part-graph snapshot, refreshed on the worker
+    // thread after every successful install_graph() (BakeAll/Reload/cone).
+    // App-thread readers go through graph_snapshot_mutex; graph_generation_
+    // lets callers cheaply detect a refresh without copying the snapshot.
+    mutable std::mutex graph_snapshot_mutex;
+    part_graph_snapshot::Snapshot graph_snapshot_copy;
+    std::atomic<uint64_t> graph_generation_{0};
+    // Copies provider->graph_snapshot() into graph_snapshot_copy and bumps
+    // graph_generation_. Worker thread only; call right after a successful
+    // install_graph().
+    void publish_graph_snapshot();
+
     // A request owns one fixed completion slot before sector bake begins.
     // max_inflight is 16; twice that capacity leaves room for acknowledgements
     // retained across a coordinator generation transition without allocating.
@@ -1002,6 +1014,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
                        "install", err);
             return;
         }
+        publish_graph_snapshot();
         // Emit per-part errors for any parts that failed during install.
         for (const auto& fp : provider->install_result().failed) {
             BakeErrorCode code = classify_error(fp.error);
@@ -2727,6 +2740,13 @@ void WorldSession::Impl::publish_streaming_snapshot() {
     streaming::detail::publish_streaming_snapshot(world, snapshot);
 }
 
+void WorldSession::Impl::publish_graph_snapshot() {
+    if (!provider) return;
+    std::lock_guard<std::mutex> lock(graph_snapshot_mutex);
+    graph_snapshot_copy = provider->graph_snapshot();
+    graph_generation_.fetch_add(1, std::memory_order_relaxed);
+}
+
 // ---------------------------------------------------------------------------
 // WorldSession::Impl::execute_sector_stream_step
 // Phase C Task 9: one sector-streaming step. Called by worker_loop in the
@@ -3248,6 +3268,7 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
                        "cone", ierr.empty() ? "install_graph failed" : ierr);
             return;
         }
+        publish_graph_snapshot();
         // Emit per-part errors for any partial install failures.
         for (const auto& fp : provider->install_result().failed) {
             BakeErrorCode code = classify_error(fp.error);
@@ -3613,6 +3634,18 @@ bool WorldSession::sea_level(float& out) const {
     if (impl_->world_sea_level == std::numeric_limits<float>::lowest()) return false;
     out = impl_->world_sea_level;
     return true;
+}
+
+bool WorldSession::graph_snapshot(part_graph_snapshot::Snapshot& out) const {
+    if (!impl_->connected) return false;
+    std::lock_guard<std::mutex> lock(impl_->graph_snapshot_mutex);
+    if (impl_->graph_generation_.load(std::memory_order_relaxed) == 0) return false;
+    out = impl_->graph_snapshot_copy;
+    return true;
+}
+
+uint64_t WorldSession::graph_generation() const {
+    return impl_->graph_generation_.load(std::memory_order_relaxed);
 }
 
 void WorldSession::Impl::poll_runtime_sources() {

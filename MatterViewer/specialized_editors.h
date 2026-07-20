@@ -38,6 +38,10 @@ struct PhysicsEditorCommands {
 struct StreamingEditorState {
     bool follow_camera = false;
     uint64_t seed = 0;
+    // UI-only for now: no StreamingEditorCommands entry point exists yet to
+    // apply a per-anchor radius (sector streaming config is currently global).
+    // Kept here so the Properties panel has somewhere to store the drag value.
+    float radius = 32.0f;
 };
 
 struct StreamingEditorCommands {

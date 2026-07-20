@@ -89,6 +89,7 @@ void EditorModel::rebuild_hierarchy(const std::vector<SceneRecord>& records) {
         row.parent_id = record->parent_id;
         row.name = record->name;
         row.depth = depth;
+        row.component_names = record->component_names;
         auto it = children_of.find(id);
         row.child_count = (it != children_of.end())
                                ? static_cast<uint32_t>(it->second.size())

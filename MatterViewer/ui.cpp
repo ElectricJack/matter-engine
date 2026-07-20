@@ -101,6 +101,10 @@ bool Ui::setup(GLFWwindow* window, matter::VulkanDevice& vulkan,
     ImGui::CreateContext();
     imgui_context_initialized_ = true;
     ImGui::StyleColorsDark();
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    // imgui.ini persistence is on by default — panel positions save/restore
+    // automatically across runs.
     if (!ImGui_ImplGlfw_InitForVulkan(window, true)) {
         error = "ImGui GLFW Vulkan initialization failed";
         shutdown();
@@ -225,7 +229,82 @@ bool Ui::end_frame(const matter::VulkanFrame& frame, std::string& error) {
     return true;
 }
 
+namespace {
+constexpr float kToolbarHeight = 40.0f;
+constexpr float kSceneWidthFrac = 0.22f;
+constexpr float kPropertiesWidthFrac = 0.26f;
+constexpr float kConsoleHeightFrac = 0.20f;
+} // namespace
+
+ToolbarActions Ui::draw_toolbar(matter::scene::SimulationMode mode) {
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(display.x, kToolbarHeight), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Toolbar", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                     ImGuiWindowFlags_NoScrollbar);
+    const ToolbarActions actions = draw_toolbar_contents(toolbar_state_, mode);
+    ImGui::End();
+    draw_viewport_border_tint(mode);
+    return actions;
+}
+
+void Ui::draw_scene_panel(EditorModel& editor, matter::WorldSession* session,
+                          SceneCommands* commands, matter::scene::SimulationMode mode,
+                          matter::CameraDesc* camera, SelectionSet* selection,
+                          const FieldCommands* fields, ConsoleLog* console_log,
+                          const std::unordered_set<uint64_t>* authored_entity_ids) {
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    const float scene_w = display.x * kSceneWidthFrac;
+    ImGui::SetNextWindowPos(ImVec2(0, kToolbarHeight), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(scene_w, display.y - kToolbarHeight),
+                             ImGuiCond_FirstUseEver);
+    ImGui::Begin("Scene");
+    draw_scene_tree(scene_tree_state_, editor, session, commands, mode, camera,
+                    selection, fields, console_log, authored_entity_ids);
+    ImGui::End();
+}
+
+void Ui::draw_properties_panel(const SelectionSet& selection, EditorModel& editor,
+                               const PropertiesRegistry& registry,
+                               const FieldCommands& fields,
+                               const ComponentCommands& components,
+                               matter::scene::SimulationMode mode,
+                               const part_graph_snapshot::Snapshot* snapshot,
+                               SpecializedEditors& specialized,
+                               const matter::Float3& camera_position) {
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    const float props_w = display.x * kPropertiesWidthFrac;
+    ImGui::SetNextWindowPos(ImVec2(display.x - props_w, kToolbarHeight),
+                            ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(props_w, display.y - kToolbarHeight),
+                             ImGuiCond_FirstUseEver);
+    ImGui::Begin("Properties");
+    draw_properties_contents(properties_state_, selection, editor, registry,
+                             fields, components, mode, snapshot,
+                             specialized, camera_position);
+    ImGui::End();
+}
+
+void Ui::draw_console_panel(ConsoleLog& log) {
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    const float scene_w = display.x * kSceneWidthFrac;
+    const float props_w = display.x * kPropertiesWidthFrac;
+    const float console_h = display.y * kConsoleHeightFrac;
+    ImGui::SetNextWindowPos(ImVec2(scene_w, display.y - console_h), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(display.x - scene_w - props_w, console_h),
+                             ImGuiCond_FirstUseEver);
+    ImGui::Begin("Console");
+    draw_console_contents(console_state_, log);
+    ImGui::End();
+}
+
 void Ui::draw_debug_panel(ViewerStats& s) {
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    const float props_w = display.x * kPropertiesWidthFrac;
+    ImGui::SetNextWindowPos(ImVec2(display.x - props_w, kToolbarHeight),
+                            ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(props_w, 0), ImGuiCond_FirstUseEver);
     ImGui::Begin("Viewer Debug");
 
     ImGui::Text("FPS: %.1f  (%.2f ms)", s.fps, s.frame_ms);
@@ -288,9 +367,11 @@ void Ui::draw_debug_panel(ViewerStats& s) {
 }
 
 void Ui::draw_camera_panel(matter::CameraDesc& cam) {
-    ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - 270.0f, 20.0f),
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    const float props_w = display.x * kPropertiesWidthFrac;
+    ImGui::SetNextWindowPos(ImVec2(display.x - props_w, kToolbarHeight + 400.0f),
                             ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(250, 0), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(props_w, 0), ImGuiCond_FirstUseEver);
     ImGui::Begin("Camera");
 
     ImGui::DragFloat3("Position", &cam.position.x, 0.1f);
@@ -364,6 +445,19 @@ void Ui::draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& s
     ImGui::End();
 }
 
+void Ui::draw_gizmo(const SelectionSet& selection, const FieldCommands& fields,
+                    const matter::CameraDesc& camera,
+                    matter::scene::SimulationMode mode, float viewport_x,
+                    float viewport_y, float viewport_w, float viewport_h) {
+    gizmo_submitted_ = viewer::draw_gizmo(gizmo_state_, selection, fields,
+                                          camera, mode, viewport_x, viewport_y,
+                                          viewport_w, viewport_h);
+}
+
+void Ui::update_gizmo_hotkeys() {
+    viewer::update_gizmo_hotkeys(gizmo_state_);
+}
+
 void Ui::update_sector_streaming(matter::WorldSession& session,
                                  const matter::CameraDesc& camera) {
     flecs::world& world = session.ecs();
@@ -385,8 +479,7 @@ void Ui::update_sector_streaming(matter::WorldSession& session,
 bool Ui::camera_input_allowed() const {
     if (ImGui::GetCurrentContext() == nullptr) return true;
     const ImGuiIO& io = ImGui::GetIO();
-    const bool gizmo_over =
-        gizmo_submitted_ && ImGuizmo::IsOver(ImGuizmo::TRANSLATE);
+    const bool gizmo_over = gizmo_submitted_ && ImGuizmo::IsOver();
     return matter_viewer::camera_input_allowed(
         io.WantCaptureMouse, io.WantCaptureKeyboard,
         gizmo_over, ImGuizmo::IsUsing());

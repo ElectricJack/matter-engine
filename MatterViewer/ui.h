@@ -10,6 +10,14 @@
 #include "matter/camera.h"
 #include "matter/world_session.h"
 #include "streaming_anchor_controller.h"
+#include "editor_model.h"
+#include "scene_tree_panel.h"
+#include "console_panel.h"
+#include "toolbar_panel.h"
+#include "properties_registry.h"
+#include "properties_panel.h"
+#include "selection_set.h"
+#include "gizmo.h"
 
 struct GLFWwindow;
 namespace matter { class VulkanDevice; struct VulkanFrame; }
@@ -106,6 +114,44 @@ public:
     // Standalone panel listing available worlds as buttons. Clicking a non-current
     // world sets stats.world_switch_requested; main handles the swap next frame.
     void draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& stats);
+    // Manual docking-layout scaffolding (no ImGui docking branch vendored yet):
+    // fixed-position panels anchored to the display edges via
+    // ImGuiCond_FirstUseEver, so imgui.ini persistence still lets users move them.
+    ToolbarActions draw_toolbar(matter::scene::SimulationMode mode);
+    // Task 13: `commands` drives the row context menus (Add Child Entity,
+    // Duplicate, Delete, reparent-on-add-child); `mode` disables the
+    // destructive items during Play; `camera`/`fields` drive the Focus
+    // action; `selection` is kept in sync with context-menu-driven selection
+    // changes so the Properties panel/gizmo follow along; `console_log`
+    // receives error messages from failed mutations. All pointer params are
+    // nullable — passing null simply disables/no-ops the features that need
+    // them (see scene_tree_panel.h).
+    void draw_scene_panel(EditorModel& editor, matter::WorldSession* session,
+                          SceneCommands* commands, matter::scene::SimulationMode mode,
+                          matter::CameraDesc* camera, SelectionSet* selection,
+                          const FieldCommands* fields, ConsoleLog* console_log,
+                          const std::unordered_set<uint64_t>* authored_entity_ids = nullptr);
+    void draw_properties_panel(const SelectionSet& selection, EditorModel& editor,
+                               const PropertiesRegistry& registry,
+                               const FieldCommands& fields,
+                               const ComponentCommands& components,
+                               matter::scene::SimulationMode mode,
+                               const part_graph_snapshot::Snapshot* snapshot,
+                               SpecializedEditors& specialized,
+                               const matter::Float3& camera_position);
+    void draw_console_panel(ConsoleLog& log);
+    // Draws the ImGuizmo transform gizmo for the primary selection (Task 10).
+    // No-op outside Edit/Pause or when nothing selectable is chosen. Sets
+    // gizmo_submitted_ so camera_input_allowed() can suppress camera input
+    // while the gizmo is hovered/dragged. Call once per frame, after
+    // draw_properties_panel and before camera_input_order.decide_capture().
+    void draw_gizmo(const SelectionSet& selection, const FieldCommands& fields,
+                    const matter::CameraDesc& camera,
+                    matter::scene::SimulationMode mode, float viewport_x,
+                    float viewport_y, float viewport_w, float viewport_h);
+    // Forwards to viewer::update_gizmo_hotkeys(gizmo_state_) — call only when
+    // !io.WantTextInput && !io.WantCaptureKeyboard.
+    void update_gizmo_hotkeys();
     void update_sector_streaming(matter::WorldSession& session,
                                  const matter::CameraDesc& camera);
     // draw_sector_streaming_panel retired in Phase 4 Task 12: sector streaming
@@ -130,6 +176,11 @@ private:
     matter_viewer::StreamingAnchorState streaming_anchor_{};
     std::uint64_t anchor_id_input_ = 0;
     std::uint64_t streaming_seed_ = 0;
+    GizmoState gizmo_state_;
+    SceneTreeState scene_tree_state_;
+    ToolbarState toolbar_state_;
+    ConsolePanelState console_state_;
+    PropertiesPanelState properties_state_;
 };
 
 } // namespace viewer

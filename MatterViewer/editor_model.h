@@ -21,6 +21,7 @@ struct HierarchyRow {
     std::string name;
     uint32_t depth = 0;
     uint32_t child_count = 0;
+    std::vector<std::string> component_names;
 };
 
 // Callback interface for the engine's scene mutation API.

@@ -120,8 +120,8 @@ endif
 # Task 9 switches the Windows application to Vulkan. Keep the existing Linux
 # application/backend as an explicit compatibility path until the later engine
 # OpenGL-removal task can migrate or retire it without breaking the default target.
-LINUX_APP_SRC = main_linux.cpp ui_linux.cpp camera_controller.cpp streaming_anchor_controller.cpp
-APP_SRC = main.cpp ui.cpp camera_controller.cpp streaming_anchor_controller.cpp
+LINUX_APP_SRC = main_linux.cpp ui_linux.cpp camera_controller.cpp camera_focus.cpp streaming_anchor_controller.cpp selection_set.cpp editor_model.cpp scene_tree_panel.cpp viewport_pick.cpp selection_outline.cpp toolbar_panel.cpp console_panel.cpp console_log.cpp properties_registry.cpp properties_panel.cpp specialized_editors.cpp gizmo.cpp os_open.cpp
+APP_SRC = main.cpp ui.cpp camera_controller.cpp camera_focus.cpp streaming_anchor_controller.cpp selection_set.cpp editor_model.cpp scene_tree_panel.cpp viewport_pick.cpp selection_outline.cpp toolbar_panel.cpp console_panel.cpp console_log.cpp properties_registry.cpp properties_panel.cpp specialized_editors.cpp gizmo.cpp os_open.cpp
 
 # Windows direct-source compile: ME3 pipeline + MSL + QJS (mirrors old viewer).
 # These are ONLY used by the Windows target; the Linux target links libmatter_engine3.a.
@@ -175,6 +175,8 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/ecs/physics_systems.cpp \
               $(ME3_DIR)/src/ecs/streaming_systems.cpp \
               $(ME3_DIR)/src/ecs/transform_system.cpp \
+              $(ME3_DIR)/src/ecs/scene_registry.cpp \
+              $(ME3_DIR)/src/ecs/simulation_control.cpp \
               $(ME3_DIR)/src/streaming/sector_streaming_coordinator.cpp \
               $(ME3_DIR)/src/matter_engine.cpp \
               $(ME3_DIR)/src/pf_bindings.cpp \
@@ -244,7 +246,7 @@ PIPC_NAMES_WIN = $(notdir $(WIN_PIPELINE_C))
 FLECS_NAME = $(notdir $(FLECS_C))
 
 vpath %.cpp . $(ME3_DIR)/src $(ME3_DIR)/src/render $(ME3_DIR)/src/provider $(ME3_DIR)/src/ecs \
-             $(ME3_DIR)/src/streaming \
+             $(ME3_DIR)/src/streaming $(ME3_DIR)/src/script \
              $(MSL_DIR)/src $(IMGUI_PATH) $(IMGUI_PATH)/backends \
              $(IMGUIZMO_PATH) \
              ../ParticleFlowLib/src
@@ -581,5 +583,27 @@ win-shaders-gpu:
 # shaders / shaders_gpu_link / win-shaders-gpu rules anyway.
 clean:
 	rm -rf viewer viewer.exe build
+
+# SelectionSet headless test (no GL/raylib/imgui deps)
+build/test_selection_set.exe: tests/test_selection_set.cpp selection_set.cpp selection_set.h
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_selection_set.cpp selection_set.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -I.
+
+.PHONY: run-test-selection-set
+run-test-selection-set: build/test_selection_set.exe
+	./build/test_selection_set.exe
+
+# ConsoleLog headless test: console_log.cpp holds the ImGui-free ring-buffer
+# logic (draw_console_contents, which needs ImGui, lives in console_panel.cpp
+# instead), so this links without any ImGui dependency.
+build/test_console_log.exe: tests/test_console_log.cpp console_log.cpp console_panel.h
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_console_log.cpp console_log.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -I. -lpthread
+
+.PHONY: run-test-console-log
+run-test-console-log: build/test_console_log.exe
+	./build/test_console_log.exe
 
 .PHONY: viewer windows clean shaders shaders_gpu_link win-shaders-gpu regen-processed-shader mingw-box3d embedded-shaders build-engine-lib vulkan-instancing-perf
