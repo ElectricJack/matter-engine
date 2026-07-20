@@ -5456,6 +5456,15 @@ bool VkSceneRenderer::record_cull_and_render(
                        ray_tracing_settings_.debug_view
                    ? 1.0f
                    : 0.0f);
+    frame_lighting.camera_fwd_x = -matrices.world_to_view.m[8];
+    frame_lighting.camera_fwd_y = -matrices.world_to_view.m[9];
+    frame_lighting.camera_fwd_z = -matrices.world_to_view.m[10];
+    frame_lighting.tan_half_fov =
+        matrices.view_to_clip.m[5] != 0.0f
+            ? 1.0f / matrices.view_to_clip.m[5] : 1.0f;
+    frame_lighting.aspect_ratio =
+        matrices.view_to_clip.m[0] != 0.0f
+            ? matrices.view_to_clip.m[5] / matrices.view_to_clip.m[0] : 1.0f;
     RasterRecord record{&albedo_,
                         &normal_,
                         &orm_,
@@ -6496,6 +6505,7 @@ bool VkSceneRenderer::update_dynamic_instances(
                 GpuInstance& instance = dynamic_instance_staging_[change.slot_index];
                 instance.previous_object_to_world = instance.object_to_world;
                 instance.object_to_world = pack_glsl_mat4(change.object_to_world);
+                instance.history_valid = 1;
                 dynamic_dirty_ = true;
                 break;
             }

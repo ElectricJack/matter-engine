@@ -3,6 +3,7 @@
 #extension GL_GOOGLE_include_directive : require
 
 #include "rt_surface_common.glsl"
+#include "sky_common.glsl"
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
 layout(set = 0, binding = 1) uniform sampler2D depth_texture;
@@ -117,37 +118,29 @@ void basis(vec3 n, out vec3 t, out vec3 b) {
 }
 
 vec3 sky_environment(vec3 direction) {
-    float horizon = clamp(direction.y * 0.5 + 0.5, 0.0, 1.0);
-    return constants.sky_color * mix(0.2, 1.25, horizon);
+    return procedural_sky(direction, constants.sky_color);
 }
 
 vec3 environment(vec3 direction) {
-    float sun_disk = smoothstep(0.99975, 0.99995,
-                                dot(direction, normalize(constants.to_sun)));
-    return sky_environment(direction) +
-           constants.sun_color * constants.sun_intensity * sun_disk;
+    return sky_with_sun(direction, constants.sky_color,
+                        normalize(constants.to_sun), constants.sun_color,
+                        constants.sun_intensity);
 }
 
-// Environment for 1-spp reflection rays: the analytic sun disk is scaled by
-// the disk/lobe solid-angle ratio, approximating roughness prefiltering.
-// Near-mirror lobes keep the full stable glint; rough lobes -- where a rare
-// disk hit used to produce a firefly -- get the physically tiny prefiltered
-// value instead.
 vec3 reflection_environment(vec3 direction, float roughness) {
-    const float sun_solid_angle = 9.42e-4;  // 2*pi*(1 - 0.99985)
+    const float sun_solid_angle = 9.42e-4;
     float alpha = roughness * roughness;
     float lobe_solid_angle = 3.14159265 * alpha * alpha;
     float prefilter =
         sun_solid_angle / max(lobe_solid_angle, sun_solid_angle);
     float sun_disk = smoothstep(0.99975, 0.99995,
                                 dot(direction, normalize(constants.to_sun)));
-    return sky_environment(direction) + constants.sun_color *
+    return procedural_sky(direction, constants.sky_color) + constants.sun_color *
            constants.sun_intensity * sun_disk * prefilter;
 }
 
-vec3 sky_irradiance(vec3 normal) {
-    return constants.sky_color * mix(0.2, 1.0,
-        clamp(normal.y * 0.5 + 0.5, 0.0, 1.0));
+vec3 rt_sky_irradiance(vec3 normal) {
+    return sky_irradiance(normal, constants.sky_color);
 }
 
 vec3 hit_emission(RtSurface surface, out vec3 base) {
@@ -165,7 +158,7 @@ vec3 hit_emission(RtSurface surface, out vec3 base) {
 
 vec3 hit_radiance(RtSurface surface, out vec3 base) {
     vec3 emission = hit_emission(surface, base);
-    return emission + sky_irradiance(surface.normal) * base;
+    return emission + rt_sky_irradiance(surface.normal) * base;
 }
 
 void main() {

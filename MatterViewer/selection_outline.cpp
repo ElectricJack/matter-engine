@@ -1,13 +1,9 @@
 #include "selection_outline.h"
+#include "selection_bounds.h"
 
 #include "imgui.h"
-#include "matter/ecs.h"
-#include "matter/query.h"
-#include "matter/scene.h"
-#include "matter/world_session.h"
 
 #include <cmath>
-#include <cstdint>
 
 namespace viewer {
 namespace {
@@ -53,7 +49,6 @@ Mat4 multiply(const Mat4& a, const Mat4& b) {
     return out;
 }
 
-// Project world point to screen pixel. Returns false if behind camera.
 bool project(const Mat4& vp, int fb_w, int fb_h, const float p[3], ImVec2& screen) {
     float x = vp.m[0]*p[0] + vp.m[4]*p[1] + vp.m[8]*p[2] + vp.m[12];
     float y = vp.m[1]*p[0] + vp.m[5]*p[1] + vp.m[9]*p[2] + vp.m[13];
@@ -65,18 +60,18 @@ bool project(const Mat4& vp, int fb_w, int fb_h, const float p[3], ImVec2& scree
     return true;
 }
 
-void draw_aabb_wireframe(ImDrawList* dl, const Mat4& vp, int fb_w, int fb_h,
-                         const float mn[3], const float mx[3], ImU32 color) {
-    float corners[8][3] = {
-        {mn[0],mn[1],mn[2]}, {mx[0],mn[1],mn[2]},
-        {mx[0],mx[1],mn[2]}, {mn[0],mx[1],mn[2]},
-        {mn[0],mn[1],mx[2]}, {mx[0],mn[1],mx[2]},
-        {mx[0],mx[1],mx[2]}, {mn[0],mx[1],mx[2]},
-    };
+void transform_point(const float mat[16], const float in[3], float out[3]) {
+    out[0] = mat[0]*in[0] + mat[1]*in[1] + mat[2]*in[2]  + mat[3];
+    out[1] = mat[4]*in[0] + mat[5]*in[1] + mat[6]*in[2]  + mat[7];
+    out[2] = mat[8]*in[0] + mat[9]*in[1] + mat[10]*in[2] + mat[11];
+}
+
+void draw_obb_wireframe(ImDrawList* dl, const Mat4& vp, int fb_w, int fb_h,
+                        const float world_corners[8][3], ImU32 color) {
     ImVec2 screen[8];
     bool visible[8];
     for (int i = 0; i < 8; ++i)
-        visible[i] = project(vp, fb_w, fb_h, corners[i], screen[i]);
+        visible[i] = project(vp, fb_w, fb_h, world_corners[i], screen[i]);
     static constexpr int edges[12][2] = {
         {0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},{0,4},{1,5},{2,6},{3,7}
     };
@@ -86,44 +81,16 @@ void draw_aabb_wireframe(ImDrawList* dl, const Mat4& vp, int fb_w, int fb_h,
     }
 }
 
-bool aabb_for_object(const SelectedObject& obj, matter::WorldSession& session,
-                     float aabb_min[3], float aabb_max[3]) {
-    if (obj.kind == SelectedObject::BakedRoot) {
-        const uint32_t count = session.instance_count();
-        for (uint32_t i = 0; i < count; ++i) {
-            matter::InstanceInfo info;
-            if (!session.instance_info(i, info)) continue;
-            if (info.part_hash != obj.id) continue;
-            // Mat4f uses row-major storage with column-vector algebra; the
-            // translation lives in the last column of each row.
-            const float translation[3] = {
-                info.transform[3], info.transform[7], info.transform[11]
-            };
-            for (int a = 0; a < 3; ++a) {
-                aabb_min[a] = translation[a] - 2.0f;
-                aabb_max[a] = translation[a] + 2.0f;
-            }
-            return true;
-        }
-        return false;
-    }
-
-    // SelectedObject::Entity ids live in SceneEntityId space (the stable
-    // authored-id hash), matching the pick, tree, and validation code paths.
-    bool found = false;
-    session.ecs().each(
-        [&](flecs::entity, const matter::scene::SceneEntityId& sid,
-            const matter::ecs::LocalTransform& lt) {
-            if (found || sid.value != obj.id) return;
-            found = true;
-            aabb_min[0] = lt.translation.x - 0.5f;
-            aabb_min[1] = lt.translation.y - 0.5f;
-            aabb_min[2] = lt.translation.z - 0.5f;
-            aabb_max[0] = lt.translation.x + 0.5f;
-            aabb_max[1] = lt.translation.y + 0.5f;
-            aabb_max[2] = lt.translation.z + 0.5f;
-        });
-    return found;
+void make_obb_corners(const float mn[3], const float mx[3],
+                      const float mat[16], float out[8][3]) {
+    float local[8][3] = {
+        {mn[0],mn[1],mn[2]}, {mx[0],mn[1],mn[2]},
+        {mx[0],mx[1],mn[2]}, {mn[0],mx[1],mn[2]},
+        {mn[0],mn[1],mx[2]}, {mx[0],mn[1],mx[2]},
+        {mx[0],mx[1],mx[2]}, {mn[0],mx[1],mx[2]},
+    };
+    for (int i = 0; i < 8; ++i)
+        transform_point(mat, local[i], out[i]);
 }
 
 } // namespace
@@ -156,9 +123,12 @@ void draw_selection_outlines(const SelectionSet& selection,
         const ImU32 color = is_primary ? IM_COL32(255, 200, 0, 255)
                                        : IM_COL32(100, 180, 255, 200);
 
-        float aabb_min[3], aabb_max[3];
-        if (aabb_for_object(obj, session, aabb_min, aabb_max))
-            draw_aabb_wireframe(dl, vp, fb_width, fb_height, aabb_min, aabb_max, color);
+        SelectionBounds sb;
+        if (bounds_for_object(obj, session, sb)) {
+            float corners[8][3];
+            make_obb_corners(sb.local_min, sb.local_max, sb.world_matrix, corners);
+            draw_obb_wireframe(dl, vp, fb_width, fb_height, corners, color);
+        }
     }
 }
 

@@ -211,6 +211,7 @@ public:
     bool raycast(const float origin[3], const float dir[3], float max_t, RayHit& out);
     uint32_t instance_count() const;
     bool instance_info(uint32_t idx, InstanceInfo& out);
+    bool part_bounds(uint64_t part_hash, PartBounds& out) const;
 
     // Task 7 test seam: install a per-part fault hook on the underlying provider
     // config. The hook fires once per part processed during install_graph() and the

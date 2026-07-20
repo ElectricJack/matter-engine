@@ -1,7 +1,9 @@
 #include "viewport_pick.h"
+#include "selection_bounds.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 #include "matter/ecs.h"
 #include "matter/query.h"
@@ -49,6 +51,59 @@ bool ray_aabb(const float origin[3], const float dir[3],
     return true;
 }
 
+bool invert_affine(const float m[16], float inv[16]) {
+    float a[9] = {m[0],m[1],m[2], m[4],m[5],m[6], m[8],m[9],m[10]};
+    float det = a[0]*(a[4]*a[8]-a[5]*a[7])
+              - a[1]*(a[3]*a[8]-a[5]*a[6])
+              + a[2]*(a[3]*a[7]-a[4]*a[6]);
+    if (std::abs(det) < 1e-20f) return false;
+    float inv_det = 1.0f / det;
+    float r[9];
+    r[0] =  (a[4]*a[8]-a[5]*a[7]) * inv_det;
+    r[1] = -(a[1]*a[8]-a[2]*a[7]) * inv_det;
+    r[2] =  (a[1]*a[5]-a[2]*a[4]) * inv_det;
+    r[3] = -(a[3]*a[8]-a[5]*a[6]) * inv_det;
+    r[4] =  (a[0]*a[8]-a[2]*a[6]) * inv_det;
+    r[5] = -(a[0]*a[5]-a[2]*a[3]) * inv_det;
+    r[6] =  (a[3]*a[7]-a[4]*a[6]) * inv_det;
+    r[7] = -(a[0]*a[7]-a[1]*a[6]) * inv_det;
+    r[8] =  (a[0]*a[4]-a[1]*a[3]) * inv_det;
+    float tx = m[3], ty = m[7], tz = m[11];
+    std::memset(inv, 0, sizeof(float)*16);
+    inv[0]=r[0]; inv[1]=r[1]; inv[2]=r[2];
+    inv[4]=r[3]; inv[5]=r[4]; inv[6]=r[5];
+    inv[8]=r[6]; inv[9]=r[7]; inv[10]=r[8];
+    inv[3]  = -(r[0]*tx + r[1]*ty + r[2]*tz);
+    inv[7]  = -(r[3]*tx + r[4]*ty + r[5]*tz);
+    inv[11] = -(r[6]*tx + r[7]*ty + r[8]*tz);
+    inv[15] = 1.0f;
+    return true;
+}
+
+void xform_point(const float m[16], const float in[3], float out[3]) {
+    out[0] = m[0]*in[0] + m[1]*in[1] + m[2]*in[2]  + m[3];
+    out[1] = m[4]*in[0] + m[5]*in[1] + m[6]*in[2]  + m[7];
+    out[2] = m[8]*in[0] + m[9]*in[1] + m[10]*in[2] + m[11];
+}
+
+void xform_dir(const float m[16], const float in[3], float out[3]) {
+    out[0] = m[0]*in[0] + m[1]*in[1] + m[2]*in[2];
+    out[1] = m[4]*in[0] + m[5]*in[1] + m[6]*in[2];
+    out[2] = m[8]*in[0] + m[9]*in[1] + m[10]*in[2];
+}
+
+bool ray_obb(const float origin[3], const float dir[3],
+             const float world_mat[16],
+             const float local_min[3], const float local_max[3],
+             float& t_out) {
+    float inv[16];
+    if (!invert_affine(world_mat, inv)) return false;
+    float local_origin[3], local_dir[3];
+    xform_point(inv, origin, local_origin);
+    xform_dir(inv, dir, local_dir);
+    return ray_aabb(local_origin, local_dir, local_min, local_max, t_out);
+}
+
 }  // namespace
 
 PickResult viewport_pick(float cursor_x, float cursor_y,
@@ -88,17 +143,13 @@ PickResult viewport_pick(float cursor_x, float cursor_y,
     for (uint32_t i = 0; i < instance_count; ++i) {
         matter::InstanceInfo info;
         if (!session.instance_info(i, info)) continue;
-        const float translation[3] = {info.transform[3], info.transform[7],
-                                       info.transform[11]};
-        constexpr float kHalfExtent = 2.0f;
-        const float aabb_min[3] = {translation[0] - kHalfExtent,
-                                    translation[1] - kHalfExtent,
-                                    translation[2] - kHalfExtent};
-        const float aabb_max[3] = {translation[0] + kHalfExtent,
-                                    translation[1] + kHalfExtent,
-                                    translation[2] + kHalfExtent};
+
+        float local_min[3], local_max[3];
+        local_aabb_for_part(session, info.part_hash, 2.0f, local_min, local_max);
+
         float t = 0.0f;
-        if (ray_aabb(origin, ray_dir, aabb_min, aabb_max, t) && t < best_t) {
+        if (ray_obb(origin, ray_dir, info.transform, local_min, local_max, t) &&
+            t < best_t) {
             best_t = t;
             found = true;
             best_object.kind = SelectedObject::BakedRoot;
@@ -106,22 +157,31 @@ PickResult viewport_pick(float cursor_x, float cursor_y,
         }
     }
 
-    // Entities are identified by their stable SceneEntityId (authored-id
-    // hash), NOT the flecs entity id — the whole editor (scene tree,
-    // properties, gizmo, field commands, per-frame selection validation)
-    // resolves SelectedObject::Entity ids in SceneEntityId space.
     session.ecs().each(
-        [&](flecs::entity, const matter::scene::SceneEntityId& sid,
+        [&](flecs::entity e, const matter::scene::SceneEntityId& sid,
             const matter::ecs::LocalTransform& lt) {
-            constexpr float kHalfExtent = 0.5f;
-            const float aabb_min[3] = {lt.translation.x - kHalfExtent,
-                                        lt.translation.y - kHalfExtent,
-                                        lt.translation.z - kHalfExtent};
-            const float aabb_max[3] = {lt.translation.x + kHalfExtent,
-                                        lt.translation.y + kHalfExtent,
-                                        lt.translation.z + kHalfExtent};
+            float mat[16];
+            if (e.has<matter::ecs::WorldTransform>()) {
+                auto wt = e.get<matter::ecs::WorldTransform>();
+                std::copy(wt.matrix.m, wt.matrix.m + 16, mat);
+            } else {
+                std::fill(mat, mat + 16, 0.0f);
+                mat[0] = lt.scale.x; mat[5] = lt.scale.y; mat[10] = lt.scale.z;
+                mat[3] = lt.translation.x; mat[7] = lt.translation.y;
+                mat[11] = lt.translation.z; mat[15] = 1.0f;
+            }
+
+            uint64_t part_hash = 0;
+            if (e.has<matter::scene::PartInstance>()) {
+                auto pi = e.get<matter::scene::PartInstance>();
+                part_hash = pi.part_hash;
+            }
+            float local_min[3], local_max[3];
+            local_aabb_for_part(session, part_hash, 0.5f, local_min, local_max);
+
             float t = 0.0f;
-            if (ray_aabb(origin, ray_dir, aabb_min, aabb_max, t) && t < best_t) {
+            if (ray_obb(origin, ray_dir, mat, local_min, local_max, t) &&
+                t < best_t) {
                 best_t = t;
                 found = true;
                 best_object.kind = SelectedObject::Entity;

@@ -120,8 +120,8 @@ endif
 # Task 9 switches the Windows application to Vulkan. Keep the existing Linux
 # application/backend as an explicit compatibility path until the later engine
 # OpenGL-removal task can migrate or retire it without breaking the default target.
-LINUX_APP_SRC = main_linux.cpp ui_linux.cpp camera_controller.cpp camera_focus.cpp streaming_anchor_controller.cpp selection_set.cpp editor_model.cpp scene_tree_panel.cpp viewport_pick.cpp selection_outline.cpp toolbar_panel.cpp console_panel.cpp console_log.cpp properties_registry.cpp properties_panel.cpp specialized_editors.cpp gizmo.cpp os_open.cpp
-APP_SRC = main.cpp ui.cpp camera_controller.cpp camera_focus.cpp streaming_anchor_controller.cpp selection_set.cpp editor_model.cpp scene_tree_panel.cpp viewport_pick.cpp selection_outline.cpp toolbar_panel.cpp console_panel.cpp console_log.cpp properties_registry.cpp properties_panel.cpp specialized_editors.cpp gizmo.cpp os_open.cpp
+LINUX_APP_SRC = main_linux.cpp ui_linux.cpp camera_controller.cpp camera_focus.cpp streaming_anchor_controller.cpp selection_set.cpp editor_model.cpp scene_tree_panel.cpp selection_bounds.cpp viewport_pick.cpp selection_outline.cpp toolbar_panel.cpp console_panel.cpp console_log.cpp properties_registry.cpp properties_panel.cpp specialized_editors.cpp gizmo.cpp os_open.cpp
+APP_SRC = main.cpp ui.cpp camera_controller.cpp camera_focus.cpp streaming_anchor_controller.cpp selection_set.cpp editor_model.cpp scene_tree_panel.cpp selection_bounds.cpp viewport_pick.cpp selection_outline.cpp toolbar_panel.cpp console_panel.cpp console_log.cpp properties_registry.cpp properties_panel.cpp specialized_editors.cpp gizmo.cpp os_open.cpp
 
 # Windows direct-source compile: ME3 pipeline + MSL + QJS (mirrors old viewer).
 # These are ONLY used by the Windows target; the Linux target links libmatter_engine3.a.
@@ -439,6 +439,9 @@ build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_visibility.rahit.spv \
     build/shaders_vk/rt_lighting.rgen.spv \
     build/shaders_vk/rt_surface_test.rgen.spv: \
     $(ME3_DIR)/shaders_vk/rt_surface_common.glsl
+
+build/shaders_vk/composite.frag.spv build/shaders_vk/rt_lighting.rgen.spv: \
+    $(ME3_DIR)/shaders_vk/sky_common.glsl
 
 build/shaders_vk/gi_temporal.comp.spv build/shaders_vk/gi_atrous.comp.spv: \
     $(ME3_DIR)/shaders_vk/gi_common.glsl

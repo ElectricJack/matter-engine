@@ -1,4 +1,5 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
 
 layout(location = 0) in vec2 in_uv;
 layout(location = 0) out vec4 out_hdr;
@@ -11,8 +12,6 @@ layout(set = 0, binding = 4) uniform sampler2D raw_diffuse_texture;
 layout(set = 0, binding = 5) uniform sampler2D specular_texture;
 layout(set = 0, binding = 6) uniform usampler2D identity_texture;
 
-// Mirrors MaterialGpuRecord / rt_surface_common.glsl RtMaterialGpu; declared
-// locally because rt_surface_common.glsl claims set 0 bindings 3-5.
 struct RtMaterialGpu {
     vec4 base_roughness;
     vec4 metal_opacity_spec_coat;
@@ -41,10 +40,28 @@ layout(push_constant) uniform SceneLighting {
     vec3 sky_color;
     float emission_multiplier;
     float debug_view;
+    float camera_fwd_x;
+    float camera_fwd_y;
+    float camera_fwd_z;
+    float tan_half_fov;
+    float aspect_ratio;
     float pad0;
     float pad1;
-    float pad2;
 } lighting;
+
+#include "sky_common.glsl"
+
+vec3 compute_view_ray(vec2 uv) {
+    vec3 fwd = vec3(lighting.camera_fwd_x, lighting.camera_fwd_y,
+                    lighting.camera_fwd_z);
+    vec3 world_up = abs(fwd.y) < 0.999 ? vec3(0, 1, 0) : vec3(0, 0, 1);
+    vec3 right = normalize(cross(fwd, world_up));
+    vec3 up = cross(right, fwd);
+    vec2 ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    return normalize(fwd +
+        right * ndc.x * lighting.aspect_ratio * lighting.tan_half_fov +
+        up    * ndc.y * lighting.tan_half_fov);
+}
 
 void main() {
     vec4 albedo = texture(albedo_texture, in_uv);
@@ -54,6 +71,17 @@ void main() {
     vec3 normal = normal_length_squared > 1e-20
                     ? normal_sample * inversesqrt(normal_length_squared)
                     : vec3(0.0);
+
+    if (normal_length_squared <= 1e-20) {
+        vec3 ray = compute_view_ray(in_uv);
+        vec3 to_sun = normalize(-lighting.sun_direction);
+        vec3 sky = sky_with_sun(ray, lighting.sky_color,
+                                to_sun, lighting.sun_color,
+                                lighting.sun_intensity);
+        out_hdr = vec4(sky, 1.0);
+        return;
+    }
+
     vec4 orm = texture(orm_texture, in_uv);
     vec3 to_sun = normalize(-lighting.sun_direction);
     float direct = max(dot(normal, to_sun), 0.0);
@@ -61,7 +89,7 @@ void main() {
     float metallic = orm.y;
     float ao = orm.z;
     vec3 diffuse = albedo.rgb * (1.0 - metallic);
-    vec3 ambient = diffuse * lighting.sky_color * ao;
+    vec3 ambient = diffuse * sky_irradiance(normal, lighting.sky_color) * ao;
     vec3 visibility = texture(visibility_texture, in_uv).rgb;
     if (lighting.debug_view > 1.5) {
         out_hdr = vec4(normal * 0.5 + 0.5, 1.0);
@@ -79,9 +107,6 @@ void main() {
         float subsurface = clamp(material.scattering.w, 0.0, 1.0);
         if (subsurface > 0.0) {
             if ((material.flags_misc.x & MATERIAL_THIN_WALLED) != 0u) {
-                // Thin-walled backlight: view-independent wrapped term
-                // (composite has no camera position), sharpened by the
-                // authored anisotropy.
                 float backlit = clamp(-dot(normal, to_sun), 0.0, 1.0);
                 float aniso = clamp(material.scattering_shape.y, 0.0, 1.0);
                 backlit = pow(backlit, mix(1.0, 4.0, aniso));
@@ -90,8 +115,6 @@ void main() {
                 sun_response += material.scattering.rgb * subsurface *
                                 backlit * distance_falloff;
             } else {
-                // Wax-style wrap: soften the terminator; the wrapped-in
-                // region is tinted by the scattering color.
                 float wrapped = clamp((dot(normal, to_sun) + subsurface) /
                                       (1.0 + subsurface), 0.0, 1.0);
                 sun_response += diffuse * material.scattering.rgb *
@@ -117,20 +140,36 @@ void main() {
     vec3 specular = texture(specular_texture, in_uv).rgb;
     vec4 transmission = texture(transmission_texture, in_uv);
     float transmission_coverage = clamp(transmission.a, 0.0, 1.0);
+    vec3 glass_reflection = vec3(0.0);
     if (transmission_coverage < 0.01 && material_index < rt_materials.length()) {
         RtMaterialGpu mat = rt_materials[material_index];
         float mat_trans = clamp(mat.transmission.x, 0.0, 1.0);
         if (mat_trans > 0.0) {
             float ior = max(mat.transmission.y, 1.001);
             float r0 = pow((1.0 - ior) / (1.0 + ior), 2.0);
-            float cos_i = clamp(abs(normal.z), 0.0, 1.0);
+            vec3 view_ray = compute_view_ray(in_uv);
+            float cos_i = clamp(abs(dot(normal, view_ray)), 0.0, 1.0);
             float fresnel = r0 + (1.0 - r0) * pow(1.0 - cos_i, 5.0);
             transmission_coverage = mat_trans * (1.0 - fresnel);
-            transmission.rgb = lighting.sky_color * mat.absorption_pad.rgb * ao;
+            vec3 refract_dir = refract(-view_ray, normal, 1.0 / ior);
+            bool tir = dot(refract_dir, refract_dir) < 0.001;
+            vec3 reflect_dir = reflect(-view_ray, normal);
+            vec3 through_dir = tir ? reflect_dir : refract_dir;
+            vec3 to_sun = normalize(-lighting.sun_direction);
+            transmission.rgb = sky_with_sun(through_dir, lighting.sky_color,
+                                            to_sun, lighting.sun_color,
+                                            lighting.sun_intensity * 0.5)
+                             * mat.absorption_pad.rgb;
+            glass_reflection = sky_with_sun(reflect_dir, lighting.sky_color,
+                                            to_sun, lighting.sun_color,
+                                            lighting.sun_intensity)
+                             * fresnel * mat_trans;
         }
     }
     vec3 linear_hdr = (ambient + sun * mix(1.0, 0.65, roughness) +
                        raw_diffuse) * (1.0 - transmission_coverage) +
-                      emission + specular + transmission.rgb;
+                      emission + specular +
+                      transmission.rgb * transmission_coverage +
+                      glass_reflection;
     out_hdr = vec4(linear_hdr, 1.0);
 }

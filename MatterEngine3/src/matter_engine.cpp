@@ -4554,4 +4554,26 @@ bool WorldSession::instance_info(uint32_t idx, InstanceInfo& out) {
     return true;
 }
 
+bool WorldSession::part_bounds(uint64_t part_hash, PartBounds& out) const {
+    if (!impl_->store) return false;
+    const auto* lp = impl_->store->find(part_hash);
+    if (!lp) return false;
+    if (lp->clusters.empty()) {
+        if (lp->bound_radius <= 0.0f) return false;
+        float r = lp->bound_radius;
+        out.aabb_min[0] = out.aabb_min[1] = out.aabb_min[2] = -r;
+        out.aabb_max[0] = out.aabb_max[1] = out.aabb_max[2] =  r;
+        return true;
+    }
+    out.aabb_min[0] = out.aabb_min[1] = out.aabb_min[2] =  1e30f;
+    out.aabb_max[0] = out.aabb_max[1] = out.aabb_max[2] = -1e30f;
+    for (const auto& c : lp->clusters) {
+        for (int a = 0; a < 3; ++a) {
+            if (c.aabb_min[a] < out.aabb_min[a]) out.aabb_min[a] = c.aabb_min[a];
+            if (c.aabb_max[a] > out.aabb_max[a]) out.aabb_max[a] = c.aabb_max[a];
+        }
+    }
+    return true;
+}
+
 } // namespace matter
