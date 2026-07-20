@@ -63,6 +63,10 @@ void main() {
     vec3 diffuse = albedo.rgb * (1.0 - metallic);
     vec3 ambient = diffuse * lighting.sky_color * ao;
     vec3 visibility = texture(visibility_texture, in_uv).rgb;
+    if (lighting.debug_view > 1.5) {
+        out_hdr = vec4(normal * 0.5 + 0.5, 1.0);
+        return;
+    }
     if (lighting.debug_view > 0.5) {
         out_hdr = vec4(visibility, 1.0);
         return;

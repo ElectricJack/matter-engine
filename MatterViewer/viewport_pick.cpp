@@ -5,6 +5,7 @@
 
 #include "matter/ecs.h"
 #include "matter/query.h"
+#include "matter/scene.h"
 #include "matter/world_session.h"
 
 namespace viewer {
@@ -105,8 +106,13 @@ PickResult viewport_pick(float cursor_x, float cursor_y,
         }
     }
 
-    session.ecs().each<matter::ecs::LocalTransform>(
-        [&](flecs::entity e, const matter::ecs::LocalTransform& lt) {
+    // Entities are identified by their stable SceneEntityId (authored-id
+    // hash), NOT the flecs entity id — the whole editor (scene tree,
+    // properties, gizmo, field commands, per-frame selection validation)
+    // resolves SelectedObject::Entity ids in SceneEntityId space.
+    session.ecs().each(
+        [&](flecs::entity, const matter::scene::SceneEntityId& sid,
+            const matter::ecs::LocalTransform& lt) {
             constexpr float kHalfExtent = 0.5f;
             const float aabb_min[3] = {lt.translation.x - kHalfExtent,
                                         lt.translation.y - kHalfExtent,
@@ -119,7 +125,7 @@ PickResult viewport_pick(float cursor_x, float cursor_y,
                 best_t = t;
                 found = true;
                 best_object.kind = SelectedObject::Entity;
-                best_object.id = static_cast<uint64_t>(e.id());
+                best_object.id = sid.value;
             }
         });
 

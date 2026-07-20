@@ -4043,6 +4043,93 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
     return true;
 }
 
+// Task 7 (dynamic lane): rebuild_command_template() sizes the per-bucket
+// transform regions and the per-part indirect draw ranges from STATIC
+// instances only (part_instance_counts_ is that baseline and is never
+// modified here). When prepare_frame() merges dynamic instances into
+// instance_staging_, the culler needs room in each bucket for them, or
+// reserve_transform_slot() in shaders_vk/cull.comp finds
+// `next.first_instance - this.first_instance` exhausted and drops the
+// instance (the "dynamic entities cast RT shadows but never rasterize" bug).
+// This re-derives, from the static baseline plus the active dynamic slots:
+//   - command_template_[].first_instance (per-bucket transform offsets)
+//   - draw_transform_slots_ (total transform-buffer slots / capacities.w)
+//   - part_command_ranges_ (a part with only dynamic instances must still
+//     record its indirect draws)
+// The recompute always starts from the static baseline, so it is idempotent
+// across frames and reproduces rebuild_command_template()'s exact output when
+// no dynamic instances are active (which restores the static layout).
+bool VkSceneRenderer::apply_dynamic_command_layout(std::string& error) {
+    if (command_template_.size() !=
+            cluster_staging_.size() * static_cast<size_t>(kVkMaxLod) ||
+        part_instance_counts_.size() != parts_.size()) {
+        error = "dynamic command layout requires a valid static command template";
+        return false;
+    }
+    std::vector<uint32_t> merged_counts = part_instance_counts_;
+    for (uint32_t part_slot : dynamic_instance_part_slots_) {
+        if (part_slot == UINT32_MAX) continue;
+        if (part_slot >= merged_counts.size()) {
+            error = "dynamic instance part bucket is outside the active part table";
+            return false;
+        }
+        if (!checked_u32_add(merged_counts[part_slot], 1u,
+                             merged_counts[part_slot],
+                             "dynamic instance part bucket", error)) {
+            return false;
+        }
+    }
+    uint32_t first_instance = 0;
+    for (size_t cluster_index = 0; cluster_index < cluster_staging_.size();
+         ++cluster_index) {
+        const GpuCluster& cluster = cluster_staging_[cluster_index];
+        const auto& lods = cluster_lods_[cluster_index];
+        if (cluster.part_slot >= merged_counts.size()) {
+            error = "cluster part bucket is outside the active part table";
+            return false;
+        }
+        for (size_t lod = 0; lod < kVkMaxLod; ++lod) {
+            DrawCommand& command =
+                command_template_[cluster_index * kVkMaxLod + lod];
+            command.first_instance = first_instance;
+            if (lod < lods.size() &&
+                !checked_u32_add(first_instance,
+                                 merged_counts[cluster.part_slot],
+                                 first_instance, "draw transform slots",
+                                 error)) {
+                return false;
+            }
+        }
+    }
+    VkDeviceSize transform_bytes = 0;
+    if (!vk_scene_detail::checked_mul_to_device_size(
+            first_instance, sizeof(GpuDrawTransform), transform_bytes,
+            "draw-transform buffer", error)) {
+        return false;
+    }
+    const VkDeviceSize storage_limit =
+        std::min(limits_.max_storage_buffer_range, limits_.max_buffer_size);
+    if (storage_limit != 0 && transform_bytes > storage_limit) {
+        error = "draw-transform buffer exceeds Vulkan storage descriptor limit";
+        return false;
+    }
+    draw_transform_slots_ = first_instance;
+    std::vector<PartCommandRange> next_part_ranges;
+    next_part_ranges.reserve(parts_.size());
+    for (uint32_t slot = 0; slot < parts_.size(); ++slot) {
+        const PartRecord& part = parts_[slot];
+        if (!part.live || merged_counts[slot] == 0 || part.cluster_count == 0 ||
+            part.vertex_count == 0)
+            continue;
+        next_part_ranges.push_back(
+            {part.cluster_start * kVkMaxLod,
+             part.cluster_count * kVkMaxLod, slot});
+    }
+    part_command_ranges_ = std::move(next_part_ranges);
+    ++command_generation_;
+    return true;
+}
+
 bool VkSceneRenderer::upload_scene_buffers(
     FrameResources& frame, VkCommandBuffer material_command_buffer,
     bool reset_stats, std::string& error) {
@@ -4436,12 +4523,24 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     }
     // Merge active dynamic instances into the static staging vectors so the
     // upload, constants, and dispatch code all see one contiguous array.
-    // The dynamic tails are stripped at the start of the next update_instances().
+    // The dynamic tails are stripped at the start of the next update_instances()
+    // and defensively here, so repeated prepare_frame() calls cannot stack
+    // duplicate tails.
+    if (instance_staging_.size() > static_instance_count_)
+        instance_staging_.resize(static_instance_count_);
+    if (rt_instances_.size() > static_rt_instance_count_)
+        rt_instances_.resize(static_rt_instance_count_);
     if (dynamic_instance_count_ > 0) {
         for (size_t i = 0; i < dynamic_instance_staging_.size(); ++i) {
             if (dynamic_instance_part_slots_[i] != UINT32_MAX) {
                 const GpuInstance& inst = dynamic_instance_staging_[i];
                 instance_staging_.push_back(inst);
+                // The cull dispatch fans out counts.y threads per instance;
+                // a dynamic-only part with more clusters than any static
+                // instance must widen the fan-out or its tail clusters are
+                // never visited.
+                max_clusters_per_instance_ =
+                    std::max(max_clusters_per_instance_, inst.cluster_count);
                 const uint32_t slot = dynamic_instance_part_slots_[i];
                 RtInstance rt{};
                 if (slot < parts_.size())
@@ -4457,6 +4556,13 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
             ++instance_generation_;
             dynamic_dirty_ = false;
         }
+    }
+    // Re-derive the culler's transform regions and the per-part draw ranges
+    // for the merged instance set. Also runs once more after the last dynamic
+    // instance disappears to restore the static-only baseline.
+    if (dynamic_instance_count_ > 0 || dynamic_command_layout_applied_) {
+        if (!apply_dynamic_command_layout(error)) return false;
+        dynamic_command_layout_applied_ = dynamic_instance_count_ > 0;
     }
     if (!upload_scene_buffers(selected, frame.command_buffer, false, error) ||
         !upload_frame_constants(selected, matrices, camera_eye, pixel_budget,
@@ -5344,10 +5450,12 @@ bool VkSceneRenderer::record_cull_and_render(
                               ? 1.0f
                               : 0.0f;
     frame_lighting.debug_view =
-        ray_tracing_settings_.enabled && vulkan_->ray_tracing_available() &&
-                ray_tracing_settings_.debug_view
-            ? 1.0f
-            : 0.0f;
+        composite_debug_override_ > 0.0f
+            ? composite_debug_override_
+            : (ray_tracing_settings_.enabled && vulkan_->ray_tracing_available() &&
+                       ray_tracing_settings_.debug_view
+                   ? 1.0f
+                   : 0.0f);
     RasterRecord record{&albedo_,
                         &normal_,
                         &orm_,
@@ -5788,7 +5896,7 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
                         static_cast<uint32_t>(part_command_ranges_.size()),
                         limits_.max_draw_indirect_count,
                         nullptr,
-                        lighting_,
+                        [&]{ auto l = lighting_; l.debug_view = composite_debug_override_; return l; }(),
                         false,
                         nullptr,
                         nullptr,

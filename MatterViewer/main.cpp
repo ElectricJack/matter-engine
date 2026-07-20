@@ -1587,8 +1587,18 @@ int main() {
                     fb_width, fb_height, frame_camera, *session);
                 if (pick.hit) {
                     selection_set.replace(pick.object);
+                    // Keep the outliner's single-slot selection mirrored on
+                    // the primary pick (viewport and outliner share the same
+                    // selection).
+                    if (pick.object.kind == viewer::SelectedObject::Entity) {
+                        editor_model.select(
+                            matter::scene::SceneEntityId{pick.object.id});
+                    } else {
+                        editor_model.clear_selection();
+                    }
                 } else {
                     selection_set.clear();
+                    editor_model.clear_selection();
                 }
             }
         }
@@ -1603,7 +1613,13 @@ int main() {
                 }
                 return false;
             }
-            return session->ecs().is_alive(static_cast<flecs::entity_t>(obj.id));
+            // Entity selections are keyed by SceneEntityId (the stable
+            // authored-id hash), not by flecs entity id — resolve through the
+            // SceneEntityId component so dynamic ECS entities stay selected
+            // across frames.
+            return find_scene_entity(session->ecs(),
+                                     matter::scene::SceneEntityId{obj.id})
+                .is_valid();
         });
 
         ui.update_sector_streaming(*session, frame_camera);
@@ -1653,6 +1669,8 @@ int main() {
         options.min_projected_size = min_projected_size;
         options.dlss_mode = selected_dlss_mode;
         options.vulkan_lighting = stats.lighting;
+        options.vulkan_lighting.composite_debug_view =
+            stats.debug_view_mode == 1 ? 2.0f : 0.0f;
         options.vulkan_ray_tracing.enabled =
             vulkan->ray_tracing_available() && !disable_vulkan_rt;
         if (!session->render(frame_camera, frame, options, error)) {
