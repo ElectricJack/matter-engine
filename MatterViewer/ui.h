@@ -94,6 +94,7 @@ struct ViewerStats {
     float gpu_dlss_ms           = 0.0f;
     float gpu_composite_ms      = 0.0f;
     bool  gpu_timers_supported  = false;
+    int   debug_view_mode       = 0;
 };
 
 void reset_lighting_controls(ViewerStats& stats);

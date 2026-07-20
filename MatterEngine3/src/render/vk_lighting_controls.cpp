@@ -17,6 +17,7 @@ matter::VulkanLightingOverrides sanitize_vulkan_lighting_overrides(
     out.emission_multiplier =
         std::clamp(finite_or(value.emission_multiplier, 1.0f), 0.0f, 4.0f);
     out.exposure_ev = std::clamp(finite_or(value.exposure_ev, -2.0f), -6.0f, 6.0f);
+    out.composite_debug_view = std::clamp(finite_or(value.composite_debug_view, 0.0f), 0.0f, 10.0f);
     return out;
 }
 

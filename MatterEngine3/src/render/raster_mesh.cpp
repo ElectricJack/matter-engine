@@ -81,9 +81,11 @@ RasterMeshData build_raster_mesh_data(const Tri* tris, const TriEx* triex, int t
         const float2 uvs[3] = {triex ? triex[i].uv0 : make_float2(0.0f),
                                triex ? triex[i].uv1 : make_float2(0.0f),
                                triex ? triex[i].uv2 : make_float2(0.0f)};
-        const uint32_t material_id = triex
-                                         ? static_cast<uint32_t>(triex[i].materialId)
-                                         : UINT32_MAX;
+        const uint32_t material_id =
+            triex ? static_cast<uint32_t>(triex[i].materialId)
+                  : (default_mat_id >= 0.0f
+                         ? static_cast<uint32_t>(default_mat_id + 0.5f)
+                         : UINT32_MAX);
         unsigned char rgba[4] = { 255, 255, 255, 0 };            // neutral tint
         if (triex) {
             rgba[0] = to_u8(triex[i].tint.x); rgba[1] = to_u8(triex[i].tint.y);

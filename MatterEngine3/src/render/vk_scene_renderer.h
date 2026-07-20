@@ -426,6 +426,7 @@ public:
 #endif
     void set_lighting(const VkSceneLighting& lighting);
     void set_display_exposure(float exposure_ev);
+    void set_composite_debug_view(float mode) { composite_debug_override_ = mode; }
     void set_ray_tracing_settings(
         const matter::VulkanRayTracingSettings& settings);
     void set_gi_settings(const matter::VulkanGiSettings& settings) {
@@ -979,6 +980,7 @@ private:
     VkSceneLighting lighting_{};
     bool lighting_initialized_ = false;
     float display_exposure_ev_ = -2.0f;
+    float composite_debug_override_ = 0.0f;
     matter::VulkanRayTracingSettings ray_tracing_settings_{};
     matter::VulkanGiSettings gi_settings_{};
     uint32_t last_rt_samples_ = 1;

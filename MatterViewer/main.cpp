@@ -1677,6 +1677,8 @@ int main() {
         options.min_projected_size = min_projected_size;
         options.dlss_mode = selected_dlss_mode;
         options.vulkan_lighting = stats.lighting;
+        options.vulkan_lighting.composite_debug_view =
+            stats.debug_view_mode == 1 ? 2.0f : 0.0f;
         options.vulkan_ray_tracing.enabled =
             vulkan->ray_tracing_available() && !disable_vulkan_rt;
         if (!session->render(frame_camera, frame, options, error)) {

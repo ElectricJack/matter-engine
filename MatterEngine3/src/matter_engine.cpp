@@ -4233,6 +4233,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     lighting.emission_multiplier = controls.emission_multiplier;
     impl_->vk_scene->set_lighting(lighting);
     impl_->vk_scene->set_display_exposure(controls.exposure_ev);
+    impl_->vk_scene->set_composite_debug_view(controls.composite_debug_view);
     const auto build_end = std::chrono::steady_clock::now();
     const auto draw_start = std::chrono::steady_clock::now();
     if (!impl_->vk_scene->record_cull_and_render(

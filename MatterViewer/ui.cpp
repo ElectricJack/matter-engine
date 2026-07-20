@@ -369,6 +369,10 @@ void Ui::draw_debug_panel(ViewerStats& s) {
                        4.0f, "%.2f");
     if (ImGui::Button("Reset to World")) reset_lighting_controls(s);
 
+    ImGui::SeparatorText("Debug View");
+    const char* debug_views[] = { "None", "Normals" };
+    ImGui::Combo("View", &s.debug_view_mode, debug_views, 2);
+
     ImGui::End();
 }
 

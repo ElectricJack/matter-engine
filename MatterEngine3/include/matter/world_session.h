@@ -40,6 +40,7 @@ struct VulkanLightingOverrides {
     float sky_multiplier = 1.0f;
     float emission_multiplier = 1.0f;
     float exposure_ev = -2.0f;
+    float composite_debug_view = 0.0f;
 };
 
 struct RenderOptions {

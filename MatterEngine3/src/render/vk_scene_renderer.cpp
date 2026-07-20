@@ -5432,10 +5432,12 @@ bool VkSceneRenderer::record_cull_and_render(
                               ? 1.0f
                               : 0.0f;
     frame_lighting.debug_view =
-        ray_tracing_settings_.enabled && vulkan_->ray_tracing_available() &&
-                ray_tracing_settings_.debug_view
-            ? 1.0f
-            : 0.0f;
+        composite_debug_override_ > 0.0f
+            ? composite_debug_override_
+            : (ray_tracing_settings_.enabled && vulkan_->ray_tracing_available() &&
+                       ray_tracing_settings_.debug_view
+                   ? 1.0f
+                   : 0.0f);
     RasterRecord record{&albedo_,
                         &normal_,
                         &orm_,
@@ -5876,7 +5878,7 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
                         static_cast<uint32_t>(part_command_ranges_.size()),
                         limits_.max_draw_indirect_count,
                         nullptr,
-                        lighting_,
+                        [&]{ auto l = lighting_; l.debug_view = composite_debug_override_; return l; }(),
                         false,
                         nullptr,
                         nullptr,
