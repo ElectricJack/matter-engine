@@ -1,6 +1,20 @@
 #extension GL_EXT_buffer_reference2 : require
 #extension GL_EXT_buffer_reference_uvec2 : require
 
+// Ground tileset sampling (Task 9): RT set 0 mirrors the raster set 1
+// bindings at 15 (tex array) / 16 (TilesetParams UBO) — 0-14 are occupied by
+// this file's own bindings (3,4,5) and by rt_lighting.rgen's (0,1,6-14); see
+// the binding sweep recorded in the Task 9 plan notes. Every shader that
+// includes rt_surface_common.glsl (rt_surface.rchit, rt_visibility.rahit,
+// rt_radiance.rmiss, rt_lighting.rgen, rt_surface_test.rgen) therefore
+// declares these two bindings even if it never samples them; the renderer
+// binds them uniformly across the RT pipeline's set 0, so the unused
+// declarations are harmless.
+#define TILESET_SET 0
+#define TILESET_TEX_BINDING 15
+#define TILESET_PARAMS_BINDING 16
+#include "tileset_common.glsl"
+
 struct RtSurface {
     vec3 position;
     float hit_t;
@@ -77,6 +91,48 @@ layout(set = 0, binding = 5, std430) buffer RtErrorCounter {
     uint any_hit_layers;
     uint capped_rays;
 };
+
+// RT hit-path ground tileset override (Task 9): flat (non-POM) Wang sampling
+// at a traced hit, for GI bounces and reflection/refraction hits that land
+// on ground geometry away from the primary GBuffer pixel (the primary pixel
+// itself is already textured by gbuffer.frag/Task 7 via the albedo/normal/orm
+// G-buffer textures rt_lighting.rgen reads back).
+//
+// Gradient proxy: no ray-cone/footprint term exists in RtSurfacePayload or
+// RtSurface today (checked before adding one), so the mip/AA footprint is
+// approximated as hit_distance * a fixed cone-spread constant — a constant
+// angle stand-in for the true pixel-footprint cone (sufficient for diffuse
+// GI/reflection ground LOD, which never needs to be pixel-sharp).
+const float RT_TILESET_CONE_SPREAD = 0.01;
+
+struct RtTilesetSample {
+    bool applied;
+    vec3 albedo;     // valid only if applied
+    vec3 normal;     // shading normal; = surface.normal when !applied
+    float roughness; // valid only if applied; no live consumer yet (see Task 9 notes)
+};
+
+RtTilesetSample rt_tileset_sample(RtMaterialGpu material, RtSurface surface) {
+    RtTilesetSample result;
+    result.applied = false;
+    result.albedo = vec3(0.0);
+    result.normal = surface.normal;
+    result.roughness = 0.0;
+    int slot = tileset_detail_slot(material.flags_misc);
+    if (slot < 0) return result;
+    float footprint = max(max(surface.hit_t, 0.0) * RT_TILESET_CONE_SPREAD, 1e-4);
+    vec2 dWdx = vec2(footprint, 0.0);
+    vec2 dWdy = vec2(0.0, footprint);
+    vec3 normal_ts, orm;
+    vec3 albedo = tileset_sample_ground(slot, surface.position.xz, dWdx, dWdy,
+                                        normal_ts, orm);
+    float tint_blend = clamp(surface.tint.a, 0.0, 1.0);
+    result.applied = true;
+    result.albedo = albedo * mix(vec3(1.0), surface.tint.rgb, tint_blend);
+    result.normal = tileset_rotate_normal(normal_ts, surface.normal);
+    result.roughness = clamp(orm.g, 0.0, 1.0);
+    return result;
+}
 
 const uint RT_SURFACE_VALID = 1u;
 const uint RT_SURFACE_FRONT_FACE = 2u;

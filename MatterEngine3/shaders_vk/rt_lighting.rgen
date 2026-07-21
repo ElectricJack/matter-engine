@@ -143,8 +143,9 @@ vec3 rt_sky_irradiance(vec3 normal) {
     return sky_irradiance(normal, constants.sky_color);
 }
 
-vec3 hit_emission(RtSurface surface, out vec3 base) {
+vec3 hit_emission(RtSurface surface, out vec3 base, out vec3 shading_normal) {
     base = vec3(0.0);
+    shading_normal = surface.normal;
     if ((surface.flags & RT_SURFACE_VALID) == 0u) return vec3(0.0);
     if (surface.material_index >= rt_materials.length()) return vec3(0.0);
     RtMaterialGpu material = rt_materials[surface.material_index];
@@ -152,13 +153,23 @@ vec3 hit_emission(RtSurface surface, out vec3 base) {
     base = mix(material.base_roughness.rgb, surface.tint.rgb, tint_blend);
     vec3 emission_color = mix(material.emission_strength.rgb,
                               surface.tint.rgb, tint_blend);
+    // Ground tileset override (Task 9): replace the flat material color
+    // (and the normal used for sky-irradiance shading below) with a
+    // Wang-sampled ground texture when the hit material carries a detail
+    // slot. Emission is left untouched — ground tilesets do not emit.
+    RtTilesetSample tileset_hit = rt_tileset_sample(material, surface);
+    if (tileset_hit.applied) {
+        base = tileset_hit.albedo;
+        shading_normal = tileset_hit.normal;
+    }
     return emission_color * max(material.emission_strength.w, 0.0) *
            constants.emission_multiplier;
 }
 
 vec3 hit_radiance(RtSurface surface, out vec3 base) {
-    vec3 emission = hit_emission(surface, base);
-    return emission + rt_sky_irradiance(surface.normal) * base;
+    vec3 shading_normal;
+    vec3 emission = hit_emission(surface, base, shading_normal);
+    return emission + rt_sky_irradiance(shading_normal) * base;
 }
 
 vec3 hit_radiance_sunlit(RtSurface surface, vec3 to_sun) {
@@ -237,13 +248,15 @@ void main() {
             break;
         }
         vec3 hit_base;
+        vec3 hit_shading_normal_unused;
         bool final_vertex = vertex == 1;
         // sky_irradiance approximates everything beyond the final vertex;
         // adding it at the intermediate vertex too would double count the
         // sky, so intermediate vertices contribute emission only.
         bounce += throughput * (final_vertex
                                     ? hit_radiance(hit.surface, hit_base)
-                                    : hit_emission(hit.surface, hit_base));
+                                    : hit_emission(hit.surface, hit_base,
+                                                   hit_shading_normal_unused));
         float ndotl = max(dot(hit.surface.normal, to_sun), 0.0);
         if (ndotl > 0.0 && any(greaterThan(hit_base, vec3(0.0)))) {
             visibility_payload.visibility = vec3(1.0);
