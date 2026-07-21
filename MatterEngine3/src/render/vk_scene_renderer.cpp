@@ -954,6 +954,8 @@ void VkSceneRenderer::destroy_pipeline() {
         vkDestroyDescriptorSetLayout(device, rt_set_layout_, nullptr);
     if (composite_sampler_ != VK_NULL_HANDLE)
         vkDestroySampler(device, composite_sampler_, nullptr);
+    if (vol_linear_sampler_ != VK_NULL_HANDLE)
+        vkDestroySampler(device, vol_linear_sampler_, nullptr);
     if (display_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, display_pipeline_, nullptr);
     if (display_pipeline_layout_ != VK_NULL_HANDLE)
@@ -985,6 +987,7 @@ void VkSceneRenderer::destroy_pipeline() {
     composite_pipeline_layout_ = VK_NULL_HANDLE;
     composite_pipeline_ = VK_NULL_HANDLE;
     composite_sampler_ = VK_NULL_HANDLE;
+    vol_linear_sampler_ = VK_NULL_HANDLE;
     display_set_layout_ = VK_NULL_HANDLE;
     display_pipeline_layout_ = VK_NULL_HANDLE;
     display_pipeline_ = VK_NULL_HANDLE;
@@ -1650,6 +1653,13 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     if (result != VK_SUCCESS)
         return fail_vk("vkCreateSampler(composite)", result, error);
 
+    sampler.magFilter = VK_FILTER_LINEAR;
+    sampler.minFilter = VK_FILTER_LINEAR;
+    sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    result = vkCreateSampler(device, &sampler, nullptr, &vol_linear_sampler_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateSampler(vol_linear)", result, error);
+
     // 1x1x1 placeholder 3D texture for the volumetric integrated binding
     // (composite.frag binding 9).  Replaced by the real froxel texture once
     // VkVolumetrics is wired up; until then vol_enabled stays 0.0 so the
@@ -2136,7 +2146,8 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
     VkDescriptorImageInfo image_infos[10]{};
     VkWriteDescriptorSet writes[11]{};
     for (uint32_t i = 0; i < 10; ++i) {
-        image_infos[i].sampler = composite_sampler_;
+        image_infos[i].sampler = (i == 8) ? vol_linear_sampler_
+                                          : composite_sampler_;
         image_infos[i].imageView = sampled[i]->view;
         image_infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -5561,6 +5572,10 @@ bool VkSceneRenderer::record_cull_and_render(
     const bool vol_active = volumetrics_ && volumetrics_->active();
     frame_lighting.vol_enabled = vol_active ? 1.0f : 0.0f;
     frame_lighting.vol_debug_view = volumetrics_debug_view_;
+    frame_lighting.camera_near = matrices.view_to_clip.m[11] /
+                                 matrices.view_to_clip.m[10];
+    frame_lighting.camera_far = matrices.view_to_clip.m[11] /
+                                (matrices.view_to_clip.m[10] + 1.0f);
     RasterRecord record{&albedo_,
                         &normal_,
                         &orm_,

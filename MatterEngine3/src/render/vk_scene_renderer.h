@@ -315,8 +315,10 @@ struct VkSceneLighting {
     float jitter_offset_v = 0.0f;
     float vol_enabled = 0.0f;
     float vol_debug_view = 0.0f;
+    float camera_near = 1.0f;
+    float camera_far = 5000.0f;
 };
-static_assert(sizeof(VkSceneLighting) == 88);
+static_assert(sizeof(VkSceneLighting) == 96);
 
 struct VkSceneUploadCounters {
     uint64_t vertex_uploads = 0;
@@ -870,6 +872,7 @@ private:
     VkPipelineLayout composite_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline composite_pipeline_ = VK_NULL_HANDLE;
     VkSampler composite_sampler_ = VK_NULL_HANDLE;
+    VkSampler vol_linear_sampler_ = VK_NULL_HANDLE;  // trilinear for froxel volume
     VkDescriptorSetLayout display_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout display_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline display_pipeline_ = VK_NULL_HANDLE;

@@ -24,8 +24,8 @@ layout(push_constant) uniform ScatterConstants {
     vec3 sky_color;
     float temporal_blend;
     uint history_valid;
-    float pad0;
-    float pad1;
+    float camera_near;
+    float camera_far;
     float pad2;
 } pc;
 
@@ -59,7 +59,8 @@ void main() {
         if (is_active && extinction > 1e-6) {
             float depth = slice_to_depth(float(z) + 0.5);
             vec2 uv = (vec2(voxel.xy) + 0.5) / vec2(VOL_W, VOL_H);
-            float ndc_z = (VOL_NEAR / depth);
+            float ndc_z = pc.camera_far * (depth - pc.camera_near) /
+                          ((pc.camera_far - pc.camera_near) * depth);
             vec4 clip_pos = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0,
                                  ndc_z, 1.0);
             vec4 world_h = pc.clip_to_world * clip_pos;
@@ -102,7 +103,8 @@ void main() {
         if (pc.history_valid != 0u) {
             float depth = slice_to_depth(float(z) + 0.5);
             vec2 uv = (vec2(voxel.xy) + 0.5) / vec2(VOL_W, VOL_H);
-            float ndc_z = (VOL_NEAR / depth);
+            float ndc_z = pc.camera_far * (depth - pc.camera_near) /
+                          ((pc.camera_far - pc.camera_near) * depth);
             vec4 clip_pos = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0,
                                  ndc_z, 1.0);
             vec4 world_h = pc.clip_to_world * clip_pos;
@@ -116,23 +118,21 @@ void main() {
             // Check if the reprojected point is within the previous frustum.
             if (all(greaterThanEqual(prev_uv, vec2(0.0))) &&
                 all(lessThanEqual(prev_uv, vec2(1.0)))) {
-                // Reconstruct the slice from reprojected depth.
-                float prev_depth = VOL_NEAR / max(prev_ndc.z, 1e-6);
+                float prev_depth = pc.camera_far * pc.camera_near /
+                    max(pc.camera_far - prev_ndc.z *
+                        (pc.camera_far - pc.camera_near), 1e-6);
                 float prev_slice_n = depth_to_slice_n(prev_depth);
                 vec3 history_uvw = vec3(prev_uv, prev_slice_n);
 
                 vec4 history = texture(vol_scatter_history, history_uvw);
 
                 if (is_active) {
-                    // Blend: 85% history, 15% fresh.
                     scatter_result = mix(history, scatter_result,
                                          1.0 - pc.temporal_blend);
                 } else {
-                    // Non-is_active pixels: carry forward the history.
                     scatter_result = history;
                 }
             }
-            // else: out-of-frustum, fallback to fresh (or zero for non-active).
         }
 
         imageStore(vol_scatter_out, ivec3(voxel.xy, z), scatter_result);

@@ -20,9 +20,9 @@ layout(push_constant) uniform DensityConstants {
     float fog_density;
     float fog_floor;
     float fog_falloff;
-    float pad0;
+    float camera_near;
     vec3 fog_color;
-    float pad1;
+    float camera_far;
     vec3 fog_wind;
     float pad2;
 } pc;
@@ -33,14 +33,17 @@ void main() {
 
     // Iterate over all depth slices for this XY thread.
     for (int z = 0; z < int(VOL_D); ++z) {
-        // Reconstruct world position from froxel coordinates.
-        vec2 uv = (vec2(voxel.xy) + 0.5) / vec2(VOL_W, VOL_H);
         float depth = slice_to_depth(float(z) + 0.5);
 
-        // Linearize depth into clip space. The exponential mapping gives us
-        // view-space depth; convert UV + depth to a clip-space point, then
-        // transform to world space via clip_to_world.
-        float ndc_z = (VOL_NEAR / depth);  // reverse-Z approximation
+        // Slices closer than the camera near plane have no valid NDC mapping.
+        if (depth < pc.camera_near) {
+            imageStore(vol_media, ivec3(voxel.xy, z), vec4(0.0));
+            continue;
+        }
+
+        vec2 uv = (vec2(voxel.xy) + 0.5) / vec2(VOL_W, VOL_H);
+        float ndc_z = pc.camera_far * (depth - pc.camera_near) /
+                      ((pc.camera_far - pc.camera_near) * depth);
         vec4 clip_pos = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, ndc_z, 1.0);
         vec4 world_h = pc.clip_to_world * clip_pos;
         vec3 world_pos = world_h.xyz / world_h.w;

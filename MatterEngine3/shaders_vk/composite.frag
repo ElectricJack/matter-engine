@@ -53,6 +53,8 @@ layout(push_constant) uniform SceneLighting {
     float jitter_offset_v;
     float vol_enabled;
     float vol_debug_view;
+    float camera_near;
+    float camera_far;
 } lighting;
 
 #include "sky_common.glsl"
@@ -114,7 +116,9 @@ void main() {
     }
     if (lighting.vol_debug_view > 2.5) {
         float depth_sample = texture(depth_texture, in_uv).r;
-        float linear_depth = VOL_NEAR / max(depth_sample, 1e-6);
+        float linear_depth = lighting.camera_far * lighting.camera_near /
+            max(lighting.camera_far - depth_sample *
+                (lighting.camera_far - lighting.camera_near), 1e-6);
         float slice_n = depth_to_slice_n(linear_depth);
         vec3 uvw = vec3(in_uv, slice_n);
         if (lighting.vol_debug_view > 4.5) {
@@ -205,7 +209,9 @@ void main() {
 
     if (lighting.vol_enabled > 0.5) {
         float depth_sample = texture(depth_texture, in_uv).r;
-        float linear_depth = VOL_NEAR / max(depth_sample, 1e-6);
+        float linear_depth = lighting.camera_far * lighting.camera_near /
+            max(lighting.camera_far - depth_sample *
+                (lighting.camera_far - lighting.camera_near), 1e-6);
         float slice_n = depth_to_slice_n(linear_depth);
         vec3 uvw = vec3(in_uv, slice_n);
         vec4 integrated = texture(vol_integrated_texture, uvw);

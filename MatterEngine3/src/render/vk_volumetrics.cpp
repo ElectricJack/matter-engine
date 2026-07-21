@@ -871,12 +871,14 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     density_pc.fog_density = fog_density_ * fog_density_mul_;
     density_pc.fog_floor = fog_floor_ + fog_floor_offset_;
     density_pc.fog_falloff = fog_falloff_ * fog_falloff_mul_;
-    density_pc.pad0 = 0.0f;
+    density_pc.camera_near = matrices.view_to_clip.m[11] /
+                             matrices.view_to_clip.m[10];
     for (int i = 0; i < 3; ++i) {
         density_pc.fog_color[i] = fog_color_[i] * fog_color_mul_[i];
         density_pc.fog_wind[i] = fog_wind_[i] * fog_wind_mul_[i];
     }
-    density_pc.pad1 = 0.0f;
+    density_pc.camera_far = matrices.view_to_clip.m[11] /
+                            (matrices.view_to_clip.m[10] + 1.0f);
     density_pc.pad2 = 0.0f;
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, density_pipeline_);
@@ -961,8 +963,10 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     scatter_pc.sky_color[2] = sky_color_[2];
     scatter_pc.temporal_blend = temporal_blend_;
     scatter_pc.history_valid = has_prev_matrices_ ? 1u : 0u;
-    scatter_pc.pad0 = 0.0f;
-    scatter_pc.pad1 = 0.0f;
+    scatter_pc.camera_near = matrices.view_to_clip.m[11] /
+                             matrices.view_to_clip.m[10];
+    scatter_pc.camera_far = matrices.view_to_clip.m[11] /
+                            (matrices.view_to_clip.m[10] + 1.0f);
     scatter_pc.pad2 = 0.0f;
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, scatter_pipeline_);

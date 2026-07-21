@@ -97,9 +97,9 @@ private:
         float fog_density;
         float fog_floor;
         float fog_falloff;
-        float pad0;
+        float camera_near;
         float fog_color[3];
-        float pad1;
+        float camera_far;
         float fog_wind[3];
         float pad2;
     };
@@ -117,8 +117,8 @@ private:
         float sky_color[3];
         float temporal_blend;
         uint32_t history_valid;
-        float pad0;
-        float pad1;
+        float camera_near;
+        float camera_far;
         float pad2;
     };
     static_assert(sizeof(ScatterConstants) == 208);
