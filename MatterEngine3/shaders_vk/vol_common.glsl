@@ -29,12 +29,14 @@ float hg_phase(float cos_theta, float g) {
 }
 
 // Must match C++ GpuVolumeEmitter in vk_emitter_gather.h (64 bytes std430).
+// Note: the C++ field `length` is named `axial_len` here because GLSL
+// reserves `.length` for the built-in length() method on member access.
 struct GpuVolumeEmitter {
     float world_pos[3];
     float radius;
     float world_dir[3];
     float spread;
-    float length;
+    float axial_len;
     float density;
     float rise;
     float turbulence;

@@ -46,7 +46,7 @@ void main() {
 
     // 2x2 Bayer subsampling: each frame traces 1 of 4 froxel columns.
     int bayer = bayer2x2(voxel.xy);
-    bool active = (bayer == int(pc.frame_index & 3u));
+    bool is_active = (bayer == int(pc.frame_index & 3u));
 
     for (int z = 0; z < int(VOL_D); ++z) {
         vec3 uvw = (vec3(voxel.xy, z) + 0.5) / vec3(VOL_W, VOL_H, VOL_D);
@@ -56,7 +56,7 @@ void main() {
 
         vec4 scatter_result = vec4(0.0);
 
-        if (active && extinction > 1e-6) {
+        if (is_active && extinction > 1e-6) {
             float depth = slice_to_depth(float(z) + 0.5);
             vec2 uv = (vec2(voxel.xy) + 0.5) / vec2(VOL_W, VOL_H);
             float ndc_z = (VOL_NEAR / depth);
@@ -85,7 +85,7 @@ void main() {
             }
 
             // Henyey-Greenstein phase for sun contribution.
-            float cos_theta = dot(view_dir, -to_sun);
+            float cos_theta = dot(view_dir, to_sun);
             float phase = hg_phase(cos_theta, pc.phase_g);
 
             // Sun in-scattering.
@@ -123,12 +123,12 @@ void main() {
 
                 vec4 history = texture(vol_scatter_history, history_uvw);
 
-                if (active) {
+                if (is_active) {
                     // Blend: 85% history, 15% fresh.
                     scatter_result = mix(history, scatter_result,
                                          1.0 - pc.temporal_blend);
                 } else {
-                    // Non-active pixels: carry forward the history.
+                    // Non-is_active pixels: carry forward the history.
                     scatter_result = history;
                 }
             }

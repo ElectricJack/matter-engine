@@ -71,7 +71,7 @@ void main() {
                                       emitters[i].color[2]);
             float radius = emitters[i].radius;
             float spread = emitters[i].spread;
-            float length_ = emitters[i].length;
+            float length_ = emitters[i].axial_len;
             float e_density = emitters[i].density;
             float rise = emitters[i].rise;
             float turbulence = emitters[i].turbulence;
