@@ -14,8 +14,10 @@
 // SettlePlan's colliders via metric_info_of() so the size/weight rules live
 // here, not at every call site. Hashes absent from the map fall back to a
 // 0.5 m characteristic size with full orientation weight. The map is keyed
-// per child hash (not per scale): the char size is the fit's size as-is; if
-// per-scale precision matters, callers can pre-bake scale into the value.
+// per child hash (not per scale): the char size is the UNSCALED fit's size;
+// compare_settled multiplies it by each baseline instance's own scale at
+// comparison time (physics simulated the scaled collider), so one map entry
+// serves every instance of that child regardless of scale.
 
 #include "tileset_bake.h"      // SettledTorus, SettledInstance
 #include "tileset_collider.h"  // ColliderFit, ColliderType
@@ -71,8 +73,9 @@ PoseMetricInfo metric_info_of(const ColliderFit& fit);
 // Position deltas take the shortest path modulo the torus extent
 // (kTorusN * baseline.cfg.size) in x/z, matching sync_groups_step's
 // half-torus logic; extent <= 0 disables wrapping. Each delta is divided by
-// the pair's characteristic size (looked up by the BASELINE instance's
-// child_hash; 0.5 m fallback).
+// the pair's effective characteristic size: char_size (looked up by the
+// BASELINE instance's child_hash; 0.5 m fallback) times the baseline
+// instance's scale (scale <= 0 falls back to 1).
 //
 // Orientation delta is the quaternion angle 2*acos(|dot|) in degrees,
 // multiplied by orient_weight; pairs with weight 0 contribute no

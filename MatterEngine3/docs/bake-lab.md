@@ -196,7 +196,7 @@ Collector* current();
 
 | Site | Today | Becomes |
 |---|---|---|
-| `execute_bake` stages (`matter_engine.cpp:823-1163`) | `[bake-timing]` stderr | `kSpanInstall/Compose/Publish` spans; tileset split out of compose via a `kSpanTileset` span inside `compose_world` (fixes the `:1090` lump) |
+| `execute_bake` stages (`matter_engine.cpp:823-1163`) | `[bake-timing]` stderr | `kSpanInstall/Compose/Publish` spans; tileset split out of compose via a `kSpanTileset` span inside `LocalProvider::run_tileset_deferred` (fixes the `:1090` lump; nests under publish on the bake path and also covers the eager `connect()` path) |
 | `bake_source` `prof_lap` (`script_host.cpp:969-1422`) | env-gated stderr | `kSpanPartBake` parent + fold/ctx/eval/merge/build/mesh/save child spans (one per prof_lap boundary); stderr line re-rendered from spans when `MATTER_BAKE_PROFILE=1` |
 | `lod_bake::bake_lods` (`lod_bake.cpp:99`) | untimed | `kSpanLod` + per-rung `kSpanLodRung` with `tris_in/tris_out/keep_ratio` counters |
 | `part_flatten` (`part_flatten.cpp:1216`) | `FlattenResult` returned | `kSpanFlatten` + counters `levels/clusters/full_tris/coarsest_tris/instance_refs` |
@@ -258,7 +258,7 @@ public:
 ### II.6 Tests
 
 - **`bake_trace` unit tests** (new, headless): nesting, counters, snapshot-under-writer, thread-local current, no-op when unset, overhead micro-benchmark (<0.1% target on a synthetic 10k-span run).
-- **Trace-shape test:** bake a fixture part via `PartGraph::install` with a collector set; assert the expected span tree (`kSpanPartBake` → fold/eval/build/mesh/save) and that counters are present. Guards against silent instrumentation rot.
+- **Trace-shape test:** bake a fixture part via `PartGraph::install` with a collector set; assert the expected span tree (`kSpanPartBake` → fold/ctx/eval/merge/build/mesh/save) and that counters are present. Guards against silent instrumentation rot.
 - **`MATTER_BAKE_PROFILE` parity:** env-gated stderr line still emitted and derived from spans (string-compare against the span values).
 - **Job sandbox isolation:** run a Cold part job; assert production `parts/` untouched and sandbox removed after completion.
 - Existing suites stay green (instrumentation is observation-only): `run-script`, `run-graph`, `run-tilesetbake`, `run-world-definition`.
@@ -272,7 +272,7 @@ public:
 ### II.8 Validation checklist
 
 1. `run-baketrace` green; overhead micro-benchmark within target.
-2. Bake the demo world: Timeline shows install → compose (with tileset now separated) → per-part → publish; `MATTER_BAKE_PROFILE=1` output unchanged in content.
+2. Bake the demo world: Timeline shows install → compose → per-part → publish, with tileset as its own span under publish; `MATTER_BAKE_PROFILE=1` output unchanged in content.
 3. Part Lab: bake `Rock` with default params → phase breakdown matches the old `rock_bake_profile` numbers (±noise); edit `size`, re-bake, both variants in the table with sensible deltas; LOD gallery steps through rungs.
 4. Bake the same job twice → identical resolved hash and near-identical trace (determinism).
 5. Export a variant set, restart the viewer, import — rows restore.

@@ -121,7 +121,11 @@ PoseDeltaReport compare_settled(const SettledTorus& baseline,
         float dz = wrap_delta(b.pose.pz - a.pose.pz, extent);
         float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
         float cs = info.char_size > 0.0f ? info.char_size : kFallbackCharSize;
-        float nd = dist / cs;
+        // The map is keyed per child_hash, but physics simulated the SCALED
+        // collider, so the effective characteristic size is char_size * scale
+        // (baseline instance's scale; non-positive scale falls back to 1).
+        const float sc = a.scale > 0.0f ? a.scale : 1.0f;
+        float nd = dist / (cs * sc);
         pos_deltas.push_back(nd);
         if (nd > 1.0f) ++rep.teleports;
         if (nd > rep.max) rep.max = nd;

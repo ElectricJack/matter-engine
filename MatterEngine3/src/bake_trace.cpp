@@ -38,11 +38,13 @@ void Collector::count(const char* name, double v) {
     target.counters.push_back(Counter{name, v});
 }
 
-void Collector::end() {
+double Collector::end() {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (open_.empty()) return;  // unbalanced end(): safe no-op
-    open_.back()->end_ms = now_ms();
+    if (open_.empty()) return 0.0;  // unbalanced end(): safe no-op
+    Span* s = open_.back();
+    s->end_ms = now_ms();
     open_.pop_back();
+    return s->end_ms - s->begin_ms;
 }
 
 Span Collector::snapshot() const {
