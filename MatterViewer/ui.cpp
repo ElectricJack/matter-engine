@@ -7,6 +7,7 @@
 #include <system_error>
 
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "ImGuizmo.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
@@ -103,8 +104,7 @@ bool Ui::setup(GLFWwindow* window, matter::VulkanDevice& vulkan,
     ImGui::StyleColorsDark();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    // imgui.ini persistence is on by default — panel positions save/restore
-    // automatically across runs.
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     if (!ImGui_ImplGlfw_InitForVulkan(window, true)) {
         error = "ImGui GLFW Vulkan initialization failed";
         shutdown();
@@ -136,12 +136,12 @@ bool Ui::initialize_vulkan_backend(VkFormat color_format,
     init.DescriptorPool = reinterpret_cast<VkDescriptorPool>(descriptor_pool_);
     init.MinImageCount = image_count;
     init.ImageCount = image_count;
-    init.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+    init.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
     init.UseDynamicRendering = true;
-    init.PipelineRenderingCreateInfo = {
+    init.PipelineInfoMain.PipelineRenderingCreateInfo = {
         VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR};
-    init.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
-    init.PipelineRenderingCreateInfo.pColorAttachmentFormats = &color_format;
+    init.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
+    init.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &color_format;
     if (!ImGui_ImplVulkan_Init(&init)) {
         error = "ImGui Vulkan initialization failed";
         return false;
@@ -154,6 +154,11 @@ bool Ui::initialize_vulkan_backend(VkFormat color_format,
 
 void Ui::shutdown() {
     if (!vulkan_) return;
+    destroy_viewport_target();
+    if (rt_sampler_) {
+        vkDestroySampler(vulkan_->device(), rt_sampler_, nullptr);
+        rt_sampler_ = VK_NULL_HANDLE;
+    }
     vulkan_->wait_idle();
     if (vulkan_backend_initialized_) {
         ImGui_ImplVulkan_Shutdown();
@@ -206,6 +211,12 @@ bool Ui::begin_frame(const matter::VulkanFrame& frame, std::string& error) {
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
     ImGuizmo::BeginFrame();
+    if (!hide_ui_) {
+        build_dockspace();
+    } else {
+        const ImVec2 d = ImGui::GetIO().DisplaySize;
+        viewport_rect_ = ViewportRect{0, 0, d.x, d.y};
+    }
     return true;
 }
 
@@ -216,7 +227,9 @@ bool Ui::end_frame(const matter::VulkanFrame& frame, std::string& error) {
         VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     attachment.imageView = frame.swapchain_image_view;
     attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    attachment.loadOp = has_viewport_target()
+                            ? VK_ATTACHMENT_LOAD_OP_CLEAR
+                            : VK_ATTACHMENT_LOAD_OP_LOAD;
     attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
     rendering.renderArea.extent = frame.extent;
@@ -236,6 +249,257 @@ constexpr float kPropertiesWidthFrac = 0.26f;
 constexpr float kConsoleHeightFrac = 0.20f;
 } // namespace
 
+void Ui::build_dockspace() {
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+
+    ImGui::SetNextWindowPos(ImVec2(0, kToolbarHeight));
+    ImGui::SetNextWindowSize(ImVec2(display.x, display.y - kToolbarHeight));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::Begin("##DockHost", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                     ImGuiWindowFlags_NoBringToFrontOnFocus |
+                     ImGuiWindowFlags_NoNavFocus |
+                     ImGuiWindowFlags_NoDocking);
+    ImGui::PopStyleVar();
+
+    const ImGuiID dockspace_id = ImGui::GetID("MainDockSpace");
+
+    if (ImGui::DockBuilderGetNode(dockspace_id) == nullptr) {
+        ImGui::DockBuilderRemoveNode(dockspace_id);
+        ImGui::DockBuilderAddNode(dockspace_id,
+                                  ImGuiDockNodeFlags_DockSpace);
+        ImGui::DockBuilderSetNodeSize(dockspace_id,
+                                      ImVec2(display.x,
+                                             display.y - kToolbarHeight));
+
+        ImGuiID center = dockspace_id;
+        const ImGuiID left = ImGui::DockBuilderSplitNode(
+            center, ImGuiDir_Left, kSceneWidthFrac, nullptr, &center);
+        const ImGuiID right = ImGui::DockBuilderSplitNode(
+            center, ImGuiDir_Right,
+            kPropertiesWidthFrac / (1.0f - kSceneWidthFrac), nullptr,
+            &center);
+        const ImGuiID bottom = ImGui::DockBuilderSplitNode(
+            center, ImGuiDir_Down, kConsoleHeightFrac, nullptr, &center);
+
+        ImGui::DockBuilderDockWindow("Scene", left);
+        ImGui::DockBuilderDockWindow("Properties", right);
+        ImGui::DockBuilderDockWindow("Console", bottom);
+        ImGui::DockBuilderDockWindow("Viewport", center);
+        ImGui::DockBuilderDockWindow("Viewer Debug", right);
+        ImGui::DockBuilderDockWindow("Camera", right);
+
+        ImGui::DockBuilderFinish(dockspace_id);
+    }
+
+    ImGui::DockSpace(dockspace_id, ImVec2(0, 0),
+                     ImGuiDockNodeFlags_PassthruCentralNode);
+    ImGui::End();
+
+    (void)ImGui::DockBuilderGetCentralNode(dockspace_id);
+}
+
+void Ui::prepare_viewport_rect() {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::Begin("Viewport", nullptr,
+                 ImGuiWindowFlags_NoScrollbar |
+                     ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleVar();
+    viewport_hovered_ = ImGui::IsWindowHovered();
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    const float sx = std::floor(pos.x);
+    const float sy = std::floor(pos.y);
+    const float sw = std::floor(avail.x > 0 ? avail.x : 0);
+    const float sh = std::floor(avail.y > 0 ? avail.y : 0);
+    viewport_rect_ = ViewportRect{sx, sy, sw, sh};
+    ImGuizmo::SetAlternativeWindow(ImGui::GetCurrentWindow());
+    ImGui::End();
+}
+
+void Ui::draw_viewport_window() {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::Begin("Viewport", nullptr,
+                 ImGuiWindowFlags_NoScrollbar |
+                     ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleVar();
+    if (rt_descriptor_ && viewport_rect_.w > 0 && viewport_rect_.h > 0) {
+        ImGui::SetCursorScreenPos(
+            ImVec2(viewport_rect_.x, viewport_rect_.y));
+        ImGui::Image(rt_descriptor_,
+                     ImVec2(viewport_rect_.w, viewport_rect_.h));
+    }
+    ImGui::End();
+}
+
+bool Ui::ensure_viewport_target(uint32_t width, uint32_t height,
+                                VkFormat format, std::string& error) {
+    if (rt_image_ && rt_width_ == width && rt_height_ == height) {
+        pending_rt_frames_ = 0;
+        return true;
+    }
+    if (rt_image_) {
+        if (width != pending_rt_w_ || height != pending_rt_h_) {
+            pending_rt_w_ = width;
+            pending_rt_h_ = height;
+            pending_rt_frames_ = 1;
+            return true;
+        }
+        if (++pending_rt_frames_ < 4) return true;
+    }
+    destroy_viewport_target();
+    if (width == 0 || height == 0) return true;
+    const VkDevice device = vulkan_->device();
+
+    VkImageCreateInfo img{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    img.imageType = VK_IMAGE_TYPE_2D;
+    img.format = format;
+    img.extent = {width, height, 1};
+    img.mipLevels = 1;
+    img.arrayLayers = 1;
+    img.samples = VK_SAMPLE_COUNT_1_BIT;
+    img.tiling = VK_IMAGE_TILING_OPTIMAL;
+    img.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    img.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (vkCreateImage(device, &img, nullptr, &rt_image_) != VK_SUCCESS) {
+        error = "failed to create viewport render target image";
+        return false;
+    }
+
+    VkMemoryRequirements mem_req;
+    vkGetImageMemoryRequirements(device, rt_image_, &mem_req);
+    VkPhysicalDeviceMemoryProperties mem_props;
+    vkGetPhysicalDeviceMemoryProperties(vulkan_->physical_device(), &mem_props);
+    uint32_t mem_type = UINT32_MAX;
+    for (uint32_t i = 0; i < mem_props.memoryTypeCount; ++i) {
+        if ((mem_req.memoryTypeBits & (1u << i)) &&
+            (mem_props.memoryTypes[i].propertyFlags &
+             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+            mem_type = i;
+            break;
+        }
+    }
+    if (mem_type == UINT32_MAX) {
+        error = "no suitable memory type for viewport render target";
+        destroy_viewport_target();
+        return false;
+    }
+
+    VkMemoryAllocateInfo alloc{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    alloc.allocationSize = mem_req.size;
+    alloc.memoryTypeIndex = mem_type;
+    if (vkAllocateMemory(device, &alloc, nullptr, &rt_memory_) != VK_SUCCESS) {
+        error = "failed to allocate viewport render target memory";
+        destroy_viewport_target();
+        return false;
+    }
+    vkBindImageMemory(device, rt_image_, rt_memory_, 0);
+
+    VkImageViewCreateInfo view_info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    view_info.image = rt_image_;
+    view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view_info.format = format;
+    view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (vkCreateImageView(device, &view_info, nullptr, &rt_view_) != VK_SUCCESS) {
+        error = "failed to create viewport render target image view";
+        destroy_viewport_target();
+        return false;
+    }
+
+    if (!rt_sampler_) {
+        VkSamplerCreateInfo samp{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        samp.magFilter = VK_FILTER_LINEAR;
+        samp.minFilter = VK_FILTER_LINEAR;
+        samp.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samp.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samp.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        if (vkCreateSampler(device, &samp, nullptr, &rt_sampler_) !=
+            VK_SUCCESS) {
+            error = "failed to create viewport sampler";
+            destroy_viewport_target();
+            return false;
+        }
+    }
+
+    rt_descriptor_ = ImGui_ImplVulkan_AddTexture(
+        rt_sampler_, rt_view_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if (!rt_descriptor_) {
+        error = "failed to register viewport texture with ImGui";
+        destroy_viewport_target();
+        return false;
+    }
+
+    rt_width_ = width;
+    rt_height_ = height;
+    return true;
+}
+
+void Ui::destroy_viewport_target() {
+    if (!vulkan_) return;
+    const VkDevice device = vulkan_->device();
+    vulkan_->wait_idle();
+    if (rt_descriptor_) {
+        ImGui_ImplVulkan_RemoveTexture(rt_descriptor_);
+        rt_descriptor_ = VK_NULL_HANDLE;
+    }
+    if (rt_view_) { vkDestroyImageView(device, rt_view_, nullptr); rt_view_ = VK_NULL_HANDLE; }
+    if (rt_image_) { vkDestroyImage(device, rt_image_, nullptr); rt_image_ = VK_NULL_HANDLE; }
+    if (rt_memory_) { vkFreeMemory(device, rt_memory_, nullptr); rt_memory_ = VK_NULL_HANDLE; }
+    rt_width_ = rt_height_ = 0;
+}
+
+matter::VulkanFrame Ui::viewport_render_frame(const matter::VulkanFrame& frame,
+                                               std::string& error) {
+    const uint32_t w = static_cast<uint32_t>(viewport_rect_.w);
+    const uint32_t h = static_cast<uint32_t>(viewport_rect_.h);
+    if (w == 0 || h == 0 || hide_ui_) return frame;
+    if (!ensure_viewport_target(w, h, frame.swapchain_format, error))
+        return frame;
+
+    VkImageMemoryBarrier2 to_color{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    to_color.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    to_color.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    to_color.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    to_color.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
+                             VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    to_color.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    to_color.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    to_color.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_color.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_color.image = rt_image_;
+    to_color.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep.imageMemoryBarrierCount = 1;
+    dep.pImageMemoryBarriers = &to_color;
+    vkCmdPipelineBarrier2(frame.command_buffer, &dep);
+
+    matter::VulkanFrame vp_frame = frame;
+    vp_frame.swapchain_image = rt_image_;
+    vp_frame.swapchain_image_view = rt_view_;
+    vp_frame.extent = {rt_width_, rt_height_};
+    return vp_frame;
+}
+
+void Ui::transition_viewport_for_sampling(VkCommandBuffer cmd) {
+    if (rt_image_ == VK_NULL_HANDLE) return;
+    VkImageMemoryBarrier2 to_read{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    to_read.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    to_read.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    to_read.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    to_read.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    to_read.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    to_read.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    to_read.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_read.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_read.image = rt_image_;
+    to_read.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep.imageMemoryBarrierCount = 1;
+    dep.pImageMemoryBarriers = &to_read;
+    vkCmdPipelineBarrier2(cmd, &dep);
+}
+
 ToolbarActions Ui::draw_toolbar(matter::scene::SimulationMode mode) {
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
@@ -245,7 +509,8 @@ ToolbarActions Ui::draw_toolbar(matter::scene::SimulationMode mode) {
                      ImGuiWindowFlags_NoScrollbar);
     const ToolbarActions actions = draw_toolbar_contents(toolbar_state_, mode);
     ImGui::End();
-    draw_viewport_border_tint(mode);
+    draw_viewport_border_tint(mode, viewport_rect_.x, viewport_rect_.y,
+                              viewport_rect_.w, viewport_rect_.h);
     return actions;
 }
 
@@ -254,11 +519,6 @@ void Ui::draw_scene_panel(EditorModel& editor, matter::WorldSession* session,
                           matter::CameraDesc* camera, SelectionSet* selection,
                           const FieldCommands* fields, ConsoleLog* console_log,
                           const std::unordered_set<uint64_t>* authored_entity_ids) {
-    const ImVec2 display = ImGui::GetIO().DisplaySize;
-    const float scene_w = display.x * kSceneWidthFrac;
-    ImGui::SetNextWindowPos(ImVec2(0, kToolbarHeight), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(scene_w, display.y - kToolbarHeight),
-                             ImGuiCond_FirstUseEver);
     ImGui::Begin("Scene");
     draw_scene_tree(scene_tree_state_, editor, session, commands, mode, camera,
                     selection, fields, console_log, authored_entity_ids);
@@ -273,12 +533,6 @@ void Ui::draw_properties_panel(const SelectionSet& selection, EditorModel& edito
                                const part_graph_snapshot::Snapshot* snapshot,
                                SpecializedEditors& specialized,
                                const matter::Float3& camera_position) {
-    const ImVec2 display = ImGui::GetIO().DisplaySize;
-    const float props_w = display.x * kPropertiesWidthFrac;
-    ImGui::SetNextWindowPos(ImVec2(display.x - props_w, kToolbarHeight),
-                            ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(props_w, display.y - kToolbarHeight),
-                             ImGuiCond_FirstUseEver);
     ImGui::Begin("Properties");
     draw_properties_contents(properties_state_, selection, editor, registry,
                              fields, components, mode, snapshot,
@@ -287,13 +541,6 @@ void Ui::draw_properties_panel(const SelectionSet& selection, EditorModel& edito
 }
 
 void Ui::draw_console_panel(ConsoleLog& log) {
-    const ImVec2 display = ImGui::GetIO().DisplaySize;
-    const float scene_w = display.x * kSceneWidthFrac;
-    const float props_w = display.x * kPropertiesWidthFrac;
-    const float console_h = display.y * kConsoleHeightFrac;
-    ImGui::SetNextWindowPos(ImVec2(scene_w, display.y - console_h), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(display.x - scene_w - props_w, console_h),
-                             ImGuiCond_FirstUseEver);
     ImGui::Begin("Console");
     draw_console_contents(console_state_, log);
     ImGui::End();
@@ -306,11 +553,6 @@ void Ui::reset_scene_tree_cache() {
 }
 
 void Ui::draw_debug_panel(ViewerStats& s) {
-    const ImVec2 display = ImGui::GetIO().DisplaySize;
-    const float props_w = display.x * kPropertiesWidthFrac;
-    ImGui::SetNextWindowPos(ImVec2(display.x - props_w, kToolbarHeight),
-                            ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(props_w, 0), ImGuiCond_FirstUseEver);
     ImGui::Begin("Viewer Debug");
 
     ImGui::Text("FPS: %.1f  (%.2f ms)", s.fps, s.frame_ms);
@@ -388,11 +630,6 @@ void Ui::draw_debug_panel(ViewerStats& s) {
 }
 
 void Ui::draw_camera_panel(matter::CameraDesc& cam) {
-    const ImVec2 display = ImGui::GetIO().DisplaySize;
-    const float props_w = display.x * kPropertiesWidthFrac;
-    ImGui::SetNextWindowPos(ImVec2(display.x - props_w, kToolbarHeight + 400.0f),
-                            ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(props_w, 0), ImGuiCond_FirstUseEver);
     ImGui::Begin("Camera");
 
     ImGui::DragFloat3("Position", &cam.position.x, 0.1f);
@@ -501,8 +738,10 @@ bool Ui::camera_input_allowed() const {
     if (ImGui::GetCurrentContext() == nullptr) return true;
     const ImGuiIO& io = ImGui::GetIO();
     const bool gizmo_over = gizmo_submitted_ && ImGuizmo::IsOver();
+    const bool mouse_captured = io.WantCaptureMouse && !viewport_hovered_;
+    const bool kb_captured = io.WantCaptureKeyboard && !viewport_hovered_;
     return matter_viewer::camera_input_allowed(
-        io.WantCaptureMouse, io.WantCaptureKeyboard,
+        mouse_captured, kb_captured,
         gizmo_over, ImGuizmo::IsUsing());
 }
 

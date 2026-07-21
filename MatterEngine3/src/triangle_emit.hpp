@@ -113,6 +113,10 @@ private:
     void emitTriangle(float3 p0, float3 p1, float3 p2, int material_id,
                       const mat4& transform,
                       float4 tint = make_float4(1,1,1,0));
+    void emitTriangleSmooth(float3 p0, float3 p1, float3 p2,
+                            float3 n0, float3 n1, float3 n2,
+                            int material_id, const mat4& transform,
+                            float4 tint = make_float4(1,1,1,0));
 
     std::vector<Tri>   tris_;
     std::vector<TriEx> triex_;

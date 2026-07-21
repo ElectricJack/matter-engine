@@ -49,14 +49,16 @@ Mat4 multiply(const Mat4& a, const Mat4& b) {
     return out;
 }
 
-bool project(const Mat4& vp, int fb_w, int fb_h, const float p[3], ImVec2& screen) {
+bool project(const Mat4& vp, int fb_w, int fb_h,
+             float off_x, float off_y,
+             const float p[3], ImVec2& screen) {
     float x = vp.m[0]*p[0] + vp.m[4]*p[1] + vp.m[8]*p[2] + vp.m[12];
     float y = vp.m[1]*p[0] + vp.m[5]*p[1] + vp.m[9]*p[2] + vp.m[13];
     float w = vp.m[3]*p[0] + vp.m[7]*p[1] + vp.m[11]*p[2] + vp.m[15];
     if (w <= 0.001f) return false;
     x /= w; y /= w;
-    screen.x = (x * 0.5f + 0.5f) * fb_w;
-    screen.y = (1.0f - (y * 0.5f + 0.5f)) * fb_h;
+    screen.x = (x * 0.5f + 0.5f) * fb_w + off_x;
+    screen.y = (1.0f - (y * 0.5f + 0.5f)) * fb_h + off_y;
     return true;
 }
 
@@ -67,11 +69,12 @@ void transform_point(const float mat[16], const float in[3], float out[3]) {
 }
 
 void draw_obb_wireframe(ImDrawList* dl, const Mat4& vp, int fb_w, int fb_h,
+                        float off_x, float off_y,
                         const float world_corners[8][3], ImU32 color) {
     ImVec2 screen[8];
     bool visible[8];
     for (int i = 0; i < 8; ++i)
-        visible[i] = project(vp, fb_w, fb_h, world_corners[i], screen[i]);
+        visible[i] = project(vp, fb_w, fb_h, off_x, off_y, world_corners[i], screen[i]);
     static constexpr int edges[12][2] = {
         {0,1},{1,2},{2,3},{3,0},{4,5},{5,6},{6,7},{7,4},{0,4},{1,5},{2,6},{3,7}
     };
@@ -98,7 +101,8 @@ void make_obb_corners(const float mn[3], const float mx[3],
 void draw_selection_outlines(const SelectionSet& selection,
                              const matter::CameraDesc& camera,
                              int fb_width, int fb_height,
-                             matter::WorldSession& session) {
+                             matter::WorldSession& session,
+                             float offset_x, float offset_y) {
     if (selection.empty() || fb_width <= 0 || fb_height <= 0) return;
 
     float eye[3] = {camera.position.x, camera.position.y, camera.position.z};
@@ -127,7 +131,7 @@ void draw_selection_outlines(const SelectionSet& selection,
         if (bounds_for_object(obj, session, sb)) {
             float corners[8][3];
             make_obb_corners(sb.local_min, sb.local_max, sb.world_matrix, corners);
-            draw_obb_wireframe(dl, vp, fb_width, fb_height, corners, color);
+            draw_obb_wireframe(dl, vp, fb_width, fb_height, offset_x, offset_y, corners, color);
         }
     }
 }

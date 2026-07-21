@@ -18,6 +18,8 @@
 
 namespace viewer {
 
+struct ViewportRect { float x = 0, y = 0, w = 0, h = 0; };
+
 // One available world for the runtime picker. Populated by scan_worlds at
 // startup; consumed by draw_worlds_panel and the main-loop switch handler.
 struct WorldEntry {
@@ -90,10 +92,10 @@ public:
     // Standalone panel listing available worlds as buttons. Clicking a non-current
     // world sets stats.world_switch_requested; main handles the swap next frame.
     void draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& stats);
-    // Manual docking-layout scaffolding (no ImGui docking branch vendored yet):
-    // fixed-position panels anchored to the display edges via
-    // ImGuiCond_FirstUseEver, so imgui.ini persistence still lets users move them.
     ToolbarActions draw_toolbar(matter::scene::SimulationMode mode);
+    void draw_viewport_window();
+    const ViewportRect& viewport_rect() const { return viewport_rect_; }
+    void set_hide_ui(bool hide) { hide_ui_ = hide; }
     // Task 13: see ui.h (Vulkan viewer) for the fuller doc comment; behavior
     // mirrors that build. All pointer params are nullable.
     void draw_scene_panel(EditorModel& editor, matter::WorldSession* session,
@@ -126,7 +128,11 @@ public:
     bool camera_input_allowed() const;
 
 private:
+    void build_dockspace();
     bool gizmo_submitted_ = false;
+    bool viewport_hovered_ = false;
+    bool hide_ui_ = false;
+    ViewportRect viewport_rect_{};
     GizmoState gizmo_state_;
     SceneTreeState scene_tree_state_;
     ToolbarState toolbar_state_;

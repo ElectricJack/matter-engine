@@ -311,10 +311,12 @@ struct VkSceneLighting {
     float camera_fwd_z = -1.0f;
     float tan_half_fov = 1.0f;
     float aspect_ratio = 1.0f;
+    float jitter_offset_u = 0.0f;
+    float jitter_offset_v = 0.0f;
     float vol_enabled = 0.0f;
     float vol_debug_view = 0.0f;
 };
-static_assert(sizeof(VkSceneLighting) == 80);
+static_assert(sizeof(VkSceneLighting) == 88);
 
 struct VkSceneUploadCounters {
     uint64_t vertex_uploads = 0;

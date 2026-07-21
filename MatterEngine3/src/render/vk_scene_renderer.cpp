@@ -5547,6 +5547,20 @@ bool VkSceneRenderer::record_cull_and_render(
     frame_lighting.aspect_ratio =
         matrices.view_to_clip.m[0] != 0.0f
             ? matrices.view_to_clip.m[5] / matrices.view_to_clip.m[0] : 1.0f;
+    const VkExtent2D ie = temporal_frame_.internal_extent.width != 0
+                              ? temporal_frame_.internal_extent
+                              : frame.extent;
+    frame_lighting.jitter_offset_u =
+        ie.width  != 0 ? temporal_frame_.jitter_pixels[0] /
+                             static_cast<float>(ie.width)
+                       : 0.0f;
+    frame_lighting.jitter_offset_v =
+        ie.height != 0 ? temporal_frame_.jitter_pixels[1] /
+                             static_cast<float>(ie.height)
+                       : 0.0f;
+    const bool vol_active = volumetrics_ && volumetrics_->active();
+    frame_lighting.vol_enabled = vol_active ? 1.0f : 0.0f;
+    frame_lighting.vol_debug_view = volumetrics_debug_view_;
     RasterRecord record{&albedo_,
                         &normal_,
                         &orm_,

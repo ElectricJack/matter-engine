@@ -1280,7 +1280,10 @@ int main() {
     const bool test_resize = std::getenv("MATTER_TEST_RESIZE") != nullptr;
     const bool hide_ui = std::getenv("MATTER_HIDE_UI") != nullptr;
     bool resize_exercised = false;
-    if (hide_ui) std::printf("viewer: UI hidden by MATTER_HIDE_UI\n");
+    if (hide_ui) {
+        std::printf("viewer: UI hidden by MATTER_HIDE_UI\n");
+        ui.set_hide_ui(true);
+    }
 
     int cmd_fd = -1;
 #ifdef _WIN32
@@ -1453,6 +1456,7 @@ int main() {
 
         matter_viewer::CurrentFrameInputOrder camera_input_order{};
         const bool ui_frame_ready = ui.begin_frame(frame, error);
+        matter::VulkanFrame render_frame = frame;
         if (!ui_frame_ready) {
             std::fprintf(stderr, "FATAL: ImGui Vulkan prepare: %s\n",
                          error.c_str());
@@ -1495,6 +1499,12 @@ int main() {
                         editor_model.clear_selection();
                     }
                 }
+            }
+            if (!hide_ui) ui.prepare_viewport_rect();
+            render_frame = ui.viewport_render_frame(frame, error);
+            if (!error.empty()) {
+                std::fprintf(stderr, "viewport target: %s\n", error.c_str());
+                error.clear();
             }
             if (!hide_ui) {
                 const viewer::ToolbarActions toolbar =
@@ -1544,6 +1554,7 @@ int main() {
                 ui.draw_properties_panel(selection_set, editor_model, properties_registry,
                                         field_commands, component_commands, sim_control.mode(),
                                         &cached_snapshot, specialized_editors, camera.position);
+                ui.draw_viewport_window();
                 ui.draw_console_panel(console_log);
                 ui.draw_debug_panel(stats);
                 ui.draw_worlds_panel(worlds, stats);
@@ -1552,15 +1563,9 @@ int main() {
                 // streaming editing now lives in the Properties panel via
                 // SpecializedEditors (MatterViewer/specialized_editors.h).
                 {
-                    // Task 10: transform gizmo. Full-window viewport rect for
-                    // now — the manual docking layout has no fixed viewport
-                    // sub-region to clip to yet.
-                    int fb_width = 0, fb_height = 0;
-                    glfwGetFramebufferSize(window, &fb_width, &fb_height);
+                    const auto& vp = ui.viewport_rect();
                     ui.draw_gizmo(selection_set, field_commands, camera,
-                                 sim_control.mode(), 0.0f, 0.0f,
-                                 static_cast<float>(fb_width),
-                                 static_cast<float>(fb_height));
+                                 sim_control.mode(), vp.x, vp.y, vp.w, vp.h);
                 }
             }
             camera_input_order.build_ui();
@@ -1582,9 +1587,18 @@ int main() {
                 glfwGetCursorPos(window, &cursor_x, &cursor_y);
                 int fb_width = 0, fb_height = 0;
                 glfwGetFramebufferSize(window, &fb_width, &fb_height);
-                const viewer::PickResult pick = viewer::viewport_pick(
-                    static_cast<float>(cursor_x), static_cast<float>(cursor_y),
-                    fb_width, fb_height, frame_camera, *session);
+                const auto& vp = ui.viewport_rect();
+                const bool in_viewport =
+                    cursor_x >= vp.x && cursor_x < vp.x + vp.w &&
+                    cursor_y >= vp.y && cursor_y < vp.y + vp.h;
+                const viewer::PickResult pick = in_viewport
+                    ? viewer::viewport_pick(
+                          static_cast<float>(cursor_x - vp.x),
+                          static_cast<float>(cursor_y - vp.y),
+                          static_cast<int>(vp.w),
+                          static_cast<int>(vp.h),
+                          frame_camera, *session)
+                    : viewer::PickResult{};
                 if (pick.hit) {
                     selection_set.replace(pick.object);
                     // Keep the outliner's single-slot selection mirrored on
@@ -1625,6 +1639,13 @@ int main() {
         ui.update_sector_streaming(*session, frame_camera);
         matter::TickDesc tick{};
         tick.frame_delta_seconds = dt;
+        if (sim_control.should_advance_fixed()) {
+            // Play mode: run physics normally.
+        } else if (sim_control.consume_pending_step()) {
+            tick.max_fixed_steps = 1;
+        } else {
+            tick.max_fixed_steps = 0;
+        }
         session->tick(tick);
         camera_input_order.tick_scene();
         session->pump_gpu_jobs(4.0f);
@@ -1676,17 +1697,19 @@ int main() {
             static_cast<float>(stats.vol_debug_view);
         options.vulkan_ray_tracing.enabled =
             vulkan->ray_tracing_available() && !disable_vulkan_rt;
-        if (!session->render(frame_camera, frame, options, error)) {
+        if (!session->render(frame_camera, render_frame, options, error)) {
             std::fprintf(stderr, "FATAL: render: %s\n", error.c_str());
             fatal_error = true;
         } else {
             camera_input_order.render_scene();
         }
         if (ui_frame_ready && !fatal_error) {
+            ui.transition_viewport_for_sampling(frame.command_buffer);
+            const auto& sel_vp = ui.viewport_rect();
             viewer::draw_selection_outlines(selection_set, frame_camera,
-                                            static_cast<int>(frame.extent.width),
-                                            static_cast<int>(frame.extent.height),
-                                            *session);
+                                            static_cast<int>(render_frame.extent.width),
+                                            static_cast<int>(render_frame.extent.height),
+                                            *session, sel_vp.x, sel_vp.y);
         }
         const matter::FrameStats& frame_stats = session->frame_stats();
         dlss_modes_supported = vulkan->dlss_available() &&
@@ -1817,9 +1840,8 @@ int main() {
         } else {
             if (ui_frame_completed && !fatal_error) {
                 camera_input_order.end_frame();
-                if (camera_input_order.camera_update_allowed()) {
-                    // Free-fly affects the next frame, after this frame's scene
-                    // and UI have been submitted at the presentation boundary.
+                if (camera_input_order.camera_update_allowed() ||
+                    camera_capture) {
                     camera_controller.update(window, dt, camera);
                 }
             }

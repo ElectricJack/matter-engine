@@ -32,5 +32,17 @@ class PhysicsPlayground extends World {
         },
       });
     }
+    for (let i = 0; i < 4; ++i) {
+      this.entity({
+        id: "glass-sphere-" + i,
+        name: "Glass Sphere " + i,
+        components: {
+          LocalTransform: { translation: [i * 2.5 - 3.5, 12 + i * 3, 4] },
+          PartInstance: { part: "GlassSphere" },
+          RigidBody: { type: "dynamic" },
+          SphereCollider: { radius: 1.2 },
+        },
+      });
+    }
   }
 }

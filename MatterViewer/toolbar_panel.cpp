@@ -84,7 +84,8 @@ ToolbarActions draw_toolbar_contents(ToolbarState& state,
     return actions;
 }
 
-void draw_viewport_border_tint(matter::scene::SimulationMode mode) {
+void draw_viewport_border_tint(matter::scene::SimulationMode mode,
+                               float vp_x, float vp_y, float vp_w, float vp_h) {
     using matter::scene::SimulationMode;
     if (mode == SimulationMode::Edit) return;
 
@@ -95,11 +96,11 @@ void draw_viewport_border_tint(matter::scene::SimulationMode mode) {
         color = ImVec4(200.0f / 255.0f, 160.0f / 255.0f, 0.0f / 255.0f, 180.0f / 255.0f);
     }
     const ImU32 col32 = ImGui::ColorConvertFloat4ToU32(color);
-    const ImVec2 display = ImGui::GetIO().DisplaySize;
     const float thickness = 3.0f;
     const float inset = thickness * 0.5f;
     ImGui::GetForegroundDrawList()->AddRect(
-        ImVec2(inset, inset), ImVec2(display.x - inset, display.y - inset),
+        ImVec2(vp_x + inset, vp_y + inset),
+        ImVec2(vp_x + vp_w - inset, vp_y + vp_h - inset),
         col32, 0.0f, 0, thickness);
 }
 

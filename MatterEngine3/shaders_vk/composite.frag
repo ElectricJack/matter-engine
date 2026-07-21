@@ -49,6 +49,8 @@ layout(push_constant) uniform SceneLighting {
     float camera_fwd_z;
     float tan_half_fov;
     float aspect_ratio;
+    float jitter_offset_u;
+    float jitter_offset_v;
     float vol_enabled;
     float vol_debug_view;
 } lighting;
@@ -61,7 +63,9 @@ vec3 compute_view_ray(vec2 uv) {
     vec3 world_up = abs(fwd.y) < 0.999 ? vec3(0, 1, 0) : vec3(0, 0, 1);
     vec3 right = normalize(cross(fwd, world_up));
     vec3 up = cross(right, fwd);
-    vec2 ndc = vec2(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    vec2 compensated = uv - vec2(lighting.jitter_offset_u,
+                                  lighting.jitter_offset_v);
+    vec2 ndc = vec2(compensated.x * 2.0 - 1.0, 1.0 - compensated.y * 2.0);
     return normalize(fwd +
         right * ndc.x * lighting.aspect_ratio * lighting.tan_half_fov +
         up    * ndc.y * lighting.tan_half_fov);

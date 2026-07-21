@@ -6,6 +6,7 @@
 #include <system_error>
 
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "ImGuizmo.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
@@ -59,8 +60,7 @@ void Ui::setup() {
     ImGui::StyleColorsDark();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    // imgui.ini persistence is on by default — panel positions save/restore
-    // automatically across runs.
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     ImGui_ImplGlfw_InitForOpenGL(glfwGetCurrentContext(), true);
     ImGui_ImplOpenGL3_Init("#version 330");
 }
@@ -77,6 +77,12 @@ void Ui::begin_frame() {
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
     ImGuizmo::BeginFrame();
+    if (!hide_ui_) {
+        build_dockspace();
+    } else {
+        const ImVec2 d = ImGui::GetIO().DisplaySize;
+        viewport_rect_ = ViewportRect{0, 0, d.x, d.y};
+    }
 }
 
 void Ui::end_frame() {
@@ -91,6 +97,76 @@ constexpr float kPropertiesWidthFrac = 0.26f;
 constexpr float kConsoleHeightFrac = 0.20f;
 } // namespace
 
+void Ui::build_dockspace() {
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+
+    ImGui::SetNextWindowPos(ImVec2(0, kToolbarHeight));
+    ImGui::SetNextWindowSize(ImVec2(display.x, display.y - kToolbarHeight));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::Begin("##DockHost", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                     ImGuiWindowFlags_NoBringToFrontOnFocus |
+                     ImGuiWindowFlags_NoNavFocus |
+                     ImGuiWindowFlags_NoDocking);
+    ImGui::PopStyleVar();
+
+    const ImGuiID dockspace_id = ImGui::GetID("MainDockSpace");
+
+    if (ImGui::DockBuilderGetNode(dockspace_id) == nullptr) {
+        ImGui::DockBuilderRemoveNode(dockspace_id);
+        ImGui::DockBuilderAddNode(dockspace_id,
+                                  ImGuiDockNodeFlags_DockSpace);
+        ImGui::DockBuilderSetNodeSize(dockspace_id,
+                                      ImVec2(display.x,
+                                             display.y - kToolbarHeight));
+
+        ImGuiID center = dockspace_id;
+        const ImGuiID left = ImGui::DockBuilderSplitNode(
+            center, ImGuiDir_Left, kSceneWidthFrac, nullptr, &center);
+        const ImGuiID right = ImGui::DockBuilderSplitNode(
+            center, ImGuiDir_Right,
+            kPropertiesWidthFrac / (1.0f - kSceneWidthFrac), nullptr,
+            &center);
+        const ImGuiID bottom = ImGui::DockBuilderSplitNode(
+            center, ImGuiDir_Down, kConsoleHeightFrac, nullptr, &center);
+
+        ImGui::DockBuilderDockWindow("Scene", left);
+        ImGui::DockBuilderDockWindow("Properties", right);
+        ImGui::DockBuilderDockWindow("Console", bottom);
+        ImGui::DockBuilderDockWindow("Viewport", center);
+        ImGui::DockBuilderDockWindow("Viewer Debug", right);
+        ImGui::DockBuilderDockWindow("Camera", right);
+
+        ImGui::DockBuilderFinish(dockspace_id);
+    }
+
+    ImGui::DockSpace(dockspace_id, ImVec2(0, 0),
+                     ImGuiDockNodeFlags_PassthruCentralNode);
+    ImGui::End();
+
+    ImGuiDockNode* central = ImGui::DockBuilderGetCentralNode(dockspace_id);
+    if (central && viewport_rect_.w == 0) {
+        viewport_rect_ = ViewportRect{central->Pos.x, central->Pos.y,
+                                       central->Size.x, central->Size.y};
+    }
+}
+
+void Ui::draw_viewport_window() {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::Begin("Viewport", nullptr,
+                 ImGuiWindowFlags_NoScrollbar |
+                     ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleVar();
+    viewport_hovered_ = ImGui::IsWindowHovered();
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    viewport_rect_ = ViewportRect{pos.x, pos.y,
+                                   avail.x > 0 ? avail.x : 0,
+                                   avail.y > 0 ? avail.y : 0};
+    ImGui::End();
+}
+
 ToolbarActions Ui::draw_toolbar(matter::scene::SimulationMode mode) {
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_FirstUseEver);
@@ -100,7 +176,8 @@ ToolbarActions Ui::draw_toolbar(matter::scene::SimulationMode mode) {
                      ImGuiWindowFlags_NoScrollbar);
     const ToolbarActions actions = draw_toolbar_contents(toolbar_state_, mode);
     ImGui::End();
-    draw_viewport_border_tint(mode);
+    draw_viewport_border_tint(mode, viewport_rect_.x, viewport_rect_.y,
+                              viewport_rect_.w, viewport_rect_.h);
     return actions;
 }
 
@@ -109,11 +186,6 @@ void Ui::draw_scene_panel(EditorModel& editor, matter::WorldSession* session,
                           matter::CameraDesc* camera, SelectionSet* selection,
                           const FieldCommands* fields, ConsoleLog* console_log,
                           const std::unordered_set<uint64_t>* authored_entity_ids) {
-    const ImVec2 display = ImGui::GetIO().DisplaySize;
-    const float scene_w = display.x * kSceneWidthFrac;
-    ImGui::SetNextWindowPos(ImVec2(0, kToolbarHeight), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(scene_w, display.y - kToolbarHeight),
-                             ImGuiCond_FirstUseEver);
     ImGui::Begin("Scene");
     draw_scene_tree(scene_tree_state_, editor, session, commands, mode, camera,
                     selection, fields, console_log, authored_entity_ids);
@@ -128,12 +200,6 @@ void Ui::draw_properties_panel(const SelectionSet& selection, EditorModel& edito
                                const part_graph_snapshot::Snapshot* snapshot,
                                SpecializedEditors& specialized,
                                const matter::Float3& camera_position) {
-    const ImVec2 display = ImGui::GetIO().DisplaySize;
-    const float props_w = display.x * kPropertiesWidthFrac;
-    ImGui::SetNextWindowPos(ImVec2(display.x - props_w, kToolbarHeight),
-                            ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(props_w, display.y - kToolbarHeight),
-                             ImGuiCond_FirstUseEver);
     ImGui::Begin("Properties");
     draw_properties_contents(properties_state_, selection, editor, registry,
                              fields, components, mode, snapshot,
@@ -142,24 +208,12 @@ void Ui::draw_properties_panel(const SelectionSet& selection, EditorModel& edito
 }
 
 void Ui::draw_console_panel(ConsoleLog& log) {
-    const ImVec2 display = ImGui::GetIO().DisplaySize;
-    const float scene_w = display.x * kSceneWidthFrac;
-    const float props_w = display.x * kPropertiesWidthFrac;
-    const float console_h = display.y * kConsoleHeightFrac;
-    ImGui::SetNextWindowPos(ImVec2(scene_w, display.y - console_h), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(display.x - scene_w - props_w, console_h),
-                             ImGuiCond_FirstUseEver);
     ImGui::Begin("Console");
     draw_console_contents(console_state_, log);
     ImGui::End();
 }
 
 void Ui::draw_debug_panel(ViewerStats& s) {
-    const ImVec2 display = ImGui::GetIO().DisplaySize;
-    const float props_w = display.x * kPropertiesWidthFrac;
-    ImGui::SetNextWindowPos(ImVec2(display.x - props_w, kToolbarHeight),
-                            ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(props_w, 0), ImGuiCond_FirstUseEver);
     ImGui::Begin("Viewer Debug");
 
     ImGui::Text("FPS: %.1f  (%.2f ms)", s.fps, s.frame_ms);
@@ -196,11 +250,6 @@ void Ui::draw_debug_panel(ViewerStats& s) {
 }
 
 void Ui::draw_camera_panel(matter::CameraDesc& cam) {
-    const ImVec2 display = ImGui::GetIO().DisplaySize;
-    const float props_w = display.x * kPropertiesWidthFrac;
-    ImGui::SetNextWindowPos(ImVec2(display.x - props_w, kToolbarHeight + 400.0f),
-                            ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(props_w, 0), ImGuiCond_FirstUseEver);
     ImGui::Begin("Camera");
 
     ImGui::DragFloat3("Position", &cam.position.x, 0.1f);
@@ -291,8 +340,10 @@ bool Ui::camera_input_allowed() const {
     if (ImGui::GetCurrentContext() == nullptr) return true;
     const ImGuiIO& io = ImGui::GetIO();
     const bool gizmo_over = gizmo_submitted_ && ImGuizmo::IsOver();
+    const bool mouse_captured = io.WantCaptureMouse && !viewport_hovered_;
+    const bool kb_captured = io.WantCaptureKeyboard && !viewport_hovered_;
     return matter_viewer::camera_input_allowed(
-        io.WantCaptureMouse, io.WantCaptureKeyboard, gizmo_over,
+        mouse_captured, kb_captured, gizmo_over,
         ImGuizmo::IsUsing());
 }
 

@@ -12,6 +12,8 @@ namespace viewer {
 void draw_selection_outlines(const SelectionSet& selection,
                              const matter::CameraDesc& camera,
                              int fb_width, int fb_height,
-                             matter::WorldSession& session);
+                             matter::WorldSession& session,
+                             float offset_x = 0.0f,
+                             float offset_y = 0.0f);
 
 } // namespace viewer

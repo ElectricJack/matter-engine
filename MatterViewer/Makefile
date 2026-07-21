@@ -71,7 +71,7 @@ HAVE_STREAMLINE ?= 0
 # Point this at a locally installed, licensed Streamline SDK.  Nothing from the
 # SDK is checked into this repository; HAVE_STREAMLINE=0 is the default.
 STREAMLINE_PATH ?=
-STREAMLINE_DLL_DIR ?= $(STREAMLINE_PATH)/bin/x64/development
+STREAMLINE_DLL_DIR ?= $(STREAMLINE_PATH)/bin/x64
 # ---- Phase 5 autoremesher_core (Task 15 wiring) ----
 # The vendored autoremesher_core static lib + its TBB dependency. Linux-only:
 # the library was built for Linux in Task 4 (Libraries/autoremesher_core/) and

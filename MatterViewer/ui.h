@@ -24,6 +24,8 @@ namespace matter { class VulkanDevice; struct VulkanFrame; }
 
 namespace viewer {
 
+struct ViewportRect { float x = 0, y = 0, w = 0, h = 0; };
+
 // One available world for the runtime picker. Populated by scan_worlds at
 // startup; consumed by draw_worlds_panel and the main-loop switch handler.
 struct WorldEntry {
@@ -118,10 +120,15 @@ public:
     // Standalone panel listing available worlds as buttons. Clicking a non-current
     // world sets stats.world_switch_requested; main handles the swap next frame.
     void draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& stats);
-    // Manual docking-layout scaffolding (no ImGui docking branch vendored yet):
-    // fixed-position panels anchored to the display edges via
-    // ImGuiCond_FirstUseEver, so imgui.ini persistence still lets users move them.
     ToolbarActions draw_toolbar(matter::scene::SimulationMode mode);
+    void prepare_viewport_rect();
+    void draw_viewport_window();
+    const ViewportRect& viewport_rect() const { return viewport_rect_; }
+    void set_hide_ui(bool hide) { hide_ui_ = hide; }
+    matter::VulkanFrame viewport_render_frame(const matter::VulkanFrame& frame,
+                                               std::string& error);
+    void transition_viewport_for_sampling(VkCommandBuffer cmd);
+    bool has_viewport_target() const { return rt_image_ != VK_NULL_HANDLE; }
     // Task 13: `commands` drives the row context menus (Add Child Entity,
     // Duplicate, Delete, reparent-on-add-child); `mode` disables the
     // destructive items during Play; `camera`/`fields` drive the Focus
@@ -166,6 +173,10 @@ public:
     void reset_scene_tree_cache();
 
 private:
+    void build_dockspace();
+    bool ensure_viewport_target(uint32_t width, uint32_t height,
+                                VkFormat format, std::string& error);
+    void destroy_viewport_target();
     bool initialize_vulkan_backend(VkFormat format, std::uint32_t image_count,
                                    std::string& error);
     bool prepare_vulkan_backend(const matter::VulkanFrame& frame,
@@ -178,6 +189,19 @@ private:
     bool glfw_backend_initialized_ = false;
     bool vulkan_backend_initialized_ = false;
     bool gizmo_submitted_ = false;
+    bool viewport_hovered_ = false;
+    bool hide_ui_ = false;
+    ViewportRect viewport_rect_{};
+    VkImage rt_image_ = VK_NULL_HANDLE;
+    VkImageView rt_view_ = VK_NULL_HANDLE;
+    VkDeviceMemory rt_memory_ = VK_NULL_HANDLE;
+    VkDescriptorSet rt_descriptor_ = VK_NULL_HANDLE;
+    VkSampler rt_sampler_ = VK_NULL_HANDLE;
+    uint32_t rt_width_ = 0;
+    uint32_t rt_height_ = 0;
+    uint32_t pending_rt_w_ = 0;
+    uint32_t pending_rt_h_ = 0;
+    int pending_rt_frames_ = 0;
     matter_viewer::StreamingAnchorState streaming_anchor_{};
     std::uint64_t anchor_id_input_ = 0;
     std::uint64_t streaming_seed_ = 0;

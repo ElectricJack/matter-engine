@@ -93,17 +93,24 @@ void CameraController::update(GLFWwindow* window, float dt, matter::CameraDesc& 
     input.speed_boost = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
                         glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
 
+    int win_w = 0, win_h = 0;
+    glfwGetWindowSize(window, &win_w, &win_h);
+    const double cx = win_w * 0.5, cy = win_h * 0.5;
+
     double x = 0.0, y = 0.0;
     glfwGetCursorPos(window, &x, &y);
     if (first_mouse_) {
-        last_x_ = x;
-        last_y_ = y;
+        glfwSetCursorPos(window, cx, cy);
+        last_x_ = cx;
+        last_y_ = cy;
         first_mouse_ = false;
+    } else {
+        input.yaw_pixels = static_cast<float>(x - last_x_);
+        input.pitch_pixels = static_cast<float>(y - last_y_);
+        glfwSetCursorPos(window, cx, cy);
+        last_x_ = cx;
+        last_y_ = cy;
     }
-    input.yaw_pixels = static_cast<float>(x - last_x_);
-    input.pitch_pixels = static_cast<float>(y - last_y_);
-    last_x_ = x;
-    last_y_ = y;
 
     apply_camera_input(camera, input, dt, 8.0f, 0.002f);
 }

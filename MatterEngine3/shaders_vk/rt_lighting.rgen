@@ -161,6 +161,32 @@ vec3 hit_radiance(RtSurface surface, out vec3 base) {
     return emission + rt_sky_irradiance(surface.normal) * base;
 }
 
+vec3 hit_radiance_sunlit(RtSurface surface, vec3 to_sun) {
+    vec3 base;
+    vec3 radiance = hit_radiance(surface, base);
+    float ndotl = max(dot(surface.normal, to_sun), 0.0);
+    if (ndotl > 0.0 && any(greaterThan(base, vec3(0.0)))) {
+        visibility_payload.visibility = vec3(1.0);
+        visibility_payload.layers = 0u;
+        traceRayEXT(scene,
+                    gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+                    0x01, 0, 0, 0,
+                    surface.position + surface.normal * constants.bias,
+                    constants.bias, to_sun, constants.max_distance, 0);
+        if (max(visibility_payload.visibility.r,
+                max(visibility_payload.visibility.g,
+                    visibility_payload.visibility.b)) >= 0.01) {
+            traceRayEXT(scene, gl_RayFlagsNoneEXT, 0x02, 0, 0, 0,
+                        surface.position + surface.normal * constants.bias,
+                        constants.bias, to_sun, constants.max_distance, 0);
+        }
+        radiance += base * 0.31830988618 * constants.sun_color *
+                    constants.sun_intensity * ndotl *
+                    visibility_payload.visibility;
+    }
+    return radiance;
+}
+
 void main() {
     ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
     float depth;
@@ -254,6 +280,8 @@ void main() {
     vec3 primary_diffuse = albedo.rgb * (1.0 - orm.y);
     vec3 raw = primary_diffuse * bounce * orm.z *
                constants.diffuse_multiplier;
+    float raw_lum = dot(raw, vec3(0.2126, 0.7152, 0.0722));
+    if (raw_lum > 8.0) raw *= 8.0 / raw_lum;
     imageStore(raw_diffuse_image, pixel, vec4(raw, 1.0));
 
     vec3 specular = vec3(0.0);
@@ -327,6 +355,8 @@ void main() {
         }
     }
     if (any(isnan(specular)) || any(isinf(specular))) specular = vec3(0.0);
+    float spec_lum = dot(specular, vec3(0.2126, 0.7152, 0.0722));
+    if (spec_lum > 8.0) specular *= 8.0 / spec_lum;
     imageStore(raw_specular_image, pixel, vec4(specular, selected_f0));
     imageStore(raw_specular_aux_image, pixel, vec4(specular_aux, 0.0, 0.0));
 
@@ -373,11 +403,8 @@ void main() {
                     }
                     path_length += max(hit.surface.hit_t, 0.0);
                     if ((hit.surface.flags & RT_SURFACE_FRONT_FACE) != 0u) {
-                        // A solid surface inside/behind the medium blocks
-                        // the walk: shade it and stop.
-                        vec3 blocked_base;
-                        exit_radiance = hit_radiance(hit.surface,
-                                                     blocked_base);
+                        exit_radiance = hit_radiance_sunlit(hit.surface,
+                                                            to_sun);
                         shaded = true;
                         break;
                     }
@@ -396,10 +423,9 @@ void main() {
                         traceRayEXT(scene, gl_RayFlagsOpaqueEXT, 0xff, 1, 0,
                                     1, exit_origin, constants.bias, exit_dir,
                                     constants.max_distance, 1);
-                        vec3 exit_base;
                         exit_radiance =
                             (hit.surface.flags & RT_SURFACE_VALID) != 0u
-                                ? hit_radiance(hit.surface, exit_base)
+                                ? hit_radiance_sunlit(hit.surface, to_sun)
                                 : environment(exit_dir);
                         shaded = true;
                         break;

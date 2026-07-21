@@ -475,17 +475,16 @@ int main() {
             ui.draw_properties_panel(selection_set, editor_model, properties_registry,
                                     field_commands, component_commands, sim_control.mode(),
                                     &cached_snapshot, specialized_editors, camera.position);
+            ui.draw_viewport_window();
             ui.draw_console_panel(console_log);
             ui.draw_debug_panel(stats);
             ui.draw_worlds_panel(worlds, stats);
             ui.draw_camera_panel(camera);
-            // Task 10: transform gizmo. Full-window viewport rect for now —
-            // the manual docking layout has no fixed viewport sub-region to
-            // clip to yet.
-            ui.draw_gizmo(selection_set, field_commands, camera,
-                         sim_control.mode(), 0.0f, 0.0f,
-                         static_cast<float>(GetScreenWidth()),
-                         static_cast<float>(GetScreenHeight()));
+            {
+                const auto& vp = ui.viewport_rect();
+                ui.draw_gizmo(selection_set, field_commands, camera,
+                             sim_control.mode(), vp.x, vp.y, vp.w, vp.h);
+            }
             ui.end_frame();
         EndDrawing();
 
