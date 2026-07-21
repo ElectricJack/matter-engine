@@ -1713,6 +1713,209 @@ static void test_emit_volume_hash_divergence() {
           "different emitter params produce different bake hashes");
 }
 
+// ===========================================================================
+// Bake Lab task 1.4 — part-bake phase spans + MATTER_BAKE_PROFILE parity.
+// ===========================================================================
+#include "bake_trace.h"
+#include "bake_trace_names.h"
+#include <algorithm>  // std::remove (parity-test \r\n normalization)
+#ifdef _WIN32
+#include <io.h>
+#define SH_DUP    _dup
+#define SH_DUP2   _dup2
+#define SH_CLOSE  _close
+#define SH_FILENO _fileno
+#else
+#include <unistd.h>
+#define SH_DUP    dup
+#define SH_DUP2   dup2
+#define SH_CLOSE  close
+#define SH_FILENO fileno
+#endif
+
+static void sh_set_profile_env(bool on) {
+#ifdef _WIN32
+    _putenv(on ? "MATTER_BAKE_PROFILE=1" : "MATTER_BAKE_PROFILE=");
+#else
+    if (on) setenv("MATTER_BAKE_PROFILE", "1", 1);
+    else    unsetenv("MATTER_BAKE_PROFILE");
+#endif
+}
+
+// A bake with a collector current produces one part-bake span whose children
+// tile it: fold/ctx/eval/merge/build always run; mesh/save additionally run
+// on the success path (a clean bake exercises all seven).
+static void test_part_bake_span_shape() {
+    bake_trace::Collector col;
+    bake_trace::set_current(&col);
+    script_host::ScriptHost host;
+    const char* src =
+        "class SpanProbe extends Part {\n"
+        "  static params = {};\n"
+        "  build(p) {}\n"
+        "}\n";
+    script_host::BakeResult r = host.bake_source(src, "{}", {});
+    bake_trace::set_current(nullptr);
+    CHECK(r.error.ok, "span-shape: bake succeeded");
+
+    bake_trace::Span snap = col.snapshot();
+    CHECK(snap.children.size() == 1, "span-shape: one top-level span");
+    if (snap.children.size() != 1) return;
+    const bake_trace::Span& pb = snap.children[0];
+    CHECK(std::strcmp(pb.name, bake_trace::kSpanPartBake) == 0,
+          "span-shape: top-level span is part-bake");
+    CHECK(pb.end_ms != bake_trace::kOpenEndMs, "span-shape: part-bake closed");
+
+    const char* expect[] = {
+        bake_trace::kSpanFold,  bake_trace::kSpanCtx,  bake_trace::kSpanEval,
+        bake_trace::kSpanMerge, bake_trace::kSpanBuild, bake_trace::kSpanMesh,
+        bake_trace::kSpanSave };
+    CHECK(pb.children.size() == 7,
+          "span-shape: seven phase children on the success path");
+    if (pb.children.size() == 7) {
+        double prev_end = pb.begin_ms;
+        for (size_t i = 0; i < 7; ++i) {
+            const bake_trace::Span& ph = pb.children[i];
+            CHECK(std::strcmp(ph.name, expect[i]) == 0,
+                  "span-shape: phase order fold/ctx/eval/merge/build/mesh/save");
+            CHECK(ph.end_ms != bake_trace::kOpenEndMs, "span-shape: phase closed");
+            CHECK(ph.begin_ms + 1e-9 >= prev_end,
+                  "span-shape: phases are non-overlapping and ordered");
+            prev_end = ph.end_ms;
+        }
+        CHECK(prev_end <= pb.end_ms + 1e-9,
+              "span-shape: phases end inside part-bake");
+    }
+}
+
+// A failed bake (no Part class -> error during the eval phase) truncates the
+// chain: fold/ctx/eval recorded, merge/build/mesh/save never opened. All
+// spans still closed (nothing leaks open past bake_source).
+static void test_part_bake_span_shape_on_error() {
+    bake_trace::Collector col;
+    bake_trace::set_current(&col);
+    script_host::ScriptHost host;
+    script_host::BakeResult r =
+        host.bake_source("class NotAPart {}\n", "{}", {});
+    bake_trace::set_current(nullptr);
+    CHECK(!r.error.ok, "span-error: bake failed as expected");
+
+    bake_trace::Span snap = col.snapshot();
+    CHECK(snap.children.size() == 1 &&
+              std::strcmp(snap.children[0].name, bake_trace::kSpanPartBake) == 0,
+          "span-error: part-bake span present on failure");
+    if (snap.children.size() != 1) return;
+    const bake_trace::Span& pb = snap.children[0];
+    CHECK(pb.end_ms != bake_trace::kOpenEndMs, "span-error: part-bake closed");
+    CHECK(pb.children.size() == 3, "span-error: chain truncated at eval");
+    if (pb.children.size() == 3) {
+        CHECK(std::strcmp(pb.children[0].name, bake_trace::kSpanFold) == 0 &&
+                  std::strcmp(pb.children[1].name, bake_trace::kSpanCtx) == 0 &&
+                  std::strcmp(pb.children[2].name, bake_trace::kSpanEval) == 0,
+              "span-error: children are fold/ctx/eval");
+        CHECK(pb.children[2].end_ms != bake_trace::kOpenEndMs,
+              "span-error: interrupted phase closed at bake exit");
+    }
+}
+
+// With NO collector current, bake_source installs a local one for its own
+// duration and restores the null afterwards — no crash, no leaked current.
+static void test_part_bake_no_collector() {
+    bake_trace::set_current(nullptr);
+    script_host::ScriptHost host;
+    const char* src =
+        "class NoCol extends Part {\n"
+        "  static params = {};\n"
+        "  build(p) {}\n"
+        "}\n";
+    script_host::BakeResult r = host.bake_source(src, "{}", {});
+    CHECK(r.error.ok, "no-collector: bake succeeded");
+    CHECK(bake_trace::current() == nullptr,
+          "no-collector: thread-local current restored to null");
+}
+
+// MATTER_BAKE_PROFILE parity: the stderr line is rendered from the span
+// data, so re-rendering the same format string from the collector snapshot
+// must reproduce the captured line byte-for-byte.
+static void test_bake_profile_parity() {
+    const char* kCap = "bake_profile_capture.tmp";
+    sh_set_profile_env(true);
+
+    bake_trace::Collector col;
+    bake_trace::set_current(&col);
+    script_host::ScriptHost host;
+    const char* src =
+        "class ProfPart extends Part {\n"
+        "  static params = {};\n"
+        "  build(p) {}\n"
+        "}\n";
+
+    fflush(stderr);
+    int old_fd = SH_DUP(2);
+    FILE* cap = fopen(kCap, "w");
+    CHECK(old_fd >= 0 && cap != nullptr, "parity: stderr capture set up");
+    if (old_fd < 0 || cap == nullptr) {
+        if (cap) fclose(cap);
+        bake_trace::set_current(nullptr);
+        sh_set_profile_env(false);
+        return;
+    }
+    SH_DUP2(SH_FILENO(cap), 2);
+    script_host::BakeResult r = host.bake_source(src, "{}", {});
+    fflush(stderr);
+    SH_DUP2(old_fd, 2);
+    SH_CLOSE(old_fd);
+    fclose(cap);
+    bake_trace::set_current(nullptr);
+    sh_set_profile_env(false);
+
+    CHECK(r.error.ok, "parity: bake succeeded");
+    std::vector<uint8_t> bytes = read_all(kCap);
+    std::remove(kCap);
+    std::string captured(bytes.begin(), bytes.end());
+    size_t at = captured.find("[bake_profile] ");
+    CHECK(at != std::string::npos, "parity: [bake_profile] line emitted");
+    if (at == std::string::npos) return;
+    size_t nl = captured.find('\n', at);
+    std::string line = captured.substr(
+        at, nl == std::string::npos ? std::string::npos : nl + 1 - at);
+    // Windows text-mode stderr writes \r\n; normalize to \n for the compare.
+    line.erase(std::remove(line.begin(), line.end(), '\r'), line.end());
+
+    // Re-render the expected line from the span data. Spans are immutable
+    // once closed, so this snapshot carries the same values bake_source
+    // rendered from — identical doubles, identical %.1f text.
+    bake_trace::Span snap = col.snapshot();
+    CHECK(snap.children.size() == 1, "parity: one part-bake span");
+    if (snap.children.size() != 1) return;
+    const bake_trace::Span& pb = snap.children[0];
+    double t_total = pb.end_ms - pb.begin_ms;
+    double t_fold = 0, t_ctx = 0, t_eval = 0, t_merge = 0, t_build = 0,
+           t_mesh = 0, t_save = 0;
+    for (const bake_trace::Span& ph : pb.children) {
+        double ms = ph.end_ms - ph.begin_ms;
+        if      (std::strcmp(ph.name, bake_trace::kSpanFold)  == 0) t_fold  += ms;
+        else if (std::strcmp(ph.name, bake_trace::kSpanCtx)   == 0) t_ctx   += ms;
+        else if (std::strcmp(ph.name, bake_trace::kSpanEval)  == 0) t_eval  += ms;
+        else if (std::strcmp(ph.name, bake_trace::kSpanMerge) == 0) t_merge += ms;
+        else if (std::strcmp(ph.name, bake_trace::kSpanBuild) == 0) t_build += ms;
+        else if (std::strcmp(ph.name, bake_trace::kSpanMesh)  == 0) t_mesh  += ms;
+        else if (std::strcmp(ph.name, bake_trace::kSpanSave)  == 0) t_save  += ms;
+    }
+    char expect_line[320];
+    std::snprintf(expect_line, sizeof(expect_line),
+        "[bake_profile] %s total=%.1f fold=%.1f ctx=%.1f eval=%.1f "
+        "merge=%.1f build=%.1f mesh=%.1f save=%.1f free=%.1f\n",
+        "ProfPart", t_total,
+        t_fold, t_ctx, t_eval, t_merge, t_build, t_mesh, t_save,
+        t_total - (t_fold + t_ctx + t_eval + t_merge +
+                   t_build + t_mesh + t_save));
+    CHECK(line == expect_line,
+          "parity: profile line matches span-rendered line byte-for-byte");
+    if (line != expect_line)
+        printf("  captured: %s  expected: %s", line.c_str(), expect_line);
+}
+
 int main() {
     test_embed_eval_1_plus_1();
     test_p5_round_mesh_dispatch();
@@ -1769,6 +1972,11 @@ int main() {
     test_emit_volume_missing_pos();
     test_emit_volume_invalid_radius();
     test_emit_volume_hash_divergence();
+    // Bake Lab task 1.4 — part-bake phase spans + profile parity.
+    test_part_bake_span_shape();
+    test_part_bake_span_shape_on_error();
+    test_part_bake_no_collector();
+    test_bake_profile_parity();
     if (g_failures == 0) printf("ALL PASS\n");
     return g_failures ? 1 : 0;
 }

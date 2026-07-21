@@ -478,7 +478,7 @@ TERRAINMESH_CPP    = terrain_mesher_tests.cpp ../src/terrain_field.cpp ../src/te
 
 # Phase C Task 5 — terrain verb (sh flavor: bake_source + WorldBinding + terrainVolume).
 TERRAINVERB_TARGET = terrain_verb_tests
-TERRAINVERB_CPP = terrain_verb_tests.cpp ../src/part_graph.cpp \
+TERRAINVERB_CPP = terrain_verb_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
                   ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                   ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                   ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
@@ -492,7 +492,7 @@ TERRAINVERB_C = $(COMMON_MSL_C)
 
 # Phase C Task 7 — WorldSector.js + native world query verbs (sh flavor).
 SECTORBAKE_TARGET = sector_bake_tests
-SECTORBAKE_CPP = sector_bake_tests.cpp ../src/part_graph.cpp \
+SECTORBAKE_CPP = sector_bake_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
                  ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                  ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                  ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
@@ -519,7 +519,7 @@ PARTSTORE_C   = $(MSL)/material_registry.c
 # the graph_integration/example/gallery/treebake/grasslod/stressforest
 # family all use -DMATTER_HAVE_SCRIPT_HOST + QJS_INC.
 SCRIPT_TARGET = script_host_tests
-SCRIPT_CPP = script_host_tests.cpp ../src/part_graph.cpp ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+SCRIPT_CPP = script_host_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
              ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
              ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
              ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
@@ -549,7 +549,7 @@ PF_CPP = ../src/pf_bindings.cpp \
 TERRAIN_SRC = ../src/terrain_field.cpp ../src/terrain_mesher.cpp
 
 GRAPH_INT_TARGET = part_graph_integration_tests
-GRAPH_INT_CPP = part_graph_integration_tests.cpp ../src/part_graph.cpp \
+GRAPH_INT_CPP = part_graph_integration_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
@@ -560,7 +560,7 @@ GRAPH_INT_CPP = part_graph_integration_tests.cpp ../src/part_graph.cpp \
 GRAPH_INT_C   = $(COMMON_MSL_C)
 
 EXAMPLE_TARGET = example_world
-EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp \
+EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
               ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/dsl_bindings.cpp \
               ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
               ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp ../src/part_flatten.cpp \
@@ -603,7 +603,7 @@ LIVEPROD_CPP = live_edit_prod_tests.cpp \
 LIVEPROD_C   = $(COMMON_MSL_C)
 
 TILESETBAKE_TARGET = tileset_bake_tests
-TILESETBAKE_CPP = tileset_bake_tests.cpp ../src/part_graph.cpp \
+TILESETBAKE_CPP = tileset_bake_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
                   ../src/tileset_bake.cpp ../src/tileset_settle.cpp \
                   ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
                   ../src/tileset_phase.cpp \
@@ -646,7 +646,7 @@ PHYSICS_PLAYGROUND_CPP    = physics_playground_tests.cpp \
 
 # Phase C Task 4 — eval_world: World builder DSL + ScriptHost::eval_world (sh flavor).
 EVALWORLD_TARGET = eval_world_tests
-EVALWORLD_CPP = eval_world_tests.cpp ../src/part_graph.cpp \
+EVALWORLD_CPP = eval_world_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
@@ -660,7 +660,7 @@ EVALWORLD_C = $(COMMON_MSL_C)
 
 # Phase C Task 1: fold cache in ScriptHost (sh flavor).
 FOLDCACHE_TARGET = fold_cache_tests
-FOLDCACHE_CPP = fold_cache_tests.cpp ../src/part_graph.cpp \
+FOLDCACHE_CPP = fold_cache_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
@@ -675,6 +675,7 @@ FOLDCACHE_C = $(COMMON_MSL_C)
 # ===== flavor sp2 (SP2_SCRIPT_HOST) =====================================
 SHLIB_TARGET = shared_lib_tests
 SHLIB_CPP = shared_lib_tests.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
+            ../src/bake_trace.cpp \
             ../src/part_graph.cpp \
             ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \
             ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
@@ -716,7 +717,7 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
 # flavor (-DMATTER_HAVE_AUTOREMESHER) so modifier_apply dispatches retopo.
 # mesh_retopo.cpp is the only autoremesher-specific addition over MODBAKE_CPP.
 RETOPO_INT_TARGET = retopo_integration_tests
-RETOPO_INT_CPP = retopo_integration_tests.cpp \
+RETOPO_INT_CPP = retopo_integration_tests.cpp ../src/bake_trace.cpp \
                  ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp \
                  ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                  ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp \

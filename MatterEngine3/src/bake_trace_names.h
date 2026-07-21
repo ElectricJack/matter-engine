@@ -23,6 +23,7 @@ inline constexpr const char* kSpanPartBake = "part-bake";
 inline constexpr const char* kSpanFold     = "fold";
 inline constexpr const char* kSpanCtx      = "ctx";
 inline constexpr const char* kSpanEval     = "eval";
+inline constexpr const char* kSpanMerge    = "merge";
 inline constexpr const char* kSpanBuild    = "build";
 inline constexpr const char* kSpanMesh     = "mesh";
 inline constexpr const char* kSpanSave     = "save";

@@ -24,6 +24,8 @@ extern "C" {
 extern "C" {
 #include "material_registry.h"          // MaterialMergeGroup (fat-prim bucket seeding)
 }
+#include "bake_trace.h"        // Bake Lab task 1.4: part-bake phase spans
+#include "bake_trace_names.h"  // kSpanPartBake + fold/ctx/eval/merge/... constants
 #include <cstdio>
 #include <cstdlib>   // std::getenv (MATTER_BAKE_PROFILE)
 #include <cstring>
@@ -938,6 +940,77 @@ static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
     }
 }
 
+// ---------------------------------------------------------------------------
+// Bake Lab task 1.4 — part-bake phase spans.
+//
+// ScopedCurrentCollector: bake_source must produce spans even when no
+// collector is current (bakes outside execute_bake, e.g. direct ScriptHost
+// callers), because the MATTER_BAKE_PROFILE=1 stderr line is rendered FROM
+// the span data. When none is current it installs a local throwaway
+// Collector as the thread-local current for the duration of the bake and
+// restores the null on exit; when one is already current (execute_bake /
+// tests) it is a no-op and spans nest into that collector.
+struct ScopedCurrentCollector {
+    bake_trace::Collector local;
+    bool installed = false;
+    ScopedCurrentCollector() {
+        if (bake_trace::current() == nullptr) {
+            bake_trace::set_current(&local);
+            installed = true;
+        }
+    }
+    ~ScopedCurrentCollector() {
+        if (installed) bake_trace::set_current(nullptr);
+    }
+    ScopedCurrentCollector(const ScopedCurrentCollector&) = delete;
+    ScopedCurrentCollector& operator=(const ScopedCurrentCollector&) = delete;
+};
+
+// PartBakePhases: opens the kSpanPartBake parent plus a chain of
+// non-overlapping phase children that tile its duration at exactly the old
+// prof_lap() boundaries — next() closes the open phase and opens the next
+// one at the same instant, so phase spans partition the timeline the same
+// way the laps did. The destructor closes any spans still open, so early
+// returns and the bad_alloc unwind leave the collector balanced.
+struct PartBakePhases {
+    bake_trace::Collector* c = nullptr;
+    int depth = 0;  // 0 = nothing open, 1 = part-bake open, 2 = + phase open
+    void start(bake_trace::Collector* col, const char* first_phase) {
+        c = col;
+        if (!c) return;
+        c->begin(bake_trace::kSpanPartBake);
+        c->begin(first_phase);
+        depth = 2;
+    }
+    void next(const char* phase) {  // close the open phase, open `phase`
+        if (!c || depth == 0) return;
+        if (depth == 2) c->end();
+        c->begin(phase);
+        depth = 2;
+    }
+    void end_phase() {  // close the open phase; part-bake stays open
+        if (c && depth == 2) { c->end(); depth = 1; }
+    }
+    void end_part() {   // close part-bake (and any phase still open)
+        while (c && depth > 0) { c->end(); --depth; }
+    }
+    ~PartBakePhases() { end_part(); }
+};
+
+// Depth-first search for the LAST (most recently appended) span with the
+// given name. bake_source snapshots immediately after closing its part-bake
+// span, and the collector is single-writer, so the rightmost match in tree
+// order is the span this bake just wrote — even when an outer collector has
+// accumulated part-bake spans from earlier parts of the same run.
+static const bake_trace::Span* find_last_span(const bake_trace::Span& s,
+                                              const char* name,
+                                              const bake_trace::Span* best) {
+    if (s.name && std::strcmp(s.name, name) == 0) best = &s;
+    for (const bake_trace::Span& child : s.children)
+        best = find_last_span(child, name, best);
+    return best;
+}
+
 BakeResult ScriptHost::bake_source(const std::string& source,
                                    const std::string& params_json,
                                    const BakeOptions& opts,
@@ -959,19 +1032,21 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     try {
 
     // MATTER_BAKE_PROFILE=1: per-bake phase timing line on stderr (diagnostic).
-    static const bool prof_on = std::getenv("MATTER_BAKE_PROFILE") != nullptr;
-    using prof_clock = std::chrono::steady_clock;
-    prof_clock::time_point prof_t0 = prof_clock::now();
-    prof_clock::time_point prof_t  = prof_t0;
-    double prof_fold = 0, prof_ctx = 0, prof_eval = 0, prof_merge = 0,
-           prof_build = 0, prof_mesh = 0, prof_save = 0;
+    // Task 1.4: the line is rendered from BakeTrace span data — the spans ARE
+    // the timing source (no second clock). Checked per call (not latched in a
+    // function-local static) so tests can toggle the env var; same gate and
+    // same output otherwise.
+    const bool prof_on = std::getenv("MATTER_BAKE_PROFILE") != nullptr;
     std::string prof_class;
-    auto prof_lap = [&]() -> double {
-        prof_clock::time_point n = prof_clock::now();
-        double ms = std::chrono::duration<double, std::milli>(n - prof_t).count();
-        prof_t = n;
-        return ms;
-    };
+
+    // Guarantee a current collector for this bake (local throwaway when none
+    // is installed), then tile the part-bake span with phase children at the
+    // old prof_lap boundaries. Declared before the first `goto done` so both
+    // are in scope at the label and unwound on every exit path.
+    ScopedCurrentCollector bt_guard;
+    bake_trace::Collector* const btc = bake_trace::current();
+    PartBakePhases phases;
+    phases.start(btc, bake_trace::kSpanFold);
 
     // Perf fix: fold sources once (removing the redundant fold that was inside
     // merge_params_canonical) and spin up a single JSRuntime for the whole bake.
@@ -997,7 +1072,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     // eval) to keep the bake deterministic and file-access-free.
     ModuleStore store = store_from_fold(fold);
     const bool use_module = !store.sources.empty();
-    prof_fold = prof_lap();
+    phases.next(bake_trace::kSpanCtx);
 
     rt = JS_NewRuntime();
     if (use_module) JS_SetModuleLoaderFunc(rt, sh_module_normalize, sh_module_loader, &store);
@@ -1030,7 +1105,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     if (JS_IsException(base)) { r.error = harvest_exception(ctx); JS_FreeValue(ctx,base); goto done; }
     JS_FreeValue(ctx, base);
     dsl::install_bindings(ctx);
-    prof_ctx = prof_lap();
+    phases.next(bake_trace::kSpanEval);
 
     {
         // Eval user source + a generic trampoline that publishes the authored
@@ -1052,7 +1127,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             if (JS_IsException(v)) { r.error = harvest_exception(ctx); JS_FreeValue(ctx,v); goto done; }
             JS_FreeValue(ctx, v);
         }
-        prof_eval = prof_lap();
+        phases.next(bake_trace::kSpanMerge);
 
         JSValue global = JS_GetGlobalObject(ctx);
         JSValue authored = JS_GetPropertyStr(ctx, global, "__partClass");
@@ -1127,7 +1202,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             // Thread the world field binding so terrainVolume can call the mesher.
             state.set_world(opts.world);
         }
-        prof_merge = prof_lap();
+        phases.next(bake_trace::kSpanBuild);
 
         JSValue inst = JS_CallConstructor(ctx, authored, 0, nullptr);
         JS_FreeValue(ctx, authored);
@@ -1150,7 +1225,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         JS_FreeValue(ctx, bret);
         JS_FreeValue(ctx, paramsObj);
         JS_FreeValue(ctx, inst);
-        prof_build = prof_lap();
+        phases.next(bake_trace::kSpanMesh);
 
         // Capture globalThis.__amb (a probe authored code may set) so tests can
         // assert the bake context exposes no ambient Date/require/fetch/os bindings.
@@ -1385,7 +1460,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             ve.turbulence = e.turbulence;
             emitters.push_back(ve);
         }
-        prof_mesh = prof_lap();
+        phases.next(bake_trace::kSpanSave);
         bool ok = part_asset::save_v2(path, blas, tlas,
                                       kids.empty() ? nullptr : kids.data(), kids.size(),
                                       lods, emitters, r.resolved_hash);
@@ -1406,23 +1481,50 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                 part_asset::save_flatten_hints(hpath, hints);
             }
         }
-        prof_save = prof_lap();
+        phases.end_phase();  // close kSpanSave; part-bake stays open
     }
 
 done:
+    // Close the phase still open on error paths BEFORE the runtime teardown,
+    // then close part-bake after it: the teardown lands in part-bake's
+    // residual ("free") time, exactly where the old prof_lap accounting put
+    // it on the success path.
+    phases.end_phase();
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);
-    if (prof_on) {
-        double total = std::chrono::duration<double, std::milli>(
-                           prof_clock::now() - prof_t0).count();
+    phases.end_part();
+    if (prof_on && btc) {
+        // Render the historical [bake_profile] line from the span data: find
+        // the part-bake span this bake just closed and read every phase value
+        // off its children. Single timing source — the printed milliseconds
+        // are exactly the values carried by the spans.
+        const bake_trace::Span snap = btc->snapshot();
+        const bake_trace::Span* pb =
+            find_last_span(snap, bake_trace::kSpanPartBake, nullptr);
+        double t_total = 0, t_fold = 0, t_ctx = 0, t_eval = 0, t_merge = 0,
+               t_build = 0, t_mesh = 0, t_save = 0;
+        if (pb) {
+            t_total = pb->end_ms - pb->begin_ms;
+            for (const bake_trace::Span& ph : pb->children) {
+                if (ph.name == nullptr || ph.end_ms == bake_trace::kOpenEndMs)
+                    continue;
+                const double ms = ph.end_ms - ph.begin_ms;
+                if      (std::strcmp(ph.name, bake_trace::kSpanFold)  == 0) t_fold  += ms;
+                else if (std::strcmp(ph.name, bake_trace::kSpanCtx)   == 0) t_ctx   += ms;
+                else if (std::strcmp(ph.name, bake_trace::kSpanEval)  == 0) t_eval  += ms;
+                else if (std::strcmp(ph.name, bake_trace::kSpanMerge) == 0) t_merge += ms;
+                else if (std::strcmp(ph.name, bake_trace::kSpanBuild) == 0) t_build += ms;
+                else if (std::strcmp(ph.name, bake_trace::kSpanMesh)  == 0) t_mesh  += ms;
+                else if (std::strcmp(ph.name, bake_trace::kSpanSave)  == 0) t_save  += ms;
+            }
+        }
         std::fprintf(stderr,
             "[bake_profile] %s total=%.1f fold=%.1f ctx=%.1f eval=%.1f "
             "merge=%.1f build=%.1f mesh=%.1f save=%.1f free=%.1f\n",
-            prof_class.empty() ? "?" : prof_class.c_str(), total,
-            prof_fold, prof_ctx, prof_eval, prof_merge, prof_build,
-            prof_mesh, prof_save,
-            total - (prof_fold + prof_ctx + prof_eval + prof_merge +
-                     prof_build + prof_mesh + prof_save));
+            prof_class.empty() ? "?" : prof_class.c_str(), t_total,
+            t_fold, t_ctx, t_eval, t_merge, t_build, t_mesh, t_save,
+            t_total - (t_fold + t_ctx + t_eval + t_merge +
+                       t_build + t_mesh + t_save));
     }
     return r;
 
