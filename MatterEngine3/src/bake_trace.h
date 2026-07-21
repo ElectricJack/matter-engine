@@ -55,8 +55,11 @@ public:
     void begin(const char* name);            // open a child of the open span
     void count(const char* name, double v);  // attach a counter to the open
                                              // span (root if none is open)
-    void end();                              // close the innermost open span
-                                             // (safe no-op when none is open)
+    // Close the innermost open span (safe no-op when none is open). Returns
+    // the closed span's duration in ms — exactly end_ms - begin_ms as stored
+    // on the span — so writers can record phase timings without re-walking
+    // the tree via snapshot(); 0.0 on the no-op path.
+    double end();
 
     // Reader API — deep copy of the whole tree under the mutex; safe to call
     // from any thread while the writer is appending. The returned root span

@@ -973,43 +973,59 @@ struct ScopedCurrentCollector {
 // way the laps did. The destructor closes any spans still open, so early
 // returns and the bad_alloc unwind leave the collector balanced.
 struct PartBakePhases {
+    // Phase timings recorded at the instant each span closes: Collector::end()
+    // returns end_ms - begin_ms exactly as stored on the span, so these are by
+    // construction the same values a snapshot would read off the tree — the
+    // MATTER_BAKE_PROFILE line renders from here in O(1) instead of deep-
+    // copying and searching the whole session trace per part.
+    struct Times {
+        double total = 0, fold = 0, ctx = 0, eval = 0, merge = 0,
+               build = 0, mesh = 0, save = 0;
+    } times;
     bake_trace::Collector* c = nullptr;
+    const char* cur = nullptr;  // name of the open phase (kSpan* constant)
     int depth = 0;  // 0 = nothing open, 1 = part-bake open, 2 = + phase open
     void start(bake_trace::Collector* col, const char* first_phase) {
         c = col;
         if (!c) return;
         c->begin(bake_trace::kSpanPartBake);
         c->begin(first_phase);
+        cur = first_phase;
         depth = 2;
     }
     void next(const char* phase) {  // close the open phase, open `phase`
         if (!c || depth == 0) return;
-        if (depth == 2) c->end();
+        if (depth == 2) record(c->end());
         c->begin(phase);
+        cur = phase;
         depth = 2;
     }
     void end_phase() {  // close the open phase; part-bake stays open
-        if (c && depth == 2) { c->end(); depth = 1; }
+        if (c && depth == 2) { record(c->end()); depth = 1; }
     }
     void end_part() {   // close part-bake (and any phase still open)
-        while (c && depth > 0) { c->end(); --depth; }
+        while (c && depth > 0) {
+            const double ms = c->end();
+            if (depth == 2) record(ms);
+            else            times.total = ms;  // the part-bake span itself
+            --depth;
+        }
     }
     ~PartBakePhases() { end_part(); }
-};
 
-// Depth-first search for the LAST (most recently appended) span with the
-// given name. bake_source snapshots immediately after closing its part-bake
-// span, and the collector is single-writer, so the rightmost match in tree
-// order is the span this bake just wrote — even when an outer collector has
-// accumulated part-bake spans from earlier parts of the same run.
-static const bake_trace::Span* find_last_span(const bake_trace::Span& s,
-                                              const char* name,
-                                              const bake_trace::Span* best) {
-    if (s.name && std::strcmp(s.name, name) == 0) best = &s;
-    for (const bake_trace::Span& child : s.children)
-        best = find_last_span(child, name, best);
-    return best;
-}
+private:
+    void record(double ms) {  // accumulate the just-closed phase's duration
+        if (cur == nullptr) return;
+        if      (std::strcmp(cur, bake_trace::kSpanFold)  == 0) times.fold  += ms;
+        else if (std::strcmp(cur, bake_trace::kSpanCtx)   == 0) times.ctx   += ms;
+        else if (std::strcmp(cur, bake_trace::kSpanEval)  == 0) times.eval  += ms;
+        else if (std::strcmp(cur, bake_trace::kSpanMerge) == 0) times.merge += ms;
+        else if (std::strcmp(cur, bake_trace::kSpanBuild) == 0) times.build += ms;
+        else if (std::strcmp(cur, bake_trace::kSpanMesh)  == 0) times.mesh  += ms;
+        else if (std::strcmp(cur, bake_trace::kSpanSave)  == 0) times.save  += ms;
+        cur = nullptr;
+    }
+};
 
 BakeResult ScriptHost::bake_source(const std::string& source,
                                    const std::string& params_json,
@@ -1494,37 +1510,19 @@ done:
     JS_FreeRuntime(rt);
     phases.end_part();
     if (prof_on && btc) {
-        // Render the historical [bake_profile] line from the span data: find
-        // the part-bake span this bake just closed and read every phase value
-        // off its children. Single timing source — the printed milliseconds
-        // are exactly the values carried by the spans.
-        const bake_trace::Span snap = btc->snapshot();
-        const bake_trace::Span* pb =
-            find_last_span(snap, bake_trace::kSpanPartBake, nullptr);
-        double t_total = 0, t_fold = 0, t_ctx = 0, t_eval = 0, t_merge = 0,
-               t_build = 0, t_mesh = 0, t_save = 0;
-        if (pb) {
-            t_total = pb->end_ms - pb->begin_ms;
-            for (const bake_trace::Span& ph : pb->children) {
-                if (ph.name == nullptr || ph.end_ms == bake_trace::kOpenEndMs)
-                    continue;
-                const double ms = ph.end_ms - ph.begin_ms;
-                if      (std::strcmp(ph.name, bake_trace::kSpanFold)  == 0) t_fold  += ms;
-                else if (std::strcmp(ph.name, bake_trace::kSpanCtx)   == 0) t_ctx   += ms;
-                else if (std::strcmp(ph.name, bake_trace::kSpanEval)  == 0) t_eval  += ms;
-                else if (std::strcmp(ph.name, bake_trace::kSpanMerge) == 0) t_merge += ms;
-                else if (std::strcmp(ph.name, bake_trace::kSpanBuild) == 0) t_build += ms;
-                else if (std::strcmp(ph.name, bake_trace::kSpanMesh)  == 0) t_mesh  += ms;
-                else if (std::strcmp(ph.name, bake_trace::kSpanSave)  == 0) t_save  += ms;
-            }
-        }
+        // Render the historical [bake_profile] line from the phase timings
+        // PartBakePhases recorded as it closed each span. Collector::end()
+        // hands back exactly the ms stored on the span, so the printed values
+        // are identical to what a snapshot of the trace would yield — without
+        // the O(session-trace) snapshot + search this path used to do.
+        const PartBakePhases::Times& t = phases.times;
         std::fprintf(stderr,
             "[bake_profile] %s total=%.1f fold=%.1f ctx=%.1f eval=%.1f "
             "merge=%.1f build=%.1f mesh=%.1f save=%.1f free=%.1f\n",
-            prof_class.empty() ? "?" : prof_class.c_str(), t_total,
-            t_fold, t_ctx, t_eval, t_merge, t_build, t_mesh, t_save,
-            t_total - (t_fold + t_ctx + t_eval + t_merge +
-                       t_build + t_mesh + t_save));
+            prof_class.empty() ? "?" : prof_class.c_str(), t.total,
+            t.fold, t.ctx, t.eval, t.merge, t.build, t.mesh, t.save,
+            t.total - (t.fold + t.ctx + t.eval + t.merge +
+                       t.build + t.mesh + t.save));
     }
     return r;
 

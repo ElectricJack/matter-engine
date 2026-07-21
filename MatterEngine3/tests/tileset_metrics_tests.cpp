@@ -221,6 +221,37 @@ static void test_hull_char_size() {
     CHECK(tileset::orient_weight_of(cap) == 1.0f, "capsule: 3.0 extent ratio -> weight 1");
 }
 
+static void test_scale_normalization() {
+    // Two instances SHARING one child_hash (map keyed by plain hash, one
+    // entry) at scales 0.5 and 2.0, same 0.2 m absolute displacement. The
+    // effective characteristic size is char_size * instance scale, so the
+    // normalized deltas differ 4x: 0.2/(1*0.5)=0.4 vs 0.2/(1*2.0)=0.1.
+    SettledInstance a0 = inst(11, 1.0f, 0, 1.0f);  a0.scale = 0.5f;
+    SettledInstance a1 = inst(11, 4.0f, 0, 1.0f);  a1.scale = 2.0f;
+    SettledInstance b0 = a0;  b0.pose.px += 0.2f;
+    SettledInstance b1 = a1;  b1.pose.px += 0.2f;
+    SettledTorus a = make_torus({ a0, a1 });
+    SettledTorus b = make_torus({ b0, b1 });
+
+    PoseMetricMap map;
+    map[11] = PoseMetricInfo{ 1.0f, 1.0f };  // one UNSCALED entry serves both
+    CHECK(map.size() == 1, "scale: map keyed by plain hash (one shared entry)");
+
+    PoseDeltaReport r = tileset::compare_settled(a, b, map);
+    // N=2 nearest-rank: median = index 0 (smaller), p95/max = index 1.
+    CHECK(near_f(r.median, 0.1f), "scale: scale-2 instance normalized to 0.1");
+    CHECK(near_f(r.max, 0.4f), "scale: scale-0.5 instance normalized to 0.4");
+    CHECK(near_f(r.max / r.median, 4.0f, 1e-3f),
+          "scale: same displacement, 4x normalized-delta ratio");
+
+    // Non-positive scale falls back to 1.0 (plain char_size normalization).
+    SettledInstance z0 = inst(11, 1.0f, 0, 1.0f);  z0.scale = 0.0f;
+    SettledInstance z1 = z0;  z1.pose.px += 0.2f;
+    PoseDeltaReport rz = tileset::compare_settled(make_torus({ z0 }),
+                                                  make_torus({ z1 }), map);
+    CHECK(near_f(rz.max, 0.2f), "scale: scale<=0 falls back to 1.0");
+}
+
 int main() {
     test_identity();
     test_known_offset();
@@ -232,6 +263,7 @@ int main() {
     test_gate_boundary();
     test_percentiles();
     test_hull_char_size();
+    test_scale_normalization();
     printf("tileset_metrics_tests: ");
     return check_summary();
 }

@@ -13,6 +13,8 @@
 
 #include "part_graph.h"        // includes script_host.h under the guard
 #include "part_asset_v2.h"     // cache_path_resolved
+#include "bake_trace.h"        // Bake Lab §II.6: install-path trace shape
+#include "bake_trace_names.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -23,6 +25,14 @@
 #include <vector>
 #include <sys/stat.h>
 #include <unistd.h>
+
+#ifdef _WIN32
+// MinGW-w64 has no realpath(); _fullpath (stdlib.h) is the direct equivalent.
+// Callers here all pass 4096-byte buffers (see main's `abs`).
+static char* realpath(const char* path, char* resolved) {
+    return _fullpath(resolved, path, 4096);
+}
+#endif
 
 #include "check.h"
 
@@ -445,11 +455,84 @@ static void test_stale_material_cache_migrates() {
     fs::remove_all(root, ec);
 }
 
+// Bake Lab spec §II.6 trace-shape test: a cold-cache PartGraph::install with a
+// bake_trace::Collector current must record at least one part-bake span, with
+// its phase children (fold + ctx at minimum), IN THAT COLLECTOR — guarding
+// against part baking silently moving off the collector's (installing) thread,
+// where the thread-local current() would no longer see it.
+static void test_install_trace_shape() {
+    using namespace part_graph;
+    namespace fs = std::filesystem;
+
+    const fs::path root = fs::absolute("part_graph_trace_shape_test");
+    std::error_code ec;
+    fs::remove_all(root, ec);          // cold cache: no prior parts/
+    fs::create_directories(root / "schemas", ec);
+    fs::create_directories(root / "parts", ec);
+    CHECK(!ec, "trace-shape sandbox created");
+    if (ec) return;
+
+    write_file((root / "schemas" / "TraceBox.js").string(),
+        "class TraceBox extends Part {"
+        " build(p){ this.beginVoxels(0.25); this.fill(MAT.stone);"
+        " this.box([0,0,0],[0.5,0.5,0.5]); this.endVoxels(); } }");
+
+    script_host::ScriptHost host;
+    FileModuleResolver resolver(host, (root / "schemas").string());
+    HostBaker baker(host, root.string());
+    PartGraph graph(resolver, baker);
+
+    bake_trace::Collector col;
+    bake_trace::set_current(&col);
+    InstallResult r = graph.install({ChildRequest{"TraceBox", Params{}}});
+    bake_trace::set_current(nullptr);
+
+    CHECK(r.ok && r.baked.size() == 1 && r.hits == 0,
+          "trace-shape: cold install actually baked");
+
+    // Walk the snapshot for part-bake spans (install may nest them under
+    // other spans; depth-first search keeps the test robust to added layers).
+    bake_trace::Span snap = col.snapshot();
+    int part_bakes = 0;
+    bool have_fold = false, have_ctx = false, all_closed = true;
+    std::vector<const bake_trace::Span*> stack{&snap};
+    while (!stack.empty()) {
+        const bake_trace::Span* s = stack.back();
+        stack.pop_back();
+        if (s->name && std::strcmp(s->name, bake_trace::kSpanPartBake) == 0) {
+            ++part_bakes;
+            if (s->end_ms == bake_trace::kOpenEndMs) all_closed = false;
+            for (const bake_trace::Span& ph : s->children) {
+                if (!ph.name) continue;
+                if (std::strcmp(ph.name, bake_trace::kSpanFold) == 0) have_fold = true;
+                if (std::strcmp(ph.name, bake_trace::kSpanCtx)  == 0) have_ctx  = true;
+                if (ph.end_ms == bake_trace::kOpenEndMs) all_closed = false;
+            }
+        }
+        for (const bake_trace::Span& c : s->children) stack.push_back(&c);
+    }
+    CHECK(part_bakes >= 1,
+          "trace-shape: install recorded a part-bake span in the collector");
+    CHECK(have_fold, "trace-shape: part-bake has a fold phase child");
+    CHECK(have_ctx, "trace-shape: part-bake has a ctx phase child");
+    CHECK(all_closed, "trace-shape: all part-bake/phase spans closed");
+
+    fs::remove_all(root, ec);
+}
+
 int main(int argc, char** argv) {
     using namespace part_graph;
 
     test_stale_material_cache_migrates();
     if (argc == 2 && std::strcmp(argv[1], "--cache-migration-only") == 0)
+        return g_failures == 0 ? 0 : 1;
+
+    // Bake Lab §II.6: install-path trace shape with a collector set. Runs
+    // early (and selectable in isolation, like --cache-migration-only above)
+    // because it is cwd-portable via std::filesystem — the sandboxed tests
+    // below assume a POSIX /tmp + shell.
+    test_install_trace_shape();
+    if (argc == 2 && std::strcmp(argv[1], "--trace-shape-only") == 0)
         return g_failures == 0 ? 0 : 1;
 
     // Resolve the demo schemas + shared-lib to ABSOLUTE paths NOW, before any test
