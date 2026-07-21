@@ -361,8 +361,190 @@ static void test_sync_determinism() {
     CHECK(h1 == h2, "sync determinism: double-run pose hashes are identical");
 }
 
+// ---------------------------------------------------------------------------
+// Step-vs-batch pose_hash goldens (Bake Lab task 5.1, settle spec section II.6).
+// Golden values recorded from the PRE-refactor batch settle_layer (commit
+// 967926d4) on this toolchain. They gate the step-API refactor: batch and
+// explicit begin/step/end runs must both reproduce them exactly. NEVER update
+// a golden to make a refactor pass.
+// ---------------------------------------------------------------------------
+static const uint64_t kGoldenBoxesHash   = 0x569863c035295d23ull;
+static const uint64_t kGoldenLayeredHash = 0x175e3787212ea621ull;
+
+// Fixture A: 30 free boxes, seed 777, single layer, no finalize.
+// (Same construction as test_settle_determinism.)
+static std::vector<tileset::BodySpawn> golden_boxes_spawns(const tileset::ColliderFit* box,
+                                                           float T) {
+    std::vector<tileset::BodySpawn> spawns;
+    uint64_t s = 777;
+    for (int i = 0; i < 30; ++i) {
+        tileset::BodySpawn b;
+        b.collider = box;
+        b.start = { phys_unit(s) * T, 0.3f + 0.5f * phys_unit(s), phys_unit(s) * T,
+                    0, 0, 0, 1 };
+        spawns.push_back(b);
+    }
+    return spawns;
+}
+
+static uint64_t golden_boxes_batch() {
+    const float T = 8.0f;
+    tileset::HeightField hf = flat_field(T, 0.25f);
+    tileset::SettleParams sp;
+    tileset::SettleWorld sw(T, hf, sp);
+    tileset::ColliderFit box = small_box_fit();
+    sw.settle_layer(golden_boxes_spawns(&box, T));
+    return sw.pose_hash();
+}
+
+// Fixture B: two layers (40 boxes + 2 sync-group instances, then 20 capsules)
+// plus finalize. (Same construction as test_layered_end_to_end.)
+struct GoldenLayeredSpawns {
+    std::vector<tileset::BodySpawn> layer1, layer2;
+};
+static GoldenLayeredSpawns golden_layered_spawns(const tileset::ColliderFit* box,
+                                                 const tileset::ColliderFit* twig,
+                                                 int group, float T) {
+    GoldenLayeredSpawns out;
+    uint64_t s = 424242;
+    for (int i = 0; i < 40; ++i) {
+        tileset::BodySpawn b;
+        b.collider = box;
+        b.start = { phys_unit(s) * T, 0.3f + 0.5f * phys_unit(s), phys_unit(s) * T,
+                    0, 0, 0, 1 };
+        out.layer1.push_back(b);
+    }
+    for (int k = 0; k < 2; ++k) {
+        tileset::BodySpawn b;
+        b.collider = box;
+        b.start = { 1.0f + 4.0f * k, 0.2f, 2.0f, 0, 0, 0, 1 };
+        b.sync_group = group;
+        b.instance = k;
+        out.layer1.push_back(b);
+    }
+    for (int i = 0; i < 20; ++i) {
+        tileset::BodySpawn b;
+        b.collider = twig;
+        b.density = 500.0f;
+        b.start = { phys_unit(s) * T, 0.4f + 0.4f * phys_unit(s), phys_unit(s) * T,
+                    0, 0, 0, 1 };
+        out.layer2.push_back(b);
+    }
+    return out;
+}
+
+static uint64_t golden_layered_batch() {
+    const float T = 8.0f;
+    tileset::HeightField hf = flat_field(T, 0.25f);
+    tileset::SettleParams sp;
+    tileset::SettleWorld sw(T, hf, sp);
+    int g = sw.add_sync_group({ { 0, 0, 0, 0, 0, 0, 1 },
+                                { 4, 0, 0, 0, 0, 0, 1 } });
+    tileset::ColliderFit box = small_box_fit();
+    tileset::ColliderFit twig = twig_fit();
+    GoldenLayeredSpawns sp2 = golden_layered_spawns(&box, &twig, g, T);
+    sw.settle_layer(sp2.layer1);
+    sw.settle_layer(sp2.layer2);
+    sw.finalize();
+    return sw.pose_hash();
+}
+
+// Explicit step-mode layer loop, mirroring settle_layer's reimplementation,
+// with TickStats sanity checks along the way.
+static void step_layer_checked(tileset::SettleWorld& sw,
+                               const std::vector<tileset::BodySpawn>& spawns,
+                               const tileset::SettleParams& sp,
+                               const char* label) {
+    sw.begin_layer(spawns);
+    int expect_tick = 0;
+    float sim_time = 0.0f, step_ms_sum = 0.0f;
+    bool ticks_ok = true, awake_ok = true, ms_ok = true, time_ok = true;
+    while (sim_time < sp.max_sim_time && !sw.layer_converged()) {
+        tileset::TickStats ts = sw.step();
+        if (ts.tick != expect_tick++) ticks_ok = false;
+        if (ts.layer_awake > (int)spawns.size() || ts.total_awake < ts.layer_awake)
+            awake_ok = false;
+        if (ts.step_ms < 0.0f) ms_ok = false;
+        if (ts.sim_time <= sim_time) time_ok = false;
+        sim_time = ts.sim_time;
+        step_ms_sum += ts.step_ms;
+    }
+    sw.end_layer();
+    char msg[128];
+    snprintf(msg, sizeof msg, "step[%s]: TickStats.tick increments from 0", label);
+    CHECK(ticks_ok && expect_tick > 0, msg);
+    snprintf(msg, sizeof msg, "step[%s]: layer_awake <= spawns and <= total_awake", label);
+    CHECK(awake_ok, msg);
+    snprintf(msg, sizeof msg, "step[%s]: step_ms sane (each >= 0, total > 0)", label);
+    CHECK(ms_ok && step_ms_sum > 0.0f, msg);
+    snprintf(msg, sizeof msg, "step[%s]: sim_time strictly increases by dt", label);
+    CHECK(time_ok, msg);
+}
+
+static uint64_t golden_boxes_step() {
+    const float T = 8.0f;
+    tileset::HeightField hf = flat_field(T, 0.25f);
+    tileset::SettleParams sp;
+    tileset::SettleWorld sw(T, hf, sp);
+    tileset::ColliderFit box = small_box_fit();
+    step_layer_checked(sw, golden_boxes_spawns(&box, T), sp, "boxes");
+    CHECK(sw.body_count() == 30, "step[boxes]: body_count matches spawns");
+    return sw.pose_hash();
+}
+
+static uint64_t golden_layered_step() {
+    const float T = 8.0f;
+    tileset::HeightField hf = flat_field(T, 0.25f);
+    tileset::SettleParams sp;
+    tileset::SettleWorld sw(T, hf, sp);
+    int g = sw.add_sync_group({ { 0, 0, 0, 0, 0, 0, 1 },
+                                { 4, 0, 0, 0, 0, 0, 1 } });
+    tileset::ColliderFit box = small_box_fit();
+    tileset::ColliderFit twig = twig_fit();
+    GoldenLayeredSpawns sp2 = golden_layered_spawns(&box, &twig, g, T);
+    step_layer_checked(sw, sp2.layer1, sp, "layered-1");
+    step_layer_checked(sw, sp2.layer2, sp, "layered-2");
+    sw.finalize();
+    CHECK(sw.body_count() == 62, "step[layered]: body_count spans both layers");
+    tileset::BodyState bs = sw.body_state(40);   // first sync instance
+    CHECK(bs.sync_group == g && bs.instance == 0,
+          "step[layered]: body_state reports sync group binding");
+    // Free body 0 (finalize turns sync bodies kinematic, which reads as awake).
+    tileset::BodyState fb = sw.body_state(0);
+    CHECK(fb.sync_group == -1 && !fb.awake && fb.ticks_awake > 0,
+          "step[layered]: settled free body is asleep but was awake for some ticks");
+    return sw.pose_hash();
+}
+
+static void test_step_vs_batch_golden() {
+    // (a) Batch settle_layer still reproduces the pre-refactor goldens.
+    uint64_t hb_batch = golden_boxes_batch();
+    uint64_t hl_batch = golden_layered_batch();
+    CHECK(hb_batch == kGoldenBoxesHash,
+          "golden: batch boxes pose_hash matches pre-refactor value");
+    CHECK(hl_batch == kGoldenLayeredHash,
+          "golden: batch layered pose_hash matches pre-refactor value");
+
+    // (b) The explicit begin/step/end loop produces the identical hashes.
+    uint64_t hb_step = golden_boxes_step();
+    uint64_t hl_step = golden_layered_step();
+    CHECK(hb_step == kGoldenBoxesHash,
+          "golden: step-mode boxes pose_hash matches pre-refactor value");
+    CHECK(hl_step == kGoldenLayeredHash,
+          "golden: step-mode layered pose_hash matches pre-refactor value");
+
+    if (hb_batch != kGoldenBoxesHash || hl_batch != kGoldenLayeredHash ||
+        hb_step != kGoldenBoxesHash || hl_step != kGoldenLayeredHash) {
+        printf("  [golden-diag] batch boxes=0x%016llx layered=0x%016llx\n",
+               (unsigned long long)hb_batch, (unsigned long long)hl_batch);
+        printf("  [golden-diag] step  boxes=0x%016llx layered=0x%016llx\n",
+               (unsigned long long)hb_step, (unsigned long long)hl_step);
+    }
+}
+
 int main() {
     printf("== tileset_physics_tests ==\n");
+    test_step_vs_batch_golden();
     test_smoke_drop();
     test_settle_boxes_converge();
     test_settle_toroidal_wrap();

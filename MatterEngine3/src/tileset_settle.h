@@ -41,6 +41,26 @@ struct LayerResult {
     float sim_time = 0.0f;
 };
 
+// Per-tick telemetry captured by SettleWorld::step().
+struct TickStats {
+    int   tick = 0;                // tick index within the current layer (0-based)
+    float sim_time = 0.0f;         // accumulated sim seconds this layer
+    int   layer_awake = 0, total_awake = 0;
+    float max_lin_vel = 0.0f, max_ang_vel = 0.0f;   // this layer, sim units
+    bool  first_contact = false;   // latched true after fall phase ends
+    int   wake_events = 0;         // asleep->awake transitions this tick
+    float step_ms = 0.0f;
+};
+
+// Per-body inspection state (world units, unscaled).
+struct BodyState {
+    Pose  pose;
+    float lin_vel[3], ang_vel[3];
+    bool  awake = false;
+    int   ticks_awake = 0;
+    int   sync_group = -1, instance = 0;
+};
+
 // One box3d world spanning the 4x4 torus. Bodies wrap toroidally in x/z.
 class SettleWorld {
 public:
@@ -55,7 +75,23 @@ public:
 
     // Spawn one layer and step until converged or out of time.
     // Earlier layers stay dynamic (asleep unless disturbed).
+    // Implemented on top of the step API below; bit-identical to stepping
+    // manually: begin_layer + step while (sim_time < max_sim_time &&
+    // !layer_converged()) + end_layer.
     LayerResult settle_layer(const std::vector<BodySpawn>& bodies);
+
+    // Step mode. begin_layer spawns bodies exactly as settle_layer does.
+    // step() advances one tick: b3World_Step -> wrap_bodies -> sync_groups_step
+    // -> telemetry. layer_converged() applies the same sleep_fraction rule
+    // (false until the first step of the layer). end_layer() refreshes poses()
+    // and returns the aggregate LayerResult.
+    void      begin_layer(const std::vector<BodySpawn>& spawns);
+    TickStats step();
+    bool      layer_converged() const;
+    LayerResult end_layer();
+
+    int       body_count() const;
+    BodyState body_state(int index) const;   // index = spawn order
 
     // After the last layer: snap sync groups to exact shared poses, switch
     // them kinematic, micro-relax, and refresh poses().
