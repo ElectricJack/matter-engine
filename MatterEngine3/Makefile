@@ -111,6 +111,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/matter_engine.cpp \
           src/refine_controller.cpp \
           src/async_bake.cpp \
+          src/bake_trace.cpp \
           src/resolve_cache.cpp \
           src/terrain_field.cpp \
           src/terrain_mesher.cpp \
@@ -169,6 +170,7 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           matter_engine.o \
           refine_controller.o \
           async_bake.o \
+          bake_trace.o \
           resolve_cache.o \
           terrain_field.o \
           terrain_mesher.o \

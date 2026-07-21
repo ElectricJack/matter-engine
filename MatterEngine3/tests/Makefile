@@ -342,6 +342,10 @@ SHADER_SOURCE_CPP = shader_source_tests.cpp ../src/shader_source.cpp
 ASYNCQ_TARGET = async_queue_tests
 ASYNCQ_CPP = async_queue_tests.cpp ../src/async_bake.cpp
 
+# Bake Lab task 1.1 — BakeTrace span/counter collector (headless, pure CPU).
+BAKETRACE_TARGET = bake_trace_tests
+BAKETRACE_CPP    = bake_trace_tests.cpp ../src/bake_trace.cpp
+
 TILESETGTEX_TARGET = tileset_gtex_tests
 TILESETGTEX_CPP    = tileset_gtex_tests.cpp ../src/tileset_gtex.cpp
 
@@ -826,6 +830,7 @@ def_CPP_SRCS := $(sort \
     $(POLYTRI_CPP) \
     $(SHADER_SOURCE_CPP) \
     $(ASYNCQ_CPP) \
+    $(BAKETRACE_CPP) \
     $(TILESETGTEX_CPP) \
     $(EMITTERGATHER_CPP) \
     $(REFINECTL_CPP) \
@@ -946,6 +951,7 @@ DEV_OBJS = $(call obj_list,def,$(DEV_SOURCES))
 POLYTRI_OBJS = $(call obj_list,def,$(POLYTRI_CPP))
 SHADER_SOURCE_OBJS = $(call obj_list,def,$(SHADER_SOURCE_CPP))
 ASYNCQ_OBJS = $(call obj_list,def,$(ASYNCQ_CPP))
+BAKETRACE_OBJS = $(call obj_list,def,$(BAKETRACE_CPP))
 TILESETGTEX_OBJS = $(call obj_list,def,$(TILESETGTEX_CPP))
 EMITTERGATHER_OBJS = $(call obj_list,def,$(EMITTERGATHER_CPP))
 REFINECTL_OBJS = $(call obj_list,def,$(REFINECTL_CPP))
@@ -992,7 +998,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather
+.PHONY: clean run-matrix run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq run-baketrace gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1400,6 +1406,12 @@ $(ASYNCQ_TARGET): $(ASYNCQ_OBJS)
 run-asyncq: $(ASYNCQ_TARGET)
 	./$(ASYNCQ_TARGET)
 
+$(BAKETRACE_TARGET): $(BAKETRACE_OBJS)
+	$(CC) $(BAKETRACE_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) -lpthread
+
+run-baketrace: $(BAKETRACE_TARGET)
+	./$(BAKETRACE_TARGET)
+
 # Phase C Task 4 — RefineController tile pairing + priority/eviction (pure CPU, def flavor).
 $(REFINECTL_TARGET): $(REFINECTL_OBJS)
 	$(CC) $(REFINECTL_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS)
@@ -1608,7 +1620,7 @@ clean:
 	      $(TILESETMEADOWMANIFEST_TARGET) $(RETOPO_INT_TARGET) $(SHADER_SOURCE_TARGET) \
 	      $(POLYTRI_TARGET) $(ISO_TARGET) $(FLATTEN_TARGET) \
 	      $(TILESETTORUSBVH_TARGET) $(TILESETDSL_TARGET) $(TILESETBAKE_TARGET) \
-	      $(TILESETGTEX_TARGET) $(ASYNCQ_TARGET) $(GALLERY_TARGET) \
+	      $(TILESETGTEX_TARGET) $(ASYNCQ_TARGET) $(BAKETRACE_TARGET) $(GALLERY_TARGET) \
 	      $(LIVEPROD_TARGET) $(MODAPPLY_TARGET) $(MODBAKE_TARGET) $(PARTSTORE_TARGET) \
 	      $(TERRAINNOISE_TARGET) \
 	      $(REFINECTL_TARGET) \
