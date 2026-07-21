@@ -1,6 +1,8 @@
 #version 460
 #extension GL_GOOGLE_include_directive : require
 
+#include "vol_common.glsl"
+
 layout(location = 0) in vec2 in_uv;
 layout(location = 0) out vec4 out_hdr;
 
@@ -31,6 +33,8 @@ layout(set = 0, binding = 7, std430) readonly buffer RtMaterialTable {
 const uint MATERIAL_THIN_WALLED = 1u << 0u;
 
 layout(set = 0, binding = 8) uniform sampler2D transmission_texture;
+layout(set = 0, binding = 9) uniform sampler3D vol_integrated_texture;
+layout(set = 0, binding = 10) uniform sampler2D depth_texture;
 
 layout(push_constant) uniform SceneLighting {
     vec3 sun_direction;
@@ -45,8 +49,8 @@ layout(push_constant) uniform SceneLighting {
     float camera_fwd_z;
     float tan_half_fov;
     float aspect_ratio;
-    float pad0;
-    float pad1;
+    float vol_enabled;
+    float vol_debug_view;
 } lighting;
 
 #include "sky_common.glsl"
@@ -78,6 +82,11 @@ void main() {
         vec3 sky = sky_with_sun(ray, lighting.sky_color,
                                 to_sun, lighting.sun_color,
                                 lighting.sun_intensity);
+        if (lighting.vol_enabled > 0.5) {
+            vec3 far_uvw = vec3(in_uv, 1.0 - 0.5 / float(VOL_D));
+            vec4 integrated = texture(vol_integrated_texture, far_uvw);
+            sky = sky * integrated.a + integrated.rgb;
+        }
         out_hdr = vec4(sky, 1.0);
         return;
     }
@@ -97,6 +106,24 @@ void main() {
     }
     if (lighting.debug_view > 0.5) {
         out_hdr = vec4(visibility, 1.0);
+        return;
+    }
+    if (lighting.vol_debug_view > 2.5) {
+        float depth_sample = texture(depth_texture, in_uv).r;
+        float linear_depth = VOL_NEAR / max(depth_sample, 1e-6);
+        float slice_n = depth_to_slice_n(linear_depth);
+        vec3 uvw = vec3(in_uv, slice_n);
+        if (lighting.vol_debug_view > 4.5) {
+            vec4 integrated = texture(vol_integrated_texture, uvw);
+            out_hdr = vec4(integrated.rgb, 1.0);
+        } else if (lighting.vol_debug_view > 3.5) {
+            vec4 integrated = texture(vol_integrated_texture, uvw);
+            out_hdr = vec4(integrated.rgb * 5.0, 1.0);
+        } else {
+            vec4 integrated = texture(vol_integrated_texture, uvw);
+            float density_vis = 1.0 - integrated.a;
+            out_hdr = vec4(vec3(density_vis), 1.0);
+        }
         return;
     }
     uint material_index = texelFetch(identity_texture,
@@ -171,5 +198,15 @@ void main() {
                       emission + specular +
                       transmission.rgb * transmission_coverage +
                       glass_reflection;
+
+    if (lighting.vol_enabled > 0.5) {
+        float depth_sample = texture(depth_texture, in_uv).r;
+        float linear_depth = VOL_NEAR / max(depth_sample, 1e-6);
+        float slice_n = depth_to_slice_n(linear_depth);
+        vec3 uvw = vec3(in_uv, slice_n);
+        vec4 integrated = texture(vol_integrated_texture, uvw);
+        linear_hdr = linear_hdr * integrated.a + integrated.rgb;
+    }
+
     out_hdr = vec4(linear_hdr, 1.0);
 }

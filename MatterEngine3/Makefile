@@ -225,7 +225,10 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/gi_temporal.comp.spv \
          build/shaders_vk/gi_atrous.comp.spv \
          build/shaders_vk/rt_surface.rchit.spv \
-         build/shaders_vk/rt_surface_test.rgen.spv
+         build/shaders_vk/rt_surface_test.rgen.spv \
+         build/shaders_vk/vol_density.comp.spv \
+         build/shaders_vk/vol_scatter.comp.spv \
+         build/shaders_vk/vol_integrate.comp.spv
 
 build/shaders_vk/%.spv: shaders_vk/%
 	@mkdir -p $(dir $@)
@@ -245,6 +248,11 @@ build/shaders_vk/composite.frag.spv build/shaders_vk/rt_lighting.rgen.spv: \
 
 build/shaders_vk/gi_temporal.comp.spv build/shaders_vk/gi_atrous.comp.spv: \
     shaders_vk/gi_common.glsl
+
+build/shaders_vk/vol_density.comp.spv build/shaders_vk/vol_scatter.comp.spv \
+    build/shaders_vk/vol_integrate.comp.spv \
+    build/shaders_vk/composite.frag.spv: \
+    shaders_vk/vol_common.glsl
 
 shaders_gen/embedded_spirv.h: $(VK_SPV) tools/embed_spirv.py
 	python3 tools/embed_spirv.py $@ $(VK_SPV)

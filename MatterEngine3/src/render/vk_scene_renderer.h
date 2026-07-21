@@ -307,8 +307,8 @@ struct VkSceneLighting {
     float camera_fwd_z = -1.0f;
     float tan_half_fov = 1.0f;
     float aspect_ratio = 1.0f;
-    float pad0 = 0.0f;
-    float pad1 = 0.0f;
+    float vol_enabled = 0.0f;
+    float vol_debug_view = 0.0f;
 };
 static_assert(sizeof(VkSceneLighting) == 80);
 
