@@ -152,6 +152,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/render/streamline_bridge.cpp \
               $(ME3_DIR)/src/render/vk_context.cpp $(ME3_DIR)/src/render/vk_resources.cpp \
               $(ME3_DIR)/src/render/vk_pipeline.cpp $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+              $(ME3_DIR)/src/render/tileset_slicer.cpp \
               $(ME3_DIR)/src/render/vk_volumetrics.cpp $(ME3_DIR)/src/render/vk_emitter_gather.cpp \
               $(ME3_DIR)/src/render/vk_instance_cache.cpp \
               $(ME3_DIR)/src/render/vulkan_only_compat.cpp \
@@ -435,11 +436,14 @@ build/shaders_vk/%.spv: $(ME3_DIR)/shaders_vk/%
 build/shaders_vk/raster.vert.spv build/shaders_vk/gbuffer.frag.spv: \
     $(ME3_DIR)/shaders_vk/material_common.glsl
 
+build/shaders_vk/gbuffer.frag.spv: $(ME3_DIR)/shaders_vk/tileset_common.glsl
+
 build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_visibility.rahit.spv \
     build/shaders_vk/rt_radiance.rmiss.spv \
     build/shaders_vk/rt_lighting.rgen.spv \
     build/shaders_vk/rt_surface_test.rgen.spv: \
-    $(ME3_DIR)/shaders_vk/rt_surface_common.glsl
+    $(ME3_DIR)/shaders_vk/rt_surface_common.glsl \
+    $(ME3_DIR)/shaders_vk/tileset_common.glsl
 
 build/shaders_vk/composite.frag.spv build/shaders_vk/rt_lighting.rgen.spv: \
     $(ME3_DIR)/shaders_vk/sky_common.glsl
@@ -473,6 +477,8 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_resources.cpp \
         $(ME3_DIR)/src/render/vk_pipeline.cpp \
         $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+        $(ME3_DIR)/src/render/tileset_slicer.cpp \
+        $(ME3_DIR)/src/tileset_gtex.cpp \
         $(ME3_DIR)/src/render/vk_volumetrics.cpp \
         $(ME3_DIR)/src/render/vk_emitter_gather.cpp \
         $(ME3_DIR)/src/render/raster_mesh.cpp \
@@ -491,6 +497,8 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/vk_resources.cpp \
 	    $(ME3_DIR)/src/render/vk_pipeline.cpp \
 	    $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+	    $(ME3_DIR)/src/render/tileset_slicer.cpp \
+	    $(ME3_DIR)/src/tileset_gtex.cpp \
 	    $(ME3_DIR)/src/render/vk_volumetrics.cpp \
 	    $(ME3_DIR)/src/render/vk_emitter_gather.cpp \
 	    $(ME3_DIR)/src/render/raster_mesh.cpp \

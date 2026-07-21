@@ -351,6 +351,23 @@ public:
     bool update_materials(const std::vector<MaterialGpuRecord>& records,
                           uint64_t shading_revision,
                           uint64_t geometry_revision, std::string& error);
+    // Phase 1 tileset Vulkan port (Task 6): loads a .gtex ground tileset atlas
+    // (tileset_gtex.h) into slot [0,4), CPU-slices it into 16-layer texture
+    // arrays with full per-layer mip chains (tileset_slicer.h), uploads them,
+    // and (re)writes the shared TilesetParams UBO plus both descriptor sets
+    // (raster set 1 bindings 6/7, RT set 0 bindings 15/16). Fails closed: on
+    // any error the slot's previous contents (if any) are left untouched and
+    // false is returned with error set — ground rendering for that slot
+    // degrades to untextured, it never crashes and never leaves a
+    // partially-uploaded image bound. Safe to call before/without a prior
+    // init(); returns false if the renderer has not initialized Vulkan
+    // resources yet.
+    bool load_tileset_slot(int slot, const std::string& gtex_path,
+                           std::string& error);
+    // Frees slot's GPU images (if loaded) and rewrites descriptors across all
+    // frame slots to point back at the shared dummy images. No-op if the slot
+    // was never loaded or slot is out of range.
+    void unload_tileset_slot(int slot);
     bool consume_gi_history_reset();
     bool rt_geometry_classification_dirty(uint64_t part_hash) const;
     void release_part(uint64_t part_hash);
@@ -716,6 +733,64 @@ private:
         uint32_t max_draw_indirect_count = 0;
     };
 
+    // --- Phase 1 tileset Vulkan port (Task 6) ------------------------------
+    // Channel order matches tileset_gtex.h's ChannelId and the descriptor
+    // array index slot*4 + channel used by both descriptor sets.
+    enum TilesetChannel {
+        kTilesetChannelAlbedo = 0,
+        kTilesetChannelNormal = 1,
+        kTilesetChannelOrm = 2,
+        kTilesetChannelHeight = 3,
+        kTilesetChannelCount = 4,
+    };
+
+    // Raw-handle image, manually created/destroyed: matter::VkImageResource's
+    // create_image() only supports a single mip level and array layer
+    // (vk_resources.cpp), so the 16-layer, full-mip-chain images this feature
+    // requires are built directly with vkCreateImage/vkCreateImageView here,
+    // reusing the public matter::find_memory_type/create_buffer/submit_immediate
+    // helpers for memory allocation and upload plumbing.
+    struct TilesetImage {
+        VkImage image = VK_NULL_HANDLE;
+        VkImageView view = VK_NULL_HANDLE;  // VK_IMAGE_VIEW_TYPE_2D_ARRAY
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+    };
+
+    struct TilesetSlotGpu {
+        bool loaded = false;
+        TilesetImage channels[kTilesetChannelCount];
+        float tile_size_m = 0.0f;
+        float texels_per_meter = 0.0f;
+        float height_min = 0.0f;
+        float height_max = 0.0f;
+        float mean_albedo[3] = {0.0f, 0.0f, 0.0f};
+    };
+
+    // std140 UBO — MUST match the plan's Task 6 struct field-for-field
+    // (MatterEngine3/shaders_vk/tileset_common.glsl's TilesetParams block
+    // mirrors this: vec4 tile_size_m/texels_per_meter/height_min/height_max,
+    // vec4 mean_albedo[4], vec4 pom_a{steps,refine,max_distance,fade_band},
+    // vec4 pom_b{fade_center,fade_width,pad,pad}). Every group below is
+    // exactly 16 bytes so the natural C++ layout matches std140 with no
+    // manual padding.
+    struct alignas(16) TilesetParamsGpu {
+        float slot_tile_size_m[4]{};
+        float slot_texels_per_meter[4]{};
+        float slot_height_min[4]{};
+        float slot_height_max[4]{};
+        float slot_mean_albedo[4][4]{};  // rgb + valid flag in [.][3]
+        float pom_steps = 24.0f;
+        float pom_refine_steps = 4.0f;
+        float pom_max_distance_m = 25.0f;
+        float pom_fade_band_m = 5.0f;
+        float detail_fade_center_m = 40.0f;
+        float detail_fade_width_m = 10.0f;
+        float pad0 = 0.0f;
+        float pad1 = 0.0f;
+    };
+    static_assert(sizeof(TilesetParamsGpu) == 160,
+                  "TilesetParamsGpu must remain ten vec4 records (std140)");
+
     struct FrameResources {
         matter::VkBufferResource frame_constants;
         matter::VkBufferResource instances;
@@ -853,6 +928,25 @@ private:
     bool poisoned() const { return !poison_reason_.empty(); }
     void destroy_pipeline();
 
+    // --- Phase 1 tileset Vulkan port (Task 6) ------------------------------
+    // Creates the shared sampler, the three format-family dummy images, and
+    // the TilesetParams UBO on first use. Idempotent (tileset_infra_ready_
+    // guards re-entry). Called from init().
+    bool ensure_tileset_infra(std::string& error);
+    bool create_tileset_image(VkFormat format, uint32_t edge_px,
+                              uint32_t mip_levels, uint32_t array_layers,
+                              TilesetImage& out, std::string& error);
+    void destroy_tileset_image(TilesetImage& image);
+    // Real slot view if loaded, else the format-matched dummy's view.
+    VkImageView tileset_channel_view(int slot, int channel) const;
+    void write_tileset_params_buffer();
+    // Writes bindings 6 (16-entry sampler2DArray) and 7 (TilesetParams UBO)
+    // for one raster (set 1) descriptor set, sourced from current renderer
+    // state (loaded slots or dummies). Called once per frame at frame-resource
+    // creation/growth (update_frame_descriptors) and again for every frame
+    // slot whenever a tileset slot loads or unloads.
+    void write_tileset_descriptors_for_frame(VkDescriptorSet set);
+
     matter::VulkanDevice* vulkan_ = nullptr;
     matter::StreamlineBridge* dlss_bridge_ = nullptr;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
@@ -912,6 +1006,17 @@ private:
     matter::VkImageResource raw_transmission_;
     matter::VkImageResource vol_dummy_3d_;
     VkExtent2D raw_diffuse_extent_{};
+
+    // --- Phase 1 tileset Vulkan port (Task 6) ------------------------------
+    TilesetSlotGpu tileset_slots_[4]{};
+    // One dummy per distinct format among the 4 channels (albedo and ORM
+    // share R8G8B8A8_UNORM, so 3 dummies cover all 4 channel roles).
+    TilesetImage tileset_dummy_rgba8_;  // albedo, orm
+    TilesetImage tileset_dummy_rg8_;    // normal
+    TilesetImage tileset_dummy_r16_;    // height
+    VkSampler tileset_sampler_ = VK_NULL_HANDLE;
+    matter::VkBufferResource tileset_params_;
+    bool tileset_infra_ready_ = false;
     struct GiHistorySet {
         matter::VkImageResource radiance;
         matter::VkImageResource moments;

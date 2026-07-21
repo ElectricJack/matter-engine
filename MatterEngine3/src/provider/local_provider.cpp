@@ -850,6 +850,20 @@ bool LocalProvider::run_tileset_deferred(
                 return false;
             }
             MaterialRegistrySetGroundTilesetSlot(16, slot_idx);
+            // Tileset Vulkan port (Task 6): mirror the same .gtex atlas into
+            // the Vulkan renderer's texture-array slot, when one is active.
+            // Non-fatal to world load: a failure here leaves the Vulkan
+            // ground untextured for this slot but does not fail the bake.
+            if (cfg_.vk_tileset_load) {
+                std::string ve;
+                if (!cfg_.vk_tileset_load(slot_idx, gtex_path, ve)) {
+                    fprintf(stderr,
+                            "[local_provider] Vulkan tileset slot %d load "
+                            "failed (ground stays untextured): %s\n",
+                            slot_idx, ve.c_str());
+                    fflush(stderr);
+                }
+            }
             printf("LocalProvider: tileset '%s' -> slot %d (%s) [deferred]\n",
                    root_module.c_str(), slot_idx, gtex_path.c_str());
             return true;

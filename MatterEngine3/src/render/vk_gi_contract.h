@@ -99,6 +99,22 @@ static_assert(offsetof(MaterialGpuRecord, scattering_shape) == 112,
               "MaterialGpuRecord scattering_shape must be vec4 7");
 static_assert(offsetof(MaterialGpuRecord, flags_misc) == 128,
               "MaterialGpuRecord flags_misc must be uvec4 8");
+// flags_misc[0]: MaterialSurfaceFlags bitmask (unchanged).
+// flags_misc[1]: schema v4 / Vulkan tileset (spec "Material schema", Phase 1
+//   Task 8): packs the ground detail slot (low byte) and the ground macro
+//   slot (next byte, Phase 3) as (slot + 1), so -1 (untextured / no macro)
+//   encodes as 0 in that byte:
+//     flags_misc[1] = uint32(detailSlot + 1) | (uint32(macroSlot + 1) << 8)
+//   Packed by MaterialRegistryPackRtForGPU / MaterialPackDetailMacroSlots
+//   (MatterSurfaceLib/include/material_registry.h) from MaterialDef's
+//   groundTilesetSlot ("detail slot", runtime override via
+//   MaterialRegistrySetGroundTilesetSlot) and groundMacroSlot (runtime
+//   override via MaterialRegistrySetGroundMacroSlot). Decoded on the shader
+//   side by shaders_vk/tileset_common.glsl's tileset_detail_slot()/
+//   tileset_macro_slot(). The GL raster path never reads flags_misc at all
+//   (MaterialRegistryPackForGPU's separate 12-float table is frozen and
+//   carries only the detail slot, as a plain float, in slot [11]).
+// flags_misc[2], flags_misc[3]: unused (reserved), always 0.
 static_assert(std::is_standard_layout<GpuRtPartRecord>::value,
               "GpuRtPartRecord must remain a standard-layout GPU record");
 static_assert(sizeof(GpuRtPartRecord) == 48,
