@@ -74,7 +74,8 @@ scope:        part | tileset | world
 module:       e.g. "Tree"                  (part/tileset scopes)
 params_json:  override params for the root  ← "bake different versions of a part"
 seed:         world/tileset seed
-phase_params: e.g. SettleParams overrides
+phase_params: per-phase overrides — SettleParams; lod_bake::BakeTargets and
+              part_flatten::FlattenTargets ladders (LOD-config experiments)
 cache_policy: bypass none | bypass derived caches (settle, resolve) | cold (fresh sandbox)
 ```
 
@@ -106,6 +107,15 @@ Each completed job contributes a row: job descriptor, trace summary (per-phase m
 - **Settle Lab** — as specified in [settle-tick-optimizer.md](settle-tick-optimizer.md): tick transport, collider wireframes colored by sleep state, convergence curves, blame list, A/B ghost with the pose-delta gate. Its transport becomes the shared transport widget bound to the settle `SteppablePhase`.
 - **Op stepper** — `build()` replay for a selected part: step through DSL ops, watch the tree assemble, see per-op cost attribution (which loop of branches burns the time).
 - **Variants** — the table + compare views.
+
+#### LOD experimentation (Part Lab + Variants, spanning both panels)
+
+Two distinct LOD experiment kinds are first-class:
+
+1. **Ladder-config variants** — same part, different LOD *pipeline* settings: override `lod_bake::BakeTargets` (`keep_ratio`/`threshold` ladder) and/or `part_flatten::FlattenTargets` (`radius_divisor` steps, `cluster_target_tris`, `max_depth`) per job via `phase_params`. Answers "what if the ladder were `{1.0, 0.3, 0.05}`?" without touching engine defaults or part source. (The third existing knob — part-authored `static lodBudgets`/`lodAnchorSize`, read via `ScriptHost::eval_lod_budgets` — is source-level; testing it means editing the part source, which the Lab treats as just another variant since the fold hash changes.)
+2. **Per-LOD generation-parameter variants (rung substitution)** — the hypothesis that a coarse LOD is better *generated* than *decimated*: a tree built with `{branches: 2, leafDensity: 0.1}` versus the full tree's decimated rung 2. The Lab tests this with existing machinery — a coarse-params bake is just another part variant — plus one compare primitive: designate variant B's LOD0 mesh as a **candidate rung k** of baseline variant A, and compare it against A's decimated rung k on cost (B's full bake time vs. A's rung-k decimation time), triangle count, and geometric deviation vs. A's LOD0. This makes the experiment runnable *before* any engine support for per-LOD generation exists.
+
+If rung-substitution experiments prove out, the forward path is an engine feature — parts opting into per-level build parameters (e.g. a `static lodParams(level)` hook) with the ladder assembled from multiple `build()` runs instead of decimation alone. That is out of scope here (it changes the LOD ladder's error/seam guarantees; the current ladder is strictly fine-to-coarse decimation, `lod_bake.cpp:99`) — but it would arrive as a new phase, born instrumented per §I.6, and the Lab's rung-substitution data is precisely the evidence that decision needs.
 
 ### I.6 Phase extensibility contract
 
@@ -209,6 +219,10 @@ struct BakeJobDesc {
     std::string params_json;        // override params (Part Lab editor output)
     uint64_t    seed = 0;
     enum CachePolicy { Warm, BypassDerived, Cold } cache = Cold;
+    // Optional LOD-pipeline overrides (ladder-config experiments, §I.5).
+    // Unset = engine defaults; production paths never populate these.
+    std::optional<lod_bake::BakeTargets>      lod_targets;
+    std::optional<part_flatten::FlattenTargets> flatten_targets;
 };
 
 class BakeLabJob {                  // one job = one sandbox + collector + thread
@@ -224,6 +238,7 @@ public:
 - **Artifacts:** resolved hash, `.part` path, per-LOD tri counts (via `part_asset::load_v2` like `rock_bake_profile::load_tri_count`, extended to per-LOD granularity), file sizes.
 - **Params editor:** on module selection, run `resolve_hash`'s merge path once to obtain canonical merged defaults (`ScriptHost::last_merged_params()`), parse to a key→value grid, edit, re-serialize as the job's `params_json`. Numbers/strings/bools editable; nested objects shown as raw JSON.
 - **Preview / LOD gallery:** the baked variant is displayed by loading the artifact's LOD meshes CPU-side and rendering wireframe overlays through the same ImGui draw-list projection path the Settle Lab uses (no Vulkan changes); rung selector switches which LOD is shown, with tri count and rung bake time from the trace beside it. A fully shaded preview (publishing the scratch part through the session renderer) is a recorded upgrade, not required for stage 2.
+- **LOD-target overrides (ladder-config experiments, §I.5):** when `lod_targets`/`flatten_targets` are set, the runner threads them to the bake as optional arguments (`HostBaker`/`lod_bake::bake_lods` and `part_flatten::flatten_part` grow optional-targets parameters defaulting to today's values; production call sites pass nothing and are byte-for-byte unchanged). Override-built artifacts live only in the job sandbox — never the production cache.
 - **World/tileset scopes (stage 3+):** a private `WorldSession` with `cache_root` pointed at the Lab scratch dir; details land with the settle instrument integration.
 
 ### II.4 Variant table — `MatterViewer/bake_lab_variants.cpp`
@@ -231,6 +246,7 @@ public:
 - `VariantRow { BakeJobDesc desc; SpanSummary phases; std::map<std::string,double> counters; JobArtifacts artifacts; }`.
 - Table UI (`ImGui::Table`): one column per phase family + key counters; a "baseline" row toggle; delta coloring vs. baseline.
 - Compare actions per scope: parts → wireframe ghost overlay (baseline gray, candidate colored) + tri/size deltas; settle (stage 3) → `PoseDeltaReport` PASS/FAIL cell.
+- **LOD compare (§I.5 LOD experimentation):** a per-rung sub-table for part rows — rung × {tris, rung time, deviation}. Deviation = sampled surface distance from the rung's mesh to the baseline variant's LOD0 (estimator chosen at implementation time; the loaded meshes and BLAS machinery are available — report max and mean, normalized by part bound radius). **Rung substitution:** mark variant B's LOD0 as "candidate rung k of variant A" — the sub-table then compares B's LOD0 against A's rung k on generation cost (B's full bake time vs. A's rung-k time), tris, and deviation vs. A's LOD0, with the ghost overlay for eyeballing. This is the per-LOD-generation-params experiment (a coarse-params tree vs. the decimated full tree).
 - **Persistence:** "Export" writes `{desc, phases, counters, artifact hashes}` (not artifact payloads) as JSON to `<lab-scratch>/variants/<name>.json`; "Import" restores rows as read-only (artifacts may be gone; hash recorded so a re-run can verify reproduction).
 
 ### II.5 Lab shell and transport
@@ -260,7 +276,8 @@ public:
 3. Part Lab: bake `Rock` with default params → phase breakdown matches the old `rock_bake_profile` numbers (±noise); edit `size`, re-bake, both variants in the table with sensible deltas; LOD gallery steps through rungs.
 4. Bake the same job twice → identical resolved hash and near-identical trace (determinism).
 5. Export a variant set, restart the viewer, import — rows restore.
-6. Production bake path: no behavioral diffs (`[bake-timing]` values consistent with span sums; all existing tests green).
+6. LOD experiments: bake `Rock` with default vs. overridden `BakeTargets` (`{1.0, 0.3, 0.05}`) → per-rung sub-table shows expected tri-count shifts; production `parts/` untouched. Rung-substitute a small-`size` variant as candidate rung 2 of the default → cost/tris/deviation cells populate and the ghost overlay renders both.
+7. Production bake path: no behavioral diffs (`[bake-timing]` values consistent with span sums; all existing tests green; `lod_bake`/`part_flatten` optional-targets parameters verified default-equivalent by existing flatten/LOD suites).
 
 ### Touched files, summary
 
@@ -269,7 +286,7 @@ public:
 | `MatterEngine3/src/bake_trace.{h,cpp}`, `bake_trace_names.h` | new — collector, spans, macros, thread-local current |
 | `MatterEngine3/src/matter_engine.cpp` | stage spans; tileset split; session collector + `last_bake_trace` |
 | `MatterEngine3/src/script_host.cpp` | `prof_lap` sites → spans; env mirror rendered from spans |
-| `MatterEngine3/src/lod_bake.cpp`, `part_flatten.cpp`, `tileset_bake.cpp` | phase spans + counters |
+| `MatterEngine3/src/lod_bake.cpp`, `part_flatten.cpp`, `tileset_bake.cpp` | phase spans + counters; `lod_bake`/`part_flatten` additionally grow optional-targets parameters (default = today's values) for Lab ladder-config overrides |
 | `MatterEngine3/include/matter/world_session.h` | `last_bake_trace` accessor |
 | `MatterEngine3/tests/bake_trace_tests.cpp`, `tests/Makefile` | new tests + `run-baketrace` |
 | `MatterViewer/bake_lab.{h,cpp}`, `bake_lab_timeline.cpp`, `bake_lab_variants.cpp` | new — shell, job runner, timeline, variants |
