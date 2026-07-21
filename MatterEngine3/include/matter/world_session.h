@@ -16,6 +16,8 @@
 #include "matter/events.h"
 #include "matter/query.h"
 
+#include "bake_trace.h"   // bake_trace::Span — see last_bake_trace()
+
 namespace matter {
 
 struct VulkanFrame;
@@ -192,6 +194,13 @@ public:
     // Generation counter bumped on install/reresolve; callers cache the snapshot
     // and re-query only when generation changes.
     uint64_t graph_generation() const;
+
+    // Bake Lab: snapshot of the hierarchical span trace recorded by the most
+    // recent (or in-flight) bake. Valid after BakeFinished; calling during a
+    // bake is safe and yields a consistent partial tree (open spans keep
+    // end_ms == bake_trace::kOpenEndMs). Root children are the execute_bake
+    // stages (install/compose/publish; a resolve-cache hit skips the first two).
+    void last_bake_trace(bake_trace::Span& out) const;
 
     // Phase C Task 7: enqueue a seed-driven world reroll. Stores
     // root_params_override = {"worldSeed": <world_seed>} and enqueues a Reload

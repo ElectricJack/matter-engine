@@ -20,6 +20,9 @@
 #include "matter/engine_context.h"
 #include "matter/world_session.h"
 
+#include "bake_trace.h"
+#include "bake_trace_names.h"
+
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -310,6 +313,35 @@ static bool test_completes_finished(const std::string& sandbox) {
     uint32_t ic = s->instance_count();
     printf("  instance_count: %u\n", ic);
     CHECK(ic > 0, "instance_count() > 0 after bake");
+
+    // Bake Lab (task 1.2): after BakeFinished, last_bake_trace returns the
+    // stage-span tree. reset_cache above nuked .cache (resolve cache included),
+    // so this was a full bake: the root's children are exactly the execute_bake
+    // stages install, compose, publish, in order, and all spans are closed.
+    {
+        bake_trace::Span trace;
+        s->last_bake_trace(trace);
+        CHECK(trace.name && std::strcmp(trace.name, bake_trace::kRootName) == 0,
+              "trace root is named \"root\"");
+        printf("  bake trace: %zu root children\n", trace.children.size());
+        for (const auto& c : trace.children)
+            printf("    span %s: %.1f..%.1f ms\n",
+                   c.name ? c.name : "(null)", c.begin_ms, c.end_ms);
+        CHECK(trace.children.size() == 3,
+              "trace root has exactly 3 stage spans (install/compose/publish)");
+        if (trace.children.size() == 3) {
+            CHECK(std::strcmp(trace.children[0].name, bake_trace::kSpanInstall) == 0,
+                  "stage span 0 is \"install\"");
+            CHECK(std::strcmp(trace.children[1].name, bake_trace::kSpanCompose) == 0,
+                  "stage span 1 is \"compose\"");
+            CHECK(std::strcmp(trace.children[2].name, bake_trace::kSpanPublish) == 0,
+                  "stage span 2 is \"publish\"");
+        }
+        for (const auto& c : trace.children) {
+            CHECK(c.begin_ms >= 0.0, "stage span begin_ms >= 0");
+            CHECK(c.end_ms >= c.begin_ms, "stage span is closed (end >= begin)");
+        }
+    }
 
     return true;
 }

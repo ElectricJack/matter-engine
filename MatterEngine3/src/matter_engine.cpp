@@ -10,6 +10,8 @@
 #include "matter/world_session.h"
 
 #include "async_bake.h"
+#include "bake_trace.h"        // Bake Lab: per-session stage-span collector
+#include "bake_trace_names.h"
 #include "ecs/ecs_runtime.h"
 #include "ecs/dynamic_scene_bridge.h"
 #include "ecs/streaming_systems.h"
@@ -407,6 +409,13 @@ struct WorldSession::Impl {
     // torn down and rebuilt. Cheap insurance: LocalProvider::poll_deltas
     // currently always returns false, but the flag also fences future providers.
     std::atomic<bool> bake_active{false};
+
+    // Bake Lab (task 1.2): per-session bake trace. execute_bake resets it and
+    // makes it the worker thread's current collector for the duration of the
+    // command; WorldSession::last_bake_trace() snapshots it from any thread
+    // (Collector::snapshot deep-copies under the collector mutex, so a
+    // concurrent snapshot during a bake yields a consistent partial tree).
+    bake_trace::Collector bake_collector;
 
     // Lazy CPU tracer for the query API (raycast/instance_count/instance_info).
     // Built on first query after a bake. mutable so instance_count() const can build.
@@ -824,6 +833,15 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     auto& token = cmd.token;
     auto is_cancelled = [&] { return token && token->is_cancelled(); };
 
+    // Bake Lab (task 1.2): fresh trace for this run; make the session collector
+    // current on the worker thread so BAKE_SPAN/BAKE_COUNT sites anywhere below
+    // record into it. RAII clear covers every exit path (error, cancel, return).
+    bake_collector.reset();
+    bake_trace::set_current(&bake_collector);
+    struct TraceCurrentGuard {
+        ~TraceCurrentGuard() { bake_trace::set_current(nullptr); }
+    } trace_current_guard;
+
     // 1) BakeStarted -----------------------------------------------------------
     ecs_runtime.enqueue_world_state(
         {ecs_runtime::WorldStateCommandKind::Loading});
@@ -984,7 +1002,10 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
                         pp_rc.fault_hook            = cfg.test_fault_hook;
                         pp_rc.load_msg_include_hash = true;
                         pp_rc.provider_ref          = provider;
-                        publish_pipeline(token, std::move(cached_manifest), pp_rc);
+                        {
+                            BAKE_SPAN(bake_trace::kSpanPublish);
+                            publish_pipeline(token, std::move(cached_manifest), pp_rc);
+                        }
                         double publish_ms_rc = std::chrono::duration<double, std::milli>(
                             clk_t::now() - t_publish_start_rc).count();
                         double total_ms2 = std::chrono::duration<double, std::milli>(
@@ -1012,6 +1033,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     int count_errors = 0;
     auto t_install_start = clk_t::now();
     {
+        BAKE_SPAN(bake_trace::kSpanInstall);   // same region install_ms measures
         std::string err;
         if (!provider->install_graph(err, part_graph::BakePolicy::RootsOnly)) {
             printf("install: %s\n", err.c_str());
@@ -1067,9 +1089,12 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         pp.fault_hook            = cfg.test_fault_hook;
         pp.load_msg_include_hash = true;
         pp.provider_ref          = provider;
-        publish_pipeline(token, std::move(empty_manifest), pp);
-        // publish_pipeline replaces PartStore — re-apply transient scratch dir.
-        if (store) store->set_scratch_dir(provider->transient_dir());
+        {
+            BAKE_SPAN(bake_trace::kSpanPublish);   // same region publish_ms measures
+            publish_pipeline(token, std::move(empty_manifest), pp);
+            // publish_pipeline replaces PartStore — re-apply transient scratch dir.
+            if (store) store->set_scratch_dir(provider->transient_dir());
+        }
         double publish_ms = std::chrono::duration<double, std::milli>(
             clk_t::now() - t_publish_start).count();
         double total_ms = std::chrono::duration<double, std::milli>(
@@ -1092,6 +1117,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     auto t_compose_start = clk_t::now();
     viewer::WorldManifest new_manifest;
     {
+        BAKE_SPAN(bake_trace::kSpanCompose);   // same region compose_ms measures
         std::string err;
         if (!provider->compose_world(new_manifest, err)) {
             printf("compose: %s\n", err.c_str());
@@ -1136,7 +1162,10 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     pp.fault_hook            = cfg.test_fault_hook;
     pp.load_msg_include_hash = true;
     pp.provider_ref          = provider;  // shared_ptr extends lifetime through publish
-    publish_pipeline(token, std::move(new_manifest), pp);
+    {
+        BAKE_SPAN(bake_trace::kSpanPublish);   // same region publish_ms measures
+        publish_pipeline(token, std::move(new_manifest), pp);
+    }
     double publish_ms = std::chrono::duration<double, std::milli>(
         clk_t::now() - t_publish_start).count();
     double total_ms = std::chrono::duration<double, std::milli>(
@@ -3664,6 +3693,10 @@ bool WorldSession::graph_snapshot(part_graph_snapshot::Snapshot& out) const {
 
 uint64_t WorldSession::graph_generation() const {
     return impl_->graph_generation_.load(std::memory_order_relaxed);
+}
+
+void WorldSession::last_bake_trace(bake_trace::Span& out) const {
+    out = impl_->bake_collector.snapshot();
 }
 
 void WorldSession::Impl::poll_runtime_sources() {

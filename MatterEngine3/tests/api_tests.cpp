@@ -2,6 +2,8 @@
 // bake, event sequence, offscreen render, raycast. Run with GALLIUM_DRIVER=d3d12.
 // Fixture: examples/primitive_demo / Primitives (smallest world, single Gallery root).
 #include "matter/engine_context.h"
+#include "bake_trace.h"
+#include "bake_trace_names.h"
 #include "raylib.h"
 #include <cassert>
 #include <cmath>
@@ -24,6 +26,12 @@ int main() {
     wd.engine_shared_lib_dir = "../MatterEngine3/shared-lib";
     auto session = engine->open_world(wd, err);
     if (!session) { printf("FAIL open_world: %s\n", err.c_str()); return 1; }
+
+    // Bake Lab (task 1.2): remove the resolve cache so this bake runs the full
+    // install+compose+publish path. A warm-cache bake legitimately takes the
+    // fast path (publish span only), which would make the trace check below
+    // nondeterministic across runs.
+    std::remove("cache/cache/Primitives.resolve");
 
     session->request_bake();
     // Phase B (Task 6): bake now runs on a worker thread and marshals GL work
@@ -55,6 +63,28 @@ int main() {
     int part_done = 0;
     for (auto& e : evs) if (e.type == matter::EventType::BakePartDone) ++part_done;
     printf("events: %zu (%d PartDone)\n", evs.size(), part_done);
+
+    // Bake Lab (task 1.2): after BakeFinished, last_bake_trace returns the
+    // stage-span tree. The cache was cleared above, so this was a full bake:
+    // the root's children are exactly install, compose, publish, in order,
+    // and all spans are closed (end_ms >= begin_ms >= 0).
+    {
+        bake_trace::Span trace;
+        session->last_bake_trace(trace);
+        assert(trace.name && std::strcmp(trace.name, bake_trace::kRootName) == 0);
+        printf("bake trace: %zu root children\n", trace.children.size());
+        for (auto& c : trace.children)
+            printf("  span %s: %.1f..%.1f ms\n",
+                   c.name ? c.name : "(null)", c.begin_ms, c.end_ms);
+        assert(trace.children.size() == 3);
+        assert(std::strcmp(trace.children[0].name, bake_trace::kSpanInstall) == 0);
+        assert(std::strcmp(trace.children[1].name, bake_trace::kSpanCompose) == 0);
+        assert(std::strcmp(trace.children[2].name, bake_trace::kSpanPublish) == 0);
+        for (auto& c : trace.children) {
+            assert(c.begin_ms >= 0.0);
+            assert(c.end_ms >= c.begin_ms);   // closed, not kOpenEndMs
+        }
+    }
 
     uint32_t ic = session->instance_count();
     printf("instance_count: %u\n", ic);

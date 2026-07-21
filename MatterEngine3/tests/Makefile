@@ -71,7 +71,7 @@ endif
 # and LDLIBS is last in the link recipes, so they ride in LDLIBS.
 ifneq (,$(findstring _NT,$(UNAME_S)))
     LDFLAGS = -lm -lpthread
-    LDLIBS  = ../../Libraries/raylib/src/libraylib.a -lopengl32 -lgdi32 -lwinmm
+    LDLIBS  = ../../Libraries/raylib/src/libraylib.a -lopengl32 -lgdi32 -lwinmm -lws2_32 -ldbghelp
 endif
 
 OBJDIR := build
@@ -700,7 +700,7 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../src/render/world_composer.cpp \
               ../src/render/raster_mesh.cpp \
               ../src/render/tileset_provider.cpp ../src/render/tileset_gl_ctx.cpp \
-              ../src/tileset_phase.cpp ../src/tileset_phase_gpu.cpp \
+              ../src/tileset_phase.cpp \
               ../src/tileset_bake_primary.cpp ../src/tileset_bake_ao.cpp \
               ../src/tileset_settle.cpp ../src/tileset_gtex.cpp \
               ../src/tileset_bake.cpp ../src/tileset_bake_gpu.cpp ../src/tileset_collider.cpp \
@@ -743,6 +743,7 @@ RETOPO_INT_LDFLAGS = $(LDFLAGS) \
 # ===== flavor gpu (GPU tests) ==========================================
 GPU_RENDER_CPP = \
     ../src/async_bake.cpp \
+    ../src/bake_trace.cpp \
     ../src/render/matrix_math.cpp ../src/render/frame_matrices.cpp \
     ../src/render/renderer.cpp ../src/render/raster_composer.cpp \
     ../src/render/raster_mesh.cpp ../src/render/part_store.cpp \
@@ -775,7 +776,7 @@ GPU_PIPELINE_CPP = \
     ../src/world_lights.cpp \
     ../src/world_tracer.cpp \
     ../src/shader_source.cpp \
-    ../src/tileset_phase.cpp ../src/tileset_phase_gpu.cpp \
+    ../src/tileset_phase.cpp \
     ../src/tileset_bake.cpp ../src/tileset_settle.cpp \
     ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
     ../src/tileset_bake_primary.cpp ../src/tileset_bake_ao.cpp \
@@ -796,6 +797,7 @@ GPU_MSL_CPP = \
 
 GPU_MSL_C   = $(COMMON_MSL_C)
 GPU_ALL_CPP = $(GPU_PIPELINE_CPP) $(GPU_RENDER_CPP) $(GPU_MSL_CPP) \
+              ../src/ecs/scene_registry.cpp \
               ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
               ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
               ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
