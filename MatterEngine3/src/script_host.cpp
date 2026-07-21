@@ -1360,10 +1360,26 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                            ? rel_path
                            : opts.parts_dir + "/" + rel_path;
         part_asset::LodLevels lods{};   // SP-2 writes no LOD array.
+        // Collect volumetric emitters authored via emitVolume() during build().
+        std::vector<part_asset::VolumeEmitter> emitters;
+        emitters.reserve(state.emitters().size());
+        for (const auto& e : state.emitters()) {
+            part_asset::VolumeEmitter ve;
+            std::memcpy(ve.pos,   e.pos,   sizeof ve.pos);
+            std::memcpy(ve.dir,   e.dir,   sizeof ve.dir);
+            ve.radius     = e.radius;
+            ve.spread     = e.spread;
+            ve.length     = e.length;
+            ve.density    = e.density;
+            std::memcpy(ve.color, e.color, sizeof ve.color);
+            ve.rise       = e.rise;
+            ve.turbulence = e.turbulence;
+            emitters.push_back(ve);
+        }
         prof_mesh = prof_lap();
         bool ok = part_asset::save_v2(path, blas, tlas,
                                       kids.empty() ? nullptr : kids.data(), kids.size(),
-                                      lods, r.resolved_hash);
+                                      lods, emitters, r.resolved_hash);
         if (!ok) { r.error.ok = false; r.error.message = "save_v2 failed"; }
         else {
             r.written_path = path;
