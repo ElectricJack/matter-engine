@@ -24,8 +24,9 @@ constexpr uint32_t kFormatVersionV3 = 3u;
 // stale flats regenerate automatically (Stage 2 ladder retune bumped 3 -> 4;
 // bake-hardening #2 bumped 4 -> 5 to add the instance_refs trailer;
 // lod-instanced-children bumped 5 -> 6 to add segment tag + inline_cutover;
-// the shared nine-level serialized/render capacity bumped 6 -> 7).
-constexpr uint32_t kFormatVersionFlat = 7u;
+// the shared nine-level serialized/render capacity bumped 6 -> 7;
+// volumetric emitter trailer bumped 7 -> 8).
+constexpr uint32_t kFormatVersionFlat = 8u;
 
 // Content-addressed identity for a part. All three inputs are OPAQUE byte ranges
 // to SP-1 (script source, params, child resolved-hashes). child_hashes need NOT be
@@ -91,6 +92,22 @@ struct FlattenHints {
 bool save_flatten_hints(const std::string& path, const FlattenHints& hints);
 bool load_flatten_hints(const std::string& path, FlattenHints& out);
 
+// Volumetric emitter record serialized as a tagged trailer in .part artifacts.
+// 44 bytes, padding-free layout for stable serialization.
+struct VolumeEmitter {
+    float pos[3];
+    float dir[3];
+    float radius;
+    float spread;
+    float length;
+    float density;
+    float color[3];
+    float rise;
+    float turbulence;  // 11 floats * 4 = 44 bytes
+};
+static_assert(sizeof(VolumeEmitter) == 44,
+              "VolumeEmitter must be 44 bytes for stable serialization");
+
 // Serialize the baked managers + child table + LOD levels to path (atomic temp+rename).
 // Writes format_version=2. Returns false on any I/O failure or dangling BLAS handle.
 // GL-free. children may be null iff child_count == 0; lods may be empty.
@@ -98,6 +115,15 @@ bool save_v2(const std::string& path, const BLASManager& blas,
              const TLASManager& tlas,
              const ChildInstance* children, size_t child_count,
              const LodLevels& lods,
+             uint64_t resolved_hash);
+
+// Overload with volumetric emitters: appends a tagged EMIT trailer after the
+// lods block. Omits the trailer when emitters is empty for backward compat.
+bool save_v2(const std::string& path, const BLASManager& blas,
+             const TLASManager& tlas,
+             const ChildInstance* children, size_t child_count,
+             const LodLevels& lods,
+             const std::vector<VolumeEmitter>& emitters,
              uint64_t resolved_hash);
 
 // Atomically publish source_path at target_path, replacing an existing target
@@ -115,6 +141,16 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
              BLASManager& blas, TLASManager& tlas,
              std::vector<ChildInstance>& children_out,
              LodLevels& lods_out,
+             PartAssetLoadFailure* failure = nullptr,
+             std::string* reason = nullptr);
+
+// Overload that also reads the optional EMIT trailer for volumetric emitters.
+// Returns empty emitters for older .part files that lack the trailer.
+bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
+             BLASManager& blas, TLASManager& tlas,
+             std::vector<ChildInstance>& children_out,
+             LodLevels& lods_out,
+             std::vector<VolumeEmitter>& emitters_out,
              PartAssetLoadFailure* failure = nullptr,
              std::string* reason = nullptr);
 

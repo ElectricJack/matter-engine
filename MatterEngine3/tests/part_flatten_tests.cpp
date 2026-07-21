@@ -1482,7 +1482,7 @@ static void test_flat_version_bump() {
 
     // New flats carry the bumped version.
     assert(part_asset::peek_format_version(p) == part_asset::kFormatVersionFlat);
-    assert(part_asset::kFormatVersionFlat == 7u);
+    assert(part_asset::kFormatVersionFlat == 8u);
 
     // Patch the version field back to 3 (a pre-retune bake): loader must reject.
     // Header layout: magic (u32) then format_version (u32) — verify the write
