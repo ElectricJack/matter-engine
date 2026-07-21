@@ -75,6 +75,12 @@ MATRIX_HEADERS = check.h ../include/matter/math_types.h ../include/matter/camera
                  ../src/render/matrix_math.h ../src/render/frame_matrices.h \
                  ../src/render/gpu_matrix_pack.h
 
+# CPU-only, no GL/VK/raylib link deps (mirrors MATRIX_TARGET's direct-compile
+# pattern) — pure atlas-slicing + mip math, unit-testable without a device.
+TILESETSLICER_TARGET = tileset_slicer_tests
+TILESETSLICER_CPP = tileset_slicer_tests.cpp ../src/render/tileset_slicer.cpp
+TILESETSLICER_HEADERS = check.h ../src/render/tileset_slicer.h
+
 FLECS_DIR = ../../Libraries/flecs
 FLECS_C = $(FLECS_DIR)/flecs.c
 
@@ -984,7 +990,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather
+.PHONY: clean run-matrix run-tilesetslicer run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -995,6 +1001,12 @@ $(MATRIX_TARGET): $(MATRIX_CPP) $(MATRIX_HEADERS)
 
 run-matrix: $(MATRIX_TARGET)
 	./$(MATRIX_TARGET)
+
+$(TILESETSLICER_TARGET): $(TILESETSLICER_CPP) $(TILESETSLICER_HEADERS)
+	$(CC) $(TILESETSLICER_CPP) -o $@ $(CFLAGS) $(INCLUDE_PATHS)
+
+run-tilesetslicer: $(TILESETSLICER_TARGET)
+	./$(TILESETSLICER_TARGET)
 
 $(ECS_TARGET): $(ECS_OBJS) $(BOX3D_LIB)
 	$(CC) $(ECS_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB)
@@ -1612,6 +1624,7 @@ clean:
 	      $(SECTORBAKE_TARGET) \
 	      $(EVALWORLD_TARGET) \
 	      $(MATRIX_TARGET) \
+	      $(TILESETSLICER_TARGET) \
 	      $(ECS_TARGET) \
 	      $(PHYSICS_TARGET) \
 	      $(SCENE_REGISTRY_TARGET) \
