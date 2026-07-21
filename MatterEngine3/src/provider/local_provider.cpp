@@ -10,6 +10,8 @@
 #include "blas_manager.hpp"
 #include "tlas_manager.hpp"
 #include "tileset_phase.h"
+#include "bake_trace.h"        // Bake Lab task 1.3: tileset span split
+#include "bake_trace_names.h"  // kSpanTileset
 #ifndef MATTER_VULKAN_ONLY
 #include "tileset_bake_gpu.h"  // TilesetPhaseOpts
 #include "tileset_provider.h"
@@ -753,6 +755,18 @@ bool LocalProvider::run_tileset_deferred(
 #if defined(MATTER_HAVE_SCRIPT_HOST)
     // Guard: max slots checked at compose_world time; indices already validated.
     const int total = (int)tileset_indices_.size();
+    if (total == 0) return true;   // nothing to do; keep traces free of empty spans
+
+    // Bake Lab task 1.3 (docs/bake-lab.md §II.1): the tileset phase is no
+    // longer inside compose_world — Task 15 moved it here, reached from
+    // publish_pipeline's tail (deferred, after BakeFinished) and eagerly from
+    // connect(). Spanning this function covers both paths and splits tileset
+    // time out of kSpanCompose on the Timeline. Observation-only: with no
+    // collector current on this thread the span is a no-op. GL work marshaled
+    // via run_gl below runs on the GL thread and is intentionally not spanned
+    // (single-writer discipline); its wall time still lands inside this span
+    // because run_gl blocks the calling thread.
+    BAKE_SPAN(bake_trace::kSpanTileset);
 
     // Phase B: route GL work through gpu_run when set; fall back to inline.
     auto run_gl = [&](const char* name, std::function<bool(std::string&)> fn,

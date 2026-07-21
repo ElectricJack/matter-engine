@@ -182,6 +182,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/render/dynamic_instance_slots.cpp \
               $(ME3_DIR)/src/streaming/sector_streaming_coordinator.cpp \
               $(ME3_DIR)/src/matter_engine.cpp \
+              $(ME3_DIR)/src/bake_trace.cpp \
               $(ME3_DIR)/src/pf_bindings.cpp \
               ../ParticleFlowLib/src/pf_math.cpp \
               ../ParticleFlowLib/src/pf_sim.cpp \

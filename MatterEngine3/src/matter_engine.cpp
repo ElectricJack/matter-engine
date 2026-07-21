@@ -1111,9 +1111,11 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         nullptr,
         streaming::SectorStreamingErrorCode::UnsupportedWorld);
 
-    // 3) compose_world on the worker (scatter/place; tileset GL marshaled) ----
-    // NOTE: tileset phase runs inside compose_world and is not separable without
-    // surgery into LocalProvider — compose_ms includes scatter + flatten + tileset.
+    // 3) compose_world on the worker (scatter/place) --------------------------
+    // NOTE: the tileset phase no longer runs inside compose_world (Task 15
+    // deferred it to run_tileset_deferred in publish_pipeline's tail), so
+    // compose_ms is scatter + placement only. BakeTrace task 1.3: tileset time
+    // is spanned separately (kSpanTileset inside run_tileset_deferred).
     auto t_compose_start = clk_t::now();
     viewer::WorldManifest new_manifest;
     {
