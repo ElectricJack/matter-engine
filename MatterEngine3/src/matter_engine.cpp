@@ -271,6 +271,7 @@ struct WorldSession::Impl {
     // World data.
     viewer::WorldManifest manifest;
     viewer::WorldState    state;
+    matter::FogSettings   authored_fog_{};
 
     // Compositor objects.
     std::unique_ptr<viewer::PartStore>      store;
@@ -961,6 +962,8 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
                     cached_manifest.instances = std::move(rc_payload.instances);
                     cached_manifest.lights    = rc_payload.lights;
 
+                    authored_fog_ = provider->world_settings().fog;
+
                     {
                         fprintf(stderr, "resolve cache: hit %016llx\n",
                                 (unsigned long long)rc_cache_key);
@@ -1100,6 +1103,8 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     double compose_ms = std::chrono::duration<double, std::milli>(
         clk_t::now() - t_compose_start).count();
     if (is_cancelled()) { emit_error(BakeErrorCode::Cancelled, "compose", "cancelled"); return; }
+
+    authored_fog_ = provider->world_settings().fog;
 
     // Phase C Task 17: save resolve cache after a successful full install+compose.
     // Write to temp + rename (atomic). Non-fatal on failure (no cache next warm launch).
@@ -3309,6 +3314,8 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
         }
     }
 
+    authored_fog_ = provider->world_settings().fog;
+
     if (is_cancelled()) {
         emit_error(BakeErrorCode::Cancelled, "cone", "cancelled");
         return;
@@ -3999,10 +4006,8 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->vk_scene->set_dlss_mode(opts.dlss_mode);
     impl_->vk_scene->set_ray_tracing_settings(opts.vulkan_ray_tracing);
     impl_->vk_scene->set_gi_settings(opts.vulkan_gi);
-    {
-        matter::FogSettings fog{};
-        impl_->vk_scene->set_volumetrics_settings(opts.vulkan_volumetrics, fog);
-    }
+    impl_->vk_scene->set_volumetrics_settings(opts.vulkan_volumetrics,
+                                               impl_->authored_fog_);
     const int material_count = MaterialRegistryCount();
     std::vector<MaterialGpuRecord> material_records(
         static_cast<size_t>(material_count));
