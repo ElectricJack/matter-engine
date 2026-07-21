@@ -888,6 +888,7 @@ void VkSceneRenderer::destroy_pipeline() {
     raw_specular_.reset();
     raw_specular_aux_.reset();
     raw_transmission_.reset();
+    vol_dummy_3d_.reset();
     for (auto& image : gi_atrous_) image.reset();
     for (auto& image : gi_spec_atrous_) image.reset();
     for (auto* histories : {&gi_history_, &gi_spec_history_}) {
@@ -1508,7 +1509,7 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     if (result != VK_SUCCESS)
         return fail_vk("vkCreateGraphicsPipelines(raster)", result, error);
 
-    std::array<VkDescriptorSetLayoutBinding, 9> sampled_bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 11> sampled_bindings{};
     for (uint32_t i = 0; i < 7; ++i) {
         sampled_bindings[i] = descriptor_binding(
             i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -1518,6 +1519,13 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
         7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT);
     sampled_bindings[8] = descriptor_binding(
         8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        VK_SHADER_STAGE_FRAGMENT_BIT);
+    // binding 9: vol_integrated_texture (sampler3D), binding 10: depth_texture
+    sampled_bindings[9] = descriptor_binding(
+        9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        VK_SHADER_STAGE_FRAGMENT_BIT);
+    sampled_bindings[10] = descriptor_binding(
+        10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         VK_SHADER_STAGE_FRAGMENT_BIT);
     VkDescriptorSetLayoutCreateInfo sampled_layout{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
@@ -1610,8 +1618,32 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sampler.maxLod = 0.0f;
     result = vkCreateSampler(device, &sampler, nullptr, &composite_sampler_);
-    return result == VK_SUCCESS ||
-           fail_vk("vkCreateSampler(composite)", result, error);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateSampler(composite)", result, error);
+
+    // 1x1x1 placeholder 3D texture for the volumetric integrated binding
+    // (composite.frag binding 9).  Replaced by the real froxel texture once
+    // VkVolumetrics is wired up; until then vol_enabled stays 0.0 so the
+    // shader never samples it.
+    if (!matter::create_image(
+            *vulkan_, VK_IMAGE_TYPE_3D, VK_FORMAT_R16G16B16A16_SFLOAT,
+            {1, 1, 1},
+            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            vol_dummy_3d_, error)) {
+        return false;
+    }
+    if (!matter::transition_image(
+            *vulkan_, vol_dummy_3d_,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, VK_ACCESS_2_NONE,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT, error)) {
+        return false;
+    }
+    return true;
 }
 
 bool VkSceneRenderer::create_display_pipeline(std::string& error) {
@@ -1862,7 +1894,7 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 13},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-         frame_slot_count * 77},
+         frame_slot_count * 79},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 22}};
     VkDescriptorPoolCreateInfo pool{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -2066,11 +2098,13 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
     matter::VkImageResource* sampled[] = {&albedo_, &normal_, &orm_,
                                           &visibility_, diffuse, specular,
                                           &material_instance_,
-                                          &raw_transmission_};
-    const uint32_t sampled_slots[] = {0, 1, 2, 3, 4, 5, 6, 8};
-    VkDescriptorImageInfo image_infos[8]{};
-    VkWriteDescriptorSet writes[9]{};
-    for (uint32_t i = 0; i < 8; ++i) {
+                                          &raw_transmission_,
+                                          &vol_dummy_3d_,
+                                          &depth_};
+    const uint32_t sampled_slots[] = {0, 1, 2, 3, 4, 5, 6, 8, 9, 10};
+    VkDescriptorImageInfo image_infos[10]{};
+    VkWriteDescriptorSet writes[11]{};
+    for (uint32_t i = 0; i < 10; ++i) {
         image_infos[i].sampler = composite_sampler_;
         image_infos[i].imageView = sampled[i]->view;
         image_infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -2084,13 +2118,13 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
     }
     VkDescriptorBufferInfo material_info{frame.materials.buffer, 0,
                                          frame.materials.size};
-    writes[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[8].dstSet = frame.composite_descriptor_set;
-    writes[8].dstBinding = 7;
-    writes[8].descriptorCount = 1;
-    writes[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[8].pBufferInfo = &material_info;
-    vkUpdateDescriptorSets(vulkan_->device(), 9, writes, 0, nullptr);
+    writes[10].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[10].dstSet = frame.composite_descriptor_set;
+    writes[10].dstBinding = 7;
+    writes[10].descriptorCount = 1;
+    writes[10].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[10].pBufferInfo = &material_info;
+    vkUpdateDescriptorSets(vulkan_->device(), 11, writes, 0, nullptr);
 }
 
 void VkSceneRenderer::update_display_descriptor(VkDescriptorSet set,
@@ -5407,7 +5441,7 @@ bool VkSceneRenderer::record_cull_and_render(
         depth_.lifetime, hdr_.lifetime,
         visibility_.lifetime, raw_diffuse_.lifetime,
         raw_specular_.lifetime, raw_specular_aux_.lifetime,
-        raw_transmission_.lifetime,
+        raw_transmission_.lifetime, vol_dummy_3d_.lifetime,
         gi_atrous_[0].lifetime, gi_atrous_[1].lifetime,
         gi_spec_atrous_[0].lifetime, gi_spec_atrous_[1].lifetime};
     for (auto* histories : {&gi_history_, &gi_spec_history_}) {

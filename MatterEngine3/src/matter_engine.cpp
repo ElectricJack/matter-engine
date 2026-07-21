@@ -4231,6 +4231,8 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         impl_->manifest.lights.sky_color[1] * controls.sky_multiplier,
         impl_->manifest.lights.sky_color[2] * controls.sky_multiplier};
     lighting.emission_multiplier = controls.emission_multiplier;
+    lighting.vol_enabled = opts.vulkan_volumetrics.enabled ? 1.0f : 0.0f;
+    lighting.vol_debug_view = opts.vulkan_volumetrics.vol_debug_view;
     impl_->vk_scene->set_lighting(lighting);
     impl_->vk_scene->set_display_exposure(controls.exposure_ev);
     impl_->vk_scene->set_composite_debug_view(controls.composite_debug_view);
