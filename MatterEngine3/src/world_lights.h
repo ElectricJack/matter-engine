@@ -23,11 +23,6 @@ struct WorldLights {
     std::vector<SpotLight> spots;
 };
 
-// Parse `light ...` lines from a world.manifest. Every other line is ignored
-// (the part-graph reader owns them). A missing file yields defaults and true.
-// Malformed light lines fail with err set.
-bool parse_lights(const std::string& manifest_path, WorldLights& out, std::string& err);
-
 // FNV-1a over the packed float values (sun, sky, then spots in file order).
 uint64_t lights_fingerprint(const WorldLights& l);
 

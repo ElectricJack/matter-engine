@@ -32,7 +32,18 @@ ProdGraphResolver::ProdGraphResolver(part_graph_snapshot::Snapshot& snap,
     : snap_(snap)
     , host_(host)
     , schemas_dir_(std::move(schemas_dir))
-    , shared_lib_dir_(std::move(shared_lib_dir))
+    , shared_lib_dirs_{std::move(shared_lib_dir)}
+{}
+
+ProdGraphResolver::ProdGraphResolver(part_graph_snapshot::Snapshot& snap,
+                                     script_host::ScriptHost& host,
+                                     std::string schemas_dir,
+                                     std::vector<std::string> shared_lib_dirs)
+    : snap_(snap)
+    , host_(host)
+    , schemas_dir_(std::move(schemas_dir))
+    , shared_lib_dirs_(std::move(shared_lib_dirs))
+    , exact_shared_paths_(true)
 {}
 
 std::vector<live_edit::PartId>
@@ -44,11 +55,13 @@ ProdGraphResolver::parts_for_file(const std::string& path) {
     }
     // 2. Shared-lib lookup: if path is inside shared_lib_dir, strip the dir
     //    prefix to get a module name, then look it up in by_import.
-    if (!shared_lib_dir_.empty() &&
-        path.size() > shared_lib_dir_.size() &&
-        path.compare(0, shared_lib_dir_.size(), shared_lib_dir_) == 0) {
+    if (exact_shared_paths_) return {};
+    for (const std::string& shared_lib_dir : shared_lib_dirs_) {
+      if (!shared_lib_dir.empty() &&
+        path.size() > shared_lib_dir.size() &&
+        path.compare(0, shared_lib_dir.size(), shared_lib_dir) == 0) {
         // path = <shared_lib_dir>/<module>.js
-        std::string rel = path.substr(shared_lib_dir_.size());
+        std::string rel = path.substr(shared_lib_dir.size());
         // strip leading slash
         if (!rel.empty() && (rel[0] == '/' || rel[0] == '\\')) rel = rel.substr(1);
         // strip .js suffix
@@ -56,6 +69,7 @@ ProdGraphResolver::parts_for_file(const std::string& path) {
             rel = rel.substr(0, rel.size() - 3);
         auto it2 = snap_.by_import.find(rel);
         if (it2 != snap_.by_import.end()) return it2->second;
+      }
     }
     return {};
 }

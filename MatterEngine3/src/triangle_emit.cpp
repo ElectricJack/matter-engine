@@ -5,6 +5,12 @@
 
 namespace tri_emit {
 
+static float3 normalize3(float3 v) {
+    float len = sqrtf(v.x*v.x + v.y*v.y + v.z*v.z);
+    if (len < 1e-12f) return make_float3(0, 0, 1);
+    return make_float3(v.x/len, v.y/len, v.z/len);
+}
+
 static float3 face_normal(float3 p0, float3 p1, float3 p2) {
     float3 e1 = p1 - p0, e2 = p2 - p0;
     float3 n = cross(e1, e2);
@@ -35,6 +41,33 @@ void TriangleBuildBuffer::emitTriangle(float3 p0, float3 p1, float3 p2,
     e.materialId = material_id;      // per-triangle material
     e.tint = tint;                   // tint cursor (neutral 1,1,1,0 by default)
     e.ao0 = e.ao1 = e.ao2 = 1.0f;    // unbaked = fully unoccluded
+    triex_.push_back(e);
+}
+
+void TriangleBuildBuffer::emitTriangleSmooth(float3 p0, float3 p1, float3 p2,
+                                             float3 n0, float3 n1, float3 n2,
+                                             int material_id,
+                                             const mat4& transform, float4 tint) {
+    float3 w0 = transform.TransformPoint(p0);
+    float3 w1 = transform.TransformPoint(p1);
+    float3 w2 = transform.TransformPoint(p2);
+    Tri t;
+    t.vertex0  = w0;
+    t.vertex1  = w1;
+    t.vertex2  = w2;
+    t.centroid = make_float3((w0.x+w1.x+w2.x)/3.0f,
+                             (w0.y+w1.y+w2.y)/3.0f,
+                             (w0.z+w1.z+w2.z)/3.0f);
+    tris_.push_back(t);
+
+    TriEx e{};
+    e.uv0 = e.uv1 = e.uv2 = make_float2(0.0f, 0.0f);
+    e.N0 = normalize3(transform.TransformVector(n0));
+    e.N1 = normalize3(transform.TransformVector(n1));
+    e.N2 = normalize3(transform.TransformVector(n2));
+    e.materialId = material_id;
+    e.tint = tint;
+    e.ao0 = e.ao1 = e.ao2 = 1.0f;
     triex_.push_back(e);
 }
 
@@ -127,36 +160,33 @@ void TriangleBuildBuffer::line(float3 a, float3 b, float r0, float r1,
 
 void TriangleBuildBuffer::sphere(float3 center, float r, int material_id,
                                  const mat4& transform, int segments, float4 tint) {
-    // A UV sphere: `rings` latitude bands x `segments` longitude slices. Top and
-    // bottom bands are triangle fans to the poles; the middle bands are quad
-    // strips (two tris each). Outward winding. Local-space verts are baked under
-    // `transform` by emitTriangle, so scale/rotation/translation apply (G8).
     if (segments < 3) segments = 3;
-    const int rings = segments;                  // latitude bands ~ slices for a round look
+    const int rings = segments;
     const float kPI = 3.14159265358979323846f;
-    auto P = [&](int ring, int slice) {
-        float phi   = kPI * ((float)ring / rings);        // 0..PI (pole to pole)
+    auto PN = [&](int ring, int slice, float3& pos, float3& nrm) {
+        float phi   = kPI * ((float)ring / rings);
         float theta = 2.0f * kPI * ((float)slice / segments);
-        float sinP = sinf(phi);
-        return make_float3(center.x + r * sinP * cosf(theta),
-                           center.y + r * cosf(phi),
-                           center.z + r * sinP * sinf(theta));
+        float sinP = sinf(phi), cosP = cosf(phi);
+        float sinT = sinf(theta), cosT = cosf(theta);
+        nrm = make_float3(sinP * cosT, cosP, sinP * sinT);
+        pos = make_float3(center.x + r * nrm.x,
+                          center.y + r * nrm.y,
+                          center.z + r * nrm.z);
     };
     for (int ring = 0; ring < rings; ++ring) {
         for (int slice = 0; slice < segments; ++slice) {
-            float3 a = P(ring,   slice);
-            float3 b = P(ring+1, slice);
-            float3 c = P(ring+1, slice+1);
-            float3 d = P(ring,   slice+1);
+            float3 pa, pb, pc, pd, na, nb, nc, nd;
+            PN(ring,   slice,   pa, na);
+            PN(ring+1, slice,   pb, nb);
+            PN(ring+1, slice+1, pc, nc);
+            PN(ring,   slice+1, pd, nd);
             if (ring == 0) {
-                // top cap fan: a is the north pole (degenerate b/d band)
-                emitTriangle(a, b, c, material_id, transform, tint);
+                emitTriangleSmooth(pa, pc, pb, na, nc, nb, material_id, transform, tint);
             } else if (ring == rings - 1) {
-                // bottom cap fan: c is the south pole
-                emitTriangle(a, b, d, material_id, transform, tint);
+                emitTriangleSmooth(pa, pd, pb, na, nd, nb, material_id, transform, tint);
             } else {
-                emitTriangle(a, b, c, material_id, transform, tint);
-                emitTriangle(a, c, d, material_id, transform, tint);
+                emitTriangleSmooth(pa, pc, pb, na, nc, nb, material_id, transform, tint);
+                emitTriangleSmooth(pa, pd, pc, na, nd, nc, material_id, transform, tint);
             }
         }
     }
@@ -172,8 +202,8 @@ void TriangleBuildBuffer::box(float3 center, float3 h, int material_id,
         return make_float3(xs[ix], ys[iy], zs[iz]);
     };
     auto quad = [&](float3 p0, float3 p1, float3 p2, float3 p3) {
-        emitTriangle(p0, p1, p2, material_id, transform, tint);
-        emitTriangle(p0, p2, p3, material_id, transform, tint);
+        emitTriangle(p0, p2, p1, material_id, transform, tint);
+        emitTriangle(p0, p3, p2, material_id, transform, tint);
     };
     // -X and +X
     quad(V(0,0,1), V(0,0,0), V(0,1,0), V(0,1,1));

@@ -5,8 +5,25 @@
 #include "matter/engine_context.h"
 #include "matter/vulkan_device.h"
 #include "matter/world_session.h"
+#include "matter/ecs.h"
+#include "matter/physics.h"
+#include "matter/scene.h"
+#include "matter/streaming.h"
+#include "ecs/simulation_control.h"
+#include "ecs/scene_registry.h"
 #include "camera_controller.h"
+#include "camera_focus.h"
+#include "editor_model.h"
+#include "properties_panel.h"
+#include "properties_registry.h"
+#include "selection_outline.h"
+#include "selection_set.h"
+#include "toolbar_panel.h"
+#include "console_panel.h"
 #include "ui.h"
+#include "viewport_pick.h"
+
+#include "imgui.h"
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -25,6 +42,7 @@
 #include <iomanip>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #ifndef _WIN32
@@ -37,6 +55,505 @@
 #endif
 
 namespace {
+
+// ---------------------------------------------------------------------------
+// Properties panel field access (Phase 5 Task 7). There is no generic
+// reflection API for ECS components, so field get/set is hardcoded per
+// ComponentKind here, dispatching on the component/field name strings that
+// PropertiesRegistry hands back (which mirror ecs/scene_registry.h's
+// ComponentDescriptor/FieldDescriptor tables).
+// ---------------------------------------------------------------------------
+
+// flecs' entity_view::get<T>() returns `const T&` (asserts if absent), not a
+// pointer — wrap it as a has<T>()-checked pointer so the field-access helpers
+// below can use the usual "null means absent" pattern.
+template <typename T>
+const T* get_ptr(flecs::entity e) {
+    return e.has<T>() ? &e.get<T>() : nullptr;
+}
+
+flecs::entity find_scene_entity(flecs::world& world, matter::scene::SceneEntityId id) {
+    flecs::entity found;
+    world.each([&](flecs::entity e, const matter::scene::SceneEntityId& sid) {
+        if (!found && sid.value == id.value) found = e;
+    });
+    return found;
+}
+
+bool collider_prop_get_float(const matter::physics::ColliderProperties& p,
+                             const char* field, float& out) {
+    if (!std::strcmp(field, "density")) { out = p.density; return true; }
+    if (!std::strcmp(field, "friction")) { out = p.friction; return true; }
+    if (!std::strcmp(field, "restitution")) { out = p.restitution; return true; }
+    return false;
+}
+bool collider_prop_set_float(matter::physics::ColliderProperties& p,
+                             const char* field, float value) {
+    if (!std::strcmp(field, "density")) { p.density = value; return true; }
+    if (!std::strcmp(field, "friction")) { p.friction = value; return true; }
+    if (!std::strcmp(field, "restitution")) { p.restitution = value; return true; }
+    return false;
+}
+
+bool field_get_float(matter::WorldSession* session, matter::scene::SceneEntityId id,
+                     const char* component, const char* field, float& out) {
+    if (!session) return false;
+    flecs::entity e = find_scene_entity(session->ecs(), id);
+    if (!e.is_valid()) return false;
+
+    if (!std::strcmp(component, "RigidBody")) {
+        const auto* rb = get_ptr<matter::physics::RigidBody>(e);
+        if (!rb) return false;
+        if (!std::strcmp(field, "linear_damping")) { out = rb->linear_damping; return true; }
+        if (!std::strcmp(field, "angular_damping")) { out = rb->angular_damping; return true; }
+        if (!std::strcmp(field, "gravity_scale")) { out = rb->gravity_scale; return true; }
+        if (!std::strcmp(field, "sleep_threshold")) { out = rb->sleep_threshold; return true; }
+        return false;
+    }
+    if (!std::strcmp(component, "SphereCollider")) {
+        const auto* c = get_ptr<matter::physics::SphereCollider>(e);
+        if (!c) return false;
+        if (!std::strcmp(field, "radius")) { out = c->radius; return true; }
+        return collider_prop_get_float(c->properties, field, out);
+    }
+    if (!std::strcmp(component, "CapsuleCollider")) {
+        const auto* c = get_ptr<matter::physics::CapsuleCollider>(e);
+        if (!c) return false;
+        if (!std::strcmp(field, "radius")) { out = c->radius; return true; }
+        return collider_prop_get_float(c->properties, field, out);
+    }
+    if (!std::strcmp(component, "BoxCollider")) {
+        const auto* c = get_ptr<matter::physics::BoxCollider>(e);
+        if (!c) return false;
+        return collider_prop_get_float(c->properties, field, out);
+    }
+    if (!std::strcmp(component, "ConvexHullCollider")) {
+        const auto* c = get_ptr<matter::physics::ConvexHullCollider>(e);
+        if (!c) return false;
+        return collider_prop_get_float(c->properties, field, out);
+    }
+    return false;
+}
+
+bool field_set_float(matter::WorldSession* session, matter::scene::SceneEntityId id,
+                     const char* component, const char* field, float value) {
+    if (!session) return false;
+    flecs::entity e = find_scene_entity(session->ecs(), id);
+    if (!e.is_valid()) return false;
+
+    if (!std::strcmp(component, "RigidBody")) {
+        const auto* rb = get_ptr<matter::physics::RigidBody>(e);
+        if (!rb) return false;
+        matter::physics::RigidBody copy = *rb;
+        bool ok = true;
+        if (!std::strcmp(field, "linear_damping")) copy.linear_damping = value;
+        else if (!std::strcmp(field, "angular_damping")) copy.angular_damping = value;
+        else if (!std::strcmp(field, "gravity_scale")) copy.gravity_scale = value;
+        else if (!std::strcmp(field, "sleep_threshold")) copy.sleep_threshold = value;
+        else ok = false;
+        if (ok) e.set<matter::physics::RigidBody>(copy);
+        return ok;
+    }
+    if (!std::strcmp(component, "SphereCollider")) {
+        const auto* c = get_ptr<matter::physics::SphereCollider>(e);
+        if (!c) return false;
+        matter::physics::SphereCollider copy = *c;
+        bool ok = true;
+        if (!std::strcmp(field, "radius")) copy.radius = value;
+        else ok = collider_prop_set_float(copy.properties, field, value);
+        if (ok) e.set<matter::physics::SphereCollider>(copy);
+        return ok;
+    }
+    if (!std::strcmp(component, "CapsuleCollider")) {
+        const auto* c = get_ptr<matter::physics::CapsuleCollider>(e);
+        if (!c) return false;
+        matter::physics::CapsuleCollider copy = *c;
+        bool ok = true;
+        if (!std::strcmp(field, "radius")) copy.radius = value;
+        else ok = collider_prop_set_float(copy.properties, field, value);
+        if (ok) e.set<matter::physics::CapsuleCollider>(copy);
+        return ok;
+    }
+    if (!std::strcmp(component, "BoxCollider")) {
+        const auto* c = get_ptr<matter::physics::BoxCollider>(e);
+        if (!c) return false;
+        matter::physics::BoxCollider copy = *c;
+        const bool ok = collider_prop_set_float(copy.properties, field, value);
+        if (ok) e.set<matter::physics::BoxCollider>(copy);
+        return ok;
+    }
+    if (!std::strcmp(component, "ConvexHullCollider")) {
+        const auto* c = get_ptr<matter::physics::ConvexHullCollider>(e);
+        if (!c) return false;
+        matter::physics::ConvexHullCollider copy = *c;
+        const bool ok = collider_prop_set_float(copy.properties, field, value);
+        if (ok) e.set<matter::physics::ConvexHullCollider>(copy);
+        return ok;
+    }
+    return false;
+}
+
+bool field_get_int(matter::WorldSession* session, matter::scene::SceneEntityId id,
+                   const char* component, const char* field, int& out) {
+    if (!session) return false;
+    flecs::entity e = find_scene_entity(session->ecs(), id);
+    if (!e.is_valid()) return false;
+    if (!std::strcmp(component, "RigidBody") && !std::strcmp(field, "type")) {
+        const auto* rb = get_ptr<matter::physics::RigidBody>(e);
+        if (!rb) return false;
+        out = static_cast<int>(rb->type);
+        return true;
+    }
+    return false;
+}
+
+bool field_set_int(matter::WorldSession* session, matter::scene::SceneEntityId id,
+                   const char* component, const char* field, int value) {
+    if (!session) return false;
+    flecs::entity e = find_scene_entity(session->ecs(), id);
+    if (!e.is_valid()) return false;
+    if (!std::strcmp(component, "RigidBody") && !std::strcmp(field, "type")) {
+        const auto* rb = get_ptr<matter::physics::RigidBody>(e);
+        if (!rb) return false;
+        matter::physics::RigidBody copy = *rb;
+        copy.type = static_cast<matter::physics::RigidBodyType>(
+            std::max(0, std::min(2, value)));
+        e.set<matter::physics::RigidBody>(copy);
+        return true;
+    }
+    return false;
+}
+
+bool field_get_uint(matter::WorldSession* session, matter::scene::SceneEntityId id,
+                    const char* component, const char* field, uint32_t& out) {
+    if (!session) return false;
+    flecs::entity e = find_scene_entity(session->ecs(), id);
+    if (!e.is_valid()) return false;
+    if (!std::strcmp(component, "PartInstance") && !std::strcmp(field, "part_hash")) {
+        const auto* pi = get_ptr<matter::scene::PartInstance>(e);
+        if (!pi) return false;
+        out = static_cast<uint32_t>(pi->part_hash);
+        return true;
+    }
+    if (!std::strcmp(component, "ConvexHullCollider") && !std::strcmp(field, "point_count")) {
+        const auto* c = get_ptr<matter::physics::ConvexHullCollider>(e);
+        if (!c) return false;
+        out = c->point_count;
+        return true;
+    }
+    return false;
+}
+
+bool field_set_uint(matter::WorldSession* session, matter::scene::SceneEntityId id,
+                    const char* component, const char* field, uint32_t value) {
+    if (!session) return false;
+    // PartInstance.part_hash is uint64_t — the generic uint32 write path would
+    // silently truncate the upper 32 bits. Part assignment is routed through
+    // the specialized picker (assign_part callback) which uses the full 64-bit
+    // hash. Reject writes here to prevent silent corruption.
+    if (!std::strcmp(component, "PartInstance") && !std::strcmp(field, "part_hash"))
+        return false;
+    flecs::entity e = find_scene_entity(session->ecs(), id);
+    if (!e.is_valid()) return false;
+    (void)value;
+    return false;
+}
+
+bool field_get_bool(matter::WorldSession* session, matter::scene::SceneEntityId id,
+                    const char* component, const char* field, bool& out) {
+    if (!session) return false;
+    flecs::entity e = find_scene_entity(session->ecs(), id);
+    if (!e.is_valid()) return false;
+    if (!std::strcmp(component, "RigidBody")) {
+        const auto* rb = get_ptr<matter::physics::RigidBody>(e);
+        if (!rb) return false;
+        if (!std::strcmp(field, "enable_sleep")) { out = rb->enable_sleep; return true; }
+        if (!std::strcmp(field, "continuous")) { out = rb->continuous; return true; }
+        return false;
+    }
+    if (!std::strcmp(component, "SphereCollider")) {
+        const auto* c = get_ptr<matter::physics::SphereCollider>(e);
+        if (c && !std::strcmp(field, "sensor")) { out = c->properties.sensor; return true; }
+        return false;
+    }
+    if (!std::strcmp(component, "CapsuleCollider")) {
+        const auto* c = get_ptr<matter::physics::CapsuleCollider>(e);
+        if (c && !std::strcmp(field, "sensor")) { out = c->properties.sensor; return true; }
+        return false;
+    }
+    if (!std::strcmp(component, "BoxCollider")) {
+        const auto* c = get_ptr<matter::physics::BoxCollider>(e);
+        if (c && !std::strcmp(field, "sensor")) { out = c->properties.sensor; return true; }
+        return false;
+    }
+    if (!std::strcmp(component, "ConvexHullCollider")) {
+        const auto* c = get_ptr<matter::physics::ConvexHullCollider>(e);
+        if (c && !std::strcmp(field, "sensor")) { out = c->properties.sensor; return true; }
+        return false;
+    }
+    if (!std::strcmp(component, "PartInstance")) {
+        const auto* pi = get_ptr<matter::scene::PartInstance>(e);
+        if (!pi) return false;
+        if (!std::strcmp(field, "visible")) { out = pi->visible; return true; }
+        if (!std::strcmp(field, "casts_shadow")) { out = pi->casts_shadow; return true; }
+        return false;
+    }
+    return false;
+}
+
+bool field_set_bool(matter::WorldSession* session, matter::scene::SceneEntityId id,
+                    const char* component, const char* field, bool value) {
+    if (!session) return false;
+    flecs::entity e = find_scene_entity(session->ecs(), id);
+    if (!e.is_valid()) return false;
+    if (!std::strcmp(component, "RigidBody")) {
+        const auto* rb = get_ptr<matter::physics::RigidBody>(e);
+        if (!rb) return false;
+        matter::physics::RigidBody copy = *rb;
+        bool ok = true;
+        if (!std::strcmp(field, "enable_sleep")) copy.enable_sleep = value;
+        else if (!std::strcmp(field, "continuous")) copy.continuous = value;
+        else ok = false;
+        if (ok) e.set<matter::physics::RigidBody>(copy);
+        return ok;
+    }
+    if (!std::strcmp(component, "SphereCollider")) {
+        const auto* c = get_ptr<matter::physics::SphereCollider>(e);
+        if (!c || std::strcmp(field, "sensor")) return false;
+        matter::physics::SphereCollider copy = *c;
+        copy.properties.sensor = value;
+        e.set<matter::physics::SphereCollider>(copy);
+        return true;
+    }
+    if (!std::strcmp(component, "CapsuleCollider")) {
+        const auto* c = get_ptr<matter::physics::CapsuleCollider>(e);
+        if (!c || std::strcmp(field, "sensor")) return false;
+        matter::physics::CapsuleCollider copy = *c;
+        copy.properties.sensor = value;
+        e.set<matter::physics::CapsuleCollider>(copy);
+        return true;
+    }
+    if (!std::strcmp(component, "BoxCollider")) {
+        const auto* c = get_ptr<matter::physics::BoxCollider>(e);
+        if (!c || std::strcmp(field, "sensor")) return false;
+        matter::physics::BoxCollider copy = *c;
+        copy.properties.sensor = value;
+        e.set<matter::physics::BoxCollider>(copy);
+        return true;
+    }
+    if (!std::strcmp(component, "ConvexHullCollider")) {
+        const auto* c = get_ptr<matter::physics::ConvexHullCollider>(e);
+        if (!c || std::strcmp(field, "sensor")) return false;
+        matter::physics::ConvexHullCollider copy = *c;
+        copy.properties.sensor = value;
+        e.set<matter::physics::ConvexHullCollider>(copy);
+        return true;
+    }
+    if (!std::strcmp(component, "PartInstance")) {
+        const auto* pi = get_ptr<matter::scene::PartInstance>(e);
+        if (!pi) return false;
+        matter::scene::PartInstance copy = *pi;
+        bool ok = true;
+        if (!std::strcmp(field, "visible")) copy.visible = value;
+        else if (!std::strcmp(field, "casts_shadow")) copy.casts_shadow = value;
+        else ok = false;
+        if (ok) e.set<matter::scene::PartInstance>(copy);
+        return ok;
+    }
+    return false;
+}
+
+bool field_get_float3(matter::WorldSession* session, matter::scene::SceneEntityId id,
+                      const char* component, const char* field, matter::Float3& out) {
+    if (!session) return false;
+    flecs::entity e = find_scene_entity(session->ecs(), id);
+    if (!e.is_valid()) return false;
+    if (!std::strcmp(component, "LocalTransform")) {
+        const auto* t = get_ptr<matter::ecs::LocalTransform>(e);
+        if (!t) return false;
+        if (!std::strcmp(field, "translation")) { out = t->translation; return true; }
+        if (!std::strcmp(field, "scale")) { out = t->scale; return true; }
+        return false;
+    }
+    if (!std::strcmp(component, "PhysicsVelocity")) {
+        const auto* v = get_ptr<matter::physics::PhysicsVelocity>(e);
+        if (!v) return false;
+        if (!std::strcmp(field, "linear")) { out = v->linear; return true; }
+        if (!std::strcmp(field, "angular")) { out = v->angular; return true; }
+        return false;
+    }
+    if (!std::strcmp(component, "SphereCollider")) {
+        const auto* c = get_ptr<matter::physics::SphereCollider>(e);
+        if (c && !std::strcmp(field, "center")) { out = c->center; return true; }
+        return false;
+    }
+    if (!std::strcmp(component, "CapsuleCollider")) {
+        const auto* c = get_ptr<matter::physics::CapsuleCollider>(e);
+        if (!c) return false;
+        if (!std::strcmp(field, "point_a")) { out = c->point_a; return true; }
+        if (!std::strcmp(field, "point_b")) { out = c->point_b; return true; }
+        return false;
+    }
+    if (!std::strcmp(component, "BoxCollider")) {
+        const auto* c = get_ptr<matter::physics::BoxCollider>(e);
+        if (!c) return false;
+        if (!std::strcmp(field, "center")) { out = c->center; return true; }
+        if (!std::strcmp(field, "half_extents")) { out = c->half_extents; return true; }
+        return false;
+    }
+    return false;
+}
+
+bool field_set_float3(matter::WorldSession* session, matter::scene::SceneEntityId id,
+                      const char* component, const char* field, matter::Float3 value) {
+    if (!session) return false;
+    flecs::entity e = find_scene_entity(session->ecs(), id);
+    if (!e.is_valid()) return false;
+    if (!std::strcmp(component, "LocalTransform")) {
+        const auto* t = get_ptr<matter::ecs::LocalTransform>(e);
+        if (!t) return false;
+        matter::ecs::LocalTransform copy = *t;
+        bool ok = true;
+        if (!std::strcmp(field, "translation")) copy.translation = value;
+        else if (!std::strcmp(field, "scale")) copy.scale = value;
+        else ok = false;
+        if (ok) e.set<matter::ecs::LocalTransform>(copy);
+        return ok;
+    }
+    if (!std::strcmp(component, "PhysicsVelocity")) {
+        const auto* v = get_ptr<matter::physics::PhysicsVelocity>(e);
+        if (!v) return false;
+        matter::physics::PhysicsVelocity copy = *v;
+        bool ok = true;
+        if (!std::strcmp(field, "linear")) copy.linear = value;
+        else if (!std::strcmp(field, "angular")) copy.angular = value;
+        else ok = false;
+        if (ok) e.set<matter::physics::PhysicsVelocity>(copy);
+        return ok;
+    }
+    if (!std::strcmp(component, "SphereCollider")) {
+        const auto* c = get_ptr<matter::physics::SphereCollider>(e);
+        if (!c || std::strcmp(field, "center")) return false;
+        matter::physics::SphereCollider copy = *c;
+        copy.center = value;
+        e.set<matter::physics::SphereCollider>(copy);
+        return true;
+    }
+    if (!std::strcmp(component, "CapsuleCollider")) {
+        const auto* c = get_ptr<matter::physics::CapsuleCollider>(e);
+        if (!c) return false;
+        matter::physics::CapsuleCollider copy = *c;
+        bool ok = true;
+        if (!std::strcmp(field, "point_a")) copy.point_a = value;
+        else if (!std::strcmp(field, "point_b")) copy.point_b = value;
+        else ok = false;
+        if (ok) e.set<matter::physics::CapsuleCollider>(copy);
+        return ok;
+    }
+    if (!std::strcmp(component, "BoxCollider")) {
+        const auto* c = get_ptr<matter::physics::BoxCollider>(e);
+        if (!c) return false;
+        matter::physics::BoxCollider copy = *c;
+        bool ok = true;
+        if (!std::strcmp(field, "center")) copy.center = value;
+        else if (!std::strcmp(field, "half_extents")) copy.half_extents = value;
+        else ok = false;
+        if (ok) e.set<matter::physics::BoxCollider>(copy);
+        return ok;
+    }
+    return false;
+}
+
+bool field_get_quat(matter::WorldSession* session, matter::scene::SceneEntityId id,
+                    const char* component, const char* field, matter::Quaternion& out) {
+    if (!session || std::strcmp(field, "rotation")) return false;
+    flecs::entity e = find_scene_entity(session->ecs(), id);
+    if (!e.is_valid()) return false;
+    if (!std::strcmp(component, "LocalTransform")) {
+        const auto* t = get_ptr<matter::ecs::LocalTransform>(e);
+        if (!t) return false;
+        out = t->rotation;
+        return true;
+    }
+    if (!std::strcmp(component, "BoxCollider")) {
+        const auto* c = get_ptr<matter::physics::BoxCollider>(e);
+        if (!c) return false;
+        out = c->rotation;
+        return true;
+    }
+    return false;
+}
+
+bool field_set_quat(matter::WorldSession* session, matter::scene::SceneEntityId id,
+                    const char* component, const char* field, matter::Quaternion value) {
+    if (!session || std::strcmp(field, "rotation")) return false;
+    flecs::entity e = find_scene_entity(session->ecs(), id);
+    if (!e.is_valid()) return false;
+    if (!std::strcmp(component, "LocalTransform")) {
+        const auto* t = get_ptr<matter::ecs::LocalTransform>(e);
+        if (!t) return false;
+        matter::ecs::LocalTransform copy = *t;
+        copy.rotation = value;
+        e.set<matter::ecs::LocalTransform>(copy);
+        return true;
+    }
+    if (!std::strcmp(component, "BoxCollider")) {
+        const auto* c = get_ptr<matter::physics::BoxCollider>(e);
+        if (!c) return false;
+        matter::physics::BoxCollider copy = *c;
+        copy.rotation = value;
+        e.set<matter::physics::BoxCollider>(copy);
+        return true;
+    }
+    return false;
+}
+
+// Adds a default-constructed component instance to a scene entity by name.
+// Mirrors ecs/scene_registry.cpp's instantiate() switch, minus Transform
+// (always present) — used by the Properties panel's "+ Add Component" menu.
+matter::scene::SceneEditResult component_add(matter::WorldSession* session,
+                                             matter::scene::SceneEntityId id,
+                                             const char* component_name) {
+    using matter::scene::SceneEditError;
+    using matter::scene::SceneEditResult;
+    if (!session) return SceneEditResult{SceneEditError::InvalidTarget, {}};
+    flecs::entity e = find_scene_entity(session->ecs(), id);
+    if (!e.is_valid()) return SceneEditResult{SceneEditError::EntityNotFound, {}};
+
+    if (!std::strcmp(component_name, "RigidBody")) e.set<matter::physics::RigidBody>({});
+    else if (!std::strcmp(component_name, "PhysicsVelocity")) e.set<matter::physics::PhysicsVelocity>({});
+    else if (!std::strcmp(component_name, "SphereCollider")) e.set<matter::physics::SphereCollider>({});
+    else if (!std::strcmp(component_name, "CapsuleCollider")) e.set<matter::physics::CapsuleCollider>({});
+    else if (!std::strcmp(component_name, "BoxCollider")) e.set<matter::physics::BoxCollider>({});
+    else if (!std::strcmp(component_name, "ConvexHullCollider")) e.set<matter::physics::ConvexHullCollider>({});
+    else if (!std::strcmp(component_name, "PartInstance")) e.set<matter::scene::PartInstance>({});
+    else if (!std::strcmp(component_name, "SectorStreaming")) e.add<matter::streaming::SectorStreaming>();
+    else return SceneEditResult{SceneEditError::InvalidTarget, {}};
+
+    return SceneEditResult{SceneEditError::None, id};
+}
+
+matter::scene::SceneEditResult component_remove(matter::WorldSession* session,
+                                                matter::scene::SceneEntityId id,
+                                                const char* component_name) {
+    using matter::scene::SceneEditError;
+    using matter::scene::SceneEditResult;
+    if (!session) return SceneEditResult{SceneEditError::InvalidTarget, {}};
+    flecs::entity e = find_scene_entity(session->ecs(), id);
+    if (!e.is_valid()) return SceneEditResult{SceneEditError::EntityNotFound, {}};
+
+    if (!std::strcmp(component_name, "RigidBody")) e.remove<matter::physics::RigidBody>();
+    else if (!std::strcmp(component_name, "PhysicsVelocity")) e.remove<matter::physics::PhysicsVelocity>();
+    else if (!std::strcmp(component_name, "SphereCollider")) e.remove<matter::physics::SphereCollider>();
+    else if (!std::strcmp(component_name, "CapsuleCollider")) e.remove<matter::physics::CapsuleCollider>();
+    else if (!std::strcmp(component_name, "BoxCollider")) e.remove<matter::physics::BoxCollider>();
+    else if (!std::strcmp(component_name, "ConvexHullCollider")) e.remove<matter::physics::ConvexHullCollider>();
+    else if (!std::strcmp(component_name, "PartInstance")) e.remove<matter::scene::PartInstance>();
+    else if (!std::strcmp(component_name, "SectorStreaming")) e.remove<matter::streaming::SectorStreaming>();
+    else return SceneEditResult{SceneEditError::InvalidTarget, {}};
+
+    return SceneEditResult{SceneEditError::None, id};
+}
 
 void init_camera(matter::CameraDesc& camera) {
     camera.position = {20.0f, 16.0f, 34.0f};
@@ -324,9 +841,8 @@ int main() {
     auto worlds = viewer::scan_worlds(examples_root());
     std::printf("worlds available (%d):\n", static_cast<int>(worlds.size()));
     for (size_t i = 0; i < worlds.size(); ++i)
-        std::printf("  [%zu] %s  (%s / %s)\n", i, worlds[i].label.c_str(),
-                    worlds[i].schemas_dir.c_str(),
-                    worlds[i].world_data_dir.c_str());
+        std::printf("  [%zu] %s  (%s)\n", i, worlds[i].label.c_str(),
+                    worlds[i].project_dir.c_str());
     if (worlds.empty()) {
         std::fprintf(stderr, "FATAL: no worlds found under %s\n",
                      examples_root().c_str());
@@ -395,10 +911,9 @@ int main() {
     const std::string shared_lib = shared_lib_root();
     auto open_world = [&](const viewer::WorldEntry& entry) {
         matter::WorldDesc desc;
-        desc.schemas_dir = entry.schemas_dir.c_str();
-        desc.world_data_dir = entry.world_data_dir.c_str();
+        desc.project_dir = entry.project_dir.c_str();
         desc.world_name = entry.world_name.c_str();
-        desc.shared_lib_dir = shared_lib.c_str();
+        desc.engine_shared_lib_dir = shared_lib.c_str();
         desc.enable_live_edit = std::getenv("MATTER_LIVE_EDIT") != nullptr;
         std::string world_error;
         auto result = engine->open_world(desc, world_error);
@@ -416,6 +931,315 @@ int main() {
         return 1;
     }
 
+    viewer::EditorModel editor_model;
+    viewer::SelectionSet selection_set;
+    matter::scene::SimulationControl sim_control;
+    viewer::ConsoleLog console_log;
+    console_log.push(viewer::LogSeverity::Info,
+                      "Connected to " + worlds[initial_world].world_name);
+
+    // Task 9: cached part graph snapshot for the Properties panel's baked-root
+    // info card. Refreshed only when graph_generation() changes so the panel
+    // doesn't re-copy the whole snapshot every frame.
+    part_graph_snapshot::Snapshot cached_snapshot;
+    uint64_t cached_graph_gen = 0;
+    viewer::SceneCommands scene_commands;
+    scene_commands.query_records = [&session]() -> std::vector<matter::scene::SceneRecord> {
+        std::vector<matter::scene::SceneRecord> records;
+        if (!session) return records;
+        session->ecs().each(
+            [&](flecs::entity e, const matter::scene::SceneEntityId& id) {
+                matter::scene::SceneRecord rec;
+                rec.id = id;
+                if (e.parent().is_valid() && e.parent().has<matter::scene::SceneEntityId>()) {
+                    rec.parent_id = e.parent().get<matter::scene::SceneEntityId>();
+                }
+                const char* n = e.name().c_str();
+                rec.name = (n && n[0]) ? n : "Entity";
+                // LocalTransform is always present (instantiate() sets it
+                // unconditionally) but is still listed here for consistency
+                // with PropertiesRegistry lookups that key off component_names.
+                rec.component_names.push_back("LocalTransform");
+                if (e.has<matter::physics::RigidBody>())
+                    rec.component_names.push_back("RigidBody");
+                if (e.has<matter::physics::PhysicsVelocity>())
+                    rec.component_names.push_back("PhysicsVelocity");
+                if (e.has<matter::physics::SphereCollider>())
+                    rec.component_names.push_back("SphereCollider");
+                if (e.has<matter::physics::CapsuleCollider>())
+                    rec.component_names.push_back("CapsuleCollider");
+                if (e.has<matter::physics::BoxCollider>())
+                    rec.component_names.push_back("BoxCollider");
+                if (e.has<matter::physics::ConvexHullCollider>())
+                    rec.component_names.push_back("ConvexHullCollider");
+                if (e.has<matter::scene::PartInstance>()) {
+                    rec.component_names.push_back("PartInstance");
+                }
+                if (e.has<matter::streaming::SectorStreaming>())
+                    rec.component_names.push_back("SectorStreaming");
+                records.push_back(std::move(rec));
+            });
+        return records;
+    };
+    scene_commands.generation = [&session]() -> uint64_t {
+        if (!session) return 0;
+        return static_cast<uint64_t>(session->ecs().get_info()->frame_count_total);
+    };
+    // Task 13: entity CRUD backing the scene-tree context menu. Editor-created
+    // entities use their own flecs entity id as the SceneEntityId value (so
+    // they line up with SelectionSet/viewport-pick/gizmo, which all key off
+    // flecs ids for Entity selections — see viewport_pick.cpp) rather than
+    // the content hash scene_registry.cpp assigns to authored/baked entities.
+    scene_commands.create_empty =
+        [&session](const std::string& name) -> matter::scene::SceneEditResult {
+        matter::scene::SceneEditResult result;
+        if (!session) {
+            result.error = matter::scene::SceneEditError::InvalidTarget;
+            return result;
+        }
+        flecs::world& world = session->ecs();
+        flecs::entity e = world.entity();
+        e.set<matter::scene::SceneEntityId>({static_cast<uint64_t>(e.id())});
+        if (!name.empty()) e.set_name(name.c_str());
+        e.set<matter::ecs::LocalTransform>({});
+        result.created_id = matter::scene::SceneEntityId{static_cast<uint64_t>(e.id())};
+        return result;
+    };
+    scene_commands.duplicate =
+        [&session](matter::scene::SceneEntityId src) -> matter::scene::SceneEditResult {
+        matter::scene::SceneEditResult result;
+        if (!session) {
+            result.error = matter::scene::SceneEditError::InvalidTarget;
+            return result;
+        }
+        flecs::entity src_e = find_scene_entity(session->ecs(), src);
+        if (!src_e.is_valid()) {
+            result.error = matter::scene::SceneEditError::EntityNotFound;
+            return result;
+        }
+        flecs::entity copy = src_e.clone();
+        // clone() copies component values verbatim, including SceneEntityId --
+        // overwrite with the copy's own flecs id so it's unique.
+        copy.set<matter::scene::SceneEntityId>({static_cast<uint64_t>(copy.id())});
+        const char* orig_name = src_e.name().c_str();
+        if (orig_name && orig_name[0]) {
+            copy.set_name((std::string(orig_name) + " Copy").c_str());
+        }
+        if (src_e.parent().is_valid()) copy.child_of(src_e.parent());
+        result.created_id = matter::scene::SceneEntityId{static_cast<uint64_t>(copy.id())};
+        return result;
+    };
+    scene_commands.delete_entity =
+        [&session](matter::scene::SceneEntityId target) -> matter::scene::SceneEditResult {
+        matter::scene::SceneEditResult result;
+        if (!session) {
+            result.error = matter::scene::SceneEditError::InvalidTarget;
+            return result;
+        }
+        flecs::entity e = find_scene_entity(session->ecs(), target);
+        if (!e.is_valid()) {
+            result.error = matter::scene::SceneEditError::EntityNotFound;
+            return result;
+        }
+        // Destroying the parent cascades to ECS children by default (flecs'
+        // default ChildOf cleanup policy).
+        e.destruct();
+        return result;
+    };
+    scene_commands.reparent =
+        [&session](matter::scene::SceneEntityId child,
+                  matter::scene::SceneEntityId new_parent) -> matter::scene::SceneEditResult {
+        matter::scene::SceneEditResult result;
+        if (!session) {
+            result.error = matter::scene::SceneEditError::InvalidTarget;
+            return result;
+        }
+        flecs::entity child_e = find_scene_entity(session->ecs(), child);
+        if (!child_e.is_valid()) {
+            result.error = matter::scene::SceneEditError::EntityNotFound;
+            return result;
+        }
+        if (new_parent.value == 0) {
+            child_e.remove(flecs::ChildOf, flecs::Wildcard);
+            return result;
+        }
+        flecs::entity parent_e = find_scene_entity(session->ecs(), new_parent);
+        if (!parent_e.is_valid()) {
+            result.error = matter::scene::SceneEditError::InvalidTarget;
+            return result;
+        }
+        for (flecs::entity cursor = parent_e; cursor.is_valid();
+             cursor = cursor.parent()) {
+            if (cursor == child_e) {
+                result.error = matter::scene::SceneEditError::CycleDetected;
+                return result;
+            }
+        }
+        child_e.child_of(parent_e);
+        return result;
+    };
+
+    // Properties panel (Phase 5 Task 7) wiring: PropertiesRegistry supplies
+    // the field/widget layout, FieldCommands/ComponentCommands bridge it to
+    // the live ECS via the free functions defined above.
+    viewer::PropertiesRegistry properties_registry;
+    viewer::FieldCommands field_commands;
+    field_commands.get_float = [&session](matter::scene::SceneEntityId id, const char* c, const char* f, float& out) {
+        return field_get_float(session.get(), id, c, f, out);
+    };
+    field_commands.set_float = [&session](matter::scene::SceneEntityId id, const char* c, const char* f, float v) {
+        return field_set_float(session.get(), id, c, f, v);
+    };
+    field_commands.get_int = [&session](matter::scene::SceneEntityId id, const char* c, const char* f, int& out) {
+        return field_get_int(session.get(), id, c, f, out);
+    };
+    field_commands.set_int = [&session](matter::scene::SceneEntityId id, const char* c, const char* f, int v) {
+        return field_set_int(session.get(), id, c, f, v);
+    };
+    field_commands.get_uint = [&session](matter::scene::SceneEntityId id, const char* c, const char* f, uint32_t& out) {
+        return field_get_uint(session.get(), id, c, f, out);
+    };
+    field_commands.set_uint = [&session](matter::scene::SceneEntityId id, const char* c, const char* f, uint32_t v) {
+        return field_set_uint(session.get(), id, c, f, v);
+    };
+    field_commands.get_bool = [&session](matter::scene::SceneEntityId id, const char* c, const char* f, bool& out) {
+        return field_get_bool(session.get(), id, c, f, out);
+    };
+    field_commands.set_bool = [&session](matter::scene::SceneEntityId id, const char* c, const char* f, bool v) {
+        return field_set_bool(session.get(), id, c, f, v);
+    };
+    field_commands.get_float3 = [&session](matter::scene::SceneEntityId id, const char* c, const char* f, matter::Float3& out) {
+        return field_get_float3(session.get(), id, c, f, out);
+    };
+    field_commands.set_float3 = [&session](matter::scene::SceneEntityId id, const char* c, const char* f, matter::Float3 v) {
+        return field_set_float3(session.get(), id, c, f, v);
+    };
+    field_commands.get_quat = [&session](matter::scene::SceneEntityId id, const char* c, const char* f, matter::Quaternion& out) {
+        return field_get_quat(session.get(), id, c, f, out);
+    };
+    field_commands.set_quat = [&session](matter::scene::SceneEntityId id, const char* c, const char* f, matter::Quaternion v) {
+        return field_set_quat(session.get(), id, c, f, v);
+    };
+    viewer::ComponentCommands component_commands;
+    component_commands.add_component = [&session](matter::scene::SceneEntityId id, const char* name) {
+        return component_add(session.get(), id, name);
+    };
+    component_commands.remove_component = [&session](matter::scene::SceneEntityId id, const char* name) {
+        return component_remove(session.get(), id, name);
+    };
+
+    // Specialized editors (Task 8): component-specific actions the generic
+    // field grid can't express — part picking, physics runtime actions,
+    // sector streaming attach/detach. Wired the same way as FieldCommands
+    // above: free functions hardcoded per ComponentKind, bridged through
+    // std::function callbacks the UI layer invokes without knowing about
+    // flecs/WorldSession.
+    viewer::SpecializedEditors specialized_editors;
+    specialized_editors.part_commands().assign_part =
+        [&session](matter::scene::SceneEntityId id, uint64_t new_hash) {
+            if (!session) return false;
+            flecs::entity e = find_scene_entity(session->ecs(), id);
+            if (!e.is_valid() || !e.has<matter::scene::PartInstance>()) return false;
+            matter::scene::PartInstance copy = e.get<matter::scene::PartInstance>();
+            copy.part_hash = new_hash;
+            e.set<matter::scene::PartInstance>(copy);
+            return true;
+        };
+    specialized_editors.part_commands().list_available_parts =
+        []() -> std::vector<std::pair<uint64_t, std::string>> {
+            // Stub: the part store (part_asset/part_graph) isn't easily
+            // reachable from main.cpp's WorldSession handle today. Returning
+            // an empty list keeps the picker popup functional (shows
+            // "No parts available") without crashing; wiring a real lookup
+            // is future work once WorldSession exposes a part enumeration API.
+            return {};
+        };
+
+    specialized_editors.physics_commands().set_linear_velocity =
+        [&session](matter::scene::SceneEntityId id, matter::Float3 velocity) {
+            if (!session) return false;
+            flecs::entity e = find_scene_entity(session->ecs(), id);
+            if (!e.is_valid()) return false;
+            matter::physics::PhysicsVelocity copy =
+                e.has<matter::physics::PhysicsVelocity>()
+                    ? e.get<matter::physics::PhysicsVelocity>()
+                    : matter::physics::PhysicsVelocity{};
+            copy.linear = velocity;
+            e.set<matter::physics::PhysicsVelocity>(copy);
+            return true;
+        };
+    specialized_editors.physics_commands().apply_impulse =
+        [&session](matter::scene::SceneEntityId id, matter::Float3 impulse) {
+            // Stub: no direct Box3d body handle is threaded through
+            // WorldSession, so this approximates an impulse as an
+            // instantaneous PhysicsVelocity delta (mass is not accounted
+            // for). Good enough for interactive nudging in the editor;
+            // real impulse application belongs in the physics_systems.cpp
+            // Box3d bridge.
+            if (!session) return false;
+            flecs::entity e = find_scene_entity(session->ecs(), id);
+            if (!e.is_valid()) return false;
+            matter::physics::PhysicsVelocity copy =
+                e.has<matter::physics::PhysicsVelocity>()
+                    ? e.get<matter::physics::PhysicsVelocity>()
+                    : matter::physics::PhysicsVelocity{};
+            copy.linear.x += impulse.x;
+            copy.linear.y += impulse.y;
+            copy.linear.z += impulse.z;
+            e.set<matter::physics::PhysicsVelocity>(copy);
+            return true;
+        };
+    specialized_editors.physics_commands().wake =
+        [&session](matter::scene::SceneEntityId id) {
+            // Stub: no sleep/wake state is tracked on RigidBody yet (see
+            // matter/physics.h — RigidBody has enable_sleep/sleep_threshold
+            // but no runtime "is asleep" flag exposed to the editor).
+            if (!session) return false;
+            flecs::entity e = find_scene_entity(session->ecs(), id);
+            return e.is_valid() && e.has<matter::physics::RigidBody>();
+        };
+    specialized_editors.physics_commands().teleport =
+        [&session](matter::scene::SceneEntityId id, matter::Float3 position) {
+            if (!session) return false;
+            flecs::entity e = find_scene_entity(session->ecs(), id);
+            if (!e.is_valid() || !e.has<matter::ecs::LocalTransform>()) return false;
+            matter::ecs::LocalTransform copy = e.get<matter::ecs::LocalTransform>();
+            copy.translation = position;
+            e.set<matter::ecs::LocalTransform>(copy);
+            return true;
+        };
+
+    specialized_editors.streaming_commands().attach_streaming =
+        [&session](matter::scene::SceneEntityId id) {
+            if (!session) return false;
+            flecs::entity e = find_scene_entity(session->ecs(), id);
+            if (!e.is_valid()) return false;
+            e.add<matter::streaming::SectorStreaming>();
+            return true;
+        };
+    specialized_editors.streaming_commands().remove_streaming =
+        [&session](matter::scene::SceneEntityId id) {
+            if (!session) return false;
+            flecs::entity e = find_scene_entity(session->ecs(), id);
+            if (!e.is_valid()) return false;
+            e.remove<matter::streaming::SectorStreaming>();
+            return true;
+        };
+    specialized_editors.streaming_commands().set_follow_camera =
+        [](bool /*follow*/) {
+            // Stub: per-anchor follow-camera toggling isn't wired to
+            // matter_viewer::StreamingAnchorState yet (that controller
+            // currently tracks a single global anchor, not a per-entity
+            // flag). Follow-camera behavior today is still driven by
+            // Ui::update_sector_streaming / streaming_anchor_controller.
+        };
+    specialized_editors.streaming_commands().regenerate =
+        [](uint64_t /*seed*/) {
+            // Stub: no reseed entry point is exposed by
+            // matter::streaming::SectorStreaming / sector_streamer.cpp yet.
+        };
+
+    bool left_mouse_down = false;
     bool camera_capture = false;
     bool tab_down = false;
     bool f9_down = false;
@@ -456,7 +1280,10 @@ int main() {
     const bool test_resize = std::getenv("MATTER_TEST_RESIZE") != nullptr;
     const bool hide_ui = std::getenv("MATTER_HIDE_UI") != nullptr;
     bool resize_exercised = false;
-    if (hide_ui) std::printf("viewer: UI hidden by MATTER_HIDE_UI\n");
+    if (hide_ui) {
+        std::printf("viewer: UI hidden by MATTER_HIDE_UI\n");
+        ui.set_hide_ui(true);
+    }
 
     int cmd_fd = -1;
 #ifdef _WIN32
@@ -629,18 +1456,117 @@ int main() {
 
         matter_viewer::CurrentFrameInputOrder camera_input_order{};
         const bool ui_frame_ready = ui.begin_frame(frame, error);
+        matter::VulkanFrame render_frame = frame;
         if (!ui_frame_ready) {
             std::fprintf(stderr, "FATAL: ImGui Vulkan prepare: %s\n",
                          error.c_str());
             fatal_error = true;
         } else {
             camera_input_order.begin_ui();
+            editor_model.refresh(scene_commands);
+            // Gizmo mode hotkeys (G/T = translate, R = rotate, S = scale).
+            // Only when ImGui isn't capturing keyboard/text input, so typing
+            // in a Properties field doesn't retarget the gizmo.
+            {
+                const ImGuiIO& io = ImGui::GetIO();
+                if (!io.WantTextInput && !io.WantCaptureKeyboard) {
+                    ui.update_gizmo_hotkeys();
+                    // Task 13: F focuses the camera on the current selection;
+                    // Delete removes every selected entity (Edit/Pause only).
+                    if (ImGui::IsKeyPressed(ImGuiKey_F, false)) {
+                        viewer::focus_camera_on_selection(camera, selection_set,
+                                                          field_commands);
+                    }
+                    if (sim_control.mode() != matter::scene::SimulationMode::Play &&
+                        ImGui::IsKeyPressed(ImGuiKey_Delete, false)) {
+                        const std::vector<viewer::SelectedObject> to_delete =
+                            selection_set.items();
+                        for (const auto& obj : to_delete) {
+                            if (obj.kind != viewer::SelectedObject::Entity) continue;
+                            flecs::entity check = find_scene_entity(
+                                session->ecs(),
+                                matter::scene::SceneEntityId{obj.id});
+                            if (!check.is_valid()) continue;
+                            editor_model.select(matter::scene::SceneEntityId{obj.id});
+                            const matter::scene::SceneEditResult result =
+                                editor_model.delete_selected(scene_commands);
+                            if (result.error != matter::scene::SceneEditError::None) {
+                                console_log.push(viewer::LogSeverity::Error,
+                                                 "Delete: entity mutation failed");
+                            }
+                        }
+                        selection_set.clear();
+                        editor_model.clear_selection();
+                    }
+                }
+            }
+            if (!hide_ui) ui.prepare_viewport_rect();
+            render_frame = ui.viewport_render_frame(frame, error);
+            if (!error.empty()) {
+                std::fprintf(stderr, "viewport target: %s\n", error.c_str());
+                error.clear();
+            }
             if (!hide_ui) {
+                const viewer::ToolbarActions toolbar =
+                    ui.draw_toolbar(sim_control.mode());
+                if (toolbar.play_clicked) {
+                    std::string sim_err;
+                    if (!sim_control.play(session->ecs(), sim_err))
+                        std::fprintf(stderr, "play: %s\n", sim_err.c_str());
+                }
+                if (toolbar.pause_clicked) {
+                    std::string sim_err;
+                    if (!sim_control.pause(sim_err))
+                        std::fprintf(stderr, "pause: %s\n", sim_err.c_str());
+                }
+                if (toolbar.step_clicked) {
+                    std::string sim_err;
+                    if (!sim_control.step(sim_err))
+                        std::fprintf(stderr, "step: %s\n", sim_err.c_str());
+                }
+                if (toolbar.stop_clicked) {
+                    std::string sim_err;
+                    if (!sim_control.stop(session->ecs(), sim_err)) {
+                        std::fprintf(stderr, "stop: %s\n", sim_err.c_str());
+                    } else {
+                        selection_set.clear();
+                        editor_model.clear_selection();
+                    }
+                }
+                {
+                    const uint64_t gen = session->graph_generation();
+                    if (gen != cached_graph_gen) {
+                        session->graph_snapshot(cached_snapshot);
+                        cached_graph_gen = gen;
+                    }
+                }
+                const std::unordered_set<uint64_t>* authored_ptr = nullptr;
+                std::unordered_set<uint64_t> authored_entity_ids;
+                if (sim_control.has_snapshot()) {
+                    for (const auto& ent : sim_control.snapshot().entities) {
+                        authored_entity_ids.insert(ent.id.value);
+                    }
+                    authored_ptr = &authored_entity_ids;
+                }
+                ui.draw_scene_panel(editor_model, session.get(), &scene_commands,
+                                   sim_control.mode(), &camera, &selection_set,
+                                   &field_commands, &console_log, authored_ptr);
+                ui.draw_properties_panel(selection_set, editor_model, properties_registry,
+                                        field_commands, component_commands, sim_control.mode(),
+                                        &cached_snapshot, specialized_editors, camera.position);
+                ui.draw_viewport_window();
+                ui.draw_console_panel(console_log);
                 ui.draw_debug_panel(stats);
                 ui.draw_worlds_panel(worlds, stats);
                 ui.draw_camera_panel(camera);
-                ui.draw_sector_streaming_panel(
-                    *session, camera, frame.extent.width, frame.extent.height);
+                // draw_sector_streaming_panel retired in Phase 4 Task 12 — sector
+                // streaming editing now lives in the Properties panel via
+                // SpecializedEditors (MatterViewer/specialized_editors.h).
+                {
+                    const auto& vp = ui.viewport_rect();
+                    ui.draw_gizmo(selection_set, field_commands, camera,
+                                 sim_control.mode(), vp.x, vp.y, vp.w, vp.h);
+                }
             }
             camera_input_order.build_ui();
             camera_input_order.decide_capture(ui.camera_input_allowed());
@@ -650,9 +1576,76 @@ int main() {
         // this snapshot immutable through streaming, tick, scene render, and UI
         // submission so every current-frame camera consumer agrees.
         const matter::CameraDesc frame_camera = camera;
+
+        {
+            const bool mouse_down =
+                glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            const bool mouse_clicked = mouse_down && !left_mouse_down;
+            left_mouse_down = mouse_down;
+            if (mouse_clicked && ui_frame_ready && ui.camera_input_allowed()) {
+                double cursor_x = 0.0, cursor_y = 0.0;
+                glfwGetCursorPos(window, &cursor_x, &cursor_y);
+                int fb_width = 0, fb_height = 0;
+                glfwGetFramebufferSize(window, &fb_width, &fb_height);
+                const auto& vp = ui.viewport_rect();
+                const bool in_viewport =
+                    cursor_x >= vp.x && cursor_x < vp.x + vp.w &&
+                    cursor_y >= vp.y && cursor_y < vp.y + vp.h;
+                const viewer::PickResult pick = in_viewport
+                    ? viewer::viewport_pick(
+                          static_cast<float>(cursor_x - vp.x),
+                          static_cast<float>(cursor_y - vp.y),
+                          static_cast<int>(vp.w),
+                          static_cast<int>(vp.h),
+                          frame_camera, *session)
+                    : viewer::PickResult{};
+                if (pick.hit) {
+                    selection_set.replace(pick.object);
+                    // Keep the outliner's single-slot selection mirrored on
+                    // the primary pick (viewport and outliner share the same
+                    // selection).
+                    if (pick.object.kind == viewer::SelectedObject::Entity) {
+                        editor_model.select(
+                            matter::scene::SceneEntityId{pick.object.id});
+                    } else {
+                        editor_model.clear_selection();
+                    }
+                } else {
+                    selection_set.clear();
+                    editor_model.clear_selection();
+                }
+            }
+        }
+
+        selection_set.validate([&](const viewer::SelectedObject& obj) {
+            if (obj.kind == viewer::SelectedObject::BakedRoot) {
+                const uint32_t count = session->instance_count();
+                for (uint32_t i = 0; i < count; ++i) {
+                    matter::InstanceInfo info;
+                    if (session->instance_info(i, info) && info.part_hash == obj.id)
+                        return true;
+                }
+                return false;
+            }
+            // Entity selections are keyed by SceneEntityId (the stable
+            // authored-id hash), not by flecs entity id — resolve through the
+            // SceneEntityId component so dynamic ECS entities stay selected
+            // across frames.
+            return find_scene_entity(session->ecs(),
+                                     matter::scene::SceneEntityId{obj.id})
+                .is_valid();
+        });
+
         ui.update_sector_streaming(*session, frame_camera);
         matter::TickDesc tick{};
         tick.frame_delta_seconds = dt;
+        if (sim_control.should_advance_fixed()) {
+            // Play mode: run physics normally.
+        } else if (sim_control.consume_pending_step()) {
+            tick.max_fixed_steps = 1;
+        } else {
+            tick.max_fixed_steps = 0;
+        }
         session->tick(tick);
         camera_input_order.tick_scene();
         session->pump_gpu_jobs(4.0f);
@@ -664,6 +1657,11 @@ int main() {
             else if (event.type == matter::EventType::BakeFinished) {
                 std::printf("bake finished (%d errors)\n", event.errors);
                 bake_ready = event.errors == 0;
+                console_log.push(
+                    event.errors == 0 ? viewer::LogSeverity::Info
+                                       : viewer::LogSeverity::Warning,
+                    "Bake finished: " + std::to_string(event.done) +
+                        " parts, " + std::to_string(event.errors) + " errors");
                 matter::InstanceInfo selected{};
                 if (bake_ready && !selected_world_reported &&
                     session->instance_info(0, selected)) {
@@ -673,9 +1671,12 @@ int main() {
                     selected_world_reported = true;
                 }
                 if (fifo_path) std::printf("viewer: bake ready\n");
-            } else if (event.type == matter::EventType::BakeError)
+            } else if (event.type == matter::EventType::BakeError) {
                 std::printf("bake error [%s]: %s\n", event.module.c_str(),
                             event.message.c_str());
+                console_log.push(viewer::LogSeverity::Error,
+                                  "[" + event.module + "] " + event.message);
+            }
         }
         matter::RenderOptions options;
         options.path = matter::RenderPath::GpuDriven;
@@ -689,13 +1690,26 @@ int main() {
         options.min_projected_size = min_projected_size;
         options.dlss_mode = selected_dlss_mode;
         options.vulkan_lighting = stats.lighting;
+        options.vulkan_lighting.composite_debug_view =
+            stats.debug_view_mode == 1 ? 2.0f : 0.0f;
+        options.vulkan_volumetrics = stats.volumetrics;
+        options.vulkan_volumetrics.vol_debug_view =
+            static_cast<float>(stats.vol_debug_view);
         options.vulkan_ray_tracing.enabled =
             vulkan->ray_tracing_available() && !disable_vulkan_rt;
-        if (!session->render(frame_camera, frame, options, error)) {
+        if (!session->render(frame_camera, render_frame, options, error)) {
             std::fprintf(stderr, "FATAL: render: %s\n", error.c_str());
             fatal_error = true;
         } else {
             camera_input_order.render_scene();
+        }
+        if (ui_frame_ready && !fatal_error) {
+            ui.transition_viewport_for_sampling(frame.command_buffer);
+            const auto& sel_vp = ui.viewport_rect();
+            viewer::draw_selection_outlines(selection_set, frame_camera,
+                                            static_cast<int>(render_frame.extent.width),
+                                            static_cast<int>(render_frame.extent.height),
+                                            *session, sel_vp.x, sel_vp.y);
         }
         const matter::FrameStats& frame_stats = session->frame_stats();
         dlss_modes_supported = vulkan->dlss_available() &&
@@ -826,9 +1840,8 @@ int main() {
         } else {
             if (ui_frame_completed && !fatal_error) {
                 camera_input_order.end_frame();
-                if (camera_input_order.camera_update_allowed()) {
-                    // Free-fly affects the next frame, after this frame's scene
-                    // and UI have been submitted at the presentation boundary.
+                if (camera_input_order.camera_update_allowed() ||
+                    camera_capture) {
                     camera_controller.update(window, dt, camera);
                 }
             }
@@ -917,6 +1930,9 @@ int main() {
         if (stats.reload_requested) {
             stats.reload_requested = false;
             bake_ready = false; screenshot_settle = 0;
+            selection_set.clear();
+            editor_model.clear_selection();
+            sim_control = matter::scene::SimulationControl{};
             viewer::prepare_world_reload(stats);
             session->reload();
         }
@@ -930,9 +1946,14 @@ int main() {
                 continue;
             }
             session = std::move(next_session);
+            selection_set.clear();
+            editor_model.clear_selection();
+            sim_control = matter::scene::SimulationControl{};
             viewer::complete_world_switch(stats, true);
             stats.world_current = selected;
             selected_world_reported = false;
+            console_log.push(viewer::LogSeverity::Info,
+                              "Connected to " + worlds[selected].world_name);
             bake_ready = false; screenshot_settle = 0;
             apply_world_resolver_defaults(worlds[selected].world_name,
                                           active_radius,

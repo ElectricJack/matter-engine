@@ -264,4 +264,19 @@ void DslState::placeChild(const std::string& module,
     children_.push_back(p);
 }
 
+void DslState::emit_volume(const VolumeEmitter& e) {
+    if (e.radius <= 0.0f) { set_error("emitVolume: radius must be > 0"); return; }
+    if (e.length <= 0.0f) { set_error("emitVolume: length must be > 0"); return; }
+    if (e.density < 0.0f) { set_error("emitVolume: density must be >= 0"); return; }
+    // Normalize the direction vector; zero-length is an error.
+    float dx = e.dir[0], dy = e.dir[1], dz = e.dir[2];
+    float len = sqrtf(dx*dx + dy*dy + dz*dz);
+    if (len < 1e-9f) { set_error("emitVolume: dir must be non-zero"); return; }
+    VolumeEmitter normed = e;
+    normed.dir[0] = dx / len;
+    normed.dir[1] = dy / len;
+    normed.dir[2] = dz / len;
+    emitters_.push_back(normed);
+}
+
 } // namespace dsl

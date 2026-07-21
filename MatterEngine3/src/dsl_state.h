@@ -102,6 +102,21 @@ struct ModifierRegion {
     std::vector<ModifierSpec> stack;    // execution order
 };
 
+// Volumetric emitter authored via emitVolume(). Stored on the part and
+// serialized as a tagged trailer in the .part artifact so the renderer can
+// spawn froxel-based smoke/mist at runtime.
+struct VolumeEmitter {
+    float pos[3]   = {};
+    float dir[3]   = {0,1,0};
+    float radius   = 0.4f;
+    float spread   = 0.15f;
+    float length   = 12.0f;
+    float density  = 0.8f;
+    float color[3] = {1,1,1};
+    float rise     = 1.5f;
+    float turbulence = 0.6f;
+};
+
 // C++-owned authoring state. JS bindings mutate this; JS holds no engine state.
 class DslState {
 public:
@@ -349,6 +364,10 @@ public:
     // standard beginShape/vertex/endShape path.
     void pushTerrainTriangle(const float pos[9], const float nrm[9], int material_id);
 
+    // Volumetric emitters authored via emitVolume().
+    void emit_volume(const VolumeEmitter& e);
+    const std::vector<VolumeEmitter>& emitters() const { return emitters_; }
+
 private:
     std::unique_ptr<tileset::TilesetState> tileset_;
     std::vector<Matrix> stack_;   // never empty (seeded with identity)
@@ -383,6 +402,7 @@ private:
     std::chrono::steady_clock::time_point budget_deadline_{};
     bool budget_bounded_ = false;
     WorldBinding world_;  // terrain field binding (null by default)
+    std::vector<VolumeEmitter> emitters_;  // volumetric emitters (emitVolume)
 };
 
 } // namespace dsl

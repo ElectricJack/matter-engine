@@ -1,12 +1,14 @@
 #include "ecs_runtime.h"
 #include "physics_context.h"
 #include "streaming_systems.h"
+#include "scene_registry.h"
 #include "../streaming/sector_streaming_coordinator.h"
 #include "matter/physics.h"
 #include "matter/streaming.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 
 namespace matter::physics {
@@ -372,15 +374,30 @@ void Runtime::drain_world_state_commands() {
     }
 
     ecs::WorldRuntimeState state = world_.get<ecs::WorldRuntimeState>();
-    for (const WorldStateCommand command : commands) {
+    for (auto& command : commands) {
         switch (command.kind) {
             case WorldStateCommandKind::Loading:
                 state.status = ecs::WorldStatus::Loading;
                 break;
-            case WorldStateCommandKind::Ready:
+            case WorldStateCommandKind::Ready: {
                 state.status = ecs::WorldStatus::Ready;
                 ++state.content_generation;
+                if (!command.entities.empty()) {
+                    scene::PartResolver resolver = command.part_resolver
+                        ? command.part_resolver
+                        : scene::PartResolver([](const std::string&, uint64_t& out_hash) {
+                              out_hash = 0;
+                              return true;
+                          });
+                    scene::RecipeError err;
+                    if (!scene::bootstrap_transactional(world_, command.entities,
+                                                       scene_generation_, resolver, err)) {
+                        std::fprintf(stderr, "bootstrap_transactional failed: %s (entity: %s)\n",
+                                     err.message.c_str(), err.authored_id.c_str());
+                    }
+                }
                 break;
+            }
             case WorldStateCommandKind::Failed:
                 state.status = ecs::WorldStatus::Failed;
                 break;
@@ -393,8 +410,7 @@ TickResult Runtime::tick(const TickDesc& desc) {
     const double frame_delta = desc.frame_delta_seconds;
     const double fixed_delta = desc.fixed_delta_seconds;
     if (!std::isfinite(frame_delta) || frame_delta < 0.0 ||
-        !std::isfinite(fixed_delta) || fixed_delta <= 0.0 ||
-        desc.max_fixed_steps == 0) {
+        !std::isfinite(fixed_delta) || fixed_delta <= 0.0) {
         return {0, 0, true};
     }
 
@@ -404,28 +420,30 @@ TickResult Runtime::tick(const TickDesc& desc) {
         world_, explicit_flecs_frame_delta(contributed_delta));
     drain_world_state_commands();
     ecs::drain_hierarchy_commands(world_);
-    accumulator_seconds_ += contributed_delta;
 
     TickResult result{};
-    while (result.fixed_steps < desc.max_fixed_steps) {
-        snap_half_ulp_shortfall_to_fixed_boundary(
-            accumulator_seconds_, desc.fixed_delta_seconds, fixed_delta);
-        if (accumulator_seconds_ < fixed_delta) {
-            break;
+    if (desc.max_fixed_steps > 0) {
+        accumulator_seconds_ += contributed_delta;
+        while (result.fixed_steps < desc.max_fixed_steps) {
+            snap_half_ulp_shortfall_to_fixed_boundary(
+                accumulator_seconds_, desc.fixed_delta_seconds, fixed_delta);
+            if (accumulator_seconds_ < fixed_delta) {
+                break;
+            }
+            world_.run_pipeline(fixed_pipeline_, desc.fixed_delta_seconds);
+            accumulator_seconds_ -= fixed_delta;
+            ++result.fixed_steps;
         }
-        world_.run_pipeline(fixed_pipeline_, desc.fixed_delta_seconds);
-        accumulator_seconds_ -= fixed_delta;
-        ++result.fixed_steps;
-    }
 
-    const double complete_excess_steps =
-        std::floor(accumulator_seconds_ / fixed_delta);
-    if (complete_excess_steps > 0.0) {
-        const double max_reportable =
-            static_cast<double>(std::numeric_limits<uint32_t>::max());
-        result.dropped_steps = static_cast<uint32_t>(
-            std::min(complete_excess_steps, max_reportable));
-        accumulator_seconds_ -= complete_excess_steps * fixed_delta;
+        const double complete_excess_steps =
+            std::floor(accumulator_seconds_ / fixed_delta);
+        if (complete_excess_steps > 0.0) {
+            const double max_reportable =
+                static_cast<double>(std::numeric_limits<uint32_t>::max());
+            result.dropped_steps = static_cast<uint32_t>(
+                std::min(complete_excess_steps, max_reportable));
+            accumulator_seconds_ -= complete_excess_steps * fixed_delta;
+        }
     }
 
     world_.run_pipeline(

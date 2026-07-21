@@ -337,6 +337,94 @@ ASYNCQ_CPP = async_queue_tests.cpp ../src/async_bake.cpp
 TILESETGTEX_TARGET = tileset_gtex_tests
 TILESETGTEX_CPP    = tileset_gtex_tests.cpp ../src/tileset_gtex.cpp
 
+# Volumetrics Task 3 — CPU emitter gather (distance filter, 256 cap).
+EMITTERGATHER_TARGET = emitter_gather_tests
+EMITTERGATHER_CPP    = emitter_gather_tests.cpp ../src/render/vk_emitter_gather.cpp
+
+# Phase 4 Task 4 — SceneRegistry reflected ECS validation + instantiation (def flavor).
+SCENE_REGISTRY_TARGET = scene_registry_tests
+SCENE_REGISTRY_CPP    = scene_registry_tests.cpp ../src/ecs/scene_registry.cpp \
+                        ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
+                        ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
+                        ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
+                        ../src/streaming/sector_streaming_coordinator.cpp \
+                        ../src/sector_streamer.cpp
+SCENE_REGISTRY_C      = $(FLECS_C)
+
+# Phase 4 Task 6 — CPU stable dynamic instance slots (pure CPU, def flavor,
+# no Flecs/physics/ECS deps).
+DYNAMIC_SLOTS_TARGET = dynamic_instance_slots_tests
+DYNAMIC_SLOTS_CPP    = dynamic_instance_slots_tests.cpp ../src/render/dynamic_instance_slots.cpp
+
+# Phase 4 Task 5 — Recipe normalization + transactional bootstrap (def flavor).
+ENTITY_RECIPE_TARGET = entity_recipe_tests
+ENTITY_RECIPE_CPP    = entity_recipe_tests.cpp ../src/ecs/scene_registry.cpp \
+                       ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
+                       ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
+                       ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
+                       ../src/streaming/sector_streaming_coordinator.cpp \
+                       ../src/sector_streamer.cpp
+ENTITY_RECIPE_C      = $(FLECS_C)
+
+# Phase 4 Task 8 — ECS dynamic scene bridge (headless, Flecs, no GL/Vulkan).
+DYNAMIC_BRIDGE_TARGET = dynamic_bridge_tests
+DYNAMIC_BRIDGE_CPP    = dynamic_scene_bridge_tests.cpp ../src/ecs/dynamic_scene_bridge.cpp \
+                        ../src/render/dynamic_instance_slots.cpp \
+                        ../src/ecs/scene_registry.cpp \
+                        ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
+                        ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
+                        ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
+                        ../src/streaming/sector_streaming_coordinator.cpp \
+                        ../src/sector_streamer.cpp
+DYNAMIC_BRIDGE_C      = $(FLECS_C)
+
+# Phase 4 Task 9 — Editor model (pure CPU, no GL/Vulkan/Flecs needed).
+EDITOR_MODEL_TARGET = editor_model_tests
+EDITOR_MODEL_CPP    = editor_model_tests.cpp ../../MatterViewer/editor_model.cpp
+
+# Phase 4 Task 10 — Properties registry (needs scene_registry for ComponentDescriptor).
+PROPERTIES_REGISTRY_TARGET = properties_registry_tests
+PROPERTIES_REGISTRY_CPP    = properties_registry_tests.cpp ../../MatterViewer/properties_registry.cpp \
+                             ../src/ecs/scene_registry.cpp \
+                             ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
+                             ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
+                             ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
+                             ../src/streaming/sector_streaming_coordinator.cpp \
+                             ../src/sector_streamer.cpp
+PROPERTIES_REGISTRY_C      = $(FLECS_C)
+
+# Phase 4 Task 11 — Simulation control (Play/Pause/Step/Stop with snapshot).
+SIMULATION_CONTROL_TARGET = simulation_control_tests
+SIMULATION_CONTROL_CPP    = simulation_control_tests.cpp ../src/ecs/simulation_control.cpp \
+                            ../src/ecs/scene_registry.cpp \
+                            ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
+                            ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
+                            ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
+                            ../src/streaming/sector_streaming_coordinator.cpp \
+                            ../src/sector_streamer.cpp
+SIMULATION_CONTROL_C      = $(FLECS_C)
+
+# Phase 4 Task 12 — Specialized editors (pure CPU, no Flecs/GL).
+SPECIALIZED_EDITORS_TARGET = specialized_editors_tests
+SPECIALIZED_EDITORS_CPP    = specialized_editors_tests.cpp \
+                             ../../MatterViewer/specialized_editors.cpp \
+                             ../../MatterViewer/properties_registry.cpp \
+                             ../src/ecs/scene_registry.cpp
+SPECIALIZED_EDITORS_C      = $(FLECS_C)
+
+# Phase 5 — entity -> ECS bridge (Ready world-state commands bootstrap Flecs
+# entities via scene::bootstrap_transactional). Needs the full Runtime, same
+# link set as SIMULATION_CONTROL.
+ECS_ENTITY_BRIDGE_TARGET = ecs_entity_bridge_tests
+ECS_ENTITY_BRIDGE_CPP    = ecs_entity_bridge_tests.cpp \
+                           ../src/ecs/scene_registry.cpp \
+                           ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
+                           ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
+                           ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
+                           ../src/streaming/sector_streaming_coordinator.cpp \
+                           ../src/sector_streamer.cpp
+ECS_ENTITY_BRIDGE_C      = $(FLECS_C)
+
 # Phase C Task 4 — RefineController tile-pairing + priority/eviction (pure CPU, def flavor).
 REFINECTL_TARGET = refine_controller_tests
 REFINECTL_CPP    = refine_controller_tests.cpp ../src/refine_controller.cpp \
@@ -518,6 +606,10 @@ TILESETBAKE_CPP = tileset_bake_tests.cpp ../src/part_graph.cpp \
                   $(COMMON_MSL_FULL_SRC)
 TILESETBAKE_C   = $(COMMON_MSL_C)
 
+TILESETPARAMS_TARGET = tileset_params_tests
+TILESETPARAMS_CPP = tileset_params_tests.cpp $(filter-out tileset_bake_tests.cpp,$(TILESETBAKE_CPP))
+TILESETPARAMS_C = $(TILESETBAKE_C)
+
 # ===== flavor qjs (script_host_tests + tileset_dsl_tests + terrainnoise) ===
 # NOTE: script_host_tests originally compiled with CFLAGS + INCLUDE_PATHS +
 # QJS_INC (no -DMATTER_HAVE_SCRIPT_HOST). That maps to `qjs`, not `sh`.
@@ -527,6 +619,18 @@ TILESETDSL_CPP = tileset_dsl_tests.cpp $(filter-out script_host_tests.cpp, $(SCR
 # Phase C Task 1: terrain noise contract (qjs flavor — module_resolver + QJS only).
 TERRAINNOISE_TARGET = terrain_noise_tests
 TERRAINNOISE_CPP = terrain_noise_tests.cpp ../src/module_resolver.cpp
+
+# Phase 4 Task 1: hermetic World JavaScript statics contract.
+WORLD_DEFINITION_TARGET = world_definition_tests
+WORLD_DEFINITION_CPP = world_definition_tests.cpp \
+                       ../src/script/world_definition_loader.cpp \
+                       ../src/module_resolver.cpp
+
+# Phase 4 Task 13: PhysicsPlayground world and closure.
+PHYSICS_PLAYGROUND_TARGET = physics_playground_tests
+PHYSICS_PLAYGROUND_CPP    = physics_playground_tests.cpp \
+                            ../src/script/world_definition_loader.cpp \
+                            ../src/module_resolver.cpp
 
 # Phase C Task 4 — eval_world: World builder DSL + ScriptHost::eval_world (sh flavor).
 EVALWORLD_TARGET = eval_world_tests
@@ -580,10 +684,11 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../src/provider/resolvers.cpp \
               ../src/render/part_store.cpp \
               ../src/provider/local_provider.cpp \
+              ../src/script/world_definition_loader.cpp \
               ../src/render/world_composer.cpp \
               ../src/render/raster_mesh.cpp \
               ../src/render/tileset_provider.cpp ../src/render/tileset_gl_ctx.cpp \
-              ../src/tileset_phase.cpp ../src/tileset_phase_gpu.cpp \
+              ../src/tileset_phase.cpp \
               ../src/tileset_bake_primary.cpp ../src/tileset_bake_ao.cpp \
               ../src/tileset_settle.cpp ../src/tileset_gtex.cpp \
               ../src/tileset_bake.cpp ../src/tileset_bake_gpu.cpp ../src/tileset_collider.cpp \
@@ -644,7 +749,7 @@ GPU_RENDER_CPP = \
 
 GPU_PIPELINE_CPP = \
     ../src/part_graph.cpp \
-    ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp \
+    ../src/script_host.cpp ../src/script/world_definition_loader.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp \
     ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp \
     ../src/script_rng_binding.cpp \
     ../src/polygon_triangulate.cpp \
@@ -658,7 +763,7 @@ GPU_PIPELINE_CPP = \
     ../src/world_lights.cpp \
     ../src/world_tracer.cpp \
     ../src/shader_source.cpp \
-    ../src/tileset_phase.cpp ../src/tileset_phase_gpu.cpp \
+    ../src/tileset_phase.cpp \
     ../src/tileset_bake.cpp ../src/tileset_settle.cpp \
     ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
     ../src/tileset_bake_primary.cpp ../src/tileset_bake_ao.cpp \
@@ -692,6 +797,15 @@ GPU_ALL_CPP = $(GPU_PIPELINE_CPP) $(GPU_RENDER_CPP) $(GPU_MSL_CPP) \
 def_CPP_SRCS := $(sort \
     $(ECS_CPP) \
     $(PHYSICS_CPP) \
+    $(SCENE_REGISTRY_CPP) \
+    $(ENTITY_RECIPE_CPP) \
+    $(DYNAMIC_SLOTS_CPP) \
+    $(DYNAMIC_BRIDGE_CPP) \
+    $(EDITOR_MODEL_CPP) \
+    $(PROPERTIES_REGISTRY_CPP) \
+    $(SIMULATION_CONTROL_CPP) \
+    $(SPECIALIZED_EDITORS_CPP) \
+    $(ECS_ENTITY_BRIDGE_CPP) \
     $(PARTV2_CPP) \
     $(GRAPH_SOURCES) \
     $(TRIVAR_CPP) \
@@ -705,6 +819,7 @@ def_CPP_SRCS := $(sort \
     $(SHADER_SOURCE_CPP) \
     $(ASYNCQ_CPP) \
     $(TILESETGTEX_CPP) \
+    $(EMITTERGATHER_CPP) \
     $(REFINECTL_CPP) \
     $(SECTORSTREAM_CPP) \
     $(SECTORCOORD_CPP) \
@@ -718,7 +833,9 @@ qjs_CPP_SRCS := $(sort \
     $(SCRIPT_CPP) \
     $(MODBAKE_CPP) \
     $(TILESETDSL_CPP) \
-    $(TERRAINNOISE_CPP))
+    $(TERRAINNOISE_CPP) \
+    $(WORLD_DEFINITION_CPP) \
+    $(PHYSICS_PLAYGROUND_CPP))
 
 sh_CPP_SRCS := $(sort \
     $(EVALWORLD_CPP) \
@@ -734,6 +851,7 @@ sh_CPP_SRCS := $(sort \
     $(STRESSFOREST_CPP) \
     $(LIGHTING_GARDEN_CPP) \
     $(TILESETBAKE_CPP) \
+    $(TILESETPARAMS_CPP) \
     $(LIVEPROD_CPP))
 
 sp2_CPP_SRCS := $(sort $(SHLIB_CPP))
@@ -799,6 +917,15 @@ $(foreach s,$(physicsc_C_SRCS),$(eval $(call objrule_c,physicsc,$(s))))
 # ---------------------------------------------------------------------------
 ECS_OBJS = $(call obj_list,def,$(ECS_CPP)) $(call obj_list,flecsc,$(ECS_C))
 PHYSICS_OBJS = $(call obj_list,def,$(PHYSICS_CPP)) $(call obj_list,physicsc,$(PHYSICS_C))
+SCENE_REGISTRY_OBJS = $(call obj_list,def,$(SCENE_REGISTRY_CPP)) $(call obj_list,flecsc,$(SCENE_REGISTRY_C))
+ENTITY_RECIPE_OBJS = $(call obj_list,def,$(ENTITY_RECIPE_CPP)) $(call obj_list,flecsc,$(ENTITY_RECIPE_C))
+DYNAMIC_SLOTS_OBJS = $(call obj_list,def,$(DYNAMIC_SLOTS_CPP))
+DYNAMIC_BRIDGE_OBJS = $(call obj_list,def,$(DYNAMIC_BRIDGE_CPP)) $(call obj_list,flecsc,$(DYNAMIC_BRIDGE_C))
+EDITOR_MODEL_OBJS = $(call obj_list,def,$(EDITOR_MODEL_CPP))
+PROPERTIES_REGISTRY_OBJS = $(call obj_list,def,$(PROPERTIES_REGISTRY_CPP)) $(call obj_list,flecsc,$(PROPERTIES_REGISTRY_C))
+SIMULATION_CONTROL_OBJS = $(call obj_list,def,$(SIMULATION_CONTROL_CPP)) $(call obj_list,flecsc,$(SIMULATION_CONTROL_C))
+SPECIALIZED_EDITORS_OBJS = $(call obj_list,def,$(SPECIALIZED_EDITORS_CPP)) $(call obj_list,flecsc,$(SPECIALIZED_EDITORS_C))
+ECS_ENTITY_BRIDGE_OBJS = $(call obj_list,def,$(ECS_ENTITY_BRIDGE_CPP)) $(call obj_list,flecsc,$(ECS_ENTITY_BRIDGE_C))
 PARTV2_OBJS = $(call obj_list,def,$(PARTV2_CPP)) $(call obj_list,mslc,$(PARTV2_C))
 GRAPH_OBJS  = $(call obj_list,def,$(GRAPH_SOURCES)) $(call obj_list,mslc,$(GRAPH_C))
 TRIVAR_OBJS = $(call obj_list,def,$(TRIVAR_CPP)) $(call obj_list,mslc,$(TRIVAR_C))
@@ -812,6 +939,7 @@ POLYTRI_OBJS = $(call obj_list,def,$(POLYTRI_CPP))
 SHADER_SOURCE_OBJS = $(call obj_list,def,$(SHADER_SOURCE_CPP))
 ASYNCQ_OBJS = $(call obj_list,def,$(ASYNCQ_CPP))
 TILESETGTEX_OBJS = $(call obj_list,def,$(TILESETGTEX_CPP))
+EMITTERGATHER_OBJS = $(call obj_list,def,$(EMITTERGATHER_CPP))
 REFINECTL_OBJS = $(call obj_list,def,$(REFINECTL_CPP))
 SECTORSTREAM_OBJS = $(call obj_list,def,$(SECTORSTREAM_CPP))
 SECTORCOORD_OBJS = $(call obj_list,def,$(SECTORCOORD_CPP)) $(call obj_list,flecsc,$(SECTORCOORD_C))
@@ -827,6 +955,8 @@ SCRIPT_OBJS = $(call obj_list,qjs,$(SCRIPT_CPP)) $(call obj_list,mslc,$(SCRIPT_C
 MODBAKE_OBJS = $(call obj_list,qjs,$(MODBAKE_CPP)) $(call obj_list,mslc,$(MODBAKE_C)) $(qjsc_C_OBJS)
 TILESETDSL_OBJS = $(call obj_list,qjs,$(TILESETDSL_CPP)) $(call obj_list,mslc,$(SCRIPT_C)) $(qjsc_C_OBJS)
 TERRAINNOISE_OBJS = $(call obj_list,qjs,$(TERRAINNOISE_CPP)) $(qjsc_C_OBJS)
+WORLD_DEFINITION_OBJS = $(call obj_list,qjs,$(WORLD_DEFINITION_CPP)) $(qjsc_C_OBJS)
+PHYSICS_PLAYGROUND_OBJS = $(call obj_list,qjs,$(PHYSICS_PLAYGROUND_CPP)) $(qjsc_C_OBJS)
 EVALWORLD_OBJS = $(call obj_list,sh,$(EVALWORLD_CPP)) $(call obj_list,mslc,$(EVALWORLD_C)) $(qjsc_C_OBJS)
 FOLDCACHE_OBJS = $(call obj_list,sh,$(FOLDCACHE_CPP)) $(call obj_list,mslc,$(FOLDCACHE_C)) $(qjsc_C_OBJS)
 
@@ -840,6 +970,7 @@ STRESSFOREST_OBJS = $(call obj_list,sh,$(STRESSFOREST_CPP)) $(call obj_list,mslc
 LIGHTING_GARDEN_OBJS = $(call obj_list,sh,$(LIGHTING_GARDEN_CPP)) \
                        $(call obj_list,mslc,$(LIGHTING_GARDEN_C)) $(qjsc_C_OBJS)
 TILESETBAKE_OBJS = $(call obj_list,sh,$(TILESETBAKE_CPP)) $(call obj_list,mslc,$(TILESETBAKE_C)) $(qjsc_C_OBJS)
+TILESETPARAMS_OBJS = $(call obj_list,sh,$(TILESETPARAMS_CPP)) $(call obj_list,mslc,$(TILESETPARAMS_C)) $(qjsc_C_OBJS)
 LIVEPROD_OBJS    = $(call obj_list,sh,$(LIVEPROD_CPP)) $(call obj_list,mslc,$(LIVEPROD_C)) $(qjsc_C_OBJS)
 
 SHLIB_OBJS = $(call obj_list,sp2,$(SHLIB_CPP)) $(call obj_list,mslc,$(SHLIB_C)) $(qjsc_C_OBJS)
@@ -853,7 +984,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-ecs run-physics run-partv2 run-partstore run-script run-foldcache run-evalworld run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream
+.PHONY: clean run-matrix run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -876,6 +1007,75 @@ $(PHYSICS_TARGET): $(PHYSICS_OBJS) $(BOX3D_LIB)
 
 run-physics: $(PHYSICS_TARGET)
 	./$(PHYSICS_TARGET)
+
+# Phase 4 Task 4 — Scene registry (reflected components, validation, instantiation).
+# Pure CPU test: no GL, no raylib — only box3d + flecs system deps.
+$(SCENE_REGISTRY_TARGET): $(SCENE_REGISTRY_OBJS) $(BOX3D_LIB)
+	$(CC) $(SCENE_REGISTRY_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) -lws2_32 -ldbghelp -lwinmm
+
+run-scene-registry: $(SCENE_REGISTRY_TARGET)
+	./$(SCENE_REGISTRY_TARGET)
+
+# Phase 4 Task 5 — Recipe normalization + transactional bootstrap.
+# Pure CPU test: no GL, no raylib — only box3d + flecs system deps.
+$(ENTITY_RECIPE_TARGET): $(ENTITY_RECIPE_OBJS) $(BOX3D_LIB)
+	$(CC) $(ENTITY_RECIPE_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) -lws2_32 -ldbghelp -lwinmm
+
+run-entity-recipes: $(ENTITY_RECIPE_TARGET)
+	./$(ENTITY_RECIPE_TARGET)
+
+# Phase 4 Task 6 — CPU stable dynamic instance slots.
+# Pure CPU test: no GL, no raylib, no Flecs/physics/ECS deps.
+$(DYNAMIC_SLOTS_TARGET): $(DYNAMIC_SLOTS_OBJS)
+	$(CC) $(DYNAMIC_SLOTS_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread
+
+run-dynamic-slots: $(DYNAMIC_SLOTS_TARGET)
+	./$(DYNAMIC_SLOTS_TARGET)
+
+# Phase 4 Task 8 — ECS dynamic scene bridge (reconciles SceneEntityId +
+# WorldTransform + PartInstance against DynamicInstanceSlots each frame).
+# Pure CPU test: no GL, no raylib — only box3d + flecs system deps.
+$(DYNAMIC_BRIDGE_TARGET): $(DYNAMIC_BRIDGE_OBJS) $(BOX3D_LIB)
+	$(CC) $(DYNAMIC_BRIDGE_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) -lws2_32 -ldbghelp -lwinmm
+
+run-dynamic-bridge: $(DYNAMIC_BRIDGE_TARGET)
+	./$(DYNAMIC_BRIDGE_TARGET)
+
+# Phase 4 Task 9 — Editor model (pure CPU, no Flecs/GL runtime).
+$(EDITOR_MODEL_TARGET): $(EDITOR_MODEL_OBJS)
+	$(CC) $(EDITOR_MODEL_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread
+
+run-editor-model: $(EDITOR_MODEL_TARGET)
+	./$(EDITOR_MODEL_TARGET)
+
+# Phase 4 Task 10 — Properties registry (pure CPU, needs scene_registry).
+$(PROPERTIES_REGISTRY_TARGET): $(PROPERTIES_REGISTRY_OBJS) $(BOX3D_LIB)
+	$(CC) $(PROPERTIES_REGISTRY_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) -lws2_32 -ldbghelp -lwinmm
+
+run-properties-registry: $(PROPERTIES_REGISTRY_TARGET)
+	./$(PROPERTIES_REGISTRY_TARGET)
+
+# Phase 4 Task 11 — Simulation control.
+$(SIMULATION_CONTROL_TARGET): $(SIMULATION_CONTROL_OBJS) $(BOX3D_LIB)
+	$(CC) $(SIMULATION_CONTROL_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) -lws2_32 -ldbghelp -lwinmm
+
+run-simulation-control: $(SIMULATION_CONTROL_TARGET)
+	./$(SIMULATION_CONTROL_TARGET)
+
+# Phase 4 Task 12 — Specialized editors (pure CPU, needs scene_registry).
+$(SPECIALIZED_EDITORS_TARGET): $(SPECIALIZED_EDITORS_OBJS)
+	$(CC) $(SPECIALIZED_EDITORS_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread -lws2_32 -ldbghelp -lwinmm
+
+run-specialized-editors: $(SPECIALIZED_EDITORS_TARGET)
+	./$(SPECIALIZED_EDITORS_TARGET)
+
+# Phase 5 — entity -> ECS bridge (Ready world-state commands bootstrap
+# Flecs entities via scene::bootstrap_transactional).
+$(ECS_ENTITY_BRIDGE_TARGET): $(ECS_ENTITY_BRIDGE_OBJS) $(BOX3D_LIB)
+	$(CC) $(ECS_ENTITY_BRIDGE_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) -lws2_32 -ldbghelp -lwinmm
+
+run-ecs-entity-bridge: $(ECS_ENTITY_BRIDGE_TARGET)
+	./$(ECS_ENTITY_BRIDGE_TARGET)
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests.
 $(PARTV2_TARGET): $(PARTV2_OBJS)
@@ -914,6 +1114,18 @@ $(EVALWORLD_TARGET): $(EVALWORLD_OBJS)
 
 run-evalworld: $(EVALWORLD_TARGET)
 	./$(EVALWORLD_TARGET)
+
+$(WORLD_DEFINITION_TARGET): $(WORLD_DEFINITION_OBJS)
+	$(CC) $(WORLD_DEFINITION_OBJS) -o $@ $(FLAVOR_qjs_FLAGS) -lm
+
+run-world-definition: $(WORLD_DEFINITION_TARGET)
+	./$(WORLD_DEFINITION_TARGET)
+
+$(PHYSICS_PLAYGROUND_TARGET): $(PHYSICS_PLAYGROUND_OBJS)
+	$(CC) $(PHYSICS_PLAYGROUND_OBJS) -o $@ $(FLAVOR_qjs_FLAGS) -lm
+
+run-physics-playground: $(PHYSICS_PLAYGROUND_TARGET)
+	./$(PHYSICS_PLAYGROUND_TARGET)
 
 # Phase C Task 5 — terrain mesher (pure CPU, no JS, no GL).
 $(TERRAINMESH_TARGET): $(TERRAINMESH_OBJS)
@@ -1136,6 +1348,14 @@ $(TILESETBAKE_TARGET): $(TILESETBAKE_OBJS) $(BOX3D_DIR)/libbox3d.a
 run-tilesetbake: $(TILESETBAKE_TARGET)
 	./$(TILESETBAKE_TARGET)
 
+$(TILESETPARAMS_TARGET): $(TILESETPARAMS_OBJS) $(BOX3D_DIR)/libbox3d.a
+	$(CC) $(TILESETPARAMS_OBJS) -o $@ \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) \
+	      $(BOX3D_DIR)/libbox3d.a
+
+run-tilesetparams: $(TILESETPARAMS_TARGET)
+	./$(TILESETPARAMS_TARGET)
+
 # tileset .gtex format round-trip.
 $(TILESETGTEX_TARGET): $(TILESETGTEX_OBJS)
 	$(CC) $(TILESETGTEX_OBJS) -o $@ $(CFLAGS) -I../include -I../../Libraries/raylib/src
@@ -1150,7 +1370,7 @@ $(TILESETTORUSBVH_TARGET): $(TILESETTORUSBVH_OBJS)
 run-tilesettorusbvh: $(TILESETTORUSBVH_TARGET)
 	./$(TILESETTORUSBVH_TARGET)
 
-# Meadow world.manifest tileset-flag parse test.
+# Meadow world-definition tileset-flag test.
 $(TILESETMEADOWMANIFEST_TARGET): $(TILESETMEADOWMANIFEST_OBJS)
 	$(CC) $(TILESETMEADOWMANIFEST_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
 
@@ -1212,6 +1432,13 @@ $(PARTSTORE_TARGET): $(PARTSTORE_OBJS)
 
 run-partstore: $(PARTSTORE_TARGET)
 	./$(PARTSTORE_TARGET)
+
+# Volumetrics Task 3 — CPU emitter gather (distance filter, 256 cap).
+$(EMITTERGATHER_TARGET): $(EMITTERGATHER_OBJS)
+	$(CC) $(EMITTERGATHER_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) -lm
+
+run-emittergather: $(EMITTERGATHER_TARGET)
+	./$(EMITTERGATHER_TARGET)
 
 # Modifier-region bake plumbing (Task 4): full bake through ScriptHost, region
 # meshes welded across cells and stack-processed.
@@ -1365,7 +1592,8 @@ vulkan-smoke:
 # ---------------------------------------------------------------------------
 clean:
 	rm -rf $(OBJDIR)
-	rm -f $(PARTV2_TARGET) $(SCRIPT_TARGET) $(GRAPH_TARGET) $(GRAPH_INT_TARGET) \
+	rm -f $(PARTV2_TARGET) $(SCRIPT_TARGET) $(GRAPH_TARGET) $(GRAPH_INT_TARGET) $(EMITTERGATHER_TARGET) $(WORLD_DEFINITION_TARGET) \
+	      $(PHYSICS_PLAYGROUND_TARGET) \
 	      $(TRIVAR_TARGET) $(SHLIB_TARGET) $(COMP_TARGET) $(DEV_TARGET) \
 	      $(EXAMPLE_TARGET) $(VIEWER_LOGIC_TARGET) $(TREEBAKE_TARGET) \
 	      $(GRASSLOD_TARGET) $(STRESSFOREST_TARGET) $(LIGHTING_GARDEN_TARGET) \
@@ -1386,6 +1614,9 @@ clean:
 	      $(MATRIX_TARGET) \
 	      $(ECS_TARGET) \
 	      $(PHYSICS_TARGET) \
+	      $(SCENE_REGISTRY_TARGET) \
+	      $(ENTITY_RECIPE_TARGET) \
+	      $(DYNAMIC_SLOTS_TARGET) \
 	      tileset_physics_tests tileset_core_tests tileset_placement_tests \
 	      gpu_tests tileset_gpu_tests tileset_seam_tests tileset_provider_tests \
 	      tileset_load_tests api_tests async_bake_tests demand_bake_tests transient_tests release_part_tests \

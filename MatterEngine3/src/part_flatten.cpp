@@ -212,6 +212,7 @@ struct PartGeo {
     std::vector<Tri>   tris;
     std::vector<TriEx> triex;                                // parallel to tris
     std::vector<part_asset::ChildInstance> children;
+    std::vector<part_asset::VolumeEmitter> emitters;
     // LOD-instanced-children: per-part flatten hints (child index -> inline px).
     // Loaded lazily in Gatherer::load; absent sidecar => empty map (no hints).
     part_asset::FlattenHints hints;
@@ -552,7 +553,7 @@ private:
         part_asset::LodLevels lods_in;
         const std::string path = cache_root_ + "/" + part_asset::cache_path_resolved(hash);
         if (!part_asset::load_v2(path, hash, scratch, scratch_tlas,
-                                 geo->children, lods_in)) {
+                                 geo->children, lods_in, geo->emitters)) {
             err = "flatten: load_v2 failed for " + path;
             cache_.emplace(hash, std::move(geo));
             return nullptr;
@@ -646,6 +647,7 @@ static FlattenResult flatten_budget_ladder(const std::string& cache_root,
                                            uint64_t root_hash,
                                            const FlattenTargets& targets,
                                            Gatherer& g0, float radius,
+                                           const std::vector<part_asset::VolumeEmitter>& emitters,
                                            const part_asset::LodVariants& v) {
     FlattenResult res;
     res.full_tris = g0.tris().size();
@@ -730,7 +732,9 @@ static FlattenResult flatten_budget_ladder(const std::string& cache_root,
     const std::string out_path = cache_root + "/" + part_asset::cache_path_flat(root_hash);
     // Budget-variant ladder has no instance boundaries: each variant is a
     // complete standalone mesh at its own tri budget.
-    if (!part_asset::save_flat_v3(out_path, blas, tlas, clusters, root_hash)) {
+    if (!part_asset::save_flat_v3(out_path, blas, tlas, clusters,
+                                  std::vector<part_asset::FlatInstanceRef>{},
+                                  root_hash, emitters)) {
         res.error = "flatten: save_flat_v3 failed for " + out_path;
         return res;
     }
@@ -927,7 +931,8 @@ static FlattenResult flatten_segmented(const std::string& cache_root,
                                        const FlattenTargets& targets,
                                        Gatherer& g,
                                        float world_aabb_min[3],
-                                       float world_aabb_max[3]) {
+                                       float world_aabb_max[3],
+                                       const std::vector<part_asset::VolumeEmitter>& emitters) {
     FlattenResult res;
     const auto& hrefs = g.hinted_refs();
 
@@ -1200,7 +1205,7 @@ static FlattenResult flatten_segmented(const std::string& cache_root,
     res.instance_refs = out_refs.size();
 
     const std::string out_path = cache_root + "/" + part_asset::cache_path_flat(root_hash);
-    if (!part_asset::save_flat_v3(out_path, blas, tlas, flat_clusters, out_refs, root_hash)) {
+    if (!part_asset::save_flat_v3(out_path, blas, tlas, flat_clusters, out_refs, root_hash, emitters)) {
         res.error = "flatten: save_flat_v3 failed for " + out_path;
         return res;
     }
@@ -1230,6 +1235,13 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
     std::unordered_map<uint64_t, size_t> est_tris;
     (void)decide_bottomup(root_hash, 0, g, targets, decisions, est_tris,
                           res.error);
+    // Collect root emitters (metadata only; rides through flatten unchanged).
+    std::vector<part_asset::VolumeEmitter> root_emitters;
+    {
+        std::string ld_err;
+        const PartGeo* root_geo = g.load_public(root_hash, ld_err);
+        if (root_geo) root_emitters = root_geo->emitters;
+    }
     if (!res.error.empty()) {
         // decide_bottomup already logged the offending part; surface the same
         // error the old top-down gather would have surfaced.
@@ -1272,7 +1284,7 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
         const float dz = full_full.empty() ? 0.0f : mx[2]-mn[2];
         const float radius_full = 0.5f * std::sqrt(dx*dx+dy*dy+dz*dz);
         return flatten_budget_ladder(cache_root, root_hash, targets, g,
-                                     radius_full, variants);
+                                     radius_full, root_emitters, variants);
     }
 
     // Streaming path: Pass 1 gathers per-triangle centroids + tickets (~28
@@ -1297,7 +1309,7 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
     // byte-identical to the classic streaming ladder below.
     if (!g.hinted_refs().empty())
         return flatten_segmented(cache_root, root_hash, targets, g,
-                                 world_aabb_min, world_aabb_max);
+                                 world_aabb_min, world_aabb_max, root_emitters);
 
     std::vector<part_asset::FlatInstanceRef>& refs = g.instance_refs();
     std::vector<float3>& centroids = g.centroids();
@@ -1554,7 +1566,7 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
 
     const std::string out_path = cache_root + "/" + part_asset::cache_path_flat(root_hash);
     if (!part_asset::save_flat_v3(out_path, blas, tlas, flat_clusters, refs,
-                                  root_hash)) {
+                                  root_hash, root_emitters)) {
         res.error = "flatten: save_flat_v3 failed for " + out_path;
         return res;
     }

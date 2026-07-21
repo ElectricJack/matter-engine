@@ -615,11 +615,20 @@ static bool read_le(std::ifstream& f, T& v) {
 uint64_t settle_cache_key(uint64_t script_source_hash,
                           const std::vector<uint64_t>& sorted_child_hashes)
 {
+    return settle_cache_key(script_source_hash, sorted_child_hashes, "{}");
+}
+
+uint64_t settle_cache_key(uint64_t script_source_hash,
+                          const std::vector<uint64_t>& sorted_child_hashes,
+                          const std::string& canonical_root_params_json)
+{
     // FNV-1a over (script_source_hash u64 LE, sorted child hashes u64s LE,
+    //              canonical root params bytes + NUL,
     //              kEngineBakeVersion u32 LE, kBox3dVersion u32 LE).
     std::vector<uint8_t> buf;
     buf.resize(sizeof(uint64_t)
              + sorted_child_hashes.size() * sizeof(uint64_t)
+             + canonical_root_params_json.size() + 1
              + sizeof(uint32_t) * 2);
     size_t off = 0;
     std::memcpy(buf.data() + off, &script_source_hash, sizeof(uint64_t));
@@ -628,6 +637,10 @@ uint64_t settle_cache_key(uint64_t script_source_hash,
         std::memcpy(buf.data() + off, &h, sizeof(uint64_t));
         off += sizeof(uint64_t);
     }
+    std::memcpy(buf.data() + off, canonical_root_params_json.data(),
+                canonical_root_params_json.size());
+    off += canonical_root_params_json.size();
+    buf[off++] = 0;
     uint32_t ebv = kEngineBakeVersion;
     uint32_t bv  = kBox3dVersion;
     std::memcpy(buf.data() + off, &ebv, sizeof(uint32_t)); off += sizeof(uint32_t);

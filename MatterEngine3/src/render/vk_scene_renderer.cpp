@@ -13,8 +13,11 @@
 #include "gpu_matrix_pack.h"
 #include "matrix_math.h"
 #include "matter/vulkan_device.h"
+#include "matter/world_definition.h"
+#include "matter/world_session.h"
 #include "shaders_gen/embedded_spirv.h"
 #include "streamline_bridge.h"
+#include "vk_volumetrics.h"
 
 namespace viewer {
 namespace {
@@ -329,6 +332,11 @@ struct RasterRecord {
     VkQueryPool ts_pool = VK_NULL_HANDLE;
     uint8_t* ts_written = nullptr;
     uint32_t gbuffer_zone = 0;
+    VkVolumetrics* volumetrics = nullptr;
+    uint32_t frame_slot = 0;
+    float frame_time = 0.0f;
+    uint32_t volumetrics_zone = 0;
+    VkAccelerationStructureKHR tlas = VK_NULL_HANDLE;
 };
 
 void record_raster(VkCommandBuffer command_buffer, void* user_data) {
@@ -385,7 +393,9 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
     depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    depth_attachment.clearValue.depthStencil = {1.0f, 0};
+    // Reversed-Z: far plane maps to NDC depth 0, so the "no geometry yet"
+    // clear value is 0.0 (was 1.0 under standard-Z).
+    depth_attachment.clearValue.depthStencil = {0.0f, 0};
     VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
     rendering.renderArea.extent = record.extent;
     rendering.layerCount = 1;
@@ -473,6 +483,23 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    }
+
+    // --- Volumetrics pass: froxel density + scatter + integrate ---
+    if (record.volumetrics && record.volumetrics->active()) {
+        if (record.ts_pool != VK_NULL_HANDLE && record.ts_written) {
+            write_ts(command_buffer, record.ts_pool, record.volumetrics_zone, false);
+            record.ts_written[record.volumetrics_zone] |= 1u;
+        }
+        std::string vol_error;
+        record.volumetrics->record(
+            command_buffer, record.frame_slot,
+            *record.depth, record.tlas, *record.matrices,
+            record.frame_time, vol_error);
+        if (record.ts_pool != VK_NULL_HANDLE && record.ts_written) {
+            write_ts(command_buffer, record.ts_pool, record.volumetrics_zone, true);
+            record.ts_written[record.volumetrics_zone] |= 2u;
+        }
     }
 
     VkRenderingAttachmentInfo hdr_attachment{
@@ -881,6 +908,10 @@ VkSceneRenderer::~VkSceneRenderer() {
 
 void VkSceneRenderer::destroy_pipeline() {
     if (!vulkan_) return;
+    if (volumetrics_) {
+        volumetrics_->destroy();
+        volumetrics_.reset();
+    }
     const VkDevice device = vulkan_->device();
     rt_sbt_.reset();
     visibility_.reset();
@@ -888,6 +919,7 @@ void VkSceneRenderer::destroy_pipeline() {
     raw_specular_.reset();
     raw_specular_aux_.reset();
     raw_transmission_.reset();
+    vol_dummy_3d_.reset();
     for (auto& image : gi_atrous_) image.reset();
     for (auto& image : gi_spec_atrous_) image.reset();
     for (auto* histories : {&gi_history_, &gi_spec_history_}) {
@@ -924,6 +956,8 @@ void VkSceneRenderer::destroy_pipeline() {
         vkDestroyDescriptorSetLayout(device, rt_set_layout_, nullptr);
     if (composite_sampler_ != VK_NULL_HANDLE)
         vkDestroySampler(device, composite_sampler_, nullptr);
+    if (vol_linear_sampler_ != VK_NULL_HANDLE)
+        vkDestroySampler(device, vol_linear_sampler_, nullptr);
     if (display_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, display_pipeline_, nullptr);
     if (display_pipeline_layout_ != VK_NULL_HANDLE)
@@ -955,6 +989,7 @@ void VkSceneRenderer::destroy_pipeline() {
     composite_pipeline_layout_ = VK_NULL_HANDLE;
     composite_pipeline_ = VK_NULL_HANDLE;
     composite_sampler_ = VK_NULL_HANDLE;
+    vol_linear_sampler_ = VK_NULL_HANDLE;
     display_set_layout_ = VK_NULL_HANDLE;
     display_pipeline_layout_ = VK_NULL_HANDLE;
     display_pipeline_ = VK_NULL_HANDLE;
@@ -1466,7 +1501,9 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
         VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     depth_stencil.depthTestEnable  = VK_TRUE;
     depth_stencil.depthWriteEnable = VK_TRUE;
-    depth_stencil.depthCompareOp   = VK_COMPARE_OP_LESS_OR_EQUAL;
+    // Reversed-Z: nearer geometry has a larger NDC depth, so passing requires
+    // depth >= existing (was <= under standard-Z).
+    depth_stencil.depthCompareOp   = VK_COMPARE_OP_GREATER_OR_EQUAL;
     VkPipelineColorBlendAttachmentState blend_attachments[5]{};
     for (auto& blend : blend_attachments) {
         blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
@@ -1508,7 +1545,7 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     if (result != VK_SUCCESS)
         return fail_vk("vkCreateGraphicsPipelines(raster)", result, error);
 
-    std::array<VkDescriptorSetLayoutBinding, 9> sampled_bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 11> sampled_bindings{};
     for (uint32_t i = 0; i < 7; ++i) {
         sampled_bindings[i] = descriptor_binding(
             i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -1518,6 +1555,13 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
         7, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT);
     sampled_bindings[8] = descriptor_binding(
         8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        VK_SHADER_STAGE_FRAGMENT_BIT);
+    // binding 9: vol_integrated_texture (sampler3D), binding 10: depth_texture
+    sampled_bindings[9] = descriptor_binding(
+        9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        VK_SHADER_STAGE_FRAGMENT_BIT);
+    sampled_bindings[10] = descriptor_binding(
+        10, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         VK_SHADER_STAGE_FRAGMENT_BIT);
     VkDescriptorSetLayoutCreateInfo sampled_layout{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
@@ -1610,8 +1654,39 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sampler.maxLod = 0.0f;
     result = vkCreateSampler(device, &sampler, nullptr, &composite_sampler_);
-    return result == VK_SUCCESS ||
-           fail_vk("vkCreateSampler(composite)", result, error);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateSampler(composite)", result, error);
+
+    sampler.magFilter = VK_FILTER_LINEAR;
+    sampler.minFilter = VK_FILTER_LINEAR;
+    sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    result = vkCreateSampler(device, &sampler, nullptr, &vol_linear_sampler_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateSampler(vol_linear)", result, error);
+
+    // 1x1x1 placeholder 3D texture for the volumetric integrated binding
+    // (composite.frag binding 9).  Replaced by the real froxel texture once
+    // VkVolumetrics is wired up; until then vol_enabled stays 0.0 so the
+    // shader never samples it.
+    if (!matter::create_image(
+            *vulkan_, VK_IMAGE_TYPE_3D, VK_FORMAT_R16G16B16A16_SFLOAT,
+            {1, 1, 1},
+            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            vol_dummy_3d_, error)) {
+        return false;
+    }
+    if (!matter::transition_image(
+            *vulkan_, vol_dummy_3d_,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, VK_ACCESS_2_NONE,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            VK_IMAGE_ASPECT_COLOR_BIT, error)) {
+        return false;
+    }
+    return true;
 }
 
 bool VkSceneRenderer::create_display_pipeline(std::string& error) {
@@ -1862,7 +1937,7 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 13},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-         frame_slot_count * 77},
+         frame_slot_count * 79},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 22}};
     VkDescriptorPoolCreateInfo pool{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -2063,15 +2138,20 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
             ? (gi_filtered_valid_ ? &gi_spec_atrous_[gi_filtered_index_]
                                   : &gi_spec_history_[gi_composite_history_index_].radiance)
             : &raw_specular_;
+    const bool vol_active = volumetrics_ && volumetrics_->active();
     matter::VkImageResource* sampled[] = {&albedo_, &normal_, &orm_,
                                           &visibility_, diffuse, specular,
                                           &material_instance_,
-                                          &raw_transmission_};
-    const uint32_t sampled_slots[] = {0, 1, 2, 3, 4, 5, 6, 8};
-    VkDescriptorImageInfo image_infos[8]{};
-    VkWriteDescriptorSet writes[9]{};
-    for (uint32_t i = 0; i < 8; ++i) {
-        image_infos[i].sampler = composite_sampler_;
+                                          &raw_transmission_,
+                                          vol_active ? &volumetrics_->vol_integrated()
+                                                     : &vol_dummy_3d_,
+                                          &depth_};
+    const uint32_t sampled_slots[] = {0, 1, 2, 3, 4, 5, 6, 8, 9, 10};
+    VkDescriptorImageInfo image_infos[10]{};
+    VkWriteDescriptorSet writes[11]{};
+    for (uint32_t i = 0; i < 10; ++i) {
+        image_infos[i].sampler = (i == 8) ? vol_linear_sampler_
+                                          : composite_sampler_;
         image_infos[i].imageView = sampled[i]->view;
         image_infos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -2084,13 +2164,13 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
     }
     VkDescriptorBufferInfo material_info{frame.materials.buffer, 0,
                                          frame.materials.size};
-    writes[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[8].dstSet = frame.composite_descriptor_set;
-    writes[8].dstBinding = 7;
-    writes[8].descriptorCount = 1;
-    writes[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[8].pBufferInfo = &material_info;
-    vkUpdateDescriptorSets(vulkan_->device(), 9, writes, 0, nullptr);
+    writes[10].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[10].dstSet = frame.composite_descriptor_set;
+    writes[10].dstBinding = 7;
+    writes[10].descriptorCount = 1;
+    writes[10].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[10].pBufferInfo = &material_info;
+    vkUpdateDescriptorSets(vulkan_->device(), 11, writes, 0, nullptr);
 }
 
 void VkSceneRenderer::update_display_descriptor(VkDescriptorSet set,
@@ -2284,6 +2364,12 @@ bool VkSceneRenderer::init(std::string& error) {
     if (!create_pipeline(error)) {
         destroy_pipeline();
         return false;
+    }
+    if (!volumetrics_) {
+        auto vol = std::make_unique<VkVolumetrics>();
+        std::string vol_error;
+        if (vol->init(*vulkan_, vol_error))
+            volumetrics_ = std::move(vol);
     }
     if (sizeof(FrameConstants) >
         std::min(limits_.max_uniform_buffer_range, limits_.max_buffer_size)) {
@@ -3710,6 +3796,15 @@ void VkSceneRenderer::set_display_exposure(float exposure_ev) {
     display_exposure_ev_ = exposure_ev;
 }
 
+void VkSceneRenderer::set_volumetrics_settings(
+    const matter::VulkanVolumetricsSettings& s,
+    const matter::FogSettings& fog) {
+    volumetrics_enabled_ = s.enabled;
+    volumetrics_debug_view_ = s.vol_debug_view;
+    if (volumetrics_)
+        volumetrics_->update_settings(s, fog);
+}
+
 void VkSceneRenderer::release_part(uint64_t part_hash) {
     if (poisoned()) return;
     const auto found = slot_of_.find(part_hash);
@@ -3795,6 +3890,8 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
                            return instance.part_hash == part_hash;
                        }),
         rt_instances_.end());
+    static_instance_count_ = instance_staging_.size();
+    static_rt_instance_count_ = rt_instances_.size();
     max_clusters_per_instance_ = 0;
     for (const auto& instance : instance_staging_)
         max_clusters_per_instance_ =
@@ -3803,6 +3900,7 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
     if (!rebuild_command_template(ignored_error)) {
         instance_staging_.clear();
         instance_part_slots_.clear();
+        static_instance_count_ = 0;
         part_instance_counts_.clear();
         command_template_.clear();
         part_command_ranges_.clear();
@@ -3827,6 +3925,11 @@ bool VkSceneRenderer::update_instances(
         return false;
     }
     (void)public_count;
+    // Strip any dynamic tail appended by the previous prepare_frame().
+    if (instance_staging_.size() > static_instance_count_)
+        instance_staging_.resize(static_instance_count_);
+    if (rt_instances_.size() > static_rt_instance_count_)
+        rt_instances_.resize(static_rt_instance_count_);
     std::vector<GpuInstance> candidate_instances;
     std::vector<uint32_t> candidate_slots;
     std::vector<RtInstance> candidate_rt;
@@ -3887,6 +3990,8 @@ bool VkSceneRenderer::update_instances(
         instance_part_slots_ = std::move(candidate_slots);
         rt_instances_ = std::move(candidate_rt);
         max_clusters_per_instance_ = candidate_max_clusters;
+        static_instance_count_ = instance_staging_.size();
+        static_rt_instance_count_ = rt_instances_.size();
         ++instance_generation_;
         return true;
     }
@@ -3917,6 +4022,8 @@ bool VkSceneRenderer::update_instances(
         draw_transform_slots_ = old_transform_slots;
         return false;
     }
+    static_instance_count_ = instance_staging_.size();
+    static_rt_instance_count_ = rt_instances_.size();
     ++instance_generation_;
     if (layout_changed) note_command_layout_rebuild();
     return true;
@@ -4028,6 +4135,93 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
     draw_transform_slots_ = first_instance;
     part_instance_counts_ = std::move(per_part);
     part_command_ranges_ = std::move(next_part_ranges);
+    return true;
+}
+
+// Task 7 (dynamic lane): rebuild_command_template() sizes the per-bucket
+// transform regions and the per-part indirect draw ranges from STATIC
+// instances only (part_instance_counts_ is that baseline and is never
+// modified here). When prepare_frame() merges dynamic instances into
+// instance_staging_, the culler needs room in each bucket for them, or
+// reserve_transform_slot() in shaders_vk/cull.comp finds
+// `next.first_instance - this.first_instance` exhausted and drops the
+// instance (the "dynamic entities cast RT shadows but never rasterize" bug).
+// This re-derives, from the static baseline plus the active dynamic slots:
+//   - command_template_[].first_instance (per-bucket transform offsets)
+//   - draw_transform_slots_ (total transform-buffer slots / capacities.w)
+//   - part_command_ranges_ (a part with only dynamic instances must still
+//     record its indirect draws)
+// The recompute always starts from the static baseline, so it is idempotent
+// across frames and reproduces rebuild_command_template()'s exact output when
+// no dynamic instances are active (which restores the static layout).
+bool VkSceneRenderer::apply_dynamic_command_layout(std::string& error) {
+    if (command_template_.size() !=
+            cluster_staging_.size() * static_cast<size_t>(kVkMaxLod) ||
+        part_instance_counts_.size() != parts_.size()) {
+        error = "dynamic command layout requires a valid static command template";
+        return false;
+    }
+    std::vector<uint32_t> merged_counts = part_instance_counts_;
+    for (uint32_t part_slot : dynamic_instance_part_slots_) {
+        if (part_slot == UINT32_MAX) continue;
+        if (part_slot >= merged_counts.size()) {
+            error = "dynamic instance part bucket is outside the active part table";
+            return false;
+        }
+        if (!checked_u32_add(merged_counts[part_slot], 1u,
+                             merged_counts[part_slot],
+                             "dynamic instance part bucket", error)) {
+            return false;
+        }
+    }
+    uint32_t first_instance = 0;
+    for (size_t cluster_index = 0; cluster_index < cluster_staging_.size();
+         ++cluster_index) {
+        const GpuCluster& cluster = cluster_staging_[cluster_index];
+        const auto& lods = cluster_lods_[cluster_index];
+        if (cluster.part_slot >= merged_counts.size()) {
+            error = "cluster part bucket is outside the active part table";
+            return false;
+        }
+        for (size_t lod = 0; lod < kVkMaxLod; ++lod) {
+            DrawCommand& command =
+                command_template_[cluster_index * kVkMaxLod + lod];
+            command.first_instance = first_instance;
+            if (lod < lods.size() &&
+                !checked_u32_add(first_instance,
+                                 merged_counts[cluster.part_slot],
+                                 first_instance, "draw transform slots",
+                                 error)) {
+                return false;
+            }
+        }
+    }
+    VkDeviceSize transform_bytes = 0;
+    if (!vk_scene_detail::checked_mul_to_device_size(
+            first_instance, sizeof(GpuDrawTransform), transform_bytes,
+            "draw-transform buffer", error)) {
+        return false;
+    }
+    const VkDeviceSize storage_limit =
+        std::min(limits_.max_storage_buffer_range, limits_.max_buffer_size);
+    if (storage_limit != 0 && transform_bytes > storage_limit) {
+        error = "draw-transform buffer exceeds Vulkan storage descriptor limit";
+        return false;
+    }
+    draw_transform_slots_ = first_instance;
+    std::vector<PartCommandRange> next_part_ranges;
+    next_part_ranges.reserve(parts_.size());
+    for (uint32_t slot = 0; slot < parts_.size(); ++slot) {
+        const PartRecord& part = parts_[slot];
+        if (!part.live || merged_counts[slot] == 0 || part.cluster_count == 0 ||
+            part.vertex_count == 0)
+            continue;
+        next_part_ranges.push_back(
+            {part.cluster_start * kVkMaxLod,
+             part.cluster_count * kVkMaxLod, slot});
+    }
+    part_command_ranges_ = std::move(next_part_ranges);
+    ++command_generation_;
     return true;
 }
 
@@ -4421,6 +4615,49 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
         // Begin the 'total' zone immediately after the reset.
         write_ts(frame.command_buffer, selected.ts_pool, kGpuZoneTotal, false);
         selected.ts_written[kGpuZoneTotal] |= 1u;
+    }
+    // Merge active dynamic instances into the static staging vectors so the
+    // upload, constants, and dispatch code all see one contiguous array.
+    // The dynamic tails are stripped at the start of the next update_instances()
+    // and defensively here, so repeated prepare_frame() calls cannot stack
+    // duplicate tails.
+    if (instance_staging_.size() > static_instance_count_)
+        instance_staging_.resize(static_instance_count_);
+    if (rt_instances_.size() > static_rt_instance_count_)
+        rt_instances_.resize(static_rt_instance_count_);
+    if (dynamic_instance_count_ > 0) {
+        for (size_t i = 0; i < dynamic_instance_staging_.size(); ++i) {
+            if (dynamic_instance_part_slots_[i] != UINT32_MAX) {
+                const GpuInstance& inst = dynamic_instance_staging_[i];
+                instance_staging_.push_back(inst);
+                // The cull dispatch fans out counts.y threads per instance;
+                // a dynamic-only part with more clusters than any static
+                // instance must widen the fan-out or its tail clusters are
+                // never visited.
+                max_clusters_per_instance_ =
+                    std::max(max_clusters_per_instance_, inst.cluster_count);
+                const uint32_t slot = dynamic_instance_part_slots_[i];
+                RtInstance rt{};
+                if (slot < parts_.size())
+                    rt.part_hash = parts_[slot].hash;
+                for (int r = 0; r < 4; ++r)
+                    for (int c = 0; c < 4; ++c)
+                        rt.transform[r * 4 + c] =
+                            inst.object_to_world.elements[c * 4 + r];
+                rt_instances_.push_back(rt);
+            }
+        }
+        if (dynamic_dirty_) {
+            ++instance_generation_;
+            dynamic_dirty_ = false;
+        }
+    }
+    // Re-derive the culler's transform regions and the per-part draw ranges
+    // for the merged instance set. Also runs once more after the last dynamic
+    // instance disappears to restore the static-only baseline.
+    if (dynamic_instance_count_ > 0 || dynamic_command_layout_applied_) {
+        if (!apply_dynamic_command_layout(error)) return false;
+        dynamic_command_layout_applied_ = dynamic_instance_count_ > 0;
     }
     if (!upload_scene_buffers(selected, frame.command_buffer, false, error) ||
         !upload_frame_constants(selected, matrices, camera_eye, pixel_budget,
@@ -5265,9 +5502,11 @@ bool VkSceneRenderer::record_cull_and_render(
         depth_.lifetime, hdr_.lifetime,
         visibility_.lifetime, raw_diffuse_.lifetime,
         raw_specular_.lifetime, raw_specular_aux_.lifetime,
-        raw_transmission_.lifetime,
+        raw_transmission_.lifetime, vol_dummy_3d_.lifetime,
         gi_atrous_[0].lifetime, gi_atrous_[1].lifetime,
         gi_spec_atrous_[0].lifetime, gi_spec_atrous_[1].lifetime};
+    if (volumetrics_ && volumetrics_->active())
+        attachments.push_back(volumetrics_->vol_integrated().lifetime);
     for (auto* histories : {&gi_history_, &gi_spec_history_}) {
         for (auto& history : *histories) {
             attachments.push_back(history.radiance.lifetime);
@@ -5308,10 +5547,43 @@ bool VkSceneRenderer::record_cull_and_render(
                               ? 1.0f
                               : 0.0f;
     frame_lighting.debug_view =
-        ray_tracing_settings_.enabled && vulkan_->ray_tracing_available() &&
-                ray_tracing_settings_.debug_view
-            ? 1.0f
-            : 0.0f;
+        composite_debug_override_ > 0.0f
+            ? composite_debug_override_
+            : (ray_tracing_settings_.enabled && vulkan_->ray_tracing_available() &&
+                       ray_tracing_settings_.debug_view
+                   ? 1.0f
+                   : 0.0f);
+    frame_lighting.camera_fwd_x = -matrices.world_to_view.m[8];
+    frame_lighting.camera_fwd_y = -matrices.world_to_view.m[9];
+    frame_lighting.camera_fwd_z = -matrices.world_to_view.m[10];
+    frame_lighting.tan_half_fov =
+        matrices.view_to_clip.m[5] != 0.0f
+            ? 1.0f / matrices.view_to_clip.m[5] : 1.0f;
+    frame_lighting.aspect_ratio =
+        matrices.view_to_clip.m[0] != 0.0f
+            ? matrices.view_to_clip.m[5] / matrices.view_to_clip.m[0] : 1.0f;
+    const VkExtent2D ie = temporal_frame_.internal_extent.width != 0
+                              ? temporal_frame_.internal_extent
+                              : frame.extent;
+    frame_lighting.jitter_offset_u =
+        ie.width  != 0 ? temporal_frame_.jitter_pixels[0] /
+                             static_cast<float>(ie.width)
+                       : 0.0f;
+    frame_lighting.jitter_offset_v =
+        ie.height != 0 ? temporal_frame_.jitter_pixels[1] /
+                             static_cast<float>(ie.height)
+                       : 0.0f;
+    const bool vol_active = volumetrics_ && volumetrics_->active();
+    frame_lighting.vol_enabled = vol_active ? 1.0f : 0.0f;
+    frame_lighting.vol_debug_view = volumetrics_debug_view_;
+    // Reversed-Z projection identities: m[10] = near/(far-near),
+    // m[11] = far*near/(far-near) (near->NDC 1, far->NDC 0), so
+    // m[11]/m[10] = far and m[11]/(m[10]+1) = near -- the near/far roles are
+    // swapped relative to the old standard-ZO recovery.
+    frame_lighting.camera_far = matrices.view_to_clip.m[11] /
+                                matrices.view_to_clip.m[10];
+    frame_lighting.camera_near = matrices.view_to_clip.m[11] /
+                                 (matrices.view_to_clip.m[10] + 1.0f);
     RasterRecord record{&albedo_,
                         &normal_,
                         &orm_,
@@ -5348,7 +5620,14 @@ bool VkSceneRenderer::record_cull_and_render(
                         &ray_trace_ok,
                         selected.ts_pool,
                         selected.ts_written,
-                        kGpuZoneGBuffer};
+                        kGpuZoneGBuffer,
+                        volumetrics_.get(),
+                        frame.frame_slot,
+                        static_cast<float>(frame.serial) * (1.0f / 60.0f),
+                        kGpuZoneVolumetrics,
+                        selected.rt_tlas.handle};
+    if (volumetrics_)
+        volumetrics_->set_lighting(frame_lighting);
     record_raster(frame.command_buffer, &record);
     if (!ray_trace_ok) return false;
     raster_attachments_ready_ = true;
@@ -5752,7 +6031,7 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
                         static_cast<uint32_t>(part_command_ranges_.size()),
                         limits_.max_draw_indirect_count,
                         nullptr,
-                        lighting_,
+                        [&]{ auto l = lighting_; l.debug_view = composite_debug_override_; return l; }(),
                         false,
                         nullptr,
                         nullptr,
@@ -5928,12 +6207,17 @@ bool VkSceneRenderer::record_composite_to_swapchain(
         }
         const matter::Mat4f& projection =
             temporal_frame_.current_unjittered.view_to_clip;
-        constants.camera_near = projection.m[11] / projection.m[10];
-        constants.camera_far =
+        // Reversed-Z projection identities: m[10] = near/(far-near),
+        // m[11] = far*near/(far-near) (near->NDC 1, far->NDC 0), so
+        // m[11]/m[10] = far and m[11]/(m[10]+1) = near -- swapped from the
+        // old standard-ZO recovery (camera_near/camera_far remain true
+        // linear distances in meters for downstream consumers).
+        constants.camera_far = projection.m[11] / projection.m[10];
+        constants.camera_near =
             projection.m[11] / (projection.m[10] + 1.0f);
         constants.camera_fov = 2.0f * std::atan(1.0f / projection.m[5]);
         constants.camera_aspect_ratio = projection.m[5] / projection.m[0];
-        constants.depth_inverted = false;
+        constants.depth_inverted = true;
         constants.camera_motion_included = true;
         constants.motion_vectors_jittered = true;
         constants.reset = temporal_frame_.reset;
@@ -6066,7 +6350,10 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
                                             std::string& error) {
     error.clear();
     pixel = {};
-    pixel.depth = 1.0f;
+    // Fallback/error default represents "background" (nothing rendered);
+    // reversed-Z's background depth is 0.0 (was 1.0 under standard-Z). This
+    // is overwritten by the actual GBuffer readback below on success.
+    pixel.depth = 0.0f;
     pixel.visibility = {1.0f, 1.0f, 1.0f};
     if (fail_if_poisoned(error)) return false;
     if (!raster_attachments_ready_) {
@@ -6259,6 +6546,7 @@ void VkSceneRenderer::reset() {
     cluster_lods_.clear();
     instance_staging_.clear();
     instance_part_slots_.clear();
+    static_instance_count_ = 0;
     part_instance_counts_.clear();
     command_template_.clear();
     part_command_ranges_.clear();
@@ -6266,6 +6554,7 @@ void VkSceneRenderer::reset() {
     raster_command_enabled_.clear();
     uploaded_raster_command_enabled_.clear();
     rt_instances_.clear();
+    static_rt_instance_count_ = 0;
     vertex_staging_.clear();
     max_clusters_per_instance_ = 0;
     draw_transform_slots_ = 0;
@@ -6292,6 +6581,87 @@ void VkSceneRenderer::reset() {
     test_fail_after_frame_resource_allocations_ =
         std::numeric_limits<uint32_t>::max();
 #endif
+}
+
+// Dynamic lane (Task 7): consumes CPU-side slot changes produced by
+// matter::render::DynamicInstanceSlots. Slot indices are stable across calls,
+// so dynamic_instance_staging_/dynamic_instance_part_slots_ are indexed
+// directly by DynamicSlotChange::slot_index, growing lazily as new slots are
+// bound. A part_slot value of UINT32_MAX marks an inactive (removed/unbound)
+// slot.
+bool VkSceneRenderer::update_dynamic_instances(
+    const matter::render::DynamicSlotChange* changes, uint32_t count,
+    uint64_t submit_serial, std::string& error) {
+    error.clear();
+    if (fail_if_poisoned(error)) return false;
+    dynamic_submit_serial_ = submit_serial;
+    if (count > 0 && changes == nullptr) {
+        error = "update_dynamic_instances: null changes with nonzero count";
+        return false;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+        const matter::render::DynamicSlotChange& change = changes[i];
+        if (change.slot_index == UINT32_MAX) {
+            error = "update_dynamic_instances: invalid slot_index";
+            return false;
+        }
+        if (change.slot_index >= dynamic_instance_staging_.size()) {
+            dynamic_instance_staging_.resize(change.slot_index + 1, GpuInstance{});
+            dynamic_instance_part_slots_.resize(change.slot_index + 1, UINT32_MAX);
+        }
+        switch (change.kind) {
+            case matter::render::DynamicSlotChangeKind::Bind: {
+                const auto found = slot_of_.find(change.part_hash);
+                if (found == slot_of_.end()) {
+                    error = "update_dynamic_instances: unknown part_hash for Bind";
+                    return false;
+                }
+                const PartRecord& part = parts_[static_cast<size_t>(found->second)];
+                GpuInstance instance{};
+                instance.object_to_world = pack_glsl_mat4(change.object_to_world);
+                instance.previous_object_to_world = instance.object_to_world;
+                instance.part_slot = static_cast<uint32_t>(found->second);
+                instance.cluster_start = part.cluster_start;
+                instance.cluster_count = part.cluster_count;
+                instance.instance_token =
+                    vulkan_history_token(change.entity_id.value);
+                dynamic_instance_staging_[change.slot_index] = instance;
+                dynamic_instance_part_slots_[change.slot_index] = instance.part_slot;
+                dynamic_dirty_ = true;
+                break;
+            }
+            case matter::render::DynamicSlotChangeKind::Transform: {
+                if (dynamic_instance_part_slots_[change.slot_index] == UINT32_MAX) {
+                    error =
+                        "update_dynamic_instances: Transform on unbound slot";
+                    return false;
+                }
+                GpuInstance& instance = dynamic_instance_staging_[change.slot_index];
+                instance.previous_object_to_world = instance.object_to_world;
+                instance.object_to_world = pack_glsl_mat4(change.object_to_world);
+                instance.history_valid = 1;
+                dynamic_dirty_ = true;
+                break;
+            }
+            case matter::render::DynamicSlotChangeKind::Remove: {
+                dynamic_instance_staging_[change.slot_index] = GpuInstance{};
+                dynamic_instance_part_slots_[change.slot_index] = UINT32_MAX;
+                dynamic_dirty_ = true;
+                break;
+            }
+        }
+    }
+    uint32_t active = 0;
+    for (uint32_t part_slot : dynamic_instance_part_slots_) {
+        if (part_slot != UINT32_MAX) ++active;
+    }
+    dynamic_instance_count_ = active;
+    return true;
+}
+
+void VkSceneRenderer::finish_dynamic_frame(uint64_t completed_serial) {
+    dynamic_completed_serial_ =
+        std::max(dynamic_completed_serial_, completed_serial);
 }
 
 }  // namespace viewer

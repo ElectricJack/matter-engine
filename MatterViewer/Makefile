@@ -71,7 +71,7 @@ HAVE_STREAMLINE ?= 0
 # Point this at a locally installed, licensed Streamline SDK.  Nothing from the
 # SDK is checked into this repository; HAVE_STREAMLINE=0 is the default.
 STREAMLINE_PATH ?=
-STREAMLINE_DLL_DIR ?= $(STREAMLINE_PATH)/bin/x64/development
+STREAMLINE_DLL_DIR ?= $(STREAMLINE_PATH)/bin/x64
 # ---- Phase 5 autoremesher_core (Task 15 wiring) ----
 # The vendored autoremesher_core static lib + its TBB dependency. Linux-only:
 # the library was built for Linux in Task 4 (Libraries/autoremesher_core/) and
@@ -120,8 +120,8 @@ endif
 # Task 9 switches the Windows application to Vulkan. Keep the existing Linux
 # application/backend as an explicit compatibility path until the later engine
 # OpenGL-removal task can migrate or retire it without breaking the default target.
-LINUX_APP_SRC = main_linux.cpp ui_linux.cpp camera_controller.cpp streaming_anchor_controller.cpp
-APP_SRC = main.cpp ui.cpp camera_controller.cpp streaming_anchor_controller.cpp
+LINUX_APP_SRC = main_linux.cpp ui_linux.cpp camera_controller.cpp camera_focus.cpp streaming_anchor_controller.cpp selection_set.cpp editor_model.cpp scene_tree_panel.cpp selection_bounds.cpp viewport_pick.cpp selection_outline.cpp toolbar_panel.cpp console_panel.cpp console_log.cpp properties_registry.cpp properties_panel.cpp specialized_editors.cpp gizmo.cpp os_open.cpp
+APP_SRC = main.cpp ui.cpp camera_controller.cpp camera_focus.cpp streaming_anchor_controller.cpp selection_set.cpp editor_model.cpp scene_tree_panel.cpp selection_bounds.cpp viewport_pick.cpp selection_outline.cpp toolbar_panel.cpp console_panel.cpp console_log.cpp properties_registry.cpp properties_panel.cpp specialized_editors.cpp gizmo.cpp os_open.cpp
 
 # Windows direct-source compile: ME3 pipeline + MSL + QJS (mirrors old viewer).
 # These are ONLY used by the Windows target; the Linux target links libmatter_engine3.a.
@@ -129,6 +129,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/script_host.cpp $(ME3_DIR)/src/dsl_state.cpp \
               $(ME3_DIR)/src/dsl_triangle.cpp $(ME3_DIR)/src/dsl_bindings.cpp \
               $(ME3_DIR)/src/csg_lowering.cpp $(ME3_DIR)/src/module_resolver.cpp \
+              $(ME3_DIR)/src/script/world_definition_loader.cpp \
               $(ME3_DIR)/src/script_rng_binding.cpp \
               $(ME3_DIR)/src/polygon_triangulate.cpp \
               $(ME3_DIR)/src/part_asset_v2.cpp $(ME3_DIR)/src/lod_bake.cpp \
@@ -151,6 +152,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/render/streamline_bridge.cpp \
               $(ME3_DIR)/src/render/vk_context.cpp $(ME3_DIR)/src/render/vk_resources.cpp \
               $(ME3_DIR)/src/render/vk_pipeline.cpp $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+              $(ME3_DIR)/src/render/vk_volumetrics.cpp $(ME3_DIR)/src/render/vk_emitter_gather.cpp \
               $(ME3_DIR)/src/render/vk_instance_cache.cpp \
               $(ME3_DIR)/src/render/vulkan_only_compat.cpp \
               $(ME3_DIR)/src/render/frame_matrices.cpp $(ME3_DIR)/src/render/matrix_math.cpp \
@@ -174,6 +176,10 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/ecs/physics_systems.cpp \
               $(ME3_DIR)/src/ecs/streaming_systems.cpp \
               $(ME3_DIR)/src/ecs/transform_system.cpp \
+              $(ME3_DIR)/src/ecs/scene_registry.cpp \
+              $(ME3_DIR)/src/ecs/simulation_control.cpp \
+              $(ME3_DIR)/src/ecs/dynamic_scene_bridge.cpp \
+              $(ME3_DIR)/src/render/dynamic_instance_slots.cpp \
               $(ME3_DIR)/src/streaming/sector_streaming_coordinator.cpp \
               $(ME3_DIR)/src/matter_engine.cpp \
               $(ME3_DIR)/src/pf_bindings.cpp \
@@ -243,7 +249,7 @@ PIPC_NAMES_WIN = $(notdir $(WIN_PIPELINE_C))
 FLECS_NAME = $(notdir $(FLECS_C))
 
 vpath %.cpp . $(ME3_DIR)/src $(ME3_DIR)/src/render $(ME3_DIR)/src/provider $(ME3_DIR)/src/ecs \
-             $(ME3_DIR)/src/streaming \
+             $(ME3_DIR)/src/streaming $(ME3_DIR)/src/script \
              $(MSL_DIR)/src $(IMGUI_PATH) $(IMGUI_PATH)/backends \
              $(IMGUIZMO_PATH) \
              ../ParticleFlowLib/src
@@ -435,6 +441,9 @@ build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_visibility.rahit.spv \
     build/shaders_vk/rt_surface_test.rgen.spv: \
     $(ME3_DIR)/shaders_vk/rt_surface_common.glsl
 
+build/shaders_vk/composite.frag.spv build/shaders_vk/rt_lighting.rgen.spv: \
+    $(ME3_DIR)/shaders_vk/sky_common.glsl
+
 build/shaders_vk/gi_temporal.comp.spv build/shaders_vk/gi_atrous.comp.spv: \
     $(ME3_DIR)/shaders_vk/gi_common.glsl
 
@@ -453,6 +462,8 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_resources.h \
         $(ME3_DIR)/src/render/vk_pipeline.h \
         $(ME3_DIR)/src/render/vk_scene_renderer.h \
+        $(ME3_DIR)/src/render/vk_volumetrics.h \
+        $(ME3_DIR)/src/render/vk_emitter_gather.h \
         $(ME3_DIR)/src/render/vk_instance_cache.h \
         $(ME3_DIR)/src/render/vk_instance_cache.cpp \
         $(ME3_DIR)/src/render/vk_lighting_controls.h \
@@ -462,6 +473,8 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_resources.cpp \
         $(ME3_DIR)/src/render/vk_pipeline.cpp \
         $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+        $(ME3_DIR)/src/render/vk_volumetrics.cpp \
+        $(ME3_DIR)/src/render/vk_emitter_gather.cpp \
         $(ME3_DIR)/src/render/raster_mesh.cpp \
         $(ME3_DIR)/src/render/frame_matrices.cpp \
         $(ME3_DIR)/src/render/vk_temporal.cpp \
@@ -478,6 +491,8 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/vk_resources.cpp \
 	    $(ME3_DIR)/src/render/vk_pipeline.cpp \
 	    $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+	    $(ME3_DIR)/src/render/vk_volumetrics.cpp \
+	    $(ME3_DIR)/src/render/vk_emitter_gather.cpp \
 	    $(ME3_DIR)/src/render/raster_mesh.cpp \
 	    $(ME3_DIR)/src/render/vk_instance_cache.cpp \
 	    $(ME3_DIR)/src/render/frame_matrices.cpp \
@@ -580,5 +595,27 @@ win-shaders-gpu:
 # shaders / shaders_gpu_link / win-shaders-gpu rules anyway.
 clean:
 	rm -rf viewer viewer.exe build
+
+# SelectionSet headless test (no GL/raylib/imgui deps)
+build/test_selection_set.exe: tests/test_selection_set.cpp selection_set.cpp selection_set.h
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_selection_set.cpp selection_set.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -I.
+
+.PHONY: run-test-selection-set
+run-test-selection-set: build/test_selection_set.exe
+	./build/test_selection_set.exe
+
+# ConsoleLog headless test: console_log.cpp holds the ImGui-free ring-buffer
+# logic (draw_console_contents, which needs ImGui, lives in console_panel.cpp
+# instead), so this links without any ImGui dependency.
+build/test_console_log.exe: tests/test_console_log.cpp console_log.cpp console_panel.h
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_console_log.cpp console_log.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -I. -lpthread
+
+.PHONY: run-test-console-log
+run-test-console-log: build/test_console_log.exe
+	./build/test_console_log.exe
 
 .PHONY: viewer windows clean shaders shaders_gpu_link win-shaders-gpu regen-processed-shader mingw-box3d embedded-shaders build-engine-lib vulkan-instancing-perf

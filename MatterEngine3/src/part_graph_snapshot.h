@@ -19,6 +19,7 @@ struct Node {
     std::string params_json;                  // canonical params at install
     std::vector<std::string> children;        // child module names (deduped, insert order)
     std::vector<std::string> shared_imports;  // shared-lib module names found in source
+    std::vector<std::string> shared_source_paths; // selected direct/transitive files
     uint64_t resolved_hash = 0;
     bool is_root = false;
 };

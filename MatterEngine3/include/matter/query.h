@@ -17,4 +17,9 @@ struct InstanceInfo {
     const char* module_name = nullptr;  // may be null; valid until next bake/reload
 };
 
+struct PartBounds {
+    float aabb_min[3];
+    float aabb_max[3];
+};
+
 } // namespace matter

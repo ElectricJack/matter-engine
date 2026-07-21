@@ -85,7 +85,7 @@ FLECS_OBJ = flecs.o
 # LOD flatten/select, tileset pipeline, render, provider, and facade.
 ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/dsl_triangle.cpp src/triangle_emit.cpp src/polygon_triangulate.cpp \
-          src/csg_lowering.cpp src/module_resolver.cpp src/script_rng_binding.cpp \
+          src/csg_lowering.cpp src/module_resolver.cpp src/script/world_definition_loader.cpp src/script_rng_binding.cpp \
           src/part_asset_v2.cpp src/part_graph.cpp src/part_graph_snapshot.cpp \
           src/live_edit.cpp src/live_edit_prod.cpp src/inotify_watcher.cpp \
           src/lod_bake.cpp src/world_flatten.cpp src/part_flatten.cpp \
@@ -97,7 +97,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/part_cluster.cpp \
           src/tileset_layout.cpp src/tileset_collider.cpp src/tileset_settle.cpp \
           src/tileset_placement.cpp src/tileset_part_collider.cpp src/tileset_bake.cpp \
-          src/tileset_phase.cpp src/tileset_phase_gpu.cpp \
+          src/tileset_phase.cpp \
           src/tileset_gtex.cpp src/tileset_torus_bvh.cpp \
           src/tileset_bake_primary.cpp src/tileset_bake_ao.cpp src/tileset_bake_gpu.cpp \
           src/shader_source.cpp \
@@ -146,7 +146,7 @@ MSL_C_OBJ = surface.o open_particle_surface.o spatial_hash.o \
 ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           pf_math.o pf_sim.o pf_fields.o pf_path_recorder.o pf_bindings.o \
           dsl_triangle.o triangle_emit.o polygon_triangulate.o \
-          csg_lowering.o module_resolver.o script_rng_binding.o \
+          csg_lowering.o module_resolver.o world_definition_loader.o script_rng_binding.o \
           part_asset_v2.o part_graph.o part_graph_snapshot.o \
           live_edit.o live_edit_prod.o inotify_watcher.o \
           lod_bake.o world_flatten.o part_flatten.o \
@@ -158,7 +158,7 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           part_cluster.o \
           tileset_layout.o tileset_collider.o \
           tileset_settle.o tileset_placement.o tileset_part_collider.o tileset_bake.o \
-          tileset_phase.o tileset_phase_gpu.o \
+          tileset_phase.o \
           tileset_gtex.o tileset_torus_bvh.o tileset_bake_primary.o \
           tileset_bake_ao.o tileset_bake_gpu.o shader_source.o \
           renderer.o raster_composer.o raster_mesh.o matrix_math.o frame_matrices.o vk_temporal.o vk_gi_math.o vk_lighting_controls.o \
@@ -225,7 +225,10 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/gi_temporal.comp.spv \
          build/shaders_vk/gi_atrous.comp.spv \
          build/shaders_vk/rt_surface.rchit.spv \
-         build/shaders_vk/rt_surface_test.rgen.spv
+         build/shaders_vk/rt_surface_test.rgen.spv \
+         build/shaders_vk/vol_density.comp.spv \
+         build/shaders_vk/vol_scatter.comp.spv \
+         build/shaders_vk/vol_integrate.comp.spv
 
 build/shaders_vk/%.spv: shaders_vk/%
 	@mkdir -p $(dir $@)
@@ -240,8 +243,16 @@ build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_visibility.rahit.spv \
     build/shaders_vk/rt_surface_test.rgen.spv: \
     shaders_vk/rt_surface_common.glsl
 
+build/shaders_vk/composite.frag.spv build/shaders_vk/rt_lighting.rgen.spv: \
+    shaders_vk/sky_common.glsl
+
 build/shaders_vk/gi_temporal.comp.spv build/shaders_vk/gi_atrous.comp.spv: \
     shaders_vk/gi_common.glsl
+
+build/shaders_vk/vol_density.comp.spv build/shaders_vk/vol_scatter.comp.spv \
+    build/shaders_vk/vol_integrate.comp.spv \
+    build/shaders_vk/composite.frag.spv: \
+    shaders_vk/vol_common.glsl
 
 shaders_gen/embedded_spirv.h: $(VK_SPV) tools/embed_spirv.py
 	python3 tools/embed_spirv.py $@ $(VK_SPV)
@@ -250,7 +261,7 @@ vulkan-spirv: shaders_gen/embedded_spirv.h
 
 # Per-file pattern rules enable safe parallel compilation with `make -j`.
 # vpath directs Make to search source directories by basename.
-vpath %.cpp src src/render src/provider src/ecs src/streaming $(MSL_DIR)/src $(PFL_DIR)/src
+vpath %.cpp src src/render src/provider src/script src/ecs src/streaming $(MSL_DIR)/src $(PFL_DIR)/src
 vpath %.c $(QJS_DIR) $(MSL_DIR)/src $(FLECS_DIR)
 
 # Flecs C source (gcc C17, never g++).

@@ -1,0 +1,128 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "vol_common.glsl"
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 1) in;
+
+layout(rgba16f, set = 0, binding = 0) uniform writeonly image3D vol_media;
+layout(set = 0, binding = 1) uniform sampler3D noise_tex;
+
+layout(std430, set = 0, binding = 2) readonly buffer EmitterSSBO {
+    uint emitter_count;
+    GpuVolumeEmitter emitters[];
+};
+
+layout(push_constant) uniform DensityConstants {
+    mat4 clip_to_world;
+    vec3 camera_pos;
+    float frame_time;
+    float fog_density;
+    float fog_floor;
+    float fog_falloff;
+    float camera_near;
+    vec3 fog_color;
+    float camera_far;
+    vec3 fog_wind;
+    float pad2;
+} pc;
+
+void main() {
+    ivec3 voxel = ivec3(gl_GlobalInvocationID.xyz);
+    if (voxel.x >= int(VOL_W) || voxel.y >= int(VOL_H)) return;
+
+    // Iterate over all depth slices for this XY thread.
+    for (int z = 0; z < int(VOL_D); ++z) {
+        float depth = slice_to_depth(float(z) + 0.5);
+
+        // Slices closer than the camera near plane have no valid NDC mapping.
+        if (depth < pc.camera_near) {
+            imageStore(vol_media, ivec3(voxel.xy, z), vec4(0.0));
+            continue;
+        }
+
+        vec2 uv = (vec2(voxel.xy) + 0.5) / vec2(VOL_W, VOL_H);
+        // Reversed-ZO: hw=1 at z=near, hw=0 at z=far.
+        // Verify: z=near -> near*(far-near)/(near*(far-near)) = 1;
+        //         z=far  -> near*(far-far)/(far*(far-near))   = 0.
+        float ndc_z = pc.camera_near * (pc.camera_far - depth) /
+                      ((pc.camera_far - pc.camera_near) * depth);
+        vec4 clip_pos = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, ndc_z, 1.0);
+        vec4 world_h = pc.clip_to_world * clip_pos;
+        vec3 world_pos = world_h.xyz / world_h.w;
+
+        // --- Height fog ---
+        float y = world_pos.y;
+        float height_fog = pc.fog_density *
+            exp(-max(y - pc.fog_floor, 0.0) / max(pc.fog_falloff, 0.01));
+
+        // Wind-displaced noise for fog variation.
+        vec3 noise_coord = (world_pos + pc.fog_wind * pc.frame_time) * 0.02;
+        float noise_val = texture(noise_tex, noise_coord).r;
+        height_fog *= mix(0.5, 1.5, noise_val);
+
+        vec3 fog_albedo = pc.fog_color;
+        float extinction = height_fog;
+
+        // --- Emitter contributions ---
+        for (uint i = 0; i < emitter_count; ++i) {
+            vec3 emitter_pos = vec3(emitters[i].world_pos[0],
+                                    emitters[i].world_pos[1],
+                                    emitters[i].world_pos[2]);
+            vec3 emitter_dir = vec3(emitters[i].world_dir[0],
+                                    emitters[i].world_dir[1],
+                                    emitters[i].world_dir[2]);
+            vec3 emitter_color = vec3(emitters[i].color[0],
+                                      emitters[i].color[1],
+                                      emitters[i].color[2]);
+            float radius = emitters[i].radius;
+            float spread = emitters[i].spread;
+            float length_ = emitters[i].axial_len;
+            float e_density = emitters[i].density;
+            float rise = emitters[i].rise;
+            float turbulence = emitters[i].turbulence;
+
+            vec3 to_voxel = world_pos - emitter_pos;
+
+            // Rise offset: shift the effective center upward over time.
+            to_voxel.y -= rise * pc.frame_time;
+
+            // Axial distance along the emitter direction.
+            float axial = dot(to_voxel, emitter_dir);
+            float axial_fade = 1.0;
+            if (length_ > 0.0) {
+                axial_fade = 1.0 - smoothstep(0.0, length_, abs(axial));
+            }
+
+            // Cone radius at this axial distance.
+            float cone_r = radius + max(axial, 0.0) * spread;
+
+            // Radial distance from the cone axis.
+            vec3 radial_vec = to_voxel - axial * emitter_dir;
+            float radial_dist = length(radial_vec);
+
+            // Smooth radial falloff.
+            float radial_falloff = 1.0 - smoothstep(0.0, cone_r, radial_dist);
+
+            // Curl-noise warp from the noise texture for turbulence.
+            if (turbulence > 0.0) {
+                vec3 warp_coord = (world_pos + pc.fog_wind * pc.frame_time * 0.5) * 0.05;
+                vec3 warp = (texture(noise_tex, warp_coord).rgb - 0.5) * 2.0;
+                vec3 warped_pos = world_pos + warp * turbulence * radius;
+                vec3 warped_to = warped_pos - emitter_pos;
+                warped_to.y -= rise * pc.frame_time;
+                float warped_radial = length(warped_to - dot(warped_to, emitter_dir) * emitter_dir);
+                radial_falloff = 1.0 - smoothstep(0.0, cone_r, warped_radial);
+            }
+
+            float emitter_contrib = e_density * radial_falloff * axial_fade;
+            extinction += emitter_contrib;
+            fog_albedo = mix(fog_albedo, emitter_color,
+                             clamp(emitter_contrib / max(extinction, 1e-6), 0.0, 1.0));
+        }
+
+        // Store rgb = albedo * density (scattering coefficient), a = extinction.
+        imageStore(vol_media, ivec3(voxel.xy, z),
+                   vec4(fog_albedo * extinction, extinction));
+    }
+}

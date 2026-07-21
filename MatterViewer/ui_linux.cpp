@@ -6,8 +6,11 @@
 #include <system_error>
 
 #include "imgui.h"
+#include "imgui_internal.h"
+#include "ImGuizmo.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
+#include "streaming_anchor_controller.h"
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -19,29 +22,31 @@ std::vector<WorldEntry> scan_worlds(const std::string& examples_root) {
     std::vector<WorldEntry> out;
     std::error_code ec;
 
-    // examples_root/<demo>/
-    for (auto it = fs::directory_iterator(examples_root, ec);
-         !ec && it != fs::directory_iterator(); it.increment(ec)) {
-        const fs::path demo = it->path();
-        if (!fs::is_directory(demo, ec)) continue;
-
-        const fs::path schemas   = demo / "schemas";
-        const fs::path world_data = demo / "WorldData";
-        if (!fs::is_directory(schemas, ec) || !fs::is_directory(world_data, ec)) continue;
-
-        // examples_root/<demo>/WorldData/<world_name>/
-        std::error_code ec2;
-        for (auto wit = fs::directory_iterator(world_data, ec2);
-             !ec2 && wit != fs::directory_iterator(); wit.increment(ec2)) {
-            const fs::path world_dir = wit->path();
-            if (!fs::is_directory(world_dir, ec2)) continue;
+    auto scan_project = [&](const fs::path& project) {
+        std::error_code project_ec;
+        const fs::path objects = project / "objects";
+        const fs::path worlds = project / "worlds";
+        if (!fs::is_directory(objects, project_ec) ||
+            !fs::is_directory(worlds, project_ec)) return;
+        for (auto wit = fs::directory_iterator(worlds, project_ec);
+             !project_ec && wit != fs::directory_iterator();
+             wit.increment(project_ec)) {
+            const fs::path world_file = wit->path();
+            if (!fs::is_regular_file(world_file, project_ec) ||
+                world_file.extension() != ".js") continue;
             WorldEntry e;
-            e.label          = world_dir.filename().string();
-            e.schemas_dir    = schemas.string();
-            e.world_data_dir = world_data.string();
-            e.world_name     = world_dir.filename().string();
+            e.label = world_file.stem().string();
+            e.project_dir = project.string();
+            e.world_name = world_file.stem().string();
             out.push_back(std::move(e));
         }
+    };
+
+    const fs::path root(examples_root);
+    scan_project(root);
+    for (auto it = fs::directory_iterator(root, ec);
+         !ec && it != fs::directory_iterator(); it.increment(ec)) {
+        if (fs::is_directory(it->path(), ec)) scan_project(it->path());
     }
 
     std::sort(out.begin(), out.end(),
@@ -53,6 +58,9 @@ void Ui::setup() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     ImGui_ImplGlfw_InitForOpenGL(glfwGetCurrentContext(), true);
     ImGui_ImplOpenGL3_Init("#version 330");
 }
@@ -64,14 +72,145 @@ void Ui::shutdown() {
 }
 
 void Ui::begin_frame() {
+    gizmo_submitted_ = false;
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
+    ImGuizmo::BeginFrame();
+    if (!hide_ui_) {
+        build_dockspace();
+    } else {
+        const ImVec2 d = ImGui::GetIO().DisplaySize;
+        viewport_rect_ = ViewportRect{0, 0, d.x, d.y};
+    }
 }
 
 void Ui::end_frame() {
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+}
+
+namespace {
+constexpr float kToolbarHeight = 40.0f;
+constexpr float kSceneWidthFrac = 0.22f;
+constexpr float kPropertiesWidthFrac = 0.26f;
+constexpr float kConsoleHeightFrac = 0.20f;
+} // namespace
+
+void Ui::build_dockspace() {
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+
+    ImGui::SetNextWindowPos(ImVec2(0, kToolbarHeight));
+    ImGui::SetNextWindowSize(ImVec2(display.x, display.y - kToolbarHeight));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::Begin("##DockHost", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                     ImGuiWindowFlags_NoBringToFrontOnFocus |
+                     ImGuiWindowFlags_NoNavFocus |
+                     ImGuiWindowFlags_NoDocking);
+    ImGui::PopStyleVar();
+
+    const ImGuiID dockspace_id = ImGui::GetID("MainDockSpace");
+
+    if (ImGui::DockBuilderGetNode(dockspace_id) == nullptr) {
+        ImGui::DockBuilderRemoveNode(dockspace_id);
+        ImGui::DockBuilderAddNode(dockspace_id,
+                                  ImGuiDockNodeFlags_DockSpace);
+        ImGui::DockBuilderSetNodeSize(dockspace_id,
+                                      ImVec2(display.x,
+                                             display.y - kToolbarHeight));
+
+        ImGuiID center = dockspace_id;
+        const ImGuiID left = ImGui::DockBuilderSplitNode(
+            center, ImGuiDir_Left, kSceneWidthFrac, nullptr, &center);
+        const ImGuiID right = ImGui::DockBuilderSplitNode(
+            center, ImGuiDir_Right,
+            kPropertiesWidthFrac / (1.0f - kSceneWidthFrac), nullptr,
+            &center);
+        const ImGuiID bottom = ImGui::DockBuilderSplitNode(
+            center, ImGuiDir_Down, kConsoleHeightFrac, nullptr, &center);
+
+        ImGui::DockBuilderDockWindow("Scene", left);
+        ImGui::DockBuilderDockWindow("Properties", right);
+        ImGui::DockBuilderDockWindow("Console", bottom);
+        ImGui::DockBuilderDockWindow("Viewport", center);
+        ImGui::DockBuilderDockWindow("Viewer Debug", right);
+        ImGui::DockBuilderDockWindow("Camera", right);
+
+        ImGui::DockBuilderFinish(dockspace_id);
+    }
+
+    ImGui::DockSpace(dockspace_id, ImVec2(0, 0),
+                     ImGuiDockNodeFlags_PassthruCentralNode);
+    ImGui::End();
+
+    ImGuiDockNode* central = ImGui::DockBuilderGetCentralNode(dockspace_id);
+    if (central && viewport_rect_.w == 0) {
+        viewport_rect_ = ViewportRect{central->Pos.x, central->Pos.y,
+                                       central->Size.x, central->Size.y};
+    }
+}
+
+void Ui::draw_viewport_window() {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::Begin("Viewport", nullptr,
+                 ImGuiWindowFlags_NoScrollbar |
+                     ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleVar();
+    viewport_hovered_ = ImGui::IsWindowHovered();
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    viewport_rect_ = ViewportRect{pos.x, pos.y,
+                                   avail.x > 0 ? avail.x : 0,
+                                   avail.y > 0 ? avail.y : 0};
+    ImGui::End();
+}
+
+ToolbarActions Ui::draw_toolbar(matter::scene::SimulationMode mode) {
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(display.x, kToolbarHeight), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Toolbar", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                     ImGuiWindowFlags_NoScrollbar);
+    const ToolbarActions actions = draw_toolbar_contents(toolbar_state_, mode);
+    ImGui::End();
+    draw_viewport_border_tint(mode, viewport_rect_.x, viewport_rect_.y,
+                              viewport_rect_.w, viewport_rect_.h);
+    return actions;
+}
+
+void Ui::draw_scene_panel(EditorModel& editor, matter::WorldSession* session,
+                          SceneCommands* commands, matter::scene::SimulationMode mode,
+                          matter::CameraDesc* camera, SelectionSet* selection,
+                          const FieldCommands* fields, ConsoleLog* console_log,
+                          const std::unordered_set<uint64_t>* authored_entity_ids) {
+    ImGui::Begin("Scene");
+    draw_scene_tree(scene_tree_state_, editor, session, commands, mode, camera,
+                    selection, fields, console_log, authored_entity_ids);
+    ImGui::End();
+}
+
+void Ui::draw_properties_panel(const SelectionSet& selection, EditorModel& editor,
+                               const PropertiesRegistry& registry,
+                               const FieldCommands& fields,
+                               const ComponentCommands& components,
+                               matter::scene::SimulationMode mode,
+                               const part_graph_snapshot::Snapshot* snapshot,
+                               SpecializedEditors& specialized,
+                               const matter::Float3& camera_position) {
+    ImGui::Begin("Properties");
+    draw_properties_contents(properties_state_, selection, editor, registry,
+                             fields, components, mode, snapshot,
+                             specialized, camera_position);
+    ImGui::End();
+}
+
+void Ui::draw_console_panel(ConsoleLog& log) {
+    ImGui::Begin("Console");
+    draw_console_contents(console_state_, log);
+    ImGui::End();
 }
 
 void Ui::draw_debug_panel(ViewerStats& s) {
@@ -111,9 +250,6 @@ void Ui::draw_debug_panel(ViewerStats& s) {
 }
 
 void Ui::draw_camera_panel(matter::CameraDesc& cam) {
-    ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - 270.0f, 20.0f),
-                            ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(250, 0), ImGuiCond_FirstUseEver);
     ImGui::Begin("Camera");
 
     ImGui::DragFloat3("Position", &cam.position.x, 0.1f);
@@ -185,6 +321,30 @@ void Ui::draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& s
     }
 
     ImGui::End();
+}
+
+void Ui::draw_gizmo(const SelectionSet& selection, const FieldCommands& fields,
+                    const matter::CameraDesc& camera,
+                    matter::scene::SimulationMode mode, float viewport_x,
+                    float viewport_y, float viewport_w, float viewport_h) {
+    gizmo_submitted_ = viewer::draw_gizmo(gizmo_state_, selection, fields,
+                                          camera, mode, viewport_x, viewport_y,
+                                          viewport_w, viewport_h);
+}
+
+void Ui::update_gizmo_hotkeys() {
+    viewer::update_gizmo_hotkeys(gizmo_state_);
+}
+
+bool Ui::camera_input_allowed() const {
+    if (ImGui::GetCurrentContext() == nullptr) return true;
+    const ImGuiIO& io = ImGui::GetIO();
+    const bool gizmo_over = gizmo_submitted_ && ImGuizmo::IsOver();
+    const bool mouse_captured = io.WantCaptureMouse && !viewport_hovered_;
+    const bool kb_captured = io.WantCaptureKeyboard && !viewport_hovered_;
+    return matter_viewer::camera_input_allowed(
+        mouse_captured, kb_captured, gizmo_over,
+        ImGuizmo::IsUsing());
 }
 
 } // namespace viewer

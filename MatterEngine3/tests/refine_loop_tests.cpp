@@ -32,31 +32,57 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <sys/stat.h>
 #include <thread>
-#include <unistd.h>
 #include <vector>
 
 #include "check.h"
 
 using clk = std::chrono::steady_clock;
+namespace fs = std::filesystem;
 
 // ---------------------------------------------------------------------------
 // Sandbox helpers
 // ---------------------------------------------------------------------------
 
-static void run_cmd(const std::string& cmd) { std::system(cmd.c_str()); }
-
-static bool write_file(const std::string& path, const std::string& body) {
-    std::ofstream f(path);
+static bool write_file(const fs::path& path, const std::string& body) {
+    std::error_code ec;
+    fs::create_directories(path.parent_path(), ec);
+    if (ec) return false;
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
     if (!f) return false;
     f << body;
-    return true;
+    return f.good();
+}
+
+static void remove_tree(const fs::path& path) {
+    std::error_code ignored;
+    fs::remove_all(path, ignored);
+}
+
+static bool reset_project(const fs::path& root, const std::string& world_name) {
+    remove_tree(root);
+    std::error_code ec;
+    fs::create_directories(root / "objects", ec);
+    if (ec) return false;
+    fs::create_directories(root / "worlds", ec);
+    if (ec) return false;
+    fs::create_directories(root / "shared-lib", ec);
+    if (ec) return false;
+    fs::create_directories(root / ".cache" / world_name / "parts", ec);
+    return !ec;
+}
+
+static bool reset_cache(const fs::path& root, const std::string& world_name) {
+    remove_tree(root / ".cache");
+    std::error_code ec;
+    fs::create_directories(root / ".cache" / world_name / "parts", ec);
+    return !ec;
 }
 
 // Build a 3x3 MiniValley sandbox.
@@ -69,15 +95,11 @@ static bool write_file(const std::string& path, const std::string& body) {
 // We instead create a single Terrain.js that is parametric (takes res, tx, tz)
 // and a MiniValley root that places it twice per tile (coarse+full).
 static bool build_miniValley_sandbox(const std::string& root) {
-    run_cmd("rm -rf " + root);
-    run_cmd("mkdir -p " + root + "/schemas");
-    run_cmd("mkdir -p " + root + "/world_data/MiniValley");
-    run_cmd("mkdir -p " + root + "/shared-lib");
-    run_cmd("mkdir -p " + root + "/cache/parts");
+    if (!reset_project(root, "MiniValley")) return false;
 
     // Terrain.js — parametric part; res, tx, tz are params.
     // Returns a tiny quad mesh regardless of params.
-    if (!write_file(root + "/schemas/Terrain.js",
+    if (!write_file(fs::path(root) / "objects" / "Terrain.js",
         "class Terrain extends Part {\n"
         "  static get params() { return { res:'coarse', tx:0, tz:0 }; }\n"
         "  build(p) {\n"
@@ -105,8 +127,6 @@ static bool build_miniValley_sandbox(const std::string& root) {
     // via the transform stack (same pattern as Meadow.js).
     // The requires() array ensures all 18 nodes (9 coarse + 9 full) appear in the
     // graph snapshot / bake_plan so RefineController::build() can pair them.
-    // The `expand` flag in world.manifest promotes these 9 placeChild children to
-    // separate world manifest instances (giving RefineController per-tile positions).
     std::ostringstream root_js;
     root_js << "class MiniValley extends Part {\n";
     root_js << "  static get requires() {\n    return [\n";
@@ -129,17 +149,39 @@ static bool build_miniValley_sandbox(const std::string& root) {
         }
     }
     root_js << "  }\n}\n";
-    if (!write_file(root + "/schemas/MiniValley.js", root_js.str())) return false;
+    if (!write_file(fs::path(root) / "objects" / "MiniValley.js", root_js.str())) return false;
 
-    // World manifest: MiniValley with `expand` so each coarse tile becomes a
-    // separate world instance (gives RefineController per-tile positions).
-    // Without `expand`, all children are merged into the root's flat and the
-    // manifest has only one entry at origin — RefineController can't distinguish tiles.
-    if (!write_file(root + "/world_data/MiniValley/world.manifest",
-        "# MiniValley 3x3 refine-loop test fixture\n"
-        "MiniValley expand\n")) return false;
+    // World class file: worlds/MiniValley.js
+    // The root module and world class share the name "MiniValley". The world class
+    // references the Part module "MiniValley" (in objects/MiniValley.js) with expand.
+    if (!write_file(fs::path(root) / "worlds" / "MiniValley.js",
+        "class MiniValley extends World {\n"
+        "  static roots = [\n"
+        "    { module: 'MiniValley', transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], expand: true },\n"
+        "  ];\n"
+        "}\n")) return false;
 
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Portable environment variable helpers
+// ---------------------------------------------------------------------------
+
+static void set_env(const char* name, const char* value) {
+#ifdef _WIN32
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 1);
+#endif
+}
+
+static void unset_env(const char* name) {
+#ifdef _WIN32
+    _putenv_s(name, "");
+#else
+    unsetenv(name);
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -153,20 +195,16 @@ static std::unique_ptr<matter::WorldSession> open_session(
     std::string& err)
 {
     matter::EngineDesc ed;
-    std::string cr = sandbox + "/cache";
+    std::string cr = sandbox + "/.cache/MiniValley";
     ed.cache_root     = cr.c_str();
     ed.allow_gl_lt_46 = true;
     engine_out = matter::EngineContext::create(ed, err);
     if (!engine_out) return nullptr;
 
     matter::WorldDesc wd;
-    std::string schemas = sandbox + "/schemas";
-    std::string wdata   = sandbox + "/world_data";
-    std::string shlib   = sandbox + "/shared-lib";
-    wd.schemas_dir    = schemas.c_str();
-    wd.world_data_dir = wdata.c_str();
-    wd.world_name     = "MiniValley";
-    wd.shared_lib_dir = shlib.c_str();
+    wd.project_dir           = sandbox.c_str();
+    wd.world_name            = "MiniValley";
+    wd.engine_shared_lib_dir = "../shared-lib";
     return engine_out->open_world(wd, err);
 }
 
@@ -213,7 +251,10 @@ static bool test_refines_toward_focus(const std::string& sandbox) {
     printf("\n[test_refines_toward_focus]\n");
 
     // Cold cache.
-    run_cmd("rm -rf " + sandbox + "/cache && mkdir -p " + sandbox + "/cache/parts");
+    if (!reset_cache(sandbox, "MiniValley")) {
+        printf("  reset_cache failed\n");
+        return false;
+    }
 
     std::string err;
     std::unique_ptr<matter::EngineContext> engine;
@@ -301,7 +342,7 @@ static bool test_eviction(const std::string& sandbox) {
     // (default 160 if not set). For this test we want a small radius so only a few
     // tiles fit; we expose it via the env override (read in Impl init).
     // The test relies on MATTER_REFINE_RADIUS=12 so only tile (0,0) is within range
-    // (tile center at (5,0,5); radius 12 just covers it at dist≈7.07).
+    // (tile center at (5,0,5); radius 12 just covers it at dist~7.07).
     // We set the env before open_session above would have been called, but since
     // open_session has already run, we need to rely on re-reading or a separate
     // session. The env var is read once at Impl init (open_world), so we must set
@@ -310,12 +351,12 @@ static bool test_eviction(const std::string& sandbox) {
     s.reset();
     engine.reset();
 
-    // Set radius to 12 so only tile (0,0) (center at 5,0,5, dist≈7.07) fits.
-    setenv("MATTER_REFINE_RADIUS", "12", 1);
+    // Set radius to 12 so only tile (0,0) (center at 5,0,5, dist~7.07) fits.
+    set_env("MATTER_REFINE_RADIUS", "12");
 
     s = open_session(sandbox, engine, err);
     CHECK(s != nullptr, "refine-evict: session (small radius) opened");
-    if (!s) { unsetenv("MATTER_REFINE_RADIUS"); return false; }
+    if (!s) { unset_env("MATTER_REFINE_RADIUS"); return false; }
 
     float focus_near[3] = { 5.0f, 0.0f, 5.0f };
     s->set_bake_focus(focus_near);
@@ -323,7 +364,7 @@ static bool test_eviction(const std::string& sandbox) {
     s->request_bake();
     auto br = drive_bake(*s, 60);
     CHECK(br.finished, "refine-evict: BakeFinished");
-    if (!br.finished) { unsetenv("MATTER_REFINE_RADIUS"); return false; }
+    if (!br.finished) { unset_env("MATTER_REFINE_RADIUS"); return false; }
 
     // Pump refine loop until tile (0,0) is Full (done >= 1).
     int done_near  = 0;
@@ -371,7 +412,7 @@ static bool test_eviction(const std::string& sandbox) {
         }
     }
 
-    unsetenv("MATTER_REFINE_RADIUS");
+    unset_env("MATTER_REFINE_RADIUS");
 
     CHECK(got_eviction, "refine-evict: full_count dropped after moving focus far (eviction event)");
     return true;
@@ -478,7 +519,7 @@ int main() {
     printf("=== refine_loop_tests ===\n");
 
     // One persistent sandbox for all tests (warm cache shared across cases).
-    const std::string sandbox = "/tmp/me3_refine_loop_tests";
+    const std::string sandbox = (fs::temp_directory_path() / "me3_refine_loop_tests").string();
     if (!build_miniValley_sandbox(sandbox)) {
         printf("FATAL: build_miniValley_sandbox failed\n");
         return 1;

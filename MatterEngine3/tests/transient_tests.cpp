@@ -19,8 +19,6 @@
 #include <memory>
 #include <set>
 #include <string>
-#include <sys/stat.h>
-#include <unistd.h>
 
 // Include the provider/graph headers the demand_bake_tests suite uses
 #include "../src/provider/local_provider.h"
@@ -28,10 +26,7 @@
 #include "../src/part_asset_v2.h"
 #include "../src/render/part_store.h"
 
-static bool file_exists(const std::string& p) {
-    struct stat st{};
-    return ::stat(p.c_str(), &st) == 0;
-}
+namespace fs = std::filesystem;
 
 static std::vector<uint8_t> read_bytes(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
@@ -56,19 +51,18 @@ static void make_prior_schema(std::vector<uint8_t>& bytes) {
 // Terrain: transient leaf part (no requires)
 // Rock: persistent leaf part (no requires)
 static bool build_transient_sandbox(const std::string& root) {
-    namespace fs = std::filesystem;
     std::error_code ec;
     fs::remove_all(root, ec);
     ec.clear();
-    fs::create_directories(root + "/schemas", ec);
-    fs::create_directories(root + "/world_data/Demo", ec);
+    fs::create_directories(root + "/objects", ec);
+    fs::create_directories(root + "/worlds", ec);
     fs::create_directories(root + "/shared-lib", ec);
-    fs::create_directories(root + "/cache/parts", ec);
+    fs::create_directories(root + "/.cache/Demo/parts", ec);
     if (ec) return false;
 
     // Terrain — transient leaf (no requires)
     {
-        std::ofstream f(root + "/schemas/Terrain.js");
+        std::ofstream f(root + "/objects/Terrain.js");
         if (!f) return false;
         f << "class Terrain extends Part {\n"
           << "  build(p) {\n"
@@ -84,7 +78,7 @@ static bool build_transient_sandbox(const std::string& root) {
 
     // Rock — persistent leaf (no requires)
     {
-        std::ofstream f(root + "/schemas/Rock.js");
+        std::ofstream f(root + "/objects/Rock.js");
         if (!f) return false;
         f << "class Rock extends Part {\n"
           << "  build(p) {\n"
@@ -98,13 +92,16 @@ static bool build_transient_sandbox(const std::string& root) {
           << "}\n";
     }
 
-    // Manifest: two roots (Terrain and Rock)
+    // World class: two roots (Terrain and Rock)
     {
-        std::ofstream f(root + "/world_data/Demo/world.manifest");
+        std::ofstream f(root + "/worlds/Demo.js");
         if (!f) return false;
-        f << "# transient artifact routing test\n"
-          << "Terrain\n"
-          << "Rock\n";
+        f << "class Demo extends World {\n"
+          << "  static roots = [\n"
+          << "    { module: 'Terrain', transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] },\n"
+          << "    { module: 'Rock', transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] },\n"
+          << "  ];\n"
+          << "}\n";
     }
 
     return true;
@@ -114,20 +111,14 @@ static bool build_transient_sandbox(const std::string& root) {
 static std::unique_ptr<viewer::LocalProvider> make_provider(
     const std::string& sandbox,
     const std::string& world_name = "Demo") {
-    viewer::LocalProviderConfig cfg;
-    cfg.schemas_dir    = sandbox + "/schemas";
-    cfg.world_data_dir = sandbox + "/world_data";
-    cfg.world_name     = world_name;
-    cfg.shared_lib_dir = sandbox + "/shared-lib";
-    cfg.cache_root     = sandbox + "/cache";
-    cfg.gl_available   = false;
+    auto cfg = viewer::LocalProviderConfig::for_project(sandbox, world_name, "");
+    cfg.gl_available = false;
     return std::make_unique<viewer::LocalProvider>(std::move(cfg));
 }
 
 // Main test: fixtures and assertions from the brief
 int main() {
-    std::string sandbox = std::filesystem::absolute(
-        "transient_test_" + std::to_string(getpid())).string();
+    std::string sandbox = (fs::temp_directory_path() / "me3_transient_tests").string();
 
     // Arrange a provider exactly the way demand_bake_tests.cpp does
     if (!build_transient_sandbox(sandbox)) {
@@ -151,7 +142,7 @@ int main() {
         return 1;
     }
 
-    const std::string cache_root = sandbox + "/cache";
+    const std::string cache_root = sandbox + "/.cache/Demo";
     const auto& snap = prov->graph_snapshot();
 
     // Get Terrain and Rock hashes
@@ -175,9 +166,9 @@ int main() {
     const std::string cache_terrain = cache_root + "/" +
                                       part_asset::cache_path_resolved(terrain_hash);
 
-    CHECK(file_exists(scratch_terrain),
+    CHECK(fs::is_regular_file(scratch_terrain),
           "Terrain .part exists under scratch dir");
-    CHECK(!file_exists(cache_terrain),
+    CHECK(!fs::exists(cache_terrain),
           "Terrain .part does NOT exist under cache dir");
     printf("  Terrain transient file: %s\n", scratch_terrain.c_str());
 
@@ -322,20 +313,20 @@ int main() {
 
     // 9. Release Terrain and verify scratch files are gone
     prov->release_transient(terrain_hash);
-    CHECK(!file_exists(scratch_terrain),
+    CHECK(!fs::exists(scratch_terrain),
           "Terrain scratch .part file deleted after release_transient");
     printf("  Terrain scratch file deleted\n");
 
     // 10. Verify Rock's artifact IS in cache (unchanged for persistent modules)
     const std::string cache_rock = cache_root + "/" +
                                    part_asset::cache_path_resolved(rock_hash);
-    CHECK(file_exists(cache_rock),
+    CHECK(fs::is_regular_file(cache_rock),
           "Rock .part exists under cache dir (persistent module)");
     printf("  Rock cache file: %s\n", cache_rock.c_str());
 
     // Cleanup
     std::error_code cleanup_ec;
-    std::filesystem::remove_all(sandbox, cleanup_ec);
+    fs::remove_all(sandbox, cleanup_ec);
 
     printf("ALL TESTS PASSED\n");
     return check_summary();

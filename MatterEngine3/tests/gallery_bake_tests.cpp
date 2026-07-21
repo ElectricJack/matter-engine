@@ -14,6 +14,8 @@
 #include "part_asset_v2.h"     // cache_path_resolved, load_v2, ChildInstance
 #include "blas_manager.hpp"
 #include "tlas_manager.hpp"
+#include "script/world_definition_loader.h"
+#include "provider/local_provider.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -47,8 +49,8 @@ static size_t load_tri_count(uint64_t h, size_t& child_count) {
 }
 
 int main() {
-    const std::string schemas    = abspath("../examples/primitive_demo/schemas");
-    const std::string world_data = abspath("../examples/primitive_demo/WorldData");
+    const std::string project    = abspath("../examples/primitive_demo");
+    const std::string objects    = abspath("../examples/primitive_demo/objects");
     const std::string shared_lib  = abspath("../shared-lib");
 
     const std::string sandbox = "/tmp/me3_gallery_bake";
@@ -58,15 +60,24 @@ int main() {
 
     script_host::ScriptHost host;
     host.set_shared_lib_root(shared_lib);
-    FileModuleResolver resolver(host, schemas);
+    FileModuleResolver resolver(host, objects);
     HostBaker baker(host, ".");
     PartGraph graph(resolver, baker);
 
-    std::vector<ChildRequest> roots; std::string err;
-    if (!PartGraph::read_manifest(world_data, "Primitives", roots, err)) {
-        printf("FAIL: read_manifest: %s\n", err.c_str());
+    matter::WorldLoadDesc load_desc;
+    load_desc.world_path = project + "/worlds/Primitives.js";
+    load_desc.objects_dir = objects;
+    load_desc.engine_shared_lib_dir = shared_lib;
+    matter::WorldDefinition definition;
+    matter::WorldLoadError load_error;
+    if (!matter::load_world_definition(load_desc, definition, load_error)) {
+        printf("FAIL: load_world_definition: %s\n", load_error.message.c_str());
         return 1;
     }
+    viewer::ProviderWorldDefinition adapted =
+        viewer::adapt_world_definition(definition);
+    std::vector<ChildRequest> roots = std::move(adapted.roots);
+    std::string err;
     CHECK(roots.size() == 1 && roots[0].module == "Gallery",
           "manifest should list exactly the Gallery root");
 

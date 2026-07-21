@@ -7,9 +7,11 @@
 
 #include "matter/camera.h"
 #include "matter/ecs.h"
+#include "matter/world_definition.h"
 #include "matter/streaming.h"
 #include "matter/vulkan_device.h"
 #include "render/vk_gi_contract.h"
+#include "part_graph_snapshot.h"
 
 #include "matter/events.h"
 #include "matter/query.h"
@@ -19,10 +21,12 @@ namespace matter {
 struct VulkanFrame;
 
 struct WorldDesc {
-    const char* schemas_dir    = nullptr;
-    const char* world_data_dir = nullptr;
-    const char* world_name     = nullptr;  // world subdir of world_data_dir
-    const char* shared_lib_dir = nullptr;  // shared .js library dir
+    // Preferred project layout. open_world derives objects/, worlds/,
+    // optional shared-lib/, and .cache/<world>/ from this root.
+    const char* project_dir = nullptr;
+    const char* world_name  = nullptr;
+    const char* engine_shared_lib_dir = nullptr;
+
     bool enable_live_edit = false;  // watch schemas/shared-lib dirs, cone-rebake on save (Linux inotify; no-op elsewhere)
 };
 
@@ -37,6 +41,7 @@ struct VulkanLightingOverrides {
     float sky_multiplier = 1.0f;
     float emission_multiplier = 1.0f;
     float exposure_ev = -2.0f;
+    float composite_debug_view = 0.0f;
 };
 
 struct RenderOptions {
@@ -54,6 +59,7 @@ struct RenderOptions {
     VulkanRayTracingSettings vulkan_ray_tracing{};
     VulkanGiSettings vulkan_gi{};
     VulkanLightingOverrides vulkan_lighting{};
+    VulkanVolumetricsSettings vulkan_volumetrics{};
 };
 
 struct TickDesc {
@@ -110,6 +116,7 @@ struct FrameStats {
     float gpu_denoise_ms        = 0;
     float gpu_dlss_ms           = 0;
     float gpu_composite_ms      = 0;
+    float gpu_vol_ms            = 0;
     bool  gpu_timers_supported  = false;
     uint64_t ecs_fixed_steps = 0;
     uint64_t ecs_dropped_steps = 0;
@@ -178,6 +185,14 @@ public:
     // closed-world (expand/tileset) sessions (no water plane in those worlds).
     bool sea_level(float& out) const;
 
+    // Copy of the provider's part-graph snapshot. Refreshed after connect and
+    // live-edit reresolve. Returns false if no provider is connected.
+    bool graph_snapshot(part_graph_snapshot::Snapshot& out) const;
+
+    // Generation counter bumped on install/reresolve; callers cache the snapshot
+    // and re-query only when generation changes.
+    uint64_t graph_generation() const;
+
     // Phase C Task 7: enqueue a seed-driven world reroll. Stores
     // root_params_override = {"worldSeed": <world_seed>} and enqueues a Reload
     // with full supersession semantics (a newer regenerate/reload supersedes any
@@ -199,6 +214,7 @@ public:
     bool raycast(const float origin[3], const float dir[3], float max_t, RayHit& out);
     uint32_t instance_count() const;
     bool instance_info(uint32_t idx, InstanceInfo& out);
+    bool part_bounds(uint64_t part_hash, PartBounds& out) const;
 
     // Task 7 test seam: install a per-part fault hook on the underlying provider
     // config. The hook fires once per part processed during install_graph() and the

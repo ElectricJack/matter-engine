@@ -86,7 +86,13 @@ void main() {
         float oldDepth = texelFetch(previousDepth, previousPixel, 0).r;
         vec3 oldNormal = normalize(texelFetch(previousNormal, previousPixel, 0).xyz);
         uvec2 oldIdentity = texelFetch(previousIdentity, previousPixel, 0).rg;
-        float depthThreshold = max(0.01, 0.02 * max(abs(depth), abs(oldDepth)));
+        // Reversed-Z: 1 - depth equals the standard-Z depth value for the same
+        // near/far, so scaling by the complement reproduces the pre-migration
+        // rejection tolerance exactly (raw reversed values are ~0 scene-wide
+        // and would collapse the threshold to the floor, over-rejecting
+        // history and letting 1-spp firefly noise through).
+        float depthThreshold =
+            max(0.01, 0.02 * max(abs(1.0 - depth), abs(1.0 - oldDepth)));
         if (abs(depth - oldDepth) > depthThreshold)
             rejection = REJECT_DEPTH;
         else if (dot(normal, oldNormal) < 0.85)

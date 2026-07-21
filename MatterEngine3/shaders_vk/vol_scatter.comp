@@ -1,0 +1,142 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_ray_query : require
+
+#include "vol_common.glsl"
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform sampler3D vol_media_tex;
+layout(rgba16f, set = 0, binding = 1) uniform writeonly image3D vol_scatter_out;
+layout(set = 0, binding = 2) uniform sampler3D vol_scatter_history;
+layout(set = 0, binding = 3) uniform sampler2D depth_tex;
+layout(set = 0, binding = 4) uniform accelerationStructureEXT tlas;
+
+layout(push_constant) uniform ScatterConstants {
+    mat4 clip_to_world;
+    mat4 prev_world_to_clip;
+    vec3 camera_pos;
+    uint frame_index;
+    vec3 sun_dir;
+    float sun_intensity;
+    vec3 sun_color;
+    float phase_g;
+    vec3 sky_color;
+    float temporal_blend;
+    uint history_valid;
+    float camera_near;
+    float camera_far;
+    float pad2;
+} pc;
+
+// Sky irradiance approximation (matches rt_lighting.rgen pattern).
+vec3 sky_irradiance(vec3 normal) {
+    return pc.sky_color * mix(0.2, 1.0,
+        clamp(normal.y * 0.5 + 0.5, 0.0, 1.0));
+}
+
+// 2x2 Bayer pattern index for temporal subsampling.
+int bayer2x2(ivec2 pixel) {
+    return (pixel.x & 1) + (pixel.y & 1) * 2;
+}
+
+void main() {
+    ivec3 voxel = ivec3(gl_GlobalInvocationID.xyz);
+    if (voxel.x >= int(VOL_W) || voxel.y >= int(VOL_H)) return;
+
+    // 2x2 Bayer subsampling: each frame traces 1 of 4 froxel columns.
+    int bayer = bayer2x2(voxel.xy);
+    bool is_active = (bayer == int(pc.frame_index & 3u));
+
+    for (int z = 0; z < int(VOL_D); ++z) {
+        vec3 uvw = (vec3(voxel.xy, z) + 0.5) / vec3(VOL_W, VOL_H, VOL_D);
+        vec4 media = texture(vol_media_tex, uvw);
+        vec3 scattering = media.rgb;  // albedo * extinction
+        float extinction = media.a;
+
+        vec4 scatter_result = vec4(0.0);
+
+        if (is_active && extinction > 1e-6) {
+            float depth = slice_to_depth(float(z) + 0.5);
+            vec2 uv = (vec2(voxel.xy) + 0.5) / vec2(VOL_W, VOL_H);
+            // Reversed-ZO: hw=1 at z=near, hw=0 at z=far (see vol_density.comp
+            // for the plug-in verification).
+            float ndc_z = pc.camera_near * (pc.camera_far - depth) /
+                          ((pc.camera_far - pc.camera_near) * depth);
+            vec4 clip_pos = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0,
+                                 ndc_z, 1.0);
+            vec4 world_h = pc.clip_to_world * clip_pos;
+            vec3 world_pos = world_h.xyz / world_h.w;
+
+            // View direction for phase function.
+            vec3 view_dir = normalize(world_pos - pc.camera_pos);
+            vec3 to_sun = normalize(-pc.sun_dir);
+
+            // Shadow ray via rayQueryEXT.
+            float shadow = 1.0;
+            rayQueryEXT rq;
+            rayQueryInitializeEXT(rq, tlas,
+                gl_RayFlagsTerminateOnFirstHitEXT |
+                gl_RayFlagsOpaqueEXT,
+                0xFF,
+                world_pos, 0.1,
+                to_sun, VOL_FAR);
+            rayQueryProceedEXT(rq);
+            if (rayQueryGetIntersectionTypeEXT(rq, true) !=
+                gl_RayQueryCommittedIntersectionNoneEXT) {
+                shadow = 0.0;
+            }
+
+            // Henyey-Greenstein phase for sun contribution.
+            float cos_theta = dot(view_dir, to_sun);
+            float phase = hg_phase(cos_theta, pc.phase_g);
+
+            // Sun in-scattering.
+            vec3 sun_contrib = scattering * shadow * phase *
+                               pc.sun_color * pc.sun_intensity;
+
+            // Sky ambient (isotropic approximation using upward hemisphere).
+            vec3 sky_contrib = scattering * sky_irradiance(vec3(0.0, 1.0, 0.0));
+
+            scatter_result = vec4(sun_contrib + sky_contrib, extinction);
+        }
+
+        // Temporal reprojection — always sample history (clamp-to-edge
+        // provides smooth fill-in for newly exposed screen regions).
+        if (pc.history_valid != 0u) {
+            float depth = slice_to_depth(float(z) + 0.5);
+            vec2 uv = (vec2(voxel.xy) + 0.5) / vec2(VOL_W, VOL_H);
+            // Reversed-ZO: hw=1 at z=near, hw=0 at z=far (see vol_density.comp
+            // for the plug-in verification).
+            float ndc_z = pc.camera_near * (pc.camera_far - depth) /
+                          ((pc.camera_far - pc.camera_near) * depth);
+            vec4 clip_pos = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0,
+                                 ndc_z, 1.0);
+            vec4 world_h = pc.clip_to_world * clip_pos;
+            vec3 world_pos = world_h.xyz / world_h.w;
+
+            vec4 prev_clip = pc.prev_world_to_clip * vec4(world_pos, 1.0);
+            vec3 prev_ndc = prev_clip.xyz / prev_clip.w;
+            vec2 prev_uv = clamp(prev_ndc.xy * vec2(0.5, -0.5) + 0.5,
+                                 vec2(0.0), vec2(1.0));
+            // Reversed-ZO inverse: hw=1 -> near, hw=0 -> far.
+            // Verify: hw=1 -> near*far/((far-near)+near) = near;
+            //         hw=0 -> near*far/near              = far.
+            float prev_depth = pc.camera_near * pc.camera_far /
+                max(prev_ndc.z * (pc.camera_far - pc.camera_near) +
+                    pc.camera_near, 1e-6);
+            float prev_slice_n = depth_to_slice_n(prev_depth);
+            vec4 history = texture(vol_scatter_history,
+                                   vec3(prev_uv, prev_slice_n));
+
+            if (is_active) {
+                scatter_result = mix(history, scatter_result,
+                                     1.0 - pc.temporal_blend);
+            } else {
+                scatter_result = history;
+            }
+        }
+
+        imageStore(vol_scatter_out, ivec3(voxel.xy, z), scatter_result);
+    }
+}

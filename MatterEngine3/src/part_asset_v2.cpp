@@ -500,6 +500,25 @@ bool save_v2(const std::string& path, const BLASManager& blas,
     return write_file_atomic(path, kFormatVersionV2, resolved_hash, body);
 }
 
+bool save_v2(const std::string& path, const BLASManager& blas,
+             const TLASManager& tlas,
+             const ChildInstance* children, size_t child_count,
+             const LodLevels& lods,
+             const std::vector<VolumeEmitter>& emitters,
+             uint64_t resolved_hash) {
+    std::vector<uint8_t> body;
+    std::unordered_map<BLASHandle, uint32_t> h2i;
+    if (!append_common_body(body, blas, tlas, children, child_count, lods, h2i))
+        return false;
+    // Append the EMIT trailer only when there are emitters (backward compat).
+    if (!emitters.empty()) {
+        put<uint32_t>(body, 0x454D4954u);  // "EMIT" tag
+        put<uint32_t>(body, static_cast<uint32_t>(emitters.size()));
+        put_bytes(body, emitters.data(), emitters.size() * sizeof(VolumeEmitter));
+    }
+    return write_file_atomic(path, kFormatVersionV2, resolved_hash, body);
+}
+
 bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
              BLASManager& blas, TLASManager& tlas,
              std::vector<ChildInstance>& children_out,
@@ -541,6 +560,72 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
             *failure = PartAssetLoadFailure::CorruptBody;
         if (reason && reason->empty()) *reason = "corrupt part body";
         return false;
+    }
+    return true;
+}
+
+bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
+             BLASManager& blas, TLASManager& tlas,
+             std::vector<ChildInstance>& children_out,
+             LodLevels& lods_out,
+             std::vector<VolumeEmitter>& emitters_out,
+             PartAssetLoadFailure* failure,
+             std::string* reason) {
+    emitters_out.clear();
+    children_out.clear();
+    lods_out.clear();
+    if (failure) *failure = PartAssetLoadFailure::None;
+    if (reason) reason->clear();
+
+    const auto fail = [failure, reason](PartAssetLoadFailure value, const char* message) {
+        if (failure) *failure = value;
+        if (reason) *reason = message;
+        return false;
+    };
+
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return fail(PartAssetLoadFailure::Header, "invalid part header");
+    std::fseek(f, 0, SEEK_END);
+    long sz = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    if (sz < 40) { std::fclose(f); return fail(PartAssetLoadFailure::Header, "invalid part header"); }
+    std::vector<uint8_t> buf(static_cast<size_t>(sz));
+    bool read_ok = std::fread(buf.data(), 1, buf.size(), f) == buf.size();
+    std::fclose(f);
+    if (!read_ok) return fail(PartAssetLoadFailure::Header, "invalid part header");
+
+    Reader r{ buf.data(), buf.data() + buf.size() };
+    uint64_t content_hash = 0;
+    if (!read_and_validate_header(r, expected_resolved_hash, kFormatVersionV2, content_hash))
+        return fail(PartAssetLoadFailure::Header, "invalid part header");
+    if (fnv1a64(r.p, static_cast<size_t>(r.end - r.p)) != content_hash)
+        return fail(PartAssetLoadFailure::CorruptBody, "corrupt part body");
+
+    std::vector<BLASHandle> handles;
+    if (!read_common_body(r, blas, tlas, children_out, lods_out, handles, failure, reason)) {
+        if (failure && *failure == PartAssetLoadFailure::None)
+            *failure = PartAssetLoadFailure::CorruptBody;
+        if (reason && reason->empty()) *reason = "corrupt part body";
+        return false;
+    }
+
+    // Probe for the optional EMIT trailer: 4-byte tag 0x454D4954 ("EMIT"),
+    // uint32_t count, then count * sizeof(VolumeEmitter) raw bytes.
+    // At EOF (older .part files without emitters) -> empty, not an error.
+    if (r.p < r.end && static_cast<size_t>(r.end - r.p) >= sizeof(uint32_t)) {
+        // Peek at the tag without consuming.
+        uint32_t tag = 0;
+        std::memcpy(&tag, r.p, sizeof(uint32_t));
+        if (tag == 0x454D4954u) {
+            r.p += sizeof(uint32_t);  // consume tag
+            const uint32_t count = r.get<uint32_t>();
+            if (!r.ok) return fail(PartAssetLoadFailure::CorruptBody, "corrupt EMIT trailer");
+            const size_t bytes = static_cast<size_t>(count) * sizeof(VolumeEmitter);
+            const uint8_t* data = r.take(bytes);
+            if (!r.ok) return fail(PartAssetLoadFailure::CorruptBody, "corrupt EMIT trailer");
+            emitters_out.resize(count);
+            std::memcpy(emitters_out.data(), data, bytes);
+        }
     }
     return true;
 }
@@ -593,6 +678,49 @@ bool save_flat_v3(const std::string& path, const BLASManager& blas,
                   uint64_t resolved_hash) {
     return save_flat_v3(path, blas, tlas, clusters,
                         std::vector<FlatInstanceRef>{}, resolved_hash);
+}
+
+bool save_flat_v3(const std::string& path, const BLASManager& blas,
+                  const TLASManager& tlas,
+                  const std::vector<FlatCluster>& clusters,
+                  const std::vector<FlatInstanceRef>& instance_refs,
+                  uint64_t resolved_hash,
+                  const std::vector<VolumeEmitter>& emitters) {
+    for (const auto& cluster : clusters)
+        if (cluster.lods.size() > matter::kMaxSerializedLodLevels) return false;
+
+    std::vector<uint8_t> body;
+    std::unordered_map<BLASHandle, uint32_t> h2i;
+    if (!append_common_body(body, blas, tlas, nullptr, 0, LodLevels{}, h2i))
+        return false;
+
+    put<uint32_t>(body, static_cast<uint32_t>(clusters.size()));
+    for (const auto& c : clusters) {
+        put_bytes(body, c.aabb_min, 3 * sizeof(float));
+        put_bytes(body, c.aabb_max, 3 * sizeof(float));
+        put<uint32_t>(body, c.segment);
+        put<uint32_t>(body, static_cast<uint32_t>(c.lods.size()));
+        for (const auto& lvl : c.lods) {
+            put<float>(body, lvl.screen_size_threshold);
+            put<uint32_t>(body, static_cast<uint32_t>(lvl.blas_indices.size()));
+            for (uint32_t idx : lvl.blas_indices) put<uint32_t>(body, idx);
+        }
+    }
+
+    put<uint32_t>(body, static_cast<uint32_t>(instance_refs.size()));
+    for (const auto& r : instance_refs) {
+        put<uint64_t>(body, r.child_resolved_hash);
+        put_bytes(body, r.transform, 16 * sizeof(float));
+        put<float>(body, r.inline_cutover);
+    }
+
+    if (!emitters.empty()) {
+        put<uint32_t>(body, 0x454D4954u);
+        put<uint32_t>(body, static_cast<uint32_t>(emitters.size()));
+        put_bytes(body, emitters.data(), emitters.size() * sizeof(VolumeEmitter));
+    }
+
+    return write_file_atomic(path, kFormatVersionFlat, resolved_hash, body);
 }
 
 bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
@@ -685,6 +813,105 @@ bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
     std::vector<FlatInstanceRef> refs_ignored;
     return load_flat_v3(path, expected_resolved_hash, blas, tlas, clusters_out,
                         refs_ignored);
+}
+
+bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
+                  BLASManager& blas, TLASManager& tlas,
+                  std::vector<FlatCluster>& clusters_out,
+                  std::vector<FlatInstanceRef>& instance_refs_out,
+                  std::vector<VolumeEmitter>& emitters_out) {
+    clusters_out.clear();
+    instance_refs_out.clear();
+    emitters_out.clear();
+
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::fseek(f, 0, SEEK_END);
+    long sz = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    if (sz < 40) { std::fclose(f); return false; }
+    std::vector<uint8_t> buf(static_cast<size_t>(sz));
+    bool read_ok = std::fread(buf.data(), 1, buf.size(), f) == buf.size();
+    std::fclose(f);
+    if (!read_ok) return false;
+
+    Reader r{ buf.data(), buf.data() + buf.size() };
+    uint64_t content_hash = 0;
+    if (!read_and_validate_header(r, expected_resolved_hash, kFormatVersionFlat, content_hash))
+        return false;
+    if (fnv1a64(r.p, static_cast<size_t>(r.end - r.p)) != content_hash) return false;
+
+    std::vector<ChildInstance> children_ignored;
+    LodLevels lods_ignored;
+    std::vector<BLASHandle> handles;
+    if (!read_common_body(r, blas, tlas, children_ignored, lods_ignored, handles))
+        return false;
+
+    const uint32_t blas_count = static_cast<uint32_t>(blas.get_entries().size());
+
+    const uint32_t cluster_count = r.get<uint32_t>();
+    if (!r.ok) return false;
+    clusters_out.reserve(cluster_count);
+    for (uint32_t ci = 0; ci < cluster_count; ++ci) {
+        FlatCluster fc;
+        const uint8_t* amin = r.take(3 * sizeof(float));
+        const uint8_t* amax = r.take(3 * sizeof(float));
+        if (!r.ok) return false;
+        std::memcpy(fc.aabb_min, amin, 3 * sizeof(float));
+        std::memcpy(fc.aabb_max, amax, 3 * sizeof(float));
+        fc.segment = r.get<uint32_t>();
+        const uint32_t level_count = r.get<uint32_t>();
+        if (!r.ok) return false;
+        if (level_count > matter::kMaxSerializedLodLevels) return false;
+        fc.lods.reserve(level_count);
+        for (uint32_t li = 0; li < level_count; ++li) {
+            LodLevel lvl;
+            lvl.screen_size_threshold = r.get<float>();
+            const uint32_t idx_count = r.get<uint32_t>();
+            if (!r.ok) return false;
+            lvl.blas_indices.reserve(idx_count);
+            for (uint32_t j = 0; j < idx_count; ++j) {
+                const uint32_t idx = r.get<uint32_t>();
+                if (!r.ok) return false;
+                if (idx >= blas_count) return false;
+                lvl.blas_indices.push_back(idx);
+            }
+            fc.lods.push_back(std::move(lvl));
+        }
+        clusters_out.push_back(std::move(fc));
+    }
+    if (!r.ok) return false;
+
+    const uint32_t ref_count = r.get<uint32_t>();
+    if (!r.ok) return false;
+    instance_refs_out.reserve(ref_count);
+    for (uint32_t i = 0; i < ref_count; ++i) {
+        FlatInstanceRef ref{};
+        ref.child_resolved_hash = r.get<uint64_t>();
+        const uint8_t* tf = r.take(16 * sizeof(float));
+        if (!r.ok) return false;
+        std::memcpy(ref.transform, tf, 16 * sizeof(float));
+        ref.inline_cutover = r.get<float>();
+        instance_refs_out.push_back(ref);
+    }
+    if (!r.ok) return false;
+
+    // Probe for the optional EMIT trailer (EOF-tolerant).
+    if (r.p < r.end && static_cast<size_t>(r.end - r.p) >= sizeof(uint32_t)) {
+        uint32_t tag = 0;
+        std::memcpy(&tag, r.p, sizeof(uint32_t));
+        if (tag == 0x454D4954u) {
+            r.p += sizeof(uint32_t);
+            const uint32_t count = r.get<uint32_t>();
+            if (!r.ok) return false;
+            const size_t bytes = static_cast<size_t>(count) * sizeof(VolumeEmitter);
+            const uint8_t* data = r.take(bytes);
+            if (!r.ok) return false;
+            emitters_out.resize(count);
+            std::memcpy(emitters_out.data(), data, bytes);
+        }
+    }
+    return true;
 }
 
 uint32_t peek_format_version(const std::string& path) {

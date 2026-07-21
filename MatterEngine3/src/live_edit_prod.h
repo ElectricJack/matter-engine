@@ -23,6 +23,10 @@ public:
                       script_host::ScriptHost& host,
                       std::string schemas_dir,
                       std::string shared_lib_dir);
+    ProdGraphResolver(part_graph_snapshot::Snapshot& snap,
+                      script_host::ScriptHost& host,
+                      std::string schemas_dir,
+                      std::vector<std::string> shared_lib_dirs);
 
     // The part(s) defined by, or importing, this script / shared-lib file.
     // by_file lookup first (normal schema); if that misses, check if the path is
@@ -48,7 +52,8 @@ private:
     part_graph_snapshot::Snapshot& snap_;
     script_host::ScriptHost&       host_;
     std::string                    schemas_dir_;
-    std::string                    shared_lib_dir_;
+    std::vector<std::string>       shared_lib_dirs_;
+    bool                           exact_shared_paths_ = false;
 };
 
 // SP-2 production seam: bake one part under its new resolved hash.

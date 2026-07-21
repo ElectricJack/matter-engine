@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <filesystem>
 #include <set>
 #include <sstream>
 #include <string>
@@ -25,6 +26,7 @@
 #include "check.h"
 
 using namespace part_graph;
+namespace fs = std::filesystem;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -114,17 +116,69 @@ struct Sandbox {
 
 static Sandbox make_sandbox(const char* name) {
     Sandbox s;
-    s.root       = std::string("/tmp/me3_liveprod_") + name;
+    s.root       = (fs::temp_directory_path() /
+                    (std::string("me3_liveprod_") + name)).string();
     s.schemas    = s.root + "/schemas";
     s.shared_lib = s.root + "/shared-lib";
     s.parts      = s.root + "/parts";
-    ::system(("rm -rf " + s.root).c_str());
-    ::system(("mkdir -p " + s.schemas + " " + s.shared_lib + " " + s.parts).c_str());
+    std::error_code ec;
+    fs::remove_all(s.root, ec);
+    fs::create_directories(s.schemas);
+    fs::create_directories(s.shared_lib);
+    fs::create_directories(s.parts);
     write_file(s.schemas + "/Leaf.js", LEAF_JS);
     write_file(s.schemas + "/Mid.js",  MID_JS);
     write_file(s.schemas + "/Root.js", ROOT_JS);
     write_file(s.shared_lib + "/Shared.js", SHARED_JS);
     return s;
+}
+
+static void test_snapshot_records_selected_ordered_shared_paths() {
+    std::printf("[test_snapshot_records_selected_ordered_shared_paths]\n");
+    Sandbox s = make_sandbox("ordered_paths");
+    const std::string engine_shared = s.root + "/engine-shared";
+    fs::create_directories(engine_shared);
+    write_file(s.shared_lib + "/Shared.js",
+        "import { engineValue } from 'shared-lib/EngineOnly';\n"
+        "export const noise = x => x + engineValue;\n");
+    write_file(engine_shared + "/Shared.js",
+        "export const noise = x => x + 999;\n");
+    write_file(engine_shared + "/EngineOnly.js",
+        "export const engineValue = 7;\n");
+
+    script_host::ScriptHost host;
+    host.set_shared_lib_roots({s.shared_lib, engine_shared});
+    FileModuleResolver resolver(host, s.schemas);
+    HostBaker baker(host, s.root);
+    PartGraph graph(resolver, baker);
+    part_graph_snapshot::Snapshot snap;
+    InstallResult ir = graph.install({ChildRequest{"Root", {}}}, &snap);
+    CHECK(ir.ok, "ordered shared paths: install succeeds");
+    if (!ir.ok) return;
+
+    const auto& mid = snap.nodes.at("Mid");
+    const std::set<std::string> selected(mid.shared_source_paths.begin(),
+                                         mid.shared_source_paths.end());
+    CHECK(selected == std::set<std::string>({
+              s.shared_lib + "/Shared.js",
+              engine_shared + "/EngineOnly.js"}),
+          "snapshot records selected direct and transitive shared paths");
+    CHECK(snap.by_file.count(s.shared_lib + "/Shared.js") == 1,
+          "snapshot indexes selected project shadow path");
+    CHECK(snap.by_file.count(engine_shared + "/EngineOnly.js") == 1,
+          "snapshot indexes selected engine fallback path");
+    CHECK(snap.by_file.count(engine_shared + "/Shared.js") == 0,
+          "snapshot does not index shadowed engine path");
+
+    live_edit_prod::ProdGraphResolver gr(
+        snap, host, s.schemas,
+        std::vector<std::string>{s.shared_lib, engine_shared});
+    const auto fallback_parts =
+        gr.parts_for_file(engine_shared + "/EngineOnly.js");
+    CHECK(fallback_parts == std::vector<std::string>{"Mid"},
+          "live edit maps selected engine fallback to importer");
+    CHECK(gr.parts_for_file(engine_shared + "/Shared.js").empty(),
+          "live edit ignores shadowed engine module edits");
 }
 
 // ---------------------------------------------------------------------------
@@ -464,6 +518,7 @@ static void test_flattener() {
 int main() {
     std::printf("=== live_edit_prod_tests ===\n");
     test_snapshot_structure();
+    test_snapshot_records_selected_ordered_shared_paths();
     test_resolver_parts_for_file();
     test_resolver_ancestors();
     test_resolver_topo_order();

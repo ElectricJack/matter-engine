@@ -544,7 +544,7 @@ static void test_cache_artifact_compatibility_probe() {
     std::vector<FlatCluster> clusters;
     CHECK(save_flat_v3(flat_path, blas, tlas, clusters, flat_hash),
           "compat probe flat fixture saved");
-    CHECK(kFormatVersionFlat == 7u,
+    CHECK(kFormatVersionFlat == 8u,
           "flat compatibility version invalidates pre-LOD-cap artifacts");
     CHECK(is_cache_artifact_header_compatible(flat_path, flat_hash, kFormatVersionFlat),
           "header probe accepts current flat artifact");

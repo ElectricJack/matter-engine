@@ -1,7 +1,7 @@
 // Phase C Task 13 — demand-driven bake primitives: BakePolicy::RootsOnly,
 // retained bake_plan, ensure_part_baked / ensure_part_flattened.
 //
-// Headless (allow_gl_lt_46=true), uses the async sandbox schema dir.
+// Headless (allow_gl_lt_46=true), uses the project-root JS layout.
 // Hierarchy: Root -> Child (+ Grandchild), so subtree recursion is exercised.
 //
 // Tests:
@@ -32,58 +32,81 @@
 #include "script_host.h"      // ScriptHost
 #include "blas_manager.hpp"   // BLASManager (for load_v2 in case f)
 #include "tlas_manager.hpp"   // TLASManager (for load_v2 in case f)
-#include "tileset_phase.h"    // run_tileset_phase (settle-only overload)
+#include "tileset_phase.h"    // run_tileset_phase_from_objects (settle-only overload)
 #include "tileset_bake.h"     // SettledTorus, SettleReport
 
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <sys/stat.h>
 #include <thread>
-#include <unistd.h>
 #include <vector>
 
 #include "check.h"
+
+namespace fs = std::filesystem;
 
 // ---------------------------------------------------------------------------
 // Sandbox helpers
 // ---------------------------------------------------------------------------
 
-static void run_cmd(const std::string& cmd) { std::system(cmd.c_str()); }
-
-static bool write_file(const std::string& path, const std::string& body) {
-    std::ofstream f(path);
+static bool write_file(const fs::path& path, const std::string& body) {
+    std::error_code ec;
+    fs::create_directories(path.parent_path(), ec);
+    if (ec) return false;
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
     if (!f) return false;
     f << body;
-    return true;
+    return f.good();
+}
+
+static void remove_tree(const fs::path& path) {
+    std::error_code ignored;
+    fs::remove_all(path, ignored);
+}
+
+static bool reset_project(const fs::path& root, const std::string& world_name) {
+    remove_tree(root);
+    std::error_code ec;
+    fs::create_directories(root / "objects", ec);
+    if (ec) return false;
+    fs::create_directories(root / "worlds", ec);
+    if (ec) return false;
+    fs::create_directories(root / "shared-lib", ec);
+    if (ec) return false;
+    fs::create_directories(root / ".cache" / world_name / "parts", ec);
+    return !ec;
+}
+
+static bool reset_cache(const fs::path& root, const std::string& world_name) {
+    remove_tree(root / ".cache");
+    std::error_code ec;
+    fs::create_directories(root / ".cache" / world_name / "parts", ec);
+    return !ec;
 }
 
 // Build a sandbox with hierarchy: Root -> Child -> Grandchild.
 // Root has two children: Child and a leaf Leaf. Child has one child: Grandchild.
-// Schemas are trivial mesh parts (no voxel session, no shared-lib imports).
+// Objects are trivial mesh parts (no voxel session, no shared-lib imports).
 //
 //   Grandchild (leaf)
 //   Child  -> requires Grandchild
 //   Leaf   (leaf, second child of Root)
 //   Root   -> requires Child, Leaf
 //
-// World manifest places Root once (no flags).
-static bool build_sandbox(const std::string& root) {
-    run_cmd("rm -rf " + root);
-    run_cmd("mkdir -p " + root + "/schemas");
-    run_cmd("mkdir -p " + root + "/world_data/Hier");
-    run_cmd("mkdir -p " + root + "/shared-lib");
-    run_cmd("mkdir -p " + root + "/cache/parts");
+// World class places Root once (no flags).
+static bool build_sandbox(const fs::path& root) {
+    if (!reset_project(root, "Hier")) return false;
 
     // Grandchild — leaf
-    if (!write_file(root + "/schemas/Grandchild.js",
+    if (!write_file(root / "objects" / "Grandchild.js",
         "class Grandchild extends Part {\n"
         "  build(p) {\n"
         "    this.fill(MAT.stone);\n"
@@ -96,7 +119,7 @@ static bool build_sandbox(const std::string& root) {
         "}\n")) return false;
 
     // Leaf — leaf (second child of Root)
-    if (!write_file(root + "/schemas/Leaf.js",
+    if (!write_file(root / "objects" / "Leaf.js",
         "class Leaf extends Part {\n"
         "  build(p) {\n"
         "    this.fill(MAT.stone);\n"
@@ -109,7 +132,7 @@ static bool build_sandbox(const std::string& root) {
         "}\n")) return false;
 
     // Child — requires Grandchild, placed at origin
-    if (!write_file(root + "/schemas/Child.js",
+    if (!write_file(root / "objects" / "Child.js",
         "class Child extends Part {\n"
         "  static get requires() {\n"
         "    return [{ module: 'Grandchild', params: {} }];\n"
@@ -126,7 +149,7 @@ static bool build_sandbox(const std::string& root) {
         "}\n")) return false;
 
     // Root — requires Child + Leaf
-    if (!write_file(root + "/schemas/Root.js",
+    if (!write_file(root / "objects" / "Root.js",
         "class Root extends Part {\n"
         "  static get requires() {\n"
         "    return [\n"
@@ -146,10 +169,13 @@ static bool build_sandbox(const std::string& root) {
         "  }\n"
         "}\n")) return false;
 
-    // Manifest: one Root placement
-    if (!write_file(root + "/world_data/Hier/world.manifest",
-        "# demand-bake tests hierarchy\n"
-        "Root\n")) return false;
+    // World class: one Root placement
+    if (!write_file(root / "worlds" / "Hier.js",
+        "class Hier extends World {\n"
+        "  static roots = [\n"
+        "    { module: 'Root', transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] },\n"
+        "  ];\n"
+        "}\n")) return false;
 
     return true;
 }
@@ -170,28 +196,23 @@ static bool flat_part_exists(const std::string& cache_root, uint64_t hash) {
 
 // Run install_graph() on the sandbox using LocalProvider directly (headless).
 // Returns LocalProvider on success (caller owns it, installs onto the heap).
-// Sets up and tears down the provider in a controlled way.
 static std::unique_ptr<viewer::LocalProvider> make_provider(
-    const std::string& sandbox,
+    const fs::path& sandbox,
     const std::string& world_name = "Hier") {
-    viewer::LocalProviderConfig cfg;
-    cfg.schemas_dir    = sandbox + "/schemas";
-    cfg.world_data_dir = sandbox + "/world_data";
-    cfg.world_name     = world_name;
-    cfg.shared_lib_dir = sandbox + "/shared-lib";
-    cfg.cache_root     = sandbox + "/cache";
-    cfg.gl_available   = false;
+    auto cfg = viewer::LocalProviderConfig::for_project(
+        sandbox.string(), world_name, "../shared-lib");
+    cfg.gl_available = false;
     return std::make_unique<viewer::LocalProvider>(std::move(cfg));
 }
 
 // ---------------------------------------------------------------------------
 // (a) test_roots_only_bakes_roots
 // ---------------------------------------------------------------------------
-static bool test_roots_only_bakes_roots(const std::string& sandbox) {
+static bool test_roots_only_bakes_roots(const fs::path& sandbox) {
     printf("-- (a) test_roots_only_bakes_roots\n");
 
     // Cold cache
-    run_cmd("rm -rf " + sandbox + "/cache && mkdir -p " + sandbox + "/cache/parts");
+    reset_cache(sandbox, "Hier");
 
     auto prov = make_provider(sandbox);
     std::string err;
@@ -204,7 +225,7 @@ static bool test_roots_only_bakes_roots(const std::string& sandbox) {
     CHECK(!ir.root_hashes.empty(), "root_hashes not empty");
     CHECK(ir.root_hashes[0] != 0, "root hash non-zero");
 
-    const std::string cache_root = sandbox + "/cache";
+    const std::string cache_root = (sandbox / ".cache" / "Hier").string();
 
     // Root .part must exist
     uint64_t root_hash = ir.root_hashes[0];
@@ -269,24 +290,20 @@ static bool test_roots_only_bakes_roots(const std::string& sandbox) {
 // ---------------------------------------------------------------------------
 // (b) test_ensure_part_baked_subtree
 // ---------------------------------------------------------------------------
-static bool test_ensure_part_baked_subtree(const std::string& sandbox) {
+static bool test_ensure_part_baked_subtree(const fs::path& sandbox) {
     printf("-- (b) test_ensure_part_baked_subtree\n");
 
     // Fresh cache for this test
-    run_cmd("rm -rf " + sandbox + "/cache && mkdir -p " + sandbox + "/cache/parts");
+    reset_cache(sandbox, "Hier");
 
     // Wire an on_part counter so we can assert the second call is a true no-op.
     // ensure_part_baked fires on_part for each part it actually bakes (not for
     // cached() short-circuits), so the counter must increase on the first call
     // and must NOT increase on the second call.
     int on_part_count = 0;
-    viewer::LocalProviderConfig cfg;
-    cfg.schemas_dir    = sandbox + "/schemas";
-    cfg.world_data_dir = sandbox + "/world_data";
-    cfg.world_name     = "Hier";
-    cfg.shared_lib_dir = sandbox + "/shared-lib";
-    cfg.cache_root     = sandbox + "/cache";
-    cfg.gl_available   = false;
+    auto cfg = viewer::LocalProviderConfig::for_project(
+        sandbox.string(), "Hier", "../shared-lib");
+    cfg.gl_available = false;
     cfg.on_part = [&](const char* /*module*/, int /*done*/, int /*total*/) {
         ++on_part_count;
     };
@@ -304,7 +321,7 @@ static bool test_ensure_part_baked_subtree(const std::string& sandbox) {
 
     const part_graph::InstallResult& ir = prov->install_result();
     const auto& snap = prov->graph_snapshot();
-    const std::string cache_root = sandbox + "/cache";
+    const std::string cache_root = (sandbox / ".cache" / "Hier").string();
 
     uint64_t child_hash = 0, grandchild_hash = 0;
     {
@@ -363,43 +380,38 @@ static bool test_ensure_part_baked_subtree(const std::string& sandbox) {
 // ---------------------------------------------------------------------------
 // (c) test_hash_parity
 // ---------------------------------------------------------------------------
-static bool test_hash_parity(const std::string& sandbox) {
+static bool test_hash_parity(const fs::path& sandbox) {
     printf("-- (c) test_hash_parity\n");
 
-    // RootsOnly install on sandbox/cache_a
-    run_cmd("rm -rf " + sandbox + "/cache_a && mkdir -p " + sandbox + "/cache_a/parts");
-    // BakeAll install on sandbox/cache_b
-    run_cmd("rm -rf " + sandbox + "/cache_b && mkdir -p " + sandbox + "/cache_b/parts");
+    // Use two separate project sandboxes with distinct cache roots for parity.
+    const fs::path sandbox_a = sandbox.parent_path() / (sandbox.filename().string() + "_parity_a");
+    const fs::path sandbox_b = sandbox.parent_path() / (sandbox.filename().string() + "_parity_b");
+
+    // Build identical sandboxes
+    if (!build_sandbox(sandbox_a)) return false;
+    if (!build_sandbox(sandbox_b)) return false;
 
     // Provider A — RootsOnly
-    viewer::LocalProviderConfig cfgA;
-    cfgA.schemas_dir    = sandbox + "/schemas";
-    cfgA.world_data_dir = sandbox + "/world_data";
-    cfgA.world_name     = "Hier";
-    cfgA.shared_lib_dir = sandbox + "/shared-lib";
-    cfgA.cache_root     = sandbox + "/cache_a";
-    cfgA.gl_available   = false;
+    auto cfgA = viewer::LocalProviderConfig::for_project(
+        sandbox_a.string(), "Hier", "../shared-lib");
+    cfgA.gl_available = false;
     auto provA = std::make_unique<viewer::LocalProvider>(std::move(cfgA));
 
     std::string errA;
     bool okA = provA->install_graph(errA, part_graph::BakePolicy::RootsOnly);
     CHECK(okA, "install_graph(RootsOnly) for parity A");
-    if (!okA) { printf("  errA: %s\n", errA.c_str()); return false; }
+    if (!okA) { printf("  errA: %s\n", errA.c_str()); remove_tree(sandbox_a); remove_tree(sandbox_b); return false; }
 
     // Provider B — All (default)
-    viewer::LocalProviderConfig cfgB;
-    cfgB.schemas_dir    = sandbox + "/schemas";
-    cfgB.world_data_dir = sandbox + "/world_data";
-    cfgB.world_name     = "Hier";
-    cfgB.shared_lib_dir = sandbox + "/shared-lib";
-    cfgB.cache_root     = sandbox + "/cache_b";
-    cfgB.gl_available   = false;
+    auto cfgB = viewer::LocalProviderConfig::for_project(
+        sandbox_b.string(), "Hier", "../shared-lib");
+    cfgB.gl_available = false;
     auto provB = std::make_unique<viewer::LocalProvider>(std::move(cfgB));
 
     std::string errB;
     bool okB = provB->install_graph(errB);  // BakePolicy::All is default
     CHECK(okB, "install_graph(All) for parity B");
-    if (!okB) { printf("  errB: %s\n", errB.c_str()); return false; }
+    if (!okB) { printf("  errB: %s\n", errB.c_str()); remove_tree(sandbox_a); remove_tree(sandbox_b); return false; }
 
     // Collect hashes from bake_plan A
     std::set<uint64_t> hashes_a, hashes_b;
@@ -425,6 +437,8 @@ static bool test_hash_parity(const std::string& sandbox) {
         }
     }
 
+    remove_tree(sandbox_a);
+    remove_tree(sandbox_b);
     printf("  (c) PASS\n");
     return true;
 }
@@ -432,11 +446,11 @@ static bool test_hash_parity(const std::string& sandbox) {
 // ---------------------------------------------------------------------------
 // (d) test_ensure_part_flattened
 // ---------------------------------------------------------------------------
-static bool test_ensure_part_flattened(const std::string& sandbox) {
+static bool test_ensure_part_flattened(const fs::path& sandbox) {
     printf("-- (d) test_ensure_part_flattened\n");
 
     // Fresh cache
-    run_cmd("rm -rf " + sandbox + "/cache && mkdir -p " + sandbox + "/cache/parts");
+    reset_cache(sandbox, "Hier");
 
     auto prov = make_provider(sandbox);
     std::string err;
@@ -445,7 +459,7 @@ static bool test_ensure_part_flattened(const std::string& sandbox) {
     if (!ok) { printf("  err: %s\n", err.c_str()); return false; }
 
     const auto& snap = prov->graph_snapshot();
-    const std::string cache_root = sandbox + "/cache";
+    const std::string cache_root = (sandbox / ".cache" / "Hier").string();
 
     uint64_t child_hash = 0;
     {
@@ -487,7 +501,7 @@ static bool test_ensure_part_flattened(const std::string& sandbox) {
 // Drive the async session to BakeFinished and assert:
 //   (a) BakeFinished.errors == 0
 //   (b) all placed parts' .part and .flat.part now exist on disk
-//   (c) Unplaced's .part does NOT exist (never published → never baked)
+//   (c) Unplaced's .part does NOT exist (never published -> never baked)
 //   (d) instances_total > 0 (placed parts rendered)
 //   (e) BakePartDone events with phase="parts" and non-empty module labels arrived
 // ---------------------------------------------------------------------------
@@ -495,19 +509,15 @@ static bool test_ensure_part_flattened(const std::string& sandbox) {
 // Build a sandbox mimicking the Meadow pattern for demand bake:
 //   World (expand root) requires [Placed1, Placed2, Placed3, Unplaced].
 //   World's build() only calls placeChild for Placed1/2/3.
-//   The manifest declares World with `expand` flag so each placed child
+//   The world class declares World with `expand: true` flag so each placed child
 //   becomes a first-class manifest entry. Unplaced is in `requires` but
-//   never a placeChild → it's in the bake_plan but never in manifest →
-//   never in publish_order → never gets ensure_part_baked called.
+//   never a placeChild -> it's in the bake_plan but never in manifest ->
+//   never in publish_order -> never gets ensure_part_baked called.
 //
 // This mirrors the Terrain coarse/full pattern in Meadow.js:
 //   requires both resolutions but only places coarse tiles.
-static bool build_e2e_sandbox(const std::string& root) {
-    run_cmd("rm -rf " + root);
-    run_cmd("mkdir -p " + root + "/schemas");
-    run_cmd("mkdir -p " + root + "/world_data/E2E");
-    run_cmd("mkdir -p " + root + "/shared-lib");
-    run_cmd("mkdir -p " + root + "/cache/parts");
+static bool build_e2e_sandbox(const fs::path& root) {
+    if (!reset_project(root, "E2E")) return false;
 
     // Leaf schema template — each leaf is a distinct geometry so hashes differ.
     auto write_leaf = [&](const std::string& name, float size) -> bool {
@@ -522,7 +532,7 @@ static bool build_e2e_sandbox(const std::string& root) {
            << "    this.endShape();\n"
            << "  }\n"
            << "}\n";
-        return write_file(root + "/schemas/" + name + ".js", js.str());
+        return write_file(root / "objects" / (name + ".js"), js.str());
     };
 
     if (!write_leaf("Placed1",  0.3f)) return false;
@@ -532,8 +542,8 @@ static bool build_e2e_sandbox(const std::string& root) {
 
     // World (expand root): requires all four, but placeChild only the three placed.
     // Unplaced is in static requires (bake_plan covers it) but never placeChild'd.
-    // With `expand` in world.manifest, only Placed1/2/3 become manifest entries.
-    if (!write_file(root + "/schemas/World.js",
+    // With `expand` in world class, only Placed1/2/3 become manifest entries.
+    if (!write_file(root / "objects" / "World.js",
         "class World extends Part {\n"
         "  static get requires() {\n"
         "    return [\n"
@@ -557,11 +567,14 @@ static bool build_e2e_sandbox(const std::string& root) {
         "  }\n"
         "}\n")) return false;
 
-    // Manifest: World with `expand` flag — children become individual instances.
+    // World class: World with `expand: true` flag — children become individual instances.
     // Only placed children (Placed1/2/3) appear in the expanded manifest.
-    if (!write_file(root + "/world_data/E2E/world.manifest",
-        "# demand-bake e2e test\n"
-        "World expand\n")) return false;
+    if (!write_file(root / "worlds" / "E2E.js",
+        "class E2E extends World {\n"
+        "  static roots = [\n"
+        "    { module: 'World', transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], expand: true },\n"
+        "  ];\n"
+        "}\n")) return false;
 
     return true;
 }
@@ -593,10 +606,10 @@ static bool drive_bake_e2e(matter::WorldSession& s,
     return false;
 }
 
-static bool test_demand_bake_e2e(const std::string& base_dir) {
+static bool test_demand_bake_e2e(const fs::path& base_dir) {
     printf("-- (e) test_demand_bake_e2e\n");
 
-    const std::string sandbox = base_dir + "_e2e";
+    const fs::path sandbox = base_dir.parent_path() / (base_dir.filename().string() + "_e2e");
     if (!build_e2e_sandbox(sandbox)) {
         printf("  FAIL: build_e2e_sandbox\n");
         ++g_failures;
@@ -604,12 +617,10 @@ static bool test_demand_bake_e2e(const std::string& base_dir) {
     }
 
     // Cold cache
-    run_cmd("rm -rf " + sandbox + "/cache && mkdir -p " + sandbox + "/cache/parts");
+    reset_cache(sandbox, "E2E");
 
-    std::string cache_root_s = sandbox + "/cache";
-    std::string schemas_s    = sandbox + "/schemas";
-    std::string wdata_s      = sandbox + "/world_data";
-    std::string shlib_s      = sandbox + "/shared-lib";
+    const std::string sandbox_s = sandbox.string();
+    const std::string cache_root_s = (sandbox / ".cache" / "E2E").string();
 
     std::string err;
     matter::EngineDesc ed;
@@ -617,22 +628,21 @@ static bool test_demand_bake_e2e(const std::string& base_dir) {
     ed.allow_gl_lt_46 = true;
     auto engine = matter::EngineContext::create(ed, err);
     CHECK(engine != nullptr, "e2e: engine created");
-    if (!engine) { printf("  err: %s\n", err.c_str()); run_cmd("rm -rf " + sandbox); return false; }
+    if (!engine) { printf("  err: %s\n", err.c_str()); remove_tree(sandbox); return false; }
 
     matter::WorldDesc wd;
-    wd.schemas_dir    = schemas_s.c_str();
-    wd.world_data_dir = wdata_s.c_str();
-    wd.world_name     = "E2E";
-    wd.shared_lib_dir = shlib_s.c_str();
+    wd.project_dir = sandbox_s.c_str();
+    wd.world_name  = "E2E";
+    wd.engine_shared_lib_dir = "../shared-lib";
     auto s = engine->open_world(wd, err);
     CHECK(s != nullptr, "e2e: session opened");
-    if (!s) { printf("  err: %s\n", err.c_str()); run_cmd("rm -rf " + sandbox); return false; }
+    if (!s) { printf("  err: %s\n", err.c_str()); remove_tree(sandbox); return false; }
 
     s->request_bake();
     std::vector<matter::Event> log;
     bool bake_ok = drive_bake_e2e(*s, log);
     CHECK(bake_ok, "e2e: BakeFinished arrived");
-    if (!bake_ok) { run_cmd("rm -rf " + sandbox); return false; }
+    if (!bake_ok) { remove_tree(sandbox); return false; }
 
     // (a) BakeFinished.errors == 0
     matter::Event* finished_ev = nullptr;
@@ -646,19 +656,15 @@ static bool test_demand_bake_e2e(const std::string& base_dir) {
 
     // We need part hashes to verify disk presence. Use LocalProvider directly to get them.
     // Build a LocalProvider on the existing warm cache to read graph snapshot hashes.
-    viewer::LocalProviderConfig cfg2;
-    cfg2.schemas_dir    = schemas_s;
-    cfg2.world_data_dir = wdata_s;
-    cfg2.world_name     = "E2E";
-    cfg2.shared_lib_dir = shlib_s;
-    cfg2.cache_root     = cache_root_s;
-    cfg2.gl_available   = false;
+    auto cfg2 = viewer::LocalProviderConfig::for_project(
+        sandbox_s, "E2E", "../shared-lib");
+    cfg2.gl_available = false;
     auto prov = std::make_unique<viewer::LocalProvider>(std::move(cfg2));
     std::string ierr;
     // Use RootsOnly so we get the bake_plan without re-baking anything.
     bool inst_ok = prov->install_graph(ierr, part_graph::BakePolicy::RootsOnly);
     CHECK(inst_ok, "e2e: verify provider install succeeded");
-    if (!inst_ok) { printf("  install err: %s\n", ierr.c_str()); run_cmd("rm -rf " + sandbox); return false; }
+    if (!inst_ok) { printf("  install err: %s\n", ierr.c_str()); remove_tree(sandbox); return false; }
 
     const part_graph::InstallResult& ir = prov->install_result();
     const auto& snap = prov->graph_snapshot();
@@ -693,7 +699,7 @@ static bool test_demand_bake_e2e(const std::string& base_dir) {
           "e2e: unplaced IS in bake_plan (requires declared it)");
 
     // (b) All placed parts' .part AND .flat.part now exist on disk.
-    // With expand flag: Placed1/2/3 are direct manifest entries → each gets
+    // With expand flag: Placed1/2/3 are direct manifest entries -> each gets
     // ensure_part_baked + ensure_part_flattened in the publish loop.
     // World's own .part also exists (baked at install as root).
     CHECK(part_exists(cache_root_s, world_hash),  "e2e: World .part exists (root, baked at install)");
@@ -712,12 +718,12 @@ static bool test_demand_bake_e2e(const std::string& base_dir) {
     printf("  unplaced .part exists: %s (expect: no)\n",
            part_exists(cache_root_s, unplaced_hash) ? "YES" : "no");
     CHECK(!part_exists(cache_root_s, unplaced_hash),
-          "e2e: Unplaced .part does NOT exist (never in manifest → never demand-baked)");
+          "e2e: Unplaced .part does NOT exist (never in manifest -> never demand-baked)");
 
     // (d) instances_total > 0
-    const auto& fs = s->frame_stats();
-    printf("  instances_total=%u\n", fs.instances_total);
-    CHECK(fs.instances_total > 0, "e2e: instances_total > 0 (placed parts rendered)");
+    const auto& fstats = s->frame_stats();
+    printf("  instances_total=%u\n", fstats.instances_total);
+    CHECK(fstats.instances_total > 0, "e2e: instances_total > 0 (placed parts rendered)");
 
     // (e) At least one BakePartDone with phase="parts" and a non-empty module label
     int parts_events_with_module = 0;
@@ -731,7 +737,7 @@ static bool test_demand_bake_e2e(const std::string& base_dir) {
     CHECK(parts_events_with_module >= 1,
           "e2e: BakePartDone events with phase=parts and non-empty module arrived");
 
-    run_cmd("rm -rf " + sandbox);
+    remove_tree(sandbox);
     printf("  (e) PASS\n");
     return true;
 }
@@ -747,16 +753,12 @@ static bool test_demand_bake_e2e(const std::string& base_dir) {
 //   - Each child hash is found in bake_plan; its BakeInputs.params round-trip to
 //     the expected canonical JSON via params_to_json.
 // ---------------------------------------------------------------------------
-static bool build_parametric_sandbox(const std::string& root) {
-    run_cmd("rm -rf " + root);
-    run_cmd("mkdir -p " + root + "/schemas");
-    run_cmd("mkdir -p " + root + "/world_data/Param");
-    run_cmd("mkdir -p " + root + "/shared-lib");
-    run_cmd("mkdir -p " + root + "/cache/parts");
+static bool build_parametric_sandbox(const fs::path& root) {
+    if (!reset_project(root, "Param")) return false;
 
     // Tile module: parameterised by {i} (integer variant) or {a, b} (float variant).
     // Each distinct params set produces distinct geometry (and thus a distinct hash).
-    if (!write_file(root + "/schemas/Tile.js",
+    if (!write_file(root / "objects" / "Tile.js",
         "class Tile extends Part {\n"
         "  static params = { i: 0, a: 0.0, b: 0.0 };\n"
         "  build(p) {\n"
@@ -778,7 +780,7 @@ static bool build_parametric_sandbox(const std::string& root) {
     // key which is the {i:2} hash — causing child[1] and child[2] to share a hash.
     // After the fix, lookup_child_hash normalizes {b:2,a:0.1} -> {a:0.1,b:2} JSON
     // and finds the correct composite key, so all three child hashes are distinct.
-    if (!write_file(root + "/schemas/ParamRoot.js",
+    if (!write_file(root / "objects" / "ParamRoot.js",
         "class ParamRoot extends Part {\n"
         "  static requires = [\n"
         "    { module: 'Tile', params: { i: 1 } },\n"
@@ -802,32 +804,32 @@ static bool build_parametric_sandbox(const std::string& root) {
         "  }\n"
         "}\n")) return false;
 
-    if (!write_file(root + "/world_data/Param/world.manifest",
-        "# parametric placements test\n"
-        "ParamRoot\n")) return false;
+    // World class: ParamRoot placement
+    if (!write_file(root / "worlds" / "Param.js",
+        "class Param extends World {\n"
+        "  static roots = [\n"
+        "    { module: 'ParamRoot', transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] },\n"
+        "  ];\n"
+        "}\n")) return false;
 
     return true;
 }
 
-static bool test_parametric_placements_distinct(const std::string& base_dir) {
+static bool test_parametric_placements_distinct(const fs::path& base_dir) {
     printf("-- (f) test_parametric_placements_distinct\n");
 
-    const std::string sandbox = base_dir + "_param";
+    const fs::path sandbox = base_dir.parent_path() / (base_dir.filename().string() + "_param");
     if (!build_parametric_sandbox(sandbox)) {
         printf("  FAIL: build_parametric_sandbox\n");
         ++g_failures;
         return false;
     }
 
-    run_cmd("rm -rf " + sandbox + "/cache && mkdir -p " + sandbox + "/cache/parts");
+    reset_cache(sandbox, "Param");
 
-    viewer::LocalProviderConfig cfg;
-    cfg.schemas_dir    = sandbox + "/schemas";
-    cfg.world_data_dir = sandbox + "/world_data";
-    cfg.world_name     = "Param";
-    cfg.shared_lib_dir = sandbox + "/shared-lib";
-    cfg.cache_root     = sandbox + "/cache";
-    cfg.gl_available   = false;
+    auto cfg = viewer::LocalProviderConfig::for_project(
+        sandbox.string(), "Param", "../shared-lib");
+    cfg.gl_available = false;
     auto prov = std::make_unique<viewer::LocalProvider>(std::move(cfg));
 
     std::string err;
@@ -836,7 +838,7 @@ static bool test_parametric_placements_distinct(const std::string& base_dir) {
     CHECK(ok, "(f) install_graph(All) succeeded");
     if (!ok) {
         printf("  err: %s\n", err.c_str());
-        run_cmd("rm -rf " + sandbox);
+        remove_tree(sandbox);
         return false;
     }
 
@@ -844,7 +846,7 @@ static bool test_parametric_placements_distinct(const std::string& base_dir) {
     CHECK(ir.ok, "(f) install result ok");
     CHECK(!ir.root_hashes.empty() && ir.root_hashes[0] != 0, "(f) root hash non-zero");
     if (ir.root_hashes.empty() || ir.root_hashes[0] == 0) {
-        run_cmd("rm -rf " + sandbox);
+        remove_tree(sandbox);
         return false;
     }
 
@@ -888,7 +890,7 @@ static bool test_parametric_placements_distinct(const std::string& base_dir) {
     // Read the root .part child-instance table and verify 3 DISTINCT child hashes.
     // This is the key assertion: each placeChild('Tile', params) must resolve to
     // its own variant's hash, not collapse via the module-only fallback.
-    const std::string cache_root = sandbox + "/cache";
+    const std::string cache_root = (sandbox / ".cache" / "Param").string();
     const uint64_t root_hash = ir.root_hashes[0];
     CHECK(part_exists(cache_root, root_hash), "(f) root .part exists");
     for (uint64_t h : tile_hashes)
@@ -938,7 +940,7 @@ static bool test_parametric_placements_distinct(const std::string& base_dir) {
             printf("  failed: module=%s err=%s\n", fp.module.c_str(), fp.error.c_str());
     }
 
-    run_cmd("rm -rf " + sandbox);
+    remove_tree(sandbox);
     printf("  (f) PASS\n");
     return true;
 }
@@ -951,15 +953,11 @@ static bool test_parametric_placements_distinct(const std::string& base_dir) {
 // The root bake must FAIL (install returns ok==false OR the root has a failed
 // entry) with an error message that names the module 'Tile'.
 // ---------------------------------------------------------------------------
-static bool build_mismatch_sandbox(const std::string& root) {
-    run_cmd("rm -rf " + root);
-    run_cmd("mkdir -p " + root + "/schemas");
-    run_cmd("mkdir -p " + root + "/world_data/Mismatch");
-    run_cmd("mkdir -p " + root + "/shared-lib");
-    run_cmd("mkdir -p " + root + "/cache/parts");
+static bool build_mismatch_sandbox(const fs::path& root) {
+    if (!reset_project(root, "Mismatch")) return false;
 
     // Tile module: parameterised by {i}.
-    if (!write_file(root + "/schemas/Tile.js",
+    if (!write_file(root / "objects" / "Tile.js",
         "class Tile extends Part {\n"
         "  static params = { i: 0 };\n"
         "  build(p) {\n"
@@ -973,7 +971,7 @@ static bool build_mismatch_sandbox(const std::string& root) {
         "}\n")) return false;
 
     // Root: declares Tile with {i:1} and {i:2} only. build() tries {i:3} — undeclared.
-    if (!write_file(root + "/schemas/MismatchRoot.js",
+    if (!write_file(root / "objects" / "MismatchRoot.js",
         "class MismatchRoot extends Part {\n"
         "  static requires = [\n"
         "    { module: 'Tile', params: { i: 1 } },\n"
@@ -991,32 +989,32 @@ static bool build_mismatch_sandbox(const std::string& root) {
         "  }\n"
         "}\n")) return false;
 
-    if (!write_file(root + "/world_data/Mismatch/world.manifest",
-        "# param-mismatch error test\n"
-        "MismatchRoot\n")) return false;
+    // World class: MismatchRoot placement
+    if (!write_file(root / "worlds" / "Mismatch.js",
+        "class Mismatch extends World {\n"
+        "  static roots = [\n"
+        "    { module: 'MismatchRoot', transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] },\n"
+        "  ];\n"
+        "}\n")) return false;
 
     return true;
 }
 
-static bool test_placechild_param_mismatch_errors(const std::string& base_dir) {
+static bool test_placechild_param_mismatch_errors(const fs::path& base_dir) {
     printf("-- (g) test_placechild_param_mismatch_errors\n");
 
-    const std::string sandbox = base_dir + "_mismatch";
+    const fs::path sandbox = base_dir.parent_path() / (base_dir.filename().string() + "_mismatch");
     if (!build_mismatch_sandbox(sandbox)) {
         printf("  FAIL: build_mismatch_sandbox\n");
         ++g_failures;
         return false;
     }
 
-    run_cmd("rm -rf " + sandbox + "/cache && mkdir -p " + sandbox + "/cache/parts");
+    reset_cache(sandbox, "Mismatch");
 
-    viewer::LocalProviderConfig cfg;
-    cfg.schemas_dir    = sandbox + "/schemas";
-    cfg.world_data_dir = sandbox + "/world_data";
-    cfg.world_name     = "Mismatch";
-    cfg.shared_lib_dir = sandbox + "/shared-lib";
-    cfg.cache_root     = sandbox + "/cache";
-    cfg.gl_available   = false;
+    auto cfg = viewer::LocalProviderConfig::for_project(
+        sandbox.string(), "Mismatch", "../shared-lib");
+    cfg.gl_available = false;
     auto prov = std::make_unique<viewer::LocalProvider>(std::move(cfg));
 
     std::string err;
@@ -1057,13 +1055,14 @@ static bool test_placechild_param_mismatch_errors(const std::string& base_dir) {
     // With param-mismatch failing at lookup, MismatchRoot's bake fails before any
     // placeChild succeeds — the root .part must NOT exist on disk.
     if (!ir.root_hashes.empty() && ir.root_hashes[0] != 0) {
-        bool root_on_disk = part_exists(sandbox + "/cache", ir.root_hashes[0]);
+        const std::string cache_root = (sandbox / ".cache" / "Mismatch").string();
+        bool root_on_disk = part_exists(cache_root, ir.root_hashes[0]);
         printf("  root .part on disk: %s (expect: no, bake failed)\n",
                root_on_disk ? "YES" : "no");
         CHECK(!root_on_disk, "(g) root .part does NOT exist (bake failed)");
     }
 
-    run_cmd("rm -rf " + sandbox);
+    remove_tree(sandbox);
     printf("  (g) PASS\n");
     return true;
 }
@@ -1082,15 +1081,11 @@ static bool test_placechild_param_mismatch_errors(const std::string& base_dir) {
 // Note: the headless path runs settle-only (no GPU atlas). The event sequence
 // still provides the ordering guarantee: BakeFinished precedes tileset events.
 // ---------------------------------------------------------------------------
-static bool build_tileset_sandbox(const std::string& root) {
-    run_cmd("rm -rf " + root);
-    run_cmd("mkdir -p " + root + "/schemas");
-    run_cmd("mkdir -p " + root + "/world_data/TileWorld");
-    run_cmd("mkdir -p " + root + "/shared-lib");
-    run_cmd("mkdir -p " + root + "/cache/parts");
+static bool build_tileset_sandbox(const fs::path& root) {
+    if (!reset_project(root, "TileWorld")) return false;
 
     // A simple leaf pebble part (no requires).
-    if (!write_file(root + "/schemas/SmallPebble.js",
+    if (!write_file(root / "objects" / "SmallPebble.js",
         "class SmallPebble extends Part {\n"
         "  build(p) {\n"
         "    this.fill(MAT.stone);\n"
@@ -1105,7 +1100,7 @@ static bool build_tileset_sandbox(const std::string& root) {
     // A simple tileset root: requires SmallPebble, places it via interior().
     // Uses a flat base with no physics (physics: false) to avoid the box3d
     // simulation cost in the headless test context.
-    if (!write_file(root + "/schemas/SimpleTileset.js",
+    if (!write_file(root / "objects" / "SimpleTileset.js",
         "class SimpleTileset extends Tileset {\n"
         "  static requires = [\n"
         "    { module: 'SmallPebble', params: {} },\n"
@@ -1120,19 +1115,22 @@ static bool build_tileset_sandbox(const std::string& root) {
         "  }\n"
         "}\n")) return false;
 
-    // World manifest: SimpleTileset with `tileset` flag so it routes through the
+    // World class: SimpleTileset with `tileset: true` flag so it routes through the
     // tileset phase rather than the generic part publish path.
-    if (!write_file(root + "/world_data/TileWorld/world.manifest",
-        "# tileset deferred ordering test\n"
-        "SimpleTileset tileset\n")) return false;
+    if (!write_file(root / "worlds" / "TileWorld.js",
+        "class TileWorld extends World {\n"
+        "  static roots = [\n"
+        "    { module: 'SimpleTileset', transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], tileset: true },\n"
+        "  ];\n"
+        "}\n")) return false;
 
     return true;
 }
 
-static bool test_tileset_deferred_ordering(const std::string& base_dir) {
+static bool test_tileset_deferred_ordering(const fs::path& base_dir) {
     printf("-- (h) test_tileset_deferred_ordering\n");
 
-    const std::string sandbox = base_dir + "_tileset";
+    const fs::path sandbox = base_dir.parent_path() / (base_dir.filename().string() + "_tileset");
     if (!build_tileset_sandbox(sandbox)) {
         printf("  FAIL: build_tileset_sandbox\n");
         ++g_failures;
@@ -1140,12 +1138,10 @@ static bool test_tileset_deferred_ordering(const std::string& base_dir) {
     }
 
     // Cold cache.
-    run_cmd("rm -rf " + sandbox + "/cache && mkdir -p " + sandbox + "/cache/parts");
+    reset_cache(sandbox, "TileWorld");
 
-    const std::string cache_root_s = sandbox + "/cache";
-    const std::string schemas_s    = sandbox + "/schemas";
-    const std::string wdata_s      = sandbox + "/world_data";
-    const std::string shlib_s      = sandbox + "/shared-lib";
+    const std::string sandbox_s    = sandbox.string();
+    const std::string cache_root_s = (sandbox / ".cache" / "TileWorld").string();
 
     std::string err;
     matter::EngineDesc ed;
@@ -1153,16 +1149,15 @@ static bool test_tileset_deferred_ordering(const std::string& base_dir) {
     ed.allow_gl_lt_46 = true;  // headless
     auto engine = matter::EngineContext::create(ed, err);
     CHECK(engine != nullptr, "h: engine created");
-    if (!engine) { printf("  err: %s\n", err.c_str()); run_cmd("rm -rf " + sandbox); return false; }
+    if (!engine) { printf("  err: %s\n", err.c_str()); remove_tree(sandbox); return false; }
 
     matter::WorldDesc wd;
-    wd.schemas_dir    = schemas_s.c_str();
-    wd.world_data_dir = wdata_s.c_str();
-    wd.world_name     = "TileWorld";
-    wd.shared_lib_dir = shlib_s.c_str();
+    wd.project_dir = sandbox_s.c_str();
+    wd.world_name  = "TileWorld";
+    wd.engine_shared_lib_dir = "../shared-lib";
     auto s = engine->open_world(wd, err);
     CHECK(s != nullptr, "h: session opened");
-    if (!s) { printf("  err: %s\n", err.c_str()); run_cmd("rm -rf " + sandbox); return false; }
+    if (!s) { printf("  err: %s\n", err.c_str()); remove_tree(sandbox); return false; }
 
     s->request_bake();
 
@@ -1221,7 +1216,7 @@ static bool test_tileset_deferred_ordering(const std::string& base_dir) {
     }
 
     CHECK(got_finished, "h: BakeFinished arrived");
-    if (!got_finished) { run_cmd("rm -rf " + sandbox); return false; }
+    if (!got_finished) { remove_tree(sandbox); return false; }
 
     // Key assertion: NO BakePartDone(phase="tileset") events before BakeFinished.
     int tileset_before_finished = 0;
@@ -1248,23 +1243,19 @@ static bool test_tileset_deferred_ordering(const std::string& base_dir) {
 
     (void)got_error;  // reported inline; non-fatal for ordering test
 
-    run_cmd("rm -rf " + sandbox);
+    remove_tree(sandbox);
     printf("  (h) PASS\n");
     return true;
 }
 
 // Build a tileset sandbox that uses string module specifiers in layer() so
-// that run_tileset_phase can call eval_tileset in isolation (no pre-defined
-// class references needed in the JS global scope).
-static bool build_cache_wiring_sandbox(const std::string& root) {
-    run_cmd("rm -rf " + root);
-    run_cmd("mkdir -p " + root + "/schemas");
-    run_cmd("mkdir -p " + root + "/world_data/WireWorld");
-    run_cmd("mkdir -p " + root + "/shared-lib");
-    run_cmd("mkdir -p " + root + "/cache/parts");
+// that run_tileset_phase_from_objects can call eval_tileset in isolation (no
+// pre-defined class references needed in the JS global scope).
+static bool build_cache_wiring_sandbox(const fs::path& root) {
+    if (!reset_project(root, "WireWorld")) return false;
 
     // Leaf pebble (no requires).
-    if (!write_file(root + "/schemas/WirePebble.js",
+    if (!write_file(root / "objects" / "WirePebble.js",
         "class WirePebble extends Part {\n"
         "  build(p) {\n"
         "    this.fill(MAT.stone);\n"
@@ -1279,7 +1270,7 @@ static bool build_cache_wiring_sandbox(const std::string& root) {
     // Tileset using a string literal specifier in layer() and the positional
     // base(fn, material) API to avoid any JS reference-resolution issues in
     // the eval_tileset context (which evaluates the script in isolation).
-    if (!write_file(root + "/schemas/WireTileset.js",
+    if (!write_file(root / "objects" / "WireTileset.js",
         "class WireTileset extends Tileset {\n"
         "  static requires = [\n"
         "    { module: 'WirePebble', params: {} },\n"
@@ -1294,9 +1285,13 @@ static bool build_cache_wiring_sandbox(const std::string& root) {
         "  }\n"
         "}\n")) return false;
 
-    if (!write_file(root + "/world_data/WireWorld/world.manifest",
-        "# settle-cache wiring test\n"
-        "WireTileset tileset\n")) return false;
+    // World class: WireTileset with tileset flag
+    if (!write_file(root / "worlds" / "WireWorld.js",
+        "class WireWorld extends World {\n"
+        "  static roots = [\n"
+        "    { module: 'WireTileset', transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], tileset: true },\n"
+        "  ];\n"
+        "}\n")) return false;
 
     return true;
 }
@@ -1304,16 +1299,16 @@ static bool build_cache_wiring_sandbox(const std::string& root) {
 // ---------------------------------------------------------------------------
 // (i) test_tileset_settle_cache_wiring
 //
-// Calls run_tileset_phase twice on the same WireTileset sandbox with the
-// same cache_root. Asserts:
+// Calls run_tileset_phase_from_objects twice on the same WireTileset sandbox
+// with the same cache_root. Asserts:
 //   (1) First run: from_cache == false (cold settle ran).
 //   (2) Second run: from_cache == true (warm hit; no physics ran).
 //   (3) Instances count, pose_hash, and individual poses are bitwise identical.
 // ---------------------------------------------------------------------------
-static bool test_tileset_settle_cache_wiring(const std::string& base_dir) {
+static bool test_tileset_settle_cache_wiring(const fs::path& base_dir) {
     printf("-- (i) test_tileset_settle_cache_wiring\n");
 
-    const std::string sandbox = base_dir + "_settle_cache_wiring";
+    const fs::path sandbox = base_dir.parent_path() / (base_dir.filename().string() + "_settle_cache_wiring");
     if (!build_cache_wiring_sandbox(sandbox)) {
         printf("  FAIL: build_cache_wiring_sandbox\n");
         ++g_failures;
@@ -1321,28 +1316,28 @@ static bool test_tileset_settle_cache_wiring(const std::string& base_dir) {
     }
 
     // Cold cache.
-    run_cmd("rm -rf " + sandbox + "/cache && mkdir -p " + sandbox + "/cache/parts");
+    reset_cache(sandbox, "WireWorld");
 
-    const std::string world_data = sandbox + "/world_data";
-    const std::string cache_root = sandbox + "/cache";
-    const std::string shlib      = sandbox + "/shared-lib";
+    const std::string objects_dir = (sandbox / "objects").string();
+    const std::string cache_root  = (sandbox / ".cache" / "WireWorld").string();
+    const std::string shlib       = (sandbox / "shared-lib").string();
 
     // First run: cold cache — settle runs, cache is saved.
     tileset::SettledTorus first;
     std::string err1;
-    bool ok1 = tileset::run_tileset_phase(world_data, "WireWorld", "WireTileset",
-                                          cache_root, first, err1, shlib);
+    bool ok1 = tileset::run_tileset_phase_from_objects(objects_dir, "WireTileset",
+                                                       cache_root, first, err1, shlib);
     if (!ok1) printf("  first run err: %s\n", err1.c_str());
-    CHECK(ok1, "(i) first run_tileset_phase succeeded");
+    CHECK(ok1, "(i) first run_tileset_phase_from_objects succeeded");
     CHECK(!first.report.from_cache, "(i) first run: from_cache == false (cold settle)");
 
     // Second run: warm cache — settle must be skipped.
     tileset::SettledTorus second;
     std::string err2;
-    bool ok2 = tileset::run_tileset_phase(world_data, "WireWorld", "WireTileset",
-                                          cache_root, second, err2, shlib);
+    bool ok2 = tileset::run_tileset_phase_from_objects(objects_dir, "WireTileset",
+                                                       cache_root, second, err2, shlib);
     if (!ok2) printf("  second run err: %s\n", err2.c_str());
-    CHECK(ok2, "(i) second run_tileset_phase succeeded");
+    CHECK(ok2, "(i) second run_tileset_phase_from_objects succeeded");
     CHECK(second.report.from_cache, "(i) second run: from_cache == true (warm cache hit)");
 
     // Results must be bitwise identical.
@@ -1361,7 +1356,7 @@ static bool test_tileset_settle_cache_wiring(const std::string& base_dir) {
     }
     CHECK(poses_ok, "(i) all instance poses bitwise-identical");
 
-    run_cmd("rm -rf " + sandbox);
+    remove_tree(sandbox);
     printf("  (i) PASS\n");
     return true;
 }
@@ -1370,9 +1365,9 @@ static bool test_tileset_settle_cache_wiring(const std::string& base_dir) {
 // main
 // ---------------------------------------------------------------------------
 int main() {
-    const std::string sandbox = "/tmp/demand_bake_tests_sandbox";
+    const fs::path sandbox = fs::temp_directory_path() / "demand_bake_tests_sandbox";
     printf("=== demand_bake_tests ===\n");
-    printf("sandbox: %s\n\n", sandbox.c_str());
+    printf("sandbox: %s\n\n", sandbox.string().c_str());
 
     if (!build_sandbox(sandbox)) {
         printf("FATAL: failed to build sandbox\n");
@@ -1388,6 +1383,8 @@ int main() {
     bool g = test_placechild_param_mismatch_errors(sandbox);
     bool h = test_tileset_deferred_ordering(sandbox);
     bool i = test_tileset_settle_cache_wiring(sandbox);
+
+    remove_tree(sandbox);
 
     printf("\n");
     if (g_failures == 0) {

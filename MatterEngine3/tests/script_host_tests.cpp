@@ -1619,6 +1619,100 @@ static void test_placechild_instanced_flags() {
     CHECK(kids[2].inline_below_px == 32.0f, "C inline_below_px == 32");
 }
 
+// emitVolume DSL verb: valid call bakes and round-trips through save/load.
+static void test_emit_volume_roundtrip() {
+    script_host::ScriptHost host;
+    const char* src =
+        "class Smoker extends Part { static params={};\n"
+        "  build(p){\n"
+        "    this.beginVoxels(0.25); this.fill(MAT.stone);\n"
+        "    this.sphere([0,0,0], 0.5); this.endVoxels();\n"
+        "    this.emitVolume({ pos: [1,2,3], dir: [0,1,0], radius: 0.5,\n"
+        "                      spread: 0.2, length: 10, density: 0.9,\n"
+        "                      color: [0.8,0.6,0.4], rise: 2.0, turbulence: 0.7 });\n"
+        "  }\n"
+        "}\n";
+    script_host::BakeResult r = host.bake_source(src, "{}", {});
+    CHECK(r.error.ok, "emitVolume bake succeeds");
+    CHECK(!r.written_path.empty(), "emitVolume part written");
+
+    // Round-trip: reload the .part and verify the emitter trailer.
+    BLASManager blas; TLASManager tlas(64);
+    std::vector<part_asset::ChildInstance> children;
+    part_asset::LodLevels lods;
+    std::vector<part_asset::VolumeEmitter> emitters;
+    std::string ppath = part_asset::cache_path_resolved(r.resolved_hash);
+    bool loaded = part_asset::load_v2(ppath, r.resolved_hash, blas, tlas,
+                                       children, lods, emitters);
+    CHECK(loaded, "emitVolume part reloads");
+    CHECK(emitters.size() == 1, "one emitter round-tripped");
+    if (emitters.size() == 1) {
+        CHECK(emitters[0].pos[0] == 1.0f && emitters[0].pos[1] == 2.0f &&
+              emitters[0].pos[2] == 3.0f, "emitter pos round-trips");
+        CHECK(emitters[0].radius == 0.5f, "emitter radius round-trips");
+        CHECK(emitters[0].density == 0.9f, "emitter density round-trips");
+        CHECK(fabsf(emitters[0].color[0] - 0.8f) < 1e-6f, "emitter color round-trips");
+        CHECK(emitters[0].rise == 2.0f, "emitter rise round-trips");
+        CHECK(emitters[0].turbulence == 0.7f, "emitter turbulence round-trips");
+    }
+}
+
+// emitVolume: missing required pos field fails the bake.
+static void test_emit_volume_missing_pos() {
+    script_host::ScriptHost host;
+    const char* src =
+        "class Bad extends Part { static params={};\n"
+        "  build(p){\n"
+        "    this.emitVolume({ radius: 0.5 });\n"
+        "  }\n"
+        "}\n";
+    script_host::BakeResult r = host.bake_source(src, "{}", {});
+    CHECK(!r.error.ok, "emitVolume without pos fails the bake");
+    CHECK(r.error.message.find("pos") != std::string::npos,
+          "error message mentions pos");
+}
+
+// emitVolume: invalid radius (<= 0) fails the bake.
+static void test_emit_volume_invalid_radius() {
+    script_host::ScriptHost host;
+    const char* src =
+        "class Bad extends Part { static params={};\n"
+        "  build(p){\n"
+        "    this.emitVolume({ pos: [0,0,0], radius: -1 });\n"
+        "  }\n"
+        "}\n";
+    script_host::BakeResult r = host.bake_source(src, "{}", {});
+    CHECK(!r.error.ok, "emitVolume with negative radius fails the bake");
+    CHECK(r.error.message.find("radius") != std::string::npos,
+          "error message mentions radius");
+}
+
+// emitVolume: different emitter params produce different bake hashes.
+static void test_emit_volume_hash_divergence() {
+    const char* srcA =
+        "class A extends Part { static params={};\n"
+        "  build(p){\n"
+        "    this.beginVoxels(0.25); this.fill(MAT.stone);\n"
+        "    this.sphere([0,0,0],0.5); this.endVoxels();\n"
+        "    this.emitVolume({ pos: [0,0,0] });\n"
+        "  }\n"
+        "}\n";
+    const char* srcB =
+        "class A extends Part { static params={};\n"
+        "  build(p){\n"
+        "    this.beginVoxels(0.25); this.fill(MAT.stone);\n"
+        "    this.sphere([0,0,0],0.5); this.endVoxels();\n"
+        "    this.emitVolume({ pos: [1,2,3] });\n"
+        "  }\n"
+        "}\n";
+    script_host::ScriptHost hA, hB;
+    auto rA = hA.bake_source(srcA, "{}", {});
+    auto rB = hB.bake_source(srcB, "{}", {});
+    CHECK(rA.error.ok && rB.error.ok, "both emitVolume bakes succeed");
+    CHECK(rA.resolved_hash != rB.resolved_hash,
+          "different emitter params produce different bake hashes");
+}
+
 int main() {
     test_embed_eval_1_plus_1();
     test_p5_round_mesh_dispatch();
@@ -1671,6 +1765,10 @@ int main() {
     test_raycast_sees_difference_cut();
     test_placechild_instanced_flags();
     test_bake_writes_flatten_hints();
+    test_emit_volume_roundtrip();
+    test_emit_volume_missing_pos();
+    test_emit_volume_invalid_radius();
+    test_emit_volume_hash_divergence();
     if (g_failures == 0) printf("ALL PASS\n");
     return g_failures ? 1 : 0;
 }

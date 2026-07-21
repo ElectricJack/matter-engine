@@ -335,6 +335,25 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots,
                 }
             }
 
+            // Resolve the complete import closure so snapshots record the exact
+            // project/engine file selected for direct and transitive imports.
+            for (const auto& selected : resolver_.shared_sources_for(n.source)) {
+                std::string imp = selected.first;
+                const std::string prefix = "shared-lib/";
+                if (imp.rfind(prefix, 0) == 0) imp.erase(0, prefix.size());
+                if (imp.size() >= 3 &&
+                    imp.compare(imp.size() - 3, 3, ".js") == 0)
+                    imp.resize(imp.size() - 3);
+                if (std::find(snode.shared_imports.begin(),
+                              snode.shared_imports.end(), imp) ==
+                    snode.shared_imports.end())
+                    snode.shared_imports.push_back(imp);
+                if (std::find(snode.shared_source_paths.begin(),
+                              snode.shared_source_paths.end(), selected.second) ==
+                    snode.shared_source_paths.end())
+                    snode.shared_source_paths.push_back(selected.second);
+            }
+
             // source_path: ask the resolver (FileModuleResolver overrides to return
             // <schemas_dir>/<module>.js; base class returns "").
             snode.source_path = resolver_.source_path_for(n.module);
@@ -347,6 +366,11 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots,
             part_graph_snapshot::Node& sn = kv2.second;
             if (!sn.source_path.empty()) {
                 auto& bfv = snap->by_file[sn.source_path];
+                if (std::find(bfv.begin(), bfv.end(), sn.module) == bfv.end())
+                    bfv.push_back(sn.module);
+            }
+            for (const auto& shared_path : sn.shared_source_paths) {
+                auto& bfv = snap->by_file[shared_path];
                 if (std::find(bfv.begin(), bfv.end(), sn.module) == bfv.end())
                     bfv.push_back(sn.module);
             }
@@ -462,56 +486,6 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots,
     return result;
 }
 
-bool PartGraph::read_manifest(const std::string& world_data_dir, const std::string& world,
-                              std::vector<ChildRequest>& roots_out, std::string& error_out,
-                              std::vector<bool>* expand_out,
-                              std::vector<bool>* tileset_out,
-                              std::string* world_module_out) {
-    std::string path = world_data_dir + "/" + world + "/world.manifest";
-    std::ifstream in(path);
-    if (!in) {
-        error_out = "world manifest not found: " + path;
-        return false;
-    }
-    std::string line;
-    while (std::getline(in, line)) {
-        // trim leading/trailing whitespace
-        size_t b = line.find_first_not_of(" \t\r\n");
-        if (b == std::string::npos) continue;        // blank
-        size_t e = line.find_last_not_of(" \t\r\n");
-        std::string trimmed = line.substr(b, e - b + 1);
-        if (trimmed.empty() || trimmed[0] == '#') continue; // comment
-        std::istringstream tokens(trimmed);
-        std::string name, flag;
-        tokens >> name;
-        if (name == "light") continue;  // light lines are owned by world_lights::parse_lights
-        bool expand = false, tileset = false, is_world = false;
-        while (tokens >> flag) {
-            if (flag == "expand") expand = true;
-            else if (flag == "tileset") tileset = true;
-            else if (flag == "world") is_world = true;
-            else {
-                error_out = "unknown manifest flag '" + flag + "' for root " + name;
-                return false;
-            }
-        }
-        if (expand && tileset) {
-            error_out = "root " + name + " cannot be both tileset and expand";
-            return false;
-        }
-        // World-kind lines are NOT added to roots_out — the world module is never
-        // a graph root; it is evaluated separately by LocalProvider via eval_world.
-        if (is_world) {
-            if (world_module_out) *world_module_out = name;
-            continue;
-        }
-        roots_out.push_back(ChildRequest{ name, Params{} });
-        if (expand_out)  expand_out->push_back(expand);
-        if (tileset_out) tileset_out->push_back(tileset);
-    }
-    return true;
-}
-
 } // namespace part_graph
 
 #if defined(MATTER_HAVE_SCRIPT_HOST)
@@ -548,6 +522,18 @@ bool FileModuleResolver::get_requires(const std::string& module, const Params& p
     for (const auto& k : kids)
         out.push_back(ChildRequest{ k.module_specifier, params_from_json(k.params_json) });
     return true;   // (a thrown `requires` surfaces as a host error -> empty + caller errors)
+}
+
+std::vector<std::pair<std::string, std::string>>
+FileModuleResolver::shared_sources_for(const std::string& source) {
+    module_resolver::FoldResult fold;
+    std::string err;
+    if (!host_.fold_sources_cached(source, fold, err)) return {};
+    std::vector<std::pair<std::string, std::string>> selected;
+    selected.reserve(fold.modules.size());
+    for (const auto& module : fold.modules)
+        selected.emplace_back(module.specifier, module.source_path);
+    return selected;
 }
 
 HostBaker::HostBaker(script_host::ScriptHost& host, std::string parts_dir)

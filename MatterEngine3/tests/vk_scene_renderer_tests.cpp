@@ -11,6 +11,8 @@
 
 #include "render/vk_scene_renderer.h"
 #include "render/vk_gi_contract.h"
+#include "render/dynamic_instance_slots.h"
+#include "matter/scene.h"
 
 #include <cstddef>
 #include <cstdio>
@@ -191,6 +193,121 @@ static void test_gpu_rt_part_record_layout() {
 }
 
 // ---------------------------------------------------------------------------
+// test_dynamic_slot_change_fields
+//
+// Task 7: DynamicSlotChange (from render/dynamic_instance_slots.h, Task 6)
+// has the fields the dynamic lane consumes, and can be constructed directly.
+// ---------------------------------------------------------------------------
+static void test_dynamic_slot_change_fields() {
+    printf("\n[test_dynamic_slot_change_fields]\n");
+
+    matter::render::DynamicSlotChange change;
+    change.kind = matter::render::DynamicSlotChangeKind::Bind;
+    change.slot_index = 3u;
+    change.part_hash = 0xABCDEF01ull;
+    change.object_to_world = matter::Mat4f{};
+    change.casts_shadow = false;
+    change.entity_id.value = 42u;
+
+    CHECK(change.kind == matter::render::DynamicSlotChangeKind::Bind,
+          "DynamicSlotChange::kind constructs as Bind");
+    CHECK(change.slot_index == 3u, "DynamicSlotChange::slot_index round-trips");
+    CHECK(change.part_hash == 0xABCDEF01ull,
+          "DynamicSlotChange::part_hash round-trips");
+    CHECK(change.casts_shadow == false,
+          "DynamicSlotChange::casts_shadow round-trips");
+    CHECK(change.entity_id.value == 42u,
+          "DynamicSlotChange::entity_id.value round-trips");
+}
+
+// ---------------------------------------------------------------------------
+// test_dynamic_slot_change_bind_shares_part_hash
+//
+// A Bind change references a part_hash from the same 64-bit space used by
+// VkScenePart::part_hash / VkSceneInstance::part_hash, showing static and
+// dynamic instances share the renderer's part resources.
+// ---------------------------------------------------------------------------
+static void test_dynamic_slot_change_bind_shares_part_hash() {
+    printf("\n[test_dynamic_slot_change_bind_shares_part_hash]\n");
+
+    viewer::VkScenePart part;
+    part.part_hash = 0x9999AAAA1111BBBBull;
+
+    matter::render::DynamicSlotChange change;
+    change.kind = matter::render::DynamicSlotChangeKind::Bind;
+    change.slot_index = 0u;
+    change.part_hash = part.part_hash;
+
+    CHECK(change.part_hash == part.part_hash,
+          "Bind change part_hash matches VkScenePart::part_hash type/value space");
+}
+
+// ---------------------------------------------------------------------------
+// test_instance_identity_tagging
+//
+// Static instances (VkSceneInstance) tag identity via a raw uint64_t
+// instance_id fed through viewer::vulkan_history_token(); dynamic instances
+// (DynamicSlotChange) tag identity via matter::scene::SceneEntityId. Both
+// route through the same folding function so history/token semantics are
+// identical, but the source field differs by lane.
+// ---------------------------------------------------------------------------
+static void test_instance_identity_tagging() {
+    printf("\n[test_instance_identity_tagging]\n");
+
+    viewer::VkSceneInstance static_instance;
+    static_instance.instance_id = 0x1000000020ull;
+
+    matter::render::DynamicSlotChange dynamic_change;
+    dynamic_change.entity_id.value = 0x1000000020ull;
+
+    const uint32_t static_token =
+        viewer::vulkan_history_token(static_instance.instance_id);
+    const uint32_t dynamic_token =
+        viewer::vulkan_history_token(dynamic_change.entity_id.value);
+
+    CHECK(static_token == dynamic_token,
+          "same 64-bit identity folds to the same history token regardless of "
+          "lane");
+    CHECK(static_token != 0, "vulkan_history_token never returns zero");
+
+    // Zero identity still folds to a nonzero sentinel token for both lanes.
+    viewer::VkSceneInstance zero_static;
+    zero_static.instance_id = 0;
+    matter::scene::SceneEntityId zero_entity;
+    zero_entity.value = 0;
+    CHECK(viewer::vulkan_history_token(zero_static.instance_id) == 1u,
+          "zero instance_id folds to sentinel token 1");
+    CHECK(viewer::vulkan_history_token(zero_entity.value) == 1u,
+          "zero entity_id folds to sentinel token 1");
+}
+
+// ---------------------------------------------------------------------------
+// test_dynamic_slot_change_kind_distinct
+//
+// Bind, Transform, and Remove are distinct enumerators; a Transform-only
+// change is recognizable and does not alias Bind or Remove.
+// ---------------------------------------------------------------------------
+static void test_dynamic_slot_change_kind_distinct() {
+    printf("\n[test_dynamic_slot_change_kind_distinct]\n");
+
+    using matter::render::DynamicSlotChangeKind;
+
+    CHECK(DynamicSlotChangeKind::Bind != DynamicSlotChangeKind::Transform,
+          "Bind is distinct from Transform");
+    CHECK(DynamicSlotChangeKind::Transform != DynamicSlotChangeKind::Remove,
+          "Transform is distinct from Remove");
+    CHECK(DynamicSlotChangeKind::Bind != DynamicSlotChangeKind::Remove,
+          "Bind is distinct from Remove");
+
+    matter::render::DynamicSlotChange change;
+    change.kind = DynamicSlotChangeKind::Transform;
+    change.slot_index = 7u;
+    CHECK(change.kind == DynamicSlotChangeKind::Transform &&
+              change.kind != DynamicSlotChangeKind::Bind,
+          "Transform-only change is constructible and distinguishable from Bind");
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
@@ -202,6 +319,10 @@ int main() {
     test_rt_geometry_selection_fields();
     test_two_lod_rt_payload_indexed();
     test_gpu_rt_part_record_layout();
+    test_dynamic_slot_change_fields();
+    test_dynamic_slot_change_bind_shares_part_hash();
+    test_instance_identity_tagging();
+    test_dynamic_slot_change_kind_distinct();
 
     printf("\n--- Results: %d/%d passed", g_tests - g_failures, g_tests);
     if (g_failures == 0)

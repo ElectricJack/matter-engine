@@ -4,6 +4,8 @@
 #include "blas_manager.hpp"
 #include "tlas_manager.hpp"
 #include "vk_scene_renderer.h"
+#include "script/world_definition_loader.h"
+#include "provider/local_provider.h"
 #include "check.h"
 
 #include <array>
@@ -50,8 +52,8 @@ static constexpr std::array<ExpectedCell, 25> kCells{{
 
 int main() {
     const fs::path original = fs::current_path();
-    const fs::path schemas = fs::absolute("../examples/world_demo/schemas");
-    const fs::path world_data = fs::absolute("../examples/world_demo/WorldData");
+    const fs::path project = fs::absolute("../examples/world_demo");
+    const fs::path objects = fs::absolute("../examples/world_demo/objects");
     const fs::path shared_lib = fs::absolute("../shared-lib");
     const fs::path sandbox = fs::temp_directory_path() / "me3_lighting_garden";
     fs::remove_all(sandbox);
@@ -61,21 +63,29 @@ int main() {
 
     script_host::ScriptHost host;
     host.set_shared_lib_root(shared_lib.string());
-    FileModuleResolver resolver(host, schemas.string());
+    FileModuleResolver resolver(host, objects.string());
     HostBaker baker(host, ".");
     PartGraph graph(resolver, baker);
 
-    std::vector<ChildRequest> roots;
-    std::string error;
-    const bool manifest_ok =
-        PartGraph::read_manifest(world_data.string(), "LightingGarden", roots, error);
-    CHECK(manifest_ok, "LightingGarden manifest parses");
-    if (!manifest_ok) {
-        if (!error.empty()) std::printf("manifest error: %s\n", error.c_str());
+    matter::WorldLoadDesc load_desc;
+    load_desc.world_path = (project / "worlds" / "LightingGarden.js").string();
+    load_desc.objects_dir = objects.string();
+    load_desc.engine_shared_lib_dir = shared_lib.string();
+    matter::WorldDefinition definition;
+    matter::WorldLoadError load_error;
+    const bool definition_ok =
+        matter::load_world_definition(load_desc, definition, load_error);
+    CHECK(definition_ok, "LightingGarden world definition loads");
+    if (!definition_ok) {
+        if (!load_error.message.empty())
+            std::printf("load error: %s\n", load_error.message.c_str());
         return check_summary();
     }
+    viewer::ProviderWorldDefinition adapted =
+        viewer::adapt_world_definition(definition);
+    std::vector<ChildRequest> roots = std::move(adapted.roots);
     CHECK(roots.size() == 1 && roots[0].module == "LightingGarden",
-          "manifest has one LightingGarden root");
+          "world definition has one LightingGarden root");
     if (roots.size() != 1) return check_summary();
 
     InstallResult install = graph.install(roots);

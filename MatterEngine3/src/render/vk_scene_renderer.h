@@ -19,6 +19,7 @@
 #include "matter/lod_contract.h"
 #include "matter/math_types.h"
 #include "material_registry.h"
+#include "render/dynamic_instance_slots.h"
 #include "vk_gi_contract.h"
 #include "vk_draw_command.h"
 #include "vk_resources.h"
@@ -29,9 +30,13 @@ class VulkanDevice;
 class StreamlineBridge;
 enum class DlssMode : uint8_t;
 struct VulkanFrame;
+struct VulkanVolumetricsSettings;
+struct FogSettings;
 }
 
 namespace viewer {
+
+class VkVolumetrics;
 
 constexpr uint32_t kVkMaxLod =
     static_cast<uint32_t>(matter::kMaxSerializedLodLevels);
@@ -301,11 +306,19 @@ struct VkSceneLighting {
     matter::Float3 sky_color{0.38f, 0.43f, 0.52f};
     float emission_multiplier = 1.0f;
     float debug_view = 0.0f;
-    float pad0 = 0.0f;
-    float pad1 = 0.0f;
-    float pad2 = 0.0f;
+    float camera_fwd_x = 0.0f;
+    float camera_fwd_y = 0.0f;
+    float camera_fwd_z = -1.0f;
+    float tan_half_fov = 1.0f;
+    float aspect_ratio = 1.0f;
+    float jitter_offset_u = 0.0f;
+    float jitter_offset_v = 0.0f;
+    float vol_enabled = 0.0f;
+    float vol_debug_view = 0.0f;
+    float camera_near = 1.0f;
+    float camera_far = 5000.0f;
 };
-static_assert(sizeof(VkSceneLighting) == 64);
+static_assert(sizeof(VkSceneLighting) == 96);
 
 struct VkSceneUploadCounters {
     uint64_t vertex_uploads = 0;
@@ -343,6 +356,16 @@ public:
     void release_part(uint64_t part_hash);
     bool update_instances(const std::vector<VkSceneInstance>& instances,
                           std::string& error);
+    // Dynamic lane (Task 7): consumes CPU-side slot changes produced by
+    // matter::render::DynamicInstanceSlots. submit_serial identifies the GPU
+    // frame this batch of changes will be submitted with; finish_dynamic_frame
+    // reports back the highest completed serial so callers can safely reuse
+    // retired slots.
+    bool update_dynamic_instances(const matter::render::DynamicSlotChange* changes,
+                                  uint32_t count,
+                                  uint64_t submit_serial,
+                                  std::string& error);
+    void finish_dynamic_frame(uint64_t completed_serial);
     void set_temporal_frame(const TemporalFrame& frame) { temporal_frame_ = frame; }
     void set_dlss_mode(matter::DlssMode mode);
     VkExtent2D dlss_internal_extent(VkExtent2D output_extent) const;
@@ -415,6 +438,7 @@ public:
 #endif
     void set_lighting(const VkSceneLighting& lighting);
     void set_display_exposure(float exposure_ev);
+    void set_composite_debug_view(float mode) { composite_debug_override_ = mode; }
     void set_ray_tracing_settings(
         const matter::VulkanRayTracingSettings& settings);
     void set_gi_settings(const matter::VulkanGiSettings& settings) {
@@ -423,6 +447,8 @@ public:
         gi_settings_.samples_per_pixel = 1u;
         gi_settings_.trace_scale = std::max(0.125f, std::min(settings.trace_scale, 1.0f));
     }
+    void set_volumetrics_settings(const matter::VulkanVolumetricsSettings& s,
+                                  const matter::FogSettings& fog);
     // Blit the real HDR world composite into the currently acquired swapchain
     // image, leaving it ready for UI dynamic rendering.
     bool record_composite_to_swapchain(const matter::VulkanFrame& frame,
@@ -544,7 +570,8 @@ public:
     static constexpr uint32_t kGpuZoneDenoise      = 6;
     static constexpr uint32_t kGpuZoneDlss         = 7;
     static constexpr uint32_t kGpuZoneComposite    = 8;
-    static constexpr uint32_t kGpuZoneCount        = 9;
+    static constexpr uint32_t kGpuZoneVolumetrics  = 9;
+    static constexpr uint32_t kGpuZoneCount        = 10;
     bool gpu_timers_supported() const { return gpu_timers_supported_; }
     float gpu_zone_ms(uint32_t zone) const {
         return zone < kGpuZoneCount ? gpu_smoothed_ms_[zone] : 0.0f;
@@ -819,6 +846,7 @@ private:
     bool validate_draw_command_regions(std::string& error) const;
     void note_command_layout_rebuild();
     bool rebuild_command_template(std::string& error);
+    bool apply_dynamic_command_layout(std::string& error);
     bool load_device_limits(std::string& error);
     bool fail_if_poisoned(std::string& error) const;
     bool poison(std::string& error);
@@ -844,6 +872,7 @@ private:
     VkPipelineLayout composite_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline composite_pipeline_ = VK_NULL_HANDLE;
     VkSampler composite_sampler_ = VK_NULL_HANDLE;
+    VkSampler vol_linear_sampler_ = VK_NULL_HANDLE;  // trilinear for froxel volume
     VkDescriptorSetLayout display_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout display_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline display_pipeline_ = VK_NULL_HANDLE;
@@ -881,6 +910,7 @@ private:
     matter::VkImageResource raw_specular_;
     matter::VkImageResource raw_specular_aux_;
     matter::VkImageResource raw_transmission_;
+    matter::VkImageResource vol_dummy_3d_;
     VkExtent2D raw_diffuse_extent_{};
     struct GiHistorySet {
         matter::VkImageResource radiance;
@@ -925,6 +955,21 @@ private:
     std::vector<std::vector<VkSceneLod>> cluster_lods_;
     std::vector<GpuInstance> instance_staging_;
     std::vector<uint32_t> instance_part_slots_;
+    size_t static_instance_count_ = 0;
+
+    // Dynamic lane state (Task 7)
+    std::vector<GpuInstance> dynamic_instance_staging_;
+    std::vector<uint32_t> dynamic_instance_part_slots_;
+    uint32_t dynamic_instance_count_ = 0;
+    uint64_t dynamic_submit_serial_ = 0;
+    uint64_t dynamic_completed_serial_ = 0;
+    bool dynamic_dirty_ = false;
+    // True while command_template_/part_command_ranges_/draw_transform_slots_
+    // carry per-frame offsets that include dynamic instances (see
+    // apply_dynamic_command_layout). Cleared once the static baseline is
+    // restored after the last dynamic instance disappears.
+    bool dynamic_command_layout_applied_ = false;
+
     std::vector<uint32_t> part_instance_counts_;
     std::vector<DrawCommand> command_template_;
     std::vector<PartCommandRange> part_command_ranges_;
@@ -932,6 +977,7 @@ private:
     std::vector<uint8_t> raster_command_enabled_;
     std::vector<uint8_t> uploaded_raster_command_enabled_;
     std::vector<RtInstance> rt_instances_;
+    size_t static_rt_instance_count_ = 0;
     std::vector<VkRasterVertex> vertex_staging_;
     std::vector<uint32_t> index_staging_;   // CPU-side mirror; Task 4 uploads to GPU
     std::vector<MaterialGpuRecord> material_staging_;
@@ -955,8 +1001,12 @@ private:
     VkSceneLighting lighting_{};
     bool lighting_initialized_ = false;
     float display_exposure_ev_ = -2.0f;
+    float composite_debug_override_ = 0.0f;
     matter::VulkanRayTracingSettings ray_tracing_settings_{};
     matter::VulkanGiSettings gi_settings_{};
+    std::unique_ptr<VkVolumetrics> volumetrics_;
+    bool volumetrics_enabled_ = false;
+    float volumetrics_debug_view_ = 0.0f;
     uint32_t last_rt_samples_ = 1;
     bool last_rt_debug_view_ = false;
     bool last_rt_available_ = false;

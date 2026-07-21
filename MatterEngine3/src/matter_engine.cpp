@@ -11,6 +11,7 @@
 
 #include "async_bake.h"
 #include "ecs/ecs_runtime.h"
+#include "ecs/dynamic_scene_bridge.h"
 #include "ecs/streaming_systems.h"
 #include "local_provider.h"
 #include "part_store.h"   // LoadedPart, walk_part_tree
@@ -71,6 +72,7 @@
 #include <cstring>
 #include <deque>
 #include <fstream>
+#include <filesystem>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -269,6 +271,7 @@ struct WorldSession::Impl {
     // World data.
     viewer::WorldManifest manifest;
     viewer::WorldState    state;
+    matter::FogSettings   authored_fog_{};
 
     // Compositor objects.
     std::unique_ptr<viewer::PartStore>      store;
@@ -285,6 +288,7 @@ struct WorldSession::Impl {
     std::vector<MaterialGpuRecord> vk_material_records;
     uint64_t vk_material_shading_revision = 0;
     uint64_t vk_material_geometry_revision = 0;
+    matter::scene::DynamicSceneBridge dynamic_bridge{256};
 #endif
     lod_select::PartLodTable                lods;
 
@@ -346,6 +350,18 @@ struct WorldSession::Impl {
     streaming::SectorStreamingStatus streaming_status_copy{};
     streaming::detail::ProfileActivationGate streaming_profile_activation;
     streaming::detail::PendingEvictionBatch pending_sector_evictions;
+
+    // Copy of the provider's part-graph snapshot, refreshed on the worker
+    // thread after every successful install_graph() (BakeAll/Reload/cone).
+    // App-thread readers go through graph_snapshot_mutex; graph_generation_
+    // lets callers cheaply detect a refresh without copying the snapshot.
+    mutable std::mutex graph_snapshot_mutex;
+    part_graph_snapshot::Snapshot graph_snapshot_copy;
+    std::atomic<uint64_t> graph_generation_{0};
+    // Copies provider->graph_snapshot() into graph_snapshot_copy and bumps
+    // graph_generation_. Worker thread only; call right after a successful
+    // install_graph().
+    void publish_graph_snapshot();
 
     // A request owns one fixed completion slot before sector bake begins.
     // max_inflight is 16; twice that capacity leaves room for acknowledgements
@@ -598,6 +614,7 @@ struct WorldSession::Impl {
 
     // Sector size from the eval_world result (world units per sector tile).
     float world_sector_size = 16.0f;
+    viewer::ProceduralWorldProfile world_profile{};
 
     // Cached sector source text (WorldSector.js read once at install_world time).
     std::string world_sector_source;
@@ -917,17 +934,16 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     // to the full install+compose path.
     bool resolve_cache_hit = false;
     uint64_t rc_cache_key  = 0;
-    if (!enable_live_edit && !cfg.schemas_dir.empty() && !cfg.world_data_dir.empty()) {
-        const std::string world_manifest_path =
-            cfg.world_data_dir + "/" + cfg.world_name + "/world.manifest";
+    if (!enable_live_edit && !cfg.object_sources_dir().empty()) {
         rc_cache_key = resolve_cache::compute_key(
-            world_manifest_path,
+            cfg.world_path,
             cfg.root_params_json,
-            cfg.schemas_dir,
-            cfg.shared_lib_dir);
+            cfg.object_sources_dir(),
+            cfg.project_shared_lib_dir,
+            cfg.engine_shared_lib_dir);
         if (rc_cache_key != 0) {
             resolve_cache::ResolveCachePayload rc_payload;
-            if (resolve_cache::load(engine->cache_root, cfg.world_name,
+            if (resolve_cache::load(cfg.cache_root, cfg.world_name,
                                     rc_cache_key, rc_payload)) {
                 // Cache header valid — try to restore provider state.
                 std::string rc_err;
@@ -945,6 +961,8 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
                     viewer::WorldManifest cached_manifest;
                     cached_manifest.instances = std::move(rc_payload.instances);
                     cached_manifest.lights    = rc_payload.lights;
+
+                    authored_fog_ = provider->world_settings().fog;
 
                     {
                         fprintf(stderr, "resolve cache: hit %016llx\n",
@@ -1001,6 +1019,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
                        "install", err);
             return;
         }
+        publish_graph_snapshot();
         // Emit per-part errors for any parts that failed during install.
         for (const auto& fp : provider->install_result().failed) {
             BakeErrorCode code = classify_error(fp.error);
@@ -1085,6 +1104,8 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         clk_t::now() - t_compose_start).count();
     if (is_cancelled()) { emit_error(BakeErrorCode::Cancelled, "compose", "cancelled"); return; }
 
+    authored_fog_ = provider->world_settings().fog;
+
     // Phase C Task 17: save resolve cache after a successful full install+compose.
     // Write to temp + rename (atomic). Non-fatal on failure (no cache next warm launch).
     if (!enable_live_edit && rc_cache_key != 0 && !is_cancelled()) {
@@ -1094,7 +1115,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         rc_save.snapshot    = provider->graph_snapshot();
         rc_save.bake_plan   = provider->install_result().bake_plan;
         rc_save.root_hashes = provider->install_result().root_hashes;
-        if (!resolve_cache::save(engine->cache_root, cfg.world_name,
+        if (!resolve_cache::save(cfg.cache_root, cfg.world_name,
                                  rc_cache_key, rc_save)) {
             fprintf(stderr, "resolve cache: save failed (non-fatal)\n");
         } else {
@@ -1318,6 +1339,11 @@ void WorldSession::Impl::publish_pipeline(
             if (!seen.insert(e.part_hash).second) continue;
             publish_order.push_back(e.part_hash);
         }
+        for (const auto& kv : provider->entity_part_hashes()) {
+            if (kv.second == 0) continue;
+            if (!seen.insert(kv.second).second) continue;
+            publish_order.push_back(kv.second);
+        }
     }
 
     // Phase C Task 3: distance-ordered publish.
@@ -1456,7 +1482,7 @@ void WorldSession::Impl::publish_pipeline(
         // visible to the upcoming GPU job's `added` snapshot build.
         if (!part_bake_failed) {
             // Only attempt ref streaming when the flat is available (demand or eager).
-            const std::string flat_abs = engine->cache_root + "/" +
+            const std::string flat_abs = cfg.cache_root + "/" +
                                          part_asset::cache_path_flat(h);
             if (part_asset::peek_format_version(flat_abs) ==
                     part_asset::kFormatVersionFlat) {
@@ -1690,8 +1716,16 @@ void WorldSession::Impl::publish_pipeline(
         return;
     }
 
-    ecs_runtime.enqueue_world_state(
-        {ecs_runtime::WorldStateCommandKind::Ready});
+    {
+        ecs_runtime::WorldStateCommand cmd;
+        cmd.kind = ecs_runtime::WorldStateCommandKind::Ready;
+        cmd.entities = provider->authored_entities();
+        auto prov = provider;
+        cmd.part_resolver = [prov](const std::string& name, uint64_t& out) {
+            return prov->resolve_module_hash(name, out);
+        };
+        ecs_runtime.enqueue_world_state(std::move(cmd));
+    }
 
     // Merge load-phase (publish-job) failures and bake-phase failures into count_errors.
     // run_blocking(finalize_job) above guarantees all publish jobs completed
@@ -2058,10 +2092,10 @@ bool WorldSession::Impl::install_world(
     const std::string& wmod = provider->world_module();
     if (wmod.empty()) { err = "install_world: no world module"; return false; }
 
-    // 1. Read world source: <schemas_dir>/<world_module>.js
+    // 1. Read world source
     std::string world_source;
     {
-        const std::string world_js = cfg.schemas_dir + "/" + wmod + ".js";
+        const std::string world_js = cfg.world_path;
         std::ifstream in(world_js, std::ios::binary);
         if (!in) { err = "install_world: cannot read " + world_js; return false; }
         std::ostringstream ss; ss << in.rdbuf();
@@ -2070,7 +2104,7 @@ bool WorldSession::Impl::install_world(
 
     // 2. eval_world with the root_params_json override.
     script_host::ScriptHost host;
-    host.set_shared_lib_root(cfg.shared_lib_dir);
+    host.set_shared_lib_roots(provider->shared_lib_roots());
     std::string params_json = cfg.root_params_json.empty() ? "{}" : cfg.root_params_json;
     script_host::WorldEvalResult r = host.eval_world(world_source, params_json);
     if (!r.ok) { err = "install_world: eval_world failed: " + r.message; return false; }
@@ -2087,7 +2121,16 @@ bool WorldSession::Impl::install_world(
     // 4. Store world constants.
     world_sea_level    = world_field->sea_level();
     world_biomes_json  = r.biomes_json;
-    world_sector_size  = r.sector_size;
+    matter::WorldSettings legacy_settings;
+    legacy_settings.sector_size = r.sector_size;
+    legacy_settings.y_min = r.y_min;
+    legacy_settings.y_max = r.y_max;
+    const viewer::ProceduralWorldProfile runtime_profile =
+        viewer::select_procedural_world_profile(
+            true, provider->world_settings(),
+            legacy_settings);
+    world_sector_size = runtime_profile.sector_size;
+    world_profile = runtime_profile;
     {
         char hbuf[32];
         std::snprintf(hbuf, sizeof(hbuf), "%016llx",
@@ -2112,9 +2155,7 @@ bool WorldSession::Impl::install_world(
     //    the field (terrainVolume / heightAt / biomeAt etc.).
     dsl::WorldBinding wb;
     wb.field       = world_field.get();
-    wb.sector_size = r.sector_size;
-    wb.y_min       = r.y_min;
-    wb.y_max       = r.y_max;
+    runtime_profile.apply(wb);
     provider->host_baker().set_world(wb);
 
     // 6. Mark WorldSector as transient so its artifacts go to scratch.
@@ -2123,7 +2164,8 @@ bool WorldSession::Impl::install_world(
 
     // 7. Read sector source: <schemas_dir>/WorldSector.js
     {
-        const std::string sector_js = cfg.schemas_dir + "/WorldSector.js";
+        const std::string sector_js =
+            cfg.object_sources_dir() + "/WorldSector.js";
         std::ifstream in(sector_js, std::ios::binary);
         if (!in) { err = "install_world: cannot read " + sector_js; return false; }
         std::ostringstream ss; ss << in.rdbuf();
@@ -2167,7 +2209,8 @@ bool WorldSession::Impl::install_world(
 
         std::string source;
         {
-            const std::string child_js = cfg.schemas_dir + "/" + module + ".js";
+            const std::string child_js =
+                cfg.object_sources_dir() + "/" + module + ".js";
             std::ifstream in(child_js, std::ios::binary);
             if (!in) {
                 fprintf(stderr, "install_world: cannot read child %s (skipping)\n", child_js.c_str());
@@ -2713,6 +2756,13 @@ void WorldSession::Impl::publish_streaming_snapshot() {
     streaming::detail::publish_streaming_snapshot(world, snapshot);
 }
 
+void WorldSession::Impl::publish_graph_snapshot() {
+    if (!provider) return;
+    std::lock_guard<std::mutex> lock(graph_snapshot_mutex);
+    graph_snapshot_copy = provider->graph_snapshot();
+    graph_generation_.fetch_add(1, std::memory_order_relaxed);
+}
+
 // ---------------------------------------------------------------------------
 // WorldSession::Impl::execute_sector_stream_step
 // Phase C Task 9: one sector-streaming step. Called by worker_loop in the
@@ -2796,12 +2846,10 @@ void WorldSession::Impl::execute_sector_stream_step() {
         script_host::BakeOptions opts;
         opts.parts_dir = provider->transient_dir();
         opts.world.field       = world_field.get();
-        opts.world.sector_size = world_sector_size;
-        opts.world.y_min       = -64.0f;
-        opts.world.y_max       = 192.0f;
+        world_profile.apply(opts.world);
 
         script_host::ScriptHost bake_host;
-        bake_host.set_shared_lib_root(cfg.shared_lib_dir);
+        bake_host.set_shared_lib_roots(provider->shared_lib_roots());
 
         script_host::BakeResult br;
         try {
@@ -3143,13 +3191,13 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
 
     // Fresh ScriptHost for the rebake (shared-lib root from cfg).
     script_host::ScriptHost host;
-    host.set_shared_lib_root(cfg.shared_lib_dir);
+    const std::vector<std::string> live_shared_roots = provider->shared_lib_roots();
+    host.set_shared_lib_roots(live_shared_roots);
 
-    live_edit_prod::ProdGraphResolver gr(snap, host,
-                                         cfg.schemas_dir,
-                                         cfg.shared_lib_dir);
-    live_edit_prod::ProdBaker         pb(snap, host, engine->cache_root);
-    live_edit_prod::ProdFlattener     pf(snap, host, engine->cache_root);
+    auto gr = std::make_unique<live_edit_prod::ProdGraphResolver>(
+        snap, host, cfg.object_sources_dir(), live_shared_roots);
+    live_edit_prod::ProdBaker         pb(snap, host, cfg.cache_root);
+    live_edit_prod::ProdFlattener     pf(snap, host, cfg.cache_root);
 
     // NullSink: we convert errors to BakeError events below.
     struct NullSink : live_edit::ErrorSink {
@@ -3157,7 +3205,7 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
     } null_sink;
 
     NullWatcher nw;
-    live_edit::LiveEditSession sess(nw, gr, pb, pf, null_sink,
+    live_edit::LiveEditSession sess(nw, *gr, pb, pf, null_sink,
                                    live_edit::LiveEditConfig{/*debounce_ms=*/0,
                                                              /*bake_budget_ms=*/0});
 
@@ -3236,6 +3284,7 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
                        "cone", ierr.empty() ? "install_graph failed" : ierr);
             return;
         }
+        publish_graph_snapshot();
         // Emit per-part errors for any partial install failures.
         for (const auto& fp : provider->install_result().failed) {
             BakeErrorCode code = classify_error(fp.error);
@@ -3264,6 +3313,8 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
             return;
         }
     }
+
+    authored_fog_ = provider->world_settings().fog;
 
     if (is_cancelled()) {
         emit_error(BakeErrorCode::Cancelled, "cone", "cancelled");
@@ -3307,7 +3358,7 @@ bool WorldSession::Impl::ensure_tracer() const {
 
     tracer = std::make_unique<world_tracer::WorldTracer>();
     std::string err;
-    if (!tracer->build(engine->cache_root, trace_instances, err)) {
+    if (!tracer->build(cfg.cache_root, trace_instances, err)) {
         std::fprintf(stderr, "WorldSession: tracer build failed: %s\n", err.c_str());
         tracer.reset();
         return false;
@@ -3381,24 +3432,49 @@ std::unique_ptr<WorldSession> EngineContext::open_world(const WorldDesc& desc,
     auto simpl = std::make_unique<WorldSession::Impl>();
     simpl->engine = impl_.get();
 
-    // Fill provider config from WorldDesc + engine cache_root.
-    simpl->cfg.schemas_dir    = desc.schemas_dir    ? desc.schemas_dir    : "";
-    simpl->cfg.world_data_dir = desc.world_data_dir ? desc.world_data_dir : "";
-    simpl->cfg.world_name     = desc.world_name     ? desc.world_name     : "";
-    simpl->cfg.shared_lib_dir = desc.shared_lib_dir ? desc.shared_lib_dir : "";
-    simpl->cfg.cache_root     = impl_->cache_root;
+    if (desc.project_dir == nullptr || desc.project_dir[0] == '\0') {
+        err = "open_world: project_dir is required";
+        return nullptr;
+    }
+    if (desc.world_name == nullptr || desc.world_name[0] == '\0') {
+        err = "open_world: world_name is required";
+        return nullptr;
+    }
+    {
+        namespace fs = std::filesystem;
+        simpl->cfg = viewer::LocalProviderConfig::for_project(
+            desc.project_dir, desc.world_name,
+            desc.engine_shared_lib_dir ? desc.engine_shared_lib_dir : "");
+        std::error_code ec;
+        if (!fs::is_directory(simpl->cfg.objects_dir, ec)) {
+            err = "open_world: objects directory not found: " +
+                  simpl->cfg.objects_dir;
+            return nullptr;
+        }
+        ec.clear();
+        if (!fs::is_regular_file(simpl->cfg.world_path, ec)) {
+            err = "open_world: world source not found: " + simpl->cfg.world_path;
+            return nullptr;
+        }
+    }
 
     // Task 10: live-edit opt-in. On Linux, eagerly create and register the
     // inotify watcher so events during and after the initial bake are captured.
 #ifdef __linux__
     simpl->enable_live_edit = desc.enable_live_edit;
-    if (desc.enable_live_edit && !simpl->cfg.schemas_dir.empty()) {
+    if (desc.enable_live_edit && !simpl->cfg.object_sources_dir().empty()) {
         simpl->inotify_watcher = std::make_unique<live_edit::InotifyWatcher>();
-        simpl->inotify_watcher->add_watch(simpl->cfg.schemas_dir);
-        if (!simpl->cfg.shared_lib_dir.empty())
-            simpl->inotify_watcher->add_watch(simpl->cfg.shared_lib_dir);
+        simpl->inotify_watcher->add_watch(simpl->cfg.object_sources_dir());
+        simpl->inotify_watcher->add_watch(simpl->cfg.worlds_dir);
+        if (!simpl->cfg.project_shared_lib_dir.empty())
+            simpl->inotify_watcher->add_watch(
+                simpl->cfg.project_shared_lib_dir);
+        if (!simpl->cfg.engine_shared_lib_dir.empty())
+            simpl->inotify_watcher->add_watch(
+                simpl->cfg.engine_shared_lib_dir);
         simpl->inotify_watching = true;
-        printf("live-edit: watching %s\n", simpl->cfg.schemas_dir.c_str());
+        printf("live-edit: watching %s\n",
+               simpl->cfg.object_sources_dir().c_str());
     }
 #else
     if (desc.enable_live_edit)
@@ -3576,6 +3652,18 @@ bool WorldSession::sea_level(float& out) const {
     if (impl_->world_sea_level == std::numeric_limits<float>::lowest()) return false;
     out = impl_->world_sea_level;
     return true;
+}
+
+bool WorldSession::graph_snapshot(part_graph_snapshot::Snapshot& out) const {
+    if (!impl_->connected) return false;
+    std::lock_guard<std::mutex> lock(impl_->graph_snapshot_mutex);
+    if (impl_->graph_generation_.load(std::memory_order_relaxed) == 0) return false;
+    out = impl_->graph_snapshot_copy;
+    return true;
+}
+
+uint64_t WorldSession::graph_generation() const {
+    return impl_->graph_generation_.load(std::memory_order_relaxed);
 }
 
 void WorldSession::Impl::poll_runtime_sources() {
@@ -3918,6 +4006,8 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->vk_scene->set_dlss_mode(opts.dlss_mode);
     impl_->vk_scene->set_ray_tracing_settings(opts.vulkan_ray_tracing);
     impl_->vk_scene->set_gi_settings(opts.vulkan_gi);
+    impl_->vk_scene->set_volumetrics_settings(opts.vulkan_volumetrics,
+                                               impl_->authored_fog_);
     const int material_count = MaterialRegistryCount();
     std::vector<MaterialGpuRecord> material_records(
         static_cast<size_t>(material_count));
@@ -4098,6 +4188,36 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
         return false;
     }
+    // Dynamic entity bridge: reconcile ECS entities with renderer slots.
+    // Drop Bind changes whose part can't be loaded yet (next frame retries).
+    {
+        scene::BridgeErrorSink sink{};
+        std::string bridge_err;
+        impl_->dynamic_bridge.reconcile(impl_->ecs_runtime.world(), sink, bridge_err);
+        auto changes = impl_->dynamic_bridge.drain();
+        std::vector<render::DynamicSlotChange> valid;
+        valid.reserve(changes.size());
+        for (auto& c : changes) {
+            if (c.kind == render::DynamicSlotChangeKind::Bind) {
+                const viewer::LoadedPart* lp = impl_->store->get_or_load(c.part_hash);
+                if (!lp) continue;
+                bool drawable = false;
+                if (!ensure_vulkan_part(*impl_->vk_scene, c.part_hash, *lp, drawable, err))
+                    continue;
+                if (!drawable) continue;
+            }
+            valid.push_back(std::move(c));
+        }
+        if (!valid.empty()) {
+            std::string dyn_err;
+            if (!impl_->vk_scene->update_dynamic_instances(
+                    valid.data(), static_cast<uint32_t>(valid.size()),
+                    frame.serial, dyn_err)) {
+                fprintf(stderr, "dynamic instance error (non-fatal): %s\n",
+                        dyn_err.c_str());
+            }
+        }
+    }
     const viewer::FrameMatrices& matrices = temporal.current_jittered;
     if (!impl_->vk_scene->prepare_frame(frame, matrices, cam.position, budget,
                                         err)) {
@@ -4120,8 +4240,11 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         impl_->manifest.lights.sky_color[1] * controls.sky_multiplier,
         impl_->manifest.lights.sky_color[2] * controls.sky_multiplier};
     lighting.emission_multiplier = controls.emission_multiplier;
+    lighting.vol_enabled = opts.vulkan_volumetrics.enabled ? 1.0f : 0.0f;
+    lighting.vol_debug_view = opts.vulkan_volumetrics.vol_debug_view;
     impl_->vk_scene->set_lighting(lighting);
     impl_->vk_scene->set_display_exposure(controls.exposure_ev);
+    impl_->vk_scene->set_composite_debug_view(controls.composite_debug_view);
     const auto build_end = std::chrono::steady_clock::now();
     const auto draw_start = std::chrono::steady_clock::now();
     if (!impl_->vk_scene->record_cull_and_render(
@@ -4185,6 +4308,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.gpu_denoise_ms          = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneDenoise);
     impl_->stats.gpu_dlss_ms             = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneDlss);
     impl_->stats.gpu_composite_ms        = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneComposite);
+    impl_->stats.gpu_vol_ms              = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVolumetrics);
     return true;
 }
 
@@ -4193,8 +4317,11 @@ void WorldSession::finish_vulkan_frame(uint64_t frame_serial, bool presented) {
         impl_->vk_temporal_token == 0) {
         return;
     }
-    if (impl_->vk_scene)
+    if (impl_->vk_scene) {
         impl_->vk_scene->finish_ray_tracing_frame(frame_serial, presented);
+        impl_->vk_scene->finish_dynamic_frame(frame_serial);
+    }
+    impl_->dynamic_bridge.finish_frame(frame_serial);
     if (presented)
         (void)impl_->vk_temporal.commit_presented(impl_->vk_temporal_token);
     else
@@ -4436,6 +4563,28 @@ bool WorldSession::instance_info(uint32_t idx, InstanceInfo& out) {
     if (it != impl_->module_by_hash.end() && !it->second.empty())
         out.module_name = it->second.c_str();
 
+    return true;
+}
+
+bool WorldSession::part_bounds(uint64_t part_hash, PartBounds& out) const {
+    if (!impl_->store) return false;
+    const auto* lp = impl_->store->find(part_hash);
+    if (!lp) return false;
+    if (lp->clusters.empty()) {
+        if (lp->bound_radius <= 0.0f) return false;
+        float r = lp->bound_radius;
+        out.aabb_min[0] = out.aabb_min[1] = out.aabb_min[2] = -r;
+        out.aabb_max[0] = out.aabb_max[1] = out.aabb_max[2] =  r;
+        return true;
+    }
+    out.aabb_min[0] = out.aabb_min[1] = out.aabb_min[2] =  1e30f;
+    out.aabb_max[0] = out.aabb_max[1] = out.aabb_max[2] = -1e30f;
+    for (const auto& c : lp->clusters) {
+        for (int a = 0; a < 3; ++a) {
+            if (c.aabb_min[a] < out.aabb_min[a]) out.aabb_min[a] = c.aabb_min[a];
+            if (c.aabb_max[a] > out.aabb_max[a]) out.aabb_max[a] = c.aabb_max[a];
+        }
+    }
     return true;
 }
 

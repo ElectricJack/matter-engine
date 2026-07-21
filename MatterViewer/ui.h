@@ -10,24 +10,32 @@
 #include "matter/camera.h"
 #include "matter/world_session.h"
 #include "streaming_anchor_controller.h"
+#include "editor_model.h"
+#include "scene_tree_panel.h"
+#include "console_panel.h"
+#include "toolbar_panel.h"
+#include "properties_registry.h"
+#include "properties_panel.h"
+#include "selection_set.h"
+#include "gizmo.h"
 
 struct GLFWwindow;
 namespace matter { class VulkanDevice; struct VulkanFrame; }
 
 namespace viewer {
 
+struct ViewportRect { float x = 0, y = 0, w = 0, h = 0; };
+
 // One available world for the runtime picker. Populated by scan_worlds at
 // startup; consumed by draw_worlds_panel and the main-loop switch handler.
 struct WorldEntry {
-    std::string label;           // display name (WorldData/ subdir name)
-    std::string schemas_dir;     // e.g. "../examples/world_demo/schemas"
-    std::string world_data_dir;  // e.g. "../examples/world_demo/WorldData"
-    std::string world_name;      // e.g. "Demo"
+    std::string label;        // display name (world .js filename stem)
+    std::string project_dir;  // project containing objects/ and worlds/
+    std::string world_name;   // e.g. "Demo"
 };
 
-// Scan a root like "../examples" for available worlds. Every subdirectory
-// <demo>/ that contains both schemas/ and WorldData/ contributes one entry
-// per subdirectory of WorldData/. Sorted by label.
+// Scan a root like "../examples" for projects containing objects/ + worlds/.
+// Every regular worlds/*.js file contributes one entry, sorted by label.
 std::vector<WorldEntry> scan_worlds(const std::string& examples_root);
 
 // Read-only stats the HUD displays each frame; the resolver selector is the one
@@ -76,6 +84,8 @@ struct ViewerStats {
     int      world_current = 0;
     int      world_switch_requested = -1;
     matter::VulkanLightingOverrides lighting{};
+    matter::VulkanVolumetricsSettings volumetrics{};
+    int vol_debug_view = 0;
     // GPU-side per-pass timings (ms), smoothed EMA. Values are 0 when the
     // zone did not execute or GPU timers are unsupported.
     float gpu_total_ms          = 0.0f;
@@ -87,7 +97,9 @@ struct ViewerStats {
     float gpu_denoise_ms        = 0.0f;
     float gpu_dlss_ms           = 0.0f;
     float gpu_composite_ms      = 0.0f;
+    float gpu_vol_ms            = 0.0f;
     bool  gpu_timers_supported  = false;
+    int   debug_view_mode       = 0;
 };
 
 void reset_lighting_controls(ViewerStats& stats);
@@ -108,15 +120,63 @@ public:
     // Standalone panel listing available worlds as buttons. Clicking a non-current
     // world sets stats.world_switch_requested; main handles the swap next frame.
     void draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& stats);
+    ToolbarActions draw_toolbar(matter::scene::SimulationMode mode);
+    void prepare_viewport_rect();
+    void draw_viewport_window();
+    const ViewportRect& viewport_rect() const { return viewport_rect_; }
+    void set_hide_ui(bool hide) { hide_ui_ = hide; }
+    matter::VulkanFrame viewport_render_frame(const matter::VulkanFrame& frame,
+                                               std::string& error);
+    void transition_viewport_for_sampling(VkCommandBuffer cmd);
+    bool has_viewport_target() const { return rt_image_ != VK_NULL_HANDLE; }
+    // Task 13: `commands` drives the row context menus (Add Child Entity,
+    // Duplicate, Delete, reparent-on-add-child); `mode` disables the
+    // destructive items during Play; `camera`/`fields` drive the Focus
+    // action; `selection` is kept in sync with context-menu-driven selection
+    // changes so the Properties panel/gizmo follow along; `console_log`
+    // receives error messages from failed mutations. All pointer params are
+    // nullable — passing null simply disables/no-ops the features that need
+    // them (see scene_tree_panel.h).
+    void draw_scene_panel(EditorModel& editor, matter::WorldSession* session,
+                          SceneCommands* commands, matter::scene::SimulationMode mode,
+                          matter::CameraDesc* camera, SelectionSet* selection,
+                          const FieldCommands* fields, ConsoleLog* console_log,
+                          const std::unordered_set<uint64_t>* authored_entity_ids = nullptr);
+    void draw_properties_panel(const SelectionSet& selection, EditorModel& editor,
+                               const PropertiesRegistry& registry,
+                               const FieldCommands& fields,
+                               const ComponentCommands& components,
+                               matter::scene::SimulationMode mode,
+                               const part_graph_snapshot::Snapshot* snapshot,
+                               SpecializedEditors& specialized,
+                               const matter::Float3& camera_position);
+    void draw_console_panel(ConsoleLog& log);
+    // Draws the ImGuizmo transform gizmo for the primary selection (Task 10).
+    // No-op outside Edit/Pause or when nothing selectable is chosen. Sets
+    // gizmo_submitted_ so camera_input_allowed() can suppress camera input
+    // while the gizmo is hovered/dragged. Call once per frame, after
+    // draw_properties_panel and before camera_input_order.decide_capture().
+    void draw_gizmo(const SelectionSet& selection, const FieldCommands& fields,
+                    const matter::CameraDesc& camera,
+                    matter::scene::SimulationMode mode, float viewport_x,
+                    float viewport_y, float viewport_w, float viewport_h);
+    // Forwards to viewer::update_gizmo_hotkeys(gizmo_state_) — call only when
+    // !io.WantTextInput && !io.WantCaptureKeyboard.
+    void update_gizmo_hotkeys();
     void update_sector_streaming(matter::WorldSession& session,
                                  const matter::CameraDesc& camera);
-    void draw_sector_streaming_panel(matter::WorldSession& session,
-                                     matter::CameraDesc& camera,
-                                     std::uint32_t viewport_width,
-                                     std::uint32_t viewport_height);
+    // draw_sector_streaming_panel retired in Phase 4 Task 12: sector streaming
+    // editing now lives in the Properties panel via SpecializedEditors
+    // (see MatterViewer/specialized_editors.h). update_sector_streaming above
+    // (the per-frame anchor/follow logic) is unaffected and stays here.
     bool camera_input_allowed() const;
+    void reset_scene_tree_cache();
 
 private:
+    void build_dockspace();
+    bool ensure_viewport_target(uint32_t width, uint32_t height,
+                                VkFormat format, std::string& error);
+    void destroy_viewport_target();
     bool initialize_vulkan_backend(VkFormat format, std::uint32_t image_count,
                                    std::string& error);
     bool prepare_vulkan_backend(const matter::VulkanFrame& frame,
@@ -129,9 +189,27 @@ private:
     bool glfw_backend_initialized_ = false;
     bool vulkan_backend_initialized_ = false;
     bool gizmo_submitted_ = false;
+    bool viewport_hovered_ = false;
+    bool hide_ui_ = false;
+    ViewportRect viewport_rect_{};
+    VkImage rt_image_ = VK_NULL_HANDLE;
+    VkImageView rt_view_ = VK_NULL_HANDLE;
+    VkDeviceMemory rt_memory_ = VK_NULL_HANDLE;
+    VkDescriptorSet rt_descriptor_ = VK_NULL_HANDLE;
+    VkSampler rt_sampler_ = VK_NULL_HANDLE;
+    uint32_t rt_width_ = 0;
+    uint32_t rt_height_ = 0;
+    uint32_t pending_rt_w_ = 0;
+    uint32_t pending_rt_h_ = 0;
+    int pending_rt_frames_ = 0;
     matter_viewer::StreamingAnchorState streaming_anchor_{};
     std::uint64_t anchor_id_input_ = 0;
     std::uint64_t streaming_seed_ = 0;
+    GizmoState gizmo_state_;
+    SceneTreeState scene_tree_state_;
+    ToolbarState toolbar_state_;
+    ConsolePanelState console_state_;
+    PropertiesPanelState properties_state_;
 };
 
 } // namespace viewer

@@ -7,11 +7,11 @@
 #include <system_error>
 
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "ImGuizmo.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_vulkan.h"
 #include "matter/vulkan_device.h"
-#include "render/frame_matrices.h"
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -19,28 +19,9 @@
 namespace viewer {
 namespace {
 
-const char* streaming_state_name(
-    matter::streaming::SectorStreamingState state) {
-    using State = matter::streaming::SectorStreamingState;
-    switch (state) {
-        case State::Detached: return "Detached";
-        case State::PendingProfile: return "PendingProfile";
-        case State::PendingTransform: return "PendingTransform";
-        case State::Active: return "Active";
-        case State::Detaching: return "Detaching";
-    }
-    return "Detached";
-}
-
-flecs::entity_t published_streaming_owner(flecs::world& world) {
-    flecs::entity_t owner = 0;
-    world.each<matter::streaming::SectorStreamingStatus>(
-        [&owner](flecs::entity entity,
-                 matter::streaming::SectorStreamingStatus&) {
-            if (owner == 0) owner = entity.id();
-        });
-    return owner;
-}
+// streaming_state_name and published_streaming_owner were removed in Phase 4
+// Task 12 along with draw_sector_streaming_panel — they had no callers once
+// the panel was retired in favor of the Properties-panel specialized editor.
 
 } // namespace
 
@@ -61,29 +42,31 @@ std::vector<WorldEntry> scan_worlds(const std::string& examples_root) {
     std::vector<WorldEntry> out;
     std::error_code ec;
 
-    // examples_root/<demo>/
-    for (auto it = fs::directory_iterator(examples_root, ec);
-         !ec && it != fs::directory_iterator(); it.increment(ec)) {
-        const fs::path demo = it->path();
-        if (!fs::is_directory(demo, ec)) continue;
-
-        const fs::path schemas   = demo / "schemas";
-        const fs::path world_data = demo / "WorldData";
-        if (!fs::is_directory(schemas, ec) || !fs::is_directory(world_data, ec)) continue;
-
-        // examples_root/<demo>/WorldData/<world_name>/
-        std::error_code ec2;
-        for (auto wit = fs::directory_iterator(world_data, ec2);
-             !ec2 && wit != fs::directory_iterator(); wit.increment(ec2)) {
-            const fs::path world_dir = wit->path();
-            if (!fs::is_directory(world_dir, ec2)) continue;
+    auto scan_project = [&](const fs::path& project) {
+        std::error_code project_ec;
+        const fs::path objects = project / "objects";
+        const fs::path worlds = project / "worlds";
+        if (!fs::is_directory(objects, project_ec) ||
+            !fs::is_directory(worlds, project_ec)) return;
+        for (auto wit = fs::directory_iterator(worlds, project_ec);
+             !project_ec && wit != fs::directory_iterator();
+             wit.increment(project_ec)) {
+            const fs::path world_file = wit->path();
+            if (!fs::is_regular_file(world_file, project_ec) ||
+                world_file.extension() != ".js") continue;
             WorldEntry e;
-            e.label          = world_dir.filename().string();
-            e.schemas_dir    = schemas.string();
-            e.world_data_dir = world_data.string();
-            e.world_name     = world_dir.filename().string();
+            e.label = world_file.stem().string();
+            e.project_dir = project.string();
+            e.world_name = world_file.stem().string();
             out.push_back(std::move(e));
         }
+    };
+
+    const fs::path root(examples_root);
+    scan_project(root);
+    for (auto it = fs::directory_iterator(root, ec);
+         !ec && it != fs::directory_iterator(); it.increment(ec)) {
+        if (fs::is_directory(it->path(), ec)) scan_project(it->path());
     }
 
     std::sort(out.begin(), out.end(),
@@ -119,6 +102,9 @@ bool Ui::setup(GLFWwindow* window, matter::VulkanDevice& vulkan,
     ImGui::CreateContext();
     imgui_context_initialized_ = true;
     ImGui::StyleColorsDark();
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     if (!ImGui_ImplGlfw_InitForVulkan(window, true)) {
         error = "ImGui GLFW Vulkan initialization failed";
         shutdown();
@@ -150,12 +136,12 @@ bool Ui::initialize_vulkan_backend(VkFormat color_format,
     init.DescriptorPool = reinterpret_cast<VkDescriptorPool>(descriptor_pool_);
     init.MinImageCount = image_count;
     init.ImageCount = image_count;
-    init.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+    init.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
     init.UseDynamicRendering = true;
-    init.PipelineRenderingCreateInfo = {
+    init.PipelineInfoMain.PipelineRenderingCreateInfo = {
         VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR};
-    init.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
-    init.PipelineRenderingCreateInfo.pColorAttachmentFormats = &color_format;
+    init.PipelineInfoMain.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
+    init.PipelineInfoMain.PipelineRenderingCreateInfo.pColorAttachmentFormats = &color_format;
     if (!ImGui_ImplVulkan_Init(&init)) {
         error = "ImGui Vulkan initialization failed";
         return false;
@@ -168,6 +154,11 @@ bool Ui::initialize_vulkan_backend(VkFormat color_format,
 
 void Ui::shutdown() {
     if (!vulkan_) return;
+    destroy_viewport_target();
+    if (rt_sampler_) {
+        vkDestroySampler(vulkan_->device(), rt_sampler_, nullptr);
+        rt_sampler_ = VK_NULL_HANDLE;
+    }
     vulkan_->wait_idle();
     if (vulkan_backend_initialized_) {
         ImGui_ImplVulkan_Shutdown();
@@ -220,6 +211,12 @@ bool Ui::begin_frame(const matter::VulkanFrame& frame, std::string& error) {
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
     ImGuizmo::BeginFrame();
+    if (!hide_ui_) {
+        build_dockspace();
+    } else {
+        const ImVec2 d = ImGui::GetIO().DisplaySize;
+        viewport_rect_ = ViewportRect{0, 0, d.x, d.y};
+    }
     return true;
 }
 
@@ -230,7 +227,9 @@ bool Ui::end_frame(const matter::VulkanFrame& frame, std::string& error) {
         VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     attachment.imageView = frame.swapchain_image_view;
     attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    attachment.loadOp = has_viewport_target()
+                            ? VK_ATTACHMENT_LOAD_OP_CLEAR
+                            : VK_ATTACHMENT_LOAD_OP_LOAD;
     attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
     rendering.renderArea.extent = frame.extent;
@@ -243,6 +242,316 @@ bool Ui::end_frame(const matter::VulkanFrame& frame, std::string& error) {
     return true;
 }
 
+namespace {
+constexpr float kToolbarHeight = 40.0f;
+constexpr float kSceneWidthFrac = 0.22f;
+constexpr float kPropertiesWidthFrac = 0.26f;
+constexpr float kConsoleHeightFrac = 0.20f;
+} // namespace
+
+void Ui::build_dockspace() {
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+
+    ImGui::SetNextWindowPos(ImVec2(0, kToolbarHeight));
+    ImGui::SetNextWindowSize(ImVec2(display.x, display.y - kToolbarHeight));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::Begin("##DockHost", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                     ImGuiWindowFlags_NoBringToFrontOnFocus |
+                     ImGuiWindowFlags_NoNavFocus |
+                     ImGuiWindowFlags_NoDocking);
+    ImGui::PopStyleVar();
+
+    const ImGuiID dockspace_id = ImGui::GetID("MainDockSpace");
+
+    if (ImGui::DockBuilderGetNode(dockspace_id) == nullptr) {
+        ImGui::DockBuilderRemoveNode(dockspace_id);
+        ImGui::DockBuilderAddNode(dockspace_id,
+                                  ImGuiDockNodeFlags_DockSpace);
+        ImGui::DockBuilderSetNodeSize(dockspace_id,
+                                      ImVec2(display.x,
+                                             display.y - kToolbarHeight));
+
+        ImGuiID center = dockspace_id;
+        const ImGuiID left = ImGui::DockBuilderSplitNode(
+            center, ImGuiDir_Left, kSceneWidthFrac, nullptr, &center);
+        const ImGuiID right = ImGui::DockBuilderSplitNode(
+            center, ImGuiDir_Right,
+            kPropertiesWidthFrac / (1.0f - kSceneWidthFrac), nullptr,
+            &center);
+        const ImGuiID bottom = ImGui::DockBuilderSplitNode(
+            center, ImGuiDir_Down, kConsoleHeightFrac, nullptr, &center);
+
+        ImGui::DockBuilderDockWindow("Scene", left);
+        ImGui::DockBuilderDockWindow("Properties", right);
+        ImGui::DockBuilderDockWindow("Console", bottom);
+        ImGui::DockBuilderDockWindow("Viewport", center);
+        ImGui::DockBuilderDockWindow("Viewer Debug", right);
+        ImGui::DockBuilderDockWindow("Camera", right);
+
+        ImGui::DockBuilderFinish(dockspace_id);
+    }
+
+    ImGui::DockSpace(dockspace_id, ImVec2(0, 0),
+                     ImGuiDockNodeFlags_PassthruCentralNode);
+    ImGui::End();
+
+    (void)ImGui::DockBuilderGetCentralNode(dockspace_id);
+}
+
+void Ui::prepare_viewport_rect() {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::Begin("Viewport", nullptr,
+                 ImGuiWindowFlags_NoScrollbar |
+                     ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleVar();
+    viewport_hovered_ = ImGui::IsWindowHovered();
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    const float sx = std::floor(pos.x);
+    const float sy = std::floor(pos.y);
+    const float sw = std::floor(avail.x > 0 ? avail.x : 0);
+    const float sh = std::floor(avail.y > 0 ? avail.y : 0);
+    viewport_rect_ = ViewportRect{sx, sy, sw, sh};
+    ImGuizmo::SetAlternativeWindow(ImGui::GetCurrentWindow());
+    ImGui::End();
+}
+
+void Ui::draw_viewport_window() {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::Begin("Viewport", nullptr,
+                 ImGuiWindowFlags_NoScrollbar |
+                     ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::PopStyleVar();
+    if (rt_descriptor_ && viewport_rect_.w > 0 && viewport_rect_.h > 0) {
+        ImGui::SetCursorScreenPos(
+            ImVec2(viewport_rect_.x, viewport_rect_.y));
+        ImGui::Image(rt_descriptor_,
+                     ImVec2(viewport_rect_.w, viewport_rect_.h));
+    }
+    ImGui::End();
+}
+
+bool Ui::ensure_viewport_target(uint32_t width, uint32_t height,
+                                VkFormat format, std::string& error) {
+    if (rt_image_ && rt_width_ == width && rt_height_ == height) {
+        pending_rt_frames_ = 0;
+        return true;
+    }
+    if (rt_image_) {
+        if (width != pending_rt_w_ || height != pending_rt_h_) {
+            pending_rt_w_ = width;
+            pending_rt_h_ = height;
+            pending_rt_frames_ = 1;
+            return true;
+        }
+        if (++pending_rt_frames_ < 4) return true;
+    }
+    destroy_viewport_target();
+    if (width == 0 || height == 0) return true;
+    const VkDevice device = vulkan_->device();
+
+    VkImageCreateInfo img{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    img.imageType = VK_IMAGE_TYPE_2D;
+    img.format = format;
+    img.extent = {width, height, 1};
+    img.mipLevels = 1;
+    img.arrayLayers = 1;
+    img.samples = VK_SAMPLE_COUNT_1_BIT;
+    img.tiling = VK_IMAGE_TILING_OPTIMAL;
+    img.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    img.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (vkCreateImage(device, &img, nullptr, &rt_image_) != VK_SUCCESS) {
+        error = "failed to create viewport render target image";
+        return false;
+    }
+
+    VkMemoryRequirements mem_req;
+    vkGetImageMemoryRequirements(device, rt_image_, &mem_req);
+    VkPhysicalDeviceMemoryProperties mem_props;
+    vkGetPhysicalDeviceMemoryProperties(vulkan_->physical_device(), &mem_props);
+    uint32_t mem_type = UINT32_MAX;
+    for (uint32_t i = 0; i < mem_props.memoryTypeCount; ++i) {
+        if ((mem_req.memoryTypeBits & (1u << i)) &&
+            (mem_props.memoryTypes[i].propertyFlags &
+             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+            mem_type = i;
+            break;
+        }
+    }
+    if (mem_type == UINT32_MAX) {
+        error = "no suitable memory type for viewport render target";
+        destroy_viewport_target();
+        return false;
+    }
+
+    VkMemoryAllocateInfo alloc{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    alloc.allocationSize = mem_req.size;
+    alloc.memoryTypeIndex = mem_type;
+    if (vkAllocateMemory(device, &alloc, nullptr, &rt_memory_) != VK_SUCCESS) {
+        error = "failed to allocate viewport render target memory";
+        destroy_viewport_target();
+        return false;
+    }
+    vkBindImageMemory(device, rt_image_, rt_memory_, 0);
+
+    VkImageViewCreateInfo view_info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    view_info.image = rt_image_;
+    view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view_info.format = format;
+    view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (vkCreateImageView(device, &view_info, nullptr, &rt_view_) != VK_SUCCESS) {
+        error = "failed to create viewport render target image view";
+        destroy_viewport_target();
+        return false;
+    }
+
+    if (!rt_sampler_) {
+        VkSamplerCreateInfo samp{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        samp.magFilter = VK_FILTER_LINEAR;
+        samp.minFilter = VK_FILTER_LINEAR;
+        samp.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samp.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        samp.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        if (vkCreateSampler(device, &samp, nullptr, &rt_sampler_) !=
+            VK_SUCCESS) {
+            error = "failed to create viewport sampler";
+            destroy_viewport_target();
+            return false;
+        }
+    }
+
+    rt_descriptor_ = ImGui_ImplVulkan_AddTexture(
+        rt_sampler_, rt_view_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    if (!rt_descriptor_) {
+        error = "failed to register viewport texture with ImGui";
+        destroy_viewport_target();
+        return false;
+    }
+
+    rt_width_ = width;
+    rt_height_ = height;
+    return true;
+}
+
+void Ui::destroy_viewport_target() {
+    if (!vulkan_) return;
+    const VkDevice device = vulkan_->device();
+    vulkan_->wait_idle();
+    if (rt_descriptor_) {
+        ImGui_ImplVulkan_RemoveTexture(rt_descriptor_);
+        rt_descriptor_ = VK_NULL_HANDLE;
+    }
+    if (rt_view_) { vkDestroyImageView(device, rt_view_, nullptr); rt_view_ = VK_NULL_HANDLE; }
+    if (rt_image_) { vkDestroyImage(device, rt_image_, nullptr); rt_image_ = VK_NULL_HANDLE; }
+    if (rt_memory_) { vkFreeMemory(device, rt_memory_, nullptr); rt_memory_ = VK_NULL_HANDLE; }
+    rt_width_ = rt_height_ = 0;
+}
+
+matter::VulkanFrame Ui::viewport_render_frame(const matter::VulkanFrame& frame,
+                                               std::string& error) {
+    const uint32_t w = static_cast<uint32_t>(viewport_rect_.w);
+    const uint32_t h = static_cast<uint32_t>(viewport_rect_.h);
+    if (w == 0 || h == 0 || hide_ui_) return frame;
+    if (!ensure_viewport_target(w, h, frame.swapchain_format, error))
+        return frame;
+
+    VkImageMemoryBarrier2 to_color{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    to_color.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    to_color.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    to_color.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    to_color.dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
+                             VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    to_color.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    to_color.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    to_color.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_color.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_color.image = rt_image_;
+    to_color.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep.imageMemoryBarrierCount = 1;
+    dep.pImageMemoryBarriers = &to_color;
+    vkCmdPipelineBarrier2(frame.command_buffer, &dep);
+
+    matter::VulkanFrame vp_frame = frame;
+    vp_frame.swapchain_image = rt_image_;
+    vp_frame.swapchain_image_view = rt_view_;
+    vp_frame.extent = {rt_width_, rt_height_};
+    return vp_frame;
+}
+
+void Ui::transition_viewport_for_sampling(VkCommandBuffer cmd) {
+    if (rt_image_ == VK_NULL_HANDLE) return;
+    VkImageMemoryBarrier2 to_read{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+    to_read.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    to_read.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    to_read.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    to_read.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    to_read.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    to_read.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    to_read.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_read.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_read.image = rt_image_;
+    to_read.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep.imageMemoryBarrierCount = 1;
+    dep.pImageMemoryBarriers = &to_read;
+    vkCmdPipelineBarrier2(cmd, &dep);
+}
+
+ToolbarActions Ui::draw_toolbar(matter::scene::SimulationMode mode) {
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(display.x, kToolbarHeight), ImGuiCond_Always);
+    ImGui::Begin("Toolbar", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                     ImGuiWindowFlags_NoScrollbar);
+    const ToolbarActions actions = draw_toolbar_contents(toolbar_state_, mode);
+    ImGui::End();
+    draw_viewport_border_tint(mode, viewport_rect_.x, viewport_rect_.y,
+                              viewport_rect_.w, viewport_rect_.h);
+    return actions;
+}
+
+void Ui::draw_scene_panel(EditorModel& editor, matter::WorldSession* session,
+                          SceneCommands* commands, matter::scene::SimulationMode mode,
+                          matter::CameraDesc* camera, SelectionSet* selection,
+                          const FieldCommands* fields, ConsoleLog* console_log,
+                          const std::unordered_set<uint64_t>* authored_entity_ids) {
+    ImGui::Begin("Scene");
+    draw_scene_tree(scene_tree_state_, editor, session, commands, mode, camera,
+                    selection, fields, console_log, authored_entity_ids);
+    ImGui::End();
+}
+
+void Ui::draw_properties_panel(const SelectionSet& selection, EditorModel& editor,
+                               const PropertiesRegistry& registry,
+                               const FieldCommands& fields,
+                               const ComponentCommands& components,
+                               matter::scene::SimulationMode mode,
+                               const part_graph_snapshot::Snapshot* snapshot,
+                               SpecializedEditors& specialized,
+                               const matter::Float3& camera_position) {
+    ImGui::Begin("Properties");
+    draw_properties_contents(properties_state_, selection, editor, registry,
+                             fields, components, mode, snapshot,
+                             specialized, camera_position);
+    ImGui::End();
+}
+
+void Ui::draw_console_panel(ConsoleLog& log) {
+    ImGui::Begin("Console");
+    draw_console_contents(console_state_, log);
+    ImGui::End();
+}
+
+void Ui::reset_scene_tree_cache() {
+    scene_tree_state_.cached_graph_gen = UINT64_MAX;
+    scene_tree_state_.cached_snapshot = part_graph_snapshot::Snapshot{};
+    scene_tree_state_.selected_root_hash = 0;
+}
+
 void Ui::draw_debug_panel(ViewerStats& s) {
     ImGui::Begin("Viewer Debug");
 
@@ -250,13 +559,13 @@ void Ui::draw_debug_panel(ViewerStats& s) {
     if (s.gpu_timers_supported) {
         const float sum = s.gpu_cull_ms + s.gpu_gbuffer_ms + s.gpu_blas_ms +
                           s.gpu_tlas_ms + s.gpu_rt_ms + s.gpu_denoise_ms +
-                          s.gpu_dlss_ms + s.gpu_composite_ms;
+                          s.gpu_dlss_ms + s.gpu_composite_ms + s.gpu_vol_ms;
         const float unaccounted = s.gpu_total_ms - sum;
-        ImGui::Text("GPU %.1fms | Cull %.1f GBuf %.1f BLAS %.1f TLAS %.1f RT %.1f Den %.1f DLSS %.1f Comp %.1f (other %.1f)",
+        ImGui::Text("GPU %.1fms | Cull %.1f GBuf %.1f BLAS %.1f TLAS %.1f RT %.1f Den %.1f DLSS %.1f Comp %.1f Vol %.1f (other %.1f)",
                     s.gpu_total_ms, s.gpu_cull_ms,
                     s.gpu_gbuffer_ms, s.gpu_blas_ms, s.gpu_tlas_ms, s.gpu_rt_ms,
                     s.gpu_denoise_ms, s.gpu_dlss_ms, s.gpu_composite_ms,
-                    unaccounted);
+                    s.gpu_vol_ms, unaccounted);
     } else {
         ImGui::TextDisabled("GPU timers unavailable");
     }
@@ -302,13 +611,25 @@ void Ui::draw_debug_panel(ViewerStats& s) {
                        4.0f, "%.2f");
     if (ImGui::Button("Reset to World")) reset_lighting_controls(s);
 
+    ImGui::SeparatorText("Volumetrics");
+    ImGui::Checkbox("Enable##vol", &s.volumetrics.enabled);
+    if (s.volumetrics.enabled) {
+        ImGui::SliderFloat("Phase g", &s.volumetrics.phase_g, 0.0f, 0.99f, "%.2f");
+        ImGui::SliderFloat("Temporal blend", &s.volumetrics.temporal_blend, 0.0f, 0.99f, "%.2f");
+        ImGui::SliderFloat("Fog density", &s.volumetrics.fog_density_mul, 0.0f, 4.0f, "%.2f");
+        ImGui::SliderFloat("Fog falloff", &s.volumetrics.fog_falloff_mul, 0.1f, 4.0f, "%.2f");
+        const char* vol_views[] = { "Off", "Density", "Scatter", "Integrated" };
+        ImGui::Combo("Vol debug##vd", &s.vol_debug_view, vol_views, 4);
+    }
+
+    ImGui::SeparatorText("Debug View");
+    const char* debug_views[] = { "None", "Normals" };
+    ImGui::Combo("View", &s.debug_view_mode, debug_views, 2);
+
     ImGui::End();
 }
 
 void Ui::draw_camera_panel(matter::CameraDesc& cam) {
-    ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - 270.0f, 20.0f),
-                            ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(250, 0), ImGuiCond_FirstUseEver);
     ImGui::Begin("Camera");
 
     ImGui::DragFloat3("Position", &cam.position.x, 0.1f);
@@ -382,6 +703,19 @@ void Ui::draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& s
     ImGui::End();
 }
 
+void Ui::draw_gizmo(const SelectionSet& selection, const FieldCommands& fields,
+                    const matter::CameraDesc& camera,
+                    matter::scene::SimulationMode mode, float viewport_x,
+                    float viewport_y, float viewport_w, float viewport_h) {
+    gizmo_submitted_ = viewer::draw_gizmo(gizmo_state_, selection, fields,
+                                          camera, mode, viewport_x, viewport_y,
+                                          viewport_w, viewport_h);
+}
+
+void Ui::update_gizmo_hotkeys() {
+    viewer::update_gizmo_hotkeys(gizmo_state_);
+}
+
 void Ui::update_sector_streaming(matter::WorldSession& session,
                                  const matter::CameraDesc& camera) {
     flecs::world& world = session.ecs();
@@ -395,192 +729,19 @@ void Ui::update_sector_streaming(matter::WorldSession& session,
     matter_viewer::follow_camera(streaming_anchor_, world, camera_position);
 }
 
-void Ui::draw_sector_streaming_panel(matter::WorldSession& session,
-                                     matter::CameraDesc& camera,
-                                     std::uint32_t viewport_width,
-                                     std::uint32_t viewport_height) {
-    flecs::world& world = session.ecs();
-    const flecs::entity_t selected_before = streaming_anchor_.selected;
-    matter_viewer::validate_anchor(streaming_anchor_, world);
-    if (selected_before != 0 && streaming_anchor_.selected == 0) {
-        anchor_id_input_ = 0;
-    }
-
-    ImGui::SetNextWindowPos(ImVec2(20.0f, 160.0f), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(360.0f, 0.0f), ImGuiCond_FirstUseEver);
-    ImGui::Begin("Sector Streaming");
-
-    if (ImGui::Button("Create Anchor")) {
-        anchor_id_input_ = matter_viewer::create_anchor(streaming_anchor_, world);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Clear Selection")) {
-        matter_viewer::clear_anchor(streaming_anchor_);
-        anchor_id_input_ = 0;
-    }
-
-    ImGui::SetNextItemWidth(220.0f);
-    ImGui::InputScalar("Anchor ID", ImGuiDataType_U64, &anchor_id_input_);
-    ImGui::SameLine();
-    if (ImGui::Button("Select")) {
-        if (!matter_viewer::select_anchor(streaming_anchor_, world,
-                                          static_cast<flecs::entity_t>(
-                                              anchor_id_input_))) {
-            anchor_id_input_ = 0;
-        }
-    }
-
-    matter_viewer::validate_anchor(streaming_anchor_, world);
-    const bool has_selection = streaming_anchor_.selected != 0;
-    bool has_streaming = false;
-    if (has_selection) {
-        has_streaming =
-            flecs::entity(world.c_ptr(), streaming_anchor_.selected)
-                .has<matter::streaming::SectorStreaming>();
-    }
-
-    const bool attach_disabled = !has_selection || has_streaming;
-    if (attach_disabled) ImGui::BeginDisabled();
-    if (ImGui::Button("Attach Streaming")) {
-        matter_viewer::attach_streaming(streaming_anchor_, world);
-    }
-    if (attach_disabled) ImGui::EndDisabled();
-    ImGui::SameLine();
-    const bool remove_disabled = !has_selection || !has_streaming;
-    if (remove_disabled) ImGui::BeginDisabled();
-    if (ImGui::Button("Remove Streaming")) {
-        matter_viewer::remove_streaming(streaming_anchor_, world);
-        has_streaming = false;
-    }
-    if (remove_disabled) ImGui::EndDisabled();
-
-    bool follow = streaming_anchor_.follow_editor_camera;
-    if (!has_selection) ImGui::BeginDisabled();
-    if (ImGui::Checkbox("Follow editor camera", &follow)) {
-        if (follow) {
-            streaming_anchor_.follow_editor_camera = true;
-        } else {
-            matter_viewer::detach_follow(streaming_anchor_, world);
-        }
-    }
-    if (!has_selection) ImGui::EndDisabled();
-
-    ImGui::SameLine();
-    if (!has_selection || streaming_anchor_.follow_editor_camera)
-        ImGui::BeginDisabled();
-    if (ImGui::Button("Frame Anchor")) {
-        matter_viewer::frame_selected_anchor(streaming_anchor_, world, camera,
-                                             10.0f);
-    }
-    if (!has_selection || streaming_anchor_.follow_editor_camera)
-        ImGui::EndDisabled();
-
-    ImGui::Separator();
-    ImGui::SetNextItemWidth(220.0f);
-    ImGui::InputScalar("Seed", ImGuiDataType_U64, &streaming_seed_);
-    ImGui::SameLine();
-    if (ImGui::Button("Regenerate")) {
-        session.regenerate(streaming_seed_);
-    }
-
-    const matter::streaming::SectorStreamingStatus status =
-        session.streaming_status();
-    matter_viewer::validate_anchor(streaming_anchor_, world);
-    flecs::entity_t active_owner = published_streaming_owner(world);
-    const matter::streaming::SectorStreamingError* recoverable_error = nullptr;
-    if (streaming_anchor_.selected != 0) {
-        const flecs::entity selected(world.c_ptr(), streaming_anchor_.selected);
-        recoverable_error =
-            selected.try_get<matter::streaming::SectorStreamingError>();
-        if (recoverable_error != nullptr &&
-            recoverable_error->code ==
-                matter::streaming::SectorStreamingErrorCode::OwnerAlreadyClaimed &&
-            recoverable_error->active_owner != 0) {
-            active_owner = recoverable_error->active_owner;
-        } else if (active_owner == 0 &&
-                   selected.has<matter::streaming::SectorStreaming>()) {
-            active_owner = selected.id();
-        }
-    }
-    if (recoverable_error == nullptr && active_owner != 0 &&
-        world.is_alive(active_owner)) {
-        recoverable_error =
-            flecs::entity(world.c_ptr(), active_owner)
-                .try_get<matter::streaming::SectorStreamingError>();
-    }
-
-    ImGui::SeparatorText("Status");
-    ImGui::Text("Selected: %llu",
-                static_cast<unsigned long long>(streaming_anchor_.selected));
-    ImGui::Text("Active owner: %llu",
-                static_cast<unsigned long long>(active_owner));
-    ImGui::Text("State: %s", streaming_state_name(status.state));
-    ImGui::Text("Generation: %llu",
-                static_cast<unsigned long long>(status.generation));
-    ImGui::Text("Resident: %u", status.resident_sectors);
-    ImGui::Text("Inflight: %u", status.inflight_sectors);
-    if (recoverable_error == nullptr ||
-        recoverable_error->code ==
-            matter::streaming::SectorStreamingErrorCode::None) {
-        ImGui::Text("Recoverable error: None");
-    } else if (recoverable_error->code ==
-               matter::streaming::SectorStreamingErrorCode::UnsupportedWorld) {
-        ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
-                           "Recoverable error: UnsupportedWorld");
-    } else {
-        ImGui::TextColored(
-            ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
-            "Recoverable error: OwnerAlreadyClaimed (active owner %llu)",
-            static_cast<unsigned long long>(recoverable_error->active_owner));
-    }
-    ImGui::End();
-
-    if (viewport_width == 0 || viewport_height == 0 ||
-        !matter_viewer::gizmo_translation_allowed(streaming_anchor_, world)) {
-        return;
-    }
-    const flecs::entity anchor(world.c_ptr(), streaming_anchor_.selected);
-    const matter::ecs::LocalTransform* transform =
-        anchor.try_get<matter::ecs::LocalTransform>();
-    if (transform == nullptr) {
-        return;
-    }
-
-    FrameMatrices frame{};
-    std::string matrix_error;
-    if (!build_frame_matrices(camera, viewport_width, viewport_height, frame,
-                              matrix_error)) {
-        return;
-    }
-    std::array<float, 16> view =
-        matter_viewer::to_imguizmo_matrix(frame.world_to_view);
-    std::array<float, 16> projection =
-        matter_viewer::to_imguizmo_matrix(frame.view_to_clip);
-    std::array<float, 16> model = matter_viewer::to_imguizmo_matrix(
-    matter_viewer::local_transform_matrix(*transform));
-
-    ImGuizmo::SetOrthographic(false);
-    const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    ImGuizmo::SetRect(viewport->Pos.x, viewport->Pos.y, viewport->Size.x,
-                      viewport->Size.y);
-    gizmo_submitted_ = true;
-    if (ImGuizmo::Manipulate(view.data(), projection.data(),
-                             ImGuizmo::TRANSLATE, ImGuizmo::WORLD,
-                             model.data())) {
-        const matter::Mat4f engine_model =
-            matter_viewer::from_imguizmo_matrix(model.data());
-        matter_viewer::apply_gizmo_translation(streaming_anchor_, world,
-                                                engine_model.m);
-    }
-}
+// draw_sector_streaming_panel retired in Phase 4 Task 12 — sector streaming
+// editing moved into the Properties panel via SpecializedEditors
+// (MatterViewer/specialized_editors.h). update_sector_streaming above (the
+// per-frame anchor/follow logic, not UI) is unaffected.
 
 bool Ui::camera_input_allowed() const {
     if (ImGui::GetCurrentContext() == nullptr) return true;
     const ImGuiIO& io = ImGui::GetIO();
-    const bool gizmo_over =
-        gizmo_submitted_ && ImGuizmo::IsOver(ImGuizmo::TRANSLATE);
+    const bool gizmo_over = gizmo_submitted_ && ImGuizmo::IsOver();
+    const bool mouse_captured = io.WantCaptureMouse && !viewport_hovered_;
+    const bool kb_captured = io.WantCaptureKeyboard && !viewport_hovered_;
     return matter_viewer::camera_input_allowed(
-        io.WantCaptureMouse, io.WantCaptureKeyboard,
+        mouse_captured, kb_captured,
         gizmo_over, ImGuizmo::IsUsing());
 }
 

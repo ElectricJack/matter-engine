@@ -26,7 +26,8 @@ void main() {
     ivec2 extent = ivec2(gl_LaunchSizeEXT.xy);
     vec2 uv = (vec2(pixel) + vec2(0.5)) / vec2(extent);
     float depth = texelFetch(depth_texture, pixel, 0).x;
-    if (depth >= 1.0) {
+    // Reversed-Z: far/cleared background is now 0.0 (was 1.0 under standard-Z).
+    if (depth <= 0.0) {
         imageStore(visibility_image, pixel, vec4(1.0));
         return;
     }

@@ -11,8 +11,17 @@
 
 #include "matter/engine_context.h"
 #include "matter/world_session.h"
+#include "matter/ecs.h"
+#include "matter/scene.h"
 #include "camera_controller.h"
+#include "camera_focus.h"
+#include "editor_model.h"
+#include "selection_set.h"
+#include "properties_panel.h"
+#include "ecs/simulation_control.h"
 #include "ui_linux.h"
+
+#include "imgui.h"
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -91,9 +100,9 @@ int main() {
     auto worlds = viewer::scan_worlds("../MatterEngine3/examples");
     printf("worlds available (%d):\n", (int)worlds.size());
     for (size_t i = 0; i < worlds.size(); ++i) {
-        printf("  [%zu] %s  (%s / %s)\n",
+        printf("  [%zu] %s  (%s)\n",
                i, worlds[i].label.c_str(),
-               worlds[i].schemas_dir.c_str(), worlds[i].world_data_dir.c_str());
+               worlds[i].project_dir.c_str());
     }
     if (worlds.empty()) {
         printf("FATAL: no worlds found under ../MatterEngine3/examples\n");
@@ -166,10 +175,9 @@ int main() {
     // the per-frame poll_event() drain; GPU work runs inside pump_gpu_jobs() each frame.
     auto open_world_and_start_bake = [&](const viewer::WorldEntry& w) -> std::unique_ptr<matter::WorldSession> {
         matter::WorldDesc wd;
-        wd.schemas_dir    = w.schemas_dir.c_str();
-        wd.world_data_dir = w.world_data_dir.c_str();
+        wd.project_dir    = w.project_dir.c_str();
         wd.world_name     = w.world_name.c_str();
-        wd.shared_lib_dir = "../MatterEngine3/shared-lib";
+        wd.engine_shared_lib_dir = "../MatterEngine3/shared-lib";
         // Task 10: MATTER_LIVE_EDIT=1 opts in to inotify live-edit (Linux only;
         // ignored with a notice on other platforms).
         wd.enable_live_edit = (getenv("MATTER_LIVE_EDIT") != nullptr);
@@ -184,6 +192,49 @@ int main() {
 
     auto session = open_world_and_start_bake(worlds[initial_world]);
     if (!session) { ui.shutdown(); CloseWindow(); return 1; }
+
+    viewer::EditorModel editor_model;
+    viewer::SelectionSet selection_set;
+    viewer::ConsoleLog console_log;
+    viewer::PropertiesRegistry properties_registry;
+    matter::scene::SimulationControl sim_control;
+
+    // Task 9: cached part graph snapshot for the Properties panel's baked-root
+    // info card. Refreshed only when graph_generation() changes.
+    part_graph_snapshot::Snapshot cached_snapshot;
+    uint64_t cached_graph_gen = 0;
+    viewer::FieldCommands field_commands{};
+    viewer::ComponentCommands component_commands{};
+    // Task 8: specialized editor commands. Left unwired (default-constructed
+    // std::functions) like field_commands/component_commands above — the
+    // Linux/raylib build path doesn't hook up live ECS field access yet, so
+    // the Properties panel's specialized sections render but every button is
+    // effectively a no-op until this path gets the same wiring as main.cpp.
+    viewer::SpecializedEditors specialized_editors{};
+    viewer::SceneCommands scene_commands;
+    scene_commands.query_records = [&session]() -> std::vector<matter::scene::SceneRecord> {
+        std::vector<matter::scene::SceneRecord> records;
+        if (!session) return records;
+        session->ecs().each(
+            [&](flecs::entity e, const matter::scene::SceneEntityId& id) {
+                matter::scene::SceneRecord rec;
+                rec.id = id;
+                if (e.parent().is_valid() && e.parent().has<matter::scene::SceneEntityId>()) {
+                    rec.parent_id = e.parent().get<matter::scene::SceneEntityId>();
+                }
+                const char* n = e.name().c_str();
+                rec.name = (n && n[0]) ? n : "Entity";
+                if (e.has<matter::scene::PartInstance>()) {
+                    rec.component_names.push_back("PartInstance");
+                }
+                records.push_back(std::move(rec));
+            });
+        return records;
+    };
+    scene_commands.generation = [&session]() -> uint64_t {
+        if (!session) return 0;
+        return static_cast<uint64_t>(session->ecs().get_info()->frame_count_total);
+    };
 
     stats.gpu_cull_active = !use_rt;
     apply_world_resolver_defaults(worlds[initial_world].world_name,
@@ -347,9 +398,93 @@ int main() {
             stats.cache_hits      = (int)fs.cache_hits;
             stats.connected       = true;
             ui.begin_frame();
+            editor_model.refresh(scene_commands);
+            // Gizmo mode hotkeys (G/T = translate, R = rotate, S = scale).
+            // Only when ImGui isn't capturing keyboard/text input, so typing
+            // in a Properties field doesn't retarget the gizmo.
+            {
+                const ImGuiIO& io = ImGui::GetIO();
+                if (!io.WantTextInput && !io.WantCaptureKeyboard) {
+                    ui.update_gizmo_hotkeys();
+                    // Task 13: F focuses the camera on the current selection;
+                    // Delete removes every selected entity (Edit/Pause only).
+                    // field_commands/scene_commands mutation callbacks are
+                    // unwired on this build path (see comment above
+                    // specialized_editors setup), so these are effectively
+                    // no-ops here until this path gets the same live-ECS
+                    // wiring as main.cpp.
+                    if (ImGui::IsKeyPressed(ImGuiKey_F, false)) {
+                        viewer::focus_camera_on_selection(camera, selection_set,
+                                                          field_commands);
+                    }
+                    if (sim_control.mode() != matter::scene::SimulationMode::Play &&
+                        ImGui::IsKeyPressed(ImGuiKey_Delete, false)) {
+                        const std::vector<viewer::SelectedObject> to_delete =
+                            selection_set.items();
+                        for (const auto& obj : to_delete) {
+                            if (obj.kind != viewer::SelectedObject::Entity) continue;
+                            editor_model.select(matter::scene::SceneEntityId{obj.id});
+                            const matter::scene::SceneEditResult result =
+                                editor_model.delete_selected(scene_commands);
+                            if (result.error != matter::scene::SceneEditError::None) {
+                                console_log.push(viewer::LogSeverity::Error,
+                                                 "Delete: entity mutation failed");
+                            }
+                        }
+                        selection_set.clear();
+                        editor_model.clear_selection();
+                    }
+                }
+            }
+            const viewer::ToolbarActions toolbar =
+                ui.draw_toolbar(sim_control.mode());
+            if (toolbar.play_clicked) {
+                std::string sim_err;
+                if (!sim_control.play(session->ecs(), sim_err))
+                    console_log.push(viewer::LogSeverity::Error, "Play: " + sim_err);
+            }
+            if (toolbar.pause_clicked) {
+                std::string sim_err;
+                if (!sim_control.pause(sim_err))
+                    console_log.push(viewer::LogSeverity::Error, "Pause: " + sim_err);
+            }
+            if (toolbar.step_clicked) {
+                std::string sim_err;
+                if (!sim_control.step(sim_err))
+                    console_log.push(viewer::LogSeverity::Error, "Step: " + sim_err);
+            }
+            if (toolbar.stop_clicked) {
+                std::string sim_err;
+                if (!sim_control.stop(session->ecs(), sim_err)) {
+                    console_log.push(viewer::LogSeverity::Error, "Stop: " + sim_err);
+                } else {
+                    selection_set.clear();
+                    editor_model.clear_selection();
+                }
+            }
+            {
+                const uint64_t gen = session->graph_generation();
+                if (gen != cached_graph_gen) {
+                    session->graph_snapshot(cached_snapshot);
+                    cached_graph_gen = gen;
+                }
+            }
+            ui.draw_scene_panel(editor_model, session.get(), &scene_commands,
+                               sim_control.mode(), &camera, &selection_set,
+                               &field_commands, &console_log, nullptr);
+            ui.draw_properties_panel(selection_set, editor_model, properties_registry,
+                                    field_commands, component_commands, sim_control.mode(),
+                                    &cached_snapshot, specialized_editors, camera.position);
+            ui.draw_viewport_window();
+            ui.draw_console_panel(console_log);
             ui.draw_debug_panel(stats);
             ui.draw_worlds_panel(worlds, stats);
             ui.draw_camera_panel(camera);
+            {
+                const auto& vp = ui.viewport_rect();
+                ui.draw_gizmo(selection_set, field_commands, camera,
+                             sim_control.mode(), vp.x, vp.y, vp.w, vp.h);
+            }
             ui.end_frame();
         EndDrawing();
 
@@ -398,8 +533,9 @@ int main() {
                 camera_capture = false;
                 camera_controller.set_capture(glfw_window, false);
             }
-            // Phase B: enqueue the reload bake and return immediately.
-            // Progress and errors surface through the per-frame poll_event() drain.
+            selection_set.clear();
+            editor_model.clear_selection();
+            sim_control = matter::scene::SimulationControl{};
             session->reload();
         }
 
@@ -413,6 +549,9 @@ int main() {
                     camera_capture = false;
                     camera_controller.set_capture(glfw_window, false);
                 }
+                selection_set.clear();
+                editor_model.clear_selection();
+                sim_control = matter::scene::SimulationControl{};
                 session.reset();
                 session = open_world_and_start_bake(w);
                 if (!session) { printf("world switch failed; exiting\n"); break; }

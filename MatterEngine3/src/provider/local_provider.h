@@ -2,16 +2,20 @@
 #define VIEWER_LOCAL_PROVIDER_H
 
 #include "world_source.h"
+#include "world_lights.h"
 #include "part_store.h"
 #include "part_graph.h"           // PartGraph, InstallResult, ChildRequest
 #include "part_graph_snapshot.h"  // Task 9: live-edit graph snapshot
+#include "matter/world_definition.h"
 
 #if defined(MATTER_HAVE_SCRIPT_HOST)
 #include "script_host.h"
 #endif
 
+#include <cmath>
 #include <cstdint>
 #include <functional>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <set>
@@ -22,11 +26,30 @@
 namespace viewer {
 
 struct LocalProviderConfig {
-    std::string schemas_dir;      // ../examples/world_demo/schemas
-    std::string world_data_dir;   // ../examples/world_demo/WorldData
-    std::string world_name;       // "Demo"
-    std::string shared_lib_dir;   // ../shared-lib
-    std::string cache_root;       // persistent parts/ cache (NOT a /tmp throwaway)
+    std::string project_dir;
+    std::string objects_dir;
+    std::string worlds_dir;
+    std::string world_path;
+    std::string project_shared_lib_dir;
+    std::string engine_shared_lib_dir;
+
+    static LocalProviderConfig for_project(
+        const std::string& project_dir,
+        const std::string& world_name,
+        const std::string& engine_shared_lib_dir);
+
+    const std::string& object_sources_dir() const { return objects_dir; }
+    std::vector<std::string> shared_lib_roots() const {
+        std::vector<std::string> roots;
+        if (!project_shared_lib_dir.empty())
+            roots.push_back(project_shared_lib_dir);
+        if (!engine_shared_lib_dir.empty())
+            roots.push_back(engine_shared_lib_dir);
+        return roots;
+    }
+
+    std::string world_name;
+    std::string cache_root;
 
     // Invoked during fetch_parts once per part processed (bake or cache hit):
     // module = part module name, done/total = progress through the want list.
@@ -63,6 +86,111 @@ struct LocalProviderConfig {
     // rebuilds operate on a diff of changed files, not a full root-params change).
     std::string root_params_json;
 };
+
+inline LocalProviderConfig LocalProviderConfig::for_project(
+    const std::string& project_dir_value,
+    const std::string& world_name_value,
+    const std::string& engine_shared_lib_dir_value) {
+    namespace fs = std::filesystem;
+    LocalProviderConfig cfg;
+    const fs::path project(project_dir_value);
+    cfg.project_dir = project.string();
+    cfg.objects_dir = (project / "objects").string();
+    cfg.worlds_dir = (project / "worlds").string();
+    cfg.world_name = world_name_value;
+    cfg.world_path = (project / "worlds" / (world_name_value + ".js")).string();
+    const fs::path project_shared = project / "shared-lib";
+    std::error_code ec;
+    if (fs::is_directory(project_shared, ec))
+        cfg.project_shared_lib_dir = project_shared.string();
+    cfg.engine_shared_lib_dir = engine_shared_lib_dir_value;
+    cfg.cache_root = (project / ".cache" / world_name_value).string();
+    return cfg;
+}
+
+struct ProviderWorldDefinition {
+    std::vector<part_graph::ChildRequest> roots;
+    std::vector<matter::Mat4f> root_transforms;
+    std::vector<bool> expand_flags;
+    std::vector<bool> tileset_flags;
+    world_lights::WorldLights lights;
+    matter::WorldSettings settings;
+};
+
+struct ProceduralWorldProfile {
+    float sector_size = 16.0f;
+    float y_min = -64.0f;
+    float y_max = 192.0f;
+
+    template <typename WorldBinding>
+    void apply(WorldBinding& binding) const {
+        binding.sector_size = sector_size;
+        binding.y_min = y_min;
+        binding.y_max = y_max;
+    }
+};
+
+inline ProceduralWorldProfile select_procedural_world_profile(
+    bool project_layout,
+    const matter::WorldSettings& authored,
+    const matter::WorldSettings& legacy) {
+    const matter::WorldSettings& selected = project_layout ? authored : legacy;
+    return {selected.sector_size, selected.y_min, selected.y_max};
+}
+
+inline ProviderWorldDefinition adapt_world_definition(
+    const matter::WorldDefinition& definition) {
+    ProviderWorldDefinition out;
+    out.roots.reserve(definition.roots.size());
+    out.root_transforms.reserve(definition.roots.size());
+    out.expand_flags.reserve(definition.roots.size());
+    out.tileset_flags.reserve(definition.roots.size());
+    for (const matter::WorldRoot& root : definition.roots) {
+        out.roots.push_back({root.module,
+                             part_graph::params_from_json(root.params_json)});
+        out.root_transforms.push_back(root.transform);
+        out.expand_flags.push_back(root.expand);
+        out.tileset_flags.push_back(root.tileset);
+    }
+
+    out.settings = definition.settings;
+    out.lights.sun_dir[0] = definition.settings.sun_direction.x;
+    out.lights.sun_dir[1] = definition.settings.sun_direction.y;
+    out.lights.sun_dir[2] = definition.settings.sun_direction.z;
+    out.lights.sun_color[0] = definition.settings.sun_color.x;
+    out.lights.sun_color[1] = definition.settings.sun_color.y;
+    out.lights.sun_color[2] = definition.settings.sun_color.z;
+    out.lights.sky_color[0] = definition.settings.sky_color.x;
+    out.lights.sky_color[1] = definition.settings.sky_color.y;
+    out.lights.sky_color[2] = definition.settings.sky_color.z;
+    out.lights.spots.reserve(definition.lights.size());
+    constexpr float kPiOver180 = 3.14159265358979323846f / 180.0f;
+    for (const matter::WorldLight& light : definition.lights) {
+        world_lights::SpotLight runtime{};
+        runtime.pos[0] = light.position.x;
+        runtime.pos[1] = light.position.y;
+        runtime.pos[2] = light.position.z;
+        runtime.dir[0] = light.direction.x;
+        runtime.dir[1] = light.direction.y;
+        runtime.dir[2] = light.direction.z;
+        const float length = std::sqrt(runtime.dir[0] * runtime.dir[0] +
+                                       runtime.dir[1] * runtime.dir[1] +
+                                       runtime.dir[2] * runtime.dir[2]);
+        if (length > 1e-8f) {
+            runtime.dir[0] /= length;
+            runtime.dir[1] /= length;
+            runtime.dir[2] /= length;
+        }
+        runtime.color[0] = light.color.x * light.intensity;
+        runtime.color[1] = light.color.y * light.intensity;
+        runtime.color[2] = light.color.z * light.intensity;
+        runtime.range = light.range;
+        runtime.cos_inner = std::cos(light.inner_cone_degrees * kPiOver180);
+        runtime.cos_outer = std::cos(light.outer_cone_degrees * kPiOver180);
+        out.lights.spots.push_back(runtime);
+    }
+    return out;
+}
 
 // Drives the SP-3 install path over a persistent content-addressed cache and
 // scatters the example world (terrain/trees/grass) into a WorldManifest. Same
@@ -165,10 +293,38 @@ public:
 
     // Access the transient scratch dir (for test assertions).
     const std::string& transient_dir() const { return transient_dir_; }
+    const std::vector<std::string>& shared_lib_roots() const {
+        return abs_shared_lib_roots_;
+    }
+    const matter::WorldSettings& world_settings() const {
+        return world_settings_;
+    }
 
     // Phase C Task 4: name of the module tagged `world` in world.manifest (empty
     // if no world-kind entry). Populated after install_graph(). Task 9 consumes it.
     const std::string& world_module() const { return world_module_; }
+
+    // Task: authored entities parsed from `static entities` / buildEntities()
+    // in the world script, populated by load_authored_world() and consumed
+    // by the ECS runtime to bootstrap Flecs entities.
+    const std::vector<matter::RawEntityRecipe>& authored_entities() const {
+        return authored_entities_;
+    }
+
+    bool resolve_module_hash(const std::string& module_name, uint64_t& out_hash) const {
+        for (const auto& kv : module_by_hash_) {
+            if (kv.second == module_name) { out_hash = kv.first; return true; }
+        }
+        return false;
+    }
+
+    std::map<std::string, uint64_t> entity_part_hashes() const {
+        std::map<std::string, uint64_t> out;
+        for (const auto& kv : graph_snapshot_.nodes)
+            if (kv.second.resolved_hash != 0)
+                out[kv.first] = kv.second.resolved_hash;
+        return out;
+    }
 
 #if defined(MATTER_HAVE_SCRIPT_HOST)
     // Phase C Task 9: expose the shared HostBaker so install_world can set the
@@ -184,14 +340,17 @@ private:
     int                  install_bake_count_ = 0; // counter for install-phase on_part callbacks
     std::set<uint64_t>   baked_hashes_;  // hashes freshly baked by last install_graph()
     std::map<uint64_t, std::string> module_by_hash_; // hash -> module name (from manifest roots)
+    std::vector<matter::RawEntityRecipe> authored_entities_; // authored entity recipes from world script
     std::vector<FetchFailed> fetch_failed_; // Task 7 fix: per-part load failures from fetch_parts()
     part_graph_snapshot::Snapshot graph_snapshot_;  // Task 9: live-edit graph snapshot
 
     // State produced by install_graph(), consumed by compose_world().
     // Valid only after a successful install_graph() call.
     std::string abs_schemas_;
-    std::string abs_world_data_;
-    std::string abs_shared_lib_;
+    std::string abs_world_path_;
+    std::string abs_project_shared_lib_;
+    std::string abs_engine_shared_lib_;
+    std::vector<std::string> abs_shared_lib_roots_;
     std::string abs_cache_root_;
 
     // Select scratch for a transient hash only when its current .part is
@@ -200,12 +359,16 @@ private:
 
     // install_graph() output: roots split by kind, install result
     std::vector<part_graph::ChildRequest> roots_;           // all manifest roots
+    std::vector<matter::Mat4f>            root_transforms_;
     std::vector<bool>                     expand_flags_;
     std::vector<bool>                     tileset_flags_;
     std::vector<part_graph::ChildRequest> roots_for_install_;
     std::vector<size_t>                   install_to_orig_;
     std::vector<size_t>                   tileset_indices_;
+    size_t                                entity_part_root_start_ = 0;
     part_graph::InstallResult             ir_;
+    static std::set<std::string> collect_entity_part_modules(
+        const std::vector<matter::RawEntityRecipe>& entities);
 
 #if defined(MATTER_HAVE_SCRIPT_HOST)
     // Owned objects that span both phases.
@@ -220,6 +383,11 @@ private:
 
     // Task 4: world-kind module name from manifest (empty if none).
     std::string world_module_;
+    world_lights::WorldLights authored_lights_;
+    matter::WorldSettings world_settings_;
+
+    bool prepare_paths(std::string& err);
+    bool load_authored_world(std::string& err);
 };
 
 // Expand an assembly root's baked child-instance table (from its .part in

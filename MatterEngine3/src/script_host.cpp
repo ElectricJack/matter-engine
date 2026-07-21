@@ -316,7 +316,7 @@ std::string ScriptHost::merge_params_canonical(const std::string& source,
     // reference imported values). Fail-closed on a fold error.
     ModuleStore store;
     bool use_module = false;
-    if (!shared_lib_root_.empty()) {
+    if (!shared_lib_roots_.empty()) {
         module_resolver::FoldResult fr;
         std::string ferr;
         if (!fold_sources_cached(source, fr, ferr)) {
@@ -386,12 +386,14 @@ std::vector<RequiredChild> ScriptHost::eval_requires(const std::string& source,
     // Reuse the shared params-merge path so the params handed to `requires` are
     // the same canonical merged params build()/resolve_hash see.
     // Tileset classes extend Tileset (not Part directly), so merge_params_canonical
-    // returns "{}" with kNoPartClassMsg — accept the fallback (like eval_tileset does)
-    // and only fail-closed on a genuinely bad params_json parse or other errors.
+    // returns kNoPartClassMsg. In that expected case, retain the caller's canonical
+    // authored root params so functional static requires(params) sees the same value
+    // later passed to eval_tileset/build. Only fail closed on other merge errors.
     BakeError merr;
     std::string merged = merge_params_canonical(source, params_json, merr);
     if (!merr.ok && merr.message != kNoPartClassMsg) return out;
-    if (!merr.ok) merged = "{}";  // tileset fallback: no static params
+    if (!merr.ok)
+        merged = params_json.empty() ? "{}" : params_json;
 
     // Try Part class first; fall back to Tileset class name for tileset roots.
     bool is_tileset = false;
@@ -407,7 +409,7 @@ std::vector<RequiredChild> ScriptHost::eval_requires(const std::string& source,
     // error by returning an empty list.
     ModuleStore store;
     bool use_module = false;
-    if (!shared_lib_root_.empty()) {
+    if (!shared_lib_roots_.empty()) {
         module_resolver::FoldResult fr;
         std::string ferr;
         if (!fold_sources_cached(source, fr, ferr)) return out;
@@ -436,12 +438,21 @@ std::vector<RequiredChild> ScriptHost::eval_requires(const std::string& source,
         }
         JS_FreeValue(ctx, tsbase);
         std::string wrapped = source + "\n;globalThis.__partClass = " + className + ";\n";
-        JSValue v = JS_Eval(ctx, wrapped.c_str(), wrapped.size(), "<tileset>",
-                            JS_EVAL_TYPE_GLOBAL);
-        if (JS_IsException(v)) {
-            JS_FreeValue(ctx, v); JS_FreeContext(ctx); JS_FreeRuntime(rt); return out;
+        if (use_module) {
+            bool threw = false;
+            JSValue v = eval_part_as_module(ctx, rt, wrapped, &threw);
+            if (threw) {
+                JS_FreeValue(ctx, v); JS_FreeContext(ctx); JS_FreeRuntime(rt); return out;
+            }
+            JS_FreeValue(ctx, v);
+        } else {
+            JSValue v = JS_Eval(ctx, wrapped.c_str(), wrapped.size(), "<tileset>",
+                                JS_EVAL_TYPE_GLOBAL);
+            if (JS_IsException(v)) {
+                JS_FreeValue(ctx, v); JS_FreeContext(ctx); JS_FreeRuntime(rt); return out;
+            }
+            JS_FreeValue(ctx, v);
         }
-        JS_FreeValue(ctx, v);
     } else {
         if (!eval_part_publish_class(source, className, use_module ? &store : nullptr,
                                      rt, ctx, eerr))
@@ -549,7 +560,7 @@ ScriptHost::LodBudgetSpec ScriptHost::eval_lod_budgets(const std::string& source
 
     ModuleStore store;
     bool use_module = false;
-    if (!shared_lib_root_.empty()) {
+    if (!shared_lib_roots_.empty()) {
         module_resolver::FoldResult fr;
         std::string ferr;
         if (!fold_sources_cached(source, fr, ferr)) return out;
@@ -609,9 +620,9 @@ uint64_t ScriptHost::resolve_hash(const std::string& source,
     module_resolver::FoldResult fr;
     const char* src_bytes = source.data();
     size_t      src_len   = source.size();
-    if (!shared_lib_root_.empty()) {
+    if (!shared_lib_roots_.empty()) {
         std::string ferr;
-        if (!module_resolver::fold_sources(source, shared_lib_root_, fr, ferr))
+        if (!module_resolver::fold_sources(source, shared_lib_roots_, fr, ferr))
             return 0;   // fail-closed
         src_bytes = fr.folded.data();
         src_len   = fr.folded.size();
@@ -969,7 +980,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     // previously created. The fold result, merged string, and resolved_hash are all
     // byte-identical to the previous double-RT path.
     module_resolver::FoldResult fold;
-    if (!shared_lib_root_.empty()) {
+    if (!shared_lib_roots_.empty()) {
         std::string ferr;
         if (!fold_sources_cached(source, fold, ferr)) {
             // Fail-closed: a missing/illegal shared module aborts the bake with
@@ -1246,7 +1257,6 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         if (tb && !tb->triangles().empty()) {
             const std::vector<Tri>&   src_t = tb->triangles();
             const std::vector<TriEx>& src_e = tb->tri_extra();
-
             // Partition the direct-triangle stream into base + one bucket per
             // modifier region using each region's recorded [tri_begin, tri_end).
             // Single walk over the flat stream (regions are ordered/non-overlapping).
@@ -1266,7 +1276,6 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                     }
                 }
             }
-
             // Base direct-triangle path: register each triangle as-is.
             if (!base_t.empty()) {
                 std::vector<Tri>   norm(base_t.size());
@@ -1360,10 +1369,26 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                            ? rel_path
                            : opts.parts_dir + "/" + rel_path;
         part_asset::LodLevels lods{};   // SP-2 writes no LOD array.
+        // Collect volumetric emitters authored via emitVolume() during build().
+        std::vector<part_asset::VolumeEmitter> emitters;
+        emitters.reserve(state.emitters().size());
+        for (const auto& e : state.emitters()) {
+            part_asset::VolumeEmitter ve;
+            std::memcpy(ve.pos,   e.pos,   sizeof ve.pos);
+            std::memcpy(ve.dir,   e.dir,   sizeof ve.dir);
+            ve.radius     = e.radius;
+            ve.spread     = e.spread;
+            ve.length     = e.length;
+            ve.density    = e.density;
+            std::memcpy(ve.color, e.color, sizeof ve.color);
+            ve.rise       = e.rise;
+            ve.turbulence = e.turbulence;
+            emitters.push_back(ve);
+        }
         prof_mesh = prof_lap();
         bool ok = part_asset::save_v2(path, blas, tlas,
                                       kids.empty() ? nullptr : kids.data(), kids.size(),
-                                      lods, r.resolved_hash);
+                                      lods, emitters, r.resolved_hash);
         if (!ok) { r.error.ok = false; r.error.message = "save_v2 failed"; }
         else {
             r.written_path = path;
@@ -1421,14 +1446,6 @@ done:
     }
 }
 
-// Extract the authored class name from `class <Name> extends World`.
-static std::string find_world_class_name(const std::string& source) {
-    static const std::regex re("class\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s+extends\\s+World\\b");
-    std::smatch m;
-    if (std::regex_search(source, m, re)) return m[1].str();
-    return std::string();
-}
-
 // ---------------------------------------------------------------------------
 // eval_world: evaluate a World-definition class, return the field program text
 // and biome table JSON. Mirrors eval_requires/eval_tileset structurally.
@@ -1438,7 +1455,7 @@ WorldEvalResult ScriptHost::eval_world(const std::string& source,
     WorldEvalResult r;
 
     // 1. Find class name.
-    std::string className = find_world_class_name(source);
+    std::string className = matter::world_script_detail::find_world_class_name(source);
     if (className.empty()) {
         r.message = "no class extending World found";
         return r;
@@ -1512,7 +1529,7 @@ WorldEvalResult ScriptHost::eval_world(const std::string& source,
     module_resolver::FoldResult fold;
     ModuleStore fold_store;
     bool use_module = false;
-    if (!shared_lib_root_.empty()) {
+    if (!shared_lib_roots_.empty()) {
         std::string ferr;
         if (!fold_sources_cached(source, fold, ferr)) {
             r.message = "module resolution failed: " + ferr;
@@ -1843,7 +1860,7 @@ TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
 
         const char* src_bytes = source.data();
         size_t      src_len   = source.size();
-        if (!shared_lib_root_.empty()) {
+        if (!shared_lib_roots_.empty()) {
             std::string ferr;
             if (!fold_sources_cached(source, fold, ferr)) {
                 r.error.ok = false;
@@ -2249,7 +2266,9 @@ ts_done:
 
 // FNV-1a 64-bit hash of two strings (source + shared_lib_root).
 // Used as cache key for (source, shared_lib_root) pairs.
-static uint64_t fold_key_fnv1a64(const std::string& a, const std::string& b) {
+static uint64_t fold_key_fnv1a64(
+    const std::string& source,
+    const std::vector<std::string>& ordered_roots) {
     uint64_t h = 1469598103934665603ull;  // FNV offset basis
     auto mix = [&](const std::string& s) {
         for (unsigned char c : s) {
@@ -2259,8 +2278,8 @@ static uint64_t fold_key_fnv1a64(const std::string& a, const std::string& b) {
         h ^= 0xff;
         h *= 1099511628211ull;  // separator
     };
-    mix(a);
-    mix(b);
+    mix(source);
+    for (const std::string& root : ordered_roots) mix(root);
     return h;
 }
 
@@ -2268,12 +2287,12 @@ bool ScriptHost::fold_sources_cached(const std::string& source,
                                      module_resolver::FoldResult& out,
                                      std::string& err) {
     // If no shared-lib root, skip the cache and just return an empty fold result.
-    if (shared_lib_root_.empty()) {
+    if (shared_lib_roots_.empty()) {
         out = module_resolver::FoldResult{};
         return true;
     }
 
-    const uint64_t key = fold_key_fnv1a64(source, shared_lib_root_);
+    const uint64_t key = fold_key_fnv1a64(source, shared_lib_roots_);
 
     // Check cache first (with lock).
     {
@@ -2288,7 +2307,7 @@ bool ScriptHost::fold_sources_cached(const std::string& source,
 
     // Cache miss: fold the sources.
     module_resolver::FoldResult fresh;
-    if (!module_resolver::fold_sources(source, shared_lib_root_, fresh, err)) {
+    if (!module_resolver::fold_sources(source, shared_lib_roots_, fresh, err)) {
         return false;
     }
 

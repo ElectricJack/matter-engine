@@ -1,4 +1,7 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "vol_common.glsl"
 
 layout(location = 0) in vec2 in_uv;
 layout(location = 0) out vec4 out_hdr;
@@ -11,8 +14,6 @@ layout(set = 0, binding = 4) uniform sampler2D raw_diffuse_texture;
 layout(set = 0, binding = 5) uniform sampler2D specular_texture;
 layout(set = 0, binding = 6) uniform usampler2D identity_texture;
 
-// Mirrors MaterialGpuRecord / rt_surface_common.glsl RtMaterialGpu; declared
-// locally because rt_surface_common.glsl claims set 0 bindings 3-5.
 struct RtMaterialGpu {
     vec4 base_roughness;
     vec4 metal_opacity_spec_coat;
@@ -32,6 +33,8 @@ layout(set = 0, binding = 7, std430) readonly buffer RtMaterialTable {
 const uint MATERIAL_THIN_WALLED = 1u << 0u;
 
 layout(set = 0, binding = 8) uniform sampler2D transmission_texture;
+layout(set = 0, binding = 9) uniform sampler3D vol_integrated_texture;
+layout(set = 0, binding = 10) uniform sampler2D depth_texture;
 
 layout(push_constant) uniform SceneLighting {
     vec3 sun_direction;
@@ -41,10 +44,34 @@ layout(push_constant) uniform SceneLighting {
     vec3 sky_color;
     float emission_multiplier;
     float debug_view;
-    float pad0;
-    float pad1;
-    float pad2;
+    float camera_fwd_x;
+    float camera_fwd_y;
+    float camera_fwd_z;
+    float tan_half_fov;
+    float aspect_ratio;
+    float jitter_offset_u;
+    float jitter_offset_v;
+    float vol_enabled;
+    float vol_debug_view;
+    float camera_near;
+    float camera_far;
 } lighting;
+
+#include "sky_common.glsl"
+
+vec3 compute_view_ray(vec2 uv) {
+    vec3 fwd = vec3(lighting.camera_fwd_x, lighting.camera_fwd_y,
+                    lighting.camera_fwd_z);
+    vec3 world_up = abs(fwd.y) < 0.999 ? vec3(0, 1, 0) : vec3(0, 0, 1);
+    vec3 right = normalize(cross(fwd, world_up));
+    vec3 up = cross(right, fwd);
+    vec2 compensated = uv - vec2(lighting.jitter_offset_u,
+                                  lighting.jitter_offset_v);
+    vec2 ndc = vec2(compensated.x * 2.0 - 1.0, 1.0 - compensated.y * 2.0);
+    return normalize(fwd +
+        right * ndc.x * lighting.aspect_ratio * lighting.tan_half_fov +
+        up    * ndc.y * lighting.tan_half_fov);
+}
 
 void main() {
     vec4 albedo = texture(albedo_texture, in_uv);
@@ -54,6 +81,22 @@ void main() {
     vec3 normal = normal_length_squared > 1e-20
                     ? normal_sample * inversesqrt(normal_length_squared)
                     : vec3(0.0);
+
+    if (normal_length_squared <= 1e-20) {
+        vec3 ray = compute_view_ray(in_uv);
+        vec3 to_sun = normalize(-lighting.sun_direction);
+        vec3 sky = sky_with_sun(ray, lighting.sky_color,
+                                to_sun, lighting.sun_color,
+                                lighting.sun_intensity);
+        if (lighting.vol_enabled > 0.5) {
+            vec3 far_uvw = vec3(in_uv, 1.0 - 0.5 / float(VOL_D));
+            vec4 integrated = texture(vol_integrated_texture, far_uvw);
+            sky = sky * integrated.a + integrated.rgb;
+        }
+        out_hdr = vec4(sky, 1.0);
+        return;
+    }
+
     vec4 orm = texture(orm_texture, in_uv);
     vec3 to_sun = normalize(-lighting.sun_direction);
     float direct = max(dot(normal, to_sun), 0.0);
@@ -61,10 +104,36 @@ void main() {
     float metallic = orm.y;
     float ao = orm.z;
     vec3 diffuse = albedo.rgb * (1.0 - metallic);
-    vec3 ambient = diffuse * lighting.sky_color * ao;
+    vec3 ambient = diffuse * sky_irradiance(normal, lighting.sky_color) * ao;
     vec3 visibility = texture(visibility_texture, in_uv).rgb;
+    if (lighting.debug_view > 1.5) {
+        out_hdr = vec4(normal * 0.5 + 0.5, 1.0);
+        return;
+    }
     if (lighting.debug_view > 0.5) {
         out_hdr = vec4(visibility, 1.0);
+        return;
+    }
+    if (lighting.vol_debug_view > 2.5) {
+        float depth_sample = texture(depth_texture, in_uv).r;
+        // Reversed-ZO inverse: hw=1 -> near, hw=0 -> far (see
+        // vol_scatter.comp's prev_depth for the plug-in verification).
+        float linear_depth = lighting.camera_near * lighting.camera_far /
+            max(depth_sample * (lighting.camera_far - lighting.camera_near) +
+                lighting.camera_near, 1e-6);
+        float slice_n = depth_to_slice_n(linear_depth);
+        vec3 uvw = vec3(in_uv, slice_n);
+        if (lighting.vol_debug_view > 4.5) {
+            vec4 integrated = texture(vol_integrated_texture, uvw);
+            out_hdr = vec4(integrated.rgb, 1.0);
+        } else if (lighting.vol_debug_view > 3.5) {
+            vec4 integrated = texture(vol_integrated_texture, uvw);
+            out_hdr = vec4(integrated.rgb * 5.0, 1.0);
+        } else {
+            vec4 integrated = texture(vol_integrated_texture, uvw);
+            float density_vis = 1.0 - integrated.a;
+            out_hdr = vec4(vec3(density_vis), 1.0);
+        }
         return;
     }
     uint material_index = texelFetch(identity_texture,
@@ -75,9 +144,6 @@ void main() {
         float subsurface = clamp(material.scattering.w, 0.0, 1.0);
         if (subsurface > 0.0) {
             if ((material.flags_misc.x & MATERIAL_THIN_WALLED) != 0u) {
-                // Thin-walled backlight: view-independent wrapped term
-                // (composite has no camera position), sharpened by the
-                // authored anisotropy.
                 float backlit = clamp(-dot(normal, to_sun), 0.0, 1.0);
                 float aniso = clamp(material.scattering_shape.y, 0.0, 1.0);
                 backlit = pow(backlit, mix(1.0, 4.0, aniso));
@@ -86,8 +152,6 @@ void main() {
                 sun_response += material.scattering.rgb * subsurface *
                                 backlit * distance_falloff;
             } else {
-                // Wax-style wrap: soften the terminator; the wrapped-in
-                // region is tinted by the scattering color.
                 float wrapped = clamp((dot(normal, to_sun) + subsurface) /
                                       (1.0 + subsurface), 0.0, 1.0);
                 sun_response += diffuse * material.scattering.rgb *
@@ -113,8 +177,50 @@ void main() {
     vec3 specular = texture(specular_texture, in_uv).rgb;
     vec4 transmission = texture(transmission_texture, in_uv);
     float transmission_coverage = clamp(transmission.a, 0.0, 1.0);
+    vec3 glass_reflection = vec3(0.0);
+    if (transmission_coverage < 0.01 && material_index < rt_materials.length()) {
+        RtMaterialGpu mat = rt_materials[material_index];
+        float mat_trans = clamp(mat.transmission.x, 0.0, 1.0);
+        if (mat_trans > 0.0) {
+            float ior = max(mat.transmission.y, 1.001);
+            float r0 = pow((1.0 - ior) / (1.0 + ior), 2.0);
+            vec3 view_ray = compute_view_ray(in_uv);
+            float cos_i = clamp(abs(dot(normal, view_ray)), 0.0, 1.0);
+            float fresnel = r0 + (1.0 - r0) * pow(1.0 - cos_i, 5.0);
+            transmission_coverage = mat_trans * (1.0 - fresnel);
+            vec3 refract_dir = refract(-view_ray, normal, 1.0 / ior);
+            bool tir = dot(refract_dir, refract_dir) < 0.001;
+            vec3 reflect_dir = reflect(-view_ray, normal);
+            vec3 through_dir = tir ? reflect_dir : refract_dir;
+            vec3 to_sun = normalize(-lighting.sun_direction);
+            transmission.rgb = sky_with_sun(through_dir, lighting.sky_color,
+                                            to_sun, lighting.sun_color,
+                                            lighting.sun_intensity * 0.5)
+                             * mat.absorption_pad.rgb;
+            glass_reflection = sky_with_sun(reflect_dir, lighting.sky_color,
+                                            to_sun, lighting.sun_color,
+                                            lighting.sun_intensity)
+                             * fresnel * mat_trans;
+        }
+    }
     vec3 linear_hdr = (ambient + sun * mix(1.0, 0.65, roughness) +
                        raw_diffuse) * (1.0 - transmission_coverage) +
-                      emission + specular + transmission.rgb;
+                      emission + specular +
+                      transmission.rgb * transmission_coverage +
+                      glass_reflection;
+
+    if (lighting.vol_enabled > 0.5) {
+        float depth_sample = texture(depth_texture, in_uv).r;
+        // Reversed-ZO inverse: hw=1 -> near, hw=0 -> far (see
+        // vol_scatter.comp's prev_depth for the plug-in verification).
+        float linear_depth = lighting.camera_near * lighting.camera_far /
+            max(depth_sample * (lighting.camera_far - lighting.camera_near) +
+                lighting.camera_near, 1e-6);
+        float slice_n = depth_to_slice_n(linear_depth);
+        vec3 uvw = vec3(in_uv, slice_n);
+        vec4 integrated = texture(vol_integrated_texture, uvw);
+        linear_hdr = linear_hdr * integrated.a + integrated.rgb;
+    }
+
     out_hdr = vec4(linear_hdr, 1.0);
 }

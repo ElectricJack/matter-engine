@@ -74,6 +74,62 @@ To create a new project that builds on existing ones:
 
 ## Building Projects
 
+### Toolchain (Windows / MSYS2 UCRT64)
+
+The project builds with GCC from MSYS2's UCRT64 environment. The compiler lives at
+`C:\msys64\ucrt64\bin\g++.exe`. MSYS2's `/usr/bin/make` is used as the build driver.
+
+**Critical: TEMP variable fix.** MSYS2's make clobbers the Windows TEMP env var,
+causing GCC to fail with "Cannot create temporary file in C:\WINDOWS\". Always pass
+TEMP explicitly:
+
+```bash
+export PATH="/c/msys64/ucrt64/bin:/c/msys64/usr/bin:$PATH"
+
+# Build kernel library
+make -C MatterEngine3 \
+  TMP="C:/Users/webde/AppData/Local/Temp" \
+  TEMP="C:/Users/webde/AppData/Local/Temp"
+
+# Build viewer (Windows target)
+make -C MatterViewer windows \
+  TMP="C:/Users/webde/AppData/Local/Temp" \
+  TEMP="C:/Users/webde/AppData/Local/Temp"
+
+# Run tests (pass GRAPHICS= on Windows since it's unset)
+make -C MatterEngine3/tests run-world-definition \
+  TMP="C:/Users/webde/AppData/Local/Temp" \
+  TEMP="C:/Users/webde/AppData/Local/Temp" \
+  GRAPHICS=GRAPHICS_API_OPENGL_43
+```
+
+**Note:** Test link targets that use `-lGL -lX11 -ldl -lrt` (Linux-only libs) will
+fail at link time on Windows. Compilation still succeeds — the syntax/semantic check
+is the important gate. Tests that don't depend on raylib or GL (like
+`run-world-definition`, `run-script`, `run-evalworld`) link and run fully on Windows.
+
+### Worktree setup (symlinks)
+
+Git worktrees on Windows render tracked symlinks as small text files. Run the setup
+script from repo root after creating a worktree:
+
+```bash
+bash setup-worktree.sh
+```
+
+This creates NTFS junctions for the three directory symlinks the build requires:
+- `MatterEngine3/shaders` → `MatterSurfaceLib/shaders`
+- `MatterViewer/shaders` → `MatterSurfaceLib/shaders`
+- `MatterViewer/shaders_gpu` → `MatterEngine3/shaders_gpu`
+
+### Sandbox note for Claude Desktop App
+
+When running commands via the Claude Desktop App (not CLI), the Bash tool is sandboxed.
+To compile, use `dangerouslyDisableSandbox: true` on Bash tool calls. The sandbox
+blocks writes to system temp directories that GCC requires.
+
+### Standard build commands
+
 Each project has its own Makefile and can be built independently:
 
 ```bash

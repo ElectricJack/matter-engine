@@ -934,6 +934,71 @@ static JSValue j_terrainVolume(JSContext* c, JSValueConst, int n, JSValueConst* 
     return JS_UNDEFINED;
 }
 
+// emitVolume({ pos, dir, radius, spread, length, density, color, rise, turbulence })
+static JSValue j_emitVolume(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    DslState* st = state_of(c);
+    if (n < 1 || !JS_IsObject(a[0])) {
+        st->set_error("emitVolume: expected an object argument");
+        return JS_UNDEFINED;
+    }
+    JSValueConst obj = a[0];
+    dsl::VolumeEmitter e{};
+
+    // pos (required array of 3)
+    {
+        JSValue v = JS_GetPropertyStr(c, obj, "pos");
+        if (JS_IsUndefined(v) || JS_IsNull(v)) {
+            JS_FreeValue(c, v);
+            st->set_error("emitVolume: pos is required");
+            return JS_UNDEFINED;
+        }
+        for (int i = 0; i < 3; ++i) {
+            JSValue ei = JS_GetPropertyUint32(c, v, (uint32_t)i);
+            e.pos[i] = (float)argd(c, ei);
+            JS_FreeValue(c, ei);
+        }
+        JS_FreeValue(c, v);
+    }
+
+    // dir (optional array of 3, default {0,1,0})
+    {
+        JSValue v = JS_GetPropertyStr(c, obj, "dir");
+        if (!JS_IsUndefined(v) && !JS_IsNull(v)) {
+            for (int i = 0; i < 3; ++i) {
+                JSValue ei = JS_GetPropertyUint32(c, v, (uint32_t)i);
+                e.dir[i] = (float)argd(c, ei);
+                JS_FreeValue(c, ei);
+            }
+        }
+        JS_FreeValue(c, v);
+    }
+
+    // color (optional array of 3, default {1,1,1})
+    {
+        JSValue v = JS_GetPropertyStr(c, obj, "color");
+        if (!JS_IsUndefined(v) && !JS_IsNull(v)) {
+            for (int i = 0; i < 3; ++i) {
+                JSValue ei = JS_GetPropertyUint32(c, v, (uint32_t)i);
+                e.color[i] = (float)argd(c, ei);
+                JS_FreeValue(c, ei);
+            }
+        }
+        JS_FreeValue(c, v);
+    }
+
+    // Scalar fields (all optional with defaults from the struct initializer)
+    double d;
+    if (opt_num(c, obj, "radius",     d)) e.radius     = (float)d;
+    if (opt_num(c, obj, "spread",     d)) e.spread     = (float)d;
+    if (opt_num(c, obj, "length",     d)) e.length     = (float)d;
+    if (opt_num(c, obj, "density",    d)) e.density    = (float)d;
+    if (opt_num(c, obj, "rise",       d)) e.rise       = (float)d;
+    if (opt_num(c, obj, "turbulence", d)) e.turbulence = (float)d;
+
+    st->emit_volume(e);
+    return JS_UNDEFINED;
+}
+
 void install_bindings(JSContext* ctx) {
     JSValue g = JS_GetGlobalObject(ctx);
     auto bind=[&](const char* n, JSCFunction* f, int argc){ JS_SetPropertyStr(ctx,g,n,JS_NewCFunction(ctx,f,n,argc)); };
@@ -956,6 +1021,8 @@ void install_bindings(JSContext* ctx) {
     bind("__dsl_beginContour",j_beginContour,0); bind("__dsl_endContour",j_endContour,0);
     bind("__dsl_joinType",j_joinType,1); bind("__dsl_extrude",j_extrude,1);
     bind("__dsl_position",j_position,0);
+    // Volumetric emitter binding.
+    bind("__dsl_emitVolume",j_emitVolume,1);
     // Terrain verb binding (Task 5: terrainVolume).
     bind("__terrainVolume",j_terrainVolume,4);
     // World query verbs (Task 7: heightAt/slopeAt/moistureAt/biomeAt).
