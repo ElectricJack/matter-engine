@@ -1,6 +1,6 @@
 class ChimneySmoke extends Part {
   build(p) {
-    emitVolume({
+    this.emitVolume({
       pos:        [0, 0, 0],
       dir:        [0, 1, 0],
       radius:     0.35,

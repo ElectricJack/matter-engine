@@ -1,6 +1,6 @@
 class WaterfallMist extends Part {
   build(p) {
-    emitVolume({
+    this.emitVolume({
       pos:        [0, 0, 0],
       dir:        [0, -0.3, 1],
       radius:     1.2,
