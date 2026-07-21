@@ -3999,6 +3999,10 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->vk_scene->set_dlss_mode(opts.dlss_mode);
     impl_->vk_scene->set_ray_tracing_settings(opts.vulkan_ray_tracing);
     impl_->vk_scene->set_gi_settings(opts.vulkan_gi);
+    {
+        matter::FogSettings fog{};
+        impl_->vk_scene->set_volumetrics_settings(opts.vulkan_volumetrics, fog);
+    }
     const int material_count = MaterialRegistryCount();
     std::vector<MaterialGpuRecord> material_records(
         static_cast<size_t>(material_count));
@@ -4299,6 +4303,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->stats.gpu_denoise_ms          = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneDenoise);
     impl_->stats.gpu_dlss_ms             = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneDlss);
     impl_->stats.gpu_composite_ms        = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneComposite);
+    impl_->stats.gpu_vol_ms              = impl_->vk_scene->gpu_zone_ms(viewer::VkSceneRenderer::kGpuZoneVolumetrics);
     return true;
 }
 

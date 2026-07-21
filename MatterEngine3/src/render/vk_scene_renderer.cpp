@@ -13,8 +13,11 @@
 #include "gpu_matrix_pack.h"
 #include "matrix_math.h"
 #include "matter/vulkan_device.h"
+#include "matter/world_definition.h"
+#include "matter/world_session.h"
 #include "shaders_gen/embedded_spirv.h"
 #include "streamline_bridge.h"
+#include "vk_volumetrics.h"
 
 namespace viewer {
 namespace {
@@ -329,6 +332,11 @@ struct RasterRecord {
     VkQueryPool ts_pool = VK_NULL_HANDLE;
     uint8_t* ts_written = nullptr;
     uint32_t gbuffer_zone = 0;
+    VkVolumetrics* volumetrics = nullptr;
+    uint32_t frame_slot = 0;
+    float frame_time = 0.0f;
+    uint32_t volumetrics_zone = 0;
+    VkAccelerationStructureKHR tlas = VK_NULL_HANDLE;
 };
 
 void record_raster(VkCommandBuffer command_buffer, void* user_data) {
@@ -473,6 +481,23 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    }
+
+    // --- Volumetrics pass: froxel density + scatter + integrate ---
+    if (record.volumetrics && record.volumetrics->active()) {
+        if (record.ts_pool != VK_NULL_HANDLE && record.ts_written) {
+            write_ts(command_buffer, record.ts_pool, record.volumetrics_zone, false);
+            record.ts_written[record.volumetrics_zone] |= 1u;
+        }
+        std::string vol_error;
+        record.volumetrics->record(
+            command_buffer, record.frame_slot,
+            *record.depth, record.tlas, *record.matrices,
+            record.frame_time, vol_error);
+        if (record.ts_pool != VK_NULL_HANDLE && record.ts_written) {
+            write_ts(command_buffer, record.ts_pool, record.volumetrics_zone, true);
+            record.ts_written[record.volumetrics_zone] |= 2u;
+        }
     }
 
     VkRenderingAttachmentInfo hdr_attachment{
@@ -881,6 +906,10 @@ VkSceneRenderer::~VkSceneRenderer() {
 
 void VkSceneRenderer::destroy_pipeline() {
     if (!vulkan_) return;
+    if (volumetrics_) {
+        volumetrics_->destroy();
+        volumetrics_.reset();
+    }
     const VkDevice device = vulkan_->device();
     rt_sbt_.reset();
     visibility_.reset();
@@ -2095,11 +2124,13 @@ void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
             ? (gi_filtered_valid_ ? &gi_spec_atrous_[gi_filtered_index_]
                                   : &gi_spec_history_[gi_composite_history_index_].radiance)
             : &raw_specular_;
+    const bool vol_active = volumetrics_ && volumetrics_->active();
     matter::VkImageResource* sampled[] = {&albedo_, &normal_, &orm_,
                                           &visibility_, diffuse, specular,
                                           &material_instance_,
                                           &raw_transmission_,
-                                          &vol_dummy_3d_,
+                                          vol_active ? &volumetrics_->vol_integrated()
+                                                     : &vol_dummy_3d_,
                                           &depth_};
     const uint32_t sampled_slots[] = {0, 1, 2, 3, 4, 5, 6, 8, 9, 10};
     VkDescriptorImageInfo image_infos[10]{};
@@ -2318,6 +2349,12 @@ bool VkSceneRenderer::init(std::string& error) {
     if (!create_pipeline(error)) {
         destroy_pipeline();
         return false;
+    }
+    if (!volumetrics_) {
+        auto vol = std::make_unique<VkVolumetrics>();
+        std::string vol_error;
+        if (vol->init(*vulkan_, vol_error))
+            volumetrics_ = std::move(vol);
     }
     if (sizeof(FrameConstants) >
         std::min(limits_.max_uniform_buffer_range, limits_.max_buffer_size)) {
@@ -3742,6 +3779,15 @@ void VkSceneRenderer::set_lighting(const VkSceneLighting& lighting) {
 
 void VkSceneRenderer::set_display_exposure(float exposure_ev) {
     display_exposure_ev_ = exposure_ev;
+}
+
+void VkSceneRenderer::set_volumetrics_settings(
+    const matter::VulkanVolumetricsSettings& s,
+    const matter::FogSettings& fog) {
+    volumetrics_enabled_ = s.enabled;
+    volumetrics_debug_view_ = s.vol_debug_view;
+    if (volumetrics_)
+        volumetrics_->update_settings(s, fog);
 }
 
 void VkSceneRenderer::release_part(uint64_t part_hash) {
@@ -5444,6 +5490,8 @@ bool VkSceneRenderer::record_cull_and_render(
         raw_transmission_.lifetime, vol_dummy_3d_.lifetime,
         gi_atrous_[0].lifetime, gi_atrous_[1].lifetime,
         gi_spec_atrous_[0].lifetime, gi_spec_atrous_[1].lifetime};
+    if (volumetrics_ && volumetrics_->active())
+        attachments.push_back(volumetrics_->vol_integrated().lifetime);
     for (auto* histories : {&gi_history_, &gi_spec_history_}) {
         for (auto& history : *histories) {
             attachments.push_back(history.radiance.lifetime);
@@ -5535,7 +5583,14 @@ bool VkSceneRenderer::record_cull_and_render(
                         &ray_trace_ok,
                         selected.ts_pool,
                         selected.ts_written,
-                        kGpuZoneGBuffer};
+                        kGpuZoneGBuffer,
+                        volumetrics_.get(),
+                        frame.frame_slot,
+                        static_cast<float>(frame.serial) * (1.0f / 60.0f),
+                        kGpuZoneVolumetrics,
+                        selected.rt_tlas.handle};
+    if (volumetrics_)
+        volumetrics_->set_lighting(frame_lighting);
     record_raster(frame.command_buffer, &record);
     if (!ray_trace_ok) return false;
     raster_attachments_ready_ = true;

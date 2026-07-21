@@ -39,6 +39,18 @@ struct FogSettings {
     float wind[3]  = {0.0f, 0.0f, 0.0f};
 };
 
+struct VulkanVolumetricsSettings {
+    bool  enabled        = false;
+    float temporal_blend = 0.85f;
+    float phase_g        = 0.3f;
+    float fog_density_mul  = 1.0f;
+    float fog_floor_offset = 0.0f;
+    float fog_falloff_mul  = 1.0f;
+    float fog_color_mul[3] = {1.0f, 1.0f, 1.0f};
+    float fog_wind_mul[3]  = {1.0f, 1.0f, 1.0f};
+    float vol_debug_view   = 0.0f;
+};
+
 struct WorldSettings {
     float sector_size = 16.0f;
     float y_min = -64.0f;

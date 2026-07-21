@@ -7,6 +7,7 @@
 
 #include "matter/camera.h"
 #include "matter/ecs.h"
+#include "matter/world_definition.h"
 #include "matter/streaming.h"
 #include "matter/vulkan_device.h"
 #include "render/vk_gi_contract.h"
@@ -41,18 +42,6 @@ struct VulkanLightingOverrides {
     float emission_multiplier = 1.0f;
     float exposure_ev = -2.0f;
     float composite_debug_view = 0.0f;
-};
-
-struct VulkanVolumetricsSettings {
-    bool  enabled        = false;
-    float temporal_blend = 0.85f;
-    float phase_g        = 0.3f;
-    float fog_density_mul  = 1.0f;
-    float fog_floor_offset = 0.0f;
-    float fog_falloff_mul  = 1.0f;
-    float fog_color_mul[3] = {1.0f, 1.0f, 1.0f};
-    float fog_wind_mul[3]  = {1.0f, 1.0f, 1.0f};
-    float vol_debug_view   = 0.0f;
 };
 
 struct RenderOptions {

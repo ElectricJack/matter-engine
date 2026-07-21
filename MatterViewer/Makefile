@@ -152,6 +152,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/render/streamline_bridge.cpp \
               $(ME3_DIR)/src/render/vk_context.cpp $(ME3_DIR)/src/render/vk_resources.cpp \
               $(ME3_DIR)/src/render/vk_pipeline.cpp $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+              $(ME3_DIR)/src/render/vk_volumetrics.cpp $(ME3_DIR)/src/render/vk_emitter_gather.cpp \
               $(ME3_DIR)/src/render/vk_instance_cache.cpp \
               $(ME3_DIR)/src/render/vulkan_only_compat.cpp \
               $(ME3_DIR)/src/render/frame_matrices.cpp $(ME3_DIR)/src/render/matrix_math.cpp \
@@ -461,6 +462,8 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_resources.h \
         $(ME3_DIR)/src/render/vk_pipeline.h \
         $(ME3_DIR)/src/render/vk_scene_renderer.h \
+        $(ME3_DIR)/src/render/vk_volumetrics.h \
+        $(ME3_DIR)/src/render/vk_emitter_gather.h \
         $(ME3_DIR)/src/render/vk_instance_cache.h \
         $(ME3_DIR)/src/render/vk_instance_cache.cpp \
         $(ME3_DIR)/src/render/vk_lighting_controls.h \
@@ -470,6 +473,8 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_resources.cpp \
         $(ME3_DIR)/src/render/vk_pipeline.cpp \
         $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+        $(ME3_DIR)/src/render/vk_volumetrics.cpp \
+        $(ME3_DIR)/src/render/vk_emitter_gather.cpp \
         $(ME3_DIR)/src/render/raster_mesh.cpp \
         $(ME3_DIR)/src/render/frame_matrices.cpp \
         $(ME3_DIR)/src/render/vk_temporal.cpp \
@@ -486,6 +491,8 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/vk_resources.cpp \
 	    $(ME3_DIR)/src/render/vk_pipeline.cpp \
 	    $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+	    $(ME3_DIR)/src/render/vk_volumetrics.cpp \
+	    $(ME3_DIR)/src/render/vk_emitter_gather.cpp \
 	    $(ME3_DIR)/src/render/raster_mesh.cpp \
 	    $(ME3_DIR)/src/render/vk_instance_cache.cpp \
 	    $(ME3_DIR)/src/render/frame_matrices.cpp \

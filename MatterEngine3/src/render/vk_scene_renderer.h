@@ -30,9 +30,13 @@ class VulkanDevice;
 class StreamlineBridge;
 enum class DlssMode : uint8_t;
 struct VulkanFrame;
+struct VulkanVolumetricsSettings;
+struct FogSettings;
 }
 
 namespace viewer {
+
+class VkVolumetrics;
 
 constexpr uint32_t kVkMaxLod =
     static_cast<uint32_t>(matter::kMaxSerializedLodLevels);
@@ -439,6 +443,8 @@ public:
         gi_settings_.samples_per_pixel = 1u;
         gi_settings_.trace_scale = std::max(0.125f, std::min(settings.trace_scale, 1.0f));
     }
+    void set_volumetrics_settings(const matter::VulkanVolumetricsSettings& s,
+                                  const matter::FogSettings& fog);
     // Blit the real HDR world composite into the currently acquired swapchain
     // image, leaving it ready for UI dynamic rendering.
     bool record_composite_to_swapchain(const matter::VulkanFrame& frame,
@@ -560,7 +566,8 @@ public:
     static constexpr uint32_t kGpuZoneDenoise      = 6;
     static constexpr uint32_t kGpuZoneDlss         = 7;
     static constexpr uint32_t kGpuZoneComposite    = 8;
-    static constexpr uint32_t kGpuZoneCount        = 9;
+    static constexpr uint32_t kGpuZoneVolumetrics  = 9;
+    static constexpr uint32_t kGpuZoneCount        = 10;
     bool gpu_timers_supported() const { return gpu_timers_supported_; }
     float gpu_zone_ms(uint32_t zone) const {
         return zone < kGpuZoneCount ? gpu_smoothed_ms_[zone] : 0.0f;
@@ -992,6 +999,9 @@ private:
     float composite_debug_override_ = 0.0f;
     matter::VulkanRayTracingSettings ray_tracing_settings_{};
     matter::VulkanGiSettings gi_settings_{};
+    std::unique_ptr<VkVolumetrics> volumetrics_;
+    bool volumetrics_enabled_ = false;
+    float volumetrics_debug_view_ = 0.0f;
     uint32_t last_rt_samples_ = 1;
     bool last_rt_debug_view_ = false;
     bool last_rt_available_ = false;
