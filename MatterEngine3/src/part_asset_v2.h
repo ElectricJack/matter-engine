@@ -190,4 +190,21 @@ bool is_cache_artifact_header_compatible(
 // read/magic failure). The provider uses this to spot stale v2 flats.
 uint32_t peek_format_version(const std::string& path);
 
+// Volume emitter: authored per-part via the emitVolume() DSL verb.
+// Stored in part-local space; the runtime transforms pos/dir by the
+// instance's object-to-world matrix before uploading to the GPU SSBO.
+struct VolumeEmitter {
+    float pos[3];
+    float dir[3];
+    float radius;
+    float spread;
+    float length;
+    float density;
+    float color[3];
+    float rise;
+    float turbulence;
+};
+static_assert(sizeof(VolumeEmitter) == 60,
+              "VolumeEmitter must be 15 tightly-packed floats");
+
 } // namespace part_asset
