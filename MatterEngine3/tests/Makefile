@@ -1646,3 +1646,20 @@ clean:
 	      refine_loop_tests \
 	      resolve_cache_tests \
 	      world_stream_tests
+
+# ---------------------------------------------------------------------------
+# Bake Lab task 5.3: pose-delta metric unit tests (settle-tick-optimizer.md
+# §II.3). Self-contained append-only block: separate .PHONY line and a clean
+# hook so the shared .PHONY/clean lines above stay untouched.
+# ---------------------------------------------------------------------------
+tileset_metrics_tests: tileset_metrics_tests.cpp ../src/tileset_metrics.cpp ../src/tileset_metrics.h
+	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include -I../src \
+	    -o $@ tileset_metrics_tests.cpp ../src/tileset_metrics.cpp -lm
+
+run-tilesetmetrics: tileset_metrics_tests
+	./tileset_metrics_tests
+
+.PHONY: run-tilesetmetrics clean-tilesetmetrics
+clean: clean-tilesetmetrics
+clean-tilesetmetrics:
+	rm -f tileset_metrics_tests
