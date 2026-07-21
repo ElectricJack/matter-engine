@@ -688,7 +688,7 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../src/render/world_composer.cpp \
               ../src/render/raster_mesh.cpp \
               ../src/render/tileset_provider.cpp ../src/render/tileset_gl_ctx.cpp \
-              ../src/tileset_phase.cpp ../src/tileset_phase_gpu.cpp \
+              ../src/tileset_phase.cpp \
               ../src/tileset_bake_primary.cpp ../src/tileset_bake_ao.cpp \
               ../src/tileset_settle.cpp ../src/tileset_gtex.cpp \
               ../src/tileset_bake.cpp ../src/tileset_bake_gpu.cpp ../src/tileset_collider.cpp \
@@ -763,7 +763,7 @@ GPU_PIPELINE_CPP = \
     ../src/world_lights.cpp \
     ../src/world_tracer.cpp \
     ../src/shader_source.cpp \
-    ../src/tileset_phase.cpp ../src/tileset_phase_gpu.cpp \
+    ../src/tileset_phase.cpp \
     ../src/tileset_bake.cpp ../src/tileset_settle.cpp \
     ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
     ../src/tileset_bake_primary.cpp ../src/tileset_bake_ao.cpp \
