@@ -203,7 +203,8 @@ void main() {
     float normal_length_squared = dot(normal_sample, normal_sample);
     vec3 orm = texelFetch(orm_texture, source_pixel, 0).xyz;
     uvec2 identity = texelFetch(identity_texture, source_pixel, 0).rg;
-    if (depth >= 1.0 || albedo.a <= 0.0 || normal_length_squared < 0.5) {
+    // Reversed-Z: far/cleared background is now 0.0 (was 1.0 under standard-Z).
+    if (depth <= 0.0 || albedo.a <= 0.0 || normal_length_squared < 0.5) {
         imageStore(raw_diffuse_image, pixel, vec4(0.0));
         imageStore(raw_specular_image, pixel, vec4(0.0));
         imageStore(raw_specular_aux_image, pixel, vec4(0.0));

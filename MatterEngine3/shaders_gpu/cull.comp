@@ -82,7 +82,14 @@ void main() {
             if (c.w <= 0.001) { crosses_near = true; break; }
             vec3 ndc = c.xyz / c.w;
             uv_min = min(uv_min, ndc.xy); uv_max = max(uv_max, ndc.xy);
-            z_min = min(z_min, ndc.z);   // Vulkan NDC already matches [0,1] depth
+            // view_proj is the canonical reversed-Z matrix (near->1, far->0),
+            // but the HiZ pyramid is built from the GL raster's depth buffer,
+            // which still uses the standard convention (rlFrustum + default
+            // glDepthRange: near->0, far->1). For matching near/far the two
+            // are exact complements: gl_depth == 1.0 - reversed_ndc_z, so
+            // convert per-corner to keep the min/max compare in GL-depth
+            // space.
+            z_min = min(z_min, 1.0 - ndc.z);
         }
         if (!crosses_near) {
             vec2 a = clamp(uv_min * 0.5 + 0.5, 0.0, 1.0);
