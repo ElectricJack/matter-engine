@@ -301,8 +301,8 @@ struct VkSceneLighting {
     matter::Float3 sky_color{0.38f, 0.43f, 0.52f};
     float emission_multiplier = 1.0f;
     float debug_view = 0.0f;
-    float pad0 = 0.0f;
-    float pad1 = 0.0f;
+    float vol_enabled = 0.0f;
+    float vol_debug_view = 0.0f;
     float pad2 = 0.0f;
 };
 static_assert(sizeof(VkSceneLighting) == 64);
