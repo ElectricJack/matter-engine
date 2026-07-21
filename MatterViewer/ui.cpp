@@ -78,15 +78,21 @@ bool Ui::setup(GLFWwindow* window, matter::VulkanDevice& vulkan,
                std::string& error) {
     vulkan_ = &vulkan;
     image_count_ = vulkan.swapchain_image_count();
+    // Dear ImGui's Vulkan backend (1.92+) allocates separate SAMPLED_IMAGE and
+    // SAMPLER descriptor sets from this pool (see imgui_impl_vulkan.cpp's
+    // DescriptorSetLayoutTexture/DescriptorSetLayoutSampler); without those
+    // pool sizes the validation layer warns on every vkAllocateDescriptorSets.
     const VkDescriptorPoolSize pool_sizes[] = {
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 128},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 128},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 128},
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 128},
+        {VK_DESCRIPTOR_TYPE_SAMPLER, 16},
     };
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pool.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     pool.maxSets = 384;
-    pool.poolSizeCount = 3;
+    pool.poolSizeCount = 5;
     pool.pPoolSizes = pool_sizes;
     VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
     const VkResult pool_result = vkCreateDescriptorPool(

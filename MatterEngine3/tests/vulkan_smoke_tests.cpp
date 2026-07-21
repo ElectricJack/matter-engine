@@ -28,6 +28,7 @@
 #include "render/vk_resources.h"
 #include "render/vk_scene_renderer.h"
 #include "provider/sector_resolver.h"
+#include "tileset_gtex.h"
 #include "../../MatterViewer/ui.h"
 
 namespace {
@@ -594,8 +595,13 @@ void run_streamline_presentation_funnel_tests(matter::VulkanDevice& vulkan) {
 void run_vulkan_only_handle_diagnostic(matter::VulkanDevice& vulkan) {
     std::string error;
     const auto trace = [](const char* label) {
+        // matter::win32_process_handle_count() no longer exists in the engine;
+        // query the Win32 process handle count directly (windows.h reaches
+        // this TU via VK_USE_PLATFORM_WIN32_KHR -> vulkan_win32.h).
+        DWORD handle_count = 0;
+        GetProcessHandleCount(GetCurrentProcess(), &handle_count);
         std::printf("HANDLE_DIAG %-38s count=%u result=0 sync=n/a\n", label,
-                    matter::win32_process_handle_count());
+                    static_cast<unsigned>(handle_count));
     };
     trace("Vulkan-only baseline");
     matter::VkImageResource image;
@@ -1428,6 +1434,153 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
               error.empty() ? "submit RT-disabled production frame"
                             : error.c_str());
     }
+}
+
+// Phase 1 tileset Vulkan port: end-to-end load_tileset_slot exercise against a
+// synthetic .gtex (no world content required). Asserts the fail-closed
+// negative paths, that a loaded slot's Wang-sampled albedo/ORM replace the
+// material's flat values in the G-buffer (gbuffer.frag Task 7 branch, keyed by
+// MaterialGpu.flags_misc[1] low byte = detailSlot + 1), the slot-replacement
+// path, and that unload falls back to the dummy descriptors without
+// validation complaints.
+void run_tileset_slot_load(matter::VulkanDevice& vulkan) {
+    constexpr uint32_t width = 160;
+    constexpr uint32_t height = 160;
+    std::string error;
+    viewer::VkSceneRenderer renderer(vulkan);
+    CHECK(renderer.init(error),
+          error.empty() ? "tileset: renderer init" : error.c_str());
+
+    // Synthetic 4x4-tile atlas, tile_px = 8 (32x32). Constant channels so the
+    // expected G-buffer values are exact regardless of Wang layer selection:
+    //   albedo (40, 80, 120), normal flat (128, 128),
+    //   ORM occlusion=255 / roughness=100 / metallic=20, height = 0.
+    const int tile_px = 8;
+    const int atlas_px = tile_px * 4;
+    const size_t pixel_count = static_cast<size_t>(atlas_px) * atlas_px;
+    std::vector<uint8_t> albedo(pixel_count * 3);
+    std::vector<uint8_t> normal(pixel_count * 2);
+    std::vector<uint8_t> orm(pixel_count * 3);
+    std::vector<uint16_t> height_px(pixel_count, 0);
+    for (size_t i = 0; i < pixel_count; ++i) {
+        albedo[i * 3 + 0] = 40;
+        albedo[i * 3 + 1] = 80;
+        albedo[i * 3 + 2] = 120;
+        normal[i * 2 + 0] = 128;
+        normal[i * 2 + 1] = 128;
+        orm[i * 3 + 0] = 255;
+        orm[i * 3 + 1] = 100;
+        orm[i * 3 + 2] = 20;
+    }
+    tileset::GTexHeader gtex_header{};
+    gtex_header.tile_size_m = 2.0f;
+    gtex_header.texels_per_meter = 4;
+    gtex_header.height_min = 0.0f;
+    gtex_header.height_max = 0.1f;
+    gtex_header.content_hash = 0x7113537u;
+    const char* temp_dir = std::getenv("TEMP");
+    const std::string gtex_path =
+        std::string(temp_dir ? temp_dir : ".") + "\\me3_smoke_tileset.gtex";
+    CHECK(tileset::save_gtex(gtex_path, gtex_header, atlas_px, atlas_px,
+                             albedo.data(), normal.data(), orm.data(),
+                             height_px.data(), error),
+          error.empty() ? "tileset: save synthetic .gtex" : error.c_str());
+
+    // Fail-closed negatives: bad slot, missing file. Neither may poison the
+    // renderer or leave descriptors half-written.
+    CHECK(!renderer.load_tileset_slot(4, gtex_path, error) && !error.empty(),
+          "tileset: slot 4 out of range fails closed");
+    CHECK(!renderer.load_tileset_slot(-1, gtex_path, error) && !error.empty(),
+          "tileset: slot -1 out of range fails closed");
+    CHECK(!renderer.load_tileset_slot(0, gtex_path + ".missing", error) &&
+              !error.empty(),
+          "tileset: missing .gtex path fails closed");
+
+    CHECK(renderer.load_tileset_slot(0, gtex_path, error),
+          error.empty() ? "tileset: load synthetic .gtex into slot 0"
+                        : error.c_str());
+
+    // Material 7 carries detail slot 0 (packed as slot + 1 = 1) with a flat
+    // base color deliberately different from the atlas so a pass could not
+    // come from the untextured path.
+    std::vector<MaterialGpuRecord> materials(9);
+    materials[7].base_roughness[0] = 0.9f;
+    materials[7].base_roughness[1] = 0.1f;
+    materials[7].base_roughness[2] = 0.1f;
+    materials[7].base_roughness[3] = 0.9f;
+    materials[7].metal_opacity_spec_coat[0] = 0.0f;
+    materials[7].metal_opacity_spec_coat[1] = 1.0f;
+    materials[7].scattering_shape[3] = 1.0f;
+    materials[7].flags_misc[1] = 1u;  // detailSlot 0 + 1, no macro slot
+    CHECK(renderer.update_materials(materials, 1, 1, error),
+          error.empty() ? "tileset: stage materials" : error.c_str());
+
+    viewer::VkScenePart triangle = known_raster_triangle(970);
+    if (triangle.indices.empty()) triangle.indices = {0, 1, 2};
+    CHECK(renderer.ensure_part(triangle, error) >= 0,
+          error.empty() ? "tileset: ensure ground triangle" : error.c_str());
+    const matter::Mat4f identity = identity_matrix();
+    CHECK(renderer.update_instances({{970, identity, 42}}, error),
+          error.empty() ? "tileset: upload instance" : error.c_str());
+
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.0f, 0.0f};
+    camera.target = {0.0f, 0.0f, -1.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.57079632679f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 10.0f;
+    viewer::FrameMatrices frame{};
+    CHECK(viewer::build_frame_matrices(camera, width, height, frame, error),
+          error.empty() ? "tileset: build frame matrices" : error.c_str());
+    CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f, error) &&
+              renderer.render_gbuffer_and_composite(width, height, error),
+          error.empty() ? "tileset: render textured frame" : error.c_str());
+
+    viewer::VkRasterPixel center{};
+    CHECK(renderer.readback_raster_pixel(width / 2, height / 2, center, error),
+          error.empty() ? "tileset: read center pixel" : error.c_str());
+    CHECK(close4(center.albedo,
+                 {40.0f / 255.0f, 80.0f / 255.0f, 120.0f / 255.0f, 1.0f},
+                 8e-3f),
+          "tileset: G-buffer albedo is the Wang-sampled atlas color");
+    CHECK(close4(center.orm,
+                 {100.0f / 255.0f, 20.0f / 255.0f, 0.5f, 1.0f}, 8e-3f),
+          "tileset: G-buffer ORM is texture roughness/metallic with baked AO");
+    CHECK(center.normal.y > 0.99f,
+          "tileset: flat tangent normal stays aligned with the geometric +Y");
+    CHECK(center.material_index == 7u,
+          "tileset: material id channel is untouched by the tileset branch");
+
+    // Replacement path: loading the same slot again must swap cleanly.
+    CHECK(renderer.load_tileset_slot(0, gtex_path, error),
+          error.empty() ? "tileset: reload slot 0 (replacement path)"
+                        : error.c_str());
+    CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f, error) &&
+              renderer.render_gbuffer_and_composite(width, height, error),
+          error.empty() ? "tileset: render after reload" : error.c_str());
+    viewer::VkRasterPixel reloaded{};
+    CHECK(renderer.readback_raster_pixel(width / 2, height / 2, reloaded,
+                                         error) &&
+              close4(reloaded.albedo,
+                     {40.0f / 255.0f, 80.0f / 255.0f, 120.0f / 255.0f, 1.0f},
+                     8e-3f),
+          "tileset: reloaded slot still samples the atlas");
+
+    // Unload: material still requests slot 0, so the shader samples the
+    // zero-filled dummies (fail-closed black ground, never garbage/crash).
+    renderer.unload_tileset_slot(0);
+    CHECK(renderer.dispatch_culling(frame, camera.position, 1.0f, error) &&
+              renderer.render_gbuffer_and_composite(width, height, error),
+          error.empty() ? "tileset: render after unload" : error.c_str());
+    viewer::VkRasterPixel unloaded{};
+    CHECK(renderer.readback_raster_pixel(width / 2, height / 2, unloaded,
+                                         error) &&
+              close4(unloaded.albedo, {0.0f, 0.0f, 0.0f, 1.0f}, 8e-3f),
+          "tileset: unloaded slot falls back to zero-filled dummy layers");
+
+    vulkan.wait_idle();
+    std::remove(gtex_path.c_str());
 }
 
 void run_native_multilod_rt_mapping(matter::VulkanDevice& vulkan) {
@@ -4896,6 +5049,16 @@ int main() {
             glfwTerminate();
             return check_summary();
         }
+        if (smoke_mode && std::string(smoke_mode) == "tileset") {
+            run_tileset_slot_load(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
         if (smoke_mode &&
             (std::string(smoke_mode) == "raster" ||
              std::string(smoke_mode) == "rt-disabled")) {
@@ -4940,6 +5103,7 @@ int main() {
         run_frame_upload_tests(*vulkan);
         run_frame_record_tests(*vulkan);
         run_frame_resource_recovery_tests(*vulkan);
+        run_tileset_slot_load(*vulkan);
         for (int i = 0; i < 3; ++i) {
             matter::VulkanFrame frame{};
             const bool began = vulkan->begin_frame(frame, error);

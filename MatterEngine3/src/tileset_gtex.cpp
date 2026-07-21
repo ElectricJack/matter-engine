@@ -143,13 +143,13 @@ bool save_gtex(const std::string& path,
     entries[CHAN_NORMAL_RG8].id  = CHAN_NORMAL_RG8;
     entries[CHAN_ORM_RGB8].id    = CHAN_ORM_RGB8;
     entries[CHAN_HEIGHT_R16].id  = CHAN_HEIGHT_R16;
-    for (int i = 0; i < CHAN_COUNT; ++i) {
+    for (int i = 0; i < (int)CHAN_COUNT; ++i) {
         entries[i].width  = (uint32_t)atlas_w_px;
         entries[i].height = (uint32_t)atlas_h_px;
     }
     wr(buf, entries, sizeof(entries));
 
-    for (int i = 0; i < CHAN_COUNT; ++i) {
+    for (int i = 0; i < (int)CHAN_COUNT; ++i) {
         entries[i].offset = (uint32_t)buf.size();
         entries[i].size   = (uint32_t)blob[i].size();
         wr(buf, blob[i].data(), blob[i].size());
@@ -230,7 +230,7 @@ bool load_gtex(const std::string& path,
 
     // Sort entries by id for direct lookup.
     const GTexChannelEntry* by_id[CHAN_COUNT] = { nullptr, nullptr, nullptr, nullptr };
-    for (int i = 0; i < CHAN_COUNT; ++i) {
+    for (int i = 0; i < (int)CHAN_COUNT; ++i) {
         uint32_t id = entries[i].id;
         if (id >= CHAN_COUNT) {
             err = "load_gtex: bad channel id in table: " + path; return false;
@@ -241,7 +241,7 @@ bool load_gtex(const std::string& path,
         }
         by_id[id] = &entries[i];
     }
-    for (int i = 0; i < CHAN_COUNT; ++i) {
+    for (int i = 0; i < (int)CHAN_COUNT; ++i) {
         if (!by_id[i]) { err = "load_gtex: missing channel in table: " + path; return false; }
     }
 
