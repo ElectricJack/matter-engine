@@ -393,7 +393,9 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
     depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
     depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    depth_attachment.clearValue.depthStencil = {1.0f, 0};
+    // Reversed-Z: far plane maps to NDC depth 0, so the "no geometry yet"
+    // clear value is 0.0 (was 1.0 under standard-Z).
+    depth_attachment.clearValue.depthStencil = {0.0f, 0};
     VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
     rendering.renderArea.extent = record.extent;
     rendering.layerCount = 1;
@@ -1499,7 +1501,9 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
         VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     depth_stencil.depthTestEnable  = VK_TRUE;
     depth_stencil.depthWriteEnable = VK_TRUE;
-    depth_stencil.depthCompareOp   = VK_COMPARE_OP_LESS_OR_EQUAL;
+    // Reversed-Z: nearer geometry has a larger NDC depth, so passing requires
+    // depth >= existing (was <= under standard-Z).
+    depth_stencil.depthCompareOp   = VK_COMPARE_OP_GREATER_OR_EQUAL;
     VkPipelineColorBlendAttachmentState blend_attachments[5]{};
     for (auto& blend : blend_attachments) {
         blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
@@ -5572,10 +5576,14 @@ bool VkSceneRenderer::record_cull_and_render(
     const bool vol_active = volumetrics_ && volumetrics_->active();
     frame_lighting.vol_enabled = vol_active ? 1.0f : 0.0f;
     frame_lighting.vol_debug_view = volumetrics_debug_view_;
-    frame_lighting.camera_near = matrices.view_to_clip.m[11] /
-                                 matrices.view_to_clip.m[10];
+    // Reversed-Z projection identities: m[10] = near/(far-near),
+    // m[11] = far*near/(far-near) (near->NDC 1, far->NDC 0), so
+    // m[11]/m[10] = far and m[11]/(m[10]+1) = near -- the near/far roles are
+    // swapped relative to the old standard-ZO recovery.
     frame_lighting.camera_far = matrices.view_to_clip.m[11] /
-                                (matrices.view_to_clip.m[10] + 1.0f);
+                                matrices.view_to_clip.m[10];
+    frame_lighting.camera_near = matrices.view_to_clip.m[11] /
+                                 (matrices.view_to_clip.m[10] + 1.0f);
     RasterRecord record{&albedo_,
                         &normal_,
                         &orm_,
@@ -6199,12 +6207,17 @@ bool VkSceneRenderer::record_composite_to_swapchain(
         }
         const matter::Mat4f& projection =
             temporal_frame_.current_unjittered.view_to_clip;
-        constants.camera_near = projection.m[11] / projection.m[10];
-        constants.camera_far =
+        // Reversed-Z projection identities: m[10] = near/(far-near),
+        // m[11] = far*near/(far-near) (near->NDC 1, far->NDC 0), so
+        // m[11]/m[10] = far and m[11]/(m[10]+1) = near -- swapped from the
+        // old standard-ZO recovery (camera_near/camera_far remain true
+        // linear distances in meters for downstream consumers).
+        constants.camera_far = projection.m[11] / projection.m[10];
+        constants.camera_near =
             projection.m[11] / (projection.m[10] + 1.0f);
         constants.camera_fov = 2.0f * std::atan(1.0f / projection.m[5]);
         constants.camera_aspect_ratio = projection.m[5] / projection.m[0];
-        constants.depth_inverted = false;
+        constants.depth_inverted = true;
         constants.camera_motion_included = true;
         constants.motion_vectors_jittered = true;
         constants.reset = temporal_frame_.reset;
@@ -6337,7 +6350,10 @@ bool VkSceneRenderer::readback_raster_pixel(uint32_t x, uint32_t y,
                                             std::string& error) {
     error.clear();
     pixel = {};
-    pixel.depth = 1.0f;
+    // Fallback/error default represents "background" (nothing rendered);
+    // reversed-Z's background depth is 0.0 (was 1.0 under standard-Z). This
+    // is overwritten by the actual GBuffer readback below on success.
+    pixel.depth = 0.0f;
     pixel.visibility = {1.0f, 1.0f, 1.0f};
     if (fail_if_poisoned(error)) return false;
     if (!raster_attachments_ready_) {
