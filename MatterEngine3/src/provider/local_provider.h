@@ -318,11 +318,21 @@ public:
         return false;
     }
 
+    // Hashes for the modules referenced by authored entities' PartInstance
+    // components (the extra install roots added by install_graph). The publish
+    // pipeline appends these so entity-spawnable parts are flattened and
+    // preloaded even though they have no manifest instances. Deliberately NOT
+    // the whole graph snapshot: manifest-placed parts publish via the manifest,
+    // and unplaced graph nodes must stay out of the publish set — an `expand`
+    // root's own aggregate part would double the geometry cost, and a root that
+    // failed install would be resurrected (async_bake_tests cases g and k).
     std::map<std::string, uint64_t> entity_part_hashes() const {
         std::map<std::string, uint64_t> out;
-        for (const auto& kv : graph_snapshot_.nodes)
-            if (kv.second.resolved_hash != 0)
-                out[kv.first] = kv.second.resolved_hash;
+        for (const auto& mod : collect_entity_part_modules(authored_entities_)) {
+            auto it = graph_snapshot_.nodes.find(mod);
+            if (it != graph_snapshot_.nodes.end() && it->second.resolved_hash != 0)
+                out[mod] = it->second.resolved_hash;
+        }
         return out;
     }
 
