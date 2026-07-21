@@ -205,6 +205,18 @@ bool float3_value(JSContext* context, JSValueConst value, Float3& output) {
     return true;
 }
 
+bool float3_array_value(JSContext* context, JSValueConst value, float output[3]) {
+    std::uint32_t length = 0;
+    if (!array_length(context, value, length) || length != 3) return false;
+    for (std::uint32_t index = 0; index < 3; ++index) {
+        JSValue element = JS_GetPropertyUint32(context, value, index);
+        const bool ok = number_value(context, element, output[index]);
+        JS_FreeValue(context, element);
+        if (!ok) return false;
+    }
+    return true;
+}
+
 bool canonical_json(JSContext* context,
                     JSValueConst canonicalizer,
                     JSValueConst value,
@@ -495,6 +507,53 @@ bool extract_lights(JSContext* context,
     return true;
 }
 
+bool extract_fog(JSContext* context,
+                 JSValueConst world_class,
+                 const WorldLoadDesc& desc,
+                 WorldDefinition& definition,
+                 WorldLoadError& error) {
+    JSValue fog_val = JS_GetPropertyStr(context, world_class, "fog");
+    if (JS_IsUndefined(fog_val)) {
+        JS_FreeValue(context, fog_val);
+        return true;
+    }
+    if (!JS_IsObject(fog_val)) {
+        JS_FreeValue(context, fog_val);
+        return fail(desc, error, "fog", "World.fog must be an object");
+    }
+
+    FogSettings& fog = definition.settings.fog;
+
+    if (!optional_number(context, fog_val, "density", fog.density) ||
+        !optional_number(context, fog_val, "floor", fog.floor) ||
+        !optional_number(context, fog_val, "falloff", fog.falloff)) {
+        JS_FreeValue(context, fog_val);
+        return fail(desc, error, "fog",
+                    "fog density, floor, and falloff must be numeric");
+    }
+
+    JSValue color = JS_GetPropertyStr(context, fog_val, "color");
+    if (!JS_IsUndefined(color) && !float3_array_value(context, color, fog.color)) {
+        JS_FreeValue(context, color);
+        JS_FreeValue(context, fog_val);
+        return fail(desc, error, "fog.color",
+                    "fog.color must contain 3 numbers");
+    }
+    JS_FreeValue(context, color);
+
+    JSValue wind = JS_GetPropertyStr(context, fog_val, "wind");
+    if (!JS_IsUndefined(wind) && !float3_array_value(context, wind, fog.wind)) {
+        JS_FreeValue(context, wind);
+        JS_FreeValue(context, fog_val);
+        return fail(desc, error, "fog.wind",
+                    "fog.wind must contain 3 numbers");
+    }
+    JS_FreeValue(context, wind);
+
+    JS_FreeValue(context, fog_val);
+    return true;
+}
+
 bool extract_settings(JSContext* context,
                       JSValueConst world_class,
                       const WorldLoadDesc& desc,
@@ -737,6 +796,7 @@ class World {}
                             definition, error) &&
               extract_settings(context, world_class, desc, definition, error) &&
               extract_lights(context, world_class, desc, definition, error) &&
+              extract_fog(context, world_class, desc, definition, error) &&
               append_static_entities(context, world_class, desc, error);
     if (!ok) {
         definition = WorldDefinition{};

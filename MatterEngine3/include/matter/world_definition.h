@@ -31,6 +31,14 @@ struct WorldLight {
     float outer_cone_degrees = 180.0f;
 };
 
+struct FogSettings {
+    float density  = 0.0f;
+    float floor    = 0.0f;
+    float falloff  = 30.0f;
+    float color[3] = {0.9f, 0.92f, 0.95f};
+    float wind[3]  = {0.0f, 0.0f, 0.0f};
+};
+
 struct WorldSettings {
     float sector_size = 16.0f;
     float y_min = -64.0f;
@@ -40,6 +48,8 @@ struct WorldSettings {
     Float3 sun_direction{-0.45f, -0.80f, -0.35f};
     Float3 sun_color{2.2f, 2.05f, 1.8f};
     Float3 sky_color{0.38f, 0.43f, 0.52f};
+
+    FogSettings fog{};
 };
 
 // Typed component validation deliberately occurs later at the SceneRegistry

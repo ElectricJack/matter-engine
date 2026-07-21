@@ -423,6 +423,90 @@ class ThrowingWorld extends World {
           "throwing buildEntities clears extracted roots and settings");
 }
 
+// ---------------------------------------------------------------------------
+// Fog extraction tests (Task 4: volumetrics)
+// ---------------------------------------------------------------------------
+
+void test_fog_extraction_with_authored_values() {
+    Fixture fixture;
+    const fs::path path = fixture.write("FogWorld.js", R"JS(
+class FogWorld extends World {
+  static roots = [{ module: 'Root' }];
+  static fog = {
+    density: 0.05,
+    floor: -10.0,
+    falloff: 50.0,
+    color: [0.8, 0.85, 0.9],
+    wind: [1.0, 0.0, 0.5],
+  };
+}
+)JS");
+
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+
+    const matter::FogSettings& fog = definition.settings.fog;
+    CHECK(nearly_equal(fog.density, 0.05f), "fog density extracted");
+    CHECK(nearly_equal(fog.floor, -10.0f), "fog floor extracted");
+    CHECK(nearly_equal(fog.falloff, 50.0f), "fog falloff extracted");
+    CHECK(nearly_equal(fog.color[0], 0.8f) &&
+              nearly_equal(fog.color[1], 0.85f) &&
+              nearly_equal(fog.color[2], 0.9f),
+          "fog color extracted");
+    CHECK(nearly_equal(fog.wind[0], 1.0f) &&
+              nearly_equal(fog.wind[1], 0.0f) &&
+              nearly_equal(fog.wind[2], 0.5f),
+          "fog wind extracted");
+}
+
+void test_fog_defaults_when_absent() {
+    Fixture fixture;
+    const fs::path path = fixture.write("NoFogWorld.js", R"JS(
+class NoFogWorld extends World {
+  static roots = [{ module: 'Root' }];
+}
+)JS");
+
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+
+    const matter::FogSettings& fog = definition.settings.fog;
+    CHECK(nearly_equal(fog.density, 0.0f), "fog density defaults to 0 (no fog)");
+    CHECK(nearly_equal(fog.floor, 0.0f), "fog floor defaults to 0");
+    CHECK(nearly_equal(fog.falloff, 30.0f), "fog falloff defaults to 30");
+    CHECK(nearly_equal(fog.color[0], 0.9f) &&
+              nearly_equal(fog.color[1], 0.92f) &&
+              nearly_equal(fog.color[2], 0.95f),
+          "fog color defaults to neutral blue-white");
+    CHECK(nearly_equal(fog.wind[0], 0.0f) &&
+              nearly_equal(fog.wind[1], 0.0f) &&
+              nearly_equal(fog.wind[2], 0.0f),
+          "fog wind defaults to zero");
+}
+
+void test_vulkan_volumetrics_settings_defaults() {
+    matter::VulkanVolumetricsSettings vol{};
+    CHECK(vol.enabled == false, "volumetrics disabled by default");
+    CHECK(nearly_equal(vol.temporal_blend, 0.85f), "temporal_blend defaults to 0.85");
+    CHECK(nearly_equal(vol.phase_g, 0.3f), "phase_g defaults to 0.3");
+    CHECK(nearly_equal(vol.fog_density_mul, 1.0f), "fog_density_mul defaults to 1.0");
+    CHECK(nearly_equal(vol.fog_floor_offset, 0.0f), "fog_floor_offset defaults to 0.0");
+    CHECK(nearly_equal(vol.fog_falloff_mul, 1.0f), "fog_falloff_mul defaults to 1.0");
+    CHECK(nearly_equal(vol.fog_color_mul[0], 1.0f) &&
+              nearly_equal(vol.fog_color_mul[1], 1.0f) &&
+              nearly_equal(vol.fog_color_mul[2], 1.0f),
+          "fog_color_mul defaults to white");
+    CHECK(nearly_equal(vol.fog_wind_mul[0], 1.0f) &&
+              nearly_equal(vol.fog_wind_mul[1], 1.0f) &&
+              nearly_equal(vol.fog_wind_mul[2], 1.0f),
+          "fog_wind_mul defaults to identity");
+    CHECK(nearly_equal(vol.vol_debug_view, 0.0f), "vol_debug_view defaults to 0.0");
+}
+
 } // namespace
 
 int main() {
@@ -434,5 +518,8 @@ int main() {
     test_authored_entity_override_cannot_intercept_collection();
     test_rejects_undefined_or_non_json_owned_values();
     test_build_entities_failures_clear_partial_definition();
+    test_fog_extraction_with_authored_values();
+    test_fog_defaults_when_absent();
+    test_vulkan_volumetrics_settings_defaults();
     return check_summary();
 }

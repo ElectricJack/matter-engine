@@ -43,6 +43,18 @@ struct VulkanLightingOverrides {
     float composite_debug_view = 0.0f;
 };
 
+struct VulkanVolumetricsSettings {
+    bool  enabled        = false;
+    float temporal_blend = 0.85f;
+    float phase_g        = 0.3f;
+    float fog_density_mul  = 1.0f;
+    float fog_floor_offset = 0.0f;
+    float fog_falloff_mul  = 1.0f;
+    float fog_color_mul[3] = {1.0f, 1.0f, 1.0f};
+    float fog_wind_mul[3]  = {1.0f, 1.0f, 1.0f};
+    float vol_debug_view   = 0.0f;
+};
+
 struct RenderOptions {
     RenderPath   path     = RenderPath::GpuDriven;
     ResolverKind resolver = ResolverKind::SectorLod;
@@ -58,6 +70,7 @@ struct RenderOptions {
     VulkanRayTracingSettings vulkan_ray_tracing{};
     VulkanGiSettings vulkan_gi{};
     VulkanLightingOverrides vulkan_lighting{};
+    VulkanVolumetricsSettings vulkan_volumetrics{};
 };
 
 struct TickDesc {
