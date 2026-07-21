@@ -38,7 +38,7 @@ Goal: every existing timing site emits structured spans; the worker's trace is r
 | 1.4 | Part-bake spans: convert the seven `prof_lap` sites (`script_host.cpp:969-1422`) to `kSpanPartBake` + fold/ctx/eval/build/mesh/save children; `MATTER_BAKE_PROFILE=1` stderr line re-rendered **from the spans** | M | `src/script_host.cpp` | parity test: env-gated line still emitted, values match span values; `run-script` green |
 | 1.5 | Phase counters: `lod_bake` per-rung spans (`tris_in/out`, `keep_ratio`), `part_flatten` counters from `FlattenResult`, `settle_tileset` per-layer spans (`bodies/ticks/converged/sim_time`) | M | `src/lod_bake.cpp`, `src/part_flatten.cpp`, `src/tileset_bake.cpp` | trace-shape test: bake fixture part via `PartGraph::install` with collector set; assert expected span tree + counters present |
 
-**Exit:** bake-lab.md §II.8 items 1–2, 6. Tag the trace-shape test as the instrumentation-rot guard.
+**Exit:** bake-lab.md §II.8 items 1–2, 7. Tag the trace-shape test as the instrumentation-rot guard.
 
 ## Milestone 2 — Lab shell + Timeline panel (bake-lab.md §II.2, §II.5)
 
@@ -60,6 +60,7 @@ Covers "optimize tree generation" profiling and "bake different versions of part
 | 3.2 | Params editor: module picker over schema dirs; defaults via the canonical merge path (`ScriptHost::last_merged_params()` after `resolve_hash`); key→value grid (numbers/strings/bools; nested objects as raw JSON) → job `params_json` | M | same | manual: `Tree`/`Rock` defaults appear; edited param changes resolved hash |
 | 3.3 | Wireframe preview + LOD gallery: extract a shared world-to-screen wireframe helper (ImGui background draw list + camera view-proj — also used by Settle Lab in M5), render selected artifact's chosen LOD rung with tri count + rung time from trace | M | `MatterViewer/debug_draw.{h,cpp}` (new helper), `bake_lab.cpp` | manual: rung selector steps LOD0→coarsest; counts match artifact |
 | 3.4 | Determinism check: same job twice → identical hash, near-identical trace | S | test or manual | bake-lab.md §II.8 item 4 |
+| 3.5 | LOD ladder-config overrides: `BakeJobDesc.lod_targets`/`flatten_targets` threaded to optional-targets parameters on `lod_bake::bake_lods` / `part_flatten::flatten_part` (defaults = today's values; production call sites unchanged); Part Lab UI for editing the ladders | M | `src/lod_bake.{h,cpp}`, `src/part_flatten.{h,cpp}`, `bake_lab.cpp` | existing flatten/LOD suites green (default-equivalence); override bake shows shifted per-rung tri counts; sandbox-only artifacts |
 
 **Exit:** bake-lab.md §II.8 item 3.
 
@@ -70,6 +71,7 @@ Covers "optimize tree generation" profiling and "bake different versions of part
 | 4.1 | `VariantRow` + table UI: phase columns, key counters, baseline-row toggle, delta coloring | M | `MatterViewer/bake_lab_variants.cpp` | manual: two `Rock` size variants compare sensibly |
 | 4.2 | Part compare: ghost overlay (baseline gray + candidate colored wireframes via the M3.3 helper), tri/size deltas | S | same | manual |
 | 4.3 | Export/import JSON under `<lab-scratch>/variants/` (descriptor + summaries + hashes, no payloads); imported rows read-only | S | same | bake-lab.md §II.8 item 5 |
+| 4.4 | LOD compare: per-rung sub-table (tris / rung time / deviation vs. baseline LOD0, normalized by bound radius) + **rung substitution** (variant B's LOD0 as candidate rung k of variant A — the per-LOD generation-params experiment) | M | `bake_lab_variants.cpp`, deviation estimator in `bake_lab.cpp` or a small engine helper | bake-lab.md §II.8 item 6: default-vs-overridden `BakeTargets` sub-table sane; substitution row populates cost/tris/deviation + ghost |
 
 ## Milestone 5 — Settle instrument (settle-tick-optimizer.md §II, adapted)
 
