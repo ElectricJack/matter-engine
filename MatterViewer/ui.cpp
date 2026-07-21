@@ -289,6 +289,7 @@ void Ui::build_dockspace() {
         ImGui::DockBuilderDockWindow("Viewport", center);
         ImGui::DockBuilderDockWindow("Viewer Debug", right);
         ImGui::DockBuilderDockWindow("Camera", right);
+        ImGui::DockBuilderDockWindow("Bake Lab", bottom);
 
         ImGui::DockBuilderFinish(dockspace_id);
     }
@@ -626,6 +627,13 @@ void Ui::draw_debug_panel(ViewerStats& s) {
     const char* debug_views[] = { "None", "Normals" };
     ImGui::Combo("View", &s.debug_view_mode, debug_views, 2);
 
+    ImGui::End();
+}
+
+void Ui::draw_bake_lab_panel(BakeLab& lab) {
+    if (!lab.visible) return;
+    ImGui::Begin("Bake Lab", &lab.visible);
+    lab.draw_contents();
     ImGui::End();
 }
 

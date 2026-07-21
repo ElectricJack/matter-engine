@@ -18,6 +18,7 @@
 #include "properties_panel.h"
 #include "selection_set.h"
 #include "gizmo.h"
+#include "bake_lab.h"
 
 struct GLFWwindow;
 namespace matter { class VulkanDevice; struct VulkanFrame; }
@@ -114,6 +115,10 @@ public:
     bool begin_frame(const matter::VulkanFrame& frame, std::string& error);
     bool end_frame(const matter::VulkanFrame& frame, std::string& error);
     void draw_debug_panel(ViewerStats& stats);
+    // Bake Lab shell (bake-lab.md §II.5): "Bake Lab" window wrapping
+    // BakeLab::draw_contents(), same Begin/End split as draw_console_panel.
+    // No-op while lab.visible is false (window close button clears it).
+    void draw_bake_lab_panel(BakeLab& lab);
     // MSL-style orbit/zoom controls: navigate the view without locking the cursor
     // or using WASD (works over remote desktop). Mutates the camera in place.
     void draw_camera_panel(matter::CameraDesc& cam);

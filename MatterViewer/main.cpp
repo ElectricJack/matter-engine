@@ -1271,6 +1271,9 @@ int main() {
     std::string reported_vk_rt_reason;
     bool reported_vk_rt_once = false;
     viewer::CameraController camera_controller;
+    // Bake Lab shell (task 2.1): window drawn with the other panels below;
+    // tick_frame runs each frame beside session tick/pump.
+    viewer::BakeLab bake_lab;
     const char* screenshot_env = std::getenv("MATTER_SCREENSHOT");
     const std::string screenshot_path = screenshot_env ? screenshot_env : "";
     int screenshot_settle = 0;
@@ -1557,6 +1560,7 @@ int main() {
                 ui.draw_viewport_window();
                 ui.draw_console_panel(console_log);
                 ui.draw_debug_panel(stats);
+                ui.draw_bake_lab_panel(bake_lab);
                 ui.draw_worlds_panel(worlds, stats);
                 ui.draw_camera_panel(camera);
                 // draw_sector_streaming_panel retired in Phase 4 Task 12 — sector
@@ -1649,6 +1653,7 @@ int main() {
         session->tick(tick);
         camera_input_order.tick_scene();
         session->pump_gpu_jobs(4.0f);
+        bake_lab.tick_frame(viewer::BakeLab::kDefaultTickBudgetMs);
         matter::Event event;
         while (session->poll_event(event)) {
             if (event.type == matter::EventType::BakePartDone)
