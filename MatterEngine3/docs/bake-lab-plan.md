@@ -2,7 +2,7 @@
 
 > Execution plan for [bake-lab.md](bake-lab.md) (umbrella spec) and [settle-tick-optimizer.md](settle-tick-optimizer.md) (settle instrument spec). Milestone-ordered task breakdown with file targets, test gates, and exit criteria. Each task is one commit-sized unit; every commit leaves all existing suites green.
 
-- **Baseline:** `5680f51a`
+- **Baseline:** the Bake Lab docs series (specs + this plan; branch point of `feature/bake-lab`)
 - **Status:** Plan — ready to execute
 - **Sizing:** S ≈ under half a day of focused work, M ≈ a day, L ≈ multi-day. Sequential within a milestone unless noted.
 
@@ -10,7 +10,7 @@
 
 ## Working agreement
 
-- **Branch:** all Bake Lab work on a dedicated `feature/bake-lab` branch cut from main. This repo hosts concurrent sessions on other branches (`feature/reversed-z` in flight at time of writing); do not develop this on main directly.
+- **Branch + worktree:** all Bake Lab work on the `feature/bake-lab` branch, executed inside the dedicated worktree `.worktrees/bake-lab` (cut from the docs-spec tip = main + Bake Lab docs commits only). This repo hosts concurrent sessions on other branches (`feature/reversed-z` in flight at time of writing); do not develop this on main directly, and do not build in the primary checkout while it holds another session's work. After (re)creating the worktree, run `bash setup-worktree.sh` inside it once — Windows worktrees render the three tracked directory symlinks (`MatterEngine3/shaders`, `MatterViewer/shaders`, `MatterViewer/shaders_gpu`) as text files; the script replaces them with NTFS junctions the build requires.
 - **Build/test commands** (per CLAUDE.md, MSYS2 UCRT64, `TMP`/`TEMP` passed explicitly):
 
 ```bash
@@ -23,6 +23,20 @@ make -C MatterViewer windows     TMP=... TEMP=...
 
 - **Regression floor per commit:** `run-script`, `run-graph`, `run-tilesetbake`, `run-world-definition` (headless, Windows-runnable) plus whatever the task touches.
 - **Spec is authority:** section references below (§) point into the two spec documents; where this plan and a spec disagree, fix the spec first, then the code.
+
+## Subagent execution model
+
+The plan is executed by subagents, one task row per agent, coordinated from a main session.
+
+- **Agent contract (every task agent):** read the task's spec section(s) first; implement only that task's file targets; build with the CLAUDE.md toolchain commands (TEMP fix mandatory); run the task's gate plus the regression floor; commit on `feature/bake-lab` as `feat(bake-lab): task N.M — <short title>` (docs fixes as `docs(bake)`). An agent that cannot make its gate pass reports the failure — it does not weaken the gate, skip tests, or exceed its task's file scope.
+- **Sequencing lanes** (an agent per box; boxes in a lane are serial, lanes run concurrently):
+  - **Lane A (spine):** 1.1 → 1.2 → then 1.3, 1.4, 1.5 may run as three parallel agents (disjoint files) in isolated worktrees, merged back in task order.
+  - **Lane B (viewer, after M1):** 2.1 → 2.2 → 2.3, then M3 (3.1 → 3.2/3.3 parallel → 3.4 → 3.5), then M4.
+  - **Lane C (settle engine, after 1.1 only):** 5.1 → 5.2 → 5.3 → 5.4 — no viewer dependency, runs alongside Lane B.
+  - **Lane D (settle UI):** 5.5 → 5.6 → 5.7 after Lane B reaches 3.3 (needs the shell and wireframe helper) and Lane C completes.
+  - **M6** starts only after 5.5 proves the transport contract.
+- **Milestone review gate:** before a milestone is declared done, a separate reviewer agent (fresh context, no implementation history) verifies the milestone's exit criteria against the spec checklists and the diff. Findings are fixed before the next milestone's agents launch.
+- **Standing constraints for all agents:** never touch `MatterEngine3/shaders_gen/embedded_spirv.h` or anything under `shaders_vk/`/`shaders_gpu/` (conflict magnet, and nothing in this plan needs shaders); never commit to main or any branch other than `feature/bake-lab`; scratch/test artifacts stay out of the tree (use test-local sandboxes, mirror the `part_asset_v2_tests_cache` pattern).
 
 ---
 
