@@ -291,7 +291,8 @@ TRIVAR_CPP = triangle_variation_tests.cpp ../src/triangle_emit.cpp ../src/polygo
 TRIVAR_C   = $(MSL)/material_registry.c
 
 COMP_TARGET = composition_tests
-COMP_CPP = composition_tests.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp \
+COMP_CPP = composition_tests.cpp ../src/lod_bake.cpp ../src/bake_trace.cpp \
+           ../src/world_flatten.cpp \
            ../src/sector_grid.cpp ../src/lod_select.cpp ../src/part_asset_v2.cpp \
            $(MSL)/mesh_simplifier.cpp \
            $(MSL)/mesh_indexed.cpp \
@@ -300,6 +301,7 @@ COMP_C   = $(MSL)/material_registry.c
 
 FLATTEN_TARGET = part_flatten_tests
 FLATTEN_CPP = part_flatten_tests.cpp ../src/part_flatten.cpp ../src/lod_bake.cpp \
+              ../src/bake_trace.cpp \
               ../src/part_cluster.cpp \
               ../src/part_asset_v2.cpp \
               ../src/retopo_blacklist.cpp \
@@ -506,7 +508,8 @@ PARTSTORE_TARGET = partstore_tests
 PARTSTORE_CPP = partstore_tests.cpp ../src/render/part_store.cpp \
                 ../src/render/matrix_math.cpp \
                 ../src/render/raster_mesh.cpp ../src/lod_select.cpp \
-                ../src/sector_grid.cpp ../src/lod_bake.cpp ../src/part_asset_v2.cpp \
+                ../src/sector_grid.cpp ../src/lod_bake.cpp ../src/bake_trace.cpp \
+                ../src/part_asset_v2.cpp \
                 $(MSL)/mesh_simplifier.cpp $(MSL)/mesh_indexed.cpp \
                 $(COMMON_MSL_BLAS_SRC)
 PARTSTORE_C   = $(MSL)/material_registry.c

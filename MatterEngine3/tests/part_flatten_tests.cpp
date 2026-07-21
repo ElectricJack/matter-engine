@@ -7,6 +7,8 @@
 #include "part_flatten.h"
 #include "part_asset_v2.h"
 #include "lod_bake.h"
+#include "bake_trace.h"        // Bake Lab task 1.5: flatten/LOD trace-shape tests
+#include "bake_trace_names.h"  // kSpanFlatten, kSpanLod, kSpanLodRung
 #include "part_cluster.h"
 #include "../../MatterSurfaceLib/include/blas_manager.hpp"
 #include "../../MatterSurfaceLib/include/tlas_manager.hpp"
@@ -1667,6 +1669,19 @@ static void test_flatten_unhinted_unchanged() {
     printf("  test_flatten_unhinted_unchanged OK\n");
 }
 
+// Portable setenv shim (pre-existing test used bare POSIX setenv/unsetenv,
+// which MinGW lacks — same pattern as script_host_tests.cpp's profile-env
+// helper). value == nullptr unsets. Behavior on POSIX is unchanged.
+static void pf_set_env(const char* name, const char* value) {
+#ifdef _WIN32
+    std::string kv = std::string(name) + "=" + (value ? value : "");
+    _putenv(kv.c_str());
+#else
+    if (value) setenv(name, value, 1);
+    else       unsetenv(name);
+#endif
+}
+
 // Task 3: retained vs re-materialised flatten must produce byte-identical artifacts.
 static void test_flatten_retain_budget_identical() {
     printf("=== test_flatten_retain_budget_identical ===\n");
@@ -1706,30 +1721,120 @@ static void test_flatten_retain_budget_identical() {
     tgt.cluster_target_tris = 16000;
 
     // Run A: retention enabled (512 MB budget — takes the retained path).
-    setenv("MATTER_FLATTEN_RETAIN_MB", "512", 1);
+    pf_set_env("MATTER_FLATTEN_RETAIN_MB", "512");
     const std::string flat_a = root_a + "/" + part_asset::cache_path_flat(kRetainHash);
     std::remove(flat_a.c_str());
     auto res_a = part_flatten::flatten_part(root_a, kRetainHash, tgt);
     CHECK(res_a.ok, "retain test (budget=512): flatten ok");
-    if (!res_a.ok) { printf("  error: %s\n", res_a.error.c_str()); unsetenv("MATTER_FLATTEN_RETAIN_MB"); return; }
+    if (!res_a.ok) { printf("  error: %s\n", res_a.error.c_str()); pf_set_env("MATTER_FLATTEN_RETAIN_MB", nullptr); return; }
     std::vector<char> bytes_a;
     CHECK(read_bytes(flat_a, bytes_a), "retain test: flat_a readable");
 
     // Run B: retention disabled (budget=0 — forces re-materialization).
-    setenv("MATTER_FLATTEN_RETAIN_MB", "0", 1);
+    pf_set_env("MATTER_FLATTEN_RETAIN_MB", "0");
     const std::string flat_b = root_b + "/" + part_asset::cache_path_flat(kRetainHash);
     std::remove(flat_b.c_str());
     auto res_b = part_flatten::flatten_part(root_b, kRetainHash, tgt);
     CHECK(res_b.ok, "retain test (budget=0): flatten ok");
-    if (!res_b.ok) { printf("  error: %s\n", res_b.error.c_str()); unsetenv("MATTER_FLATTEN_RETAIN_MB"); return; }
+    if (!res_b.ok) { printf("  error: %s\n", res_b.error.c_str()); pf_set_env("MATTER_FLATTEN_RETAIN_MB", nullptr); return; }
     std::vector<char> bytes_b;
     CHECK(read_bytes(flat_b, bytes_b), "retain test: flat_b readable");
 
-    unsetenv("MATTER_FLATTEN_RETAIN_MB");
+    pf_set_env("MATTER_FLATTEN_RETAIN_MB", nullptr);
 
     CHECK(bytes_a == bytes_b,
           "retained and streamed flatten artifacts are byte-identical");
     printf(bytes_a == bytes_b ? "PASSED\n" : "FAILED\n");
+}
+
+// ===========================================================================
+// Bake Lab task 1.5 — trace-shape tests (docs/bake-lab.md §II.6): flatten and
+// LOD-ladder instrumentation must produce the expected spans + counters when a
+// collector is current, guarding against silent instrumentation rot.
+// ===========================================================================
+
+static const bake_trace::Counter* find_counter(const bake_trace::Span& s,
+                                               const char* name) {
+    for (const auto& c : s.counters)
+        if (std::strcmp(c.name, name) == 0) return &c;
+    return nullptr;
+}
+
+// flatten_part with a collector current -> one closed kSpanFlatten span whose
+// counters mirror the returned FlattenResult fields.
+static void test_flatten_trace_spans() {
+    printf("=== test_flatten_trace_spans ===\n");
+    std::remove(flat_path().c_str());
+    bake_trace::Collector col;
+    bake_trace::set_current(&col);
+    part_flatten::FlattenResult res =
+        part_flatten::flatten_part(kCacheRoot, kParentHash);
+    bake_trace::set_current(nullptr);
+    CHECK(res.ok, "trace: flatten_part ok");
+    if (!res.ok) return;
+
+    bake_trace::Span snap = col.snapshot();
+    CHECK(snap.children.size() == 1, "trace: one top-level flatten span");
+    if (snap.children.size() != 1) return;
+    const bake_trace::Span& fl = snap.children[0];
+    CHECK(std::strcmp(fl.name, bake_trace::kSpanFlatten) == 0,
+          "trace: top-level span is flatten");
+    CHECK(fl.end_ms != bake_trace::kOpenEndMs, "trace: flatten span closed");
+
+    struct { const char* name; double expect; } want[] = {
+        { "levels",        (double)res.levels },
+        { "clusters",      (double)res.clusters },
+        { "full_tris",     (double)res.full_tris },
+        { "coarsest_tris", (double)res.coarsest_tris },
+        { "instance_refs", (double)res.instance_refs },
+    };
+    for (const auto& w : want) {
+        const bake_trace::Counter* c = find_counter(fl, w.name);
+        CHECK(c != nullptr, "trace: flatten counter present");
+        if (c) CHECK(c->value == w.expect,
+                     "trace: flatten counter matches FlattenResult");
+    }
+}
+
+// bake_lods with a collector current -> one closed kSpanLod span with one
+// kSpanLodRung child per BakeTargets level, each carrying
+// tris_in/tris_out/keep_ratio counters.
+static void test_lod_rung_trace_spans() {
+    printf("=== test_lod_rung_trace_spans ===\n");
+    bake_trace::Collector col;
+    bake_trace::set_current(&col);
+    BLASManager blas;
+    std::vector<Tri> tris = quad_tris();
+    lod_bake::BakeTargets targets;   // default ladder {1.0, 0.1, 0.01}
+    lod_bake::LodLevels lods = lod_bake::bake_lods(tris, targets, blas);
+    bake_trace::set_current(nullptr);
+    CHECK(lods.size() == targets.keep_ratio.size(), "trace: ladder built");
+
+    bake_trace::Span snap = col.snapshot();
+    CHECK(snap.children.size() == 1, "trace: one top-level lod span");
+    if (snap.children.size() != 1) return;
+    const bake_trace::Span& lod = snap.children[0];
+    CHECK(std::strcmp(lod.name, bake_trace::kSpanLod) == 0,
+          "trace: top-level span is lod");
+    CHECK(lod.end_ms != bake_trace::kOpenEndMs, "trace: lod span closed");
+    CHECK(lod.children.size() == targets.keep_ratio.size(),
+          "trace: one lod-rung child per ladder level");
+    if (lod.children.size() != targets.keep_ratio.size()) return;
+    for (size_t i = 0; i < lod.children.size(); ++i) {
+        const bake_trace::Span& rung = lod.children[i];
+        CHECK(std::strcmp(rung.name, bake_trace::kSpanLodRung) == 0,
+              "trace: rung span named lod-rung");
+        CHECK(rung.end_ms != bake_trace::kOpenEndMs, "trace: rung span closed");
+        const bake_trace::Counter* tin  = find_counter(rung, "tris_in");
+        const bake_trace::Counter* tout = find_counter(rung, "tris_out");
+        const bake_trace::Counter* keep = find_counter(rung, "keep_ratio");
+        CHECK(tin && tout && keep, "trace: rung has tris_in/tris_out/keep_ratio");
+        if (!(tin && tout && keep)) continue;
+        CHECK(tin->value == (double)tris.size(), "trace: tris_in = input size");
+        CHECK(tout->value >= 1.0, "trace: tris_out non-empty");
+        CHECK(keep->value == (double)targets.keep_ratio[i],
+              "trace: keep_ratio matches ladder level");
+    }
 }
 
 static void test_emitter_flat_round_trip();
@@ -1766,6 +1871,8 @@ int main() {
     test_flatten_segmented();
     test_flatten_unhinted_unchanged();
     test_flatten_retain_budget_identical();
+    test_flatten_trace_spans();      // Bake Lab task 1.5 instrumentation guard
+    test_lod_rung_trace_spans();     // Bake Lab task 1.5 instrumentation guard
 
     test_emitter_flat_round_trip();  // volumetric emitter metadata persistence
 

@@ -4,6 +4,8 @@
 #include "tileset_settle.h"
 #include "tileset_gtex.h"   // kEngineBakeVersion, kBox3dVersion
 #include "part_asset.h"     // fnv1a64
+#include "bake_trace.h"        // Bake Lab task 1.5: per-layer settle spans
+#include "bake_trace_names.h"  // kSpanSettleLayer
 
 #include <algorithm>        // std::sort (settle_cache_key)
 #include <cmath>
@@ -488,7 +490,24 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
     // ---- Run the plan -----------------------------------------------------------
     // `plan` owns the ColliderFits every BodySpawn::collider borrows; it must
     // (and does) outlive `world`.
-    SettleWorld world(plan.torus_size, plan.hf, SettleParams{});
+    // (Named so the trace `ticks` counter below can derive tick counts from
+    // sim_time / dt; previously an unnamed SettleParams{} temporary.)
+    const SettleParams settle_params{};
+    SettleWorld world(plan.torus_size, plan.hf, settle_params);
+
+    // Bake Lab task 1.5 (docs/bake-lab.md §II.1): one kSpanSettleLayer per
+    // batch that actually settles (the shared-drops batch, then each physics
+    // layer) with bodies/ticks/converged/sim_time counters. LayerResult does
+    // not carry a tick count, so `ticks` is derived as round(sim_time / dt).
+    // Observation-only; no-op without a current collector. Deliberately
+    // coarse — SettleWorld::step internals are task 5.7, not instrumented here.
+    auto count_layer = [&](size_t bodies, const LayerResult& lr) {
+        BAKE_COUNT("bodies",    (double)bodies);
+        BAKE_COUNT("ticks",     std::floor((double)lr.sim_time /
+                                           (double)settle_params.dt + 0.5));
+        BAKE_COUNT("converged", lr.converged ? 1.0 : 0.0);
+        BAKE_COUNT("sim_time",  (double)lr.sim_time);
+    };
 
     // Register sync groups in recorded order so world group ids equal the plan
     // indices that BodySpawn::sync_group references. Groups whose bodies have
@@ -500,14 +519,18 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
 
     // Settle all drops in one batch.
     if (!plan.drop_spawns.empty()) {
+        BAKE_SPAN(bake_trace::kSpanSettleLayer);
         LayerResult drop_result = world.settle_layer(plan.drop_spawns);
+        count_layer(plan.drop_spawns.size(), drop_result);
         if (!drop_result.converged) out.report.converged_all = false;
     }
 
     // Settle each layer's physics bodies, in declaration order.
     for (const auto& lp : plan.layers) {
         if (!lp.spawns.empty()) {
+            BAKE_SPAN(bake_trace::kSpanSettleLayer);
             LayerResult lr = world.settle_layer(lp.spawns);
+            count_layer(lp.spawns.size(), lr);
             out.report.layers.push_back(lr);
             if (!lr.converged) out.report.converged_all = false;
         } else {

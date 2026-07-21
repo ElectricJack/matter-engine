@@ -18,6 +18,8 @@
 #include "tileset_bake.h"
 #include "tileset_phase.h"
 #include "tileset_spec.h"
+#include "bake_trace.h"        // Bake Lab task 1.5: settle-layer trace-shape test
+#include "bake_trace_names.h"  // kSpanSettleLayer
 
 #include <cmath>
 #include <cstdio>
@@ -287,6 +289,61 @@ static void test_settle_tileset(const std::string& cache_dir,
     tileset::SettledTorus t3;
     CHECK(!tileset::settle_tileset(spec, in, t3, err) && err.find("Pebble") != std::string::npos,
           "bake: unknown child hash errors naming the layer module");
+}
+
+// ---------------------------------------------------------------------------
+// Bake Lab task 1.5 — trace-shape test (docs/bake-lab.md §II.6): with a
+// collector current, settle_tileset emits one kSpanSettleLayer per batch that
+// actually settles — for this fixture: the shared-drops batch (16 bodies) and
+// the physics Twig layer (48 bodies); the non-physics Pebble layer gets none.
+// Counters: bodies, ticks (derived sim_time/dt), converged, sim_time.
+// ---------------------------------------------------------------------------
+static const bake_trace::Counter* find_counter(const bake_trace::Span& s,
+                                               const char* name) {
+    for (const auto& c : s.counters)
+        if (std::strcmp(c.name, name) == 0) return &c;
+    return nullptr;
+}
+
+static void test_settle_trace_spans(const std::string& cache_dir,
+                                    uint64_t pebble_hash, uint64_t twig_hash) {
+    tileset::TilesetSpec spec = make_spec(pebble_hash, twig_hash);
+    tileset::BakeInputs in{ cache_dir };
+    tileset::SettledTorus torus;
+    std::string err;
+
+    bake_trace::Collector col;
+    bake_trace::set_current(&col);
+    bool ok = tileset::settle_tileset(spec, in, torus, err);
+    bake_trace::set_current(nullptr);
+    CHECK(ok, "trace: settle_tileset succeeds");
+    if (!ok) return;
+
+    bake_trace::Span snap = col.snapshot();
+    CHECK(snap.children.size() == 2,
+          "trace: two settle-layer spans (drops batch + physics layer)");
+    if (snap.children.size() != 2) return;
+
+    const double expect_bodies[2] = { 16.0, 4.0 * 8.0 + 16.0 };
+    for (size_t i = 0; i < 2; ++i) {
+        const bake_trace::Span& sl = snap.children[i];
+        CHECK(std::strcmp(sl.name, bake_trace::kSpanSettleLayer) == 0,
+              "trace: span named settle-layer");
+        CHECK(sl.end_ms != bake_trace::kOpenEndMs, "trace: settle-layer closed");
+        const bake_trace::Counter* bodies    = find_counter(sl, "bodies");
+        const bake_trace::Counter* ticks     = find_counter(sl, "ticks");
+        const bake_trace::Counter* converged = find_counter(sl, "converged");
+        const bake_trace::Counter* sim_time  = find_counter(sl, "sim_time");
+        CHECK(bodies && ticks && converged && sim_time,
+              "trace: settle-layer has bodies/ticks/converged/sim_time");
+        if (!(bodies && ticks && converged && sim_time)) continue;
+        CHECK(bodies->value == expect_bodies[i],
+              "trace: bodies counter matches spawn count");
+        CHECK(ticks->value >= 1.0, "trace: at least one derived tick");
+        CHECK(converged->value == 0.0 || converged->value == 1.0,
+              "trace: converged is 0/1");
+        CHECK(sim_time->value > 0.0, "trace: sim_time positive");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -642,6 +699,7 @@ int main()
         uint64_t pebble_hash = pebble_ir.root_hashes[0];
         uint64_t twig_hash   = twig_ir.root_hashes[0];
         test_settle_tileset(root.string(), pebble_hash, twig_hash);
+        test_settle_trace_spans(root.string(), pebble_hash, twig_hash);
         test_build_settle_plan(root.string(), pebble_hash, twig_hash);
     }
 

@@ -1,5 +1,7 @@
 #include "part_flatten.h"
 #include "matter/lod_contract.h"
+#include "bake_trace.h"        // Bake Lab task 1.5: flatten span + counters
+#include "bake_trace_names.h"  // kSpanFlatten
 
 #include "part_asset_v2.h"   // load_v2/save_flat_v3, cache_path_*, load_lod_sidecar
 #include "lod_bake.h"        // decimate_to_error
@@ -1599,8 +1601,21 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
 // during the message construction).
 FlattenResult flatten_part(const std::string& cache_root, uint64_t root_hash,
                            const FlattenTargets& targets) {
+    // Bake Lab task 1.5 (docs/bake-lab.md §II.1): kSpanFlatten with counters
+    // from the computed FlattenResult. The span lives at this public boundary
+    // (not in flatten_part_impl) so the counters can be attached after the
+    // result exists, on every impl return path. Recursive child flattens
+    // (BOUNDARY-child pre-bake) nest naturally as child flatten spans.
+    // Observation-only; no-op without a current collector.
+    BAKE_SPAN(bake_trace::kSpanFlatten);
     try {
-        return flatten_part_impl(cache_root, root_hash, targets);
+        FlattenResult res = flatten_part_impl(cache_root, root_hash, targets);
+        BAKE_COUNT("levels",        (double)res.levels);
+        BAKE_COUNT("clusters",      (double)res.clusters);
+        BAKE_COUNT("full_tris",     (double)res.full_tris);
+        BAKE_COUNT("coarsest_tris", (double)res.coarsest_tris);
+        BAKE_COUNT("instance_refs", (double)res.instance_refs);
+        return res;
     } catch (const std::bad_alloc& e) {
         FlattenResult res;
         char buf[192];

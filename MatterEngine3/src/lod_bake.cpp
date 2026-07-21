@@ -1,4 +1,6 @@
 #include "lod_bake.h"
+#include "bake_trace.h"        // Bake Lab task 1.5: LOD ladder spans + counters
+#include "bake_trace_names.h"  // kSpanLod, kSpanLodRung
 #include "../../MatterSurfaceLib/include/mesh_simplifier.hpp"
 #include "../../MatterSurfaceLib/include/mesh_indexed.hpp"
 #include <cmath>
@@ -99,7 +101,12 @@ std::vector<Tri> decimate_to_error(const std::vector<Tri>& tris, float epsilon,
 LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
                     BLASManager& blas, const std::vector<TriEx>* triex) {
     LodLevels out;
+    // Bake Lab task 1.5 (docs/bake-lab.md §II.1): one kSpanLod around the
+    // ladder, one kSpanLodRung child per level with tris_in/tris_out/keep_ratio
+    // counters. Observation-only; no-op without a current collector.
+    BAKE_SPAN(bake_trace::kSpanLod);
     for (size_t lvl = 0; lvl < targets.keep_ratio.size(); ++lvl) {
+        BAKE_SPAN(bake_trace::kSpanLodRung);
         float keep = targets.keep_ratio[lvl];
         bool full = (keep >= 0.999f);
         // Perf fix: for the undecimated (full) level, avoid copying `tris` by
@@ -111,6 +118,9 @@ LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
             if (decimated.empty()) decimated = tris;  // never register empty geometry
         }
         const std::vector<Tri>& geo = full ? tris : decimated;
+        BAKE_COUNT("tris_in",    (double)tris.size());
+        BAKE_COUNT("tris_out",   (double)geo.size());
+        BAKE_COUNT("keep_ratio", (double)keep);
         // Per-triangle TriEx (materialId/tint/normals/AO) is only valid for the
         // undecimated level: `geo` is then the input triangle set in original order,
         // so triex[i] still describes geo[i]. Decimation reorders/merges triangles,
