@@ -1,10 +1,11 @@
-# Settle Tick Optimizer — Bake Lab Phase 1
+# Settle Tick Optimizer — Bake Lab settle instrument
 
 > Design and implementation spec for making the Box3d tileset settle loop externally steppable, measurable tick-by-tick, and optimizable — with a "visually close" pose-delta gate instead of bit-identical poses, a headless benchmark for regression tracking, and an interactive Settle Lab panel in MatterViewer.
 
 - **Target:** `tileset_settle.{h,cpp}` + `tileset_bake.{h,cpp}` + new `MatterEngine3/tests/settle_bench.cpp` + new MatterViewer "Settle Lab" panel
 - **Baseline:** `a36ded91` (local main)
 - **Status:** Spec — ready to implement
+- **Context:** one instrument of the Bake Lab workbench — see [bake-lab.md](bake-lab.md) for the umbrella architecture. Per its roadmap, BakeTrace (bake-lab.md §II.1) lands first; this spec's engine work is unchanged by that, and its Settle Lab UI mounts as a Bake Lab panel with the stepper adopting the shared `SteppablePhase` transport contract (bake-lab.md §I.4). Settle spans/`TickStats` aggregates additionally feed BakeTrace once both exist.
 
 ---
 
