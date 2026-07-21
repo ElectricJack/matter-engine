@@ -66,6 +66,14 @@ else
     LDLIBS = ../../Libraries/raylib/src/libraylib.a
 endif
 
+# Windows (MSYS2 MinGW/UCRT64, uname like MINGW64_NT-*): no X11/GL/rt here.
+# Win32 system libs must come AFTER libraylib.a (ld resolves left to right),
+# and LDLIBS is last in the link recipes, so they ride in LDLIBS.
+ifneq (,$(findstring _NT,$(UNAME_S)))
+    LDFLAGS = -lm -lpthread
+    LDLIBS  = ../../Libraries/raylib/src/libraylib.a -lopengl32 -lgdi32 -lwinmm -lws2_32 -ldbghelp
+endif
+
 OBJDIR := build
 DEPFLAGS := -MMD -MP
 
@@ -784,6 +792,7 @@ GPU_MSL_CPP = \
 
 GPU_MSL_C   = $(COMMON_MSL_C)
 GPU_ALL_CPP = $(GPU_PIPELINE_CPP) $(GPU_RENDER_CPP) $(GPU_MSL_CPP) \
+              ../src/ecs/scene_registry.cpp \
               ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
               ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
               ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
