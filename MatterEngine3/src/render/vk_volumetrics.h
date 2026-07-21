@@ -143,6 +143,7 @@ private:
 
     // Samplers.
     VkSampler linear_clamp_sampler_ = VK_NULL_HANDLE;
+    VkSampler linear_border_sampler_ = VK_NULL_HANDLE;
     VkSampler linear_repeat_sampler_ = VK_NULL_HANDLE;
 
     // Density pass resources.

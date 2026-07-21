@@ -304,10 +304,21 @@ bool VkVolumetrics::create_samplers(matter::VulkanDevice& vulkan,
     if (result != VK_SUCCESS)
         return vk_fail("vkCreateSampler(clamp)", result, error);
 
+    // Clamp-to-border (transparent black) for history texture so edge
+    // samples return zero instead of smearing the edge texel.
+    info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    info.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+    result = vkCreateSampler(device_, &info, nullptr, &linear_border_sampler_);
+    if (result != VK_SUCCESS)
+        return vk_fail("vkCreateSampler(border)", result, error);
+
     // Repeat for noise texture.
     info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     info.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    info.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
     result = vkCreateSampler(device_, &info, nullptr, &linear_repeat_sampler_);
     if (result != VK_SUCCESS)
         return vk_fail("vkCreateSampler(repeat)", result, error);
@@ -1083,6 +1094,8 @@ void VkVolumetrics::destroy() {
     // Samplers.
     if (linear_clamp_sampler_ != VK_NULL_HANDLE)
         vkDestroySampler(device_, linear_clamp_sampler_, nullptr);
+    if (linear_border_sampler_ != VK_NULL_HANDLE)
+        vkDestroySampler(device_, linear_border_sampler_, nullptr);
     if (linear_repeat_sampler_ != VK_NULL_HANDLE)
         vkDestroySampler(device_, linear_repeat_sampler_, nullptr);
 
@@ -1114,6 +1127,7 @@ void VkVolumetrics::destroy() {
     scatter_set_layout_ = VK_NULL_HANDLE;
     integrate_set_layout_ = VK_NULL_HANDLE;
     linear_clamp_sampler_ = VK_NULL_HANDLE;
+    linear_border_sampler_ = VK_NULL_HANDLE;
     linear_repeat_sampler_ = VK_NULL_HANDLE;
 
     device_ = VK_NULL_HANDLE;

@@ -99,7 +99,8 @@ void main() {
             scatter_result = vec4(sun_contrib + sky_contrib, extinction);
         }
 
-        // Temporal reprojection.
+        // Temporal reprojection — always sample history (clamp-to-edge
+        // provides smooth fill-in for newly exposed screen regions).
         if (pc.history_valid != 0u) {
             float depth = slice_to_depth(float(z) + 0.5);
             vec2 uv = (vec2(voxel.xy) + 0.5) / vec2(VOL_W, VOL_H);
@@ -110,28 +111,22 @@ void main() {
             vec4 world_h = pc.clip_to_world * clip_pos;
             vec3 world_pos = world_h.xyz / world_h.w;
 
-            // Reproject through previous frame's matrix.
             vec4 prev_clip = pc.prev_world_to_clip * vec4(world_pos, 1.0);
             vec3 prev_ndc = prev_clip.xyz / prev_clip.w;
-            vec2 prev_uv = prev_ndc.xy * vec2(0.5, -0.5) + 0.5;
+            vec2 prev_uv = clamp(prev_ndc.xy * vec2(0.5, -0.5) + 0.5,
+                                 vec2(0.0), vec2(1.0));
+            float prev_depth = pc.camera_far * pc.camera_near /
+                max(pc.camera_far - prev_ndc.z *
+                    (pc.camera_far - pc.camera_near), 1e-6);
+            float prev_slice_n = depth_to_slice_n(prev_depth);
+            vec4 history = texture(vol_scatter_history,
+                                   vec3(prev_uv, prev_slice_n));
 
-            // Check if the reprojected point is within the previous frustum.
-            if (all(greaterThanEqual(prev_uv, vec2(0.0))) &&
-                all(lessThanEqual(prev_uv, vec2(1.0)))) {
-                float prev_depth = pc.camera_far * pc.camera_near /
-                    max(pc.camera_far - prev_ndc.z *
-                        (pc.camera_far - pc.camera_near), 1e-6);
-                float prev_slice_n = depth_to_slice_n(prev_depth);
-                vec3 history_uvw = vec3(prev_uv, prev_slice_n);
-
-                vec4 history = texture(vol_scatter_history, history_uvw);
-
-                if (is_active) {
-                    scatter_result = mix(history, scatter_result,
-                                         1.0 - pc.temporal_blend);
-                } else {
-                    scatter_result = history;
-                }
+            if (is_active) {
+                scatter_result = mix(history, scatter_result,
+                                     1.0 - pc.temporal_blend);
+            } else {
+                scatter_result = history;
             }
         }
 
