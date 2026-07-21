@@ -66,6 +66,14 @@ else
     LDLIBS = ../../Libraries/raylib/src/libraylib.a
 endif
 
+# Windows (MSYS2 MinGW/UCRT64, uname like MINGW64_NT-*): no X11/GL/rt here.
+# Win32 system libs must come AFTER libraylib.a (ld resolves left to right),
+# and LDLIBS is last in the link recipes, so they ride in LDLIBS.
+ifneq (,$(findstring _NT,$(UNAME_S)))
+    LDFLAGS = -lm -lpthread
+    LDLIBS  = ../../Libraries/raylib/src/libraylib.a -lopengl32 -lgdi32 -lwinmm
+endif
+
 OBJDIR := build
 DEPFLAGS := -MMD -MP
 
