@@ -21,7 +21,11 @@ make -C MatterEngine3/tests run-baketrace run-tilesetphysics run-tilesetbake run
 make -C MatterViewer windows     TMP=... TEMP=...
 ```
 
-- **Regression floor per commit:** `run-script`, `run-graph`, `run-tilesetbake`, `run-world-definition` (headless, Windows-runnable) plus whatever the task touches.
+- **Worktree bootstrap (verified 2026-07-21; all three steps required in a fresh worktree):**
+  1. Shader junctions — `setup-worktree.sh`'s `cmd mklink` fails on this repo path; create the three junctions with PowerShell instead: `New-Item -ItemType Junction -Path <link> -Target <target>` for `MatterEngine3/shaders → MatterSurfaceLib/shaders`, `MatterViewer/shaders → MatterSurfaceLib/shaders`, `MatterViewer/shaders_gpu → MatterEngine3/shaders_gpu` (delete the small placeholder text files first).
+  2. Prebuilt vendored archives are build artifacts, absent from a fresh worktree — copy from the primary checkout: `Libraries/raylib/src/libraylib.a`, `Libraries/box3d/libbox3d.a`, `Libraries/autoremesher_core/libautoremesher_core.a`.
+  3. Baseline-build the kernel (`make -C MatterEngine3 ...`) before running any test target.
+- **Regression floor per commit:** `run-script`, `run-graph`, `run-tilesetbake` (headless; verified green in the worktree at baseline) plus whatever the task touches. `run-world-definition` is **excluded until fixed upstream**: it fails on main itself (`FAIL: Demo root count` — the volumetrics work added ChimneySmoke/WaterfallMist roots to `examples/world_demo/worlds/Demo.js` without updating `world_definition_tests.cpp`, which also wrongly assumes identity root transforms; tracked as a separate out-of-band task, not Bake Lab scope). Note: the tests Makefile historically selected Linux link flags (`-lX11` etc.) on Windows — masked in the primary checkout by stale prebuilt test executables; fixed on this branch with a `MINGW*_NT` platform branch (LDFLAGS `-lm -lpthread`, Win32 libs after `libraylib.a` in LDLIBS).
 - **Spec is authority:** section references below (§) point into the two spec documents; where this plan and a spec disagree, fix the spec first, then the code.
 
 ## Subagent execution model
