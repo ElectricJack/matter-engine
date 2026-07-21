@@ -1732,6 +1732,8 @@ static void test_flatten_retain_budget_identical() {
     printf(bytes_a == bytes_b ? "PASSED\n" : "FAILED\n");
 }
 
+static void test_emitter_flat_round_trip();
+
 int main() {
     if (!write_fixtures()) {
         printf("FAIL: could not write fixture parts under %s\n", kCacheRoot);
@@ -1765,7 +1767,69 @@ int main() {
     test_flatten_unhinted_unchanged();
     test_flatten_retain_budget_identical();
 
+    test_emitter_flat_round_trip();  // volumetric emitter metadata persistence
+
     if (g_failures == 0) { printf("part_flatten_tests: ALL PASS\n"); return 0; }
     printf("part_flatten_tests: %d FAILURE(S)\n", g_failures);
     return 1;
+}
+
+static void test_emitter_flat_round_trip() {
+    printf("=== test_emitter_flat_round_trip ===\n");
+
+    BLASManager blas_out;
+    TLASManager tlas_out(16);
+    auto handles = make_blas_n(blas_out, 1, 4);
+
+    std::vector<part_asset::FlatCluster> clusters(1);
+    clusters[0].aabb_min[0] = 0; clusters[0].aabb_min[1] = 0; clusters[0].aabb_min[2] = 0;
+    clusters[0].aabb_max[0] = 1; clusters[0].aabb_max[1] = 1; clusters[0].aabb_max[2] = 1;
+    part_asset::LodLevel l0;
+    l0.screen_size_threshold = 100.0f;
+    l0.blas_indices.push_back(blas_handle_index(blas_out, handles[0]));
+    clusters[0].lods.push_back(std::move(l0));
+
+    part_asset::VolumeEmitter e{};
+    e.pos[0] = 0; e.pos[1] = 5; e.pos[2] = 0;
+    e.dir[0] = 0; e.dir[1] = 1; e.dir[2] = 0;
+    e.radius = 1.5f; e.spread = 0.2f; e.length = 10.0f;
+    e.density = 0.7f;
+    e.color[0] = 0.8f; e.color[1] = 0.85f; e.color[2] = 0.9f;
+    e.rise = 1.0f; e.turbulence = 0.5f;
+    std::vector<part_asset::VolumeEmitter> emitters_out = {e};
+
+    const uint64_t hash = 0xEE11AABB00CC0000ull;
+    const std::string path = std::string(kCacheRoot) + "/parts/test_emitter_flat.flat.part";
+
+    bool saved = part_asset::save_flat_v3(path, blas_out, tlas_out, clusters,
+                                          std::vector<part_asset::FlatInstanceRef>{},
+                                          hash, emitters_out);
+    CHECK(saved, "emitter_flat: save_flat_v3 with emitters succeeds");
+
+    BLASManager blas_in;
+    TLASManager tlas_in(16);
+    std::vector<part_asset::FlatCluster> clusters_in;
+    std::vector<part_asset::FlatInstanceRef> refs_in;
+    std::vector<part_asset::VolumeEmitter> emitters_in;
+    bool loaded = part_asset::load_flat_v3(path, hash, blas_in, tlas_in,
+                                           clusters_in, refs_in, emitters_in);
+    CHECK(loaded, "emitter_flat: load_flat_v3 with emitters succeeds");
+    CHECK(emitters_in.size() == 1u, "emitter_flat: one emitter round-trips");
+    if (!emitters_in.empty()) {
+        CHECK(std::abs(emitters_in[0].radius - 1.5f) < 1e-5f,
+              "emitter_flat: radius round-trips");
+        CHECK(std::abs(emitters_in[0].density - 0.7f) < 1e-5f,
+              "emitter_flat: density round-trips");
+        CHECK(std::abs(emitters_in[0].color[2] - 0.9f) < 1e-5f,
+              "emitter_flat: color[2] round-trips");
+    }
+
+    // Verify that load_flat_v3 WITHOUT emitter param still works (back-compat).
+    BLASManager blas_bc;
+    TLASManager tlas_bc(16);
+    std::vector<part_asset::FlatCluster> clusters_bc;
+    std::vector<part_asset::FlatInstanceRef> refs_bc;
+    bool loaded_bc = part_asset::load_flat_v3(path, hash, blas_bc, tlas_bc,
+                                              clusters_bc, refs_bc);
+    CHECK(loaded_bc, "emitter_flat: back-compat load_flat_v3 still works");
 }

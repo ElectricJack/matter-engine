@@ -205,6 +205,19 @@ bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
 bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
                   BLASManager& blas, TLASManager& tlas,
                   std::vector<FlatCluster>& clusters_out);
+// Overload with volumetric emitters: appends an EMIT trailer after instance_refs.
+bool save_flat_v3(const std::string& path, const BLASManager& blas,
+                  const TLASManager& tlas,
+                  const std::vector<FlatCluster>& clusters,
+                  const std::vector<FlatInstanceRef>& instance_refs,
+                  uint64_t resolved_hash,
+                  const std::vector<VolumeEmitter>& emitters);
+// Overload that also reads the optional EMIT trailer for volumetric emitters.
+bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
+                  BLASManager& blas, TLASManager& tlas,
+                  std::vector<FlatCluster>& clusters_out,
+                  std::vector<FlatInstanceRef>& instance_refs_out,
+                  std::vector<VolumeEmitter>& emitters_out);
 
 // Lightweight cache-hit validation shared by bakers/providers. Validates the
 // common header and the material-table prefix without reading or hashing the
