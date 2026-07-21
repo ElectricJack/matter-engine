@@ -27,6 +27,20 @@
 
 #include "check.h"
 
+// Windows compatibility: setenv/unsetenv are POSIX-only; provide wrappers
+// using _putenv so test_flatten_retain_budget_identical compiles on MSYS2.
+#ifdef _WIN32
+#include <cstdlib>
+static int setenv(const char* name, const char* value, int /*overwrite*/) {
+    std::string s = std::string(name) + "=" + value;
+    return _putenv(s.c_str());
+}
+static int unsetenv(const char* name) {
+    std::string s = std::string(name) + "=";
+    return _putenv(s.c_str());
+}
+#endif
+
 namespace fs = std::filesystem;
 
 static const std::string kCacheRootStorage =
@@ -1732,6 +1746,152 @@ static void test_flatten_retain_budget_identical() {
     printf(bytes_a == bytes_b ? "PASSED\n" : "FAILED\n");
 }
 
+// ----------------------------------------------------------------- emitter flatten tests --
+
+// Volumetric emitters: save a .part with one VolumeEmitter, flatten it, then
+// load the .flat.part and verify the emitter survived the round-trip unchanged.
+static const uint64_t kEmitterPartHash = 0xEEEE000044440004ull;
+
+static void test_emitter_flatten_round_trip() {
+    printf("=== test_emitter_flatten_round_trip ===\n");
+
+    // 1. Build a simple sphere part with one volume emitter.
+    std::vector<Tri> tris = sphere_tris(10, 5);
+    CHECK(!tris.empty(), "emitter test: sphere tris non-empty");
+    {
+        BLASManager blas;
+        TLASManager tlas(16);
+        std::vector<TriEx> ex(tris.size(), make_triex(2));
+        BLASHandle h = blas.register_triangles(tris.data(), (int)tris.size(), ex.data());
+        uint32_t idx = UINT32_MAX;
+        const auto& entries = blas.get_entries();
+        for (size_t k = 0; k < entries.size(); ++k)
+            if (entries[k]->handle == h) { idx = (uint32_t)k; break; }
+        CHECK(idx != UINT32_MAX, "emitter test: blas registration ok");
+        part_asset::LodLevels lods;
+        part_asset::LodLevel L;
+        L.screen_size_threshold = 0.0f;
+        L.blas_indices.push_back(idx);
+        lods.push_back(L);
+
+        // Create a VolumeEmitter with known values.
+        part_asset::VolumeEmitter em{};
+        em.position[0] = 0.0f; em.position[1] = 1.0f; em.position[2] = 2.0f;
+        em.radius   = 1.5f;
+        em.density   = 0.7f;
+        em.color[0] = 1.0f; em.color[1] = 0.5f; em.color[2] = 0.0f; em.color[3] = 1.0f;
+        em.type     = 0;
+        em.falloff  = 2.0f;
+        std::vector<part_asset::VolumeEmitter> emitters = { em };
+
+        const std::string path = std::string(kCacheRoot) + "/" +
+                                 part_asset::cache_path_resolved(kEmitterPartHash);
+        bool sv = part_asset::save_v2(path, blas, tlas, nullptr, 0, lods,
+                                      kEmitterPartHash, emitters);
+        CHECK(sv, "emitter test: save_v2 with emitter ok");
+        if (!sv) { printf("  SKIPPING\n"); return; }
+    }
+
+    // 2. Verify the .part round-trips emitters via load_v2.
+    {
+        BLASManager blas;
+        TLASManager tlas(16);
+        std::vector<part_asset::ChildInstance> children;
+        part_asset::LodLevels lods;
+        std::vector<part_asset::VolumeEmitter> loaded_emitters;
+        const std::string path = std::string(kCacheRoot) + "/" +
+                                 part_asset::cache_path_resolved(kEmitterPartHash);
+        bool lv = part_asset::load_v2(path, kEmitterPartHash, blas, tlas,
+                                      children, lods, loaded_emitters);
+        CHECK(lv, "emitter test: load_v2 with emitter ok");
+        CHECK(loaded_emitters.size() == 1, "emitter test: 1 emitter in .part");
+        if (loaded_emitters.size() == 1) {
+            CHECK(loaded_emitters[0].radius == 1.5f, "emitter test: .part radius round-trips");
+            CHECK(loaded_emitters[0].density == 0.7f, "emitter test: .part density round-trips");
+        }
+    }
+
+    // 3. Flatten the part.
+    const std::string flat = std::string(kCacheRoot) + "/" +
+                             part_asset::cache_path_flat(kEmitterPartHash);
+    std::remove(flat.c_str());
+
+    // Remove any stale lods sidecar to ensure QEM path.
+    std::string lods_sidecar = std::string(kCacheRoot) + "/" +
+                               part_asset::cache_path_lods(kEmitterPartHash);
+    std::remove(lods_sidecar.c_str());
+
+    part_flatten::FlattenResult res =
+        part_flatten::flatten_part(kCacheRoot, kEmitterPartHash);
+    CHECK(res.ok, "emitter test: flatten_part ok");
+    if (!res.ok) { printf("  error: %s\n", res.error.c_str()); return; }
+
+    // 4. Load the .flat.part and verify emitters survived.
+    {
+        BLASManager blas;
+        TLASManager tlas(16);
+        std::vector<part_asset::FlatCluster> clusters;
+        std::vector<part_asset::FlatInstanceRef> refs;
+        std::vector<part_asset::VolumeEmitter> flat_emitters;
+        bool loaded = part_asset::load_flat_v3(flat, kEmitterPartHash, blas, tlas,
+                                               clusters, refs, flat_emitters);
+        CHECK(loaded, "emitter test: load_flat_v3 with emitters ok");
+        CHECK(flat_emitters.size() == 1,
+              "emitter test: 1 emitter survives .part -> .flat.part");
+        if (flat_emitters.size() == 1) {
+            CHECK(flat_emitters[0].radius == 1.5f,
+                  "emitter test: flat radius round-trips");
+            CHECK(flat_emitters[0].density == 0.7f,
+                  "emitter test: flat density round-trips");
+            CHECK(flat_emitters[0].position[1] == 1.0f,
+                  "emitter test: flat position[1] round-trips");
+            CHECK(flat_emitters[0].falloff == 2.0f,
+                  "emitter test: flat falloff round-trips");
+        }
+    }
+
+    // 5. The back-compat load_flat_v3 (6-arg, no emitters) must still succeed.
+    {
+        BLASManager blas;
+        TLASManager tlas(16);
+        std::vector<part_asset::FlatCluster> clusters;
+        std::vector<part_asset::FlatInstanceRef> refs;
+        bool loaded = part_asset::load_flat_v3(flat, kEmitterPartHash, blas, tlas,
+                                               clusters, refs);
+        CHECK(loaded, "emitter test: back-compat load_flat_v3 (6-arg) still works");
+    }
+
+    printf("PASSED\n");
+}
+
+// Verify that flatten of a part WITHOUT emitters produces an empty emitters
+// vector when loaded with the emitter-aware load_flat_v3 overload.
+static void test_flatten_no_emitter_round_trip() {
+    printf("=== test_flatten_no_emitter_round_trip ===\n");
+
+    // The parent fixture was written by write_fixtures() without emitters.
+    // Its flat was already created by earlier tests; remove and re-flatten.
+    const std::string flat = std::string(kCacheRoot) + "/" +
+                             part_asset::cache_path_flat(kParentHash);
+    std::remove(flat.c_str());
+
+    auto res = part_flatten::flatten_part(kCacheRoot, kParentHash);
+    CHECK(res.ok, "no-emitter test: flatten_part ok");
+    if (!res.ok) { printf("  error: %s\n", res.error.c_str()); return; }
+
+    BLASManager blas;
+    TLASManager tlas(16);
+    std::vector<part_asset::FlatCluster> clusters;
+    std::vector<part_asset::FlatInstanceRef> refs;
+    std::vector<part_asset::VolumeEmitter> emitters;
+    bool loaded = part_asset::load_flat_v3(flat, kParentHash, blas, tlas,
+                                           clusters, refs, emitters);
+    CHECK(loaded, "no-emitter test: load_flat_v3 ok");
+    CHECK(emitters.empty(), "no-emitter test: emitters vector is empty for part without emitters");
+
+    printf("PASSED\n");
+}
+
 int main() {
     if (!write_fixtures()) {
         printf("FAIL: could not write fixture parts under %s\n", kCacheRoot);
@@ -1764,6 +1924,8 @@ int main() {
     test_flatten_segmented();
     test_flatten_unhinted_unchanged();
     test_flatten_retain_budget_identical();
+    test_emitter_flatten_round_trip();
+    test_flatten_no_emitter_round_trip();
 
     if (g_failures == 0) { printf("part_flatten_tests: ALL PASS\n"); return 0; }
     printf("part_flatten_tests: %d FAILURE(S)\n", g_failures);

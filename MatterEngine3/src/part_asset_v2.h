@@ -24,8 +24,9 @@ constexpr uint32_t kFormatVersionV3 = 3u;
 // stale flats regenerate automatically (Stage 2 ladder retune bumped 3 -> 4;
 // bake-hardening #2 bumped 4 -> 5 to add the instance_refs trailer;
 // lod-instanced-children bumped 5 -> 6 to add segment tag + inline_cutover;
-// the shared nine-level serialized/render capacity bumped 6 -> 7).
-constexpr uint32_t kFormatVersionFlat = 7u;
+// the shared nine-level serialized/render capacity bumped 6 -> 7;
+// volumetric emitters trailer bumped 7 -> 8).
+constexpr uint32_t kFormatVersionFlat = 8u;
 
 // Content-addressed identity for a part. All three inputs are OPAQUE byte ranges
 // to SP-1 (script source, params, child resolved-hashes). child_hashes need NOT be
@@ -91,6 +92,22 @@ struct FlattenHints {
 bool save_flatten_hints(const std::string& path, const FlattenHints& hints);
 bool load_flatten_hints(const std::string& path, FlattenHints& out);
 
+// Volume emitter metadata: describes a spherical fog/volumetric emitter attached
+// to a part. Emitters are baked into the .part artifact and ride along through
+// the flatten pipeline unchanged (metadata only, no geometry).
+// Tag 0x454D4954u ('EMIT') + uint32_t count + raw VolumeEmitter bytes forms the
+// optional EMIT trailer appended after the main body in both v2 and flat formats.
+struct VolumeEmitter {
+    float    position[3];   // local-space center
+    float    radius;        // world-space radius of the emitting sphere
+    float    density;       // fog density (0..1 typical)
+    float    color[4];      // RGBA emission color
+    uint32_t type;          // emitter type (0 = sphere, reserved for future shapes)
+    float    falloff;       // radial falloff exponent
+};
+static_assert(sizeof(VolumeEmitter) == 44,
+              "VolumeEmitter must be 44 bytes for stable serialization");
+
 // Serialize the baked managers + child table + LOD levels to path (atomic temp+rename).
 // Writes format_version=2. Returns false on any I/O failure or dangling BLAS handle.
 // GL-free. children may be null iff child_count == 0; lods may be empty.
@@ -99,6 +116,14 @@ bool save_v2(const std::string& path, const BLASManager& blas,
              const ChildInstance* children, size_t child_count,
              const LodLevels& lods,
              uint64_t resolved_hash);
+
+// Overload: save_v2 with an optional EMIT trailer for volume emitters.
+bool save_v2(const std::string& path, const BLASManager& blas,
+             const TLASManager& tlas,
+             const ChildInstance* children, size_t child_count,
+             const LodLevels& lods,
+             uint64_t resolved_hash,
+             const std::vector<VolumeEmitter>& emitters);
 
 // Atomically publish source_path at target_path, replacing an existing target
 // without deleting it first. Failure leaves the previous target intact.
@@ -115,6 +140,16 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
              BLASManager& blas, TLASManager& tlas,
              std::vector<ChildInstance>& children_out,
              LodLevels& lods_out,
+             PartAssetLoadFailure* failure = nullptr,
+             std::string* reason = nullptr);
+
+// Overload: load_v2 that also reads the EMIT trailer (EOF-tolerant: files
+// written without emitters return an empty vector and succeed normally).
+bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
+             BLASManager& blas, TLASManager& tlas,
+             std::vector<ChildInstance>& children_out,
+             LodLevels& lods_out,
+             std::vector<VolumeEmitter>& emitters_out,
              PartAssetLoadFailure* failure = nullptr,
              std::string* reason = nullptr);
 
@@ -156,6 +191,13 @@ bool save_flat_v3(const std::string& path, const BLASManager& blas,
                   const std::vector<FlatCluster>& clusters,
                   const std::vector<FlatInstanceRef>& instance_refs,
                   uint64_t resolved_hash);
+// Overload: save_flat_v3 with an optional EMIT trailer for volume emitters.
+bool save_flat_v3(const std::string& path, const BLASManager& blas,
+                  const TLASManager& tlas,
+                  const std::vector<FlatCluster>& clusters,
+                  const std::vector<FlatInstanceRef>& instance_refs,
+                  uint64_t resolved_hash,
+                  const std::vector<VolumeEmitter>& emitters);
 // Back-compat overload: writes zero instance_refs.
 bool save_flat_v3(const std::string& path, const BLASManager& blas,
                   const TLASManager& tlas,
@@ -165,6 +207,12 @@ bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
                   BLASManager& blas, TLASManager& tlas,
                   std::vector<FlatCluster>& clusters_out,
                   std::vector<FlatInstanceRef>& instance_refs_out);
+// Overload: load_flat_v3 that also reads the EMIT trailer (EOF-tolerant).
+bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
+                  BLASManager& blas, TLASManager& tlas,
+                  std::vector<FlatCluster>& clusters_out,
+                  std::vector<FlatInstanceRef>& instance_refs_out,
+                  std::vector<VolumeEmitter>& emitters_out);
 // Back-compat overload: discards the instance_refs trailer (still validates it).
 bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
                   BLASManager& blas, TLASManager& tlas,

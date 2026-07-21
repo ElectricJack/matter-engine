@@ -500,6 +500,25 @@ bool save_v2(const std::string& path, const BLASManager& blas,
     return write_file_atomic(path, kFormatVersionV2, resolved_hash, body);
 }
 
+bool save_v2(const std::string& path, const BLASManager& blas,
+             const TLASManager& tlas,
+             const ChildInstance* children, size_t child_count,
+             const LodLevels& lods,
+             uint64_t resolved_hash,
+             const std::vector<VolumeEmitter>& emitters) {
+    std::vector<uint8_t> body;
+    std::unordered_map<BLASHandle, uint32_t> h2i;
+    if (!append_common_body(body, blas, tlas, children, child_count, lods, h2i))
+        return false;
+    // --- EMIT trailer (optional; only written when non-empty) ---
+    if (!emitters.empty()) {
+        put<uint32_t>(body, 0x454D4954u);  // 'EMIT'
+        put<uint32_t>(body, static_cast<uint32_t>(emitters.size()));
+        put_bytes(body, emitters.data(), emitters.size() * sizeof(VolumeEmitter));
+    }
+    return write_file_atomic(path, kFormatVersionV2, resolved_hash, body);
+}
+
 bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
              BLASManager& blas, TLASManager& tlas,
              std::vector<ChildInstance>& children_out,
@@ -545,17 +564,89 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
     return true;
 }
 
+bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
+             BLASManager& blas, TLASManager& tlas,
+             std::vector<ChildInstance>& children_out,
+             LodLevels& lods_out,
+             std::vector<VolumeEmitter>& emitters_out,
+             PartAssetLoadFailure* failure,
+             std::string* reason) {
+    emitters_out.clear();
+    children_out.clear();
+    lods_out.clear();
+    if (failure) *failure = PartAssetLoadFailure::None;
+    if (reason) reason->clear();
+
+    const auto fail = [failure, reason](PartAssetLoadFailure value, const char* message) {
+        if (failure) *failure = value;
+        if (reason) *reason = message;
+        return false;
+    };
+
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return fail(PartAssetLoadFailure::Header, "invalid part header");
+    std::fseek(f, 0, SEEK_END);
+    long sz = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    if (sz < 40) { std::fclose(f); return fail(PartAssetLoadFailure::Header, "invalid part header"); }
+    std::vector<uint8_t> buf(static_cast<size_t>(sz));
+    bool read_ok = std::fread(buf.data(), 1, buf.size(), f) == buf.size();
+    std::fclose(f);
+    if (!read_ok) return fail(PartAssetLoadFailure::Header, "invalid part header");
+
+    Reader r{ buf.data(), buf.data() + buf.size() };
+    uint64_t content_hash = 0;
+    if (!read_and_validate_header(r, expected_resolved_hash, kFormatVersionV2, content_hash))
+        return fail(PartAssetLoadFailure::Header, "invalid part header");
+    if (fnv1a64(r.p, static_cast<size_t>(r.end - r.p)) != content_hash)
+        return fail(PartAssetLoadFailure::CorruptBody, "corrupt part body");
+
+    std::vector<BLASHandle> handles;
+    if (!read_common_body(r, blas, tlas, children_out, lods_out, handles, failure, reason)) {
+        if (failure && *failure == PartAssetLoadFailure::None)
+            *failure = PartAssetLoadFailure::CorruptBody;
+        if (reason && reason->empty()) *reason = "corrupt part body";
+        return false;
+    }
+
+    // --- EMIT trailer probe (EOF-tolerant) ---
+    // Old .part files have no EMIT trailer; in that case r.p == r.end and we
+    // return an empty emitters_out. Files with the trailer start with the 4-byte
+    // tag 0x454D4954u followed by a uint32_t count and count*sizeof(VolumeEmitter)
+    // raw bytes.
+    if (static_cast<size_t>(r.end - r.p) >= sizeof(uint32_t)) {
+        const uint8_t* saved_p = r.p;
+        uint32_t tag = r.get<uint32_t>();
+        if (r.ok && tag == 0x454D4954u) {
+            uint32_t count = r.get<uint32_t>();
+            if (r.ok && count > 0) {
+                const uint8_t* data = r.take(count * sizeof(VolumeEmitter));
+                if (r.ok && data) {
+                    emitters_out.resize(count);
+                    std::memcpy(emitters_out.data(), data, count * sizeof(VolumeEmitter));
+                }
+            }
+        } else {
+            // Not an EMIT tag; rewind (no trailer present).
+            r.p = saved_p;
+        }
+    }
+
+    return true;
+}
+
 bool save_flat_v3(const std::string& path, const BLASManager& blas,
                   const TLASManager& tlas,
                   const std::vector<FlatCluster>& clusters,
                   const std::vector<FlatInstanceRef>& instance_refs,
-                  uint64_t resolved_hash) {
+                  uint64_t resolved_hash,
+                  const std::vector<VolumeEmitter>& emitters) {
     for (const auto& cluster : clusters)
         if (cluster.lods.size() > matter::kMaxSerializedLodLevels) return false;
 
     std::vector<uint8_t> body;
     std::unordered_map<BLASHandle, uint32_t> h2i;
-    // v7 body = v6 layout plus the enforced shared LOD capacity.
+    // v8 body = v7 layout plus the optional EMIT trailer.
     if (!append_common_body(body, blas, tlas, nullptr, 0, LodLevels{}, h2i))
         return false;
 
@@ -584,7 +675,23 @@ bool save_flat_v3(const std::string& path, const BLASManager& blas,
         put<float>(body, r.inline_cutover);                     // v6: inline cutover
     }
 
+    // --- EMIT trailer (v8, optional; only written when non-empty) ---
+    if (!emitters.empty()) {
+        put<uint32_t>(body, 0x454D4954u);  // 'EMIT'
+        put<uint32_t>(body, static_cast<uint32_t>(emitters.size()));
+        put_bytes(body, emitters.data(), emitters.size() * sizeof(VolumeEmitter));
+    }
+
     return write_file_atomic(path, kFormatVersionFlat, resolved_hash, body);
+}
+
+bool save_flat_v3(const std::string& path, const BLASManager& blas,
+                  const TLASManager& tlas,
+                  const std::vector<FlatCluster>& clusters,
+                  const std::vector<FlatInstanceRef>& instance_refs,
+                  uint64_t resolved_hash) {
+    return save_flat_v3(path, blas, tlas, clusters, instance_refs, resolved_hash,
+                        std::vector<VolumeEmitter>{});
 }
 
 bool save_flat_v3(const std::string& path, const BLASManager& blas,
@@ -598,9 +705,11 @@ bool save_flat_v3(const std::string& path, const BLASManager& blas,
 bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
                   BLASManager& blas, TLASManager& tlas,
                   std::vector<FlatCluster>& clusters_out,
-                  std::vector<FlatInstanceRef>& instance_refs_out) {
+                  std::vector<FlatInstanceRef>& instance_refs_out,
+                  std::vector<VolumeEmitter>& emitters_out) {
     clusters_out.clear();
     instance_refs_out.clear();
+    emitters_out.clear();
 
     FILE* f = std::fopen(path.c_str(), "rb");
     if (!f) return false;
@@ -676,7 +785,39 @@ bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
         ref.inline_cutover = r.get<float>();                   // v6: inline cutover (_pad not serialized)
         instance_refs_out.push_back(ref);
     }
-    return r.ok;
+    if (!r.ok) return false;
+
+    // --- EMIT trailer probe (v8, EOF-tolerant) ---
+    // Flat artifacts written before v8 have no EMIT trailer; r.p == r.end and
+    // emitters_out stays empty. v8 artifacts append the optional EMIT block
+    // after the instance_refs trailer (same tag+count+raw format as save_v2).
+    if (static_cast<size_t>(r.end - r.p) >= sizeof(uint32_t)) {
+        const uint8_t* saved_p = r.p;
+        uint32_t tag = r.get<uint32_t>();
+        if (r.ok && tag == 0x454D4954u) {
+            uint32_t count = r.get<uint32_t>();
+            if (r.ok && count > 0) {
+                const uint8_t* data = r.take(count * sizeof(VolumeEmitter));
+                if (r.ok && data) {
+                    emitters_out.resize(count);
+                    std::memcpy(emitters_out.data(), data, count * sizeof(VolumeEmitter));
+                }
+            }
+        } else {
+            r.p = saved_p;  // rewind; no EMIT trailer present
+        }
+    }
+
+    return true;
+}
+
+bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
+                  BLASManager& blas, TLASManager& tlas,
+                  std::vector<FlatCluster>& clusters_out,
+                  std::vector<FlatInstanceRef>& instance_refs_out) {
+    std::vector<VolumeEmitter> emitters_ignored;
+    return load_flat_v3(path, expected_resolved_hash, blas, tlas, clusters_out,
+                        instance_refs_out, emitters_ignored);
 }
 
 bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
