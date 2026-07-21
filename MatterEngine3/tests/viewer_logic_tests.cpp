@@ -1510,8 +1510,11 @@ static void test_frustum_planes_known_camera() {
           "Vulkan frame matrices build");
     const auto near_ndc = viewer::project_ndc(frame.world_to_clip, {0, 0, -0.05f});
     const auto far_ndc = viewer::project_ndc(frame.world_to_clip, {0, 0, -4000.0f});
-    CHECK(std::fabs(near_ndc.z) < 1e-5f, "Vulkan near plane maps to NDC z=0");
-    CHECK(std::fabs(far_ndc.z - 1.0f) < 1e-5f, "Vulkan far plane maps to NDC z=1");
+    // Reversed-Z: build_frame_matrices now projects with
+    // perspective_rh_zo_reversed (near->1, far->0), the inverse of the
+    // pre-migration convention this test used to assert.
+    CHECK(std::fabs(near_ndc.z - 1.0f) < 1e-5f, "Vulkan near plane maps to NDC z=1");
+    CHECK(std::fabs(far_ndc.z) < 1e-5f, "Vulkan far plane maps to NDC z=0");
     // A point straight ahead inside the frustum passes all 6 planes.
     float p[3] = {0, 0, -10};
     for (int i = 0; i < 6; ++i) {

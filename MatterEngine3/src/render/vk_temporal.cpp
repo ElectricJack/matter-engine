@@ -91,9 +91,13 @@ GiTemporalResult GiTemporalState::accumulate(
         result.rejection_bits = kGiRejectBounds;
         return result;
     }
-    const float depth_threshold =
-        std::max(0.01f, 0.02f * std::max(std::fabs(current.depth),
-                                        std::fabs(presented_.surface.depth)));
+    // Reversed-Z: scale by the depth complement (1 - d), which equals the
+    // standard-Z depth for the same planes — keeps the pre-migration
+    // tolerance instead of collapsing to the floor scene-wide. Mirrors
+    // gi_temporal.comp.
+    const float depth_threshold = std::max(
+        0.01f, 0.02f * std::max(std::fabs(1.0f - current.depth),
+                                std::fabs(1.0f - presented_.surface.depth)));
     if (std::fabs(current.depth - presented_.surface.depth) > depth_threshold) {
         result.rejection_bits = kGiRejectDepth;
         return result;

@@ -1151,11 +1151,15 @@ void run_raster_path(matter::VulkanDevice& vulkan) {
     CHECK(std::isfinite(center.depth) && center.depth >= 0.0f &&
               center.depth <= 1.0f,
           "known center Vulkan depth range");
-    CHECK(std::fabs(center.depth - 0.959596f) <= 2e-3f,
+    // Reversed-Z: triangle at view distance 2.0 with near=0.1/far=10 projects
+    // to near*(far-d)/((far-near)*d) = 0.1*8/(9.9*2) = 0.040404 (was 0.959596
+    // under the standard-Z convention).
+    CHECK(std::fabs(center.depth - 0.040404f) <= 2e-3f,
           "known center projected depth");
     CHECK(lower_right_inside.albedo.w > 0.99f,
           "negative-height viewport preserves top-left framebuffer convention");
-    CHECK(background.albedo.w < 0.01f && background.depth >= 0.999f,
+    // Reversed-Z: the depth clear value (background) is 0.0, not 1.0.
+    CHECK(background.albedo.w < 0.01f && background.depth <= 0.001f,
           "background color and depth remain clear");
     CHECK(background.material_index == UINT32_MAX &&
               background.instance_token == UINT32_MAX,
