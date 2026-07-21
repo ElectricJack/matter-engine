@@ -93,7 +93,7 @@ bool save_flatten_hints(const std::string& path, const FlattenHints& hints);
 bool load_flatten_hints(const std::string& path, FlattenHints& out);
 
 // Volumetric emitter record serialized as a tagged trailer in .part artifacts.
-// 44 bytes, padding-free layout for stable serialization.
+// 60 bytes, padding-free layout for stable serialization.
 struct VolumeEmitter {
     float pos[3];
     float dir[3];
@@ -103,10 +103,10 @@ struct VolumeEmitter {
     float density;
     float color[3];
     float rise;
-    float turbulence;  // 11 floats * 4 = 44 bytes
+    float turbulence;  // 15 floats * 4 = 60 bytes
 };
-static_assert(sizeof(VolumeEmitter) == 44,
-              "VolumeEmitter must be 44 bytes for stable serialization");
+static_assert(sizeof(VolumeEmitter) == 60,
+              "VolumeEmitter must be 60 bytes for stable serialization");
 
 // Serialize the baked managers + child table + LOD levels to path (atomic temp+rename).
 // Writes format_version=2. Returns false on any I/O failure or dangling BLAS handle.

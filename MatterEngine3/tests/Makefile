@@ -337,6 +337,10 @@ ASYNCQ_CPP = async_queue_tests.cpp ../src/async_bake.cpp
 TILESETGTEX_TARGET = tileset_gtex_tests
 TILESETGTEX_CPP    = tileset_gtex_tests.cpp ../src/tileset_gtex.cpp
 
+# Volumetrics Task 3 — CPU emitter gather (distance filter, 256 cap).
+EMITTERGATHER_TARGET = emitter_gather_tests
+EMITTERGATHER_CPP    = emitter_gather_tests.cpp ../src/render/vk_emitter_gather.cpp
+
 # Phase 4 Task 4 — SceneRegistry reflected ECS validation + instantiation (def flavor).
 SCENE_REGISTRY_TARGET = scene_registry_tests
 SCENE_REGISTRY_CPP    = scene_registry_tests.cpp ../src/ecs/scene_registry.cpp \
@@ -815,6 +819,7 @@ def_CPP_SRCS := $(sort \
     $(SHADER_SOURCE_CPP) \
     $(ASYNCQ_CPP) \
     $(TILESETGTEX_CPP) \
+    $(EMITTERGATHER_CPP) \
     $(REFINECTL_CPP) \
     $(SECTORSTREAM_CPP) \
     $(SECTORCOORD_CPP) \
@@ -934,6 +939,7 @@ POLYTRI_OBJS = $(call obj_list,def,$(POLYTRI_CPP))
 SHADER_SOURCE_OBJS = $(call obj_list,def,$(SHADER_SOURCE_CPP))
 ASYNCQ_OBJS = $(call obj_list,def,$(ASYNCQ_CPP))
 TILESETGTEX_OBJS = $(call obj_list,def,$(TILESETGTEX_CPP))
+EMITTERGATHER_OBJS = $(call obj_list,def,$(EMITTERGATHER_CPP))
 REFINECTL_OBJS = $(call obj_list,def,$(REFINECTL_CPP))
 SECTORSTREAM_OBJS = $(call obj_list,def,$(SECTORSTREAM_CPP))
 SECTORCOORD_OBJS = $(call obj_list,def,$(SECTORCOORD_CPP)) $(call obj_list,flecsc,$(SECTORCOORD_C))
@@ -978,7 +984,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge
+.PHONY: clean run-matrix run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1427,6 +1433,13 @@ $(PARTSTORE_TARGET): $(PARTSTORE_OBJS)
 run-partstore: $(PARTSTORE_TARGET)
 	./$(PARTSTORE_TARGET)
 
+# Volumetrics Task 3 — CPU emitter gather (distance filter, 256 cap).
+$(EMITTERGATHER_TARGET): $(EMITTERGATHER_OBJS)
+	$(CC) $(EMITTERGATHER_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) -lm
+
+run-emittergather: $(EMITTERGATHER_TARGET)
+	./$(EMITTERGATHER_TARGET)
+
 # Modifier-region bake plumbing (Task 4): full bake through ScriptHost, region
 # meshes welded across cells and stack-processed.
 $(MODBAKE_TARGET): $(MODBAKE_OBJS)
@@ -1579,7 +1592,7 @@ vulkan-smoke:
 # ---------------------------------------------------------------------------
 clean:
 	rm -rf $(OBJDIR)
-	rm -f $(PARTV2_TARGET) $(SCRIPT_TARGET) $(GRAPH_TARGET) $(GRAPH_INT_TARGET) $(WORLD_DEFINITION_TARGET) \
+	rm -f $(PARTV2_TARGET) $(SCRIPT_TARGET) $(GRAPH_TARGET) $(GRAPH_INT_TARGET) $(EMITTERGATHER_TARGET) $(WORLD_DEFINITION_TARGET) \
 	      $(PHYSICS_PLAYGROUND_TARGET) \
 	      $(TRIVAR_TARGET) $(SHLIB_TARGET) $(COMP_TARGET) $(DEV_TARGET) \
 	      $(EXAMPLE_TARGET) $(VIEWER_LOGIC_TARGET) $(TREEBAKE_TARGET) \
