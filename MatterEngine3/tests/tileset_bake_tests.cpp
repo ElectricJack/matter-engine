@@ -290,6 +290,69 @@ static void test_settle_tileset(const std::string& cache_dir,
 }
 
 // ---------------------------------------------------------------------------
+// test_build_settle_plan — direct plan-builder assertions (task 5.2).
+// The plan must expose exactly what settle_tileset consumes for the same spec:
+// same drop/spawn/nonphys counts, layer structure, and sync-group bookkeeping.
+// ---------------------------------------------------------------------------
+static void test_build_settle_plan(const std::string& cache_dir,
+                                   uint64_t pebble_hash, uint64_t twig_hash) {
+    tileset::TilesetSpec spec = make_spec(pebble_hash, twig_hash);
+    tileset::BakeInputs in{ cache_dir };
+    tileset::SettlePlan plan;
+    std::string err;
+    CHECK(tileset::build_settle_plan(spec, in, plan, err), "plan: build_settle_plan succeeds");
+    CHECK(err.empty(), "plan: no error text on success");
+
+    CHECK(plan.torus_size == 4 * 2.0f, "plan: torus_size = kTorusN * cfg.size");
+    CHECK(plan.hf.count_x > 0 && plan.hf.count_z > 0, "plan: heightfield tiled");
+
+    // Drops: 1 DropChildRec x 16 occurrence frames.
+    CHECK(plan.drop_spawns.size() == 16, "plan: 16 drop spawns");
+    CHECK(plan.drop_provs.size() == plan.drop_spawns.size(), "plan: drop provs parallel to spawns");
+
+    // Layers mirror the spec: layer 0 non-physics (48 snapped pebbles),
+    // layer 1 physics (4 strip placements x 8 occurrences + 16 interiors = 48).
+    CHECK(plan.layers.size() == 2, "plan: one LayerPlan per script layer");
+    bool l0_ok = plan.layers.size() == 2
+              && !plan.layers[0].physics
+              && plan.layers[0].spawns.empty()
+              && plan.layers[0].provs.empty()
+              && plan.layers[0].nonphys.size() == 48
+              && plan.layers[0].module == "Pebble";
+    CHECK(l0_ok, "plan: layer 0 = non-physics, 48 snapped instances, no spawns");
+    bool l1_ok = plan.layers.size() == 2
+              && plan.layers[1].physics
+              && plan.layers[1].spawns.size() == 4 * 8 + 16
+              && plan.layers[1].provs.size() == plan.layers[1].spawns.size()
+              && plan.layers[1].nonphys.empty()
+              && plan.layers[1].module == "Twig";
+    CHECK(l1_ok, "plan: layer 1 = physics, 48 spawns with parallel provs");
+
+    // Sync groups: 1 (drop) + 4 (strip placements), recorded in add order;
+    // every spawn's sync_group must index into sync_group_frames and every
+    // collider pointer must be non-null (borrowed from plan.colliders).
+    CHECK(plan.sync_group_frames.size() == 1 + 4, "plan: 5 sync groups (1 drop + 4 strips)");
+    bool refs_ok = true;
+    auto check_spawns = [&](const std::vector<tileset::BodySpawn>& spawns) {
+        for (const auto& bs : spawns) {
+            if (!bs.collider) refs_ok = false;
+            if (bs.sync_group >= (int)plan.sync_group_frames.size()) refs_ok = false;
+        }
+    };
+    check_spawns(plan.drop_spawns);
+    for (const auto& lp : plan.layers) check_spawns(lp.spawns);
+    CHECK(refs_ok, "plan: all spawns have colliders and in-range sync groups");
+    CHECK(!plan.colliders.empty(), "plan: collider storage populated");
+
+    // Cross-check against what settle_tileset consumed: total assembled
+    // instances = drops + per-layer physics + per-layer non-physics.
+    size_t total = plan.drop_provs.size();
+    for (const auto& lp : plan.layers) total += lp.provs.size() + lp.nonphys.size();
+    CHECK(total == 16 + (4 * 8 + 16) + 48,
+          "plan: totals match settle_tileset's assembled instance count");
+}
+
+// ---------------------------------------------------------------------------
 // test_scaled_collider_physics
 //
 // Verifies (a) that instances record their intended scale, and (b) that a
@@ -579,6 +642,7 @@ int main()
         uint64_t pebble_hash = pebble_ir.root_hashes[0];
         uint64_t twig_hash   = twig_ir.root_hashes[0];
         test_settle_tileset(root.string(), pebble_hash, twig_hash);
+        test_build_settle_plan(root.string(), pebble_hash, twig_hash);
     }
 
     if (pebble_ir.ok && !pebble_ir.root_hashes.empty() &&

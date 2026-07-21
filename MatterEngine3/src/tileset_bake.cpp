@@ -128,46 +128,27 @@ static float base_height(const BaseField& base, float x, float z, float tile_siz
 // Collider memoization keys
 // ---------------------------------------------------------------------------
 // Base key: (child_hash, collider_override) — used to cache the unscaled fit.
+// (The scaled key — ScaledColliderKey — lives in tileset_bake.h since SettlePlan
+// exposes the scaled-collider map; SpawnProv/NonPhysInst moved there too.)
 using ColliderKey = std::pair<uint64_t, std::string>;
 
-// Scaled key: (child_hash, collider_override, scale) — one entry per unique scale.
-// Scale derives deterministically from the RNG so exact float comparison is safe.
-struct ScaledColliderKey {
-    uint64_t    child_hash;
-    std::string override_str;
-    float       scale;
-    bool operator<(const ScaledColliderKey& o) const {
-        if (child_hash != o.child_hash) return child_hash < o.child_hash;
-        if (override_str != o.override_str) return override_str < o.override_str;
-        return scale < o.scale;
-    }
-};
-
 // ---------------------------------------------------------------------------
-// Provenance record for each spawned body
-// ---------------------------------------------------------------------------
-struct SpawnProv {
-    uint64_t child_hash = 0;
-    float    scale      = 1.0f;
-    int      layer      = -1;   // -1 = drop
-};
-
-// ---------------------------------------------------------------------------
-// settle_tileset — main orchestrator
+// build_settle_plan — spawn-plan builder (settle-tick-optimizer.md §II.2)
 // ---------------------------------------------------------------------------
 
 // Samples per tile for the flat-base heightfield (no scripted base() call).
 // Mirrors BaseField::kSamplesPerTile for cross-path consistency.
 static constexpr int kFlatBaseSamplesPerTile = 8;
 
-bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
-                    SettledTorus& out, std::string& err)
+bool build_settle_plan(const TilesetSpec& spec, const BakeInputs& in,
+                       SettlePlan& out, std::string& err)
 {
     const float T  = spec.cfg.size;
     const float ET = kTorusN * T;
+    out.torus_size = ET;
 
     // ---- Step 1: build the torus HeightField -----------------------------------
-    HeightField hf;
+    HeightField& hf = out.hf;
     if (spec.base.set) {
         const int n   = spec.base.n;
         hf.cell       = spec.base.cell;
@@ -192,11 +173,13 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
     // Base cache: (child_hash, collider_override) -> unscaled ColliderFit.
     std::map<ColliderKey, ColliderFit> collider_cache;
     // Scaled cache: (child_hash, collider_override, scale) -> scale_fit(base, scale).
-    // std::map is pointer-stable so &entry is valid for the lifetime of settle_tileset.
+    // Lives in the plan (out.colliders): std::map is pointer-stable, so the
+    // BodySpawn::collider pointers taken below stay valid for the plan's lifetime
+    // (see the LIFETIME note on SettlePlan in tileset_bake.h).
     // Scale 1.0 is stored here too (scale_fit(base, 1.0) == base, but the pointer
     // from the scaled map is used uniformly so BodySpawn.collider always reflects
     // the intended simulation geometry.
-    std::map<ScaledColliderKey, ColliderFit> scaled_cache;
+    std::map<ScaledColliderKey, ColliderFit>& scaled_cache = out.colliders;
 
     // Helper: get or load a base ColliderFit for a (hash, override) pair.
     // Returns nullptr and sets err on failure.
@@ -257,16 +240,15 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
                 if (!check_placement(p)) return false;
     }
 
-    // ---- Step 3: create SettleWorld ---------------------------------------------
-    SettleWorld world(ET, hf, SettleParams{});
-
-    // ---- Step 4: shared drops ---------------------------------------------------
+    // ---- Step 3: shared drops ---------------------------------------------------
     // One sync group per DropChildRec with 16 occurrence frames (one per tile).
     // The drop transform's translation/rotation goes into the SPAWN pose.
     // Frames are pure translations: {col*T, 0, row*T}.
+    // Sync groups are recorded in add order; the plan index equals the group id
+    // SettleWorld::add_sync_group will return when the run loop replays them.
 
-    std::vector<BodySpawn> drop_spawns;
-    std::vector<SpawnProv> drop_provs;
+    std::vector<BodySpawn>& drop_spawns = out.drop_spawns;
+    std::vector<SpawnProv>& drop_provs  = out.drop_provs;
 
     for (const auto& dr : spec.drops) {
         // Parse the transform matrix into a spawn pose.
@@ -280,7 +262,8 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
             for (int c = 0; c < kTorusN; ++c)
                 frames.push_back(Pose{ c * T, 0.0f, r * T, 0.0f, 0.0f, 0.0f, 1.0f });
 
-        int sg = world.add_sync_group(frames);
+        int sg = (int)out.sync_group_frames.size();
+        out.sync_group_frames.push_back(std::move(frames));
 
         // Drops always have scale 1.0 (DropChildRec carries no scale field).
         // Use the scaled cache (scale=1.0) so the pointer convention is uniform.
@@ -303,32 +286,16 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
         }
     }
 
-    // Settle all drops in one batch.
-    LayerResult drop_result;
-    if (!drop_spawns.empty()) {
-        drop_result = world.settle_layer(drop_spawns);
-        if (!drop_result.converged) out.report.converged_all = false;
-    }
-
-    // ---- Step 5: per script layer -----------------------------------------------
-    struct NonPhysInst {
-        uint64_t child_hash;
-        float    scale;
-        Pose     pose;
-        int      layer;
-    };
-
-    // Provenance for physics spawns (one per layer).
-    std::vector<std::vector<SpawnProv>> layer_phys_provs;
-    // Non-physics instances appended after each layer.
-    std::vector<NonPhysInst> all_nonphys;
-
+    // ---- Step 4: per script layer -----------------------------------------------
     int layer_idx = 0;
     for (const auto& ls : spec.layers) {
         const std::string& ov = ls.collider_override;
-        std::vector<BodySpawn> layer_spawns;
-        std::vector<SpawnProv> layer_provs;
-        std::vector<NonPhysInst> layer_nonphys;
+        SettlePlan::LayerPlan lp;
+        lp.module  = ls.module;
+        lp.physics = ls.physics;
+        std::vector<BodySpawn>&   layer_spawns  = lp.spawns;
+        std::vector<SpawnProv>&   layer_provs   = lp.provs;
+        std::vector<NonPhysInst>& layer_nonphys = lp.nonphys;
 
         if (ls.physics) {
             // --- Strip placements (physics) ---
@@ -365,7 +332,8 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
                             frames.push_back(frame);
                         }
 
-                        int sg = world.add_sync_group(frames);
+                        int sg = (int)out.sync_group_frames.size();
+                        out.sync_group_frames.push_back(std::move(frames));
 
                         // Scaled collider: use p.scale so physics simulates with the
                         // correct geometry even when scale != 1.0.
@@ -499,9 +467,47 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
             }
         }
 
-        // Settle this layer's physics bodies.
-        if (!layer_spawns.empty()) {
-            LayerResult lr = world.settle_layer(layer_spawns);
+        out.layers.push_back(std::move(lp));
+        ++layer_idx;
+    }
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// settle_tileset — main orchestrator: build the plan, run it, assemble output
+// ---------------------------------------------------------------------------
+bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
+                    SettledTorus& out, std::string& err)
+{
+    // Plan building is pure reorganization of the spawn inputs — no RNG draws,
+    // no physics. Fail-closed before any world exists.
+    SettlePlan plan;
+    if (!build_settle_plan(spec, in, plan, err)) return false;
+
+    // ---- Run the plan -----------------------------------------------------------
+    // `plan` owns the ColliderFits every BodySpawn::collider borrows; it must
+    // (and does) outlive `world`.
+    SettleWorld world(plan.torus_size, plan.hf, SettleParams{});
+
+    // Register sync groups in recorded order so world group ids equal the plan
+    // indices that BodySpawn::sync_group references. Groups whose bodies have
+    // not spawned yet are inert (sync_groups_step skips groups with fewer
+    // members than occurrence frames), so registering them all upfront is
+    // behavior-identical to the previous interleaved registration.
+    for (const auto& frames : plan.sync_group_frames)
+        world.add_sync_group(frames);
+
+    // Settle all drops in one batch.
+    if (!plan.drop_spawns.empty()) {
+        LayerResult drop_result = world.settle_layer(plan.drop_spawns);
+        if (!drop_result.converged) out.report.converged_all = false;
+    }
+
+    // Settle each layer's physics bodies, in declaration order.
+    for (const auto& lp : plan.layers) {
+        if (!lp.spawns.empty()) {
+            LayerResult lr = world.settle_layer(lp.spawns);
             out.report.layers.push_back(lr);
             if (!lr.converged) out.report.converged_all = false;
         } else {
@@ -510,37 +516,33 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
             lr.converged = true;
             out.report.layers.push_back(lr);
         }
-
-        layer_phys_provs.push_back(std::move(layer_provs));
-        for (auto& ni : layer_nonphys)
-            all_nonphys.push_back(ni);
-
-        ++layer_idx;
     }
 
-    // ---- Step 6: finalize and read back poses -----------------------------------
+    // ---- Finalize and read back poses -------------------------------------------
     world.finalize();
     const std::vector<Pose>& phys_poses = world.poses();
     out.report.pose_hash = world.pose_hash();
 
-    // ---- Step 7: assemble output instances in the correct order -----------------
-    // Order: drops first, then per layer: physics instances then non-physics.
+    // ---- Assemble output instances in the correct order -------------------------
+    // Order (test-guarded, see tileset_bake.h:4-10): drops first, then per
+    // layer: physics instances then non-physics.
 
     size_t pose_idx = 0;
 
     // Drop instances (all drops were settle_layer'd as a single batch before any layer).
-    for (size_t i = 0; i < drop_provs.size(); ++i) {
+    for (const auto& pv : plan.drop_provs) {
         SettledInstance si;
-        si.child_hash = drop_provs[i].child_hash;
-        si.scale      = drop_provs[i].scale;
+        si.child_hash = pv.child_hash;
+        si.scale      = pv.scale;
         si.pose       = phys_poses[pose_idx++];
         si.layer      = -1;
         out.instances.push_back(si);
     }
 
-    // Per-layer physics instances.
-    for (size_t li = 0; li < layer_phys_provs.size(); ++li) {
-        for (const auto& pv : layer_phys_provs[li]) {
+    // Per-layer physics instances, then that layer's non-physics instances
+    // (accumulated in placement order at plan time).
+    for (const auto& lp : plan.layers) {
+        for (const auto& pv : lp.provs) {
             SettledInstance si;
             si.child_hash = pv.child_hash;
             si.scale      = pv.scale;
@@ -548,21 +550,17 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
             si.layer      = pv.layer;
             out.instances.push_back(si);
         }
-        // Non-physics instances for this layer (in all_nonphys with matching layer).
-        // They were accumulated in placement order.
-        for (const auto& ni : all_nonphys) {
-            if (ni.layer == (int)li) {
-                SettledInstance si;
-                si.child_hash = ni.child_hash;
-                si.scale      = ni.scale;
-                si.pose       = ni.pose;
-                si.layer      = ni.layer;
-                out.instances.push_back(si);
-            }
+        for (const auto& ni : lp.nonphys) {
+            SettledInstance si;
+            si.child_hash = ni.child_hash;
+            si.scale      = ni.scale;
+            si.pose       = ni.pose;
+            si.layer      = ni.layer;
+            out.instances.push_back(si);
         }
     }
 
-    // ---- Step 8: fill remaining output fields -----------------------------------
+    // ---- Fill remaining output fields -------------------------------------------
     out.cfg             = spec.cfg;
     out.base            = spec.base;
     out.variant_ranges  = spec.variant_ranges;
