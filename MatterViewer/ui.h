@@ -82,6 +82,8 @@ struct ViewerStats {
     int      world_current = 0;
     int      world_switch_requested = -1;
     matter::VulkanLightingOverrides lighting{};
+    matter::VulkanVolumetricsSettings volumetrics{};
+    int vol_debug_view = 0;
     // GPU-side per-pass timings (ms), smoothed EMA. Values are 0 when the
     // zone did not execute or GPU timers are unsupported.
     float gpu_total_ms          = 0.0f;
@@ -93,6 +95,7 @@ struct ViewerStats {
     float gpu_denoise_ms        = 0.0f;
     float gpu_dlss_ms           = 0.0f;
     float gpu_composite_ms      = 0.0f;
+    float gpu_vol_ms            = 0.0f;
     bool  gpu_timers_supported  = false;
     int   debug_view_mode       = 0;
 };

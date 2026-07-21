@@ -127,6 +127,7 @@ struct FrameStats {
     float gpu_denoise_ms        = 0;
     float gpu_dlss_ms           = 0;
     float gpu_composite_ms      = 0;
+    float gpu_vol_ms            = 0;
     bool  gpu_timers_supported  = false;
     uint64_t ecs_fixed_steps = 0;
     uint64_t ecs_dropped_steps = 0;

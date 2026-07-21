@@ -317,13 +317,13 @@ void Ui::draw_debug_panel(ViewerStats& s) {
     if (s.gpu_timers_supported) {
         const float sum = s.gpu_cull_ms + s.gpu_gbuffer_ms + s.gpu_blas_ms +
                           s.gpu_tlas_ms + s.gpu_rt_ms + s.gpu_denoise_ms +
-                          s.gpu_dlss_ms + s.gpu_composite_ms;
+                          s.gpu_dlss_ms + s.gpu_composite_ms + s.gpu_vol_ms;
         const float unaccounted = s.gpu_total_ms - sum;
-        ImGui::Text("GPU %.1fms | Cull %.1f GBuf %.1f BLAS %.1f TLAS %.1f RT %.1f Den %.1f DLSS %.1f Comp %.1f (other %.1f)",
+        ImGui::Text("GPU %.1fms | Cull %.1f GBuf %.1f BLAS %.1f TLAS %.1f RT %.1f Den %.1f DLSS %.1f Comp %.1f Vol %.1f (other %.1f)",
                     s.gpu_total_ms, s.gpu_cull_ms,
                     s.gpu_gbuffer_ms, s.gpu_blas_ms, s.gpu_tlas_ms, s.gpu_rt_ms,
                     s.gpu_denoise_ms, s.gpu_dlss_ms, s.gpu_composite_ms,
-                    unaccounted);
+                    s.gpu_vol_ms, unaccounted);
     } else {
         ImGui::TextDisabled("GPU timers unavailable");
     }
@@ -368,6 +368,17 @@ void Ui::draw_debug_panel(ViewerStats& s) {
     ImGui::SliderFloat("Emission", &s.lighting.emission_multiplier, 0.0f,
                        4.0f, "%.2f");
     if (ImGui::Button("Reset to World")) reset_lighting_controls(s);
+
+    ImGui::SeparatorText("Volumetrics");
+    ImGui::Checkbox("Enable##vol", &s.volumetrics.enabled);
+    if (s.volumetrics.enabled) {
+        ImGui::SliderFloat("Phase g", &s.volumetrics.phase_g, 0.0f, 0.99f, "%.2f");
+        ImGui::SliderFloat("Temporal blend", &s.volumetrics.temporal_blend, 0.0f, 0.99f, "%.2f");
+        ImGui::SliderFloat("Fog density", &s.volumetrics.fog_density_mul, 0.0f, 4.0f, "%.2f");
+        ImGui::SliderFloat("Fog falloff", &s.volumetrics.fog_falloff_mul, 0.1f, 4.0f, "%.2f");
+        const char* vol_views[] = { "Off", "Density", "Scatter", "Integrated" };
+        ImGui::Combo("Vol debug##vd", &s.vol_debug_view, vol_views, 4);
+    }
 
     ImGui::SeparatorText("Debug View");
     const char* debug_views[] = { "None", "Normals" };
