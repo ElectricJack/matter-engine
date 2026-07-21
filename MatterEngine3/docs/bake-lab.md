@@ -189,7 +189,7 @@ Collector* current();
 }  // namespace bake_trace
 ```
 
-- `bake_trace_names.h`: `kSpanInstall`, `kSpanCompose`, `kSpanScatter`, `kSpanTileset`, `kSpanSettleLayer`, `kSpanPartBake`, `kSpanFold`, `kSpanEval`, `kSpanBuild`, `kSpanMesh`, `kSpanLod`, `kSpanLodRung`, `kSpanFlatten`, `kSpanSave`, `kSpanPublish`, … (one constant per existing timing site; extended as phases arrive).
+- `bake_trace_names.h`: `kSpanInstall`, `kSpanCompose`, `kSpanScatter`, `kSpanTileset`, `kSpanSettleLayer`, `kSpanPartBake`, `kSpanFold`, `kSpanCtx`, `kSpanEval`, `kSpanMerge`, `kSpanBuild`, `kSpanMesh`, `kSpanLod`, `kSpanLodRung`, `kSpanFlatten`, `kSpanSave`, `kSpanPublish`, … (one constant per existing timing site; extended as phases arrive).
 - The thread-local `current()` design means instrumenting a site is one line and library code stays collector-agnostic. The bake worker sets the session collector at `execute_bake` entry; Lab part jobs set their own around `PartGraph::install`.
 
 **Conversion sites (observation-only, no behavior change):**
@@ -197,7 +197,7 @@ Collector* current();
 | Site | Today | Becomes |
 |---|---|---|
 | `execute_bake` stages (`matter_engine.cpp:823-1163`) | `[bake-timing]` stderr | `kSpanInstall/Compose/Publish` spans; tileset split out of compose via a `kSpanTileset` span inside `compose_world` (fixes the `:1090` lump) |
-| `bake_source` `prof_lap` (`script_host.cpp:969-1422`) | env-gated stderr | `kSpanPartBake` parent + fold/ctx/eval/build/mesh/save child spans; stderr line re-rendered from spans when `MATTER_BAKE_PROFILE=1` |
+| `bake_source` `prof_lap` (`script_host.cpp:969-1422`) | env-gated stderr | `kSpanPartBake` parent + fold/ctx/eval/merge/build/mesh/save child spans (one per prof_lap boundary); stderr line re-rendered from spans when `MATTER_BAKE_PROFILE=1` |
 | `lod_bake::bake_lods` (`lod_bake.cpp:99`) | untimed | `kSpanLod` + per-rung `kSpanLodRung` with `tris_in/tris_out/keep_ratio` counters |
 | `part_flatten` (`part_flatten.cpp:1216`) | `FlattenResult` returned | `kSpanFlatten` + counters `levels/clusters/full_tris/coarsest_tris/instance_refs` |
 | `settle_tileset` (`tileset_bake.cpp:163`) | `SettleReport` | `kSpanSettleLayer` per layer with `bodies/ticks/converged/sim_time` counters |
