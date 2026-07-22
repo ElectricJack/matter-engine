@@ -6,6 +6,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -370,6 +371,330 @@ void test_flags_misc_detail_macro_packing() {
           "tileset_macro_slot decode recovers macro slot 2");
 }
 
+// =============================================================================
+// Task 10 (Phase 2 — parallax occlusion mapping): scalar C++ mirror of the
+// world-space POM march that will be ported to shaders_vk/tileset_common.glsl
+// (tileset_pom_march) and called from shaders_vk/gbuffer.frag. This mirror IS
+// the spec for that GLSL: shaders_vk/gbuffer.frag's and
+// shaders_vk/tileset_common.glsl's tileset_pom_march must match this
+// reference bit-for-bit in structure (same variable names: p, step_v,
+// prev_diff, prev_p, ray_h, tex_h, diff) so a line-by-line diff against the
+// GLSL is always possible.
+//
+// Height convention: height_fn(x, z) returns world-space meters, 0 at the
+// relief top / datum (matching the bake convention where the R16 height
+// channel's top value decodes to the datum), negative going down into the
+// relief. This is the *decoded* height (already in meters) — the GLSL march
+// decodes the R16 texture sample via height_min/height_max before reaching
+// the same diff math; the C++ mirror skips that decode step and samples
+// meters directly since it is testing the march, not the texture format.
+// -----------------------------------------------------------------------------
+
+struct Vec3 {
+    float x = 0.0f, y = 0.0f, z = 0.0f;
+};
+
+inline Vec3 operator+(Vec3 a, Vec3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
+inline Vec3 operator-(Vec3 a, Vec3 b) { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
+inline Vec3 operator*(Vec3 a, float s) { return {a.x * s, a.y * s, a.z * s}; }
+inline float dot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+inline float length(Vec3 a) { return std::sqrt(dot(a, a)); }
+inline Vec3 normalize(Vec3 a) {
+    const float l = length(a);
+    return (l > 1e-12f) ? a * (1.0f / l) : a;
+}
+inline Vec3 mix(Vec3 a, Vec3 b, float t) { return a + (b - a) * t; }
+
+using HeightFn = std::function<float(float x, float z)>;
+
+// tileset_pom_march_cpp — scalar mirror of tileset_common.glsl's
+// tileset_pom_march(). Same march contract as the plan's GLSL sketch:
+//
+//   float h_range = height_max - height_min;
+//   if (h_range <= 0) return plane_point;               // flat: entry point
+//   vec3 p = plane_point;                                // enter at datum
+//   vec3 step_v = ray_dir * (h_range / max(|dot(ray_dir, plane_n)|, 0.08)
+//                            / steps);                    // grazing clamp
+//   float prev_diff = 0; vec3 prev_p = p;
+//   for i in [0, steps):
+//     p += step_v;
+//     ray_h = dot(p - plane_point, plane_n);               // <= 0, descending
+//     tex_h = height_fn(p.x, p.z);                         // <= 0, meters
+//     diff = ray_h - tex_h;                                // < 0 => below relief
+//     if diff < 0:
+//       t = prev_diff / max(prev_diff - diff, 1e-6);       // linear refine
+//       lo = prev_p, hi = p (lo above relief, hi below)
+//       for r in [0, refine_steps):                        // bisection refine
+//         mid = mix(lo, hi, 0.5)
+//         mid_diff = dot(mid - plane_point, plane_n) - height_fn(mid.x, mid.z)
+//         if mid_diff < 0: hi = mid else lo = mid
+//       return mix(lo, hi, lo_diff / (lo_diff - hi_diff))   // final linear solve
+//     prev_diff = diff; prev_p = p;
+//   return p;                                               // no crossing found
+//
+// ray_origin is accepted for signature parity with the GLSL sketch (which
+// takes it for future distance/fade-band use in gbuffer.frag) but, per the
+// plan, the march itself always enters at plane_point (the datum), not
+// ray_origin — this matches "the ray enters at the datum plane".
+Vec3 tileset_pom_march_cpp(const HeightFn& height_fn, const Vec3& ray_origin,
+                           const Vec3& ray_dir, const Vec3& plane_point,
+                           const Vec3& plane_n, float h_range, int steps,
+                           int refine_steps) {
+    (void)ray_origin;
+
+    // Flat height (relief == 0 everywhere) => returns the entry point exactly.
+    if (h_range <= 0.0f) return plane_point;
+
+    Vec3 p = plane_point;
+    const float denom = std::max(std::fabs(dot(ray_dir, plane_n)), 0.08f);
+    const Vec3 step_v = ray_dir * (h_range / denom / (float)steps);
+
+    float prev_diff = 0.0f;
+    Vec3 prev_p = p;
+
+    for (int i = 0; i < steps; ++i) {
+        p = p + step_v;
+        const float ray_h = dot(p - plane_point, plane_n);  // <= 0, descending
+        const float tex_h = height_fn(p.x, p.z);            // <= 0, meters
+        const float diff = ray_h - tex_h;                   // < 0 => below relief
+
+        if (diff < 0.0f) {
+            // Bracket [prev_p, p]: prev_diff >= 0 (at/above relief), diff < 0
+            // (below relief). Bisection refine within the bracket, then one
+            // final linear solve for the sub-step crossing point.
+            Vec3 lo = prev_p, hi = p;
+            float lo_diff = prev_diff, hi_diff = diff;
+            for (int r = 0; r < refine_steps; ++r) {
+                const Vec3 mid = mix(lo, hi, 0.5f);
+                const float mid_ray_h = dot(mid - plane_point, plane_n);
+                const float mid_tex_h = height_fn(mid.x, mid.z);
+                const float mid_diff = mid_ray_h - mid_tex_h;
+                if (mid_diff < 0.0f) {
+                    hi = mid;
+                    hi_diff = mid_diff;
+                } else {
+                    lo = mid;
+                    lo_diff = mid_diff;
+                }
+            }
+            const float t = lo_diff / std::max(lo_diff - hi_diff, 1e-6f);
+            return mix(lo, hi, t);
+        }
+        prev_diff = diff;
+        prev_p = p;
+    }
+    return p;  // no crossing found within the step budget
+}
+
+constexpr int kPomSteps = 24;
+constexpr int kPomRefineSteps = 4;
+
+// -----------------------------------------------------------------------------
+// Test 1: flat heightfield -> hit == entry point (1e-5).
+// h_range <= 0 is the plan's explicit "flat" shortcut: the march must return
+// plane_point exactly, regardless of ray_dir/plane_n/height_fn.
+// -----------------------------------------------------------------------------
+void test_pom_flat_height_returns_entry_point() {
+    const Vec3 plane_point{1.25f, 0.0f, -3.5f};
+    const Vec3 plane_n{0.0f, 1.0f, 0.0f};
+    const Vec3 ray_dir = normalize(Vec3{0.3f, -0.9f, 0.1f});
+    auto height_fn = [](float, float) { return 0.0f; };
+
+    const Vec3 hit = tileset_pom_march_cpp(height_fn, plane_point, ray_dir,
+                                           plane_point, plane_n,
+                                           /*h_range=*/0.0f, kPomSteps,
+                                           kPomRefineSteps);
+    CHECK(std::fabs(hit.x - plane_point.x) < 1e-5f &&
+              std::fabs(hit.y - plane_point.y) < 1e-5f &&
+              std::fabs(hit.z - plane_point.z) < 1e-5f,
+          "flat heightfield (h_range<=0) returns the entry point exactly");
+}
+
+// -----------------------------------------------------------------------------
+// Test 2: step-function trench, oblique ray, analytic intersection known.
+// height(x,z) = 0 for x < x0 (at the datum), -0.093 for x >= x0 (a trench,
+// within h_range=0.15). The entry point sits a hair to the left of x0 so the
+// very first sampled point (after one step_v) already lands at x >= x0 — the
+// march therefore spends its whole run in the uniform trench region and the
+// analytic crossing is a closed-form solve of ray_h(s) = -0.093.
+// -----------------------------------------------------------------------------
+void test_pom_step_trench_oblique_ray_matches_analytic() {
+    const float x0 = 0.0f;
+    const float h_range = 0.15f;
+    const float trench_depth = -0.093f;
+    auto height_fn = [&](float x, float) {
+        return (x < x0) ? 0.0f : trench_depth;
+    };
+
+    const Vec3 plane_point{-1e-4f, 0.0f, 0.0f};
+    const Vec3 plane_n{0.0f, 1.0f, 0.0f};
+    const Vec3 ray_dir{0.6f, -0.8f, 0.0f};  // already unit length
+
+    const float denom = std::max(std::fabs(dot(ray_dir, plane_n)), 0.08f);
+    const float step_len = h_range / denom / (float)kPomSteps;  // one linear step
+
+    // Analytic: ray_h(s) = plane_point.y + s*ray_dir.y - plane_point.y = s*ray_dir.y
+    // (plane_n is +Y so ray_h is just the y-displacement). Solve s*ray_dir.y ==
+    // trench_depth for the world-space distance s along the ray from plane_point.
+    const float s_analytic = trench_depth / ray_dir.y;
+    const Vec3 analytic_hit = plane_point + ray_dir * s_analytic;
+
+    const Vec3 hit = tileset_pom_march_cpp(height_fn, plane_point, ray_dir,
+                                           plane_point, plane_n, h_range,
+                                           kPomSteps, kPomRefineSteps);
+
+    const float dist_to_analytic = length(hit - analytic_hit);
+    CHECK(dist_to_analytic < step_len,
+          "marched hit lands within one linear step length of the analytic "
+          "trench intersection (pre-refinement bound)");
+
+    const float refine_tol = h_range * std::pow(2.0f, -(float)kPomRefineSteps);
+    CHECK(dist_to_analytic < refine_tol,
+          "marched hit lands within h_range * 2^-refine_steps of the analytic "
+          "trench intersection (post-refinement bound)");
+}
+
+// -----------------------------------------------------------------------------
+// Test 3: boundary-crossing continuity. Fields A and B differ outside a
+// shared strip around x0 but are byte-for-byte identical *inside* the strip
+// (mirroring how two Wang edge-matched tiles agree on their shared edge
+// strip). A composite field selects A for x < x0 and B for x >= x0. A ray
+// that lands and stays within the shared strip while crossing x0 mid-march
+// must therefore produce the same hit whether marched against the
+// composite, pure-A, or pure-B field (all three evaluate the identical
+// shared function along the entire path) — this is the seam-transparency
+// property the whole world-space-march design rests on.
+// -----------------------------------------------------------------------------
+void test_pom_boundary_crossing_continuity() {
+    const float x0 = 0.0f;
+    const float strip = 0.05f;  // shared-edge-strip half-width, meters
+    auto shared = [](float x) { return -0.06f + 0.4f * x; };  // common slope
+
+    auto field_a = [&](float x, float) {
+        return (x >= -strip) ? shared(x) : -0.02f;  // differs far outside strip
+    };
+    auto field_b = [&](float x, float) {
+        return (x <= strip) ? shared(x) : -0.10f;  // differs far outside strip
+    };
+    auto field_composite = [&](float x, float z) {
+        return (x < x0) ? field_a(x, z) : field_b(x, z);
+    };
+
+    // Entry within the strip on the A side; ray drifts across x0 while
+    // staying inside [-strip, strip] for the whole march.
+    const Vec3 plane_point{-0.02f, 0.0f, 0.0f};
+    const Vec3 plane_n{0.0f, 1.0f, 0.0f};
+    const Vec3 ray_dir = normalize(Vec3{0.15f, -1.0f, 0.0f});
+    const float h_range = 0.15f;
+
+    const Vec3 hit_composite = tileset_pom_march_cpp(
+        field_composite, plane_point, ray_dir, plane_point, plane_n, h_range,
+        kPomSteps, kPomRefineSteps);
+    const Vec3 hit_a = tileset_pom_march_cpp(field_a, plane_point, ray_dir,
+                                             plane_point, plane_n, h_range,
+                                             kPomSteps, kPomRefineSteps);
+    const Vec3 hit_b = tileset_pom_march_cpp(field_b, plane_point, ray_dir,
+                                             plane_point, plane_n, h_range,
+                                             kPomSteps, kPomRefineSteps);
+
+    CHECK(length(hit_composite - hit_a) < 1e-4f,
+          "composite-field hit matches pure-A hit for a ray confined to the "
+          "shared edge strip while crossing x0");
+    CHECK(length(hit_composite - hit_b) < 1e-4f,
+          "composite-field hit matches pure-B hit for a ray confined to the "
+          "shared edge strip while crossing x0");
+}
+
+// -----------------------------------------------------------------------------
+// Test 4: grazing ray (|dot(dir, plane_n)| ~ 0.01) terminates within the
+// step budget and returns a finite position — this is the 0.08 clamp's job:
+// without it, step_v's length would blow up toward infinity as the ray
+// direction approaches the plane.
+// -----------------------------------------------------------------------------
+void test_pom_grazing_ray_clamped_and_finite() {
+    const Vec3 plane_point{0.0f, 0.0f, 0.0f};
+    const Vec3 plane_n{0.0f, 1.0f, 0.0f};
+    // dot(ray_dir, plane_n) == ray_dir.y ~= 0.01 (near-horizontal, grazing).
+    const Vec3 ray_dir = normalize(Vec3{1.0f, -0.01f, 0.0f});
+    CHECK(std::fabs(dot(ray_dir, plane_n)) < 0.08f,
+          "test fixture ray is actually grazing (below the 0.08 clamp floor)");
+
+    auto height_fn = [](float x, float) {
+        return -0.05f + 0.02f * std::sin(x * 3.0f);  // mild bump field
+    };
+
+    const Vec3 hit = tileset_pom_march_cpp(height_fn, plane_point, ray_dir,
+                                           plane_point, plane_n,
+                                           /*h_range=*/0.1f, kPomSteps,
+                                           kPomRefineSteps);
+    CHECK(std::isfinite(hit.x) && std::isfinite(hit.y) && std::isfinite(hit.z),
+          "grazing ray march returns a finite position (0.08 clamp holds)");
+
+    // The clamp bounds step_v's length to h_range / 0.08 / steps regardless of
+    // how close to zero dot(ray_dir, plane_n) gets, so the total ray path
+    // length across all steps is bounded independent of grazing angle.
+    const float max_total_path = 0.1f / 0.08f;  // h_range / clamp_floor
+    const float path = length(hit - plane_point);
+    CHECK(path <= max_total_path + 1e-4f,
+          "grazing ray's total marched path stays bounded by the 0.08 clamp");
+}
+
+// -----------------------------------------------------------------------------
+// Test 5: sloped datum plane (normal tilted ~20 degrees from vertical).
+// (a) flat relief still returns the entry point exactly regardless of the
+//     plane tilt (the h_range<=0 shortcut doesn't consult plane_n at all).
+// (b) a uniform "bump" (constant depth offset) intersects at the
+//     analytically expected spot within refinement tolerance, marching
+//     straight into the tilted plane's own normal direction.
+// -----------------------------------------------------------------------------
+void test_pom_sloped_datum_plane() {
+    const float tilt_rad = 20.0f * 3.14159265358979323846f / 180.0f;
+    const Vec3 plane_n = normalize(Vec3{std::sin(tilt_rad), std::cos(tilt_rad), 0.0f});
+    const Vec3 plane_point{2.0f, 5.0f, -1.0f};
+
+    // (a) Flat relief on a tilted datum: still returns the entry point.
+    {
+        auto flat_fn = [](float, float) { return 0.0f; };
+        const Vec3 ray_dir = normalize(Vec3{-plane_n.x, -plane_n.y, 0.05f});
+        const Vec3 hit = tileset_pom_march_cpp(flat_fn, plane_point, ray_dir,
+                                               plane_point, plane_n,
+                                               /*h_range=*/0.0f, kPomSteps,
+                                               kPomRefineSteps);
+        CHECK(std::fabs(hit.x - plane_point.x) < 1e-5f &&
+                  std::fabs(hit.y - plane_point.y) < 1e-5f &&
+                  std::fabs(hit.z - plane_point.z) < 1e-5f,
+              "flat relief on a tilted datum plane still returns the entry "
+              "point exactly");
+    }
+
+    // (b) Uniform bump, ray aimed straight along -plane_n (dot == -1, no
+    // grazing clamp engaged): analytic crossing is a single dot-product solve.
+    {
+        const float h_range = 0.1f;
+        const float depth = -0.052f;  // not an exact multiple of the step size
+        auto bump_fn = [&](float, float) { return depth; };
+        const Vec3 ray_dir = plane_n * -1.0f;
+
+        const float denom = std::max(std::fabs(dot(ray_dir, plane_n)), 0.08f);
+        CHECK(std::fabs(denom - 1.0f) < 1e-5f,
+              "ray anti-parallel to plane_n is not grazing (denom == 1)");
+
+        // ray_h(s) = dot(s*ray_dir, plane_n) = s * dot(ray_dir,plane_n) = -s.
+        // Solve -s == depth => s == -depth.
+        const float s_analytic = -depth;
+        const Vec3 analytic_hit = plane_point + ray_dir * s_analytic;
+
+        const Vec3 hit = tileset_pom_march_cpp(bump_fn, plane_point, ray_dir,
+                                               plane_point, plane_n, h_range,
+                                               kPomSteps, kPomRefineSteps);
+
+        const float refine_tol = h_range * std::pow(2.0f, -(float)kPomRefineSteps);
+        CHECK(length(hit - analytic_hit) < refine_tol,
+              "sloped-datum bump intersection matches the analytic spot "
+              "within h_range * 2^-refine_steps");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -381,5 +706,11 @@ int main() {
     test_mean_rgb_half_black_half_white();
     test_fail_closed_invalid_inputs();
     test_flags_misc_detail_macro_packing();
+
+    test_pom_flat_height_returns_entry_point();
+    test_pom_step_trench_oblique_ray_matches_analytic();
+    test_pom_boundary_crossing_continuity();
+    test_pom_grazing_ray_clamped_and_finite();
+    test_pom_sloped_datum_plane();
     return check_summary();
 }

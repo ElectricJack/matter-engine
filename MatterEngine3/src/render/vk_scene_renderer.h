@@ -770,9 +770,10 @@ private:
     // (MatterEngine3/shaders_vk/tileset_common.glsl's TilesetParams block
     // mirrors this: vec4 tile_size_m/texels_per_meter/height_min/height_max,
     // vec4 mean_albedo[4], vec4 pom_a{steps,refine,max_distance,fade_band},
-    // vec4 pom_b{fade_center,fade_width,pad,pad}). Every group below is
-    // exactly 16 bytes so the natural C++ layout matches std140 with no
-    // manual padding.
+    // vec4 pom_b{fade_center,fade_width,pad,pad},
+    // vec4 sun_dir_intensity{dir.xyz,intensity} (Phase 2 Task 11)). Every
+    // group below is exactly 16 bytes so the natural C++ layout matches
+    // std140 with no manual padding.
     struct alignas(16) TilesetParamsGpu {
         float slot_tile_size_m[4]{};
         float slot_texels_per_meter[4]{};
@@ -785,11 +786,22 @@ private:
         float pom_fade_band_m = 5.0f;
         float detail_fade_center_m = 40.0f;
         float detail_fade_width_m = 10.0f;
-        float pad0 = 0.0f;
+        // Max relief depth (meters) the POM march may carve. The baked
+        // height range is dominated by sparse tall litter (rock tips), so
+        // marching the full range sinks the whole dirt floor by ~h_range —
+        // deep stepped canyons. Parallax only needs ~10 cm to sell relief;
+        // anything deeper is real-geometry territory.
+        float pom_max_relief_m = 0.12f;
         float pad1 = 0.0f;
+        // Task 11 (height self-shadow): direction-to-sun (normalized, world
+        // space, matches the `to_sun` convention used by the RT shadow push
+        // constants -- i.e. normalize(-VkSceneLighting::sun_direction)) and
+        // sun_intensity in .w. gbuffer.frag skips the self-shadow march when
+        // dir.y <= 0 (sun below horizon) or intensity <= 0.
+        float sun_dir_intensity[4] = {0.0f, 1.0f, 0.0f, 1.0f};
     };
-    static_assert(sizeof(TilesetParamsGpu) == 160,
-                  "TilesetParamsGpu must remain ten vec4 records (std140)");
+    static_assert(sizeof(TilesetParamsGpu) == 176,
+                  "TilesetParamsGpu must remain eleven vec4 records (std140)");
 
     struct FrameResources {
         matter::VkBufferResource frame_constants;

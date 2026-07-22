@@ -1046,10 +1046,15 @@ void VkSceneRenderer::destroy_pipeline() {
 
 bool VkSceneRenderer::create_pipeline(std::string& error) {
     const VkDevice device = vulkan_->device();
+    // Phase 2 (tileset POM, Task 10) adds FRAGMENT_BIT: gbuffer.frag needs
+    // FrameConstants.world_to_clip (project the marched world position for
+    // the conservative depth write) and camera_eye_pixel_budget.xyz (view
+    // ray origin for the march).
     const VkDescriptorSetLayoutBinding frame_binding =
         descriptor_binding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                            VK_SHADER_STAGE_COMPUTE_BIT |
-                               VK_SHADER_STAGE_VERTEX_BIT);
+                               VK_SHADER_STAGE_VERTEX_BIT |
+                               VK_SHADER_STAGE_FRAGMENT_BIT);
     VkDescriptorSetLayoutCreateInfo frame_layout{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     frame_layout.bindingCount = 1;
@@ -2414,6 +2419,20 @@ void VkSceneRenderer::write_tileset_params_buffer() {
         params.slot_mean_albedo[slot][1] = s.mean_albedo[1];
         params.slot_mean_albedo[slot][2] = s.mean_albedo[2];
         params.slot_mean_albedo[slot][3] = s.loaded ? 1.0f : 0.0f;
+    }
+    // Task 11: direction-to-sun, same convention as the RT shadow push
+    // constants (record_ray_trace_dispatch): normalize(-sun_direction),
+    // since VkSceneLighting::sun_direction points FROM the sun toward the
+    // scene. Falls back to straight-up when the light vector degenerates.
+    {
+        const float x = -lighting_.sun_direction.x;
+        const float y = -lighting_.sun_direction.y;
+        const float z = -lighting_.sun_direction.z;
+        const float length = std::sqrt(x * x + y * y + z * z);
+        params.sun_dir_intensity[0] = length > 0.0f ? x / length : 0.0f;
+        params.sun_dir_intensity[1] = length > 0.0f ? y / length : 1.0f;
+        params.sun_dir_intensity[2] = length > 0.0f ? z / length : 0.0f;
+        params.sun_dir_intensity[3] = lighting_.sun_intensity;
     }
     std::memcpy(tileset_params_.mapped, &params, sizeof(params));
     std::string flush_error;
@@ -4392,6 +4411,11 @@ void VkSceneRenderer::set_lighting(const VkSceneLighting& lighting) {
         gi_history_reset_pending_ = true;
     lighting_ = lighting;
     lighting_initialized_ = true;
+    // Task 11: mirror the fresh sun direction/intensity into the tileset UBO
+    // every frame -- write_tileset_params_buffer() no-ops until
+    // ensure_tileset_infra() has run, and re-derives the (cheap) slot table
+    // from tileset_slots_ each call, so this stays a plain memcpy+flush.
+    if (source_changed) write_tileset_params_buffer();
 }
 
 void VkSceneRenderer::set_display_exposure(float exposure_ev) {
