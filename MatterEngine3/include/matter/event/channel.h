@@ -228,6 +228,18 @@ public:
         cv_not_full_.notify_all();
     }
 
+    // Best-effort emptiness probe, callable from any thread (locks m_). True
+    // when no items are currently queued. Added for transport wrappers that
+    // preserve an emptiness query in their public API (matter_async::
+    // GpuJobQueue::idle, src/async_bake.h) — a wrapper-side pending counter
+    // cannot track it without racing run_blocking()'s internal enqueue, so the
+    // probe belongs on the channel that owns the queue. Purely additive; no
+    // existing behavior changes.
+    bool empty() const {
+        std::lock_guard<std::mutex> lock(m_);
+        return q_.empty();
+    }
+
     // Monotonic intentional-loss counter: DropOldest evictions and
     // CoalesceNewest evicted-replacements.
     uint64_t dropped() const { return dropped_.load(std::memory_order_relaxed); }

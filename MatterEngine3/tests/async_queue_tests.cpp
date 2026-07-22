@@ -228,6 +228,157 @@ static void test_push_after_shutdown_is_cancelled_and_not_queued() {
 }
 
 // ---------------------------------------------------------------------------
+// E2 gate: supersession cancels EVERY displaced token.
+//   Build up an in-flight command plus several queued commands, then supersede
+//   with BakeAll. Assert the in-flight token AND every queued token is
+//   cancelled, that the next real command popped is the BakeAll, and that the
+//   superseded commands are never handed to the consumer.
+// ---------------------------------------------------------------------------
+static void test_bakeall_cancels_every_displaced_token() {
+    std::printf("[test_bakeall_cancels_every_displaced_token]\n");
+    CommandQueue cq;
+
+    auto t1 = cq.push({CommandKind::RebakeCone, {"a.js"}, nullptr});
+    auto t2 = cq.push({CommandKind::RebakeCone, {"b.js"}, nullptr});
+    auto t3 = cq.push({CommandKind::RebakeCone, {"c.js"}, nullptr});
+
+    // Pop one so it is "in flight".
+    Command inflight;
+    CHECK(cq.pop(inflight), "first pop succeeded");
+    CHECK(inflight.kind == CommandKind::RebakeCone, "in-flight is RebakeCone");
+    CHECK(inflight.token == t1, "in-flight token is t1 (FIFO)");
+
+    // Queue two more behind the still-pending t2, t3.
+    auto t4 = cq.push({CommandKind::RebakeCone, {"d.js"}, nullptr});
+    auto t5 = cq.push({CommandKind::RebakeCone, {"e.js"}, nullptr});
+
+    CHECK(!t1->is_cancelled() && !t2->is_cancelled() && !t3->is_cancelled() &&
+              !t4->is_cancelled() && !t5->is_cancelled(),
+          "no token cancelled before supersession");
+
+    // Supersede everything.
+    auto tba = cq.push({CommandKind::BakeAll, {}, nullptr});
+
+    CHECK(t1->is_cancelled(), "displaced in-flight token t1 cancelled");
+    CHECK(t2->is_cancelled(), "displaced queued token t2 cancelled");
+    CHECK(t3->is_cancelled(), "displaced queued token t3 cancelled");
+    CHECK(t4->is_cancelled(), "displaced queued token t4 cancelled");
+    CHECK(t5->is_cancelled(), "displaced queued token t5 cancelled");
+    CHECK(!tba->is_cancelled(), "the superseding BakeAll token is NOT cancelled");
+
+    // The consumer must next see the BakeAll, never any superseded RebakeCone.
+    Command next;
+    CHECK(cq.pop(next), "pop after supersession succeeded");
+    CHECK(next.kind == CommandKind::BakeAll,
+          "consumer sees BakeAll next — every superseded command was skipped");
+    CHECK(next.token == tba, "popped token is the BakeAll token");
+
+    cq.shut_down();
+    Command drain;
+    CHECK(!cq.pop(drain), "queue empty + shut down after BakeAll consumed");
+    printf("ok bakeall_cancels_every_displaced_token\n");
+}
+
+// Reload supersedes exactly like BakeAll.
+static void test_reload_supersedes_like_bakeall() {
+    std::printf("[test_reload_supersedes_like_bakeall]\n");
+    CommandQueue cq;
+    auto t1 = cq.push({CommandKind::RebakeCone, {"a.js"}, nullptr});
+    auto t2 = cq.push({CommandKind::RebakeCone, {"b.js"}, nullptr});
+    auto tr = cq.push({CommandKind::Reload, {}, nullptr});
+
+    CHECK(t1->is_cancelled() && t2->is_cancelled(),
+          "Reload cancelled both queued RebakeCone tokens");
+    CHECK(!tr->is_cancelled(), "Reload token itself not cancelled");
+
+    Command out;
+    CHECK(cq.pop(out), "pop succeeded");
+    CHECK(out.kind == CommandKind::Reload, "Reload superseded the pending RebakeCones");
+    cq.shut_down();
+    printf("ok reload_supersedes_like_bakeall\n");
+}
+
+// Shutdown-command supersession cancels the in-flight token plus every queued
+// token, and the consumer's next pop returns false.
+static void test_shutdown_command_cancels_all_pending() {
+    std::printf("[test_shutdown_command_cancels_all_pending]\n");
+    CommandQueue cq;
+    auto t1 = cq.push({CommandKind::RebakeCone, {"a.js"}, nullptr});
+    Command inflight;
+    CHECK(cq.pop(inflight), "pop RebakeCone in-flight");
+    auto t2 = cq.push({CommandKind::RebakeCone, {"b.js"}, nullptr});
+    auto t3 = cq.push({CommandKind::RebakeCone, {"c.js"}, nullptr});
+
+    cq.push({CommandKind::Shutdown, {}, nullptr});
+    CHECK(t1->is_cancelled(), "Shutdown cancelled in-flight token");
+    CHECK(t2->is_cancelled() && t3->is_cancelled(),
+          "Shutdown cancelled every queued token");
+
+    Command out;
+    CHECK(!cq.pop(out), "pop returns false after Shutdown command");
+    printf("ok shutdown_command_cancels_all_pending\n");
+}
+
+// RebakeCone stays strict FIFO and is never cancelled absent supersession.
+static void test_rebake_cone_fifo_preserved() {
+    std::printf("[test_rebake_cone_fifo_preserved]\n");
+    CommandQueue cq;
+    auto t1 = cq.push({CommandKind::RebakeCone, {"1"}, nullptr});
+    auto t2 = cq.push({CommandKind::RebakeCone, {"2"}, nullptr});
+    auto t3 = cq.push({CommandKind::RebakeCone, {"3"}, nullptr});
+
+    Command a, b, c;
+    CHECK(cq.pop(a) && a.changed_files[0] == "1", "FIFO: first is 1");
+    CHECK(cq.pop(b) && b.changed_files[0] == "2", "FIFO: second is 2");
+    CHECK(cq.pop(c) && c.changed_files[0] == "3", "FIFO: third is 3");
+    CHECK(!t1->is_cancelled() && !t2->is_cancelled() && !t3->is_cancelled(),
+          "no RebakeCone token cancelled without supersession");
+    cq.shut_down();
+    printf("ok rebake_cone_fifo_preserved\n");
+}
+
+// pop_wait times out on an empty queue (timed_out=true), then delivers a command
+// pushed afterwards (timed wakeup path over wait_pop_for).
+static void test_pop_wait_times_out_then_delivers() {
+    std::printf("[test_pop_wait_times_out_then_delivers]\n");
+    CommandQueue cq;
+
+    Command out;
+    bool timed_out = false;
+    bool got = cq.pop_wait(out, /*ms=*/20, timed_out);
+    CHECK(!got && timed_out, "pop_wait times out on empty queue (timed_out=true)");
+
+    cq.push({CommandKind::RebakeCone, {"x"}, nullptr});
+    timed_out = true;
+    got = cq.pop_wait(out, /*ms=*/1000, timed_out);
+    CHECK(got && !timed_out, "pop_wait delivers a command pushed after the wait began");
+    CHECK(out.kind == CommandKind::RebakeCone, "delivered command is the RebakeCone");
+    cq.shut_down();
+    printf("ok pop_wait_times_out_then_delivers\n");
+}
+
+// A consumer blocked in pop_wait is released by shut_down() with timed_out=false.
+static void test_pop_wait_wakes_on_shutdown() {
+    std::printf("[test_pop_wait_wakes_on_shutdown]\n");
+    CommandQueue cq;
+    bool returned_false = false;
+    bool timed_out_flag = true;
+    std::thread consumer([&]() {
+        Command c;
+        bool to = false;
+        bool ok = cq.pop_wait(c, /*ms=*/60000, to);  // long wait; shutdown must break it
+        returned_false = !ok;
+        timed_out_flag = to;
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    cq.shut_down();
+    consumer.join();
+    CHECK(returned_false, "pop_wait returned false after shut_down");
+    CHECK(!timed_out_flag, "shutdown wakeup reports timed_out=false, not a timeout");
+    printf("ok pop_wait_wakes_on_shutdown\n");
+}
+
+// ---------------------------------------------------------------------------
 // 9. event_struct_shape_test
 //    Constructs a matter::Event, sets phase/code/errors, asserts defaults.
 // ---------------------------------------------------------------------------
@@ -261,6 +412,12 @@ int main() {
     test_bakeall_supersedes_pending_and_cancels_inflight();
     test_command_shutdown_wakes_pop();
     test_push_after_shutdown_is_cancelled_and_not_queued();
+    test_bakeall_cancels_every_displaced_token();
+    test_reload_supersedes_like_bakeall();
+    test_shutdown_command_cancels_all_pending();
+    test_rebake_cone_fifo_preserved();
+    test_pop_wait_times_out_then_delivers();
+    test_pop_wait_wakes_on_shutdown();
     test_event_struct_shape();
     if (g_failures) {
         std::printf("\n%d FAILURES\n", g_failures);
