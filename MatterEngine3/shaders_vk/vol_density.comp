@@ -42,7 +42,10 @@ void main() {
         }
 
         vec2 uv = (vec2(voxel.xy) + 0.5) / vec2(VOL_W, VOL_H);
-        float ndc_z = pc.camera_far * (depth - pc.camera_near) /
+        // Reversed-ZO: hw=1 at z=near, hw=0 at z=far.
+        // Verify: z=near -> near*(far-near)/(near*(far-near)) = 1;
+        //         z=far  -> near*(far-far)/(far*(far-near))   = 0.
+        float ndc_z = pc.camera_near * (pc.camera_far - depth) /
                       ((pc.camera_far - pc.camera_near) * depth);
         vec4 clip_pos = vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, ndc_z, 1.0);
         vec4 world_h = pc.clip_to_world * clip_pos;

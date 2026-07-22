@@ -17,7 +17,7 @@ typedef enum MaterialSurfaceFlags {
     MATERIAL_VOLUME_BOUNDARY = 1u << 3
 } MaterialSurfaceFlags;
 
-enum { MATERIAL_SCHEMA_VERSION = 3 };
+enum { MATERIAL_SCHEMA_VERSION = 4 };
 
 typedef struct {
     float albedo[3];      // base color
@@ -30,9 +30,17 @@ typedef struct {
     int   mergeGroup;     // particles whose materials share a mergeGroup blend together
     int   meshingAlgorithm; // 0 = marching cubes (default), 1 = oriented cubes; selects the mesher
     int   groundTilesetSlot; // Phase 4: -1 = untextured, 0..3 = viewer tileset slot to sample.
-                             // For static registry entries this stays -1; the viewer runtime
-                             // sets a live override via MaterialRegistrySetGroundTilesetSlot()
-                             // after loading a world tileset atlas.
+                             // Schema v4 (spec "Material schema"): this is now the "detail slot"
+                             // (field name kept for source compatibility). For static registry
+                             // entries this stays -1; the viewer runtime sets a live override via
+                             // MaterialRegistrySetGroundTilesetSlot() after loading a world tileset
+                             // atlas.
+    int   groundMacroSlot;  // Schema v4: -1 = no macro layer, 0..3 = viewer tileset slot sampled
+                             // as the coarse macro/frequency-split layer (Phase 3). Overridden at
+                             // runtime via MaterialRegistrySetGroundMacroSlot(). Vulkan-only: the
+                             // GL path (MaterialRegistryPackForGPU, 12-float table) never reads
+                             // this field; it flows solely through MaterialGpuRecord.flags_misc[1]
+                             // (see MaterialRegistryPackRtForGPU and vk_gi_contract.h).
     float opacity;
     float transmission;
     float emissionColor[3];
@@ -89,6 +97,19 @@ int MaterialIsTransparent(int materialId);
 #define MATERIAL_FLOATS_PER_DEF 12
 void MaterialRegistryPackForGPU(float* out);
 
+// Pure packing helper for MaterialGpuRecord.flags_misc[1] (schema v4, spec
+// "Material schema" / Vulkan tileset). detailSlot/macroSlot are the already-
+// resolved slots (-1 = none, override-or-static already applied by the
+// caller); this function has no global state so tests can assert the
+// encoding directly: MaterialPackDetailMacroSlots(0, 2) == (1u | (3u << 8)),
+// MaterialPackDetailMacroSlots(-1, -1) == 0u. Mirrors exactly what
+// MaterialRegistryPackRtForGPU packs; decoded by shaders_vk/tileset_common.glsl's
+// tileset_detail_slot()/tileset_macro_slot() (see render/vk_gi_contract.h).
+static inline uint32_t MaterialPackDetailMacroSlots(int detailSlot, int macroSlot) {
+    return ((uint32_t)(detailSlot + 1) & 0xFFu) |
+           (((uint32_t)(macroSlot + 1) & 0xFFu) << 8);
+}
+
 // Packs the registry into the Vulkan ray-tracing material layout.
 void MaterialRegistryPackRtForGPU(MaterialGpuRecord* out);
 
@@ -98,6 +119,16 @@ void MaterialRegistryPackRtForGPU(MaterialGpuRecord* out);
 // material 16 (DIRT) to the ForestFloor atlas after LocalProvider::connect().
 // Silently no-op on materialId out of range OR slot outside [-1, 3].
 void MaterialRegistrySetGroundTilesetSlot(int materialId, int slot);
+
+// Runtime override: bind material `materialId` to viewer macro tileset slot
+// `slot` (Phase 3 frequency-split ground layer). Pass slot < 0 to clear.
+// Mirrors MaterialRegistrySetGroundTilesetSlot's semantics and validation but
+// is independent: a material can carry a detail slot, a macro slot, both, or
+// neither. Values persist for the life of the process. Consumed only by
+// MaterialRegistryPackRtForGPU (Vulkan MaterialGpuRecord.flags_misc[1]); the
+// GL path's MaterialRegistryPackForGPU never reads it.
+// Silently no-op on materialId out of range OR slot outside [-1, 3].
+void MaterialRegistrySetGroundMacroSlot(int materialId, int slot);
 
 #ifdef __cplusplus
 }

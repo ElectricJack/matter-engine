@@ -11,14 +11,18 @@ import { add, sub, scale as vscale, normalize, length } from 'shared-lib/vecmath
 // while blob/cut counts grow with size, so big rocks read as more fractured
 // rather than magnified. One baked variant per (seed, size); Meadow instances
 // with random yaw/scale, sunk ~15%.
+// `detail` (default 1 = legacy grid) divides the voxel spacing: detail 2-3
+// bakes the same shape on a proportionally finer grid for close-up placements
+// (e.g. ForestFloor ground litter) where the size-relative default reads faceted.
 class Rock extends Part {
-  static params = { seed: 0, size: 1.0 };
+  static params = { seed: 0, size: 1.0, detail: 1.0 };
 
   build(p) {
     const S = Math.max(0.02, p.size);
+    const detail = Math.max(1.0, p.detail || 1.0);
     const r = rng(1000 + p.seed);
     this.beginModifier();
-    const spacing = Math.min(0.8, Math.max(0.015, 0.10 * S));
+    const spacing = Math.min(0.8, Math.max(0.01, 0.10 * S / detail));
     this.beginVoxels(spacing);
     this.fill(MAT.rock);
     this.smoothing(0.35 * spacing);

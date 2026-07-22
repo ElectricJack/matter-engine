@@ -1,211 +1,92 @@
 import { rng } from 'shared-lib/rng';
-import { heightField } from 'shared-lib/terrain_noise';
 
-// The Meadow Valley world assembly. Phase C 10× expansion: 51×51 terrain tiles
-// at 16 units each = 816×816 world. Every tile requires TWO Terrain variants
-// (coarse N=8 and full N=64); only the coarse instance is placed — the full-res
-// tile bakes lazily during the later refine loop (Task 6). Scatter is banded by
-// radial distance from centre, matching the terrain_noise.js band definitions.
+// Lightweight Meadow — a fixed 48x48 m flat dirt ground with scattered rocks.
+// Purpose: verification stage for the Vulkan ground-tileset work (spec
+// 2026-07-21): the ForestFloor .gtex binds to MAT.dirt, so the ground quad
+// shows the Wang-tile atlas; rocks give parallax/shadow reference points.
+// No trees, no grass, no terrain tiles, no streaming. The original 816x816
+// world is preserved at examples/world_demo/backup/Meadow.objects.js.bak.
 
-// ---- World constants --------------------------------------------------------
-const TILES = 51;
-const TILE  = 16.0;
-const WORLD = TILES * TILE;              // 816.0
+const S = 24.0;                 // half-extent: ground spans [-24, 24]^2
+const ROCK_VARIANTS = 4;
+const ROCKS = 30;               // ordinary rocks
+const BOULDER_SIZES = [2.5, 4.0], BOULDER_SEEDS = 2, BOULDERS = 5;
+const PEBBLE_VARIANTS = 4;
+const PEBBLES = 40;             // a few physical pebbles vs. the baked-in ones
+const GRASS_VARIANTS = 5;
+// ~50% grass coverage: 48x48 m = 2304 m^2, target ~1150 m^2 of grass.
+// ~90 clumps x ~14 tufts x ~0.8 m^2 visual footprint per tuft (scale ~2)
+// lands in that band while keeping clumped, patchy structure.
+const GRASS_CLUMPS = 90;          // clump centers
+const GRASS_PER_CLUMP = [10, 18]; // tufts per clump (range)
+const GRASS_CLUMP_RADIUS = 1.2;   // tuft spread around the center
 
-// ---- Scatter constants -------------------------------------------------------
-const ROCK_VARIANTS   = 8;
-const PEBBLE_VARIANTS = 6;
-const GRASS_VARIANTS  = 5;
-
-const GRASS_SLOPE_MAX = 0.5;   // thin grass on slopes steeper than this
-const TREE_MIN_DIST   = 24.0;  // rejection-sampling spacing between oaks
-
-// Landmark boulders: a few large Rock bakes (discrete sizes to bound the
-// variant count) scattered sparsely; instance scale adds continuous variety.
-// Count scaled ~10x from the 256x256 world (14) to preserve density.
-const BOULDER_SIZES = [2.5, 4.0], BOULDER_SEEDS = 4, BOULDERS = 140;
-
-// Scatter budget arithmetic — expected placed instance counts:
-// World: 51×51 = 2,601 tiles placed (coarse only).
-// Band areas (by tile-centre radial test, WORLD=816):
-//   R_MEADOW = 816×0.16 ≈ 130.6, R_FOOT = 816×0.34 ≈ 277.4
-//   meadow tiles ≈ 213, foothills tiles ≈ 736, mountain tiles ≈ 1,652
-//   (tile areas: meadow ≈ 54,528 sq, foothills ≈ 188,416 sq, mountain ≈ 422,912 sq)
-// Per-area densities from the original 256×256 world (65,536 sq):
-//   rocks  : 600/65536  ≈ 0.00916/sq
-//   pebbles: 4000/65536 ≈ 0.06104/sq
-//   grass  : 40000/65536 ≈ 0.610/sq
-//   trees  : 40/65536   ≈ 0.00061/sq
-// Banded scatter:
-//   meadow    : all kinds at full density
-//               rocks≈499, pebbles≈3328, grass≈33281, trees≈33
-//   foothills : rocks at full density + grass at ¼, no pebbles, no trees
-//               rocks≈1725, grass≈28750
-//   mountains : rocks at ⅛ density only
-//               rocks≈484
-// Total scatter ≈ 68,100.
-// Total placed instances ≈ 2,601 + 68,100 = 70,701  ← well within ≤150,000 budget.
-const MEADOW_ROCKS  =  499, MEADOW_PEBBLES =  3328, MEADOW_GRASS =  33281, MEADOW_TREES = 33;
-const FOOT_ROCKS    = 1725, FOOT_GRASS     = 28750;
-const MOUNT_ROCKS   =  484;
-
-// makeRequires(seed): generate child requests propagating worldSeed to Terrain
-// so each seed produces distinct terrain hashes (cache miss on reroll) while
-// scatter schemas (Rock/Pebble/Grass/Tree) use seed-free params and always hit
-// cache across rerolls. Called as a function-requires so p.worldSeed flows in.
-function makeRequires(seed) {
+function makeRequires() {
   const req = [];
-  // Two Terrain variants per tile: coarse (N=8) and full (N=64).
-  // worldSeed flows through so terrain hashes change per seed (cache miss on reroll).
-  for (let tz = 0; tz < TILES; tz++)
-    for (let tx = 0; tx < TILES; tx++)
-      for (const res of ['coarse', 'full'])
-        req.push({ module: 'Terrain',
-                   params: { tx, tz, res, worldSeed: seed, worldSize: WORLD } });
-  // Scatter schema variants (seed-free params — cache-stable across worldSeed).
-  for (let s = 0; s < ROCK_VARIANTS;   ++s) req.push({ module: 'Rock',   params: { seed: s } });
+  req.push({ module: 'MeadowGround' });
+  for (let s = 0; s < ROCK_VARIANTS; ++s) req.push({ module: 'Rock', params: { seed: s } });
   for (const sz of BOULDER_SIZES)
     for (let s = 0; s < BOULDER_SEEDS; ++s)
       req.push({ module: 'Rock', params: { seed: s, size: sz } });
   for (let s = 0; s < PEBBLE_VARIANTS; ++s) req.push({ module: 'Pebble', params: { seed: s } });
-  for (let s = 0; s < GRASS_VARIANTS;  ++s) req.push({ module: 'Grass',  params: { seed: s } });
-  req.push({ module: 'Tree' });
+  for (let s = 0; s < GRASS_VARIANTS; ++s) req.push({ module: 'Grass', params: { seed: s } });
   return req;
 }
 
 class Meadow extends Part {
-  static params  = { worldSeed: 20260709 };
-  // Function-based requires so p.worldSeed propagates to Terrain child hashes.
-  // Scatter children (Rock/Pebble/Grass/Tree) use seed-free params and hit cache
-  // across rerolls — only terrain tiles re-bake when the seed changes.
-  static requires = function(p) { return makeRequires(p.worldSeed); };
+  static params = { worldSeed: 20260721 };
+  static requires = function(p) { return makeRequires(); };
 
   build(p) {
-    const H = heightField(p.worldSeed, WORLD);
     const r = rng(p.worldSeed);
 
-    const cx = WORLD / 2, cz = WORLD / 2;
-    const R_MEADOW = WORLD * 0.16;   // ~130.6
-    const R_FOOT   = WORLD * 0.34;   // ~277.4
+    // Ground is its own part: expanded roots emit child instances only, so
+    // inline root triangles would be dropped (that bit us — the "ground" in
+    // early screenshots was the sky gradient).
+    this.placeChild('MeadowGround');
 
-    // Band classifier by tile-centre radial distance (matches terrain_noise.js bandAt).
-    function band(tx, tz) {
-      const x = tx * TILE + TILE / 2;
-      const z = tz * TILE + TILE / 2;
-      const dist = Math.hypot(x - cx, z - cz);
-      return dist < R_MEADOW ? 'meadow' : dist < R_FOOT ? 'foothills' : 'mountains';
-    }
-
-    // ---- Terrain tiles: place COARSE only ------------------------------------
-    for (let tz = 0; tz < TILES; tz++) {
-      for (let tx = 0; tx < TILES; tx++) {
-        this.pushMatrix();
-        this.translate(tx * TILE, 0, tz * TILE);
-        this.placeChild('Terrain',
-          { tx, tz, res: 'coarse', worldSeed: p.worldSeed, worldSize: WORLD });
-        this.popMatrix();
-      }
-    }
-
-    // Shared ground-follow placement helper.
+    // Ground-follow placement on the flat plane (sink slightly so bases
+    // don't float on the texture).
     const put = (module, params, x, z, s, sinkY) => {
       this.pushMatrix();
-      this.translate(x, H.heightAt(x, z) - sinkY, z);
+      this.translate(x, -sinkY, z);
       this.rotateY(r.range(0, Math.PI * 2));
       this.scale(s, s, s);
       this.placeChild(module, params);
       this.popMatrix();
     };
 
-    // ---- Collect tile positions per band for scatter sampling ----------------
-    const meadowTiles = [], foothillsTiles = [], mountainTiles = [];
-    for (let tz = 0; tz < TILES; tz++)
-      for (let tx = 0; tx < TILES; tx++) {
-        const b = band(tx, tz);
-        const ox = tx * TILE, oz = tz * TILE;
-        if      (b === 'meadow')     meadowTiles.push([ox, oz]);
-        else if (b === 'foothills')  foothillsTiles.push([ox, oz]);
-        else                         mountainTiles.push([ox, oz]);
-      }
-
-    // Random position within a tile (given tile origin).
-    const inTile = (ox, oz) =>
-      [ox + r.range(0, TILE), oz + r.range(0, TILE)];
-
-    // Sample a random tile from a band array, then a random position in it.
-    const randPos = (tiles) => {
-      const t = tiles[r.int(tiles.length)];
-      return inTile(t[0], t[1]);
-    };
-
-    // ---- Meadow-band scatter (all kinds at full density) --------------------
-    for (let i = 0; i < MEADOW_ROCKS; ++i) {
-      const [x, z] = randPos(meadowTiles);
-      put('Rock', { seed: r.int(ROCK_VARIANTS) }, x, z, r.range(0.6, 1.8), 0.15 * r.range(0.6, 1.8));
+    const M = S - 2.0;          // keep scatter off the very edge
+    for (let i = 0; i < ROCKS; ++i) {
+      const s = r.range(0.6, 1.8);
+      put('Rock', { seed: r.int(ROCK_VARIANTS) },
+          r.range(-M, M), r.range(-M, M), s, 0.15 * s);
     }
-    // Landmark boulders: scattered across the whole world (all bands).
     for (let i = 0; i < BOULDERS; ++i) {
-      const x = r.range(0, WORLD), z = r.range(0, WORLD);
       const sz = BOULDER_SIZES[r.int(BOULDER_SIZES.length)];
       const s = r.range(0.8, 1.2);
-      put('Rock', { seed: r.int(BOULDER_SEEDS), size: sz }, x, z, s, 0.15 * sz * s);
+      put('Rock', { seed: r.int(BOULDER_SEEDS), size: sz },
+          r.range(-M, M), r.range(-M, M), s, 0.15 * sz * s);
     }
-    for (let i = 0; i < MEADOW_PEBBLES; ++i) {
-      const [x, z] = randPos(meadowTiles);
-      put('Pebble', { seed: r.int(PEBBLE_VARIANTS) }, x, z, r.range(0.5, 1.5), 0.02);
-    }
-    {
-      let placed = 0, guard = 0;
-      while (placed < MEADOW_GRASS && guard < MEADOW_GRASS * 4) {
-        ++guard;
-        const [x, z] = randPos(meadowTiles);
-        if (H.slopeAt(x, z) > GRASS_SLOPE_MAX && r.random() < 0.7) continue;
-        put('Grass', { seed: r.int(GRASS_VARIANTS) }, x, z, r.range(0.8, 1.3), 0.02);
-        ++placed;
-      }
-    }
-    {
-      const oaks = [];
-      let tguard = 0;
-      while (oaks.length < MEADOW_TREES && tguard < MEADOW_TREES * 50) {
-        ++tguard;
-        const t = meadowTiles[r.int(meadowTiles.length)];
-        const x = t[0] + r.range(1, TILE - 1), z = t[1] + r.range(1, TILE - 1);
-        let ok = true;
-        for (let i = 0; i < oaks.length; ++i) {
-          const dx = x - oaks[i][0], dz = z - oaks[i][1];
-          if (dx * dx + dz * dz < TREE_MIN_DIST * TREE_MIN_DIST) { ok = false; break; }
-        }
-        if (!ok) continue;
-        oaks.push([x, z]);
-        this.pushMatrix();
-        this.translate(x, H.heightAt(x, z), z);
-        this.rotateY(r.range(0, Math.PI * 2));
-        this.placeChild('Tree');
-        this.popMatrix();
-      }
+    for (let i = 0; i < PEBBLES; ++i) {
+      put('Pebble', { seed: r.int(PEBBLE_VARIANTS) },
+          r.range(-M, M), r.range(-M, M), r.range(0.5, 1.5), 0.02);
     }
 
-    // ---- Foothills-band scatter (rocks + ¼ grass, slope-thinned; no pebbles/trees) --
-    for (let i = 0; i < FOOT_ROCKS; ++i) {
-      const [x, z] = randPos(foothillsTiles);
-      put('Rock', { seed: r.int(ROCK_VARIANTS) }, x, z, r.range(0.6, 1.8), 0.15 * r.range(0.6, 1.8));
-    }
-    {
-      let placed = 0, guard = 0;
-      while (placed < FOOT_GRASS && guard < FOOT_GRASS * 4) {
-        ++guard;
-        const [x, z] = randPos(foothillsTiles);
-        if (H.slopeAt(x, z) > GRASS_SLOPE_MAX && r.random() < 0.7) continue;
-        put('Grass', { seed: r.int(GRASS_VARIANTS) }, x, z, r.range(0.8, 1.3), 0.02);
-        ++placed;
+    // Large grass clumps: cluster tufts around scattered centers so they
+    // read as patches rather than confetti.
+    for (let c = 0; c < GRASS_CLUMPS; ++c) {
+      const cx = r.range(-M, M), cz = r.range(-M, M);
+      const n = GRASS_PER_CLUMP[0] +
+                r.int(GRASS_PER_CLUMP[1] - GRASS_PER_CLUMP[0] + 1);
+      for (let i = 0; i < n; ++i) {
+        const a = r.range(0, Math.PI * 2);
+        const d = GRASS_CLUMP_RADIUS * Math.sqrt(r.random());
+        const x = Math.max(-M, Math.min(M, cx + Math.cos(a) * d));
+        const z = Math.max(-M, Math.min(M, cz + Math.sin(a) * d));
+        put('Grass', { seed: r.int(GRASS_VARIANTS) },
+            x, z, r.range(1.6, 2.6), 0.02);
       }
-    }
-
-    // ---- Mountains-band scatter (sparse rocks only, ⅛ of rock density) ----
-    for (let i = 0; i < MOUNT_ROCKS; ++i) {
-      const [x, z] = randPos(mountainTiles);
-      put('Rock', { seed: r.int(ROCK_VARIANTS) }, x, z, r.range(0.6, 1.8), 0.15 * r.range(0.6, 1.8));
     }
   }
 }

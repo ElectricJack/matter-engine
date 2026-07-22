@@ -18,6 +18,7 @@
 #include "gpu_matrix_pack.h"
 #include "matter/lod_contract.h"
 #include "matter/math_types.h"
+#include "matter/world_definition.h"
 #include "material_registry.h"
 #include "render/dynamic_instance_slots.h"
 #include "vk_gi_contract.h"
@@ -32,6 +33,7 @@ enum class DlssMode : uint8_t;
 struct VulkanFrame;
 struct VulkanVolumetricsSettings;
 struct FogSettings;
+struct TilesetPomSettings;
 }
 
 namespace viewer {
@@ -351,6 +353,23 @@ public:
     bool update_materials(const std::vector<MaterialGpuRecord>& records,
                           uint64_t shading_revision,
                           uint64_t geometry_revision, std::string& error);
+    // Phase 1 tileset Vulkan port (Task 6): loads a .gtex ground tileset atlas
+    // (tileset_gtex.h) into slot [0,4), CPU-slices it into 16-layer texture
+    // arrays with full per-layer mip chains (tileset_slicer.h), uploads them,
+    // and (re)writes the shared TilesetParams UBO plus both descriptor sets
+    // (raster set 1 bindings 6/7, RT set 0 bindings 15/16). Fails closed: on
+    // any error the slot's previous contents (if any) are left untouched and
+    // false is returned with error set — ground rendering for that slot
+    // degrades to untextured, it never crashes and never leaves a
+    // partially-uploaded image bound. Safe to call before/without a prior
+    // init(); returns false if the renderer has not initialized Vulkan
+    // resources yet.
+    bool load_tileset_slot(int slot, const std::string& gtex_path,
+                           std::string& error);
+    // Frees slot's GPU images (if loaded) and rewrites descriptors across all
+    // frame slots to point back at the shared dummy images. No-op if the slot
+    // was never loaded or slot is out of range.
+    void unload_tileset_slot(int slot);
     bool consume_gi_history_reset();
     bool rt_geometry_classification_dirty(uint64_t part_hash) const;
     void release_part(uint64_t part_hash);
@@ -449,6 +468,13 @@ public:
     }
     void set_volumetrics_settings(const matter::VulkanVolumetricsSettings& s,
                                   const matter::FogSettings& fog);
+    // Ground POM live-tunables (viewer "Ground POM" UI). Stores the settings
+    // and immediately re-writes the tileset params UBO (cheap -- see
+    // write_tileset_params_buffer) so the next frame's gbuffer/RT tileset
+    // sampling picks up the change; slot-derived fields (height ranges,
+    // mean albedo, tile sizes) stay renderer-owned and are re-derived from
+    // tileset_slots_ on every call, same as the sun_dir_intensity mirror.
+    void set_tileset_pom_settings(const matter::TilesetPomSettings& s);
     // Blit the real HDR world composite into the currently acquired swapchain
     // image, leaving it ready for UI dynamic rendering.
     bool record_composite_to_swapchain(const matter::VulkanFrame& frame,
@@ -716,6 +742,124 @@ private:
         uint32_t max_draw_indirect_count = 0;
     };
 
+    // --- Phase 1 tileset Vulkan port (Task 6) ------------------------------
+    // Channel order matches tileset_gtex.h's ChannelId and the descriptor
+    // array index slot*6 + channel used by both descriptor sets.
+    // Phase 2 (horizon-map lighting): kTilesetChannelHorizonA/B are the two
+    // quarter-albedo-resolution RGBA8 horizon-map textures (.gtex v2
+    // CHAN_HORIZON_A/B; see tileset_common.glsl's tileset_horizon_sin).
+    // v1 .gtex files carry no horizon data -- load_tileset_slot binds the
+    // shared RGBA8 dummy for these two channels and clears has_horizon.
+    enum TilesetChannel {
+        kTilesetChannelAlbedo = 0,
+        kTilesetChannelNormal = 1,
+        kTilesetChannelOrm = 2,
+        kTilesetChannelHeight = 3,
+        kTilesetChannelHorizonA = 4,
+        kTilesetChannelHorizonB = 5,
+        kTilesetChannelCount = 6,
+    };
+
+    // Raw-handle image, manually created/destroyed: matter::VkImageResource's
+    // create_image() only supports a single mip level and array layer
+    // (vk_resources.cpp), so the 16-layer, full-mip-chain images this feature
+    // requires are built directly with vkCreateImage/vkCreateImageView here,
+    // reusing the public matter::find_memory_type/create_buffer/submit_immediate
+    // helpers for memory allocation and upload plumbing.
+    struct TilesetImage {
+        VkImage image = VK_NULL_HANDLE;
+        VkImageView view = VK_NULL_HANDLE;  // VK_IMAGE_VIEW_TYPE_2D_ARRAY
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+    };
+
+    struct TilesetSlotGpu {
+        bool loaded = false;
+        // Phase 2 (horizon-map lighting): true when this slot's .gtex was a
+        // v2 file carrying CHAN_HORIZON_A/B (tileset::load_gtex returned
+        // non-empty horizon vectors). false for v1 files (or when unloaded)
+        // -- channels[kTilesetChannelHorizonA/B] then hold the shared RGBA8
+        // dummy and the horizon helpers in tileset_common.glsl must read as
+        // fully unoccluded. Folded into TilesetParamsGpu.slot_mean_albedo's
+        // valid flag rather than adding a new field (see
+        // write_tileset_params_buffer).
+        bool has_horizon = false;
+        TilesetImage channels[kTilesetChannelCount];
+        float tile_size_m = 0.0f;
+        float texels_per_meter = 0.0f;
+        float height_min = 0.0f;
+        float height_max = 0.0f;
+        float mean_albedo[3] = {0.0f, 0.0f, 0.0f};
+    };
+
+    // std140 UBO — MUST match the plan's Task 6 struct field-for-field
+    // (MatterEngine3/shaders_vk/tileset_common.glsl's TilesetParams block
+    // mirrors this: vec4 tile_size_m/texels_per_meter/height_min/height_max,
+    // vec4 mean_albedo[4], vec4 pom_a{steps,refine,max_distance,fade_band},
+    // vec4 pom_b{fade_center,fade_width,max_relief_m,max_march_m},
+    // vec4 sun_dir_intensity{dir.xyz,intensity} (Phase 2 Task 11),
+    // vec4 pom_c{datum_bias_m,ao_strength,shadow_strength,horizon_strength}
+    // (Ground POM UI knobs; .w repurposed from "reserved" for the horizon-map
+    // lighting feature -- see TilesetPomSettings::horizon_strength)). Every
+    // group below is exactly 16 bytes so the natural C++ layout matches
+    // std140 with no manual padding.
+    //
+    // Horizon-map has_horizon flag: rather than growing this struct (it must
+    // stay 192 bytes / twelve vec4 records per the static_assert below),
+    // slot_mean_albedo[slot][3] -- previously a plain 0/1 "slot loaded" bool
+    // unused by any shader -- now encodes both bits: 0.0 = not loaded,
+    // 1.0 = loaded without horizon data (v1 .gtex), 2.0 = loaded with
+    // horizon data (v2 .gtex). tileset_common.glsl's tileset_has_horizon
+    // reads `mean_albedo[slot].w >= 1.5`.
+    struct alignas(16) TilesetParamsGpu {
+        float slot_tile_size_m[4]{};
+        float slot_texels_per_meter[4]{};
+        float slot_height_min[4]{};
+        float slot_height_max[4]{};
+        // rgb + valid/has_horizon flag in [.][3]: 0 = not loaded, 1 = loaded
+        // (no horizon), 2 = loaded (with horizon). See file comment above.
+        float slot_mean_albedo[4][4]{};
+        float pom_steps = 50.0f;
+        float pom_refine_steps = 4.0f;
+        float pom_max_distance_m = 50.4f;
+        float pom_fade_band_m = 1.0f;
+        float detail_fade_center_m = 40.0f;
+        float detail_fade_width_m = 10.0f;
+        // Max relief depth (meters) the POM march may carve. The baked
+        // height range is dominated by sparse tall litter (rock tips), so
+        // marching the full range sinks the whole dirt floor by ~h_range —
+        // deep stepped canyons. Parallax only needs ~10 cm to sell relief;
+        // anything deeper is real-geometry territory.
+        float pom_max_relief_m = 0.178f;
+        // Max total world-space march length (meters). Without this cap a
+        // near-tangent view ray marches relief/0.08 (~2 m) laterally and the
+        // grazing ground dissolves into a structureless smear of far-away
+        // texels; capping the march bounds the lateral offset parallax can
+        // ever produce. When the cap is exhausted without a relief crossing
+        // the march returns the capped end point (continuous with neighbors
+        // that crossed just before the cap).
+        float pom_max_march_m = 0.73f;
+        // Task 11 (height self-shadow): direction-to-sun (normalized, world
+        // space, matches the `to_sun` convention used by the RT shadow push
+        // constants -- i.e. normalize(-VkSceneLighting::sun_direction)) and
+        // sun_intensity in .w. gbuffer.frag skips the self-shadow march when
+        // dir.y <= 0 (sun below horizon) or intensity <= 0.
+        float sun_dir_intensity[4] = {0.0f, 1.0f, 0.0f, 1.0f};
+        // Ground POM UI knobs (matter::TilesetPomSettings, mirrored into the
+        // UBO by write_tileset_params_buffer): x = datum_bias_m -- subtracted
+        // from the decoded relief height before the clamp in
+        // tileset_relief_h, letting baked litter stand proud of a recessed
+        // dirt floor instead of clamping flat at the datum. y = ao_strength,
+        // z = shadow_strength -- gbuffer.frag blend factors for the baked AO
+        // texel and the self-shadow march result (0 = fully suppressed, 1 =
+        // full baked strength). w = horizon_strength (Phase 2 horizon-map
+        // lighting) -- blends the per-direction baked horizon occlusion
+        // toward 0 (fully visible) instead of always applying it at full
+        // strength; see tileset_common.glsl's tileset_horizon_occlusion.
+        float pom_datum_bias_ao_shadow[4] = {0.105f, 0.63f, 0.68f, 1.0f};
+    };
+    static_assert(sizeof(TilesetParamsGpu) == 192,
+                  "TilesetParamsGpu must remain twelve vec4 records (std140)");
+
     struct FrameResources {
         matter::VkBufferResource frame_constants;
         matter::VkBufferResource instances;
@@ -853,6 +997,25 @@ private:
     bool poisoned() const { return !poison_reason_.empty(); }
     void destroy_pipeline();
 
+    // --- Phase 1 tileset Vulkan port (Task 6) ------------------------------
+    // Creates the shared sampler, the three format-family dummy images, and
+    // the TilesetParams UBO on first use. Idempotent (tileset_infra_ready_
+    // guards re-entry). Called from init().
+    bool ensure_tileset_infra(std::string& error);
+    bool create_tileset_image(VkFormat format, uint32_t edge_px,
+                              uint32_t mip_levels, uint32_t array_layers,
+                              TilesetImage& out, std::string& error);
+    void destroy_tileset_image(TilesetImage& image);
+    // Real slot view if loaded, else the format-matched dummy's view.
+    VkImageView tileset_channel_view(int slot, int channel) const;
+    void write_tileset_params_buffer();
+    // Writes bindings 6 (16-entry sampler2DArray) and 7 (TilesetParams UBO)
+    // for one raster (set 1) descriptor set, sourced from current renderer
+    // state (loaded slots or dummies). Called once per frame at frame-resource
+    // creation/growth (update_frame_descriptors) and again for every frame
+    // slot whenever a tileset slot loads or unloads.
+    void write_tileset_descriptors_for_frame(VkDescriptorSet set);
+
     matter::VulkanDevice* vulkan_ = nullptr;
     matter::StreamlineBridge* dlss_bridge_ = nullptr;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
@@ -912,6 +1075,17 @@ private:
     matter::VkImageResource raw_transmission_;
     matter::VkImageResource vol_dummy_3d_;
     VkExtent2D raw_diffuse_extent_{};
+
+    // --- Phase 1 tileset Vulkan port (Task 6) ------------------------------
+    TilesetSlotGpu tileset_slots_[4]{};
+    // One dummy per distinct format among the 4 channels (albedo and ORM
+    // share R8G8B8A8_UNORM, so 3 dummies cover all 4 channel roles).
+    TilesetImage tileset_dummy_rgba8_;  // albedo, orm
+    TilesetImage tileset_dummy_rg8_;    // normal
+    TilesetImage tileset_dummy_r16_;    // height
+    VkSampler tileset_sampler_ = VK_NULL_HANDLE;
+    matter::VkBufferResource tileset_params_;
+    bool tileset_infra_ready_ = false;
     struct GiHistorySet {
         matter::VkImageResource radiance;
         matter::VkImageResource moments;
@@ -1007,6 +1181,7 @@ private:
     std::unique_ptr<VkVolumetrics> volumetrics_;
     bool volumetrics_enabled_ = false;
     float volumetrics_debug_view_ = 0.0f;
+    matter::TilesetPomSettings tileset_pom_settings_{};
     uint32_t last_rt_samples_ = 1;
     bool last_rt_debug_view_ = false;
     bool last_rt_available_ = false;

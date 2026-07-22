@@ -97,6 +97,26 @@ matter::Mat4f perspective_rh_zo(float fovy, float aspect, float near_plane,
     return projection;
 }
 
+// Reversed-Z (near->1, far->0). Derivation from the row-major/column-vector
+// layout above: row 3 (m[14] = -1, m[15] = 0) is unchanged, so clip.w = -z
+// still equals view-space distance d for any point in front of the camera.
+// NDC depth = (m[10]*z + m[11]) / clip.w = m[11]/d - m[10]. Solving
+// m[11]/near - m[10] = 1 and m[11]/far - m[10] = 0 simultaneously gives
+// m[10] = near/(far-near) and m[11] = far*near/(far-near) — the near/far
+// roles are swapped relative to perspective_rh_zo's depth terms, and only
+// those two terms change.
+matter::Mat4f perspective_rh_zo_reversed(float fovy, float aspect,
+                                         float near_plane, float far_plane) {
+    const float y_scale = 1.0f / std::tan(fovy * 0.5f);
+    matter::Mat4f projection{};
+    projection.m[0] = y_scale / aspect;
+    projection.m[5] = y_scale;
+    projection.m[10] = near_plane / (far_plane - near_plane);
+    projection.m[11] = far_plane * near_plane / (far_plane - near_plane);
+    projection.m[14] = -1.0f;
+    return projection;
+}
+
 bool mat4_inverse(const matter::Mat4f& matrix, matter::Mat4f& inverse) {
     double augmented[4][8]{};
     for (int row = 0; row < 4; ++row) {

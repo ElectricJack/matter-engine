@@ -63,6 +63,19 @@ struct LocalProviderConfig {
                        std::function<bool(std::string& err)> fn,
                        std::string& err)> gpu_run;
 
+    // Tileset Vulkan port (spec "Phase 1 - Vulkan tileset consumption",
+    // Task 6): invoked once per tileset root right after the GL bake +
+    // viewer::tileset_provider::load_slot succeed in run_tileset_deferred, so
+    // the Vulkan renderer can mirror the same .gtex atlas into its own
+    // texture-array slot. Null when no Vulkan renderer is active (GL-only
+    // viewer, headless tests, MATTER_VULKAN_ONLY builds that never reach the
+    // GL bake branch below). A false return is logged and otherwise ignored —
+    // the world load still succeeds; ground rendering for that slot just
+    // stays untextured on the Vulkan side (fail-closed, matches the GL path's
+    // own failure handling for a single tileset root).
+    std::function<bool(int slot, const std::string& gtex_path,
+                       std::string& err)> vk_tileset_load;
+
     // True when GLAD function pointers are loaded (i.e., a window was created).
     // False in headless tests (no window, no GL context): the tileset phase
     // runs physics-settle only; the .gtex is generated later when a viewer

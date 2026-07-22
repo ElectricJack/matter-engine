@@ -219,6 +219,7 @@ struct ExpectedExampleRoot {
     const char* module;
     bool expand;
     bool tileset;
+    matter::Float3 translation{0.0f, 0.0f, 0.0f};
 };
 
 struct ExpectedExampleWorld {
@@ -239,7 +240,9 @@ bool nearly_equal(float a, float b) {
 void test_example_worlds_preserve_manifest_authoring() {
     const fs::path project = fs::path("../examples/world_demo");
     const ExpectedExampleWorld worlds[] = {
-        {"Demo", {{"TreeGallery", false, false}}},
+        {"Demo", {{"TreeGallery", false, false},
+                  {"ChimneySmoke", false, false, {5.0f, 6.0f, 0.0f}},
+                  {"WaterfallMist", false, false, {-8.0f, 0.0f, 10.0f}}}},
         {"Meadow", {{"Meadow", true, false},
                     {"ForestFloor", false, true}}},
         {"MeadowWorld", {},
@@ -259,13 +262,6 @@ void test_example_worlds_preserve_manifest_authoring() {
         {"StressForest200k", {{"StressForest200k", true, false}}},
         {"StressForest500k", {{"StressForest500k", true, false}}},
     };
-    const float identity[16] = {
-        1, 0, 0, 0,
-        0, 1, 0, 0,
-        0, 0, 1, 0,
-        0, 0, 0, 1,
-    };
-
     CHECK(fs::is_directory(project / "objects"),
           "example project exposes object modules under objects/");
     CHECK(!fs::exists(project / "schemas"),
@@ -299,11 +295,18 @@ void test_example_worlds_preserve_manifest_authoring() {
                   (std::string(expected.name) + " root order/module").c_str());
             CHECK(actual.params_json == "{}",
                   (std::string(expected.name) + " root params").c_str());
-            bool identity_matches = true;
+            const float expected_transform[16] = {
+                1, 0, 0, 0,
+                0, 1, 0, 0,
+                0, 0, 1, 0,
+                root.translation.x, root.translation.y, root.translation.z, 1,
+            };
+            bool transform_matches = true;
             for (std::size_t element = 0; element < 16; ++element)
-                identity_matches = identity_matches &&
-                    nearly_equal(actual.transform.m[element], identity[element]);
-            CHECK(identity_matches,
+                transform_matches = transform_matches &&
+                    nearly_equal(actual.transform.m[element],
+                                 expected_transform[element]);
+            CHECK(transform_matches,
                   (std::string(expected.name) + " root transform").c_str());
             CHECK(actual.expand == root.expand && actual.tileset == root.tileset,
                   (std::string(expected.name) + " root flags").c_str());

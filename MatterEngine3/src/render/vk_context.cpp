@@ -986,6 +986,16 @@ struct VulkanDevice::Impl {
         features2.features.multiDrawIndirect = VK_TRUE;
         features2.features.shaderStorageImageExtendedFormats =
             ray_tracing_enabled ? VK_TRUE : VK_FALSE;
+        // Phase 1 tileset Vulkan port (Task 6): the ground tileset sampler
+        // wants anisotropic filtering. Gate the enable on the earlier
+        // rt_features2 query (vkGetPhysicalDeviceFeatures2 above) so we never
+        // request a feature the physical device doesn't support; the
+        // renderer additionally re-queries this at sampler-creation time and
+        // sets anisotropyEnable=VK_FALSE defensively if it ever observes the
+        // feature off, but the enable has to happen here, at logical device
+        // creation, for anisotropyEnable=VK_TRUE to be valid at all.
+        features2.features.samplerAnisotropy =
+            rt_features2.features.samplerAnisotropy;
         features2.pNext = &features12;
 
         VkDeviceCreateInfo create{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
