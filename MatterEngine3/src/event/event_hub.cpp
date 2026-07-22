@@ -195,6 +195,16 @@ int Hub::pump(lane ln, double ms_budget) {
     return total;
 }
 
+int Hub::pump_one(lane ln) {
+    check_lane_owner(ln);
+    Channel<detail::QueuedEnvelope>* ch = get_or_create_lane_channel(ln);
+    detail::QueuedEnvelope env;
+    int ran = ch->pump_one([&](detail::QueuedEnvelope& e) { env = std::move(e); });
+    if (ran == 0) return 0;  // lane empty
+    dispatch_envelope(env, ln);
+    return 1;
+}
+
 void Hub::close() {
     if (closed_.exchange(true, std::memory_order_acq_rel)) return;  // idempotent
 

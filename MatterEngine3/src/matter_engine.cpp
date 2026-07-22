@@ -9,6 +9,12 @@
 #include "matter/engine_context.h"
 #include "matter/world_session.h"
 
+// E3 event system: per-session evt::Hub carrying typed bake/stream events;
+// the legacy poll_event() API is a compat shim over lane::legacy_poll.
+#include "matter/event/event_hub.h"
+#include "matter/events/bake_events.h"
+#include "matter/events/stream_events.h"
+
 #include "async_bake.h"
 #include "bake_trace.h"        // Bake Lab: per-session stage-span collector
 #include "bake_trace_names.h"
@@ -335,12 +341,37 @@ struct WorldSession::Impl {
 
     std::atomic<bool> connected{false};
 
-    // Event queue — capped at 4096 to prevent unbounded growth if the app
-    // never drains (older events dropped when the cap is hit).
-    // Phase B: worker + app thread both touch this, so every access is
-    // guarded by events_mutex.
-    std::deque<Event> events;
-    std::mutex        events_mutex;
+    // E3 (event-system.md S I.13): the per-session event hub. All bake/stream
+    // progress is emitted here as typed events (matter/events/*.h). Declared
+    // BEFORE the async-bake members that emit into it (`gpu_jobs`, `commands`,
+    // `worker`, below) so it OUTLIVES them (members destroy in reverse
+    // declaration order); ~WorldSession additionally stops/joins the worker
+    // and calls hub_.close() explicitly before teardown (S I.13 close order).
+    evt::Hub hub_;
+
+    // E3 legacy compat shim (S I.11 / S II.4 item 6). A private subscription
+    // set feeds every bake/stream typed event — converted back to a legacy
+    // matter::Event — into `legacy_pending_`, exclusively on lane::legacy_poll.
+    // WorldSession::poll_event() owns that lane, pump_one()s it, and returns
+    // one converted Event per call (preserving the pre-E3 one-per-call FIFO
+    // drain) WITHOUT any frame-loop app-lane pump. `legacy_pending_` and
+    // `legacy_lane_claimed_` are touched ONLY on the app thread (inside
+    // poll_event's pump_one dispatch and its own pop), so they need no mutex —
+    // this replaces the old events_mutex-guarded deque. The old silent
+    // drop-oldest 4096 cap is gone: the lane's Channel is bounded DropOldest
+    // and COUNTS drops (hub/Channel::dropped()), never silently.
+    evt::SubscriptionSet   legacy_subs_;
+    std::deque<Event>      legacy_pending_;
+    bool                   legacy_lane_claimed_ = false;
+
+    Impl() { wire_legacy_poll_subs(); }
+
+    // Register the private lane::legacy_poll subscriptions (called once from
+    // the ctor, on the app thread, BEFORE any bake can emit).
+    void wire_legacy_poll_subs();
+    // App-thread compat drain: pump_one on lane::legacy_poll until one legacy
+    // Event is available or the lane is empty. Backs WorldSession::poll_event.
+    bool poll_legacy_event(Event& out);
 
     // Phase C Task 3: bake focus point (app thread writes, worker reads).
     // Uses its own mutex (separate from events_mutex) so a set_bake_focus call
@@ -448,8 +479,6 @@ struct WorldSession::Impl {
     bool ensure_tracer() const;
 
     // --- Phase B: async bake worker helpers (defined below) ------------------
-    // Emit an event onto the queue (thread-safe). Applies the 4096 cap.
-    void emit_event(Event ev);
     // Start the worker thread if not already running.
     void ensure_worker_started();
     // Worker thread entry point.
@@ -669,14 +698,99 @@ struct WorldSession::Impl {
 };
 
 // ---------------------------------------------------------------------------
-// WorldSession::Impl::emit_event / ensure_worker_started / worker_loop
-// Phase B: worker command loop and event fan-out.
+// E3 legacy compat shim: typed hub event -> pre-E3 matter::Event.
+//
+// Each overload reconstructs EXACTLY the fields the corresponding legacy
+// emit_event() call site used to set, leaving all other Event fields at
+// their defaults — the same defaults a fresh `Event ev;` had — so the byte
+// sequence poll_event() returns is identical to the pre-E3 queue (gate 2:
+// run-asyncbake's event stream is unchanged). These run only on the app
+// thread, inside poll_event()'s pump_one dispatch (event-system.md S I.11).
 // ---------------------------------------------------------------------------
+namespace {
+Event to_legacy_event(const events::BakeStarted&) {
+    Event e;
+    e.type = EventType::BakeStarted;
+    return e;
+}
+Event to_legacy_event(const events::BakePartDone& s) {
+    Event e;
+    e.type   = EventType::BakePartDone;
+    e.module = s.module;
+    e.done   = s.done;
+    e.total  = s.total;
+    e.phase  = s.phase;
+    return e;
+}
+Event to_legacy_event(const events::BakeFinished& s) {
+    Event e;
+    e.type   = EventType::BakeFinished;
+    e.errors = s.errors;
+    return e;
+}
+Event to_legacy_event(const events::BakeError& s) {
+    Event e;
+    e.type    = EventType::BakeError;
+    e.module  = s.module;
+    e.message = s.message;
+    e.phase   = s.phase;
+    e.code    = s.code;
+    return e;
+}
+Event to_legacy_event(const events::RefineTileDone& s) {
+    Event e;
+    e.type    = EventType::RefineTileDone;
+    e.module  = s.module;
+    e.done    = s.done;
+    e.total   = s.total;
+    e.phase   = "refine";   // the legacy Event always tagged phase="refine"
+    e.tile_tx = s.tile_tx;
+    e.tile_tz = s.tile_tz;
+    return e;
+}
+}  // namespace
 
-void WorldSession::Impl::emit_event(Event ev) {
-    std::lock_guard<std::mutex> lk(events_mutex);
-    if (events.size() >= 4096) events.pop_front();
-    events.push_back(std::move(ev));
+void WorldSession::Impl::wire_legacy_poll_subs() {
+    // One private subscription per typed bake/stream event, ALL on the
+    // dedicated lane::legacy_poll (never lane::app), converting back into a
+    // legacy Event enqueued into legacy_pending_. Because each emit pushes
+    // exactly one envelope onto this lane (one legacy_poll subscriber per
+    // type), poll_event()'s pump_one yields exactly one legacy Event — the
+    // one-per-call FIFO contract. must_subscribe is thread-safe; this runs
+    // on the app thread at construction, before any bake can emit.
+    legacy_subs_ += hub_.must_subscribe<events::BakeStarted>(
+        "legacy_poll.bake_started", evt::lane::legacy_poll,
+        [this](const events::BakeStarted& e) { legacy_pending_.push_back(to_legacy_event(e)); });
+    legacy_subs_ += hub_.must_subscribe<events::BakePartDone>(
+        "legacy_poll.bake_part_done", evt::lane::legacy_poll,
+        [this](const events::BakePartDone& e) { legacy_pending_.push_back(to_legacy_event(e)); });
+    legacy_subs_ += hub_.must_subscribe<events::BakeFinished>(
+        "legacy_poll.bake_finished", evt::lane::legacy_poll,
+        [this](const events::BakeFinished& e) { legacy_pending_.push_back(to_legacy_event(e)); });
+    legacy_subs_ += hub_.must_subscribe<events::BakeError>(
+        "legacy_poll.bake_error", evt::lane::legacy_poll,
+        [this](const events::BakeError& e) { legacy_pending_.push_back(to_legacy_event(e)); });
+    legacy_subs_ += hub_.must_subscribe<events::RefineTileDone>(
+        "legacy_poll.refine_tile", evt::lane::legacy_poll,
+        [this](const events::RefineTileDone& e) { legacy_pending_.push_back(to_legacy_event(e)); });
+}
+
+bool WorldSession::Impl::poll_legacy_event(Event& out) {
+    // Claim the lane on first poll (the app thread that drains it). Lazy so
+    // the owner is unambiguously whichever thread actually calls poll_event.
+    if (!legacy_lane_claimed_) {
+        hub_.claim_lane(evt::lane::legacy_poll);
+        legacy_lane_claimed_ = true;
+    }
+    // Pump one envelope at a time until a converted Event is buffered or the
+    // lane empties. In practice one pump_one yields exactly one Event; the
+    // loop is defensive (and independent of any E4 app-lane frame pump).
+    while (legacy_pending_.empty()) {
+        if (hub_.pump_one(evt::lane::legacy_poll) == 0) return false;
+    }
+    out = std::move(legacy_pending_.front());
+    legacy_pending_.pop_front();
+    return true;
 }
 
 void WorldSession::Impl::ensure_worker_started() {
@@ -704,14 +818,13 @@ void WorldSession::Impl::worker_loop() {
         }
         if (cleared) return true;
 
-        Event event;
-        event.type = EventType::BakeError;
+        events::BakeError event;
         event.code = BakeErrorCode::GpuError;
         event.phase = "stream";
         event.message = clear_error.empty()
             ? "streaming eviction barrier failed"
             : clear_error;
-        emit_event(std::move(event));
+        hub_.emit(std::move(event));
         return false;
     };
     // Phase C Task 6: refine loop.
@@ -791,21 +904,19 @@ void WorldSession::Impl::worker_loop() {
                         ecs_runtime.enqueue_world_state(
                             {ecs_runtime::WorldStateCommandKind::Failed});
                     }
-                    Event ev;
-                    ev.type    = EventType::BakeError;
+                    events::BakeError ev;
                     ev.code    = BakeErrorCode::OutOfMemory;
                     ev.message = "std::bad_alloc";
-                    emit_event(std::move(ev));
+                    hub_.emit(std::move(ev));
                 } catch (std::exception& e) {
                     if (!cmd.token || !cmd.token->is_cancelled()) {
                         ecs_runtime.enqueue_world_state(
                             {ecs_runtime::WorldStateCommandKind::Failed});
                     }
-                    Event ev;
-                    ev.type    = EventType::BakeError;
+                    events::BakeError ev;
                     ev.code    = BakeErrorCode::Internal;
                     ev.message = e.what();
-                    emit_event(std::move(ev));
+                    hub_.emit(std::move(ev));
                 }
                 bake_active.store(false, std::memory_order_release);
                 continue;
@@ -823,15 +934,14 @@ void WorldSession::Impl::worker_loop() {
                    streaming::detail::IdleWorkerFailure failure,
                    const char* message) {
                     auto& self = *static_cast<WorldSession::Impl*>(opaque);
-                    Event event;
-                    event.type = EventType::BakeError;
+                    events::BakeError event;
                     event.code = failure ==
                             streaming::detail::IdleWorkerFailure::OutOfMemory
                         ? BakeErrorCode::OutOfMemory
                         : BakeErrorCode::Internal;
                     event.phase = "stream";
                     event.message = message;
-                    self.emit_event(std::move(event));
+                    self.hub_.emit(std::move(event));
                 });
             if (refine_ctrl) execute_refine_step();
             continue;
@@ -865,9 +975,7 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
     ecs_runtime.enqueue_world_state(
         {ecs_runtime::WorldStateCommandKind::Loading});
     {
-        Event ev;
-        ev.type = EventType::BakeStarted;
-        emit_event(std::move(ev));
+        hub_.emit(events::BakeStarted{});
     }
 
     // Emit-a-BakeError helper (worker-side, so all call sites just tag phase).
@@ -876,12 +984,11 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
             ecs_runtime.enqueue_world_state(
                 {ecs_runtime::WorldStateCommandKind::Failed});
         }
-        Event ev;
-        ev.type    = EventType::BakeError;
+        events::BakeError ev;
         ev.code    = code;
         ev.phase   = phase;
         ev.message = msg;
-        emit_event(std::move(ev));
+        hub_.emit(std::move(ev));
     };
 
     // 2) Build a fresh provider and install the part graph --------------------
@@ -915,15 +1022,14 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
 
     // Install-phase on_part carries phase="install" (total==0, indeterminate).
     cfg.on_part = [this](const char* module, int done, int total) {
-        Event ev;
-        ev.type   = EventType::BakePartDone;
+        events::BakePartDone ev;
         ev.module = module ? module : "";
         ev.done   = done;
         ev.total  = total;
         // total==0 => install phase; total>0 => fetch/parts phase.
         // Distinguish by total: install fires with 0, per-part with want.size().
         ev.phase  = (total == 0) ? "install" : "parts";
-        emit_event(std::move(ev));
+        hub_.emit(std::move(ev));
     };
     // Bind gpu_run to marshal tileset GL work to the app thread via gpu_jobs.
     cfg.gpu_run = [this, token](const char* name,
@@ -1079,13 +1185,12 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         // Emit per-part errors for any parts that failed during install.
         for (const auto& fp : provider->install_result().failed) {
             BakeErrorCode code = classify_error(fp.error);
-            Event ev;
-            ev.type    = EventType::BakeError;
+            events::BakeError ev;
             ev.code    = code;
             ev.phase   = "install";
             ev.module  = fp.module;
             ev.message = fp.error;
-            emit_event(std::move(ev));
+            hub_.emit(std::move(ev));
             ++count_errors;
         }
     }
@@ -1242,12 +1347,11 @@ void WorldSession::Impl::publish_pipeline(
             ecs_runtime.enqueue_world_state(
                 {ecs_runtime::WorldStateCommandKind::Failed});
         }
-        Event ev;
-        ev.type    = EventType::BakeError;
+        events::BakeError ev;
         ev.code    = code;
         ev.phase   = phase;
         ev.message = msg;
-        emit_event(std::move(ev));
+        hub_.emit(std::move(ev));
     };
 
     const std::string& pfx = p.job_prefix;
@@ -1530,13 +1634,12 @@ void WorldSession::Impl::publish_pipeline(
                 if (berr.find("not in bake plan") == std::string::npos) {
                     std::string part_module_b;
                     { auto it = mod_by_hash.find(h); if (it != mod_by_hash.end()) part_module_b = it->second; }
-                    Event bev;
-                    bev.type    = EventType::BakeError;
+                    events::BakeError bev;
                     bev.code    = classify_error(berr);
                     bev.phase   = "parts";
                     bev.module  = part_module_b;
                     bev.message = berr;
-                    emit_event(std::move(bev));
+                    hub_.emit(std::move(bev));
                     ++bake_fail_count;
                 }
                 // Skip GPU job for this part (artifact missing)
@@ -1629,8 +1732,7 @@ void WorldSession::Impl::publish_pipeline(
         // total = publish_order.size() at emit time — may grow between events
         // as FlatInstanceRefs are discovered (see events.h).
         {
-            Event ev;
-            ev.type   = EventType::BakePartDone;
+            events::BakePartDone ev;
             // mod_by_hash is seeded from graph-known roots only; ref-streamed
             // children publish with module="" (no provider API to look them up).
             auto it   = mod_by_hash.find(h);
@@ -1638,7 +1740,7 @@ void WorldSession::Impl::publish_pipeline(
             ev.done   = (int)(i + 1);
             ev.total  = (int)publish_order.size();
             ev.phase  = "parts";
-            emit_event(std::move(ev));
+            hub_.emit(std::move(ev));
         }
 
         if (part_bake_failed) continue;  // skip GPU job for this part
@@ -1670,7 +1772,7 @@ void WorldSession::Impl::publish_pipeline(
             // inject deterministic faults. On any failure: emit a BakeError,
             // increment load_fail_count, and return true-with-skip (do NOT
             // publish the delta; do not abort the job pipeline).
-            // emit_event is mutex-guarded so calling from the GL thread is safe.
+            // hub_.emit is thread-safe so calling from the GL thread is safe.
             BakeErrorCode fail_code = BakeErrorCode::IoError;
             std::string   fail_msg;
             bool          part_failed = false;
@@ -1695,13 +1797,12 @@ void WorldSession::Impl::publish_pipeline(
             }
 
             if (part_failed) {
-                Event bev;
-                bev.type    = EventType::BakeError;
+                events::BakeError bev;
                 bev.code    = fail_code;
                 bev.phase   = "parts";
                 bev.module  = part_module;
                 bev.message = fail_msg;
-                emit_event(std::move(bev));
+                hub_.emit(std::move(bev));
                 ++cap_state->load_fail_count;
                 return true;   // skip-and-continue: pipeline keeps running
             }
@@ -1810,10 +1911,9 @@ void WorldSession::Impl::publish_pipeline(
 
     // 8) BakeFinished.
     {
-        Event ev;
-        ev.type   = EventType::BakeFinished;
+        events::BakeFinished ev;
         ev.errors = count_errors;
-        emit_event(std::move(ev));
+        hub_.emit(std::move(ev));
     }
 
     // 9) Deferred tileset phase (Task 15): runs after BakeFinished so silhouette
@@ -1825,24 +1925,22 @@ void WorldSession::Impl::publish_pipeline(
     //    connect() sync path — LocalProvider::connect — where callers need the full world.)
     if (p.provider_ref) {
         auto tileset_on_part = [this, &pfx](int done, int total, const char* module) {
-            Event ev;
-            ev.type   = EventType::BakePartDone;
+            events::BakePartDone ev;
             ev.phase  = "tileset";
             ev.module = module ? module : "";
             ev.done   = done;
             ev.total  = total;
-            emit_event(std::move(ev));
+            hub_.emit(std::move(ev));
         };
         std::string terr;
         if (!p.provider_ref->run_tileset_deferred(tileset_on_part, is_cancelled, terr)) {
             if (!is_cancelled()) {
                 // Non-fatal: emit BakeError but the world is already rendering.
-                Event ev;
-                ev.type    = EventType::BakeError;
+                events::BakeError ev;
                 ev.code    = classify_error(terr);
                 ev.phase   = "tileset";
                 ev.message = terr;
-                emit_event(std::move(ev));
+                hub_.emit(std::move(ev));
             }
         }
     }
@@ -1973,15 +2071,13 @@ void WorldSession::Impl::execute_refine_step() {
             if (r == 1) {
                 // Swap succeeded — promote tile to Full and report progress.
                 refine_ctrl->mark(ti, matter_refine::TileRecord::State::Full);
-                Event ev;
-                ev.type    = EventType::RefineTileDone;
+                events::RefineTileDone ev;
                 ev.module  = "Terrain";
                 ev.done    = (int)refine_ctrl->full_count();
                 ev.total   = (int)tile_count;
-                ev.phase   = "refine";
                 ev.tile_tx = ev_tx;
                 ev.tile_tz = ev_tz;
-                emit_event(std::move(ev));
+                hub_.emit(std::move(ev));
             } else {
                 // Swap failed (get_or_load returned null) — leave Coarse for retry.
                 fprintf(stderr, "[refine] upgrade GL job failed for tile (%d,%d) — "
@@ -2058,15 +2154,13 @@ void WorldSession::Impl::execute_refine_step() {
             gpu_jobs.post(std::move(ej));
 
             // Emit RefineTileDone with the new (decremented) done count.
-            Event ev;
-            ev.type    = EventType::RefineTileDone;
+            events::RefineTileDone ev;
             ev.module  = "Terrain";
             ev.done    = (int)done_after;
             ev.total   = (int)tile_count;
-            ev.phase   = "refine";
             ev.tile_tx = ev_tx_e;
             ev.tile_tz = ev_tz_e;
-            emit_event(std::move(ev));
+            hub_.emit(std::move(ev));
         }
     }
 
@@ -2292,12 +2386,11 @@ bool WorldSession::Impl::install_world(
             std::ifstream in(child_js, std::ios::binary);
             if (!in) {
                 fprintf(stderr, "install_world: cannot read child %s (skipping)\n", child_js.c_str());
-                Event ev;
-                ev.type = EventType::BakeError;
+                events::BakeError ev;
                 ev.code = BakeErrorCode::ScriptError;
                 ev.phase = "install";
                 ev.message = "cannot read child " + child_js;
-                emit_event(std::move(ev));
+                hub_.emit(std::move(ev));
                 return false;
             }
             std::ostringstream ss; ss << in.rdbuf();
@@ -2335,12 +2428,11 @@ bool WorldSession::Impl::install_world(
                     kid_hashes, kid_modules, kid_params, hash)) {
                 fprintf(stderr, "install_world: bake failed for %s (skipping)\n",
                         module.c_str());
-                Event ev;
-                ev.type = EventType::BakeError;
+                events::BakeError ev;
                 ev.code = BakeErrorCode::ScriptError;
                 ev.phase = "install";
                 ev.message = "bake failed for " + module + " params=" + params_json;
-                emit_event(std::move(ev));
+                hub_.emit(std::move(ev));
                 return false;
             }
             // W5 (Part Workbench, static lods): must run BEFORE bake_lod_variants
@@ -2866,14 +2958,13 @@ void WorldSession::Impl::execute_sector_stream_step() {
     coordinator.worker_step();
     std::string eviction_error;
     if (!drain_sector_evictions(/*require_empty=*/false, eviction_error)) {
-        Event event;
-        event.type = EventType::BakeError;
+        events::BakeError event;
         event.code = BakeErrorCode::GpuError;
         event.phase = "stream";
         event.message = eviction_error.empty()
             ? "sector eviction failed"
             : eviction_error;
-        emit_event(std::move(event));
+        hub_.emit(std::move(event));
         return;
     }
     if (!provider || !world_field) return;
@@ -2948,24 +3039,22 @@ void WorldSession::Impl::execute_sector_stream_step() {
                 completion_index, /*rollback_complete=*/true,
                 /*published=*/false);
             tracked_guard.disarm();
-            Event ev;
-            ev.type = EventType::BakeError;
+            events::BakeError ev;
             ev.code = BakeErrorCode::ScriptError;
             ev.phase = "stream";
             ev.message = exception.what();
-            emit_event(std::move(ev));
+            hub_.emit(std::move(ev));
             continue;
         } catch (...) {
             mark_publication_for_retry(
                 completion_index, /*rollback_complete=*/true,
                 /*published=*/false);
             tracked_guard.disarm();
-            Event ev;
-            ev.type = EventType::BakeError;
+            events::BakeError ev;
             ev.code = BakeErrorCode::ScriptError;
             ev.phase = "stream";
             ev.message = "unknown sector bake failure";
-            emit_event(std::move(ev));
+            hub_.emit(std::move(ev));
             continue;
         }
 
@@ -2978,12 +3067,11 @@ void WorldSession::Impl::execute_sector_stream_step() {
                 /*published=*/false);
             tracked_guard.disarm();
 
-            Event ev;
-            ev.type    = EventType::BakeError;
+            events::BakeError ev;
             ev.code    = BakeErrorCode::ScriptError;
             ev.phase   = "stream";
             ev.message = br.error.message;
-            emit_event(std::move(ev));
+            hub_.emit(std::move(ev));
             continue;
         }
 
@@ -2993,12 +3081,11 @@ void WorldSession::Impl::execute_sector_stream_step() {
                 completion_index, /*rollback_complete=*/false,
                 /*published=*/false);
             tracked_guard.disarm();
-            Event ev;
-            ev.type = EventType::BakeError;
+            events::BakeError ev;
             ev.code = BakeErrorCode::GpuError;
             ev.phase = "stream";
             ev.message = "sector publication artifact retention failed";
-            emit_event(std::move(ev));
+            hub_.emit(std::move(ev));
             continue;
         }
         tracked_guard.disarm();
@@ -3027,8 +3114,7 @@ void WorldSession::Impl::execute_sector_stream_step() {
                     [this](const char* message,
                            const std::string& detail) noexcept {
                     try {
-                        Event event;
-                        event.type = EventType::BakeError;
+                        events::BakeError event;
                         event.code = BakeErrorCode::GpuError;
                         event.phase = "stream";
                         event.message = message;
@@ -3036,7 +3122,7 @@ void WorldSession::Impl::execute_sector_stream_step() {
                             event.message += ": cleanup pending: ";
                             event.message += detail;
                         }
-                        emit_event(std::move(event));
+                        hub_.emit(std::move(event));
                     } catch (...) {
                     }
                 };
@@ -3174,22 +3260,20 @@ void WorldSession::Impl::execute_sector_stream_step() {
             mark_publication_for_retry(
                 completion_index, /*rollback_complete=*/false,
                 /*published=*/false);
-            Event event;
-            event.type = EventType::BakeError;
+            events::BakeError event;
             event.code = BakeErrorCode::GpuError;
             event.phase = "stream";
             event.message = exception.what();
-            emit_event(std::move(event));
+            hub_.emit(std::move(event));
         } catch (...) {
             mark_publication_for_retry(
                 completion_index, /*rollback_complete=*/false,
                 /*published=*/false);
-            Event event;
-            event.type = EventType::BakeError;
+            events::BakeError event;
             event.code = BakeErrorCode::GpuError;
             event.phase = "stream";
             event.message = "unknown sector publication post failure";
-            emit_event(std::move(event));
+            hub_.emit(std::move(event));
         }
     }
 
@@ -3198,14 +3282,13 @@ void WorldSession::Impl::execute_sector_stream_step() {
     coordinator.worker_step();
     eviction_error.clear();
     if (!drain_sector_evictions(/*require_empty=*/false, eviction_error)) {
-        Event event;
-        event.type = EventType::BakeError;
+        events::BakeError event;
         event.code = BakeErrorCode::GpuError;
         event.phase = "stream";
         event.message = eviction_error.empty()
             ? "sector replacement eviction failed"
             : eviction_error;
-        emit_event(std::move(event));
+        hub_.emit(std::move(event));
         return;
     }
 
@@ -3216,10 +3299,9 @@ void WorldSession::Impl::execute_sector_stream_step() {
         snapshot.status.resident_sectors > 0 &&
         snapshot.status.inflight_sectors == 0) {
         world_initial_load_done = true;
-        Event ev;
-        ev.type   = EventType::BakeFinished;
+        events::BakeFinished ev;
         ev.errors = 0;
-        emit_event(std::move(ev));
+        hub_.emit(std::move(ev));
     }
 }
 
@@ -3250,19 +3332,16 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
             ecs_runtime.enqueue_world_state(
                 {ecs_runtime::WorldStateCommandKind::Failed});
         }
-        Event ev;
-        ev.type    = EventType::BakeError;
+        events::BakeError ev;
         ev.code    = code;
         ev.phase   = phase;
         ev.message = msg;
-        emit_event(std::move(ev));
+        hub_.emit(std::move(ev));
     };
 
     // 0) Announce start.
     {
-        Event ev;
-        ev.type = EventType::BakeStarted;
-        emit_event(std::move(ev));
+        hub_.emit(events::BakeStarted{});
     }
 
     if (is_cancelled()) {
@@ -3310,13 +3389,12 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
                 code = BakeErrorCode::Internal;
             else
                 code = BakeErrorCode::ScriptError;
-            Event ev;
-            ev.type    = EventType::BakeError;
+            events::BakeError ev;
             ev.code    = code;
             ev.phase   = "cone";
             ev.module  = e.part;
             ev.message = e.message;
-            emit_event(std::move(ev));
+            hub_.emit(std::move(ev));
         }
         return;  // old world keeps rendering
     }
@@ -3331,13 +3409,12 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
     //    cache; re-install is cheap because all parts are now cache hits.
     //    Refresh cfg_ callbacks with the cone command's token before re-installing.
     cfg.on_part = [this](const char* module, int done, int total) {
-        Event ev;
-        ev.type   = EventType::BakePartDone;
+        events::BakePartDone ev;
         ev.module = module ? module : "";
         ev.done   = done;
         ev.total  = total;
         ev.phase  = (total == 0) ? "install" : "parts";
-        emit_event(std::move(ev));
+        hub_.emit(std::move(ev));
     };
     cfg.gpu_run = [this, token](const char* name,
                                 std::function<bool(std::string&)> fn,
@@ -3387,13 +3464,12 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
         // Emit per-part errors for any partial install failures.
         for (const auto& fp : provider->install_result().failed) {
             BakeErrorCode code = classify_error(fp.error);
-            Event ev;
-            ev.type    = EventType::BakeError;
+            events::BakeError ev;
             ev.code    = code;
             ev.phase   = "cone";
             ev.module  = fp.module;
             ev.message = fp.error;
-            emit_event(std::move(ev));
+            hub_.emit(std::move(ev));
         }
     }
 
@@ -3673,6 +3749,14 @@ WorldSession::~WorldSession() {
     // coordinator intent so persistent cleanup faults cannot block destruction.
     impl_->terminal_streaming_teardown_noexcept();
     if (!gpu_queue_shutdown) impl_->gpu_jobs.shut_down();
+
+    // E3 close ordering (event-system.md S I.13): every emitter has now been
+    // stopped/joined — the worker is joined above and gpu_jobs is shut down, so
+    // no publish-job lambda can still emit on this (app/GL) thread. Close the
+    // hub here: it cancels any queued legacy-lane envelopes and waits for any
+    // in-flight callbacks, BEFORE the remaining session state is destroyed and
+    // before ~Impl runs hub_'s own defensive close.
+    impl_->hub_.close();
 
 #ifdef MATTER_VULKAN_VIEWER
     impl_->vk_instance_cache.invalidate();
@@ -4636,14 +4720,18 @@ void WorldSession::render(const CameraDesc&, int, int, const RenderOptions&) {
 #endif
 
 bool WorldSession::poll_event(Event& out) {
-    // Phase B: worker thread pushes into `events` under events_mutex; the
-    // consumer (app thread) drains here under the same lock.
-    std::lock_guard<std::mutex> lk(impl_->events_mutex);
-    if (impl_->events.empty()) return false;
-    out = std::move(impl_->events.front());
-    impl_->events.pop_front();
-    return true;
+    // E3 compat shim (event-system.md S I.11 / S II.4 item 6): the worker/GL
+    // threads emit typed bake/stream events onto the session hub; a private
+    // subscription set on the dedicated lane::legacy_poll converts each back
+    // into a legacy matter::Event. This call owns that lane, pump_one()s it,
+    // and returns exactly one converted Event per call (or false when empty) —
+    // preserving the pre-E3 one-event-per-call FIFO drain WITHOUT depending on
+    // any frame-loop app-lane pump (E4 adds that; this must work standalone).
+    return impl_->poll_legacy_event(out);
 }
+
+evt::Hub& WorldSession::events() { return impl_->hub_; }
+const evt::Hub& WorldSession::events() const { return impl_->hub_; }
 
 const FrameStats& WorldSession::frame_stats() const {
     return impl_->stats;
@@ -4660,12 +4748,11 @@ void WorldSession::pump_gpu_jobs(float ms_budget) {
     if (!impl_->retry_publication_completions(completion_error) &&
         !completion_error.empty()) {
         try {
-            Event event;
-            event.type = EventType::BakeError;
+            events::BakeError event;
             event.code = BakeErrorCode::GpuError;
             event.phase = "stream";
             event.message = completion_error;
-            impl_->emit_event(std::move(event));
+            impl_->hub_.emit(std::move(event));
         } catch (...) {
         }
     }

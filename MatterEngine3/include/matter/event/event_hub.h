@@ -351,6 +351,15 @@ public:
     // -------------------------------------------------------------
     int pump(lane ln, double ms_budget);
 
+    // Owner thread only (claim_lane first): deliver AT MOST ONE queued
+    // envelope from lane `ln`. Returns 1 if one was dispatched, 0 if the
+    // lane was empty. Mirrors Channel<T>::pump_one — the one-per-call drain
+    // the E3 legacy poll_event shim needs (S I.11 / S II.4 item 6): it
+    // owns lane::legacy_poll and pump_one()s it so the legacy API keeps its
+    // one-event-per-call FIFO semantics WITHOUT depending on the E4
+    // frame-loop app-lane pump.
+    int pump_one(lane ln);
+
     // Registers the calling thread as lane `ln`'s owner.
     void claim_lane(lane ln);
 

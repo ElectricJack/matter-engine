@@ -771,6 +771,9 @@ GPU_RENDER_CPP = \
     ../src/render/tileset_provider.cpp ../src/render/tileset_gl_ctx.cpp \
     ../src/provider/local_provider.cpp ../src/provider/resolvers.cpp \
     ../src/matter_engine.cpp \
+    ../src/event/event_hub.cpp \
+    ../src/event/subscription.cpp \
+    ../src/event/dispatch_context.cpp \
     ../src/live_edit.cpp \
     ../src/live_edit_prod.cpp \
     ../src/inotify_watcher.cpp \

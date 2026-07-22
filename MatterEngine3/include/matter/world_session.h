@@ -19,6 +19,8 @@
 #include "bake_trace.h"   // bake_trace::Span — see last_bake_trace()
 #include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
 
+namespace matter::evt { class Hub; }
+
 namespace matter {
 
 struct VulkanFrame;
@@ -191,6 +193,17 @@ public:
     void set_bake_focus(const float pos[3]);
 
     bool poll_event(Event& out);       // drain one; loop until false
+
+    // The per-session event hub (event-system.md S I.13: one hub per
+    // WorldSession, lifetime = session lifetime — the returned reference is
+    // valid only until this session is closed/replaced). Bake/stream
+    // progress is emitted here as typed events (matter/events/*.h); the
+    // legacy poll_event() above is a compat shim over a private
+    // lane::legacy_poll subscription set (S I.11 / S II.4 item 6).
+    // New subscribers register directly against this hub.
+    evt::Hub& events();
+    const evt::Hub& events() const;
+
     const FrameStats& frame_stats() const;
     // Copied coordinator state; no streamer or render-resource state crosses
     // the worker/app boundary.

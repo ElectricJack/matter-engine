@@ -183,6 +183,9 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/render/dynamic_instance_slots.cpp \
               $(ME3_DIR)/src/streaming/sector_streaming_coordinator.cpp \
               $(ME3_DIR)/src/matter_engine.cpp \
+              $(ME3_DIR)/src/event/event_hub.cpp \
+              $(ME3_DIR)/src/event/subscription.cpp \
+              $(ME3_DIR)/src/event/dispatch_context.cpp \
               $(ME3_DIR)/src/bake_trace.cpp \
               $(ME3_DIR)/src/pf_bindings.cpp \
               ../ParticleFlowLib/src/pf_math.cpp \
@@ -251,7 +254,7 @@ PIPC_NAMES_WIN = $(notdir $(WIN_PIPELINE_C))
 FLECS_NAME = $(notdir $(FLECS_C))
 
 vpath %.cpp . $(ME3_DIR)/src $(ME3_DIR)/src/render $(ME3_DIR)/src/provider $(ME3_DIR)/src/ecs \
-             $(ME3_DIR)/src/streaming $(ME3_DIR)/src/script \
+             $(ME3_DIR)/src/streaming $(ME3_DIR)/src/script $(ME3_DIR)/src/event \
              $(MSL_DIR)/src $(IMGUI_PATH) $(IMGUI_PATH)/backends \
              $(IMGUIZMO_PATH) \
              ../ParticleFlowLib/src

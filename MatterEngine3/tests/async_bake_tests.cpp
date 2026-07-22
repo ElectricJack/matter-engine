@@ -23,12 +23,19 @@
 #include "bake_trace.h"
 #include "bake_trace_names.h"
 
+// E3: the session event hub + typed bake events, for the poll_event parity
+// / no-frame-pump test (test_e3_poll_event_typed_parity).
+#include "matter/event/event_hub.h"
+#include "matter/events/bake_events.h"
+#include "matter/events/stream_events.h"
+
 #include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <sstream>
 #include <stdexcept>
@@ -1329,6 +1336,148 @@ static bool test_regenerate_seed_reroll(const std::string& sandbox) {
     return ok1 && ok2 && ok3 && pb1 >= 1 && pb2 >= 1 && pb3 == 0 && ch3 >= 1;
 }
 
+// --- (m) E3 — poll_event typed-parity + no-frame-pump shim -------------------
+// Proves the E3 legacy compat shim (event-system.md S I.11 / S II.4 item 6):
+//   1. The ~40 emit sites now emit TYPED events onto the session hub; a typed
+//      subscriber added via WorldSession::events() observes them.
+//   2. poll_event() returns the identical legacy Event sequence — one per call,
+//      FIFO (BakeStarted -> BakePartDone... -> BakeFinished) — reconstructed
+//      losslessly from the typed events by the private lane::legacy_poll subs.
+//   3. It works with NO frame-loop app-lane pump: the drive loop below calls
+//      ONLY pump_gpu_jobs (GL work) and poll_event — never hub.pump(lane::app),
+//      which E4 adds. poll_event owns and pump_one()s lane::legacy_poll itself.
+static bool test_e3_poll_event_typed_parity(const std::string& sandbox) {
+    printf("-- (m) e3_poll_event_typed_parity\n");
+    reset_cache(sandbox, "Box");
+    std::string err;
+    std::string cache_root_s = (fs::path(sandbox) / ".cache").string();
+    matter::EngineDesc ed;
+    ed.cache_root     = cache_root_s.c_str();
+    ed.allow_gl_lt_46 = true;
+    auto engine = matter::EngineContext::create(ed, err);
+    CHECK(engine != nullptr, "e3: engine created");
+    if (!engine) return false;
+    matter::WorldDesc wd = project_world_desc(sandbox, "Box");
+    auto s = engine->open_world(wd, err);
+    CHECK(s != nullptr, "e3: session opened");
+    if (!s) return false;
+
+    // Immediate typed subscribers on the SAME session hub the legacy shim
+    // drains. Immediate delivery runs on the emitter thread and observes every
+    // emit; the Box fixture is a clean happy-path world whose bake events are
+    // all emitted serially on the worker thread, so the immediate order equals
+    // the FIFO order poll_event drains. Collect the same 5 fields drive_bake
+    // records (type/module/done/total/phase) so the two streams are comparable.
+    std::mutex tmu;
+    std::vector<EvRec> typed_seq;
+    auto push_typed = [&](const EvRec& r) {
+        std::lock_guard<std::mutex> lk(tmu);
+        typed_seq.push_back(r);
+    };
+    matter::evt::SubscriptionSet subs;
+    subs += s->events().must_subscribe<matter::events::BakeStarted>(
+        "test.e3.started", matter::evt::immediate,
+        [&](const matter::events::BakeStarted&) {
+            EvRec r; r.type = (int)matter::EventType::BakeStarted; push_typed(r);
+        });
+    subs += s->events().must_subscribe<matter::events::BakePartDone>(
+        "test.e3.part_done", matter::evt::immediate,
+        [&](const matter::events::BakePartDone& e) {
+            EvRec r; r.type = (int)matter::EventType::BakePartDone;
+            r.module = e.module; r.done = e.done; r.total = e.total; r.phase = e.phase;
+            push_typed(r);
+        });
+    subs += s->events().must_subscribe<matter::events::BakeFinished>(
+        "test.e3.finished", matter::evt::immediate,
+        [&](const matter::events::BakeFinished&) {
+            EvRec r; r.type = (int)matter::EventType::BakeFinished; push_typed(r);
+        });
+    subs += s->events().must_subscribe<matter::events::BakeError>(
+        "test.e3.error", matter::evt::immediate,
+        [&](const matter::events::BakeError& e) {
+            EvRec r; r.type = (int)matter::EventType::BakeError;
+            r.module = e.module; r.phase = e.phase; push_typed(r);
+        });
+
+    // The hub is wired (registry sees the legacy_poll + test subscribers).
+    CHECK(!s->events().registry_snapshot().empty(),
+          "e3: registry_snapshot non-empty (session hub wired)");
+
+    s->request_bake();
+
+    // Drive to completion with ONLY pump_gpu_jobs + poll_event (NO app-lane
+    // pump anywhere — the S II.4 item 6 standalone proof). Count polls to prove
+    // one-event-per-call.
+    std::vector<EvRec> legacy_seq;
+    int  poll_returns = 0;
+    bool finished = false;
+    auto deadline = clk::now() + std::chrono::seconds(60);
+    while (clk::now() < deadline && !finished) {
+        s->pump_gpu_jobs(4.0f);
+        matter::Event ev;
+        bool any = false;
+        while (s->poll_event(ev)) {
+            any = true;
+            ++poll_returns;
+            EvRec r;
+            r.type = (int)ev.type; r.module = ev.module;
+            r.done = ev.done; r.total = ev.total; r.phase = ev.phase;
+            legacy_seq.push_back(r);
+            if (ev.type == matter::EventType::BakeFinished) { finished = true; break; }
+            if (ev.type == matter::EventType::BakeError)
+                printf("  e3 BakeError phase=%s msg=%s\n", ev.phase.c_str(), ev.message.c_str());
+        }
+        if (!any && !finished) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+
+    CHECK(finished, "e3: BakeFinished arrived via poll_event with NO app-lane pump");
+    CHECK(poll_returns == (int)legacy_seq.size(),
+          "e3: poll_event is one-event-per-call (poll count == events drained)");
+    CHECK(!legacy_seq.empty() &&
+          legacy_seq.front().type == (int)matter::EventType::BakeStarted,
+          "e3: legacy sequence starts with BakeStarted");
+    CHECK(!legacy_seq.empty() &&
+          legacy_seq.back().type == (int)matter::EventType::BakeFinished,
+          "e3: legacy sequence ends with BakeFinished");
+    int legacy_parts = 0;
+    for (const auto& r : legacy_seq)
+        if (r.type == (int)matter::EventType::BakePartDone && r.phase == "parts")
+            ++legacy_parts;
+    CHECK(legacy_parts >= 1, "e3: legacy sequence has >=1 BakePartDone(parts)");
+
+    // Cross-thread owner barrier: the immediate lambdas capture test locals, so
+    // quiesce them before comparing / tearing down (event-system.md S I.5/I.6).
+    subs.unsubscribe_all_and_wait();
+
+    // Compare the typed-subscriber stream to the legacy poll stream, both
+    // truncated at the first BakeFinished (post-finished deferred tileset events
+    // are excluded from both). Field-identical == proof the typed events carry
+    // exactly what the legacy Event needed AND that a hub subscriber sees the
+    // same sequence poll_event returns.
+    std::vector<EvRec> typed_trunc;
+    {
+        std::lock_guard<std::mutex> lk(tmu);
+        for (const auto& r : typed_seq) {
+            typed_trunc.push_back(r);
+            if (r.type == (int)matter::EventType::BakeFinished) break;
+        }
+    }
+    CHECK(typed_trunc.size() == legacy_seq.size(),
+          "e3: typed subscriber saw the same number of events as poll_event");
+    bool elementwise = typed_trunc.size() == legacy_seq.size();
+    for (size_t i = 0; elementwise && i < legacy_seq.size(); ++i) {
+        const auto& a = typed_trunc[i];
+        const auto& b = legacy_seq[i];
+        if (a.type != b.type || a.module != b.module || a.done != b.done ||
+            a.total != b.total || a.phase != b.phase)
+            elementwise = false;
+    }
+    CHECK(elementwise,
+          "e3: typed-subscriber sequence == legacy poll_event sequence (field-identical)");
+
+    return finished;
+}
+
 int main() {
     // Unique writable sandbox so parallel test runs do not collide.
     const auto stamp = std::chrono::high_resolution_clock::now()
@@ -1368,6 +1517,11 @@ int main() {
 
     // Task 7 (Phase C): regenerate(seed) — root param override reload.
     test_regenerate_seed_reroll(sandbox);
+
+    // E3 milestone (event-system.md): typed bake events + legacy poll_event
+    // shim over lane::legacy_poll. Runs LAST so it cannot perturb any prior
+    // test's cache/state assumptions.
+    test_e3_poll_event_typed_parity(sandbox);
 
     printf(g_failures ? "\n%d FAILURE(S)\n" : "\nALL PASS\n", g_failures);
     // Best-effort cleanup of the writable temporary project.
