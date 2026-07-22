@@ -32,7 +32,7 @@ layout(set = TILESET_SET, binding = TILESET_PARAMS_BINDING, std140)
     vec4 height_max;
     vec4 mean_albedo[4];         // rgb + valid
     vec4 pom_a;                  // steps, refine_steps, max_distance_m, fade_band_m
-    vec4 pom_b;                  // detail_fade_center_m, detail_fade_width_m, pom_max_relief_m, pad
+    vec4 pom_b;                  // detail_fade_center_m, detail_fade_width_m, pom_max_relief_m, pom_max_march_m
     // Task 11: direction-to-sun (normalized, world space; xyz) + sun_intensity
     // (w). Uploaded per-frame from the renderer's lighting state (see
     // VkSceneRenderer::set_lighting / write_tileset_params_buffer). y <= 0.0
@@ -198,9 +198,17 @@ vec3 tileset_pom_march(int slot, vec3 ray_origin, vec3 ray_dir,
     float relief = min(h_range, max(tileset.pom_b.z, 1e-4));
 
     // Grazing clamp: never let the effective per-step travel distance blow
-    // up as the view ray approaches tangent to the surface.
+    // up as the view ray approaches tangent to the surface. On top of the
+    // 0.08 cosine floor, cap the TOTAL march length at pom_b.w
+    // (pom_max_march_m): without the cap a near-tangent ray still travels
+    // relief/0.08 (~2 m) laterally, sampling texels meters away from the
+    // fragment and smearing the grazing ground into a structureless band.
+    // The cap bounds the lateral parallax offset; rays that never cross the
+    // relief within the cap return the capped end point below (continuous
+    // with neighboring rays that cross just inside the cap).
     float cos_theta = max(abs(dot(ray_dir, plane_n)), 0.08);
-    vec3 step_v = ray_dir * (relief / cos_theta / float(steps));
+    float march_len = min(relief / cos_theta, max(tileset.pom_b.w, 1e-4));
+    vec3 step_v = ray_dir * (march_len / float(steps));
 
     vec3 p = plane_point;
     vec3 prev_p = p;
@@ -291,7 +299,11 @@ float tileset_self_shadow(int slot, vec3 hit_point, vec3 plane_point,
         float clearance = ray_h - tex_h;   // >= 0 clear of the relief, < 0 occluded
         min_clearance = min(min_clearance, clearance);
     }
-    float softness = max(relief / float(kShadowSteps), 1e-4);
+    // Softness: half a step's worth of relief. Halving the original
+    // relief/steps term doubles the shadow contrast — hollows whose rims
+    // block the sun by even a few centimeters now read as properly dark,
+    // which is most of what sells the recessed look at walk height.
+    float softness = max(0.5 * relief / float(kShadowSteps), 1e-4);
     return clamp(min_clearance / softness, 0.0, 1.0);
 }
 

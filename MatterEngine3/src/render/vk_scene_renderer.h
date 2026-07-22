@@ -770,7 +770,7 @@ private:
     // (MatterEngine3/shaders_vk/tileset_common.glsl's TilesetParams block
     // mirrors this: vec4 tile_size_m/texels_per_meter/height_min/height_max,
     // vec4 mean_albedo[4], vec4 pom_a{steps,refine,max_distance,fade_band},
-    // vec4 pom_b{fade_center,fade_width,pad,pad},
+    // vec4 pom_b{fade_center,fade_width,max_relief_m,max_march_m},
     // vec4 sun_dir_intensity{dir.xyz,intensity} (Phase 2 Task 11)). Every
     // group below is exactly 16 bytes so the natural C++ layout matches
     // std140 with no manual padding.
@@ -791,8 +791,15 @@ private:
         // marching the full range sinks the whole dirt floor by ~h_range —
         // deep stepped canyons. Parallax only needs ~10 cm to sell relief;
         // anything deeper is real-geometry territory.
-        float pom_max_relief_m = 0.12f;
-        float pad1 = 0.0f;
+        float pom_max_relief_m = 0.16f;
+        // Max total world-space march length (meters). Without this cap a
+        // near-tangent view ray marches relief/0.08 (~2 m) laterally and the
+        // grazing ground dissolves into a structureless smear of far-away
+        // texels; capping the march bounds the lateral offset parallax can
+        // ever produce. When the cap is exhausted without a relief crossing
+        // the march returns the capped end point (continuous with neighbors
+        // that crossed just before the cap).
+        float pom_max_march_m = 0.5f;
         // Task 11 (height self-shadow): direction-to-sun (normalized, world
         // space, matches the `to_sun` convention used by the RT shadow push
         // constants -- i.e. normalize(-VkSceneLighting::sun_direction)) and

@@ -413,8 +413,9 @@ using HeightFn = std::function<float(float x, float z)>;
 //   float h_range = height_max - height_min;
 //   if (h_range <= 0) return plane_point;               // flat: entry point
 //   vec3 p = plane_point;                                // enter at datum
-//   vec3 step_v = ray_dir * (h_range / max(|dot(ray_dir, plane_n)|, 0.08)
-//                            / steps);                    // grazing clamp
+//   float march_len = min(h_range / max(|dot(ray_dir, plane_n)|, 0.08),
+//                         max_march_m);                   // grazing clamp +
+//   vec3 step_v = ray_dir * (march_len / steps);          // total-length cap
 //   float prev_diff = 0; vec3 prev_p = p;
 //   for i in [0, steps):
 //     p += step_v;
@@ -439,7 +440,7 @@ using HeightFn = std::function<float(float x, float z)>;
 Vec3 tileset_pom_march_cpp(const HeightFn& height_fn, const Vec3& ray_origin,
                            const Vec3& ray_dir, const Vec3& plane_point,
                            const Vec3& plane_n, float h_range, int steps,
-                           int refine_steps) {
+                           int refine_steps, float max_march_m) {
     (void)ray_origin;
 
     // Flat height (relief == 0 everywhere) => returns the entry point exactly.
@@ -447,7 +448,14 @@ Vec3 tileset_pom_march_cpp(const HeightFn& height_fn, const Vec3& ray_origin,
 
     Vec3 p = plane_point;
     const float denom = std::max(std::fabs(dot(ray_dir, plane_n)), 0.08f);
-    const Vec3 step_v = ray_dir * (h_range / denom / (float)steps);
+    // Total-length cap (mirrors tileset.pom_b.w / pom_max_march_m): bounds
+    // the lateral parallax offset at grazing angles so near-tangent rays
+    // cannot sample texels meters away from the fragment. Rays that never
+    // cross the relief within the cap fall through to `return p` -- the
+    // capped end point, continuous with rays crossing just inside the cap.
+    const float march_len =
+        std::min(h_range / denom, std::max(max_march_m, 1e-4f));
+    const Vec3 step_v = ray_dir * (march_len / (float)steps);
 
     float prev_diff = 0.0f;
     Vec3 prev_p = p;
@@ -488,6 +496,10 @@ Vec3 tileset_pom_march_cpp(const HeightFn& height_fn, const Vec3& ray_origin,
 
 constexpr int kPomSteps = 24;
 constexpr int kPomRefineSteps = 4;
+// Mirrors TilesetParamsGpu::pom_max_march_m's default (0.5 m). Tests whose
+// natural march length (h_range / denom) is below this are unaffected by the
+// cap; the grazing test below exercises the capped branch explicitly.
+constexpr float kPomMaxMarchM = 0.5f;
 
 // -----------------------------------------------------------------------------
 // Test 1: flat heightfield -> hit == entry point (1e-5).
@@ -503,7 +515,7 @@ void test_pom_flat_height_returns_entry_point() {
     const Vec3 hit = tileset_pom_march_cpp(height_fn, plane_point, ray_dir,
                                            plane_point, plane_n,
                                            /*h_range=*/0.0f, kPomSteps,
-                                           kPomRefineSteps);
+                                           kPomRefineSteps, kPomMaxMarchM);
     CHECK(std::fabs(hit.x - plane_point.x) < 1e-5f &&
               std::fabs(hit.y - plane_point.y) < 1e-5f &&
               std::fabs(hit.z - plane_point.z) < 1e-5f,
@@ -541,7 +553,7 @@ void test_pom_step_trench_oblique_ray_matches_analytic() {
 
     const Vec3 hit = tileset_pom_march_cpp(height_fn, plane_point, ray_dir,
                                            plane_point, plane_n, h_range,
-                                           kPomSteps, kPomRefineSteps);
+                                           kPomSteps, kPomRefineSteps, kPomMaxMarchM);
 
     const float dist_to_analytic = length(hit - analytic_hit);
     CHECK(dist_to_analytic < step_len,
@@ -589,13 +601,13 @@ void test_pom_boundary_crossing_continuity() {
 
     const Vec3 hit_composite = tileset_pom_march_cpp(
         field_composite, plane_point, ray_dir, plane_point, plane_n, h_range,
-        kPomSteps, kPomRefineSteps);
+        kPomSteps, kPomRefineSteps, kPomMaxMarchM);
     const Vec3 hit_a = tileset_pom_march_cpp(field_a, plane_point, ray_dir,
                                              plane_point, plane_n, h_range,
-                                             kPomSteps, kPomRefineSteps);
+                                             kPomSteps, kPomRefineSteps, kPomMaxMarchM);
     const Vec3 hit_b = tileset_pom_march_cpp(field_b, plane_point, ray_dir,
                                              plane_point, plane_n, h_range,
-                                             kPomSteps, kPomRefineSteps);
+                                             kPomSteps, kPomRefineSteps, kPomMaxMarchM);
 
     CHECK(length(hit_composite - hit_a) < 1e-4f,
           "composite-field hit matches pure-A hit for a ray confined to the "
@@ -626,17 +638,22 @@ void test_pom_grazing_ray_clamped_and_finite() {
     const Vec3 hit = tileset_pom_march_cpp(height_fn, plane_point, ray_dir,
                                            plane_point, plane_n,
                                            /*h_range=*/0.1f, kPomSteps,
-                                           kPomRefineSteps);
+                                           kPomRefineSteps, kPomMaxMarchM);
     CHECK(std::isfinite(hit.x) && std::isfinite(hit.y) && std::isfinite(hit.z),
           "grazing ray march returns a finite position (0.08 clamp holds)");
 
-    // The clamp bounds step_v's length to h_range / 0.08 / steps regardless of
-    // how close to zero dot(ray_dir, plane_n) gets, so the total ray path
-    // length across all steps is bounded independent of grazing angle.
-    const float max_total_path = 0.1f / 0.08f;  // h_range / clamp_floor
+    // The cosine clamp bounds the natural march length to h_range / 0.08 and
+    // the total-length cap (kPomMaxMarchM) tightens it further: for this
+    // fixture h_range / 0.08 == 1.25 m > 0.5 m, so the cap is the binding
+    // constraint -- the lateral parallax offset a grazing ray can produce is
+    // bounded by pom_max_march_m, not by the (much larger) cosine-clamped
+    // length. This is the anti-smear guarantee.
+    CHECK(0.1f / 0.08f > kPomMaxMarchM,
+          "test fixture's natural march length actually exceeds the cap");
+    const float max_total_path = kPomMaxMarchM;
     const float path = length(hit - plane_point);
     CHECK(path <= max_total_path + 1e-4f,
-          "grazing ray's total marched path stays bounded by the 0.08 clamp");
+          "grazing ray's total marched path stays bounded by pom_max_march_m");
 }
 
 // -----------------------------------------------------------------------------
@@ -659,7 +676,7 @@ void test_pom_sloped_datum_plane() {
         const Vec3 hit = tileset_pom_march_cpp(flat_fn, plane_point, ray_dir,
                                                plane_point, plane_n,
                                                /*h_range=*/0.0f, kPomSteps,
-                                               kPomRefineSteps);
+                                               kPomRefineSteps, kPomMaxMarchM);
         CHECK(std::fabs(hit.x - plane_point.x) < 1e-5f &&
                   std::fabs(hit.y - plane_point.y) < 1e-5f &&
                   std::fabs(hit.z - plane_point.z) < 1e-5f,
@@ -686,7 +703,7 @@ void test_pom_sloped_datum_plane() {
 
         const Vec3 hit = tileset_pom_march_cpp(bump_fn, plane_point, ray_dir,
                                                plane_point, plane_n, h_range,
-                                               kPomSteps, kPomRefineSteps);
+                                               kPomSteps, kPomRefineSteps, kPomMaxMarchM);
 
         const float refine_tol = h_range * std::pow(2.0f, -(float)kPomRefineSteps);
         CHECK(length(hit - analytic_hit) < refine_tol,
