@@ -2020,6 +2020,12 @@ int main() {
     session.reset();
     ui.shutdown();
     engine.reset();
+    // Part Workbench (W2): the isolation session/engine own GPU resources tied
+    // to the shared VulkanDevice below. bake_lab is a stack local destroyed
+    // only when main() returns — i.e. AFTER vulkan.reset() — so release its
+    // session+engine explicitly here, while the device is still alive (and so
+    // any teardown validation errors are counted below).
+    bake_lab.workbench().close();
     const uint32_t validation_errors = vulkan->validation_error_count();
     vulkan.reset();
     glfwDestroyWindow(window);
