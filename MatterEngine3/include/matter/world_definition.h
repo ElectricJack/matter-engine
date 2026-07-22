@@ -72,14 +72,14 @@ struct TilesetPomSettings {
     // tile sample still applies either way -- only the parallax/self-shadow
     // displacement is gated.
     bool  enabled            = true;
-    float relief_cap_m       = 0.16f;   // pom_max_relief_m
-    float datum_bias_m       = 0.10f;   // NEW: see file comment above
-    float max_march_m        = 0.5f;    // pom_max_march_m
-    int   steps              = 24;      // pom_steps (linear march steps near camera)
-    float max_distance_m     = 25.0f;   // pom_max_distance_m
-    float fade_band_m        = 5.0f;    // pom_fade_band_m
-    float ao_strength        = 1.0f;    // baked-AO texel blend factor
-    float shadow_strength    = 1.0f;    // self-shadow blend factor
+    float relief_cap_m       = 0.178f;  // pom_max_relief_m
+    float datum_bias_m       = 0.105f;  // NEW: see file comment above
+    float max_march_m        = 0.73f;   // pom_max_march_m
+    int   steps              = 50;      // pom_steps (linear march steps near camera)
+    float max_distance_m     = 50.4f;   // pom_max_distance_m
+    float fade_band_m        = 1.0f;    // pom_fade_band_m
+    float ao_strength        = 0.63f;   // baked-AO texel blend factor
+    float shadow_strength    = 0.68f;   // self-shadow blend factor
 };
 
 struct WorldSettings {

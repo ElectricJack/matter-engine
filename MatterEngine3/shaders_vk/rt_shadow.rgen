@@ -5,6 +5,33 @@ layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
 layout(set = 0, binding = 1) uniform sampler2D depth_texture;
 layout(set = 0, binding = 2, rgba16f) uniform image2D visibility_image;
 
+// Ground-POM roof escape (mirrors rt_lighting.rgen's identical fix, see its
+// "Ground-POM roof escape" comment): rt_shadow is depth-only and has no
+// material context of its own, so it reuses two bindings that already exist
+// in the shared RT descriptor set (set 0) populated by
+// VkSceneRenderer::record_ray_trace_dispatch for rt_lighting.rgen -- binding
+// 4 (RT material table) and binding 11 (GBuffer identity/material-instance
+// attachment). Both are declared here as raygen-visible reads only; no
+// renderer-side descriptor-set changes were needed since the writes already
+// cover the RAYGEN stage for these bindings.
+struct RtMaterialGpu {
+    vec4 base_roughness;
+    vec4 metal_opacity_spec_coat;
+    vec4 specular_tint_coat_roughness;
+    vec4 emission_strength;
+    vec4 transmission;
+    vec4 absorption_pad;
+    vec4 scattering;
+    vec4 scattering_shape;
+    uvec4 flags_misc;
+};
+
+layout(set = 0, binding = 4, std430) readonly buffer RtMaterialTable {
+    RtMaterialGpu rt_materials[];
+};
+
+layout(set = 0, binding = 11) uniform usampler2D identity_texture;
+
 layout(push_constant) uniform ShadowConstants {
     mat4 clip_to_world;
     vec3 to_sun;
@@ -12,6 +39,14 @@ layout(push_constant) uniform ShadowConstants {
     float bias;
     uint samples;
     uint debug_view;
+    // World-space distance to lift the shadow ray origin along the sun
+    // direction for ground-tileset materials, so the ray clears the flat
+    // ground mesh still sitting in the TLAS above the marched (recessed)
+    // GBuffer depth. See rt_lighting.rgen's roof-escape comment for the
+    // underlying bug; computed on the CPU from the LIVE tileset POM relief
+    // cap (VkSceneRenderer::tileset_pom_settings_.relief_cap_m + 0.02), so
+    // the tuning UI's slider keeps working here too.
+    float pom_lift;
 } constants;
 
 struct VisibilityPayload {
@@ -35,6 +70,17 @@ void main() {
                    vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
     vec3 world = world_h.xyz / world_h.w;
     vec3 sun = normalize(constants.to_sun);
+    // Ground-POM roof escape: lift ALONG the sun ray (not along the surface
+    // normal, which rt_shadow does not have here) so the lift only ever
+    // skips the [0, t] segment directly behind the origin -- it cannot
+    // introduce a sideways leak. Clamping sun.y bounds the lift at grazing
+    // sun angles instead of blowing up toward the horizon.
+    uvec2 identity = texelFetch(identity_texture, pixel, 0).rg;
+    if (identity.x < rt_materials.length()) {
+        RtMaterialGpu roof_mat = rt_materials[identity.x];
+        if ((roof_mat.flags_misc.y & 0xFFu) != 0u)
+            world += sun * (constants.pom_lift / max(sun.y, 0.05));
+    }
     vec3 tangent = normalize(abs(sun.y) < 0.99
                                  ? cross(sun, vec3(0.0, 1.0, 0.0))
                                  : cross(sun, vec3(1.0, 0.0, 0.0)));

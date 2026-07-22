@@ -5950,7 +5950,13 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         float bias;
         uint32_t samples;
         uint32_t debug_view;
-        uint32_t pad;
+        // Ground-POM roof escape (mirrors rt_lighting.rgen's shading-origin
+        // lift): world-space distance to lift the shadow ray origin along
+        // the sun direction for materials that carry a ground tileset
+        // detail slot. Sourced from the LIVE tileset POM settings so the
+        // tuning UI's relief-cap slider keeps working (see
+        // write_tileset_params_buffer's identical pom_max_relief_m source).
+        float pom_lift;
     } constants{};
     constants.clip_to_world = pack_glsl_mat4(matrices.clip_to_world);
     const float x = -lighting_.sun_direction.x;
@@ -5964,6 +5970,7 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     constants.bias = ray_tracing_settings_.bias;
     constants.samples = std::max(1u, ray_tracing_settings_.samples);
     constants.debug_view = ray_tracing_settings_.debug_view ? 1u : 0u;
+    constants.pom_lift = tileset_pom_settings_.relief_cap_m + 0.02f;
     last_rt_samples_ = constants.samples;
     last_rt_debug_view_ = constants.debug_view != 0;
     vkCmdBindPipeline(frame.command_buffer,

@@ -790,10 +790,10 @@ private:
         float slot_height_min[4]{};
         float slot_height_max[4]{};
         float slot_mean_albedo[4][4]{};  // rgb + valid flag in [.][3]
-        float pom_steps = 24.0f;
+        float pom_steps = 50.0f;
         float pom_refine_steps = 4.0f;
-        float pom_max_distance_m = 25.0f;
-        float pom_fade_band_m = 5.0f;
+        float pom_max_distance_m = 50.4f;
+        float pom_fade_band_m = 1.0f;
         float detail_fade_center_m = 40.0f;
         float detail_fade_width_m = 10.0f;
         // Max relief depth (meters) the POM march may carve. The baked
@@ -801,7 +801,7 @@ private:
         // marching the full range sinks the whole dirt floor by ~h_range —
         // deep stepped canyons. Parallax only needs ~10 cm to sell relief;
         // anything deeper is real-geometry territory.
-        float pom_max_relief_m = 0.16f;
+        float pom_max_relief_m = 0.178f;
         // Max total world-space march length (meters). Without this cap a
         // near-tangent view ray marches relief/0.08 (~2 m) laterally and the
         // grazing ground dissolves into a structureless smear of far-away
@@ -809,7 +809,7 @@ private:
         // ever produce. When the cap is exhausted without a relief crossing
         // the march returns the capped end point (continuous with neighbors
         // that crossed just before the cap).
-        float pom_max_march_m = 0.5f;
+        float pom_max_march_m = 0.73f;
         // Task 11 (height self-shadow): direction-to-sun (normalized, world
         // space, matches the `to_sun` convention used by the RT shadow push
         // constants -- i.e. normalize(-VkSceneLighting::sun_direction)) and
@@ -824,7 +824,7 @@ private:
         // z = shadow_strength -- gbuffer.frag blend factors for the baked AO
         // texel and the self-shadow march result (0 = fully suppressed, 1 =
         // full baked strength). w = reserved.
-        float pom_datum_bias_ao_shadow[4] = {0.10f, 1.0f, 1.0f, 0.0f};
+        float pom_datum_bias_ao_shadow[4] = {0.105f, 0.63f, 0.68f, 0.0f};
     };
     static_assert(sizeof(TilesetParamsGpu) == 192,
                   "TilesetParamsGpu must remain twelve vec4 records (std140)");
