@@ -1720,3 +1720,37 @@ run-eventchannel: event_channel_tests
 clean: clean-eventchannel
 clean-eventchannel:
 	rm -f event_channel_tests
+
+# ---------------------------------------------------------------------------
+# E1b -- evt::Hub tests (event-system.md S II.1 E1, S II.4 items 1 and 7).
+# Links the Hub's own implementation objects directly (small TU count);
+# mirrors event_channel_tests' pattern -- self-contained, no engine .cpp
+# deps beyond matter/event/*, no GL/raylib. -lpthread for the cross-thread
+# lifetime/race tests. -Isrc is needed because event_hub.h reaches
+# matter/event/detail/dispatch_context.h under include/, but
+# dispatch_context.cpp/subscription.cpp/event_hub.cpp themselves live
+# under src/event and are compiled directly here (not via the kernel lib)
+# so this target builds standalone, like event_channel_tests above.
+# ---------------------------------------------------------------------------
+EVENTHUB_SRC = event_hub_tests.cpp \
+               ../src/event/event_hub.cpp \
+               ../src/event/subscription.cpp \
+               ../src/event/dispatch_context.cpp
+EVENTHUB_HEADERS = check.h ../include/matter/event/channel.h \
+                   ../include/matter/event/subscription.h \
+                   ../include/matter/event/event_name.h \
+                   ../include/matter/event/registration_error.h \
+                   ../include/matter/event/event_hub.h \
+                   ../include/matter/event/detail/dispatch_context.h
+
+event_hub_tests: $(EVENTHUB_SRC) $(EVENTHUB_HEADERS)
+	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include -I../src \
+	    -o $@ $(EVENTHUB_SRC) -lpthread
+
+run-eventhub: event_hub_tests
+	./event_hub_tests
+
+.PHONY: run-eventhub clean-eventhub
+clean: clean-eventhub
+clean-eventhub:
+	rm -f event_hub_tests
