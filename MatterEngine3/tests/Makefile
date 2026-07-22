@@ -1757,3 +1757,37 @@ run-eventhub: event_hub_tests
 clean: clean-eventhub
 clean-eventhub:
 	rm -f event_hub_tests
+
+# ---------------------------------------------------------------------------
+# E4a -- evt::CommandRegistry tests (event-system.md S I.10, S II.4 items 2
+# and 5). Same self-contained pattern as event_hub_tests above: compiles the
+# command layer's own implementation objects directly (command.cpp plus the
+# Hub/subscription objects it depends on for the cmd.* notifications), no
+# engine .cpp deps beyond matter/event/*, no GL/raylib. -Isrc is needed for
+# matter/event/detail/dispatch_context.h; -lpthread for the cross-thread
+# dispatch/ticket/wait tests.
+# ---------------------------------------------------------------------------
+EVENTCMD_SRC = event_command_tests.cpp \
+               ../src/event/command.cpp \
+               ../src/event/event_hub.cpp \
+               ../src/event/subscription.cpp \
+               ../src/event/dispatch_context.cpp
+EVENTCMD_HEADERS = check.h ../include/matter/event/channel.h \
+                   ../include/matter/event/subscription.h \
+                   ../include/matter/event/event_name.h \
+                   ../include/matter/event/registration_error.h \
+                   ../include/matter/event/event_hub.h \
+                   ../include/matter/event/command.h \
+                   ../include/matter/event/detail/dispatch_context.h
+
+event_command_tests: $(EVENTCMD_SRC) $(EVENTCMD_HEADERS)
+	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include -I../src \
+	    -o $@ $(EVENTCMD_SRC) -lpthread
+
+run-eventcommand: event_command_tests
+	./event_command_tests
+
+.PHONY: run-eventcommand clean-eventcommand
+clean: clean-eventcommand
+clean-eventcommand:
+	rm -f event_command_tests
