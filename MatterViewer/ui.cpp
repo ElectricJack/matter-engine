@@ -628,6 +628,19 @@ void Ui::draw_debug_panel(ViewerStats& s) {
         ImGui::Combo("Vol debug##vd", &s.vol_debug_view, vol_views, 4);
     }
 
+    if (ImGui::CollapsingHeader("Ground POM")) {
+        matter::TilesetPomSettings& pom = s.tileset_pom;
+        ImGui::Checkbox("POM enable##pom", &pom.enabled);
+        ImGui::SliderFloat("Relief cap (m)", &pom.relief_cap_m, 0.0f, 0.5f, "%.3f");
+        ImGui::SliderFloat("Datum bias (m)", &pom.datum_bias_m, 0.0f, 0.3f, "%.3f");
+        ImGui::SliderFloat("Max march (m)", &pom.max_march_m, 0.1f, 2.0f, "%.2f");
+        ImGui::SliderInt("Steps", &pom.steps, 4, 64);
+        ImGui::SliderFloat("Max distance (m)", &pom.max_distance_m, 5.0f, 100.0f, "%.1f");
+        ImGui::SliderFloat("Fade band (m)", &pom.fade_band_m, 1.0f, 20.0f, "%.1f");
+        ImGui::SliderFloat("AO strength", &pom.ao_strength, 0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Shadow strength", &pom.shadow_strength, 0.0f, 2.0f, "%.2f");
+    }
+
     ImGui::SeparatorText("Debug View");
     const char* debug_views[] = { "None", "Normals" };
     ImGui::Combo("View", &s.debug_view_mode, debug_views, 2);

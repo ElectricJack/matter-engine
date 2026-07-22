@@ -86,6 +86,7 @@ struct ViewerStats {
     matter::VulkanLightingOverrides lighting{};
     matter::VulkanVolumetricsSettings volumetrics{};
     int vol_debug_view = 0;
+    matter::TilesetPomSettings tileset_pom{};
     // GPU-side per-pass timings (ms), smoothed EMA. Values are 0 when the
     // zone did not execute or GPU timers are unsupported.
     float gpu_total_ms          = 0.0f;
