@@ -5,7 +5,7 @@
 - **Target:** new `MatterEngine3/src/bake_trace.{h,cpp}` + trace hooks across the bake pipeline + new MatterViewer `bake_lab.{h,cpp}` mode
 - **Baseline:** `d3bb7a5d` (local main)
 - **Status:** Spec — umbrella; foundation (Part II) ready to implement
-- **Instrument specs:** [settle-tick-optimizer.md](settle-tick-optimizer.md) (committed); Part Lab and DSL op stepper to follow as their build stages arrive
+- **Instrument specs:** [settle-tick-optimizer.md](settle-tick-optimizer.md) (committed; engine tools complete, experiment queue unscheduled); [part-workbench.md](part-workbench.md) (**supersedes** this doc's Part Lab §II.3, variant table §II.4, Timeline diff mode in §II.2, and the §I.5 LOD-experimentation machinery — the project pivoted to hands-on tools: asset browser, isolation bake with live LOD watch, and manual per-LOD authoring persisted to part source)
 
 ---
 
