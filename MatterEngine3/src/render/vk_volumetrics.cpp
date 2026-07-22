@@ -1,3 +1,20 @@
+// Keep windows.h (pulled in by vulkan_win32.h when VK_USE_PLATFORM_WIN32_KHR
+// is defined, e.g. the vulkan_smoke_tests build) from declaring GDI/USER
+// symbols (Rectangle, CloseWindow, ShowCursor) that collide with raylib.h,
+// which reaches this TU via vk_emitter_gather.h -> part_asset_v2.h ->
+// part_asset.h -> blas_manager.hpp. Same pattern as part_asset_v2.cpp.
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOGDI
+#define NOGDI
+#endif
+#ifndef NOUSER
+#define NOUSER
+#endif
+#endif
+
 #include "vk_volumetrics.h"
 
 #include <algorithm>
@@ -289,6 +306,7 @@ bool VkVolumetrics::create_emitter_buffer(matter::VulkanDevice& vulkan,
 
 bool VkVolumetrics::create_samplers(matter::VulkanDevice& vulkan,
                                      std::string& error) {
+    (void)vulkan;  // device handle comes from device_; kept for API symmetry
     VkSamplerCreateInfo info{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
     info.magFilter = VK_FILTER_LINEAR;
     info.minFilter = VK_FILTER_LINEAR;
@@ -332,6 +350,7 @@ bool VkVolumetrics::create_samplers(matter::VulkanDevice& vulkan,
 
 bool VkVolumetrics::create_density_pipeline(matter::VulkanDevice& vulkan,
                                              std::string& error) {
+    (void)vulkan;  // device handle comes from device_; kept for API symmetry
     // Bindings:
     //   0 = storage image (vol_media, writeonly)
     //   1 = combined image sampler (noise_tex)
@@ -470,6 +489,7 @@ bool VkVolumetrics::create_density_pipeline(matter::VulkanDevice& vulkan,
 
 bool VkVolumetrics::create_scatter_pipeline(matter::VulkanDevice& vulkan,
                                              std::string& error) {
+    (void)vulkan;  // device handle comes from device_; kept for API symmetry
     // Bindings:
     //   0 = combined image sampler (vol_media, read)
     //   1 = storage image (vol_scatter[current], write)
@@ -621,6 +641,7 @@ bool VkVolumetrics::create_scatter_pipeline(matter::VulkanDevice& vulkan,
 
 bool VkVolumetrics::create_integrate_pipeline(matter::VulkanDevice& vulkan,
                                                std::string& error) {
+    (void)vulkan;  // device handle comes from device_; kept for API symmetry
     // Bindings:
     //   0 = combined image sampler (vol_scatter[current], read)
     //   1 = storage image (vol_integrated, write)
@@ -780,6 +801,7 @@ void VkVolumetrics::set_lighting(const VkSceneLighting& lighting) {
 void VkVolumetrics::update_emitters(
     matter::VulkanDevice& vulkan,
     const std::vector<GpuVolumeEmitter>& emitters) {
+    (void)vulkan;  // device handle comes from device_; kept for API symmetry
     if (!initialized_ || emitter_ssbo_.buffer == VK_NULL_HANDLE) return;
 
     const uint32_t count =
@@ -811,6 +833,7 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
                            float frame_time,
                            std::string& error) {
     (void)frame_slot;
+    (void)error;  // recording currently cannot fail after init succeeds
     if (!initialized_) return true;
     if (!enabled_ || !ray_query_available_) return true;
 
@@ -869,13 +892,17 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     // Fill push constants.
     DensityConstants density_pc{};
     pack_mat4_column_major(density_pc.clip_to_world, matrices.clip_to_world);
-    // Extract camera position: clip_to_world * (0,0,0,1) in row-major storage.
+    // Extract camera position by unprojecting the near-plane center.
+    // Reversed-Z: near is NDC z = 1, so this is clip_to_world * (0,0,1,1).
+    // (NDC (0,0,0) is now the FAR-plane center — using it put the "camera"
+    // a kilometer out and flipped every view-dependent term.)
     {
-        float w = matrices.clip_to_world.m[15];
+        const float* m = matrices.clip_to_world.m;
+        float w = m[14] + m[15];
         if (std::abs(w) > 1e-9f) {
-            density_pc.camera_pos[0] = matrices.clip_to_world.m[3] / w;
-            density_pc.camera_pos[1] = matrices.clip_to_world.m[7] / w;
-            density_pc.camera_pos[2] = matrices.clip_to_world.m[11] / w;
+            density_pc.camera_pos[0] = (m[2]  + m[3])  / w;
+            density_pc.camera_pos[1] = (m[6]  + m[7])  / w;
+            density_pc.camera_pos[2] = (m[10] + m[11]) / w;
         }
     }
     density_pc.frame_time = frame_time;
@@ -954,13 +981,15 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
     ScatterConstants scatter_pc{};
     pack_mat4_column_major(scatter_pc.clip_to_world, matrices.clip_to_world);
     pack_mat4_column_major(scatter_pc.prev_world_to_clip, prev_world_to_clip_);
-    // Camera position from the current clip_to_world.
+    // Camera position = unprojected near-plane center (reversed-Z: NDC z = 1;
+    // see the density_pc note above).
     {
-        float w = matrices.clip_to_world.m[15];
+        const float* m = matrices.clip_to_world.m;
+        float w = m[14] + m[15];
         if (std::abs(w) > 1e-9f) {
-            scatter_pc.camera_pos[0] = matrices.clip_to_world.m[3] / w;
-            scatter_pc.camera_pos[1] = matrices.clip_to_world.m[7] / w;
-            scatter_pc.camera_pos[2] = matrices.clip_to_world.m[11] / w;
+            scatter_pc.camera_pos[0] = (m[2]  + m[3])  / w;
+            scatter_pc.camera_pos[1] = (m[6]  + m[7])  / w;
+            scatter_pc.camera_pos[2] = (m[10] + m[11]) / w;
         }
     }
     scatter_pc.frame_index = frame_index_;

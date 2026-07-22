@@ -143,8 +143,11 @@ vec3 rt_sky_irradiance(vec3 normal) {
     return sky_irradiance(normal, constants.sky_color);
 }
 
-vec3 hit_emission(RtSurface surface, out vec3 base) {
+vec3 hit_emission(RtSurface surface, out vec3 base, out vec3 shading_normal,
+                  out float horizon_mean_occlusion) {
     base = vec3(0.0);
+    shading_normal = surface.normal;
+    horizon_mean_occlusion = 0.0;
     if ((surface.flags & RT_SURFACE_VALID) == 0u) return vec3(0.0);
     if (surface.material_index >= rt_materials.length()) return vec3(0.0);
     RtMaterialGpu material = rt_materials[surface.material_index];
@@ -152,13 +155,35 @@ vec3 hit_emission(RtSurface surface, out vec3 base) {
     base = mix(material.base_roughness.rgb, surface.tint.rgb, tint_blend);
     vec3 emission_color = mix(material.emission_strength.rgb,
                               surface.tint.rgb, tint_blend);
+    // Ground tileset override (Task 9): replace the flat material color
+    // (and the normal used for sky-irradiance shading below) with a
+    // Wang-sampled ground texture when the hit material carries a detail
+    // slot. Emission is left untouched — ground tilesets do not emit.
+    RtTilesetSample tileset_hit = rt_tileset_sample(material, surface);
+    if (tileset_hit.applied) {
+        base = tileset_hit.albedo;
+        shading_normal = tileset_hit.normal;
+        horizon_mean_occlusion = tileset_hit.mean_occlusion;
+    }
     return emission_color * max(material.emission_strength.w, 0.0) *
            constants.emission_multiplier;
 }
 
 vec3 hit_radiance(RtSurface surface, out vec3 base) {
-    vec3 emission = hit_emission(surface, base);
-    return emission + rt_sky_irradiance(surface.normal) * base;
+    vec3 shading_normal;
+    float mean_occlusion;
+    vec3 emission = hit_emission(surface, base, shading_normal,
+                                 mean_occlusion);
+    // Phase 2 (horizon-map lighting): hollow ground seen in reflections/GI
+    // picks up hollow darkening -- baked horizon occlusion attenuates the
+    // sky-irradiance term (not the sun/emission terms, which already have
+    // their own visibility handling) by up to horizon_strength * 0.7. The
+    // 0.7 cap is a documented approximation: even a fully-occluded direction
+    // still sees SOME sky through nearby gaps, so irradiance is dimmed, not
+    // zeroed.
+    float sky_scale =
+        1.0 - clamp(tileset.pom_c.w, 0.0, 1.0) * mean_occlusion * 0.7;
+    return emission + rt_sky_irradiance(shading_normal) * base * sky_scale;
 }
 
 vec3 hit_radiance_sunlit(RtSurface surface, vec3 to_sun) {
@@ -216,6 +241,25 @@ void main() {
                    vec4(source_uv.x * 2.0 - 1.0,
                         1.0 - source_uv.y * 2.0, depth, 1.0);
     vec3 world = world_h.xyz / world_h.w;
+    // Ground-POM roof escape: the GBuffer depth for tileset materials is the
+    // MARCHED (recessed) surface, which sits up to pom_max_relief below the
+    // rasterized ground mesh -- and that flat mesh is still in the TLAS
+    // directly overhead. Rays traced from the recessed point hit its
+    // underside, blacking out GI/sky for the whole parallax region (and only
+    // there, which is the tell). Lift the shading origin back above the
+    // mesh plane for materials that carry a ground tileset slot.
+    //
+    // Phase 2 (horizon-map lighting): also remember the slot here so the GI
+    // cosine-ray loop below can apply per-ray horizon occlusion for the
+    // primary pixel -- this is the same detail-slot lookup the roof escape
+    // already performs, just hoisted out so it survives past this if block.
+    int ground_tileset_slot = -1;
+    if (identity.x < rt_materials.length()) {
+        RtMaterialGpu roof_mat = rt_materials[identity.x];
+        ground_tileset_slot = tileset_detail_slot(roof_mat.flags_misc);
+        if (ground_tileset_slot >= 0)
+            world += normal * (tileset.pom_b.z + 0.02);
+    }
     uint seed = pcg_hash(uint(source_pixel.x) ^
                          (uint(source_pixel.y) * 0x9e3779b9u) ^
                          (constants.presented_frame_index * 0x85ebca6bu) ^
@@ -227,23 +271,59 @@ void main() {
     vec3 to_sun = normalize(constants.to_sun);
     for (int vertex = 0; vertex < 2; ++vertex) {
         vec3 direction = cosine_direction(vertex_normal, seed);
+        // Phase 2 (horizon-map lighting): for the primary pixel's own GI
+        // cosine ray (vertex 0 only -- ground_tileset_slot describes the
+        // primary surface, not whatever this ray goes on to hit), test the
+        // ray direction against the baked horizon map at the shading point.
+        // horizon_ray_scale attenuates this ray's traced contribution below
+        // (environment escape, hit radiance/emission, and the direct
+        // sun-lit term all get scaled together -- everything this loop
+        // iteration adds to `bounce` from following `direction`); the
+        // complementary occluded fraction is NOT dropped but approximated
+        // as a local bounce off the flat ground albedo lit by ambient sky,
+        // so occluded rays still contribute something rather than going
+        // fully black. No screen-space derivatives exist in a raygen shader,
+        // so dWdx/dWdy are passed as zero (finest available mip -- fine
+        // given the horizon texture's already-coarse quarter resolution).
+        float horizon_ray_scale = 1.0;
+        if (vertex == 0 && ground_tileset_slot >= 0) {
+            float occl = tileset_horizon_occlusion(
+                ground_tileset_slot, world.xz, direction, vec2(0.0),
+                vec2(0.0));
+            horizon_ray_scale = 1.0 - occl;
+            // 0.35 is a documented approximation: the fraction of ambient
+            // sky irradiance a horizon-occluded hemisphere direction still
+            // contributes via one indirect bounce off the surrounding
+            // (occluding) geometry, standing in for the light transport a
+            // full extra bounce would compute. `albedo` is the primary
+            // pixel's already-textured flat ground albedo (GBuffer albedo
+            // texture read at the top of main()), reused rather than
+            // re-deriving it via rt_tileset_sample.
+            bounce += throughput * occl * albedo.rgb * rt_sky_irradiance(normal) *
+                      0.35;
+        }
         hit.surface = invalid_rt_surface();
         hit.part_slot = hit.primitive = 0xffffffffu;
         traceRayEXT(scene, gl_RayFlagsOpaqueEXT, 0xff, 1, 0, 1,
                     vertex_origin, constants.bias, direction,
                     constants.max_distance, 1);
         if ((hit.surface.flags & RT_SURFACE_VALID) == 0u) {
-            bounce += throughput * environment(direction);
+            bounce += throughput * horizon_ray_scale * environment(direction);
             break;
         }
         vec3 hit_base;
+        vec3 hit_shading_normal_unused;
+        float hit_mean_occlusion_unused;
         bool final_vertex = vertex == 1;
         // sky_irradiance approximates everything beyond the final vertex;
         // adding it at the intermediate vertex too would double count the
         // sky, so intermediate vertices contribute emission only.
-        bounce += throughput * (final_vertex
-                                    ? hit_radiance(hit.surface, hit_base)
-                                    : hit_emission(hit.surface, hit_base));
+        bounce += throughput * horizon_ray_scale *
+                  (final_vertex
+                       ? hit_radiance(hit.surface, hit_base)
+                       : hit_emission(hit.surface, hit_base,
+                                      hit_shading_normal_unused,
+                                      hit_mean_occlusion_unused));
         float ndotl = max(dot(hit.surface.normal, to_sun), 0.0);
         if (ndotl > 0.0 && any(greaterThan(hit_base, vec3(0.0)))) {
             visibility_payload.visibility = vec3(1.0);
@@ -266,8 +346,9 @@ void main() {
             // Lambertian 1/pi keeps the sun-lit indirect component in
             // ratio with the sky component (whose pi cancels against the
             // cosine-sampling pdf).
-            bounce += throughput * hit_base * 0.31830988618 *
-                      constants.sun_color * constants.sun_intensity * ndotl *
+            bounce += throughput * horizon_ray_scale * hit_base *
+                      0.31830988618 * constants.sun_color *
+                      constants.sun_intensity * ndotl *
                       visibility_payload.visibility;
         }
         if (final_vertex) break;
@@ -309,8 +390,10 @@ void main() {
                     max(primary.specular_tint_coat_roughness.rgb, vec3(0.0)),
                 base_color, clamp(primary.metal_opacity_spec_coat.x, 0.0, 1.0));
         selected_f0 = dot(f0, vec3(0.3333333333));
+        // Reversed-Z: the near plane is NDC z = 1.0 (z = 0.0 is now the far
+        // plane; unprojecting it flips the view vector ~180 degrees).
         vec4 near_h = constants.clip_to_world *
-            vec4(source_uv.x * 2.0 - 1.0, 1.0 - source_uv.y * 2.0, 0.0, 1.0);
+            vec4(source_uv.x * 2.0 - 1.0, 1.0 - source_uv.y * 2.0, 1.0, 1.0);
         vec3 near_world = near_h.xyz / near_h.w;
         vec3 view = normalize(near_world - world);
         vec3 tangent, bitangent;
@@ -368,9 +451,12 @@ void main() {
         transmission_weight = clamp(trans_material.transmission.x, 0.0, 1.0);
         if (transmission_weight > 0.0) {
             float ior = max(trans_material.transmission.y, 1.0001);
+            // Reversed-Z: near plane is NDC z = 1.0 (see the specular-path
+            // note above; z = 0.0 here made trans_view point away from the
+            // camera, which black-holed glass seen from outside).
             vec4 trans_near_h = constants.clip_to_world *
                 vec4(source_uv.x * 2.0 - 1.0, 1.0 - source_uv.y * 2.0,
-                     0.0, 1.0);
+                     1.0, 1.0);
             vec3 trans_near_world = trans_near_h.xyz / trans_near_h.w;
             vec3 trans_view = normalize(trans_near_world - world);
             float f0 = pow((ior - 1.0) / (ior + 1.0), 2.0);

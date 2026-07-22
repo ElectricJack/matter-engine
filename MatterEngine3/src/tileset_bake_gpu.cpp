@@ -9,6 +9,7 @@
 #include "tileset_torus_bvh.h"     // assemble_torus_bvh
 #include "tileset_bake_primary.h"  // bake_primary
 #include "tileset_bake_ao.h"       // bake_ao (material-table overload)
+#include "tileset_bake_horizon.h"  // bake_horizon
 #include "tileset_gl_ctx.h"        // tileset_gl_init, compile_compute_program, load_compute_source
 
 #include "blas_manager.hpp"
@@ -141,15 +142,19 @@ bool bake_tileset_gpu(const SettledTorus& settled,
         // ------------------------------------------------------------------
         // 4. Load + compile shaders.
         // ------------------------------------------------------------------
-        std::string src_p, src_ao;
+        std::string src_p, src_ao, src_horizon;
         if (!load_compute_source("shaders_gpu/tileset_bake_primary.comp",
                                   "shaders", src_p, err)) return false;
         if (!load_compute_source("shaders_gpu/tileset_bake_ao.comp",
                                   "shaders", src_ao, err)) return false;
+        if (!load_compute_source("shaders_gpu/tileset_bake_horizon.comp",
+                                  "shaders", src_horizon, err)) return false;
         GLuint prog_p  = compile_compute_program(src_p,  err);
         if (!prog_p) return false;
         GLuint prog_ao = compile_compute_program(src_ao, err);
         if (!prog_ao) { glDeleteProgram(prog_p); return false; }
+        GLuint prog_horizon = compile_compute_program(src_horizon, err);
+        if (!prog_horizon) { glDeleteProgram(prog_p); glDeleteProgram(prog_ao); return false; }
 
         // ------------------------------------------------------------------
         // 5. Material table snapshot.
@@ -184,7 +189,7 @@ bool bake_tileset_gpu(const SettledTorus& settled,
                           ray_y, hmin, hmax,
                           albedo, normal_rg, orm, height, err))
         {
-            glDeleteProgram(prog_p); glDeleteProgram(prog_ao);
+            glDeleteProgram(prog_p); glDeleteProgram(prog_ao); glDeleteProgram(prog_horizon);
             return false;
         }
 
@@ -197,7 +202,7 @@ bool bake_tileset_gpu(const SettledTorus& settled,
                      (uint32_t)settled.cfg.seed,
                      ao, err))
         {
-            glDeleteProgram(prog_p); glDeleteProgram(prog_ao);
+            glDeleteProgram(prog_p); glDeleteProgram(prog_ao); glDeleteProgram(prog_horizon);
             return false;
         }
 
@@ -207,11 +212,22 @@ bool bake_tileset_gpu(const SettledTorus& settled,
         pack_orm_ao(orm, ao);
 
         // ------------------------------------------------------------------
-        // 10. Write .gtex.
+        // 9b. Horizon-map bake pass (quarter-res, full-res height re-uploaded).
         // ------------------------------------------------------------------
+        std::vector<uint8_t> horizon_a, horizon_b;
+        int horizon_w = 0, horizon_h = 0;
         const int W = kTorusN * (int)settled.cfg.size * settled.cfg.texels_per_meter;
         const int H = W;
+        if (!bake_horizon(prog_horizon, height, W, H, settled.cfg.texels_per_meter,
+                          hmin, hmax, horizon_a, horizon_b, horizon_w, horizon_h, err))
+        {
+            glDeleteProgram(prog_p); glDeleteProgram(prog_ao); glDeleteProgram(prog_horizon);
+            return false;
+        }
 
+        // ------------------------------------------------------------------
+        // 10. Write .gtex (v2: albedo/normal/orm/height + horizon A/B).
+        // ------------------------------------------------------------------
         GTexHeader hdr{};
         hdr.tile_size_m         = settled.cfg.size;
         hdr.texels_per_meter    = settled.cfg.texels_per_meter;
@@ -224,9 +240,10 @@ bool bake_tileset_gpu(const SettledTorus& settled,
         hdr.engine_bake_version = kEngineBakeVersion;
 
         if (!save_gtex(out_gtex_path, hdr, W, H,
-                       albedo.data(), normal_rg.data(), orm.data(), height.data(), err))
+                       albedo.data(), normal_rg.data(), orm.data(), height.data(), err,
+                       horizon_w, horizon_h, horizon_a.data(), horizon_b.data()))
         {
-            glDeleteProgram(prog_p); glDeleteProgram(prog_ao);
+            glDeleteProgram(prog_p); glDeleteProgram(prog_ao); glDeleteProgram(prog_horizon);
             return false;
         }
 
@@ -239,13 +256,14 @@ bool bake_tileset_gpu(const SettledTorus& settled,
                 base.resize(base.size() - 5);
             if (!dump_pngs(base, W, H, albedo, normal_rg, orm, height)) {
                 err = "bake_tileset_gpu: --dump-png emit failed near " + base;
-                glDeleteProgram(prog_p); glDeleteProgram(prog_ao);
+                glDeleteProgram(prog_p); glDeleteProgram(prog_ao); glDeleteProgram(prog_horizon);
                 return false;
             }
         }
 
         glDeleteProgram(prog_p);
         glDeleteProgram(prog_ao);
+        glDeleteProgram(prog_horizon);
         return true;
 
     } catch (const std::bad_alloc&) {

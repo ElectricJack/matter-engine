@@ -100,6 +100,25 @@ static bool run_tileset_phase_impl(const std::string& schemas_dir,
             err = "tileset_phase: root_hashes count mismatch (internal error)";
             return false;
         }
+        // Fail closed on soft (skip-and-continue) install failures. PartGraph
+        // reports ok=true even when individual roots fail to resolve or bake
+        // (root_hashes[i] == 0, details in ir.failed). A zero hash must not
+        // flow into the placement table: it would surface much later as
+        // 'collider_for_part failed for hash 0x0' during settle with the real
+        // cause (e.g. a shared-lib fold error making resolve_hash return 0)
+        // silently dropped here.
+        for (size_t i = 0; i < ir.root_hashes.size(); ++i) {
+            if (ir.root_hashes[i] != 0) continue;
+            err = "tileset_phase: child '" + required[i].module_specifier +
+                  "' (params " + required[i].params_json + ") failed to install";
+            for (const auto& fp : ir.failed) {
+                if (fp.module == required[i].module_specifier) {
+                    err += ": " + fp.error;
+                    break;
+                }
+            }
+            return false;
+        }
     } else {
         ir.ok = true;
     }

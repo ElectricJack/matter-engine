@@ -15,15 +15,19 @@ enum {
     GROUP_WAX = 24, GROUP_FOLIAGE_THIN = 25
 };
 
+// Schema v4: groundMacroSlot is inserted right after groundTilesetSlot with a
+// fixed -1 (no macro layer) default baked into the macro body — every static
+// registry entry gets the default without touching each call site's argument
+// list. The viewer overrides it at runtime via MaterialRegistrySetGroundMacroSlot().
 #define MATERIAL_DEF(R,G,B,ROUGH,METAL,EMIT,TRANSLUCENT,IOR,FLAT,GROUP,MESHER,SLOT, \
                      TRANSMIT,ER,EG,EB,AR,AG,AB,ADIST,THICK,SUBSURFACE,SR,SG,SB,SDIST,ANISO,FLAGS) \
-    {{R,G,B}, ROUGH, METAL, EMIT, TRANSLUCENT, IOR, FLAT, GROUP, MESHER, SLOT, \
+    {{R,G,B}, ROUGH, METAL, EMIT, TRANSLUCENT, IOR, FLAT, GROUP, MESHER, SLOT, -1, \
      1.0f, TRANSMIT, {ER,EG,EB}, {AR,AG,AB}, ADIST, THICK, SUBSURFACE, {SR,SG,SB}, \
      SDIST, ANISO, 0.0f, 0.0f, 1.0f, {1.0f,1.0f,1.0f}, 0.0f, 1.0f, FLAGS}
 
 #define MATERIAL_DEF_ADVANCED(R,G,B,ROUGH,METAL,EMIT,TRANSLUCENT,IOR,FLAT,GROUP,MESHER,SLOT, \
     TRANSMIT,ER,EG,EB,AR,AG,AB,ADIST,THICK,SUBSURFACE,SR,SG,SB,SDIST,ANISO,COAT,COATROUGH,FLAGS) \
-    {{R,G,B}, ROUGH, METAL, EMIT, TRANSLUCENT, IOR, FLAT, GROUP, MESHER, SLOT, \
+    {{R,G,B}, ROUGH, METAL, EMIT, TRANSLUCENT, IOR, FLAT, GROUP, MESHER, SLOT, -1, \
      1.0f, TRANSMIT, {ER,EG,EB}, {AR,AG,AB}, ADIST, THICK, SUBSURFACE, {SR,SG,SB}, \
      SDIST, ANISO, COAT, COATROUGH, 1.0f, {1.0f,1.0f,1.0f}, 0.0f, 1.0f, FLAGS}
 
@@ -76,6 +80,17 @@ static int g_slot_overrides[ME_MAX_SLOT_OVERRIDES] = {
     -1,-1,-1,-1, -1,-1,-1,-1, -1,-1,-1,-1, -1,-1,-1,-1,
 };
 
+// Runtime macro-slot overrides (parallel to g_materials), mirroring
+// g_slot_overrides above. Schema v4 / Phase 3: -1 = no override; the value in
+// g_materials[i].groundMacroSlot wins (itself -1 by default for every entry).
+#define ME_MAX_MACRO_OVERRIDES 64
+static int g_macro_overrides[ME_MAX_MACRO_OVERRIDES] = {
+    -1,-1,-1,-1, -1,-1,-1,-1, -1,-1,-1,-1, -1,-1,-1,-1,
+    -1,-1,-1,-1, -1,-1,-1,-1, -1,-1,-1,-1, -1,-1,-1,-1,
+    -1,-1,-1,-1, -1,-1,-1,-1, -1,-1,-1,-1, -1,-1,-1,-1,
+    -1,-1,-1,-1, -1,-1,-1,-1, -1,-1,-1,-1, -1,-1,-1,-1,
+};
+
 int MaterialRegistryCount(void) { return g_count; }
 
 uint32_t MaterialRegistrySchemaVersion(void) { return MATERIAL_SCHEMA_VERSION; }
@@ -101,6 +116,12 @@ void MaterialRegistrySetGroundTilesetSlot(int materialId, int slot) {
     if (materialId < 0 || materialId >= ME_MAX_SLOT_OVERRIDES) return;
     if (slot < -1 || slot > 3) return;
     g_slot_overrides[materialId] = slot;
+}
+
+void MaterialRegistrySetGroundMacroSlot(int materialId, int slot) {
+    if (materialId < 0 || materialId >= ME_MAX_MACRO_OVERRIDES) return;
+    if (slot < -1 || slot > 3) return;
+    g_macro_overrides[materialId] = slot;
 }
 
 void MaterialRegistryPackForGPU(float* out) {
@@ -171,9 +192,27 @@ void MaterialRegistryPackRtForGPU(MaterialGpuRecord* out) {
         r->scattering_shape[2] = m->alphaCutoff;
         r->scattering_shape[3] = m->shadowOpacity;
         r->flags_misc[0] = m->surfaceFlags;
-        r->flags_misc[1] = (uint32_t)((i < ME_MAX_SLOT_OVERRIDES && g_slot_overrides[i] >= 0)
-                                         ? g_slot_overrides[i]
-                                         : m->groundTilesetSlot);
+        /* Schema v4 / Vulkan tileset (spec "Material schema"): flags_misc[1]
+           packs BOTH the detail slot (low byte) and the macro slot (next byte)
+           as (slot + 1) so -1 (untextured/no-macro) encodes as 0 and shaders
+           can test the byte for zero instead of sign-extending a negative
+           value out of an unsigned lane. Runtime overrides win over the
+           static table, exactly like the GL path's slot [11] in
+           MaterialRegistryPackForGPU above (which is untouched by this change
+           and still carries only the detail slot as a plain float). Decoded by
+           shaders_vk/tileset_common.glsl's tileset_detail_slot/tileset_macro_slot
+           and documented in render/vk_gi_contract.h. */
+        {
+            const int detail_slot =
+                (i < ME_MAX_SLOT_OVERRIDES && g_slot_overrides[i] >= 0)
+                    ? g_slot_overrides[i]
+                    : m->groundTilesetSlot;
+            const int macro_slot =
+                (i < ME_MAX_MACRO_OVERRIDES && g_macro_overrides[i] >= 0)
+                    ? g_macro_overrides[i]
+                    : m->groundMacroSlot;
+            r->flags_misc[1] = MaterialPackDetailMacroSlots(detail_slot, macro_slot);
+        }
         r->flags_misc[2] = 0u;
         r->flags_misc[3] = 0u;
     }

@@ -99,13 +99,14 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/tileset_placement.cpp src/tileset_part_collider.cpp src/tileset_bake.cpp \
           src/tileset_phase.cpp \
           src/tileset_gtex.cpp src/tileset_torus_bvh.cpp \
-          src/tileset_bake_primary.cpp src/tileset_bake_ao.cpp src/tileset_bake_gpu.cpp \
+          src/tileset_bake_primary.cpp src/tileset_bake_ao.cpp src/tileset_bake_horizon.cpp src/tileset_bake_gpu.cpp \
           src/shader_source.cpp \
           src/render/renderer.cpp src/render/raster_composer.cpp src/render/raster_mesh.cpp \
           src/render/matrix_math.cpp src/render/frame_matrices.cpp src/render/vk_temporal.cpp src/render/vk_gi_math.cpp src/render/vk_lighting_controls.cpp \
           src/render/part_store.cpp src/render/world_composer.cpp src/render/world_state.cpp \
           src/render/gpu_culler.cpp \
           src/render/tileset_provider.cpp src/render/tileset_gl_ctx.cpp \
+          src/render/tileset_slicer.cpp \
           src/provider/local_provider.cpp src/provider/resolvers.cpp \
           src/ecs/ecs_runtime.cpp src/ecs/physics_context.cpp src/ecs/physics_shapes.cpp src/ecs/physics_systems.cpp src/ecs/streaming_systems.cpp src/ecs/transform_system.cpp \
           src/matter_engine.cpp \
@@ -160,10 +161,11 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           tileset_settle.o tileset_placement.o tileset_part_collider.o tileset_bake.o \
           tileset_phase.o \
           tileset_gtex.o tileset_torus_bvh.o tileset_bake_primary.o \
-          tileset_bake_ao.o tileset_bake_gpu.o shader_source.o \
+          tileset_bake_ao.o tileset_bake_horizon.o tileset_bake_gpu.o shader_source.o \
           renderer.o raster_composer.o raster_mesh.o matrix_math.o frame_matrices.o vk_temporal.o vk_gi_math.o vk_lighting_controls.o \
           part_store.o world_composer.o world_state.o \
           gpu_culler.o tileset_provider.o tileset_gl_ctx.o \
+          tileset_slicer.o \
           local_provider.o resolvers.o \
           ecs_runtime.o physics_context.o physics_shapes.o physics_systems.o streaming_systems.o transform_system.o \
           matter_engine.o \
@@ -192,7 +194,7 @@ SHADER_LOGICAL := shaders/raster.vs shaders/raster.fs shaders/tileset_sampling.g
     shaders/materials.glsl shaders/bvh_tlas_common.glsl shaders/lighting.glsl \
     shaders_gpu/cull.comp shaders_gpu/hiz_downsample.comp \
     shaders_gpu/raster_gpu_driven.vs shaders_gpu/tileset_bake_primary.comp \
-    shaders_gpu/tileset_bake_ao.comp
+    shaders_gpu/tileset_bake_ao.comp shaders_gpu/tileset_bake_horizon.comp
 # SHADER_FILES resolves logical paths into real filesystem paths under MatterEngine3/:
 # shaders/ is a symlink -> ../MatterSurfaceLib/shaders; shaders_gpu/ is a real dir.
 SHADER_FILES := $(SHADER_LOGICAL)
@@ -237,11 +239,18 @@ build/shaders_vk/%.spv: shaders_vk/%
 build/shaders_vk/raster.vert.spv build/shaders_vk/gbuffer.frag.spv: \
     shaders_vk/material_common.glsl
 
+build/shaders_vk/gbuffer.frag.spv: shaders_vk/tileset_common.glsl
+
 build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_visibility.rahit.spv \
     build/shaders_vk/rt_radiance.rmiss.spv \
     build/shaders_vk/rt_lighting.rgen.spv \
     build/shaders_vk/rt_surface_test.rgen.spv: \
-    shaders_vk/rt_surface_common.glsl
+    shaders_vk/rt_surface_common.glsl shaders_vk/tileset_common.glsl
+
+# Phase 2 (horizon-map lighting): rt_shadow.rgen now includes
+# tileset_common.glsl directly (not via rt_surface_common.glsl -- it does
+# not otherwise use that file) to reach bindings 15/16 for the horizon test.
+build/shaders_vk/rt_shadow.rgen.spv: shaders_vk/tileset_common.glsl
 
 build/shaders_vk/composite.frag.spv build/shaders_vk/rt_lighting.rgen.spv: \
     shaders_vk/sky_common.glsl

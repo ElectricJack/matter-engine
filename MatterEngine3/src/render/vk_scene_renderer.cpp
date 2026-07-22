@@ -17,6 +17,8 @@
 #include "matter/world_session.h"
 #include "shaders_gen/embedded_spirv.h"
 #include "streamline_bridge.h"
+#include "tileset_gtex.h"
+#include "tileset_slicer.h"
 #include "vk_volumetrics.h"
 
 namespace viewer {
@@ -958,6 +960,21 @@ void VkSceneRenderer::destroy_pipeline() {
         vkDestroySampler(device, composite_sampler_, nullptr);
     if (vol_linear_sampler_ != VK_NULL_HANDLE)
         vkDestroySampler(device, vol_linear_sampler_, nullptr);
+    // Phase 1 tileset Vulkan port (Task 6): tear down slot images, dummies,
+    // sampler, and the params UBO (matter::VkBufferResource cleans itself up
+    // via reset()).
+    for (auto& slot : tileset_slots_) {
+        for (auto& channel : slot.channels) destroy_tileset_image(channel);
+        slot = TilesetSlotGpu{};
+    }
+    destroy_tileset_image(tileset_dummy_rgba8_);
+    destroy_tileset_image(tileset_dummy_rg8_);
+    destroy_tileset_image(tileset_dummy_r16_);
+    if (tileset_sampler_ != VK_NULL_HANDLE)
+        vkDestroySampler(device, tileset_sampler_, nullptr);
+    tileset_sampler_ = VK_NULL_HANDLE;
+    tileset_params_.reset();
+    tileset_infra_ready_ = false;
     if (display_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, display_pipeline_, nullptr);
     if (display_pipeline_layout_ != VK_NULL_HANDLE)
@@ -1029,10 +1046,15 @@ void VkSceneRenderer::destroy_pipeline() {
 
 bool VkSceneRenderer::create_pipeline(std::string& error) {
     const VkDevice device = vulkan_->device();
+    // Phase 2 (tileset POM, Task 10) adds FRAGMENT_BIT: gbuffer.frag needs
+    // FrameConstants.world_to_clip (project the marched world position for
+    // the conservative depth write) and camera_eye_pixel_budget.xyz (view
+    // ray origin for the march).
     const VkDescriptorSetLayoutBinding frame_binding =
         descriptor_binding(0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                            VK_SHADER_STAGE_COMPUTE_BIT |
-                               VK_SHADER_STAGE_VERTEX_BIT);
+                               VK_SHADER_STAGE_VERTEX_BIT |
+                               VK_SHADER_STAGE_FRAGMENT_BIT);
     VkDescriptorSetLayoutCreateInfo frame_layout{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     frame_layout.bindingCount = 1;
@@ -1042,11 +1064,23 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     if (result != VK_SUCCESS)
         return fail_vk("vkCreateDescriptorSetLayout(frame)", result, error);
 
-    std::array<VkDescriptorSetLayoutBinding, 6> scene_bindings{};
-    for (uint32_t i = 0; i < scene_bindings.size(); ++i)
+    // Bindings 0-5: scene storage buffers (DrawTransforms at 3, Materials at
+    // 5). Bindings 6-7 (Phase 1 tileset Vulkan port, Task 6): the 16-entry
+    // ground tileset sampler2DArray and the TilesetParams UBO, sampled only
+    // by gbuffer.frag.
+    std::array<VkDescriptorSetLayoutBinding, 8> scene_bindings{};
+    for (uint32_t i = 0; i < 6; ++i)
         scene_bindings[i] =
             descriptor_binding(i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
                                vk_scene_detail::scene_binding_stage_flags(i));
+    scene_bindings[6] = descriptor_binding(
+        6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        VK_SHADER_STAGE_FRAGMENT_BIT);
+    // Phase 2 (horizon-map lighting): 4 slots * 6 channels (was 4 slots * 4
+    // channels) -- see VkSceneRenderer::kTilesetChannelCount.
+    scene_bindings[6].descriptorCount = 4 * kTilesetChannelCount;
+    scene_bindings[7] = descriptor_binding(
+        7, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT);
     VkDescriptorSetLayoutCreateInfo scene_layout{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     scene_layout.bindingCount =
@@ -1220,7 +1254,7 @@ bool VkSceneRenderer::create_gi_atrous_pipeline(std::string& error) {
 
 bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
     const VkDevice device = vulkan_->device();
-    const VkDescriptorSetLayoutBinding bindings[] = {
+    VkDescriptorSetLayoutBinding bindings[] = {
         descriptor_binding(0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
                            VK_SHADER_STAGE_RAYGEN_BIT_KHR),
         descriptor_binding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -1254,10 +1288,32 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
         descriptor_binding(13, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                            VK_SHADER_STAGE_RAYGEN_BIT_KHR),
         descriptor_binding(14, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                           VK_SHADER_STAGE_RAYGEN_BIT_KHR)};
+                           VK_SHADER_STAGE_RAYGEN_BIT_KHR),
+        // Phase 1 tileset Vulkan port (Task 6): mirrors raster set 1's
+        // bindings 6/7. Stage flags must cover every stage whose SPIR-V can
+        // statically reference the bindings: tileset_common.glsl is pulled in
+        // by rt_surface_common.glsl, which is included by rt_lighting.rgen /
+        // rt_surface_test.rgen (raygen), rt_surface.rchit (closest hit),
+        // rt_visibility.rahit (any hit), and rt_radiance.rmiss (miss). glslang
+        // keeps declared-but-uncalled helper functions (rt_tileset_sample) in
+        // the module unless optimized, and SPIR-V 1.4+ lists all globals in
+        // the entry-point interface, so be conservative and cover all four
+        // stages — extra stage bits on a set layout are harmless.
+        descriptor_binding(15, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                           VK_SHADER_STAGE_RAYGEN_BIT_KHR |
+                               VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+                               VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
+                               VK_SHADER_STAGE_MISS_BIT_KHR),
+        descriptor_binding(16, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                           VK_SHADER_STAGE_RAYGEN_BIT_KHR |
+                               VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+                               VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
+                               VK_SHADER_STAGE_MISS_BIT_KHR)};
+    bindings[15].descriptorCount = 4 * kTilesetChannelCount;
     VkDescriptorSetLayoutCreateInfo set_info{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    set_info.bindingCount = 15;
+    set_info.bindingCount =
+        static_cast<uint32_t>(sizeof(bindings) / sizeof(bindings[0]));
     set_info.pBindings = bindings;
     VkResult result = vkCreateDescriptorSetLayout(device, &set_info, nullptr,
                                                    &rt_set_layout_);
@@ -1933,11 +1989,16 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         frame_resource_slot_capacity_ >= frame_slot_count) {
         return true;
     }
+    // Phase 1 tileset Vulkan port (Task 6): raster set 1 gained binding 6
+    // (4*kTilesetChannelCount combined-image-sampler descriptors -- 24 since
+    // Phase 2's horizon-map channels grew the per-slot channel count 4->6)
+    // and binding 7 (1 uniform buffer, TilesetParams) per frame slot — added
+    // to the +4*kTilesetChannelCount / +1 below.
     const VkDescriptorPoolSize pool_sizes[] = {
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count * 2},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 13},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-         frame_slot_count * 79},
+         frame_slot_count * (79 + 4 * kTilesetChannelCount)},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 22}};
     VkDescriptorPoolCreateInfo pool{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -2072,15 +2133,23 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         if (rt_descriptor_pool_ != VK_NULL_HANDLE)
             vkDestroyDescriptorPool(vulkan_->device(), rt_descriptor_pool_,
                                     nullptr);
+        // Phase 1 tileset Vulkan port (Task 6): RT set 0 gained binding 15
+        // (4*kTilesetChannelCount combined-image-sampler descriptors -- 24
+        // since Phase 2's horizon-map channels grew the per-slot channel
+        // count 4->6) and binding 16 (1 uniform buffer, TilesetParams) per
+        // frame slot.
         const VkDescriptorPoolSize rt_sizes[] = {
             {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, frame_slot_count},
-            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, frame_slot_count * 5},
+            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+             frame_slot_count * (5 + 4 * kTilesetChannelCount)},
             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 5},
-            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 4}};
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 4},
+            {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count}};
         VkDescriptorPoolCreateInfo rt_pool{
             VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         rt_pool.maxSets = frame_slot_count;
-        rt_pool.poolSizeCount = 4;
+        rt_pool.poolSizeCount =
+            static_cast<uint32_t>(sizeof(rt_sizes) / sizeof(rt_sizes[0]));
         rt_pool.pPoolSizes = rt_sizes;
         VkResult rt_result = vkCreateDescriptorPool(
             vulkan_->device(), &rt_pool, nullptr, &rt_descriptor_pool_);
@@ -2123,6 +2192,710 @@ void VkSceneRenderer::update_frame_descriptors(FrameResources& frame) {
                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.stats);
     update_descriptor(frame.descriptor_sets[1], 5,
                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.materials);
+    write_tileset_descriptors_for_frame(frame.descriptor_sets[1]);
+}
+
+// --- Phase 1 tileset Vulkan port (Task 6) ----------------------------------
+
+bool VkSceneRenderer::create_tileset_image(VkFormat format, uint32_t edge_px,
+                                           uint32_t mip_levels,
+                                           uint32_t array_layers,
+                                           TilesetImage& out,
+                                           std::string& error) {
+    out = TilesetImage{};
+    if (edge_px == 0 || mip_levels == 0 || array_layers == 0) {
+        error = "create_tileset_image requires nonzero extent/mips/layers";
+        return false;
+    }
+    const VkDevice device = vulkan_->device();
+    VkImageCreateInfo create{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    create.imageType = VK_IMAGE_TYPE_2D;
+    create.format = format;
+    create.extent = {edge_px, edge_px, 1};
+    create.mipLevels = mip_levels;
+    create.arrayLayers = array_layers;
+    create.samples = VK_SAMPLE_COUNT_1_BIT;
+    create.tiling = VK_IMAGE_TILING_OPTIMAL;
+    create.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    create.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    create.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkImage image = VK_NULL_HANDLE;
+    VkResult result = vkCreateImage(device, &create, nullptr, &image);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateImage(tileset)", result, error);
+    VkMemoryRequirements requirements{};
+    vkGetImageMemoryRequirements(device, image, &requirements);
+    uint32_t memory_type = 0;
+    VkMemoryPropertyFlags selected = 0;
+    if (!matter::find_memory_type(vulkan_->physical_device(),
+                                  requirements.memoryTypeBits,
+                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                  memory_type, selected, error)) {
+        vkDestroyImage(device, image, nullptr);
+        return false;
+    }
+    VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocate.allocationSize = requirements.size;
+    allocate.memoryTypeIndex = memory_type;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    result = vkAllocateMemory(device, &allocate, nullptr, &memory);
+    if (result != VK_SUCCESS) {
+        vkDestroyImage(device, image, nullptr);
+        return fail_vk("vkAllocateMemory(tileset)", result, error);
+    }
+    result = vkBindImageMemory(device, image, memory, 0);
+    if (result != VK_SUCCESS) {
+        vkFreeMemory(device, memory, nullptr);
+        vkDestroyImage(device, image, nullptr);
+        return fail_vk("vkBindImageMemory(tileset)", result, error);
+    }
+    VkImageViewCreateInfo view_create{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    view_create.image = image;
+    view_create.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+    view_create.format = format;
+    view_create.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mip_levels,
+                                    0, array_layers};
+    VkImageView view = VK_NULL_HANDLE;
+    result = vkCreateImageView(device, &view_create, nullptr, &view);
+    if (result != VK_SUCCESS) {
+        vkFreeMemory(device, memory, nullptr);
+        vkDestroyImage(device, image, nullptr);
+        return fail_vk("vkCreateImageView(tileset)", result, error);
+    }
+    out.image = image;
+    out.view = view;
+    out.memory = memory;
+    return true;
+}
+
+void VkSceneRenderer::destroy_tileset_image(TilesetImage& image) {
+    if (!vulkan_) {
+        image = TilesetImage{};
+        return;
+    }
+    const VkDevice device = vulkan_->device();
+    if (image.view != VK_NULL_HANDLE) vkDestroyImageView(device, image.view, nullptr);
+    if (image.image != VK_NULL_HANDLE) vkDestroyImage(device, image.image, nullptr);
+    if (image.memory != VK_NULL_HANDLE) vkFreeMemory(device, image.memory, nullptr);
+    image = TilesetImage{};
+}
+
+namespace {
+// Non-capturing so it converts to matter::ImmediateRecordFn (a plain function
+// pointer); context travels via user_data like every other submit_immediate
+// caller in this file (see record_raster/record_cull_dispatch above).
+struct TilesetDummyInitRecord {
+    VkImage images[3]{};
+    bool rt_available = false;
+};
+
+void record_tileset_dummy_init(VkCommandBuffer cmd, void* user_data) {
+    const auto& rec = *static_cast<TilesetDummyInitRecord*>(user_data);
+    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 16};
+    const VkClearColorValue zero{{0.0f, 0.0f, 0.0f, 0.0f}};
+    const VkPipelineStageFlags2 dst_stage =
+        vk_scene_detail::ray_depth_destination_stages(rec.rt_available);
+    for (VkImage image : rec.images) {
+        VkImageMemoryBarrier2 to_dst{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+        to_dst.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+        to_dst.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        to_dst.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        to_dst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        to_dst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        to_dst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        to_dst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        to_dst.image = image;
+        to_dst.subresourceRange = range;
+        VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dep.imageMemoryBarrierCount = 1;
+        dep.pImageMemoryBarriers = &to_dst;
+        vkCmdPipelineBarrier2(cmd, &dep);
+
+        vkCmdClearColorImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                             &zero, 1, &range);
+
+        VkImageMemoryBarrier2 to_read = to_dst;
+        to_read.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        to_read.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        to_read.dstStageMask = dst_stage;
+        to_read.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        to_read.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        to_read.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkDependencyInfo dep2{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dep2.imageMemoryBarrierCount = 1;
+        dep2.pImageMemoryBarriers = &to_read;
+        vkCmdPipelineBarrier2(cmd, &dep2);
+    }
+}
+}  // namespace
+
+bool VkSceneRenderer::ensure_tileset_infra(std::string& error) {
+    if (tileset_infra_ready_) return true;
+    VkPhysicalDeviceFeatures features{};
+    vkGetPhysicalDeviceFeatures(vulkan_->physical_device(), &features);
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(vulkan_->physical_device(), &properties);
+
+    // Trilinear, repeat (cell UV is always in [0,1] — harmless), full LOD
+    // range. anisotropyEnable is gated on the device feature actually being
+    // enabled on this logical device (see vk_context.cpp's samplerAnisotropy
+    // enable, which mirrors the same physical-device query) — requesting
+    // anisotropy without the feature enabled is a validation error.
+    VkSamplerCreateInfo sampler_create{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    sampler_create.magFilter = VK_FILTER_LINEAR;
+    sampler_create.minFilter = VK_FILTER_LINEAR;
+    sampler_create.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    sampler_create.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sampler_create.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sampler_create.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sampler_create.anisotropyEnable =
+        features.samplerAnisotropy ? VK_TRUE : VK_FALSE;
+    sampler_create.maxAnisotropy =
+        features.samplerAnisotropy
+            ? std::min(8.0f, properties.limits.maxSamplerAnisotropy)
+            : 1.0f;
+    sampler_create.minLod = 0.0f;
+    sampler_create.maxLod = VK_LOD_CLAMP_NONE;
+    VkResult result = vkCreateSampler(vulkan_->device(), &sampler_create,
+                                      nullptr, &tileset_sampler_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateSampler(tileset)", result, error);
+
+    // 1x1x16-layer dummy per format family (albedo/ORM/horizon_a/horizon_b
+    // all share R8G8B8A8_UNORM -- Phase 2's horizon channels need no fourth
+    // dummy). Every one of the 16 array entries is "statically used" by the
+    // nonuniformEXT-indexed descriptor array regardless of which materials
+    // are drawn this frame, so all three dummies must be valid,
+    // SHADER_READ_ONLY_OPTIMAL images before the first frame — not just
+    // before the first load_tileset_slot() call.
+    if (!create_tileset_image(VK_FORMAT_R8G8B8A8_UNORM, 1, 1, 16,
+                              tileset_dummy_rgba8_, error) ||
+        !create_tileset_image(VK_FORMAT_R8G8_UNORM, 1, 1, 16,
+                              tileset_dummy_rg8_, error) ||
+        !create_tileset_image(VK_FORMAT_R16_UNORM, 1, 1, 16,
+                              tileset_dummy_r16_, error)) {
+        return false;
+    }
+    TilesetDummyInitRecord dummy_record{
+        {tileset_dummy_rgba8_.image, tileset_dummy_rg8_.image,
+         tileset_dummy_r16_.image},
+        vulkan_->ray_tracing_available()};
+    if (!matter::submit_immediate(*vulkan_, record_tileset_dummy_init,
+                                  &dummy_record, error,
+                                  matter::ImmediateSubmitPhase::image_transition)) {
+        return false;
+    }
+
+    if (!matter::create_buffer(*vulkan_, sizeof(TilesetParamsGpu),
+                               VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                               tileset_params_, error) ||
+        !matter::map_buffer(tileset_params_, error)) {
+        return false;
+    }
+    tileset_infra_ready_ = true;
+    write_tileset_params_buffer();
+    return true;
+}
+
+VkImageView VkSceneRenderer::tileset_channel_view(int slot, int channel) const {
+    if (slot >= 0 && slot < 4) {
+        const TilesetSlotGpu& s = tileset_slots_[slot];
+        if (s.loaded && s.channels[channel].view != VK_NULL_HANDLE)
+            return s.channels[channel].view;
+    }
+    switch (channel) {
+        case kTilesetChannelNormal: return tileset_dummy_rg8_.view;
+        case kTilesetChannelHeight: return tileset_dummy_r16_.view;
+        default: return tileset_dummy_rgba8_.view;  // albedo, orm
+    }
+}
+
+void VkSceneRenderer::write_tileset_params_buffer() {
+    if (!tileset_infra_ready_ || tileset_params_.mapped == nullptr) return;
+    TilesetParamsGpu params{};
+    for (int slot = 0; slot < 4; ++slot) {
+        const TilesetSlotGpu& s = tileset_slots_[slot];
+        params.slot_tile_size_m[slot] = s.tile_size_m;
+        params.slot_texels_per_meter[slot] = s.texels_per_meter;
+        params.slot_height_min[slot] = s.height_min;
+        params.slot_height_max[slot] = s.height_max;
+        params.slot_mean_albedo[slot][0] = s.mean_albedo[0];
+        params.slot_mean_albedo[slot][1] = s.mean_albedo[1];
+        params.slot_mean_albedo[slot][2] = s.mean_albedo[2];
+        // 0 = not loaded, 1 = loaded (no horizon data), 2 = loaded with
+        // horizon data. See TilesetParamsGpu's file comment.
+        params.slot_mean_albedo[slot][3] =
+            !s.loaded ? 0.0f : (s.has_horizon ? 2.0f : 1.0f);
+    }
+    // Ground POM UI knobs (matter::TilesetPomSettings, see
+    // set_tileset_pom_settings). "enabled == false" uploads pom_steps == 0,
+    // which gbuffer.frag's `full_steps > 0` check turns into a full skip of
+    // the march/self-shadow branch -- the flat Wang tile sample still
+    // applies, so this is a soft disable, not a black hole.
+    params.pom_steps = tileset_pom_settings_.enabled
+                            ? static_cast<float>(tileset_pom_settings_.steps)
+                            : 0.0f;
+    params.pom_refine_steps = 4.0f;
+    params.pom_max_distance_m = tileset_pom_settings_.max_distance_m;
+    params.pom_fade_band_m = tileset_pom_settings_.fade_band_m;
+    params.pom_max_relief_m = tileset_pom_settings_.relief_cap_m;
+    params.pom_max_march_m = tileset_pom_settings_.max_march_m;
+    params.pom_datum_bias_ao_shadow[0] = tileset_pom_settings_.datum_bias_m;
+    params.pom_datum_bias_ao_shadow[1] = tileset_pom_settings_.ao_strength;
+    params.pom_datum_bias_ao_shadow[2] = tileset_pom_settings_.shadow_strength;
+    params.pom_datum_bias_ao_shadow[3] = tileset_pom_settings_.horizon_strength;
+    // Task 11: direction-to-sun, same convention as the RT shadow push
+    // constants (record_ray_trace_dispatch): normalize(-sun_direction),
+    // since VkSceneLighting::sun_direction points FROM the sun toward the
+    // scene. Falls back to straight-up when the light vector degenerates.
+    {
+        const float x = -lighting_.sun_direction.x;
+        const float y = -lighting_.sun_direction.y;
+        const float z = -lighting_.sun_direction.z;
+        const float length = std::sqrt(x * x + y * y + z * z);
+        params.sun_dir_intensity[0] = length > 0.0f ? x / length : 0.0f;
+        params.sun_dir_intensity[1] = length > 0.0f ? y / length : 1.0f;
+        params.sun_dir_intensity[2] = length > 0.0f ? z / length : 0.0f;
+        params.sun_dir_intensity[3] = lighting_.sun_intensity;
+    }
+    std::memcpy(tileset_params_.mapped, &params, sizeof(params));
+    std::string flush_error;
+    matter::flush_buffer(tileset_params_, 0, sizeof(params), flush_error);
+}
+
+void VkSceneRenderer::write_tileset_descriptors_for_frame(VkDescriptorSet set) {
+    if (set == VK_NULL_HANDLE || !tileset_infra_ready_) return;
+    VkDescriptorImageInfo image_infos[4 * kTilesetChannelCount]{};
+    for (int slot = 0; slot < 4; ++slot) {
+        for (int channel = 0; channel < kTilesetChannelCount; ++channel) {
+            VkDescriptorImageInfo& info =
+                image_infos[slot * kTilesetChannelCount + channel];
+            info.sampler = tileset_sampler_;
+            info.imageView = tileset_channel_view(slot, channel);
+            info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
+    }
+    VkDescriptorBufferInfo params_info{tileset_params_.buffer, 0,
+                                       sizeof(TilesetParamsGpu)};
+    VkWriteDescriptorSet writes[2]{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = set;
+    writes[0].dstBinding = 6;
+    writes[0].descriptorCount = 4 * kTilesetChannelCount;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].pImageInfo = image_infos;
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = set;
+    writes[1].dstBinding = 7;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[1].pBufferInfo = &params_info;
+    vkUpdateDescriptorSets(vulkan_->device(), 2, writes, 0, nullptr);
+}
+
+namespace {
+// 6 = VkSceneRenderer::kTilesetChannelCount (private enum; this is a free
+// function in an anonymous namespace, so the literal is repeated here rather
+// than referenced -- matches the pre-existing style, which used a literal 4
+// before the horizon channels were added).
+struct TilesetUploadRecord {
+    VkBuffer staging = VK_NULL_HANDLE;
+    VkImage images[6]{};
+    uint32_t mip_counts[6]{};
+    std::vector<VkBufferImageCopy> regions[6];
+    bool rt_available = false;
+};
+
+void record_tileset_upload(VkCommandBuffer cmd, void* user_data) {
+    auto& rec = *static_cast<TilesetUploadRecord*>(user_data);
+    const VkPipelineStageFlags2 dst_stage =
+        vk_scene_detail::ray_depth_destination_stages(rec.rt_available);
+    for (int c = 0; c < 6; ++c) {
+        if (rec.images[c] == VK_NULL_HANDLE || rec.regions[c].empty()) continue;
+        const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0,
+                                            rec.mip_counts[c], 0, 16};
+        VkImageMemoryBarrier2 to_dst{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+        to_dst.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
+        to_dst.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        to_dst.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        to_dst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        to_dst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        to_dst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        to_dst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        to_dst.image = rec.images[c];
+        to_dst.subresourceRange = range;
+        VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dep.imageMemoryBarrierCount = 1;
+        dep.pImageMemoryBarriers = &to_dst;
+        vkCmdPipelineBarrier2(cmd, &dep);
+
+        vkCmdCopyBufferToImage(cmd, rec.staging, rec.images[c],
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               static_cast<uint32_t>(rec.regions[c].size()),
+                               rec.regions[c].data());
+
+        VkImageMemoryBarrier2 to_read = to_dst;
+        to_read.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        to_read.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        to_read.dstStageMask = dst_stage;
+        to_read.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        to_read.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        to_read.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkDependencyInfo dep2{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dep2.imageMemoryBarrierCount = 1;
+        dep2.pImageMemoryBarriers = &to_read;
+        vkCmdPipelineBarrier2(cmd, &dep2);
+    }
+}
+}  // namespace
+
+bool VkSceneRenderer::load_tileset_slot(int slot, const std::string& gtex_path,
+                                        std::string& error) {
+    error.clear();
+    if (fail_if_poisoned(error)) return false;
+    if (slot < 0 || slot >= 4) {
+        error = "load_tileset_slot: slot " + std::to_string(slot) +
+                " out of range [0,4)";
+        return false;
+    }
+    if (gtex_path.empty()) {
+        error = "load_tileset_slot: empty gtex_path";
+        return false;
+    }
+    if (!initialized_ || !tileset_infra_ready_) {
+        error = "load_tileset_slot: VkSceneRenderer not initialized";
+        return false;
+    }
+
+    tileset::GTexHeader header;
+    std::vector<uint8_t> albedo_rgb8, normal_rg8, orm_rgb8;
+    std::vector<uint16_t> height_r16;
+    // Phase 2 (horizon-map lighting), .gtex v2: two additional RGBA8
+    // out-params carrying CHAN_HORIZON_A/B (8 packed azimuth directions,
+    // quarter albedo resolution). Call site matches the 8-argument
+    // tileset::load_gtex overload landed in tileset_gtex.h (horizon_a/b
+    // appended after height_r16_out, before err) -- cross-checked against
+    // tileset_gtex_tests.cpp's call sites. v1 .gtex files leave both
+    // vectors empty (that overload's documented v1 behavior), which this
+    // function treats as "no horizon data" below, not an error.
+    std::vector<uint8_t> horizon_a, horizon_b;
+    if (!tileset::load_gtex(gtex_path, header, albedo_rgb8, normal_rg8,
+                            orm_rgb8, height_r16, horizon_a, horizon_b,
+                            error)) {
+        return false;
+    }
+
+    // .gtex atlases are always square with a 4x4 tile grid (tileset_gtex.h);
+    // load_gtex doesn't return pixel dimensions directly, so derive + cross-
+    // validate from the decoded buffer sizes (fail-closed on any mismatch —
+    // never trust a corrupt/foreign .gtex enough to compute a bogus stride).
+    if (height_r16.empty() || albedo_rgb8.size() % 3 != 0) {
+        error = "load_tileset_slot: empty or malformed .gtex channel data: " +
+                gtex_path;
+        return false;
+    }
+    const size_t pixel_count = height_r16.size();
+    const int atlas_dim = static_cast<int>(
+        std::lround(std::sqrt(static_cast<double>(pixel_count))));
+    if (atlas_dim <= 0 || static_cast<size_t>(atlas_dim) * atlas_dim != pixel_count ||
+        atlas_dim % 4 != 0 ||
+        albedo_rgb8.size() != pixel_count * 3 ||
+        normal_rg8.size() != pixel_count * 2 ||
+        orm_rgb8.size() != pixel_count * 3) {
+        error = "load_tileset_slot: atlas dimension/channel-size mismatch: " +
+                gtex_path;
+        return false;
+    }
+    const int tile_px = atlas_dim / 4;
+
+    // Horizon channels (v2 only): quarter albedo resolution, RGBA8 (4
+    // bytes/pixel), same square/4x4-grid contract as the core channels but
+    // at their own (smaller) atlas_dim/tile_px. Empty vectors (v1 file, or a
+    // malformed v2 file missing one of the pair) fail CLOSED to "no horizon
+    // data" -- has_horizon stays false and the slot loads normally with the
+    // horizon channels bound to the shared dummy, never a hard error, since
+    // horizon-map lighting is an optional enhancement layer.
+    //
+    // header.horizon_w_px/h_px (tileset_gtex.h, v2) give the atlas
+    // dimensions directly rather than requiring another sqrt-derivation
+    // from the decoded vector size, but are still cross-validated against
+    // the actual horizon_a/horizon_b byte counts below -- never trust a
+    // corrupt/foreign header field enough to compute a bogus stride.
+    const bool has_horizon = !horizon_a.empty() && !horizon_b.empty();
+    int horizon_atlas_dim = 0;
+    int horizon_tile_px = 0;
+    if (has_horizon) {
+        horizon_atlas_dim = header.horizon_w_px;
+        if (horizon_a.size() != horizon_b.size() ||
+            horizon_atlas_dim <= 0 || header.horizon_h_px != horizon_atlas_dim ||
+            horizon_atlas_dim % 4 != 0 ||
+            horizon_a.size() !=
+                static_cast<size_t>(horizon_atlas_dim) *
+                    static_cast<size_t>(horizon_atlas_dim) * 4) {
+            error = "load_tileset_slot: horizon atlas dimension mismatch: " +
+                    gtex_path;
+            return false;
+        }
+        horizon_tile_px = horizon_atlas_dim / 4;
+    }
+
+    tileset::SlicedChannel sliced_albedo, sliced_normal, sliced_orm, sliced_height;
+    tileset::SlicedChannel sliced_horizon_a, sliced_horizon_b;
+    if (!tileset::slice_channel(albedo_rgb8.data(), atlas_dim, atlas_dim, 3,
+                                /*expand_rgb_to_rgba=*/true,
+                                /*filter_as_u16=*/false, sliced_albedo, error) ||
+        !tileset::slice_channel(normal_rg8.data(), atlas_dim, atlas_dim, 2,
+                                /*expand_rgb_to_rgba=*/false,
+                                /*filter_as_u16=*/false, sliced_normal, error) ||
+        !tileset::slice_channel(orm_rgb8.data(), atlas_dim, atlas_dim, 3,
+                                /*expand_rgb_to_rgba=*/true,
+                                /*filter_as_u16=*/false, sliced_orm, error) ||
+        !tileset::slice_channel(reinterpret_cast<const uint8_t*>(height_r16.data()),
+                                atlas_dim, atlas_dim, 2,
+                                /*expand_rgb_to_rgba=*/false,
+                                /*filter_as_u16=*/true, sliced_height, error)) {
+        return false;
+    }
+    if (has_horizon &&
+        (!tileset::slice_channel(horizon_a.data(), horizon_atlas_dim,
+                                 horizon_atlas_dim, 4,
+                                 /*expand_rgb_to_rgba=*/false,
+                                 /*filter_as_u16=*/false, sliced_horizon_a,
+                                 error) ||
+         !tileset::slice_channel(horizon_b.data(), horizon_atlas_dim,
+                                 horizon_atlas_dim, 4,
+                                 /*expand_rgb_to_rgba=*/false,
+                                 /*filter_as_u16=*/false, sliced_horizon_b,
+                                 error))) {
+        return false;
+    }
+    tileset::SlicedChannel* slices[4] = {&sliced_albedo, &sliced_normal,
+                                        &sliced_orm, &sliced_height};
+    for (tileset::SlicedChannel* s : slices) {
+        if (s->tile_px != tile_px || s->mip_count <= 0 ||
+            static_cast<int>(s->layers.size()) != 16) {
+            error = "load_tileset_slot: slicer output shape mismatch: " +
+                    gtex_path;
+            return false;
+        }
+    }
+    tileset::SlicedChannel* horizon_slices[2] = {&sliced_horizon_a,
+                                                 &sliced_horizon_b};
+    if (has_horizon) {
+        for (tileset::SlicedChannel* s : horizon_slices) {
+            if (s->tile_px != horizon_tile_px || s->mip_count <= 0 ||
+                static_cast<int>(s->layers.size()) != 16) {
+                error = "load_tileset_slot: horizon slicer output shape "
+                        "mismatch: " + gtex_path;
+                return false;
+            }
+        }
+    }
+    // Index order matches TilesetChannel (albedo/normal/orm/height/
+    // horizon_a/horizon_b); horizon_a/b share albedo/orm's RGBA8 format.
+    const VkFormat formats[kTilesetChannelCount] = {
+        VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8_UNORM,
+        VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16_UNORM,
+        VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
+
+    // Build the single shared staging buffer (all channels/layers/mips) and
+    // the per-image copy regions before touching any renderer state, so a
+    // failure here leaves the previously loaded slot (if any) untouched.
+    size_t total_bytes = 0;
+    for (tileset::SlicedChannel* s : slices)
+        for (const auto& layer : s->layers)
+            for (const auto& mip : layer) total_bytes += mip.size();
+    if (has_horizon) {
+        for (tileset::SlicedChannel* s : horizon_slices)
+            for (const auto& layer : s->layers)
+                for (const auto& mip : layer) total_bytes += mip.size();
+    }
+    if (total_bytes == 0) {
+        error = "load_tileset_slot: sliced atlas produced zero bytes: " + gtex_path;
+        return false;
+    }
+
+    matter::VkBufferResource staging;
+    if (!matter::create_buffer(*vulkan_, static_cast<VkDeviceSize>(total_bytes),
+                               VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, staging,
+                               error) ||
+        !matter::map_buffer(staging, error)) {
+        return false;
+    }
+
+    TilesetImage new_images[kTilesetChannelCount];
+    bool created_ok = true;
+    for (int c = 0; c < 4 && created_ok; ++c) {
+        created_ok = create_tileset_image(
+            formats[c], static_cast<uint32_t>(tile_px),
+            static_cast<uint32_t>(slices[c]->mip_count), 16, new_images[c],
+            error);
+    }
+    if (created_ok && has_horizon) {
+        for (int c = 0; c < 2 && created_ok; ++c) {
+            created_ok = create_tileset_image(
+                formats[kTilesetChannelHorizonA + c],
+                static_cast<uint32_t>(horizon_tile_px),
+                static_cast<uint32_t>(horizon_slices[c]->mip_count), 16,
+                new_images[kTilesetChannelHorizonA + c], error);
+        }
+    }
+    if (!created_ok) {
+        for (auto& image : new_images) destroy_tileset_image(image);
+        return false;
+    }
+
+    TilesetUploadRecord upload_record;
+    upload_record.staging = staging.buffer;
+    upload_record.rt_available = vulkan_->ray_tracing_available();
+    size_t offset = 0;
+    for (int c = 0; c < 4; ++c) {
+        upload_record.images[c] = new_images[c].image;
+        upload_record.mip_counts[c] = static_cast<uint32_t>(slices[c]->mip_count);
+        auto& regions = upload_record.regions[c];
+        regions.reserve(static_cast<size_t>(slices[c]->mip_count) * 16);
+        for (int layer = 0; layer < 16; ++layer) {
+            int dim = tile_px;
+            for (int mip = 0; mip < slices[c]->mip_count; ++mip) {
+                const std::vector<uint8_t>& data =
+                    slices[c]->layers[static_cast<size_t>(layer)]
+                                     [static_cast<size_t>(mip)];
+                const size_t expected =
+                    static_cast<size_t>(dim) * dim *
+                    static_cast<size_t>(slices[c]->bytes_per_pixel);
+                if (data.size() != expected) {
+                    error = "load_tileset_slot: mip byte-size mismatch (layer " +
+                            std::to_string(layer) + " mip " +
+                            std::to_string(mip) + "): " + gtex_path;
+                    for (auto& image : new_images) destroy_tileset_image(image);
+                    return false;
+                }
+                std::memcpy(static_cast<uint8_t*>(staging.mapped) + offset,
+                           data.data(), data.size());
+                VkBufferImageCopy region{};
+                region.bufferOffset = static_cast<VkDeviceSize>(offset);
+                region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                region.imageSubresource.mipLevel = static_cast<uint32_t>(mip);
+                region.imageSubresource.baseArrayLayer =
+                    static_cast<uint32_t>(layer);
+                region.imageSubresource.layerCount = 1;
+                region.imageExtent = {static_cast<uint32_t>(dim),
+                                     static_cast<uint32_t>(dim), 1};
+                regions.push_back(region);
+                offset += data.size();
+                dim = dim / 2;
+            }
+        }
+    }
+    if (has_horizon) {
+        for (int hc = 0; hc < 2; ++hc) {
+            const int c = kTilesetChannelHorizonA + hc;
+            tileset::SlicedChannel* s = horizon_slices[hc];
+            upload_record.images[c] = new_images[c].image;
+            upload_record.mip_counts[c] = static_cast<uint32_t>(s->mip_count);
+            auto& regions = upload_record.regions[c];
+            regions.reserve(static_cast<size_t>(s->mip_count) * 16);
+            for (int layer = 0; layer < 16; ++layer) {
+                int dim = horizon_tile_px;
+                for (int mip = 0; mip < s->mip_count; ++mip) {
+                    const std::vector<uint8_t>& data =
+                        s->layers[static_cast<size_t>(layer)]
+                                 [static_cast<size_t>(mip)];
+                    const size_t expected = static_cast<size_t>(dim) * dim *
+                        static_cast<size_t>(s->bytes_per_pixel);
+                    if (data.size() != expected) {
+                        error = "load_tileset_slot: horizon mip byte-size "
+                                "mismatch (layer " + std::to_string(layer) +
+                                " mip " + std::to_string(mip) + "): " +
+                                gtex_path;
+                        for (auto& image : new_images)
+                            destroy_tileset_image(image);
+                        return false;
+                    }
+                    std::memcpy(static_cast<uint8_t*>(staging.mapped) + offset,
+                               data.data(), data.size());
+                    VkBufferImageCopy region{};
+                    region.bufferOffset = static_cast<VkDeviceSize>(offset);
+                    region.imageSubresource.aspectMask =
+                        VK_IMAGE_ASPECT_COLOR_BIT;
+                    region.imageSubresource.mipLevel =
+                        static_cast<uint32_t>(mip);
+                    region.imageSubresource.baseArrayLayer =
+                        static_cast<uint32_t>(layer);
+                    region.imageSubresource.layerCount = 1;
+                    region.imageExtent = {static_cast<uint32_t>(dim),
+                                         static_cast<uint32_t>(dim), 1};
+                    regions.push_back(region);
+                    offset += data.size();
+                    dim = dim / 2;
+                }
+            }
+        }
+    }
+    if (!matter::flush_buffer(staging, 0, total_bytes, error)) {
+        for (auto& image : new_images) destroy_tileset_image(image);
+        return false;
+    }
+    if (!matter::submit_immediate(*vulkan_, record_tileset_upload,
+                                  &upload_record, error,
+                                  matter::ImmediateSubmitPhase::staging_upload,
+                                  {staging.lifetime})) {
+        for (auto& image : new_images) destroy_tileset_image(image);
+        return false;
+    }
+
+    // Everything succeeded: swap the new images into place. Only now do we
+    // touch renderer state / destroy the previous occupant, so an unloaded or
+    // still-valid prior slot is never left half-updated on failure.
+    //
+    // wait_idle is unconditional: the descriptor rewrite below touches EVERY
+    // frame slot's raster set 1, and sets referenced by still-pending command
+    // buffers must not be updated (no UPDATE_AFTER_BIND on these layouts).
+    // Loads are rare (world connect / rebake), so the stall is acceptable.
+    vulkan_->wait_idle();
+    if (tileset_slots_[slot].loaded) {
+        for (auto& channel : tileset_slots_[slot].channels)
+            destroy_tileset_image(channel);
+    }
+    TilesetSlotGpu& target = tileset_slots_[slot];
+    target = TilesetSlotGpu{};
+    for (int c = 0; c < 4; ++c) target.channels[c] = new_images[c];
+    if (has_horizon) {
+        target.channels[kTilesetChannelHorizonA] =
+            new_images[kTilesetChannelHorizonA];
+        target.channels[kTilesetChannelHorizonB] =
+            new_images[kTilesetChannelHorizonB];
+    }
+    target.has_horizon = has_horizon;
+    target.tile_size_m = header.tile_size_m;
+    target.texels_per_meter = static_cast<float>(header.texels_per_meter);
+    target.height_min = header.height_min;
+    target.height_max = header.height_max;
+    tileset::mean_rgb(albedo_rgb8.data(), atlas_dim, atlas_dim, 3,
+                      target.mean_albedo);
+    target.loaded = true;
+
+    write_tileset_params_buffer();
+    for (auto& frame : frames_)
+        write_tileset_descriptors_for_frame(frame.descriptor_sets[1]);
+    return true;
+}
+
+void VkSceneRenderer::unload_tileset_slot(int slot) {
+    if (slot < 0 || slot >= 4) return;
+    if (!tileset_slots_[slot].loaded) return;
+    if (vulkan_) vulkan_->wait_idle();
+    for (auto& channel : tileset_slots_[slot].channels)
+        destroy_tileset_image(channel);
+    tileset_slots_[slot] = TilesetSlotGpu{};
+    write_tileset_params_buffer();
+    for (auto& frame : frames_)
+        write_tileset_descriptors_for_frame(frame.descriptor_sets[1]);
 }
 
 void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {
@@ -2365,11 +3138,28 @@ bool VkSceneRenderer::init(std::string& error) {
         destroy_pipeline();
         return false;
     }
+    // Phase 1 tileset Vulkan port (Task 6): sampler + dummy images + params
+    // UBO must exist before the first ensure_frame_resources() call below,
+    // since update_frame_descriptors() always writes raster set 1 bindings
+    // 6/7 (dummies until a world loads a real tileset slot).
+    if (!ensure_tileset_infra(error)) {
+        destroy_pipeline();
+        return false;
+    }
     if (!volumetrics_) {
         auto vol = std::make_unique<VkVolumetrics>();
         std::string vol_error;
-        if (vol->init(*vulkan_, vol_error))
+        if (vol->init(*vulkan_, vol_error)) {
             volumetrics_ = std::move(vol);
+        } else {
+            // Volumetrics are optional, but a failed init must not be silent:
+            // every downstream symptom (empty froxel volume, dead debug
+            // views) is otherwise indistinguishable from "disabled".
+            std::fprintf(stderr,
+                         "[vk] volumetrics init FAILED (volumetrics disabled): %s\n",
+                         vol_error.c_str());
+            std::fflush(stderr);
+        }
     }
     if (sizeof(FrameConstants) >
         std::min(limits_.max_uniform_buffer_range, limits_.max_buffer_size)) {
@@ -3790,6 +4580,11 @@ void VkSceneRenderer::set_lighting(const VkSceneLighting& lighting) {
         gi_history_reset_pending_ = true;
     lighting_ = lighting;
     lighting_initialized_ = true;
+    // Task 11: mirror the fresh sun direction/intensity into the tileset UBO
+    // every frame -- write_tileset_params_buffer() no-ops until
+    // ensure_tileset_infra() has run, and re-derives the (cheap) slot table
+    // from tileset_slots_ each call, so this stays a plain memcpy+flush.
+    if (source_changed) write_tileset_params_buffer();
 }
 
 void VkSceneRenderer::set_display_exposure(float exposure_ev) {
@@ -3803,6 +4598,18 @@ void VkSceneRenderer::set_volumetrics_settings(
     volumetrics_debug_view_ = s.vol_debug_view;
     if (volumetrics_)
         volumetrics_->update_settings(s, fog);
+}
+
+void VkSceneRenderer::set_tileset_pom_settings(
+    const matter::TilesetPomSettings& s) {
+    tileset_pom_settings_ = s;
+    // write_tileset_params_buffer() no-ops until ensure_tileset_infra() has
+    // run and re-derives the (cheap) slot table from tileset_slots_ every
+    // call, same pattern as the per-frame sun_dir_intensity mirror in
+    // set_lighting -- calling it here keeps the UBO in lockstep with the
+    // settings the instant they change rather than waiting for the next
+    // lighting update.
+    write_tileset_params_buffer();
 }
 
 void VkSceneRenderer::release_part(uint64_t part_hash) {
@@ -5205,7 +6012,23 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
                                       selected.rt_error_counter.size};
     VkDescriptorBufferInfo test_output_info{selected.rt_test_output.buffer, 0,
                                             selected.rt_test_output.size};
-    VkWriteDescriptorSet writes[15]{};
+    // Phase 1 tileset Vulkan port (Task 6): bindings 15/16 mirror raster set
+    // 1's bindings 6/7. Rebuilt from current renderer state (loaded slots or
+    // dummies) every frame here, the same way the rest of this array already
+    // is — no separate "on slot load" write is needed for the RT set.
+    VkDescriptorImageInfo tileset_image_infos[4 * kTilesetChannelCount]{};
+    for (int slot = 0; slot < 4; ++slot) {
+        for (int channel = 0; channel < kTilesetChannelCount; ++channel) {
+            VkDescriptorImageInfo& info =
+                tileset_image_infos[slot * kTilesetChannelCount + channel];
+            info.sampler = tileset_sampler_;
+            info.imageView = tileset_channel_view(slot, channel);
+            info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
+    }
+    VkDescriptorBufferInfo tileset_params_info{tileset_params_.buffer, 0,
+                                               sizeof(TilesetParamsGpu)};
+    VkWriteDescriptorSet writes[17]{};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].pNext = &as_write;
     writes[0].dstSet = rt_descriptor_sets_[frame.frame_slot];
@@ -5260,14 +6083,32 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
             : VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         writes[i].pImageInfo = extra_infos[i - 11];
     }
-    vkUpdateDescriptorSets(vulkan_->device(), 15, writes, 0, nullptr);
+    writes[15].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[15].dstSet = rt_descriptor_sets_[frame.frame_slot];
+    writes[15].dstBinding = 15;
+    writes[15].descriptorCount = 4 * kTilesetChannelCount;
+    writes[15].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[15].pImageInfo = tileset_image_infos;
+    writes[16].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[16].dstSet = rt_descriptor_sets_[frame.frame_slot];
+    writes[16].dstBinding = 16;
+    writes[16].descriptorCount = 1;
+    writes[16].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[16].pBufferInfo = &tileset_params_info;
+    vkUpdateDescriptorSets(vulkan_->device(), 17, writes, 0, nullptr);
     struct alignas(16) ShadowConstants {
         GpuMat4 clip_to_world;
         float to_sun_max_distance[4];
         float bias;
         uint32_t samples;
         uint32_t debug_view;
-        uint32_t pad;
+        // Ground-POM roof escape (mirrors rt_lighting.rgen's shading-origin
+        // lift): world-space distance to lift the shadow ray origin along
+        // the sun direction for materials that carry a ground tileset
+        // detail slot. Sourced from the LIVE tileset POM settings so the
+        // tuning UI's relief-cap slider keeps working (see
+        // write_tileset_params_buffer's identical pom_max_relief_m source).
+        float pom_lift;
     } constants{};
     constants.clip_to_world = pack_glsl_mat4(matrices.clip_to_world);
     const float x = -lighting_.sun_direction.x;
@@ -5281,6 +6122,7 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     constants.bias = ray_tracing_settings_.bias;
     constants.samples = std::max(1u, ray_tracing_settings_.samples);
     constants.debug_view = ray_tracing_settings_.debug_view ? 1u : 0u;
+    constants.pom_lift = tileset_pom_settings_.relief_cap_m + 0.02f;
     last_rt_samples_ = constants.samples;
     last_rt_debug_view_ = constants.debug_view != 0;
     vkCmdBindPipeline(frame.command_buffer,

@@ -560,7 +560,12 @@ void init_camera(matter::CameraDesc& camera) {
     camera.target = {0.0f, 9.0f, 0.0f};
     camera.up = {0.0f, 1.0f, 0.0f};
     camera.vertical_fov_radians = 0.78539816339f;
-    camera.near_plane = 1.0f;
+    // 0.1 m near plane: a 1.0 m near plane clipped every ground fragment
+    // within a meter of a low (walk/crouch-height) camera, opening a razor
+    // straight horizontal hole in the flat ground mesh with the distant
+    // horizon strip showing through. Reversed-Z depth (near -> 1, far -> 0)
+    // keeps plenty of precision at near = 0.1 even with far = 5000.
+    camera.near_plane = 0.1f;
     camera.far_plane = 5000.0f;
 }
 
@@ -1695,6 +1700,7 @@ int main() {
         options.vulkan_volumetrics = stats.volumetrics;
         options.vulkan_volumetrics.vol_debug_view =
             static_cast<float>(stats.vol_debug_view);
+        options.vulkan_tileset_pom = stats.tileset_pom;
         options.vulkan_ray_tracing.enabled =
             vulkan->ray_tracing_available() && !disable_vulkan_rt;
         if (!session->render(frame_camera, render_frame, options, error)) {

@@ -898,6 +898,21 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         j.token = token;
         return gpu_jobs.run_blocking(std::move(j), err);
     };
+#ifdef MATTER_VULKAN_VIEWER
+    // Phase 1 tileset Vulkan port (Task 6): mirrors the GL path's
+    // viewer::tileset_provider::load_slot call (run_tileset_deferred, right
+    // after bake_tileset_gpu) into the Vulkan renderer. Null vk_scene (no
+    // Vulkan render device / GL-only viewer) means the world stays untextured
+    // on the Vulkan side, matching the fail-closed rule.
+    cfg.vk_tileset_load = [this](int slot, const std::string& gtex_path,
+                                 std::string& err) -> bool {
+        if (!vk_scene) {
+            err = "vk_tileset_load: Vulkan renderer not active";
+            return false;
+        }
+        return vk_scene->load_tileset_slot(slot, gtex_path, err);
+    };
+#endif
     // Signal whether GLAD function pointers are loaded (i.e., a window exists)
     // so the tileset phase can choose between headless settle-only and full GPU
     // atlas bake. GLAD pointers are process-global and written once at window
@@ -3262,6 +3277,19 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
         j.token = token;
         return gpu_jobs.run_blocking(std::move(j), err);
     };
+#ifdef MATTER_VULKAN_VIEWER
+    // Phase 1 tileset Vulkan port (Task 6): same wiring as execute_bake above,
+    // refreshed here since this path re-creates the LocalProvider with a
+    // fresh cfg_ for the cone rebuild.
+    cfg.vk_tileset_load = [this](int slot, const std::string& gtex_path,
+                                 std::string& err) -> bool {
+        if (!vk_scene) {
+            err = "vk_tileset_load: Vulkan renderer not active";
+            return false;
+        }
+        return vk_scene->load_tileset_slot(slot, gtex_path, err);
+    };
+#endif
 #ifdef MATTER_VULKAN_ONLY
     cfg.gl_available = false;
 #else
@@ -4008,6 +4036,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->vk_scene->set_gi_settings(opts.vulkan_gi);
     impl_->vk_scene->set_volumetrics_settings(opts.vulkan_volumetrics,
                                                impl_->authored_fog_);
+    impl_->vk_scene->set_tileset_pom_settings(opts.vulkan_tileset_pom);
     const int material_count = MaterialRegistryCount();
     std::vector<MaterialGpuRecord> material_records(
         static_cast<size_t>(material_count));

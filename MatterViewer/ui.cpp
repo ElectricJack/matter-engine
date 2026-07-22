@@ -78,15 +78,21 @@ bool Ui::setup(GLFWwindow* window, matter::VulkanDevice& vulkan,
                std::string& error) {
     vulkan_ = &vulkan;
     image_count_ = vulkan.swapchain_image_count();
+    // Dear ImGui's Vulkan backend (1.92+) allocates separate SAMPLED_IMAGE and
+    // SAMPLER descriptor sets from this pool (see imgui_impl_vulkan.cpp's
+    // DescriptorSetLayoutTexture/DescriptorSetLayoutSampler); without those
+    // pool sizes the validation layer warns on every vkAllocateDescriptorSets.
     const VkDescriptorPoolSize pool_sizes[] = {
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 128},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 128},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 128},
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 128},
+        {VK_DESCRIPTOR_TYPE_SAMPLER, 16},
     };
     VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pool.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
     pool.maxSets = 384;
-    pool.poolSizeCount = 3;
+    pool.poolSizeCount = 5;
     pool.pPoolSizes = pool_sizes;
     VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
     const VkResult pool_result = vkCreateDescriptorPool(
@@ -620,6 +626,24 @@ void Ui::draw_debug_panel(ViewerStats& s) {
         ImGui::SliderFloat("Fog falloff", &s.volumetrics.fog_falloff_mul, 0.1f, 4.0f, "%.2f");
         const char* vol_views[] = { "Off", "Density", "Scatter", "Integrated" };
         ImGui::Combo("Vol debug##vd", &s.vol_debug_view, vol_views, 4);
+    }
+
+    if (ImGui::CollapsingHeader("Ground POM")) {
+        matter::TilesetPomSettings& pom = s.tileset_pom;
+        ImGui::Checkbox("POM enable##pom", &pom.enabled);
+        ImGui::SliderFloat("Relief cap (m)", &pom.relief_cap_m, 0.0f, 0.5f, "%.3f");
+        ImGui::SliderFloat("Datum bias (m)", &pom.datum_bias_m, 0.0f, 0.3f, "%.3f");
+        ImGui::SliderFloat("Max march (m)", &pom.max_march_m, 0.1f, 2.0f, "%.2f");
+        ImGui::SliderInt("Steps", &pom.steps, 4, 64);
+        ImGui::SliderFloat("Max distance (m)", &pom.max_distance_m, 5.0f, 100.0f, "%.1f");
+        ImGui::SliderFloat("Fade band (m)", &pom.fade_band_m, 1.0f, 20.0f, "%.1f");
+        ImGui::SliderFloat("AO strength", &pom.ao_strength, 0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Shadow strength", &pom.shadow_strength, 0.0f, 2.0f, "%.2f");
+        // Phase 2 (horizon-map lighting): blends the baked per-direction
+        // horizon occlusion toward 0 (fully visible) instead of always
+        // applying it at full strength. No effect on slots loaded from a
+        // v1 .gtex (no horizon data baked).
+        ImGui::SliderFloat("Horizon occlusion", &pom.horizon_strength, 0.0f, 1.0f, "%.2f");
     }
 
     ImGui::SeparatorText("Debug View");
