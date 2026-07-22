@@ -1700,3 +1700,23 @@ run-tilesetmetrics: tileset_metrics_tests
 clean: clean-tilesetmetrics
 clean-tilesetmetrics:
 	rm -f tileset_metrics_tests
+
+# ---------------------------------------------------------------------------
+# E1a — evt::Channel<T> transport primitive tests (event-system.md §II.1 E1).
+# Self-contained append-only block, same pattern as tileset_metrics_tests
+# above: separate .PHONY line and clean hook so the shared .PHONY/clean lines
+# stay untouched. Header-only template (MatterEngine3/include/matter/event/
+# channel.h) — no engine .cpp deps, no GL/raylib. -lpthread for the
+# std::thread producer/consumer tests.
+# ---------------------------------------------------------------------------
+event_channel_tests: event_channel_tests.cpp ../include/matter/event/channel.h check.h
+	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include \
+	    -o $@ event_channel_tests.cpp -lpthread
+
+run-eventchannel: event_channel_tests
+	./event_channel_tests
+
+.PHONY: run-eventchannel clean-eventchannel
+clean: clean-eventchannel
+clean-eventchannel:
+	rm -f event_channel_tests
