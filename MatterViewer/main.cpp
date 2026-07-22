@@ -1394,10 +1394,10 @@ int main() {
     // Registration handles must outlive the frame loop, so they live here.
     auto reg_reload = registry.must_register_handler<viewer::ViewerReload>(
         matter::evt::CommandScope::App, app_lane, [&](const viewer::ViewerReload&) {
-            bake_ready = false;
-            screenshot_settle = 0;
-            viewer::prepare_world_reload(stats);
-            binding.request_reload();  // clears app models + session->reload()
+            // RECORD intent only; the model-clear + session->reload() heavy op
+            // runs at the post-frame seam (S I.13), never mid-ImGui-draw. The
+            // request is accepted and ACKed synchronously here.
+            binding.request_reload();
             return viewer::ViewerReload::Result::succeeded(true);
         });
     auto reg_switch = registry.must_register_handler<viewer::ViewerSwitchWorld>(
@@ -1405,22 +1405,12 @@ int main() {
             const int selected = cmd.index;
             if (selected < 0 || selected >= static_cast<int>(worlds.size()))
                 return viewer::ViewerSwitchWorld::Result::failed("world index out of range");
-            // SessionBinding::replace runs the S I.13 epoch sequence; a failed
-            // open leaves the old session + epoch intact.
-            const bool ok = binding.replace([&]() { return open_world(worlds[selected]); });
-            if (!ok) {
-                viewer::complete_world_switch(stats, false);
-                return viewer::ViewerSwitchWorld::Result::failed("open_world failed");
-            }
-            viewer::complete_world_switch(stats, true);
-            stats.world_current = selected;
-            selected_world_reported = false;
-            console_log.push(viewer::LogSeverity::Info,
-                             "Connected to " + worlds[selected].world_name);
-            bake_ready = false;
-            screenshot_settle = 0;
-            apply_world_resolver_defaults(worlds[selected].world_name, active_radius,
-                                          min_projected_size, stats);
+            // RECORD intent only; SessionBinding::replace (the S I.13 epoch
+            // sequence) runs at the post-frame seam, not synchronously mid-draw.
+            // The request is accepted and ACKed here; the actual session
+            // destroy/recreate (and success/failure bookkeeping) happens at the
+            // seam, matching the original flag-based timing.
+            binding.request_switch(selected);
             return viewer::ViewerSwitchWorld::Result::succeeded(true);
         });
     auto reg_open_part = registry.must_register_handler<viewer::WorkbenchOpenPart>(
@@ -2143,12 +2133,43 @@ int main() {
                         stats.culled_clusters, stats.gpu_culled_hiz);
             stats_label.clear();
         }
-        // Reload / world-switch are no longer polled flags handled here: they
-        // are the viewer.reload / viewer.switch_world commands. UI triggers run
-        // them synchronously via execute() during panel draw; FIFO triggers run
-        // them at the registry pump right after the FIFO parse (S I.11, E4b).
-        // SessionBinding::replace performs the S I.13 close/quiesce/replace/
-        // rebind/open/request epoch sequence for a switch.
+        // Post-frame seam (event-system.md S I.13). Reload / world-switch are
+        // no longer polled flags but viewer.reload / viewer.switch_world
+        // commands; their handlers only RECORD pending intent on the
+        // SessionBinding (UI triggers via execute() during panel draw; FIFO
+        // triggers via the registry pump after the FIFO parse). The heavy
+        // session op is applied HERE — after end_frame, never mid-ImGui-draw —
+        // matching the original flag-based timing. Both UI and FIFO switch/
+        // reload funnel to this single apply point.
+        if (binding.pending_reload()) {
+            binding.clear_pending_reload();
+            bake_ready = false;
+            screenshot_settle = 0;
+            viewer::prepare_world_reload(stats);
+            binding.reload();  // clears app models + session->reload()
+        }
+        const int pending_switch = binding.pending_switch();
+        if (pending_switch >= 0 && pending_switch < static_cast<int>(worlds.size())) {
+            binding.clear_pending_switch();
+            const int selected = pending_switch;
+            // SessionBinding::replace runs the S I.13 close/quiesce/replace/
+            // rebind/open/request epoch sequence; a failed open leaves the old
+            // session + epoch fully intact.
+            const bool ok = binding.replace([&]() { return open_world(worlds[selected]); });
+            if (!ok) {
+                viewer::complete_world_switch(stats, false);
+            } else {
+                viewer::complete_world_switch(stats, true);
+                stats.world_current = selected;
+                selected_world_reported = false;
+                console_log.push(viewer::LogSeverity::Info,
+                                 "Connected to " + worlds[selected].world_name);
+                bake_ready = false;
+                screenshot_settle = 0;
+                apply_world_resolver_defaults(worlds[selected].world_name, active_radius,
+                                              min_projected_size, stats);
+            }
+        }
     }
 
 #ifndef _WIN32

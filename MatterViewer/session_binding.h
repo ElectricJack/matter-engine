@@ -84,6 +84,21 @@ public:
     // ActiveSession epoch, then requests the initial bake.
     void initialize();
 
+    // --- pending intent (recorded during execute/pump; applied at the seam) --
+    // The App command handlers (viewer.switch_world / viewer.reload) RECORD
+    // intent here and return success synchronously; main.cpp applies the heavy
+    // session op at the post-frame seam (event-system.md S I.13, matching the
+    // original flag-based timing) so the session destroy/recreate never runs
+    // mid-ImGui-draw. UI-execute() and FIFO-dispatch() triggers both funnel
+    // through this one recorded-intent → seam-apply path.
+    void request_switch(int index) { pending_switch_ = index; }
+    void request_reload() { pending_reload_ = true; }
+    int pending_switch() const { return pending_switch_; }  // -1 == none
+    bool pending_reload() const { return pending_reload_; }
+    void clear_pending_switch() { pending_switch_ = -1; }
+    void clear_pending_reload() { pending_reload_ = false; }
+
+    // --- heavy session ops (invoked ONLY at the post-frame seam) -------------
     // World switch (S I.13 sequence above). `open_next` opens the target world
     // without baking. Returns true on success; on a failed open returns false
     // and leaves the old session + epoch intact. The move of the new session
@@ -93,7 +108,7 @@ public:
 
     // In-place reload (session reused; epoch unchanged). Clears app models then
     // calls session->reload().
-    void request_reload();
+    void reload();
 
     // The active ActiveSession epoch token (session id + generation), for
     // diagnostics / tests.
@@ -116,6 +131,10 @@ private:
     uint64_t next_session_id_ = 1;
     uint64_t current_session_id_ = 0;
     uint64_t current_generation_ = 0;
+    // Pending world-switch/reload intent, recorded by the command handlers and
+    // consumed at main.cpp's post-frame seam. -1 / false == nothing pending.
+    int pending_switch_ = -1;
+    bool pending_reload_ = false;
 };
 
 }  // namespace viewer

@@ -86,9 +86,10 @@ bool SessionBinding::replace(const OpenFn& open_next) {
     return true;
 }
 
-void SessionBinding::request_reload() {
+void SessionBinding::reload() {
     // Reload reuses the session in place: the hub and epoch survive. Clear app
-    // models (selection referencing regenerated content), then reload.
+    // models (selection referencing regenerated content), then reload. Runs at
+    // main.cpp's post-frame seam (never mid-draw), from recorded pending intent.
     if (clear_models_) clear_models_();
     if (session_) session_->reload();
 }
