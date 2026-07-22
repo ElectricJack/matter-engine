@@ -631,6 +631,15 @@ TILESETPARAMS_TARGET = tileset_params_tests
 TILESETPARAMS_CPP = tileset_params_tests.cpp $(filter-out tileset_bake_tests.cpp,$(TILESETBAKE_CPP))
 TILESETPARAMS_C = $(TILESETBAKE_C)
 
+# Bake Lab task 5.4 — settle_bench headless benchmark CLI. Pulls in
+# build_settle_plan's dependencies (same as TILESETBAKE_CPP: full script host +
+# part_graph + tileset_bake/settle/collider) plus tileset_metrics.cpp for the
+# pose-delta compare gate.
+SETTLEBENCH_TARGET = settle_bench
+SETTLEBENCH_CPP = settle_bench.cpp $(filter-out tileset_bake_tests.cpp,$(TILESETBAKE_CPP)) \
+                  ../src/tileset_metrics.cpp
+SETTLEBENCH_C = $(TILESETBAKE_C)
+
 # ===== flavor qjs (script_host_tests + tileset_dsl_tests + terrainnoise) ===
 # NOTE: script_host_tests originally compiled with CFLAGS + INCLUDE_PATHS +
 # QJS_INC (no -DMATTER_HAVE_SCRIPT_HOST). That maps to `qjs`, not `sh`.
@@ -877,6 +886,7 @@ sh_CPP_SRCS := $(sort \
     $(LIGHTING_GARDEN_CPP) \
     $(TILESETBAKE_CPP) \
     $(TILESETPARAMS_CPP) \
+    $(SETTLEBENCH_CPP) \
     $(LIVEPROD_CPP))
 
 sp2_CPP_SRCS := $(sort $(SHLIB_CPP))
@@ -997,6 +1007,7 @@ LIGHTING_GARDEN_OBJS = $(call obj_list,sh,$(LIGHTING_GARDEN_CPP)) \
                        $(call obj_list,mslc,$(LIGHTING_GARDEN_C)) $(qjsc_C_OBJS)
 TILESETBAKE_OBJS = $(call obj_list,sh,$(TILESETBAKE_CPP)) $(call obj_list,mslc,$(TILESETBAKE_C)) $(qjsc_C_OBJS)
 TILESETPARAMS_OBJS = $(call obj_list,sh,$(TILESETPARAMS_CPP)) $(call obj_list,mslc,$(TILESETPARAMS_C)) $(qjsc_C_OBJS)
+SETTLEBENCH_OBJS = $(call obj_list,sh,$(SETTLEBENCH_CPP)) $(call obj_list,mslc,$(SETTLEBENCH_C)) $(qjsc_C_OBJS)
 LIVEPROD_OBJS    = $(call obj_list,sh,$(LIVEPROD_CPP)) $(call obj_list,mslc,$(LIVEPROD_C)) $(qjsc_C_OBJS)
 
 SHLIB_OBJS = $(call obj_list,sp2,$(SHLIB_CPP)) $(call obj_list,mslc,$(SHLIB_C)) $(qjsc_C_OBJS)
@@ -1010,7 +1021,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-tilesetslicer run-baketrace run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather
+.PHONY: clean run-matrix run-tilesetslicer run-baketrace run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-settlebench
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1388,6 +1399,15 @@ $(TILESETPARAMS_TARGET): $(TILESETPARAMS_OBJS) $(BOX3D_DIR)/libbox3d.a
 run-tilesetparams: $(TILESETPARAMS_TARGET)
 	./$(TILESETPARAMS_TARGET)
 
+# Bake Lab task 5.4 — settle_bench headless benchmark CLI.
+$(SETTLEBENCH_TARGET): $(SETTLEBENCH_OBJS) $(BOX3D_DIR)/libbox3d.a
+	$(CC) $(SETTLEBENCH_OBJS) -o $@ \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) \
+	      $(BOX3D_DIR)/libbox3d.a
+
+run-settlebench: $(SETTLEBENCH_TARGET)
+	./$(SETTLEBENCH_TARGET) --spec synthetic
+
 # tileset .gtex format round-trip.
 $(TILESETGTEX_TARGET): $(TILESETGTEX_OBJS)
 	$(CC) $(TILESETGTEX_OBJS) -o $@ $(CFLAGS) -I../include -I../../Libraries/raylib/src
@@ -1656,6 +1676,7 @@ clean:
 	      $(SCENE_REGISTRY_TARGET) \
 	      $(ENTITY_RECIPE_TARGET) \
 	      $(DYNAMIC_SLOTS_TARGET) \
+	      $(SETTLEBENCH_TARGET) \
 	      tileset_physics_tests tileset_core_tests tileset_placement_tests \
 	      gpu_tests tileset_gpu_tests tileset_seam_tests tileset_provider_tests \
 	      tileset_load_tests api_tests async_bake_tests demand_bake_tests transient_tests release_part_tests \
