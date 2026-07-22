@@ -19,28 +19,27 @@ void draw_placeholder_tab(const char* name, const char* coming, ImGuiTabItemFlag
 } // namespace
 
 void BakeLab::draw_contents(matter::WorldSession* session,
-                            const std::vector<WorldEntry>& worlds, ViewerStats& stats,
-                            const std::string& shared_lib_root) {
+                            const std::vector<WorldEntry>& worlds,
+                            WorkbenchHandoff& handoff) {
     // main.cpp calls workbench().begin_frame() unconditionally each frame
     // (even while this window is hidden) so wants_viewport() never sticks on
     // a stale true if the Bake Lab window is closed mid-isolation.
     if (ImGui::BeginTabBar("##bake_lab_tabs")) {
-        if (ImGui::BeginTabItem("Assets")) {
-            asset_browser_.draw(worlds, stats, shared_lib_root,
-                                pending_workbench_module, pending_workbench_project,
-                                focus_workbench_tab_);
-            ImGui::EndTabItem();
-        }
-        // W1->W2 handoff: the Assets tab's "Open in Workbench" action records
-        // pending_workbench_module/project and sets focus_workbench_tab_. Open
-        // the part in the isolation session here (unconditional so it fires
-        // even if the tab body is skipped), then clear the pending state. The
-        // focus flag forces the Workbench tab selected this same frame via
-        // ImGuiTabItemFlags_SetSelected.
-        if (!pending_workbench_module.empty()) {
-            workbench_.open_part(pending_workbench_project, pending_workbench_module);
-            pending_workbench_module.clear();
-            pending_workbench_project.clear();
+        // Open-in-Workbench handoff (see WorkbenchHandoff in ui.h): the
+        // standalone Asset Browser pane's "Open in Workbench" action records
+        // handoff.pending_module/pending_project and sets
+        // handoff.focus_requested. Open the part in the isolation session
+        // here (unconditional so it fires even if the tab body is skipped
+        // this frame), then clear the pending state. focus_workbench_tab_
+        // forces the Workbench tab selected this same frame via
+        // ImGuiTabItemFlags_SetSelected; Ui::draw_bake_lab_panel separately
+        // uses handoff.focus_requested to raise the whole window.
+        if (!handoff.pending_module.empty()) {
+            workbench_.open_part(handoff.pending_project, handoff.pending_module);
+            handoff.pending_module.clear();
+            handoff.pending_project.clear();
+            if (handoff.focus_requested) focus_workbench_tab_ = true;
+            handoff.focus_requested = false;
         }
         // W2 (part-workbench.md): isolation scene + bake button + Params &
         // Variations panel. Body lives entirely in part_workbench.{h,cpp}.

@@ -1279,6 +1279,12 @@ int main() {
     // Bake Lab shell (task 2.1): window drawn with the other panels below;
     // tick_frame runs each frame beside session tick/pump.
     viewer::BakeLab bake_lab;
+    // Standalone Assets pane (promoted out of Bake Lab's former "Assets"
+    // tab): a loop-scope AssetBrowser owner, same pattern as bake_lab above.
+    // workbench_handoff is the one-directional "Open in Workbench" channel
+    // between it and bake_lab — see WorkbenchHandoff's doc comment in ui.h.
+    viewer::AssetBrowser asset_browser;
+    viewer::WorkbenchHandoff workbench_handoff;
     // Part Workbench (part-workbench.md W2): private isolation session, see
     // part_workbench.h's architecture note. cache/lab-scratch is entirely
     // separate from production worlds' <project>/.cache/<world> roots.
@@ -1573,7 +1579,9 @@ int main() {
                 ui.draw_viewport_window();
                 ui.draw_console_panel(console_log);
                 ui.draw_debug_panel(stats);
-                ui.draw_bake_lab_panel(bake_lab, session.get(), worlds, stats, shared_lib);
+                ui.draw_bake_lab_panel(bake_lab, session.get(), worlds, workbench_handoff);
+                ui.draw_asset_browser_panel(asset_browser, worlds, stats, shared_lib,
+                                           workbench_handoff);
                 ui.draw_worlds_panel(worlds, stats);
                 ui.draw_camera_panel(camera);
                 // draw_sector_streaming_panel retired in Phase 4 Task 12 — sector

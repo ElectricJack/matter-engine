@@ -19,6 +19,7 @@
 #include "selection_set.h"
 #include "gizmo.h"
 #include "bake_lab.h"
+#include "asset_browser.h"
 
 struct GLFWwindow;
 namespace matter { class VulkanDevice; struct VulkanFrame; }
@@ -38,6 +39,21 @@ struct WorldEntry {
 // Scan a root like "../examples" for projects containing objects/ + worlds/.
 // Every regular worlds/*.js file contributes one entry, sorted by label.
 std::vector<WorldEntry> scan_worlds(const std::string& examples_root);
+
+// Cross-pane handoff for "Open in Workbench": the standalone Asset Browser
+// pane (Ui::draw_asset_browser_panel) writes a pending (module, project)
+// request here when its "Open in Workbench" button fires; the Bake Lab
+// window (BakeLab::draw_contents) reads and clears it once per frame,
+// calling PartWorkbench::open_part and selecting/focusing its Workbench tab.
+// One producer (Asset Browser), one consumer (BakeLab) — deliberately
+// one-directional. Owned as a loop-scope variable in main.cpp, next to
+// `worlds`/`stats`, and threaded to both panels' draw calls.
+struct WorkbenchHandoff {
+    std::string pending_module;
+    std::string pending_project;
+    bool focus_requested = false;  // BakeLab: select+focus the Workbench tab
+                                    // and raise the Bake Lab window this frame.
+};
 
 // Read-only stats the HUD displays each frame; the resolver selector is the one
 // field the panel writes back. Everything else is filled by main/composer/provider.
@@ -119,11 +135,24 @@ public:
     // Bake Lab shell (bake-lab.md §II.5): "Bake Lab" window wrapping
     // BakeLab::draw_contents(), same Begin/End split as draw_console_panel.
     // No-op while lab.visible is false (window close button clears it).
-    // worlds/stats/shared_lib_root are threaded to the Assets tab (W1) and
-    // worlds to the Workbench tab (W2) — see BakeLab::draw_contents for why.
+    // `worlds` is threaded to the Workbench tab's part picker (W2). `handoff`
+    // is the pending "Open in Workbench" request written by the standalone
+    // Asset Browser pane (draw_asset_browser_panel below); a pending request
+    // both consumes into PartWorkbench::open_part (inside draw_contents) and,
+    // here, raises/focuses the Bake Lab window itself.
     void draw_bake_lab_panel(BakeLab& lab, matter::WorldSession* session,
-                             const std::vector<WorldEntry>& worlds, ViewerStats& stats,
-                             const std::string& shared_lib_root);
+                             const std::vector<WorldEntry>& worlds,
+                             WorkbenchHandoff& handoff);
+    // Standalone Assets pane (promoted out of Bake Lab's former "Assets" tab
+    // so it's usable during any workflow, not just baking). Owns no state
+    // itself — `browser` is a loop-scope AssetBrowser instance main.cpp owns
+    // next to `bake_lab`. worlds/stats/shared_lib_root are exactly what
+    // AssetBrowser::draw always needed; `handoff` is where "Open in
+    // Workbench" clicks land (see WorkbenchHandoff doc comment above and
+    // draw_bake_lab_panel, which consumes it).
+    void draw_asset_browser_panel(AssetBrowser& browser,
+                                  const std::vector<WorldEntry>& worlds, ViewerStats& stats,
+                                  const std::string& shared_lib_root, WorkbenchHandoff& handoff);
     // MSL-style orbit/zoom controls: navigate the view without locking the cursor
     // or using WASD (works over remote desktop). Mutates the camera in place.
     void draw_camera_panel(matter::CameraDesc& cam);

@@ -296,6 +296,11 @@ void Ui::build_dockspace() {
         ImGui::DockBuilderDockWindow("Viewer Debug", right);
         ImGui::DockBuilderDockWindow("Camera", right);
         ImGui::DockBuilderDockWindow("Bake Lab", bottom);
+        // Promoted out of Bake Lab's former "Assets" tab (now a standalone
+        // pane usable outside Bake Lab too). Docked into the same left node
+        // as Scene, tabbed alongside it, since both are project/hierarchy
+        // browsers over the current world(s).
+        ImGui::DockBuilderDockWindow("Assets", left);
 
         ImGui::DockBuilderFinish(dockspace_id);
     }
@@ -655,11 +660,28 @@ void Ui::draw_debug_panel(ViewerStats& s) {
 }
 
 void Ui::draw_bake_lab_panel(BakeLab& lab, matter::WorldSession* session,
-                             const std::vector<WorldEntry>& worlds, ViewerStats& stats,
-                             const std::string& shared_lib_root) {
+                             const std::vector<WorldEntry>& worlds,
+                             WorkbenchHandoff& handoff) {
+    // A pending handoff means the standalone Asset Browser pane's "Open in
+    // Workbench" button just fired: make sure the window is visible and
+    // raise it to the front. draw_contents (below) separately selects the
+    // Workbench tab itself once it consumes the handoff.
+    if (!handoff.pending_module.empty() && handoff.focus_requested) {
+        lab.visible = true;
+        ImGui::SetNextWindowFocus();
+    }
     if (!lab.visible) return;
     ImGui::Begin("Bake Lab", &lab.visible);
-    lab.draw_contents(session, worlds, stats, shared_lib_root);
+    lab.draw_contents(session, worlds, handoff);
+    ImGui::End();
+}
+
+void Ui::draw_asset_browser_panel(AssetBrowser& browser,
+                                  const std::vector<WorldEntry>& worlds, ViewerStats& stats,
+                                  const std::string& shared_lib_root, WorkbenchHandoff& handoff) {
+    ImGui::Begin("Assets");
+    browser.draw(worlds, stats, shared_lib_root, handoff.pending_module,
+                handoff.pending_project, handoff.focus_requested);
     ImGui::End();
 }
 
