@@ -1565,7 +1565,7 @@ int main() {
                 ui.draw_viewport_window();
                 ui.draw_console_panel(console_log);
                 ui.draw_debug_panel(stats);
-                ui.draw_bake_lab_panel(bake_lab, session.get());
+                ui.draw_bake_lab_panel(bake_lab, session.get(), worlds, stats, shared_lib);
                 ui.draw_worlds_panel(worlds, stats);
                 ui.draw_camera_panel(camera);
                 // draw_sector_streaming_panel retired in Phase 4 Task 12 — sector

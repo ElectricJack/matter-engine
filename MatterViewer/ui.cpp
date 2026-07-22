@@ -654,10 +654,12 @@ void Ui::draw_debug_panel(ViewerStats& s) {
     ImGui::End();
 }
 
-void Ui::draw_bake_lab_panel(BakeLab& lab, matter::WorldSession* session) {
+void Ui::draw_bake_lab_panel(BakeLab& lab, matter::WorldSession* session,
+                             const std::vector<WorldEntry>& worlds, ViewerStats& stats,
+                             const std::string& shared_lib_root) {
     if (!lab.visible) return;
     ImGui::Begin("Bake Lab", &lab.visible);
-    lab.draw_contents(session);
+    lab.draw_contents(session, worlds, stats, shared_lib_root);
     ImGui::End();
 }
 
