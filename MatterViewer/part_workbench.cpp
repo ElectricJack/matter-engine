@@ -1175,8 +1175,14 @@ void PartWorkbench::draw_lod_authoring_panel() {
         "Edits an in-memory model, not the file (part-workbench.md W5). Click "
         "\"Save lods to source\" to write it into %s.js (marker-delimited, "
         "parse-verified, restores the file on failure, .bak on the first save "
-        "this session) -- then Bake to see the authored ladder applied.",
+        "this session), then Bake to fold the ladder into the baked artifacts.",
         module_.c_str());
+    ImGui::TextDisabled(
+        "(?) Note: exclude / per-LOD params bake correctly into the .part "
+        "artifacts and are verifiable there, but the live viewport does not yet "
+        "reflect them -- render-time consumption of the per-level mask is a "
+        "follow-up. The LOD-override view above shows the decimation ladder, "
+        "not authored exclusions.");
 
     matter::InstanceInfo info;
     const uint64_t part_hash = session_->instance_info(0, info) ? info.part_hash : 0;

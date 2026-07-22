@@ -804,7 +804,13 @@ bool HostBaker::bake_static_lods(const std::string& source, const Params& params
             std::vector<uint32_t> child_level_mask(kids.size(), 0xFFFFFFFFu);
             for (size_t i = 0; i < lods.size() && i < 32; ++i) {
                 const uint32_t excl = plan.level_exclude_masks[i];
-                for (size_t k = 0; k < kids.size(); ++k)
+                // level_exclude_masks are uint32 (see the computation cap at
+                // k < 32 above), so only the first 32 child placements can be
+                // excluded; guard the shift to avoid UB (1u << k, k >= 32) and
+                // match that cap. Children past 31 are always-present (a known
+                // limitation to lift with a wider mask when the render path
+                // consumes LMSK).
+                for (size_t k = 0; k < kids.size() && k < 32; ++k)
                     if (excl & (1u << k)) child_level_mask[k] &= ~(1u << (uint32_t)i);
             }
             if (!part_asset::save_v2(part_path, blas, tlas, kids.data(), kids.size(),
