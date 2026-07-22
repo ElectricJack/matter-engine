@@ -695,7 +695,7 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../src/render/raster_mesh.cpp \
               ../src/render/tileset_provider.cpp ../src/render/tileset_gl_ctx.cpp \
               ../src/tileset_phase.cpp \
-              ../src/tileset_bake_primary.cpp ../src/tileset_bake_ao.cpp \
+              ../src/tileset_bake_primary.cpp ../src/tileset_bake_ao.cpp ../src/tileset_bake_horizon.cpp \
               ../src/tileset_settle.cpp ../src/tileset_gtex.cpp \
               ../src/tileset_bake.cpp ../src/tileset_bake_gpu.cpp ../src/tileset_collider.cpp \
               ../src/tileset_part_collider.cpp ../src/tileset_torus_bvh.cpp \
@@ -772,7 +772,7 @@ GPU_PIPELINE_CPP = \
     ../src/tileset_phase.cpp \
     ../src/tileset_bake.cpp ../src/tileset_settle.cpp \
     ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
-    ../src/tileset_bake_primary.cpp ../src/tileset_bake_ao.cpp \
+    ../src/tileset_bake_primary.cpp ../src/tileset_bake_ao.cpp ../src/tileset_bake_horizon.cpp \
     ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
     $(TERRAIN_SRC) \
     $(PF_CPP)

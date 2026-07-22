@@ -1,0 +1,85 @@
+#version 460 core
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// -----------------------------------------------------------------------------
+// Horizon-map bake pass. Reads the full-res height channel (produced by the
+// primary bake pass, re-uploaded here as a plain R16 image — no BVH/BLAS/TLAS
+// traversal is needed for this pass) and writes two quarter-res RGBA8 images:
+// horizonAImg packs azimuths 0/45/90/135 deg in R/G/B/A, horizonBImg packs
+// 180/225/270/315 deg. Each byte is unorm8 sin(horizon elevation angle) at
+// that texel in that direction (0 = flat horizon, 1 = fully walled).
+//
+// Azimuth 0 = world +X, rotating toward +Z (theta = atan2(dirZ, dirX) convention:
+// dir = (cos(theta), sin(theta)) in the (X,Z) plane).
+//
+// The full-res atlas already tiles as a torus (tileset_torus_bvh.cpp tessellates
+// the base heightfield periodically across the 4x4 grid before the primary bake
+// rasterizes it), so wrapping texel indices modulo atlasW/atlasH gives true
+// cross-tile-border neighbors — the same "torus provides true neighbors" property
+// the AO pass relies on via its periodic BVH, just realized here as integer wrap
+// addressing on the height texture instead of ray traversal.
+// -----------------------------------------------------------------------------
+
+layout(rgba8, binding = 5) uniform writeonly image2D horizonAImg;  // az 0/45/90/135
+layout(rgba8, binding = 6) uniform writeonly image2D horizonBImg;  // az 180/225/270/315
+layout(r16,   binding = 7) uniform readonly  image2D heightImg;    // full-res, unorm [0,1] over [heightMin,heightMax]
+
+uniform int   atlasW;          // full-res atlas width  (px)
+uniform int   atlasH;          // full-res atlas height (px)
+uniform int   horizonW;        // quarter-res atlas width  (px)
+uniform int   horizonH;        // quarter-res atlas height (px)
+uniform int   texelsPerMeter;  // full-res texels per meter
+uniform float heightMin;
+uniform float heightMax;
+
+// Horizon scan radius: 0.30 m, matching the AO pass's edge_strip_width cap
+// rationale (arrangement-independence — a texel's horizon must not depend on
+// which Wang tile variant happens to sit beyond the scan radius).
+const float kHorizonScanRadiusM   = 0.30;
+const int   kHorizonRadialSamples = 24;
+const int   kHorizonAzimuthCount  = 8;
+
+int wrapi(int v, int n) {
+    int m = v % n;
+    return m < 0 ? m + n : m;
+}
+
+float fetchHeightWorld(ivec2 p) {
+    ivec2 wp = ivec2(wrapi(p.x, atlasW), wrapi(p.y, atlasH));
+    float hn = imageLoad(heightImg, wp).r;
+    return heightMin + hn * (heightMax - heightMin);
+}
+
+void main() {
+    ivec2 qxy = ivec2(gl_GlobalInvocationID.xy);
+    if (qxy.x >= horizonW || qxy.y >= horizonH) return;
+
+    // Representative full-res receiver texel: center of the 4x4 full-res block
+    // this quarter-res texel aggregates.
+    ivec2 fxy = qxy * 4 + ivec2(2, 2);
+    float hReceiver = fetchHeightWorld(fxy);
+
+    float az[8] = float[8](0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0);
+    float sinOut[8];
+
+    for (int a = 0; a < kHorizonAzimuthCount; ++a) {
+        float theta = radians(az[a]);
+        float dirX = cos(theta);
+        float dirZ = sin(theta);
+        float best = 0.0;
+        for (int s = 1; s <= kHorizonRadialSamples; ++s) {
+            float d  = kHorizonScanRadiusM * float(s) / float(kHorizonRadialSamples);
+            float ox = d * dirX * float(texelsPerMeter);
+            float oz = d * dirZ * float(texelsPerMeter);
+            ivec2 sp = fxy + ivec2(int(round(ox)), int(round(oz)));
+            float hS = fetchHeightWorld(sp);
+            float dh = hS - hReceiver;
+            float val = clamp(dh / sqrt(dh * dh + d * d), 0.0, 1.0);
+            best = max(best, val);
+        }
+        sinOut[a] = best;
+    }
+
+    imageStore(horizonAImg, qxy, vec4(sinOut[0], sinOut[1], sinOut[2], sinOut[3]));
+    imageStore(horizonBImg, qxy, vec4(sinOut[4], sinOut[5], sinOut[6], sinOut[7]));
+}
