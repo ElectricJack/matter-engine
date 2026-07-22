@@ -81,6 +81,15 @@ RasterMeshData build_raster_mesh_data(const Tri* tris, const TriEx* triex, int t
         const float2 uvs[3] = {triex ? triex[i].uv0 : make_float2(0.0f),
                                triex ? triex[i].uv1 : make_float2(0.0f),
                                triex ? triex[i].uv2 : make_float2(0.0f)};
+        // Without TriEx (decimated LOD levels — see lod_bake::bake_lods), fall
+        // back to the caller-supplied dominant material. The GL path already
+        // does this via the float texcoord channel (mat_id above); the Vulkan
+        // path reads the uint material_ids channel, and leaving it at
+        // UINT32_MAX makes every decimated-LOD vertex fail the shader's
+        // material_index bounds check and render as the flat-grey fallback
+        // material (the "dynamic entities render uniform grey" bug — parts
+        // referenced only by ECS entities load through PartStore's
+        // compositional re-bake, which strips TriEx from all LODs > 0).
         const uint32_t material_id =
             triex ? static_cast<uint32_t>(triex[i].materialId)
                   : (default_mat_id >= 0.0f
