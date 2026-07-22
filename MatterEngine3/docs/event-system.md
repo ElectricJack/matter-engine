@@ -4,7 +4,7 @@
 
 - **Target:** new `MatterEngine3/src/event/` (hub, transport, observable models, command layer) + incremental migration of existing signaling sites in `matter_engine.cpp`, `async_bake.h`, MatterViewer, and the ECS bridge
 - **Baseline:** `34213f65` (feature/bake-lab)
-- **Status:** Spec — Part I design for user review; Part II milestones tentative, open questions flagged for decision
+- **Status:** Spec — design settled (topology and the five open questions resolved with the user, §II.3); Part II milestones ready to sequence; implementation not started
 - **Relation:** builds on the observability tooling from [bake-lab.md](bake-lab.md) (BakeTrace spans, Timeline flamegraph) for the event inspector; respects [part-workbench.md](part-workbench.md)'s `BakeObserver` (W3) as a shipping seam that later re-expresses on this system.
 
 ---
@@ -358,6 +358,56 @@ Every existing mechanism, its bucket, and its destination. "Compat shim" means t
 - **Observability overhead distorts behavior.** Trace off = one branch per emit; ring buffer is fixed-size, no allocation per record beyond payload summaries (elided when off); handler timing uses the same cheap clocks as bake_trace, whose <0.1% overhead target (`bake-lab.md` §I.8) applies here too.
 - **The hub becomes a new dumping ground** (everything stringly-typed, giant payloads, "misc" events). Mitigated: typed structs only (no generic variant payload API), namespaced names reviewed like public API, and the strategy-callback exclusion rule preventing the worst category error — request/response traffic masquerading as events.
 
+### I.13 Hub topology, session lifetime, and SessionBinding
+
+**Decision: one hub per `WorldSession`, plus one app (viewer/editor) hub.** Same `evt::Hub` type, multiple instances.
+
+- **App hub** — editor/UI notifications, the command registry (§I.10), and observable models (§I.9). Lifetime = the editor. Subscribe once.
+- **Session hub** — that session's bake/stream/entity/physics events. Born and dies with the session.
+
+**Grounded in the session lifecycle:** a world **switch** *recreates* the session — `auto next = open_world(...); session = std::move(next)` (`MatterViewer/main.cpp:2004,2009`), destroying the old one — while a **reload** reuses it in place (`session->reload()`, `main.cpp:1998`). So switch kills a session, and a per-session hub is the right lifetime unit: on switch, that session's subscriptions, queued events, and trace records are destroyed with it by RAII. A single global hub would instead require manually scrubbing every subscription/queued-event/trace-record tagged to the dead session on every switch *and* every workbench open/close — the exact dangling-listener cleanup this design exists to avoid.
+
+**The rebind cost is real but bounded to one place.** Because switch recreates the session, anything app-side holding the old session pointer dangles *regardless of topology* — command handlers that mutate the world, view-model adapters, selection referencing a now-gone entity. A rebind step is therefore unavoidable in any design; per-session hubs don't add it, they just also cleanly kill the session-side half. That step is **`SessionBinding`**, living at the `complete_world_switch`/`open_world` seam. On session replace it:
+
+1. tears down and rebuilds the app↔session bridge subscriptions — the small fixed set of editor-wide session-event subscribers (HUD, console, timeline) and the view-model adapters (§I.14);
+2. clears app-side models referencing the dead world (selection, per-entity view-models);
+3. resets the world-scoped undo stack (§II.3.2).
+
+The **isolation session** (Part Workbench) gets its own hub too, and there the rebind cost is near-zero: its events only ever reach the workbench, which co-owns the session, so open/close is a self-contained teardown with no editor-wide rebinding.
+
+**No automatic cross-hub forwarding.** Handlers reach across hubs by holding an explicit reference (an app-hub command handler calls into a session; `SessionBinding` explicitly bridges the session events the editor wants). Auto-propagation between hubs would reintroduce the emergent-order problem §I.7 works to kill. The **inspector** views multiple hubs via a hub selector — the same pattern as the Timeline's trace-source selector (`bake_lab_timeline`, task 2.2).
+
+**Ruled out — single global hub with a session-source tag:** buys unified trace and zero rebind, but trades away RAII teardown (back to manual scrubbing of session-tagged state on every switch and workbench-close). Lifetime hygiene wins; the inspector's hub selector recovers the unified-view benefit at negligible cost.
+
+### I.14 Worked example — the scene graph (app view-model over a session bridge)
+
+The scene tree is the canonical case the topology is shaped around: a permanent editor panel whose entire content belongs to a session that is destroyed on every world switch. The editor already builds two-thirds of the target shape.
+
+**Today** (`MatterViewer/editor_model.h`, `scene_tree_panel.cpp:234`):
+
+- `EditorModel` holds the flattened `HierarchyRow` list — an app-scoped view-model that survives world switches; the panel reads `editor.rows()`.
+- `SceneCommands` is a struct of injected `std::function`s (`query_records`, `generation`, `create_empty`/`duplicate`/`delete_entity`/`reparent`) — a bridge decoupling the model from the session's ECS.
+- Sync is a **generation-gated poll**: each frame checks `session->graph_generation()` and re-snapshots (`graph_snapshot`/`query_records`) only when it changed.
+- Mutations flow back `EditorModel` → `SceneCommands` → session, returning `SceneEditResult`.
+
+That is already an app-scoped view-model behind a session-bound bridge — the answer to "how does an editor-scoped view get its model from the active session" is *the bridge is the swappable indirection; the view-model and panel stay put*. The event system formalizes each piece and upgrades the weak one:
+
+| Today | Under the event system |
+|---|---|
+| `EditorModel` rows | App-hub **observable model** (rows as an observable collection); panel binds once, primed on bind |
+| `SceneCommands` `std::function` bridge | The **`SessionBinding`-owned adapter** (§I.13), rebuilt against the new session on switch |
+| `query_records`/`generation` | Adapter's populate path (snapshot on bind / re-bind) |
+| **Per-frame poll + full re-query on generation change** | **Event-driven incremental sync** — the one real change |
+| `create_empty`/`duplicate`/`delete_entity`/`reparent` (`SceneEditResult`) | **Registered commands** on the app-hub registry — the first undoable actions |
+
+**The upgrade:** today any structural change bumps the generation and the panel re-flattens the *whole* tree next frame — coarse (a full rebuild for one rename). The session already has the finer signal: flecs structural observers (`OnAdd/OnSet/OnRemove` in `transform_system.cpp:400`, `physics_systems.cpp:20`). The adapter subscribes to those as session-hub entity events and updates only the affected row; because rows are observable properties, only that UI row re-renders (coalesced). The generation counter stays as a cheap correctness backstop — if it ever jumps more than the events accounted for, fall back to a full re-snapshot.
+
+**On world switch:** `session = std::move(next)` destroys the old session; its hub and every adapter subscription against it die with it. `SessionBinding` builds a fresh adapter against the new session and re-snapshots the `EditorModel`. The panel never notices — it is still bound to the same app-scoped model. (This systematizes what `Selection::world_generation` hand-rolls today to invalidate selection across worlds.)
+
+**Mutations close the loop through the same pipeline:** a reparent-via-drag becomes an `edit.reparent` command; its handler mutates the session's ECS; that fires the session's structural observer; the adapter updates the row. The panel is deliberately *not* hand-updated on the drag — issue the command and let the change return, so the displayed tree can never diverge from the world's actual state. Because those mutations are now commands with inverses captured at execute time (§I.10), reparent/delete/duplicate become undoable for free.
+
+**Threading:** `graph_snapshot` is read on the app thread, safe because the ECS tick runs in the app-thread frame loop (`session->tick`); tick-originated changes update the adapter immediately. If a structural change ever originates off-thread (streaming/physics on a worker), the adapter marshals it as a queued session→app event rather than touching the app-thread observable model directly — the §I.9 property-affinity rule, for free.
+
 ---
 
 ## Part II — Implementation Spec
@@ -375,11 +425,11 @@ Deliberately lighter than Part I: the design above is the deliverable to settle;
 **E3 — First real events + compat shim.**
 Session hub in `WorldSession::Impl`; the ~40 `emit_event` sites convert to typed events; `poll_event` becomes a shim (drains a hub subscription into the legacy `Event` struct) so MatterViewer and tests are untouched. Error sinks convert to `error.*` events with adapter shims. Gate: all existing suites green with the shim; drop counter visible.
 
-**E4 — Inspector + viewer migration.**
-Events tab in the Bake Lab shell (registry/trace/timeline views, §I.8); viewer polled flags → registered commands (`viewer.reload`, `viewer.switch_world`, `workbench.open_part`); `WorkbenchHandoff` and the flag fields delete. Command registry lands here (execute + notifications + journaling hook; no undo stack yet). Gate: reload/world-switch/open-in-workbench behave identically, now visible in the trace.
+**E4 — Inspector + viewer migration + SessionBinding.**
+Events tab in the Bake Lab shell (registry/trace/timeline views with a hub selector, §I.8/§I.13); viewer polled flags → registered commands (`viewer.reload`, `viewer.switch_world`, `workbench.open_part`); `WorkbenchHandoff` and the flag fields delete; `MATTER_CMD_FIFO` routes through the command registry (§II.3.4). `SessionBinding` (§I.13) lands here as the switch-seam rebind for editor-wide session subscribers. Command registry lands here (execute + notifications + journaling hook; no undo stack yet). Gate: reload/world-switch/open-in-workbench behave identically, now visible in the trace; a world switch cleanly tears down and rebinds session subscriptions.
 
-**E5 — Observable properties.**
-`evt::Property<T>` + flush integration in the frame loop; first binding: the Workbench params panel or selected-part state (smallest real multi-view value available). Gate: coalescing test (N sets → 1 delivery), equality suppression, affinity assert, edit-loop termination.
+**E5 — Observable properties + the scene graph.**
+`evt::Property<T>` + flush integration in the frame loop; the scene graph (§I.14) is the first real binding — `EditorModel` becomes an observable model behind a `SessionBinding`-owned adapter driven by the session's structural observers, and `SceneCommands` mutations become registered commands (the first undoable candidates). Gate: coalescing test (N sets → 1 delivery), equality suppression, affinity assert, edit-loop termination; scene tree updates incrementally (single-row, not full re-flatten) on an entity change and re-snapshots cleanly on world switch.
 
 **E6 — Entity events: wire the orphaned physics pipeline.**
 `PhysicsEvents` → flecs entity events in the pull stage (`phys.*`); a consuming proof (debug overlay or test observer); trace mirroring. This is the gameplay-event foundation for Phase 6 scripting.
@@ -402,10 +452,14 @@ Events tab in the Bake Lab shell (registry/trace/timeline views, §I.8); viewer 
 | `MatterEngine3/src/event/property.h` | E5 | new — observable properties |
 | `MatterEngine3/src/ecs/physics_context.cpp`, `ecs_runtime.cpp` | E6 | `PhysicsEvents` → flecs entity events in pull stage |
 
-### II.3 Open questions (deliberately left for the user)
+### II.3 Resolved decisions
 
-1. **Hub topology:** one global hub, or one per `WorldSession` plus one for the viewer app? Per-session hubs isolate Lab private sessions (the part-workbench pattern) cleanly, but editor-wide subscribers then need to re-subscribe on session swap. Leaning per-session + one app hub, with the inspector able to view both — but this changes subscriber lifetime ergonomics and deserves a decision.
-2. **Undo-stack scoping** (§I.10): per-world, per-editor-context, or global? Affects nothing in the command shape, but determines when the stack milestone can be scheduled.
-3. **Trace persistence:** should the event trace export to disk alongside BakeTrace's JSON export (repro attachments for bug reports), and should command journaling reuse that format?
-4. **`MATTER_CMD_FIFO`:** the external FIFO reader is a command *source* — should it route through the command registry (named, traced, journaled) in E4, or stay as-is until a real need appears?
-5. **Aggressiveness of E3:** convert all ~40 `emit_event` sites in one milestone (mechanical but wide), or domain-by-domain (`bake.*` first, `stream.*` second)? The shim makes either safe; this is a review-bandwidth choice.
+The five questions posed at design time, resolved with the user:
+
+1. **Hub topology → per-`WorldSession` hub + one app hub**, with a `SessionBinding` rebind at the switch seam. Rationale, session-lifecycle grounding, and the ruled-out global-hub alternative are in §I.13; the scene graph works through this split in §I.14.
+2. **Undo-stack scoping → app-owned command registry, world-scoped stack, cleared on world switch.** Undoing an edit to a world no longer loaded is meaningless, so the stack resets in `SessionBinding` alongside the other switch teardown. *Not* per-panel (a duplicate-and-move must be one undo step) and *not* global-across-worlds. The workbench isolation session is not an undo target — its "undo" is re-selecting a prior pinned variation, already provided.
+3. **Trace/journal persistence → reuse BakeTrace's JSON format.** Event-trace export is on-demand (dump the ring buffer when asked, not always-on streaming). Command journaling is a distinct opt-in *persistent* log that reuses the same serialization — same format, two durability policies.
+4. **`MATTER_CMD_FIFO` → route through the command registry in E4.** It is a command source by definition; routing it makes external commands named/traced/journaled and deletes a bespoke poll path. Dev-convenience commands (screenshot) are simply non-undoable commands.
+5. **E3 cadence → domain-by-domain**, `bake.*` first (already queued-to-app, lowest timing risk, proves the shim), then `stream.*`, then the error sinks (the synchronous ones needing the careful sync→immediate call). A 40-site big-bang would rubber-stamp the §I.6 per-site delivery-mode audit the migration depends on.
+
+**Still genuinely open (accommodated by the design, scheduled later):** multi-command transactions (group N commands into one undo step, e.g. duplicate-and-move) — the command shape supports it via a transaction wrapper, but the grouping API and nesting rules are deferred to the undo-stack milestone; and the on-disk command-journal schema specifics (beyond "reuses the trace serialization").
