@@ -426,7 +426,10 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/gi_temporal.comp.spv \
          build/shaders_vk/gi_atrous.comp.spv \
          build/shaders_vk/rt_surface.rchit.spv \
-         build/shaders_vk/rt_surface_test.rgen.spv
+         build/shaders_vk/rt_surface_test.rgen.spv \
+         build/shaders_vk/vol_density.comp.spv \
+         build/shaders_vk/vol_scatter.comp.spv \
+         build/shaders_vk/vol_integrate.comp.spv
 VK_EMBEDDED_HEADER = $(ME3_DIR)/shaders_gen/embedded_spirv.h
 
 build/shaders_vk/%.spv: $(ME3_DIR)/shaders_vk/%

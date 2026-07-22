@@ -2961,8 +2961,17 @@ bool VkSceneRenderer::init(std::string& error) {
     if (!volumetrics_) {
         auto vol = std::make_unique<VkVolumetrics>();
         std::string vol_error;
-        if (vol->init(*vulkan_, vol_error))
+        if (vol->init(*vulkan_, vol_error)) {
             volumetrics_ = std::move(vol);
+        } else {
+            // Volumetrics are optional, but a failed init must not be silent:
+            // every downstream symptom (empty froxel volume, dead debug
+            // views) is otherwise indistinguishable from "disabled".
+            std::fprintf(stderr,
+                         "[vk] volumetrics init FAILED (volumetrics disabled): %s\n",
+                         vol_error.c_str());
+            std::fflush(stderr);
+        }
     }
     if (sizeof(FrameConstants) >
         std::min(limits_.max_uniform_buffer_range, limits_.max_buffer_size)) {
