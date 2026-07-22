@@ -1,5 +1,6 @@
 #include "bake_lab.h"
 
+#include "ui.h"  // WorldEntry
 #include "imgui.h"
 
 namespace viewer {
@@ -16,10 +17,21 @@ void draw_placeholder_tab(const char* name, const char* coming) {
 
 } // namespace
 
-void BakeLab::draw_contents(matter::WorldSession* session) {
+void BakeLab::draw_contents(matter::WorldSession* session,
+                            const std::vector<WorldEntry>& worlds) {
+    // main.cpp calls workbench().begin_frame() unconditionally each frame
+    // (even while this window is hidden) so wants_viewport() never sticks on
+    // a stale true if the Bake Lab window is closed mid-isolation.
     if (ImGui::BeginTabBar("##bake_lab_tabs")) {
         if (ImGui::BeginTabItem("Timeline")) {
             timeline_.draw(session);
+            ImGui::EndTabItem();
+        }
+        // W2 (part-workbench.md): isolation scene + bake button + Params &
+        // Variations panel. Body lives entirely in part_workbench.{h,cpp} to
+        // avoid colliding with the Assets-tab agent's tab-bar edits here.
+        if (ImGui::BeginTabItem("Workbench")) {
+            workbench_.draw(worlds);
             ImGui::EndTabItem();
         }
         draw_placeholder_tab("Part Lab", "Coming in tasks 3.x (part-scope bake lab)");

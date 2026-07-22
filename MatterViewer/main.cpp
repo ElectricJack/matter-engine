@@ -1279,6 +1279,10 @@ int main() {
     // Bake Lab shell (task 2.1): window drawn with the other panels below;
     // tick_frame runs each frame beside session tick/pump.
     viewer::BakeLab bake_lab;
+    // Part Workbench (part-workbench.md W2): private isolation session, see
+    // part_workbench.h's architecture note. cache/lab-scratch is entirely
+    // separate from production worlds' <project>/.cache/<world> roots.
+    bake_lab.workbench().configure(vulkan.get(), examples_root(), shared_lib);
     const char* screenshot_env = std::getenv("MATTER_SCREENSHOT");
     const std::string screenshot_path = screenshot_env ? screenshot_env : "";
     int screenshot_settle = 0;
@@ -1465,6 +1469,10 @@ int main() {
         matter_viewer::CurrentFrameInputOrder camera_input_order{};
         const bool ui_frame_ready = ui.begin_frame(frame, error);
         matter::VulkanFrame render_frame = frame;
+        // Reset before the Bake Lab tab bar draws so wants_viewport() below
+        // reflects whether the Workbench tab is actually focused THIS frame
+        // (see part_workbench.h's modal-isolation note).
+        bake_lab.workbench().begin_frame();
         if (!ui_frame_ready) {
             std::fprintf(stderr, "FATAL: ImGui Vulkan prepare: %s\n",
                          error.c_str());
@@ -1565,7 +1573,7 @@ int main() {
                 ui.draw_viewport_window();
                 ui.draw_console_panel(console_log);
                 ui.draw_debug_panel(stats);
-                ui.draw_bake_lab_panel(bake_lab, session.get());
+                ui.draw_bake_lab_panel(bake_lab, session.get(), worlds);
                 ui.draw_worlds_panel(worlds, stats);
                 ui.draw_camera_panel(camera);
                 // draw_sector_streaming_panel retired in Phase 4 Task 12 — sector
@@ -1658,6 +1666,11 @@ int main() {
         session->tick(tick);
         camera_input_order.tick_scene();
         session->pump_gpu_jobs(4.0f);
+        // Part Workbench (W2): the isolation session ticks/pumps every frame
+        // regardless of tab focus, so switching back to it is instant (no
+        // reload) and a bake keeps progressing while you're on another tab.
+        bake_lab.workbench().tick(dt);
+        bake_lab.workbench().pump_gpu_jobs(2.0f);
         bake_lab.tick_frame(viewer::BakeLab::kDefaultTickBudgetMs);
         matter::Event event;
         while (session->poll_event(event)) {
@@ -1708,19 +1721,41 @@ int main() {
         options.vulkan_tileset_pom = stats.tileset_pom;
         options.vulkan_ray_tracing.enabled =
             vulkan->ray_tracing_available() && !disable_vulkan_rt;
-        if (!session->render(frame_camera, render_frame, options, error)) {
+        // Part Workbench (W2, "modal isolation" — see part_workbench.h):
+        // VulkanFrame/render() always draws the whole frame extent and
+        // begin_frame() yields exactly one frame per call, so only ONE
+        // session's render() can run this frame. The Workbench tab being
+        // focused (wants_viewport()) swaps which one — the production
+        // session keeps ticking/pumping in the background either way, so
+        // flipping tabs back is instant.
+        const bool show_isolation =
+            bake_lab.workbench().wants_viewport() && bake_lab.workbench().session();
+        matter::WorldSession* render_session =
+            show_isolation ? bake_lab.workbench().session() : session.get();
+        const matter::CameraDesc& render_camera =
+            show_isolation ? bake_lab.workbench().camera() : frame_camera;
+        if (!render_session->render(render_camera, render_frame, options, error)) {
             std::fprintf(stderr, "FATAL: render: %s\n", error.c_str());
             fatal_error = true;
-        } else {
+        } else if (!show_isolation) {
             camera_input_order.render_scene();
         }
         if (ui_frame_ready && !fatal_error) {
+            // Required every frame regardless of which session rendered —
+            // this transitions the offscreen viewport render target so
+            // ImGui can sample it as a texture (Ui::draw_viewport_window).
             ui.transition_viewport_for_sampling(frame.command_buffer);
-            const auto& sel_vp = ui.viewport_rect();
-            viewer::draw_selection_outlines(selection_set, frame_camera,
-                                            static_cast<int>(render_frame.extent.width),
-                                            static_cast<int>(render_frame.extent.height),
-                                            *session, sel_vp.x, sel_vp.y);
+            if (!show_isolation) {
+                // Selection outlines are keyed to the production session's
+                // ECS/selection state; skip while the isolation session owns
+                // the viewport image (nothing in `selection_set` refers to
+                // the isolation world's entities).
+                const auto& sel_vp = ui.viewport_rect();
+                viewer::draw_selection_outlines(selection_set, frame_camera,
+                                                static_cast<int>(render_frame.extent.width),
+                                                static_cast<int>(render_frame.extent.height),
+                                                *session, sel_vp.x, sel_vp.y);
+            }
         }
         const matter::FrameStats& frame_stats = session->frame_stats();
         dlss_modes_supported = vulkan->dlss_available() &&
