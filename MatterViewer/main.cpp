@@ -1734,6 +1734,13 @@ int main() {
             show_isolation ? bake_lab.workbench().session() : session.get();
         const matter::CameraDesc& render_camera =
             show_isolation ? bake_lab.workbench().camera() : frame_camera;
+        // Part Workbench W4 (part-workbench.md SS-I.5): the LOD Inspector's
+        // force_lod/hide_child_instances debug toggles only ever apply to the
+        // isolation session's own render — `options` (built above from the
+        // production HUD's controls) stays untouched, and force_lod defaults
+        // to -1 / hide_child_instances to false whenever the Inspector hasn't
+        // been interacted with, so this is a no-op until the user acts.
+        if (show_isolation) bake_lab.workbench().apply_lod_inspector_options(options);
         if (!render_session->render(render_camera, render_frame, options, error)) {
             std::fprintf(stderr, "FATAL: render: %s\n", error.c_str());
             fatal_error = true;

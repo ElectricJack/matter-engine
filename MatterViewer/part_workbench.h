@@ -27,6 +27,7 @@
 #include "matter/engine_context.h"
 #include "matter/query.h"
 #include "matter/world_session.h"
+#include "lod_inspector.h"  // W4: LOD Inspector section (part-workbench.md SS-I.5)
 
 namespace viewer {
 
@@ -94,6 +95,17 @@ public:
     matter::WorldSession* session() { return session_.get(); }
     matter::CameraDesc& camera() { return camera_; }
     const std::string& module_name() const { return module_; }
+
+    // W4: copies the LOD Inspector's current debug toggles (force_lod,
+    // hide_child_instances) onto `opts`. Call once per frame BEFORE
+    // session()->render() when this workbench owns the viewport this frame
+    // (see main.cpp's "modal isolation" render-session selection) so toggles
+    // set in the most recently drawn Workbench tab take effect. No-op on
+    // opts's other fields; safe to call even while closed (leaves opts at
+    // -1/false, i.e. no override).
+    void apply_lod_inspector_options(matter::RenderOptions& opts) const {
+        lod_inspector_.apply(opts);
+    }
 
     // Timeline integration (W2 note): the Timeline tab can add this session
     // as a second BakeLabTraceSource via session()->last_bake_trace() once
@@ -166,6 +178,11 @@ private:
     // thread-safety contract this drains under (worker/GL thread writers,
     // main-thread reader via a mutex).
     std::unique_ptr<WorkbenchBakeObserver> bake_observer_;
+
+    // W4: LOD Inspector section, drawn as part of draw() below. Owns the
+    // force_lod/hide_child_instances debug toggle state; see
+    // apply_lod_inspector_options() and lod_inspector.h.
+    LodInspector lod_inspector_;
 };
 
 }  // namespace viewer

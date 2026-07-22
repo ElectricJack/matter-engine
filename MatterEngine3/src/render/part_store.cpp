@@ -55,11 +55,12 @@ void build_expansion(uint64_t root_hash,
         const std::function<const LoadedPart*(uint64_t)>& getter,
         std::vector<ExpandedNode>& out) {
     walk_part_tree(root_hash, getter,
-        [&](const LoadedPart* lp, uint64_t hash, const float rel[16], int /*depth*/) {
+        [&](const LoadedPart* lp, uint64_t hash, const float rel[16], int depth) {
             if (lp->lod_mesh_data.empty()) return;
             ExpandedNode n;
             n.part_hash = hash;
             memcpy(n.rel_transform, rel, sizeof n.rel_transform);
+            n.depth = depth;
             out.push_back(n);
         });
 }

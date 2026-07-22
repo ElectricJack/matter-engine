@@ -47,8 +47,25 @@ inline GpuInstanceRec pack_instance(const float source[16]) {
     return packed;
 }
 
+// Bake Lab W4 (part-workbench.md SS-I.5): squash a packed cluster's
+// thresholds so the UNMODIFIED cull.comp selection loop
+// ("first i with psize >= thresholds[i]") always lands on `level`,
+// regardless of camera distance. Levels before `level` get an unreachable
+// +inf threshold; `level` itself gets a guaranteed -inf (always-satisfied)
+// threshold. Levels after `level` are left as-is — unreachable, since the
+// shader's ascending scan breaks at the first match. No-op when force_lod<0
+// (the default) or the cluster has no levels, so production packing is
+// byte-identical to pre-W4 output. See RenderOptions::force_lod.
+inline void apply_force_lod(GpuClusterMeta& m, int force_lod) {
+    if (force_lod < 0 || m.lod_count == 0) return;
+    uint32_t level = (uint32_t)force_lod;
+    if (level >= m.lod_count) level = m.lod_count - 1;
+    for (uint32_t i = 0; i < level; ++i) m.thresholds[i] = 3.402823e38f;      // +inf-ish
+    m.thresholds[level] = -3.402823e38f;                                     // always selected
+}
+
 inline GpuClusterMeta pack_cluster(const LoadedCluster& cl, uint32_t part_slot,
-                                   uint32_t cluster_index) {
+                                   uint32_t cluster_index, int force_lod = -1) {
     GpuClusterMeta m{};
     for (int i = 0; i < 3; ++i) { m.aabb_min[i] = cl.aabb_min[i]; m.aabb_max[i] = cl.aabb_max[i]; }
     m.radius = cl.radius;
@@ -61,13 +78,15 @@ inline GpuClusterMeta pack_cluster(const LoadedCluster& cl, uint32_t part_slot,
     m.lod_count = n;
     m.part_slot = part_slot;
     m.cluster_index = cluster_index;
+    apply_force_lod(m, force_lod);
     return m;
 }
 
 // Clusterless (whole-part) path: one synthetic cluster covering the part.
 // Thresholds come from the part-level ladder, so the cull shader's selection
 // formula (identical to lod_select.cpp) reproduces the resolver's pick.
-inline GpuClusterMeta pack_whole_part(const LoadedPart& lp, uint32_t part_slot) {
+inline GpuClusterMeta pack_whole_part(const LoadedPart& lp, uint32_t part_slot,
+                                      int force_lod = -1) {
     GpuClusterMeta m{};
     float r = lp.bound_radius;
     for (int i = 0; i < 3; ++i) { m.aabb_min[i] = -r; m.aabb_max[i] = r; }
@@ -87,6 +106,7 @@ inline GpuClusterMeta pack_whole_part(const LoadedPart& lp, uint32_t part_slot) 
     m.lod_count = n;
     m.part_slot = part_slot;
     m.cluster_index = 0xFFFFFFFFu;   // marks synthetic
+    apply_force_lod(m, force_lod);
     return m;
 }
 

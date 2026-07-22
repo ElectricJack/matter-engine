@@ -99,7 +99,8 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                         uint64_t part_hash,
                         const viewer::LoadedPart& loaded,
                         bool& drawable,
-                        std::string& error);
+                        std::string& error,
+                        int force_lod = -1);
 #endif
 #ifndef MATTER_VULKAN_ONLY
 // Temporary compatibility boundary for the current OpenGL/raylib renderer.
@@ -291,6 +292,16 @@ struct WorldSession::Impl {
     uint64_t vk_material_shading_revision = 0;
     uint64_t vk_material_geometry_revision = 0;
     matter::scene::DynamicSceneBridge dynamic_bridge{256};
+    // Bake Lab W4 (part-workbench.md SS-I.5): the force_lod value currently
+    // baked into registered Vulkan parts' cluster thresholds (see
+    // ensure_vulkan_part). When RenderOptions::force_lod differs from this,
+    // render() releases the touched parts so they re-register with the new
+    // override — see WorldSession::render(VulkanFrame).
+    int  vk_force_lod_applied_ = -1;
+    // W4: hide_child_instances filters the per-frame expansion walk rather
+    // than baked cluster data, so — like force_lod — a change needs to force
+    // instances_dirty even when the resolved instance set itself is unchanged.
+    bool vk_hide_children_applied_ = false;
 #endif
     lod_select::PartLodTable                lods;
 
@@ -424,6 +435,14 @@ struct WorldSession::Impl {
 
     // hash -> module name for expanded_instance info (filled from manifest)
     mutable std::unordered_map<uint64_t, std::string> module_by_hash;
+
+    // Bake Lab W4 (part-workbench.md SS-I.5): hash -> module name for
+    // part_child_summary(), rebuilt from graph_snapshot() (which, unlike
+    // module_by_hash above, covers COMPOSITIONAL children, not just world
+    // roots). Backs the const char* returned in PartChildSummary::module_name
+    // so it stays valid until the next part_child_summary() call, matching
+    // InstanceInfo::module_name's "valid until next bake/reload" contract.
+    mutable std::unordered_map<uint64_t, std::string> lab_child_module_cache_;
 
     // Ensure tracer is built and up-to-date. Returns false if build failed.
     bool ensure_tracer() const;
@@ -3925,7 +3944,7 @@ struct VulkanDiagnosticMaterialOverride {
 
 bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                         uint64_t part_hash, const viewer::LoadedPart& loaded,
-                        bool& drawable, std::string& error) {
+                        bool& drawable, std::string& error, int force_lod) {
     drawable = false;
     if (loaded.lod_mesh_data.empty()) return true;
     viewer::VkScenePart part;
@@ -4031,6 +4050,20 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
     }
     if (part.vertices.empty()) return true;
 
+    // Bake Lab W4 (part-workbench.md SS-I.5): squash a cluster's thresholds
+    // so the unmodified Vulkan cull.comp selection loop ("first i with
+    // psize >= thresholds[i]") always lands on `level`, regardless of camera
+    // distance — mirrors gpu_cull_types.h::apply_force_lod for the GL path.
+    // No-op when force_lod < 0 (the default), so production packing stays
+    // byte-identical to pre-W4 output.
+    const auto apply_force_lod = [](std::vector<viewer::VkSceneLod>& lods, int fl) {
+        if (fl < 0 || lods.empty()) return;
+        const size_t level = std::min<size_t>((size_t)fl, lods.size() - 1);
+        for (size_t i = 0; i < level; ++i)
+            lods[i].threshold = std::numeric_limits<float>::max();
+        lods[level].threshold = -std::numeric_limits<float>::max();
+    };
+
     if (!loaded.clusters.empty()) {
         for (const auto& source : loaded.clusters) {
             viewer::VkSceneCluster cluster;
@@ -4052,6 +4085,7 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                                         static_cast<uint32_t>(mesh.indices.size()),
                                         source.thresholds[li]});
             }
+            apply_force_lod(cluster.lods, force_lod);
             if (!cluster.lods.empty()) part.clusters.push_back(std::move(cluster));
         }
     } else {
@@ -4070,6 +4104,7 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                                     static_cast<uint32_t>(mesh.indices.size()),
                                     threshold});
         }
+        apply_force_lod(cluster.lods, force_lod);
         if (!cluster.lods.empty()) part.clusters.push_back(std::move(cluster));
     }
     if (part.clusters.empty()) return true;
@@ -4194,7 +4229,20 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     const auto resolved = resolver.resolve(impl_->state, impl_->lods, camera_pos);
     const auto resolve_end = std::chrono::steady_clock::now();
 
-    const bool instances_dirty = !impl_->vk_instance_cache.matches(resolved);
+    // Bake Lab W4 (part-workbench.md SS-I.5): LOD Inspector debug overrides.
+    // Neither is part of the vk_instance_cache fingerprint (they don't change
+    // the resolved instance set), so a change is tracked explicitly and both
+    // forces a rebuild AND (for force_lod) releases already-registered parts
+    // so ensure_vulkan_part rebakes their cluster thresholds. Defaults (-1 /
+    // false) leave production render output byte-identical to pre-W4.
+    const bool force_lod_changed = (opts.force_lod != impl_->vk_force_lod_applied_);
+    const bool hide_children_changed =
+        (opts.hide_child_instances != impl_->vk_hide_children_applied_);
+    impl_->vk_force_lod_applied_ = opts.force_lod;
+    impl_->vk_hide_children_applied_ = opts.hide_child_instances;
+
+    const bool instances_dirty = force_lod_changed || hide_children_changed ||
+                                 !impl_->vk_instance_cache.matches(resolved);
     if (instances_dirty) {
         std::vector<viewer::VkSceneInstance> rebuilt;
         rebuilt.reserve(resolved.size() * 2);
@@ -4206,16 +4254,22 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             const viewer::LoadedPart* root =
                 impl_->store->get_or_load(source.part_hash);
             if (!root) continue;
+            if (force_lod_changed) impl_->vk_scene->release_part(source.part_hash);
             if (!root->expansion.empty()) {
                 for (size_t node_index = 0;
                      node_index < root->expansion.size(); ++node_index) {
                     const auto& node = root->expansion[node_index];
+                    // W4: "show root only" debug filter — skip descendant
+                    // child-instance subtrees (depth > 0).
+                    if (opts.hide_child_instances && node.depth > 0) continue;
                     const viewer::LoadedPart* loaded =
                         impl_->store->get_or_load(node.part_hash);
                     if (!loaded) continue;
+                    if (force_lod_changed) impl_->vk_scene->release_part(node.part_hash);
                     bool drawable = false;
                     if (!ensure_vulkan_part(*impl_->vk_scene, node.part_hash,
-                                            *loaded, drawable, err)) return false;
+                                            *loaded, drawable, err,
+                                            opts.force_lod)) return false;
                     if (!drawable) continue;
                     Mat4f root_transform{};
                     Mat4f relative{};
@@ -4233,7 +4287,8 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             } else {
                 bool drawable = false;
                 if (!ensure_vulkan_part(*impl_->vk_scene, source.part_hash,
-                                        *root, drawable, err)) return false;
+                                        *root, drawable, err,
+                                        opts.force_lod)) return false;
                 if (!drawable) continue;
                 viewer::VkSceneInstance instance;
                 instance.part_hash = source.part_hash;
@@ -4533,6 +4588,11 @@ void WorldSession::render(const CameraDesc& cam, int fb_width, int fb_height,
         // Enable stats readback (same as main.cpp line 418 — viewer always shows counters).
         impl_->gpu_culler.set_stats_readback(true);
         impl_->gpu_culler.set_min_projected_size(opts.min_projected_size);
+        // Bake Lab W4 (part-workbench.md SS-I.5): LOD Inspector debug
+        // overrides. Defaults (-1 / false) are byte-identical to pre-W4
+        // packing — see gpu_cull_types.h::apply_force_lod.
+        impl_->gpu_culler.set_force_lod(opts.force_lod);
+        impl_->gpu_culler.set_hide_child_instances(opts.hide_child_instances);
         impl_->gpu_culler.cull(resolved, *impl_->store, eye,
                                frame.frustum_planes, frame.world_to_clip, budget);
         auto t2 = std::chrono::steady_clock::now();
@@ -4674,6 +4734,83 @@ bool WorldSession::part_bounds(uint64_t part_hash, PartBounds& out) const {
             if (c.aabb_max[a] > out.aabb_max[a]) out.aabb_max[a] = c.aabb_max[a];
         }
     }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Bake Lab W4 (part-workbench.md SS-I.5): LOD Inspector grid data source.
+// Pure PartStore reads (impl_->store->find — never triggers a load), no
+// bake/render side effects. Mirrors part_bounds above.
+// ---------------------------------------------------------------------------
+
+uint32_t WorldSession::part_lod_level_count(uint64_t part_hash) const {
+    if (!impl_->store) return 0;
+    const auto* lp = impl_->store->find(part_hash);
+    return lp ? static_cast<uint32_t>(lp->lod_mesh_data.size()) : 0;
+}
+
+bool WorldSession::part_lod_level_info(uint64_t part_hash, uint32_t level,
+                                       PartLodLevelInfo& out) const {
+    if (!impl_->store) return false;
+    const auto* lp = impl_->store->find(part_hash);
+    if (!lp || level >= lp->lod_mesh_data.size()) return false;
+    out.threshold = level < lp->thresholds.size() ? lp->thresholds[level] : 0.0f;
+    out.triangle_count =
+        static_cast<uint32_t>(lp->lod_mesh_data[level].indices.size() / 3);
+    return true;
+}
+
+uint32_t WorldSession::part_child_summary_count(uint64_t part_hash) const {
+    if (!impl_->store) return 0;
+    const auto* lp = impl_->store->find(part_hash);
+    if (!lp) return 0;
+    std::vector<uint64_t> distinct;
+    distinct.reserve(lp->children.size());
+    for (const auto& c : lp->children) {
+        if (std::find(distinct.begin(), distinct.end(), c.child_resolved_hash) ==
+            distinct.end())
+            distinct.push_back(c.child_resolved_hash);
+    }
+    return static_cast<uint32_t>(distinct.size());
+}
+
+bool WorldSession::part_child_summary(uint64_t part_hash, uint32_t idx,
+                                      PartChildSummary& out) const {
+    if (!impl_->store) return false;
+    const auto* lp = impl_->store->find(part_hash);
+    if (!lp) return false;
+
+    // Aggregate the (possibly-repeated) children table by hash, preserving
+    // first-seen order so `idx` is stable across calls for the same bake.
+    std::vector<std::pair<uint64_t, uint32_t>> agg;  // hash -> count
+    for (const auto& c : lp->children) {
+        bool found = false;
+        for (auto& p : agg) {
+            if (p.first == c.child_resolved_hash) { ++p.second; found = true; break; }
+        }
+        if (!found) agg.emplace_back(c.child_resolved_hash, 1u);
+    }
+    if (idx >= agg.size()) return false;
+    out.child_hash = agg[idx].first;
+    out.instance_count = agg[idx].second;
+    out.module_name = nullptr;
+
+    // Resolve module name via the part graph (covers compositional children,
+    // unlike module_by_hash which only covers world roots). Best-effort: a
+    // part loaded via a flat/scratch path with no live graph snapshot simply
+    // reports no module name.
+    part_graph_snapshot::Snapshot snap;
+    if (graph_snapshot(snap)) {
+        for (const auto& kv : snap.nodes) {
+            if (kv.second.resolved_hash == out.child_hash) {
+                impl_->lab_child_module_cache_[out.child_hash] = kv.first;
+                break;
+            }
+        }
+    }
+    auto it = impl_->lab_child_module_cache_.find(out.child_hash);
+    if (it != impl_->lab_child_module_cache_.end() && !it->second.empty())
+        out.module_name = it->second.c_str();
     return true;
 }
 

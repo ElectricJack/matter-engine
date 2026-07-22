@@ -64,6 +64,25 @@ struct RenderOptions {
     VulkanLightingOverrides vulkan_lighting{};
     VulkanVolumetricsSettings vulkan_volumetrics{};
     TilesetPomSettings vulkan_tileset_pom{};
+
+    // Bake Lab W4 (part-workbench.md SS-I.5): LOD Inspector debug overrides.
+    // Lab-only — production render paths are byte-identical to pre-W4
+    // behavior when left at these defaults.
+    //
+    // -1 (default): normal camera-based LOD selection. >=0: force every
+    // cluster/part touched by this render to LOD level k, clamped to that
+    // part's own level count, regardless of camera distance. Implemented by
+    // squashing the selected cluster's screen-size thresholds so the existing
+    // cull-shader selection math (unmodified) always resolves to level k —
+    // see ensure_vulkan_part in matter_engine.cpp and pack_cluster/
+    // pack_whole_part in render/gpu_cull_types.h.
+    int  force_lod = -1;
+    // False (default): normal rendering. True: only a part's own root-level
+    // mesh renders; its baked child-instance subtrees (LoadedPart::expansion
+    // nodes at depth > 0) are skipped. Coarser than the spec's per-module
+    // visibility mask (hiding e.g. only "Leaf") — this is the "show root
+    // only" granularity called out as an acceptable W4 fallback.
+    bool hide_child_instances = false;
 };
 
 struct TickDesc {
@@ -226,6 +245,18 @@ public:
     uint32_t instance_count() const;
     bool instance_info(uint32_t idx, InstanceInfo& out);
     bool part_bounds(uint64_t part_hash, PartBounds& out) const;
+
+    // Bake Lab W4: LOD Inspector grid data source (part-workbench.md SS-I.5).
+    // Pure PartStore reads, no bake/render side effects — mirrors
+    // instance_info/part_bounds above. Return 0/false when part_hash has no
+    // loaded LoadedPart (not yet baked, or released from CPU memory) so
+    // callers can tell "no data yet" apart from "zero levels/children".
+    uint32_t part_lod_level_count(uint64_t part_hash) const;
+    bool part_lod_level_info(uint64_t part_hash, uint32_t level, PartLodLevelInfo& out) const;
+    // Children aggregated by hash: repeated placements of the same module
+    // collapse into one PartChildSummary entry (see query.h).
+    uint32_t part_child_summary_count(uint64_t part_hash) const;
+    bool part_child_summary(uint64_t part_hash, uint32_t idx, PartChildSummary& out) const;
 
     // Bake Lab W3: install an optional per-rung bake observer (Lab-only; not
     // part of the stable public API). Null clears it. Applied to the next

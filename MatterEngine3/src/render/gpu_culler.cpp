@@ -445,13 +445,13 @@ int GpuCuller::ensure_part(uint64_t part_hash, PartStore& store) {
         for (uint32_t ci = 0; ci < (uint32_t)lp->clusters.size(); ++ci) {
             cluster_staging_.push_back(
                 pack_cluster(lp->clusters[ci], part_slot_u,
-                             pg.cluster_start + ci));
+                             pg.cluster_start + ci, force_lod_));
         }
         pg.cluster_count = (uint32_t)lp->clusters.size();
         pg.fine_cluster_count = lp->fine_cluster_count;
     } else {
         // Whole-part synthetic cluster.
-        cluster_staging_.push_back(pack_whole_part(*lp, part_slot_u));
+        cluster_staging_.push_back(pack_whole_part(*lp, part_slot_u, force_lod_));
         pg.cluster_count = 1;
         pg.fine_cluster_count = 1;
     }
@@ -611,6 +611,13 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
             last_resolved_fp_     = fp;
         }
     }
+    // W4: hide_child_instances_ isn't part of the fingerprint above (it
+    // filters expansion at cull-time rather than changing registered cluster
+    // data), so flip it into a re-expand explicitly.
+    if (last_hide_children_applied_ != hide_child_instances_) {
+        instances_dirty = true;
+        last_hide_children_applied_ = hide_child_instances_;
+    }
 
     if (instances_dirty) {
         // ------------------------------------------------------------------
@@ -633,6 +640,9 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
             // Walk expansion table (built by build_expansion in part_store.cpp).
             if (!lp->expansion.empty()) {
                 for (const auto& en : lp->expansion) {
+                    // W4: "show root only" debug filter — skip descendant
+                    // child-instance subtrees (depth > 0).
+                    if (hide_child_instances_ && en.depth > 0) continue;
                     int node_slot = ensure_part(en.part_hash, store);
                     if (node_slot < 0) continue;
 

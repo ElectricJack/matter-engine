@@ -119,6 +119,26 @@ public:
     void set_min_projected_size(float v) { min_projected_size_ = v; }
     float min_projected_size() const     { return min_projected_size_; }
 
+    // Bake Lab W4 (part-workbench.md SS-I.5): LOD Inspector debug overrides.
+    // -1 (default) = normal camera-based selection, byte-identical to pre-W4
+    // packing. >=0 forces every cluster to LOD level k (clamped per-cluster
+    // to its own level count) — see apply_force_lod in gpu_cull_types.h.
+    // Changing the value invalidates already-registered parts (reset(), so
+    // the next cull() re-packs their cluster thresholds with the new value);
+    // debug-only path, not called on the per-frame hot path.
+    void set_force_lod(int lod) {
+        if (lod == force_lod_) return;
+        force_lod_ = lod;
+        reset();
+    }
+    int force_lod() const { return force_lod_; }
+
+    // Hides child-instance geometry (LoadedPart::expansion nodes at depth>0)
+    // so only a part's own root-level mesh is expanded/drawn. False (default)
+    // is byte-identical to pre-W4 behavior.
+    void set_hide_child_instances(bool v) { hide_child_instances_ = v; }
+    bool hide_child_instances() const     { return hide_child_instances_; }
+
     // HUD counters (valid after draw_indirect() with stats_readback_ enabled).
     size_t culled_clusters() const { return stat_culled_; }        // frustum
     size_t culled_hiz()      const { return stat_culled_hiz_; }    // occlusion
@@ -218,12 +238,22 @@ private:
 
     float min_projected_size_ = 0.0f;   // sub-pixel cluster floor; 0 = off
 
+    // Bake Lab W4 debug overrides (see setters above). Defaults are
+    // byte-identical to pre-W4 behavior.
+    int  force_lod_ = -1;
+    bool hide_child_instances_ = false;
+
     // --- Instance upload dirty-check ---
     // FNV-1a fingerprint over (part_hash, transform) of every ResolvedInstance
     // from the previous cull() call, plus the count.  When both match, skip
     // the expand + SSBO re-upload phase (static world fast-path).
     uint64_t last_resolved_fp_    = 0;
     int      last_resolved_count_ = -1;
+    // W4: hide_child_instances_ is a per-frame expansion filter, not baked
+    // into registered cluster data, so it needs its own dirty flag (the
+    // resolved-instance fingerprint above doesn't change when only this
+    // option flips).
+    bool     last_hide_children_applied_ = false;
 
     // Hoisted per-frame expansion state (reused across frames; avoids repeated
     // large-vector alloc/free for static worlds on the dirty-check fast-path).

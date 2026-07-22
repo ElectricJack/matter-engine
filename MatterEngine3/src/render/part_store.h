@@ -21,6 +21,12 @@ namespace viewer {
 struct ExpandedNode {
     uint64_t part_hash;          // hash of the part that owns the drawable lod_mesh_data
     float    rel_transform[16];  // engine row-major, relative to instance root
+    // W4 (Bake Lab LOD Inspector, part-workbench.md SS-I.5): depth in the
+    // part tree from walk_part_tree (0 = the root part's own mesh node; >0 =
+    // a descendant child-instance subtree). Drives the debug
+    // hide_child_instances render option ("show root only"). Not used by any
+    // pre-W4 code path.
+    int      depth = 0;
 };
 
 // Per-cluster data loaded from a v3 flat artifact.

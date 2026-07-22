@@ -615,6 +615,7 @@ void PartWorkbench::close() {
     module_.clear();
     status_line_.clear();
     if (bake_observer_) bake_observer_->reset();  // W3: drop stale rung log
+    lod_inspector_.reset();  // W4: drop stale force_lod/hide_children overrides
 }
 
 void PartWorkbench::open_part(const std::string& source_project_dir, const std::string& module) {
@@ -664,6 +665,7 @@ void PartWorkbench::open_part(const std::string& source_project_dir, const std::
     if (!bake_observer_) bake_observer_ = std::make_unique<WorkbenchBakeObserver>();
     bake_observer_->reset();
     session_->set_bake_observer(bake_observer_.get());
+    lod_inspector_.reset();  // W4: opening a (possibly different) part drops stale overrides
     session_->request_bake();
     awaiting_bounds_frame_ = true;
     bake_start_ms_ = now_ms();
@@ -833,6 +835,17 @@ void PartWorkbench::draw(const std::vector<WorldEntry>& worlds) {
 
     ImGui::Spacing();
     draw_pins_panel();
+
+    // W4: LOD Inspector — reads the freshly-baked root part's hash off the
+    // isolation session (instance 0 is always the isolation world's single
+    // root; see write_iso_world_file's synthetic `static roots = [{module}]`).
+    ImGui::Spacing();
+    {
+        matter::InstanceInfo info;
+        const uint64_t part_hash =
+            session_->instance_info(0, info) ? info.part_hash : 0;
+        lod_inspector_.draw(session_.get(), part_hash);
+    }
 }
 
 void PartWorkbench::draw_open_picker(const std::vector<WorldEntry>& worlds) {
