@@ -1076,7 +1076,9 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     scene_bindings[6] = descriptor_binding(
         6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         VK_SHADER_STAGE_FRAGMENT_BIT);
-    scene_bindings[6].descriptorCount = 16;
+    // Phase 2 (horizon-map lighting): 4 slots * 6 channels (was 4 slots * 4
+    // channels) -- see VkSceneRenderer::kTilesetChannelCount.
+    scene_bindings[6].descriptorCount = 4 * kTilesetChannelCount;
     scene_bindings[7] = descriptor_binding(
         7, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT);
     VkDescriptorSetLayoutCreateInfo scene_layout{
@@ -1307,7 +1309,7 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
                                VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
                                VK_SHADER_STAGE_ANY_HIT_BIT_KHR |
                                VK_SHADER_STAGE_MISS_BIT_KHR)};
-    bindings[15].descriptorCount = 16;
+    bindings[15].descriptorCount = 4 * kTilesetChannelCount;
     VkDescriptorSetLayoutCreateInfo set_info{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     set_info.bindingCount =
@@ -1987,14 +1989,16 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         frame_resource_slot_capacity_ >= frame_slot_count) {
         return true;
     }
-    // Phase 1 tileset Vulkan port (Task 6): raster set 1 gained binding 6 (16
-    // combined-image-sampler descriptors) and binding 7 (1 uniform buffer,
-    // TilesetParams) per frame slot — added to the +16 / +1 below.
+    // Phase 1 tileset Vulkan port (Task 6): raster set 1 gained binding 6
+    // (4*kTilesetChannelCount combined-image-sampler descriptors -- 24 since
+    // Phase 2's horizon-map channels grew the per-slot channel count 4->6)
+    // and binding 7 (1 uniform buffer, TilesetParams) per frame slot — added
+    // to the +4*kTilesetChannelCount / +1 below.
     const VkDescriptorPoolSize pool_sizes[] = {
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count * 2},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 13},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-         frame_slot_count * (79 + 16)},
+         frame_slot_count * (79 + 4 * kTilesetChannelCount)},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 22}};
     VkDescriptorPoolCreateInfo pool{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -2130,12 +2134,14 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             vkDestroyDescriptorPool(vulkan_->device(), rt_descriptor_pool_,
                                     nullptr);
         // Phase 1 tileset Vulkan port (Task 6): RT set 0 gained binding 15
-        // (16 combined-image-sampler descriptors) and binding 16 (1 uniform
-        // buffer, TilesetParams) per frame slot.
+        // (4*kTilesetChannelCount combined-image-sampler descriptors -- 24
+        // since Phase 2's horizon-map channels grew the per-slot channel
+        // count 4->6) and binding 16 (1 uniform buffer, TilesetParams) per
+        // frame slot.
         const VkDescriptorPoolSize rt_sizes[] = {
             {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, frame_slot_count},
             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-             frame_slot_count * (5 + 16)},
+             frame_slot_count * (5 + 4 * kTilesetChannelCount)},
             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 5},
             {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 4},
             {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count}};
@@ -2356,8 +2362,9 @@ bool VkSceneRenderer::ensure_tileset_infra(std::string& error) {
     if (result != VK_SUCCESS)
         return fail_vk("vkCreateSampler(tileset)", result, error);
 
-    // 1x1x16-layer dummy per format family (albedo/ORM share R8G8B8A8_UNORM).
-    // Every one of the 16 array entries is "statically used" by the
+    // 1x1x16-layer dummy per format family (albedo/ORM/horizon_a/horizon_b
+    // all share R8G8B8A8_UNORM -- Phase 2's horizon channels need no fourth
+    // dummy). Every one of the 16 array entries is "statically used" by the
     // nonuniformEXT-indexed descriptor array regardless of which materials
     // are drawn this frame, so all three dummies must be valid,
     // SHADER_READ_ONLY_OPTIMAL images before the first frame — not just
@@ -2418,7 +2425,10 @@ void VkSceneRenderer::write_tileset_params_buffer() {
         params.slot_mean_albedo[slot][0] = s.mean_albedo[0];
         params.slot_mean_albedo[slot][1] = s.mean_albedo[1];
         params.slot_mean_albedo[slot][2] = s.mean_albedo[2];
-        params.slot_mean_albedo[slot][3] = s.loaded ? 1.0f : 0.0f;
+        // 0 = not loaded, 1 = loaded (no horizon data), 2 = loaded with
+        // horizon data. See TilesetParamsGpu's file comment.
+        params.slot_mean_albedo[slot][3] =
+            !s.loaded ? 0.0f : (s.has_horizon ? 2.0f : 1.0f);
     }
     // Ground POM UI knobs (matter::TilesetPomSettings, see
     // set_tileset_pom_settings). "enabled == false" uploads pom_steps == 0,
@@ -2436,7 +2446,7 @@ void VkSceneRenderer::write_tileset_params_buffer() {
     params.pom_datum_bias_ao_shadow[0] = tileset_pom_settings_.datum_bias_m;
     params.pom_datum_bias_ao_shadow[1] = tileset_pom_settings_.ao_strength;
     params.pom_datum_bias_ao_shadow[2] = tileset_pom_settings_.shadow_strength;
-    params.pom_datum_bias_ao_shadow[3] = 0.0f;
+    params.pom_datum_bias_ao_shadow[3] = tileset_pom_settings_.horizon_strength;
     // Task 11: direction-to-sun, same convention as the RT shadow push
     // constants (record_ray_trace_dispatch): normalize(-sun_direction),
     // since VkSceneLighting::sun_direction points FROM the sun toward the
@@ -2458,10 +2468,11 @@ void VkSceneRenderer::write_tileset_params_buffer() {
 
 void VkSceneRenderer::write_tileset_descriptors_for_frame(VkDescriptorSet set) {
     if (set == VK_NULL_HANDLE || !tileset_infra_ready_) return;
-    VkDescriptorImageInfo image_infos[16]{};
+    VkDescriptorImageInfo image_infos[4 * kTilesetChannelCount]{};
     for (int slot = 0; slot < 4; ++slot) {
-        for (int channel = 0; channel < 4; ++channel) {
-            VkDescriptorImageInfo& info = image_infos[slot * 4 + channel];
+        for (int channel = 0; channel < kTilesetChannelCount; ++channel) {
+            VkDescriptorImageInfo& info =
+                image_infos[slot * kTilesetChannelCount + channel];
             info.sampler = tileset_sampler_;
             info.imageView = tileset_channel_view(slot, channel);
             info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -2473,7 +2484,7 @@ void VkSceneRenderer::write_tileset_descriptors_for_frame(VkDescriptorSet set) {
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = set;
     writes[0].dstBinding = 6;
-    writes[0].descriptorCount = 16;
+    writes[0].descriptorCount = 4 * kTilesetChannelCount;
     writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[0].pImageInfo = image_infos;
     writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -2486,11 +2497,15 @@ void VkSceneRenderer::write_tileset_descriptors_for_frame(VkDescriptorSet set) {
 }
 
 namespace {
+// 6 = VkSceneRenderer::kTilesetChannelCount (private enum; this is a free
+// function in an anonymous namespace, so the literal is repeated here rather
+// than referenced -- matches the pre-existing style, which used a literal 4
+// before the horizon channels were added).
 struct TilesetUploadRecord {
     VkBuffer staging = VK_NULL_HANDLE;
-    VkImage images[4]{};
-    uint32_t mip_counts[4]{};
-    std::vector<VkBufferImageCopy> regions[4];
+    VkImage images[6]{};
+    uint32_t mip_counts[6]{};
+    std::vector<VkBufferImageCopy> regions[6];
     bool rt_available = false;
 };
 
@@ -2498,7 +2513,7 @@ void record_tileset_upload(VkCommandBuffer cmd, void* user_data) {
     auto& rec = *static_cast<TilesetUploadRecord*>(user_data);
     const VkPipelineStageFlags2 dst_stage =
         vk_scene_detail::ray_depth_destination_stages(rec.rt_available);
-    for (int c = 0; c < 4; ++c) {
+    for (int c = 0; c < 6; ++c) {
         if (rec.images[c] == VK_NULL_HANDLE || rec.regions[c].empty()) continue;
         const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0,
                                             rec.mip_counts[c], 0, 16};
@@ -2558,8 +2573,18 @@ bool VkSceneRenderer::load_tileset_slot(int slot, const std::string& gtex_path,
     tileset::GTexHeader header;
     std::vector<uint8_t> albedo_rgb8, normal_rg8, orm_rgb8;
     std::vector<uint16_t> height_r16;
+    // Phase 2 (horizon-map lighting), .gtex v2: two additional RGBA8
+    // out-params carrying CHAN_HORIZON_A/B (8 packed azimuth directions,
+    // quarter albedo resolution). Call site matches the 8-argument
+    // tileset::load_gtex overload landed in tileset_gtex.h (horizon_a/b
+    // appended after height_r16_out, before err) -- cross-checked against
+    // tileset_gtex_tests.cpp's call sites. v1 .gtex files leave both
+    // vectors empty (that overload's documented v1 behavior), which this
+    // function treats as "no horizon data" below, not an error.
+    std::vector<uint8_t> horizon_a, horizon_b;
     if (!tileset::load_gtex(gtex_path, header, albedo_rgb8, normal_rg8,
-                            orm_rgb8, height_r16, error)) {
+                            orm_rgb8, height_r16, horizon_a, horizon_b,
+                            error)) {
         return false;
     }
 
@@ -2586,7 +2611,39 @@ bool VkSceneRenderer::load_tileset_slot(int slot, const std::string& gtex_path,
     }
     const int tile_px = atlas_dim / 4;
 
+    // Horizon channels (v2 only): quarter albedo resolution, RGBA8 (4
+    // bytes/pixel), same square/4x4-grid contract as the core channels but
+    // at their own (smaller) atlas_dim/tile_px. Empty vectors (v1 file, or a
+    // malformed v2 file missing one of the pair) fail CLOSED to "no horizon
+    // data" -- has_horizon stays false and the slot loads normally with the
+    // horizon channels bound to the shared dummy, never a hard error, since
+    // horizon-map lighting is an optional enhancement layer.
+    //
+    // header.horizon_w_px/h_px (tileset_gtex.h, v2) give the atlas
+    // dimensions directly rather than requiring another sqrt-derivation
+    // from the decoded vector size, but are still cross-validated against
+    // the actual horizon_a/horizon_b byte counts below -- never trust a
+    // corrupt/foreign header field enough to compute a bogus stride.
+    const bool has_horizon = !horizon_a.empty() && !horizon_b.empty();
+    int horizon_atlas_dim = 0;
+    int horizon_tile_px = 0;
+    if (has_horizon) {
+        horizon_atlas_dim = header.horizon_w_px;
+        if (horizon_a.size() != horizon_b.size() ||
+            horizon_atlas_dim <= 0 || header.horizon_h_px != horizon_atlas_dim ||
+            horizon_atlas_dim % 4 != 0 ||
+            horizon_a.size() !=
+                static_cast<size_t>(horizon_atlas_dim) *
+                    static_cast<size_t>(horizon_atlas_dim) * 4) {
+            error = "load_tileset_slot: horizon atlas dimension mismatch: " +
+                    gtex_path;
+            return false;
+        }
+        horizon_tile_px = horizon_atlas_dim / 4;
+    }
+
     tileset::SlicedChannel sliced_albedo, sliced_normal, sliced_orm, sliced_height;
+    tileset::SlicedChannel sliced_horizon_a, sliced_horizon_b;
     if (!tileset::slice_channel(albedo_rgb8.data(), atlas_dim, atlas_dim, 3,
                                 /*expand_rgb_to_rgba=*/true,
                                 /*filter_as_u16=*/false, sliced_albedo, error) ||
@@ -2602,6 +2659,19 @@ bool VkSceneRenderer::load_tileset_slot(int slot, const std::string& gtex_path,
                                 /*filter_as_u16=*/true, sliced_height, error)) {
         return false;
     }
+    if (has_horizon &&
+        (!tileset::slice_channel(horizon_a.data(), horizon_atlas_dim,
+                                 horizon_atlas_dim, 4,
+                                 /*expand_rgb_to_rgba=*/false,
+                                 /*filter_as_u16=*/false, sliced_horizon_a,
+                                 error) ||
+         !tileset::slice_channel(horizon_b.data(), horizon_atlas_dim,
+                                 horizon_atlas_dim, 4,
+                                 /*expand_rgb_to_rgba=*/false,
+                                 /*filter_as_u16=*/false, sliced_horizon_b,
+                                 error))) {
+        return false;
+    }
     tileset::SlicedChannel* slices[4] = {&sliced_albedo, &sliced_normal,
                                         &sliced_orm, &sliced_height};
     for (tileset::SlicedChannel* s : slices) {
@@ -2612,8 +2682,24 @@ bool VkSceneRenderer::load_tileset_slot(int slot, const std::string& gtex_path,
             return false;
         }
     }
-    const VkFormat formats[4] = {VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8_UNORM,
-                                 VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16_UNORM};
+    tileset::SlicedChannel* horizon_slices[2] = {&sliced_horizon_a,
+                                                 &sliced_horizon_b};
+    if (has_horizon) {
+        for (tileset::SlicedChannel* s : horizon_slices) {
+            if (s->tile_px != horizon_tile_px || s->mip_count <= 0 ||
+                static_cast<int>(s->layers.size()) != 16) {
+                error = "load_tileset_slot: horizon slicer output shape "
+                        "mismatch: " + gtex_path;
+                return false;
+            }
+        }
+    }
+    // Index order matches TilesetChannel (albedo/normal/orm/height/
+    // horizon_a/horizon_b); horizon_a/b share albedo/orm's RGBA8 format.
+    const VkFormat formats[kTilesetChannelCount] = {
+        VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8_UNORM,
+        VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16_UNORM,
+        VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM};
 
     // Build the single shared staging buffer (all channels/layers/mips) and
     // the per-image copy regions before touching any renderer state, so a
@@ -2622,6 +2708,11 @@ bool VkSceneRenderer::load_tileset_slot(int slot, const std::string& gtex_path,
     for (tileset::SlicedChannel* s : slices)
         for (const auto& layer : s->layers)
             for (const auto& mip : layer) total_bytes += mip.size();
+    if (has_horizon) {
+        for (tileset::SlicedChannel* s : horizon_slices)
+            for (const auto& layer : s->layers)
+                for (const auto& mip : layer) total_bytes += mip.size();
+    }
     if (total_bytes == 0) {
         error = "load_tileset_slot: sliced atlas produced zero bytes: " + gtex_path;
         return false;
@@ -2637,13 +2728,22 @@ bool VkSceneRenderer::load_tileset_slot(int slot, const std::string& gtex_path,
         return false;
     }
 
-    TilesetImage new_images[4];
+    TilesetImage new_images[kTilesetChannelCount];
     bool created_ok = true;
     for (int c = 0; c < 4 && created_ok; ++c) {
         created_ok = create_tileset_image(
             formats[c], static_cast<uint32_t>(tile_px),
             static_cast<uint32_t>(slices[c]->mip_count), 16, new_images[c],
             error);
+    }
+    if (created_ok && has_horizon) {
+        for (int c = 0; c < 2 && created_ok; ++c) {
+            created_ok = create_tileset_image(
+                formats[kTilesetChannelHorizonA + c],
+                static_cast<uint32_t>(horizon_tile_px),
+                static_cast<uint32_t>(horizon_slices[c]->mip_count), 16,
+                new_images[kTilesetChannelHorizonA + c], error);
+        }
     }
     if (!created_ok) {
         for (auto& image : new_images) destroy_tileset_image(image);
@@ -2692,6 +2792,51 @@ bool VkSceneRenderer::load_tileset_slot(int slot, const std::string& gtex_path,
             }
         }
     }
+    if (has_horizon) {
+        for (int hc = 0; hc < 2; ++hc) {
+            const int c = kTilesetChannelHorizonA + hc;
+            tileset::SlicedChannel* s = horizon_slices[hc];
+            upload_record.images[c] = new_images[c].image;
+            upload_record.mip_counts[c] = static_cast<uint32_t>(s->mip_count);
+            auto& regions = upload_record.regions[c];
+            regions.reserve(static_cast<size_t>(s->mip_count) * 16);
+            for (int layer = 0; layer < 16; ++layer) {
+                int dim = horizon_tile_px;
+                for (int mip = 0; mip < s->mip_count; ++mip) {
+                    const std::vector<uint8_t>& data =
+                        s->layers[static_cast<size_t>(layer)]
+                                 [static_cast<size_t>(mip)];
+                    const size_t expected = static_cast<size_t>(dim) * dim *
+                        static_cast<size_t>(s->bytes_per_pixel);
+                    if (data.size() != expected) {
+                        error = "load_tileset_slot: horizon mip byte-size "
+                                "mismatch (layer " + std::to_string(layer) +
+                                " mip " + std::to_string(mip) + "): " +
+                                gtex_path;
+                        for (auto& image : new_images)
+                            destroy_tileset_image(image);
+                        return false;
+                    }
+                    std::memcpy(static_cast<uint8_t*>(staging.mapped) + offset,
+                               data.data(), data.size());
+                    VkBufferImageCopy region{};
+                    region.bufferOffset = static_cast<VkDeviceSize>(offset);
+                    region.imageSubresource.aspectMask =
+                        VK_IMAGE_ASPECT_COLOR_BIT;
+                    region.imageSubresource.mipLevel =
+                        static_cast<uint32_t>(mip);
+                    region.imageSubresource.baseArrayLayer =
+                        static_cast<uint32_t>(layer);
+                    region.imageSubresource.layerCount = 1;
+                    region.imageExtent = {static_cast<uint32_t>(dim),
+                                         static_cast<uint32_t>(dim), 1};
+                    regions.push_back(region);
+                    offset += data.size();
+                    dim = dim / 2;
+                }
+            }
+        }
+    }
     if (!matter::flush_buffer(staging, 0, total_bytes, error)) {
         for (auto& image : new_images) destroy_tileset_image(image);
         return false;
@@ -2720,6 +2865,13 @@ bool VkSceneRenderer::load_tileset_slot(int slot, const std::string& gtex_path,
     TilesetSlotGpu& target = tileset_slots_[slot];
     target = TilesetSlotGpu{};
     for (int c = 0; c < 4; ++c) target.channels[c] = new_images[c];
+    if (has_horizon) {
+        target.channels[kTilesetChannelHorizonA] =
+            new_images[kTilesetChannelHorizonA];
+        target.channels[kTilesetChannelHorizonB] =
+            new_images[kTilesetChannelHorizonB];
+    }
+    target.has_horizon = has_horizon;
     target.tile_size_m = header.tile_size_m;
     target.texels_per_meter = static_cast<float>(header.texels_per_meter);
     target.height_min = header.height_min;
@@ -5864,11 +6016,11 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     // 1's bindings 6/7. Rebuilt from current renderer state (loaded slots or
     // dummies) every frame here, the same way the rest of this array already
     // is — no separate "on slot load" write is needed for the RT set.
-    VkDescriptorImageInfo tileset_image_infos[16]{};
+    VkDescriptorImageInfo tileset_image_infos[4 * kTilesetChannelCount]{};
     for (int slot = 0; slot < 4; ++slot) {
-        for (int channel = 0; channel < 4; ++channel) {
+        for (int channel = 0; channel < kTilesetChannelCount; ++channel) {
             VkDescriptorImageInfo& info =
-                tileset_image_infos[slot * 4 + channel];
+                tileset_image_infos[slot * kTilesetChannelCount + channel];
             info.sampler = tileset_sampler_;
             info.imageView = tileset_channel_view(slot, channel);
             info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -5934,7 +6086,7 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     writes[15].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[15].dstSet = rt_descriptor_sets_[frame.frame_slot];
     writes[15].dstBinding = 15;
-    writes[15].descriptorCount = 16;
+    writes[15].descriptorCount = 4 * kTilesetChannelCount;
     writes[15].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[15].pImageInfo = tileset_image_infos;
     writes[16].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;

@@ -164,20 +164,23 @@ void main() {
                 mix(1.0, clamp(marched_orm.r, 0.0, 1.0), tileset.pom_c.y);
             float marched_ao = ao * marched_ao_tex_effective;
 
-            // Task 11: height self-shadow toward the sun, from the marched
-            // (displaced) point. Skipped when the sun is below the horizon
-            // or has no intensity -- both make the march physically
+            // Phase 2 (horizon-map lighting): baked per-direction horizon
+            // occlusion toward the sun, replacing the old in-shader
+            // self-shadow march (tileset_self_shadow, now retired -- see
+            // tileset_common.glsl). Skipped when the sun is below the
+            // horizon or has no intensity -- both make the test physically
             // meaningless, not just cheap to skip.
             vec3 to_sun_dir = tileset.sun_dir_intensity.xyz;
             float sun_intensity = tileset.sun_dir_intensity.w;
             if (to_sun_dir.y > 0.0 && sun_intensity > 0.0) {
-                float shadow = tileset_self_shadow(
-                    tileset_slot, marched_pos, in_world_pos, plane_n,
-                    to_sun_dir, mdWdx, mdWdy);
+                float occlusion = tileset_horizon_occlusion(
+                    tileset_slot, marched_pos.xz, to_sun_dir, mdWdx, mdWdy);
+                float visibility = 1.0 - occlusion;
                 // Ground POM UI "shadow strength" (tileset.pom_c.z): blends
-                // the self-shadow factor toward 1.0 (unoccluded) instead of
-                // always applying it at full strength.
-                float shadow_effective = mix(1.0, shadow, tileset.pom_c.z);
+                // the horizon-occlusion visibility toward 1.0 (unoccluded)
+                // instead of always applying it at full strength -- same
+                // slider semantics the old self-shadow march used.
+                float shadow_effective = mix(1.0, visibility, tileset.pom_c.z);
                 marched_ao *= shadow_effective;
             }
 

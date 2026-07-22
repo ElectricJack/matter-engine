@@ -3,7 +3,8 @@
 // tileset_common.glsl — Wang-tile ground sampling for the Vulkan pipeline.
 // Port of the GL tileset_sampling.glsl with two structural changes:
 //   * per-tile texture-array layers (mip bleed between tiles is impossible),
-//   * descriptor-array samplers indexed slot*4+channel (no if-chains).
+//   * descriptor-array samplers indexed slot*6+channel (no if-chains; the
+//     per-slot channel count grew 4->6 with Phase 2's horizon-map channels).
 // Included by gbuffer.frag (raster set 1) and rt_* (set 0); the includer
 // defines TILESET_SET / TILESET_TEX_BINDING / TILESET_PARAMS_BINDING before
 // including so bindings resolve per pipeline:
@@ -22,15 +23,20 @@
 
 #extension GL_EXT_nonuniform_qualifier : require
 
+// 24 = 4 slots * 6 channels (Phase 2 horizon-map lighting grew the per-slot
+// channel count from 4 to 6: TILESET_CH_HORIZON_A/B).
 layout(set = TILESET_SET, binding = TILESET_TEX_BINDING)
-    uniform sampler2DArray tilesetTex[16];
+    uniform sampler2DArray tilesetTex[24];
 layout(set = TILESET_SET, binding = TILESET_PARAMS_BINDING, std140)
     uniform TilesetParams {
     vec4 tile_size_m;            // per slot
     vec4 texels_per_meter;
     vec4 height_min;
     vec4 height_max;
-    vec4 mean_albedo[4];         // rgb + valid
+    // rgb + valid/has_horizon flag in .w: 0 = not loaded, 1 = loaded (no
+    // horizon data, v1 .gtex), 2 = loaded with horizon data (v2 .gtex). See
+    // tileset_has_horizon below and VkSceneRenderer::write_tileset_params_buffer.
+    vec4 mean_albedo[4];
     vec4 pom_a;                  // steps, refine_steps, max_distance_m, fade_band_m
     vec4 pom_b;                  // detail_fade_center_m, detail_fade_width_m, pom_max_relief_m, pom_max_march_m
     // Task 11: direction-to-sun (normalized, world space; xyz) + sun_intensity
@@ -46,14 +52,25 @@ layout(set = TILESET_SET, binding = TILESET_PARAMS_BINDING, std140)
     // stand proud instead of clamping flat at 0. y = ao_strength, z =
     // shadow_strength -- both blend factors (0 = baked term fully
     // suppressed, 1 = full baked strength) applied in gbuffer.frag. w =
-    // reserved.
+    // horizon_strength (Phase 2 horizon-map lighting) -- blends the
+    // per-direction baked horizon occlusion toward 0 (fully visible)
+    // instead of always applying it at full strength; see
+    // tileset_horizon_occlusion below.
     vec4 pom_c;
 } tileset;
 
-#define TILESET_CH_ALBEDO 0
-#define TILESET_CH_NORMAL 1
-#define TILESET_CH_ORM    2
-#define TILESET_CH_HEIGHT 3
+#define TILESET_CH_ALBEDO    0
+#define TILESET_CH_NORMAL    1
+#define TILESET_CH_ORM       2
+#define TILESET_CH_HEIGHT    3
+// Phase 2 (horizon-map lighting): 8 packed azimuth directions (0/45/.../315
+// degrees, azimuth 0 = world +X rotating toward +Z) split across two RGBA8
+// textures -- A holds 0/45/90/135, B holds 180/225/270/315 -- at quarter
+// albedo resolution. Each byte is sin(horizon elevation) as unorm8 (ground
+// obstructions only ever occlude upward, so elevation in [0,90] degrees and
+// sin(elevation) in [0,1] needs no [-1,1] remap on decode).
+#define TILESET_CH_HORIZON_A 4
+#define TILESET_CH_HORIZON_B 5
 
 // PCG-flavoured integer hash; identical constants to the GL/bake version so the
 // runtime arrangement matches the seam tests. Same ivec2 in => same color out.
@@ -94,7 +111,7 @@ vec4 tileset_sample(int slot, int channel, vec2 worldXZ,
     int layer; vec2 uv;
     wang_resolve(slot, worldXZ, layer, uv);
     float inv = 1.0 / tileset.tile_size_m[slot];
-    return textureGrad(tilesetTex[nonuniformEXT(slot * 4 + channel)],
+    return textureGrad(tilesetTex[nonuniformEXT(slot * 6 + channel)],
                        vec3(uv, float(layer)), dWdx * inv, dWdy * inv);
 }
 
@@ -337,6 +354,104 @@ float tileset_self_shadow(int slot, vec3 hit_point, vec3 plane_point,
     // which is most of what sells the recessed look at walk height.
     float softness = max(0.5 * relief / float(kShadowSteps), 1e-4);
     return clamp(min_clearance / softness, 0.0, 1.0);
+}
+// RETIRED (Phase 2 horizon-map lighting): tileset_self_shadow's only call
+// site (gbuffer.frag's Task 11 self-shadow branch) was replaced by
+// tileset_horizon_occlusion below -- baked per-direction horizon data is a
+// strict upgrade over this short in-shader march (covers occluders outside
+// the march's ~0.3 m cap, e.g. neighboring litter/rocks, not just the
+// immediate relief under the fragment). Left in place rather than deleted:
+// no other call sites exist today, but removing a shared header's function
+// is a larger diff than this task's scope warrants and the march remains a
+// working, independently-testable reference implementation.
+
+// ---------------------------------------------------------------------------
+// Phase 2: horizon-map lighting.
+// ---------------------------------------------------------------------------
+//
+// .gtex v2 adds CHAN_HORIZON_A/B: two RGBA8 textures at quarter albedo
+// resolution, packing sin(horizon elevation) as unorm8 for 8 azimuth
+// directions around the compass (0/45/.../315 degrees; azimuth 0 = world +X
+// rotating toward +Z, i.e. angle = atan(dir.z, dir.x)). A holds
+// 0/45/90/135 in its R/G/B/A components, B holds 180/225/270/315 in the
+// same component order. v1 .gtex files carry no horizon data; those slots
+// bind the shared RGBA8 dummy (all zero) and have_horizon reads false via
+// tileset_has_horizon, so every helper below fails safely to "fully
+// visible" / "no occlusion" rather than reading zero-as-occluded.
+
+// True when slot has real (non-dummy) horizon-map data loaded. See
+// TilesetParamsGpu's file comment (vk_scene_renderer.h) for the
+// 0/1/2 encoding packed into mean_albedo[slot].w.
+bool tileset_has_horizon(int slot) {
+    return tileset.mean_albedo[slot].w >= 1.5;
+}
+
+// Sample the baked horizon elevation (as sin(elevation), already unorm8
+// decoded into [0,1] by the sampler -- no further remap) toward a given
+// world-space azimuth direction dir_xz = (dir.x, dir.z) (need not be unit
+// length; only its angle matters). Interpolates between the two nearest of
+// the 8 stored 45-degree-spaced directions, including the 315->0 wrap
+// across the A/B texture split (global direction index 7, texture B
+// component A, blends toward global index 0, texture A component R).
+float tileset_horizon_sin(int slot, vec2 worldXZ, vec2 dir_xz,
+                          vec2 dWdx, vec2 dWdy) {
+    float angle = atan(dir_xz.y, dir_xz.x);       // atan(z, x); radians
+    float deg = degrees(angle);
+    if (deg < 0.0) deg += 360.0;
+    float idxf = deg * (1.0 / 45.0);              // [0, 8)
+    int idx0 = int(floor(idxf)) & 7;              // wrap-safe (idxf >= 0)
+    int idx1 = (idx0 + 1) & 7;
+    float t = fract(idxf);
+
+    // Both textures are always sampled (2 fetches) rather than branching on
+    // which one(s) the two indices land in -- simpler, uniform control
+    // flow, and both taps are needed whenever the interpolation straddles
+    // the A/B split anyway (idx0 == 3 or idx0 == 7).
+    vec4 texA = tileset_sample(slot, TILESET_CH_HORIZON_A, worldXZ, dWdx, dWdy);
+    vec4 texB = tileset_sample(slot, TILESET_CH_HORIZON_B, worldXZ, dWdx, dWdy);
+    float v0 = (idx0 < 4) ? texA[idx0] : texB[idx0 - 4];
+    float v1 = (idx1 < 4) ? texA[idx1] : texB[idx1 - 4];
+    return mix(v0, v1, t);
+}
+
+// Per-ray horizon occlusion toward dir_world (typically the to-sun
+// direction, or a GI cosine-sampled bounce direction). dir_world.y doubles
+// as sin(elevation) for a normalized direction, so it compares directly
+// against the baked tileset_horizon_sin value with a soft (0.05-wide)
+// edge -- smoothstep gives visibility in [0,1], 1 = fully above the baked
+// horizon, 0 = fully below (occluded). Returns the OCCLUSION (1 -
+// visibility), already scaled by the live horizon_strength UI knob
+// (tileset.pom_c.w) and by whether this slot actually has horizon data --
+// callers do not need to re-check tileset_has_horizon themselves.
+float tileset_horizon_occlusion(int slot, vec2 worldXZ, vec3 dir_world,
+                                vec2 dWdx, vec2 dWdy) {
+    if (!tileset_has_horizon(slot)) return 0.0;
+    vec2 dir_xz = dir_world.xz;
+    // Straight up/down: azimuth is undefined and no ground obstruction is
+    // physically meaningful along this direction anyway -- unoccluded.
+    if (dot(dir_xz, dir_xz) < 1e-8) return 0.0;
+    float h = tileset_horizon_sin(slot, worldXZ, dir_xz, dWdx, dWdy);
+    float visibility = smoothstep(h - 0.05, h + 0.05, dir_world.y);
+    return (1.0 - visibility) * max(tileset.pom_c.w, 0.0);
+}
+
+// Mean of the 8 baked sin(elevation) values (both A/B taps averaged),
+// expressed as a mean OCCLUSION (1 - mean_sin) for ambient/sky-irradiance
+// -style scaling where no single ray direction applies. Deliberately does
+// NOT bake in horizon_strength (unlike tileset_horizon_occlusion) -- ambient
+// consumers (e.g. rt_surface_common.glsl's hit-path sky-irradiance scale)
+// apply their own strength/weight to this raw term, and pre-scaling here
+// would double-apply it wherever a caller also multiplies by
+// tileset.pom_c.w. Returns 0 (no occlusion) when the slot has no horizon
+// data.
+float tileset_horizon_mean_occlusion(int slot, vec2 worldXZ,
+                                     vec2 dWdx, vec2 dWdy) {
+    if (!tileset_has_horizon(slot)) return 0.0;
+    vec4 texA = tileset_sample(slot, TILESET_CH_HORIZON_A, worldXZ, dWdx, dWdy);
+    vec4 texB = tileset_sample(slot, TILESET_CH_HORIZON_B, worldXZ, dWdx, dWdy);
+    float mean_sin = (texA.x + texA.y + texA.z + texA.w +
+                      texB.x + texB.y + texB.z + texB.w) * 0.125;
+    return clamp(1.0 - mean_sin, 0.0, 1.0);
 }
 
 #endif

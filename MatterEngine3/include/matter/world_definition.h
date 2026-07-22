@@ -80,6 +80,13 @@ struct TilesetPomSettings {
     float fade_band_m        = 1.0f;    // pom_fade_band_m
     float ao_strength        = 0.63f;   // baked-AO texel blend factor
     float shadow_strength    = 0.68f;   // self-shadow blend factor
+    // Horizon-map occlusion strength (Phase 2 horizon-map lighting): blends
+    // the per-direction baked horizon occlusion toward 0 (no occlusion)
+    // instead of always applying it at full strength. Mirrors ao_strength /
+    // shadow_strength's blend-factor convention. Consumed by
+    // TilesetParamsGpu.pom_c.w (see vk_scene_renderer.h/.cpp) and by
+    // tileset_common.glsl's tileset_horizon_occlusion.
+    float horizon_strength   = 1.0f;
 };
 
 struct WorldSettings {

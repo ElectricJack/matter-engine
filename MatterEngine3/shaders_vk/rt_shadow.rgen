@@ -1,5 +1,18 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+
+// Phase 2 (horizon-map lighting): shares RT set 0 with rt_lighting.rgen /
+// rt_surface_common.glsl's consumers -- bindings 15 (tileset texture array)
+// / 16 (TilesetParams UBO) are already written into this set every frame
+// (VkSceneRenderer::update_rt_descriptors), this shader simply hadn't
+// declared them before. Only bindings 0/1/2 (this file's own) plus 4/11
+// (reused below, declared locally) were previously in use here -- no
+// binding conflicts with 15/16.
+#define TILESET_SET 0
+#define TILESET_TEX_BINDING 15
+#define TILESET_PARAMS_BINDING 16
+#include "tileset_common.glsl"
 
 layout(set = 0, binding = 0) uniform accelerationStructureEXT scene;
 layout(set = 0, binding = 1) uniform sampler2D depth_texture;
@@ -76,10 +89,27 @@ void main() {
     // introduce a sideways leak. Clamping sun.y bounds the lift at grazing
     // sun angles instead of blowing up toward the horizon.
     uvec2 identity = texelFetch(identity_texture, pixel, 0).rg;
+    // Phase 2 (horizon-map lighting): hoist the detail-slot lookup out of
+    // this if block (it previously only tested `!= 0u` inline) so the
+    // horizon-occlusion test below can reuse it.
+    int shadow_tileset_slot = -1;
     if (identity.x < rt_materials.length()) {
         RtMaterialGpu roof_mat = rt_materials[identity.x];
-        if ((roof_mat.flags_misc.y & 0xFFu) != 0u)
+        shadow_tileset_slot = tileset_detail_slot(roof_mat.flags_misc);
+        if (shadow_tileset_slot >= 0)
             world += sun * (constants.pom_lift / max(sun.y, 0.05));
+    }
+    // Baked per-direction horizon occlusion toward the sun. No screen-space
+    // derivatives exist in a raygen shader, so dWdx/dWdy are passed as zero
+    // (finest available mip -- acceptable given the horizon texture's
+    // already-coarse quarter resolution). Soft (smoothstep-edged) visibility
+    // in [0,1]; 1.0 (no attenuation) when this pixel has no ground-tileset
+    // material or its slot carries no horizon data.
+    float horizon_visibility = 1.0;
+    if (shadow_tileset_slot >= 0) {
+        float occl = tileset_horizon_occlusion(shadow_tileset_slot, world.xz,
+                                               sun, vec2(0.0), vec2(0.0));
+        horizon_visibility = 1.0 - occl;
     }
     vec3 tangent = normalize(abs(sun.y) < 0.99
                                  ? cross(sun, vec3(0.0, 1.0, 0.0))
@@ -111,5 +141,5 @@ void main() {
         sum += payload.visibility;
     }
     imageStore(visibility_image, pixel,
-               vec4(sum / float(sample_count), 1.0));
+               vec4(sum / float(sample_count) * horizon_visibility, 1.0));
 }

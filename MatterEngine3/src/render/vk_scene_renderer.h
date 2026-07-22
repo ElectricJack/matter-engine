@@ -744,13 +744,20 @@ private:
 
     // --- Phase 1 tileset Vulkan port (Task 6) ------------------------------
     // Channel order matches tileset_gtex.h's ChannelId and the descriptor
-    // array index slot*4 + channel used by both descriptor sets.
+    // array index slot*6 + channel used by both descriptor sets.
+    // Phase 2 (horizon-map lighting): kTilesetChannelHorizonA/B are the two
+    // quarter-albedo-resolution RGBA8 horizon-map textures (.gtex v2
+    // CHAN_HORIZON_A/B; see tileset_common.glsl's tileset_horizon_sin).
+    // v1 .gtex files carry no horizon data -- load_tileset_slot binds the
+    // shared RGBA8 dummy for these two channels and clears has_horizon.
     enum TilesetChannel {
         kTilesetChannelAlbedo = 0,
         kTilesetChannelNormal = 1,
         kTilesetChannelOrm = 2,
         kTilesetChannelHeight = 3,
-        kTilesetChannelCount = 4,
+        kTilesetChannelHorizonA = 4,
+        kTilesetChannelHorizonB = 5,
+        kTilesetChannelCount = 6,
     };
 
     // Raw-handle image, manually created/destroyed: matter::VkImageResource's
@@ -767,6 +774,15 @@ private:
 
     struct TilesetSlotGpu {
         bool loaded = false;
+        // Phase 2 (horizon-map lighting): true when this slot's .gtex was a
+        // v2 file carrying CHAN_HORIZON_A/B (tileset::load_gtex returned
+        // non-empty horizon vectors). false for v1 files (or when unloaded)
+        // -- channels[kTilesetChannelHorizonA/B] then hold the shared RGBA8
+        // dummy and the horizon helpers in tileset_common.glsl must read as
+        // fully unoccluded. Folded into TilesetParamsGpu.slot_mean_albedo's
+        // valid flag rather than adding a new field (see
+        // write_tileset_params_buffer).
+        bool has_horizon = false;
         TilesetImage channels[kTilesetChannelCount];
         float tile_size_m = 0.0f;
         float texels_per_meter = 0.0f;
@@ -781,15 +797,27 @@ private:
     // vec4 mean_albedo[4], vec4 pom_a{steps,refine,max_distance,fade_band},
     // vec4 pom_b{fade_center,fade_width,max_relief_m,max_march_m},
     // vec4 sun_dir_intensity{dir.xyz,intensity} (Phase 2 Task 11),
-    // vec4 pom_c{datum_bias_m,ao_strength,shadow_strength,reserved} (Ground
-    // POM UI knobs)). Every group below is exactly 16 bytes so the natural
-    // C++ layout matches std140 with no manual padding.
+    // vec4 pom_c{datum_bias_m,ao_strength,shadow_strength,horizon_strength}
+    // (Ground POM UI knobs; .w repurposed from "reserved" for the horizon-map
+    // lighting feature -- see TilesetPomSettings::horizon_strength)). Every
+    // group below is exactly 16 bytes so the natural C++ layout matches
+    // std140 with no manual padding.
+    //
+    // Horizon-map has_horizon flag: rather than growing this struct (it must
+    // stay 192 bytes / twelve vec4 records per the static_assert below),
+    // slot_mean_albedo[slot][3] -- previously a plain 0/1 "slot loaded" bool
+    // unused by any shader -- now encodes both bits: 0.0 = not loaded,
+    // 1.0 = loaded without horizon data (v1 .gtex), 2.0 = loaded with
+    // horizon data (v2 .gtex). tileset_common.glsl's tileset_has_horizon
+    // reads `mean_albedo[slot].w >= 1.5`.
     struct alignas(16) TilesetParamsGpu {
         float slot_tile_size_m[4]{};
         float slot_texels_per_meter[4]{};
         float slot_height_min[4]{};
         float slot_height_max[4]{};
-        float slot_mean_albedo[4][4]{};  // rgb + valid flag in [.][3]
+        // rgb + valid/has_horizon flag in [.][3]: 0 = not loaded, 1 = loaded
+        // (no horizon), 2 = loaded (with horizon). See file comment above.
+        float slot_mean_albedo[4][4]{};
         float pom_steps = 50.0f;
         float pom_refine_steps = 4.0f;
         float pom_max_distance_m = 50.4f;
@@ -823,8 +851,11 @@ private:
         // dirt floor instead of clamping flat at the datum. y = ao_strength,
         // z = shadow_strength -- gbuffer.frag blend factors for the baked AO
         // texel and the self-shadow march result (0 = fully suppressed, 1 =
-        // full baked strength). w = reserved.
-        float pom_datum_bias_ao_shadow[4] = {0.105f, 0.63f, 0.68f, 0.0f};
+        // full baked strength). w = horizon_strength (Phase 2 horizon-map
+        // lighting) -- blends the per-direction baked horizon occlusion
+        // toward 0 (fully visible) instead of always applying it at full
+        // strength; see tileset_common.glsl's tileset_horizon_occlusion.
+        float pom_datum_bias_ao_shadow[4] = {0.105f, 0.63f, 0.68f, 1.0f};
     };
     static_assert(sizeof(TilesetParamsGpu) == 192,
                   "TilesetParamsGpu must remain twelve vec4 records (std140)");

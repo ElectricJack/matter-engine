@@ -639,6 +639,11 @@ void Ui::draw_debug_panel(ViewerStats& s) {
         ImGui::SliderFloat("Fade band (m)", &pom.fade_band_m, 1.0f, 20.0f, "%.1f");
         ImGui::SliderFloat("AO strength", &pom.ao_strength, 0.0f, 1.0f, "%.2f");
         ImGui::SliderFloat("Shadow strength", &pom.shadow_strength, 0.0f, 2.0f, "%.2f");
+        // Phase 2 (horizon-map lighting): blends the baked per-direction
+        // horizon occlusion toward 0 (fully visible) instead of always
+        // applying it at full strength. No effect on slots loaded from a
+        // v1 .gtex (no horizon data baked).
+        ImGui::SliderFloat("Horizon occlusion", &pom.horizon_strength, 0.0f, 1.0f, "%.2f");
     }
 
     ImGui::SeparatorText("Debug View");

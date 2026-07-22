@@ -110,6 +110,13 @@ struct RtTilesetSample {
     vec3 albedo;     // valid only if applied
     vec3 normal;     // shading normal; = surface.normal when !applied
     float roughness; // valid only if applied; no live consumer yet (see Task 9 notes)
+    // Phase 2 (horizon-map lighting): mean of the slot's 8 baked horizon
+    // occlusion samples (tileset_horizon_mean_occlusion), 0.0 when
+    // !applied or the slot has no horizon data. Raw (not yet scaled by
+    // horizon_strength) -- consumers (e.g. rt_lighting.rgen's hit_radiance)
+    // apply tileset.pom_c.w themselves when scaling sky irradiance, so this
+    // field never double-applies the strength knob.
+    float mean_occlusion;
 };
 
 RtTilesetSample rt_tileset_sample(RtMaterialGpu material, RtSurface surface) {
@@ -118,6 +125,7 @@ RtTilesetSample rt_tileset_sample(RtMaterialGpu material, RtSurface surface) {
     result.albedo = vec3(0.0);
     result.normal = surface.normal;
     result.roughness = 0.0;
+    result.mean_occlusion = 0.0;
     int slot = tileset_detail_slot(material.flags_misc);
     if (slot < 0) return result;
     float footprint = max(max(surface.hit_t, 0.0) * RT_TILESET_CONE_SPREAD, 1e-4);
@@ -131,6 +139,8 @@ RtTilesetSample rt_tileset_sample(RtMaterialGpu material, RtSurface surface) {
     result.albedo = albedo * mix(vec3(1.0), surface.tint.rgb, tint_blend);
     result.normal = tileset_rotate_normal(normal_ts, surface.normal);
     result.roughness = clamp(orm.g, 0.0, 1.0);
+    result.mean_occlusion = tileset_horizon_mean_occlusion(
+        slot, surface.position.xz, dWdx, dWdy);
     return result;
 }
 
