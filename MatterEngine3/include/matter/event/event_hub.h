@@ -139,6 +139,17 @@ struct QueuedEnvelope {
     std::chrono::steady_clock::time_point enqueue_time{};
 };
 
+// Test-only dispatch-barrier probe. Null in production (one predictable
+// not-taken branch per dispatch, in the same spirit as the swappable
+// fail_fast handler seam). When set, it is invoked at BOTH dispatch sites
+// at the barrier BETWEEN the in_flight increment and the active-bit load,
+// letting the event tests park a dispatcher in that exact window and prove
+// unsubscribe_all_and_wait()/close() cannot let a callback slip through
+// after they return. C++17 inline variable -> a single shared instance
+// across the header (immediate dispatch) and the library TU (queued
+// dispatch). Left null by default; the test resets it to null when done.
+inline std::function<void(const SubscriptionBlock*)> g_dispatch_barrier_probe{};
+
 }  // namespace detail
 
 class Hub {
@@ -260,11 +271,33 @@ public:
         std::vector<lane> lanes_needed;
         for (auto& rec : snapshot) {
             if (rec.is_immediate) {
+                // Lifetime barrier (S I.6, S II.4 item 1): bump in_flight
+                // FIRST (in the guard's ctor), THEN check the active bit.
+                // Teardown (unsubscribe_all_and_wait/close) stores
+                // active=false and then waits for in_flight to reach zero;
+                // incrementing before the seq_cst active load closes the
+                // Dekker-style store-load double-miss, so a callback that
+                // passes the active check can never run after teardown
+                // returns. The guard decrements in_flight on EVERY exit path
+                // -- the skip-continue below AND a handler that throws.
+                struct InFlightGuard {
+                    SubscriptionBlock* b;
+                    explicit InFlightGuard(SubscriptionBlock* blk) : b(blk) {
+                        b->in_flight.fetch_add(1, std::memory_order_seq_cst);
+                    }
+                    ~InFlightGuard() { b->in_flight.fetch_sub(1, std::memory_order_acq_rel); }
+                    InFlightGuard(const InFlightGuard&) = delete;
+                    InFlightGuard& operator=(const InFlightGuard&) = delete;
+                } in_flight_guard(rec.block.get());
+                // Test seam: park the dispatcher in the increment->active-load
+                // window (null/no-op in production).
+                if (detail::g_dispatch_barrier_probe)
+                    detail::g_dispatch_barrier_probe(rec.block.get());
                 // Active-bit check immediately before entry (S I.6): a
                 // handler removed before its turn (by an earlier handler
-                // in this same walk) is skipped.
-                if (!rec.block->active.load(std::memory_order_acquire)) continue;
-                rec.block->in_flight.fetch_add(1, std::memory_order_acq_rel);
+                // in this same walk, or by concurrent teardown) is skipped;
+                // the guard above still decrements the count on continue.
+                if (!rec.block->active.load(std::memory_order_seq_cst)) continue;
                 double handler_ms = 0.0;
                 {
                     detail::ScopedDispatch guard(rec.block.get());
@@ -274,7 +307,6 @@ public:
                     handler_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
                 }
                 rec.block->delivery_count.fetch_add(1, std::memory_order_relaxed);
-                rec.block->in_flight.fetch_sub(1, std::memory_order_acq_rel);
                 if (tracing) {
                     trace_rec.subscribers.push_back(
                         TraceSubscriberRecord{rec.name, true, 0, handler_ms, depth});

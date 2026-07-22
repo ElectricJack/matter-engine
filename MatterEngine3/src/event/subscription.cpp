@@ -84,12 +84,18 @@ void SubscriptionSet::unsubscribe_all_and_wait() {
     }
 
     // Phase 1: mark every block inactive so no NEW dispatch begins.
-    for (auto& b : blocks) b->active.store(false, std::memory_order_release);
+    // seq_cst pairs with the seq_cst in_flight increment + active load at
+    // the Hub dispatch sites (event_hub.h emit / event_hub.cpp
+    // dispatch_envelope): the store here and the load in phase 2 cannot both
+    // miss a dispatcher that is incrementing in_flight and loading active at
+    // the same instant, so a callback that passes the active check can never
+    // begin after this call has observed in_flight == 0.
+    for (auto& b : blocks) b->active.store(false, std::memory_order_seq_cst);
 
     // Phase 2: wait for every already-in-flight callback (started before
     // phase 1 ran, on another thread) to finish.
     for (auto& b : blocks) {
-        while (b->in_flight.load(std::memory_order_acquire) != 0) {
+        while (b->in_flight.load(std::memory_order_seq_cst) != 0) {
             std::this_thread::sleep_for(std::chrono::microseconds(50));
         }
     }

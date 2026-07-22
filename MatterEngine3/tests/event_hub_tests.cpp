@@ -287,6 +287,132 @@ static void test_emit_vs_teardown_race() {
 }
 
 // ---------------------------------------------------------------------------
+// 5b. DETERMINISTIC emit-vs-teardown TOCTOU (S II.4 item 1, E1 review).
+//
+// The sleep-based test above passes even on the buggy code because Windows
+// sleep granularity (~1-15ms) hides the sub-microsecond window between the
+// dispatcher's active-bit check and its in_flight increment. This test
+// removes ALL timing dependence: a dispatch-barrier probe (the detail seam,
+// null in production) parks the dispatcher at the exact barrier between the
+// in_flight increment and the active-bit load, and handshake atomics drive
+// the interleaving.
+//
+// The safety property asserted: a callback that reaches the dispatch barrier
+// must NEVER run after unsubscribe_all_and_wait() has returned.
+//
+//   FIXED code (increment BEFORE active load): at the barrier in_flight is
+//     already 1, so unsubscribe_all_and_wait() blocks until the dispatcher
+//     is released; the released dispatcher then reads active==false and
+//     SKIPS the callback. `invoked_after_teardown` stays false.
+//
+//   BROKEN code (active load BEFORE increment): at the barrier in_flight is
+//     still 0 (the active bit was already read as true), so
+//     unsubscribe_all_and_wait() observes 0 and RETURNS immediately; the
+//     released dispatcher then increments and INVOKES the callback -- after
+//     teardown returned. `invoked_after_teardown` becomes true -> CHECK
+//     fails. (Validated by temporarily reverting the reorder; see report.)
+//
+// Determinism argument: FIXED can never set `teardown_returned` before we
+// release (in_flight==1 blocks it), regardless of the release-spin length --
+// so the spin below always falls through and releases it. BROKEN sets
+// `teardown_returned` after O(1) atomic ops (store + one load + flag), long
+// before the generous spin budget elapses. Neither branch depends on any
+// wall-clock duration or the size of the µs window.
+// ---------------------------------------------------------------------------
+static void test_dispatch_barrier_toctou_deterministic() {
+    printf("[test_dispatch_barrier_toctou_deterministic]\n");
+
+    Hub hub;
+    SubscriptionSet subs;
+
+    std::atomic<bool> at_barrier{false};          // dispatcher reached the barrier
+    std::atomic<bool> release_dispatch{false};    // controller -> dispatcher: proceed
+    std::atomic<bool> callback_invoked{false};    // the callback body ran
+    std::atomic<bool> teardown_returned{false};   // unsubscribe_all_and_wait() returned
+    std::atomic<bool> invoked_after_teardown{false};
+
+    // Fires on the emitter thread, inside dispatch, at the barrier between
+    // the in_flight increment and the active-bit load. Parks there until the
+    // controller releases it.
+    matter::evt::detail::g_dispatch_barrier_probe =
+        [&](const matter::evt::SubscriptionBlock*) {
+            at_barrier.store(true, std::memory_order_seq_cst);
+            while (!release_dispatch.load(std::memory_order_seq_cst)) std::this_thread::yield();
+        };
+
+    subs += hub.must_subscribe<Ping>(
+        "toctou.victim", matter::evt::immediate, [&](const Ping&) {
+            callback_invoked.store(true, std::memory_order_seq_cst);
+            if (teardown_returned.load(std::memory_order_seq_cst))
+                invoked_after_teardown.store(true, std::memory_order_seq_cst);
+        });
+
+    // Emitter thread: dispatches the victim; the probe parks it at the barrier.
+    std::thread emitter([&] { hub.emit(Ping{1}); });
+
+    // Wait until the dispatcher is parked at the barrier (no sleep).
+    while (!at_barrier.load(std::memory_order_seq_cst)) std::this_thread::yield();
+
+    // Teardown on another thread: mark inactive, wait for in-flight to drain.
+    std::thread teardown([&] {
+        subs.unsubscribe_all_and_wait();
+        teardown_returned.store(true, std::memory_order_seq_cst);
+    });
+
+    // Release only AFTER teardown has committed its outcome: on BROKEN code it
+    // returns without needing us (in_flight==0), so we observe teardown_returned
+    // and release afterwards -> the invoke then lands after teardown returned.
+    // On FIXED code teardown can never return until we release, so this loop
+    // deterministically exhausts and falls through.
+    const long long kSpinBudget = 50'000'000;
+    for (long long i = 0; i < kSpinBudget && !teardown_returned.load(std::memory_order_seq_cst); ++i)
+        std::this_thread::yield();
+    release_dispatch.store(true, std::memory_order_seq_cst);
+
+    emitter.join();
+    teardown.join();
+
+    CHECK(!invoked_after_teardown.load(std::memory_order_seq_cst),
+          "no callback that reached the dispatch barrier ran after unsubscribe_all_and_wait() returned");
+    // On the fixed code the deactivated victim is skipped at the barrier.
+    CHECK(!callback_invoked.load(std::memory_order_seq_cst),
+          "a subscription deactivated at the barrier is skipped, not invoked");
+
+    matter::evt::detail::g_dispatch_barrier_probe = nullptr;
+    printf("ok dispatch_barrier_toctou_deterministic\n");
+}
+
+// ---------------------------------------------------------------------------
+// 5c. Reentrancy preservation: a subscription logically removed by an EARLIER
+//     handler, before its own dispatch turn in the SAME walk, is skipped
+//     (the active-bit check between the in_flight increment and invoke must
+//     still gate entry after the increment-then-check reorder).
+// ---------------------------------------------------------------------------
+static void test_earlier_handler_removes_later_subscriber_skipped() {
+    printf("[test_earlier_handler_removes_later_subscriber_skipped]\n");
+    Hub hub;
+    std::vector<std::string> walk;
+
+    Subscription y = hub.must_subscribe<Ping>(
+        "skip.y", matter::evt::immediate, [&](const Ping&) { walk.push_back("y"); },
+        phase::Default, 1);  // later in the walk (higher priority value)
+
+    Subscription x = hub.must_subscribe<Ping>(
+        "skip.x", matter::evt::immediate,
+        [&](const Ping&) {
+            walk.push_back("x");
+            // Remove y before its turn in THIS same walk.
+            y.reset();
+        },
+        phase::Default, 0);  // dispatched first
+
+    hub.emit(Ping{1});
+    CHECK(walk == std::vector<std::string>({"x"}),
+          "y, logically removed by x before its turn, was skipped in the same walk");
+    printf("ok earlier_handler_removes_later_subscriber_skipped\n");
+}
+
+// ---------------------------------------------------------------------------
 // 6. Logical unsubscribe before pump suppresses a queued delivery.
 // ---------------------------------------------------------------------------
 static void test_logical_unsubscribe_before_pump_suppresses_delivery() {
@@ -561,6 +687,8 @@ int main() {
     test_uniqueness_try_subscribe_no_mutation();
     test_uniqueness_must_subscribe_fail_fast_release_path();
     test_emit_vs_teardown_race();
+    test_dispatch_barrier_toctou_deterministic();
+    test_earlier_handler_removes_later_subscriber_skipped();
     test_logical_unsubscribe_before_pump_suppresses_delivery();
     test_unsubscribe_all_and_wait_illegal_self_call();
     test_close_invalidates_and_drops_queued();

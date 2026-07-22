@@ -129,9 +129,29 @@ void Hub::dispatch_envelope(detail::QueuedEnvelope& env, lane ln) {
     if (tracing) trace_rec.nesting_depth = depth - 1;
 
     for (auto& rec : snapshot) {
-        // Active-bit check immediately before entry (S I.6).
-        if (!rec.block->active.load(std::memory_order_acquire)) continue;
-        rec.block->in_flight.fetch_add(1, std::memory_order_acq_rel);
+        // Lifetime barrier (S I.6, S II.4 item 1): bump in_flight FIRST (in
+        // the guard's ctor), THEN check the active bit -- mirrors the
+        // immediate-dispatch site in event_hub.h. Teardown stores
+        // active=false and then waits for in_flight to reach zero;
+        // incrementing before the seq_cst active load closes the
+        // store-load double-miss so a callback that passes the active check
+        // cannot run after unsubscribe_all_and_wait()/close() returns. The
+        // guard decrements on EVERY exit path incl. skip-continue and throw.
+        struct InFlightGuard {
+            SubscriptionBlock* b;
+            explicit InFlightGuard(SubscriptionBlock* blk) : b(blk) {
+                b->in_flight.fetch_add(1, std::memory_order_seq_cst);
+            }
+            ~InFlightGuard() { b->in_flight.fetch_sub(1, std::memory_order_acq_rel); }
+            InFlightGuard(const InFlightGuard&) = delete;
+            InFlightGuard& operator=(const InFlightGuard&) = delete;
+        } in_flight_guard(rec.block.get());
+        // Test seam: park the dispatcher in the increment->active-load window
+        // (null/no-op in production).
+        if (detail::g_dispatch_barrier_probe) detail::g_dispatch_barrier_probe(rec.block.get());
+        // Active-bit check immediately before entry (S I.6); the guard
+        // above still decrements the count on continue.
+        if (!rec.block->active.load(std::memory_order_seq_cst)) continue;
         double handler_ms = 0.0;
         {
             detail::ScopedDispatch dg(rec.block.get());
@@ -141,7 +161,6 @@ void Hub::dispatch_envelope(detail::QueuedEnvelope& env, lane ln) {
             handler_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
         }
         rec.block->delivery_count.fetch_add(1, std::memory_order_relaxed);
-        rec.block->in_flight.fetch_sub(1, std::memory_order_acq_rel);
         if (tracing) {
             trace_rec.subscribers.push_back(
                 TraceSubscriberRecord{rec.name, false, rec.ln.id, handler_ms, depth});
@@ -187,7 +206,10 @@ void Hub::close() {
             detail::TypeState& ts = *kv.second;
             std::lock_guard<std::mutex> lk2(ts.mu);
             for (auto& rec : ts.subscribers) {
-                rec.block->active.store(false, std::memory_order_release);
+                // seq_cst pairs with the seq_cst in_flight increment + active
+                // load at the dispatch sites: store-then-wait here can never
+                // miss an increment that a dispatcher is about to make.
+                rec.block->active.store(false, std::memory_order_seq_cst);
                 blocks.push_back(rec.block);
             }
         }
@@ -204,7 +226,7 @@ void Hub::close() {
     // Phase 2: wait for in-flight callbacks (already executing elsewhere
     // when phase 1 ran) to finish.
     for (auto& b : blocks) {
-        while (b->in_flight.load(std::memory_order_acquire) != 0) {
+        while (b->in_flight.load(std::memory_order_seq_cst) != 0) {
             std::this_thread::sleep_for(std::chrono::microseconds(50));
         }
     }
