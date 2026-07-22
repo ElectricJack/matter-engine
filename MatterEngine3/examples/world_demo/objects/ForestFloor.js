@@ -8,55 +8,82 @@
 
 class ForestFloor extends Tileset {
   static requires = [
-    ...[0, 1, 2, 3].map(s => ({ module: 'Pebble', params: { seed: s } })),
-    ...[0, 1].map(s => ({ module: 'Rock',   params: { seed: s } })),
-    { module: 'Twig' },
+    ...[0, 1, 2, 3].map(s => ({ module: 'Pebble', params: { seed: s, size: 2.0 } })),
+    ...[0, 1].map(s => ({ module: 'Rock',   params: { seed: s, size: 1.2, detail: 2.5 } })),
+    ...[0, 1, 2].map(s => ({ module: 'Twig', params: { seed: s, size: 4.0 } })),
     { module: 'Leaf' },
   ];
 
   build() {
     // 2 m tile, 512 texels/m -> 1024 px per tile edge, 4096x4096 atlas.
-    this.tile({ size: 2.0, texelsPerMeter: 512, seed: 1234 });
+    const SIZE = 2.0;
+    this.tile({ size: SIZE, texelsPerMeter: 512, seed: 1234 });
 
-    // Dirt underlayer: a low-amplitude bumpy heightfield so AO has structure to
-    // catch. All shared content; wraps toroidally at the tile bounds.
-    this.base((x, z) => 0.03 * Math.sin(x * 2.1) * Math.cos(z * 2.1), MAT.dirt);
+    // Dirt underlayer: uneven forest soil built from tile-periodic value
+    // noise. The lattice hash wraps mod `freq`, so the field satisfies
+    // f(0,z) == f(SIZE,z) and f(x,0) == f(x,SIZE) exactly (x = SIZE maps to
+    // lattice cell freq == cell 0) — no seam lines. Three fBm octaves at
+    // 0.67 m / 0.29 m / 0.15 m features, total amplitude ~0.12 m, so normals
+    // and baked AO get soil-like relief with no directional banding.
+    const vnoise = (x, z, freq, seed) => {
+      const fx = x / SIZE * freq, fz = z / SIZE * freq;
+      const ix = Math.floor(fx), iz = Math.floor(fz);
+      const tx = fx - ix, tz = fz - iz;
+      const sx = tx * tx * (3 - 2 * tx), sz = tz * tz * (3 - 2 * tz);
+      const h = (i, j) => {
+        i = ((i % freq) + freq) % freq;
+        j = ((j % freq) + freq) % freq;
+        const n = Math.sin(i * 127.1 + j * 311.7 + seed * 74.7) * 43758.5453;
+        return n - Math.floor(n);
+      };
+      const a = h(ix, iz), b = h(ix + 1, iz), c = h(ix, iz + 1), d = h(ix + 1, iz + 1);
+      return (a + (b - a) * sx + (c - a) * sz + (a - b - c + d) * sx * sz) * 2 - 1;
+    };
+    // Domain warp: offset the sample point by low-frequency periodic noise
+    // before evaluating the fBm. Because the warp field itself tiles, the
+    // warped field still tiles exactly, but the value-noise lattice loses its
+    // axis alignment so no cross-hatch reads through at mid distance.
+    this.base((x, z) => {
+      const wx = x + 0.22 * vnoise(x, z, 2, 7);
+      const wz = z + 0.22 * vnoise(x, z, 2, 8);
+      return 0.065 * vnoise(wx, wz, 3, 1)
+           + 0.035 * vnoise(wx, wz, 7, 2)
+           + 0.016 * vnoise(x, z, 13, 3);
+    }, MAT.dirt);
 
-    // Scattered content that produces the 16 tile variants. Ordered light→heavy so
-    // later layers can push earlier ones without moving them across a seam.
+    // Litter layers. Ordered light->heavy so later layers can push earlier
+    // ones without moving them across a seam.
     //
-    // Physics is opt-in per layer. It only pays off for chunky objects whose
-    // rest pose actually depends on collision (Rock — solid, needs to sit on
-    // uneven terrain without clipping and can push its neighbours). Pebble,
-    // Twig, Leaf are small/thin enough that algorithmic surface-snap gives a
-    // visually equivalent result at a fraction of the settle cost:
-    //   settle cost scales roughly O(N) per box3d step * ~1000 steps, so at
-    //   349 bodies/m^2 * 64 m^2 = ~22k dynamic bodies the current stack does
-    //   not converge in a useful wall-clock. Rock alone at 4/m^2 * 64 = 256
-    //   bodies settles in seconds. Everything else uses `physics: false` and
-    //   snaps to base_height + fit_half_height - embed * 2 * fit_half_height.
-    // Note on scales: these part scripts (Pebble/Rock/Twig/Leaf) were originally
-    // authored for larger-scale placements. Ground-litter sizes are much smaller
-    // than their native unit dimensions, so the layer scale is expressed as a
-    // multiplier that brings the object into the intended physical size:
-    //   Pebble : native ~10cm ball  -> 0.4-1.0x -> 4-10cm pebbles
-    //   Rock   : native ~30cm blob  -> 0.4-0.8x -> 12-24cm rocks
-    //   Twig   : native ~20cm stick -> 0.4-1.0x -> 8-20cm twigs
-    //   Leaf   : native ~1m blade   -> 0.03-0.06x -> 3-6cm leaves
+    // Physics is opt-in per layer; only Rock (chunky, must sit on uneven
+    // terrain) uses it for the final bake. Everything else snaps to
+    // base_height + fit_half_height - embed * 2 * fit_half_height.
+    //
+    // Scale notes (final size = authored native size * layer scale):
+    //   Pebble : baked at size 2.0 (~0.5 m blob, fine grid) -> 0.4-1.0x -> 20-50 cm
+    //   Rock   : baked at size 1.2, detail 2.5              -> 0.5-0.9x -> 0.6-1.1 m
+    //   Twig   : baked at size 4.0 (~0.7-1.4 m, voxelized)  -> 0.6-1.1x
+    //   Leaf   : native ~1 m blade                          -> 0.15-0.28x -> 15-28 cm
+    //
+    // Distribution: cluster placement (gaussian clumps around uniform centers)
+    // for pebbles/twigs/leaves reads as litter drifts; rocks go sparse poisson.
     this.layer('Pebble', {
-      density: 60, scale: [0.4, 1.0], placement: 'poisson',
-      physics: false, embed: 0.3,
-      params: r => ({ seed: r.int(4) }),
+      density: 1.8, scale: [0.4, 1.0], placement: 'cluster',
+      physics: false, embed: 0.2,
+      params: r => ({ seed: r.int(4), size: 2.0 }),
     });
     this.layer('Rock', {
-      density: 2, scale: [0.4, 0.8], physics: true,
-      params: r => ({ seed: r.int(2) }),
+      density: 0.35, scale: [0.5, 0.9], placement: 'poisson',
+      physics: false, embed: 0.15,
+      params: r => ({ seed: r.int(2), size: 1.2, detail: 2.5 }),
     });
     this.layer('Twig', {
-      density: 15, scale: [0.4, 1.0], physics: false, embed: 0.02,
+      density: 1.0, scale: [0.7, 1.2], placement: 'cluster',
+      physics: false, embed: 0.05,
+      params: r => ({ seed: r.int(3), size: 4.0 }),
     });
     this.layer('Leaf', {
-      density: 80, scale: [0.03, 0.06], physics: false, embed: 0.0,
+      density: 4.0, scale: [0.16, 0.3], placement: 'cluster',
+      physics: false, embed: 0.0,
     });
   }
 }
