@@ -316,6 +316,7 @@ void AssetBrowser::annotate_project(Project& project) {
 void AssetBrowser::draw(const std::vector<WorldEntry>& worlds, ViewerStats& stats,
                         const std::string& shared_lib_root,
                         std::string& pending_workbench_module,
+                        std::string& pending_workbench_project,
                         bool& focus_workbench_tab) {
     bool need_full_scan = !scanned_ || shared_lib_root != scanned_shared_lib_root_;
 
@@ -350,11 +351,13 @@ void AssetBrowser::draw(const std::vector<WorldEntry>& worlds, ViewerStats& stat
         return;
     }
     for (Project& project : projects_)
-        draw_project(project, stats, pending_workbench_module, focus_workbench_tab);
+        draw_project(project, stats, pending_workbench_module,
+                     pending_workbench_project, focus_workbench_tab);
 }
 
 void AssetBrowser::draw_project(Project& project, ViewerStats& stats,
                                 std::string& pending_workbench_module,
+                                std::string& pending_workbench_project,
                                 bool& focus_workbench_tab) {
     ImGui::PushID(project.path.c_str());
     if (ImGui::CollapsingHeader(project.name.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -380,7 +383,8 @@ void AssetBrowser::draw_project(Project& project, ViewerStats& stats,
         if (ImGui::TreeNodeEx("Objects", ImGuiTreeNodeFlags_DefaultOpen)) {
             for (AssetObject& obj : project.objects) {
                 if (!passes_filter(obj.module)) continue;
-                draw_object_row(project, obj, pending_workbench_module, focus_workbench_tab);
+                draw_object_row(project, obj, pending_workbench_module,
+                                pending_workbench_project, focus_workbench_tab);
             }
             if (project.objects.empty()) ImGui::TextDisabled("(none)");
             ImGui::TreePop();
@@ -400,6 +404,7 @@ void AssetBrowser::draw_project(Project& project, ViewerStats& stats,
 
 void AssetBrowser::draw_object_row(Project& project, AssetObject& obj,
                                    std::string& pending_workbench_module,
+                                   std::string& pending_workbench_project,
                                    bool& focus_workbench_tab) {
     ImGui::PushID(obj.module.c_str());
 
@@ -431,6 +436,8 @@ void AssetBrowser::draw_object_row(Project& project, AssetObject& obj,
     ImGui::SameLine();
     if (ImGui::SmallButton("Open in Workbench")) {
         pending_workbench_module = obj.module;
+        pending_workbench_project = project.path;  // == WorldEntry::project_dir;
+                                                   // PartWorkbench::open_part(project, module).
         focus_workbench_tab = true;
     }
     ImGui::SameLine();

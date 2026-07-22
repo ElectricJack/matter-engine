@@ -1,0 +1,889 @@
+#include "part_workbench.h"
+
+#include "ui.h"  // viewer::WorldEntry
+
+#include "imgui.h"
+
+#include "script_host.h"  // MatterEngine3/src (ME3_DIR/src is on the app include path)
+
+#include <algorithm>
+#include <cctype>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
+namespace viewer {
+namespace {
+
+namespace fs = std::filesystem;
+
+double now_ms() {
+    using namespace std::chrono;
+    return duration<double, std::milli>(steady_clock::now().time_since_epoch()).count();
+}
+
+// ---------------------------------------------------------------------------
+// Minimal JSON value type. The Params & Variations panel edits arbitrary
+// part `static params` shapes (numbers/bools/strings/nested objects) with no
+// schema known ahead of time, so a small hand-rolled parser/writer is used
+// instead of pulling in a JSON dependency. Object key order is preserved
+// (insertion order), which is all the editor and manifest need — the engine
+// side (script_host's merge_params_canonical) does its own canonicalization
+// for hashing, independent of how we format JSON here.
+// ---------------------------------------------------------------------------
+struct JsonValue {
+    enum class Kind { Null, Bool, Number, String, Array, Object } kind = Kind::Null;
+    bool b = false;
+    double num = 0.0;
+    std::string str;
+    std::vector<JsonValue> arr;
+    std::vector<std::pair<std::string, JsonValue>> obj;
+
+    JsonValue* find(const std::string& key) {
+        for (auto& kv : obj)
+            if (kv.first == key) return &kv.second;
+        return nullptr;
+    }
+};
+
+class JsonParser {
+public:
+    explicit JsonParser(const std::string& text) : s_(text) {}
+
+    bool parse(JsonValue& out) {
+        skip_ws();
+        if (!parse_value(out)) return false;
+        skip_ws();
+        return true;  // trailing garbage tolerated
+    }
+
+private:
+    const std::string& s_;
+    size_t i_ = 0;
+
+    void skip_ws() {
+        while (i_ < s_.size() && std::isspace(static_cast<unsigned char>(s_[i_]))) ++i_;
+    }
+    bool eof() const { return i_ >= s_.size(); }
+    char peek() const { return i_ < s_.size() ? s_[i_] : '\0'; }
+
+    bool parse_value(JsonValue& out) {
+        skip_ws();
+        if (eof()) return false;
+        char c = peek();
+        if (c == '{') return parse_object(out);
+        if (c == '[') return parse_array(out);
+        if (c == '"') return parse_string_value(out);
+        if (c == 't' || c == 'f') return parse_bool(out);
+        if (c == 'n') return parse_null(out);
+        return parse_number(out);
+    }
+
+    bool parse_object(JsonValue& out) {
+        out.kind = JsonValue::Kind::Object;
+        ++i_;  // '{'
+        skip_ws();
+        if (peek() == '}') { ++i_; return true; }
+        while (true) {
+            skip_ws();
+            if (peek() != '"') return false;
+            std::string key;
+            if (!parse_raw_string(key)) return false;
+            skip_ws();
+            if (peek() != ':') return false;
+            ++i_;
+            JsonValue val;
+            if (!parse_value(val)) return false;
+            out.obj.emplace_back(std::move(key), std::move(val));
+            skip_ws();
+            if (peek() == ',') { ++i_; continue; }
+            if (peek() == '}') { ++i_; break; }
+            return false;
+        }
+        return true;
+    }
+
+    bool parse_array(JsonValue& out) {
+        out.kind = JsonValue::Kind::Array;
+        ++i_;  // '['
+        skip_ws();
+        if (peek() == ']') { ++i_; return true; }
+        while (true) {
+            JsonValue val;
+            if (!parse_value(val)) return false;
+            out.arr.push_back(std::move(val));
+            skip_ws();
+            if (peek() == ',') { ++i_; continue; }
+            if (peek() == ']') { ++i_; break; }
+            return false;
+        }
+        return true;
+    }
+
+    bool parse_raw_string(std::string& out) {
+        if (peek() != '"') return false;
+        ++i_;
+        out.clear();
+        while (!eof() && peek() != '"') {
+            char c = s_[i_++];
+            if (c == '\\' && !eof()) {
+                char e = s_[i_++];
+                switch (e) {
+                    case 'n': out += '\n'; break;
+                    case 't': out += '\t'; break;
+                    case 'r': out += '\r'; break;
+                    case '"': out += '"'; break;
+                    case '\\': out += '\\'; break;
+                    case '/': out += '/'; break;
+                    default: out += e; break;
+                }
+            } else {
+                out += c;
+            }
+        }
+        if (eof()) return false;
+        ++i_;  // closing quote
+        return true;
+    }
+
+    bool parse_string_value(JsonValue& out) {
+        out.kind = JsonValue::Kind::String;
+        return parse_raw_string(out.str);
+    }
+
+    bool parse_bool(JsonValue& out) {
+        if (s_.compare(i_, 4, "true") == 0) { out.kind = JsonValue::Kind::Bool; out.b = true; i_ += 4; return true; }
+        if (s_.compare(i_, 5, "false") == 0) { out.kind = JsonValue::Kind::Bool; out.b = false; i_ += 5; return true; }
+        return false;
+    }
+
+    bool parse_null(JsonValue& out) {
+        if (s_.compare(i_, 4, "null") == 0) { out.kind = JsonValue::Kind::Null; i_ += 4; return true; }
+        return false;
+    }
+
+    bool parse_number(JsonValue& out) {
+        size_t start = i_;
+        if (peek() == '-') ++i_;
+        while (!eof() && (std::isdigit(static_cast<unsigned char>(peek())) || peek() == '.' ||
+                          peek() == 'e' || peek() == 'E' || peek() == '+' || peek() == '-'))
+            ++i_;
+        if (i_ == start) return false;
+        out.kind = JsonValue::Kind::Number;
+        out.num = std::atof(s_.substr(start, i_ - start).c_str());
+        return true;
+    }
+};
+
+bool parse_json(const std::string& text, JsonValue& out) {
+    JsonParser p(text);
+    return p.parse(out);
+}
+
+void write_json_escaped(const std::string& s, std::string& out) {
+    out += '"';
+    for (char c : s) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\t': out += "\\t"; break;
+            case '\r': out += "\\r"; break;
+            default: out += c; break;
+        }
+    }
+    out += '"';
+}
+
+void write_json(const JsonValue& v, std::string& out) {
+    switch (v.kind) {
+        case JsonValue::Kind::Null: out += "null"; break;
+        case JsonValue::Kind::Bool: out += v.b ? "true" : "false"; break;
+        case JsonValue::Kind::Number: {
+            // Integral values print without a trailing ".0" so params like
+            // {"seed": 3} round-trip as JS integers, not 3.0.
+            double intpart;
+            if (std::modf(v.num, &intpart) == 0.0 && std::fabs(v.num) < 1e15) {
+                char buf[32];
+                std::snprintf(buf, sizeof(buf), "%lld", static_cast<long long>(v.num));
+                out += buf;
+            } else {
+                char buf[64];
+                std::snprintf(buf, sizeof(buf), "%.9g", v.num);
+                out += buf;
+            }
+            break;
+        }
+        case JsonValue::Kind::String: write_json_escaped(v.str, out); break;
+        case JsonValue::Kind::Array: {
+            out += '[';
+            for (size_t i = 0; i < v.arr.size(); ++i) {
+                if (i) out += ',';
+                write_json(v.arr[i], out);
+            }
+            out += ']';
+            break;
+        }
+        case JsonValue::Kind::Object: {
+            out += '{';
+            for (size_t i = 0; i < v.obj.size(); ++i) {
+                if (i) out += ',';
+                write_json_escaped(v.obj[i].first, out);
+                out += ':';
+                write_json(v.obj[i].second, out);
+            }
+            out += '}';
+            break;
+        }
+    }
+}
+
+std::string write_json(const JsonValue& v) {
+    std::string out;
+    write_json(v, out);
+    return out;
+}
+
+std::string read_file(const std::string& path, bool& ok) {
+    std::ifstream f(path, std::ios::binary);
+    ok = f.good();
+    if (!ok) return {};
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+
+bool write_file(const std::string& path, const std::string& text) {
+    fs::path p(path);
+    std::error_code ec;
+    if (p.has_parent_path()) fs::create_directories(p.parent_path(), ec);
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    if (!f.good()) return false;
+    f << text;
+    return true;
+}
+
+std::string sanitize_identifier(const std::string& in) {
+    std::string out;
+    out.reserve(in.size());
+    for (char c : in) {
+        if (std::isalnum(static_cast<unsigned char>(c)) || c == '_')
+            out += c;
+        else
+            out += '_';
+    }
+    if (out.empty() || std::isdigit(static_cast<unsigned char>(out[0])))
+        out = "_" + out;
+    return out;
+}
+
+// Creates `link` as a directory alias for `target` (Windows NTFS junction /
+// POSIX symlink) if it doesn't already resolve to a directory. Mirrors
+// setup-worktree.sh's junction pattern (mklink /J) — the established way
+// this codebase aliases a directory across a worktree/scratch boundary
+// without file duplication and without requiring admin privileges.
+bool ensure_dir_alias(const std::string& link, const std::string& target, std::string& err) {
+    std::error_code ec;
+    if (fs::exists(link, ec)) {
+        if (fs::is_directory(link, ec)) return true;  // already aliased
+        fs::remove(link, ec);                          // stray placeholder file
+    }
+    fs::path lp(link);
+    if (lp.has_parent_path()) fs::create_directories(lp.parent_path(), ec);
+#ifdef _WIN32
+    std::string cmd = "cmd /c mklink /J \"" + link + "\" \"" + target + "\" >nul 2>&1";
+    std::system(cmd.c_str());
+#else
+    ::symlink(target.c_str(), link.c_str());
+#endif
+    if (!fs::is_directory(link, ec)) {
+        err = "failed to alias " + link + " -> " + target;
+        return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// PartWorkbench
+// ---------------------------------------------------------------------------
+
+struct PartWorkbenchScriptHostHolder {
+    script_host::ScriptHost host;
+};
+
+PartWorkbench::PartWorkbench() = default;
+PartWorkbench::~PartWorkbench() {
+    // Explicit order (session before engine) documents the lifecycle even
+    // though member destruction order already guarantees it.
+    session_.reset();
+    engine_.reset();
+}
+
+void PartWorkbench::configure(matter::VulkanDevice* device, std::string examples_root,
+                              std::string engine_shared_lib_dir) {
+    device_ = device;
+    examples_root_ = std::move(examples_root);
+    engine_shared_lib_dir_ = std::move(engine_shared_lib_dir);
+    // Isolated from production caches: production worlds cache under
+    // "<project_dir>/.cache/<world_name>" (LocalProviderConfig::for_project).
+    // The workbench's scratch project directories live entirely under this
+    // separate root instead, so nothing here can collide with or be swept up
+    // by production cache maintenance.
+    scratch_root_ = "cache/lab-scratch";
+}
+
+std::string PartWorkbench::scratch_project_dir() const {
+    fs::path src(source_project_dir_);
+    std::string base = src.filename().string();
+    if (base.empty()) base = "project";
+    return (fs::path(scratch_root_) / base).string();
+}
+
+std::string PartWorkbench::iso_world_name() const {
+    return "__iso_" + sanitize_identifier(module_);
+}
+
+std::string PartWorkbench::iso_cache_root() const {
+    // Mirrors LocalProviderConfig::for_project's cache_root formula exactly
+    // (project_dir/.cache/world_name) so cold-rebake cache clearing targets
+    // the same directory the engine actually bakes into.
+    return (fs::path(scratch_project_dir()) / ".cache" / iso_world_name()).string();
+}
+
+std::string PartWorkbench::manifest_path() const {
+    return (fs::path(scratch_project_dir()) / "workbench_manifest.json").string();
+}
+
+bool PartWorkbench::ensure_scratch_project(const std::string& source_project_dir, std::string& err) {
+    const std::string spdir = scratch_project_dir();
+    std::error_code ec;
+    fs::create_directories(fs::path(spdir) / "worlds", ec);
+    if (!ensure_dir_alias((fs::path(spdir) / "objects").string(),
+                          (fs::path(source_project_dir) / "objects").string(), err))
+        return false;
+    const fs::path source_shared = fs::path(source_project_dir) / "shared-lib";
+    if (fs::is_directory(source_shared, ec)) {
+        if (!ensure_dir_alias((fs::path(spdir) / "shared-lib").string(), source_shared.string(), err))
+            return false;
+    }
+    return true;
+}
+
+void PartWorkbench::write_iso_world_file(const std::string& params_json) {
+    const std::string class_name = "IsoWorld_" + sanitize_identifier(module_);
+    std::ostringstream js;
+    js << "// Generated by the Part Workbench (part-workbench.md W2). Safe to\n"
+       << "// delete; rewritten on every open/param edit/bake.\n"
+       << "class " << class_name << " extends World {\n"
+       << "  static roots = [{\n"
+       << "    module: \"" << module_ << "\",\n"
+       << "    params: " << params_json << ",\n"
+       << "    transform: [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1],\n"
+       << "    expand: true,\n"
+       << "  }];\n"
+       << "}\n";
+    const std::string path =
+        (fs::path(scratch_project_dir()) / "worlds" / (iso_world_name() + ".js")).string();
+    write_file(path, js.str());
+}
+
+void PartWorkbench::refresh_default_params() {
+    if (!host_) host_ = std::make_unique<PartWorkbenchScriptHostHolder>();
+    std::vector<std::string> roots;
+    const fs::path source_shared = fs::path(source_project_dir_) / "shared-lib";
+    std::error_code ec;
+    if (fs::is_directory(source_shared, ec)) roots.push_back(source_shared.string());
+    if (!engine_shared_lib_dir_.empty()) roots.push_back(engine_shared_lib_dir_);
+    host_->host.set_shared_lib_roots(roots);
+
+    bool ok = false;
+    const std::string source_path = (fs::path(source_project_dir_) / "objects" / (module_ + ".js")).string();
+    part_source_ = read_file(source_path, ok);
+    if (!ok) {
+        status_line_ = "part source not found: " + source_path;
+        default_params_json_ = "{}";
+        current_params_json_ = "{}";
+        return;
+    }
+    const uint64_t hash = host_->host.resolve_hash(part_source_, "{}");
+    if (hash == 0) {
+        status_line_ = "failed to resolve params for " + module_ + " (check the part source for errors)";
+        default_params_json_ = "{}";
+    } else {
+        default_params_json_ = host_->host.last_merged_params();
+        if (default_params_json_.empty()) default_params_json_ = "{}";
+    }
+}
+
+std::string PartWorkbench::compute_hash_hex(const std::string& params_json) {
+    if (!host_ || part_source_.empty()) return {};
+    const uint64_t hash = host_->host.resolve_hash(part_source_, params_json);
+    char buf[17];
+    std::snprintf(buf, sizeof(buf), "%016llx", static_cast<unsigned long long>(hash));
+    return std::string(buf);
+}
+
+void PartWorkbench::load_manifest() {
+    manifest_.parts.clear();
+    manifest_project_key_ = scratch_project_dir();
+    bool ok = false;
+    const std::string text = read_file(manifest_path(), ok);
+    if (!ok || text.empty()) return;
+    JsonValue root;
+    if (!parse_json(text, root) || root.kind != JsonValue::Kind::Object) return;
+    JsonValue* parts = root.find("parts");
+    if (!parts || parts->kind != JsonValue::Kind::Array) return;
+    for (JsonValue& pv : parts->arr) {
+        if (pv.kind != JsonValue::Kind::Object) continue;
+        WorkbenchPartRecord rec;
+        if (JsonValue* m = pv.find("module")) rec.module = m->str;
+        if (JsonValue* bh = pv.find("baked_hashes")) {
+            if (bh->kind == JsonValue::Kind::Array)
+                for (JsonValue& h : bh->arr) rec.baked_hashes.push_back(h.str);
+        }
+        if (JsonValue* pins = pv.find("pins")) {
+            if (pins->kind == JsonValue::Kind::Array) {
+                for (JsonValue& pinv : pins->arr) {
+                    WorkbenchPin pin;
+                    if (JsonValue* n = pinv.find("name")) pin.name = n->str;
+                    if (JsonValue* pj = pinv.find("params_json")) pin.params_json = write_json(*pj);
+                    if (JsonValue* hh = pinv.find("hash_hex")) pin.hash_hex = hh->str;
+                    if (JsonValue* tr = pinv.find("last_tris")) pin.last_tris = static_cast<uint32_t>(tr->num);
+                    if (JsonValue* bm = pinv.find("last_bake_ms")) pin.last_bake_ms = bm->num;
+                    pin.baked = std::find(rec.baked_hashes.begin(), rec.baked_hashes.end(), pin.hash_hex) !=
+                                rec.baked_hashes.end();
+                    rec.pins.push_back(std::move(pin));
+                }
+            }
+        }
+        manifest_.parts.push_back(std::move(rec));
+    }
+}
+
+void PartWorkbench::save_manifest() {
+    JsonValue root;
+    root.kind = JsonValue::Kind::Object;
+    JsonValue parts;
+    parts.kind = JsonValue::Kind::Array;
+    for (const WorkbenchPartRecord& rec : manifest_.parts) {
+        JsonValue pv;
+        pv.kind = JsonValue::Kind::Object;
+        JsonValue mv; mv.kind = JsonValue::Kind::String; mv.str = rec.module;
+        pv.obj.emplace_back("module", mv);
+
+        JsonValue bh; bh.kind = JsonValue::Kind::Array;
+        for (const std::string& h : rec.baked_hashes) {
+            JsonValue hv; hv.kind = JsonValue::Kind::String; hv.str = h;
+            bh.arr.push_back(hv);
+        }
+        pv.obj.emplace_back("baked_hashes", bh);
+
+        JsonValue pins; pins.kind = JsonValue::Kind::Array;
+        for (const WorkbenchPin& pin : rec.pins) {
+            JsonValue pinv; pinv.kind = JsonValue::Kind::Object;
+            JsonValue nv; nv.kind = JsonValue::Kind::String; nv.str = pin.name;
+            pinv.obj.emplace_back("name", nv);
+            JsonValue pj;
+            if (!parse_json(pin.params_json, pj)) { pj.kind = JsonValue::Kind::Object; }
+            pinv.obj.emplace_back("params_json", pj);
+            JsonValue hh; hh.kind = JsonValue::Kind::String; hh.str = pin.hash_hex;
+            pinv.obj.emplace_back("hash_hex", hh);
+            JsonValue tr; tr.kind = JsonValue::Kind::Number; tr.num = pin.last_tris;
+            pinv.obj.emplace_back("last_tris", tr);
+            JsonValue bm; bm.kind = JsonValue::Kind::Number; bm.num = pin.last_bake_ms;
+            pinv.obj.emplace_back("last_bake_ms", bm);
+            pins.arr.push_back(std::move(pinv));
+        }
+        pv.obj.emplace_back("pins", pins);
+        parts.arr.push_back(std::move(pv));
+    }
+    root.obj.emplace_back("parts", parts);
+    write_file(manifest_path(), write_json(root));
+}
+
+WorkbenchPartRecord& PartWorkbench::part_record() {
+    for (WorkbenchPartRecord& rec : manifest_.parts)
+        if (rec.module == module_) return rec;
+    WorkbenchPartRecord rec;
+    rec.module = module_;
+    manifest_.parts.push_back(std::move(rec));
+    return manifest_.parts.back();
+}
+
+void PartWorkbench::close() {
+    session_.reset();
+    engine_.reset();
+    module_.clear();
+    status_line_.clear();
+}
+
+void PartWorkbench::open_part(const std::string& source_project_dir, const std::string& module) {
+    if (module.empty() || source_project_dir.empty()) return;
+    session_.reset();
+    engine_.reset();
+
+    source_project_dir_ = source_project_dir;
+    module_ = module;
+
+    std::string err;
+    if (!ensure_scratch_project(source_project_dir_, err)) {
+        status_line_ = err;
+        return;
+    }
+    if (manifest_project_key_ != scratch_project_dir()) load_manifest();
+
+    refresh_default_params();
+    current_params_json_ = default_params_json_;
+    write_iso_world_file(current_params_json_);
+
+    matter::EngineDesc edesc;
+    const std::string cache_root_hint = iso_cache_root();  // informational; see header note
+    edesc.cache_root = cache_root_hint.c_str();
+    edesc.render_device = device_;
+    engine_ = matter::EngineContext::create(edesc, err);
+    if (!engine_) {
+        status_line_ = "EngineContext::create failed: " + err;
+        return;
+    }
+
+    const std::string proj = scratch_project_dir();
+    const std::string wname = iso_world_name();
+    matter::WorldDesc wd;
+    wd.project_dir = proj.c_str();
+    wd.world_name = wname.c_str();
+    wd.engine_shared_lib_dir = engine_shared_lib_dir_.c_str();
+    session_ = engine_->open_world(wd, err);
+    if (!session_) {
+        status_line_ = "open_world failed: " + err;
+        engine_.reset();
+        return;
+    }
+    session_->request_bake();
+    awaiting_bounds_frame_ = true;
+    bake_start_ms_ = now_ms();
+    status_line_ = "opened " + module_ + " (cache hit if scratch-baked before)...";
+}
+
+void PartWorkbench::apply_params(const std::string& params_json, bool cold) {
+    if (!session_) return;
+    current_params_json_ = params_json;
+    write_iso_world_file(current_params_json_);
+    if (cold) {
+        std::error_code ec;
+        fs::remove_all(fs::path(iso_cache_root()) / "parts", ec);
+        status_line_ = "cold rebake...";
+    } else {
+        status_line_ = "loading variation...";
+    }
+    session_->reload();
+    awaiting_bounds_frame_ = true;
+    bake_start_ms_ = now_ms();
+}
+
+void PartWorkbench::frame_camera_on_bounds() {
+    if (!session_) return;
+    matter::InstanceInfo info;
+    if (!session_->instance_info(0, info)) return;
+    matter::PartBounds bounds;
+    if (!session_->part_bounds(info.part_hash, bounds)) return;
+    const float cx = 0.5f * (bounds.aabb_min[0] + bounds.aabb_max[0]);
+    const float cy = 0.5f * (bounds.aabb_min[1] + bounds.aabb_max[1]);
+    const float cz = 0.5f * (bounds.aabb_min[2] + bounds.aabb_max[2]);
+    const float ex = bounds.aabb_max[0] - bounds.aabb_min[0];
+    const float ey = bounds.aabb_max[1] - bounds.aabb_min[1];
+    const float ez = bounds.aabb_max[2] - bounds.aabb_min[2];
+    float radius = 0.5f * std::sqrt(ex * ex + ey * ey + ez * ez);
+    radius = std::max(radius, 0.25f);
+    // 35deg framing FOV, matching camera_focus.cpp's convention; fixed
+    // 3/4-view direction since the isolation camera has no prior orbit state
+    // to preserve on first frame.
+    constexpr float kFovRad = 35.0f * 3.14159265358979323846f / 180.0f;
+    const float distance = std::max(radius / std::tan(kFovRad * 0.5f), 0.1f) * 1.3f;
+    float dx = 0.6f, dy = 0.45f, dz = 0.6f;
+    const float dlen = std::sqrt(dx * dx + dy * dy + dz * dz);
+    dx /= dlen; dy /= dlen; dz /= dlen;
+    camera_.target = {cx, cy, cz};
+    camera_.position = {cx + dx * distance, cy + dy * distance, cz + dz * distance};
+}
+
+void PartWorkbench::tick(float dt) {
+    if (!session_) return;
+    matter::TickDesc td{};
+    td.frame_delta_seconds = dt;
+    td.max_fixed_steps = 0;  // isolation scene: no physics stepping needed
+    session_->tick(td);
+
+    matter::Event event;
+    while (session_->poll_event(event)) {
+        if (event.type == matter::EventType::BakeFinished) {
+            const double elapsed_ms = now_ms() - bake_start_ms_;
+            const bool ok = event.errors == 0;
+            if (ok) {
+                const std::string hash_hex = compute_hash_hex(current_params_json_);
+                WorkbenchPartRecord& rec = part_record();
+                if (!hash_hex.empty() &&
+                    std::find(rec.baked_hashes.begin(), rec.baked_hashes.end(), hash_hex) ==
+                        rec.baked_hashes.end())
+                    rec.baked_hashes.push_back(hash_hex);
+                for (WorkbenchPin& pin : rec.pins) {
+                    if (pin.params_json == current_params_json_ || pin.hash_hex == hash_hex) {
+                        pin.baked = true;
+                        pin.hash_hex = hash_hex;
+                        pin.last_bake_ms = elapsed_ms;
+                        pin.last_tris = session_->frame_stats().triangles;
+                    }
+                }
+                save_manifest();
+                if (awaiting_bounds_frame_) {
+                    frame_camera_on_bounds();
+                    awaiting_bounds_frame_ = false;
+                }
+                char buf[128];
+                std::snprintf(buf, sizeof(buf), "baked ok (%.0f ms)", elapsed_ms);
+                status_line_ = buf;
+            } else {
+                status_line_ = "bake finished with " + std::to_string(event.errors) + " error(s)";
+            }
+        } else if (event.type == matter::EventType::BakeError) {
+            status_line_ = "bake error [" + event.module + "]: " + event.message;
+        }
+    }
+}
+
+void PartWorkbench::pump_gpu_jobs(float ms_budget) {
+    if (session_) session_->pump_gpu_jobs(ms_budget);
+}
+
+// ---------------------------------------------------------------------------
+// UI
+// ---------------------------------------------------------------------------
+
+void PartWorkbench::draw(const std::vector<WorldEntry>& worlds) {
+    viewport_active_ = true;
+
+    draw_open_picker(worlds);
+    ImGui::Separator();
+
+    if (!is_open()) {
+        ImGui::TextDisabled("Open a part above to isolate-bake it.");
+        if (!status_line_.empty()) ImGui::TextWrapped("%s", status_line_.c_str());
+        return;
+    }
+
+    ImGui::Text("Part: %s", module_.c_str());
+    ImGui::SameLine();
+    ImGui::TextDisabled("scratch cache: %s", iso_cache_root().c_str());
+    if (!status_line_.empty()) ImGui::TextWrapped("%s", status_line_.c_str());
+
+    ImGui::Spacing();
+    draw_params_panel();
+    ImGui::Spacing();
+    if (ImGui::Button("Bake (cold rebake)")) {
+        apply_params(current_params_json_, /*cold=*/true);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reframe camera")) {
+        frame_camera_on_bounds();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Pin current params")) {
+        JsonValue def, cur;
+        std::string name = "default";
+        if (parse_json(default_params_json_, def) && parse_json(current_params_json_, cur) &&
+            def.kind == JsonValue::Kind::Object && cur.kind == JsonValue::Kind::Object) {
+            std::string diffs;
+            for (auto& kv : cur.obj) {
+                JsonValue* dv = def.find(kv.first);
+                if (!dv || write_json(*dv) != write_json(kv.second)) {
+                    if (!diffs.empty()) diffs += " ";
+                    diffs += kv.first + "=" + write_json(kv.second);
+                }
+            }
+            if (!diffs.empty()) name = diffs;
+        }
+        WorkbenchPin pin;
+        pin.name = name;
+        pin.params_json = current_params_json_;
+        pin.hash_hex = compute_hash_hex(current_params_json_);
+        WorkbenchPartRecord& rec = part_record();
+        pin.baked = std::find(rec.baked_hashes.begin(), rec.baked_hashes.end(), pin.hash_hex) !=
+                    rec.baked_hashes.end();
+        rec.pins.push_back(std::move(pin));
+        save_manifest();
+    }
+
+    ImGui::Spacing();
+    draw_pins_panel();
+}
+
+void PartWorkbench::draw_open_picker(const std::vector<WorldEntry>& worlds) {
+    std::vector<std::string> project_dirs;
+    for (const WorldEntry& w : worlds) {
+        if (std::find(project_dirs.begin(), project_dirs.end(), w.project_dir) == project_dirs.end())
+            project_dirs.push_back(w.project_dir);
+    }
+    if (project_dirs.empty()) {
+        ImGui::TextDisabled("No projects found (scan_worlds returned none).");
+        return;
+    }
+    if (open_project_index_ >= static_cast<int>(project_dirs.size())) open_project_index_ = 0;
+
+    ImGui::TextUnformatted("Open in Workbench:");
+    ImGui::SetNextItemWidth(220);
+    if (ImGui::BeginCombo("##wb_project", project_dirs[open_project_index_].c_str())) {
+        for (int i = 0; i < static_cast<int>(project_dirs.size()); ++i) {
+            const bool selected = i == open_project_index_;
+            if (ImGui::Selectable(project_dirs[i].c_str(), selected)) open_project_index_ = i;
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(160);
+    ImGui::InputTextWithHint("##wb_module", "module name (e.g. Rock)", open_module_buf_,
+                             sizeof(open_module_buf_));
+    ImGui::SameLine();
+    if (ImGui::Button("Open")) {
+        open_part(project_dirs[open_project_index_], std::string(open_module_buf_));
+    }
+}
+
+void PartWorkbench::draw_params_panel() {
+    ImGui::SeparatorText("Params & Variations");
+    JsonValue def;
+    if (!parse_json(default_params_json_, def) || def.kind != JsonValue::Kind::Object) {
+        ImGui::TextDisabled("%s has no editable params (or params failed to resolve).",
+                            module_.c_str());
+        return;
+    }
+    JsonValue cur;
+    if (!parse_json(current_params_json_, cur) || cur.kind != JsonValue::Kind::Object) cur = def;
+
+    bool changed = false;
+    for (auto& dkv : def.obj) {
+        const std::string& key = dkv.first;
+        JsonValue& defv = dkv.second;
+        JsonValue* curv = cur.find(key);
+        if (!curv) {
+            cur.obj.emplace_back(key, defv);
+            curv = &cur.obj.back().second;
+        }
+        ImGui::PushID(key.c_str());
+        const bool differs = write_json(*curv) != write_json(defv);
+        if (differs) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.35f, 1.0f));
+        ImGui::TextUnformatted(key.c_str());
+        if (differs) ImGui::PopStyleColor();
+        ImGui::SameLine(160);
+
+        switch (defv.kind) {
+            case JsonValue::Kind::Number: {
+                float v = static_cast<float>(curv->num);
+                ImGui::SetNextItemWidth(140);
+                if (ImGui::DragFloat("##v", &v, 0.05f)) { curv->num = v; changed = true; }
+                if (key == "seed") {
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("dice")) {
+                        curv->num = static_cast<double>(std::rand() % 1000000);
+                        changed = true;
+                    }
+                }
+                break;
+            }
+            case JsonValue::Kind::Bool: {
+                bool v = curv->b;
+                if (ImGui::Checkbox("##v", &v)) { curv->b = v; changed = true; }
+                break;
+            }
+            case JsonValue::Kind::String: {
+                char buf[256];
+                std::snprintf(buf, sizeof(buf), "%s", curv->str.c_str());
+                ImGui::SetNextItemWidth(220);
+                if (ImGui::InputText("##v", buf, sizeof(buf))) { curv->str = buf; changed = true; }
+                break;
+            }
+            default: {
+                // Nested object/array/null: raw JSON text edit.
+                std::string text = write_json(*curv);
+                char buf[2048];
+                std::snprintf(buf, sizeof(buf), "%s", text.c_str());
+                ImGui::SetNextItemWidth(320);
+                if (ImGui::InputText("##v", buf, sizeof(buf))) {
+                    JsonValue parsed;
+                    if (parse_json(buf, parsed)) { *curv = parsed; changed = true; }
+                }
+                break;
+            }
+        }
+        if (differs) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reset")) { *curv = defv; changed = true; }
+        }
+        ImGui::PopID();
+    }
+    if (changed) current_params_json_ = write_json(cur);
+}
+
+void PartWorkbench::draw_pins_panel() {
+    ImGui::SeparatorText("Pinned Variations");
+    WorkbenchPartRecord& rec = part_record();
+    if (rec.pins.empty()) {
+        ImGui::TextDisabled("No pins yet — edit params and click \"Pin current params\".");
+        return;
+    }
+    if (ImGui::BeginTable("wb_pins", 5,
+                          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Name");
+        ImGui::TableSetupColumn("Baked");
+        ImGui::TableSetupColumn("Tris");
+        ImGui::TableSetupColumn("Bake ms");
+        ImGui::TableSetupColumn("Load");
+        ImGui::TableHeadersRow();
+        for (size_t i = 0; i < rec.pins.size(); ++i) {
+            WorkbenchPin& pin = rec.pins[i];
+            pin.baked = std::find(rec.baked_hashes.begin(), rec.baked_hashes.end(), pin.hash_hex) !=
+                        rec.baked_hashes.end();
+            const bool stale = pin.params_json != current_params_json_ && !pin.baked;
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::PushID(static_cast<int>(i));
+            char name_buf[128];
+            std::snprintf(name_buf, sizeof(name_buf), "%s", pin.name.c_str());
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputText("##name", name_buf, sizeof(name_buf))) {
+                pin.name = name_buf;
+                save_manifest();
+            }
+            ImGui::TableSetColumnIndex(1);
+            if (pin.baked) ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f), "baked");
+            else if (stale) ImGui::TextColored(ImVec4(0.95f, 0.6f, 0.2f, 1.0f), "stale - Bake to see");
+            else ImGui::TextDisabled("unbaked");
+            ImGui::TableSetColumnIndex(2);
+            ImGui::Text("%u", pin.last_tris);
+            ImGui::TableSetColumnIndex(3);
+            ImGui::Text("%.0f", pin.last_bake_ms);
+            ImGui::TableSetColumnIndex(4);
+            if (ImGui::SmallButton("Load")) {
+                // Re-selecting a previously-baked variation: writing the same
+                // params and reload()ing hits the still-present scratch .part
+                // (fast, no cold wipe); an unbaked pin's reload() performs the
+                // real first bake for that hash (same call, no special-casing
+                // needed — the engine's own cache check decides hit vs miss).
+                apply_params(pin.params_json, /*cold=*/false);
+            }
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+}
+
+}  // namespace viewer

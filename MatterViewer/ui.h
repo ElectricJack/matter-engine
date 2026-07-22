@@ -119,8 +119,8 @@ public:
     // Bake Lab shell (bake-lab.md §II.5): "Bake Lab" window wrapping
     // BakeLab::draw_contents(), same Begin/End split as draw_console_panel.
     // No-op while lab.visible is false (window close button clears it).
-    // worlds/stats/shared_lib_root are threaded to the Assets tab (W1,
-    // part-workbench.md) — see BakeLab::draw_contents for why.
+    // worlds/stats/shared_lib_root are threaded to the Assets tab (W1) and
+    // worlds to the Workbench tab (W2) — see BakeLab::draw_contents for why.
     void draw_bake_lab_panel(BakeLab& lab, matter::WorldSession* session,
                              const std::vector<WorldEntry>& worlds, ViewerStats& stats,
                              const std::string& shared_lib_root);

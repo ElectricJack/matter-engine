@@ -21,19 +21,34 @@ void draw_placeholder_tab(const char* name, const char* coming, ImGuiTabItemFlag
 void BakeLab::draw_contents(matter::WorldSession* session,
                             const std::vector<WorldEntry>& worlds, ViewerStats& stats,
                             const std::string& shared_lib_root) {
+    // main.cpp calls workbench().begin_frame() unconditionally each frame
+    // (even while this window is hidden) so wants_viewport() never sticks on
+    // a stale true if the Bake Lab window is closed mid-isolation.
     if (ImGui::BeginTabBar("##bake_lab_tabs")) {
         if (ImGui::BeginTabItem("Assets")) {
             asset_browser_.draw(worlds, stats, shared_lib_root,
-                                pending_workbench_module, focus_workbench_tab_);
+                                pending_workbench_module, pending_workbench_project,
+                                focus_workbench_tab_);
             ImGui::EndTabItem();
         }
-        // "Open in Workbench" (Assets tab) sets focus_workbench_tab_; consumed
-        // here (one frame after it's set) via ImGuiTabItemFlags_SetSelected,
-        // then cleared so it doesn't keep forcing the tab open.
-        draw_placeholder_tab("Workbench",
-                             "Coming in W2+ (part-workbench.md): isolation scene, "
-                             "bake button, params & variations",
-                             focus_workbench_tab_ ? ImGuiTabItemFlags_SetSelected : 0);
+        // W1->W2 handoff: the Assets tab's "Open in Workbench" action records
+        // pending_workbench_module/project and sets focus_workbench_tab_. Open
+        // the part in the isolation session here (unconditional so it fires
+        // even if the tab body is skipped), then clear the pending state. The
+        // focus flag forces the Workbench tab selected this same frame via
+        // ImGuiTabItemFlags_SetSelected.
+        if (!pending_workbench_module.empty()) {
+            workbench_.open_part(pending_workbench_project, pending_workbench_module);
+            pending_workbench_module.clear();
+            pending_workbench_project.clear();
+        }
+        // W2 (part-workbench.md): isolation scene + bake button + Params &
+        // Variations panel. Body lives entirely in part_workbench.{h,cpp}.
+        if (ImGui::BeginTabItem("Workbench", nullptr,
+                                focus_workbench_tab_ ? ImGuiTabItemFlags_SetSelected : 0)) {
+            workbench_.draw(worlds);
+            ImGui::EndTabItem();
+        }
         focus_workbench_tab_ = false;
         if (ImGui::BeginTabItem("Timeline")) {
             timeline_.draw(session);

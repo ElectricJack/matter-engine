@@ -61,6 +61,7 @@ public:
     void draw(const std::vector<WorldEntry>& worlds, ViewerStats& stats,
               const std::string& shared_lib_root,
               std::string& pending_workbench_module,
+              std::string& pending_workbench_project,
               bool& focus_workbench_tab);
 
     enum class Kind { Part, Tileset, Support };
@@ -124,9 +125,11 @@ private:
                                  std::vector<RequiredChildUi>* out_children);
 
     void draw_project(Project& project, ViewerStats& stats,
-                      std::string& pending_workbench_module, bool& focus_workbench_tab);
+                      std::string& pending_workbench_module,
+                      std::string& pending_workbench_project, bool& focus_workbench_tab);
     void draw_object_row(Project& project, AssetObject& obj,
-                         std::string& pending_workbench_module, bool& focus_workbench_tab);
+                         std::string& pending_workbench_module,
+                         std::string& pending_workbench_project, bool& focus_workbench_tab);
     bool passes_filter(const std::string& name) const;
 
     std::unique_ptr<script_host::ScriptHost> host_;  // pimpl'd — see the
