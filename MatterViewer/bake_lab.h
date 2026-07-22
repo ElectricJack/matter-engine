@@ -5,9 +5,13 @@
 #include <vector>
 
 #include "bake_lab_timeline.h"
+#include "event_inspector.h"
 #include "part_workbench.h"
 
-namespace matter { class WorldSession; }
+namespace matter {
+class WorldSession;
+namespace evt { class Hub; }
+}  // namespace matter
 
 namespace viewer {
 
@@ -43,7 +47,10 @@ public:
     // threaded to the Workbench tab's part picker (part-workbench.md W2). A
     // pending tab-focus (set by the lab.focus_tab command handler) forces the
     // Workbench tab selected this frame via ImGuiTabItemFlags_SetSelected.
-    void draw_contents(matter::WorldSession* session,
+    // `app_hub` is the editor-lifetime app hub (event-system.md S I.13); it and
+    // `session` are handed to the read-only Events inspector tab (E4c), which
+    // introspects the app hub + the production session hub (session->events()).
+    void draw_contents(matter::evt::Hub* app_hub, matter::WorldSession* session,
                        const std::vector<WorldEntry>& worlds);
 
     // --- command handlers (event-system.md S I.11, E4b) --------------------
@@ -70,6 +77,7 @@ public:
 
 private:
     BakeLabTimeline timeline_;
+    EventInspector event_inspector_;
     PartWorkbench workbench_;
     // Set by the command handlers above; consumed in draw_contents (tab focus)
     // and take_window_raise (window raise). Replaces the old focus_workbench_tab_

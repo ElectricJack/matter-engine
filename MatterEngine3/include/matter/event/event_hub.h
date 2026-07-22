@@ -70,6 +70,17 @@ struct RegistrySnapshotEntry {
     std::vector<SubscriberInfo> subscribers;  // in dispatch (phase,priority,name) order
 };
 
+// Per-lane intentional-loss / rejection counters (S I.8: "drops are counted
+// out-of-band ... read by ... the inspector"). One entry per lane channel the
+// hub has created. dropped == DropOldest evictions; rejected == capacity
+// rejections. Both are the raw Channel<T>::dropped()/rejected() monotonic
+// counters for the lane's queue.
+struct LaneCounters {
+    uint32_t lane_id = 0;
+    uint64_t dropped = 0;
+    uint64_t rejected = 0;
+};
+
 // ---------------------------------------------------------------------
 // Trace (S I.8): "what fired." A per-hub fixed-size ring buffer.
 // ---------------------------------------------------------------------
@@ -375,6 +386,11 @@ public:
     // -------------------------------------------------------------
     std::vector<RegistrySnapshotEntry> registry_snapshot() const;
 
+    // Per-lane drop/reject counters for every lane channel this hub has
+    // created (S I.8). Read-only introspection for the events inspector; the
+    // underlying counters are the lane queue's Channel<T>::dropped()/rejected().
+    std::vector<LaneCounters> lane_counters() const;
+
     void set_trace_enabled(bool on) { trace_enabled_.store(on, std::memory_order_relaxed); }
     bool trace_enabled() const { return trace_enabled_.load(std::memory_order_relaxed); }
     std::vector<TraceRecord> trace_snapshot() const;
@@ -428,7 +444,7 @@ private:
     mutable std::mutex types_mu_;
     std::unordered_map<const void*, std::unique_ptr<detail::TypeState>> types_;
 
-    std::mutex lanes_mu_;
+    mutable std::mutex lanes_mu_;
     std::unordered_map<uint32_t, std::unique_ptr<Channel<detail::QueuedEnvelope>>> lane_channels_;
     std::unordered_map<uint32_t, std::thread::id> lane_owners_;
 

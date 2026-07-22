@@ -18,7 +18,7 @@ void draw_placeholder_tab(const char* name, const char* coming, ImGuiTabItemFlag
 
 } // namespace
 
-void BakeLab::draw_contents(matter::WorldSession* session,
+void BakeLab::draw_contents(matter::evt::Hub* app_hub, matter::WorldSession* session,
                             const std::vector<WorldEntry>& worlds) {
     // main.cpp calls workbench().begin_frame() unconditionally each frame
     // (even while this window is hidden) so wants_viewport() never sticks on
@@ -37,6 +37,13 @@ void BakeLab::draw_contents(matter::WorldSession* session,
         tab_focus_pending_ = false;
         if (ImGui::BeginTabItem("Timeline")) {
             timeline_.draw(session);
+            ImGui::EndTabItem();
+        }
+        // E4c: read-only Events inspector over the app hub + production session
+        // hub. The session hub is re-fetched inside EventInspector::draw every
+        // frame (session->events()), never cached across a world switch.
+        if (ImGui::BeginTabItem("Events")) {
+            event_inspector_.draw(app_hub, session);
             ImGui::EndTabItem();
         }
         draw_placeholder_tab("Settle", "Parked (part-workbench.md I.6 / task 5.5)");

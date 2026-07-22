@@ -23,7 +23,7 @@
 #include "asset_browser.h"
 
 struct GLFWwindow;
-namespace matter { class VulkanDevice; struct VulkanFrame; }
+namespace matter { class VulkanDevice; struct VulkanFrame; namespace evt { class Hub; } }
 
 namespace viewer {
 
@@ -141,7 +141,8 @@ public:
     // Asset Browser pane (draw_asset_browser_panel below); a pending request
     // both consumes into PartWorkbench::open_part (inside draw_contents) and,
     // here, raises/focuses the Bake Lab window itself.
-    void draw_bake_lab_panel(BakeLab& lab, matter::WorldSession* session,
+    void draw_bake_lab_panel(BakeLab& lab, matter::evt::Hub* app_hub,
+                             matter::WorldSession* session,
                              const std::vector<WorldEntry>& worlds);
     // Standalone Assets pane (promoted out of Bake Lab's former "Assets" tab
     // so it's usable during any workflow, not just baking). Owns no state

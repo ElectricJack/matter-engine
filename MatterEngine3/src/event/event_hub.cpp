@@ -270,6 +270,16 @@ std::vector<RegistrySnapshotEntry> Hub::registry_snapshot() const {
     return out;
 }
 
+std::vector<LaneCounters> Hub::lane_counters() const {
+    std::vector<LaneCounters> out;
+    std::lock_guard<std::mutex> lk(lanes_mu_);
+    out.reserve(lane_channels_.size());
+    for (auto& kv : lane_channels_) {
+        out.push_back(LaneCounters{kv.first, kv.second->dropped(), kv.second->rejected()});
+    }
+    return out;
+}
+
 void Hub::push_trace_record_locked(TraceRecord rec) {
     trace_ring_.push_back(std::move(rec));
     while (trace_ring_.size() > trace_capacity_) trace_ring_.pop_front();

@@ -659,7 +659,8 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands) {
     ImGui::End();
 }
 
-void Ui::draw_bake_lab_panel(BakeLab& lab, matter::WorldSession* session,
+void Ui::draw_bake_lab_panel(BakeLab& lab, matter::evt::Hub* app_hub,
+                             matter::WorldSession* session,
                              const std::vector<WorldEntry>& worlds) {
     // A pending window-raise means the lab.focus_tab command just fired (via
     // the Asset Browser's "Open in Workbench"): make sure the window is visible
@@ -671,7 +672,7 @@ void Ui::draw_bake_lab_panel(BakeLab& lab, matter::WorldSession* session,
     }
     if (!lab.visible) return;
     ImGui::Begin("Bake Lab", &lab.visible);
-    lab.draw_contents(session, worlds);
+    lab.draw_contents(app_hub, session, worlds);
     ImGui::End();
 }
 
