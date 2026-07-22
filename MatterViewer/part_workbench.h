@@ -141,6 +141,22 @@ private:
     void draw_pins_panel();
     void frame_camera_on_bounds();
 
+    // W5 (Part Workbench, static lods — part-workbench.md SS-I.5/W5 sub-steps
+    // 3-4): per-LOD authoring. One in-memory row per authored `static lods[i]`
+    // entry, seeded from ScriptHost::eval_lods(part_source_) on open_part();
+    // edited here without touching the file. "Save lods to source" is the only
+    // path that writes — see write_lods_to_source()'s doc comment for the
+    // marker-block + parse-verify + restore-on-failure + .bak contract.
+    struct LodAuthLevelUI {
+        bool has_params = false;
+        std::string params_text;          // raw editable JSON object text
+        std::vector<std::string> exclude; // child module names dropped at this level
+    };
+    void seed_lod_authoring();
+    void draw_lod_authoring_panel();
+    std::string render_lods_block() const;
+    bool write_lods_to_source(std::string& err);
+
     matter::VulkanDevice* device_ = nullptr;
     std::string examples_root_;
     std::string engine_shared_lib_dir_;
@@ -183,6 +199,15 @@ private:
     // force_lod/hide_child_instances debug toggle state; see
     // apply_lod_inspector_options() and lod_inspector.h.
     LodInspector lod_inspector_;
+
+    // W5: per-LOD authoring model (session-scratch; see LodAuthLevelUI doc
+    // comment above). Reseeded from source on every open_part(). Bake picks
+    // it up only after an explicit "Save lods to source" (the isolation
+    // session bakes from the real part .js, aliased via ensure_dir_alias —
+    // there is no separate in-memory-source bake path in this milestone; see
+    // the W5 report for the scope note).
+    std::vector<LodAuthLevelUI> lod_authoring_;
+    bool lod_wrote_bak_this_session_ = false;
 };
 
 }  // namespace viewer

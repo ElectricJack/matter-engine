@@ -2343,6 +2343,14 @@ bool WorldSession::Impl::install_world(
                 emit_event(std::move(ev));
                 return false;
             }
+            // W5 (Part Workbench, static lods): must run BEFORE bake_lod_variants
+            // (its fast path prefers the child-table/merged-params state bake()
+            // just left on the host, and bake_lod_variants's own optional
+            // budget-variant bakes would otherwise overwrite it — its slow-path
+            // recovery bake stays correct either way).
+            provider->host_baker().bake_static_lods(
+                source, part_graph::params_from_json(params_json),
+                kid_hashes, kid_modules, kid_params, hash);
             provider->host_baker().bake_lod_variants(
                 source, part_graph::params_from_json(params_json),
                 kid_hashes, hash);

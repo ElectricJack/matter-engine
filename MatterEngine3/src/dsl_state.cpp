@@ -261,6 +261,7 @@ void DslState::placeChild(const std::string& module,
     matrix_to_row16(top(), p.transform);
     p.instanced = instanced;
     p.inline_below_px = inline_below_px;
+    p.module = module;
     children_.push_back(p);
 }
 

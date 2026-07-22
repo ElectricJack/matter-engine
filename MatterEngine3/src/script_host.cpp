@@ -606,6 +606,149 @@ ScriptHost::LodBudgetSpec ScriptHost::eval_lod_budgets(const std::string& source
     return out;
 }
 
+// W5 (Part Workbench): static discovery of `static lods` WITHOUT building.
+// Same restricted intrinsics / no-build discipline as eval_lod_budgets and
+// eval_requires. Fail-closed: any shape violation clears the whole list.
+ScriptHost::LodAuthoring ScriptHost::eval_lods(const std::string& source) {
+    LodAuthoring out;
+
+    std::string className = find_part_class_name(source);
+    if (className.empty()) return out;
+
+    ModuleStore store;
+    bool use_module = false;
+    if (!shared_lib_roots_.empty()) {
+        module_resolver::FoldResult fr;
+        std::string ferr;
+        if (!fold_sources_cached(source, fr, ferr)) return out;
+        if (!fr.modules.empty()) { store = store_from_fold(fr); use_module = true; }
+    }
+
+    JSRuntime* rt = nullptr; JSContext* ctx = nullptr;
+    BakeError eerr;
+    if (!eval_part_publish_class(source, className, use_module ? &store : nullptr,
+                                 rt, ctx, eerr))
+        return out;
+
+    bool ok = true;
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue authored = JS_GetPropertyStr(ctx, global, "__partClass");
+    JS_FreeValue(ctx, global);
+    if (!JS_IsFunction(ctx, authored)) {
+        JS_FreeValue(ctx, authored);
+        JS_FreeContext(ctx); JS_FreeRuntime(rt); return out;
+    }
+
+    // Canonicalizer shared with merge_params_canonical/eval_requires (sorted
+    // keys, no whitespace) so a level's params_json is directly mergeable with
+    // the base merged params by simple JS Object.assign at the call site.
+    static const char* kCanon =
+      "(function(o){if(o===undefined||o===null)return '{}';"
+      "let keys=Object.keys(o).sort();let r={};for(let k of keys)r[k]=o[k];"
+      "return JSON.stringify(r);})";
+    JSValue canonFn = JS_Eval(ctx, kCanon, strlen(kCanon), "<canon>", JS_EVAL_TYPE_GLOBAL);
+
+    JSValue lods = JS_GetPropertyStr(ctx, authored, "lods");
+    if (JS_IsArray(lods)) {
+        uint32_t len = 0;
+        {
+            JSValue lenv = JS_GetPropertyStr(ctx, lods, "length");
+            JS_ToUint32(ctx, &len, lenv); JS_FreeValue(ctx, lenv);
+        }
+        for (uint32_t i = 0; i < len && ok; ++i) {
+            JSValue entry = JS_GetPropertyUint32(ctx, lods, i);
+            // Each entry must be a plain object (not null, not an array/primitive) —
+            // JS_IsObject also accepts arrays/functions, so exclude those explicitly.
+            if (!JS_IsObject(entry) || JS_IsArray(entry) || JS_IsFunction(ctx, entry)) {
+                ok = false; JS_FreeValue(ctx, entry); break;
+            }
+            LodLevelSpec spec;
+
+            JSValue paramsV = JS_GetPropertyStr(ctx, entry, "params");
+            if (!JS_IsUndefined(paramsV)) {
+                if (!JS_IsObject(paramsV) || JS_IsArray(paramsV) || JS_IsFunction(ctx, paramsV)) {
+                    ok = false; JS_FreeValue(ctx, paramsV); JS_FreeValue(ctx, entry); break;
+                }
+                spec.has_params = true;
+                JSValue canonStr = JS_Call(ctx, canonFn, JS_UNDEFINED, 1, &paramsV);
+                if (JS_IsException(canonStr)) { ok = false; JS_FreeValue(ctx, canonStr);
+                    JS_FreeValue(ctx, paramsV); JS_FreeValue(ctx, entry); break; }
+                const char* cs = JS_ToCString(ctx, canonStr);
+                spec.params_json = cs ? cs : "{}";
+                if (cs) JS_FreeCString(ctx, cs);
+                JS_FreeValue(ctx, canonStr);
+            } else {
+                spec.params_json = "{}";
+            }
+            JS_FreeValue(ctx, paramsV);
+
+            JSValue excludeV = JS_GetPropertyStr(ctx, entry, "exclude");
+            if (!JS_IsUndefined(excludeV)) {
+                if (!JS_IsArray(excludeV)) {
+                    ok = false; JS_FreeValue(ctx, excludeV); JS_FreeValue(ctx, entry); break;
+                }
+                uint32_t elen = 0;
+                {
+                    JSValue lenv = JS_GetPropertyStr(ctx, excludeV, "length");
+                    JS_ToUint32(ctx, &elen, lenv); JS_FreeValue(ctx, lenv);
+                }
+                for (uint32_t j = 0; j < elen && ok; ++j) {
+                    JSValue el = JS_GetPropertyUint32(ctx, excludeV, j);
+                    if (!JS_IsString(el)) { ok = false; JS_FreeValue(ctx, el); break; }
+                    const char* s = JS_ToCString(ctx, el);
+                    if (s) { spec.exclude.push_back(s); JS_FreeCString(ctx, s); }
+                    else { ok = false; }
+                    JS_FreeValue(ctx, el);
+                }
+            }
+            JS_FreeValue(ctx, excludeV);
+            JS_FreeValue(ctx, entry);
+            if (ok) out.push_back(std::move(spec));
+        }
+    } else if (!JS_IsUndefined(lods)) {
+        ok = false;  // `static lods` present but not an array: fail closed
+    }
+    JS_FreeValue(ctx, lods);
+    JS_FreeValue(ctx, canonFn);
+    JS_FreeValue(ctx, authored);
+    JS_FreeContext(ctx); JS_FreeRuntime(rt);
+
+    if (!ok) out.clear();  // fail-closed: any malformed entry discards the whole block
+    return out;
+}
+
+std::string ScriptHost::merge_json_shallow(const std::string& base_json,
+                                           const std::string& override_json) {
+    std::string out = "{}";
+    JSRuntime* rt = JS_NewRuntime();
+    if (!rt) return out;
+    JSContext* ctx = JS_NewContext(rt);   // bare context: no part-base, no DSL bindings
+    if (!ctx) { JS_FreeRuntime(rt); return out; }
+
+    JSValue a = JS_ParseJSON(ctx, base_json.c_str(), base_json.size(), "<a>");
+    JSValue b = JS_ParseJSON(ctx, override_json.c_str(), override_json.size(), "<b>");
+    if (!JS_IsException(a) && !JS_IsException(b)) {
+        static const char* kMerge =
+          "(function(d,o){let m=Object.assign({},d,o);"
+          "let keys=Object.keys(m).sort();let r={};for(let k of keys)r[k]=m[k];"
+          "return JSON.stringify(r);})";
+        JSValue fn = JS_Eval(ctx, kMerge, strlen(kMerge), "<merge>", JS_EVAL_TYPE_GLOBAL);
+        JSValue args[2] = { a, b };
+        JSValue res = JS_Call(ctx, fn, JS_UNDEFINED, 2, args);
+        if (!JS_IsException(res)) {
+            const char* s = JS_ToCString(ctx, res);
+            if (s) { out = s; JS_FreeCString(ctx, s); }
+        }
+        JS_FreeValue(ctx, res);
+        JS_FreeValue(ctx, fn);
+    }
+    JS_FreeValue(ctx, a);
+    JS_FreeValue(ctx, b);
+    JS_FreeContext(ctx);
+    JS_FreeRuntime(rt);
+    return out;
+}
+
 uint64_t ScriptHost::resolve_hash(const std::string& source,
                                   const std::string& params_json,
                                   const uint64_t* child_hashes,
@@ -1200,7 +1343,15 @@ BakeResult ScriptHost::bake_source(const std::string& source,
 
             // Seed the deterministic RNG and install the child-hash table now that
             // `merged` is available (deferred from the old pre-eval setup block).
-            state.set_rng(derive_seed(merged));
+            // W5 seeding rule: when the caller supplies opts.seed_params_json (a
+            // per-LOD-level bake seeding from the BASE/LOD0 merged params rather
+            // than this call's own `merged`), derive the seed from THAT instead —
+            // the level's build() still receives `merged` (its own params), only
+            // the rng stream is pinned to LOD0's. Empty (every pre-W5 caller)
+            // means "seed from this call's own merged params", byte-identical to
+            // the pre-W5 code path.
+            state.set_rng(derive_seed(
+                opts.seed_params_json.empty() ? merged : opts.seed_params_json));
             {
                 std::map<std::string, uint64_t> name2hash;
                 if (child_modules && child_hashes)
@@ -1455,11 +1606,14 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         // Persist the child instances placed via placeChild() during build().
         std::vector<part_asset::ChildInstance> kids;
         kids.reserve(state.children().size());
+        r.child_modules_placed.reserve(state.children().size());
         for (const auto& c : state.children()) {
             part_asset::ChildInstance ci;
             ci.child_resolved_hash = c.hash;
             std::memcpy(ci.transform, c.transform, sizeof ci.transform);
             kids.push_back(ci);
+            // W5: parallel module-name carry (see BakeResult::child_modules_placed).
+            r.child_modules_placed.push_back(c.module);
         }
         // Build the write path: if opts.parts_dir is non-empty, make it absolute
         // by joining parts_dir + "/" + cache_path_resolved(...).  Otherwise fall

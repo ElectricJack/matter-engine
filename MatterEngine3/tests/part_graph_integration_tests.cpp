@@ -391,6 +391,122 @@ static void test_lod_variant_sidecar() {
     printf("  test_lod_variant_sidecar OK\n");
 }
 
+// W5 (Part Workbench, static lods) end-to-end: a schema exporting
+// `static lods = [ {}, { params:{...} }, { exclude:[...] } ]` installed
+// through the REAL FileModuleResolver + HostBaker + PartGraph::install
+// (exercising HostBaker::bake_static_lods exactly as matter_engine.cpp's
+// install pipeline calls it). Asserts:
+//   - parts/<root_hash>.static_lods sidecar has 3 levels
+//   - level 0 (no params/exclude) points at the root hash itself
+//   - level 1 (params) points at a DISTINCT, on-disk .part
+//   - level 2 (exclude) keeps the root hash but sets a non-zero exclude mask,
+//     and the root .part's LMSK trailer reflects it (child excluded at level 2
+//     only)
+// A second install (fully cached) leaves the sidecar and .part untouched.
+static void test_static_lods_end_to_end() {
+    namespace pg = part_graph;
+
+    const std::string root = "/tmp/me3_static_lods_e2e";
+    system(("rm -rf " + root).c_str());
+    const std::string schemas = root + "/schemas";
+    system(("mkdir -p " + schemas + " " + root + "/parts").c_str());
+
+    // Leaf: a childless part placed by Tree so `exclude` has something to drop.
+    write_file(schemas + "/Leaf.js",
+        "class Leaf extends Part {\n"
+        "  build(p) { this.beginVoxels(0.1); this.fill(1);\n"
+        "             this.sphere([0,0,0], 0.1); this.endVoxels(); }\n"
+        "}\n");
+
+    // Tree: opts into static lods. LOD1 regenerates with a different `n`
+    // (params-driven fresh build); LOD2 excludes Leaf. The seeding rule is
+    // exercised indirectly here (both levels bake successfully; the dedicated
+    // unit test in script_host_tests.cpp asserts the rng-stream identity
+    // directly at the ScriptHost layer).
+    write_file(schemas + "/Tree.js",
+        "class Tree extends Part {\n"
+        "  static params = { seed: 3, n: 2 };\n"
+        "  static requires(p) { return [ { module: 'Leaf', params: {} } ]; }\n"
+        "  static lods = [\n"
+        "    {},\n"
+        "    { params: { n: 1 } },\n"
+        "    { exclude: ['Leaf'] }\n"
+        "  ];\n"
+        "  build(p) {\n"
+        "    this.beginVoxels(0.1); this.fill(1);\n"
+        "    this.box([0,0,0],[0.2,0.2,0.2]); this.endVoxels();\n"
+        "    this.placeChild('Leaf');\n"
+        "  }\n"
+        "}\n");
+
+    char prevcwd[4096]; if (!getcwd(prevcwd, sizeof prevcwd)) prevcwd[0] = '\0';
+    CHECK(chdir(root.c_str()) == 0, "static_lods_e2e: chdir into sandbox");
+
+    script_host::ScriptHost host;
+    pg::FileModuleResolver resolver(host, "schemas");
+    pg::HostBaker baker(host, ".");
+    pg::PartGraph graph(resolver, baker);
+
+    pg::InstallResult ir = graph.install({ pg::ChildRequest{"Tree", pg::Params{}} });
+    CHECK(ir.ok, "static_lods_e2e: install ok");
+    if (!ir.ok) printf("  install error: %s\n", ir.error.c_str());
+    CHECK(ir.root_hashes.size() == 1, "static_lods_e2e: one root hash");
+
+    if (ir.ok && ir.root_hashes.size() == 1) {
+        const uint64_t root_hash = ir.root_hashes[0];
+        const std::string sidecar_path =
+            std::string(".") + "/" + part_asset::cache_path_static_lods(root_hash);
+
+        part_asset::StaticLodPlan plan;
+        CHECK(part_asset::load_static_lod_plan(sidecar_path, plan),
+              "static_lods_e2e: sidecar loads");
+        CHECK(plan.level_hashes.size() == 3, "static_lods_e2e: 3 authored levels");
+        if (plan.level_hashes.size() == 3) {
+            CHECK(plan.level_hashes[0] == root_hash,
+                  "static_lods_e2e: level 0 (no params/exclude) == root hash");
+            CHECK(plan.level_hashes[1] != root_hash,
+                  "static_lods_e2e: level 1 (params) is a distinct rebuild");
+            std::ifstream in(part_asset::cache_path_resolved(plan.level_hashes[1]),
+                             std::ios::binary);
+            CHECK(in.good(), "static_lods_e2e: level 1's .part exists on disk");
+            CHECK(plan.level_exclude_masks[1] == 0,
+                  "static_lods_e2e: level 1 excludes nothing");
+            CHECK(plan.level_hashes[2] == root_hash,
+                  "static_lods_e2e: level 2 (exclude only) reuses root hash (decimated)");
+            CHECK(plan.level_exclude_masks[2] != 0,
+                  "static_lods_e2e: level 2 has a non-zero exclude mask");
+        }
+
+        // The root .part's LMSK trailer: the single child (Leaf) must be
+        // ABSENT at level 2 and PRESENT at levels 0/1.
+        BLASManager blas; TLASManager tlas(64);
+        std::vector<part_asset::ChildInstance> kids;
+        part_asset::LodLevels lods_out;
+        std::vector<part_asset::VolumeEmitter> emitters;
+        std::vector<uint32_t> mask;
+        const std::string part_path = part_asset::cache_path_resolved(root_hash);
+        CHECK(part_asset::load_v2(part_path, root_hash, blas, tlas, kids, lods_out,
+                                  emitters, mask),
+              "static_lods_e2e: root .part reloads with LMSK-aware load_v2");
+        CHECK(kids.size() == 1, "static_lods_e2e: one Leaf placement");
+        CHECK(mask.size() == 1, "static_lods_e2e: LMSK trailer present (one child)");
+        if (mask.size() == 1) {
+            CHECK((mask[0] & (1u << 0)) != 0, "static_lods_e2e: Leaf present at level 0");
+            CHECK((mask[0] & (1u << 1)) != 0, "static_lods_e2e: Leaf present at level 1");
+            CHECK((mask[0] & (1u << 2)) == 0, "static_lods_e2e: Leaf ABSENT at level 2 (excluded)");
+        }
+
+        // Re-install: everything cached, sidecar untouched, nothing re-baked.
+        pg::InstallResult ir2 = graph.install({ pg::ChildRequest{"Tree", pg::Params{}} });
+        CHECK(ir2.ok, "static_lods_e2e: second install ok");
+        CHECK(ir2.baked.empty(), "static_lods_e2e: second install bakes nothing");
+    }
+
+    if (prevcwd[0]) (void)chdir(prevcwd);
+    system(("rm -rf " + root).c_str());
+    printf("  test_static_lods_end_to_end OK\n");
+}
+
 static void test_stale_material_cache_migrates() {
     using namespace part_graph;
     namespace fs = std::filesystem;
@@ -615,6 +731,12 @@ int main(int argc, char** argv) {
     // below assume a POSIX /tmp + shell.
     test_install_trace_shape();
     if (argc == 2 && std::strcmp(argv[1], "--trace-shape-only") == 0)
+        return g_failures == 0 ? 0 : 1;
+
+    // W5: static lods end-to-end, selectable in isolation like the two above
+    // (also POSIX /tmp-only, runs before the sandboxed tests below).
+    test_static_lods_end_to_end();
+    if (argc == 2 && std::strcmp(argv[1], "--static-lods-only") == 0)
         return g_failures == 0 ? 0 : 1;
 
     // Resolve the demo schemas + shared-lib to ABSOLUTE paths NOW, before any test

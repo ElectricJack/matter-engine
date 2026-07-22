@@ -88,6 +88,20 @@ struct Baker {
         return true;
     }
 
+    // W5 (Part Workbench, static lods): optional, mirrors bake_lod_variants
+    // (called for every node after its bake/cache-hit; default no-op keeps
+    // logic-test fakes untouched). See HostBaker::bake_static_lods for the
+    // real implementation's contract.
+    virtual bool bake_static_lods(const std::string& source, const Params& params,
+                                  const std::vector<uint64_t>& child_hashes,
+                                  const std::vector<std::string>& child_modules,
+                                  const std::vector<std::string>& child_params,
+                                  uint64_t resolved_hash) {
+        (void)source; (void)params; (void)child_hashes;
+        (void)child_modules; (void)child_params; (void)resolved_hash;
+        return true;
+    }
+
     // Task 2 optional seam: notify baker of the module name about to be baked.
     // Default no-op; HostBaker overrides to route transient modules to scratch.
     virtual void set_baking_module(const std::string& /*module*/) {}
@@ -220,6 +234,40 @@ public:
                            const std::vector<uint64_t>& child_hashes,
                            uint64_t resolved_hash) override;
 
+    // W5 (Part Workbench, static lods): for schemas exporting `static lods`,
+    // (a) computes a per-authored-level exclude mask from `exclude` module
+    // names (matched against the child-table order the immediately-preceding
+    // bake() call placed — see the CALLING CONVENTION note below) and folds it
+    // into the base .part's ChildInstance table as an LMSK trailer (only when
+    // at least one level actually excludes something — an unauthored/no-op
+    // `static lods` never touches the .part bytes); (b) for each level with
+    // `params`, bakes a fresh, independent artifact with base-then-level-
+    // merged params, seeding from the BASE (LOD0) merged params per the
+    // seeding rule so the level draws the same rng stream and stays the same
+    // tree; and (c) records the per-level {geometry hash, exclude mask} plan
+    // in a `cache_path_static_lods` sidecar. `params`-driven levels on a part
+    // with children are unsupported (mirrors bake_lod_variants's existing
+    // children restriction) and fall back to decimation; `exclude` still
+    // applies. Declared on Baker (default no-op, like bake_lod_variants) so
+    // PartGraph::install can call it uniformly; only HostBaker overrides it.
+    //
+    // Safe to call on EITHER a fresh bake or a cache hit (mirrors
+    // bake_lod_variants's calling convention — no ordering requirement on the
+    // caller): when the immediately-preceding bake() call on this HostBaker
+    // was for this SAME resolved_hash, its cached child-table/merged-params
+    // state is reused at zero extra cost; otherwise (a cache hit whose sidecar
+    // is missing/stale — e.g. `static lods` was just added to an already-
+    // cached part) this performs one extra content-addressed, idempotent
+    // bake_source call to recover the same data (reproduces the exact bytes
+    // already on disk; not free, but correct). child_modules/child_params
+    // mirror bake()'s own signature so that recovery bake can place children
+    // exactly like the original bake did.
+    bool bake_static_lods(const std::string& source, const Params& params,
+                          const std::vector<uint64_t>& child_hashes,
+                          const std::vector<std::string>& child_modules,
+                          const std::vector<std::string>& child_params,
+                          uint64_t resolved_hash) override;
+
     // Task 2: configure transient-module routing.
     // modules points to a set of module names (e.g., {"Terrain"}); bakes of
     // these modules write artifacts under scratch_dir instead of parts_dir_.
@@ -261,6 +309,13 @@ private:
     dsl::WorldBinding world_;
     // W3: optional per-rung bake observer (see set_bake_observer above).
     BakeObserver* observer_ = nullptr;
+    // W5: module name per child-table entry from the most recent successful
+    // bake() call, in state.children() order, plus the resolved_hash it
+    // belongs to — read by bake_static_lods's fast path (see its doc comment).
+    // last_baked_hash_ guards against a stale cross-part read: bake_static_lods
+    // only trusts these when last_baked_hash_ == the part it's asked about.
+    std::vector<std::string> last_child_modules_placed_;
+    uint64_t last_baked_hash_ = 0;
 };
 
 } // namespace part_graph

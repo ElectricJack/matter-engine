@@ -274,6 +274,12 @@ public:
         float transform[16];
         bool instanced = false;
         float inline_below_px = 0.0f;
+        // W5 (Part Workbench, static lods): the module name this placement came
+        // from, so a caller building a per-level `exclude` mask after bake_source
+        // can match placements by module name without re-deriving it. NOT
+        // serialized into ChildInstance (part_asset_v2's on-disk record stays
+        // module-name-free, unchanged layout) — purely an in-memory carry.
+        std::string module;
     };
 
     // Host installs the declared children's placement table before build();

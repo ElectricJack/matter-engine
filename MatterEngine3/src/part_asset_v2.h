@@ -82,6 +82,29 @@ struct LodVariants {
 // False if the file is missing or unparseable (callers fall back to QEM).
 bool load_lod_sidecar(const std::string& path, LodVariants& out);
 
+// Sidecar recording a part's authored `static lods` bake plan (W5, Part
+// Workbench): "parts/<16-hex>.static_lods". Written by
+// HostBaker::bake_static_lods for schemas exporting `static lods`; one line
+// per authored level, in level order:
+//   <geometry-hash-hex> <exclude-mask-hex>
+// geometry-hash: the resolved hash of the .part to use for this level's OWN
+// geometry — equals the root/LOD0 hash for a decimation level (no `params`),
+// or a distinct hash for a level with a fresh `params`-driven build.
+// exclude-mask: bitmask over child-table positions (bit k = child k is
+// DROPPED at this level), 0 when the level has no `exclude`. Content-
+// addressed alongside the .part: any source/param change changes the root
+// hash and orphans the stale sidecar, same discipline as cache_path_lods.
+std::string cache_path_static_lods(uint64_t resolved_hash);
+
+struct StaticLodPlan {
+    std::vector<uint64_t> level_hashes;        // geometry hash per authored level
+    std::vector<uint32_t> level_exclude_masks; // parallel; bit k = child k dropped
+};
+bool save_static_lod_plan(const std::string& path, const StaticLodPlan& plan);
+// False if the file is missing or unparseable (callers fall back to treating
+// the part as if it had no `static lods`).
+bool load_static_lod_plan(const std::string& path, StaticLodPlan& out);
+
 // Cache key for the flatten-hints sidecar of a part: "parts/<16-hex>.hints".
 // Stores which children are LOD-instanced and at what pixel threshold.
 std::string cache_path_hints(uint64_t resolved_hash);
@@ -126,6 +149,25 @@ bool save_v2(const std::string& path, const BLASManager& blas,
              const std::vector<VolumeEmitter>& emitters,
              uint64_t resolved_hash);
 
+// W5 (Part Workbench, static lods) — per-level child presence. Extends the v2
+// body with an OPTIONAL tagged "LMSK" trailer (same additive-trailer pattern
+// as the EMIT block above, appended after it): one uint32 bitmask per child,
+// parallel to the children table, bit k set means the child at that table
+// position is present at authored LOD level k. THE COMPAT GUARANTEE: the
+// trailer is written ONLY when child_level_mask is non-empty, so every
+// existing call site (the two overloads above, and any part baked without
+// `static lods`) writes ZERO extra bytes — byte-for-byte identical output to
+// before this overload existed. child_level_mask must be either empty (no
+// trailer; "present at all levels" for every child, today's behavior) or
+// exactly child_count entries long; a size mismatch fails the save.
+bool save_v2(const std::string& path, const BLASManager& blas,
+             const TLASManager& tlas,
+             const ChildInstance* children, size_t child_count,
+             const LodLevels& lods,
+             const std::vector<VolumeEmitter>& emitters,
+             const std::vector<uint32_t>& child_level_mask,
+             uint64_t resolved_hash);
+
 // Atomically publish source_path at target_path, replacing an existing target
 // without deleting it first. Failure leaves the previous target intact.
 bool replace_file_atomic(const std::string& source_path,
@@ -151,6 +193,19 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
              std::vector<ChildInstance>& children_out,
              LodLevels& lods_out,
              std::vector<VolumeEmitter>& emitters_out,
+             PartAssetLoadFailure* failure = nullptr,
+             std::string* reason = nullptr);
+
+// W5: overload that also reads the optional LMSK per-level child-presence
+// trailer (see save_v2 above). child_level_mask_out is left EMPTY when the
+// trailer is absent (the compat default: every child present at all levels) —
+// callers must treat empty as "no restriction", not "no children visible".
+bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
+             BLASManager& blas, TLASManager& tlas,
+             std::vector<ChildInstance>& children_out,
+             LodLevels& lods_out,
+             std::vector<VolumeEmitter>& emitters_out,
+             std::vector<uint32_t>& child_level_mask_out,
              PartAssetLoadFailure* failure = nullptr,
              std::string* reason = nullptr);
 

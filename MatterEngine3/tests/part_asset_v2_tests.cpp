@@ -720,6 +720,122 @@ static void test_flatten_hints_round_trip() {
           "hints cleared (all-or-nothing) on malformed file");
 }
 
+// W5 (Part Workbench, static lods) — THE CRITICAL FORMAT-COMPAT GATE: the new
+// save_v2 overload that can append an LMSK per-level-child-presence trailer
+// must write BYTE-IDENTICAL output to the pre-W5 save_v2 overloads when the
+// caller passes an empty child_level_mask (every pre-W5 call site, and every
+// part without `static lods`). Proven directly by comparing raw file bytes
+// from both overloads, not just "loads back the same" — the strongest form
+// of the compat guarantee the milestone spec demands.
+static void test_lmsk_absent_is_byte_identical() {
+    using namespace part_asset;
+    BLASManager blasA; TLASManager tlasA(64);
+    BLASHandle hA, hB; build_scene(blasA, tlasA, hA, hB);
+    auto kids = sample_children();
+    auto lods = sample_lods();
+    std::vector<VolumeEmitter> emitters;  // empty: also exercises the EMIT-absent path
+
+    const char* path_old = "test_v2_lmsk_old.part";
+    const char* path_new = "test_v2_lmsk_new.part";
+    remove(path_old); remove(path_new);
+
+    CHECK(save_v2(path_old, blasA, tlasA, kids.data(), kids.size(), lods,
+                  emitters, 0x7777u),
+          "pre-W5 emitters-overload save ok");
+    CHECK(save_v2(path_new, blasA, tlasA, kids.data(), kids.size(), lods,
+                  emitters, std::vector<uint32_t>{}, 0x7777u),
+          "W5 overload save ok with empty mask");
+
+    std::vector<uint8_t> bytes_old = read_file(path_old);
+    std::vector<uint8_t> bytes_new = read_file(path_new);
+    CHECK(!bytes_old.empty() && bytes_old.size() == bytes_new.size() &&
+          memcmp(bytes_old.data(), bytes_new.data(), bytes_old.size()) == 0,
+          "LMSK-capable overload with empty mask == byte-identical to pre-W5 output");
+
+    remove(path_old); remove(path_new);
+}
+
+// W5: a non-empty child_level_mask round-trips through the LMSK trailer, and
+// load_v2 without the mask-reading overload still loads the SAME children/
+// lods/emitters (the trailer is inert to old callers, an EOF-tolerant probe).
+static void test_lmsk_round_trip() {
+    using namespace part_asset;
+    BLASManager blasA; TLASManager tlasA(64);
+    BLASHandle hA, hB; build_scene(blasA, tlasA, hA, hB);
+    auto kids = sample_children();
+    auto lods = sample_lods();
+    std::vector<VolumeEmitter> emitters;
+
+    // child 0 present at levels {0,2}; child 1 present at all levels (bit
+    // pattern 0xFFFFFFFF, still explicit here to prove non-default masks
+    // round-trip too, not just the "excluded somewhere" case).
+    std::vector<uint32_t> mask = { 0b101u, 0xFFFFFFFFu };
+
+    const char* path = "test_v2_lmsk_round.part";
+    remove(path);
+    CHECK(save_v2(path, blasA, tlasA, kids.data(), kids.size(), lods,
+                  emitters, mask, 0x8888u),
+          "LMSK save ok");
+
+    BLASManager blasB; TLASManager tlasB(64);
+    std::vector<ChildInstance> kidsOut; LodLevels lodsOut;
+    std::vector<VolumeEmitter> emittersOut; std::vector<uint32_t> maskOut;
+    CHECK(load_v2(path, 0x8888u, blasB, tlasB, kidsOut, lodsOut, emittersOut, maskOut),
+          "LMSK-aware load_v2 ok");
+    CHECK(kidsOut.size() == 2, "children still round-trip");
+    CHECK(maskOut.size() == 2, "mask round-trips parallel to children");
+    if (maskOut.size() == 2) {
+        CHECK(maskOut[0] == 0b101u, "child 0 mask preserved");
+        CHECK(maskOut[1] == 0xFFFFFFFFu, "child 1 mask preserved");
+    }
+
+    // An OLD caller (the emitters-only overload, no mask out-param) still
+    // loads the same children/lods -- the trailer is inert to it.
+    BLASManager blasC; TLASManager tlasC(64);
+    std::vector<ChildInstance> kidsC; LodLevels lodsC; std::vector<VolumeEmitter> emC;
+    CHECK(load_v2(path, 0x8888u, blasC, tlasC, kidsC, lodsC, emC),
+          "pre-W5 load_v2 overload still loads an LMSK-trailer file");
+    CHECK(kidsC.size() == 2, "pre-W5 overload sees the same children");
+
+    remove(path);
+}
+
+// W5: cache_path_static_lods / save_static_lod_plan / load_static_lod_plan
+// sidecar round-trip (parallel to the existing lodBudgets sidecar test
+// pattern), including the malformed-file all-or-nothing guard.
+static void test_static_lod_plan_sidecar() {
+    using namespace part_asset;
+    make_test_dir(kCacheRoot);
+    make_test_dir((std::string(kCacheRoot) + "/parts").c_str());
+
+    const uint64_t h = 0x1234000056780000ull;
+    CHECK(cache_path_static_lods(h) == "parts/1234000056780000.static_lods",
+          "cache_path_static_lods filename");
+
+    std::string p = std::string(kCacheRoot) + "/" + cache_path_static_lods(h);
+    StaticLodPlan plan;
+    plan.level_hashes        = { h, 0xAAAAAAAAAAAAAAAAull, h, h };
+    plan.level_exclude_masks = { 0u, 0u, 0b11u, 0b1u };
+    CHECK(save_static_lod_plan(p, plan), "save_static_lod_plan ok");
+
+    StaticLodPlan loaded;
+    CHECK(load_static_lod_plan(p, loaded), "load_static_lod_plan ok");
+    CHECK(loaded.level_hashes == plan.level_hashes, "level hashes preserved");
+    CHECK(loaded.level_exclude_masks == plan.level_exclude_masks,
+          "level exclude masks preserved");
+
+    // Size mismatch is rejected outright (never silently truncated/padded).
+    StaticLodPlan bad;
+    bad.level_hashes = { h };
+    bad.level_exclude_masks = { 0u, 1u };
+    CHECK(!save_static_lod_plan(p + ".bad", bad),
+          "save_static_lod_plan rejects mismatched array sizes");
+
+    StaticLodPlan missing;
+    CHECK(!load_static_lod_plan(p + ".nope", missing),
+          "load_static_lod_plan returns false for a missing file");
+}
+
 int main() {
     test_atomic_replace_preserves_target_on_failure();
     test_cache_path_resolved();
@@ -734,6 +850,9 @@ int main() {
     test_header_probe();
     test_new_materials();
     test_flatten_hints_round_trip();
+    test_lmsk_absent_is_byte_identical();
+    test_lmsk_round_trip();
+    test_static_lod_plan_sidecar();
     if (g_failures == 0) printf("All part_asset_v2 tests passed\n");
     return g_failures == 0 ? 0 : 1;
 }

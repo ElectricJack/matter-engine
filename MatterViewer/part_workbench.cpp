@@ -636,6 +636,11 @@ void PartWorkbench::open_part(const std::string& source_project_dir, const std::
     refresh_default_params();
     current_params_json_ = default_params_json_;
     write_iso_world_file(current_params_json_);
+    // W5: reseed the per-LOD authoring model from THIS part's source and drop
+    // the "wrote a .bak this session" flag so a new open_part() always backs
+    // up before its first write, even if a previous session already had one.
+    seed_lod_authoring();
+    lod_wrote_bak_this_session_ = false;
 
     matter::EngineDesc edesc;
     const std::string cache_root_hint = iso_cache_root();  // informational; see header note
@@ -846,6 +851,10 @@ void PartWorkbench::draw(const std::vector<WorldEntry>& worlds) {
             session_->instance_info(0, info) ? info.part_hash : 0;
         lod_inspector_.draw(session_.get(), part_hash);
     }
+
+    // W5: per-LOD authoring (part-workbench.md SS-I.5/W5).
+    ImGui::Spacing();
+    draw_lod_authoring_panel();
 }
 
 void PartWorkbench::draw_open_picker(const std::vector<WorldEntry>& worlds) {
@@ -1004,6 +1013,233 @@ void PartWorkbench::draw_pins_panel() {
             ImGui::PopID();
         }
         ImGui::EndTable();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// W5: per-LOD authoring (part-workbench.md SS-I.5, W5 sub-steps 3-4)
+// ---------------------------------------------------------------------------
+
+void PartWorkbench::seed_lod_authoring() {
+    lod_authoring_.clear();
+    if (!host_ || part_source_.empty()) return;
+    // eval_lods is fail-closed (schema-invalid or absent `static lods` both
+    // yield empty), so an empty result here just means "no authored levels
+    // yet" -- the panel starts blank and "+ Add level" builds one from
+    // scratch, same as any other part.
+    auto lods = host_->host.eval_lods(part_source_);
+    lod_authoring_.reserve(lods.size());
+    for (auto& L : lods) {
+        LodAuthLevelUI ui;
+        ui.has_params = L.has_params;
+        ui.params_text = L.params_json;
+        ui.exclude = std::move(L.exclude);
+        lod_authoring_.push_back(std::move(ui));
+    }
+}
+
+std::string PartWorkbench::render_lods_block() const {
+    std::ostringstream out;
+    out << "  // <part-workbench> \xE2\x80\x94 authored in the LOD inspector; safe to hand-edit.\n";
+    out << "  static lods = [\n";
+    for (size_t i = 0; i < lod_authoring_.size(); ++i) {
+        const LodAuthLevelUI& L = lod_authoring_[i];
+        out << "    { ";
+        bool wrote = false;
+        if (L.has_params) {
+            out << "params: " << (L.params_text.empty() ? "{}" : L.params_text);
+            wrote = true;
+        }
+        if (!L.exclude.empty()) {
+            if (wrote) out << ", ";
+            out << "exclude: [";
+            for (size_t k = 0; k < L.exclude.size(); ++k) {
+                if (k) out << ", ";
+                out << "\"" << L.exclude[k] << "\"";
+            }
+            out << "]";
+            wrote = true;
+        }
+        out << " },";
+        // Human-readable comment (part-workbench.md I.5: "annotating levels
+        // with plain-language comments").
+        out << "  // LOD" << i << ": ";
+        if (L.has_params && !L.exclude.empty())
+            out << "regenerated, excludes " << L.exclude.size() << " module(s)";
+        else if (L.has_params)
+            out << "regenerated with param overrides";
+        else if (!L.exclude.empty())
+            out << "decimated, excludes " << L.exclude.size() << " module(s)";
+        else
+            out << "decimated from LOD0 (default)";
+        out << "\n";
+    }
+    out << "  ];\n";
+    out << "  // </part-workbench>\n";
+    return out.str();
+}
+
+bool PartWorkbench::write_lods_to_source(std::string& err) {
+    if (part_source_.empty()) { err = "no part source loaded"; return false; }
+    const std::string block = render_lods_block();
+    const std::string begin_marker = "// <part-workbench>";
+    const std::string end_marker = "// </part-workbench>";
+
+    std::string new_source;
+    const size_t b = part_source_.find(begin_marker);
+    const size_t e = (b == std::string::npos) ? std::string::npos
+                                              : part_source_.find(end_marker, b);
+    if (b != std::string::npos && e != std::string::npos) {
+        // Replace exactly the marker-delimited block (whole lines), never
+        // touching anything outside it (part-workbench.md I.7 risk mitigation).
+        size_t line_start = part_source_.rfind('\n', b);
+        line_start = (line_start == std::string::npos) ? 0 : line_start + 1;
+        size_t line_end = part_source_.find('\n', e);
+        line_end = (line_end == std::string::npos) ? part_source_.size() : line_end + 1;
+        new_source = part_source_.substr(0, line_start) + block + part_source_.substr(line_end);
+    } else {
+        // No existing block: insert after `static params` (spec: "insert
+        // after static params when absent"). Falls back to right after the
+        // class's opening brace when the part declares no static params at
+        // all. Naive semicolon/brace scan matches this codebase's authored
+        // style (`static params = {...};` on its own statement).
+        size_t insert_at;
+        const size_t p = part_source_.find("static params");
+        if (p != std::string::npos) {
+            const size_t semi = part_source_.find(';', p);
+            insert_at = (semi == std::string::npos) ? part_source_.size() : semi + 1;
+        } else {
+            const size_t cls = part_source_.find("class ");
+            const size_t brace =
+                (cls == std::string::npos) ? std::string::npos : part_source_.find('{', cls);
+            insert_at = (brace == std::string::npos) ? 0 : brace + 1;
+        }
+        const size_t nl = part_source_.find('\n', insert_at);
+        insert_at = (nl == std::string::npos) ? insert_at : nl + 1;
+        new_source = part_source_.substr(0, insert_at) + block + part_source_.substr(insert_at);
+    }
+
+    // Parse-verify BEFORE touching the file (part-workbench.md I.7): the new
+    // block must round-trip through eval_lods at the SAME level count, and
+    // the class must still resolve (a syntax error anywhere in the file, not
+    // just the injected block, must be caught here). A fresh ScriptHost
+    // avoids disturbing host_'s cached merged-params/hash state.
+    script_host::ScriptHost verify_host;
+    verify_host.set_shared_lib_roots(host_ ? host_->host.shared_lib_roots()
+                                           : std::vector<std::string>{});
+    if (verify_host.eval_lods(new_source).size() != lod_authoring_.size()) {
+        err = "parse-verify failed: the edited static lods block did not "
+              "round-trip through eval_lods (check for a JS syntax error)";
+        return false;
+    }
+    if (verify_host.resolve_hash(new_source, "{}") == 0) {
+        err = "parse-verify failed: the part no longer resolves after the edit";
+        return false;
+    }
+
+    const std::string source_path =
+        (fs::path(source_project_dir_) / "objects" / (module_ + ".js")).string();
+
+    // .bak on the FIRST write of this open_part() session only, so it always
+    // holds the file as it was before ANY workbench edit this session.
+    if (!lod_wrote_bak_this_session_) {
+        write_file(source_path + ".bak", part_source_);
+        lod_wrote_bak_this_session_ = true;
+    }
+
+    const std::string previous_bytes = part_source_;
+    if (!write_file(source_path, new_source)) {
+        err = "failed to write " + source_path;
+        return false;
+    }
+
+    // Restore-on-failure: re-read what actually landed on disk and re-verify
+    // through the same two checks. Catches a partial/corrupt write that the
+    // in-memory pre-check above cannot see.
+    bool read_ok = false;
+    const std::string reread = read_file(source_path, read_ok);
+    if (!read_ok || verify_host.eval_lods(reread).size() != lod_authoring_.size() ||
+        verify_host.resolve_hash(reread, "{}") == 0) {
+        write_file(source_path, previous_bytes);
+        err = "post-write verification failed on the file just written; restored the previous source";
+        return false;
+    }
+
+    part_source_ = new_source;
+    return true;
+}
+
+void PartWorkbench::draw_lod_authoring_panel() {
+    ImGui::SeparatorText("Per-LOD Authoring (static lods)");
+    ImGui::TextWrapped(
+        "Edits an in-memory model, not the file (part-workbench.md W5). Click "
+        "\"Save lods to source\" to write it into %s.js (marker-delimited, "
+        "parse-verified, restores the file on failure, .bak on the first save "
+        "this session) -- then Bake to see the authored ladder applied.",
+        module_.c_str());
+
+    matter::InstanceInfo info;
+    const uint64_t part_hash = session_->instance_info(0, info) ? info.part_hash : 0;
+    std::vector<std::string> modules;
+    if (part_hash) {
+        const uint32_t cc = session_->part_child_summary_count(part_hash);
+        for (uint32_t i = 0; i < cc; ++i) {
+            matter::PartChildSummary cs{};
+            if (session_->part_child_summary(part_hash, i, cs) && cs.module_name && *cs.module_name)
+                modules.push_back(cs.module_name);
+        }
+    }
+
+    if (ImGui::Button("+ Add level")) lod_authoring_.push_back(LodAuthLevelUI{});
+    ImGui::SameLine();
+    ImGui::BeginDisabled(lod_authoring_.empty());
+    if (ImGui::Button("- Remove last level")) lod_authoring_.pop_back();
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Save lods to source")) {
+        std::string err;
+        if (write_lods_to_source(err))
+            status_line_ = "static lods saved to " + module_ + ".js \xE2\x80\x94 Bake to apply";
+        else
+            status_line_ = "save failed: " + err;
+    }
+
+    if (lod_authoring_.empty()) {
+        ImGui::TextDisabled("No authored levels -- this part bakes with today's default decimation ladder.");
+        return;
+    }
+
+    for (size_t i = 0; i < lod_authoring_.size(); ++i) {
+        LodAuthLevelUI& L = lod_authoring_[i];
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::Text("LOD %zu", i);
+        ImGui::SameLine();
+        ImGui::Checkbox("params override", &L.has_params);
+        if (L.has_params) {
+            char buf[512];
+            std::snprintf(buf, sizeof(buf), "%s", L.params_text.c_str());
+            ImGui::SetNextItemWidth(340);
+            ImGui::SameLine();
+            if (ImGui::InputText("##params_json", buf, sizeof(buf))) L.params_text = buf;
+        }
+        if (!modules.empty()) {
+            ImGui::TextDisabled("Included children:");
+            for (const std::string& m : modules) {
+                ImGui::SameLine();
+                bool included =
+                    std::find(L.exclude.begin(), L.exclude.end(), m) == L.exclude.end();
+                if (ImGui::Checkbox(m.c_str(), &included)) {
+                    if (included) {
+                        L.exclude.erase(std::remove(L.exclude.begin(), L.exclude.end(), m),
+                                        L.exclude.end());
+                    } else if (std::find(L.exclude.begin(), L.exclude.end(), m) == L.exclude.end()) {
+                        L.exclude.push_back(m);
+                    }
+                }
+            }
+        }
+        ImGui::PopID();
+        ImGui::Separator();
     }
 }
 
