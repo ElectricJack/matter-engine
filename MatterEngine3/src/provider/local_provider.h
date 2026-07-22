@@ -91,6 +91,12 @@ struct LocalProviderConfig {
     // Null in production (kernel-internal test seam; not part of the public stable API).
     std::function<void(int part_index)> test_fault_hook;
 
+    // W3 (Part Workbench, Lab-only): optional per-rung bake observer, applied
+    // to the HostBaker on every (re)construction so isolation-session bakes
+    // get live LOD0/rung callbacks. Null in production (kernel-internal Lab
+    // seam; see matter/bake_observer.h for the thread contract).
+    BakeObserver* bake_observer = nullptr;
+
     // Phase C Task 7: optional root-params override JSON object, e.g. {"worldSeed": 2}.
     // When non-empty, merged (overrides win) into every manifest root's params before
     // merge_params_canonical, so the resolved hash changes with the seed value.

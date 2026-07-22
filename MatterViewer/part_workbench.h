@@ -32,6 +32,7 @@ namespace viewer {
 
 struct WorldEntry;  // ui.h
 struct PartWorkbenchScriptHostHolder;  // part_workbench.cpp; owns script_host::ScriptHost
+struct WorkbenchBakeObserver;  // part_workbench.cpp; W3 per-rung bake observer (implements ::BakeObserver)
 
 // One pinned parameter set for a part, persisted in the workbench manifest.
 struct WorkbenchPin {
@@ -155,6 +156,16 @@ private:
     char open_module_buf_[128] = {0};
     int open_project_index_ = 0;
     std::string status_line_;
+
+    // W3: per-rung live bake watch. bake_observer_ is set on session_ right
+    // after it's created (open_part) and reset at the start of every bake
+    // (open_part/apply_params) so stale rungs from a prior bake never leak
+    // into a new one's status line. tick() drains it into status_line_ each
+    // frame while a bake is in flight. See part_workbench.cpp for the
+    // WorkbenchBakeObserver definition and matter/bake_observer.h for the
+    // thread-safety contract this drains under (worker/GL thread writers,
+    // main-thread reader via a mutex).
+    std::unique_ptr<WorkbenchBakeObserver> bake_observer_;
 };
 
 }  // namespace viewer

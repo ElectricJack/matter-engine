@@ -1,5 +1,6 @@
 #pragma once
 #include "part_graph_snapshot.h"
+#include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
 #include <cstdint>
 #include <map>
 #include <set>
@@ -238,6 +239,12 @@ public:
     // BakeOptions constructed by bake().
     void set_world(const dsl::WorldBinding& w) { world_ = w; }
 
+    // W3 (Part Workbench, Lab-only): optional per-rung bake observer, threaded
+    // into every BakeOptions constructed by bake() (same pattern as
+    // set_world). Null (default) means bake_source's observer hooks are
+    // skipped — production installs never call this setter.
+    void set_bake_observer(BakeObserver* observer) { observer_ = observer; }
+
 private:
     script_host::ScriptHost& host_;
     std::string              parts_dir_;
@@ -252,6 +259,8 @@ private:
 
     // Task 5: world field binding
     dsl::WorldBinding world_;
+    // W3: optional per-rung bake observer (see set_bake_observer above).
+    BakeObserver* observer_ = nullptr;
 };
 
 } // namespace part_graph

@@ -8,6 +8,7 @@
 #include "tileset_spec.h"
 #include "module_resolver.h"
 #include "script/world_definition_loader.h"
+#include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
 
 namespace script_host {
 
@@ -28,6 +29,11 @@ struct BakeOptions {
     // World field binding: threaded through so the terrainVolume verb can call
     // terrain_mesher::mesh_sector. Null field = unbound (terrainVolume fails loudly).
     dsl::WorldBinding world;
+    // W3 (Part Workbench, Lab-only): optional per-rung bake observer. Null
+    // (the default, and the only value production bakes ever set) means
+    // bake_source's observer hooks are skipped entirely — byte-identical to
+    // the pre-W3 code path. See matter/bake_observer.h for the thread contract.
+    BakeObserver* observer = nullptr;
 };
 
 struct BakeResult {

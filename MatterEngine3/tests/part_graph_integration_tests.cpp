@@ -15,6 +15,7 @@
 #include "part_asset_v2.h"     // cache_path_resolved
 #include "bake_trace.h"        // Bake Lab §II.6: install-path trace shape
 #include "bake_trace_names.h"
+#include "matter/bake_observer.h"  // Bake Lab W3: per-rung bake observer seam
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -520,6 +521,87 @@ static void test_install_trace_shape() {
     fs::remove_all(root, ec);
 }
 
+// Bake Lab W3: BakeObserver::on_mesh_ready must fire exactly once, with a
+// plausible (>0) triangle count, when a real part with actual geometry bakes
+// through the REAL HostBaker/ScriptHost path (PartGraph::install ->
+// HostBaker::bake -> ScriptHost::bake_source). The ladder-rung hook
+// (on_rung_ready) is exercised separately in part_flatten_tests.cpp against
+// lod_bake::bake_lods() directly -- bake_source itself only produces the
+// full-resolution mesh; the LOD ladder is built later (PartStore's load-time
+// re-bake), a different subsystem this suite doesn't drive. A NULL observer
+// (every other test in this file) must remain completely unaffected -- that
+// byte-identity guarantee is what the rest of this suite's untouched
+// assertions continue to cover.
+struct RecordingMeshObserver : public BakeObserver {
+    int calls = 0;
+    int last_tris = -1;
+    void on_mesh_ready(int tris) override {
+        ++calls;
+        last_tris = tris;
+    }
+    // on_rung_ready deliberately left as the no-op default: bake_source never
+    // builds a LOD ladder, so this observer must see zero rung calls too.
+    int rung_calls = 0;
+    void on_rung_ready(int, int, double) override { ++rung_calls; }
+};
+
+static void test_bake_observer_mesh_ready() {
+    namespace pg = part_graph;
+    namespace fs = std::filesystem;
+
+    const fs::path root = fs::absolute("part_graph_bake_observer_test");
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(root / "schemas", ec);
+    fs::create_directories(root / "parts", ec);
+    CHECK(!ec, "bake_observer sandbox created");
+    if (ec) return;
+
+    write_file((root / "schemas" / "ObserverBox.js").string(),
+        "class ObserverBox extends Part {"
+        " build(p){ this.beginVoxels(0.25); this.fill(MAT.stone);"
+        " this.box([0,0,0],[0.5,0.5,0.5]); this.endVoxels(); } }");
+
+    script_host::ScriptHost host;
+    pg::FileModuleResolver resolver(host, (root / "schemas").string());
+    pg::HostBaker baker(host, root.string());
+    baker.set_bake_observer(nullptr);  // explicit: default is already null
+
+    // --- Pass 1: NULL observer (the production default) -- must bake fine
+    // and (implicitly, via every other cold-cache test in this suite passing
+    // unmodified) be byte-identical to the pre-W3 code path.
+    pg::PartGraph graph_null(resolver, baker);
+    pg::InstallResult r_null = graph_null.install({ pg::ChildRequest{"ObserverBox", pg::Params{}} });
+    CHECK(r_null.ok && r_null.baked.size() == 1,
+          "bake_observer: null-observer bake succeeds (byte-identity baseline)");
+
+    // --- Pass 2: cold rebake of a DIFFERENT box, this time with an observer
+    // wired via HostBaker::set_bake_observer (the W3 facade seam) BEFORE
+    // install. A second, distinct schema keeps this a genuine cold bake
+    // (ObserverBox is already cached from Pass 1).
+    write_file((root / "schemas" / "ObserverBox2.js").string(),
+        "class ObserverBox2 extends Part {"
+        " build(p){ this.beginVoxels(0.25); this.fill(MAT.stone);"
+        " this.box([0,0,0],[0.6,0.6,0.6]); this.endVoxels(); } }");
+
+    RecordingMeshObserver obs;
+    baker.set_bake_observer(&obs);
+    pg::PartGraph graph_obs(resolver, baker);
+    pg::InstallResult r_obs = graph_obs.install({ pg::ChildRequest{"ObserverBox2", pg::Params{}} });
+    baker.set_bake_observer(nullptr);  // don't leak the observer into later tests
+    CHECK(r_obs.ok && r_obs.baked.size() == 1,
+          "bake_observer: observed bake succeeds");
+    CHECK(obs.calls == 1, "bake_observer: on_mesh_ready fired exactly once");
+    CHECK(obs.last_tris > 0, "bake_observer: on_mesh_ready reported a plausible (>0) tri count");
+    CHECK(obs.rung_calls == 0,
+          "bake_observer: on_rung_ready did NOT fire from bake_source "
+          "(the LOD ladder is a separate subsystem -- see part_flatten_tests.cpp)");
+
+    fs::remove_all(root, ec);
+    printf("  test_bake_observer_mesh_ready OK (mesh_ready calls=%d tris=%d)\n",
+           obs.calls, obs.last_tris);
+}
+
 int main(int argc, char** argv) {
     using namespace part_graph;
 
@@ -618,6 +700,11 @@ int main(int argc, char** argv) {
 
     // SP-3 Task 13: budget-variant baking + .lods sidecar.
     test_lod_variant_sidecar();
+
+    // Bake Lab W3: per-rung bake observer seam -- on_mesh_ready fires exactly
+    // once with a plausible tri count on an observed bake; a null observer
+    // (every other test above) is unaffected.
+    test_bake_observer_mesh_ready();
 
     if (g_failures == 0) printf("All part_graph integration tests passed\n");
     return g_failures == 0 ? 0 : 1;

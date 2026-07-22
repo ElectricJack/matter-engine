@@ -369,6 +369,8 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     // Task 13 (Phase C): create a shared HostBaker that persists beyond install_graph()
     // so ensure_part_baked() can reuse it without reconstructing a ScriptHost.
     host_baker_ = std::make_unique<part_graph::HostBaker>(*host_, abs_cache_root_);
+    // W3: thread the optional per-rung bake observer (null in production).
+    host_baker_->set_bake_observer(cfg_.bake_observer);
 
     // Task 2: apply transient settings to the baker (if set_transient_modules was called)
     if (!transient_modules_.empty()) {
@@ -1196,6 +1198,8 @@ bool LocalProvider::restore_from_cache(
     host_->set_shared_lib_roots(abs_shared_lib_roots_);
     resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_schemas_);
     host_baker_ = std::make_unique<part_graph::HostBaker>(*host_, abs_cache_root_);
+    // W3: thread the optional per-rung bake observer (null in production).
+    host_baker_->set_bake_observer(cfg_.bake_observer);
 
     // Task 2: apply transient settings to the baker (if set_transient_modules was called)
     if (!transient_modules_.empty()) {

@@ -5,6 +5,7 @@
 #include "imgui.h"
 
 #include "script_host.h"  // MatterEngine3/src (ME3_DIR/src is on the app include path)
+#include "matter/bake_observer.h"  // W3: per-rung bake observer seam
 
 #include <algorithm>
 #include <cctype>
@@ -15,6 +16,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 
 #ifndef _WIN32
@@ -322,6 +324,92 @@ struct PartWorkbenchScriptHostHolder {
     script_host::ScriptHost host;
 };
 
+// W3 (Bake Lab, docs/part-workbench.md SS-I.4 "per-rung live watch"): the
+// workbench's implementation of the engine's BakeObserver seam
+// (MatterEngine3/include/matter/bake_observer.h). Set on the isolation
+// session only (never the production session) so production bakes are
+// unaffected.
+//
+// Thread discipline: on_mesh_ready fires on the bake worker thread
+// (script_host::bake_source); on_rung_ready fires wherever lod_bake::bake_lods
+// is invoked from, which in the production pipeline is PartStore::get_or_load
+// running inside a GL-thread publish job (matter_async::assert_gl_thread) —
+// see part_store.h's set_bake_observer doc comment. This class does no GL or
+// ImGui work in either callback: it only copies primitive data under a mutex.
+// The workbench's main-thread tick() drains that log (drain_status()) and
+// only THAT thread ever touches status_line_/ImGui, so no GL/UI call ever
+// happens off the main thread regardless of which thread wrote the event.
+//
+// Chosen approach (see part_workbench.md W3, "IMPORTANT design guidance"):
+// (B) rung-reveal via status line. A true live mid-bake mesh swap (approach A)
+// would need an ad-hoc GL-upload path for a CPU mesh that isn't otherwise
+// uploaded until the part publishes, AND the production LOD selection lives
+// in the GPU-driven compute-cull path (vk_scene_renderer.cpp / gpu_cull_types.h,
+// off-limits shader-adjacent files for this milestone) rather than a place a
+// CPU-side "show LOD k" override could cheaply hook. So W3 ships the real,
+// live, per-rung timing/tri-count feedback (this class) without a viewport
+// mesh swap; a true per-LOD viewport reveal is noted as a W4/A follow-up once
+// the LOD-override render option exists.
+struct WorkbenchBakeObserver : public BakeObserver {
+    void on_mesh_ready(int tris) override {
+        std::lock_guard<std::mutex> lk(mu_);
+        mesh_tris_ = tris;
+        mesh_ready_ = true;
+        rungs_.clear();  // a fresh mesh means a fresh ladder is about to start
+        ++generation_;
+    }
+    void on_rung_ready(int level, int tris, double ms) override {
+        std::lock_guard<std::mutex> lk(mu_);
+        rungs_.push_back({level, tris, ms});
+        ++generation_;
+    }
+
+    // Called by open_part()/apply_params() (main thread) right before a new
+    // bake starts, so a prior bake's rungs never bleed into the new status
+    // line.
+    void reset() {
+        std::lock_guard<std::mutex> lk(mu_);
+        rungs_.clear();
+        mesh_ready_ = false;
+        mesh_tris_ = 0;
+        generation_ = 0;
+        drained_generation_ = 0;
+    }
+
+    // Main-thread poll (tick()): returns true and fills `out` with a status
+    // line when new events arrived since the last call; false (out untouched)
+    // when nothing changed. Cheap to call every frame — a mutex lock plus an
+    // integer compare on the common (no-change) path.
+    bool drain_status(std::string& out) {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (generation_ == drained_generation_) return false;
+        drained_generation_ = generation_;
+        char buf[160];
+        if (!rungs_.empty()) {
+            // Total level count isn't known until the ladder finishes (each
+            // rung arrives one at a time), so the line shows "LOD k" rather
+            // than "LOD k/N" — the count so far, not a promised total.
+            const Rung& r = rungs_.back();
+            std::snprintf(buf, sizeof(buf), "LOD %d ready \xE2\x80\x94 %d tris \xE2\x80\x94 %.0f ms",
+                          r.level, r.tris, r.ms);
+            out = buf;
+        } else if (mesh_ready_) {
+            std::snprintf(buf, sizeof(buf), "mesh ready \xE2\x80\x94 %d tris, baking LOD ladder...", mesh_tris_);
+            out = buf;
+        }
+        return true;
+    }
+
+private:
+    struct Rung { int level; int tris; double ms; };
+    std::mutex mu_;
+    std::vector<Rung> rungs_;
+    bool mesh_ready_ = false;
+    int mesh_tris_ = 0;
+    uint64_t generation_ = 0;
+    uint64_t drained_generation_ = 0;
+};
+
 PartWorkbench::PartWorkbench() = default;
 PartWorkbench::~PartWorkbench() {
     // Explicit order (session before engine) documents the lifecycle even
@@ -526,6 +614,7 @@ void PartWorkbench::close() {
     engine_.reset();
     module_.clear();
     status_line_.clear();
+    if (bake_observer_) bake_observer_->reset();  // W3: drop stale rung log
 }
 
 void PartWorkbench::open_part(const std::string& source_project_dir, const std::string& module) {
@@ -569,6 +658,12 @@ void PartWorkbench::open_part(const std::string& source_project_dir, const std::
         engine_.reset();
         return;
     }
+    // W3: wire the per-rung observer to THIS (private, isolation-only)
+    // session before the first bake. Lazily created once, reused across
+    // open_part()/apply_params() calls; reset() clears prior-bake rungs.
+    if (!bake_observer_) bake_observer_ = std::make_unique<WorkbenchBakeObserver>();
+    bake_observer_->reset();
+    session_->set_bake_observer(bake_observer_.get());
     session_->request_bake();
     awaiting_bounds_frame_ = true;
     bake_start_ms_ = now_ms();
@@ -579,6 +674,8 @@ void PartWorkbench::apply_params(const std::string& params_json, bool cold) {
     if (!session_) return;
     current_params_json_ = params_json;
     write_iso_world_file(current_params_json_);
+    // W3: clear the prior bake's rung log before the new one starts.
+    if (bake_observer_) bake_observer_->reset();
     if (cold) {
         std::error_code ec;
         fs::remove_all(fs::path(iso_cache_root()) / "parts", ec);
@@ -623,6 +720,17 @@ void PartWorkbench::tick(float dt) {
     td.frame_delta_seconds = dt;
     td.max_fixed_steps = 0;  // isolation scene: no physics stepping needed
     session_->tick(td);
+
+    // W3: drain the observer's rung log into a live status line. Runs on the
+    // main thread only (this is the sole reader of bake_observer_'s mutex-
+    // guarded state); on_mesh_ready/on_rung_ready may have written from the
+    // bake worker or GL thread, but nothing here touches GL/ImGui state
+    // beyond assigning a std::string, which draw() reads later this frame.
+    if (bake_observer_) {
+        std::string live;
+        if (bake_observer_->drain_status(live) && !live.empty())
+            status_line_ = live;
+    }
 
     matter::Event event;
     while (session_->poll_event(event)) {

@@ -476,7 +476,7 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
     LoadedPart lp;
     lp.bound_radius = radius;
     lp.children = std::move(children);   // keep the baked child-instance table for the WorldComposer
-    lod_bake::LodLevels lods = lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, blas_, triex_ptr);
+    lod_bake::LodLevels lods = lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, blas_, triex_ptr, observer_);
     for (const auto& L : lods) {
         // A geometry-less part (one that only places children) bakes to empty
         // triangles and yields LOD levels with no BLAS -> skip them, leaving

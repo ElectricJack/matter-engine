@@ -17,6 +17,7 @@
 #include "matter/query.h"
 
 #include "bake_trace.h"   // bake_trace::Span — see last_bake_trace()
+#include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
 
 namespace matter {
 
@@ -225,6 +226,15 @@ public:
     uint32_t instance_count() const;
     bool instance_info(uint32_t idx, InstanceInfo& out);
     bool part_bounds(uint64_t part_hash, PartBounds& out) const;
+
+    // Bake Lab W3: install an optional per-rung bake observer (Lab-only; not
+    // part of the stable public API). Null clears it. Applied to the next
+    // request_bake()/reload() — see matter/bake_observer.h for the full
+    // seam contract (thread discipline, null = zero cost). Callers that
+    // register a non-null observer are expected to be Lab/tooling code
+    // (e.g. PartWorkbench's private isolation session), never a production
+    // world session.
+    void set_bake_observer(BakeObserver* observer);
 
     // Task 7 test seam: install a per-part fault hook on the underlying provider
     // config. The hook fires once per part processed during install_graph() and the

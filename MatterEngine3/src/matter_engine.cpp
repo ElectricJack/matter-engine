@@ -1107,8 +1107,13 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         {
             BAKE_SPAN(bake_trace::kSpanPublish);   // same region publish_ms measures
             publish_pipeline(token, std::move(empty_manifest), pp);
-            // publish_pipeline replaces PartStore — re-apply transient scratch dir.
-            if (store) store->set_scratch_dir(provider->transient_dir());
+            // publish_pipeline replaces PartStore — re-apply transient scratch dir
+            // and the W3 bake observer (both are per-construction state on the
+            // fresh PartStore instance).
+            if (store) {
+                store->set_scratch_dir(provider->transient_dir());
+                store->set_bake_observer(cfg.bake_observer);
+            }
         }
         double publish_ms = std::chrono::duration<double, std::milli>(
             clk_t::now() - t_publish_start).count();
@@ -1304,6 +1309,10 @@ void WorldSession::Impl::publish_pipeline(
 #endif
 
         reset_out->new_store = std::make_unique<viewer::PartStore>(cfg.cache_root);
+        // W3: thread the optional per-rung bake observer (null in production;
+        // re-applied at the publish_pipeline call sites too, since PartStore
+        // is replaced wholesale on every GL reset job).
+        reset_out->new_store->set_bake_observer(cfg.bake_observer);
 #ifndef MATTER_VULKAN_ONLY
         reset_out->new_composer = std::make_unique<viewer::WorldComposer>(
             *reset_out->new_store, /*tlas_capacity=*/16);
@@ -2203,10 +2212,14 @@ bool WorldSession::Impl::install_world(
     wb.field       = world_field.get();
     runtime_profile.apply(wb);
     provider->host_baker().set_world(wb);
+    provider->host_baker().set_bake_observer(cfg.bake_observer);  // W3
 
     // 6. Mark WorldSector as transient so its artifacts go to scratch.
     provider->set_transient_modules({"WorldSector"});
-    if (store) store->set_scratch_dir(provider->transient_dir());
+    if (store) {
+        store->set_scratch_dir(provider->transient_dir());
+        store->set_bake_observer(cfg.bake_observer);  // W3
+    }
 
     // 7. Read sector source: <schemas_dir>/WorldSector.js
     {
@@ -3647,6 +3660,18 @@ WorldSession::~WorldSession() {
 #ifndef MATTER_VULKAN_ONLY
     impl_->renderer.shutdown();
 #endif
+}
+
+void WorldSession::set_bake_observer(BakeObserver* observer) {
+    // W3 (Bake Lab): stored on cfg_ so it's picked up whenever the next bake
+    // (re)constructs the LocalProvider/HostBaker (see local_provider.cpp) and
+    // whenever publish_pipeline (re)constructs the PartStore. Also applied to
+    // the CURRENT PartStore immediately (if one already exists) so a caller
+    // that sets the observer between bakes — e.g. right after open_part(),
+    // before the first request_bake() — doesn't need to know the store's
+    // construction order to get callbacks on the very next bake.
+    impl_->cfg.bake_observer = observer;
+    if (impl_->store) impl_->store->set_bake_observer(observer);
 }
 
 void WorldSession::set_test_fault_hook(std::function<void(int)> hook) {

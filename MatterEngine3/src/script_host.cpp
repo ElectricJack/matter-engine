@@ -1442,6 +1442,16 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         }
 
         tlas.build(blas);
+        // W3 (Part Workbench, Lab-only): the part's full-resolution mesh is now
+        // fully registered in `blas` (all marching-cubes cells committed) — this
+        // is "LOD0 mesh ready" from the workbench's point of view. Null-checked;
+        // no-op cost when unset (production bakes never set opts.observer).
+        if (opts.observer) {
+            int mesh_tris = 0;
+            for (const auto& e : blas.get_entries())
+                mesh_tris += (int)e->triangles.size();
+            opts.observer->on_mesh_ready(mesh_tris);
+        }
         // Persist the child instances placed via placeChild() during build().
         std::vector<part_asset::ChildInstance> kids;
         kids.reserve(state.children().size());

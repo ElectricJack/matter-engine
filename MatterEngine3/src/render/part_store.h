@@ -5,6 +5,7 @@
 #include "lod_select.h"         // lod_select::PartLodTable
 #include "part_asset_v2.h"      // part_asset::ChildInstance
 #include "raster_mesh.h"        // RasterMeshData
+#include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
 
 #include <cstdint>
 #include <functional>
@@ -114,6 +115,16 @@ public:
     // get_or_load probes scratch first, then falls back to cache_root_.
     void set_scratch_dir(std::string dir) { scratch_dir_ = std::move(dir); }
 
+    // W3 (Part Workbench, Lab-only): optional per-rung bake observer, passed
+    // straight through to lod_bake::bake_lods() inside get_or_load(). Null
+    // (default) means the observer hooks are skipped there — production
+    // sessions never call this setter. See matter/bake_observer.h for the
+    // thread contract; note get_or_load() runs inside a GL-thread publish
+    // job in the production pipeline, so on_rung_ready may fire on the GL
+    // thread here (unlike on_mesh_ready from bake_source, which fires on the
+    // bake worker thread) — callers must not assume either.
+    void set_bake_observer(BakeObserver* observer) { observer_ = observer; }
+
     // TEST-ONLY: register a pre-built LoadedPart under a hash without any disk I/O.
     // Used by gpu_cull_tests to build synthetic fixtures. Not for production use.
     void inject_for_test(uint64_t part_hash, LoadedPart lp) {
@@ -133,6 +144,7 @@ private:
     BLASManager                       blas_;
     std::map<uint64_t, LoadedPart>    loaded_;
     std::set<uint64_t>                load_failed_;      // suppress repeat logging
+    BakeObserver*                     observer_ = nullptr;  // W3: optional per-rung observer
 };
 
 } // namespace viewer
