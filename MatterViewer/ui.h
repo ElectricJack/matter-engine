@@ -119,7 +119,7 @@ public:
     // Bake Lab shell (bake-lab.md §II.5): "Bake Lab" window wrapping
     // BakeLab::draw_contents(), same Begin/End split as draw_console_panel.
     // No-op while lab.visible is false (window close button clears it).
-    void draw_bake_lab_panel(BakeLab& lab);
+    void draw_bake_lab_panel(BakeLab& lab, matter::WorldSession* session);
     // MSL-style orbit/zoom controls: navigate the view without locking the cursor
     // or using WASD (works over remote desktop). Mutates the camera in place.
     void draw_camera_panel(matter::CameraDesc& cam);

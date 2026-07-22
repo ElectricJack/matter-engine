@@ -16,9 +16,12 @@ void draw_placeholder_tab(const char* name, const char* coming) {
 
 } // namespace
 
-void BakeLab::draw_contents() {
+void BakeLab::draw_contents(matter::WorldSession* session) {
     if (ImGui::BeginTabBar("##bake_lab_tabs")) {
-        draw_placeholder_tab("Timeline", "Coming in task 2.2 (flamegraph)");
+        if (ImGui::BeginTabItem("Timeline")) {
+            timeline_.draw(session);
+            ImGui::EndTabItem();
+        }
         draw_placeholder_tab("Part Lab", "Coming in tasks 3.x (part-scope bake lab)");
         draw_placeholder_tab("Settle", "Coming in task 5.5 (settle lab)");
         draw_placeholder_tab("Variants", "Coming in tasks 4.x (variant table)");
@@ -27,8 +30,9 @@ void BakeLab::draw_contents() {
 }
 
 void BakeLab::tick_frame(float wall_budget_ms) {
-    // Task 2.1: nothing to advance yet. Later tasks poll BakeJob threads and
-    // step the active SteppablePhase under this wall budget (bake-lab.md §II.5).
+    // Task 2.2: Timeline is pull-based (Refresh button), nothing to advance
+    // here. Later tasks poll BakeJob threads and step the active
+    // SteppablePhase under this wall budget (bake-lab.md §II.5).
     (void)wall_budget_ms;
 }
 
