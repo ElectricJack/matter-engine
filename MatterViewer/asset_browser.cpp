@@ -315,9 +315,7 @@ void AssetBrowser::annotate_project(Project& project) {
 
 void AssetBrowser::draw(const std::vector<WorldEntry>& worlds, ViewerStats& stats,
                         const std::string& shared_lib_root,
-                        std::string& pending_workbench_module,
-                        std::string& pending_workbench_project,
-                        bool& focus_workbench_tab) {
+                        const ViewerCommands& commands) {
     bool need_full_scan = !scanned_ || shared_lib_root != scanned_shared_lib_root_;
 
     if (ImGui::Button("Refresh")) need_full_scan = true;
@@ -351,14 +349,11 @@ void AssetBrowser::draw(const std::vector<WorldEntry>& worlds, ViewerStats& stat
         return;
     }
     for (Project& project : projects_)
-        draw_project(project, stats, pending_workbench_module,
-                     pending_workbench_project, focus_workbench_tab);
+        draw_project(project, stats, commands);
 }
 
 void AssetBrowser::draw_project(Project& project, ViewerStats& stats,
-                                std::string& pending_workbench_module,
-                                std::string& pending_workbench_project,
-                                bool& focus_workbench_tab) {
+                                const ViewerCommands& commands) {
     ImGui::PushID(project.path.c_str());
     if (ImGui::CollapsingHeader(project.name.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Indent();
@@ -372,7 +367,8 @@ void AssetBrowser::draw_project(Project& project, ViewerStats& stats,
                 ImGui::SameLine();
                 const bool is_current = (w.world_index == stats.world_current);
                 if (is_current) ImGui::BeginDisabled(true);
-                if (ImGui::SmallButton("Load")) stats.world_switch_requested = w.world_index;
+                if (ImGui::SmallButton("Load") && commands.switch_world)
+                    commands.switch_world(w.world_index);
                 if (is_current) ImGui::EndDisabled();
                 ImGui::PopID();
             }
@@ -383,8 +379,7 @@ void AssetBrowser::draw_project(Project& project, ViewerStats& stats,
         if (ImGui::TreeNodeEx("Objects", ImGuiTreeNodeFlags_DefaultOpen)) {
             for (AssetObject& obj : project.objects) {
                 if (!passes_filter(obj.module)) continue;
-                draw_object_row(project, obj, pending_workbench_module,
-                                pending_workbench_project, focus_workbench_tab);
+                draw_object_row(project, obj, commands);
             }
             if (project.objects.empty()) ImGui::TextDisabled("(none)");
             ImGui::TreePop();
@@ -403,9 +398,7 @@ void AssetBrowser::draw_project(Project& project, ViewerStats& stats,
 }
 
 void AssetBrowser::draw_object_row(Project& project, AssetObject& obj,
-                                   std::string& pending_workbench_module,
-                                   std::string& pending_workbench_project,
-                                   bool& focus_workbench_tab) {
+                                   const ViewerCommands& commands) {
     ImGui::PushID(obj.module.c_str());
 
     if (obj.module == scroll_to_module_) {
@@ -434,11 +427,10 @@ void AssetBrowser::draw_object_row(Project& project, AssetObject& obj,
     }
 
     ImGui::SameLine();
-    if (ImGui::SmallButton("Open in Workbench")) {
-        pending_workbench_module = obj.module;
-        pending_workbench_project = project.path;  // == WorldEntry::project_dir;
-                                                   // PartWorkbench::open_part(project, module).
-        focus_workbench_tab = true;
+    if (ImGui::SmallButton("Open in Workbench") && commands.open_in_workbench) {
+        // project.path == WorldEntry::project_dir; issues workbench.open_part +
+        // lab.focus_tab through the app command registry (main.cpp).
+        commands.open_in_workbench(project.path, obj.module);
     }
     ImGui::SameLine();
     if (ImGui::SmallButton("Reveal")) {

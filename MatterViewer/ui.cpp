@@ -564,7 +564,7 @@ void Ui::reset_scene_tree_cache() {
     scene_tree_state_.selected_root_hash = 0;
 }
 
-void Ui::draw_debug_panel(ViewerStats& s) {
+void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands) {
     ImGui::Begin("Viewer Debug");
 
     ImGui::Text("FPS: %.1f  (%.2f ms)", s.fps, s.frame_ms);
@@ -610,7 +610,7 @@ void Ui::draw_debug_panel(ViewerStats& s) {
     ImGui::SliderFloat("Pixel budget", &s.pixel_budget, 0.1f, 2.0f, "%.2f");
     const char* resolvers[] = { "PassThrough", "SectorLod" };
     ImGui::Combo("Resolver", &s.resolver_choice, resolvers, 2);
-    if (ImGui::Button("Reload world")) s.reload_requested = true;
+    if (ImGui::Button("Reload world") && commands.reload) commands.reload();
 
     ImGui::SeparatorText("Lighting");
     ImGui::SliderFloat("Exposure (EV)", &s.lighting.exposure_ev, -6.0f, 6.0f,
@@ -660,28 +660,27 @@ void Ui::draw_debug_panel(ViewerStats& s) {
 }
 
 void Ui::draw_bake_lab_panel(BakeLab& lab, matter::WorldSession* session,
-                             const std::vector<WorldEntry>& worlds,
-                             WorkbenchHandoff& handoff) {
-    // A pending handoff means the standalone Asset Browser pane's "Open in
-    // Workbench" button just fired: make sure the window is visible and
-    // raise it to the front. draw_contents (below) separately selects the
-    // Workbench tab itself once it consumes the handoff.
-    if (!handoff.pending_module.empty() && handoff.focus_requested) {
+                             const std::vector<WorldEntry>& worlds) {
+    // A pending window-raise means the lab.focus_tab command just fired (via
+    // the Asset Browser's "Open in Workbench"): make sure the window is visible
+    // and raise it to the front. draw_contents (below) separately selects the
+    // Workbench tab itself. Poll+clear here so the raise applies exactly once.
+    if (lab.take_window_raise()) {
         lab.visible = true;
         ImGui::SetNextWindowFocus();
     }
     if (!lab.visible) return;
     ImGui::Begin("Bake Lab", &lab.visible);
-    lab.draw_contents(session, worlds, handoff);
+    lab.draw_contents(session, worlds);
     ImGui::End();
 }
 
 void Ui::draw_asset_browser_panel(AssetBrowser& browser,
                                   const std::vector<WorldEntry>& worlds, ViewerStats& stats,
-                                  const std::string& shared_lib_root, WorkbenchHandoff& handoff) {
+                                  const std::string& shared_lib_root,
+                                  const ViewerCommands& commands) {
     ImGui::Begin("Assets");
-    browser.draw(worlds, stats, shared_lib_root, handoff.pending_module,
-                handoff.pending_project, handoff.focus_requested);
+    browser.draw(worlds, stats, shared_lib_root, commands);
     ImGui::End();
 }
 
@@ -742,7 +741,8 @@ void Ui::draw_camera_panel(matter::CameraDesc& cam) {
     ImGui::End();
 }
 
-void Ui::draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& stats) {
+void Ui::draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& stats,
+                           const ViewerCommands& commands) {
     ImGui::SetNextWindowPos(ImVec2(20.0f, 20.0f), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(200, 0), ImGuiCond_FirstUseEver);
     ImGui::Begin("Worlds");
@@ -750,8 +750,8 @@ void Ui::draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& s
     for (int i = 0; i < (int)worlds.size(); ++i) {
         const bool is_current = (i == stats.world_current);
         if (is_current) ImGui::BeginDisabled(true);
-        if (ImGui::Button(worlds[i].label.c_str())) {
-            stats.world_switch_requested = i;
+        if (ImGui::Button(worlds[i].label.c_str()) && commands.switch_world) {
+            commands.switch_world(i);
         }
         if (is_current) ImGui::EndDisabled();
     }

@@ -192,7 +192,11 @@ public:
     // from the app thread at any time before or between bakes.
     void set_bake_focus(const float pos[3]);
 
-    bool poll_event(Event& out);       // drain one; loop until false
+    // Single-consumer: drain only from the app (main/UI) thread — the same
+    // thread that owns the app command lane and pumps the session per frame
+    // (event-system.md S I.11 / S II.4 item 6; E4b SessionBinding runs the
+    // world-switch teardown on this thread). Drain one; loop until false.
+    bool poll_event(Event& out);
 
     // The per-session event hub (event-system.md S I.13: one hub per
     // WorldSession, lifetime = session lifetime — the returned reference is

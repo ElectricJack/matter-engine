@@ -2,6 +2,7 @@
 #define VIEWER_UI_H
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -40,19 +41,20 @@ struct WorldEntry {
 // Every regular worlds/*.js file contributes one entry, sorted by label.
 std::vector<WorldEntry> scan_worlds(const std::string& examples_root);
 
-// Cross-pane handoff for "Open in Workbench": the standalone Asset Browser
-// pane (Ui::draw_asset_browser_panel) writes a pending (module, project)
-// request here when its "Open in Workbench" button fires; the Bake Lab
-// window (BakeLab::draw_contents) reads and clears it once per frame,
-// calling PartWorkbench::open_part and selecting/focusing its Workbench tab.
-// One producer (Asset Browser), one consumer (BakeLab) — deliberately
-// one-directional. Owned as a loop-scope variable in main.cpp, next to
-// `worlds`/`stats`, and threaded to both panels' draw calls.
-struct WorkbenchHandoff {
-    std::string pending_module;
-    std::string pending_project;
-    bool focus_requested = false;  // BakeLab: select+focus the Workbench tab
-                                    // and raise the Bake Lab window this frame.
+// ViewerCommands — the plain-std::function bridge by which UI panels ISSUE the
+// viewer's registered commands (event-system.md S I.10/S I.11, E4b). Same idiom
+// as SceneCommands / FieldCommands: main.cpp populates each closure to call
+// registry.execute(<typed command>) on the app lane (synchronous, same-thread
+// UI trigger), so command.h stays off this header's wide include chain. These
+// replace the deleted polled request flags (reload_requested /
+// world_switch_requested) and the WorkbenchHandoff struct.
+struct ViewerCommands {
+    std::function<void()> reload;                     // viewer.reload
+    std::function<void(int world_index)> switch_world;  // viewer.switch_world{index}
+    // workbench.open_part{project,module} + lab.focus_tab{Workbench}: opens the
+    // part in the isolation session and selects/raises the Workbench tab.
+    std::function<void(const std::string& project, const std::string& module)>
+        open_in_workbench;
 };
 
 // Read-only stats the HUD displays each frame; the resolver selector is the one
@@ -70,7 +72,6 @@ struct ViewerStats {
     int      last_want_count = 0;   // last reconcile want-list size
     // Writable: 0 = PassThrough, 1 = SectorLod. Panel sets this; main swaps resolver.
     int      resolver_choice = 0;
-    bool     reload_requested = false;   // panel sets; main clears after handling
     // GPU-path counters. The Vulkan GPU-driven path reports raster_batches (live
     // indirect draw buckets) and raster_tris from the cull shader stats SSBO.
     // batch_cache_hit remains legacy/always-false (no per-frame batch cache).
@@ -96,10 +97,10 @@ struct ViewerStats {
     // Writable: runtime LOD quality/speed dial. main propagates it to the
     // resolver + composer each frame; also settable via FIFO `budget <f>`.
     float    pixel_budget = 1.0f;
-    // World picker: main sets `world_current` after each connect; panel writes
-    // `world_switch_requested` (index into the enumerated worlds list, -1 = none).
+    // World picker: main sets `world_current` after each connect. The panel no
+    // longer writes a switch-request flag — it issues ViewerCommands::switch_world
+    // (index into the enumerated worlds list) instead.
     int      world_current = 0;
-    int      world_switch_requested = -1;
     matter::VulkanLightingOverrides lighting{};
     matter::VulkanVolumetricsSettings volumetrics{};
     int vol_debug_view = 0;
@@ -131,7 +132,7 @@ public:
     void shutdown();
     bool begin_frame(const matter::VulkanFrame& frame, std::string& error);
     bool end_frame(const matter::VulkanFrame& frame, std::string& error);
-    void draw_debug_panel(ViewerStats& stats);
+    void draw_debug_panel(ViewerStats& stats, const ViewerCommands& commands);
     // Bake Lab shell (bake-lab.md §II.5): "Bake Lab" window wrapping
     // BakeLab::draw_contents(), same Begin/End split as draw_console_panel.
     // No-op while lab.visible is false (window close button clears it).
@@ -141,24 +142,25 @@ public:
     // both consumes into PartWorkbench::open_part (inside draw_contents) and,
     // here, raises/focuses the Bake Lab window itself.
     void draw_bake_lab_panel(BakeLab& lab, matter::WorldSession* session,
-                             const std::vector<WorldEntry>& worlds,
-                             WorkbenchHandoff& handoff);
+                             const std::vector<WorldEntry>& worlds);
     // Standalone Assets pane (promoted out of Bake Lab's former "Assets" tab
     // so it's usable during any workflow, not just baking). Owns no state
     // itself — `browser` is a loop-scope AssetBrowser instance main.cpp owns
     // next to `bake_lab`. worlds/stats/shared_lib_root are exactly what
     // AssetBrowser::draw always needed; `handoff` is where "Open in
-    // Workbench" clicks land (see WorkbenchHandoff doc comment above and
-    // draw_bake_lab_panel, which consumes it).
+    // Workbench" clicks issue ViewerCommands::open_in_workbench, and "Load"
+    // issues ViewerCommands::switch_world.
     void draw_asset_browser_panel(AssetBrowser& browser,
                                   const std::vector<WorldEntry>& worlds, ViewerStats& stats,
-                                  const std::string& shared_lib_root, WorkbenchHandoff& handoff);
+                                  const std::string& shared_lib_root,
+                                  const ViewerCommands& commands);
     // MSL-style orbit/zoom controls: navigate the view without locking the cursor
     // or using WASD (works over remote desktop). Mutates the camera in place.
     void draw_camera_panel(matter::CameraDesc& cam);
     // Standalone panel listing available worlds as buttons. Clicking a non-current
-    // world sets stats.world_switch_requested; main handles the swap next frame.
-    void draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& stats);
+    // world issues ViewerCommands::switch_world (viewer.switch_world command).
+    void draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& stats,
+                           const ViewerCommands& commands);
     ToolbarActions draw_toolbar(matter::scene::SimulationMode mode);
     void prepare_viewport_rect();
     void draw_viewport_window();

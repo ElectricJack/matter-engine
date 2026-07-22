@@ -22,6 +22,7 @@ namespace viewer {
 
 struct WorldEntry;
 struct ViewerStats;
+struct ViewerCommands;
 
 // Assets tab (MatterEngine3/docs/part-workbench.md, part II W1): a read-only
 // browser over every world project's worlds/objects/shared-lib, annotated
@@ -36,9 +37,9 @@ struct ViewerStats;
 class AssetBrowser {
 public:
     // worlds/stats: the exact vector+struct main.cpp already builds/owns.
-    // Reused so "Load" can set stats.world_switch_requested precisely like
-    // Ui::draw_worlds_panel does — the same switch handled in main.cpp's
-    // frame loop (main.cpp: `if (stats.world_switch_requested >= 0) ...`).
+    // Reused so "Load" can issue ViewerCommands::switch_world exactly like
+    // Ui::draw_worlds_panel does — routed through the app command registry in
+    // main.cpp (viewer.switch_world).
     //
     // shared_lib_root: the engine-wide shared-lib dir — the SAME string
     // main.cpp passes as WorldDesc::engine_shared_lib_dir when it opens a
@@ -50,19 +51,14 @@ public:
     // rescan()). Get this wrong and every hash the browser computes diverges
     // from the real cache and every object shows unbaked.
     //
-    // pending_workbench_module / focus_workbench_tab: written when "Open in
-    // Workbench" is clicked. BakeLab owns pending_workbench_module and reads
-    // focus_workbench_tab to select the Workbench tab next frame; the
-    // Workbench tab body (a later milestone) is expected to consume and
-    // clear pending_workbench_module once it opens the part.
+    // commands: "Open in Workbench" issues ViewerCommands::open_in_workbench
+    // (workbench.open_part + lab.focus_tab); "Load" issues switch_world.
     AssetBrowser();
     ~AssetBrowser();
 
     void draw(const std::vector<WorldEntry>& worlds, ViewerStats& stats,
               const std::string& shared_lib_root,
-              std::string& pending_workbench_module,
-              std::string& pending_workbench_project,
-              bool& focus_workbench_tab);
+              const ViewerCommands& commands);
 
     enum class Kind { Part, Tileset, Support };
 
@@ -124,12 +120,8 @@ private:
                                  const std::string& params_json, int depth,
                                  std::vector<RequiredChildUi>* out_children);
 
-    void draw_project(Project& project, ViewerStats& stats,
-                      std::string& pending_workbench_module,
-                      std::string& pending_workbench_project, bool& focus_workbench_tab);
-    void draw_object_row(Project& project, AssetObject& obj,
-                         std::string& pending_workbench_module,
-                         std::string& pending_workbench_project, bool& focus_workbench_tab);
+    void draw_project(Project& project, ViewerStats& stats, const ViewerCommands& commands);
+    void draw_object_row(Project& project, AssetObject& obj, const ViewerCommands& commands);
     bool passes_filter(const std::string& name) const;
 
     std::unique_ptr<script_host::ScriptHost> host_;  // pimpl'd — see the

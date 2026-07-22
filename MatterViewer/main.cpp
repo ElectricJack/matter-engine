@@ -21,6 +21,10 @@
 #include "toolbar_panel.h"
 #include "console_panel.h"
 #include "ui.h"
+#include "session_binding.h"
+#include "viewer_commands.h"
+#include "matter/event/event_hub.h"
+#include "matter/event/command.h"
 #include "viewport_pick.h"
 
 #include "imgui.h"
@@ -926,7 +930,10 @@ int main() {
             std::fprintf(stderr, "open_world: %s\n", world_error.c_str());
             return result;
         }
-        result->request_bake();
+        // NOTE (E4b): the bake is NOT requested here. SessionBinding owns bake
+        // ordering (event-system.md S I.13): it builds the app<->session bridge
+        // and opens the command epoch FIRST, then requests the initial bake, so
+        // no bake.started can precede the subscribers.
         return result;
     };
     auto session = open_world(worlds[initial_world]);
@@ -1281,10 +1288,10 @@ int main() {
     viewer::BakeLab bake_lab;
     // Standalone Assets pane (promoted out of Bake Lab's former "Assets"
     // tab): a loop-scope AssetBrowser owner, same pattern as bake_lab above.
-    // workbench_handoff is the one-directional "Open in Workbench" channel
-    // between it and bake_lab — see WorkbenchHandoff's doc comment in ui.h.
+    // Its "Open in Workbench" / "Load" actions now issue the workbench.open_part
+    // / lab.focus_tab / viewer.switch_world commands through the app registry
+    // (event-system.md S I.11, E4b) instead of a shared handoff struct.
     viewer::AssetBrowser asset_browser;
-    viewer::WorkbenchHandoff workbench_handoff;
     // Part Workbench (part-workbench.md W2): private isolation session, see
     // part_workbench.h's architecture note. cache/lab-scratch is entirely
     // separate from production worlds' <project>/.cache/<world> roots.
@@ -1348,6 +1355,147 @@ int main() {
     std::vector<double> perf_frame_times;
     auto previous_time = std::chrono::steady_clock::now();
     double hud_frame_ms = 0.0;
+
+    // ---- Event system E4b: app hub + command registry + SessionBinding ------
+    // The app hub (event-system.md S I.13) is distinct from the per-session hub
+    // (session->events()): it carries editor/UI notifications, the command
+    // registry, and observable models, and lives for the whole editor. The
+    // command registry runs on the app lane, which THIS (main/UI) thread owns
+    // and pumps once per frame — same thread that pumps the session and drains
+    // poll_event.
+    matter::evt::Hub app_hub;
+    matter::evt::CommandRegistry registry(app_hub);
+    const matter::evt::lane app_lane = matter::evt::lane::app;
+    registry.claim_lane(app_lane);
+
+    // Clears app-side models referencing a dead/reloaded world. The E5 scene
+    // adapter resnapshots here; E4b clears selection + editor selection + sim.
+    auto clear_app_models = [&]() {
+        selection_set.clear();
+        editor_model.clear_selection();
+        sim_control = matter::scene::SimulationControl{};
+    };
+    // E4b bridge builder is intentionally empty: the app<->session bridge
+    // subscription STRUCTURE (quiesce-before-close / rebuild-after-replace) is
+    // wired through SessionBinding now; the concrete HUD/scene bridges land in
+    // E5 (S I.13/S I.14). Passing an empty builder changes no runtime behavior.
+    viewer::SessionBinding binding(
+        app_hub, registry, app_lane, session, clear_app_models,
+        [](matter::evt::Hub&, std::vector<matter::evt::Subscription>&) {});
+    // Startup bind-then-request: builds the bridge + opens the first command
+    // epoch BEFORE requesting the initial bake (relocated from open_world).
+    binding.initialize();
+
+    // ---- Registered viewer commands (S I.11 migration map) ------------------
+    // Handlers live where the poll-site code lived (this main loop / the lab
+    // shell). All App-scoped and non-undoable. Same-thread UI triggers reach
+    // them through execute() (via the ViewerCommands bridge below); the FIFO
+    // reaches them through dispatch() (pumped after the FIFO parse). The
+    // Registration handles must outlive the frame loop, so they live here.
+    auto reg_reload = registry.must_register_handler<viewer::ViewerReload>(
+        matter::evt::CommandScope::App, app_lane, [&](const viewer::ViewerReload&) {
+            bake_ready = false;
+            screenshot_settle = 0;
+            viewer::prepare_world_reload(stats);
+            binding.request_reload();  // clears app models + session->reload()
+            return viewer::ViewerReload::Result::succeeded(true);
+        });
+    auto reg_switch = registry.must_register_handler<viewer::ViewerSwitchWorld>(
+        matter::evt::CommandScope::App, app_lane, [&](const viewer::ViewerSwitchWorld& cmd) {
+            const int selected = cmd.index;
+            if (selected < 0 || selected >= static_cast<int>(worlds.size()))
+                return viewer::ViewerSwitchWorld::Result::failed("world index out of range");
+            // SessionBinding::replace runs the S I.13 epoch sequence; a failed
+            // open leaves the old session + epoch intact.
+            const bool ok = binding.replace([&]() { return open_world(worlds[selected]); });
+            if (!ok) {
+                viewer::complete_world_switch(stats, false);
+                return viewer::ViewerSwitchWorld::Result::failed("open_world failed");
+            }
+            viewer::complete_world_switch(stats, true);
+            stats.world_current = selected;
+            selected_world_reported = false;
+            console_log.push(viewer::LogSeverity::Info,
+                             "Connected to " + worlds[selected].world_name);
+            bake_ready = false;
+            screenshot_settle = 0;
+            apply_world_resolver_defaults(worlds[selected].world_name, active_radius,
+                                          min_projected_size, stats);
+            return viewer::ViewerSwitchWorld::Result::succeeded(true);
+        });
+    auto reg_open_part = registry.must_register_handler<viewer::WorkbenchOpenPart>(
+        matter::evt::CommandScope::App, app_lane, [&](const viewer::WorkbenchOpenPart& cmd) {
+            bake_lab.open_workbench_part(cmd.project, cmd.module);
+            return viewer::WorkbenchOpenPart::Result::succeeded(true);
+        });
+    auto reg_focus_tab = registry.must_register_handler<viewer::LabFocusTab>(
+        matter::evt::CommandScope::App, app_lane, [&](const viewer::LabFocusTab& cmd) {
+            if (cmd.tab == "Workbench") bake_lab.focus_workbench_tab();
+            return viewer::LabFocusTab::Result::succeeded(true);
+        });
+
+    // ---- FIFO dev-convenience command handlers (S II.3.4) -------------------
+    auto reg_fifo_cam = registry.must_register_handler<viewer::FifoSetCamera>(
+        matter::evt::CommandScope::App, app_lane, [&](const viewer::FifoSetCamera& cmd) {
+            camera.position = {cmd.eye[0], cmd.eye[1], cmd.eye[2]};
+            camera.target = {cmd.target[0], cmd.target[1], cmd.target[2]};
+            return viewer::FifoSetCamera::Result::succeeded(true);
+        });
+    auto reg_fifo_shot = registry.must_register_handler<viewer::FifoScreenshot>(
+        matter::evt::CommandScope::App, app_lane, [&](const viewer::FifoScreenshot& cmd) {
+            shot_path = cmd.path;
+            shot_settle = 3;
+            return viewer::FifoScreenshot::Result::succeeded(true);
+        });
+    auto reg_fifo_stats = registry.must_register_handler<viewer::FifoStatsLabel>(
+        matter::evt::CommandScope::App, app_lane, [&](const viewer::FifoStatsLabel& cmd) {
+            stats_label = cmd.label;
+            return viewer::FifoStatsLabel::Result::succeeded(true);
+        });
+    auto reg_fifo_budget = registry.must_register_handler<viewer::FifoBudget>(
+        matter::evt::CommandScope::App, app_lane, [&](const viewer::FifoBudget& cmd) {
+            stats.pixel_budget = std::max(0.05f, std::min(4.0f, cmd.value));
+            return viewer::FifoBudget::Result::succeeded(true);
+        });
+    auto reg_fifo_dlss = registry.must_register_handler<viewer::FifoDlss>(
+        matter::evt::CommandScope::App, app_lane, [&](const viewer::FifoDlss& cmd) {
+            if (cmd.mode == "native") selected_dlss_mode = matter::DlssMode::Native;
+            else if (cmd.mode == "quality") selected_dlss_mode = matter::DlssMode::Quality;
+            else if (cmd.mode == "balanced") selected_dlss_mode = matter::DlssMode::Balanced;
+            else if (cmd.mode == "performance") selected_dlss_mode = matter::DlssMode::Performance;
+            else {
+                std::printf("dlss: expected native, quality, balanced, or performance\n");
+                return viewer::FifoDlss::Result::failed("bad dlss mode");
+            }
+            return viewer::FifoDlss::Result::succeeded(true);
+        });
+    auto reg_fifo_quit = registry.must_register_handler<viewer::FifoQuit>(
+        matter::evt::CommandScope::App, app_lane, [&](const viewer::FifoQuit&) {
+            quit_requested = true;
+            return viewer::FifoQuit::Result::succeeded(true);
+        });
+
+    // ---- ViewerCommands bridge (issued by UI panels; S I.11) ----------------
+    // Same idiom as SceneCommands/FieldCommands: each closure runs on the app
+    // lane (the UI/main thread owns it) and issues the typed command through
+    // execute() — synchronous, preserving today's immediate handling.
+    viewer::ViewerCommands viewer_commands;
+    viewer_commands.reload = [&]() { registry.execute(viewer::ViewerReload{}); };
+    viewer_commands.switch_world = [&](int index) {
+        viewer::ViewerSwitchWorld cmd;
+        cmd.index = index;
+        registry.execute(cmd);
+    };
+    viewer_commands.open_in_workbench = [&](const std::string& project,
+                                            const std::string& module) {
+        viewer::WorkbenchOpenPart open_cmd;
+        open_cmd.project = project;
+        open_cmd.module = module;
+        registry.execute(open_cmd);
+        viewer::LabFocusTab focus_cmd;
+        focus_cmd.tab = "Workbench";
+        registry.execute(focus_cmd);
+    };
 
     while (!glfwWindowShouldClose(window) && !quit_requested && !fatal_error) {
         // This starts before event polling and begin_frame(), whose fence wait and
@@ -1417,43 +1565,50 @@ int main() {
                 std::string line = cmd_buffer.substr(0, newline);
                 cmd_buffer.erase(0, newline + 1);
                 if (!line.empty() && line.back() == '\r') line.pop_back();
+                // MATTER_CMD_FIFO is a cross-thread command source (S II.3.4):
+                // parse each line into its typed command and dispatch() it so
+                // every external submission is named/traced/journaled and gets
+                // an explicit ticket completion. The queued jobs run at the
+                // registry pump right below (still this frame, before render).
                 float c[6]; char word[256];
                 if (std::sscanf(line.c_str(), "cam %f %f %f %f %f %f",
                                 &c[0], &c[1], &c[2], &c[3], &c[4], &c[5]) == 6) {
-                    camera.position = {c[0], c[1], c[2]};
-                    camera.target = {c[3], c[4], c[5]};
+                    viewer::FifoSetCamera cmd;
+                    cmd.eye[0] = c[0]; cmd.eye[1] = c[1]; cmd.eye[2] = c[2];
+                    cmd.target[0] = c[3]; cmd.target[1] = c[4]; cmd.target[2] = c[5];
+                    registry.dispatch(cmd);
                 } else if (std::sscanf(line.c_str(), "shot %255s", word) == 1) {
-                    shot_path = word; shot_settle = 3;
+                    viewer::FifoScreenshot cmd; cmd.path = word;
+                    registry.dispatch(cmd);
                 } else if (std::sscanf(line.c_str(), "stats %255s", word) == 1) {
-                    stats_label = word;
+                    viewer::FifoStatsLabel cmd; cmd.label = word;
+                    registry.dispatch(cmd);
                 } else if (std::sscanf(line.c_str(), "budget %f", &c[0]) == 1) {
-                    stats.pixel_budget = std::max(0.05f, std::min(4.0f, c[0]));
+                    viewer::FifoBudget cmd; cmd.value = c[0];
+                    registry.dispatch(cmd);
                 } else if (std::sscanf(line.c_str(), "hiz %255s", word) == 1) {
                     std::printf("hiz: not available in Vulkan milestone\n");
                 } else if (std::sscanf(line.c_str(), "dlss %255s", word) == 1) {
-                    if (std::strcmp(word, "native") == 0)
-                        selected_dlss_mode = matter::DlssMode::Native;
-                    else if (std::strcmp(word, "quality") == 0)
-                        selected_dlss_mode = matter::DlssMode::Quality;
-                    else if (std::strcmp(word, "balanced") == 0)
-                        selected_dlss_mode = matter::DlssMode::Balanced;
-                    else if (std::strcmp(word, "performance") == 0)
-                        selected_dlss_mode = matter::DlssMode::Performance;
-                    else
-                        std::printf("dlss: expected native, quality, balanced, or performance\n");
+                    viewer::FifoDlss cmd; cmd.mode = word;
+                    registry.dispatch(cmd);
                 } else if (line == "reload") {
-                    stats.reload_requested = true;
+                    registry.dispatch(viewer::ViewerReload{});
                 } else if (line == "wireframe" || line == "wireframe toggle") {
                     std::printf("wireframe: not available in Vulkan milestone\n");
                 } else if (line == "wireframe on" || line == "wireframe off") {
                     std::printf("wireframe: not available in Vulkan milestone\n");
                 } else if (line == "quit") {
-                    quit_requested = true;
+                    registry.dispatch(viewer::FifoQuit{});
                 } else if (!line.empty()) {
                     std::printf("cmd: unrecognized '%s'\n", line.c_str());
                 }
             }
         }
+        // Frame-loop command point: run the FIFO-dispatched commands (and any
+        // then()-continuations) on the app lane. Placed here — before begin_frame
+        // and the camera snapshot — so a FIFO `cam`/`budget` applies to THIS
+        // frame's render exactly as the old inline handling did.
+        registry.pump(app_lane, 5.0);
 
         if (test_resize && bake_ready && !resize_exercised) {
             glfwSetWindowSize(window, 960, 540);
@@ -1578,11 +1733,11 @@ int main() {
                                         &cached_snapshot, specialized_editors, camera.position);
                 ui.draw_viewport_window();
                 ui.draw_console_panel(console_log);
-                ui.draw_debug_panel(stats);
-                ui.draw_bake_lab_panel(bake_lab, session.get(), worlds, workbench_handoff);
+                ui.draw_debug_panel(stats, viewer_commands);
+                ui.draw_bake_lab_panel(bake_lab, session.get(), worlds);
                 ui.draw_asset_browser_panel(asset_browser, worlds, stats, shared_lib,
-                                           workbench_handoff);
-                ui.draw_worlds_panel(worlds, stats);
+                                           viewer_commands);
+                ui.draw_worlds_panel(worlds, stats, viewer_commands);
                 ui.draw_camera_panel(camera);
                 // draw_sector_streaming_panel retired in Phase 4 Task 12 — sector
                 // streaming editing now lives in the Properties panel via
@@ -1988,38 +2143,12 @@ int main() {
                         stats.culled_clusters, stats.gpu_culled_hiz);
             stats_label.clear();
         }
-        if (stats.reload_requested) {
-            stats.reload_requested = false;
-            bake_ready = false; screenshot_settle = 0;
-            selection_set.clear();
-            editor_model.clear_selection();
-            sim_control = matter::scene::SimulationControl{};
-            viewer::prepare_world_reload(stats);
-            session->reload();
-        }
-        if (stats.world_switch_requested >= 0 &&
-            stats.world_switch_requested < static_cast<int>(worlds.size())) {
-            const int selected = stats.world_switch_requested;
-            stats.world_switch_requested = -1;
-            auto next_session = open_world(worlds[selected]);
-            if (!next_session) {
-                viewer::complete_world_switch(stats, false);
-                continue;
-            }
-            session = std::move(next_session);
-            selection_set.clear();
-            editor_model.clear_selection();
-            sim_control = matter::scene::SimulationControl{};
-            viewer::complete_world_switch(stats, true);
-            stats.world_current = selected;
-            selected_world_reported = false;
-            console_log.push(viewer::LogSeverity::Info,
-                              "Connected to " + worlds[selected].world_name);
-            bake_ready = false; screenshot_settle = 0;
-            apply_world_resolver_defaults(worlds[selected].world_name,
-                                          active_radius,
-                                          min_projected_size, stats);
-        }
+        // Reload / world-switch are no longer polled flags handled here: they
+        // are the viewer.reload / viewer.switch_world commands. UI triggers run
+        // them synchronously via execute() during panel draw; FIFO triggers run
+        // them at the registry pump right after the FIFO parse (S I.11, E4b).
+        // SessionBinding::replace performs the S I.13 close/quiesce/replace/
+        // rebind/open/request epoch sequence for a switch.
     }
 
 #ifndef _WIN32
