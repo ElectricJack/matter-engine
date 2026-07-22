@@ -18,6 +18,7 @@
 #include "gpu_matrix_pack.h"
 #include "matter/lod_contract.h"
 #include "matter/math_types.h"
+#include "matter/world_definition.h"
 #include "material_registry.h"
 #include "render/dynamic_instance_slots.h"
 #include "vk_gi_contract.h"
@@ -32,6 +33,7 @@ enum class DlssMode : uint8_t;
 struct VulkanFrame;
 struct VulkanVolumetricsSettings;
 struct FogSettings;
+struct TilesetPomSettings;
 }
 
 namespace viewer {
@@ -466,6 +468,13 @@ public:
     }
     void set_volumetrics_settings(const matter::VulkanVolumetricsSettings& s,
                                   const matter::FogSettings& fog);
+    // Ground POM live-tunables (viewer "Ground POM" UI). Stores the settings
+    // and immediately re-writes the tileset params UBO (cheap -- see
+    // write_tileset_params_buffer) so the next frame's gbuffer/RT tileset
+    // sampling picks up the change; slot-derived fields (height ranges,
+    // mean albedo, tile sizes) stay renderer-owned and are re-derived from
+    // tileset_slots_ on every call, same as the sun_dir_intensity mirror.
+    void set_tileset_pom_settings(const matter::TilesetPomSettings& s);
     // Blit the real HDR world composite into the currently acquired swapchain
     // image, leaving it ready for UI dynamic rendering.
     bool record_composite_to_swapchain(const matter::VulkanFrame& frame,
@@ -771,9 +780,10 @@ private:
     // mirrors this: vec4 tile_size_m/texels_per_meter/height_min/height_max,
     // vec4 mean_albedo[4], vec4 pom_a{steps,refine,max_distance,fade_band},
     // vec4 pom_b{fade_center,fade_width,max_relief_m,max_march_m},
-    // vec4 sun_dir_intensity{dir.xyz,intensity} (Phase 2 Task 11)). Every
-    // group below is exactly 16 bytes so the natural C++ layout matches
-    // std140 with no manual padding.
+    // vec4 sun_dir_intensity{dir.xyz,intensity} (Phase 2 Task 11),
+    // vec4 pom_c{datum_bias_m,ao_strength,shadow_strength,reserved} (Ground
+    // POM UI knobs)). Every group below is exactly 16 bytes so the natural
+    // C++ layout matches std140 with no manual padding.
     struct alignas(16) TilesetParamsGpu {
         float slot_tile_size_m[4]{};
         float slot_texels_per_meter[4]{};
@@ -806,9 +816,18 @@ private:
         // sun_intensity in .w. gbuffer.frag skips the self-shadow march when
         // dir.y <= 0 (sun below horizon) or intensity <= 0.
         float sun_dir_intensity[4] = {0.0f, 1.0f, 0.0f, 1.0f};
+        // Ground POM UI knobs (matter::TilesetPomSettings, mirrored into the
+        // UBO by write_tileset_params_buffer): x = datum_bias_m -- subtracted
+        // from the decoded relief height before the clamp in
+        // tileset_relief_h, letting baked litter stand proud of a recessed
+        // dirt floor instead of clamping flat at the datum. y = ao_strength,
+        // z = shadow_strength -- gbuffer.frag blend factors for the baked AO
+        // texel and the self-shadow march result (0 = fully suppressed, 1 =
+        // full baked strength). w = reserved.
+        float pom_datum_bias_ao_shadow[4] = {0.10f, 1.0f, 1.0f, 0.0f};
     };
-    static_assert(sizeof(TilesetParamsGpu) == 176,
-                  "TilesetParamsGpu must remain eleven vec4 records (std140)");
+    static_assert(sizeof(TilesetParamsGpu) == 192,
+                  "TilesetParamsGpu must remain twelve vec4 records (std140)");
 
     struct FrameResources {
         matter::VkBufferResource frame_constants;
@@ -1131,6 +1150,7 @@ private:
     std::unique_ptr<VkVolumetrics> volumetrics_;
     bool volumetrics_enabled_ = false;
     float volumetrics_debug_view_ = 0.0f;
+    matter::TilesetPomSettings tileset_pom_settings_{};
     uint32_t last_rt_samples_ = 1;
     bool last_rt_debug_view_ = false;
     bool last_rt_available_ = false;

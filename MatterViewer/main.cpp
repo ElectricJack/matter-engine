@@ -1700,6 +1700,7 @@ int main() {
         options.vulkan_volumetrics = stats.volumetrics;
         options.vulkan_volumetrics.vol_debug_view =
             static_cast<float>(stats.vol_debug_view);
+        options.vulkan_tileset_pom = stats.tileset_pom;
         options.vulkan_ray_tracing.enabled =
             vulkan->ray_tracing_available() && !disable_vulkan_rt;
         if (!session->render(frame_camera, render_frame, options, error)) {

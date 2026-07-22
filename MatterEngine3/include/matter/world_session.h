@@ -60,6 +60,7 @@ struct RenderOptions {
     VulkanGiSettings vulkan_gi{};
     VulkanLightingOverrides vulkan_lighting{};
     VulkanVolumetricsSettings vulkan_volumetrics{};
+    TilesetPomSettings vulkan_tileset_pom{};
 };
 
 struct TickDesc {

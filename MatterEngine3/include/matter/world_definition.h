@@ -51,6 +51,37 @@ struct VulkanVolumetricsSettings {
     float vol_debug_view   = 0.0f;
 };
 
+// Ground POM live-tunables (viewer "Ground POM" UI). Mirrors the
+// VulkanVolumetricsSettings pattern: this struct flows
+// ui.cpp/main.cpp -> RenderOptions -> WorldSession::render ->
+// VkSceneRenderer::set_tileset_pom_settings -> TilesetParamsGpu UBO
+// (MatterEngine3/src/render/vk_scene_renderer.h/.cpp; GLSL mirror in
+// MatterEngine3/shaders_vk/tileset_common.glsl's TilesetParams block).
+// Slot-derived fields (per-slot height ranges, mean albedo, tile sizes)
+// stay renderer-owned and are not part of this struct.
+//
+// Defaults reproduce the renderer's pre-existing hardcoded TilesetParamsGpu
+// values exactly (see vk_scene_renderer.h), EXCEPT datum_bias_m: that field
+// is new (Ground POM datum-bias fix for baked litter clamping flat at the
+// datum) and defaults to 0.10 m, a nonzero value with no old behavior to
+// match.
+struct TilesetPomSettings {
+    // false disables the entire POM march/self-shadow branch in
+    // gbuffer.frag (drives the uploaded pom_steps to 0; see
+    // VkSceneRenderer::set_tileset_pom_settings). The flat (Phase 1) Wang
+    // tile sample still applies either way -- only the parallax/self-shadow
+    // displacement is gated.
+    bool  enabled            = true;
+    float relief_cap_m       = 0.16f;   // pom_max_relief_m
+    float datum_bias_m       = 0.10f;   // NEW: see file comment above
+    float max_march_m        = 0.5f;    // pom_max_march_m
+    int   steps              = 24;      // pom_steps (linear march steps near camera)
+    float max_distance_m     = 25.0f;   // pom_max_distance_m
+    float fade_band_m        = 5.0f;    // pom_fade_band_m
+    float ao_strength        = 1.0f;    // baked-AO texel blend factor
+    float shadow_strength    = 1.0f;    // self-shadow blend factor
+};
+
 struct WorldSettings {
     float sector_size = 16.0f;
     float y_min = -64.0f;

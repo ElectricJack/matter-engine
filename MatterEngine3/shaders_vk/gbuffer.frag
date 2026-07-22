@@ -101,7 +101,12 @@ void main() {
             tileset_rotate_normal(flat_normal_ts, normalize(in_normal));
         float flat_roughness = clamp(flat_orm.g, 0.0, 1.0);
         float flat_metallic = clamp(flat_orm.b, 0.0, 1.0);
-        float flat_ao = ao * clamp(flat_orm.r, 0.0, 1.0);
+        // Ground POM UI "AO strength" (tileset.pom_c.y): blends the baked
+        // tileset AO texel toward 1.0 (no occlusion) rather than always
+        // applying it at full strength.
+        float flat_ao_tex_effective =
+            mix(1.0, clamp(flat_orm.r, 0.0, 1.0), tileset.pom_c.y);
+        float flat_ao = ao * flat_ao_tex_effective;
 
         // Start from the flat (Phase 1) result; the POM branch below blends
         // toward the marched result over the fade band, so the flat values
@@ -113,11 +118,17 @@ void main() {
         ao = flat_ao;
 
         // Phase 2 (Task 10): world-space POM, gated by distance from camera.
+        // Ground POM UI "POM enable" checkbox: off drives tileset.pom_a.x
+        // (pom_steps) to 0, which this full_steps > 0 check turns into a
+        // full skip of the march/self-shadow branch below -- the flat
+        // (Phase 1) sample assigned above stays the final result, same as
+        // any other case where the branch condition is false.
         vec3 camera_eye = frame.camera_eye_pixel_budget.xyz;
         float dist = length(in_world_pos - camera_eye);
         float pom_max_distance = tileset.pom_a.z;
         float pom_fade_band = max(tileset.pom_a.w, 1e-4);
-        if (dist < pom_max_distance + pom_fade_band) {
+        int full_steps = int(tileset.pom_a.x);
+        if (full_steps > 0 && dist < pom_max_distance + pom_fade_band) {
             vec3 plane_n = normalize(in_normal);
             vec3 ray_dir = normalize(in_world_pos - camera_eye);
 
@@ -126,7 +137,6 @@ void main() {
             // ~8 steps at pom_max_distance; beyond max_distance + fade_band
             // the branch above already skipped the march entirely.
             float near_t = clamp(dist / max(pom_max_distance, 1e-4), 0.0, 1.0);
-            int full_steps = int(tileset.pom_a.x);
             int min_steps = 8;
             int march_steps =
                 max(min_steps, int(mix(float(full_steps), float(min_steps),
@@ -150,7 +160,9 @@ void main() {
                 tileset_rotate_normal(marched_normal_ts, plane_n);
             float marched_roughness = clamp(marched_orm.g, 0.0, 1.0);
             float marched_metallic = clamp(marched_orm.b, 0.0, 1.0);
-            float marched_ao = ao * clamp(marched_orm.r, 0.0, 1.0);
+            float marched_ao_tex_effective =
+                mix(1.0, clamp(marched_orm.r, 0.0, 1.0), tileset.pom_c.y);
+            float marched_ao = ao * marched_ao_tex_effective;
 
             // Task 11: height self-shadow toward the sun, from the marched
             // (displaced) point. Skipped when the sun is below the horizon
@@ -162,7 +174,11 @@ void main() {
                 float shadow = tileset_self_shadow(
                     tileset_slot, marched_pos, in_world_pos, plane_n,
                     to_sun_dir, mdWdx, mdWdy);
-                marched_ao *= shadow;
+                // Ground POM UI "shadow strength" (tileset.pom_c.z): blends
+                // the self-shadow factor toward 1.0 (unoccluded) instead of
+                // always applying it at full strength.
+                float shadow_effective = mix(1.0, shadow, tileset.pom_c.z);
+                marched_ao *= shadow_effective;
             }
 
             // Fade band: full parallax result up to

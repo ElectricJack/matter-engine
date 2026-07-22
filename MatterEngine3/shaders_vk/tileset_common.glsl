@@ -39,6 +39,15 @@ layout(set = TILESET_SET, binding = TILESET_PARAMS_BINDING, std140)
     // means the sun is below the horizon; w <= 0.0 means no sun contribution
     // -- both are the caller's cue to skip the self-shadow march entirely.
     vec4 sun_dir_intensity;
+    // Live-tunable datum/strength knobs (TilesetPomSettings, viewer "Ground
+    // POM" UI): x = datum_bias_m -- subtracted from the decoded relief height
+    // before the clamp in tileset_relief_h, so raising it sinks the dirt
+    // floor and lets baked litter (which tops out above the dirt-mean datum)
+    // stand proud instead of clamping flat at 0. y = ao_strength, z =
+    // shadow_strength -- both blend factors (0 = baked term fully
+    // suppressed, 1 = full baked strength) applied in gbuffer.frag. w =
+    // reserved.
+    vec4 pom_c;
 } tileset;
 
 #define TILESET_CH_ALBEDO 0
@@ -184,9 +193,20 @@ float tileset_relief_h(int slot, float h_range, float relief, vec2 xz,
     // canyons, self-shadow black). Positive values (litter standing above
     // the plane) clamp to 0: push-away parallax cannot represent them, and
     // they already read as albedo detail.
+    //
+    // datum_bias_m (tileset.pom_c.x, viewer "Ground POM" UI) shifts the
+    // datum plane down before the clamp: raw = height_min + texel*h_range -
+    // datum_bias. Baked litter that peaks above the dirt-mean datum (texel
+    // near/at 1.0, raw near/above 0) now reads as slightly positive-of-zero
+    // before the clamp still zeroes it, but the surrounding dirt floor
+    // (which was already <= 0) is uniformly biased more negative, sinking it
+    // further from 0 and giving the un-clamped litter more visual headroom
+    // to stand proud of the now-recessed floor. relief still bounds the
+    // total depth this can carve.
     float raw = tileset.height_min[slot] +
                 tileset_sample(slot, TILESET_CH_HEIGHT, xz, dWdx, dWdy).r *
-                    h_range;
+                    h_range -
+                tileset.pom_c.x;
     return clamp(raw, -relief, 0.0);
 }
 
@@ -285,12 +305,24 @@ float tileset_self_shadow(int slot, vec3 hit_point, vec3 plane_point,
 
     const int kShadowSteps = 8;
     const float kShadowCapM = 0.3;   // ~edgeStripWidth scale, arrangement-safe
+    // Start bias: lift the march origin off the surface along the geometric
+    // normal before stepping toward the sun. Without this, the first
+    // sample's clearance is evaluated almost exactly at hit_point's own
+    // relief boundary -- hit_point IS where the primary POM march found
+    // ray_h == tex_h, so clearance there is ~0 by construction, and any
+    // neighboring texel that samples even slightly higher reads as
+    // immediate occlusion. At low sun elevations (to_sun_dir.y small) the
+    // per-step rise along the normal is tiny, so this self-occlusion
+    // persists across most of the short march -- shading the entire
+    // parallax region toward fully dark ("self-shadow acne") rather than
+    // only genuine hollows whose rims actually block the sun.
+    const float kStartBiasM = 0.02;
 
     float step_len = kShadowCapM / float(kShadowSteps);
     vec3 step_v = to_sun_dir * step_len;
 
     float min_clearance = 1e6;
-    vec3 p = hit_point;
+    vec3 p = hit_point + plane_n * kStartBiasM;
     for (int i = 0; i < kShadowSteps; ++i) {
         p += step_v;
         float ray_h = dot(p - plane_point, plane_n);

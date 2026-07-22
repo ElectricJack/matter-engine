@@ -4036,6 +4036,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     impl_->vk_scene->set_gi_settings(opts.vulkan_gi);
     impl_->vk_scene->set_volumetrics_settings(opts.vulkan_volumetrics,
                                                impl_->authored_fog_);
+    impl_->vk_scene->set_tileset_pom_settings(opts.vulkan_tileset_pom);
     const int material_count = MaterialRegistryCount();
     std::vector<MaterialGpuRecord> material_records(
         static_cast<size_t>(material_count));

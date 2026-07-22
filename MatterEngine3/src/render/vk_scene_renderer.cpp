@@ -2420,6 +2420,23 @@ void VkSceneRenderer::write_tileset_params_buffer() {
         params.slot_mean_albedo[slot][2] = s.mean_albedo[2];
         params.slot_mean_albedo[slot][3] = s.loaded ? 1.0f : 0.0f;
     }
+    // Ground POM UI knobs (matter::TilesetPomSettings, see
+    // set_tileset_pom_settings). "enabled == false" uploads pom_steps == 0,
+    // which gbuffer.frag's `full_steps > 0` check turns into a full skip of
+    // the march/self-shadow branch -- the flat Wang tile sample still
+    // applies, so this is a soft disable, not a black hole.
+    params.pom_steps = tileset_pom_settings_.enabled
+                            ? static_cast<float>(tileset_pom_settings_.steps)
+                            : 0.0f;
+    params.pom_refine_steps = 4.0f;
+    params.pom_max_distance_m = tileset_pom_settings_.max_distance_m;
+    params.pom_fade_band_m = tileset_pom_settings_.fade_band_m;
+    params.pom_max_relief_m = tileset_pom_settings_.relief_cap_m;
+    params.pom_max_march_m = tileset_pom_settings_.max_march_m;
+    params.pom_datum_bias_ao_shadow[0] = tileset_pom_settings_.datum_bias_m;
+    params.pom_datum_bias_ao_shadow[1] = tileset_pom_settings_.ao_strength;
+    params.pom_datum_bias_ao_shadow[2] = tileset_pom_settings_.shadow_strength;
+    params.pom_datum_bias_ao_shadow[3] = 0.0f;
     // Task 11: direction-to-sun, same convention as the RT shadow push
     // constants (record_ray_trace_dispatch): normalize(-sun_direction),
     // since VkSceneLighting::sun_direction points FROM the sun toward the
@@ -4429,6 +4446,18 @@ void VkSceneRenderer::set_volumetrics_settings(
     volumetrics_debug_view_ = s.vol_debug_view;
     if (volumetrics_)
         volumetrics_->update_settings(s, fog);
+}
+
+void VkSceneRenderer::set_tileset_pom_settings(
+    const matter::TilesetPomSettings& s) {
+    tileset_pom_settings_ = s;
+    // write_tileset_params_buffer() no-ops until ensure_tileset_infra() has
+    // run and re-derives the (cheap) slot table from tileset_slots_ every
+    // call, same pattern as the per-frame sun_dir_intensity mirror in
+    // set_lighting -- calling it here keeps the UBO in lockstep with the
+    // settings the instant they change rather than waiting for the next
+    // lighting update.
+    write_tileset_params_buffer();
 }
 
 void VkSceneRenderer::release_part(uint64_t part_hash) {
