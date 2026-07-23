@@ -19,6 +19,7 @@
 
 namespace matter::animation {
 namespace {
+bool g_test_replace_legacy_lock_directory_once = false;
 uint64_t fnv(const uint8_t* p, size_t n) { uint64_t h=1469598103934665603ull; for(size_t i=0;i<n;++i){h^=p[i];h*=1099511628211ull;} return h; }
 void u32(std::vector<uint8_t>& b,uint32_t v){for(int i=0;i<4;++i)b.push_back(uint8_t(v>>(8*i)));}
 void u64(std::vector<uint8_t>& b,uint64_t v){for(int i=0;i<8;++i)b.push_back(uint8_t(v>>(8*i)));}
@@ -62,6 +63,13 @@ struct PublicationLock {
 #else
     int fd = -1;
 #endif
+    bool remove_empty_directory_only() {
+#ifdef _WIN32
+        return RemoveDirectoryA(path.string().c_str()) != 0;
+#else
+        return rmdir(path.string().c_str()) == 0;
+#endif
+    }
     bool migrate_legacy_empty_directory() {
         std::error_code ec;
         const auto status = std::filesystem::symlink_status(path, ec);
@@ -71,7 +79,15 @@ struct PublicationLock {
             return std::filesystem::is_regular_file(status);
         // Only the old directory sentinel can be removed, and only while it
         // is empty.  Any race or non-empty directory fails closed.
-        return std::filesystem::remove(path, ec) && !ec;
+        if (g_test_replace_legacy_lock_directory_once) {
+            g_test_replace_legacy_lock_directory_once = false;
+            if (!remove_empty_directory_only()) return false;
+            FILE* replacement = std::fopen(path.string().c_str(), "wb");
+            if (!replacement) return false;
+            const bool closed = std::fclose(replacement) == 0;
+            return false && closed;
+        }
+        return remove_empty_directory_only();
     }
     bool acquire(const std::filesystem::path& target) {
         path = target.string() + ".lock";
@@ -141,6 +157,7 @@ bool publish_animation_bundle(const BundleCandidates& c,const BundleIdentity& i,
     if(!cleanup()||!lock.release()){fail(d,"bundle.cleanup");return false;}return true;
 }
 void release_animation_bundle_test_lock() { if(g_test_held_publication_lock){g_test_held_publication_lock->release();g_test_held_publication_lock.reset();} }
+void set_animation_bundle_test_replace_legacy_lock_directory_once() { g_test_replace_legacy_lock_directory_once = true; }
 bool load_committed_animation_bundle(const std::filesystem::path& root,uint64_t hash,BLASManager&,AnimAsset&out,Diagnostics&d){
     BundleIdentity i;
     if (!parse_manifest(cache_path_anim_commit(root, hash), i) || i.resolved_hash != hash ||

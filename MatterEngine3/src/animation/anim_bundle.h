@@ -43,6 +43,7 @@ struct BundleCandidates {
 };
 // Test-only companion for deterministic same-process publication contention.
 void release_animation_bundle_test_lock();
+void set_animation_bundle_test_replace_legacy_lock_directory_once();
 bool publish_animation_bundle(const BundleCandidates&, const BundleIdentity&, Diagnostics&);
 bool load_committed_animation_bundle(const std::filesystem::path&, uint64_t,
                                      BLASManager&, AnimAsset&, Diagnostics&);

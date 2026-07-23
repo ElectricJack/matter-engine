@@ -270,6 +270,13 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
           "empty stale directory lock is migrated to a reusable regular lock file");
     CHECK(std::filesystem::is_regular_file(stale_lock),
           "directory-lock migration retains the stable regular lock file");
+    std::filesystem::remove(stale_lock);
+    std::filesystem::create_directory(stale_lock);
+    set_animation_bundle_test_replace_legacy_lock_directory_once();
+    CHECK(!publish_animation_bundle({contention_part, contention_anim, root, 1}, contention_identity, diagnostics),
+          "directory-to-regular migration race fails lock acquisition closed");
+    CHECK(std::filesystem::is_regular_file(stale_lock),
+          "directory-only migration never unlinks a replacement regular lock file");
     std::filesystem::remove(cache_path_anim_commit(root, hash));
     CHECK(!load_committed_animation_bundle(root, hash, unused, loaded, diagnostics),
           "ANLK part without MACM is an animated cache miss");
