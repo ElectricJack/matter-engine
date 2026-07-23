@@ -20,6 +20,7 @@
 #include "bake_trace_names.h"
 #include "ecs/ecs_runtime.h"
 #include "ecs/dynamic_scene_bridge.h"
+#include "ecs/bridge_error_hub.h"  // I.11: hub-backed BridgeErrorSink adapter
 #include "ecs/streaming_systems.h"
 #include "scene/scene_service.h"          // E5b SceneService (centralized mutations)
 #include "scene/scene_change_tracker.h"   // E5b SceneChangeTracker (sequenced deltas)
@@ -50,6 +51,7 @@
 
 // Task 10: live-edit watcher + production seams.
 #include "live_edit.h"
+#include "live_edit_error_hub.h"  // I.11: hub-backed live-edit ErrorSink adapter
 #include "live_edit_prod.h"
 #include "part_graph_snapshot.h"
 
@@ -3383,13 +3385,15 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
     live_edit_prod::ProdBaker         pb(snap, host, cfg.cache_root);
     live_edit_prod::ProdFlattener     pf(snap, host, cfg.cache_root);
 
-    // NullSink: we convert errors to BakeError events below.
-    struct NullSink : live_edit::ErrorSink {
-        void report(const live_edit::LiveEditError&) override {}
-    } null_sink;
+    // I.11: hub-backed adapter — each structured live-edit error is republished
+    // as an immediate error.live_edit on the session hub (in addition to the
+    // BakeError events we synthesize from rep.errors below, which the legacy
+    // poll shim still consumes). LiveEditSession is unchanged: it takes an
+    // ErrorSink& and calls sink_.report() exactly as before.
+    live_edit::HubErrorSink live_edit_sink(hub_);
 
     NullWatcher nw;
-    live_edit::LiveEditSession sess(nw, *gr, pb, pf, null_sink,
+    live_edit::LiveEditSession sess(nw, *gr, pb, pf, live_edit_sink,
                                    live_edit::LiveEditConfig{/*debounce_ms=*/0,
                                                              /*bake_budget_ms=*/0});
 
@@ -4455,7 +4459,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     // Dynamic entity bridge: reconcile ECS entities with renderer slots.
     // Drop Bind changes whose part can't be loaded yet (next frame retries).
     {
-        scene::BridgeErrorSink sink{};
+        // I.11: hub-backed adapter — bridge per-entity errors are republished
+        // as immediate error.part_instance{,_clear} on the session hub.
+        scene::BridgeErrorSink sink = scene::make_hub_error_sink(impl_->hub_);
         std::string bridge_err;
         impl_->dynamic_bridge.reconcile(impl_->ecs_runtime.world(), sink, bridge_err);
         auto changes = impl_->dynamic_bridge.drain();

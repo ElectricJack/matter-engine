@@ -1759,6 +1759,39 @@ clean-eventhub:
 	rm -f event_hub_tests
 
 # ---------------------------------------------------------------------------
+# I.11 -- error-sink migration tests (event-system.md S I.11 Notification-sink
+# row, S I.6 immediate delivery). Proves the two hub-backed sink adapters
+# (live_edit::HubErrorSink, scene::make_hub_error_sink) emit error.live_edit /
+# error.part_instance{,_clear} with the right fields. Self-contained like
+# event_hub_tests above: the adapters are header-only, so this compiles only
+# the event impl objects (no kernel lib, no flecs, no GL). -Isrc reaches
+# live_edit_error_hub.h + ecs/bridge_error_hub.h.
+# ---------------------------------------------------------------------------
+ERROREVENTS_SRC = error_events_tests.cpp \
+                  ../src/event/event_hub.cpp \
+                  ../src/event/subscription.cpp \
+                  ../src/event/dispatch_context.cpp
+ERROREVENTS_HEADERS = check.h ../include/matter/event/event_hub.h \
+                      ../include/matter/event/event_name.h \
+                      ../include/matter/events/error_events.h \
+                      ../src/live_edit_error_hub.h \
+                      ../src/live_edit_interfaces.h \
+                      ../src/ecs/bridge_error_hub.h \
+                      ../src/ecs/bridge_error_sink.h
+
+error_events_tests: $(ERROREVENTS_SRC) $(ERROREVENTS_HEADERS)
+	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include -I../src \
+	    -o $@ $(ERROREVENTS_SRC) -lpthread
+
+run-errorevents: error_events_tests
+	./error_events_tests
+
+.PHONY: run-errorevents clean-errorevents
+clean: clean-errorevents
+clean-errorevents:
+	rm -f error_events_tests
+
+# ---------------------------------------------------------------------------
 # E4a -- evt::CommandRegistry tests (event-system.md S I.10, S II.4 items 2
 # and 5). Same self-contained pattern as event_hub_tests above: compiles the
 # command layer's own implementation objects directly (command.cpp plus the
