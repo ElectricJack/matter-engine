@@ -12,6 +12,7 @@ namespace matter::animation {
 constexpr uint32_t kAnimFormatVersion = 1;
 constexpr uint32_t kAnimationSchemaVersion = 1;
 constexpr uint32_t kAnimationBakeEpoch = 1;
+constexpr uint32_t kAnimationCompilerIdentifier = 1;
 
 struct BuildNonce { uint64_t high = 0; uint64_t low = 0; bool operator==(const BuildNonce& v) const { return high == v.high && low == v.low; } };
 BuildNonce generate_build_nonce();

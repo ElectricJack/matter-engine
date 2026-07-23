@@ -27,6 +27,7 @@ struct BundleIdentity {
     uint32_t animation_bake_epoch = kAnimationBakeEpoch;
     uint32_t target_abi_tag = 0;
     uint32_t ozz_tag_hash = 0;
+    uint32_t compiler_identifier = kAnimationCompilerIdentifier;
     std::vector<LodBindingSignature> lods;
 };
 struct BundleCandidates {

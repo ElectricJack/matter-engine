@@ -200,6 +200,7 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     { auto changed = manifest; put32(changed, 56, 99); refresh_trailing_checksum(changed); reject_manifest("reject MACM bake mismatch", changed); }
     { auto changed = manifest; put32(changed, 60, 99); refresh_trailing_checksum(changed); reject_manifest("reject MACM ABI mismatch", changed); }
     { auto changed = manifest; put32(changed, 64, 99); refresh_trailing_checksum(changed); reject_manifest("reject MACM ozz mismatch", changed); }
+    { auto changed = manifest; put32(changed, 68, 99); refresh_trailing_checksum(changed); reject_manifest("reject MACM compiler mismatch", changed); }
     { auto changed = manifest; changed.back() ^= 1; reject_manifest("reject MACM checksum", changed); }
     for (uint32_t stage = 1; stage <= 3; ++stage) {
         const auto failed_part = root / "failed.part";
