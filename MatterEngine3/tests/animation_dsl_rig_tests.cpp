@@ -70,6 +70,10 @@ void test_reviewed_session_handle_and_source_contracts() {
     auto modifier_in_rig = bake("this.beginRig('r'); this.beginModifier();", host_modifier);
     CHECK(!modifier_in_rig.error.ok && modifier_in_rig.error.message.find("open rig") != std::string::npos,
           "modifier session rejects open rig");
+    script_host::ScriptHost host_polygon;
+    auto rig_in_polygon = bake("this.beginShape(SHAPE.polygon); this.beginRig('r');", host_polygon);
+    CHECK(!rig_in_polygon.error.ok && rig_in_polygon.error.message.find("open authoring session") != std::string::npos,
+          "beginRig rejects an open polygon");
     script_host::ScriptHost host3;
     auto second = bake("const a=this.beginRig('named'); this.root('root'); this.endRig(); const b=this.beginRig('again');", host3);
     CHECK(!second.error.ok && second.error.message.find("only one rig") != std::string::npos,

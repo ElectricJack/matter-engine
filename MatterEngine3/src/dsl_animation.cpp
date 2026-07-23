@@ -25,7 +25,6 @@ bool valid_transform(const AnimationTransform& value) {
     return finite3(value.translation) && finiteq(value.rotation) && finite3(value.scale) && length2 > 1e-12f &&
            value.scale.x > 0.0f && value.scale.y > 0.0f && value.scale.z > 0.0f;
 }
-SourceSpan source_for(const std::string& object) { return {"<script>", 0, 0, object}; }
 int find_joint(const AnimationBuild& build, const std::string& name) {
     for (size_t i = 0; i < build.rig.joints.size(); ++i) if (build.rig.joints[i].name == name) return static_cast<int>(i);
     return -1;
@@ -74,7 +73,7 @@ const std::optional<matter::animation::CanonicalAnimationBuild>& DslState::canon
 }
 uint64_t DslState::begin_rig(const std::string& name) {
     if (animation_) { set_rig_error("only one rig is permitted per bake"); return 0; }
-    if (session_ != Session::None || region_open_) { set_rig_error("beginRig inside an open authoring session"); return 0; }
+    if (session_ != Session::None || region_open_ || polygon_open_ || contour_open_) { set_rig_error("beginRig inside an open authoring session"); return 0; }
     animation_ = std::make_unique<AnimationBuildBuffer>(); animation_->open = true; animation_->name = name;
     return animation_->handle;
 }
@@ -119,7 +118,7 @@ void DslState::rig_socket(const std::string& name, const AnimationTransform& loc
     animation_->authored.rig.sockets.push_back({name, animation_->current_parent, local, rig_source_});
 }
 void DslState::rig_mirror_branch(const std::string& from, const std::string& to, int axis, const std::string& rename_from, const std::string& rename_to, const std::map<std::string, std::string>& names) {
-    if (!rig_open()) { set_error("mirrorBranch outside an open rig session"); return; }
+    if (!rig_open()) { set_rig_error("mirrorBranch outside an open rig session"); return; }
     if (axis < 0 || axis > 2 || find_joint(animation_->authored, from) < 0 || to.empty() || find_joint(animation_->authored, to) >= 0 || has_socket(animation_->authored, to)) { set_rig_error("mirrorBranch has an invalid source, axis, or destination"); return; }
     std::vector<JointDef> joints; std::vector<std::string> queue{from};
     for (size_t i=0; i<queue.size(); ++i) for (const JointDef& joint : animation_->authored.rig.joints) if (joint.parent == queue[i]) queue.push_back(joint.name);
@@ -127,14 +126,14 @@ void DslState::rig_mirror_branch(const std::string& from, const std::string& to,
     std::vector<SocketDef> sockets; for (const SocketDef& socket : animation_->authored.rig.sockets) if (std::find(queue.begin(), queue.end(), socket.joint) != queue.end()) sockets.push_back(socket);
     if (!names.empty()) {
         std::set<std::string> required(queue.begin() + 1, queue.end()); for (const SocketDef& socket : sockets) required.insert(socket.name);
-        if (names.size() != required.size()) { set_error("mirrorBranch explicit name map is incomplete"); return; }
-        for (const auto& entry : names) if (!required.count(entry.first) || entry.second.empty()) { set_error("mirrorBranch explicit name map is incomplete"); return; }
+        if (names.size() != required.size()) { set_rig_error("mirrorBranch explicit name map is incomplete"); return; }
+        for (const auto& entry : names) if (!required.count(entry.first) || entry.second.empty()) { set_rig_error("mirrorBranch explicit name map is incomplete"); return; }
     }
     std::map<std::string, std::string> remap; remap[from]=to;
     for (size_t i=1; i<queue.size(); ++i) {
         std::string dest;
-        if (!names.empty()) { auto it=names.find(queue[i]); if (it == names.end()) { set_error("mirrorBranch explicit name map is incomplete"); return; } dest=it->second; }
-        else if (!token_name(queue[i], rename_from, rename_to, dest)) { set_error("mirrorBranch rename token must occur exactly once"); return; }
+        if (!names.empty()) { auto it=names.find(queue[i]); if (it == names.end()) { set_rig_error("mirrorBranch explicit name map is incomplete"); return; } dest=it->second; }
+        else if (!token_name(queue[i], rename_from, rename_to, dest)) { set_rig_error("mirrorBranch rename token must occur exactly once"); return; }
         if (dest.empty() || find_joint(animation_->authored,dest) >= 0 || has_socket(animation_->authored,dest) || std::any_of(remap.begin(), remap.end(), [&](const auto& p){ return p.second == dest; })) { set_rig_error("mirrorBranch name collision"); return; }
         remap[queue[i]]=dest;
     }
@@ -152,13 +151,13 @@ void DslState::rig_mirror_branch(const std::string& from, const std::string& to,
         if (name.empty() || !occupied.insert(name).second) { set_rig_error("mirrorBranch socket name collision"); return; }
         mirrored_sockets.push_back({source, name});
     }
-    for (const JointDef& source : joints) { AnimationTransform local=reflected(source.local,axis); const std::string parent = source.name == from ? source.parent : remap[source.parent]; animation_->authored.rig.joints.push_back({remap[source.name], parent, local, source.radius, source_for(remap[source.name])}); }
-    for (const auto& cloned : mirrored_sockets) animation_->authored.rig.sockets.push_back({cloned.second,remap[cloned.first.joint],reflected(cloned.first.local,axis),source_for(cloned.second)});
+    for (const JointDef& source : joints) { AnimationTransform local=reflected(source.local,axis); const std::string parent = source.name == from ? source.parent : remap[source.parent]; animation_->authored.rig.joints.push_back({remap[source.name], parent, local, source.radius, rig_source_}); }
+    for (const auto& cloned : mirrored_sockets) animation_->authored.rig.sockets.push_back({cloned.second,remap[cloned.first.joint],reflected(cloned.first.local,axis),rig_source_});
 }
 void DslState::end_rig() {
     if (!rig_open()) { set_rig_error("endRig outside an open rig session"); return; }
     if (!animation_->stack.empty()) { set_rig_error("rig stack left unbalanced at endRig"); return; }
-    AnimationBuild candidate=animation_->authored; candidate.graph.nodes.push_back({"__rig_only_output",{},true,matter::animation::EvaluationCadence::Fixed,source_for("rig")});
+    AnimationBuild candidate=animation_->authored; candidate.graph.nodes.push_back({"__rig_only_output",{},true,matter::animation::EvaluationCadence::Fixed,rig_source_});
     matter::animation::Diagnostics diagnostics; matter::animation::CanonicalAnimationBuild canonical;
     if (!matter::animation::validate_and_canonicalize_animation_build(candidate,canonical,diagnostics)) { set_rig_error(diagnostics.items.empty()?"rig validation failed":diagnostics.items.front().message); return; }
     animation_->canonical=std::move(canonical); animation_->open=false; animation_->ended=true;
