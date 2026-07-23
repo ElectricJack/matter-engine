@@ -13,8 +13,41 @@
 
 #include <box3d/box3d.h>
 
+#include "matter/event/event_hub.h"
+#include "matter/events/physics_events.h"
+
 namespace matter::physics::detail {
 namespace {
+
+// E6: deliver one flecs entity event per endpoint of every captured pair, so
+// each participant independently hears "I touched `other`". Emitted for the
+// RigidBody id (every physics body carries it), on the tick thread, from the
+// pull stage. `ecs_emit` dispatches observers synchronously here; structural
+// work an observer does is still deferred by the enclosing system, exactly as
+// the existing PostPhysics event readers rely on.
+template <typename Event>
+void emit_pair_events(
+    flecs::world& world,
+    const std::vector<PhysicsPairEvent>& pairs) {
+    for (const PhysicsPairEvent& pair : pairs) {
+        if (world.is_alive(pair.first)) {
+            Event payload{pair.second};
+            world.event<Event>()
+                .template id<RigidBody>()
+                .entity(pair.first)
+                .ctx(payload)
+                .emit();
+        }
+        if (world.is_alive(pair.second)) {
+            Event payload{pair.first};
+            world.event<Event>()
+                .template id<RigidBody>()
+                .entity(pair.second)
+                .ctx(payload)
+                .emit();
+        }
+    }
+}
 
 struct BridgeRecord {
     const flecs::world_t* owning_world = nullptr;
@@ -1267,6 +1300,29 @@ void PhysicsContext::pull(flecs::world& world) {
         entity.set<PhysicsVelocity>(velocity);
         entity.add<ecs::TransformDirty>();
     }
+
+    // E6 (docs/event-system.md S I.11 PhysicsEvents row): deliver the captured
+    // snapshot as per-entity flecs gameplay events during this pull stage, then
+    // mirror one aggregate onto the session hub trace for the inspector. The
+    // snapshot (events_) was filled by the preceding step() this fixed tick.
+    emit_pair_events<PhysContactBegin>(world, events_.contact_begin);
+    emit_pair_events<PhysContactEnd>(world, events_.contact_end);
+    emit_pair_events<PhysSensorEnter>(world, events_.sensor_begin);
+    emit_pair_events<PhysSensorExit>(world, events_.sensor_end);
+
+    if (event_hub_ != nullptr) {
+        const uint32_t contacts = static_cast<uint32_t>(
+            events_.contact_begin.size() + events_.contact_end.size());
+        const uint32_t sensors = static_cast<uint32_t>(
+            events_.sensor_begin.size() + events_.sensor_end.size());
+        if (contacts + sensors > 0) {
+            event_hub_->emit(matter::events::PhysStep{contacts, sensors});
+        }
+    }
+}
+
+void PhysicsContext::set_event_hub(matter::evt::Hub* hub) noexcept {
+    event_hub_ = hub;
 }
 
 uint32_t PhysicsContext::last_step_substeps() const noexcept {

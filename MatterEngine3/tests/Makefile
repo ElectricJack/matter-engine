@@ -1857,3 +1857,43 @@ run-scenetracker: $(SCENETRACKER_TARGET)
 clean: clean-scenetracker
 clean-scenetracker:
 	rm -f scene_tracker_tests
+
+# ---------------------------------------------------------------------------
+# E6 -- physics contact/sensor events as flecs entity events (event-system.md
+# S I.4 / S I.11 PhysicsEvents row, S II.1 E6). The consuming proof: a flecs
+# observer receives the per-entity gameplay events the pull stage now emits,
+# and the session hub trace records the aggregate phys.step. Headless,
+# Windows-runnable (physics engine + flecs + box3d + the event hub, no
+# GL/raylib) -- links like the physics target ($(LDFLAGS) $(BOX3D_LIB)).
+# The physics engine sources already carry def rules (via PHYSICS_CPP in the
+# line-833 union) and the event sources carry def rules (via the scene_tracker
+# target above); only physicsevents_tests.cpp needs a fresh def rule. flecs.c
+# reuses the physicsc flavor object the physics target builds.
+# ---------------------------------------------------------------------------
+PHYSICSEVENTS_TARGET = physicsevents_tests
+PHYSICSEVENTS_CPP    = physicsevents_tests.cpp ../src/ecs/scene_registry.cpp \
+                       ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
+                       ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
+                       ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
+                       ../src/streaming/sector_streaming_coordinator.cpp \
+                       ../src/sector_streamer.cpp \
+                       ../src/event/event_hub.cpp ../src/event/subscription.cpp \
+                       ../src/event/dispatch_context.cpp
+PHYSICSEVENTS_C      = $(FLECS_C)
+PHYSICSEVENTS_OBJS   = $(call obj_list,def,$(PHYSICSEVENTS_CPP)) $(call obj_list,physicsc,$(PHYSICSEVENTS_C))
+
+$(eval $(call objrule_cpp,def,physicsevents_tests.cpp))
+
+# Links like the scene-registry target: box3d + the Windows flecs runtime libs
+# (ws2_32/dbghelp/winmm) flecs.c pulls in for its HTTP/OS layer, so the binary
+# actually runs headless on Windows (not just compiles).
+$(PHYSICSEVENTS_TARGET): $(PHYSICSEVENTS_OBJS) $(BOX3D_LIB)
+	$(CC) $(PHYSICSEVENTS_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) -lws2_32 -ldbghelp -lwinmm
+
+run-physicsevents: $(PHYSICSEVENTS_TARGET)
+	./$(PHYSICSEVENTS_TARGET)
+
+.PHONY: run-physicsevents clean-physicsevents
+clean: clean-physicsevents
+clean-physicsevents:
+	rm -f physicsevents_tests

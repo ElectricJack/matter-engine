@@ -19,6 +19,12 @@ void drain_hierarchy_commands(flecs::world& world);
 
 } // namespace matter::ecs
 
+namespace matter::evt {
+
+class Hub;
+
+} // namespace matter::evt
+
 namespace matter::physics::detail {
 
 class PhysicsContext;
@@ -63,6 +69,12 @@ public:
     const streaming::detail::Coordinator& streaming_coordinator() const noexcept;
     void enqueue_world_state(WorldStateCommand command);
     TickResult tick(const TickDesc& desc);
+
+    // E6: connect the owning session's evt::Hub so the physics pull stage can
+    // mirror an aggregate events::PhysStep per active step into its trace
+    // (docs/event-system.md S I.8 / S I.11). Optional; null leaves physics
+    // entity-event delivery unaffected (those go through flecs regardless).
+    void set_physics_event_hub(matter::evt::Hub* hub) noexcept;
 
 private:
     void drain_world_state_commands();

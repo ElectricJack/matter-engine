@@ -377,7 +377,13 @@ struct WorldSession::Impl {
     scene::SceneService        scene_service_{ecs_runtime.world()};
     scene::SceneChangeTracker  scene_tracker_{ecs_runtime.world(), hub_};
 
-    Impl() { wire_legacy_poll_subs(); }
+    Impl() {
+        wire_legacy_poll_subs();
+        // E6 (docs/event-system.md S I.11): mirror per-step physics activity
+        // into this session's hub trace. Entity-shaped physics gameplay events
+        // are delivered separately as flecs entity events on the tick thread.
+        ecs_runtime.set_physics_event_hub(&hub_);
+    }
 
     // Register the private lane::legacy_poll subscriptions (called once from
     // the ctor, on the app thread, BEFORE any bake can emit).
