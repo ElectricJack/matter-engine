@@ -136,8 +136,13 @@ APP_SRC = main.cpp ui.cpp camera_controller.cpp camera_focus.cpp streaming_ancho
 # These are ONLY used by the Windows target; the Linux target links libmatter_engine3.a.
 WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/animation/ozz_adapter.cpp \
+              $(ME3_DIR)/src/animation/animation_ir.cpp \
+              $(ME3_DIR)/src/animation/animation_validate.cpp \
+              $(ME3_DIR)/src/animation/anim_asset.cpp \
+              $(ME3_DIR)/src/animation/anim_bundle.cpp \
               $(ME3_DIR)/src/script_host.cpp $(ME3_DIR)/src/dsl_state.cpp \
               $(ME3_DIR)/src/dsl_triangle.cpp $(ME3_DIR)/src/dsl_bindings.cpp \
+              $(ME3_DIR)/src/dsl_animation.cpp \
               $(ME3_DIR)/src/csg_lowering.cpp $(ME3_DIR)/src/module_resolver.cpp \
               $(ME3_DIR)/src/script/world_definition_loader.cpp \
               $(ME3_DIR)/src/script_rng_binding.cpp \
@@ -639,4 +644,13 @@ build/test_console_log.exe: tests/test_console_log.cpp console_log.cpp console_p
 run-test-console-log: build/test_console_log.exe
 	./build/test_console_log.exe
 
-.PHONY: viewer windows clean shaders shaders_gpu_link win-shaders-gpu regen-processed-shader mingw-box3d embedded-shaders build-engine-lib vulkan-instancing-perf
+.PHONY: viewer windows clean shaders shaders_gpu_link win-shaders-gpu regen-processed-shader mingw-box3d embedded-shaders build-engine-lib vulkan-instancing-perf check-animation-production-sources
+
+# Windows is a direct-source production build.  Keep its list aligned with the
+# archive's A4-A6 implementation units without adding ozz's offline library to
+# the viewer/runtime link line.
+check-animation-production-sources:
+	@for source in dsl_animation.cpp animation_ir.cpp animation_validate.cpp anim_asset.cpp anim_bundle.cpp; do \
+		case " $(WIN_ME3_CPP) " in *"/$$source "*) ;; *) \
+			echo "ERROR: Windows production build omits $$source"; exit 1 ;; esac; \
+	done

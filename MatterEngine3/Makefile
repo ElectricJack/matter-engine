@@ -92,7 +92,7 @@ FLECS_OBJ = flecs.o
 
 # MatterEngine3 C++ sources: full pipeline — bake/script/DSL/CSG, part-graph,
 # LOD flatten/select, tileset pipeline, render, provider, and facade.
-ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
+ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_animation.cpp \
           src/dsl_triangle.cpp src/triangle_emit.cpp src/polygon_triangulate.cpp \
           src/csg_lowering.cpp src/module_resolver.cpp src/script/world_definition_loader.cpp src/script_rng_binding.cpp \
           src/part_asset_v2.cpp src/part_graph.cpp src/part_graph_snapshot.cpp \
@@ -156,7 +156,7 @@ MSL_C   = $(MSL_DIR)/src/surface.c $(MSL_DIR)/src/open_particle_surface.c \
 MSL_C_OBJ = surface.o open_particle_surface.o spatial_hash.o \
             object_allocator.o material_registry.o fat_primitive.o
 
-ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
+ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o dsl_animation.o \
           pf_math.o pf_sim.o pf_fields.o pf_path_recorder.o pf_bindings.o \
           dsl_triangle.o triangle_emit.o polygon_triangulate.o \
           csg_lowering.o module_resolver.o world_definition_loader.o script_rng_binding.o \
@@ -188,7 +188,7 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           terrain_mesher.o \
           sector_streamer.o \
           ozz_adapter.o \
-          animation_ir.o animation_validate.o \
+          animation_ir.o animation_validate.o anim_asset.o anim_bundle.o \
           sector_streaming_coordinator.o
 
 # MSL C++ object names (basenames; same flat-object model as ME3_OBJ).
@@ -213,10 +213,21 @@ SHADER_LOGICAL := shaders/raster.vs shaders/raster.fs shaders/tileset_sampling.g
 # shaders/ is a symlink -> ../MatterSurfaceLib/shaders; shaders_gpu/ is a real dir.
 SHADER_FILES := $(SHADER_LOGICAL)
 
-.PHONY: all clean test vulkan-spirv
+.PHONY: all clean test vulkan-spirv check-animation-production-sources
 
 # all MUST be the first target so it is the default goal.
 all: $(LIB)
+
+# Keep the archive's explicit object list in sync with the animation sources
+# consumed by the bake/runtime boundary.  The archive is flat, so a source
+# listed in ME3_CPP but omitted here silently disappears from production links.
+ANIMATION_PRODUCTION_OBJ = dsl_animation.o ozz_adapter.o animation_ir.o \
+                           animation_validate.o anim_asset.o anim_bundle.o
+check-animation-production-sources:
+	@for object in $(ANIMATION_PRODUCTION_OBJ); do \
+		case " $(ME3_OBJ) " in *" $$object "*) ;; *) \
+			echo "ERROR: production archive omits $$object"; exit 1 ;; esac; \
+	done
 
 shaders_gen/embedded_shaders.h: tools/embed_shaders.py $(SHADER_FILES)
 	mkdir -p shaders_gen
