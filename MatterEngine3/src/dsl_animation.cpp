@@ -72,53 +72,55 @@ const std::optional<matter::animation::CanonicalAnimationBuild>& DslState::canon
     static const std::optional<matter::animation::CanonicalAnimationBuild> none;
     return animation_ ? animation_->canonical : none;
 }
-void DslState::begin_rig(const std::string&) {
-    if (animation_ && animation_->open) { set_error("beginRig inside an open rig session"); return; }
-    animation_ = std::make_unique<AnimationBuildBuffer>(); animation_->open = true;
+uint64_t DslState::begin_rig(const std::string& name) {
+    if (animation_) { set_rig_error("only one rig is permitted per bake"); return 0; }
+    if (session_ != Session::None || region_open_) { set_rig_error("beginRig inside an open authoring session"); return 0; }
+    animation_ = std::make_unique<AnimationBuildBuffer>(); animation_->open = true; animation_->name = name;
+    return animation_->handle;
 }
 void DslState::rig_root(const std::string& name, const AnimationTransform& local) {
-    if (!rig_open()) { set_error("root outside an open rig session"); return; }
-    if (!animation_->authored.rig.joints.empty()) { set_error("multiple roots in rig session"); return; }
-    if (name.empty() || !valid_transform(local)) { set_error("root requires a finite positive transform"); return; }
-    animation_->authored.rig.joints.push_back({name, "", local, animation_->radius, source_for(name)}); animation_->current_parent = name;
+    if (!rig_open()) { set_rig_error("root outside an open rig session"); return; }
+    if (!animation_->authored.rig.joints.empty()) { set_rig_error("multiple roots in rig session"); return; }
+    if (name.empty() || !valid_transform(local)) { set_rig_error("root requires a finite positive transform"); return; }
+    animation_->authored.rig.joints.push_back({name, "", local, animation_->radius, rig_source_}); animation_->current_parent = name;
 }
 void DslState::rig_bone(const std::string& name, const AnimationTransform& local) {
-    if (!rig_open()) { set_error("bone outside an open rig session"); return; }
-    if (animation_->current_parent.empty() || find_joint(animation_->authored, animation_->current_parent) < 0) { set_error("bone has no valid selected parent"); return; }
-    if (name.empty() || find_joint(animation_->authored, name) >= 0) { set_error("duplicate joint name"); return; }
-    if (!valid_transform(local)) { set_error("bone requires a finite positive transform"); return; }
-    animation_->authored.rig.joints.push_back({name, animation_->current_parent, local, animation_->radius, source_for(name)}); animation_->current_parent = name;
+    if (!rig_open()) { set_rig_error("bone outside an open rig session"); return; }
+    if (animation_->current_parent.empty() || find_joint(animation_->authored, animation_->current_parent) < 0) { set_rig_error("bone has no valid selected parent"); return; }
+    if (name.empty() || find_joint(animation_->authored, name) >= 0 || has_socket(animation_->authored, name)) { set_rig_error("duplicate joint name"); return; }
+    if (!valid_transform(local)) { set_rig_error("bone requires a finite positive transform"); return; }
+    animation_->authored.rig.joints.push_back({name, animation_->current_parent, local, animation_->radius, rig_source_}); animation_->current_parent = name;
 }
 void DslState::rig_push() {
-    if (!rig_open()) { set_error("push outside an open rig session"); return; }
-    if (animation_->current_parent.empty()) { set_error("push has no selected joint"); return; }
-    animation_->stack.push_back({animation_->current_parent, animation_->transform, animation_->radius, material_, animation_->mirror_axis});
+    if (!rig_open()) { set_rig_error("push outside an open rig session"); return; }
+    if (animation_->current_parent.empty()) { set_rig_error("push has no selected joint"); return; }
+    animation_->stack.push_back({animation_->current_parent, animation_->radius});
 }
 void DslState::rig_pop() {
-    if (!rig_open()) { set_error("pop outside an open rig session"); return; }
-    if (animation_->stack.empty()) { set_error("pop without matching push"); return; }
-    const RigCursor cursor = animation_->stack.back(); animation_->stack.pop_back(); animation_->current_parent=cursor.parent; animation_->transform=cursor.transform; animation_->radius=cursor.radius; animation_->mirror_axis=cursor.mirror_axis; material_=cursor.material;
+    if (!rig_open()) { set_rig_error("pop outside an open rig session"); return; }
+    if (animation_->stack.empty()) { set_rig_error("pop without matching push"); return; }
+    const RigCursor cursor = animation_->stack.back(); animation_->stack.pop_back(); animation_->current_parent=cursor.parent; animation_->radius=cursor.radius;
 }
 void DslState::rig_at_joint(const std::string& name) {
-    if (!rig_open()) { set_error("atJoint outside an open rig session"); return; }
-    if (find_joint(animation_->authored, name) < 0) { set_error("atJoint selects an unknown joint"); return; }
+    if (!rig_open()) { set_rig_error("atJoint outside an open rig session"); return; }
+    if (find_joint(animation_->authored, name) < 0) { set_rig_error("atJoint selects an unknown joint"); return; }
     animation_->current_parent = name;
 }
 void DslState::rig_radius(float value) {
-    if (!rig_open()) { set_error("radius outside an open rig session"); return; }
-    if (!finite(value) || value <= 0.0f) { set_error("radius must be finite and positive"); return; }
+    if (!rig_open()) { set_rig_error("radius outside an open rig session"); return; }
+    if (!finite(value) || value <= 0.0f) { set_rig_error("radius must be finite and positive"); return; }
     animation_->radius = value;
 }
 void DslState::rig_socket(const std::string& name, const AnimationTransform& local) {
-    if (!rig_open()) { set_error("socket outside an open rig session"); return; }
-    if (animation_->current_parent.empty() || find_joint(animation_->authored, animation_->current_parent) < 0) { set_error("socket has no valid selected parent"); return; }
-    if (name.empty() || has_socket(animation_->authored, name)) { set_error("duplicate socket name"); return; }
-    if (!valid_transform(local)) { set_error("socket requires a finite positive transform"); return; }
-    animation_->authored.rig.sockets.push_back({name, animation_->current_parent, local, source_for(name)});
+    if (!rig_open()) { set_rig_error("socket outside an open rig session"); return; }
+    if (animation_->current_parent.empty() || find_joint(animation_->authored, animation_->current_parent) < 0) { set_rig_error("socket has no valid selected parent"); return; }
+    if (name.empty() || has_socket(animation_->authored, name) || find_joint(animation_->authored, name) >= 0) { set_rig_error("duplicate socket name"); return; }
+    if (!valid_transform(local)) { set_rig_error("socket requires a finite positive transform"); return; }
+    animation_->authored.rig.sockets.push_back({name, animation_->current_parent, local, rig_source_});
 }
 void DslState::rig_mirror_branch(const std::string& from, const std::string& to, int axis, const std::string& rename_from, const std::string& rename_to, const std::map<std::string, std::string>& names) {
     if (!rig_open()) { set_error("mirrorBranch outside an open rig session"); return; }
-    if (axis < 0 || axis > 2 || find_joint(animation_->authored, from) < 0 || to.empty() || find_joint(animation_->authored, to) >= 0) { set_error("mirrorBranch has an invalid source, axis, or destination"); return; }
+    if (axis < 0 || axis > 2 || find_joint(animation_->authored, from) < 0 || to.empty() || find_joint(animation_->authored, to) >= 0 || has_socket(animation_->authored, to)) { set_rig_error("mirrorBranch has an invalid source, axis, or destination"); return; }
     std::vector<JointDef> joints; std::vector<std::string> queue{from};
     for (size_t i=0; i<queue.size(); ++i) for (const JointDef& joint : animation_->authored.rig.joints) if (joint.parent == queue[i]) queue.push_back(joint.name);
     for (const std::string& name : queue) joints.push_back(animation_->authored.rig.joints[find_joint(animation_->authored, name)]);
@@ -133,18 +135,32 @@ void DslState::rig_mirror_branch(const std::string& from, const std::string& to,
         std::string dest;
         if (!names.empty()) { auto it=names.find(queue[i]); if (it == names.end()) { set_error("mirrorBranch explicit name map is incomplete"); return; } dest=it->second; }
         else if (!token_name(queue[i], rename_from, rename_to, dest)) { set_error("mirrorBranch rename token must occur exactly once"); return; }
-        if (dest.empty() || find_joint(animation_->authored,dest) >= 0 || std::any_of(remap.begin(), remap.end(), [&](const auto& p){ return p.second == dest; })) { set_error("mirrorBranch name collision"); return; }
+        if (dest.empty() || find_joint(animation_->authored,dest) >= 0 || has_socket(animation_->authored,dest) || std::any_of(remap.begin(), remap.end(), [&](const auto& p){ return p.second == dest; })) { set_rig_error("mirrorBranch name collision"); return; }
         remap[queue[i]]=dest;
     }
+    // Preflight every socket before appending a single joint. A late socket
+    // failure must not leave a half-mirrored rig behind.
+    std::vector<std::pair<SocketDef, std::string>> mirrored_sockets;
+    std::set<std::string> occupied;
+    for (const JointDef& joint : animation_->authored.rig.joints) occupied.insert(joint.name);
+    for (const SocketDef& socket : animation_->authored.rig.sockets) occupied.insert(socket.name);
+    for (const auto& entry : remap) occupied.insert(entry.second);
+    for (const SocketDef& source : sockets) {
+        std::string name;
+        if (!names.empty()) name=names.at(source.name);
+        else if (!token_name(source.name, rename_from, rename_to, name)) { set_rig_error("mirrorBranch socket rename token must occur exactly once"); return; }
+        if (name.empty() || !occupied.insert(name).second) { set_rig_error("mirrorBranch socket name collision"); return; }
+        mirrored_sockets.push_back({source, name});
+    }
     for (const JointDef& source : joints) { AnimationTransform local=reflected(source.local,axis); const std::string parent = source.name == from ? source.parent : remap[source.parent]; animation_->authored.rig.joints.push_back({remap[source.name], parent, local, source.radius, source_for(remap[source.name])}); }
-    for (const SocketDef& source : sockets) { std::string name; if (!names.empty()) name=names.at(source.name); else if (!token_name(source.name, rename_from, rename_to, name)) { set_error("mirrorBranch socket rename token must occur exactly once"); return; } if (has_socket(animation_->authored,name)) { set_error("mirrorBranch socket name collision"); return; } animation_->authored.rig.sockets.push_back({name,remap[source.joint],reflected(source.local,axis),source_for(name)}); }
+    for (const auto& cloned : mirrored_sockets) animation_->authored.rig.sockets.push_back({cloned.second,remap[cloned.first.joint],reflected(cloned.first.local,axis),source_for(cloned.second)});
 }
 void DslState::end_rig() {
-    if (!rig_open()) { set_error("endRig outside an open rig session"); return; }
-    if (!animation_->stack.empty()) { set_error("rig stack left unbalanced at endRig"); return; }
+    if (!rig_open()) { set_rig_error("endRig outside an open rig session"); return; }
+    if (!animation_->stack.empty()) { set_rig_error("rig stack left unbalanced at endRig"); return; }
     AnimationBuild candidate=animation_->authored; candidate.graph.nodes.push_back({"__rig_only_output",{},true,matter::animation::EvaluationCadence::Fixed,source_for("rig")});
     matter::animation::Diagnostics diagnostics; matter::animation::CanonicalAnimationBuild canonical;
-    if (!matter::animation::validate_and_canonicalize_animation_build(candidate,canonical,diagnostics)) { set_error(diagnostics.items.empty()?"rig validation failed":diagnostics.items.front().message); return; }
+    if (!matter::animation::validate_and_canonicalize_animation_build(candidate,canonical,diagnostics)) { set_rig_error(diagnostics.items.empty()?"rig validation failed":diagnostics.items.front().message); return; }
     animation_->canonical=std::move(canonical); animation_->open=false; animation_->ended=true;
 }
 

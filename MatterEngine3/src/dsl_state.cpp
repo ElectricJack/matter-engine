@@ -77,6 +77,7 @@ void DslState::lookAt(float tx, float ty, float tz,
 }
 
 void DslState::beginVoxels(float spacing) {
+    if (rig_open()) { set_error("beginVoxels inside an open rig session"); return; }
     if (session_ != Session::None) { set_error("beginVoxels inside an open session"); return; }
     // A session change is a lazy-emission flush point: any unclaimed POLYGON
     // profile flat-fills here before the voxel session opens (P3).

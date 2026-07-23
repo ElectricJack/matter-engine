@@ -1181,6 +1181,9 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     if (r.error.ok && state.has_error()) {
         r.error.ok = false;
         r.error.message = state.error();
+        const auto& source = state.rig_error_source();
+        if (source.line != 0)
+            r.error.source_location = source.module + ":" + std::to_string(source.line) + ":" + std::to_string(source.column) + " (" + source.object + ")";
     }
     if (r.error.ok && state.rig_open()) {
         r.error.ok = false;

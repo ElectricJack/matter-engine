@@ -26,16 +26,16 @@ globalThis.Part = class Part {
                            else __dsl_lookAt(t[0],t[1],t[2], up[0],up[1],up[2]); }
   fill(mat)              { __dsl_fill(mat); }
   tint(r,g,b,a)          { __dsl_tint(r,g,b,(a===undefined?1:a)); }
-  beginRig(name)         { __dsl_beginRig(name); }
-  root(name,pos,rot)     { __dsl_root(name,pos,rot); }
-  bone(name,end,rot)     { __dsl_bone(name,end,rot); }
-  push()                 { __dsl_rigPush(); }
-  pop()                  { __dsl_rigPop(); }
-  atJoint(name)          { __dsl_atJoint(name); }
-  radius(value)          { __dsl_radius(value); }
-  socket(name,transform) { __dsl_socket(name,transform); }
-  mirrorBranch(a,b,opts) { __dsl_mirrorBranch(a,b,opts); }
-  endRig()               { __dsl_endRig(); }
+  beginRig(name)         { return __dsl_beginRig(name,(new Error()).stack); }
+  root(name,pos,rot)     { __dsl_root(name,pos,rot,(new Error()).stack); }
+  bone(name,end,rot)     { __dsl_bone(name,end,rot,(new Error()).stack); }
+  push()                 { __dsl_rigPush((new Error()).stack); }
+  pop()                  { __dsl_rigPop((new Error()).stack); }
+  atJoint(name)          { __dsl_atJoint(name,(new Error()).stack); }
+  radius(value)          { __dsl_radius(value,(new Error()).stack); }
+  socket(name,transform) { __dsl_socket(name,transform,(new Error()).stack); }
+  mirrorBranch(a,b,opts) { __dsl_mirrorBranch(a,b,opts,(new Error()).stack); }
+  endRig()               { __dsl_endRig((new Error()).stack); }
   beginVoxels(spacing)   { __dsl_beginVoxels(spacing); }
   endVoxels()            { __dsl_endVoxels(); }
   sphere(c,r)            { __dsl_sphere(c[0],c[1],c[2],r); }

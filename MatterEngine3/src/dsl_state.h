@@ -160,7 +160,10 @@ public:
 
     // Stateful, bake-time rig DSL. Its branch stack is deliberately separate
     // from the geometry matrix stack, preserving existing static authoring.
-    void begin_rig(const std::string& name);
+    uint64_t begin_rig(const std::string& name);
+    void set_rig_source(matter::animation::SourceSpan source) { rig_source_ = std::move(source); }
+    void set_rig_error(const std::string& message) { if (!has_error_) { rig_error_source_ = rig_source_; set_error(message); } }
+    const matter::animation::SourceSpan& rig_error_source() const { return rig_error_source_; }
     void rig_root(const std::string& name, const matter::AnimationTransform& local);
     void rig_bone(const std::string& name, const matter::AnimationTransform& local);
     void rig_push();
@@ -422,6 +425,8 @@ private:
     WorldBinding world_;  // terrain field binding (null by default)
     std::vector<VolumeEmitter> emitters_;  // volumetric emitters (emitVolume)
     std::unique_ptr<AnimationBuildBuffer> animation_;
+    matter::animation::SourceSpan rig_source_;
+    matter::animation::SourceSpan rig_error_source_;
 };
 
 } // namespace dsl

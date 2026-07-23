@@ -34,6 +34,7 @@ DslState::DslState()
 DslState::~DslState() = default;
 
 void DslState::beginShape(int mode) {
+    if (rig_open()) { set_error("beginShape inside an open rig session"); return; }
     if (session_ == Session::Voxels) { set_error("beginShape inside an open voxel session"); return; }
     if (session_ == Session::Triangles) { set_error("nested beginShape (call endShape first)"); return; }
     if (polygon_open_) { set_error("nested beginShape (call endShape first)"); return; }
@@ -231,6 +232,7 @@ void DslState::extrude(const float* path_xyz, int path_n) {
 }
 
 void DslState::begin_modifier_region() {
+    if (rig_open()) { set_error("beginModifier inside an open rig session"); return; }
     if (region_open_) { set_error("beginModifier: modifier regions do not nest"); return; }
     if (session_ != Session::None) {
         set_error("beginModifier inside an open session (call it before beginVoxels/beginShape)");
