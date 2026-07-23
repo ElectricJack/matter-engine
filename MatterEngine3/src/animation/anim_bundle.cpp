@@ -62,8 +62,20 @@ struct PublicationLock {
 #else
     int fd = -1;
 #endif
+    bool migrate_legacy_empty_directory() {
+        std::error_code ec;
+        const auto status = std::filesystem::symlink_status(path, ec);
+        if (ec) return ec == std::errc::no_such_file_or_directory;
+        if (!std::filesystem::exists(status)) return true;
+        if (!std::filesystem::is_directory(status))
+            return std::filesystem::is_regular_file(status);
+        // Only the old directory sentinel can be removed, and only while it
+        // is empty.  Any race or non-empty directory fails closed.
+        return std::filesystem::remove(path, ec) && !ec;
+    }
     bool acquire(const std::filesystem::path& target) {
         path = target.string() + ".lock";
+        if (!migrate_legacy_empty_directory()) return false;
 #ifdef _WIN32
         handle = CreateFileA(path.string().c_str(), GENERIC_READ | GENERIC_WRITE, 0,
                              nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -84,9 +96,9 @@ struct PublicationLock {
         closed = close(fd) == 0; fd = -1;
 #endif
         held = false;
-        std::error_code ec;
-        const bool removed = std::filesystem::remove(path, ec) || !std::filesystem::exists(path, ec);
-        return closed && !ec && removed;
+        // Keep the regular lock file inode permanently.  Removing it after
+        // close races another opener which may still hold the old inode.
+        return closed;
     }
     ~PublicationLock() { release(); }
 };

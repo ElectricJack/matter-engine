@@ -248,7 +248,8 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     locked_identity.part_body_checksum = file_part_body_checksum(locked_part.string().c_str());
     CHECK(!publish_animation_bundle({locked_part, locked_anim, root, 1}, locked_identity, diagnostics),
           "stale lock file is recovered and publisher reaches deterministic injected failure");
-    CHECK(!std::filesystem::exists(stale_lock), "recovered stale lock file is cleaned up");
+    CHECK(std::filesystem::is_regular_file(stale_lock),
+          "recovered stale lock is retained as a stable regular lock file");
     const auto contention_part = root / "contention.part";
     const auto contention_anim = root / "contention.anim";
     CHECK(part_asset::save_v2(contention_part.string(), blas, tlas, nullptr, 0, {}, {}, link, hash),
@@ -263,6 +264,12 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     release_animation_bundle_test_lock();
     CHECK(!publish_animation_bundle({contention_part, contention_anim, root, 1}, contention_identity, diagnostics),
           "publisher proceeds after held OS lock is released");
+    std::filesystem::remove(stale_lock);
+    std::filesystem::create_directory(stale_lock);
+    CHECK(!publish_animation_bundle({contention_part, contention_anim, root, 1}, contention_identity, diagnostics),
+          "empty stale directory lock is migrated to a reusable regular lock file");
+    CHECK(std::filesystem::is_regular_file(stale_lock),
+          "directory-lock migration retains the stable regular lock file");
     std::filesystem::remove(cache_path_anim_commit(root, hash));
     CHECK(!load_committed_animation_bundle(root, hash, unused, loaded, diagnostics),
           "ANLK part without MACM is an animated cache miss");
