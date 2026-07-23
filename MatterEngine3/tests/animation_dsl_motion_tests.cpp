@@ -5,6 +5,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -77,5 +79,28 @@ void test_motion_source_spans_are_preserved() {
     script_host::ScriptHost marker_host; const auto marker=bake("this.beginRig('r'); this.root('root'); this.bone('mid',[1,0,0]); this.bone('tip',[1,0,0]); this.endRig(); this.beginClip('bad',{duration:1,sampleRate:1}); this.marker(1,'bad'); this.endClip();",marker_host);
     CHECK(!marker.error.ok && marker.error.source_location.find("marker")!=std::string::npos,"marker diagnostic preserves declaration object");
 }
+void test_imported_motion_source_span_preserves_module() {
+    const auto root = std::filesystem::temp_directory_path() / "matter_animation_motion_span";
+    std::error_code ec;
+    std::filesystem::create_directories(root, ec);
+    {
+        std::ofstream helper(root / "motion_helper.js", std::ios::binary);
+        helper << "export function declareBad(part) {\n"
+                  "  part.input('speed',{type:'symbol',default:''});\n"
+                  "}\n";
+    }
+    script_host::ScriptHost host;
+    host.set_shared_lib_root(root.string());
+    const auto result = host.bake_source(
+        "import { declareBad } from 'shared-lib/motion_helper';\n"
+        "class ImportedMotionPart extends Part { build(p) {\n"
+        "  this.beginRig('r'); this.root('root'); this.endRig();\n"
+        "  this.beginClip('idle',{duration:1,sampleRate:1}); this.key('root',0,{}); this.endClip();\n"
+        "  this.beginMotion(); declareBad(this); this.clipNode('idle','idle'); this.output('out','idle'); this.endMotion();\n"
+        "} }", "{}", {});
+    CHECK(!result.error.ok && result.error.source_location.find("shared-lib/motion_helper") != std::string::npos,
+          "imported motion diagnostic preserves its module specifier");
+    std::filesystem::remove_all(root, ec);
 }
-int main(){test_generated_loop_and_controls();test_validation_rejects_bad_motion_graph();test_collinear_target_requires_pole();test_generate_cannot_author_geometry();test_generate_cannot_mutate_terrain_or_join_cursor();test_motion_options_fail_closed();test_motion_source_spans_are_preserved();if(g_failures){std::printf("animation_dsl_motion_tests: %d failure(s)\n",g_failures);return 1;}std::printf("animation_dsl_motion_tests: all tests passed\n");return 0;}
+}
+int main(){test_generated_loop_and_controls();test_validation_rejects_bad_motion_graph();test_collinear_target_requires_pole();test_generate_cannot_author_geometry();test_generate_cannot_mutate_terrain_or_join_cursor();test_motion_options_fail_closed();test_motion_source_spans_are_preserved();test_imported_motion_source_span_preserves_module();if(g_failures){std::printf("animation_dsl_motion_tests: %d failure(s)\n",g_failures);return 1;}std::printf("animation_dsl_motion_tests: all tests passed\n");return 0;}

@@ -247,7 +247,7 @@ IMGUI_SRC_WIN = $(IMGUI_CORE_SRC) $(IMGUIZMO_SRC) \
 # Windows: full direct-source compile (APP_SRC + WIN_ME3_CPP + WIN_MSL_CPP + IMGUI_SRC).
 CXX_FLAGS_BUILD_COMMON = $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -MMD -MP
 # Windows is the release build path for now: -DNDEBUG disables assert().
-CXX_FLAGS_BUILD_WIN_COMMON = $(CFLAGS) -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST -DMATTER_VULKAN_VIEWER -DMATTER_VULKAN_ONLY $(WIN_INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -ffunction-sections -fdata-sections -MMD -MP
+CXX_FLAGS_BUILD_WIN_COMMON = $(CFLAGS) -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST -DMATTER_RUNTIME_ANIMATION_ONLY -DMATTER_VULKAN_VIEWER -DMATTER_VULKAN_ONLY $(WIN_INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -ffunction-sections -fdata-sections -MMD -MP
 CXX_FLAGS_BUILD_WIN_COMMON += -DMATTER_HAVE_STREAMLINE=$(HAVE_STREAMLINE)
 ifeq ($(HAVE_STREAMLINE),1)
   CXX_FLAGS_BUILD_WIN_COMMON += -I"$(STREAMLINE_PATH)/include"
@@ -647,10 +647,15 @@ run-test-console-log: build/test_console_log.exe
 .PHONY: viewer windows clean shaders shaders_gpu_link win-shaders-gpu regen-processed-shader mingw-box3d embedded-shaders build-engine-lib vulkan-instancing-perf check-animation-production-sources
 
 # Windows is a direct-source production build.  Keep its list aligned with the
-# archive's A4-A6 implementation units without adding ozz's offline library to
-# the viewer/runtime link line.
+# archive's runtime implementation units without adding Ozz's bake-only
+# compiler. Animation schema verbs are present, while raw-clip compilation is
+# routed to the bake host rather than the Viewer runtime.
 check-animation-production-sources:
 	@for source in dsl_animation.cpp animation_ir.cpp animation_validate.cpp anim_asset.cpp anim_bundle.cpp; do \
 		case " $(WIN_ME3_CPP) " in *"/$$source "*) ;; *) \
 			echo "ERROR: Windows production build omits $$source"; exit 1 ;; esac; \
 	done
+	@case " $(WIN_ME3_CPP) " in *"/ozz_bake.cpp "*) \
+		echo "ERROR: Windows Viewer must not compile Ozz offline bake sources"; exit 1 ;; esac
+	@case " $(WIN_LIBS) " in *"$(OZZ_OFFLINE_LIB) "*) \
+		echo "ERROR: Windows Viewer must not link the Ozz offline archive"; exit 1 ;; esac

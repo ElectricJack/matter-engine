@@ -48,6 +48,7 @@ ifeq ($(UNAME_S),Darwin)
 endif
 
 CC      = g++
+NM      = nm
 CFLAGS  = -std=c++17 -Wall -Wno-missing-braces -Wno-unused-variable -O2 -D$(PLATFORM) -D$(GRAPHICS) \
           -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB $(EXTRA_CFLAGS)
 ifeq ($(UNAME_S),Darwin)
@@ -126,6 +127,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_ani
           src/terrain_mesher.cpp \
           src/sector_streamer.cpp \
           src/animation/ozz_adapter.cpp \
+          src/animation/ozz_bake.cpp \
           src/animation/animation_ir.cpp src/animation/animation_validate.cpp \
           src/animation/anim_asset.cpp src/animation/anim_bundle.cpp \
           src/streaming/sector_streaming_coordinator.cpp
@@ -188,6 +190,7 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o dsl_animation.o \
           terrain_mesher.o \
           sector_streamer.o \
           ozz_adapter.o \
+          ozz_bake.o \
           animation_ir.o animation_validate.o anim_asset.o anim_bundle.o \
           sector_streaming_coordinator.o
 
@@ -213,7 +216,7 @@ SHADER_LOGICAL := shaders/raster.vs shaders/raster.fs shaders/tileset_sampling.g
 # shaders/ is a symlink -> ../MatterSurfaceLib/shaders; shaders_gpu/ is a real dir.
 SHADER_FILES := $(SHADER_LOGICAL)
 
-.PHONY: all clean test vulkan-spirv check-animation-production-sources
+.PHONY: all clean test vulkan-spirv check-animation-production-sources check-animation-runtime-boundary
 
 # all MUST be the first target so it is the default goal.
 all: $(LIB)
@@ -221,13 +224,21 @@ all: $(LIB)
 # Keep the archive's explicit object list in sync with the animation sources
 # consumed by the bake/runtime boundary.  The archive is flat, so a source
 # listed in ME3_CPP but omitted here silently disappears from production links.
-ANIMATION_PRODUCTION_OBJ = dsl_animation.o ozz_adapter.o animation_ir.o \
+ANIMATION_PRODUCTION_OBJ = dsl_animation.o ozz_adapter.o ozz_bake.o animation_ir.o \
                            animation_validate.o anim_asset.o anim_bundle.o
 check-animation-production-sources:
 	@for object in $(ANIMATION_PRODUCTION_OBJ); do \
 		case " $(ME3_OBJ) " in *" $$object "*) ;; *) \
 			echo "ERROR: production archive omits $$object"; exit 1 ;; esac; \
 	done
+
+# The runtime adapter must remain linkable against only Ozz runtime archives.
+# Offline compilation lives in ozz_bake.o, which is retained in this archive
+# for the bake host but is never a Viewer runtime dependency.
+check-animation-runtime-boundary: ozz_adapter.o
+	@if $(NM) -C ozz_adapter.o | grep -q 'ozz::animation::offline::'; then \
+		echo "ERROR: runtime adapter references Ozz offline symbols"; exit 1; \
+	fi
 
 shaders_gen/embedded_shaders.h: tools/embed_shaders.py $(SHADER_FILES)
 	mkdir -p shaders_gen

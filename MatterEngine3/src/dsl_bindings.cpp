@@ -113,7 +113,22 @@ static matter::AnimationTransform socket_transform(JSContext* c, JSValueConst va
 }
 static void rig_source(JSContext* c, int n, JSValueConst* a, const char* object) {
     matter::animation::SourceSpan source{"<part>", 0, 0, object};
-    if (n > 0 && JS_IsString(a[n-1])) { const std::string stack=arg_string(c,a[n-1]); std::smatch match; if (std::regex_search(stack,match,std::regex("<part>:(\\d+):(\\d+)"))) { source.line=(uint32_t)std::stoul(match[1]); source.column=(uint32_t)std::stoul(match[2]); } }
+    if (n > 0 && JS_IsString(a[n-1])) {
+        const std::string stack=arg_string(c,a[n-1]);
+        // The Part base wrapper creates Error.stack itself, so its frame is
+        // always first.  Select the first authored caller frame instead of
+        // searching only for the root pseudo-module: imported shared-lib
+        // declarations must retain their canonical module specifier.
+        const std::regex frame("([^()\\s:]+):(\\d+):(\\d+)");
+        for (std::sregex_iterator it(stack.begin(), stack.end(), frame), end; it != end; ++it) {
+            const std::string module=(*it)[1];
+            if (module == "<part-base>") continue;
+            source.module=module;
+            source.line=static_cast<uint32_t>(std::stoul((*it)[2]));
+            source.column=static_cast<uint32_t>(std::stoul((*it)[3]));
+            break;
+        }
+    }
     state_of(c)->set_rig_source(std::move(source));
 }
 static int anim_user_argc(int argc) { return argc > 0 ? argc - 1 : 0; }

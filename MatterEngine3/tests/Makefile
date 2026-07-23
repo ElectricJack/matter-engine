@@ -94,10 +94,13 @@ MATRIX_HEADERS = check.h ../include/matter/math_types.h ../include/matter/camera
                  ../src/render/gpu_matrix_pack.h
 
 ANIMATION_OZZ_TARGET = animation_ozz_smoke_tests
-ANIMATION_OZZ_CPP = animation_ozz_smoke_tests.cpp ../src/animation/ozz_adapter.cpp ../src/animation/animation_ir.cpp
+ANIMATION_OZZ_CPP = animation_ozz_smoke_tests.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp
 
 ANIMATION_OZZ_ADAPTER_TARGET = animation_ozz_adapter_tests
-ANIMATION_OZZ_ADAPTER_CPP = animation_ozz_adapter_tests.cpp ../src/animation/ozz_adapter.cpp ../src/animation/animation_ir.cpp
+ANIMATION_OZZ_ADAPTER_CPP = animation_ozz_adapter_tests.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp
+
+ANIMATION_OZZ_RUNTIME_LINK_TARGET = animation_ozz_runtime_link_tests
+ANIMATION_OZZ_RUNTIME_LINK_CPP = animation_ozz_runtime_link_tests.cpp ../src/animation/ozz_adapter.cpp ../src/animation/animation_ir.cpp
 
 ANIMATION_IR_TARGET = animation_ir_tests
 ANIMATION_IR_CPP = animation_ir_tests.cpp ../src/animation/animation_ir.cpp ../src/animation/animation_validate.cpp
@@ -550,7 +553,7 @@ PARTSTORE_C   = $(MSL)/material_registry.c
 # the graph_integration/example/gallery/treebake/grasslod/stressforest
 # family all use -DMATTER_HAVE_SCRIPT_HOST + QJS_INC.
 SCRIPT_TARGET = script_host_tests
-SCRIPT_CPP = script_host_tests.cpp ../src/part_graph.cpp ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_animation.cpp ../src/animation/animation_ir.cpp ../src/animation/animation_validate.cpp ../src/animation/ozz_adapter.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+SCRIPT_CPP = script_host_tests.cpp ../src/part_graph.cpp ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_animation.cpp ../src/animation/animation_ir.cpp ../src/animation/animation_validate.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
              ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
              ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
              ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
@@ -1054,6 +1057,12 @@ $(ANIMATION_OZZ_ADAPTER_TARGET): $(ANIMATION_OZZ_ADAPTER_CPP) $(OZZ_OFFLINE_LIBS
 
 run-animation-ozz-adapter: $(ANIMATION_OZZ_ADAPTER_TARGET)
 	./$(ANIMATION_OZZ_ADAPTER_TARGET)
+
+$(ANIMATION_OZZ_RUNTIME_LINK_TARGET): $(ANIMATION_OZZ_RUNTIME_LINK_CPP) $(OZZ_RUNTIME_LIBS)
+	$(CC) $(ANIMATION_OZZ_RUNTIME_LINK_CPP) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(OZZ_RUNTIME_LIBS)
+
+run-animation-ozz-runtime-link: $(ANIMATION_OZZ_RUNTIME_LINK_TARGET)
+	./$(ANIMATION_OZZ_RUNTIME_LINK_TARGET)
 
 $(ANIMATION_IR_TARGET): $(ANIMATION_IR_CPP)
 	$(CC) $(ANIMATION_IR_CPP) -o $@ $(CFLAGS) $(INCLUDE_PATHS)
