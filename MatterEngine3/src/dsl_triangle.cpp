@@ -85,6 +85,7 @@ void DslState::endShape() {
     session_ = Session::None;
 }
 void DslState::beginContour() {
+    if (rig_open()) { set_error("beginContour inside an open rig session"); return; }
     if (!polygon_open_) { set_error("beginContour outside a POLYGON beginShape"); return; }
     if (contour_open_)  { set_error("nested beginContour (call endContour first)"); return; }
     if (poly_outer_.size() < 3) { set_error("beginContour before the outer contour has >=3 vertices"); return; }

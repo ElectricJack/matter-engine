@@ -1180,6 +1180,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     last_buffer_ = state.buffer();
     if (r.error.ok && state.has_error()) {
         r.error.ok = false;
+        r.error.code = state.rig_error_code();
         r.error.message = state.error();
         const auto& source = state.rig_error_source();
         if (source.line != 0)

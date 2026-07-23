@@ -263,17 +263,23 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
     diagnostics.sort();
     if (!diagnostics.items.empty()) return false;
     if (!canonical) return true;
-    canonical->rig.joints.clear(); canonical->targets.clear(); canonical->graph_order = order; canonical->authored_state = encode_authored_state(build);
+    canonical->rig.joints.clear(); canonical->rig.sockets.clear(); canonical->targets.clear(); canonical->graph_order = order; canonical->authored_state = encode_authored_state(build);
     std::vector<std::vector<size_t>> children(build.rig.joints.size());
     size_t root = 0;
     for (size_t i = 0; i < parents.size(); ++i) { if (parents[i] < 0) root = i; else children[parents[i]].push_back(i); }
     std::function<void(size_t, JointIndex)> visit = [&](size_t authored, JointIndex parent) {
         const JointIndex index = static_cast<JointIndex>(canonical->rig.joints.size());
-        canonical->rig.joints.push_back({build.rig.joints[authored].name, parent, build.rig.joints[authored].local, build.rig.joints[authored].radius, {index, index}});
+        canonical->rig.joints.push_back({build.rig.joints[authored].name, parent, build.rig.joints[authored].local, build.rig.joints[authored].radius, {index, index}, build.rig.joints[authored].source});
         for (size_t child : children[authored]) visit(child, index);
         canonical->rig.joints[index].subtree.end = static_cast<JointIndex>(canonical->rig.joints.size());
     };
     visit(root, kInvalidJoint);
+    for (const SocketDef& socket : build.rig.sockets) {
+        JointIndex joint = kInvalidJoint;
+        for (size_t i = 0; i < canonical->rig.joints.size(); ++i)
+            if (canonical->rig.joints[i].name == socket.joint) { joint = static_cast<JointIndex>(i); break; }
+        canonical->rig.sockets.push_back({socket.name, joint, socket.local, socket.source});
+    }
     for (size_t i = 0; i < build.targets.size(); ++i) {
         CanonicalTarget target; target.name = build.targets[i].name; target.driver = build.targets[i].driver; target.cadence = build.targets[i].cadence;
         for (const std::string& name : {build.targets[i].start_joint, build.rig.joints[find_joint(build, build.targets[i].end_joint)].parent, build.targets[i].end_joint}) {

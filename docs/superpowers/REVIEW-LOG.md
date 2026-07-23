@@ -295,3 +295,10 @@ run-graph-integration, run-trivar, run-shlib, run-comp, run-dev. A final full-bu
 the entire MatterEngine3 implementation follows below.
 
 <!-- Subsequent sub-projects appended below as they complete. -->
+
+## A5 â€” Procedural Rig DSL Coverage Follow-up
+
+- **Scope:** Expanded `animation_dsl_rig_tests` across exact `S*R*S` reflection on all axes, proper-frame determinant, canonical quaternions, sockets, explicit maps/tokens/collisions, lifecycle/session exclusion, invalid data, source spans, and atomic mirror preflight.
+- **Behavior fixes:** Canonical rig IR now retains sockets and cloned declaration spans; captured joint/socket quaternions are normalized and sign-canonical; `beginContour()` rejects an open rig; bake errors preserve the rig diagnostic code; a read-only `RigDebugState` permits atomic rollback assertions without exposing mutable bake state.
+- **Verification:** `run-animation-dsl-rig`, `run-animation-ir`, and `run-script` pass. `git diff --check` is clean.
+- **Deferred to A7:** Surface-normal/winding validation belongs to final geometry binding. A5 proves the reflected joint/socket frames remain proper oriented bases; it intentionally does not claim generated surface-normal coverage.

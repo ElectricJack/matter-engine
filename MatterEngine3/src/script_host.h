@@ -14,6 +14,7 @@ namespace script_host {
 
 struct BakeError {
     bool        ok = true;        // true = no error
+    std::string code;             // stable machine-readable category when supplied by the DSL
     std::string message;          // human-readable
     std::string source_location;  // best-effort "file:line" (may be empty)
 };

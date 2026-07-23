@@ -124,8 +124,9 @@ struct AnimationBuild {
     std::vector<AttachmentDef> attachments;
 };
 
-struct CanonicalJoint { std::string name; JointIndex parent = kInvalidJoint; AnimationTransform local{}; float radius = 1.0f; JointRange subtree{}; };
-struct CanonicalRig { std::vector<CanonicalJoint> joints; };
+struct CanonicalJoint { std::string name; JointIndex parent = kInvalidJoint; AnimationTransform local{}; float radius = 1.0f; JointRange subtree{}; SourceSpan source; };
+struct CanonicalSocket { std::string name; JointIndex joint = kInvalidJoint; AnimationTransform local{}; SourceSpan source; };
+struct CanonicalRig { std::vector<CanonicalJoint> joints; std::vector<CanonicalSocket> sockets; };
 struct CanonicalTarget { std::string name; std::vector<JointIndex> chain; TargetDriverKind driver = TargetDriverKind::External; EvaluationCadence cadence = EvaluationCadence::Frame; };
 struct CanonicalAnimationBuild {
     CanonicalRig rig;

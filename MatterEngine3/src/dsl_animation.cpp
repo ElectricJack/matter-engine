@@ -71,6 +71,15 @@ const std::optional<matter::animation::CanonicalAnimationBuild>& DslState::canon
     static const std::optional<matter::animation::CanonicalAnimationBuild> none;
     return animation_ ? animation_->canonical : none;
 }
+RigDebugState DslState::rig_debug_state() const {
+    RigDebugState result;
+    if (!animation_) return result;
+    result.joint_count = animation_->authored.rig.joints.size();
+    result.socket_count = animation_->authored.rig.sockets.size();
+    result.current_parent = animation_->current_parent;
+    result.radius = animation_->radius;
+    return result;
+}
 uint64_t DslState::begin_rig(const std::string& name) {
     if (animation_) { set_rig_error("only one rig is permitted per bake"); return 0; }
     if (session_ != Session::None || region_open_ || polygon_open_ || contour_open_) { set_rig_error("beginRig inside an open authoring session"); return 0; }
@@ -81,14 +90,16 @@ void DslState::rig_root(const std::string& name, const AnimationTransform& local
     if (!rig_open()) { set_rig_error("root outside an open rig session"); return; }
     if (!animation_->authored.rig.joints.empty()) { set_rig_error("multiple roots in rig session"); return; }
     if (name.empty() || !valid_transform(local)) { set_rig_error("root requires a finite positive transform"); return; }
-    animation_->authored.rig.joints.push_back({name, "", local, animation_->radius, rig_source_}); animation_->current_parent = name;
+    AnimationTransform normalized = local; canonicalize(normalized.rotation);
+    animation_->authored.rig.joints.push_back({name, "", normalized, animation_->radius, rig_source_}); animation_->current_parent = name;
 }
 void DslState::rig_bone(const std::string& name, const AnimationTransform& local) {
     if (!rig_open()) { set_rig_error("bone outside an open rig session"); return; }
     if (animation_->current_parent.empty() || find_joint(animation_->authored, animation_->current_parent) < 0) { set_rig_error("bone has no valid selected parent"); return; }
     if (name.empty() || find_joint(animation_->authored, name) >= 0 || has_socket(animation_->authored, name)) { set_rig_error("duplicate joint name"); return; }
     if (!valid_transform(local)) { set_rig_error("bone requires a finite positive transform"); return; }
-    animation_->authored.rig.joints.push_back({name, animation_->current_parent, local, animation_->radius, rig_source_}); animation_->current_parent = name;
+    AnimationTransform normalized = local; canonicalize(normalized.rotation);
+    animation_->authored.rig.joints.push_back({name, animation_->current_parent, normalized, animation_->radius, rig_source_}); animation_->current_parent = name;
 }
 void DslState::rig_push() {
     if (!rig_open()) { set_rig_error("push outside an open rig session"); return; }
@@ -115,11 +126,13 @@ void DslState::rig_socket(const std::string& name, const AnimationTransform& loc
     if (animation_->current_parent.empty() || find_joint(animation_->authored, animation_->current_parent) < 0) { set_rig_error("socket has no valid selected parent"); return; }
     if (name.empty() || has_socket(animation_->authored, name) || find_joint(animation_->authored, name) >= 0) { set_rig_error("duplicate socket name"); return; }
     if (!valid_transform(local)) { set_rig_error("socket requires a finite positive transform"); return; }
-    animation_->authored.rig.sockets.push_back({name, animation_->current_parent, local, rig_source_});
+    AnimationTransform normalized = local; canonicalize(normalized.rotation);
+    animation_->authored.rig.sockets.push_back({name, animation_->current_parent, normalized, rig_source_});
 }
 void DslState::rig_mirror_branch(const std::string& from, const std::string& to, int axis, const std::string& rename_from, const std::string& rename_to, const std::map<std::string, std::string>& names) {
     if (!rig_open()) { set_rig_error("mirrorBranch outside an open rig session"); return; }
-    if (axis < 0 || axis > 2 || find_joint(animation_->authored, from) < 0 || to.empty() || find_joint(animation_->authored, to) >= 0 || has_socket(animation_->authored, to)) { set_rig_error("mirrorBranch has an invalid source, axis, or destination"); return; }
+    if (axis < 0 || axis > 2 || find_joint(animation_->authored, from) < 0 || to.empty()) { set_rig_error("mirrorBranch has an invalid source, axis, or destination"); return; }
+    if (find_joint(animation_->authored, to) >= 0 || has_socket(animation_->authored, to)) { set_rig_error("mirrorBranch destination name collision"); return; }
     std::vector<JointDef> joints; std::vector<std::string> queue{from};
     for (size_t i=0; i<queue.size(); ++i) for (const JointDef& joint : animation_->authored.rig.joints) if (joint.parent == queue[i]) queue.push_back(joint.name);
     for (const std::string& name : queue) joints.push_back(animation_->authored.rig.joints[find_joint(animation_->authored, name)]);
@@ -159,7 +172,7 @@ void DslState::end_rig() {
     if (!animation_->stack.empty()) { set_rig_error("rig stack left unbalanced at endRig"); return; }
     AnimationBuild candidate=animation_->authored; candidate.graph.nodes.push_back({"__rig_only_output",{},true,matter::animation::EvaluationCadence::Fixed,rig_source_});
     matter::animation::Diagnostics diagnostics; matter::animation::CanonicalAnimationBuild canonical;
-    if (!matter::animation::validate_and_canonicalize_animation_build(candidate,canonical,diagnostics)) { set_rig_error(diagnostics.items.empty()?"rig validation failed":diagnostics.items.front().message); return; }
+    if (!matter::animation::validate_and_canonicalize_animation_build(candidate,canonical,diagnostics)) { set_rig_error(diagnostics.items.empty()?"rig validation failed":diagnostics.items.front().message, "rig-validation"); return; }
     animation_->canonical=std::move(canonical); animation_->open=false; animation_->ended=true;
 }
 

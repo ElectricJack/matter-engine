@@ -118,6 +118,15 @@ struct VolumeEmitter {
     float turbulence = 0.6f;
 };
 
+// Read-only snapshot for focused authoring tests. It exposes no mutable IR and
+// is not consumed by the production bake pipeline.
+struct RigDebugState {
+    size_t joint_count = 0;
+    size_t socket_count = 0;
+    std::string current_parent;
+    float radius = 1.0f;
+};
+
 // C++-owned authoring state. JS bindings mutate this; JS holds no engine state.
 class DslState {
 public:
@@ -162,8 +171,9 @@ public:
     // from the geometry matrix stack, preserving existing static authoring.
     uint64_t begin_rig(const std::string& name);
     void set_rig_source(matter::animation::SourceSpan source) { rig_source_ = std::move(source); }
-    void set_rig_error(const std::string& message) { if (!has_error_) { rig_error_source_ = rig_source_; set_error(message); } }
+    void set_rig_error(const std::string& message, const char* code = "rig-dsl") { if (!has_error_) { rig_error_source_ = rig_source_; rig_error_code_ = code; set_error(message); } }
     const matter::animation::SourceSpan& rig_error_source() const { return rig_error_source_; }
+    const std::string& rig_error_code() const { return rig_error_code_; }
     void rig_root(const std::string& name, const matter::AnimationTransform& local);
     void rig_bone(const std::string& name, const matter::AnimationTransform& local);
     void rig_push();
@@ -176,6 +186,7 @@ public:
                            const std::map<std::string, std::string>& explicit_names);
     void end_rig();
     bool rig_open() const { return animation_ && animation_->open; }
+    RigDebugState rig_debug_state() const;
     const std::optional<matter::animation::CanonicalAnimationBuild>& canonical_rig() const;
 
     // Session enum (one at a time; misuse = error)
@@ -427,6 +438,7 @@ private:
     std::unique_ptr<AnimationBuildBuffer> animation_;
     matter::animation::SourceSpan rig_source_;
     matter::animation::SourceSpan rig_error_source_;
+    std::string rig_error_code_;
 };
 
 } // namespace dsl
