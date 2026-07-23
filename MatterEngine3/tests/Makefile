@@ -56,6 +56,15 @@ endif
 # headers, then raylib.
 INCLUDE_PATHS = -I../include -I../src -I../src/render -I../src/provider -I../../MatterSurfaceLib/include -I$(RAYLIB_PATH) -I../../Libraries/raylib/src -I../../ParticleFlowLib/include -I../../Libraries/Vulkan-Headers/include -I$(BOX3D_DIR)/include
 INCLUDE_PATHS += -I$(FLECS_DIR)
+OZZ_DIR = ../../Libraries/ozz-animation
+OZZ_BUILD_DIR = $(OZZ_DIR)/build/matter
+OZZ_INCLUDE = $(OZZ_DIR)/include
+OZZ_BASE_LIB = $(OZZ_BUILD_DIR)/src/base/libozz_base.a
+OZZ_ANIMATION_LIB = $(OZZ_BUILD_DIR)/src/animation/runtime/libozz_animation.a
+OZZ_OFFLINE_LIB = $(OZZ_BUILD_DIR)/src/animation/offline/libozz_animation_offline.a
+OZZ_RUNTIME_LIBS = $(OZZ_ANIMATION_LIB) $(OZZ_BASE_LIB)
+OZZ_OFFLINE_LIBS = $(OZZ_OFFLINE_LIB) $(OZZ_RUNTIME_LIBS)
+INCLUDE_PATHS += -I$(OZZ_INCLUDE)
 
 # Library paths (match MatterSurfaceLib/tests; same depth).
 ifeq ($(UNAME_S),Linux)
@@ -83,6 +92,9 @@ MATRIX_CPP = matrix_tests.cpp ../src/render/matrix_math.cpp ../src/render/frame_
 MATRIX_HEADERS = check.h ../include/matter/math_types.h ../include/matter/camera.h \
                  ../src/render/matrix_math.h ../src/render/frame_matrices.h \
                  ../src/render/gpu_matrix_pack.h
+
+ANIMATION_OZZ_TARGET = animation_ozz_smoke_tests
+ANIMATION_OZZ_CPP = animation_ozz_smoke_tests.cpp ../src/animation/ozz_adapter.cpp
 
 # CPU-only, no GL/VK/raylib link deps (mirrors MATRIX_TARGET's direct-compile
 # pattern) — pure atlas-slicing + mip math, unit-testable without a device.
@@ -1000,7 +1012,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-tilesetslicer run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather
+.PHONY: clean run-matrix run-animation-ozz run-tilesetslicer run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1011,6 +1023,13 @@ $(MATRIX_TARGET): $(MATRIX_CPP) $(MATRIX_HEADERS)
 
 run-matrix: $(MATRIX_TARGET)
 	./$(MATRIX_TARGET)
+
+$(ANIMATION_OZZ_TARGET): $(ANIMATION_OZZ_CPP) $(OZZ_OFFLINE_LIBS)
+
+	$(CC) $(ANIMATION_OZZ_CPP) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(OZZ_OFFLINE_LIBS)
+
+run-animation-ozz: $(ANIMATION_OZZ_TARGET)
+	./$(ANIMATION_OZZ_TARGET)
 
 $(TILESETSLICER_TARGET): $(TILESETSLICER_CPP) $(TILESETSLICER_HEADERS)
 	$(CC) $(TILESETSLICER_CPP) -o $@ $(CFLAGS) $(INCLUDE_PATHS)

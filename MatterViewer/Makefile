@@ -35,6 +35,14 @@ WIN_BOX3D_LIB = $(BOX3D_DIR)/build-mingw/libbox3d.a
 ME3_DIR     = ../MatterEngine3
 MSL_DIR     = ../MatterSurfaceLib
 FLECS_DIR   = ../Libraries/flecs
+OZZ_DIR     = ../Libraries/ozz-animation
+OZZ_BUILD_DIR = $(OZZ_DIR)/build/matter
+OZZ_INCLUDE = $(OZZ_DIR)/include
+OZZ_BASE_LIB = $(OZZ_BUILD_DIR)/src/base/libozz_base.a
+OZZ_ANIMATION_LIB = $(OZZ_BUILD_DIR)/src/animation/runtime/libozz_animation.a
+OZZ_OFFLINE_LIB = $(OZZ_BUILD_DIR)/src/animation/offline/libozz_animation_offline.a
+OZZ_RUNTIME_LIBS = $(OZZ_ANIMATION_LIB) $(OZZ_BASE_LIB)
+OZZ_OFFLINE_LIBS = $(OZZ_OFFLINE_LIB) $(OZZ_RUNTIME_LIBS)
 
 # Linux app compile: only public engine API + imgui + raylib headers visible.
 # Private ME3 src/ headers are NOT exposed here; they are internal to the library.
@@ -49,6 +57,7 @@ INCLUDE_PATHS = -I$(ME3_DIR)/include \
                 -I$(RAYLIB_PATH)/external/glfw/include \
                 -I$(BOX3D_DIR)/include \
                 -I$(FLECS_DIR) \
+                -I$(OZZ_INCLUDE) \
                 -I../Libraries/Vulkan-Headers/include
 
 # Windows direct-source build also needs private ME3 src/ headers since it
@@ -65,7 +74,7 @@ WIN_INCLUDE_PATHS = -I$(VULKAN_INCLUDE) \
                      -I../ParticleFlowLib/include
 
 LDFLAGS = -lGL -lm -lpthread -ldl -lrt -lX11
-LDLIBS  = ../Libraries/raylib/build/linux/libraylib.a $(BOX3D_LIB)
+LDLIBS  = ../Libraries/raylib/build/linux/libraylib.a $(BOX3D_LIB) $(OZZ_RUNTIME_LIBS)
 
 HAVE_STREAMLINE ?= 0
 # Point this at a locally installed, licensed Streamline SDK.  Nothing from the
@@ -126,6 +135,7 @@ APP_SRC = main.cpp ui.cpp camera_controller.cpp camera_focus.cpp streaming_ancho
 # Windows direct-source compile: ME3 pipeline + MSL + QJS (mirrors old viewer).
 # These are ONLY used by the Windows target; the Linux target links libmatter_engine3.a.
 WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
+              $(ME3_DIR)/src/animation/ozz_adapter.cpp \
               $(ME3_DIR)/src/script_host.cpp $(ME3_DIR)/src/dsl_state.cpp \
               $(ME3_DIR)/src/dsl_triangle.cpp $(ME3_DIR)/src/dsl_bindings.cpp \
               $(ME3_DIR)/src/csg_lowering.cpp $(ME3_DIR)/src/module_resolver.cpp \
@@ -369,7 +379,7 @@ VULKAN_RUNTIME_DIR ?= $(shell cygpath -m /ucrt64/bin)
 WIN_FEATURES = build/windows/build_features.txt
 # Win32 import libs raylib depends on; MUST come AFTER libraylib.a on the link
 # line so the static linker can resolve raylib's __imp_* references.
-WIN_LIBS    = $(WIN_BOX3D_LIB) -lwinpthread
+WIN_LIBS    = $(WIN_BOX3D_LIB) $(OZZ_RUNTIME_LIBS) -lwinpthread
 WIN_SYSTEM_LIBS = -lgdi32 -lwinmm -luser32 -lshell32 -lws2_32 -ldbghelp
 
 .PHONY: vulkan-preflight

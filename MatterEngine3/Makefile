@@ -58,6 +58,14 @@ RAYLIB_PATH = ../Libraries/raylib/src
 MSL_DIR     = ../MatterSurfaceLib
 PFL_DIR     = ../ParticleFlowLib
 FLECS_DIR   = ../Libraries/flecs
+OZZ_DIR     = ../Libraries/ozz-animation
+OZZ_BUILD_DIR = $(OZZ_DIR)/build/matter
+OZZ_INCLUDE = $(OZZ_DIR)/include
+OZZ_BASE_LIB = $(OZZ_BUILD_DIR)/src/base/libozz_base.a
+OZZ_ANIMATION_LIB = $(OZZ_BUILD_DIR)/src/animation/runtime/libozz_animation.a
+OZZ_OFFLINE_LIB = $(OZZ_BUILD_DIR)/src/animation/offline/libozz_animation_offline.a
+OZZ_RUNTIME_LIBS = $(OZZ_ANIMATION_LIB) $(OZZ_BASE_LIB)
+OZZ_OFFLINE_LIBS = $(OZZ_OFFLINE_LIB) $(OZZ_RUNTIME_LIBS)
 
 # Include directories: NEW MatterEngine3 headers, consumed MatterSurfaceLib
 # headers, vendored QuickJS-ng, then raylib (for the BLAS/Tri/TriEx types).
@@ -69,6 +77,7 @@ INCLUDE_PATHS = -Iinclude -Isrc -Isrc/render -Isrc/provider \
                 -I$(QJS_DIR) -I$(RAYLIB_PATH) -I$(BOX3D_DIR)/include \
                 -I$(PFL_DIR)/include \
                 -I$(FLECS_DIR) \
+                -I$(OZZ_INCLUDE) \
                 -I../Libraries/Vulkan-Headers/include $(EXTRA_INCLUDE)
 
 # Vendored QuickJS-ng engine. v0.10.0 needs xsum.c (xsum_small_* symbols) beyond
@@ -116,6 +125,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/terrain_field.cpp \
           src/terrain_mesher.cpp \
           src/sector_streamer.cpp \
+          src/animation/ozz_adapter.cpp \
           src/streaming/sector_streaming_coordinator.cpp
 
 # MatterSurfaceLib C++ backend sources compiled into the archive so MatterViewer
@@ -175,6 +185,7 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           terrain_field.o \
           terrain_mesher.o \
           sector_streamer.o \
+          ozz_adapter.o \
           sector_streaming_coordinator.o
 
 # MSL C++ object names (basenames; same flat-object model as ME3_OBJ).
@@ -270,7 +281,7 @@ vulkan-spirv: shaders_gen/embedded_spirv.h
 
 # Per-file pattern rules enable safe parallel compilation with `make -j`.
 # vpath directs Make to search source directories by basename.
-vpath %.cpp src src/render src/provider src/script src/ecs src/streaming $(MSL_DIR)/src $(PFL_DIR)/src
+vpath %.cpp src src/animation src/render src/provider src/script src/ecs src/streaming $(MSL_DIR)/src $(PFL_DIR)/src
 vpath %.c $(QJS_DIR) $(MSL_DIR)/src $(FLECS_DIR)
 
 # Flecs C source (gcc C17, never g++).
