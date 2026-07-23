@@ -111,7 +111,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_ani
           src/tileset_gtex.cpp src/tileset_torus_bvh.cpp \
           src/tileset_bake_primary.cpp src/tileset_bake_ao.cpp src/tileset_bake_horizon.cpp src/tileset_bake_gpu.cpp \
           src/shader_source.cpp \
-          src/render/renderer.cpp src/render/raster_composer.cpp src/render/raster_mesh.cpp \
+          src/render/renderer.cpp src/render/raster_composer.cpp src/render/raster_mesh.cpp src/render/indexed_part_geometry.cpp \
           src/render/matrix_math.cpp src/render/frame_matrices.cpp src/render/vk_temporal.cpp src/render/vk_gi_math.cpp src/render/vk_lighting_controls.cpp \
           src/render/part_store.cpp src/render/world_composer.cpp src/render/world_state.cpp \
           src/render/gpu_culler.cpp \
@@ -128,7 +128,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_ani
           src/sector_streamer.cpp \
           src/animation/ozz_adapter.cpp \
           src/animation/ozz_bake.cpp \
-          src/animation/animation_ir.cpp src/animation/animation_validate.cpp \
+          src/animation/animation_ir.cpp src/animation/animation_validate.cpp src/animation/animation_binding_bake.cpp \
           src/animation/anim_asset.cpp src/animation/anim_bundle.cpp \
           src/streaming/sector_streaming_coordinator.cpp
 
@@ -176,7 +176,7 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o dsl_animation.o \
           tileset_phase.o \
           tileset_gtex.o tileset_torus_bvh.o tileset_bake_primary.o \
           tileset_bake_ao.o tileset_bake_horizon.o tileset_bake_gpu.o shader_source.o \
-          renderer.o raster_composer.o raster_mesh.o matrix_math.o frame_matrices.o vk_temporal.o vk_gi_math.o vk_lighting_controls.o \
+          renderer.o raster_composer.o raster_mesh.o indexed_part_geometry.o matrix_math.o frame_matrices.o vk_temporal.o vk_gi_math.o vk_lighting_controls.o \
           part_store.o world_composer.o world_state.o \
           gpu_culler.o tileset_provider.o tileset_gl_ctx.o \
           tileset_slicer.o \
@@ -191,7 +191,7 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o dsl_animation.o \
           sector_streamer.o \
           ozz_adapter.o \
           ozz_bake.o \
-          animation_ir.o animation_validate.o anim_asset.o anim_bundle.o \
+          animation_ir.o animation_validate.o animation_binding_bake.o anim_asset.o anim_bundle.o \
           sector_streaming_coordinator.o
 
 # MSL C++ object names (basenames; same flat-object model as ME3_OBJ).
@@ -225,7 +225,7 @@ all: $(LIB)
 # consumed by the bake/runtime boundary.  The archive is flat, so a source
 # listed in ME3_CPP but omitted here silently disappears from production links.
 ANIMATION_PRODUCTION_OBJ = dsl_animation.o ozz_adapter.o ozz_bake.o animation_ir.o \
-                           animation_validate.o anim_asset.o anim_bundle.o
+                           animation_validate.o animation_binding_bake.o anim_asset.o anim_bundle.o
 check-animation-production-sources:
 	@for object in $(ANIMATION_PRODUCTION_OBJ); do \
 		case " $(ME3_OBJ) " in *" $$object "*) ;; *) \

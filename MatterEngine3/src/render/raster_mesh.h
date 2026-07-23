@@ -1,6 +1,6 @@
 #ifndef VIEWER_RASTER_MESH_H
 #define VIEWER_RASTER_MESH_H
-#include "bvh.h"           // Tri, TriEx (MatterSurfaceLib)
+#include "indexed_part_geometry.h"
 #include <cstdint>
 #include <vector>
 
@@ -15,19 +15,7 @@ namespace viewer {
 // CPU-side vertex arrays for one LOD level, raylib-Mesh channel layout.
 // TriEx maps onto standard channels: normals <- N0/N1/N2, colors <- tint RGBA,
 // texcoords <- (materialId, per-vertex AO). GL-free: upload happens in RasterComposer.
-struct RasterMeshData {
-    std::vector<float>         vertices;
-    std::vector<float>         normals;
-    std::vector<unsigned char> colors;
-    std::vector<float>         texcoords;
-    std::vector<float>         surface_uvs;
-    std::vector<uint32_t>      material_ids;
-    std::vector<float>         baked_ao;
-    // Unique-vertex count. `indices` triangulates them (3 per tri, part-local).
-    // Empty `indices` = legacy soup layout (only produced by expand_indexed).
-    int vertex_count = 0;
-    std::vector<uint32_t>      indices;
-};
+using RasterMeshData = IndexedPartGeometry;
 
 RasterMeshData build_raster_mesh_data(const Tri* tris, const TriEx* triex, int tri_count,
                                       float default_mat_id = -1.0f);

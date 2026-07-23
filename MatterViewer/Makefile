@@ -162,7 +162,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/tileset_bake.cpp $(ME3_DIR)/src/tileset_settle.cpp \
               $(ME3_DIR)/src/tileset_collider.cpp $(ME3_DIR)/src/tileset_part_collider.cpp \
               \
-              $(ME3_DIR)/src/render/raster_mesh.cpp $(ME3_DIR)/src/render/part_store.cpp \
+              $(ME3_DIR)/src/render/raster_mesh.cpp $(ME3_DIR)/src/render/indexed_part_geometry.cpp $(ME3_DIR)/src/render/part_store.cpp \
               $(ME3_DIR)/src/render/world_state.cpp \
               $(ME3_DIR)/src/render/streamline_bridge.cpp \
               $(ME3_DIR)/src/render/vk_context.cpp $(ME3_DIR)/src/render/vk_resources.cpp \
@@ -517,7 +517,7 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/tileset_gtex.cpp \
         $(ME3_DIR)/src/render/vk_volumetrics.cpp \
         $(ME3_DIR)/src/render/vk_emitter_gather.cpp \
-        $(ME3_DIR)/src/render/raster_mesh.cpp \
+        $(ME3_DIR)/src/render/raster_mesh.cpp $(ME3_DIR)/src/render/indexed_part_geometry.cpp \
         $(ME3_DIR)/src/render/frame_matrices.cpp \
         $(ME3_DIR)/src/render/vk_temporal.cpp \
         $(ME3_DIR)/src/render/vk_gi_math.cpp \
@@ -537,7 +537,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/tileset_gtex.cpp \
 	    $(ME3_DIR)/src/render/vk_volumetrics.cpp \
 	    $(ME3_DIR)/src/render/vk_emitter_gather.cpp \
-	    $(ME3_DIR)/src/render/raster_mesh.cpp \
+	    $(ME3_DIR)/src/render/raster_mesh.cpp $(ME3_DIR)/src/render/indexed_part_geometry.cpp \
 	    $(ME3_DIR)/src/render/vk_instance_cache.cpp \
 	    $(ME3_DIR)/src/render/frame_matrices.cpp \
 	    $(ME3_DIR)/src/render/vk_temporal.cpp \
