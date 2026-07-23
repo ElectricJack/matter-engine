@@ -200,8 +200,11 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
         if (!valid_cadence(target.cadence)) diagnostics.add("invalid-cadence", target.source, "target cadence is unsupported");
         if (target.driver != TargetDriverKind::External && target.driver != TargetDriverKind::Controller)
             diagnostics.add("invalid-target-driver", target.source, "target must have exactly one supported driver");
-        if (target.driver == TargetDriverKind::Controller && find_controller(build, target.controller) < 0)
+        const int controller = find_controller(build, target.controller);
+        if (target.driver == TargetDriverKind::Controller && controller < 0)
             diagnostics.add("bad-controller-reference", target.source, "controller target references an unknown controller");
+        else if (target.driver == TargetDriverKind::Controller && build.controllers[controller].cadence == EvaluationCadence::Frame && target.cadence == EvaluationCadence::Fixed)
+            diagnostics.add("frame-controller-to-fixed-target", target.source, "fixed target cannot depend on a frame controller");
         if (target.driver == TargetDriverKind::External && !target.controller.empty())
             diagnostics.add("multiple-target-drivers", target.source, "external target cannot also name a controller");
         const int start = find_joint(build, target.start_joint), end = find_joint(build, target.end_joint);
