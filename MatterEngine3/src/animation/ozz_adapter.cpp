@@ -166,6 +166,7 @@ void build_raw_children(const RigDefinition& rig, const std::vector<std::vector<
 bool make_runtime_skeleton(const RigDefinition& rig, ozz::unique_ptr<ozz::animation::Skeleton>& runtime, std::vector<JointIndex>* parents, std::vector<JointRange>* subtrees, Diagnostics& diagnostics) {
     const std::vector<std::size_t> order = canonical_order(rig, diagnostics);
     if (order.empty()) return false;
+    if (order.size() > kMaxJoints) { diagnostics.add("ozz-skeleton", rig.source, "rig exceeds the Matter joint limit"); return false; }
     std::unordered_map<std::string, std::size_t> authored;
     std::vector<std::vector<std::size_t>> children(rig.joints.size());
     std::size_t root = 0;
@@ -192,9 +193,27 @@ bool make_runtime_skeleton(const RigDefinition& rig, ozz::unique_ptr<ozz::animat
     return true;
 }
 
+bool validate_metadata(const std::vector<JointIndex>& parents, const std::vector<JointRange>& subtrees) {
+    const std::size_t count = parents.size();
+    if (count == 0 || subtrees.size() != count || parents[0] != kInvalidJoint) return false;
+    std::vector<JointRange> expected(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        if (i != 0 && (parents[i] == kInvalidJoint || parents[i] >= i)) return false;
+        if (subtrees[i].begin != i || subtrees[i].end <= i || subtrees[i].end > count) return false;
+        expected[i] = {static_cast<JointIndex>(i), static_cast<JointIndex>(i + 1)};
+    }
+    for (std::size_t i = count; i-- > 1;) expected[parents[i]].end = std::max(expected[parents[i]].end, expected[i].end);
+    return expected == subtrees;
+}
+
+bool is_ancestor(const OzzSkeleton& skeleton, JointIndex ancestor, JointIndex descendant) {
+    for (JointIndex current = descendant; current != kInvalidJoint; current = skeleton.parent(current)) if (current == ancestor) return true;
+    return false;
+}
+
 } // namespace
 
-struct OzzSkeleton::Impl { ozz::unique_ptr<ozz::animation::Skeleton> runtime; std::vector<JointIndex> parents; std::vector<JointRange> subtrees; };
+struct OzzSkeleton::Impl { ozz::unique_ptr<ozz::animation::Skeleton> runtime; std::vector<JointIndex> parents; std::vector<JointRange> subtrees; std::vector<AnimationTransform> rest_locals; };
 struct OzzAnimation::Impl { ozz::unique_ptr<ozz::animation::Animation> runtime; int tracks = 0; };
 struct OzzSampleContext::Impl { std::unique_ptr<ozz::animation::SamplingJob::Context> runtime; std::vector<ozz::math::SoaTransform> locals; };
 
@@ -206,6 +225,10 @@ OzzSampleContext::OzzSampleContext() : impl_(new Impl) {} OzzSampleContext::~Ozz
 bool build_skeleton(const RigDefinition& rig, OzzSkeleton& skeleton, Diagnostics& diagnostics) {
     ozz::unique_ptr<ozz::animation::Skeleton> runtime; std::vector<JointIndex> parents; std::vector<JointRange> subtrees;
     if (!make_runtime_skeleton(rig, runtime, &parents, &subtrees, diagnostics)) return false;
+    const std::vector<std::size_t> order = canonical_order(rig, diagnostics);
+    if (order.empty()) return false;
+    skeleton.impl_->rest_locals.clear();
+    for (std::size_t joint : order) skeleton.impl_->rest_locals.push_back(rig.joints[joint].local);
     skeleton.impl_->runtime=std::move(runtime); skeleton.impl_->parents=std::move(parents); skeleton.impl_->subtrees=std::move(subtrees); return true;
 }
 
@@ -244,10 +267,11 @@ bool serialize_animation(const OzzAnimation& animation, std::vector<uint8_t>& by
 bool deserialize_skeleton(const uint8_t* data, std::size_t size, OzzSkeleton& skeleton, Diagnostics& diagnostics) {
     if (!data || size<6 || std::memcmp(data,"MOS1",4)!=0) { diagnostics.add("ozz-archive",{},"invalid skeleton archive"); return false; } std::size_t offset=4; uint16_t count=0; if(!read_u16(data,size,offset,count)||count>kMaxJoints||offset+count*6>size){diagnostics.add("ozz-archive",{},"truncated skeleton archive");return false;}
     std::vector<JointIndex> parents(count); std::vector<JointRange> subtrees(count); for(uint16_t i=0;i<count;++i) if(!read_u16(data,size,offset,parents[i])||!read_u16(data,size,offset,subtrees[i].begin)||!read_u16(data,size,offset,subtrees[i].end)){diagnostics.add("ozz-archive",{},"truncated skeleton metadata");return false;}
-    BufferStream stream(data,size); stream.seek(offset); ozz::unique_ptr<ozz::animation::Skeleton> runtime=ozz::make_unique<ozz::animation::Skeleton>(); ozz::io::IArchive archive(&stream); if (!archive.TestTag<ozz::animation::Skeleton>()) { diagnostics.add("ozz-archive",{},"skeleton archive tag mismatch"); return false; } archive >> *runtime; if(stream.failed() || runtime->num_joints()!=count){diagnostics.add("ozz-archive",{},"skeleton metadata count mismatch");return false;} skeleton.impl_->runtime=std::move(runtime); skeleton.impl_->parents=std::move(parents); skeleton.impl_->subtrees=std::move(subtrees); return true;
+    if (!validate_metadata(parents, subtrees)) { diagnostics.add("ozz-archive",{},"invalid skeleton metadata"); return false; }
+    BufferStream stream(data,size); stream.seek(offset); ozz::unique_ptr<ozz::animation::Skeleton> runtime=ozz::make_unique<ozz::animation::Skeleton>(); ozz::io::IArchive archive(&stream); if (!archive.TestTag<ozz::animation::Skeleton>()) { diagnostics.add("ozz-archive",{},"skeleton archive tag mismatch"); return false; } archive >> *runtime; if(stream.failed() || stream.Tell() != static_cast<int>(size) || runtime->num_joints()!=count){diagnostics.add("ozz-archive",{},"skeleton metadata count mismatch");return false;} for (std::size_t i=0; i<count; ++i) if (runtime->joint_parents()[i] != (parents[i] == kInvalidJoint ? ozz::animation::Skeleton::kNoParent : static_cast<int16_t>(parents[i]))) { diagnostics.add("ozz-archive",{},"skeleton parent metadata mismatch"); return false; } std::vector<AnimationTransform> rest; std::vector<ozz::math::SoaTransform> rest_soa(runtime->joint_rest_poses().begin(), runtime->joint_rest_poses().end()); from_soa(rest_soa, count, rest); skeleton.impl_->runtime=std::move(runtime); skeleton.impl_->parents=std::move(parents); skeleton.impl_->subtrees=std::move(subtrees); skeleton.impl_->rest_locals=std::move(rest); return true;
 }
 bool deserialize_animation(const uint8_t* data, std::size_t size, OzzAnimation& animation, Diagnostics& diagnostics) {
-    if(!data||size<6||std::memcmp(data,"MOA1",4)!=0){diagnostics.add("ozz-archive",{},"invalid animation archive");return false;} std::size_t offset=4; uint16_t tracks=0; if(!read_u16(data,size,offset,tracks)){diagnostics.add("ozz-archive",{},"truncated animation archive");return false;} BufferStream stream(data,size);stream.seek(offset);ozz::unique_ptr<ozz::animation::Animation> runtime=ozz::make_unique<ozz::animation::Animation>();ozz::io::IArchive archive(&stream);if (!archive.TestTag<ozz::animation::Animation>()) { diagnostics.add("ozz-archive",{},"animation archive tag mismatch"); return false; } archive>>*runtime;if(stream.failed() || runtime->num_tracks()!=tracks){diagnostics.add("ozz-archive",{},"animation metadata count mismatch");return false;}animation.impl_->tracks=tracks;animation.impl_->runtime=std::move(runtime);return true;
+    if(!data||size<6||std::memcmp(data,"MOA1",4)!=0){diagnostics.add("ozz-archive",{},"invalid animation archive");return false;} std::size_t offset=4; uint16_t tracks=0; if(!read_u16(data,size,offset,tracks)){diagnostics.add("ozz-archive",{},"truncated animation archive");return false;} BufferStream stream(data,size);stream.seek(offset);ozz::unique_ptr<ozz::animation::Animation> runtime=ozz::make_unique<ozz::animation::Animation>();ozz::io::IArchive archive(&stream);if (!archive.TestTag<ozz::animation::Animation>()) { diagnostics.add("ozz-archive",{},"animation archive tag mismatch"); return false; } archive>>*runtime;if(stream.failed() || stream.Tell() != static_cast<int>(size) || runtime->num_tracks()!=tracks){diagnostics.add("ozz-archive",{},"animation metadata count mismatch");return false;}animation.impl_->tracks=tracks;animation.impl_->runtime=std::move(runtime);return true;
 }
 
 bool sample(const OzzAnimation& animation, float ratio, OzzSampleContext& context, std::vector<AnimationTransform>& locals) {
@@ -258,17 +282,18 @@ bool sample(const OzzAnimation& animation, float ratio, OzzSampleContext& contex
     return true;
 }
 
-bool blend(const std::vector<BlendLayer>& layers, const std::vector<AdditiveLayer>& additive_layers, std::vector<AnimationTransform>& locals) {
+bool blend(const OzzSkeleton& skeleton, const std::vector<BlendLayer>& layers, const std::vector<AdditiveLayer>& additive_layers, std::vector<AnimationTransform>& locals) {
     std::size_t count = 0;
     for (const BlendLayer& layer : layers) if (layer.locals) { if (count == 0) count = layer.locals->size(); if (layer.locals->size() != count) return false; }
     for (const AdditiveLayer& layer : additive_layers) if (layer.locals && (count == 0 || layer.locals->size() != count)) return false;
-    if (count == 0) return false;
+    if (!skeleton.impl_->runtime || count == 0 || count != skeleton.joint_count() || skeleton.impl_->rest_locals.size() != count) return false;
     std::vector<std::vector<ozz::math::SoaTransform>> poses;
     std::vector<ozz::animation::BlendingJob::Layer> normal;
     std::vector<ozz::animation::BlendingJob::Layer> additive;
     for (const BlendLayer& layer : layers) if (layer.locals) { poses.emplace_back(); to_soa(*layer.locals, poses.back()); normal.push_back({layer.weight, ozz::make_span(poses.back()), {}}); }
     for (const AdditiveLayer& layer : additive_layers) if (layer.locals) { poses.emplace_back(); to_soa(*layer.locals, poses.back()); additive.push_back({layer.weight, ozz::make_span(poses.back()), {}}); }
-    std::vector<ozz::math::SoaTransform> rest((count + 3) / 4, ozz::math::SoaTransform::identity());
+    std::vector<ozz::math::SoaTransform> rest;
+    to_soa(skeleton.impl_->rest_locals, rest);
     std::vector<ozz::math::SoaTransform> output(rest.size());
     ozz::animation::BlendingJob job;
     job.layers = ozz::make_span(normal); job.additive_layers = ozz::make_span(additive);
@@ -283,7 +308,9 @@ bool local_to_model(const OzzSkeleton& skeleton, const std::vector<AnimationTran
     if (!skeleton.impl_->runtime || count == 0 || locals.size() != count) return false;
     const std::size_t begin = affected.begin == kInvalidJoint ? 0 : affected.begin;
     const std::size_t end = affected.end == kInvalidJoint ? count : affected.end;
-    if (begin >= end || end > count) return false;
+    if (begin >= end || end > count || (begin != 0 && !(affected == skeleton.subtree(static_cast<JointIndex>(begin))))) return false;
+    const bool partial = begin != 0;
+    if (partial && models.size() != count) return false;
     std::vector<ozz::math::SoaTransform> input; to_soa(locals, input);
     std::vector<ozz::math::Float4x4> output(count);
     if (models.size() == count) for (std::size_t i = 0; i < count; ++i) output[i] = to_ozz_matrix(models[i]);
@@ -291,13 +318,14 @@ bool local_to_model(const OzzSkeleton& skeleton, const std::vector<AnimationTran
     job.skeleton = skeleton.impl_->runtime.get(); job.input = ozz::make_span(input); job.output = ozz::make_span(output);
     job.from = static_cast<int>(begin); job.to = static_cast<int>(end - 1);
     if (!job.Run()) return false;
-    models.resize(count); for (std::size_t i = 0; i < count; ++i) models[i] = from_ozz_matrix(output[i]);
+    if (!partial) models.resize(count);
+    for (std::size_t i = begin; i < end; ++i) models[i] = from_ozz_matrix(output[i]);
     return true;
 }
 
 bool solve_two_bone(const TwoBoneSolve& solve, const std::vector<Mat4f>& models, std::vector<AnimationTransform>& locals, std::vector<Mat4f>& updated_models) {
-    if(!solve.skeleton||solve.start==kInvalidJoint||solve.mid==kInvalidJoint||solve.end==kInvalidJoint||models.size()!=solve.skeleton->joint_count()||locals.size()!=models.size()) { return false; }
-    auto to_ozz=[](const Mat4f& value){ozz::math::Float4x4 out;for(int col=0;col<4;++col){float column[4]={value.m[col],value.m[4+col],value.m[8+col],value.m[12+col]};out.cols[col]=ozz::math::simd_float4::LoadPtrU(column);}return out;};const ozz::math::Float4x4 start=to_ozz(models[solve.start]),mid=to_ozz(models[solve.mid]),end=to_ozz(models[solve.end]);ozz::animation::IKTwoBoneJob job;job.target=ozz::math::simd_float4::Load3PtrU(&solve.target.x);job.pole_vector=ozz::math::simd_float4::Load3PtrU(&solve.pole_vector.x);job.mid_axis=ozz::math::simd_float4::Load3PtrU(&solve.mid_axis.x);job.twist_angle=solve.twist_angle;job.soften=solve.soften;job.weight=solve.weight;job.start_joint=&start;job.mid_joint=&mid;job.end_joint=&end;ozz::math::SimdQuaternion start_correction,mid_correction;job.start_joint_correction=&start_correction;job.mid_joint_correction=&mid_correction;if(!job.Run())return false;float values[4];ozz::math::StorePtrU(start_correction.xyzw,values);locals[solve.start].rotation=normalize(multiply({values[0],values[1],values[2],values[3]},locals[solve.start].rotation));ozz::math::StorePtrU(mid_correction.xyzw,values);locals[solve.mid].rotation=normalize(multiply({values[0],values[1],values[2],values[3]},locals[solve.mid].rotation));updated_models=models;return local_to_model(*solve.skeleton,locals,updated_models,solve.skeleton->subtree(solve.start));
+    if(!solve.skeleton || solve.start >= solve.skeleton->joint_count() || solve.mid >= solve.skeleton->joint_count() || solve.end >= solve.skeleton->joint_count() || !is_ancestor(*solve.skeleton, solve.start, solve.mid) || !is_ancestor(*solve.skeleton, solve.mid, solve.end) || models.size()!=solve.skeleton->joint_count()||locals.size()!=models.size()) { return false; }
+    const ozz::math::Float4x4 start=to_ozz_matrix(models[solve.start]),mid=to_ozz_matrix(models[solve.mid]),end=to_ozz_matrix(models[solve.end]);ozz::animation::IKTwoBoneJob job;job.target=ozz::math::simd_float4::Load3PtrU(&solve.target.x);job.pole_vector=ozz::math::simd_float4::Load3PtrU(&solve.pole_vector.x);job.mid_axis=ozz::math::simd_float4::Load3PtrU(&solve.mid_axis.x);job.twist_angle=solve.twist_angle;job.soften=solve.soften;job.weight=solve.weight;job.start_joint=&start;job.mid_joint=&mid;job.end_joint=&end;ozz::math::SimdQuaternion start_correction,mid_correction;job.start_joint_correction=&start_correction;job.mid_joint_correction=&mid_correction;if(!job.Run())return false;float values[4];ozz::math::StorePtrU(start_correction.xyzw,values);locals[solve.start].rotation=normalize(multiply(locals[solve.start].rotation,{values[0],values[1],values[2],values[3]}));ozz::math::StorePtrU(mid_correction.xyzw,values);locals[solve.mid].rotation=normalize(multiply(locals[solve.mid].rotation,{values[0],values[1],values[2],values[3]}));updated_models=models;return local_to_model(*solve.skeleton,locals,updated_models,solve.skeleton->subtree(solve.start));
 }
 
 } // namespace matter::animation

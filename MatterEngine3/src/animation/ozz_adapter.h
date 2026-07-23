@@ -30,6 +30,7 @@ private:
     friend bool build_skeleton(const RigDefinition&, OzzSkeleton&, Diagnostics&);
     friend bool serialize_skeleton(const OzzSkeleton&, std::vector<uint8_t>&);
     friend bool deserialize_skeleton(const uint8_t*, std::size_t, OzzSkeleton&, Diagnostics&);
+    friend bool blend(const OzzSkeleton&, const std::vector<struct BlendLayer>&, const std::vector<struct AdditiveLayer>&, std::vector<AnimationTransform>&);
     friend bool local_to_model(const OzzSkeleton&, const std::vector<AnimationTransform>&, std::vector<Mat4f>&, JointRange);
     friend bool solve_two_bone(const struct TwoBoneSolve&, const std::vector<Mat4f>&, std::vector<AnimationTransform>&, std::vector<Mat4f>&);
 };
@@ -90,7 +91,7 @@ bool serialize_animation(const OzzAnimation&, std::vector<uint8_t>&);
 bool deserialize_skeleton(const uint8_t* data, std::size_t size, OzzSkeleton&, Diagnostics&);
 bool deserialize_animation(const uint8_t* data, std::size_t size, OzzAnimation&, Diagnostics&);
 bool sample(const OzzAnimation&, float ratio, OzzSampleContext&, std::vector<AnimationTransform>& locals);
-bool blend(const std::vector<BlendLayer>&, const std::vector<AdditiveLayer>&, std::vector<AnimationTransform>& locals);
+bool blend(const OzzSkeleton&, const std::vector<BlendLayer>&, const std::vector<AdditiveLayer>&, std::vector<AnimationTransform>& locals);
 bool local_to_model(const OzzSkeleton&, const std::vector<AnimationTransform>& locals,
                     std::vector<Mat4f>& models, JointRange affected = {});
 bool solve_two_bone(const TwoBoneSolve&, const std::vector<Mat4f>& models,
