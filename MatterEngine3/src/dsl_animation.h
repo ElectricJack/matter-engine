@@ -33,6 +33,7 @@ struct AnimationBuildBuffer {
     std::vector<std::string> clip_pose_joints;
     std::string current_motion;
     bool motion_open = false;
+    bool generating = false;
     bool open = false;
     bool ended = false;
 };

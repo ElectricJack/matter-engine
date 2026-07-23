@@ -29,11 +29,13 @@ AnimationBuild valid_build() {
     };
     build.clips = {{"idle", 1.0f, 30.0f, {}, {}, at("idle", 5)}};
     build.inputs = {{"speed", AnimationValueType::Number, 0.0, EvaluationCadence::Fixed, at("speed", 6)}};
-    build.targets = {{"hand", "root", "tip", TargetDriverKind::External, "", EvaluationCadence::Frame, at("hand", 7)}};
+    build.targets = {{"hand", "root", "tip", TargetDriverKind::External, "", EvaluationCadence::Frame, at("hand", 7), {0.0f, 0.0f, 1.0f}, true}};
     build.graph.nodes = {
         {"source", {}, false, EvaluationCadence::Fixed, at("source", 8)},
         {"output", {"source"}, true, EvaluationCadence::Fixed, at("output", 9)},
     };
+    build.graph.nodes[0].kind = GraphNodeKind::Clip;
+    build.graph.nodes[0].clip = "idle";
     return build;
 }
 
@@ -139,9 +141,22 @@ void test_target_chains_and_canonical_orders_are_deterministic() {
     AnimationBuild frame_controller = fixed_controller; frame_controller.controllers[0].cadence = EvaluationCadence::Frame;
     CanonicalAnimationBuild fixed_canonical, frame_canonical; Diagnostics fixed_diagnostics, frame_diagnostics;
     CHECK(validate_and_canonicalize_animation_build(fixed_controller, fixed_canonical, fixed_diagnostics) && validate_and_canonicalize_animation_build(frame_controller, frame_canonical, frame_diagnostics), "controller cadence fixtures validate"); CHECK(fixed_canonical.encode() != frame_canonical.encode(), "encoding retains controller cadence");
-    AnimationBuild tied = valid_build(); tied.graph.nodes = {{"first", {}, false, EvaluationCadence::Fixed, at("first", 60)}, {"second", {}, false, EvaluationCadence::Fixed, at("second", 61)}, {"output", {"first", "second"}, true, EvaluationCadence::Fixed, at("output", 62)}};
+    AnimationBuild tied = valid_build(); tied.graph.nodes = {{"first", {}, false, EvaluationCadence::Fixed, at("first", 60)}, {"second", {}, false, EvaluationCadence::Fixed, at("second", 61)}, {"add", {"first", "second"}, false, EvaluationCadence::Fixed, at("add", 62)}, {"output", {"add"}, true, EvaluationCadence::Fixed, at("output", 63)}}; tied.graph.nodes[0].kind = GraphNodeKind::Clip; tied.graph.nodes[0].clip = "idle"; tied.graph.nodes[1].kind = GraphNodeKind::Clip; tied.graph.nodes[1].clip = "idle"; tied.graph.nodes[2].kind = GraphNodeKind::Additive;
     CanonicalAnimationBuild tied_canonical; Diagnostics tied_diagnostics;
-    CHECK(validate_and_canonicalize_animation_build(tied, tied_canonical, tied_diagnostics), "tied graph fixture validates"); CHECK(tied_canonical.graph_order == std::vector<uint16_t>({0, 1, 2}), "graph topological sort keeps declaration ties");
+    CHECK(validate_and_canonicalize_animation_build(tied, tied_canonical, tied_diagnostics), "tied graph fixture validates"); CHECK(tied_canonical.graph_order == std::vector<uint16_t>({0, 1, 2, 3}), "graph topological sort keeps declaration ties");
+    AnimationBuild bend = valid_build(); bend.rig.joints[2].local.translation = {1.0f, 1.0f, 0.0f}; bend.targets[0].has_pole = false; CanonicalAnimationBuild bend_canonical; Diagnostics bend_diagnostics;
+    CHECK(validate_and_canonicalize_animation_build(bend, bend_canonical, bend_diagnostics), "non-collinear omitted pole fixture validates"); CHECK(std::fabs(bend_canonical.targets[0].bend_axis.z) > 0.99f, "bend axis is computed in start-joint-local bind space");
+    AnimationBuild collinear = valid_build(); collinear.targets[0].has_pole = false; check_invalid(collinear, "collinear-target-pole-required", "collinear omitted pole is rejected");
+    AnimationBuild half_life = valid_build(); half_life.targets[0].position_half_life = -1.0f; check_invalid(half_life, "invalid-target-half-life", "negative target half-life is rejected");
+}
+
+void test_graph_node_contracts_are_strict() {
+    AnimationBuild build = valid_build(); build.graph.nodes[0].dependencies = {"output"}; check_invalid(build, "clip-fields", "clip dependencies are rejected");
+    build = valid_build(); build.graph.nodes[0].kind = GraphNodeKind::Blend1D; build.graph.nodes[0].input = "speed"; build.graph.nodes[0].dependencies = {"output"}; build.graph.nodes[0].thresholds = {0.0f}; check_invalid(build, "blend1d-arity", "blend1D arity is rejected");
+    build = valid_build(); build.graph.nodes[0].kind = GraphNodeKind::Additive; build.graph.nodes[0].dependencies = {"output"}; check_invalid(build, "additive-arity", "additive arity is rejected");
+    build = valid_build(); build.graph.nodes[0].kind = GraphNodeKind::NativeController; build.graph.nodes[0].controller = "missing"; check_invalid(build, "missing-controller-reference", "native controller reference is required");
+    build = valid_build(); build.graph.nodes[1].dependencies.clear(); check_invalid(build, "output-arity", "output arity is rejected");
+    build = valid_build(); build.graph.nodes[0].kind = static_cast<GraphNodeKind>(99); check_invalid(build, "invalid-graph-kind", "unsupported graph kind is rejected");
 }
 
 void test_diagnostics_are_stably_sorted() {
@@ -157,7 +172,7 @@ void test_diagnostics_are_stably_sorted() {
 } // namespace
 
 int main() {
-    test_duplicate_names_are_rejected(); test_rig_structure_and_numeric_values_are_validated(); test_limits_and_clip_data_are_validated(); test_inputs_drivers_targets_and_graph_are_validated(); test_target_chains_and_canonical_orders_are_deterministic(); test_diagnostics_are_stably_sorted();
+    test_duplicate_names_are_rejected(); test_rig_structure_and_numeric_values_are_validated(); test_limits_and_clip_data_are_validated(); test_inputs_drivers_targets_and_graph_are_validated(); test_target_chains_and_canonical_orders_are_deterministic(); test_graph_node_contracts_are_strict(); test_diagnostics_are_stably_sorted();
     if (g_failures != 0) { std::printf("animation_ir_tests: %d failure(s)\n", g_failures); return 1; }
     std::printf("animation_ir_tests: all tests passed\n"); return 0;
 }

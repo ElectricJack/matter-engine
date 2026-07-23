@@ -85,6 +85,7 @@ struct ClipDefinition {
     SourceSpan source;
     bool loop = false;
     bool additive = false;
+    std::vector<uint8_t> ozz_blob;
 };
 
 struct AnimationValue {
@@ -105,8 +106,8 @@ struct AnimationValue {
 };
 
 struct InputSchema { std::string name; AnimationValueType type = AnimationValueType::Number; AnimationValue default_value{}; EvaluationCadence cadence = EvaluationCadence::Fixed; SourceSpan source; };
-struct TargetSchema { std::string name; std::string start_joint; std::string end_joint; TargetDriverKind driver = TargetDriverKind::External; std::string controller; EvaluationCadence cadence = EvaluationCadence::Frame; SourceSpan source; Float3 pole{0.0f, 0.0f, 0.0f}; bool has_pole = false; float soften = 1.0f; float twist = 0.0f; float position_half_life = 0.0f; float rotation_half_life = 0.0f; float weight_half_life = 0.0f; bool enabled = true; };
-struct ControllerDef { std::string name; SourceSpan source; EvaluationCadence cadence = EvaluationCadence::Fixed; };
+struct TargetSchema { std::string name; std::string start_joint; std::string end_joint; TargetDriverKind driver = TargetDriverKind::External; std::string controller; EvaluationCadence cadence = EvaluationCadence::Frame; SourceSpan source; Float3 pole{0.0f, 0.0f, 0.0f}; bool has_pole = false; float soften = 1.0f; float twist = 0.0f; float position_half_life = 0.0f; float rotation_half_life = 0.0f; float weight_half_life = 0.0f; bool enabled = true; bool require_explicit_pole = false; };
+struct ControllerDef { std::string name; SourceSpan source; EvaluationCadence cadence = EvaluationCadence::Fixed; std::string type; };
 enum class GraphNodeKind { Clip, Blend1D, Additive, NativeController, Output };
 struct GraphNode { std::string name; std::vector<std::string> dependencies; bool is_output = false; EvaluationCadence cadence = EvaluationCadence::Fixed; SourceSpan source; GraphNodeKind kind = GraphNodeKind::Output; std::string clip; std::string input; std::vector<float> thresholds; std::string controller; };
 struct MotionDefinition { std::vector<GraphNode> nodes; SourceSpan source; };
@@ -125,12 +126,13 @@ struct AnimationBuild {
     std::vector<SkinBindingDef> skin_bindings;
     std::vector<RigidBindingDef> rigid_bindings;
     std::vector<AttachmentDef> attachments;
+    std::vector<uint8_t> ozz_skeleton_blob;
 };
 
 struct CanonicalJoint { std::string name; JointIndex parent = kInvalidJoint; AnimationTransform local{}; float radius = 1.0f; JointRange subtree{}; SourceSpan source; };
 struct CanonicalSocket { std::string name; JointIndex joint = kInvalidJoint; AnimationTransform local{}; SourceSpan source; };
 struct CanonicalRig { std::vector<CanonicalJoint> joints; std::vector<CanonicalSocket> sockets; };
-struct CanonicalTarget { std::string name; std::vector<JointIndex> chain; TargetDriverKind driver = TargetDriverKind::External; EvaluationCadence cadence = EvaluationCadence::Frame; Float3 pole{0.0f, 0.0f, 0.0f}; bool has_pole = false; Float3 bend_axis{0.0f, 0.0f, 1.0f}; float soften = 1.0f; float twist = 0.0f; bool enabled = true; };
+struct CanonicalTarget { std::string name; std::vector<JointIndex> chain; TargetDriverKind driver = TargetDriverKind::External; EvaluationCadence cadence = EvaluationCadence::Frame; std::string controller; Float3 pole{0.0f, 0.0f, 0.0f}; bool has_pole = false; Float3 bend_axis{0.0f, 0.0f, 1.0f}; float soften = 1.0f; float twist = 0.0f; float position_half_life = 0.0f; float rotation_half_life = 0.0f; float weight_half_life = 0.0f; bool enabled = true; };
 struct CanonicalAnimationBuild {
     CanonicalRig rig;
     std::vector<CanonicalTarget> targets;

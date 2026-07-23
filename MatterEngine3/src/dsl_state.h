@@ -186,6 +186,8 @@ public:
                            const std::map<std::string, std::string>& explicit_names);
     void end_rig();
     bool rig_open() const { return animation_ && animation_->open; }
+    bool clip_open() const { return animation_ && animation_->clip_open; }
+    bool motion_open() const { return animation_ && animation_->motion_open; }
     RigDebugState rig_debug_state() const;
     const std::optional<matter::animation::CanonicalAnimationBuild>& canonical_rig() const;
 

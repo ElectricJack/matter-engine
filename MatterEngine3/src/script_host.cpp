@@ -1191,6 +1191,8 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         r.error.ok = false;
         r.error.message = "rig session left unfinished at end of build";
     }
+    if (r.error.ok && state.clip_open()) { r.error.ok=false; r.error.message="clip session left unfinished at end of build"; }
+    if (r.error.ok && state.motion_open()) { r.error.ok=false; r.error.message="motion session left unfinished at end of build"; }
     if (r.error.ok && state.canonical_rig()) last_animation_rig_ = state.canonical_rig();
     if (r.error.ok && state.authored_animation()) last_animation_build_ = *state.authored_animation();
     // A session left open at end of build is a misuse.

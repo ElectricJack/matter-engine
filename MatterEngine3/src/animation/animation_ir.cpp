@@ -37,7 +37,7 @@ std::string CanonicalAnimationBuild::encode() const {
                << socket.local.scale.x << ',' << socket.local.scale.y << ',' << socket.local.scale.z << '\n';
     }
     for (const CanonicalTarget& target : targets) {
-        output << target.name << '|' << static_cast<int>(target.driver) << '|' << static_cast<int>(target.cadence) << '|' << target.has_pole << '|' << target.pole.x << ',' << target.pole.y << ',' << target.pole.z << '|' << target.bend_axis.x << ',' << target.bend_axis.y << ',' << target.bend_axis.z << '|' << target.soften << '|' << target.twist << '|' << target.enabled;
+        output << target.name << '|' << static_cast<int>(target.driver) << '|' << static_cast<int>(target.cadence) << '|' << target.controller << '|' << target.has_pole << '|' << target.pole.x << ',' << target.pole.y << ',' << target.pole.z << '|' << target.bend_axis.x << ',' << target.bend_axis.y << ',' << target.bend_axis.z << '|' << target.soften << '|' << target.twist << '|' << target.position_half_life << '|' << target.rotation_half_life << '|' << target.weight_half_life << '|' << target.enabled;
         for (JointIndex joint : target.chain) output << '|' << joint;
         output << '\n';
     }

@@ -16,6 +16,10 @@ Float3 rotate_inverse(const Quaternion& q, const Float3& v) {
     const Quaternion t{q.w*v.x + q.y*v.z - q.z*v.y, q.w*v.y + q.z*v.x - q.x*v.z, q.w*v.z + q.x*v.y - q.y*v.x, -q.x*v.x-q.y*v.y-q.z*v.z};
     return {t.x*p.w + t.w*p.x + t.y*p.z - t.z*p.y, t.y*p.w + t.w*p.y + t.z*p.x - t.x*p.z, t.z*p.w + t.w*p.z + t.x*p.y - t.y*p.x};
 }
+Quaternion qmul_local(const Quaternion&a,const Quaternion&b){return {a.w*b.x+a.x*b.w+a.y*b.z-a.z*b.y,a.w*b.y-a.x*b.z+a.y*b.w+a.z*b.x,a.w*b.z+a.x*b.y-a.y*b.x+a.z*b.w,a.w*b.w-a.x*b.x-a.y*b.y-a.z*b.z};}
+Float3 qrotate_local(const Quaternion&q,const Float3&v){Quaternion p{v.x,v.y,v.z,0}; Quaternion qi{-q.x,-q.y,-q.z,q.w}; Quaternion t=qmul_local(q,p); Quaternion r=qmul_local(t,qi); return {r.x,r.y,r.z};}
+Quaternion bind_model_rotation(const AnimationBuild& build,const std::vector<int>& parents,int index){if(index<0)return {0,0,0,1};const auto&q=build.rig.joints[(size_t)index].local.rotation;return parents[index]<0?q:qmul_local(bind_model_rotation(build,parents,parents[index]),q);}
+Float3 bind_model_position(const AnimationBuild& build,const std::vector<int>& parents,int index){if(index<0)return {};const auto& j=build.rig.joints[(size_t)index];if(parents[index]<0)return j.local.translation;const int p=parents[index];const Float3 pt=bind_model_position(build,parents,p);const Float3 d=qrotate_local(bind_model_rotation(build,parents,p),j.local.translation);return {pt.x+d.x,pt.y+d.y,pt.z+d.z};}
 bool finiteq(const Quaternion& value) { return finite(value.x) && finite(value.y) && finite(value.z) && finite(value.w); }
 bool valid_cadence(EvaluationCadence cadence) { return cadence == EvaluationCadence::Fixed || cadence == EvaluationCadence::Frame; }
 bool valid_input_type(AnimationValueType type) {
@@ -91,7 +95,7 @@ std::string encode_authored_state(const AnimationBuild& build) {
     output << std::setprecision(9);
     for (const SocketDef& socket : build.rig.sockets) { append_string(output, socket.name); append_string(output, socket.joint); append_transform(output, socket.local); }
     for (const ClipDefinition& clip : build.clips) {
-        append_string(output, clip.name); output << clip.duration << ',' << clip.rate << ',' << clip.loop << ',' << clip.additive << '|';
+        append_string(output, clip.name); output << clip.duration << ',' << clip.rate << ',' << clip.loop << ',' << clip.additive << ',' << clip.ozz_blob.size() << '|';
         for (const ClipTrack& track : clip.tracks) { append_string(output, track.joint); for (const ClipKey& key : track.keys) { output << key.time << '|'; append_transform(output, key.value); } }
         for (const ClipMarker& marker : clip.markers) { append_string(output, marker.name); output << marker.time << '|'; }
     }
@@ -108,9 +112,9 @@ std::string encode_authored_state(const AnimationBuild& build) {
         }
         output << '|';
     }
-    for (const TargetSchema& target : build.targets) { append_string(output, target.name); append_string(output, target.start_joint); append_string(output, target.end_joint); append_string(output, target.controller); output << static_cast<int>(target.driver) << ',' << static_cast<int>(target.cadence) << ',' << target.has_pole << ',' << target.pole.x << ',' << target.pole.y << ',' << target.pole.z << ',' << target.soften << ',' << target.twist << ',' << target.enabled << '|'; }
-    for (const ControllerDef& controller : build.controllers) { append_string(output, controller.name); output << static_cast<int>(controller.cadence) << '|'; }
-    for (const GraphNode& node : build.graph.nodes) { append_string(output, node.name); append_string(output, node.clip); append_string(output, node.controller); output << node.is_output << ',' << static_cast<int>(node.kind) << ',' << static_cast<int>(node.cadence) << '|'; for (const std::string& dependency : node.dependencies) append_string(output, dependency); }
+    for (const TargetSchema& target : build.targets) { append_string(output, target.name); append_string(output, target.start_joint); append_string(output, target.end_joint); append_string(output, target.controller); output << static_cast<int>(target.driver) << ',' << static_cast<int>(target.cadence) << ',' << target.has_pole << ',' << target.pole.x << ',' << target.pole.y << ',' << target.pole.z << ',' << target.soften << ',' << target.twist << ',' << target.position_half_life << ',' << target.rotation_half_life << ',' << target.weight_half_life << ',' << target.enabled << ',' << target.require_explicit_pole << '|'; }
+    for (const ControllerDef& controller : build.controllers) { append_string(output, controller.name); append_string(output, controller.type); output << static_cast<int>(controller.cadence) << '|'; }
+    for (const GraphNode& node : build.graph.nodes) { append_string(output, node.name); append_string(output, node.clip); append_string(output, node.input); append_string(output, node.controller); output << node.is_output << ',' << static_cast<int>(node.kind) << ',' << static_cast<int>(node.cadence) << '|'; for (float threshold : node.thresholds) output << threshold << ','; output << '|'; for (const std::string& dependency : node.dependencies) append_string(output, dependency); }
     for (const SkinBindingDef& binding : build.skin_bindings) { append_string(output, binding.name); for (const std::string& joint : binding.joints) append_string(output, joint); }
     for (const RigidBindingDef& binding : build.rigid_bindings) { append_string(output, binding.name); append_string(output, binding.joint); append_transform(output, binding.local); }
     for (const AttachmentDef& attachment : build.attachments) { append_string(output, attachment.name); append_string(output, attachment.socket); append_transform(output, attachment.local); }
@@ -214,6 +218,10 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
             diagnostics.add("multiple-target-drivers", target.source, "external target cannot also name a controller");
         if (!finite(target.soften) || target.soften < 0.0f || target.soften > 1.0f) diagnostics.add("invalid-target-soften", target.source, "target soften must be finite in [0,1]");
         if (!finite(target.twist)) diagnostics.add("invalid-target-twist", target.source, "target twist must be finite");
+        if (!finite(target.position_half_life) || target.position_half_life < 0.0f ||
+            !finite(target.rotation_half_life) || target.rotation_half_life < 0.0f ||
+            !finite(target.weight_half_life) || target.weight_half_life < 0.0f)
+            diagnostics.add("invalid-target-half-life", target.source, "target half-lives must be finite and non-negative");
         if (target.has_pole && !finite3(target.pole)) diagnostics.add("invalid-target-pole", target.source, "target pole must be finite");
         const int start = find_joint(build, target.start_joint), end = find_joint(build, target.end_joint);
         if (start < 0) diagnostics.add("missing-target-start-joint", target.source, "target start joint is not declared");
@@ -232,6 +240,15 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
             if (finite3(segment) && segment.x * segment.x + segment.y * segment.y + segment.z * segment.z <= 1e-12f)
                 diagnostics.add("degenerate-target-segment", build.rig.joints[chain[i]].source, "target segment must be non-degenerate");
         }
+        if (chain.size() == 3 && !target.has_pole) {
+            const int startAuth=(int)chain[0], midAuth=(int)chain[1], endAuth=(int)chain[2];
+            const Float3 startPos=bind_model_position(build,parents,startAuth), midPos=bind_model_position(build,parents,midAuth), endPos=bind_model_position(build,parents,endAuth);
+            const Float3 a=rotate_inverse(build.rig.joints[startAuth].local.rotation,{midPos.x-startPos.x,midPos.y-startPos.y,midPos.z-startPos.z});
+            const Float3 b=rotate_inverse(build.rig.joints[startAuth].local.rotation,{endPos.x-startPos.x,endPos.y-startPos.y,endPos.z-startPos.z});
+            const Float3 cross{a.y*b.z-a.z*b.y, a.z*b.x-a.x*b.z, a.x*b.y-a.y*b.x};
+            if (cross.x*cross.x + cross.y*cross.y + cross.z*cross.z <= 1e-12f)
+                diagnostics.add("collinear-target-pole-required", target.source, "collinear target chain requires an explicit pole");
+        }
         for (const std::vector<JointIndex>& other : chains) {
             bool overlap = false;
             for (JointIndex left : chain) for (JointIndex right : other) if (left == right) overlap = true;
@@ -245,10 +262,49 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
     std::vector<uint16_t> indegree(build.graph.nodes.size(), 0);
     for (size_t i = 0; i < build.graph.nodes.size(); ++i) {
         const GraphNode& node = build.graph.nodes[i];
-        if (node.is_output) ++outputs;
-        if (static_cast<int>(node.kind) < static_cast<int>(GraphNodeKind::Clip) || static_cast<int>(node.kind) > static_cast<int>(GraphNodeKind::Output)) diagnostics.add("invalid-graph-kind", node.source, "graph node kind is unsupported");
-        if (node.kind == GraphNodeKind::Clip && !node.clip.empty()) { bool found=false; for(const auto& clip:build.clips) if(clip.name==node.clip) found=true; if(!found) diagnostics.add("missing-clip-reference", node.source, "clip graph node references an unknown clip"); }
-        if (node.kind == GraphNodeKind::NativeController && !node.controller.empty() && find_controller(build,node.controller)<0) diagnostics.add("missing-controller-reference", node.source, "native controller graph node references an unknown controller");
+        const bool synthetic = node.name.rfind("__", 0) == 0;
+        const int kind = static_cast<int>(node.kind);
+        if (kind < static_cast<int>(GraphNodeKind::Clip) || kind > static_cast<int>(GraphNodeKind::Output)) {
+            diagnostics.add("invalid-graph-kind", node.source, "graph node kind is unsupported");
+        } else if (!synthetic) {
+            switch (node.kind) {
+            case GraphNodeKind::Clip: {
+                bool found = !node.clip.empty();
+                for (const auto& clip : build.clips) if (clip.name == node.clip) found = true;
+                if (node.clip.empty() || !found) diagnostics.add("missing-clip-reference", node.source, "clip graph node requires a declared clip");
+                if (!node.dependencies.empty() || !node.input.empty() || !node.thresholds.empty() || !node.controller.empty()) diagnostics.add("clip-fields", node.source, "clip node has unsupported fields");
+                break;
+            }
+            case GraphNodeKind::Blend1D: {
+                int input = -1;
+                for (size_t j = 0; j < build.inputs.size(); ++j) if (build.inputs[j].name == node.input) input = static_cast<int>(j);
+                if (input < 0) diagnostics.add("missing-blend-input", node.source, "blend1D requires a declared input");
+                else if (build.inputs[input].type != AnimationValueType::Number) diagnostics.add("blend-input-type", node.source, "blend1D input must be numeric");
+                if (node.dependencies.size() < 2 || node.thresholds.size() != node.dependencies.size()) diagnostics.add("blend1d-arity", node.source, "blend1D thresholds must match at least two inputs");
+                for (size_t j = 0; j < node.thresholds.size(); ++j) if (!finite(node.thresholds[j]) || (j && node.thresholds[j] <= node.thresholds[j - 1])) diagnostics.add("blend1d-thresholds", node.source, "blend1D thresholds must be finite and strictly ordered");
+                if (!node.clip.empty() || !node.controller.empty()) diagnostics.add("blend1d-fields", node.source, "blend1D node has unsupported fields");
+                break;
+            }
+            case GraphNodeKind::Additive:
+                if (node.dependencies.size() != 2) diagnostics.add("additive-arity", node.source, "additive node requires exactly two inputs");
+                if (!node.input.empty() || !node.clip.empty() || !node.thresholds.empty() || !node.controller.empty()) diagnostics.add("additive-fields", node.source, "additive node has unsupported fields");
+                break;
+            case GraphNodeKind::NativeController:
+                if (node.controller.empty() || find_controller(build, node.controller) < 0) diagnostics.add("missing-controller-reference", node.source, "native controller node requires a declared controller");
+                if (node.dependencies.size() > 1) diagnostics.add("native-controller-arity", node.source, "native controller node accepts at most one input");
+                if (!node.input.empty() || !node.clip.empty() || !node.thresholds.empty()) diagnostics.add("native-controller-fields", node.source, "native controller node has unsupported fields");
+                break;
+            case GraphNodeKind::Output:
+                if (!node.is_output) diagnostics.add("graph-output-flag", node.source, "output node must be marked output");
+                if (node.dependencies.size() != 1) diagnostics.add("output-arity", node.source, "output node requires exactly one dependency");
+                if (!node.input.empty() || !node.clip.empty() || !node.thresholds.empty() || !node.controller.empty()) diagnostics.add("output-fields", node.source, "output node has unsupported fields");
+                break;
+            }
+            if (node.kind != GraphNodeKind::Output && node.is_output) diagnostics.add("graph-output-kind", node.source, "only output nodes may be marked output");
+            if (node.is_output) ++outputs;
+        } else if (node.kind == GraphNodeKind::Output && node.is_output) {
+            ++outputs;
+        }
         if (!valid_cadence(node.cadence)) diagnostics.add("invalid-cadence", node.source, "graph cadence is unsupported");
         for (const std::string& dependency : node.dependencies) {
             const int dep = find_graph_node(build.graph, dependency);
@@ -298,14 +354,17 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
         canonical->rig.sockets.push_back({socket.name, joint, socket.local, socket.source});
     }
     for (size_t i = 0; i < build.targets.size(); ++i) {
-        CanonicalTarget target; target.name = build.targets[i].name; target.driver = build.targets[i].driver; target.cadence = build.targets[i].cadence; target.pole=build.targets[i].pole; target.has_pole=build.targets[i].has_pole; target.soften=build.targets[i].soften; target.twist=build.targets[i].twist; target.enabled=build.targets[i].enabled;
+        CanonicalTarget target; target.name = build.targets[i].name; target.driver = build.targets[i].driver; target.cadence = build.targets[i].cadence; target.controller=build.targets[i].controller; target.pole=build.targets[i].pole; target.has_pole=build.targets[i].has_pole; target.soften=build.targets[i].soften; target.twist=build.targets[i].twist; target.position_half_life=build.targets[i].position_half_life; target.rotation_half_life=build.targets[i].rotation_half_life; target.weight_half_life=build.targets[i].weight_half_life; target.enabled=build.targets[i].enabled;
         for (const std::string& name : {build.targets[i].start_joint, build.rig.joints[find_joint(build, build.targets[i].end_joint)].parent, build.targets[i].end_joint}) {
             for (size_t joint = 0; joint < canonical->rig.joints.size(); ++joint) if (canonical->rig.joints[joint].name == name) target.chain.push_back(static_cast<JointIndex>(joint));
         }
         if (target.chain.size() == 3) {
             const int endAuth=find_joint(build, build.targets[i].end_joint); const int midAuth=endAuth>=0?parents[endAuth]:-1;
-            const Float3 a = midAuth>=0?build.rig.joints[midAuth].local.translation:Float3{};
-            const Float3 b = endAuth>=0?build.rig.joints[endAuth].local.translation:Float3{};
+            const Float3 startPos=bind_model_position(build,parents,find_joint(build,build.targets[i].start_joint));
+            const Float3 midPos=bind_model_position(build,parents,midAuth), endPos=bind_model_position(build,parents,endAuth);
+            const int startIndex=find_joint(build,build.targets[i].start_joint); const Quaternion startRot=startIndex>=0?bind_model_rotation(build,parents,startIndex):Quaternion{0,0,0,1};
+            const Float3 a=startIndex>=0?rotate_inverse(startRot,{midPos.x-startPos.x,midPos.y-startPos.y,midPos.z-startPos.z}):Float3{};
+            const Float3 b=startIndex>=0?rotate_inverse(startRot,{endPos.x-startPos.x,endPos.y-startPos.y,endPos.z-startPos.z}):Float3{};
             Float3 axis{a.y*b.z-a.z*b.y, a.z*b.x-a.x*b.z, a.x*b.y-a.y*b.x};
             const float len=std::sqrt(axis.x*axis.x+axis.y*axis.y+axis.z*axis.z);
             if (len > 1e-6f) { axis.x/=len; axis.y/=len; axis.z/=len; target.bend_axis=axis; }

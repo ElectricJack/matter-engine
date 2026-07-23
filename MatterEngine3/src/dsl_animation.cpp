@@ -194,6 +194,7 @@ void DslState::end_rig() {
 }
 
 void DslState::begin_clip(const std::string& name, float duration, float rate, bool loop, bool additive) {
+    if(animation_&&animation_->generating){set_rig_error("structural authoring is forbidden during generate");return;}
     if (animation_ && animation_->clip_open) { set_rig_error("clip session already open"); return; }
     if (!animation_ || !animation_->ended) { set_rig_error("beginClip requires a completed rig"); return; }
     if (name.empty()) { set_rig_error("clip name must be non-empty"); return; }
@@ -202,10 +203,10 @@ void DslState::begin_clip(const std::string& name, float duration, float rate, b
     animation_->authored.clips.push_back({});
     auto& clip=animation_->authored.clips.back(); clip.name=name; clip.duration=duration; clip.rate=rate; clip.loop=loop; clip.additive=additive; clip.source=rig_source_;
 }
-void DslState::clip_duration(float duration) { if(!animation_||!animation_->clip_open){set_rig_error("duration outside an open clip");return;} animation_->clip_duration=duration; animation_->authored.clips.back().duration=duration; }
-void DslState::clip_rate(float rate) { if(!animation_||!animation_->clip_open){set_rig_error("sampleRate outside an open clip");return;} animation_->clip_rate=rate; animation_->authored.clips.back().rate=rate; }
-void DslState::clip_loop(bool loop) { if(!animation_||!animation_->clip_open){set_rig_error("loop outside an open clip");return;} animation_->clip_loop=loop; animation_->authored.clips.back().loop=loop; }
-void DslState::clip_mode(bool additive) { if(!animation_||!animation_->clip_open){set_rig_error("mode outside an open clip");return;} animation_->clip_additive=additive; animation_->authored.clips.back().additive=additive; }
+void DslState::clip_duration(float duration) { if(animation_&&animation_->generating){set_rig_error("duration is structural and forbidden during generate");return;} if(!animation_||!animation_->clip_open){set_rig_error("duration outside an open clip");return;} animation_->clip_duration=duration; animation_->authored.clips.back().duration=duration; }
+void DslState::clip_rate(float rate) { if(animation_&&animation_->generating){set_rig_error("sampleRate is structural and forbidden during generate");return;} if(!animation_||!animation_->clip_open){set_rig_error("sampleRate outside an open clip");return;} animation_->clip_rate=rate; animation_->authored.clips.back().rate=rate; }
+void DslState::clip_loop(bool loop) { if(animation_&&animation_->generating){set_rig_error("loop is structural and forbidden during generate");return;} if(!animation_||!animation_->clip_open){set_rig_error("loop outside an open clip");return;} animation_->clip_loop=loop; animation_->authored.clips.back().loop=loop; }
+void DslState::clip_mode(bool additive) { if(animation_&&animation_->generating){set_rig_error("mode is structural and forbidden during generate");return;} if(!animation_||!animation_->clip_open){set_rig_error("mode outside an open clip");return;} animation_->clip_additive=additive; animation_->authored.clips.back().additive=additive; }
 void DslState::clip_at(const std::string& joint) {
     if(!animation_||!animation_->clip_open){set_rig_error("at outside an open clip");return;}
     if(find_joint(animation_->authored,joint)<0){set_rig_error("clip at selects an unknown joint");return;}
@@ -224,46 +225,54 @@ void DslState::clip_translate(float x,float y,float z) {
     auto& p=animation_->clip_pose[(size_t)j]; p.translation.x+=x; p.translation.y+=y; p.translation.z+=z;
 }
 void DslState::clip_key(const std::string& joint,float time,const AnimationTransform& value) {
+    if(animation_&&animation_->generating){set_rig_error("key is structural and forbidden during generate");return;}
     if(!animation_||!animation_->clip_open){set_rig_error("key outside an open clip");return;}
     if(find_joint(animation_->authored,joint)<0){set_rig_error("clip key references an unknown joint");return;}
     ClipTrack* track=nullptr; auto& tracks=animation_->authored.clips.back().tracks; for(auto& t:tracks)if(t.joint==joint)track=&t;
     if(!track){tracks.push_back({joint,{},rig_source_});track=&tracks.back();} track->keys.push_back({time,value,rig_source_});
 }
 void DslState::clip_marker(float normalized_time,const std::string& name) {
+    if(animation_&&animation_->generating){set_rig_error("marker is structural and forbidden during generate");return;}
     if(!animation_||!animation_->clip_open){set_rig_error("marker outside an open clip");return;}
     animation_->authored.clips.back().markers.push_back({name,normalized_time,rig_source_});
 }
 bool DslState::begin_clip_sample() {
     if(!animation_||!animation_->clip_open){set_rig_error("generate outside an open clip");return false;}
-    animation_->clip_pose.clear(); animation_->clip_pose_joints.clear();
+    if(animation_->generating){set_rig_error("nested generate callback is forbidden");return false;}
+    animation_->generating=true; animation_->clip_pose.clear(); animation_->clip_pose_joints.clear();
     for(const auto& j:animation_->authored.rig.joints){animation_->clip_pose.push_back(j.local);animation_->clip_pose_joints.push_back(j.name);}
     animation_->name.clear(); return true;
 }
 bool DslState::capture_clip_sample(float phase) {
-    if(!animation_||!animation_->clip_open||animation_->clip_pose.size()!=animation_->authored.rig.joints.size())return false;
+    if(!animation_||!animation_->clip_open||animation_->clip_pose.size()!=animation_->authored.rig.joints.size()){if(animation_)animation_->generating=false;return false;}
     auto& clip=animation_->authored.clips.back();
     for(auto& track:clip.tracks) std::stable_sort(track.keys.begin(),track.keys.end(),[](const auto&a,const auto&b){return a.time<b.time;});
     std::stable_sort(clip.markers.begin(),clip.markers.end(),[](const auto&a,const auto&b){return a.time<b.time;});
     for(size_t i=0;i<animation_->clip_pose.size();++i){ ClipTrack* track=nullptr; for(auto& t:clip.tracks)if(t.joint==animation_->clip_pose_joints[i])track=&t; if(!track){clip.tracks.push_back({animation_->clip_pose_joints[i],{},rig_source_});track=&clip.tracks.back();} track->keys.push_back({phase*clip.duration,animation_->clip_pose[i],rig_source_}); }
-    return true;
+    animation_->generating=false; return true;
 }
 uint32_t DslState::clip_sample_segments() const { if(!animation_||!animation_->clip_open||!finite(animation_->clip_duration)||!finite(animation_->clip_rate)||animation_->clip_duration<=0||animation_->clip_rate<=0)return 0; const double n=std::ceil((double)animation_->clip_duration*(double)animation_->clip_rate); return (uint32_t)std::max(1.0,std::min(n,(double)UINT32_MAX)); }
 bool DslState::clip_is_loop() const { return animation_&&animation_->clip_open&&animation_->clip_loop; }
 void DslState::end_clip() {
+    if(animation_&&animation_->generating){set_rig_error("endClip is forbidden during generate");return;}
     if(!animation_||!animation_->clip_open){set_rig_error("endClip outside an open clip");return;}
     auto& clip=animation_->authored.clips.back();
+    for(auto& track:clip.tracks) std::stable_sort(track.keys.begin(),track.keys.end(),[](const auto& left,const auto& right){return left.time<right.time;});
+    std::stable_sort(clip.markers.begin(),clip.markers.end(),[](const auto& left,const auto& right){return left.time<right.time;});
     if(clip.loop){for(auto& t:clip.tracks)if(!t.keys.empty())t.keys.push_back({clip.duration,t.keys.front().value,rig_source_});}
     AnimationBuild validation = animation_->authored; validation.graph.nodes.push_back({"__clip_validation_output",{},true,matter::animation::EvaluationCadence::Fixed,rig_source_}); matter::animation::Diagnostics vd; if(!matter::animation::validate_animation_build(validation,vd)){set_rig_error(vd.items.empty()?"clip validation failed":vd.items.front().message,"clip-validation");return;}
     matter::animation::Diagnostics d; matter::animation::OzzSkeleton sk; matter::animation::OzzAnimation oa;
     if(!matter::animation::build_skeleton(animation_->authored.rig,sk,d)||!matter::animation::build_clip(animation_->authored.rig,clip,oa,d)){set_rig_error(d.items.empty()?"clip compilation failed":d.items.front().message,"clip-compile");return;}
+    if(animation_->authored.ozz_skeleton_blob.empty()&&!matter::animation::serialize_skeleton(sk,animation_->authored.ozz_skeleton_blob)){set_rig_error("skeleton serialization failed","clip-compile");return;}
+    if(!matter::animation::serialize_animation(oa,clip.ozz_blob)||clip.ozz_blob.empty()){set_rig_error("clip serialization failed","clip-compile");return;}
     animation_->clip_open=false; animation_->current_clip.clear(); animation_->name.clear();
 }
-void DslState::begin_motion(const std::string& name) { if(!animation_||!animation_->ended){set_rig_error("beginMotion requires a completed rig");return;} if(animation_->motion_open){set_rig_error("motion session already open");return;} auto& nodes=animation_->authored.graph.nodes; nodes.erase(std::remove_if(nodes.begin(),nodes.end(),[](const GraphNode& n){return n.name=="__rig_only_output";}),nodes.end()); animation_->motion_open=true; animation_->current_motion=name; }
+void DslState::begin_motion(const std::string& name) { if(animation_&&animation_->generating){set_rig_error("structural authoring is forbidden during generate");return;} if(!animation_||!animation_->ended){set_rig_error("beginMotion requires a completed rig");return;} if(animation_->clip_open){set_rig_error("beginMotion cannot nest inside a clip");return;} if(animation_->motion_open){set_rig_error("motion session already open");return;} auto& nodes=animation_->authored.graph.nodes; nodes.erase(std::remove_if(nodes.begin(),nodes.end(),[](const GraphNode& n){return n.name=="__rig_only_output";}),nodes.end()); animation_->motion_open=true; animation_->current_motion=name; }
 void DslState::motion_input(const InputSchema& input){if(!animation_||!animation_->motion_open){set_rig_error("input outside an open motion");return;} animation_->authored.inputs.push_back(input);}
-void DslState::motion_target(const TargetSchema& target){if(!animation_||!animation_->motion_open){set_rig_error("target outside an open motion");return;} animation_->authored.targets.push_back(target);}
+void DslState::motion_target(const TargetSchema& target){if(!animation_||!animation_->motion_open){set_rig_error("target outside an open motion");return;} TargetSchema copy=target; copy.require_explicit_pole = copy.require_explicit_pole || copy.source.module=="<part>"; animation_->authored.targets.push_back(std::move(copy));}
 void DslState::motion_controller(const ControllerDef& controller){if(!animation_||!animation_->motion_open){set_rig_error("controller outside an open motion");return;} animation_->authored.controllers.push_back(controller);}
 void DslState::motion_node(const GraphNode& node){if(!animation_||!animation_->motion_open){set_rig_error("graph node outside an open motion");return;} animation_->authored.graph.nodes.push_back(node);}
-void DslState::end_motion(){if(!animation_||!animation_->motion_open){set_rig_error("endMotion outside an open motion");return;} matter::animation::Diagnostics d; matter::animation::CanonicalAnimationBuild c; if(!matter::animation::validate_and_canonicalize_animation_build(animation_->authored,c,d)){set_rig_error(d.items.empty()?"motion validation failed":d.items.front().message,"motion-validation");return;} animation_->canonical=std::move(c); animation_->motion_open=false; animation_->current_motion.clear();}
+void DslState::end_motion(){if(animation_&&animation_->generating){set_rig_error("endMotion is forbidden during generate");return;} if(!animation_||!animation_->motion_open){set_rig_error("endMotion outside an open motion");return;} matter::animation::Diagnostics d; matter::animation::CanonicalAnimationBuild c; if(!matter::animation::validate_and_canonicalize_animation_build(animation_->authored,c,d)){set_rig_error(d.items.empty()?"motion validation failed":d.items.front().message,"motion-validation");return;} animation_->canonical=std::move(c); animation_->motion_open=false; animation_->current_motion.clear();}
 const std::optional<matter::animation::CanonicalAnimationBuild>& DslState::canonical_animation() const { return canonical_rig(); }
 const matter::animation::AnimationBuild* DslState::authored_animation() const { return animation_ ? &animation_->authored : nullptr; }
 
