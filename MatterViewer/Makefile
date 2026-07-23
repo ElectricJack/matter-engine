@@ -121,7 +121,7 @@ endif
 # application/backend as an explicit compatibility path until the later engine
 # OpenGL-removal task can migrate or retire it without breaking the default target.
 LINUX_APP_SRC = main_linux.cpp ui_linux.cpp camera_controller.cpp camera_focus.cpp streaming_anchor_controller.cpp selection_set.cpp editor_model.cpp scene_tree_panel.cpp selection_bounds.cpp viewport_pick.cpp selection_outline.cpp toolbar_panel.cpp console_panel.cpp console_log.cpp properties_registry.cpp properties_panel.cpp specialized_editors.cpp gizmo.cpp os_open.cpp
-APP_SRC = main.cpp ui.cpp session_binding.cpp bake_lab.cpp bake_lab_timeline.cpp event_inspector.cpp asset_browser.cpp part_workbench.cpp lod_inspector.cpp camera_controller.cpp camera_focus.cpp streaming_anchor_controller.cpp selection_set.cpp editor_model.cpp scene_tree_panel.cpp selection_bounds.cpp viewport_pick.cpp selection_outline.cpp toolbar_panel.cpp console_panel.cpp console_log.cpp properties_registry.cpp properties_panel.cpp specialized_editors.cpp gizmo.cpp os_open.cpp
+APP_SRC = main.cpp ui.cpp session_binding.cpp scene_model_adapter.cpp bake_lab.cpp bake_lab_timeline.cpp event_inspector.cpp asset_browser.cpp part_workbench.cpp lod_inspector.cpp camera_controller.cpp camera_focus.cpp streaming_anchor_controller.cpp selection_set.cpp editor_model.cpp scene_tree_panel.cpp selection_bounds.cpp viewport_pick.cpp selection_outline.cpp toolbar_panel.cpp console_panel.cpp console_log.cpp properties_registry.cpp properties_panel.cpp specialized_editors.cpp gizmo.cpp os_open.cpp
 
 # Windows direct-source compile: ME3 pipeline + MSL + QJS (mirrors old viewer).
 # These are ONLY used by the Windows target; the Linux target links libmatter_engine3.a.
@@ -187,6 +187,9 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/event/subscription.cpp \
               $(ME3_DIR)/src/event/dispatch_context.cpp \
               $(ME3_DIR)/src/event/command.cpp \
+              $(ME3_DIR)/src/event/property.cpp \
+              $(ME3_DIR)/src/scene/scene_service.cpp \
+              $(ME3_DIR)/src/scene/scene_change_tracker.cpp \
               $(ME3_DIR)/src/bake_trace.cpp \
               $(ME3_DIR)/src/pf_bindings.cpp \
               ../ParticleFlowLib/src/pf_math.cpp \
@@ -256,6 +259,7 @@ FLECS_NAME = $(notdir $(FLECS_C))
 
 vpath %.cpp . $(ME3_DIR)/src $(ME3_DIR)/src/render $(ME3_DIR)/src/provider $(ME3_DIR)/src/ecs \
              $(ME3_DIR)/src/streaming $(ME3_DIR)/src/script $(ME3_DIR)/src/event \
+             $(ME3_DIR)/src/scene \
              $(MSL_DIR)/src $(IMGUI_PATH) $(IMGUI_PATH)/backends \
              $(IMGUIZMO_PATH) \
              ../ParticleFlowLib/src

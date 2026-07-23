@@ -23,20 +23,61 @@ std::string to_lower(const std::string& s) {
 
 } // namespace
 
+void EditorModel::attach_scheduler(matter::evt::PropertyScheduler& scheduler) {
+    scheduler_ = &scheduler;
+    rows_rev_ =
+        std::make_unique<matter::evt::Property<uint64_t>>(scheduler, "editor.scene_rows", 0);
+    // Prime-on-bind fires the observer once with the current value; the dirty
+    // flag is false at that point so it is a no-op. Thereafter every flush
+    // delivery that follows a mark_rows_changed() re-flattens exactly once.
+    rows_sub_ = rows_rev_->bind("editor.rebuild_hierarchy", [this](const uint64_t&) {
+        if (hierarchy_dirty_) {
+            rebuild_hierarchy_from_store();
+            hierarchy_dirty_ = false;
+        }
+    });
+}
+
+void EditorModel::mark_rows_changed() {
+    hierarchy_dirty_ = true;
+    // Coalesced: N set()s in one tick collapse to one flush delivery (S I.9).
+    if (rows_rev_) rows_rev_->set(++rev_counter_);
+}
+
+void EditorModel::apply_snapshot(const std::vector<SceneRecord>& rows) {
+    records_.clear();
+    for (const auto& r : rows) records_[r.id.value] = r;
+    // Snapshot is correctness-critical (bind / world switch / sequence-gap
+    // recovery): rebuild synchronously so the tree is correct on the very next
+    // draw independent of the next scheduler flush. Clear the dirty flag so any
+    // pending deferred rebuild is a no-op.
+    rebuild_hierarchy_from_store();
+    hierarchy_dirty_ = false;
+    if (rows_rev_) rows_rev_->set(++rev_counter_);
+}
+
+void EditorModel::apply_upsert(const std::vector<SceneRecord>& rows) {
+    for (const auto& r : rows) records_[r.id.value] = r;
+    mark_rows_changed();
+}
+
+void EditorModel::apply_remove(const std::vector<SceneEntityId>& ids) {
+    // Tolerate remove-of-unknown-id (E5b review note): a same-tick create+delete
+    // emits a rows_removed for an id never upserted here. erase() of a missing
+    // key is a silent no-op — no assert-on-presence.
+    for (const auto& id : ids) records_.erase(id.value);
+    mark_rows_changed();
+}
+
 void EditorModel::refresh(const SceneCommands& commands) {
+    if (commands.generation) {
+        last_generation_ = commands.generation();
+    }
     std::vector<SceneRecord> records;
     if (commands.query_records) {
         records = commands.query_records();
     }
-    if (commands.generation) {
-        last_generation_ = commands.generation();
-    }
-
-    rebuild_hierarchy(records);
-
-    if (has_selection() && !is_selection_valid()) {
-        clear_selection();
-    }
+    apply_snapshot(records);
 }
 
 void EditorModel::set_filter(const std::string& filter) {
@@ -53,23 +94,28 @@ void EditorModel::clear_selection() {
     selection_ = Selection{};
 }
 
-void EditorModel::rebuild_hierarchy(const std::vector<SceneRecord>& records) {
+void EditorModel::rebuild_hierarchy_from_store() {
     all_rows_.clear();
 
-    // Map from record id -> record, and parent id -> children ids.
+    // Map from record id -> record, and parent id -> children ids. Pointers into
+    // records_ are stable for the duration of this rebuild (the store is not
+    // mutated here).
     std::unordered_map<uint64_t, const SceneRecord*> by_id;
     std::unordered_map<uint64_t, std::vector<uint64_t>> children_of;
     std::vector<uint64_t> roots;
 
-    by_id.reserve(records.size());
-    for (const auto& record : records) {
-        by_id[record.id.value] = &record;
+    by_id.reserve(records_.size());
+    for (const auto& [id, record] : records_) {
+        by_id[id] = &record;
     }
-    for (const auto& record : records) {
-        if (record.parent_id.value == 0) {
-            roots.push_back(record.id.value);
+    for (const auto& [id, record] : records_) {
+        // Root when parentless, OR when the parent is not (or no longer) in the
+        // store — a parentless orphan stays visible rather than disappearing.
+        if (record.parent_id.value == 0 ||
+            by_id.find(record.parent_id.value) == by_id.end()) {
+            roots.push_back(id);
         } else {
-            children_of[record.parent_id.value].push_back(record.id.value);
+            children_of[record.parent_id.value].push_back(id);
         }
     }
 
@@ -108,6 +154,11 @@ void EditorModel::rebuild_hierarchy(const std::vector<SceneRecord>& records) {
     }
 
     apply_filter();
+
+    // Drop a selection whose entity no longer exists (moved out of refresh()).
+    if (has_selection() && !is_selection_valid()) {
+        clear_selection();
+    }
 }
 
 void EditorModel::apply_filter() {

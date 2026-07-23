@@ -11,6 +11,7 @@
 #include "matter/streaming.h"
 #include "ecs/simulation_control.h"
 #include "ecs/scene_registry.h"
+#include "scene/scene_service.h"  // E5c: session->scene_service() (world_session.h fwd-decls it)
 #include "camera_controller.h"
 #include "camera_focus.h"
 #include "editor_model.h"
@@ -22,9 +23,11 @@
 #include "console_panel.h"
 #include "ui.h"
 #include "session_binding.h"
+#include "scene_model_adapter.h"
 #include "viewer_commands.h"
 #include "matter/event/event_hub.h"
 #include "matter/event/command.h"
+#include "matter/event/property.h"
 #include "viewport_pick.h"
 
 #include "imgui.h"
@@ -943,7 +946,16 @@ int main() {
         return 1;
     }
 
+    // E5c: app-owned observable-model scheduler (event-system.md S I.9). Declared
+    // BEFORE editor_model so it OUTLIVES it — the EditorModel's revision Property
+    // unregisters from this scheduler in its destructor, so the scheduler must
+    // still be alive then. Claimed on this (main/UI) thread; flushed once per
+    // frame after session->tick() (S I.14 flush-after-tick, wired below).
+    matter::evt::PropertyScheduler property_scheduler;
+    property_scheduler.claim();
+
     viewer::EditorModel editor_model;
+    editor_model.attach_scheduler(property_scheduler);
     viewer::SelectionSet selection_set;
     matter::scene::SimulationControl sim_control;
     viewer::ConsoleLog console_log;
@@ -956,140 +968,11 @@ int main() {
     part_graph_snapshot::Snapshot cached_snapshot;
     uint64_t cached_graph_gen = 0;
     viewer::SceneCommands scene_commands;
-    scene_commands.query_records = [&session]() -> std::vector<matter::scene::SceneRecord> {
-        std::vector<matter::scene::SceneRecord> records;
-        if (!session) return records;
-        session->ecs().each(
-            [&](flecs::entity e, const matter::scene::SceneEntityId& id) {
-                matter::scene::SceneRecord rec;
-                rec.id = id;
-                if (e.parent().is_valid() && e.parent().has<matter::scene::SceneEntityId>()) {
-                    rec.parent_id = e.parent().get<matter::scene::SceneEntityId>();
-                }
-                const char* n = e.name().c_str();
-                rec.name = (n && n[0]) ? n : "Entity";
-                // LocalTransform is always present (instantiate() sets it
-                // unconditionally) but is still listed here for consistency
-                // with PropertiesRegistry lookups that key off component_names.
-                rec.component_names.push_back("LocalTransform");
-                if (e.has<matter::physics::RigidBody>())
-                    rec.component_names.push_back("RigidBody");
-                if (e.has<matter::physics::PhysicsVelocity>())
-                    rec.component_names.push_back("PhysicsVelocity");
-                if (e.has<matter::physics::SphereCollider>())
-                    rec.component_names.push_back("SphereCollider");
-                if (e.has<matter::physics::CapsuleCollider>())
-                    rec.component_names.push_back("CapsuleCollider");
-                if (e.has<matter::physics::BoxCollider>())
-                    rec.component_names.push_back("BoxCollider");
-                if (e.has<matter::physics::ConvexHullCollider>())
-                    rec.component_names.push_back("ConvexHullCollider");
-                if (e.has<matter::scene::PartInstance>()) {
-                    rec.component_names.push_back("PartInstance");
-                }
-                if (e.has<matter::streaming::SectorStreaming>())
-                    rec.component_names.push_back("SectorStreaming");
-                records.push_back(std::move(rec));
-            });
-        return records;
-    };
-    scene_commands.generation = [&session]() -> uint64_t {
-        if (!session) return 0;
-        return static_cast<uint64_t>(session->ecs().get_info()->frame_count_total);
-    };
-    // Task 13: entity CRUD backing the scene-tree context menu. Editor-created
-    // entities use their own flecs entity id as the SceneEntityId value (so
-    // they line up with SelectionSet/viewport-pick/gizmo, which all key off
-    // flecs ids for Entity selections — see viewport_pick.cpp) rather than
-    // the content hash scene_registry.cpp assigns to authored/baked entities.
-    scene_commands.create_empty =
-        [&session](const std::string& name) -> matter::scene::SceneEditResult {
-        matter::scene::SceneEditResult result;
-        if (!session) {
-            result.error = matter::scene::SceneEditError::InvalidTarget;
-            return result;
-        }
-        flecs::world& world = session->ecs();
-        flecs::entity e = world.entity();
-        e.set<matter::scene::SceneEntityId>({static_cast<uint64_t>(e.id())});
-        if (!name.empty()) e.set_name(name.c_str());
-        e.set<matter::ecs::LocalTransform>({});
-        result.created_id = matter::scene::SceneEntityId{static_cast<uint64_t>(e.id())};
-        return result;
-    };
-    scene_commands.duplicate =
-        [&session](matter::scene::SceneEntityId src) -> matter::scene::SceneEditResult {
-        matter::scene::SceneEditResult result;
-        if (!session) {
-            result.error = matter::scene::SceneEditError::InvalidTarget;
-            return result;
-        }
-        flecs::entity src_e = find_scene_entity(session->ecs(), src);
-        if (!src_e.is_valid()) {
-            result.error = matter::scene::SceneEditError::EntityNotFound;
-            return result;
-        }
-        flecs::entity copy = src_e.clone();
-        // clone() copies component values verbatim, including SceneEntityId --
-        // overwrite with the copy's own flecs id so it's unique.
-        copy.set<matter::scene::SceneEntityId>({static_cast<uint64_t>(copy.id())});
-        const char* orig_name = src_e.name().c_str();
-        if (orig_name && orig_name[0]) {
-            copy.set_name((std::string(orig_name) + " Copy").c_str());
-        }
-        if (src_e.parent().is_valid()) copy.child_of(src_e.parent());
-        result.created_id = matter::scene::SceneEntityId{static_cast<uint64_t>(copy.id())};
-        return result;
-    };
-    scene_commands.delete_entity =
-        [&session](matter::scene::SceneEntityId target) -> matter::scene::SceneEditResult {
-        matter::scene::SceneEditResult result;
-        if (!session) {
-            result.error = matter::scene::SceneEditError::InvalidTarget;
-            return result;
-        }
-        flecs::entity e = find_scene_entity(session->ecs(), target);
-        if (!e.is_valid()) {
-            result.error = matter::scene::SceneEditError::EntityNotFound;
-            return result;
-        }
-        // Destroying the parent cascades to ECS children by default (flecs'
-        // default ChildOf cleanup policy).
-        e.destruct();
-        return result;
-    };
-    scene_commands.reparent =
-        [&session](matter::scene::SceneEntityId child,
-                  matter::scene::SceneEntityId new_parent) -> matter::scene::SceneEditResult {
-        matter::scene::SceneEditResult result;
-        if (!session) {
-            result.error = matter::scene::SceneEditError::InvalidTarget;
-            return result;
-        }
-        flecs::entity child_e = find_scene_entity(session->ecs(), child);
-        if (!child_e.is_valid()) {
-            result.error = matter::scene::SceneEditError::EntityNotFound;
-            return result;
-        }
-        if (new_parent.value == 0) {
-            child_e.remove(flecs::ChildOf, flecs::Wildcard);
-            return result;
-        }
-        flecs::entity parent_e = find_scene_entity(session->ecs(), new_parent);
-        if (!parent_e.is_valid()) {
-            result.error = matter::scene::SceneEditError::InvalidTarget;
-            return result;
-        }
-        for (flecs::entity cursor = parent_e; cursor.is_valid();
-             cursor = cursor.parent()) {
-            if (cursor == child_e) {
-                result.error = matter::scene::SceneEditError::CycleDetected;
-                return result;
-            }
-        }
-        child_e.child_of(parent_e);
-        return result;
-    };
+    // E5c (event-system.md S I.14): the mutation closures are assigned
+    // LATER (after the command registry + scene-edit handlers exist) so each
+    // routes through registry.execute() of a SceneService ActiveSession
+    // command. The old per-frame query_records/generation POLL path is gone —
+    // the model is now delta-driven by the SessionBinding scene adapter.
 
     // Properties panel (Phase 5 Task 7) wiring: PropertiesRegistry supplies
     // the field/widget layout, FieldCommands/ComponentCommands bridge it to
@@ -1375,15 +1258,21 @@ int main() {
         editor_model.clear_selection();
         sim_control = matter::scene::SimulationControl{};
     };
-    // E4b bridge builder is intentionally empty: the app<->session bridge
-    // subscription STRUCTURE (quiesce-before-close / rebuild-after-replace) is
-    // wired through SessionBinding now; the concrete HUD/scene bridges land in
-    // E5 (S I.13/S I.14). Passing an empty builder changes no runtime behavior.
+    // E5c: the SessionBinding-owned scene adapter (scene_model_adapter.*) is the
+    // concrete app<->session bridge SessionBinding (re)builds on bind / world
+    // switch and quiesces before the old session hub dies. It snapshot-primes
+    // the EditorModel and subscribes immediate to the canonical scene deltas.
+    // Constructed BEFORE the binding so binding.initialize()'s rebuild_bridge
+    // populates the model from the initial session's snapshot.
+    viewer::SceneModelAdapter scene_adapter(editor_model, session);
     viewer::SessionBinding binding(
         app_hub, registry, app_lane, session, clear_app_models,
-        [](matter::evt::Hub&, std::vector<matter::evt::Subscription>&) {});
-    // Startup bind-then-request: builds the bridge + opens the first command
-    // epoch BEFORE requesting the initial bake (relocated from open_world).
+        [&scene_adapter](matter::evt::Hub& session_hub,
+                         std::vector<matter::evt::Subscription>& out) {
+            scene_adapter.build(session_hub, out);
+        });
+    // Startup bind-then-request: builds the bridge (snapshot-primes the scene
+    // model) + opens the first command epoch BEFORE requesting the initial bake.
     binding.initialize();
 
     // ---- Registered viewer commands (S I.11 migration map) ------------------
@@ -1464,6 +1353,88 @@ int main() {
             quit_requested = true;
             return viewer::FifoQuit::Result::succeeded(true);
         });
+
+    // ---- E5c scene-edit handlers (ActiveSession; SceneService) --------------
+    // The first ActiveSession-scoped commands (event-system.md S I.14): each
+    // mutates world entity state through the session's SceneService — the one
+    // supported mutation path — and returns the typed SceneEditResult (with
+    // created_id for create/duplicate). The mutation is observed by
+    // SceneChangeTracker and published as a canonical delta at end-of-tick; the
+    // handlers never hand-patch the model. Stamped with the ActiveSession epoch,
+    // so a stale-epoch submission completes StaleScope (ids can't drift across a
+    // world switch).
+    auto reg_scene_create = registry.must_register_handler<viewer::SceneCreateEntity>(
+        matter::evt::CommandScope::ActiveSession, app_lane,
+        [&](const viewer::SceneCreateEntity& cmd) {
+            return viewer::SceneCreateEntity::Result::succeeded(
+                session->scene_service().create_empty(cmd.name));
+        });
+    auto reg_scene_dup = registry.must_register_handler<viewer::SceneDuplicateEntity>(
+        matter::evt::CommandScope::ActiveSession, app_lane,
+        [&](const viewer::SceneDuplicateEntity& cmd) {
+            return viewer::SceneDuplicateEntity::Result::succeeded(
+                session->scene_service().duplicate(cmd.src));
+        });
+    auto reg_scene_del = registry.must_register_handler<viewer::SceneDeleteEntity>(
+        matter::evt::CommandScope::ActiveSession, app_lane,
+        [&](const viewer::SceneDeleteEntity& cmd) {
+            return viewer::SceneDeleteEntity::Result::succeeded(
+                session->scene_service().delete_entity(cmd.target));
+        });
+    auto reg_scene_reparent = registry.must_register_handler<viewer::SceneReparentEntity>(
+        matter::evt::CommandScope::ActiveSession, app_lane,
+        [&](const viewer::SceneReparentEntity& cmd) {
+            return viewer::SceneReparentEntity::Result::succeeded(
+                session->scene_service().reparent(cmd.child, cmd.new_parent));
+        });
+
+    // Scene-tree mutation bridge (E5c): same std::function idiom as
+    // FieldCommands, but each closure now issues a SceneService ActiveSession
+    // command via execute() (synchronous, typed) instead of touching the ECS
+    // directly. execute() returns the typed SceneEditResult so create/duplicate
+    // still expose created_id for immediate selection; a StaleScope/Rejected
+    // (value-less) result maps to an InvalidTarget edit error.
+    auto scene_edit_result = [](matter::scene::SceneEditResult r,
+                                bool has_value) -> matter::scene::SceneEditResult {
+        return has_value ? r
+                         : matter::scene::SceneEditResult{
+                               matter::scene::SceneEditError::InvalidTarget, {}};
+    };
+    scene_commands.create_empty =
+        [&, scene_edit_result](const std::string& name) -> matter::scene::SceneEditResult {
+        viewer::SceneCreateEntity cmd;
+        cmd.name = name;
+        auto res = registry.execute(cmd);
+        return scene_edit_result(res.value.value_or(matter::scene::SceneEditResult{}),
+                                 res.value.has_value());
+    };
+    scene_commands.duplicate =
+        [&, scene_edit_result](matter::scene::SceneEntityId src) -> matter::scene::SceneEditResult {
+        viewer::SceneDuplicateEntity cmd;
+        cmd.src = src;
+        auto res = registry.execute(cmd);
+        return scene_edit_result(res.value.value_or(matter::scene::SceneEditResult{}),
+                                 res.value.has_value());
+    };
+    scene_commands.delete_entity =
+        [&, scene_edit_result](matter::scene::SceneEntityId target) -> matter::scene::SceneEditResult {
+        viewer::SceneDeleteEntity cmd;
+        cmd.target = target;
+        auto res = registry.execute(cmd);
+        return scene_edit_result(res.value.value_or(matter::scene::SceneEditResult{}),
+                                 res.value.has_value());
+    };
+    scene_commands.reparent =
+        [&, scene_edit_result](matter::scene::SceneEntityId child,
+                               matter::scene::SceneEntityId new_parent)
+        -> matter::scene::SceneEditResult {
+        viewer::SceneReparentEntity cmd;
+        cmd.child = child;
+        cmd.new_parent = new_parent;
+        auto res = registry.execute(cmd);
+        return scene_edit_result(res.value.value_or(matter::scene::SceneEditResult{}),
+                                 res.value.has_value());
+    };
 
     // ---- ViewerCommands bridge (issued by UI panels; S I.11) ----------------
     // Same idiom as SceneCommands/FieldCommands: each closure runs on the app
@@ -1630,7 +1601,10 @@ int main() {
             fatal_error = true;
         } else {
             camera_input_order.begin_ui();
-            editor_model.refresh(scene_commands);
+            // E5c: no per-frame editor_model.refresh() — the scene tree is
+            // delta-driven by the SessionBinding scene adapter, and its flattened
+            // rows are re-derived at property_scheduler.flush_dirty() (after tick)
+            // only on ticks that actually changed rows.
             // Gizmo mode hotkeys (G/T = translate, R = rotate, S = scale).
             // Only when ImGui isn't capturing keyboard/text input, so typing
             // in a Properties field doesn't retarget the gizmo.
@@ -1817,6 +1791,11 @@ int main() {
             tick.max_fixed_steps = 0;
         }
         session->tick(tick);
+        // E5c (event-system.md S I.14): flush observable models AFTER tick, so
+        // this frame's tick -> SceneChangeTracker::flush -> scene-adapter apply ->
+        // Property::set have all run and their coalesced deliveries land now
+        // (scene deltas from tick N reach the UI this frame, not N+1).
+        property_scheduler.flush_dirty();
         camera_input_order.tick_scene();
         session->pump_gpu_jobs(4.0f);
         // Part Workbench (W2): the isolation session ticks/pumps every frame

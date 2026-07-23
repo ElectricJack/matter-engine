@@ -25,8 +25,51 @@
 #include <string>
 
 #include "matter/event/command.h"
+#include "matter/scene.h"  // SceneEntityId / SceneEditResult receipts (E5c)
 
 namespace viewer {
+
+// --- E5c scene-edit commands (event-system.md S I.14) -----------------------
+// The FIRST ActiveSession-scoped commands: each mutates world entity state, so
+// each is stamped with the SessionBinding's ActiveSession epoch token and
+// completes StaleScope if the world switched before it ran (entity ids can
+// never drift across a switch). Handlers call the session's SceneService — the
+// one supported mutation path — and the typed receipt is the SceneEditResult
+// (carrying created_id for create/duplicate, so a caller selects it the same
+// frame). The mutation is observed by SceneChangeTracker and published as a
+// canonical delta at end-of-tick; these commands never hand-patch the model.
+// The result also carries the (future) inverse hook — the first undoable
+// candidates — though no undo stack exists yet.
+
+// scene.create_entity{name} — create an empty scene entity.
+struct SceneCreateEntity {
+    MT_COMMAND_NAME("scene.create_entity");
+    using Result = matter::evt::CommandResult<matter::scene::SceneEditResult>;
+    std::string name;
+};
+
+// scene.duplicate_entity{src} — duplicate an entity (subtree component copy).
+struct SceneDuplicateEntity {
+    MT_COMMAND_NAME("scene.duplicate_entity");
+    using Result = matter::evt::CommandResult<matter::scene::SceneEditResult>;
+    matter::scene::SceneEntityId src;
+};
+
+// scene.delete_entity{target} — delete an entity and its subtree.
+struct SceneDeleteEntity {
+    MT_COMMAND_NAME("scene.delete_entity");
+    using Result = matter::evt::CommandResult<matter::scene::SceneEditResult>;
+    matter::scene::SceneEntityId target;
+};
+
+// scene.reparent_entity{child,new_parent} — reparent (new_parent == 0 detaches
+// to root).
+struct SceneReparentEntity {
+    MT_COMMAND_NAME("scene.reparent_entity");
+    using Result = matter::evt::CommandResult<matter::scene::SceneEditResult>;
+    matter::scene::SceneEntityId child;
+    matter::scene::SceneEntityId new_parent;
+};
 
 // --- viewer polled-flag migrations (S I.11 "Viewer polled flags" row) -------
 
