@@ -36,6 +36,9 @@ struct AnimationBuildBuffer {
     bool generating = false;
     bool open = false;
     bool ended = false;
+    // One primary skin/rigid owner per parent-child segment.  Decorative rigid
+    // bindings are intentionally not owners and therefore do not participate.
+    std::vector<bool> primary_segment_claims;
 };
 
 } // namespace dsl

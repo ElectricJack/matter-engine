@@ -64,6 +64,12 @@ Quaternion qmul(const Quaternion& a, const Quaternion& b) {
             a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w,
             a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z};
 }
+Float3 qrotate(const Quaternion& q, const Float3& value) {
+    const Float3 u{q.x, q.y, q.z};
+    const Float3 uv{u.y*value.z-u.z*value.y, u.z*value.x-u.x*value.z, u.x*value.y-u.y*value.x};
+    const Float3 uuv{u.y*uv.z-u.z*uv.y, u.z*uv.x-u.x*uv.z, u.x*uv.y-u.y*uv.x};
+    return {value.x + 2.0f*(q.w*uv.x+uuv.x), value.y + 2.0f*(q.w*uv.y+uuv.y), value.z + 2.0f*(q.w*uv.z+uuv.z)};
+}
 Quaternion qaxis(float x, float y, float z, float radians) {
     const float h = radians * 0.5f; const float s = std::sin(h);
     return {x*s, y*s, z*s, std::cos(h)};
@@ -281,6 +287,97 @@ void DslState::motion_target(const TargetSchema& target){if(!animation_||!animat
 void DslState::motion_controller(const ControllerDef& controller){if(!animation_||!animation_->motion_open){set_rig_error("controller outside an open motion");return;} animation_->authored.controllers.push_back(controller);}
 void DslState::motion_node(const GraphNode& node){if(!animation_||!animation_->motion_open){set_rig_error("graph node outside an open motion");return;} animation_->authored.graph.nodes.push_back(node);}
 void DslState::end_motion(){if(animation_&&animation_->generating){set_rig_error("endMotion is forbidden during generate");return;} if(!animation_||!animation_->motion_open){set_rig_error("endMotion outside an open motion");return;} matter::animation::Diagnostics d; matter::animation::CanonicalAnimationBuild c; if(!matter::animation::validate_and_canonicalize_animation_build(animation_->authored,c,d)){if(!d.items.empty())rig_source_=d.items.front().source;set_rig_error(d.items.empty()?"motion validation failed":d.items.front().message,"motion-validation");return;} animation_->canonical=std::move(c); animation_->motion_open=false; animation_->current_motion.clear();}
+
+namespace {
+bool binding_segments(const AnimationBuildBuffer& animation, const std::vector<std::string>& requested,
+                      std::vector<size_t>& selected, std::string& error) {
+    const auto& joints = animation.authored.rig.joints;
+    if (joints.empty()) { error = "binding requires a completed rig"; return false; }
+    std::set<std::string> seen;
+    const auto add = [&](const std::string& name) {
+        if (!seen.insert(name).second) { error = "binding selection contains a duplicate joint"; return false; }
+        const int index = find_joint(animation.authored, name);
+        if (index < 0) { error = "binding selection references an unknown joint"; return false; }
+        if (animation.authored.rig.joints[static_cast<size_t>(index)].parent.empty()) { error = "binding selection cannot use the root joint"; return false; }
+        selected.push_back(static_cast<size_t>(index)); return true;
+    };
+    if (requested.empty()) {
+        for (size_t index = 0; index < joints.size(); ++index)
+            if (!joints[index].parent.empty() && !add(joints[index].name)) return false;
+    } else for (const std::string& name : requested) if (!add(name)) return false;
+    if (selected.empty()) { error = "binding selection has no parent-child segments"; return false; }
+    return true;
+}
+bool unique_binding_name(const AnimationBuild& build, const std::string& name) {
+    if (name.empty()) return false;
+    for (const auto& binding : build.skin_bindings) if (binding.name == name) return false;
+    for (const auto& binding : build.rigid_bindings) if (binding.name == name) return false;
+    for (const auto& attachment : build.attachments) if (attachment.name == name) return false;
+    return true;
+}
+}
+
+void DslState::rig_skin(const std::string& name, const std::vector<std::string>& requested,
+                        float falloff, bool generate, float spacing) {
+    if (!animation_ || !animation_->ended || animation_->clip_open || animation_->motion_open) { set_rig_error("skin requires a completed rig outside clip or motion authoring"); return; }
+    if (!unique_binding_name(animation_->authored, name)) { set_rig_error("binding name must be non-empty and unique"); return; }
+    if (!finite(falloff) || falloff <= 0.0f) { set_rig_error("skin falloff must be finite and positive"); return; }
+    if (generate && (!finite(spacing) || spacing <= 0.0f)) { set_rig_error("generated skin spacing must be finite and positive"); return; }
+    if (session_ != Session::None || polygon_open_ || contour_open_ || region_open_) { set_rig_error("skin generation requires no open geometry session"); return; }
+    std::vector<size_t> selected; std::string error;
+    if (!binding_segments(*animation_, requested, selected, error)) { set_rig_error(error); return; }
+    if (animation_->primary_segment_claims.empty()) animation_->primary_segment_claims.assign(animation_->authored.rig.joints.size(), false);
+    for (size_t index : selected) if (animation_->primary_segment_claims[index]) { set_rig_error("binding segment is already claimed by a primary binding"); return; }
+    matter::animation::SkinBindingDef binding; binding.name=name; binding.falloff=falloff; binding.generated=generate; binding.source=rig_source_;
+    for (size_t index : selected) binding.joints.push_back(animation_->authored.rig.joints[index].name);
+    if (generate) {
+        const auto& joints = animation_->authored.rig.joints;
+        std::vector<Float3> positions(joints.size()); std::vector<Quaternion> rotations(joints.size());
+        for (size_t index = 0; index < joints.size(); ++index) {
+            const int parent = joints[index].parent.empty() ? -1 : find_joint(animation_->authored, joints[index].parent);
+            if (parent < 0) { positions[index]=joints[index].local.translation; rotations[index]=joints[index].local.rotation; }
+            else { const Float3 rotated=qrotate(rotations[static_cast<size_t>(parent)], joints[index].local.translation); positions[index]={positions[static_cast<size_t>(parent)].x+rotated.x,positions[static_cast<size_t>(parent)].y+rotated.y,positions[static_cast<size_t>(parent)].z+rotated.z}; rotations[index]=qmul(rotations[static_cast<size_t>(parent)], joints[index].local.rotation); normalize_q(rotations[index]); }
+        }
+        beginVoxels(spacing);
+        if (has_error_) return;
+        std::set<size_t> endpoints;
+        for (size_t child : selected) {
+            const size_t parent=static_cast<size_t>(find_joint(animation_->authored, joints[child].parent));
+            emit_voxel_segment(BrushKind::Cylinder, {positions[parent].x,positions[parent].y,positions[parent].z}, {positions[child].x,positions[child].y,positions[child].z}, joints[parent].radius, joints[child].radius, CsgOp::Union);
+            endpoints.insert(parent); endpoints.insert(child);
+        }
+        for (size_t joint : endpoints) emit_voxel_sphere({positions[joint].x,positions[joint].y,positions[joint].z}, joints[joint].radius, CsgOp::Union);
+        endVoxels(); if (has_error_) return;
+    }
+    for (size_t index : selected) animation_->primary_segment_claims[index]=true;
+    animation_->authored.skin_bindings.push_back(std::move(binding));
+}
+
+void DslState::rig_segments(const std::string& name, const std::vector<std::string>& requested, bool decorative) {
+    if (!animation_ || !animation_->ended || animation_->clip_open || animation_->motion_open) { set_rig_error("segments requires a completed rig outside clip or motion authoring"); return; }
+    if (!unique_binding_name(animation_->authored, name)) { set_rig_error("binding name must be non-empty and unique"); return; }
+    std::vector<size_t> selected; std::string error;
+    if (!binding_segments(*animation_, requested, selected, error)) { set_rig_error(error); return; }
+    if (animation_->primary_segment_claims.empty()) animation_->primary_segment_claims.assign(animation_->authored.rig.joints.size(), false);
+    if (!decorative) for (size_t index : selected) if (animation_->primary_segment_claims[index]) { set_rig_error("binding segment is already claimed by a primary binding"); return; }
+    for (size_t index : selected) {
+        matter::animation::RigidBindingDef binding; binding.name=name; binding.joint=animation_->authored.rig.joints[index].name; binding.decorative=decorative; binding.source=rig_source_;
+        animation_->authored.rigid_bindings.push_back(std::move(binding));
+        if (!decorative) animation_->primary_segment_claims[index]=true;
+    }
+}
+
+void DslState::rig_attach(const std::string& name, const std::string& socket,
+                          const std::string& child_module, const AnimationTransform& local) {
+    if (!animation_ || !animation_->ended || animation_->clip_open || animation_->motion_open) { set_rig_error("attach requires a completed rig outside clip or motion authoring"); return; }
+    if (!unique_binding_name(animation_->authored, name)) { set_rig_error("attachment name must be non-empty and unique"); return; }
+    if (!has_socket(animation_->authored, socket)) { set_rig_error("attachment references an unknown socket"); return; }
+    if (!valid_transform(local)) { set_rig_error("attachment requires a finite positive transform"); return; }
+    uint64_t child_hash=0;
+    if (child_module.empty() || !lookup_child_hash(child_module, nullptr, 0, child_hash) || child_hash == 0) { set_rig_error("attachment references an unresolved child"); return; }
+    animation_->authored.attachments.push_back({name, socket, child_hash, local, rig_source_});
+}
+
 const std::optional<matter::animation::CanonicalAnimationBuild>& DslState::canonical_animation() const { return canonical_rig(); }
 const matter::animation::AnimationBuild* DslState::authored_animation() const { return animation_ ? &animation_->authored : nullptr; }
 

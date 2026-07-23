@@ -220,6 +220,17 @@ public:
     const std::optional<matter::animation::CanonicalAnimationBuild>& canonical_animation() const;
     const matter::animation::AnimationBuild* authored_animation() const;
 
+    // Geometry binding authoring. `skin(...,{generate:true})` additionally
+    // emits the selected bind-pose segment field through the ordinary voxel
+    // path; the declarations themselves remain bake IR until A8 publishes
+    // them with the MANM binding payload.
+    void rig_skin(const std::string& name, const std::vector<std::string>& joints,
+                  float falloff, bool generate, float spacing);
+    void rig_segments(const std::string& name, const std::vector<std::string>& joints,
+                      bool decorative);
+    void rig_attach(const std::string& name, const std::string& socket,
+                    const std::string& child_module, const matter::AnimationTransform& local);
+
     // Session enum (one at a time; misuse = error)
     void beginVoxels(float spacing);        // misuse (already open) -> set_error
     void endVoxels();                        // misuse (not open) -> set_error

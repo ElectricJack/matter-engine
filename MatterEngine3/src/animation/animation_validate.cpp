@@ -4,6 +4,7 @@
 #include <cmath>
 #include <functional>
 #include <iomanip>
+#include <set>
 #include <sstream>
 
 namespace matter::animation {
@@ -115,9 +116,9 @@ std::string encode_authored_state(const AnimationBuild& build) {
     for (const TargetSchema& target : build.targets) { append_string(output, target.name); append_string(output, target.start_joint); append_string(output, target.end_joint); append_string(output, target.controller); output << static_cast<int>(target.driver) << ',' << static_cast<int>(target.cadence) << ',' << target.has_pole << ',' << target.pole.x << ',' << target.pole.y << ',' << target.pole.z << ',' << target.soften << ',' << target.twist << ',' << target.position_half_life << ',' << target.rotation_half_life << ',' << target.weight_half_life << ',' << target.enabled << ',' << target.require_explicit_pole << '|'; }
     for (const ControllerDef& controller : build.controllers) { append_string(output, controller.name); append_string(output, controller.type); output << static_cast<int>(controller.cadence) << '|'; }
     for (const GraphNode& node : build.graph.nodes) { append_string(output, node.name); append_string(output, node.clip); append_string(output, node.input); append_string(output, node.controller); output << node.is_output << ',' << static_cast<int>(node.kind) << ',' << static_cast<int>(node.cadence) << '|'; for (float threshold : node.thresholds) output << threshold << ','; output << '|'; for (const std::string& dependency : node.dependencies) append_string(output, dependency); }
-    for (const SkinBindingDef& binding : build.skin_bindings) { append_string(output, binding.name); for (const std::string& joint : binding.joints) append_string(output, joint); }
-    for (const RigidBindingDef& binding : build.rigid_bindings) { append_string(output, binding.name); append_string(output, binding.joint); append_transform(output, binding.local); }
-    for (const AttachmentDef& attachment : build.attachments) { append_string(output, attachment.name); append_string(output, attachment.socket); append_transform(output, attachment.local); }
+    for (const SkinBindingDef& binding : build.skin_bindings) { append_string(output, binding.name); output << binding.falloff << ',' << binding.generated << '|'; for (const std::string& joint : binding.joints) append_string(output, joint); }
+    for (const RigidBindingDef& binding : build.rigid_bindings) { append_string(output, binding.name); append_string(output, binding.joint); output << binding.decorative << '|'; append_transform(output, binding.local); }
+    for (const AttachmentDef& attachment : build.attachments) { append_string(output, attachment.name); append_string(output, attachment.socket); output << attachment.child_hash << '|'; append_transform(output, attachment.local); }
     return output.str();
 }
 
@@ -190,16 +191,25 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
         if (controller.type.empty()) diagnostics.add("invalid-controller-type", controller.source, "controller type must identify a native controller");
         if (!valid_cadence(controller.cadence)) diagnostics.add("invalid-cadence", controller.source, "controller cadence is unsupported");
     }
+    std::set<std::string> named_bindings;
+    std::set<std::string> rigid_binding_names;
+    std::set<std::string> rigid_segments;
     for (const SkinBindingDef& binding : build.skin_bindings) {
-        if (binding.joints.size() > kMaxSkinInfluences) diagnostics.add("skin-influence-limit", binding.source, "skin binding exceeds four influences");
+        if (binding.name.empty() || !named_bindings.insert(binding.name).second) diagnostics.add("duplicate-binding", binding.source, "binding name must be non-empty and unique");
+        if (!finite(binding.falloff) || binding.falloff <= 0.0f) diagnostics.add("invalid-skin-falloff", binding.source, "skin falloff must be finite and positive");
+        if (binding.joints.empty()) diagnostics.add("empty-skin-binding", binding.source, "skin binding requires at least one segment");
         for (const std::string& joint : binding.joints)
             if (find_joint(build, joint) < 0) diagnostics.add("missing-skin-joint", binding.source, "skin binding joint is not declared");
     }
     for (const RigidBindingDef& binding : build.rigid_bindings) {
+        if (binding.name.empty() || named_bindings.count(binding.name) || !rigid_segments.insert(binding.name + "\x1f" + binding.joint).second) diagnostics.add("duplicate-binding", binding.source, "rigid binding name/segment must be unique");
+        rigid_binding_names.insert(binding.name);
         if (find_joint(build, binding.joint) < 0) diagnostics.add("missing-rigid-joint", binding.source, "rigid binding joint is not declared");
         validate_transform(binding.local, binding.source, diagnostics);
     }
     for (const AttachmentDef& attachment : build.attachments) {
+        if (attachment.name.empty() || rigid_binding_names.count(attachment.name) || !named_bindings.insert(attachment.name).second) diagnostics.add("duplicate-binding", attachment.source, "attachment name must be non-empty and unique");
+        if (attachment.child_hash == 0) diagnostics.add("unresolved-attachment-child", attachment.source, "attachment child must resolve to a non-zero hash");
         bool found = false;
         for (const SocketDef& socket : build.rig.sockets) if (socket.name == attachment.socket) found = true;
         if (!found) diagnostics.add("missing-attachment-socket", attachment.source, "attachment socket is not declared");

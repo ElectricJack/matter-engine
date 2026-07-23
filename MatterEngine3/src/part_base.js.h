@@ -36,6 +36,9 @@ globalThis.Part = class Part {
   socket(name,transform) { __dsl_socket(name,transform,(new Error()).stack); }
   mirrorBranch(a,b,opts) { __dsl_mirrorBranch(a,b,opts,(new Error()).stack); }
   endRig()               { __dsl_endRig((new Error()).stack); }
+  skin(name,opts)        { __dsl_skin(name,opts,(new Error()).stack); }
+  segments(name,opts)    { __dsl_segments(name,opts,(new Error()).stack); }
+  attach(name,socket,module,transform) { __dsl_attach(name,socket,module,transform,(new Error()).stack); }
   beginClip(rig,name,opts) { return __dsl_beginClip(rig,name,opts,(new Error()).stack); }
   duration(v)             { __dsl_clipDuration(v); }
   sampleRate(v)           { __dsl_clipRate(v); }

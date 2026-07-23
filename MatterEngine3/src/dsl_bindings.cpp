@@ -267,6 +267,58 @@ static JSValue j_mirrorBranch(JSContext* c, JSValueConst, int n, JSValueConst* a
     state->rig_mirror_branch(from,to,plane,rename_from,rename_to,names); return JS_UNDEFINED;
 }
 static JSValue j_endRig(JSContext* c, JSValueConst, int n, JSValueConst* a) { rig_source(c,n,a,"endRig"); state_of(c)->end_rig(); return JS_UNDEFINED; }
+static bool binding_joints(JSContext* c, JSValueConst value, std::vector<std::string>& out) {
+    if (JS_IsUndefined(value)) return true;
+    if (!JS_IsArray(value)) return false;
+    JSValue length_value=JS_GetPropertyStr(c,value,"length"); uint32_t length=0;
+    const bool length_ok=JS_ToUint32(c,&length,length_value)>=0; JS_FreeValue(c,length_value);
+    if (!length_ok) return false;
+    out.clear(); out.reserve(length);
+    for (uint32_t index=0; index<length; ++index) {
+        JSValue item=JS_GetPropertyUint32(c,value,index); std::string joint;
+        const bool ok=anim_string(c,item,joint); JS_FreeValue(c,item);
+        if (!ok) return false;
+        out.push_back(std::move(joint));
+    }
+    return true;
+}
+static bool binding_number_property(JSContext* c, JSValueConst options, const char* key, float& out) {
+    JSValue value=JS_GetPropertyStr(c,options,key);
+    if (JS_IsUndefined(value)) { JS_FreeValue(c,value); return true; }
+    double number=0.0; const bool ok=JS_IsNumber(value)&&JS_ToFloat64(c,&number,value)>=0&&std::isfinite(number);
+    JS_FreeValue(c,value); if (ok) out=static_cast<float>(number); return ok;
+}
+static bool binding_bool_property(JSContext* c, JSValueConst options, const char* key, bool& out) {
+    JSValue value=JS_GetPropertyStr(c,options,key);
+    if (JS_IsUndefined(value)) { JS_FreeValue(c,value); return true; }
+    const bool ok=JS_IsBool(value); if (ok) out=JS_ToBool(c,value)>0; JS_FreeValue(c,value); return ok;
+}
+static JSValue j_skin(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    rig_source(c,n,a,"skin"); const int argc=rig_user_argc(n); std::string name;
+    if (argc < 1 || !rig_nonempty_string(c,argc,a,0,name)) { state_of(c)->set_rig_error("skin requires a non-empty name"); return JS_UNDEFINED; }
+    if (argc > 2 || (argc == 2 && !JS_IsObject(a[1]))) { state_of(c)->set_rig_error("skin options must be an object"); return JS_UNDEFINED; }
+    std::vector<std::string> joints; float falloff=1.0f, spacing=0.1f; bool generate=false;
+    if (argc == 2) {
+        JSValue value=JS_GetPropertyStr(c,a[1],"joints"); const bool joints_ok=binding_joints(c,value,joints); JS_FreeValue(c,value);
+        if (!joints_ok || !binding_number_property(c,a[1],"falloff",falloff) || !binding_number_property(c,a[1],"spacing",spacing) || !binding_bool_property(c,a[1],"generate",generate)) { state_of(c)->set_rig_error("skin options require string joints and finite numeric/boolean values"); return JS_UNDEFINED; }
+    }
+    state_of(c)->rig_skin(name,joints,falloff,generate,spacing); return JS_UNDEFINED;
+}
+static JSValue j_segments(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    rig_source(c,n,a,"segments"); const int argc=rig_user_argc(n); std::string name;
+    if (argc < 1 || !rig_nonempty_string(c,argc,a,0,name)) { state_of(c)->set_rig_error("segments requires a non-empty name"); return JS_UNDEFINED; }
+    if (argc > 2 || (argc == 2 && !JS_IsObject(a[1]))) { state_of(c)->set_rig_error("segments options must be an object"); return JS_UNDEFINED; }
+    std::vector<std::string> joints; bool decorative=false;
+    if (argc == 2) { JSValue value=JS_GetPropertyStr(c,a[1],"joints"); const bool joints_ok=binding_joints(c,value,joints); JS_FreeValue(c,value); if (!joints_ok || !binding_bool_property(c,a[1],"decorative",decorative)) { state_of(c)->set_rig_error("segments options require string joints and a boolean decorative flag"); return JS_UNDEFINED; } }
+    state_of(c)->rig_segments(name,joints,decorative); return JS_UNDEFINED;
+}
+static JSValue j_attach(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    rig_source(c,n,a,"attach"); const int argc=rig_user_argc(n); std::string name,socket,module;
+    if (argc < 3 || argc > 4 || !rig_nonempty_string(c,argc,a,0,name) || !rig_nonempty_string(c,argc,a,1,socket) || !rig_nonempty_string(c,argc,a,2,module)) { state_of(c)->set_rig_error("attach requires name, socket, and child module strings"); return JS_UNDEFINED; }
+    bool ok=true; matter::AnimationTransform local{}; if (argc == 4) local=socket_transform(c,a[3],&ok);
+    if (!ok) { state_of(c)->set_rig_error("attach transform must be a finite transform object"); return JS_UNDEFINED; }
+    state_of(c)->rig_attach(name,socket,module,local); return JS_UNDEFINED;
+}
 static JSValue j_sphere(JSContext* c, JSValueConst, int, JSValueConst* a){
     state_of(c)->sphere({(float)argd(c,a[0]),(float)argd(c,a[1]),(float)argd(c,a[2])},(float)argd(c,a[3]),CsgOp::Union); return JS_UNDEFINED; }
 static JSValue j_box(JSContext* c, JSValueConst, int, JSValueConst* a){
@@ -1221,7 +1273,7 @@ void install_bindings(JSContext* ctx) {
     bind("__dsl_beginVoxels",j_beginVoxels,1); bind("__dsl_endVoxels",j_endVoxels,0);
     bind("__dsl_beginRig",j_beginRig,1); bind("__dsl_root",j_root,3); bind("__dsl_bone",j_bone,3);
     bind("__dsl_rigPush",j_rigPush,0); bind("__dsl_rigPop",j_rigPop,0); bind("__dsl_atJoint",j_atJoint,1);
-    bind("__dsl_radius",j_radius,1); bind("__dsl_socket",j_socket,2); bind("__dsl_mirrorBranch",j_mirrorBranch,3); bind("__dsl_endRig",j_endRig,0);
+    bind("__dsl_radius",j_radius,1); bind("__dsl_socket",j_socket,2); bind("__dsl_mirrorBranch",j_mirrorBranch,3); bind("__dsl_endRig",j_endRig,0); bind("__dsl_skin",j_skin,2); bind("__dsl_segments",j_segments,2); bind("__dsl_attach",j_attach,4);
     bind("__dsl_beginClip",j_beginClip,3); bind("__dsl_clipDuration",j_clipDuration,1); bind("__dsl_clipRate",j_clipRate,1); bind("__dsl_clipLoop",j_clipLoop,1); bind("__dsl_clipMode",j_clipMode,1); bind("__dsl_clipAt",j_clipAt,1); bind("__dsl_clipMarker",j_clipMarker,2); bind("__dsl_clipKey",j_clipKey,3); bind("__dsl_generate",j_generate,1); bind("__dsl_endClip",j_endClip,0);
     bind("__dsl_beginMotion",j_beginMotion,1); bind("__dsl_input",j_motionInput,2); bind("__dsl_target",j_motionTarget,2); bind("__dsl_controller",j_motionController,3); bind("__dsl_clipNode",j_clipNode,2); bind("__dsl_blend1D",j_blendNode,3); bind("__dsl_additive",j_additiveNode,3); bind("__dsl_nativeController",j_nativeNode,2); bind("__dsl_output",j_outputNode,2); bind("__dsl_endMotion",j_endMotion,0);
     bind("__dsl_sphere",j_sphere,4); bind("__dsl_box",j_box,6);

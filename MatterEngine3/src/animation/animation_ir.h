@@ -112,9 +112,30 @@ enum class GraphNodeKind { Clip, Blend1D, Additive, NativeController, Output };
 struct GraphNode { std::string name; std::vector<std::string> dependencies; bool is_output = false; EvaluationCadence cadence = EvaluationCadence::Fixed; SourceSpan source; GraphNodeKind kind = GraphNodeKind::Output; std::string clip; std::string input; std::vector<float> thresholds; std::string controller; };
 struct MotionDefinition { std::vector<GraphNode> nodes; SourceSpan source; };
 
-struct SkinBindingDef { std::string name; std::vector<std::string> joints; SourceSpan source; };
-struct RigidBindingDef { std::string name; std::string joint; AnimationTransform local{}; SourceSpan source; };
-struct AttachmentDef { std::string name; std::string socket; AnimationTransform local{}; SourceSpan source; };
+// Authoring declarations are retained in the bake IR.  They describe the
+// geometry-to-rig relationship; A8 owns publication of the resulting binding
+// payload, and Phase C owns runtime deformation.
+struct SkinBindingDef {
+    std::string name;
+    std::vector<std::string> joints; // selected parent-child segments by child joint
+    float falloff = 1.0f;
+    bool generated = false;
+    SourceSpan source;
+};
+struct RigidBindingDef {
+    std::string name;
+    std::string joint; // one record per selected parent-child segment
+    AnimationTransform local{};
+    bool decorative = false;
+    SourceSpan source;
+};
+struct AttachmentDef {
+    std::string name;
+    std::string socket;
+    uint64_t child_hash = 0; // resolved during the parent bake; never a module name at runtime
+    AnimationTransform local{};
+    SourceSpan source;
+};
 
 struct AnimationBuild {
     RigDefinition rig;

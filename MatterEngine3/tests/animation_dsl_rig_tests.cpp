@@ -222,6 +222,49 @@ void test_rig_transform_arrays_reject_coerced_elements_and_bad_maps() {
     CHECK(!map_result.error.ok && map_result.error.message.find("object map with string values") != std::string::npos, "multi-property invalid map fails cleanly without coercion");
 }
 
+void test_rig_binding_authoring_captures_skin_segments_and_attachments() {
+    script_host::ScriptHost host;
+    const std::string source =
+        "class BindingPart extends Part { build(p) {\n"
+        "this.beginRig('r'); this.radius(.5); this.root('root'); this.bone('arm',[2,0,0]); this.socket('grip'); this.endRig();\n"
+        "this.skin('body',{joints:['arm'],falloff:1.5,generate:true,spacing:.25});\n"
+        "this.segments('armor',{joints:['arm'],decorative:true});\n"
+        "this.attach('tool','grip','Tool',{position:[1,2,3]});\n"
+        "} }";
+    const uint64_t child_hash = 0x1234u;
+    const std::string child_module = "Tool";
+    const auto result = host.bake_source(source, "{}", {}, &child_hash, 1, &child_module);
+    CHECK(result.error.ok, "rig binding declarations bake with a resolved attachment child");
+    const auto& build = host.last_animation_build();
+    CHECK(build && build->skin_bindings.size() == 1 && build->skin_bindings[0].name == "body" &&
+          build->skin_bindings[0].joints.size() == 1 && build->skin_bindings[0].joints[0] == "arm" &&
+          close(build->skin_bindings[0].falloff, 1.5f) && build->skin_bindings[0].generated,
+          "skin records its selected segment in authored animation IR");
+    CHECK(build && build->rigid_bindings.size() == 1 && build->rigid_bindings[0].joint == "arm",
+          "segments emits one rigid binding record per selected segment");
+    CHECK(build && build->attachments.size() == 1 && build->attachments[0].name == "tool" &&
+          build->attachments[0].socket == "grip" && build->attachments[0].child_hash == child_hash,
+          "attachment captures its socket and declared child hash");
+    CHECK(host.last_buffer().ops.size() >= 3, "generated skin contributes tapered segment and endpoint voxel geometry");
+}
+
+void test_rig_binding_authoring_rejects_malformed_or_overlapping_declarations() {
+    struct Case { const char* body; const char* needle; };
+    const Case cases[] = {
+        {"this.beginRig('r');this.root('root');this.bone('arm',[1,0,0]);this.endRig();this.skin('a',{joints:['missing']});", "unknown joint"},
+        {"this.beginRig('r');this.root('root');this.bone('arm',[1,0,0]);this.endRig();this.skin('a',{joints:['arm']});this.segments('b',{joints:['arm']});", "already claimed"},
+        {"this.beginRig('r');this.root('root');this.bone('arm',[1,0,0]);this.endRig();this.skin('a',{joints:['arm','arm']});", "duplicate"},
+        {"this.beginRig('r');this.root('root');this.bone('arm',[1,0,0]);this.endRig();this.skin('a',{falloff:0});", "positive"},
+        {"this.beginRig('r');this.root('root');this.socket('grip');this.endRig();this.attach('tool','grip','Missing');", "unresolved child"},
+    };
+    for (const auto& c : cases) {
+        script_host::ScriptHost host;
+        const auto result = bake(c.body, host);
+        CHECK(!result.error.ok && result.error.message.find(c.needle) != std::string::npos,
+              "malformed binding declarations fail closed");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -233,6 +276,8 @@ int main() {
     test_stable_named_handle_and_one_rig_rule();
     test_rig_bindings_reject_missing_null_and_coerced_arguments();
     test_rig_transform_arrays_reject_coerced_elements_and_bad_maps();
+    test_rig_binding_authoring_captures_skin_segments_and_attachments();
+    test_rig_binding_authoring_rejects_malformed_or_overlapping_declarations();
     if (g_failures) { std::printf("animation_dsl_rig_tests: %d failure(s)\n", g_failures); return 1; }
     std::printf("animation_dsl_rig_tests: all tests passed\n");
     return 0;
