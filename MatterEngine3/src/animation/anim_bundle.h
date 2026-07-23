@@ -1,0 +1,40 @@
+#pragma once
+
+#include "anim_asset.h"
+#include "part_asset_v2.h"
+
+#include <filesystem>
+#include <vector>
+
+namespace matter::animation {
+
+struct LodBindingSignature {
+    uint64_t indexed_vertex_signature = 0;
+    uint32_t vertex_count = 0;
+    uint32_t influence_count = 0;
+    bool operator==(const LodBindingSignature& v) const {
+        return indexed_vertex_signature == v.indexed_vertex_signature &&
+               vertex_count == v.vertex_count && influence_count == v.influence_count;
+    }
+};
+struct BundleIdentity {
+    uint64_t resolved_hash = 0;
+    BuildNonce nonce{};
+    uint64_t part_body_checksum = 0;
+    uint64_t anim_body_checksum = 0;
+    uint32_t part_format_version = part_asset::kFormatVersionV2;
+    uint32_t animation_schema_version = kAnimationSchemaVersion;
+    uint32_t animation_bake_epoch = kAnimationBakeEpoch;
+    uint32_t target_abi_tag = 0;
+    uint32_t ozz_tag_hash = 0;
+    std::vector<LodBindingSignature> lods;
+};
+struct BundleCandidates {
+    std::filesystem::path part_candidate;
+    std::filesystem::path anim_candidate;
+    std::filesystem::path cache_root;
+};
+bool publish_animation_bundle(const BundleCandidates&, const BundleIdentity&, Diagnostics&);
+bool load_committed_animation_bundle(const std::filesystem::path&, uint64_t,
+                                     BLASManager&, AnimAsset&, Diagnostics&);
+} // namespace matter::animation

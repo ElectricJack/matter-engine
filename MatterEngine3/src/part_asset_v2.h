@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -108,6 +109,16 @@ struct VolumeEmitter {
 static_assert(sizeof(VolumeEmitter) == 60,
               "VolumeEmitter must be 60 bytes for stable serialization");
 
+// Optional trailer on animated v2 parts. Static writers do not emit it and
+// their bytes/API remain unchanged.
+struct PartAnimationLink {
+    uint32_t version = 1;
+    uint32_t bundle_required = 1;
+    uint64_t resolved_hash = 0;
+    uint64_t nonce_high = 0;
+    uint64_t nonce_low = 0;
+};
+
 // Serialize the baked managers + child table + LOD levels to path (atomic temp+rename).
 // Writes format_version=2. Returns false on any I/O failure or dangling BLAS handle.
 // GL-free. children may be null iff child_count == 0; lods may be empty.
@@ -126,6 +137,14 @@ bool save_v2(const std::string& path, const BLASManager& blas,
              const std::vector<VolumeEmitter>& emitters,
              uint64_t resolved_hash);
 
+bool save_v2(const std::string& path, const BLASManager& blas,
+             const TLASManager& tlas,
+             const ChildInstance* children, size_t child_count,
+             const LodLevels& lods,
+             const std::vector<VolumeEmitter>& emitters,
+             const PartAnimationLink& animation_link,
+             uint64_t resolved_hash);
+
 // Atomically publish source_path at target_path, replacing an existing target
 // without deleting it first. Failure leaves the previous target intact.
 bool replace_file_atomic(const std::string& source_path,
@@ -141,6 +160,20 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
              BLASManager& blas, TLASManager& tlas,
              std::vector<ChildInstance>& children_out,
              LodLevels& lods_out,
+             PartAssetLoadFailure* failure = nullptr,
+             std::string* reason = nullptr);
+
+// Header/checksum/trailer validation without reconstructing render managers.
+// A present ANLK with invalid fields fails closed; no ANLK is a static part.
+bool load_animation_link(const std::string& path, uint64_t expected_resolved_hash,
+                         std::optional<PartAnimationLink>& animation_link_out);
+
+bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
+             BLASManager& blas, TLASManager& tlas,
+             std::vector<ChildInstance>& children_out,
+             LodLevels& lods_out,
+             std::vector<VolumeEmitter>& emitters_out,
+             std::optional<PartAnimationLink>& animation_link_out,
              PartAssetLoadFailure* failure = nullptr,
              std::string* reason = nullptr);
 

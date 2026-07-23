@@ -505,6 +505,33 @@ bool save_v2(const std::string& path, const BLASManager& blas,
              const ChildInstance* children, size_t child_count,
              const LodLevels& lods,
              const std::vector<VolumeEmitter>& emitters,
+             const PartAnimationLink& link,
+             uint64_t resolved_hash) {
+    if (link.version != 1 || link.bundle_required != 1 ||
+        link.resolved_hash != resolved_hash) return false;
+    std::vector<uint8_t> body;
+    std::unordered_map<BLASHandle, uint32_t> h2i;
+    if (!append_common_body(body, blas, tlas, children, child_count, lods, h2i))
+        return false;
+    if (!emitters.empty()) {
+        put<uint32_t>(body, 0x454D4954u); // EMIT
+        put<uint32_t>(body, static_cast<uint32_t>(emitters.size()));
+        put_bytes(body, emitters.data(), emitters.size() * sizeof(VolumeEmitter));
+    }
+    put<uint32_t>(body, 0x414E4C4Bu); // ANLK
+    put<uint32_t>(body, link.version);
+    put<uint32_t>(body, link.bundle_required);
+    put<uint64_t>(body, link.resolved_hash);
+    put<uint64_t>(body, link.nonce_high);
+    put<uint64_t>(body, link.nonce_low);
+    return write_file_atomic(path, kFormatVersionV2, resolved_hash, body);
+}
+
+bool save_v2(const std::string& path, const BLASManager& blas,
+             const TLASManager& tlas,
+             const ChildInstance* children, size_t child_count,
+             const LodLevels& lods,
+             const std::vector<VolumeEmitter>& emitters,
              uint64_t resolved_hash) {
     std::vector<uint8_t> body;
     std::unordered_map<BLASHandle, uint32_t> h2i;
@@ -561,6 +588,78 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
         if (reason && reason->empty()) *reason = "corrupt part body";
         return false;
     }
+    return true;
+}
+
+bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
+             BLASManager& blas, TLASManager& tlas,
+             std::vector<ChildInstance>& children_out,
+             LodLevels& lods_out,
+             std::vector<VolumeEmitter>& emitters_out,
+             std::optional<PartAnimationLink>& animation_link_out,
+             PartAssetLoadFailure* failure, std::string* reason) {
+    animation_link_out.reset();
+    if (!load_v2(path, expected_resolved_hash, blas, tlas, children_out, lods_out,
+                 emitters_out, failure, reason)) return false;
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::fseek(f, 0, SEEK_END); const long size = std::ftell(f);
+    constexpr long kLinkBytes = 36;
+    if (size < 40 + kLinkBytes) { std::fclose(f); return true; }
+    std::fseek(f, size - kLinkBytes, SEEK_SET);
+    uint8_t raw[kLinkBytes]{};
+    const bool read_ok = std::fread(raw, 1, sizeof(raw), f) == sizeof(raw);
+    std::fclose(f);
+    if (!read_ok) return false;
+    Reader r{raw, raw + sizeof(raw)};
+    const uint32_t tag = r.get<uint32_t>();
+    if (tag != 0x414E4C4Bu) return true; // no link: ordinary static part
+    PartAnimationLink link;
+    link.version = r.get<uint32_t>();
+    link.bundle_required = r.get<uint32_t>();
+    link.resolved_hash = r.get<uint64_t>();
+    link.nonce_high = r.get<uint64_t>();
+    link.nonce_low = r.get<uint64_t>();
+    if (!r.ok || link.version != 1 || link.bundle_required != 1 ||
+        link.resolved_hash != expected_resolved_hash) {
+        if (failure) *failure = PartAssetLoadFailure::CorruptBody;
+        if (reason) *reason = "corrupt ANLK trailer";
+        return false;
+    }
+    animation_link_out = link;
+    return true;
+}
+
+bool load_animation_link(const std::string& path, uint64_t expected_resolved_hash,
+                         std::optional<PartAnimationLink>& out) {
+    out.reset();
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::fseek(f, 0, SEEK_END); const long size = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    if (size < 40) { std::fclose(f); return false; }
+    std::vector<uint8_t> bytes(static_cast<size_t>(size));
+    const bool read_ok = std::fread(bytes.data(), 1, bytes.size(), f) == bytes.size();
+    std::fclose(f);
+    if (!read_ok) return false;
+    Reader header{bytes.data(), bytes.data() + bytes.size()};
+    uint64_t checksum = 0;
+    if (!read_and_validate_header(header, expected_resolved_hash, kFormatVersionV2, checksum) ||
+        fnv1a64(header.p, static_cast<size_t>(header.end - header.p)) != checksum)
+        return false;
+    constexpr size_t kLinkBytes = 36;
+    if (bytes.size() < 40 + kLinkBytes) return true;
+    Reader r{bytes.data() + bytes.size() - kLinkBytes, bytes.data() + bytes.size()};
+    if (r.get<uint32_t>() != 0x414E4C4Bu) return true;
+    PartAnimationLink link;
+    link.version = r.get<uint32_t>();
+    link.bundle_required = r.get<uint32_t>();
+    link.resolved_hash = r.get<uint64_t>();
+    link.nonce_high = r.get<uint64_t>();
+    link.nonce_low = r.get<uint64_t>();
+    if (!r.ok || link.version != 1 || link.bundle_required != 1 ||
+        link.resolved_hash != expected_resolved_hash) return false;
+    out = link;
     return true;
 }
 
