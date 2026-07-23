@@ -204,6 +204,24 @@ void test_rig_bindings_reject_missing_null_and_coerced_arguments() {
     for (const char* body : bad_mirror) { script_host::ScriptHost host; const auto result=bake(body,host); CHECK(!result.error.ok && result.error.message.find("mirrorBranch requires") != std::string::npos, "mirrorBranch rejects malformed names/options without coercion"); }
 }
 
+void test_rig_transform_arrays_reject_coerced_elements_and_bad_maps() {
+    struct Case { const char* body; const char* needle; };
+    const Case transforms[] = {
+        {"this.beginRig('r'); this.root('root',['0',0,0]);", "root requires finite position and rotation arrays"},
+        {"this.beginRig('r'); this.root('root',[0,0,0],[0,false,0,1]);", "root requires finite position and rotation arrays"},
+        {"this.beginRig('r'); this.root('root'); this.bone('child',[0,null,0]);", "bone requires finite endpoint and rotation arrays"},
+        {"this.beginRig('r'); this.root('root'); this.bone('child',[0,0,0],[0,0,{},1]);", "bone requires finite endpoint and rotation arrays"},
+        {"this.beginRig('r'); this.root('root'); this.socket('s',{position:[0,0,'0']});", "socket requires a finite transform object"},
+        {"this.beginRig('r'); this.root('root'); this.socket('s',{rotation:[0,0,Symbol('q'),1]});", "socket requires a finite transform object"},
+        {"this.beginRig('r'); this.root('root'); this.socket('s',{scale:[1,true,1]});", "socket requires a finite transform object"},
+        {"this.beginRig('r'); this.root('root',[NaN,0,0]);", "root requires finite position and rotation arrays"},
+    };
+    for (const Case& c : transforms) { script_host::ScriptHost host; const auto result=bake(c.body,host); CHECK(!result.error.ok && result.error.message.find(c.needle) != std::string::npos, "transform arrays reject coercive/non-finite elements"); }
+    script_host::ScriptHost map_host;
+    const auto map_result=bake("this.beginRig('r'); this.root('root'); this.bone('leftArm',[1,0,0]); this.mirrorBranch('leftArm','rightArm',{axis:'x',map:{a:'ok',b:'ok',c:'ok',d:'ok',e:'ok',f:'ok',g:'ok',h:'ok',i:'ok',j:'ok',k:'ok',z:{}}});",map_host);
+    CHECK(!map_result.error.ok && map_result.error.message.find("object map with string values") != std::string::npos, "multi-property invalid map fails cleanly without coercion");
+}
+
 } // namespace
 
 int main() {
@@ -214,6 +232,7 @@ int main() {
     test_source_aware_failures_and_mirror_spans();
     test_stable_named_handle_and_one_rig_rule();
     test_rig_bindings_reject_missing_null_and_coerced_arguments();
+    test_rig_transform_arrays_reject_coerced_elements_and_bad_maps();
     if (g_failures) { std::printf("animation_dsl_rig_tests: %d failure(s)\n", g_failures); return 1; }
     std::printf("animation_dsl_rig_tests: all tests passed\n");
     return 0;
