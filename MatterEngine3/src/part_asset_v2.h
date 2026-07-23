@@ -147,8 +147,18 @@ bool save_v2(const std::string& path, const BLASManager& blas,
 
 // Atomically publish source_path at target_path, replacing an existing target
 // without deleting it first. Failure leaves the previous target intact.
+enum class FileReplaceOutcome {
+    NotReplaced,
+    ReplacedDurable,
+    ReplacedNotDurabilityConfirmed,
+};
+FileReplaceOutcome replace_file_atomic_detailed(const std::string& source_path,
+                                                const std::string& target_path);
 bool replace_file_atomic(const std::string& source_path,
                          const std::string& target_path);
+// Deterministic test seam: makes the next completed rename report that parent
+// directory durability could not be confirmed.
+void set_replace_file_atomic_test_post_rename_failure_once();
 
 // Reconstruct managers from a v2 file; returns the child table and LOD levels to the
 // caller (passive — no backend action). Returns false (caller regenerates) on any

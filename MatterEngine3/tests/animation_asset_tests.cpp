@@ -172,6 +172,9 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     identity.anim_body_checksum = anim_body_checksum(anim);
     identity.target_abi_tag = anim.target_abi_tag;
     identity.ozz_tag_hash = anim.ozz_tag_hash;
+    // LOD identity is not an ordered numeric sequence, and total packed
+    // influences may legitimately exceed the vertex count (up to four each).
+    identity.lods = {{9, 2, 8}, {1, 1, 4}};
     BundleIdentity invalid_lod = identity;
     invalid_lod.lods.push_back({0, 1, 1});
     CHECK(!publish_animation_bundle({candidate_part, candidate_anim, root}, invalid_lod, diagnostics),
@@ -220,6 +223,32 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
         CHECK(load_committed_animation_bundle(root, hash, unused, loaded, diagnostics),
               "last-good committed bundle survives interrupted publication");
     }
+    for (uint32_t replacement = 1; replacement <= 3; ++replacement) {
+        const auto failed_part = root / "durability.part";
+        const auto failed_anim = root / "durability.anim";
+        CHECK(part_asset::save_v2(failed_part.string(), blas, tlas, nullptr, 0, {}, {}, link, hash),
+              "rewrite candidate before post-rename durability failure");
+        CHECK(save_anim_candidate(anim, failed_anim, diagnostics),
+              "rewrite anim before post-rename durability failure");
+        BundleIdentity failed_identity = identity;
+        failed_identity.part_body_checksum = file_part_body_checksum(failed_part.string().c_str());
+        CHECK(!publish_animation_bundle({failed_part, failed_anim, root, 0, replacement}, failed_identity, diagnostics),
+              "post-rename durability uncertainty reports publication failure");
+        CHECK(load_committed_animation_bundle(root, hash, unused, loaded, diagnostics),
+              "last-good committed bundle survives post-rename durability uncertainty");
+    }
+    const auto stale_lock = cache_path_anim_commit(root, hash).string() + ".lock";
+    write_bytes(stale_lock.c_str(), {'s', 't', 'a', 'l', 'e'});
+    const auto locked_part = root / "stale-lock.part";
+    const auto locked_anim = root / "stale-lock.anim";
+    CHECK(part_asset::save_v2(locked_part.string(), blas, tlas, nullptr, 0, {}, {}, link, hash),
+          "write candidate behind stale lock file");
+    CHECK(save_anim_candidate(anim, locked_anim, diagnostics), "write anim behind stale lock file");
+    BundleIdentity locked_identity = identity;
+    locked_identity.part_body_checksum = file_part_body_checksum(locked_part.string().c_str());
+    CHECK(!publish_animation_bundle({locked_part, locked_anim, root, 1}, locked_identity, diagnostics),
+          "stale lock file is recovered and publisher reaches deterministic injected failure");
+    CHECK(!std::filesystem::exists(stale_lock), "recovered stale lock file is cleaned up");
     std::filesystem::remove(cache_path_anim_commit(root, hash));
     CHECK(!load_committed_animation_bundle(root, hash, unused, loaded, diagnostics),
           "ANLK part without MACM is an animated cache miss");

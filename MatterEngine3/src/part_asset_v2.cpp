@@ -100,6 +100,10 @@ struct Reader {
 
 namespace part_asset {
 
+namespace {
+bool g_test_fail_post_rename_once = false;
+}
+
 uint64_t compute_resolved_hash(const void* source_bytes, size_t source_len,
                                const void* params_bytes, size_t params_len,
                                const uint64_t* child_hashes, size_t child_count) {
@@ -411,6 +415,11 @@ struct ParsedCommonBody {
     LodLevels lods;
 };
 
+constexpr uint32_t kMaxPartBlasEntries = 65536;
+constexpr uint32_t kMaxPartInternalInstances = 1u << 20;
+constexpr uint32_t kMaxPartChildren = 1u << 20;
+constexpr uint32_t kMaxPartLodLevels = 64;
+
 template <class T>
 static bool copy_array(Reader& r, uint32_t count, std::vector<T>& out) {
     if (count > static_cast<uint64_t>(r.end - r.p) / sizeof(T)) {
@@ -452,7 +461,8 @@ static bool parse_common_body(Reader& r, ParsedCommonBody& out,
 
     // --- BLAS table ---
     const uint32_t blas_count = r.get<uint32_t>();
-    if (!r.ok) return false;
+    if (!r.ok || blas_count > kMaxPartBlasEntries ||
+        blas_count > static_cast<uint64_t>(r.end - r.p) / (5 * sizeof(uint32_t))) return false;
     out.blas_entries.reserve(blas_count);
     for (uint32_t i = 0; i < blas_count; ++i) {
         ParsedBlasEntry entry;
@@ -461,17 +471,31 @@ static bool parse_common_body(Reader& r, ParsedCommonBody& out,
         const uint32_t tri_count  = r.get<uint32_t>();
         const uint32_t nodes_used = r.get<uint32_t>();
         const uint32_t has_triex  = r.get<uint32_t>();
-        if (!r.ok || has_triex > 1 ||
+        if (!r.ok || tri_count == 0 || tri_count > static_cast<uint32_t>(INT32_MAX) ||
+            nodes_used == 0 || has_triex > 1 ||
+            nodes_used > static_cast<uint64_t>(tri_count) * 2u + 1u ||
             !copy_array(r, tri_count, entry.triangles) ||
             (has_triex && !copy_array(r, tri_count, entry.tri_extra)) ||
             !copy_array(r, nodes_used, entry.nodes) ||
             !copy_array(r, tri_count, entry.tri_indices)) return false;
+        for (uint tri_index : entry.tri_indices)
+            if (tri_index >= tri_count) return false;
+        for (uint32_t node_index = 0; node_index < nodes_used; ++node_index) {
+            const BVHNode& node = entry.nodes[node_index];
+            if (node.triCount != 0) {
+                if (node.leftFirst > tri_count || node.triCount > tri_count - node.leftFirst)
+                    return false;
+            } else if (nodes_used < 2 || node.leftFirst > nodes_used - 2) {
+                return false;
+            }
+        }
         out.blas_entries.push_back(std::move(entry));
     }
 
     // --- Internal instances ---
     const uint32_t inst_count = r.get<uint32_t>();
-    if (!r.ok) return false;
+    if (!r.ok || inst_count > kMaxPartInternalInstances ||
+        inst_count > static_cast<uint64_t>(r.end - r.p) / (2 * sizeof(uint32_t) + 16 * sizeof(float))) return false;
     out.instances.reserve(inst_count);
     for (uint32_t i = 0; i < inst_count; ++i) {
         ParsedDrawInstance instance;
@@ -486,7 +510,8 @@ static bool parse_common_body(Reader& r, ParsedCommonBody& out,
 
     // --- Child instances (passive — returned to caller) ---
     const uint32_t child_count = r.get<uint32_t>();
-    if (!r.ok) return false;
+    if (!r.ok || child_count > kMaxPartChildren ||
+        child_count > static_cast<uint64_t>(r.end - r.p) / (sizeof(uint64_t) + 16 * sizeof(float))) return false;
     out.children.reserve(child_count);
     for (uint32_t i = 0; i < child_count; ++i) {
         ChildInstance ci{};
@@ -499,13 +524,14 @@ static bool parse_common_body(Reader& r, ParsedCommonBody& out,
 
     // --- LOD levels (passive — returned to caller) ---
     const uint32_t level_count = r.get<uint32_t>();
-    if (!r.ok) return false;
+    if (!r.ok || level_count > kMaxPartLodLevels ||
+        level_count > static_cast<uint64_t>(r.end - r.p) / (sizeof(float) + sizeof(uint32_t))) return false;
     out.lods.reserve(level_count);
     for (uint32_t i = 0; i < level_count; ++i) {
         LodLevel lvl;
         lvl.screen_size_threshold = r.get<float>();
         const uint32_t idx_count  = r.get<uint32_t>();
-        if (!r.ok) return false;
+        if (!r.ok || idx_count > static_cast<uint64_t>(r.end - r.p) / sizeof(uint32_t)) return false;
         lvl.blas_indices.reserve(idx_count);
         for (uint32_t j = 0; j < idx_count; ++j) {
             const uint32_t idx = r.get<uint32_t>();
@@ -658,15 +684,33 @@ static bool parse_v2_suffix(const PartV2Preflight& input, uint64_t expected_reso
 // Public API
 // ─────────────────────────────────────────────────────────────────────────────
 
+void set_replace_file_atomic_test_post_rename_failure_once() {
+    g_test_fail_post_rename_once = true;
+}
+
+FileReplaceOutcome replace_file_atomic_detailed(const std::string& source_path,
+                                                const std::string& target_path) {
+#ifdef _WIN32
+    if (MoveFileExA(source_path.c_str(), target_path.c_str(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == 0)
+        return FileReplaceOutcome::NotReplaced;
+#else
+    if (std::rename(source_path.c_str(), target_path.c_str()) != 0)
+        return FileReplaceOutcome::NotReplaced;
+    if (!fsync_parent_directory(target_path))
+        return FileReplaceOutcome::ReplacedNotDurabilityConfirmed;
+#endif
+    if (g_test_fail_post_rename_once) {
+        g_test_fail_post_rename_once = false;
+        return FileReplaceOutcome::ReplacedNotDurabilityConfirmed;
+    }
+    return FileReplaceOutcome::ReplacedDurable;
+}
+
 bool replace_file_atomic(const std::string& source_path,
                          const std::string& target_path) {
-#ifdef _WIN32
-    return MoveFileExA(source_path.c_str(), target_path.c_str(),
-                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
-#else
-    return std::rename(source_path.c_str(), target_path.c_str()) == 0 &&
-           fsync_parent_directory(target_path);
-#endif
+    return replace_file_atomic_detailed(source_path, target_path) ==
+           FileReplaceOutcome::ReplacedDurable;
 }
 
 bool save_v2(const std::string& path, const BLASManager& blas,
