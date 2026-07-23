@@ -168,6 +168,42 @@ void test_stable_named_handle_and_one_rig_rule() {
     CHECK(!result.error.ok && result.error.message.find("only one rig") != std::string::npos, "one rig per bake remains enforced");
 }
 
+void test_rig_bindings_reject_missing_null_and_coerced_arguments() {
+    const char* optional_begin[] = {
+        "const h=this.beginRig(); if(h!==1) throw Error('handle'); this.root('root'); this.endRig();",
+        "this.beginRig(undefined); this.root('root'); this.endRig();",
+        "this.beginRig(null); this.root('root'); this.endRig();",
+    };
+    for (const char* body : optional_begin) { script_host::ScriptHost host; const auto result=bake(body,host); CHECK(result.error.ok, "beginRig accepts an omitted, undefined, or null optional name"); }
+    const char* invalid_begin[] = {"this.beginRig(7);", "this.beginRig({});", "this.beginRig(Symbol('rig'));"};
+    for (const char* body : invalid_begin) { script_host::ScriptHost host; const auto result=bake(body,host); CHECK(!result.error.ok && result.error.message.find("beginRig name must be a string") != std::string::npos, "beginRig never coerces a non-string name"); }
+
+    struct NameCase { const char* expression; };
+    const NameCase bad_names[] = {{"undefined"}, {"null"}, {"7"}, {"{}"}, {"Symbol('name')"}};
+    for (const NameCase& c : bad_names) {
+        script_host::ScriptHost root; const std::string root_body="this.beginRig('r'); this.root(" + std::string(c.expression) + ");"; const auto root_result=bake(root_body.c_str(),root);
+        CHECK(!root_result.error.ok && root_result.error.message.find("root requires a non-empty string name") != std::string::npos, "root never coerces a required name");
+        script_host::ScriptHost bone; const std::string bone_body="this.beginRig('r'); this.root('root'); this.bone(" + std::string(c.expression) + ",[1,0,0]);"; const auto bone_result=bake(bone_body.c_str(),bone);
+        CHECK(!bone_result.error.ok && bone_result.error.message.find("bone requires a non-empty string name") != std::string::npos, "bone never coerces a required name");
+        script_host::ScriptHost at_joint; const std::string at_joint_body="this.beginRig('r'); this.root('root'); this.atJoint(" + std::string(c.expression) + ");"; const auto at_joint_result=bake(at_joint_body.c_str(),at_joint);
+        CHECK(!at_joint_result.error.ok && at_joint_result.error.message.find("atJoint requires a non-empty string name") != std::string::npos, "atJoint never coerces a required name");
+        script_host::ScriptHost socket; const std::string socket_body="this.beginRig('r'); this.root('root'); this.socket(" + std::string(c.expression) + ");"; const auto socket_result=bake(socket_body.c_str(),socket);
+        CHECK(!socket_result.error.ok && socket_result.error.message.find("socket requires a non-empty string name") != std::string::npos, "socket never coerces a required name");
+    }
+    const char* bad_radius[] = {"this.beginRig('r'); this.radius();", "this.beginRig('r'); this.radius(null);", "this.beginRig('r'); this.radius('1');", "this.beginRig('r'); this.radius(NaN);", "this.beginRig('r'); this.radius(Infinity);"};
+    for (const char* body : bad_radius) { script_host::ScriptHost host; const auto result=bake(body,host); CHECK(!result.error.ok && result.error.message.find("radius requires a finite numeric value") != std::string::npos, "radius requires a present finite number without coercion"); }
+    const char* bad_mirror[] = {
+        "this.beginRig('r'); this.root('root'); this.mirrorBranch(undefined,'right',{axis:'x'});",
+        "this.beginRig('r'); this.root('root'); this.mirrorBranch(7,'right',{axis:'x'});",
+        "this.beginRig('r'); this.root('root'); this.mirrorBranch('root',null,{axis:'x'});",
+        "this.beginRig('r'); this.root('root'); this.mirrorBranch('root','right',null);",
+        "this.beginRig('r'); this.root('root'); this.mirrorBranch('root','right',{axis:7});",
+        "this.beginRig('r'); this.root('root'); this.mirrorBranch('root','right',{axis:'x',rename:{from:7,to:'right'}});",
+        "this.beginRig('r'); this.root('root'); this.bone('leftArm',[1,0,0]); this.mirrorBranch('leftArm','rightArm',{axis:'x',map:{leftArm:{}}});",
+    };
+    for (const char* body : bad_mirror) { script_host::ScriptHost host; const auto result=bake(body,host); CHECK(!result.error.ok && result.error.message.find("mirrorBranch requires") != std::string::npos, "mirrorBranch rejects malformed names/options without coercion"); }
+}
+
 } // namespace
 
 int main() {
@@ -177,6 +213,7 @@ int main() {
     test_rig_and_geometry_sessions_are_mutually_exclusive();
     test_source_aware_failures_and_mirror_spans();
     test_stable_named_handle_and_one_rig_rule();
+    test_rig_bindings_reject_missing_null_and_coerced_arguments();
     if (g_failures) { std::printf("animation_dsl_rig_tests: %d failure(s)\n", g_failures); return 1; }
     std::printf("animation_dsl_rig_tests: all tests passed\n");
     return 0;

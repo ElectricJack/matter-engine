@@ -67,6 +67,28 @@ static std::string arg_string(JSContext* c, JSValueConst value) {
     const char* text = JS_ToCString(c, value); if (!text) return {};
     std::string result(text); JS_FreeCString(c, text); return result;
 }
+// Every Part rig wrapper deliberately appends Error.stack after its authored
+// arguments. Keep that hidden diagnostic argument out of native arity checks;
+// an authored `undefined` remains an actual supplied user argument.
+static int rig_user_argc(int argc) { return argc > 0 ? argc - 1 : 0; }
+static bool rig_nonempty_string(JSContext* c, int argc, JSValueConst* args, int index, std::string& out) {
+    if (index >= argc || !JS_IsString(args[index])) return false;
+    out = arg_string(c, args[index]);
+    return !out.empty();
+}
+static bool rig_optional_string(JSContext* c, int argc, JSValueConst* args, int index, std::string& out) {
+    if (index >= argc || JS_IsUndefined(args[index]) || JS_IsNull(args[index])) { out.clear(); return true; }
+    if (!JS_IsString(args[index])) return false;
+    out = arg_string(c, args[index]);
+    return true;
+}
+static bool rig_finite_number(JSContext* c, int argc, JSValueConst* args, int index, float& out) {
+    if (index >= argc || !JS_IsNumber(args[index])) return false;
+    double value = 0.0;
+    if (JS_ToFloat64(c, &value, args[index]) < 0 || !std::isfinite(value)) return false;
+    out = static_cast<float>(value);
+    return true;
+}
 static bool array_floats(JSContext* c, JSValueConst value, int count, float* out) {
     if (!JS_IsArray(value)) return false;
     for (int i=0; i<count; ++i) { JSValue item=JS_GetPropertyUint32(c,value,i); double number=0; const int ok=JS_ToFloat64(c,&number,item); JS_FreeValue(c,item); if (ok < 0 || !std::isfinite(number)) return false; out[i]=static_cast<float>(number); }
@@ -91,23 +113,43 @@ static matter::AnimationTransform socket_transform(JSContext* c, JSValueConst va
 }
 static void rig_source(JSContext* c, int n, JSValueConst* a, const char* object) {
     matter::animation::SourceSpan source{"<part>", 0, 0, object};
-    if (n > 0) { const std::string stack=arg_string(c,a[n-1]); std::smatch match; if (std::regex_search(stack,match,std::regex("<part>:(\\d+):(\\d+)"))) { source.line=(uint32_t)std::stoul(match[1]); source.column=(uint32_t)std::stoul(match[2]); } }
+    if (n > 0 && JS_IsString(a[n-1])) { const std::string stack=arg_string(c,a[n-1]); std::smatch match; if (std::regex_search(stack,match,std::regex("<part>:(\\d+):(\\d+)"))) { source.line=(uint32_t)std::stoul(match[1]); source.column=(uint32_t)std::stoul(match[2]); } }
     state_of(c)->set_rig_source(std::move(source));
 }
-static JSValue j_beginRig(JSContext* c, JSValueConst, int n, JSValueConst* a) { rig_source(c,n,a,"beginRig"); return JS_NewInt64(c,(int64_t)state_of(c)->begin_rig(n ? arg_string(c,a[0]) : "")); }
-static JSValue j_root(JSContext* c, JSValueConst, int n, JSValueConst* a) { rig_source(c,n,a,"root"); bool ok=false; const auto local=rig_transform(c,n>1?a[1]:JS_UNDEFINED,n>2?a[2]:JS_UNDEFINED,false,&ok); if (!ok) state_of(c)->set_rig_error("root requires finite position and rotation arrays"); else state_of(c)->rig_root(arg_string(c,a[0]),local); return JS_UNDEFINED; }
-static JSValue j_bone(JSContext* c, JSValueConst, int n, JSValueConst* a) { rig_source(c,n,a,"bone"); bool ok=false; const auto local=rig_transform(c,n>1?a[1]:JS_UNDEFINED,n>2?a[2]:JS_UNDEFINED,true,&ok); if (!ok) state_of(c)->set_rig_error("bone requires finite endpoint and rotation arrays"); else state_of(c)->rig_bone(arg_string(c,a[0]),local); return JS_UNDEFINED; }
+static JSValue j_beginRig(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    rig_source(c,n,a,"beginRig"); const int argc=rig_user_argc(n); std::string name;
+    if (!rig_optional_string(c,argc,a,0,name)) { state_of(c)->set_rig_error("beginRig name must be a string"); return JS_NewInt64(c,0); }
+    return JS_NewInt64(c,(int64_t)state_of(c)->begin_rig(name));
+}
+static JSValue j_root(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    rig_source(c,n,a,"root"); const int argc=rig_user_argc(n); std::string name;
+    if (!rig_nonempty_string(c,argc,a,0,name)) state_of(c)->set_rig_error("root requires a non-empty string name");
+    else { bool ok=false; const auto local=rig_transform(c,argc>1?a[1]:JS_UNDEFINED,argc>2?a[2]:JS_UNDEFINED,false,&ok); if (!ok) state_of(c)->set_rig_error("root requires finite position and rotation arrays"); else state_of(c)->rig_root(name,local); }
+    return JS_UNDEFINED;
+}
+static JSValue j_bone(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    rig_source(c,n,a,"bone"); const int argc=rig_user_argc(n); std::string name;
+    if (!rig_nonempty_string(c,argc,a,0,name)) state_of(c)->set_rig_error("bone requires a non-empty string name");
+    else if (argc <= 1 || !JS_IsArray(a[1])) state_of(c)->set_rig_error("bone requires finite endpoint and rotation arrays");
+    else { bool ok=false; const auto local=rig_transform(c,a[1],argc>2?a[2]:JS_UNDEFINED,true,&ok); if (!ok) state_of(c)->set_rig_error("bone requires finite endpoint and rotation arrays"); else state_of(c)->rig_bone(name,local); }
+    return JS_UNDEFINED;
+}
 static JSValue j_rigPush(JSContext* c, JSValueConst, int n, JSValueConst* a) { rig_source(c,n,a,"push"); state_of(c)->rig_push(); return JS_UNDEFINED; }
 static JSValue j_rigPop(JSContext* c, JSValueConst, int n, JSValueConst* a) { rig_source(c,n,a,"pop"); state_of(c)->rig_pop(); return JS_UNDEFINED; }
-static JSValue j_atJoint(JSContext* c, JSValueConst, int n, JSValueConst* a) { rig_source(c,n,a,"atJoint"); state_of(c)->rig_at_joint(arg_string(c,a[0])); return JS_UNDEFINED; }
-static JSValue j_radius(JSContext* c, JSValueConst, int n, JSValueConst* a) { rig_source(c,n,a,"radius"); state_of(c)->rig_radius((float)argd(c,a[0])); return JS_UNDEFINED; }
-static JSValue j_socket(JSContext* c, JSValueConst, int n, JSValueConst* a) { rig_source(c,n,a,"socket"); bool ok=false; const auto local=socket_transform(c,n>1?a[1]:JS_UNDEFINED,&ok); if (!ok) state_of(c)->set_rig_error("socket requires a finite transform object"); else state_of(c)->rig_socket(arg_string(c,a[0]),local); return JS_UNDEFINED; }
+static JSValue j_atJoint(JSContext* c, JSValueConst, int n, JSValueConst* a) { rig_source(c,n,a,"atJoint"); const int argc=rig_user_argc(n); std::string name; if (!rig_nonempty_string(c,argc,a,0,name)) state_of(c)->set_rig_error("atJoint requires a non-empty string name"); else state_of(c)->rig_at_joint(name); return JS_UNDEFINED; }
+static JSValue j_radius(JSContext* c, JSValueConst, int n, JSValueConst* a) { rig_source(c,n,a,"radius"); const int argc=rig_user_argc(n); float value=0.0f; if (!rig_finite_number(c,argc,a,0,value)) state_of(c)->set_rig_error("radius requires a finite numeric value"); else state_of(c)->rig_radius(value); return JS_UNDEFINED; }
+static JSValue j_socket(JSContext* c, JSValueConst, int n, JSValueConst* a) { rig_source(c,n,a,"socket"); const int argc=rig_user_argc(n); std::string name; if (!rig_nonempty_string(c,argc,a,0,name)) state_of(c)->set_rig_error("socket requires a non-empty string name"); else { bool ok=false; const auto local=socket_transform(c,argc>1?a[1]:JS_UNDEFINED,&ok); if (!ok) state_of(c)->set_rig_error("socket requires a finite transform object"); else state_of(c)->rig_socket(name,local); } return JS_UNDEFINED; }
 static JSValue j_mirrorBranch(JSContext* c, JSValueConst, int n, JSValueConst* a) {
-    rig_source(c,n,a,"mirrorBranch"); DslState* state=state_of(c); if (n < 3 || !JS_IsObject(a[2])) { state->set_rig_error("mirrorBranch requires an options object"); return JS_UNDEFINED; }
-    const std::string from=arg_string(c,a[0]), to=arg_string(c,a[1]); JSValue axis=JS_GetPropertyStr(c,a[2],"axis"); const std::string axis_name=arg_string(c,axis); JS_FreeValue(c,axis);
-    const int plane=axis_name=="x"?0:(axis_name=="y"?1:(axis_name=="z"?2:-1)); std::string rename_from,rename_to; std::map<std::string,std::string> names;
-    JSValue rename=JS_GetPropertyStr(c,a[2],"rename"); if (JS_IsObject(rename)) { JSValue f=JS_GetPropertyStr(c,rename,"from"), t=JS_GetPropertyStr(c,rename,"to"); rename_from=arg_string(c,f); rename_to=arg_string(c,t); JS_FreeValue(c,f); JS_FreeValue(c,t); } JS_FreeValue(c,rename);
-    JSValue map=JS_GetPropertyStr(c,a[2],"map"); if (JS_IsObject(map)) { JSPropertyEnum* props=nullptr; uint32_t count=0; if (JS_GetOwnPropertyNames(c,&props,&count,map,JS_GPN_STRING_MASK)==0) { for (uint32_t i=0;i<count;++i) { const char* key=JS_AtomToCString(c,props[i].atom); JSValue v=JS_GetProperty(c,map,props[i].atom); if (key) { names[key]=arg_string(c,v); JS_FreeCString(c,key); } JS_FreeValue(c,v); JS_FreeAtom(c,props[i].atom); } js_free(c,props); } } JS_FreeValue(c,map);
+    rig_source(c,n,a,"mirrorBranch"); DslState* state=state_of(c); const int argc=rig_user_argc(n); std::string from,to;
+    if (!rig_nonempty_string(c,argc,a,0,from) || !rig_nonempty_string(c,argc,a,1,to)) { state->set_rig_error("mirrorBranch requires non-empty string from and to names"); return JS_UNDEFINED; }
+    if (argc <= 2 || !JS_IsObject(a[2])) { state->set_rig_error("mirrorBranch requires an options object"); return JS_UNDEFINED; }
+    JSValue axis=JS_GetPropertyStr(c,a[2],"axis"); std::string axis_name; const bool valid_axis=JS_IsString(axis) && rig_nonempty_string(c,1,&axis,0,axis_name); JS_FreeValue(c,axis);
+    const int plane=valid_axis && axis_name=="x"?0:(valid_axis && axis_name=="y"?1:(valid_axis && axis_name=="z"?2:-1)); if (plane < 0) { state->set_rig_error("mirrorBranch requires axis 'x', 'y', or 'z'"); return JS_UNDEFINED; }
+    std::string rename_from,rename_to; std::map<std::string,std::string> names;
+    JSValue rename=JS_GetPropertyStr(c,a[2],"rename");
+    if (!JS_IsUndefined(rename)) { if (!JS_IsObject(rename)) { JS_FreeValue(c,rename); state->set_rig_error("mirrorBranch requires string rename.from and rename.to"); return JS_UNDEFINED; } JSValue f=JS_GetPropertyStr(c,rename,"from"), t=JS_GetPropertyStr(c,rename,"to"); const bool valid=rig_nonempty_string(c,1,&f,0,rename_from) && rig_nonempty_string(c,1,&t,0,rename_to); JS_FreeValue(c,f); JS_FreeValue(c,t); if (!valid) { JS_FreeValue(c,rename); state->set_rig_error("mirrorBranch requires string rename.from and rename.to"); return JS_UNDEFINED; } } JS_FreeValue(c,rename);
+    JSValue map=JS_GetPropertyStr(c,a[2],"map");
+    if (!JS_IsUndefined(map)) { if (!JS_IsObject(map)) { JS_FreeValue(c,map); state->set_rig_error("mirrorBranch requires an object map with string values"); return JS_UNDEFINED; } JSPropertyEnum* props=nullptr; uint32_t count=0; const int listed=JS_GetOwnPropertyNames(c,&props,&count,map,JS_GPN_STRING_MASK); if (listed != 0) { JS_FreeValue(c,map); state->set_rig_error("mirrorBranch requires an object map with string values"); return JS_UNDEFINED; } for (uint32_t i=0;i<count;++i) { const char* key=JS_AtomToCString(c,props[i].atom); JSValue value=JS_GetProperty(c,map,props[i].atom); std::string mapped; const bool valid=key && *key && rig_nonempty_string(c,1,&value,0,mapped); if (valid) names[key]=mapped; if (key) JS_FreeCString(c,key); JS_FreeValue(c,value); JS_FreeAtom(c,props[i].atom); if (!valid) { js_free(c,props); JS_FreeValue(c,map); state->set_rig_error("mirrorBranch requires an object map with string values"); return JS_UNDEFINED; } } js_free(c,props); } JS_FreeValue(c,map);
     state->rig_mirror_branch(from,to,plane,rename_from,rename_to,names); return JS_UNDEFINED;
 }
 static JSValue j_endRig(JSContext* c, JSValueConst, int n, JSValueConst* a) { rig_source(c,n,a,"endRig"); state_of(c)->end_rig(); return JS_UNDEFINED; }
