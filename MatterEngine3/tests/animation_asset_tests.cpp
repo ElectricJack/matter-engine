@@ -171,6 +171,10 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     identity.anim_body_checksum = anim_body_checksum(anim);
     identity.target_abi_tag = anim.target_abi_tag;
     identity.ozz_tag_hash = anim.ozz_tag_hash;
+    BundleIdentity invalid_lod = identity;
+    invalid_lod.lods.push_back({0, 1, 1});
+    CHECK(!publish_animation_bundle({candidate_part, candidate_anim, root}, invalid_lod, diagnostics),
+          "reject manifest LOD with zero indexed-vertex signature");
     CHECK(publish_animation_bundle({candidate_part, candidate_anim, root}, identity, diagnostics),
           "publish coherent bundle with MACM last");
     std::optional<part_asset::PartAnimationLink> saved_link;
