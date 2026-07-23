@@ -1791,3 +1791,33 @@ run-eventcommand: event_command_tests
 clean: clean-eventcommand
 clean-eventcommand:
 	rm -f event_command_tests
+
+# ---------------------------------------------------------------------------
+# E5a -- evt::Property<T> + evt::PropertyScheduler tests (event-system.md
+# S I.9, S II.1 E5). Same self-contained pattern as event_hub_tests above:
+# the scheduler's only impl object is property.cpp, and it depends on the
+# swappable fail_fast seam (subscription.cpp / registration_error). No engine
+# .cpp deps beyond matter/event/*, no GL/raylib. -Isrc is unnecessary here
+# (property.h reaches only subscription.h + registration_error.h under
+# include/), but kept for parity. -lpthread for the affinity off-thread test.
+# ---------------------------------------------------------------------------
+EVENTPROP_SRC = event_property_tests.cpp \
+                ../src/event/property.cpp \
+                ../src/event/subscription.cpp \
+                ../src/event/dispatch_context.cpp
+EVENTPROP_HEADERS = check.h ../include/matter/event/property.h \
+                    ../include/matter/event/subscription.h \
+                    ../include/matter/event/registration_error.h \
+                    ../include/matter/event/detail/dispatch_context.h
+
+event_property_tests: $(EVENTPROP_SRC) $(EVENTPROP_HEADERS)
+	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include -I../src \
+	    -o $@ $(EVENTPROP_SRC) -lpthread
+
+run-eventproperty: event_property_tests
+	./event_property_tests
+
+.PHONY: run-eventproperty clean-eventproperty
+clean: clean-eventproperty
+clean-eventproperty:
+	rm -f event_property_tests
