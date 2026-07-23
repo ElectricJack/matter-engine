@@ -3,6 +3,7 @@
 #include "check.h"
 
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <vector>
 
@@ -242,7 +243,10 @@ static void test_anlk_malformed_and_static_compatibility() {
     constexpr uint64_t hash = 0xabcdef0123456789ull;
     CHECK(part_asset::save_v2(static_path.string(), blas, tlas, nullptr, 0, {}, hash), "write legacy static part");
     const auto legacy_bytes = read_bytes(static_path.string().c_str());
-    CHECK(legacy_bytes.size() > 40 && fnv(legacy_bytes, 0) != 0, "legacy static part fixture has stable pre-ANLK bytes");
+    // Fixed pre-A4 golden from d0be4f3f's static writer (not a second current
+    // write): the one-triangle/material-registry fixture must stay byte-stable.
+    CHECK(legacy_bytes.size() == 4944 && fnv(legacy_bytes, 0) == 0x7da5a4b8e5767282ull,
+          "legacy static part exactly matches the pre-A4 golden");
     std::optional<part_asset::PartAnimationLink> absent;
     CHECK(part_asset::load_animation_link(static_path.string(), hash, absent) && !absent, "old static part has no ANLK link");
     const part_asset::PartAnimationLink link{1, 1, hash, 3, 4};
@@ -264,6 +268,93 @@ static void test_anlk_malformed_and_static_compatibility() {
     std::filesystem::remove_all(root);
 }
 
+static void refresh_part_body_checksum(std::vector<uint8_t>& bytes) {
+    put64(bytes, 32, fnv(bytes, 40));
+}
+
+static void test_part_v2_preflight_boundary_and_no_side_effects() {
+    const std::filesystem::path root = "animation_asset_tests_cache/preflight";
+    const auto static_path = root / "static.part";
+    const auto emit_path = root / "emit-anlk-bytes.part";
+    const auto suffix_path = root / "suffix.part";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root);
+
+    constexpr uint64_t hash = 0x2a4d9c7e11335577ull;
+    BLASManager source_blas;
+    TLASManager source_tlas(1);
+    Tri triangle{};
+    triangle.vertex0 = make_float3(0, 0, 0); triangle.vertex1 = make_float3(1, 0, 0); triangle.vertex2 = make_float3(0, 1, 0);
+    triangle.centroid = make_float3(.333f, .333f, 0);
+    TriEx extra{};
+    const BLASHandle handle = source_blas.register_triangles(&triangle, 1, &extra);
+    TLASManager::DrawInstance instance{}; instance.blas_handle = handle;
+    source_tlas.draw_batch({instance}); source_tlas.build(source_blas);
+    CHECK(part_asset::save_v2(static_path.string(), source_blas, source_tlas,
+                              nullptr, 0, {}, hash), "write preflight static part");
+
+    // A syntactically valid common body followed by an unknown byte must fail
+    // before it mutates a caller-owned BLAS manager.
+    auto suffix = read_bytes(static_path.string().c_str());
+    suffix.push_back(0x7f);
+    refresh_part_body_checksum(suffix);
+    write_bytes(suffix_path.string().c_str(), suffix);
+    BLASManager legacy_blas;
+    TLASManager legacy_tlas(1);
+    std::vector<part_asset::ChildInstance> children;
+    part_asset::LodLevels lods;
+    CHECK(!part_asset::load_v2(suffix_path.string(), hash, legacy_blas, legacy_tlas,
+                               children, lods),
+          "legacy v2 rejects an appended unknown suffix");
+    CHECK(legacy_blas.live_count() == 0,
+          "legacy malformed suffix leaves BLAS manager unchanged");
+    BLASManager animation_blas;
+    TLASManager animation_tlas(1);
+    std::vector<part_asset::VolumeEmitter> rejected_emitters;
+    std::optional<part_asset::PartAnimationLink> rejected_link;
+    CHECK(!part_asset::load_v2(suffix_path.string(), hash, animation_blas, animation_tlas,
+                               children, lods, rejected_emitters, rejected_link),
+          "animation-aware v2 rejects an appended unknown suffix");
+    CHECK(animation_blas.live_count() == 0,
+          "animation-aware malformed suffix leaves BLAS manager unchanged");
+
+    auto truncated_suffix = read_bytes(static_path.string().c_str());
+    truncated_suffix.insert(truncated_suffix.end(), {'E', 'M', 'I'});
+    refresh_part_body_checksum(truncated_suffix);
+    write_bytes(suffix_path.string().c_str(), truncated_suffix);
+    CHECK(!part_asset::load_v2(suffix_path.string(), hash, animation_blas, animation_tlas,
+                               children, lods, rejected_emitters, rejected_link),
+          "animation-aware v2 rejects a truncated trailer");
+    CHECK(animation_blas.live_count() == 0,
+          "truncated trailer leaves BLAS manager unchanged");
+
+    // ANLK-shaped bytes inside a raw EMIT payload are data, not a trailer.
+    part_asset::VolumeEmitter emitter{};
+    const part_asset::PartAnimationLink fake_link{1, 1, hash, 0x1234, 0x5678};
+    static_assert(sizeof(fake_link) == 32, "ANLK payload fields are stable");
+    std::memcpy(reinterpret_cast<uint8_t*>(&emitter) + sizeof(emitter) - 32,
+                reinterpret_cast<const uint8_t*>(&fake_link), sizeof(fake_link));
+    // Include the tag immediately before the payload fields so the last 36 bytes
+    // of the EMIT payload exactly resemble an ANLK record.
+    std::memcpy(reinterpret_cast<uint8_t*>(&emitter) + sizeof(emitter) - 36,
+                "KLNA", 4);
+    CHECK(part_asset::save_v2(emit_path.string(), source_blas, source_tlas,
+                              nullptr, 0, {}, {emitter}, hash),
+          "write EMIT payload ending in ANLK-shaped bytes");
+    BLASManager emit_blas;
+    TLASManager emit_tlas(1);
+    std::vector<part_asset::VolumeEmitter> emitters;
+    std::optional<part_asset::PartAnimationLink> parsed_link;
+    CHECK(part_asset::load_v2(emit_path.string(), hash, emit_blas, emit_tlas,
+                              children, lods, emitters, parsed_link),
+          "animation-aware loader accepts static EMIT payload");
+    CHECK(!parsed_link,
+          "ANLK-shaped EMIT payload bytes are not misclassified as a link trailer");
+    CHECK(emitters.size() == 1, "EMIT payload still round-trips");
+
+    std::filesystem::remove_all(root);
+}
+
 int main() {
     test_anim_round_trip_and_corruption();
     test_anim_required_sections_fail_closed();
@@ -271,5 +362,6 @@ int main() {
     test_anim_header_table_checksum_and_truncation_rejection();
     test_committed_bundle_rejects_torn_and_mixed_siblings();
     test_anlk_malformed_and_static_compatibility();
+    test_part_v2_preflight_boundary_and_no_side_effects();
     return check_summary();
 }

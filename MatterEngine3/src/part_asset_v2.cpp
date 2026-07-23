@@ -8,6 +8,7 @@
 #include <cstddef>   // offsetof
 #include <cstdlib>   // strtoull
 #include <fstream>
+#include <filesystem>
 #include <vector>
 #include <unordered_map>
 #include <algorithm>
@@ -17,6 +18,10 @@
 #define NOGDI
 #define NOUSER
 #include <windows.h>
+#include <io.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
 #endif
 
 // Pin the consumed (read-only) TriEx layout the serializer depends on. The TriEx
@@ -49,6 +54,27 @@ void ensure_parent_dir(const std::string& path) {
     mkdir(path.substr(0, pos).c_str(), 0755); // ignore EEXIST
 #endif
 }
+bool durable_flush(FILE* file) {
+    if (std::fflush(file) != 0) return false;
+#ifdef _WIN32
+    return _commit(_fileno(file)) == 0;
+#else
+    return fsync(fileno(file)) == 0;
+#endif
+}
+// POSIX requires an explicit parent-directory fsync after rename.  Windows
+// uses MoveFileEx(..., MOVEFILE_WRITE_THROUGH) in replace_file_atomic instead.
+#ifndef _WIN32
+bool fsync_parent_directory(const std::string& path) {
+    std::filesystem::path parent = std::filesystem::path(path).parent_path();
+    if (parent.empty()) parent = ".";
+    const int fd = open(parent.string().c_str(), O_RDONLY | O_DIRECTORY);
+    if (fd < 0) return false;
+    const bool ok = fsync(fd) == 0;
+    const int close_result = close(fd);
+    return ok && close_result == 0;
+}
+#endif
 struct Reader {
     const uint8_t* p;
     const uint8_t* end;
@@ -268,18 +294,19 @@ static bool write_file_atomic(const std::string& path,
                      tmp.c_str(), errno, std::strerror(errno));
         return false;
     }
-    bool ok = std::fwrite(head.data(), 1, head.size(), f) == head.size() &&
-              std::fwrite(body.data(), 1, body.size(), f) == body.size();
-    std::fclose(f);
-    if (!ok) {
+    const bool wrote = std::fwrite(head.data(), 1, head.size(), f) == head.size() &&
+                       std::fwrite(body.data(), 1, body.size(), f) == body.size();
+    const bool flushed = wrote && durable_flush(f);
+    const bool closed = std::fclose(f) == 0;
+    if (!wrote || !flushed || !closed) {
         std::fprintf(stderr, "  save_v2: fwrite('%s') failed\n", tmp.c_str());
-        std::remove(tmp.c_str());
+        if (std::remove(tmp.c_str()) != 0 && errno != ENOENT) return false;
         return false;
     }
     if (!replace_file_atomic(tmp, path)) {
         std::fprintf(stderr, "  save_v2: atomic replace('%s' -> '%s') failed: errno=%d (%s)\n",
                      tmp.c_str(), path.c_str(), errno, std::strerror(errno));
-        std::remove(tmp.c_str());
+        if (std::remove(tmp.c_str()) != 0 && errno != ENOENT) return false;
         return false;
     }
     return true;
@@ -361,19 +388,49 @@ bool is_cache_artifact_header_compatible(
     return true;
 }
 
-// Read the common body sections (materials, BLAS, instances, children, lods)
-// from a Reader that is positioned just past the header. Populates the managers
-// and out-params; returns false on any corruption.
-static bool read_common_body(Reader& r,
-                             BLASManager& blas, TLASManager& tlas,
-                             std::vector<ChildInstance>& children_out,
-                             LodLevels& lods_out,
-                             std::vector<BLASHandle>& handles_out,
-                             PartAssetLoadFailure* failure = nullptr,
-                             std::string* reason = nullptr) {
-    children_out.clear();
-    lods_out.clear();
-    handles_out.clear();
+// Part v2 must be completely syntactically valid before it acquires any
+// caller-owned renderer state.  Keep the parsed common body in ordinary owned
+// vectors first; only publish it after the trailer grammar has consumed EOF.
+struct ParsedBlasEntry {
+    uint32_t hash = 0;
+    uint32_t ref_count = 0;
+    std::vector<Tri> triangles;
+    std::vector<TriEx> tri_extra;
+    std::vector<BVHNode> nodes;
+    std::vector<uint> tri_indices;
+};
+struct ParsedDrawInstance {
+    uint32_t blas_index = 0;
+    uint32_t material_id = 0;
+    Matrix4x4 transform;
+};
+struct ParsedCommonBody {
+    std::vector<ParsedBlasEntry> blas_entries;
+    std::vector<ParsedDrawInstance> instances;
+    std::vector<ChildInstance> children;
+    LodLevels lods;
+};
+
+template <class T>
+static bool copy_array(Reader& r, uint32_t count, std::vector<T>& out) {
+    if (count > static_cast<uint64_t>(r.end - r.p) / sizeof(T)) {
+        r.ok = false;
+        return false;
+    }
+    const uint8_t* data = r.take(static_cast<size_t>(count) * sizeof(T));
+    if (!r.ok) return false;
+    out.resize(count);
+    if (count != 0) std::memcpy(out.data(), data, out.size() * sizeof(T));
+    return true;
+}
+
+// Syntactic preflight for the common body.  On success r.p is the exact first
+// byte after the LOD block, which is the only valid start of an EMIT/ANLK
+// suffix.  This function has no BLAS/TLAS side effects.
+static bool parse_common_body(Reader& r, ParsedCommonBody& out,
+                              PartAssetLoadFailure* failure = nullptr,
+                              std::string* reason = nullptr) {
+    out = {};
 
     // --- Materials (validate against the live registry) ---
     const uint32_t material_schema = r.get<uint32_t>();
@@ -396,61 +453,54 @@ static bool read_common_body(Reader& r,
     // --- BLAS table ---
     const uint32_t blas_count = r.get<uint32_t>();
     if (!r.ok) return false;
-    handles_out.resize(blas_count, INVALID_BLAS_HANDLE);
+    out.blas_entries.reserve(blas_count);
     for (uint32_t i = 0; i < blas_count; ++i) {
-        const uint32_t hash       = r.get<uint32_t>();
-        const uint32_t ref_count  = r.get<uint32_t>();
+        ParsedBlasEntry entry;
+        entry.hash                = r.get<uint32_t>();
+        entry.ref_count           = r.get<uint32_t>();
         const uint32_t tri_count  = r.get<uint32_t>();
         const uint32_t nodes_used = r.get<uint32_t>();
         const uint32_t has_triex  = r.get<uint32_t>();
-        if (!r.ok) return false;
-        const Tri*     tris  = reinterpret_cast<const Tri*>(r.take(tri_count * sizeof(Tri)));
-        const TriEx*   triex = has_triex
-                               ? reinterpret_cast<const TriEx*>(r.take(tri_count * sizeof(TriEx)))
-                               : nullptr;
-        const BVHNode* nodes  = reinterpret_cast<const BVHNode*>(r.take(nodes_used * sizeof(BVHNode)));
-        const uint*    triIdx = reinterpret_cast<const uint*>(r.take(tri_count * sizeof(uint)));
-        if (!r.ok) return false;
-        handles_out[i] = blas.register_prebuilt(tris, triex, static_cast<int>(tri_count),
-                                                nodes, nodes_used, triIdx, hash, ref_count);
-        if (handles_out[i] == INVALID_BLAS_HANDLE) return false;
+        if (!r.ok || has_triex > 1 ||
+            !copy_array(r, tri_count, entry.triangles) ||
+            (has_triex && !copy_array(r, tri_count, entry.tri_extra)) ||
+            !copy_array(r, nodes_used, entry.nodes) ||
+            !copy_array(r, tri_count, entry.tri_indices)) return false;
+        out.blas_entries.push_back(std::move(entry));
     }
 
     // --- Internal instances ---
     const uint32_t inst_count = r.get<uint32_t>();
     if (!r.ok) return false;
-    std::vector<TLASManager::DrawInstance> insts;
-    insts.reserve(inst_count);
+    out.instances.reserve(inst_count);
     for (uint32_t i = 0; i < inst_count; ++i) {
-        const uint32_t blas_index = r.get<uint32_t>();
-        const uint32_t material   = r.get<uint32_t>();
+        ParsedDrawInstance instance;
+        instance.blas_index = r.get<uint32_t>();
+        instance.material_id = r.get<uint32_t>();
         const uint8_t* tf         = r.take(16 * sizeof(float));
         if (!r.ok) return false;
-        if (blas_index >= blas_count) return false;
-        TLASManager::DrawInstance di;
-        di.blas_handle = handles_out[blas_index];
-        di.material_id = material;
-        std::memcpy(di.transform.m, tf, 16 * sizeof(float));
-        insts.push_back(di);
+        if (instance.blas_index >= blas_count) return false;
+        std::memcpy(instance.transform.m, tf, 16 * sizeof(float));
+        out.instances.push_back(instance);
     }
 
     // --- Child instances (passive — returned to caller) ---
     const uint32_t child_count = r.get<uint32_t>();
     if (!r.ok) return false;
-    children_out.reserve(child_count);
+    out.children.reserve(child_count);
     for (uint32_t i = 0; i < child_count; ++i) {
         ChildInstance ci{};
         ci.child_resolved_hash = r.get<uint64_t>();
         const uint8_t* tf = r.take(16 * sizeof(float));
         if (!r.ok) return false;
         std::memcpy(ci.transform, tf, 16 * sizeof(float));
-        children_out.push_back(ci);
+        out.children.push_back(ci);
     }
 
     // --- LOD levels (passive — returned to caller) ---
     const uint32_t level_count = r.get<uint32_t>();
     if (!r.ok) return false;
-    lods_out.reserve(level_count);
+    out.lods.reserve(level_count);
     for (uint32_t i = 0; i < level_count; ++i) {
         LodLevel lvl;
         lvl.screen_size_threshold = r.get<float>();
@@ -463,14 +513,144 @@ static bool read_common_body(Reader& r,
             if (idx >= blas_count) return false; // dangling LOD index: regenerate
             lvl.blas_indices.push_back(idx);
         }
-        lods_out.push_back(std::move(lvl));
+        out.lods.push_back(std::move(lvl));
     }
-    if (!r.ok) return false;
+    return r.ok;
+}
 
-    if (!insts.empty()) {
-        tlas.draw_batch(insts);
+static bool publish_common_body(const ParsedCommonBody& parsed,
+                                BLASManager& blas, TLASManager& tlas,
+                                std::vector<ChildInstance>& children_out,
+                                LodLevels& lods_out) {
+    std::vector<BLASHandle> handles;
+    handles.reserve(parsed.blas_entries.size());
+    for (const ParsedBlasEntry& entry : parsed.blas_entries) {
+        const BLASHandle handle = blas.register_prebuilt(
+            entry.triangles.data(),
+            entry.tri_extra.empty() ? nullptr : entry.tri_extra.data(),
+            static_cast<int>(entry.triangles.size()), entry.nodes.data(),
+            static_cast<uint>(entry.nodes.size()), entry.tri_indices.data(),
+            entry.hash, entry.ref_count);
+        if (handle == INVALID_BLAS_HANDLE) return false;
+        handles.push_back(handle);
+    }
+    if (!parsed.instances.empty()) {
+        std::vector<TLASManager::DrawInstance> instances;
+        instances.reserve(parsed.instances.size());
+        for (const ParsedDrawInstance& input : parsed.instances) {
+            TLASManager::DrawInstance output{};
+            output.blas_handle = handles[input.blas_index];
+            output.material_id = input.material_id;
+            output.transform = input.transform;
+            instances.push_back(output);
+        }
+        tlas.draw_batch(instances);
         tlas.build(blas);
     }
+    children_out = parsed.children;
+    lods_out = parsed.lods;
+    return true;
+}
+
+// Flat artifacts have their own post-common-body grammar.  Keep their existing
+// loader contract while v2 uses the stricter preflight below.
+static bool read_common_body(Reader& r, BLASManager& blas, TLASManager& tlas,
+                             std::vector<ChildInstance>& children_out,
+                             LodLevels& lods_out,
+                             std::vector<BLASHandle>& handles_out,
+                             PartAssetLoadFailure* failure = nullptr,
+                             std::string* reason = nullptr) {
+    ParsedCommonBody parsed;
+    if (!parse_common_body(r, parsed, failure, reason)) return false;
+    handles_out.clear();
+    return publish_common_body(parsed, blas, tlas, children_out, lods_out);
+}
+
+struct PartV2Preflight {
+    std::vector<uint8_t> bytes;
+    ParsedCommonBody common;
+    size_t suffix_offset = 0;
+};
+
+static bool preflight_v2_file(const std::string& path, uint64_t expected_resolved_hash,
+                              PartV2Preflight& out, PartAssetLoadFailure* failure,
+                              std::string* reason) {
+    out = {};
+    const auto fail = [failure, reason](PartAssetLoadFailure value, const char* message) {
+        if (failure) *failure = value;
+        if (reason) *reason = message;
+        return false;
+    };
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return fail(PartAssetLoadFailure::Header, "invalid part header");
+    std::fseek(f, 0, SEEK_END);
+    const long size = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    if (size < 40) { std::fclose(f); return fail(PartAssetLoadFailure::Header, "invalid part header"); }
+    out.bytes.resize(static_cast<size_t>(size));
+    const bool read_ok = std::fread(out.bytes.data(), 1, out.bytes.size(), f) == out.bytes.size();
+    std::fclose(f);
+    if (!read_ok) return fail(PartAssetLoadFailure::Header, "invalid part header");
+    Reader reader{out.bytes.data(), out.bytes.data() + out.bytes.size()};
+    uint64_t content_hash = 0;
+    if (!read_and_validate_header(reader, expected_resolved_hash, kFormatVersionV2, content_hash))
+        return fail(PartAssetLoadFailure::Header, "invalid part header");
+    if (fnv1a64(reader.p, static_cast<size_t>(reader.end - reader.p)) != content_hash)
+        return fail(PartAssetLoadFailure::CorruptBody, "corrupt part body");
+    if (!parse_common_body(reader, out.common, failure, reason)) {
+        if (failure && *failure == PartAssetLoadFailure::None) *failure = PartAssetLoadFailure::CorruptBody;
+        if (reason && reason->empty()) *reason = "corrupt part body";
+        return false;
+    }
+    out.suffix_offset = static_cast<size_t>(reader.p - out.bytes.data());
+    return true;
+}
+
+static bool parse_v2_suffix(const PartV2Preflight& input, uint64_t expected_resolved_hash,
+                            bool accept_animation_link,
+                            std::vector<VolumeEmitter>* emitters_out,
+                            std::optional<PartAnimationLink>* animation_link_out,
+                            PartAssetLoadFailure* failure, std::string* reason) {
+    if (emitters_out) emitters_out->clear();
+    if (animation_link_out) animation_link_out->reset();
+    const auto fail = [failure, reason](const char* message) {
+        if (failure) *failure = PartAssetLoadFailure::CorruptBody;
+        if (reason) *reason = message;
+        return false;
+    };
+    Reader r{input.bytes.data() + input.suffix_offset,
+             input.bytes.data() + input.bytes.size()};
+    if (r.p != r.end) {
+        if (static_cast<size_t>(r.end - r.p) < sizeof(uint32_t)) return fail("unknown part trailer");
+        uint32_t tag = 0;
+        std::memcpy(&tag, r.p, sizeof(tag));
+        if (tag == 0x454D4954u) { // EMIT
+            r.p += sizeof(tag);
+            const uint32_t count = r.get<uint32_t>();
+            if (!r.ok || count > static_cast<uint64_t>(r.end - r.p) / sizeof(VolumeEmitter))
+                return fail("corrupt EMIT trailer");
+            const uint8_t* bytes = r.take(static_cast<size_t>(count) * sizeof(VolumeEmitter));
+            if (!r.ok) return fail("corrupt EMIT trailer");
+            if (emitters_out) {
+                emitters_out->resize(count);
+                if (count != 0) std::memcpy(emitters_out->data(), bytes,
+                                            static_cast<size_t>(count) * sizeof(VolumeEmitter));
+            }
+        }
+    }
+    if (r.p == r.end) return true;
+    if (!accept_animation_link) return fail("unknown part trailer");
+    if (static_cast<size_t>(r.end - r.p) != 36) return fail("corrupt ANLK trailer");
+    if (r.get<uint32_t>() != 0x414E4C4Bu) return fail("unknown part trailer");
+    PartAnimationLink link;
+    link.version = r.get<uint32_t>();
+    link.bundle_required = r.get<uint32_t>();
+    link.resolved_hash = r.get<uint64_t>();
+    link.nonce_high = r.get<uint64_t>();
+    link.nonce_low = r.get<uint64_t>();
+    if (!r.ok || r.p != r.end || link.version != 1 || link.bundle_required != 1 ||
+        link.resolved_hash != expected_resolved_hash) return fail("corrupt ANLK trailer");
+    if (animation_link_out) *animation_link_out = link;
     return true;
 }
 
@@ -484,7 +664,8 @@ bool replace_file_atomic(const std::string& source_path,
     return MoveFileExA(source_path.c_str(), target_path.c_str(),
                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
 #else
-    return std::rename(source_path.c_str(), target_path.c_str()) == 0;
+    return std::rename(source_path.c_str(), target_path.c_str()) == 0 &&
+           fsync_parent_directory(target_path);
 #endif
 }
 
@@ -556,53 +737,14 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
     lods_out.clear();
     if (failure) *failure = PartAssetLoadFailure::None;
     if (reason) reason->clear();
-
-    const auto fail = [failure, reason](PartAssetLoadFailure value, const char* message) {
-        if (failure) *failure = value;
-        if (reason) *reason = message;
+    PartV2Preflight preflight;
+    if (!preflight_v2_file(path, expected_resolved_hash, preflight, failure, reason) ||
+        !parse_v2_suffix(preflight, expected_resolved_hash, false, nullptr, nullptr,
+                         failure, reason)) return false;
+    if (!publish_common_body(preflight.common, blas, tlas, children_out, lods_out)) {
+        if (failure) *failure = PartAssetLoadFailure::CorruptBody;
+        if (reason) *reason = "failed to publish validated part body";
         return false;
-    };
-
-    FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return fail(PartAssetLoadFailure::Header, "invalid part header");
-    std::fseek(f, 0, SEEK_END);
-    long sz = std::ftell(f);
-    std::fseek(f, 0, SEEK_SET);
-    if (sz < 40) { std::fclose(f); return fail(PartAssetLoadFailure::Header, "invalid part header"); } // 40-byte v2 header
-    std::vector<uint8_t> buf(static_cast<size_t>(sz));
-    bool read_ok = std::fread(buf.data(), 1, buf.size(), f) == buf.size();
-    std::fclose(f);
-    if (!read_ok) return fail(PartAssetLoadFailure::Header, "invalid part header");
-
-    Reader r{ buf.data(), buf.data() + buf.size() };
-    uint64_t content_hash = 0;
-    if (!read_and_validate_header(r, expected_resolved_hash, kFormatVersionV2, content_hash))
-        return fail(PartAssetLoadFailure::Header, "invalid part header");
-    if (fnv1a64(r.p, static_cast<size_t>(r.end - r.p)) != content_hash)
-        return fail(PartAssetLoadFailure::CorruptBody, "corrupt part body");
-
-    std::vector<BLASHandle> handles;
-    if (!read_common_body(r, blas, tlas, children_out, lods_out, handles, failure, reason)) {
-        if (failure && *failure == PartAssetLoadFailure::None)
-            *failure = PartAssetLoadFailure::CorruptBody;
-        if (reason && reason->empty()) *reason = "corrupt part body";
-        return false;
-    }
-    // Legacy overloads deliberately understand only the historical optional
-    // EMIT trailer. Anything else (notably ANLK) is a cache miss, never a
-    // silent static downgrade.
-    if (r.p < r.end) {
-        if (static_cast<size_t>(r.end - r.p) < sizeof(uint32_t))
-            return fail(PartAssetLoadFailure::CorruptBody, "unknown part trailer");
-        uint32_t tag = 0;
-        std::memcpy(&tag, r.p, sizeof(tag));
-        if (tag != 0x454D4954u)
-            return fail(PartAssetLoadFailure::CorruptBody, "unknown part trailer");
-        r.p += sizeof(uint32_t);
-        const uint32_t count = r.get<uint32_t>();
-        const size_t bytes = static_cast<size_t>(count) * sizeof(VolumeEmitter);
-        if (!r.ok || !r.take(bytes) || r.p != r.end)
-            return fail(PartAssetLoadFailure::CorruptBody, "corrupt EMIT trailer");
     }
     return true;
 }
@@ -614,69 +756,28 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
              std::vector<VolumeEmitter>& emitters_out,
              std::optional<PartAnimationLink>& animation_link_out,
              PartAssetLoadFailure* failure, std::string* reason) {
-    animation_link_out.reset();
-    if (!load_v2(path, expected_resolved_hash, blas, tlas, children_out, lods_out,
-                 emitters_out, failure, reason)) return false;
-    FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return false;
-    std::fseek(f, 0, SEEK_END); const long size = std::ftell(f);
-    constexpr long kLinkBytes = 36;
-    if (size < 40 + kLinkBytes) { std::fclose(f); return true; }
-    std::fseek(f, size - kLinkBytes, SEEK_SET);
-    uint8_t raw[kLinkBytes]{};
-    const bool read_ok = std::fread(raw, 1, sizeof(raw), f) == sizeof(raw);
-    std::fclose(f);
-    if (!read_ok) return false;
-    Reader r{raw, raw + sizeof(raw)};
-    const uint32_t tag = r.get<uint32_t>();
-    if (tag != 0x414E4C4Bu) return true; // no link: ordinary static part
-    PartAnimationLink link;
-    link.version = r.get<uint32_t>();
-    link.bundle_required = r.get<uint32_t>();
-    link.resolved_hash = r.get<uint64_t>();
-    link.nonce_high = r.get<uint64_t>();
-    link.nonce_low = r.get<uint64_t>();
-    if (!r.ok || link.version != 1 || link.bundle_required != 1 ||
-        link.resolved_hash != expected_resolved_hash) {
+    children_out.clear(); lods_out.clear(); emitters_out.clear(); animation_link_out.reset();
+    if (failure) *failure = PartAssetLoadFailure::None;
+    if (reason) reason->clear();
+    PartV2Preflight preflight;
+    if (!preflight_v2_file(path, expected_resolved_hash, preflight, failure, reason) ||
+        !parse_v2_suffix(preflight, expected_resolved_hash, true, &emitters_out,
+                         &animation_link_out, failure, reason)) return false;
+    if (!publish_common_body(preflight.common, blas, tlas, children_out, lods_out)) {
         if (failure) *failure = PartAssetLoadFailure::CorruptBody;
-        if (reason) *reason = "corrupt ANLK trailer";
+        if (reason) *reason = "failed to publish validated part body";
         return false;
     }
-    animation_link_out = link;
     return true;
 }
 
 bool load_animation_link(const std::string& path, uint64_t expected_resolved_hash,
                          std::optional<PartAnimationLink>& out) {
     out.reset();
-    FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return false;
-    std::fseek(f, 0, SEEK_END); const long size = std::ftell(f);
-    std::fseek(f, 0, SEEK_SET);
-    if (size < 40) { std::fclose(f); return false; }
-    std::vector<uint8_t> bytes(static_cast<size_t>(size));
-    const bool read_ok = std::fread(bytes.data(), 1, bytes.size(), f) == bytes.size();
-    std::fclose(f);
-    if (!read_ok) return false;
-    Reader header{bytes.data(), bytes.data() + bytes.size()};
-    uint64_t checksum = 0;
-    if (!read_and_validate_header(header, expected_resolved_hash, kFormatVersionV2, checksum) ||
-        fnv1a64(header.p, static_cast<size_t>(header.end - header.p)) != checksum)
-        return false;
-    constexpr size_t kLinkBytes = 36;
-    if (bytes.size() < 40 + kLinkBytes) return true;
-    Reader r{bytes.data() + bytes.size() - kLinkBytes, bytes.data() + bytes.size()};
-    if (r.get<uint32_t>() != 0x414E4C4Bu) return true;
-    PartAnimationLink link;
-    link.version = r.get<uint32_t>();
-    link.bundle_required = r.get<uint32_t>();
-    link.resolved_hash = r.get<uint64_t>();
-    link.nonce_high = r.get<uint64_t>();
-    link.nonce_low = r.get<uint64_t>();
-    if (!r.ok || link.version != 1 || link.bundle_required != 1 ||
-        link.resolved_hash != expected_resolved_hash) return false;
-    out = link;
-    return true;
+    PartV2Preflight preflight;
+    return preflight_v2_file(path, expected_resolved_hash, preflight, nullptr, nullptr) &&
+           parse_v2_suffix(preflight, expected_resolved_hash, true, nullptr, &out,
+                           nullptr, nullptr);
 }
 
 bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
@@ -691,56 +792,14 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
     lods_out.clear();
     if (failure) *failure = PartAssetLoadFailure::None;
     if (reason) reason->clear();
-
-    const auto fail = [failure, reason](PartAssetLoadFailure value, const char* message) {
-        if (failure) *failure = value;
-        if (reason) *reason = message;
+    PartV2Preflight preflight;
+    if (!preflight_v2_file(path, expected_resolved_hash, preflight, failure, reason) ||
+        !parse_v2_suffix(preflight, expected_resolved_hash, false, &emitters_out,
+                         nullptr, failure, reason)) return false;
+    if (!publish_common_body(preflight.common, blas, tlas, children_out, lods_out)) {
+        if (failure) *failure = PartAssetLoadFailure::CorruptBody;
+        if (reason) *reason = "failed to publish validated part body";
         return false;
-    };
-
-    FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return fail(PartAssetLoadFailure::Header, "invalid part header");
-    std::fseek(f, 0, SEEK_END);
-    long sz = std::ftell(f);
-    std::fseek(f, 0, SEEK_SET);
-    if (sz < 40) { std::fclose(f); return fail(PartAssetLoadFailure::Header, "invalid part header"); }
-    std::vector<uint8_t> buf(static_cast<size_t>(sz));
-    bool read_ok = std::fread(buf.data(), 1, buf.size(), f) == buf.size();
-    std::fclose(f);
-    if (!read_ok) return fail(PartAssetLoadFailure::Header, "invalid part header");
-
-    Reader r{ buf.data(), buf.data() + buf.size() };
-    uint64_t content_hash = 0;
-    if (!read_and_validate_header(r, expected_resolved_hash, kFormatVersionV2, content_hash))
-        return fail(PartAssetLoadFailure::Header, "invalid part header");
-    if (fnv1a64(r.p, static_cast<size_t>(r.end - r.p)) != content_hash)
-        return fail(PartAssetLoadFailure::CorruptBody, "corrupt part body");
-
-    std::vector<BLASHandle> handles;
-    if (!read_common_body(r, blas, tlas, children_out, lods_out, handles, failure, reason)) {
-        if (failure && *failure == PartAssetLoadFailure::None)
-            *failure = PartAssetLoadFailure::CorruptBody;
-        if (reason && reason->empty()) *reason = "corrupt part body";
-        return false;
-    }
-
-    // Probe for the optional EMIT trailer: 4-byte tag 0x454D4954 ("EMIT"),
-    // uint32_t count, then count * sizeof(VolumeEmitter) raw bytes.
-    // At EOF (older .part files without emitters) -> empty, not an error.
-    if (r.p < r.end && static_cast<size_t>(r.end - r.p) >= sizeof(uint32_t)) {
-        // Peek at the tag without consuming.
-        uint32_t tag = 0;
-        std::memcpy(&tag, r.p, sizeof(uint32_t));
-        if (tag == 0x454D4954u) {
-            r.p += sizeof(uint32_t);  // consume tag
-            const uint32_t count = r.get<uint32_t>();
-            if (!r.ok) return fail(PartAssetLoadFailure::CorruptBody, "corrupt EMIT trailer");
-            const size_t bytes = static_cast<size_t>(count) * sizeof(VolumeEmitter);
-            const uint8_t* data = r.take(bytes);
-            if (!r.ok) return fail(PartAssetLoadFailure::CorruptBody, "corrupt EMIT trailer");
-            emitters_out.resize(count);
-            std::memcpy(emitters_out.data(), data, bytes);
-        }
     }
     return true;
 }
