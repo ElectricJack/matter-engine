@@ -158,13 +158,13 @@ public:
     }
 
     // Material cursor
-    void fill(uint32_t materialId) { material_ = materialId; }
+    void fill(uint32_t materialId) { if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; } material_ = materialId; }
     uint32_t material() const { return material_; }
 
     // Tint cursor (G4): RGBA, alpha = blend strength. Default (1,1,1,0) is neutral
     // (alpha 0 = no tint), so unset behavior is byte-identical to before. Captured
     // onto each brush/triangle at emit, mirroring `material_`.
-    void tint(float r, float g, float b, float a) { tint_ = Vector4{r,g,b,a}; }
+    void tint(float r, float g, float b, float a) { if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; } tint_ = Vector4{r,g,b,a}; }
     Vector4 tint() const { return tint_; }
 
     // Stateful, bake-time rig DSL. Its branch stack is deliberately separate

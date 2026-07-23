@@ -40,7 +40,7 @@ void test_collinear_target_requires_pole() {
     CHECK(!result.error.ok && result.error.message.find("explicit pole")!=std::string::npos,"collinear omitted pole fails closed");
 }
 void test_generate_cannot_author_geometry() {
-    script_host::ScriptHost host; const auto result=bake("this.beginRig('r'); this.root('root'); this.bone('mid',[1,0,0]); this.bone('tip',[1,0,0]); this.endRig(); this.beginClip('bad',{duration:1,sampleRate:1}); this.generate(phase=>{this.beginVoxels(.1); this.sphere([0,0,0],1); this.endVoxels();}); this.endClip();",host);
+    script_host::ScriptHost host; const auto result=bake("this.beginRig('r'); this.root('root'); this.bone('mid',[1,0,0]); this.bone('tip',[1,0,0]); this.endRig(); this.beginClip('bad',{duration:1,sampleRate:1}); this.generate(phase=>{this.fill(2); this.tint(1,0,0,1); this.placeChild('missing'); this.emitVolume({radius:1,length:1,dir:[1,0,0]}); this.beginVoxels(.1); this.sphere([0,0,0],1); this.endVoxels();}); this.endClip();",host);
     CHECK(!result.error.ok && result.error.message.find("geometry authoring is forbidden")!=std::string::npos,"generate rejects structural geometry authoring");
 }
 void test_motion_source_spans_are_preserved() {

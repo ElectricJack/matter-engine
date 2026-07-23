@@ -250,6 +250,7 @@ bool DslState::lookup_child_hash(const std::string& module,
 void DslState::placeChild(const std::string& module,
                           const void* params, size_t params_len,
                           bool instanced, float inline_below_px) {
+    if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     uint64_t hash = 0;
     const char* params_ptr = static_cast<const char*>(params);
     if (!lookup_child_hash(module, params_ptr, params_len, hash)) {
@@ -276,6 +277,7 @@ void DslState::placeChild(const std::string& module,
 }
 
 void DslState::emit_volume(const VolumeEmitter& e) {
+    if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     if (e.radius <= 0.0f) { set_error("emitVolume: radius must be > 0"); return; }
     if (e.length <= 0.0f) { set_error("emitVolume: length must be > 0"); return; }
     if (e.density < 0.0f) { set_error("emitVolume: density must be >= 0"); return; }
