@@ -126,6 +126,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/terrain_mesher.cpp \
           src/sector_streamer.cpp \
           src/animation/ozz_adapter.cpp \
+          src/animation/animation_ir.cpp src/animation/animation_validate.cpp \
           src/streaming/sector_streaming_coordinator.cpp
 
 # MatterSurfaceLib C++ backend sources compiled into the archive so MatterViewer
@@ -186,6 +187,7 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           terrain_mesher.o \
           sector_streamer.o \
           ozz_adapter.o \
+          animation_ir.o animation_validate.o \
           sector_streaming_coordinator.o
 
 # MSL C++ object names (basenames; same flat-object model as ME3_OBJ).

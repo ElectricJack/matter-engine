@@ -96,6 +96,9 @@ MATRIX_HEADERS = check.h ../include/matter/math_types.h ../include/matter/camera
 ANIMATION_OZZ_TARGET = animation_ozz_smoke_tests
 ANIMATION_OZZ_CPP = animation_ozz_smoke_tests.cpp ../src/animation/ozz_adapter.cpp
 
+ANIMATION_IR_TARGET = animation_ir_tests
+ANIMATION_IR_CPP = animation_ir_tests.cpp ../src/animation/animation_ir.cpp ../src/animation/animation_validate.cpp
+
 # CPU-only, no GL/VK/raylib link deps (mirrors MATRIX_TARGET's direct-compile
 # pattern) — pure atlas-slicing + mip math, unit-testable without a device.
 TILESETSLICER_TARGET = tileset_slicer_tests
@@ -1030,6 +1033,14 @@ $(ANIMATION_OZZ_TARGET): $(ANIMATION_OZZ_CPP) $(OZZ_OFFLINE_LIBS)
 
 run-animation-ozz: $(ANIMATION_OZZ_TARGET)
 	./$(ANIMATION_OZZ_TARGET)
+
+$(ANIMATION_IR_TARGET): $(ANIMATION_IR_CPP)
+	$(CC) $(ANIMATION_IR_CPP) -o $@ $(CFLAGS) $(INCLUDE_PATHS)
+
+run-animation-ir: $(ANIMATION_IR_TARGET)
+	./$(ANIMATION_IR_TARGET)
+
+.PHONY: run-animation-ir
 
 $(TILESETSLICER_TARGET): $(TILESETSLICER_CPP) $(TILESETSLICER_HEADERS)
 	$(CC) $(TILESETSLICER_CPP) -o $@ $(CFLAGS) $(INCLUDE_PATHS)
