@@ -13,6 +13,10 @@ bool finite(float value) { return std::isfinite(value); }
 bool finite3(const Float3& value) { return finite(value.x) && finite(value.y) && finite(value.z); }
 bool finiteq(const Quaternion& value) { return finite(value.x) && finite(value.y) && finite(value.z) && finite(value.w); }
 bool valid_cadence(EvaluationCadence cadence) { return cadence == EvaluationCadence::Fixed || cadence == EvaluationCadence::Frame; }
+bool valid_input_type(AnimationValueType type) {
+    return type == AnimationValueType::Bool || type == AnimationValueType::Number || type == AnimationValueType::Float3 ||
+           type == AnimationValueType::Quaternion || type == AnimationValueType::Transform || type == AnimationValueType::Symbol;
+}
 
 bool valid_transform(const AnimationTransform& transform) {
     return finite3(transform.translation) && finiteq(transform.rotation) && finite3(transform.scale);
@@ -100,7 +104,7 @@ std::string encode_authored_state(const AnimationBuild& build) {
         output << '|';
     }
     for (const TargetSchema& target : build.targets) { append_string(output, target.name); append_string(output, target.start_joint); append_string(output, target.end_joint); append_string(output, target.controller); output << static_cast<int>(target.driver) << ',' << static_cast<int>(target.cadence) << '|'; }
-    for (const ControllerDef& controller : build.controllers) append_string(output, controller.name);
+    for (const ControllerDef& controller : build.controllers) { append_string(output, controller.name); output << static_cast<int>(controller.cadence) << '|'; }
     for (const GraphNode& node : build.graph.nodes) { append_string(output, node.name); output << node.is_output << ',' << static_cast<int>(node.cadence) << '|'; for (const std::string& dependency : node.dependencies) append_string(output, dependency); }
     for (const SkinBindingDef& binding : build.skin_bindings) { append_string(output, binding.name); for (const std::string& joint : binding.joints) append_string(output, joint); }
     for (const RigidBindingDef& binding : build.rigid_bindings) { append_string(output, binding.name); append_string(output, binding.joint); append_transform(output, binding.local); }
@@ -168,10 +172,13 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
     }
 
     for (const InputSchema& input : build.inputs) {
-        if (input.type != input.default_value.type) diagnostics.add("input-default-type", input.source, "input default does not match declared type");
+        if (!valid_input_type(input.type)) diagnostics.add("unsupported-input-type", input.source, "input uses an unsupported value type");
+        else if (input.type != input.default_value.type) diagnostics.add("input-default-type", input.source, "input default does not match declared type");
         else if (!valid_animation_value(input.default_value)) diagnostics.add("non-finite-input-default", input.source, "input default is invalid for its type");
         if (!valid_cadence(input.cadence)) diagnostics.add("invalid-cadence", input.source, "input cadence is unsupported");
     }
+    for (const ControllerDef& controller : build.controllers)
+        if (!valid_cadence(controller.cadence)) diagnostics.add("invalid-cadence", controller.source, "controller cadence is unsupported");
     for (const SkinBindingDef& binding : build.skin_bindings) {
         if (binding.joints.size() > kMaxSkinInfluences) diagnostics.add("skin-influence-limit", binding.source, "skin binding exceeds four influences");
         for (const std::string& joint : binding.joints)
@@ -198,7 +205,9 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
         if (target.driver == TargetDriverKind::External && !target.controller.empty())
             diagnostics.add("multiple-target-drivers", target.source, "external target cannot also name a controller");
         const int start = find_joint(build, target.start_joint), end = find_joint(build, target.end_joint);
-        if (start < 0 || end < 0) { diagnostics.add("missing-target-joint", target.source, "target endpoint is not declared"); continue; }
+        if (start < 0) diagnostics.add("missing-target-start-joint", target.source, "target start joint is not declared");
+        if (end < 0) diagnostics.add("missing-target-end-joint", target.source, "target end joint is not declared");
+        if (start < 0 || end < 0) continue;
         std::vector<JointIndex> chain;
         for (int current = end; current >= 0; current = parents[current]) {
             chain.push_back(static_cast<JointIndex>(current));

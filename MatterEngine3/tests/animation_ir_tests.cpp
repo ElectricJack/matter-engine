@@ -77,6 +77,7 @@ void test_rig_structure_and_numeric_values_are_validated() {
     CHECK(has_code(diagnostics, "non-finite-transform"), "non-finite transforms diagnosed");
     CHECK(has_code(diagnostics, "non-normalizable-rotation"), "invalid rotations diagnosed");
     CHECK(has_code(diagnostics, "invalid-joint-radius"), "invalid radii diagnosed");
+    AnimationBuild socket = valid_build(); socket.rig.sockets = {{"bad-socket", "missing", transform(), at("bad-socket", 15)}}; check_invalid(socket, "missing-socket-joint", "socket missing joint fails");
 }
 
 void test_limits_and_clip_data_are_validated() {
@@ -87,6 +88,9 @@ void test_limits_and_clip_data_are_validated() {
     clip.clips[0].tracks = {{"root", {{0.8f, transform(), at("key-a", 30)}, {0.2f, transform(), at("key-b", 31)}, {std::numeric_limits<float>::quiet_NaN(), transform(), at("key-c", 32)}}, at("track", 29)}}; clip.clips[0].markers = {{"bad", std::numeric_limits<float>::infinity(), at("marker", 33)}};
     Diagnostics diagnostics; CHECK(!validate_animation_build(clip, diagnostics), "invalid clip fails");
     CHECK(has_code(diagnostics, "invalid-clip-duration"), "duration diagnosed"); CHECK(has_code(diagnostics, "invalid-clip-rate"), "rate diagnosed"); CHECK(has_code(diagnostics, "key-out-of-range"), "key range diagnosed"); CHECK(has_code(diagnostics, "nonmonotonic-key"), "key order diagnosed"); CHECK(has_code(diagnostics, "marker-out-of-range"), "marker range diagnosed");
+    AnimationBuild track = valid_build(); track.clips[0].tracks = {{"missing", {{0.0f, transform(), at("missing-key", 34)}}, at("missing-track", 35)}}; check_invalid(track, "missing-track-joint", "clip track missing joint fails");
+    AnimationBuild key_value = valid_build(); key_value.clips[0].tracks = {{"root", {{0.0f, transform(), at("key", 36)}}, at("track", 37)}}; key_value.clips[0].tracks[0].keys[0].value.rotation = {0, 0, 0, 0}; key_value.clips[0].tracks[0].keys[0].value.scale.x = std::numeric_limits<float>::infinity();
+    diagnostics.items.clear(); CHECK(!validate_animation_build(key_value, diagnostics), "invalid clip key transform fails"); CHECK(has_code(diagnostics, "non-finite-transform"), "non-finite key transform diagnosed"); CHECK(has_code(diagnostics, "non-normalizable-rotation"), "key rotation diagnosed");
     AnimationBuild bindings = valid_build(); bindings.skin_bindings = {{"skin", {"root", "mid", "tip", "arm", "root"}, at("skin", 33)}}; bindings.rigid_bindings = {{"rigid", "missing", transform(), at("rigid", 34)}}; bindings.attachments = {{"attachment", "missing", transform(), at("attachment", 35)}};
     diagnostics.items.clear(); CHECK(!validate_animation_build(bindings, diagnostics), "invalid bindings fail"); CHECK(has_code(diagnostics, "skin-influence-limit"), "skin influence limit diagnosed"); CHECK(has_code(diagnostics, "missing-rigid-joint"), "rigid joint diagnosed"); CHECK(has_code(diagnostics, "missing-attachment-socket"), "attachment socket diagnosed");
 }
@@ -102,9 +106,20 @@ void test_inputs_drivers_targets_and_graph_are_validated() {
     graph = valid_build(); graph.graph.nodes[0].is_output = true; check_invalid(graph, "multiple-graph-output", "multiple graph outputs fail");
     AnimationBuild driver = valid_build(); driver.targets[0].driver = static_cast<TargetDriverKind>(99); check_invalid(driver, "invalid-target-driver", "missing target driver fails");
     AnimationBuild defaults = valid_build(); defaults.inputs[0].default_value = std::numeric_limits<double>::infinity(); check_invalid(defaults, "non-finite-input-default", "non-finite input default fails");
+    AnimationBuild all_types = valid_build(); all_types.inputs = {{"bool", AnimationValueType::Bool, true, EvaluationCadence::Fixed, at("bool", 42)}, {"number", AnimationValueType::Number, 1.0, EvaluationCadence::Fixed, at("number", 43)}, {"float3", AnimationValueType::Float3, Float3{1, 2, 3}, EvaluationCadence::Fixed, at("float3", 44)}, {"quat", AnimationValueType::Quaternion, Quaternion{0, 0, 0, 1}, EvaluationCadence::Fixed, at("quat", 45)}, {"transform", AnimationValueType::Transform, transform(), EvaluationCadence::Fixed, at("transform", 46)}, {"symbol", AnimationValueType::Symbol, "idle", EvaluationCadence::Fixed, at("symbol", 47)}};
+    diagnostics.items.clear(); CHECK(validate_animation_build(all_types, diagnostics), "every typed valid default succeeds");
+    all_types.inputs[0].default_value = 1.0; all_types.inputs[1].default_value = std::numeric_limits<double>::infinity(); all_types.inputs[2].default_value = Float3{std::numeric_limits<float>::infinity(), 0, 0}; all_types.inputs[3].default_value = Quaternion{0, 0, 0, 0}; all_types.inputs[4].default_value = transform(); all_types.inputs[4].default_value.transform.rotation = {0, 0, 0, 0}; all_types.inputs[5].default_value = "";
+    diagnostics.items.clear(); CHECK(!validate_animation_build(all_types, diagnostics), "typed default mismatches and invalid values fail"); CHECK(has_code(diagnostics, "input-default-type"), "typed mismatch diagnosed"); CHECK(has_code(diagnostics, "non-finite-input-default"), "invalid typed defaults diagnosed");
+    AnimationBuild invalid_type = valid_build(); invalid_type.inputs[0].type = static_cast<AnimationValueType>(99); check_invalid(invalid_type, "unsupported-input-type", "unsupported input type fails");
 }
 
 void test_target_chains_and_canonical_orders_are_deterministic() {
+    AnimationBuild missing_start = valid_build(); missing_start.targets[0].start_joint = "missing"; check_invalid(missing_start, "missing-target-start-joint", "missing target start fails");
+    AnimationBuild missing_end = valid_build(); missing_end.targets[0].end_joint = "missing"; check_invalid(missing_end, "missing-target-end-joint", "missing target end fails");
+    AnimationBuild external_controller = valid_build(); external_controller.targets[0].controller = "controller"; check_invalid(external_controller, "multiple-target-drivers", "external target cannot name controller");
+    AnimationBuild bad_target_cadence = valid_build(); bad_target_cadence.targets[0].cadence = static_cast<EvaluationCadence>(99); check_invalid(bad_target_cadence, "invalid-cadence", "invalid target cadence fails");
+    AnimationBuild bad_graph_cadence = valid_build(); bad_graph_cadence.graph.nodes[0].cadence = static_cast<EvaluationCadence>(99); check_invalid(bad_graph_cadence, "invalid-cadence", "invalid graph cadence fails");
+    AnimationBuild bad_controller_cadence = valid_build(); bad_controller_cadence.controllers = {{"controller", at("controller", 48), static_cast<EvaluationCadence>(99)}}; check_invalid(bad_controller_cadence, "invalid-cadence", "invalid controller cadence fails");
     AnimationBuild path = valid_build(); path.targets[0].start_joint = "mid"; path.targets[0].end_joint = "arm"; check_invalid(path, "target-not-descendant", "target end must descend from start");
     AnimationBuild length = valid_build(); length.targets[0].start_joint = "mid"; check_invalid(length, "target-chain-length", "v1 needs three joints");
     AnimationBuild overlap = valid_build(); overlap.targets.push_back({"other", "root", "tip", TargetDriverKind::External, "", EvaluationCadence::Frame, at("other", 50)}); check_invalid(overlap, "overlapping-target-chain", "overlapping writable chains fail");
@@ -113,10 +128,16 @@ void test_target_chains_and_canonical_orders_are_deterministic() {
     CHECK(ca.rig.joints[0].name == "root" && ca.rig.joints[1].name == "mid" && ca.rig.joints[2].name == "tip" && ca.rig.joints[3].name == "arm", "rig uses preorder and declared sibling order");
     const JointRange root_range{0, 4};
     const JointRange mid_range{1, 3};
-    CHECK(ca.rig.joints[0].subtree == root_range && ca.rig.joints[1].subtree == mid_range, "subtree ranges are contiguous and exact"); CHECK(ca.targets[0].chain.size() == 3 && ca.targets[0].chain[0] == 0 && ca.targets[0].chain[2] == 2, "target chain is inclusive and canonical");
+    const JointRange tip_range{2, 3};
+    const JointRange arm_range{3, 4};
+    CHECK(ca.rig.joints[0].subtree == root_range && ca.rig.joints[1].subtree == mid_range && ca.rig.joints[2].subtree == tip_range && ca.rig.joints[3].subtree == arm_range, "every branching subtree range is contiguous and exact"); CHECK(ca.targets[0].chain.size() == 3 && ca.targets[0].chain[0] == 0 && ca.targets[0].chain[2] == 2, "target chain is inclusive and canonical");
     CHECK(ca.encode() == cb.encode(), "equivalent builds encode identically");
     AnimationBuild changed = valid_build(); changed.clips[0].name = "other"; CanonicalAnimationBuild changed_canonical; Diagnostics changed_diagnostics;
     CHECK(validate_and_canonicalize_animation_build(changed, changed_canonical, changed_diagnostics), "changed fixture validates"); CHECK(ca.encode() != changed_canonical.encode(), "encoding retains all authored IR data");
+    AnimationBuild fixed_controller = valid_build(); fixed_controller.controllers = {{"controller", at("controller", 63), EvaluationCadence::Fixed}};
+    AnimationBuild frame_controller = fixed_controller; frame_controller.controllers[0].cadence = EvaluationCadence::Frame;
+    CanonicalAnimationBuild fixed_canonical, frame_canonical; Diagnostics fixed_diagnostics, frame_diagnostics;
+    CHECK(validate_and_canonicalize_animation_build(fixed_controller, fixed_canonical, fixed_diagnostics) && validate_and_canonicalize_animation_build(frame_controller, frame_canonical, frame_diagnostics), "controller cadence fixtures validate"); CHECK(fixed_canonical.encode() != frame_canonical.encode(), "encoding retains controller cadence");
     AnimationBuild tied = valid_build(); tied.graph.nodes = {{"first", {}, false, EvaluationCadence::Fixed, at("first", 60)}, {"second", {}, false, EvaluationCadence::Fixed, at("second", 61)}, {"output", {"first", "second"}, true, EvaluationCadence::Fixed, at("output", 62)}};
     CanonicalAnimationBuild tied_canonical; Diagnostics tied_diagnostics;
     CHECK(validate_and_canonicalize_animation_build(tied, tied_canonical, tied_diagnostics), "tied graph fixture validates"); CHECK(tied_canonical.graph_order == std::vector<uint16_t>({0, 1, 2}), "graph topological sort keeps declaration ties");
@@ -125,6 +146,11 @@ void test_target_chains_and_canonical_orders_are_deterministic() {
 void test_diagnostics_are_stably_sorted() {
     AnimationBuild build = valid_build(); build.rig.joints[2].radius = -1.0f; build.rig.joints[1].parent = "missing"; Diagnostics first, second;
     validate_animation_build(build, first); validate_animation_build(build, second); CHECK(first.items == second.items, "diagnostics are stable across validation runs"); CHECK(std::is_sorted(first.items.begin(), first.items.end(), DiagnosticLess{}), "diagnostics have deterministic order");
+    AnimationBuild permuted = valid_build();
+    permuted.rig.sockets = {{"late", "missing-a", transform(), at("late", 80)}, {"early", "missing-b", transform(), at("early", 70)}};
+    permuted.clips = {{"late-clip", 0.0f, 30.0f, {}, {}, at("late-clip", 82)}, {"early-clip", -1.0f, 30.0f, {}, {}, at("early-clip", 72)}};
+    AnimationBuild reordered = permuted; std::swap(reordered.rig.sockets[0], reordered.rig.sockets[1]); std::swap(reordered.clips[0], reordered.clips[1]);
+    Diagnostics permuted_diagnostics, reordered_diagnostics; validate_animation_build(permuted, permuted_diagnostics); validate_animation_build(reordered, reordered_diagnostics); CHECK(permuted_diagnostics.items == reordered_diagnostics.items, "diagnostic order is independent of declaration traversal");
 }
 
 } // namespace

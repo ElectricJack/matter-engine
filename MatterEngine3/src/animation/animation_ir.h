@@ -104,7 +104,7 @@ struct AnimationValue {
 
 struct InputSchema { std::string name; AnimationValueType type = AnimationValueType::Number; AnimationValue default_value{}; EvaluationCadence cadence = EvaluationCadence::Fixed; SourceSpan source; };
 struct TargetSchema { std::string name; std::string start_joint; std::string end_joint; TargetDriverKind driver = TargetDriverKind::External; std::string controller; EvaluationCadence cadence = EvaluationCadence::Frame; SourceSpan source; };
-struct ControllerDef { std::string name; SourceSpan source; };
+struct ControllerDef { std::string name; SourceSpan source; EvaluationCadence cadence = EvaluationCadence::Fixed; };
 struct GraphNode { std::string name; std::vector<std::string> dependencies; bool is_output = false; EvaluationCadence cadence = EvaluationCadence::Fixed; SourceSpan source; };
 struct MotionDefinition { std::vector<GraphNode> nodes; SourceSpan source; };
 
