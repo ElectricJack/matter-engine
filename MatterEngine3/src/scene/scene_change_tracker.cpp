@@ -44,7 +44,10 @@ SceneRecord SceneChangeTracker::snapshot_entity(flecs::entity e) {
     }
 
     // Display name = the Flecs name identifier ((EcsIdentifier, EcsName)).
-    if (const char* n = e.name().c_str()) rec.name = n;
+    // Fall back to "Entity" for unnamed entities, matching the pre-E5 query
+    // path so the scene tree never shows a blank row.
+    const char* n = e.name().c_str();
+    rec.name = (n && n[0]) ? n : "Entity";
 
     append_component_names(e, rec.component_names);
     return rec;
