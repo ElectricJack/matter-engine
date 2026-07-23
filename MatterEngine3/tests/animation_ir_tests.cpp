@@ -54,7 +54,7 @@ void test_duplicate_names_are_rejected() {
     build.rig.joints.push_back({"root", "", transform(), 1.0f, at("root-again", 10)});
     build.rig.sockets = {{"socket", "root", transform(), at("socket", 11)}, {"socket", "root", transform(), at("socket-again", 12)}};
     build.clips.push_back(build.clips.front()); build.inputs.push_back(build.inputs.front()); build.targets.push_back(build.targets.front());
-    build.controllers = {{"controller", at("controller", 13)}, {"controller", at("controller-again", 14)}};
+    build.controllers = {{"controller", at("controller", 13), EvaluationCadence::Fixed, "native"}, {"controller", at("controller-again", 14), EvaluationCadence::Fixed, "native"}};
     build.graph.nodes.push_back(build.graph.nodes.front());
     Diagnostics diagnostics;
     CHECK(!validate_animation_build(build, diagnostics), "duplicate authored names fail");
@@ -99,7 +99,7 @@ void test_limits_and_clip_data_are_validated() {
 
 void test_inputs_drivers_targets_and_graph_are_validated() {
     AnimationBuild build = valid_build(); build.inputs[0].default_value = true; build.inputs[0].cadence = static_cast<EvaluationCadence>(99);
-    build.controllers = {{"controller", at("controller", 40)}}; build.targets[0].driver = TargetDriverKind::Controller; build.targets[0].controller = "missing";
+    build.controllers = {{"controller", at("controller", 40), EvaluationCadence::Fixed, "native"}}; build.targets[0].driver = TargetDriverKind::Controller; build.targets[0].controller = "missing";
     build.targets.push_back({"also-hand", "root", "tip", TargetDriverKind::External, "", EvaluationCadence::Frame, at("also-hand", 41)}); build.graph.nodes[0].cadence = EvaluationCadence::Frame;
     Diagnostics diagnostics; CHECK(!validate_animation_build(build, diagnostics), "invalid input, drivers and graph fail");
     CHECK(has_code(diagnostics, "input-default-type"), "input default type diagnosed"); CHECK(has_code(diagnostics, "invalid-cadence"), "unsupported cadence diagnosed"); CHECK(has_code(diagnostics, "bad-controller-reference"), "bad controller diagnosed"); CHECK(has_code(diagnostics, "multiple-target-drivers"), "multiple driver diagnosed"); CHECK(has_code(diagnostics, "frame-to-fixed-dependency"), "cadence crossing diagnosed");
@@ -113,6 +113,7 @@ void test_inputs_drivers_targets_and_graph_are_validated() {
     all_types.inputs[0].default_value = 1.0; all_types.inputs[1].default_value = std::numeric_limits<double>::infinity(); all_types.inputs[2].default_value = Float3{std::numeric_limits<float>::infinity(), 0, 0}; all_types.inputs[3].default_value = Quaternion{0, 0, 0, 0}; all_types.inputs[4].default_value = transform(); all_types.inputs[4].default_value.transform.rotation = {0, 0, 0, 0}; all_types.inputs[5].default_value = "";
     diagnostics.items.clear(); CHECK(!validate_animation_build(all_types, diagnostics), "typed default mismatches and invalid values fail"); CHECK(has_code(diagnostics, "input-default-type"), "typed mismatch diagnosed"); CHECK(has_code(diagnostics, "non-finite-input-default"), "invalid typed defaults diagnosed");
     AnimationBuild invalid_type = valid_build(); invalid_type.inputs[0].type = static_cast<AnimationValueType>(99); check_invalid(invalid_type, "unsupported-input-type", "unsupported input type fails");
+    AnimationBuild invalid_controller_type = valid_build(); invalid_controller_type.controllers = {{"controller", at("controller-type", 48), EvaluationCadence::Fixed, ""}}; check_invalid(invalid_controller_type, "invalid-controller-type", "controller type is required");
 }
 
 void test_target_chains_and_canonical_orders_are_deterministic() {
@@ -121,8 +122,8 @@ void test_target_chains_and_canonical_orders_are_deterministic() {
     AnimationBuild external_controller = valid_build(); external_controller.targets[0].controller = "controller"; check_invalid(external_controller, "multiple-target-drivers", "external target cannot name controller");
     AnimationBuild bad_target_cadence = valid_build(); bad_target_cadence.targets[0].cadence = static_cast<EvaluationCadence>(99); check_invalid(bad_target_cadence, "invalid-cadence", "invalid target cadence fails");
     AnimationBuild bad_graph_cadence = valid_build(); bad_graph_cadence.graph.nodes[0].cadence = static_cast<EvaluationCadence>(99); check_invalid(bad_graph_cadence, "invalid-cadence", "invalid graph cadence fails");
-    AnimationBuild bad_controller_cadence = valid_build(); bad_controller_cadence.controllers = {{"controller", at("controller", 48), static_cast<EvaluationCadence>(99)}}; check_invalid(bad_controller_cadence, "invalid-cadence", "invalid controller cadence fails");
-    AnimationBuild frame_controller_fixed_target = valid_build(); frame_controller_fixed_target.controllers = {{"controller", at("controller", 49), EvaluationCadence::Frame}}; frame_controller_fixed_target.targets[0].driver = TargetDriverKind::Controller; frame_controller_fixed_target.targets[0].controller = "controller"; frame_controller_fixed_target.targets[0].cadence = EvaluationCadence::Fixed; check_invalid(frame_controller_fixed_target, "frame-controller-to-fixed-target", "frame controller cannot drive fixed target");
+    AnimationBuild bad_controller_cadence = valid_build(); bad_controller_cadence.controllers = {{"controller", at("controller", 48), static_cast<EvaluationCadence>(99), "native"}}; check_invalid(bad_controller_cadence, "invalid-cadence", "invalid controller cadence fails");
+    AnimationBuild frame_controller_fixed_target = valid_build(); frame_controller_fixed_target.controllers = {{"controller", at("controller", 49), EvaluationCadence::Frame, "native"}}; frame_controller_fixed_target.targets[0].driver = TargetDriverKind::Controller; frame_controller_fixed_target.targets[0].controller = "controller"; frame_controller_fixed_target.targets[0].cadence = EvaluationCadence::Fixed; check_invalid(frame_controller_fixed_target, "frame-controller-to-fixed-target", "frame controller cannot drive fixed target");
     AnimationBuild path = valid_build(); path.targets[0].start_joint = "mid"; path.targets[0].end_joint = "arm"; check_invalid(path, "target-not-descendant", "target end must descend from start");
     AnimationBuild length = valid_build(); length.targets[0].start_joint = "mid"; check_invalid(length, "target-chain-length", "v1 needs three joints");
     AnimationBuild overlap = valid_build(); overlap.targets.push_back({"other", "root", "tip", TargetDriverKind::External, "", EvaluationCadence::Frame, at("other", 50)}); check_invalid(overlap, "overlapping-target-chain", "overlapping writable chains fail");
@@ -137,7 +138,7 @@ void test_target_chains_and_canonical_orders_are_deterministic() {
     CHECK(ca.encode() == cb.encode(), "equivalent builds encode identically");
     AnimationBuild changed = valid_build(); changed.clips[0].name = "other"; CanonicalAnimationBuild changed_canonical; Diagnostics changed_diagnostics;
     CHECK(validate_and_canonicalize_animation_build(changed, changed_canonical, changed_diagnostics), "changed fixture validates"); CHECK(ca.encode() != changed_canonical.encode(), "encoding retains all authored IR data");
-    AnimationBuild fixed_controller = valid_build(); fixed_controller.controllers = {{"controller", at("controller", 63), EvaluationCadence::Fixed}};
+    AnimationBuild fixed_controller = valid_build(); fixed_controller.controllers = {{"controller", at("controller", 63), EvaluationCadence::Fixed, "native"}};
     AnimationBuild frame_controller = fixed_controller; frame_controller.controllers[0].cadence = EvaluationCadence::Frame;
     CanonicalAnimationBuild fixed_canonical, frame_canonical; Diagnostics fixed_diagnostics, frame_diagnostics;
     CHECK(validate_and_canonicalize_animation_build(fixed_controller, fixed_canonical, fixed_diagnostics) && validate_and_canonicalize_animation_build(frame_controller, frame_canonical, frame_diagnostics), "controller cadence fixtures validate"); CHECK(fixed_canonical.encode() != frame_canonical.encode(), "encoding retains controller cadence");

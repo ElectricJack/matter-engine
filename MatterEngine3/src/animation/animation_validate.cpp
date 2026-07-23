@@ -186,8 +186,10 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
         else if (!valid_animation_value(input.default_value)) diagnostics.add("non-finite-input-default", input.source, "input default is invalid for its type");
         if (!valid_cadence(input.cadence)) diagnostics.add("invalid-cadence", input.source, "input cadence is unsupported");
     }
-    for (const ControllerDef& controller : build.controllers)
+    for (const ControllerDef& controller : build.controllers) {
+        if (controller.type.empty()) diagnostics.add("invalid-controller-type", controller.source, "controller type must identify a native controller");
         if (!valid_cadence(controller.cadence)) diagnostics.add("invalid-cadence", controller.source, "controller cadence is unsupported");
+    }
     for (const SkinBindingDef& binding : build.skin_bindings) {
         if (binding.joints.size() > kMaxSkinInfluences) diagnostics.add("skin-influence-limit", binding.source, "skin binding exceeds four influences");
         for (const std::string& joint : binding.joints)
