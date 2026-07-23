@@ -1,4 +1,5 @@
 #include "animation/anim_bundle.h"
+#include "animation/animation_binding_bake.h"
 
 #include <cstdio>
 #include <cstring>
@@ -128,7 +129,8 @@ bool publish_animation_bundle(const BundleCandidates& c,const BundleIdentity& i,
     BLASManager candidate_blas; TLASManager candidate_tlas(1 << 20);
     std::vector<part_asset::ChildInstance> candidate_children; part_asset::LodLevels candidate_lods;
     std::vector<part_asset::VolumeEmitter> candidate_emitters;
-    if(i.part_format_version!=part_asset::kFormatVersionV2||i.animation_schema_version!=kAnimationSchemaVersion||i.animation_bake_epoch!=kAnimationBakeEpoch||i.compiler_identifier!=kAnimationCompilerIdentifier||i.target_abi_tag!=kAnimationTargetAbiTag||i.ozz_tag_hash!=kAnimationOzzTagHash||(i.nonce.high==0&&i.nonce.low==0)||!load_anim(c.anim_candidate,a,d)||a.resolved_hash!=i.resolved_hash||!(a.nonce==i.nonce)||a.target_abi_tag!=kAnimationTargetAbiTag||a.ozz_tag_hash!=kAnimationOzzTagHash||a.target_abi_tag!=i.target_abi_tag||a.ozz_tag_hash!=i.ozz_tag_hash||anim_body_checksum(a)!=i.anim_body_checksum||!checksum_part(c.part_candidate,pc)||pc!=i.part_body_checksum||!part_asset::load_v2(c.part_candidate.string(),i.resolved_hash,candidate_blas,candidate_tlas,candidate_children,candidate_lods,candidate_emitters,link)||!link||link->nonce_high!=i.nonce.high||link->nonce_low!=i.nonce.low){fail(d,"bundle.candidate");return false;}
+    BindingBake binding;
+    if(i.part_format_version!=part_asset::kFormatVersionV2||i.animation_schema_version!=kAnimationSchemaVersion||i.animation_bake_epoch!=kAnimationBakeEpoch||i.compiler_identifier!=kAnimationCompilerIdentifier||i.target_abi_tag!=kAnimationTargetAbiTag||i.ozz_tag_hash!=kAnimationOzzTagHash||(i.nonce.high==0&&i.nonce.low==0)||!load_anim(c.anim_candidate,a,d)||!get_anim_binding_bake(a,binding)||!manifest_matches_binding(i.lods,binding)||a.resolved_hash!=i.resolved_hash||!(a.nonce==i.nonce)||a.target_abi_tag!=kAnimationTargetAbiTag||a.ozz_tag_hash!=kAnimationOzzTagHash||a.target_abi_tag!=i.target_abi_tag||a.ozz_tag_hash!=i.ozz_tag_hash||anim_body_checksum(a)!=i.anim_body_checksum||!checksum_part(c.part_candidate,pc)||pc!=i.part_body_checksum||!part_asset::load_v2(c.part_candidate.string(),i.resolved_hash,candidate_blas,candidate_tlas,candidate_children,candidate_lods,candidate_emitters,link)||!link||link->nonce_high!=i.nonce.high||link->nonce_low!=i.nonce.low){fail(d,"bundle.candidate");return false;}
     std::error_code ec;std::filesystem::create_directories(c.cache_root/"parts",ec);if(ec){fail(d,"bundle.directory");return false;}
     auto part=c.cache_root/part_asset::cache_path_resolved(i.resolved_hash);auto anim=cache_path_anim(c.cache_root,i.resolved_hash);auto manifest=cache_path_anim_commit(c.cache_root,i.resolved_hash);std::vector<uint8_t>m;
     if(c.test_hold_publication_lock){
@@ -180,6 +182,10 @@ bool load_committed_animation_bundle(const std::filesystem::path& root,uint64_t 
         !(a.nonce == i.nonce) || a.target_abi_tag != kAnimationTargetAbiTag ||
         a.ozz_tag_hash != kAnimationOzzTagHash || a.target_abi_tag != i.target_abi_tag ||
         a.ozz_tag_hash != i.ozz_tag_hash || anim_body_checksum(a) != i.anim_body_checksum) { fail(d, "bundle.anim"); return false; }
+    BindingBake binding;
+    if (!get_anim_binding_bake(a, binding) || !manifest_matches_binding(i.lods, binding)) {
+        fail(d, "bundle.binding"); return false;
+    }
     // Validation happens entirely in candidate state.  Only a fully coherent
     // sibling set is allowed to replace the caller's last-good part state.
     blas = std::move(checked_blas);

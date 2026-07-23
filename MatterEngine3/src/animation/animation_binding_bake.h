@@ -16,7 +16,16 @@ struct VertexInfluences {
 };
 
 struct JointLocalBounds { JointIndex joint = kInvalidJoint; Float3 minimum{}; Float3 maximum{}; };
-struct LodSkinBinding { uint64_t indexed_vertex_signature = 0; uint32_t vertex_count = 0; std::vector<VertexInfluences> influences; std::vector<JointLocalBounds> cluster_bounds; };
+// Bounds are owned by a stable cluster range within one LOD.  The current
+// indexed-geometry bake produces a single cluster (id 0) spanning the LOD;
+// later clustered geometry can add records without changing the asset format.
+struct ClusterJointBounds {
+    uint32_t cluster_id = 0;
+    uint32_t vertex_begin = 0;
+    uint32_t vertex_end = 0;
+    std::vector<JointLocalBounds> joints;
+};
+struct LodSkinBinding { uint64_t indexed_vertex_signature = 0; uint32_t vertex_count = 0; std::vector<VertexInfluences> influences; std::vector<ClusterJointBounds> clusters; };
 struct BindingBake { std::vector<LodSkinBinding> lods; std::vector<Mat4f> inverse_bind_matrices; };
 
 // Claims use the child-joint index for each parent-child segment. Attachments
@@ -42,5 +51,11 @@ bool build_skin_binding(const CanonicalRig& rig,
 std::vector<LodBindingSignature> manifest_lod_signatures(const BindingBake& bake);
 bool manifest_matches_binding(const std::vector<LodBindingSignature>& manifest,
                               const BindingBake& bake);
+
+// Stores and retrieves the A7 binding payload using the dedicated MANM
+// sections.  These functions fail closed on malformed counts, non-finite data,
+// invalid joint indices, or incompatible cross-section topology.
+bool set_anim_binding_bake(AnimAsset& asset, const BindingBake& bake);
+bool get_anim_binding_bake(const AnimAsset& asset, BindingBake& bake);
 
 } // namespace matter::animation

@@ -106,7 +106,7 @@ ANIMATION_IR_TARGET = animation_ir_tests
 ANIMATION_IR_CPP = animation_ir_tests.cpp ../src/animation/animation_ir.cpp ../src/animation/animation_validate.cpp
 
 ANIMATION_ASSET_TARGET = animation_asset_tests
-ANIMATION_ASSET_CPP = animation_asset_tests.cpp ../src/animation/anim_asset.cpp ../src/animation/anim_bundle.cpp ../src/animation/animation_ir.cpp ../src/part_asset_v2.cpp $(COMMON_MSL_BLAS_SRC) $(MSL)/material_registry.c
+ANIMATION_ASSET_CPP = animation_asset_tests.cpp ../src/animation/anim_asset.cpp ../src/animation/anim_bundle.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_ir.cpp ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp ../src/part_asset_v2.cpp $(COMMON_MSL_BLAS_SRC) $(MSL)/material_registry.c
 
 ANIMATION_DSL_RIG_TARGET = animation_dsl_rig_tests
 ANIMATION_DSL_RIG_CPP = animation_dsl_rig_tests.cpp $(filter-out script_host_tests.cpp,$(SCRIPT_CPP))

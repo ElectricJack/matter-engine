@@ -1,8 +1,10 @@
 #include "animation/anim_asset.h"
 #include "animation/anim_bundle.h"
+#include "animation/animation_binding_bake.h"
 #include "check.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <vector>
@@ -44,6 +46,25 @@ static void refresh_trailing_checksum(std::vector<uint8_t>& bytes) {
     (void)checksum;
 }
 
+static BindingBake sample_binding() {
+    BindingBake bake;
+    matter::Mat4f identity{};
+    identity.m[0] = identity.m[5] = identity.m[10] = identity.m[15] = 1.0f;
+    bake.inverse_bind_matrices.push_back(identity);
+    matter::animation::LodSkinBinding lod;
+    lod.indexed_vertex_signature = 9;
+    lod.vertex_count = 2;
+    lod.influences.resize(2);
+    for (auto& influence : lod.influences) { influence.joints[0] = 0; influence.weights[0] = 65535; }
+    matter::animation::ClusterJointBounds cluster;
+    cluster.cluster_id = 0;
+    cluster.vertex_end = 2;
+    cluster.joints.push_back({0, {-1.0f,-1.0f,-1.0f}, {1.0f,1.0f,1.0f}});
+    lod.clusters.push_back(cluster);
+    bake.lods.push_back(lod);
+    return bake;
+}
+
 static AnimAsset sample_asset() {
     AnimAsset asset;
     asset.resolved_hash = 0x0123456789abcdefull;
@@ -54,12 +75,11 @@ static AnimAsset sample_asset() {
         {AnimSectionKind::RigSchema, {1}},
         {AnimSectionKind::InputTargetSchemas, {2}},
         {AnimSectionKind::GraphControllerBytecode, {3}},
-        {AnimSectionKind::GeometryBindings, {4}},
-        {AnimSectionKind::InverseBindMatrices, {5}},
-        {AnimSectionKind::ClusterBounds, {6}},
         {AnimSectionKind::OzzSkeleton, {7}},
         {AnimSectionKind::OzzClips, {8}},
     };
+    const bool set = set_anim_binding_bake(asset, sample_binding());
+    if (!set) std::abort();
     return asset;
 }
 
@@ -174,7 +194,7 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     identity.ozz_tag_hash = anim.ozz_tag_hash;
     // LOD identity is not an ordered numeric sequence, and total packed
     // influences may legitimately exceed the vertex count (up to four each).
-    identity.lods = {{9, 2, 8}, {1, 1, 4}};
+    identity.lods = manifest_lod_signatures(sample_binding());
     BundleIdentity invalid_lod = identity;
     invalid_lod.lods.push_back({0, 1, 1});
     CHECK(!publish_animation_bundle({candidate_part, candidate_anim, root}, invalid_lod, diagnostics),
@@ -233,6 +253,8 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     { auto changed = manifest; put32(changed, 60, 99); refresh_trailing_checksum(changed); reject_manifest("reject MACM ABI mismatch", changed); }
     { auto changed = manifest; put32(changed, 64, 99); refresh_trailing_checksum(changed); reject_manifest("reject MACM ozz mismatch", changed); }
     { auto changed = manifest; put32(changed, 68, 99); refresh_trailing_checksum(changed); reject_manifest("reject MACM compiler mismatch", changed); }
+    { auto changed = manifest; put64(changed, 76, 10); refresh_trailing_checksum(changed); reject_manifest("reject MACM binding signature mismatch", changed); }
+    { auto changed = manifest; put32(changed, 84, 3); refresh_trailing_checksum(changed); reject_manifest("reject MACM binding vertex-count mismatch", changed); }
     { auto changed = manifest; changed.back() ^= 1; reject_manifest("reject MACM checksum", changed); }
     for (uint32_t stage = 1; stage <= 3; ++stage) {
         const auto failed_part = root / "failed.part";

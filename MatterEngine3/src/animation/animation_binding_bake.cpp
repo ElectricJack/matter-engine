@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 
 namespace matter::animation {
@@ -19,10 +20,48 @@ Mat4f local_matrix(const AnimationTransform&t){Quaternion q=t.rotation;const flo
 Float3 transform_point(const Mat4f&m,const Float3&p){return {m.m[0]*p.x+m.m[1]*p.y+m.m[2]*p.z+m.m[3],m.m[4]*p.x+m.m[5]*p.y+m.m[6]*p.z+m.m[7],m.m[8]*p.x+m.m[9]*p.y+m.m[10]*p.z+m.m[11]};}
 bool inverse(const Mat4f&source,Mat4f&out){float a[4][8]{};for(int r=0;r<4;++r)for(int c=0;c<4;++c){a[r][c]=source.m[r*4+c];a[r][c+4]=(r==c)?1.0f:0.0f;}for(int c=0;c<4;++c){int pivot=c;for(int r=c+1;r<4;++r)if(std::fabs(a[r][c])>std::fabs(a[pivot][c]))pivot=r;if(std::fabs(a[pivot][c])<1e-12f)return false;for(int k=0;k<8;++k)std::swap(a[c][k],a[pivot][k]);const float d=a[c][c];for(int k=0;k<8;++k)a[c][k]/=d;for(int r=0;r<4;++r)if(r!=c){const float f=a[r][c];for(int k=0;k<8;++k)a[r][k]-=f*a[c][k];}}for(int r=0;r<4;++r)for(int c=0;c<4;++c)out.m[r*4+c]=a[r][c+4];return true;}
 struct BindJoint { Float3 position{}; Quaternion rotation{}; float radius=1; Mat4f world{}; };
-std::vector<BindJoint> bind_joints(const CanonicalRig&rig){std::vector<BindJoint> out(rig.joints.size());for(size_t i=0;i<rig.joints.size();++i){const auto&joint=rig.joints[i];const Mat4f local=local_matrix(joint.local);out[i].world=joint.parent==kInvalidJoint?local:multiply(out[joint.parent].world,local);out[i].position=transform_point(out[i].world,{});out[i].radius=joint.radius;const Quaternion local_q=joint.local.rotation;out[i].rotation=joint.parent==kInvalidJoint?local_q:qmul(out[joint.parent].rotation,local_q);}return out;}
+bool bind_joints(const CanonicalRig&rig, std::vector<BindJoint>&out){
+    if (rig.joints.empty() || rig.joints.size() > kMaxJoints) return false;
+    // Canonical order is part of the binding contract: a parent must have
+    // already been evaluated before a child references it.
+    for (size_t i=0;i<rig.joints.size();++i) {
+        const JointIndex parent=rig.joints[i].parent;
+        if (parent != kInvalidJoint && (parent >= rig.joints.size() || parent >= i)) return false;
+    }
+    out.resize(rig.joints.size());
+    for(size_t i=0;i<rig.joints.size();++i){const auto&joint=rig.joints[i];const Mat4f local=local_matrix(joint.local);out[i].world=joint.parent==kInvalidJoint?local:multiply(out[joint.parent].world,local);out[i].position=transform_point(out[i].world,{});out[i].radius=joint.radius;const Quaternion local_q=joint.local.rotation;out[i].rotation=joint.parent==kInvalidJoint?local_q:qmul(out[joint.parent].rotation,local_q);}return true;
+}
 float smooth(float q){q=std::max(0.0f,std::min(1.0f,q));return q*q*(3.0f-2.0f*q);}
 void add_weight(std::vector<float>&values,JointIndex joint,float weight){if(joint!=kInvalidJoint&&std::isfinite(weight)&&weight>0)values[joint]+=weight;}
 VertexInfluences quantize(std::vector<float> values,const std::vector<BindJoint>&joints,const Float3&p){VertexInfluences out;std::vector<JointIndex> order;for(JointIndex i=0;i<values.size();++i)if(values[i]>0)order.push_back(i);if(order.empty()){JointIndex nearest=0;float distance=std::numeric_limits<float>::infinity();for(JointIndex i=0;i<joints.size();++i){const float d=length2(sub(p,joints[i].position));if(d<distance||(d==distance&&i<nearest)){distance=d;nearest=i;}}out.joints[0]=nearest;out.weights[0]=65535;return out;}std::sort(order.begin(),order.end(),[&](JointIndex a,JointIndex b){return values[a]!=values[b]?values[a]>values[b]:a<b;});if(order.size()>kMaxSkinInfluences)order.resize(kMaxSkinInfluences);float total=0;for(auto j:order)total+=values[j];uint32_t assigned=0;for(size_t i=0;i<order.size();++i){out.joints[i]=order[i];if(i==0)continue;const uint32_t q=static_cast<uint32_t>(std::floor(values[order[i]]/total*65535.0f));out.weights[i]=static_cast<uint16_t>(q);assigned+=q;}out.weights[0]=static_cast<uint16_t>(65535u-assigned);return out;}
+void put16(std::vector<uint8_t>& bytes, uint16_t value) { bytes.push_back(uint8_t(value)); bytes.push_back(uint8_t(value >> 8)); }
+void put32(std::vector<uint8_t>& bytes, uint32_t value) { for (int i=0;i<4;++i) bytes.push_back(uint8_t(value >> (8*i))); }
+void put64(std::vector<uint8_t>& bytes, uint64_t value) { for (int i=0;i<8;++i) bytes.push_back(uint8_t(value >> (8*i))); }
+void put_float(std::vector<uint8_t>& bytes, float value) { uint32_t raw=0; std::memcpy(&raw,&value,sizeof raw); put32(bytes,raw); }
+bool get16(const std::vector<uint8_t>& bytes, size_t& at, uint16_t& value) { if (at>bytes.size() || bytes.size()-at<2) return false; value=uint16_t(bytes[at])|uint16_t(bytes[at+1])<<8; at+=2; return true; }
+bool get32(const std::vector<uint8_t>& bytes, size_t& at, uint32_t& value) { if (at>bytes.size() || bytes.size()-at<4) return false; value=0; for(int i=0;i<4;++i)value|=uint32_t(bytes[at++])<<(8*i); return true; }
+bool get64(const std::vector<uint8_t>& bytes, size_t& at, uint64_t& value) { if (at>bytes.size() || bytes.size()-at<8) return false; value=0; for(int i=0;i<8;++i)value|=uint64_t(bytes[at++])<<(8*i); return true; }
+bool get_float(const std::vector<uint8_t>& bytes, size_t& at, float& value) { uint32_t raw=0; if(!get32(bytes,at,raw))return false; std::memcpy(&value,&raw,sizeof value); return std::isfinite(value); }
+void tag(std::vector<uint8_t>& bytes, const char (&value)[5]) { bytes.insert(bytes.end(),value,value+4); }
+bool take_tag(const std::vector<uint8_t>& bytes, size_t& at, const char (&value)[5]) { if(at>bytes.size() || bytes.size()-at<4 || std::memcmp(bytes.data()+at,value,4)!=0)return false;at+=4;return true; }
+bool valid_bounds(const JointLocalBounds& bound, size_t joints) { return bound.joint<joints && std::isfinite(bound.minimum.x)&&std::isfinite(bound.minimum.y)&&std::isfinite(bound.minimum.z)&&std::isfinite(bound.maximum.x)&&std::isfinite(bound.maximum.y)&&std::isfinite(bound.maximum.z)&&bound.minimum.x<=bound.maximum.x&&bound.minimum.y<=bound.maximum.y&&bound.minimum.z<=bound.maximum.z; }
+bool valid_binding(const BindingBake& bake) {
+    if (bake.inverse_bind_matrices.empty() || bake.inverse_bind_matrices.size()>kMaxJoints || bake.lods.empty() || bake.lods.size()>64) return false;
+    for (const auto& matrix : bake.inverse_bind_matrices) for (float value : matrix.m) if (!std::isfinite(value)) return false;
+    for (const auto& lod : bake.lods) {
+        if(!lod.indexed_vertex_signature || !lod.vertex_count || lod.influences.size()!=lod.vertex_count || lod.clusters.empty()) return false;
+        std::vector<uint32_t> cluster_ids;
+        for (const auto& influence : lod.influences) for(size_t i=0;i<kMaxSkinInfluences;++i) if(influence.weights[i] && influence.joints[i]>=bake.inverse_bind_matrices.size()) return false;
+        for (const auto& cluster : lod.clusters) {
+            if (cluster.vertex_begin>=cluster.vertex_end || cluster.vertex_end>lod.vertex_count || std::find(cluster_ids.begin(),cluster_ids.end(),cluster.cluster_id)!=cluster_ids.end()) return false;
+            cluster_ids.push_back(cluster.cluster_id);
+            for (const auto& bound : cluster.joints) if(!valid_bounds(bound,bake.inverse_bind_matrices.size())) return false;
+        }
+    }
+    return true;
+}
+const AnimSection* section(const AnimAsset& asset, AnimSectionKind kind) { const AnimSection* found=nullptr; for(const auto& candidate:asset.sections) if(candidate.kind==kind){if(found)return nullptr;found=&candidate;} return found; }
+void set_section(AnimAsset& asset, AnimSectionKind kind, std::vector<uint8_t> bytes) { for(auto& section:asset.sections)if(section.kind==kind){section.bytes=std::move(bytes);return;} asset.sections.push_back({kind,std::move(bytes)}); }
 }
 
 bool BindingClaims::claim(const std::vector<JointIndex>& children,bool decorative){
@@ -42,7 +81,45 @@ bool BindingClaims::claim_skin(const std::vector<JointIndex>& children,bool deco
 bool BindingClaims::claim_rigid(const std::vector<JointIndex>& children,bool decorative){return claim(children,decorative);}
 bool validate_attachment(bool child_resolved,bool child_has_committed_animation){return child_resolved&&!child_has_committed_animation;}
 
-bool build_skin_binding(const CanonicalRig&rig,const std::vector<viewer::IndexedPartGeometry>&lods,float falloff_scale,BindingBake&out){out={};if(rig.joints.empty()||!std::isfinite(falloff_scale)||falloff_scale<=0)return false;const auto joints=bind_joints(rig);out.inverse_bind_matrices.resize(joints.size());for(size_t i=0;i<joints.size();++i)if(!inverse(joints[i].world,out.inverse_bind_matrices[i]))return false;for(size_t lod=0;lod<lods.size();++lod){const auto&geometry=lods[lod];if(geometry.vertex_count<0||geometry.vertices.size()!=static_cast<size_t>(geometry.vertex_count)*3)return false;LodSkinBinding baked;baked.indexed_vertex_signature=viewer::indexed_part_geometry_signature(geometry,static_cast<uint32_t>(lod));baked.vertex_count=static_cast<uint32_t>(geometry.vertex_count);baked.influences.reserve(baked.vertex_count);std::vector<bool> used(joints.size(),false);for(uint32_t vertex=0;vertex<baked.vertex_count;++vertex){const Float3 p{geometry.vertices[vertex*3],geometry.vertices[vertex*3+1],geometry.vertices[vertex*3+2]};std::vector<float> values(joints.size(),0.0f);for(JointIndex child=0;child<joints.size();++child){const JointIndex parent=rig.joints[child].parent;if(parent==kInvalidJoint)continue;const Float3 d=sub(joints[child].position,joints[parent].position);const float d2=length2(d);if(d2<=1e-12f)continue;const float t=std::max(0.0f,std::min(1.0f,dot(sub(p,joints[parent].position),d)/d2));const Float3 closest=add(joints[parent].position,mul(d,t));const float radius=joints[parent].radius+(joints[child].radius-joints[parent].radius)*t;const float q=1.0f-length(sub(p,closest))/(falloff_scale*std::max(radius,1e-6f));const float field=smooth(q);add_weight(values,parent,field*(1.0f-t));add_weight(values,child,field*t);}for(JointIndex j=0;j<joints.size();++j){const bool endpoint=rig.joints[j].parent==kInvalidJoint||rig.joints[j].subtree.end==j+1;if(endpoint)add_weight(values,j,smooth(1.0f-length(sub(p,joints[j].position))/(falloff_scale*std::max(joints[j].radius,1e-6f))));}const auto influence=quantize(std::move(values),joints,p);for(size_t k=0;k<kMaxSkinInfluences;++k)if(influence.weights[k])used[influence.joints[k]]=true;baked.influences.push_back(influence);}for(JointIndex j=0;j<joints.size();++j)if(used[j]){JointLocalBounds bounds;bounds.joint=j;bounds.minimum={std::numeric_limits<float>::infinity(),std::numeric_limits<float>::infinity(),std::numeric_limits<float>::infinity()};bounds.maximum={-std::numeric_limits<float>::infinity(),-std::numeric_limits<float>::infinity(),-std::numeric_limits<float>::infinity()};bool any=false;for(uint32_t vertex=0;vertex<baked.vertex_count;++vertex){bool influences=false;for(size_t k=0;k<kMaxSkinInfluences;++k)if(baked.influences[vertex].joints[k]==j&&baked.influences[vertex].weights[k])influences=true;if(!influences)continue;const Float3 point=transform_point(out.inverse_bind_matrices[j],{geometry.vertices[vertex*3],geometry.vertices[vertex*3+1],geometry.vertices[vertex*3+2]});bounds.minimum.x=std::min(bounds.minimum.x,point.x);bounds.minimum.y=std::min(bounds.minimum.y,point.y);bounds.minimum.z=std::min(bounds.minimum.z,point.z);bounds.maximum.x=std::max(bounds.maximum.x,point.x);bounds.maximum.y=std::max(bounds.maximum.y,point.y);bounds.maximum.z=std::max(bounds.maximum.z,point.z);any=true;}if(any)baked.cluster_bounds.push_back(bounds);}out.lods.push_back(std::move(baked));}return true;}
+bool build_skin_binding(const CanonicalRig&rig,const std::vector<viewer::IndexedPartGeometry>&lods,float falloff_scale,BindingBake&out){out={};if(!std::isfinite(falloff_scale)||falloff_scale<=0)return false;std::vector<BindJoint> joints;if(!bind_joints(rig,joints))return false;out.inverse_bind_matrices.resize(joints.size());for(size_t i=0;i<joints.size();++i)if(!inverse(joints[i].world,out.inverse_bind_matrices[i]))return false;for(size_t lod=0;lod<lods.size();++lod){const auto&geometry=lods[lod];if(geometry.vertex_count<0||geometry.vertices.size()!=static_cast<size_t>(geometry.vertex_count)*3)return false;LodSkinBinding baked;baked.indexed_vertex_signature=viewer::indexed_part_geometry_signature(geometry,static_cast<uint32_t>(lod));baked.vertex_count=static_cast<uint32_t>(geometry.vertex_count);baked.influences.reserve(baked.vertex_count);std::vector<bool> used(joints.size(),false);for(uint32_t vertex=0;vertex<baked.vertex_count;++vertex){const Float3 p{geometry.vertices[vertex*3],geometry.vertices[vertex*3+1],geometry.vertices[vertex*3+2]};std::vector<float> values(joints.size(),0.0f);for(JointIndex child=0;child<joints.size();++child){const JointIndex parent=rig.joints[child].parent;if(parent==kInvalidJoint)continue;const Float3 d=sub(joints[child].position,joints[parent].position);const float d2=length2(d);if(d2<=1e-12f)continue;const float t=std::max(0.0f,std::min(1.0f,dot(sub(p,joints[parent].position),d)/d2));const Float3 closest=add(joints[parent].position,mul(d,t));const float radius=joints[parent].radius+(joints[child].radius-joints[parent].radius)*t;const float q=1.0f-length(sub(p,closest))/(falloff_scale*std::max(radius,1e-6f));const float field=smooth(q);add_weight(values,parent,field*(1.0f-t));add_weight(values,child,field*t);}for(JointIndex j=0;j<joints.size();++j){const bool endpoint=rig.joints[j].parent==kInvalidJoint||rig.joints[j].subtree.end==j+1;if(endpoint)add_weight(values,j,smooth(1.0f-length(sub(p,joints[j].position))/(falloff_scale*std::max(joints[j].radius,1e-6f))));}const auto influence=quantize(std::move(values),joints,p);for(size_t k=0;k<kMaxSkinInfluences;++k)if(influence.weights[k])used[influence.joints[k]]=true;baked.influences.push_back(influence);}ClusterJointBounds cluster;cluster.cluster_id=0;cluster.vertex_begin=0;cluster.vertex_end=baked.vertex_count;for(JointIndex j=0;j<joints.size();++j)if(used[j]){JointLocalBounds bounds;bounds.joint=j;bounds.minimum={std::numeric_limits<float>::infinity(),std::numeric_limits<float>::infinity(),std::numeric_limits<float>::infinity()};bounds.maximum={-std::numeric_limits<float>::infinity(),-std::numeric_limits<float>::infinity(),-std::numeric_limits<float>::infinity()};bool any=false;for(uint32_t vertex=0;vertex<baked.vertex_count;++vertex){bool influences=false;for(size_t k=0;k<kMaxSkinInfluences;++k)if(baked.influences[vertex].joints[k]==j&&baked.influences[vertex].weights[k])influences=true;if(!influences)continue;const Float3 point=transform_point(out.inverse_bind_matrices[j],{geometry.vertices[vertex*3],geometry.vertices[vertex*3+1],geometry.vertices[vertex*3+2]});bounds.minimum.x=std::min(bounds.minimum.x,point.x);bounds.minimum.y=std::min(bounds.minimum.y,point.y);bounds.minimum.z=std::min(bounds.minimum.z,point.z);bounds.maximum.x=std::max(bounds.maximum.x,point.x);bounds.maximum.y=std::max(bounds.maximum.y,point.y);bounds.maximum.z=std::max(bounds.maximum.z,point.z);any=true;}if(any)cluster.joints.push_back(bounds);}if(!cluster.joints.empty())baked.clusters.push_back(std::move(cluster));out.lods.push_back(std::move(baked));}return true;}
 std::vector<LodBindingSignature> manifest_lod_signatures(const BindingBake&bake){std::vector<LodBindingSignature> out;out.reserve(bake.lods.size());for(const auto&lod:bake.lods)out.push_back({lod.indexed_vertex_signature,lod.vertex_count,static_cast<uint32_t>(lod.influences.size()*kMaxSkinInfluences)});return out;}
 bool manifest_matches_binding(const std::vector<LodBindingSignature>&manifest,const BindingBake&bake){return manifest==manifest_lod_signatures(bake);}
+
+bool set_anim_binding_bake(AnimAsset& asset, const BindingBake& bake) {
+    if (!valid_binding(bake)) return false;
+    std::vector<uint8_t> geometry, inverse_binds, bounds;
+    tag(geometry,"GBND"); put32(geometry,1); put32(geometry,static_cast<uint32_t>(bake.lods.size()));
+    for (const auto& lod : bake.lods) {
+        put64(geometry,lod.indexed_vertex_signature); put32(geometry,lod.vertex_count); put32(geometry,static_cast<uint32_t>(lod.influences.size()));
+        for (const auto& influence : lod.influences) for (size_t i=0;i<kMaxSkinInfluences;++i) { put16(geometry,influence.joints[i]); put16(geometry,influence.weights[i]); }
+    }
+    tag(inverse_binds,"IBND"); put32(inverse_binds,1); put32(inverse_binds,static_cast<uint32_t>(bake.inverse_bind_matrices.size()));
+    for (const auto& matrix : bake.inverse_bind_matrices) for (float value : matrix.m) put_float(inverse_binds,value);
+    tag(bounds,"CBND"); put32(bounds,1); put32(bounds,static_cast<uint32_t>(bake.lods.size()));
+    for (const auto& lod : bake.lods) {
+        put32(bounds,static_cast<uint32_t>(lod.clusters.size()));
+        for (const auto& cluster : lod.clusters) {
+            put32(bounds,cluster.cluster_id); put32(bounds,cluster.vertex_begin); put32(bounds,cluster.vertex_end); put32(bounds,static_cast<uint32_t>(cluster.joints.size()));
+            for (const auto& joint : cluster.joints) { put16(bounds,joint.joint); put_float(bounds,joint.minimum.x); put_float(bounds,joint.minimum.y); put_float(bounds,joint.minimum.z); put_float(bounds,joint.maximum.x); put_float(bounds,joint.maximum.y); put_float(bounds,joint.maximum.z); }
+        }
+    }
+    set_section(asset,AnimSectionKind::GeometryBindings,std::move(geometry));
+    set_section(asset,AnimSectionKind::InverseBindMatrices,std::move(inverse_binds));
+    set_section(asset,AnimSectionKind::ClusterBounds,std::move(bounds));
+    return true;
+}
+
+bool get_anim_binding_bake(const AnimAsset& asset, BindingBake& bake) {
+    bake={}; const auto* geometry=section(asset,AnimSectionKind::GeometryBindings); const auto* inverse_binds=section(asset,AnimSectionKind::InverseBindMatrices); const auto* bounds=section(asset,AnimSectionKind::ClusterBounds);
+    if(!geometry||!inverse_binds||!bounds)return false;
+    size_t at=0; uint32_t version=0,lod_count=0;
+    if(!take_tag(geometry->bytes,at,"GBND")||!get32(geometry->bytes,at,version)||version!=1||!get32(geometry->bytes,at,lod_count)||lod_count==0||lod_count>64)return false;
+    bake.lods.resize(lod_count);
+    for(auto& lod:bake.lods){uint32_t influence_count=0;if(!get64(geometry->bytes,at,lod.indexed_vertex_signature)||!get32(geometry->bytes,at,lod.vertex_count)||!get32(geometry->bytes,at,influence_count)||influence_count!=lod.vertex_count||influence_count>(geometry->bytes.size()-at)/(kMaxSkinInfluences*4))return false;lod.influences.resize(influence_count);for(auto& influence:lod.influences)for(size_t i=0;i<kMaxSkinInfluences;++i)if(!get16(geometry->bytes,at,influence.joints[i])||!get16(geometry->bytes,at,influence.weights[i]))return false;}
+    if(at!=geometry->bytes.size())return false;
+    at=0; uint32_t matrix_count=0;if(!take_tag(inverse_binds->bytes,at,"IBND")||!get32(inverse_binds->bytes,at,version)||version!=1||!get32(inverse_binds->bytes,at,matrix_count)||matrix_count==0||matrix_count>kMaxJoints)return false;bake.inverse_bind_matrices.resize(matrix_count);for(auto& matrix:bake.inverse_bind_matrices)for(float& value:matrix.m)if(!get_float(inverse_binds->bytes,at,value))return false;if(at!=inverse_binds->bytes.size())return false;
+    at=0; uint32_t bound_lods=0;if(!take_tag(bounds->bytes,at,"CBND")||!get32(bounds->bytes,at,version)||version!=1||!get32(bounds->bytes,at,bound_lods)||bound_lods!=lod_count)return false;
+    for(auto& lod:bake.lods){uint32_t cluster_count=0;if(!get32(bounds->bytes,at,cluster_count)||cluster_count>lod.vertex_count||cluster_count>(bounds->bytes.size()-at)/16)return false;lod.clusters.resize(cluster_count);for(auto& cluster:lod.clusters){uint32_t joint_count=0;if(!get32(bounds->bytes,at,cluster.cluster_id)||!get32(bounds->bytes,at,cluster.vertex_begin)||!get32(bounds->bytes,at,cluster.vertex_end)||!get32(bounds->bytes,at,joint_count)||joint_count>matrix_count||joint_count>(bounds->bytes.size()-at)/26)return false;cluster.joints.resize(joint_count);for(auto& joint:cluster.joints){if(!get16(bounds->bytes,at,joint.joint)||!get_float(bounds->bytes,at,joint.minimum.x)||!get_float(bounds->bytes,at,joint.minimum.y)||!get_float(bounds->bytes,at,joint.minimum.z)||!get_float(bounds->bytes,at,joint.maximum.x)||!get_float(bounds->bytes,at,joint.maximum.y)||!get_float(bounds->bytes,at,joint.maximum.z))return false;}}}
+    return at==bounds->bytes.size()&&valid_binding(bake);
+}
 } // namespace matter::animation
