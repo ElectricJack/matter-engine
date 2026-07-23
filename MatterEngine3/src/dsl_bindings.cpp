@@ -61,6 +61,50 @@ static JSValue j_lookAt(JSContext* c, JSValueConst, int n, JSValueConst* a){
     return JS_UNDEFINED; }
 static JSValue j_beginVoxels(JSContext* c, JSValueConst, int, JSValueConst* a){ state_of(c)->beginVoxels((float)argd(c,a[0])); return JS_UNDEFINED; }
 static JSValue j_endVoxels(JSContext* c, JSValueConst, int, JSValueConst*){ state_of(c)->endVoxels(); return JS_UNDEFINED; }
+
+static std::string arg_string(JSContext* c, JSValueConst value) {
+    const char* text = JS_ToCString(c, value); if (!text) return {};
+    std::string result(text); JS_FreeCString(c, text); return result;
+}
+static bool array_floats(JSContext* c, JSValueConst value, int count, float* out) {
+    if (!JS_IsArray(value)) return false;
+    for (int i=0; i<count; ++i) { JSValue item=JS_GetPropertyUint32(c,value,i); double number=0; const int ok=JS_ToFloat64(c,&number,item); JS_FreeValue(c,item); if (ok < 0 || !std::isfinite(number)) return false; out[i]=static_cast<float>(number); }
+    return true;
+}
+static matter::AnimationTransform rig_transform(JSContext* c, JSValueConst position, JSValueConst rotation, bool required_position, bool* ok) {
+    matter::AnimationTransform result{}; *ok = !required_position && (JS_IsUndefined(position) || JS_IsNull(position));
+    if (!*ok) *ok = array_floats(c,position,3,&result.translation.x);
+    if (*ok && !JS_IsUndefined(rotation) && !JS_IsNull(rotation)) *ok = array_floats(c,rotation,4,&result.rotation.x);
+    return result;
+}
+static matter::AnimationTransform socket_transform(JSContext* c, JSValueConst value, bool* ok) {
+    matter::AnimationTransform result{}; *ok=true;
+    if (JS_IsUndefined(value) || JS_IsNull(value)) return result;
+    if (!JS_IsObject(value)) { *ok=false; return result; }
+    JSValue p=JS_GetPropertyStr(c,value,"position"); if (JS_IsUndefined(p)) { JS_FreeValue(c,p); p=JS_GetPropertyStr(c,value,"translation"); }
+    JSValue r=JS_GetPropertyStr(c,value,"rotation"), s=JS_GetPropertyStr(c,value,"scale");
+    if (!JS_IsUndefined(p) && !JS_IsNull(p)) *ok=array_floats(c,p,3,&result.translation.x);
+    if (*ok && !JS_IsUndefined(r) && !JS_IsNull(r)) *ok=array_floats(c,r,4,&result.rotation.x);
+    if (*ok && !JS_IsUndefined(s) && !JS_IsNull(s)) *ok=array_floats(c,s,3,&result.scale.x);
+    JS_FreeValue(c,p); JS_FreeValue(c,r); JS_FreeValue(c,s); return result;
+}
+static JSValue j_beginRig(JSContext* c, JSValueConst, int n, JSValueConst* a) { state_of(c)->begin_rig(n ? arg_string(c,a[0]) : ""); return JS_UNDEFINED; }
+static JSValue j_root(JSContext* c, JSValueConst, int n, JSValueConst* a) { bool ok=false; const auto local=rig_transform(c,n>1?a[1]:JS_UNDEFINED,n>2?a[2]:JS_UNDEFINED,false,&ok); if (!ok) state_of(c)->set_error("root requires finite position and rotation arrays"); else state_of(c)->rig_root(arg_string(c,a[0]),local); return JS_UNDEFINED; }
+static JSValue j_bone(JSContext* c, JSValueConst, int n, JSValueConst* a) { bool ok=false; const auto local=rig_transform(c,n>1?a[1]:JS_UNDEFINED,n>2?a[2]:JS_UNDEFINED,true,&ok); if (!ok) state_of(c)->set_error("bone requires finite endpoint and rotation arrays"); else state_of(c)->rig_bone(arg_string(c,a[0]),local); return JS_UNDEFINED; }
+static JSValue j_rigPush(JSContext* c, JSValueConst, int, JSValueConst*) { state_of(c)->rig_push(); return JS_UNDEFINED; }
+static JSValue j_rigPop(JSContext* c, JSValueConst, int, JSValueConst*) { state_of(c)->rig_pop(); return JS_UNDEFINED; }
+static JSValue j_atJoint(JSContext* c, JSValueConst, int, JSValueConst* a) { state_of(c)->rig_at_joint(arg_string(c,a[0])); return JS_UNDEFINED; }
+static JSValue j_radius(JSContext* c, JSValueConst, int, JSValueConst* a) { state_of(c)->rig_radius((float)argd(c,a[0])); return JS_UNDEFINED; }
+static JSValue j_socket(JSContext* c, JSValueConst, int n, JSValueConst* a) { bool ok=false; const auto local=socket_transform(c,n>1?a[1]:JS_UNDEFINED,&ok); if (!ok) state_of(c)->set_error("socket requires a finite transform object"); else state_of(c)->rig_socket(arg_string(c,a[0]),local); return JS_UNDEFINED; }
+static JSValue j_mirrorBranch(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    DslState* state=state_of(c); if (n < 3 || !JS_IsObject(a[2])) { state->set_error("mirrorBranch requires an options object"); return JS_UNDEFINED; }
+    const std::string from=arg_string(c,a[0]), to=arg_string(c,a[1]); JSValue axis=JS_GetPropertyStr(c,a[2],"axis"); const std::string axis_name=arg_string(c,axis); JS_FreeValue(c,axis);
+    const int plane=axis_name=="x"?0:(axis_name=="y"?1:(axis_name=="z"?2:-1)); std::string rename_from,rename_to; std::map<std::string,std::string> names;
+    JSValue rename=JS_GetPropertyStr(c,a[2],"rename"); if (JS_IsObject(rename)) { JSValue f=JS_GetPropertyStr(c,rename,"from"), t=JS_GetPropertyStr(c,rename,"to"); rename_from=arg_string(c,f); rename_to=arg_string(c,t); JS_FreeValue(c,f); JS_FreeValue(c,t); } JS_FreeValue(c,rename);
+    JSValue map=JS_GetPropertyStr(c,a[2],"map"); if (JS_IsObject(map)) { JSPropertyEnum* props=nullptr; uint32_t count=0; if (JS_GetOwnPropertyNames(c,&props,&count,map,JS_GPN_STRING_MASK)==0) { for (uint32_t i=0;i<count;++i) { const char* key=JS_AtomToCString(c,props[i].atom); JSValue v=JS_GetProperty(c,map,props[i].atom); if (key) { names[key]=arg_string(c,v); JS_FreeCString(c,key); } JS_FreeValue(c,v); JS_FreeAtom(c,props[i].atom); } js_free(c,props); } } JS_FreeValue(c,map);
+    state->rig_mirror_branch(from,to,plane,rename_from,rename_to,names); return JS_UNDEFINED;
+}
+static JSValue j_endRig(JSContext* c, JSValueConst, int, JSValueConst*) { state_of(c)->end_rig(); return JS_UNDEFINED; }
 static JSValue j_sphere(JSContext* c, JSValueConst, int, JSValueConst* a){
     state_of(c)->sphere({(float)argd(c,a[0]),(float)argd(c,a[1]),(float)argd(c,a[2])},(float)argd(c,a[3]),CsgOp::Union); return JS_UNDEFINED; }
 static JSValue j_box(JSContext* c, JSValueConst, int, JSValueConst* a){
@@ -1009,6 +1053,9 @@ void install_bindings(JSContext* ctx) {
     bind("__dsl_lookAt",j_lookAt,6);
     bind("__dsl_fill",j_fill,1); bind("__dsl_tint",j_tint,4);
     bind("__dsl_beginVoxels",j_beginVoxels,1); bind("__dsl_endVoxels",j_endVoxels,0);
+    bind("__dsl_beginRig",j_beginRig,1); bind("__dsl_root",j_root,3); bind("__dsl_bone",j_bone,3);
+    bind("__dsl_rigPush",j_rigPush,0); bind("__dsl_rigPop",j_rigPop,0); bind("__dsl_atJoint",j_atJoint,1);
+    bind("__dsl_radius",j_radius,1); bind("__dsl_socket",j_socket,2); bind("__dsl_mirrorBranch",j_mirrorBranch,3); bind("__dsl_endRig",j_endRig,0);
     bind("__dsl_sphere",j_sphere,4); bind("__dsl_box",j_box,6);
     bind("__dsl_op",j_op,1); bind("__dsl_smoothing",j_smoothing,1);
     bind("__dsl_raycast",j_raycast,6);

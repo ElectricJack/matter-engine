@@ -26,6 +26,16 @@ globalThis.Part = class Part {
                            else __dsl_lookAt(t[0],t[1],t[2], up[0],up[1],up[2]); }
   fill(mat)              { __dsl_fill(mat); }
   tint(r,g,b,a)          { __dsl_tint(r,g,b,(a===undefined?1:a)); }
+  beginRig(name)         { __dsl_beginRig(name); }
+  root(name,pos,rot)     { __dsl_root(name,pos,rot); }
+  bone(name,end,rot)     { __dsl_bone(name,end,rot); }
+  push()                 { __dsl_rigPush(); }
+  pop()                  { __dsl_rigPop(); }
+  atJoint(name)          { __dsl_atJoint(name); }
+  radius(value)          { __dsl_radius(value); }
+  socket(name,transform) { __dsl_socket(name,transform); }
+  mirrorBranch(a,b,opts) { __dsl_mirrorBranch(a,b,opts); }
+  endRig()               { __dsl_endRig(); }
   beginVoxels(spacing)   { __dsl_beginVoxels(spacing); }
   endVoxels()            { __dsl_endVoxels(); }
   sphere(c,r)            { __dsl_sphere(c[0],c[1],c[2],r); }

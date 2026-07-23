@@ -4,6 +4,7 @@
 #include <vector>
 #include <mutex>
 #include <unordered_map>
+#include <optional>
 #include "dsl_state.h"
 #include "tileset_spec.h"
 #include "module_resolver.h"
@@ -175,6 +176,7 @@ public:
     std::string last_merged_params() const { return last_merged_params_; }
     bool last_build_ran() const { return last_build_ran_; }
     const dsl::BuildBuffer& last_buffer() const { return last_buffer_; }
+    const std::optional<matter::animation::CanonicalAnimationBuild>& last_animation_rig() const { return last_animation_rig_; }
     // Value of globalThis.__amb captured after the last build() (used by tests to
     // assert no ambient Date/require/fetch/os bindings exist). Empty if unset.
     std::string last_ambient_probe() const { return last_ambient_probe_; }
@@ -191,6 +193,7 @@ private:
     std::string last_merged_params_;
     bool last_build_ran_ = false;
     dsl::BuildBuffer last_buffer_;
+    std::optional<matter::animation::CanonicalAnimationBuild> last_animation_rig_;
     std::string last_ambient_probe_;
 
     // Fold cache: (source, ordered shared-lib roots) -> FoldResult (thread-safe).

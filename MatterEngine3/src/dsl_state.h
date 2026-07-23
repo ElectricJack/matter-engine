@@ -3,6 +3,7 @@
 #include "dsl_rng.h"
 #include "terrain_field.h"
 #include "tileset_spec.h"
+#include "dsl_animation.h"
 #include <chrono>
 #include <cstdint>
 #include <map>
@@ -156,6 +157,23 @@ public:
     // onto each brush/triangle at emit, mirroring `material_`.
     void tint(float r, float g, float b, float a) { tint_ = Vector4{r,g,b,a}; }
     Vector4 tint() const { return tint_; }
+
+    // Stateful, bake-time rig DSL. Its branch stack is deliberately separate
+    // from the geometry matrix stack, preserving existing static authoring.
+    void begin_rig(const std::string& name);
+    void rig_root(const std::string& name, const matter::AnimationTransform& local);
+    void rig_bone(const std::string& name, const matter::AnimationTransform& local);
+    void rig_push();
+    void rig_pop();
+    void rig_at_joint(const std::string& name);
+    void rig_radius(float value);
+    void rig_socket(const std::string& name, const matter::AnimationTransform& local);
+    void rig_mirror_branch(const std::string& from, const std::string& to, int axis,
+                           const std::string& rename_from, const std::string& rename_to,
+                           const std::map<std::string, std::string>& explicit_names);
+    void end_rig();
+    bool rig_open() const { return animation_ && animation_->open; }
+    const std::optional<matter::animation::CanonicalAnimationBuild>& canonical_rig() const;
 
     // Session enum (one at a time; misuse = error)
     void beginVoxels(float spacing);        // misuse (already open) -> set_error
@@ -403,6 +421,7 @@ private:
     bool budget_bounded_ = false;
     WorldBinding world_;  // terrain field binding (null by default)
     std::vector<VolumeEmitter> emitters_;  // volumetric emitters (emitVolume)
+    std::unique_ptr<AnimationBuildBuffer> animation_;
 };
 
 } // namespace dsl
