@@ -999,7 +999,7 @@ void test_engine_native_events_publish_before_post_physics_and_replace() {
     flecs::system event_reader =
         world.system<EventReaderProbe>("ReadPhysicsEventsInPostPhysics")
         .kind<ecs::PostPhysics>()
-        .each([&](flecs::iter& iterator, size_t, EventReaderProbe&) {
+        .each([&](flecs::iter& iterator, size_t, const EventReaderProbe&) {
             flecs::world callback_world = iterator.world();
             const auto& events = physics::physics_events(callback_world);
             if (!events.contact_begin.empty() || !events.contact_hit.empty()) {
@@ -1475,7 +1475,7 @@ void test_pull_writes_are_visible_through_fixed_post_update() {
             .read<ecs::LocalTransform>()
             .read<physics::PhysicsVelocity>()
             .read<ecs::TransformDirty>()
-            .each([&](PhysicsVisibilityProbe&) {
+            .each([&](const PhysicsVisibilityProbe&) {
                 ++post_physics_hits;
                 const ecs::LocalTransform local =
                     root.get<ecs::LocalTransform>();
@@ -1498,7 +1498,7 @@ void test_pull_writes_are_visible_through_fixed_post_update() {
         world.system<PhysicsVisibilityProbe>("ObserveAfterFixedPostPhysics")
             .kind<AfterFixedPostPhysics>()
             .read<ecs::WorldTransform>()
-            .each([&](PhysicsVisibilityProbe&) {
+            .each([&](const PhysicsVisibilityProbe&) {
                 ++after_fixed_post_hits;
                 const ecs::WorldTransform value =
                     child.get<ecs::WorldTransform>();
