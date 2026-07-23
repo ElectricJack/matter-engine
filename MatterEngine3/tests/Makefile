@@ -953,17 +953,33 @@ $(foreach s,$(physicsc_C_SRCS),$(eval $(call objrule_c,physicsc,$(s))))
 # ---------------------------------------------------------------------------
 # Convenience: derived object-list helpers per binary (link-time inputs).
 # ---------------------------------------------------------------------------
-ECS_OBJS = $(call obj_list,def,$(ECS_CPP)) $(call obj_list,flecsc,$(ECS_C))
-PHYSICS_OBJS = $(call obj_list,def,$(PHYSICS_CPP)) $(call obj_list,physicsc,$(PHYSICS_C))
-SCENE_REGISTRY_OBJS = $(call obj_list,def,$(SCENE_REGISTRY_CPP)) $(call obj_list,flecsc,$(SCENE_REGISTRY_C))
-ENTITY_RECIPE_OBJS = $(call obj_list,def,$(ENTITY_RECIPE_CPP)) $(call obj_list,flecsc,$(ENTITY_RECIPE_C))
+# E6 fallout (docs/event-system.md S I.11): physics_context.o now references
+# matter::evt::* (event_hub_->emit(events::PhysStep) in PhysicsContext::pull),
+# pulling in undefined dispatch_stack()/emit_depth() (dispatch_context.cpp),
+# fail_fast() (subscription.cpp), and Hub::get_or_create_lane_channel /
+# push_trace_record_locked (event_hub.cpp). Every def-flavor target that links
+# physics_context.cpp must therefore also link the event impl trio. Append as a
+# link-only object list (NOT via the *_CPP source vars) so these sources do not
+# enter the def_CPP_SRCS union — their def obj rules already exist unconditionally
+# via the scene_tracker block below, so a second rule-gen (and its "overriding
+# recipe" warning) is avoided. Mirrors run-physicsevents / run-scenetracker /
+# the gpu targets, which link the same trio.
+EVENT_IMPL_DEF_OBJS = $(call obj_list,def,\
+    ../src/event/event_hub.cpp \
+    ../src/event/subscription.cpp \
+    ../src/event/dispatch_context.cpp)
+
+ECS_OBJS = $(call obj_list,def,$(ECS_CPP)) $(call obj_list,flecsc,$(ECS_C)) $(EVENT_IMPL_DEF_OBJS)
+PHYSICS_OBJS = $(call obj_list,def,$(PHYSICS_CPP)) $(call obj_list,physicsc,$(PHYSICS_C)) $(EVENT_IMPL_DEF_OBJS)
+SCENE_REGISTRY_OBJS = $(call obj_list,def,$(SCENE_REGISTRY_CPP)) $(call obj_list,flecsc,$(SCENE_REGISTRY_C)) $(EVENT_IMPL_DEF_OBJS)
+ENTITY_RECIPE_OBJS = $(call obj_list,def,$(ENTITY_RECIPE_CPP)) $(call obj_list,flecsc,$(ENTITY_RECIPE_C)) $(EVENT_IMPL_DEF_OBJS)
 DYNAMIC_SLOTS_OBJS = $(call obj_list,def,$(DYNAMIC_SLOTS_CPP))
-DYNAMIC_BRIDGE_OBJS = $(call obj_list,def,$(DYNAMIC_BRIDGE_CPP)) $(call obj_list,flecsc,$(DYNAMIC_BRIDGE_C))
+DYNAMIC_BRIDGE_OBJS = $(call obj_list,def,$(DYNAMIC_BRIDGE_CPP)) $(call obj_list,flecsc,$(DYNAMIC_BRIDGE_C)) $(EVENT_IMPL_DEF_OBJS)
 EDITOR_MODEL_OBJS = $(call obj_list,def,$(EDITOR_MODEL_CPP))
-PROPERTIES_REGISTRY_OBJS = $(call obj_list,def,$(PROPERTIES_REGISTRY_CPP)) $(call obj_list,flecsc,$(PROPERTIES_REGISTRY_C))
-SIMULATION_CONTROL_OBJS = $(call obj_list,def,$(SIMULATION_CONTROL_CPP)) $(call obj_list,flecsc,$(SIMULATION_CONTROL_C))
+PROPERTIES_REGISTRY_OBJS = $(call obj_list,def,$(PROPERTIES_REGISTRY_CPP)) $(call obj_list,flecsc,$(PROPERTIES_REGISTRY_C)) $(EVENT_IMPL_DEF_OBJS)
+SIMULATION_CONTROL_OBJS = $(call obj_list,def,$(SIMULATION_CONTROL_CPP)) $(call obj_list,flecsc,$(SIMULATION_CONTROL_C)) $(EVENT_IMPL_DEF_OBJS)
 SPECIALIZED_EDITORS_OBJS = $(call obj_list,def,$(SPECIALIZED_EDITORS_CPP)) $(call obj_list,flecsc,$(SPECIALIZED_EDITORS_C))
-ECS_ENTITY_BRIDGE_OBJS = $(call obj_list,def,$(ECS_ENTITY_BRIDGE_CPP)) $(call obj_list,flecsc,$(ECS_ENTITY_BRIDGE_C))
+ECS_ENTITY_BRIDGE_OBJS = $(call obj_list,def,$(ECS_ENTITY_BRIDGE_CPP)) $(call obj_list,flecsc,$(ECS_ENTITY_BRIDGE_C)) $(EVENT_IMPL_DEF_OBJS)
 PARTV2_OBJS = $(call obj_list,def,$(PARTV2_CPP)) $(call obj_list,mslc,$(PARTV2_C))
 GRAPH_OBJS  = $(call obj_list,def,$(GRAPH_SOURCES)) $(call obj_list,mslc,$(GRAPH_C))
 TRIVAR_OBJS = $(call obj_list,def,$(TRIVAR_CPP)) $(call obj_list,mslc,$(TRIVAR_C))
