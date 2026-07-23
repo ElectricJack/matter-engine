@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <unordered_set>
 #ifdef _WIN32
 #include <io.h>
@@ -89,6 +90,7 @@ struct PublicationLock {
     }
     ~PublicationLock() { release(); }
 };
+std::unique_ptr<PublicationLock> g_test_held_publication_lock;
 bool make_manifest(const BundleIdentity&i,std::vector<uint8_t>&b){if(i.lods.size()>UINT32_MAX||!valid_lods(i.lods))return false;b.insert(b.end(),{'M','A','C','M'});u32(b,1);u64(b,i.resolved_hash);u64(b,i.nonce.high);u64(b,i.nonce.low);u64(b,i.part_body_checksum);u64(b,i.anim_body_checksum);u32(b,i.part_format_version);u32(b,i.animation_schema_version);u32(b,i.animation_bake_epoch);u32(b,i.target_abi_tag);u32(b,i.ozz_tag_hash);u32(b,i.compiler_identifier);u32(b,uint32_t(i.lods.size()));for(auto&l:i.lods){u64(b,l.indexed_vertex_signature);u32(b,l.vertex_count);u32(b,l.influence_count);}u64(b,fnv(b.data(),b.size()));return true;}
 bool parse_manifest(const std::filesystem::path&p,BundleIdentity&i){std::vector<uint8_t>b;if(!read(p,b)||b.size()<84||std::memcmp(b.data(),"MACM",4))return false;size_t x=b.size()-8;uint64_t sum=0;if(!g64(b,x,sum)||sum!=fnv(b.data(),b.size()-8))return false;x=4;uint32_t v=0,n=0;if(!g32(b,x,v)||v!=1||!g64(b,x,i.resolved_hash)||!g64(b,x,i.nonce.high)||!g64(b,x,i.nonce.low)||!g64(b,x,i.part_body_checksum)||!g64(b,x,i.anim_body_checksum)||!g32(b,x,i.part_format_version)||!g32(b,x,i.animation_schema_version)||!g32(b,x,i.animation_bake_epoch)||!g32(b,x,i.target_abi_tag)||!g32(b,x,i.ozz_tag_hash)||!g32(b,x,i.compiler_identifier)||!g32(b,x,n)||n>64||n>(b.size()-x-8)/16)return false;i.lods.resize(n);for(auto&l:i.lods)if(!g64(b,x,l.indexed_vertex_signature)||!g32(b,x,l.vertex_count)||!g32(b,x,l.influence_count))return false;return x==b.size()-8&&valid_lods(i.lods);}
 }
@@ -101,6 +103,13 @@ bool publish_animation_bundle(const BundleCandidates& c,const BundleIdentity& i,
     if(i.part_format_version!=part_asset::kFormatVersionV2||i.animation_schema_version!=kAnimationSchemaVersion||i.animation_bake_epoch!=kAnimationBakeEpoch||i.compiler_identifier!=kAnimationCompilerIdentifier||(i.nonce.high==0&&i.nonce.low==0)||!load_anim(c.anim_candidate,a,d)||a.resolved_hash!=i.resolved_hash||!(a.nonce==i.nonce)||a.target_abi_tag!=i.target_abi_tag||a.ozz_tag_hash!=i.ozz_tag_hash||anim_body_checksum(a)!=i.anim_body_checksum||!checksum_part(c.part_candidate,pc)||pc!=i.part_body_checksum||!part_asset::load_v2(c.part_candidate.string(),i.resolved_hash,candidate_blas,candidate_tlas,candidate_children,candidate_lods,candidate_emitters,link)||!link||link->nonce_high!=i.nonce.high||link->nonce_low!=i.nonce.low){fail(d,"bundle.candidate");return false;}
     std::error_code ec;std::filesystem::create_directories(c.cache_root/"parts",ec);if(ec){fail(d,"bundle.directory");return false;}
     auto part=c.cache_root/part_asset::cache_path_resolved(i.resolved_hash);auto anim=cache_path_anim(c.cache_root,i.resolved_hash);auto manifest=cache_path_anim_commit(c.cache_root,i.resolved_hash);std::vector<uint8_t>m;
+    if(c.test_hold_publication_lock){
+        if(g_test_held_publication_lock){fail(d,"bundle.lock");return false;}
+        auto held=std::make_unique<PublicationLock>();
+        if(!held->acquire(manifest)){fail(d,"bundle.lock");return false;}
+        g_test_held_publication_lock=std::move(held);
+        fail(d,"bundle.injected");return false;
+    }
     PublicationLock lock; if(!lock.acquire(manifest)){fail(d,"bundle.lock");return false;}
     bool had_part=false,had_anim=false,had_manifest=false;
     const auto cleanup = [&] { return discard_backups(part,anim,manifest,i.nonce)&&discard_temporary(tmp(manifest,i.nonce)); };
@@ -119,6 +128,7 @@ bool publish_animation_bundle(const BundleCandidates& c,const BundleIdentity& i,
     if(manifest_result!=part_asset::FileReplaceOutcome::ReplacedDurable){const bool restored=(manifest_result==part_asset::FileReplaceOutcome::NotReplaced||rollback(manifest,i.nonce,had_manifest))&&rollback(anim,i.nonce,had_anim)&&rollback(part,i.nonce,had_part);if(!restored)fail(d,"bundle.rollback");else if(!cleanup())fail(d,"bundle.cleanup");fail(d,"bundle.publish");return false;}
     if(!cleanup()||!lock.release()){fail(d,"bundle.cleanup");return false;}return true;
 }
+void release_animation_bundle_test_lock() { if(g_test_held_publication_lock){g_test_held_publication_lock->release();g_test_held_publication_lock.reset();} }
 bool load_committed_animation_bundle(const std::filesystem::path& root,uint64_t hash,BLASManager&,AnimAsset&out,Diagnostics&d){
     BundleIdentity i;
     if (!parse_manifest(cache_path_anim_commit(root, hash), i) || i.resolved_hash != hash ||

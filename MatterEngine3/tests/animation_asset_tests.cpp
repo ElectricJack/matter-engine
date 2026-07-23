@@ -249,6 +249,20 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     CHECK(!publish_animation_bundle({locked_part, locked_anim, root, 1}, locked_identity, diagnostics),
           "stale lock file is recovered and publisher reaches deterministic injected failure");
     CHECK(!std::filesystem::exists(stale_lock), "recovered stale lock file is cleaned up");
+    const auto contention_part = root / "contention.part";
+    const auto contention_anim = root / "contention.anim";
+    CHECK(part_asset::save_v2(contention_part.string(), blas, tlas, nullptr, 0, {}, {}, link, hash),
+          "write candidate for same-process lock contention");
+    CHECK(save_anim_candidate(anim, contention_anim, diagnostics), "write anim for same-process lock contention");
+    BundleIdentity contention_identity = identity;
+    contention_identity.part_body_checksum = file_part_body_checksum(contention_part.string().c_str());
+    CHECK(!publish_animation_bundle({contention_part, contention_anim, root, 0, 0, true}, contention_identity, diagnostics),
+          "test holder acquires the publication lock");
+    CHECK(!publish_animation_bundle({contention_part, contention_anim, root, 1}, contention_identity, diagnostics),
+          "same-process publisher observes held OS lock");
+    release_animation_bundle_test_lock();
+    CHECK(!publish_animation_bundle({contention_part, contention_anim, root, 1}, contention_identity, diagnostics),
+          "publisher proceeds after held OS lock is released");
     std::filesystem::remove(cache_path_anim_commit(root, hash));
     CHECK(!load_committed_animation_bundle(root, hash, unused, loaded, diagnostics),
           "ANLK part without MACM is an animated cache miss");

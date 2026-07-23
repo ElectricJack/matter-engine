@@ -39,7 +39,10 @@ struct BundleCandidates {
     // Test-only fault point: report durability uncertainty immediately after
     // replacing part/anim/manifest (the rename itself has completed).
     uint32_t test_fail_after_replace_sync = 0;
+    bool test_hold_publication_lock = false;
 };
+// Test-only companion for deterministic same-process publication contention.
+void release_animation_bundle_test_lock();
 bool publish_animation_bundle(const BundleCandidates&, const BundleIdentity&, Diagnostics&);
 bool load_committed_animation_bundle(const std::filesystem::path&, uint64_t,
                                      BLASManager&, AnimAsset&, Diagnostics&);
