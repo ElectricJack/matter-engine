@@ -33,6 +33,8 @@ struct BundleCandidates {
     std::filesystem::path part_candidate;
     std::filesystem::path anim_candidate;
     std::filesystem::path cache_root;
+    // Test-only fault point: 1/2/3 fails immediately before replacing part/anim/manifest.
+    uint32_t test_fail_before_replace = 0;
 };
 bool publish_animation_bundle(const BundleCandidates&, const BundleIdentity&, Diagnostics&);
 bool load_committed_animation_bundle(const std::filesystem::path&, uint64_t,

@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <random>
 
 namespace matter::animation {
 namespace {
@@ -16,6 +17,25 @@ bool get32(const std::vector<uint8_t>& b, size_t& p, uint32_t& v) { if (p > b.si
 bool get64(const std::vector<uint8_t>& b, size_t& p, uint64_t& v) { if (p > b.size() || b.size()-p < 8) return false; v=0; for(int i=0;i<8;++i) v|=uint64_t(b[p++])<<(i*8); return true; }
 void fail(Diagnostics& d, const char* code) { d.add(code, {}, code); }
 bool plus_ok(uint64_t a, uint64_t b, uint64_t& out) { if (a > std::numeric_limits<uint64_t>::max()-b) return false; out=a+b; return true; }
+bool required_sections(const std::vector<AnimSection>& sections) {
+    uint32_t seen = 0;
+    for (const auto& section : sections) {
+        const uint32_t kind = static_cast<uint32_t>(section.kind);
+        if (kind == 0 || kind > 8) return false;
+        const uint32_t bit = 1u << (kind - 1);
+        if ((seen & bit) != 0) return false;
+        seen |= bit;
+    }
+    return seen == 0xffu;
+}
+}
+
+BuildNonce generate_build_nonce() {
+    std::random_device entropy;
+    BuildNonce nonce{(uint64_t(entropy()) << 32) ^ entropy(),
+                     (uint64_t(entropy()) << 32) ^ entropy()};
+    if (nonce.high == 0 && nonce.low == 0) nonce.low = 1;
+    return nonce;
 }
 
 std::filesystem::path cache_path_anim(const std::filesystem::path& root, uint64_t h) { char x[32]; std::snprintf(x,sizeof x,"%016llx.anim",static_cast<unsigned long long>(h)); return root / "parts" / x; }
@@ -24,7 +44,7 @@ std::filesystem::path cache_path_anim_commit(const std::filesystem::path& root, 
 uint64_t anim_body_checksum(const AnimAsset& a) { std::vector<uint8_t> b; for (const auto& s:a.sections) { u32(b,uint32_t(s.kind)); u64(b,s.bytes.size()); b.insert(b.end(),s.bytes.begin(),s.bytes.end()); } return fnv(b.data(),b.size()); }
 
 bool save_anim_candidate(const AnimAsset& a, const std::filesystem::path& path, Diagnostics& d) {
-    if (a.sections.size() > UINT32_MAX) { fail(d,"anim.section_count"); return false; }
+    if (a.sections.size() > UINT32_MAX || !required_sections(a.sections)) { fail(d,"anim.sections"); return false; }
     std::vector<uint8_t> table, payload;
     uint64_t off = kHeaderBytes + uint64_t(a.sections.size()) * kSectionBytes;
     for (const auto& s : a.sections) {
@@ -53,6 +73,7 @@ bool load_anim(const std::filesystem::path& path, AnimAsset& a, Diagnostics& d) 
                               std::vector<uint8_t>(b.begin() + size_t(e.off),
                                                    b.begin() + size_t(e.off + e.len))});
     }
+    if (!required_sections(a.sections)) { a = {}; fail(d, "anim.sections"); return false; }
     return true;
 }
 } // namespace matter::animation

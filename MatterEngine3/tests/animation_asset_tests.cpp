@@ -8,7 +8,7 @@
 
 using namespace matter::animation;
 
-static const char* kAnimPath = "animation_asset_tests.anim";
+static const char* kAnimPath = "animation_asset_tests_cache/manm.anim";
 
 static uint64_t fnv(const std::vector<uint8_t>& bytes, size_t offset) {
     uint64_t h = 1469598103934665603ull;
@@ -20,6 +20,28 @@ static uint64_t file_part_body_checksum(const char* path) {
     std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), {});
     return fnv(bytes, 40);
 }
+static std::vector<uint8_t> read_bytes(const char* path) {
+    std::ifstream in(path, std::ios::binary);
+    return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)), {});
+}
+static void write_bytes(const char* path, const std::vector<uint8_t>& bytes) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+}
+static void put32(std::vector<uint8_t>& bytes, size_t offset, uint32_t value) {
+    for (size_t i = 0; i < 4; ++i) bytes[offset + i] = uint8_t(value >> (8 * i));
+}
+static void put64(std::vector<uint8_t>& bytes, size_t offset, uint64_t value) {
+    for (size_t i = 0; i < 8; ++i) bytes[offset + i] = uint8_t(value >> (8 * i));
+}
+static void refresh_trailing_checksum(std::vector<uint8_t>& bytes) {
+    const uint64_t checksum = fnv(bytes, 0) ^ fnv(std::vector<uint8_t>{}, 0);
+    // FNV must exclude the trailing checksum itself.
+    uint64_t h = 1469598103934665603ull;
+    for (size_t i = 0; i + 8 < bytes.size(); ++i) { h ^= bytes[i]; h *= 1099511628211ull; }
+    put64(bytes, bytes.size() - 8, h);
+    (void)checksum;
+}
 
 static AnimAsset sample_asset() {
     AnimAsset asset;
@@ -27,9 +49,67 @@ static AnimAsset sample_asset() {
     asset.nonce = {0x1020304050607080ull, 0x90a0b0c0d0e0f000ull};
     asset.target_abi_tag = 0x41524942u;
     asset.ozz_tag_hash = 0x00160000u;
-    asset.sections.push_back({AnimSectionKind::RigSchema, {1, 2, 3}});
-    asset.sections.push_back({AnimSectionKind::OzzSkeleton, {4, 5, 6, 7}});
+    asset.sections = {
+        {AnimSectionKind::RigSchema, {1}},
+        {AnimSectionKind::InputTargetSchemas, {2}},
+        {AnimSectionKind::GraphControllerBytecode, {3}},
+        {AnimSectionKind::GeometryBindings, {4}},
+        {AnimSectionKind::InverseBindMatrices, {5}},
+        {AnimSectionKind::ClusterBounds, {6}},
+        {AnimSectionKind::OzzSkeleton, {7}},
+        {AnimSectionKind::OzzClips, {8}},
+    };
     return asset;
+}
+
+static void test_anim_required_sections_fail_closed() {
+    Diagnostics diagnostics;
+    AnimAsset missing = sample_asset();
+    missing.sections.pop_back();
+    CHECK(!save_anim_candidate(missing, kAnimPath, diagnostics),
+          "reject MANM candidate missing required v1 section");
+    AnimAsset duplicate = sample_asset();
+    duplicate.sections.push_back(duplicate.sections.front());
+    CHECK(!save_anim_candidate(duplicate, kAnimPath, diagnostics),
+          "reject MANM candidate duplicate section");
+    AnimAsset unknown = sample_asset();
+    unknown.sections[0].kind = static_cast<AnimSectionKind>(99);
+    CHECK(!save_anim_candidate(unknown, kAnimPath, diagnostics),
+          "reject MANM candidate unknown section");
+}
+
+static void test_anim_cache_paths_and_nonce() {
+    const std::filesystem::path root = "cache-root";
+    CHECK(cache_path_anim(root, 1) == root / "parts/0000000000000001.anim", "ANIM cache path is hash-only sibling");
+    CHECK(cache_path_anim_commit(root, 1) == root / "parts/0000000000000001.anim.commit", "MACM cache path is hash-only sibling");
+    const BuildNonce nonce = generate_build_nonce();
+    CHECK(nonce.high != 0 || nonce.low != 0, "generated bundle nonce is nonzero before candidate serialization");
+}
+
+static void test_anim_header_table_checksum_and_truncation_rejection() {
+    Diagnostics diagnostics;
+    const AnimAsset asset = sample_asset();
+    CHECK(save_anim_candidate(asset, kAnimPath, diagnostics), "save MANM corruption fixture");
+    const std::vector<uint8_t> original = read_bytes(kAnimPath);
+    const auto reject = [&](const char* message, const std::vector<uint8_t>& changed) {
+        write_bytes(kAnimPath, changed);
+        AnimAsset output;
+        CHECK(!load_anim(kAnimPath, output, diagnostics), message);
+    };
+    for (const auto offset : {size_t(4), size_t(8), size_t(12)}) {
+        auto changed = original;
+        put32(changed, offset, 2);
+        reject(offset == 4 ? "reject MANM format epoch" : offset == 8 ? "reject MANM schema epoch" : "reject MANM bake epoch", changed);
+    }
+    { auto changed = original; changed.back() ^= 0x80; reject("reject MANM body checksum", changed); }
+    { auto changed = original; put64(changed, 72, UINT64_MAX - 2); reject("reject MANM section offset overflow", changed); }
+    { auto changed = original; put64(changed, 92, 228); reject("reject MANM overlapping sections", changed); }
+    { auto changed = original; put64(changed, 80, UINT64_MAX); reject("reject MANM section length overflow", changed); }
+    for (size_t length : {size_t(0), size_t(67), size_t(100), original.size() - 1}) {
+        auto changed = original; changed.resize(length);
+        reject("reject truncated MANM", changed);
+    }
+    std::remove(kAnimPath);
 }
 
 static void test_anim_round_trip_and_corruption() {
@@ -102,14 +182,82 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     BLASManager unused;
     CHECK(load_committed_animation_bundle(root, hash, unused, loaded, diagnostics),
           "load coherent MANM/ANLK/MACM bundle");
+    const auto manifest_path = cache_path_anim_commit(root, hash);
+    const std::vector<uint8_t> manifest = read_bytes(manifest_path.string().c_str());
+    const auto reject_manifest = [&](const char* message, std::vector<uint8_t> changed) {
+        write_bytes(manifest_path.string().c_str(), changed);
+        CHECK(!load_committed_animation_bundle(root, hash, unused, loaded, diagnostics), message);
+        write_bytes(manifest_path.string().c_str(), manifest);
+    };
+    { auto changed = manifest; changed[0] = 'X'; reject_manifest("reject MACM magic", changed); }
+    { auto changed = manifest; put32(changed, 4, 2); refresh_trailing_checksum(changed); reject_manifest("reject MACM version", changed); }
+    { auto changed = manifest; put64(changed, 8, hash + 1); refresh_trailing_checksum(changed); reject_manifest("reject MACM resolved hash", changed); }
+    { auto changed = manifest; put64(changed, 16, 1); refresh_trailing_checksum(changed); reject_manifest("reject MACM nonce mismatch", changed); }
+    { auto changed = manifest; put64(changed, 32, 1); refresh_trailing_checksum(changed); reject_manifest("reject MACM part checksum mismatch", changed); }
+    { auto changed = manifest; put64(changed, 40, 1); refresh_trailing_checksum(changed); reject_manifest("reject MACM anim checksum mismatch", changed); }
+    { auto changed = manifest; put32(changed, 48, 99); refresh_trailing_checksum(changed); reject_manifest("reject MACM part format mismatch", changed); }
+    { auto changed = manifest; put32(changed, 52, 99); refresh_trailing_checksum(changed); reject_manifest("reject MACM schema mismatch", changed); }
+    { auto changed = manifest; put32(changed, 56, 99); refresh_trailing_checksum(changed); reject_manifest("reject MACM bake mismatch", changed); }
+    { auto changed = manifest; put32(changed, 60, 99); refresh_trailing_checksum(changed); reject_manifest("reject MACM ABI mismatch", changed); }
+    { auto changed = manifest; put32(changed, 64, 99); refresh_trailing_checksum(changed); reject_manifest("reject MACM ozz mismatch", changed); }
+    { auto changed = manifest; changed.back() ^= 1; reject_manifest("reject MACM checksum", changed); }
+    for (uint32_t stage = 1; stage <= 3; ++stage) {
+        const auto failed_part = root / "failed.part";
+        const auto failed_anim = root / "failed.anim";
+        CHECK(part_asset::save_v2(failed_part.string(), blas, tlas, nullptr, 0, {}, {}, link, hash),
+              "rewrite candidate before injected publish failure");
+        CHECK(save_anim_candidate(anim, failed_anim, diagnostics), "rewrite anim before injected publish failure");
+        BundleIdentity failed_identity = identity;
+        failed_identity.part_body_checksum = file_part_body_checksum(failed_part.string().c_str());
+        CHECK(!publish_animation_bundle({failed_part, failed_anim, root, stage}, failed_identity, diagnostics),
+              "interrupted publication reports failure");
+        CHECK(load_committed_animation_bundle(root, hash, unused, loaded, diagnostics),
+              "last-good committed bundle survives interrupted publication");
+    }
     std::filesystem::remove(cache_path_anim_commit(root, hash));
     CHECK(!load_committed_animation_bundle(root, hash, unused, loaded, diagnostics),
           "ANLK part without MACM is an animated cache miss");
     std::filesystem::remove_all(root);
 }
 
+static void test_anlk_malformed_and_static_compatibility() {
+    const std::filesystem::path root = "animation_asset_tests_cache/anlk";
+    const auto static_path = root / "legacy.part";
+    const auto linked_path = root / "linked.part";
+    std::filesystem::create_directories(root);
+    BLASManager blas;
+    TLASManager tlas(1);
+    Tri triangle{};
+    triangle.vertex0 = make_float3(0, 0, 0); triangle.vertex1 = make_float3(1, 0, 0); triangle.vertex2 = make_float3(0, 1, 0);
+    triangle.centroid = make_float3(.333f, .333f, 0);
+    TriEx extra{};
+    const BLASHandle handle = blas.register_triangles(&triangle, 1, &extra);
+    TLASManager::DrawInstance instance{}; instance.blas_handle = handle; tlas.draw_batch({instance}); tlas.build(blas);
+    constexpr uint64_t hash = 0xabcdef0123456789ull;
+    CHECK(part_asset::save_v2(static_path.string(), blas, tlas, nullptr, 0, {}, hash), "write legacy static part");
+    const auto legacy_bytes = read_bytes(static_path.string().c_str());
+    CHECK(part_asset::save_v2(static_path.string(), blas, tlas, nullptr, 0, {}, hash), "rewrite legacy static part through old overload");
+    CHECK(read_bytes(static_path.string().c_str()) == legacy_bytes, "legacy static part bytes unchanged by ANLK support");
+    std::optional<part_asset::PartAnimationLink> absent;
+    CHECK(part_asset::load_animation_link(static_path.string(), hash, absent) && !absent, "old static part has no ANLK link");
+    const part_asset::PartAnimationLink link{1, 1, hash, 3, 4};
+    CHECK(part_asset::save_v2(linked_path.string(), blas, tlas, nullptr, 0, {}, {}, link, hash), "write linked part");
+    std::optional<part_asset::PartAnimationLink> parsed;
+    CHECK(part_asset::load_animation_link(linked_path.string(), hash, parsed) && parsed && parsed->nonce_low == 4, "ANLK round trip");
+    auto corrupt = read_bytes(linked_path.string().c_str());
+    put32(corrupt, corrupt.size() - 32, 2); // ANLK version
+    put64(corrupt, 32, fnv(corrupt, 40)); // refresh ordinary part body checksum
+    write_bytes(linked_path.string().c_str(), corrupt);
+    CHECK(!part_asset::load_animation_link(linked_path.string(), hash, parsed), "reject malformed ANLK trailer");
+    std::filesystem::remove_all(root);
+}
+
 int main() {
     test_anim_round_trip_and_corruption();
+    test_anim_required_sections_fail_closed();
+    test_anim_cache_paths_and_nonce();
+    test_anim_header_table_checksum_and_truncation_rejection();
     test_committed_bundle_rejects_torn_and_mixed_siblings();
+    test_anlk_malformed_and_static_compatibility();
     return check_summary();
 }

@@ -14,6 +14,7 @@ constexpr uint32_t kAnimationSchemaVersion = 1;
 constexpr uint32_t kAnimationBakeEpoch = 1;
 
 struct BuildNonce { uint64_t high = 0; uint64_t low = 0; bool operator==(const BuildNonce& v) const { return high == v.high && low == v.low; } };
+BuildNonce generate_build_nonce();
 enum class AnimSectionKind : uint32_t {
     RigSchema = 1, InputTargetSchemas = 2, GraphControllerBytecode = 3,
     GeometryBindings = 4, InverseBindMatrices = 5, ClusterBounds = 6,
