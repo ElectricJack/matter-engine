@@ -110,6 +110,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/render/tileset_slicer.cpp \
           src/provider/local_provider.cpp src/provider/resolvers.cpp \
           src/ecs/ecs_runtime.cpp src/ecs/physics_context.cpp src/ecs/physics_shapes.cpp src/ecs/physics_systems.cpp src/ecs/streaming_systems.cpp src/ecs/transform_system.cpp \
+          src/scene/scene_service.cpp src/scene/scene_change_tracker.cpp \
           src/matter_engine.cpp \
           src/refine_controller.cpp \
           src/async_bake.cpp \
@@ -173,6 +174,7 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           tileset_slicer.o \
           local_provider.o resolvers.o \
           ecs_runtime.o physics_context.o physics_shapes.o physics_systems.o streaming_systems.o transform_system.o \
+          scene_service.o scene_change_tracker.o \
           matter_engine.o \
           refine_controller.o \
           async_bake.o \
@@ -278,7 +280,7 @@ vulkan-spirv: shaders_gen/embedded_spirv.h
 
 # Per-file pattern rules enable safe parallel compilation with `make -j`.
 # vpath directs Make to search source directories by basename.
-vpath %.cpp src src/render src/provider src/script src/ecs src/streaming src/event $(MSL_DIR)/src $(PFL_DIR)/src
+vpath %.cpp src src/render src/provider src/script src/ecs src/scene src/streaming src/event $(MSL_DIR)/src $(PFL_DIR)/src
 vpath %.c $(QJS_DIR) $(MSL_DIR)/src $(FLECS_DIR)
 
 # Flecs C source (gcc C17, never g++).

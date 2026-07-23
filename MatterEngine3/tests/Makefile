@@ -1821,3 +1821,39 @@ run-eventproperty: event_property_tests
 clean: clean-eventproperty
 clean-eventproperty:
 	rm -f event_property_tests
+
+# ---------------------------------------------------------------------------
+# E5b -- scene::SceneChangeTracker + scene::SceneService tests
+# (event-system.md S I.14 / S II.1 E5). Headless, Windows-runnable: flecs +
+# the event hub, no GL/raylib/box3d. Object-based (not the single-g++-command
+# pattern) because flecs.c must compile via the flecsc (gcc-as-C) flavor, like
+# the run-ecs-entity-bridge target. Links the Windows flecs runtime libs
+# (ws2_32/dbghelp/winmm) the scene-registry target already uses.
+# ---------------------------------------------------------------------------
+SCENETRACKER_TARGET = scene_tracker_tests
+SCENETRACKER_CPP    = scene_tracker_tests.cpp \
+                      ../src/scene/scene_service.cpp \
+                      ../src/scene/scene_change_tracker.cpp \
+                      ../src/event/event_hub.cpp \
+                      ../src/event/subscription.cpp \
+                      ../src/event/dispatch_context.cpp
+SCENETRACKER_C      = $(FLECS_C)
+SCENETRACKER_OBJS   = $(call obj_list,def,$(SCENETRACKER_CPP)) $(call obj_list,flecsc,$(SCENETRACKER_C))
+
+# Generate the per-source compile rules for these sources (they are not in the
+# line-833 def_CPP_SRCS union, so without this the generic $(OBJDIR)/% mkdir
+# rule would wrongly create the .o paths as directories). flecs.c already has
+# its rule via flecsc_C_SRCS. Append-only; none of these sources collide with
+# def_CPP_SRCS entries.
+$(foreach s,$(SCENETRACKER_CPP),$(eval $(call objrule_cpp,def,$(s))))
+
+$(SCENETRACKER_TARGET): $(SCENETRACKER_OBJS)
+	$(CC) $(SCENETRACKER_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread -lws2_32 -ldbghelp -lwinmm
+
+run-scenetracker: $(SCENETRACKER_TARGET)
+	./$(SCENETRACKER_TARGET)
+
+.PHONY: run-scenetracker clean-scenetracker
+clean: clean-scenetracker
+clean-scenetracker:
+	rm -f scene_tracker_tests

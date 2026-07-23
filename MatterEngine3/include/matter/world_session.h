@@ -20,6 +20,7 @@
 #include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
 
 namespace matter::evt { class Hub; }
+namespace matter::scene { class SceneService; class SceneChangeTracker; }
 
 namespace matter {
 
@@ -207,6 +208,18 @@ public:
     // New subscribers register directly against this hub.
     evt::Hub& events();
     const evt::Hub& events() const;
+
+    // E5b (event-system.md S I.14): the session-owned scene-graph model layer.
+    // scene_service() is the ONE supported path for create/duplicate/delete/
+    // reparent/rename/component edits (validation + the Flecs mutation, returns
+    // a typed SceneEditResult). scene_change_tracker() publishes the canonical
+    // sequenced scene-row deltas (scene.rows_upserted / scene.rows_removed on
+    // events()) at end-of-tick flush and serves the (rows, sequence) recovery
+    // snapshot. Both are app-thread-affine; the returned references are valid
+    // only until this session is closed/replaced (same as events()). Wired for
+    // the E5c SessionBinding adapter.
+    scene::SceneService& scene_service();
+    scene::SceneChangeTracker& scene_change_tracker();
 
     const FrameStats& frame_stats() const;
     // Copied coordinator state; no streamer or render-resource state crosses

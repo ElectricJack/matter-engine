@@ -21,6 +21,8 @@
 #include "ecs/ecs_runtime.h"
 #include "ecs/dynamic_scene_bridge.h"
 #include "ecs/streaming_systems.h"
+#include "scene/scene_service.h"          // E5b SceneService (centralized mutations)
+#include "scene/scene_change_tracker.h"   // E5b SceneChangeTracker (sequenced deltas)
 #include "local_provider.h"
 #include "part_store.h"   // LoadedPart, walk_part_tree
 #ifndef MATTER_VULKAN_ONLY
@@ -363,6 +365,17 @@ struct WorldSession::Impl {
     evt::SubscriptionSet   legacy_subs_;
     std::deque<Event>      legacy_pending_;
     bool                   legacy_lane_claimed_ = false;
+
+    // E5b (event-system.md S I.14): the session-owned scene-graph model layer.
+    // SceneService centralizes validated create/duplicate/delete/reparent/
+    // rename/component edits; SceneChangeTracker installs lightweight Flecs
+    // observers and publishes sequenced upsert/remove batches onto `hub_` at
+    // end-of-tick flush. Both are app-thread-affine. Declared AFTER
+    // `ecs_runtime` and `hub_` so they construct after (and destruct before)
+    // the world and hub they reference (S I.13 close order); the tracker's
+    // destructor removes its observers before the world is torn down.
+    scene::SceneService        scene_service_{ecs_runtime.world()};
+    scene::SceneChangeTracker  scene_tracker_{ecs_runtime.world(), hub_};
 
     Impl() { wire_legacy_poll_subs(); }
 
@@ -3925,12 +3938,21 @@ void WorldSession::tick(const TickDesc& desc) {
     if (result.invalid) {
         ++impl_->stats.ecs_invalid_ticks;
         impl_->publish_streaming_snapshot();
+        // E5b (S I.14): end-of-tick scene-delta flush, app thread. Runs even on
+        // an invalid tick so edits made via SceneService before the tick still
+        // publish their canonical delta.
+        impl_->scene_tracker_.flush();
         return;
     }
     impl_->stats.ecs_fixed_steps += result.fixed_steps;
     impl_->stats.ecs_dropped_steps += result.dropped_steps;
     impl_->poll_runtime_sources();
     impl_->publish_streaming_snapshot();
+    // E5b (S I.14): flush the SceneChangeTracker at END of the app-thread ECS
+    // tick — snapshots each dirty live entity once and publishes the sequenced
+    // upsert/remove batches. Pinned to precede PropertyScheduler::flush_dirty
+    // in the frame loop so tick-N deltas reach the UI in frame N.
+    impl_->scene_tracker_.flush();
 }
 
 #ifdef MATTER_VULKAN_VIEWER
@@ -4732,6 +4754,14 @@ bool WorldSession::poll_event(Event& out) {
 
 evt::Hub& WorldSession::events() { return impl_->hub_; }
 const evt::Hub& WorldSession::events() const { return impl_->hub_; }
+
+// E5b (event-system.md S I.14): the session-owned scene model layer, exposed
+// for the E5c SessionBinding adapter / command handlers. Same lifetime as the
+// session; app-thread affinity. SceneService is the ONE supported mutation
+// path; SceneChangeTracker publishes the sequenced deltas and serves the
+// (rows, sequence) recovery snapshot.
+scene::SceneService& WorldSession::scene_service() { return impl_->scene_service_; }
+scene::SceneChangeTracker& WorldSession::scene_change_tracker() { return impl_->scene_tracker_; }
 
 const FrameStats& WorldSession::frame_stats() const {
     return impl_->stats;
