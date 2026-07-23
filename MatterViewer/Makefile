@@ -299,16 +299,34 @@ $(L_CPP_OBJ): $(L_DIR)/%.o: %.cpp | $(L_DIR)
 # EXTRA_RETOPO_CPP tells the library Makefile to also compile mesh_retopo.cpp.
 # The library Makefile stamps its EXTRA_CFLAGS (.lib_flags) and self-forces a
 # full recompile only when the flag set changes, so this stays incremental.
+# The Viewer is a runtime consumer: raw Ozz clip compilation remains in the
+# bake host, so its archive must compile dsl_animation.cpp with the same
+# runtime-only boundary used by the Windows direct-source build.
+RUNTIME_ANIMATION_CFLAGS = -DMATTER_RUNTIME_ANIMATION_ONLY
 .PHONY: build-engine-lib
 build-engine-lib:
 ifneq ($(HAVE_AUTOREMESHER),)
 	$(MAKE) -C $(ME3_DIR) \
-	    EXTRA_CFLAGS="$(AR_CORE_CFLAGS)" \
+	    EXTRA_CFLAGS="$(AR_CORE_CFLAGS) $(RUNTIME_ANIMATION_CFLAGS)" \
 	    EXTRA_INCLUDE="-I$(AR_CORE_PATH)/include" \
 	    EXTRA_RETOPO_CPP="$(MSL_DIR)/src/mesh_retopo.cpp"
 else
-	$(MAKE) -C $(ME3_DIR)
+	$(MAKE) -C $(ME3_DIR) EXTRA_CFLAGS="$(RUNTIME_ANIMATION_CFLAGS)"
 endif
+
+# Linux's Viewer links the engine archive, so test the actual archive boundary
+# rather than only direct-compiled adapter sources.  The probe retains both
+# dsl_bindings.o and dsl_animation.o, then links with Ozz runtime libraries
+# only.  It must never pull the bake-only offline archive into the Viewer.
+ANIMATION_RUNTIME_ARCHIVE_LINK_TARGET = build/test_animation_runtime_archive_link
+$(ANIMATION_RUNTIME_ARCHIVE_LINK_TARGET): tests/test_animation_runtime_archive_link.cpp build-engine-lib
+	@mkdir -p $(dir $@)
+	$(CC) $< $(ME3_DIR)/libmatter_engine3.a -o $@ \
+	    $(CXX_FLAGS_BUILD_COMMON) $(LDFLAGS) $(LDLIBS) $(AR_CORE_LDFLAGS)
+
+.PHONY: check-animation-runtime-link
+check-animation-runtime-link: $(ANIMATION_RUNTIME_ARCHIVE_LINK_TARGET)
+	./$(ANIMATION_RUNTIME_ARCHIVE_LINK_TARGET)
 
 # Generate embedded shader header before compiling any TU that includes it.
 # Needed by the Windows direct-source build (shader_source.cpp); the Linux
