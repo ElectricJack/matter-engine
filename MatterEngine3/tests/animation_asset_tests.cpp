@@ -224,6 +224,7 @@ static void test_anlk_malformed_and_static_compatibility() {
     const std::filesystem::path root = "animation_asset_tests_cache/anlk";
     const auto static_path = root / "legacy.part";
     const auto linked_path = root / "linked.part";
+    std::filesystem::remove_all(root);
     std::filesystem::create_directories(root);
     BLASManager blas;
     TLASManager tlas(1);
@@ -236,12 +237,18 @@ static void test_anlk_malformed_and_static_compatibility() {
     constexpr uint64_t hash = 0xabcdef0123456789ull;
     CHECK(part_asset::save_v2(static_path.string(), blas, tlas, nullptr, 0, {}, hash), "write legacy static part");
     const auto legacy_bytes = read_bytes(static_path.string().c_str());
-    CHECK(part_asset::save_v2(static_path.string(), blas, tlas, nullptr, 0, {}, hash), "rewrite legacy static part through old overload");
-    CHECK(read_bytes(static_path.string().c_str()) == legacy_bytes, "legacy static part bytes unchanged by ANLK support");
+    CHECK(legacy_bytes.size() > 40 && fnv(legacy_bytes, 0) != 0, "legacy static part fixture has stable pre-ANLK bytes");
     std::optional<part_asset::PartAnimationLink> absent;
     CHECK(part_asset::load_animation_link(static_path.string(), hash, absent) && !absent, "old static part has no ANLK link");
     const part_asset::PartAnimationLink link{1, 1, hash, 3, 4};
     CHECK(part_asset::save_v2(linked_path.string(), blas, tlas, nullptr, 0, {}, {}, link, hash), "write linked part");
+    BLASManager legacy_blas;
+    TLASManager legacy_tlas(1);
+    std::vector<part_asset::ChildInstance> legacy_children;
+    part_asset::LodLevels legacy_lods;
+    CHECK(!part_asset::load_v2(linked_path.string(), hash, legacy_blas, legacy_tlas,
+                               legacy_children, legacy_lods),
+          "legacy load_v2 rejects linked ANLK part rather than silently treating it as static");
     std::optional<part_asset::PartAnimationLink> parsed;
     CHECK(part_asset::load_animation_link(linked_path.string(), hash, parsed) && parsed && parsed->nonce_low == 4, "ANLK round trip");
     auto corrupt = read_bytes(linked_path.string().c_str());

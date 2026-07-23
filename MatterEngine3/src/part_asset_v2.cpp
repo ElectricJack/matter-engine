@@ -588,6 +588,22 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
         if (reason && reason->empty()) *reason = "corrupt part body";
         return false;
     }
+    // Legacy overloads deliberately understand only the historical optional
+    // EMIT trailer. Anything else (notably ANLK) is a cache miss, never a
+    // silent static downgrade.
+    if (r.p < r.end) {
+        if (static_cast<size_t>(r.end - r.p) < sizeof(uint32_t))
+            return fail(PartAssetLoadFailure::CorruptBody, "unknown part trailer");
+        uint32_t tag = 0;
+        std::memcpy(&tag, r.p, sizeof(tag));
+        if (tag != 0x454D4954u)
+            return fail(PartAssetLoadFailure::CorruptBody, "unknown part trailer");
+        r.p += sizeof(uint32_t);
+        const uint32_t count = r.get<uint32_t>();
+        const size_t bytes = static_cast<size_t>(count) * sizeof(VolumeEmitter);
+        if (!r.ok || !r.take(bytes) || r.p != r.end)
+            return fail(PartAssetLoadFailure::CorruptBody, "corrupt EMIT trailer");
+    }
     return true;
 }
 

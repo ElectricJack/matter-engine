@@ -26,7 +26,10 @@ bool parse_manifest(const std::filesystem::path&p,BundleIdentity&i){std::vector<
 
 bool publish_animation_bundle(const BundleCandidates& c,const BundleIdentity& i,Diagnostics& d){
     AnimAsset a; uint64_t pc=0; std::optional<part_asset::PartAnimationLink> link;
-    if(i.part_format_version!=part_asset::kFormatVersionV2||i.animation_schema_version!=kAnimationSchemaVersion||i.animation_bake_epoch!=kAnimationBakeEpoch||(i.nonce.high==0&&i.nonce.low==0)||!load_anim(c.anim_candidate,a,d)||a.resolved_hash!=i.resolved_hash||!(a.nonce==i.nonce)||a.target_abi_tag!=i.target_abi_tag||a.ozz_tag_hash!=i.ozz_tag_hash||anim_body_checksum(a)!=i.anim_body_checksum||!checksum_part(c.part_candidate,pc)||pc!=i.part_body_checksum||!part_asset::load_animation_link(c.part_candidate.string(),i.resolved_hash,link)||!link||link->nonce_high!=i.nonce.high||link->nonce_low!=i.nonce.low){fail(d,"bundle.candidate");return false;}
+    BLASManager candidate_blas; TLASManager candidate_tlas(1);
+    std::vector<part_asset::ChildInstance> candidate_children; part_asset::LodLevels candidate_lods;
+    std::vector<part_asset::VolumeEmitter> candidate_emitters;
+    if(i.part_format_version!=part_asset::kFormatVersionV2||i.animation_schema_version!=kAnimationSchemaVersion||i.animation_bake_epoch!=kAnimationBakeEpoch||(i.nonce.high==0&&i.nonce.low==0)||!load_anim(c.anim_candidate,a,d)||a.resolved_hash!=i.resolved_hash||!(a.nonce==i.nonce)||a.target_abi_tag!=i.target_abi_tag||a.ozz_tag_hash!=i.ozz_tag_hash||anim_body_checksum(a)!=i.anim_body_checksum||!checksum_part(c.part_candidate,pc)||pc!=i.part_body_checksum||!part_asset::load_v2(c.part_candidate.string(),i.resolved_hash,candidate_blas,candidate_tlas,candidate_children,candidate_lods,candidate_emitters,link)||!link||link->nonce_high!=i.nonce.high||link->nonce_low!=i.nonce.low){fail(d,"bundle.candidate");return false;}
     std::error_code ec;std::filesystem::create_directories(c.cache_root/"parts",ec);if(ec){fail(d,"bundle.directory");return false;}
     auto part=c.cache_root/part_asset::cache_path_resolved(i.resolved_hash);auto anim=cache_path_anim(c.cache_root,i.resolved_hash);auto manifest=cache_path_anim_commit(c.cache_root,i.resolved_hash);std::vector<uint8_t>m;
     bool had_part=false,had_anim=false,had_manifest=false;
@@ -49,8 +52,11 @@ bool load_committed_animation_bundle(const std::filesystem::path& root,uint64_t 
     auto part = root / part_asset::cache_path_resolved(hash);
     uint64_t pc = 0;
     if (!checksum_part(part, pc) || pc != i.part_body_checksum) { fail(d, "bundle.part_checksum"); return false; }
-    std::optional<part_asset::PartAnimationLink> link;
-    if (!part_asset::load_animation_link(part.string(), hash, link) || !link ||
+    BLASManager checked_blas; TLASManager checked_tlas(1);
+    std::vector<part_asset::ChildInstance> checked_children; part_asset::LodLevels checked_lods;
+    std::vector<part_asset::VolumeEmitter> checked_emitters; std::optional<part_asset::PartAnimationLink> link;
+    if (!part_asset::load_v2(part.string(), hash, checked_blas, checked_tlas, checked_children,
+                             checked_lods, checked_emitters, link) || !link ||
         link->nonce_high != i.nonce.high || link->nonce_low != i.nonce.low) { fail(d, "bundle.link"); return false; }
     AnimAsset a;
     if (!load_anim(cache_path_anim(root, hash), a, d) || a.resolved_hash != hash ||
