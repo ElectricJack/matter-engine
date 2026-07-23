@@ -48,8 +48,8 @@ static AnimAsset sample_asset() {
     AnimAsset asset;
     asset.resolved_hash = 0x0123456789abcdefull;
     asset.nonce = {0x1020304050607080ull, 0x90a0b0c0d0e0f000ull};
-    asset.target_abi_tag = 0x41524942u;
-    asset.ozz_tag_hash = 0x00160000u;
+    asset.target_abi_tag = kAnimationTargetAbiTag;
+    asset.ozz_tag_hash = kAnimationOzzTagHash;
     asset.sections = {
         {AnimSectionKind::RigSchema, {1}},
         {AnimSectionKind::InputTargetSchemas, {2}},
@@ -179,6 +179,25 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     invalid_lod.lods.push_back({0, 1, 1});
     CHECK(!publish_animation_bundle({candidate_part, candidate_anim, root}, invalid_lod, diagnostics),
           "reject manifest LOD with zero indexed-vertex signature");
+    AnimAsset stale_anim = anim;
+    stale_anim.target_abi_tag ^= 1u;
+    BundleIdentity stale_identity = identity;
+    stale_identity.target_abi_tag = stale_anim.target_abi_tag;
+    stale_identity.ozz_tag_hash = stale_anim.ozz_tag_hash;
+    stale_identity.anim_body_checksum = anim_body_checksum(stale_anim);
+    CHECK(save_anim_candidate(stale_anim, candidate_anim, diagnostics), "write stale compatibility candidate");
+    CHECK(!publish_animation_bundle({candidate_part, candidate_anim, root}, stale_identity, diagnostics),
+          "reject candidate whose ABI tag is self-consistent but stale");
+    stale_anim = anim;
+    stale_anim.ozz_tag_hash ^= 1u;
+    stale_identity = identity;
+    stale_identity.target_abi_tag = stale_anim.target_abi_tag;
+    stale_identity.ozz_tag_hash = stale_anim.ozz_tag_hash;
+    stale_identity.anim_body_checksum = anim_body_checksum(stale_anim);
+    CHECK(save_anim_candidate(stale_anim, candidate_anim, diagnostics), "write stale Ozz compatibility candidate");
+    CHECK(!publish_animation_bundle({candidate_part, candidate_anim, root}, stale_identity, diagnostics),
+          "reject candidate whose Ozz tag is self-consistent but stale");
+    CHECK(save_anim_candidate(anim, candidate_anim, diagnostics), "restore current compatibility candidate");
     CHECK(publish_animation_bundle({candidate_part, candidate_anim, root}, identity, diagnostics),
           "publish coherent bundle with MACM last");
     std::optional<part_asset::PartAnimationLink> saved_link;
@@ -190,11 +209,16 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     BLASManager unused;
     CHECK(load_committed_animation_bundle(root, hash, unused, loaded, diagnostics),
           "load coherent MANM/ANLK/MACM bundle");
+    CHECK(unused.live_count() == 1, "committed bundle transaction publishes loaded BLAS into caller state");
     const auto manifest_path = cache_path_anim_commit(root, hash);
     const std::vector<uint8_t> manifest = read_bytes(manifest_path.string().c_str());
     const auto reject_manifest = [&](const char* message, std::vector<uint8_t> changed) {
+        const size_t last_good_blas_count = unused.live_count();
+        const AnimAsset last_good_asset = loaded;
         write_bytes(manifest_path.string().c_str(), changed);
         CHECK(!load_committed_animation_bundle(root, hash, unused, loaded, diagnostics), message);
+        CHECK(unused.live_count() == last_good_blas_count && loaded == last_good_asset,
+              "failed committed load preserves the caller's last-good state");
         write_bytes(manifest_path.string().c_str(), manifest);
     };
     { auto changed = manifest; changed[0] = 'X'; reject_manifest("reject MACM magic", changed); }

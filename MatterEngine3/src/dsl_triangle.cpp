@@ -316,6 +316,7 @@ void DslState::flush_retained_profile() {
 }
 
 void DslState::pushTerrainTriangle(const float pos[9], const float nrm[9], int material_id) {
+    if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     Tri t;
     t.vertex0 = make_float3(pos[0], pos[1], pos[2]);
     t.vertex1 = make_float3(pos[3], pos[4], pos[5]);

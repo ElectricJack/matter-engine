@@ -151,6 +151,12 @@ void test_local_to_model_and_two_bone_subtree_refresh() {
     skipped_intermediate.mid = 3;
     skipped_intermediate.end = 4;
     CHECK(!solve_two_bone(skipped_intermediate, models, locals, updated_models), "IK rejects a chain that skips an intermediate joint");
+    TwoBoneSolve wrong_affected = solve;
+    wrong_affected.affected = skeleton.subtree(0);
+    CHECK(!solve_two_bone(wrong_affected, models, locals, updated_models), "IK rejects an affected range that does not exactly match the start subtree");
+    TwoBoneSolve malformed_affected = solve;
+    malformed_affected.affected = {solve.start, static_cast<JointIndex>(solve.end + 1)};
+    CHECK(!solve_two_bone(malformed_affected, models, locals, updated_models), "IK rejects a noncanonical affected range");
 
     std::vector<Mat4f> partial_models = models;
     const Mat4f root_before = partial_models[0];

@@ -281,7 +281,11 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
                 int input = -1;
                 for (size_t j = 0; j < build.inputs.size(); ++j) if (build.inputs[j].name == node.input) input = static_cast<int>(j);
                 if (input < 0) diagnostics.add("missing-blend-input", node.source, "blend1D requires a declared input");
-                else if (build.inputs[input].type != AnimationValueType::Number) diagnostics.add("blend-input-type", node.source, "blend1D input must be numeric");
+                else {
+                    if (build.inputs[input].type != AnimationValueType::Number) diagnostics.add("blend-input-type", node.source, "blend1D input must be numeric");
+                    if (build.inputs[input].cadence == EvaluationCadence::Frame && node.cadence == EvaluationCadence::Fixed)
+                        diagnostics.add("frame-to-fixed-dependency", node.source, "fixed graph node cannot depend on frame data");
+                }
                 if (node.dependencies.size() < 2 || node.thresholds.size() != node.dependencies.size()) diagnostics.add("blend1d-arity", node.source, "blend1D thresholds must match at least two inputs");
                 for (size_t j = 0; j < node.thresholds.size(); ++j) if (!finite(node.thresholds[j]) || (j && node.thresholds[j] <= node.thresholds[j - 1])) diagnostics.add("blend1d-thresholds", node.source, "blend1D thresholds must be finite and strictly ordered");
                 if (!node.clip.empty() || !node.controller.empty()) diagnostics.add("blend1d-fields", node.source, "blend1D node has unsupported fields");
@@ -293,6 +297,8 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
                 break;
             case GraphNodeKind::NativeController:
                 if (node.controller.empty() || find_controller(build, node.controller) < 0) diagnostics.add("missing-controller-reference", node.source, "native controller node requires a declared controller");
+                else if (build.controllers[find_controller(build, node.controller)].cadence == EvaluationCadence::Frame && node.cadence == EvaluationCadence::Fixed)
+                    diagnostics.add("frame-to-fixed-dependency", node.source, "fixed graph node cannot depend on frame data");
                 if (node.dependencies.size() > 1) diagnostics.add("native-controller-arity", node.source, "native controller node accepts at most one input");
                 if (!node.input.empty() || !node.clip.empty() || !node.thresholds.empty()) diagnostics.add("native-controller-fields", node.source, "native controller node has unsupported fields");
                 break;

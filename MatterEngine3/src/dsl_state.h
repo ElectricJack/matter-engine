@@ -287,7 +287,10 @@ public:
     void endContour();                       // misuse (no open contour) -> set_error
     // Author-selectable wall stitch at interior polyline vertices, set BEFORE
     // extrude (0=MITER default, 1=BEVEL, 2=ROUND).
-    void joinType(int kind) { join_ = (kind==1?JoinKind::Bevel:(kind==2?JoinKind::Round:JoinKind::Miter)); }
+    void joinType(int kind) {
+        if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
+        join_ = (kind==1?JoinKind::Bevel:(kind==2?JoinKind::Round:JoinKind::Miter));
+    }
     // Sweep the retained POLYGON profile along `path` (a flat array of 3*path_n
     // floats). Voxel session -> error (deferred); mid-open-beginShape -> error;
     // no retained profile -> error. Consumes the profile (suppresses its flat

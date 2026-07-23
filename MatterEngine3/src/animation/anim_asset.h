@@ -13,6 +13,11 @@ constexpr uint32_t kAnimFormatVersion = 1;
 constexpr uint32_t kAnimationSchemaVersion = 1;
 constexpr uint32_t kAnimationBakeEpoch = 1;
 constexpr uint32_t kAnimationCompilerIdentifier = 1;
+// Runtime-owned compatibility values.  These must be checked against the
+// running build at publish and load time; comparing a bundle's copies only
+// proves that its siblings agree with one another.
+constexpr uint32_t kAnimationTargetAbiTag = 0x41524942u;
+constexpr uint32_t kAnimationOzzTagHash = 0x00160000u;
 
 struct BuildNonce { uint64_t high = 0; uint64_t low = 0; bool operator==(const BuildNonce& v) const { return high == v.high && low == v.low; } };
 BuildNonce generate_build_nonce();

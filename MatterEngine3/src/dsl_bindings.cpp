@@ -118,17 +118,46 @@ static void rig_source(JSContext* c, int n, JSValueConst* a, const char* object)
 }
 static int anim_user_argc(int argc) { return argc > 0 ? argc - 1 : 0; }
 static bool anim_string(JSContext* c, JSValueConst v, std::string& out) { if(!JS_IsString(v))return false; out=arg_string(c,v); return !out.empty(); }
-static matter::animation::EvaluationCadence anim_cadence(JSContext* c, JSValueConst obj) { std::string s=arg_string(c,obj); return s=="frame"?matter::animation::EvaluationCadence::Frame:matter::animation::EvaluationCadence::Fixed; }
-static matter::animation::AnimationValue anim_value(JSContext* c, JSValueConst v, matter::AnimationValueType type) {
-    matter::animation::AnimationValue out; out.type=type; if(type==matter::AnimationValueType::Bool) out.boolean=JS_ToBool(c,v)>0;
-    else if(type==matter::AnimationValueType::Number) out.number=argd(c,v);
-    else if(type==matter::AnimationValueType::Symbol) out.symbol=arg_string(c,v);
-    else if(type==matter::AnimationValueType::Float3) array_floats(c,v,3,&out.float3.x);
-    else if(type==matter::AnimationValueType::Quaternion) array_floats(c,v,4,&out.quaternion.x);
-    else if(type==matter::AnimationValueType::Transform) { bool ok=false; out.transform=socket_transform(c,v,&ok); }
-    return out;
+static bool anim_cadence(JSContext* c, JSValueConst value, matter::animation::EvaluationCadence& out) {
+    if (!JS_IsString(value)) return false;
+    const std::string name = arg_string(c, value);
+    if (name == "fixed") { out = matter::animation::EvaluationCadence::Fixed; return true; }
+    if (name == "frame") { out = matter::animation::EvaluationCadence::Frame; return true; }
+    return false;
 }
-static matter::AnimationValueType anim_type(JSContext* c, JSValueConst v) { const std::string s=arg_string(c,v); if(s=="bool"||s=="boolean")return matter::AnimationValueType::Bool; if(s=="vec3"||s=="float3")return matter::AnimationValueType::Float3; if(s=="quat"||s=="quaternion")return matter::AnimationValueType::Quaternion; if(s=="transform")return matter::AnimationValueType::Transform; if(s=="symbol"||s=="enum")return matter::AnimationValueType::Symbol; return matter::AnimationValueType::Number; }
+static bool anim_value(JSContext* c, JSValueConst value, matter::AnimationValueType type,
+                       matter::animation::AnimationValue& out) {
+    out = {}; out.type = type;
+    if (type == matter::AnimationValueType::Bool) {
+        if (!JS_IsBool(value)) return false;
+        out.boolean = JS_ToBool(c, value) > 0;
+    } else if (type == matter::AnimationValueType::Number) {
+        double number = 0.0;
+        if (!JS_IsNumber(value) || JS_ToFloat64(c, &number, value) < 0 || !std::isfinite(number)) return false;
+        out.number = number;
+    } else if (type == matter::AnimationValueType::Symbol) {
+        if (!JS_IsString(value)) return false;
+        out.symbol = arg_string(c, value);
+    } else if (type == matter::AnimationValueType::Float3) {
+        if (!array_floats(c, value, 3, &out.float3.x)) return false;
+    } else if (type == matter::AnimationValueType::Quaternion) {
+        if (!array_floats(c, value, 4, &out.quaternion.x)) return false;
+    } else if (type == matter::AnimationValueType::Transform) {
+        bool ok = false; out.transform = socket_transform(c, value, &ok); if (!ok) return false;
+    }
+    return true;
+}
+static bool anim_type(JSContext* c, JSValueConst value, matter::AnimationValueType& out) {
+    if (!JS_IsString(value)) return false;
+    const std::string name = arg_string(c, value);
+    if (name == "float" || name == "number") { out = matter::AnimationValueType::Number; return true; }
+    if (name == "bool" || name == "boolean") { out = matter::AnimationValueType::Bool; return true; }
+    if (name == "vec3" || name == "float3") { out = matter::AnimationValueType::Float3; return true; }
+    if (name == "quat" || name == "quaternion") { out = matter::AnimationValueType::Quaternion; return true; }
+    if (name == "transform") { out = matter::AnimationValueType::Transform; return true; }
+    if (name == "symbol" || name == "enum") { out = matter::AnimationValueType::Symbol; return true; }
+    return false;
+}
 static JSValue j_beginClip(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     rig_source(c,n,a,"beginClip"); int argc=anim_user_argc(n); int off=(argc>1&&JS_IsNumber(a[0]))?1:0; std::string name; if(argc<=off||!anim_string(c,a[off],name)){state_of(c)->set_rig_error("beginClip requires a name");return JS_UNDEFINED;} float duration=1,rate=30; bool loop=false,add=false; if(argc>off+1&&JS_IsObject(a[off+1])){JSValue v=JS_GetPropertyStr(c,a[off+1],"duration");if(JS_IsNumber(v))duration=(float)argd(c,v);JS_FreeValue(c,v);v=JS_GetPropertyStr(c,a[off+1],"sampleRate");if(JS_IsNumber(v))rate=(float)argd(c,v);JS_FreeValue(c,v);v=JS_GetPropertyStr(c,a[off+1],"loop");if(!JS_IsUndefined(v))loop=JS_ToBool(c,v)>0;JS_FreeValue(c,v);v=JS_GetPropertyStr(c,a[off+1],"mode");if(JS_IsString(v))add=arg_string(c,v)=="additive";JS_FreeValue(c,v);} state_of(c)->begin_clip(name,duration,rate,loop,add); return JS_UNDEFINED;
 }
@@ -142,9 +171,47 @@ static JSValue j_clipKey(JSContext* c, JSValueConst, int n, JSValueConst* a){rig
 static JSValue j_generate(JSContext* c, JSValueConst, int n, JSValueConst* a){int argc=n;if(argc<1||!JS_IsFunction(c,a[0])){state_of(c)->set_rig_error("generate requires a callback");return JS_UNDEFINED;} DslState* st=state_of(c); const uint32_t seg=st->clip_sample_segments(); if(seg==0){st->set_rig_error("generated clip requires finite positive duration and sampleRate");return JS_UNDEFINED;} const uint32_t count=st->clip_is_loop()?seg:seg+1; for(uint32_t i=0;i<count;++i){ if(!st->begin_clip_sample())break; const float phase=(float)i/(float)seg; JSValue pv=JS_NewFloat64(c,phase); JSValue r=JS_Call(c,a[0],JS_UNDEFINED,1,&pv); JS_FreeValue(c,pv); if(JS_IsException(r)){JS_FreeValue(c,r);st->set_rig_error("generated clip callback failed");break;} JS_FreeValue(c,r); if(!st->capture_clip_sample(phase))break; } return JS_UNDEFINED; }
 static JSValue j_endClip(JSContext* c, JSValueConst, int n, JSValueConst* a){rig_source(c,n,a,"endClip");state_of(c)->end_clip();return JS_UNDEFINED;}
 static JSValue j_beginMotion(JSContext* c, JSValueConst, int n, JSValueConst* a){rig_source(c,n,a,"beginMotion");int argc=anim_user_argc(n);std::string s="motion";if(argc>0&&!JS_IsUndefined(a[0])&&!anim_string(c,a[0],s))state_of(c)->set_rig_error("beginMotion requires a name");else state_of(c)->begin_motion(s);return JS_UNDEFINED;}
-static JSValue j_motionInput(JSContext* c, JSValueConst, int n, JSValueConst* a){rig_source(c,n,a,"input");int argc=anim_user_argc(n);std::string name;if(argc<2||!anim_string(c,a[0],name)||!JS_IsObject(a[1])){state_of(c)->set_rig_error("input requires name and options");return JS_UNDEFINED;} matter::animation::InputSchema in;in.name=name;in.source=state_of(c)->rig_source();in.source.object="input";JSValue v=JS_GetPropertyStr(c,a[1],"type");in.type=anim_type(c,v);JS_FreeValue(c,v);v=JS_GetPropertyStr(c,a[1],"cadence");if(JS_IsString(v))in.cadence=anim_cadence(c,v);JS_FreeValue(c,v);v=JS_GetPropertyStr(c,a[1],"default");if(!JS_IsUndefined(v))in.default_value=anim_value(c,v,in.type);JS_FreeValue(c,v);state_of(c)->motion_input(in);return JS_UNDEFINED;}
-static JSValue j_motionTarget(JSContext* c, JSValueConst, int n, JSValueConst* a){rig_source(c,n,a,"target");int argc=anim_user_argc(n);std::string name;if(argc<2||!anim_string(c,a[0],name)||!JS_IsObject(a[1])){state_of(c)->set_rig_error("target requires name and options");return JS_UNDEFINED;} matter::animation::TargetSchema t;t.name=name;t.source=state_of(c)->rig_source();t.source.object="target";auto getstr=[&](const char*k,std::string&o){JSValue v=JS_GetPropertyStr(c,a[1],k);bool ok=anim_string(c,v,o);JS_FreeValue(c,v);return ok;};if(!getstr("start",t.start_joint)||!getstr("end",t.end_joint)){state_of(c)->set_rig_error("target requires start and end joints");return JS_UNDEFINED;}JSValue v=JS_GetPropertyStr(c,a[1],"cadence");if(JS_IsString(v))t.cadence=anim_cadence(c,v);JS_FreeValue(c,v);v=JS_GetPropertyStr(c,a[1],"driver");if(JS_IsString(v)){t.driver=arg_string(c,v)=="controller"?matter::animation::TargetDriverKind::Controller:matter::animation::TargetDriverKind::External;}else if(JS_IsObject(v)){JSValue q=JS_GetPropertyStr(c,v,"controller");t.driver=matter::animation::TargetDriverKind::Controller;t.controller=arg_string(c,q);JS_FreeValue(c,q);}JS_FreeValue(c,v);v=JS_GetPropertyStr(c,a[1],"pole");if(!JS_IsUndefined(v)&&!JS_IsNull(v)){t.has_pole=array_floats(c,v,3,&t.pole.x);}JS_FreeValue(c,v);double d=0;auto num=[&](const char*k,float&o){JSValue q=JS_GetPropertyStr(c,a[1],k);if(JS_IsNumber(q)){JS_ToFloat64(c,&d,q);o=(float)d;}JS_FreeValue(c,q);};num("soften",t.soften);num("twist",t.twist);num("positionHalfLife",t.position_half_life);num("rotationHalfLife",t.rotation_half_life);num("weightHalfLife",t.weight_half_life);v=JS_GetPropertyStr(c,a[1],"enabled");if(!JS_IsUndefined(v))t.enabled=JS_ToBool(c,v)>0;JS_FreeValue(c,v);state_of(c)->motion_target(t);return JS_UNDEFINED;}
-static JSValue j_motionController(JSContext* c, JSValueConst, int n, JSValueConst* a){rig_source(c,n,a,"controller");int argc=anim_user_argc(n);std::string name,type="native";if(argc<1||!anim_string(c,a[0],name)){state_of(c)->set_rig_error("controller requires a name");return JS_UNDEFINED;}if(argc>1&&JS_IsString(a[1]))type=arg_string(c,a[1]);matter::animation::ControllerDef d;d.name=name;d.type=type;d.source=state_of(c)->rig_source();d.source.object="controller";if(argc>2&&JS_IsObject(a[2])){JSValue v=JS_GetPropertyStr(c,a[2],"cadence");if(JS_IsString(v))d.cadence=anim_cadence(c,v);JS_FreeValue(c,v);}state_of(c)->motion_controller(d);return JS_UNDEFINED;}
+static JSValue j_motionInput(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    rig_source(c,n,a,"input"); const int argc=anim_user_argc(n); std::string name;
+    if(argc<2||!anim_string(c,a[0],name)||!JS_IsObject(a[1])) { state_of(c)->set_rig_error("input requires name and options"); return JS_UNDEFINED; }
+    matter::animation::InputSchema in; in.name=name; in.source=state_of(c)->rig_source(); in.source.object="input";
+    JSValue value=JS_GetPropertyStr(c,a[1],"type"); const bool type_ok=anim_type(c,value,in.type); JS_FreeValue(c,value);
+    if(!type_ok) { state_of(c)->set_rig_error("input type must be a supported type string"); return JS_UNDEFINED; }
+    value=JS_GetPropertyStr(c,a[1],"cadence");
+    if(!JS_IsUndefined(value) && !anim_cadence(c,value,in.cadence)) { JS_FreeValue(c,value); state_of(c)->set_rig_error("input cadence must be 'fixed' or 'frame'"); return JS_UNDEFINED; }
+    JS_FreeValue(c,value); value=JS_GetPropertyStr(c,a[1],"default");
+    if(!JS_IsUndefined(value) && !anim_value(c,value,in.type,in.default_value)) { JS_FreeValue(c,value); state_of(c)->set_rig_error("input default does not match its declared type"); return JS_UNDEFINED; }
+    JS_FreeValue(c,value); state_of(c)->motion_input(in); return JS_UNDEFINED;
+}
+static JSValue j_motionTarget(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    rig_source(c,n,a,"target"); const int argc=anim_user_argc(n); std::string name;
+    if(argc<2||!anim_string(c,a[0],name)||!JS_IsObject(a[1])) { state_of(c)->set_rig_error("target requires name and options"); return JS_UNDEFINED; }
+    matter::animation::TargetSchema t; t.name=name; t.source=state_of(c)->rig_source(); t.source.object="target";
+    auto string_property=[&](const char* key,std::string& out){ JSValue value=JS_GetPropertyStr(c,a[1],key); const bool ok=anim_string(c,value,out); JS_FreeValue(c,value); return ok; };
+    if(!string_property("start",t.start_joint)||!string_property("end",t.end_joint)) { state_of(c)->set_rig_error("target requires start and end joints"); return JS_UNDEFINED; }
+    JSValue value=JS_GetPropertyStr(c,a[1],"cadence");
+    if(!JS_IsUndefined(value) && !anim_cadence(c,value,t.cadence)) { JS_FreeValue(c,value); state_of(c)->set_rig_error("target cadence must be 'fixed' or 'frame'"); return JS_UNDEFINED; }
+    JS_FreeValue(c,value); value=JS_GetPropertyStr(c,a[1],"driver");
+    if(!JS_IsUndefined(value)) {
+        if(JS_IsString(value)) { const std::string driver=arg_string(c,value); if(driver=="external") t.driver=matter::animation::TargetDriverKind::External; else if(driver=="controller") t.driver=matter::animation::TargetDriverKind::Controller; else { JS_FreeValue(c,value); state_of(c)->set_rig_error("target driver must be 'external' or 'controller'"); return JS_UNDEFINED; } }
+        else if(JS_IsObject(value)) { JSValue controller=JS_GetPropertyStr(c,value,"controller"); const bool ok=anim_string(c,controller,t.controller); JS_FreeValue(c,controller); if(!ok) { JS_FreeValue(c,value); state_of(c)->set_rig_error("target controller driver requires a controller name"); return JS_UNDEFINED; } t.driver=matter::animation::TargetDriverKind::Controller; }
+        else { JS_FreeValue(c,value); state_of(c)->set_rig_error("target driver must be a string or controller object"); return JS_UNDEFINED; }
+    }
+    JS_FreeValue(c,value); value=JS_GetPropertyStr(c,a[1],"pole");
+    if(!JS_IsUndefined(value)&&!JS_IsNull(value)) { if(!array_floats(c,value,3,&t.pole.x)) { JS_FreeValue(c,value); state_of(c)->set_rig_error("target pole must be a finite vec3"); return JS_UNDEFINED; } t.has_pole=true; }
+    JS_FreeValue(c,value); auto number_property=[&](const char* key,float& out){ JSValue number=JS_GetPropertyStr(c,a[1],key); if(JS_IsUndefined(number)) { JS_FreeValue(c,number); return true; } double parsed=0.0; const bool ok=JS_IsNumber(number)&&JS_ToFloat64(c,&parsed,number)>=0&&std::isfinite(parsed); JS_FreeValue(c,number); if(ok) out=static_cast<float>(parsed); return ok; };
+    if(!number_property("soften",t.soften)||!number_property("twist",t.twist)||!number_property("positionHalfLife",t.position_half_life)||!number_property("rotationHalfLife",t.rotation_half_life)||!number_property("weightHalfLife",t.weight_half_life)) { state_of(c)->set_rig_error("target numeric options must be finite numbers"); return JS_UNDEFINED; }
+    value=JS_GetPropertyStr(c,a[1],"enabled"); if(!JS_IsUndefined(value)) { if(!JS_IsBool(value)) { JS_FreeValue(c,value); state_of(c)->set_rig_error("target enabled must be boolean"); return JS_UNDEFINED; } t.enabled=JS_ToBool(c,value)>0; } JS_FreeValue(c,value);
+    state_of(c)->motion_target(t); return JS_UNDEFINED;
+}
+static JSValue j_motionController(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    rig_source(c,n,a,"controller"); const int argc=anim_user_argc(n); std::string name,type="native";
+    if(argc<1||!anim_string(c,a[0],name)) { state_of(c)->set_rig_error("controller requires a name"); return JS_UNDEFINED; }
+    if(argc>1 && !anim_string(c,a[1],type)) { state_of(c)->set_rig_error("controller type must be a non-empty string"); return JS_UNDEFINED; }
+    matter::animation::ControllerDef d; d.name=name; d.type=type; d.source=state_of(c)->rig_source(); d.source.object="controller";
+    if(argc>2) { if(!JS_IsObject(a[2])) { state_of(c)->set_rig_error("controller options must be an object"); return JS_UNDEFINED; } JSValue value=JS_GetPropertyStr(c,a[2],"cadence"); if(!JS_IsUndefined(value)&&!anim_cadence(c,value,d.cadence)) { JS_FreeValue(c,value); state_of(c)->set_rig_error("controller cadence must be 'fixed' or 'frame'"); return JS_UNDEFINED; } JS_FreeValue(c,value); }
+    state_of(c)->motion_controller(d); return JS_UNDEFINED;
+}
 static JSValue j_motionNode(JSContext* c, JSValueConst, int n, JSValueConst* a, matter::animation::GraphNodeKind kind){rig_source(c,n,a,"graph");int argc=anim_user_argc(n);std::string name;if(argc<1||!anim_string(c,a[0],name)){state_of(c)->set_rig_error("graph node requires a name");return JS_UNDEFINED;}matter::animation::GraphNode g;g.name=name;g.kind=kind;g.source=state_of(c)->rig_source();g.source.object="graph";for(int i=1;i<argc;++i){std::string dep;if(anim_string(c,a[i],dep))g.dependencies.push_back(dep);}g.is_output=kind==matter::animation::GraphNodeKind::Output;state_of(c)->motion_node(g);return JS_UNDEFINED;}
 static JSValue j_clipNode(JSContext* c,JSValueConst,int n,JSValueConst*a){rig_source(c,n,a,"clipNode");int argc=anim_user_argc(n);if(argc<2){state_of(c)->set_rig_error("clipNode requires name and clip");return JS_UNDEFINED;}matter::animation::GraphNode g;g.name=arg_string(c,a[0]);g.clip=arg_string(c,a[1]);g.kind=matter::animation::GraphNodeKind::Clip;g.source=state_of(c)->rig_source();g.source.object="clipNode";state_of(c)->motion_node(g);return JS_UNDEFINED;} static JSValue j_blendNode(JSContext*c,JSValueConst,int n,JSValueConst*a){rig_source(c,n,a,"blend1D");int argc=anim_user_argc(n);if(argc<3||!JS_IsArray(a[2])){state_of(c)->set_rig_error("blend1D requires name, input, and samples");return JS_UNDEFINED;}matter::animation::GraphNode g;g.name=arg_string(c,a[0]);g.input=arg_string(c,a[1]);g.kind=matter::animation::GraphNodeKind::Blend1D;g.source=state_of(c)->rig_source();g.source.object="blend1D";JSValue lv=JS_GetPropertyStr(c,a[2],"length");uint32_t len=0;JS_ToUint32(c,&len,lv);JS_FreeValue(c,lv);for(uint32_t i=0;i<len;++i){JSValue pair=JS_GetPropertyUint32(c,a[2],i);if(JS_IsArray(pair)){JSValue tv=JS_GetPropertyUint32(c,pair,0);if(JS_IsNumber(tv))g.thresholds.push_back((float)argd(c,tv));JS_FreeValue(c,tv);JSValue nv=JS_GetPropertyUint32(c,pair,1);std::string dep;if(anim_string(c,nv,dep))g.dependencies.push_back(dep);JS_FreeValue(c,nv);}JS_FreeValue(c,pair);}state_of(c)->motion_node(g);return JS_UNDEFINED;} static JSValue j_additiveNode(JSContext*c,JSValueConst,int n,JSValueConst*a){return j_motionNode(c,JS_UNDEFINED,n,a,matter::animation::GraphNodeKind::Additive);} static JSValue j_nativeNode(JSContext*c,JSValueConst,int n,JSValueConst*a){rig_source(c,n,a,"nativeController");int argc=anim_user_argc(n);if(argc<2){state_of(c)->set_rig_error("nativeController requires name and controller");return JS_UNDEFINED;}matter::animation::GraphNode g;g.name=arg_string(c,a[0]);g.controller=arg_string(c,a[1]);g.kind=matter::animation::GraphNodeKind::NativeController;g.source=state_of(c)->rig_source();g.source.object="nativeController";if(argc>2){std::string dep;if(anim_string(c,a[2],dep))g.dependencies.push_back(dep);}state_of(c)->motion_node(g);return JS_UNDEFINED;} static JSValue j_outputNode(JSContext*c,JSValueConst,int n,JSValueConst*a){return j_motionNode(c,JS_UNDEFINED,n,a,matter::animation::GraphNodeKind::Output);}
 static JSValue j_endMotion(JSContext*c,JSValueConst,int n,JSValueConst*a){rig_source(c,n,a,"endMotion");state_of(c)->end_motion();return JS_UNDEFINED;}
@@ -1008,6 +1075,10 @@ static JSValue j_biomeAt(JSContext* c, JSValueConst, int, JSValueConst* a) {
 // Fails loudly if no world binding is installed.
 static JSValue j_terrainVolume(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     DslState* st = state_of(c);
+    if (st->generating_animation()) {
+        st->set_error("geometry authoring is forbidden during generate");
+        return JS_UNDEFINED;
+    }
     const WorldBinding& w = st->world();
     if (!w.field) {
         st->set_error("terrainVolume: no world bound — set BakeOptions.world before baking a terrain sector");

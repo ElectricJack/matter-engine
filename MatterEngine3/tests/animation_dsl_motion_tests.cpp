@@ -43,6 +43,34 @@ void test_generate_cannot_author_geometry() {
     script_host::ScriptHost host; const auto result=bake("this.beginRig('r'); this.root('root'); this.bone('mid',[1,0,0]); this.bone('tip',[1,0,0]); this.endRig(); this.beginClip('bad',{duration:1,sampleRate:1}); this.generate(phase=>{this.fill(2); this.tint(1,0,0,1); this.placeChild('missing'); this.emitVolume({radius:1,length:1,dir:[1,0,0]}); this.beginVoxels(.1); this.sphere([0,0,0],1); this.endVoxels();}); this.endClip();",host);
     CHECK(!result.error.ok && result.error.message.find("geometry authoring is forbidden")!=std::string::npos,"generate rejects structural geometry authoring");
 }
+void test_generate_cannot_mutate_terrain_or_join_cursor() {
+    script_host::ScriptHost terrain_host;
+    const auto terrain = bake("this.beginRig('r'); this.root('root'); this.endRig(); this.beginClip('bad',{duration:1,sampleRate:1}); this.generate(phase=>{this.terrainVolume(0,0,0);}); this.endClip();", terrain_host);
+    CHECK(!terrain.error.ok && terrain.error.message.find("geometry authoring is forbidden") != std::string::npos,
+          "generate rejects terrain output before terrain world validation");
+    script_host::ScriptHost join_host;
+    const auto join = bake("this.beginRig('r'); this.root('root'); this.endRig(); this.beginClip('bad',{duration:1,sampleRate:1}); this.generate(phase=>{this.joinType(1);}); this.endClip();", join_host);
+    CHECK(!join.error.ok && join.error.message.find("geometry authoring is forbidden") != std::string::npos,
+          "generate rejects join cursor mutation");
+}
+void test_motion_options_fail_closed() {
+    script_host::ScriptHost type_host;
+    const auto unknown_type = bake("this.beginRig('r'); this.root('root'); this.endRig(); this.beginMotion(); this.input('x',{type:'not-a-type',default:0}); this.output('out','missing'); this.endMotion();", type_host);
+    CHECK(!unknown_type.error.ok && unknown_type.error.message.find("type") != std::string::npos,
+          "unknown input type fails instead of becoming number");
+    script_host::ScriptHost value_host;
+    const auto bad_value = bake("this.beginRig('r'); this.root('root'); this.endRig(); this.beginMotion(); this.input('x',{type:'vec3',default:[1,'bad',3]}); this.output('out','missing'); this.endMotion();", value_host);
+    CHECK(!bad_value.error.ok && bad_value.error.message.find("default") != std::string::npos,
+          "ill-typed input default fails instead of becoming a zero vector");
+    script_host::ScriptHost cadence_host;
+    const auto bad_cadence = bake("this.beginRig('r'); this.root('root'); this.endRig(); this.beginMotion(); this.input('x',{type:'float',cadence:'tick',default:0}); this.output('out','missing'); this.endMotion();", cadence_host);
+    CHECK(!bad_cadence.error.ok && bad_cadence.error.message.find("cadence") != std::string::npos,
+          "unknown input cadence fails instead of becoming fixed");
+    script_host::ScriptHost dependency_host;
+    const auto bad_dependency = bake("this.beginRig('r'); this.root('root'); this.endRig(); this.beginClip('idle',{duration:1,sampleRate:1}); this.key('root',0,{}); this.endClip(); this.beginMotion(); this.input('speed',{type:'float',cadence:'frame',default:0}); this.clipNode('idle','idle'); this.blend1D('blend','speed',[[0,'idle'],[1,'idle']]); this.output('out','blend'); this.endMotion();", dependency_host);
+    CHECK(!bad_dependency.error.ok && bad_dependency.error.message.find("frame") != std::string::npos,
+          "frame input cannot feed a fixed blend graph node");
+}
 void test_motion_source_spans_are_preserved() {
     script_host::ScriptHost host; const auto input=bake("this.beginRig('r');\n this.root('root');\n this.bone('mid',[1,0,0]);\n this.bone('tip',[1,0,0]);\n this.endRig();\n this.beginMotion();\n this.input('speed',{type:'symbol',default:''});\n this.output('out');\n this.endMotion();",host);
     if(!input.error.ok) std::printf("input span: %s (%s)\\n",input.error.source_location.c_str(),input.error.message.c_str()); CHECK(!input.error.ok && !input.error.source_location.empty(),"input diagnostic preserves declaration span");
@@ -50,4 +78,4 @@ void test_motion_source_spans_are_preserved() {
     CHECK(!marker.error.ok && marker.error.source_location.find("marker")!=std::string::npos,"marker diagnostic preserves declaration object");
 }
 }
-int main(){test_generated_loop_and_controls();test_validation_rejects_bad_motion_graph();test_collinear_target_requires_pole();test_generate_cannot_author_geometry();test_motion_source_spans_are_preserved();if(g_failures){std::printf("animation_dsl_motion_tests: %d failure(s)\n",g_failures);return 1;}std::printf("animation_dsl_motion_tests: all tests passed\n");return 0;}
+int main(){test_generated_loop_and_controls();test_validation_rejects_bad_motion_graph();test_collinear_target_requires_pole();test_generate_cannot_author_geometry();test_generate_cannot_mutate_terrain_or_join_cursor();test_motion_options_fail_closed();test_motion_source_spans_are_preserved();if(g_failures){std::printf("animation_dsl_motion_tests: %d failure(s)\n",g_failures);return 1;}std::printf("animation_dsl_motion_tests: all tests passed\n");return 0;}
