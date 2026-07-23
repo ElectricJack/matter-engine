@@ -206,11 +206,6 @@ bool validate_metadata(const std::vector<JointIndex>& parents, const std::vector
     return expected == subtrees;
 }
 
-bool is_ancestor(const OzzSkeleton& skeleton, JointIndex ancestor, JointIndex descendant) {
-    for (JointIndex current = descendant; current != kInvalidJoint; current = skeleton.parent(current)) if (current == ancestor) return true;
-    return false;
-}
-
 } // namespace
 
 struct OzzSkeleton::Impl { ozz::unique_ptr<ozz::animation::Skeleton> runtime; std::vector<JointIndex> parents; std::vector<JointRange> subtrees; std::vector<AnimationTransform> rest_locals; };
@@ -306,10 +301,12 @@ bool blend(const OzzSkeleton& skeleton, const std::vector<BlendLayer>& layers, c
 bool local_to_model(const OzzSkeleton& skeleton, const std::vector<AnimationTransform>& locals, std::vector<Mat4f>& models, JointRange affected) {
     const std::size_t count = skeleton.joint_count();
     if (!skeleton.impl_->runtime || count == 0 || locals.size() != count) return false;
-    const std::size_t begin = affected.begin == kInvalidJoint ? 0 : affected.begin;
-    const std::size_t end = affected.end == kInvalidJoint ? count : affected.end;
-    if (begin >= end || end > count || (begin != 0 && !(affected == skeleton.subtree(static_cast<JointIndex>(begin))))) return false;
-    const bool partial = begin != 0;
+    const bool all = affected.begin == kInvalidJoint && affected.end == kInvalidJoint;
+    if (!all && (affected.begin == kInvalidJoint || affected.end == kInvalidJoint)) return false;
+    const std::size_t begin = all ? 0 : affected.begin;
+    const std::size_t end = all ? count : affected.end;
+    if (begin >= end || end > count || (!all && !(affected == skeleton.subtree(static_cast<JointIndex>(begin))))) return false;
+    const bool partial = !all && begin != 0;
     if (partial && models.size() != count) return false;
     std::vector<ozz::math::SoaTransform> input; to_soa(locals, input);
     std::vector<ozz::math::Float4x4> output(count);
@@ -324,7 +321,7 @@ bool local_to_model(const OzzSkeleton& skeleton, const std::vector<AnimationTran
 }
 
 bool solve_two_bone(const TwoBoneSolve& solve, const std::vector<Mat4f>& models, std::vector<AnimationTransform>& locals, std::vector<Mat4f>& updated_models) {
-    if(!solve.skeleton || solve.start >= solve.skeleton->joint_count() || solve.mid >= solve.skeleton->joint_count() || solve.end >= solve.skeleton->joint_count() || !is_ancestor(*solve.skeleton, solve.start, solve.mid) || !is_ancestor(*solve.skeleton, solve.mid, solve.end) || models.size()!=solve.skeleton->joint_count()||locals.size()!=models.size()) { return false; }
+    if(!solve.skeleton || solve.start >= solve.skeleton->joint_count() || solve.mid >= solve.skeleton->joint_count() || solve.end >= solve.skeleton->joint_count() || solve.start == solve.mid || solve.mid == solve.end || solve.start == solve.end || solve.skeleton->parent(solve.mid) != solve.start || solve.skeleton->parent(solve.end) != solve.mid || models.size()!=solve.skeleton->joint_count()||locals.size()!=models.size()) { return false; }
     const ozz::math::Float4x4 start=to_ozz_matrix(models[solve.start]),mid=to_ozz_matrix(models[solve.mid]),end=to_ozz_matrix(models[solve.end]);ozz::animation::IKTwoBoneJob job;job.target=ozz::math::simd_float4::Load3PtrU(&solve.target.x);job.pole_vector=ozz::math::simd_float4::Load3PtrU(&solve.pole_vector.x);job.mid_axis=ozz::math::simd_float4::Load3PtrU(&solve.mid_axis.x);job.twist_angle=solve.twist_angle;job.soften=solve.soften;job.weight=solve.weight;job.start_joint=&start;job.mid_joint=&mid;job.end_joint=&end;ozz::math::SimdQuaternion start_correction,mid_correction;job.start_joint_correction=&start_correction;job.mid_joint_correction=&mid_correction;if(!job.Run())return false;float values[4];ozz::math::StorePtrU(start_correction.xyzw,values);locals[solve.start].rotation=normalize(multiply(locals[solve.start].rotation,{values[0],values[1],values[2],values[3]}));ozz::math::StorePtrU(mid_correction.xyzw,values);locals[solve.mid].rotation=normalize(multiply(locals[solve.mid].rotation,{values[0],values[1],values[2],values[3]}));updated_models=models;return local_to_model(*solve.skeleton,locals,updated_models,solve.skeleton->subtree(solve.start));
 }
 

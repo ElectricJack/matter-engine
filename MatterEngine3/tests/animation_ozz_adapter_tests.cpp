@@ -141,6 +141,16 @@ void test_local_to_model_and_two_bone_subtree_refresh() {
     non_chain.mid = 3;
     non_chain.end = 2;
     CHECK(!solve_two_bone(non_chain, models, locals, updated_models), "IK rejects a non-ancestral start-mid-end chain");
+    TwoBoneSolve duplicate_start_mid = solve;
+    duplicate_start_mid.mid = duplicate_start_mid.start;
+    CHECK(!solve_two_bone(duplicate_start_mid, models, locals, updated_models), "IK rejects duplicate start and mid joints");
+    TwoBoneSolve duplicate_mid_end = solve;
+    duplicate_mid_end.end = duplicate_mid_end.mid;
+    CHECK(!solve_two_bone(duplicate_mid_end, models, locals, updated_models), "IK rejects duplicate mid and end joints");
+    TwoBoneSolve skipped_intermediate = solve;
+    skipped_intermediate.mid = 3;
+    skipped_intermediate.end = 4;
+    CHECK(!solve_two_bone(skipped_intermediate, models, locals, updated_models), "IK rejects a chain that skips an intermediate joint");
 
     std::vector<Mat4f> partial_models = models;
     const Mat4f root_before = partial_models[0];
@@ -149,6 +159,10 @@ void test_local_to_model_and_two_bone_subtree_refresh() {
     CHECK(near(partial_models[0].m[3], root_before.m[3]) && near(partial_models[0].m[7], root_before.m[7]),
           "partial local-to-model preserves unaffected models");
     CHECK(!local_to_model(skeleton, locals, partial_models, {1, 3}), "rejects noncanonical partial ranges");
+    CHECK(!local_to_model(skeleton, locals, partial_models, {0, 4}), "rejects a root-origin range that is not the full compiled subtree");
+    CHECK(!local_to_model(skeleton, locals, partial_models, {kInvalidJoint, 4}), "rejects a default-begin partial range");
+    CHECK(!local_to_model(skeleton, locals, partial_models, {1, kInvalidJoint}), "rejects a partial-begin default-end range");
+    CHECK(local_to_model(skeleton, locals, partial_models, skeleton.subtree(0)), "accepts the exact root compiled subtree range");
     std::vector<Mat4f> undersized;
     CHECK(!local_to_model(skeleton, locals, undersized, skeleton.subtree(1)), "partial local-to-model requires the parent model palette");
 
