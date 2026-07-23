@@ -22,26 +22,30 @@ namespace dsl {
 
 namespace dsl {
 
-void DslState::pushMatrix() { stack_.push_back(stack_.back()); }
+void DslState::pushMatrix() { if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; } stack_.push_back(stack_.back()); }
 void DslState::popMatrix() {
+    if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     if (stack_.size() <= 1) { set_error("popMatrix without matching pushMatrix"); return; }
     stack_.pop_back();
 }
 void DslState::translate(float x, float y, float z) {
     if (animation_ && animation_->clip_open && !animation_->name.empty()) { clip_translate(x,y,z); return; }
+    if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     stack_.back() = MatrixMultiply(MatrixTranslate(x,y,z), stack_.back());
 }
-void DslState::rotateX(float r){ if(animation_&&animation_->clip_open&&!animation_->name.empty()){clip_rotate(1,0,0,r);return;} stack_.back()=MatrixMultiply(MatrixRotateX(r),stack_.back()); }
-void DslState::rotateY(float r){ if(animation_&&animation_->clip_open&&!animation_->name.empty()){clip_rotate(0,1,0,r);return;} stack_.back()=MatrixMultiply(MatrixRotateY(r),stack_.back()); }
-void DslState::rotateZ(float r){ if(animation_&&animation_->clip_open&&!animation_->name.empty()){clip_rotate(0,0,1,r);return;} stack_.back()=MatrixMultiply(MatrixRotateZ(r),stack_.back()); }
-void DslState::scale(float x,float y,float z){ stack_.back()=MatrixMultiply(MatrixScale(x,y,z),stack_.back()); }
+void DslState::rotateX(float r){ if(animation_&&animation_->clip_open&&!animation_->name.empty()){clip_rotate(1,0,0,r);return;} if(generating_animation()){set_error("geometry authoring is forbidden during generate");return;} stack_.back()=MatrixMultiply(MatrixRotateX(r),stack_.back()); }
+void DslState::rotateY(float r){ if(animation_&&animation_->clip_open&&!animation_->name.empty()){clip_rotate(0,1,0,r);return;} if(generating_animation()){set_error("geometry authoring is forbidden during generate");return;} stack_.back()=MatrixMultiply(MatrixRotateY(r),stack_.back()); }
+void DslState::rotateZ(float r){ if(animation_&&animation_->clip_open&&!animation_->name.empty()){clip_rotate(0,0,1,r);return;} if(generating_animation()){set_error("geometry authoring is forbidden during generate");return;} stack_.back()=MatrixMultiply(MatrixRotateZ(r),stack_.back()); }
+void DslState::scale(float x,float y,float z){ if(generating_animation()){set_error("geometry authoring is forbidden during generate");return;} stack_.back()=MatrixMultiply(MatrixScale(x,y,z),stack_.back()); }
 void DslState::applyMatrix(const float m[16]) {
+    if(generating_animation()){set_error("geometry authoring is forbidden during generate");return;}
     Matrix mm = { m[0],m[1],m[2],m[3], m[4],m[5],m[6],m[7],
                   m[8],m[9],m[10],m[11], m[12],m[13],m[14],m[15] };
     stack_.back() = MatrixMultiply(mm, stack_.back());
 }
 void DslState::lookAt(float tx, float ty, float tz,
                       float upx, float upy, float upz) {
+    if(generating_animation()){set_error("geometry authoring is forbidden during generate");return;}
     // Orient the current frame so its +Z (forward) points from the current frame
     // origin toward the target, composed onto the stack top. The frame origin is
     // the translation of the current matrix (position()). We build a rotation in
@@ -78,6 +82,7 @@ void DslState::lookAt(float tx, float ty, float tz,
 }
 
 void DslState::beginVoxels(float spacing) {
+    if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     if (rig_open()) { set_error("beginVoxels inside an open rig session"); return; }
     if (session_ != Session::None) { set_error("beginVoxels inside an open session"); return; }
     // A session change is a lazy-emission flush point: any unclaimed POLYGON
@@ -87,6 +92,7 @@ void DslState::beginVoxels(float spacing) {
     session_start_ = buffer_.ops.size();
 }
 void DslState::endVoxels() {
+    if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     if (session_ != Session::Voxels) { set_error("endVoxels with no open voxel session"); return; }
     // Whole-expression smoothing: the spec applies smoothing(k) to the whole
     // session's union, not just the brush emitted while the cursor was set. Stamp
@@ -98,12 +104,14 @@ void DslState::endVoxels() {
 }
 
 void DslState::emit_voxel_sphere(const Vector3& c, float r, CsgOp op) {
+    if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     BuildOp o{}; o.kind=BrushKind::Sphere; o.op=op; o.transform=stack_.back();
     o.materialId=material_; o.center=c; o.radius=r; o.smoothing=smoothing_; o.spacing=spacing_;
     o.tint=tint_;
     buffer_.ops.push_back(o);
 }
 void DslState::emit_voxel_box(const Vector3& c, const Vector3& h, CsgOp op) {
+    if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     BuildOp o{}; o.kind=BrushKind::Box; o.op=op; o.transform=stack_.back();
     o.materialId=material_; o.center=c; o.halfExtents=h; o.smoothing=smoothing_; o.spacing=spacing_;
     o.tint=tint_;
@@ -114,6 +122,7 @@ void DslState::emit_voxel_box(const Vector3& c, const Vector3& h, CsgOp op) {
 // r1==r0; lowering uses only r0 for the capsule kind).
 void DslState::emit_voxel_segment(BrushKind kind, const Vector3& a, const Vector3& b,
                                   float r0, float r1, CsgOp op) {
+    if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     BuildOp o{}; o.kind=kind; o.op=op; o.transform=stack_.back();
     o.materialId=material_; o.center=a; o.segB=b; o.radius=r0; o.r1=r1;
     o.smoothing=smoothing_; o.spacing=spacing_; o.tint=tint_;

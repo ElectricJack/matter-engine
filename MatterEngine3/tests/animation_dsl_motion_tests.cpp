@@ -39,5 +39,15 @@ void test_collinear_target_requires_pole() {
     else std::printf("collinear diagnostic: %s (%s)\\n", result.error.message.c_str(), result.error.code.c_str());
     CHECK(!result.error.ok && result.error.message.find("explicit pole")!=std::string::npos,"collinear omitted pole fails closed");
 }
+void test_generate_cannot_author_geometry() {
+    script_host::ScriptHost host; const auto result=bake("this.beginRig('r'); this.root('root'); this.bone('mid',[1,0,0]); this.bone('tip',[1,0,0]); this.endRig(); this.beginClip('bad',{duration:1,sampleRate:1}); this.generate(phase=>{this.beginVoxels(.1); this.sphere([0,0,0],1); this.endVoxels();}); this.endClip();",host);
+    CHECK(!result.error.ok && result.error.message.find("geometry authoring is forbidden")!=std::string::npos,"generate rejects structural geometry authoring");
 }
-int main(){test_generated_loop_and_controls();test_validation_rejects_bad_motion_graph();test_collinear_target_requires_pole();if(g_failures){std::printf("animation_dsl_motion_tests: %d failure(s)\n",g_failures);return 1;}std::printf("animation_dsl_motion_tests: all tests passed\n");return 0;}
+void test_motion_source_spans_are_preserved() {
+    script_host::ScriptHost host; const auto input=bake("this.beginRig('r');\n this.root('root');\n this.bone('mid',[1,0,0]);\n this.bone('tip',[1,0,0]);\n this.endRig();\n this.beginMotion();\n this.input('speed',{type:'symbol',default:''});\n this.output('out');\n this.endMotion();",host);
+    if(!input.error.ok) std::printf("input span: %s (%s)\\n",input.error.source_location.c_str(),input.error.message.c_str()); CHECK(!input.error.ok && !input.error.source_location.empty(),"input diagnostic preserves declaration span");
+    script_host::ScriptHost marker_host; const auto marker=bake("this.beginRig('r'); this.root('root'); this.bone('mid',[1,0,0]); this.bone('tip',[1,0,0]); this.endRig(); this.beginClip('bad',{duration:1,sampleRate:1}); this.marker(1,'bad'); this.endClip();",marker_host);
+    CHECK(!marker.error.ok && marker.error.source_location.find("marker")!=std::string::npos,"marker diagnostic preserves declaration object");
+}
+}
+int main(){test_generated_loop_and_controls();test_validation_rejects_bad_motion_graph();test_collinear_target_requires_pole();test_generate_cannot_author_geometry();test_motion_source_spans_are_preserved();if(g_failures){std::printf("animation_dsl_motion_tests: %d failure(s)\n",g_failures);return 1;}std::printf("animation_dsl_motion_tests: all tests passed\n");return 0;}

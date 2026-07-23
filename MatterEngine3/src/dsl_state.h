@@ -171,6 +171,8 @@ public:
     // from the geometry matrix stack, preserving existing static authoring.
     uint64_t begin_rig(const std::string& name);
     void set_rig_source(matter::animation::SourceSpan source) { rig_source_ = std::move(source); }
+    const matter::animation::SourceSpan& rig_source() const { return rig_source_; }
+    bool generating_animation() const { return animation_ && animation_->generating; }
     void set_rig_error(const std::string& message, const char* code = "rig-dsl") { if (!has_error_) { rig_error_source_ = rig_source_; rig_error_code_ = code; set_error(message); } }
     const matter::animation::SourceSpan& rig_error_source() const { return rig_error_source_; }
     const std::string& rig_error_code() const { return rig_error_code_; }
@@ -225,7 +227,7 @@ public:
     float spacing() const { return spacing_; }
 
     // Smoothing cursor
-    void smoothing(float k) { smoothing_ = (k < 0 ? 0 : k); }
+    void smoothing(float k) { if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; } smoothing_ = (k < 0 ? 0 : k); }
     float smoothing_k() const { return smoothing_; }
 
     // Modifier regions. begin/end are defined in dsl_triangle.cpp — they
@@ -315,6 +317,7 @@ public:
     // after endVoxels, or before any brush in this session) is a clear error and
     // can no longer mis-tag a previous session's brush.
     void set_last_op(CsgOp op) {
+        if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
         if (session_ != Session::Voxels) {
             set_error("CSG op outside an open voxel session");
             return;

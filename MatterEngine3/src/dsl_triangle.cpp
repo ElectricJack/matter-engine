@@ -34,6 +34,7 @@ DslState::DslState()
 DslState::~DslState() = default;
 
 void DslState::beginShape(int mode) {
+    if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     if (rig_open()) { set_error("beginShape inside an open rig session"); return; }
     if (session_ == Session::Voxels) { set_error("beginShape inside an open voxel session"); return; }
     if (session_ == Session::Triangles) { set_error("nested beginShape (call endShape first)"); return; }
@@ -54,6 +55,7 @@ void DslState::beginShape(int mode) {
                           tint_f4(tint_));
 }
 void DslState::vertex(float x, float y, float z) {
+    if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     if (polygon_open_) {
         // POLYGON: 2D (u,v) cross-section point; z ignored. Routes to the active
         // hole contour if one is open, else the outer contour.
@@ -65,6 +67,7 @@ void DslState::vertex(float x, float y, float z) {
     tris_buf_->vertex(make_float3(x, y, z));
 }
 void DslState::endShape() {
+    if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     if (polygon_open_) {
         if (contour_open_) { set_error("endShape with an open beginContour (call endContour first)"); return; }
         // Finalize + RETAIN the contour set as the current profile (lazy emit). A
@@ -85,6 +88,7 @@ void DslState::endShape() {
     session_ = Session::None;
 }
 void DslState::beginContour() {
+    if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     if (rig_open()) { set_error("beginContour inside an open rig session"); return; }
     if (!polygon_open_) { set_error("beginContour outside a POLYGON beginShape"); return; }
     if (contour_open_)  { set_error("nested beginContour (call endContour first)"); return; }
@@ -93,11 +97,13 @@ void DslState::beginContour() {
     poly_holes_.emplace_back();
 }
 void DslState::endContour() {
+    if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     if (!contour_open_) { set_error("endContour with no open beginContour"); return; }
     contour_open_ = false;
 }
 void DslState::line(float ax, float ay, float az, float bx, float by, float bz,
                     float r0, float r1) {
+    if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     // G1: in a voxel session, line() IS a capsule (sdSegment - r) -- the same
     // primitive as voxel capsule(). Uses the segment radius r0 (a capsule has a
     // single radius; the swept-tube taper r0!=r1 is a mesh-only nicety). In
@@ -114,6 +120,7 @@ void DslState::line(float ax, float ay, float az, float bx, float by, float bz,
 // Round primitives (Phase 4 / P2). Voxel session -> analytic SDF brush. None ->
 // clean error (mesh emitters land in Phase 5). Triangles (mid-beginShape) -> error.
 void DslState::capsule(const Vector3& a, const Vector3& b, float r, CsgOp op) {
+    if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     if (session_ == Session::Voxels) { emit_voxel_segment(BrushKind::Capsule, a, b, r, r, op); return; }
     if (session_ == Session::Triangles) {
         set_error("capsule() inside a beginShape (a solid is its own primitive; call endShape first)");
@@ -124,6 +131,7 @@ void DslState::capsule(const Vector3& a, const Vector3& b, float r, CsgOp op) {
                        (int)material_, top_mat4(top()), 16, 6, tint_f4(tint_));
 }
 void DslState::cylinder(const Vector3& a, const Vector3& b, float r, CsgOp op) {
+    if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     if (session_ == Session::Voxels) { emit_voxel_segment(BrushKind::Cylinder, a, b, r, r, op); return; }
     if (session_ == Session::Triangles) {
         set_error("cylinder() inside a beginShape (a solid is its own primitive; call endShape first)");
@@ -134,6 +142,7 @@ void DslState::cylinder(const Vector3& a, const Vector3& b, float r, CsgOp op) {
                           r, r, (int)material_, top_mat4(top()), 16, tint_f4(tint_));
 }
 void DslState::cone(const Vector3& a, const Vector3& b, float r0, float r1, CsgOp op) {
+    if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     // cone is sugar that lowers to the tapered Cylinder (sdCappedCone). r1<r0 (or
     // r1=0) gives the taper; equal radii is a straight cylinder.
     if (session_ == Session::Voxels) { emit_voxel_segment(BrushKind::Cylinder, a, b, r0, r1, op); return; }
@@ -152,6 +161,7 @@ void DslState::cone(const Vector3& a, const Vector3& b, float r0, float r1, CsgO
 // pulls in MSL headers that collide with raymath.h — so dsl_state.cpp delegates
 // its voxel-brush body via emit_voxel_sphere/emit_voxel_box.
 void DslState::sphere(const Vector3& c, float r, CsgOp op) {
+    if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     if (session_ == Session::Voxels) { emit_voxel_sphere(c, r, op); return; }
     if (session_ == Session::Triangles) {
         set_error("sphere() inside a beginShape (a solid is its own primitive; call endShape first)");
@@ -162,6 +172,7 @@ void DslState::sphere(const Vector3& c, float r, CsgOp op) {
                       12, tint_f4(tint_));
 }
 void DslState::box(const Vector3& c, const Vector3& h, CsgOp op) {
+    if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     if (session_ == Session::Voxels) { emit_voxel_box(c, h, op); return; }
     if (session_ == Session::Triangles) {
         set_error("box() inside a beginShape (a solid is its own primitive; call endShape first)");
@@ -196,6 +207,7 @@ static tri_emit::JoinType to_emit_join(JoinKind j) {
 }
 
 void DslState::extrude(const float* path_xyz, int path_n) {
+    if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     // Dispatch rules (fail-closed). Voxel extrude is deferred this phase.
     if (session_ == Session::Voxels) {
         set_error("extrude not supported in voxel session yet");
@@ -233,6 +245,7 @@ void DslState::extrude(const float* path_xyz, int path_n) {
 }
 
 void DslState::begin_modifier_region() {
+    if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     if (rig_open()) { set_error("beginModifier inside an open rig session"); return; }
     if (region_open_) { set_error("beginModifier: modifier regions do not nest"); return; }
     if (session_ != Session::None) {
@@ -245,6 +258,7 @@ void DslState::begin_modifier_region() {
 }
 
 void DslState::end_modifier_region(std::vector<ModifierSpec> stack) {
+    if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     if (!region_open_) { set_error("endModifier without beginModifier"); return; }
     if (session_ != Session::None) {
         set_error("endModifier inside an open session (close the session first)");
