@@ -1024,6 +1024,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     last_build_ran_ = false;
     last_buffer_.clear();
     last_animation_rig_.reset();
+    last_animation_build_.reset();
     last_ambient_probe_.clear();
     {
     JSValue base = JS_Eval(ctx, kPartBaseJS, strlen(kPartBaseJS), "<part-base>",
@@ -1191,6 +1192,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         r.error.message = "rig session left unfinished at end of build";
     }
     if (r.error.ok && state.canonical_rig()) last_animation_rig_ = state.canonical_rig();
+    if (r.error.ok && state.authored_animation()) last_animation_build_ = *state.authored_animation();
     // A session left open at end of build is a misuse.
     if (r.error.ok && state.session() != dsl::Session::None) {
         r.error.ok = false;

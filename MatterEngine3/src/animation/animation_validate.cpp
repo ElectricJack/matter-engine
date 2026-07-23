@@ -11,6 +11,11 @@ namespace {
 
 bool finite(float value) { return std::isfinite(value); }
 bool finite3(const Float3& value) { return finite(value.x) && finite(value.y) && finite(value.z); }
+Float3 rotate_inverse(const Quaternion& q, const Float3& v) {
+    const Quaternion p{-q.x,-q.y,-q.z,q.w};
+    const Quaternion t{q.w*v.x + q.y*v.z - q.z*v.y, q.w*v.y + q.z*v.x - q.x*v.z, q.w*v.z + q.x*v.y - q.y*v.x, -q.x*v.x-q.y*v.y-q.z*v.z};
+    return {t.x*p.w + t.w*p.x + t.y*p.z - t.z*p.y, t.y*p.w + t.w*p.y + t.z*p.x - t.x*p.z, t.z*p.w + t.w*p.z + t.x*p.y - t.y*p.x};
+}
 bool finiteq(const Quaternion& value) { return finite(value.x) && finite(value.y) && finite(value.z) && finite(value.w); }
 bool valid_cadence(EvaluationCadence cadence) { return cadence == EvaluationCadence::Fixed || cadence == EvaluationCadence::Frame; }
 bool valid_input_type(AnimationValueType type) {
@@ -86,7 +91,7 @@ std::string encode_authored_state(const AnimationBuild& build) {
     output << std::setprecision(9);
     for (const SocketDef& socket : build.rig.sockets) { append_string(output, socket.name); append_string(output, socket.joint); append_transform(output, socket.local); }
     for (const ClipDefinition& clip : build.clips) {
-        append_string(output, clip.name); output << clip.duration << ',' << clip.rate << '|';
+        append_string(output, clip.name); output << clip.duration << ',' << clip.rate << ',' << clip.loop << ',' << clip.additive << '|';
         for (const ClipTrack& track : clip.tracks) { append_string(output, track.joint); for (const ClipKey& key : track.keys) { output << key.time << '|'; append_transform(output, key.value); } }
         for (const ClipMarker& marker : clip.markers) { append_string(output, marker.name); output << marker.time << '|'; }
     }
@@ -103,9 +108,9 @@ std::string encode_authored_state(const AnimationBuild& build) {
         }
         output << '|';
     }
-    for (const TargetSchema& target : build.targets) { append_string(output, target.name); append_string(output, target.start_joint); append_string(output, target.end_joint); append_string(output, target.controller); output << static_cast<int>(target.driver) << ',' << static_cast<int>(target.cadence) << '|'; }
+    for (const TargetSchema& target : build.targets) { append_string(output, target.name); append_string(output, target.start_joint); append_string(output, target.end_joint); append_string(output, target.controller); output << static_cast<int>(target.driver) << ',' << static_cast<int>(target.cadence) << ',' << target.has_pole << ',' << target.pole.x << ',' << target.pole.y << ',' << target.pole.z << ',' << target.soften << ',' << target.twist << ',' << target.enabled << '|'; }
     for (const ControllerDef& controller : build.controllers) { append_string(output, controller.name); output << static_cast<int>(controller.cadence) << '|'; }
-    for (const GraphNode& node : build.graph.nodes) { append_string(output, node.name); output << node.is_output << ',' << static_cast<int>(node.cadence) << '|'; for (const std::string& dependency : node.dependencies) append_string(output, dependency); }
+    for (const GraphNode& node : build.graph.nodes) { append_string(output, node.name); append_string(output, node.clip); append_string(output, node.controller); output << node.is_output << ',' << static_cast<int>(node.kind) << ',' << static_cast<int>(node.cadence) << '|'; for (const std::string& dependency : node.dependencies) append_string(output, dependency); }
     for (const SkinBindingDef& binding : build.skin_bindings) { append_string(output, binding.name); for (const std::string& joint : binding.joints) append_string(output, joint); }
     for (const RigidBindingDef& binding : build.rigid_bindings) { append_string(output, binding.name); append_string(output, binding.joint); append_transform(output, binding.local); }
     for (const AttachmentDef& attachment : build.attachments) { append_string(output, attachment.name); append_string(output, attachment.socket); append_transform(output, attachment.local); }
@@ -168,7 +173,7 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
             }
         }
         for (const ClipMarker& marker : clip.markers)
-            if (!finite(marker.time) || marker.time < 0.0f || (finite(clip.duration) && marker.time > clip.duration)) diagnostics.add("marker-out-of-range", marker.source, "marker time is outside duration");
+            if (!finite(marker.time) || marker.time < 0.0f || marker.time >= 1.0f) diagnostics.add("marker-out-of-range", marker.source, "marker time must be normalized in [0,1)");
     }
 
     for (const InputSchema& input : build.inputs) {
@@ -207,6 +212,9 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
             diagnostics.add("frame-controller-to-fixed-target", target.source, "fixed target cannot depend on a frame controller");
         if (target.driver == TargetDriverKind::External && !target.controller.empty())
             diagnostics.add("multiple-target-drivers", target.source, "external target cannot also name a controller");
+        if (!finite(target.soften) || target.soften < 0.0f || target.soften > 1.0f) diagnostics.add("invalid-target-soften", target.source, "target soften must be finite in [0,1]");
+        if (!finite(target.twist)) diagnostics.add("invalid-target-twist", target.source, "target twist must be finite");
+        if (target.has_pole && !finite3(target.pole)) diagnostics.add("invalid-target-pole", target.source, "target pole must be finite");
         const int start = find_joint(build, target.start_joint), end = find_joint(build, target.end_joint);
         if (start < 0) diagnostics.add("missing-target-start-joint", target.source, "target start joint is not declared");
         if (end < 0) diagnostics.add("missing-target-end-joint", target.source, "target end joint is not declared");
@@ -238,6 +246,9 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
     for (size_t i = 0; i < build.graph.nodes.size(); ++i) {
         const GraphNode& node = build.graph.nodes[i];
         if (node.is_output) ++outputs;
+        if (static_cast<int>(node.kind) < static_cast<int>(GraphNodeKind::Clip) || static_cast<int>(node.kind) > static_cast<int>(GraphNodeKind::Output)) diagnostics.add("invalid-graph-kind", node.source, "graph node kind is unsupported");
+        if (node.kind == GraphNodeKind::Clip && !node.clip.empty()) { bool found=false; for(const auto& clip:build.clips) if(clip.name==node.clip) found=true; if(!found) diagnostics.add("missing-clip-reference", node.source, "clip graph node references an unknown clip"); }
+        if (node.kind == GraphNodeKind::NativeController && !node.controller.empty() && find_controller(build,node.controller)<0) diagnostics.add("missing-controller-reference", node.source, "native controller graph node references an unknown controller");
         if (!valid_cadence(node.cadence)) diagnostics.add("invalid-cadence", node.source, "graph cadence is unsupported");
         for (const std::string& dependency : node.dependencies) {
             const int dep = find_graph_node(build.graph, dependency);
@@ -259,6 +270,12 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
         for (uint16_t child : outgoing[next]) --pending[child];
     }
     if (order.size() != build.graph.nodes.size()) diagnostics.add("graph-cycle", build.graph.source, "graph contains a cycle");
+    if (!build.graph.nodes.empty()) {
+        std::vector<bool> used(build.graph.nodes.size(), false); std::vector<uint16_t> todo;
+        for(size_t i=0;i<build.graph.nodes.size();++i) if(build.graph.nodes[i].is_output) todo.push_back((uint16_t)i);
+        while(!todo.empty()){const uint16_t x=todo.back();todo.pop_back();if(used[x])continue;used[x]=true;for(const auto& dep:build.graph.nodes[x].dependencies){int d=find_graph_node(build.graph,dep);if(d>=0)todo.push_back((uint16_t)d);}}
+        for(size_t i=0;i<used.size();++i) if(!used[i]) diagnostics.add("unused-graph-node", build.graph.nodes[i].source, "graph node is not reachable from output");
+    }
 
     diagnostics.sort();
     if (!diagnostics.items.empty()) return false;
@@ -281,9 +298,18 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
         canonical->rig.sockets.push_back({socket.name, joint, socket.local, socket.source});
     }
     for (size_t i = 0; i < build.targets.size(); ++i) {
-        CanonicalTarget target; target.name = build.targets[i].name; target.driver = build.targets[i].driver; target.cadence = build.targets[i].cadence;
+        CanonicalTarget target; target.name = build.targets[i].name; target.driver = build.targets[i].driver; target.cadence = build.targets[i].cadence; target.pole=build.targets[i].pole; target.has_pole=build.targets[i].has_pole; target.soften=build.targets[i].soften; target.twist=build.targets[i].twist; target.enabled=build.targets[i].enabled;
         for (const std::string& name : {build.targets[i].start_joint, build.rig.joints[find_joint(build, build.targets[i].end_joint)].parent, build.targets[i].end_joint}) {
             for (size_t joint = 0; joint < canonical->rig.joints.size(); ++joint) if (canonical->rig.joints[joint].name == name) target.chain.push_back(static_cast<JointIndex>(joint));
+        }
+        if (target.chain.size() == 3) {
+            const int endAuth=find_joint(build, build.targets[i].end_joint); const int midAuth=endAuth>=0?parents[endAuth]:-1;
+            const Float3 a = midAuth>=0?build.rig.joints[midAuth].local.translation:Float3{};
+            const Float3 b = endAuth>=0?build.rig.joints[endAuth].local.translation:Float3{};
+            Float3 axis{a.y*b.z-a.z*b.y, a.z*b.x-a.x*b.z, a.x*b.y-a.y*b.x};
+            const float len=std::sqrt(axis.x*axis.x+axis.y*axis.y+axis.z*axis.z);
+            if (len > 1e-6f) { axis.x/=len; axis.y/=len; axis.z/=len; target.bend_axis=axis; }
+            if (target.has_pole) { const float pn=std::sqrt(target.pole.x*target.pole.x+target.pole.y*target.pole.y+target.pole.z*target.pole.z); if(pn>1e-6f){target.pole.x/=pn;target.pole.y/=pn;target.pole.z/=pn; int rootAuth=-1; for(size_t ri=0;ri<parents.size();++ri)if(parents[ri]<0){rootAuth=(int)ri;break;} if(rootAuth>=0) target.pole=rotate_inverse(build.rig.joints[rootAuth].local.rotation,target.pole);} }
         }
         canonical->targets.push_back(target);
     }

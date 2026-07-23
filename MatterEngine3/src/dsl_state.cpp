@@ -28,11 +28,12 @@ void DslState::popMatrix() {
     stack_.pop_back();
 }
 void DslState::translate(float x, float y, float z) {
+    if (animation_ && animation_->clip_open && !animation_->name.empty()) { clip_translate(x,y,z); return; }
     stack_.back() = MatrixMultiply(MatrixTranslate(x,y,z), stack_.back());
 }
-void DslState::rotateX(float r){ stack_.back()=MatrixMultiply(MatrixRotateX(r),stack_.back()); }
-void DslState::rotateY(float r){ stack_.back()=MatrixMultiply(MatrixRotateY(r),stack_.back()); }
-void DslState::rotateZ(float r){ stack_.back()=MatrixMultiply(MatrixRotateZ(r),stack_.back()); }
+void DslState::rotateX(float r){ if(animation_&&animation_->clip_open&&!animation_->name.empty()){clip_rotate(1,0,0,r);return;} stack_.back()=MatrixMultiply(MatrixRotateX(r),stack_.back()); }
+void DslState::rotateY(float r){ if(animation_&&animation_->clip_open&&!animation_->name.empty()){clip_rotate(0,1,0,r);return;} stack_.back()=MatrixMultiply(MatrixRotateY(r),stack_.back()); }
+void DslState::rotateZ(float r){ if(animation_&&animation_->clip_open&&!animation_->name.empty()){clip_rotate(0,0,1,r);return;} stack_.back()=MatrixMultiply(MatrixRotateZ(r),stack_.back()); }
 void DslState::scale(float x,float y,float z){ stack_.back()=MatrixMultiply(MatrixScale(x,y,z),stack_.back()); }
 void DslState::applyMatrix(const float m[16]) {
     Matrix mm = { m[0],m[1],m[2],m[3], m[4],m[5],m[6],m[7],

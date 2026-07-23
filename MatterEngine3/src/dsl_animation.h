@@ -23,6 +23,16 @@ struct AnimationBuildBuffer {
     std::string name;
     uint64_t handle = 1;
     std::vector<RigCursor> stack;
+    std::string current_clip;
+    bool clip_open = false;
+    bool clip_loop = false;
+    bool clip_additive = false;
+    float clip_duration = 1.0f;
+    float clip_rate = 30.0f;
+    std::vector<matter::AnimationTransform> clip_pose;
+    std::vector<std::string> clip_pose_joints;
+    std::string current_motion;
+    bool motion_open = false;
     bool open = false;
     bool ended = false;
 };

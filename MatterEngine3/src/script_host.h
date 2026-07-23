@@ -178,6 +178,8 @@ public:
     bool last_build_ran() const { return last_build_ran_; }
     const dsl::BuildBuffer& last_buffer() const { return last_buffer_; }
     const std::optional<matter::animation::CanonicalAnimationBuild>& last_animation_rig() const { return last_animation_rig_; }
+    const std::optional<matter::animation::CanonicalAnimationBuild>& last_animation_motion() const { return last_animation_rig_; }
+    const std::optional<matter::animation::AnimationBuild>& last_animation_build() const { return last_animation_build_; }
     // Value of globalThis.__amb captured after the last build() (used by tests to
     // assert no ambient Date/require/fetch/os bindings exist). Empty if unset.
     std::string last_ambient_probe() const { return last_ambient_probe_; }
@@ -195,6 +197,7 @@ private:
     bool last_build_ran_ = false;
     dsl::BuildBuffer last_buffer_;
     std::optional<matter::animation::CanonicalAnimationBuild> last_animation_rig_;
+    std::optional<matter::animation::AnimationBuild> last_animation_build_;
     std::string last_ambient_probe_;
 
     // Fold cache: (source, ordered shared-lib roots) -> FoldResult (thread-safe).

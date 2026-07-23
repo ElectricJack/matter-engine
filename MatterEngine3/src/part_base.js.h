@@ -36,6 +36,26 @@ globalThis.Part = class Part {
   socket(name,transform) { __dsl_socket(name,transform,(new Error()).stack); }
   mirrorBranch(a,b,opts) { __dsl_mirrorBranch(a,b,opts,(new Error()).stack); }
   endRig()               { __dsl_endRig((new Error()).stack); }
+  beginClip(rig,name,opts) { return __dsl_beginClip(rig,name,opts,(new Error()).stack); }
+  duration(v)             { __dsl_clipDuration(v); }
+  sampleRate(v)           { __dsl_clipRate(v); }
+  loop(v)                 { __dsl_clipLoop(v); }
+  mode(v)                 { __dsl_clipMode(v); }
+  at(name)                { __dsl_clipAt(name); }
+  marker(t,name)          { __dsl_clipMarker(t,name,(new Error()).stack); }
+  key(joint,t,transform)  { __dsl_clipKey(joint,t,transform,(new Error()).stack); }
+  generate(fn)            { __dsl_generate(fn); }
+  endClip()               { __dsl_endClip((new Error()).stack); }
+  beginMotion(name)       { __dsl_beginMotion(name,(new Error()).stack); }
+  input(name,opts)        { __dsl_input(name,opts,(new Error()).stack); }
+  target(name,opts)       { __dsl_target(name,opts,(new Error()).stack); }
+  controller(name,type,opts) { __dsl_controller(name,type,opts,(new Error()).stack); }
+  clipNode(name,clip)     { __dsl_clipNode(name,clip,(new Error()).stack); }
+  blend1D(name,input,nodes) { __dsl_blend1D(name,input,nodes,(new Error()).stack); }
+  additive(name,base,add) { __dsl_additive(name,base,add,(new Error()).stack); }
+  nativeController(name,controller,source) { __dsl_nativeController(name,controller,source,(new Error()).stack); }
+  output(name,node)        { __dsl_output(name,node,(new Error()).stack); }
+  endMotion()              { __dsl_endMotion((new Error()).stack); }
   beginVoxels(spacing)   { __dsl_beginVoxels(spacing); }
   endVoxels()            { __dsl_endVoxels(); }
   sphere(c,r)            { __dsl_sphere(c[0],c[1],c[2],r); }

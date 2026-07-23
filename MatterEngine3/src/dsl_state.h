@@ -189,6 +189,33 @@ public:
     RigDebugState rig_debug_state() const;
     const std::optional<matter::animation::CanonicalAnimationBuild>& canonical_rig() const;
 
+    // Bake-time motion authoring. These methods are intentionally stateful and
+    // retain only canonical Matter IR; generated callbacks are sampled and
+    // discarded before end_clip returns.
+    void begin_clip(const std::string& name, float duration, float rate, bool loop, bool additive);
+    void clip_duration(float duration);
+    void clip_rate(float rate);
+    void clip_loop(bool loop);
+    void clip_mode(bool additive);
+    void clip_at(const std::string& joint);
+    void clip_rotate(float x, float y, float z, float radians);
+    void clip_translate(float x, float y, float z);
+    void clip_key(const std::string& joint, float time, const matter::AnimationTransform& value);
+    void clip_marker(float normalized_time, const std::string& name);
+    bool begin_clip_sample();
+    bool capture_clip_sample(float phase);
+    uint32_t clip_sample_segments() const;
+    bool clip_is_loop() const;
+    void end_clip();
+    void begin_motion(const std::string& name = "motion");
+    void motion_input(const matter::animation::InputSchema& input);
+    void motion_target(const matter::animation::TargetSchema& target);
+    void motion_controller(const matter::animation::ControllerDef& controller);
+    void motion_node(const matter::animation::GraphNode& node);
+    void end_motion();
+    const std::optional<matter::animation::CanonicalAnimationBuild>& canonical_animation() const;
+    const matter::animation::AnimationBuild* authored_animation() const;
+
     // Session enum (one at a time; misuse = error)
     void beginVoxels(float spacing);        // misuse (already open) -> set_error
     void endVoxels();                        // misuse (not open) -> set_error
