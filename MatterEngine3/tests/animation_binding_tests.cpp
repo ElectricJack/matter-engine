@@ -120,6 +120,21 @@ void test_binding_payload_retains_lods_matrices_and_cluster_ranges() {
     CHECK(!matter::animation::get_anim_binding_bake(asset, decoded),
           "truncated binding topology fails closed before allocation");
 }
+
+void test_binding_payload_requires_complete_cluster_bounds() {
+    BindingBake source;
+    CHECK(matter::animation::build_skin_binding(two_joint_rig(), {geometry()}, 1.0f, source),
+          "build binding bounds validation fixture");
+    matter::animation::AnimAsset asset;
+    auto missing_bounds = source;
+    missing_bounds.lods[0].clusters[0].joints.clear();
+    CHECK(!matter::animation::set_anim_binding_bake(asset, missing_bounds),
+          "empty cluster bounds cannot serialize as a skinned binding");
+    auto incomplete_bounds = source;
+    incomplete_bounds.lods[0].clusters[0].joints.pop_back();
+    CHECK(!matter::animation::set_anim_binding_bake(asset, incomplete_bounds),
+          "every influencing joint has a conservative cluster bound");
+}
 }
 
 int main() {
@@ -129,5 +144,6 @@ int main() {
     test_duplicate_segment_claim_fails_closed();
     test_malformed_rig_hierarchy_fails_before_parent_indexing();
     test_binding_payload_retains_lods_matrices_and_cluster_ranges();
+    test_binding_payload_requires_complete_cluster_bounds();
     return check_summary();
 }

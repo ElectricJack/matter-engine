@@ -46,26 +46,26 @@ static void refresh_trailing_checksum(std::vector<uint8_t>& bytes) {
     (void)checksum;
 }
 
-static BindingBake sample_binding() {
+static BindingBake sample_binding(const LodBindingSignature* signature = nullptr) {
     BindingBake bake;
     matter::Mat4f identity{};
     identity.m[0] = identity.m[5] = identity.m[10] = identity.m[15] = 1.0f;
     bake.inverse_bind_matrices.push_back(identity);
     matter::animation::LodSkinBinding lod;
-    lod.indexed_vertex_signature = 9;
-    lod.vertex_count = 2;
-    lod.influences.resize(2);
+    lod.indexed_vertex_signature = signature ? signature->indexed_vertex_signature : 9;
+    lod.vertex_count = signature ? signature->vertex_count : 2;
+    lod.influences.resize(lod.vertex_count);
     for (auto& influence : lod.influences) { influence.joints[0] = 0; influence.weights[0] = 65535; }
     matter::animation::ClusterJointBounds cluster;
     cluster.cluster_id = 0;
-    cluster.vertex_end = 2;
+    cluster.vertex_end = lod.vertex_count;
     cluster.joints.push_back({0, {-1.0f,-1.0f,-1.0f}, {1.0f,1.0f,1.0f}});
     lod.clusters.push_back(cluster);
     bake.lods.push_back(lod);
     return bake;
 }
 
-static AnimAsset sample_asset() {
+static AnimAsset sample_asset(const LodBindingSignature* signature = nullptr) {
     AnimAsset asset;
     asset.resolved_hash = 0x0123456789abcdefull;
     asset.nonce = {0x1020304050607080ull, 0x90a0b0c0d0e0f000ull};
@@ -78,7 +78,7 @@ static AnimAsset sample_asset() {
         {AnimSectionKind::OzzSkeleton, {7}},
         {AnimSectionKind::OzzClips, {8}},
     };
-    const bool set = set_anim_binding_bake(asset, sample_binding());
+    const bool set = set_anim_binding_bake(asset, sample_binding(signature));
     if (!set) std::abort();
     return asset;
 }
@@ -163,6 +163,7 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     const std::filesystem::path root = "animation_asset_bundle_cache";
     const auto candidate_part = root / "candidate.part";
     const auto candidate_anim = root / "candidate.anim";
+    std::filesystem::remove_all(root);
     std::filesystem::create_directories(root / "parts");
     BLASManager blas;
     TLASManager tlas(4);
@@ -180,7 +181,13 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     part_asset::PartAnimationLink link{1, 1, hash, 0x1111222233334444ull, 0x5555666677778888ull};
     CHECK(part_asset::save_v2(candidate_part.string(), blas, tlas, nullptr, 0,
                               {}, {}, link, hash), "write ANLK part candidate");
-    AnimAsset anim = sample_asset();
+    const auto geometry = viewer::build_indexed_part_geometry(&triangle, &extra, 1);
+    const LodBindingSignature geometry_signature{
+        viewer::indexed_part_geometry_signature(geometry, 0),
+        static_cast<uint32_t>(geometry.vertex_count),
+        static_cast<uint32_t>(geometry.vertex_count * kMaxSkinInfluences),
+    };
+    AnimAsset anim = sample_asset(&geometry_signature);
     anim.resolved_hash = hash;
     anim.nonce = BuildNonce{link.nonce_high, link.nonce_low};
     Diagnostics diagnostics;
@@ -194,7 +201,7 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     identity.ozz_tag_hash = anim.ozz_tag_hash;
     // LOD identity is not an ordered numeric sequence, and total packed
     // influences may legitimately exceed the vertex count (up to four each).
-    identity.lods = manifest_lod_signatures(sample_binding());
+    identity.lods = manifest_lod_signatures(sample_binding(&geometry_signature));
     BundleIdentity invalid_lod = identity;
     invalid_lod.lods.push_back({0, 1, 1});
     CHECK(!publish_animation_bundle({candidate_part, candidate_anim, root}, invalid_lod, diagnostics),
@@ -218,6 +225,31 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     CHECK(!publish_animation_bundle({candidate_part, candidate_anim, root}, stale_identity, diagnostics),
           "reject candidate whose Ozz tag is self-consistent but stale");
     CHECK(save_anim_candidate(anim, candidate_anim, diagnostics), "restore current compatibility candidate");
+    BLASManager mismatched_blas;
+    TLASManager mismatched_tlas(4);
+    Tri mismatched_triangle = triangle;
+    mismatched_triangle.vertex0.x += 2.0f;
+    mismatched_triangle.vertex1.x += 2.0f;
+    mismatched_triangle.vertex2.x += 2.0f;
+    mismatched_triangle.centroid.x += 2.0f;
+    const BLASHandle mismatched_handle = mismatched_blas.register_triangles(&mismatched_triangle, 1, &extra);
+    TLASManager::DrawInstance mismatched_instance{};
+    mismatched_instance.blas_handle = mismatched_handle;
+    mismatched_tlas.draw_batch({mismatched_instance});
+    mismatched_tlas.build(mismatched_blas);
+    const auto mismatched_part = root / "mismatched.part";
+    CHECK(part_asset::save_v2(mismatched_part.string(), mismatched_blas, mismatched_tlas, nullptr, 0,
+                              {}, {}, link, hash), "write mismatched geometry candidate");
+    BundleIdentity mismatched_identity = identity;
+    mismatched_identity.part_body_checksum = file_part_body_checksum(mismatched_part.string().c_str());
+    CHECK(!publish_animation_bundle({mismatched_part, candidate_anim, root}, mismatched_identity, diagnostics),
+          "reject candidate whose PART geometry differs from its MANM binding");
+    CHECK(part_asset::save_v2(candidate_part.string(), blas, tlas, nullptr, 0, {}, {}, link, hash),
+          "rewrite coherent part after rejected geometry candidate");
+    CHECK(save_anim_candidate(anim, candidate_anim, diagnostics),
+          "rewrite coherent MANM after rejected geometry candidate");
+    identity.part_body_checksum = file_part_body_checksum(candidate_part.string().c_str());
+    identity.anim_body_checksum = anim_body_checksum(anim);
     CHECK(publish_animation_bundle({candidate_part, candidate_anim, root}, identity, diagnostics),
           "publish coherent bundle with MACM last");
     std::optional<part_asset::PartAnimationLink> saved_link;
@@ -230,8 +262,28 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     CHECK(load_committed_animation_bundle(root, hash, unused, loaded, diagnostics),
           "load coherent MANM/ANLK/MACM bundle");
     CHECK(unused.live_count() == 1, "committed bundle transaction publishes loaded BLAS into caller state");
+    const auto committed_part_path = root / part_asset::cache_path_resolved(hash);
     const auto manifest_path = cache_path_anim_commit(root, hash);
     const std::vector<uint8_t> manifest = read_bytes(manifest_path.string().c_str());
+    CHECK(part_asset::save_v2(mismatched_part.string(), mismatched_blas, mismatched_tlas, nullptr, 0,
+                              {}, {}, link, hash), "rewrite mismatched geometry for committed-load test");
+    std::filesystem::copy_file(mismatched_part, committed_part_path,
+                               std::filesystem::copy_options::overwrite_existing);
+    auto mismatched_manifest = manifest;
+    put64(mismatched_manifest, 32, file_part_body_checksum(committed_part_path.string().c_str()));
+    refresh_trailing_checksum(mismatched_manifest);
+    write_bytes(manifest_path.string().c_str(), mismatched_manifest);
+    const size_t last_good_blas_count = unused.live_count();
+    const AnimAsset last_good_asset = loaded;
+    CHECK(!load_committed_animation_bundle(root, hash, unused, loaded, diagnostics),
+          "reject committed PART geometry that differs from its MANM binding");
+    CHECK(unused.live_count() == last_good_blas_count && loaded == last_good_asset,
+          "geometry mismatch preserves the last-good committed bundle");
+    CHECK(part_asset::save_v2(candidate_part.string(), blas, tlas, nullptr, 0, {}, {}, link, hash),
+          "restore coherent part candidate after geometry mismatch test");
+    std::filesystem::copy_file(candidate_part, committed_part_path,
+                               std::filesystem::copy_options::overwrite_existing);
+    write_bytes(manifest_path.string().c_str(), manifest);
     const auto reject_manifest = [&](const char* message, std::vector<uint8_t> changed) {
         const size_t last_good_blas_count = unused.live_count();
         const AnimAsset last_good_asset = loaded;
@@ -254,7 +306,7 @@ static void test_committed_bundle_rejects_torn_and_mixed_siblings() {
     { auto changed = manifest; put32(changed, 64, 99); refresh_trailing_checksum(changed); reject_manifest("reject MACM ozz mismatch", changed); }
     { auto changed = manifest; put32(changed, 68, 99); refresh_trailing_checksum(changed); reject_manifest("reject MACM compiler mismatch", changed); }
     { auto changed = manifest; put64(changed, 76, 10); refresh_trailing_checksum(changed); reject_manifest("reject MACM binding signature mismatch", changed); }
-    { auto changed = manifest; put32(changed, 84, 3); refresh_trailing_checksum(changed); reject_manifest("reject MACM binding vertex-count mismatch", changed); }
+    { auto changed = manifest; put32(changed, 84, 4); refresh_trailing_checksum(changed); reject_manifest("reject MACM binding vertex-count mismatch", changed); }
     { auto changed = manifest; changed.back() ^= 1; reject_manifest("reject MACM checksum", changed); }
     for (uint32_t stage = 1; stage <= 3; ++stage) {
         const auto failed_part = root / "failed.part";

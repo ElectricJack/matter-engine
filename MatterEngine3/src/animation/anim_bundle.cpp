@@ -28,6 +28,53 @@ bool g32(const std::vector<uint8_t>&b,size_t&p,uint32_t&v){if(p>b.size()||b.size
 bool g64(const std::vector<uint8_t>&b,size_t&p,uint64_t&v){if(p>b.size()||b.size()-p<8)return false;v=0;for(int i=0;i<8;++i)v|=uint64_t(b[p++])<<(8*i);return true;}
 void fail(Diagnostics&d,const char*c){d.add(c,{},c);}
 bool valid_lods(const std::vector<LodBindingSignature>& lods) { if(lods.size()>64)return false; std::unordered_set<uint64_t> identities; for(const auto& lod:lods){const uint64_t max_influences=uint64_t(lod.vertex_count)*4u; if(lod.indexed_vertex_signature==0||lod.vertex_count==0||lod.influence_count==0||uint64_t(lod.influence_count)>max_influences||!identities.insert(lod.indexed_vertex_signature).second)return false;}return true; }
+bool part_matches_binding(const BLASManager& blas, const part_asset::LodLevels& lods,
+                          const BindingBake& binding) {
+    std::vector<std::vector<uint32_t>> levels;
+    const auto& entries = blas.get_entries();
+    if (lods.empty()) {
+        if (entries.empty()) return false;
+        levels.emplace_back();
+        levels.back().reserve(entries.size());
+        for (uint32_t index = 0; index < entries.size(); ++index) levels.back().push_back(index);
+    } else {
+        if (lods.size() > 64) return false;
+        levels.reserve(lods.size());
+        for (const auto& lod : lods) {
+            if (lod.blas_indices.empty()) return false;
+            std::unordered_set<uint32_t> seen;
+            for (uint32_t index : lod.blas_indices)
+                if (index >= entries.size() || !entries[index] || !seen.insert(index).second) return false;
+            levels.push_back(lod.blas_indices);
+        }
+    }
+    if (levels.size() != binding.lods.size()) return false;
+    for (size_t level = 0; level < levels.size(); ++level) {
+        std::vector<Tri> triangles;
+        std::vector<TriEx> triex;
+        bool all_have_triex = true;
+        for (uint32_t index : levels[level]) {
+            const auto& entry = entries[index];
+            const TriEx* extra = entry->tri_extra.size() == entry->triangles.size()
+                                 ? entry->tri_extra.data() : entry->mesh->triEx;
+            if (!extra) all_have_triex = false;
+            triangles.insert(triangles.end(), entry->triangles.begin(), entry->triangles.end());
+            if (extra) triex.insert(triex.end(), extra, extra + entry->triangles.size());
+        }
+        // The existing raster path has one coherent TriEx mode per indexed
+        // stream.  A mixed stream has no exact shared representation yet, so
+        // reject it rather than accept a binding against different semantics.
+        if (triangles.empty() || (!all_have_triex && !triex.empty())) return false;
+        const auto geometry = viewer::build_indexed_part_geometry(
+            triangles.data(), all_have_triex ? triex.data() : nullptr,
+            static_cast<int>(triangles.size()));
+        const auto& baked = binding.lods[level];
+        if (geometry.vertex_count <= 0 || baked.vertex_count != static_cast<uint32_t>(geometry.vertex_count) ||
+            baked.indexed_vertex_signature != viewer::indexed_part_geometry_signature(geometry, static_cast<uint32_t>(level)))
+            return false;
+    }
+    return true;
+}
 bool read(const std::filesystem::path&p,std::vector<uint8_t>&b){FILE*f=std::fopen(p.string().c_str(),"rb");if(!f)return false;std::fseek(f,0,SEEK_END);long n=std::ftell(f);std::fseek(f,0,SEEK_SET);if(n<0){std::fclose(f);return false;}b.resize(size_t(n));bool ok=std::fread(b.data(),1,b.size(),f)==b.size();std::fclose(f);return ok;}
 bool durable_flush(FILE* f) { if(std::fflush(f)!=0)return false;
 #ifdef _WIN32
@@ -130,7 +177,7 @@ bool publish_animation_bundle(const BundleCandidates& c,const BundleIdentity& i,
     std::vector<part_asset::ChildInstance> candidate_children; part_asset::LodLevels candidate_lods;
     std::vector<part_asset::VolumeEmitter> candidate_emitters;
     BindingBake binding;
-    if(i.part_format_version!=part_asset::kFormatVersionV2||i.animation_schema_version!=kAnimationSchemaVersion||i.animation_bake_epoch!=kAnimationBakeEpoch||i.compiler_identifier!=kAnimationCompilerIdentifier||i.target_abi_tag!=kAnimationTargetAbiTag||i.ozz_tag_hash!=kAnimationOzzTagHash||(i.nonce.high==0&&i.nonce.low==0)||!load_anim(c.anim_candidate,a,d)||!get_anim_binding_bake(a,binding)||!manifest_matches_binding(i.lods,binding)||a.resolved_hash!=i.resolved_hash||!(a.nonce==i.nonce)||a.target_abi_tag!=kAnimationTargetAbiTag||a.ozz_tag_hash!=kAnimationOzzTagHash||a.target_abi_tag!=i.target_abi_tag||a.ozz_tag_hash!=i.ozz_tag_hash||anim_body_checksum(a)!=i.anim_body_checksum||!checksum_part(c.part_candidate,pc)||pc!=i.part_body_checksum||!part_asset::load_v2(c.part_candidate.string(),i.resolved_hash,candidate_blas,candidate_tlas,candidate_children,candidate_lods,candidate_emitters,link)||!link||link->nonce_high!=i.nonce.high||link->nonce_low!=i.nonce.low){fail(d,"bundle.candidate");return false;}
+    if(i.part_format_version!=part_asset::kFormatVersionV2||i.animation_schema_version!=kAnimationSchemaVersion||i.animation_bake_epoch!=kAnimationBakeEpoch||i.compiler_identifier!=kAnimationCompilerIdentifier||i.target_abi_tag!=kAnimationTargetAbiTag||i.ozz_tag_hash!=kAnimationOzzTagHash||(i.nonce.high==0&&i.nonce.low==0)||!load_anim(c.anim_candidate,a,d)||!get_anim_binding_bake(a,binding)||!manifest_matches_binding(i.lods,binding)||a.resolved_hash!=i.resolved_hash||!(a.nonce==i.nonce)||a.target_abi_tag!=kAnimationTargetAbiTag||a.ozz_tag_hash!=kAnimationOzzTagHash||a.target_abi_tag!=i.target_abi_tag||a.ozz_tag_hash!=i.ozz_tag_hash||anim_body_checksum(a)!=i.anim_body_checksum||!checksum_part(c.part_candidate,pc)||pc!=i.part_body_checksum||!part_asset::load_v2(c.part_candidate.string(),i.resolved_hash,candidate_blas,candidate_tlas,candidate_children,candidate_lods,candidate_emitters,link)||!part_matches_binding(candidate_blas,candidate_lods,binding)||!link||link->nonce_high!=i.nonce.high||link->nonce_low!=i.nonce.low){fail(d,"bundle.candidate");return false;}
     std::error_code ec;std::filesystem::create_directories(c.cache_root/"parts",ec);if(ec){fail(d,"bundle.directory");return false;}
     auto part=c.cache_root/part_asset::cache_path_resolved(i.resolved_hash);auto anim=cache_path_anim(c.cache_root,i.resolved_hash);auto manifest=cache_path_anim_commit(c.cache_root,i.resolved_hash);std::vector<uint8_t>m;
     if(c.test_hold_publication_lock){
@@ -183,7 +230,8 @@ bool load_committed_animation_bundle(const std::filesystem::path& root,uint64_t 
         a.ozz_tag_hash != kAnimationOzzTagHash || a.target_abi_tag != i.target_abi_tag ||
         a.ozz_tag_hash != i.ozz_tag_hash || anim_body_checksum(a) != i.anim_body_checksum) { fail(d, "bundle.anim"); return false; }
     BindingBake binding;
-    if (!get_anim_binding_bake(a, binding) || !manifest_matches_binding(i.lods, binding)) {
+    if (!get_anim_binding_bake(a, binding) || !manifest_matches_binding(i.lods, binding) ||
+        !part_matches_binding(checked_blas, checked_lods, binding)) {
         fail(d, "bundle.binding"); return false;
     }
     // Validation happens entirely in candidate state.  Only a fully coherent

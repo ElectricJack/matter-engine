@@ -50,13 +50,36 @@ bool valid_binding(const BindingBake& bake) {
     for (const auto& matrix : bake.inverse_bind_matrices) for (float value : matrix.m) if (!std::isfinite(value)) return false;
     for (const auto& lod : bake.lods) {
         if(!lod.indexed_vertex_signature || !lod.vertex_count || lod.influences.size()!=lod.vertex_count || lod.clusters.empty()) return false;
-        std::vector<uint32_t> cluster_ids;
-        for (const auto& influence : lod.influences) for(size_t i=0;i<kMaxSkinInfluences;++i) if(influence.weights[i] && influence.joints[i]>=bake.inverse_bind_matrices.size()) return false;
-        for (const auto& cluster : lod.clusters) {
-            if (cluster.vertex_begin>=cluster.vertex_end || cluster.vertex_end>lod.vertex_count || std::find(cluster_ids.begin(),cluster_ids.end(),cluster.cluster_id)!=cluster_ids.end()) return false;
-            cluster_ids.push_back(cluster.cluster_id);
-            for (const auto& bound : cluster.joints) if(!valid_bounds(bound,bake.inverse_bind_matrices.size())) return false;
+        for (const auto& influence : lod.influences) {
+            uint32_t total = 0;
+            std::vector<JointIndex> joints;
+            for(size_t i=0;i<kMaxSkinInfluences;++i) {
+                if (!influence.weights[i]) continue;
+                if (influence.joints[i]>=bake.inverse_bind_matrices.size() ||
+                    std::find(joints.begin(), joints.end(), influence.joints[i]) != joints.end()) return false;
+                joints.push_back(influence.joints[i]);
+                total += influence.weights[i];
+            }
+            if (total != 65535u) return false;
         }
+        std::vector<uint32_t> cluster_ids;
+        std::vector<bool> covered(lod.vertex_count, false);
+        for (const auto& cluster : lod.clusters) {
+            if (cluster.vertex_begin>=cluster.vertex_end || cluster.vertex_end>lod.vertex_count || cluster.joints.empty() || std::find(cluster_ids.begin(),cluster_ids.end(),cluster.cluster_id)!=cluster_ids.end()) return false;
+            cluster_ids.push_back(cluster.cluster_id);
+            std::vector<JointIndex> bound_joints;
+            for (const auto& bound : cluster.joints) {
+                if(!valid_bounds(bound,bake.inverse_bind_matrices.size()) || std::find(bound_joints.begin(),bound_joints.end(),bound.joint)!=bound_joints.end()) return false;
+                bound_joints.push_back(bound.joint);
+            }
+            for (uint32_t vertex=cluster.vertex_begin;vertex<cluster.vertex_end;++vertex) {
+                if (covered[vertex]) return false;
+                covered[vertex]=true;
+                for(size_t i=0;i<kMaxSkinInfluences;++i)
+                    if (lod.influences[vertex].weights[i] && std::find(bound_joints.begin(),bound_joints.end(),lod.influences[vertex].joints[i])==bound_joints.end()) return false;
+            }
+        }
+        for (bool vertex : covered) if (!vertex) return false;
     }
     return true;
 }
