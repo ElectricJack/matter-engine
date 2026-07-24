@@ -29,6 +29,30 @@ struct RecordingWorldQueries final : AnimationWorldQueries {
     }
 };
 
+// The service-bound controller test must not pass because the gait controller
+// happens to fall back to its authored prediction when no world-query adapter
+// is installed.  This adapter returns a deliberately offset, stable landing
+// point and records its inputs, so the test observes the full Runtime bridge:
+// fixed controller -> world query -> controller-owned target -> IK pose.
+struct GaitRuntimeWorldQueries final : AnimationWorldQueries {
+    mutable uint32_t calls = 0;
+    mutable std::vector<Float3> origins;
+
+    bool ray_cast(const Float3& origin, const Float3& direction, float max_distance,
+                  uint64_t mask, WorldRayHit& out) const override {
+        ++calls;
+        origins.push_back(origin);
+        if (std::fabs(direction.x) >= 1e-4f || std::fabs(direction.y + 1.0f) >= 1e-4f ||
+            std::fabs(direction.z) >= 1e-4f || std::fabs(max_distance - 2.0f) >= 1e-4f || mask != 0)
+            return false;
+        out.entity = 0x47524944u; // "GRID" -- stable fixture ground identity.
+        out.position = {origin.x + 0.5f, 0.25f, origin.z + 0.125f};
+        out.normal = {0.0f, 1.0f, 0.0f};
+        out.distance = 0.75f;
+        return true;
+    }
+};
+
 // A real evaluator definition deliberately travels through the service-owned
 // runtime descriptor.  The Runtime must not need callers to duplicate this
 // work into AnimationSystems manually.
@@ -147,6 +171,8 @@ AnimationRuntimeDefinition target_definition(
 
 void test_runtime_fixed_controller_ik_persists_through_frame_and_checkpoint_replay() {
     ecs_runtime::Runtime runtime;
+    GaitRuntimeWorldQueries queries;
+    runtime.animation_systems().set_world_queries(&queries);
     AnimationService service;
     runtime.attach_animation_service(service);
     const AnimAsset* asset = service.insert_asset({0x97u, {1u, 2u}});
@@ -179,6 +205,20 @@ void test_runtime_fixed_controller_ik_persists_through_frame_and_checkpoint_repl
           "controller-owned target rejects the external writer despite a lookup handle");
 
     CHECK(runtime.tick({0.1f, 0.1f, 1}).fixed_steps == 1, "controller target runs in the fixed Runtime phase");
+    CHECK(queries.calls == 2 && queries.origins.size() == 2 &&
+              same_float(queries.origins[0].x, parameters.left_predicted.x) &&
+              same_float(queries.origins[0].y, parameters.left_predicted.y + parameters.step_height) &&
+              same_float(queries.origins[1].x, parameters.right_predicted.x) &&
+              same_float(queries.origins[1].y, parameters.right_predicted.y + parameters.step_height),
+          "fixed gait controller uses the installed Runtime world-query adapter for both feet");
+    std::vector<AnimatorCheckpoint> checkpoints;
+    CHECK(service.capture_runtime_checkpoints(checkpoints) && checkpoints.size() == 1 &&
+              checkpoints[0].target_desired.size() == 2 &&
+              same_float(checkpoints[0].target_desired[0].translation.x,
+                         parameters.left_predicted.x + 0.5f) &&
+              same_float(checkpoints[0].target_desired[0].translation.y, 0.25f) &&
+              same_float(checkpoints[0].target_desired[0].translation.z, 0.125f),
+          "query hit becomes the controller-owned left target instead of the authored prediction");
     const AnimationPoseSnapshot fixed = runtime.animation_systems().pose_snapshots().latest(animator.instance);
     CHECK(fixed.local_pose.count == 7 && std::fabs(fixed.local_pose[1].rotation.z) > 1e-3f,
           "fixed controller target solves its IK chain before the presentation snapshot");
@@ -195,14 +235,25 @@ void test_runtime_fixed_controller_ik_persists_through_frame_and_checkpoint_repl
               same_matrix(frame.previous_model_pose[0], fixed_previous[0]),
           "presentation-only update preserves fixed previous-model history");
 
-    std::vector<AnimatorCheckpoint> checkpoints;
-    CHECK(service.capture_runtime_checkpoints(checkpoints) && checkpoints.size() == 1,
-          "capture includes controller and target runtime state");
     CHECK(runtime.tick({0.1f, 0.1f, 1}).fixed_steps == 1, "advance controller state beyond checkpoint");
     const AnimationPoseSnapshot advanced = runtime.animation_systems().pose_snapshots().latest(animator.instance);
+    std::vector<AnimatorCheckpoint> advanced_checkpoints;
+    CHECK(service.capture_runtime_checkpoints(advanced_checkpoints) && advanced_checkpoints.size() == 1 &&
+              advanced_checkpoints[0].target_desired.size() == 2 &&
+              advanced_checkpoints[0].target_desired[1].translation.y > parameters.right_predicted.y + 1e-3f &&
+              !same_float(advanced_checkpoints[0].target_desired[1].translation.y,
+                          checkpoints[0].target_desired[1].translation.y),
+          "advancing the gait state changes the swinging foot target rather than retaining a static default");
     CHECK(service.restore_runtime_checkpoints(checkpoints), "restore controller/target checkpoint through service bridge");
     CHECK(runtime.tick({0.1f, 0.1f, 1}).fixed_steps == 1, "replay restored controller step through Runtime");
     const AnimationPoseSnapshot replay = runtime.animation_systems().pose_snapshots().latest(animator.instance);
+    std::vector<AnimatorCheckpoint> replay_checkpoints;
+    CHECK(service.capture_runtime_checkpoints(replay_checkpoints) && replay_checkpoints.size() == 1 &&
+              replay_checkpoints[0].target_desired.size() == 2 &&
+              same_transform(replay_checkpoints[0].target_desired[1],
+                             advanced_checkpoints[0].target_desired[1]) &&
+              queries.calls == 6,
+          "checkpoint restore replays the gait controller phase, swing target, and world queries deterministically");
     CHECK(advanced.local_pose.count == 7 && replay.local_pose.count == 7 &&
               same_transform(advanced.local_pose[1], replay.local_pose[1]) &&
               advanced.model_pose.count == 7 && replay.model_pose.count == 7 && same_matrix(advanced.model_pose[1], replay.model_pose[1]),
