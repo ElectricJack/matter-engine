@@ -30,6 +30,12 @@ void fail(Diagnostics&d,const char*c){d.add(c,{},c);}
 bool valid_lods(const std::vector<LodBindingSignature>& lods) { if(lods.size()>64)return false; std::unordered_set<uint64_t> identities; for(const auto& lod:lods){const uint64_t max_influences=uint64_t(lod.vertex_count)*4u; if(lod.indexed_vertex_signature==0||lod.vertex_count==0||lod.influence_count==0||uint64_t(lod.influence_count)>max_influences||!identities.insert(lod.indexed_vertex_signature).second)return false;}return true; }
 bool part_matches_binding(const BLASManager& blas, const part_asset::LodLevels& lods,
                           const BindingBake& binding) {
+    // Rigid segments and attachments are typed animation declarations; they
+    // do not carry skinned vertex data to compare against the Part's indexed
+    // geometry.  The caller has already fully validated the Part and MANM
+    // payloads, so semantic geometry matching applies only when a skin LOD
+    // is present.
+    if (binding.lods.empty()) return true;
     std::vector<std::vector<uint32_t>> levels;
     const auto& entries = blas.get_entries();
     if (lods.empty()) {
