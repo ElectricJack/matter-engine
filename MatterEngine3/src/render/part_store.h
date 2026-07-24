@@ -57,6 +57,12 @@ struct LoadedPart {
     float    inline_cutover  = 0.0f;   // max over flat_refs; 0 = no cutover refs
     uint32_t fine_cluster_count = 0;   // clusters[0..fine_cluster_count-1] are segment-0
     const matter::animation::AnimAsset* animation_asset = nullptr; // immutable store-owned peer
+
+    // Exact registration ownership for the shared BLAS manager.  View arrays
+    // above can alias a handle (legacy v2 synthetic clusters) or contain the
+    // same deduplicated handle once per independent registration (v3 flats),
+    // so they cannot safely drive rollback/release on their own.
+    std::vector<BLASHandle> owned_blas;
 };
 
 // Walk the part tree rooted at root_hash depth-first, depth-capped at 8.

@@ -18,6 +18,28 @@
 
 namespace viewer {
 
+// Release exactly the references this LoadedPart registered.  Legacy view
+// arrays are deliberately not authoritative: v2 mirrors a registration into a
+// synthetic cluster, while v3 may legitimately register the same deduplicated
+// handle several times.  Old injected test fixtures predate owned_blas, so
+// retain their view-array fallback for that narrow test-only path.
+static void release_loaded_part_blas(BLASManager& blas, const LoadedPart& lp) {
+    if (!lp.owned_blas.empty()) {
+        for (BLASHandle h : lp.owned_blas) {
+            if (h != INVALID_BLAS_HANDLE) blas.release_blas(h);
+        }
+        return;
+    }
+    for (BLASHandle h : lp.lod_blas) {
+        if (h != INVALID_BLAS_HANDLE) blas.release_blas(h);
+    }
+    for (const auto& cluster : lp.clusters) {
+        for (BLASHandle h : cluster.lod_blas) {
+            if (h != INVALID_BLAS_HANDLE) blas.release_blas(h);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // walk_part_tree implementation — single recursive traversal shared by
 // build_expansion, WorldComposer::compose, and the main.cpp TLAS-sizing walk.
@@ -118,6 +140,11 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
     // from this root as ANLK-free.  Do not independently probe scratch/cache:
     // a flat is only valid beside that exact canonical static Part.
     const std::string path = artifact_root + "/" + part_asset::cache_path_flat(part_hash);
+    const auto rollback = [&] {
+        release_loaded_part_blas(blas_, lp);
+        lp = LoadedPart{};
+        return false;
+    };
 
     // Sniff version first; fall back to compositional path when absent.
     uint32_t ver = part_asset::peek_format_version(path);
@@ -161,7 +188,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
             // No coarse clusters (or empty): fall back to all clusters for max_lods.
             for (const auto& cl : clusters_in) max_lods = std::max(max_lods, cl.lods.size());
         }
-        if (max_lods == 0) return false;
+        if (max_lods == 0) return rollback();
 
         // --- Step 1: Legacy whole-part view for the RT path (WorldComposer/TLAS). ---
         // IMPORTANT: lp.lod_mesh_data[0..max_lods-1] are the whole-part entries (parallel
@@ -205,6 +232,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
             if (tris.empty()) continue;
             const TriEx* ex = (triex.size() == tris.size()) ? triex.data() : nullptr;
             BLASHandle h = blas_.register_triangles(tris.data(), (int)tris.size(), ex);
+            lp.owned_blas.push_back(h);
             lp.thresholds.push_back(thr);
             lp.lod_blas.push_back(h);
 
@@ -218,7 +246,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
                 lp.lod_mesh_data.push_back({});
             }
         }
-        if (lp.lod_blas.empty()) return false;
+        if (lp.lod_blas.empty()) return rollback();
 
         // --- Step 2: Per-cluster data (for Task 13 per-cluster GPU culling). ---
         // Each cluster gets its own LoadedCluster with parallel thresholds / lod_blas /
@@ -255,6 +283,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
                 if (ctris.empty()) continue;
                 const TriEx* cex = (ctriex.size() == ctris.size()) ? ctriex.data() : nullptr;
                 BLASHandle ch = blas_.register_triangles(ctris.data(), (int)ctris.size(), cex);
+                lp.owned_blas.push_back(ch);
 
                 // Append cluster-level mesh-data after the legacy whole-part entries.
                 int mesh_idx = (int)lp.lod_mesh_data.size();
@@ -279,7 +308,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
             if (segmented && cl_in.segment == 0) ++fine_pushed;
             lp.clusters.push_back(std::move(cl_out));
         }
-        if (lp.clusters.empty()) return false;
+        if (lp.clusters.empty()) return rollback();
 
         // Set fine_cluster_count: for segmented flats, count pushed fine clusters;
         // for unsegmented flats, all clusters are "fine" (fine_cluster_count == size).
@@ -332,6 +361,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
             if (tris.empty()) continue;
             const TriEx* ex = (triex.size() == tris.size()) ? triex.data() : nullptr;
             BLASHandle h = blas_.register_triangles(tris.data(), (int)tris.size(), ex);
+            lp.owned_blas.push_back(h);
             lp.thresholds.push_back(lods_in[li].screen_size_threshold);
             lp.lod_blas.push_back(h);
 
@@ -362,7 +392,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
                 aabb_set = true;
             }
         }
-        if (lp.lod_blas.empty()) return false;
+        if (lp.lod_blas.empty()) return rollback();
 
         // Finalise synthetic cluster AABB.
         std::memcpy(syn_cl.aabb_min, mn, sizeof mn);
@@ -433,6 +463,9 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
                 loaded_[part_hash].expansion = std::move(exp);
                 return &loaded_[part_hash];
             }
+            // The decoded flat was never published. Undo every shared-BLAS
+            // registration before retrying the coherent Part path below.
+            release_loaded_part_blas(blas_, flat);
         }
     }
 
@@ -566,6 +599,7 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
         lp.thresholds.push_back(L.screen_size_threshold);
         size_t abs_idx = L.blas_indices[0];   // absolute index into blas_.get_entries()
         lp.lod_blas.push_back(blas_.get_entries()[abs_idx]->handle);
+        lp.owned_blas.push_back(lp.lod_blas.back());
 
         if (const auto* e = blas_.get_entry(lp.lod_blas.back())) {
             const TriEx* mesh_ex = (e->tri_extra.size() == e->triangles.size() && !e->tri_extra.empty())
@@ -632,21 +666,7 @@ void PartStore::release(uint64_t part_hash) {
 
     const LoadedPart& lp = it->second;
 
-    // Release all BLAS handles in the whole-part LOD ladder.
-    for (BLASHandle h : lp.lod_blas) {
-        if (h != INVALID_BLAS_HANDLE) {
-            blas_.release_blas(h);
-        }
-    }
-
-    // Release all BLAS handles in each per-cluster LOD ladder.
-    for (const auto& cluster : lp.clusters) {
-        for (BLASHandle h : cluster.lod_blas) {
-            if (h != INVALID_BLAS_HANDLE) {
-                blas_.release_blas(h);
-            }
-        }
-    }
+    release_loaded_part_blas(blas_, lp);
 
     // Now safe to erase the LoadedPart from memory.
     loaded_.erase(it);

@@ -253,6 +253,58 @@ static void test_partstore_flat_never_downgrades_selected_linked_part() {
           "A8 co-located flat cannot downgrade a linked canonical Part");
 }
 
+// A static flat is decoded into the shared BLAS manager before the second
+// canonical-Part snapshot admits it.  If an atomic publisher replaces that
+// canonical Part with a linked generation at the admission seam, the decoded
+// candidate must release every shared-BLAS reference before the linked fallback
+// is loaded.  Compare against a direct linked load so this checks both unique
+// entries and deduplicated-handle reference counts rather than only success.
+static void test_partstore_rejected_flat_candidate_releases_shared_blas() {
+    namespace fs = std::filesystem;
+    namespace anim = matter::animation;
+    const fs::path root = fs::temp_directory_path() / "me3_a8_partstore_flat_rollback";
+    const fs::path baseline_root = root / "baseline";
+    const fs::path raced_root = root / "raced";
+    std::error_code ec; fs::remove_all(root, ec);
+    struct Cleanup { fs::path root; ~Cleanup() { std::error_code ignored; fs::remove_all(root, ignored); } } cleanup{root};
+    constexpr uint64_t hash = 0xa815b815b815b815ull;
+    const anim::BuildNonce nonce{0x0102030405060708ull, 0x1112131415161718ull};
+
+    CHECK(publish_rigid_bundle(baseline_root, hash, nonce),
+          "A8 flat rollback baseline linked bundle is published");
+    viewer::PartStore baseline(baseline_root.string());
+    const viewer::LoadedPart* baseline_part = baseline.get_or_load(hash);
+    CHECK(baseline_part && baseline_part->animation_asset &&
+              baseline_part->animation_asset->nonce == nonce,
+          "A8 flat rollback baseline loads linked generation");
+    const size_t baseline_live = baseline.blas().live_count();
+    uint64_t baseline_refs = 0;
+    for (const auto& entry : baseline.blas().get_entries()) baseline_refs += entry->ref_count;
+    CHECK(baseline_live > 0 && baseline_refs > 0,
+          "A8 flat rollback baseline has shared BLAS ownership");
+
+    CHECK(publish_static_part_and_flat(raced_root, hash),
+          "A8 flat rollback static Part and flat candidate are published");
+    viewer::PartStore raced(raced_root.string());
+    bool replaced = false;
+    raced.set_flat_admission_hook_for_tests([&] {
+        replaced = publish_rigid_bundle(raced_root, hash, nonce);
+    });
+    const viewer::LoadedPart* loaded = raced.get_or_load(hash);
+    CHECK(replaced, "A8 flat rollback admission hook publishes linked replacement");
+    CHECK(loaded && loaded->animation_asset && loaded->animation_asset->nonce == nonce,
+          "A8 flat rollback rejects stale candidate and loads linked replacement");
+    uint64_t raced_refs = 0;
+    for (const auto& entry : raced.blas().get_entries()) raced_refs += entry->ref_count;
+    CHECK(raced.blas().live_count() == baseline_live,
+          "A8 rejected flat candidate adds no shared BLAS entries");
+    CHECK(raced_refs == baseline_refs,
+          "A8 rejected flat candidate adds no shared BLAS references");
+    raced.release(hash);
+    CHECK(raced.blas().live_count() == 0,
+          "A8 rejected flat candidate leaves no BLAS after linked part release");
+}
+
 // Task 7: segmented v6 flat loading.
 static void test_partstore_segmented_loading() {
     printf("=== test_partstore_segmented_loading ===\n");
@@ -422,6 +474,7 @@ int main() {
     test_partstore_uses_one_scratch_first_bundle_root();
     test_partstore_retries_after_torn_generation_and_recovers_same_store();
     test_partstore_flat_never_downgrades_selected_linked_part();
+    test_partstore_rejected_flat_candidate_releases_shared_blas();
 
     if (g_failures) {
         printf("partstore_tests: %d FAILURE(S)\n", g_failures);

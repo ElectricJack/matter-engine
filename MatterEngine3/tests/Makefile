@@ -253,6 +253,8 @@ FLAVOR_sh_FLAGS       := $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) -I
 # Only the graph integration target carries the deterministic cache-race seam.
 # Production and ordinary script-host test objects have no hook API or storage.
 FLAVOR_sh_test_FLAGS  := $(FLAVOR_sh_FLAGS) -DMATTER_TEST_CACHE_VALIDATION_HOOK
+# PartStore has its own cache-admission seam. Keep it test-only.
+FLAVOR_partstore_test_FLAGS := $(FLAVOR_def_FLAGS) -DMATTER_TEST_CACHE_VALIDATION_HOOK
 FLAVOR_sp2_FLAGS      := $(CFLAGS) -DSP2_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC)
 FLAVOR_vl_FLAGS       := $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB -pthread $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC)
 FLAVOR_retopo_FLAGS   := $(CFLAGS) -DMATTER_HAVE_AUTOREMESHER $(INCLUDE_PATHS) -I$(AR_CORE_PATH)/include $(QJS_INC)
@@ -925,6 +927,7 @@ sh_CPP_SRCS := $(sort \
     $(TILESETPARAMS_CPP) \
     $(LIVEPROD_CPP))
 sh_test_CPP_SRCS := $(sort $(GRAPH_INT_CPP))
+partstore_test_CPP_SRCS := $(sort $(PARTSTORE_CPP))
 
 sp2_CPP_SRCS := $(sort $(SHLIB_CPP))
 vl_CPP_SRCS  := $(sort $(VIEWER_LOGIC_CPP))
@@ -956,6 +959,7 @@ def_CPP_OBJS    := $(call obj_list,def,$(def_CPP_SRCS))
 qjs_CPP_OBJS    := $(call obj_list,qjs,$(qjs_CPP_SRCS))
 sh_CPP_OBJS     := $(call obj_list,sh,$(sh_CPP_SRCS))
 sh_test_CPP_OBJS := $(call obj_list,sh_test,$(sh_test_CPP_SRCS))
+partstore_test_CPP_OBJS := $(call obj_list,partstore_test,$(partstore_test_CPP_SRCS))
 sp2_CPP_OBJS    := $(call obj_list,sp2,$(sp2_CPP_SRCS))
 vl_CPP_OBJS     := $(call obj_list,vl,$(vl_CPP_SRCS))
 retopo_CPP_OBJS := $(call obj_list,retopo,$(retopo_CPP_SRCS))
@@ -965,7 +969,7 @@ qjsc_C_OBJS     := $(call obj_list,qjsc,$(qjsc_C_SRCS))
 flecsc_C_OBJS   := $(call obj_list,flecsc,$(flecsc_C_SRCS))
 physicsc_C_OBJS := $(call obj_list,physicsc,$(physicsc_C_SRCS))
 
-ALL_OBJS := $(def_CPP_OBJS) $(qjs_CPP_OBJS) $(sh_CPP_OBJS) $(sh_test_CPP_OBJS) $(sp2_CPP_OBJS) \
+ALL_OBJS := $(def_CPP_OBJS) $(qjs_CPP_OBJS) $(sh_CPP_OBJS) $(sh_test_CPP_OBJS) $(partstore_test_CPP_OBJS) $(sp2_CPP_OBJS) \
             $(vl_CPP_OBJS) $(retopo_CPP_OBJS) $(gpu_CPP_OBJS) \
             $(mslc_C_OBJS) $(qjsc_C_OBJS) $(flecsc_C_OBJS) $(physicsc_C_OBJS)
 
@@ -974,6 +978,7 @@ $(foreach s,$(def_CPP_SRCS),$(eval $(call objrule_cpp,def,$(s))))
 $(foreach s,$(qjs_CPP_SRCS),$(eval $(call objrule_cpp,qjs,$(s))))
 $(foreach s,$(sh_CPP_SRCS),$(eval $(call objrule_cpp,sh,$(s))))
 $(foreach s,$(sh_test_CPP_SRCS),$(eval $(call objrule_cpp,sh_test,$(s))))
+$(foreach s,$(partstore_test_CPP_SRCS),$(eval $(call objrule_cpp,partstore_test,$(s))))
 $(foreach s,$(sp2_CPP_SRCS),$(eval $(call objrule_cpp,sp2,$(s))))
 $(foreach s,$(vl_CPP_SRCS),$(eval $(call objrule_cpp,vl,$(s))))
 $(foreach s,$(retopo_CPP_SRCS),$(eval $(call objrule_cpp,retopo,$(s))))
@@ -1023,7 +1028,7 @@ TERRAINFIELD_OBJS = $(call obj_list,def,$(TERRAINFIELD_CPP))
 TERRAINMESH_OBJS  = $(call obj_list,def,$(TERRAINMESH_CPP))
 TERRAINVERB_OBJS  = $(call obj_list,sh,$(TERRAINVERB_CPP)) $(call obj_list,mslc,$(TERRAINVERB_C)) $(qjsc_C_OBJS)
 SECTORBAKE_OBJS   = $(call obj_list,sh,$(SECTORBAKE_CPP)) $(call obj_list,mslc,$(SECTORBAKE_C)) $(qjsc_C_OBJS)
-PARTSTORE_OBJS = $(call obj_list,def,$(PARTSTORE_CPP)) $(call obj_list,mslc,$(PARTSTORE_C))
+PARTSTORE_OBJS = $(call obj_list,partstore_test,$(PARTSTORE_CPP)) $(call obj_list,mslc,$(PARTSTORE_C))
 
 SCRIPT_OBJS = $(call obj_list,qjs,$(SCRIPT_CPP)) $(call obj_list,mslc,$(SCRIPT_C)) $(qjsc_C_OBJS)
 MODBAKE_OBJS = $(call obj_list,qjs,$(MODBAKE_CPP)) $(call obj_list,mslc,$(MODBAKE_C)) $(qjsc_C_OBJS)
