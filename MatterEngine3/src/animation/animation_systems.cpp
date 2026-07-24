@@ -43,6 +43,36 @@ bool inverse(const Mat4f& source, Mat4f& out) {
     return true;
 }
 
+AnimationTransform runtime_root_delta(const AnimationTransform& previous, const AnimationTransform& current) {
+    AnimationTransform result{};
+    result.translation = {current.translation.x - previous.translation.x, current.translation.y - previous.translation.y,
+                          current.translation.z - previous.translation.z};
+    return result;
+}
+
+void emit_runtime_markers(AnimatorInstanceHandle instance, const std::vector<RuntimeClipMarker>& markers,
+                          float duration, bool loop, float previous, float current,
+                          std::vector<AnimationMarkerEvent>& out) {
+    if (duration <= 0.0f || previous == current) return;
+    const bool forward = current > previous;
+    struct Item { float absolute; RuntimeClipMarker marker; };
+    std::vector<Item> items;
+    for (const auto& marker : markers) {
+        const int first = loop ? int(std::floor(std::min(previous, current) / duration)) - 1 : 0;
+        const int last = loop ? int(std::ceil(std::max(previous, current) / duration)) + 1 : 0;
+        for (int cycle = first; cycle <= last; ++cycle) {
+            const float absolute = loop ? marker.time + cycle * duration : marker.time;
+            if ((forward && absolute > previous && absolute <= current) || (!forward && absolute >= current && absolute < previous))
+                items.push_back({absolute, marker});
+        }
+    }
+    std::stable_sort(items.begin(), items.end(), [forward](const Item& a, const Item& b) {
+        if (a.absolute != b.absolute) return forward ? a.absolute < b.absolute : a.absolute > b.absolute;
+        return a.marker.marker_index < b.marker.marker_index;
+    });
+    for (const auto& item : items) out.push_back({instance, item.marker.marker_index, item.marker.time});
+}
+
 bool complete(const AnimationPoseSnapshot& snapshot) {
     const uint32_t count = snapshot.local_pose.count;
     return snapshot.instance.valid() &&
@@ -149,15 +179,30 @@ bool AnimationSystems::publish_desired_root_motion(AnimatorInstanceHandle instan
                                                     const DesiredRootMotion& motion,
                                                     uint64_t fixed_tick) {
     if (!instance.valid() || !motion.valid) return false;
-    RootMotionSlot& slot = desired_root_motion_[animator_key(instance)];
-    // A tick is authored once.  Replacing it after authority consumption would
-    // make simulation order-dependent, so reject it.
-    if (slot.tick == fixed_tick && slot.consumed) return false;
+    const uint64_t slot_key = animator_key(instance);
+    const auto existing = desired_root_motion_.find(slot_key);
+    if (existing != desired_root_motion_.end() && existing->second.tick == fixed_tick) return false;
+    RootMotionSlot& slot = desired_root_motion_[slot_key];
     slot.tick = fixed_tick;
     slot.motion = motion;
     slot.consumed = false;
     return true;
 }
+
+bool AnimationSystems::register_fixed_work(const AnimationFixedWork& work) {
+    if (!work.instance.valid() || !std::isfinite(work.clip.duration) || work.clip.duration <= 0.0f ||
+        !std::isfinite(work.clip.time) || !std::isfinite(work.clip.rate)) return false;
+    for (const auto& marker : work.clip.markers)
+        if (!std::isfinite(marker.time) || marker.time < 0.0f || marker.time > work.clip.duration) return false;
+    for (const auto& query : work.queries)
+        if (animator_key(query.instance) != animator_key(work.instance) || !std::isfinite(query.max_distance) || query.max_distance < 0.0f) return false;
+    fixed_work_[animator_key(work.instance)] = work;
+    return true;
+}
+
+void AnimationSystems::remove_fixed_work(AnimatorInstanceHandle instance) { if (instance.valid()) fixed_work_.erase(animator_key(instance)); }
+std::vector<AnimationMarkerEvent> AnimationSystems::take_marker_events() { std::vector<AnimationMarkerEvent> result; result.swap(marker_events_); return result; }
+std::vector<DesiredRootMotion> AnimationSystems::take_consumed_root_motion() { std::vector<DesiredRootMotion> result; result.swap(consumed_root_motion_); return result; }
 
 bool AnimationSystems::consume_desired_root_motion(AnimatorInstanceHandle instance,
                                                     uint64_t fixed_tick,
@@ -235,13 +280,45 @@ void AnimationSystems::run_fixed_pre(flecs::world& world, double fixed_delta) {
     trace(AnimationScheduleEvent::FixedAdvanceClocks, fixed_delta);
 }
 
-void AnimationSystems::run_fixed_update(double fixed_delta) {
+void AnimationSystems::run_fixed_update(flecs::world& world, double fixed_delta) {
     trace(AnimationScheduleEvent::FixedSampleRootChannels, fixed_delta);
+    struct OrderedMarker { AnimatorInstanceHandle instance; uint16_t node; uint16_t clip; AnimationMarkerEvent event; };
+    std::vector<OrderedMarker> emitted;
+    for (auto& pair : fixed_work_) {
+        AnimationFixedWork& work = pair.second;
+        const float previous = work.clip.time;
+        const float current = previous + work.clip.rate * static_cast<float>(fixed_delta);
+        std::vector<AnimationMarkerEvent> local;
+        emit_runtime_markers(work.instance, work.clip.markers, work.clip.duration, work.clip.loop, previous, current, local);
+        for (const auto& event : local) emitted.push_back({work.instance, work.clip.node_index, work.clip.clip_index, event});
+        work.clip.time = current;
+    }
+    std::stable_sort(emitted.begin(), emitted.end(), [](const OrderedMarker& a, const OrderedMarker& b) {
+        if (a.instance.slot_index != b.instance.slot_index) return a.instance.slot_index < b.instance.slot_index;
+        if (a.clip != b.clip) return a.clip < b.clip;
+        if (a.node != b.node) return a.node < b.node;
+        if (a.event.time != b.event.time) return a.event.time < b.event.time;
+        return a.event.marker_index < b.event.marker_index;
+    });
+    for (const auto& marker : emitted) marker_events_.push_back(marker.event);
     trace(AnimationScheduleEvent::FixedPublishDesiredRootMotion, fixed_delta);
+    const uint64_t tick = world.get<ecs::AnimationFixedState>().current_tick;
+    for (const auto& pair : fixed_work_) {
+        const AnimationFixedWork& work = pair.second;
+        DesiredRootMotion motion{};
+        motion.delta = runtime_root_delta(work.root_previous, work.root_current);
+        motion.valid = true;
+        (void)publish_desired_root_motion(work.instance, motion, tick);
+    }
     trace(AnimationScheduleEvent::FixedEmitMarkers, fixed_delta);
 }
 
-void AnimationSystems::run_pre_physics(double fixed_delta) {
+void AnimationSystems::run_pre_physics(flecs::world& world, double fixed_delta) {
+    const uint64_t tick = world.get<ecs::AnimationFixedState>().current_tick;
+    for (const auto& pair : fixed_work_) {
+        DesiredRootMotion motion{};
+        if (consume_desired_root_motion(pair.second.instance, tick, motion)) consumed_root_motion_.push_back(motion);
+    }
     trace(AnimationScheduleEvent::PrePhysicsAuthority, fixed_delta);
 }
 
@@ -253,10 +330,22 @@ void AnimationSystems::run_post_physics(double fixed_delta) {
     trace(AnimationScheduleEvent::PostPhysicsHierarchy, fixed_delta);
 }
 
-void AnimationSystems::run_fixed_post(double fixed_delta) {
+void AnimationSystems::run_fixed_post(flecs::world& world, double fixed_delta) {
     trace(AnimationScheduleEvent::FixedEvaluateControllers, fixed_delta);
     trace(AnimationScheduleEvent::FixedWorldQueries, fixed_delta);
+    std::vector<AnimationWorldQueryRequest> queries;
+    for (const auto& pair : fixed_work_)
+        queries.insert(queries.end(), pair.second.queries.begin(), pair.second.queries.end());
+    (void)execute_fixed_world_queries(std::move(queries));
     trace(AnimationScheduleEvent::FixedSmoothTargets, fixed_delta);
+    for (auto& pair : fixed_work_) {
+        AnimationFixedWork& work = pair.second;
+        if (work.root_entity == 0) continue;
+        const flecs::entity root = world.entity(work.root_entity);
+        const ecs::WorldTransform* transform = root.try_get<ecs::WorldTransform>();
+        if (transform == nullptr || !resolve_world_target(transform->matrix, work.desired_target_world,
+                                                           work.evaluated_target_root_relative)) continue;
+    }
     trace(AnimationScheduleEvent::FixedPublishSnapshot, fixed_delta);
 }
 
@@ -280,15 +369,15 @@ void register_animation_systems(flecs::world& world, AnimationSystems& systems) 
             instance.run_fixed_pre(runtime_world, delta);
         });
     register_system<ecs::FixedUpdate>(world, "MatterAnimationFixedUpdate",
-        [](AnimationSystems& instance, flecs::world&, double delta) { instance.run_fixed_update(delta); });
+        [](AnimationSystems& instance, flecs::world& runtime_world, double delta) { instance.run_fixed_update(runtime_world, delta); });
     register_system<ecs::PrePhysics>(world, "MatterAnimationPrePhysics",
-        [](AnimationSystems& instance, flecs::world&, double delta) { instance.run_pre_physics(delta); });
+        [](AnimationSystems& instance, flecs::world& runtime_world, double delta) { instance.run_pre_physics(runtime_world, delta); });
     register_system<ecs::Physics>(world, "MatterAnimationPhysicsTrace",
         [](AnimationSystems& instance, flecs::world&, double delta) { instance.run_physics(delta); });
     register_system<ecs::PostPhysicsHierarchy>(world, "MatterAnimationPostPhysicsHierarchy",
         [](AnimationSystems& instance, flecs::world&, double delta) { instance.run_post_physics(delta); });
     register_system<ecs::FixedPostUpdate>(world, "MatterAnimationFixedPostUpdate",
-        [](AnimationSystems& instance, flecs::world&, double delta) { instance.run_fixed_post(delta); });
+        [](AnimationSystems& instance, flecs::world& runtime_world, double delta) { instance.run_fixed_post(runtime_world, delta); });
     register_system<ecs::FrameUpdate>(world, "MatterAnimationFrameUpdate",
         [](AnimationSystems& instance, flecs::world& runtime_world, double delta) {
             instance.run_frame(runtime_world, delta);

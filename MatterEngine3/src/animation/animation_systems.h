@@ -31,6 +31,30 @@ struct AnimationWorldQueryResult {
     WorldRayHit value{};
 };
 
+// This is the explicit B4 bridge from graph evaluation to fixed simulation.
+// It is value-owned by AnimationSystems, so API writes cannot race phase
+// execution. B5 replaces the simple root values with controller output.
+struct AnimationFixedClipWork {
+    uint16_t node_index = 0;
+    uint16_t clip_index = 0;
+    float duration = 0.0f;
+    bool loop = false;
+    float time = 0.0f;
+    float rate = 1.0f;
+    std::vector<RuntimeClipMarker> markers;
+};
+
+struct AnimationFixedWork {
+    AnimatorInstanceHandle instance{};
+    AnimationFixedClipWork clip{};
+    AnimationTransform root_previous{};
+    AnimationTransform root_current{};
+    std::vector<AnimationWorldQueryRequest> queries;
+    AnimationTransform desired_target_world{};
+    AnimationTransform evaluated_target_root_relative{};
+    uint64_t root_entity = 0;
+};
+
 // B3 makes the boundary order observable.  Entries named for later features
 // are scheduling stubs only: B4/B5 own markers, root motion, world queries,
 // controllers, target solving, and IK behavior.
@@ -114,15 +138,19 @@ public:
     std::vector<AnimationWorldQueryResult> execute_fixed_world_queries(
         std::vector<AnimationWorldQueryRequest> requests);
     uint64_t world_query_overflow_count() const noexcept { return world_query_overflow_count_; }
+    bool register_fixed_work(const AnimationFixedWork& work);
+    void remove_fixed_work(AnimatorInstanceHandle instance);
+    std::vector<AnimationMarkerEvent> take_marker_events();
+    std::vector<DesiredRootMotion> take_consumed_root_motion();
 
 private:
     friend void register_animation_systems(flecs::world&, AnimationSystems&);
     void run_fixed_pre(flecs::world& world, double fixed_delta);
-    void run_fixed_update(double fixed_delta);
-    void run_pre_physics(double fixed_delta);
+    void run_fixed_update(flecs::world& world, double fixed_delta);
+    void run_pre_physics(flecs::world& world, double fixed_delta);
     void run_physics(double fixed_delta);
     void run_post_physics(double fixed_delta);
-    void run_fixed_post(double fixed_delta);
+    void run_fixed_post(flecs::world& world, double fixed_delta);
     void run_frame(flecs::world& world, double frame_delta);
     void trace(AnimationScheduleEvent event, double delta_seconds);
 
@@ -133,6 +161,9 @@ private:
     std::map<uint64_t, RootMotionSlot> desired_root_motion_;
     const AnimationWorldQueries* world_queries_ = nullptr;
     uint64_t world_query_overflow_count_ = 0;
+    std::map<uint64_t, AnimationFixedWork> fixed_work_;
+    std::vector<AnimationMarkerEvent> marker_events_;
+    std::vector<DesiredRootMotion> consumed_root_motion_;
 };
 
 // Target writes are intentionally stored in world coordinates.  This helper is

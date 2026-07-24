@@ -1,6 +1,7 @@
 #include "animation/animation_evaluator.h"
 #include "animation/animation_systems.h"
 #include "animation/animation_world_queries.h"
+#include "../src/ecs/ecs_runtime.h"
 #include "check.h"
 
 #include <cstdio>
@@ -85,6 +86,29 @@ void test_queries_apply_cap_and_explicit_misses() {
           "overflow queries explicitly report no-hit and increment overflow stats");
 }
 
+void test_runtime_fixed_phases_execute_registered_animation_work() {
+    ecs_runtime::Runtime runtime;
+    RecordingWorldQueries queries;
+    AnimationSystems& systems = runtime.animation_systems();
+    systems.set_world_queries(&queries);
+    AnimationFixedWork work{};
+    work.instance = handle(33);
+    work.clip.duration = 1.0f;
+    work.clip.loop = true;
+    work.clip.time = 0.9f;
+    work.clip.rate = 1.0f;
+    work.clip.markers = {{0.0f, 1}};
+    work.root_previous.translation = {0.0f, 0.0f, 0.0f};
+    work.root_current.translation = {1.0f, 0.0f, 0.0f};
+    work.queries.push_back({handle(33), 0, 0, {0, 0, 0}, {0, -1, 0}, 3.0f, UINT64_MAX});
+    CHECK(systems.register_fixed_work(work), "runtime accepts a valid animation fixed-work binding");
+    runtime.tick({0.2f, 0.1f, 4});
+    CHECK(queries.calls == 2, "FixedPostUpdate executes registered animation world queries for every real fixed step");
+    CHECK(systems.take_marker_events().size() == 1, "FixedUpdate emits bound clip markers in the real runtime");
+    CHECK(systems.take_consumed_root_motion().size() == 2,
+          "PrePhysics consumes each registered desired root motion exactly once per fixed tick");
+}
+
 } // namespace
 
 int main() {
@@ -93,6 +117,7 @@ int main() {
     test_root_motion_delta_preserves_loop_boundary_translation();
     test_world_target_is_resolved_at_evaluation_boundary();
     test_queries_apply_cap_and_explicit_misses();
+    test_runtime_fixed_phases_execute_registered_animation_work();
     if (g_failures) return 1;
     std::puts("animation_simulation_tests: all tests passed");
 }
