@@ -118,5 +118,30 @@ void test_graph_root_motion_crosses_loops_and_locks_pose(){
  CHECK(reverse.evaluate({request(r,f.def,1,.2f)})&&reverse.evaluate({request(r,f.def,2,.2f)}),"reverse graph loop samples evaluate");
  CHECK(reverse.fixed_root_motion(r,motion)&&near(motion.delta.translation.x,-2.0f),"root delta preserves reverse multi-loop distance");
 }
+void test_root_lock_preserves_authored_root_reference_and_scale(){
+ RigDefinition root_rig; AnimationTransform rest{}; rest.translation={3,4,5}; rest.rotation={0,0,.70710678f,.70710678f}; rest.scale={2,3,4};
+ root_rig.joints.push_back({"root","",rest,1,{"t",1,1,"root"}});
+ AnimationTransform end=rest; end.translation.x=7; end.rotation={0,0,1,0}; end.scale={4,5,6};
+ ClipDefinition root_clip; root_clip.name="root-lock"; root_clip.duration=1; root_clip.rate=1; root_clip.loop=false; root_clip.source={"t",1,1,"root-lock"};
+ root_clip.tracks.push_back({"root",{{0,rest,{"t",1,1,"start"}},{1,end,{"t",1,1,"end"}}},{"t",1,1,"track"}});
+ OzzSkeleton skeleton; OzzAnimation animation; Diagnostics diagnostics;
+ CHECK(build_skeleton(root_rig,skeleton,diagnostics)&&build_clip(root_rig,root_clip,animation,diagnostics),"build non-identity root-lock fixture");
+ AnimationEvaluationDefinition definition; definition.skeleton=&skeleton; definition.clips={{&animation,1,false,false}}; definition.inverse_bind_model={identity()}; definition.nodes={{RuntimeGraphNodeKind::Clip,{},0},{RuntimeGraphNodeKind::Output,{0}}};
+ const auto h=handle(52); AnimationEvaluator evaluator; auto first=request(h,definition,1,.25f); first.root_lock=true;
+ auto second=request(h,definition,2,.25f); second.root_lock=true;
+ CHECK(evaluator.evaluate({first})&&evaluator.evaluate({second}),"non-identity root-lock samples evaluate");
+ const auto pose=evaluator.snapshot(h); DesiredRootMotion motion{};
+ CHECK(pose.local_pose.count==1&&near(pose.local_pose[0].translation.x,3)&&near(pose.local_pose[0].translation.y,4)&&near(pose.local_pose[0].rotation.z,.70710678f)&&near(pose.local_pose[0].rotation.w,.70710678f),"root lock retains the authored bind translation and rotation");
+ CHECK(near(pose.local_pose[0].scale.x,3)&&near(pose.local_pose[0].scale.y,4)&&near(pose.local_pose[0].scale.z,5),"root lock retains evaluated authored scale");
+ CHECK(evaluator.fixed_root_motion(h,motion)&&near(motion.delta.translation.x,1)&&motion.delta.rotation.z>.20f&&motion.delta.rotation.z<.21f,"root motion exposes only the dynamic translation and rotation");
+ AnimatorCheckpoint checkpoint{}; checkpoint.instance=h;
+ CHECK(evaluator.capture_checkpoint(h,checkpoint),"capture root-locked checkpoint");
+ AnimationEvaluator restored;
+ CHECK(restored.restore_checkpoint(h,definition,checkpoint),"restore root-locked checkpoint");
+ const auto replay=restored.snapshot(h);
+ CHECK(replay.local_pose.count==1&&near(replay.local_pose[0].translation.x,3)&&near(replay.local_pose[0].rotation.z,.70710678f)&&near(replay.local_pose[0].scale.x,3),"checkpoint restore retains locked reference root and authored scale");
+ auto next=request(h,definition,3,.25f); next.root_lock=true;
+ CHECK(restored.evaluate({next})&&restored.fixed_root_motion(h,motion)&&near(motion.delta.translation.x,1),"restored root lock resumes with the same dynamic root delta");
 }
-int main(){test_controls();test_cadence_aware_control_sampling();test_time_interpolation_and_previous();test_wrap_clamp_pause_and_disable();test_non_looping_clip_clamps();test_blend_and_additive();test_budget_order_and_reuse();test_snapshot_backing_and_priority_controller_budget();test_definition_shape_and_graph_contract_rejection();test_graph_root_motion_crosses_loops_and_locks_pose();if(g_failures){std::printf("animation_evaluator_tests: %d failure(s)\n",g_failures);return 1;}std::puts("animation_evaluator_tests: all tests passed");}
+}
+int main(){test_controls();test_cadence_aware_control_sampling();test_time_interpolation_and_previous();test_wrap_clamp_pause_and_disable();test_non_looping_clip_clamps();test_blend_and_additive();test_budget_order_and_reuse();test_snapshot_backing_and_priority_controller_budget();test_definition_shape_and_graph_contract_rejection();test_graph_root_motion_crosses_loops_and_locks_pose();test_root_lock_preserves_authored_root_reference_and_scale();if(g_failures){std::printf("animation_evaluator_tests: %d failure(s)\n",g_failures);return 1;}std::puts("animation_evaluator_tests: all tests passed");}

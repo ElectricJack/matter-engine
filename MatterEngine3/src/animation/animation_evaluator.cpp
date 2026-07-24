@@ -327,8 +327,18 @@ bool AnimationEvaluator::evaluate(std::vector<AnimationEvaluationRequest> reques
         back.local=std::move(results.back());
         // The ECS root is the sole root-motion authority.  Keep the renderer
         // pose in-place after deriving the graph delta so no skinning path can
-        // apply the same translation/rotation a second time.
-        if(request.root_lock) back.local[0]=AnimationTransform{};
+        // apply the same translation/rotation a second time.  The Ozz tracks
+        // contain absolute local transforms, so identity is not the correct
+        // in-place reference for an authored non-identity root: retain the
+        // skeleton rest translation/rotation and only remove the dynamic root
+        // components consumed by ECS.  Scale is deliberately retained from
+        // the evaluated track; root motion never consumes scale.
+        if(request.root_lock) {
+            AnimationTransform root_reference{};
+            if(!def.skeleton->rest_local(0,root_reference)) { all=false; continue; }
+            back.local[0].translation=root_reference.translation;
+            back.local[0].rotation=root_reference.rotation;
+        }
         std::vector<Mat4f> model; if(!local_to_model(*def.skeleton,back.local,model)) { all=false; continue; }
         back.previous_model=state.has_snapshot?state.pose[state.front_slot].model:model;
         back.model=std::move(model); back.palette.resize(back.model.size()); back.previous_palette.resize(back.previous_model.size());

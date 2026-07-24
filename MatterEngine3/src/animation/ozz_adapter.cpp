@@ -150,6 +150,11 @@ struct OzzSampleContext::Impl { std::unique_ptr<ozz::animation::SamplingJob::Con
 
 OzzSkeleton::OzzSkeleton() : impl_(new Impl) {} OzzSkeleton::~OzzSkeleton() = default; OzzSkeleton::OzzSkeleton(OzzSkeleton&&) noexcept = default; OzzSkeleton& OzzSkeleton::operator=(OzzSkeleton&&) noexcept = default;
 std::size_t OzzSkeleton::joint_count() const { return impl_->parents.size(); } JointIndex OzzSkeleton::parent(JointIndex joint) const { return joint < impl_->parents.size() ? impl_->parents[joint] : kInvalidJoint; } JointRange OzzSkeleton::subtree(JointIndex joint) const { return joint < impl_->subtrees.size() ? impl_->subtrees[joint] : JointRange{}; }
+bool OzzSkeleton::rest_local(JointIndex joint, AnimationTransform& out) const {
+    if (joint >= impl_->rest_locals.size()) return false;
+    out = impl_->rest_locals[joint];
+    return true;
+}
 OzzAnimation::OzzAnimation() : impl_(new Impl) {} OzzAnimation::~OzzAnimation() = default; OzzAnimation::OzzAnimation(OzzAnimation&&) noexcept = default; OzzAnimation& OzzAnimation::operator=(OzzAnimation&&) noexcept = default;
 OzzSampleContext::OzzSampleContext() : impl_(new Impl) {} OzzSampleContext::~OzzSampleContext() = default; OzzSampleContext::OzzSampleContext(OzzSampleContext&&) noexcept = default; OzzSampleContext& OzzSampleContext::operator=(OzzSampleContext&&) noexcept = default;
 

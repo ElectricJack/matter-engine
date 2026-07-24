@@ -35,11 +35,12 @@ struct BoundFixture {
     OzzAnimation clip;
     std::shared_ptr<AnimationEvaluationDefinition> evaluation = std::make_shared<AnimationEvaluationDefinition>();
     Diagnostics diagnostics;
-    BoundFixture() {
+    explicit BoundFixture(const AnimationTransform* root_rest = nullptr,
+                          const AnimationTransform* root_end = nullptr) {
         RigDefinition rig;
-        AnimationTransform rest{};
-        AnimationTransform end = rest;
-        end.translation.x = 1.0f;
+        AnimationTransform rest = root_rest ? *root_rest : AnimationTransform{};
+        AnimationTransform end = root_end ? *root_end : rest;
+        if (!root_end) end.translation.x += 1.0f;
         rig.joints.push_back({"root", "", rest, 1, {"test", 1, 1, "root"}});
         ClipDefinition source;
         source.name = "move"; source.duration = 1.0f; source.rate = 30.0f; source.loop = true;
@@ -276,6 +277,46 @@ void test_service_graph_root_motion_owns_fixed_authority() {
           "published skeleton pose has root translation removed after root authority consumes it");
 }
 
+void test_service_root_lock_keeps_authored_reference_out_of_ecs_authority() {
+    AnimationTransform rest{};
+    rest.translation = {3.0f, 4.0f, 5.0f};
+    rest.rotation = {0.0f, 0.0f, 0.70710678f, 0.70710678f};
+    rest.scale = {2.0f, 3.0f, 4.0f};
+    AnimationTransform end = rest;
+    end.translation.x = 7.0f;
+    end.rotation = {0.0f, 0.0f, 1.0f, 0.0f};
+    end.scale = {4.0f, 5.0f, 6.0f};
+
+    ecs_runtime::Runtime runtime;
+    AnimationService service;
+    runtime.attach_animation_service(service);
+    const AnimAsset* asset = service.insert_asset({0x95u, {1u, 2u}});
+    BoundFixture fixture(&rest, &end);
+    auto descriptor = std::make_shared<AnimationRuntimeBindingDescriptor>();
+    descriptor->evaluation = fixture.evaluation;
+    descriptor->fixed_work.clip.duration = 1.0f;
+    descriptor->fixed_work.clip.loop = true;
+    flecs::entity root = runtime.world().entity("NonIdentityGraphRootAuthority");
+    ecs::LocalTransform root_local{};
+    root_local.translation.x = 10.0f;
+    root.set<ecs::LocalTransform>(root_local);
+    descriptor->fixed_work.root_entity = root.id();
+    AnimationRuntimeDefinition definition;
+    definition.binding = descriptor;
+    const Animator animator = service.create(asset, definition);
+    CHECK(animator.valid(), "create non-identity root-lock animator");
+
+    runtime.tick({0.2f, 0.1f, 4});
+    const ecs::LocalTransform moved = root.get<ecs::LocalTransform>();
+    CHECK(moved.translation.x > 10.39f && moved.translation.x < 10.41f && moved.rotation.z > .075f && moved.rotation.z < .077f,
+          "ECS authority receives only the dynamic root translation and rotation");
+    const auto pose = runtime.animation_systems().pose_snapshots().latest(animator.instance);
+    CHECK(pose.local_pose.count == 1 && pose.local_pose[0].translation.x == 3.0f && pose.local_pose[0].translation.y == 4.0f &&
+              pose.local_pose[0].rotation.z > .70f && pose.local_pose[0].rotation.z < .71f &&
+              pose.local_pose[0].scale.x > 2.19f && pose.local_pose[0].scale.x < 2.21f,
+          "root-locked pose retains bind translation/rotation and evaluated scale");
+}
+
 } // namespace
 
 int main() {
@@ -286,6 +327,7 @@ int main() {
     test_queries_apply_cap_and_explicit_misses();
     test_runtime_fixed_phases_execute_registered_animation_work();
     test_service_graph_root_motion_owns_fixed_authority();
+    test_service_root_lock_keeps_authored_reference_out_of_ecs_authority();
     test_service_bound_runtime_work_is_automatic_and_generation_safe();
     test_service_checkpoint_restores_runtime_tick_deterministically();
     if (g_failures) return 1;

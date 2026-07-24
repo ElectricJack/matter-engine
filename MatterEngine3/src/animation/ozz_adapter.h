@@ -23,6 +23,10 @@ public:
     std::size_t joint_count() const;
     JointIndex parent(JointIndex joint) const;
     JointRange subtree(JointIndex joint) const;
+    // Copies the authored skeleton-local rest transform.  Runtime users need
+    // this for operations such as root locking that must preserve an authored
+    // root offset without exposing Ozz implementation data.
+    bool rest_local(JointIndex joint, AnimationTransform& out) const;
 
 private:
     struct Impl;
