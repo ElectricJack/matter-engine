@@ -130,7 +130,7 @@ endif
 # application/backend as an explicit compatibility path until the later engine
 # OpenGL-removal task can migrate or retire it without breaking the default target.
 LINUX_APP_SRC = main_linux.cpp ui_linux.cpp camera_controller.cpp camera_focus.cpp streaming_anchor_controller.cpp selection_set.cpp editor_model.cpp scene_tree_panel.cpp selection_bounds.cpp viewport_pick.cpp selection_outline.cpp toolbar_panel.cpp console_panel.cpp console_log.cpp properties_registry.cpp properties_panel.cpp specialized_editors.cpp gizmo.cpp os_open.cpp
-APP_SRC = main.cpp ui.cpp camera_controller.cpp camera_focus.cpp streaming_anchor_controller.cpp selection_set.cpp editor_model.cpp scene_tree_panel.cpp selection_bounds.cpp viewport_pick.cpp selection_outline.cpp toolbar_panel.cpp console_panel.cpp console_log.cpp properties_registry.cpp properties_panel.cpp specialized_editors.cpp gizmo.cpp os_open.cpp
+APP_SRC = main.cpp ui.cpp ui_lighting_controls.cpp camera_controller.cpp camera_focus.cpp streaming_anchor_controller.cpp selection_set.cpp editor_model.cpp scene_tree_panel.cpp selection_bounds.cpp viewport_pick.cpp selection_outline.cpp toolbar_panel.cpp console_panel.cpp console_log.cpp properties_registry.cpp properties_panel.cpp specialized_editors.cpp gizmo.cpp os_open.cpp
 
 # Windows direct-source compile: ME3 pipeline + MSL + QJS (mirrors old viewer).
 # These are ONLY used by the Windows target; the Linux target links libmatter_engine3.a.
@@ -451,8 +451,10 @@ $(GLFW_WIN_LIB): $(GLFW_WIN_OBJ)
 	$(WIN_AR) rcs $@ $^
 
 VK_SPV = build/shaders_vk/transform_probe.comp.spv \
+         build/shaders_vk/animation_skin.comp.spv \
          build/shaders_vk/cull.comp.spv \
          build/shaders_vk/raster.vert.spv \
+         build/shaders_vk/raster_skin.vert.spv \
          build/shaders_vk/gbuffer.frag.spv \
          build/shaders_vk/composite.vert.spv \
          build/shaders_vk/composite.frag.spv \
@@ -481,6 +483,12 @@ build/shaders_vk/%.spv: $(ME3_DIR)/shaders_vk/%
 build/shaders_vk/raster.vert.spv build/shaders_vk/gbuffer.frag.spv: \
     $(ME3_DIR)/shaders_vk/material_common.glsl
 
+build/shaders_vk/raster_skin.vert.spv: $(ME3_DIR)/shaders_vk/raster.vert \
+    $(ME3_DIR)/shaders_vk/material_common.glsl
+	@mkdir -p $(dir $@)
+	$(GLSLC) --target-env=vulkan1.3 -O -I$(ME3_DIR)/shaders_vk \
+	    -DMATTER_SKINNED_VERTEX_INPUT $< -o $@
+
 build/shaders_vk/gbuffer.frag.spv: $(ME3_DIR)/shaders_vk/tileset_common.glsl
 
 build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_visibility.rahit.spv \
@@ -501,8 +509,7 @@ $(VK_EMBEDDED_HEADER): $(VK_SPV) $(ME3_DIR)/tools/embed_spirv.py
 
 build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/tests/vulkan_smoke_tests.cpp \
-        ui.cpp ui.h streaming_anchor_controller.cpp \
-        streaming_anchor_controller.h $(IMGUI_SRC_WIN) \
+        ui_lighting_controls.cpp ui.h \
         $(ME3_DIR)/include/matter/vulkan_device.h \
         $(ME3_DIR)/src/render/gpu_matrix_pack.h \
         $(ME3_DIR)/src/render/vk_draw_command.h \
@@ -535,9 +542,7 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/matrix_math.cpp \
         $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(W_FLECS_OBJ)
 	@mkdir -p $(dir $@)
-	$(WIN_CXX) $(ME3_DIR)/tests/vulkan_smoke_tests.cpp ui.cpp \
-	    streaming_anchor_controller.cpp \
-	    $(IMGUI_SRC_WIN) \
+	$(WIN_CXX) $(ME3_DIR)/tests/vulkan_smoke_tests.cpp ui_lighting_controls.cpp \
 	    $(ME3_DIR)/src/render/streamline_bridge.cpp \
 	    $(ME3_DIR)/src/render/vk_context.cpp \
 	    $(ME3_DIR)/src/render/vk_resources.cpp \
@@ -568,11 +573,10 @@ build/windows/vulkan_smoke_tests.exe: \
 	    -I../MatterSurfaceLib/include \
 	    -I$(ME3_DIR)/tests \
 	    -I../Libraries/raylib/src/external/glfw/include \
-	    -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends -I$(IMGUIZMO_PATH) \
 	    -I$(FLECS_DIR) \
 	    $(if $(filter 1,$(HAVE_STREAMLINE)),-I"$(STREAMLINE_PATH)/include") \
 	    -I$(VULKAN_INCLUDE) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 \
-	    -lgdi32 -luser32 -lshell32 -Wl,-Bstatic
+	    $(WIN_SYSTEM_LIBS) -Wl,-Bstatic
 
 .PHONY: vulkan-smoke
 vulkan-smoke: vulkan-preflight $(GLFW_WIN_LIB) \

@@ -25,18 +25,6 @@ namespace {
 
 } // namespace
 
-void reset_lighting_controls(ViewerStats& stats) {
-    stats.lighting = matter::VulkanLightingOverrides{};
-}
-
-void prepare_world_reload(ViewerStats& stats) {
-    reset_lighting_controls(stats);
-}
-
-void complete_world_switch(ViewerStats& stats, bool succeeded) {
-    if (succeeded) reset_lighting_controls(stats);
-}
-
 std::vector<WorldEntry> scan_worlds(const std::string& examples_root) {
     namespace fs = std::filesystem;
     std::vector<WorldEntry> out;

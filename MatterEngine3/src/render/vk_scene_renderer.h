@@ -298,6 +298,23 @@ struct GiAtrousGpuResult {
     std::vector<matter::Float4> penultimate;
     std::array<uint32_t, 5> gpu_step_widths{};
 };
+
+// Test-only direct execution fixture for the production C2 skin pipeline.
+// Unlike the CPU oracle it binds VkSceneRenderer's actual descriptor layout
+// and compute pipeline, then reads both deformation streams back after the
+// same compute-to-consumer barrier the raster path records.
+struct VkAnimationSkinGpuFixture {
+    std::vector<VkSkinSourceVertex> source;
+    std::vector<VkSkinInfluence> influences;
+    std::vector<VkSkinJoint> current_palette;
+    std::vector<VkSkinJoint> previous_palette;
+    std::vector<VkSkinWorkItem> work;
+};
+
+struct VkAnimationSkinGpuResult {
+    std::vector<VkSkinVertex> current;
+    std::vector<VkSkinVertex> previous;
+};
 #endif
 
 struct VkSceneLighting {
@@ -539,6 +556,9 @@ public:
     bool test_dispatch_gi_atrous_fixture(
         const GiAtrousGpuFixture& fixture, GiAtrousGpuResult& result,
         std::string& error);
+    bool test_dispatch_animation_skin_fixture(
+        const VkAnimationSkinGpuFixture& fixture,
+        VkAnimationSkinGpuResult& result, std::string& error);
     bool test_record_hdr_constant(const matter::VulkanFrame& frame,
                                   matter::Float3 color,
                                   std::string& error);

@@ -10,7 +10,10 @@ struct SourceVertex {
     vec4 tint;
     vec4 surface;
     uint material_index;
-    uvec3 pad;
+    // Do not use uvec3 here: std430 gives it 16-byte base alignment and
+    // silently changes this record's array stride to 96 bytes. The C++ ABI is
+    // intentionally five vec4 lanes (80 bytes), so retain scalar padding.
+    uint pad0, pad1, pad2;
 };
 struct Influence { uvec4 joint_weight_lo; uvec4 weight_joint_hi; };
 // C++ VkSkinInfluence is four u16 joints followed by four u16 weights. GLSL
@@ -27,7 +30,9 @@ struct SkinnedVertex {
     vec4 tint;
     vec4 surface;
     uint material_index;
-    uvec3 pad;
+    // Same scalar-padding requirement as SourceVertex: VkSkinVertex is 96
+    // bytes, with the three trailing words immediately following material.
+    uint pad0, pad1, pad2;
 };
 
 layout(set = 2, binding = 0, std430) readonly buffer Sources { SourceVertex source[]; };
@@ -74,7 +79,7 @@ void main() {
     out_vertex.tint = input_vertex.tint;
     out_vertex.surface = input_vertex.surface;
     out_vertex.material_index = input_vertex.material_index;
-    out_vertex.pad = uvec3(0);
+    out_vertex.pad0 = out_vertex.pad1 = out_vertex.pad2 = 0u;
     current_output[item.output_current + local_vertex] = out_vertex;
     // Raster binds this second stream at location 5.  Keep its primary
     // position explicitly previous so the vertex fetch cannot accidentally

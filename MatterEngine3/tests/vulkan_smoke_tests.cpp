@@ -4756,6 +4756,157 @@ void finish_vulkan_test(std::unique_ptr<matter::VulkanDevice>& vulkan) {
           "no Vulkan validation errors through retained device teardown");
 }
 
+viewer::VkSkinMatrix skin_identity_matrix() {
+    viewer::VkSkinMatrix result{};
+    result.elements[0] = result.elements[5] = result.elements[10] =
+        result.elements[15] = 1.0f;
+    return result;
+}
+
+viewer::VkSkinMatrix skin_z_rotation(float radians, float sx = 1.0f,
+                                     float sy = 1.0f) {
+    viewer::VkSkinMatrix result = skin_identity_matrix();
+    const float c = std::cos(radians);
+    const float s = std::sin(radians);
+    result.elements[0] = c * sx;
+    result.elements[1] = s * sx;
+    result.elements[4] = -s * sy;
+    result.elements[5] = c * sy;
+    return result;
+}
+
+void check_skin_fixture_against_cpu(
+    const viewer::VkAnimationSkinGpuFixture& fixture,
+    const viewer::VkAnimationSkinGpuResult& result, const char* label) {
+    for (const viewer::VkSkinWorkItem& work : fixture.work) {
+        const uint32_t palette_count =
+            work.flags >> viewer::kVkSkinPaletteCountShift;
+        for (uint32_t vertex = 0; vertex != work.vertex_count; ++vertex) {
+            viewer::VkSkinVertex expected{};
+            const bool cpu_ok = viewer::vk_skin_vertex_cpu(
+                fixture.source[work.source_vertex + vertex],
+                fixture.influences[work.influence + vertex],
+                fixture.current_palette.data() + work.palette,
+                fixture.previous_palette.data() + work.palette,
+                palette_count, expected);
+            const viewer::VkSkinVertex& actual =
+                result.current[work.output_current + vertex];
+            const viewer::VkSkinVertex& previous =
+                result.previous[work.output_previous + vertex];
+            if (!cpu_ok) {
+                CHECK(actual.position[0] == 0.0f && previous.position[0] == 0.0f,
+                      label);
+                continue;
+            }
+            bool parity = true;
+            for (uint32_t component = 0; component != 3; ++component) {
+                parity = parity &&
+                    std::fabs(actual.position[component] -
+                              expected.position[component]) <= 1e-5f &&
+                    std::fabs(previous.position[component] -
+                              expected.previous_position[component]) <= 1e-5f &&
+                    std::fabs(actual.normal[component] -
+                              expected.normal[component]) <= 1e-4f;
+            }
+            if (!parity)
+                std::printf("%s: GPU current=(%.5f %.5f %.5f) prior=(%.5f %.5f %.5f) expected=(%.5f %.5f %.5f) prior=(%.5f %.5f %.5f)\n",
+                            label, actual.position[0], actual.position[1],
+                            actual.position[2], previous.position[0],
+                            previous.position[1], previous.position[2],
+                            expected.position[0], expected.position[1],
+                            expected.position[2], expected.previous_position[0],
+                            expected.previous_position[1],
+                            expected.previous_position[2]);
+            CHECK(parity, label);
+        }
+    }
+}
+
+void run_animation_skin_gpu_readback_tests(matter::VulkanDevice& vulkan) {
+    viewer::VkSceneRenderer renderer(vulkan);
+    renderer.test_force_rt_unavailable(true);
+    std::string error;
+    const bool initialized = renderer.init(error);
+    CHECK(initialized, error.empty() ? "initialize skin GPU fixture renderer"
+                                      : error.c_str());
+    if (!initialized) return;
+
+    for (const uint32_t count : {1u, 63u, 64u, 65u}) {
+        viewer::VkAnimationSkinGpuFixture fixture{};
+        fixture.source.resize(count);
+        fixture.influences.resize(count);
+        for (uint32_t index = 0; index != count; ++index) {
+            fixture.source[index].position[0] = static_cast<float>(index) * 0.25f;
+            fixture.source[index].position[1] = 1.0f;
+            fixture.source[index].normal[0] = 1.0f;
+            fixture.source[index].tint[2] = 0.75f;
+            fixture.source[index].surface[3] = 1.0f;
+            fixture.source[index].material_index = 7;
+            fixture.influences[index].weight[0] = 65535;
+        }
+        viewer::VkSkinJoint current{};
+        current.position = skin_identity_matrix();
+        current.normal = skin_identity_matrix();
+        current.position.elements[12] = 2.0f;
+        viewer::VkSkinJoint previous = current;
+        previous.position.elements[12] = -3.0f;
+        fixture.current_palette.push_back(current);
+        fixture.previous_palette.push_back(previous);
+        fixture.work.push_back({0, 0, count, 0, 0, 0, 0,
+                                1u << viewer::kVkSkinPaletteCountShift});
+        viewer::VkAnimationSkinGpuResult result;
+        error.clear();
+        const bool dispatched =
+            renderer.test_dispatch_animation_skin_fixture(fixture, result, error);
+        CHECK(dispatched, error.empty() ? "dispatch skin GPU fixture" : error.c_str());
+        if (dispatched) check_skin_fixture_against_cpu(
+            fixture, result, "GPU skin identity/current-previous parity");
+    }
+
+    viewer::VkAnimationSkinGpuFixture blend{};
+    blend.source.resize(1);
+    blend.source[0].position[0] = 1.0f;
+    blend.source[0].normal[0] = 1.0f;
+    blend.influences.resize(1);
+    blend.influences[0].joint[0] = 0;
+    blend.influences[0].joint[1] = 1;
+    blend.influences[0].weight[0] = 32768;
+    blend.influences[0].weight[1] = 32767;
+    viewer::VkSkinJoint joint0{};
+    joint0.position = skin_z_rotation(0.4f, 2.0f, 0.5f);
+    joint0.normal = skin_z_rotation(0.4f, 0.5f, 2.0f);
+    viewer::VkSkinJoint joint1{};
+    joint1.position = skin_z_rotation(-0.7f, 0.25f, 3.0f);
+    joint1.normal = skin_z_rotation(-0.7f, 4.0f, 1.0f / 3.0f);
+    blend.current_palette = {joint0, joint1};
+    joint0.position.elements[12] = -1.0f;
+    joint1.position.elements[12] = 3.0f;
+    blend.previous_palette = {joint0, joint1};
+    blend.work.push_back({0, 0, 1, 0, 0, 0, 0,
+                          2u << viewer::kVkSkinPaletteCountShift});
+    viewer::VkAnimationSkinGpuResult blend_result;
+    error.clear();
+    const bool blend_dispatched = renderer.test_dispatch_animation_skin_fixture(
+        blend, blend_result, error);
+    CHECK(blend_dispatched, error.empty() ? "dispatch rotated blended skin GPU fixture"
+                                          : error.c_str());
+    if (blend_dispatched) check_skin_fixture_against_cpu(
+        blend, blend_result, "GPU skin rotation blend and nonuniform normal parity");
+
+    viewer::VkAnimationSkinGpuFixture invalid = blend;
+    invalid.influences[0].joint[0] = 2;
+    viewer::VkAnimationSkinGpuResult invalid_result;
+    error.clear();
+    const bool invalid_dispatched = renderer.test_dispatch_animation_skin_fixture(
+        invalid, invalid_result, error);
+    CHECK(invalid_dispatched, error.empty() ? "dispatch invalid-joint guard fixture"
+                                            : error.c_str());
+    if (invalid_dispatched) check_skin_fixture_against_cpu(
+        invalid, invalid_result, "GPU invalid joint guard leaves output unwritten");
+    CHECK(vulkan.validation_error_count() == 0,
+          "animation skin fixture emits no Vulkan validation errors");
+}
+
 bool run_retention_fault(matter::VulkanDevice& vulkan,
                          const std::string& phase, std::string& error) {
     _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS", phase.c_str());
@@ -4887,17 +5038,22 @@ void run_outlive_resources(std::unique_ptr<matter::VulkanDevice>& vulkan,
 }  // namespace
 
 int main() {
-    test_vulkan_lighting_override_contract();
-    test_viewer_lighting_controls();
-    run_vulkan_gi_math_tests();
-    run_raster_mesh_material_contract_tests();
-    run_rt_lod_payload_contract_tests();
-    run_ray_tracing_capability_contract_tests();
-    run_vulkan_instance_cache_tests();
-    run_vulkan_temporal_tests();
-    run_vulkan_gi_temporal_sequence_tests();
-    run_streamline_bridge_fallback_tests();
-    run_dlss_bridge_contract_tests();
+    const char* startup_smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
+    const bool animation_skin_only = startup_smoke_mode &&
+        std::string(startup_smoke_mode) == "animation-skin";
+    if (!animation_skin_only) {
+        test_vulkan_lighting_override_contract();
+        test_viewer_lighting_controls();
+        run_vulkan_gi_math_tests();
+        run_raster_mesh_material_contract_tests();
+        run_rt_lod_payload_contract_tests();
+        run_ray_tracing_capability_contract_tests();
+        run_vulkan_instance_cache_tests();
+        run_vulkan_temporal_tests();
+        run_vulkan_gi_temporal_sequence_tests();
+        run_streamline_bridge_fallback_tests();
+        run_dlss_bridge_contract_tests();
+    }
 #ifdef MATTER_VK_TEST_LAYER_PATH
     // MSYS2 installs validation-layer manifests outside the Windows registry.
     // Point this standalone test at that installed development package and let
@@ -5041,6 +5197,16 @@ int main() {
             run_vk_scene_checked_size_tests(*vulkan);
             run_cull_parity(*vulkan);
             run_cull_region_and_lifecycle_tests(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "animation-skin") {
+            run_animation_skin_gpu_readback_tests(*vulkan);
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
             vulkan->wait_idle();

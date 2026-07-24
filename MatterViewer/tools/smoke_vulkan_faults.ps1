@@ -12,7 +12,8 @@ try {
         @{ Label = 'Streamline missing device proxy'; Mode = 'streamline-missing-device-proxy' },
         @{ Label = 'rt'; Mode = 'rt' },
         @{ Label = 'rt-disabled'; Mode = 'rt-disabled' },
-        @{ Label = 'rt-unavailable'; Mode = 'rt-unavailable' }
+        @{ Label = 'rt-unavailable'; Mode = 'rt-unavailable' },
+        @{ Label = 'animation skin compute readback'; Mode = 'animation-skin' }
     )
     foreach ($case in $modes) {
         [Environment]::SetEnvironmentVariable('MATTER_VK_SMOKE_MODE',

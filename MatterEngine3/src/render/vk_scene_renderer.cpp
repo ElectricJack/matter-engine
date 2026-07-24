@@ -1288,6 +1288,12 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
         !create_gi_temporal_pipeline(error) ||
         !create_gi_atrous_pipeline(error))
         return false;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    // The skin compute fixture does not exercise RT. Keeping it disabled for
+    // that test avoids creating ray-query modules on a device deliberately
+    // configured without the optional ray-query feature.
+    if (test_force_rt_unavailable_) return true;
+#endif
     return !vulkan_->ray_tracing_available() ||
            create_ray_tracing_pipeline(error);
 }
@@ -3490,7 +3496,14 @@ bool VkSceneRenderer::init(std::string& error) {
         destroy_pipeline();
         return false;
     }
-    if (!volumetrics_) {
+    bool initialize_volumetrics = true;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    // The direct C2 skin fixture deliberately avoids optional ray-query
+    // modules as well as RT pipelines; it exercises only the skin compute
+    // ABI and must be valid on a non-ray-query logical device.
+    initialize_volumetrics = !test_force_rt_unavailable_;
+#endif
+    if (initialize_volumetrics && !volumetrics_) {
         auto vol = std::make_unique<VkVolumetrics>();
         std::string vol_error;
         if (vol->init(*vulkan_, vol_error)) {
@@ -4544,6 +4557,227 @@ bool VkSceneRenderer::test_dispatch_gi_atrous_fixture(
             result.gpu_step_widths.size() * sizeof(uint32_t), 0, error))
         return false;
     return true;
+}
+
+bool VkSceneRenderer::test_dispatch_animation_skin_fixture(
+    const VkAnimationSkinGpuFixture& fixture,
+    VkAnimationSkinGpuResult& result, std::string& error) {
+    result = {};
+    error.clear();
+    if (!initialized_ || skin_pipeline_ == VK_NULL_HANDLE ||
+        skin_pipeline_layout_ == VK_NULL_HANDLE ||
+        skin_set_layout_ == VK_NULL_HANDLE || fixture.source.empty() ||
+        fixture.influences.empty() || fixture.current_palette.empty() ||
+        fixture.previous_palette.empty() || fixture.work.empty() ||
+        fixture.current_palette.size() != fixture.previous_palette.size()) {
+        error = "animation skin GPU fixture requires initialized nonempty streams";
+        return false;
+    }
+
+    uint64_t current_count = 0;
+    uint64_t previous_count = 0;
+    uint32_t max_vertices = 0;
+    for (const VkSkinWorkItem& work : fixture.work) {
+        const uint32_t palette_count =
+            work.flags >> kVkSkinPaletteCountShift;
+        if (work.vertex_count == 0 || palette_count == 0 ||
+            work.source_vertex > fixture.source.size() ||
+            work.vertex_count > fixture.source.size() - work.source_vertex ||
+            work.influence > fixture.influences.size() ||
+            work.vertex_count > fixture.influences.size() - work.influence ||
+            work.palette > fixture.current_palette.size() ||
+            palette_count > fixture.current_palette.size() - work.palette) {
+            error = "animation skin GPU fixture has an invalid work range";
+            return false;
+        }
+        current_count = std::max<uint64_t>(
+            current_count,
+            static_cast<uint64_t>(work.output_current) + work.vertex_count);
+        previous_count = std::max<uint64_t>(
+            previous_count,
+            static_cast<uint64_t>(work.output_previous) + work.vertex_count);
+        max_vertices = std::max(max_vertices, work.vertex_count);
+    }
+    if (fixture.work.size() > kVkMaxSkinWorkItems ||
+        current_count == 0 || previous_count == 0 ||
+        current_count > kVkMaxSkinnedOutputVertices ||
+        previous_count > kVkMaxSkinnedOutputVertices) {
+        error = "animation skin GPU fixture exceeds C2 queue bounds";
+        return false;
+    }
+    const uint32_t groups_x = (max_vertices + 63u) / 64u;
+    if (groups_x == 0 || groups_x > limits_.max_dispatch_group_count_x) {
+        error = "animation skin GPU fixture dispatch exceeds device limit";
+        return false;
+    }
+
+    const auto bytes = [](size_t count, size_t stride) -> VkDeviceSize {
+        return static_cast<VkDeviceSize>(count) * static_cast<VkDeviceSize>(stride);
+    };
+    const VkBufferUsageFlags input_usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                           VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                                           VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    const VkBufferUsageFlags output_usage = input_usage;
+    matter::VkBufferResource source;
+    matter::VkBufferResource influences;
+    matter::VkBufferResource current_palette;
+    matter::VkBufferResource previous_palette;
+    matter::VkBufferResource work;
+    matter::VkBufferResource current_output;
+    matter::VkBufferResource previous_output;
+    const auto create = [&](matter::VkBufferResource& buffer,
+                            VkDeviceSize size, VkBufferUsageFlags usage) {
+        return matter::create_buffer(
+            *vulkan_, size, usage, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+            buffer, error);
+    };
+    if (!create(source, bytes(fixture.source.size(), sizeof(VkSkinSourceVertex)),
+                input_usage) ||
+        !create(influences, bytes(fixture.influences.size(), sizeof(VkSkinInfluence)),
+                input_usage) ||
+        !create(current_palette,
+                bytes(fixture.current_palette.size(), sizeof(VkSkinJoint)),
+                input_usage) ||
+        !create(previous_palette,
+                bytes(fixture.previous_palette.size(), sizeof(VkSkinJoint)),
+                input_usage) ||
+        !create(work, bytes(fixture.work.size(), sizeof(VkSkinWorkItem)),
+                input_usage) ||
+        !create(current_output,
+                bytes(static_cast<size_t>(current_count), sizeof(VkSkinVertex)),
+                output_usage) ||
+        !create(previous_output,
+                bytes(static_cast<size_t>(previous_count), sizeof(VkSkinVertex)),
+                output_usage)) return false;
+    result.current.resize(static_cast<size_t>(current_count));
+    result.previous.resize(static_cast<size_t>(previous_count));
+    const auto upload = [&](matter::VkBufferResource& buffer, const void* data,
+                            VkDeviceSize size) {
+        return matter::upload_buffer(*vulkan_, buffer, data,
+                                     static_cast<size_t>(size), 0, error);
+    };
+    if (!upload(source, fixture.source.data(), source.size) ||
+        !upload(influences, fixture.influences.data(), influences.size) ||
+        !upload(current_palette, fixture.current_palette.data(),
+                current_palette.size) ||
+        !upload(previous_palette, fixture.previous_palette.data(),
+                previous_palette.size) ||
+        !upload(work, fixture.work.data(), work.size) ||
+        !upload(current_output, result.current.data(), current_output.size) ||
+        !upload(previous_output, result.previous.data(), previous_output.size))
+        return false;
+
+    const VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7};
+    VkDescriptorPoolCreateInfo pool_info{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pool_info.maxSets = 1;
+    pool_info.poolSizeCount = 1;
+    pool_info.pPoolSizes = &pool_size;
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    if (vkCreateDescriptorPool(vulkan_->device(), &pool_info, nullptr, &pool) !=
+        VK_SUCCESS) {
+        error = "vkCreateDescriptorPool(animation skin fixture) failed";
+        return false;
+    }
+    const auto destroy_pool = [&]() {
+        if (pool != VK_NULL_HANDLE)
+            vkDestroyDescriptorPool(vulkan_->device(), pool, nullptr);
+    };
+    VkDescriptorSetAllocateInfo allocate{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    allocate.descriptorPool = pool;
+    allocate.descriptorSetCount = 1;
+    allocate.pSetLayouts = &skin_set_layout_;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    if (vkAllocateDescriptorSets(vulkan_->device(), &allocate, &set) != VK_SUCCESS) {
+        destroy_pool();
+        error = "vkAllocateDescriptorSets(animation skin fixture) failed";
+        return false;
+    }
+    const std::array<matter::VkBufferResource*, 7> buffers{
+        &source, &influences, &current_palette, &previous_palette, &work,
+        &current_output, &previous_output};
+    std::array<VkDescriptorBufferInfo, 7> infos{};
+    std::array<VkWriteDescriptorSet, 7> writes{};
+    for (uint32_t index = 0; index != buffers.size(); ++index) {
+        infos[index] = {buffers[index]->buffer, 0, buffers[index]->size};
+        writes[index] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        writes[index].dstSet = set;
+        writes[index].dstBinding = index;
+        writes[index].descriptorCount = 1;
+        writes[index].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[index].pBufferInfo = &infos[index];
+    }
+    vkUpdateDescriptorSets(vulkan_->device(), static_cast<uint32_t>(writes.size()),
+                           writes.data(), 0, nullptr);
+
+    struct Record {
+        VkSceneRenderer* renderer;
+        VkDescriptorSet set;
+        VkBuffer current;
+        VkBuffer previous;
+        uint32_t groups_x;
+        uint32_t work_count;
+    } record{this, set, current_output.buffer, previous_output.buffer,
+             groups_x, static_cast<uint32_t>(fixture.work.size())};
+    const auto callback = [](VkCommandBuffer command_buffer, void* opaque) {
+        const Record& item = *static_cast<const Record*>(opaque);
+        VkSceneRenderer& renderer = *item.renderer;
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          renderer.skin_pipeline_);
+        // animation_skin.comp statically uses only set 2. Binding it at its
+        // production set index proves this fixture exercises the renderer's
+        // real ABI instead of a look-alike standalone compute layout.
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                renderer.skin_pipeline_layout_, 2, 1,
+                                &item.set, 0, nullptr);
+        vkCmdPushConstants(command_buffer, renderer.skin_pipeline_layout_,
+                           VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(item.work_count), &item.work_count);
+        vkCmdDispatch(command_buffer, item.groups_x, item.work_count, 1);
+        VkBufferMemoryBarrier2 barriers[2]{};
+        for (VkBufferMemoryBarrier2& barrier : barriers) {
+            barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+            barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+            // Keep the production raster-consumer dependency and add the host
+            // consumer used by this readback fixture.
+            barrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT |
+                                   VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+                                   VK_PIPELINE_STAGE_2_HOST_BIT;
+            barrier.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT |
+                                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                                    VK_ACCESS_2_HOST_READ_BIT;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.offset = 0;
+            barrier.size = VK_WHOLE_SIZE;
+        }
+        barriers[0].buffer = item.current;
+        barriers[1].buffer = item.previous;
+        VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        dependency.bufferMemoryBarrierCount = 2;
+        dependency.pBufferMemoryBarriers = barriers;
+        vkCmdPipelineBarrier2(command_buffer, &dependency);
+    };
+    bool submitted = matter::submit_immediate(
+        *vulkan_, callback, &record, error,
+        matter::ImmediateSubmitPhase::compute_dispatch,
+        {source.lifetime, influences.lifetime, current_palette.lifetime,
+         previous_palette.lifetime, work.lifetime, current_output.lifetime,
+         previous_output.lifetime});
+    if (submitted)
+        submitted = matter::readback_buffer(*vulkan_, current_output,
+                                             result.current.data(),
+                                             current_output.size, 0, error) &&
+                    matter::readback_buffer(*vulkan_, previous_output,
+                                             result.previous.data(),
+                                             previous_output.size, 0, error);
+    destroy_pool();
+    if (!submitted) result = {};
+    return submitted;
 }
 #endif
 
