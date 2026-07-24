@@ -178,6 +178,14 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
 bool load_animation_link(const std::string& path, uint64_t expected_resolved_hash,
                          std::optional<PartAnimationLink>& animation_link_out);
 
+// Read one exact, fully validated canonical v2 Part snapshot and report a
+// fingerprint of the bytes that were parsed. Returns false for an animated
+// (ANLK-bearing), malformed, or unreadable Part. Callers that use an adjacent
+// static acceleration can compare two snapshots to reject a replacement that
+// raced their acceleration load.
+bool load_static_part_snapshot(const std::string& path, uint64_t expected_resolved_hash,
+                               uint64_t& fingerprint_out);
+
 bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
              BLASManager& blas, TLASManager& tlas,
              std::vector<ChildInstance>& children_out,

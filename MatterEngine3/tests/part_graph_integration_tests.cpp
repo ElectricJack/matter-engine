@@ -14,6 +14,9 @@
 #include "part_graph.h"        // includes script_host.h under the guard
 #include "part_asset_v2.h"     // cache_path_resolved
 #include "render/part_store.h" // A8: verify HostBaker and runtime select one root
+#include "animation/anim_asset.h"
+#include "animation/anim_bundle.h"
+#include "animation/animation_binding_bake.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -38,6 +41,108 @@ static std::string read_file(const std::string& path) {
     std::ifstream f(path, std::ios::binary);
     std::ostringstream ss; ss << f.rdbuf();
     return ss.str();
+}
+
+static uint64_t part_checksum(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)), {});
+    uint64_t hash = 1469598103934665603ull;
+    for (size_t i = 40; i < bytes.size(); ++i) {
+        hash ^= bytes[i];
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+static matter::animation::AnimAsset rigid_asset(uint64_t hash,
+                                                  matter::animation::BuildNonce nonce) {
+    using namespace matter::animation;
+    AnimAsset asset;
+    asset.resolved_hash = hash;
+    asset.nonce = nonce;
+    asset.target_abi_tag = kAnimationTargetAbiTag;
+    asset.ozz_tag_hash = kAnimationOzzTagHash;
+    asset.sections = {{AnimSectionKind::RigSchema, {1}},
+                      {AnimSectionKind::InputTargetSchemas, {2}},
+                      {AnimSectionKind::GraphControllerBytecode, {3}},
+                      {AnimSectionKind::OzzSkeleton, {7}},
+                      {AnimSectionKind::OzzClips, {8}}};
+    BindingBake binding;
+    matter::Mat4f identity{};
+    identity.m[0] = identity.m[5] = identity.m[10] = identity.m[15] = 1.0f;
+    binding.inverse_bind_matrices.push_back(identity);
+    RigidSegmentBake rigid;
+    rigid.name = "segment";
+    rigid.joint = 0;
+    rigid.geometry.push_back({0, 1, 0, 1});
+    binding.rigid_segments.push_back(rigid);
+    if (!set_anim_binding_bake(asset, binding)) std::abort();
+    return asset;
+}
+
+static bool publish_rigid_bundle(const std::filesystem::path& root, uint64_t hash,
+                                 matter::animation::BuildNonce nonce) {
+    namespace anim = matter::animation;
+    std::error_code ec;
+    std::filesystem::create_directories(root / "parts", ec);
+    if (ec) return false;
+    BLASManager source;
+    TLASManager tlas(4);
+    Tri triangle{};
+    triangle.vertex0 = make_float3(0, 0, 0);
+    triangle.vertex1 = make_float3(1, 0, 0);
+    triangle.vertex2 = make_float3(0, 1, 0);
+    triangle.centroid = make_float3(1.f / 3, 1.f / 3, 0);
+    TriEx extra{};
+    const BLASHandle handle = source.register_triangles(&triangle, 1, &extra);
+    TLASManager::DrawInstance instance{};
+    instance.blas_handle = handle;
+    tlas.draw_batch({instance});
+    tlas.build(source);
+    const auto candidate_part = root / "static-race-candidate.part";
+    const auto candidate_anim = root / "static-race-candidate.anim";
+    const part_asset::PartAnimationLink link{1, 1, hash, nonce.high, nonce.low};
+    if (!part_asset::save_v2(candidate_part.string(), source, tlas, nullptr, 0,
+                             {}, {}, link, hash)) return false;
+    const anim::AnimAsset asset = rigid_asset(hash, nonce);
+    anim::Diagnostics diagnostics;
+    if (!anim::save_anim_candidate(asset, candidate_anim, diagnostics)) return false;
+    anim::BundleIdentity identity;
+    identity.resolved_hash = hash;
+    identity.nonce = nonce;
+    identity.part_body_checksum = part_checksum(candidate_part);
+    identity.anim_body_checksum = anim::anim_body_checksum(asset);
+    identity.target_abi_tag = asset.target_abi_tag;
+    identity.ozz_tag_hash = asset.ozz_tag_hash;
+    return anim::publish_animation_bundle({candidate_part, candidate_anim, root}, identity,
+                                          diagnostics);
+}
+
+static bool publish_flat(const std::filesystem::path& root, uint64_t hash) {
+    std::error_code ec;
+    std::filesystem::create_directories(root / "parts", ec);
+    if (ec) return false;
+    Tri triangle{};
+    triangle.vertex0 = make_float3(0, 0, 0);
+    triangle.vertex1 = make_float3(1, 0, 0);
+    triangle.vertex2 = make_float3(0, 1, 0);
+    triangle.centroid = make_float3(1.f / 3, 1.f / 3, 0);
+    TriEx extra{};
+    BLASManager flat_blas;
+    TLASManager flat_tlas(4);
+    const uint32_t flat_index = static_cast<uint32_t>(flat_blas.get_entries().size());
+    flat_blas.register_triangles(&triangle, 1, &extra);
+    part_asset::FlatCluster cluster{};
+    cluster.aabb_min[0] = cluster.aabb_min[1] = cluster.aabb_min[2] = 0.0f;
+    cluster.aabb_max[0] = cluster.aabb_max[1] = 1.0f;
+    cluster.aabb_max[2] = 0.0f;
+    part_asset::LodLevel level;
+    level.screen_size_threshold = 0.5f;
+    level.blas_indices.push_back(flat_index);
+    cluster.lods.push_back(level);
+    return part_asset::save_flat_v3(
+        (root / part_asset::cache_path_flat(hash)).string(), flat_blas, flat_tlas,
+        {cluster}, hash);
 }
 
 // A8: an ANLK is a commitment to the complete sibling generation.  Static
@@ -156,6 +261,73 @@ static void test_animated_cache_rejects_changed_link_during_validation() {
     baker.set_cache_validation_hook_for_tests({});
     CHECK(baker.cached(first.resolved_hash),
           "A8 next cache probe accepts the stable replacement generation");
+}
+
+// A static flat is only an acceleration of the exact canonical static Part it
+// was selected beside.  Replace that Part atomically with a coherent linked
+// generation after the flat is decoded but before it is admitted: neither the
+// runtime nor the bake cache may return the stale static result.
+static void test_static_flat_rejects_linked_replacement_during_admission() {
+    namespace fs = std::filesystem;
+    namespace pg = part_graph;
+    namespace anim = matter::animation;
+    const fs::path root = fs::temp_directory_path() / "me3_a8_static_flat_toctou";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(root / "parts", ec);
+    CHECK(!ec, "A8 static-flat TOCTOU fixture directory is created");
+    struct Cleanup {
+        fs::path root;
+        ~Cleanup() { std::error_code ignored; fs::remove_all(root, ignored); }
+    } cleanup{root};
+    if (ec) return;
+
+    const std::string source =
+        "class StaticFlatRaceA8 extends Part { build(p) {"
+        "this.beginShape(SHAPE.triangles);this.vertex(0,0,0);"
+        "this.vertex(1,0,0);this.vertex(0,1,0);this.endShape();} }";
+    script_host::ScriptHost host;
+    script_host::BakeOptions options;
+    options.parts_dir = root.string();
+    const auto static_result = host.bake_source(source, "{}", options);
+    CHECK(static_result.error.ok, "A8 static-flat TOCTOU fixture publishes static Part");
+    if (!static_result.error.ok) return;
+    CHECK(publish_flat(root, static_result.resolved_hash),
+          "A8 static-flat TOCTOU fixture publishes static flat sibling");
+
+    const anim::BuildNonce runtime_nonce{0x1111222233334444ull, 0x5555666677778888ull};
+    bool runtime_replaced = false;
+    viewer::PartStore runtime(root.string());
+    runtime.set_flat_admission_hook_for_tests([&] {
+        runtime_replaced = publish_rigid_bundle(root, static_result.resolved_hash, runtime_nonce);
+    });
+    const viewer::LoadedPart* raced = runtime.get_or_load(static_result.resolved_hash);
+    CHECK(runtime_replaced, "A8 runtime static-flat hook atomically publishes linked replacement");
+    CHECK(raced && raced->animation_asset && raced->animation_asset->nonce == runtime_nonce,
+          "A8 runtime rejects stale flat and retries the linked replacement");
+    runtime.set_flat_admission_hook_for_tests({});
+    runtime.release(static_result.resolved_hash);
+    const viewer::LoadedPart* stable_runtime = runtime.get_or_load(static_result.resolved_hash);
+    CHECK(stable_runtime && stable_runtime->animation_asset &&
+              stable_runtime->animation_asset->nonce == runtime_nonce,
+          "A8 next runtime probe loads the stable linked generation");
+
+    // Recreate the static lane, then exercise the matching bake-cache gate.
+    const auto static_again = host.bake_source(source, "{}", options);
+    CHECK(static_again.error.ok && static_again.resolved_hash == static_result.resolved_hash,
+          "A8 static-flat TOCTOU fixture recreates same-root static Part");
+    const anim::BuildNonce bake_nonce{0x9999aaaabbbbccccull, 0xddddeeeeffff0001ull};
+    bool bake_replaced = false;
+    pg::HostBaker baker(host, root.string());
+    baker.set_cache_validation_hook_for_tests([&] {
+        bake_replaced = publish_rigid_bundle(root, static_result.resolved_hash, bake_nonce);
+    });
+    CHECK(!baker.cached(static_result.resolved_hash),
+          "A8 bake cache rejects static Part changed to linked during admission");
+    CHECK(bake_replaced, "A8 bake-cache static hook atomically publishes linked replacement");
+    baker.set_cache_validation_hook_for_tests({});
+    CHECK(baker.cached(static_result.resolved_hash),
+          "A8 next bake-cache probe accepts stable linked generation");
 }
 
 // A8 root-consistency regression: the cache probe and runtime loader must make
@@ -636,6 +808,7 @@ int main(int argc, char** argv) {
     if (argc == 2 && std::strcmp(argv[1], "--animation-provider-only") == 0) {
         test_animated_cache_sibling_contract();
         test_scratch_linked_bundle_never_falls_back_to_cache();
+        test_static_flat_rejects_linked_replacement_during_admission();
         return g_failures == 0 ? 0 : 1;
     }
 
@@ -728,6 +901,7 @@ int main(int argc, char** argv) {
 
     test_animated_cache_sibling_contract();
     test_animated_cache_rejects_changed_link_during_validation();
+    test_static_flat_rejects_linked_replacement_during_admission();
     test_scratch_linked_bundle_never_falls_back_to_cache();
 
     if (g_failures == 0) printf("All part_graph integration tests passed\n");

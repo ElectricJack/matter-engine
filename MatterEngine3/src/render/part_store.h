@@ -116,6 +116,14 @@ public:
     // get_or_load probes scratch first, then falls back to cache_root_.
     void set_scratch_dir(std::string dir) { scratch_dir_ = std::move(dir); }
 
+#ifdef MATTER_TEST_CACHE_VALIDATION_HOOK
+    // Test-build-only interleave seam. It runs after an eligible static flat
+    // has been decoded but before its canonical Part is admitted to loaded_.
+    void set_flat_admission_hook_for_tests(std::function<void()> hook) {
+        flat_admission_hook_for_tests_ = std::move(hook);
+    }
+#endif
+
     // TEST-ONLY: register a pre-built LoadedPart under a hash without any disk I/O.
     // Used by gpu_cull_tests to build synthetic fixtures. Not for production use.
     void inject_for_test(uint64_t part_hash, LoadedPart lp) {
@@ -135,6 +143,9 @@ private:
     BLASManager                       blas_;
     std::map<uint64_t, LoadedPart>    loaded_;
     matter::animation::AnimationAssetStore animation_assets_;
+#ifdef MATTER_TEST_CACHE_VALIDATION_HOOK
+    std::function<void()>              flat_admission_hook_for_tests_;
+#endif
 };
 
 } // namespace viewer

@@ -824,6 +824,19 @@ bool load_animation_link(const std::string& path, uint64_t expected_resolved_has
                            nullptr, nullptr);
 }
 
+bool load_static_part_snapshot(const std::string& path, uint64_t expected_resolved_hash,
+                               uint64_t& fingerprint_out) {
+    fingerprint_out = 0;
+    PartV2Preflight preflight;
+    std::optional<PartAnimationLink> link;
+    if (!preflight_v2_file(path, expected_resolved_hash, preflight, nullptr, nullptr) ||
+        !parse_v2_suffix(preflight, expected_resolved_hash, true, nullptr, &link,
+                         nullptr, nullptr) ||
+        link) return false;
+    fingerprint_out = fnv1a64(preflight.bytes.data(), preflight.bytes.size());
+    return true;
+}
+
 bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
              BLASManager& blas, TLASManager& tlas,
              std::vector<ChildInstance>& children_out,

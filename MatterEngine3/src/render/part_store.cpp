@@ -400,26 +400,39 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
         const std::string selected_root = select_artifact_root(part_hash, scratch_dir_, cache_root_);
         const std::string canonical_part =
             selected_root + "/" + part_asset::cache_path_resolved(part_hash);
-        std::optional<part_asset::PartAnimationLink> canonical_link;
+        uint64_t canonical_fingerprint = 0;
         LoadedPart flat;
-        if (part_asset::load_animation_link(canonical_part, part_hash, canonical_link) &&
-            !canonical_link && load_flat(part_hash, selected_root, flat)) {
-            // Insert the parent FIRST (before any recursive child loads) to prevent
-            // re-entrancy: if a child transitively references the same parent hash,
-            // the early-out at the top of get_or_load will return the already-inserted
-            // (partially constructed) entry rather than recursing infinitely.
-            loaded_.emplace(part_hash, std::move(flat));
+        if (part_asset::load_static_part_snapshot(canonical_part, part_hash,
+                                                  canonical_fingerprint) &&
+            load_flat(part_hash, selected_root, flat)) {
+#ifdef MATTER_TEST_CACHE_VALIDATION_HOOK
+            if (flat_admission_hook_for_tests_) flat_admission_hook_for_tests_();
+#endif
+            // Both snapshots parse one exact canonical Part from the root we
+            // selected before loading the flat.  A replacement (including a
+            // newly linked generation) invalidates this static acceleration;
+            // fall through and re-probe the normal coherent loader instead.
+            uint64_t final_fingerprint = 0;
+            if (part_asset::load_static_part_snapshot(canonical_part, part_hash,
+                                                       final_fingerprint) &&
+                final_fingerprint == canonical_fingerprint) {
+                // Insert the parent FIRST (before any recursive child loads) to prevent
+                // re-entrancy: if a child transitively references the same parent hash,
+                // the early-out at the top of get_or_load will return the already-inserted
+                // (partially constructed) entry rather than recursing infinitely.
+                loaded_.emplace(part_hash, std::move(flat));
 
-            // Recursively load each flat_ref child. The parent is already in loaded_
-            // so circular references are safe.
-            for (const auto& ref : loaded_[part_hash].flat_refs)
-                get_or_load(ref.child_resolved_hash);
+                // Recursively load each flat_ref child. The parent is already in loaded_
+                // so circular references are safe.
+                for (const auto& ref : loaded_[part_hash].flat_refs)
+                    get_or_load(ref.child_resolved_hash);
 
-            // Build expansion into a local vector first, then assign.
-            std::vector<ExpandedNode> exp;
-            build_expansion(part_hash, [this](uint64_t h){ return get_or_load(h); }, exp);
-            loaded_[part_hash].expansion = std::move(exp);
-            return &loaded_[part_hash];
+                // Build expansion into a local vector first, then assign.
+                std::vector<ExpandedNode> exp;
+                build_expansion(part_hash, [this](uint64_t h){ return get_or_load(h); }, exp);
+                loaded_[part_hash].expansion = std::move(exp);
+                return &loaded_[part_hash];
+            }
         }
     }
 

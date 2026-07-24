@@ -558,7 +558,18 @@ bool HostBaker::cached(uint64_t resolved_hash) {
         if (!part_asset::is_cache_artifact_header_compatible(path, resolved_hash, part_asset::kFormatVersionV2)) return false;
         std::optional<part_asset::PartAnimationLink> link;
         if (!part_asset::load_animation_link(path, resolved_hash, link)) return false;
-        if (!link) return true;
+        if (!link) {
+            uint64_t static_fingerprint = 0;
+            if (!part_asset::load_static_part_snapshot(path, resolved_hash,
+                                                       static_fingerprint)) return false;
+#ifdef MATTER_TEST_CACHE_VALIDATION_HOOK
+            if (cache_validation_hook_for_tests_) cache_validation_hook_for_tests_();
+#endif
+            uint64_t final_static_fingerprint = 0;
+            return part_asset::load_static_part_snapshot(path, resolved_hash,
+                                                         final_static_fingerprint) &&
+                   final_static_fingerprint == static_fingerprint;
+        }
 #ifdef MATTER_TEST_CACHE_VALIDATION_HOOK
         if (cache_validation_hook_for_tests_) cache_validation_hook_for_tests_();
 #endif
