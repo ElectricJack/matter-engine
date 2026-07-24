@@ -180,6 +180,13 @@ bool VkAnimationBounds::update_instance(uint32_t instance_slot,
     } else if (state.asset_key == asset_key && !state.last_complete.empty()) {
         staged = state.last_complete;
     } else {
+        // A fail-open record is still owned by this exact immutable asset.
+        // Keep that ownership even without a complete pose so unregister_asset
+        // can retire the conservative fallback.  Any prior complete bounds
+        // belong to another asset revision and must not become eligible for a
+        // later rejected update after this identity is rebound.
+        state.asset_key = asset_key;
+        state.last_complete.clear();
         staged.reserve(asset.clusters.size());
         for (const VkAnimationBoundsCluster& cluster : asset.clusters)
             staged.push_back({{instance_slot, instance_generation, cluster.cluster_index, cluster.lod},

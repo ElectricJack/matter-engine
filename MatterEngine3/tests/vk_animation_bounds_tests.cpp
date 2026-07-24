@@ -209,6 +209,39 @@ void test_ambiguous_rejection_scope_removes_without_guessing_an_asset() {
           "conflicting asset identities clear the dynamic record instead of choosing an unsafe fallback");
 }
 
+void test_asset_retirement_removes_fail_open_fallback_for_reused_identity() {
+    VkAnimationBounds bounds;
+    constexpr uint32_t slot = 12;
+    constexpr uint32_t generation = 9;
+    constexpr uint64_t retired_asset = 17;
+    constexpr uint64_t rebound_asset = 18;
+    VkAnimationBoundsAsset rebound = asset(rebound_asset);
+    rebound.conservative_asset_bound = {{-20.0f, -20.0f, -20.0f},
+                                        {20.0f, 20.0f, 20.0f}};
+    CHECK(bounds.register_asset(asset(retired_asset)) && bounds.register_asset(rebound),
+          "register assets for fallback retirement test");
+
+    // A rejected frame has no pose, so this creates only the conservative
+    // fallback record. The same full slot identity can later be rebound, but
+    // retiring the original asset must remove its fallback before that occurs.
+    bounds.fail_open_instances({{slot, generation, retired_asset}});
+    CHECK(bounds.dynamic_bounds().size() == 1 && !bounds.dynamic_bounds()[0].occlusion_enabled,
+          "rejected pose publishes an asset-owned fail-open fallback");
+    CHECK(bounds.unregister_asset(retired_asset),
+          "retire the asset that owns the fallback record");
+    CHECK(bounds.dynamic_bounds().empty() && bounds.gpu_records().empty(),
+          "asset retirement removes fail-open fallback GPU and dynamic records");
+
+    VkSkinPose corrupt{};
+    CHECK(!bounds.update_instance(slot, generation, rebound_asset, corrupt, false),
+          "same full identity can publish only the rebound asset fallback");
+    CHECK(bounds.dynamic_bounds().size() == 1 && bounds.dynamic_bounds()[0].key.instance_slot == slot &&
+              bounds.dynamic_bounds()[0].key.instance_generation == generation &&
+              bounds.dynamic_bounds()[0].aabb.min[0] == -20.0f &&
+              !bounds.dynamic_bounds()[0].occlusion_enabled,
+          "retired fallback cannot survive into a static or rebound owner");
+}
+
 }  // namespace
 
 int main() {
@@ -221,5 +254,6 @@ int main() {
     test_recycled_slot_generation_never_reuses_old_complete_bound();
     test_bridge_rejection_discards_prior_complete_bound();
     test_ambiguous_rejection_scope_removes_without_guessing_an_asset();
+    test_asset_retirement_removes_fail_open_fallback_for_reused_identity();
     return failures == 0 ? 0 : 1;
 }
