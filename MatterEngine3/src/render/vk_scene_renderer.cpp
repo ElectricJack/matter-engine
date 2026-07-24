@@ -901,23 +901,27 @@ bool VkSceneRenderer::begin_animation_skinning_frame(
 }
 
 bool VkSceneRenderer::submit_visible_animation_skinning(
-    uint32_t frame_slot, const std::vector<VkSkinSubmission>& visible) {
+    uint32_t frame_slot, const std::vector<VkSkinSubmission>& visible,
+    const std::vector<VkAnimationBoundsInstance>& rejected_bounds) {
+    // The bridge can reject before it has a VkSkinSubmission.  Its explicit
+    // full generational scope is consumed before the empty queue is
+    // published, so culling cannot retain a prior animated record.
+    animation_bounds_.fail_open_instances(rejected_bounds);
     // Publish the work queue first: a rejected queue must not advance a
     // dynamic bound independently of the pose it claims to represent. Bounds
     // assets intentionally share the immutable skin asset key, while callers
     // without serialized bounds retain the static path unchanged.
     if (!animation_skinning_.submit_visible(frame_slot, visible)) {
         // The queue has fallen back before a complete pose can be consumed.
-        // Resolve each registered asset through the bounds fail-open path: it
-        // keeps a matching last-complete box for a budget freeze, otherwise
-        // replaces the unsafe stale box with the conservative asset bound and
-        // marks occlusion disabled.
-        const VkSkinPose missing_pose{};
+        // Clear each matching dynamic record before publishing its
+        // conservative asset bound with occlusion disabled.
+        std::vector<VkAnimationBoundsInstance> queue_rejected;
+        queue_rejected.reserve(visible.size());
         for (const VkSkinSubmission& submission : visible)
-            (void)animation_bounds_.update_instance(
-                submission.instance_slot, submission.instance_generation,
-                submission.asset_key, missing_pose,
-                false);
+            queue_rejected.push_back({submission.instance_slot,
+                                      submission.instance_generation,
+                                      submission.asset_key});
+        animation_bounds_.fail_open_instances(queue_rejected);
         return false;
     }
     for (const VkSkinSubmission& submission : visible)

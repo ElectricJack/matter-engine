@@ -202,6 +202,43 @@ bool VkAnimationBounds::update_instance(uint32_t instance_slot,
     return complete;
 }
 
+void VkAnimationBounds::fail_open_instances(
+    const std::vector<VkAnimationBoundsInstance>& instances) {
+    std::vector<VkAnimationBoundsInstance> ordered = instances;
+    std::sort(ordered.begin(), ordered.end(),
+              [](const VkAnimationBoundsInstance& left,
+                 const VkAnimationBoundsInstance& right) {
+                  if (left.instance_slot != right.instance_slot)
+                      return left.instance_slot < right.instance_slot;
+                  if (left.instance_generation != right.instance_generation)
+                      return left.instance_generation < right.instance_generation;
+                  return left.asset_key < right.asset_key;
+              });
+    for (size_t index = 0; index != ordered.size();) {
+        const VkAnimationBoundsInstance value = ordered[index];
+        size_t next = index + 1;
+        // A valid bridge produces one asset per dynamic owner.  Conflicting
+        // asset identities are ambiguous: removal is safer than guessing a
+        // conservative bound from the wrong mesh revision.
+        bool unambiguous_asset = true;
+        while (next != ordered.size() &&
+               ordered[next].instance_slot == value.instance_slot &&
+               ordered[next].instance_generation == value.instance_generation) {
+            unambiguous_asset = unambiguous_asset &&
+                                ordered[next].asset_key == value.asset_key;
+            ++next;
+        }
+        remove_instance(value.instance_slot, value.instance_generation);
+        if (unambiguous_asset && assets_.find(value.asset_key) != assets_.end()) {
+            const VkSkinPose missing_pose{};
+            (void)update_instance(value.instance_slot,
+                                  value.instance_generation,
+                                  value.asset_key, missing_pose, false);
+        }
+        index = next;
+    }
+}
+
 bool VkAnimationBounds::unregister_asset(uint64_t asset_key) noexcept {
     if (asset_key == 0 || assets_.erase(asset_key) == 0) return false;
     std::vector<std::pair<uint32_t, uint32_t>> retired_instances;

@@ -69,10 +69,14 @@ public:
     std::vector<render::DynamicSlotChange> drain();
 
     // C2 handoff after reconcile(): resolves only currently live root slots
-    // and exact presentation snapshots.  On failure `out` is unchanged, so a
+    // and exact presentation snapshots. `active_bounds` is populated even on
+    // rejection with every resolvable full dynamic-slot generation examined
+    // before the failure. The renderer uses it to evict old bounds before
+    // culling an empty fallback queue. On failure `out` is unchanged, so a
     // stale scene generation can never publish a torn subset of skin work.
     bool collect_animation_skinning(flecs::world& world,
                                     std::vector<viewer::VkSkinSubmission>& out,
+                                    std::vector<viewer::VkAnimationBoundsInstance>& active_bounds,
                                     std::string& error,
                                     uint64_t render_frame_serial) const;
 

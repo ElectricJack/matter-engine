@@ -4265,6 +4265,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         // exact renderer serial above; the renderer receives only that
         // immutable snapshot plus immutable influences, never an evaluator.
         std::vector<viewer::VkSkinSubmission> skin_submissions;
+        std::vector<viewer::VkAnimationBoundsInstance> rejected_skin_bounds;
         bool skin_assets_ok = true;
         std::set<uint64_t> active_bounds_assets;
         impl_->ecs_runtime.world().each(
@@ -4290,9 +4291,13 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                 (void)impl_->vk_scene->unregister_animation_bounds_asset(retired);
         }
         impl_->vk_animation_bounds_assets = std::move(active_bounds_assets);
-        if (skin_assets_ok && !impl_->dynamic_bridge.collect_animation_skinning(
-                                  impl_->ecs_runtime.world(), skin_submissions,
-                                  bridge_err, frame.serial)) {
+        // Collect even after asset registration rejects.  The bridge provides
+        // full generational slots for every live animated owner so the
+        // renderer can clear any old dynamic bound before its empty fallback
+        // queue reaches culling.
+        if (!impl_->dynamic_bridge.collect_animation_skinning(
+                impl_->ecs_runtime.world(), skin_submissions,
+                rejected_skin_bounds, bridge_err, frame.serial)) {
             skin_assets_ok = false;
             fprintf(stderr, "animation skin bridge error (non-fatal): %s\n",
                     bridge_err.c_str());
@@ -4304,7 +4309,10 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                 frame.frame_slot, impl_->vk_skin_completed_serial) ||
             !impl_->vk_scene->submit_visible_animation_skinning(
                 frame.frame_slot, skin_assets_ok ? skin_submissions
-                                                  : std::vector<viewer::VkSkinSubmission>{}) ||
+                                                  : std::vector<viewer::VkSkinSubmission>{},
+                skin_assets_ok
+                    ? std::vector<viewer::VkAnimationBoundsInstance>{}
+                    : rejected_skin_bounds) ||
             !impl_->vk_scene->finish_animation_skinning_frame(frame.frame_slot,
                                                                 frame.serial)) {
             fprintf(stderr, "animation skin frame queue rejected (non-fatal)\n");

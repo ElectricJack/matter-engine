@@ -176,6 +176,39 @@ void test_recycled_slot_generation_never_reuses_old_complete_bound() {
           "recycled slot fails open to asset bound rather than old incarnation's box");
 }
 
+void test_bridge_rejection_discards_prior_complete_bound() {
+    VkAnimationBounds bounds;
+    CHECK(bounds.register_asset(asset(14)), "register bridge rejection asset");
+    CHECK(bounds.update_instance(8, 5, 14, pose(40.0f, 39.0f), true),
+          "prior frame publishes an occlusion-safe dynamic bound");
+
+    // A bridge/snapshot rejection has no pose to submit.  It must not retain
+    // the old smaller result for this generational slot into the new frame.
+    bounds.fail_open_instances({{8, 5, 14}});
+    const auto& current = bounds.dynamic_bounds();
+    CHECK(current.size() == 1 && current[0].key.instance_slot == 8 &&
+              current[0].key.instance_generation == 5,
+          "bridge rejection replaces rather than appends a prior GPU bound");
+    CHECK(!current[0].occlusion_enabled && current[0].aabb.min[0] == -10.0f &&
+              current[0].aabb.max[0] == 10.0f,
+          "bridge rejection fails open to the conservative asset bound");
+    const auto gpu = bounds.gpu_records();
+    CHECK(gpu.size() == 1 && gpu[0].flags == 0 && gpu[0].aabb_min[0] == -10.0f &&
+              gpu[0].aabb_max[0] == 10.0f,
+          "the old dynamic GPU record cannot survive a rejected bridge frame");
+}
+
+void test_ambiguous_rejection_scope_removes_without_guessing_an_asset() {
+    VkAnimationBounds bounds;
+    CHECK(bounds.register_asset(asset(15)) && bounds.register_asset(asset(16)),
+          "register assets for ambiguous rejection scope");
+    CHECK(bounds.update_instance(8, 6, 15, pose(40.0f, 39.0f), true),
+          "prior bound exists before malformed duplicate scope");
+    bounds.fail_open_instances({{8, 6, 15}, {8, 6, 16}});
+    CHECK(bounds.dynamic_bounds().empty() && bounds.gpu_records().empty(),
+          "conflicting asset identities clear the dynamic record instead of choosing an unsafe fallback");
+}
+
 }  // namespace
 
 int main() {
@@ -186,5 +219,7 @@ int main() {
     test_static_clusters_keep_static_path();
     test_random_pose_bound_contains_every_brute_force_corner_and_lod();
     test_recycled_slot_generation_never_reuses_old_complete_bound();
+    test_bridge_rejection_discards_prior_complete_bound();
+    test_ambiguous_rejection_scope_removes_without_guessing_an_asset();
     return failures == 0 ? 0 : 1;
 }

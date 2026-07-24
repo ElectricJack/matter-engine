@@ -55,6 +55,15 @@ struct VkAnimationBoundsKey {
     }
 };
 
+// The renderer-facing identity of one animated owner.  This deliberately
+// includes the dynamic-slot generation: a rejected bridge frame must never
+// clear or inherit a bound belonging to a later reuse of the same slot.
+struct VkAnimationBoundsInstance {
+    uint32_t instance_slot = 0;
+    uint32_t instance_generation = 0;
+    uint64_t asset_key = 0;
+};
+
 struct VkAnimationDynamicClusterBound {
     VkAnimationBoundsKey key{};
     VkAnimationBoundsAabb aabb{};
@@ -95,6 +104,12 @@ public:
     bool update_instance(uint32_t instance_slot, uint32_t instance_generation,
                          uint64_t asset_key,
                          const VkSkinPose& pose, bool history_valid);
+    // A bridge/snapshot rejection has no valid pose for this frame.  Remove
+    // any prior complete bound for every supplied full generational slot, then
+    // publish the asset fallback with occlusion disabled when the asset is
+    // still registered.  An unknown asset still removes the old record.
+    void fail_open_instances(
+        const std::vector<VkAnimationBoundsInstance>& instances);
     void remove_instance(uint32_t instance_slot, uint32_t instance_generation) noexcept;
     bool unregister_asset(uint64_t asset_key) noexcept;
     void clear_frame() noexcept;

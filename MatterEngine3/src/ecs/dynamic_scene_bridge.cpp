@@ -121,6 +121,7 @@ std::vector<render::DynamicSlotChange> DynamicSceneBridge::drain() { return slot
 
 bool DynamicSceneBridge::collect_animation_skinning(
     flecs::world& world, std::vector<viewer::VkSkinSubmission>& out,
+    std::vector<viewer::VkAnimationBoundsInstance>& active_bounds,
     std::string& error, uint64_t render_frame_serial) const {
     error.clear();
     if (render_frame_serial == 0) {
@@ -128,12 +129,13 @@ bool DynamicSceneBridge::collect_animation_skinning(
         return false;
     }
     std::vector<viewer::VkSkinSubmission> staged;
+    std::vector<viewer::VkAnimationBoundsInstance> staged_bounds;
     bool accepted = true;
-    world.each([this, &staged, &accepted, &error, render_frame_serial](
+    world.each([this, &staged, &staged_bounds, &accepted, &error, render_frame_serial](
                    flecs::entity, const SceneEntityId& id,
                    const PartInstance& part,
                    const render::AnimationSkinnedBinding& binding) {
-        if (!accepted || !part.visible) return;
+        if (!part.visible) return;
         const render::DynamicInstanceKey key = root_key(id);
         const auto tracked = tracked_.find(key);
         if (tracked == tracked_.end() || !tracked->second.slot.valid()) {
@@ -141,6 +143,13 @@ bool DynamicSceneBridge::collect_animation_skinning(
             error = "animation skin mapping has no current dynamic transform slot";
             return;
         }
+        // This metadata is deliberately staged before pose expansion: the
+        // caller still needs the exact current slot generation to clear a
+        // prior dynamic bound if expansion rejects the snapshot.
+        staged_bounds.push_back({tracked->second.slot.index,
+                                 tracked->second.slot.generation,
+                                 binding.asset ? binding.asset->identity : 0});
+        if (!accepted) return;
         const render::AnimationSkinExpansion expansion{
             key, part.part_hash, tracked->second.slot.index, render_frame_serial, binding,
             tracked->second.slot.generation};
@@ -149,6 +158,23 @@ bool DynamicSceneBridge::collect_animation_skinning(
             error = "stale or invalid animation skin binding";
         }
     });
+    std::sort(staged_bounds.begin(), staged_bounds.end(),
+              [](const viewer::VkAnimationBoundsInstance& left,
+                 const viewer::VkAnimationBoundsInstance& right) {
+                  if (left.instance_slot != right.instance_slot)
+                      return left.instance_slot < right.instance_slot;
+                  if (left.instance_generation != right.instance_generation)
+                      return left.instance_generation < right.instance_generation;
+                  return left.asset_key < right.asset_key;
+              });
+    staged_bounds.erase(std::unique(staged_bounds.begin(), staged_bounds.end(),
+                                    [](const viewer::VkAnimationBoundsInstance& left,
+                                       const viewer::VkAnimationBoundsInstance& right) {
+                                        return left.instance_slot == right.instance_slot &&
+                                               left.instance_generation == right.instance_generation &&
+                                               left.asset_key == right.asset_key;
+                                    }), staged_bounds.end());
+    active_bounds.insert(active_bounds.end(), staged_bounds.begin(), staged_bounds.end());
     if (!accepted) return false;
     out.insert(out.end(), staged.begin(), staged.end());
     return true;

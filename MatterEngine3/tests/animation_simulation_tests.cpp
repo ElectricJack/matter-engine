@@ -710,7 +710,8 @@ void test_runtime_scene_binding_publishes_c2_indexed_skin_work() {
     CHECK(bridge.reconcile(runtime.world(), sink, error, kRenderSerial),
           "scene bridge establishes the existing root transform slot before skin collection");
     std::vector<viewer::VkSkinSubmission> submissions;
-    CHECK(bridge.collect_animation_skinning(runtime.world(), submissions, error, kRenderSerial),
+    std::vector<viewer::VkAnimationBoundsInstance> active_bounds;
+    CHECK(bridge.collect_animation_skinning(runtime.world(), submissions, active_bounds, error, kRenderSerial),
           "scene bridge maps the exact current entity generation, part, LOD, and transform slot to C2 work");
     CHECK(submissions.size() == 1 && submissions[0].source_vertex == 4u &&
               submissions[0].first_index == 12u && submissions[0].index_count == 3u &&
@@ -726,13 +727,25 @@ void test_runtime_scene_binding_publishes_c2_indexed_skin_work() {
               !vk_skin_replaces_static_command(queued.raster_draws, 15u, 3u),
           "only the exact animated indexed command is replaced; unrelated static work remains visible");
 
+    const viewer::VkAnimationBoundsInstance expected_bound = active_bounds.front();
+    submissions.clear();
+    active_bounds.clear();
+    CHECK(!bridge.collect_animation_skinning(runtime.world(), submissions, active_bounds,
+                                             error, kRenderSerial + 1) &&
+              submissions.empty() && active_bounds.size() == 1 &&
+              active_bounds[0].instance_slot == expected_bound.instance_slot &&
+              active_bounds[0].instance_generation == expected_bound.instance_generation &&
+              active_bounds[0].asset_key == expected_bound.asset_key,
+          "stale snapshot rejection reports the full generational scope for renderer fail-open");
+
     CHECK(service.remove(animator.instance), "removing the owner invalidates C2 component lifecycle");
     runtime.tick({0.0f, 0.1f, 1});
     CHECK(!entity.has<render::AnimationSkinnedBinding>(),
           "runtime removes stale C2 component before a later scene handoff");
     submissions.clear();
+    active_bounds.clear();
     CHECK(bridge.reconcile(runtime.world(), sink, error, kRenderSerial + 1) &&
-              bridge.collect_animation_skinning(runtime.world(), submissions, error, kRenderSerial + 1) &&
+              bridge.collect_animation_skinning(runtime.world(), submissions, active_bounds, error, kRenderSerial + 1) &&
               submissions.empty(),
           "detached or stale skin component cannot publish old work into a later frame");
 }
