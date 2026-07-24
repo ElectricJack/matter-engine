@@ -1,6 +1,8 @@
 #include "check.h"
 #include "dsl_state.h"
+#include "indexed_part_geometry.h"
 #include "script_host.h"
+#include "triangle_emit.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -270,6 +272,74 @@ void test_rig_binding_authoring_rejects_malformed_or_overlapping_declarations() 
     }
 }
 
+void test_scoped_skin_binding_captures_only_its_authored_ranges() {
+    script_host::ScriptHost host;
+    const auto result = bake(
+        "this.beginVoxels(.1); this.sphere([9,0,0],1); this.endVoxels(); "
+        "this.beginRig('r'); this.root('root'); this.bone('arm',[1,0,0]); this.endRig(); "
+        "this.skin('body',{joints:['arm']}); "
+        "this.bind('body',()=>{ this.beginVoxels(.1); this.sphere([0,0,0],1); this.endVoxels(); "
+        "this.beginShape(SHAPE.triangles); this.vertex(0,0,0); this.vertex(1,0,0); this.vertex(0,1,0); this.endShape(); });", host);
+    CHECK(result.error.ok, "scoped bind emits ordinary voxel and indexed geometry");
+    const auto& build = host.last_animation_build();
+    CHECK(build && build->skin_bindings.size() == 1 && build->skin_bindings[0].geometry.size() == 1,
+          "scoped bind retains exactly one authored geometry selection in animation IR");
+    if (build && !build->skin_bindings.empty() && !build->skin_bindings[0].geometry.empty()) {
+        const auto& range = build->skin_bindings[0].geometry[0];
+        CHECK(range.op_begin == 1 && range.op_end == 2,
+              "scoped bind excludes preceding static voxel operations");
+        CHECK(range.triangle_begin == 0 && range.triangle_end == 1,
+              "scoped bind records the exact direct-triangle range");
+    }
+
+    const auto unknown = bake(
+        "this.beginRig('r'); this.root('root'); this.bone('arm',[1,0,0]); this.endRig(); "
+        "this.skin('body',{joints:['arm']}); this.bind('missing',()=>{});", host);
+    CHECK(!unknown.error.ok && unknown.error.message.find("unknown skin binding") != std::string::npos,
+          "bind rejects a name that is not a declared deformable skin binding");
+    const auto nested = bake(
+        "this.beginRig('r'); this.root('root'); this.bone('arm',[1,0,0]); this.endRig(); "
+        "this.skin('body',{joints:['arm']}); this.bind('body',()=>this.bind('body',()=>{}));", host);
+    CHECK(!nested.error.ok && nested.error.message.find("cannot nest") != std::string::npos,
+          "bind scopes fail closed rather than silently merging nested selections");
+}
+
+void test_mirrored_bound_geometry_reverses_winding_and_preserves_static_winding() {
+    AnimationTransform identity{};
+    AnimationTransform child{}; child.translation = {1,0,0};
+    dsl::DslState bound;
+    bound.begin_rig("r"); bound.rig_root("root", identity); bound.rig_bone("arm", child); bound.end_rig();
+    bound.rig_skin("body", {"arm"}, 1.0f, false, .1f);
+    CHECK(!bound.has_error() && bound.begin_binding_scope("body"), "a completed skin binding opens a scoped selection");
+    bound.scale(-1, 1, 1);
+    bound.beginShape(0); bound.vertex(0,0,0); bound.vertex(1,0,0); bound.vertex(0,1,0); bound.endShape();
+    CHECK(bound.end_binding_scope(), "a balanced mirrored scoped binding closes successfully");
+    const auto* tris = bound.triangle_buffer();
+    CHECK(tris && tris->triangles().size() == 1 && tris->tri_extra().size() == 1,
+          "mirrored scoped binding emits one direct triangle");
+    if (tris && !tris->triangles().empty()) {
+        const Tri& t = tris->triangles()[0]; const TriEx& e = tris->tri_extra()[0];
+        const float3 face = cross(t.vertex1 - t.vertex0, t.vertex2 - t.vertex0);
+        CHECK(face.z > 0.0f && e.N0.z > 0.0f,
+              "mirrored bound direct geometry has corrected outward indexed winding and normals");
+        const auto indexed = viewer::build_indexed_part_geometry(&t, &e, 1);
+        CHECK(indexed.indices.size() == 3 && indexed.vertices[indexed.indices[1]*3+1] > 0.0f,
+              "indexed conversion consumes the corrected mirrored corner order");
+    }
+    const auto* authored = bound.authored_animation();
+    CHECK(authored && authored->skin_bindings.size() == 1 && authored->skin_bindings[0].geometry.size() == 1 &&
+          authored->skin_bindings[0].geometry[0].triangle_end == 1,
+          "the mirrored geometry remains attached to its deformable binding selection");
+
+    tri_emit::TriangleBuildBuffer static_geometry;
+    mat4 identity_matrix{}; identity_matrix.cell[0]=identity_matrix.cell[5]=identity_matrix.cell[10]=identity_matrix.cell[15]=1.0f;
+    static_geometry.beginShape(tri_emit::ShapeType::TRIANGLES, identity_matrix, 0);
+    static_geometry.vertex(make_float3(0,0,0)); static_geometry.vertex(make_float3(1,0,0)); static_geometry.vertex(make_float3(0,1,0)); static_geometry.endShape();
+    CHECK(static_geometry.triangles().size() == 1 &&
+          static_geometry.triangles()[0].vertex1.x > 0.0f && static_geometry.tri_extra()[0].N0.z > 0.0f,
+          "non-mirrored static direct geometry retains its legacy winding and normals");
+}
+
 } // namespace
 
 int main() {
@@ -283,6 +353,8 @@ int main() {
     test_rig_transform_arrays_reject_coerced_elements_and_bad_maps();
     test_rig_binding_authoring_captures_skin_segments_and_attachments();
     test_rig_binding_authoring_rejects_malformed_or_overlapping_declarations();
+    test_scoped_skin_binding_captures_only_its_authored_ranges();
+    test_mirrored_bound_geometry_reverses_winding_and_preserves_static_winding();
     if (g_failures) { std::printf("animation_dsl_rig_tests: %d failure(s)\n", g_failures); return 1; }
     std::printf("animation_dsl_rig_tests: all tests passed\n");
     return 0;

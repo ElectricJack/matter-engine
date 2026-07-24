@@ -319,6 +319,21 @@ static JSValue j_attach(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     if (!ok) { state_of(c)->set_rig_error("attach transform must be a finite transform object"); return JS_UNDEFINED; }
     state_of(c)->rig_attach(name,socket,module,local); return JS_UNDEFINED;
 }
+static JSValue j_bind_geometry(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    rig_source(c,n,a,"bind"); const int argc=rig_user_argc(n); std::string name;
+    DslState* state=state_of(c);
+    if (argc != 2 || !rig_nonempty_string(c,argc,a,0,name) || !JS_IsFunction(c,a[1])) {
+        state->set_rig_error("bind requires a skin binding name and callback"); return JS_UNDEFINED;
+    }
+    if (!state->begin_binding_scope(name)) return JS_UNDEFINED;
+    JSValue result=JS_Call(c,a[1],JS_UNDEFINED,0,nullptr);
+    const bool callback_failed=JS_IsException(result);
+    JS_FreeValue(c,result);
+    if (callback_failed) { state->cancel_binding_scope(); state->set_rig_error("bind callback failed"); return JS_UNDEFINED; }
+    if (state->has_error()) { state->cancel_binding_scope(); return JS_UNDEFINED; }
+    state->end_binding_scope();
+    return JS_UNDEFINED;
+}
 static JSValue j_sphere(JSContext* c, JSValueConst, int, JSValueConst* a){
     state_of(c)->sphere({(float)argd(c,a[0]),(float)argd(c,a[1]),(float)argd(c,a[2])},(float)argd(c,a[3]),CsgOp::Union); return JS_UNDEFINED; }
 static JSValue j_box(JSContext* c, JSValueConst, int, JSValueConst* a){
@@ -1273,7 +1288,7 @@ void install_bindings(JSContext* ctx) {
     bind("__dsl_beginVoxels",j_beginVoxels,1); bind("__dsl_endVoxels",j_endVoxels,0);
     bind("__dsl_beginRig",j_beginRig,1); bind("__dsl_root",j_root,3); bind("__dsl_bone",j_bone,3);
     bind("__dsl_rigPush",j_rigPush,0); bind("__dsl_rigPop",j_rigPop,0); bind("__dsl_atJoint",j_atJoint,1);
-    bind("__dsl_radius",j_radius,1); bind("__dsl_socket",j_socket,2); bind("__dsl_mirrorBranch",j_mirrorBranch,3); bind("__dsl_endRig",j_endRig,0); bind("__dsl_skin",j_skin,2); bind("__dsl_segments",j_segments,2); bind("__dsl_attach",j_attach,4);
+    bind("__dsl_radius",j_radius,1); bind("__dsl_socket",j_socket,2); bind("__dsl_mirrorBranch",j_mirrorBranch,3); bind("__dsl_endRig",j_endRig,0); bind("__dsl_skin",j_skin,2); bind("__dsl_segments",j_segments,2); bind("__dsl_attach",j_attach,4); bind("__dsl_bind",j_bind_geometry,2);
     bind("__dsl_beginClip",j_beginClip,3); bind("__dsl_clipDuration",j_clipDuration,1); bind("__dsl_clipRate",j_clipRate,1); bind("__dsl_clipLoop",j_clipLoop,1); bind("__dsl_clipMode",j_clipMode,1); bind("__dsl_clipAt",j_clipAt,1); bind("__dsl_clipMarker",j_clipMarker,2); bind("__dsl_clipKey",j_clipKey,3); bind("__dsl_generate",j_generate,1); bind("__dsl_endClip",j_endClip,0);
     bind("__dsl_beginMotion",j_beginMotion,1); bind("__dsl_input",j_motionInput,2); bind("__dsl_target",j_motionTarget,2); bind("__dsl_controller",j_motionController,3); bind("__dsl_clipNode",j_clipNode,2); bind("__dsl_blend1D",j_blendNode,3); bind("__dsl_additive",j_additiveNode,3); bind("__dsl_nativeController",j_nativeNode,2); bind("__dsl_output",j_outputNode,2); bind("__dsl_endMotion",j_endMotion,0);
     bind("__dsl_sphere",j_sphere,4); bind("__dsl_box",j_box,6);

@@ -116,7 +116,7 @@ std::string encode_authored_state(const AnimationBuild& build) {
     for (const TargetSchema& target : build.targets) { append_string(output, target.name); append_string(output, target.start_joint); append_string(output, target.end_joint); append_string(output, target.controller); output << static_cast<int>(target.driver) << ',' << static_cast<int>(target.cadence) << ',' << target.has_pole << ',' << target.pole.x << ',' << target.pole.y << ',' << target.pole.z << ',' << target.soften << ',' << target.twist << ',' << target.position_half_life << ',' << target.rotation_half_life << ',' << target.weight_half_life << ',' << target.enabled << ',' << target.require_explicit_pole << '|'; }
     for (const ControllerDef& controller : build.controllers) { append_string(output, controller.name); append_string(output, controller.type); output << static_cast<int>(controller.cadence) << '|'; }
     for (const GraphNode& node : build.graph.nodes) { append_string(output, node.name); append_string(output, node.clip); append_string(output, node.input); append_string(output, node.controller); output << node.is_output << ',' << static_cast<int>(node.kind) << ',' << static_cast<int>(node.cadence) << '|'; for (float threshold : node.thresholds) output << threshold << ','; output << '|'; for (const std::string& dependency : node.dependencies) append_string(output, dependency); }
-    for (const SkinBindingDef& binding : build.skin_bindings) { append_string(output, binding.name); output << binding.falloff << ',' << binding.generated << '|'; for (const std::string& joint : binding.joints) append_string(output, joint); }
+    for (const SkinBindingDef& binding : build.skin_bindings) { append_string(output, binding.name); output << binding.falloff << ',' << binding.generated << '|'; for (const std::string& joint : binding.joints) append_string(output, joint); for (const BindingGeometryRange& range : binding.geometry) output << range.op_begin << ',' << range.op_end << ',' << range.triangle_begin << ',' << range.triangle_end << '|'; }
     for (const RigidBindingDef& binding : build.rigid_bindings) { append_string(output, binding.name); append_string(output, binding.joint); output << binding.decorative << '|'; append_transform(output, binding.local); }
     for (const AttachmentDef& attachment : build.attachments) { append_string(output, attachment.name); append_string(output, attachment.socket); output << attachment.child_hash << '|'; append_transform(output, attachment.local); }
     return output.str();
@@ -208,6 +208,11 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
             if (primary_binding_segments[static_cast<size_t>(index)]) diagnostics.add("overlapping-primary-binding", binding.source, "primary bindings cannot share a segment");
             else primary_binding_segments[static_cast<size_t>(index)] = true;
         }
+        for (const BindingGeometryRange& range : binding.geometry)
+            if (range.op_begin > range.op_end || range.triangle_begin > range.triangle_end ||
+                (range.op_begin == range.op_end && range.triangle_begin == range.triangle_end))
+                diagnostics.add("invalid-binding-geometry-range", binding.source,
+                                "binding geometry range must be ordered and non-empty");
     }
     for (const RigidBindingDef& binding : build.rigid_bindings) {
         if (binding.name.empty() || named_bindings.count(binding.name) || !rigid_segments.insert(binding.name + "\x1f" + binding.joint).second) diagnostics.add("duplicate-binding", binding.source, "rigid binding name/segment must be unique");

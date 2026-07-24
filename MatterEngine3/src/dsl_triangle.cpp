@@ -33,6 +33,10 @@ DslState::DslState()
 }
 DslState::~DslState() = default;
 
+size_t DslState::direct_triangle_count() const {
+    return tris_buf_ ? tris_buf_->triangles().size() : 0;
+}
+
 void DslState::beginShape(int mode) {
     if (generating_animation()) { set_error("geometry authoring is forbidden during generate"); return; }
     if (rig_open()) { set_error("beginShape inside an open rig session"); return; }

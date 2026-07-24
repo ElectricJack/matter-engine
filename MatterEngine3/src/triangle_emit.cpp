@@ -1,6 +1,7 @@
 #include "triangle_emit.hpp"
 #include "polygon_triangulate.hpp"
 #include <cmath>
+#include <utility>
 #include <vector>
 
 namespace tri_emit {
@@ -19,12 +20,21 @@ static float3 face_normal(float3 p0, float3 p1, float3 p2) {
     return make_float3(n.x/len, n.y/len, n.z/len);
 }
 
+static bool reverses_handedness(const mat4& m) {
+    const float det =
+        m.cell[0]*(m.cell[5]*m.cell[10]-m.cell[6]*m.cell[9])-
+        m.cell[1]*(m.cell[4]*m.cell[10]-m.cell[6]*m.cell[8])+
+        m.cell[2]*(m.cell[4]*m.cell[9]-m.cell[5]*m.cell[8]);
+    return det < 0.0f;
+}
+
 void TriangleBuildBuffer::emitTriangle(float3 p0, float3 p1, float3 p2,
                                        int material_id, const mat4& transform,
                                        float4 tint) {
     float3 w0 = transform.TransformPoint(p0);
     float3 w1 = transform.TransformPoint(p1);
     float3 w2 = transform.TransformPoint(p2);
+    if (reverses_handedness(transform)) std::swap(w1, w2);
     Tri t;
     t.vertex0  = w0;
     t.vertex1  = w1;
@@ -51,6 +61,8 @@ void TriangleBuildBuffer::emitTriangleSmooth(float3 p0, float3 p1, float3 p2,
     float3 w0 = transform.TransformPoint(p0);
     float3 w1 = transform.TransformPoint(p1);
     float3 w2 = transform.TransformPoint(p2);
+    const bool reversed = reverses_handedness(transform);
+    if (reversed) std::swap(w1, w2);
     Tri t;
     t.vertex0  = w0;
     t.vertex1  = w1;
@@ -65,6 +77,7 @@ void TriangleBuildBuffer::emitTriangleSmooth(float3 p0, float3 p1, float3 p2,
     e.N0 = normalize3(transform.TransformVector(n0));
     e.N1 = normalize3(transform.TransformVector(n1));
     e.N2 = normalize3(transform.TransformVector(n2));
+    if (reversed) std::swap(e.N1, e.N2);
     e.materialId = material_id;
     e.tint = tint;
     e.ao0 = e.ao1 = e.ao2 = 1.0f;

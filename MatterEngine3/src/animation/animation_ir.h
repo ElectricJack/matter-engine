@@ -115,11 +115,21 @@ struct MotionDefinition { std::vector<GraphNode> nodes; SourceSpan source; };
 // Authoring declarations are retained in the bake IR.  They describe the
 // geometry-to-rig relationship; A8 owns publication of the resulting binding
 // payload, and Phase C owns runtime deformation.
+struct BindingGeometryRange {
+    // Half-open authored ranges. `op_*` refers to the procedural field stream;
+    // `triangle_*` refers to direct triangles before shared indexing. A8 maps
+    // both through the one indexed-geometry builder.
+    uint32_t op_begin = 0;
+    uint32_t op_end = 0;
+    uint32_t triangle_begin = 0;
+    uint32_t triangle_end = 0;
+};
 struct SkinBindingDef {
     std::string name;
     std::vector<std::string> joints; // selected parent-child segments by child joint
     float falloff = 1.0f;
     bool generated = false;
+    std::vector<BindingGeometryRange> geometry;
     SourceSpan source;
 };
 struct RigidBindingDef {

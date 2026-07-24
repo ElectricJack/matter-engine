@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <set>
 
@@ -341,6 +342,7 @@ void DslState::rig_skin(const std::string& name, const std::vector<std::string>&
     for (size_t index : selected) if (animation_->primary_segment_claims[index]) { set_rig_error("binding segment is already claimed by a primary binding"); return; }
     matter::animation::SkinBindingDef binding; binding.name=name; binding.falloff=falloff; binding.generated=generate; binding.source=rig_source_;
     for (size_t index : selected) binding.joints.push_back(animation_->authored.rig.joints[index].name);
+    const size_t generated_op_begin=buffer_.ops.size(), generated_triangle_begin=direct_triangle_count();
     if (generate) {
         const auto& joints = animation_->authored.rig.joints;
         std::vector<Float3> positions(joints.size()); std::vector<Quaternion> rotations(joints.size());
@@ -360,6 +362,15 @@ void DslState::rig_skin(const std::string& name, const std::vector<std::string>&
         for (size_t joint : endpoints) emit_voxel_sphere({positions[joint].x,positions[joint].y,positions[joint].z}, joints[joint].radius, CsgOp::Union);
         endVoxels(); if (has_error_) return;
     }
+    if (generate) {
+        const size_t generated_op_end=buffer_.ops.size(), generated_triangle_end=direct_triangle_count();
+        if (generated_op_end > std::numeric_limits<uint32_t>::max() ||
+            generated_triangle_end > std::numeric_limits<uint32_t>::max()) {
+            set_rig_error("generated skin geometry exceeds v1 range limits"); return;
+        }
+        binding.geometry.push_back({static_cast<uint32_t>(generated_op_begin), static_cast<uint32_t>(generated_op_end),
+                                    static_cast<uint32_t>(generated_triangle_begin), static_cast<uint32_t>(generated_triangle_end)});
+    }
     for (size_t index : selected) animation_->primary_segment_claims[index]=true;
     animation_->authored.skin_bindings.push_back(std::move(binding));
     matter::animation::Diagnostics diagnostics;
@@ -368,6 +379,55 @@ void DslState::rig_skin(const std::string& name, const std::vector<std::string>&
         set_rig_error(diagnostics.items.empty()?"skin binding validation failed":diagnostics.items.front().message, "binding-validation");
     }
 }
+
+bool DslState::begin_binding_scope(const std::string& name) {
+    if (!animation_ || !animation_->ended || animation_->clip_open || animation_->motion_open) {
+        set_rig_error("bind requires a completed rig outside clip or motion authoring"); return false;
+    }
+    if (binding_scope_) { set_rig_error("bind scopes cannot nest"); return false; }
+    if (session_ != Session::None || polygon_open_ || contour_open_ || region_open_) {
+        set_rig_error("bind scope requires no open geometry session"); return false;
+    }
+    size_t skin_index=0;
+    while (skin_index < animation_->authored.skin_bindings.size() && animation_->authored.skin_bindings[skin_index].name != name) ++skin_index;
+    if (skin_index == animation_->authored.skin_bindings.size()) {
+        set_rig_error("bind references an unknown skin binding"); return false;
+    }
+    binding_scope_ = BindingScope{skin_index, buffer_.ops.size(), direct_triangle_count()};
+    return true;
+}
+
+bool DslState::end_binding_scope() {
+    if (!binding_scope_) { set_rig_error("bind scope is not open"); return false; }
+    const BindingScope scope=*binding_scope_;
+    binding_scope_.reset();
+    if (session_ != Session::None || polygon_open_ || contour_open_ || region_open_) {
+        set_rig_error("bind scope requires no open geometry session"); return false;
+    }
+    // Retained polygons are lazy direct geometry. Flush before recording the
+    // end so they cannot leak into a later, unrelated binding scope.
+    flush_retained_profile();
+    if (has_error_) return false;
+    const size_t op_end=buffer_.ops.size(), triangle_end=direct_triangle_count();
+    if (op_end > std::numeric_limits<uint32_t>::max() || triangle_end > std::numeric_limits<uint32_t>::max()) {
+        set_rig_error("binding geometry exceeds v1 range limits"); return false;
+    }
+    if (scope.op_begin == op_end && scope.triangle_begin == triangle_end) {
+        set_rig_error("bind scope must author geometry"); return false;
+    }
+    animation_->authored.skin_bindings[scope.skin_index].geometry.push_back(
+        {static_cast<uint32_t>(scope.op_begin), static_cast<uint32_t>(op_end),
+         static_cast<uint32_t>(scope.triangle_begin), static_cast<uint32_t>(triangle_end)});
+    matter::animation::Diagnostics diagnostics;
+    if (!refresh_canonical_animation(*animation_, rig_source_, diagnostics)) {
+        set_rig_error(diagnostics.items.empty()?"binding geometry validation failed":diagnostics.items.front().message,
+                      "binding-validation");
+        return false;
+    }
+    return true;
+}
+
+void DslState::cancel_binding_scope() { binding_scope_.reset(); }
 
 void DslState::rig_segments(const std::string& name, const std::vector<std::string>& requested, bool decorative) {
     if (!animation_ || !animation_->ended || animation_->clip_open || animation_->motion_open) { set_rig_error("segments requires a completed rig outside clip or motion authoring"); return; }

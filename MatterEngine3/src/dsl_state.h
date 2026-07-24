@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -230,6 +231,12 @@ public:
                       bool decorative);
     void rig_attach(const std::string& name, const std::string& socket,
                     const std::string& child_module, const matter::AnimationTransform& local);
+    // `bind(name, callback)` captures only the geometry authored by callback
+    // into a declared deformable skin binding. A8 resolves these authored
+    // ranges through the shared indexed-geometry builder.
+    bool begin_binding_scope(const std::string& name);
+    bool end_binding_scope();
+    void cancel_binding_scope();
 
     // Session enum (one at a time; misuse = error)
     void beginVoxels(float spacing);        // misuse (already open) -> set_error
@@ -317,6 +324,7 @@ public:
     // is fine for callers that include triangle_emit.hpp (the bake host).
     tri_emit::TriangleBuildBuffer*       triangle_buffer()       { return tris_buf_.get(); }
     const tri_emit::TriangleBuildBuffer* triangle_buffer() const { return tris_buf_.get(); }
+    size_t direct_triangle_count() const;
 
     // In-session surface probe: sphere-trace the analytic smooth-min field of
     // the brushes emitted SO FAR in the open voxel session (smoothing cursor at
@@ -482,6 +490,12 @@ private:
     WorldBinding world_;  // terrain field binding (null by default)
     std::vector<VolumeEmitter> emitters_;  // volumetric emitters (emitVolume)
     std::unique_ptr<AnimationBuildBuffer> animation_;
+    struct BindingScope {
+        size_t skin_index = 0;
+        size_t op_begin = 0;
+        size_t triangle_begin = 0;
+    };
+    std::optional<BindingScope> binding_scope_;
     matter::animation::SourceSpan rig_source_;
     matter::animation::SourceSpan rig_error_source_;
     std::string rig_error_code_;
