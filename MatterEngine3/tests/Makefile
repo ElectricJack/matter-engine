@@ -121,6 +121,8 @@ ANIMATION_BINDING_CPP = animation_binding_tests.cpp ../src/render/raster_mesh.cp
 
 ANIMATION_STORE_TARGET = animation_store_tests
 ANIMATION_STORE_CPP = animation_store_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp
+ANIMATION_EVALUATOR_TARGET = animation_evaluator_tests
+ANIMATION_EVALUATOR_CPP = animation_evaluator_tests.cpp ../src/animation/animation_evaluator.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp
 
 # CPU-only, no GL/VK/raylib link deps (mirrors MATRIX_TARGET's direct-compile
 # pattern) — pure atlas-slicing + mip math, unit-testable without a device.
@@ -1066,7 +1068,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-tilesetslicer run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather
+.PHONY: clean run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-tilesetslicer run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1131,6 +1133,12 @@ $(ANIMATION_STORE_TARGET): $(ANIMATION_STORE_CPP)
 
 run-animation-store: $(ANIMATION_STORE_TARGET)
 	./$(ANIMATION_STORE_TARGET)
+
+$(ANIMATION_EVALUATOR_TARGET): $(ANIMATION_EVALUATOR_CPP) $(OZZ_OFFLINE_LIBS)
+	$(CC) $(ANIMATION_EVALUATOR_CPP) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(OZZ_OFFLINE_LIBS)
+
+run-animation-evaluator: $(ANIMATION_EVALUATOR_TARGET)
+	./$(ANIMATION_EVALUATOR_TARGET)
 
 .PHONY: run-animation-ir
 

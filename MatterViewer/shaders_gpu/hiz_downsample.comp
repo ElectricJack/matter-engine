@@ -1,0 +1,41 @@
+#version 460
+// HiZ max-reduce downsample.
+// copy_mode == 1: 1:1 texelFetch src -> dst (depth-to-R32F copy, mip 0 fill).
+// copy_mode == 0: 2x2 max-reduce src mip (src_mip) -> dst (one mip lower).
+// src_mip: which mip level of `src` to read.
+// dst_size: pixel dimensions of the destination image.
+// Per-fetch clamp to textureSize(src, src_mip)-1 guards odd-size mips where
+// the 2x fetch would otherwise read out of bounds (texelFetch OOB is undefined).
+layout(local_size_x = 8, local_size_y = 8) in;
+layout(binding = 0)          uniform sampler2D src;   // mip set via texelFetch + src_mip
+layout(r32f, binding = 1)    uniform writeonly image2D dst;
+uniform int  src_mip;
+uniform ivec2 dst_size;
+uniform int  copy_mode;   // 1 = 1:1 copy, 0 = 2x2 max-reduce
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= dst_size.x || p.y >= dst_size.y) return;
+
+    float result;
+    if (copy_mode == 1) {
+        // 1:1 copy: p maps 1:1 from src mip `src_mip`.
+        ivec2 src_sz = textureSize(src, src_mip);
+        ivec2 s = clamp(p, ivec2(0), src_sz - 1);
+        result = texelFetch(src, s, src_mip).r;
+    } else {
+        // 2x2 max-reduce.
+        ivec2 src_sz = textureSize(src, src_mip);
+        ivec2 base = p * 2;
+        ivec2 s00 = clamp(base,                  ivec2(0), src_sz - 1);
+        ivec2 s10 = clamp(base + ivec2(1, 0),    ivec2(0), src_sz - 1);
+        ivec2 s01 = clamp(base + ivec2(0, 1),    ivec2(0), src_sz - 1);
+        ivec2 s11 = clamp(base + ivec2(1, 1),    ivec2(0), src_sz - 1);
+        float d0 = texelFetch(src, s00, src_mip).r;
+        float d1 = texelFetch(src, s10, src_mip).r;
+        float d2 = texelFetch(src, s01, src_mip).r;
+        float d3 = texelFetch(src, s11, src_mip).r;
+        result = max(max(d0, d1), max(d2, d3));
+    }
+    imageStore(dst, p, vec4(result));
+}

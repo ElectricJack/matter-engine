@@ -129,7 +129,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_ani
           src/animation/ozz_adapter.cpp \
           src/animation/ozz_bake.cpp \
           src/animation/animation_ir.cpp src/animation/animation_validate.cpp src/animation/animation_binding_bake.cpp \
-          src/animation/anim_asset.cpp src/animation/anim_bundle.cpp src/animation/animation_asset_store.cpp src/animation/animation_store.cpp \
+          src/animation/anim_asset.cpp src/animation/anim_bundle.cpp src/animation/animation_asset_store.cpp src/animation/animation_store.cpp src/animation/animation_evaluator.cpp \
           src/streaming/sector_streaming_coordinator.cpp
 
 # MatterSurfaceLib C++ backend sources compiled into the archive so MatterViewer
