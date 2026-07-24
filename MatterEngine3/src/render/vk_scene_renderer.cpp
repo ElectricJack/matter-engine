@@ -318,6 +318,8 @@ struct RasterRecord {
     VkBuffer vertex_buffer;
     VkBuffer index_buffer;
     VkBuffer indirect_buffer;
+    const DrawCommand* static_commands;
+    uint32_t static_command_count;
     uint32_t index_count;
     VkBuffer skin_vertex_buffer;
     VkBuffer skin_previous_vertex_buffer;
@@ -431,21 +433,33 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
                          VK_INDEX_TYPE_UINT32);
     for (uint32_t i = 0; i < record.draw_range_count; ++i) {
         const PartCommandRange& range = record.draw_ranges[i];
-        uint32_t remaining = range.command_count;
-        uint32_t first = range.first_command;
-        while (remaining != 0) {
-            const uint32_t count =
-                std::min(remaining, record.max_draw_indirect_count);
+        if (range.first_command > record.static_command_count ||
+            range.command_count > record.static_command_count - range.first_command)
+            continue;
+        for (uint32_t command = range.first_command;
+             command != range.first_command + range.command_count; ++command) {
+            const DrawCommand& candidate = record.static_commands[command];
+            // A compute-skinned output replaces its exact immutable indexed
+            // draw range.  Do this at static indirect recording time rather
+            // than drawing bind pose first and overdrawing it later; unrelated
+            // commands remain grouped by the existing part ranges.
+            const bool replaced = record.skin_draw_count != 0 && std::any_of(
+                record.skin_draws, record.skin_draws + record.skin_draw_count,
+                [&candidate](const VkSkinRasterDraw& skin) {
+                    return skin.first_index == candidate.first_index &&
+                           skin.index_count == candidate.index_count;
+                });
+            if (replaced) {
+                continue;
+            }
             vkCmdDrawIndexedIndirect(command_buffer, record.indirect_buffer,
-                                     static_cast<VkDeviceSize>(first) *
+                                     static_cast<VkDeviceSize>(command) *
                                          sizeof(DrawCommand),
-                                     count, sizeof(DrawCommand));
+                                     1, sizeof(DrawCommand));
             if (record.recorded_draw_ranges) {
                 record.recorded_draw_ranges->push_back(
-                    {first, count, range.part_slot});
+                    {command, 1, range.part_slot});
             }
-            first += count;
-            remaining -= count;
         }
     }
     // Accepted skin work is drawn from the per-frame compute output, never
@@ -6778,6 +6792,8 @@ bool VkSceneRenderer::record_cull_and_render(
                         vertices_.buffer,
                         indices_.buffer,
                         selected.commands.buffer,
+                        command_template_.data(),
+                        static_cast<uint32_t>(command_template_.size()),
                         static_cast<uint32_t>(index_staging_.size()),
                         selected.skin_current_output.buffer,
                         selected.skin_previous_output.buffer,
@@ -7216,6 +7232,8 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
                         vertices_.buffer,
                         indices_.buffer,
                         selected.commands.buffer,
+                        command_template_.data(),
+                        static_cast<uint32_t>(command_template_.size()),
                         uploaded_index_count_,
                         VK_NULL_HANDLE,
                         VK_NULL_HANDLE,

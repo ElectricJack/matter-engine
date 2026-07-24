@@ -80,6 +80,13 @@ static_assert(std::is_standard_layout<VkSkinWorkItem>::value,
               "VkSkinWorkItem must remain shader-copyable");
 
 constexpr uint32_t kVkSkinHistoryInvalid = 1u << 0;
+// The work ABI is deliberately fixed at 32 bytes.  Palette size is carried in
+// the otherwise spare high bits of flags so the shader can reject a corrupt
+// influence before indexing either palette stream.  C1's asset contract caps
+// skeletons far below this representable maximum.
+constexpr uint32_t kVkSkinPaletteCountShift = 16u;
+constexpr uint32_t kVkSkinPaletteCountMax = 0xffffu;
+constexpr uint32_t kVkSkinWorkFlagsMask = (1u << kVkSkinPaletteCountShift) - 1u;
 constexpr uint32_t kVkMaxSkinWorkItems = 256;
 constexpr uint32_t kVkMaxSkinnedOutputVertices = 2000000;
 

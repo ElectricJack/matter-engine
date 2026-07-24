@@ -51,6 +51,13 @@ struct VkSkinRasterDraw {
     uint32_t flags = 0;
 };
 
+// Static indirect commands are identified by their immutable global indexed
+// range.  A skinned draw may replace only an exact range match: overlap or a
+// stale partial range leaves static rendering intact.
+bool vk_skin_replaces_static_command(const std::vector<VkSkinRasterDraw>& draws,
+                                     uint32_t first_index,
+                                     uint32_t index_count) noexcept;
+
 struct VkSkinArenaSlice {
     uint32_t offset = 0;
     uint32_t count = 0;

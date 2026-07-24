@@ -45,10 +45,41 @@ bool finite3(const float value[4]) noexcept {
            std::isfinite(value[2]);
 }
 
+bool finite_matrix(const VkSkinMatrix& value) noexcept {
+    for (float element : value.elements)
+        if (!std::isfinite(element)) return false;
+    return true;
+}
+
+bool finite_joint(const VkSkinJoint& value) noexcept {
+    return finite_matrix(value.position) && finite_matrix(value.normal);
+}
+
+bool valid_influence(const VkSkinInfluence& influence,
+                     uint32_t palette_count) noexcept {
+    uint32_t total_weight = 0;
+    for (uint32_t lane = 0; lane != 4; ++lane) {
+        const uint16_t weight = influence.weight[lane];
+        if (weight == 0) continue;
+        if (influence.joint[lane] >= palette_count) return false;
+        total_weight += weight;
+    }
+    return total_weight != 0;
+}
+
 }  // namespace
 
 VkAnimationSkinning::VkAnimationSkinning(uint32_t frame_slots)
     : frames_(frame_slots == 0 ? 1 : frame_slots) {}
+
+bool vk_skin_replaces_static_command(
+    const std::vector<VkSkinRasterDraw>& draws, uint32_t first_index,
+    uint32_t index_count) noexcept {
+    return std::any_of(draws.begin(), draws.end(),
+                       [first_index, index_count](const VkSkinRasterDraw& draw) {
+        return draw.first_index == first_index && draw.index_count == index_count;
+    });
+}
 
 bool VkAnimationSkinning::identical(const std::vector<VkSkinInfluence>& a,
                                     const std::vector<VkSkinInfluence>& b) noexcept {
@@ -108,6 +139,7 @@ bool VkAnimationSkinning::submit_visible(
         uint32_t output_end = 0;
         if (asset == assets_.end() || value.vertex_count == 0 ||
             value.pose.current.empty() || value.pose.previous.size() != value.pose.current.size() ||
+            value.pose.current.size() > kVkSkinPaletteCountMax ||
             !checked_add(value.source_vertex, value.vertex_count, source_end) ||
             !checked_add(value.influence_vertex, value.vertex_count, source_end) ||
             source_end > asset->second.values.size() ||
@@ -117,6 +149,31 @@ bool VkAnimationSkinning::submit_visible(
             publish_fallbacks();
             ++fallback_count_;
             return false;
+        }
+        const uint32_t joint_count = static_cast<uint32_t>(value.pose.current.size());
+        for (const VkSkinJoint& joint : value.pose.current) {
+            if (!finite_joint(joint)) {
+                publish_fallbacks();
+                ++fallback_count_;
+                return false;
+            }
+        }
+        if (value.history_valid) {
+            for (const VkSkinJoint& joint : value.pose.previous) {
+                if (!finite_joint(joint)) {
+                    publish_fallbacks();
+                    ++fallback_count_;
+                    return false;
+                }
+            }
+        }
+        for (uint32_t vertex = value.influence_vertex;
+             vertex != value.influence_vertex + value.vertex_count; ++vertex) {
+            if (!valid_influence(asset->second.values[vertex], joint_count)) {
+                publish_fallbacks();
+                ++fallback_count_;
+                return false;
+            }
         }
         output_count = output_end;
     }
@@ -154,7 +211,8 @@ bool VkAnimationSkinning::submit_visible(
         item.output_current = output_offset;
         item.output_previous = output_offset;
         item.instance_slot = value.instance_slot;
-        item.flags = value.history_valid ? 0u : kVkSkinHistoryInvalid;
+        item.flags = (value.history_valid ? 0u : kVkSkinHistoryInvalid) |
+                     (joint_count << kVkSkinPaletteCountShift);
         staged.work_items.push_back(item);
         staged.current_output.push_back({output_offset, value.vertex_count});
         staged.previous_output.push_back({output_offset, value.vertex_count});

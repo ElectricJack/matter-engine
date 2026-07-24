@@ -46,6 +46,8 @@ void main() {
     if (work_index >= dispatch.work_count) return;
     WorkItem item = work[work_index];
     if (local_vertex >= item.vertex_count) return;
+    uint palette_count = item.flags >> 16u;
+    if (palette_count == 0u) return;
     SourceVertex input_vertex = source[item.source_vertex + local_vertex];
     uint influence_offset = (item.influence + local_vertex) * 4u;
     vec4 current_position = vec4(0.0);
@@ -57,6 +59,10 @@ void main() {
         uint joint = u16_at(packed_joint, (lane & 1u) != 0u);
         float weight = float(u16_at(packed_weight, (lane & 1u) != 0u)) / 65535.0;
         if (weight == 0.0) continue;
+        // CPU submission validation rejects this case.  Retain this guard in
+        // the shader because stale/corrupt GPU work must never turn into an
+        // out-of-bounds SSBO palette read.
+        if (joint >= palette_count) return;
         current_position += (current_palette[item.palette + joint].position * vec4(input_vertex.position.xyz, 1.0)) * weight;
         previous_position += (previous_palette[item.palette + joint].position * vec4(input_vertex.position.xyz, 1.0)) * weight;
         current_normal += (current_palette[item.palette + joint].normal * vec4(input_vertex.normal.xyz, 0.0)).xyz * weight;

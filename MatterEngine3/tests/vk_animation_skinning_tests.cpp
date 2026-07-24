@@ -44,6 +44,12 @@ static VkSkinSubmission candidate(uint64_t asset, uint32_t slot,
     return result;
 }
 
+static std::vector<VkSkinInfluence> valid_influences(uint32_t count) {
+    std::vector<VkSkinInfluence> result(count);
+    for (VkSkinInfluence& influence : result) influence.weight[0] = 65535;
+    return result;
+}
+
 static void test_shader_abi_and_weight_decode() {
     CHECK(sizeof(VkSkinMatrix) == 64, "skin matrix is a std430 mat4");
     CHECK(alignof(VkSkinMatrix) == 16, "skin matrix keeps vec4 alignment");
@@ -75,7 +81,7 @@ static void test_shader_abi_and_weight_decode() {
 
 static void test_asset_registration_and_visible_sorted_submission() {
     VkAnimationSkinning skinning(2);
-    std::vector<VkSkinInfluence> influences(12);
+    std::vector<VkSkinInfluence> influences = valid_influences(12);
     CHECK(skinning.register_asset(44, influences), "immutable influence asset registers");
     CHECK(skinning.register_asset(44, influences), "same immutable asset deduplicates");
     influences.resize(13);
@@ -96,7 +102,7 @@ static void test_asset_registration_and_visible_sorted_submission() {
 
 static void test_current_previous_pair_and_history_fallback() {
     VkAnimationSkinning skinning(2);
-    CHECK(skinning.register_asset(9, std::vector<VkSkinInfluence>(8)), "asset registers");
+    CHECK(skinning.register_asset(9, valid_influences(8)), "asset registers");
     VkSkinSubmission fresh = candidate(9, 3, 8, 0, 0, 0);
     fresh.history_valid = false;
     fresh.pose = pose(2, 4.0f);
@@ -114,7 +120,7 @@ static void test_current_previous_pair_and_history_fallback() {
 
 static void test_indexed_raster_mapping_tracks_sorted_output_offsets() {
     VkAnimationSkinning skinning(1);
-    CHECK(skinning.register_asset(7, std::vector<VkSkinInfluence>(16)),
+    CHECK(skinning.register_asset(7, valid_influences(16)),
           "mapping fixture registers immutable influences");
     VkSkinSubmission later = candidate(7, 9, 3, 0, 4, 0);
     later.first_index = 30; later.index_count = 6;
@@ -143,7 +149,7 @@ static void test_indexed_raster_mapping_tracks_sorted_output_offsets() {
 
 static void test_fence_lifetime_wrap_and_transactional_caps() {
     VkAnimationSkinning skinning(2);
-    CHECK(skinning.register_asset(1, std::vector<VkSkinInfluence>(2000000)), "large asset registers");
+    CHECK(skinning.register_asset(1, valid_influences(2000000)), "large asset registers");
     VkSkinSubmission one = candidate(1, 1, 1000000, 0, 0, 0);
     CHECK(skinning.submit_visible(0, {one}), "first frame owns its arena slices");
     CHECK(skinning.mark_submitted(0, 10), "first seal records the submitted fence");
@@ -177,6 +183,49 @@ static void test_fence_lifetime_wrap_and_transactional_caps() {
           "a duplicate fence on another slot is rejected on the global submission timeline");
     CHECK(skinning.mark_submitted(1, 12),
           "a later fence seals an independent slot on the global timeline");
+}
+
+static void test_submission_rejects_invalid_influences_and_palettes_transactionally() {
+    VkAnimationSkinning skinning(1);
+    std::vector<VkSkinInfluence> invalid_joint = valid_influences(1);
+    invalid_joint[0].joint[0] = 2;
+    CHECK(skinning.register_asset(71, invalid_joint),
+          "immutable malformed asset can be registered before its palette is known");
+    VkSkinSubmission submission = candidate(71, 1, 1, 0, 0, 0);
+    CHECK(!skinning.submit_visible(0, {submission}),
+          "out-of-range nonzero influence rejects before a work queue allocation");
+    CHECK(skinning.frame(0).work_items.empty() && skinning.frame(0).raster_draws.empty(),
+          "invalid influence publishes no work or raster mapping");
+
+    CHECK(skinning.begin_frame(0, 0), "unsealed rejected frame resets");
+    std::vector<VkSkinInfluence> zero_weight(1);
+    CHECK(skinning.register_asset(72, zero_weight), "zero-weight asset registers for submission validation");
+    submission = candidate(72, 2, 1, 0, 0, 0);
+    CHECK(!skinning.submit_visible(0, {submission}),
+          "zero UNORM total weight rejects before queue allocation");
+    CHECK(skinning.frame(0).work_items.empty() && skinning.frame(0).raster_draws.empty(),
+          "zero-weight rejection leaves no partial queue");
+
+    CHECK(skinning.begin_frame(0, 0), "second rejected frame resets");
+    submission = candidate(71, 3, 1, 0, 0, 0);
+    submission.pose.current[0].position.elements[0] = NAN;
+    CHECK(!skinning.submit_visible(0, {submission}),
+          "non-finite palette rejects before queue allocation");
+    CHECK(skinning.frame(0).work_items.empty() && skinning.frame(0).raster_draws.empty(),
+          "non-finite palette rejection leaves no partial queue");
+}
+
+static void test_skin_mapping_replaces_only_its_matching_static_command() {
+    VkSkinRasterDraw draw{};
+    draw.first_index = 12;
+    draw.index_count = 6;
+    const std::vector<VkSkinRasterDraw> draws{draw};
+    CHECK(vk_skin_replaces_static_command(draws, 12, 6),
+          "accepted skinned mapping suppresses its matching bind-pose indirect command");
+    CHECK(!vk_skin_replaces_static_command(draws, 18, 6),
+          "unrelated static command remains in the indirect path");
+    CHECK(!vk_skin_replaces_static_command(draws, 12, 3),
+          "partial indexed range is never suppressed by a skin mapping");
 }
 
 static void test_cpu_skinning_matches_compute_contract() {
@@ -218,6 +267,8 @@ int main() {
     test_current_previous_pair_and_history_fallback();
     test_indexed_raster_mapping_tracks_sorted_output_offsets();
     test_fence_lifetime_wrap_and_transactional_caps();
+    test_submission_rejects_invalid_influences_and_palettes_transactionally();
+    test_skin_mapping_replaces_only_its_matching_static_command();
     test_cpu_skinning_matches_compute_contract();
     return check_summary();
 }
