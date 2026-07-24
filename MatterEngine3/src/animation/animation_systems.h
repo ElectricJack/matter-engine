@@ -1,6 +1,7 @@
 #pragma once
 
 #include "animation/animation_evaluator.h"
+#include "animation/animation_controllers.h"
 #include "animation/animation_world_queries.h"
 
 #include <array>
@@ -70,6 +71,16 @@ struct AnimationRuntimeBindingDescriptor {
     AnimationFixedWork fixed_work;
     // UINT16_MAX means this descriptor has no externally-driven target.
     uint16_t target_index = UINT16_MAX;
+    // These declarations are immutable and are instantiated per animator.
+    // Controllers may only name Controller-owned targets; duplicate target
+    // ownership is rejected when the binding is admitted.
+    std::vector<CanonicalTarget> targets;
+    struct Controller {
+        NativeControllerDescriptor descriptor;
+        int32_t priority = 0;
+        std::vector<uint16_t> target_indices;
+    };
+    std::vector<Controller> controllers;
 };
 
 // B3 makes the boundary order observable.  Entries named for later features
@@ -183,6 +194,7 @@ private:
     void sample_service_bindings();
     void evaluate_service_bindings(flecs::world& world, double delta_seconds,
                                    float accumulator_alpha);
+    bool apply_targets(AnimatorInstanceHandle, EvaluationCadence, double);
 
     double interpolation_alpha_ = 0.0;
     std::vector<AnimationScheduleTraceEntry> trace_;
@@ -197,6 +209,11 @@ private:
     AnimationService* service_ = nullptr;
     AnimationEvaluator evaluator_;
     std::map<uint64_t, AnimationRuntimeBindingLease> service_bindings_;
+    struct TargetRuntime {
+        std::vector<AnimationTargetState> targets;
+        std::vector<std::unique_ptr<NativeController>> controllers;
+    };
+    std::map<uint64_t, TargetRuntime> target_runtime_;
 };
 
 // Target writes are intentionally stored in world coordinates.  This helper is

@@ -19,7 +19,10 @@ Float3 inverse_rotate(Quaternion q,Float3 v) { q=inverse(q); const Float3 u{q.x,
 }
 
 bool smooth_animation_target(const CanonicalTarget& target, AnimationTargetState& state, double dt, EvaluationCadence cadence) {
-    if (target.cadence != cadence || !finite_transform(state.desired) || !finite_transform(state.evaluated)) return target.cadence != cadence;
+    // A cadence mismatch is not a successful no-op: callers use the return
+    // value to decide whether a pending snap was consumed.  Leave every byte
+    // untouched so the declared phase is the sole place that can apply it.
+    if (target.cadence != cadence || !finite_transform(state.desired) || !finite_transform(state.evaluated)) return false;
     const float pa=alpha(dt,target.position_half_life),ra=alpha(dt,target.rotation_half_life),wa=alpha(dt,target.weight_half_life); if(pa<0||ra<0||wa<0)return false;
     const float desired_weight=state.enabled?clamp01(state.desired_weight):0.0f;
     if(state.snap_requested){state.evaluated=state.desired;state.evaluated_weight=desired_weight;state.snap_requested=false;return true;}
@@ -38,7 +41,8 @@ bool resolve_two_bone_chain(const OzzSkeleton& skeleton, JointIndex start, Joint
 bool target_chains_overlap(const CanonicalTarget&a,const CanonicalTarget&b) { for(JointIndex i:a.chain)for(JointIndex j:b.chain)if(i==j)return true;return false; }
 bool validate_exclusive_target_chains(const std::vector<CanonicalTarget>& targets) { for(size_t i=0;i<targets.size();++i){if(targets[i].chain.size()!=3)return false;for(size_t j=0;j<i;++j)if(target_chains_overlap(targets[i],targets[j]))return false;}return true; }
 bool solve_animation_target(const CanonicalTarget& t,const OzzSkeleton&s,const AnimationTargetState& state,std::vector<AnimationTransform>&locals,std::vector<Mat4f>&models) {
-    if(t.chain.size()!=3||locals.size()!=s.joint_count()||models.size()!=s.joint_count()||state.evaluated_weight<=0)return t.chain.size()==3;
+    if(t.chain.size()!=3||locals.size()!=s.joint_count()||models.size()!=s.joint_count()||!finite_transform(state.evaluated)||!finite(state.evaluated_weight)||state.evaluated_weight<0||state.evaluated_weight>1||!finite(t.soften)||!finite(t.twist)||!finite(t.bend_axis.x)||!finite(t.bend_axis.y)||!finite(t.bend_axis.z)||!finite(t.pole.x)||!finite(t.pole.y)||!finite(t.pole.z))return false;
+    if(state.evaluated_weight<=0)return true;
     JointIndex mid;JointRange affected;if(!resolve_two_bone_chain(s,t.chain[0],t.chain[2],mid,affected)||mid!=t.chain[1])return false;
     const Quaternion root_rotation=model_rotation(models[t.chain[0]]);
     const Float3 pole=t.has_pole?inverse_rotate(root_rotation,t.pole):Float3{0,1,0};

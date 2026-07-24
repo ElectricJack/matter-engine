@@ -370,6 +370,33 @@ bool AnimationEvaluator::fixed_root_motion(AnimatorInstanceHandle instance,
     out=it->second->fixed_root_motion;
     return true;
 }
+bool AnimationEvaluator::solve_targets(AnimatorInstanceHandle instance,
+                                       const AnimationEvaluationDefinition& definition,
+                                       const std::vector<CanonicalTarget>& targets,
+                                       const std::vector<AnimationTargetState>& target_states,
+                                       uint64_t frame_serial) {
+    const auto it=states_.find(key(instance));
+    if(!instance.valid() || it==states_.end() || !it->second || !it->second->has_snapshot ||
+       it->second->shape.definition!=&definition || targets.size()!=target_states.size() ||
+       !validate_exclusive_target_chains(targets)) return false;
+    State& state=*it->second;
+    const uint8_t back_slot=uint8_t(1u-state.front_slot);
+    State::PoseBuffer& back=state.pose[back_slot];
+    const State::PoseBuffer& front=state.pose[state.front_slot];
+    back.local=front.local; back.model=front.model;
+    // All input validation happens before any live buffer is published.
+    for(size_t i=0;i<targets.size();++i) {
+        const AnimationTargetState& target=target_states[i];
+        if(!std::isfinite(target.evaluated_weight) || target.evaluated_weight<0.0f || target.evaluated_weight>1.0f ||
+           !solve_animation_target(targets[i],*definition.skeleton,target,back.local,back.model)) return false;
+    }
+    back.previous_model=front.model;
+    back.palette.resize(back.model.size()); back.previous_palette.resize(back.previous_model.size());
+    for(size_t i=0;i<back.model.size();++i) { back.palette[i]=multiply(back.model[i],definition.inverse_bind_model[i]); back.previous_palette[i]=multiply(back.previous_model[i],definition.inverse_bind_model[i]); }
+    state.front_slot=back_slot;
+    state.view={instance,state.last_fixed_tick,frame_serial,{back.local.data(),uint32_t(back.local.size())},{back.model.data(),uint32_t(back.model.size())},{back.previous_model.data(),uint32_t(back.previous_model.size())},{back.palette.data(),uint32_t(back.palette.size())},{back.previous_palette.data(),uint32_t(back.previous_palette.size())}};
+    return true;
+}
 bool AnimationEvaluator::capture_checkpoint(AnimatorInstanceHandle instance, AnimatorCheckpoint& out) const {
     const auto it=states_.find(key(instance));
     if(!instance.valid() || it==states_.end() || !it->second) return false;

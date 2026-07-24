@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <set>
 #include <type_traits>
 #include <utility>
 
@@ -228,6 +229,16 @@ std::vector<DesiredRootMotion> AnimationSystems::take_consumed_root_motion() { s
 bool AnimationSystems::refresh_service_binding(const AnimationRuntimeBindingLease& lease) {
     if (!lease.valid() || !lease.descriptor || !lease.descriptor->evaluation) return false;
     const AnimationRuntimeBindingDescriptor& descriptor = *lease.descriptor;
+    if(descriptor.targets.size()!=lease.target_transforms.size() || descriptor.targets.size()!=lease.target_weights.size() ||
+       descriptor.targets.size()!=lease.target_enabled.size() || descriptor.targets.size()>kMaxTargets ||
+       !validate_exclusive_target_chains(descriptor.targets)) return false;
+    std::set<uint16_t> owned_targets;
+    for(const auto& controller:descriptor.controllers) {
+        if(controller.descriptor.cadence!=EvaluationCadence::Fixed || !std::isfinite(static_cast<double>(controller.priority))) return false;
+        for(uint16_t target:controller.target_indices) {
+            if(target>=descriptor.targets.size() || descriptor.targets[target].driver!=TargetDriverKind::Controller || !owned_targets.insert(target).second) return false;
+        }
+    }
     AnimationFixedWork work = descriptor.fixed_work;
     work.instance = lease.instance;
     const uint64_t slot_key = animator_key(lease.instance);
@@ -257,8 +268,53 @@ bool AnimationSystems::refresh_service_binding(const AnimationRuntimeBindingLeas
             ? lease.target_weights[descriptor.target_index] : 0.0f;
         work.target_enabled = lease.target_enabled[descriptor.target_index] != 0;
     }
+    TargetRuntime candidate;
+    const auto prior=target_runtime_.find(slot_key);
+    if(prior!=target_runtime_.end()) candidate.targets=prior->second.targets;
+    if(candidate.targets.size()!=descriptor.targets.size()) {
+        candidate.targets.resize(descriptor.targets.size());
+        for(size_t i=0;i<candidate.targets.size();++i) candidate.targets[i].enabled=descriptor.targets[i].enabled;
+    }
+    for(size_t i=0;i<candidate.targets.size();++i) {
+        // Controller-owned values are preserved; public API owns external values.
+        if(descriptor.targets[i].driver==TargetDriverKind::External) {
+            candidate.targets[i].desired=lease.target_transforms[i];
+            candidate.targets[i].desired_weight=lease.target_weights[i];
+            candidate.targets[i].enabled=lease.target_enabled[i]!=0;
+            candidate.targets[i].snap_requested=lease.target_snap_requested.size()==descriptor.targets.size() && lease.target_snap_requested[i]!=0;
+        }
+        if(!std::isfinite(candidate.targets[i].desired_weight) || candidate.targets[i].desired_weight<0 || candidate.targets[i].desired_weight>1) return false;
+    }
+    if(prior==target_runtime_.end() || prior->second.controllers.size()!=descriptor.controllers.size()) {
+        NativeControllerRegistry registry=NativeControllerRegistry::with_v1_controllers();
+        candidate.controllers.clear();
+        for(const auto& controller:descriptor.controllers) {
+            NativeControllerLayout layout{}; auto instance=registry.create(controller.descriptor,layout);
+            if(!instance || layout.frame_state_bytes!=0 || layout.fixed_state_bytes>64u*1024u) return false;
+            candidate.controllers.push_back(std::move(instance));
+        }
+    } else candidate.controllers=std::move(target_runtime_[slot_key].controllers);
     if (!register_fixed_work(work)) return false;
     service_bindings_[animator_key(lease.instance)] = lease;
+    target_runtime_[slot_key]=std::move(candidate);
+    return true;
+}
+
+bool AnimationSystems::apply_targets(AnimatorInstanceHandle instance, EvaluationCadence cadence, double delta_seconds) {
+    const uint64_t slot_key=animator_key(instance);
+    const auto binding=service_bindings_.find(slot_key); const auto runtime=target_runtime_.find(slot_key);
+    if(binding==service_bindings_.end() || runtime==target_runtime_.end() || !binding->second.descriptor || !binding->second.descriptor->evaluation) return false;
+    const auto& targets=binding->second.descriptor->targets;
+    if(targets.size()!=runtime->second.targets.size()) return false;
+    std::vector<AnimationTargetState> candidate=runtime->second.targets;
+    for(size_t i=0;i<targets.size();++i) {
+        const bool mismatch=targets[i].cadence!=cadence;
+        if(mismatch) continue;
+        if(!smooth_animation_target(targets[i],candidate[i],delta_seconds,cadence)) return false;
+    }
+    const ecs::AnimationFrameState frame{}; // frame serial is filled by caller's current snapshot path below.
+    (void)frame;
+    runtime->second.targets=std::move(candidate);
     return true;
 }
 
@@ -268,6 +324,7 @@ void AnimationSystems::detach_service_binding(AnimatorInstanceHandle instance) {
     pose_snapshots_.forget(instance);
     evaluator_.forget(instance);
     service_bindings_.erase(animator_key(instance));
+    target_runtime_.erase(animator_key(instance));
 }
 
 bool AnimationSystems::capture_service_checkpoint(AnimatorCheckpoint& checkpoint) const {
@@ -284,6 +341,12 @@ bool AnimationSystems::capture_service_checkpoint(AnimatorCheckpoint& checkpoint
     checkpoint.evaluated_target=work->second.evaluated_target_root_relative;
     checkpoint.target_weight=work->second.target_weight;
     checkpoint.target_enabled=work->second.target_enabled;
+    const auto runtime=target_runtime_.find(animator_key(checkpoint.instance));
+    if(runtime==target_runtime_.end()) return false;
+    checkpoint.target_desired.clear(); checkpoint.target_weights.clear(); checkpoint.target_enabled_states.clear(); checkpoint.target_snap_requested_states.clear();
+    checkpoint.target_evaluated_states.clear(); checkpoint.target_evaluated_weights.clear(); checkpoint.native_controller_checkpoints.clear();
+    for(const auto& target:runtime->second.targets) { checkpoint.target_desired.push_back(target.desired); checkpoint.target_weights.push_back(target.desired_weight); checkpoint.target_enabled_states.push_back(target.enabled?1u:0u); checkpoint.target_snap_requested_states.push_back(target.snap_requested?1u:0u); checkpoint.target_evaluated_states.push_back(target.evaluated); checkpoint.target_evaluated_weights.push_back(target.evaluated_weight); }
+    for(const auto& controller:runtime->second.controllers) { std::vector<uint8_t> state; if(!controller || !controller->checkpoint(state) || state.size()>64u*1024u) return false; checkpoint.native_controller_checkpoints.push_back(std::move(state)); }
     // Marker crossings are reconstructed from evaluator previous/current graph
     // time.  A descriptor cursor would be a second, stale marker clock.
     checkpoint.marker_cursors.clear();
@@ -303,7 +366,9 @@ bool AnimationSystems::validate_service_checkpoint(const AnimatorCheckpoint& che
     if(!std::isfinite(checkpoint.fixed_clip_time) || !std::isfinite(checkpoint.target_weight) ||
        !finite_transform(checkpoint.fixed_root_previous) || !finite_transform(checkpoint.fixed_root_current) ||
        !finite_transform(checkpoint.desired_target) || !finite_transform(checkpoint.evaluated_target)) return false;
-    if(!checkpoint.marker_cursors.empty()) return false;
+    const auto runtime=target_runtime_.find(animator_key(checkpoint.instance));
+    if(runtime==target_runtime_.end() || !checkpoint.marker_cursors.empty() || checkpoint.target_evaluated_states.size()!=runtime->second.targets.size() || checkpoint.target_evaluated_weights.size()!=runtime->second.targets.size() || checkpoint.native_controller_checkpoints.size()!=runtime->second.controllers.size()) return false;
+    for(size_t i=0;i<runtime->second.targets.size();++i) if(!finite_transform(checkpoint.target_evaluated_states[i]) || !std::isfinite(checkpoint.target_evaluated_weights[i]) || checkpoint.target_evaluated_weights[i]<0||checkpoint.target_evaluated_weights[i]>1) return false;
     return evaluator_.validate_checkpoint(checkpoint.instance,*binding->second.descriptor->evaluation,checkpoint);
 }
 
@@ -311,7 +376,8 @@ bool AnimationSystems::restore_service_checkpoint(const AnimatorCheckpoint& chec
     if(!validate_service_checkpoint(checkpoint)) return false;
     const uint64_t slot_key=animator_key(checkpoint.instance);
     const AnimationRuntimeBindingLease& binding=service_bindings_.at(slot_key);
-    AnimationFixedWork restored=fixed_work_.at(slot_key);
+    const AnimationFixedWork previous_work=fixed_work_.at(slot_key);
+    AnimationFixedWork restored=previous_work;
     restored.clip.time=checkpoint.fixed_clip_time;
     restored.root_previous=checkpoint.fixed_root_previous;
     restored.root_current=checkpoint.fixed_root_current;
@@ -320,8 +386,14 @@ bool AnimationSystems::restore_service_checkpoint(const AnimatorCheckpoint& chec
     restored.evaluated_target_root_relative=checkpoint.evaluated_target;
     restored.target_weight=checkpoint.target_weight;
     restored.target_enabled=checkpoint.target_enabled;
-    if(!register_fixed_work(restored)) return false;
-    if(!evaluator_.restore_checkpoint(checkpoint.instance,*binding.descriptor->evaluation,checkpoint)) return false;
+    TargetRuntime& candidate=target_runtime_.at(slot_key);
+    std::vector<std::vector<uint8_t>> previous_controller_state; previous_controller_state.reserve(candidate.controllers.size());
+    for(const auto& controller:candidate.controllers) { std::vector<uint8_t> bytes; if(!controller || !controller->checkpoint(bytes)) return false; previous_controller_state.push_back(std::move(bytes)); }
+    for(size_t i=0;i<candidate.controllers.size();++i) if(!candidate.controllers[i]->restore(checkpoint.native_controller_checkpoints[i])) { for(size_t j=0;j<i;++j) (void)candidate.controllers[j]->restore(previous_controller_state[j]); return false; }
+    const std::vector<AnimationTargetState> previous_targets=candidate.targets;
+    for(size_t i=0;i<candidate.targets.size();++i) { candidate.targets[i].desired=checkpoint.target_desired[i]; candidate.targets[i].desired_weight=checkpoint.target_weights[i]; candidate.targets[i].enabled=checkpoint.target_enabled_states[i]!=0; candidate.targets[i].snap_requested=checkpoint.target_snap_requested_states[i]!=0; candidate.targets[i].evaluated=checkpoint.target_evaluated_states[i]; candidate.targets[i].evaluated_weight=checkpoint.target_evaluated_weights[i]; }
+    if(!register_fixed_work(restored)) { candidate.targets=previous_targets; for(size_t i=0;i<candidate.controllers.size();++i) (void)candidate.controllers[i]->restore(previous_controller_state[i]); return false; }
+    if(!evaluator_.restore_checkpoint(checkpoint.instance,*binding.descriptor->evaluation,checkpoint)) { (void)register_fixed_work(previous_work); candidate.targets=previous_targets; for(size_t i=0;i<candidate.controllers.size();++i) (void)candidate.controllers[i]->restore(previous_controller_state[i]); return false; }
     const AnimationPoseSnapshot pose=evaluator_.snapshot(checkpoint.instance);
     if(pose.instance.valid()) (void)pose_snapshots_.publish(pose);
     return true;
@@ -558,6 +630,26 @@ void AnimationSystems::run_post_physics(double fixed_delta) {
 
 void AnimationSystems::run_fixed_post(flecs::world& world, double fixed_delta) {
     trace(AnimationScheduleEvent::FixedEvaluateControllers, fixed_delta);
+    // Controller execution is deterministic by (declared priority, animator
+    // handle, declaration order). Each controller produces a complete write
+    // batch; a rejected batch leaves all target state unchanged.
+    struct ControllerJob { int32_t priority; uint64_t key; uint16_t order; };
+    std::vector<ControllerJob> jobs;
+    for(const auto& pair:service_bindings_) if(pair.second.descriptor) for(uint16_t i=0;i<pair.second.descriptor->controllers.size();++i) jobs.push_back({pair.second.descriptor->controllers[i].priority,pair.first,i});
+    std::stable_sort(jobs.begin(),jobs.end(),[](const ControllerJob&a,const ControllerJob&b){if(a.priority!=b.priority)return a.priority<b.priority;if(a.key!=b.key)return a.key<b.key;return a.order<b.order;});
+    for(const ControllerJob& job:jobs) {
+        auto& runtime=target_runtime_[job.key]; const auto& binding=service_bindings_.at(job.key); const auto& spec=binding.descriptor->controllers[job.order];
+        if(job.order>=runtime.controllers.size() || !runtime.controllers[job.order]) continue;
+        NativeControllerContext context{}; context.fixed_delta_seconds=fixed_delta; context.world_queries=world_queries_;
+        if(!runtime.controllers[job.order]->fixed_update(context)) continue;
+        std::vector<AnimationTargetState> candidate=runtime.targets; bool valid=true;
+        for(const ControllerTargetWrite& write:context.writes) {
+            if(write.target_index>=candidate.size() || std::find(spec.target_indices.begin(),spec.target_indices.end(),write.target_index)==spec.target_indices.end() ||
+               !std::isfinite(write.weight) || write.weight<0||write.weight>1 || !finite_transform(write.transform)) {valid=false;break;}
+            candidate[write.target_index].desired=write.transform; candidate[write.target_index].desired_weight=write.weight; candidate[write.target_index].enabled=true;
+        }
+        if(valid) runtime.targets=std::move(candidate);
+    }
     trace(AnimationScheduleEvent::FixedWorldQueries, fixed_delta);
     std::vector<AnimationWorldQueryRequest> queries;
     for (const auto& pair : fixed_work_)
@@ -571,6 +663,14 @@ void AnimationSystems::run_fixed_post(flecs::world& world, double fixed_delta) {
         const ecs::WorldTransform* transform = root.try_get<ecs::WorldTransform>();
         if (transform == nullptr || !resolve_world_target(transform->matrix, work.desired_target_world,
                                                            work.evaluated_target_root_relative)) continue;
+    }
+    for(const auto& pair:service_bindings_) {
+        (void)apply_targets(pair.second.instance,EvaluationCadence::Fixed,fixed_delta);
+        const auto runtime=target_runtime_.find(pair.first); if(runtime==target_runtime_.end() || runtime->second.targets.empty()) continue;
+        const ecs::AnimationFrameState frame=world.get<ecs::AnimationFrameState>();
+        if(evaluator_.solve_targets(pair.second.instance,*pair.second.descriptor->evaluation,pair.second.descriptor->targets,runtime->second.targets,frame.frame_serial)) {
+            const AnimationPoseSnapshot pose=evaluator_.snapshot(pair.second.instance); if(pose.instance.valid()) (void)pose_snapshots_.publish(pose);
+        }
     }
     trace(AnimationScheduleEvent::FixedPublishSnapshot, fixed_delta);
 }
@@ -587,6 +687,13 @@ void AnimationSystems::run_frame(flecs::world& world, double frame_delta) {
     // graph clock on wall-frame time.
     evaluate_service_bindings(world, 0.0, static_cast<float>(interpolation_alpha_));
     trace(AnimationScheduleEvent::FrameSolveTargetsAndIk, frame_delta);
+    for(const auto& pair:service_bindings_) {
+        (void)apply_targets(pair.second.instance,EvaluationCadence::Frame,frame_delta);
+        const auto runtime=target_runtime_.find(pair.first); if(runtime==target_runtime_.end() || runtime->second.targets.empty()) continue;
+        if(evaluator_.solve_targets(pair.second.instance,*pair.second.descriptor->evaluation,pair.second.descriptor->targets,runtime->second.targets,state.frame_serial)) {
+            const AnimationPoseSnapshot pose=evaluator_.snapshot(pair.second.instance); if(pose.instance.valid()) (void)pose_snapshots_.publish(pose);
+        }
+    }
     trace(AnimationScheduleEvent::FramePublishPoseSnapshot, frame_delta);
 }
 

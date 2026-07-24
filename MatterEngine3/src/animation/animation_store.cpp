@@ -152,6 +152,14 @@ bool valid_binding(const std::shared_ptr<const AnimationRuntimeBindingDescriptor
         if (!std::isfinite(marker.time) || marker.time < 0.0f || marker.time > work.clip.duration) return false;
     for (const AnimationWorldQueryRequest& query : work.queries)
         if (!std::isfinite(query.max_distance) || query.max_distance < 0.0f) return false;
+    if (binding->targets.size()>kMaxTargets || !validate_exclusive_target_chains(binding->targets)) return false;
+    std::set<uint16_t> controller_targets;
+    NativeControllerRegistry registry=NativeControllerRegistry::with_v1_controllers();
+    for(const auto& controller:binding->controllers) {
+        if(controller.descriptor.cadence!=EvaluationCadence::Fixed) return false;
+        NativeControllerLayout layout{}; if(!registry.create(controller.descriptor,layout) || layout.frame_state_bytes!=0 || layout.fixed_state_bytes>64u*1024u) return false;
+        for(uint16_t target:controller.target_indices) if(target>=binding->targets.size() || binding->targets[target].driver!=TargetDriverKind::Controller || !controller_targets.insert(target).second) return false;
+    }
     return true;
 }
 
@@ -166,6 +174,7 @@ bool valid_definition(const AnimationRuntimeDefinition& definition) {
         for (size_t i = 0; i < definition.inputs.size(); ++i)
             if (evaluation.inputs[i].type != definition.inputs[i].type || evaluation.inputs[i].cadence != definition.inputs[i].cadence) return false;
         if (definition.binding->target_index != UINT16_MAX && definition.binding->target_index >= definition.targets.size()) return false;
+        if (!definition.binding->targets.empty() && definition.binding->targets.size()!=definition.targets.size()) return false;
     }
     return definition.mutable_bytes() != std::numeric_limits<size_t>::max();
 }
@@ -524,8 +533,8 @@ public:
         for (const StoredValue& control : value->fixed_previous) out.fixed_previous.push_back(animation_value(control));
         for (const StoredValue& control : value->fixed_current) out.fixed_current.push_back(animation_value(control));
         for (const StoredValue& control : value->frame_controls) out.frame_controls.push_back(animation_value(control));
-        out.target_transforms.reserve(value->targets.size()); out.target_weights.reserve(value->targets.size()); out.target_enabled.reserve(value->targets.size());
-        for (const TargetState& target : value->targets) { out.target_transforms.push_back(target.transform); out.target_weights.push_back(target.weight); out.target_enabled.push_back(target.enabled ? 1u : 0u); }
+        out.target_transforms.reserve(value->targets.size()); out.target_weights.reserve(value->targets.size()); out.target_enabled.reserve(value->targets.size()); out.target_snap_requested.reserve(value->targets.size());
+        for (const TargetState& target : value->targets) { out.target_transforms.push_back(target.transform); out.target_weights.push_back(target.weight); out.target_enabled.push_back(target.enabled ? 1u : 0u); out.target_snap_requested.push_back(target.snap_requested ? 1u : 0u); }
         return out.valid();
     }
 

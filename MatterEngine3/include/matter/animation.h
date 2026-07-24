@@ -99,6 +99,7 @@ struct AnimationRuntimeBindingLease {
     std::vector<AnimationTransform> target_transforms;
     std::vector<float> target_weights;
     std::vector<uint8_t> target_enabled;
+    std::vector<uint8_t> target_snap_requested;
     bool valid() const { return instance.valid() && descriptor != nullptr; }
 };
 

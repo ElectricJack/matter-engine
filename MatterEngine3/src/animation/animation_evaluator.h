@@ -2,6 +2,7 @@
 
 #include "animation/animation_ir.h"
 #include "animation/ozz_adapter.h"
+#include "animation/animation_targets.h"
 #include "matter/animation.h"
 
 #include <cstdint>
@@ -60,9 +61,12 @@ struct AnimatorCheckpoint {
     bool target_enabled = false;
     bool target_snap_requested = false;
     std::vector<AnimationTransform> target_desired;
+    std::vector<AnimationTransform> target_evaluated_states;
     std::vector<float> target_weights;
+    std::vector<float> target_evaluated_weights;
     std::vector<uint8_t> target_enabled_states;
     std::vector<uint8_t> target_snap_requested_states;
+    std::vector<std::vector<uint8_t>> native_controller_checkpoints;
     std::vector<uint8_t> graph_state;
     std::vector<uint8_t> controller_state;
     std::vector<uint8_t> sample_context_state;
@@ -80,13 +84,14 @@ struct AnimatorCheckpoint {
     size_t serialized_size() const {
         size_t total = sizeof(*this) + graph_state.size() + controller_state.size() + sample_context_state.size() +
                        pose_scratch_state.size() + marker_cursors.size() * sizeof(uint32_t) +
-                       fixed_local_pose.size() * sizeof(AnimationTransform) + target_desired.size() * sizeof(AnimationTransform) +
-                       target_weights.size() * sizeof(float) + target_enabled_states.size() + target_snap_requested_states.size() +
+                       fixed_local_pose.size() * sizeof(AnimationTransform) + target_desired.size() * sizeof(AnimationTransform) + target_evaluated_states.size() * sizeof(AnimationTransform) +
+                       target_weights.size() * sizeof(float) + target_evaluated_weights.size() * sizeof(float) + target_enabled_states.size() + target_snap_requested_states.size() +
                        fixed_model_pose.size() * sizeof(Mat4f) + fixed_previous_model_pose.size() * sizeof(Mat4f) +
                        fixed_skin_palette.size() * sizeof(Mat4f) + fixed_previous_skin_palette.size() * sizeof(Mat4f);
         for (const auto& value : fixed_inputs) total += sizeof(AnimationValue) + value.symbol.size();
         for (const auto& value : fixed_previous_inputs) total += sizeof(AnimationValue) + value.symbol.size();
         for (const auto& value : frame_inputs) total += sizeof(AnimationValue) + value.symbol.size();
+        for (const auto& value : native_controller_checkpoints) total += value.size();
         return total;
     }
     bool bounded(size_t limit = 64u * 1024u) const {
@@ -235,6 +240,13 @@ public:
                            std::vector<RuntimeGraphClipAdvance>& out) const;
     bool fixed_root_motion(AnimatorInstanceHandle instance,
                            DesiredRootMotion& out) const;
+    // Applies validated targets to the published pose through a back buffer.
+    // On any invalid target/solve failure the previous snapshot remains live.
+    bool solve_targets(AnimatorInstanceHandle instance,
+                       const AnimationEvaluationDefinition& definition,
+                       const std::vector<CanonicalTarget>& targets,
+                       const std::vector<AnimationTargetState>& states,
+                       uint64_t frame_serial);
     void forget(AnimatorInstanceHandle instance);
 
 private:
