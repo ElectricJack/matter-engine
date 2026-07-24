@@ -2,6 +2,7 @@
 #include "physics_context.h"
 #include "streaming_systems.h"
 #include "scene_registry.h"
+#include "animation/animation_systems.h"
 #include "../streaming/sector_streaming_coordinator.h"
 #include "matter/physics.h"
 #include "matter/streaming.h"
@@ -58,10 +59,17 @@ CoreModule::CoreModule(flecs::world& world) {
     world.component<PrePhysics>();
     world.component<Physics>();
     world.component<PostPhysics>();
+    world.component<PostPhysicsHierarchy>();
     world.component<FixedPostUpdate>();
     world.component<FrameUpdate>();
     world.component<FixedPipelineSystem>();
     world.component<FramePipelineSystem>();
+    world.component<AnimationFixedState>()
+        .member("previous_tick", &AnimationFixedState::previous_tick)
+        .member("current_tick", &AnimationFixedState::current_tick);
+    world.component<AnimationFrameState>()
+        .member("frame_serial", &AnimationFrameState::frame_serial)
+        .member("interpolation_alpha", &AnimationFrameState::interpolation_alpha);
 
     world.component<FixedPreUpdate>()
         .add(flecs::Phase)
@@ -78,9 +86,12 @@ CoreModule::CoreModule(flecs::world& world) {
     world.component<PostPhysics>()
         .add(flecs::Phase)
         .depends_on<Physics>();
-    world.component<FixedPostUpdate>()
+    world.component<PostPhysicsHierarchy>()
         .add(flecs::Phase)
         .depends_on<PostPhysics>();
+    world.component<FixedPostUpdate>()
+        .add(flecs::Phase)
+        .depends_on<PostPhysicsHierarchy>();
     world.component<FrameUpdate>()
         .add(flecs::Phase)
         .depends_on<FixedPostUpdate>();
@@ -88,6 +99,8 @@ CoreModule::CoreModule(flecs::world& world) {
     register_transform_systems(world);
 
     world.set<WorldRuntimeState>(WorldRuntimeState{});
+    world.set<AnimationFixedState>(AnimationFixedState{});
+    world.set<AnimationFrameState>(AnimationFrameState{});
     world.set_scope(previous_scope.id());
 }
 
@@ -324,6 +337,8 @@ Runtime::Runtime() {
     streaming_ = std::make_unique<streaming::detail::Coordinator>();
     world_.set<streaming::detail::StreamingContextRef>(
         streaming::detail::StreamingContextRef{streaming_.get()});
+    animation_systems_ = std::make_unique<animation::AnimationSystems>();
+    animation::register_animation_systems(world_, *animation_systems_);
     fixed_pipeline_ = build_pipeline<ecs::FixedPipelineSystem>(world_);
     frame_pipeline_ = build_pipeline<ecs::FramePipelineSystem>(world_);
 }
@@ -356,6 +371,14 @@ streaming::detail::Coordinator& Runtime::streaming_coordinator() noexcept {
 const streaming::detail::Coordinator&
 Runtime::streaming_coordinator() const noexcept {
     return *streaming_;
+}
+
+animation::AnimationSystems& Runtime::animation_systems() noexcept {
+    return *animation_systems_;
+}
+
+const animation::AnimationSystems& Runtime::animation_systems() const noexcept {
+    return *animation_systems_;
 }
 
 void Runtime::enqueue_world_state(WorldStateCommand command) {
@@ -412,7 +435,7 @@ TickResult Runtime::tick(const TickDesc& desc) {
     if (!std::isfinite(frame_delta) || frame_delta < 0.0 ||
         !std::isfinite(fixed_delta) || fixed_delta <= 0.0 ||
         desc.max_fixed_steps == 0) {
-        return {0, 0, true};
+        return {0, 0, true, 0.0};
     }
 
     const double contributed_delta =
@@ -446,6 +469,10 @@ TickResult Runtime::tick(const TickDesc& desc) {
             accumulator_seconds_ -= complete_excess_steps * fixed_delta;
         }
     }
+
+    result.interpolation_alpha = std::max(
+        0.0, std::min(1.0, accumulator_seconds_ / fixed_delta));
+    animation_systems_->set_interpolation_alpha(result.interpolation_alpha);
 
     world_.run_pipeline(
         frame_pipeline_, static_cast<float>(contributed_delta));

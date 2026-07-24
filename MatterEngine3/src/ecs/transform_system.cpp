@@ -425,7 +425,7 @@ void register_transform_systems(flecs::world& world) {
             finish_pending_removal(entity);
         });
 
-    register_propagation_system<FixedPostUpdate, FixedPipelineSystem>(
+    register_propagation_system<PostPhysicsHierarchy, FixedPipelineSystem>(
         world, "PropagateTransformsFixed");
     register_propagation_system<FrameUpdate, FramePipelineSystem>(
         world, "PropagateTransformsFrame");

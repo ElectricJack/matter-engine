@@ -124,6 +124,9 @@ ANIMATION_STORE_CPP = animation_store_tests.cpp ../src/animation/animation_store
 ANIMATION_EVALUATOR_TARGET = animation_evaluator_tests
 ANIMATION_EVALUATOR_CPP = animation_evaluator_tests.cpp ../src/animation/animation_evaluator.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp
 
+ANIMATION_SYSTEMS_TARGET = animation_systems_tests
+ANIMATION_SYSTEMS_CPP = animation_systems_tests.cpp ../src/animation/animation_systems.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
+
 # CPU-only, no GL/VK/raylib link deps (mirrors MATRIX_TARGET's direct-compile
 # pattern) — pure atlas-slicing + mip math, unit-testable without a device.
 TILESETSLICER_TARGET = tileset_slicer_tests
@@ -134,11 +137,11 @@ FLECS_DIR = ../../Libraries/flecs
 FLECS_C = $(FLECS_DIR)/flecs.c
 
 ECS_TARGET = ecs_tests
-ECS_CPP = ecs_tests.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
+ECS_CPP = ecs_tests.cpp ../src/animation/animation_systems.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 ECS_C = $(FLECS_C)
 
 PHYSICS_TARGET = physics-tests
-PHYSICS_CPP = physics_tests.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
+PHYSICS_CPP = physics_tests.cpp ../src/animation/animation_systems.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 PHYSICS_C = $(FLECS_C)
 
 # ---------------------------------------------------------------------------
@@ -403,7 +406,7 @@ EMITTERGATHER_CPP    = emitter_gather_tests.cpp ../src/render/vk_emitter_gather.
 
 # Phase 4 Task 4 — SceneRegistry reflected ECS validation + instantiation (def flavor).
 SCENE_REGISTRY_TARGET = scene_registry_tests
-SCENE_REGISTRY_CPP    = scene_registry_tests.cpp ../src/ecs/scene_registry.cpp \
+SCENE_REGISTRY_CPP    = scene_registry_tests.cpp ../src/animation/animation_systems.cpp ../src/ecs/scene_registry.cpp \
                         ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                         ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
                         ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
@@ -418,7 +421,7 @@ DYNAMIC_SLOTS_CPP    = dynamic_instance_slots_tests.cpp ../src/render/dynamic_in
 
 # Phase 4 Task 5 — Recipe normalization + transactional bootstrap (def flavor).
 ENTITY_RECIPE_TARGET = entity_recipe_tests
-ENTITY_RECIPE_CPP    = entity_recipe_tests.cpp ../src/ecs/scene_registry.cpp \
+ENTITY_RECIPE_CPP    = entity_recipe_tests.cpp ../src/animation/animation_systems.cpp ../src/ecs/scene_registry.cpp \
                        ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                        ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
                        ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
@@ -428,7 +431,7 @@ ENTITY_RECIPE_C      = $(FLECS_C)
 
 # Phase 4 Task 8 — ECS dynamic scene bridge (headless, Flecs, no GL/Vulkan).
 DYNAMIC_BRIDGE_TARGET = dynamic_bridge_tests
-DYNAMIC_BRIDGE_CPP    = dynamic_scene_bridge_tests.cpp ../src/ecs/dynamic_scene_bridge.cpp \
+DYNAMIC_BRIDGE_CPP    = dynamic_scene_bridge_tests.cpp ../src/animation/animation_systems.cpp ../src/ecs/dynamic_scene_bridge.cpp \
                         ../src/render/dynamic_instance_slots.cpp \
                         ../src/ecs/scene_registry.cpp \
                         ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
@@ -444,7 +447,7 @@ EDITOR_MODEL_CPP    = editor_model_tests.cpp ../../MatterViewer/editor_model.cpp
 
 # Phase 4 Task 10 — Properties registry (needs scene_registry for ComponentDescriptor).
 PROPERTIES_REGISTRY_TARGET = properties_registry_tests
-PROPERTIES_REGISTRY_CPP    = properties_registry_tests.cpp ../../MatterViewer/properties_registry.cpp \
+PROPERTIES_REGISTRY_CPP    = properties_registry_tests.cpp ../src/animation/animation_systems.cpp ../../MatterViewer/properties_registry.cpp \
                              ../src/ecs/scene_registry.cpp \
                              ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                              ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
@@ -455,7 +458,7 @@ PROPERTIES_REGISTRY_C      = $(FLECS_C)
 
 # Phase 4 Task 11 — Simulation control (Play/Pause/Step/Stop with snapshot).
 SIMULATION_CONTROL_TARGET = simulation_control_tests
-SIMULATION_CONTROL_CPP    = simulation_control_tests.cpp ../src/ecs/simulation_control.cpp \
+SIMULATION_CONTROL_CPP    = simulation_control_tests.cpp ../src/animation/animation_systems.cpp ../src/ecs/simulation_control.cpp \
                             ../src/ecs/scene_registry.cpp \
                             ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                             ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
@@ -476,7 +479,7 @@ SPECIALIZED_EDITORS_C      = $(FLECS_C)
 # entities via scene::bootstrap_transactional). Needs the full Runtime, same
 # link set as SIMULATION_CONTROL.
 ECS_ENTITY_BRIDGE_TARGET = ecs_entity_bridge_tests
-ECS_ENTITY_BRIDGE_CPP    = ecs_entity_bridge_tests.cpp \
+ECS_ENTITY_BRIDGE_CPP    = ecs_entity_bridge_tests.cpp ../src/animation/animation_systems.cpp \
                            ../src/ecs/scene_registry.cpp \
                            ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                            ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
@@ -860,7 +863,7 @@ GPU_MSL_CPP = \
 GPU_MSL_C   = $(COMMON_MSL_C)
 GPU_ALL_CPP = $(GPU_PIPELINE_CPP) $(GPU_RENDER_CPP) $(GPU_MSL_CPP) \
               ../src/ecs/scene_registry.cpp \
-              ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
+              ../src/animation/animation_systems.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
               ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
               ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
               ../src/streaming/sector_streaming_coordinator.cpp
@@ -873,6 +876,7 @@ GPU_ALL_CPP = $(GPU_PIPELINE_CPP) $(GPU_RENDER_CPP) $(GPU_MSL_CPP) \
 def_CPP_SRCS := $(sort \
     $(ECS_CPP) \
     $(PHYSICS_CPP) \
+    $(ANIMATION_SYSTEMS_CPP) \
     $(SCENE_REGISTRY_CPP) \
     $(ENTITY_RECIPE_CPP) \
     $(DYNAMIC_SLOTS_CPP) \
@@ -1001,6 +1005,7 @@ $(foreach s,$(physicsc_C_SRCS),$(eval $(call objrule_c,physicsc,$(s))))
 # ---------------------------------------------------------------------------
 ECS_OBJS = $(call obj_list,def,$(ECS_CPP)) $(call obj_list,flecsc,$(ECS_C))
 PHYSICS_OBJS = $(call obj_list,def,$(PHYSICS_CPP)) $(call obj_list,physicsc,$(PHYSICS_C))
+ANIMATION_SYSTEMS_OBJS = $(call obj_list,def,$(ANIMATION_SYSTEMS_CPP)) $(call obj_list,flecsc,$(FLECS_C))
 SCENE_REGISTRY_OBJS = $(call obj_list,def,$(SCENE_REGISTRY_CPP)) $(call obj_list,flecsc,$(SCENE_REGISTRY_C))
 ENTITY_RECIPE_OBJS = $(call obj_list,def,$(ENTITY_RECIPE_CPP)) $(call obj_list,flecsc,$(ENTITY_RECIPE_C))
 DYNAMIC_SLOTS_OBJS = $(call obj_list,def,$(DYNAMIC_SLOTS_CPP))
@@ -1068,7 +1073,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-tilesetslicer run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather
+.PHONY: clean run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-systems run-tilesetslicer run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1139,6 +1144,12 @@ $(ANIMATION_EVALUATOR_TARGET): $(ANIMATION_EVALUATOR_CPP) $(OZZ_OFFLINE_LIBS)
 
 run-animation-evaluator: $(ANIMATION_EVALUATOR_TARGET)
 	./$(ANIMATION_EVALUATOR_TARGET)
+
+$(ANIMATION_SYSTEMS_TARGET): $(ANIMATION_SYSTEMS_OBJS) $(BOX3D_LIB)
+	$(CC) $(ANIMATION_SYSTEMS_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(FLECS_PLATFORM_LIBS)
+
+run-animation-systems: $(ANIMATION_SYSTEMS_TARGET)
+	./$(ANIMATION_SYSTEMS_TARGET)
 
 .PHONY: run-animation-ir
 

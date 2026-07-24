@@ -31,12 +31,21 @@ class Coordinator;
 
 } // namespace matter::streaming::detail
 
+namespace matter::animation {
+
+class AnimationSystems;
+
+} // namespace matter::animation
+
 namespace matter::ecs_runtime {
 
 struct TickResult {
     uint32_t fixed_steps = 0;
     uint32_t dropped_steps = 0;
     bool invalid = false;
+    // The fixed-time remainder after the accumulator loop.  This is consumed
+    // by presentation only and must never advance simulation state.
+    double interpolation_alpha = 0.0;
 };
 
 enum class WorldStateCommandKind { Loading, Ready, Failed };
@@ -61,6 +70,10 @@ public:
     // public include surface.
     streaming::detail::Coordinator& streaming_coordinator() noexcept;
     const streaming::detail::Coordinator& streaming_coordinator() const noexcept;
+    // Internal B3 test/seam; render adapters use the independent snapshot
+    // store owned by these systems rather than taking Flecs component pointers.
+    animation::AnimationSystems& animation_systems() noexcept;
+    const animation::AnimationSystems& animation_systems() const noexcept;
     void enqueue_world_state(WorldStateCommand command);
     TickResult tick(const TickDesc& desc);
 
@@ -70,6 +83,7 @@ private:
     flecs::world world_;
     std::unique_ptr<physics::detail::PhysicsContext> physics_;
     std::unique_ptr<streaming::detail::Coordinator> streaming_;
+    std::unique_ptr<animation::AnimationSystems> animation_systems_;
     flecs::entity fixed_pipeline_;
     flecs::entity frame_pipeline_;
     double accumulator_seconds_ = 0.0;

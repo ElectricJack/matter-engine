@@ -36,10 +36,29 @@ struct FixedUpdate {};
 struct PrePhysics {};
 struct Physics {};
 struct PostPhysics {};
+// Ordered tail of PostPhysics: user systems observe physics pulls first, then
+// hierarchy propagation makes the pulled transforms current for FixedPostUpdate.
+struct PostPhysicsHierarchy {};
 struct FixedPostUpdate {};
 struct FrameUpdate {};
 struct FixedPipelineSystem {};
 struct FramePipelineSystem {};
+
+// Fixed simulation state advances only inside FixedPreUpdate.  Animation
+// systems use this singleton to rotate their previous/current sampled state;
+// presentation must never advance it from FrameUpdate.
+struct AnimationFixedState {
+    uint64_t previous_tick = 0;
+    uint64_t current_tick = 0;
+};
+
+// Presentation-only state written once per rendered frame after fixed stepping.
+// interpolation_alpha is the clamped fixed-time remainder; it never changes
+// simulation time or the number of fixed steps executed.
+struct AnimationFrameState {
+    uint64_t frame_serial = 0;
+    double interpolation_alpha = 0.0;
+};
 
 struct CoreModule {
     explicit CoreModule(flecs::world& world);
