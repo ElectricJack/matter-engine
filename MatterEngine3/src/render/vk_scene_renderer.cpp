@@ -20,6 +20,7 @@
 #include "tileset_gtex.h"
 #include "tileset_slicer.h"
 #include "vk_volumetrics.h"
+#include "tileset_bake_vk.h"
 
 namespace viewer {
 namespace {
@@ -2896,6 +2897,22 @@ void VkSceneRenderer::unload_tileset_slot(int slot) {
     write_tileset_params_buffer();
     for (auto& frame : frames_)
         write_tileset_descriptors_for_frame(frame.descriptor_sets[1]);
+}
+
+bool VkSceneRenderer::bake_tileset(const tileset::SettledTorus& settled,
+                                   uint64_t script_source_hash,
+                                   const std::string& gtex_path,
+                                   const tileset::BakeInputs& inputs,
+                                   bool force_rebake, bool dump_png,
+                                   std::string& error) {
+    if (!vulkan_) {
+        error = "VkSceneRenderer::bake_tileset: no Vulkan device";
+        return false;
+    }
+    // Q1: thin passthrough to the free function that owns the bake logic.
+    return tileset::bake_tileset_vk(*vulkan_, settled, script_source_hash,
+                                    gtex_path, inputs, force_rebake, dump_png,
+                                    error);
 }
 
 void VkSceneRenderer::update_composite_descriptor(FrameResources& frame) {

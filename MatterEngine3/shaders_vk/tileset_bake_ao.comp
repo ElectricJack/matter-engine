@@ -1,0 +1,195 @@
+#version 460
+#extension GL_EXT_ray_query : require
+
+// -----------------------------------------------------------------------------
+// Vulkan hardware-RT port of shaders_gpu/tileset_bake_ao.comp (V2).
+//
+// Per texel: re-cast the primary ortho ray (same SSBO hit reconstruction as
+// tileset_bake_primary.comp), offset P = hit.position + N*1e-3, build a cosine
+// hemisphere basis, and cast `aoSamples` (64) occlusion rays. Each occlusion ray
+// is a rayQueryEXT with gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT
+// and tMax = maxRayDist (= cfg.edge_strip_width) — the exact shape of
+// vol_scatter.comp:77-85's shadow query. ao = 1 - occluded/aoSamples, written R8.
+//
+// SEAM INVARIANCE (spec §I.6): the RNG chain, the cosine-hemisphere sampler, the
+// basis construction, and the tile-local seed coordinates are byte-preserved
+// from the GL shader. Only the GL shadowQuery(P,dir,maxRayDist) is replaced by
+// the ray-query occlusion test. Two texels at the same tile-local phase in
+// different tiles therefore trace an IDENTICAL ray set, and each ray contributes
+// only a boolean "hit within maxRayDist" — making the per-texel result
+// independent of traversal order.
+// -----------------------------------------------------------------------------
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(r8, set = 0, binding = 0) uniform writeonly image2D aoImg;
+
+layout(set = 0, binding = 1) uniform accelerationStructureEXT tlas;
+
+// Per-triangle geometry, global (concatenated across all BLAS entries). Layout
+// is 18 floats per triangle: v0.xyz, v1.xyz, v2.xyz, n0.xyz, n1.xyz, n2.xyz.
+layout(std430, set = 0, binding = 2) readonly buffer TriDataBuf { float triData[]; };
+// Per-triangle material id (global). -1 = "fall back to instance material".
+layout(std430, set = 0, binding = 3) readonly buffer TriMatBuf  { int   triMat[];  };
+// Per-BLAS first-triangle offset into the global arrays, indexed by the
+// instance custom index (= BLAS entry index).
+layout(std430, set = 0, binding = 4) readonly buffer TriFirstBuf { uint triFirst[]; };
+// Per-instance fallback material id, indexed by gl_InstanceID (TLAS build order).
+layout(std430, set = 0, binding = 5) readonly buffer InstMatBuf  { int  instMat[];  };
+// Material table (canonical 12-float MaterialRegistryPackForGPU layout):
+//   [0..2] albedo.rgb, [3] roughness, [4] metallic, [5] emission, [6] pad,
+//   [7] translucency, [8] ior, [9] flatShading, [10] mergeGroup, [11] slot
+layout(std430, set = 0, binding = 6) readonly buffer MaterialBuf { float mats[]; };
+
+layout(push_constant) uniform Push {
+    int   atlasW;
+    int   atlasH;
+    int   texelsPerMeter;
+    float rayY;
+    float heightMin;
+    float heightMax;
+    uint  seed;          // = (uint32_t)cfg.seed
+    int   aoSamples;     // 64
+    float maxRayDist;    // = cfg.edge_strip_width
+} pc;
+
+bool mat_flat(int id) { return mats[id * 12 + 9] > 0.5; }
+
+vec3 tri_vec3(uint tri, int slot) {
+    uint b = tri * 18u + uint(slot) * 3u;
+    return vec3(triData[b + 0u], triData[b + 1u], triData[b + 2u]);
+}
+
+// ---------------------------------------------------------------------------
+// RNG / basis — byte-preserved from shaders_gpu/tileset_bake_ao.comp:31-57.
+// These are the seam-invariance mechanism; do NOT alter any line.
+// ---------------------------------------------------------------------------
+
+// SplitMix32-style bit hash (32-bit output).
+uint splitmix32(uint x) {
+    x += 0x9E3779B9u;
+    x = (x ^ (x >> 16)) * 0x85EBCA6Bu;
+    x = (x ^ (x >> 13)) * 0xC2B2AE35u;
+    return x ^ (x >> 16);
+}
+
+// Uniform [0,1) from a 32-bit hash.
+float u01(uint h) { return float(h & 0x00FFFFFFu) / 16777216.0; }
+
+// Cosine-weighted hemisphere direction in the local frame (N = +Y).
+vec3 cosine_hemi(vec2 uv) {
+    float r = sqrt(uv.x);
+    float phi = 6.28318530718 * uv.y;
+    float x = r * cos(phi);
+    float z = r * sin(phi);
+    float y = sqrt(max(0.0, 1.0 - uv.x));
+    return vec3(x, y, z);
+}
+
+// Build an orthonormal frame with N as +Y.
+mat3 make_basis(vec3 n) {
+    vec3 t = abs(n.y) < 0.999 ? vec3(0, 1, 0) : vec3(1, 0, 0);
+    vec3 b = normalize(cross(t, n));
+    vec3 tt = cross(n, b);
+    return mat3(b, n, tt);
+}
+
+// Occlusion test: replaces the GL shadowQuery(P,dir,maxRayDist). Early-exit BVH
+// traversal via rayQueryEXT, terminate-on-first-hit, distance-capped at
+// maxRayDist. tMin = 0.0: P is already biased off the surface by N*1e-3 (matches
+// the primary pass' 0.0 tMin; the GL shadowQuery likewise self-biases). Returns
+// true if any geometry is hit within maxRayDist.
+bool occludeQuery(vec3 P, vec3 dir, float maxRayDist) {
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(rq, tlas,
+        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+        0xFFu,
+        P, 0.0,
+        dir, maxRayDist);
+    rayQueryProceedEXT(rq);
+    return rayQueryGetIntersectionTypeEXT(rq, true) !=
+           gl_RayQueryCommittedIntersectionNoneEXT;
+}
+
+void main() {
+    ivec2 xy = ivec2(gl_GlobalInvocationID.xy);
+    if (xy.x >= pc.atlasW || xy.y >= pc.atlasH) return;
+
+    // Re-cast the primary ortho ray to fetch position + normal.
+    float wx = (float(xy.x) + 0.5) / float(pc.texelsPerMeter);
+    float wz = (float(xy.y) + 0.5) / float(pc.texelsPerMeter);
+    vec3 O = vec3(wx, pc.rayY, wz);
+    vec3 D = vec3(0.0, -1.0, 0.0);
+    float maxT = pc.rayY - (pc.heightMin - 1.0);
+
+    rayQueryEXT prq;
+    rayQueryInitializeEXT(prq, tlas, gl_RayFlagsOpaqueEXT, 0xFFu, O, 0.0, D, maxT);
+    while (rayQueryProceedEXT(prq)) {}
+
+    if (rayQueryGetIntersectionTypeEXT(prq, true) !=
+        gl_RayQueryCommittedIntersectionTriangleEXT) {
+        imageStore(aoImg, xy, vec4(1.0));  // no geometry = full sky, AO=1
+        return;
+    }
+
+    // Primary-hit reconstruction — identical to tileset_bake_primary.comp.
+    int  blasIndex = rayQueryGetIntersectionInstanceCustomIndexEXT(prq, true);
+    int  instId    = rayQueryGetIntersectionInstanceIdEXT(prq, true);
+    uint prim      = uint(rayQueryGetIntersectionPrimitiveIndexEXT(prq, true));
+    vec2 bary      = rayQueryGetIntersectionBarycentricsEXT(prq, true);
+    float tHit     = rayQueryGetIntersectionTEXT(prq, true);
+    mat4x3 o2w     = rayQueryGetIntersectionObjectToWorldEXT(prq, true);
+
+    uint gtri = triFirst[blasIndex] + prim;
+
+    int triM = triMat[gtri];
+    int mid  = (triM >= 0) ? triM : instMat[instId];
+
+    float bu = 1.0 - bary.x - bary.y;
+    float bv = bary.x;
+    float bw = bary.y;
+
+    vec3 v0 = tri_vec3(gtri, 0), v1 = tri_vec3(gtri, 1), v2 = tri_vec3(gtri, 2);
+    vec3 faceN = cross(v1 - v0, v2 - v0);
+
+    vec3 localN;
+    if (mat_flat(mid)) {
+        localN = faceN;
+    } else {
+        vec3 n0 = tri_vec3(gtri, 3), n1 = tri_vec3(gtri, 4), n2 = tri_vec3(gtri, 5);
+        localN = bu * n0 + bv * n1 + bw * n2;
+        if (dot(localN, localN) < 1e-20) localN = faceN;
+    }
+    vec3 N = normalize(mat3(o2w) * localN);
+    if (N.y < 0.0) N = -N;
+
+    mat3 F = make_basis(N);
+    vec3 hitPos = O + tHit * D;
+    vec3 P = hitPos + N * 1e-3;   // bias off surface to avoid self-intersection
+
+    // Tile-local seed coordinates so same relative position within any tile
+    // uses identical rays.  Two texels at the same phase within different tiles
+    // (e.g. atlas x=0 and x=tile_texels) get IDENTICAL Monte Carlo samples,
+    // which is required for Wang-tile seam invariance: same-color boundary
+    // strips at different atlas locations must produce byte-identical AO.
+    // Within one tile, adjacent texels still get different phases → different
+    // rays → low Monte Carlo variance (no visible banding).
+    // kTorusN=4 (see include/tileset_layout.h); atlasW = kTorusN * tile_texels.
+    int tile_texels = pc.atlasW / 4;
+    uint local_x = uint(xy.x % tile_texels);
+    uint local_y = uint(xy.y % tile_texels);
+
+    int occluded = 0;
+    for (int i = 0; i < pc.aoSamples; ++i) {
+        uint h1 = splitmix32(local_x * 73856093u ^ local_y * 19349663u
+                             ^ uint(i) * 83492791u ^ pc.seed);
+        uint h2 = splitmix32(h1);
+        vec2 uv = vec2(u01(h1), u01(h2));
+        vec3 local_dir = cosine_hemi(uv);
+        vec3 dir = F * local_dir;
+        // Ray-query occlusion: early-exit BVH traversal, no material decode.
+        if (occludeQuery(P, dir, pc.maxRayDist)) ++occluded;
+    }
+    float ao = 1.0 - float(occluded) / float(pc.aoSamples);
+    imageStore(aoImg, xy, vec4(ao));
+}

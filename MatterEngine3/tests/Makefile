@@ -357,6 +357,17 @@ BAKETRACE_CPP    = bake_trace_tests.cpp ../src/bake_trace.cpp
 TILESETGTEX_TARGET = tileset_gtex_tests
 TILESETGTEX_CPP    = tileset_gtex_tests.cpp ../src/tileset_gtex.cpp
 
+# Vulkan .gtex bake (V1) readback->save_gtex repack — pure CPU (header-only
+# inline helpers from ../src/render/tileset_bake_vk.h, no Vulkan link).
+TILESETVKREPACK_TARGET = tileset_bake_vk_repack_tests
+TILESETVKREPACK_CPP    = tileset_bake_vk_repack_tests.cpp
+
+# Vulkan .gtex bake (V2) AO seam-invariance mechanism + ORM.r fold — pure CPU
+# (ported splitmix32/u01/cosine_hemi/make_basis + header-only gtex_pack_orm_ao,
+# no Vulkan link).
+TILESETVKAO_TARGET = tileset_bake_vk_ao_tests
+TILESETVKAO_CPP    = tileset_bake_vk_ao_tests.cpp
+
 # Volumetrics Task 3 — CPU emitter gather (distance filter, 256 cap).
 EMITTERGATHER_TARGET = emitter_gather_tests
 EMITTERGATHER_CPP    = emitter_gather_tests.cpp ../src/render/vk_emitter_gather.cpp
@@ -856,6 +867,8 @@ def_CPP_SRCS := $(sort \
     $(ASYNCQ_CPP) \
     $(BAKETRACE_CPP) \
     $(TILESETGTEX_CPP) \
+    $(TILESETVKREPACK_CPP) \
+    $(TILESETVKAO_CPP) \
     $(EMITTERGATHER_CPP) \
     $(REFINECTL_CPP) \
     $(SECTORSTREAM_CPP) \
@@ -994,6 +1007,8 @@ SHADER_SOURCE_OBJS = $(call obj_list,def,$(SHADER_SOURCE_CPP))
 ASYNCQ_OBJS = $(call obj_list,def,$(ASYNCQ_CPP))
 BAKETRACE_OBJS = $(call obj_list,def,$(BAKETRACE_CPP))
 TILESETGTEX_OBJS = $(call obj_list,def,$(TILESETGTEX_CPP))
+TILESETVKREPACK_OBJS = $(call obj_list,def,$(TILESETVKREPACK_CPP))
+TILESETVKAO_OBJS = $(call obj_list,def,$(TILESETVKAO_CPP))
 EMITTERGATHER_OBJS = $(call obj_list,def,$(EMITTERGATHER_CPP))
 REFINECTL_OBJS = $(call obj_list,def,$(REFINECTL_CPP))
 SECTORSTREAM_OBJS = $(call obj_list,def,$(SECTORSTREAM_CPP))
@@ -1040,7 +1055,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-tilesetslicer run-baketrace run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-settlebench
+.PHONY: clean run-matrix run-tilesetslicer run-baketrace run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-settlebench
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1433,6 +1448,20 @@ $(TILESETGTEX_TARGET): $(TILESETGTEX_OBJS)
 
 run-tilesetgtex: $(TILESETGTEX_TARGET)
 	./$(TILESETGTEX_TARGET)
+
+# Vulkan .gtex bake (V1) repack — headless, no engine/Vulkan link.
+$(TILESETVKREPACK_TARGET): $(TILESETVKREPACK_OBJS)
+	$(CC) $(TILESETVKREPACK_OBJS) -o $@ $(CFLAGS)
+
+run-tilesetvkrepack: $(TILESETVKREPACK_TARGET)
+	./$(TILESETVKREPACK_TARGET)
+
+# Vulkan .gtex bake (V2) AO seam-invariance — headless, no engine/Vulkan link.
+$(TILESETVKAO_TARGET): $(TILESETVKAO_OBJS)
+	$(CC) $(TILESETVKAO_OBJS) -o $@ $(CFLAGS)
+
+run-tilesetvkao: $(TILESETVKAO_TARGET)
+	./$(TILESETVKAO_TARGET)
 
 # tileset_torus_bvh.
 $(TILESETTORUSBVH_TARGET): $(TILESETTORUSBVH_OBJS)

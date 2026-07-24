@@ -240,7 +240,9 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/rt_surface_test.rgen.spv \
          build/shaders_vk/vol_density.comp.spv \
          build/shaders_vk/vol_scatter.comp.spv \
-         build/shaders_vk/vol_integrate.comp.spv
+         build/shaders_vk/vol_integrate.comp.spv \
+         build/shaders_vk/tileset_bake_primary.comp.spv \
+         build/shaders_vk/tileset_bake_ao.comp.spv
 
 build/shaders_vk/%.spv: shaders_vk/%
 	@mkdir -p $(dir $@)

@@ -36,6 +36,11 @@ struct FogSettings;
 struct TilesetPomSettings;
 }
 
+namespace tileset {
+struct SettledTorus;
+struct BakeInputs;
+}
+
 namespace viewer {
 
 class VkVolumetrics;
@@ -370,6 +375,19 @@ public:
     // frame slots to point back at the shared dummy images. No-op if the slot
     // was never loaded or slot is out of range.
     void unload_tileset_slot(int slot);
+    // Vulkan hardware-RT .gtex bake (spec vulkan-rt-gtex-bake.md, milestone V1).
+    // Thin passthrough to tileset::bake_tileset_vk (Q1): hands the bake the
+    // renderer's Vulkan device so it can build a bake-only acceleration
+    // structure and dispatch the primary compute pass. V1 produces the four
+    // core channels (albedo/normal/ORM.gb/height) with AO=1.0 placeholder and
+    // no horizon; it is NOT wired into the deferred phase and does NOT bump
+    // kEngineBakeVersion (both are V4). Fails closed: false + err on any error
+    // or when the device lacks ray-tracing support.
+    bool bake_tileset(const tileset::SettledTorus& settled,
+                      uint64_t script_source_hash,
+                      const std::string& gtex_path,
+                      const tileset::BakeInputs& inputs, bool force_rebake,
+                      bool dump_png, std::string& error);
     bool consume_gi_history_reset();
     bool rt_geometry_classification_dirty(uint64_t part_hash) const;
     void release_part(uint64_t part_hash);
