@@ -2,6 +2,7 @@
 #include "triangle_emit.hpp"
 
 #include "animation/animation_validate.h"
+#include "animation/animation_binding_bake.h"
 #include "animation/ozz_adapter.h"
 
 #include <algorithm>
@@ -487,7 +488,14 @@ void DslState::rig_attach(const std::string& name, const std::string& socket,
     if (!valid_transform(local)) { set_rig_error("attachment requires a finite positive transform"); return; }
     uint64_t child_hash=0;
     if (child_module.empty() || !lookup_child_hash(child_module, nullptr, 0, child_hash) || child_hash == 0) { set_rig_error("attachment references an unresolved child"); return; }
-    matter::animation::AttachmentDef attachment; attachment.name=name; attachment.child_hash=child_hash; attachment.local=local; attachment.source=rig_source_;
+    if (child_animation_artifact_is_invalid(child_hash)) {
+        set_rig_error("attachment references an invalid committed part artifact"); return;
+    }
+    const bool child_has_animation = child_has_committed_animation(child_hash);
+    if (!matter::animation::validate_attachment(true, child_has_animation)) {
+        set_rig_error("v1 attachment cannot target a child with nested committed animation"); return;
+    }
+    matter::animation::AttachmentDef attachment; attachment.name=name; attachment.child_hash=child_hash; attachment.child_has_committed_animation=child_has_animation; attachment.local=local; attachment.source=rig_source_;
     if (socket_target) attachment.socket=socket; else attachment.joint=socket;
     animation_->authored.attachments.push_back(std::move(attachment));
     matter::animation::Diagnostics diagnostics;

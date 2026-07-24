@@ -67,7 +67,9 @@ private:
 
 // child_resolved is false for an unresolved/missing child. A committed child
 // animation is forbidden in v1: nested animators are intentionally deferred.
-bool validate_attachment(bool child_resolved, bool child_has_committed_animation);
+inline bool validate_attachment(bool child_resolved, bool child_has_committed_animation) {
+    return child_resolved && !child_has_committed_animation;
+}
 
 bool build_skin_binding(const CanonicalRig& rig,
                         const std::vector<JointIndex>& child_joints,

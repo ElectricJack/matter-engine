@@ -187,7 +187,6 @@ bool BindingClaims::claim(const std::vector<JointIndex>& children,bool decorativ
 }
 bool BindingClaims::claim_skin(const std::vector<JointIndex>& children,bool decorative){return claim(children,decorative);}
 bool BindingClaims::claim_rigid(const std::vector<JointIndex>& children,bool decorative){return claim(children,decorative);}
-bool validate_attachment(bool child_resolved,bool child_has_committed_animation){return child_resolved&&!child_has_committed_animation;}
 
 bool build_skin_binding(const CanonicalRig&rig,const std::vector<JointIndex>&child_joints,const std::vector<viewer::IndexedPartGeometry>&lods,float falloff_scale,BindingBake&out){
     out={};if(!std::isfinite(falloff_scale)||falloff_scale<=0)return false;std::vector<BindJoint> joints;if(!bind_joints(rig,joints))return false;

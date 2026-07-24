@@ -1,11 +1,16 @@
 #include "check.h"
 #include "dsl_state.h"
 #include "indexed_part_geometry.h"
+#include "part_asset_v2.h"
 #include "script_host.h"
 #include "triangle_emit.hpp"
+#include "blas_manager.hpp"
+#include "tlas_manager.hpp"
 
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <string>
 
 namespace {
@@ -347,6 +352,61 @@ void test_scoped_skin_binding_rejects_structural_animation_authoring() {
           "a rejected structural callback rolls back later voxel geometry instead of leaking it into the failed bake buffer");
 }
 
+void test_binding_authoring_requires_owned_geometry_before_publish() {
+    script_host::ScriptHost host;
+    const auto unbound_skin = bake(
+        "this.beginRig('r');this.root('root');this.bone('arm',[1,0,0]);this.endRig();"
+        "this.skin('body',{joints:['arm'],generate:false});", host);
+    CHECK(!unbound_skin.error.ok && unbound_skin.error.message.find("own geometry") != std::string::npos,
+          "explicit skin fails at build end unless a bind scope owns geometry");
+
+    const auto unbound_segments = bake(
+        "this.beginRig('r');this.root('root');this.bone('arm',[1,0,0]);this.endRig();"
+        "this.segments('armor',{joints:['arm']});", host);
+    CHECK(!unbound_segments.error.ok && unbound_segments.error.message.find("own geometry") != std::string::npos,
+          "rigid segments fail at build end unless a bind scope owns geometry");
+
+    const auto generated_skin = bake(
+        "this.beginRig('r');this.root('root');this.bone('arm',[1,0,0]);this.endRig();"
+        "this.skin('body',{joints:['arm'],generate:true,voxelSize:.25});", host);
+    CHECK(generated_skin.error.ok,
+          "generated skin retains its implicit geometry range without a bind callback");
+}
+
+void test_attachment_rejects_child_with_committed_animation_link() {
+    const std::filesystem::path root = "animation_dsl_rig_attachment_cache";
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+    std::filesystem::create_directories(root / "parts", ec);
+    const uint64_t child_hash = 0xabcdu;
+    BLASManager child_blas;
+    TLASManager child_tlas(1);
+    const part_asset::PartAnimationLink link{1, 1, child_hash, 4, 5};
+    CHECK(part_asset::save_v2((root / part_asset::cache_path_resolved(child_hash)).string(), child_blas,
+                              child_tlas, nullptr, 0, {}, {}, link, child_hash),
+          "committed animated-child fixture is written with ANLK");
+
+    script_host::ScriptHost host;
+    script_host::BakeOptions opts;
+    opts.parts_dir = root.string();
+    const std::string module = "Tool";
+    const auto result = host.bake_source(
+        "class Parent extends Part { build(p) { this.beginRig('r');this.root('root');this.socket('grip');this.endRig();this.attach('tool','grip','Tool'); } }",
+        "{}", opts, &child_hash, 1, &module);
+    CHECK(!result.error.ok && result.error.message.find("nested committed animation") != std::string::npos,
+          "v1 attachments reject a resolved child with a committed ANLK animation link");
+    {
+        std::ofstream corrupt(root / part_asset::cache_path_resolved(child_hash), std::ios::binary | std::ios::trunc);
+        corrupt << "corrupt";
+    }
+    const auto corrupt_result = host.bake_source(
+        "class Parent extends Part { build(p) { this.beginRig('r');this.root('root');this.socket('grip');this.endRig();this.attach('tool','grip','Tool'); } }",
+        "{}", opts, &child_hash, 1, &module);
+    CHECK(!corrupt_result.error.ok && corrupt_result.error.message.find("invalid committed part artifact") != std::string::npos,
+          "an existing child part that cannot be preflighted never falls through as a static attachment");
+    std::filesystem::remove_all(root, ec);
+}
+
 void test_mirrored_bound_geometry_reverses_winding_and_preserves_static_winding() {
     AnimationTransform identity{};
     AnimationTransform child{}; child.translation = {1,0,0};
@@ -398,6 +458,8 @@ int main() {
     test_rig_binding_authoring_rejects_malformed_or_overlapping_declarations();
     test_scoped_skin_binding_captures_only_its_authored_ranges();
     test_scoped_skin_binding_rejects_structural_animation_authoring();
+    test_binding_authoring_requires_owned_geometry_before_publish();
+    test_attachment_rejects_child_with_committed_animation_link();
     test_mirrored_bound_geometry_reverses_winding_and_preserves_static_winding();
     if (g_failures) { std::printf("animation_dsl_rig_tests: %d failure(s)\n", g_failures); return 1; }
     std::printf("animation_dsl_rig_tests: all tests passed\n");

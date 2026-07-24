@@ -6,6 +6,7 @@ extern "C" {
 #include "tileset_base.js.h"
 #include "world_base.js.h"
 #include "part_asset_v2.h"   // SP-1 v2 helper (compute_resolved_hash, save_v2)
+#include "animation/animation_validate.h"
 #include "triangle_emit.hpp" // direct-triangle (mesh) session buffer
 #include "dsl_state.h"
 #include "dsl_bindings.h"
@@ -29,10 +30,12 @@ extern "C" {
 #include <cstring>
 #include <cmath>
 #include <chrono>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <new>       // std::bad_alloc
 #include <regex>
+#include <set>
 #include <utility>   // std::pair
 
 namespace script_host {
@@ -1114,6 +1117,8 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             state.set_rng(derive_seed(merged));
             {
                 std::map<std::string, uint64_t> name2hash;
+                std::map<uint64_t, bool> child_animation_status;
+                std::set<uint64_t> invalid_child_animation_artifacts;
                 if (child_modules && child_hashes)
                     for (size_t ci = 0; ci < child_count; ++ci) {
                         name2hash[child_modules[ci]] = child_hashes[ci];
@@ -1123,8 +1128,26 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                             key += child_params[ci];
                             name2hash[key] = child_hashes[ci];
                         }
+                        // A7 only needs to distinguish a static/absent child
+                        // from a child whose already-committed part carries an
+                        // ANLK trailer. This does not load or route .anim data;
+                        // that provider work remains in A8.
+                        const std::filesystem::path child_path = opts.parts_dir.empty()
+                            ? std::filesystem::path(part_asset::cache_path_resolved(child_hashes[ci]))
+                            : std::filesystem::path(opts.parts_dir) / part_asset::cache_path_resolved(child_hashes[ci]);
+                        std::optional<part_asset::PartAnimationLink> link;
+                        std::error_code artifact_error;
+                        if (std::filesystem::exists(child_path, artifact_error)) {
+                            if (!part_asset::load_animation_link(child_path.string(), child_hashes[ci], link))
+                                invalid_child_animation_artifacts.insert(child_hashes[ci]);
+                            else child_animation_status[child_hashes[ci]] = link.has_value();
+                        } else if (artifact_error) {
+                            invalid_child_animation_artifacts.insert(child_hashes[ci]);
+                        } else child_animation_status[child_hashes[ci]] = false;
                     }
                 state.set_child_hashes(std::move(name2hash));
+                state.set_child_animation_status(std::move(child_animation_status),
+                                                 std::move(invalid_child_animation_artifacts));
             }
             // Thread the world field binding so terrainVolume can call the mesher.
             state.set_world(opts.world);
@@ -1193,6 +1216,21 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     }
     if (r.error.ok && state.clip_open()) { r.error.ok=false; r.error.message="clip session left unfinished at end of build"; }
     if (r.error.ok && state.motion_open()) { r.error.ok=false; r.error.message="motion session left unfinished at end of build"; }
+    if (r.error.ok && state.authored_animation()) {
+        matter::animation::Diagnostics diagnostics;
+        if (!matter::animation::validate_final_animation_bindings(*state.authored_animation(), diagnostics)) {
+            r.error.ok = false;
+            r.error.code = "binding-validation";
+            r.error.message = diagnostics.items.empty()
+                ? "animation binding final validation failed"
+                : diagnostics.items.front().message;
+            if (!diagnostics.items.empty() && diagnostics.items.front().source.line != 0) {
+                const auto& source = diagnostics.items.front().source;
+                r.error.source_location = source.module + ":" + std::to_string(source.line) + ":" +
+                    std::to_string(source.column) + " (" + source.object + ")";
+            }
+        }
+    }
     if (r.error.ok && state.canonical_rig()) last_animation_rig_ = state.canonical_rig();
     if (r.error.ok && state.authored_animation()) last_animation_build_ = *state.authored_animation();
     // A session left open at end of build is a misuse.

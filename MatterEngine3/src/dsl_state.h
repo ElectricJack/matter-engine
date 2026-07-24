@@ -9,6 +9,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -388,6 +389,21 @@ public:
     bool lookup_child_hash(const std::string& module,
                            const char* params_json, size_t len,
                            uint64_t& out);
+    // Bake-time child artifact status, keyed by an already-resolved child hash.
+    // This is deliberately only an ANLK presence bit; runtime provider routing
+    // remains A8 work.
+    void set_child_animation_status(std::map<uint64_t, bool> status,
+                                    std::set<uint64_t> invalid_artifacts = {}) {
+        child_animation_status_ = std::move(status);
+        invalid_child_animation_artifacts_ = std::move(invalid_artifacts);
+    }
+    bool child_has_committed_animation(uint64_t resolved_hash) const {
+        const auto it = child_animation_status_.find(resolved_hash);
+        return it != child_animation_status_.end() && it->second;
+    }
+    bool child_animation_artifact_is_invalid(uint64_t resolved_hash) const {
+        return invalid_child_animation_artifacts_.count(resolved_hash) != 0;
+    }
 
     // Strict composite-key-only lookup: does NOT fall back to the plain module key.
     // Returns true iff `module \x1f params_json` is an explicit entry in the table.
@@ -474,6 +490,8 @@ private:
     std::string error_;
     std::unique_ptr<Rng> rng_;    // seeded by the host before build()
     std::map<std::string, uint64_t>   child_hashes_;   // declared children placement table (see set_child_hashes)
+    std::map<uint64_t, bool> child_animation_status_;  // committed ANLK status for declared child hashes
+    std::set<uint64_t> invalid_child_animation_artifacts_;
     std::vector<ChildPlacement>       children_;        // accumulated placements
     std::unique_ptr<tri_emit::TriangleBuildBuffer> tris_buf_;  // direct-triangle session
 

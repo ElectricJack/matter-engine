@@ -152,6 +152,9 @@ struct AttachmentDef {
     std::string socket;
     std::string joint;
     uint64_t child_hash = 0; // resolved during the parent bake; never a module name at runtime
+    // Bake-time ANLK status of child_hash. v1 rejects nested committed animation;
+    // this is retained in authored IR so final validation cannot lose that fact.
+    bool child_has_committed_animation = false;
     AnimationTransform local{};
     SourceSpan source;
 };

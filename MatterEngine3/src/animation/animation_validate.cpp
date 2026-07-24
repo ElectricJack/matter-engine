@@ -1,4 +1,5 @@
 #include "animation/animation_validate.h"
+#include "animation/animation_binding_bake.h"
 
 #include <algorithm>
 #include <cmath>
@@ -118,7 +119,7 @@ std::string encode_authored_state(const AnimationBuild& build) {
     for (const GraphNode& node : build.graph.nodes) { append_string(output, node.name); append_string(output, node.clip); append_string(output, node.input); append_string(output, node.controller); output << node.is_output << ',' << static_cast<int>(node.kind) << ',' << static_cast<int>(node.cadence) << '|'; for (float threshold : node.thresholds) output << threshold << ','; output << '|'; for (const std::string& dependency : node.dependencies) append_string(output, dependency); }
     for (const SkinBindingDef& binding : build.skin_bindings) { append_string(output, binding.name); output << binding.radius_scale << ',' << binding.falloff << ',' << binding.voxel_size << ',' << binding.generated << '|'; for (const std::string& joint : binding.joints) append_string(output, joint); for (const BindingGeometryRange& range : binding.geometry) output << range.op_begin << ',' << range.op_end << ',' << range.triangle_begin << ',' << range.triangle_end << '|'; }
     for (const RigidBindingDef& binding : build.rigid_bindings) { append_string(output, binding.name); append_string(output, binding.joint); output << binding.decorative << '|'; append_transform(output, binding.local); for (const BindingGeometryRange& range : binding.geometry) output << range.op_begin << ',' << range.op_end << ',' << range.triangle_begin << ',' << range.triangle_end << '|'; }
-    for (const AttachmentDef& attachment : build.attachments) { append_string(output, attachment.name); append_string(output, attachment.socket); append_string(output, attachment.joint); output << attachment.child_hash << '|'; append_transform(output, attachment.local); }
+    for (const AttachmentDef& attachment : build.attachments) { append_string(output, attachment.name); append_string(output, attachment.socket); append_string(output, attachment.joint); output << attachment.child_hash << ',' << attachment.child_has_committed_animation << '|'; append_transform(output, attachment.local); }
     return output.str();
 }
 
@@ -236,6 +237,9 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
     for (const AttachmentDef& attachment : build.attachments) {
         if (attachment.name.empty() || rigid_binding_names.count(attachment.name) || !named_bindings.insert(attachment.name).second) diagnostics.add("duplicate-binding", attachment.source, "attachment name must be non-empty and unique");
         if (attachment.child_hash == 0) diagnostics.add("unresolved-attachment-child", attachment.source, "attachment child must resolve to a non-zero hash");
+        if (!validate_attachment(attachment.child_hash != 0, attachment.child_has_committed_animation))
+            diagnostics.add("nested-committed-animation", attachment.source,
+                            "v1 attachment cannot target a child with nested committed animation");
         const bool has_socket = !attachment.socket.empty();
         const bool has_joint = !attachment.joint.empty();
         if (has_socket == has_joint) diagnostics.add("invalid-attachment-target", attachment.source, "attachment must target exactly one joint or socket");
@@ -425,5 +429,18 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
 
 bool validate_animation_build(const AnimationBuild& build, Diagnostics& diagnostics) { return validate_impl(build, diagnostics, nullptr); }
 bool validate_and_canonicalize_animation_build(const AnimationBuild& build, CanonicalAnimationBuild& canonical, Diagnostics& diagnostics) { return validate_impl(build, diagnostics, &canonical); }
+bool validate_final_animation_bindings(const AnimationBuild& build, Diagnostics& diagnostics) {
+    diagnostics.items.clear();
+    for (const SkinBindingDef& binding : build.skin_bindings)
+        if (!binding.generated && binding.geometry.empty())
+            diagnostics.add("unowned-skin-geometry", binding.source,
+                            "explicit skin binding must own geometry through bind(name, callback)");
+    for (const RigidBindingDef& binding : build.rigid_bindings)
+        if (binding.geometry.empty())
+            diagnostics.add("unowned-rigid-geometry", binding.source,
+                            "rigid segment binding must own geometry through bind(name, callback)");
+    diagnostics.sort();
+    return diagnostics.items.empty();
+}
 
 } // namespace matter::animation
