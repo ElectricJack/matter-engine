@@ -1649,7 +1649,12 @@ int main() {
         } else if (sim_control.consume_pending_step()) {
             tick.max_fixed_steps = 1;
         } else {
-            tick.max_fixed_steps = 0;
+            // Paused: advance no simulation time. A tick must permit at least
+            // one fixed step to be valid, so issue a frame-only tick that
+            // contributes zero delta — nothing accumulates, so no fixed step
+            // runs, while queued edits still drain and the scene still renders.
+            tick.frame_delta_seconds = 0.0f;
+            tick.max_fixed_steps = 1;
         }
         session->tick(tick);
         camera_input_order.tick_scene();

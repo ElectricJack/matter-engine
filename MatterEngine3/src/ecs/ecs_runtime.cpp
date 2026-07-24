@@ -410,7 +410,8 @@ TickResult Runtime::tick(const TickDesc& desc) {
     const double frame_delta = desc.frame_delta_seconds;
     const double fixed_delta = desc.fixed_delta_seconds;
     if (!std::isfinite(frame_delta) || frame_delta < 0.0 ||
-        !std::isfinite(fixed_delta) || fixed_delta <= 0.0) {
+        !std::isfinite(fixed_delta) || fixed_delta <= 0.0 ||
+        desc.max_fixed_steps == 0) {
         return {0, 0, true};
     }
 

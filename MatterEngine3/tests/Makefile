@@ -93,7 +93,7 @@ FLECS_DIR = ../../Libraries/flecs
 FLECS_C = $(FLECS_DIR)/flecs.c
 
 ECS_TARGET = ecs_tests
-ECS_CPP = ecs_tests.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
+ECS_CPP = ecs_tests.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 ECS_C = $(FLECS_C)
 
 PHYSICS_TARGET = physics-tests
@@ -1018,7 +1018,7 @@ run-tilesetslicer: $(TILESETSLICER_TARGET)
 	./$(TILESETSLICER_TARGET)
 
 $(ECS_TARGET): $(ECS_OBJS) $(BOX3D_LIB)
-	$(CC) $(ECS_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB)
+	$(CC) $(ECS_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) -lws2_32 -ldbghelp -lwinmm
 
 run-ecs: $(ECS_TARGET)
 	./$(ECS_TARGET)

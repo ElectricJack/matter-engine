@@ -96,7 +96,7 @@ void register_recording_system(
         .each([&recording, phase, fixed](
             flecs::iter& iterator,
             size_t,
-            ScheduleProbe&) {
+            ScheduleProbe) {
             recording.phases.push_back(phase);
             if (fixed) {
                 recording.fixed_deltas.push_back(iterator.delta_time());
@@ -150,7 +150,7 @@ void install_post_frame_probe(
     flecs::system system = world.system<PostFrameProbe>()
         .kind<ecs::FrameUpdate>()
         .each([raw_world, &frame_in_progress_calls, &post_frame_calls](
-            PostFrameProbe&) {
+            PostFrameProbe) {
             if ((ecs_world_get_flags(raw_world) & EcsWorldFrameInProgress) != 0) {
                 ++frame_in_progress_calls;
                 ecs_run_post_frame(
