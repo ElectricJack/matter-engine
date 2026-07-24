@@ -18,6 +18,13 @@
 // The channel-repack helpers below are pure (no Vulkan) so they can be unit
 // tested headlessly — they are the analytic validation substitute for the GPU
 // trace, which is runtime-validated by rendering.
+//
+// PROVENANCE NOTE: comments here and in shaders_vk/tileset_bake_*.comp cite the
+// GL software-BVH ancestors (tileset_bake_gpu.cpp, tileset_bake_primary/ao/
+// horizon.{cpp,comp}, render/tileset_gl_ctx.*) with file:line for the passages
+// that were transliterated byte-for-byte. Those files were DELETED in V5
+// (docs/vulkan-rt-gtex-bake.md §I.8); the citations are historical and resolve
+// only in git history (last present at commit c9a41297).
 
 #include <cmath>
 #include <cstddef>

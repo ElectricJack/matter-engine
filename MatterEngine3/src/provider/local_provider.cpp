@@ -14,8 +14,8 @@
 #include "bake_trace.h"        // Bake Lab task 1.3: tileset span split
 #include "bake_trace_names.h"  // kSpanTileset
 #ifndef MATTER_VULKAN_ONLY
-#include "tileset_bake_gpu.h"  // TilesetPhaseOpts
-#include "tileset_provider.h"
+#include "tileset_provider.h"  // GL atlas-slot consumer (unload_all); the GL
+                               // bake it used to sit beside is gone (V5).
 #endif
 #include "material_registry.h"
 
