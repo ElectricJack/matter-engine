@@ -681,7 +681,13 @@ void test_runtime_scene_binding_publishes_c2_indexed_skin_work() {
     std::vector<viewer::VkSkinInfluence> influences(3);
     for (auto& influence : influences) influence.weight[0] = 65535;
     render::AnimationSkinnedLod lod{0xC2B0u, 4u, 0u, 3u, 12u, 3u};
-    render::AnimationSkinnedAsset skin_asset{0xC201u, 1u, &influences, {lod}};
+    viewer::VkAnimationBoundsAsset skin_bounds{};
+    skin_bounds.asset_key = 0xC201u;
+    skin_bounds.conservative_asset_bound = {{-2.0f, -2.0f, -2.0f}, {2.0f, 2.0f, 2.0f}};
+    skin_bounds.clusters.push_back({0u, 0u,
+                                    {{0u, {{-1.0f, -1.0f, -1.0f},
+                                             {1.0f, 1.0f, 1.0f}}}}});
+    render::AnimationSkinnedAsset skin_asset{0xC201u, 1u, &influences, {lod}, &skin_bounds};
     flecs::entity entity = runtime.world().entity("RuntimeSkinnedEntity");
     entity.set<scene::SceneEntityId>({0xC2E1u, 8u});
     entity.set<scene::PartInstance>({0xC2B0u, true, true});

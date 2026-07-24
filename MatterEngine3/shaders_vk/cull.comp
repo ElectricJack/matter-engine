@@ -27,17 +27,24 @@ struct GpuInstance {
     uint history_valid;
     uint instance_token;
     uint animation_instance_slot;
-    uint pad1;
+    uint animation_instance_generation;
 };
 
 struct DynamicAnimationBound {
     vec4 aabb_min;
     vec4 aabb_max;
     uint instance_slot;
+    uint instance_generation;
     uint cluster_index;
     uint lod;
     uint flags;
+    uint pad;
 };
+// `flags & 1` is the serialized permission for an HZB occlusion test. This
+// culling pipeline currently performs frustum/LOD selection only, so both a
+// valid dynamic box and a fail-open conservative box participate in that
+// test. A future HZB path must consult this flag and must never occlude a
+// record with the bit clear.
 
 struct DrawTransform {
     mat4 current;
@@ -100,9 +107,13 @@ bool dynamic_cluster_union(const GpuInstance instance, const ClusterMeta cluster
     bool found = false;
     aabb_min = vec3(3.402823e38);
     aabb_max = vec3(-3.402823e38);
-    for (uint i = 0u; i < dynamic_animation_bounds.length(); ++i) {
+    // The buffer capacity can be larger than this frame's payload after a
+    // prior busy frame. Counts.w is authoritative; never inspect stale tail
+    // records, including when this frame has zero animated bounds.
+    for (uint i = 0u; i < frame.counts.w; ++i) {
         const DynamicAnimationBound value = dynamic_animation_bounds[i];
         if (value.instance_slot != instance.animation_instance_slot ||
+            value.instance_generation != instance.animation_instance_generation ||
             value.cluster_index != cluster.cluster_index) continue;
         aabb_min = min(aabb_min, value.aabb_min.xyz);
         aabb_max = max(aabb_max, value.aabb_max.xyz);
@@ -114,9 +125,10 @@ bool dynamic_cluster_union(const GpuInstance instance, const ClusterMeta cluster
 bool dynamic_cluster_lod(const GpuInstance instance, const ClusterMeta cluster,
                          uint lod, out vec3 aabb_min, out vec3 aabb_max) {
     if (instance.animation_instance_slot == 0xffffffffu) return false;
-    for (uint i = 0u; i < dynamic_animation_bounds.length(); ++i) {
+    for (uint i = 0u; i < frame.counts.w; ++i) {
         const DynamicAnimationBound value = dynamic_animation_bounds[i];
         if (value.instance_slot == instance.animation_instance_slot &&
+            value.instance_generation == instance.animation_instance_generation &&
             value.cluster_index == cluster.cluster_index && value.lod == lod) {
             aabb_min = value.aabb_min.xyz;
             aabb_max = value.aabb_max.xyz;

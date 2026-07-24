@@ -73,6 +73,7 @@ enum class DynamicSlotChangeKind : uint8_t {
 struct DynamicSlotChange {
     DynamicSlotChangeKind kind = DynamicSlotChangeKind::Bind;
     uint32_t slot_index = UINT32_MAX;
+    uint32_t slot_generation = 0;
     uint64_t part_hash = 0;
     Mat4f object_to_world{};
     Mat4f previous_object_to_world{};

@@ -142,7 +142,8 @@ bool DynamicSceneBridge::collect_animation_skinning(
             return;
         }
         const render::AnimationSkinExpansion expansion{
-            key, part.part_hash, tracked->second.slot.index, render_frame_serial, binding};
+            key, part.part_hash, tracked->second.slot.index, render_frame_serial, binding,
+            tracked->second.slot.generation};
         if (!skin_bridge_.expand(expansion, staged)) {
             accepted = false;
             error = "stale or invalid animation skin binding";

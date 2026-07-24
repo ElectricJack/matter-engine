@@ -39,11 +39,17 @@ struct VkAnimationBoundsAsset {
 
 struct VkAnimationBoundsKey {
     uint32_t instance_slot = 0;
+    // Slot indices are deliberately reusable.  Pair them with the generation
+    // issued by DynamicInstanceSlots so a new entity incarnation cannot reuse
+    // a previous owner's last-complete animated bounds.
+    uint32_t instance_generation = 0;
     uint32_t cluster_index = 0;
     uint32_t lod = 0;
 
     bool operator<(const VkAnimationBoundsKey& rhs) const noexcept {
         if (instance_slot != rhs.instance_slot) return instance_slot < rhs.instance_slot;
+        if (instance_generation != rhs.instance_generation)
+            return instance_generation < rhs.instance_generation;
         if (cluster_index != rhs.cluster_index) return cluster_index < rhs.cluster_index;
         return lod < rhs.lod;
     }
@@ -63,14 +69,21 @@ struct alignas(16) VkAnimationBoundsGpuRecord {
     float aabb_min[4]{};
     float aabb_max[4]{};
     uint32_t instance_slot = 0;
+    uint32_t instance_generation = 0;
     uint32_t cluster_index = 0;
     uint32_t lod = 0;
     uint32_t flags = 0;
+    uint32_t pad = 0;
 };
-static_assert(sizeof(VkAnimationBoundsGpuRecord) == 48,
+static_assert(sizeof(VkAnimationBoundsGpuRecord) == 64,
               "dynamic animation bounds must remain std430-compatible");
 
 constexpr uint32_t kVkAnimationBoundsOcclusionEnabled = 1u;
+
+// Validates immutable serialized joint-local bounds without creating a
+// renderer-side registration.  The skin bridge uses it to reject a malformed
+// ECS binding before any queue or culling state is touched.
+bool valid_animation_bounds_asset(const VkAnimationBoundsAsset& asset) noexcept;
 
 // Frame-local, transactional resolver for animated bounds.  A successful pose
 // replaces all cluster bounds for that instance together. A rejected pose keeps
@@ -79,8 +92,11 @@ constexpr uint32_t kVkAnimationBoundsOcclusionEnabled = 1u;
 class VkAnimationBounds {
 public:
     bool register_asset(const VkAnimationBoundsAsset& asset);
-    bool update_instance(uint32_t instance_slot, uint64_t asset_key,
+    bool update_instance(uint32_t instance_slot, uint32_t instance_generation,
+                         uint64_t asset_key,
                          const VkSkinPose& pose, bool history_valid);
+    void remove_instance(uint32_t instance_slot, uint32_t instance_generation) noexcept;
+    bool unregister_asset(uint64_t asset_key) noexcept;
     void clear_frame() noexcept;
 
     const std::vector<VkAnimationDynamicClusterBound>& dynamic_bounds() const noexcept {
@@ -96,7 +112,7 @@ private:
     };
 
     std::map<uint64_t, VkAnimationBoundsAsset> assets_;
-    std::map<uint32_t, InstanceState> instances_;
+    std::map<std::pair<uint32_t, uint32_t>, InstanceState> instances_;
     std::vector<VkAnimationDynamicClusterBound> dynamic_bounds_;
 
     static bool valid_aabb(const VkAnimationBoundsAabb& aabb) noexcept;

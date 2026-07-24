@@ -49,7 +49,7 @@ DynamicInstanceSlots::UpsertResult DynamicInstanceSlots::upsert(const DynamicIns
 
         DynamicSlotChangeKind kind = part_changed ? DynamicSlotChangeKind::Bind
                                                    : DynamicSlotChangeKind::Transform;
-        changes_.push_back(DynamicSlotChange{kind, idx, s.part_hash, s.object_to_world,
+        changes_.push_back(DynamicSlotChange{kind, idx, s.generation, s.part_hash, s.object_to_world,
                                               s.previous_object_to_world, s.casts_shadow, s.key,
                                               {s.key.entity_id, s.key.entity_generation}});
         return {DynamicSlotHandle{idx, s.generation}, SlotResult::Ok};
@@ -74,7 +74,7 @@ DynamicInstanceSlots::UpsertResult DynamicInstanceSlots::upsert(const DynamicIns
     key_to_slot_[input.key] = idx;
     ++active_count_;
 
-    changes_.push_back(DynamicSlotChange{DynamicSlotChangeKind::Bind, idx, s.part_hash,
+    changes_.push_back(DynamicSlotChange{DynamicSlotChangeKind::Bind, idx, s.generation, s.part_hash,
                                           s.object_to_world, s.previous_object_to_world, s.casts_shadow,
                                           s.key, {s.key.entity_id, s.key.entity_generation}});
     return {DynamicSlotHandle{idx, s.generation}, SlotResult::Ok};
@@ -90,6 +90,7 @@ SlotResult DynamicInstanceSlots::remove(DynamicSlotHandle handle) {
         return SlotResult::StaleGeneration;
     }
 
+    const uint32_t removed_generation = s.generation;
     s.alive = false;
     s.pending_free = true;
     s.retire_serial = current_serial_;
@@ -98,7 +99,7 @@ SlotResult DynamicInstanceSlots::remove(DynamicSlotHandle handle) {
     key_to_slot_.erase(s.key);
     --active_count_;
 
-    changes_.push_back(DynamicSlotChange{DynamicSlotChangeKind::Remove, handle.index, s.part_hash,
+    changes_.push_back(DynamicSlotChange{DynamicSlotChangeKind::Remove, handle.index, removed_generation, s.part_hash,
                                           s.object_to_world, s.previous_object_to_world, s.casts_shadow,
                                           s.key, {s.key.entity_id, s.key.entity_generation}});
     pending_free_.push_back(handle.index);

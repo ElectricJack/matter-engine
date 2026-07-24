@@ -80,7 +80,9 @@ bool valid_lod(const AnimationSkinnedLod& lod,
 
 bool valid_animation_skinned_asset(const AnimationSkinnedAsset& asset) noexcept {
     if (asset.identity == 0 || asset.generation == 0 || asset.influences == nullptr ||
-        asset.influences->empty() || asset.lods.empty()) return false;
+        asset.influences->empty() || asset.lods.empty() || asset.bounds == nullptr ||
+        asset.bounds->asset_key != asset.identity ||
+        !viewer::valid_animation_bounds_asset(*asset.bounds)) return false;
     for (const AnimationSkinnedLod& lod : asset.lods)
         if (!valid_lod(lod, *asset.influences)) return false;
     return true;
@@ -117,6 +119,7 @@ bool AnimationSkinBridge::expand(
     submission.source_vertex = lod.source_vertex;
     submission.vertex_count = lod.vertex_count;
     submission.instance_slot = input.transform_slot;
+    submission.instance_generation = input.transform_generation;
     submission.lod = binding.lod;
     submission.first_index = lod.first_index;
     submission.index_count = lod.index_count;

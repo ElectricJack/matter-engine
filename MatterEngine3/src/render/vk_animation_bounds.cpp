@@ -14,6 +14,14 @@ bool finite_matrix(const VkSkinMatrix& matrix) noexcept {
     return true;
 }
 
+bool valid_aabb(const VkAnimationBoundsAabb& aabb) noexcept {
+    for (uint32_t axis = 0; axis != 3; ++axis) {
+        if (!std::isfinite(aabb.min[axis]) || !std::isfinite(aabb.max[axis]) ||
+            aabb.min[axis] > aabb.max[axis]) return false;
+    }
+    return true;
+}
+
 void include_point(VkAnimationBoundsAabb& result, const float point[3]) noexcept {
     for (uint32_t axis = 0; axis != 3; ++axis) {
         result.min[axis] = std::min(result.min[axis], point[axis]);
@@ -71,11 +79,7 @@ bool same_floats(const void* a, const void* b, size_t count) noexcept {
 }  // namespace
 
 bool VkAnimationBounds::valid_aabb(const VkAnimationBoundsAabb& aabb) noexcept {
-    for (uint32_t axis = 0; axis != 3; ++axis) {
-        if (!std::isfinite(aabb.min[axis]) || !std::isfinite(aabb.max[axis]) ||
-            aabb.min[axis] > aabb.max[axis]) return false;
-    }
-    return true;
+    return ::viewer::valid_aabb(aabb);
 }
 
 bool VkAnimationBounds::valid_pose(const VkSkinPose& pose,
@@ -112,7 +116,7 @@ bool VkAnimationBounds::identical_asset(const VkAnimationBoundsAsset& a,
     return true;
 }
 
-bool VkAnimationBounds::register_asset(const VkAnimationBoundsAsset& asset) {
+bool valid_animation_bounds_asset(const VkAnimationBoundsAsset& asset) noexcept {
     if (asset.asset_key == 0 || asset.clusters.empty() ||
         !valid_aabb(asset.conservative_asset_bound)) return false;
     std::map<std::pair<uint32_t, uint32_t>, bool> seen_clusters;
@@ -123,13 +127,20 @@ bool VkAnimationBounds::register_asset(const VkAnimationBoundsAsset& asset) {
         for (const VkAnimationBoundsJointAabb& joint : cluster.joints)
             if (!valid_aabb(joint.aabb)) return false;
     }
+    return true;
+}
+
+bool VkAnimationBounds::register_asset(const VkAnimationBoundsAsset& asset) {
+    if (!valid_animation_bounds_asset(asset)) return false;
     const auto existing = assets_.find(asset.asset_key);
     if (existing != assets_.end()) return identical_asset(existing->second, asset);
     assets_.emplace(asset.asset_key, asset);
     return true;
 }
 
-bool VkAnimationBounds::update_instance(uint32_t instance_slot, uint64_t asset_key,
+bool VkAnimationBounds::update_instance(uint32_t instance_slot,
+                                        uint32_t instance_generation,
+                                        uint64_t asset_key,
                                         const VkSkinPose& pose,
                                         bool history_valid) {
     const auto asset_it = assets_.find(asset_key);
@@ -157,11 +168,12 @@ bool VkAnimationBounds::update_instance(uint32_t instance_slot, uint64_t asset_k
                 complete = false;
                 break;
             }
-            staged.push_back({{instance_slot, cluster.cluster_index, cluster.lod}, unioned, true});
+            staged.push_back({{instance_slot, instance_generation, cluster.cluster_index, cluster.lod}, unioned, true});
         }
     }
 
-    InstanceState& state = instances_[instance_slot];
+    const auto instance_key = std::make_pair(instance_slot, instance_generation);
+    InstanceState& state = instances_[instance_key];
     if (complete) {
         state.asset_key = asset_key;
         state.last_complete = staged;
@@ -170,14 +182,15 @@ bool VkAnimationBounds::update_instance(uint32_t instance_slot, uint64_t asset_k
     } else {
         staged.reserve(asset.clusters.size());
         for (const VkAnimationBoundsCluster& cluster : asset.clusters)
-            staged.push_back({{instance_slot, cluster.cluster_index, cluster.lod},
+            staged.push_back({{instance_slot, instance_generation, cluster.cluster_index, cluster.lod},
                               asset.conservative_asset_bound, false});
     }
 
     dynamic_bounds_.erase(
         std::remove_if(dynamic_bounds_.begin(), dynamic_bounds_.end(),
-                       [instance_slot](const VkAnimationDynamicClusterBound& value) {
-                           return value.key.instance_slot == instance_slot;
+                       [instance_slot, instance_generation](const VkAnimationDynamicClusterBound& value) {
+                           return value.key.instance_slot == instance_slot &&
+                                  value.key.instance_generation == instance_generation;
                        }),
         dynamic_bounds_.end());
     dynamic_bounds_.insert(dynamic_bounds_.end(), staged.begin(), staged.end());
@@ -187,6 +200,40 @@ bool VkAnimationBounds::update_instance(uint32_t instance_slot, uint64_t asset_k
                     return left.key < right.key;
               });
     return complete;
+}
+
+bool VkAnimationBounds::unregister_asset(uint64_t asset_key) noexcept {
+    if (asset_key == 0 || assets_.erase(asset_key) == 0) return false;
+    std::vector<std::pair<uint32_t, uint32_t>> retired_instances;
+    for (auto it = instances_.begin(); it != instances_.end();) {
+        if (it->second.asset_key == asset_key) {
+            retired_instances.push_back(it->first);
+            it = instances_.erase(it);
+        }
+        else ++it;
+    }
+    dynamic_bounds_.erase(
+        std::remove_if(dynamic_bounds_.begin(), dynamic_bounds_.end(),
+                       [&retired_instances](const VkAnimationDynamicClusterBound& value) {
+                           return std::find(retired_instances.begin(), retired_instances.end(),
+                                            std::make_pair(value.key.instance_slot,
+                                                           value.key.instance_generation)) !=
+                                  retired_instances.end();
+                       }),
+        dynamic_bounds_.end());
+    return true;
+}
+
+void VkAnimationBounds::remove_instance(uint32_t instance_slot,
+                                        uint32_t instance_generation) noexcept {
+    instances_.erase(std::make_pair(instance_slot, instance_generation));
+    dynamic_bounds_.erase(
+        std::remove_if(dynamic_bounds_.begin(), dynamic_bounds_.end(),
+                       [instance_slot, instance_generation](const VkAnimationDynamicClusterBound& value) {
+                           return value.key.instance_slot == instance_slot &&
+                                  value.key.instance_generation == instance_generation;
+                       }),
+        dynamic_bounds_.end());
 }
 
 void VkAnimationBounds::clear_frame() noexcept {
@@ -203,6 +250,7 @@ std::vector<VkAnimationBoundsGpuRecord> VkAnimationBounds::gpu_records() const {
             record.aabb_max[axis] = value.aabb.max[axis];
         }
         record.instance_slot = value.key.instance_slot;
+        record.instance_generation = value.key.instance_generation;
         record.cluster_index = value.key.cluster_index;
         record.lod = value.key.lod;
         record.flags = value.occlusion_enabled ? kVkAnimationBoundsOcclusionEnabled : 0u;
@@ -215,6 +263,7 @@ bool VkAnimationBounds::has_dynamic_bound(const VkAnimationBoundsKey& key) const
     return std::any_of(dynamic_bounds_.begin(), dynamic_bounds_.end(),
                        [&key](const VkAnimationDynamicClusterBound& value) {
                            return value.key.instance_slot == key.instance_slot &&
+                                  value.key.instance_generation == key.instance_generation &&
                                   value.key.cluster_index == key.cluster_index &&
                                   value.key.lod == key.lod;
                        });

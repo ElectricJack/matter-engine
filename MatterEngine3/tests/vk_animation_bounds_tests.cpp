@@ -1,5 +1,6 @@
 #include "render/vk_animation_bounds.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -60,11 +61,11 @@ VkAnimationBoundsAsset asset(uint64_t key) {
 void test_current_and_previous_are_unioned() {
     VkAnimationBounds bounds;
     CHECK(bounds.register_asset(asset(7)), "register valid bounds asset");
-    CHECK(bounds.update_instance(4, 7, pose(100.0f, -50.0f), true),
+    CHECK(bounds.update_instance(4, 1, 7, pose(100.0f, -50.0f), true),
           "publish current and previous bounds");
     const auto& dynamic = bounds.dynamic_bounds();
     CHECK(dynamic.size() == 1, "one dynamic cluster bound");
-    CHECK(dynamic[0].key.instance_slot == 4 && dynamic[0].key.cluster_index == 2 &&
+    CHECK(dynamic[0].key.instance_slot == 4 && dynamic[0].key.instance_generation == 1 && dynamic[0].key.cluster_index == 2 &&
               dynamic[0].key.lod == 1, "dynamic key is instance/cluster/lod");
     CHECK(dynamic[0].aabb.min[0] <= -51.0f && dynamic[0].aabb.max[0] >= 101.0f,
           "temporal union contains both transformed cluster boxes");
@@ -74,7 +75,7 @@ void test_current_and_previous_are_unioned() {
 void test_missing_history_uses_current_not_stale_previous() {
     VkAnimationBounds bounds;
     CHECK(bounds.register_asset(asset(8)), "register asset for history test");
-    CHECK(bounds.update_instance(9, 8, pose(20.0f, -999.0f), false),
+    CHECK(bounds.update_instance(9, 3, 8, pose(20.0f, -999.0f), false),
           "publish missing-history current bounds");
     const auto& value = bounds.dynamic_bounds()[0];
     CHECK(value.aabb.min[0] >= 19.0f && value.aabb.max[0] >= 21.0f,
@@ -85,7 +86,7 @@ void test_corrupt_or_missing_pose_fails_open_to_asset_bound() {
     VkAnimationBounds bounds;
     CHECK(bounds.register_asset(asset(9)), "register fallback asset");
     VkSkinPose corrupt{};
-    CHECK(!bounds.update_instance(1, 9, corrupt, false), "empty pose is rejected");
+    CHECK(!bounds.update_instance(1, 2, 9, corrupt, false), "empty pose is rejected");
     const auto& fallback = bounds.dynamic_bounds();
     CHECK(fallback.size() == 1 && !fallback[0].occlusion_enabled,
           "missing pose disables occlusion rather than using a stale smaller bound");
@@ -102,10 +103,10 @@ void test_rejects_empty_influences_and_preserves_last_complete_bounds() {
     invalid.clusters[0].joints.clear();
     CHECK(!bounds.register_asset(invalid), "empty influence cluster is an invalid asset");
     CHECK(bounds.register_asset(asset(11)), "register valid asset for frozen bound test");
-    CHECK(bounds.update_instance(2, 11, pose(3.0f, 2.0f), true), "publish complete pose");
+    CHECK(bounds.update_instance(2, 1, 11, pose(3.0f, 2.0f), true), "publish complete pose");
     const auto complete = bounds.dynamic_bounds()[0].aabb;
     VkSkinPose corrupt{};
-    CHECK(!bounds.update_instance(2, 11, corrupt, false), "reject corrupt frozen pose");
+    CHECK(!bounds.update_instance(2, 1, 11, corrupt, false), "reject corrupt frozen pose");
     const auto& retained = bounds.dynamic_bounds()[0];
     CHECK(retained.occlusion_enabled && retained.aabb.min[0] == complete.min[0] &&
               retained.aabb.max[0] == complete.max[0],
@@ -116,7 +117,7 @@ void test_rejects_empty_influences_and_preserves_last_complete_bounds() {
 
 void test_static_clusters_keep_static_path() {
     VkAnimationBounds bounds;
-    CHECK(!bounds.has_dynamic_bound({42, 3, 0}), "unregistered/static cluster has no dynamic override");
+    CHECK(!bounds.has_dynamic_bound({42, 0, 3, 0}), "unregistered/static cluster has no dynamic override");
 }
 
 void test_random_pose_bound_contains_every_brute_force_corner_and_lod() {
@@ -134,7 +135,7 @@ void test_random_pose_bound_contains_every_brute_force_corner_and_lod() {
         state = state * 1664525u + 1013904223u;
         const float previous_x = static_cast<float>(state & 0xffu) * 0.125f - 16.0f;
         const VkSkinPose animated = pose(current_x, previous_x);
-        CHECK(bounds.update_instance(19, 12, animated, true),
+        CHECK(bounds.update_instance(19, 7, 12, animated, true),
               "publish deterministic random pose");
         const auto& values = bounds.dynamic_bounds();
         CHECK(values.size() == 2, "each serialized LOD receives a separate bound");
@@ -156,6 +157,25 @@ void test_random_pose_bound_contains_every_brute_force_corner_and_lod() {
     }
 }
 
+void test_recycled_slot_generation_never_reuses_old_complete_bound() {
+    VkAnimationBounds bounds;
+    CHECK(bounds.register_asset(asset(13)), "register recycled-slot asset");
+    CHECK(bounds.update_instance(6, 1, 13, pose(40.0f, 39.0f), true),
+          "old incarnation publishes a complete bound");
+    VkSkinPose corrupt{};
+    CHECK(!bounds.update_instance(6, 2, 13, corrupt, false),
+          "new incarnation rejects missing pose");
+    const auto& current = bounds.dynamic_bounds();
+    const auto fresh = std::find_if(current.begin(), current.end(),
+                                    [](const VkAnimationDynamicClusterBound& value) {
+                                        return value.key.instance_slot == 6 &&
+                                               value.key.instance_generation == 2;
+                                    });
+    CHECK(fresh != current.end() && !fresh->occlusion_enabled &&
+              fresh->aabb.min[0] == -10.0f && fresh->aabb.max[0] == 10.0f,
+          "recycled slot fails open to asset bound rather than old incarnation's box");
+}
+
 }  // namespace
 
 int main() {
@@ -165,5 +185,6 @@ int main() {
     test_rejects_empty_influences_and_preserves_last_complete_bounds();
     test_static_clusters_keep_static_path();
     test_random_pose_bound_contains_every_brute_force_corner_and_lod();
+    test_recycled_slot_generation_never_reuses_old_complete_bound();
     return failures == 0 ? 0 : 1;
 }

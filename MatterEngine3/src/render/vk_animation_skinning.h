@@ -25,6 +25,7 @@ struct VkSkinSubmission {
     uint32_t source_vertex = 0;
     uint32_t vertex_count = 0;
     uint32_t instance_slot = 0;
+    uint32_t instance_generation = 0;
     int32_t render_priority = 0;
     uint32_t distance_bucket = 0;
     uint32_t lod = 0;

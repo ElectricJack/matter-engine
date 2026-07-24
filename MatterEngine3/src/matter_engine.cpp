@@ -287,6 +287,9 @@ struct WorldSession::Impl {
     uint64_t vk_temporal_token = 0;
     // C2 skin arena reuse follows actual frame completion, not submission.
     uint64_t vk_skin_completed_serial = 0;
+    // Renderer-side bounds copies are immutable. Track the active ECS asset
+    // set so binding removal retires stale copies on the next frame.
+    std::set<uint64_t> vk_animation_bounds_assets;
     std::vector<MaterialGpuRecord> vk_material_records;
     uint64_t vk_material_shading_revision = 0;
     uint64_t vk_material_geometry_revision = 0;
@@ -4263,8 +4266,9 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
         // immutable snapshot plus immutable influences, never an evaluator.
         std::vector<viewer::VkSkinSubmission> skin_submissions;
         bool skin_assets_ok = true;
+        std::set<uint64_t> active_bounds_assets;
         impl_->ecs_runtime.world().each(
-            [this, &skin_assets_ok](flecs::entity,
+            [this, &skin_assets_ok, &active_bounds_assets](flecs::entity,
                                     const render::AnimationSkinnedBinding& binding) {
                 const render::AnimationSkinnedAsset* asset = binding.asset;
                 if (!skin_assets_ok || !binding.visible || asset == nullptr ||
@@ -4273,9 +4277,19 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                     skin_assets_ok = false;
                     return;
                 }
+                if (!impl_->vk_scene->register_animation_bounds_asset(*asset->bounds)) {
+                    skin_assets_ok = false;
+                    return;
+                }
+                active_bounds_assets.insert(asset->identity);
                 skin_assets_ok = impl_->vk_scene->register_animation_skin_asset(
                     asset->identity, *asset->influences);
             });
+        for (uint64_t retired : impl_->vk_animation_bounds_assets) {
+            if (active_bounds_assets.count(retired) == 0)
+                (void)impl_->vk_scene->unregister_animation_bounds_asset(retired);
+        }
+        impl_->vk_animation_bounds_assets = std::move(active_bounds_assets);
         if (skin_assets_ok && !impl_->dynamic_bridge.collect_animation_skinning(
                                   impl_->ecs_runtime.world(), skin_submissions,
                                   bridge_err, frame.serial)) {

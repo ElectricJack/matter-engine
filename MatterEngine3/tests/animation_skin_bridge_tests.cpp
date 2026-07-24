@@ -41,6 +41,14 @@ std::vector<viewer::VkSkinInfluence> influences() {
     return result;
 }
 
+viewer::VkAnimationBoundsAsset bounds(uint64_t key) {
+    viewer::VkAnimationBoundsAsset result{};
+    result.asset_key = key;
+    result.conservative_asset_bound = {{-10.0f, -10.0f, -10.0f}, {10.0f, 10.0f, 10.0f}};
+    result.clusters.push_back({0, 0, {{0, {{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}}}}});
+    return result;
+}
+
 void test_exact_snapshot_becomes_indexed_skin_submission() {
     animation::AnimationPoseSnapshotStore snapshots;
     const Mat4f current = identity(5.0f);
@@ -58,16 +66,18 @@ void test_exact_snapshot_becomes_indexed_skin_submission() {
     std::vector<viewer::VkSkinInfluence> storage = influences();
     // The asset is immutable in production; retain the influence storage in
     // this fixture so the bridge can validate it before renderer registration.
-    render::AnimationSkinnedAsset asset{0x99, 2, &storage, {lod}};
+    const auto asset_bounds = bounds(0x99);
+    render::AnimationSkinnedAsset asset{0x99, 2, &storage, {lod}, &asset_bounds};
     render::AnimationSkinnedBinding binding{animator(), &asset, 2, 0, true};
     render::AnimationSkinBridge bridge(&snapshots);
     std::vector<viewer::VkSkinSubmission> out;
-    const render::AnimationSkinExpansion input{{0x55, 4, 0}, 0xabc, 17, 41, binding};
+    const render::AnimationSkinExpansion input{{0x55, 4, 0}, 0xabc, 17, 41, binding, 6};
     CHECK(bridge.expand(input, out), "matching entity/part/LOD and fresh snapshot submit");
     CHECK(out.size() == 1 && out[0].asset_key == asset.identity &&
               out[0].source_vertex == 10 && out[0].influence_vertex == 0 &&
               out[0].vertex_count == 3 && out[0].first_index == 30 &&
-              out[0].index_count == 3 && out[0].instance_slot == 17,
+              out[0].index_count == 3 && out[0].instance_slot == 17 &&
+              out[0].instance_generation == 6,
           "submission retains the exact immutable source/indexed/transform-slot mapping");
     CHECK(out[0].history_valid && out[0].pose.current.size() == 1 &&
               out[0].pose.current[0].position.elements[12] == 5.0f &&
@@ -81,7 +91,8 @@ void test_stale_and_mismatched_bindings_fail_without_torn_work() {
     CHECK(snapshots.publish(pose(animator(), 5, &matrix, &matrix)), "fixture snapshot publishes");
     std::vector<viewer::VkSkinInfluence> storage = influences();
     render::AnimationSkinnedLod lod{0xabc, 0, 0, 3, 0, 3};
-    render::AnimationSkinnedAsset asset{0x99, 2, &storage, {lod}};
+    const auto asset_bounds = bounds(0x99);
+    render::AnimationSkinnedAsset asset{0x99, 2, &storage, {lod}, &asset_bounds};
     render::AnimationSkinnedBinding binding{animator(), &asset, 2, 0, true};
     render::AnimationSkinBridge bridge(&snapshots);
     std::vector<viewer::VkSkinSubmission> out;

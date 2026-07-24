@@ -420,8 +420,11 @@ public:
         return animation_skinning_;
     }
     bool register_animation_bounds_asset(const VkAnimationBoundsAsset& asset);
-    bool update_animation_bounds(uint32_t instance_slot, uint64_t asset_key,
+    bool update_animation_bounds(uint32_t instance_slot,
+                                 uint32_t instance_generation,
+                                 uint64_t asset_key,
                                  const VkSkinPose& pose, bool history_valid);
+    bool unregister_animation_bounds_asset(uint64_t asset_key);
     const VkAnimationBounds& animation_bounds() const noexcept {
         return animation_bounds_;
     }
@@ -730,7 +733,7 @@ private:
         uint32_t history_valid;
         uint32_t instance_token;
         uint32_t animation_instance_slot;
-        uint32_t pad;
+        uint32_t animation_instance_generation;
     };
     struct GpuDrawTransform {
         GpuMat4 current;

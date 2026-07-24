@@ -6,6 +6,7 @@
 #include "animation/animation_systems.h"
 #include "render/dynamic_instance_slots.h"
 #include "render/vk_animation_skinning.h"
+#include "render/vk_animation_bounds.h"
 
 #include <cstdint>
 #include <vector>
@@ -30,6 +31,10 @@ struct AnimationSkinnedAsset {
     uint32_t generation = 0;
     const std::vector<viewer::VkSkinInfluence>* influences = nullptr;
     std::vector<AnimationSkinnedLod> lods;
+    // Immutable, joint-local cluster bounds for this exact asset revision.
+    // Culling is fail-open without this payload, so runtime bindings require
+    // it rather than silently using stale data from another revision.
+    const viewer::VkAnimationBoundsAsset* bounds = nullptr;
 };
 
 struct AnimationSkinnedBinding {
@@ -46,6 +51,7 @@ struct AnimationSkinExpansion {
     uint32_t transform_slot = UINT32_MAX;
     uint64_t frame_serial = 0;
     AnimationSkinnedBinding binding{};
+    uint32_t transform_generation = 0;
 };
 
 // Validates only data which is independent of a particular evaluated pose.

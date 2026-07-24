@@ -10,9 +10,11 @@
 // These are pure CPU tests; no GPU/window required.
 
 #include "render/vk_scene_renderer.h"
+#include "render/vk_animation_bounds.h"
 #include "render/vk_gi_contract.h"
 #include "render/dynamic_instance_slots.h"
 #include "matter/scene.h"
+#include "shaders_gen/embedded_spirv.h"
 
 #include <cstddef>
 #include <cstdio>
@@ -204,6 +206,7 @@ static void test_dynamic_slot_change_fields() {
     matter::render::DynamicSlotChange change;
     change.kind = matter::render::DynamicSlotChangeKind::Bind;
     change.slot_index = 3u;
+    change.slot_generation = 9u;
     change.part_hash = 0xABCDEF01ull;
     change.object_to_world = matter::Mat4f{};
     change.casts_shadow = false;
@@ -212,12 +215,23 @@ static void test_dynamic_slot_change_fields() {
     CHECK(change.kind == matter::render::DynamicSlotChangeKind::Bind,
           "DynamicSlotChange::kind constructs as Bind");
     CHECK(change.slot_index == 3u, "DynamicSlotChange::slot_index round-trips");
+    CHECK(change.slot_generation == 9u,
+          "DynamicSlotChange carries the full generational slot identity");
     CHECK(change.part_hash == 0xABCDEF01ull,
           "DynamicSlotChange::part_hash round-trips");
     CHECK(change.casts_shadow == false,
           "DynamicSlotChange::casts_shadow round-trips");
     CHECK(change.entity_id.value == 42u,
           "DynamicSlotChange::entity_id.value round-trips");
+}
+
+static void test_animation_bounds_cull_shader_contract() {
+    printf("\n[test_animation_bounds_cull_shader_contract]\n");
+    CHECK(sizeof(viewer::VkAnimationBoundsGpuRecord) == 64,
+          "dynamic animation bounds GPU payload preserves slot generation and std430 stride");
+    const matter::EmbeddedSpirvView cull = matter::find_spirv("cull.comp.spv");
+    CHECK(cull.words != nullptr && cull.word_count != 0,
+          "clean embedded shader table contains the generated dynamic-bounds cull shader");
 }
 
 // ---------------------------------------------------------------------------
@@ -323,6 +337,7 @@ int main() {
     test_dynamic_slot_change_bind_shares_part_hash();
     test_instance_identity_tagging();
     test_dynamic_slot_change_kind_distinct();
+    test_animation_bounds_cull_shader_contract();
 
     printf("\n--- Results: %d/%d passed", g_tests - g_failures, g_tests);
     if (g_failures == 0)

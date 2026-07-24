@@ -915,13 +915,15 @@ bool VkSceneRenderer::submit_visible_animation_skinning(
         const VkSkinPose missing_pose{};
         for (const VkSkinSubmission& submission : visible)
             (void)animation_bounds_.update_instance(
-                submission.instance_slot, submission.asset_key, missing_pose,
+                submission.instance_slot, submission.instance_generation,
+                submission.asset_key, missing_pose,
                 false);
         return false;
     }
     for (const VkSkinSubmission& submission : visible)
         (void)animation_bounds_.update_instance(
-            submission.instance_slot, submission.asset_key, submission.pose,
+            submission.instance_slot, submission.instance_generation,
+            submission.asset_key, submission.pose,
             submission.history_valid);
     return true;
 }
@@ -937,11 +939,17 @@ bool VkSceneRenderer::register_animation_bounds_asset(
 }
 
 bool VkSceneRenderer::update_animation_bounds(uint32_t instance_slot,
+                                              uint32_t instance_generation,
                                               uint64_t asset_key,
                                               const VkSkinPose& pose,
                                               bool history_valid) {
-    return animation_bounds_.update_instance(instance_slot, asset_key, pose,
+    return animation_bounds_.update_instance(instance_slot, instance_generation,
+                                             asset_key, pose,
                                              history_valid);
+}
+
+bool VkSceneRenderer::unregister_animation_bounds_asset(uint64_t asset_key) {
+    return animation_bounds_.unregister_asset(asset_key);
 }
 
 matter::DlssMode VkSceneRenderer::active_dlss_mode() const {
@@ -5380,6 +5388,8 @@ bool VkSceneRenderer::update_instances(
                 ? vulkan_history_token(stable_id)
                 : static_cast<uint32_t>(source_index) + 1u;
         instance.animation_instance_slot = source.animation_instance_slot;
+        // Static scene records have no generational dynamic-slot identity.
+        instance.animation_instance_generation = 0;
         const auto temporal = std::find_if(
             temporal_frame_.instances.begin(), temporal_frame_.instances.end(),
             [stable_id](const TemporalInstanceFrame& item) {
@@ -5962,6 +5972,7 @@ bool VkSceneRenderer::upload_frame_constants(FrameResources& frame,
     constants.counts[0] = static_cast<uint32_t>(instance_staging_.size());
     constants.counts[1] = max_clusters_per_instance_;
     constants.counts[2] = static_cast<uint32_t>(material_staging_.size());
+    constants.counts[3] = static_cast<uint32_t>(animation_bounds_.dynamic_bounds().size());
     constants.capacities[0] = static_cast<uint32_t>(cluster_staging_.size());
     constants.capacities[1] = static_cast<uint32_t>(instance_staging_.size());
     constants.capacities[2] = static_cast<uint32_t>(command_template_.size());
@@ -8144,6 +8155,7 @@ bool VkSceneRenderer::update_dynamic_instances(
                 instance.instance_token =
                     vulkan_history_token(change.entity_id.value);
                 instance.animation_instance_slot = change.slot_index;
+                instance.animation_instance_generation = change.slot_generation;
                 dynamic_instance_staging_[change.slot_index] = instance;
                 dynamic_instance_part_slots_[change.slot_index] = instance.part_slot;
                 dynamic_dirty_ = true;
@@ -8156,6 +8168,10 @@ bool VkSceneRenderer::update_dynamic_instances(
                     return false;
                 }
                 GpuInstance& instance = dynamic_instance_staging_[change.slot_index];
+                if (instance.animation_instance_generation != change.slot_generation) {
+                    error = "update_dynamic_instances: Transform generation mismatch";
+                    return false;
+                }
                 instance.previous_object_to_world = pack_glsl_mat4(change.previous_object_to_world);
                 instance.object_to_world = pack_glsl_mat4(change.object_to_world);
                 instance.history_valid = 1;
@@ -8163,6 +8179,8 @@ bool VkSceneRenderer::update_dynamic_instances(
                 break;
             }
             case matter::render::DynamicSlotChangeKind::Remove: {
+                animation_bounds_.remove_instance(change.slot_index,
+                                                  change.slot_generation);
                 dynamic_instance_staging_[change.slot_index] = GpuInstance{};
                 dynamic_instance_part_slots_[change.slot_index] = UINT32_MAX;
                 dynamic_dirty_ = true;
