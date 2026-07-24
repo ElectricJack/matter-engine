@@ -36,6 +36,9 @@ globalThis.Part = class Part {
   socket(name,transform) { __dsl_socket(name,transform,(new Error()).stack); }
   mirrorBranch(a,b,opts) { __dsl_mirrorBranch(a,b,opts,(new Error()).stack); }
   endRig()               { __dsl_endRig((new Error()).stack); }
+  // skin defaults to an implicit generated envelope. opts.radiusScale,
+  // opts.falloffScale, and opts.voxelSize are canonical; falloff and spacing
+  // remain one-at-a-time compatibility aliases for the latter two.
   skin(name,opts)        { __dsl_skin(name,opts,(new Error()).stack); }
   segments(name,opts)    { __dsl_segments(name,opts,(new Error()).stack); }
   attach(name,socket,module,transform) { __dsl_attach(name,socket,module,transform,(new Error()).stack); }

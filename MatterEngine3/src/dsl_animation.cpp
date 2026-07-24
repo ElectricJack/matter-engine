@@ -332,18 +332,19 @@ bool unique_binding_name(const AnimationBuild& build, const std::string& name) {
 }
 
 void DslState::rig_skin(const std::string& name, const std::vector<std::string>& requested,
-                        float falloff, bool generate, float spacing) {
+                        float radius_scale, float falloff, bool generate, float spacing) {
     if (binding_scope_) { set_rig_error("structural animation authoring is forbidden inside a bind scope"); return; }
     if (!animation_ || !animation_->ended || animation_->clip_open || animation_->motion_open) { set_rig_error("skin requires a completed rig outside clip or motion authoring"); return; }
     if (!unique_binding_name(animation_->authored, name)) { set_rig_error("binding name must be non-empty and unique"); return; }
-    if (!finite(falloff) || falloff <= 0.0f) { set_rig_error("skin falloff must be finite and positive"); return; }
+    if (!finite(radius_scale) || radius_scale <= 0.0f) { set_rig_error("skin radiusScale must be finite and positive"); return; }
+    if (!finite(falloff) || falloff <= 0.0f) { set_rig_error("skin falloffScale must be finite and positive"); return; }
     if (generate && (!finite(spacing) || spacing <= 0.0f)) { set_rig_error("generated skin spacing must be finite and positive"); return; }
     if (session_ != Session::None || polygon_open_ || contour_open_ || region_open_) { set_rig_error("skin generation requires no open geometry session"); return; }
     std::vector<size_t> selected; std::string error;
     if (!binding_segments(*animation_, requested, selected, error)) { set_rig_error(error); return; }
     if (animation_->primary_segment_claims.empty()) animation_->primary_segment_claims.assign(animation_->authored.rig.joints.size(), false);
     for (size_t index : selected) if (animation_->primary_segment_claims[index]) { set_rig_error("binding segment is already claimed by a primary binding"); return; }
-    matter::animation::SkinBindingDef binding; binding.name=name; binding.falloff=falloff; binding.generated=generate; binding.source=rig_source_;
+    matter::animation::SkinBindingDef binding; binding.name=name; binding.radius_scale=radius_scale; binding.falloff=falloff; binding.voxel_size=spacing; binding.generated=generate; binding.source=rig_source_;
     for (size_t index : selected) binding.joints.push_back(animation_->authored.rig.joints[index].name);
     const size_t generated_op_begin=buffer_.ops.size(), generated_triangle_begin=direct_triangle_count();
     if (generate) {
@@ -359,10 +360,10 @@ void DslState::rig_skin(const std::string& name, const std::vector<std::string>&
         std::set<size_t> endpoints;
         for (size_t child : selected) {
             const size_t parent=static_cast<size_t>(find_joint(animation_->authored, joints[child].parent));
-            emit_voxel_segment(BrushKind::Cylinder, {positions[parent].x,positions[parent].y,positions[parent].z}, {positions[child].x,positions[child].y,positions[child].z}, joints[parent].radius, joints[child].radius, CsgOp::Union);
+            emit_voxel_segment(BrushKind::Cylinder, {positions[parent].x,positions[parent].y,positions[parent].z}, {positions[child].x,positions[child].y,positions[child].z}, joints[parent].radius*radius_scale, joints[child].radius*radius_scale, CsgOp::Union);
             endpoints.insert(parent); endpoints.insert(child);
         }
-        for (size_t joint : endpoints) emit_voxel_sphere({positions[joint].x,positions[joint].y,positions[joint].z}, joints[joint].radius, CsgOp::Union);
+        for (size_t joint : endpoints) emit_voxel_sphere({positions[joint].x,positions[joint].y,positions[joint].z}, joints[joint].radius*radius_scale, CsgOp::Union);
         endVoxels(); if (has_error_) return;
     }
     if (generate) {
@@ -391,12 +392,17 @@ bool DslState::begin_binding_scope(const std::string& name) {
     if (session_ != Session::None || polygon_open_ || contour_open_ || region_open_) {
         set_rig_error("bind scope requires no open geometry session"); return false;
     }
-    size_t skin_index=0;
-    while (skin_index < animation_->authored.skin_bindings.size() && animation_->authored.skin_bindings[skin_index].name != name) ++skin_index;
-    if (skin_index == animation_->authored.skin_bindings.size()) {
-        set_rig_error("bind references an unknown skin binding"); return false;
+    BindingScope scope;
+    for (size_t index=0; index<animation_->authored.skin_bindings.size(); ++index)
+        if (animation_->authored.skin_bindings[index].name == name) scope.indices.push_back(index);
+    if (scope.indices.empty()) {
+        scope.kind=BindingScope::Kind::Rigid;
+        for (size_t index=0; index<animation_->authored.rigid_bindings.size(); ++index)
+            if (animation_->authored.rigid_bindings[index].name == name) scope.indices.push_back(index);
     }
-    binding_scope_ = BindingScope{skin_index, buffer_.ops.size(), direct_triangle_count()};
+    if (scope.indices.empty()) { set_rig_error("bind references an unknown skin or rigid binding"); return false; }
+    scope.op_begin=buffer_.ops.size(); scope.triangle_begin=direct_triangle_count();
+    binding_scope_ = std::move(scope);
     return true;
 }
 
@@ -418,13 +424,19 @@ bool DslState::end_binding_scope() {
     if (scope.op_begin == op_end && scope.triangle_begin == triangle_end) {
         set_rig_error("bind scope must author geometry"); return false;
     }
-    auto& ranges=animation_->authored.skin_bindings[scope.skin_index].geometry;
-    ranges.push_back(
-        {static_cast<uint32_t>(scope.op_begin), static_cast<uint32_t>(op_end),
-         static_cast<uint32_t>(scope.triangle_begin), static_cast<uint32_t>(triangle_end)});
+    const matter::animation::BindingGeometryRange range{
+        static_cast<uint32_t>(scope.op_begin), static_cast<uint32_t>(op_end),
+        static_cast<uint32_t>(scope.triangle_begin), static_cast<uint32_t>(triangle_end)};
+    for (size_t index : scope.indices) {
+        if (scope.kind == BindingScope::Kind::Skin) animation_->authored.skin_bindings[index].geometry.push_back(range);
+        else animation_->authored.rigid_bindings[index].geometry.push_back(range);
+    }
     matter::animation::Diagnostics diagnostics;
     if (!refresh_canonical_animation(*animation_, rig_source_, diagnostics)) {
-        ranges.pop_back();
+        for (size_t index : scope.indices) {
+            if (scope.kind == BindingScope::Kind::Skin) animation_->authored.skin_bindings[index].geometry.pop_back();
+            else animation_->authored.rigid_bindings[index].geometry.pop_back();
+        }
         set_rig_error(diagnostics.items.empty()?"binding geometry validation failed":diagnostics.items.front().message,
                       "binding-validation");
         return false;
@@ -442,16 +454,18 @@ void DslState::cancel_binding_scope() {
     binding_scope_.reset();
 }
 
-void DslState::rig_segments(const std::string& name, const std::vector<std::string>& requested, bool decorative) {
+void DslState::rig_segments(const std::string& name, const std::vector<std::string>& requested, bool decorative,
+                            const AnimationTransform& bind_offset) {
     if (binding_scope_) { set_rig_error("structural animation authoring is forbidden inside a bind scope"); return; }
     if (!animation_ || !animation_->ended || animation_->clip_open || animation_->motion_open) { set_rig_error("segments requires a completed rig outside clip or motion authoring"); return; }
     if (!unique_binding_name(animation_->authored, name)) { set_rig_error("binding name must be non-empty and unique"); return; }
+    if (!valid_transform(bind_offset)) { set_rig_error("segments bind offset must be a finite positive transform"); return; }
     std::vector<size_t> selected; std::string error;
     if (!binding_segments(*animation_, requested, selected, error)) { set_rig_error(error); return; }
     if (animation_->primary_segment_claims.empty()) animation_->primary_segment_claims.assign(animation_->authored.rig.joints.size(), false);
     if (!decorative) for (size_t index : selected) if (animation_->primary_segment_claims[index]) { set_rig_error("binding segment is already claimed by a primary binding"); return; }
     for (size_t index : selected) {
-        matter::animation::RigidBindingDef binding; binding.name=name; binding.joint=animation_->authored.rig.joints[index].name; binding.decorative=decorative; binding.source=rig_source_;
+        matter::animation::RigidBindingDef binding; binding.name=name; binding.joint=animation_->authored.rig.joints[index].name; binding.local=bind_offset; binding.decorative=decorative; binding.source=rig_source_;
         animation_->authored.rigid_bindings.push_back(std::move(binding));
         if (!decorative) animation_->primary_segment_claims[index]=true;
     }
@@ -467,11 +481,15 @@ void DslState::rig_attach(const std::string& name, const std::string& socket,
     if (binding_scope_) { set_rig_error("structural animation authoring is forbidden inside a bind scope"); return; }
     if (!animation_ || !animation_->ended || animation_->clip_open || animation_->motion_open) { set_rig_error("attach requires a completed rig outside clip or motion authoring"); return; }
     if (!unique_binding_name(animation_->authored, name)) { set_rig_error("attachment name must be non-empty and unique"); return; }
-    if (!has_socket(animation_->authored, socket)) { set_rig_error("attachment references an unknown socket"); return; }
+    const bool socket_target=has_socket(animation_->authored, socket);
+    const bool joint_target=find_joint(animation_->authored, socket)>=0;
+    if (!socket_target && !joint_target) { set_rig_error("attachment references an unknown joint or socket"); return; }
     if (!valid_transform(local)) { set_rig_error("attachment requires a finite positive transform"); return; }
     uint64_t child_hash=0;
     if (child_module.empty() || !lookup_child_hash(child_module, nullptr, 0, child_hash) || child_hash == 0) { set_rig_error("attachment references an unresolved child"); return; }
-    animation_->authored.attachments.push_back({name, socket, child_hash, local, rig_source_});
+    matter::animation::AttachmentDef attachment; attachment.name=name; attachment.child_hash=child_hash; attachment.local=local; attachment.source=rig_source_;
+    if (socket_target) attachment.socket=socket; else attachment.joint=socket;
+    animation_->authored.attachments.push_back(std::move(attachment));
     matter::animation::Diagnostics diagnostics;
     if (!refresh_canonical_animation(*animation_, rig_source_, diagnostics)) {
         if (!diagnostics.items.empty()) rig_source_=diagnostics.items.front().source;

@@ -229,9 +229,11 @@ void test_rig_binding_authoring_captures_skin_segments_and_attachments() {
     const std::string source =
         "class BindingPart extends Part { build(p) {\n"
         "this.beginRig('r'); this.radius(.5); this.root('root'); this.bone('arm',[2,0,0]); this.socket('grip'); this.endRig();\n"
-        "this.skin('body',{joints:['arm'],falloff:1.5,generate:true,spacing:.25});\n"
-        "this.segments('armor',{joints:['arm'],decorative:true});\n"
+        "this.skin('body',{joints:['arm'],radiusScale:1.25,falloffScale:1.5,generate:true,voxelSize:.25});\n"
+        "this.segments('armor',{joints:['arm'],decorative:true,offset:{position:[4,5,6]}});\n"
+        "this.bind('armor',()=>{this.beginShape(SHAPE.triangles);this.vertex(0,0,0);this.vertex(1,0,0);this.vertex(0,1,0);this.endShape();});\n"
         "this.attach('tool','grip','Tool',{position:[1,2,3]});\n"
+        "this.attach('jointTool','arm','Tool',{position:[4,5,6]});\n"
         "} }";
     const uint64_t child_hash = 0x1234u;
     const std::string child_module = "Tool";
@@ -240,13 +242,21 @@ void test_rig_binding_authoring_captures_skin_segments_and_attachments() {
     const auto& build = host.last_animation_build();
     CHECK(build && build->skin_bindings.size() == 1 && build->skin_bindings[0].name == "body" &&
           build->skin_bindings[0].joints.size() == 1 && build->skin_bindings[0].joints[0] == "arm" &&
-          close(build->skin_bindings[0].falloff, 1.5f) && build->skin_bindings[0].generated,
-          "skin records its selected segment in authored animation IR");
+          close(build->skin_bindings[0].radius_scale, 1.25f) && close(build->skin_bindings[0].falloff, 1.5f) &&
+          close(build->skin_bindings[0].voxel_size, .25f) && build->skin_bindings[0].generated,
+          "skin records its selected segment and canonical envelope options in authored animation IR");
     CHECK(build && build->rigid_bindings.size() == 1 && build->rigid_bindings[0].joint == "arm",
           "segments emits one rigid binding record per selected segment");
-    CHECK(build && build->attachments.size() == 1 && build->attachments[0].name == "tool" &&
+    CHECK(build && build->rigid_bindings.size() == 1 && close(build->rigid_bindings[0].local.translation.x, 4.0f) &&
+          build->rigid_bindings[0].geometry.size() == 1 && build->rigid_bindings[0].geometry[0].triangle_end == 1,
+          "segments retains its authored bind offset and selected geometry range");
+    CHECK(build && build->attachments.size() == 2 && build->attachments[0].name == "tool" &&
           build->attachments[0].socket == "grip" && build->attachments[0].child_hash == child_hash,
           "attachment captures its socket and declared child hash");
+    CHECK(build && build->attachments.size() == 2 && build->attachments[1].name == "jointTool" &&
+          build->attachments[1].joint == "arm" && build->attachments[1].socket.empty() &&
+          build->attachments[1].child_hash == child_hash && close(build->attachments[1].local.translation.z, 6.0f),
+          "attachment accepts a direct joint target and retains its resolved child and local transform");
     const auto& canonical = host.last_animation_rig();
     CHECK(canonical && canonical->authored_state.find("body") != std::string::npos &&
           canonical->authored_state.find("armor") != std::string::npos &&
@@ -262,6 +272,7 @@ void test_rig_binding_authoring_rejects_malformed_or_overlapping_declarations() 
         {"this.beginRig('r');this.root('root');this.bone('arm',[1,0,0]);this.endRig();this.skin('a',{joints:['arm']});this.segments('b',{joints:['arm']});", "already claimed"},
         {"this.beginRig('r');this.root('root');this.bone('arm',[1,0,0]);this.endRig();this.skin('a',{joints:['arm','arm']});", "duplicate"},
         {"this.beginRig('r');this.root('root');this.bone('arm',[1,0,0]);this.endRig();this.skin('a',{falloff:0});", "positive"},
+        {"this.beginRig('r');this.root('root');this.bone('arm',[1,0,0]);this.endRig();this.skin('a',{falloff:1,falloffScale:1});", "falloffScale"},
         {"this.beginRig('r');this.root('root');this.socket('grip');this.endRig();this.attach('tool','grip','Missing');", "unresolved child"},
     };
     for (const auto& c : cases) {
@@ -277,7 +288,7 @@ void test_scoped_skin_binding_captures_only_its_authored_ranges() {
     const auto result = bake(
         "this.beginVoxels(.1); this.sphere([9,0,0],1); this.endVoxels(); "
         "this.beginRig('r'); this.root('root'); this.bone('arm',[1,0,0]); this.endRig(); "
-        "this.skin('body',{joints:['arm']}); "
+        "this.skin('body',{joints:['arm'],generate:false}); "
         "this.bind('body',()=>{ this.beginVoxels(.1); this.sphere([0,0,0],1); this.endVoxels(); "
         "this.beginShape(SHAPE.triangles); this.vertex(0,0,0); this.vertex(1,0,0); this.vertex(0,1,0); this.endShape(); });", host);
     CHECK(result.error.ok, "scoped bind emits ordinary voxel and indexed geometry");
@@ -294,12 +305,12 @@ void test_scoped_skin_binding_captures_only_its_authored_ranges() {
 
     const auto unknown = bake(
         "this.beginRig('r'); this.root('root'); this.bone('arm',[1,0,0]); this.endRig(); "
-        "this.skin('body',{joints:['arm']}); this.bind('missing',()=>{});", host);
-    CHECK(!unknown.error.ok && unknown.error.message.find("unknown skin binding") != std::string::npos,
-          "bind rejects a name that is not a declared deformable skin binding");
+        "this.skin('body',{joints:['arm'],generate:false}); this.bind('missing',()=>{});", host);
+    CHECK(!unknown.error.ok && unknown.error.message.find("unknown skin or rigid binding") != std::string::npos,
+          "bind rejects a name that is not a declared deformable skin or rigid binding");
     const auto nested = bake(
         "this.beginRig('r'); this.root('root'); this.bone('arm',[1,0,0]); this.endRig(); "
-        "this.skin('body',{joints:['arm']}); this.bind('body',()=>this.bind('body',()=>{}));", host);
+        "this.skin('body',{joints:['arm'],generate:false}); this.bind('body',()=>this.bind('body',()=>{}));", host);
     CHECK(!nested.error.ok && nested.error.message.find("cannot nest") != std::string::npos,
           "bind scopes fail closed rather than silently merging nested selections");
 }
@@ -315,7 +326,7 @@ void test_scoped_skin_binding_rejects_structural_animation_authoring() {
         script_host::ScriptHost blocked;
         const std::string body =
             std::string("this.beginRig('r'); this.root('root'); this.bone('arm',[1,0,0]); this.atJoint('root'); this.bone('leg',[0,1,0]); this.endRig(); ") +
-            "this.skin('body',{joints:['arm']}); this.bind('body',()=>{ " + escaped + " });";
+            "this.skin('body',{joints:['arm'],generate:false}); this.bind('body',()=>{ " + escaped + " });";
         const auto blocked_result = bake(body.c_str(), blocked);
         CHECK(!blocked_result.error.ok && blocked_result.error.message.find("bind scope") != std::string::npos,
               "bind callbacks reject every structural animation entry point before state can escape the scope");
@@ -324,7 +335,7 @@ void test_scoped_skin_binding_rejects_structural_animation_authoring() {
     script_host::ScriptHost host;
     const auto result = bake(
         "this.beginRig('r'); this.root('root'); this.bone('arm',[1,0,0]); this.atJoint('root'); this.bone('leg',[0,1,0]); this.endRig(); "
-        "this.skin('body',{joints:['arm']}); "
+        "this.skin('body',{joints:['arm'],generate:false}); "
         "this.bind('body',()=>{ this.skin('legSkin',{joints:['leg']}); "
         "this.beginVoxels(.1); this.sphere([0,0,0],1); this.endVoxels(); });", host);
     CHECK(!result.error.ok && result.error.message.find("bind scope") != std::string::npos,

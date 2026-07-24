@@ -127,7 +127,12 @@ struct BindingGeometryRange {
 struct SkinBindingDef {
     std::string name;
     std::vector<std::string> joints; // selected parent-child segments by child joint
+    // Radius controls the generated field envelope; falloff controls the
+    // post-bake weight field.  voxel_size is retained so implicit geometry is
+    // reproducible from source alone.
+    float radius_scale = 1.0f;
     float falloff = 1.0f;
+    float voxel_size = 0.1f;
     bool generated = false;
     std::vector<BindingGeometryRange> geometry;
     SourceSpan source;
@@ -137,11 +142,15 @@ struct RigidBindingDef {
     std::string joint; // one record per selected parent-child segment
     AnimationTransform local{};
     bool decorative = false;
+    std::vector<BindingGeometryRange> geometry;
     SourceSpan source;
 };
 struct AttachmentDef {
     std::string name;
+    // Exactly one target is populated.  Sockets retain their symbolic name;
+    // direct joints retain the declared joint name for canonical resolution.
     std::string socket;
+    std::string joint;
     uint64_t child_hash = 0; // resolved during the parent bake; never a module name at runtime
     AnimationTransform local{};
     SourceSpan source;

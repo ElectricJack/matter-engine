@@ -226,14 +226,20 @@ public:
     // path; the declarations themselves remain bake IR until A8 publishes
     // them with the MANM binding payload.
     void rig_skin(const std::string& name, const std::vector<std::string>& joints,
-                  float falloff, bool generate, float spacing);
+                  float radius_scale, float falloff_scale, bool generate, float voxel_size);
+    void rig_skin(const std::string& name, const std::vector<std::string>& joints,
+                  float falloff_scale, bool generate, float voxel_size) {
+        rig_skin(name, joints, 1.0f, falloff_scale, generate, voxel_size);
+    }
     void rig_segments(const std::string& name, const std::vector<std::string>& joints,
-                      bool decorative);
-    void rig_attach(const std::string& name, const std::string& socket,
+                      bool decorative, const matter::AnimationTransform& bind_offset);
+    void rig_segments(const std::string& name, const std::vector<std::string>& joints,
+                      bool decorative) { rig_segments(name, joints, decorative, {}); }
+    void rig_attach(const std::string& name, const std::string& target,
                     const std::string& child_module, const matter::AnimationTransform& local);
     // `bind(name, callback)` captures only the geometry authored by callback
-    // into a declared deformable skin binding. A8 resolves these authored
-    // ranges through the shared indexed-geometry builder.
+    // into a declared skin or rigid binding. A8 resolves these authored ranges
+    // through the shared indexed-geometry builder.
     bool begin_binding_scope(const std::string& name);
     bool end_binding_scope();
     void cancel_binding_scope();
@@ -491,7 +497,8 @@ private:
     std::vector<VolumeEmitter> emitters_;  // volumetric emitters (emitVolume)
     std::unique_ptr<AnimationBuildBuffer> animation_;
     struct BindingScope {
-        size_t skin_index = 0;
+        enum class Kind { Skin, Rigid } kind = Kind::Skin;
+        std::vector<size_t> indices;
         size_t op_begin = 0;
         size_t triangle_begin = 0;
     };

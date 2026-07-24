@@ -32,6 +32,7 @@ bool bind_joints(const CanonicalRig&rig, std::vector<BindJoint>&out){
     for(size_t i=0;i<rig.joints.size();++i){const auto&joint=rig.joints[i];const Mat4f local=local_matrix(joint.local);out[i].world=joint.parent==kInvalidJoint?local:multiply(out[joint.parent].world,local);out[i].position=transform_point(out[i].world,{});out[i].radius=joint.radius;const Quaternion local_q=joint.local.rotation;out[i].rotation=joint.parent==kInvalidJoint?local_q:qmul(out[joint.parent].rotation,local_q);}return true;
 }
 float smooth(float q){q=std::max(0.0f,std::min(1.0f,q));return q*q*(3.0f-2.0f*q);}
+bool valid_transform(const AnimationTransform& value);
 void add_weight(std::vector<float>&values,JointIndex joint,float weight){if(joint!=kInvalidJoint&&std::isfinite(weight)&&weight>0)values[joint]+=weight;}
 VertexInfluences quantize(std::vector<float> values,const std::vector<BindJoint>&joints,const Float3&p,const std::vector<bool>&allowed){
     VertexInfluences out; std::vector<JointIndex> order;
@@ -52,15 +53,57 @@ void put16(std::vector<uint8_t>& bytes, uint16_t value) { bytes.push_back(uint8_
 void put32(std::vector<uint8_t>& bytes, uint32_t value) { for (int i=0;i<4;++i) bytes.push_back(uint8_t(value >> (8*i))); }
 void put64(std::vector<uint8_t>& bytes, uint64_t value) { for (int i=0;i<8;++i) bytes.push_back(uint8_t(value >> (8*i))); }
 void put_float(std::vector<uint8_t>& bytes, float value) { uint32_t raw=0; std::memcpy(&raw,&value,sizeof raw); put32(bytes,raw); }
+void put_string(std::vector<uint8_t>& bytes, const std::string& value) { put32(bytes, static_cast<uint32_t>(value.size())); bytes.insert(bytes.end(), value.begin(), value.end()); }
+void put_transform(std::vector<uint8_t>& bytes, const AnimationTransform& value) {
+    put_float(bytes,value.translation.x); put_float(bytes,value.translation.y); put_float(bytes,value.translation.z);
+    put_float(bytes,value.rotation.x); put_float(bytes,value.rotation.y); put_float(bytes,value.rotation.z); put_float(bytes,value.rotation.w);
+    put_float(bytes,value.scale.x); put_float(bytes,value.scale.y); put_float(bytes,value.scale.z);
+}
 bool get16(const std::vector<uint8_t>& bytes, size_t& at, uint16_t& value) { if (at>bytes.size() || bytes.size()-at<2) return false; value=uint16_t(bytes[at])|uint16_t(bytes[at+1])<<8; at+=2; return true; }
 bool get32(const std::vector<uint8_t>& bytes, size_t& at, uint32_t& value) { if (at>bytes.size() || bytes.size()-at<4) return false; value=0; for(int i=0;i<4;++i)value|=uint32_t(bytes[at++])<<(8*i); return true; }
 bool get64(const std::vector<uint8_t>& bytes, size_t& at, uint64_t& value) { if (at>bytes.size() || bytes.size()-at<8) return false; value=0; for(int i=0;i<8;++i)value|=uint64_t(bytes[at++])<<(8*i); return true; }
 bool get_float(const std::vector<uint8_t>& bytes, size_t& at, float& value) { uint32_t raw=0; if(!get32(bytes,at,raw))return false; std::memcpy(&value,&raw,sizeof value); return std::isfinite(value); }
+bool get_string(const std::vector<uint8_t>& bytes, size_t& at, std::string& value) {
+    uint32_t count=0;
+    if (!get32(bytes,at,count) || count > 1024 || count > bytes.size()-at) return false;
+    value.assign(reinterpret_cast<const char*>(bytes.data()+at), count); at += count;
+    return true;
+}
+bool get_transform(const std::vector<uint8_t>& bytes, size_t& at, AnimationTransform& value) {
+    return get_float(bytes,at,value.translation.x) && get_float(bytes,at,value.translation.y) && get_float(bytes,at,value.translation.z) &&
+           get_float(bytes,at,value.rotation.x) && get_float(bytes,at,value.rotation.y) && get_float(bytes,at,value.rotation.z) && get_float(bytes,at,value.rotation.w) &&
+           get_float(bytes,at,value.scale.x) && get_float(bytes,at,value.scale.y) && get_float(bytes,at,value.scale.z) && valid_transform(value);
+}
 void tag(std::vector<uint8_t>& bytes, const char (&value)[5]) { bytes.insert(bytes.end(),value,value+4); }
 bool take_tag(const std::vector<uint8_t>& bytes, size_t& at, const char (&value)[5]) { if(at>bytes.size() || bytes.size()-at<4 || std::memcmp(bytes.data()+at,value,4)!=0)return false;at+=4;return true; }
 bool valid_bounds(const JointLocalBounds& bound, size_t joints) { return bound.joint<joints && std::isfinite(bound.minimum.x)&&std::isfinite(bound.minimum.y)&&std::isfinite(bound.minimum.z)&&std::isfinite(bound.maximum.x)&&std::isfinite(bound.maximum.y)&&std::isfinite(bound.maximum.z)&&bound.minimum.x<=bound.maximum.x&&bound.minimum.y<=bound.maximum.y&&bound.minimum.z<=bound.maximum.z; }
+bool valid_transform(const AnimationTransform& value) {
+    const float* values[] = {&value.translation.x, &value.translation.y, &value.translation.z,
+                             &value.rotation.x, &value.rotation.y, &value.rotation.z, &value.rotation.w,
+                             &value.scale.x, &value.scale.y, &value.scale.z};
+    for (const float* item : values) if (!std::isfinite(*item)) return false;
+    return value.scale.x > 0.0f && value.scale.y > 0.0f && value.scale.z > 0.0f;
+}
+bool valid_range(const BindingGeometryRange& range) {
+    return range.op_begin <= range.op_end && range.triangle_begin <= range.triangle_end &&
+           (range.op_begin != range.op_end || range.triangle_begin != range.triangle_end);
+}
+bool valid_rigid_segment(const RigidSegmentBake& segment, size_t joints) {
+    if (segment.name.empty() || segment.name.size() > 1024 || segment.joint >= joints ||
+        !valid_transform(segment.bind_offset) || segment.geometry.empty() || segment.geometry.size() > 4096)
+        return false;
+    for (const auto& range : segment.geometry) if (!valid_range(range)) return false;
+    return true;
+}
+bool valid_attachment_binding(const AttachmentBake& attachment) {
+    return !attachment.name.empty() && attachment.name.size() <= 1024 && !attachment.target.empty() &&
+           attachment.target.size() <= 1024 && attachment.child_hash != 0 &&
+           (attachment.target_kind == AttachmentTargetKind::Joint || attachment.target_kind == AttachmentTargetKind::Socket) &&
+           valid_transform(attachment.local);
+}
 bool valid_binding(const BindingBake& bake) {
-    if (bake.inverse_bind_matrices.empty() || bake.inverse_bind_matrices.size()>kMaxJoints || bake.lods.empty() || bake.lods.size()>64) return false;
+    if (bake.inverse_bind_matrices.empty() || bake.inverse_bind_matrices.size()>kMaxJoints || bake.lods.size()>64) return false;
+    if (bake.lods.empty() && bake.rigid_segments.empty() && bake.attachments.empty()) return false;
     for (const auto& matrix : bake.inverse_bind_matrices) for (float value : matrix.m) if (!std::isfinite(value)) return false;
     for (const auto& lod : bake.lods) {
         if(!lod.indexed_vertex_signature || !lod.vertex_count || lod.influences.size()!=lod.vertex_count || lod.clusters.empty()) return false;
@@ -94,6 +137,20 @@ bool valid_binding(const BindingBake& bake) {
             }
         }
         for (bool vertex : covered) if (!vertex) return false;
+    }
+    std::vector<std::string> rigid_names;
+    for (const auto& segment : bake.rigid_segments) {
+        if (!valid_rigid_segment(segment, bake.inverse_bind_matrices.size()) ||
+            std::find(rigid_names.begin(), rigid_names.end(), segment.name + "\x1f" + std::to_string(segment.joint)) != rigid_names.end())
+            return false;
+        rigid_names.push_back(segment.name + "\x1f" + std::to_string(segment.joint));
+    }
+    std::vector<std::string> attachment_names;
+    for (const auto& attachment : bake.attachments) {
+        if (!valid_attachment_binding(attachment) ||
+            std::find(attachment_names.begin(), attachment_names.end(), attachment.name) != attachment_names.end())
+            return false;
+        attachment_names.push_back(attachment.name);
     }
     return true;
 }
@@ -151,7 +208,7 @@ bool manifest_matches_binding(const std::vector<LodBindingSignature>&manifest,co
 
 bool set_anim_binding_bake(AnimAsset& asset, const BindingBake& bake) {
     if (!valid_binding(bake)) return false;
-    std::vector<uint8_t> geometry, inverse_binds, bounds;
+    std::vector<uint8_t> geometry, inverse_binds, bounds, rigid_segments, attachments;
     tag(geometry,"GBND"); put32(geometry,1); put32(geometry,static_cast<uint32_t>(bake.lods.size()));
     for (const auto& lod : bake.lods) {
         put64(geometry,lod.indexed_vertex_signature); put32(geometry,lod.vertex_count); put32(geometry,static_cast<uint32_t>(lod.influences.size()));
@@ -167,23 +224,58 @@ bool set_anim_binding_bake(AnimAsset& asset, const BindingBake& bake) {
             for (const auto& joint : cluster.joints) { put16(bounds,joint.joint); put_float(bounds,joint.minimum.x); put_float(bounds,joint.minimum.y); put_float(bounds,joint.minimum.z); put_float(bounds,joint.maximum.x); put_float(bounds,joint.maximum.y); put_float(bounds,joint.maximum.z); }
         }
     }
+    tag(rigid_segments,"RBND"); put32(rigid_segments,1); put32(rigid_segments,static_cast<uint32_t>(bake.rigid_segments.size()));
+    for (const auto& segment : bake.rigid_segments) {
+        put_string(rigid_segments,segment.name); put16(rigid_segments,segment.joint);
+        rigid_segments.push_back(segment.decorative ? 1 : 0); put_transform(rigid_segments,segment.bind_offset);
+        put32(rigid_segments,static_cast<uint32_t>(segment.geometry.size()));
+        for (const auto& range : segment.geometry) { put32(rigid_segments,range.op_begin); put32(rigid_segments,range.op_end); put32(rigid_segments,range.triangle_begin); put32(rigid_segments,range.triangle_end); }
+    }
+    tag(attachments,"ABND"); put32(attachments,1); put32(attachments,static_cast<uint32_t>(bake.attachments.size()));
+    for (const auto& attachment : bake.attachments) {
+        put_string(attachments,attachment.name); attachments.push_back(static_cast<uint8_t>(attachment.target_kind));
+        put_string(attachments,attachment.target); put64(attachments,attachment.child_hash); put_transform(attachments,attachment.local);
+    }
     set_section(asset,AnimSectionKind::GeometryBindings,std::move(geometry));
     set_section(asset,AnimSectionKind::InverseBindMatrices,std::move(inverse_binds));
     set_section(asset,AnimSectionKind::ClusterBounds,std::move(bounds));
+    set_section(asset,AnimSectionKind::RigidSegments,std::move(rigid_segments));
+    set_section(asset,AnimSectionKind::Attachments,std::move(attachments));
     return true;
 }
 
 bool get_anim_binding_bake(const AnimAsset& asset, BindingBake& bake) {
-    bake={}; const auto* geometry=section(asset,AnimSectionKind::GeometryBindings); const auto* inverse_binds=section(asset,AnimSectionKind::InverseBindMatrices); const auto* bounds=section(asset,AnimSectionKind::ClusterBounds);
-    if(!geometry||!inverse_binds||!bounds)return false;
+    bake={}; const auto* geometry=section(asset,AnimSectionKind::GeometryBindings); const auto* inverse_binds=section(asset,AnimSectionKind::InverseBindMatrices); const auto* bounds=section(asset,AnimSectionKind::ClusterBounds); const auto* rigid_segments=section(asset,AnimSectionKind::RigidSegments); const auto* attachments=section(asset,AnimSectionKind::Attachments);
+    if(!geometry||!inverse_binds||!bounds||!rigid_segments||!attachments)return false;
     size_t at=0; uint32_t version=0,lod_count=0;
-    if(!take_tag(geometry->bytes,at,"GBND")||!get32(geometry->bytes,at,version)||version!=1||!get32(geometry->bytes,at,lod_count)||lod_count==0||lod_count>64)return false;
+    if(!take_tag(geometry->bytes,at,"GBND")||!get32(geometry->bytes,at,version)||version!=1||!get32(geometry->bytes,at,lod_count)||lod_count>64)return false;
     bake.lods.resize(lod_count);
     for(auto& lod:bake.lods){uint32_t influence_count=0;if(!get64(geometry->bytes,at,lod.indexed_vertex_signature)||!get32(geometry->bytes,at,lod.vertex_count)||!get32(geometry->bytes,at,influence_count)||influence_count!=lod.vertex_count||influence_count>(geometry->bytes.size()-at)/(kMaxSkinInfluences*4))return false;lod.influences.resize(influence_count);for(auto& influence:lod.influences)for(size_t i=0;i<kMaxSkinInfluences;++i)if(!get16(geometry->bytes,at,influence.joints[i])||!get16(geometry->bytes,at,influence.weights[i]))return false;}
     if(at!=geometry->bytes.size())return false;
     at=0; uint32_t matrix_count=0;if(!take_tag(inverse_binds->bytes,at,"IBND")||!get32(inverse_binds->bytes,at,version)||version!=1||!get32(inverse_binds->bytes,at,matrix_count)||matrix_count==0||matrix_count>kMaxJoints)return false;bake.inverse_bind_matrices.resize(matrix_count);for(auto& matrix:bake.inverse_bind_matrices)for(float& value:matrix.m)if(!get_float(inverse_binds->bytes,at,value))return false;if(at!=inverse_binds->bytes.size())return false;
     at=0; uint32_t bound_lods=0;if(!take_tag(bounds->bytes,at,"CBND")||!get32(bounds->bytes,at,version)||version!=1||!get32(bounds->bytes,at,bound_lods)||bound_lods!=lod_count)return false;
     for(auto& lod:bake.lods){uint32_t cluster_count=0;if(!get32(bounds->bytes,at,cluster_count)||cluster_count>lod.vertex_count||cluster_count>(bounds->bytes.size()-at)/16)return false;lod.clusters.resize(cluster_count);for(auto& cluster:lod.clusters){uint32_t joint_count=0;if(!get32(bounds->bytes,at,cluster.cluster_id)||!get32(bounds->bytes,at,cluster.vertex_begin)||!get32(bounds->bytes,at,cluster.vertex_end)||!get32(bounds->bytes,at,joint_count)||joint_count>matrix_count||joint_count>(bounds->bytes.size()-at)/26)return false;cluster.joints.resize(joint_count);for(auto& joint:cluster.joints){if(!get16(bounds->bytes,at,joint.joint)||!get_float(bounds->bytes,at,joint.minimum.x)||!get_float(bounds->bytes,at,joint.minimum.y)||!get_float(bounds->bytes,at,joint.minimum.z)||!get_float(bounds->bytes,at,joint.maximum.x)||!get_float(bounds->bytes,at,joint.maximum.y)||!get_float(bounds->bytes,at,joint.maximum.z))return false;}}}
-    return at==bounds->bytes.size()&&valid_binding(bake);
+    if (at != bounds->bytes.size()) return false;
+    at=0; uint32_t rigid_count=0;
+    if(!take_tag(rigid_segments->bytes,at,"RBND")||!get32(rigid_segments->bytes,at,version)||version!=1||!get32(rigid_segments->bytes,at,rigid_count)||rigid_count>kMaxJoints)return false;
+    bake.rigid_segments.resize(rigid_count);
+    for (auto& segment : bake.rigid_segments) {
+        uint8_t decorative=0; uint32_t range_count=0;
+        if(!get_string(rigid_segments->bytes,at,segment.name)||!get16(rigid_segments->bytes,at,segment.joint)||at>=rigid_segments->bytes.size())return false;
+        decorative=rigid_segments->bytes[at++]; if(decorative>1||!get_transform(rigid_segments->bytes,at,segment.bind_offset)||!get32(rigid_segments->bytes,at,range_count)||range_count==0||range_count>4096||range_count>(rigid_segments->bytes.size()-at)/16)return false;
+        segment.decorative=decorative!=0; segment.geometry.resize(range_count);
+        for (auto& range : segment.geometry) if(!get32(rigid_segments->bytes,at,range.op_begin)||!get32(rigid_segments->bytes,at,range.op_end)||!get32(rigid_segments->bytes,at,range.triangle_begin)||!get32(rigid_segments->bytes,at,range.triangle_end))return false;
+    }
+    if(at!=rigid_segments->bytes.size())return false;
+    at=0; uint32_t attachment_count=0;
+    if(!take_tag(attachments->bytes,at,"ABND")||!get32(attachments->bytes,at,version)||version!=1||!get32(attachments->bytes,at,attachment_count)||attachment_count>kMaxJoints)return false;
+    bake.attachments.resize(attachment_count);
+    for (auto& attachment : bake.attachments) {
+        uint8_t kind=0;
+        if(!get_string(attachments->bytes,at,attachment.name)||at>=attachments->bytes.size())return false;
+        kind=attachments->bytes[at++]; if(kind>static_cast<uint8_t>(AttachmentTargetKind::Socket)||!get_string(attachments->bytes,at,attachment.target)||!get64(attachments->bytes,at,attachment.child_hash)||!get_transform(attachments->bytes,at,attachment.local))return false;
+        attachment.target_kind=static_cast<AttachmentTargetKind>(kind);
+    }
+    return at==attachments->bytes.size()&&valid_binding(bake);
 }
 } // namespace matter::animation

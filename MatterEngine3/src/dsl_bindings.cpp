@@ -288,6 +288,17 @@ static bool binding_number_property(JSContext* c, JSValueConst options, const ch
     double number=0.0; const bool ok=JS_IsNumber(value)&&JS_ToFloat64(c,&number,value)>=0&&std::isfinite(number);
     JS_FreeValue(c,value); if (ok) out=static_cast<float>(number); return ok;
 }
+// v1 names are accepted as single, documented aliases. Supplying both names
+// is an authoring error: choosing a precedence would make source ambiguous.
+static bool binding_number_alias(JSContext* c, JSValueConst options, const char* primary, const char* legacy, float& out) {
+    JSValue current=JS_GetPropertyStr(c,options,primary), old=JS_GetPropertyStr(c,options,legacy);
+    const bool has_current=!JS_IsUndefined(current), has_old=!JS_IsUndefined(old);
+    if (has_current && has_old) { JS_FreeValue(c,current); JS_FreeValue(c,old); return false; }
+    JSValue chosen=has_current?current:old; double number=0.0;
+    const bool ok=JS_IsUndefined(chosen)||(JS_IsNumber(chosen)&&JS_ToFloat64(c,&number,chosen)>=0&&std::isfinite(number));
+    if (ok && !JS_IsUndefined(chosen)) out=static_cast<float>(number);
+    JS_FreeValue(c,current); JS_FreeValue(c,old); return ok;
+}
 static bool binding_bool_property(JSContext* c, JSValueConst options, const char* key, bool& out) {
     JSValue value=JS_GetPropertyStr(c,options,key);
     if (JS_IsUndefined(value)) { JS_FreeValue(c,value); return true; }
@@ -297,20 +308,20 @@ static JSValue j_skin(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     rig_source(c,n,a,"skin"); const int argc=rig_user_argc(n); std::string name;
     if (argc < 1 || !rig_nonempty_string(c,argc,a,0,name)) { state_of(c)->set_rig_error("skin requires a non-empty name"); return JS_UNDEFINED; }
     if (argc > 2 || (argc == 2 && !JS_IsObject(a[1]))) { state_of(c)->set_rig_error("skin options must be an object"); return JS_UNDEFINED; }
-    std::vector<std::string> joints; float falloff=1.0f, spacing=0.1f; bool generate=false;
+    std::vector<std::string> joints; float radius_scale=1.0f, falloff=1.0f, spacing=0.1f; bool generate=true;
     if (argc == 2) {
         JSValue value=JS_GetPropertyStr(c,a[1],"joints"); const bool joints_ok=binding_joints(c,value,joints); JS_FreeValue(c,value);
-        if (!joints_ok || !binding_number_property(c,a[1],"falloff",falloff) || !binding_number_property(c,a[1],"spacing",spacing) || !binding_bool_property(c,a[1],"generate",generate)) { state_of(c)->set_rig_error("skin options require string joints and finite numeric/boolean values"); return JS_UNDEFINED; }
+        if (!joints_ok || !binding_number_property(c,a[1],"radiusScale",radius_scale) || !binding_number_alias(c,a[1],"falloffScale","falloff",falloff) || !binding_number_alias(c,a[1],"voxelSize","spacing",spacing) || !binding_bool_property(c,a[1],"generate",generate)) { state_of(c)->set_rig_error("skin options require string joints and finite radiusScale/falloffScale/voxelSize values (falloff and spacing are aliases)"); return JS_UNDEFINED; }
     }
-    state_of(c)->rig_skin(name,joints,falloff,generate,spacing); return JS_UNDEFINED;
+    state_of(c)->rig_skin(name,joints,radius_scale,falloff,generate,spacing); return JS_UNDEFINED;
 }
 static JSValue j_segments(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     rig_source(c,n,a,"segments"); const int argc=rig_user_argc(n); std::string name;
     if (argc < 1 || !rig_nonempty_string(c,argc,a,0,name)) { state_of(c)->set_rig_error("segments requires a non-empty name"); return JS_UNDEFINED; }
     if (argc > 2 || (argc == 2 && !JS_IsObject(a[1]))) { state_of(c)->set_rig_error("segments options must be an object"); return JS_UNDEFINED; }
-    std::vector<std::string> joints; bool decorative=false;
-    if (argc == 2) { JSValue value=JS_GetPropertyStr(c,a[1],"joints"); const bool joints_ok=binding_joints(c,value,joints); JS_FreeValue(c,value); if (!joints_ok || !binding_bool_property(c,a[1],"decorative",decorative)) { state_of(c)->set_rig_error("segments options require string joints and a boolean decorative flag"); return JS_UNDEFINED; } }
-    state_of(c)->rig_segments(name,joints,decorative); return JS_UNDEFINED;
+    std::vector<std::string> joints; bool decorative=false; matter::AnimationTransform offset{};
+    if (argc == 2) { JSValue value=JS_GetPropertyStr(c,a[1],"joints"); const bool joints_ok=binding_joints(c,value,joints); JS_FreeValue(c,value); bool transform_ok=true; value=JS_GetPropertyStr(c,a[1],"offset"); if(!JS_IsUndefined(value))offset=socket_transform(c,value,&transform_ok); JS_FreeValue(c,value); if (!joints_ok || !binding_bool_property(c,a[1],"decorative",decorative) || !transform_ok) { state_of(c)->set_rig_error("segments options require string joints, a boolean decorative flag, and a finite offset transform"); return JS_UNDEFINED; } }
+    state_of(c)->rig_segments(name,joints,decorative,offset); return JS_UNDEFINED;
 }
 static JSValue j_attach(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     rig_source(c,n,a,"attach"); const int argc=rig_user_argc(n); std::string name,socket,module;

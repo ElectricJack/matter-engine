@@ -10,7 +10,9 @@
 namespace matter::animation {
 
 constexpr uint32_t kAnimFormatVersion = 1;
-constexpr uint32_t kAnimationSchemaVersion = 1;
+// v2 adds mandatory typed rigid-segment and attachment binding sections. An
+// older executable must reject the asset rather than silently dropping them.
+constexpr uint32_t kAnimationSchemaVersion = 2;
 constexpr uint32_t kAnimationBakeEpoch = 1;
 constexpr uint32_t kAnimationCompilerIdentifier = 1;
 // Runtime-owned compatibility values.  These must be checked against the
@@ -24,7 +26,7 @@ BuildNonce generate_build_nonce();
 enum class AnimSectionKind : uint32_t {
     RigSchema = 1, InputTargetSchemas = 2, GraphControllerBytecode = 3,
     GeometryBindings = 4, InverseBindMatrices = 5, ClusterBounds = 6,
-    OzzSkeleton = 7, OzzClips = 8,
+    OzzSkeleton = 7, OzzClips = 8, RigidSegments = 9, Attachments = 10,
 };
 struct AnimSection { AnimSectionKind kind{}; std::vector<uint8_t> bytes; bool operator==(const AnimSection& v) const { return kind == v.kind && bytes == v.bytes; } };
 struct AnimAsset {

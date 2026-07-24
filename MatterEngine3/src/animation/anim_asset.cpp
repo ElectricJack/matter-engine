@@ -34,12 +34,12 @@ bool required_sections(const std::vector<AnimSection>& sections) {
     uint32_t seen = 0;
     for (const auto& section : sections) {
         const uint32_t kind = static_cast<uint32_t>(section.kind);
-        if (kind == 0 || kind > 8) return false;
+        if (kind == 0 || kind > 10) return false;
         const uint32_t bit = 1u << (kind - 1);
         if ((seen & bit) != 0) return false;
         seen |= bit;
     }
-    return seen == 0xffu;
+    return seen == ((1u << 10) - 1u);
 }
 }
 
@@ -82,7 +82,7 @@ bool load_anim(const std::filesystem::path& path, AnimAsset& a, Diagnostics& d) 
     a={}; FILE* f=std::fopen(path.string().c_str(),"rb"); if(!f){fail(d,"anim.open");return false;} std::fseek(f,0,SEEK_END); long size=std::ftell(f); std::fseek(f,0,SEEK_SET); if(size < long(kHeaderBytes)){std::fclose(f);fail(d,"anim.truncated");return false;} std::vector<uint8_t> b(static_cast<size_t>(size)); bool read=std::fread(b.data(),1,b.size(),f)==b.size();std::fclose(f);if(!read){fail(d,"anim.read");return false;}
     if(std::memcmp(b.data(),"MANM",4)!=0){fail(d,"anim.magic");return false;} size_t p=4; uint32_t format=0,schema=0,epoch=0,abi=0,ozz=0,count=0; uint64_t table=0,checksum=0;
     if(!get32(b,p,format)||!get32(b,p,schema)||!get32(b,p,epoch)||!get64(b,p,a.resolved_hash)||!get64(b,p,a.nonce.high)||!get64(b,p,a.nonce.low)||!get32(b,p,abi)||!get32(b,p,ozz)||!get32(b,p,count)||!get64(b,p,table)||!get64(b,p,checksum)){fail(d,"anim.truncated");return false;}
-    if(format!=1||schema!=1||epoch!=1){fail(d,"anim.version");return false;} a.target_abi_tag=abi;a.ozz_tag_hash=ozz;
+    if(format!=kAnimFormatVersion||schema!=kAnimationSchemaVersion||epoch!=kAnimationBakeEpoch){fail(d,"anim.version");return false;} a.target_abi_tag=abi;a.ozz_tag_hash=ozz;
     uint64_t table_end=0; if(table!=kHeaderBytes || !plus_ok(table,uint64_t(count)*kSectionBytes,table_end) || table_end>b.size()){fail(d,"anim.section_table");return false;}
     struct Entry { uint32_t kind; uint64_t off,len; }; std::vector<Entry> es; p=size_t(table); for(uint32_t i=0;i<count;++i){Entry e{};if(!get32(b,p,e.kind)||!get64(b,p,e.off)||!get64(b,p,e.len)){fail(d,"anim.section_table");return false;}uint64_t end=0;if(!plus_ok(e.off,e.len,end)||e.off<table_end||end>b.size()){fail(d,"anim.section_range");return false;}es.push_back(e);}
     std::sort(es.begin(),es.end(),[](const Entry&x,const Entry&y){return x.off<y.off;}); uint64_t prior=table_end; for(const auto&e:es){if(e.off<prior){fail(d,"anim.section_overlap");return false;}prior=e.off+e.len;}

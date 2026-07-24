@@ -26,7 +26,30 @@ struct ClusterJointBounds {
     std::vector<JointLocalBounds> joints;
 };
 struct LodSkinBinding { uint64_t indexed_vertex_signature = 0; uint32_t vertex_count = 0; std::vector<VertexInfluences> influences; std::vector<ClusterJointBounds> clusters; };
-struct BindingBake { std::vector<LodSkinBinding> lods; std::vector<Mat4f> inverse_bind_matrices; };
+// Runtime-friendly form of a declared rigid segment. The authoring joint is
+// canonicalized to an index; geometry remains half-open authored ranges until
+// A8 resolves it to final BLAS ownership.
+struct RigidSegmentBake {
+    std::string name;
+    JointIndex joint = kInvalidJoint;
+    AnimationTransform bind_offset{};
+    bool decorative = false;
+    std::vector<BindingGeometryRange> geometry;
+};
+enum class AttachmentTargetKind : uint8_t { Joint = 0, Socket = 1 };
+struct AttachmentBake {
+    std::string name;
+    std::string target;
+    AttachmentTargetKind target_kind = AttachmentTargetKind::Socket;
+    uint64_t child_hash = 0;
+    AnimationTransform local{};
+};
+struct BindingBake {
+    std::vector<LodSkinBinding> lods;
+    std::vector<Mat4f> inverse_bind_matrices;
+    std::vector<RigidSegmentBake> rigid_segments;
+    std::vector<AttachmentBake> attachments;
+};
 
 // Claims use the child-joint index for each parent-child segment. Attachments
 // do not claim a segment; decorative overlap is always explicit.

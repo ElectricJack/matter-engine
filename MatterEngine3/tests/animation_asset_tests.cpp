@@ -45,6 +45,14 @@ static void refresh_trailing_checksum(std::vector<uint8_t>& bytes) {
     put64(bytes, bytes.size() - 8, h);
     (void)checksum;
 }
+static void refresh_manm_checksum(std::vector<uint8_t>& bytes) {
+    uint64_t h = 1469598103934665603ull;
+    for (size_t i = 0; i < bytes.size(); ++i) {
+        const uint8_t byte = (i >= 60 && i < 68) ? 0 : bytes[i];
+        h ^= byte; h *= 1099511628211ull;
+    }
+    put64(bytes, 60, h);
+}
 
 static BindingBake sample_binding(const LodBindingSignature* signature = nullptr) {
     BindingBake bake;
@@ -119,7 +127,7 @@ static void test_anim_header_table_checksum_and_truncation_rejection() {
     };
     for (const auto offset : {size_t(4), size_t(8), size_t(12)}) {
         auto changed = original;
-        put32(changed, offset, 2);
+        put32(changed, offset, offset == 8 ? kAnimationSchemaVersion + 1 : 2);
         reject(offset == 4 ? "reject MANM format epoch" : offset == 8 ? "reject MANM schema epoch" : "reject MANM bake epoch", changed);
     }
     { auto changed = original; changed.back() ^= 0x80; reject("reject MANM body checksum", changed); }
@@ -130,6 +138,30 @@ static void test_anim_header_table_checksum_and_truncation_rejection() {
         auto changed = original; changed.resize(length);
         reject("reject truncated MANM", changed);
     }
+    std::remove(kAnimPath);
+}
+
+static void test_anim_v2_rejects_old_schema_and_missing_typed_sections() {
+    Diagnostics diagnostics;
+    const AnimAsset asset = sample_asset();
+    CHECK(save_anim_candidate(asset, kAnimPath, diagnostics), "save v2 MANM section-table fixture");
+    const std::vector<uint8_t> original = read_bytes(kAnimPath);
+    auto old_schema = original;
+    put32(old_schema, 8, 1);
+    refresh_manm_checksum(old_schema);
+    write_bytes(kAnimPath, old_schema);
+    AnimAsset decoded;
+    CHECK(!load_anim(kAnimPath, decoded, diagnostics),
+          "v2 loader rejects a checksummed old schema before it can omit typed declarations");
+    auto missing_attachment_section = original;
+    // The section table begins at byte 68 and each entry is kind/u64/u64.
+    // Replacing kind 10 with an existing kind 8 preserves the table layout but
+    // proves that the v2 required-section contract fails closed.
+    put32(missing_attachment_section, 68 + 9 * 20, 8);
+    refresh_manm_checksum(missing_attachment_section);
+    write_bytes(kAnimPath, missing_attachment_section);
+    CHECK(!load_anim(kAnimPath, decoded, diagnostics),
+          "v2 loader rejects a checksummed table missing typed attachment declarations");
     std::remove(kAnimPath);
 }
 
@@ -515,6 +547,7 @@ int main() {
     test_anim_required_sections_fail_closed();
     test_anim_cache_paths_and_nonce();
     test_anim_header_table_checksum_and_truncation_rejection();
+    test_anim_v2_rejects_old_schema_and_missing_typed_sections();
     test_committed_bundle_rejects_torn_and_mixed_siblings();
     test_anlk_malformed_and_static_compatibility();
     test_part_v2_preflight_boundary_and_no_side_effects();

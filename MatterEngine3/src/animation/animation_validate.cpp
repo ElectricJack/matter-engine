@@ -116,9 +116,9 @@ std::string encode_authored_state(const AnimationBuild& build) {
     for (const TargetSchema& target : build.targets) { append_string(output, target.name); append_string(output, target.start_joint); append_string(output, target.end_joint); append_string(output, target.controller); output << static_cast<int>(target.driver) << ',' << static_cast<int>(target.cadence) << ',' << target.has_pole << ',' << target.pole.x << ',' << target.pole.y << ',' << target.pole.z << ',' << target.soften << ',' << target.twist << ',' << target.position_half_life << ',' << target.rotation_half_life << ',' << target.weight_half_life << ',' << target.enabled << ',' << target.require_explicit_pole << '|'; }
     for (const ControllerDef& controller : build.controllers) { append_string(output, controller.name); append_string(output, controller.type); output << static_cast<int>(controller.cadence) << '|'; }
     for (const GraphNode& node : build.graph.nodes) { append_string(output, node.name); append_string(output, node.clip); append_string(output, node.input); append_string(output, node.controller); output << node.is_output << ',' << static_cast<int>(node.kind) << ',' << static_cast<int>(node.cadence) << '|'; for (float threshold : node.thresholds) output << threshold << ','; output << '|'; for (const std::string& dependency : node.dependencies) append_string(output, dependency); }
-    for (const SkinBindingDef& binding : build.skin_bindings) { append_string(output, binding.name); output << binding.falloff << ',' << binding.generated << '|'; for (const std::string& joint : binding.joints) append_string(output, joint); for (const BindingGeometryRange& range : binding.geometry) output << range.op_begin << ',' << range.op_end << ',' << range.triangle_begin << ',' << range.triangle_end << '|'; }
-    for (const RigidBindingDef& binding : build.rigid_bindings) { append_string(output, binding.name); append_string(output, binding.joint); output << binding.decorative << '|'; append_transform(output, binding.local); }
-    for (const AttachmentDef& attachment : build.attachments) { append_string(output, attachment.name); append_string(output, attachment.socket); output << attachment.child_hash << '|'; append_transform(output, attachment.local); }
+    for (const SkinBindingDef& binding : build.skin_bindings) { append_string(output, binding.name); output << binding.radius_scale << ',' << binding.falloff << ',' << binding.voxel_size << ',' << binding.generated << '|'; for (const std::string& joint : binding.joints) append_string(output, joint); for (const BindingGeometryRange& range : binding.geometry) output << range.op_begin << ',' << range.op_end << ',' << range.triangle_begin << ',' << range.triangle_end << '|'; }
+    for (const RigidBindingDef& binding : build.rigid_bindings) { append_string(output, binding.name); append_string(output, binding.joint); output << binding.decorative << '|'; append_transform(output, binding.local); for (const BindingGeometryRange& range : binding.geometry) output << range.op_begin << ',' << range.op_end << ',' << range.triangle_begin << ',' << range.triangle_end << '|'; }
+    for (const AttachmentDef& attachment : build.attachments) { append_string(output, attachment.name); append_string(output, attachment.socket); append_string(output, attachment.joint); output << attachment.child_hash << '|'; append_transform(output, attachment.local); }
     return output.str();
 }
 
@@ -197,7 +197,9 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
     std::vector<bool> primary_binding_segments(build.rig.joints.size(), false);
     for (const SkinBindingDef& binding : build.skin_bindings) {
         if (binding.name.empty() || !named_bindings.insert(binding.name).second) diagnostics.add("duplicate-binding", binding.source, "binding name must be non-empty and unique");
-        if (!finite(binding.falloff) || binding.falloff <= 0.0f) diagnostics.add("invalid-skin-falloff", binding.source, "skin falloff must be finite and positive");
+        if (!finite(binding.radius_scale) || binding.radius_scale <= 0.0f) diagnostics.add("invalid-skin-radius-scale", binding.source, "skin radiusScale must be finite and positive");
+        if (!finite(binding.falloff) || binding.falloff <= 0.0f) diagnostics.add("invalid-skin-falloff", binding.source, "skin falloffScale must be finite and positive");
+        if (!finite(binding.voxel_size) || binding.voxel_size <= 0.0f) diagnostics.add("invalid-skin-voxel-size", binding.source, "skin voxelSize must be finite and positive");
         if (binding.joints.empty()) diagnostics.add("empty-skin-binding", binding.source, "skin binding requires at least one segment");
         std::set<std::string> selected;
         for (const std::string& joint : binding.joints) {
@@ -225,13 +227,20 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
             else primary_binding_segments[static_cast<size_t>(index)] = true;
         }
         validate_transform(binding.local, binding.source, diagnostics);
+        for (const BindingGeometryRange& range : binding.geometry)
+            if (range.op_begin > range.op_end || range.triangle_begin > range.triangle_end ||
+                (range.op_begin == range.op_end && range.triangle_begin == range.triangle_end))
+                diagnostics.add("invalid-binding-geometry-range", binding.source,
+                                "binding geometry range must be ordered and non-empty");
     }
     for (const AttachmentDef& attachment : build.attachments) {
         if (attachment.name.empty() || rigid_binding_names.count(attachment.name) || !named_bindings.insert(attachment.name).second) diagnostics.add("duplicate-binding", attachment.source, "attachment name must be non-empty and unique");
         if (attachment.child_hash == 0) diagnostics.add("unresolved-attachment-child", attachment.source, "attachment child must resolve to a non-zero hash");
-        bool found = false;
-        for (const SocketDef& socket : build.rig.sockets) if (socket.name == attachment.socket) found = true;
-        if (!found) diagnostics.add("missing-attachment-socket", attachment.source, "attachment socket is not declared");
+        const bool has_socket = !attachment.socket.empty();
+        const bool has_joint = !attachment.joint.empty();
+        if (has_socket == has_joint) diagnostics.add("invalid-attachment-target", attachment.source, "attachment must target exactly one joint or socket");
+        if (has_socket) { bool found = false; for (const SocketDef& socket : build.rig.sockets) if (socket.name == attachment.socket) found = true; if (!found) diagnostics.add("missing-attachment-socket", attachment.source, "attachment socket is not declared"); }
+        if (has_joint && find_joint(build, attachment.joint) < 0) diagnostics.add("missing-attachment-joint", attachment.source, "attachment joint is not declared");
         validate_transform(attachment.local, attachment.source, diagnostics);
     }
 

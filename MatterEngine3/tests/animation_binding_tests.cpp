@@ -162,6 +162,79 @@ void test_binding_payload_requires_complete_cluster_bounds() {
     CHECK(!matter::animation::set_anim_binding_bake(asset, incomplete_bounds),
           "every influencing joint has a conservative cluster bound");
 }
+
+void test_binding_payload_retains_rigid_segments_and_attachments() {
+    BindingBake source;
+    CHECK(matter::animation::build_skin_binding(two_joint_rig(), {1}, {geometry()}, 1.0f, source),
+          "build binding declaration persistence fixture");
+    matter::animation::RigidSegmentBake rigid;
+    rigid.name = "armor";
+    rigid.joint = 1;
+    rigid.bind_offset.translation = {2.0f, 3.0f, 4.0f};
+    rigid.geometry.push_back({3, 7, 11, 13});
+    source.rigid_segments.push_back(rigid);
+    matter::animation::AttachmentBake attachment;
+    attachment.name = "tool";
+    attachment.target = "arm";
+    attachment.target_kind = matter::animation::AttachmentTargetKind::Joint;
+    attachment.child_hash = 0x12345678ull;
+    attachment.local.translation = {5.0f, 6.0f, 7.0f};
+    source.attachments.push_back(attachment);
+    matter::animation::AnimAsset asset;
+    asset.sections = {
+        {matter::animation::AnimSectionKind::RigSchema, {1}},
+        {matter::animation::AnimSectionKind::InputTargetSchemas, {2}},
+        {matter::animation::AnimSectionKind::GraphControllerBytecode, {3}},
+        {matter::animation::AnimSectionKind::OzzSkeleton, {7}},
+        {matter::animation::AnimSectionKind::OzzClips, {8}},
+    };
+    CHECK(matter::animation::set_anim_binding_bake(asset, source),
+          "binding declarations serialize into typed MANM sections");
+    BindingBake decoded;
+    CHECK(matter::animation::get_anim_binding_bake(asset, decoded),
+          "typed rigid and attachment declarations decode");
+    CHECK(decoded.rigid_segments.size() == 1 && decoded.rigid_segments[0].name == "armor" &&
+          decoded.rigid_segments[0].joint == 1 &&
+          decoded.rigid_segments[0].geometry.size() == 1 &&
+          decoded.rigid_segments[0].geometry[0].op_begin == 3 &&
+          decoded.rigid_segments[0].geometry[0].triangle_end == 13 &&
+          decoded.rigid_segments[0].bind_offset.translation.x == 2.0f,
+          "rigid declaration retains joint, bind offset, and owned geometry range");
+    CHECK(decoded.attachments.size() == 1 && decoded.attachments[0].name == "tool" &&
+          decoded.attachments[0].target == "arm" &&
+          decoded.attachments[0].target_kind == matter::animation::AttachmentTargetKind::Joint &&
+          decoded.attachments[0].child_hash == attachment.child_hash &&
+          decoded.attachments[0].local.translation.z == 7.0f,
+          "attachment retains target kind, resolved child hash, and local transform");
+    for (auto& section : asset.sections)
+        if (section.kind == matter::animation::AnimSectionKind::RigidSegments)
+            section.bytes.pop_back();
+    CHECK(!matter::animation::get_anim_binding_bake(asset, decoded),
+          "truncated typed rigid section fails closed");
+}
+
+void test_rigid_only_binding_needs_no_skin_payload() {
+    BindingBake source;
+    matter::Mat4f identity{}; identity.m[0]=identity.m[5]=identity.m[10]=identity.m[15]=1.0f;
+    source.inverse_bind_matrices = {identity, identity};
+    matter::animation::RigidSegmentBake rigid;
+    rigid.name="separate"; rigid.joint=1; rigid.geometry.push_back({0, 2, 0, 0});
+    source.rigid_segments.push_back(rigid);
+    matter::animation::AnimAsset asset;
+    asset.sections = {
+        {matter::animation::AnimSectionKind::RigSchema, {1}},
+        {matter::animation::AnimSectionKind::InputTargetSchemas, {2}},
+        {matter::animation::AnimSectionKind::GraphControllerBytecode, {3}},
+        {matter::animation::AnimSectionKind::OzzSkeleton, {7}},
+        {matter::animation::AnimSectionKind::OzzClips, {8}},
+    };
+    CHECK(matter::animation::set_anim_binding_bake(asset, source),
+          "a rigid-only segmented model serializes without synthetic skin weights");
+    BindingBake decoded;
+    CHECK(matter::animation::get_anim_binding_bake(asset, decoded) && decoded.lods.empty() &&
+          decoded.rigid_segments.size()==1 && decoded.rigid_segments[0].joint==1,
+          "rigid-only MANM payload retains its segment owner without a skin LOD");
+}
 }
 
 int main() {
@@ -173,5 +246,7 @@ int main() {
     test_malformed_rig_hierarchy_fails_before_parent_indexing();
     test_binding_payload_retains_lods_matrices_and_cluster_ranges();
     test_binding_payload_requires_complete_cluster_bounds();
+    test_binding_payload_retains_rigid_segments_and_attachments();
+    test_rigid_only_binding_needs_no_skin_payload();
     return check_summary();
 }
