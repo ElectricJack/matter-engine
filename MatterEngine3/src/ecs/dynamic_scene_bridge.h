@@ -14,6 +14,7 @@
 #include "matter/ecs.h"
 #include "matter/scene.h"
 #include "render/animation_rigid_bridge.h"
+#include "render/animation_skin_bridge.h"
 #include "render/dynamic_instance_slots.h"
 
 #include "flecs.h"
@@ -67,6 +68,14 @@ public:
     // Drain the accumulated slot changes since last drain.
     std::vector<render::DynamicSlotChange> drain();
 
+    // C2 handoff after reconcile(): resolves only currently live root slots
+    // and exact presentation snapshots.  On failure `out` is unchanged, so a
+    // stale scene generation can never publish a torn subset of skin work.
+    bool collect_animation_skinning(flecs::world& world,
+                                    std::vector<viewer::VkSkinSubmission>& out,
+                                    std::string& error,
+                                    uint64_t render_frame_serial) const;
+
     // Notify that a GPU frame completed (allows slot reuse).
     void finish_frame(uint64_t completed_serial);
 
@@ -94,6 +103,7 @@ private:
 
     render::DynamicInstanceSlots slots_;
     render::AnimationRigidBridge rigid_bridge_;
+    render::AnimationSkinBridge skin_bridge_;
     std::unordered_map<render::DynamicInstanceKey, TrackedEntity,
                        render::DynamicInstanceKeyHash> tracked_;
     std::unordered_map<render::DynamicInstanceKey, EntityMotion,

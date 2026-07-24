@@ -6,6 +6,7 @@
 #include "ecs/dynamic_scene_bridge.h"
 #include "ecs/simulation_control.h"
 #include "render/animation_rigid_bridge.h"
+#include "render/animation_skin_bridge.h"
 #include "check.h"
 
 #include <cstdio>
@@ -662,6 +663,74 @@ void test_runtime_produces_and_retires_rigid_binding_components() {
           "retired service animator removes its old articulated dynamic slot");
 }
 
+void test_runtime_scene_binding_publishes_c2_indexed_skin_work() {
+    ecs_runtime::Runtime runtime;
+    AnimationService service;
+    runtime.attach_animation_service(service);
+    const AnimAsset* asset = service.insert_asset({0xC201u, {1u, 2u}});
+    BoundFixture fixture;
+    auto descriptor = std::make_shared<AnimationRuntimeBindingDescriptor>();
+    descriptor->evaluation = fixture.evaluation;
+    descriptor->fixed_work.clip.duration = 1.0f;
+    descriptor->fixed_work.clip.loop = true;
+    AnimationRuntimeDefinition definition;
+    definition.binding = descriptor;
+    const Animator animator = service.create(asset, definition);
+    CHECK(animator.valid(), "C2 fixture creates a live service animator");
+
+    std::vector<viewer::VkSkinInfluence> influences(3);
+    for (auto& influence : influences) influence.weight[0] = 65535;
+    render::AnimationSkinnedLod lod{0xC2B0u, 4u, 0u, 3u, 12u, 3u};
+    render::AnimationSkinnedAsset skin_asset{0xC201u, 1u, &influences, {lod}};
+    flecs::entity entity = runtime.world().entity("RuntimeSkinnedEntity");
+    entity.set<scene::SceneEntityId>({0xC2E1u, 8u});
+    entity.set<scene::PartInstance>({0xC2B0u, true, true});
+    Mat4f entity_world{};
+    entity_world.m[0] = entity_world.m[5] = entity_world.m[10] = entity_world.m[15] = 1.0f;
+    entity.set<ecs::WorldTransform>({entity_world});
+    CHECK(runtime.attach_animation_skinned_binding(entity, animator.instance, skin_asset),
+          "runtime accepts a validated immutable C2 descriptor for its live service owner");
+    render::AnimationSkinnedAsset wrong_asset = skin_asset;
+    wrong_asset.identity = 0xBADu;
+    CHECK(!runtime.attach_animation_skinned_binding(entity, animator.instance, wrong_asset),
+          "runtime rejects a skin descriptor from another ANIM identity");
+
+    runtime.tick({0.1f, 0.1f, 2});
+    constexpr uint64_t kRenderSerial = 0xC2F1u;
+    runtime.animation_systems().publish_presentation_for_render(kRenderSerial);
+    scene::DynamicSceneBridge bridge(4, &runtime.animation_systems().pose_snapshots());
+    scene::BridgeErrorSink sink{};
+    std::string error;
+    CHECK(bridge.reconcile(runtime.world(), sink, error, kRenderSerial),
+          "scene bridge establishes the existing root transform slot before skin collection");
+    std::vector<viewer::VkSkinSubmission> submissions;
+    CHECK(bridge.collect_animation_skinning(runtime.world(), submissions, error, kRenderSerial),
+          "scene bridge maps the exact current entity generation, part, LOD, and transform slot to C2 work");
+    CHECK(submissions.size() == 1 && submissions[0].source_vertex == 4u &&
+              submissions[0].first_index == 12u && submissions[0].index_count == 3u &&
+              submissions[0].instance_slot != UINT32_MAX,
+          "C2 submission retains indexed raster mapping instead of manufacturing a bind-pose draw");
+    viewer::VkAnimationSkinning skinning(1);
+    CHECK(skinning.register_asset(skin_asset.identity, influences) &&
+              skinning.begin_frame(0, 0) && skinning.submit_visible(0, submissions),
+          "registered immutable influences and fresh pose select the C2 compute queue");
+    const auto& queued = skinning.frame(0);
+    CHECK(queued.work_items.size() == 1 && queued.raster_draws.size() == 1 &&
+              vk_skin_replaces_static_command(queued.raster_draws, 12u, 3u) &&
+              !vk_skin_replaces_static_command(queued.raster_draws, 15u, 3u),
+          "only the exact animated indexed command is replaced; unrelated static work remains visible");
+
+    CHECK(service.remove(animator.instance), "removing the owner invalidates C2 component lifecycle");
+    runtime.tick({0.0f, 0.1f, 1});
+    CHECK(!entity.has<render::AnimationSkinnedBinding>(),
+          "runtime removes stale C2 component before a later scene handoff");
+    submissions.clear();
+    CHECK(bridge.reconcile(runtime.world(), sink, error, kRenderSerial + 1) &&
+              bridge.collect_animation_skinning(runtime.world(), submissions, error, kRenderSerial + 1) &&
+              submissions.empty(),
+          "detached or stale skin component cannot publish old work into a later frame");
+}
+
 } // namespace
 
 int main() {
@@ -674,6 +743,7 @@ int main() {
     test_service_graph_root_motion_owns_fixed_authority();
     test_service_root_lock_keeps_authored_reference_out_of_ecs_authority();
     test_runtime_produces_and_retires_rigid_binding_components();
+    test_runtime_scene_binding_publishes_c2_indexed_skin_work();
     test_service_bound_runtime_work_is_automatic_and_generation_safe();
     test_controller_input_bindings_are_fixed_typed_and_fail_closed();
     test_service_checkpoint_restores_runtime_tick_deterministically();

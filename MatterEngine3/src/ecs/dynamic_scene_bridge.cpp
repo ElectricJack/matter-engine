@@ -14,11 +14,12 @@ render::DynamicInstanceKey root_key(SceneEntityId id) {
 
 DynamicSceneBridge::DynamicSceneBridge(
     uint32_t slot_capacity, const animation::AnimationPoseSnapshotStore* snapshots)
-    : slots_(slot_capacity), rigid_bridge_(snapshots) {}
+    : slots_(slot_capacity), rigid_bridge_(snapshots), skin_bridge_(snapshots) {}
 
 void DynamicSceneBridge::set_animation_pose_snapshots(
     const animation::AnimationPoseSnapshotStore* snapshots) noexcept {
     rigid_bridge_.set_snapshots(snapshots);
+    skin_bridge_.set_snapshots(snapshots);
 }
 
 uint32_t DynamicSceneBridge::fold_pick_token(uint64_t value) {
@@ -117,6 +118,41 @@ bool DynamicSceneBridge::reconcile(flecs::world& world, const BridgeErrorSink& s
 }
 
 std::vector<render::DynamicSlotChange> DynamicSceneBridge::drain() { return slots_.drain(); }
+
+bool DynamicSceneBridge::collect_animation_skinning(
+    flecs::world& world, std::vector<viewer::VkSkinSubmission>& out,
+    std::string& error, uint64_t render_frame_serial) const {
+    error.clear();
+    if (render_frame_serial == 0) {
+        error = "invalid animation skin render serial";
+        return false;
+    }
+    std::vector<viewer::VkSkinSubmission> staged;
+    bool accepted = true;
+    world.each([this, &staged, &accepted, &error, render_frame_serial](
+                   flecs::entity, const SceneEntityId& id,
+                   const PartInstance& part,
+                   const render::AnimationSkinnedBinding& binding) {
+        if (!accepted || !part.visible) return;
+        const render::DynamicInstanceKey key = root_key(id);
+        const auto tracked = tracked_.find(key);
+        if (tracked == tracked_.end() || !tracked->second.slot.valid()) {
+            accepted = false;
+            error = "animation skin mapping has no current dynamic transform slot";
+            return;
+        }
+        const render::AnimationSkinExpansion expansion{
+            key, part.part_hash, tracked->second.slot.index, render_frame_serial, binding};
+        if (!skin_bridge_.expand(expansion, staged)) {
+            accepted = false;
+            error = "stale or invalid animation skin binding";
+        }
+    });
+    if (!accepted) return false;
+    out.insert(out.end(), staged.begin(), staged.end());
+    return true;
+}
+
 void DynamicSceneBridge::finish_frame(uint64_t completed_serial) { slots_.finish_frame(completed_serial); }
 uint32_t DynamicSceneBridge::active_count() const { return slots_.active_count(); }
 

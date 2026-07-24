@@ -6,6 +6,7 @@
 #include "animation/animation_store.h"
 #include "animation/animation_world_queries.h"
 #include "render/animation_rigid_bridge.h"
+#include "render/animation_skin_bridge.h"
 #include "../streaming/sector_streaming_coordinator.h"
 #include "matter/physics.h"
 #include "matter/streaming.h"
@@ -344,6 +345,7 @@ Runtime::Runtime() {
     // The producer owns component lifecycle; DynamicSceneBridge is only a
     // renderer adapter and must never manufacture this component itself.
     world_.component<render::AnimationRigidBinding>();
+    world_.component<render::AnimationSkinnedBinding>();
     // Animation's fixed world-query seam is backed by the same live Box3D
     // world as the Physics pipeline.  There is deliberately no production
     // no-hit default once Runtime owns a world.
@@ -408,6 +410,13 @@ void Runtime::attach_animation_service(AnimationService* service) noexcept {
     });
     for (flecs::entity entity : attached)
         entity.remove<render::AnimationRigidBinding>();
+    attached.clear();
+    world_.each([&attached](flecs::entity entity,
+                            const render::AnimationSkinnedBinding&) {
+        attached.push_back(entity);
+    });
+    for (flecs::entity entity : attached)
+        entity.remove<render::AnimationSkinnedBinding>();
     if (bound_animation_service_ != nullptr) bound_animation_service_->attach_runtime_systems(nullptr);
     bound_animation_service_ = service;
     if (bound_animation_service_ != nullptr) bound_animation_service_->attach_runtime_systems(animation_systems_.get());
@@ -439,6 +448,25 @@ void Runtime::detach_animation_rigid_binding(flecs::entity entity) {
         entity.remove<render::AnimationRigidBinding>();
 }
 
+bool Runtime::attach_animation_skinned_binding(
+    flecs::entity entity, AnimatorInstanceHandle animator,
+    const render::AnimationSkinnedAsset& asset, uint32_t lod, bool visible) {
+    if (!entity.is_valid() || bound_animation_service_ == nullptr ||
+        !animator.valid() || !render::valid_animation_skinned_asset(asset) ||
+        lod >= asset.lods.size()) return false;
+    AnimationRuntimeBindingLease lease;
+    if (!bound_animation_service_->runtime_binding(animator, lease) ||
+        lease.asset_identity != asset.identity) return false;
+    entity.set<render::AnimationSkinnedBinding>(
+        {animator, &asset, asset.generation, lod, visible});
+    return true;
+}
+
+void Runtime::detach_animation_skinned_binding(flecs::entity entity) {
+    if (entity.is_valid() && entity.has<render::AnimationSkinnedBinding>())
+        entity.remove<render::AnimationSkinnedBinding>();
+}
+
 void Runtime::reconcile_animation_rigid_binding_lifecycle() {
     std::vector<flecs::entity> stale;
     world_.each([this, &stale](flecs::entity entity,
@@ -456,6 +484,23 @@ void Runtime::reconcile_animation_rigid_binding_lifecycle() {
     });
     for (flecs::entity entity : stale)
         entity.remove<render::AnimationRigidBinding>();
+}
+
+void Runtime::reconcile_animation_skinned_binding_lifecycle() {
+    std::vector<flecs::entity> stale;
+    world_.each([this, &stale](flecs::entity entity,
+                               const render::AnimationSkinnedBinding& binding) {
+        AnimationRuntimeBindingLease lease;
+        const render::AnimationSkinnedAsset* asset = binding.asset;
+        if (bound_animation_service_ == nullptr || asset == nullptr ||
+            binding.asset_generation != asset->generation ||
+            !render::valid_animation_skinned_asset(*asset) ||
+            binding.lod >= asset->lods.size() ||
+            !bound_animation_service_->runtime_binding(binding.animator, lease) ||
+            lease.asset_identity != asset->identity) stale.push_back(entity);
+    });
+    for (flecs::entity entity : stale)
+        entity.remove<render::AnimationSkinnedBinding>();
 }
 
 void Runtime::enqueue_world_state(WorldStateCommand command) {
@@ -521,6 +566,7 @@ TickResult Runtime::tick(const TickDesc& desc) {
         world_, explicit_flecs_frame_delta(contributed_delta));
     drain_world_state_commands();
     reconcile_animation_rigid_binding_lifecycle();
+    reconcile_animation_skinned_binding_lifecycle();
     ecs::drain_hierarchy_commands(world_);
 
     TickResult result{};

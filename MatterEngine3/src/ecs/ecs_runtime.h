@@ -40,7 +40,7 @@ class Box3DAnimationWorldQueries;
 } // namespace matter::animation
 
 namespace matter { class AnimationService; }
-namespace matter::render { struct AnimationRigidAsset; }
+namespace matter::render { struct AnimationRigidAsset; struct AnimationSkinnedAsset; }
 
 namespace matter::ecs_runtime {
 
@@ -98,12 +98,22 @@ public:
         return attach_animation_rigid_binding(entity, animator, asset, casts_shadow);
     }
     void detach_animation_rigid_binding(flecs::entity entity);
+    // C2 equivalent of the articulated binding producer.  The declaration
+    // remains an immutable renderer descriptor; Runtime validates only its
+    // owning service/ANIM identity and removes it on stale lifecycle events.
+    bool attach_animation_skinned_binding(flecs::entity entity,
+                                          AnimatorInstanceHandle animator,
+                                          const render::AnimationSkinnedAsset& asset,
+                                          uint32_t lod = 0,
+                                          bool visible = true);
+    void detach_animation_skinned_binding(flecs::entity entity);
     void enqueue_world_state(WorldStateCommand command);
     TickResult tick(const TickDesc& desc);
 
 private:
     void drain_world_state_commands();
     void reconcile_animation_rigid_binding_lifecycle();
+    void reconcile_animation_skinned_binding_lifecycle();
 
     flecs::world world_;
     std::unique_ptr<physics::detail::PhysicsContext> physics_;

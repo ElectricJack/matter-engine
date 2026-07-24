@@ -128,7 +128,7 @@ ANIMATION_SYSTEMS_TARGET = animation_systems_tests
 ANIMATION_SYSTEMS_CPP = animation_systems_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_world_queries.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 
 ANIMATION_SIMULATION_TARGET = animation_simulation_tests
-ANIMATION_SIMULATION_CPP = animation_simulation_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_world_queries.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/simulation_control.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/dynamic_scene_bridge.cpp ../src/render/animation_rigid_bridge.cpp ../src/render/dynamic_instance_slots.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
+ANIMATION_SIMULATION_CPP = animation_simulation_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_world_queries.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/simulation_control.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/dynamic_scene_bridge.cpp ../src/render/animation_rigid_bridge.cpp ../src/render/animation_skin_bridge.cpp ../src/render/vk_animation_skinning.cpp ../src/render/dynamic_instance_slots.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 
 ANIMATION_CONTROLLER_TARGET = animation_controller_tests
 ANIMATION_CONTROLLER_CPP = animation_controller_tests.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp
@@ -464,6 +464,13 @@ ANIMATION_RIGID_CPP    = animation_rigid_bridge_tests.cpp ../src/render/animatio
                         ../src/animation/animation_targets.cpp ../src/animation/animation_controllers.cpp \
                         ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp
 ANIMATION_RIGID_C      = $(FLECS_C)
+
+ANIMATION_SKIN_TARGET = animation_skin_bridge_tests
+ANIMATION_SKIN_CPP    = animation_skin_bridge_tests.cpp ../src/render/animation_skin_bridge.cpp \
+                        ../src/animation/animation_systems.cpp ../src/animation/animation_evaluator.cpp \
+                        ../src/animation/animation_targets.cpp ../src/animation/animation_controllers.cpp \
+                        ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp
+ANIMATION_SKIN_C      = $(FLECS_C)
 
 # Phase 4 Task 9 — Editor model (pure CPU, no GL/Vulkan/Flecs needed).
 EDITOR_MODEL_TARGET = editor_model_tests
@@ -909,6 +916,7 @@ def_CPP_SRCS := $(sort \
     $(DYNAMIC_SLOTS_CPP) \
     $(DYNAMIC_BRIDGE_CPP) \
     $(ANIMATION_RIGID_CPP) \
+    $(ANIMATION_SKIN_CPP) \
     $(EDITOR_MODEL_CPP) \
     $(PROPERTIES_REGISTRY_CPP) \
     $(SIMULATION_CONTROL_CPP) \
@@ -1043,6 +1051,7 @@ ENTITY_RECIPE_OBJS = $(call obj_list,def,$(ENTITY_RECIPE_CPP)) $(call obj_list,f
 DYNAMIC_SLOTS_OBJS = $(call obj_list,def,$(DYNAMIC_SLOTS_CPP))
 DYNAMIC_BRIDGE_OBJS = $(call obj_list,def,$(DYNAMIC_BRIDGE_CPP)) $(call obj_list,flecsc,$(DYNAMIC_BRIDGE_C))
 ANIMATION_RIGID_OBJS = $(call obj_list,def,$(ANIMATION_RIGID_CPP)) $(call obj_list,flecsc,$(ANIMATION_RIGID_C))
+ANIMATION_SKIN_OBJS = $(call obj_list,def,$(ANIMATION_SKIN_CPP)) $(call obj_list,flecsc,$(ANIMATION_SKIN_C))
 EDITOR_MODEL_OBJS = $(call obj_list,def,$(EDITOR_MODEL_CPP))
 PROPERTIES_REGISTRY_OBJS = $(call obj_list,def,$(PROPERTIES_REGISTRY_CPP)) $(call obj_list,flecsc,$(PROPERTIES_REGISTRY_C))
 SIMULATION_CONTROL_OBJS = $(call obj_list,def,$(SIMULATION_CONTROL_CPP)) $(call obj_list,flecsc,$(SIMULATION_CONTROL_C))
@@ -1258,6 +1267,12 @@ $(ANIMATION_RIGID_TARGET): $(ANIMATION_RIGID_OBJS)
 
 run-animation-rigid: $(ANIMATION_RIGID_TARGET)
 	./$(ANIMATION_RIGID_TARGET)
+
+$(ANIMATION_SKIN_TARGET): $(ANIMATION_SKIN_OBJS)
+	$(CC) $(ANIMATION_SKIN_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(OZZ_OFFLINE_LIBS) $(FLECS_PLATFORM_LIBS)
+
+run-animation-skin: $(ANIMATION_SKIN_TARGET)
+	./$(ANIMATION_SKIN_TARGET)
 
 # Phase 4 Task 9 — Editor model (pure CPU, no Flecs/GL runtime).
 $(EDITOR_MODEL_TARGET): $(EDITOR_MODEL_OBJS)

@@ -285,6 +285,8 @@ struct WorldSession::Impl {
     viewer::TemporalState vk_temporal;
     uint64_t vk_temporal_serial = 0;
     uint64_t vk_temporal_token = 0;
+    // C2 skin arena reuse follows actual frame completion, not submission.
+    uint64_t vk_skin_completed_serial = 0;
     std::vector<MaterialGpuRecord> vk_material_records;
     uint64_t vk_material_shading_revision = 0;
     uint64_t vk_material_geometry_revision = 0;
@@ -4254,6 +4256,45 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                         dyn_err.c_str());
             }
         }
+
+        // C2 uses the same conservative scene visibility/transform lane as
+        // the root dynamic instance.  Animation has already published an
+        // exact renderer serial above; the renderer receives only that
+        // immutable snapshot plus immutable influences, never an evaluator.
+        std::vector<viewer::VkSkinSubmission> skin_submissions;
+        bool skin_assets_ok = true;
+        impl_->ecs_runtime.world().each(
+            [this, &skin_assets_ok](flecs::entity,
+                                    const render::AnimationSkinnedBinding& binding) {
+                const render::AnimationSkinnedAsset* asset = binding.asset;
+                if (!skin_assets_ok || !binding.visible || asset == nullptr ||
+                    binding.asset_generation != asset->generation ||
+                    !render::valid_animation_skinned_asset(*asset)) {
+                    skin_assets_ok = false;
+                    return;
+                }
+                skin_assets_ok = impl_->vk_scene->register_animation_skin_asset(
+                    asset->identity, *asset->influences);
+            });
+        if (skin_assets_ok && !impl_->dynamic_bridge.collect_animation_skinning(
+                                  impl_->ecs_runtime.world(), skin_submissions,
+                                  bridge_err, frame.serial)) {
+            skin_assets_ok = false;
+            fprintf(stderr, "animation skin bridge error (non-fatal): %s\n",
+                    bridge_err.c_str());
+        }
+        // begin/submit/finish form one frame transaction even for rejection:
+        // an empty accepted queue suppresses stale work while static commands
+        // remain the conservative bind-pose fallback until C3 bounds arrive.
+        if (!impl_->vk_scene->begin_animation_skinning_frame(
+                frame.frame_slot, impl_->vk_skin_completed_serial) ||
+            !impl_->vk_scene->submit_visible_animation_skinning(
+                frame.frame_slot, skin_assets_ok ? skin_submissions
+                                                  : std::vector<viewer::VkSkinSubmission>{}) ||
+            !impl_->vk_scene->finish_animation_skinning_frame(frame.frame_slot,
+                                                                frame.serial)) {
+            fprintf(stderr, "animation skin frame queue rejected (non-fatal)\n");
+        }
     }
     const viewer::FrameMatrices& matrices = temporal.current_jittered;
     if (!impl_->vk_scene->prepare_frame(frame, matrices, cam.position, budget,
@@ -4357,6 +4398,8 @@ void WorldSession::finish_vulkan_frame(uint64_t frame_serial, bool presented) {
     if (impl_->vk_scene) {
         impl_->vk_scene->finish_ray_tracing_frame(frame_serial, presented);
         impl_->vk_scene->finish_dynamic_frame(frame_serial);
+        impl_->vk_skin_completed_serial =
+            std::max(impl_->vk_skin_completed_serial, frame_serial);
     }
     impl_->dynamic_bridge.finish_frame(frame_serial);
     if (presented)
