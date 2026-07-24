@@ -1,4 +1,5 @@
 #include "animation/animation_evaluator.h"
+#include "animation/animation_store.h"
 #include "animation/animation_systems.h"
 #include "animation/animation_world_queries.h"
 #include "../src/ecs/ecs_runtime.h"
@@ -6,6 +7,7 @@
 
 #include <cstdio>
 #include <vector>
+#include <memory>
 
 using namespace matter;
 using namespace matter::animation;
@@ -23,6 +25,73 @@ struct RecordingWorldQueries final : AnimationWorldQueries {
         return false;
     }
 };
+
+// A real evaluator definition deliberately travels through the service-owned
+// runtime descriptor.  The Runtime must not need callers to duplicate this
+// work into AnimationSystems manually.
+struct BoundFixture {
+    OzzSkeleton skeleton;
+    OzzAnimation clip;
+    std::shared_ptr<AnimationEvaluationDefinition> evaluation = std::make_shared<AnimationEvaluationDefinition>();
+    Diagnostics diagnostics;
+    BoundFixture() {
+        RigDefinition rig;
+        AnimationTransform rest{};
+        rig.joints.push_back({"root", "", rest, 1, {"test", 1, 1, "root"}});
+        ClipDefinition source;
+        source.name = "move"; source.duration = 1.0f; source.rate = 30.0f; source.loop = true;
+        source.source = {"test", 1, 1, "clip"};
+        source.tracks.push_back({"root", {{0.0f, rest, {"test",1,1,"a"}}, {1.0f, rest, {"test",1,1,"b"}}}, {"test",1,1,"track"}});
+        CHECK(build_skeleton(rig, skeleton, diagnostics) && build_clip(rig, source, clip, diagnostics),
+              "build runtime binding evaluator fixture");
+        Mat4f identity{}; identity.m[0] = identity.m[5] = identity.m[10] = identity.m[15] = 1.0f;
+        evaluation->skeleton = &skeleton;
+        evaluation->clips = {{&clip, 1.0f, true, false}};
+        evaluation->inverse_bind_model = {identity};
+        evaluation->nodes = {{RuntimeGraphNodeKind::Clip, {}, 0}, {RuntimeGraphNodeKind::Output, {0}}};
+    }
+};
+
+void test_service_bound_runtime_work_is_automatic_and_generation_safe() {
+    ecs_runtime::Runtime runtime;
+    RecordingWorldQueries queries;
+    runtime.animation_systems().set_world_queries(&queries);
+    AnimationService service;
+    runtime.attach_animation_service(service);
+    const AnimAsset* asset = service.insert_asset({0x92u, {1u, 2u}});
+    BoundFixture fixture;
+    auto descriptor = std::make_shared<AnimationRuntimeBindingDescriptor>();
+    descriptor->evaluation = fixture.evaluation;
+    descriptor->fixed_work.clip.duration = 1.0f;
+    descriptor->fixed_work.clip.loop = true;
+    descriptor->fixed_work.clip.time = 0.9f;
+    descriptor->fixed_work.clip.markers = {{0.0f, 7u}};
+    descriptor->fixed_work.queries.push_back({{}, 0, 0, {0,0,0}, {0,-1,0}, 2.0f, UINT64_MAX});
+    AnimationRuntimeDefinition definition;
+    definition.binding = descriptor;
+    const Animator created = service.create(asset, definition);
+    CHECK(created.valid(), "service creates a descriptor-bound animator");
+    runtime.tick({0.2f, 0.1f, 4});
+    CHECK(queries.calls == 2, "bound descriptor executes queries without manual fixed-work registration");
+    CHECK(runtime.animation_systems().take_marker_events().size() == 1,
+          "bound descriptor emits markers through normal runtime ticks");
+    CHECK(runtime.animation_systems().take_consumed_root_motion().size() == 2,
+          "bound descriptor publishes and consumes root motion through normal runtime ticks");
+    CHECK(runtime.animation_systems().pose_snapshots().latest(created.instance).local_pose.count == 1,
+          "bound descriptor evaluates and publishes a renderer-safe pose checkpoint");
+    const AnimatorInstanceHandle stale = created.instance;
+    const Animator replaced = service.replace_asset(created.instance, asset, definition);
+    CHECK(replaced.valid() && replaced.instance.generation != stale.generation,
+          "redefinition replaces the binding with a new generation");
+    runtime.tick({0.1f, 0.1f, 1});
+    CHECK(runtime.animation_systems().pose_snapshots().latest(stale).local_pose.empty() &&
+              runtime.animation_systems().pose_snapshots().latest(replaced.instance).local_pose.count == 1,
+          "redefinition rejects stale generation state and republishes only the replacement pose");
+    CHECK(service.remove(replaced.instance), "remove tears down a bound animator");
+    runtime.tick({0.1f, 0.1f, 1});
+    CHECK(runtime.animation_systems().pose_snapshots().latest(stale).local_pose.empty(),
+          "destroy unregisters stale generation pose work");
+}
 
 void test_markers_use_half_open_intervals_and_stable_order() {
     const RuntimeClipMarker markers[] = {{0.0f, 4}, {0.25f, 2}, {0.25f, 3}, {0.75f, 1}};
@@ -118,6 +187,7 @@ int main() {
     test_world_target_is_resolved_at_evaluation_boundary();
     test_queries_apply_cap_and_explicit_misses();
     test_runtime_fixed_phases_execute_registered_animation_work();
+    test_service_bound_runtime_work_is_automatic_and_generation_safe();
     if (g_failures) return 1;
     std::puts("animation_simulation_tests: all tests passed");
 }

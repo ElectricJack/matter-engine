@@ -6,6 +6,7 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <vector>
 
 namespace flecs { class world; }
@@ -53,6 +54,17 @@ struct AnimationFixedWork {
     AnimationTransform desired_target_world{};
     AnimationTransform evaluated_target_root_relative{};
     uint64_t root_entity = 0;
+};
+
+// Immutable authored-to-runtime bridge.  It is owned by the definition (via a
+// shared immutable descriptor), while AnimationSystems owns only copies of
+// per-instance work.  Keeping the evaluator definition alive here prevents a
+// hot reload from invalidating an in-flight runtime request.
+struct AnimationRuntimeBindingDescriptor {
+    std::shared_ptr<const AnimationEvaluationDefinition> evaluation;
+    AnimationFixedWork fixed_work;
+    // UINT16_MAX means this descriptor has no externally-driven target.
+    uint16_t target_index = UINT16_MAX;
 };
 
 // B3 makes the boundary order observable.  Entries named for later features
@@ -143,6 +155,13 @@ public:
     std::vector<AnimationMarkerEvent> take_marker_events();
     std::vector<DesiredRootMotion> take_consumed_root_motion();
 
+    // Called by AnimationService lifecycle operations.  These entry points
+    // are internal; direct register_fixed_work remains a narrow test/tool seam.
+    bool refresh_service_binding(const AnimationRuntimeBindingLease& lease);
+    void detach_service_binding(AnimatorInstanceHandle instance);
+    void attach_service(AnimationService* service) noexcept { service_ = service; }
+    bool has_service(const AnimationService* service) const noexcept { return service_ == service; }
+
 private:
     friend void register_animation_systems(flecs::world&, AnimationSystems&);
     void run_fixed_pre(flecs::world& world, double fixed_delta);
@@ -153,6 +172,8 @@ private:
     void run_fixed_post(flecs::world& world, double fixed_delta);
     void run_frame(flecs::world& world, double frame_delta);
     void trace(AnimationScheduleEvent event, double delta_seconds);
+    void sample_service_bindings();
+    void evaluate_service_bindings(flecs::world& world, double delta_seconds);
 
     double interpolation_alpha_ = 0.0;
     std::vector<AnimationScheduleTraceEntry> trace_;
@@ -164,6 +185,9 @@ private:
     std::map<uint64_t, AnimationFixedWork> fixed_work_;
     std::vector<AnimationMarkerEvent> marker_events_;
     std::vector<DesiredRootMotion> consumed_root_motion_;
+    AnimationService* service_ = nullptr;
+    AnimationEvaluator evaluator_;
+    std::map<uint64_t, AnimationRuntimeBindingLease> service_bindings_;
 };
 
 // Target writes are intentionally stored in world coordinates.  This helper is

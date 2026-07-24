@@ -3,6 +3,7 @@
 #include "streaming_systems.h"
 #include "scene_registry.h"
 #include "animation/animation_systems.h"
+#include "animation/animation_store.h"
 #include "../streaming/sector_streaming_coordinator.h"
 #include "matter/physics.h"
 #include "matter/streaming.h"
@@ -344,6 +345,10 @@ Runtime::Runtime() {
 }
 
 Runtime::~Runtime() {
+    if (bound_animation_service_ != nullptr && animation_systems_->has_service(bound_animation_service_)) {
+        bound_animation_service_->attach_runtime_systems(nullptr);
+        bound_animation_service_ = nullptr;
+    }
     // Streaming teardown observers remain registered until world finalization.
     // Null their private lookup before releasing the coordinator they target.
     world_.set<streaming::detail::StreamingContextRef>({nullptr});
@@ -379,6 +384,13 @@ animation::AnimationSystems& Runtime::animation_systems() noexcept {
 
 const animation::AnimationSystems& Runtime::animation_systems() const noexcept {
     return *animation_systems_;
+}
+
+void Runtime::attach_animation_service(AnimationService* service) noexcept {
+    if (bound_animation_service_ == service) return;
+    if (bound_animation_service_ != nullptr) bound_animation_service_->attach_runtime_systems(nullptr);
+    bound_animation_service_ = service;
+    if (bound_animation_service_ != nullptr) bound_animation_service_->attach_runtime_systems(animation_systems_.get());
 }
 
 void Runtime::enqueue_world_state(WorldStateCommand command) {

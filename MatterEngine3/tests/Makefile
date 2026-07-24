@@ -120,15 +120,15 @@ ANIMATION_BINDING_TARGET = animation_binding_tests
 ANIMATION_BINDING_CPP = animation_binding_tests.cpp ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_ir.cpp
 
 ANIMATION_STORE_TARGET = animation_store_tests
-ANIMATION_STORE_CPP = animation_store_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp
+ANIMATION_STORE_CPP = animation_store_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 ANIMATION_EVALUATOR_TARGET = animation_evaluator_tests
 ANIMATION_EVALUATOR_CPP = animation_evaluator_tests.cpp ../src/animation/animation_evaluator.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp
 
 ANIMATION_SYSTEMS_TARGET = animation_systems_tests
-ANIMATION_SYSTEMS_CPP = animation_systems_tests.cpp ../src/animation/animation_systems.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
+ANIMATION_SYSTEMS_CPP = animation_systems_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 
 ANIMATION_SIMULATION_TARGET = animation_simulation_tests
-ANIMATION_SIMULATION_CPP = animation_simulation_tests.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp ../src/animation/animation_world_queries.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
+ANIMATION_SIMULATION_CPP = animation_simulation_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp ../src/animation/animation_world_queries.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 
 # CPU-only, no GL/VK/raylib link deps (mirrors MATRIX_TARGET's direct-compile
 # pattern) — pure atlas-slicing + mip math, unit-testable without a device.
@@ -138,13 +138,14 @@ TILESETSLICER_HEADERS = check.h ../src/render/tileset_slicer.h
 
 FLECS_DIR = ../../Libraries/flecs
 FLECS_C = $(FLECS_DIR)/flecs.c
+ANIMATION_RUNTIME_CPP = ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp
 
 ECS_TARGET = ecs_tests
 ECS_CPP = ecs_tests.cpp ../src/animation/animation_systems.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 ECS_C = $(FLECS_C)
 
 PHYSICS_TARGET = physics-tests
-PHYSICS_CPP = physics_tests.cpp ../src/animation/animation_systems.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
+PHYSICS_CPP = physics_tests.cpp $(ANIMATION_RUNTIME_CPP) ../src/animation/animation_systems.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 PHYSICS_C = $(FLECS_C)
 
 # ---------------------------------------------------------------------------
@@ -461,7 +462,7 @@ PROPERTIES_REGISTRY_C      = $(FLECS_C)
 
 # Phase 4 Task 11 — Simulation control (Play/Pause/Step/Stop with snapshot).
 SIMULATION_CONTROL_TARGET = simulation_control_tests
-SIMULATION_CONTROL_CPP    = simulation_control_tests.cpp ../src/animation/animation_systems.cpp ../src/ecs/simulation_control.cpp \
+SIMULATION_CONTROL_CPP    = simulation_control_tests.cpp $(ANIMATION_RUNTIME_CPP) ../src/animation/animation_systems.cpp ../src/ecs/simulation_control.cpp \
                             ../src/ecs/scene_registry.cpp \
                             ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                             ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
@@ -878,6 +879,7 @@ GPU_ALL_CPP = $(GPU_PIPELINE_CPP) $(GPU_RENDER_CPP) $(GPU_MSL_CPP) \
 # Collect the sources compiled under each flavor.
 def_CPP_SRCS := $(sort \
     $(ECS_CPP) \
+    $(ANIMATION_STORE_CPP) \
     $(PHYSICS_CPP) \
     $(ANIMATION_SYSTEMS_CPP) \
     $(ANIMATION_SIMULATION_CPP) \
@@ -1011,6 +1013,7 @@ ECS_OBJS = $(call obj_list,def,$(ECS_CPP)) $(call obj_list,flecsc,$(ECS_C))
 PHYSICS_OBJS = $(call obj_list,def,$(PHYSICS_CPP)) $(call obj_list,physicsc,$(PHYSICS_C))
 ANIMATION_SYSTEMS_OBJS = $(call obj_list,def,$(ANIMATION_SYSTEMS_CPP)) $(call obj_list,flecsc,$(FLECS_C))
 ANIMATION_SIMULATION_OBJS = $(call obj_list,def,$(ANIMATION_SIMULATION_CPP)) $(call obj_list,flecsc,$(FLECS_C))
+ANIMATION_STORE_OBJS = $(call obj_list,def,$(ANIMATION_STORE_CPP)) $(call obj_list,flecsc,$(FLECS_C))
 SCENE_REGISTRY_OBJS = $(call obj_list,def,$(SCENE_REGISTRY_CPP)) $(call obj_list,flecsc,$(SCENE_REGISTRY_C))
 ENTITY_RECIPE_OBJS = $(call obj_list,def,$(ENTITY_RECIPE_CPP)) $(call obj_list,flecsc,$(ENTITY_RECIPE_C))
 DYNAMIC_SLOTS_OBJS = $(call obj_list,def,$(DYNAMIC_SLOTS_CPP))
@@ -1138,8 +1141,8 @@ $(ANIMATION_BINDING_TARGET): $(ANIMATION_BINDING_CPP)
 run-animation-binding: $(ANIMATION_BINDING_TARGET)
 	./$(ANIMATION_BINDING_TARGET)
 
-$(ANIMATION_STORE_TARGET): $(ANIMATION_STORE_CPP)
-	$(CC) $(ANIMATION_STORE_CPP) -o $@ $(CFLAGS) $(INCLUDE_PATHS)
+$(ANIMATION_STORE_TARGET): $(ANIMATION_STORE_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
+	$(CC) $(ANIMATION_STORE_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(FLECS_PLATFORM_LIBS)
 
 run-animation-store: $(ANIMATION_STORE_TARGET)
 	./$(ANIMATION_STORE_TARGET)
@@ -1150,8 +1153,8 @@ $(ANIMATION_EVALUATOR_TARGET): $(ANIMATION_EVALUATOR_CPP) $(OZZ_OFFLINE_LIBS)
 run-animation-evaluator: $(ANIMATION_EVALUATOR_TARGET)
 	./$(ANIMATION_EVALUATOR_TARGET)
 
-$(ANIMATION_SYSTEMS_TARGET): $(ANIMATION_SYSTEMS_OBJS) $(BOX3D_LIB)
-	$(CC) $(ANIMATION_SYSTEMS_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(FLECS_PLATFORM_LIBS)
+$(ANIMATION_SYSTEMS_TARGET): $(ANIMATION_SYSTEMS_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
+	$(CC) $(ANIMATION_SYSTEMS_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(FLECS_PLATFORM_LIBS)
 
 run-animation-systems: $(ANIMATION_SYSTEMS_TARGET)
 	./$(ANIMATION_SYSTEMS_TARGET)
@@ -1176,8 +1179,8 @@ $(ECS_TARGET): $(ECS_OBJS) $(BOX3D_LIB)
 run-ecs: $(ECS_TARGET)
 	./$(ECS_TARGET)
 
-$(PHYSICS_TARGET): $(PHYSICS_OBJS) $(BOX3D_LIB)
-	$(CC) $(PHYSICS_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(FLECS_PLATFORM_LIBS)
+$(PHYSICS_TARGET): $(PHYSICS_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
+	$(CC) $(PHYSICS_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(FLECS_PLATFORM_LIBS)
 
 run-physics: $(PHYSICS_TARGET)
 	./$(PHYSICS_TARGET)
@@ -1230,8 +1233,8 @@ run-properties-registry: $(PROPERTIES_REGISTRY_TARGET)
 	./$(PROPERTIES_REGISTRY_TARGET)
 
 # Phase 4 Task 11 — Simulation control.
-$(SIMULATION_CONTROL_TARGET): $(SIMULATION_CONTROL_OBJS) $(BOX3D_LIB)
-	$(CC) $(SIMULATION_CONTROL_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) -lws2_32 -ldbghelp -lwinmm
+$(SIMULATION_CONTROL_TARGET): $(SIMULATION_CONTROL_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
+	$(CC) $(SIMULATION_CONTROL_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) -lws2_32 -ldbghelp -lwinmm
 
 run-simulation-control: $(SIMULATION_CONTROL_TARGET)
 	./$(SIMULATION_CONTROL_TARGET)

@@ -3,6 +3,7 @@
 #include "animation/animation_asset_store.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <map>
@@ -121,7 +122,7 @@ bool same_definition(const AnimationRuntimeDefinition& left, const AnimationRunt
     if (left.graph_state_bytes != right.graph_state_bytes ||
         left.controller_state_bytes != right.controller_state_bytes ||
         left.sample_context_bytes != right.sample_context_bytes ||
-        left.pose_scratch_bytes != right.pose_scratch_bytes ||
+        left.pose_scratch_bytes != right.pose_scratch_bytes || left.binding.get() != right.binding.get() ||
         left.inputs.size() != right.inputs.size() || left.targets.size() != right.targets.size()) return false;
     for (size_t i = 0; i < left.inputs.size(); ++i) {
         if (!same_input(left.inputs[i], right.inputs[i]) ||
@@ -133,11 +134,41 @@ bool same_definition(const AnimationRuntimeDefinition& left, const AnimationRunt
     return true;
 }
 
+bool valid_binding(const std::shared_ptr<const AnimationRuntimeBindingDescriptor>& binding) {
+    if (!binding) return true; // Legacy definitions are deliberately unbound.
+    const AnimationEvaluationDefinition* evaluation = binding->evaluation.get();
+    const AnimationFixedWork& work = binding->fixed_work;
+    if (!evaluation || !valid_animation_evaluation_definition(*evaluation) ||
+        !std::isfinite(work.clip.duration) || work.clip.duration <= 0.0f ||
+        !std::isfinite(work.clip.time) || !std::isfinite(work.clip.rate)) return false;
+    for (const RuntimeClipMarker& marker : work.clip.markers)
+        if (!std::isfinite(marker.time) || marker.time < 0.0f || marker.time > work.clip.duration) return false;
+    for (const AnimationWorldQueryRequest& query : work.queries)
+        if (!std::isfinite(query.max_distance) || query.max_distance < 0.0f) return false;
+    return true;
+}
+
 bool valid_definition(const AnimationRuntimeDefinition& definition) {
     for (const RuntimeInputDefinition& input : definition.inputs) {
         if (input.default_value.type != input.type) return false;
     }
+    if (!valid_binding(definition.binding)) return false;
+    if (definition.binding) {
+        const auto& evaluation = *definition.binding->evaluation;
+        if (evaluation.inputs.size() != definition.inputs.size()) return false;
+        for (size_t i = 0; i < definition.inputs.size(); ++i)
+            if (evaluation.inputs[i].type != definition.inputs[i].type || evaluation.inputs[i].cadence != definition.inputs[i].cadence) return false;
+        if (definition.binding->target_index != UINT16_MAX && definition.binding->target_index >= definition.targets.size()) return false;
+    }
     return definition.mutable_bytes() != std::numeric_limits<size_t>::max();
+}
+
+AnimationRuntimeBindingLease::Value animation_value(const StoredValue& value) {
+    AnimationRuntimeBindingLease::Value result{};
+    result.type = value.type; result.boolean = value.boolean; result.number = value.number;
+    result.float3 = value.float3; result.quaternion = value.quaternion;
+    result.transform = value.transform; result.symbol = value.symbol;
+    return result;
 }
 
 Slot make_slot(const AnimAsset* asset, const AnimationRuntimeDefinition* definition, uint32_t generation) {
@@ -191,6 +222,7 @@ public:
         slots_.reserve(config_.instance_capacity);
         free_indices_.reserve(config_.instance_capacity);
     }
+    ~AnimationServiceImpl() { attach_runtime_systems(nullptr, nullptr); }
 
     const AnimAsset* insert_asset(AnimAsset asset) { return assets_.insert(std::move(asset)); }
 
@@ -214,7 +246,9 @@ public:
         old = make_slot(asset, schema, generation);
         mutable_bytes_ += schema->mutable_bytes();
         ++active_count_;
-        return {instance_handle(index, old), AnimationStatus::Ok};
+        const Animator result{instance_handle(index, old), AnimationStatus::Ok};
+        refresh_runtime_binding(result.instance, old);
+        return result;
     }
 
     Animator replace(AnimatorInstanceHandle handle, const AnimAsset* asset, const AnimationRuntimeDefinition& definition) {
@@ -248,14 +282,19 @@ public:
             }
         }
         const uint32_t index = handle.slot_index;
+        const AnimatorInstanceHandle stale = instance_handle(index, *old);
         *old = std::move(replacement);
         mutable_bytes_ = mutable_bytes_ - old_bytes + new_bytes;
-        return {instance_handle(index, *old), AnimationStatus::Ok};
+        if (systems_) systems_->detach_service_binding(stale);
+        const Animator result{instance_handle(index, *old), AnimationStatus::Ok};
+        refresh_runtime_binding(result.instance, *old);
+        return result;
     }
 
     bool remove(AnimatorInstanceHandle handle) {
         Slot* value = slot(handle);
         if (!value) return false;
+        if (systems_) systems_->detach_service_binding(handle);
         mutable_bytes_ -= value->definition->mutable_bytes();
         value->alive = false;
         value->asset = nullptr;
@@ -293,6 +332,7 @@ public:
         if (handle.value_type != type || schema.type != type || handle.cadence != public_cadence(schema.cadence)) return false;
         if (schema.cadence == EvaluationCadence::Fixed) owner->fixed_current[handle.schema_index] = value;
         else owner->frame_controls[handle.schema_index] = value;
+        refresh_runtime_binding(instance_handle(handle.slot_index, *owner), *owner);
         return true;
     }
 
@@ -300,24 +340,32 @@ public:
         TargetState* state = writable_target(handle);
         if (!state) return false;
         state->enabled = enabled;
+        Slot* owner = slot(handle.slot_index, handle.generation);
+        refresh_runtime_binding(instance_handle(handle.slot_index, *owner), *owner);
         return true;
     }
     bool set_weight(AnimationTargetHandle handle, float weight) {
         TargetState* state = writable_target(handle);
         if (!state || !state->enabled) return false;
         state->weight = weight;
+        Slot* owner = slot(handle.slot_index, handle.generation);
+        refresh_runtime_binding(instance_handle(handle.slot_index, *owner), *owner);
         return true;
     }
     bool set_transform(AnimationTargetHandle handle, const AnimationTransform& transform) {
         TargetState* state = writable_target(handle);
         if (!state || !state->enabled) return false;
         state->transform = transform;
+        Slot* owner = slot(handle.slot_index, handle.generation);
+        refresh_runtime_binding(instance_handle(handle.slot_index, *owner), *owner);
         return true;
     }
     bool snap(AnimationTargetHandle handle) {
         TargetState* state = writable_target(handle);
         if (!state) return false;
         state->snap_requested = true;
+        Slot* owner = slot(handle.slot_index, handle.generation);
+        refresh_runtime_binding(instance_handle(handle.slot_index, *owner), *owner);
         return true;
     }
 
@@ -327,7 +375,43 @@ public:
     float number_value(AnimationInputHandle handle) const { const StoredValue* v = read_input(handle, AnimationValueType::Number); return v ? v->number : 0.0f; }
     bool bool_value(AnimationInputHandle handle) const { const StoredValue* v = read_input(handle, AnimationValueType::Bool); return v && v->boolean; }
 
+    bool runtime_binding(AnimatorInstanceHandle handle, AnimationRuntimeBindingLease& out) const {
+        out = {};
+        const Slot* value = slot(handle);
+        if (!value || !value->definition->binding) return false;
+        out.instance = handle;
+        out.asset_identity = value->asset->resolved_hash;
+        out.descriptor = value->definition->binding;
+        out.fixed_previous.reserve(value->fixed_previous.size());
+        out.fixed_current.reserve(value->fixed_current.size());
+        out.frame_controls.reserve(value->frame_controls.size());
+        for (const StoredValue& control : value->fixed_previous) out.fixed_previous.push_back(animation_value(control));
+        for (const StoredValue& control : value->fixed_current) out.fixed_current.push_back(animation_value(control));
+        for (const StoredValue& control : value->frame_controls) out.frame_controls.push_back(animation_value(control));
+        out.target_transforms.reserve(value->targets.size()); out.target_weights.reserve(value->targets.size()); out.target_enabled.reserve(value->targets.size());
+        for (const TargetState& target : value->targets) { out.target_transforms.push_back(target.transform); out.target_weights.push_back(target.weight); out.target_enabled.push_back(target.enabled ? 1u : 0u); }
+        return out.valid();
+    }
+
+    void attach_runtime_systems(AnimationSystems* systems, AnimationService* owner) {
+        if (systems_ == systems) return;
+        if (systems_) {
+            for (uint32_t index = 0; index < slots_.size(); ++index)
+                if (slots_[index].alive) systems_->detach_service_binding(instance_handle(index, slots_[index]));
+            systems_->attach_service(nullptr);
+        }
+        systems_ = systems;
+        if (!systems_) return;
+        systems_->attach_service(owner);
+        for (uint32_t index = 0; index < slots_.size(); ++index) if (slots_[index].alive) refresh_runtime_binding(instance_handle(index, slots_[index]), slots_[index]);
+    }
+
 private:
+    void refresh_runtime_binding(AnimatorInstanceHandle handle, const Slot& value) {
+        if (!systems_ || !value.definition->binding) return;
+        AnimationRuntimeBindingLease lease;
+        if (!runtime_binding(handle, lease) || !systems_->refresh_service_binding(lease)) systems_->detach_service_binding(handle);
+    }
     const AnimationRuntimeDefinition* schema_for(const AnimAsset* asset, const AnimationRuntimeDefinition& definition) {
         const auto existing = schemas_.find(asset);
         if (existing != schemas_.end()) return same_definition(*existing->second, definition) ? existing->second.get() : nullptr;
@@ -379,6 +463,7 @@ private:
     std::vector<uint32_t> free_indices_;
     size_t mutable_bytes_ = 0;
     uint32_t active_count_ = 0;
+    AnimationSystems* systems_ = nullptr;
 };
 
 } // namespace matter::animation
@@ -393,6 +478,8 @@ const animation::AnimAsset* AnimationService::insert_asset(animation::AnimAsset 
 Animator AnimationService::create(const animation::AnimAsset* asset, const animation::AnimationRuntimeDefinition& definition) { return impl_->create(asset, definition); }
 Animator AnimationService::replace_asset(AnimatorInstanceHandle instance, const animation::AnimAsset* asset, const animation::AnimationRuntimeDefinition& definition) { return impl_->replace(instance, asset, definition); }
 bool AnimationService::remove(AnimatorInstanceHandle instance) { return impl_->remove(instance); }
+bool AnimationService::runtime_binding(AnimatorInstanceHandle instance, AnimationRuntimeBindingLease& out) const { return impl_->runtime_binding(instance, out); }
+void AnimationService::attach_runtime_systems(animation::AnimationSystems* systems) { impl_->attach_runtime_systems(systems, systems ? this : nullptr); }
 AnimationInputHandle AnimationService::input(AnimatorInstanceHandle instance, std::string_view name) const { return impl_->input(instance, name); }
 AnimationTargetHandle AnimationService::target(AnimatorInstanceHandle instance, std::string_view name) const { return impl_->target(instance, name); }
 bool AnimationService::set(AnimationInputHandle h, bool v) { animation::StoredValue value; value.type = AnimationValueType::Bool; value.boolean = v; return impl_->set(h, value, value.type); }

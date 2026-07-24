@@ -222,6 +222,86 @@ void AnimationSystems::remove_fixed_work(AnimatorInstanceHandle instance) { if (
 std::vector<AnimationMarkerEvent> AnimationSystems::take_marker_events() { std::vector<AnimationMarkerEvent> result; result.swap(marker_events_); return result; }
 std::vector<DesiredRootMotion> AnimationSystems::take_consumed_root_motion() { std::vector<DesiredRootMotion> result; result.swap(consumed_root_motion_); return result; }
 
+bool AnimationSystems::refresh_service_binding(const AnimationRuntimeBindingLease& lease) {
+    if (!lease.valid() || !lease.descriptor || !lease.descriptor->evaluation) return false;
+    const AnimationRuntimeBindingDescriptor& descriptor = *lease.descriptor;
+    AnimationFixedWork work = descriptor.fixed_work;
+    work.instance = lease.instance;
+    for (AnimationWorldQueryRequest& query : work.queries) {
+        if (query.instance.valid() && animator_key(query.instance) != animator_key(lease.instance)) return false;
+        query.instance = lease.instance;
+    }
+    if (descriptor.target_index != UINT16_MAX) {
+        if (descriptor.target_index >= lease.target_transforms.size() ||
+            descriptor.target_index >= lease.target_enabled.size() ||
+            lease.target_enabled[descriptor.target_index] == 0) return false;
+        work.desired_target_world = lease.target_transforms[descriptor.target_index];
+    }
+    if (!register_fixed_work(work)) return false;
+    service_bindings_[animator_key(lease.instance)] = lease;
+    return true;
+}
+
+void AnimationSystems::detach_service_binding(AnimatorInstanceHandle instance) {
+    if (!instance.valid()) return;
+    remove_fixed_work(instance);
+    pose_snapshots_.forget(instance);
+    evaluator_.forget(instance);
+    service_bindings_.erase(animator_key(instance));
+}
+
+void AnimationSystems::sample_service_bindings() {
+    // Values are snapshotted by AnimationService on every lifecycle/control
+    // mutation.  The owned lease below is therefore phase-stable and no Slot
+    // pointer crosses this boundary.
+}
+
+void AnimationSystems::evaluate_service_bindings(flecs::world& world, double delta_seconds) {
+    const ecs::AnimationFixedState fixed = world.get<ecs::AnimationFixedState>();
+    const ecs::AnimationFrameState frame = world.get<ecs::AnimationFrameState>();
+    std::vector<AnimationEvaluationRequest> requests;
+    std::vector<std::vector<AnimationValue>> previous_values;
+    std::vector<std::vector<AnimationValue>> current_values;
+    std::vector<std::vector<AnimationValue>> frame_values;
+    requests.reserve(service_bindings_.size());
+    previous_values.reserve(service_bindings_.size()); current_values.reserve(service_bindings_.size()); frame_values.reserve(service_bindings_.size());
+    const auto convert = [](const std::vector<AnimationRuntimeBindingLease::Value>& values) {
+        std::vector<AnimationValue> result; result.reserve(values.size());
+        for (const auto& value : values) {
+            switch (value.type) {
+                case AnimationValueType::Bool: result.emplace_back(value.boolean); break;
+                case AnimationValueType::Number: result.emplace_back(value.number); break;
+                case AnimationValueType::Float3: result.emplace_back(value.float3); break;
+                case AnimationValueType::Quaternion: result.emplace_back(value.quaternion); break;
+                case AnimationValueType::Transform: result.emplace_back(value.transform); break;
+                case AnimationValueType::Symbol: { AnimationValue symbol{}; symbol.type = AnimationValueType::Symbol; symbol.symbol = std::to_string(value.symbol); result.push_back(std::move(symbol)); break; }
+            }
+        }
+        return result;
+    };
+    for (const auto& item : service_bindings_) {
+        const AnimationRuntimeBindingLease& lease = item.second;
+        if (!lease.valid() || !lease.descriptor || !lease.descriptor->evaluation) continue;
+        AnimationEvaluationRequest request{};
+        request.instance = lease.instance;
+        request.definition = lease.descriptor->evaluation.get();
+        previous_values.push_back(convert(lease.fixed_previous)); current_values.push_back(convert(lease.fixed_current)); frame_values.push_back(convert(lease.frame_controls));
+        request.fixed_previous = {previous_values.back().data(), static_cast<uint32_t>(previous_values.back().size())};
+        request.fixed_current = {current_values.back().data(), static_cast<uint32_t>(current_values.back().size())};
+        request.frame_controls = {frame_values.back().data(), static_cast<uint32_t>(frame_values.back().size())};
+        request.fixed_tick = fixed.current_tick;
+        request.frame_serial = frame.frame_serial;
+        request.fixed_delta_seconds = static_cast<float>(delta_seconds);
+        request.accumulator_alpha = static_cast<float>(frame.interpolation_alpha);
+        requests.push_back(request);
+    }
+    if (!requests.empty()) (void)evaluator_.evaluate(requests);
+    for (const AnimationEvaluationRequest& request : requests) {
+        const AnimationPoseSnapshot snapshot = evaluator_.snapshot(request.instance);
+        if (snapshot.instance.valid() && snapshot.frame_serial == frame.frame_serial) (void)pose_snapshots_.publish(snapshot);
+    }
+}
+
 bool AnimationSystems::consume_desired_root_motion(AnimatorInstanceHandle instance,
                                                     uint64_t fixed_tick,
                                                     DesiredRootMotion& out) {
@@ -296,6 +376,7 @@ void AnimationSystems::run_fixed_pre(flecs::world& world, double fixed_delta) {
     ++state.current_tick;
     world.set<ecs::AnimationFixedState>(state);
     trace(AnimationScheduleEvent::FixedRotateState, fixed_delta);
+    sample_service_bindings();
     trace(AnimationScheduleEvent::FixedSampleApiWrites, fixed_delta);
     trace(AnimationScheduleEvent::FixedAdvanceClocks, fixed_delta);
 }
@@ -377,6 +458,7 @@ void AnimationSystems::run_frame(flecs::world& world, double frame_delta) {
     trace(AnimationScheduleEvent::FrameSampleApiWrites, frame_delta);
     trace(AnimationScheduleEvent::FrameInterpolateFixedState, frame_delta);
     trace(AnimationScheduleEvent::FrameEvaluatePresentationGraph, frame_delta);
+    evaluate_service_bindings(world, frame_delta);
     trace(AnimationScheduleEvent::FrameSolveTargetsAndIk, frame_delta);
     trace(AnimationScheduleEvent::FramePublishPoseSnapshot, frame_delta);
 }

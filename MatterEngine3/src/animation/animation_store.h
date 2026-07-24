@@ -2,9 +2,11 @@
 
 #include "animation/anim_asset.h"
 #include "animation/animation_ir.h"
+#include "animation/animation_systems.h"
 #include "matter/animation.h"
 
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -34,6 +36,10 @@ struct AnimationRuntimeDefinition {
     size_t controller_state_bytes = 0;
     size_t sample_context_bytes = 0;
     size_t pose_scratch_bytes = 0;
+    // Null intentionally means legacy/unbound: it can be created but never
+    // participates in runtime evaluation.  A non-null descriptor must be
+    // complete enough to build both evaluator and fixed simulation work.
+    std::shared_ptr<const AnimationRuntimeBindingDescriptor> binding;
     size_t mutable_bytes() const;
 };
 

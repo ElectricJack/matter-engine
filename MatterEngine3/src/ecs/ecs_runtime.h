@@ -37,6 +37,8 @@ class AnimationSystems;
 
 } // namespace matter::animation
 
+namespace matter { class AnimationService; }
+
 namespace matter::ecs_runtime {
 
 struct TickResult {
@@ -74,6 +76,10 @@ public:
     // store owned by these systems rather than taking Flecs component pointers.
     animation::AnimationSystems& animation_systems() noexcept;
     const animation::AnimationSystems& animation_systems() const noexcept;
+    // Connects an owner service to this runtime's internal animation bridge.
+    // The caller retains service lifetime and may detach with nullptr.
+    void attach_animation_service(AnimationService* service) noexcept;
+    void attach_animation_service(AnimationService& service) noexcept { attach_animation_service(&service); }
     void enqueue_world_state(WorldStateCommand command);
     TickResult tick(const TickDesc& desc);
 
@@ -84,6 +90,7 @@ private:
     std::unique_ptr<physics::detail::PhysicsContext> physics_;
     std::unique_ptr<streaming::detail::Coordinator> streaming_;
     std::unique_ptr<animation::AnimationSystems> animation_systems_;
+    AnimationService* bound_animation_service_ = nullptr;
     flecs::entity fixed_pipeline_;
     flecs::entity frame_pipeline_;
     double accumulator_seconds_ = 0.0;

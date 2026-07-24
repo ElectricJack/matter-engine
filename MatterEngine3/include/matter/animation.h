@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <string_view>
+#include <vector>
 
 namespace matter {
 
@@ -65,7 +66,39 @@ struct AnimationMarkerEvent { AnimatorInstanceHandle instance{}; uint32_t marker
 struct AnimationRuntimeStats { uint32_t active_instances = 0; uint32_t instance_capacity = 0; size_t mutable_bytes = 0; size_t mutable_budget_bytes = 0; };
 struct AnimationStoreConfig { uint32_t instance_capacity = 4096; size_t mutable_budget_bytes = 64u * 1024u * 1024u; };
 
-namespace animation { struct AnimAsset; struct AnimationRuntimeDefinition; class AnimationServiceImpl; }
+namespace animation {
+struct AnimAsset;
+struct AnimationRuntimeDefinition;
+struct AnimationRuntimeBindingDescriptor;
+class AnimationServiceImpl;
+class AnimationSystems;
+}
+
+// A read-only, generation-qualified service snapshot used only by the
+// internal runtime bridge.  It deliberately carries values, not Slot pointers:
+// a service redefinition or destroy cannot leave the ECS phase with a dangling
+// reference into AnimationServiceImpl.
+struct AnimationRuntimeBindingLease {
+    AnimatorInstanceHandle instance{};
+    uint64_t asset_identity = 0;
+    std::shared_ptr<const animation::AnimationRuntimeBindingDescriptor> descriptor;
+    struct Value {
+        AnimationValueType type = AnimationValueType::Number;
+        bool boolean = false;
+        double number = 0.0;
+        Float3 float3{};
+        Quaternion quaternion{};
+        AnimationTransform transform{};
+        uint32_t symbol = 0;
+    };
+    std::vector<Value> fixed_previous;
+    std::vector<Value> fixed_current;
+    std::vector<Value> frame_controls;
+    std::vector<AnimationTransform> target_transforms;
+    std::vector<float> target_weights;
+    std::vector<uint8_t> target_enabled;
+    bool valid() const { return instance.valid() && descriptor != nullptr; }
+};
 
 class AnimationService {
 public:
@@ -94,6 +127,12 @@ public:
     bool set_weight(AnimationTargetHandle, float);
     bool set_transform(AnimationTargetHandle, const AnimationTransform&);
     bool snap(AnimationTargetHandle);
+
+    // Internal runtime bridge.  Definitions with no runtime descriptor remain
+    // intentionally unbound for compatibility; malformed descriptors fail at
+    // create/replace rather than becoming partially active.
+    bool runtime_binding(AnimatorInstanceHandle, AnimationRuntimeBindingLease&) const;
+    void attach_runtime_systems(animation::AnimationSystems* systems);
 
     AnimationStatus status(AnimatorInstanceHandle) const;
     AnimationRuntimeStats stats() const;

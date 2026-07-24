@@ -122,6 +122,12 @@ struct AnimationEvaluationDefinition {
     std::vector<Mat4f> inverse_bind_model;
 };
 
+// Shared validation boundary for immutable runtime descriptors.  Service
+// creation uses it before publishing a binding; evaluator repeats it before
+// evaluating so malformed hot-reload data cannot become active through either
+// path.
+bool valid_animation_evaluation_definition(const AnimationEvaluationDefinition& definition);
+
 // B1 owns the typed controls and passes a stable fixed previous/current view at
 // the B3 phase boundary.  Frame controls are sampled once by that boundary and
 // must never be interpolated here.

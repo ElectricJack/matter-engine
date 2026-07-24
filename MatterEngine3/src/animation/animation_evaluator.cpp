@@ -73,6 +73,8 @@ float clip_ratio(const RuntimeGraphClip& clip,float time) {
 }
 } // namespace
 
+bool valid_animation_evaluation_definition(const AnimationEvaluationDefinition& definition) { return valid(definition); }
+
 void emit_crossed_markers(AnimatorInstanceHandle instance,
                           ArrayView<RuntimeClipMarker> markers,
                           float duration, bool loop,
