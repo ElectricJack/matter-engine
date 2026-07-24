@@ -16,6 +16,12 @@ AnimAsset asset(uint64_t hash, uint64_t nonce) {
     return value;
 }
 
+AnimAsset asset_with_section(uint64_t hash, uint64_t nonce, uint8_t byte) {
+    AnimAsset value = asset(hash, nonce);
+    value.sections.push_back({AnimSectionKind::RigSchema, {byte}});
+    return value;
+}
+
 AnimationRuntimeDefinition definition() {
     AnimationRuntimeDefinition result;
     result.inputs = {
@@ -52,6 +58,24 @@ void test_asset_dedup_and_handle_reuse() {
     CHECK(replacement.instance.generation != first_animator.instance.generation, "reuse increments generation");
     CHECK(!service.set(speed, 9.0f), "stale input never affects reused slot");
     CHECK(!service.set_enabled(hand, false), "stale target never affects reused slot");
+}
+
+void test_asset_identity_conflict_fails_without_mutating_store_or_runtime() {
+    AnimationService service;
+    const AnimAsset* first = service.insert_asset(asset_with_section(70, 1, 7));
+    const AnimAsset* equal = service.insert_asset(asset_with_section(70, 1, 7));
+    CHECK(first != nullptr && equal == first, "equal immutable asset payload reuses its identity");
+    CHECK(service.create(first, definition()).valid(), "original immutable asset remains usable");
+    const size_t bytes_before_conflict = service.mutable_bytes();
+
+    const AnimAsset* conflicting = service.insert_asset(asset_with_section(70, 1, 8));
+    CHECK(conflicting == nullptr, "conflicting immutable payload for an existing identity is rejected");
+    CHECK(first->sections.size() == 1 && first->sections[0].bytes == std::vector<uint8_t>{7},
+          "rejected payload cannot overwrite the original immutable asset");
+    CHECK(service.create(conflicting, definition()).status == AnimationStatus::LoadFailed,
+          "rejected immutable asset propagates a load failure through AnimationService");
+    CHECK(service.mutable_bytes() == bytes_before_conflict,
+          "rejected immutable asset cannot change mutable runtime accounting");
 }
 
 void test_typed_cadence_and_target_contracts() {
@@ -176,6 +200,7 @@ void test_defaults_budget_accounting_and_migration() {
 
 int main() {
     test_asset_dedup_and_handle_reuse();
+    test_asset_identity_conflict_fails_without_mutating_store_or_runtime();
     test_typed_cadence_and_target_contracts();
     test_defaults_budget_accounting_and_migration();
     test_hard_caps_and_bind_pose_degradation();
