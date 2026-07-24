@@ -119,6 +119,24 @@ struct ViewerStats {
     float gpu_vol_ms            = 0.0f;
     bool  gpu_timers_supported  = false;
     int   debug_view_mode       = 0;
+    // Main-loop phase timings (ms), smoothed EMA. These partition the SAME
+    // wall-clock window that produces `frame_ms` (perf_frame_start .. after
+    // end_frame), so `frame_ms` minus their sum is genuinely unmeasured code
+    // rather than a gap between two different clocks. Added because
+    // resolve/build/draw accounted for under a third of the frame and we had
+    // no way to attribute the rest.
+    float loop_poll_ms     = 0.0f;  // events + input, up to begin_frame
+    float loop_acquire_ms  = 0.0f;  // vulkan->begin_frame: fence wait + swapchain acquire
+    float loop_ui_ms       = 0.0f;  // ImGui panel building
+    float loop_tick_ms     = 0.0f;  // session->tick (ECS, physics, transforms)
+    float loop_pump_ms     = 0.0f;  // session->pump_gpu_jobs (sector publish lands here)
+    float loop_lab_ms      = 0.0f;  // Bake Lab / Workbench per-frame work
+    float loop_render_ms   = 0.0f;  // session->render (contains resolve/build/draw)
+    float loop_present_ms  = 0.0f;  // vulkan->end_frame: submit + present
+    // Peak-hold over a decaying window. Publish/bake stalls are spiky and an
+    // EMA averages them away — the peak is what actually breaks frame cadence.
+    float loop_peak_pump_ms    = 0.0f;
+    float loop_peak_acquire_ms = 0.0f;
 };
 
 void reset_lighting_controls(ViewerStats& stats);
@@ -205,6 +223,19 @@ public:
     // Forwards to viewer::update_gizmo_hotkeys(gizmo_state_) — call only when
     // !io.WantTextInput && !io.WantCaptureKeyboard.
     void update_gizmo_hotkeys();
+    // World-kind (streaming) sessions draw geometry ONLY from streamed
+    // sectors, and the engine refuses to construct a SectorStreamer until an
+    // ECS entity carrying matter::streaming::SectorStreaming exists
+    // (sector_streaming_coordinator.cpp gates on worker_owner_ + worker_anchor_,
+    // both of which originate from that component's OnAdd/OnSet observer).
+    // Retiring the sector panel removed the only production code that created
+    // one, so streaming worlds rendered nothing. Call this once the session is
+    // Ready (after BakeFinished); it creates + attaches the anchor with
+    // follow_editor_camera enabled so update_sector_streaming below keeps it on
+    // the camera. Idempotent, and a no-op for closed-world sessions (detected
+    // via WorldSession::sea_level, which only succeeds for world-kind).
+    // Returns true only on the call that actually created the anchor.
+    bool ensure_streaming_anchor(matter::WorldSession& session);
     void update_sector_streaming(matter::WorldSession& session,
                                  const matter::CameraDesc& camera);
     // draw_sector_streaming_panel retired in Phase 4 Task 12: sector streaming

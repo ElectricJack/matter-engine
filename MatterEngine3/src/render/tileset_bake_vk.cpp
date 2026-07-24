@@ -1,9 +1,14 @@
-// tileset_bake_vk.cpp — Vulkan hardware-RT .gtex bake orchestrator (V1).
+// tileset_bake_vk.cpp — Vulkan hardware-RT .gtex bake orchestrator (V1-V3).
 //
 // See tileset_bake_vk.h and MatterEngine3/docs/vulkan-rt-gtex-bake.md §I.4/§II.1.
-// V1 delivers the PRIMARY pass only: geometry lift from the CPU-side BLAS/TLAS
+// V1 delivers the PRIMARY pass: geometry lift from the CPU-side BLAS/TLAS
 // entries assemble_torus_bvh builds -> staging upload -> bake-only BLAS(es)+TLAS
-// -> tileset_bake_primary.comp dispatch -> readback -> repack -> save_gtex.
+// -> tileset_bake_primary.comp dispatch -> readback -> repack. V2 adds the AO
+// pass (folded into ORM.r). V3 adds the horizon pass — a CPU scan
+// (gtex_bake_horizon_cpu, tileset_bake_vk.h) over the full-res height buffer
+// already in host memory, no additional GPU dispatch — producing the
+// HORIZON_A/B channels, so save_gtex is now called with all six channels
+// (full v2 .gtex form).
 //
 // This is a viewer-only translation unit (compiled into WIN_ME3_CPP under
 // -DMATTER_VULKAN_ONLY); the headless kernel library never sees it.
@@ -86,7 +91,9 @@ void compute_height_range(const SettledTorus& st, float& hmin, float& hmax,
 
 bool dump_pngs(const std::string& base, int W, int H,
                const std::vector<uint8_t>& a, const std::vector<uint8_t>& n,
-               const std::vector<uint8_t>& o, const std::vector<uint16_t>& h) {
+               const std::vector<uint8_t>& o, const std::vector<uint16_t>& h,
+               int qw, int qh, const std::vector<uint8_t>& horizon_a,
+               const std::vector<uint8_t>& horizon_b) {
     std::string p = base + "-albedo.png";
     if (!stbi_write_png(p.c_str(), W, H, 3, a.data(), W * 3)) return false;
     p = base + "-normal.png";
@@ -97,6 +104,16 @@ bool dump_pngs(const std::string& base, int W, int H,
     for (size_t i = 0; i < h.size(); ++i) h8[i] = (uint8_t)(h[i] >> 8);
     p = base + "-height.png";
     if (!stbi_write_png(p.c_str(), W, H, 1, h8.data(), W)) return false;
+    // V3: quarter-res horizon channels, RGBA8 (azimuth packing per
+    // tileset_gtex.h's CHAN_HORIZON_A/B doc comment).
+    if (qw > 0 && qh > 0 && !horizon_a.empty() && !horizon_b.empty()) {
+        p = base + "-horizona.png";
+        if (!stbi_write_png(p.c_str(), qw, qh, 4, horizon_a.data(), qw * 4))
+            return false;
+        p = base + "-horizonb.png";
+        if (!stbi_write_png(p.c_str(), qw, qh, 4, horizon_b.data(), qw * 4))
+            return false;
+    }
     return true;
 }
 
@@ -1010,8 +1027,19 @@ bool bake_tileset_vk(matter::VulkanDevice& vulkan, const SettledTorus& settled,
         normal_rg.assign(rb_n.begin(), rb_n.end());
         std::memcpy(height.data(), rb_h.data(), rb_h.size());
 
-        // 17. Write .gtex. V1 emits the four core channels only (no horizon);
-        //     kEngineBakeVersion is intentionally unchanged (validation build).
+        // 16b. V3: horizon pass — pure CPU scan over the full-res height
+        //      buffer just repacked above (no rays, no BVH, no additional GPU
+        //      dispatch). See gtex_bake_horizon_cpu (tileset_bake_vk.h) for
+        //      the transcription of tileset_bake_horizon.comp's scan math.
+        std::vector<uint8_t> horizon_a, horizon_b;
+        int horizon_w = 0, horizon_h = 0;
+        gtex_bake_horizon_cpu(height, W, H, settled.cfg.texels_per_meter, hmin,
+                              hmax, horizon_a, horizon_b, horizon_w, horizon_h);
+
+        // 17. Write .gtex. V3 emits the full six-channel v2 atlas (adds the
+        //     horizon channels save_gtex's trailing optional params take);
+        //     kEngineBakeVersion is intentionally unchanged (validation build,
+        //     bumped at V4 per the milestone plan).
         GTexHeader hdr{};
         hdr.tile_size_m = settled.cfg.size;
         hdr.texels_per_meter = settled.cfg.texels_per_meter;
@@ -1023,14 +1051,16 @@ bool bake_tileset_vk(matter::VulkanDevice& vulkan, const SettledTorus& settled,
         hdr.box3d_version = kBox3dVersion;
         hdr.engine_bake_version = kEngineBakeVersion;
         if (!save_gtex(out_gtex_path, hdr, W, H, albedo.data(), normal_rg.data(),
-                       orm.data(), height.data(), err))
+                       orm.data(), height.data(), err, horizon_w, horizon_h,
+                       horizon_a.data(), horizon_b.data()))
             return false;
 
         if (dump_png) {
             std::string base = out_gtex_path;
             if (base.size() >= 5 && base.compare(base.size() - 5, 5, ".gtex") == 0)
                 base.resize(base.size() - 5);
-            if (!dump_pngs(base, W, H, albedo, normal_rg, orm, height)) {
+            if (!dump_pngs(base, W, H, albedo, normal_rg, orm, height, horizon_w,
+                          horizon_h, horizon_a, horizon_b)) {
                 err = "bake_tileset_vk: --dump-png emit failed near " + base;
                 return false;
             }

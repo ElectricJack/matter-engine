@@ -368,6 +368,11 @@ TILESETVKREPACK_CPP    = tileset_bake_vk_repack_tests.cpp
 TILESETVKAO_TARGET = tileset_bake_vk_ao_tests
 TILESETVKAO_CPP    = tileset_bake_vk_ao_tests.cpp
 
+# Vulkan .gtex bake (V3) horizon pass -- pure CPU (header-only inline
+# gtex_bake_horizon_cpu from ../src/render/tileset_bake_vk.h), no Vulkan link.
+TILESETVKHORIZON_TARGET = tileset_bake_vk_horizon_tests
+TILESETVKHORIZON_CPP    = tileset_bake_vk_horizon_tests.cpp
+
 # Volumetrics Task 3 — CPU emitter gather (distance filter, 256 cap).
 EMITTERGATHER_TARGET = emitter_gather_tests
 EMITTERGATHER_CPP    = emitter_gather_tests.cpp ../src/render/vk_emitter_gather.cpp
@@ -869,6 +874,7 @@ def_CPP_SRCS := $(sort \
     $(TILESETGTEX_CPP) \
     $(TILESETVKREPACK_CPP) \
     $(TILESETVKAO_CPP) \
+    $(TILESETVKHORIZON_CPP) \
     $(EMITTERGATHER_CPP) \
     $(REFINECTL_CPP) \
     $(SECTORSTREAM_CPP) \
@@ -1009,6 +1015,7 @@ BAKETRACE_OBJS = $(call obj_list,def,$(BAKETRACE_CPP))
 TILESETGTEX_OBJS = $(call obj_list,def,$(TILESETGTEX_CPP))
 TILESETVKREPACK_OBJS = $(call obj_list,def,$(TILESETVKREPACK_CPP))
 TILESETVKAO_OBJS = $(call obj_list,def,$(TILESETVKAO_CPP))
+TILESETVKHORIZON_OBJS = $(call obj_list,def,$(TILESETVKHORIZON_CPP))
 EMITTERGATHER_OBJS = $(call obj_list,def,$(EMITTERGATHER_CPP))
 REFINECTL_OBJS = $(call obj_list,def,$(REFINECTL_CPP))
 SECTORSTREAM_OBJS = $(call obj_list,def,$(SECTORSTREAM_CPP))
@@ -1462,6 +1469,13 @@ $(TILESETVKAO_TARGET): $(TILESETVKAO_OBJS)
 
 run-tilesetvkao: $(TILESETVKAO_TARGET)
 	./$(TILESETVKAO_TARGET)
+
+# Vulkan .gtex bake (V3) horizon pass -- headless, no engine/Vulkan link.
+$(TILESETVKHORIZON_TARGET): $(TILESETVKHORIZON_OBJS)
+	$(CC) $(TILESETVKHORIZON_OBJS) -o $@ $(CFLAGS)
+
+run-tilesetvkhorizon: $(TILESETVKHORIZON_TARGET)
+	./$(TILESETVKHORIZON_TARGET)
 
 # tileset_torus_bvh.
 $(TILESETTORUSBVH_TARGET): $(TILESETTORUSBVH_OBJS)

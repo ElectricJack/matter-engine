@@ -765,15 +765,17 @@ bool LocalProvider::run_tileset_deferred(
     // publish_pipeline's tail (deferred, after BakeFinished) and eagerly from
     // connect(). Spanning this function covers both paths and splits tileset
     // time out of kSpanCompose on the Timeline. Observation-only: with no
-    // collector current on this thread the span is a no-op. GL work marshaled
-    // via run_gl below runs on the GL thread and is intentionally not spanned
-    // (single-writer discipline); its wall time still lands inside this span
-    // because run_gl blocks the calling thread.
+    // collector current on this thread the span is a no-op. GPU work marshaled
+    // via run_gpu below runs on the app/Vulkan thread and is intentionally not
+    // spanned (single-writer discipline); its wall time still lands inside this
+    // span because run_gpu blocks the calling thread.
     BAKE_SPAN(bake_trace::kSpanTileset);
 
-    // Phase B: route GL work through gpu_run when set; fall back to inline.
-    auto run_gl = [&](const char* name, std::function<bool(std::string&)> fn,
-                      std::string& e) -> bool {
+    // Phase B: route GPU work through gpu_run when set; fall back to inline.
+    // (Was run_gl: the GL bake it used to marshal is gone — the closure now
+    // carries the Vulkan bake + slot upload, spec §I.7 "Render-thread half".)
+    auto run_gpu = [&](const char* name, std::function<bool(std::string&)> fn,
+                       std::string& e) -> bool {
         if (cfg_.gpu_run) return cfg_.gpu_run(name, std::move(fn), e);
         return fn(e);
     };
@@ -785,6 +787,27 @@ bool LocalProvider::run_tileset_deferred(
         return tileset::run_tileset_phase_from_objects(
             abs_schemas_, root_module, root_params_json, abs_cache_root_,
             settled, settle_err, abs_shared_lib_roots_);
+    };
+
+    // Slot load, shared by the post-bake and cache-hit paths (spec §I.7 "Slot
+    // load"): the .gtex on disk is the same artifact either way, so a fresh
+    // bake and a cache hit go through one identical MaterialRegistry +
+    // vk_tileset_load pair. A load failure is non-fatal — that slot's ground
+    // stays untextured (matches vk_tileset_load's documented contract).
+    auto load_slot = [&](int slot, const std::string& gtex_path,
+                         const std::string& root_module, const char* tag) {
+        MaterialRegistrySetGroundTilesetSlot(16, slot);
+        std::string ve;
+        if (cfg_.vk_tileset_load && !cfg_.vk_tileset_load(slot, gtex_path, ve)) {
+            fprintf(stderr,
+                    "[local_provider] Vulkan tileset slot %d load "
+                    "failed (ground stays untextured): %s\n",
+                    slot, ve.c_str());
+            fflush(stderr);
+            return;
+        }
+        printf("LocalProvider: tileset '%s' -> slot %d (%s) [%s]\n",
+               root_module.c_str(), slot, gtex_path.c_str(), tag);
     };
 
     for (int idx = 0; idx < total; ++idx) {
@@ -801,91 +824,18 @@ bool LocalProvider::run_tileset_deferred(
             on_tileset_part(idx, total, root_module.c_str());
 
         const int slot_idx = baked_tileset_count_;
+        // Two arms, no preprocessor gate (spec §I.7): bake-capable when a
+        // Vulkan bake callback is bound, load-only when it is not.
+        const bool can_bake = static_cast<bool>(cfg_.vk_tileset_bake);
 
-        if (!cfg_.gl_available) {
-            // Headless: settle (cheap, cache-wired, and required for the
-            // pose_hash half of the .gtex cache key), then serve a cached
-            // atlas if one matches. No GL means no fresh bake — a cache miss
-            // leaves the ground untextured rather than failing the load.
+        // ---- Shared prologue (worker thread; spec §I.7 "Worker half") ------
+        // Settle is required on BOTH arms: pose_hash is half the .gtex cache
+        // key, so even a load-only probe has to settle first.
+        if (!can_bake) {
             fprintf(stderr, "[local_provider] headless deferred tileset: '%s'\n",
                     root_module.c_str());
             fflush(stderr);
-            std::string se;
-            tileset::SettledTorus settled;
-            if (!settle_tileset(root_module, root_params_json, settled, se)) {
-                err = "LocalProvider: tileset '" + root_module +
-                      "' settle failed (headless): " + se;
-                return false;
-            }
-            printf("LocalProvider: tileset '%s' settle ok (deferred headless)\n",
-                   root_module.c_str());
-
-            const std::string root_js_path = abs_schemas_ + "/" + root_module + ".js";
-            uint64_t script_source_hash = 0;
-            {
-                std::ifstream jf(root_js_path, std::ios::binary);
-                if (jf) {
-                    std::ostringstream ss; ss << jf.rdbuf();
-                    const std::string src = ss.str();
-                    script_source_hash = part_asset::fnv1a64(src.data(), src.size());
-                }
-                // Unreadable script -> hash 0 -> cache check below fails closed.
-            }
-            const std::string gtex_path = abs_cache_root_ + "/" + root_module + ".gtex";
-            const uint64_t expected = tileset::gtex_content_hash(
-                settled.report.pose_hash, script_source_hash,
-                tileset::kEngineBakeVersion, tileset::kBox3dVersion);
-            if (tileset::gtex_cache_hit(gtex_path, expected)) {
-                MaterialRegistrySetGroundTilesetSlot(16, slot_idx);
-                if (cfg_.vk_tileset_load) {
-                    std::string ve;
-                    if (!cfg_.vk_tileset_load(slot_idx, gtex_path, ve)) {
-                        fprintf(stderr,
-                                "[local_provider] Vulkan tileset slot %d load "
-                                "failed (ground stays untextured): %s\n",
-                                slot_idx, ve.c_str());
-                        fflush(stderr);
-                    } else {
-                        printf("LocalProvider: tileset '%s' -> slot %d (%s) "
-                               "[headless cache hit]\n",
-                               root_module.c_str(), slot_idx, gtex_path.c_str());
-                    }
-                }
-                ++baked_tileset_count_;
-            } else {
-                // Diagnostic detail: distinguish "no file" from "stale hash"
-                // (a stale hash names the half that moved via the stored header).
-                tileset::GTexHeader stale_hdr;
-                std::vector<uint8_t> ta, tn, to_;
-                std::vector<uint16_t> th;
-                std::string le;
-                const bool file_readable =
-                    tileset::load_gtex(gtex_path, stale_hdr, ta, tn, to_, th, le);
-                fprintf(stderr,
-                        "[local_provider] tileset '%s': no cached .gtex matches "
-                        "(headless build cannot bake; ground stays untextured)\n"
-                        "  probed: %s\n  expected content_hash %016llx; %s\n",
-                        root_module.c_str(), gtex_path.c_str(),
-                        (unsigned long long)expected,
-                        file_readable
-                            ? ("file has " + [&]{ char b[32]; snprintf(b, sizeof b, "%016llx",
-                                  (unsigned long long)stale_hdr.content_hash); return std::string(b); }() +
-                               " (bake_ver " + std::to_string(stale_hdr.engine_bake_version) +
-                               " box3d_ver " + std::to_string(stale_hdr.box3d_version) + ")").c_str()
-                            : ("file missing/unreadable: " + le).c_str());
-                fflush(stderr);
-            }
-
-            if (on_tileset_part)
-                on_tileset_part(idx + 1, total, root_module.c_str());
-            continue;
         }
-
-#ifndef MATTER_VULKAN_ONLY
-        // GL available: settle on the worker (CPU-only, cache-wired), then GPU bake on GL thread.
-        const bool dump_png = std::getenv("MATTER_TILESET_DUMP_PNG") != nullptr;
-
-        // Step 1 (worker thread): physics settle + cache load/save — no GL needed.
         tileset::SettledTorus settled;
         {
             std::string se;
@@ -894,8 +844,11 @@ bool LocalProvider::run_tileset_deferred(
                 return false;
             }
         }
+        if (!can_bake)
+            printf("LocalProvider: tileset '%s' settle ok (deferred headless)\n",
+                   root_module.c_str());
 
-        // Compute script source hash on the worker (needed by bake_tileset_gpu for .gtex cache key).
+        // Script source hash — the other half of the .gtex cache key.
         const std::string root_js_path = abs_schemas_ + "/" + root_module + ".js";
         uint64_t script_source_hash = 0;
         {
@@ -905,58 +858,74 @@ bool LocalProvider::run_tileset_deferred(
                 const std::string src = ss.str();
                 script_source_hash = part_asset::fnv1a64(src.data(), src.size());
             }
-            // If the file can't be read, hash stays 0 — bake_tileset_gpu will force-rebake.
+            // Unreadable script -> hash 0 -> the load-only probe fails closed;
+            // the bake arm simply rebakes.
         }
         const std::string gtex_path = abs_cache_root_ + "/" + root_module + ".gtex";
+        const uint64_t expected = tileset::gtex_content_hash(
+            settled.report.pose_hash, script_source_hash,
+            tileset::kEngineBakeVersion, tileset::kBox3dVersion);
 
-        // Step 2 (GL thread): GPU atlas bake + slot upload — GL required.
-        std::string te;
-        bool ok = run_gl(root_module.c_str(), [&](std::string& ge) -> bool {
+        if (can_bake) {
+            // ---- Bake-capable arm: Vulkan hardware-RT .gtex bake ------------
+            // Marshaled to the app/Vulkan thread through gpu_run; the worker
+            // blocks here, so the wall time still lands inside kSpanTileset.
+            const bool dump_png = std::getenv("MATTER_TILESET_DUMP_PNG") != nullptr;
             tileset::BakeInputs bi; bi.parts_cache_dir = abs_cache_root_;
-            std::string be;
-            if (!tileset::bake_tileset_gpu(settled, script_source_hash, gtex_path,
-                                           bi, false, dump_png, be)) {
-                ge = "bake_tileset_gpu(" + root_module + "): " + be +
-                     " (if a GL error: set GALLIUM_DRIVER=d3d12 on WSLg)";
-                return false;
-            }
-            std::string le;
-            if (!viewer::tileset_provider::load_slot(slot_idx, gtex_path, le)) {
-                ge = "tileset_provider::load_slot(" + gtex_path + "): " + le;
-                return false;
-            }
-            MaterialRegistrySetGroundTilesetSlot(16, slot_idx);
-            // Tileset Vulkan port (Task 6): mirror the same .gtex atlas into
-            // the Vulkan renderer's texture-array slot, when one is active.
-            // Non-fatal to world load: a failure here leaves the Vulkan
-            // ground untextured for this slot but does not fail the bake.
-            if (cfg_.vk_tileset_load) {
-                std::string ve;
-                if (!cfg_.vk_tileset_load(slot_idx, gtex_path, ve)) {
-                    fprintf(stderr,
-                            "[local_provider] Vulkan tileset slot %d load "
-                            "failed (ground stays untextured): %s\n",
-                            slot_idx, ve.c_str());
-                    fflush(stderr);
+            std::string te;
+            const bool ok = run_gpu(root_module.c_str(), [&](std::string& ge) -> bool {
+                // No cache probe here: bake_tileset_vk probes the very same
+                // `expected` content hash itself and returns true without
+                // doing any work on a hit (spec §I.7), and load_slot below
+                // runs either way — so a hit still loads the slot.
+                std::string be;
+                if (!cfg_.vk_tileset_bake(settled, script_source_hash, gtex_path,
+                                          bi, dump_png, be)) {
+                    ge = "vk_tileset_bake(" + root_module + "): " + be;
+                    return false;
                 }
-            }
-            printf("LocalProvider: tileset '%s' -> slot %d (%s) [deferred]\n",
-                   root_module.c_str(), slot_idx, gtex_path.c_str());
-            return true;
-        }, te);
+                load_slot(slot_idx, gtex_path, root_module, "deferred");
+                return true;
+            }, te);
 
-        if (!ok) {
-            err = "LocalProvider: tileset '" + root_module + "': " + te;
-            return false;
+            if (!ok) {
+                // Fatal to the tileset phase: propagates as
+                // BakeError{phase="tileset"} (deferred) / fails connect() (sync).
+                err = "LocalProvider: tileset '" + root_module + "': " + te;
+                return false;
+            }
+            ++baked_tileset_count_;
+        } else if (tileset::gtex_cache_hit(gtex_path, expected)) {
+            // ---- Load-only arm: serve a cached atlas ------------------------
+            load_slot(slot_idx, gtex_path, root_module, "headless cache hit");
+            ++baked_tileset_count_;
+        } else {
+            // ---- Load-only arm: cache miss, non-fatal -----------------------
+            // Diagnostic detail: distinguish "no file" from "stale hash"
+            // (a stale hash names the half that moved via the stored header).
+            tileset::GTexHeader stale_hdr;
+            std::vector<uint8_t> ta, tn, to_;
+            std::vector<uint16_t> th;
+            std::string le;
+            const bool file_readable =
+                tileset::load_gtex(gtex_path, stale_hdr, ta, tn, to_, th, le);
+            fprintf(stderr,
+                    "[local_provider] tileset '%s': no cached .gtex matches "
+                    "(headless build cannot bake; ground stays untextured)\n"
+                    "  probed: %s\n  expected content_hash %016llx; %s\n",
+                    root_module.c_str(), gtex_path.c_str(),
+                    (unsigned long long)expected,
+                    file_readable
+                        ? ("file has " + [&]{ char b[32]; snprintf(b, sizeof b, "%016llx",
+                              (unsigned long long)stale_hdr.content_hash); return std::string(b); }() +
+                           " (bake_ver " + std::to_string(stale_hdr.engine_bake_version) +
+                           " box3d_ver " + std::to_string(stale_hdr.box3d_version) + ")").c_str()
+                        : ("file missing/unreadable: " + le).c_str());
+            fflush(stderr);
         }
-        ++baked_tileset_count_;
 
         if (on_tileset_part)
             on_tileset_part(idx + 1, total, root_module.c_str());
-#else
-        err = "LocalProvider: Vulkan-only build cannot enter GL tileset bake path";
-        return false;
-#endif
     }
     return true;
 #else

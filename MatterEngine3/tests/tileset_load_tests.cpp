@@ -78,7 +78,13 @@ static void test_local_provider_processes_tileset_root() {
         "}\n");
 
     auto cfg = viewer::LocalProviderConfig::for_project(root.string(), "TinyWorld", "");
-    cfg.gl_available = true;   // hidden raylib window is a real GL context
+    // STALE AFTER V4 (vulkan-rt-gtex-bake.md): run_tileset_deferred no longer
+    // has a GL bake arm — it bakes only when cfg.vk_tileset_bake is bound (a
+    // live Vulkan renderer), else it probes the cache and loads. This GL-only
+    // harness therefore takes the load-only arm and the .gtex/slot assertions
+    // below cannot pass on a cold cache. Retired with the rest of the GL bake
+    // in V5 (spec §I.8 "GPU test targets"); left intact so the retirement is a
+    // single, deliberate change rather than a silent edit here.
 
     viewer::LocalProvider provider(cfg);
     viewer::WorldManifest wm;
@@ -165,7 +171,7 @@ static void test_local_provider_bakes_meadow_forestfloor() {
         "}\n");
 
     auto cfg = viewer::LocalProviderConfig::for_project(root.string(), "Sandbox", "");
-    cfg.gl_available = true;   // hidden raylib window is a real GL context
+    // STALE AFTER V4 — see the note in test_local_provider_processes_tileset_root.
 
     viewer::LocalProvider provider(cfg);
     viewer::WorldManifest wm;
