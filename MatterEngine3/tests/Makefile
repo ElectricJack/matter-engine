@@ -119,6 +119,9 @@ ANIMATION_DSL_RIG_OBJS = $(call obj_list,qjs,$(ANIMATION_DSL_RIG_CPP)) $(call ob
 ANIMATION_BINDING_TARGET = animation_binding_tests
 ANIMATION_BINDING_CPP = animation_binding_tests.cpp ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_ir.cpp
 
+ANIMATION_STORE_TARGET = animation_store_tests
+ANIMATION_STORE_CPP = animation_store_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp
+
 # CPU-only, no GL/VK/raylib link deps (mirrors MATRIX_TARGET's direct-compile
 # pattern) — pure atlas-slicing + mip math, unit-testable without a device.
 TILESETSLICER_TARGET = tileset_slicer_tests
@@ -1122,6 +1125,12 @@ $(ANIMATION_BINDING_TARGET): $(ANIMATION_BINDING_CPP)
 
 run-animation-binding: $(ANIMATION_BINDING_TARGET)
 	./$(ANIMATION_BINDING_TARGET)
+
+$(ANIMATION_STORE_TARGET): $(ANIMATION_STORE_CPP)
+	$(CC) $(ANIMATION_STORE_CPP) -o $@ $(CFLAGS) $(INCLUDE_PATHS)
+
+run-animation-store: $(ANIMATION_STORE_TARGET)
+	./$(ANIMATION_STORE_TARGET)
 
 .PHONY: run-animation-ir
 
