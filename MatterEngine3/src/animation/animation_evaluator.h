@@ -41,21 +41,51 @@ struct AnimationPoseSnapshot {
 struct AnimatorCheckpoint {
     AnimatorInstanceHandle instance{};
     uint64_t asset_identity = 0;
+    uint64_t asset_nonce_high = 0;
+    uint64_t asset_nonce_low = 0;
+    // A checkpoint is deliberately process-local (it is an editor play/stop
+    // transaction, not a save-game).  This identity pins it to the exact
+    // immutable runtime descriptor that supplied its Ozz objects.
+    uint64_t descriptor_identity = 0;
     uint64_t last_fixed_tick = 0;
+    uint64_t snapshot_frame_serial = 0;
     float previous_fixed_time = 0.0f;
     float current_fixed_time = 0.0f;
     std::vector<AnimationValue> fixed_inputs;
+    std::vector<AnimationValue> fixed_previous_inputs;
     std::vector<AnimationValue> frame_inputs;
     AnimationTransform desired_target{};
     AnimationTransform evaluated_target{};
     float target_weight = 0.0f;
+    bool target_enabled = false;
+    bool target_snap_requested = false;
+    std::vector<AnimationTransform> target_desired;
+    std::vector<float> target_weights;
+    std::vector<uint8_t> target_enabled_states;
+    std::vector<uint8_t> target_snap_requested_states;
+    std::vector<uint8_t> graph_state;
     std::vector<uint8_t> controller_state;
+    std::vector<uint8_t> sample_context_state;
+    std::vector<uint8_t> pose_scratch_state;
     std::vector<uint32_t> marker_cursors;
     std::vector<AnimationTransform> fixed_local_pose;
+    std::vector<Mat4f> fixed_model_pose;
+    std::vector<Mat4f> fixed_previous_model_pose;
+    std::vector<Mat4f> fixed_skin_palette;
+    std::vector<Mat4f> fixed_previous_skin_palette;
+    AnimationTransform fixed_root_previous{};
+    AnimationTransform fixed_root_current{};
+    float fixed_clip_time = 0.0f;
+    bool fixed_root_sampled = false;
     size_t serialized_size() const {
-        size_t total = sizeof(*this) + controller_state.size() + marker_cursors.size() * sizeof(uint32_t) +
-                       fixed_local_pose.size() * sizeof(AnimationTransform);
+        size_t total = sizeof(*this) + graph_state.size() + controller_state.size() + sample_context_state.size() +
+                       pose_scratch_state.size() + marker_cursors.size() * sizeof(uint32_t) +
+                       fixed_local_pose.size() * sizeof(AnimationTransform) + target_desired.size() * sizeof(AnimationTransform) +
+                       target_weights.size() * sizeof(float) + target_enabled_states.size() + target_snap_requested_states.size() +
+                       fixed_model_pose.size() * sizeof(Mat4f) + fixed_previous_model_pose.size() * sizeof(Mat4f) +
+                       fixed_skin_palette.size() * sizeof(Mat4f) + fixed_previous_skin_palette.size() * sizeof(Mat4f);
         for (const auto& value : fixed_inputs) total += sizeof(AnimationValue) + value.symbol.size();
+        for (const auto& value : fixed_previous_inputs) total += sizeof(AnimationValue) + value.symbol.size();
         for (const auto& value : frame_inputs) total += sizeof(AnimationValue) + value.symbol.size();
         return total;
     }
@@ -174,6 +204,13 @@ public:
     // over-budget work; an already completed snapshot remains visible.
     bool evaluate(std::vector<AnimationEvaluationRequest> requests);
     AnimationPoseSnapshot snapshot(AnimatorInstanceHandle instance) const;
+    bool capture_checkpoint(AnimatorInstanceHandle instance, AnimatorCheckpoint& out) const;
+    bool validate_checkpoint(AnimatorInstanceHandle instance,
+                             const AnimationEvaluationDefinition& definition,
+                             const AnimatorCheckpoint& checkpoint) const;
+    bool restore_checkpoint(AnimatorInstanceHandle instance,
+                            const AnimationEvaluationDefinition& definition,
+                            const AnimatorCheckpoint& checkpoint);
     void forget(AnimatorInstanceHandle instance);
 
 private:

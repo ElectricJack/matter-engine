@@ -12,6 +12,8 @@
 #include <unordered_map>
 #include <vector>
 
+namespace matter { class AnimationService; }
+
 namespace matter::scene {
 
 // Snapshot of one entity's editable state (whitelisted components only).
@@ -72,17 +74,22 @@ public:
 
     // Get the snapshot (for testing).
     const SceneSnapshot& snapshot() const { return snapshot_; }
+    // Optional runtime binding.  When present, Play/Stop captures/restores
+    // every descriptor-bound animator through the service rather than relying
+    // on callers to hand-maintain a parallel checkpoint vector.
+    void attach_animation_service(AnimationService* service) noexcept { animation_service_ = service; }
     bool set_animator_checkpoints(std::vector<animation::AnimatorCheckpoint> checkpoints);
     const std::vector<animation::AnimatorCheckpoint>& animator_checkpoints() const { return animator_checkpoints_; }
 
 private:
-    void capture_snapshot(flecs::world& world);
-    void restore_snapshot(flecs::world& world);
+    bool capture_snapshot(flecs::world& world);
+    bool restore_snapshot(flecs::world& world);
 
     SimulationMode mode_ = SimulationMode::Edit;
     SceneSnapshot snapshot_;
     bool step_pending_ = false;
     std::vector<animation::AnimatorCheckpoint> animator_checkpoints_;
+    AnimationService* animation_service_ = nullptr;
 };
 
 } // namespace matter::scene

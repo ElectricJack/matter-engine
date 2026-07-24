@@ -70,6 +70,7 @@ namespace animation {
 struct AnimAsset;
 struct AnimationRuntimeDefinition;
 struct AnimationRuntimeBindingDescriptor;
+struct AnimatorCheckpoint;
 class AnimationServiceImpl;
 class AnimationSystems;
 }
@@ -81,6 +82,7 @@ class AnimationSystems;
 struct AnimationRuntimeBindingLease {
     AnimatorInstanceHandle instance{};
     uint64_t asset_identity = 0;
+    uint64_t descriptor_identity = 0;
     std::shared_ptr<const animation::AnimationRuntimeBindingDescriptor> descriptor;
     struct Value {
         AnimationValueType type = AnimationValueType::Number;
@@ -133,6 +135,13 @@ public:
     // create/replace rather than becoming partially active.
     bool runtime_binding(AnimatorInstanceHandle, AnimationRuntimeBindingLease&) const;
     void attach_runtime_systems(animation::AnimationSystems* systems);
+
+    // Editor play/stop seam.  These operate only on descriptor-bound runtime
+    // animators and are transactional: a rejected restore leaves both the
+    // service controls and its attached runtime bridge untouched.
+    bool capture_runtime_checkpoints(std::vector<animation::AnimatorCheckpoint>& out) const;
+    bool validate_runtime_checkpoints(const std::vector<animation::AnimatorCheckpoint>& checkpoints) const;
+    bool restore_runtime_checkpoints(const std::vector<animation::AnimatorCheckpoint>& checkpoints);
 
     AnimationStatus status(AnimatorInstanceHandle) const;
     AnimationRuntimeStats stats() const;

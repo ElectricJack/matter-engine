@@ -166,6 +166,9 @@ public:
     void detach_service_binding(AnimatorInstanceHandle instance);
     void attach_service(AnimationService* service) noexcept { service_ = service; }
     bool has_service(const AnimationService* service) const noexcept { return service_ == service; }
+    bool capture_service_checkpoint(AnimatorCheckpoint& checkpoint) const;
+    bool validate_service_checkpoint(const AnimatorCheckpoint& checkpoint) const;
+    bool restore_service_checkpoint(const AnimatorCheckpoint& checkpoint);
 
 private:
     friend void register_animation_systems(flecs::world&, AnimationSystems&);

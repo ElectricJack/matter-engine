@@ -65,6 +65,12 @@ AnimationTransform runtime_root_delta(const AnimationTransform& previous, const 
     return root_motion_delta(previous, current);
 }
 
+bool finite_transform(const AnimationTransform& value) {
+    return std::isfinite(value.translation.x) && std::isfinite(value.translation.y) && std::isfinite(value.translation.z) &&
+           std::isfinite(value.rotation.x) && std::isfinite(value.rotation.y) && std::isfinite(value.rotation.z) && std::isfinite(value.rotation.w) &&
+           std::isfinite(value.scale.x) && std::isfinite(value.scale.y) && std::isfinite(value.scale.z);
+}
+
 void emit_runtime_markers(AnimatorInstanceHandle instance, const std::vector<RuntimeClipMarker>& markers,
                           float duration, bool loop, float previous, float current,
                           std::vector<AnimationMarkerEvent>& out) {
@@ -262,6 +268,69 @@ void AnimationSystems::detach_service_binding(AnimatorInstanceHandle instance) {
     pose_snapshots_.forget(instance);
     evaluator_.forget(instance);
     service_bindings_.erase(animator_key(instance));
+}
+
+bool AnimationSystems::capture_service_checkpoint(AnimatorCheckpoint& checkpoint) const {
+    const auto binding=service_bindings_.find(animator_key(checkpoint.instance));
+    const auto work=fixed_work_.find(animator_key(checkpoint.instance));
+    if(binding==service_bindings_.end() || work==fixed_work_.end() ||
+       binding->second.asset_identity!=checkpoint.asset_identity ||
+       binding->second.descriptor_identity!=checkpoint.descriptor_identity) return false;
+    checkpoint.fixed_clip_time=work->second.clip.time;
+    checkpoint.fixed_root_previous=work->second.root_previous;
+    checkpoint.fixed_root_current=work->second.root_current;
+    checkpoint.fixed_root_sampled=work->second.root_sampled;
+    checkpoint.desired_target=work->second.desired_target_world;
+    checkpoint.evaluated_target=work->second.evaluated_target_root_relative;
+    checkpoint.target_weight=work->second.target_weight;
+    checkpoint.target_enabled=work->second.target_enabled;
+    checkpoint.marker_cursors.clear();
+    if(work->second.clip.duration > 0.0f) {
+        float cursor_time=std::fmod(work->second.clip.time,work->second.clip.duration);
+        if(cursor_time<0.0f) cursor_time+=work->second.clip.duration;
+        uint32_t cursor=0;
+        for(const RuntimeClipMarker& marker:work->second.clip.markers) if(marker.time<=cursor_time) ++cursor;
+        checkpoint.marker_cursors.push_back(cursor);
+    }
+    // An evaluator may not have run yet when Play begins.  That is a valid
+    // bind-pose checkpoint; restore reconstructs transient contexts lazily.
+    (void)evaluator_.capture_checkpoint(checkpoint.instance, checkpoint);
+    return checkpoint.bounded();
+}
+
+bool AnimationSystems::validate_service_checkpoint(const AnimatorCheckpoint& checkpoint) const {
+    const auto binding=service_bindings_.find(animator_key(checkpoint.instance));
+    const auto work=fixed_work_.find(animator_key(checkpoint.instance));
+    if(binding==service_bindings_.end() || work==fixed_work_.end() || !binding->second.valid() ||
+       !binding->second.descriptor || !binding->second.descriptor->evaluation ||
+       binding->second.asset_identity!=checkpoint.asset_identity ||
+       binding->second.descriptor_identity!=checkpoint.descriptor_identity || !checkpoint.bounded()) return false;
+    if(!std::isfinite(checkpoint.fixed_clip_time) || !std::isfinite(checkpoint.target_weight) ||
+       !finite_transform(checkpoint.fixed_root_previous) || !finite_transform(checkpoint.fixed_root_current) ||
+       !finite_transform(checkpoint.desired_target) || !finite_transform(checkpoint.evaluated_target)) return false;
+    if(checkpoint.marker_cursors.size()>1 ||
+       (!checkpoint.marker_cursors.empty() && checkpoint.marker_cursors[0]>work->second.clip.markers.size())) return false;
+    return evaluator_.validate_checkpoint(checkpoint.instance,*binding->second.descriptor->evaluation,checkpoint);
+}
+
+bool AnimationSystems::restore_service_checkpoint(const AnimatorCheckpoint& checkpoint) {
+    if(!validate_service_checkpoint(checkpoint)) return false;
+    const uint64_t slot_key=animator_key(checkpoint.instance);
+    const AnimationRuntimeBindingLease& binding=service_bindings_.at(slot_key);
+    AnimationFixedWork restored=fixed_work_.at(slot_key);
+    restored.clip.time=checkpoint.fixed_clip_time;
+    restored.root_previous=checkpoint.fixed_root_previous;
+    restored.root_current=checkpoint.fixed_root_current;
+    restored.root_sampled=checkpoint.fixed_root_sampled;
+    restored.desired_target_world=checkpoint.desired_target;
+    restored.evaluated_target_root_relative=checkpoint.evaluated_target;
+    restored.target_weight=checkpoint.target_weight;
+    restored.target_enabled=checkpoint.target_enabled;
+    if(!register_fixed_work(restored)) return false;
+    if(!evaluator_.restore_checkpoint(checkpoint.instance,*binding.descriptor->evaluation,checkpoint)) return false;
+    const AnimationPoseSnapshot pose=evaluator_.snapshot(checkpoint.instance);
+    if(pose.instance.valid()) (void)pose_snapshots_.publish(pose);
+    return true;
 }
 
 void AnimationSystems::sample_service_bindings() {

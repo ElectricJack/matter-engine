@@ -8,6 +8,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <set>
 #include <utility>
 
 namespace matter::animation {
@@ -101,6 +102,12 @@ bool same_transform(const AnimationTransform& left, const AnimationTransform& ri
            same_float3(left.scale, right.scale);
 }
 
+bool finite_transform(const AnimationTransform& value) {
+    return std::isfinite(value.translation.x) && std::isfinite(value.translation.y) && std::isfinite(value.translation.z) &&
+           std::isfinite(value.rotation.x) && std::isfinite(value.rotation.y) && std::isfinite(value.rotation.z) && std::isfinite(value.rotation.w) &&
+           std::isfinite(value.scale.x) && std::isfinite(value.scale.y) && std::isfinite(value.scale.z);
+}
+
 bool same_value(const AnimationValue& left, const AnimationValue& right) {
     if (left.type != right.type) return false;
     switch (left.type) {
@@ -169,6 +176,36 @@ AnimationRuntimeBindingLease::Value animation_value(const StoredValue& value) {
     result.float3 = value.float3; result.quaternion = value.quaternion;
     result.transform = value.transform; result.symbol = value.symbol;
     return result;
+}
+
+AnimationValue checkpoint_value(const StoredValue& value) {
+    switch (value.type) {
+        case AnimationValueType::Bool: return AnimationValue(value.boolean);
+        case AnimationValueType::Number: return AnimationValue(static_cast<double>(value.number));
+        case AnimationValueType::Float3: return AnimationValue(value.float3);
+        case AnimationValueType::Quaternion: return AnimationValue(value.quaternion);
+        case AnimationValueType::Transform: return AnimationValue(value.transform);
+        case AnimationValueType::Symbol: { AnimationValue result{}; result.type=AnimationValueType::Symbol; result.symbol=std::to_string(value.symbol); return result; }
+    }
+    return {};
+}
+
+bool checkpoint_stored_value(const AnimationValue& value, AnimationValueType expected, StoredValue& out) {
+    if(value.type!=expected) return false;
+    out={}; out.type=expected;
+    switch(expected) {
+        case AnimationValueType::Bool: out.boolean=value.boolean; return true;
+        case AnimationValueType::Number: if(!std::isfinite(value.number)) return false; out.number=static_cast<float>(value.number); return std::isfinite(out.number);
+        case AnimationValueType::Float3: out.float3=value.float3; return std::isfinite(out.float3.x)&&std::isfinite(out.float3.y)&&std::isfinite(out.float3.z);
+        case AnimationValueType::Quaternion: out.quaternion=value.quaternion; return std::isfinite(out.quaternion.x)&&std::isfinite(out.quaternion.y)&&std::isfinite(out.quaternion.z)&&std::isfinite(out.quaternion.w);
+        case AnimationValueType::Transform: out.transform=value.transform; return finite_transform(out.transform);
+        case AnimationValueType::Symbol: {
+            uint64_t parsed=0; if(value.symbol.empty()) return false;
+            for(char c:value.symbol) { if(c<'0'||c>'9'||parsed>(UINT32_MAX-uint64_t(c-'0'))/10u) return false; parsed=parsed*10u+uint64_t(c-'0'); }
+            out.symbol=static_cast<uint32_t>(parsed); return true;
+        }
+    }
+    return false;
 }
 
 Slot make_slot(const AnimAsset* asset, const AnimationRuntimeDefinition* definition, uint32_t generation) {
@@ -378,6 +415,101 @@ public:
     float number_value(AnimationInputHandle handle) const { const StoredValue* v = read_input(handle, AnimationValueType::Number); return v ? v->number : 0.0f; }
     bool bool_value(AnimationInputHandle handle) const { const StoredValue* v = read_input(handle, AnimationValueType::Bool); return v && v->boolean; }
 
+    bool capture_runtime_checkpoints(std::vector<AnimatorCheckpoint>& out) const {
+        std::vector<AnimatorCheckpoint> captured;
+        size_t bytes=0;
+        for(uint32_t index=0; index<slots_.size(); ++index) {
+            const Slot& value=slots_[index];
+            if(!value.alive || !value.definition->binding) continue;
+            AnimatorCheckpoint checkpoint{};
+            checkpoint.instance=instance_handle(index,value);
+            checkpoint.asset_identity=value.asset->resolved_hash;
+            checkpoint.asset_nonce_high=value.asset->nonce.high;
+            checkpoint.asset_nonce_low=value.asset->nonce.low;
+            checkpoint.descriptor_identity=static_cast<uint64_t>(reinterpret_cast<uintptr_t>(value.definition->binding.get()));
+            checkpoint.fixed_inputs.reserve(value.fixed_current.size()); checkpoint.fixed_previous_inputs.reserve(value.fixed_previous.size());
+            checkpoint.frame_inputs.reserve(value.frame_controls.size());
+            for(const StoredValue& input:value.fixed_current) checkpoint.fixed_inputs.push_back(checkpoint_value(input));
+            for(const StoredValue& input:value.fixed_previous) checkpoint.fixed_previous_inputs.push_back(checkpoint_value(input));
+            for(const StoredValue& input:value.frame_controls) checkpoint.frame_inputs.push_back(checkpoint_value(input));
+            checkpoint.target_desired.reserve(value.targets.size()); checkpoint.target_weights.reserve(value.targets.size());
+            checkpoint.target_enabled_states.reserve(value.targets.size()); checkpoint.target_snap_requested_states.reserve(value.targets.size());
+            for(const TargetState& target:value.targets) { checkpoint.target_desired.push_back(target.transform); checkpoint.target_weights.push_back(target.weight); checkpoint.target_enabled_states.push_back(target.enabled?1u:0u); checkpoint.target_snap_requested_states.push_back(target.snap_requested?1u:0u); }
+            checkpoint.graph_state=value.graph_state; checkpoint.controller_state=value.controller_state;
+            checkpoint.sample_context_state=value.sample_context; checkpoint.pose_scratch_state=value.pose_scratch;
+            if(systems_ && !systems_->capture_service_checkpoint(checkpoint)) return false;
+            if(!checkpoint.bounded() || checkpoint.serialized_size()>64u*1024u-bytes) return false;
+            bytes+=checkpoint.serialized_size(); captured.push_back(std::move(checkpoint));
+        }
+        out=std::move(captured);
+        return true;
+    }
+
+    bool validate_runtime_checkpoints(const std::vector<AnimatorCheckpoint>& checkpoints) const {
+        size_t expected=0, bytes=0; std::set<uint64_t> seen;
+        for(const Slot& value:slots_) if(value.alive && value.definition->binding) ++expected;
+        if(checkpoints.size()!=expected) return false;
+        for(const AnimatorCheckpoint& checkpoint:checkpoints) {
+            if(!checkpoint.instance.valid() || !checkpoint.bounded() || checkpoint.serialized_size()>64u*1024u-bytes) return false;
+            bytes+=checkpoint.serialized_size();
+            const uint64_t slot_key=(uint64_t(checkpoint.instance.slot_index)<<32u)|checkpoint.instance.generation;
+            if(!seen.insert(slot_key).second) return false;
+            const Slot* value=slot(checkpoint.instance);
+            if(!value || !value->definition->binding || value->asset->resolved_hash!=checkpoint.asset_identity ||
+               value->asset->nonce.high!=checkpoint.asset_nonce_high || value->asset->nonce.low!=checkpoint.asset_nonce_low ||
+               static_cast<uint64_t>(reinterpret_cast<uintptr_t>(value->definition->binding.get()))!=checkpoint.descriptor_identity) return false;
+            const size_t inputs=value->definition->inputs.size(), targets=value->definition->targets.size();
+            if(checkpoint.fixed_inputs.size()!=inputs || checkpoint.fixed_previous_inputs.size()!=inputs || checkpoint.frame_inputs.size()!=inputs ||
+               checkpoint.target_desired.size()!=targets || checkpoint.target_weights.size()!=targets ||
+               checkpoint.target_enabled_states.size()!=targets || checkpoint.target_snap_requested_states.size()!=targets ||
+               checkpoint.graph_state.size()!=value->graph_state.size() || checkpoint.controller_state.size()!=value->controller_state.size() ||
+               checkpoint.sample_context_state.size()!=value->sample_context.size() || checkpoint.pose_scratch_state.size()!=value->pose_scratch.size()) return false;
+            StoredValue decoded{};
+            for(size_t i=0;i<inputs;++i) if(!checkpoint_stored_value(checkpoint.fixed_inputs[i],value->definition->inputs[i].type,decoded) ||
+                !checkpoint_stored_value(checkpoint.fixed_previous_inputs[i],value->definition->inputs[i].type,decoded) ||
+                !checkpoint_stored_value(checkpoint.frame_inputs[i],value->definition->inputs[i].type,decoded)) return false;
+            for(size_t target=0;target<targets;++target)
+                if(!std::isfinite(checkpoint.target_weights[target]) || !finite_transform(checkpoint.target_desired[target])) return false;
+            if(systems_ && !systems_->validate_service_checkpoint(checkpoint)) return false;
+        }
+        return true;
+    }
+
+    bool restore_runtime_checkpoints(const std::vector<AnimatorCheckpoint>& checkpoints) {
+        if(!validate_runtime_checkpoints(checkpoints)) return false;
+        struct RestoredSlot { Slot* slot=nullptr; std::vector<StoredValue> fixed_current, fixed_previous, frame; };
+        std::vector<RestoredSlot> restored; restored.reserve(checkpoints.size());
+        for(const AnimatorCheckpoint& checkpoint:checkpoints) {
+            Slot* value=slot(checkpoint.instance); RestoredSlot next{}; next.slot=value;
+            next.fixed_current.resize(value->definition->inputs.size()); next.fixed_previous.resize(value->definition->inputs.size()); next.frame.resize(value->definition->inputs.size());
+            for(size_t i=0;i<next.fixed_current.size();++i) {
+                const AnimationValueType type=value->definition->inputs[i].type;
+                if(!checkpoint_stored_value(checkpoint.fixed_inputs[i],type,next.fixed_current[i]) || !checkpoint_stored_value(checkpoint.fixed_previous_inputs[i],type,next.fixed_previous[i]) || !checkpoint_stored_value(checkpoint.frame_inputs[i],type,next.frame[i])) return false;
+            }
+            restored.push_back(std::move(next));
+        }
+        // Every failure-prone check and allocation is complete.  Commit both
+        // service-owned state and the attached evaluator only after that point.
+        for(size_t index=0; index<checkpoints.size(); ++index) {
+            Slot& value=*restored[index].slot; const AnimatorCheckpoint& checkpoint=checkpoints[index];
+            value.fixed_current=std::move(restored[index].fixed_current); value.fixed_previous=std::move(restored[index].fixed_previous); value.frame_controls=std::move(restored[index].frame);
+            for(size_t target=0;target<value.targets.size();++target) { value.targets[target].transform=checkpoint.target_desired[target]; value.targets[target].weight=checkpoint.target_weights[target]; value.targets[target].enabled=checkpoint.target_enabled_states[target]!=0; value.targets[target].snap_requested=checkpoint.target_snap_requested_states[target]!=0; }
+            value.graph_state=checkpoint.graph_state; value.controller_state=checkpoint.controller_state; value.sample_context=checkpoint.sample_context_state; value.pose_scratch=checkpoint.pose_scratch_state;
+        }
+        if(systems_) {
+            // Rebuild the value-owned leases from the restored service slots
+            // before restoring evaluator/fixed transient state.  Otherwise a
+            // later frame would silently sample the pre-restore controls.
+            for(const AnimatorCheckpoint& checkpoint:checkpoints) {
+                AnimationRuntimeBindingLease lease;
+                if(!runtime_binding(checkpoint.instance,lease) || !systems_->refresh_service_binding(lease)) return false;
+            }
+            for(const AnimatorCheckpoint& checkpoint:checkpoints)
+                if(!systems_->restore_service_checkpoint(checkpoint)) return false;
+        }
+        return true;
+    }
+
     bool runtime_binding(AnimatorInstanceHandle handle, AnimationRuntimeBindingLease& out) const {
         out = {};
         const Slot* value = slot(handle);
@@ -385,6 +517,7 @@ public:
         out.instance = handle;
         out.asset_identity = value->asset->resolved_hash;
         out.descriptor = value->definition->binding;
+        out.descriptor_identity = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(value->definition->binding.get()));
         out.fixed_previous.reserve(value->fixed_previous.size());
         out.fixed_current.reserve(value->fixed_current.size());
         out.frame_controls.reserve(value->frame_controls.size());
@@ -495,6 +628,9 @@ Animator AnimationService::replace_asset(AnimatorInstanceHandle instance, const 
 bool AnimationService::remove(AnimatorInstanceHandle instance) { return impl_->remove(instance); }
 bool AnimationService::runtime_binding(AnimatorInstanceHandle instance, AnimationRuntimeBindingLease& out) const { return impl_->runtime_binding(instance, out); }
 void AnimationService::attach_runtime_systems(animation::AnimationSystems* systems) { impl_->attach_runtime_systems(systems, systems ? this : nullptr); }
+bool AnimationService::capture_runtime_checkpoints(std::vector<animation::AnimatorCheckpoint>& out) const { return impl_->capture_runtime_checkpoints(out); }
+bool AnimationService::validate_runtime_checkpoints(const std::vector<animation::AnimatorCheckpoint>& checkpoints) const { return impl_->validate_runtime_checkpoints(checkpoints); }
+bool AnimationService::restore_runtime_checkpoints(const std::vector<animation::AnimatorCheckpoint>& checkpoints) { return impl_->restore_runtime_checkpoints(checkpoints); }
 AnimationInputHandle AnimationService::input(AnimatorInstanceHandle instance, std::string_view name) const { return impl_->input(instance, name); }
 AnimationTargetHandle AnimationService::target(AnimatorInstanceHandle instance, std::string_view name) const { return impl_->target(instance, name); }
 bool AnimationService::set(AnimationInputHandle h, bool v) { animation::StoredValue value; value.type = AnimationValueType::Bool; value.boolean = v; return impl_->set(h, value, value.type); }

@@ -3,6 +3,7 @@
 #include "animation/animation_systems.h"
 #include "animation/animation_world_queries.h"
 #include "../src/ecs/ecs_runtime.h"
+#include "ecs/simulation_control.h"
 #include "check.h"
 
 #include <cstdio>
@@ -37,11 +38,13 @@ struct BoundFixture {
     BoundFixture() {
         RigDefinition rig;
         AnimationTransform rest{};
+        AnimationTransform end = rest;
+        end.translation.x = 1.0f;
         rig.joints.push_back({"root", "", rest, 1, {"test", 1, 1, "root"}});
         ClipDefinition source;
         source.name = "move"; source.duration = 1.0f; source.rate = 30.0f; source.loop = true;
         source.source = {"test", 1, 1, "clip"};
-        source.tracks.push_back({"root", {{0.0f, rest, {"test",1,1,"a"}}, {1.0f, rest, {"test",1,1,"b"}}}, {"test",1,1,"track"}});
+        source.tracks.push_back({"root", {{0.0f, rest, {"test",1,1,"a"}}, {1.0f, end, {"test",1,1,"b"}}}, {"test",1,1,"track"}});
         CHECK(build_skeleton(rig, skeleton, diagnostics) && build_clip(rig, source, clip, diagnostics),
               "build runtime binding evaluator fixture");
         Mat4f identity{}; identity.m[0] = identity.m[5] = identity.m[10] = identity.m[15] = 1.0f;
@@ -91,6 +94,48 @@ void test_service_bound_runtime_work_is_automatic_and_generation_safe() {
     runtime.tick({0.1f, 0.1f, 1});
     CHECK(runtime.animation_systems().pose_snapshots().latest(stale).local_pose.empty(),
           "destroy unregisters stale generation pose work");
+}
+
+void test_service_checkpoint_restores_runtime_tick_deterministically() {
+    ecs_runtime::Runtime runtime;
+    AnimationService service;
+    runtime.attach_animation_service(service);
+    scene::SimulationControl control;
+    control.attach_animation_service(&service);
+    const AnimAsset* asset = service.insert_asset({0x93u, {1u, 2u}});
+    BoundFixture fixture;
+    auto descriptor = std::make_shared<AnimationRuntimeBindingDescriptor>();
+    descriptor->evaluation = fixture.evaluation;
+    descriptor->fixed_work.clip.duration = 1.0f;
+    descriptor->fixed_work.clip.loop = true;
+    AnimationRuntimeDefinition definition;
+    definition.binding = descriptor;
+    const Animator animator = service.create(asset, definition);
+    CHECK(animator.valid(), "create checkpoint-bound animator");
+    std::string error;
+    CHECK(control.play(runtime.world(), error), "play captures service-owned animator checkpoint");
+    runtime.tick({0.1f, 0.1f, 1});
+    const auto first = runtime.animation_systems().pose_snapshots().latest(animator.instance);
+    CHECK(first.local_pose.count == 1, "first replay sample publishes a pose");
+    const float expected = first.local_pose.count ? first.local_pose[0].translation.x : -1.0f;
+    runtime.tick({0.2f, 0.1f, 4});
+    CHECK(control.stop(runtime.world(), error), "stop restores the service-owned animator checkpoint");
+    CHECK(control.mode() == scene::SimulationMode::Edit, "successful checkpoint restore returns to edit mode");
+    runtime.tick({0.1f, 0.1f, 1});
+    const auto replay = runtime.animation_systems().pose_snapshots().latest(animator.instance);
+    CHECK(replay.local_pose.count == 1 && replay.local_pose[0].translation.x == expected,
+          "restored service checkpoint replays the same Runtime tick pose");
+
+    std::vector<AnimatorCheckpoint> checkpoints;
+    CHECK(service.capture_runtime_checkpoints(checkpoints) && checkpoints.size() == 1,
+          "service captures a complete runtime checkpoint");
+    const auto retained = runtime.animation_systems().pose_snapshots().latest(animator.instance);
+    checkpoints[0].asset_identity ^= 1u;
+    CHECK(!service.restore_runtime_checkpoints(checkpoints), "asset identity mismatch rejects a checkpoint restore");
+    const auto after_reject = runtime.animation_systems().pose_snapshots().latest(animator.instance);
+    CHECK(retained.local_pose.count == after_reject.local_pose.count &&
+              retained.fixed_tick == after_reject.fixed_tick && retained.frame_serial == after_reject.frame_serial,
+          "rejected checkpoint restore leaves the live published pose unchanged");
 }
 
 void test_markers_use_half_open_intervals_and_stable_order() {
@@ -195,6 +240,7 @@ int main() {
     test_queries_apply_cap_and_explicit_misses();
     test_runtime_fixed_phases_execute_registered_animation_work();
     test_service_bound_runtime_work_is_automatic_and_generation_safe();
+    test_service_checkpoint_restores_runtime_tick_deterministically();
     if (g_failures) return 1;
     std::puts("animation_simulation_tests: all tests passed");
 }

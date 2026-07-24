@@ -118,7 +118,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_ani
           src/render/tileset_provider.cpp src/render/tileset_gl_ctx.cpp \
           src/render/tileset_slicer.cpp \
           src/provider/local_provider.cpp src/provider/resolvers.cpp \
-          src/ecs/ecs_runtime.cpp src/ecs/physics_context.cpp src/ecs/physics_shapes.cpp src/ecs/physics_systems.cpp src/ecs/streaming_systems.cpp src/ecs/transform_system.cpp \
+          src/ecs/ecs_runtime.cpp src/ecs/simulation_control.cpp src/ecs/physics_context.cpp src/ecs/physics_shapes.cpp src/ecs/physics_systems.cpp src/ecs/streaming_systems.cpp src/ecs/transform_system.cpp \
           src/matter_engine.cpp \
           src/refine_controller.cpp \
           src/async_bake.cpp \

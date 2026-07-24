@@ -264,6 +264,71 @@ bool AnimationEvaluator::evaluate(std::vector<AnimationEvaluationRequest> reques
 }
 
 AnimationPoseSnapshot AnimationEvaluator::snapshot(AnimatorInstanceHandle instance) const { const auto it=states_.find(key(instance)); return it==states_.end()||!it->second||!it->second->has_snapshot?AnimationPoseSnapshot{}:it->second->view; }
+bool AnimationEvaluator::capture_checkpoint(AnimatorInstanceHandle instance, AnimatorCheckpoint& out) const {
+    const auto it=states_.find(key(instance));
+    if(!instance.valid() || it==states_.end() || !it->second) return false;
+    const State& state=*it->second;
+    out.last_fixed_tick=state.last_fixed_tick;
+    out.snapshot_frame_serial=state.view.frame_serial;
+    out.previous_fixed_time=state.previous_fixed_time;
+    out.current_fixed_time=state.current_fixed_time;
+    if(!state.has_snapshot) {
+        out.fixed_local_pose.clear(); out.fixed_model_pose.clear(); out.fixed_previous_model_pose.clear();
+        out.fixed_skin_palette.clear(); out.fixed_previous_skin_palette.clear();
+        return true;
+    }
+    const State::PoseBuffer& front=state.pose[state.front_slot];
+    out.fixed_local_pose=front.local;
+    out.fixed_model_pose=front.model;
+    out.fixed_previous_model_pose=front.previous_model;
+    out.fixed_skin_palette=front.palette;
+    out.fixed_previous_skin_palette=front.previous_palette;
+    return true;
+}
+
+bool AnimationEvaluator::validate_checkpoint(AnimatorInstanceHandle instance,
+                                             const AnimationEvaluationDefinition& definition,
+                                             const AnimatorCheckpoint& checkpoint) const {
+    if(!instance.valid() || checkpoint.instance.slot_index!=instance.slot_index ||
+       checkpoint.instance.generation!=instance.generation || !valid(definition) || !checkpoint.bounded()) return false;
+    if(!std::isfinite(checkpoint.previous_fixed_time) || !std::isfinite(checkpoint.current_fixed_time)) return false;
+    const size_t joints=definition.skeleton->joint_count();
+    const bool empty=checkpoint.fixed_local_pose.empty() && checkpoint.fixed_model_pose.empty() &&
+                     checkpoint.fixed_previous_model_pose.empty() && checkpoint.fixed_skin_palette.empty() &&
+                     checkpoint.fixed_previous_skin_palette.empty();
+    if(empty) return true;
+    return checkpoint.fixed_local_pose.size()==joints && checkpoint.fixed_model_pose.size()==joints &&
+           checkpoint.fixed_previous_model_pose.size()==joints && checkpoint.fixed_skin_palette.size()==joints &&
+           checkpoint.fixed_previous_skin_palette.size()==joints;
+}
+
+bool AnimationEvaluator::restore_checkpoint(AnimatorInstanceHandle instance,
+                                            const AnimationEvaluationDefinition& definition,
+                                            const AnimatorCheckpoint& checkpoint) {
+    if(!validate_checkpoint(instance,definition,checkpoint)) return false;
+    auto replacement=std::make_unique<State>();
+    replacement->shape={&definition,definition.skeleton,uint32_t(definition.skeleton->joint_count())};
+    replacement->last_fixed_tick=checkpoint.last_fixed_tick;
+    replacement->previous_fixed_time=checkpoint.previous_fixed_time;
+    replacement->current_fixed_time=checkpoint.current_fixed_time;
+    replacement->initialized=true;
+    if(!checkpoint.fixed_local_pose.empty()) {
+        State::PoseBuffer& front=replacement->pose[0];
+        front.local=checkpoint.fixed_local_pose;
+        front.model=checkpoint.fixed_model_pose;
+        front.previous_model=checkpoint.fixed_previous_model_pose;
+        front.palette=checkpoint.fixed_skin_palette;
+        front.previous_palette=checkpoint.fixed_previous_skin_palette;
+        replacement->has_snapshot=true;
+        replacement->front_slot=0;
+        replacement->view={instance,checkpoint.last_fixed_tick,checkpoint.snapshot_frame_serial,
+            {front.local.data(),uint32_t(front.local.size())},{front.model.data(),uint32_t(front.model.size())},
+            {front.previous_model.data(),uint32_t(front.previous_model.size())},{front.palette.data(),uint32_t(front.palette.size())},
+            {front.previous_palette.data(),uint32_t(front.previous_palette.size())}};
+    }
+    states_[key(instance)]=std::move(replacement);
+    return true;
+}
 void AnimationEvaluator::forget(AnimatorInstanceHandle instance) { states_.erase(key(instance)); }
 
 } // namespace matter::animation

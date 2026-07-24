@@ -2,6 +2,7 @@
 // scene snapshot/restore.
 
 #include "ecs/simulation_control.h"
+#include "matter/animation.h"
 
 #include <unordered_map>
 
@@ -12,7 +13,10 @@ bool SimulationControl::play(flecs::world& world, std::string& error) {
         error = "play() requires Edit mode";
         return false;
     }
-    capture_snapshot(world);
+    if (!capture_snapshot(world)) {
+        error = "failed to capture animator checkpoint";
+        return false;
+    }
     mode_ = SimulationMode::Play;
     return true;
 }
@@ -40,7 +44,10 @@ bool SimulationControl::stop(flecs::world& world, std::string& error) {
         error = "stop() called while already in Edit mode";
         return false;
     }
-    restore_snapshot(world);
+    if (!restore_snapshot(world)) {
+        error = "failed to restore animator checkpoint";
+        return false;
+    }
     mode_ = SimulationMode::Edit;
     snapshot_ = SceneSnapshot{};
     step_pending_ = false;
@@ -72,10 +79,17 @@ bool SimulationControl::set_animator_checkpoints(
     return true;
 }
 
-void SimulationControl::capture_snapshot(flecs::world& world) {
+bool SimulationControl::capture_snapshot(flecs::world& world) {
     snapshot_.entities.clear();
     snapshot_.valid = false;
-    snapshot_.animator_checkpoints = animator_checkpoints_;
+    std::vector<animation::AnimatorCheckpoint> captured = animator_checkpoints_;
+    if (animation_service_ != nullptr && !animation_service_->capture_runtime_checkpoints(captured)) return false;
+    size_t animation_bytes = 0;
+    for (const auto& checkpoint : captured) {
+        if (!checkpoint.instance.valid() || !checkpoint.bounded() || checkpoint.serialized_size() > 64u * 1024u - animation_bytes) return false;
+        animation_bytes += checkpoint.serialized_size();
+    }
+    snapshot_.animator_checkpoints = std::move(captured);
 
     world.each([&](flecs::entity e, const SceneEntityId& id, const ecs::LocalTransform& lt) {
         EntitySnapshot snap;
@@ -114,9 +128,17 @@ void SimulationControl::capture_snapshot(flecs::world& world) {
     });
 
     snapshot_.valid = true;
+    return true;
 }
 
-void SimulationControl::restore_snapshot(flecs::world& world) {
+bool SimulationControl::restore_snapshot(flecs::world& world) {
+    // Identity/schema validation comes before touching either animation or the
+    // scene.  Stop is all-or-nothing: a stale asset cannot half-restore the
+    // world and leave a live animator on a different descriptor.
+    if (animation_service_ != nullptr &&
+        !animation_service_->validate_runtime_checkpoints(snapshot_.animator_checkpoints)) return false;
+    if (animation_service_ != nullptr &&
+        !animation_service_->restore_runtime_checkpoints(snapshot_.animator_checkpoints)) return false;
     // 1. Destroy all current SceneEntityId entities
     std::vector<flecs::entity> to_destroy;
     world.each([&](flecs::entity e, const SceneEntityId&) {
@@ -151,6 +173,7 @@ void SimulationControl::restore_snapshot(flecs::world& world) {
             }
         }
     }
+    return true;
 }
 
 } // namespace matter::scene
