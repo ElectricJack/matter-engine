@@ -6,7 +6,9 @@
 
 namespace matter::scene {
 
-struct SceneEntityId { uint64_t value = 0; };
+// Generation makes renderer identity fail closed when an editor recycles a
+// user-visible entity id while an old GPU slot is still retiring.
+struct SceneEntityId { uint64_t value = 0; uint32_t generation = 0; };
 struct PartInstance { uint64_t part_hash = 0; bool visible = true; bool casts_shadow = true; };
 enum class PartInstanceErrorCode : uint8_t { None, MissingPart, PartUnavailable, RendererCapacity };
 struct PartInstanceError { PartInstanceErrorCode code = PartInstanceErrorCode::None; uint64_t part_hash = 0; };

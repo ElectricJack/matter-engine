@@ -441,7 +441,7 @@ ENTITY_RECIPE_C      = $(FLECS_C)
 # Phase 4 Task 8 — ECS dynamic scene bridge (headless, Flecs, no GL/Vulkan).
 DYNAMIC_BRIDGE_TARGET = dynamic_bridge_tests
 DYNAMIC_BRIDGE_CPP    = dynamic_scene_bridge_tests.cpp ../src/animation/animation_systems.cpp ../src/ecs/dynamic_scene_bridge.cpp \
-                        ../src/render/dynamic_instance_slots.cpp \
+                        ../src/render/animation_rigid_bridge.cpp ../src/render/dynamic_instance_slots.cpp \
                         ../src/ecs/scene_registry.cpp \
                         ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                         ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
@@ -449,6 +449,17 @@ DYNAMIC_BRIDGE_CPP    = dynamic_scene_bridge_tests.cpp ../src/animation/animatio
                         ../src/streaming/sector_streaming_coordinator.cpp \
                         ../src/sector_streamer.cpp
 DYNAMIC_BRIDGE_C      = $(FLECS_C)
+
+# Phase B6 — expansion of authored rigid/attachment bindings into the
+# renderer's existing dynamic-instance lane.  This is deliberately headless:
+# the bridge owns no Flecs or evaluator state.
+ANIMATION_RIGID_TARGET = animation_rigid_bridge_tests
+ANIMATION_RIGID_CPP    = animation_rigid_bridge_tests.cpp ../src/render/animation_rigid_bridge.cpp \
+                        ../src/render/dynamic_instance_slots.cpp \
+                        ../src/animation/animation_systems.cpp ../src/animation/animation_evaluator.cpp \
+                        ../src/animation/animation_targets.cpp ../src/animation/animation_controllers.cpp \
+                        ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp
+ANIMATION_RIGID_C      = $(FLECS_C)
 
 # Phase 4 Task 9 — Editor model (pure CPU, no GL/Vulkan/Flecs needed).
 EDITOR_MODEL_TARGET = editor_model_tests
@@ -892,6 +903,7 @@ def_CPP_SRCS := $(sort \
     $(ENTITY_RECIPE_CPP) \
     $(DYNAMIC_SLOTS_CPP) \
     $(DYNAMIC_BRIDGE_CPP) \
+    $(ANIMATION_RIGID_CPP) \
     $(EDITOR_MODEL_CPP) \
     $(PROPERTIES_REGISTRY_CPP) \
     $(SIMULATION_CONTROL_CPP) \
@@ -971,7 +983,7 @@ gpu_CPP_SRCS := $(sort \
 # C-source flavors. Union across binaries that use them.
 mslc_C_SRCS := $(sort $(COMMON_MSL_C))
 qjsc_C_SRCS := $(sort $(QJS_C))
-flecsc_C_SRCS := $(sort $(ECS_C))
+flecsc_C_SRCS := $(sort $(ECS_C) $(ANIMATION_RIGID_C))
 physicsc_C_SRCS := $(sort $(PHYSICS_C))
 
 # Object lists per flavor.
@@ -1023,6 +1035,7 @@ SCENE_REGISTRY_OBJS = $(call obj_list,def,$(SCENE_REGISTRY_CPP)) $(call obj_list
 ENTITY_RECIPE_OBJS = $(call obj_list,def,$(ENTITY_RECIPE_CPP)) $(call obj_list,flecsc,$(ENTITY_RECIPE_C))
 DYNAMIC_SLOTS_OBJS = $(call obj_list,def,$(DYNAMIC_SLOTS_CPP))
 DYNAMIC_BRIDGE_OBJS = $(call obj_list,def,$(DYNAMIC_BRIDGE_CPP)) $(call obj_list,flecsc,$(DYNAMIC_BRIDGE_C))
+ANIMATION_RIGID_OBJS = $(call obj_list,def,$(ANIMATION_RIGID_CPP)) $(call obj_list,flecsc,$(ANIMATION_RIGID_C))
 EDITOR_MODEL_OBJS = $(call obj_list,def,$(EDITOR_MODEL_CPP))
 PROPERTIES_REGISTRY_OBJS = $(call obj_list,def,$(PROPERTIES_REGISTRY_CPP)) $(call obj_list,flecsc,$(PROPERTIES_REGISTRY_C))
 SIMULATION_CONTROL_OBJS = $(call obj_list,def,$(SIMULATION_CONTROL_CPP)) $(call obj_list,flecsc,$(SIMULATION_CONTROL_C))
@@ -1086,7 +1099,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-systems run-animation-simulation run-animation-controller run-animation-ik run-tilesetslicer run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather
+.PHONY: clean run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-systems run-animation-simulation run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1232,6 +1245,12 @@ $(DYNAMIC_BRIDGE_TARGET): $(DYNAMIC_BRIDGE_OBJS) $(BOX3D_LIB)
 
 run-dynamic-bridge: $(DYNAMIC_BRIDGE_TARGET)
 	./$(DYNAMIC_BRIDGE_TARGET)
+
+$(ANIMATION_RIGID_TARGET): $(ANIMATION_RIGID_OBJS)
+	$(CC) $(ANIMATION_RIGID_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(OZZ_OFFLINE_LIBS) $(FLECS_PLATFORM_LIBS)
+
+run-animation-rigid: $(ANIMATION_RIGID_TARGET)
+	./$(ANIMATION_RIGID_TARGET)
 
 # Phase 4 Task 9 — Editor model (pure CPU, no Flecs/GL runtime).
 $(EDITOR_MODEL_TARGET): $(EDITOR_MODEL_OBJS)
@@ -1826,6 +1845,7 @@ clean:
 	      $(SCENE_REGISTRY_TARGET) \
 	      $(ENTITY_RECIPE_TARGET) \
 	      $(DYNAMIC_SLOTS_TARGET) \
+	      $(ANIMATION_RIGID_TARGET) \
 	      tileset_physics_tests tileset_core_tests tileset_placement_tests \
 	      gpu_tests tileset_gpu_tests tileset_seam_tests tileset_provider_tests \
 	      tileset_load_tests api_tests async_bake_tests demand_bake_tests transient_tests release_part_tests \

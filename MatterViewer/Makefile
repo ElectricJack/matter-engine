@@ -203,6 +203,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/ecs/scene_registry.cpp \
               $(ME3_DIR)/src/ecs/simulation_control.cpp \
               $(ME3_DIR)/src/ecs/dynamic_scene_bridge.cpp \
+              $(ME3_DIR)/src/render/animation_rigid_bridge.cpp \
               $(ME3_DIR)/src/render/dynamic_instance_slots.cpp \
               $(ME3_DIR)/src/streaming/sector_streaming_coordinator.cpp \
               $(ME3_DIR)/src/matter_engine.cpp \
@@ -677,7 +678,7 @@ run-test-console-log: build/test_console_log.exe
 # compiler. Animation schema verbs are present, while raw-clip compilation is
 # routed to the bake host rather than the Viewer runtime.
 check-animation-production-sources:
-	@for source in dsl_animation.cpp animation_ir.cpp animation_validate.cpp animation_binding_bake.cpp anim_asset.cpp anim_bundle.cpp animation_asset_store.cpp animation_store.cpp animation_evaluator.cpp animation_systems.cpp animation_world_queries.cpp animation_controllers.cpp animation_targets.cpp; do \
+	@for source in dsl_animation.cpp animation_ir.cpp animation_validate.cpp animation_binding_bake.cpp anim_asset.cpp anim_bundle.cpp animation_asset_store.cpp animation_store.cpp animation_evaluator.cpp animation_systems.cpp animation_world_queries.cpp animation_controllers.cpp animation_targets.cpp animation_rigid_bridge.cpp; do \
 		case " $(WIN_ME3_CPP) " in *"/$$source "*) ;; *) \
 			echo "ERROR: Windows production build omits $$source"; exit 1 ;; esac; \
 	done

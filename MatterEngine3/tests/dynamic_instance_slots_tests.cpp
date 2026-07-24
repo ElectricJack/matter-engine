@@ -34,7 +34,7 @@ matter::scene::SceneEntityId entity(uint64_t v) {
 void test_bind_on_insert() {
     DynamicInstanceSlots slots(4);
     DynamicInstanceInput in;
-    in.id = entity(1);
+    in.key.entity_id = entity(1).value;
     in.part_hash = 100;
     in.object_to_world = identity();
     in.casts_shadow = true;
@@ -56,7 +56,7 @@ void test_bind_on_insert() {
 void test_noop_upsert() {
     DynamicInstanceSlots slots(4);
     DynamicInstanceInput in;
-    in.id = entity(1);
+    in.key.entity_id = entity(1).value;
     in.part_hash = 100;
     in.object_to_world = identity();
     in.casts_shadow = true;
@@ -73,7 +73,7 @@ void test_noop_upsert() {
 void test_transform_change() {
     DynamicInstanceSlots slots(4);
     DynamicInstanceInput in;
-    in.id = entity(1);
+    in.key.entity_id = entity(1).value;
     in.part_hash = 100;
     in.object_to_world = identity();
     in.casts_shadow = true;
@@ -97,7 +97,7 @@ void test_transform_change() {
 void test_part_change_emits_bind() {
     DynamicInstanceSlots slots(4);
     DynamicInstanceInput in;
-    in.id = entity(1);
+    in.key.entity_id = entity(1).value;
     in.part_hash = 100;
     in.object_to_world = identity();
     in.casts_shadow = true;
@@ -120,7 +120,7 @@ void test_part_change_emits_bind() {
 void test_remove_emits_change_and_stale_handle() {
     DynamicInstanceSlots slots(4);
     DynamicInstanceInput in;
-    in.id = entity(1);
+    in.key.entity_id = entity(1).value;
     in.part_hash = 100;
     in.object_to_world = identity();
     in.casts_shadow = true;
@@ -148,17 +148,17 @@ void test_remove_emits_change_and_stale_handle() {
 void test_capacity_exhausted() {
     DynamicInstanceSlots slots(2);
     DynamicInstanceInput a;
-    a.id = entity(1);
+    a.key.entity_id = entity(1).value;
     a.part_hash = 1;
     a.object_to_world = identity();
 
     DynamicInstanceInput b;
-    b.id = entity(2);
+    b.key.entity_id = entity(2).value;
     b.part_hash = 2;
     b.object_to_world = identity();
 
     DynamicInstanceInput c;
-    c.id = entity(3);
+    c.key.entity_id = entity(3).value;
     c.part_hash = 3;
     c.object_to_world = identity();
 
@@ -174,7 +174,7 @@ void test_capacity_exhausted() {
 void test_deferred_reuse() {
     DynamicInstanceSlots slots(1);
     DynamicInstanceInput a;
-    a.id = entity(1);
+    a.key.entity_id = entity(1).value;
     a.part_hash = 1;
     a.object_to_world = identity();
 
@@ -190,7 +190,7 @@ void test_deferred_reuse() {
     slots.drain();
 
     DynamicInstanceInput b;
-    b.id = entity(2);
+    b.key.entity_id = entity(2).value;
     b.part_hash = 2;
     b.object_to_world = identity();
 
@@ -223,7 +223,7 @@ void test_deferred_reuse() {
 void test_drain_clears_buffer() {
     DynamicInstanceSlots slots(4);
     DynamicInstanceInput in;
-    in.id = entity(1);
+    in.key.entity_id = entity(1).value;
     in.part_hash = 1;
     in.object_to_world = identity();
 
@@ -233,6 +233,25 @@ void test_drain_clears_buffer() {
 
     auto second = slots.drain();
     CHECK(second.empty(), "drain_clears: second drain is empty");
+}
+
+void test_binding_and_entity_generation_are_distinct_identities() {
+    DynamicInstanceSlots slots(4);
+    DynamicInstanceInput first;
+    first.key = {9, 1, 0};
+    first.part_hash = 10;
+    first.object_to_world = identity();
+    DynamicInstanceInput rigid = first;
+    rigid.key.binding_index = 1;
+    rigid.part_hash = 11;
+    DynamicInstanceInput recycled = first;
+    recycled.key.entity_generation = 2;
+    recycled.part_hash = 12;
+
+    CHECK(slots.upsert(first).result == SlotResult::Ok, "identity: ordinary binding inserts");
+    CHECK(slots.upsert(rigid).result == SlotResult::Ok, "identity: articulated binding does not alias root");
+    CHECK(slots.upsert(recycled).result == SlotResult::Ok, "identity: recycled entity generation does not alias old entity");
+    CHECK(slots.active_count() == 3, "identity: all key fields participate in slot identity");
 }
 
 } // namespace
@@ -246,5 +265,6 @@ int main() {
     test_capacity_exhausted();
     test_deferred_reuse();
     test_drain_clears_buffer();
+    test_binding_and_entity_generation_are_distinct_identities();
     return check_summary();
 }

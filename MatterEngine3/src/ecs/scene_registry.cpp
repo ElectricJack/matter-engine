@@ -612,7 +612,8 @@ SceneModule::SceneModule(flecs::world& world) {
     world.module<SceneModule>();
 
     world.component<SceneEntityId>()
-        .member("value", &SceneEntityId::value);
+        .member("value", &SceneEntityId::value)
+        .member("generation", &SceneEntityId::generation);
 
     world.component<PartInstance>()
         .member("part_hash", &PartInstance::part_hash)

@@ -10,6 +10,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
 #include <unordered_map>
 #include <vector>
 
@@ -18,10 +19,42 @@
 
 namespace matter::render {
 
+// A renderer slot belongs to one serialized binding of one particular ECS
+// entity incarnation.  An entity id alone is insufficient: an editor can
+// recycle it, and an articulated asset can expose several independently
+// transformed rigid pieces.
+struct DynamicInstanceKey {
+    uint64_t entity_id = 0;
+    uint32_t entity_generation = 0;
+    uint32_t binding_index = 0;
+
+    bool operator==(const DynamicInstanceKey& other) const noexcept {
+        return entity_id == other.entity_id &&
+               entity_generation == other.entity_generation &&
+               binding_index == other.binding_index;
+    }
+    bool operator<(const DynamicInstanceKey& other) const noexcept {
+        if (entity_id != other.entity_id) return entity_id < other.entity_id;
+        if (entity_generation != other.entity_generation) return entity_generation < other.entity_generation;
+        return binding_index < other.binding_index;
+    }
+};
+
+struct DynamicInstanceKeyHash {
+    size_t operator()(const DynamicInstanceKey& value) const noexcept {
+        const uint64_t folded = value.entity_id ^ (uint64_t(value.entity_generation) << 32u) ^ value.binding_index;
+        return static_cast<size_t>(folded ^ (folded >> 33u));
+    }
+};
+
 struct DynamicInstanceInput {
-    matter::scene::SceneEntityId id;
+    DynamicInstanceKey key{};
     uint64_t part_hash = 0;
     Mat4f object_to_world{};
+    // Explicit previous transform lets articulated bindings preserve motion
+    // vectors when a pose is sampled from the fixed/frame snapshot boundary.
+    // Ordinary callers may leave it zero; it then defaults to current.
+    Mat4f previous_object_to_world{};
     bool casts_shadow = true;
 };
 
@@ -42,7 +75,9 @@ struct DynamicSlotChange {
     uint32_t slot_index = UINT32_MAX;
     uint64_t part_hash = 0;
     Mat4f object_to_world{};
+    Mat4f previous_object_to_world{};
     bool casts_shadow = true;
+    DynamicInstanceKey key{};
     matter::scene::SceneEntityId entity_id;
 };
 
@@ -88,16 +123,17 @@ private:
         bool pending_free = false;
         uint32_t generation = 0;
         uint64_t retire_serial = 0;
-        matter::scene::SceneEntityId entity_id{};
+        DynamicInstanceKey key{};
         uint64_t part_hash = 0;
         Mat4f object_to_world{};
+        Mat4f previous_object_to_world{};
         bool casts_shadow = true;
     };
 
     std::vector<Slot> slots_;
     std::vector<uint32_t> free_indices_;
     std::vector<uint32_t> pending_free_;
-    std::unordered_map<uint64_t, uint32_t> entity_to_slot_;
+    std::unordered_map<DynamicInstanceKey, uint32_t, DynamicInstanceKeyHash> key_to_slot_;
     std::vector<DynamicSlotChange> changes_;
     uint64_t current_serial_ = 0;
     uint32_t capacity_ = 0;

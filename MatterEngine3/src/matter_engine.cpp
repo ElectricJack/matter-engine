@@ -4222,6 +4222,8 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     {
         scene::BridgeErrorSink sink{};
         std::string bridge_err;
+        impl_->dynamic_bridge.set_animation_pose_snapshots(
+            &impl_->ecs_runtime.animation_systems().pose_snapshots());
         impl_->dynamic_bridge.reconcile(impl_->ecs_runtime.world(), sink, bridge_err);
         auto changes = impl_->dynamic_bridge.drain();
         std::vector<render::DynamicSlotChange> valid;

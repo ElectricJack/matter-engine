@@ -7461,7 +7461,7 @@ bool VkSceneRenderer::update_dynamic_instances(
                 const PartRecord& part = parts_[static_cast<size_t>(found->second)];
                 GpuInstance instance{};
                 instance.object_to_world = pack_glsl_mat4(change.object_to_world);
-                instance.previous_object_to_world = instance.object_to_world;
+                instance.previous_object_to_world = pack_glsl_mat4(change.previous_object_to_world);
                 instance.part_slot = static_cast<uint32_t>(found->second);
                 instance.cluster_start = part.cluster_start;
                 instance.cluster_count = part.cluster_count;
@@ -7479,7 +7479,7 @@ bool VkSceneRenderer::update_dynamic_instances(
                     return false;
                 }
                 GpuInstance& instance = dynamic_instance_staging_[change.slot_index];
-                instance.previous_object_to_world = instance.object_to_world;
+                instance.previous_object_to_world = pack_glsl_mat4(change.previous_object_to_world);
                 instance.object_to_world = pack_glsl_mat4(change.object_to_world);
                 instance.history_valid = 1;
                 dynamic_dirty_ = true;

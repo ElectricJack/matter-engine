@@ -10,6 +10,11 @@ bool mat_equal(const Mat4f& a, const Mat4f& b) {
     return std::memcmp(a.m, b.m, sizeof(a.m)) == 0;
 }
 
+bool matrix_is_zero(const Mat4f& value) {
+    Mat4f zero{};
+    return mat_equal(value, zero);
+}
+
 } // namespace
 
 DynamicInstanceSlots::DynamicInstanceSlots(uint32_t capacity) : capacity_(capacity) {
@@ -21,13 +26,16 @@ DynamicInstanceSlots::DynamicInstanceSlots(uint32_t capacity) : capacity_(capaci
 }
 
 DynamicInstanceSlots::UpsertResult DynamicInstanceSlots::upsert(const DynamicInstanceInput& input) {
-    auto it = entity_to_slot_.find(input.id.value);
-    if (it != entity_to_slot_.end()) {
+    const Mat4f previous = matrix_is_zero(input.previous_object_to_world)
+        ? input.object_to_world : input.previous_object_to_world;
+    auto it = key_to_slot_.find(input.key);
+    if (it != key_to_slot_.end()) {
         uint32_t idx = it->second;
         Slot& s = slots_[idx];
 
         bool part_changed = (s.part_hash != input.part_hash);
         bool transform_changed = !mat_equal(s.object_to_world, input.object_to_world) ||
+                                  !mat_equal(s.previous_object_to_world, previous) ||
                                   s.casts_shadow != input.casts_shadow;
 
         if (!part_changed && !transform_changed) {
@@ -36,12 +44,14 @@ DynamicInstanceSlots::UpsertResult DynamicInstanceSlots::upsert(const DynamicIns
 
         s.part_hash = input.part_hash;
         s.object_to_world = input.object_to_world;
+        s.previous_object_to_world = previous;
         s.casts_shadow = input.casts_shadow;
 
         DynamicSlotChangeKind kind = part_changed ? DynamicSlotChangeKind::Bind
                                                    : DynamicSlotChangeKind::Transform;
         changes_.push_back(DynamicSlotChange{kind, idx, s.part_hash, s.object_to_world,
-                                              s.casts_shadow, s.entity_id});
+                                              s.previous_object_to_world, s.casts_shadow, s.key,
+                                              {s.key.entity_id}});
         return {DynamicSlotHandle{idx, s.generation}, SlotResult::Ok};
     }
 
@@ -55,16 +65,18 @@ DynamicInstanceSlots::UpsertResult DynamicInstanceSlots::upsert(const DynamicIns
     Slot& s = slots_[idx];
     s.alive = true;
     s.pending_free = false;
-    s.entity_id = input.id;
+    s.key = input.key;
     s.part_hash = input.part_hash;
     s.object_to_world = input.object_to_world;
+    s.previous_object_to_world = previous;
     s.casts_shadow = input.casts_shadow;
 
-    entity_to_slot_[input.id.value] = idx;
+    key_to_slot_[input.key] = idx;
     ++active_count_;
 
     changes_.push_back(DynamicSlotChange{DynamicSlotChangeKind::Bind, idx, s.part_hash,
-                                          s.object_to_world, s.casts_shadow, s.entity_id});
+                                          s.object_to_world, s.previous_object_to_world, s.casts_shadow,
+                                          s.key, {s.key.entity_id}});
     return {DynamicSlotHandle{idx, s.generation}, SlotResult::Ok};
 }
 
@@ -83,11 +95,12 @@ SlotResult DynamicInstanceSlots::remove(DynamicSlotHandle handle) {
     s.retire_serial = current_serial_;
     ++s.generation;
 
-    entity_to_slot_.erase(s.entity_id.value);
+    key_to_slot_.erase(s.key);
     --active_count_;
 
     changes_.push_back(DynamicSlotChange{DynamicSlotChangeKind::Remove, handle.index, s.part_hash,
-                                          s.object_to_world, s.casts_shadow, s.entity_id});
+                                          s.object_to_world, s.previous_object_to_world, s.casts_shadow,
+                                          s.key, {s.key.entity_id}});
     pending_free_.push_back(handle.index);
     return SlotResult::Ok;
 }

@@ -13,6 +13,7 @@
 
 #include "matter/ecs.h"
 #include "matter/scene.h"
+#include "render/animation_rigid_bridge.h"
 #include "render/dynamic_instance_slots.h"
 
 #include "flecs.h"
@@ -50,7 +51,9 @@ struct ScenePick {
 // Call reconcile() once per frame AFTER physics/transform propagation.
 class DynamicSceneBridge {
 public:
-    explicit DynamicSceneBridge(uint32_t slot_capacity);
+    explicit DynamicSceneBridge(uint32_t slot_capacity,
+                                const animation::AnimationPoseSnapshotStore* snapshots = nullptr);
+    void set_animation_pose_snapshots(const animation::AnimationPoseSnapshotStore* snapshots) noexcept;
 
     // Frame reconciliation: queries all entities with SceneEntityId + WorldTransform + PartInstance,
     // compares against previous frame state, and emits Bind/Transform/Remove changes.
@@ -77,19 +80,20 @@ public:
 
 private:
     struct TrackedEntity {
-        SceneEntityId id{};
-        uint64_t part_hash = 0;
-        Mat4f transform{};
-        bool casts_shadow = true;
-        bool visible = true;
-        bool has_error = false;
+        render::DynamicInstanceKey key{};
         render::DynamicSlotHandle slot{};
+        bool has_error = false;
     };
+    struct EntityMotion { Mat4f current{}; bool initialized = false; };
 
     static uint32_t fold_pick_token(uint64_t value);
 
     render::DynamicInstanceSlots slots_;
-    std::unordered_map<uint64_t, TrackedEntity> tracked_;  // keyed by SceneEntityId::value
+    render::AnimationRigidBridge rigid_bridge_;
+    std::unordered_map<render::DynamicInstanceKey, TrackedEntity,
+                       render::DynamicInstanceKeyHash> tracked_;
+    std::unordered_map<render::DynamicInstanceKey, EntityMotion,
+                       render::DynamicInstanceKeyHash> entity_motion_;
 };
 
 } // namespace matter::scene
