@@ -18,6 +18,7 @@
 #include "properties_panel.h"
 #include "selection_set.h"
 #include "gizmo.h"
+#include "animation_debug_overlay.h"
 
 struct GLFWwindow;
 namespace matter { class VulkanDevice; struct VulkanFrame; }
@@ -101,6 +102,9 @@ struct ViewerStats {
     float gpu_vol_ms            = 0.0f;
     bool  gpu_timers_supported  = false;
     int   debug_view_mode       = 0;
+    // Viewer-local diagnostic toggles.  These are deliberately not part of
+    // the animation service or checkpoint state.
+    AnimationDebugOverlayOptions animation_overlay{};
 };
 
 void reset_lighting_controls(ViewerStats& stats);

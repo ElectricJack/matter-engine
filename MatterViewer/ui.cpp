@@ -637,6 +637,7 @@ void Ui::draw_debug_panel(ViewerStats& s) {
     ImGui::SeparatorText("Debug View");
     const char* debug_views[] = { "None", "Normals" };
     ImGui::Combo("View", &s.debug_view_mode, debug_views, 2);
+    draw_animation_debug_overlay_controls(s.animation_overlay);
 
     ImGui::End();
 }

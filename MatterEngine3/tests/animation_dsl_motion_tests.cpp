@@ -102,5 +102,26 @@ void test_imported_motion_source_span_preserves_module() {
           "imported motion diagnostic preserves its module specifier");
     std::filesystem::remove_all(root, ec);
 }
+void test_animated_rig_gallery_source_bakes() {
+    const std::filesystem::path source_path =
+        std::filesystem::path("..") / "examples" / "world_demo" / "objects" / "AnimatedRigGallery.js";
+    std::ifstream input(source_path, std::ios::binary);
+    CHECK(input.good(), "animated gallery source is present beside the world-demo objects");
+    if (!input.good()) return;
+    const std::string source((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    script_host::ScriptHost host;
+    const uint64_t crate_hash = 0xC4A11Eull;
+    const std::string crate_module = "Crate";
+    const auto result = host.bake_source(source, "{}", {}, &crate_hash, 1, &crate_module);
+    if (!result.error.ok) std::printf("gallery bake error: %s (%s)\n", result.error.message.c_str(), result.error.code.c_str());
+    CHECK(result.error.ok, "animated gallery remains a deterministic bake-time DSL source");
+    const auto& build = host.last_animation_build();
+    CHECK(build && build->rig.joints.size() < 128 && build->targets.size() <= 8 &&
+          build->graph.nodes.size() <= 32,
+          "gallery stays inside the declared v1 joints/targets/graph budgets");
+    CHECK(build && build->clips.size() == 2 && build->skin_bindings.size() == 1 &&
+          build->rigid_bindings.size() == 3 && build->attachments.size() == 1,
+          "gallery contains generated clips, deformable skin, rigid segments, and socket attachment");
 }
-int main(){test_generated_loop_and_controls();test_validation_rejects_bad_motion_graph();test_collinear_target_requires_pole();test_generate_cannot_author_geometry();test_generate_cannot_mutate_terrain_or_join_cursor();test_motion_options_fail_closed();test_motion_source_spans_are_preserved();test_imported_motion_source_span_preserves_module();if(g_failures){std::printf("animation_dsl_motion_tests: %d failure(s)\n",g_failures);return 1;}std::printf("animation_dsl_motion_tests: all tests passed\n");return 0;}
+}
+int main(){test_generated_loop_and_controls();test_validation_rejects_bad_motion_graph();test_collinear_target_requires_pole();test_generate_cannot_author_geometry();test_generate_cannot_mutate_terrain_or_join_cursor();test_motion_options_fail_closed();test_motion_source_spans_are_preserved();test_imported_motion_source_span_preserves_module();test_animated_rig_gallery_source_bakes();if(g_failures){std::printf("animation_dsl_motion_tests: %d failure(s)\n",g_failures);return 1;}std::printf("animation_dsl_motion_tests: all tests passed\n");return 0;}
