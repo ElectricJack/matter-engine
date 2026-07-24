@@ -552,15 +552,28 @@ bool HostBaker::cached(uint64_t resolved_hash) {
     // intentionally mirrors PartStore's scratch-first root choice: a linked
     // scratch PART with a torn MANM/MACM sibling set must be rebuilt in scratch,
     // never silently accepted from a persistent-cache generation.
-    auto check_path = [resolved_hash](const std::string& base_dir) -> bool {
+    auto check_path = [this, resolved_hash](const std::string& base_dir) -> bool {
         if (base_dir.empty()) return false;
         std::string path = base_dir + "/" + part_asset::cache_path_resolved(resolved_hash);
         if (!part_asset::is_cache_artifact_header_compatible(path, resolved_hash, part_asset::kFormatVersionV2)) return false;
         std::optional<part_asset::PartAnimationLink> link;
         if (!part_asset::load_animation_link(path, resolved_hash, link)) return false;
         if (!link) return true;
+        if (cache_validation_hook_for_tests_) cache_validation_hook_for_tests_();
         BLASManager checked; matter::animation::AnimAsset asset; matter::animation::Diagnostics diagnostics;
-        return matter::animation::load_committed_animation_bundle(base_dir, resolved_hash, checked, asset, diagnostics);
+        if (!matter::animation::load_committed_animation_bundle(base_dir, resolved_hash, checked, asset, diagnostics)) return false;
+
+        // The PART and its sibling manifest are independently published.  A
+        // complete bundle that changed after the initial ANLK read is not the
+        // generation this probe selected, so reject it and let the graph
+        // rebake/retry from a fresh root snapshot.  The runtime loader makes
+        // the identical stable-link check before accepting a loaded part.
+        std::optional<part_asset::PartAnimationLink> final_link;
+        if (!part_asset::load_animation_link(path, resolved_hash, final_link) || !final_link ||
+            final_link->nonce_high != link->nonce_high ||
+            final_link->nonce_low != link->nonce_low ||
+            asset.nonce.high != link->nonce_high || asset.nonce.low != link->nonce_low) return false;
+        return true;
     };
 
     if (!transient_dir_.empty()) {

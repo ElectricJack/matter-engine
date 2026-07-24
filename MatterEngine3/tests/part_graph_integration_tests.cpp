@@ -114,6 +114,50 @@ static void test_animated_cache_sibling_contract() {
     CHECK(baker.cached(animated_result.resolved_hash), "A8 MACM rebuild restores the cache hit");
 }
 
+// A8 cache validation must reject a generation that changes after the PART
+// link has been selected but before its MANM/MACM siblings have been checked.
+// The hook deterministically simulates the atomic publisher interleaving at
+// that exact boundary; the following probe then accepts the fully new set.
+static void test_animated_cache_rejects_changed_link_during_validation() {
+    namespace fs = std::filesystem;
+    namespace pg = part_graph;
+    const fs::path root = fs::temp_directory_path() / "me3_a8_cache_link_toctou";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(root / "parts", ec);
+    CHECK(!ec, "A8 TOCTOU fixture directory is created");
+    struct Cleanup { fs::path root; ~Cleanup() { std::error_code ignored; fs::remove_all(root, ignored); } } cleanup{root};
+    if (ec) return;
+
+    const std::string source =
+        "class CacheLinkRaceA8 extends Part { build(p) {"
+        "this.beginRig('rig');this.root('root');this.bone('arm',[1,0,0]);this.endRig();"
+        "this.beginClip('idle',{duration:1,sampleRate:1});this.key('root',0,{});this.endClip();"
+        "this.segments('armPart',{joints:['arm']});"
+        "this.bind('armPart',()=>{this.beginShape(SHAPE.triangles);"
+        "this.vertex(0,0,0);this.vertex(1,0,0);this.vertex(0,1,0);this.endShape();});"
+        "} }";
+    script_host::ScriptHost host;
+    script_host::BakeOptions options;
+    options.parts_dir = root.string();
+    const auto first = host.bake_source(source, "{}", options);
+    CHECK(first.error.ok, "A8 TOCTOU fixture publishes the first linked generation");
+    if (!first.error.ok) return;
+
+    pg::HostBaker baker(host, root.string());
+    bool published_replacement = false;
+    baker.set_cache_validation_hook_for_tests([&] {
+        const auto replacement = host.bake_source(source, "{}", options);
+        published_replacement = replacement.error.ok && replacement.resolved_hash == first.resolved_hash;
+    });
+    CHECK(!baker.cached(first.resolved_hash),
+          "A8 cache probe rejects a PART link changed while validating its bundle");
+    CHECK(published_replacement, "A8 TOCTOU hook atomically publishes a replacement generation");
+    baker.set_cache_validation_hook_for_tests({});
+    CHECK(baker.cached(first.resolved_hash),
+          "A8 next cache probe accepts the stable replacement generation");
+}
+
 // A8 root-consistency regression: the cache probe and runtime loader must make
 // the same scratch-first selection.  If a scratch PART is present but its
 // linked siblings are torn, the valid persistent generation is deliberately
@@ -683,6 +727,7 @@ int main(int argc, char** argv) {
     test_lod_variant_sidecar();
 
     test_animated_cache_sibling_contract();
+    test_animated_cache_rejects_changed_link_during_validation();
     test_scratch_linked_bundle_never_falls_back_to_cache();
 
     if (g_failures == 0) printf("All part_graph integration tests passed\n");
