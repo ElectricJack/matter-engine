@@ -22,6 +22,7 @@ UNAME_M := $(shell uname -m)
 
 # Default to Linux settings
 PLATFORM = PLATFORM_DESKTOP
+GRAPHICS = GRAPHICS_API_OPENGL_33
 LIBTYPE = STATIC
 RAYLIB_RELEASE_PATH = ../../../Libraries/raylib
 RAYLIB_PATH = $(RAYLIB_RELEASE_PATH)/src
@@ -106,7 +107,7 @@ ANIMATION_IR_TARGET = animation_ir_tests
 ANIMATION_IR_CPP = animation_ir_tests.cpp ../src/animation/animation_ir.cpp ../src/animation/animation_validate.cpp
 
 ANIMATION_ASSET_TARGET = animation_asset_tests
-ANIMATION_ASSET_CPP = animation_asset_tests.cpp ../src/animation/anim_asset.cpp ../src/animation/anim_bundle.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_ir.cpp ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp ../src/part_asset_v2.cpp $(COMMON_MSL_BLAS_SRC) $(MSL)/material_registry.c
+ANIMATION_ASSET_CPP = animation_asset_tests.cpp ../src/animation/anim_asset.cpp ../src/animation/anim_bundle.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_ir.cpp ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp ../src/part_asset_v2.cpp $(COMMON_MSL_BLAS_SRC) $(MSL)/material_registry.c
 
 ANIMATION_DSL_RIG_TARGET = animation_dsl_rig_tests
 ANIMATION_DSL_RIG_CPP = animation_dsl_rig_tests.cpp $(filter-out script_host_tests.cpp,$(SCRIPT_CPP)) ../src/render/indexed_part_geometry.cpp
@@ -544,6 +545,9 @@ PARTSTORE_CPP = partstore_tests.cpp ../src/render/part_store.cpp \
                 ../src/render/matrix_math.cpp \
                 ../src/render/raster_mesh.cpp ../src/lod_select.cpp \
                 ../src/sector_grid.cpp ../src/lod_bake.cpp ../src/part_asset_v2.cpp \
+                ../src/animation/animation_asset_store.cpp ../src/animation/anim_asset.cpp \
+                ../src/animation/anim_bundle.cpp ../src/animation/animation_binding_bake.cpp \
+                ../src/animation/animation_ir.cpp ../src/render/indexed_part_geometry.cpp \
                 $(MSL)/mesh_simplifier.cpp $(MSL)/mesh_indexed.cpp \
                 $(COMMON_MSL_BLAS_SRC)
 PARTSTORE_C   = $(MSL)/material_registry.c
@@ -556,7 +560,7 @@ PARTSTORE_C   = $(MSL)/material_registry.c
 # the graph_integration/example/gallery/treebake/grasslod/stressforest
 # family all use -DMATTER_HAVE_SCRIPT_HOST + QJS_INC.
 SCRIPT_TARGET = script_host_tests
-SCRIPT_CPP = script_host_tests.cpp ../src/part_graph.cpp ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_animation.cpp ../src/animation/animation_ir.cpp ../src/animation/animation_validate.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+SCRIPT_CPP = script_host_tests.cpp ../src/part_graph.cpp ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_animation.cpp ../src/animation/animation_ir.cpp ../src/animation/animation_validate.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/anim_asset.cpp ../src/animation/anim_bundle.cpp ../src/render/indexed_part_geometry.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
              ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
              ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
              ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
@@ -586,14 +590,7 @@ PF_CPP = ../src/pf_bindings.cpp \
 TERRAIN_SRC = ../src/terrain_field.cpp ../src/terrain_mesher.cpp
 
 GRAPH_INT_TARGET = part_graph_integration_tests
-GRAPH_INT_CPP = part_graph_integration_tests.cpp ../src/part_graph.cpp \
-                ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
-                ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
-                ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
-                ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
-                $(TERRAIN_SRC) \
-                $(PF_CPP) \
-                $(COMMON_MSL_FULL_SRC)
+GRAPH_INT_CPP = part_graph_integration_tests.cpp $(filter-out script_host_tests.cpp,$(SCRIPT_CPP))
 GRAPH_INT_C   = $(COMMON_MSL_C)
 
 EXAMPLE_TARGET = example_world
@@ -1284,10 +1281,14 @@ run-iso: $(ISO_TARGET)
 # SP-3 end-to-end install through the REAL FileModuleResolver/HostBaker adapters.
 $(GRAPH_INT_TARGET): $(GRAPH_INT_OBJS)
 	$(CC) $(GRAPH_INT_OBJS) -o $@ \
-	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
 
 run-graph-integration: $(GRAPH_INT_TARGET)
 	./$(GRAPH_INT_TARGET)
+
+.PHONY: run-animation-provider
+run-animation-provider: $(GRAPH_INT_TARGET)
+	./$(GRAPH_INT_TARGET) --animation-provider-only
 
 # Part graph resolve/dedup/topo/cycle/reachability/cache-miss tests.
 $(GRAPH_TARGET): $(GRAPH_OBJS)

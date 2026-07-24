@@ -1,4 +1,5 @@
 #include "part_store.h"
+#include "animation/anim_bundle.h"
 #include "matrix_math.h"
 
 #include "part_asset_v2.h"     // load_v2, cache_path_resolved, ChildInstance, LodLevels
@@ -420,11 +421,24 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
     TLASManager scratch_tlas(65536);
     std::vector<part_asset::ChildInstance> children;
     part_asset::LodLevels lods_in;   // .part stores LOD0 only (empty levels)
-    if (!part_asset::load_v2(path, part_hash, scratch, scratch_tlas, children, lods_in)) {
+    std::vector<part_asset::VolumeEmitter> emitters;
+    std::optional<part_asset::PartAnimationLink> animation_link;
+    if (!part_asset::load_v2(path, part_hash, scratch, scratch_tlas, children, lods_in, emitters, animation_link)) {
         printf("PartStore: load_v2 failed for %016llx (%s)\n",
                (unsigned long long)part_hash, path.c_str());
         load_failed_.insert(part_hash);
         return nullptr;
+    }
+    const matter::animation::AnimAsset* animation_asset = nullptr;
+    if (animation_link) {
+        // A linked Part is never a valid static fallback. Validate the whole
+        // committed generation before publishing any in-memory Part state.
+        BLASManager checked; matter::animation::AnimAsset loaded; matter::animation::Diagnostics diagnostics;
+        if (!matter::animation::load_committed_animation_bundle(cache_root_, part_hash, checked, loaded, diagnostics)) {
+            printf("PartStore: committed animation bundle failed for %016llx\n", (unsigned long long)part_hash);
+            load_failed_.insert(part_hash); return nullptr;
+        }
+        animation_asset = animation_assets_.insert(std::move(loaded));
     }
 
     // Gather full-res triangles (and their parallel per-triangle TriEx, which
@@ -476,6 +490,7 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
     LoadedPart lp;
     lp.bound_radius = radius;
     lp.children = std::move(children);   // keep the baked child-instance table for the WorldComposer
+    lp.animation_asset = animation_asset;
     lod_bake::LodLevels lods = lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, blas_, triex_ptr);
     for (const auto& L : lods) {
         // A geometry-less part (one that only places children) bakes to empty

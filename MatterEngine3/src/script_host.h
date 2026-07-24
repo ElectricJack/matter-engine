@@ -36,6 +36,10 @@ struct BakeResult {
     BakeError error;              // error.ok == false => nothing written
     uint64_t  resolved_hash = 0;  // valid only when error.ok
     std::string written_path;     // cache_path of the .part (empty on error)
+    // Present only for a fully committed animated bundle.  `written_path` is
+    // still the final Part path so existing static callers remain unchanged.
+    std::string written_anim_path;
+    std::string written_commit_path;
 };
 
 struct TilesetEvalResult {

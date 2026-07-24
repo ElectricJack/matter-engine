@@ -39,6 +39,66 @@ static std::string read_file(const std::string& path) {
     return ss.str();
 }
 
+// A8: an ANLK is a commitment to the complete sibling generation.  Static
+// artifacts remain plain Part cache hits, whereas an animated artifact is a
+// hit only while its validated MANM/MACM siblings are intact.  A failed probe
+// must make the graph rebake the same content hash rather than accepting the
+// Part as a static fallback.
+static void test_animated_cache_sibling_contract() {
+    namespace fs = std::filesystem;
+    namespace pg = part_graph;
+    const fs::path root = fs::temp_directory_path() / "me3_a8_provider_contract";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(root / "parts", ec);
+    CHECK(!ec, "A8 cache fixture directory is created");
+    struct Cleanup { fs::path root; ~Cleanup() { std::error_code ignored; fs::remove_all(root, ignored); } } cleanup{root};
+
+    const std::string static_source =
+        "class StaticA8 extends Part { build(p) { this.beginShape(SHAPE.triangles);"
+        "this.vertex(0,0,0);this.vertex(1,0,0);this.vertex(0,1,0);this.endShape(); } }";
+    const std::string animated_source =
+        "class AnimatedA8 extends Part { build(p) {"
+        "this.beginRig('rig');this.root('root');this.bone('arm',[1,0,0]);this.endRig();"
+        "this.beginClip('idle',{duration:1,sampleRate:1});this.key('root',0,{});this.endClip();"
+        "this.segments('armPart',{joints:['arm']});"
+        "this.bind('armPart',()=>{this.beginShape(SHAPE.triangles);"
+        "this.vertex(0,0,0);this.vertex(1,0,0);this.vertex(0,1,0);this.endShape();});"
+        "} }";
+    script_host::ScriptHost host;
+    script_host::BakeOptions options;
+    options.parts_dir = root.string();
+
+    const auto static_result = host.bake_source(static_source, "{}", options);
+    CHECK(static_result.error.ok && !static_result.written_path.empty(), "A8 static source writes a Part artifact");
+    std::optional<part_asset::PartAnimationLink> static_link;
+    CHECK(part_asset::load_animation_link(static_result.written_path, static_result.resolved_hash, static_link) && !static_link,
+          "A8 static Part remains ANLK-free");
+    CHECK(static_result.written_anim_path.empty() && static_result.written_commit_path.empty(),
+          "A8 static BakeResult exposes no animation siblings");
+
+    const auto animated_result = host.bake_source(animated_source, "{}", options);
+    CHECK(animated_result.error.ok && !animated_result.written_path.empty(), "A8 bound rig writes its Part sibling");
+    CHECK(!animated_result.written_anim_path.empty() && !animated_result.written_commit_path.empty() &&
+          file_exists(animated_result.written_anim_path) && file_exists(animated_result.written_commit_path),
+          "A8 bound rig publishes MANM and MACM siblings");
+    std::optional<part_asset::PartAnimationLink> animated_link;
+    CHECK(part_asset::load_animation_link(animated_result.written_path, animated_result.resolved_hash, animated_link) && animated_link,
+          "A8 animated Part carries a valid ANLK");
+
+    pg::HostBaker baker(host, root.string());
+    CHECK(baker.cached(static_result.resolved_hash), "A8 static Part remains a cache hit");
+    CHECK(baker.cached(animated_result.resolved_hash), "A8 complete animated sibling set is a cache hit");
+
+    { std::ofstream corrupt(animated_result.written_anim_path, std::ios::binary | std::ios::trunc); corrupt << "corrupt"; }
+    CHECK(!baker.cached(animated_result.resolved_hash), "A8 corrupt MANM makes the ANLK generation a cache miss");
+    const auto rebuilt = host.bake_source(animated_source, "{}", options);
+    if (!rebuilt.error.ok) std::printf("A8 rebuild error: %s\n", rebuilt.error.message.c_str());
+    CHECK(rebuilt.error.ok && rebuilt.resolved_hash == animated_result.resolved_hash,
+          "A8 cache miss rebuilds the animated sibling generation");
+    CHECK(baker.cached(animated_result.resolved_hash), "A8 rebuilt siblings restore the cache hit");
+}
+
 // SP-3 Task 7: prove the graph-driven placement path. A parent that declares a
 // child via `static requires` AND places it via placeChild() must, after a real
 // PartGraph::install (FileModuleResolver -> HostBaker -> ScriptHost), produce a
@@ -451,14 +511,21 @@ int main(int argc, char** argv) {
     test_stale_material_cache_migrates();
     if (argc == 2 && std::strcmp(argv[1], "--cache-migration-only") == 0)
         return g_failures == 0 ? 0 : 1;
+    if (argc == 2 && std::strcmp(argv[1], "--animation-provider-only") == 0) {
+        test_animated_cache_sibling_contract();
+        return g_failures == 0 ? 0 : 1;
+    }
 
     // Resolve the demo schemas + shared-lib to ABSOLUTE paths NOW, before any test
     // chdir()s into a sandbox, so test_demo_tree_has_leaves can find the real files
     // regardless of cwd. (They are repo-relative to the tests dir we start in.)
     std::string demo_schemas, demo_sharedlib;
-    { char abs[4096];
-      if (realpath("../examples/world_demo/schemas", abs)) demo_schemas = abs;
-      if (realpath("../shared-lib", abs)) demo_sharedlib = abs; }
+    { std::error_code ec;
+      const auto schemas_path = std::filesystem::absolute("../examples/world_demo/schemas", ec);
+      if (!ec) demo_schemas = schemas_path.string();
+      ec.clear();
+      const auto sharedlib_path = std::filesystem::absolute("../shared-lib", ec);
+      if (!ec) demo_sharedlib = sharedlib_path.string(); }
 
     // Fresh sandbox so parts/<hash>.part and the schemas live in a known place.
     const std::string root = "/tmp/me3_graph_integration";
@@ -535,6 +602,8 @@ int main(int argc, char** argv) {
 
     // SP-3 Task 13: budget-variant baking + .lods sidecar.
     test_lod_variant_sidecar();
+
+    test_animated_cache_sibling_contract();
 
     if (g_failures == 0) printf("All part_graph integration tests passed\n");
     return g_failures == 0 ? 0 : 1;

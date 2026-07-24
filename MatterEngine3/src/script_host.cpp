@@ -7,6 +7,10 @@ extern "C" {
 #include "world_base.js.h"
 #include "part_asset_v2.h"   // SP-1 v2 helper (compute_resolved_hash, save_v2)
 #include "animation/animation_validate.h"
+#include "animation/anim_asset.h"
+#include "animation/anim_bundle.h"
+#include "animation/animation_binding_bake.h"
+#include "render/indexed_part_geometry.h"
 #include "triangle_emit.hpp" // direct-triangle (mesh) session buffer
 #include "dsl_state.h"
 #include "dsl_bindings.h"
@@ -39,6 +43,45 @@ extern "C" {
 #include <utility>   // std::pair
 
 namespace script_host {
+
+namespace {
+uint64_t part_body_checksum(const std::filesystem::path& path) {
+    FILE* f = std::fopen(path.string().c_str(), "rb");
+    if (!f) return 0;
+    std::fseek(f, 0, SEEK_END); const long size = std::ftell(f); std::fseek(f, 0, SEEK_SET);
+    std::vector<unsigned char> bytes(size > 40 ? size_t(size) : 0);
+    const bool ok = !bytes.empty() && std::fread(bytes.data(), 1, bytes.size(), f) == bytes.size();
+    std::fclose(f); if (!ok) return 0;
+    uint64_t h=1469598103934665603ull; for (size_t i=40;i<bytes.size();++i) { h^=bytes[i]; h*=1099511628211ull; } return h;
+}
+void asset_section(matter::animation::AnimAsset& a, matter::animation::AnimSectionKind k, const std::string& s) {
+    a.sections.push_back({k, std::vector<uint8_t>(s.begin(), s.end())});
+}
+bool make_animation_asset(const dsl::DslState& state, uint64_t hash, matter::animation::BuildNonce nonce,
+                          const BLASManager& blas, matter::animation::AnimAsset& asset,
+                          matter::animation::BindingBake& binding) {
+    const auto* authored = state.authored_animation(); const auto& canonical = state.canonical_animation();
+    if (!authored || !canonical || authored->ozz_skeleton_blob.empty()) return false;
+    asset = {}; asset.resolved_hash=hash; asset.nonce=nonce;
+    asset.target_abi_tag=matter::animation::kAnimationTargetAbiTag; asset.ozz_tag_hash=matter::animation::kAnimationOzzTagHash;
+    asset_section(asset,matter::animation::AnimSectionKind::RigSchema,canonical->encode());
+    asset_section(asset,matter::animation::AnimSectionKind::InputTargetSchemas,canonical->authored_state);
+    asset_section(asset,matter::animation::AnimSectionKind::GraphControllerBytecode,canonical->encode());
+    asset.sections.push_back({matter::animation::AnimSectionKind::OzzSkeleton,authored->ozz_skeleton_blob});
+    std::vector<uint8_t> clips; for(const auto& c:authored->clips) clips.insert(clips.end(),c.ozz_blob.begin(),c.ozz_blob.end());
+    asset.sections.push_back({matter::animation::AnimSectionKind::OzzClips,std::move(clips)});
+    std::vector<Tri> tris; std::vector<TriEx> ex; for(const auto& e:blas.get_entries()){tris.insert(tris.end(),e->triangles.begin(),e->triangles.end()); ex.insert(ex.end(),e->tri_extra.begin(),e->tri_extra.end());}
+    if(tris.empty()) return false; std::vector<viewer::IndexedPartGeometry> lods{viewer::build_indexed_part_geometry(tris.data(),ex.size()==tris.size()?ex.data():nullptr,(int)tris.size())};
+    std::vector<matter::animation::JointIndex> selected; float falloff=1.0f;
+    for(const auto& skin:authored->skin_bindings) { falloff=skin.falloff; for(const auto& name:skin.joints) for(size_t i=0;i<canonical->rig.joints.size();++i) if(canonical->rig.joints[i].name==name) selected.push_back((matter::animation::JointIndex)i); }
+    if(selected.empty() && canonical->rig.joints.size()>1) selected.push_back(1);
+    if(selected.empty() || !matter::animation::build_skin_binding(canonical->rig,selected,lods,falloff,binding)) return false;
+    if(authored->skin_bindings.empty()) binding.lods.clear();
+    for(const auto& r:authored->rigid_bindings) for(size_t i=0;i<canonical->rig.joints.size();++i) if(canonical->rig.joints[i].name==r.joint) binding.rigid_segments.push_back({r.name,(matter::animation::JointIndex)i,r.local,r.decorative,r.geometry});
+    for(const auto& x:authored->attachments) binding.attachments.push_back({x.name,x.socket.empty()?x.joint:x.socket,x.socket.empty()?matter::animation::AttachmentTargetKind::Joint:matter::animation::AttachmentTargetKind::Socket,x.child_hash,x.local});
+    return matter::animation::set_anim_binding_bake(asset,binding);
+}
+}
 
 // Shared sentinel: the exact message merge_params_canonical sets when the source
 // has no class extending Part (the tileset case — Tileset extends Part indirectly).
@@ -1438,10 +1481,40 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             emitters.push_back(ve);
         }
         prof_mesh = prof_lap();
-        bool ok = part_asset::save_v2(path, blas, tlas,
-                                      kids.empty() ? nullptr : kids.data(), kids.size(),
-                                      lods, emitters, r.resolved_hash);
-        if (!ok) { r.error.ok = false; r.error.message = "save_v2 failed"; }
+        // Static output deliberately keeps the exact legacy write path.  An
+        // authored rig instead writes isolated candidates and publishes the
+        // three siblings atomically; an ANLK can never become a static hit.
+        bool ok = false;
+        matter::animation::Diagnostics diagnostics;
+        const auto* authored_animation = state.authored_animation();
+        const bool has_persisted_binding = authored_animation &&
+            (!authored_animation->skin_bindings.empty() || !authored_animation->rigid_bindings.empty() || !authored_animation->attachments.empty());
+        if (!has_persisted_binding) {
+            ok = part_asset::save_v2(path, blas, tlas,
+                                     kids.empty() ? nullptr : kids.data(), kids.size(),
+                                     lods, emitters, r.resolved_hash);
+        } else {
+            const auto root = opts.parts_dir.empty() ? std::filesystem::path(".") : std::filesystem::path(opts.parts_dir);
+            const auto nonce = matter::animation::generate_build_nonce();
+            const auto final_part = root / part_asset::cache_path_resolved(r.resolved_hash);
+            const auto part_candidate = std::filesystem::path(final_part.string() + "." + std::to_string(nonce.high) + ".candidate");
+            const auto anim_candidate = std::filesystem::path(matter::animation::cache_path_anim(root,r.resolved_hash).string() + "." + std::to_string(nonce.low) + ".candidate");
+            matter::animation::AnimAsset asset; matter::animation::BindingBake binding;
+            const part_asset::PartAnimationLink link{1,1,r.resolved_hash,nonce.high,nonce.low};
+            ok = make_animation_asset(state,r.resolved_hash,nonce,blas,asset,binding) &&
+                 part_asset::save_v2(part_candidate.string(),blas,tlas,kids.empty()?nullptr:kids.data(),kids.size(),lods,emitters,link,r.resolved_hash) &&
+                 matter::animation::save_anim_candidate(asset,anim_candidate,diagnostics);
+            matter::animation::BundleIdentity identity; identity.resolved_hash=r.resolved_hash; identity.nonce=nonce;
+            identity.part_body_checksum=part_body_checksum(part_candidate); identity.anim_body_checksum=matter::animation::anim_body_checksum(asset);
+            identity.target_abi_tag=matter::animation::kAnimationTargetAbiTag; identity.ozz_tag_hash=matter::animation::kAnimationOzzTagHash;
+            identity.lods=matter::animation::manifest_lod_signatures(binding);
+            if (ok) ok=matter::animation::publish_animation_bundle({part_candidate,anim_candidate,root},identity,diagnostics);
+            if (ok) { r.written_anim_path=matter::animation::cache_path_anim(root,r.resolved_hash).string(); r.written_commit_path=matter::animation::cache_path_anim_commit(root,r.resolved_hash).string(); }
+        }
+        if (!ok) {
+            r.error.ok = false;
+            r.error.message = diagnostics.items.empty() ? "save_v2 failed" : diagnostics.items.front().message;
+        }
         else {
             r.written_path = path;
             part_asset::FlattenHints hints;

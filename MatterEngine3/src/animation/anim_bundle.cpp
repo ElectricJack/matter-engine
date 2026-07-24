@@ -98,7 +98,10 @@ bool sync_parent(const std::filesystem::path& p) {
     const bool ok=fsync(fd)==0; const int closed=close(fd); return ok&&closed==0;
 #endif
 }
-bool flush_existing(const std::filesystem::path& p) { FILE* f=std::fopen(p.string().c_str(),"rb");if(!f)return false;bool ok=durable_flush(f);bool closed=std::fclose(f)==0;return ok&&closed; }
+// Backups are created by copy_file, so they are regular writable files.  Open
+// them read/write: Windows rejects `_commit` on a read-only descriptor even
+// though there is no buffered payload to flush.
+bool flush_existing(const std::filesystem::path& p) { FILE* f=std::fopen(p.string().c_str(),"rb+");if(!f)return false;bool ok=durable_flush(f);bool closed=std::fclose(f)==0;return ok&&closed; }
 bool write(const std::filesystem::path&p,const std::vector<uint8_t>&b){FILE*f=std::fopen(p.string().c_str(),"wb");if(!f)return false;bool ok=std::fwrite(b.data(),1,b.size(),f)==b.size()&&durable_flush(f);bool closed=std::fclose(f)==0;return ok&&closed;}
 bool checksum_part(const std::filesystem::path&p,uint64_t&out){std::vector<uint8_t>b;if(!read(p,b)||b.size()<40)return false;out=fnv(b.data()+40,b.size()-40);return true;}
 std::string nonce_suffix(const BuildNonce& n) { char out[40]; std::snprintf(out,sizeof out,".%016llx%016llx",(unsigned long long)n.high,(unsigned long long)n.low); return out; }

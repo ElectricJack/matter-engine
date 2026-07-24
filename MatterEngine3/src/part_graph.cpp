@@ -12,6 +12,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "animation/anim_bundle.h"
 
 namespace part_graph {
 
@@ -550,8 +551,12 @@ bool HostBaker::cached(uint64_t resolved_hash) {
     auto check_path = [resolved_hash](const std::string& base_dir) -> bool {
         if (base_dir.empty()) return false;
         std::string path = base_dir + "/" + part_asset::cache_path_resolved(resolved_hash);
-        return part_asset::is_cache_artifact_header_compatible(
-            path, resolved_hash, part_asset::kFormatVersionV2);
+        if (!part_asset::is_cache_artifact_header_compatible(path, resolved_hash, part_asset::kFormatVersionV2)) return false;
+        std::optional<part_asset::PartAnimationLink> link;
+        if (!part_asset::load_animation_link(path, resolved_hash, link)) return false;
+        if (!link) return true;
+        BLASManager checked; matter::animation::AnimAsset asset; matter::animation::Diagnostics diagnostics;
+        return matter::animation::load_committed_animation_bundle(base_dir, resolved_hash, checked, asset, diagnostics);
     };
 
     // Check scratch first (if transient_dir_ is configured)

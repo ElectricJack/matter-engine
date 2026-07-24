@@ -5,6 +5,7 @@
 #include "lod_select.h"         // lod_select::PartLodTable
 #include "part_asset_v2.h"      // part_asset::ChildInstance
 #include "raster_mesh.h"        // RasterMeshData
+#include "animation/animation_asset_store.h"
 
 #include <cstdint>
 #include <functional>
@@ -56,6 +57,7 @@ struct LoadedPart {
     std::vector<part_asset::FlatInstanceRef> flat_refs;  // only refs with inline_cutover > 0
     float    inline_cutover  = 0.0f;   // max over flat_refs; 0 = no cutover refs
     uint32_t fine_cluster_count = 0;   // clusters[0..fine_cluster_count-1] are segment-0
+    const matter::animation::AnimAsset* animation_asset = nullptr; // immutable store-owned peer
 };
 
 // Walk the part tree rooted at root_hash depth-first, depth-capped at 8.
@@ -101,6 +103,7 @@ public:
     BLASManager& blas() { return blas_; }
     const std::string& cache_root() const { return cache_root_; }
     size_t loaded_count() const { return loaded_.size(); }
+    const matter::animation::AnimationAssetStore& animation_assets() const { return animation_assets_; }
 
     // LOD table for the SectorResolver: radius + thresholds per loaded part.
     lod_select::PartLodTable part_lod_table() const;
@@ -132,6 +135,7 @@ private:
     std::string                       scratch_dir_;     // Task 2: transient scratch dir
     BLASManager                       blas_;
     std::map<uint64_t, LoadedPart>    loaded_;
+    matter::animation::AnimationAssetStore animation_assets_;
     std::set<uint64_t>                load_failed_;      // suppress repeat logging
 };
 

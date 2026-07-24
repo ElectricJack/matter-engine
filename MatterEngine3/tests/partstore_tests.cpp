@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -13,11 +14,74 @@
 #include "lod_select.h"
 #include "blas_manager.hpp"
 #include "tlas_manager.hpp"
+#include "animation/anim_asset.h"
+#include "animation/anim_bundle.h"
+#include "animation/animation_binding_bake.h"
 
 static int g_failures = 0;
 #define CHECK(cond, msg) do { \
     if (!(cond)) { printf("  FAIL: %s\n", msg); ++g_failures; } \
 } while(0)
+
+static uint64_t part_checksum(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(input)), {});
+    uint64_t hash = 1469598103934665603ull;
+    for (size_t i = 40; i < bytes.size(); ++i) { hash ^= bytes[i]; hash *= 1099511628211ull; }
+    return hash;
+}
+
+static matter::animation::AnimAsset rigid_asset(uint64_t hash, matter::animation::BuildNonce nonce) {
+    using namespace matter::animation;
+    AnimAsset asset;
+    asset.resolved_hash = hash;
+    asset.nonce = nonce;
+    asset.target_abi_tag = kAnimationTargetAbiTag;
+    asset.ozz_tag_hash = kAnimationOzzTagHash;
+    asset.sections = {{AnimSectionKind::RigSchema,{1}}, {AnimSectionKind::InputTargetSchemas,{2}},
+                      {AnimSectionKind::GraphControllerBytecode,{3}}, {AnimSectionKind::OzzSkeleton,{7}},
+                      {AnimSectionKind::OzzClips,{8}}};
+    BindingBake binding;
+    matter::Mat4f identity{}; identity.m[0]=identity.m[5]=identity.m[10]=identity.m[15]=1.0f;
+    binding.inverse_bind_matrices.push_back(identity);
+    RigidSegmentBake rigid; rigid.name="segment"; rigid.joint=0; rigid.geometry.push_back({0,1,0,1});
+    binding.rigid_segments.push_back(rigid);
+    if (!set_anim_binding_bake(asset, binding)) std::abort();
+    return asset;
+}
+
+static void test_partstore_owns_committed_animation_and_keeps_live_last_good() {
+    namespace fs = std::filesystem;
+    namespace anim = matter::animation;
+    const fs::path root = fs::temp_directory_path() / "me3_a8_partstore_animation";
+    std::error_code ec; fs::remove_all(root, ec); fs::create_directories(root / "parts", ec);
+    struct Cleanup { fs::path root; ~Cleanup() { std::error_code ignored; fs::remove_all(root, ignored); } } cleanup{root};
+    constexpr uint64_t hash = 0xa81a8a1a8a1a8a1aull;
+    const anim::BuildNonce nonce{0x123456789abcdef0ull, 0x0fedcba987654321ull};
+    BLASManager source; TLASManager tlas(4);
+    Tri triangle{}; triangle.vertex0=make_float3(0,0,0); triangle.vertex1=make_float3(1,0,0); triangle.vertex2=make_float3(0,1,0); triangle.centroid=make_float3(1.f/3,1.f/3,0);
+    TriEx extra{}; const BLASHandle handle=source.register_triangles(&triangle,1,&extra);
+    TLASManager::DrawInstance instance{}; instance.blas_handle=handle; tlas.draw_batch({instance}); tlas.build(source);
+    const auto candidate_part=root/"candidate.part";
+    const auto candidate_anim=root/"candidate.anim";
+    const part_asset::PartAnimationLink link{1,1,hash,nonce.high,nonce.low};
+    CHECK(part_asset::save_v2(candidate_part.string(),source,tlas,nullptr,0,{}, {},link,hash), "A8 PartStore fixture writes linked Part candidate");
+    const anim::AnimAsset asset=rigid_asset(hash,nonce); anim::Diagnostics diagnostics;
+    CHECK(anim::save_anim_candidate(asset,candidate_anim,diagnostics), "A8 PartStore fixture writes MANM candidate");
+    anim::BundleIdentity identity; identity.resolved_hash=hash; identity.nonce=nonce;
+    identity.part_body_checksum=part_checksum(candidate_part); identity.anim_body_checksum=anim::anim_body_checksum(asset);
+    identity.target_abi_tag=asset.target_abi_tag; identity.ozz_tag_hash=asset.ozz_tag_hash;
+    CHECK(anim::publish_animation_bundle({candidate_part,candidate_anim,root},identity,diagnostics), "A8 PartStore fixture publishes committed siblings");
+    viewer::PartStore store(root.string());
+    const viewer::LoadedPart* initial=store.get_or_load(hash);
+    CHECK(initial && initial->animation_asset && *initial->animation_asset==asset && store.animation_assets().size()==1,
+          "A8 PartStore owns the validated AnimAsset beside its loaded Part");
+    { std::ofstream corrupt(anim::cache_path_anim(root,hash),std::ios::binary|std::ios::trunc); corrupt << "corrupt"; }
+    CHECK(store.get_or_load(hash)==initial && initial && initial->animation_asset==store.animation_assets().find(hash,nonce),
+          "A8 a corrupt live-reload sibling never replaces the in-memory last-good Part or asset");
+    store.release(hash);
+    CHECK(!store.get_or_load(hash), "A8 a released linked Part fails closed when its committed sibling is corrupt");
+}
 
 // Task 7: segmented v6 flat loading.
 static void test_partstore_segmented_loading() {
@@ -180,6 +244,7 @@ static void test_partstore_segmented_loading() {
 
 int main() {
     test_partstore_segmented_loading();
+    test_partstore_owns_committed_animation_and_keeps_live_last_good();
 
     if (g_failures) {
         printf("partstore_tests: %d FAILURE(S)\n", g_failures);
