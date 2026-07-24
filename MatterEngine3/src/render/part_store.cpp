@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <sys/stat.h>
 
 namespace viewer {
@@ -85,6 +86,20 @@ static std::string resolve_artifact_path(uint64_t part_hash, const std::string& 
         }
     }
     return cache_root + "/" + part_asset::cache_path_resolved(part_hash);
+}
+
+// A linked PART is a generation with MANM/MACM siblings, not three independent
+// cache lookups.  Pick its artifact root once per attempt and use that root for
+// every sibling.  In particular, a transient scratch PART must never be paired
+// with a persistent-cache animation manifest from another build generation.
+static std::string select_artifact_root(uint64_t part_hash, const std::string& scratch_dir,
+                                        const std::string& cache_root) {
+    struct stat st;
+    if (!scratch_dir.empty()) {
+        const std::string scratch_path = scratch_dir + "/" + part_asset::cache_path_resolved(part_hash);
+        if (::stat(scratch_path.c_str(), &st) == 0) return scratch_dir;
+    }
+    return cache_root;
 }
 
 // Task 2: resolve the flat artifact path, checking scratch dir first, then cache.
@@ -385,7 +400,6 @@ bool PartStore::load_flat(uint64_t part_hash, LoadedPart& lp) {
 const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
     auto cached = loaded_.find(part_hash);
     if (cached != loaded_.end()) return &cached->second;
-    if (load_failed_.count(part_hash)) return nullptr;
 
     {
         LoadedPart flat;
@@ -409,37 +423,73 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
         }
     }
 
-    // Task 2: check scratch dir first (if configured), then fall back to cache
-    const std::string path = resolve_artifact_path(part_hash, scratch_dir_, cache_root_);
-
-    // load_v2 registers the full-resolution geometry into a SCRATCH BLASManager;
-    // we then re-bake LODs into the shared store BLASManager.
-    BLASManager scratch;
-    // Sized to match the part bake's group cap: a detailed trunk bakes to >256
-    // mesh groups. The scratch TLAS is unused for geometry (we re-bake LODs from
-    // the BLAS triangles below), but an undersized cap spams capacity warnings.
-    TLASManager scratch_tlas(65536);
+    // Read a linked artifact as a bounded coherent snapshot.  The manifest is
+    // published last, so a reader can legitimately observe a new PART before
+    // its matching MANM/MACM manifest.  Such a window is a cache miss, never a
+    // static fallback; retrying a few fresh snapshots lets an in-flight atomic
+    // publisher finish without ever accepting a mixed generation.
+    std::unique_ptr<BLASManager> scratch;
     std::vector<part_asset::ChildInstance> children;
     part_asset::LodLevels lods_in;   // .part stores LOD0 only (empty levels)
     std::vector<part_asset::VolumeEmitter> emitters;
     std::optional<part_asset::PartAnimationLink> animation_link;
-    if (!part_asset::load_v2(path, part_hash, scratch, scratch_tlas, children, lods_in, emitters, animation_link)) {
-        printf("PartStore: load_v2 failed for %016llx (%s)\n",
-               (unsigned long long)part_hash, path.c_str());
-        load_failed_.insert(part_hash);
+    matter::animation::AnimAsset loaded_animation;
+    bool coherent = false;
+    for (int attempt = 0; attempt != 3 && !coherent; ++attempt) {
+        const std::string selected_root = select_artifact_root(part_hash, scratch_dir_, cache_root_);
+        const std::string path = selected_root + "/" + part_asset::cache_path_resolved(part_hash);
+        auto candidate_scratch = std::make_unique<BLASManager>();
+        // Sized to match the part bake's group cap: a detailed trunk bakes to >256
+        // mesh groups. The scratch TLAS is unused for geometry (we re-bake LODs from
+        // the BLAS triangles below), but an undersized cap spams capacity warnings.
+        TLASManager candidate_tlas(65536);
+        std::vector<part_asset::ChildInstance> candidate_children;
+        part_asset::LodLevels candidate_lods;
+        std::vector<part_asset::VolumeEmitter> candidate_emitters;
+        std::optional<part_asset::PartAnimationLink> candidate_link;
+        if (!part_asset::load_v2(path, part_hash, *candidate_scratch, candidate_tlas,
+                                 candidate_children, candidate_lods, candidate_emitters,
+                                 candidate_link)) {
+            continue;
+        }
+
+        matter::animation::AnimAsset candidate_animation;
+        if (candidate_link) {
+            // A linked Part is never a valid static fallback.  Validate the
+            // whole committed sibling generation from this same selected root.
+            BLASManager checked; matter::animation::Diagnostics diagnostics;
+            if (!matter::animation::load_committed_animation_bundle(selected_root, part_hash,
+                                                                      checked, candidate_animation,
+                                                                      diagnostics)) {
+                continue;
+            }
+            std::optional<part_asset::PartAnimationLink> final_link;
+            if (!part_asset::load_animation_link(path, part_hash, final_link) || !final_link ||
+                final_link->nonce_high != candidate_link->nonce_high ||
+                final_link->nonce_low != candidate_link->nonce_low ||
+                candidate_animation.nonce.high != candidate_link->nonce_high ||
+                candidate_animation.nonce.low != candidate_link->nonce_low) {
+                continue;
+            }
+        }
+
+        scratch = std::move(candidate_scratch);
+        children = std::move(candidate_children);
+        lods_in = std::move(candidate_lods);
+        emitters = std::move(candidate_emitters);
+        animation_link = candidate_link;
+        if (candidate_link) loaded_animation = std::move(candidate_animation);
+        coherent = true;
+    }
+    if (!coherent) {
+        printf("PartStore: coherent load failed for %016llx\n", (unsigned long long)part_hash);
         return nullptr;
     }
-    const matter::animation::AnimAsset* animation_asset = nullptr;
-    if (animation_link) {
-        // A linked Part is never a valid static fallback. Validate the whole
-        // committed generation before publishing any in-memory Part state.
-        BLASManager checked; matter::animation::AnimAsset loaded; matter::animation::Diagnostics diagnostics;
-        if (!matter::animation::load_committed_animation_bundle(cache_root_, part_hash, checked, loaded, diagnostics)) {
-            printf("PartStore: committed animation bundle failed for %016llx\n", (unsigned long long)part_hash);
-            load_failed_.insert(part_hash); return nullptr;
-        }
-        animation_asset = animation_assets_.insert(std::move(loaded));
-    }
+    // Failures remain uncommitted but are intentionally re-probed on the next
+    // get_or_load.  HostBaker can publish a new coherent generation under the
+    // same resolved hash after a transient corrupt/torn cache observation.
+    const matter::animation::AnimAsset* animation_asset = animation_link
+        ? animation_assets_.insert(std::move(loaded_animation)) : nullptr;
 
     // Gather full-res triangles (and their parallel per-triangle TriEx, which
     // carries the baked materialId/tint/normals) for lod_bake. Without the TriEx
@@ -448,7 +498,7 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
     // as one color. e->triangles and e->tri_extra are parallel in registration order.
     std::vector<Tri> tris;
     std::vector<TriEx> triex;
-    for (const auto& e : scratch.get_entries()) {
+    for (const auto& e : scratch->get_entries()) {
         tris.insert(tris.end(), e->triangles.begin(), e->triangles.end());
         triex.insert(triex.end(), e->tri_extra.begin(), e->tri_extra.end());
     }
@@ -560,9 +610,6 @@ lod_select::PartLodTable PartStore::part_lod_table() const {
 //
 // After this call:
 //   - loaded_.count(part_hash) == 0
-//   - load_failed_ is NOT cleared: if the part previously failed to load, it
-//     stays suppressed.  Use-case for release is evicting successfully-loaded
-//     geometry, not retrying failed loads.
 //   - get_or_load(part_hash) will re-read from disk (or return nullptr if no
 //     disk artifact exists).
 // ---------------------------------------------------------------------------

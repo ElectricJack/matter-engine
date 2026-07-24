@@ -50,6 +50,38 @@ static matter::animation::AnimAsset rigid_asset(uint64_t hash, matter::animation
     return asset;
 }
 
+// Publish a complete geometry-bearing rigid bundle under root.  Each call uses
+// an explicit nonce so tests can prove which sibling generation PartStore
+// selected, rather than merely proving that some animation asset loaded.
+static bool publish_rigid_bundle(const std::filesystem::path& root, uint64_t hash,
+                                 matter::animation::BuildNonce nonce) {
+    namespace fs = std::filesystem;
+    namespace anim = matter::animation;
+    std::error_code ec; fs::create_directories(root / "parts", ec);
+    if (ec) return false;
+    BLASManager source; TLASManager tlas(4);
+    Tri triangle{};
+    triangle.vertex0=make_float3(0,0,0); triangle.vertex1=make_float3(1,0,0);
+    triangle.vertex2=make_float3(0,1,0); triangle.centroid=make_float3(1.f/3,1.f/3,0);
+    TriEx extra{};
+    const BLASHandle handle=source.register_triangles(&triangle,1,&extra);
+    TLASManager::DrawInstance instance{}; instance.blas_handle=handle;
+    tlas.draw_batch({instance}); tlas.build(source);
+    const auto candidate_part=root/("candidate-"+std::to_string(nonce.low)+".part");
+    const auto candidate_anim=root/("candidate-"+std::to_string(nonce.low)+".anim");
+    const part_asset::PartAnimationLink link{1,1,hash,nonce.high,nonce.low};
+    if (!part_asset::save_v2(candidate_part.string(),source,tlas,nullptr,0,{}, {},link,hash)) return false;
+    const anim::AnimAsset asset=rigid_asset(hash,nonce);
+    anim::Diagnostics diagnostics;
+    if (!anim::save_anim_candidate(asset,candidate_anim,diagnostics)) return false;
+    anim::BundleIdentity identity;
+    identity.resolved_hash=hash; identity.nonce=nonce;
+    identity.part_body_checksum=part_checksum(candidate_part);
+    identity.anim_body_checksum=anim::anim_body_checksum(asset);
+    identity.target_abi_tag=asset.target_abi_tag; identity.ozz_tag_hash=asset.ozz_tag_hash;
+    return anim::publish_animation_bundle({candidate_part,candidate_anim,root},identity,diagnostics);
+}
+
 static void test_partstore_owns_committed_animation_and_keeps_live_last_good() {
     namespace fs = std::filesystem;
     namespace anim = matter::animation;
@@ -81,6 +113,64 @@ static void test_partstore_owns_committed_animation_and_keeps_live_last_good() {
           "A8 a corrupt live-reload sibling never replaces the in-memory last-good Part or asset");
     store.release(hash);
     CHECK(!store.get_or_load(hash), "A8 a released linked Part fails closed when its committed sibling is corrupt");
+    CHECK(publish_rigid_bundle(root, hash, nonce),
+          "A8 HostBaker-style rebuild republishes a coherent generation after corruption");
+    const viewer::LoadedPart* rebuilt=store.get_or_load(hash);
+    CHECK(rebuilt && rebuilt->animation_asset && rebuilt->animation_asset->nonce==nonce,
+          "A8 corrupt failed load recovers in the same PartStore after rebuild");
+}
+
+static void test_partstore_uses_one_scratch_first_bundle_root() {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::temp_directory_path() / "me3_a8_partstore_root_choice";
+    const fs::path scratch = root / "scratch";
+    const fs::path cache = root / "cache";
+    std::error_code ec; fs::remove_all(root, ec);
+    struct Cleanup { fs::path root; ~Cleanup() { std::error_code ignored; fs::remove_all(root, ignored); } } cleanup{root};
+    constexpr uint64_t hash = 0xa812b812b812b812ull;
+    const matter::animation::BuildNonce cache_nonce{0x1111111111111111ull, 0x2222222222222222ull};
+    const matter::animation::BuildNonce scratch_nonce{0x3333333333333333ull, 0x4444444444444444ull};
+    CHECK(publish_rigid_bundle(cache, hash, cache_nonce), "A8 cache generation is published");
+    CHECK(publish_rigid_bundle(scratch, hash, scratch_nonce), "A8 scratch generation is published");
+    viewer::PartStore store(cache.string());
+    store.set_scratch_dir(scratch.string());
+    const viewer::LoadedPart* loaded=store.get_or_load(hash);
+    CHECK(loaded && loaded->animation_asset && loaded->animation_asset->nonce==scratch_nonce,
+          "A8 scratch-first PartStore uses scratch PART, MANM, and MACM from one generation");
+}
+
+static void test_partstore_retries_after_torn_generation_and_recovers_same_store() {
+    namespace fs = std::filesystem;
+    namespace anim = matter::animation;
+    const fs::path root = fs::temp_directory_path() / "me3_a8_partstore_generation_retry";
+    std::error_code ec; fs::remove_all(root, ec);
+    struct Cleanup { fs::path root; ~Cleanup() { std::error_code ignored; fs::remove_all(root, ignored); } } cleanup{root};
+    constexpr uint64_t hash = 0xa813b813b813b813ull;
+    const anim::BuildNonce first{0xaaaaaaaaaaaaaaaaull, 0xbbbbbbbbbbbbbbbbull};
+    const anim::BuildNonce second{0xccccccccccccccccull, 0xddddddddddddddddull};
+    CHECK(publish_rigid_bundle(root, hash, first), "A8 first generation is published");
+    viewer::PartStore store(root.string());
+    // Simulate the interval after a publisher replaces PART but before it
+    // commits a matching MANM/MACM manifest: the old manifest cannot validate
+    // the new ANLK.  The failed probe must not permanently poison this store.
+    const fs::path torn_part=root/"torn.part";
+    const fs::path torn_anim=root/"torn.anim";
+    BLASManager source; TLASManager tlas(4);
+    Tri triangle{}; triangle.vertex0=make_float3(0,0,0); triangle.vertex1=make_float3(1,0,0);
+    triangle.vertex2=make_float3(0,1,0); triangle.centroid=make_float3(1.f/3,1.f/3,0);
+    TriEx extra{}; const BLASHandle handle=source.register_triangles(&triangle,1,&extra);
+    TLASManager::DrawInstance instance{}; instance.blas_handle=handle; tlas.draw_batch({instance}); tlas.build(source);
+    const part_asset::PartAnimationLink torn_link{1,1,hash,second.high,second.low};
+    CHECK(part_asset::save_v2(torn_part.string(),source,tlas,nullptr,0,{}, {},torn_link,hash),
+          "A8 writes uncommitted second-generation PART");
+    CHECK(part_asset::replace_file_atomic(torn_part.string(),
+          (root/part_asset::cache_path_resolved(hash)).string()),
+          "A8 injects publication-interleaving PART replacement");
+    CHECK(!store.get_or_load(hash), "A8 torn sibling generation fails closed");
+    CHECK(publish_rigid_bundle(root, hash, second), "A8 second coherent generation is published after torn probe");
+    const viewer::LoadedPart* recovered=store.get_or_load(hash);
+    CHECK(recovered && recovered->animation_asset && recovered->animation_asset->nonce==second,
+          "A8 same PartStore retries after a coherent replacement generation");
 }
 
 // Task 7: segmented v6 flat loading.
@@ -245,6 +335,8 @@ static void test_partstore_segmented_loading() {
 int main() {
     test_partstore_segmented_loading();
     test_partstore_owns_committed_animation_and_keeps_live_last_good();
+    test_partstore_uses_one_scratch_first_bundle_root();
+    test_partstore_retries_after_torn_generation_and_recovers_same_store();
 
     if (g_failures) {
         printf("partstore_tests: %d FAILURE(S)\n", g_failures);

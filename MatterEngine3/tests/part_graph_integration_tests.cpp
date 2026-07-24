@@ -97,6 +97,20 @@ static void test_animated_cache_sibling_contract() {
     CHECK(rebuilt.error.ok && rebuilt.resolved_hash == animated_result.resolved_hash,
           "A8 cache miss rebuilds the animated sibling generation");
     CHECK(baker.cached(animated_result.resolved_hash), "A8 rebuilt siblings restore the cache hit");
+
+    { std::ofstream corrupt(rebuilt.written_path, std::ios::binary | std::ios::trunc); corrupt << "corrupt"; }
+    CHECK(!baker.cached(animated_result.resolved_hash), "A8 corrupt PART makes the ANLK generation a cache miss");
+    const auto rebuilt_part = host.bake_source(animated_source, "{}", options);
+    CHECK(rebuilt_part.error.ok && rebuilt_part.resolved_hash == animated_result.resolved_hash,
+          "A8 corrupt PART rebuilds the animated sibling generation");
+    CHECK(baker.cached(animated_result.resolved_hash), "A8 PART rebuild restores the cache hit");
+
+    { std::ofstream corrupt(rebuilt_part.written_commit_path, std::ios::binary | std::ios::trunc); corrupt << "corrupt"; }
+    CHECK(!baker.cached(animated_result.resolved_hash), "A8 corrupt MACM makes the ANLK generation a cache miss");
+    const auto rebuilt_commit = host.bake_source(animated_source, "{}", options);
+    CHECK(rebuilt_commit.error.ok && rebuilt_commit.resolved_hash == animated_result.resolved_hash,
+          "A8 corrupt MACM rebuilds the animated sibling generation");
+    CHECK(baker.cached(animated_result.resolved_hash), "A8 MACM rebuild restores the cache hit");
 }
 
 // SP-3 Task 7: prove the graph-driven placement path. A parent that declares a

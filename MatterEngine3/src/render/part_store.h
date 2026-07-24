@@ -10,7 +10,6 @@
 #include <cstdint>
 #include <functional>
 #include <map>
-#include <set>
 #include <string>
 #include <vector>
 
@@ -136,7 +135,6 @@ private:
     BLASManager                       blas_;
     std::map<uint64_t, LoadedPart>    loaded_;
     matter::animation::AnimationAssetStore animation_assets_;
-    std::set<uint64_t>                load_failed_;      // suppress repeat logging
 };
 
 } // namespace viewer
