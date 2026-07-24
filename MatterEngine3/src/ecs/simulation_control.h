@@ -3,6 +3,7 @@
 #include "matter/ecs.h"
 #include "matter/physics.h"
 #include "matter/scene.h"
+#include "animation/animation_evaluator.h"
 
 #include "flecs.h"
 
@@ -36,6 +37,7 @@ struct EntitySnapshot {
 // Complete scene snapshot taken at Play transition.
 struct SceneSnapshot {
     std::vector<EntitySnapshot> entities;
+    std::vector<animation::AnimatorCheckpoint> animator_checkpoints;
     uint64_t generation = 0;
     bool valid = false;
 };
@@ -70,6 +72,8 @@ public:
 
     // Get the snapshot (for testing).
     const SceneSnapshot& snapshot() const { return snapshot_; }
+    bool set_animator_checkpoints(std::vector<animation::AnimatorCheckpoint> checkpoints);
+    const std::vector<animation::AnimatorCheckpoint>& animator_checkpoints() const { return animator_checkpoints_; }
 
 private:
     void capture_snapshot(flecs::world& world);
@@ -78,6 +82,7 @@ private:
     SimulationMode mode_ = SimulationMode::Edit;
     SceneSnapshot snapshot_;
     bool step_pending_ = false;
+    std::vector<animation::AnimatorCheckpoint> animator_checkpoints_;
 };
 
 } // namespace matter::scene

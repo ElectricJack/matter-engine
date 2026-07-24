@@ -129,7 +129,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_ani
           src/animation/ozz_adapter.cpp \
           src/animation/ozz_bake.cpp \
           src/animation/animation_ir.cpp src/animation/animation_validate.cpp src/animation/animation_binding_bake.cpp \
-          src/animation/anim_asset.cpp src/animation/anim_bundle.cpp src/animation/animation_asset_store.cpp src/animation/animation_store.cpp src/animation/animation_evaluator.cpp src/animation/animation_systems.cpp \
+          src/animation/anim_asset.cpp src/animation/anim_bundle.cpp src/animation/animation_asset_store.cpp src/animation/animation_store.cpp src/animation/animation_evaluator.cpp src/animation/animation_systems.cpp src/animation/animation_world_queries.cpp \
           src/streaming/sector_streaming_coordinator.cpp
 
 # MatterSurfaceLib C++ backend sources compiled into the archive so MatterViewer
@@ -191,7 +191,7 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o dsl_animation.o \
           sector_streamer.o \
           ozz_adapter.o \
           ozz_bake.o \
-          animation_ir.o animation_validate.o animation_binding_bake.o anim_asset.o anim_bundle.o animation_asset_store.o animation_store.o animation_evaluator.o animation_systems.o \
+          animation_ir.o animation_validate.o animation_binding_bake.o anim_asset.o anim_bundle.o animation_asset_store.o animation_store.o animation_evaluator.o animation_systems.o animation_world_queries.o \
           sector_streaming_coordinator.o
 
 # MSL C++ object names (basenames; same flat-object model as ME3_OBJ).
@@ -225,7 +225,7 @@ all: $(LIB)
 # consumed by the bake/runtime boundary.  The archive is flat, so a source
 # listed in ME3_CPP but omitted here silently disappears from production links.
 ANIMATION_PRODUCTION_OBJ = dsl_animation.o ozz_adapter.o ozz_bake.o animation_ir.o \
-                           animation_validate.o animation_binding_bake.o anim_asset.o anim_bundle.o animation_asset_store.o animation_store.o animation_evaluator.o animation_systems.o
+                           animation_validate.o animation_binding_bake.o anim_asset.o anim_bundle.o animation_asset_store.o animation_store.o animation_evaluator.o animation_systems.o animation_world_queries.o
 check-animation-production-sources:
 	@for object in $(ANIMATION_PRODUCTION_OBJ); do \
 		case " $(ME3_OBJ) " in *" $$object "*) ;; *) \

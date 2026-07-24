@@ -73,6 +73,59 @@ float clip_ratio(const RuntimeGraphClip& clip,float time) {
 }
 } // namespace
 
+void emit_crossed_markers(AnimatorInstanceHandle instance,
+                          ArrayView<RuntimeClipMarker> markers,
+                          float duration, bool loop,
+                          float previous_time, float current_time,
+                          std::vector<AnimationMarkerEvent>& out) {
+    if (!instance.valid() || !std::isfinite(previous_time) || !std::isfinite(current_time) ||
+        !std::isfinite(duration) || duration <= 0.0f || previous_time == current_time) return;
+    struct Crossing { float absolute_time; RuntimeClipMarker marker; };
+    std::vector<Crossing> crossings;
+    constexpr size_t kMaxMarkerEmissionsPerAdvance = 4096;
+    const bool forward = current_time > previous_time;
+    for (uint32_t i = 0; i < markers.count && crossings.size() < kMaxMarkerEmissionsPerAdvance; ++i) {
+        const RuntimeClipMarker marker = markers[i];
+        if (!std::isfinite(marker.time) || marker.time < 0.0f || marker.time > duration) continue;
+        if (!loop) {
+            const bool crossed = forward ? (marker.time > previous_time && marker.time <= current_time)
+                                         : (marker.time >= current_time && marker.time < previous_time);
+            if (crossed) crossings.push_back({marker.time, marker});
+            continue;
+        }
+        const int first = static_cast<int>(std::floor(std::min(previous_time, current_time) / duration)) - 1;
+        const int last = static_cast<int>(std::ceil(std::max(previous_time, current_time) / duration)) + 1;
+        for (int cycle = first; cycle <= last && crossings.size() < kMaxMarkerEmissionsPerAdvance; ++cycle) {
+            const float absolute = marker.time + cycle * duration;
+            const bool crossed = forward ? (absolute > previous_time && absolute <= current_time)
+                                         : (absolute >= current_time && absolute < previous_time);
+            if (crossed) crossings.push_back({absolute, marker});
+        }
+    }
+    std::stable_sort(crossings.begin(), crossings.end(), [forward](const Crossing& a, const Crossing& b) {
+        if (a.absolute_time != b.absolute_time) return forward ? a.absolute_time < b.absolute_time : a.absolute_time > b.absolute_time;
+        if (a.marker.time != b.marker.time) return forward ? a.marker.time < b.marker.time : a.marker.time > b.marker.time;
+        return a.marker.marker_index < b.marker.marker_index;
+    });
+    for (const Crossing& crossing : crossings) out.push_back({instance, crossing.marker.marker_index, crossing.marker.time});
+}
+
+AnimationTransform root_motion_delta(const AnimationTransform& previous,
+                                     const AnimationTransform& current) {
+    const Quaternion inverse_previous{-previous.rotation.x, -previous.rotation.y,
+                                      -previous.rotation.z, previous.rotation.w};
+    const Quaternion& rotation = current.rotation;
+    AnimationTransform delta{};
+    delta.translation = {current.translation.x - previous.translation.x,
+                         current.translation.y - previous.translation.y,
+                         current.translation.z - previous.translation.z};
+    delta.rotation = normalize({rotation.w * inverse_previous.x + rotation.x * inverse_previous.w + rotation.y * inverse_previous.z - rotation.z * inverse_previous.y,
+                                rotation.w * inverse_previous.y - rotation.x * inverse_previous.z + rotation.y * inverse_previous.w + rotation.z * inverse_previous.x,
+                                rotation.w * inverse_previous.z + rotation.x * inverse_previous.y - rotation.y * inverse_previous.x + rotation.z * inverse_previous.w,
+                                rotation.w * inverse_previous.w - rotation.x * inverse_previous.x - rotation.y * inverse_previous.y - rotation.z * inverse_previous.z});
+    return delta;
+}
+
 AnimationValue interpolate_fixed_control(const AnimationValue& previous,const AnimationValue& current,float alpha) {
     alpha=clamp01(alpha); if(previous.type!=current.type) return alpha>=1.0f?current:previous;
     switch(current.type) {

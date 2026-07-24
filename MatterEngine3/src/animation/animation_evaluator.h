@@ -11,6 +11,9 @@
 
 namespace matter::animation {
 
+template <typename T>
+struct ArrayView;
+
 // This deliberately is a read-only view.  A snapshot's owner is the evaluator
 // and readers must not retain it past the next successful publish for that
 // instance.
@@ -33,6 +36,29 @@ struct AnimationPoseSnapshot {
     ArrayView<Mat4f> previous_skin_palette;
 };
 
+// Replay data contains only durable animation state. Transient Ozz contexts,
+// GPU resources, and cached handles are reconstructed from asset_identity.
+struct AnimatorCheckpoint {
+    AnimatorInstanceHandle instance{};
+    uint64_t asset_identity = 0;
+    uint64_t last_fixed_tick = 0;
+    float previous_fixed_time = 0.0f;
+    float current_fixed_time = 0.0f;
+    std::vector<AnimationValue> fixed_inputs;
+    std::vector<AnimationValue> frame_inputs;
+    AnimationTransform desired_target{};
+    AnimationTransform evaluated_target{};
+    float target_weight = 0.0f;
+    std::vector<uint8_t> controller_state;
+    std::vector<uint32_t> marker_cursors;
+    std::vector<AnimationTransform> fixed_local_pose;
+    bool bounded(size_t limit = 64u * 1024u) const {
+        return controller_state.size() <= limit && marker_cursors.size() <= limit / sizeof(uint32_t) &&
+               fixed_local_pose.size() <= limit / sizeof(AnimationTransform) &&
+               fixed_inputs.size() <= limit / sizeof(AnimationValue) && frame_inputs.size() <= limit / sizeof(AnimationValue);
+    }
+};
+
 // B2 uses this compact runtime representation rather than exposing Ozz or a
 // decoder through the public AnimationService API.  A8/B3 construct it after
 // loading a fully committed asset and retain the immutable Ozz archive objects.
@@ -42,6 +68,26 @@ struct RuntimeGraphClip {
     bool loop = false;
     bool additive = false;
 };
+
+// Marker indices are declaration-order indices in the owning clip.  Keeping
+// them explicit makes event order independent of archive/layout details.
+struct RuntimeClipMarker {
+    float time = 0.0f;
+    uint32_t marker_index = UINT32_MAX;
+};
+
+// Appends events in travel order.  Forward intervals are (old,new], reverse
+// intervals are [new,old); looping intervals are split at each boundary.
+void emit_crossed_markers(AnimatorInstanceHandle instance,
+                          ArrayView<RuntimeClipMarker> markers,
+                          float duration, bool loop,
+                          float previous_time, float current_time,
+                          std::vector<AnimationMarkerEvent>& out);
+
+// The evaluator derives this before any in-place/root-lock policy is applied.
+// Translation is in root-track space; rotation is current * inverse(previous).
+AnimationTransform root_motion_delta(const AnimationTransform& previous,
+                                     const AnimationTransform& current);
 
 // Input declarations travel with the compiled graph.  The evaluator never
 // guesses a control's cadence from whichever request array happens to contain

@@ -145,6 +145,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/animation/animation_store.cpp \
               $(ME3_DIR)/src/animation/animation_evaluator.cpp \
               $(ME3_DIR)/src/animation/animation_systems.cpp \
+              $(ME3_DIR)/src/animation/animation_world_queries.cpp \
               $(ME3_DIR)/src/script_host.cpp $(ME3_DIR)/src/dsl_state.cpp \
               $(ME3_DIR)/src/dsl_triangle.cpp $(ME3_DIR)/src/dsl_bindings.cpp \
               $(ME3_DIR)/src/dsl_animation.cpp \
@@ -674,7 +675,7 @@ run-test-console-log: build/test_console_log.exe
 # compiler. Animation schema verbs are present, while raw-clip compilation is
 # routed to the bake host rather than the Viewer runtime.
 check-animation-production-sources:
-	@for source in dsl_animation.cpp animation_ir.cpp animation_validate.cpp animation_binding_bake.cpp anim_asset.cpp anim_bundle.cpp animation_asset_store.cpp animation_store.cpp animation_evaluator.cpp animation_systems.cpp; do \
+	@for source in dsl_animation.cpp animation_ir.cpp animation_validate.cpp animation_binding_bake.cpp anim_asset.cpp anim_bundle.cpp animation_asset_store.cpp animation_store.cpp animation_evaluator.cpp animation_systems.cpp animation_world_queries.cpp; do \
 		case " $(WIN_ME3_CPP) " in *"/$$source "*) ;; *) \
 			echo "ERROR: Windows production build omits $$source"; exit 1 ;; esac; \
 	done

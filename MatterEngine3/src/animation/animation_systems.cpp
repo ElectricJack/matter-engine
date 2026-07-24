@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <type_traits>
 #include <utility>
 
@@ -13,6 +14,34 @@ namespace {
 struct AnimationSystemsContext {
     AnimationSystems* value = nullptr;
 };
+
+uint64_t animator_key(AnimatorInstanceHandle instance) {
+    return (uint64_t(instance.slot_index) << 32u) | instance.generation;
+}
+
+bool inverse(const Mat4f& source, Mat4f& out) {
+    float a[4][8]{};
+    for (int row = 0; row < 4; ++row) for (int column = 0; column < 4; ++column) {
+        a[row][column] = source.m[row * 4 + column];
+        a[row][column + 4] = row == column ? 1.0f : 0.0f;
+    }
+    for (int column = 0; column < 4; ++column) {
+        int pivot = column;
+        for (int row = column + 1; row < 4; ++row)
+            if (std::fabs(a[row][column]) > std::fabs(a[pivot][column])) pivot = row;
+        if (!std::isfinite(a[pivot][column]) || std::fabs(a[pivot][column]) < 1e-8f) return false;
+        for (int item = 0; item < 8; ++item) std::swap(a[column][item], a[pivot][item]);
+        const float divisor = a[column][column];
+        for (int item = 0; item < 8; ++item) a[column][item] /= divisor;
+        for (int row = 0; row < 4; ++row) if (row != column) {
+            const float factor = a[row][column];
+            for (int item = 0; item < 8; ++item) a[row][item] -= factor * a[column][item];
+        }
+    }
+    for (int row = 0; row < 4; ++row) for (int column = 0; column < 4; ++column)
+        out.m[row * 4 + column] = a[row][column + 4];
+    return true;
+}
 
 bool complete(const AnimationPoseSnapshot& snapshot) {
     const uint32_t count = snapshot.local_pose.count;
@@ -114,6 +143,76 @@ void AnimationPoseSnapshotStore::forget(AnimatorInstanceHandle instance) {
 void AnimationSystems::set_interpolation_alpha(double alpha) noexcept {
     interpolation_alpha_ = std::isfinite(alpha)
         ? std::max(0.0, std::min(1.0, alpha)) : 0.0;
+}
+
+bool AnimationSystems::publish_desired_root_motion(AnimatorInstanceHandle instance,
+                                                    const DesiredRootMotion& motion,
+                                                    uint64_t fixed_tick) {
+    if (!instance.valid() || !motion.valid) return false;
+    RootMotionSlot& slot = desired_root_motion_[animator_key(instance)];
+    // A tick is authored once.  Replacing it after authority consumption would
+    // make simulation order-dependent, so reject it.
+    if (slot.tick == fixed_tick && slot.consumed) return false;
+    slot.tick = fixed_tick;
+    slot.motion = motion;
+    slot.consumed = false;
+    return true;
+}
+
+bool AnimationSystems::consume_desired_root_motion(AnimatorInstanceHandle instance,
+                                                    uint64_t fixed_tick,
+                                                    DesiredRootMotion& out) {
+    out = {};
+    const auto found = desired_root_motion_.find(animator_key(instance));
+    if (!instance.valid() || found == desired_root_motion_.end() || found->second.tick != fixed_tick ||
+        found->second.consumed || !found->second.motion.valid) return false;
+    found->second.consumed = true;
+    out = found->second.motion;
+    return true;
+}
+
+std::vector<AnimationWorldQueryResult> AnimationSystems::execute_fixed_world_queries(
+    std::vector<AnimationWorldQueryRequest> requests) {
+    std::vector<AnimationWorldQueryResult> results(requests.size());
+    std::vector<uint32_t> order;
+    order.reserve(requests.size());
+    for (uint32_t index = 0; index < requests.size(); ++index) {
+        results[index].instance = requests[index].instance;
+        results[index].controller_order = requests[index].controller_order;
+        order.push_back(index);
+    }
+    std::stable_sort(order.begin(), order.end(), [&requests](uint32_t a, uint32_t b) {
+        const auto& left = requests[a]; const auto& right = requests[b];
+        if (left.priority != right.priority) return left.priority < right.priority;
+        if (left.instance.slot_index != right.instance.slot_index) return left.instance.slot_index < right.instance.slot_index;
+        return left.controller_order < right.controller_order;
+    });
+    uint32_t admitted = 0;
+    for (uint32_t index : order) {
+        const auto& request = requests[index];
+        if (!request.instance.valid() || !std::isfinite(request.max_distance) || request.max_distance < 0.0f) continue;
+        if (admitted >= kMaxAnimationWorldQueries) { ++world_query_overflow_count_; continue; }
+        ++admitted;
+        if (world_queries_ != nullptr)
+            results[index].hit = world_queries_->ray_cast(request.origin, request.direction,
+                                                           request.max_distance, request.mask, results[index].value);
+    }
+    return results;
+}
+
+bool resolve_world_target(const Mat4f& current_root_world,
+                          const AnimationTransform& desired_world,
+                          AnimationTransform& out_root_relative) {
+    Mat4f inverse_root{};
+    if (!inverse(current_root_world, inverse_root)) return false;
+    const Float3& point = desired_world.translation;
+    const float x = inverse_root.m[0] * point.x + inverse_root.m[4] * point.y + inverse_root.m[8] * point.z + inverse_root.m[12];
+    const float y = inverse_root.m[1] * point.x + inverse_root.m[5] * point.y + inverse_root.m[9] * point.z + inverse_root.m[13];
+    const float z = inverse_root.m[2] * point.x + inverse_root.m[6] * point.y + inverse_root.m[10] * point.z + inverse_root.m[14];
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) return false;
+    out_root_relative = desired_world;
+    out_root_relative.translation = {x, y, z};
+    return true;
 }
 
 std::vector<AnimationScheduleTraceEntry> AnimationSystems::take_trace() {

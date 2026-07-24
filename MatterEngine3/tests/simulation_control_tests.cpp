@@ -168,6 +168,24 @@ static void test_stop_returns_to_edit() {
     CHECK(ctrl.mode() == SimulationMode::Edit, "mode should be Edit after stop()");
 }
 
+static void test_animation_checkpoint_is_bounded_and_restored() {
+    auto world = make_world();
+    add_entity(world, 1, 0.0f);
+    SimulationControl ctrl;
+    animation::AnimatorCheckpoint checkpoint;
+    checkpoint.instance = {3, 1, UINT32_MAX, static_cast<AnimationValueType>(0xff), AnimationCadence::Invalid};
+    checkpoint.asset_identity = 42;
+    checkpoint.controller_state = {1, 2, 3};
+    CHECK(ctrl.set_animator_checkpoints({checkpoint}), "bounded animator checkpoint is admitted");
+    std::string err;
+    ctrl.play(world, err);
+    checkpoint.asset_identity = 99;
+    CHECK(ctrl.set_animator_checkpoints({checkpoint}), "runtime checkpoint can advance during play");
+    ctrl.stop(world, err);
+    CHECK(ctrl.animator_checkpoints().size() == 1 && ctrl.animator_checkpoints()[0].asset_identity == 42,
+          "stop restores the captured animation checkpoint deterministically");
+}
+
 int main() {
     test_initial_mode_is_edit();
     test_play_captures_snapshot();
@@ -179,5 +197,6 @@ int main() {
     test_stop_restores_snapshot();
     test_stop_removes_play_created();
     test_stop_returns_to_edit();
+    test_animation_checkpoint_is_bounded_and_restored();
     return check_summary();
 }

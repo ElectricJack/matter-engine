@@ -59,9 +59,23 @@ bool SimulationControl::consume_pending_step() {
     return false;
 }
 
+bool SimulationControl::set_animator_checkpoints(
+    std::vector<animation::AnimatorCheckpoint> checkpoints) {
+    size_t bytes = 0;
+    for (const auto& checkpoint : checkpoints) {
+        if (!checkpoint.instance.valid() || !checkpoint.bounded()) return false;
+        bytes += checkpoint.controller_state.size() + checkpoint.marker_cursors.size() * sizeof(uint32_t) +
+                 checkpoint.fixed_local_pose.size() * sizeof(AnimationTransform);
+        if (bytes > 64u * 1024u) return false;
+    }
+    animator_checkpoints_ = std::move(checkpoints);
+    return true;
+}
+
 void SimulationControl::capture_snapshot(flecs::world& world) {
     snapshot_.entities.clear();
     snapshot_.valid = false;
+    snapshot_.animator_checkpoints = animator_checkpoints_;
 
     world.each([&](flecs::entity e, const SceneEntityId& id, const ecs::LocalTransform& lt) {
         EntitySnapshot snap;
@@ -126,6 +140,7 @@ void SimulationControl::restore_snapshot(flecs::world& world) {
         if (!snap.name.empty()) e.set_name(snap.name.c_str());
         id_to_entity[snap.id.value] = e;
     }
+    animator_checkpoints_ = snapshot_.animator_checkpoints;
     // Wire parents
     for (const auto& snap : snapshot_.entities) {
         if (snap.parent_id.value != 0) {

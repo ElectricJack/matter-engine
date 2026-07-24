@@ -1,6 +1,7 @@
 #pragma once
 
 #include "animation/animation_evaluator.h"
+#include "animation/animation_world_queries.h"
 
 #include <array>
 #include <cstdint>
@@ -10,6 +11,25 @@
 namespace flecs { class world; }
 
 namespace matter::animation {
+
+constexpr uint32_t kMaxAnimationWorldQueries = 2048;
+
+struct AnimationWorldQueryRequest {
+    AnimatorInstanceHandle instance{};
+    uint16_t controller_order = 0;
+    int32_t priority = 0;
+    Float3 origin{};
+    Float3 direction{};
+    float max_distance = 0.0f;
+    uint64_t mask = 0;
+};
+
+struct AnimationWorldQueryResult {
+    AnimatorInstanceHandle instance{};
+    uint16_t controller_order = 0;
+    bool hit = false;
+    WorldRayHit value{};
+};
 
 // B3 makes the boundary order observable.  Entries named for later features
 // are scheduling stubs only: B4/B5 own markers, root motion, world queries,
@@ -83,6 +103,18 @@ public:
     void set_interpolation_alpha(double alpha) noexcept;
     std::vector<AnimationScheduleTraceEntry> take_trace();
 
+    // Fixed root motion has exactly one consumer (the authority phase).  A
+    // second consumer for the same animator/tick fails closed.
+    bool publish_desired_root_motion(AnimatorInstanceHandle instance,
+                                     const DesiredRootMotion& motion, uint64_t fixed_tick);
+    bool consume_desired_root_motion(AnimatorInstanceHandle instance,
+                                     uint64_t fixed_tick, DesiredRootMotion& out);
+
+    void set_world_queries(const AnimationWorldQueries* queries) noexcept { world_queries_ = queries; }
+    std::vector<AnimationWorldQueryResult> execute_fixed_world_queries(
+        std::vector<AnimationWorldQueryRequest> requests);
+    uint64_t world_query_overflow_count() const noexcept { return world_query_overflow_count_; }
+
 private:
     friend void register_animation_systems(flecs::world&, AnimationSystems&);
     void run_fixed_pre(flecs::world& world, double fixed_delta);
@@ -97,7 +129,18 @@ private:
     double interpolation_alpha_ = 0.0;
     std::vector<AnimationScheduleTraceEntry> trace_;
     AnimationPoseSnapshotStore pose_snapshots_;
+    struct RootMotionSlot { uint64_t tick = 0; DesiredRootMotion motion{}; bool consumed = false; };
+    std::map<uint64_t, RootMotionSlot> desired_root_motion_;
+    const AnimationWorldQueries* world_queries_ = nullptr;
+    uint64_t world_query_overflow_count_ = 0;
 };
+
+// Target writes are intentionally stored in world coordinates.  This helper is
+// called from the fixed post-physics boundary, so moving roots cannot stale an
+// earlier API-write transform.
+bool resolve_world_target(const Mat4f& current_root_world,
+                          const AnimationTransform& desired_world,
+                          AnimationTransform& out_root_relative);
 
 // Installs the B3 fixed/frame scheduling seam into an already initialized ECS
 // world. Runtime owns the AnimationSystems object for the lifetime of systems.
