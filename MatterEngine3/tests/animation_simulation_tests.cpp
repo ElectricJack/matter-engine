@@ -68,7 +68,7 @@ void test_service_bound_runtime_work_is_automatic_and_generation_safe() {
     descriptor->fixed_work.clip.duration = 1.0f;
     descriptor->fixed_work.clip.loop = true;
     descriptor->fixed_work.clip.time = 0.9f;
-    descriptor->fixed_work.clip.markers = {{0.0f, 7u}};
+    fixture.evaluation->clips[0].markers = {{0.15f, 7u}};
     descriptor->fixed_work.queries.push_back({{}, 0, 0, {0,0,0}, {0,-1,0}, 2.0f, UINT64_MAX});
     AnimationRuntimeDefinition definition;
     definition.binding = descriptor;
@@ -230,6 +230,52 @@ void test_runtime_fixed_phases_execute_registered_animation_work() {
           "PrePhysics applies translation and rotation to the real root authority once per fixed tick");
 }
 
+// The fixed authority path is driven by the immutable evaluation graph, not
+// the legacy descriptor clock.  In particular a presentation alpha must not
+// leak into a fixed sample, and a descriptor rate must not become a second
+// animation clock.
+void test_service_graph_root_motion_owns_fixed_authority() {
+    ecs_runtime::Runtime runtime;
+    AnimationService service;
+    runtime.attach_animation_service(service);
+    const AnimAsset* asset = service.insert_asset({0x94u, {1u, 2u}});
+    BoundFixture fixture;
+    fixture.evaluation->clips[0].rate = 0.5f;
+    fixture.evaluation->clips[0].markers = {{0.075f, 7u}};
+    fixture.evaluation->clips.push_back({&fixture.clip, 1.0f, true, false, 0.5f, {{0.075f, 3u}}});
+    // The second clip is deliberately not the output pose: authored events
+    // still belong to every evaluated Clip node and sort by graph clip order.
+    fixture.evaluation->nodes = {{RuntimeGraphNodeKind::Clip, {}, 0},
+                                 {RuntimeGraphNodeKind::Clip, {}, 1},
+                                 {RuntimeGraphNodeKind::Output, {0}}};
+    auto descriptor = std::make_shared<AnimationRuntimeBindingDescriptor>();
+    descriptor->evaluation = fixture.evaluation;
+    descriptor->fixed_work.clip.duration = 1.0f;
+    descriptor->fixed_work.clip.loop = true;
+    descriptor->fixed_work.clip.rate = 25.0f; // must never drive the graph
+    flecs::entity root = runtime.world().entity("GraphRootAuthority");
+    root.set<ecs::LocalTransform>({});
+    descriptor->fixed_work.root_entity = root.id();
+    AnimationRuntimeDefinition definition;
+    definition.binding = descriptor;
+    const Animator animator = service.create(asset, definition);
+    CHECK(animator.valid(), "create graph-root service animator");
+
+    // Two fixed samples of a 0..1 root track at graph rate .5 and dt .1
+    // produce +.05 root motion on the second tick.  A frame alpha of zero
+    // cannot make the fixed sample remain at the prior pose.
+    runtime.tick({0.2f, 0.1f, 4});
+    const ecs::LocalTransform moved = root.get<ecs::LocalTransform>();
+    CHECK(moved.translation.x > 0.04f && moved.translation.x < 0.06f,
+          "fixed authority uses graph rate and current fixed pose, not descriptor clock or frame alpha");
+    const auto markers = runtime.animation_systems().take_marker_events();
+    CHECK(markers.size() == 2 && markers[0].marker_index == 7u && markers[1].marker_index == 3u,
+          "all graph clip-node markers emit in deterministic clip/declaration order");
+    const auto pose = runtime.animation_systems().pose_snapshots().latest(animator.instance);
+    CHECK(pose.local_pose.count == 1 && pose.local_pose[0].translation.x == 0.0f,
+          "published skeleton pose has root translation removed after root authority consumes it");
+}
+
 } // namespace
 
 int main() {
@@ -239,6 +285,7 @@ int main() {
     test_world_target_is_resolved_at_evaluation_boundary();
     test_queries_apply_cap_and_explicit_misses();
     test_runtime_fixed_phases_execute_registered_animation_work();
+    test_service_graph_root_motion_owns_fixed_authority();
     test_service_bound_runtime_work_is_automatic_and_generation_safe();
     test_service_checkpoint_restores_runtime_tick_deterministically();
     if (g_failures) return 1;

@@ -181,7 +181,8 @@ private:
     void run_frame(flecs::world& world, double frame_delta);
     void trace(AnimationScheduleEvent event, double delta_seconds);
     void sample_service_bindings();
-    void evaluate_service_bindings(flecs::world& world, double delta_seconds);
+    void evaluate_service_bindings(flecs::world& world, double delta_seconds,
+                                   float accumulator_alpha);
 
     double interpolation_alpha_ = 0.0;
     std::vector<AnimationScheduleTraceEntry> trace_;

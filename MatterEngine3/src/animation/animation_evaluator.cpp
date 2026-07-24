@@ -34,7 +34,11 @@ bool valid_value_type(AnimationValueType type) {
 bool valid(const AnimationEvaluationDefinition& d) {
     if(!d.skeleton || d.skeleton->joint_count()==0 || d.inverse_bind_model.size()!=d.skeleton->joint_count() || d.nodes.empty()) return false;
     for(const RuntimeGraphInput& input:d.inputs) if(!valid_value_type(input.type) || !valid_cadence(input.cadence)) return false;
-    for(const RuntimeGraphClip& clip:d.clips) if(!clip.animation || !std::isfinite(clip.duration) || clip.duration<0.0f) return false;
+    for(const RuntimeGraphClip& clip:d.clips) {
+        if(!clip.animation || !std::isfinite(clip.duration) || clip.duration<0.0f || !std::isfinite(clip.rate)) return false;
+        for(const RuntimeClipMarker& marker:clip.markers)
+            if(!std::isfinite(marker.time) || marker.time<0.0f || marker.time>clip.duration) return false;
+    }
     for(size_t i=0;i<d.nodes.size();++i) {
         const auto& n=d.nodes[i];
         if(!valid_cadence(n.cadence)) return false;
@@ -70,6 +74,60 @@ float clip_ratio(const RuntimeGraphClip& clip,float time) {
     if(clip.loop) { time=std::fmod(time,clip.duration); if(time<0) time+=clip.duration; }
     else time=std::max(0.0f,std::min(clip.duration,time));
     return time/clip.duration;
+}
+
+AnimationTransform sample_root(const RuntimeGraphClip& clip, float time, bool boundary_end = false) {
+    AnimationTransform root{};
+    if (clip.duration <= 0.0f) return root;
+    float ratio = 0.0f;
+    if (clip.loop) {
+        ratio = std::fmod(time, clip.duration);
+        if (ratio < 0.0f) ratio += clip.duration;
+        if (boundary_end && std::fabs(ratio) < 1e-5f && std::fabs(time) > 1e-5f) ratio = clip.duration;
+    } else ratio = std::max(0.0f, std::min(clip.duration, time));
+    std::vector<AnimationTransform> locals;
+    OzzSampleContext context;
+    if (!sample(*clip.animation, ratio / clip.duration, context, locals) || locals.empty()) return root;
+    return locals[0];
+}
+
+AnimationTransform inverse_delta(const AnimationTransform& value) {
+    AnimationTransform inverse{};
+    inverse.translation = {-value.translation.x, -value.translation.y, -value.translation.z};
+    inverse.rotation = {-value.rotation.x, -value.rotation.y, -value.rotation.z, value.rotation.w};
+    return inverse;
+}
+
+AnimationTransform forward_clip_root_delta(const RuntimeGraphClip& clip, float previous, float current) {
+    AnimationTransform accumulated{};
+    if (current <= previous || clip.duration <= 0.0f) return accumulated;
+    if (!clip.loop) return root_motion_delta(sample_root(clip, previous), sample_root(clip, current));
+    float cursor = previous;
+    constexpr uint32_t kMaxSegments = 4096;
+    for (uint32_t segment = 0; cursor < current && segment < kMaxSegments; ++segment) {
+        const float boundary = (std::floor(cursor / clip.duration) + 1.0f) * clip.duration;
+        const float next = std::min(current, boundary);
+        const AnimationTransform delta = root_motion_delta(sample_root(clip, cursor),
+                                                            sample_root(clip, next, next == boundary));
+        accumulated.translation.x += delta.translation.x;
+        accumulated.translation.y += delta.translation.y;
+        accumulated.translation.z += delta.translation.z;
+        accumulated.rotation = normalize({delta.rotation.w*accumulated.rotation.x + delta.rotation.x*accumulated.rotation.w + delta.rotation.y*accumulated.rotation.z - delta.rotation.z*accumulated.rotation.y,
+                                           delta.rotation.w*accumulated.rotation.y - delta.rotation.x*accumulated.rotation.z + delta.rotation.y*accumulated.rotation.w + delta.rotation.z*accumulated.rotation.x,
+                                           delta.rotation.w*accumulated.rotation.z + delta.rotation.x*accumulated.rotation.y - delta.rotation.y*accumulated.rotation.x + delta.rotation.z*accumulated.rotation.w,
+                                           delta.rotation.w*accumulated.rotation.w - delta.rotation.x*accumulated.rotation.x - delta.rotation.y*accumulated.rotation.y - delta.rotation.z*accumulated.rotation.z});
+        cursor = next;
+    }
+    return accumulated;
+}
+
+AnimationTransform clip_root_delta(const RuntimeGraphClip& clip, float previous, float current) {
+    return current >= previous ? forward_clip_root_delta(clip, previous, current)
+                               : inverse_delta(forward_clip_root_delta(clip, current, previous));
+}
+
+AnimationTransform weighted_delta(const AnimationTransform& a, const AnimationTransform& b, float t) {
+    return {lerp(a.translation, b.translation, t), slerp(a.rotation, b.rotation, t), {1.0f, 1.0f, 1.0f}};
 }
 } // namespace
 
@@ -179,6 +237,8 @@ struct AnimationEvaluator::State {
     uint64_t last_fixed_tick=std::numeric_limits<uint64_t>::max();
     float previous_fixed_time=0, current_fixed_time=0;
     uint8_t front_slot=0;
+    DesiredRootMotion fixed_root_motion{};
+    std::vector<RuntimeGraphClipAdvance> fixed_clips;
     PoseBuffer pose[2];
     AnimationPoseSnapshot view{};
 };
@@ -229,27 +289,46 @@ bool AnimationEvaluator::evaluate(std::vector<AnimationEvaluationRequest> reques
         const float alpha=clamp01(request.accumulator_alpha);
         const float sample_time=candidate_previous_time+(candidate_current_time-candidate_previous_time)*alpha;
         std::vector<std::vector<AnimationTransform>> results(def.nodes.size()); std::vector<OzzSampleContext> contexts(def.clips.size());
+        std::vector<AnimationTransform> root_deltas(def.nodes.size());
+        std::vector<RuntimeGraphClipAdvance> fixed_clips;
         bool complete=true;
         for(uint32_t i=0;i<def.nodes.size()&&complete;++i) {
             const RuntimeGraphNode& node=def.nodes[i]; auto& out=results[i];
-            if(node.kind==RuntimeGraphNodeKind::Clip) complete=sample(*def.clips[node.clip_index].animation,clip_ratio(def.clips[node.clip_index],sample_time),contexts[node.clip_index],out);
+            if(node.kind==RuntimeGraphNodeKind::Clip) {
+                const RuntimeGraphClip& clip=def.clips[node.clip_index];
+                complete=sample(*clip.animation,clip_ratio(clip,sample_time*clip.rate),contexts[node.clip_index],out);
+                root_deltas[i]=clip_root_delta(clip,candidate_previous_time*clip.rate,candidate_current_time*clip.rate);
+                if(new_fixed) fixed_clips.push_back({uint16_t(i),node.clip_index,candidate_previous_time*clip.rate,candidate_current_time*clip.rate});
+            }
             else if(node.kind==RuntimeGraphNodeKind::Blend1D) {
                 if(node.dependencies.empty() || node.thresholds.size()!=node.dependencies.size()) { complete=false; break; }
                 AnimationValue control; if(!sample_graph_input(def,request,node.input_index,control) || control.type!=AnimationValueType::Number) { complete=false; break; }
                 const float x=static_cast<float>(control.number); size_t hi=0; while(hi+1<node.thresholds.size() && x>node.thresholds[hi+1]) ++hi;
                 size_t lo=hi; if(x<=node.thresholds.front()) lo=hi=0; else if(x>=node.thresholds.back()) lo=hi=node.thresholds.size()-1; else ++hi;
-                if(lo==hi) out=results[node.dependencies[lo]]; else { const float den=node.thresholds[hi]-node.thresholds[lo]; const float t=den>0?(x-node.thresholds[lo])/den:0; complete=blend(*def.skeleton,{{&results[node.dependencies[lo]],1-clamp01(t)},{&results[node.dependencies[hi]],clamp01(t)}},{},out); }
+                if(lo==hi) { out=results[node.dependencies[lo]]; root_deltas[i]=root_deltas[node.dependencies[lo]]; }
+                else { const float den=node.thresholds[hi]-node.thresholds[lo]; const float t=den>0?(x-node.thresholds[lo])/den:0; const float weight=clamp01(t); complete=blend(*def.skeleton,{{&results[node.dependencies[lo]],1-weight},{&results[node.dependencies[hi]],weight}},{},out); root_deltas[i]=weighted_delta(root_deltas[node.dependencies[lo]],root_deltas[node.dependencies[hi]],weight); }
             } else if(node.kind==RuntimeGraphNodeKind::Additive) {
                 if(node.dependencies.size()!=2) { complete=false; break; }
                 complete=blend(*def.skeleton,{{&results[node.dependencies[0]],1}},{{&results[node.dependencies[1]],node.weight}},out);
-            } else if(node.kind==RuntimeGraphNodeKind::Output) { if(node.dependencies.size()!=1) complete=false; else out=results[node.dependencies[0]]; }
-            else if(node.kind==RuntimeGraphNodeKind::NativeController) { if(node.dependencies.size()!=1) complete=false; else out=results[node.dependencies[0]]; }
+                const AnimationTransform additive=weighted_delta(AnimationTransform{},root_deltas[node.dependencies[1]],node.weight);
+                root_deltas[i]=root_deltas[node.dependencies[0]];
+                root_deltas[i].translation.x+=additive.translation.x; root_deltas[i].translation.y+=additive.translation.y; root_deltas[i].translation.z+=additive.translation.z;
+                root_deltas[i].rotation=normalize({additive.rotation.w*root_deltas[i].rotation.x + additive.rotation.x*root_deltas[i].rotation.w + additive.rotation.y*root_deltas[i].rotation.z - additive.rotation.z*root_deltas[i].rotation.y,
+                                                    additive.rotation.w*root_deltas[i].rotation.y - additive.rotation.x*root_deltas[i].rotation.z + additive.rotation.y*root_deltas[i].rotation.w + additive.rotation.z*root_deltas[i].rotation.x,
+                                                    additive.rotation.w*root_deltas[i].rotation.z + additive.rotation.x*root_deltas[i].rotation.y - additive.rotation.y*root_deltas[i].rotation.x + additive.rotation.z*root_deltas[i].rotation.w,
+                                                    additive.rotation.w*root_deltas[i].rotation.w - additive.rotation.x*root_deltas[i].rotation.x - additive.rotation.y*root_deltas[i].rotation.y - additive.rotation.z*root_deltas[i].rotation.z});
+            } else if(node.kind==RuntimeGraphNodeKind::Output) { if(node.dependencies.size()!=1) complete=false; else { out=results[node.dependencies[0]]; root_deltas[i]=root_deltas[node.dependencies[0]]; } }
+            else if(node.kind==RuntimeGraphNodeKind::NativeController) { if(node.dependencies.size()!=1) complete=false; else { out=results[node.dependencies[0]]; root_deltas[i]=root_deltas[node.dependencies[0]]; } }
             else complete=false;
         }
         if(!complete || results.back().size()!=def.skeleton->joint_count()) { all=false; continue; }
         const uint8_t back_slot=state.has_snapshot?uint8_t(1u-state.front_slot):state.front_slot;
         State::PoseBuffer& back=state.pose[back_slot];
         back.local=std::move(results.back());
+        // The ECS root is the sole root-motion authority.  Keep the renderer
+        // pose in-place after deriving the graph delta so no skinning path can
+        // apply the same translation/rotation a second time.
+        if(request.root_lock) back.local[0]=AnimationTransform{};
         std::vector<Mat4f> model; if(!local_to_model(*def.skeleton,back.local,model)) { all=false; continue; }
         back.previous_model=state.has_snapshot?state.pose[state.front_slot].model:model;
         back.model=std::move(model); back.palette.resize(back.model.size()); back.previous_palette.resize(back.previous_model.size());
@@ -257,6 +336,7 @@ bool AnimationEvaluator::evaluate(std::vector<AnimationEvaluationRequest> reques
         state.previous_fixed_time=candidate_previous_time; state.current_fixed_time=candidate_current_time; state.last_fixed_tick=candidate_last_tick; state.initialized=candidate_initialized;
         state.front_slot=back_slot; state.has_snapshot=true;
         state.shape=shape;
+        if(new_fixed) { state.fixed_root_motion={root_deltas.back(),true}; state.fixed_clips=std::move(fixed_clips); }
         state.view={request.instance,request.fixed_tick,request.frame_serial,{back.local.data(),uint32_t(back.local.size())},{back.model.data(),uint32_t(back.model.size())},{back.previous_model.data(),uint32_t(back.previous_model.size())},{back.palette.data(),uint32_t(back.palette.size())},{back.previous_palette.data(),uint32_t(back.previous_palette.size())}};
         if(state_it==states_.end()) states_.emplace(instance_key,std::move(candidate_state));
     }
@@ -264,6 +344,22 @@ bool AnimationEvaluator::evaluate(std::vector<AnimationEvaluationRequest> reques
 }
 
 AnimationPoseSnapshot AnimationEvaluator::snapshot(AnimatorInstanceHandle instance) const { const auto it=states_.find(key(instance)); return it==states_.end()||!it->second||!it->second->has_snapshot?AnimationPoseSnapshot{}:it->second->view; }
+bool AnimationEvaluator::fixed_graph_clips(AnimatorInstanceHandle instance,
+                                           std::vector<RuntimeGraphClipAdvance>& out) const {
+    out.clear();
+    const auto it=states_.find(key(instance));
+    if(!instance.valid() || it==states_.end() || !it->second || !it->second->initialized) return false;
+    out=it->second->fixed_clips;
+    return true;
+}
+bool AnimationEvaluator::fixed_root_motion(AnimatorInstanceHandle instance,
+                                           DesiredRootMotion& out) const {
+    out={};
+    const auto it=states_.find(key(instance));
+    if(!instance.valid() || it==states_.end() || !it->second || !it->second->initialized || !it->second->fixed_root_motion.valid) return false;
+    out=it->second->fixed_root_motion;
+    return true;
+}
 bool AnimationEvaluator::capture_checkpoint(AnimatorInstanceHandle instance, AnimatorCheckpoint& out) const {
     const auto it=states_.find(key(instance));
     if(!instance.valid() || it==states_.end() || !it->second) return false;
@@ -311,7 +407,10 @@ bool AnimationEvaluator::restore_checkpoint(AnimatorInstanceHandle instance,
     replacement->last_fixed_tick=checkpoint.last_fixed_tick;
     replacement->previous_fixed_time=checkpoint.previous_fixed_time;
     replacement->current_fixed_time=checkpoint.current_fixed_time;
-    replacement->initialized=true;
+    // A Play checkpoint can legitimately precede the first fixed evaluation.
+    // Preserve that first-sample rule so the restored frame does not present a
+    // fabricated previous pose at alpha zero.
+    replacement->initialized=!checkpoint.fixed_local_pose.empty();
     if(!checkpoint.fixed_local_pose.empty()) {
         State::PoseBuffer& front=replacement->pose[0];
         front.local=checkpoint.fixed_local_pose;

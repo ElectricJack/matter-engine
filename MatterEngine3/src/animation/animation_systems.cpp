@@ -284,14 +284,9 @@ bool AnimationSystems::capture_service_checkpoint(AnimatorCheckpoint& checkpoint
     checkpoint.evaluated_target=work->second.evaluated_target_root_relative;
     checkpoint.target_weight=work->second.target_weight;
     checkpoint.target_enabled=work->second.target_enabled;
+    // Marker crossings are reconstructed from evaluator previous/current graph
+    // time.  A descriptor cursor would be a second, stale marker clock.
     checkpoint.marker_cursors.clear();
-    if(work->second.clip.duration > 0.0f) {
-        float cursor_time=std::fmod(work->second.clip.time,work->second.clip.duration);
-        if(cursor_time<0.0f) cursor_time+=work->second.clip.duration;
-        uint32_t cursor=0;
-        for(const RuntimeClipMarker& marker:work->second.clip.markers) if(marker.time<=cursor_time) ++cursor;
-        checkpoint.marker_cursors.push_back(cursor);
-    }
     // An evaluator may not have run yet when Play begins.  That is a valid
     // bind-pose checkpoint; restore reconstructs transient contexts lazily.
     (void)evaluator_.capture_checkpoint(checkpoint.instance, checkpoint);
@@ -308,8 +303,7 @@ bool AnimationSystems::validate_service_checkpoint(const AnimatorCheckpoint& che
     if(!std::isfinite(checkpoint.fixed_clip_time) || !std::isfinite(checkpoint.target_weight) ||
        !finite_transform(checkpoint.fixed_root_previous) || !finite_transform(checkpoint.fixed_root_current) ||
        !finite_transform(checkpoint.desired_target) || !finite_transform(checkpoint.evaluated_target)) return false;
-    if(checkpoint.marker_cursors.size()>1 ||
-       (!checkpoint.marker_cursors.empty() && checkpoint.marker_cursors[0]>work->second.clip.markers.size())) return false;
+    if(!checkpoint.marker_cursors.empty()) return false;
     return evaluator_.validate_checkpoint(checkpoint.instance,*binding->second.descriptor->evaluation,checkpoint);
 }
 
@@ -339,7 +333,8 @@ void AnimationSystems::sample_service_bindings() {
     // pointer crosses this boundary.
 }
 
-void AnimationSystems::evaluate_service_bindings(flecs::world& world, double delta_seconds) {
+void AnimationSystems::evaluate_service_bindings(flecs::world& world, double delta_seconds,
+                                                 float accumulator_alpha) {
     const ecs::AnimationFixedState fixed = world.get<ecs::AnimationFixedState>();
     const ecs::AnimationFrameState frame = world.get<ecs::AnimationFrameState>();
     std::vector<AnimationEvaluationRequest> requests;
@@ -375,7 +370,9 @@ void AnimationSystems::evaluate_service_bindings(flecs::world& world, double del
         request.fixed_tick = fixed.current_tick;
         request.frame_serial = frame.frame_serial;
         request.fixed_delta_seconds = static_cast<float>(delta_seconds);
-        request.accumulator_alpha = static_cast<float>(frame.interpolation_alpha);
+        request.accumulator_alpha = accumulator_alpha;
+        const auto work = fixed_work_.find(item.first);
+        request.root_lock = work != fixed_work_.end() && work->second.root_entity != 0;
         requests.push_back(request);
     }
     if (!requests.empty()) (void)evaluator_.evaluate(requests);
@@ -471,30 +468,36 @@ void AnimationSystems::run_fixed_update(flecs::world& world, double fixed_delta)
     trace(AnimationScheduleEvent::FixedSampleRootChannels, fixed_delta);
     struct OrderedMarker { AnimatorInstanceHandle instance; uint16_t node; uint16_t clip; AnimationMarkerEvent event; };
     std::vector<OrderedMarker> emitted;
+    // FixedUpdate always samples the current fixed state.  Presentation
+    // interpolation belongs exclusively to FrameUpdate.
+    evaluate_service_bindings(world, fixed_delta, 1.0f);
     for (auto& pair : fixed_work_) {
         AnimationFixedWork& work = pair.second;
-        const float previous = work.clip.time;
-        const float current = previous + work.clip.rate * static_cast<float>(fixed_delta);
-        std::vector<AnimationMarkerEvent> local;
-        emit_runtime_markers(work.instance, work.clip.markers, work.clip.duration, work.clip.loop, previous, current, local);
-        for (const auto& event : local) emitted.push_back({work.instance, work.clip.node_index, work.clip.clip_index, event});
-        work.clip.time = current;
-    }
-    // Evaluate the live graph on the fixed clock before deriving root motion.
-    // This makes the authority path consume the graph's root track (including
-    // blend/additive output), not the descriptor's obsolete test vectors.
-    evaluate_service_bindings(world, fixed_delta);
-    for (auto& pair : fixed_work_) {
-        AnimationFixedWork& work = pair.second;
-        const AnimationPoseSnapshot pose = evaluator_.snapshot(work.instance);
-        if (pose.local_pose.count == 0) continue;
-        if (!work.root_sampled) {
-            work.root_previous = pose.local_pose[0];
-            work.root_current = pose.local_pose[0];
-            work.root_sampled = true;
+        std::vector<RuntimeGraphClipAdvance> advances;
+        if (service_bindings_.find(pair.first) != service_bindings_.end() &&
+            evaluator_.fixed_graph_clips(work.instance, advances)) {
+            const AnimationEvaluationDefinition* definition = service_bindings_.at(pair.first).descriptor->evaluation.get();
+            for (const RuntimeGraphClipAdvance& advance : advances) {
+                if (definition == nullptr || advance.clip_index >= definition->clips.size()) continue;
+                const RuntimeGraphClip& clip = definition->clips[advance.clip_index];
+                // Compatibility/checkpoint metadata is derived from the
+                // graph's shared clock; it never feeds evaluation.
+                if (clip.rate != 0.0f) work.clip.time = advance.current_time / clip.rate;
+                std::vector<AnimationMarkerEvent> local;
+                emit_crossed_markers(work.instance, {clip.markers.data(), uint32_t(clip.markers.size())},
+                                     clip.duration, clip.loop, advance.previous_time, advance.current_time, local);
+                for (const AnimationMarkerEvent& event : local)
+                    emitted.push_back({work.instance, advance.node_index, advance.clip_index, event});
+            }
         } else {
-            work.root_previous = work.root_current;
-            work.root_current = pose.local_pose[0];
+            // Direct fixed-work registration is a deliberately narrow test/tool
+            // seam.  Service-bound animators never use this descriptor clock.
+            const float previous = work.clip.time;
+            const float current = previous + work.clip.rate * static_cast<float>(fixed_delta);
+            std::vector<AnimationMarkerEvent> local;
+            emit_runtime_markers(work.instance, work.clip.markers, work.clip.duration, work.clip.loop, previous, current, local);
+            for (const auto& event : local) emitted.push_back({work.instance, work.clip.node_index, work.clip.clip_index, event});
+            work.clip.time = current;
         }
     }
     std::stable_sort(emitted.begin(), emitted.end(), [](const OrderedMarker& a, const OrderedMarker& b) {
@@ -510,8 +513,12 @@ void AnimationSystems::run_fixed_update(flecs::world& world, double fixed_delta)
     for (const auto& pair : fixed_work_) {
         const AnimationFixedWork& work = pair.second;
         DesiredRootMotion motion{};
-        motion.delta = runtime_root_delta(work.root_previous, work.root_current);
-        motion.valid = true;
+        if (service_bindings_.find(pair.first) != service_bindings_.end()) {
+            if (!evaluator_.fixed_root_motion(work.instance, motion)) continue;
+        } else {
+            motion.delta = runtime_root_delta(work.root_previous, work.root_current);
+            motion.valid = true;
+        }
         (void)publish_desired_root_motion(work.instance, motion, tick);
     }
     trace(AnimationScheduleEvent::FixedEmitMarkers, fixed_delta);
@@ -576,7 +583,9 @@ void AnimationSystems::run_frame(flecs::world& world, double frame_delta) {
     trace(AnimationScheduleEvent::FrameSampleApiWrites, frame_delta);
     trace(AnimationScheduleEvent::FrameInterpolateFixedState, frame_delta);
     trace(AnimationScheduleEvent::FrameEvaluatePresentationGraph, frame_delta);
-    evaluate_service_bindings(world, frame_delta);
+    // Presentation may interpolate the two fixed states but never advances a
+    // graph clock on wall-frame time.
+    evaluate_service_bindings(world, 0.0, static_cast<float>(interpolation_alpha_));
     trace(AnimationScheduleEvent::FrameSolveTargetsAndIk, frame_delta);
     trace(AnimationScheduleEvent::FramePublishPoseSnapshot, frame_delta);
 }

@@ -103,5 +103,20 @@ void test_definition_shape_and_graph_contract_rejection(){
  CHECK(near(e.snapshot(h).local_pose[0].translation.x,.5f),"all malformed graph requests preserve the previous snapshot");
  AnimationEvaluationDefinition frame_to_fixed=f.def;AnimationEvaluator cadence_e;const auto cadence_handle=handle(41);CHECK(cadence_e.evaluate({request(cadence_handle,frame_to_fixed,1,0)}),"cadence rejection test publishes baseline");frame_to_fixed.nodes={{RuntimeGraphNodeKind::Clip,{},0,UINT16_MAX,{},1,EvaluationCadence::Frame},{RuntimeGraphNodeKind::Output,{0}}};CHECK(!cadence_e.evaluate({request(cadence_handle,frame_to_fixed,2,.5f)}),"fixed output cannot depend on a frame-cadence node");CHECK(near(cadence_e.snapshot(cadence_handle).local_pose[0].translation.x,0),"frame-to-fixed rejection preserves prior snapshot and evaluator state");
 }
+void test_graph_root_motion_crosses_loops_and_locks_pose(){
+ Fixture f; f.def.nodes={{RuntimeGraphNodeKind::Clip,{},0},{RuntimeGraphNodeKind::Output,{0}}}; f.def.clips[0].rate=10.0f;
+ AnimationEvaluator forward; const auto h=handle(50);
+ auto first=request(h,f.def,1,.2f); first.root_lock=true;
+ CHECK(forward.evaluate({first}),"first graph root sample evaluates");
+ auto second=request(h,f.def,2,.2f); second.root_lock=true;
+ CHECK(forward.evaluate({second}),"multi-loop graph root sample evaluates");
+ DesiredRootMotion motion{}; std::vector<RuntimeGraphClipAdvance> advances;
+ CHECK(forward.fixed_root_motion(h,motion)&&near(motion.delta.translation.x,2.0f),"root delta preserves forward multi-loop distance");
+ CHECK(forward.fixed_graph_clips(h,advances)&&advances.size()==1&&near(advances[0].previous_time,2.0f)&&near(advances[0].current_time,4.0f),"fixed graph traversal exposes graph clip time rather than descriptor time");
+ CHECK(near(forward.snapshot(h).local_pose[0].translation.x,0.0f),"root-locked snapshot removes consumed root translation");
+ f.def.clips[0].rate=-10.0f; AnimationEvaluator reverse; const auto r=handle(51);
+ CHECK(reverse.evaluate({request(r,f.def,1,.2f)})&&reverse.evaluate({request(r,f.def,2,.2f)}),"reverse graph loop samples evaluate");
+ CHECK(reverse.fixed_root_motion(r,motion)&&near(motion.delta.translation.x,-2.0f),"root delta preserves reverse multi-loop distance");
 }
-int main(){test_controls();test_cadence_aware_control_sampling();test_time_interpolation_and_previous();test_wrap_clamp_pause_and_disable();test_non_looping_clip_clamps();test_blend_and_additive();test_budget_order_and_reuse();test_snapshot_backing_and_priority_controller_budget();test_definition_shape_and_graph_contract_rejection();if(g_failures){std::printf("animation_evaluator_tests: %d failure(s)\n",g_failures);return 1;}std::puts("animation_evaluator_tests: all tests passed");}
+}
+int main(){test_controls();test_cadence_aware_control_sampling();test_time_interpolation_and_previous();test_wrap_clamp_pause_and_disable();test_non_looping_clip_clamps();test_blend_and_additive();test_budget_order_and_reuse();test_snapshot_backing_and_priority_controller_budget();test_definition_shape_and_graph_contract_rejection();test_graph_root_motion_crosses_loops_and_locks_pose();if(g_failures){std::printf("animation_evaluator_tests: %d failure(s)\n",g_failures);return 1;}std::puts("animation_evaluator_tests: all tests passed");}

@@ -94,6 +94,13 @@ struct AnimatorCheckpoint {
     }
 };
 
+// Marker indices are declaration-order indices in the owning clip.  Keeping
+// them explicit makes event order independent of archive/layout details.
+struct RuntimeClipMarker {
+    float time = 0.0f;
+    uint32_t marker_index = UINT32_MAX;
+};
+
 // B2 uses this compact runtime representation rather than exposing Ozz or a
 // decoder through the public AnimationService API.  A8/B3 construct it after
 // loading a fully committed asset and retain the immutable Ozz archive objects.
@@ -102,13 +109,20 @@ struct RuntimeGraphClip {
     float duration = 0.0f;
     bool loop = false;
     bool additive = false;
+    // Graph time is the only animation clock.  Rates live with immutable clip
+    // data so a runtime descriptor cannot accidentally create a second clock.
+    float rate = 1.0f;
+    std::vector<RuntimeClipMarker> markers;
 };
 
-// Marker indices are declaration-order indices in the owning clip.  Keeping
-// them explicit makes event order independent of archive/layout details.
-struct RuntimeClipMarker {
-    float time = 0.0f;
-    uint32_t marker_index = UINT32_MAX;
+// A fixed-step traversal of a graph clip node.  One record is reported for
+// every Clip node, including clips whose pose is blended out, because events
+// are authored on clip/node timelines rather than on the final root pose.
+struct RuntimeGraphClipAdvance {
+    uint16_t node_index = UINT16_MAX;
+    uint16_t clip_index = UINT16_MAX;
+    float previous_time = 0.0f;
+    float current_time = 0.0f;
 };
 
 // Appends events in travel order.  Forward intervals are (old,new], reverse
@@ -175,6 +189,9 @@ struct AnimationEvaluationRequest {
     int32_t explicit_priority = 0;
     bool paused = false;
     bool enabled = true;
+    // Set only for a service binding whose owning ECS root consumes root
+    // motion.  Standalone evaluator users retain their authored root pose.
+    bool root_lock = false;
 };
 
 struct AnimationEvaluationBudget {
@@ -211,6 +228,13 @@ public:
     bool restore_checkpoint(AnimatorInstanceHandle instance,
                             const AnimationEvaluationDefinition& definition,
                             const AnimatorCheckpoint& checkpoint);
+    // Returns the fixed graph traversal and root delta from the most recently
+    // published fixed sample.  Both are derived before root-lock changes the
+    // renderer-facing skeleton pose.
+    bool fixed_graph_clips(AnimatorInstanceHandle instance,
+                           std::vector<RuntimeGraphClipAdvance>& out) const;
+    bool fixed_root_motion(AnimatorInstanceHandle instance,
+                           DesiredRootMotion& out) const;
     void forget(AnimatorInstanceHandle instance);
 
 private:
