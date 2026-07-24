@@ -38,7 +38,10 @@ bool valid(const AnimationEvaluationDefinition& d) {
     for(size_t i=0;i<d.nodes.size();++i) {
         const auto& n=d.nodes[i];
         if(!valid_cadence(n.cadence)) return false;
-        for(uint16_t dep:n.dependencies) if(dep>=i) return false;
+        for(uint16_t dep:n.dependencies) {
+            if(dep>=i) return false;
+            if(d.nodes[dep].cadence==EvaluationCadence::Frame && n.cadence==EvaluationCadence::Fixed) return false;
+        }
         switch(n.kind) {
             case RuntimeGraphNodeKind::Clip:
                 if(!n.dependencies.empty() || n.clip_index>=d.clips.size() || n.input_index!=kNoIndex || !n.thresholds.empty()) return false;
