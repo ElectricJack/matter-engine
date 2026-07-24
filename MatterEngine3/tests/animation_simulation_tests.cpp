@@ -7,6 +7,7 @@
 #include "check.h"
 
 #include <cstdio>
+#include <cmath>
 #include <cstring>
 #include <vector>
 #include <memory>
@@ -56,6 +57,204 @@ struct BoundFixture {
         evaluation->nodes = {{RuntimeGraphNodeKind::Clip, {}, 0}, {RuntimeGraphNodeKind::Output, {0}}};
     }
 };
+
+bool same_float(float left, float right) {
+    return std::fabs(left - right) < 1e-4f;
+}
+
+bool same_transform(const AnimationTransform& left, const AnimationTransform& right) {
+    return same_float(left.translation.x, right.translation.x) &&
+           same_float(left.translation.y, right.translation.y) &&
+           same_float(left.translation.z, right.translation.z) &&
+           same_float(left.rotation.x, right.rotation.x) &&
+           same_float(left.rotation.y, right.rotation.y) &&
+           same_float(left.rotation.z, right.rotation.z) &&
+           same_float(left.rotation.w, right.rotation.w) &&
+           same_float(left.scale.x, right.scale.x) &&
+           same_float(left.scale.y, right.scale.y) &&
+           same_float(left.scale.z, right.scale.z);
+}
+
+bool same_matrix(const Mat4f& left, const Mat4f& right) {
+    for (size_t index = 0; index < 16; ++index)
+        if (!same_float(left.m[index], right.m[index])) return false;
+    return true;
+}
+
+// A service-bound set of independent three-joint chains.  The targets are
+// deliberately real runtime targets: test code reaches them only through the
+// public AnimationService and Runtime::tick seams.
+struct TargetChainFixture {
+    OzzSkeleton skeleton;
+    OzzAnimation clip;
+    std::shared_ptr<AnimationEvaluationDefinition> evaluation = std::make_shared<AnimationEvaluationDefinition>();
+    Diagnostics diagnostics;
+    explicit TargetChainFixture(uint32_t chains = 2) {
+        RigDefinition rig;
+        ClipDefinition source;
+        source.name = "target-chains";
+        source.duration = 1.0f;
+        source.rate = 30.0f;
+        source.loop = true;
+        source.source = {"test", 1, 1, "target-chains"};
+        AnimationTransform rig_root{};
+        rig.joints.push_back({"rig_root", "", rig_root, 1.0f, {"test", 1, 1, "rig_root"}});
+        source.tracks.push_back({"rig_root", {{0.0f, rig_root, {"test",1,1,"a"}}, {1.0f, rig_root, {"test",1,1,"b"}}}, {"test",1,1,"track"}});
+        for (uint32_t chain = 0; chain < chains; ++chain) {
+            const std::string prefix = "chain" + std::to_string(chain);
+            AnimationTransform root{};
+            AnimationTransform segment{};
+            segment.translation.x = 1.0f;
+            rig.joints.push_back({prefix + "_root", "rig_root", root, 1.0f, {"test", 1, 1, prefix}});
+            rig.joints.push_back({prefix + "_mid", prefix + "_root", segment, 1.0f, {"test", 1, 1, prefix}});
+            rig.joints.push_back({prefix + "_end", prefix + "_mid", segment, 1.0f, {"test", 1, 1, prefix}});
+            source.tracks.push_back({prefix + "_root", {{0.0f, root, {"test",1,1,"a"}}, {1.0f, root, {"test",1,1,"b"}}}, {"test",1,1,"track"}});
+            source.tracks.push_back({prefix + "_mid", {{0.0f, segment, {"test",1,1,"a"}}, {1.0f, segment, {"test",1,1,"b"}}}, {"test",1,1,"track"}});
+            source.tracks.push_back({prefix + "_end", {{0.0f, segment, {"test",1,1,"a"}}, {1.0f, segment, {"test",1,1,"b"}}}, {"test",1,1,"track"}});
+        }
+        CHECK(build_skeleton(rig, skeleton, diagnostics) && build_clip(rig, source, clip, diagnostics),
+              "build service-bound target-chain fixture");
+        Mat4f identity{};
+        identity.m[0] = identity.m[5] = identity.m[10] = identity.m[15] = 1.0f;
+        evaluation->skeleton = &skeleton;
+        evaluation->clips = {{&clip, 1.0f, true, false}};
+        evaluation->inverse_bind_model.assign(skeleton.joint_count(), identity);
+        evaluation->nodes = {{RuntimeGraphNodeKind::Clip, {}, 0}, {RuntimeGraphNodeKind::Output, {0}}};
+    }
+
+    CanonicalTarget target(uint32_t chain, const char* name, TargetDriverKind driver,
+                           EvaluationCadence cadence) const {
+        CanonicalTarget value{};
+        value.name = name;
+        value.chain = {static_cast<JointIndex>(chain * 3 + 1), static_cast<JointIndex>(chain * 3 + 2),
+                       static_cast<JointIndex>(chain * 3 + 3)};
+        value.driver = driver;
+        value.cadence = cadence;
+        value.has_pole = true;
+        value.pole = {0.0f, 0.0f, 1.0f};
+        return value;
+    }
+};
+
+AnimationRuntimeDefinition target_definition(
+    const std::shared_ptr<AnimationRuntimeBindingDescriptor>& descriptor,
+    const std::vector<RuntimeTargetDefinition>& targets) {
+    AnimationRuntimeDefinition definition;
+    definition.targets = targets;
+    definition.binding = descriptor;
+    return definition;
+}
+
+void test_runtime_fixed_controller_ik_persists_through_frame_and_checkpoint_replay() {
+    ecs_runtime::Runtime runtime;
+    AnimationService service;
+    runtime.attach_animation_service(service);
+    const AnimAsset* asset = service.insert_asset({0x97u, {1u, 2u}});
+    TargetChainFixture fixture;
+    auto descriptor = std::make_shared<AnimationRuntimeBindingDescriptor>();
+    descriptor->evaluation = fixture.evaluation;
+    descriptor->fixed_work.clip.duration = 1.0f;
+    descriptor->fixed_work.clip.loop = true;
+    descriptor->targets = {fixture.target(0, "left", TargetDriverKind::Controller, EvaluationCadence::Fixed),
+                           fixture.target(1, "right", TargetDriverKind::Controller, EvaluationCadence::Fixed)};
+    GaitControllerParameters parameters{};
+    parameters.left_target = 0;
+    parameters.right_target = 1;
+    parameters.left_predicted = {1.25f, 0.75f, 0.0f};
+    parameters.right_predicted = {1.25f, -0.75f, 0.0f};
+    std::vector<uint8_t> bytes(sizeof(parameters));
+    std::memcpy(bytes.data(), &parameters, sizeof(parameters));
+    AnimationRuntimeBindingDescriptor::Controller controller{};
+    controller.descriptor = {kGaitControllerTypeId, bytes, EvaluationCadence::Fixed};
+    controller.target_indices = {0, 1};
+    descriptor->controllers.push_back(std::move(controller));
+    const Animator animator = service.create(asset, target_definition(descriptor, {
+        {"left", TargetDriverKind::Controller, EvaluationCadence::Fixed, {1, 2, 3}, true},
+        {"right", TargetDriverKind::Controller, EvaluationCadence::Fixed, {4, 5, 6}, true},
+    }));
+    CHECK(animator.valid(), "service admits a fixed controller with two independent valid IK chains");
+    AnimationTransform attempted_external_write{};
+    attempted_external_write.translation = {9.0f, 9.0f, 9.0f};
+    CHECK(!service.set_transform(service.target(animator.instance, "left"), attempted_external_write),
+          "controller-owned target rejects the external writer despite a lookup handle");
+
+    CHECK(runtime.tick({0.1f, 0.1f, 1}).fixed_steps == 1, "controller target runs in the fixed Runtime phase");
+    const AnimationPoseSnapshot fixed = runtime.animation_systems().pose_snapshots().latest(animator.instance);
+    CHECK(fixed.local_pose.count == 7 && std::fabs(fixed.local_pose[1].rotation.z) > 1e-3f,
+          "fixed controller target solves its IK chain before the presentation snapshot");
+    if (fixed.local_pose.count != 7 || fixed.previous_model_pose.count != 7) return;
+    std::vector<AnimationTransform> fixed_locals(fixed.local_pose.data, fixed.local_pose.data + fixed.local_pose.count);
+    std::vector<Mat4f> fixed_previous(fixed.previous_model_pose.data,
+                                      fixed.previous_model_pose.data + fixed.previous_model_pose.count);
+
+    CHECK(runtime.tick({0.02f, 0.1f, 1}).fixed_steps == 0, "presentation-only Runtime tick has no fixed step");
+    const AnimationPoseSnapshot frame = runtime.animation_systems().pose_snapshots().latest(animator.instance);
+    CHECK(frame.local_pose.count == fixed_locals.size() && same_transform(frame.local_pose[1], fixed_locals[1]),
+          "FrameUpdate preserves the fixed controller IK pose");
+    CHECK(frame.previous_model_pose.count == fixed_previous.size() &&
+              same_matrix(frame.previous_model_pose[0], fixed_previous[0]),
+          "presentation-only update preserves fixed previous-model history");
+
+    std::vector<AnimatorCheckpoint> checkpoints;
+    CHECK(service.capture_runtime_checkpoints(checkpoints) && checkpoints.size() == 1,
+          "capture includes controller and target runtime state");
+    CHECK(runtime.tick({0.1f, 0.1f, 1}).fixed_steps == 1, "advance controller state beyond checkpoint");
+    const AnimationPoseSnapshot advanced = runtime.animation_systems().pose_snapshots().latest(animator.instance);
+    CHECK(service.restore_runtime_checkpoints(checkpoints), "restore controller/target checkpoint through service bridge");
+    CHECK(runtime.tick({0.1f, 0.1f, 1}).fixed_steps == 1, "replay restored controller step through Runtime");
+    const AnimationPoseSnapshot replay = runtime.animation_systems().pose_snapshots().latest(animator.instance);
+    CHECK(advanced.local_pose.count == 7 && replay.local_pose.count == 7 &&
+              same_transform(advanced.local_pose[1], replay.local_pose[1]) &&
+              advanced.model_pose.count == 7 && replay.model_pose.count == 7 && same_matrix(advanced.model_pose[1], replay.model_pose[1]),
+          "controller/IK checkpoint replay is deterministic and publishes fresh model data");
+}
+
+void test_runtime_fixed_and_frame_external_targets_compose_without_fixed_history_mutation() {
+    ecs_runtime::Runtime runtime;
+    AnimationService service;
+    runtime.attach_animation_service(service);
+    const AnimAsset* asset = service.insert_asset({0x98u, {1u, 2u}});
+    TargetChainFixture fixture;
+    auto descriptor = std::make_shared<AnimationRuntimeBindingDescriptor>();
+    descriptor->evaluation = fixture.evaluation;
+    descriptor->fixed_work.clip.duration = 1.0f;
+    descriptor->fixed_work.clip.loop = true;
+    descriptor->targets = {fixture.target(0, "fixed", TargetDriverKind::External, EvaluationCadence::Fixed),
+                           fixture.target(1, "frame", TargetDriverKind::External, EvaluationCadence::Frame)};
+    const Animator animator = service.create(asset, target_definition(descriptor, {
+        {"fixed", TargetDriverKind::External, EvaluationCadence::Fixed, {1, 2, 3}, true},
+        {"frame", TargetDriverKind::External, EvaluationCadence::Frame, {4, 5, 6}, true},
+    }));
+    CHECK(animator.valid(), "service admits independent fixed and frame external IK targets");
+    const AnimationTargetHandle fixed_handle = service.target(animator.instance, "fixed");
+    const AnimationTargetHandle frame_handle = service.target(animator.instance, "frame");
+    AnimationTransform fixed_target{};
+    fixed_target.translation = {1.2f, 0.7f, 0.0f};
+    CHECK(service.set_transform(fixed_handle, fixed_target) && service.snap(fixed_handle),
+          "fixed target is written through its declared API handle");
+    CHECK(runtime.tick({0.1f, 0.1f, 1}).fixed_steps == 1, "fixed target has one authoritative solve");
+    const AnimationPoseSnapshot fixed = runtime.animation_systems().pose_snapshots().latest(animator.instance);
+    CHECK(fixed.local_pose.count == 7 && std::fabs(fixed.local_pose[1].rotation.z) > 1e-3f,
+          "fixed target changes only its fixed chain");
+    if (fixed.local_pose.count != 7 || fixed.previous_model_pose.count != 7) return;
+    std::vector<AnimationTransform> fixed_chain(fixed.local_pose.data + 1, fixed.local_pose.data + 4);
+    std::vector<Mat4f> fixed_previous(fixed.previous_model_pose.data,
+                                      fixed.previous_model_pose.data + fixed.previous_model_pose.count);
+
+    AnimationTransform frame_target{};
+    frame_target.translation = {1.2f, -0.7f, 0.0f};
+    CHECK(service.set_transform(frame_handle, frame_target) && service.snap(frame_handle),
+          "frame target is written through its separate declared API handle");
+    CHECK(runtime.tick({0.02f, 0.1f, 1}).fixed_steps == 0, "frame target is evaluated without a fixed step");
+    const AnimationPoseSnapshot frame = runtime.animation_systems().pose_snapshots().latest(animator.instance);
+    CHECK(frame.local_pose.count == 7 && same_transform(frame.local_pose[1], fixed_chain[0]),
+          "frame-only target does not mutate the fixed chain pose");
+    if (frame.local_pose.count != 7) return;
+    CHECK(frame.previous_model_pose.count == fixed_previous.size() && same_matrix(frame.previous_model_pose[0], fixed_previous[0]),
+          "frame-only target does not mutate fixed previous-model history");
+    CHECK(std::fabs(frame.local_pose[4].rotation.z) > 1e-3f,
+          "frame target composes into the presentation pose on its own chain");
+}
 
 void test_service_bound_runtime_work_is_automatic_and_generation_safe() {
     ecs_runtime::Runtime runtime;
@@ -359,6 +558,8 @@ int main() {
     test_service_bound_runtime_work_is_automatic_and_generation_safe();
     test_controller_input_bindings_are_fixed_typed_and_fail_closed();
     test_service_checkpoint_restores_runtime_tick_deterministically();
+    test_runtime_fixed_controller_ik_persists_through_frame_and_checkpoint_replay();
+    test_runtime_fixed_and_frame_external_targets_compose_without_fixed_history_mutation();
     if (g_failures) return 1;
     std::puts("animation_simulation_tests: all tests passed");
 }
