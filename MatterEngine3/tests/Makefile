@@ -723,7 +723,23 @@ SHLIB_C   = $(COMMON_MSL_C)
 
 # ===== flavor vl (viewer_logic) =========================================
 VIEWER_LOGIC_TARGET = viewer_logic_tests
-VIEWER_PIPELINE_CPP = $(filter-out example_world.cpp, $(EXAMPLE_CPP))
+# viewer_logic exercises the bake host through ScriptHost, so it owns the
+# complete animation-authoring closure (including Ozz's bake-time compiler),
+# not merely the Viewer runtime adapter. Keep this list explicit and guard it
+# below: a missing TU otherwise appears only as a platform-specific link error.
+VIEWER_LOGIC_ANIMATION_BAKE_CPP = \
+              ../src/dsl_animation.cpp \
+              ../src/animation/animation_ir.cpp \
+              ../src/animation/animation_validate.cpp \
+              ../src/animation/animation_binding_bake.cpp \
+              ../src/animation/ozz_adapter.cpp \
+              ../src/animation/ozz_bake.cpp \
+              ../src/render/indexed_part_geometry.cpp
+VIEWER_LOGIC_ANIMATION_REQUIRED = dsl_animation.cpp animation_ir.cpp \
+              animation_validate.cpp animation_binding_bake.cpp \
+              ozz_adapter.cpp ozz_bake.cpp indexed_part_geometry.cpp
+VIEWER_PIPELINE_CPP = $(filter-out example_world.cpp, $(EXAMPLE_CPP)) \
+              $(VIEWER_LOGIC_ANIMATION_BAKE_CPP)
 VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../../MatterViewer/camera_controller.cpp \
               ../../MatterViewer/streaming_anchor_controller.cpp \
@@ -1036,7 +1052,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-tilesetslicer run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather
+.PHONY: clean run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-tilesetslicer run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1367,10 +1383,16 @@ run-rock-profile: $(ROCKPROF_TARGET)
 ../shaders_gen/embedded_shaders.h:
 	$(MAKE) -C .. shaders_gen/embedded_shaders.h
 
-$(VIEWER_LOGIC_TARGET): $(VIEWER_LOGIC_OBJS) | ../shaders_gen/embedded_shaders.h
+check-viewer-logic-animation-sources:
+	@for source in $(VIEWER_LOGIC_ANIMATION_REQUIRED); do \
+		case " $(VIEWER_LOGIC_CPP) " in *"/$$source "*) ;; *) \
+			echo "ERROR: viewer logic bake closure omits $$source"; exit 1 ;; esac; \
+	done
+
+$(VIEWER_LOGIC_TARGET): check-viewer-logic-animation-sources $(VIEWER_LOGIC_OBJS) $(OZZ_OFFLINE_LIBS) | ../shaders_gen/embedded_shaders.h
 	$(CC) $(VIEWER_LOGIC_OBJS) -o $@ \
 	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB -pthread $(INCLUDE_PATHS) \
-	      -I$(BOX3D_DIR)/include $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(BOX3D_DIR)/libbox3d.a
+	      -I$(BOX3D_DIR)/include $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(BOX3D_DIR)/libbox3d.a $(OZZ_OFFLINE_LIBS)
 
 run-viewer-logic: $(VIEWER_LOGIC_TARGET)
 	./$(VIEWER_LOGIC_TARGET)

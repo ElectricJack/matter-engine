@@ -662,19 +662,24 @@ static void test_composer_counts() {
 
     viewer::WorldState state; state.reset(m);
 
-    // Expected expanded total = sum over root instances of (1 + that part's child count).
+    // Match WorldComposer's shared tree walk: assembly nodes with no LOD BLAS
+    // contribute no TLAS instance, but their children are still visited.
     // All parts are already loaded in the shared store (no lod_bake re-run needed).
     size_t expected = 0;
     for (auto& e : m.instances) {
-        const viewer::LoadedPart* lp = store.get_or_load(e.part_hash);
-        expected += 1 + (lp ? lp->children.size() : 0);
+        viewer::walk_part_tree(e.part_hash,
+            [&](uint64_t hash) -> const viewer::LoadedPart* { return store.get_or_load(hash); },
+            [&](const viewer::LoadedPart* part, uint64_t, const float[16], int) {
+                if (!part->lod_blas.empty()) ++expected;
+            });
     }
     viewer::WorldComposer composer(store, expected + 16);
     auto lods = store.part_lod_table();
 
     viewer::PassThroughResolver pass;
     int active_all = composer.compose(state, pass, lods, make_float3(0,0,0));
-    CHECK(active_all == (int)expected, "passthrough composes every instance plus its children");
+    CHECK(active_all == (int)expected,
+          "passthrough composes every drawable node while traversing assemblies");
 
     // Far camera with a small activation radius -> fewer active instances.
     viewer::SectorLodResolver sec(16.0f, 32.0f);
@@ -790,6 +795,7 @@ static void test_compose_expands_children() {
     reset_test_dir(root, true);
     const uint64_t child_hash  = 0xAAAA0000AAAA0001ull;
     const uint64_t parent_hash = 0xBBBB0000BBBB0001ull;
+    const uint64_t assembler_hash = 0xCCCC0000CCCC0001ull;
 
     auto quad = [](float3 base) {
         std::vector<Tri> out(2);
@@ -801,13 +807,16 @@ static void test_compose_expands_children() {
         set(out[1], base, make_float3(base.x+1,base.y+1,base.z), make_float3(base.x,base.y+1,base.z));
         return out;
     };
-    auto save_part = [&](uint64_t hash, const std::vector<part_asset::ChildInstance>& kids) {
+    auto save_part = [&](uint64_t hash, const std::vector<part_asset::ChildInstance>& kids,
+                         bool with_geometry = true) {
         BLASManager blas; TLASManager tlas(8);
-        std::vector<Tri> tris = quad(make_float3(0,0,0));
-        blas.register_triangles(tris.data(), (int)tris.size(), nullptr);
         part_asset::LodLevels lods;
-        part_asset::LodLevel L; L.screen_size_threshold = 0.0f; L.blas_indices.push_back(0);
-        lods.push_back(L);
+        if (with_geometry) {
+            std::vector<Tri> tris = quad(make_float3(0,0,0));
+            blas.register_triangles(tris.data(), (int)tris.size(), nullptr);
+            part_asset::LodLevel L; L.screen_size_threshold = 0.0f; L.blas_indices.push_back(0);
+            lods.push_back(L);
+        }
         const std::string path = root + "/" + part_asset::cache_path_resolved(hash);
         return part_asset::save_v2(path, blas, tlas,
                                    kids.empty() ? nullptr : kids.data(), kids.size(),
@@ -825,6 +834,7 @@ static void test_compose_expands_children() {
     kids.push_back(translate(20, 0, 0)); kids.back().child_resolved_hash = child_hash;
     CHECK(save_part(child_hash, {}), "synthetic child part saved");
     CHECK(save_part(parent_hash, kids), "synthetic parent part saved");
+    CHECK(save_part(assembler_hash, kids, false), "synthetic assembly root saved");
 
     viewer::PartStore store(root);
     const viewer::LoadedPart* parent = store.get_or_load(parent_hash);
@@ -851,6 +861,20 @@ static void test_compose_expands_children() {
     // without rebuilding (behavioral check: count identical and stable).
     int again = composer.compose(state, pass, lods, make_float3(0,0,0));
     CHECK(again == recorded, "unchanged instance set composes to the same count");
+
+    // An assembly root has no geometry of its own, but composition must still
+    // traverse it and emit its drawable children.
+    const viewer::LoadedPart* assembler = store.get_or_load(assembler_hash);
+    CHECK(assembler && assembler->lod_blas.empty() && assembler->children.size() == 2,
+          "synthetic assembly root retains children without geometry");
+    viewer::WorldManifest assembly_world;
+    assembly_world.world_root_hash = 1;
+    assembly_world.instances.push_back(mk_entry(2, assembler_hash, 0.0f));
+    viewer::WorldState assembly_state;
+    assembly_state.reset(assembly_world);
+    int assembly_recorded = composer.compose(assembly_state, pass, lods, make_float3(0,0,0));
+    CHECK(assembly_recorded == 2,
+          "geometry-less assembly root emits its two drawable children only");
 
     // NOTE: RasterComposer::build_batches (CPU batch path) was deleted in Task 12
     // along with the whole CPU raster fallback; the GPU-driven path replaces it,
