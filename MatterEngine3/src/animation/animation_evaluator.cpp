@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <set>
 
 namespace matter::animation {
 namespace {
@@ -22,15 +23,41 @@ Quaternion slerp(Quaternion a, Quaternion b, float t) {
 }
 AnimationTransform lerp(AnimationTransform a, AnimationTransform b, float t) { return {lerp(a.translation,b.translation,t),slerp(a.rotation,b.rotation,t),lerp(a.scale,b.scale,t)}; }
 Mat4f multiply(const Mat4f& a,const Mat4f& b) { Mat4f r{}; for(int y=0;y<4;++y)for(int x=0;x<4;++x)for(int k=0;k<4;++k)r.m[y*4+x]+=a.m[y*4+k]*b.m[k*4+x]; return r; }
+bool valid_cadence(EvaluationCadence cadence) { return cadence==EvaluationCadence::Fixed || cadence==EvaluationCadence::Frame; }
+bool valid_value_type(AnimationValueType type) {
+    switch(type) {
+        case AnimationValueType::Number: case AnimationValueType::Float3: case AnimationValueType::Quaternion:
+        case AnimationValueType::Transform: case AnimationValueType::Bool: case AnimationValueType::Symbol: return true;
+    }
+    return false;
+}
 bool valid(const AnimationEvaluationDefinition& d) {
     if(!d.skeleton || d.skeleton->joint_count()==0 || d.inverse_bind_model.size()!=d.skeleton->joint_count() || d.nodes.empty()) return false;
+    for(const RuntimeGraphInput& input:d.inputs) if(!valid_value_type(input.type) || !valid_cadence(input.cadence)) return false;
+    for(const RuntimeGraphClip& clip:d.clips) if(!clip.animation || !std::isfinite(clip.duration) || clip.duration<0.0f) return false;
     for(size_t i=0;i<d.nodes.size();++i) {
         const auto& n=d.nodes[i];
+        if(!valid_cadence(n.cadence)) return false;
         for(uint16_t dep:n.dependencies) if(dep>=i) return false;
-        if(n.kind==RuntimeGraphNodeKind::Clip && (n.clip_index>=d.clips.size() || !d.clips[n.clip_index].animation)) return false;
-        if(n.kind==RuntimeGraphNodeKind::Blend1D) {
-            if(n.input_index>=d.inputs.size() || d.inputs[n.input_index].type!=AnimationValueType::Number) return false;
-            if(n.cadence==EvaluationCadence::Fixed && d.inputs[n.input_index].cadence==EvaluationCadence::Frame) return false;
+        switch(n.kind) {
+            case RuntimeGraphNodeKind::Clip:
+                if(!n.dependencies.empty() || n.clip_index>=d.clips.size() || n.input_index!=kNoIndex || !n.thresholds.empty()) return false;
+                break;
+            case RuntimeGraphNodeKind::Blend1D:
+                if(n.dependencies.size()<2 || n.thresholds.size()!=n.dependencies.size() || n.clip_index!=kNoIndex || n.input_index>=d.inputs.size()) return false;
+                if(d.inputs[n.input_index].type!=AnimationValueType::Number || (n.cadence==EvaluationCadence::Fixed && d.inputs[n.input_index].cadence==EvaluationCadence::Frame)) return false;
+                for(size_t threshold=0;threshold<n.thresholds.size();++threshold) if(!std::isfinite(n.thresholds[threshold]) || (threshold>0 && !(n.thresholds[threshold]>n.thresholds[threshold-1]))) return false;
+                break;
+            case RuntimeGraphNodeKind::Additive:
+                if(n.dependencies.size()!=2 || n.clip_index!=kNoIndex || n.input_index!=kNoIndex || !n.thresholds.empty() || !std::isfinite(n.weight) || n.weight<0.0f || n.weight>1.0f) return false;
+                break;
+            case RuntimeGraphNodeKind::NativeController:
+                if(n.dependencies.size()!=1 || n.clip_index!=kNoIndex || n.input_index!=kNoIndex || !n.thresholds.empty()) return false;
+                break;
+            case RuntimeGraphNodeKind::Output:
+                if(i+1!=d.nodes.size() || n.dependencies.size()!=1 || n.clip_index!=kNoIndex || n.input_index!=kNoIndex || !n.thresholds.empty()) return false;
+                break;
+            default: return false;
         }
     }
     return d.nodes.back().kind==RuntimeGraphNodeKind::Output;
@@ -78,6 +105,11 @@ bool sample_graph_input(const AnimationEvaluationDefinition& definition,
 }
 
 struct AnimationEvaluator::State {
+    struct DefinitionShape {
+        const AnimationEvaluationDefinition* definition = nullptr;
+        const OzzSkeleton* skeleton = nullptr;
+        uint32_t joint_count = 0;
+    } shape;
     struct PoseBuffer {
         std::vector<AnimationTransform> local;
         std::vector<Mat4f> model;
@@ -98,13 +130,32 @@ AnimationEvaluator::~AnimationEvaluator() = default;
 
 bool AnimationEvaluator::evaluate(std::vector<AnimationEvaluationRequest> requests) {
     std::stable_sort(requests.begin(),requests.end(),[](const auto&a,const auto&b){ if(a.visibility_class!=b.visibility_class)return a.visibility_class<b.visibility_class; if(a.explicit_priority!=b.explicit_priority)return a.explicit_priority>b.explicit_priority; return a.instance.slot_index<b.instance.slot_index; });
-    uint32_t graph_used=0, controller_used=0; bool all=true;
+    const auto shape_for=[](const AnimationEvaluationRequest& request) { return State::DefinitionShape{request.definition,request.definition->skeleton,uint32_t(request.definition->skeleton->joint_count())}; };
+    const auto same_shape=[](const State::DefinitionShape& a,const State::DefinitionShape& b) { return a.definition==b.definition && a.skeleton==b.skeleton && a.joint_count==b.joint_count; };
+    std::map<uint64_t,State::DefinitionShape> batch_shapes;
+    std::set<uint64_t> conflicting_instances;
+    bool all=true;
     for(const auto& request:requests) {
         if(!request.instance.valid() || !request.enabled || !request.definition || !valid(*request.definition)) { all=false; continue; }
+        const uint64_t instance_key=key(request.instance); const State::DefinitionShape shape=shape_for(request);
+        const auto [it,inserted]=batch_shapes.emplace(instance_key,shape);
+        if(!inserted && !same_shape(it->second,shape)) conflicting_instances.insert(instance_key);
+    }
+    uint32_t graph_used=0, controller_used=0;
+    for(const auto& request:requests) {
+        if(!request.instance.valid() || !request.enabled || !request.definition || !valid(*request.definition)) { all=false; continue; }
+        const uint64_t instance_key=key(request.instance);
+        if(conflicting_instances.count(instance_key)!=0) { all=false; continue; }
         uint32_t graph_count=0, controller_count=0; for(const auto& n:request.definition->nodes) { ++graph_count; if(n.kind==RuntimeGraphNodeKind::NativeController) ++controller_count; }
         if(graph_count>budget_.graph_nodes-graph_used || controller_count>budget_.controller_nodes-controller_used) { all=false; continue; }
         graph_used+=graph_count; controller_used+=controller_count;
-        auto& owned=states_[key(request.instance)]; if(!owned) owned=std::make_unique<State>(); State& state=*owned; const auto& def=*request.definition;
+        const auto state_it=states_.find(instance_key); State::DefinitionShape shape=shape_for(request);
+        if(state_it!=states_.end() && !same_shape(state_it->second->shape,shape)) { all=false; continue; }
+        std::unique_ptr<State> candidate_state;
+        State* state_ptr=nullptr;
+        if(state_it!=states_.end()) state_ptr=state_it->second.get();
+        else { candidate_state=std::make_unique<State>(); state_ptr=candidate_state.get(); }
+        State& state=*state_ptr; const auto& def=*request.definition;
         const bool new_fixed=state.last_fixed_tick!=request.fixed_tick;
         float candidate_previous_time=state.previous_fixed_time, candidate_current_time=state.current_fixed_time;
         uint64_t candidate_last_tick=state.last_fixed_tick;
@@ -134,7 +185,8 @@ bool AnimationEvaluator::evaluate(std::vector<AnimationEvaluationRequest> reques
                 if(node.dependencies.size()!=2) { complete=false; break; }
                 complete=blend(*def.skeleton,{{&results[node.dependencies[0]],1}},{{&results[node.dependencies[1]],node.weight}},out);
             } else if(node.kind==RuntimeGraphNodeKind::Output) { if(node.dependencies.size()!=1) complete=false; else out=results[node.dependencies[0]]; }
-            else { if(node.dependencies.size()!=1) complete=false; else out=results[node.dependencies[0]]; }
+            else if(node.kind==RuntimeGraphNodeKind::NativeController) { if(node.dependencies.size()!=1) complete=false; else out=results[node.dependencies[0]]; }
+            else complete=false;
         }
         if(!complete || results.back().size()!=def.skeleton->joint_count()) { all=false; continue; }
         const uint8_t back_slot=state.has_snapshot?uint8_t(1u-state.front_slot):state.front_slot;
@@ -146,7 +198,9 @@ bool AnimationEvaluator::evaluate(std::vector<AnimationEvaluationRequest> reques
         for(size_t i=0;i<back.model.size();++i) { back.palette[i]=multiply(back.model[i],def.inverse_bind_model[i]); back.previous_palette[i]=multiply(back.previous_model[i],def.inverse_bind_model[i]); }
         state.previous_fixed_time=candidate_previous_time; state.current_fixed_time=candidate_current_time; state.last_fixed_tick=candidate_last_tick; state.initialized=candidate_initialized;
         state.front_slot=back_slot; state.has_snapshot=true;
+        state.shape=shape;
         state.view={request.instance,request.fixed_tick,request.frame_serial,{back.local.data(),uint32_t(back.local.size())},{back.model.data(),uint32_t(back.model.size())},{back.previous_model.data(),uint32_t(back.previous_model.size())},{back.palette.data(),uint32_t(back.palette.size())},{back.previous_palette.data(),uint32_t(back.previous_palette.size())}};
+        if(state_it==states_.end()) states_.emplace(instance_key,std::move(candidate_state));
     }
     return all;
 }
