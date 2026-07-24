@@ -890,8 +890,19 @@ private:
         matter::VkBufferResource rt_error_counter;
         matter::VkBufferResource rt_test_output;
         matter::VkBufferResource gi_atrous_markers;
+        // C2 compute deformation resources.  Sources alias the immutable
+        // raster vertex arena; all other streams are per-frame so C1 fences
+        // continue to own palette/work/output lifetime.
+        matter::VkBufferResource skin_influences;
+        matter::VkBufferResource skin_sources;
+        matter::VkBufferResource skin_palette_current;
+        matter::VkBufferResource skin_palette_previous;
+        matter::VkBufferResource skin_work;
+        matter::VkBufferResource skin_current_output;
+        matter::VkBufferResource skin_previous_output;
         VkExtent2D dlss_output_extent{};
         VkDescriptorSet descriptor_sets[2]{};
+        VkDescriptorSet skin_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet composite_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet display_descriptor_set = VK_NULL_HANDLE;
         VkDescriptorSet gi_temporal_descriptor_sets[2]{};
@@ -989,6 +1000,9 @@ private:
     bool ensure_frame_resources(uint32_t frame_slot_count,
                                 std::string& error);
     void update_frame_descriptors(FrameResources& frame);
+    bool record_animation_skinning(const matter::VulkanFrame& frame,
+                                   FrameResources& resources,
+                                   std::string& error);
     void update_composite_descriptor(FrameResources& frame);
     void update_display_descriptor(VkDescriptorSet set, VkImageView view);
     bool upload_scene_buffers(FrameResources& frame,
@@ -1042,8 +1056,11 @@ private:
     bool dlss_history_reset_pending_ = false;
     uint64_t dlss_reset_count_ = 0;
     VkDescriptorSetLayout set_layouts_[2]{};
+    VkDescriptorSetLayout skin_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout pipeline_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout skin_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline pipeline_ = VK_NULL_HANDLE;
+    VkPipeline skin_pipeline_ = VK_NULL_HANDLE;
     VkPipeline raster_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout composite_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout composite_pipeline_layout_ = VK_NULL_HANDLE;

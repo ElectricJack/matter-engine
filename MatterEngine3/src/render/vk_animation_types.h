@@ -83,8 +83,42 @@ constexpr uint32_t kVkSkinHistoryInvalid = 1u << 0;
 constexpr uint32_t kVkMaxSkinWorkItems = 256;
 constexpr uint32_t kVkMaxSkinnedOutputVertices = 2000000;
 
+// Compute input/output ABI. Source vertices deliberately retain every raster
+// attribute; output adds only the previous skinned position used for true
+// deformation motion vectors. Both structs use vec4-aligned arrays so the
+// matching GLSL std430 declarations remain unambiguous.
+struct alignas(16) VkSkinSourceVertex {
+    float position[4]{};
+    float normal[4]{};
+    float tint[4]{};
+    float surface[4]{};
+    uint32_t material_index = 0;
+    uint32_t pad[3]{};
+};
+static_assert(sizeof(VkSkinSourceVertex) == 80, "VkSkinSourceVertex std430 ABI");
+
+struct alignas(16) VkSkinVertex {
+    float position[4]{};
+    float previous_position[4]{};
+    float normal[4]{};
+    float tint[4]{};
+    float surface[4]{};
+    uint32_t material_index = 0;
+    uint32_t pad[3]{};
+};
+static_assert(sizeof(VkSkinVertex) == 96, "VkSkinVertex std430 ABI");
+
 inline float vk_skin_decode_weight(uint16_t weight) noexcept {
     return static_cast<float>(weight) / 65535.0f;
 }
+
+// CPU mirror of animation_skin.comp. It is both an executable ABI contract
+// and a validation/readback oracle; production dispatch never calls it.
+bool vk_skin_vertex_cpu(const VkSkinSourceVertex& source,
+                        const VkSkinInfluence& influence,
+                        const VkSkinJoint* current_palette,
+                        const VkSkinJoint* previous_palette,
+                        uint32_t palette_count,
+                        VkSkinVertex& output) noexcept;
 
 }  // namespace viewer

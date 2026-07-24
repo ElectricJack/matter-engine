@@ -1009,6 +1009,12 @@ void VkSceneRenderer::destroy_pipeline() {
         vkDestroyDescriptorSetLayout(device, composite_set_layout_, nullptr);
     if (raster_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, raster_pipeline_, nullptr);
+    if (skin_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device, skin_pipeline_, nullptr);
+    if (skin_pipeline_layout_ != VK_NULL_HANDLE)
+        vkDestroyPipelineLayout(device, skin_pipeline_layout_, nullptr);
+    if (skin_set_layout_ != VK_NULL_HANDLE)
+        vkDestroyDescriptorSetLayout(device, skin_set_layout_, nullptr);
     if (pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, pipeline_, nullptr);
     if (pipeline_layout_ != VK_NULL_HANDLE)
@@ -1022,6 +1028,9 @@ void VkSceneRenderer::destroy_pipeline() {
     }
     pipeline_ = VK_NULL_HANDLE;
     raster_pipeline_ = VK_NULL_HANDLE;
+    skin_pipeline_ = VK_NULL_HANDLE;
+    skin_pipeline_layout_ = VK_NULL_HANDLE;
+    skin_set_layout_ = VK_NULL_HANDLE;
     composite_set_layout_ = VK_NULL_HANDLE;
     composite_pipeline_layout_ = VK_NULL_HANDLE;
     composite_pipeline_ = VK_NULL_HANDLE;
@@ -1119,6 +1128,64 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
                                     &pipeline_layout_);
     if (result != VK_SUCCESS)
         return fail_vk("vkCreatePipelineLayout(cull)", result, error);
+
+    // C2 owns a separate set because the skin buffers are intentionally not
+    // visible to ordinary static cull/raster dispatches. Bindings are kept in
+    // shader order: source, influence, current/previous palettes, work,
+    // current/previous output.
+    std::array<VkDescriptorSetLayoutBinding, 7> skin_bindings{};
+    for (uint32_t binding = 0; binding != skin_bindings.size(); ++binding)
+        skin_bindings[binding] = descriptor_binding(
+            binding, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            VK_SHADER_STAGE_COMPUTE_BIT);
+    VkDescriptorSetLayoutCreateInfo skin_layout_info{
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    skin_layout_info.bindingCount = static_cast<uint32_t>(skin_bindings.size());
+    skin_layout_info.pBindings = skin_bindings.data();
+    result = vkCreateDescriptorSetLayout(device, &skin_layout_info, nullptr,
+                                         &skin_set_layout_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateDescriptorSetLayout(animation skin)", result, error);
+    const VkDescriptorSetLayout skin_sets[] = {set_layouts_[0], set_layouts_[1],
+                                               skin_set_layout_};
+    const VkPushConstantRange skin_push{VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                                        sizeof(uint32_t)};
+    VkPipelineLayoutCreateInfo skin_pipeline_layout_info{
+        VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    skin_pipeline_layout_info.setLayoutCount = 3;
+    skin_pipeline_layout_info.pSetLayouts = skin_sets;
+    skin_pipeline_layout_info.pushConstantRangeCount = 1;
+    skin_pipeline_layout_info.pPushConstantRanges = &skin_push;
+    result = vkCreatePipelineLayout(device, &skin_pipeline_layout_info, nullptr,
+                                    &skin_pipeline_layout_);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreatePipelineLayout(animation skin)", result, error);
+    const matter::EmbeddedSpirvView skin_spirv =
+        matter::find_spirv("animation_skin.comp.spv");
+    if (!skin_spirv.words || skin_spirv.word_count == 0) {
+        error = "embedded SPIR-V not found: animation_skin.comp.spv";
+        return false;
+    }
+    VkShaderModule skin_shader = VK_NULL_HANDLE;
+    VkShaderModuleCreateInfo skin_shader_info{
+        VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    skin_shader_info.codeSize = skin_spirv.word_count * sizeof(uint32_t);
+    skin_shader_info.pCode = skin_spirv.words;
+    result = vkCreateShaderModule(device, &skin_shader_info, nullptr, &skin_shader);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateShaderModule(animation skin)", result, error);
+    VkComputePipelineCreateInfo skin_create{
+        VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    skin_create.layout = skin_pipeline_layout_;
+    skin_create.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    skin_create.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    skin_create.stage.module = skin_shader;
+    skin_create.stage.pName = "main";
+    result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &skin_create,
+                                      nullptr, &skin_pipeline_);
+    vkDestroyShaderModule(device, skin_shader, nullptr);
+    if (result != VK_SUCCESS)
+        return fail_vk("vkCreateComputePipelines(animation skin)", result, error);
 
     const matter::EmbeddedSpirvView spirv =
         matter::find_spirv("cull.comp.spv");
@@ -2016,13 +2083,13 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     // to the +4*kTilesetChannelCount / +1 below.
     const VkDescriptorPoolSize pool_sizes[] = {
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count * 2},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 13},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 20},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
          frame_slot_count * (79 + 4 * kTilesetChannelCount)},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 22}};
     VkDescriptorPoolCreateInfo pool{
         VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    pool.maxSets = frame_slot_count * 12;
+    pool.maxSets = frame_slot_count * 13;
     pool.poolSizeCount = 4;
     pool.pPoolSizes = pool_sizes;
     VkDescriptorPool next_pool = VK_NULL_HANDLE;
@@ -2038,10 +2105,11 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         return fail_vk("vkCreateDescriptorPool(cull)", result, error);
     std::vector<FrameResources> next_frames(frame_slot_count);
     std::vector<VkDescriptorSetLayout> layouts;
-    layouts.reserve(frame_slot_count * 12);
+    layouts.reserve(frame_slot_count * 13);
     for (size_t index = 0; index < frame_slot_count; ++index) {
         layouts.push_back(set_layouts_[0]);
         layouts.push_back(set_layouts_[1]);
+        layouts.push_back(skin_set_layout_);
         layouts.push_back(composite_set_layout_);
         layouts.push_back(display_set_layout_);
         layouts.push_back(gi_temporal_set_layout_);
@@ -2076,14 +2144,15 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     };
     for (size_t index = 0; index < frame_slot_count; ++index) {
         FrameResources& frame = next_frames[index];
-        frame.descriptor_sets[0] = sets[index * 12];
-        frame.descriptor_sets[1] = sets[index * 12 + 1];
-        frame.composite_descriptor_set = sets[index * 12 + 2];
-        frame.display_descriptor_set = sets[index * 12 + 3];
-        frame.gi_temporal_descriptor_sets[0] = sets[index * 12 + 4];
-        frame.gi_temporal_descriptor_sets[1] = sets[index * 12 + 5];
+        frame.descriptor_sets[0] = sets[index * 13];
+        frame.descriptor_sets[1] = sets[index * 13 + 1];
+        frame.skin_descriptor_set = sets[index * 13 + 2];
+        frame.composite_descriptor_set = sets[index * 13 + 3];
+        frame.display_descriptor_set = sets[index * 13 + 4];
+        frame.gi_temporal_descriptor_sets[0] = sets[index * 13 + 5];
+        frame.gi_temporal_descriptor_sets[1] = sets[index * 13 + 6];
         for (uint32_t i = 0; i < 6; ++i)
-            frame.gi_atrous_descriptor_sets[i] = sets[index * 12 + 6 + i];
+            frame.gi_atrous_descriptor_sets[i] = sets[index * 13 + 7 + i];
         if (!ensure_candidate_buffer(frame.frame_constants,
                                      sizeof(FrameConstants),
                                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT) ||
@@ -2120,7 +2189,29 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
             !ensure_candidate_buffer(frame.gi_atrous_markers,
                                      5 * sizeof(uint32_t),
-                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) {
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+            !ensure_candidate_buffer(frame.skin_influences,
+                                     sizeof(VkSkinInfluence),
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+            !ensure_candidate_buffer(frame.skin_sources,
+                                     sizeof(VkSkinSourceVertex),
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+            !ensure_candidate_buffer(frame.skin_palette_current,
+                                     sizeof(VkSkinJoint),
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+            !ensure_candidate_buffer(frame.skin_palette_previous,
+                                     sizeof(VkSkinJoint),
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+            !ensure_candidate_buffer(frame.skin_work, sizeof(VkSkinWorkItem),
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+            !ensure_candidate_buffer(frame.skin_current_output,
+                                     sizeof(VkSkinVertex),
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT) ||
+            !ensure_candidate_buffer(frame.skin_previous_output,
+                                     sizeof(VkSkinVertex),
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) {
             vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
             return false;
         }
@@ -2212,7 +2303,111 @@ void VkSceneRenderer::update_frame_descriptors(FrameResources& frame) {
                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.stats);
     update_descriptor(frame.descriptor_sets[1], 5,
                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.materials);
+    // Compute source is a separately packed vec4/std430 copy of the immutable
+    // raster arena; VkRasterVertex's 72-byte vertex-input ABI cannot be bound
+    // as the shader's 80-byte source storage record.
+    update_descriptor(frame.skin_descriptor_set, 0,
+                      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.skin_sources);
+    update_descriptor(frame.skin_descriptor_set, 1,
+                      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.skin_influences);
+    update_descriptor(frame.skin_descriptor_set, 2,
+                      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.skin_palette_current);
+    update_descriptor(frame.skin_descriptor_set, 3,
+                      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.skin_palette_previous);
+    update_descriptor(frame.skin_descriptor_set, 4,
+                      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.skin_work);
+    update_descriptor(frame.skin_descriptor_set, 5,
+                      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.skin_current_output);
+    update_descriptor(frame.skin_descriptor_set, 6,
+                      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.skin_previous_output);
     write_tileset_descriptors_for_frame(frame.descriptor_sets[1]);
+}
+
+bool VkSceneRenderer::record_animation_skinning(
+    const matter::VulkanFrame& frame, FrameResources& resources,
+    std::string& error) {
+    const VkSkinFrameArenas& staged = animation_skinning_.frame(frame.frame_slot);
+    if (staged.work_items.empty()) return true;
+    const auto bytes = [](size_t count, size_t stride) -> VkDeviceSize {
+        return static_cast<VkDeviceSize>(count) * static_cast<VkDeviceSize>(stride);
+    };
+    std::vector<VkSkinSourceVertex> sources(vertex_staging_.size());
+    for (size_t index = 0; index != vertex_staging_.size(); ++index) {
+        const VkRasterVertex& input = vertex_staging_[index];
+        VkSkinSourceVertex& output = sources[index];
+        output.position[0] = input.position.x; output.position[1] = input.position.y;
+        output.position[2] = input.position.z;
+        output.normal[0] = input.normal.x; output.normal[1] = input.normal.y;
+        output.normal[2] = input.normal.z;
+        output.tint[0] = input.tint.x; output.tint[1] = input.tint.y;
+        output.tint[2] = input.tint.z; output.tint[3] = input.tint.w;
+        output.surface[0] = input.surface.x; output.surface[1] = input.surface.y;
+        output.surface[2] = input.surface.z; output.surface[3] = input.surface.w;
+        output.material_index = input.material_index;
+    }
+    bool descriptors_changed = false;
+    const auto ensure = [&](matter::VkBufferResource& buffer, VkDeviceSize size,
+                            VkBufferUsageFlags usage) {
+        bool replaced = false;
+        if (!ensure_buffer(buffer, std::max<VkDeviceSize>(size, 1), usage,
+                           error, &replaced)) return false;
+        descriptors_changed = descriptors_changed || replaced;
+        return true;
+    };
+    if (!ensure(resources.skin_sources, bytes(sources.size(), sizeof(VkSkinSourceVertex)), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+        !ensure(resources.skin_influences, bytes(animation_skinning_.influences().size(), sizeof(VkSkinInfluence)), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+        !ensure(resources.skin_palette_current, bytes(staged.palette_current.size(), sizeof(VkSkinJoint)), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+        !ensure(resources.skin_palette_previous, bytes(staged.palette_previous.size(), sizeof(VkSkinJoint)), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+        !ensure(resources.skin_work, bytes(staged.work_items.size(), sizeof(VkSkinWorkItem)), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+        !ensure(resources.skin_current_output, bytes(staged.current_output_vertices, sizeof(VkSkinVertex)), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT) ||
+        !ensure(resources.skin_previous_output, bytes(staged.previous_output_vertices, sizeof(VkSkinVertex)), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return false;
+    const auto upload = [&](matter::VkBufferResource& buffer, const void* data,
+                            VkDeviceSize size) {
+        return size == 0 || matter::upload_buffer(*vulkan_, buffer, data, size, 0, error);
+    };
+    if (!upload(resources.skin_sources, sources.data(), bytes(sources.size(), sizeof(VkSkinSourceVertex))) ||
+        !upload(resources.skin_influences, animation_skinning_.influences().data(), bytes(animation_skinning_.influences().size(), sizeof(VkSkinInfluence))) ||
+        !upload(resources.skin_palette_current, staged.palette_current.data(), bytes(staged.palette_current.size(), sizeof(VkSkinJoint))) ||
+        !upload(resources.skin_palette_previous, staged.palette_previous.data(), bytes(staged.palette_previous.size(), sizeof(VkSkinJoint))) ||
+        !upload(resources.skin_work, staged.work_items.data(), bytes(staged.work_items.size(), sizeof(VkSkinWorkItem)))) return false;
+    if (descriptors_changed) update_frame_descriptors(resources);
+    uint32_t max_vertices = 0;
+    for (const VkSkinWorkItem& work : staged.work_items)
+        max_vertices = std::max(max_vertices, work.vertex_count);
+    const uint32_t groups_x = (max_vertices + 63u) / 64u;
+    if (groups_x == 0 || groups_x > limits_.max_dispatch_group_count_x) {
+        error = "animation skin dispatch exceeds device workgroup limit";
+        return false;
+    }
+    const VkDescriptorSet sets[] = {resources.descriptor_sets[0],
+                                    resources.descriptor_sets[1],
+                                    resources.skin_descriptor_set};
+    vkCmdBindPipeline(frame.command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                      skin_pipeline_);
+    vkCmdBindDescriptorSets(frame.command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                            skin_pipeline_layout_, 0, 3, sets, 0, nullptr);
+    const uint32_t work_count = static_cast<uint32_t>(staged.work_items.size());
+    vkCmdPushConstants(frame.command_buffer, skin_pipeline_layout_,
+                       VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(work_count),
+                       &work_count);
+    vkCmdDispatch(frame.command_buffer, groups_x, work_count, 1);
+    VkBufferMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT |
+                           VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT |
+                              VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.buffer = resources.skin_current_output.buffer;
+    barrier.offset = 0;
+    barrier.size = VK_WHOLE_SIZE;
+    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dependency.bufferMemoryBarrierCount = 1;
+    dependency.pBufferMemoryBarriers = &barrier;
+    vkCmdPipelineBarrier2(frame.command_buffer, &dependency);
+    return true;
 }
 
 // --- Phase 1 tileset Vulkan port (Task 6) ----------------------------------
@@ -6490,6 +6685,10 @@ bool VkSceneRenderer::record_cull_and_render(
                         selected.rt_tlas.handle};
     if (volumetrics_)
         volumetrics_->set_lighting(frame_lighting);
+    // C2 publishes compute writes before depth/gbuffer recording. The C1
+    // arena is sealed by the caller's frame fence, so this upload/dispatch
+    // observes one immutable current/previous pose pair.
+    if (!record_animation_skinning(frame, selected, error)) return false;
     record_raster(frame.command_buffer, &record);
     if (!ray_trace_ok) return false;
     raster_attachments_ready_ = true;

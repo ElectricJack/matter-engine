@@ -1,6 +1,7 @@
 #include "vk_animation_skinning.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <limits>
 
@@ -24,6 +25,26 @@ bool checked_add(uint32_t base, uint32_t count, uint32_t& result) noexcept {
     return true;
 }
 
+void transform_point(const VkSkinMatrix& matrix, const float in[4],
+                     float out[4]) noexcept {
+    for (uint32_t row = 0; row != 4; ++row)
+        out[row] = matrix.elements[row] * in[0] +
+                   matrix.elements[4 + row] * in[1] +
+                   matrix.elements[8 + row] * in[2] +
+                   matrix.elements[12 + row] * in[3];
+}
+
+void transform_direction(const VkSkinMatrix& matrix, const float in[4],
+                         float out[4]) noexcept {
+    float direction[4]{in[0], in[1], in[2], 0.0f};
+    transform_point(matrix, direction, out);
+}
+
+bool finite3(const float value[4]) noexcept {
+    return std::isfinite(value[0]) && std::isfinite(value[1]) &&
+           std::isfinite(value[2]);
+}
+
 }  // namespace
 
 VkAnimationSkinning::VkAnimationSkinning(uint32_t frame_slots)
@@ -40,7 +61,11 @@ bool VkAnimationSkinning::register_asset(
     if (asset_key == 0 || influences.empty()) return false;
     const auto existing = assets_.find(asset_key);
     if (existing != assets_.end()) return identical(existing->second.values, influences);
-    assets_.emplace(asset_key, AssetInfluences{influences});
+    if (influences.size() > std::numeric_limits<uint32_t>::max() -
+                                influence_arena_.size()) return false;
+    const uint32_t offset = static_cast<uint32_t>(influence_arena_.size());
+    influence_arena_.insert(influence_arena_.end(), influences.begin(), influences.end());
+    assets_.emplace(asset_key, AssetInfluences{influences, offset});
     return true;
 }
 
@@ -106,6 +131,9 @@ bool VkAnimationSkinning::submit_visible(
     uint32_t output_offset = 0;
     uint32_t palette_offset = 0;
     for (const VkSkinSubmission& value : sorted) {
+        const auto asset = assets_.find(value.asset_key);
+        // The validation pass above proves this lookup and its source range.
+        if (asset == assets_.end()) return false;
         const uint32_t joint_count = static_cast<uint32_t>(value.pose.current.size());
         staged.palette_current.insert(staged.palette_current.end(),
                                       value.pose.current.begin(), value.pose.current.end());
@@ -118,7 +146,7 @@ bool VkAnimationSkinning::submit_visible(
         }
         VkSkinWorkItem item{};
         item.source_vertex = value.source_vertex;
-        item.influence = value.source_vertex;
+        item.influence = asset->second.offset + value.source_vertex;
         item.vertex_count = value.vertex_count;
         item.palette = palette_offset;
         item.output_current = output_offset;
@@ -157,6 +185,57 @@ bool VkAnimationSkinning::mark_submitted(uint32_t frame_slot, uint64_t fence) {
 const VkSkinFrameArenas& VkAnimationSkinning::frame(uint32_t frame_slot) const {
     static const VkSkinFrameArenas empty{};
     return frame_slot < frames_.size() ? frames_[frame_slot] : empty;
+}
+
+bool vk_skin_vertex_cpu(const VkSkinSourceVertex& source,
+                        const VkSkinInfluence& influence,
+                        const VkSkinJoint* current_palette,
+                        const VkSkinJoint* previous_palette,
+                        uint32_t palette_count,
+                        VkSkinVertex& output) noexcept {
+    if (!current_palette || !previous_palette || palette_count == 0)
+        return false;
+    float current[4]{};
+    float previous[4]{};
+    float normal[4]{};
+    const float source_position[4]{source.position[0], source.position[1],
+                                   source.position[2], 1.0f};
+    float weight_sum = 0.0f;
+    for (uint32_t lane = 0; lane != 4; ++lane) {
+        const float weight = vk_skin_decode_weight(influence.weight[lane]);
+        if (weight == 0.0f) continue;
+        if (influence.joint[lane] >= palette_count) return false;
+        float transformed[4]{};
+        transform_point(current_palette[influence.joint[lane]].position,
+                        source_position, transformed);
+        for (uint32_t component = 0; component != 4; ++component)
+            current[component] += transformed[component] * weight;
+        transform_point(previous_palette[influence.joint[lane]].position,
+                        source_position, transformed);
+        for (uint32_t component = 0; component != 4; ++component)
+            previous[component] += transformed[component] * weight;
+        transform_direction(current_palette[influence.joint[lane]].normal,
+                            source.normal, transformed);
+        for (uint32_t component = 0; component != 3; ++component)
+            normal[component] += transformed[component] * weight;
+        weight_sum += weight;
+    }
+    if (weight_sum == 0.0f || !finite3(current) || !finite3(previous) ||
+        !finite3(normal)) return false;
+    const float length = std::sqrt(normal[0] * normal[0] +
+                                   normal[1] * normal[1] +
+                                   normal[2] * normal[2]);
+    if (!(length > 0.0f) || !std::isfinite(length)) return false;
+    for (uint32_t component = 0; component != 3; ++component)
+        normal[component] /= length;
+    output = {};
+    std::memcpy(output.position, current, sizeof(current));
+    std::memcpy(output.previous_position, previous, sizeof(previous));
+    std::memcpy(output.normal, normal, sizeof(normal));
+    std::memcpy(output.tint, source.tint, sizeof(output.tint));
+    std::memcpy(output.surface, source.surface, sizeof(output.surface));
+    output.material_index = source.material_index;
+    return true;
 }
 
 }  // namespace viewer

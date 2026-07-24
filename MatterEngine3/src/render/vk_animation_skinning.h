@@ -73,13 +73,20 @@ public:
     bool mark_submitted(uint32_t frame_slot, uint64_t fence);
 
     const VkSkinFrameArenas& frame(uint32_t frame_slot) const;
+    // Immutable packed influence arena. WorkItem::influence indexes this
+    // buffer directly, so the renderer can upload it once per asset revision.
+    const std::vector<VkSkinInfluence>& influences() const noexcept {
+        return influence_arena_;
+    }
     uint32_t fallback_count() const noexcept { return fallback_count_; }
 
 private:
     struct AssetInfluences {
         std::vector<VkSkinInfluence> values;
+        uint32_t offset = 0;
     };
     std::map<uint64_t, AssetInfluences> assets_;
+    std::vector<VkSkinInfluence> influence_arena_;
     std::vector<VkSkinFrameArenas> frames_;
     uint32_t fallback_count_ = 0;
     uint64_t last_submitted_fence_ = 0;

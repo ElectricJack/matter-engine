@@ -8,6 +8,12 @@ layout(location = 1) in vec3 in_normal;
 layout(location = 2) in vec4 in_tint;
 layout(location = 3) in vec4 in_surface;
 layout(location = 4) in uint in_material_index;
+// The C2 skin raster specialization supplies this attribute from
+// animation_skin.comp's previous output. The default static specialization
+// keeps the legacy five-attribute contract and uses in_position below.
+#ifdef MATTER_SKINNED_VERTEX_INPUT
+layout(location = 5) in vec3 in_previous_position;
+#endif
 
 layout(location = 0) out vec3 out_normal;
 layout(location = 1) out vec4 out_tint;
@@ -48,8 +54,12 @@ void main() {
     mat4 model = draw.current;
     vec4 world = model * vec4(in_position, 1.0);
     vec4 current_clip = frame.world_to_clip * world;
+    vec3 previous_local_position = in_position;
+#ifdef MATTER_SKINNED_VERTEX_INPUT
+    previous_local_position = in_previous_position;
+#endif
     vec4 previous_clip = frame.previous_world_to_clip *
-                         draw.previous * vec4(in_position, 1.0);
+                         draw.previous * vec4(previous_local_position, 1.0);
     gl_Position = current_clip;
     bool valid = frame.temporal.y == 0u && draw.history_valid != 0u &&
                  current_clip.w != 0.0 && previous_clip.w != 0.0;

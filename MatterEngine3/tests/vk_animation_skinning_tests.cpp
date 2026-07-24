@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 #include <vector>
 
 using namespace viewer;
@@ -149,10 +150,44 @@ static void test_fence_lifetime_wrap_and_transactional_caps() {
           "a later fence seals an independent slot on the global timeline");
 }
 
+static void test_cpu_skinning_matches_compute_contract() {
+    VkSkinSourceVertex source{};
+    source.position[0] = 1.0f;
+    source.normal[1] = 1.0f;
+    source.tint[0] = 0.25f; source.tint[3] = 1.0f;
+    source.surface[2] = 0.75f; source.material_index = 9;
+    VkSkinInfluence influence{};
+    influence.joint[0] = 0; influence.joint[1] = 1;
+    influence.weight[0] = 32768; influence.weight[1] = 32767;
+    VkSkinJoint current[2]{};
+    current[0].position = matrix(2.0f); current[0].normal = matrix();
+    current[1].position = matrix(4.0f); current[1].normal = matrix();
+    VkSkinJoint previous[2]{};
+    previous[0].position = matrix(-1.0f); previous[0].normal = matrix();
+    previous[1].position = matrix(1.0f); previous[1].normal = matrix();
+    VkSkinVertex output{};
+    CHECK(vk_skin_vertex_cpu(source, influence, current, previous, 2, output),
+          "CPU reference skins a four-influence vertex");
+    CHECK(std::fabs(output.position[0] - 4.0f) < 0.0001f,
+          "UNORM weights blend current positions");
+    CHECK(std::fabs(output.previous_position[0] - 1.0f) < 0.0001f,
+          "previous position uses the prior palette");
+    CHECK(std::fabs(output.normal[1] - 1.0f) < 0.0001f,
+          "normal is inverse-transpose blended and normalized");
+    CHECK(output.material_index == 9 && output.tint[0] == 0.25f &&
+              output.surface[2] == 0.75f,
+          "non-deforming vertex attributes are copied exactly");
+    influence.joint[3] = 2;
+    influence.weight[3] = 1;
+    CHECK(!vk_skin_vertex_cpu(source, influence, current, previous, 2, output),
+          "out-of-range nonzero influence fails closed");
+}
+
 int main() {
     test_shader_abi_and_weight_decode();
     test_asset_registration_and_visible_sorted_submission();
     test_current_previous_pair_and_history_fallback();
     test_fence_lifetime_wrap_and_transactional_caps();
+    test_cpu_skinning_matches_compute_contract();
     return check_summary();
 }

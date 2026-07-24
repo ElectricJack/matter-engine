@@ -982,6 +982,7 @@ gpu_CPP_SRCS := $(sort \
     release_part_tests.cpp \
     vk_scene_renderer_tests.cpp \
     vk_animation_skinning_tests.cpp \
+    vk_animation_skin_compute_tests.cpp \
     refine_loop_tests.cpp \
     world_stream_tests.cpp \
     $(GPU_ALL_CPP))
@@ -1791,6 +1792,13 @@ vk-animation-skinning-tests: $(call obj_of,gpu,vk_animation_skinning_tests.cpp) 
 
 run-vk-animation-skinning: vk-animation-skinning-tests
 	./vk-animation-skinning-tests
+
+vk-animation-skin-compute-tests: $(call obj_of,gpu,vk_animation_skin_compute_tests.cpp) $(call obj_of,gpu,../src/render/vk_animation_skinning.cpp) | ../shaders_gen/embedded_shaders.h
+	$(CC) $(call obj_of,gpu,vk_animation_skin_compute_tests.cpp) $(call obj_of,gpu,../src/render/vk_animation_skinning.cpp) \
+	      -o vk-animation-skin-compute-tests $(FLAVOR_gpu_FLAGS) -lm -lpthread
+
+run-vk-animation-skin-compute: vk-animation-skin-compute-tests
+	./vk-animation-skin-compute-tests
 
 vk-scene-renderer-tests: $(call obj_of,gpu,vk_scene_renderer_tests.cpp) | ../shaders_gen/embedded_shaders.h
 	$(CC) $(call obj_of,gpu,vk_scene_renderer_tests.cpp) \
