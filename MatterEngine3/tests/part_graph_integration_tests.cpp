@@ -13,6 +13,7 @@
 
 #include "part_graph.h"        // includes script_host.h under the guard
 #include "part_asset_v2.h"     // cache_path_resolved
+#include "render/part_store.h" // A8: verify HostBaker and runtime select one root
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -111,6 +112,69 @@ static void test_animated_cache_sibling_contract() {
     CHECK(rebuilt_commit.error.ok && rebuilt_commit.resolved_hash == animated_result.resolved_hash,
           "A8 corrupt MACM rebuilds the animated sibling generation");
     CHECK(baker.cached(animated_result.resolved_hash), "A8 MACM rebuild restores the cache hit");
+}
+
+// A8 root-consistency regression: the cache probe and runtime loader must make
+// the same scratch-first selection.  If a scratch PART is present but its
+// linked siblings are torn, the valid persistent generation is deliberately
+// not a hit: rebuild has to replace the scratch generation that PartStore will
+// later select.
+static void test_scratch_linked_bundle_never_falls_back_to_cache() {
+    namespace fs = std::filesystem;
+    namespace pg = part_graph;
+    const fs::path root = fs::temp_directory_path() / "me3_a8_scratch_root_consistency";
+    const fs::path cache = root / "cache";
+    const fs::path scratch = root / "scratch";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    fs::create_directories(cache / "parts", ec);
+    fs::create_directories(scratch / "parts", ec);
+    CHECK(!ec, "A8 scratch-root fixture directories are created");
+    struct Cleanup { fs::path root; ~Cleanup() { std::error_code ignored; fs::remove_all(root, ignored); } } cleanup{root};
+    if (ec) return;
+
+    const std::string source =
+        "class ScratchLinkedA8 extends Part { build(p) {"
+        "this.beginRig('rig');this.root('root');this.bone('arm',[1,0,0]);this.endRig();"
+        "this.beginClip('idle',{duration:1,sampleRate:1});this.key('root',0,{});this.endClip();"
+        "this.segments('armPart',{joints:['arm']});"
+        "this.bind('armPart',()=>{this.beginShape(SHAPE.triangles);"
+        "this.vertex(0,0,0);this.vertex(1,0,0);this.vertex(0,1,0);this.endShape();});"
+        "} }";
+    script_host::ScriptHost host;
+    pg::HostBaker baker(host, cache.string());
+    const uint64_t hash = baker.resolve_hash(source, pg::Params{}, {});
+    CHECK(baker.bake(source, pg::Params{}, {}, {}, {}, hash),
+          "A8 cache generation bakes before scratch corruption");
+    const fs::path cache_part = cache / part_asset::cache_path_resolved(hash);
+    const fs::path cache_anim = cache / matter::animation::cache_path_anim(cache, hash).lexically_relative(cache);
+    const fs::path cache_commit = cache / matter::animation::cache_path_anim_commit(cache, hash).lexically_relative(cache);
+    const fs::path scratch_part = scratch / part_asset::cache_path_resolved(hash);
+    const fs::path scratch_anim = scratch / matter::animation::cache_path_anim(scratch, hash).lexically_relative(scratch);
+    const fs::path scratch_commit = scratch / matter::animation::cache_path_anim_commit(scratch, hash).lexically_relative(scratch);
+    CHECK(fs::exists(cache_part) && fs::exists(cache_anim) && fs::exists(cache_commit),
+          "A8 valid cache linked generation exists");
+    fs::copy_file(cache_part, scratch_part, fs::copy_options::overwrite_existing, ec);
+    fs::copy_file(cache_anim, scratch_anim, fs::copy_options::overwrite_existing, ec);
+    fs::copy_file(cache_commit, scratch_commit, fs::copy_options::overwrite_existing, ec);
+    CHECK(!ec, "A8 scratch receives a torn linked generation fixture");
+    { std::ofstream corrupt(scratch_anim, std::ios::binary | std::ios::trunc); corrupt << "torn"; }
+
+    const std::set<std::string> transient_modules{"ScratchLinkedA8"};
+    baker.set_transient(&transient_modules, scratch.string());
+    CHECK(!baker.cached(hash),
+          "A8 scratch linked corruption is a miss even while persistent cache is valid");
+
+    baker.set_baking_module("ScratchLinkedA8");
+    CHECK(baker.bake(source, pg::Params{}, {}, {}, {}, hash),
+          "A8 scratch cache miss rebuilds the selected root");
+    CHECK(baker.cached(hash), "A8 rebuilt scratch linked generation is a cache hit");
+
+    viewer::PartStore store(cache.string());
+    store.set_scratch_dir(scratch.string());
+    const viewer::LoadedPart* loaded = store.get_or_load(hash);
+    CHECK(loaded && loaded->animation_asset,
+          "A8 fresh PartStore loads the same rebuilt scratch generation");
 }
 
 // SP-3 Task 7: prove the graph-driven placement path. A parent that declares a
@@ -527,6 +591,7 @@ int main(int argc, char** argv) {
         return g_failures == 0 ? 0 : 1;
     if (argc == 2 && std::strcmp(argv[1], "--animation-provider-only") == 0) {
         test_animated_cache_sibling_contract();
+        test_scratch_linked_bundle_never_falls_back_to_cache();
         return g_failures == 0 ? 0 : 1;
     }
 
@@ -618,6 +683,7 @@ int main(int argc, char** argv) {
     test_lod_variant_sidecar();
 
     test_animated_cache_sibling_contract();
+    test_scratch_linked_bundle_never_falls_back_to_cache();
 
     if (g_failures == 0) printf("All part_graph integration tests passed\n");
     return g_failures == 0 ? 0 : 1;

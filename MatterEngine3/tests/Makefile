@@ -590,7 +590,10 @@ PF_CPP = ../src/pf_bindings.cpp \
 TERRAIN_SRC = ../src/terrain_field.cpp ../src/terrain_mesher.cpp
 
 GRAPH_INT_TARGET = part_graph_integration_tests
-GRAPH_INT_CPP = part_graph_integration_tests.cpp $(filter-out script_host_tests.cpp,$(SCRIPT_CPP))
+GRAPH_INT_CPP = part_graph_integration_tests.cpp $(filter-out script_host_tests.cpp,$(SCRIPT_CPP)) \
+                ../src/render/part_store.cpp ../src/render/matrix_math.cpp \
+                ../src/render/raster_mesh.cpp ../src/lod_select.cpp \
+                ../src/sector_grid.cpp ../src/animation/animation_asset_store.cpp
 GRAPH_INT_C   = $(COMMON_MSL_C)
 
 EXAMPLE_TARGET = example_world

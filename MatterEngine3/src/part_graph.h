@@ -222,7 +222,8 @@ public:
     // Task 2: configure transient-module routing.
     // modules points to a set of module names (e.g., {"Terrain"}); bakes of
     // these modules write artifacts under scratch_dir instead of parts_dir_.
-    // cached() checks both locations (scratch first).
+    // cached() uses one root per hash: an existing scratch .part selects scratch
+    // exclusively, matching PartStore's runtime artifact-root policy.
     void set_transient(const std::set<std::string>* modules, std::string scratch_dir) {
         transient_modules_ = modules;
         transient_dir_ = std::move(scratch_dir);

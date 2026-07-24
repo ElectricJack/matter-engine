@@ -2,6 +2,7 @@
 #include "part_asset_v2.h"   // SP-1 (MatterEngine3, via -I../include): compute_resolved_hash,
                             //   cache_path_resolved; pulls in v1 part_asset.h for fnv1a64
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <new>          // std::bad_alloc
@@ -547,7 +548,10 @@ uint64_t HostBaker::resolve_hash(const std::string& source, const Params& params
 }
 
 bool HostBaker::cached(uint64_t resolved_hash) {
-    // Task 2: check scratch dir first (if configured), then normal cache.
+    // A scratch PART selects scratch as the artifact root for this hash.  This
+    // intentionally mirrors PartStore's scratch-first root choice: a linked
+    // scratch PART with a torn MANM/MACM sibling set must be rebuilt in scratch,
+    // never silently accepted from a persistent-cache generation.
     auto check_path = [resolved_hash](const std::string& base_dir) -> bool {
         if (base_dir.empty()) return false;
         std::string path = base_dir + "/" + part_asset::cache_path_resolved(resolved_hash);
@@ -559,9 +563,13 @@ bool HostBaker::cached(uint64_t resolved_hash) {
         return matter::animation::load_committed_animation_bundle(base_dir, resolved_hash, checked, asset, diagnostics);
     };
 
-    // Check scratch first (if transient_dir_ is configured)
-    if (check_path(transient_dir_)) return true;
-    // Fall back to normal cache
+    if (!transient_dir_.empty()) {
+        std::error_code ec;
+        const std::string scratch_part =
+            transient_dir_ + "/" + part_asset::cache_path_resolved(resolved_hash);
+        if (std::filesystem::exists(scratch_part, ec) && !ec)
+            return check_path(transient_dir_);
+    }
     return check_path(parts_dir_);
 }
 
