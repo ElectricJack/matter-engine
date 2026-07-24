@@ -1,5 +1,6 @@
 #pragma once
 
+#include "animation/animation_budget.h"
 #include "vk_animation_types.h"
 
 #include <cstdint>
@@ -71,6 +72,8 @@ enum class VkSkinFallbackMode : uint8_t { BindPoseOrLastPose };
 struct VkSkinFallback {
     uint32_t instance_slot = 0;
     VkSkinFallbackMode mode = VkSkinFallbackMode::BindPoseOrLastPose;
+    matter::animation::AnimationFallbackReason reason =
+        matter::animation::AnimationFallbackReason::None;
 };
 
 struct VkSkinFrameArenas {
@@ -92,7 +95,9 @@ struct VkSkinFrameArenas {
 // reset after their submitted fence has completed.
 class VkAnimationSkinning {
 public:
-    explicit VkAnimationSkinning(uint32_t frame_slots = 3);
+    explicit VkAnimationSkinning(
+        uint32_t frame_slots = 3,
+        matter::animation::AnimationBudgetConfig budget = {});
 
     bool register_asset(uint64_t asset_key,
                         const std::vector<VkSkinInfluence>& influences);
@@ -111,6 +116,9 @@ public:
         return influence_arena_;
     }
     uint32_t fallback_count() const noexcept { return fallback_count_; }
+    const matter::animation::AnimationBudgetRuntimeStats& stats() const noexcept {
+        return stats_;
+    }
 
 private:
     struct AssetInfluences {
@@ -121,6 +129,8 @@ private:
     std::vector<VkSkinInfluence> influence_arena_;
     std::vector<VkSkinFrameArenas> frames_;
     uint32_t fallback_count_ = 0;
+    matter::animation::AnimationBudgetConfig budget_;
+    matter::animation::AnimationBudgetRuntimeStats stats_;
     uint64_t last_submitted_fence_ = 0;
     bool has_submitted_fence_ = false;
 

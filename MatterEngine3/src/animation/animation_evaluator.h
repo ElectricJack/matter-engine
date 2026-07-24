@@ -3,6 +3,7 @@
 #include "animation/animation_ir.h"
 #include "animation/ozz_adapter.h"
 #include "animation/animation_targets.h"
+#include "animation/animation_budget.h"
 #include "matter/animation.h"
 
 #include <cstdint>
@@ -202,6 +203,7 @@ struct AnimationEvaluationRequest {
 struct AnimationEvaluationBudget {
     uint32_t graph_nodes = kMaxGraphNodes;
     uint32_t controller_nodes = kMaxControllers;
+    AnimationBudgetConfig limits{};
 };
 
 // Exact fixed-control interpolation policy.  It is exposed for the B1/B3
@@ -257,10 +259,12 @@ public:
                        const std::vector<AnimationTargetState>& states,
                        uint64_t frame_serial);
     void forget(AnimatorInstanceHandle instance);
+    const AnimationBudgetRuntimeStats& stats() const noexcept { return stats_; }
 
 private:
     struct State;
     AnimationEvaluationBudget budget_;
+    AnimationBudgetRuntimeStats stats_;
     std::map<uint64_t, std::unique_ptr<State>> states_;
 };
 

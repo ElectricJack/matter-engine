@@ -420,6 +420,12 @@ public:
     const VkAnimationSkinning& animation_skinning() const noexcept {
         return animation_skinning_;
     }
+    // Renderer diagnostics are a view of the central animation budget; no
+    // duplicate counters or renderer-specific limits are maintained here.
+    const matter::animation::AnimationBudgetRuntimeStats& animation_runtime_stats() const noexcept {
+        return animation_skinning_.stats();
+    }
+    bool skinned_rt_uses_bind_pose_blas() const noexcept;
     bool register_animation_bounds_asset(const VkAnimationBoundsAsset& asset);
     bool update_animation_bounds(uint32_t instance_slot,
                                  uint32_t instance_generation,

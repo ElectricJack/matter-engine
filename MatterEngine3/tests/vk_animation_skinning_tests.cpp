@@ -185,6 +185,25 @@ static void test_fence_lifetime_wrap_and_transactional_caps() {
           "a later fence seals an independent slot on the global timeline");
 }
 
+static void test_central_budget_controls_skinning_fallback_reason() {
+    matter::animation::AnimationBudgetConfig budget;
+    budget.max_skin_work_items = 2;
+    budget.max_skinned_vertices = 4;
+    VkAnimationSkinning skinning(1, budget);
+    CHECK(skinning.register_asset(91, valid_influences(8)),
+          "budget fixture registers immutable influences");
+    CHECK(!skinning.submit_visible(0, {candidate(91, 1, 1, 0, 0, 0),
+                                       candidate(91, 2, 1, 0, 0, 0),
+                                       candidate(91, 3, 1, 0, 0, 0)}),
+          "central work budget rejects before partial publication");
+    CHECK(skinning.frame(0).fallbacks.size() == 3 &&
+              skinning.frame(0).fallbacks[0].reason ==
+                  matter::animation::AnimationFallbackReason::SkinWorkBudget,
+          "work overflow reports a stable central fallback reason");
+    CHECK(skinning.stats().fallback_count == 1 && skinning.fallback_count() == 1,
+          "renderer staging exposes one shared fallback counter");
+}
+
 static void test_submission_rejects_invalid_influences_and_palettes_transactionally() {
     VkAnimationSkinning skinning(1);
     std::vector<VkSkinInfluence> invalid_joint = valid_influences(1);
@@ -267,6 +286,7 @@ int main() {
     test_current_previous_pair_and_history_fallback();
     test_indexed_raster_mapping_tracks_sorted_output_offsets();
     test_fence_lifetime_wrap_and_transactional_caps();
+    test_central_budget_controls_skinning_fallback_reason();
     test_submission_rejects_invalid_influences_and_palettes_transactionally();
     test_skin_mapping_replaces_only_its_matching_static_command();
     test_cpu_skinning_matches_compute_contract();

@@ -143,5 +143,15 @@ void test_root_lock_preserves_authored_root_reference_and_scale(){
  auto next=request(h,definition,3,.25f); next.root_lock=true;
  CHECK(restored.evaluate({next})&&restored.fixed_root_motion(h,motion)&&near(motion.delta.translation.x,1),"restored root lock resumes with the same dynamic root delta");
 }
+void test_central_runtime_instance_budget(){
+ Fixture f; f.def.nodes={{RuntimeGraphNodeKind::Clip,{},0},{RuntimeGraphNodeKind::Output,{0}}};
+ AnimationEvaluationBudget budget{}; budget.limits.max_runtime_instances=1;
+ AnimationEvaluator evaluator(budget);
+ CHECK(evaluator.evaluate({request(handle(60),f.def,1,0)}),"central instance budget admits the first runtime state");
+ CHECK(!evaluator.evaluate({request(handle(61),f.def,1,0)}),"central instance budget rejects a second runtime state");
+ CHECK(evaluator.snapshot(handle(61)).local_pose.empty() &&
+       evaluator.stats().fallbacks[static_cast<size_t>(AnimationFallbackReason::RuntimeInstanceLimit)]==1,
+       "runtime-limit rejection preserves prior state and records its fallback reason");
 }
-int main(){test_controls();test_cadence_aware_control_sampling();test_time_interpolation_and_previous();test_wrap_clamp_pause_and_disable();test_non_looping_clip_clamps();test_blend_and_additive();test_budget_order_and_reuse();test_snapshot_backing_and_priority_controller_budget();test_definition_shape_and_graph_contract_rejection();test_graph_root_motion_crosses_loops_and_locks_pose();test_root_lock_preserves_authored_root_reference_and_scale();if(g_failures){std::printf("animation_evaluator_tests: %d failure(s)\n",g_failures);return 1;}std::puts("animation_evaluator_tests: all tests passed");}
+}
+int main(){test_controls();test_cadence_aware_control_sampling();test_time_interpolation_and_previous();test_wrap_clamp_pause_and_disable();test_non_looping_clip_clamps();test_blend_and_additive();test_budget_order_and_reuse();test_snapshot_backing_and_priority_controller_budget();test_definition_shape_and_graph_contract_rejection();test_graph_root_motion_crosses_loops_and_locks_pose();test_root_lock_preserves_authored_root_reference_and_scale();test_central_runtime_instance_budget();if(g_failures){std::printf("animation_evaluator_tests: %d failure(s)\n",g_failures);return 1;}std::puts("animation_evaluator_tests: all tests passed");}

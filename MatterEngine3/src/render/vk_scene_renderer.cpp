@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <climits>
 #include <cmath>
 #include <cstring>
@@ -935,6 +936,11 @@ bool VkSceneRenderer::submit_visible_animation_skinning(
 bool VkSceneRenderer::finish_animation_skinning_frame(uint32_t frame_slot,
                                                        uint64_t fence) {
     return animation_skinning_.mark_submitted(frame_slot, fence);
+}
+
+bool VkSceneRenderer::skinned_rt_uses_bind_pose_blas() const noexcept {
+    const auto& contract = matter::animation::skinned_rt_build_contract();
+    return contract.build_once && !contract.allow_update && !contract.allow_refit;
 }
 
 bool VkSceneRenderer::register_animation_bounds_asset(
@@ -6353,6 +6359,12 @@ bool VkSceneRenderer::build_ray_geometry(
         item.build.flags =
             VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
         item.build.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+        // C4's ray-tracing contract is intentionally conservative: the
+        // compute-skinned raster stream never enters an RT BLAS. The immutable
+        // part bind pose remains build-once until a later deforming-RT phase.
+        assert(skinned_rt_uses_bind_pose_blas());
+        assert((item.build.flags & VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR) == 0);
+        assert(item.build.mode == VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR);
         item.build.geometryCount = 1;
         item.build.pGeometries = &item.geometry;
         item.range.primitiveCount = lod.primitive_count;

@@ -69,8 +69,10 @@ bool valid_influence(const VkSkinInfluence& influence,
 
 }  // namespace
 
-VkAnimationSkinning::VkAnimationSkinning(uint32_t frame_slots)
-    : frames_(frame_slots == 0 ? 1 : frame_slots) {}
+VkAnimationSkinning::VkAnimationSkinning(
+    uint32_t frame_slots, matter::animation::AnimationBudgetConfig budget)
+    : frames_(frame_slots == 0 ? 1 : frame_slots),
+      budget_(budget.valid() ? budget : matter::animation::AnimationBudgetConfig{}) {}
 
 bool vk_skin_replaces_static_command(
     const std::vector<VkSkinRasterDraw>& draws, uint32_t first_index,
@@ -92,6 +94,10 @@ bool VkAnimationSkinning::register_asset(
     if (asset_key == 0 || influences.empty()) return false;
     const auto existing = assets_.find(asset_key);
     if (existing != assets_.end()) return identical(existing->second.values, influences);
+    if (assets_.size() >= budget_.max_assets) {
+        stats_.record_fallback(matter::animation::AnimationFallbackReason::AssetLimit);
+        return false;
+    }
     if (influences.size() > std::numeric_limits<uint32_t>::max() -
                                 influence_arena_.size()) return false;
     const uint32_t offset = static_cast<uint32_t>(influence_arena_.size());
@@ -117,16 +123,19 @@ bool VkAnimationSkinning::submit_visible(
 
     std::vector<VkSkinSubmission> sorted = visible;
     std::sort(sorted.begin(), sorted.end(), less_submission);
-    const auto publish_fallbacks = [&target, &sorted]() {
+    const auto publish_fallbacks = [this, &target, &sorted](
+                                       matter::animation::AnimationFallbackReason reason) {
         VkSkinFrameArenas fallback{};
         fallback.fallbacks.reserve(sorted.size());
         for (const VkSkinSubmission& value : sorted)
             fallback.fallbacks.push_back({value.instance_slot,
-                                          VkSkinFallbackMode::BindPoseOrLastPose});
+                                          VkSkinFallbackMode::BindPoseOrLastPose,
+                                          reason});
         target = std::move(fallback);
+        stats_.record_fallback(reason);
     };
-    if (sorted.size() > kVkMaxSkinWorkItems) {
-        publish_fallbacks();
+    if (sorted.size() > budget_.max_skin_work_items) {
+        publish_fallbacks(matter::animation::AnimationFallbackReason::SkinWorkBudget);
         ++fallback_count_;
         return false;
     }
@@ -144,16 +153,18 @@ bool VkAnimationSkinning::submit_visible(
             !checked_add(value.influence_vertex, value.vertex_count, source_end) ||
             source_end > asset->second.values.size() ||
             !checked_add(output_count, value.vertex_count, output_end) ||
-            output_end > kVkMaxSkinnedOutputVertices ||
+            output_end > budget_.max_skinned_vertices ||
             !checked_add(palette_count, static_cast<uint32_t>(value.pose.current.size()), palette_count)) {
-            publish_fallbacks();
+            publish_fallbacks(output_end > budget_.max_skinned_vertices
+                ? matter::animation::AnimationFallbackReason::SkinVertexBudget
+                : matter::animation::AnimationFallbackReason::InvalidSkinSubmission);
             ++fallback_count_;
             return false;
         }
         const uint32_t joint_count = static_cast<uint32_t>(value.pose.current.size());
         for (const VkSkinJoint& joint : value.pose.current) {
             if (!finite_joint(joint)) {
-                publish_fallbacks();
+                publish_fallbacks(matter::animation::AnimationFallbackReason::InvalidSkinSubmission);
                 ++fallback_count_;
                 return false;
             }
@@ -161,7 +172,7 @@ bool VkAnimationSkinning::submit_visible(
         if (value.history_valid) {
             for (const VkSkinJoint& joint : value.pose.previous) {
                 if (!finite_joint(joint)) {
-                    publish_fallbacks();
+                    publish_fallbacks(matter::animation::AnimationFallbackReason::InvalidSkinSubmission);
                     ++fallback_count_;
                     return false;
                 }
@@ -170,7 +181,7 @@ bool VkAnimationSkinning::submit_visible(
         for (uint32_t vertex = value.influence_vertex;
              vertex != value.influence_vertex + value.vertex_count; ++vertex) {
             if (!valid_influence(asset->second.values[vertex], joint_count)) {
-                publish_fallbacks();
+                publish_fallbacks(matter::animation::AnimationFallbackReason::InvalidSkinSubmission);
                 ++fallback_count_;
                 return false;
             }
@@ -232,6 +243,8 @@ bool VkAnimationSkinning::submit_visible(
     staged.current_output_vertices = output_count;
     staged.previous_output_vertices = output_count;
     target = std::move(staged);
+    stats_.submitted_skin_work_items += sorted.size();
+    stats_.submitted_skinned_vertices += output_count;
     return true;
 }
 
