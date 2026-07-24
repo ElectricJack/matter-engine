@@ -132,7 +132,7 @@ void test_root_motion_delta_preserves_loop_boundary_translation() {
 void test_world_target_is_resolved_at_evaluation_boundary() {
     Mat4f root{};
     root.m[0] = root.m[5] = root.m[10] = root.m[15] = 1.0f;
-    root.m[12] = 10.0f;
+    root.m[3] = 10.0f;
     AnimationTransform world{};
     world.translation = {13.0f, 2.0f, 0.0f};
     AnimationTransform local{};
@@ -169,6 +169,10 @@ void test_runtime_fixed_phases_execute_registered_animation_work() {
     work.clip.markers = {{0.0f, 1}};
     work.root_previous.translation = {0.0f, 0.0f, 0.0f};
     work.root_current.translation = {1.0f, 0.0f, 0.0f};
+    work.root_current.rotation = {0.0f, 0.0f, 0.70710678f, 0.70710678f};
+    flecs::entity root = runtime.world().entity("AnimationRootAuthority");
+    root.set<ecs::LocalTransform>({});
+    work.root_entity = root.id();
     work.queries.push_back({handle(33), 0, 0, {0, 0, 0}, {0, -1, 0}, 3.0f, UINT64_MAX});
     CHECK(systems.register_fixed_work(work), "runtime accepts a valid animation fixed-work binding");
     runtime.tick({0.2f, 0.1f, 4});
@@ -176,6 +180,9 @@ void test_runtime_fixed_phases_execute_registered_animation_work() {
     CHECK(systems.take_marker_events().size() == 1, "FixedUpdate emits bound clip markers in the real runtime");
     CHECK(systems.take_consumed_root_motion().size() == 2,
           "PrePhysics consumes each registered desired root motion exactly once per fixed tick");
+    const ecs::LocalTransform applied = root.get<ecs::LocalTransform>();
+    CHECK(applied.translation.x == 2.0f && applied.rotation.z > 0.6f,
+          "PrePhysics applies translation and rotation to the real root authority once per fixed tick");
 }
 
 } // namespace

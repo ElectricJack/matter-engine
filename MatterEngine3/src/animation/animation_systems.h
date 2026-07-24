@@ -50,9 +50,14 @@ struct AnimationFixedWork {
     AnimationFixedClipWork clip{};
     AnimationTransform root_previous{};
     AnimationTransform root_current{};
+    // Runtime-only fixed sampling state.  It is not authored data and is
+    // preserved across control refreshes.
+    bool root_sampled = false;
     std::vector<AnimationWorldQueryRequest> queries;
     AnimationTransform desired_target_world{};
     AnimationTransform evaluated_target_root_relative{};
+    float target_weight = 0.0f;
+    bool target_enabled = false;
     uint64_t root_entity = 0;
 };
 

@@ -62,10 +62,7 @@ Quaternion matrix_rotation(const Mat4f& m) {
 }
 
 AnimationTransform runtime_root_delta(const AnimationTransform& previous, const AnimationTransform& current) {
-    AnimationTransform result{};
-    result.translation = {current.translation.x - previous.translation.x, current.translation.y - previous.translation.y,
-                          current.translation.z - previous.translation.z};
-    return result;
+    return root_motion_delta(previous, current);
 }
 
 void emit_runtime_markers(AnimatorInstanceHandle instance, const std::vector<RuntimeClipMarker>& markers,
@@ -227,15 +224,32 @@ bool AnimationSystems::refresh_service_binding(const AnimationRuntimeBindingLeas
     const AnimationRuntimeBindingDescriptor& descriptor = *lease.descriptor;
     AnimationFixedWork work = descriptor.fixed_work;
     work.instance = lease.instance;
+    const uint64_t slot_key = animator_key(lease.instance);
+    // A control write receives a fresh immutable lease, but it is not a graph
+    // replacement.  Retain clock/root/marker runtime state so a target toggle
+    // or input write cannot restart the animator.
+    const auto existing = fixed_work_.find(slot_key);
+    const auto old_lease = service_bindings_.find(slot_key);
+    if (existing != fixed_work_.end() && old_lease != service_bindings_.end() &&
+        old_lease->second.descriptor.get() == lease.descriptor.get() &&
+        old_lease->second.asset_identity == lease.asset_identity) {
+        work.clip.time = existing->second.clip.time;
+        work.root_previous = existing->second.root_previous;
+        work.root_current = existing->second.root_current;
+        work.root_sampled = existing->second.root_sampled;
+        work.evaluated_target_root_relative = existing->second.evaluated_target_root_relative;
+    }
     for (AnimationWorldQueryRequest& query : work.queries) {
         if (query.instance.valid() && animator_key(query.instance) != animator_key(lease.instance)) return false;
         query.instance = lease.instance;
     }
     if (descriptor.target_index != UINT16_MAX) {
         if (descriptor.target_index >= lease.target_transforms.size() ||
-            descriptor.target_index >= lease.target_enabled.size() ||
-            lease.target_enabled[descriptor.target_index] == 0) return false;
+            descriptor.target_index >= lease.target_enabled.size()) return false;
         work.desired_target_world = lease.target_transforms[descriptor.target_index];
+        work.target_weight = descriptor.target_index < lease.target_weights.size()
+            ? lease.target_weights[descriptor.target_index] : 0.0f;
+        work.target_enabled = lease.target_enabled[descriptor.target_index] != 0;
     }
     if (!register_fixed_work(work)) return false;
     service_bindings_[animator_key(lease.instance)] = lease;
@@ -349,9 +363,12 @@ bool resolve_world_target(const Mat4f& current_root_world,
     Mat4f inverse_root{};
     if (!inverse(current_root_world, inverse_root)) return false;
     const Float3& point = desired_world.translation;
-    const float x = inverse_root.m[0] * point.x + inverse_root.m[4] * point.y + inverse_root.m[8] * point.z + inverse_root.m[12];
-    const float y = inverse_root.m[1] * point.x + inverse_root.m[5] * point.y + inverse_root.m[9] * point.z + inverse_root.m[13];
-    const float z = inverse_root.m[2] * point.x + inverse_root.m[6] * point.y + inverse_root.m[10] * point.z + inverse_root.m[14];
+    // MatterEngine matrices are row-major and store translation in the last
+    // column (m[3], m[7], m[11]).  Keep this conversion in the engine's
+    // convention rather than silently interpreting WorldTransform as GLM.
+    const float x = inverse_root.m[0] * point.x + inverse_root.m[1] * point.y + inverse_root.m[2] * point.z + inverse_root.m[3];
+    const float y = inverse_root.m[4] * point.x + inverse_root.m[5] * point.y + inverse_root.m[6] * point.z + inverse_root.m[7];
+    const float z = inverse_root.m[8] * point.x + inverse_root.m[9] * point.y + inverse_root.m[10] * point.z + inverse_root.m[11];
     if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) return false;
     out_root_relative = desired_world;
     out_root_relative.translation = {x, y, z};
@@ -394,6 +411,23 @@ void AnimationSystems::run_fixed_update(flecs::world& world, double fixed_delta)
         for (const auto& event : local) emitted.push_back({work.instance, work.clip.node_index, work.clip.clip_index, event});
         work.clip.time = current;
     }
+    // Evaluate the live graph on the fixed clock before deriving root motion.
+    // This makes the authority path consume the graph's root track (including
+    // blend/additive output), not the descriptor's obsolete test vectors.
+    evaluate_service_bindings(world, fixed_delta);
+    for (auto& pair : fixed_work_) {
+        AnimationFixedWork& work = pair.second;
+        const AnimationPoseSnapshot pose = evaluator_.snapshot(work.instance);
+        if (pose.local_pose.count == 0) continue;
+        if (!work.root_sampled) {
+            work.root_previous = pose.local_pose[0];
+            work.root_current = pose.local_pose[0];
+            work.root_sampled = true;
+        } else {
+            work.root_previous = work.root_current;
+            work.root_current = pose.local_pose[0];
+        }
+    }
     std::stable_sort(emitted.begin(), emitted.end(), [](const OrderedMarker& a, const OrderedMarker& b) {
         if (a.instance.slot_index != b.instance.slot_index) return a.instance.slot_index < b.instance.slot_index;
         if (a.clip != b.clip) return a.clip < b.clip;
@@ -418,7 +452,22 @@ void AnimationSystems::run_pre_physics(flecs::world& world, double fixed_delta) 
     const uint64_t tick = world.get<ecs::AnimationFixedState>().current_tick;
     for (const auto& pair : fixed_work_) {
         DesiredRootMotion motion{};
-        if (consume_desired_root_motion(pair.second.instance, tick, motion)) consumed_root_motion_.push_back(motion);
+        if (!consume_desired_root_motion(pair.second.instance, tick, motion)) continue;
+        // Root motion has a single authority: this pre-physics boundary.  It
+        // writes the authored root transform before physics pushes kinematic
+        // bodies, so there is no test-only side channel or second consumer.
+        if (pair.second.root_entity != 0) {
+            flecs::entity root = world.entity(pair.second.root_entity);
+            if (ecs::LocalTransform* local = root.try_get_mut<ecs::LocalTransform>()) {
+                local->translation.x += motion.delta.translation.x;
+                local->translation.y += motion.delta.translation.y;
+                local->translation.z += motion.delta.translation.z;
+                local->rotation = multiply_quaternion(motion.delta.rotation, local->rotation);
+                root.modified<ecs::LocalTransform>();
+                root.add<ecs::TransformDirty>();
+            }
+        }
+        consumed_root_motion_.push_back(motion);
     }
     trace(AnimationScheduleEvent::PrePhysicsAuthority, fixed_delta);
 }
@@ -441,7 +490,7 @@ void AnimationSystems::run_fixed_post(flecs::world& world, double fixed_delta) {
     trace(AnimationScheduleEvent::FixedSmoothTargets, fixed_delta);
     for (auto& pair : fixed_work_) {
         AnimationFixedWork& work = pair.second;
-        if (work.root_entity == 0) continue;
+        if (work.root_entity == 0 || !work.target_enabled) continue;
         const flecs::entity root = world.entity(work.root_entity);
         const ecs::WorldTransform* transform = root.try_get<ecs::WorldTransform>();
         if (transform == nullptr || !resolve_world_target(transform->matrix, work.desired_target_world,

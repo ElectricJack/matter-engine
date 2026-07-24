@@ -255,7 +255,10 @@ public:
         Slot* old = slot(handle);
         if (!old) return {{}, AnimationStatus::InvalidHandle};
         if (!owns(asset)) return {{}, AnimationStatus::LoadFailed};
-        const AnimationRuntimeDefinition* schema = schema_for(asset, definition);
+        // A live instance may intentionally move to a new immutable graph for
+        // the same asset identity.  Keep the old schema alive for siblings,
+        // then publish a generation-qualified replacement transactionally.
+        const AnimationRuntimeDefinition* schema = schema_for(asset, definition, true);
         if (!schema) return {{}, AnimationStatus::LoadFailed};
         const size_t old_bytes = old->definition->mutable_bytes();
         const size_t new_bytes = schema->mutable_bytes();
@@ -412,9 +415,17 @@ private:
         AnimationRuntimeBindingLease lease;
         if (!runtime_binding(handle, lease) || !systems_->refresh_service_binding(lease)) systems_->detach_service_binding(handle);
     }
-    const AnimationRuntimeDefinition* schema_for(const AnimAsset* asset, const AnimationRuntimeDefinition& definition) {
+    const AnimationRuntimeDefinition* schema_for(const AnimAsset* asset, const AnimationRuntimeDefinition& definition,
+                                                  bool allow_replacement = false) {
         const auto existing = schemas_.find(asset);
-        if (existing != schemas_.end()) return same_definition(*existing->second, definition) ? existing->second.get() : nullptr;
+        if (existing != schemas_.end()) {
+            if (same_definition(*existing->second, definition)) return existing->second.get();
+            if (!allow_replacement || !valid_definition(definition)) return nullptr;
+            auto owned = std::make_unique<AnimationRuntimeDefinition>(definition);
+            const AnimationRuntimeDefinition* result = owned.get();
+            replacement_schemas_.push_back(std::move(owned));
+            return result;
+        }
         if (!valid_definition(definition)) return nullptr;
         auto owned = std::make_unique<AnimationRuntimeDefinition>(definition);
         const AnimationRuntimeDefinition* result = owned.get();
@@ -459,6 +470,10 @@ private:
     AnimationStoreConfig config_;
     AnimationAssetStore assets_;
     std::map<const AnimAsset*, std::unique_ptr<const AnimationRuntimeDefinition>> schemas_;
+    // Asset-keyed schema interning cannot discard an active sibling's
+    // descriptor. Replacements therefore own their immutable descriptors here
+    // until the service itself is destroyed.
+    std::vector<std::unique_ptr<const AnimationRuntimeDefinition>> replacement_schemas_;
     std::vector<Slot> slots_;
     std::vector<uint32_t> free_indices_;
     size_t mutable_bytes_ = 0;

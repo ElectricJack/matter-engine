@@ -34,6 +34,7 @@ class Coordinator;
 namespace matter::animation {
 
 class AnimationSystems;
+class Box3DAnimationWorldQueries;
 
 } // namespace matter::animation
 
@@ -90,6 +91,9 @@ private:
     std::unique_ptr<physics::detail::PhysicsContext> physics_;
     std::unique_ptr<streaming::detail::Coordinator> streaming_;
     std::unique_ptr<animation::AnimationSystems> animation_systems_;
+    // The production query adapter is owned by Runtime with the physics world
+    // it queries.  Tests may still override it through AnimationSystems.
+    std::unique_ptr<animation::Box3DAnimationWorldQueries> animation_world_queries_;
     AnimationService* bound_animation_service_ = nullptr;
     flecs::entity fixed_pipeline_;
     flecs::entity frame_pipeline_;

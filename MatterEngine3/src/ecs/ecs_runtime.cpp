@@ -4,6 +4,7 @@
 #include "scene_registry.h"
 #include "animation/animation_systems.h"
 #include "animation/animation_store.h"
+#include "animation/animation_world_queries.h"
 #include "../streaming/sector_streaming_coordinator.h"
 #include "matter/physics.h"
 #include "matter/streaming.h"
@@ -339,6 +340,11 @@ Runtime::Runtime() {
     world_.set<streaming::detail::StreamingContextRef>(
         streaming::detail::StreamingContextRef{streaming_.get()});
     animation_systems_ = std::make_unique<animation::AnimationSystems>();
+    // Animation's fixed world-query seam is backed by the same live Box3D
+    // world as the Physics pipeline.  There is deliberately no production
+    // no-hit default once Runtime owns a world.
+    animation_world_queries_ = std::make_unique<animation::Box3DAnimationWorldQueries>(world_);
+    animation_systems_->set_world_queries(animation_world_queries_.get());
     animation::register_animation_systems(world_, *animation_systems_);
     fixed_pipeline_ = build_pipeline<ecs::FixedPipelineSystem>(world_);
     frame_pipeline_ = build_pipeline<ecs::FramePipelineSystem>(world_);
