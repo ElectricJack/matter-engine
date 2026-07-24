@@ -43,6 +43,24 @@ bool inverse(const Mat4f& source, Mat4f& out) {
     return true;
 }
 
+Quaternion normalize_quaternion(Quaternion q) {
+    const float length = std::sqrt(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w);
+    return length > 1e-6f ? Quaternion{q.x/length, q.y/length, q.z/length, q.w/length} : Quaternion{};
+}
+Quaternion multiply_quaternion(Quaternion a, Quaternion b) {
+    return normalize_quaternion({a.w*b.x+a.x*b.w+a.y*b.z-a.z*b.y,
+                                 a.w*b.y-a.x*b.z+a.y*b.w+a.z*b.x,
+                                 a.w*b.z+a.x*b.y-a.y*b.x+a.z*b.w,
+                                 a.w*b.w-a.x*b.x-a.y*b.y-a.z*b.z});
+}
+Quaternion matrix_rotation(const Mat4f& m) {
+    const float trace = m.m[0] + m.m[5] + m.m[10];
+    if (trace > 0.0f) { const float s = std::sqrt(trace + 1.0f) * 2.0f; return normalize_quaternion({(m.m[9]-m.m[6])/s,(m.m[2]-m.m[8])/s,(m.m[4]-m.m[1])/s,0.25f*s}); }
+    if (m.m[0] > m.m[5] && m.m[0] > m.m[10]) { const float s=std::sqrt(1.0f+m.m[0]-m.m[5]-m.m[10])*2.0f; return normalize_quaternion({0.25f*s,(m.m[1]+m.m[4])/s,(m.m[2]+m.m[8])/s,(m.m[9]-m.m[6])/s}); }
+    if (m.m[5] > m.m[10]) { const float s=std::sqrt(1.0f+m.m[5]-m.m[0]-m.m[10])*2.0f; return normalize_quaternion({(m.m[1]+m.m[4])/s,0.25f*s,(m.m[6]+m.m[9])/s,(m.m[2]-m.m[8])/s}); }
+    const float s=std::sqrt(1.0f+m.m[10]-m.m[0]-m.m[5])*2.0f; return normalize_quaternion({(m.m[2]+m.m[8])/s,(m.m[6]+m.m[9])/s,0.25f*s,(m.m[4]-m.m[1])/s});
+}
+
 AnimationTransform runtime_root_delta(const AnimationTransform& previous, const AnimationTransform& current) {
     AnimationTransform result{};
     result.translation = {current.translation.x - previous.translation.x, current.translation.y - previous.translation.y,
@@ -257,6 +275,8 @@ bool resolve_world_target(const Mat4f& current_root_world,
     if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) return false;
     out_root_relative = desired_world;
     out_root_relative.translation = {x, y, z};
+    const Quaternion root = matrix_rotation(current_root_world);
+    out_root_relative.rotation = multiply_quaternion({-root.x, -root.y, -root.z, root.w}, desired_world.rotation);
     return true;
 }
 

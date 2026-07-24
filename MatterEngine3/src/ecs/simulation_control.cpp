@@ -64,8 +64,8 @@ bool SimulationControl::set_animator_checkpoints(
     size_t bytes = 0;
     for (const auto& checkpoint : checkpoints) {
         if (!checkpoint.instance.valid() || !checkpoint.bounded()) return false;
-        bytes += checkpoint.controller_state.size() + checkpoint.marker_cursors.size() * sizeof(uint32_t) +
-                 checkpoint.fixed_local_pose.size() * sizeof(AnimationTransform);
+        if (checkpoint.serialized_size() > 64u * 1024u - bytes) return false;
+        bytes += checkpoint.serialized_size();
         if (bytes > 64u * 1024u) return false;
     }
     animator_checkpoints_ = std::move(checkpoints);

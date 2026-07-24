@@ -52,10 +52,15 @@ struct AnimatorCheckpoint {
     std::vector<uint8_t> controller_state;
     std::vector<uint32_t> marker_cursors;
     std::vector<AnimationTransform> fixed_local_pose;
+    size_t serialized_size() const {
+        size_t total = sizeof(*this) + controller_state.size() + marker_cursors.size() * sizeof(uint32_t) +
+                       fixed_local_pose.size() * sizeof(AnimationTransform);
+        for (const auto& value : fixed_inputs) total += sizeof(AnimationValue) + value.symbol.size();
+        for (const auto& value : frame_inputs) total += sizeof(AnimationValue) + value.symbol.size();
+        return total;
+    }
     bool bounded(size_t limit = 64u * 1024u) const {
-        return controller_state.size() <= limit && marker_cursors.size() <= limit / sizeof(uint32_t) &&
-               fixed_local_pose.size() <= limit / sizeof(AnimationTransform) &&
-               fixed_inputs.size() <= limit / sizeof(AnimationValue) && frame_inputs.size() <= limit / sizeof(AnimationValue);
+        return serialized_size() <= limit;
     }
 };
 
