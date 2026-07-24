@@ -825,6 +825,26 @@ bool checked_size_to_int(size_t count, int& result, const char* label,
 VkSceneRenderer::VkSceneRenderer(matter::VulkanDevice& vulkan)
     : vulkan_(&vulkan), dlss_bridge_(&vulkan.streamline_bridge()) {}
 
+bool VkSceneRenderer::register_animation_skin_asset(
+    uint64_t asset_key, const std::vector<VkSkinInfluence>& influences) {
+    return animation_skinning_.register_asset(asset_key, influences);
+}
+
+bool VkSceneRenderer::begin_animation_skinning_frame(
+    uint32_t frame_slot, uint64_t completed_fence) {
+    return animation_skinning_.begin_frame(frame_slot, completed_fence);
+}
+
+bool VkSceneRenderer::submit_visible_animation_skinning(
+    uint32_t frame_slot, const std::vector<VkSkinSubmission>& visible) {
+    return animation_skinning_.submit_visible(frame_slot, visible);
+}
+
+void VkSceneRenderer::finish_animation_skinning_frame(uint32_t frame_slot,
+                                                       uint64_t fence) {
+    animation_skinning_.mark_submitted(frame_slot, fence);
+}
+
 matter::DlssMode VkSceneRenderer::active_dlss_mode() const {
     return dlss_bridge_->active_dlss_mode();
 }

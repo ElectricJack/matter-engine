@@ -22,6 +22,7 @@
 #include "material_registry.h"
 #include "render/dynamic_instance_slots.h"
 #include "vk_gi_contract.h"
+#include "vk_animation_skinning.h"
 #include "vk_draw_command.h"
 #include "vk_resources.h"
 #include "vk_temporal.h"
@@ -385,6 +386,18 @@ public:
                                   uint64_t submit_serial,
                                   std::string& error);
     void finish_dynamic_frame(uint64_t completed_serial);
+    // Phase C1 CPU staging seam. C2 consumes these exact arenas for the
+    // compute dispatch; no submission reaches the Vulkan command stream yet.
+    bool register_animation_skin_asset(
+        uint64_t asset_key, const std::vector<VkSkinInfluence>& influences);
+    bool begin_animation_skinning_frame(uint32_t frame_slot,
+                                        uint64_t completed_fence);
+    bool submit_visible_animation_skinning(
+        uint32_t frame_slot, const std::vector<VkSkinSubmission>& visible);
+    void finish_animation_skinning_frame(uint32_t frame_slot, uint64_t fence);
+    const VkAnimationSkinning& animation_skinning() const noexcept {
+        return animation_skinning_;
+    }
     void set_temporal_frame(const TemporalFrame& frame) { temporal_frame_ = frame; }
     void set_dlss_mode(matter::DlssMode mode);
     VkExtent2D dlss_internal_extent(VkExtent2D output_extent) const;
@@ -1017,6 +1030,7 @@ private:
     void write_tileset_descriptors_for_frame(VkDescriptorSet set);
 
     matter::VulkanDevice* vulkan_ = nullptr;
+    VkAnimationSkinning animation_skinning_;
     matter::StreamlineBridge* dlss_bridge_ = nullptr;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     std::unique_ptr<matter::StreamlineBridge> test_dlss_bridge_override_;
