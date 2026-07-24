@@ -194,17 +194,31 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
     std::set<std::string> named_bindings;
     std::set<std::string> rigid_binding_names;
     std::set<std::string> rigid_segments;
+    std::vector<bool> primary_binding_segments(build.rig.joints.size(), false);
     for (const SkinBindingDef& binding : build.skin_bindings) {
         if (binding.name.empty() || !named_bindings.insert(binding.name).second) diagnostics.add("duplicate-binding", binding.source, "binding name must be non-empty and unique");
         if (!finite(binding.falloff) || binding.falloff <= 0.0f) diagnostics.add("invalid-skin-falloff", binding.source, "skin falloff must be finite and positive");
         if (binding.joints.empty()) diagnostics.add("empty-skin-binding", binding.source, "skin binding requires at least one segment");
-        for (const std::string& joint : binding.joints)
-            if (find_joint(build, joint) < 0) diagnostics.add("missing-skin-joint", binding.source, "skin binding joint is not declared");
+        std::set<std::string> selected;
+        for (const std::string& joint : binding.joints) {
+            const int index = find_joint(build, joint);
+            if (index < 0) { diagnostics.add("missing-skin-joint", binding.source, "skin binding joint is not declared"); continue; }
+            if (build.rig.joints[static_cast<size_t>(index)].parent.empty()) { diagnostics.add("binding-root-joint", binding.source, "binding joint must identify a parent-child segment"); continue; }
+            if (!selected.insert(joint).second) { diagnostics.add("duplicate-skin-segment", binding.source, "skin binding cannot select a segment more than once"); continue; }
+            if (primary_binding_segments[static_cast<size_t>(index)]) diagnostics.add("overlapping-primary-binding", binding.source, "primary bindings cannot share a segment");
+            else primary_binding_segments[static_cast<size_t>(index)] = true;
+        }
     }
     for (const RigidBindingDef& binding : build.rigid_bindings) {
         if (binding.name.empty() || named_bindings.count(binding.name) || !rigid_segments.insert(binding.name + "\x1f" + binding.joint).second) diagnostics.add("duplicate-binding", binding.source, "rigid binding name/segment must be unique");
         rigid_binding_names.insert(binding.name);
-        if (find_joint(build, binding.joint) < 0) diagnostics.add("missing-rigid-joint", binding.source, "rigid binding joint is not declared");
+        const int index = find_joint(build, binding.joint);
+        if (index < 0) diagnostics.add("missing-rigid-joint", binding.source, "rigid binding joint is not declared");
+        else if (build.rig.joints[static_cast<size_t>(index)].parent.empty()) diagnostics.add("binding-root-joint", binding.source, "binding joint must identify a parent-child segment");
+        else if (!binding.decorative) {
+            if (primary_binding_segments[static_cast<size_t>(index)]) diagnostics.add("overlapping-primary-binding", binding.source, "primary bindings cannot share a segment");
+            else primary_binding_segments[static_cast<size_t>(index)] = true;
+        }
         validate_transform(binding.local, binding.source, diagnostics);
     }
     for (const AttachmentDef& attachment : build.attachments) {

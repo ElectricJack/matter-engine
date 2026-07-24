@@ -21,6 +21,15 @@ CanonicalRig two_joint_rig() {
     return rig;
 }
 
+CanonicalRig three_joint_rig() {
+    CanonicalRig rig = two_joint_rig();
+    matter::AnimationTransform sibling{};
+    sibling.translation = {0.0f, 8.0f, 0.0f};
+    rig.joints.push_back({"unselected", 0, sibling, 0.5f, {2, 3}, {}});
+    rig.joints[0].subtree.end = 3;
+    return rig;
+}
+
 viewer::IndexedPartGeometry geometry() {
     viewer::IndexedPartGeometry g;
     g.vertices = {0,0,0, 1,0,0, 0,1,0};
@@ -46,7 +55,7 @@ void test_signature_is_stable_and_includes_indices() {
 
 void test_weights_are_quantized_and_bind_pose_safe() {
     BindingBake bake;
-    CHECK(matter::animation::build_skin_binding(two_joint_rig(), {geometry()}, 1.0f, bake), "build skin binding");
+    CHECK(matter::animation::build_skin_binding(two_joint_rig(), {1}, {geometry()}, 1.0f, bake), "build skin binding");
     CHECK(bake.lods.size() == 1 && bake.lods[0].influences.size() == 3, "one influence record per final vertex");
     const auto& at_root = bake.lods[0].influences[0];
     uint32_t sum = 0; for (uint16_t v : at_root.weights) sum += v;
@@ -59,9 +68,27 @@ void test_weights_are_quantized_and_bind_pose_safe() {
           "conservative bounds retain a stable per-LOD cluster range");
 }
 
+void test_skin_binding_uses_only_the_selected_segments() {
+    auto selected = geometry();
+    selected.vertices = {0,8,0};
+    selected.normals = {0,0,1}; selected.colors = {255,255,255,255};
+    selected.texcoords = {0,1}; selected.surface_uvs = {0,0};
+    selected.material_ids = {7}; selected.baked_ao = {1};
+    selected.indices = {0,0,0}; selected.vertex_count = 1;
+    BindingBake bake;
+    CHECK(matter::animation::build_skin_binding(three_joint_rig(), {1}, {selected}, 1.0f, bake),
+          "a selected segment bakes successfully");
+    if (bake.lods.empty() || bake.lods[0].influences.empty()) return;
+    const auto& influence = bake.lods[0].influences[0];
+    for (size_t i = 0; i < influence.weights.size(); ++i)
+        CHECK(!influence.weights[i] || influence.joints[i] == 0 || influence.joints[i] == 1,
+              "a selected segment never emits an unselected-joint influence");
+}
+
 void test_primary_claims_and_animated_children_fail_closed() {
-    matter::animation::BindingClaims claims(2);
-    CHECK(claims.claim_skin({0, 1}, false), "primary skin claims segments");
+    matter::animation::BindingClaims claims(two_joint_rig());
+    CHECK(!claims.claim_skin({0}, false), "a binding claim cannot select the root");
+    CHECK(claims.claim_skin({1}, false), "primary skin claims segments");
     CHECK(!claims.claim_rigid({1}, false), "overlapping primary binding is rejected");
     CHECK(claims.claim_rigid({1}, true), "decorative overlap is explicit");
     CHECK(!matter::animation::validate_attachment(false, true), "nested committed animation is rejected");
@@ -80,20 +107,20 @@ void test_malformed_rig_hierarchy_fails_before_parent_indexing() {
     CanonicalRig malformed = two_joint_rig();
     malformed.joints[0].parent = 1;
     BindingBake bake;
-    CHECK(!matter::animation::build_skin_binding(malformed, {geometry()}, 1.0f, bake),
+    CHECK(!matter::animation::build_skin_binding(malformed, {1}, {geometry()}, 1.0f, bake),
           "parent-after-child canonical rig is rejected before binding");
     CHECK(bake.lods.empty() && bake.inverse_bind_matrices.empty(),
           "malformed canonical rig leaves the binding output empty");
 
     malformed = two_joint_rig();
     malformed.joints[1].parent = 42;
-    CHECK(!matter::animation::build_skin_binding(malformed, {geometry()}, 1.0f, bake),
+    CHECK(!matter::animation::build_skin_binding(malformed, {1}, {geometry()}, 1.0f, bake),
           "out-of-range canonical rig parent is rejected before binding");
 }
 
 void test_binding_payload_retains_lods_matrices_and_cluster_ranges() {
     BindingBake source;
-    CHECK(matter::animation::build_skin_binding(two_joint_rig(), {geometry()}, 1.0f, source),
+    CHECK(matter::animation::build_skin_binding(two_joint_rig(), {1}, {geometry()}, 1.0f, source),
           "build binding persistence fixture");
     matter::animation::AnimAsset asset;
     asset.sections = {
@@ -123,7 +150,7 @@ void test_binding_payload_retains_lods_matrices_and_cluster_ranges() {
 
 void test_binding_payload_requires_complete_cluster_bounds() {
     BindingBake source;
-    CHECK(matter::animation::build_skin_binding(two_joint_rig(), {geometry()}, 1.0f, source),
+    CHECK(matter::animation::build_skin_binding(two_joint_rig(), {1}, {geometry()}, 1.0f, source),
           "build binding bounds validation fixture");
     matter::animation::AnimAsset asset;
     auto missing_bounds = source;
@@ -140,6 +167,7 @@ void test_binding_payload_requires_complete_cluster_bounds() {
 int main() {
     test_signature_is_stable_and_includes_indices();
     test_weights_are_quantized_and_bind_pose_safe();
+    test_skin_binding_uses_only_the_selected_segments();
     test_primary_claims_and_animated_children_fail_closed();
     test_duplicate_segment_claim_fails_closed();
     test_malformed_rig_hierarchy_fails_before_parent_indexing();

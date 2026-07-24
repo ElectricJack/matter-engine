@@ -32,11 +32,13 @@ struct BindingBake { std::vector<LodSkinBinding> lods; std::vector<Mat4f> invers
 // do not claim a segment; decorative overlap is always explicit.
 class BindingClaims {
 public:
-    explicit BindingClaims(size_t joint_count) : primary_(joint_count, false) {}
+    explicit BindingClaims(size_t joint_count);
+    explicit BindingClaims(const CanonicalRig& rig);
     bool claim_skin(const std::vector<JointIndex>& child_joints, bool decorative);
     bool claim_rigid(const std::vector<JointIndex>& child_joints, bool decorative);
 private:
     std::vector<bool> primary_;
+    std::vector<bool> valid_children_;
     bool claim(const std::vector<JointIndex>& child_joints, bool decorative);
 };
 
@@ -45,6 +47,7 @@ private:
 bool validate_attachment(bool child_resolved, bool child_has_committed_animation);
 
 bool build_skin_binding(const CanonicalRig& rig,
+                        const std::vector<JointIndex>& child_joints,
                         const std::vector<viewer::IndexedPartGeometry>& lods,
                         float falloff_scale, BindingBake& out);
 

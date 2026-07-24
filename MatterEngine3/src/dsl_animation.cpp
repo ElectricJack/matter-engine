@@ -88,6 +88,18 @@ bool token_name(const std::string& source, const std::string& from, const std::s
     if (from.empty() || pos == std::string::npos || source.find(from, pos + from.size()) != std::string::npos) return false;
     out = source; out.replace(pos, from.size(), to); return true;
 }
+
+bool refresh_canonical_animation(AnimationBuildBuffer& buffer, const SourceSpan& source,
+                                 matter::animation::Diagnostics& diagnostics) {
+    AnimationBuild candidate = buffer.authored;
+    if (candidate.graph.nodes.empty())
+        candidate.graph.nodes.push_back({"__rig_only_output", {}, true,
+                                         matter::animation::EvaluationCadence::Fixed, source});
+    matter::animation::CanonicalAnimationBuild canonical;
+    if (!matter::animation::validate_and_canonicalize_animation_build(candidate, canonical, diagnostics)) return false;
+    buffer.canonical = std::move(canonical);
+    return true;
+}
 } // namespace
 
 const std::optional<matter::animation::CanonicalAnimationBuild>& DslState::canonical_rig() const {
@@ -193,10 +205,9 @@ void DslState::rig_mirror_branch(const std::string& from, const std::string& to,
 void DslState::end_rig() {
     if (!rig_open()) { set_rig_error("endRig outside an open rig session"); return; }
     if (!animation_->stack.empty()) { set_rig_error("rig stack left unbalanced at endRig"); return; }
-    AnimationBuild candidate=animation_->authored; candidate.graph.nodes.push_back({"__rig_only_output",{},true,matter::animation::EvaluationCadence::Fixed,rig_source_});
-    matter::animation::Diagnostics diagnostics; matter::animation::CanonicalAnimationBuild canonical;
-    if (!matter::animation::validate_and_canonicalize_animation_build(candidate,canonical,diagnostics)) { set_rig_error(diagnostics.items.empty()?"rig validation failed":diagnostics.items.front().message, "rig-validation"); return; }
-    animation_->canonical=std::move(canonical); animation_->open=false; animation_->ended=true;
+    matter::animation::Diagnostics diagnostics;
+    if (!refresh_canonical_animation(*animation_, rig_source_, diagnostics)) { set_rig_error(diagnostics.items.empty()?"rig validation failed":diagnostics.items.front().message, "rig-validation"); return; }
+    animation_->open=false; animation_->ended=true;
 }
 
 void DslState::begin_clip(const std::string& name, float duration, float rate, bool loop, bool additive) {
@@ -351,6 +362,11 @@ void DslState::rig_skin(const std::string& name, const std::vector<std::string>&
     }
     for (size_t index : selected) animation_->primary_segment_claims[index]=true;
     animation_->authored.skin_bindings.push_back(std::move(binding));
+    matter::animation::Diagnostics diagnostics;
+    if (!refresh_canonical_animation(*animation_, rig_source_, diagnostics)) {
+        if (!diagnostics.items.empty()) rig_source_=diagnostics.items.front().source;
+        set_rig_error(diagnostics.items.empty()?"skin binding validation failed":diagnostics.items.front().message, "binding-validation");
+    }
 }
 
 void DslState::rig_segments(const std::string& name, const std::vector<std::string>& requested, bool decorative) {
@@ -365,6 +381,11 @@ void DslState::rig_segments(const std::string& name, const std::vector<std::stri
         animation_->authored.rigid_bindings.push_back(std::move(binding));
         if (!decorative) animation_->primary_segment_claims[index]=true;
     }
+    matter::animation::Diagnostics diagnostics;
+    if (!refresh_canonical_animation(*animation_, rig_source_, diagnostics)) {
+        if (!diagnostics.items.empty()) rig_source_=diagnostics.items.front().source;
+        set_rig_error(diagnostics.items.empty()?"rigid binding validation failed":diagnostics.items.front().message, "binding-validation");
+    }
 }
 
 void DslState::rig_attach(const std::string& name, const std::string& socket,
@@ -376,6 +397,11 @@ void DslState::rig_attach(const std::string& name, const std::string& socket,
     uint64_t child_hash=0;
     if (child_module.empty() || !lookup_child_hash(child_module, nullptr, 0, child_hash) || child_hash == 0) { set_rig_error("attachment references an unresolved child"); return; }
     animation_->authored.attachments.push_back({name, socket, child_hash, local, rig_source_});
+    matter::animation::Diagnostics diagnostics;
+    if (!refresh_canonical_animation(*animation_, rig_source_, diagnostics)) {
+        if (!diagnostics.items.empty()) rig_source_=diagnostics.items.front().source;
+        set_rig_error(diagnostics.items.empty()?"attachment validation failed":diagnostics.items.front().message, "binding-validation");
+    }
 }
 
 const std::optional<matter::animation::CanonicalAnimationBuild>& DslState::canonical_animation() const { return canonical_rig(); }

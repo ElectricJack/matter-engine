@@ -93,8 +93,35 @@ void test_limits_and_clip_data_are_validated() {
     AnimationBuild track = valid_build(); track.clips[0].tracks = {{"missing", {{0.0f, transform(), at("missing-key", 34)}}, at("missing-track", 35)}}; check_invalid(track, "missing-track-joint", "clip track missing joint fails");
     AnimationBuild key_value = valid_build(); key_value.clips[0].tracks = {{"root", {{0.0f, transform(), at("key", 36)}}, at("track", 37)}}; key_value.clips[0].tracks[0].keys[0].value.rotation = {0, 0, 0, 0}; key_value.clips[0].tracks[0].keys[0].value.scale.x = std::numeric_limits<float>::infinity();
     diagnostics.items.clear(); CHECK(!validate_animation_build(key_value, diagnostics), "invalid clip key transform fails"); CHECK(has_code(diagnostics, "non-finite-transform"), "non-finite key transform diagnosed"); CHECK(has_code(diagnostics, "non-normalizable-rotation"), "key rotation diagnosed");
-    AnimationBuild bindings = valid_build(); bindings.skin_bindings = {{"skin", {"root", "mid", "tip", "arm", "root"}, at("skin", 33)}}; bindings.rigid_bindings = {{"rigid", "missing", transform(), at("rigid", 34)}}; bindings.attachments = {{"attachment", "missing", transform(), at("attachment", 35)}};
-    diagnostics.items.clear(); CHECK(!validate_animation_build(bindings, diagnostics), "invalid bindings fail"); CHECK(has_code(diagnostics, "skin-influence-limit"), "skin influence limit diagnosed"); CHECK(has_code(diagnostics, "missing-rigid-joint"), "rigid joint diagnosed"); CHECK(has_code(diagnostics, "missing-attachment-socket"), "attachment socket diagnosed");
+    AnimationBuild bindings = valid_build();
+    SkinBindingDef bad_skin; bad_skin.name="skin"; bad_skin.joints={"root", "mid", "tip", "arm", "root"}; bad_skin.source=at("skin", 33);
+    RigidBindingDef bad_rigid; bad_rigid.name="rigid"; bad_rigid.joint="missing"; bad_rigid.local=transform(); bad_rigid.source=at("rigid", 34);
+    AttachmentDef bad_attachment; bad_attachment.name="attachment"; bad_attachment.socket="missing"; bad_attachment.local=transform(); bad_attachment.source=at("attachment", 35);
+    bindings.skin_bindings={bad_skin}; bindings.rigid_bindings={bad_rigid}; bindings.attachments={bad_attachment};
+    diagnostics.items.clear(); CHECK(!validate_animation_build(bindings, diagnostics), "invalid bindings fail"); CHECK(has_code(diagnostics, "binding-root-joint"), "binding root joint diagnosed"); CHECK(has_code(diagnostics, "missing-rigid-joint"), "rigid joint diagnosed"); CHECK(has_code(diagnostics, "missing-attachment-socket"), "attachment socket diagnosed");
+}
+
+void test_binding_segments_are_distinct_non_root_and_exclusive() {
+    AnimationBuild root_skin = valid_build();
+    SkinBindingDef root; root.name="skin"; root.joints={"root"}; root.source=at("root-skin", 38);
+    root_skin.skin_bindings={root};
+    check_invalid(root_skin, "binding-root-joint", "a skin binding cannot select the root");
+
+    AnimationBuild duplicate_skin = valid_build();
+    SkinBindingDef duplicate; duplicate.name="skin"; duplicate.joints={"mid", "mid"}; duplicate.source=at("duplicate-skin", 39);
+    duplicate_skin.skin_bindings={duplicate};
+    check_invalid(duplicate_skin, "duplicate-skin-segment", "a skin binding cannot select one segment twice");
+
+    AnimationBuild overlap = valid_build();
+    SkinBindingDef skin; skin.name="skin"; skin.joints={"mid"}; skin.source=at("skin", 40);
+    RigidBindingDef rigid; rigid.name="rigid"; rigid.joint="mid"; rigid.source=at("rigid", 41);
+    overlap.skin_bindings={skin}; overlap.rigid_bindings={rigid};
+    check_invalid(overlap, "overlapping-primary-binding", "primary skin and rigid bindings cannot share a segment");
+
+    AnimationBuild decorative = valid_build(); rigid.decorative=true;
+    decorative.skin_bindings={skin}; decorative.rigid_bindings={rigid};
+    Diagnostics diagnostics;
+    CHECK(validate_animation_build(decorative, diagnostics), "decorative rigid overlap remains explicit and valid");
 }
 
 void test_inputs_drivers_targets_and_graph_are_validated() {
@@ -173,7 +200,7 @@ void test_diagnostics_are_stably_sorted() {
 } // namespace
 
 int main() {
-    test_duplicate_names_are_rejected(); test_rig_structure_and_numeric_values_are_validated(); test_limits_and_clip_data_are_validated(); test_inputs_drivers_targets_and_graph_are_validated(); test_target_chains_and_canonical_orders_are_deterministic(); test_graph_node_contracts_are_strict(); test_diagnostics_are_stably_sorted();
+    test_duplicate_names_are_rejected(); test_rig_structure_and_numeric_values_are_validated(); test_limits_and_clip_data_are_validated(); test_binding_segments_are_distinct_non_root_and_exclusive(); test_inputs_drivers_targets_and_graph_are_validated(); test_target_chains_and_canonical_orders_are_deterministic(); test_graph_node_contracts_are_strict(); test_diagnostics_are_stably_sorted();
     if (g_failures != 0) { std::printf("animation_ir_tests: %d failure(s)\n", g_failures); return 1; }
     std::printf("animation_ir_tests: all tests passed\n"); return 0;
 }

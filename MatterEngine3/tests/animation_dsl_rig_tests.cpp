@@ -245,6 +245,11 @@ void test_rig_binding_authoring_captures_skin_segments_and_attachments() {
     CHECK(build && build->attachments.size() == 1 && build->attachments[0].name == "tool" &&
           build->attachments[0].socket == "grip" && build->attachments[0].child_hash == child_hash,
           "attachment captures its socket and declared child hash");
+    const auto& canonical = host.last_animation_rig();
+    CHECK(canonical && canonical->authored_state.find("body") != std::string::npos &&
+          canonical->authored_state.find("armor") != std::string::npos &&
+          canonical->authored_state.find("tool") != std::string::npos,
+          "canonical animation state is refreshed after binding authoring");
     CHECK(host.last_buffer().ops.size() >= 3, "generated skin contributes tapered segment and endpoint voxel geometry");
 }
 
