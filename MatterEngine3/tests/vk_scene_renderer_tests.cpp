@@ -17,8 +17,11 @@
 #include "shaders_gen/embedded_spirv.h"
 
 #include <cstddef>
+#include <cmath>
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -234,6 +237,202 @@ static void test_animation_bounds_cull_shader_contract() {
           "clean embedded shader table contains the generated dynamic-bounds cull shader");
 }
 
+// This is deliberately the cull.comp lookup contract, rather than a second
+// VkAnimationBounds resolver.  It consumes the std430 records that C3 uploads
+// and applies the shader's exact identity/count rules before doing the one
+// frustum-plane decision needed by these tests.  A GPU device is not available
+// to this CPU-only target; the Makefile prerequisite above still compiles the
+// shader into the embedded table used by the renderer.
+struct C3CullContractInput {
+    viewer::VkAnimationBoundsAabb static_aabb{};
+    uint32_t animation_slot = UINT32_MAX;
+    uint32_t animation_generation = 0;
+    uint32_t cluster_index = 0;
+    uint32_t selected_lod = 0;
+};
+
+struct C3CullContractResult {
+    viewer::VkAnimationBoundsAabb selected_aabb{};
+    bool used_dynamic = false;
+    bool occlusion_enabled = false;
+    bool frustum_visible = false;
+};
+
+// Mirrors cull.comp::dynamic_cluster_union(), dynamic_cluster_lod(), and its
+// all-corners-outside test for the x >= 0 frustum plane.  `dynamic_count` is
+// FrameConstants.counts.w, which is intentionally independent of the backing
+// allocation/vector length so a stale tail cannot affect a new frame.
+static C3CullContractResult execute_c3_cull_contract(
+    const C3CullContractInput& input,
+    const std::vector<viewer::VkAnimationBoundsGpuRecord>& records,
+    uint32_t dynamic_count) {
+    C3CullContractResult result{};
+    result.selected_aabb = input.static_aabb;
+    const uint32_t inspected = std::min<uint32_t>(
+        dynamic_count, static_cast<uint32_t>(records.size()));
+    if (input.animation_slot != UINT32_MAX) {
+        bool found = false;
+        viewer::VkAnimationBoundsAabb unioned{{INFINITY, INFINITY, INFINITY},
+                                               {-INFINITY, -INFINITY, -INFINITY}};
+        for (uint32_t index = 0; index != inspected; ++index) {
+            const auto& value = records[index];
+            if (value.instance_slot != input.animation_slot ||
+                value.instance_generation != input.animation_generation ||
+                value.cluster_index != input.cluster_index)
+                continue;
+            for (uint32_t axis = 0; axis != 3; ++axis) {
+                unioned.min[axis] = std::min(unioned.min[axis], value.aabb_min[axis]);
+                unioned.max[axis] = std::max(unioned.max[axis], value.aabb_max[axis]);
+            }
+            found = true;
+        }
+        if (found) {
+            result.selected_aabb = unioned;
+            result.used_dynamic = true;
+            // The shader tightens to a selected-LOD record when one exists.
+            for (uint32_t index = 0; index != inspected; ++index) {
+                const auto& value = records[index];
+                if (value.instance_slot != input.animation_slot ||
+                    value.instance_generation != input.animation_generation ||
+                    value.cluster_index != input.cluster_index ||
+                    value.lod != input.selected_lod)
+                    continue;
+                for (uint32_t axis = 0; axis != 3; ++axis) {
+                    result.selected_aabb.min[axis] = value.aabb_min[axis];
+                    result.selected_aabb.max[axis] = value.aabb_max[axis];
+                }
+                result.occlusion_enabled =
+                    (value.flags & viewer::kVkAnimationBoundsOcclusionEnabled) != 0;
+                break;
+            }
+        }
+    }
+    // cull.comp rejects an AABB only when every corner is outside a plane.
+    // For plane (+x, 0, 0, 0), at least one x >= 0 corner is visible.
+    result.frustum_visible = result.selected_aabb.max[0] >= 0.0f;
+    return result;
+}
+
+static viewer::VkSkinMatrix test_translate(float x) {
+    viewer::VkSkinMatrix matrix{};
+    matrix.elements[0] = matrix.elements[5] = matrix.elements[10] =
+        matrix.elements[15] = 1.0f;
+    matrix.elements[12] = x;
+    return matrix;
+}
+
+static viewer::VkSkinPose test_pose(float x) {
+    viewer::VkSkinPose pose{};
+    viewer::VkSkinJoint joint{};
+    joint.position = test_translate(x);
+    pose.current.push_back(joint);
+    return pose;
+}
+
+static viewer::VkAnimationBoundsAsset test_c3_bounds_asset(uint64_t key) {
+    viewer::VkAnimationBoundsAsset asset{};
+    asset.asset_key = key;
+    asset.conservative_asset_bound = {{-10.0f, -1.0f, -1.0f},
+                                       {10.0f, 1.0f, 1.0f}};
+    viewer::VkAnimationBoundsCluster cluster{};
+    cluster.cluster_index = 7;
+    cluster.lod = 0;
+    cluster.joints.push_back({0, {{-1.0f, -1.0f, -1.0f},
+                                  {1.0f, 1.0f, 1.0f}}});
+    asset.clusters.push_back(cluster);
+    return asset;
+}
+
+static void test_c3_dynamic_bounds_cull_contract() {
+    printf("\n[test_c3_dynamic_bounds_cull_contract]\n");
+    CHECK(offsetof(viewer::VkAnimationBoundsGpuRecord, aabb_min) == 0 &&
+              offsetof(viewer::VkAnimationBoundsGpuRecord, aabb_max) == 16 &&
+              offsetof(viewer::VkAnimationBoundsGpuRecord, instance_slot) == 32 &&
+              offsetof(viewer::VkAnimationBoundsGpuRecord, instance_generation) == 36 &&
+              offsetof(viewer::VkAnimationBoundsGpuRecord, cluster_index) == 40 &&
+              offsetof(viewer::VkAnimationBoundsGpuRecord, lod) == 44 &&
+              offsetof(viewer::VkAnimationBoundsGpuRecord, flags) == 48,
+          "C3 CPU record offsets match cull.comp DynamicAnimationBound std430 ABI");
+
+    viewer::VkAnimationBounds bounds;
+    constexpr uint64_t key = 0xC300u;
+    CHECK(bounds.register_asset(test_c3_bounds_asset(key)),
+          "register serialized C3 bounds asset");
+    C3CullContractInput input{};
+    input.static_aabb = {{-12.0f, -1.0f, -1.0f}, {-10.0f, 1.0f, 1.0f}};
+    input.animation_slot = 3;
+    input.animation_generation = 9;
+    input.cluster_index = 7;
+
+    CHECK(bounds.update_instance(3, 9, key, test_pose(2.0f), false),
+          "serialize an in-frustum animated pose to the C3 GPU record");
+    const auto dynamic_inside = bounds.gpu_records();
+    const auto overridden = execute_c3_cull_contract(
+        input, dynamic_inside, static_cast<uint32_t>(dynamic_inside.size()));
+    CHECK(overridden.used_dynamic && overridden.frustum_visible,
+          "dynamic AABB overrides an outside static AABB before the cull decision");
+
+    input.static_aabb = {{-1.0f, -1.0f, -1.0f}, {1.0f, 1.0f, 1.0f}};
+    CHECK(bounds.update_instance(3, 9, key, test_pose(-20.0f), false),
+          "serialize an out-of-frustum animated pose to the C3 GPU record");
+    const auto dynamic_outside = bounds.gpu_records();
+    const auto overridden_outside = execute_c3_cull_contract(
+        input, dynamic_outside, static_cast<uint32_t>(dynamic_outside.size()));
+    CHECK(overridden_outside.used_dynamic && !overridden_outside.frustum_visible,
+          "dynamic AABB also overrides an inside static AABB when animation moves it out");
+
+    // The backing allocation can retain a previous record. FrameConstants.counts.w
+    // must be the active count: shrinking to zero must ignore the stale tail.
+    auto stale_tail = dynamic_inside;
+    // Simulate a capacity-two allocation after this frame shrank to one
+    // record. The old second record has a different LOD and is deliberately
+    // not selected, so the union itself proves whether it was inspected.
+    auto old_tail = dynamic_outside.front();
+    old_tail.lod = 1;
+    stale_tail.push_back(old_tail);
+    input.selected_lod = 2;
+    const auto shrunk_count = execute_c3_cull_contract(input, stale_tail, 1);
+    CHECK(shrunk_count.used_dynamic && shrunk_count.selected_aabb.min[0] == 1.0f &&
+              shrunk_count.selected_aabb.max[0] == 3.0f,
+          "a shrunken active count excludes a stale dynamic-bounds allocation tail");
+    const auto zero_count = execute_c3_cull_contract(input, stale_tail, 0);
+    CHECK(!zero_count.used_dynamic && zero_count.frustum_visible,
+          "zero active dynamic bounds ignores an old GPU-buffer tail and uses static culling");
+    const auto wrong_generation = execute_c3_cull_contract(
+        C3CullContractInput{{{-12.0f, -1.0f, -1.0f}, {-10.0f, 1.0f, 1.0f}},
+                            3, 10, 7, 2},
+        stale_tail, static_cast<uint32_t>(stale_tail.size()));
+    CHECK(!wrong_generation.used_dynamic && !wrong_generation.frustum_visible,
+          "same slot with a wrong generation cannot match a previous incarnation's bound");
+
+    // A rejected snapshot replaces the old compact record with the registered
+    // conservative asset bound and disables occlusion. It must not keep the
+    // previous smaller out-of-frustum record alive for either culling outcome.
+    bounds.fail_open_instances({{3, 9, key}});
+    const auto fallback_records = bounds.gpu_records();
+    input.static_aabb = {{-12.0f, -1.0f, -1.0f}, {-10.0f, 1.0f, 1.0f}};
+    input.selected_lod = 0;
+    const auto fallback = execute_c3_cull_contract(
+        input, fallback_records, static_cast<uint32_t>(fallback_records.size()));
+    CHECK(fallback.used_dynamic && fallback.frustum_visible && !fallback.occlusion_enabled,
+          "rejected snapshot publishes conservative fail-open culling with occlusion disabled");
+    CHECK(fallback.selected_aabb.min[0] == -10.0f && fallback.selected_aabb.max[0] == 10.0f,
+          "rejected snapshot cannot retain the prior smaller dynamic AABB");
+
+    // The embedded SPIR-V is rebuilt from cull.comp by this target's shader
+    // prerequisite. Keep the source-side descriptor/count contract explicit
+    // too, so changing the binding or removing the active-count guard fails
+    // this integration contract rather than silently accepting stale records.
+    std::ifstream source("../shaders_vk/cull.comp");
+    const std::string shader_text((std::istreambuf_iterator<char>(source)),
+                                  std::istreambuf_iterator<char>());
+    CHECK(source.good() || !shader_text.empty(), "read compiled C3 cull shader source contract");
+    CHECK(shader_text.find("layout(set = 1, binding = 8, std430)") != std::string::npos &&
+              shader_text.find("frame.counts.w") != std::string::npos &&
+              shader_text.find("instance_generation") != std::string::npos,
+          "embedded C3 cull shader retains binding-8 active-count and generation matching contract");
+}
+
 // ---------------------------------------------------------------------------
 // test_dynamic_slot_change_bind_shares_part_hash
 //
@@ -338,6 +537,7 @@ int main() {
     test_instance_identity_tagging();
     test_dynamic_slot_change_kind_distinct();
     test_animation_bounds_cull_shader_contract();
+    test_c3_dynamic_bounds_cull_contract();
 
     printf("\n--- Results: %d/%d passed", g_tests - g_failures, g_tests);
     if (g_failures == 0)
