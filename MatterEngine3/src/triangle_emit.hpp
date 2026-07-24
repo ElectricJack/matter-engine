@@ -101,6 +101,9 @@ public:
     const std::vector<TriEx>& tri_extra() const { return triex_; }
 
     void pushRaw(const Tri& t, const TriEx& e) { tris_.push_back(t); triex_.push_back(e); }
+    // Binding-scope cancellation restores the exact direct-geometry prefix
+    // present before the callback began. Both arrays are a paired stream.
+    void truncate(size_t count) { tris_.resize(count); triex_.resize(count); }
 
     // Append this buffer's contents onto a host's triangle/triex arrays (the
     // SP-2 build-buffer merge seam). Used so the voxel-lowered mesh and the

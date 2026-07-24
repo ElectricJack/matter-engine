@@ -331,7 +331,7 @@ static JSValue j_bind_geometry(JSContext* c, JSValueConst, int n, JSValueConst* 
     JS_FreeValue(c,result);
     if (callback_failed) { state->cancel_binding_scope(); state->set_rig_error("bind callback failed"); return JS_UNDEFINED; }
     if (state->has_error()) { state->cancel_binding_scope(); return JS_UNDEFINED; }
-    state->end_binding_scope();
+    if (!state->end_binding_scope()) state->cancel_binding_scope();
     return JS_UNDEFINED;
 }
 static JSValue j_sphere(JSContext* c, JSValueConst, int, JSValueConst* a){

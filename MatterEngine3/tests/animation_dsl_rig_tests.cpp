@@ -304,6 +304,38 @@ void test_scoped_skin_binding_captures_only_its_authored_ranges() {
           "bind scopes fail closed rather than silently merging nested selections");
 }
 
+void test_scoped_skin_binding_rejects_structural_animation_authoring() {
+    const char* escaped_authoring[] = {
+        "this.skin('legSkin',{joints:['leg']});",
+        "this.segments('legArmor',{joints:['leg'],decorative:true});",
+        "this.beginClip('nested',1,30);",
+        "this.beginMotion('nested');",
+    };
+    for (const char* escaped : escaped_authoring) {
+        script_host::ScriptHost blocked;
+        const std::string body =
+            std::string("this.beginRig('r'); this.root('root'); this.bone('arm',[1,0,0]); this.atJoint('root'); this.bone('leg',[0,1,0]); this.endRig(); ") +
+            "this.skin('body',{joints:['arm']}); this.bind('body',()=>{ " + escaped + " });";
+        const auto blocked_result = bake(body.c_str(), blocked);
+        CHECK(!blocked_result.error.ok && blocked_result.error.message.find("bind scope") != std::string::npos,
+              "bind callbacks reject every structural animation entry point before state can escape the scope");
+    }
+
+    script_host::ScriptHost host;
+    const auto result = bake(
+        "this.beginRig('r'); this.root('root'); this.bone('arm',[1,0,0]); this.atJoint('root'); this.bone('leg',[0,1,0]); this.endRig(); "
+        "this.skin('body',{joints:['arm']}); "
+        "this.bind('body',()=>{ this.skin('legSkin',{joints:['leg']}); "
+        "this.beginVoxels(.1); this.sphere([0,0,0],1); this.endVoxels(); });", host);
+    CHECK(!result.error.ok && result.error.message.find("bind scope") != std::string::npos,
+          "bind callbacks reject structural animation declarations before they can leak into a captured geometry range");
+    const auto& build = host.last_animation_build();
+    CHECK(!build || (build->skin_bindings.size() == 1 && build->skin_bindings[0].geometry.empty()),
+          "a rejected structural callback does not publish a second binding or a captured geometry range");
+    CHECK(host.last_buffer().ops.empty(),
+          "a rejected structural callback rolls back later voxel geometry instead of leaking it into the failed bake buffer");
+}
+
 void test_mirrored_bound_geometry_reverses_winding_and_preserves_static_winding() {
     AnimationTransform identity{};
     AnimationTransform child{}; child.translation = {1,0,0};
@@ -354,6 +386,7 @@ int main() {
     test_rig_binding_authoring_captures_skin_segments_and_attachments();
     test_rig_binding_authoring_rejects_malformed_or_overlapping_declarations();
     test_scoped_skin_binding_captures_only_its_authored_ranges();
+    test_scoped_skin_binding_rejects_structural_animation_authoring();
     test_mirrored_bound_geometry_reverses_winding_and_preserves_static_winding();
     if (g_failures) { std::printf("animation_dsl_rig_tests: %d failure(s)\n", g_failures); return 1; }
     std::printf("animation_dsl_rig_tests: all tests passed\n");

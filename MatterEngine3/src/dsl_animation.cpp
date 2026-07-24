@@ -1,4 +1,5 @@
 #include "dsl_state.h"
+#include "triangle_emit.hpp"
 
 #include "animation/animation_validate.h"
 #include "animation/ozz_adapter.h"
@@ -212,6 +213,7 @@ void DslState::end_rig() {
 }
 
 void DslState::begin_clip(const std::string& name, float duration, float rate, bool loop, bool additive) {
+    if (binding_scope_) { set_rig_error("structural animation authoring is forbidden inside a bind scope"); return; }
     if(animation_&&animation_->generating){set_rig_error("structural authoring is forbidden during generate");return;}
     if (animation_ && animation_->clip_open) { set_rig_error("clip session already open"); return; }
     if (!animation_ || !animation_->ended) { set_rig_error("beginClip requires a completed rig"); return; }
@@ -293,7 +295,7 @@ void DslState::end_clip() {
     animation_->clip_open=false; animation_->current_clip.clear(); animation_->name.clear();
 #endif
 }
-void DslState::begin_motion(const std::string& name) { if(animation_&&animation_->generating){set_rig_error("structural authoring is forbidden during generate");return;} if(!animation_||!animation_->ended){set_rig_error("beginMotion requires a completed rig");return;} if(animation_->clip_open){set_rig_error("beginMotion cannot nest inside a clip");return;} if(animation_->motion_open){set_rig_error("motion session already open");return;} auto& nodes=animation_->authored.graph.nodes; nodes.erase(std::remove_if(nodes.begin(),nodes.end(),[](const GraphNode& n){return n.name=="__rig_only_output";}),nodes.end()); animation_->motion_open=true; animation_->current_motion=name; }
+void DslState::begin_motion(const std::string& name) { if(binding_scope_){set_rig_error("structural animation authoring is forbidden inside a bind scope");return;} if(animation_&&animation_->generating){set_rig_error("structural authoring is forbidden during generate");return;} if(!animation_||!animation_->ended){set_rig_error("beginMotion requires a completed rig");return;} if(animation_->clip_open){set_rig_error("beginMotion cannot nest inside a clip");return;} if(animation_->motion_open){set_rig_error("motion session already open");return;} auto& nodes=animation_->authored.graph.nodes; nodes.erase(std::remove_if(nodes.begin(),nodes.end(),[](const GraphNode& n){return n.name=="__rig_only_output";}),nodes.end()); animation_->motion_open=true; animation_->current_motion=name; }
 void DslState::motion_input(const InputSchema& input){if(!animation_||!animation_->motion_open){set_rig_error("input outside an open motion");return;} animation_->authored.inputs.push_back(input);}
 void DslState::motion_target(const TargetSchema& target){if(!animation_||!animation_->motion_open){set_rig_error("target outside an open motion");return;} TargetSchema copy=target; copy.require_explicit_pole = copy.require_explicit_pole || copy.source.module=="<part>"; animation_->authored.targets.push_back(std::move(copy));}
 void DslState::motion_controller(const ControllerDef& controller){if(!animation_||!animation_->motion_open){set_rig_error("controller outside an open motion");return;} animation_->authored.controllers.push_back(controller);}
@@ -331,6 +333,7 @@ bool unique_binding_name(const AnimationBuild& build, const std::string& name) {
 
 void DslState::rig_skin(const std::string& name, const std::vector<std::string>& requested,
                         float falloff, bool generate, float spacing) {
+    if (binding_scope_) { set_rig_error("structural animation authoring is forbidden inside a bind scope"); return; }
     if (!animation_ || !animation_->ended || animation_->clip_open || animation_->motion_open) { set_rig_error("skin requires a completed rig outside clip or motion authoring"); return; }
     if (!unique_binding_name(animation_->authored, name)) { set_rig_error("binding name must be non-empty and unique"); return; }
     if (!finite(falloff) || falloff <= 0.0f) { set_rig_error("skin falloff must be finite and positive"); return; }
@@ -381,7 +384,7 @@ void DslState::rig_skin(const std::string& name, const std::vector<std::string>&
 }
 
 bool DslState::begin_binding_scope(const std::string& name) {
-    if (!animation_ || !animation_->ended || animation_->clip_open || animation_->motion_open) {
+    if (!animation_ || !animation_->ended || animation_->clip_open || animation_->motion_open || animation_->generating) {
         set_rig_error("bind requires a completed rig outside clip or motion authoring"); return false;
     }
     if (binding_scope_) { set_rig_error("bind scopes cannot nest"); return false; }
@@ -400,8 +403,8 @@ bool DslState::begin_binding_scope(const std::string& name) {
 bool DslState::end_binding_scope() {
     if (!binding_scope_) { set_rig_error("bind scope is not open"); return false; }
     const BindingScope scope=*binding_scope_;
-    binding_scope_.reset();
-    if (session_ != Session::None || polygon_open_ || contour_open_ || region_open_) {
+    if (session_ != Session::None || polygon_open_ || contour_open_ || region_open_ ||
+        animation_->clip_open || animation_->motion_open || animation_->generating) {
         set_rig_error("bind scope requires no open geometry session"); return false;
     }
     // Retained polygons are lazy direct geometry. Flush before recording the
@@ -415,21 +418,32 @@ bool DslState::end_binding_scope() {
     if (scope.op_begin == op_end && scope.triangle_begin == triangle_end) {
         set_rig_error("bind scope must author geometry"); return false;
     }
-    animation_->authored.skin_bindings[scope.skin_index].geometry.push_back(
+    auto& ranges=animation_->authored.skin_bindings[scope.skin_index].geometry;
+    ranges.push_back(
         {static_cast<uint32_t>(scope.op_begin), static_cast<uint32_t>(op_end),
          static_cast<uint32_t>(scope.triangle_begin), static_cast<uint32_t>(triangle_end)});
     matter::animation::Diagnostics diagnostics;
     if (!refresh_canonical_animation(*animation_, rig_source_, diagnostics)) {
+        ranges.pop_back();
         set_rig_error(diagnostics.items.empty()?"binding geometry validation failed":diagnostics.items.front().message,
                       "binding-validation");
         return false;
     }
+    binding_scope_.reset();
     return true;
 }
 
-void DslState::cancel_binding_scope() { binding_scope_.reset(); }
+void DslState::cancel_binding_scope() {
+    if (!binding_scope_) return;
+    const BindingScope scope=*binding_scope_;
+    if (buffer_.ops.size() >= scope.op_begin) buffer_.ops.resize(scope.op_begin);
+    if (tris_buf_ && tris_buf_->triangles().size() >= scope.triangle_begin)
+        tris_buf_->truncate(scope.triangle_begin);
+    binding_scope_.reset();
+}
 
 void DslState::rig_segments(const std::string& name, const std::vector<std::string>& requested, bool decorative) {
+    if (binding_scope_) { set_rig_error("structural animation authoring is forbidden inside a bind scope"); return; }
     if (!animation_ || !animation_->ended || animation_->clip_open || animation_->motion_open) { set_rig_error("segments requires a completed rig outside clip or motion authoring"); return; }
     if (!unique_binding_name(animation_->authored, name)) { set_rig_error("binding name must be non-empty and unique"); return; }
     std::vector<size_t> selected; std::string error;
@@ -450,6 +464,7 @@ void DslState::rig_segments(const std::string& name, const std::vector<std::stri
 
 void DslState::rig_attach(const std::string& name, const std::string& socket,
                           const std::string& child_module, const AnimationTransform& local) {
+    if (binding_scope_) { set_rig_error("structural animation authoring is forbidden inside a bind scope"); return; }
     if (!animation_ || !animation_->ended || animation_->clip_open || animation_->motion_open) { set_rig_error("attach requires a completed rig outside clip or motion authoring"); return; }
     if (!unique_binding_name(animation_->authored, name)) { set_rig_error("attachment name must be non-empty and unique"); return; }
     if (!has_socket(animation_->authored, socket)) { set_rig_error("attachment references an unknown socket"); return; }
