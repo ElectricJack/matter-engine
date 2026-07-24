@@ -112,6 +112,35 @@ static void test_current_previous_pair_and_history_fallback() {
           "newly visible instance uses current palette as previous history");
 }
 
+static void test_indexed_raster_mapping_tracks_sorted_output_offsets() {
+    VkAnimationSkinning skinning(1);
+    CHECK(skinning.register_asset(7, std::vector<VkSkinInfluence>(16)),
+          "mapping fixture registers immutable influences");
+    VkSkinSubmission later = candidate(7, 9, 3, 0, 4, 0);
+    later.first_index = 30; later.index_count = 6;
+    VkSkinSubmission first = candidate(7, 2, 5, 1, 1, 0);
+    first.source_vertex = 11;
+    first.influence_vertex = 4;
+    first.first_index = 6; first.index_count = 9;
+    CHECK(skinning.submit_visible(0, {later, first}),
+          "indexed visible work publishes atomically");
+    const auto& frame = skinning.frame(0);
+    CHECK(frame.raster_draws.size() == 2 &&
+              frame.raster_draws[0].instance_slot == 2 &&
+              frame.raster_draws[0].output_vertex == 0 &&
+              frame.raster_draws[0].source_vertex == 11 &&
+              frame.work_items[0].influence == 4 &&
+              frame.raster_draws[1].instance_slot == 9 &&
+              frame.raster_draws[1].output_vertex == 5,
+          "raster mappings follow stable work sorting and never retain stale offsets");
+    VkSkinSubmission malformed = candidate(7, 3, 2, 0, 0, 0);
+    malformed.first_index = 1; malformed.index_count = 5;
+    CHECK(skinning.begin_frame(0, 0), "completed unsealed frame resets for malformed map");
+    CHECK(skinning.submit_visible(0, {malformed}) &&
+              skinning.frame(0).raster_draws.empty(),
+          "non-triangle mapping cannot publish a raster draw and falls back safely");
+}
+
 static void test_fence_lifetime_wrap_and_transactional_caps() {
     VkAnimationSkinning skinning(2);
     CHECK(skinning.register_asset(1, std::vector<VkSkinInfluence>(2000000)), "large asset registers");
@@ -187,6 +216,7 @@ int main() {
     test_shader_abi_and_weight_decode();
     test_asset_registration_and_visible_sorted_submission();
     test_current_previous_pair_and_history_fallback();
+    test_indexed_raster_mapping_tracks_sorted_output_offsets();
     test_fence_lifetime_wrap_and_transactional_caps();
     test_cpu_skinning_matches_compute_contract();
     return check_summary();

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <climits>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -308,6 +309,7 @@ struct RasterRecord {
     matter::VkImageResource* raw_transmission;
     VkExtent2D extent;
     VkPipeline raster_pipeline;
+    VkPipeline skinned_raster_pipeline;
     VkPipelineLayout raster_layout;
     VkDescriptorSet raster_sets[2];
     VkPipeline composite_pipeline;
@@ -316,6 +318,13 @@ struct RasterRecord {
     VkBuffer vertex_buffer;
     VkBuffer index_buffer;
     VkBuffer indirect_buffer;
+    uint32_t index_count;
+    VkBuffer skin_vertex_buffer;
+    VkBuffer skin_previous_vertex_buffer;
+    const VkSkinRasterDraw* skin_draws;
+    uint32_t skin_draw_count;
+    uint32_t skin_vertex_count;
+    uint32_t draw_transform_slots;
     const PartCommandRange* draw_ranges;
     uint32_t draw_range_count;
     uint32_t max_draw_indirect_count;
@@ -437,6 +446,48 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
             }
             first += count;
             remaining -= count;
+        }
+    }
+    // Accepted skin work is drawn from the per-frame compute output, never
+    // from the immutable bind-pose arena.  Each draw carries the exact
+    // visibility-selected index span plus the source/output rebase.  Every
+    // field is range-checked below, so a stale mapping cannot turn into an
+    // out-of-bounds vertex fetch.
+    if (record.skinned_raster_pipeline != VK_NULL_HANDLE &&
+        record.skin_vertex_buffer != VK_NULL_HANDLE &&
+        record.skin_previous_vertex_buffer != VK_NULL_HANDLE) {
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          record.skinned_raster_pipeline);
+        vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                record.raster_layout, 0, 2,
+                                record.raster_sets, 0, nullptr);
+        for (uint32_t draw_index = 0; draw_index < record.skin_draw_count;
+             ++draw_index) {
+            const VkSkinRasterDraw& draw = record.skin_draws[draw_index];
+            if (draw.index_count == 0 || draw.index_count % 3u != 0u ||
+                draw.first_index > record.index_count ||
+                draw.index_count > record.index_count - draw.first_index ||
+                draw.output_vertex >= record.skin_vertex_count ||
+                draw.vertex_count == 0 ||
+                draw.vertex_count > record.skin_vertex_count - draw.output_vertex ||
+                draw.instance_slot >= record.draw_transform_slots ||
+                draw.output_vertex > static_cast<uint32_t>(INT32_MAX) ||
+                draw.source_vertex > static_cast<uint32_t>(INT32_MAX)) {
+                continue;  // fail closed to the already-recorded static path
+            }
+            const VkDeviceSize offset = static_cast<VkDeviceSize>(
+                draw.output_vertex) * sizeof(VkSkinVertex);
+            const VkBuffer skin_buffers[] = {record.skin_vertex_buffer,
+                                             record.skin_previous_vertex_buffer};
+            const VkDeviceSize skin_offsets[] = {offset, offset};
+            vkCmdBindVertexBuffers(command_buffer, 0, 2, skin_buffers,
+                                   skin_offsets);
+            const int64_t rebase = static_cast<int64_t>(draw.output_vertex) -
+                                   static_cast<int64_t>(draw.source_vertex);
+            if (rebase < INT32_MIN || rebase > INT32_MAX) continue;
+            vkCmdDrawIndexed(command_buffer, draw.index_count, 1,
+                             draw.first_index, static_cast<int32_t>(rebase),
+                             draw.instance_slot);
         }
     }
     vkCmdEndRendering(command_buffer);
@@ -1009,6 +1060,8 @@ void VkSceneRenderer::destroy_pipeline() {
         vkDestroyDescriptorSetLayout(device, composite_set_layout_, nullptr);
     if (raster_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, raster_pipeline_, nullptr);
+    if (skinned_raster_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device, skinned_raster_pipeline_, nullptr);
     if (skin_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, skin_pipeline_, nullptr);
     if (skin_pipeline_layout_ != VK_NULL_HANDLE)
@@ -1028,6 +1081,7 @@ void VkSceneRenderer::destroy_pipeline() {
     }
     pipeline_ = VK_NULL_HANDLE;
     raster_pipeline_ = VK_NULL_HANDLE;
+    skinned_raster_pipeline_ = VK_NULL_HANDLE;
     skin_pipeline_ = VK_NULL_HANDLE;
     skin_pipeline_layout_ = VK_NULL_HANDLE;
     skin_set_layout_ = VK_NULL_HANDLE;
@@ -1577,6 +1631,7 @@ bool VkSceneRenderer::create_ray_tracing_pipeline(std::string& error) {
 bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     const VkDevice device = vulkan_->device();
     VkShaderModule raster_vertex = VK_NULL_HANDLE;
+    VkShaderModule skinned_raster_vertex = VK_NULL_HANDLE;
     VkShaderModule raster_fragment = VK_NULL_HANDLE;
     if (!create_shader_module(device, "raster.vert.spv", raster_vertex,
                               error) ||
@@ -1584,6 +1639,12 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
                               error)) {
         if (raster_vertex != VK_NULL_HANDLE)
             vkDestroyShaderModule(device, raster_vertex, nullptr);
+        return false;
+    }
+    if (!create_shader_module(device, "raster_skin.vert.spv",
+                              skinned_raster_vertex, error)) {
+        vkDestroyShaderModule(device, raster_fragment, nullptr);
+        vkDestroyShaderModule(device, raster_vertex, nullptr);
         return false;
     }
     VkPipelineShaderStageCreateInfo raster_stages[2]{};
@@ -1683,10 +1744,47 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     raster_create.layout = pipeline_layout_;
     VkResult result = vkCreateGraphicsPipelines(
         device, VK_NULL_HANDLE, 1, &raster_create, nullptr, &raster_pipeline_);
+    if (result != VK_SUCCESS) {
+        vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
+        vkDestroyShaderModule(device, raster_fragment, nullptr);
+        vkDestroyShaderModule(device, raster_vertex, nullptr);
+        return fail_vk("vkCreateGraphicsPipelines(raster)", result, error);
+    }
+
+    // The skinned shader is a distinct SPIR-V specialization: it consumes
+    // the 96-byte compute record directly and therefore cannot accidentally
+    // interpret a static 72-byte VkRasterVertex as history-bearing data.
+    raster_stages[0].module = skinned_raster_vertex;
+    VkVertexInputBindingDescription skin_vertex_binding{
+        0, sizeof(VkSkinVertex), VK_VERTEX_INPUT_RATE_VERTEX};
+    const VkVertexInputAttributeDescription skin_attributes[] = {
+        {0, 0, VK_FORMAT_R32G32B32_SFLOAT,
+         static_cast<uint32_t>(offsetof(VkSkinVertex, position))},
+        {1, 0, VK_FORMAT_R32G32B32_SFLOAT,
+         static_cast<uint32_t>(offsetof(VkSkinVertex, normal))},
+        {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
+         static_cast<uint32_t>(offsetof(VkSkinVertex, tint))},
+        {3, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
+         static_cast<uint32_t>(offsetof(VkSkinVertex, surface))},
+        {4, 0, VK_FORMAT_R32_UINT,
+         static_cast<uint32_t>(offsetof(VkSkinVertex, material_index))},
+        {5, 1, VK_FORMAT_R32G32B32_SFLOAT,
+         static_cast<uint32_t>(offsetof(VkSkinVertex, position))}};
+    const VkVertexInputBindingDescription skin_vertex_bindings[] = {
+        skin_vertex_binding, {1, sizeof(VkSkinVertex), VK_VERTEX_INPUT_RATE_VERTEX}};
+    vertex_input.vertexBindingDescriptionCount = 2;
+    vertex_input.pVertexBindingDescriptions = skin_vertex_bindings;
+    vertex_input.vertexAttributeDescriptionCount = 6;
+    vertex_input.pVertexAttributeDescriptions = skin_attributes;
+    result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
+                                       &raster_create, nullptr,
+                                       &skinned_raster_pipeline_);
+    vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
     vkDestroyShaderModule(device, raster_fragment, nullptr);
     vkDestroyShaderModule(device, raster_vertex, nullptr);
     if (result != VK_SUCCESS)
-        return fail_vk("vkCreateGraphicsPipelines(raster)", result, error);
+        return fail_vk("vkCreateGraphicsPipelines(skinned raster)", result,
+                       error);
 
     std::array<VkDescriptorSetLayoutBinding, 11> sampled_bindings{};
     for (uint32_t i = 0; i < 7; ++i) {
@@ -2326,6 +2424,7 @@ void VkSceneRenderer::update_frame_descriptors(FrameResources& frame) {
 bool VkSceneRenderer::record_animation_skinning(
     const matter::VulkanFrame& frame, FrameResources& resources,
     std::string& error) {
+    resources.skin_raster_ready = false;
     const VkSkinFrameArenas& staged = animation_skinning_.frame(frame.frame_slot);
     if (staged.work_items.empty()) return true;
     const auto bytes = [](size_t count, size_t stride) -> VkDeviceSize {
@@ -2344,6 +2443,17 @@ bool VkSceneRenderer::record_animation_skinning(
         output.surface[0] = input.surface.x; output.surface[1] = input.surface.y;
         output.surface[2] = input.surface.z; output.surface[3] = input.surface.w;
         output.material_index = input.material_index;
+    }
+    // C1 validates immutable influence slices.  The renderer additionally
+    // owns the mutable raster arena, so validate it here before recording any
+    // dispatch.  On a stale/missing source range we deliberately retain the
+    // static (or last-good) raster path instead of issuing undefined SSBO
+    // reads or exposing a half-populated compute output.
+    for (const VkSkinWorkItem& work : staged.work_items) {
+        if (work.source_vertex > sources.size() ||
+            work.vertex_count > sources.size() - work.source_vertex) {
+            return true;
+        }
     }
     bool descriptors_changed = false;
     const auto ensure = [&](matter::VkBufferResource& buffer, VkDeviceSize size,
@@ -2391,22 +2501,27 @@ bool VkSceneRenderer::record_animation_skinning(
                        VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(work_count),
                        &work_count);
     vkCmdDispatch(frame.command_buffer, groups_x, work_count, 1);
-    VkBufferMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
-    barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-    barrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT |
-                           VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
-    barrier.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT |
-                              VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.buffer = resources.skin_current_output.buffer;
-    barrier.offset = 0;
-    barrier.size = VK_WHOLE_SIZE;
+    VkBufferMemoryBarrier2 barriers[2]{};
+    for (VkBufferMemoryBarrier2& barrier : barriers) {
+        barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+        barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        barrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT |
+                               VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+        barrier.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT |
+                                  VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.offset = 0;
+        barrier.size = VK_WHOLE_SIZE;
+    }
+    barriers[0].buffer = resources.skin_current_output.buffer;
+    barriers[1].buffer = resources.skin_previous_output.buffer;
     VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-    dependency.bufferMemoryBarrierCount = 1;
-    dependency.pBufferMemoryBarriers = &barrier;
+    dependency.bufferMemoryBarrierCount = 2;
+    dependency.pBufferMemoryBarriers = barriers;
     vkCmdPipelineBarrier2(frame.command_buffer, &dependency);
+    resources.skin_raster_ready = true;
     return true;
 }
 
@@ -6654,6 +6769,7 @@ bool VkSceneRenderer::record_cull_and_render(
                         &raw_transmission_,
                         raster_extent_,
                         raster_pipeline_,
+                        skinned_raster_pipeline_,
                         pipeline_layout_,
                         {selected.descriptor_sets[0], selected.descriptor_sets[1]},
                         composite_pipeline_,
@@ -6662,6 +6778,13 @@ bool VkSceneRenderer::record_cull_and_render(
                         vertices_.buffer,
                         indices_.buffer,
                         selected.commands.buffer,
+                        static_cast<uint32_t>(index_staging_.size()),
+                        selected.skin_current_output.buffer,
+                        selected.skin_previous_output.buffer,
+                        animation_skinning_.frame(frame.frame_slot).raster_draws.data(),
+                        static_cast<uint32_t>(animation_skinning_.frame(frame.frame_slot).raster_draws.size()),
+                        animation_skinning_.frame(frame.frame_slot).current_output_vertices,
+                        draw_transform_slots_,
                         part_command_ranges_.data(),
                         static_cast<uint32_t>(part_command_ranges_.size()),
                         limits_.max_draw_indirect_count,
@@ -6689,6 +6812,10 @@ bool VkSceneRenderer::record_cull_and_render(
     // arena is sealed by the caller's frame fence, so this upload/dispatch
     // observes one immutable current/previous pose pair.
     if (!record_animation_skinning(frame, selected, error)) return false;
+    // record_animation_skinning only publishes this latch after the compute
+    // work and both vertex-input barriers.  A rejected source range leaves
+    // the normal static indirect path as the sole draw producer.
+    if (!selected.skin_raster_ready) record.skin_draw_count = 0;
     record_raster(frame.command_buffer, &record);
     if (!ray_trace_ok) return false;
     raster_attachments_ready_ = true;
@@ -7080,6 +7207,7 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
                         &raw_transmission_,
                         raster_extent_,
                         raster_pipeline_,
+                        VK_NULL_HANDLE,
                         pipeline_layout_,
                         {selected.descriptor_sets[0], selected.descriptor_sets[1]},
                         composite_pipeline_,
@@ -7088,6 +7216,13 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
                         vertices_.buffer,
                         indices_.buffer,
                         selected.commands.buffer,
+                        uploaded_index_count_,
+                        VK_NULL_HANDLE,
+                        VK_NULL_HANDLE,
+                        nullptr,
+                        0,
+                        0,
+                        0,
                         part_command_ranges_.data(),
                         static_cast<uint32_t>(part_command_ranges_.size()),
                         limits_.max_draw_indirect_count,

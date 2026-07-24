@@ -70,5 +70,10 @@ void main() {
     out_vertex.material_index = input_vertex.material_index;
     out_vertex.pad = uvec3(0);
     current_output[item.output_current + local_vertex] = out_vertex;
-    previous_output[item.output_previous + local_vertex] = out_vertex;
+    // Raster binds this second stream at location 5.  Keep its primary
+    // position explicitly previous so the vertex fetch cannot accidentally
+    // read the current stream's auxiliary field after a binding change.
+    SkinnedVertex previous_vertex = out_vertex;
+    previous_vertex.position = previous_position;
+    previous_output[item.output_previous + local_vertex] = previous_vertex;
 }

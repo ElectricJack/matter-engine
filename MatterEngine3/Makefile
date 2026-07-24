@@ -251,6 +251,7 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/animation_skin.comp.spv \
          build/shaders_vk/cull.comp.spv \
          build/shaders_vk/raster.vert.spv \
+         build/shaders_vk/raster_skin.vert.spv \
          build/shaders_vk/gbuffer.frag.spv \
          build/shaders_vk/composite.vert.spv \
          build/shaders_vk/composite.frag.spv \
@@ -277,6 +278,12 @@ build/shaders_vk/%.spv: shaders_vk/%
 
 build/shaders_vk/raster.vert.spv build/shaders_vk/gbuffer.frag.spv: \
     shaders_vk/material_common.glsl
+
+# C2 uses the same source and descriptor ABI as raster.vert, but a compile
+# time specialization adds location 5 for the previous skinned position.
+build/shaders_vk/raster_skin.vert.spv: shaders_vk/raster.vert shaders_vk/material_common.glsl
+	@mkdir -p $(dir $@)
+	$(GLSLC) --target-env=vulkan1.3 -O -Ishaders_vk -DMATTER_SKINNED_VERTEX_INPUT $< -o $@
 
 build/shaders_vk/gbuffer.frag.spv: shaders_vk/tileset_common.glsl
 

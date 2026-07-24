@@ -18,14 +18,37 @@ struct VkSkinPose {
 
 struct VkSkinSubmission {
     uint64_t asset_key = 0;
+    // Immutable asset-local influence offset.  Source vertices are global to
+    // the renderer arena, so they must not be conflated once parts are
+    // compacted or multiple assets are resident.
+    uint32_t influence_vertex = 0;
     uint32_t source_vertex = 0;
     uint32_t vertex_count = 0;
     uint32_t instance_slot = 0;
     int32_t render_priority = 0;
     uint32_t distance_bucket = 0;
     uint32_t lod = 0;
+    // Global indexed-raster range selected by the visibility producer.  A
+    // zero count deliberately means "compute only": it keeps C1 callers
+    // source-compatible, but it must never manufacture a raster draw.
+    uint32_t first_index = 0;
+    uint32_t index_count = 0;
     bool history_valid = false;
     VkSkinPose pose;
+};
+
+// One accepted work item has exactly one immutable raster mapping.  The
+// output offsets are vertex indices (not bytes); record_raster converts them
+// to VkSkinVertex binding offsets.  Keeping this beside the work queue makes
+// sorting and fallback selection transactional.
+struct VkSkinRasterDraw {
+    uint32_t first_index = 0;
+    uint32_t index_count = 0;
+    uint32_t source_vertex = 0;
+    uint32_t output_vertex = 0;
+    uint32_t vertex_count = 0;
+    uint32_t instance_slot = 0;
+    uint32_t flags = 0;
 };
 
 struct VkSkinArenaSlice {
@@ -48,6 +71,7 @@ struct VkSkinFrameArenas {
     std::vector<VkSkinWorkItem> work_items;
     std::vector<VkSkinArenaSlice> current_output;
     std::vector<VkSkinArenaSlice> previous_output;
+    std::vector<VkSkinRasterDraw> raster_draws;
     std::vector<VkSkinFallback> fallbacks;
     uint32_t current_output_vertices = 0;
     uint32_t previous_output_vertices = 0;

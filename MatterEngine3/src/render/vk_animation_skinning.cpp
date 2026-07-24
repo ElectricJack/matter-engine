@@ -109,6 +109,7 @@ bool VkAnimationSkinning::submit_visible(
         if (asset == assets_.end() || value.vertex_count == 0 ||
             value.pose.current.empty() || value.pose.previous.size() != value.pose.current.size() ||
             !checked_add(value.source_vertex, value.vertex_count, source_end) ||
+            !checked_add(value.influence_vertex, value.vertex_count, source_end) ||
             source_end > asset->second.values.size() ||
             !checked_add(output_count, value.vertex_count, output_end) ||
             output_end > kVkMaxSkinnedOutputVertices ||
@@ -128,6 +129,7 @@ bool VkAnimationSkinning::submit_visible(
     staged.work_items.reserve(sorted.size());
     staged.current_output.reserve(sorted.size());
     staged.previous_output.reserve(sorted.size());
+    staged.raster_draws.reserve(sorted.size());
     uint32_t output_offset = 0;
     uint32_t palette_offset = 0;
     for (const VkSkinSubmission& value : sorted) {
@@ -146,7 +148,7 @@ bool VkAnimationSkinning::submit_visible(
         }
         VkSkinWorkItem item{};
         item.source_vertex = value.source_vertex;
-        item.influence = asset->second.offset + value.source_vertex;
+        item.influence = asset->second.offset + value.influence_vertex;
         item.vertex_count = value.vertex_count;
         item.palette = palette_offset;
         item.output_current = output_offset;
@@ -156,6 +158,16 @@ bool VkAnimationSkinning::submit_visible(
         staged.work_items.push_back(item);
         staged.current_output.push_back({output_offset, value.vertex_count});
         staged.previous_output.push_back({output_offset, value.vertex_count});
+        // Indexed raster consumption is opt-in for the C1-compatible queue:
+        // a caller which did not provide a visible indexed range remains
+        // compute-only and the renderer leaves its static/last-good draw in
+        // place.  Never infer a range from a vertex count.
+        if (value.index_count != 0 && value.index_count % 3u == 0u) {
+            staged.raster_draws.push_back({value.first_index, value.index_count,
+                                           value.source_vertex, output_offset,
+                                           value.vertex_count, value.instance_slot,
+                                           item.flags});
+        }
         output_offset += value.vertex_count;
         palette_offset += joint_count;
     }

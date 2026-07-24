@@ -914,6 +914,10 @@ private:
         uint64_t material_upload_record_count = 0;
         VkDeviceSize pending_material_bytes = 0;
         bool stats_valid = false;
+        // Published only after the compute dispatch and both vertex-input
+        // barriers have been recorded.  A malformed source/mapping therefore
+        // leaves the regular static/last-good draw path intact.
+        bool skin_raster_ready = false;
         // GPU timestamp query pool: 18 slots (9 zones × begin/end).
         VkQueryPool ts_pool = VK_NULL_HANDLE;
         // Per zone: bit 0 set when begin was written, bit 1 when end was.
@@ -1062,6 +1066,9 @@ private:
     VkPipeline pipeline_ = VK_NULL_HANDLE;
     VkPipeline skin_pipeline_ = VK_NULL_HANDLE;
     VkPipeline raster_pipeline_ = VK_NULL_HANDLE;
+    // Same descriptors/fragment stage as raster_pipeline_, but a 96-byte
+    // VkSkinVertex binding with an explicit previous-position attribute.
+    VkPipeline skinned_raster_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout composite_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout composite_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline composite_pipeline_ = VK_NULL_HANDLE;
