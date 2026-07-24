@@ -130,7 +130,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_ani
           src/animation/ozz_bake.cpp \
           src/animation/animation_ir.cpp src/animation/animation_validate.cpp src/animation/animation_binding_bake.cpp \
           src/animation/anim_asset.cpp src/animation/anim_bundle.cpp src/animation/animation_asset_store.cpp src/animation/animation_store.cpp src/animation/animation_evaluator.cpp src/animation/animation_systems.cpp src/animation/animation_world_queries.cpp src/animation/animation_controllers.cpp src/animation/animation_targets.cpp \
-          src/render/animation_rigid_bridge.cpp src/render/animation_skin_bridge.cpp src/render/vk_animation_skinning.cpp \
+          src/render/animation_rigid_bridge.cpp src/render/animation_skin_bridge.cpp src/render/vk_animation_skinning.cpp src/render/vk_animation_bounds.cpp \
           src/streaming/sector_streaming_coordinator.cpp
 
 # MatterSurfaceLib C++ backend sources compiled into the archive so MatterViewer
@@ -193,7 +193,7 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o dsl_animation.o \
           ozz_adapter.o \
           ozz_bake.o \
           animation_ir.o animation_validate.o animation_binding_bake.o anim_asset.o anim_bundle.o animation_asset_store.o animation_store.o animation_evaluator.o animation_systems.o animation_world_queries.o animation_controllers.o animation_targets.o \
-          animation_rigid_bridge.o animation_skin_bridge.o vk_animation_skinning.o \
+          animation_rigid_bridge.o animation_skin_bridge.o vk_animation_skinning.o vk_animation_bounds.o \
           sector_streaming_coordinator.o
 
 # MSL C++ object names (basenames; same flat-object model as ME3_OBJ).

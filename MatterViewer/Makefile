@@ -174,7 +174,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/render/world_state.cpp \
               $(ME3_DIR)/src/render/streamline_bridge.cpp \
               $(ME3_DIR)/src/render/vk_context.cpp $(ME3_DIR)/src/render/vk_resources.cpp \
-              $(ME3_DIR)/src/render/vk_pipeline.cpp $(ME3_DIR)/src/render/vk_scene_renderer.cpp $(ME3_DIR)/src/render/vk_animation_skinning.cpp $(ME3_DIR)/src/render/animation_skin_bridge.cpp \
+              $(ME3_DIR)/src/render/vk_pipeline.cpp $(ME3_DIR)/src/render/vk_scene_renderer.cpp $(ME3_DIR)/src/render/vk_animation_skinning.cpp $(ME3_DIR)/src/render/vk_animation_bounds.cpp $(ME3_DIR)/src/render/animation_skin_bridge.cpp \
               $(ME3_DIR)/src/render/tileset_slicer.cpp \
               $(ME3_DIR)/src/render/vk_volumetrics.cpp $(ME3_DIR)/src/render/vk_emitter_gather.cpp \
               $(ME3_DIR)/src/render/vk_instance_cache.cpp \
@@ -530,6 +530,7 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_pipeline.cpp \
         $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
         $(ME3_DIR)/src/render/vk_animation_skinning.cpp \
+        $(ME3_DIR)/src/render/vk_animation_bounds.cpp \
         $(ME3_DIR)/src/render/tileset_slicer.cpp \
         $(ME3_DIR)/src/tileset_gtex.cpp \
         $(ME3_DIR)/src/render/vk_volumetrics.cpp \
@@ -549,6 +550,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/vk_pipeline.cpp \
 	    $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
 	    $(ME3_DIR)/src/render/vk_animation_skinning.cpp \
+	    $(ME3_DIR)/src/render/vk_animation_bounds.cpp \
 	    $(ME3_DIR)/src/render/tileset_slicer.cpp \
 	    $(ME3_DIR)/src/tileset_gtex.cpp \
 	    $(ME3_DIR)/src/render/vk_volumetrics.cpp \

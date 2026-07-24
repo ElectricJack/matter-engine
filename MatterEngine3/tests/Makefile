@@ -894,6 +894,7 @@ GPU_MSL_CPP = \
 
 GPU_MSL_C   = $(COMMON_MSL_C)
 GPU_ALL_CPP = $(GPU_PIPELINE_CPP) $(GPU_RENDER_CPP) $(GPU_MSL_CPP) \
+              ../src/render/vk_animation_bounds.cpp \
               ../src/ecs/scene_registry.cpp \
               ../src/animation/animation_systems.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
               ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
@@ -991,6 +992,7 @@ gpu_CPP_SRCS := $(sort \
     vk_scene_renderer_tests.cpp \
     vk_animation_skinning_tests.cpp \
     vk_animation_skin_compute_tests.cpp \
+    vk_animation_bounds_tests.cpp \
     refine_loop_tests.cpp \
     world_stream_tests.cpp \
     $(GPU_ALL_CPP))
@@ -1115,7 +1117,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-systems run-animation-simulation run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather
+.PHONY: clean run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-systems run-animation-simulation run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1814,6 +1816,13 @@ vk-animation-skin-compute-tests: $(call obj_of,gpu,vk_animation_skin_compute_tes
 
 run-vk-animation-skin-compute: vk-animation-skin-compute-tests
 	./vk-animation-skin-compute-tests
+
+vk-animation-bounds-tests: $(call obj_of,gpu,vk_animation_bounds_tests.cpp) $(call obj_of,gpu,../src/render/vk_animation_bounds.cpp) $(call obj_of,gpu,../src/render/vk_animation_skinning.cpp) | ../shaders_gen/embedded_shaders.h
+	$(CC) $(call obj_of,gpu,vk_animation_bounds_tests.cpp) $(call obj_of,gpu,../src/render/vk_animation_bounds.cpp) $(call obj_of,gpu,../src/render/vk_animation_skinning.cpp) \
+	      -o vk-animation-bounds-tests $(FLAVOR_gpu_FLAGS) -lm -lpthread
+
+run-vk-animation-bounds: vk-animation-bounds-tests
+	./vk-animation-bounds-tests
 
 vk-scene-renderer-tests: $(call obj_of,gpu,vk_scene_renderer_tests.cpp) | ../shaders_gen/embedded_shaders.h
 	$(CC) $(call obj_of,gpu,vk_scene_renderer_tests.cpp) \

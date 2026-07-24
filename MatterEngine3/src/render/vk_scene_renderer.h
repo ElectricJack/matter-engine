@@ -23,6 +23,7 @@
 #include "render/dynamic_instance_slots.h"
 #include "vk_gi_contract.h"
 #include "vk_animation_skinning.h"
+#include "vk_animation_bounds.h"
 #include "vk_draw_command.h"
 #include "vk_resources.h"
 #include "vk_temporal.h"
@@ -172,6 +173,9 @@ struct VkSceneInstance {
     // Stable identity within the owning world session. Zero selects the
     // renderer's deterministic input-order fallback for legacy callers.
     uint64_t instance_id = 0;
+    // C3: dynamic animation bounds are keyed by the generational dynamic
+    // instance slot. UINT32_MAX retains the immutable/static culling path.
+    uint32_t animation_instance_slot = UINT32_MAX;
 };
 
 struct VkCullStats {
@@ -414,6 +418,12 @@ public:
     bool finish_animation_skinning_frame(uint32_t frame_slot, uint64_t fence);
     const VkAnimationSkinning& animation_skinning() const noexcept {
         return animation_skinning_;
+    }
+    bool register_animation_bounds_asset(const VkAnimationBoundsAsset& asset);
+    bool update_animation_bounds(uint32_t instance_slot, uint64_t asset_key,
+                                 const VkSkinPose& pose, bool history_valid);
+    const VkAnimationBounds& animation_bounds() const noexcept {
+        return animation_bounds_;
     }
     void set_temporal_frame(const TemporalFrame& frame) { temporal_frame_ = frame; }
     void set_dlss_mode(matter::DlssMode mode);
@@ -719,7 +729,8 @@ private:
         uint32_t cluster_count;
         uint32_t history_valid;
         uint32_t instance_token;
-        uint32_t pad[2];
+        uint32_t animation_instance_slot;
+        uint32_t pad;
     };
     struct GpuDrawTransform {
         GpuMat4 current;
@@ -899,6 +910,7 @@ private:
         matter::VkBufferResource commands;
         matter::VkBufferResource draw_transforms;
         matter::VkBufferResource stats;
+        matter::VkBufferResource animation_bounds;
         matter::VkBufferResource material_upload;
         matter::VkBufferResource materials;
         matter::VkImageResource dlss_output;
@@ -1069,6 +1081,7 @@ private:
 
     matter::VulkanDevice* vulkan_ = nullptr;
     VkAnimationSkinning animation_skinning_;
+    VkAnimationBounds animation_bounds_;
     matter::StreamlineBridge* dlss_bridge_ = nullptr;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     std::unique_ptr<matter::StreamlineBridge> test_dlss_bridge_override_;

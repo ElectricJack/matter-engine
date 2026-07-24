@@ -26,8 +26,17 @@ struct GpuInstance {
     uint cluster_count;
     uint history_valid;
     uint instance_token;
+    uint animation_instance_slot;
     uint pad1;
-    uint pad2;
+};
+
+struct DynamicAnimationBound {
+    vec4 aabb_min;
+    vec4 aabb_max;
+    uint instance_slot;
+    uint cluster_index;
+    uint lod;
+    uint flags;
 };
 
 struct DrawTransform {
@@ -77,6 +86,45 @@ layout(set = 1, binding = 4, std430) buffer Stats {
     uint triangles;
     uint batches;
 };
+layout(set = 1, binding = 8, std430) readonly buffer DynamicAnimationBounds {
+    DynamicAnimationBound dynamic_animation_bounds[];
+};
+
+// Dynamic records are keyed by (instance slot, serialized cluster index, LOD).
+// The initial pass unions all available LOD records, which makes the early
+// frustum decision conservative even when the chosen LOD has not yet been
+// selected. A second exact lookup below tightens it after LOD choice.
+bool dynamic_cluster_union(const GpuInstance instance, const ClusterMeta cluster,
+                           out vec3 aabb_min, out vec3 aabb_max) {
+    if (instance.animation_instance_slot == 0xffffffffu) return false;
+    bool found = false;
+    aabb_min = vec3(3.402823e38);
+    aabb_max = vec3(-3.402823e38);
+    for (uint i = 0u; i < dynamic_animation_bounds.length(); ++i) {
+        const DynamicAnimationBound value = dynamic_animation_bounds[i];
+        if (value.instance_slot != instance.animation_instance_slot ||
+            value.cluster_index != cluster.cluster_index) continue;
+        aabb_min = min(aabb_min, value.aabb_min.xyz);
+        aabb_max = max(aabb_max, value.aabb_max.xyz);
+        found = true;
+    }
+    return found;
+}
+
+bool dynamic_cluster_lod(const GpuInstance instance, const ClusterMeta cluster,
+                         uint lod, out vec3 aabb_min, out vec3 aabb_max) {
+    if (instance.animation_instance_slot == 0xffffffffu) return false;
+    for (uint i = 0u; i < dynamic_animation_bounds.length(); ++i) {
+        const DynamicAnimationBound value = dynamic_animation_bounds[i];
+        if (value.instance_slot == instance.animation_instance_slot &&
+            value.cluster_index == cluster.cluster_index && value.lod == lod) {
+            aabb_min = value.aabb_min.xyz;
+            aabb_max = value.aabb_max.xyz;
+            return true;
+        }
+    }
+    return false;
+}
 
 bool reserve_transform_slot(uint bucket, out uint slot) {
     const uint first = commands[bucket].first_instance;
@@ -114,18 +162,53 @@ void main() {
     const ClusterMeta cluster = clusters[cluster_index];
     if (cluster.lod_count == 0u || cluster.lod_count > MAX_LOD) return;
 
+    vec3 local_aabb_min = cluster.aabb_min_radius.xyz;
+    vec3 local_aabb_max = cluster.aabb_max_pad.xyz;
+    const bool dynamic_bound = dynamic_cluster_union(instance, cluster,
+                                                      local_aabb_min, local_aabb_max);
+
+    const vec3 sxv = vec3(instance.transform[0][0], instance.transform[0][1],
+                          instance.transform[0][2]);
+    const vec3 syv = vec3(instance.transform[1][0], instance.transform[1][1],
+                          instance.transform[1][2]);
+    const vec3 szv = vec3(instance.transform[2][0], instance.transform[2][1],
+                          instance.transform[2][2]);
+    const float scale = (length(sxv) + length(syv) + length(szv)) / 3.0;
+    const vec3 local_center = (local_aabb_min + local_aabb_max) * 0.5;
+    const vec3 world_center =
+        (instance.transform * vec4(local_center, 1.0)).xyz;
+    const float distance_to_eye =
+        max(distance(world_center, frame.camera_eye_pixel_budget.xyz), 0.01);
+    const float local_radius = dynamic_bound
+        ? length(local_aabb_max - local_aabb_min) * 0.5
+        : cluster.aabb_min_radius.w;
+    const float projected_size = local_radius * scale /
+                                 distance_to_eye *
+                                 frame.camera_eye_pixel_budget.w;
+    uint lod = cluster.lod_count - 1u;
+    for (uint i = 0u; i < cluster.lod_count; ++i) {
+        if (projected_size >= cluster.thresholds[i]) {
+            lod = i;
+            break;
+        }
+    }
+    // Tighten from the conservative all-LOD union to the chosen LOD before
+    // making any frustum decision. This avoids the bind-pose coarse reject
+    // while retaining per-LOD precision once selection is known.
+    if (dynamic_bound)
+        dynamic_cluster_lod(instance, cluster, lod, local_aabb_min, local_aabb_max);
+
     vec3 world_corners[8];
     for (int i = 0; i < 8; ++i) {
         const vec3 local_position = vec3(
-            (i & 4) != 0 ? cluster.aabb_max_pad.x : cluster.aabb_min_radius.x,
-            (i & 2) != 0 ? cluster.aabb_max_pad.y : cluster.aabb_min_radius.y,
-            (i & 1) != 0 ? cluster.aabb_max_pad.z : cluster.aabb_min_radius.z);
+            (i & 4) != 0 ? local_aabb_max.x : local_aabb_min.x,
+            (i & 2) != 0 ? local_aabb_max.y : local_aabb_min.y,
+            (i & 1) != 0 ? local_aabb_max.z : local_aabb_min.z);
         world_corners[i] = (instance.transform * vec4(local_position, 1.0)).xyz;
     }
 
-    // The legacy all-corners-outside test is retained.  The planes come from
-    // the canonical RH Vulkan-ZO matrix; unlike the old GL path, the near
-    // plane is z >= 0 rather than z >= -w.
+    // The legacy all-corners-outside test is retained. The selected dynamic
+    // AABB replaces immutable cluster bounds only when an override exists.
     for (int plane = 0; plane < 6; ++plane) {
         bool all_outside = true;
         for (int i = 0; i < 8; ++i) {
@@ -138,30 +221,6 @@ void main() {
         if (all_outside) {
             atomicAdd(frustum_culled, 1u);
             return;
-        }
-    }
-
-    const vec3 sxv = vec3(instance.transform[0][0], instance.transform[0][1],
-                          instance.transform[0][2]);
-    const vec3 syv = vec3(instance.transform[1][0], instance.transform[1][1],
-                          instance.transform[1][2]);
-    const vec3 szv = vec3(instance.transform[2][0], instance.transform[2][1],
-                          instance.transform[2][2]);
-    const float scale = (length(sxv) + length(syv) + length(szv)) / 3.0;
-    const vec3 local_center =
-        (cluster.aabb_min_radius.xyz + cluster.aabb_max_pad.xyz) * 0.5;
-    const vec3 world_center =
-        (instance.transform * vec4(local_center, 1.0)).xyz;
-    const float distance_to_eye =
-        max(distance(world_center, frame.camera_eye_pixel_budget.xyz), 0.01);
-    const float projected_size = cluster.aabb_min_radius.w * scale /
-                                 distance_to_eye *
-                                 frame.camera_eye_pixel_budget.w;
-    uint lod = cluster.lod_count - 1u;
-    for (uint i = 0u; i < cluster.lod_count; ++i) {
-        if (projected_size >= cluster.thresholds[i]) {
-            lod = i;
-            break;
         }
     }
 

@@ -792,7 +792,7 @@ VkShaderStageFlags scene_binding_stage_flags(uint32_t binding) noexcept {
 
 bool scene_storage_limits_supported(uint32_t max_per_stage,
                                     uint32_t max_per_set) noexcept {
-    return max_per_stage >= 5 && max_per_set >= 6;
+    return max_per_stage >= 6 && max_per_set >= 7;
 }
 
 size_t frame_constants_size_for_test() noexcept {
@@ -902,12 +902,46 @@ bool VkSceneRenderer::begin_animation_skinning_frame(
 
 bool VkSceneRenderer::submit_visible_animation_skinning(
     uint32_t frame_slot, const std::vector<VkSkinSubmission>& visible) {
-    return animation_skinning_.submit_visible(frame_slot, visible);
+    // Publish the work queue first: a rejected queue must not advance a
+    // dynamic bound independently of the pose it claims to represent. Bounds
+    // assets intentionally share the immutable skin asset key, while callers
+    // without serialized bounds retain the static path unchanged.
+    if (!animation_skinning_.submit_visible(frame_slot, visible)) {
+        // The queue has fallen back before a complete pose can be consumed.
+        // Resolve each registered asset through the bounds fail-open path: it
+        // keeps a matching last-complete box for a budget freeze, otherwise
+        // replaces the unsafe stale box with the conservative asset bound and
+        // marks occlusion disabled.
+        const VkSkinPose missing_pose{};
+        for (const VkSkinSubmission& submission : visible)
+            (void)animation_bounds_.update_instance(
+                submission.instance_slot, submission.asset_key, missing_pose,
+                false);
+        return false;
+    }
+    for (const VkSkinSubmission& submission : visible)
+        (void)animation_bounds_.update_instance(
+            submission.instance_slot, submission.asset_key, submission.pose,
+            submission.history_valid);
+    return true;
 }
 
 bool VkSceneRenderer::finish_animation_skinning_frame(uint32_t frame_slot,
                                                        uint64_t fence) {
     return animation_skinning_.mark_submitted(frame_slot, fence);
+}
+
+bool VkSceneRenderer::register_animation_bounds_asset(
+    const VkAnimationBoundsAsset& asset) {
+    return animation_bounds_.register_asset(asset);
+}
+
+bool VkSceneRenderer::update_animation_bounds(uint32_t instance_slot,
+                                              uint64_t asset_key,
+                                              const VkSkinPose& pose,
+                                              bool history_valid) {
+    return animation_bounds_.update_instance(instance_slot, asset_key, pose,
+                                             history_valid);
 }
 
 matter::DlssMode VkSceneRenderer::active_dlss_mode() const {
@@ -1165,7 +1199,7 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     // 5). Bindings 6-7 (Phase 1 tileset Vulkan port, Task 6): the 16-entry
     // ground tileset sampler2DArray and the TilesetParams UBO, sampled only
     // by gbuffer.frag.
-    std::array<VkDescriptorSetLayoutBinding, 8> scene_bindings{};
+    std::array<VkDescriptorSetLayoutBinding, 9> scene_bindings{};
     for (uint32_t i = 0; i < 6; ++i)
         scene_bindings[i] =
             descriptor_binding(i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -1178,6 +1212,10 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
     scene_bindings[6].descriptorCount = 4 * kTilesetChannelCount;
     scene_bindings[7] = descriptor_binding(
         7, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_FRAGMENT_BIT);
+    // C3 dynamic cluster AABBs. Static cluster metadata stays at binding 0;
+    // cull.comp selects this optional per-frame override by instance slot.
+    scene_bindings[8] = descriptor_binding(
+        8, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT);
     VkDescriptorSetLayoutCreateInfo scene_layout{
         VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
     scene_layout.bindingCount =
@@ -2201,7 +2239,7 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
     // to the +4*kTilesetChannelCount / +1 below.
     const VkDescriptorPoolSize pool_sizes[] = {
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, frame_slot_count * 2},
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 20},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame_slot_count * 21},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
          frame_slot_count * (79 + 4 * kTilesetChannelCount)},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, frame_slot_count * 22}};
@@ -2283,6 +2321,9 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             !ensure_candidate_buffer(frame.draw_transforms, sizeof(GpuDrawTransform),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
             !ensure_candidate_buffer(frame.stats, sizeof(VkCullStats),
+                                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
+            !ensure_candidate_buffer(frame.animation_bounds,
+                                     sizeof(VkAnimationBoundsGpuRecord),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
             !matter::create_buffer(
                 *vulkan_, sizeof(MaterialGpuRecord),
@@ -2421,6 +2462,8 @@ void VkSceneRenderer::update_frame_descriptors(FrameResources& frame) {
                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.stats);
     update_descriptor(frame.descriptor_sets[1], 5,
                       VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.materials);
+    update_descriptor(frame.descriptor_sets[1], 8,
+                      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, frame.animation_bounds);
     // Compute source is a separately packed vec4/std430 copy of the immutable
     // raster arena; VkRasterVertex's 72-byte vertex-input ABI cannot be bound
     // as the shader's 80-byte source storage record.
@@ -5336,6 +5379,7 @@ bool VkSceneRenderer::update_instances(
             stable_id != 0
                 ? vulkan_history_token(stable_id)
                 : static_cast<uint32_t>(source_index) + 1u;
+        instance.animation_instance_slot = source.animation_instance_slot;
         const auto temporal = std::find_if(
             temporal_frame_.instances.begin(), temporal_frame_.instances.end(),
             [stable_id](const TemporalInstanceFrame& item) {
@@ -6044,6 +6088,31 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
         if (!apply_dynamic_command_layout(error)) return false;
         dynamic_command_layout_applied_ = dynamic_instance_count_ > 0;
     }
+    // Bounds are resolved from the immutable current/previous pose pair before
+    // this frame's cull dispatch. An empty set still uploads one inert record
+    // so the storage descriptor remains valid on implementations that reject
+    // zero-sized buffers.
+    std::vector<VkAnimationBoundsGpuRecord> animation_bound_records =
+        animation_bounds_.gpu_records();
+    if (animation_bound_records.empty())
+        animation_bound_records.push_back({});
+    bool animation_bounds_replaced = false;
+    if (!ensure_buffer(selected.animation_bounds,
+                       static_cast<VkDeviceSize>(animation_bound_records.size()) *
+                           sizeof(VkAnimationBoundsGpuRecord),
+                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error,
+                       &animation_bounds_replaced) ||
+        !matter::upload_buffer(
+            *vulkan_, selected.animation_bounds, animation_bound_records.data(),
+            static_cast<VkDeviceSize>(animation_bound_records.size()) *
+                sizeof(VkAnimationBoundsGpuRecord), 0, error)) {
+        return false;
+    }
+    if (animation_bounds_replaced) {
+        update_descriptor(selected.descriptor_sets[1], 8,
+                          VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                          selected.animation_bounds);
+    }
     if (!upload_scene_buffers(selected, frame.command_buffer, false, error) ||
         !upload_frame_constants(selected, matrices, camera_eye, pixel_budget,
                                 error)) {
@@ -6073,6 +6142,7 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
         selected.commands.lifetime,
         selected.draw_transforms.lifetime,
         selected.stats.lifetime,
+        selected.animation_bounds.lifetime,
         selected.material_upload.lifetime,
         selected.materials.lifetime,
         albedo_.lifetime,
@@ -8073,6 +8143,7 @@ bool VkSceneRenderer::update_dynamic_instances(
                 instance.cluster_count = part.cluster_count;
                 instance.instance_token =
                     vulkan_history_token(change.entity_id.value);
+                instance.animation_instance_slot = change.slot_index;
                 dynamic_instance_staging_[change.slot_index] = instance;
                 dynamic_instance_part_slots_[change.slot_index] = instance.part_slot;
                 dynamic_dirty_ = true;
