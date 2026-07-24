@@ -24,15 +24,16 @@ AnimationTransform lerp(AnimationTransform a, AnimationTransform b, float t) { r
 Mat4f multiply(const Mat4f& a,const Mat4f& b) { Mat4f r{}; for(int y=0;y<4;++y)for(int x=0;x<4;++x)for(int k=0;k<4;++k)r.m[y*4+x]+=a.m[y*4+k]*b.m[k*4+x]; return r; }
 bool valid(const AnimationEvaluationDefinition& d) {
     if(!d.skeleton || d.skeleton->joint_count()==0 || d.inverse_bind_model.size()!=d.skeleton->joint_count() || d.nodes.empty()) return false;
-    for(size_t i=0;i<d.nodes.size();++i) { const auto& n=d.nodes[i]; for(uint16_t dep:n.dependencies) if(dep>=i) return false; if(n.kind==RuntimeGraphNodeKind::Clip && (n.clip_index>=d.clips.size() || !d.clips[n.clip_index].animation)) return false; }
+    for(size_t i=0;i<d.nodes.size();++i) {
+        const auto& n=d.nodes[i];
+        for(uint16_t dep:n.dependencies) if(dep>=i) return false;
+        if(n.kind==RuntimeGraphNodeKind::Clip && (n.clip_index>=d.clips.size() || !d.clips[n.clip_index].animation)) return false;
+        if(n.kind==RuntimeGraphNodeKind::Blend1D) {
+            if(n.input_index>=d.inputs.size() || d.inputs[n.input_index].type!=AnimationValueType::Number) return false;
+            if(n.cadence==EvaluationCadence::Fixed && d.inputs[n.input_index].cadence==EvaluationCadence::Frame) return false;
+        }
+    }
     return d.nodes.back().kind==RuntimeGraphNodeKind::Output;
-}
-float number(const AnimationEvaluationRequest& r,uint16_t index) {
-    if(index==kNoIndex) return 0.0f;
-    const ArrayView<AnimationValue>& f=r.fixed_current;
-    if(index<f.count && f[index].type==AnimationValueType::Number) return f[index].number;
-    if(index<r.frame_controls.count && r.frame_controls[index].type==AnimationValueType::Number) return r.frame_controls[index].number;
-    return 0.0f;
 }
 float clip_ratio(const RuntimeGraphClip& clip,float time) {
     if(clip.duration<=0) return 0;
@@ -54,12 +55,41 @@ AnimationValue interpolate_fixed_control(const AnimationValue& previous,const An
     return current;
 }
 
+bool sample_graph_input(const AnimationEvaluationDefinition& definition,
+                        const AnimationEvaluationRequest& request,
+                        uint16_t input_index,
+                        AnimationValue& value) {
+    if (input_index == kNoIndex || input_index >= definition.inputs.size()) return false;
+    const RuntimeGraphInput& input = definition.inputs[input_index];
+    if (input.cadence == EvaluationCadence::Frame) {
+        if (input_index >= request.frame_controls.count || request.frame_controls[input_index].type != input.type) return false;
+        value = request.frame_controls[input_index];
+        return true;
+    }
+    if (input.cadence != EvaluationCadence::Fixed || input_index >= request.fixed_current.count ||
+        request.fixed_current[input_index].type != input.type) return false;
+    const AnimationValue& current = request.fixed_current[input_index];
+    if (input_index >= request.fixed_previous.count || request.fixed_previous[input_index].type != input.type) {
+        value = current;
+        return true;
+    }
+    value = interpolate_fixed_control(request.fixed_previous[input_index], current, request.accumulator_alpha);
+    return true;
+}
+
 struct AnimationEvaluator::State {
+    struct PoseBuffer {
+        std::vector<AnimationTransform> local;
+        std::vector<Mat4f> model;
+        std::vector<Mat4f> previous_model;
+        std::vector<Mat4f> palette;
+        std::vector<Mat4f> previous_palette;
+    };
     bool initialized=false, has_snapshot=false;
     uint64_t last_fixed_tick=std::numeric_limits<uint64_t>::max();
-    float graph_time=0;
-    std::vector<AnimationTransform> prior_fixed, current_fixed, front_local;
-    std::vector<Mat4f> front_model, front_previous_model, front_palette, front_previous_palette;
+    float previous_fixed_time=0, current_fixed_time=0;
+    uint8_t front_slot=0;
+    PoseBuffer pose[2];
     AnimationPoseSnapshot view{};
 };
 
@@ -75,35 +105,48 @@ bool AnimationEvaluator::evaluate(std::vector<AnimationEvaluationRequest> reques
         if(graph_count>budget_.graph_nodes-graph_used || controller_count>budget_.controller_nodes-controller_used) { all=false; continue; }
         graph_used+=graph_count; controller_used+=controller_count;
         auto& owned=states_[key(request.instance)]; if(!owned) owned=std::make_unique<State>(); State& state=*owned; const auto& def=*request.definition;
-        if(!state.initialized) { state.initialized=true; state.current_fixed.resize(def.skeleton->joint_count()); state.prior_fixed.resize(def.skeleton->joint_count()); }
         const bool new_fixed=state.last_fixed_tick!=request.fixed_tick;
+        float candidate_previous_time=state.previous_fixed_time, candidate_current_time=state.current_fixed_time;
+        uint64_t candidate_last_tick=state.last_fixed_tick;
+        bool candidate_initialized=state.initialized;
         if(new_fixed) {
-            if(!request.paused) state.graph_time+=std::max(0.0f,request.fixed_delta_seconds);
-            std::vector<std::vector<AnimationTransform>> results(def.nodes.size()); std::vector<OzzSampleContext> contexts(def.clips.size());
-            bool complete=true;
-            for(uint32_t i=0;i<def.nodes.size()&&complete;++i) {
-                const RuntimeGraphNode& node=def.nodes[i]; auto& out=results[i];
-                if(node.kind==RuntimeGraphNodeKind::Clip) complete=sample(*def.clips[node.clip_index].animation,clip_ratio(def.clips[node.clip_index],state.graph_time),contexts[node.clip_index],out);
-                else if(node.kind==RuntimeGraphNodeKind::Blend1D) {
-                    if(node.dependencies.empty() || node.thresholds.size()!=node.dependencies.size()) { complete=false; break; }
-                    const float x=number(request,node.input_index); size_t hi=0; while(hi+1<node.thresholds.size() && x>node.thresholds[hi+1]) ++hi;
-                    size_t lo=hi; if(x<=node.thresholds.front()) lo=hi=0; else if(x>=node.thresholds.back()) lo=hi=node.thresholds.size()-1; else ++hi;
-                    if(lo==hi) out=results[node.dependencies[lo]]; else { const float den=node.thresholds[hi]-node.thresholds[lo]; const float t=den>0?(x-node.thresholds[lo])/den:0; complete=blend(*def.skeleton,{{&results[node.dependencies[lo]],1-clamp01(t)},{&results[node.dependencies[hi]],clamp01(t)}},{},out); }
-                } else if(node.kind==RuntimeGraphNodeKind::Additive) {
-                    if(node.dependencies.size()!=2) { complete=false; break; }
-                    complete=blend(*def.skeleton,{{&results[node.dependencies[0]],1}},{{&results[node.dependencies[1]],node.weight}},out);
-                } else if(node.kind==RuntimeGraphNodeKind::Output) { if(node.dependencies.size()!=1) complete=false; else out=results[node.dependencies[0]]; }
-                else { if(node.dependencies.size()!=1) complete=false; else out=results[node.dependencies[0]]; }
-            }
-            if(!complete || results.back().size()!=def.skeleton->joint_count()) { all=false; continue; }
-            state.prior_fixed=state.current_fixed; state.current_fixed=std::move(results.back()); if(state.last_fixed_tick==std::numeric_limits<uint64_t>::max()) state.prior_fixed=state.current_fixed; state.last_fixed_tick=request.fixed_tick;
+            candidate_previous_time=state.current_fixed_time;
+            candidate_current_time=state.current_fixed_time;
+            if(!request.paused) candidate_current_time+=std::max(0.0f,request.fixed_delta_seconds);
+            if(!candidate_initialized) candidate_previous_time=candidate_current_time;
+            candidate_last_tick=request.fixed_tick;
+            candidate_initialized=true;
         }
-        const float alpha=clamp01(request.accumulator_alpha); state.front_local.resize(state.current_fixed.size()); for(size_t i=0;i<state.front_local.size();++i) state.front_local[i]=lerp(state.prior_fixed[i],state.current_fixed[i],alpha);
-        std::vector<Mat4f> model; if(!local_to_model(*def.skeleton,state.front_local,model)) { all=false; continue; }
-        const std::vector<Mat4f> previous=state.has_snapshot?state.front_model:model; std::vector<Mat4f> palette(model.size()), previous_palette(model.size());
-        for(size_t i=0;i<model.size();++i) { palette[i]=multiply(model[i],def.inverse_bind_model[i]); previous_palette[i]=multiply(previous[i],def.inverse_bind_model[i]); }
-        state.front_previous_model=previous; state.front_previous_palette=previous_palette; state.front_model=std::move(model); state.front_palette=std::move(palette); state.has_snapshot=true;
-        state.view={request.instance,request.fixed_tick,request.frame_serial,{state.front_local.data(),uint32_t(state.front_local.size())},{state.front_model.data(),uint32_t(state.front_model.size())},{state.front_previous_model.data(),uint32_t(state.front_previous_model.size())},{state.front_palette.data(),uint32_t(state.front_palette.size())},{state.front_previous_palette.data(),uint32_t(state.front_previous_palette.size())}};
+        const float alpha=clamp01(request.accumulator_alpha);
+        const float sample_time=candidate_previous_time+(candidate_current_time-candidate_previous_time)*alpha;
+        std::vector<std::vector<AnimationTransform>> results(def.nodes.size()); std::vector<OzzSampleContext> contexts(def.clips.size());
+        bool complete=true;
+        for(uint32_t i=0;i<def.nodes.size()&&complete;++i) {
+            const RuntimeGraphNode& node=def.nodes[i]; auto& out=results[i];
+            if(node.kind==RuntimeGraphNodeKind::Clip) complete=sample(*def.clips[node.clip_index].animation,clip_ratio(def.clips[node.clip_index],sample_time),contexts[node.clip_index],out);
+            else if(node.kind==RuntimeGraphNodeKind::Blend1D) {
+                if(node.dependencies.empty() || node.thresholds.size()!=node.dependencies.size()) { complete=false; break; }
+                AnimationValue control; if(!sample_graph_input(def,request,node.input_index,control) || control.type!=AnimationValueType::Number) { complete=false; break; }
+                const float x=static_cast<float>(control.number); size_t hi=0; while(hi+1<node.thresholds.size() && x>node.thresholds[hi+1]) ++hi;
+                size_t lo=hi; if(x<=node.thresholds.front()) lo=hi=0; else if(x>=node.thresholds.back()) lo=hi=node.thresholds.size()-1; else ++hi;
+                if(lo==hi) out=results[node.dependencies[lo]]; else { const float den=node.thresholds[hi]-node.thresholds[lo]; const float t=den>0?(x-node.thresholds[lo])/den:0; complete=blend(*def.skeleton,{{&results[node.dependencies[lo]],1-clamp01(t)},{&results[node.dependencies[hi]],clamp01(t)}},{},out); }
+            } else if(node.kind==RuntimeGraphNodeKind::Additive) {
+                if(node.dependencies.size()!=2) { complete=false; break; }
+                complete=blend(*def.skeleton,{{&results[node.dependencies[0]],1}},{{&results[node.dependencies[1]],node.weight}},out);
+            } else if(node.kind==RuntimeGraphNodeKind::Output) { if(node.dependencies.size()!=1) complete=false; else out=results[node.dependencies[0]]; }
+            else { if(node.dependencies.size()!=1) complete=false; else out=results[node.dependencies[0]]; }
+        }
+        if(!complete || results.back().size()!=def.skeleton->joint_count()) { all=false; continue; }
+        const uint8_t back_slot=state.has_snapshot?uint8_t(1u-state.front_slot):state.front_slot;
+        State::PoseBuffer& back=state.pose[back_slot];
+        back.local=std::move(results.back());
+        std::vector<Mat4f> model; if(!local_to_model(*def.skeleton,back.local,model)) { all=false; continue; }
+        back.previous_model=state.has_snapshot?state.pose[state.front_slot].model:model;
+        back.model=std::move(model); back.palette.resize(back.model.size()); back.previous_palette.resize(back.previous_model.size());
+        for(size_t i=0;i<back.model.size();++i) { back.palette[i]=multiply(back.model[i],def.inverse_bind_model[i]); back.previous_palette[i]=multiply(back.previous_model[i],def.inverse_bind_model[i]); }
+        state.previous_fixed_time=candidate_previous_time; state.current_fixed_time=candidate_current_time; state.last_fixed_tick=candidate_last_tick; state.initialized=candidate_initialized;
+        state.front_slot=back_slot; state.has_snapshot=true;
+        state.view={request.instance,request.fixed_tick,request.frame_serial,{back.local.data(),uint32_t(back.local.size())},{back.model.data(),uint32_t(back.model.size())},{back.previous_model.data(),uint32_t(back.previous_model.size())},{back.palette.data(),uint32_t(back.palette.size())},{back.previous_palette.data(),uint32_t(back.previous_palette.size())}};
     }
     return all;
 }

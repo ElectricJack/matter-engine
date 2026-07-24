@@ -43,6 +43,14 @@ struct RuntimeGraphClip {
     bool additive = false;
 };
 
+// Input declarations travel with the compiled graph.  The evaluator never
+// guesses a control's cadence from whichever request array happens to contain
+// an entry: fixed controls are interpolated, frame controls are sampled once.
+struct RuntimeGraphInput {
+    AnimationValueType type = AnimationValueType::Number;
+    EvaluationCadence cadence = EvaluationCadence::Fixed;
+};
+
 enum class RuntimeGraphNodeKind : uint8_t { Clip, Blend1D, Additive, NativeController, Output };
 struct RuntimeGraphNode {
     RuntimeGraphNodeKind kind = RuntimeGraphNodeKind::Output;
@@ -52,11 +60,13 @@ struct RuntimeGraphNode {
     uint16_t input_index = UINT16_MAX;
     std::vector<float> thresholds;
     float weight = 1.0f;
+    EvaluationCadence cadence = EvaluationCadence::Fixed;
 };
 
 struct AnimationEvaluationDefinition {
     const OzzSkeleton* skeleton = nullptr;
     std::vector<RuntimeGraphClip> clips;
+    std::vector<RuntimeGraphInput> inputs;
     std::vector<RuntimeGraphNode> nodes;
     std::vector<Mat4f> inverse_bind_model;
 };
@@ -89,6 +99,14 @@ struct AnimationEvaluationBudget {
 // bridge and makes the cadence contract independently testable.
 AnimationValue interpolate_fixed_control(const AnimationValue& previous,
                                          const AnimationValue& current, float alpha);
+
+// Resolves a graph input exactly once for an evaluation.  Fixed values are
+// interpolated at the request's accumulator alpha; frame values are returned
+// directly and never blended with fixed storage.
+bool sample_graph_input(const AnimationEvaluationDefinition& definition,
+                        const AnimationEvaluationRequest& request,
+                        uint16_t input_index,
+                        AnimationValue& value);
 
 class AnimationEvaluator {
 public:
