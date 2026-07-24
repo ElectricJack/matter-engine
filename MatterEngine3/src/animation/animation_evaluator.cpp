@@ -354,6 +354,54 @@ bool AnimationEvaluator::evaluate(std::vector<AnimationEvaluationRequest> reques
 }
 
 AnimationPoseSnapshot AnimationEvaluator::snapshot(AnimatorInstanceHandle instance) const { const auto it=states_.find(key(instance)); return it==states_.end()||!it->second||!it->second->has_snapshot?AnimationPoseSnapshot{}:it->second->view; }
+
+bool AnimationEvaluator::begin_presentation(AnimatorInstanceHandle instance,
+                                             const AnimationEvaluationDefinition& definition,
+                                             const AnimationPoseSnapshot& previous_fixed_pose,
+                                             const AnimationPoseSnapshot& current_fixed_pose,
+                                             float interpolation_alpha,
+                                             uint64_t frame_serial) {
+    if (!instance.valid() || !valid(definition) || !previous_fixed_pose.instance.valid() ||
+        !current_fixed_pose.instance.valid() || key(previous_fixed_pose.instance) != key(instance) ||
+        key(current_fixed_pose.instance) != key(instance) || !std::isfinite(interpolation_alpha)) return false;
+    const uint32_t joints = static_cast<uint32_t>(definition.skeleton->joint_count());
+    const auto complete_pose=[joints](const AnimationPoseSnapshot& pose) { return pose.local_pose.count==joints && pose.model_pose.count==joints &&
+        pose.previous_model_pose.count==joints && pose.skin_palette.count==joints && pose.previous_skin_palette.count==joints &&
+        (joints==0 || (pose.local_pose.data && pose.model_pose.data && pose.previous_model_pose.data && pose.skin_palette.data && pose.previous_skin_palette.data)); };
+    if (!complete_pose(previous_fixed_pose) || !complete_pose(current_fixed_pose)) return false;
+    const uint64_t instance_key = key(instance);
+    const State::DefinitionShape shape{&definition, definition.skeleton, joints};
+    const auto existing = states_.find(instance_key);
+    if (existing != states_.end() && (existing->second->shape.definition != shape.definition ||
+        existing->second->shape.skeleton != shape.skeleton || existing->second->shape.joint_count != shape.joint_count)) return false;
+    std::unique_ptr<State> replacement;
+    State* state = nullptr;
+    if (existing == states_.end()) {
+        replacement = std::make_unique<State>();
+        state = replacement.get();
+    } else state = existing->second.get();
+    const uint8_t back_slot = state->has_snapshot ? uint8_t(1u - state->front_slot) : state->front_slot;
+    State::PoseBuffer& back = state->pose[back_slot];
+    const float alpha=clamp01(interpolation_alpha);
+    back.local.resize(joints);
+    for(uint32_t joint=0;joint<joints;++joint) back.local[joint]=lerp(previous_fixed_pose.local_pose[joint],current_fixed_pose.local_pose[joint],alpha);
+    if(!local_to_model(*definition.skeleton,back.local,back.model)) return false;
+    // Presentation is a copy of a solved fixed sample, not another temporal
+    // sample.  Preserve its velocity/model history exactly before layering a
+    // frame target.
+    back.previous_model.assign(previous_fixed_pose.previous_model_pose.data, previous_fixed_pose.previous_model_pose.data + joints);
+    back.palette.resize(joints); back.previous_palette.resize(joints);
+    for(uint32_t joint=0;joint<joints;++joint) { back.palette[joint]=multiply(back.model[joint],definition.inverse_bind_model[joint]); back.previous_palette[joint]=multiply(back.previous_model[joint],definition.inverse_bind_model[joint]); }
+    state->shape = shape;
+    state->has_snapshot = true;
+    state->front_slot = back_slot;
+    state->last_fixed_tick = current_fixed_pose.fixed_tick;
+    state->view = {instance, current_fixed_pose.fixed_tick, frame_serial,
+        {back.local.data(), joints}, {back.model.data(), joints}, {back.previous_model.data(), joints},
+        {back.palette.data(), joints}, {back.previous_palette.data(), joints}};
+    if (existing == states_.end()) states_.emplace(instance_key, std::move(replacement));
+    return true;
+}
 bool AnimationEvaluator::fixed_graph_clips(AnimatorInstanceHandle instance,
                                            std::vector<RuntimeGraphClipAdvance>& out) const {
     out.clear();
@@ -390,7 +438,10 @@ bool AnimationEvaluator::solve_targets(AnimatorInstanceHandle instance,
         if(!std::isfinite(target.evaluated_weight) || target.evaluated_weight<0.0f || target.evaluated_weight>1.0f ||
            !solve_animation_target(targets[i],*definition.skeleton,target,back.local,back.model)) return false;
     }
-    back.previous_model=front.model;
+    // Target/IK is a correction of the current sample, not a new temporal
+    // sample.  Keep the graph's prior fixed model so velocity remains between
+    // fixed samples and a frame-only correction cannot fabricate history.
+    back.previous_model=front.previous_model;
     back.palette.resize(back.model.size()); back.previous_palette.resize(back.previous_model.size());
     for(size_t i=0;i<back.model.size();++i) { back.palette[i]=multiply(back.model[i],definition.inverse_bind_model[i]); back.previous_palette[i]=multiply(back.previous_model[i],definition.inverse_bind_model[i]); }
     state.front_slot=back_slot;

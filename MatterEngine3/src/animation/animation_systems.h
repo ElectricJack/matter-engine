@@ -208,6 +208,11 @@ private:
     double interpolation_alpha_ = 0.0;
     std::vector<AnimationScheduleTraceEntry> trace_;
     AnimationPoseSnapshotStore pose_snapshots_;
+    // Owned solved fixed samples.  These are deliberately distinct from the
+    // renderer-facing presentation store: frame layers may never overwrite a
+    // simulation checkpoint or its previous-model history.
+    AnimationPoseSnapshotStore fixed_pose_snapshots_;
+    AnimationPoseSnapshotStore previous_fixed_pose_snapshots_;
     struct RootMotionSlot { uint64_t tick = 0; DesiredRootMotion motion{}; bool consumed = false; };
     std::map<uint64_t, RootMotionSlot> desired_root_motion_;
     const AnimationWorldQueries* world_queries_ = nullptr;
@@ -216,7 +221,12 @@ private:
     std::vector<AnimationMarkerEvent> marker_events_;
     std::vector<DesiredRootMotion> consumed_root_motion_;
     AnimationService* service_ = nullptr;
+    // Fixed evaluator state is checkpointed and is the only owner of graph
+    // clocks/root-motion history.  Presentation is an ephemeral copy made
+    // from that solved fixed pose once per frame, so a frame IK pass cannot
+    // mutate simulation state or erase a fixed IK result.
     AnimationEvaluator evaluator_;
+    AnimationEvaluator presentation_evaluator_;
     std::map<uint64_t, AnimationRuntimeBindingLease> service_bindings_;
     struct TargetRuntime {
         std::vector<AnimationTargetState> targets;

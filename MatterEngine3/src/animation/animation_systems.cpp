@@ -107,6 +107,13 @@ std::vector<AnimationTargetState> targets_for_cadence(
     return result;
 }
 
+bool has_targets_for_cadence(const std::vector<CanonicalTarget>& declarations,
+                             EvaluationCadence cadence) {
+    return std::any_of(declarations.begin(), declarations.end(), [cadence](const CanonicalTarget& target) {
+        return target.cadence == cadence;
+    });
+}
+
 void emit_runtime_markers(AnimatorInstanceHandle instance, const std::vector<RuntimeClipMarker>& markers,
                           float duration, bool loop, float previous, float current,
                           std::vector<AnimationMarkerEvent>& out) {
@@ -365,7 +372,10 @@ void AnimationSystems::detach_service_binding(AnimatorInstanceHandle instance) {
     if (!instance.valid()) return;
     remove_fixed_work(instance);
     pose_snapshots_.forget(instance);
+    fixed_pose_snapshots_.forget(instance);
+    previous_fixed_pose_snapshots_.forget(instance);
     evaluator_.forget(instance);
+    presentation_evaluator_.forget(instance);
     service_bindings_.erase(animator_key(instance));
     target_runtime_.erase(animator_key(instance));
 }
@@ -438,7 +448,20 @@ bool AnimationSystems::restore_service_checkpoint(const AnimatorCheckpoint& chec
     if(!register_fixed_work(restored)) { candidate.targets=previous_targets; for(size_t i=0;i<candidate.controllers.size();++i) (void)candidate.controllers[i]->restore(previous_controller_state[i]); return false; }
     if(!evaluator_.restore_checkpoint(checkpoint.instance,*binding.descriptor->evaluation,checkpoint)) { (void)register_fixed_work(previous_work); candidate.targets=previous_targets; for(size_t i=0;i<candidate.controllers.size();++i) (void)candidate.controllers[i]->restore(previous_controller_state[i]); return false; }
     const AnimationPoseSnapshot pose=evaluator_.snapshot(checkpoint.instance);
-    if(pose.instance.valid()) (void)pose_snapshots_.publish(pose);
+    if(pose.instance.valid()) {
+        // Checkpoints contain the fixed evaluator state, not a transient
+        // frame layer.  Re-seed both interpolation endpoints transactionally
+        // so replay cannot present a pose from the abandoned timeline.
+        (void)fixed_pose_snapshots_.publish(pose);
+        (void)previous_fixed_pose_snapshots_.publish(pose);
+        presentation_evaluator_.forget(checkpoint.instance);
+        (void)pose_snapshots_.publish(pose);
+    } else {
+        fixed_pose_snapshots_.forget(checkpoint.instance);
+        previous_fixed_pose_snapshots_.forget(checkpoint.instance);
+        presentation_evaluator_.forget(checkpoint.instance);
+        pose_snapshots_.forget(checkpoint.instance);
+    }
     return true;
 }
 
@@ -728,13 +751,26 @@ void AnimationSystems::run_fixed_post(flecs::world& world, double fixed_delta) {
                                                            work.evaluated_target_root_relative)) continue;
     }
     for(const auto& pair:service_bindings_) {
-        (void)apply_targets(pair.second.instance,EvaluationCadence::Fixed,fixed_delta);
+        if (!pair.second.descriptor || !pair.second.descriptor->evaluation ||
+            !has_targets_for_cadence(pair.second.descriptor->targets, EvaluationCadence::Fixed)) continue;
+        if (!apply_targets(pair.second.instance,EvaluationCadence::Fixed,fixed_delta)) continue;
         const auto runtime=target_runtime_.find(pair.first); if(runtime==target_runtime_.end() || runtime->second.targets.empty()) continue;
         const ecs::AnimationFrameState frame=world.get<ecs::AnimationFrameState>();
         const auto phase_targets=targets_for_cadence(pair.second.descriptor->targets,runtime->second.targets,EvaluationCadence::Fixed);
         if(evaluator_.solve_targets(pair.second.instance,*pair.second.descriptor->evaluation,pair.second.descriptor->targets,phase_targets,frame.frame_serial)) {
             const AnimationPoseSnapshot pose=evaluator_.snapshot(pair.second.instance); if(pose.instance.valid()) (void)pose_snapshots_.publish(pose);
         }
+    }
+    // Preserve the complete solved result of each fixed step before any frame
+    // presentation work.  The two stores form the interpolation source and
+    // are intentionally not part of renderer publication/checkpoint state.
+    for (const auto& pair : service_bindings_) {
+        const AnimationPoseSnapshot solved=evaluator_.snapshot(pair.second.instance);
+        if (!solved.instance.valid()) continue;
+        const AnimationPoseSnapshot prior=fixed_pose_snapshots_.latest(pair.second.instance);
+        if (prior.instance.valid()) (void)previous_fixed_pose_snapshots_.publish(prior);
+        else (void)previous_fixed_pose_snapshots_.publish(solved);
+        (void)fixed_pose_snapshots_.publish(solved);
     }
     trace(AnimationScheduleEvent::FixedPublishSnapshot, fixed_delta);
 }
@@ -747,16 +783,33 @@ void AnimationSystems::run_frame(flecs::world& world, double frame_delta) {
     trace(AnimationScheduleEvent::FrameSampleApiWrites, frame_delta);
     trace(AnimationScheduleEvent::FrameInterpolateFixedState, frame_delta);
     trace(AnimationScheduleEvent::FrameEvaluatePresentationGraph, frame_delta);
-    // Presentation may interpolate the two fixed states but never advances a
-    // graph clock on wall-frame time.
-    evaluate_service_bindings(world, 0.0, static_cast<float>(interpolation_alpha_));
+    // Presentation is an owned copy of the already solved fixed state.  It
+    // never samples the graph again on wall-frame time: doing so would both
+    // overwrite fixed controller/IK output and advance evaluator history.
+    for (const auto& pair : service_bindings_) {
+        if (!pair.second.descriptor || !pair.second.descriptor->evaluation) continue;
+        const AnimationPoseSnapshot fixed = fixed_pose_snapshots_.latest(pair.second.instance);
+        const AnimationPoseSnapshot previous = previous_fixed_pose_snapshots_.latest(pair.second.instance);
+        if (!fixed.instance.valid() || !previous.instance.valid() ||
+            !presentation_evaluator_.begin_presentation(pair.second.instance,
+                                                         *pair.second.descriptor->evaluation,
+                                                         previous, fixed,
+                                                         static_cast<float>(interpolation_alpha_), state.frame_serial)) continue;
+    }
     trace(AnimationScheduleEvent::FrameSolveTargetsAndIk, frame_delta);
     for(const auto& pair:service_bindings_) {
-        (void)apply_targets(pair.second.instance,EvaluationCadence::Frame,frame_delta);
+        if (!pair.second.descriptor || !pair.second.descriptor->evaluation) continue;
+        const bool has_frame_targets=has_targets_for_cadence(pair.second.descriptor->targets, EvaluationCadence::Frame);
+        if (!has_frame_targets) {
+            const AnimationPoseSnapshot pose=presentation_evaluator_.snapshot(pair.second.instance);
+            if(pose.instance.valid()) (void)pose_snapshots_.publish(pose);
+            continue;
+        }
+        if (has_frame_targets && !apply_targets(pair.second.instance,EvaluationCadence::Frame,frame_delta)) continue;
         const auto runtime=target_runtime_.find(pair.first); if(runtime==target_runtime_.end() || runtime->second.targets.empty()) continue;
         const auto phase_targets=targets_for_cadence(pair.second.descriptor->targets,runtime->second.targets,EvaluationCadence::Frame);
-        if(evaluator_.solve_targets(pair.second.instance,*pair.second.descriptor->evaluation,pair.second.descriptor->targets,phase_targets,state.frame_serial)) {
-            const AnimationPoseSnapshot pose=evaluator_.snapshot(pair.second.instance); if(pose.instance.valid()) (void)pose_snapshots_.publish(pose);
+        if(presentation_evaluator_.solve_targets(pair.second.instance,*pair.second.descriptor->evaluation,pair.second.descriptor->targets,phase_targets,state.frame_serial)) {
+            const AnimationPoseSnapshot pose=presentation_evaluator_.snapshot(pair.second.instance); if(pose.instance.valid()) (void)pose_snapshots_.publish(pose);
         }
     }
     trace(AnimationScheduleEvent::FramePublishPoseSnapshot, frame_delta);

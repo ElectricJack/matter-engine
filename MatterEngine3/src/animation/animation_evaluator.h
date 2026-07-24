@@ -226,6 +226,15 @@ public:
     // over-budget work; an already completed snapshot remains visible.
     bool evaluate(std::vector<AnimationEvaluationRequest> requests);
     AnimationPoseSnapshot snapshot(AnimatorInstanceHandle instance) const;
+    // Creates a presentation-owned copy of an already solved fixed pose.  It
+    // deliberately does not sample graph clocks or alter the fixed evaluator;
+    // callers can subsequently layer frame-cadence targets onto this copy.
+    bool begin_presentation(AnimatorInstanceHandle instance,
+                            const AnimationEvaluationDefinition& definition,
+                            const AnimationPoseSnapshot& previous_fixed_pose,
+                            const AnimationPoseSnapshot& current_fixed_pose,
+                            float interpolation_alpha,
+                            uint64_t frame_serial);
     bool capture_checkpoint(AnimatorInstanceHandle instance, AnimatorCheckpoint& out) const;
     bool validate_checkpoint(AnimatorInstanceHandle instance,
                              const AnimationEvaluationDefinition& definition,
