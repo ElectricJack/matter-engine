@@ -67,7 +67,10 @@ public:
     bool begin_frame(uint32_t frame_slot, uint64_t completed_fence);
     bool submit_visible(uint32_t frame_slot,
                         const std::vector<VkSkinSubmission>& visible);
-    void mark_submitted(uint32_t frame_slot, uint64_t fence);
+    // Frame slots are sealed exactly once.  A rejected seal leaves the
+    // in-flight fence untouched, so a stale caller cannot make an active
+    // arena appear reusable.
+    bool mark_submitted(uint32_t frame_slot, uint64_t fence);
 
     const VkSkinFrameArenas& frame(uint32_t frame_slot) const;
     uint32_t fallback_count() const noexcept { return fallback_count_; }
@@ -79,6 +82,8 @@ private:
     std::map<uint64_t, AssetInfluences> assets_;
     std::vector<VkSkinFrameArenas> frames_;
     uint32_t fallback_count_ = 0;
+    uint64_t last_submitted_fence_ = 0;
+    bool has_submitted_fence_ = false;
 
     static bool identical(const std::vector<VkSkinInfluence>& a,
                           const std::vector<VkSkinInfluence>& b) noexcept;

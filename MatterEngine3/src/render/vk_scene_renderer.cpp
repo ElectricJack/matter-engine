@@ -840,9 +840,9 @@ bool VkSceneRenderer::submit_visible_animation_skinning(
     return animation_skinning_.submit_visible(frame_slot, visible);
 }
 
-void VkSceneRenderer::finish_animation_skinning_frame(uint32_t frame_slot,
+bool VkSceneRenderer::finish_animation_skinning_frame(uint32_t frame_slot,
                                                        uint64_t fence) {
-    animation_skinning_.mark_submitted(frame_slot, fence);
+    return animation_skinning_.mark_submitted(frame_slot, fence);
 }
 
 matter::DlssMode VkSceneRenderer::active_dlss_mode() const {

@@ -137,11 +137,21 @@ bool VkAnimationSkinning::submit_visible(
     return true;
 }
 
-void VkAnimationSkinning::mark_submitted(uint32_t frame_slot, uint64_t fence) {
-    if (frame_slot >= frames_.size()) return;
+bool VkAnimationSkinning::mark_submitted(uint32_t frame_slot, uint64_t fence) {
+    if (frame_slot >= frames_.size()) return false;
     VkSkinFrameArenas& target = frames_[frame_slot];
+    // A slot can be associated with only one submitted fence until it has
+    // been observed complete and begin_frame has reset it.  Fence values are
+    // a single monotonically increasing timeline across all slots.
+    if (target.in_flight ||
+        (has_submitted_fence_ && fence <= last_submitted_fence_)) {
+        return false;
+    }
     target.submitted_fence = fence;
     target.in_flight = true;
+    last_submitted_fence_ = fence;
+    has_submitted_fence_ = true;
+    return true;
 }
 
 const VkSkinFrameArenas& VkAnimationSkinning::frame(uint32_t frame_slot) const {

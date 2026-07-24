@@ -46,12 +46,25 @@ static VkSkinSubmission candidate(uint64_t asset, uint32_t slot,
 static void test_shader_abi_and_weight_decode() {
     CHECK(sizeof(VkSkinMatrix) == 64, "skin matrix is a std430 mat4");
     CHECK(alignof(VkSkinMatrix) == 16, "skin matrix keeps vec4 alignment");
+    CHECK(offsetof(VkSkinMatrix, elements) == 0, "matrix elements begin at byte zero");
     CHECK(sizeof(VkSkinInfluence) == 16, "four u16 joints and weights are 16 bytes");
+    CHECK(alignof(VkSkinInfluence) == alignof(uint16_t), "influence uses scalar alignment");
+    CHECK(offsetof(VkSkinInfluence, joint) == 0, "joints begin at byte zero");
     CHECK(offsetof(VkSkinInfluence, weight) == 8, "weights start after four joints");
     CHECK(sizeof(VkSkinJoint) == 128, "two mat4 skin matrices are 128 bytes");
+    CHECK(alignof(VkSkinJoint) == 16, "skin joints retain mat4 alignment");
+    CHECK(offsetof(VkSkinJoint, position) == 0, "position matrix begins at byte zero");
     CHECK(offsetof(VkSkinJoint, normal) == 64, "normal matrix follows position matrix");
     CHECK(sizeof(VkSkinWorkItem) == 32, "work item is eight u32 fields");
+    CHECK(alignof(VkSkinWorkItem) == alignof(uint32_t), "work item uses scalar alignment");
+    CHECK(offsetof(VkSkinWorkItem, source_vertex) == 0, "source vertex ABI offset");
+    CHECK(offsetof(VkSkinWorkItem, influence) == 4, "influence ABI offset");
+    CHECK(offsetof(VkSkinWorkItem, vertex_count) == 8, "vertex count ABI offset");
+    CHECK(offsetof(VkSkinWorkItem, palette) == 12, "palette ABI offset");
+    CHECK(offsetof(VkSkinWorkItem, output_current) == 16, "current output ABI offset");
     CHECK(offsetof(VkSkinWorkItem, output_previous) == 20, "previous output ABI offset");
+    CHECK(offsetof(VkSkinWorkItem, instance_slot) == 24, "instance slot ABI offset");
+    CHECK(offsetof(VkSkinWorkItem, flags) == 28, "flags ABI offset");
     VkSkinInfluence influence{};
     influence.weight[0] = 32768;
     influence.weight[1] = 32767;
@@ -103,9 +116,21 @@ static void test_fence_lifetime_wrap_and_transactional_caps() {
     CHECK(skinning.register_asset(1, std::vector<VkSkinInfluence>(2000000)), "large asset registers");
     VkSkinSubmission one = candidate(1, 1, 1000000, 0, 0, 0);
     CHECK(skinning.submit_visible(0, {one}), "first frame owns its arena slices");
-    skinning.mark_submitted(0, 10);
+    CHECK(skinning.mark_submitted(0, 10), "first seal records the submitted fence");
+    CHECK(!skinning.mark_submitted(0, 0),
+          "duplicate stale seal is rejected instead of replacing an in-flight fence");
+    CHECK(skinning.frame(0).in_flight && skinning.frame(0).submitted_fence == 10 &&
+              skinning.frame(0).work_items.size() == 1,
+          "rejected stale seal leaves the existing arena and fence intact");
+    CHECK(!skinning.begin_frame(0, 0),
+          "stale completion cannot reset the arena after a rejected stale seal");
     CHECK(!skinning.begin_frame(0, 9), "in-flight arena cannot wrap before its fence");
     CHECK(skinning.begin_frame(0, 10), "completed fence permits arena reuse");
+    CHECK(skinning.submit_visible(0, {one}), "completed slot accepts a new allocation");
+    CHECK(skinning.mark_submitted(0, 11), "reused slot seals with its next fence");
+    CHECK(!skinning.begin_frame(0, 10),
+          "reused slot stays sealed until its own newer fence completes");
+    CHECK(skinning.begin_frame(0, 11), "reused slot resets only at its own completed fence");
 
     std::vector<VkSkinSubmission> too_many;
     for (uint32_t i = 0; i < kVkMaxSkinWorkItems + 1; ++i) too_many.push_back(candidate(1, i, 1, 0, 0, 0));
@@ -118,6 +143,10 @@ static void test_fence_lifetime_wrap_and_transactional_caps() {
     CHECK(skinning.frame(1).work_items.empty(), "vertex cap leaves no partial queue");
     CHECK(skinning.frame(1).fallbacks.size() == 1,
           "vertex cap emits a deterministic bind-or-last-pose fallback");
+    CHECK(!skinning.mark_submitted(1, 11),
+          "a duplicate fence on another slot is rejected on the global submission timeline");
+    CHECK(skinning.mark_submitted(1, 12),
+          "a later fence seals an independent slot on the global timeline");
 }
 
 int main() {

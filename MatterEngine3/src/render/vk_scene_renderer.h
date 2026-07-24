@@ -394,7 +394,7 @@ public:
                                         uint64_t completed_fence);
     bool submit_visible_animation_skinning(
         uint32_t frame_slot, const std::vector<VkSkinSubmission>& visible);
-    void finish_animation_skinning_frame(uint32_t frame_slot, uint64_t fence);
+    bool finish_animation_skinning_frame(uint32_t frame_slot, uint64_t fence);
     const VkAnimationSkinning& animation_skinning() const noexcept {
         return animation_skinning_;
     }
