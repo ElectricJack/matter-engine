@@ -51,7 +51,7 @@ DynamicInstanceSlots::UpsertResult DynamicInstanceSlots::upsert(const DynamicIns
                                                    : DynamicSlotChangeKind::Transform;
         changes_.push_back(DynamicSlotChange{kind, idx, s.part_hash, s.object_to_world,
                                               s.previous_object_to_world, s.casts_shadow, s.key,
-                                              {s.key.entity_id}});
+                                              {s.key.entity_id, s.key.entity_generation}});
         return {DynamicSlotHandle{idx, s.generation}, SlotResult::Ok};
     }
 
@@ -76,7 +76,7 @@ DynamicInstanceSlots::UpsertResult DynamicInstanceSlots::upsert(const DynamicIns
 
     changes_.push_back(DynamicSlotChange{DynamicSlotChangeKind::Bind, idx, s.part_hash,
                                           s.object_to_world, s.previous_object_to_world, s.casts_shadow,
-                                          s.key, {s.key.entity_id}});
+                                          s.key, {s.key.entity_id, s.key.entity_generation}});
     return {DynamicSlotHandle{idx, s.generation}, SlotResult::Ok};
 }
 
@@ -100,7 +100,7 @@ SlotResult DynamicInstanceSlots::remove(DynamicSlotHandle handle) {
 
     changes_.push_back(DynamicSlotChange{DynamicSlotChangeKind::Remove, handle.index, s.part_hash,
                                           s.object_to_world, s.previous_object_to_world, s.casts_shadow,
-                                          s.key, {s.key.entity_id}});
+                                          s.key, {s.key.entity_id, s.key.entity_generation}});
     pending_free_.push_back(handle.index);
     return SlotResult::Ok;
 }

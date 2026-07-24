@@ -248,10 +248,29 @@ void test_binding_and_entity_generation_are_distinct_identities() {
     recycled.key.entity_generation = 2;
     recycled.part_hash = 12;
 
-    CHECK(slots.upsert(first).result == SlotResult::Ok, "identity: ordinary binding inserts");
+    const auto old = slots.upsert(first);
+    CHECK(old.result == SlotResult::Ok, "identity: ordinary binding inserts");
     CHECK(slots.upsert(rigid).result == SlotResult::Ok, "identity: articulated binding does not alias root");
-    CHECK(slots.upsert(recycled).result == SlotResult::Ok, "identity: recycled entity generation does not alias old entity");
+    const auto fresh = slots.upsert(recycled);
+    CHECK(fresh.result == SlotResult::Ok, "identity: recycled entity generation does not alias old entity");
     CHECK(slots.active_count() == 3, "identity: all key fields participate in slot identity");
+    CHECK(old.handle.index != fresh.handle.index,
+          "identity: same entity value with a new generation owns an independent slot");
+    CHECK(slots.remove(old.handle) == SlotResult::Ok,
+          "identity: removing old incarnation does not invalidate new incarnation");
+    CHECK(slots.upsert(recycled).handle.index == fresh.handle.index,
+          "identity: new incarnation remains independently addressable after old removal");
+    const auto changes = slots.drain();
+    bool removed_old = false;
+    for (const auto& change : changes) {
+        if (change.kind == DynamicSlotChangeKind::Remove && change.key.entity_id == 9 &&
+            change.key.entity_generation == 1) {
+            removed_old = true;
+            CHECK(change.entity_id.generation == 1,
+                  "identity: emitted removal preserves old entity generation");
+        }
+    }
+    CHECK(removed_old, "identity: old incarnation emits a generation-qualified removal");
 }
 
 } // namespace

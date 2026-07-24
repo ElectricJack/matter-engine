@@ -27,7 +27,7 @@ uint32_t DynamicSceneBridge::fold_pick_token(uint64_t value) {
 }
 
 bool DynamicSceneBridge::reconcile(flecs::world& world, const BridgeErrorSink& sink,
-                                   std::string& error) {
+                                   std::string& error, uint64_t render_frame_serial) {
     error.clear();
     std::vector<render::DynamicInstanceInput> desired;
     std::unordered_set<render::DynamicInstanceKey, render::DynamicInstanceKeyHash> seen_entities;
@@ -65,7 +65,8 @@ bool DynamicSceneBridge::reconcile(flecs::world& world, const BridgeErrorSink& s
     world.each([&](flecs::entity, const SceneEntityId& id, const ecs::WorldTransform& wt,
                    const render::AnimationRigidBinding& binding) {
         const Mat4f previous = previous_for(id, wt.matrix);
-        render::AnimationRigidExpansion expansion{root_key(id), wt.matrix, previous, binding};
+        render::AnimationRigidExpansion expansion{root_key(id), wt.matrix, previous,
+                                                   render_frame_serial, binding};
         if (!rigid_bridge_.expand(expansion, desired) && binding.asset && sink.on_error) {
             sink.on_error(id, PartInstanceError{PartInstanceErrorCode::PartUnavailable,
                                                 binding.asset->identity});

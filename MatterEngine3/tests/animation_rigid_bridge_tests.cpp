@@ -46,7 +46,7 @@ void test_rigid_and_socket_expand_in_serialized_order() {
     rig.sockets.push_back(hand);
     matter::render::AnimationRigidAsset asset{0x111, 2, &bindings, &rig, {0x111}};
     matter::render::AnimationRigidBinding binding{handle(), &asset, 2, true};
-    matter::render::AnimationRigidExpansion input{{42, 5, 0}, matrix(10.0f), matrix(8.0f), binding};
+    matter::render::AnimationRigidExpansion input{{42, 5, 0}, matrix(10.0f), matrix(8.0f), 9, binding};
     std::vector<matter::render::DynamicInstanceInput> out;
     matter::render::AnimationRigidBridge bridge(&snapshots);
     CHECK(bridge.expand(input, out), "rigid bridge accepts complete immutable asset");
@@ -72,7 +72,7 @@ void test_missing_snapshot_and_stale_asset_reject_without_append() {
     rig.joints.push_back(root);
     matter::render::AnimationRigidAsset asset{0x111, 2, &bindings, &rig, {0x111}};
     matter::render::AnimationRigidBinding binding{handle(), &asset, 1, true};
-    matter::render::AnimationRigidExpansion input{{42, 5, 0}, matrix(1), matrix(1), binding};
+    matter::render::AnimationRigidExpansion input{{42, 5, 0}, matrix(1), matrix(1), 9, binding};
     std::vector<matter::render::DynamicInstanceInput> out;
     matter::animation::AnimationPoseSnapshotStore snapshots;
     matter::render::AnimationRigidBridge bridge(&snapshots);
@@ -82,10 +82,30 @@ void test_missing_snapshot_and_stale_asset_reject_without_append() {
     CHECK(!bridge.expand(input, out) && out.empty(), "missing snapshot does not produce stale records");
 }
 
+void test_stale_frame_serial_rejects_without_append() {
+    matter::animation::AnimationPoseSnapshotStore snapshots;
+    publish_pose(snapshots);
+    matter::animation::BindingBake bindings;
+    bindings.rigid_segments.push_back({"arm", 0, {}, false, {{0, 1, 0, 1}}});
+    matter::animation::CanonicalRig rig;
+    rig.joints.push_back({"root"});
+    matter::render::AnimationRigidAsset asset{0x111, 2, &bindings, &rig, {0x111}};
+    matter::render::AnimationRigidBinding binding{handle(), &asset, 2, true};
+    matter::render::AnimationRigidExpansion input{{42, 5, 0}, matrix(1), matrix(1), 8, binding};
+    std::vector<matter::render::DynamicInstanceInput> out;
+    matter::render::AnimationRigidBridge bridge(&snapshots);
+    CHECK(!bridge.expand(input, out) && out.empty(),
+          "prior frame pose is rejected instead of being expanded as current");
+    input.frame_serial = 9;
+    CHECK(bridge.expand(input, out) && out.size() == 1,
+          "matching frame pose expands after stale serial rejection");
+}
+
 } // namespace
 
 int main() {
     test_rigid_and_socket_expand_in_serialized_order();
     test_missing_snapshot_and_stale_asset_reject_without_append();
+    test_stale_frame_serial_rejects_without_append();
     return check_summary();
 }

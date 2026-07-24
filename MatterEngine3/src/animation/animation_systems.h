@@ -158,6 +158,11 @@ class AnimationSystems {
 public:
     AnimationPoseSnapshotStore& pose_snapshots() noexcept { return pose_snapshots_; }
     const AnimationPoseSnapshotStore& pose_snapshots() const noexcept { return pose_snapshots_; }
+    // Explicit presentation-to-render handoff.  Runtime evaluation owns pose
+    // contents; the render caller owns its serial.  Republishing the complete
+    // immutable view under the submission serial lets adapters require an
+    // exact serial without sampling or advancing animation at render time.
+    void publish_presentation_for_render(uint64_t render_frame_serial);
 
     // Runtime calls this exactly once, after its fixed-step accumulator loop
     // and before FrameUpdate.  It is consumed only by presentation state.

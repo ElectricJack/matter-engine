@@ -5,6 +5,7 @@
 #include "animation/animation_systems.h"
 #include "animation/animation_store.h"
 #include "animation/animation_world_queries.h"
+#include "render/animation_rigid_bridge.h"
 #include "../streaming/sector_streaming_coordinator.h"
 #include "matter/physics.h"
 #include "matter/streaming.h"
@@ -340,6 +341,9 @@ Runtime::Runtime() {
     world_.set<streaming::detail::StreamingContextRef>(
         streaming::detail::StreamingContextRef{streaming_.get()});
     animation_systems_ = std::make_unique<animation::AnimationSystems>();
+    // The producer owns component lifecycle; DynamicSceneBridge is only a
+    // renderer adapter and must never manufacture this component itself.
+    world_.component<render::AnimationRigidBinding>();
     // Animation's fixed world-query seam is backed by the same live Box3D
     // world as the Physics pipeline.  There is deliberately no production
     // no-hit default once Runtime owns a world.
@@ -394,9 +398,64 @@ const animation::AnimationSystems& Runtime::animation_systems() const noexcept {
 
 void Runtime::attach_animation_service(AnimationService* service) noexcept {
     if (bound_animation_service_ == service) return;
+    // Animator handles are service-local.  Even if a replacement service
+    // happens to reuse the same slot/generation and asset hash, it must not
+    // inherit render components produced by the previous service.
+    std::vector<flecs::entity> attached;
+    world_.each([&attached](flecs::entity entity,
+                            const render::AnimationRigidBinding&) {
+        attached.push_back(entity);
+    });
+    for (flecs::entity entity : attached)
+        entity.remove<render::AnimationRigidBinding>();
     if (bound_animation_service_ != nullptr) bound_animation_service_->attach_runtime_systems(nullptr);
     bound_animation_service_ = service;
     if (bound_animation_service_ != nullptr) bound_animation_service_->attach_runtime_systems(animation_systems_.get());
+}
+
+bool Runtime::attach_animation_rigid_binding(
+    flecs::entity entity, AnimatorInstanceHandle animator,
+    const render::AnimationRigidAsset& asset, bool casts_shadow) {
+    if (!entity.is_valid() || bound_animation_service_ == nullptr || !animator.valid() ||
+        asset.identity == 0 || asset.generation == 0 || asset.bindings == nullptr ||
+        asset.rig == nullptr) {
+        return false;
+    }
+    AnimationRuntimeBindingLease lease;
+    // The service is the authority for handle liveness.  A pointer-only asset
+    // declaration is not enough: it must describe this exact immutable ANIM
+    // asset, or a replaced/destroyed animator could render stale geometry.
+    if (!bound_animation_service_->runtime_binding(animator, lease) ||
+        lease.asset_identity != asset.identity) {
+        return false;
+    }
+    entity.set<render::AnimationRigidBinding>(
+        {animator, &asset, asset.generation, casts_shadow});
+    return true;
+}
+
+void Runtime::detach_animation_rigid_binding(flecs::entity entity) {
+    if (entity.is_valid() && entity.has<render::AnimationRigidBinding>())
+        entity.remove<render::AnimationRigidBinding>();
+}
+
+void Runtime::reconcile_animation_rigid_binding_lifecycle() {
+    std::vector<flecs::entity> stale;
+    world_.each([this, &stale](flecs::entity entity,
+                               const render::AnimationRigidBinding& binding) {
+        AnimationRuntimeBindingLease lease;
+        const render::AnimationRigidAsset* asset = binding.asset;
+        if (bound_animation_service_ == nullptr || asset == nullptr ||
+            asset->identity == 0 || asset->generation == 0 ||
+            asset->bindings == nullptr || asset->rig == nullptr ||
+            binding.asset_generation != asset->generation ||
+            !bound_animation_service_->runtime_binding(binding.animator, lease) ||
+            lease.asset_identity != asset->identity) {
+            stale.push_back(entity);
+        }
+    });
+    for (flecs::entity entity : stale)
+        entity.remove<render::AnimationRigidBinding>();
 }
 
 void Runtime::enqueue_world_state(WorldStateCommand command) {
@@ -461,6 +520,7 @@ TickResult Runtime::tick(const TickDesc& desc) {
     const FrameScope frame(
         world_, explicit_flecs_frame_delta(contributed_delta));
     drain_world_state_commands();
+    reconcile_animation_rigid_binding_lifecycle();
     ecs::drain_hierarchy_commands(world_);
 
     TickResult result{};

@@ -40,6 +40,10 @@ struct AnimationRigidExpansion {
     DynamicInstanceKey entity{};
     Mat4f entity_world{};
     Mat4f previous_entity_world{};
+    // The renderer's requested presentation serial.  A rigid expansion is
+    // only valid for the exact pose that will be submitted this frame; using
+    // latest() here would silently turn an old pose into current geometry.
+    uint64_t frame_serial = 0;
     AnimationRigidBinding binding{};
 };
 

@@ -128,7 +128,7 @@ ANIMATION_SYSTEMS_TARGET = animation_systems_tests
 ANIMATION_SYSTEMS_CPP = animation_systems_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_world_queries.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 
 ANIMATION_SIMULATION_TARGET = animation_simulation_tests
-ANIMATION_SIMULATION_CPP = animation_simulation_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_world_queries.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/simulation_control.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
+ANIMATION_SIMULATION_CPP = animation_simulation_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_world_queries.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/simulation_control.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/dynamic_scene_bridge.cpp ../src/render/animation_rigid_bridge.cpp ../src/render/dynamic_instance_slots.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 
 ANIMATION_CONTROLLER_TARGET = animation_controller_tests
 ANIMATION_CONTROLLER_CPP = animation_controller_tests.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp
@@ -440,7 +440,11 @@ ENTITY_RECIPE_C      = $(FLECS_C)
 
 # Phase 4 Task 8 — ECS dynamic scene bridge (headless, Flecs, no GL/Vulkan).
 DYNAMIC_BRIDGE_TARGET = dynamic_bridge_tests
-DYNAMIC_BRIDGE_CPP    = dynamic_scene_bridge_tests.cpp ../src/animation/animation_systems.cpp ../src/ecs/dynamic_scene_bridge.cpp \
+DYNAMIC_BRIDGE_CPP    = dynamic_scene_bridge_tests.cpp ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp \
+                        ../src/animation/animation_evaluator.cpp ../src/animation/animation_systems.cpp \
+                        ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp \
+                        ../src/animation/animation_world_queries.cpp ../src/animation/ozz_adapter.cpp \
+                        ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/dynamic_scene_bridge.cpp \
                         ../src/render/animation_rigid_bridge.cpp ../src/render/dynamic_instance_slots.cpp \
                         ../src/ecs/scene_registry.cpp \
                         ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
@@ -1241,7 +1245,7 @@ run-dynamic-slots: $(DYNAMIC_SLOTS_TARGET)
 # WorldTransform + PartInstance against DynamicInstanceSlots each frame).
 # Pure CPU test: no GL, no raylib — only box3d + flecs system deps.
 $(DYNAMIC_BRIDGE_TARGET): $(DYNAMIC_BRIDGE_OBJS) $(BOX3D_LIB)
-	$(CC) $(DYNAMIC_BRIDGE_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) -lws2_32 -ldbghelp -lwinmm
+	$(CC) $(DYNAMIC_BRIDGE_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) -lws2_32 -ldbghelp -lwinmm
 
 run-dynamic-bridge: $(DYNAMIC_BRIDGE_TARGET)
 	./$(DYNAMIC_BRIDGE_TARGET)

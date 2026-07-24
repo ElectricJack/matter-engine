@@ -3,7 +3,9 @@
 #include "animation/animation_systems.h"
 #include "animation/animation_world_queries.h"
 #include "../src/ecs/ecs_runtime.h"
+#include "ecs/dynamic_scene_bridge.h"
 #include "ecs/simulation_control.h"
+#include "render/animation_rigid_bridge.h"
 #include "check.h"
 
 #include <cstdio>
@@ -595,6 +597,71 @@ void test_service_root_lock_keeps_authored_reference_out_of_ecs_authority() {
           "root-locked pose retains bind translation/rotation and evaluated scale");
 }
 
+void test_runtime_produces_and_retires_rigid_binding_components() {
+    ecs_runtime::Runtime runtime;
+    AnimationService service;
+    runtime.attach_animation_service(service);
+    const AnimAsset* asset = service.insert_asset({0xA611u, {1u, 2u}});
+    BoundFixture fixture;
+    auto descriptor = std::make_shared<AnimationRuntimeBindingDescriptor>();
+    descriptor->evaluation = fixture.evaluation;
+    descriptor->fixed_work.clip.duration = 1.0f;
+    descriptor->fixed_work.clip.loop = true;
+    AnimationRuntimeDefinition definition;
+    definition.binding = descriptor;
+    const Animator animator = service.create(asset, definition);
+    CHECK(animator.valid(), "rigid producer creates a service animator");
+
+    BindingBake bindings;
+    bindings.rigid_segments.push_back({"body", 0, {}, false, {{0, 1, 0, 1}}});
+    CanonicalRig rig;
+    CanonicalJoint root{};
+    root.name = "root";
+    rig.joints.push_back(root);
+    render::AnimationRigidAsset render_asset{0xA611u, 1, &bindings, &rig, {0xB0D1u}};
+    flecs::entity entity = runtime.world().entity("RuntimeArticulatedEntity");
+    entity.set<scene::SceneEntityId>({0xD1CEu, 7u});
+    Mat4f entity_world{};
+    entity_world.m[0] = entity_world.m[5] = entity_world.m[10] = entity_world.m[15] = 1.0f;
+    entity_world.m[3] = 4.0f;
+    entity.set<ecs::WorldTransform>({entity_world});
+    CHECK(runtime.attach_animation_rigid_binding(entity, animator.instance, render_asset),
+          "runtime attaches a production rigid binding only for the live service animator");
+    render::AnimationRigidAsset wrong_asset = render_asset;
+    wrong_asset.identity = 0xBADu;
+    CHECK(!runtime.update_animation_rigid_binding(entity, animator.instance, wrong_asset),
+          "runtime refuses an immutable render asset from another animation identity");
+
+    runtime.tick({0.1f, 0.1f, 2});
+    const auto pose = runtime.animation_systems().pose_snapshots().latest(animator.instance);
+    CHECK(pose.instance.valid() && pose.frame_serial != 0,
+          "runtime publishes the presentation pose consumed by the render bridge");
+    constexpr uint64_t kRenderSerial = 0x51u;
+    runtime.animation_systems().publish_presentation_for_render(kRenderSerial);
+    CHECK(runtime.animation_systems().pose_snapshots().snapshot(animator.instance, kRenderSerial).instance.valid(),
+          "production handoff republishes the pose under the renderer submission serial");
+    scene::DynamicSceneBridge bridge(4, &runtime.animation_systems().pose_snapshots());
+    scene::BridgeErrorSink sink{};
+    std::string error;
+    CHECK(bridge.reconcile(runtime.world(), sink, error, kRenderSerial),
+          "dynamic scene bridge accepts runtime-produced articulated component");
+    const auto changes = bridge.drain();
+    CHECK(changes.size() == 1 && changes[0].key.entity_id == 0xD1CEu &&
+              changes[0].key.entity_generation == 7 && changes[0].key.binding_index == 1 &&
+              changes[0].part_hash == 0xB0D1u,
+          "runtime scene entity reaches rigid expansion in the dynamic render lane");
+
+    CHECK(service.remove(animator.instance), "service removes rigid binding owner");
+    runtime.tick({0.0f, 0.1f, 1});
+    CHECK(!entity.has<render::AnimationRigidBinding>(),
+          "runtime lifecycle removes the ECS rigid binding after animator destruction");
+    CHECK(bridge.reconcile(runtime.world(), sink, error, kRenderSerial + 1),
+          "bridge reconciles component removal without a stale rigid expansion");
+    const auto removals = bridge.drain();
+    CHECK(removals.size() == 1 && removals[0].kind == render::DynamicSlotChangeKind::Remove,
+          "retired service animator removes its old articulated dynamic slot");
+}
+
 } // namespace
 
 int main() {
@@ -606,6 +673,7 @@ int main() {
     test_runtime_fixed_phases_execute_registered_animation_work();
     test_service_graph_root_motion_owns_fixed_authority();
     test_service_root_lock_keeps_authored_reference_out_of_ecs_authority();
+    test_runtime_produces_and_retires_rigid_binding_components();
     test_service_bound_runtime_work_is_automatic_and_generation_safe();
     test_controller_input_bindings_are_fixed_typed_and_fail_closed();
     test_service_checkpoint_restores_runtime_tick_deterministically();

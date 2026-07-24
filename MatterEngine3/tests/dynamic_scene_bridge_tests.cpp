@@ -286,6 +286,28 @@ static void test_bridge_generation_replacement() {
     CHECK(bridge.has_entity(SceneEntityId{0x201}), "new entity 0x201 should be tracked");
 }
 
+static void test_scene_registry_assigns_reusable_id_generations() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+    world.import<SceneModule>();
+    SceneGeneration generation{};
+    RecipeError error;
+    const EntityRecipe recipe{"same-authored-id", "Entity", "", "{}"};
+    CHECK(instantiate(world, &recipe, 1, generation, error),
+          "scene registry instantiates first entity incarnation");
+    SceneEntityId first{};
+    world.each([&](flecs::entity, const SceneEntityId& id) { first = id; });
+    std::vector<flecs::entity> entities;
+    world.each([&entities](flecs::entity entity, const SceneEntityId&) { entities.push_back(entity); });
+    for (flecs::entity entity : entities) entity.destruct();
+    CHECK(instantiate(world, &recipe, 1, generation, error),
+          "scene registry instantiates recycled authored id");
+    SceneEntityId second{};
+    world.each([&](flecs::entity, const SceneEntityId& id) { second = id; });
+    CHECK(first.value == second.value && first.generation == 1 && second.generation == 2,
+          "scene registry preserves id value and advances incarnation generation on reuse");
+}
+
 int main() {
     test_bridge_add_entity();
     test_bridge_transform_only();
@@ -297,5 +319,6 @@ int main() {
     test_bridge_scene_entities_query();
     test_bridge_resolve_pick();
     test_bridge_generation_replacement();
+    test_scene_registry_assigns_reusable_id_generations();
     return check_summary();
 }

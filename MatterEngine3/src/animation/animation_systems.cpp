@@ -228,6 +228,19 @@ AnimationPoseSnapshot AnimationPoseSnapshotStore::latest(AnimatorInstanceHandle 
         ? AnimationPoseSnapshot{} : view(instance, found->second.buffers[found->second.front]);
 }
 
+void AnimationSystems::publish_presentation_for_render(uint64_t render_frame_serial) {
+    // Service bindings are the only production publishers.  Copying through
+    // AnimationPoseSnapshotStore preserves its double-buffer ownership and
+    // does not expose evaluator storage to the renderer.
+    for (const auto& pair : service_bindings_) {
+        const AnimationPoseSnapshot latest = pose_snapshots_.latest(pair.second.instance);
+        if (!latest.instance.valid() || latest.frame_serial == render_frame_serial) continue;
+        AnimationPoseSnapshot tagged = latest;
+        tagged.frame_serial = render_frame_serial;
+        (void)pose_snapshots_.publish(tagged);
+    }
+}
+
 void AnimationPoseSnapshotStore::forget(AnimatorInstanceHandle instance) {
     if (instance.valid()) {
         slots_.erase(key(instance));

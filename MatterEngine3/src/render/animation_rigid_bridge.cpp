@@ -63,7 +63,8 @@ bool AnimationRigidBridge::expand(const AnimationRigidExpansion& input,
         !valid_matrix(input.entity_world) || !valid_matrix(input.previous_entity_world)) {
         return false;
     }
-    const animation::AnimationPoseSnapshot pose = snapshots_->latest(binding.animator);
+    const animation::AnimationPoseSnapshot pose = snapshots_->snapshot(binding.animator,
+                                                                         input.frame_serial);
     if (pose.model_pose.empty() || pose.previous_model_pose.count != pose.model_pose.count) return false;
 
     // Validate the complete immutable declaration before appending, so stale or

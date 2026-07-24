@@ -4222,9 +4222,15 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     {
         scene::BridgeErrorSink sink{};
         std::string bridge_err;
+        // The Vulkan submission serial is distinct from the fixed/frame ECS
+        // counter.  Make an explicit renderer-facing snapshot publication so
+        // articulated expansion can require this exact serial.
+        impl_->ecs_runtime.animation_systems().publish_presentation_for_render(
+            frame.serial);
         impl_->dynamic_bridge.set_animation_pose_snapshots(
             &impl_->ecs_runtime.animation_systems().pose_snapshots());
-        impl_->dynamic_bridge.reconcile(impl_->ecs_runtime.world(), sink, bridge_err);
+        impl_->dynamic_bridge.reconcile(impl_->ecs_runtime.world(), sink, bridge_err,
+                                        frame.serial);
         auto changes = impl_->dynamic_bridge.drain();
         std::vector<render::DynamicSlotChange> valid;
         valid.reserve(changes.size());

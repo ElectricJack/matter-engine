@@ -428,7 +428,16 @@ bool instantiate(flecs::world& world,
         used_hashes.insert(hash);
 
         flecs::entity e = world.entity();
-        e.set<SceneEntityId>({hash});
+        // A SceneEntityId value is stable across reloads, while generation
+        // identifies this specific incarnation to deferred GPU retirement.
+        // instantiate() commits exactly one new scene generation at its end.
+        const uint64_t next_generation = gen.value + 1u;
+        if (next_generation == 0 || next_generation > UINT32_MAX) {
+            err.message = "scene entity generation exhausted";
+            err.authored_id = recipe.authored_id;
+            return false;
+        }
+        e.set<SceneEntityId>({hash, static_cast<uint32_t>(next_generation)});
 
         if (!recipe.display_name.empty())
             e.set_name(recipe.display_name.c_str());

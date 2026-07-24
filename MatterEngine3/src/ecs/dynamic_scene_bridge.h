@@ -58,7 +58,11 @@ public:
     // Frame reconciliation: queries all entities with SceneEntityId + WorldTransform + PartInstance,
     // compares against previous frame state, and emits Bind/Transform/Remove changes.
     // Returns false on fatal error (error string set).
-    bool reconcile(flecs::world& world, const BridgeErrorSink& sink, std::string& error);
+    // render_frame_serial is the serial that will be submitted to the
+    // renderer. Animated records require a pose published for exactly this
+    // serial; ordinary dynamic parts remain independent of animation.
+    bool reconcile(flecs::world& world, const BridgeErrorSink& sink, std::string& error,
+                   uint64_t render_frame_serial = 0);
 
     // Drain the accumulated slot changes since last drain.
     std::vector<render::DynamicSlotChange> drain();

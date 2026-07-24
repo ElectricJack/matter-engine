@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "matter/animation.h"
 #include "matter/ecs.h"
 #include "matter/world_session.h"
 #include "matter/world_definition.h"  // RawEntityRecipe
@@ -39,6 +40,7 @@ class Box3DAnimationWorldQueries;
 } // namespace matter::animation
 
 namespace matter { class AnimationService; }
+namespace matter::render { struct AnimationRigidAsset; }
 
 namespace matter::ecs_runtime {
 
@@ -81,11 +83,27 @@ public:
     // The caller retains service lifetime and may detach with nullptr.
     void attach_animation_service(AnimationService* service) noexcept;
     void attach_animation_service(AnimationService& service) noexcept { attach_animation_service(&service); }
+    // Production scene-side producer for B6.  The renderer only observes the
+    // resulting value component; this runtime boundary validates the live
+    // service handle against the immutable asset declaration before attaching
+    // it to an ECS entity.
+    bool attach_animation_rigid_binding(flecs::entity entity,
+                                        AnimatorInstanceHandle animator,
+                                        const render::AnimationRigidAsset& asset,
+                                        bool casts_shadow = true);
+    bool update_animation_rigid_binding(flecs::entity entity,
+                                        AnimatorInstanceHandle animator,
+                                        const render::AnimationRigidAsset& asset,
+                                        bool casts_shadow = true) {
+        return attach_animation_rigid_binding(entity, animator, asset, casts_shadow);
+    }
+    void detach_animation_rigid_binding(flecs::entity entity);
     void enqueue_world_state(WorldStateCommand command);
     TickResult tick(const TickDesc& desc);
 
 private:
     void drain_world_state_commands();
+    void reconcile_animation_rigid_binding_lifecycle();
 
     flecs::world world_;
     std::unique_ptr<physics::detail::PhysicsContext> physics_;
