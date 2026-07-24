@@ -17,16 +17,24 @@ struct AnimationInputHandle {
     uint32_t schema_index = UINT32_MAX;
     AnimationValueType value_type = static_cast<AnimationValueType>(0xff);
     AnimationCadence cadence = AnimationCadence::Invalid;
-    bool valid() const { return slot_index != UINT32_MAX; }
+    bool valid() const {
+        return slot_index != UINT32_MAX && schema_index != UINT32_MAX &&
+               static_cast<uint32_t>(value_type) <= static_cast<uint32_t>(AnimationValueType::Symbol) &&
+               (cadence == AnimationCadence::Fixed || cadence == AnimationCadence::Frame);
+    }
 };
 
 struct AnimationTargetHandle {
     uint32_t slot_index = UINT32_MAX;
     uint32_t generation = 0;
     uint32_t schema_index = UINT32_MAX;
-    AnimationValueType value_type = AnimationValueType::Transform;
+    AnimationValueType value_type = static_cast<AnimationValueType>(0xff);
     AnimationCadence cadence = AnimationCadence::Invalid;
-    bool valid() const { return slot_index != UINT32_MAX; }
+    bool valid() const {
+        return slot_index != UINT32_MAX && schema_index != UINT32_MAX &&
+               value_type == AnimationValueType::Transform &&
+               (cadence == AnimationCadence::Fixed || cadence == AnimationCadence::Frame);
+    }
 };
 
 struct AnimatorInstanceHandle {
@@ -35,7 +43,10 @@ struct AnimatorInstanceHandle {
     uint32_t schema_index = UINT32_MAX;
     AnimationValueType value_type = static_cast<AnimationValueType>(0xff);
     AnimationCadence cadence = AnimationCadence::Invalid;
-    bool valid() const { return slot_index != UINT32_MAX; }
+    bool valid() const {
+        return slot_index != UINT32_MAX && schema_index == UINT32_MAX &&
+               static_cast<uint32_t>(value_type) == 0xffu && cadence == AnimationCadence::Invalid;
+    }
 };
 
 enum class AnimationStatus : uint8_t { Ok, BudgetExceeded, InvalidHandle, LoadFailed };
@@ -43,6 +54,9 @@ enum class AnimationStatus : uint8_t { Ok, BudgetExceeded, InvalidHandle, LoadFa
 struct Animator {
     AnimatorInstanceHandle instance{};
     AnimationStatus status = AnimationStatus::Ok;
+    // Allocation caps are recoverable: the owner keeps its static .part visible
+    // in bind pose and may retry allocation later.
+    bool bind_pose_fallback = false;
     bool valid() const { return instance.valid() && status == AnimationStatus::Ok; }
 };
 

@@ -23,6 +23,14 @@ struct StoredValue {
 namespace {
 
 constexpr uint32_t kInvalid = UINT32_MAX;
+constexpr uint32_t kHardInstanceCapacity = 4096;
+constexpr size_t kHardMutableBudgetBytes = 64u * 1024u * 1024u;
+
+AnimationStoreConfig bounded_config(AnimationStoreConfig requested) {
+    requested.instance_capacity = std::min(requested.instance_capacity, kHardInstanceCapacity);
+    requested.mutable_budget_bytes = std::min(requested.mutable_budget_bytes, kHardMutableBudgetBytes);
+    return requested;
+}
 
 AnimationCadence public_cadence(EvaluationCadence cadence) {
     return cadence == EvaluationCadence::Fixed ? AnimationCadence::Fixed : AnimationCadence::Frame;
@@ -79,6 +87,59 @@ bool same_input(const RuntimeInputDefinition& left, const RuntimeInputDefinition
     return left.name == right.name && left.type == right.type && left.cadence == right.cadence;
 }
 
+bool same_float3(const Float3& left, const Float3& right) {
+    return left.x == right.x && left.y == right.y && left.z == right.z;
+}
+
+bool same_quaternion(const Quaternion& left, const Quaternion& right) {
+    return left.x == right.x && left.y == right.y && left.z == right.z && left.w == right.w;
+}
+
+bool same_transform(const AnimationTransform& left, const AnimationTransform& right) {
+    return same_float3(left.translation, right.translation) && same_quaternion(left.rotation, right.rotation) &&
+           same_float3(left.scale, right.scale);
+}
+
+bool same_value(const AnimationValue& left, const AnimationValue& right) {
+    if (left.type != right.type) return false;
+    switch (left.type) {
+        case AnimationValueType::Bool: return left.boolean == right.boolean;
+        case AnimationValueType::Number: return left.number == right.number;
+        case AnimationValueType::Float3: return same_float3(left.float3, right.float3);
+        case AnimationValueType::Quaternion: return same_quaternion(left.quaternion, right.quaternion);
+        case AnimationValueType::Transform: return same_transform(left.transform, right.transform);
+        case AnimationValueType::Symbol: return left.symbol == right.symbol;
+    }
+    return false;
+}
+
+bool same_runtime_target(const RuntimeTargetDefinition& left, const RuntimeTargetDefinition& right) {
+    return same_target(left, right) && left.enabled == right.enabled;
+}
+
+bool same_definition(const AnimationRuntimeDefinition& left, const AnimationRuntimeDefinition& right) {
+    if (left.graph_state_bytes != right.graph_state_bytes ||
+        left.controller_state_bytes != right.controller_state_bytes ||
+        left.sample_context_bytes != right.sample_context_bytes ||
+        left.pose_scratch_bytes != right.pose_scratch_bytes ||
+        left.inputs.size() != right.inputs.size() || left.targets.size() != right.targets.size()) return false;
+    for (size_t i = 0; i < left.inputs.size(); ++i) {
+        if (!same_input(left.inputs[i], right.inputs[i]) ||
+            !same_value(left.inputs[i].default_value, right.inputs[i].default_value)) return false;
+    }
+    for (size_t i = 0; i < left.targets.size(); ++i) {
+        if (!same_runtime_target(left.targets[i], right.targets[i])) return false;
+    }
+    return true;
+}
+
+bool valid_definition(const AnimationRuntimeDefinition& definition) {
+    for (const RuntimeInputDefinition& input : definition.inputs) {
+        if (input.default_value.type != input.type) return false;
+    }
+    return definition.mutable_bytes() != std::numeric_limits<size_t>::max();
+}
+
 Slot make_slot(const AnimAsset* asset, const AnimationRuntimeDefinition* definition, uint32_t generation) {
     Slot slot;
     slot.alive = true;
@@ -106,13 +167,27 @@ Slot make_slot(const AnimAsset* asset, const AnimationRuntimeDefinition* definit
 } // namespace
 
 size_t AnimationRuntimeDefinition::mutable_bytes() const {
-    return inputs.size() * 3u * sizeof(StoredValue) + targets.size() * sizeof(TargetState) +
-           graph_state_bytes + controller_state_bytes + sample_context_bytes + pose_scratch_bytes;
+    constexpr size_t kMax = std::numeric_limits<size_t>::max();
+    size_t total = 0;
+    const auto add = [&total](size_t value) {
+        if (value > std::numeric_limits<size_t>::max() - total) {
+            total = std::numeric_limits<size_t>::max();
+            return false;
+        }
+        total += value;
+        return true;
+    };
+    if (inputs.size() > kMax / (3u * sizeof(StoredValue)) ||
+        targets.size() > kMax / sizeof(TargetState)) return kMax;
+    if (!add(inputs.size() * 3u * sizeof(StoredValue)) || !add(targets.size() * sizeof(TargetState)) ||
+        !add(graph_state_bytes) || !add(controller_state_bytes) || !add(sample_context_bytes) ||
+        !add(pose_scratch_bytes)) return kMax;
+    return total;
 }
 
 class AnimationServiceImpl {
 public:
-    explicit AnimationServiceImpl(AnimationStoreConfig config) : config_(config) {
+    explicit AnimationServiceImpl(AnimationStoreConfig config) : config_(bounded_config(config)) {
         slots_.reserve(config_.instance_capacity);
         free_indices_.reserve(config_.instance_capacity);
     }
@@ -121,11 +196,11 @@ public:
 
     Animator create(const AnimAsset* asset, const AnimationRuntimeDefinition& definition) {
         if (!owns(asset)) return {{}, AnimationStatus::LoadFailed};
-        if (!asset || !can_fit(definition.mutable_bytes()) || active_count_ == config_.instance_capacity) {
-            return {{}, AnimationStatus::BudgetExceeded};
-        }
         const AnimationRuntimeDefinition* schema = schema_for(asset, definition);
         if (!schema) return {{}, AnimationStatus::LoadFailed};
+        if (!can_fit(schema->mutable_bytes()) || active_count_ == config_.instance_capacity) {
+            return {{}, AnimationStatus::BudgetExceeded, true};
+        }
         uint32_t index;
         if (free_indices_.empty()) {
             index = static_cast<uint32_t>(slots_.size());
@@ -137,7 +212,7 @@ public:
         Slot& old = slots_[index];
         const uint32_t generation = old.generation + 1u;
         old = make_slot(asset, schema, generation);
-        mutable_bytes_ += definition.mutable_bytes();
+        mutable_bytes_ += schema->mutable_bytes();
         ++active_count_;
         return {instance_handle(index, old), AnimationStatus::Ok};
     }
@@ -149,14 +224,14 @@ public:
         const AnimationRuntimeDefinition* schema = schema_for(asset, definition);
         if (!schema) return {{}, AnimationStatus::LoadFailed};
         const size_t old_bytes = old->definition->mutable_bytes();
-        const size_t new_bytes = definition.mutable_bytes();
-        if (new_bytes > old_bytes && new_bytes - old_bytes > config_.mutable_budget_bytes - mutable_bytes_) {
-            return {{}, AnimationStatus::BudgetExceeded};
+        const size_t new_bytes = schema->mutable_bytes();
+        if (mutable_bytes_ < old_bytes || new_bytes > config_.mutable_budget_bytes - (mutable_bytes_ - old_bytes)) {
+            return {{}, AnimationStatus::BudgetExceeded, true};
         }
         Slot replacement = make_slot(asset, schema, old->generation + 1u);
-        for (size_t next = 0; next < definition.inputs.size(); ++next) {
+        for (size_t next = 0; next < schema->inputs.size(); ++next) {
             for (size_t prior = 0; prior < old->definition->inputs.size(); ++prior) {
-                if (same_input(definition.inputs[next], old->definition->inputs[prior])) {
+                if (same_input(schema->inputs[next], old->definition->inputs[prior])) {
                     replacement.fixed_previous[next] = old->fixed_previous[prior];
                     replacement.fixed_current[next] = old->fixed_current[prior];
                     replacement.frame_controls[next] = old->frame_controls[prior];
@@ -164,9 +239,9 @@ public:
                 }
             }
         }
-        for (size_t next = 0; next < definition.targets.size(); ++next) {
+        for (size_t next = 0; next < schema->targets.size(); ++next) {
             for (size_t prior = 0; prior < old->definition->targets.size(); ++prior) {
-                if (same_target(definition.targets[next], old->definition->targets[prior])) {
+                if (same_target(schema->targets[next], old->definition->targets[prior])) {
                     replacement.targets[next] = old->targets[prior];
                     break;
                 }
@@ -211,6 +286,7 @@ public:
     }
 
     bool set(AnimationInputHandle handle, const StoredValue& value, AnimationValueType type) {
+        if (!handle.valid()) return false;
         Slot* owner = slot(handle.slot_index, handle.generation);
         if (!owner || handle.schema_index >= owner->definition->inputs.size()) return false;
         const RuntimeInputDefinition& schema = owner->definition->inputs[handle.schema_index];
@@ -254,7 +330,8 @@ public:
 private:
     const AnimationRuntimeDefinition* schema_for(const AnimAsset* asset, const AnimationRuntimeDefinition& definition) {
         const auto existing = schemas_.find(asset);
-        if (existing != schemas_.end()) return existing->second.get();
+        if (existing != schemas_.end()) return same_definition(*existing->second, definition) ? existing->second.get() : nullptr;
+        if (!valid_definition(definition)) return nullptr;
         auto owned = std::make_unique<AnimationRuntimeDefinition>(definition);
         const AnimationRuntimeDefinition* result = owned.get();
         schemas_.emplace(asset, std::move(owned));
@@ -263,10 +340,12 @@ private:
     bool owns(const AnimAsset* asset) const {
         return asset && assets_.find(asset->resolved_hash, asset->nonce) == asset;
     }
-    bool can_fit(size_t bytes) const { return bytes <= config_.mutable_budget_bytes - mutable_bytes_; }
+    bool can_fit(size_t bytes) const {
+        return mutable_bytes_ <= config_.mutable_budget_bytes && bytes <= config_.mutable_budget_bytes - mutable_bytes_;
+    }
     AnimatorInstanceHandle instance_handle(uint32_t index, const Slot& value) const { return {index, value.generation, kInvalid, static_cast<AnimationValueType>(0xff), AnimationCadence::Invalid}; }
-    Slot* slot(AnimatorInstanceHandle handle) { return slot(handle.slot_index, handle.generation); }
-    const Slot* slot(AnimatorInstanceHandle handle) const { return slot(handle.slot_index, handle.generation); }
+    Slot* slot(AnimatorInstanceHandle handle) { return handle.valid() ? slot(handle.slot_index, handle.generation) : nullptr; }
+    const Slot* slot(AnimatorInstanceHandle handle) const { return handle.valid() ? slot(handle.slot_index, handle.generation) : nullptr; }
     Slot* slot(uint32_t index, uint32_t generation) {
         if (index >= slots_.size()) return nullptr;
         Slot& value = slots_[index];
@@ -278,6 +357,7 @@ private:
         return value.alive && value.generation == generation ? &value : nullptr;
     }
     TargetState* writable_target(AnimationTargetHandle handle) {
+        if (!handle.valid()) return nullptr;
         Slot* owner = slot(handle.slot_index, handle.generation);
         if (!owner || handle.schema_index >= owner->definition->targets.size() || handle.value_type != AnimationValueType::Transform) return nullptr;
         const RuntimeTargetDefinition& schema = owner->definition->targets[handle.schema_index];
@@ -285,6 +365,7 @@ private:
         return &owner->targets[handle.schema_index];
     }
     const StoredValue* read_input(AnimationInputHandle handle, AnimationValueType type) const {
+        if (!handle.valid()) return nullptr;
         const Slot* owner = slot(handle.slot_index, handle.generation);
         if (!owner || handle.schema_index >= owner->definition->inputs.size() || handle.value_type != type) return nullptr;
         const RuntimeInputDefinition& schema = owner->definition->inputs[handle.schema_index];

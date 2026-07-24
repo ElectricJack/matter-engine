@@ -2,6 +2,7 @@
 #include "check.h"
 
 #include <cstdio>
+#include <limits>
 
 using namespace matter;
 using namespace matter::animation;
@@ -42,6 +43,7 @@ void test_asset_dedup_and_handle_reuse() {
     const Animator first_animator = service.create(first, definition());
     CHECK(first_animator.valid(), "create first animator");
     const AnimationInputHandle speed = service.input(first_animator.instance, "speed");
+    const AnimationTargetHandle hand = service.target(first_animator.instance, "hand");
     CHECK(service.set(speed, 7.0f), "matching typed input write succeeds");
     CHECK(service.remove(first_animator.instance), "remove animator");
     const Animator replacement = service.create(first, definition());
@@ -49,6 +51,7 @@ void test_asset_dedup_and_handle_reuse() {
           "free list reuses slot");
     CHECK(replacement.instance.generation != first_animator.instance.generation, "reuse increments generation");
     CHECK(!service.set(speed, 9.0f), "stale input never affects reused slot");
+    CHECK(!service.set_enabled(hand, false), "stale target never affects reused slot");
 }
 
 void test_typed_cadence_and_target_contracts() {
@@ -62,14 +65,75 @@ void test_typed_cadence_and_target_contracts() {
     AnimationInputHandle wrong_cadence = aim;
     wrong_cadence.cadence = AnimationCadence::Fixed;
     CHECK(!service.set(wrong_cadence, Float3{0,0,0}), "wrong input cadence rejected");
+    AnimationInputHandle wrong_field = speed;
+    wrong_field.schema_index = aim.schema_index;
+    CHECK(!service.set(wrong_field, 3.0f), "wrong input schema index rejected");
+    CHECK(service.number_value(speed) == 2.0f, "wrong field write leaves original value unchanged");
+    AnimationInputHandle wrong_value_type = speed;
+    wrong_value_type.value_type = AnimationValueType::Float3;
+    CHECK(!service.set(wrong_value_type, Float3{}), "forged input value type rejected");
+    AnimatorInstanceHandle malformed_instance = animator.instance;
+    malformed_instance.schema_index = 0;
+    CHECK(!service.input(malformed_instance, "speed").valid(), "malformed instance metadata is rejected");
     CHECK(!missing.valid(), "missing input is invalid");
 
     const AnimationTargetHandle hand = service.target(animator.instance, "hand");
     const AnimationTargetHandle foot = service.target(animator.instance, "foot");
+    AnimationTargetHandle wrong_target_cadence = hand;
+    wrong_target_cadence.cadence = AnimationCadence::Fixed;
+    CHECK(!service.set_enabled(wrong_target_cadence, false), "wrong target cadence rejected");
+    AnimationTargetHandle wrong_target_type = hand;
+    wrong_target_type.value_type = AnimationValueType::Number;
+    CHECK(!service.set_enabled(wrong_target_type, false), "wrong target value type rejected");
     CHECK(service.set_enabled(hand, false), "external target enabled state writes");
     CHECK(!service.set_transform(hand, AnimationTransform{}), "disabled target rejects transform");
     CHECK(!service.set_transform(foot, AnimationTransform{}), "controller-owned target rejects transform");
     CHECK(!service.set_weight(foot, 1.0f), "controller-owned target rejects weight");
+}
+
+void test_hard_caps_and_bind_pose_degradation() {
+    AnimationStoreConfig requested;
+    requested.instance_capacity = std::numeric_limits<uint32_t>::max();
+    requested.mutable_budget_bytes = std::numeric_limits<size_t>::max();
+    AnimationService service(requested);
+    const AnimationRuntimeStats effective = service.stats();
+    CHECK(effective.instance_capacity == 4096, "instance capacity cannot override hard cap");
+    CHECK(effective.mutable_budget_bytes == 64u * 1024u * 1024u,
+          "mutable-state budget cannot override hard cap");
+
+    AnimationRuntimeDefinition empty;
+    const AnimAsset* value = service.insert_asset(asset(41, 1));
+    Animator last;
+    for (uint32_t i = 0; i < 4096; ++i) last = service.create(value, empty);
+    CHECK(last.valid(), "hard-cap service allocates all permitted instances");
+    const Animator capped = service.create(value, empty);
+    CHECK(capped.status == AnimationStatus::BudgetExceeded && capped.bind_pose_fallback,
+          "instance cap reports recoverable bind-pose fallback");
+
+    AnimationStoreConfig memory_requested;
+    memory_requested.mutable_budget_bytes = std::numeric_limits<size_t>::max();
+    AnimationService memory_service(memory_requested);
+    AnimationRuntimeDefinition oversized;
+    oversized.graph_state_bytes = 64u * 1024u * 1024u + 1u;
+    const Animator over_budget = memory_service.create(memory_service.insert_asset(asset(42, 1)), oversized);
+    CHECK(over_budget.status == AnimationStatus::BudgetExceeded && over_budget.bind_pose_fallback,
+          "mutable hard cap reports recoverable bind-pose fallback");
+}
+
+void test_conflicting_deduplicated_schema_is_rejected() {
+    AnimationService service;
+    const AnimAsset* first = service.insert_asset(asset(50, 1));
+    const AnimAsset* duplicate = service.insert_asset(asset(50, 1));
+    const AnimationRuntimeDefinition baseline = definition();
+    CHECK(service.create(first, baseline).valid(), "first definition fixes deduplicated asset schema");
+
+    AnimationRuntimeDefinition conflicting = baseline;
+    conflicting.graph_state_bytes += 64;
+    const Animator rejected = service.create(duplicate, conflicting);
+    CHECK(rejected.status == AnimationStatus::LoadFailed,
+          "conflicting schema for deduplicated asset is rejected before allocation");
+    CHECK(service.mutable_bytes() == baseline.mutable_bytes(),
+          "rejected conflicting schema cannot corrupt mutable accounting");
 }
 
 void test_defaults_budget_accounting_and_migration() {
@@ -114,5 +178,7 @@ int main() {
     test_asset_dedup_and_handle_reuse();
     test_typed_cadence_and_target_contracts();
     test_defaults_budget_accounting_and_migration();
+    test_hard_caps_and_bind_pose_degradation();
+    test_conflicting_deduplicated_schema_is_rejected();
     return check_summary();
 }
