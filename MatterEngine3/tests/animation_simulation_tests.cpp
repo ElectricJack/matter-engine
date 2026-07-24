@@ -7,6 +7,7 @@
 #include "check.h"
 
 #include <cstdio>
+#include <cstring>
 #include <vector>
 #include <memory>
 
@@ -95,6 +96,33 @@ void test_service_bound_runtime_work_is_automatic_and_generation_safe() {
     runtime.tick({0.1f, 0.1f, 1});
     CHECK(runtime.animation_systems().pose_snapshots().latest(stale).local_pose.empty(),
           "destroy unregisters stale generation pose work");
+}
+
+void test_controller_input_bindings_are_fixed_typed_and_fail_closed() {
+    AnimationService service;
+    const AnimAsset* asset = service.insert_asset({0x96u, {1u, 2u}});
+    BoundFixture fixture;
+    fixture.evaluation->inputs = {{AnimationValueType::Number, EvaluationCadence::Fixed}};
+    auto descriptor = std::make_shared<AnimationRuntimeBindingDescriptor>();
+    descriptor->evaluation = fixture.evaluation;
+    descriptor->fixed_work.clip.duration = 1.0f;
+    descriptor->fixed_work.clip.loop = true;
+    GaitControllerParameters parameters{};
+    parameters.left_target = 0; parameters.right_target = 1;
+    std::vector<uint8_t> bytes(sizeof(parameters));
+    std::memcpy(bytes.data(), &parameters, sizeof(parameters));
+    AnimationRuntimeBindingDescriptor::Controller controller{};
+    controller.descriptor = {kGaitControllerTypeId, bytes, EvaluationCadence::Fixed};
+    // The controller declaration claims a Float3 for a Number input.  Both
+    // service admission and runtime refresh must reject before publishing.
+    controller.inputs.push_back({0, AnimationValueType::Float3, EvaluationCadence::Fixed});
+    descriptor->controllers.push_back(std::move(controller));
+    AnimationRuntimeDefinition definition;
+    definition.inputs = {{"speed", AnimationValueType::Number, EvaluationCadence::Fixed, AnimationValue(1.0)}};
+    definition.binding = descriptor;
+    const Animator rejected = service.create(asset, definition);
+    CHECK(rejected.status == AnimationStatus::LoadFailed && service.stats().active_instances == 0,
+          "malformed declared controller input rejects without allocating or publishing runtime state");
 }
 
 void test_service_checkpoint_restores_runtime_tick_deterministically() {
@@ -329,6 +357,7 @@ int main() {
     test_service_graph_root_motion_owns_fixed_authority();
     test_service_root_lock_keeps_authored_reference_out_of_ecs_authority();
     test_service_bound_runtime_work_is_automatic_and_generation_safe();
+    test_controller_input_bindings_are_fixed_typed_and_fail_closed();
     test_service_checkpoint_restores_runtime_tick_deterministically();
     if (g_failures) return 1;
     std::puts("animation_simulation_tests: all tests passed");

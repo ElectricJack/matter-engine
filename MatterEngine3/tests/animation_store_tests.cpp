@@ -110,7 +110,16 @@ void test_typed_cadence_and_target_contracts() {
     wrong_target_type.value_type = AnimationValueType::Number;
     CHECK(!service.set_enabled(wrong_target_type, false), "wrong target value type rejected");
     CHECK(service.set_enabled(hand, false), "external target enabled state writes");
-    CHECK(!service.set_transform(hand, AnimationTransform{}), "disabled target rejects transform");
+    AnimationTransform updated{}; updated.translation = {3, 4, 5};
+    CHECK(service.set_transform(hand, updated), "disabled target continues to accept the latest desired transform during fade-out");
+    CHECK(service.set_weight(hand, 0.25f), "disabled target continues to accept desired weight during fade-out");
+    CHECK(service.set_enabled(hand, true), "re-enable target after desired updates");
+    AnimationRuntimeBindingLease lease{};
+    CHECK(service.runtime_binding(animator.instance, lease) && lease.target_enabled[hand.schema_index] == 1 &&
+              lease.target_weights[hand.schema_index] == 1.0f &&
+              lease.target_transforms[hand.schema_index].translation.x == 3.0f,
+          "reenable restores full desired weight while retaining the most recent desired transform");
+    CHECK(!service.set_weight(hand, std::numeric_limits<float>::quiet_NaN()), "non-finite target weight rejected without a refresh");
     CHECK(!service.set_transform(foot, AnimationTransform{}), "controller-owned target rejects transform");
     CHECK(!service.set_weight(foot, 1.0f), "controller-owned target rejects weight");
 }

@@ -76,9 +76,18 @@ struct AnimationRuntimeBindingDescriptor {
     // ownership is rejected when the binding is admitted.
     std::vector<CanonicalTarget> targets;
     struct Controller {
+        // The controller ABI is deliberately explicit: a controller only
+        // receives these fixed inputs, in declaration order.  It never gets a
+        // view of the animator's full control array.
+        struct InputBinding {
+            uint16_t input_index = UINT16_MAX;
+            AnimationValueType type = static_cast<AnimationValueType>(0xff);
+            EvaluationCadence cadence = EvaluationCadence::Fixed;
+        };
         NativeControllerDescriptor descriptor;
         int32_t priority = 0;
         std::vector<uint16_t> target_indices;
+        std::vector<InputBinding> inputs;
     };
     std::vector<Controller> controllers;
 };
@@ -212,6 +221,7 @@ private:
     struct TargetRuntime {
         std::vector<AnimationTargetState> targets;
         std::vector<std::unique_ptr<NativeController>> controllers;
+        const AnimationRuntimeBindingDescriptor* controller_descriptor = nullptr;
     };
     std::map<uint64_t, TargetRuntime> target_runtime_;
 };

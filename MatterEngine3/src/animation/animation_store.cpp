@@ -158,6 +158,14 @@ bool valid_binding(const std::shared_ptr<const AnimationRuntimeBindingDescriptor
     for(const auto& controller:binding->controllers) {
         if(controller.descriptor.cadence!=EvaluationCadence::Fixed) return false;
         NativeControllerLayout layout{}; if(!registry.create(controller.descriptor,layout) || layout.frame_state_bytes!=0 || layout.fixed_state_bytes>64u*1024u) return false;
+        // Controller inputs are an ordered, fixed-only capability list.  Do
+        // not permit an undeclared frame value to leak into deterministic
+        // fixed simulation.
+        for (const auto& input : controller.inputs) {
+            if (input.cadence != EvaluationCadence::Fixed || input.input_index >= evaluation->inputs.size() ||
+                evaluation->inputs[input.input_index].cadence != EvaluationCadence::Fixed ||
+                evaluation->inputs[input.input_index].type != input.type) return false;
+        }
         for(uint16_t target:controller.target_indices) if(target>=binding->targets.size() || binding->targets[target].driver!=TargetDriverKind::Controller || !controller_targets.insert(target).second) return false;
     }
     return true;
@@ -389,13 +397,17 @@ public:
         TargetState* state = writable_target(handle);
         if (!state) return false;
         state->enabled = enabled;
+        // Disable is a fade request, not a write lock.  Re-enabling starts
+        // from a full desired influence while retaining any transform/weight
+        // supplied during the fade-out interval.
+        if (enabled) state->weight = 1.0f;
         Slot* owner = slot(handle.slot_index, handle.generation);
         refresh_runtime_binding(instance_handle(handle.slot_index, *owner), *owner);
         return true;
     }
     bool set_weight(AnimationTargetHandle handle, float weight) {
         TargetState* state = writable_target(handle);
-        if (!state || !state->enabled) return false;
+        if (!state || !std::isfinite(weight) || weight < 0.0f || weight > 1.0f) return false;
         state->weight = weight;
         Slot* owner = slot(handle.slot_index, handle.generation);
         refresh_runtime_binding(instance_handle(handle.slot_index, *owner), *owner);
@@ -403,7 +415,7 @@ public:
     }
     bool set_transform(AnimationTargetHandle handle, const AnimationTransform& transform) {
         TargetState* state = writable_target(handle);
-        if (!state || !state->enabled) return false;
+        if (!state || !finite_transform(transform)) return false;
         state->transform = transform;
         Slot* owner = slot(handle.slot_index, handle.generation);
         refresh_runtime_binding(instance_handle(handle.slot_index, *owner), *owner);

@@ -72,6 +72,41 @@ bool finite_transform(const AnimationTransform& value) {
            std::isfinite(value.scale.x) && std::isfinite(value.scale.y) && std::isfinite(value.scale.z);
 }
 
+bool controller_input_value(const AnimationRuntimeBindingLease::Value& source,
+                            AnimationValue& out) {
+    switch (source.type) {
+        case AnimationValueType::Bool: out = AnimationValue(source.boolean); return true;
+        case AnimationValueType::Number:
+            if (!std::isfinite(source.number)) return false;
+            out = AnimationValue(source.number); return true;
+        case AnimationValueType::Float3:
+            if (!std::isfinite(source.float3.x) || !std::isfinite(source.float3.y) || !std::isfinite(source.float3.z)) return false;
+            out = AnimationValue(source.float3); return true;
+        case AnimationValueType::Quaternion:
+            if (!std::isfinite(source.quaternion.x) || !std::isfinite(source.quaternion.y) || !std::isfinite(source.quaternion.z) || !std::isfinite(source.quaternion.w)) return false;
+            out = AnimationValue(source.quaternion); return true;
+        case AnimationValueType::Transform:
+            if (!finite_transform(source.transform)) return false;
+            out = AnimationValue(source.transform); return true;
+        case AnimationValueType::Symbol:
+            out = {}; out.type = AnimationValueType::Symbol; out.symbol = std::to_string(source.symbol); return true;
+    }
+    return false;
+}
+
+// Solver calls must not be allowed to alter a target whose cadence belongs to
+// the other phase.  A zero-weight copy preserves descriptor/chain validation
+// while preventing the Ozz solve from touching its local pose.
+std::vector<AnimationTargetState> targets_for_cadence(
+    const std::vector<CanonicalTarget>& declarations,
+    const std::vector<AnimationTargetState>& state,
+    EvaluationCadence cadence) {
+    std::vector<AnimationTargetState> result = state;
+    for (size_t i = 0; i < result.size() && i < declarations.size(); ++i)
+        if (declarations[i].cadence != cadence) result[i].evaluated_weight = 0.0f;
+    return result;
+}
+
 void emit_runtime_markers(AnimatorInstanceHandle instance, const std::vector<RuntimeClipMarker>& markers,
                           float duration, bool loop, float previous, float current,
                           std::vector<AnimationMarkerEvent>& out) {
@@ -235,6 +270,12 @@ bool AnimationSystems::refresh_service_binding(const AnimationRuntimeBindingLeas
     std::set<uint16_t> owned_targets;
     for(const auto& controller:descriptor.controllers) {
         if(controller.descriptor.cadence!=EvaluationCadence::Fixed || !std::isfinite(static_cast<double>(controller.priority))) return false;
+        for (const auto& input : controller.inputs) {
+            if (input.cadence != EvaluationCadence::Fixed ||
+                input.input_index >= descriptor.evaluation->inputs.size() ||
+                descriptor.evaluation->inputs[input.input_index].cadence != EvaluationCadence::Fixed ||
+                descriptor.evaluation->inputs[input.input_index].type != input.type) return false;
+        }
         for(uint16_t target:controller.target_indices) {
             if(target>=descriptor.targets.size() || descriptor.targets[target].driver!=TargetDriverKind::Controller || !owned_targets.insert(target).second) return false;
         }
@@ -285,7 +326,8 @@ bool AnimationSystems::refresh_service_binding(const AnimationRuntimeBindingLeas
         }
         if(!std::isfinite(candidate.targets[i].desired_weight) || candidate.targets[i].desired_weight<0 || candidate.targets[i].desired_weight>1) return false;
     }
-    if(prior==target_runtime_.end() || prior->second.controllers.size()!=descriptor.controllers.size()) {
+    if(prior==target_runtime_.end() || prior->second.controllers.size()!=descriptor.controllers.size() ||
+       prior->second.controller_descriptor!=lease.descriptor.get()) {
         NativeControllerRegistry registry=NativeControllerRegistry::with_v1_controllers();
         candidate.controllers.clear();
         for(const auto& controller:descriptor.controllers) {
@@ -294,6 +336,7 @@ bool AnimationSystems::refresh_service_binding(const AnimationRuntimeBindingLeas
             candidate.controllers.push_back(std::move(instance));
         }
     } else candidate.controllers=std::move(target_runtime_[slot_key].controllers);
+    candidate.controller_descriptor=lease.descriptor.get();
     if (!register_fixed_work(work)) return false;
     service_bindings_[animator_key(lease.instance)] = lease;
     target_runtime_[slot_key]=std::move(candidate);
@@ -641,6 +684,26 @@ void AnimationSystems::run_fixed_post(flecs::world& world, double fixed_delta) {
         auto& runtime=target_runtime_[job.key]; const auto& binding=service_bindings_.at(job.key); const auto& spec=binding.descriptor->controllers[job.order];
         if(job.order>=runtime.controllers.size() || !runtime.controllers[job.order]) continue;
         NativeControllerContext context{}; context.fixed_delta_seconds=fixed_delta; context.world_queries=world_queries_;
+        // Snapshot only this controller's declared fixed controls before it
+        // executes.  This both fixes ordering and prevents controllers from
+        // observing unrelated/frame-rate state through the runtime bridge.
+        bool inputs_valid = true;
+        context.inputs.reserve(spec.inputs.size());
+        for (const auto& input : spec.inputs) {
+            if (input.cadence != EvaluationCadence::Fixed ||
+                input.input_index >= binding.fixed_current.size() ||
+                binding.fixed_current[input.input_index].type != input.type) {
+                inputs_valid = false;
+                break;
+            }
+            AnimationValue value{};
+            if (!controller_input_value(binding.fixed_current[input.input_index], value) || value.type != input.type) {
+                inputs_valid = false;
+                break;
+            }
+            context.inputs.push_back(std::move(value));
+        }
+        if (!inputs_valid) continue;
         if(!runtime.controllers[job.order]->fixed_update(context)) continue;
         std::vector<AnimationTargetState> candidate=runtime.targets; bool valid=true;
         for(const ControllerTargetWrite& write:context.writes) {
@@ -668,7 +731,8 @@ void AnimationSystems::run_fixed_post(flecs::world& world, double fixed_delta) {
         (void)apply_targets(pair.second.instance,EvaluationCadence::Fixed,fixed_delta);
         const auto runtime=target_runtime_.find(pair.first); if(runtime==target_runtime_.end() || runtime->second.targets.empty()) continue;
         const ecs::AnimationFrameState frame=world.get<ecs::AnimationFrameState>();
-        if(evaluator_.solve_targets(pair.second.instance,*pair.second.descriptor->evaluation,pair.second.descriptor->targets,runtime->second.targets,frame.frame_serial)) {
+        const auto phase_targets=targets_for_cadence(pair.second.descriptor->targets,runtime->second.targets,EvaluationCadence::Fixed);
+        if(evaluator_.solve_targets(pair.second.instance,*pair.second.descriptor->evaluation,pair.second.descriptor->targets,phase_targets,frame.frame_serial)) {
             const AnimationPoseSnapshot pose=evaluator_.snapshot(pair.second.instance); if(pose.instance.valid()) (void)pose_snapshots_.publish(pose);
         }
     }
@@ -690,7 +754,8 @@ void AnimationSystems::run_frame(flecs::world& world, double frame_delta) {
     for(const auto& pair:service_bindings_) {
         (void)apply_targets(pair.second.instance,EvaluationCadence::Frame,frame_delta);
         const auto runtime=target_runtime_.find(pair.first); if(runtime==target_runtime_.end() || runtime->second.targets.empty()) continue;
-        if(evaluator_.solve_targets(pair.second.instance,*pair.second.descriptor->evaluation,pair.second.descriptor->targets,runtime->second.targets,state.frame_serial)) {
+        const auto phase_targets=targets_for_cadence(pair.second.descriptor->targets,runtime->second.targets,EvaluationCadence::Frame);
+        if(evaluator_.solve_targets(pair.second.instance,*pair.second.descriptor->evaluation,pair.second.descriptor->targets,phase_targets,state.frame_serial)) {
             const AnimationPoseSnapshot pose=evaluator_.snapshot(pair.second.instance); if(pose.instance.valid()) (void)pose_snapshots_.publish(pose);
         }
     }
