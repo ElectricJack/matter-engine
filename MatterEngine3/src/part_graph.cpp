@@ -559,7 +559,9 @@ bool HostBaker::cached(uint64_t resolved_hash) {
         std::optional<part_asset::PartAnimationLink> link;
         if (!part_asset::load_animation_link(path, resolved_hash, link)) return false;
         if (!link) return true;
+#ifdef MATTER_TEST_CACHE_VALIDATION_HOOK
         if (cache_validation_hook_for_tests_) cache_validation_hook_for_tests_();
+#endif
         BLASManager checked; matter::animation::AnimAsset asset; matter::animation::Diagnostics diagnostics;
         if (!matter::animation::load_committed_animation_bundle(base_dir, resolved_hash, checked, asset, diagnostics)) return false;
 

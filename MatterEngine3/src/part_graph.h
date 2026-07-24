@@ -240,12 +240,14 @@ public:
     // BakeOptions constructed by bake().
     void set_world(const dsl::WorldBinding& w) { world_ = w; }
 
-    // Test seam for the cache-validation publication boundary. Production
-    // callers leave this empty; it allows the integration test to publish a
-    // replacement generation after the first ANLK snapshot.
+    // This seam exists only in the graph-integration test build. Keeping it
+    // out of normal headers/binaries prevents a production caller from
+    // injecting work into the cache-validation critical section.
+#ifdef MATTER_TEST_CACHE_VALIDATION_HOOK
     void set_cache_validation_hook_for_tests(std::function<void()> hook) {
         cache_validation_hook_for_tests_ = std::move(hook);
     }
+#endif
 
 private:
     script_host::ScriptHost& host_;
@@ -255,7 +257,9 @@ private:
     const std::set<std::string>* transient_modules_ = nullptr;
     std::string transient_dir_;
     std::string current_module_;
+#ifdef MATTER_TEST_CACHE_VALIDATION_HOOK
     std::function<void()> cache_validation_hook_for_tests_;
+#endif
     bool is_transient(const std::string& module) const {
         return transient_modules_ && transient_modules_->count(module) != 0;
     }

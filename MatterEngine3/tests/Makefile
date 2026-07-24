@@ -250,6 +250,9 @@ GPU_GRAPHICS := GRAPHICS_API_OPENGL_43
 FLAVOR_def_FLAGS      := $(CFLAGS) $(INCLUDE_PATHS)
 FLAVOR_qjs_FLAGS      := $(CFLAGS) $(INCLUDE_PATHS) $(QJS_INC)
 FLAVOR_sh_FLAGS       := $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC)
+# Only the graph integration target carries the deterministic cache-race seam.
+# Production and ordinary script-host test objects have no hook API or storage.
+FLAVOR_sh_test_FLAGS  := $(FLAVOR_sh_FLAGS) -DMATTER_TEST_CACHE_VALIDATION_HOOK
 FLAVOR_sp2_FLAGS      := $(CFLAGS) -DSP2_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC)
 FLAVOR_vl_FLAGS       := $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB -pthread $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC)
 FLAVOR_retopo_FLAGS   := $(CFLAGS) -DMATTER_HAVE_AUTOREMESHER $(INCLUDE_PATHS) -I$(AR_CORE_PATH)/include $(QJS_INC)
@@ -269,7 +272,7 @@ FLAVOR_physicsc_FLAGS := -std=c17 -O2 -I$(FLECS_DIR)
 
 # C++ flavor list (compiled with $(CC) = g++). Order matters only for pattern-rule
 # generation; the alt-compile-cmd rules are all distinct.
-CPP_FLAVORS := def qjs sh sp2 vl retopo gpu
+CPP_FLAVORS := def qjs sh sh_test sp2 vl retopo gpu
 C_FLAVORS   := mslc qjsc flecsc physicsc
 ALL_FLAVORS := $(CPP_FLAVORS) $(C_FLAVORS)
 
@@ -921,6 +924,7 @@ sh_CPP_SRCS := $(sort \
     $(TILESETBAKE_CPP) \
     $(TILESETPARAMS_CPP) \
     $(LIVEPROD_CPP))
+sh_test_CPP_SRCS := $(sort $(GRAPH_INT_CPP))
 
 sp2_CPP_SRCS := $(sort $(SHLIB_CPP))
 vl_CPP_SRCS  := $(sort $(VIEWER_LOGIC_CPP))
@@ -951,6 +955,7 @@ physicsc_C_SRCS := $(sort $(PHYSICS_C))
 def_CPP_OBJS    := $(call obj_list,def,$(def_CPP_SRCS))
 qjs_CPP_OBJS    := $(call obj_list,qjs,$(qjs_CPP_SRCS))
 sh_CPP_OBJS     := $(call obj_list,sh,$(sh_CPP_SRCS))
+sh_test_CPP_OBJS := $(call obj_list,sh_test,$(sh_test_CPP_SRCS))
 sp2_CPP_OBJS    := $(call obj_list,sp2,$(sp2_CPP_SRCS))
 vl_CPP_OBJS     := $(call obj_list,vl,$(vl_CPP_SRCS))
 retopo_CPP_OBJS := $(call obj_list,retopo,$(retopo_CPP_SRCS))
@@ -960,7 +965,7 @@ qjsc_C_OBJS     := $(call obj_list,qjsc,$(qjsc_C_SRCS))
 flecsc_C_OBJS   := $(call obj_list,flecsc,$(flecsc_C_SRCS))
 physicsc_C_OBJS := $(call obj_list,physicsc,$(physicsc_C_SRCS))
 
-ALL_OBJS := $(def_CPP_OBJS) $(qjs_CPP_OBJS) $(sh_CPP_OBJS) $(sp2_CPP_OBJS) \
+ALL_OBJS := $(def_CPP_OBJS) $(qjs_CPP_OBJS) $(sh_CPP_OBJS) $(sh_test_CPP_OBJS) $(sp2_CPP_OBJS) \
             $(vl_CPP_OBJS) $(retopo_CPP_OBJS) $(gpu_CPP_OBJS) \
             $(mslc_C_OBJS) $(qjsc_C_OBJS) $(flecsc_C_OBJS) $(physicsc_C_OBJS)
 
@@ -968,6 +973,7 @@ ALL_OBJS := $(def_CPP_OBJS) $(qjs_CPP_OBJS) $(sh_CPP_OBJS) $(sp2_CPP_OBJS) \
 $(foreach s,$(def_CPP_SRCS),$(eval $(call objrule_cpp,def,$(s))))
 $(foreach s,$(qjs_CPP_SRCS),$(eval $(call objrule_cpp,qjs,$(s))))
 $(foreach s,$(sh_CPP_SRCS),$(eval $(call objrule_cpp,sh,$(s))))
+$(foreach s,$(sh_test_CPP_SRCS),$(eval $(call objrule_cpp,sh_test,$(s))))
 $(foreach s,$(sp2_CPP_SRCS),$(eval $(call objrule_cpp,sp2,$(s))))
 $(foreach s,$(vl_CPP_SRCS),$(eval $(call objrule_cpp,vl,$(s))))
 $(foreach s,$(retopo_CPP_SRCS),$(eval $(call objrule_cpp,retopo,$(s))))
@@ -1028,7 +1034,7 @@ PHYSICS_PLAYGROUND_OBJS = $(call obj_list,qjs,$(PHYSICS_PLAYGROUND_CPP)) $(qjsc_
 EVALWORLD_OBJS = $(call obj_list,sh,$(EVALWORLD_CPP)) $(call obj_list,mslc,$(EVALWORLD_C)) $(qjsc_C_OBJS)
 FOLDCACHE_OBJS = $(call obj_list,sh,$(FOLDCACHE_CPP)) $(call obj_list,mslc,$(FOLDCACHE_C)) $(qjsc_C_OBJS)
 
-GRAPH_INT_OBJS = $(call obj_list,sh,$(GRAPH_INT_CPP)) $(call obj_list,mslc,$(GRAPH_INT_C)) $(qjsc_C_OBJS)
+GRAPH_INT_OBJS = $(call obj_list,sh_test,$(GRAPH_INT_CPP)) $(call obj_list,mslc,$(GRAPH_INT_C)) $(qjsc_C_OBJS)
 EXAMPLE_OBJS = $(call obj_list,sh,$(EXAMPLE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 GALLERY_OBJS = $(call obj_list,sh,$(GALLERY_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 TREEBAKE_OBJS = $(call obj_list,sh,$(TREEBAKE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)

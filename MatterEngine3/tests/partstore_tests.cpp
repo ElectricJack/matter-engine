@@ -82,6 +82,49 @@ static bool publish_rigid_bundle(const std::filesystem::path& root, uint64_t has
     return anim::publish_animation_bundle({candidate_part,candidate_anim,root},identity,diagnostics);
 }
 
+// A static canonical Part plus its independent flattened raster artifact.  This
+// is deliberately separate from publish_rigid_bundle: the regression below
+// proves that a nearby static flat can never downgrade a selected linked Part.
+static bool publish_flat(const std::filesystem::path& root, uint64_t hash) {
+    namespace fs = std::filesystem;
+    std::error_code ec; fs::create_directories(root / "parts", ec);
+    if (ec) return false;
+    Tri triangle{};
+    triangle.vertex0=make_float3(0,0,0); triangle.vertex1=make_float3(1,0,0);
+    triangle.vertex2=make_float3(0,1,0); triangle.centroid=make_float3(1.f/3,1.f/3,0);
+    TriEx extra{};
+    BLASManager flat_blas; TLASManager flat_tlas(4);
+    const uint32_t flat_index=static_cast<uint32_t>(flat_blas.get_entries().size());
+    flat_blas.register_triangles(&triangle,1,&extra);
+    part_asset::FlatCluster cluster{};
+    cluster.aabb_min[0]=cluster.aabb_min[1]=cluster.aabb_min[2]=0.0f;
+    cluster.aabb_max[0]=cluster.aabb_max[1]=1.0f; cluster.aabb_max[2]=0.0f;
+    part_asset::LodLevel level; level.screen_size_threshold=0.5f;
+    level.blas_indices.push_back(flat_index); cluster.lods.push_back(level);
+    return part_asset::save_flat_v3((root / part_asset::cache_path_flat(hash)).string(),
+                                    flat_blas, flat_tlas, {cluster}, hash);
+}
+
+static bool publish_static_part(const std::filesystem::path& root, uint64_t hash) {
+    namespace fs = std::filesystem;
+    std::error_code ec; fs::create_directories(root / "parts", ec);
+    if (ec) return false;
+    BLASManager source; TLASManager tlas(4);
+    Tri triangle{};
+    triangle.vertex0=make_float3(0,0,0); triangle.vertex1=make_float3(1,0,0);
+    triangle.vertex2=make_float3(0,1,0); triangle.centroid=make_float3(1.f/3,1.f/3,0);
+    TriEx extra{};
+    const BLASHandle handle=source.register_triangles(&triangle,1,&extra);
+    TLASManager::DrawInstance instance{}; instance.blas_handle=handle;
+    tlas.draw_batch({instance}); tlas.build(source);
+    return part_asset::save_v2((root / part_asset::cache_path_resolved(hash)).string(),
+                               source, tlas, nullptr, 0, {}, hash);
+}
+
+static bool publish_static_part_and_flat(const std::filesystem::path& root, uint64_t hash) {
+    return publish_static_part(root, hash) && publish_flat(root, hash);
+}
+
 static void test_partstore_owns_committed_animation_and_keeps_live_last_good() {
     namespace fs = std::filesystem;
     namespace anim = matter::animation;
@@ -173,6 +216,43 @@ static void test_partstore_retries_after_torn_generation_and_recovers_same_store
           "A8 same PartStore retries after a coherent replacement generation");
 }
 
+// The selected canonical Part root controls whether a flat artifact is even
+// eligible.  A linked scratch Part must load its coherent animation bundle,
+// not fall through to a static cache flat merely because scratch has no flat.
+static void test_partstore_flat_never_downgrades_selected_linked_part() {
+    namespace fs = std::filesystem;
+    namespace anim = matter::animation;
+    const fs::path root = fs::temp_directory_path() / "me3_a8_partstore_flat_linked";
+    const fs::path scratch = root / "scratch";
+    const fs::path cache = root / "cache";
+    std::error_code ec; fs::remove_all(root, ec);
+    struct Cleanup { fs::path root; ~Cleanup() { std::error_code ignored; fs::remove_all(root, ignored); } } cleanup{root};
+    constexpr uint64_t hash = 0xa814b814b814b814ull;
+    const anim::BuildNonce nonce{0x1122334455667788ull, 0x8877665544332211ull};
+    CHECK(publish_static_part_and_flat(cache, hash),
+          "A8 static cache Part and flat fixture are published");
+    CHECK(publish_rigid_bundle(scratch, hash, nonce),
+          "A8 linked scratch generation is published");
+
+    // No scratch flat exists. The old independent flat lookup selected the
+    // cache flat here even though scratch owns the canonical linked Part.
+    viewer::PartStore store(cache.string());
+    store.set_scratch_dir(scratch.string());
+    const viewer::LoadedPart* loaded=store.get_or_load(hash);
+    CHECK(loaded && loaded->animation_asset && loaded->animation_asset->nonce==nonce,
+          "A8 selected scratch ANLK cannot be downgraded to a cache flat");
+
+    // The same rule holds when the selected linked root itself happens to have
+    // a stale flat sibling: ANLK wins and the runtime uses its coherent bundle.
+    CHECK(publish_flat(scratch, hash),
+          "A8 stale flat is co-located with the linked scratch root");
+    viewer::PartStore colocated(cache.string());
+    colocated.set_scratch_dir(scratch.string());
+    const viewer::LoadedPart* co_loaded=colocated.get_or_load(hash);
+    CHECK(co_loaded && co_loaded->animation_asset && co_loaded->animation_asset->nonce==nonce,
+          "A8 co-located flat cannot downgrade a linked canonical Part");
+}
+
 // Task 7: segmented v6 flat loading.
 static void test_partstore_segmented_loading() {
     printf("=== test_partstore_segmented_loading ===\n");
@@ -205,6 +285,8 @@ static void test_partstore_segmented_loading() {
     const float kIdentity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
 
     const uint64_t child_hash  = 0xCCCCCCCC11111111ull;
+    CHECK(publish_static_part(root_path, child_hash),
+          "segmented test: child has a canonical static Part");
     {
         BLASManager cblas; TLASManager ctlas(64);
         auto ct = make_tris(0, 0, 0);
@@ -223,6 +305,8 @@ static void test_partstore_segmented_loading() {
     }
 
     const uint64_t parent_hash = 0xAAAAAAAA22222222ull;
+    CHECK(publish_static_part(root_path, parent_hash),
+          "segmented test: parent has a canonical static Part");
     {
         BLASManager pblas; TLASManager ptlas(64);
 
@@ -337,6 +421,7 @@ int main() {
     test_partstore_owns_committed_animation_and_keeps_live_last_good();
     test_partstore_uses_one_scratch_first_bundle_root();
     test_partstore_retries_after_torn_generation_and_recovers_same_store();
+    test_partstore_flat_never_downgrades_selected_linked_part();
 
     if (g_failures) {
         printf("partstore_tests: %d FAILURE(S)\n", g_failures);

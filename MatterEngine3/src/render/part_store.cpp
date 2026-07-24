@@ -102,19 +102,6 @@ static std::string select_artifact_root(uint64_t part_hash, const std::string& s
     return cache_root;
 }
 
-// Task 2: resolve the flat artifact path, checking scratch dir first, then cache.
-static std::string resolve_flat_path(uint64_t part_hash, const std::string& scratch_dir,
-                                     const std::string& cache_root) {
-    struct stat st;
-    if (!scratch_dir.empty()) {
-        std::string scratch_path = scratch_dir + "/" + part_asset::cache_path_flat(part_hash);
-        if (::stat(scratch_path.c_str(), &st) == 0) {
-            return scratch_path;
-        }
-    }
-    return cache_root + "/" + part_asset::cache_path_flat(part_hash);
-}
-
 bool PartStore::has(uint64_t part_hash) const {
     if (loaded_.count(part_hash)) return true;
     struct stat st;
@@ -126,8 +113,11 @@ bool PartStore::has(uint64_t part_hash) const {
 // Tries v3 first (Task 11 format: clustered flat); falls back to legacy v2 flat
 // if v3 is unavailable. Returns false (fall back to the compositional .part) when
 // the file is absent or fails to load in either format.
-bool PartStore::load_flat(uint64_t part_hash, LoadedPart& lp) {
-    const std::string path = resolve_flat_path(part_hash, scratch_dir_, cache_root_);
+bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, LoadedPart& lp) {
+    // The caller has already selected and validated the canonical `.part`
+    // from this root as ANLK-free.  Do not independently probe scratch/cache:
+    // a flat is only valid beside that exact canonical static Part.
+    const std::string path = artifact_root + "/" + part_asset::cache_path_flat(part_hash);
 
     // Sniff version first; fall back to compositional path when absent.
     uint32_t ver = part_asset::peek_format_version(path);
@@ -401,9 +391,19 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
     auto cached = loaded_.find(part_hash);
     if (cached != loaded_.end()) return &cached->second;
 
+    // A flat artifact is an acceleration of an ANLK-free canonical Part, not
+    // an independently selectable cache entry.  Select the `.part` root
+    // first, parse its exact suffix, and only then admit that root's flat
+    // sibling.  A linked PART always takes the coherent PART/MANM/MACM path;
+    // it must never silently downgrade to a static flat from either root.
     {
+        const std::string selected_root = select_artifact_root(part_hash, scratch_dir_, cache_root_);
+        const std::string canonical_part =
+            selected_root + "/" + part_asset::cache_path_resolved(part_hash);
+        std::optional<part_asset::PartAnimationLink> canonical_link;
         LoadedPart flat;
-        if (load_flat(part_hash, flat)) {
+        if (part_asset::load_animation_link(canonical_part, part_hash, canonical_link) &&
+            !canonical_link && load_flat(part_hash, selected_root, flat)) {
             // Insert the parent FIRST (before any recursive child loads) to prevent
             // re-entrancy: if a child transitively references the same parent hash,
             // the early-out at the top of get_or_load will return the already-inserted

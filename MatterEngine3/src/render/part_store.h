@@ -128,7 +128,7 @@ private:
     // Load a bake-time flattened artifact (<hash>.flat.part) if present: uses its
     // stored LOD ladder directly (no re-bake) and leaves children empty. Returns
     // false when absent/unusable so get_or_load falls back to the compositional path.
-    bool load_flat(uint64_t part_hash, LoadedPart& lp);
+    bool load_flat(uint64_t part_hash, const std::string& artifact_root, LoadedPart& lp);
 
     std::string                       cache_root_;
     std::string                       scratch_dir_;     // Task 2: transient scratch dir
