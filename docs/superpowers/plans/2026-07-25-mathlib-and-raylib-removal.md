@@ -83,12 +83,40 @@ This is the phase that actually removes `#include "raylib.h"` from engine code. 
 
 ---
 
-## Phase 5 — decide the fate of the Linux/GL path
+## Phase 5 — port Linux to Vulkan, then retire the GL path
 
 After Phase 4, raylib survives in exactly two places: the Linux app build (`MatterEditor/Makefile:72`, `LDLIBS = .../libraylib.a`) and the GL upload machinery in `tech-debt.md` §6.
 
-- [ ] **Decision required.** Either (a) retire the Linux/GL path — `main_linux.cpp`, `ui_linux.cpp`, the GL BLAS/TLAS uploaders, `bvh_visualizer` — and remove raylib from `third_party/` entirely; or (b) keep it as a fallback, in which case raylib stays vendored but is confined to that one target.
-- [ ] If retiring: delete the §6 machinery (`textures_dirty_`, `shader_values_dirty_`, per-entry `gpu_dirty`, both `Texture2D` members, `ensure_gpu_textures_ready()`, `bind_to_shader()`) rather than refactoring it. `content_revision()` (landed `b11d36fc`) is already the backend-agnostic replacement.
+**The renderer is already portable — this is a missing build target, not missing code.** Platform gating across the ten core Vulkan sources:
+
+| Source | `_WIN32`/Win32 lines |
+|---|---|
+| `vk_pipeline`, `vk_resources`, `vk_temporal`, `vk_instance_cache`, `vk_gi_math`, `vk_lighting_controls`, `vk_emitter_gather` | **0** |
+| `vk_scene_renderer`, `vk_volumetrics` | 2 each |
+| `vk_context` | 20 (surface + instance extensions) |
+
+And `create_surface()` (`vk_context.cpp:586`) already carries both branches:
+
+```cpp
+#ifdef _WIN32
+    ... streamline.create_win32_surface(...)   // proxied so DLSS-G can hook the swapchain
+#else
+    return vk_ok(glfwCreateWindowSurface(instance, window, nullptr, &surface), ...);
+#endif
+```
+
+Windows needs the special path only because Streamline must intercept surface creation for Frame Generation. Everything else in the stack — Vulkan, GLFW, ImGui, `glslc`, QuickJS, flecs, box3d — is cross-platform. `MATTER_VULKAN_ONLY` simply appears in one place (`Makefile:248`, the Windows flag set), and the Linux target builds `LINUX_APP_SRC` (`main_linux.cpp`, `ui_linux.cpp`) instead of the Vulkan `APP_SRC`.
+
+So the choice is not "which platform do we sacrifice". It is **one renderer, two platforms, DLSS only where the SDK exists.**
+
+- [ ] Add a Linux Vulkan target that compiles `APP_SRC` (the Vulkan `main.cpp`, already free of raylib behaviour calls) with `-DMATTER_VULKAN_ONLY -DMATTER_VULKAN_VIEWER`, rather than `LINUX_APP_SRC`.
+- [ ] Build GLFW for Linux with Vulkan support — the Windows target already does a Vulkan-only GLFW via `MatterEditor/glfw_vulkan_only_context.c`; reuse that shape.
+- [ ] Link `-lvulkan` plus X11/Wayland instead of `-lGL`. `HAVE_STREAMLINE=0` on Linux: Streamline is a Windows-only SDK, so **no DLSS on Linux** — the one genuine capability loss, and it is contained behind an existing flag.
+- [ ] Expect real gaps in `vk_context`'s 20 gated lines: instance-extension selection (`VK_KHR_win32_surface` vs `VK_KHR_xlib_surface`/`wayland`), and validation-layer availability. The SPIR-V embedding step (`glslc` + `embed_spirv.py`) is already platform-neutral.
+- [ ] Once Linux runs on Vulkan, retire the GL path outright — `main_linux.cpp`, `ui_linux.cpp`, the GL BLAS/TLAS uploaders, `bvh_visualizer` — and remove raylib from `third_party/` entirely. raylib then leaves the repository rather than surviving as a one-target dependency.
+- [ ] Delete the §6 machinery (`textures_dirty_`, `shader_values_dirty_`, per-entry `gpu_dirty`, both `Texture2D` members, `ensure_gpu_textures_ready()`, `bind_to_shader()`) rather than refactoring it. `content_revision()` (landed `b11d36fc`) is already the backend-agnostic replacement.
+
+**Fallback if the Linux port stalls:** keep the GL path as-is. raylib stays vendored but confined to that single target, and §6 stays open. This is strictly worse but it is not blocking — Phases 1–4 stand on their own.
 - [ ] **Carry these two facts forward before deleting the code that documents them** (they exist only as comments in the doomed files):
   1. `bind_to_shader` stages textures every frame regardless of dirty state — raylib's batch resets `activeTextureId` after each draw.
   2. `TLASManager::mark_dirty` resets `cached_shader_id_ = 0` — GL reuses program ids after a shader is deleted, so a cached uniform location can silently belong to a stale program.
@@ -125,7 +153,7 @@ Independent of the above; can be done at any time by anyone.
 | 2 — `Matrix4x4` collapse | §1 | low; one file, mechanical |
 | 3 — raylib POD types | — | **highest**; wide, and touches bake determinism |
 | 4 — `Mesh` + compat shim | — | medium; ends the raylib header dependency |
-| 5 — GL path decision | §6 | gated on a product decision, not effort |
+| 5 — Linux→Vulkan, retire GL | §6 | medium; a build target, not a rewrite — but unverified on real hardware |
 | 6 — cleanup sweep | §8, §9, §7 | low; independent |
 
 Phases 1 and 2 are worth doing regardless of whether raylib ever goes. Phase 3 is the commitment point.
