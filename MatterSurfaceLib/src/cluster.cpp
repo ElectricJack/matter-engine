@@ -6,7 +6,7 @@
 #include "../include/vertex_ao.h"  // bake_vertex_ao, AoGrid, AoParams
 #include "../include/mesh_worker_pool.h"   // MeshWorkerPool + SurfaceScratch
 extern "C" {
-#include "../include/spatial_hash.h"
+#include "spatial_hash.h"
 }
 #include <cmath>
 #include <cstdio>

@@ -206,9 +206,12 @@ int sh_query_radius(SpatialHash* hash, float x, float y, float z, float radius,
     float radiusSq = radius * radius;
     unsigned int mask = (unsigned int)hash->bucketCount - 1u;
 
-    // Calculate the range of grid cells to check
-    int cellRange = (int)ceilf(radius / hash->cellSize);
-    GridCoord centerCoord = world_to_grid(x, y, z, hash->cellSize);
+    /* Iterate exactly the grid cells overlapping the query AABB [p-r, p+r].
+     * Flooring the corner coords (rather than centerCoord +/- ceil(r/cellSize))
+     * covers the same cells for any cell size while scanning the tightest
+     * possible range. */
+    GridCoord lo = world_to_grid(x - radius, y - radius, z - radius, hash->cellSize);
+    GridCoord hi = world_to_grid(x + radius, y + radius, z + radius, hash->cellSize);
 
     /*
      * Dedup strategy: each BucketEntry stores the GridCoord it was inserted
@@ -220,11 +223,10 @@ int sh_query_radius(SpatialHash* hash, float x, float y, float z, float radius,
      *   - No object is counted twice regardless of how many cells collide into
      *     the same bucket.
      */
-    // Check all cells in the range
-    for (int dx = -cellRange; dx <= cellRange; dx++) {
-        for (int dy = -cellRange; dy <= cellRange; dy++) {
-            for (int dz = -cellRange; dz <= cellRange; dz++) {
-                GridCoord coord = {centerCoord.x + dx, centerCoord.y + dy, centerCoord.z + dz};
+    for (int gx = lo.x; gx <= hi.x; gx++) {
+        for (int gy = lo.y; gy <= hi.y; gy++) {
+            for (int gz = lo.z; gz <= hi.z; gz++) {
+                GridCoord coord = {gx, gy, gz};
                 unsigned int bucketIndex = hash_coord(coord, mask);
 
                 // Check all objects in this bucket; only include entries whose
@@ -254,6 +256,84 @@ int sh_query_radius(SpatialHash* hash, float x, float y, float z, float radius,
         if (found >= maxResults) break;
     }
 
+    return found;
+}
+
+// Query the NEAREST objects within a radius of the given position
+int sh_query_radius_nearest(SpatialHash* hash, float x, float y, float z, float radius,
+                            void** results, int maxResults) {
+    if (!hash || !results || maxResults <= 0) return 0;
+
+    float radiusSq = radius * radius;
+    unsigned int mask = (unsigned int)hash->bucketCount - 1u;
+
+    /* Same tightest-AABB cell range as sh_query_radius. */
+    GridCoord lo = world_to_grid(x - radius, y - radius, z - radius, hash->cellSize);
+    GridCoord hi = world_to_grid(x + radius, y + radius, z + radius, hash->cellSize);
+
+    /* Keep the maxResults nearest candidates. distSq[i] parallels results[i].
+     * worstSlot tracks the kept entry with the largest distSq so a closer
+     * candidate can evict it once the buffer is full. maxResults is small
+     * (tens), so the linear worst-slot rescan on eviction is cheap. */
+    float distSqStack[256];
+    float* distSq = distSqStack;
+    float* distSqHeap = NULL;
+    if (maxResults > 256) {
+        distSqHeap = (float*)malloc((size_t)maxResults * sizeof(float));
+        if (!distSqHeap) return 0;
+        distSq = distSqHeap;
+    }
+    int found = 0;
+    int worstSlot = 0;
+
+    /* Dedup via the stored per-entry GridCoord, exactly as sh_query_radius
+     * does: cells that collide into one bucket never emit each other's
+     * objects, so no candidate is weighed twice against the nearest set. */
+    for (int gx = lo.x; gx <= hi.x; gx++) {
+        for (int gy = lo.y; gy <= hi.y; gy++) {
+            for (int gz = lo.z; gz <= hi.z; gz++) {
+                GridCoord coord = {gx, gy, gz};
+                unsigned int bucketIndex = hash_coord(coord, mask);
+
+                BucketEntry* entry = hash->buckets[bucketIndex].head;
+                while (entry) {
+                    if (entry->coord.x == coord.x &&
+                        entry->coord.y == coord.y &&
+                        entry->coord.z == coord.z) {
+                        float ex = entry->x - x;
+                        float ey = entry->y - y;
+                        float ez = entry->z - z;
+                        float d2 = ex*ex + ey*ey + ez*ez;
+
+                        if (d2 <= radiusSq) {
+                            if (found < maxResults) {
+                                results[found] = entry->object;
+                                distSq[found] = d2;
+                                found++;
+                                if (found == maxResults) {
+                                    /* Buffer just filled: find the farthest. */
+                                    worstSlot = 0;
+                                    for (int i = 1; i < found; i++)
+                                        if (distSq[i] > distSq[worstSlot]) worstSlot = i;
+                                }
+                            } else if (d2 < distSq[worstSlot]) {
+                                /* Replace the farthest kept entry, re-find it. */
+                                results[worstSlot] = entry->object;
+                                distSq[worstSlot] = d2;
+                                worstSlot = 0;
+                                for (int i = 1; i < maxResults; i++)
+                                    if (distSq[i] > distSq[worstSlot]) worstSlot = i;
+                            }
+                        }
+                    }
+
+                    entry = entry->next;
+                }
+            }
+        }
+    }
+
+    if (distSqHeap) free(distSqHeap);
     return found;
 }
 
@@ -371,15 +451,14 @@ void* sh_query_first(SpatialHash* hash, float x, float y, float z, float radius)
     float radiusSq = radius * radius;
     unsigned int mask = (unsigned int)hash->bucketCount - 1u;
 
-    // Calculate the range of grid cells to check
-    int cellRange = (int)ceilf(radius / hash->cellSize);
-    GridCoord centerCoord = world_to_grid(x, y, z, hash->cellSize);
+    /* Tightest AABB cell range, as in sh_query_radius. */
+    GridCoord lo = world_to_grid(x - radius, y - radius, z - radius, hash->cellSize);
+    GridCoord hi = world_to_grid(x + radius, y + radius, z + radius, hash->cellSize);
 
-    // Check all cells in the range
-    for (int dx = -cellRange; dx <= cellRange; dx++) {
-        for (int dy = -cellRange; dy <= cellRange; dy++) {
-            for (int dz = -cellRange; dz <= cellRange; dz++) {
-                GridCoord coord = {centerCoord.x + dx, centerCoord.y + dy, centerCoord.z + dz};
+    for (int gx = lo.x; gx <= hi.x; gx++) {
+        for (int gy = lo.y; gy <= hi.y; gy++) {
+            for (int gz = lo.z; gz <= hi.z; gz++) {
+                GridCoord coord = {gx, gy, gz};
                 unsigned int bucketIndex = hash_coord(coord, mask);
 
                 // Check all objects in this bucket; coord filter skips

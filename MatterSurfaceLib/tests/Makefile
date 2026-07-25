@@ -40,7 +40,9 @@ else
 endif
 
 # Include directories
-INCLUDE_PATHS = -I../include -I$(RAYLIB_PATH) -I../../Libraries/raylib/src
+SQL = ../../SpatialQueryLib
+MEMLIB = ../../MemoryLib
+INCLUDE_PATHS = -I../include -I$(SQL)/include -I$(MEMLIB)/include -I$(RAYLIB_PATH) -I../../Libraries/raylib/src
 
 # Library paths. The src/ archive is the Windows (MinGW COFF) cross-compile
 # output; Linux/macOS test builds must link the native ELF/Mach-O archive under
@@ -106,9 +108,9 @@ CELL_CPP = cell_bounds_tests.cpp ../src/cell.cpp ../src/mesh_simplifier.cpp \
            ../src/marching_cubes_algorithm.cpp ../src/oriented_cube_algorithm.cpp \
            ../src/vertex_ao.cpp ../src/occupancy.cpp
 CELL_C = ../src/surface.c ../src/fat_primitive.c ../src/open_particle_surface.c \
-         ../src/spatial_hash.c ../src/object_allocator.c ../src/material_registry.c
+         $(SQL)/src/spatial_hash.c $(MEMLIB)/src/mem_pool.c ../src/material_registry.c
 
-CELL_C_OBJ = surface.o fat_primitive.o open_particle_surface.o spatial_hash.o object_allocator.o material_registry.o
+CELL_C_OBJ = surface.o fat_primitive.o open_particle_surface.o spatial_hash.o mem_pool.o material_registry.o
 
 $(CELL_TARGET): $(CELL_CPP) $(CELL_C)
 	gcc -c $(CELL_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
@@ -125,9 +127,9 @@ run-cell: $(CELL_TARGET)
 CONT_TARGET = mesh_continuity_tests
 CONT_CPP = mesh_continuity_tests.cpp ../src/mesh_simplifier.cpp
 CONT_C   = ../src/surface.c ../src/fat_primitive.c ../src/open_particle_surface.c \
-           ../src/spatial_hash.c ../src/object_allocator.c
+           $(SQL)/src/spatial_hash.c $(MEMLIB)/src/mem_pool.c
 
-CONT_C_OBJ = surface.o fat_primitive.o open_particle_surface.o spatial_hash.o object_allocator.o
+CONT_C_OBJ = surface.o fat_primitive.o open_particle_surface.o spatial_hash.o mem_pool.o
 
 $(CONT_TARGET): $(CONT_CPP) $(CONT_C)
 	gcc -c $(CONT_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
@@ -191,9 +193,9 @@ PAR_CPP = parallel_mesh_tests.cpp ../src/cell.cpp ../src/mesh_simplifier.cpp \
           ../src/meshing_algorithm.cpp ../src/marching_cubes_algorithm.cpp \
           ../src/oriented_cube_algorithm.cpp ../src/vertex_ao.cpp ../src/occupancy.cpp
 PAR_C = ../src/surface.c ../src/fat_primitive.c ../src/open_particle_surface.c \
-        ../src/spatial_hash.c ../src/object_allocator.c ../src/material_registry.c
+        $(SQL)/src/spatial_hash.c $(MEMLIB)/src/mem_pool.c ../src/material_registry.c
 
-PAR_C_OBJ = surface.o fat_primitive.o open_particle_surface.o spatial_hash.o object_allocator.o material_registry.o
+PAR_C_OBJ = surface.o fat_primitive.o open_particle_surface.o spatial_hash.o mem_pool.o material_registry.o
 
 $(PAR_TARGET): $(PAR_CPP) $(PAR_C)
 	gcc -c $(PAR_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)

@@ -30,8 +30,6 @@ esac
 # MatterEngine3 is a library sub-project: `make` builds libmatter_engine3.a
 # (no app binary); its headless test targets run in the test section below.
 SIMPLE_PROJECTS=(
-    BasicWindowApp
-    SurfaceLib
     MemoryLib
     ParticleFlowLib
     SpatialQueryLib
@@ -42,14 +40,11 @@ SIMPLE_PROJECTS=(
 # Projects whose Makefile defaults to Windows cross-compile and need
 # WSL_LINUX=1 to build the native Linux binary.
 WSL_LINUX_PROJECTS=(
-    OpenParticleSurfaceLib
-    GPURayTraceExample
     MatterSurfaceLib
 )
 
 # Projects that use TARGET=linux instead.
 TARGET_LINUX_PROJECTS=(
-    ParticleDynamicsExample
 )
 
 ALL_PROJECTS=( "${SIMPLE_PROJECTS[@]}" "${WSL_LINUX_PROJECTS[@]}" "${TARGET_LINUX_PROJECTS[@]}" )

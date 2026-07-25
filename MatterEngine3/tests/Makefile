@@ -54,7 +54,7 @@ endif
 
 # Include directories: NEW MatterEngine3 headers, then consumed MatterSurfaceLib
 # headers, then raylib.
-INCLUDE_PATHS = -I../include -I../src -I../src/render -I../src/provider -I../../MatterSurfaceLib/include -I$(RAYLIB_PATH) -I../../Libraries/raylib/src -I../../ParticleFlowLib/include -I../../Libraries/Vulkan-Headers/include -I$(BOX3D_DIR)/include
+INCLUDE_PATHS = -I../include -I../src -I../src/render -I../src/provider -I../../MatterSurfaceLib/include -I../../SpatialQueryLib/include -I../../MemoryLib/include -I$(RAYLIB_PATH) -I../../Libraries/raylib/src -I../../ParticleFlowLib/include -I../../Libraries/Vulkan-Headers/include -I$(BOX3D_DIR)/include
 INCLUDE_PATHS += -I$(FLECS_DIR)
 
 # Library paths (match MatterSurfaceLib/tests; same depth).
@@ -124,6 +124,9 @@ obj_of = $(OBJDIR)/$(1)/$(call mangle,$(2)).o
 #   COMMON_MSL_FULL_SRC; compiled via gcc to keep extern "C" symbols unmangled.
 # ---------------------------------------------------------------------------
 MSL = ../../MatterSurfaceLib/src
+# Shared source-of-truth libraries (compiled from source, not copied into MSL).
+SQL = ../../SpatialQueryLib
+MEMLIB = ../../MemoryLib
 
 COMMON_MSL_BLAS_SRC = \
     $(MSL)/blas_manager.cpp \
@@ -152,8 +155,8 @@ COMMON_MSL_C = \
     $(MSL)/surface.c \
     $(MSL)/open_particle_surface.c \
     $(MSL)/fat_primitive.c \
-    $(MSL)/spatial_hash.c \
-    $(MSL)/object_allocator.c \
+    $(SQL)/src/spatial_hash.c \
+    $(MEMLIB)/src/mem_pool.c \
     $(MSL)/material_registry.c
 
 # QuickJS-ng sources
@@ -335,7 +338,7 @@ ISO_CPP = iso_primitive_tests.cpp field_probe.cpp \
           ../src/part_asset_v2.cpp \
           $(COMMON_MSL_BLAS_SRC)
 ISO_C   = $(MSL)/surface.c $(MSL)/fat_primitive.c \
-          $(MSL)/spatial_hash.c $(MSL)/object_allocator.c \
+          $(SQL)/src/spatial_hash.c $(MEMLIB)/src/mem_pool.c \
           $(MSL)/material_registry.c
 
 DEV_TARGET = dev_live_edit_tests

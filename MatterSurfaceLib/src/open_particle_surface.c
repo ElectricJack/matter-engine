@@ -1,7 +1,7 @@
 #include "../include/open_particle_surface.h"
 #include "../include/surface.h"
-#include "../include/object_allocator.h"
-#include "../include/spatial_hash.h"
+#include "mem_pool.h"
+#include "spatial_hash.h"
 #include "raylib.h"
 #include "raymath.h"
 #include "rlgl.h"
@@ -74,7 +74,7 @@ static int spatialHashCellsCapacity = 0;
 static int maxParticleCount = 0;
 static int currentParticleCount = 0;
 static float particleRadius = 0.0f;
-static ObjectAllocator* particleAllocator = NULL;
+static MemPool* particleAllocator = NULL;
 static ActiveCellList activeCells = {0};
 static SpatialHash* spatialHash = NULL;
 
@@ -334,7 +334,7 @@ void InitializeParticleSystem(int maxParticles, float radius) {
     particleRadius = radius;
     
     // Create particle allocator (object size, objects per page)
-    particleAllocator = oa_create(sizeof(InternalParticle), 10000);
+    particleAllocator = mem_pool_create(sizeof(InternalParticle), 10000);
     
     // Preallocate space for particles
     particles = (InternalParticle*)malloc(maxParticleCount * sizeof(InternalParticle));
@@ -417,7 +417,7 @@ void ShutdownParticleSystem(void) {
     particles = NULL;
     
     // Destroy allocator
-    oa_destroy(particleAllocator);
+    mem_pool_destroy(particleAllocator);
     
     // Destroy spatial hash
     if (spatialHash) {

@@ -305,6 +305,56 @@ static void test_query_first_with_two_objects(void) {
 }
 
 /* --------------------------------------------------------------------------
+ * Test 7: sh_query_radius_nearest keeps the CLOSEST maxResults, not merely the
+ * first maxResults encountered. sh_query_radius bails as soon as its buffer
+ * fills, so under a cap it can miss the actually-nearest objects; the field/SDF
+ * sampler depends on nearest-N being exact or the isosurface fragments.
+ * -------------------------------------------------------------------------- */
+static void test_query_radius_nearest_keeps_closest(void) {
+    SpatialHash* sh = sh_create(1.0f, 64);
+    assert(sh && "sh_create failed");
+
+    /* 10 objects at x = 1.5 .. 10.5, each in its own grid cell. */
+    static int ids[10];
+    for (int i = 0; i < 10; i++) {
+        ids[i] = i;
+        assert(sh_insert(sh, 1.5f + (float)i, 0.5f, 0.5f, &ids[i]));
+    }
+
+    /* Room for only 3 results, but all 10 are in range. */
+    void* results[3];
+    int n = sh_query_radius_nearest(sh, 0.5f, 0.5f, 0.5f, 20.0f, results, 3);
+    if (n != 3) {
+        FAIL("expected exactly 3 results under a maxResults=3 cap");
+        sh_destroy(sh);
+        return;
+    }
+
+    /* The three nearest are ids 0,1,2 (x = 1.5, 2.5, 3.5). Order is
+     * unspecified, so check set membership. */
+    int seen[10] = {0};
+    for (int i = 0; i < n; i++) seen[*(int*)results[i]] = 1;
+    if (!seen[0] || !seen[1] || !seen[2]) {
+        FAIL("nearest-3 did not return the three closest objects");
+        sh_destroy(sh);
+        return;
+    }
+
+    /* Radius must still bound the result set: from x=0.5 with r=2.5 only
+     * ids 0 (d=1.0) and 1 (d=2.0) qualify; id 2 sits at d=3.0. */
+    void* near[8];
+    int m = sh_query_radius_nearest(sh, 0.5f, 0.5f, 0.5f, 2.5f, near, 8);
+    if (m != 2) {
+        FAIL("radius bound not respected by sh_query_radius_nearest");
+        sh_destroy(sh);
+        return;
+    }
+
+    sh_destroy(sh);
+    PASS();
+}
+
+/* --------------------------------------------------------------------------
  * main
  * -------------------------------------------------------------------------- */
 int main(void) {
@@ -318,6 +368,7 @@ int main(void) {
     RUN_TEST(test_initial_capacity_sizes_table);
     RUN_TEST(test_basic_insert_query);
     RUN_TEST(test_query_first_with_two_objects);
+    RUN_TEST(test_query_radius_nearest_keeps_closest);
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;

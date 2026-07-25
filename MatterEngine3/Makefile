@@ -58,6 +58,9 @@ RAYLIB_PATH = ../Libraries/raylib/src
 MSL_DIR     = ../MatterSurfaceLib
 PFL_DIR     = ../ParticleFlowLib
 FLECS_DIR   = ../Libraries/flecs
+# Shared source-of-truth libraries (compiled from source, not copied).
+SQL_DIR     = ../SpatialQueryLib
+MEMLIB_DIR  = ../MemoryLib
 
 # Include directories: NEW MatterEngine3 headers, consumed MatterSurfaceLib
 # headers, vendored QuickJS-ng, then raylib (for the BLAS/Tri/TriEx types).
@@ -66,6 +69,7 @@ BOX3D_DIR     = ../Libraries/box3d
 BOX3D_LIB     = $(BOX3D_DIR)/libbox3d.a
 INCLUDE_PATHS = -Iinclude -Isrc -Isrc/render -Isrc/provider \
                 -I$(MSL_DIR)/include -I$(MSL_DIR)/src \
+                -I$(SQL_DIR)/include -I$(MEMLIB_DIR)/include \
                 -I$(QJS_DIR) -I$(RAYLIB_PATH) -I$(BOX3D_DIR)/include \
                 -I$(PFL_DIR)/include \
                 -I$(FLECS_DIR) \
@@ -143,11 +147,13 @@ MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
           $(EXTRA_RETOPO_CPP)
 
 # MSL C sources: compiled via gcc to keep extern "C" symbols unmangled.
+# spatial_hash.c and mem_pool.c are compiled from their source-of-truth libs
+# (SpatialQueryLib / MemoryLib) rather than from copies under MatterSurfaceLib.
 MSL_C   = $(MSL_DIR)/src/surface.c $(MSL_DIR)/src/open_particle_surface.c \
-          $(MSL_DIR)/src/spatial_hash.c $(MSL_DIR)/src/object_allocator.c \
+          $(SQL_DIR)/src/spatial_hash.c $(MEMLIB_DIR)/src/mem_pool.c \
           $(MSL_DIR)/src/material_registry.c $(MSL_DIR)/src/fat_primitive.c
 MSL_C_OBJ = surface.o open_particle_surface.o spatial_hash.o \
-            object_allocator.o material_registry.o fat_primitive.o
+            mem_pool.o material_registry.o fat_primitive.o
 
 ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           pf_math.o pf_sim.o pf_fields.o pf_path_recorder.o pf_bindings.o \
@@ -293,6 +299,16 @@ $(FLECS_OBJ): $(FLECS_C)
 
 # MSL C sources (gcc, extern "C" safe).
 %.o: $(MSL_DIR)/src/%.c
+	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+
+# Shared library C sources, compiled from their source-of-truth directories.
+# These are explicit (not pattern) rules and the source dirs are deliberately
+# kept off vpath: SpatialQueryLib/src/bvh.c would otherwise shadow
+# MatterSurfaceLib/src/bvh.cpp when make resolves bvh.o.
+spatial_hash.o: $(SQL_DIR)/src/spatial_hash.c
+	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+
+mem_pool.o: $(MEMLIB_DIR)/src/mem_pool.c
 	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
 
 # EXTRA_CFLAGS changes are invisible to make's dependency graph (objects look

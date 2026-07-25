@@ -1,5 +1,5 @@
 #include "../include/surface.h"
-#include "../include/spatial_hash.h"
+#include "spatial_hash.h"
 #include "../include/fat_primitive.h"   // FatPrim, primitive_sdf (typed iso-primitives)
 #include "../include/csg_stages.h"      // FieldStages (ordered CSG)
 #include "mc_tables.h"
@@ -116,39 +116,44 @@ static SurfaceScratch* g_defaultScratch = NULL;
 
 // Memory pool management functions
 // B8 fix: all reallocs use a temp pointer so OOM doesn't lose the original block.
-static void EnsureFieldCapacity(MemoryPool* pool, size_t requiredCells) {
+/* The Ensure*Capacity helpers return 0 on success and -1 on OOM. On failure the
+ * corresponding *Capacity field is left at its old (too-small) value, so the
+ * caller MUST bail rather than proceed to write `required*` entries into the
+ * undersized buffer. */
+static int EnsureFieldCapacity(MemoryPool* pool, size_t requiredCells) {
     if (pool->fieldCapacity < requiredCells) {
         // Grow by 50% or to required size, whichever is larger
         size_t newCapacity = (pool->fieldCapacity * 3) / 2;
         if (newCapacity < requiredCells) newCapacity = requiredCells;
 
         float* sf = (float*)realloc(pool->scalarField, newCapacity * sizeof(float));
-        if (!sf) { fprintf(stderr, "[ERROR] OOM growing scalarField\n"); return; }
+        if (!sf) { fprintf(stderr, "[ERROR] OOM growing scalarField\n"); return -1; }
         pool->scalarField = sf;
 
         int* mf = (int*)realloc(pool->materialField, newCapacity * sizeof(int));
-        if (!mf) { fprintf(stderr, "[ERROR] OOM growing materialField\n"); return; }
+        if (!mf) { fprintf(stderr, "[ERROR] OOM growing materialField\n"); return -1; }
         pool->materialField = mf;
 
         pool->fieldCapacity = newCapacity;
     }
+    return 0;
 }
 
-static void EnsureMeshCapacity(MemoryPool* pool, size_t requiredVertices, size_t requiredTriangles) {
+static int EnsureMeshCapacity(MemoryPool* pool, size_t requiredVertices, size_t requiredTriangles) {
     if (pool->vertexCapacity < requiredVertices) {
         size_t newCapacity = (pool->vertexCapacity * 3) / 2;
         if (newCapacity < requiredVertices) newCapacity = requiredVertices;
 
         Vector3* vt = (Vector3*)realloc(pool->vertices, newCapacity * sizeof(Vector3));
-        if (!vt) { fprintf(stderr, "[ERROR] OOM growing vertices\n"); return; }
+        if (!vt) { fprintf(stderr, "[ERROR] OOM growing vertices\n"); return -1; }
         pool->vertices = vt;
 
         Vector3* nt = (Vector3*)realloc(pool->normals, newCapacity * sizeof(Vector3));
-        if (!nt) { fprintf(stderr, "[ERROR] OOM growing normals\n"); return; }
+        if (!nt) { fprintf(stderr, "[ERROR] OOM growing normals\n"); return -1; }
         pool->normals = nt;
 
         int* mt = (int*)realloc(pool->materials, newCapacity * sizeof(int));
-        if (!mt) { fprintf(stderr, "[ERROR] OOM growing materials\n"); return; }
+        if (!mt) { fprintf(stderr, "[ERROR] OOM growing materials\n"); return -1; }
         pool->materials = mt;
 
         pool->vertexCapacity = newCapacity;
@@ -159,28 +164,30 @@ static void EnsureMeshCapacity(MemoryPool* pool, size_t requiredVertices, size_t
         if (newCapacity < requiredTriangles) newCapacity = requiredTriangles;
 
         Triangle* tt = (Triangle*)realloc(pool->triangles, newCapacity * sizeof(Triangle));
-        if (!tt) { fprintf(stderr, "[ERROR] OOM growing triangles\n"); return; }
+        if (!tt) { fprintf(stderr, "[ERROR] OOM growing triangles\n"); return -1; }
         pool->triangles = tt;
 
         pool->triangleCapacity = newCapacity;
     }
+    return 0;
 }
 
-static void EnsureHashTableCapacity(MemoryPool* pool, size_t requiredSize) {
+static int EnsureHashTableCapacity(MemoryPool* pool, size_t requiredSize) {
     if (pool->hashTableCapacity < requiredSize) {
         size_t newCapacity = (pool->hashTableCapacity * 3) / 2;
         if (newCapacity < requiredSize) newCapacity = requiredSize;
 
         unsigned long long* ek = (unsigned long long*)realloc(pool->edgeKeys, newCapacity * sizeof(unsigned long long));
-        if (!ek) { fprintf(stderr, "[ERROR] OOM growing edgeKeys\n"); return; }
+        if (!ek) { fprintf(stderr, "[ERROR] OOM growing edgeKeys\n"); return -1; }
         pool->edgeKeys = ek;
 
         int* gi = (int*)realloc(pool->globalEdgeVertexIndices, newCapacity * sizeof(int));
-        if (!gi) { fprintf(stderr, "[ERROR] OOM growing globalEdgeVertexIndices\n"); return; }
+        if (!gi) { fprintf(stderr, "[ERROR] OOM growing globalEdgeVertexIndices\n"); return -1; }
         pool->globalEdgeVertexIndices = gi;
 
         pool->hashTableCapacity = newCapacity;
     }
+    return 0;
 }
 
 static void CleanupMemoryPool(MemoryPool* pool) {
@@ -582,7 +589,10 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
     
     // Allocate memory for scalar field and material field using memory pool if enabled
     if (config.enableMemoryReuse) {
-        EnsureFieldCapacity(&scratch->pool, data.totalCells);
+        if (EnsureFieldCapacity(&scratch->pool, data.totalCells) < 0) {
+            printf("Failed to allocate memory for scalar field\n");
+            return mesh;
+        }
         data.scalarField = scratch->pool.scalarField;
         data.materialField = scratch->pool.materialField;
     } else {
@@ -717,7 +727,10 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
     Triangle* triangles;
     
     if (config.enableMemoryReuse) {
-        EnsureMeshCapacity(&scratch->pool, maxVertices, maxTriangles);
+        if (EnsureMeshCapacity(&scratch->pool, maxVertices, maxTriangles) < 0) {
+            printf("Failed to allocate memory for mesh buffers\n");
+            return mesh;
+        }
         vertices = scratch->pool.vertices;
         normals = scratch->pool.normals;
         materials = scratch->pool.materials;
@@ -753,7 +766,10 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
         hashTableSize = 1024 * 1024; // 1M entries in hash table
         
         if (config.enableMemoryReuse) {
-            EnsureHashTableCapacity(&scratch->pool, hashTableSize);
+            if (EnsureHashTableCapacity(&scratch->pool, hashTableSize) < 0) {
+                printf("Failed to allocate memory for edge hash table\n");
+                return mesh;
+            }
             edgeKeys = scratch->pool.edgeKeys;
             globalEdgeVertexIndices = scratch->pool.globalEdgeVertexIndices;
         } else {

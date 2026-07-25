@@ -10,7 +10,7 @@
 #include "meshing_algorithm.h"
 #include <utility>   // std::move
 extern "C" {
-#include "../include/spatial_hash.h"  // sh_query_radius_nearest for per-triangle material/tint
+#include "spatial_hash.h"  // sh_query_radius_nearest for per-triangle material/tint
 }
 #include <cmath>
 #include <cstdio>

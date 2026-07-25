@@ -20,21 +20,9 @@ C++ raylib starter with ImGui integration — a rotating cube with live controls
 
 Test-driven C allocator that grows in pages of fixed-size objects. No graphics. **6/6 tests pass.**
 
-### `SurfaceLib/` — marching-cubes isosurfaces
-
-![SurfaceLib screenshot](docs/screenshots/surface_lib.png)
-
-C library that builds meshes from scalar fields via marching cubes — spheres, tori, metaballs, custom user functions. The screenshot shows a metaball field with hundreds of overlapping wireframe surfaces and particle sites.
-
 ### `SpatialQueryLib/` — spatial hash + CPU BVH (C)
 
-Generic spatial hash for radius/box queries and a CPU-side BVH that can flatten into node/index buffers ready for GPU SSBO upload. No graphics. **9/9 tests pass.**
-
-### `OpenParticleSurfaceLib/` — dynamic particle → mesh pipeline
-
-![OpenParticleSurfaceLib screenshot](docs/screenshots/open_particle_surface_lib.png)
-
-C library that hot-rebuilds isosurface meshes as particles move. Pulls in `SurfaceLib` and `MemoryLib`. Tested up to 1M particles with active-cell tracking and dirty-bounds rebuilds.
+Generic spatial hash for radius/box queries and a CPU-side BVH that can flatten into node/index buffers ready for GPU SSBO upload. No graphics. Source of truth for the spatial hash the engine links. **14/14 tests pass.**
 
 ### `GPURayTraceExample/` — pixel-shader BVH ray tracer
 
@@ -95,10 +83,8 @@ make WSL_LINUX=1    # or just `make` on native Linux/macOS
 | Project | Build command | Binary |
 |---|---|---|
 | `BasicWindowApp` | `make` | `./cube_app` |
-| `SurfaceLib` | `make` | `./surface_app` |
 | `MemoryLib` | `make` | `./memorylib` (test runner) |
 | `SpatialQueryLib` | `make` | `./spatialquerylib` (test runner) |
-| `OpenParticleSurfaceLib` | `make` | `./open_particle_surface` |
 | `GPURayTraceExample` | `make WSL_LINUX=1` | `./gpu_raytrace` |
 | `ParticleDynamicsExample` | `make TARGET=linux` | `./build/linux/particle_dynamics` |
 | `MatterSurfaceLib` | `make WSL_LINUX=1` | `./matter_surface_lib` |

@@ -35,6 +35,9 @@ WIN_BOX3D_LIB = $(BOX3D_DIR)/build-mingw/libbox3d.a
 ME3_DIR     = ../MatterEngine3
 MSL_DIR     = ../MatterSurfaceLib
 FLECS_DIR   = ../Libraries/flecs
+# Shared source-of-truth libraries (compiled from source, not copied).
+SQL_DIR     = ../SpatialQueryLib
+MEMLIB_DIR  = ../MemoryLib
 
 # Linux app compile: only public engine API + imgui + raylib headers visible.
 # Private ME3 src/ headers are NOT exposed here; they are internal to the library.
@@ -43,6 +46,7 @@ FLECS_DIR   = ../Libraries/flecs
 INCLUDE_PATHS = -I$(ME3_DIR)/include \
                 -I$(ME3_DIR)/src \
                 -I$(MSL_DIR)/include \
+                -I$(SQL_DIR)/include -I$(MEMLIB_DIR)/include \
                 -I$(RAYLIB_PATH) \
                 -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends \
                 -I$(IMGUIZMO_PATH) \
@@ -212,7 +216,7 @@ WIN_MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
               $(MSL_DIR)/src/lattice.cpp $(MSL_DIR)/src/particle_culling.cpp
 
 WIN_PIPELINE_C = $(MSL_DIR)/src/surface.c $(MSL_DIR)/src/open_particle_surface.c \
-                 $(MSL_DIR)/src/spatial_hash.c $(MSL_DIR)/src/object_allocator.c \
+                 $(SQL_DIR)/src/spatial_hash.c $(MEMLIB_DIR)/src/mem_pool.c \
                  $(MSL_DIR)/src/material_registry.c $(MSL_DIR)/src/fat_primitive.c
 
 QJS_C   = $(QJS_DIR)/quickjs.c $(QJS_DIR)/libregexp.c $(QJS_DIR)/libunicode.c \
