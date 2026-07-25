@@ -60,7 +60,6 @@ third_party/autoremesher_core/thirdparty/tbb/build/*_release/
 !third_party/box3d/build-mingw/libbox3d.a
 
 # MatterEngine3 compiled binaries and bake caches
-MatterEngine3/viewer/viewer
 MatterEngine3/tests/*_check
 MatterEngine3/tests/*_profile
 MatterEngine3/tests/example_world
@@ -69,7 +68,6 @@ MatterEngine3/tests/sandbox/
 
 # viewer-integration tests (share viewer's object graph; live in viewer/ for
 # now — see followup on moving to tests/)
-MatterEngine3/viewer/*_tests
 
 # autoremesher_core smoke-test binaries (compiled from same-named drivers)
 third_party/autoremesher_core/tests/smoke_cube
@@ -81,12 +79,9 @@ libs/SpatialQueryLib/linux
 
 # Transient screenshots + sentinel files (FIFO shot capture)
 *.png.done
-MatterEngine3/viewer/*.png
-MatterEngine3/viewer/shots_forestfloor/
 MatterEngine3/tools/shots_task6/
 shots/
 # (no trailing slash: shaders is a symlink in fresh checkouts, a dir otherwise)
-MatterEngine3/viewer/shaders
 
 # Local backups / imposter test outputs / world bake data
 *.bak
