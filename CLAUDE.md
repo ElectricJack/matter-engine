@@ -19,11 +19,11 @@ MatterEngine2 follows a modular architecture where:
 
 The root directory contains:
 
-- `Libraries/` - Vendored third-party dependencies (raylib, imgui, box3d, quickjs-ng, autoremesher_core, Vulkan-Headers)
-- `Examples/` - Reference material (e.g., `bvh_article`)
+- `third_party/` - Vendored third-party dependencies (raylib, imgui, box3d, quickjs-ng, autoremesher_core, Vulkan-Headers)
+- `libs/` - Foundation libraries beneath MatterEngine3 in the dependency chain: `MemoryLib`, `SpatialQueryLib`, `ParticleFlowLib`, `MatterSurfaceLib`, `MeshChartingLib`
 - `build-all.sh` - Top-level script that builds every project for the current platform; `./build-all.sh test` also runs headless test suites
 - `create_project.sh` - Bootstrap a new sub-project skeleton
-- Individual sub-project directories (e.g., `BasicWindowApp`, `SurfaceLib`, `MatterSurfaceLib`)
+- Individual sub-project directories (e.g., `MatterEngine3`, `MatterEditor`, `BasicWindowApp`)
 - This documentation file and `ROADMAP.md`
 
 Each project follows this general structure:
@@ -124,8 +124,8 @@ bash setup-worktree.sh
 ```
 
 This creates NTFS junctions for the three directory symlinks the build requires:
-- `MatterEngine3/shaders` → `MatterSurfaceLib/shaders`
-- `MatterEditor/shaders` → `MatterSurfaceLib/shaders`
+- `MatterEngine3/shaders` → `libs/MatterSurfaceLib/shaders`
+- `MatterEditor/shaders` → `libs/MatterSurfaceLib/shaders`
 - `MatterEditor/shaders_gpu` → `MatterEngine3/shaders_gpu`
 
 ### Sandbox note for Claude Desktop App
@@ -154,20 +154,20 @@ The build system ensures that:
 Current projects and their relationships. Dependencies run one way only:
 **MatterEditor → MatterEngine3 → MatterSurfaceLib → SpatialQueryLib → MemoryLib.**
 
-1. **MemoryLib** - Pool / arena / growable-array allocators (C)
+1. **libs/MemoryLib** - Pool / arena / growable-array allocators (C)
    - Source of truth for `mem_pool`; no dependencies
 
-2. **SpatialQueryLib** - Geometry + spatial acceleration foundation
+2. **libs/SpatialQueryLib** - Geometry + spatial acceleration foundation
    - Dependencies: MemoryLib (`mem_pool`)
    - Provides: `precomp.h` (float3/float4/ALIGN), `tri.h` (Tri/TriEx/mat4),
      the BVH/TLAS structures (`bvh.cpp`, `bvh_analyzer.cpp`), and the spatial hash
    - Note: the name predates its contents — it now owns the engine's core
      geometry types, not just queries
 
-3. **ParticleFlowLib** - Particle-flow simulation, fields, path recording (C++)
+3. **libs/ParticleFlowLib** - Particle-flow simulation, fields, path recording (C++)
    - Compiled directly into MatterEngine3 and MatterEditor
 
-4. **MatterSurfaceLib** - Meshing/surfacing backend + GPU resource management
+4. **libs/MatterSurfaceLib** - Meshing/surfacing backend + GPU resource management
    - Dependencies: SpatialQueryLib, MemoryLib, raylib
    - Provides: marching-cubes/CSG surfacing (`surface.c`), cluster/cell meshing,
      mesh simplification, and the BLAS/TLAS *GPU* managers (`blas_manager`,
@@ -185,10 +185,10 @@ Current projects and their relationships. Dependencies run one way only:
    - Dependencies: MatterEngine3 (libmatter_engine3.a), MatterSurfaceLib, raylib, Dear ImGui,
      QuickJS-ng, Box3d, optionally autoremesher_core + TBB
    - Build: `make -C MatterEditor` → `editor` binary (runs from MatterEditor/ working directory)
-   - Shader symlinks: `MatterEditor/shaders` → MatterSurfaceLib/shaders,
+   - Shader symlinks: `MatterEditor/shaders` → libs/MatterSurfaceLib/shaders,
      `MatterEditor/shaders_gpu` → MatterEngine3/shaders_gpu
 
-7. **MeshChartingLib** - UV chart segmentation + atlas packing (GL-free)
+7. **libs/MeshChartingLib** - UV chart segmentation + atlas packing (GL-free)
    - No consumers today; kept for the voxel-box-imposter work
 
 `Prototypes/` holds retired experiments (`BasicWindowApp`, `GPURayTraceExample`).

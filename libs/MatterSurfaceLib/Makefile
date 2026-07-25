@@ -1,11 +1,11 @@
 CC = gcc
 CXX = g++
-# ../../ because this project lives under Prototypes/ (one level deeper than
-# the active sub-projects at the repo root).
 RAYLIB_PATH = ../../third_party/raylib
-MEMORY_LIB = ../../libs/MemoryLib
-CFLAGS = -Wall -Wextra -O2 -I$(RAYLIB_PATH)/src -I./include -I$(MEMORY_LIB)/include
-CXXFLAGS = -Wall -Wextra -O2 -std=c++14 -Wno-missing-field-initializers -I$(RAYLIB_PATH)/src -I./include -I$(MEMORY_LIB)/include
+IMGUI_PATH = ../../third_party/imgui
+SQL_DIR = ../SpatialQueryLib
+MEMLIB_DIR = ../MemoryLib
+CFLAGS = -Wall -Wextra -O2 -I$(SQL_DIR)/include -I$(MEMLIB_DIR)/include -I$(RAYLIB_PATH)/src -I$(RAYLIB_PATH)/src/external/glfw/include -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends -I./include
+CXXFLAGS = -Wall -Wextra -O2 -std=c++14 -Wno-missing-field-initializers -I$(SQL_DIR)/include -I$(MEMLIB_DIR)/include -I$(RAYLIB_PATH)/src -I$(RAYLIB_PATH)/src/external/glfw/include -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends -I./include
 
 # Build flags:
 # TARGET=windows-native : Cross-compile for Windows from Linux using MinGW
@@ -22,10 +22,10 @@ CXXFLAGS = -Wall -Wextra -O2 -std=c++14 -Wno-missing-field-initializers -I$(RAYL
 ifeq ($(TARGET),windows-native)
     # Cross-compile for Windows from Linux/WSL
     CC = x86_64-w64-mingw32-gcc
-    CXX = x86_64-w64-mingw32-g++
+    CXX = x86_64-w64-mingw32-g++-posix
     PLATFORM = windows-native
     PLATFORM_DEFINE = PLATFORM_DESKTOP
-    LDFLAGS = -L$(RAYLIB_PATH)/build/$(PLATFORM) -static-libgcc -static-libstdc++ -lopengl32 -lgdi32 -lwinmm
+    LDFLAGS = -L$(RAYLIB_PATH)/build/$(PLATFORM) -static -lopengl32 -lgdi32 -lwinmm
     LDLIBS = $(RAYLIB_PATH)/build/$(PLATFORM)/libraylib.a
     BIN_SUFFIX = .exe
 else
@@ -80,10 +80,10 @@ else
         else
             # Default: Cross-compile to Windows from WSL
             CC = x86_64-w64-mingw32-gcc
-            CXX = x86_64-w64-mingw32-g++
+            CXX = x86_64-w64-mingw32-g++-posix
             PLATFORM = windows-native
             PLATFORM_DEFINE = PLATFORM_DESKTOP
-            LDFLAGS = -L$(RAYLIB_PATH)/build/$(PLATFORM) -static-libgcc -static-libstdc++ -lopengl32 -lgdi32 -lwinmm
+            LDFLAGS = -L$(RAYLIB_PATH)/build/$(PLATFORM) -static -lopengl32 -lgdi32 -lwinmm
             LDLIBS = $(RAYLIB_PATH)/build/$(PLATFORM)/libraylib.a
             BIN_SUFFIX = .exe
         endif
@@ -103,9 +103,9 @@ else
         else
             # Default: Use MinGW toolchain for native Windows builds
             CC = x86_64-w64-mingw32-gcc
-            CXX = x86_64-w64-mingw32-g++
+            CXX = x86_64-w64-mingw32-g++-posix
             PLATFORM = windows-mingw
-            LDFLAGS = -L$(RAYLIB_PATH)/build/$(PLATFORM) -static-libgcc -static-libstdc++ -lopengl32 -lgdi32 -lwinmm
+            LDFLAGS = -L$(RAYLIB_PATH)/build/$(PLATFORM) -static -lopengl32 -lgdi32 -lwinmm
         endif
         LDLIBS = $(RAYLIB_PATH)/build/$(PLATFORM)/libraylib.a
         BIN_SUFFIX = .exe
@@ -128,12 +128,16 @@ $(shell mkdir -p $(BUILD_DIR))
 $(shell mkdir -p $(RAYLIB_PATH)/build/$(PLATFORM))
 
 # C++ main application
-SRC = main.cpp src/bvh.cpp src/blas_manager.cpp src/tlas_manager.cpp src/bvh_visualizer.cpp
-OBJ = $(OBJ_DIR)/main.o $(OBJ_DIR)/bvh.o $(OBJ_DIR)/mem_pool.o $(OBJ_DIR)/blas_manager.o $(OBJ_DIR)/tlas_manager.o $(OBJ_DIR)/bvh_visualizer.o
-BIN = $(BUILD_DIR)/gpu_raytrace$(BIN_SUFFIX)
+SRC = main.cpp $(SQL_DIR)/src/bvh.cpp src/blas_manager.cpp src/tlas_manager.cpp src/part_asset.cpp src/bvh_visualizer.cpp $(SQL_DIR)/src/bvh_analyzer.cpp src/open_particle_surface.c src/surface.c $(SQL_DIR)/src/spatial_hash.c $(MEMLIB_DIR)/src/mem_pool.c src/fat_primitive.c src/material_registry.c src/cluster.cpp src/cell.cpp src/mesh_worker_pool.cpp src/mesh_simplifier.cpp src/mesh_build_utils.cpp src/meshing_algorithm.cpp src/marching_cubes_algorithm.cpp src/oriented_cube_algorithm.cpp src/lattice.cpp src/occupancy.cpp src/particle_culling.cpp src/vertex_ao.cpp src/voxel_imposter.cpp $(IMGUI_PATH)/imgui.cpp $(IMGUI_PATH)/imgui_demo.cpp $(IMGUI_PATH)/imgui_draw.cpp $(IMGUI_PATH)/imgui_tables.cpp $(IMGUI_PATH)/imgui_widgets.cpp $(IMGUI_PATH)/backends/imgui_impl_opengl3.cpp $(IMGUI_PATH)/backends/imgui_impl_glfw.cpp
+OBJ = $(OBJ_DIR)/main.o $(OBJ_DIR)/bvh.o $(OBJ_DIR)/mem_pool.o $(OBJ_DIR)/blas_manager.o $(OBJ_DIR)/tlas_manager.o $(OBJ_DIR)/part_asset.o $(OBJ_DIR)/bvh_visualizer.o $(OBJ_DIR)/bvh_analyzer.o $(OBJ_DIR)/open_particle_surface.o $(OBJ_DIR)/surface.o $(OBJ_DIR)/fat_primitive.o $(OBJ_DIR)/material_registry.o $(OBJ_DIR)/spatial_hash.o $(OBJ_DIR)/cluster.o $(OBJ_DIR)/cell.o $(OBJ_DIR)/mesh_worker_pool.o $(OBJ_DIR)/mesh_simplifier.o $(OBJ_DIR)/mesh_build_utils.o $(OBJ_DIR)/meshing_algorithm.o $(OBJ_DIR)/marching_cubes_algorithm.o $(OBJ_DIR)/oriented_cube_algorithm.o $(OBJ_DIR)/lattice.o $(OBJ_DIR)/occupancy.o $(OBJ_DIR)/particle_culling.o $(OBJ_DIR)/vertex_ao.o $(OBJ_DIR)/voxel_imposter.o $(OBJ_DIR)/imgui.o $(OBJ_DIR)/imgui_demo.o $(OBJ_DIR)/imgui_draw.o $(OBJ_DIR)/imgui_tables.o $(OBJ_DIR)/imgui_widgets.o $(OBJ_DIR)/imgui_impl_opengl3.o $(OBJ_DIR)/imgui_impl_glfw.o
+BIN = $(BUILD_DIR)/matter_surface_lib$(BIN_SUFFIX)
 PREPROCESSOR = $(BUILD_DIR)/shader_preprocessor
 
-all: shaders $(BIN)
+all: dependencies shaders $(BIN)
+
+dependencies:
+	@echo "Setting up dependencies for $(PLATFORM)..."
+	@mkdir -p src
 
 shaders: shaders/raytrace_tlas_blas_processed.fs
 
@@ -148,7 +152,7 @@ else
 	$(CXX) $(CXXFLAGS) -o $@ $<
 endif
 
-shaders/raytrace_tlas_blas_processed.fs: shaders/raytrace_tlas_blas.fs shaders/bvh_tlas_common.glsl $(PREPROCESSOR)
+shaders/raytrace_tlas_blas_processed.fs: shaders/raytrace_tlas_blas.fs shaders/bvh_tlas_common.glsl shaders/materials.glsl shaders/lighting.glsl $(PREPROCESSOR)
 	@echo "Processing shader with includes (C++)..."
 	$(PREPROCESSOR) shaders/raytrace_tlas_blas.fs shaders/raytrace_tlas_blas_processed.fs
 
@@ -199,31 +203,30 @@ endif
 	@echo "Built executable for $(PLATFORM): $@"
 	@echo "Copying executable to root directory for easy execution..."
 ifeq ($(TARGET),windows-native)
-	@cp $@ ./gpu_raytrace.exe
-	@echo "✓ Copied to ./gpu_raytrace.exe"
+	@cp $@ ./matter_surface_lib.exe
+	@echo "✓ Copied to ./matter_surface_lib.exe"
 else ifeq ($(PLATFORM),windows-native)
 	@cp $@ ./gpu_raytrace.exe
 	@echo "✓ Copied to ./gpu_raytrace.exe (WSL→Windows cross-compile)"
 else ifeq ($(PLATFORM),windows-mingw)
-	@cp $@ ./gpu_raytrace.exe
-	@echo "✓ Copied to ./gpu_raytrace.exe"
+	@cp $@ ./matter_surface_lib.exe
+	@echo "✓ Copied to ./matter_surface_lib.exe"
 else ifeq ($(PLATFORM),windows)
-	@cp $@ ./gpu_raytrace.exe
-	@echo "✓ Copied to ./gpu_raytrace.exe"
+	@cp $@ ./matter_surface_lib.exe
+	@echo "✓ Copied to ./matter_surface_lib.exe"
 else
-	@cp $@ ./gpu_raytrace
-	@echo "✓ Copied to ./gpu_raytrace"
+	@cp $@ ./matter_surface_lib
+	@echo "✓ Copied to ./matter_surface_lib"
 endif
 
 # Build rules for main target (C++)
 $(OBJ_DIR)/main.o: main.cpp
 	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
-$(OBJ_DIR)/bvh.o: src/bvh.cpp
+$(OBJ_DIR)/bvh.o: $(SQL_DIR)/src/bvh.cpp
 	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
-# mem_pool compiled from MemoryLib (source of truth)
-$(OBJ_DIR)/mem_pool.o: $(MEMORY_LIB)/src/mem_pool.c $(MEMORY_LIB)/include/mem_pool.h
+$(OBJ_DIR)/mem_pool.o: $(MEMLIB_DIR)/src/mem_pool.c
 	$(CC) -c $< $(CFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/blas_manager.o: src/blas_manager.cpp
@@ -232,7 +235,89 @@ $(OBJ_DIR)/blas_manager.o: src/blas_manager.cpp
 $(OBJ_DIR)/tlas_manager.o: src/tlas_manager.cpp
 	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
+$(OBJ_DIR)/part_asset.o: src/part_asset.cpp
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
+
 $(OBJ_DIR)/bvh_visualizer.o: src/bvh_visualizer.cpp
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
+
+$(OBJ_DIR)/bvh_analyzer.o: $(SQL_DIR)/src/bvh_analyzer.cpp
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
+
+$(OBJ_DIR)/open_particle_surface.o: src/open_particle_surface.c
+	$(CC) -c $< $(CFLAGS) -MMD -MP -o $@
+
+$(OBJ_DIR)/surface.o: src/surface.c
+	$(CC) -c $< $(CFLAGS) -MMD -MP -o $@
+
+$(OBJ_DIR)/fat_primitive.o: src/fat_primitive.c
+	$(CC) -c $< $(CFLAGS) -MMD -MP -o $@
+
+$(OBJ_DIR)/material_registry.o: src/material_registry.c
+	$(CC) -c $< $(CFLAGS) -MMD -MP -o $@
+
+$(OBJ_DIR)/spatial_hash.o: $(SQL_DIR)/src/spatial_hash.c
+	$(CC) -c $< $(CFLAGS) -MMD -MP -o $@
+
+$(OBJ_DIR)/cluster.o: src/cluster.cpp
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
+
+$(OBJ_DIR)/cell.o: src/cell.cpp
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
+
+$(OBJ_DIR)/mesh_worker_pool.o: src/mesh_worker_pool.cpp
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
+
+$(OBJ_DIR)/mesh_build_utils.o: src/mesh_build_utils.cpp
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
+
+$(OBJ_DIR)/meshing_algorithm.o: src/meshing_algorithm.cpp
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
+
+$(OBJ_DIR)/marching_cubes_algorithm.o: src/marching_cubes_algorithm.cpp
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
+
+$(OBJ_DIR)/oriented_cube_algorithm.o: src/oriented_cube_algorithm.cpp
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
+
+$(OBJ_DIR)/mesh_simplifier.o: src/mesh_simplifier.cpp
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
+
+$(OBJ_DIR)/lattice.o: src/lattice.cpp
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
+
+$(OBJ_DIR)/occupancy.o: src/occupancy.cpp
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
+
+$(OBJ_DIR)/particle_culling.o: src/particle_culling.cpp
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
+
+$(OBJ_DIR)/vertex_ao.o: src/vertex_ao.cpp
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
+
+$(OBJ_DIR)/voxel_imposter.o: src/voxel_imposter.cpp
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
+
+# ImGui build rules
+$(OBJ_DIR)/imgui.o: $(IMGUI_PATH)/imgui.cpp
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
+
+$(OBJ_DIR)/imgui_demo.o: $(IMGUI_PATH)/imgui_demo.cpp
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
+
+$(OBJ_DIR)/imgui_draw.o: $(IMGUI_PATH)/imgui_draw.cpp
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
+
+$(OBJ_DIR)/imgui_tables.o: $(IMGUI_PATH)/imgui_tables.cpp
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
+
+$(OBJ_DIR)/imgui_widgets.o: $(IMGUI_PATH)/imgui_widgets.cpp
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
+
+$(OBJ_DIR)/imgui_impl_opengl3.o: $(IMGUI_PATH)/backends/imgui_impl_opengl3.cpp
+	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
+
+$(OBJ_DIR)/imgui_impl_glfw.o: $(IMGUI_PATH)/backends/imgui_impl_glfw.cpp
 	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 # Platform-specific clean
@@ -240,15 +325,15 @@ clean:
 	rm -rf $(BUILD_DIR)
 	rm -f *.o $(PREPROCESSOR) shaders/raytrace_tlas_blas_processed.fs
 ifeq ($(TARGET),windows-native)
-	-rm -f ./gpu_raytrace.exe
+	-rm -f ./matter_surface_lib.exe
 else ifeq ($(PLATFORM),windows-native)
-	-rm -f ./gpu_raytrace.exe
+	-rm -f ./matter_surface_lib.exe
 else ifeq ($(PLATFORM),windows-mingw)
-	-rm -f ./gpu_raytrace.exe
+	-rm -f ./matter_surface_lib.exe
 else ifeq ($(PLATFORM),windows)
-	-rm -f ./gpu_raytrace.exe
+	-rm -f ./matter_surface_lib.exe
 else
-	-rm -f ./gpu_raytrace
+	-rm -f ./matter_surface_lib
 endif
 
 # Clean all platforms
@@ -256,7 +341,7 @@ clean-all:
 	rm -rf build/
 	rm -rf $(RAYLIB_PATH)/build/
 	rm -f *.o shaders/raytrace_tlas_blas_processed.fs
-	-rm -f ./gpu_raytrace ./gpu_raytrace.exe
+	-rm -f ./matter_surface_lib ./matter_surface_lib.exe
 
 # Force rebuild raylib for current platform
 rebuild-raylib:
@@ -280,4 +365,4 @@ platform:
 
 -include $(OBJ:.o=.d)
 
-.PHONY: all clean clean-all raylib shaders rebuild-raylib platform
+.PHONY: all clean clean-all raylib shaders dependencies rebuild-raylib platform

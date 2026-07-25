@@ -8,8 +8,8 @@
 #
 # MatterEngine3 consumes the MatterSurfaceLib prototype READ-ONLY:
 #   new headers via -Iinclude, consumed prototype headers via
-#   -I../MatterSurfaceLib/include. QuickJS-ng is vendored under
-#   ../Libraries/quickjs-ng and compiled with gcc so its extern "C" symbols stay
+#   -I../libs/MatterSurfaceLib/include. QuickJS-ng is vendored under
+#   ../third_party/quickjs-ng and compiled with gcc so its extern "C" symbols stay
 #   unmangled. Per CLAUDE.md memory: after struct/header changes, prefer
 #   `make clean && make` to avoid stale objects.
 #
@@ -25,7 +25,7 @@
 #
 # Caller can inject extra flags via EXTRA_CFLAGS / EXTRA_INCLUDE:
 #   make -C MatterEngine3 EXTRA_CFLAGS="-DMATTER_HAVE_AUTOREMESHER ..." \
-#        EXTRA_INCLUDE="-I../Libraries/autoremesher_core/include"
+#        EXTRA_INCLUDE="-I../third_party/autoremesher_core/include"
 # MatterEditor/Makefile does this when libautoremesher_core.a is present so that
 # part_flatten.cpp compiles with the retopo hook enabled.
 #
@@ -54,18 +54,18 @@ ifeq ($(UNAME_S),Darwin)
     CFLAGS += -mmacosx-version-min=$(MACOS_VERSION)
 endif
 
-RAYLIB_PATH = ../Libraries/raylib/src
-MSL_DIR     = ../MatterSurfaceLib
-PFL_DIR     = ../ParticleFlowLib
-FLECS_DIR   = ../Libraries/flecs
+RAYLIB_PATH = ../third_party/raylib/src
+MSL_DIR     = ../libs/MatterSurfaceLib
+PFL_DIR     = ../libs/ParticleFlowLib
+FLECS_DIR   = ../third_party/flecs
 # Shared source-of-truth libraries (compiled from source, not copied).
-SQL_DIR     = ../SpatialQueryLib
-MEMLIB_DIR  = ../MemoryLib
+SQL_DIR     = ../libs/SpatialQueryLib
+MEMLIB_DIR  = ../libs/MemoryLib
 
 # Include directories: NEW MatterEngine3 headers, consumed MatterSurfaceLib
 # headers, vendored QuickJS-ng, then raylib (for the BLAS/Tri/TriEx types).
-QJS_DIR       = ../Libraries/quickjs-ng
-BOX3D_DIR     = ../Libraries/box3d
+QJS_DIR       = ../third_party/quickjs-ng
+BOX3D_DIR     = ../third_party/box3d
 BOX3D_LIB     = $(BOX3D_DIR)/libbox3d.a
 INCLUDE_PATHS = -Iinclude -Isrc -Isrc/render -Isrc/provider \
                 -I$(MSL_DIR)/include -I$(MSL_DIR)/src \
@@ -73,7 +73,7 @@ INCLUDE_PATHS = -Iinclude -Isrc -Isrc/render -Isrc/provider \
                 -I$(QJS_DIR) -I$(RAYLIB_PATH) -I$(BOX3D_DIR)/include \
                 -I$(PFL_DIR)/include \
                 -I$(FLECS_DIR) \
-                -I../Libraries/Vulkan-Headers/include $(EXTRA_INCLUDE)
+                -I../third_party/Vulkan-Headers/include $(EXTRA_INCLUDE)
 
 # Vendored QuickJS-ng engine. v0.10.0 needs xsum.c (xsum_small_* symbols) beyond
 # the core four. Compiled via gcc (C) so the embedding symbols stay unmangled.
@@ -209,7 +209,7 @@ SHADER_LOGICAL := shaders/raster.vs shaders/raster.fs shaders/tileset_sampling.g
     shaders_gpu/cull.comp shaders_gpu/hiz_downsample.comp \
     shaders_gpu/raster_gpu_driven.vs
 # SHADER_FILES resolves logical paths into real filesystem paths under MatterEngine3/:
-# shaders/ is a symlink -> ../MatterSurfaceLib/shaders; shaders_gpu/ is a real dir.
+# shaders/ is a symlink -> ../libs/MatterSurfaceLib/shaders; shaders_gpu/ is a real dir.
 SHADER_FILES := $(SHADER_LOGICAL)
 
 .PHONY: all clean test vulkan-spirv

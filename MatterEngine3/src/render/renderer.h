@@ -11,7 +11,7 @@
 namespace viewer {
 
 // Owns the raytrace shader + camera and draws a fullscreen traced frame.
-// Mirrors MatterSurfaceLib/main.cpp's render path.
+// Mirrors libs/MatterSurfaceLib/main.cpp's render path.
 class Renderer {
 public:
     // init_camera sets camera defaults (always called, both modes).

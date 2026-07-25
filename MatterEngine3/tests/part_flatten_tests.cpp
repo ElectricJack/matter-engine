@@ -11,11 +11,11 @@
 #include "bake_trace_names.h"  // kSpanFlatten, kSpanLod, kSpanLodRung
 #include "matter/bake_observer.h"  // Bake Lab W3: per-rung bake observer seam
 #include "part_cluster.h"
-#include "../../MatterSurfaceLib/include/blas_manager.hpp"
-#include "../../MatterSurfaceLib/include/tlas_manager.hpp"
-#include "../../MatterSurfaceLib/include/mesh_simplifier.hpp"
-#include "../../MatterSurfaceLib/include/mesh_indexed.hpp"
-#include "../../MatterSurfaceLib/include/mesh_transform.hpp"
+#include "../../libs/MatterSurfaceLib/include/blas_manager.hpp"
+#include "../../libs/MatterSurfaceLib/include/tlas_manager.hpp"
+#include "../../libs/MatterSurfaceLib/include/mesh_simplifier.hpp"
+#include "../../libs/MatterSurfaceLib/include/mesh_indexed.hpp"
+#include "../../libs/MatterSurfaceLib/include/mesh_transform.hpp"
 
 #include <cmath>
 #include <cstdint>

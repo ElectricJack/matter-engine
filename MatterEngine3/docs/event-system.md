@@ -73,7 +73,7 @@ Return a value, or name a single decision-maker: `scene::PartResolver` (`std::fu
 
 #### A — Extend flecs' event API to everything
 
-flecs (vendored, `Libraries/flecs`) has a first-class observer/emit API already used for structural events, with ordering, filtering, and an ecosystem of introspection tooling.
+flecs (vendored, `third_party/flecs`) has a first-class observer/emit API already used for structural events, with ordering, filtering, and an ecosystem of introspection tooling.
 
 - **Pro:** zero new core code; one event system on paper; entity events are its home turf.
 - **Con — disqualifying:** flecs events are **ECS-world-scoped and effectively single-threaded** — emission happens inside the world, observers run on the ECS tick thread (or defer to the merge). Engine plumbing is exactly the opposite shape: bake-worker → app-thread progress, GL-thread publish callbacks, cross-thread error reporting. Wedging those in means every emitter must marshal into the ECS world first, inheriting its tick cadence and staging rules.

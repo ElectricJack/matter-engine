@@ -13,7 +13,7 @@
 namespace {
 
 MeshIndexed make_sphere(int levels) {
-    // identical generator to MatterSurfaceLib/tests/mesh_smooth_tests.cpp
+    // identical generator to libs/MatterSurfaceLib/tests/mesh_smooth_tests.cpp
     MeshIndexed m;
     m.positions = {
         make_float3( 1, 0, 0), make_float3(-1, 0, 0),

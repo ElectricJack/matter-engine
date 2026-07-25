@@ -1,7 +1,7 @@
 #include "part_asset_v2.h"
-#include "../../MatterSurfaceLib/include/blas_manager.hpp"
-#include "../../MatterSurfaceLib/include/tlas_manager.hpp"
-#include "../../MatterSurfaceLib/include/material_registry.h"
+#include "../../libs/MatterSurfaceLib/include/blas_manager.hpp"
+#include "../../libs/MatterSurfaceLib/include/tlas_manager.hpp"
+#include "../../libs/MatterSurfaceLib/include/material_registry.h"
 #include <cstdio>
 #include <cstdint>
 #include <cstring>

@@ -6,7 +6,7 @@
 // v2 surface (resolved hash, child-instance table, ordered LOD levels) in the
 // SAME part_asset namespace.
 // See docs/superpowers/specs/2026-06-24-part-artifact-v2-design.md
-#include "part_asset.h"   // v1 (MatterSurfaceLib via -I../../MatterSurfaceLib/include):
+#include "part_asset.h"   // v1 (MatterSurfaceLib via -I../../libs/MatterSurfaceLib/include):
                           // fnv1a64, cache_path, kMagic, BLASManager/TLASManager,
                           // MaterialDef, Tri/TriEx/BVHNode
 

@@ -12,8 +12,8 @@ Nothing here is scheduled. Last audited 2026-07-25.
 
 **The one real duplicate in the math layer.**
 
-`MatterSurfaceLib/src/tlas_manager.cpp` carries a full 4×4 matrix suite on its
-own `Matrix4x4` type, sitting beside `mat4` (from `SpatialQueryLib/include/tri.h`)
+`libs/MatterSurfaceLib/src/tlas_manager.cpp` carries a full 4×4 matrix suite on its
+own `Matrix4x4` type, sitting beside `mat4` (from `libs/SpatialQueryLib/include/tri.h`)
 in the same file, with explicit converters between the two:
 
 ```cpp
@@ -29,13 +29,13 @@ lived in SpatialQueryLib's C BVH — the implementation deleted in `c3f0577a` as
 having no consumers. It had no consumers; its *matrix half* had already been
 copied here and is load-bearing.
 
-| Deleted `SpatialQueryLib/include/bvh.h` (see `c3f0577a^`) | Live in `tlas_manager.cpp` |
+| Deleted `libs/SpatialQueryLib/include/bvh.h` (see `c3f0577a^`) | Live in `tlas_manager.cpp` |
 |---|---|
 | `matrix_identity`, `matrix_multiply`, `matrix_inverse`, `matrix_translation`, `matrix_scale`, `matrix_rotation_x/y/z/axis` | all nine, identical names and `const Matrix4x4*` signatures |
 | `matrix_transform_point`, `matrix_transform_vector` | not carried over |
 
 **Still load-bearing** — not vestigial:
-- `MatterSurfaceLib/include/tlas_manager.hpp:21` (definition; 14 uses in that header)
+- `libs/MatterSurfaceLib/include/tlas_manager.hpp:21` (definition; 14 uses in that header)
 - `MatterEngine3/src/tileset_torus_bvh.cpp:162,169,299` — builds transforms from poses
 - `MatterEngine3/src/render/tileset_bake_vk.cpp:420` — row-major → `VkTransformMatrixKHR`
 - `MatterEngine3/tests/part_asset_v2_tests.cpp:96-99`
@@ -53,10 +53,10 @@ divergent handling of singular input is the actual hazard.
 | Implementation | Type | On singular input |
 |---|---|---|
 | `MatterEngine3/src/render/matrix_math.cpp:120` `mat4_inverse` | `Mat4f` | returns `false` — caller decides |
-| `SpatialQueryLib/include/tri.h:57` `mat4::Inverted` | `mat4` | returns **identity** |
+| `libs/SpatialQueryLib/include/tri.h:57` `mat4::Inverted` | `mat4` | returns **identity** |
 | `MatterEngine3/src/csg_lowering.cpp:24` `mat_invert` | raylib `Matrix` | returns **zero matrix** (guard at `:37`) |
-| `MatterSurfaceLib/src/tlas_manager.cpp:49` `matrix_inverse` | `Matrix4x4` | (fourth implementation) |
-| `Libraries/raylib/src/raymath.h:1538` `MatrixInvert` | raylib `Matrix` | **no guard** — computes `1.0f/det`, yields inf/NaN |
+| `libs/MatterSurfaceLib/src/tlas_manager.cpp:49` `matrix_inverse` | `Matrix4x4` | (fourth implementation) |
+| `third_party/raylib/src/raymath.h:1538` `MatrixInvert` | raylib `Matrix` | **no guard** — computes `1.0f/det`, yields inf/NaN |
 
 A degenerate transform silently becomes identity on one path, a zero matrix on
 another, and NaN on a third.
@@ -90,7 +90,7 @@ Recorded so this isn't re-audited as if it were debt.
 
 | Family | Home | Reach | Role |
 |---|---|---|---|
-| `float3`/`float4`/`mat4` | `SpatialQueryLib/include/{precomp,tri}.h` | **61 files** | SIMD-aligned, shaped for BVH build |
+| `float3`/`float4`/`mat4` | `libs/SpatialQueryLib/include/{precomp,tri}.h` | **61 files** | SIMD-aligned, shaped for BVH build |
 | `matter::Float3`/`Float4`/`Quaternion`/`Mat4f` | `MatterEngine3/include/matter/math_types.h` | **24 files** | the exported engine API boundary |
 | raylib `Vector3`/`Matrix`/`Quaternion` | vendored | DSL/CSG layer | where the code is raylib-facing |
 
@@ -108,8 +108,8 @@ Revisit only if conversions start appearing at layer boundaries.
 
 | Thing | Why it's legitimately separate |
 |---|---|
-| `MatterSurfaceLib/src/mesh_simplifier.cpp:80` `V3` | **double** precision — Garland-Heckbert quadrics need it. Comment: "avoids raymath coupling" |
-| `ParticleFlowLib/include/particle_flow.h:14` `pf::V3` | deterministic sim, header-only public API |
+| `libs/MatterSurfaceLib/src/mesh_simplifier.cpp:80` `V3` | **double** precision — Garland-Heckbert quadrics need it. Comment: "avoids raymath coupling" |
+| `libs/ParticleFlowLib/include/particle_flow.h:14` `pf::V3` | deterministic sim, header-only public API |
 | `MatterEngine3/shared-lib/vecmath.js` | QuickJS scripting runtime — different language |
 | `MatterEngine3/src/render/vk_gi_math.*` | BRDF/GGX sampling, builds on `matter::Float3` |
 | `MatterEngine3/src/render/gpu_matrix_pack.h:7` `GpuMat4` | GPU packing layout |
@@ -129,7 +129,7 @@ than refactor:
 - `textures_dirty_`, `shader_values_dirty_`, per-entry `gpu_dirty`, the two
   `Texture2D` members, `ensure_gpu_textures_ready()`, `bind_to_shader()`
   (BLAS and TLAS managers)
-- `MatterSurfaceLib/main.cpp:1150,1151,1496` also calls `bind_to_shader`
+- `libs/MatterSurfaceLib/main.cpp:1150,1151,1496` also calls `bind_to_shader`
 
 `content_revision()` (landed `b11d36fc`) is the backend-agnostic replacement: a
 Vulkan uploader holds its own `seen_content_revision_` and skips when equal.
@@ -155,9 +155,9 @@ in code slated for deletion:
   out of `build-all.sh`; the whole class disappears if that prototype is ever
   deleted. It is the last duplicate cluster left in the tree.
 
-- **`MatterSurfaceLib/Makefile` hardcodes `x86_64-w64-mingw32-g++-posix`**, which
+- **`libs/MatterSurfaceLib/Makefile` hardcodes `x86_64-w64-mingw32-g++-posix`**, which
   is not installed under MSYS2 UCRT64 (plain `x86_64-w64-mingw32-g++` is;
-  MatterEditor uses `/ucrt64/bin/g++`). `make -C MatterSurfaceLib` fails at the
+  MatterEditor uses `/ucrt64/bin/g++`). `make -C libs/MatterSurfaceLib` fails at the
   compiler, not at any source. Pre-existing.
 
 - **ASan is unavailable** in MSYS2 UCRT64 (`cannot find -lasan`).

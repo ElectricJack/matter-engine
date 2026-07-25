@@ -10,8 +10,8 @@ extern "C" {
 #include "../src/triangle_emit.hpp"   // complete TriangleBuildBuffer for G4/G8 tests
 #include "csg_lowering.h"
 #include "part_asset_v2.h"
-#include "../../MatterSurfaceLib/include/blas_manager.hpp"
-#include "../../MatterSurfaceLib/include/tlas_manager.hpp"
+#include "../../libs/MatterSurfaceLib/include/blas_manager.hpp"
+#include "../../libs/MatterSurfaceLib/include/tlas_manager.hpp"
 #include <sys/stat.h>
 #include <vector>
 

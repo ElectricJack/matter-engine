@@ -30,7 +30,7 @@ Cross-refs: `MatterEngine3/tests/Makefile` (`COMMON_MSL_BLAS_SRC` /
 ## autoremesher integration [DONE]
 
 Vendored MIT-licensed headless subset of huxingyi/autoremesher into
-`Libraries/autoremesher_core/`. Added `MeshIndexed`/`MeshTransform` boundary
+`third_party/autoremesher_core/`. Added `MeshIndexed`/`MeshTransform` boundary
 in MatterSurfaceLib and `mesh_retopo` module alongside the QEM simplifier.
 Retopo is per-part opt-in via `static retopo = { enabled: true, ... }` on the
 DSL part class definition, discovered by ScriptHost::eval_retopo_settings.
@@ -696,7 +696,7 @@ We want to define a physics system for the matter particles here that supports b
 
 * Create the project directory
 * Create the git repo for the project
-* Download ODE into the Libraries folder
+* Download ODE into the third_party folder
 * Create the app code for a basic test of ODE based off the BasicWindowApp project, but add a rotating cube that contains some particles bouncing around and interacting
 
 * Carefully define the generic properties of all particles

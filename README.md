@@ -10,21 +10,21 @@ This repository is a **monorepo of independently-buildable sub-projects**, each 
 
 Ordered roughly from foundational → integration.
 
-### `MemoryLib/` — memory managers: pool, arena, growable array (C)
+### `libs/MemoryLib/` — memory managers: pool, arena, growable array (C)
 
 Test-driven C allocator that grows in pages of fixed-size objects. No graphics. **6/6 tests pass.**
 
-### `SpatialQueryLib/` — geometry types + spatial acceleration (C/C++)
+### `libs/SpatialQueryLib/` — geometry types + spatial acceleration (C/C++)
 
 Source of truth for everything below the meshing layer: `precomp.h` (float3/float4/SIMD), `tri.h` (`Tri`/`TriEx`/`mat4` — the engine's universal triangle interchange types), the BVH/TLAS structures and analyzer, and a generic spatial hash for radius/box queries. GL-free. Compiled directly into `libmatter_engine3.a`. **14/14 tests pass.**
 
 *The name predates the contents — it now owns the core geometry types, not just queries.*
 
-### `ParticleFlowLib/` — particle flow simulation (C++)
+### `libs/ParticleFlowLib/` — particle flow simulation (C++)
 
 Deterministic particle simulation with force fields and append-only path recording, used by the tree/foliage generators. Compiled into the engine and editor.
 
-### `MatterSurfaceLib/` — the convergence project
+### `libs/MatterSurfaceLib/` — the convergence project
 
 ![MatterSurfaceLib screenshot](docs/screenshots/matter_surface_lib.png)
 
@@ -36,7 +36,7 @@ See [`ROADMAP.md`](./ROADMAP.md) for the design intent behind each project and w
 
 - **One repo, many independent projects.** Each sub-project has its own `Makefile` and produces its own binary. There's no umbrella build target — `build-all.sh` just walks the list.
 - **Code sharing** between sub-projects is via `-I../OtherProject/include` in Makefiles (and occasionally filesystem symlinks). No package manager, no submodules.
-- **Vendored third-party deps** live under `Libraries/` (raylib, ImGui, ODE). Building from a fresh clone needs no system packages other than a C/C++ toolchain and OpenGL/X11 dev headers.
+- **Vendored third-party deps** live under `third_party/` (raylib, ImGui, ODE). Building from a fresh clone needs no system packages other than a C/C++ toolchain and OpenGL/X11 dev headers.
 - **Cross-platform** Makefiles target Linux, macOS, and Windows (native + MinGW cross-compile from WSL). `build-all.sh` defaults to the host platform.
 
 ## Building & running
@@ -55,7 +55,7 @@ See [`ROADMAP.md`](./ROADMAP.md) for the design intent behind each project and w
 Per-project builds:
 
 ```bash
-cd MatterSurfaceLib
+cd libs/MatterSurfaceLib
 make WSL_LINUX=1    # or just `make` on native Linux/macOS
 ./matter_surface_lib
 ```
@@ -70,11 +70,11 @@ make WSL_LINUX=1    # or just `make` on native Linux/macOS
 
 | Project | Build command | Binary |
 |---|---|---|
-| `MemoryLib` | `make` | `./memorylib` (test runner) |
-| `SpatialQueryLib` | `make` | `./spatialquerylib` (test runner) |
-| `ParticleFlowLib` | `make` | `libparticleflow.a` |
+| `libs/MemoryLib` | `make` | `./memorylib` (test runner) |
+| `libs/SpatialQueryLib` | `make` | `./spatialquerylib` (test runner) |
+| `libs/ParticleFlowLib` | `make` | `libparticleflow.a` |
 | `MatterEngine3` | `make` | `libmatter_engine3.a` |
-| `MatterSurfaceLib` | `make WSL_LINUX=1` | `./matter_surface_lib` |
+| `libs/MatterSurfaceLib` | `make WSL_LINUX=1` | `./matter_surface_lib` |
 | `MatterEditor` | `make` | `./editor` |
 
 Retired experiments live under `Prototypes/` and are excluded from `build-all.sh`.
@@ -97,4 +97,4 @@ This repo was consolidated from seven previously-independent local-only sub-repo
 
 ## License
 
-Not yet specified. The vendored libraries under `Libraries/` retain their original upstream licenses (raylib: zlib, ImGui: MIT, ODE: BSD/LGPL dual).
+Not yet specified. The vendored libraries under `third_party/` retain their original upstream licenses (raylib: zlib, ImGui: MIT, ODE: BSD/LGPL dual).

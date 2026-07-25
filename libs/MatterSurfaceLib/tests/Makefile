@@ -7,7 +7,7 @@ UNAME_M := $(shell uname -m)
 # Default to Linux settings
 PLATFORM = PLATFORM_DESKTOP
 LIBTYPE = STATIC
-RAYLIB_RELEASE_PATH = ../../../Libraries/raylib
+RAYLIB_RELEASE_PATH = ../../../../third_party/raylib
 RAYLIB_PATH = $(RAYLIB_RELEASE_PATH)/src
 
 # Platform-specific settings
@@ -42,17 +42,17 @@ endif
 # Include directories
 SQL = ../../SpatialQueryLib
 MEMLIB = ../../MemoryLib
-INCLUDE_PATHS = -I../include -I$(SQL)/include -I$(MEMLIB)/include -I$(RAYLIB_PATH) -I../../Libraries/raylib/src
+INCLUDE_PATHS = -I../include -I$(SQL)/include -I$(MEMLIB)/include -I$(RAYLIB_PATH) -I../../../third_party/raylib/src
 
 # Library paths. The src/ archive is the Windows (MinGW COFF) cross-compile
 # output; Linux/macOS test builds must link the native ELF/Mach-O archive under
 # build/<platform>/ (matching the main Makefile's per-platform LDLIBS).
 ifeq ($(UNAME_S),Linux)
-    LDLIBS = ../../Libraries/raylib/build/linux/libraylib.a
+    LDLIBS = ../../../third_party/raylib/build/linux/libraylib.a
 else ifeq ($(UNAME_S),Darwin)
-    LDLIBS = ../../Libraries/raylib/build/macos/libraylib.a
+    LDLIBS = ../../../third_party/raylib/build/macos/libraylib.a
 else
-    LDLIBS = ../../Libraries/raylib/src/libraylib.a
+    LDLIBS = ../../../third_party/raylib/src/libraylib.a
 endif
 
 # Source files
@@ -277,7 +277,7 @@ run-mtx: $(MTX_TARGET)
 # mesh_retopo wrapper unit tests (headless, GL-free).
 # Links against autoremesher_core (static) + TBB (shared). The rpath uses
 # $ORIGIN so the binary finds libtbb.so.2 at runtime without LD_LIBRARY_PATH.
-AR_CORE_PATH = ../../Libraries/autoremesher_core
+AR_CORE_PATH = ../../../third_party/autoremesher_core
 TBB_BUILD_DIR := $(firstword $(wildcard $(AR_CORE_PATH)/thirdparty/tbb/build/linux_*_release))
 TBB_BUILD_SUBDIR := $(patsubst $(AR_CORE_PATH)/thirdparty/tbb/build/%,%,$(TBB_BUILD_DIR))
 
@@ -288,7 +288,7 @@ RETOPO_CFLAGS = $(CFLAGS) -I$(AR_CORE_PATH)/include
 RETOPO_LDFLAGS = $(LDFLAGS) \
                  -L$(AR_CORE_PATH) -lautoremesher_core \
                  -L$(TBB_BUILD_DIR) -ltbb \
-                 -Wl,-rpath,'$$ORIGIN/../../Libraries/autoremesher_core/thirdparty/tbb/build/$(TBB_BUILD_SUBDIR)' \
+                 -Wl,-rpath,'$$ORIGIN/../../../third_party/autoremesher_core/thirdparty/tbb/build/$(TBB_BUILD_SUBDIR)' \
                  -lpthread -ldl -lrt
 
 $(RETOPO_TARGET): $(RETOPO_SOURCES)

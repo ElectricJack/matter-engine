@@ -1,8 +1,8 @@
 #include "lod_bake.h"
 #include "bake_trace.h"        // Bake Lab task 1.5: LOD ladder spans + counters
 #include "bake_trace_names.h"  // kSpanLod, kSpanLodRung
-#include "../../MatterSurfaceLib/include/mesh_simplifier.hpp"
-#include "../../MatterSurfaceLib/include/mesh_indexed.hpp"
+#include "../../libs/MatterSurfaceLib/include/mesh_simplifier.hpp"
+#include "../../libs/MatterSurfaceLib/include/mesh_indexed.hpp"
 #include <chrono>
 #include <cmath>
 

@@ -1,8 +1,8 @@
 # Makefile for MatterEngine3 tests.
 # MatterEngine3 consumes the MatterSurfaceLib prototype READ-ONLY:
 #   new headers via -I../include, consumed prototype headers via
-#   -I../../MatterSurfaceLib/include, consumed prototype sources as
-#   ../../MatterSurfaceLib/src/<dep>. raylib paths match MatterSurfaceLib/tests
+#   -I../../libs/MatterSurfaceLib/include, consumed prototype sources as
+#   ../../libs/MatterSurfaceLib/src/<dep>. raylib paths match MatterSurfaceLib/tests
 #   (same directory depth).
 #
 # Build layout (Phase B incremental):
@@ -23,7 +23,7 @@ UNAME_M := $(shell uname -m)
 # Default to Linux settings
 PLATFORM = PLATFORM_DESKTOP
 LIBTYPE = STATIC
-RAYLIB_RELEASE_PATH = ../../../Libraries/raylib
+RAYLIB_RELEASE_PATH = ../../../third_party/raylib
 RAYLIB_PATH = $(RAYLIB_RELEASE_PATH)/src
 
 ifeq ($(UNAME_S),Linux)
@@ -54,16 +54,16 @@ endif
 
 # Include directories: NEW MatterEngine3 headers, then consumed MatterSurfaceLib
 # headers, then raylib.
-INCLUDE_PATHS = -I../include -I../src -I../src/render -I../src/provider -I../../MatterSurfaceLib/include -I../../SpatialQueryLib/include -I../../MemoryLib/include -I$(RAYLIB_PATH) -I../../Libraries/raylib/src -I../../ParticleFlowLib/include -I../../Libraries/Vulkan-Headers/include -I$(BOX3D_DIR)/include
+INCLUDE_PATHS = -I../include -I../src -I../src/render -I../src/provider -I../../libs/MatterSurfaceLib/include -I../../libs/SpatialQueryLib/include -I../../libs/MemoryLib/include -I$(RAYLIB_PATH) -I../../third_party/raylib/src -I../../libs/ParticleFlowLib/include -I../../third_party/Vulkan-Headers/include -I$(BOX3D_DIR)/include
 INCLUDE_PATHS += -I$(FLECS_DIR)
 
 # Library paths (match MatterSurfaceLib/tests; same depth).
 ifeq ($(UNAME_S),Linux)
-    LDLIBS = ../../Libraries/raylib/build/linux/libraylib.a
+    LDLIBS = ../../third_party/raylib/build/linux/libraylib.a
 else ifeq ($(UNAME_S),Darwin)
-    LDLIBS = ../../Libraries/raylib/build/macos/libraylib.a
+    LDLIBS = ../../third_party/raylib/build/macos/libraylib.a
 else
-    LDLIBS = ../../Libraries/raylib/src/libraylib.a
+    LDLIBS = ../../third_party/raylib/src/libraylib.a
 endif
 
 # Windows (MSYS2 MinGW/UCRT64, uname like MINGW64_NT-*): no X11/GL/rt here.
@@ -71,7 +71,7 @@ endif
 # and LDLIBS is last in the link recipes, so they ride in LDLIBS.
 ifneq (,$(findstring _NT,$(UNAME_S)))
     LDFLAGS = -lm -lpthread
-    LDLIBS  = ../../Libraries/raylib/src/libraylib.a -lopengl32 -lgdi32 -lwinmm -lws2_32 -ldbghelp
+    LDLIBS  = ../../third_party/raylib/src/libraylib.a -lopengl32 -lgdi32 -lwinmm -lws2_32 -ldbghelp
 endif
 
 OBJDIR := build
@@ -89,7 +89,7 @@ TILESETSLICER_TARGET = tileset_slicer_tests
 TILESETSLICER_CPP = tileset_slicer_tests.cpp ../src/render/tileset_slicer.cpp
 TILESETSLICER_HEADERS = check.h ../src/render/tileset_slicer.h
 
-FLECS_DIR = ../../Libraries/flecs
+FLECS_DIR = ../../third_party/flecs
 FLECS_C = $(FLECS_DIR)/flecs.c
 
 ECS_TARGET = ecs_tests
@@ -123,10 +123,10 @@ obj_of = $(OBJDIR)/$(1)/$(call mangle,$(2)).o
 # COMMON_MSL_C     — full C-source set (surface.c et al.) used alongside
 #   COMMON_MSL_FULL_SRC; compiled via gcc to keep extern "C" symbols unmangled.
 # ---------------------------------------------------------------------------
-MSL = ../../MatterSurfaceLib/src
+MSL = ../../libs/MatterSurfaceLib/src
 # Shared source-of-truth libraries (compiled from source, not copied into MSL).
-SQL = ../../SpatialQueryLib
-MEMLIB = ../../MemoryLib
+SQL = ../../libs/SpatialQueryLib
+MEMLIB = ../../libs/MemoryLib
 
 COMMON_MSL_BLAS_SRC = \
     $(MSL)/blas_manager.cpp \
@@ -160,16 +160,16 @@ COMMON_MSL_C = \
     $(MSL)/material_registry.c
 
 # QuickJS-ng sources
-QJS_DIR  = ../../Libraries/quickjs-ng
+QJS_DIR  = ../../third_party/quickjs-ng
 QJS_INC  = -I$(QJS_DIR)
 QJS_C    = $(QJS_DIR)/quickjs.c $(QJS_DIR)/libregexp.c \
            $(QJS_DIR)/libunicode.c $(QJS_DIR)/cutils.c $(QJS_DIR)/xsum.c
 
-BOX3D_DIR = ../../Libraries/box3d
+BOX3D_DIR = ../../third_party/box3d
 BOX3D_LIB = $(BOX3D_DIR)/libbox3d.a
 
 # Autoremesher_core detection (shared by the retopo integration test AND the GPU tests)
-AR_CORE_PATH = ../../Libraries/autoremesher_core
+AR_CORE_PATH = ../../third_party/autoremesher_core
 TBB_BUILD_DIR := $(firstword $(wildcard $(AR_CORE_PATH)/thirdparty/tbb/build/linux_*_release))
 TBB_BUILD_SUBDIR := $(patsubst $(AR_CORE_PATH)/thirdparty/tbb/build/%,%,$(TBB_BUILD_DIR))
 
@@ -202,7 +202,7 @@ ifneq ($(HAVE_AUTOREMESHER),)
   GPU_AR_CORE_CFLAGS  := -DMATTER_HAVE_AUTOREMESHER -I$(AR_CORE_PATH)/include
   GPU_AR_CORE_LDFLAGS := -L$(AR_CORE_PATH) -lautoremesher_core \
                          -L$(TBB_BUILD_DIR) -ltbb \
-                         -Wl,-rpath,'$$ORIGIN/../../Libraries/autoremesher_core/thirdparty/tbb/build/$(TBB_BUILD_SUBDIR)' \
+                         -Wl,-rpath,'$$ORIGIN/../../third_party/autoremesher_core/thirdparty/tbb/build/$(TBB_BUILD_SUBDIR)' \
                          -Wl,--allow-multiple-definition
   GPU_AR_CORE_CPP     := $(MSL)/mesh_retopo.cpp
 else
@@ -512,8 +512,8 @@ TERRAINVERB_CPP = terrain_verb_tests.cpp ../src/part_graph.cpp ../src/bake_trace
                   ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
                   ../src/terrain_field.cpp ../src/terrain_mesher.cpp \
                   ../src/pf_bindings.cpp \
-                  ../../ParticleFlowLib/src/pf_math.cpp ../../ParticleFlowLib/src/pf_sim.cpp \
-                  ../../ParticleFlowLib/src/pf_fields.cpp ../../ParticleFlowLib/src/pf_path_recorder.cpp \
+                  ../../libs/ParticleFlowLib/src/pf_math.cpp ../../libs/ParticleFlowLib/src/pf_sim.cpp \
+                  ../../libs/ParticleFlowLib/src/pf_fields.cpp ../../libs/ParticleFlowLib/src/pf_path_recorder.cpp \
                   $(COMMON_MSL_FULL_SRC)
 TERRAINVERB_C = $(COMMON_MSL_C)
 
@@ -553,8 +553,8 @@ SCRIPT_CPP = script_host_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp .
              ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
              $(TERRAIN_SRC) \
              ../src/pf_bindings.cpp \
-             ../../ParticleFlowLib/src/pf_math.cpp ../../ParticleFlowLib/src/pf_sim.cpp \
-             ../../ParticleFlowLib/src/pf_fields.cpp ../../ParticleFlowLib/src/pf_path_recorder.cpp \
+             ../../libs/ParticleFlowLib/src/pf_math.cpp ../../libs/ParticleFlowLib/src/pf_sim.cpp \
+             ../../libs/ParticleFlowLib/src/pf_fields.cpp ../../libs/ParticleFlowLib/src/pf_path_recorder.cpp \
              $(COMMON_MSL_FULL_SRC)
 SCRIPT_C   = $(COMMON_MSL_C)
 
@@ -564,7 +564,7 @@ MODBAKE_TARGET = modifier_region_bake_tests
 MODBAKE_CPP = modifier_region_bake_tests.cpp $(filter-out script_host_tests.cpp, $(SCRIPT_CPP))
 MODBAKE_C   = $(COMMON_MSL_C)
 
-PF_LIB = ../../ParticleFlowLib
+PF_LIB = ../../libs/ParticleFlowLib
 # any target that links dsl_bindings.cpp must also link pf_bindings.cpp + ParticleFlowLib sources
 PF_CPP = ../src/pf_bindings.cpp \
          $(PF_LIB)/src/pf_math.cpp \
@@ -690,8 +690,8 @@ EVALWORLD_CPP = eval_world_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp
                 ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
                 $(TERRAIN_SRC) \
                 ../src/pf_bindings.cpp \
-                ../../ParticleFlowLib/src/pf_math.cpp ../../ParticleFlowLib/src/pf_sim.cpp \
-                ../../ParticleFlowLib/src/pf_fields.cpp ../../ParticleFlowLib/src/pf_path_recorder.cpp \
+                ../../libs/ParticleFlowLib/src/pf_math.cpp ../../libs/ParticleFlowLib/src/pf_sim.cpp \
+                ../../libs/ParticleFlowLib/src/pf_fields.cpp ../../libs/ParticleFlowLib/src/pf_path_recorder.cpp \
                 $(COMMON_MSL_FULL_SRC)
 EVALWORLD_C = $(COMMON_MSL_C)
 
@@ -704,8 +704,8 @@ FOLDCACHE_CPP = fold_cache_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp
                 ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
                 $(TERRAIN_SRC) \
                 ../src/pf_bindings.cpp \
-                ../../ParticleFlowLib/src/pf_math.cpp ../../ParticleFlowLib/src/pf_sim.cpp \
-                ../../ParticleFlowLib/src/pf_fields.cpp ../../ParticleFlowLib/src/pf_path_recorder.cpp \
+                ../../libs/ParticleFlowLib/src/pf_math.cpp ../../libs/ParticleFlowLib/src/pf_sim.cpp \
+                ../../libs/ParticleFlowLib/src/pf_fields.cpp ../../libs/ParticleFlowLib/src/pf_path_recorder.cpp \
                 $(COMMON_MSL_FULL_SRC)
 FOLDCACHE_C = $(COMMON_MSL_C)
 
@@ -774,7 +774,7 @@ RETOPO_INT_C   = $(COMMON_MSL_C)
 RETOPO_INT_LDFLAGS = $(LDFLAGS) \
                      -L$(AR_CORE_PATH) -lautoremesher_core \
                      -L$(TBB_BUILD_DIR) -ltbb \
-                     -Wl,-rpath,'$$ORIGIN/../../Libraries/autoremesher_core/thirdparty/tbb/build/$(TBB_BUILD_SUBDIR)' \
+                     -Wl,-rpath,'$$ORIGIN/../../third_party/autoremesher_core/thirdparty/tbb/build/$(TBB_BUILD_SUBDIR)' \
                      -Wl,--allow-multiple-definition
 
 # ===== flavor gpu (GPU tests) ==========================================
@@ -1449,7 +1449,7 @@ run-settlebench: $(SETTLEBENCH_TARGET)
 
 # tileset .gtex format round-trip.
 $(TILESETGTEX_TARGET): $(TILESETGTEX_OBJS)
-	$(CC) $(TILESETGTEX_OBJS) -o $@ $(CFLAGS) -I../include -I../../Libraries/raylib/src
+	$(CC) $(TILESETGTEX_OBJS) -o $@ $(CFLAGS) -I../include -I../../third_party/raylib/src
 
 run-tilesetgtex: $(TILESETGTEX_TARGET)
 	./$(TILESETGTEX_TARGET)

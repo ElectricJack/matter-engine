@@ -30,9 +30,9 @@ esac
 # MatterEngine3 is a library sub-project: `make` builds libmatter_engine3.a
 # (no app binary); its headless test targets run in the test section below.
 SIMPLE_PROJECTS=(
-    MemoryLib
-    ParticleFlowLib
-    SpatialQueryLib
+    libs/MemoryLib
+    libs/ParticleFlowLib
+    libs/SpatialQueryLib
     MatterEngine3
     MatterEditor
 )
@@ -40,7 +40,7 @@ SIMPLE_PROJECTS=(
 # Projects whose Makefile defaults to Windows cross-compile and need
 # WSL_LINUX=1 to build the native Linux binary.
 WSL_LINUX_PROJECTS=(
-    MatterSurfaceLib
+    libs/MatterSurfaceLib
 )
 
 # Projects that use TARGET=linux instead.
@@ -81,11 +81,11 @@ clean_one() {
 RAYLIB_CUSTOM_CFLAGS="-DRL_DEFAULT_BATCH_MAX_TEXTURE_UNITS=16"
 prep_raylib() {
     echo "Rebuilding raylib for $PLATFORM..."
-    ( cd Libraries/raylib/src && make clean PLATFORM=PLATFORM_DESKTOP >/dev/null 2>&1 || true
+    ( cd third_party/raylib/src && make clean PLATFORM=PLATFORM_DESKTOP >/dev/null 2>&1 || true
       make PLATFORM=PLATFORM_DESKTOP CUSTOM_CFLAGS="$RAYLIB_CUSTOM_CFLAGS" >/dev/null 2>&1 )
     # Some projects look in build/<platform>/libraylib.a -- mirror it there too.
-    mkdir -p "Libraries/raylib/build/$PLATFORM"
-    cp Libraries/raylib/src/libraylib.a "Libraries/raylib/build/$PLATFORM/libraylib.a"
+    mkdir -p "third_party/raylib/build/$PLATFORM"
+    cp third_party/raylib/src/libraylib.a "third_party/raylib/build/$PLATFORM/libraylib.a"
 }
 
 # autoremesher_core: static library (geogram core + hexdom + isotropicremesher
@@ -93,8 +93,8 @@ prep_raylib() {
 # it. Not cross-platform-sensitive like raylib -- just a Linux/WSL .a.
 prep_autoremesher_core() {
     echo "Building autoremesher_core static lib..."
-    ( cd Libraries/autoremesher_core && make >/dev/null 2>&1 )
-    if [ -f Libraries/autoremesher_core/libautoremesher_core.a ]; then
+    ( cd third_party/autoremesher_core && make >/dev/null 2>&1 )
+    if [ -f third_party/autoremesher_core/libautoremesher_core.a ]; then
         echo "  autoremesher_core: OK"
     else
         echo "  autoremesher_core: FAIL"
@@ -102,8 +102,8 @@ prep_autoremesher_core() {
     # TBB runtime: header-only inside the static lib, but consumers
     # (retopo_integration_tests, viewer) link libtbb.so at final link time.
     # TBB's own Makefile emits build/linux_*_release/.
-    ( cd Libraries/autoremesher_core/thirdparty/tbb && make tbb >/dev/null 2>&1 )
-    if ls Libraries/autoremesher_core/thirdparty/tbb/build/linux_*_release/libtbb.so.2 >/dev/null 2>&1; then
+    ( cd third_party/autoremesher_core/thirdparty/tbb && make tbb >/dev/null 2>&1 )
+    if ls third_party/autoremesher_core/thirdparty/tbb/build/linux_*_release/libtbb.so.2 >/dev/null 2>&1; then
         echo "  tbb runtime: OK"
     else
         echo "  tbb runtime: FAIL"
@@ -112,8 +112,8 @@ prep_autoremesher_core() {
 
 if [ "$MODE" = "clean" ]; then
     for p in "${ALL_PROJECTS[@]}"; do clean_one "$p"; done
-    ( cd Libraries/raylib/src && make clean PLATFORM=PLATFORM_DESKTOP >/dev/null 2>&1 || true )
-    ( cd Libraries/autoremesher_core && make clean >/dev/null 2>&1 || true )
+    ( cd third_party/raylib/src && make clean PLATFORM=PLATFORM_DESKTOP >/dev/null 2>&1 || true )
+    ( cd third_party/autoremesher_core && make clean >/dev/null 2>&1 || true )
     echo "All projects cleaned."
 fi
 
@@ -135,8 +135,9 @@ if [ "$MODE" = "test" ]; then
     echo "--- grep-gate (MatterEditor dependency rule) ---"
     bash MatterEngine3/tools/grep_gate.sh || RESULT[MatterEditor]="FAIL (grep-gate)"
 
-    for proj in MemoryLib SpatialQueryLib; do
-        bin="$proj/$(echo "$proj" | tr '[:upper:]' '[:lower:]')"
+    for proj in libs/MemoryLib libs/SpatialQueryLib; do
+        base="$(basename "$proj")"
+        bin="$proj/$(echo "$base" | tr '[:upper:]' '[:lower:]')"
         if [ -x "$bin" ]; then
             echo
             echo "--- $proj ---"
@@ -146,11 +147,11 @@ if [ "$MODE" = "test" ]; then
 
     echo
     echo "--- MemoryLib (memory_tests + memory_hpp_tests) ---"
-    make -C MemoryLib test || RESULT[MemoryLib]="FAIL (tests)"
+    make -C libs/MemoryLib test || RESULT[libs/MemoryLib]="FAIL (tests)"
 
     echo
     echo "--- ParticleFlowLib (pf_tests, ASan+UBSan) ---"
-    make -C ParticleFlowLib test || RESULT[ParticleFlowLib]="FAIL (tests)"
+    make -C libs/ParticleFlowLib test || RESULT[libs/ParticleFlowLib]="FAIL (tests)"
 
     # MatterSurfaceLib headless suites (no GL window). Target name == binary name.
     # mesh_indexed_tests, mesh_transform_tests are Phase 5 additions (Task 2/3).
@@ -158,36 +159,36 @@ if [ "$MODE" = "test" ]; then
                  blas_refcount_tests mesh_continuity_tests blas_tint_tests \
                  particle_culling_tests voxel_imposter_tests \
                  mesh_indexed_tests mesh_transform_tests mesh_smooth_tests; do
-        if make -C MatterSurfaceLib/tests "$suite" >/dev/null 2>&1; then
+        if make -C libs/MatterSurfaceLib/tests "$suite" >/dev/null 2>&1; then
             echo
             echo "--- MatterSurfaceLib ($suite) ---"
-            "MatterSurfaceLib/tests/$suite" || RESULT[MatterSurfaceLib]="FAIL (tests)"
+            "libs/MatterSurfaceLib/tests/$suite" || RESULT[libs/MatterSurfaceLib]="FAIL (tests)"
         else
-            RESULT[MatterSurfaceLib]="FAIL (test build)"
+            RESULT[libs/MatterSurfaceLib]="FAIL (test build)"
         fi
     done
 
     # MSL mesh_retopo_tests (Phase 5 Task 6) — links libautoremesher_core.a + TBB.
     # Only runs if the vendored lib built; otherwise skip cleanly (autoremesher_core
     # is optional, prep_autoremesher_core above just warns "FAIL" and moves on).
-    if [ -f Libraries/autoremesher_core/libautoremesher_core.a ]; then
-        if make -C MatterSurfaceLib/tests mesh_retopo_tests >/dev/null 2>&1; then
+    if [ -f third_party/autoremesher_core/libautoremesher_core.a ]; then
+        if make -C libs/MatterSurfaceLib/tests mesh_retopo_tests >/dev/null 2>&1; then
             echo
             echo "--- MatterSurfaceLib (mesh_retopo_tests) ---"
-            MatterSurfaceLib/tests/mesh_retopo_tests || RESULT[MatterSurfaceLib]="FAIL (tests)"
+            libs/MatterSurfaceLib/tests/mesh_retopo_tests || RESULT[libs/MatterSurfaceLib]="FAIL (tests)"
         else
-            RESULT[MatterSurfaceLib]="FAIL (test build)"
+            RESULT[libs/MatterSurfaceLib]="FAIL (test build)"
         fi
     else
         echo
         echo "--- MatterSurfaceLib (mesh_retopo_tests) SKIPPED (no libautoremesher_core.a) ---"
     fi
 
-    if make -C MeshChartingLib/tests mesh_charting_tests >/dev/null 2>&1; then
+    if make -C libs/MeshChartingLib/tests mesh_charting_tests >/dev/null 2>&1; then
         echo; echo "--- MeshChartingLib (mesh_charting_tests) ---"
-        ./MeshChartingLib/tests/mesh_charting_tests || RESULT[MeshChartingLib]="FAIL (tests)"
+        ./libs/MeshChartingLib/tests/mesh_charting_tests || RESULT[libs/MeshChartingLib]="FAIL (tests)"
     else
-        RESULT[MeshChartingLib]="FAIL (test build)"
+        RESULT[libs/MeshChartingLib]="FAIL (test build)"
     fi
 
     # MatterEngine3 headless suites (script host + voxel-CSG bake; GL-free host,
@@ -203,7 +204,7 @@ if [ "$MODE" = "test" ]; then
     # Phase 5 retopo end-to-end integration (Task 14) — links autoremesher_core.
     # Same gate as the MSL mesh_retopo suite above: skip cleanly if the vendored
     # static lib wasn't built (e.g. clean checkout with no autoremesher_core).
-    if [ -f Libraries/autoremesher_core/libautoremesher_core.a ]; then
+    if [ -f third_party/autoremesher_core/libautoremesher_core.a ]; then
         echo
         echo "--- MatterEngine3 (run-retopo-integration) ---"
         make -C MatterEngine3/tests run-retopo-integration \

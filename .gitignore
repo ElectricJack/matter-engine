@@ -13,14 +13,14 @@ build/
 # Per-project compiled binaries (named after the project)
 BasicWindowApp/cube_app
 SurfaceLib/surface_app
-MemoryLib/memorylib
+libs/MemoryLib/memorylib
 OpenParticleSurfaceLib/open_particle_surface
-SpatialQueryLib/spatialquerylib
+libs/SpatialQueryLib/spatialquerylib
 GPURayTraceExample/gpu_raytrace
 GPURayTraceExample/shader_preprocessor
 ParticleDynamicsExample/particle_dynamics
-MatterSurfaceLib/matter_surface_lib
-MatterSurfaceLib/shader_preprocessor
+libs/MatterSurfaceLib/matter_surface_lib
+libs/MatterSurfaceLib/shader_preprocessor
 
 # Misc
 SurfaceLib/test_config
@@ -36,22 +36,22 @@ SurfaceLib/test_config
 .claude/
 
 # Allow raylib's vendored static lib through the *.a exclusion (committed builds)
-!Libraries/raylib/build/**/libraylib.a
-!Libraries/raylib/src/libraylib.a
+!third_party/raylib/build/**/libraylib.a
+!third_party/raylib/src/libraylib.a
 
-# Vendored TBB (Libraries/autoremesher_core/thirdparty/tbb) ships its own
+# Vendored TBB (third_party/autoremesher_core/thirdparty/tbb) ships its own
 # build system under `build/` -- the .inc / Makefile source files there are
 # NOT artifacts and must be tracked. Un-ignore the whole tree, then re-ignore
 # the versioned per-config build output subdirs it emits at build time.
-!Libraries/autoremesher_core/thirdparty/tbb/build/
-!Libraries/autoremesher_core/thirdparty/tbb/build/**
-Libraries/autoremesher_core/thirdparty/tbb/build/linux_*_debug/
-Libraries/autoremesher_core/thirdparty/tbb/build/linux_*_release/
-Libraries/autoremesher_core/thirdparty/tbb/build/*_debug/
-Libraries/autoremesher_core/thirdparty/tbb/build/*_release/
+!third_party/autoremesher_core/thirdparty/tbb/build/
+!third_party/autoremesher_core/thirdparty/tbb/build/**
+third_party/autoremesher_core/thirdparty/tbb/build/linux_*_debug/
+third_party/autoremesher_core/thirdparty/tbb/build/linux_*_release/
+third_party/autoremesher_core/thirdparty/tbb/build/*_debug/
+third_party/autoremesher_core/thirdparty/tbb/build/*_release/
 # Allow box3d's prebuilt Linux and MinGW static libs
-!Libraries/box3d/libbox3d.a
-!Libraries/box3d/build-mingw/libbox3d.a
+!third_party/box3d/libbox3d.a
+!third_party/box3d/build-mingw/libbox3d.a
 
 # MatterEngine3 compiled binaries and bake caches
 MatterEngine3/viewer/viewer
@@ -68,19 +68,19 @@ MatterEngine3/tests/sandbox/
 MatterEngine3/viewer/*_tests
 
 # Other project test binaries (compiled from same-named *.cpp drivers)
-MatterSurfaceLib/tests/*_tests
-MeshChartingLib/tests/*_tests
-Libraries/autoremesher_core/tests/smoke_cube
-Libraries/autoremesher_core/tests/quad_to_tri_test
+libs/MatterSurfaceLib/tests/*_tests
+libs/MeshChartingLib/tests/*_tests
+third_party/autoremesher_core/tests/smoke_cube
+third_party/autoremesher_core/tests/quad_to_tri_test
 
 # MemoryLib and SpatialQueryLib test binaries + object dirs
-SpatialQueryLib/spatial_hash_tests
-SpatialQueryLib/bvh_tests
-MemoryLib/memory_tests
-MemoryLib/memory_hpp_tests
+libs/SpatialQueryLib/spatial_hash_tests
+libs/SpatialQueryLib/bvh_tests
+libs/MemoryLib/memory_tests
+libs/MemoryLib/memory_hpp_tests
 # `make TARGET=linux` (build-all.sh convention) emits a binary named `linux`
-MemoryLib/linux
-SpatialQueryLib/linux
+libs/MemoryLib/linux
+libs/SpatialQueryLib/linux
 
 # Transient screenshots + sentinel files (FIFO shot capture)
 *.png.done
@@ -104,7 +104,7 @@ imposters/
 # absolute cache_root instead of defaulting to a bare relative "cache").
 # These two bare patterns match at any depth and replace what used to be
 # location-specific rules for MatterEngine3/viewer/cache,
-# MatterSurfaceLib/parts, MatterEngine3/tests/parts/, MatterEditor/cache,
+# libs/MatterSurfaceLib/parts, MatterEngine3/tests/parts/, MatterEditor/cache,
 # MatterEngine3/parts, and a bare `parts` — several of which existed only
 # because of the relative-path bug that fix closes. `cache/` (no dot) is
 # still needed: Bake Lab's scratch directory (MatterEditor/part_workbench.cpp

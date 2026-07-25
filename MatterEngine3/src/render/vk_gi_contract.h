@@ -106,7 +106,7 @@ static_assert(offsetof(MaterialGpuRecord, flags_misc) == 128,
 //   encodes as 0 in that byte:
 //     flags_misc[1] = uint32(detailSlot + 1) | (uint32(macroSlot + 1) << 8)
 //   Packed by MaterialRegistryPackRtForGPU / MaterialPackDetailMacroSlots
-//   (MatterSurfaceLib/include/material_registry.h) from MaterialDef's
+//   (libs/MatterSurfaceLib/include/material_registry.h) from MaterialDef's
 //   groundTilesetSlot ("detail slot", runtime override via
 //   MaterialRegistrySetGroundTilesetSlot) and groundMacroSlot (runtime
 //   override via MaterialRegistrySetGroundMacroSlot). Decoded on the shader

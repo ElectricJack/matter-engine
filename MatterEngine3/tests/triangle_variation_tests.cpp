@@ -8,7 +8,7 @@
 //   - Variation dedup (same params -> one artifact, N records) -> test_variation_dedup
 //   - Variation/LOD independence (same LOD-array shape)        -> test_variation_lod_independence
 #include "../src/triangle_emit.hpp"
-#include "../../MatterSurfaceLib/include/blas_manager.hpp"
+#include "../../libs/MatterSurfaceLib/include/blas_manager.hpp"
 #include <cstdio>
 #include <cmath>
 #include <algorithm>

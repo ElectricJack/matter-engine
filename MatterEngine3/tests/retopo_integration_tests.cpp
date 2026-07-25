@@ -16,15 +16,15 @@
 //
 // Runtime requirements: libautoremesher_core.a must be built (build-all.sh
 // does this) and libtbb.so must be present at the rpath baked into this
-// binary (../../Libraries/autoremesher_core/thirdparty/tbb/build/linux_*).
+// binary (../../third_party/autoremesher_core/thirdparty/tbb/build/linux_*).
 
 #include "script_host.h"
 #include "part_asset_v2.h"
 #include "retopo_blacklist.h"
-#include "../../MatterSurfaceLib/include/blas_manager.hpp"
-#include "../../MatterSurfaceLib/include/tlas_manager.hpp"
-#include "../../MatterSurfaceLib/include/mesh_retopo.hpp"
-#include "../../MatterSurfaceLib/include/mesh_indexed.hpp"
+#include "../../libs/MatterSurfaceLib/include/blas_manager.hpp"
+#include "../../libs/MatterSurfaceLib/include/tlas_manager.hpp"
+#include "../../libs/MatterSurfaceLib/include/mesh_retopo.hpp"
+#include "../../libs/MatterSurfaceLib/include/mesh_indexed.hpp"
 
 #include <cstdio>
 #include <cstdlib>

@@ -26,7 +26,7 @@ fix_junction() {
 }
 
 echo "Setting up symlinks/junctions..."
-fix_junction "MatterEngine3/shaders"      "$(pwd)/MatterSurfaceLib/shaders"
-fix_junction "MatterEditor/shaders"       "$(pwd)/MatterSurfaceLib/shaders"
+fix_junction "MatterEngine3/shaders"      "$(pwd)/libs/MatterSurfaceLib/shaders"
+fix_junction "MatterEditor/shaders"       "$(pwd)/libs/MatterSurfaceLib/shaders"
 fix_junction "MatterEditor/shaders_gpu"   "$(pwd)/MatterEngine3/shaders_gpu"
 echo "Done."

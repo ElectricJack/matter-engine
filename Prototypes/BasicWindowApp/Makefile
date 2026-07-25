@@ -1,8 +1,8 @@
 CC = gcc
 # ../../ because this project lives under Prototypes/ (one level deeper than
 # the active sub-projects at the repo root).
-RAYLIB_PATH = ../../Libraries/raylib
-IMGUI_PATH = ../../Libraries/imgui
+RAYLIB_PATH = ../../third_party/raylib
+IMGUI_PATH = ../../third_party/imgui
 CFLAGS = -Wall -Wextra -O2 -MMD -MP -I$(RAYLIB_PATH)/src -I$(RAYLIB_PATH)/src/external/glfw/include -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends
 
 # Detect OS

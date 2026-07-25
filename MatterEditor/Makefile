@@ -23,21 +23,21 @@ CC = g++
 CFLAGS = -std=c++17 -O2 -Wall -Wno-missing-braces -Wno-unused-variable \
          -DPLATFORM_DESKTOP
 
-RAYLIB_PATH = ../Libraries/raylib/src
-IMGUI_PATH  = ../Libraries/imgui
+RAYLIB_PATH = ../third_party/raylib/src
+IMGUI_PATH  = ../third_party/imgui
 # Official ImGuizmo upstream commit: dc25afb98bc3ebe00dfc9a23ba7235fead2ccb1d
-IMGUIZMO_PATH = ../Libraries/ImGuizmo
-QJS_DIR     = ../Libraries/quickjs-ng
+IMGUIZMO_PATH = ../third_party/ImGuizmo
+QJS_DIR     = ../third_party/quickjs-ng
 QJS_INC     = -I$(QJS_DIR)
-BOX3D_DIR   = ../Libraries/box3d
+BOX3D_DIR   = ../third_party/box3d
 BOX3D_LIB   = $(BOX3D_DIR)/libbox3d.a
 WIN_BOX3D_LIB = $(BOX3D_DIR)/build-mingw/libbox3d.a
 ME3_DIR     = ../MatterEngine3
-MSL_DIR     = ../MatterSurfaceLib
-FLECS_DIR   = ../Libraries/flecs
+MSL_DIR     = ../libs/MatterSurfaceLib
+FLECS_DIR   = ../third_party/flecs
 # Shared source-of-truth libraries (compiled from source, not copied).
-SQL_DIR     = ../SpatialQueryLib
-MEMLIB_DIR  = ../MemoryLib
+SQL_DIR     = ../libs/SpatialQueryLib
+MEMLIB_DIR  = ../libs/MemoryLib
 
 # Linux app compile: only public engine API + imgui + raylib headers visible.
 # Private ME3 src/ headers are NOT exposed here; they are internal to the library.
@@ -53,7 +53,7 @@ INCLUDE_PATHS = -I$(ME3_DIR)/include \
                 -I$(RAYLIB_PATH)/external/glfw/include \
                 -I$(BOX3D_DIR)/include \
                 -I$(FLECS_DIR) \
-                -I../Libraries/Vulkan-Headers/include
+                -I../third_party/Vulkan-Headers/include
 
 # Windows direct-source build also needs private ME3 src/ headers since it
 # compiles all engine sources directly (no .a). $(VULKAN_INCLUDE) comes first
@@ -66,10 +66,10 @@ WIN_INCLUDE_PATHS = -I$(VULKAN_INCLUDE) \
                      -I$(ME3_DIR)/src/provider \
                      -I$(MSL_DIR)/src \
                      -I$(FLECS_DIR) \
-                     -I../ParticleFlowLib/include
+                     -I../libs/ParticleFlowLib/include
 
 LDFLAGS = -lGL -lm -lpthread -ldl -lrt -lX11
-LDLIBS  = ../Libraries/raylib/build/linux/libraylib.a $(BOX3D_LIB)
+LDLIBS  = ../third_party/raylib/build/linux/libraylib.a $(BOX3D_LIB)
 
 HAVE_STREAMLINE ?= 0
 # Point this at a locally installed, licensed Streamline SDK.  Nothing from the
@@ -78,7 +78,7 @@ STREAMLINE_PATH ?=
 STREAMLINE_DLL_DIR ?= $(STREAMLINE_PATH)/bin/x64
 # ---- Phase 5 autoremesher_core (Task 15 wiring) ----
 # The vendored autoremesher_core static lib + its TBB dependency. Linux-only:
-# the library was built for Linux in Task 4 (Libraries/autoremesher_core/) and
+# the library was built for Linux in Task 4 (third_party/autoremesher_core/) and
 # the geogram/TBB build under mingw isn't part of this landing. Windows viewer
 # builds WITHOUT -DMATTER_HAVE_AUTOREMESHER, so schemas that opt into retopo
 # transparently fall through to the streaming unretopo'd flatten path (same
@@ -88,7 +88,7 @@ STREAMLINE_DLL_DIR ?= $(STREAMLINE_PATH)/bin/x64
 # actually present — build-all.sh produces both. Otherwise skip retopo entirely
 # and the viewer builds as before (schemas without retopo unaffected; schemas
 # WITH retopo hit the #else warn-and-continue path in part_flatten.cpp).
-AR_CORE_PATH := ../Libraries/autoremesher_core
+AR_CORE_PATH := ../third_party/autoremesher_core
 AR_CORE_LIB  := $(AR_CORE_PATH)/libautoremesher_core.a
 TBB_BUILD_DIR := $(firstword $(wildcard $(AR_CORE_PATH)/thirdparty/tbb/build/linux_*_release))
 TBB_BUILD_SUBDIR := $(patsubst $(AR_CORE_PATH)/thirdparty/tbb/build/%,%,$(TBB_BUILD_DIR))
@@ -109,7 +109,7 @@ ifneq ($(HAVE_AUTOREMESHER),)
   # RETOPO_INT_TARGET's link workaround verbatim.
   AR_CORE_LDFLAGS := -L$(AR_CORE_PATH) -lautoremesher_core \
                      -L$(TBB_BUILD_DIR) -ltbb \
-                     -Wl,-rpath,'$$ORIGIN/../Libraries/autoremesher_core/thirdparty/tbb/build/$(TBB_BUILD_SUBDIR)' \
+                     -Wl,-rpath,'$$ORIGIN/../third_party/autoremesher_core/thirdparty/tbb/build/$(TBB_BUILD_SUBDIR)' \
                      -Wl,--allow-multiple-definition
 else
   AR_CORE_CFLAGS :=
@@ -197,10 +197,10 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/scene/scene_change_tracker.cpp \
               $(ME3_DIR)/src/bake_trace.cpp \
               $(ME3_DIR)/src/pf_bindings.cpp \
-              ../ParticleFlowLib/src/pf_math.cpp \
-              ../ParticleFlowLib/src/pf_sim.cpp \
-              ../ParticleFlowLib/src/pf_fields.cpp \
-              ../ParticleFlowLib/src/pf_path_recorder.cpp
+              ../libs/ParticleFlowLib/src/pf_math.cpp \
+              ../libs/ParticleFlowLib/src/pf_sim.cpp \
+              ../libs/ParticleFlowLib/src/pf_fields.cpp \
+              ../libs/ParticleFlowLib/src/pf_path_recorder.cpp
 
 WIN_MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
               $(MSL_DIR)/src/mesh_simplifier.cpp $(MSL_DIR)/src/mesh_indexed.cpp \
@@ -267,7 +267,7 @@ vpath %.cpp . $(ME3_DIR)/src $(ME3_DIR)/src/render $(ME3_DIR)/src/provider $(ME3
              $(ME3_DIR)/src/scene \
              $(MSL_DIR)/src $(SQL_DIR)/src $(IMGUI_PATH) $(IMGUI_PATH)/backends \
              $(IMGUIZMO_PATH) \
-             ../ParticleFlowLib/src
+             ../libs/ParticleFlowLib/src
 vpath %.c $(MSL_DIR)/src $(SQL_DIR)/src $(MEMLIB_DIR)/src $(QJS_DIR) $(FLECS_DIR)
 
 .DEFAULT_GOAL := editor
@@ -399,7 +399,7 @@ $(WIN_FEATURES): vulkan-preflight
 
 # Standalone GLFW archive for Vulkan smoke tests.  Keep this separate from
 # raylib's GLFW objects so the existing OpenGL viewer path is unchanged.
-GLFW_SRC_DIR = ../Libraries/raylib/src/external/glfw/src
+GLFW_SRC_DIR = ../third_party/raylib/src/external/glfw/src
 GLFW_WIN_SRC = context.c egl_context.c init.c input.c monitor.c null_init.c \
                null_joystick.c null_monitor.c null_window.c osmesa_context.c \
                platform.c vulkan.c win32_init.c win32_joystick.c \
@@ -412,12 +412,12 @@ GLFW_WIN_LIB = build/windows/libglfw3.a
 build/windows/glfw/%.o: $(GLFW_SRC_DIR)/%.c
 	@mkdir -p $(dir $@)
 	$(WIN_CC) -c $< -o $@ -D_GLFW_WIN32 \
-	    -I../Libraries/raylib/src/external/glfw/include
+	    -I../third_party/raylib/src/external/glfw/include
 
 build/windows/glfw/glfw_vulkan_only_context.o: glfw_vulkan_only_context.c
 	@mkdir -p $(dir $@)
 	$(WIN_CC) -c $< -o $@ -D_GLFW_WIN32 \
-	    -I$(GLFW_SRC_DIR) -I../Libraries/raylib/src/external/glfw/include
+	    -I$(GLFW_SRC_DIR) -I../third_party/raylib/src/external/glfw/include
 
 $(GLFW_WIN_LIB): $(GLFW_WIN_OBJ)
 	$(WIN_AR) rcs $@ $^
@@ -536,10 +536,10 @@ build/windows/vulkan_smoke_tests.exe: \
 	    -DMATTER_HAVE_STREAMLINE=$(HAVE_STREAMLINE) \
 	    -DMATTER_VK_TEST_LAYER_PATH='"$(VULKAN_RUNTIME_DIR)"' \
 	    -I$(ME3_DIR) -I$(ME3_DIR)/include -I$(ME3_DIR)/src \
-	    -I../Libraries/raylib/src \
-	    -I../MatterSurfaceLib/include \
+	    -I../third_party/raylib/src \
+	    -I../libs/MatterSurfaceLib/include \
 	    -I$(ME3_DIR)/tests \
-	    -I../Libraries/raylib/src/external/glfw/include \
+	    -I../third_party/raylib/src/external/glfw/include \
 	    -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends -I$(IMGUIZMO_PATH) \
 	    -I$(FLECS_DIR) \
 	    $(if $(filter 1,$(HAVE_STREAMLINE)),-I"$(STREAMLINE_PATH)/include") \
@@ -563,7 +563,7 @@ build/windows/vulkan_compat_tests.exe: \
 	$(WIN_CXX) $^ -o $@ -std=c++17 -Wall -Wextra -Werror -static \
 	    -DMATTER_VULKAN_COMPAT_TESTING \
 	    -I$(ME3_DIR)/include -I$(ME3_DIR)/src \
-	    -I../Libraries/raylib/src
+	    -I../third_party/raylib/src
 
 # ---- Windows compile rules
 $(W_CPP_OBJ): $(W_DIR)/%.o: %.cpp | $(W_DIR)

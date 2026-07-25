@@ -95,7 +95,7 @@ void test_project_layout_derives_runtime_paths() {
 // live_edit_prod::ProdBaker/ProdFlattener, WorldTracer -- all in
 // matter_engine.cpp) then wrote wherever the *process's* cwd happened to be
 // at the moment of each write, not next to the project -- the exact bug
-// behind the stray parts/, imposters/, and MatterSurfaceLib/parts/
+// behind the stray parts/, imposters/, and libs/MatterSurfaceLib/parts/
 // directories this phase cleans up.
 void test_relative_project_dir_yields_absolute_cache_root() {
     const std::string relative_project = "world_definition_relcache_fixture";
