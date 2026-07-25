@@ -52,8 +52,6 @@ Libraries/autoremesher_core/thirdparty/tbb/build/*_release/
 # Allow box3d's prebuilt Linux and MinGW static libs
 !Libraries/box3d/libbox3d.a
 !Libraries/box3d/build-mingw/libbox3d.a
-MatterEngine3/viewer/cache
-MatterSurfaceLib/parts
 
 # MatterEngine3 compiled binaries and bake caches
 MatterEngine3/viewer/viewer
@@ -62,7 +60,6 @@ MatterEngine3/tests/*_tests_*
 MatterEngine3/tests/*_check
 MatterEngine3/tests/*_profile
 MatterEngine3/tests/example_world
-MatterEngine3/tests/parts/
 MatterEngine3/tests/*.log
 MatterEngine3/tests/sandbox/
 
@@ -97,15 +94,30 @@ MatterEngine3/viewer/shaders
 # Local backups / imposter test outputs / world bake data
 *.bak
 imposters/
+
+# Bake artifacts (Phase 1, repo-layout-and-cache-consolidation): every
+# "parts" and "cache" directory the engine or its tooling produces is
+# confined to <project_dir>/.cache/<world_name>/parts (see
+# LocalProviderConfig::for_project in MatterEngine3/src/provider/
+# local_provider.h and EngineContext::create in
+# MatterEngine3/src/matter_engine.cpp, both fixed to require/derive an
+# absolute cache_root instead of defaulting to a bare relative "cache").
+# These two bare patterns match at any depth and replace what used to be
+# location-specific rules for MatterEngine3/viewer/cache,
+# MatterSurfaceLib/parts, MatterEngine3/tests/parts/, MatterViewer/cache,
+# MatterEngine3/parts, and a bare `parts` — several of which existed only
+# because of the relative-path bug that fix closes. `cache/` (no dot) is
+# still needed: Bake Lab's scratch directory (MatterViewer/part_workbench.cpp
+# scratch_root_ = "cache/lab-scratch") is intentionally relative/ephemeral
+# and out of this fix's scope.
+parts
+cache/
 .cache/
 
 # Screenshots/ is a checked-in folder — override the broad `shots/` rule above
 # for the specific subdir that happens to be named `shots`.
 !Screenshots/shots/
-MatterViewer/cache
 MatterViewer/viewer
-MatterEngine3/parts
-parts
 .outrider
 .worktrees/
 .superpowers/sdd/review-*.diff

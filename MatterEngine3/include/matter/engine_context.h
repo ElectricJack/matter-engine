@@ -9,7 +9,13 @@ namespace matter {
 class VulkanDevice;
 
 struct EngineDesc {
-    const char* cache_root = "cache";  // .part cache location (parts/<hash>.part)
+    // .part cache location (parts/<hash>.part). Required: EngineContext::create
+    // fails loudly (returns nullptr + err) if left null/empty rather than
+    // silently falling back to a relative "cache" default -- a relative
+    // default here previously let bake artifacts land wherever the process
+    // happened to be launched from. When set, the engine canonicalizes it to
+    // an absolute path via std::filesystem::absolute before storing it.
+    const char* cache_root = nullptr;
     const char* shader_dir = nullptr;  // nullptr = embedded (MATTER_SHADER_DIR env overrides)
     bool allow_gl_lt_46 = false;       // true only for the ray-traced fallback path
     VulkanDevice* render_device = nullptr; // non-owning; app owns window/device

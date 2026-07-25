@@ -143,14 +143,27 @@ inline LocalProviderConfig LocalProviderConfig::for_project(
     const std::string& engine_shared_lib_dir_value) {
     namespace fs = std::filesystem;
     LocalProviderConfig cfg;
-    const fs::path project(project_dir_value);
+    // Phase 1 cache-leak fix: absolutize project_dir_value up front. cache_root
+    // below (and every other field this function derives from `project`) is
+    // composed as `project / <suffix>`; if project_dir_value were left
+    // relative, cache_root would stay relative too, and every downstream
+    // writer that composes an output path directly from cache_root --
+    // PartStore, resolve_cache, live_edit_prod::ProdBaker/ProdFlattener,
+    // WorldTracer (all in matter_engine.cpp), and part_flatten.cpp -- would
+    // then depend on the calling process's cwd at the moment of each write
+    // rather than on the project actually being opened. fs::absolute() is
+    // purely lexical (prepends current_path() when relative) so it is safe to
+    // call before prepare_paths() creates any of these directories.
+    std::error_code ec;
+    fs::path project = fs::absolute(fs::path(project_dir_value), ec);
+    if (ec) project = fs::path(project_dir_value);  // fall back to the given value
     cfg.project_dir = project.string();
     cfg.objects_dir = (project / "objects").string();
     cfg.worlds_dir = (project / "worlds").string();
     cfg.world_name = world_name_value;
     cfg.world_path = (project / "worlds" / (world_name_value + ".js")).string();
     const fs::path project_shared = project / "shared-lib";
-    std::error_code ec;
+    ec.clear();
     if (fs::is_directory(project_shared, ec))
         cfg.project_shared_lib_dir = project_shared.string();
     cfg.engine_shared_lib_dir = engine_shared_lib_dir_value;

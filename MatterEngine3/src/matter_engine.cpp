@@ -3649,7 +3649,30 @@ std::unique_ptr<EngineContext> EngineContext::create(const EngineDesc& desc,
     matter::set_shader_override_dir(desc.shader_dir);
 
     auto impl = std::make_unique<Impl>();
-    impl->cache_root = desc.cache_root ? desc.cache_root : "cache";
+    // Phase 1 cache-leak fix: cache_root has no relative default anymore (see
+    // EngineDesc::cache_root in engine_context.h). A caller-supplied value is
+    // always canonicalized to absolute here via std::filesystem::absolute, so
+    // impl->cache_root is never a bare relative string that later I/O could
+    // resolve against whatever the process's cwd happens to be at write time.
+    if (!desc.cache_root || desc.cache_root[0] == '\0') {
+        err = "EngineContext::create: cache_root is required (no relative "
+              "default; a bare relative \"cache\" default previously let "
+              "bake artifacts scatter into whatever directory the process "
+              "happened to launch from)";
+        return nullptr;
+    }
+    {
+        std::error_code ec;
+        std::filesystem::path abs_cache_root =
+            std::filesystem::absolute(std::filesystem::path(desc.cache_root), ec);
+        if (ec) {
+            err = "EngineContext::create: cannot resolve cache_root '" +
+                  std::string(desc.cache_root) + "' to an absolute path: " +
+                  ec.message();
+            return nullptr;
+        }
+        impl->cache_root = abs_cache_root.string();
+    }
     impl->render_device = desc.render_device;
 
 #ifndef MATTER_VULKAN_ONLY

@@ -828,8 +828,27 @@ int main() {
                                          : "none")
                     : vulkan->ray_tracing_unavailable_reason().c_str());
     matter::EngineDesc engine_desc;
+    // Phase 1 cache-leak fix: MATTER_CACHE_ROOT is an explicit override and
+    // still wins when set, but it is canonicalized to absolute here (rather
+    // than handed to the engine as-is) so a relative override behaves
+    // identically regardless of the directory viewer.exe was launched from.
+    // EngineContext::create() also canonicalizes/requires cache_root itself
+    // (see matter_engine.cpp), but engine_desc.cache_root is informational
+    // only -- the per-world cache_root actually used for baking is derived
+    // from WorldDesc::project_dir via LocalProviderConfig::for_project() in
+    // open_world() -- so cache_root must never be left null here or
+    // EngineContext::create() fails loudly for no functional reason.
     const char* cache_root_env = std::getenv("MATTER_CACHE_ROOT");
-    engine_desc.cache_root = cache_root_env ? cache_root_env : "cache";
+    std::string cache_root_abs;
+    {
+        std::error_code ec;
+        const std::string requested =
+            (cache_root_env && cache_root_env[0] != '\0') ? cache_root_env : "cache";
+        std::filesystem::path abs =
+            std::filesystem::absolute(std::filesystem::path(requested), ec);
+        cache_root_abs = ec ? requested : abs.string();
+    }
+    engine_desc.cache_root = cache_root_abs.c_str();
     engine_desc.render_device = vulkan.get();
     auto engine = matter::EngineContext::create(engine_desc, error);
     if (!engine) {
