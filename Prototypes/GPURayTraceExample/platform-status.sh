@@ -21,7 +21,7 @@ echo ""
 echo "Build Status:"
 for platform in linux macos windows windows-native; do
     BUILD_DIR="./build/$platform"
-    RAYLIB_LIB="../Libraries/raylib/build/$platform/libraylib.a"
+    RAYLIB_LIB="../../Libraries/raylib/build/$platform/libraylib.a"
     PREPROCESSOR="$BUILD_DIR/shader_preprocessor"
     
     if [ "$platform" = "windows-native" ]; then

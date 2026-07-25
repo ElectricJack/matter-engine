@@ -1,7 +1,9 @@
 CC = gcc
 CXX = g++
-RAYLIB_PATH = ../Libraries/raylib
-MEMORY_LIB = ../MemoryLib
+# ../../ because this project lives under Prototypes/ (one level deeper than
+# the active sub-projects at the repo root).
+RAYLIB_PATH = ../../Libraries/raylib
+MEMORY_LIB = ../../MemoryLib
 CFLAGS = -Wall -Wextra -O2 -I$(RAYLIB_PATH)/src -I./include -I$(MEMORY_LIB)/include
 CXXFLAGS = -Wall -Wextra -O2 -std=c++14 -Wno-missing-field-initializers -I$(RAYLIB_PATH)/src -I./include -I$(MEMORY_LIB)/include
 

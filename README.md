@@ -10,31 +10,19 @@ This repository is a **monorepo of independently-buildable sub-projects**, each 
 
 Ordered roughly from foundational → integration.
 
-### `BasicWindowApp/` — raylib + ImGui starter
-
-![BasicWindowApp screenshot](docs/screenshots/basic_window_app.png)
-
-C++ raylib starter with ImGui integration — a rotating cube with live controls and the canonical Dear ImGui demo window. Every later project was forked from this template.
-
 ### `MemoryLib/` — memory managers: pool, arena, growable array (C)
 
 Test-driven C allocator that grows in pages of fixed-size objects. No graphics. **6/6 tests pass.**
 
-### `SpatialQueryLib/` — spatial hash + CPU BVH (C)
+### `SpatialQueryLib/` — geometry types + spatial acceleration (C/C++)
 
-Generic spatial hash for radius/box queries and a CPU-side BVH that can flatten into node/index buffers ready for GPU SSBO upload. No graphics. Source of truth for the spatial hash the engine links. **14/14 tests pass.**
+Source of truth for everything below the meshing layer: `precomp.h` (float3/float4/SIMD), `tri.h` (`Tri`/`TriEx`/`mat4` — the engine's universal triangle interchange types), the BVH/TLAS structures and analyzer, and a generic spatial hash for radius/box queries. GL-free. Compiled directly into `libmatter_engine3.a`. **14/14 tests pass.**
 
-### `GPURayTraceExample/` — pixel-shader BVH ray tracer
+*The name predates the contents — it now owns the core geometry types, not just queries.*
 
-![GPURayTraceExample screenshot](docs/screenshots/gpu_ray_trace_example.png)
+### `ParticleFlowLib/` — particle flow simulation (C++)
 
-C++ ray tracer with modular BLAS (bottom-level acceleration structures) per-mesh and a TLAS (top-level) that animates per frame. BVH is built CPU-side, flattened, uploaded as data textures, then traversed in a fragment shader. Includes a BVH analyzer/visualizer.
-
-### `ParticleDynamicsExample/` — material-physics sandbox
-
-![ParticleDynamicsExample screenshot](docs/screenshots/particle_dynamics_example.png)
-
-C++ N-body sim with spatial-hash optimization (O(n²) → O(n·m)). The `MaterialManager` loads 20 material types, 3 chemical reactions, and a 50-entry adhesion matrix. Multiple demo scenes (material sandbox, solar system) selectable at runtime.
+Deterministic particle simulation with force fields and append-only path recording, used by the tree/foliage generators. Compiled into the engine and viewer.
 
 ### `MatterSurfaceLib/` — the convergence project
 
@@ -82,19 +70,22 @@ make WSL_LINUX=1    # or just `make` on native Linux/macOS
 
 | Project | Build command | Binary |
 |---|---|---|
-| `BasicWindowApp` | `make` | `./cube_app` |
 | `MemoryLib` | `make` | `./memorylib` (test runner) |
 | `SpatialQueryLib` | `make` | `./spatialquerylib` (test runner) |
-| `GPURayTraceExample` | `make WSL_LINUX=1` | `./gpu_raytrace` |
-| `ParticleDynamicsExample` | `make TARGET=linux` | `./build/linux/particle_dynamics` |
+| `ParticleFlowLib` | `make` | `libparticleflow.a` |
+| `MatterEngine3` | `make` | `libmatter_engine3.a` |
 | `MatterSurfaceLib` | `make WSL_LINUX=1` | `./matter_surface_lib` |
+| `MatterViewer` | `make` | `./viewer` |
+
+Retired experiments live under `Prototypes/` and are excluded from `build-all.sh`.
 
 ## Status
 
 Working as of the latest commit, verified by `./build-all.sh test` on Linux/WSL with an RTX 4090 via WSLg:
 
-- All 8 projects build cleanly
-- All 15 headless tests pass (6 in `MemoryLib`, 9 in `SpatialQueryLib`)
+- All projects build cleanly
+- Headless tests pass: 6 in `MemoryLib`, 14 in `SpatialQueryLib`, plus the
+  `MatterEngine3` suites (`run-script`, `run-evalworld`, `run-world-definition`, `run-iso`)
 - All raylib apps initialize a window and reach the render loop
 - `MatterSurfaceLib` runs the full pipeline: 1 cluster → 80 cells → marching-cubes mesh generation → BLAS registration → TLAS-based GPU ray tracing
 
