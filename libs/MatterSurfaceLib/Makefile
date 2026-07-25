@@ -305,15 +305,29 @@ $(OBJ_DIR)/imgui_impl_glfw.o: $(IMGUI_PATH)/backends/imgui_impl_glfw.cpp
 
 # Platform-specific clean: everything for this platform lives under
 # build/$(PLATFORM)/ (objects, preprocessor, binary), so this is just that.
+#
+# NOTE: shaders/raytrace_tlas_blas_processed.fs is deliberately NOT removed.
+# It is a generated file (shader_preprocessor expands the #includes in
+# raytrace_tlas_blas.fs) but it is also COMMITTED, and MatterEngine3's
+# embedded-shaders step consumes it via the MatterEngine3/shaders junction.
+# Deleting it breaks every downstream build until MatterSurfaceLib is rebuilt
+# to regenerate it -- which is impossible on a toolchain missing
+# x86_64-w64-mingw32-g++-posix, i.e. the default MSYS2 UCRT64 setup. Use
+# `make regen-shaders` to rebuild it deliberately.
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -f shaders/raytrace_tlas_blas_processed.fs
 
 # Clean all platforms
 clean-all:
 	rm -rf build/
 	rm -rf $(RAYLIB_PATH)/build/
+
+# Explicitly regenerate the committed preprocessed shader. Requires a working
+# toolchain for $(PREPROCESSOR); review the diff before committing the result.
+.PHONY: regen-shaders
+regen-shaders:
 	rm -f shaders/raytrace_tlas_blas_processed.fs
+	$(MAKE) shaders/raytrace_tlas_blas_processed.fs
 
 # Force rebuild raylib for current platform
 rebuild-raylib:

@@ -45,7 +45,7 @@ mechanical, one file. Same shape as the `spatial_hash` consolidation (`a349f723`
 
 ---
 
-## 2. Four matrix inverses, four different failure modes
+## 2. Six matrix inverses, four different failure modes
 
 This is a **correctness** item, not tidiness. The duplication is secondary; the
 divergent handling of singular input is the actual hazard.
@@ -55,11 +55,20 @@ divergent handling of singular input is the actual hazard.
 | `MatterEngine3/src/render/matrix_math.cpp:120` `mat4_inverse` | `Mat4f` | returns `false` — caller decides |
 | `libs/SpatialQueryLib/include/tri.h:57` `mat4::Inverted` | `mat4` | returns **identity** |
 | `MatterEngine3/src/csg_lowering.cpp:24` `mat_invert` | raylib `Matrix` | returns **zero matrix** (guard at `:37`) |
-| `libs/MatterSurfaceLib/src/tlas_manager.cpp:49` `matrix_inverse` | `Matrix4x4` | (fourth implementation) |
+| `libs/MatterSurfaceLib/src/tlas_manager.cpp:49` `matrix_inverse` | `Matrix4x4` | — |
+| `MatterEngine3/src/world_tracer.cpp:34` `invert4x4` | raw `float*` | cofactor expansion |
+| `MatterEngine3/src/matter_engine.cpp:197` `invert4x4` | raw `float*` | adjugate form — **dead code** |
 | `third_party/raylib/src/raymath.h:1538` `MatrixInvert` | raylib `Matrix` | **no guard** — computes `1.0f/det`, yields inf/NaN |
 
 A degenerate transform silently becomes identity on one path, a zero matrix on
 another, and NaN on a third.
+
+The last two share a **name and signature** — `static bool invert4x4(const
+float*, float*)` — in two translation units of the same project, with different
+bodies (`world_tracer` uses cofactor expansion, `matter_engine` the classic
+adjugate/`d[16]` form). Both are `static`, so no ODR clash; it is parallel
+reinvention. `matter_engine.cpp`'s copy is unused — the compiler reports
+`defined but not used`, which is how it was found.
 
 **Ruled out:** `csg_lowering::mat_invert` looks like a gratuitous reimplementation
 of raymath's `MatrixInvert` for the same type — its own comment even says it
@@ -67,7 +76,8 @@ of raymath's `MatrixInvert` for the same type — its own comment even says it
 no zero-determinant guard, and `mat_invert` adds one. The reimplementation exists
 *for* the guard. Don't delete it without replacing the guard.
 
-**Fix.** Pick one singular-matrix policy and apply it across all four.
+**Fix.** Pick one singular-matrix policy and apply it everywhere; delete the dead
+`matter_engine.cpp` copy outright.
 
 ---
 
@@ -170,3 +180,54 @@ in code slated for deletion:
 
 - **`origin/main` is behind local `main`** by the full consolidation series plus
   ~65 earlier commits. Independent of the work above.
+
+---
+
+## 8. Broken tests — all pre-existing, all found while moving paths
+
+None of these were introduced by the layout work; each was verified present
+before it. They are grouped here because they surfaced together.
+
+- **Six test files reference `projects/world_demo/schemas/`**, a directory that
+  has not existed since `83f171c9` — `WorldSector.js` lives in `objects/`.
+  Affected: `sector_bake_tests.cpp:28`, `rock_bake_profile.cpp:38`,
+  `tree_bake_check.cpp`, `grass_lod_tests.cpp:313`, `stress_forest_tests.cpp:146`,
+  `part_graph_integration_tests.cpp:747`. Verified present at `aff90146`.
+  `sector_bake_tests` runs and reports 11 failures starting `FAIL: WorldSector.js
+  readable`.
+- **`realpath` is not declared under UCRT64** in the `abspath()` helper that
+  `gallery_bake_tests`, `example_world`, `grass_lod_tests` and
+  `stress_forest_tests` each carry. They fail to COMPILE on Windows.
+- **`lighting_garden_tests.cpp:272` uses an undeclared `schemas`** — the
+  identifier is never defined in the file.
+- **`TILESETMEADOWMANIFEST_CPP` omits `../src/script/world_definition_loader.cpp`**,
+  so `tileset_meadow_manifest_tests` fails to link on `load_world_definition`.
+- **`material_registry_tests.cpp` has a wrong-depth include** —
+  `../../MatterEngine3/...` needs one more `../` now that tests sit three levels
+  below the repo root.
+
+## 9. Build and packaging
+
+- **`STREAMLINE_DLL_DIR` defaults disagree.** `MatterEditor/Makefile:78` uses
+  `$(STREAMLINE_PATH)/bin/x64` (16 release DLLs); `tools/check_vulkan_toolchain.sh:10`
+  and every historical build use `bin/x64/development` (18, adds `sl.imgui` and
+  `sl.nvperf`). Relying on the Makefile default silently ships a different DLL
+  set than the project has ever shipped. `build-dlss.sh` passes it explicitly to
+  sidestep this; the defaults should be reconciled.
+- **`build_features.txt` records `VULKAN`/`OPENGL` but not `STREAMLINE`**, so a
+  built binary carries no record of whether DLSS is compiled in. `strings
+  editor.exe | grep active_dlss_mode` is the current workaround.
+- **`raytrace_tlas_blas_processed.fs` is generated but committed.** Produced by
+  MatterSurfaceLib's `shader_preprocessor`, consumed by MatterEngine3's
+  embedded-shaders step through the `MatterEngine3/shaders` junction — and
+  regenerating it requires a toolchain that stock MSYS2 UCRT64 does not have
+  (§7). `clean` used to delete it, which broke every downstream build until a
+  `git checkout`; that was fixed and a deliberate `make regen-shaders` added,
+  but the underlying generated-yet-committed status remains.
+- **Tracked symlinks vs NTFS junctions.** `MatterEngine3/shaders`,
+  `MatterEditor/shaders` and `MatterEditor/shaders_gpu` are tracked as mode
+  120000 but exist here as junctions (`core.symlinks=false`). `git add <parent>`
+  descends into them and replaces each symlink with a directory of duplicated
+  blobs; `skip-worktree` does NOT prevent it, because the damage creates new
+  paths rather than modifying the flagged one. Now guarded by trailing-slash
+  `.gitignore` rules — do not remove them.

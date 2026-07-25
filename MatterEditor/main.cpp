@@ -610,17 +610,60 @@ bool write_png(const std::string& path, const std::vector<uint8_t>& rgba,
                           static_cast<int>(width * 4)) != 0;
 }
 
-std::string examples_root() {
-    if (std::filesystem::is_directory("projects"))
-        return "projects";
-    return "../projects";
+// Directory holding this executable, or empty if it cannot be determined.
+static std::filesystem::path executable_dir() {
+#ifdef _WIN32
+    wchar_t buf[MAX_PATH];
+    const DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return {};
+    return std::filesystem::path(buf, buf + n).parent_path();
+#else
+    std::error_code ec;
+    auto p = std::filesystem::read_symlink("/proc/self/exe", ec);
+    if (ec) return {};
+    return p.parent_path();
+#endif
 }
 
-std::string shared_lib_root() {
-    if (std::filesystem::is_directory("MatterEngine3/shared-lib"))
-        return "MatterEngine3/shared-lib";
-    return "../MatterEngine3/shared-lib";
+// Locate an asset directory by NAME rather than by a fixed number of "../".
+//
+// Three layouts have to work and they sit at different depths:
+//   dev, launched from MatterEditor/      -> ../projects
+//   dev, launched beside the binary       -> ../../../projects  (build/windows/)
+//   a packaged build (`make dist`)        -> ./projects         (next to the exe)
+//
+// Hard-coding "../" for one breaks the others -- which is exactly what happened
+// when the binary moved from MatterEditor/ into MatterEditor/build/windows/.
+// Search next to the executable first (so a package always wins), then upward
+// from the executable, then upward from the working directory.
+static std::string resolve_asset_root(const char* name) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+
+    auto walk_up = [&](fs::path dir) -> std::string {
+        for (int depth = 0; depth < 8 && !dir.empty(); ++depth) {
+            const fs::path candidate = dir / name;
+            if (fs::is_directory(candidate, ec))
+                return candidate.string();
+            const fs::path parent = dir.parent_path();
+            if (parent == dir) break;   // reached the filesystem root
+            dir = parent;
+        }
+        return {};
+    };
+
+    if (const fs::path exe = executable_dir(); !exe.empty())
+        if (std::string hit = walk_up(exe); !hit.empty()) return hit;
+
+    if (fs::path cwd = fs::current_path(ec); !ec)
+        if (std::string hit = walk_up(cwd); !hit.empty()) return hit;
+
+    return name;   // preserve the old string so the failure message stays familiar
 }
+
+std::string examples_root() { return resolve_asset_root("projects"); }
+
+std::string shared_lib_root() { return resolve_asset_root("MatterEngine3/shared-lib"); }
 
 struct PerfRunConfig {
     bool enabled = false;
