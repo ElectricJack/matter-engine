@@ -5,7 +5,7 @@ IMGUI_PATH = ../Libraries/imgui
 SQL_DIR = ../SpatialQueryLib
 MEMLIB_DIR = ../MemoryLib
 CFLAGS = -Wall -Wextra -O2 -I$(SQL_DIR)/include -I$(MEMLIB_DIR)/include -I$(RAYLIB_PATH)/src -I$(RAYLIB_PATH)/src/external/glfw/include -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends -I./include
-CXXFLAGS = -Wall -Wextra -O2 -std=c++14 -Wno-missing-field-initializers -I$(RAYLIB_PATH)/src -I$(RAYLIB_PATH)/src/external/glfw/include -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends -I./include
+CXXFLAGS = -Wall -Wextra -O2 -std=c++14 -Wno-missing-field-initializers -I$(SQL_DIR)/include -I$(MEMLIB_DIR)/include -I$(RAYLIB_PATH)/src -I$(RAYLIB_PATH)/src/external/glfw/include -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends -I./include
 
 # Build flags:
 # TARGET=windows-native : Cross-compile for Windows from Linux using MinGW
@@ -128,7 +128,7 @@ $(shell mkdir -p $(BUILD_DIR))
 $(shell mkdir -p $(RAYLIB_PATH)/build/$(PLATFORM))
 
 # C++ main application
-SRC = main.cpp src/bvh.cpp src/blas_manager.cpp src/tlas_manager.cpp src/part_asset.cpp src/bvh_visualizer.cpp src/bvh_analyzer.cpp src/open_particle_surface.c src/surface.c $(SQL_DIR)/src/spatial_hash.c $(MEMLIB_DIR)/src/mem_pool.c src/fat_primitive.c src/material_registry.c src/cluster.cpp src/cell.cpp src/mesh_worker_pool.cpp src/mesh_simplifier.cpp src/mesh_build_utils.cpp src/meshing_algorithm.cpp src/marching_cubes_algorithm.cpp src/oriented_cube_algorithm.cpp src/lattice.cpp src/occupancy.cpp src/particle_culling.cpp src/vertex_ao.cpp src/voxel_imposter.cpp $(IMGUI_PATH)/imgui.cpp $(IMGUI_PATH)/imgui_demo.cpp $(IMGUI_PATH)/imgui_draw.cpp $(IMGUI_PATH)/imgui_tables.cpp $(IMGUI_PATH)/imgui_widgets.cpp $(IMGUI_PATH)/backends/imgui_impl_opengl3.cpp $(IMGUI_PATH)/backends/imgui_impl_glfw.cpp
+SRC = main.cpp $(SQL_DIR)/src/bvh.cpp src/blas_manager.cpp src/tlas_manager.cpp src/part_asset.cpp src/bvh_visualizer.cpp $(SQL_DIR)/src/bvh_analyzer.cpp src/open_particle_surface.c src/surface.c $(SQL_DIR)/src/spatial_hash.c $(MEMLIB_DIR)/src/mem_pool.c src/fat_primitive.c src/material_registry.c src/cluster.cpp src/cell.cpp src/mesh_worker_pool.cpp src/mesh_simplifier.cpp src/mesh_build_utils.cpp src/meshing_algorithm.cpp src/marching_cubes_algorithm.cpp src/oriented_cube_algorithm.cpp src/lattice.cpp src/occupancy.cpp src/particle_culling.cpp src/vertex_ao.cpp src/voxel_imposter.cpp $(IMGUI_PATH)/imgui.cpp $(IMGUI_PATH)/imgui_demo.cpp $(IMGUI_PATH)/imgui_draw.cpp $(IMGUI_PATH)/imgui_tables.cpp $(IMGUI_PATH)/imgui_widgets.cpp $(IMGUI_PATH)/backends/imgui_impl_opengl3.cpp $(IMGUI_PATH)/backends/imgui_impl_glfw.cpp
 OBJ = $(OBJ_DIR)/main.o $(OBJ_DIR)/bvh.o $(OBJ_DIR)/mem_pool.o $(OBJ_DIR)/blas_manager.o $(OBJ_DIR)/tlas_manager.o $(OBJ_DIR)/part_asset.o $(OBJ_DIR)/bvh_visualizer.o $(OBJ_DIR)/bvh_analyzer.o $(OBJ_DIR)/open_particle_surface.o $(OBJ_DIR)/surface.o $(OBJ_DIR)/fat_primitive.o $(OBJ_DIR)/material_registry.o $(OBJ_DIR)/spatial_hash.o $(OBJ_DIR)/cluster.o $(OBJ_DIR)/cell.o $(OBJ_DIR)/mesh_worker_pool.o $(OBJ_DIR)/mesh_simplifier.o $(OBJ_DIR)/mesh_build_utils.o $(OBJ_DIR)/meshing_algorithm.o $(OBJ_DIR)/marching_cubes_algorithm.o $(OBJ_DIR)/oriented_cube_algorithm.o $(OBJ_DIR)/lattice.o $(OBJ_DIR)/occupancy.o $(OBJ_DIR)/particle_culling.o $(OBJ_DIR)/vertex_ao.o $(OBJ_DIR)/voxel_imposter.o $(OBJ_DIR)/imgui.o $(OBJ_DIR)/imgui_demo.o $(OBJ_DIR)/imgui_draw.o $(OBJ_DIR)/imgui_tables.o $(OBJ_DIR)/imgui_widgets.o $(OBJ_DIR)/imgui_impl_opengl3.o $(OBJ_DIR)/imgui_impl_glfw.o
 BIN = $(BUILD_DIR)/matter_surface_lib$(BIN_SUFFIX)
 PREPROCESSOR = $(BUILD_DIR)/shader_preprocessor
@@ -223,7 +223,7 @@ endif
 $(OBJ_DIR)/main.o: main.cpp
 	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
-$(OBJ_DIR)/bvh.o: src/bvh.cpp
+$(OBJ_DIR)/bvh.o: $(SQL_DIR)/src/bvh.cpp
 	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/mem_pool.o: $(MEMLIB_DIR)/src/mem_pool.c
@@ -241,7 +241,7 @@ $(OBJ_DIR)/part_asset.o: src/part_asset.cpp
 $(OBJ_DIR)/bvh_visualizer.o: src/bvh_visualizer.cpp
 	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
-$(OBJ_DIR)/bvh_analyzer.o: src/bvh_analyzer.cpp
+$(OBJ_DIR)/bvh_analyzer.o: $(SQL_DIR)/src/bvh_analyzer.cpp
 	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 $(OBJ_DIR)/open_particle_surface.o: src/open_particle_surface.c

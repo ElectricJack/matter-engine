@@ -1,7 +1,7 @@
 #include "../include/cell.h"
 #include "../include/cluster.h"
 #include "../include/blas_manager.hpp"
-#include "../include/bvh_analyzer.h"
+#include "bvh_analyzer.h"
 #include "../include/cell_visitor.h"
 #include "material_registry.h"
 #include "mesh_simplifier.hpp"

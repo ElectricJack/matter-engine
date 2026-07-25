@@ -134,8 +134,8 @@ MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
           $(MSL_DIR)/src/mesh_simplifier.cpp $(MSL_DIR)/src/mesh_indexed.cpp \
           $(MSL_DIR)/src/mesh_smooth.cpp \
           $(MSL_DIR)/src/mesh_transform.cpp \
-          $(MSL_DIR)/src/blas_manager.cpp $(MSL_DIR)/src/bvh.cpp \
-          $(MSL_DIR)/src/bvh_analyzer.cpp \
+          $(MSL_DIR)/src/blas_manager.cpp $(SQL_DIR)/src/bvh.cpp \
+          $(SQL_DIR)/src/bvh_analyzer.cpp \
           $(MSL_DIR)/src/mesh_worker_pool.cpp $(MSL_DIR)/src/mesh_build_utils.cpp \
           $(MSL_DIR)/src/meshing_algorithm.cpp \
           $(MSL_DIR)/src/marching_cubes_algorithm.cpp \
@@ -286,7 +286,7 @@ vulkan-spirv: shaders_gen/embedded_spirv.h
 
 # Per-file pattern rules enable safe parallel compilation with `make -j`.
 # vpath directs Make to search source directories by basename.
-vpath %.cpp src src/render src/provider src/script src/ecs src/scene src/streaming src/event $(MSL_DIR)/src $(PFL_DIR)/src
+vpath %.cpp src src/render src/provider src/script src/ecs src/scene src/streaming src/event $(MSL_DIR)/src $(SQL_DIR)/src $(PFL_DIR)/src
 vpath %.c $(QJS_DIR) $(MSL_DIR)/src $(FLECS_DIR)
 
 # Flecs C source (gcc C17, never g++).
@@ -304,7 +304,7 @@ $(FLECS_OBJ): $(FLECS_C)
 # Shared library C sources, compiled from their source-of-truth directories.
 # These are explicit (not pattern) rules and the source dirs are deliberately
 # kept off vpath: SpatialQueryLib/src/bvh.c would otherwise shadow
-# MatterSurfaceLib/src/bvh.cpp when make resolves bvh.o.
+# SpatialQueryLib/src/bvh.cpp when make resolves bvh.o.
 spatial_hash.o: $(SQL_DIR)/src/spatial_hash.c
 	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
 

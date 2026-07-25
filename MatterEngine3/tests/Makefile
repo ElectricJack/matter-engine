@@ -130,7 +130,7 @@ MEMLIB = ../../MemoryLib
 
 COMMON_MSL_BLAS_SRC = \
     $(MSL)/blas_manager.cpp \
-    $(MSL)/bvh.cpp \
+    $(SQL)/src/bvh.cpp \
     $(MSL)/tlas_manager.cpp \
     $(MSL)/vertex_ao.cpp \
     $(MSL)/occupancy.cpp \
@@ -142,7 +142,7 @@ COMMON_MSL_FULL_SRC = \
     $(MSL)/cell.cpp \
     $(MSL)/mesh_simplifier.cpp \
     $(MSL)/mesh_indexed.cpp \
-    $(MSL)/bvh_analyzer.cpp \
+    $(SQL)/src/bvh_analyzer.cpp \
     $(MSL)/mesh_worker_pool.cpp \
     $(MSL)/mesh_build_utils.cpp \
     $(MSL)/meshing_algorithm.cpp \
@@ -812,7 +812,7 @@ GPU_PIPELINE_CPP = \
 GPU_MSL_CPP = \
     $(MSL)/cluster.cpp $(MSL)/cell.cpp \
     $(MSL)/mesh_simplifier.cpp $(MSL)/mesh_indexed.cpp $(MSL)/mesh_transform.cpp \
-    $(MSL)/blas_manager.cpp $(MSL)/bvh.cpp $(MSL)/bvh_analyzer.cpp \
+    $(MSL)/blas_manager.cpp $(SQL)/src/bvh.cpp $(SQL)/src/bvh_analyzer.cpp \
     $(MSL)/mesh_worker_pool.cpp $(MSL)/mesh_build_utils.cpp \
     $(MSL)/meshing_algorithm.cpp $(MSL)/marching_cubes_algorithm.cpp \
     $(MSL)/oriented_cube_algorithm.cpp $(MSL)/vertex_ao.cpp \

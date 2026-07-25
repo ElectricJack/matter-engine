@@ -12,8 +12,8 @@ $(shell mkdir -p $(OBJ_DIR))
 $(shell mkdir -p $(OBJ_DIR)/$(SRC_DIR))
 
 # Source files — mem_pool compiled from MemoryLib (source of truth)
-SRCS = main.c src/spatial_hash.c src/bvh.c
-OBJS = $(OBJ_DIR)/main.o $(OBJ_DIR)/src/spatial_hash.o $(OBJ_DIR)/src/bvh.o $(OBJ_DIR)/src/mem_pool.o
+SRCS = main.c src/spatial_hash.c
+OBJS = $(OBJ_DIR)/main.o $(OBJ_DIR)/src/spatial_hash.o $(OBJ_DIR)/src/mem_pool.o
 
 # Header files
 HEADERS = $(wildcard $(INCLUDE_DIR)/*.h)
@@ -41,21 +41,15 @@ $(OBJ_DIR)/src/mem_pool.o: $(MEMORY_LIB)/src/mem_pool.c $(MEMORY_LIB)/include/me
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 clean:
-	rm -rf $(OBJ_DIR) $(TARGET) spatial_hash_tests bvh_tests
+	rm -rf $(OBJ_DIR) $(TARGET) spatial_hash_tests
 
 # Test target: build and run spatial hash tests with AddressSanitizer + UBSan
 TEST_SRCS = tests/spatial_hash_tests.c src/spatial_hash.c $(MEMORY_LIB)/src/mem_pool.c
 TEST_FLAGS = -Wall -Wextra -g -I./include -I$(MEMORY_LIB)/include -fsanitize=address,undefined -lm
 
-# BVH / matrix_inverse tests
-BVH_TEST_SRCS = tests/bvh_tests.c src/bvh.c
-BVH_TEST_FLAGS = -Wall -Wextra -g -I./include -I$(MEMORY_LIB)/include -fsanitize=address,undefined -lm
-
-test: $(TEST_SRCS) $(BVH_TEST_SRCS)
+test: $(TEST_SRCS)
 	$(CC) $(TEST_FLAGS) -o spatial_hash_tests $(TEST_SRCS)
 	./spatial_hash_tests
-	$(CC) $(BVH_TEST_FLAGS) -o bvh_tests $(BVH_TEST_SRCS)
-	./bvh_tests
 
 -include $(OBJS:.o=.d)
 

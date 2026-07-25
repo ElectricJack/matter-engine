@@ -1,185 +1,172 @@
-#ifndef BVH_H
-#define BVH_H
+#pragma once
 
-#include <stdbool.h>
-#include <stdint.h>
+#include "tri.h"   // Tri, TriEx, mat4
 
-// Aligned vector type for better performance
-typedef struct {
-    float x, y, z;
-} Vec3;
+// enable the use of SSE in the AABB intersection function
+#define USE_SSE
 
-typedef struct {
-    Vec3 min, max;
-} AABB;
+// bin count for binned BVH building
+#define BINS 8
 
-// Triangle structure optimized for GPU with per-vertex normals
-typedef struct {
-    Vec3 v0, v1, v2;      // Triangle vertices
-    Vec3 n0, n1, n2;      // Per-vertex normals
-    Vec3 centroid;        // Pre-computed centroid for faster BVH building
-    Vec3 normal;          // Face normal (computed from vertices)
-    int  material_id;      // Material identifier
-} Triangle;
+// Forward declarations
+class BvhMesh;
 
-// GPU-compatible triangle structure with per-vertex normals
-typedef struct {
-    float v0x, v0y, v0z, dummy1;
-    float v1x, v1y, v1z, dummy2;
-    float v2x, v2y, v2z, dummy3;
-    float n0x, n0y, n0z, dummy4;
-    float n1x, n1y, n1z, dummy5;
-    float n2x, n2y, n2z, dummy6;
-    float  cx,  cy,  cz, dummy7;
-} GPUTriangle;
+// minimalist AABB struct with grow functionality
+struct aabb
+{
+	float3 bmin, bmax;
+	aabb() { 
+		bmin = make_float3(1e30f); 
+		bmax = make_float3(-1e30f); 
+	}
+	void grow( float3 p ) { bmin = fminf( bmin, p ); bmax = fmaxf( bmax, p ); }
+	void grow( aabb& b ) { if (b.bmin.x != 1e30f) { grow( b.bmin ); grow( b.bmax ); } }
+	float area()
+	{
+		float3 e = bmax - bmin; // box extent
+		return e.x * e.y + e.y * e.z + e.z * e.x;
+	}
+};
 
-// Additional triangle data for shading
-typedef struct {
-    Vec3  n0, n1, n2;      // Per-vertex normals (for smooth shading)
-    float u0, v0;         // UV coordinates vertex 0
-    float u1, v1;         // UV coordinates vertex 1
-    float u2, v2;         // UV coordinates vertex 2
-} TriangleEx;
+// intersection record, carefully tuned to be 16 bytes in size
+struct Intersection
+{
+	float t;		// intersection distance along ray
+	float u, v;		// barycentric coordinates of the intersection
+	uint instPrim;	// instance index (12 bit) and primitive index (20 bit)
+};
 
-// Optimized BVH node structure (32 bytes, SIMD-friendly)
-typedef struct {
-    Vec3     aabb_min;    // Minimum bounds
-    uint32_t left_first;  // Left child index (internal) or first triangle (leaf)
-    Vec3     aabb_max;    // Maximum bounds  
-    uint32_t tri_count;   // Triangle count (>0 for leaf, 0 for internal)
-} BVHNode;
+// ray struct, prepared for SIMD AABB intersection
+struct ALIGN(64) BVHRay
+{
+	BVHRay() { O4 = D4 = rD4 = _mm_set1_ps( 1 ); }
+	union { struct { float3 O; float dummy1; }; __m128 O4; };
+	union { struct { float3 D; float dummy2; }; __m128 D4; };
+	union { struct { float3 rD; float dummy3; }; __m128 rD4; };
+	Intersection hit; // total ray size: 64 bytes
+};
 
-// GPU-compatible BVH node structure
-typedef struct {
-    float minx, miny, minz;
-    int   left_first;
-    float maxx, maxy, maxz;
-    int   tri_count;
-} GPUBVHNode;
+// 32-byte BVH node struct
+struct BVHNode
+{
+	union { struct { float3 aabbMin; uint leftFirst; }; __m128 aabbMin4; };
+	union { struct { float3 aabbMax; uint triCount; }; __m128 aabbMax4; };
+	bool isLeaf() const { return triCount > 0; } // empty BVH leaves do not exist
+	float CalculateNodeCost()
+	{
+		float3 e = aabbMax - aabbMin; // extent of the node
+		return (e.x * e.y + e.y * e.z + e.z * e.x) * triCount;
+	}
+};
 
-// Matrix for transformations (4x4)
-typedef struct {
-    float m[16];  // Column-major layout for GPU compatibility
-} Matrix4x4;
+// bounding volume hierarchy, to be used as BLAS
+class ALIGN(64) BVH
+{
+	struct BuildJob
+	{
+		uint nodeIdx;
+		float3 centroidMin, centroidMax;
+	};
+public:
+	BVH() = default;
+	BVH( BvhMesh* mesh );
+	// Install a previously-built BVH (from disk) without rebuilding. nodes/triIdx
+	// are copied; nodes_used is the live node count. mesh must outlive this BVH.
+	BVH( BvhMesh* mesh, const BVHNode* nodes, uint nodes_used, const uint* tri_idx );
+	void Build();
+	void Refit();
+	void Intersect( BVHRay& ray, uint instanceIdx );
+private:
+	void Subdivide( uint nodeIdx, uint depth, uint& nodePtr, float3& centroidMin, float3& centroidMax );
+	void UpdateNodeBounds( uint nodeIdx, float3& centroidMin, float3& centroidMax );
+	float FindBestSplitPlane( BVHNode& node, int& axis, int& splitPos, float3& centroidMin, float3& centroidMax );
+	bool TryMedianSplit( uint nodeIdx, int axis, float3& centroidMin, float3& centroidMax, uint& leftCount );
+	BvhMesh* mesh = 0;
+public:
+	uint* triIdx = 0;
+	uint nodesUsed;
+	BVHNode* bvhNode = 0;
+	bool subdivToOnePrim = false; // for TLAS experiment
+	BuildJob buildStack[64];
+	int buildStackPtr;
+};
 
-// Bottom-Level Acceleration Structure (BLAS) - single mesh BVH
-typedef struct {
-    Triangle* triangles;
-    int*      triangle_indices;
-    BVHNode*  nodes;
-    int       triangle_count;
-    int       node_count;
-    int       max_triangles_per_leaf;
-} BLAS;
+// minimalist mesh class
+class BvhMesh
+{
+public:
+	BvhMesh() = default;
+	BvhMesh( uint primCount );
+	BvhMesh( const char* objFile, const char* texFile, const float scale = 1 );
+	Tri* tri = 0;			// triangle data for intersection
+	TriEx* triEx = 0;		// triangle data for shading
+	int triCount = 0;
+	BVH* bvh = 0;
+	float3* P = 0, * N = 0;
+};
 
-// BVH Instance - represents a transformed BLAS in world space
-typedef struct {
-    BLAS*     blas;             // Reference to bottom-level BVH
-    Matrix4x4 transform;        // Instance-to-world transform
-    Matrix4x4 inv_transform;    // World-to-instance transform (for ray transformation)
-    AABB      world_bounds;     // AABB in world space (after transformation)
-    uint32_t  instance_id;      // Unique instance identifier
-    uint32_t  blas_start_index; // Starting index of this BLAS in the combined BLAS array
-} BVHInstance;
 
-// GPU-compatible instance structure  
-typedef struct {
-    float    transform[16];     // 4x4 transform matrix
-    float    inv_transform[16]; // 4x4 inverse transform matrix
-    uint32_t blas_start_index;  // Starting index in combined BLAS array
-    uint32_t instance_id;       // Instance identifier
-    uint32_t padding[6];        // Padding to maintain alignment
-} GPUBVHInstance;
+// BVH instance, for TLAS
+class BVHInstance
+{
+public:
+	BVH* bvh = 0;
+	mat4 transform, invTransform;
+	uint idx;
+	aabb bounds;
+	void SetTransform( const mat4& transform );
+	BVHInstance() = default;
+	BVHInstance( BVH* bvh_ptr, uint instance_idx ) : bvh(bvh_ptr), idx(instance_idx) {}
+	void Intersect( BVHRay& ray );
+	
+	// Accessor methods for compatibility
+	const mat4& GetTransform() const { return transform; }
+	mat4& GetTransform() { return transform; }
+	const mat4& GetInvTransform() const { return invTransform; }
+	mat4& GetInvTransform() { return invTransform; }
+};
 
-// Top-Level Acceleration Structure (TLAS) node
-typedef struct {
-    Vec3 aabb_min;           // Minimum bounds
-    uint32_t left_right;     // Packed left (16-bit) and right (16-bit) child indices
-    Vec3 aabb_max;           // Maximum bounds
-    uint32_t blas_index;     // BLAS index (for leaf nodes), 0 for internal nodes
-} TLASNode;
+// Top Level Acceleration Structure
+struct TLASNode
+{
+	union 
+	{ 
+		struct { float dummy1[3]; uint leftRight; }; 
+		struct { float dummy3[3]; unsigned short left, right; }; 
+		float3 aabbMin; 
+		__m128 aabbMin4; 
+	};
+	union 
+	{ 
+		struct { float dummy2[3]; uint BLAS; }; 
+		float3 aabbMax; 
+		__m128 aabbMax4; 
+	};
+	bool isLeaf() const { return leftRight == 0; }
+};
 
-// GPU-compatible TLAS node structure
-typedef struct {
-    float minx, miny, minz;
-    uint32_t left_right;     // 2x16 bits for left/right children
-    float maxx, maxy, maxz;
-    uint32_t blas_index;
-} GPUTLASNode;
-
-// Top-Level Acceleration Structure - manages BVH instances
-typedef struct {
-    BVHInstance* instances;  // Array of BVH instances
-    TLASNode* nodes;         // TLAS nodes
-    int instance_count;      // Number of instances
-    int node_count;          // Number of TLAS nodes used
-    int max_instances;       // Maximum instances supported
-} TLAS;
-
-// Function declarations
-
-// Matrix operations
-Matrix4x4 matrix_identity();
-Matrix4x4 matrix_multiply(const Matrix4x4* a, const Matrix4x4* b);
-Matrix4x4 matrix_inverse(const Matrix4x4* m);
-Vec3 matrix_transform_point(const Matrix4x4* m, Vec3 p);
-Vec3 matrix_transform_vector(const Matrix4x4* m, Vec3 v);
-
-// Advanced matrix creation
-Matrix4x4 matrix_translation(float x, float y, float z);
-Matrix4x4 matrix_scale(float sx, float sy, float sz);
-Matrix4x4 matrix_rotation_x(float angle_radians);
-Matrix4x4 matrix_rotation_y(float angle_radians);
-Matrix4x4 matrix_rotation_z(float angle_radians);
-Matrix4x4 matrix_rotation_axis(Vec3 axis, float angle_radians);
-
-// BLAS operations  
-BLAS* blas_create(Triangle* triangles, int triangle_count, int max_triangles_per_leaf);
-void blas_destroy(BLAS* blas);
-void blas_build(BLAS* blas);
-
-// BVH instance operations
-BVHInstance* bvh_instance_create(BLAS* blas, uint32_t instance_id);
-void bvh_instance_destroy(BVHInstance* instance);
-void bvh_instance_set_transform(BVHInstance* instance, const Matrix4x4* transform);
-
-// TLAS operations
-TLAS* tlas_create(int max_instances);
-void tlas_destroy(TLAS* tlas);
-void tlas_add_instance(TLAS* tlas, BVHInstance* instance);
-void tlas_build(TLAS* tlas);
-
-// GPU data preparation
-void prepare_gpu_triangles(Triangle* triangles, int count, GPUTriangle* gpu_triangles);
-void prepare_gpu_blas_nodes(BVHNode* nodes, int count, GPUBVHNode* gpu_nodes);
-void prepare_gpu_instances(BVHInstance* instances, int count, GPUBVHInstance* gpu_instances);
-void prepare_gpu_tlas_nodes(TLASNode* nodes, int count, GPUTLASNode* gpu_nodes);
-
-// Legacy compatibility (to be removed)
-typedef BLAS BVH;
-BVH* bvh_create(Triangle* triangles, int triangle_count, int max_triangles_per_leaf);
-void bvh_destroy(BVH* bvh);
-
-// Flatten BVH for GPU usage
-void bvh_flatten_for_gpu(BVH* bvh, BVHNode** node_buffer, int** index_buffer, 
-                         int* node_count, int* index_count);
-
-// Ray-triangle intersection
-bool ray_triangle_intersect(Vec3 ray_origin, Vec3 ray_direction, Triangle triangle,
-                           float* t, float* u, float* v);
-
-// AABB operations
-AABB aabb_from_triangle(Triangle triangle);
-AABB aabb_union(AABB a, AABB b);
-bool aabb_ray_intersect(AABB aabb, Vec3 ray_origin, Vec3 ray_direction, float max_t);
-float aabb_surface_area(AABB aabb);
-
-// Vector operations
-Vec3 vec3_add(Vec3 a, Vec3 b);
-Vec3 vec3_sub(Vec3 a, Vec3 b);
-Vec3 vec3_mul(Vec3 v, float s);
-Vec3 vec3_cross(Vec3 a, Vec3 b);
-float vec3_dot(Vec3 a, Vec3 b);
-Vec3 vec3_normalize(Vec3 v);
-
-#endif // BVH_H
+class ALIGN(64) TLAS
+{
+public:
+	TLAS() = default;
+	TLAS( BVHInstance* blas, int N );
+	void Build();
+	void Intersect( BVHRay& ray );
+	
+	// Public accessors for external classes
+	uint GetBlasCount() const { return blasCount; }
+	uint GetNodesUsed() const { return nodesUsed; }
+	BVHInstance* GetBlas() const { return blas; }
+	TLASNode* GetTlasNode() const { return tlasNode; }
+	
+private:
+	void BuildRecursive( uint nodeIndex, uint first, uint count );
+	int FindBestMatch( int N, int A );
+	
+public:
+	// Made public for direct access by visualization and manager classes
+	BVHInstance* blas = 0;
+	uint blasCount = 0, nodesUsed = 0;
+	TLASNode* tlasNode = 0;
+	uint* nodeIdx = 0;
+};

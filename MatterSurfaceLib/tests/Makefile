@@ -90,7 +90,7 @@ run-simp: $(SIMP_TARGET)
 
 # BLAS reference-counting / re-mesh leak regression tests (headless, no GL window)
 BLAS_TARGET = blas_refcount_tests
-BLAS_SOURCES = blas_refcount_tests.cpp ../src/blas_manager.cpp ../src/bvh.cpp ../src/vertex_ao.cpp ../src/occupancy.cpp
+BLAS_SOURCES = blas_refcount_tests.cpp ../src/blas_manager.cpp $(SQL)/src/bvh.cpp ../src/vertex_ao.cpp ../src/occupancy.cpp
 
 $(BLAS_TARGET): $(BLAS_SOURCES)
 	$(CC) $(BLAS_SOURCES) -o $(BLAS_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
@@ -103,7 +103,7 @@ run-blas: $(BLAS_TARGET)
 # unmangled (cell.cpp references GenerateMesh et al. via extern "C").
 CELL_TARGET = cell_bounds_tests
 CELL_CPP = cell_bounds_tests.cpp ../src/cell.cpp ../src/mesh_simplifier.cpp \
-           ../src/blas_manager.cpp ../src/bvh.cpp ../src/bvh_analyzer.cpp \
+           ../src/blas_manager.cpp $(SQL)/src/bvh.cpp $(SQL)/src/bvh_analyzer.cpp \
            ../src/mesh_build_utils.cpp ../src/meshing_algorithm.cpp \
            ../src/marching_cubes_algorithm.cpp ../src/oriented_cube_algorithm.cpp \
            ../src/vertex_ao.cpp ../src/occupancy.cpp
@@ -155,7 +155,7 @@ run-reg: $(REG_TARGET)
 
 # Per-triangle tint: GPU pack helper + dedup-identity regression (headless, no GL)
 TINT_TARGET = blas_tint_tests
-TINT_SOURCES = blas_tint_tests.cpp ../src/blas_manager.cpp ../src/bvh.cpp ../src/vertex_ao.cpp ../src/occupancy.cpp
+TINT_SOURCES = blas_tint_tests.cpp ../src/blas_manager.cpp $(SQL)/src/bvh.cpp ../src/vertex_ao.cpp ../src/occupancy.cpp
 
 $(TINT_TARGET): $(TINT_SOURCES)
 	$(CC) $(TINT_SOURCES) -o $(TINT_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
@@ -188,7 +188,7 @@ run-ao: $(AO_TARGET)
 # plus the worker pool. Never calls UploadMesh, so no GL context is needed.
 PAR_TARGET = parallel_mesh_tests
 PAR_CPP = parallel_mesh_tests.cpp ../src/cell.cpp ../src/mesh_simplifier.cpp \
-          ../src/blas_manager.cpp ../src/bvh.cpp ../src/bvh_analyzer.cpp \
+          ../src/blas_manager.cpp $(SQL)/src/bvh.cpp $(SQL)/src/bvh_analyzer.cpp \
           ../src/mesh_worker_pool.cpp ../src/mesh_build_utils.cpp \
           ../src/meshing_algorithm.cpp ../src/marching_cubes_algorithm.cpp \
           ../src/oriented_cube_algorithm.cpp ../src/vertex_ao.cpp ../src/occupancy.cpp
@@ -224,7 +224,7 @@ run-cube: $(CUBE_TARGET)
 # material_registry.c via gcc to keep its extern "C" symbols unmangled.
 PART_TARGET = part_asset_tests
 PART_CPP = part_asset_tests.cpp ../src/part_asset.cpp ../src/blas_manager.cpp \
-           ../src/bvh.cpp ../src/tlas_manager.cpp ../src/vertex_ao.cpp \
+           $(SQL)/src/bvh.cpp ../src/tlas_manager.cpp ../src/vertex_ao.cpp \
            ../src/occupancy.cpp
 PART_C   = ../src/material_registry.c
 PART_C_OBJ = material_registry.o
@@ -240,7 +240,7 @@ run-part: $(PART_TARGET)
 # Voxel imposter asset struct + grid-dim selection tests (headless, GL-free).
 # material_registry.c via gcc to keep its extern "C" symbols unmangled.
 VOX_TARGET = voxel_imposter_tests
-VOX_CPP = voxel_imposter_tests.cpp ../src/voxel_imposter.cpp ../src/bvh.cpp \
+VOX_CPP = voxel_imposter_tests.cpp ../src/voxel_imposter.cpp $(SQL)/src/bvh.cpp \
           ../src/part_asset.cpp ../src/blas_manager.cpp ../src/tlas_manager.cpp \
           ../src/vertex_ao.cpp ../src/occupancy.cpp
 VOX_C   = ../src/material_registry.c
