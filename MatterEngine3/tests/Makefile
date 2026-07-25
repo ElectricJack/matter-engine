@@ -419,11 +419,11 @@ DYNAMIC_BRIDGE_C      = $(FLECS_C)
 
 # Phase 4 Task 9 — Editor model (pure CPU, no GL/Vulkan/Flecs needed).
 EDITOR_MODEL_TARGET = editor_model_tests
-EDITOR_MODEL_CPP    = editor_model_tests.cpp ../../MatterViewer/editor_model.cpp
+EDITOR_MODEL_CPP    = editor_model_tests.cpp ../../MatterEditor/editor_model.cpp
 
 # Phase 4 Task 10 — Properties registry (needs scene_registry for ComponentDescriptor).
 PROPERTIES_REGISTRY_TARGET = properties_registry_tests
-PROPERTIES_REGISTRY_CPP    = properties_registry_tests.cpp ../../MatterViewer/properties_registry.cpp \
+PROPERTIES_REGISTRY_CPP    = properties_registry_tests.cpp ../../MatterEditor/properties_registry.cpp \
                              ../src/ecs/scene_registry.cpp \
                              ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                              ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
@@ -446,8 +446,8 @@ SIMULATION_CONTROL_C      = $(FLECS_C)
 # Phase 4 Task 12 — Specialized editors (pure CPU, no Flecs/GL).
 SPECIALIZED_EDITORS_TARGET = specialized_editors_tests
 SPECIALIZED_EDITORS_CPP    = specialized_editors_tests.cpp \
-                             ../../MatterViewer/specialized_editors.cpp \
-                             ../../MatterViewer/properties_registry.cpp \
+                             ../../MatterEditor/specialized_editors.cpp \
+                             ../../MatterEditor/properties_registry.cpp \
                              ../src/ecs/scene_registry.cpp
 SPECIALIZED_EDITORS_C      = $(FLECS_C)
 
@@ -726,8 +726,8 @@ SHLIB_C   = $(COMMON_MSL_C)
 VIEWER_LOGIC_TARGET = viewer_logic_tests
 VIEWER_PIPELINE_CPP = $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
-              ../../MatterViewer/camera_controller.cpp \
-              ../../MatterViewer/streaming_anchor_controller.cpp \
+              ../../MatterEditor/camera_controller.cpp \
+              ../../MatterEditor/streaming_anchor_controller.cpp \
               ../src/async_bake.cpp \
               ../src/render/matrix_math.cpp ../src/render/frame_matrices.cpp \
               ../src/render/world_state.cpp \
@@ -1601,7 +1601,7 @@ api-tests: $(call obj_of,gpu,api_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/
 	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
 
 run-api-tests: api-tests
-	cd ../../MatterViewer && GALLIUM_DRIVER=d3d12 ../MatterEngine3/tests/api_tests
+	cd ../../MatterEditor && GALLIUM_DRIVER=d3d12 ../MatterEngine3/tests/api_tests
 
 # Phase C Task 9 — world-kind session end-to-end test (GPU suite).
 world-stream-tests: $(call obj_of,gpu,world_stream_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
@@ -1610,7 +1610,7 @@ world-stream-tests: $(call obj_of,gpu,world_stream_tests.cpp) $(GPU_SHARED_OBJS)
 	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
 
 run-worldstream: world-stream-tests
-	cd ../../MatterViewer && GALLIUM_DRIVER=d3d12 MATTER_STREAM_RINGS="32:3,80:2" ../MatterEngine3/tests/world_stream_tests
+	cd ../../MatterEditor && GALLIUM_DRIVER=d3d12 MATTER_STREAM_RINGS="32:3,80:2" ../MatterEngine3/tests/world_stream_tests
 
 # Phase B Task 6 — async bake worker command loop tests.
 async-bake-tests: $(call obj_of,gpu,async_bake_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
@@ -1684,10 +1684,10 @@ run-resolvecache: resolve-cache-tests
 	./resolve_cache_tests
 
 # The Vulkan smoke executable is a Windows artifact built with the standalone
-# vendored GLFW archive owned by MatterViewer's cross-build rules.
+# vendored GLFW archive owned by MatterEditor's cross-build rules.
 .PHONY: vulkan-smoke
 vulkan-smoke:
-	$(MAKE) -C ../../MatterViewer vulkan-smoke
+	$(MAKE) -C ../../MatterEditor vulkan-smoke
 
 # ---------------------------------------------------------------------------
 # Clean: remove OBJDIR and all binaries (test-binary-name list, since they

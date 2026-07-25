@@ -4,7 +4,7 @@
 # so `make` builds a static archive (libmatter_engine3.a) that bundles the full
 # engine — script host, DSL/CSG bake pipeline, part-graph, LOD flatten/select,
 # render/provider/facade, MatterSurfaceLib backend, and vendored QuickJS-ng.
-# MatterViewer links this single archive plus raylib and (optionally) autoremesher.
+# MatterEditor links this single archive plus raylib and (optionally) autoremesher.
 #
 # MatterEngine3 consumes the MatterSurfaceLib prototype READ-ONLY:
 #   new headers via -Iinclude, consumed prototype headers via
@@ -26,7 +26,7 @@
 # Caller can inject extra flags via EXTRA_CFLAGS / EXTRA_INCLUDE:
 #   make -C MatterEngine3 EXTRA_CFLAGS="-DMATTER_HAVE_AUTOREMESHER ..." \
 #        EXTRA_INCLUDE="-I../Libraries/autoremesher_core/include"
-# MatterViewer/Makefile does this when libautoremesher_core.a is present so that
+# MatterEditor/Makefile does this when libautoremesher_core.a is present so that
 # part_flatten.cpp compiles with the retopo hook enabled.
 #
 # When MATTER_HAVE_AUTOREMESHER is passed via EXTRA_CFLAGS, the caller must also
@@ -126,7 +126,7 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/event/dispatch_context.cpp src/event/subscription.cpp src/event/event_hub.cpp src/event/command.cpp \
           src/event/property.cpp
 
-# MatterSurfaceLib C++ backend sources compiled into the archive so MatterViewer
+# MatterSurfaceLib C++ backend sources compiled into the archive so MatterEditor
 # need not compile them directly (no libmsl.a). Same set as the old viewer's MSL_CPP
 # minus mesh_retopo.cpp (handled separately via EXTRA_RETOPO_CPP when AR is present).
 MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \

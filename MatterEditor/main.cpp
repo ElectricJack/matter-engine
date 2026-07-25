@@ -805,7 +805,7 @@ int main() {
 
     std::string error;
     // Validation layers are a development dependency; requesting them
-    // unconditionally makes viewer.exe fatal on machines without the Vulkan
+    // unconditionally makes editor.exe fatal on machines without the Vulkan
     // SDK installed. Opt in via MATTER_VK_VALIDATION=1 (test harnesses do).
     const bool enable_validation =
         std::getenv("MATTER_VK_VALIDATION") != nullptr;
@@ -831,7 +831,7 @@ int main() {
     // Phase 1 cache-leak fix: MATTER_CACHE_ROOT is an explicit override and
     // still wins when set, but it is canonicalized to absolute here (rather
     // than handed to the engine as-is) so a relative override behaves
-    // identically regardless of the directory viewer.exe was launched from.
+    // identically regardless of the directory editor.exe was launched from.
     // EngineContext::create() also canonicalizes/requires cache_root itself
     // (see matter_engine.cpp), but engine_desc.cache_root is informational
     // only -- the per-world cache_root actually used for baking is derived
@@ -1743,7 +1743,7 @@ int main() {
                 ui.draw_camera_panel(camera);
                 // draw_sector_streaming_panel retired in Phase 4 Task 12 — sector
                 // streaming editing now lives in the Properties panel via
-                // SpecializedEditors (MatterViewer/specialized_editors.h).
+                // SpecializedEditors (MatterEditor/specialized_editors.h).
                 {
                     const auto& vp = ui.viewport_rect();
                     ui.draw_gizmo(selection_set, field_commands, camera,

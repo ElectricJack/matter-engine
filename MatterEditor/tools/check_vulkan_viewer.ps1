@@ -1,8 +1,8 @@
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-$main = Get-Content -Raw (Join-Path $root 'MatterViewer\main.cpp')
-$ui = Get-Content -Raw (Join-Path $root 'MatterViewer\ui.cpp')
-$makefile = Get-Content -Raw (Join-Path $root 'MatterViewer\Makefile')
+$main = Get-Content -Raw (Join-Path $root 'MatterEditor\main.cpp')
+$ui = Get-Content -Raw (Join-Path $root 'MatterEditor\ui.cpp')
+$makefile = Get-Content -Raw (Join-Path $root 'MatterEditor\Makefile')
 $engine = Get-Content -Raw (Join-Path $root 'MatterEngine3\include\matter\engine_context.h')
 $world = Get-Content -Raw (Join-Path $root 'MatterEngine3\include\matter\world_session.h')
 $vkContext = Get-Content -Raw (Join-Path $root 'MatterEngine3\src\render\vk_context.cpp')
@@ -14,10 +14,10 @@ $streamline = Get-Content -Raw (Join-Path $root 'MatterEngine3\src\render\stream
 $compositeShader = Get-Content -Raw (Join-Path $root 'MatterEngine3\shaders_vk\composite.frag')
 $compat = Get-Content -Raw (Join-Path $root 'MatterEngine3\src\render\vulkan_only_compat.cpp')
 $cell = Get-Content -Raw (Join-Path $root 'MatterSurfaceLib\src\cell.cpp')
-$runtimeSmokePath = Join-Path $root 'MatterViewer\tools\smoke_vulkan_viewer.ps1'
+$runtimeSmokePath = Join-Path $root 'MatterEditor\tools\smoke_vulkan_viewer.ps1'
 $runtimeSmoke = if (Test-Path $runtimeSmokePath) { Get-Content -Raw $runtimeSmokePath } else { '' }
-$interopSmoke = Get-Content -Raw (Join-Path $root 'MatterViewer\tools\smoke_vulkan_interop_faults.ps1')
-$perfScriptPath = Join-Path $root 'MatterViewer\tools\perf_vulkan_instancing.ps1'
+$interopSmoke = Get-Content -Raw (Join-Path $root 'MatterEditor\tools\smoke_vulkan_interop_faults.ps1')
+$perfScriptPath = Join-Path $root 'MatterEditor\tools\perf_vulkan_instancing.ps1'
 $perfScript = if (Test-Path $perfScriptPath) { Get-Content -Raw $perfScriptPath } else { '' }
 $failures = [System.Collections.Generic.List[string]]::new()
 

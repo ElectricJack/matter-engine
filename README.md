@@ -22,7 +22,7 @@ Source of truth for everything below the meshing layer: `precomp.h` (float3/floa
 
 ### `ParticleFlowLib/` — particle flow simulation (C++)
 
-Deterministic particle simulation with force fields and append-only path recording, used by the tree/foliage generators. Compiled into the engine and viewer.
+Deterministic particle simulation with force fields and append-only path recording, used by the tree/foliage generators. Compiled into the engine and editor.
 
 ### `MatterSurfaceLib/` — the convergence project
 
@@ -75,7 +75,7 @@ make WSL_LINUX=1    # or just `make` on native Linux/macOS
 | `ParticleFlowLib` | `make` | `libparticleflow.a` |
 | `MatterEngine3` | `make` | `libmatter_engine3.a` |
 | `MatterSurfaceLib` | `make WSL_LINUX=1` | `./matter_surface_lib` |
-| `MatterViewer` | `make` | `./viewer` |
+| `MatterEditor` | `make` | `./editor` |
 
 Retired experiments live under `Prototypes/` and are excluded from `build-all.sh`.
 

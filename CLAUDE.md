@@ -97,8 +97,8 @@ make -C MatterEngine3 \
   TMP="C:/Users/webde/AppData/Local/Temp" \
   TEMP="C:/Users/webde/AppData/Local/Temp"
 
-# Build viewer (Windows target)
-make -C MatterViewer windows \
+# Build editor (Windows target)
+make -C MatterEditor windows \
   TMP="C:/Users/webde/AppData/Local/Temp" \
   TEMP="C:/Users/webde/AppData/Local/Temp"
 
@@ -125,8 +125,8 @@ bash setup-worktree.sh
 
 This creates NTFS junctions for the three directory symlinks the build requires:
 - `MatterEngine3/shaders` → `MatterSurfaceLib/shaders`
-- `MatterViewer/shaders` → `MatterSurfaceLib/shaders`
-- `MatterViewer/shaders_gpu` → `MatterEngine3/shaders_gpu`
+- `MatterEditor/shaders` → `MatterSurfaceLib/shaders`
+- `MatterEditor/shaders_gpu` → `MatterEngine3/shaders_gpu`
 
 ### Sandbox note for Claude Desktop App
 
@@ -152,7 +152,7 @@ The build system ensures that:
 ## Project Relationships
 
 Current projects and their relationships. Dependencies run one way only:
-**MatterViewer → MatterEngine3 → MatterSurfaceLib → SpatialQueryLib → MemoryLib.**
+**MatterEditor → MatterEngine3 → MatterSurfaceLib → SpatialQueryLib → MemoryLib.**
 
 1. **MemoryLib** - Pool / arena / growable-array allocators (C)
    - Source of truth for `mem_pool`; no dependencies
@@ -165,7 +165,7 @@ Current projects and their relationships. Dependencies run one way only:
      geometry types, not just queries
 
 3. **ParticleFlowLib** - Particle-flow simulation, fields, path recording (C++)
-   - Compiled directly into MatterEngine3 and MatterViewer
+   - Compiled directly into MatterEngine3 and MatterEditor
 
 4. **MatterSurfaceLib** - Meshing/surfacing backend + GPU resource management
    - Dependencies: SpatialQueryLib, MemoryLib, raylib
@@ -181,12 +181,12 @@ Current projects and their relationships. Dependencies run one way only:
    - Build: `make -C MatterEngine3` → `libmatter_engine3.a` + embedded shader header
    - Tests: `make -C MatterEngine3/tests run-*` (headless) and GPU suites with `GALLIUM_DRIVER=d3d12`
 
-6. **MatterViewer** - Interactive viewer application linking the kernel library
+6. **MatterEditor** - Interactive editor application linking the kernel library
    - Dependencies: MatterEngine3 (libmatter_engine3.a), MatterSurfaceLib, raylib, Dear ImGui,
      QuickJS-ng, Box3d, optionally autoremesher_core + TBB
-   - Build: `make -C MatterViewer` → `viewer` binary (runs from MatterViewer/ working directory)
-   - Shader symlinks: `MatterViewer/shaders` → MatterSurfaceLib/shaders,
-     `MatterViewer/shaders_gpu` → MatterEngine3/shaders_gpu
+   - Build: `make -C MatterEditor` → `editor` binary (runs from MatterEditor/ working directory)
+   - Shader symlinks: `MatterEditor/shaders` → MatterSurfaceLib/shaders,
+     `MatterEditor/shaders_gpu` → MatterEngine3/shaders_gpu
 
 7. **MeshChartingLib** - UV chart segmentation + atlas packing (GL-free)
    - No consumers today; kept for the voxel-box-imposter work

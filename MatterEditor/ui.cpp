@@ -863,7 +863,7 @@ void Ui::update_sector_streaming(matter::WorldSession& session,
 
 // draw_sector_streaming_panel retired in Phase 4 Task 12 — sector streaming
 // editing moved into the Properties panel via SpecializedEditors
-// (MatterViewer/specialized_editors.h). update_sector_streaming above (the
+// (MatterEditor/specialized_editors.h). update_sector_streaming above (the
 // per-frame anchor/follow logic, not UI) is unaffected.
 
 bool Ui::camera_input_allowed() const {

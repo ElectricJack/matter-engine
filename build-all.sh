@@ -34,7 +34,7 @@ SIMPLE_PROJECTS=(
     ParticleFlowLib
     SpatialQueryLib
     MatterEngine3
-    MatterViewer
+    MatterEditor
 )
 
 # Projects whose Makefile defaults to Windows cross-compile and need
@@ -132,8 +132,8 @@ if [ "$MODE" = "test" ]; then
 
     # Phase A: grep-gate — app projects must not include engine internals.
     echo
-    echo "--- grep-gate (MatterViewer dependency rule) ---"
-    bash MatterEngine3/tools/grep_gate.sh || RESULT[MatterViewer]="FAIL (grep-gate)"
+    echo "--- grep-gate (MatterEditor dependency rule) ---"
+    bash MatterEngine3/tools/grep_gate.sh || RESULT[MatterEditor]="FAIL (grep-gate)"
 
     for proj in MemoryLib SpatialQueryLib; do
         bin="$proj/$(echo "$proj" | tr '[:upper:]' '[:lower:]')"
@@ -236,7 +236,7 @@ if [ "$MODE" = "test" ]; then
         echo
         echo "--- MatterEngine3/tests (api-tests) ---"
         make -C MatterEngine3/tests api-tests || RESULT[MatterEngine3]="FAIL (api-tests build)"
-        ( cd MatterViewer && GALLIUM_DRIVER=d3d12 ../MatterEngine3/tests/api_tests ) \
+        ( cd MatterEditor && GALLIUM_DRIVER=d3d12 ../MatterEngine3/tests/api_tests ) \
             || RESULT[MatterEngine3]="FAIL (api-tests run)"
 
         echo

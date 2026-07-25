@@ -1,4 +1,4 @@
-# MatterViewer — world viewer application (GL build).
+# MatterEditor — world editor application (GL build).
 #
 # Linux: compiles ONLY main.cpp + ui.cpp + imgui; links libmatter_engine3.a
 #   (which contains the full engine: render/provider/facade, bake pipeline,
@@ -270,7 +270,7 @@ vpath %.cpp . $(ME3_DIR)/src $(ME3_DIR)/src/render $(ME3_DIR)/src/provider $(ME3
              ../ParticleFlowLib/src
 vpath %.c $(MSL_DIR)/src $(SQL_DIR)/src $(MEMLIB_DIR)/src $(QJS_DIR) $(FLECS_DIR)
 
-.DEFAULT_GOAL := viewer
+.DEFAULT_GOAL := editor
 
 # Linux object sets: ONLY app + imgui objects.
 L_DIR = build/linux
@@ -318,8 +318,8 @@ endif
 embedded-shaders:
 	$(MAKE) -C $(ME3_DIR) shaders_gen/embedded_shaders.h
 
-viewer: build-engine-lib shaders shaders_gpu_link $(L_ALL_OBJ)
-	$(CC) $(L_ALL_OBJ) $(ME3_DIR)/libmatter_engine3.a -o viewer \
+editor: build-engine-lib shaders shaders_gpu_link $(L_ALL_OBJ)
+	$(CC) $(L_ALL_OBJ) $(ME3_DIR)/libmatter_engine3.a -o editor \
 	      $(CFLAGS) $(LDFLAGS) $(LDLIBS) $(AR_CORE_LDFLAGS)
 
 -include $(L_ALL_OBJ:.o=.d)
@@ -590,9 +590,9 @@ $(W_FLECS_OBJ): $(W_DIR)/%.o: $(FLECS_DIR)/%.c | $(W_DIR)
 $(W_CPP_OBJ): | embedded-shaders
 
 windows: $(WIN_FEATURES) $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) win-shaders-gpu $(W_ALL_OBJ)
-	$(WIN_CXX) $(W_ALL_OBJ) -o viewer.exe $(CFLAGS) -static -s -Wl,--gc-sections $(WIN_LIBS) $(GLFW_WIN_LIB) $(WIN_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 -Wl,-Bstatic
+	$(WIN_CXX) $(W_ALL_OBJ) -o editor.exe $(CFLAGS) -static -s -Wl,--gc-sections $(WIN_LIBS) $(GLFW_WIN_LIB) $(WIN_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 -Wl,-Bstatic
 	@if [ "$(HAVE_STREAMLINE)" = "1" ]; then cp -f "$(STREAMLINE_DLL_DIR)"/*.dll .; fi
-	@imports="$$($(WIN_CXX) -print-prog-name=objdump -p viewer.exe)"; \
+	@imports="$$($(WIN_CXX) -print-prog-name=objdump -p editor.exe)"; \
 	 for forbidden in opengl32 ChoosePixelFormat SetPixelFormat SwapBuffers cuGraphicsGL nvcuda cuDevice; do \
 	   echo "$$imports" | grep -qi "$$forbidden" && { echo "ERROR: forbidden PE import/symbol $$forbidden"; exit 1; } || true; \
 	 done
@@ -619,9 +619,9 @@ endif
 # The old `rm -rf shaders && cp -r` recipe also destroyed the Linux symlink, so
 # removing it keeps the shaders/ symlink intact after a cross-compile.
 
-# shaders_gpu/ is a committed git symlink in MatterViewer/ pointing to
+# shaders_gpu/ is a committed git symlink in MatterEditor/ pointing to
 # MatterEngine3/shaders_gpu/. The symlink is navigable from WSL for the Linux
-# viewer; re-create it here in case it was missing for some other reason.
+# editor; re-create it here in case it was missing for some other reason.
 win-shaders-gpu:
 	@[ -d shaders_gpu ] || ln -s $(ME3_DIR)/shaders_gpu shaders_gpu
 	@[ -d $(ME3_DIR)/shaders_gpu ] || (echo "ERROR: MatterEngine3/shaders_gpu/ missing" && exit 1)
@@ -631,7 +631,7 @@ win-shaders-gpu:
 # or `git status` will show them as deleted. The build recreates them via the
 # shaders / shaders_gpu_link / win-shaders-gpu rules anyway.
 clean:
-	rm -rf viewer viewer.exe build
+	rm -rf editor editor.exe build
 
 # SelectionSet headless test (no GL/raylib/imgui deps)
 build/test_selection_set.exe: tests/test_selection_set.cpp selection_set.cpp selection_set.h
@@ -655,4 +655,4 @@ build/test_console_log.exe: tests/test_console_log.cpp console_log.cpp console_p
 run-test-console-log: build/test_console_log.exe
 	./build/test_console_log.exe
 
-.PHONY: viewer windows clean shaders shaders_gpu_link win-shaders-gpu regen-processed-shader mingw-box3d embedded-shaders build-engine-lib vulkan-instancing-perf
+.PHONY: editor windows clean shaders shaders_gpu_link win-shaders-gpu regen-processed-shader mingw-box3d embedded-shaders build-engine-lib vulkan-instancing-perf

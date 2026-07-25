@@ -274,7 +274,7 @@ To avoid paying the ~60–65s RT warm-up repeatedly, keep the viewer alive and d
 via a named pipe:
 
 ```
-MATTER_CMD_FIFO=/tmp/viewer.fifo MATTER_RT=1 ./viewer &
+MATTER_CMD_FIFO=/tmp/viewer.fifo MATTER_RT=1 ./editor &
 echo "cam 20 16 34 0 9 0" > /tmp/viewer.fifo
 echo "shot /tmp/out.png"   > /tmp/viewer.fifo
 echo "quit"                > /tmp/viewer.fifo

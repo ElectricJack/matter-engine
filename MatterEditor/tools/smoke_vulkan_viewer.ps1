@@ -5,7 +5,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-if (-not $ViewerPath) { $ViewerPath = Join-Path $root 'MatterViewer\viewer.exe' }
+if (-not $ViewerPath) { $ViewerPath = Join-Path $root 'MatterEditor\editor.exe' }
 if (-not $OutputDir) { $OutputDir = Join-Path $root '.codex-tmp\vulkan-viewer-smoke' }
 $ViewerPath = (Resolve-Path $ViewerPath).Path
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
@@ -249,7 +249,7 @@ try {
     if (Test-Path $msysBin) { $env:PATH = "$msysBin;$env:PATH" }
     Assert-PeImports $ViewerPath
     $features = Join-Path (Split-Path $ViewerPath) 'build\windows\build_features.txt'
-    if (-not (Test-Path $features)) { $features = Join-Path $root 'MatterViewer\build\windows\build_features.txt' }
+    if (-not (Test-Path $features)) { $features = Join-Path $root 'MatterEditor\build\windows\build_features.txt' }
     $manifest = Get-Content -Raw $features
     foreach ($feature in @('VULKAN=1','OPENGL=0')) {
         if (-not $manifest.Contains($feature)) { throw "feature manifest missing $feature" }

@@ -116,7 +116,7 @@ Revisit only if conversions start appearing at layer boundaries.
 | `MatterEngine3/src/mat_math.h:46` `NormalMat` | 3×3 inverse-transpose for normals |
 | `terrain_mesher.cpp:12`, `mesh_charting.cpp:10`, `selection_outline.cpp:11` | POD structs, **zero** operations defined |
 
-Minor and real: `MatterViewer/viewport_pick.cpp:17` defines `Vec3` plus
+Minor and real: `MatterEditor/viewport_pick.cpp:17` defines `Vec3` plus
 `add`/`cross`/`normalize`/`scale`/`sub` with no precision or determinism reason.
 
 ---
@@ -157,7 +157,7 @@ in code slated for deletion:
 
 - **`MatterSurfaceLib/Makefile` hardcodes `x86_64-w64-mingw32-g++-posix`**, which
   is not installed under MSYS2 UCRT64 (plain `x86_64-w64-mingw32-g++` is;
-  MatterViewer uses `/ucrt64/bin/g++`). `make -C MatterSurfaceLib` fails at the
+  MatterEditor uses `/ucrt64/bin/g++`). `make -C MatterSurfaceLib` fails at the
   compiler, not at any source. Pre-existing.
 
 - **ASan is unavailable** in MSYS2 UCRT64 (`cannot find -lasan`).

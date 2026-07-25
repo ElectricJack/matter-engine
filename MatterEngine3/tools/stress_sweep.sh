@@ -15,7 +15,7 @@
 set -euo pipefail
 STAGE="${1:?usage: stress_sweep.sh <stage-label>}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
-cd "$HERE/../../MatterViewer"
+cd "$HERE/../../MatterEditor"
 
 CSV="$HERE/../docs/perf/stress_sweep.csv"
 TODAY="$(date +%F)"
@@ -29,7 +29,7 @@ for WORLD in $WORLDS; do
   # readiness marker ("MATTER_CMD_FIFO: listening") indefinitely; force
   # line-buffering so the log poll below sees it as soon as it prints.
   GALLIUM_DRIVER="${GALLIUM_DRIVER:-d3d12}" MATTER_GPU_CULL=1 \
-    MATTER_WORLD="$WORLD" MATTER_CMD_FIFO="$FIFO" stdbuf -oL ./viewer > "$LOG" 2>&1 &
+    MATTER_WORLD="$WORLD" MATTER_CMD_FIFO="$FIFO" stdbuf -oL ./editor > "$LOG" 2>&1 &
   PID=$!
   trap 'kill $PID 2>/dev/null || true; rm -f "$FIFO"' EXIT
 

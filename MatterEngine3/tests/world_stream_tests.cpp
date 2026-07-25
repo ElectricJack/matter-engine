@@ -1,5 +1,5 @@
 // world_stream_tests.cpp — Phase C Task 9: world-kind session end-to-end test.
-// GPU test (requires GALLIUM_DRIVER=d3d12). Runs from MatterViewer/ directory.
+// GPU test (requires GALLIUM_DRIVER=d3d12). Runs from MatterEditor/ directory.
 //
 // Assertions:
 //   1. Every session owns one ECS world with matter.ecs runtime state.

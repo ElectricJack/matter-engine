@@ -1,8 +1,8 @@
 # Settle Tick Optimizer — Bake Lab settle instrument
 
-> Design and implementation spec for making the Box3d tileset settle loop externally steppable, measurable tick-by-tick, and optimizable — with a "visually close" pose-delta gate instead of bit-identical poses, a headless benchmark for regression tracking, and an interactive Settle Lab panel in MatterViewer.
+> Design and implementation spec for making the Box3d tileset settle loop externally steppable, measurable tick-by-tick, and optimizable — with a "visually close" pose-delta gate instead of bit-identical poses, a headless benchmark for regression tracking, and an interactive Settle Lab panel in MatterEditor.
 
-- **Target:** `tileset_settle.{h,cpp}` + `tileset_bake.{h,cpp}` + new `MatterEngine3/tests/settle_bench.cpp` + new MatterViewer "Settle Lab" panel
+- **Target:** `tileset_settle.{h,cpp}` + `tileset_bake.{h,cpp}` + new `MatterEngine3/tests/settle_bench.cpp` + new MatterEditor "Settle Lab" panel
 - **Baseline:** `a36ded91` (local main)
 - **Status:** Spec — ready to implement
 - **Context:** one instrument of the Bake Lab workbench — see [bake-lab.md](bake-lab.md) for the umbrella architecture. Per its roadmap, BakeTrace (bake-lab.md §II.1) lands first; this spec's engine work is unchanged by that, and its Settle Lab UI mounts as a Bake Lab panel with the stepper adopting the shared `SteppablePhase` transport contract (bake-lab.md §I.4). Settle spans/`TickStats` aggregates additionally feed BakeTrace once both exist.
@@ -43,7 +43,7 @@ We want to (a) see where ticks go, (b) step the simulation interactively in the 
 
 #### A — Refactor `SettleWorld` to an external step API; inspector runs on the app thread **(chosen)**
 
-Split `settle_layer`'s internal `while` loop into `begin_layer(spawns)` / `step() → TickStats` / `layer_converged()`. The viewer owns a private `SettleWorld` + spawn plan directly (MatterViewer already links `libmatter_engine3.a`) and steps it on the app thread, N ticks per frame under a wall-clock budget.
+Split `settle_layer`'s internal `while` loop into `begin_layer(spawns)` / `step() → TickStats` / `layer_converged()`. The viewer owns a private `SettleWorld` + spawn plan directly (MatterEditor already links `libmatter_engine3.a`) and steps it on the app thread, N ticks per frame under a wall-clock budget.
 
 - **Pro:** no threading at all. Settle needs no GL and no worker; pausing is simply not calling `step()`. The bake worker, command queue, and supersession model are untouched.
 - **Pro:** the batch path becomes a trivial loop over the step API — one code path to trust, verified by `pose_hash` equality.
@@ -245,7 +245,7 @@ settle_bench --spec <fixture>            # run with default SettleParams
 - Always bypasses the settle cache.
 - Makefile: `settle_bench` + `run-settlebench` (runs the synthetic fixture with defaults as a smoke), added to `.PHONY` and the clean list. Windows-runnable per the CLAUDE.md non-GL rule.
 
-### II.5 Viewer Settle Lab — `MatterViewer/settle_lab.{h,cpp}` + `ui.cpp` panel
+### II.5 Viewer Settle Lab — `MatterEditor/settle_lab.{h,cpp}` + `ui.cpp` panel
 
 Controller owned by the app (not the engine session):
 
@@ -283,10 +283,10 @@ export PATH="/c/msys64/ucrt64/bin:/c/msys64/usr/bin:$PATH"
 make -C MatterEngine3 TMP="C:/Users/webde/AppData/Local/Temp" TEMP="C:/Users/webde/AppData/Local/Temp"
 make -C MatterEngine3/tests run-tilesetphysics run-tilesetbake run-settlebench \
   TMP=... TEMP=... GRAPHICS=GRAPHICS_API_OPENGL_43
-make -C MatterViewer windows TMP=... TEMP=...
+make -C MatterEditor windows TMP=... TEMP=...
 ```
 
-- MatterViewer Makefile: add `settle_lab.o`; no new libraries (Box3d and the engine sources are already linked).
+- MatterEditor Makefile: add `settle_lab.o`; no new libraries (Box3d and the engine sources are already linked).
 - **Cache-version rule (repeat, because it will bite):** any landed optimization that changes final poses must bump `kEngineBakeVersion` so `settle_cache_key` (`tileset_bake.h:63-69`) invalidates stale `.settle` files — `SettleParams` is not part of the key.
 - Experiments from §I.6 land as separate changes, each with a benchmark before/after (`--dump` baseline on main, `--compare` on the branch) pasted into the commit message.
 
@@ -309,5 +309,5 @@ make -C MatterViewer windows TMP=... TEMP=...
 | `MatterEngine3/tests/settle_bench.cpp` | new — headless benchmark CLI |
 | `MatterEngine3/tests/tileset_physics_tests.cpp` | step-vs-batch golden |
 | `MatterEngine3/tests/Makefile` | `settle_bench`, `run-settlebench` |
-| `MatterViewer/settle_lab.h/.cpp` | new — inspector controller + wireframe draw |
-| `MatterViewer/ui.cpp/.h`, `main.cpp` | Settle Lab panel + per-frame `tick_frame()` hook |
+| `MatterEditor/settle_lab.h/.cpp` | new — inspector controller + wireframe draw |
+| `MatterEditor/ui.cpp/.h`, `main.cpp` | Settle Lab panel + per-frame `tick_frame()` hook |
