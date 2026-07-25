@@ -265,10 +265,10 @@ FLECS_NAME = $(notdir $(FLECS_C))
 vpath %.cpp . $(ME3_DIR)/src $(ME3_DIR)/src/render $(ME3_DIR)/src/provider $(ME3_DIR)/src/ecs \
              $(ME3_DIR)/src/streaming $(ME3_DIR)/src/script $(ME3_DIR)/src/event \
              $(ME3_DIR)/src/scene \
-             $(MSL_DIR)/src $(IMGUI_PATH) $(IMGUI_PATH)/backends \
+             $(MSL_DIR)/src $(SQL_DIR)/src $(IMGUI_PATH) $(IMGUI_PATH)/backends \
              $(IMGUIZMO_PATH) \
              ../ParticleFlowLib/src
-vpath %.c $(MSL_DIR)/src $(QJS_DIR) $(FLECS_DIR)
+vpath %.c $(MSL_DIR)/src $(SQL_DIR)/src $(MEMLIB_DIR)/src $(QJS_DIR) $(FLECS_DIR)
 
 .DEFAULT_GOAL := viewer
 
@@ -570,8 +570,18 @@ $(W_CPP_OBJ): $(W_DIR)/%.o: %.cpp | $(W_DIR)
 	$(WIN_CXX) -c $< -o $@ $(CXX_FLAGS_BUILD_WIN_COMMON)
 $(W_QJS_OBJ): $(W_DIR)/%.o: $(QJS_DIR)/%.c | $(W_DIR)
 	$(WIN_CC) -c $< -o $@ -O2 -DNDEBUG -DCONFIG_VERSION='"0.10.0"' $(QJS_INC) -ffunction-sections -fdata-sections -MMD -MP
-$(W_PIPC_OBJ): $(W_DIR)/%.o: $(MSL_DIR)/src/%.c | $(W_DIR)
-	$(WIN_CC) -c $< -o $@ -O2 -DNDEBUG -DPLATFORM_DESKTOP $(WIN_INCLUDE_PATHS) -ffunction-sections -fdata-sections -MMD -MP
+# Pipeline C objects. Most come from MatterSurfaceLib, but spatial_hash and
+# mem_pool are compiled from their source-of-truth libraries, so they cannot
+# share the MSL static pattern rule and get their own explicit rules below.
+WIN_PIPC_COMPILE = $(WIN_CC) -c $< -o $@ -O2 -DNDEBUG -DPLATFORM_DESKTOP $(WIN_INCLUDE_PATHS) -ffunction-sections -fdata-sections -MMD -MP
+W_PIPC_MSL_OBJ = $(filter-out $(W_DIR)/spatial_hash.o $(W_DIR)/mem_pool.o,$(W_PIPC_OBJ))
+
+$(W_PIPC_MSL_OBJ): $(W_DIR)/%.o: $(MSL_DIR)/src/%.c | $(W_DIR)
+	$(WIN_PIPC_COMPILE)
+$(W_DIR)/spatial_hash.o: $(SQL_DIR)/src/spatial_hash.c | $(W_DIR)
+	$(WIN_PIPC_COMPILE)
+$(W_DIR)/mem_pool.o: $(MEMLIB_DIR)/src/mem_pool.c | $(W_DIR)
+	$(WIN_PIPC_COMPILE)
 $(W_FLECS_OBJ): $(W_DIR)/%.o: $(FLECS_DIR)/%.c | $(W_DIR)
 	$(WIN_CC) -c $< -o $@ -std=c17 -O2 -I$(FLECS_DIR) -DNDEBUG -ffunction-sections -fdata-sections -MMD -MP
 
