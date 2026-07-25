@@ -3,6 +3,7 @@
 #include <array>
 #include <cmath>
 #include <algorithm>
+#include <cstdio>
 #include <filesystem>
 #include <system_error>
 
@@ -595,6 +596,26 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands) {
     ImGui::Text("Last reconcile want: %d", s.last_want_count);
     ImGui::Separator();
 
+    // Main-loop attribution. These partition the same window `frame_ms` covers,
+    // so `other` is genuinely unmeasured code, not clock skew. `render` already
+    // contains the resolve/build/draw line above it — don't double-count them.
+    {
+        const float loop_sum = s.loop_poll_ms + s.loop_acquire_ms + s.loop_ui_ms +
+                               s.loop_tick_ms + s.loop_pump_ms + s.loop_lab_ms +
+                               s.loop_render_ms + s.loop_present_ms;
+        ImGui::Text("Loop: poll %.2f  acq %.2f  ui %.2f  tick %.2f",
+                    s.loop_poll_ms, s.loop_acquire_ms, s.loop_ui_ms,
+                    s.loop_tick_ms);
+        ImGui::Text("      pump %.2f  lab %.2f  render %.2f  present %.2f",
+                    s.loop_pump_ms, s.loop_lab_ms, s.loop_render_ms,
+                    s.loop_present_ms);
+        ImGui::Text("      sum %.2f  other %.2f ms", loop_sum,
+                    s.frame_ms - loop_sum);
+        ImGui::Text("      peak: pump %.2f  acq %.2f ms",
+                    s.loop_peak_pump_ms, s.loop_peak_acquire_ms);
+    }
+    ImGui::Separator();
+
     const char* hit_tag = s.batch_cache_hit ? " [cached]" : "";
     ImGui::Text("Raster: %d batches / %d tris  culled: %d%s",
                 s.raster_batches, s.raster_tris, s.culled_clusters, hit_tag);
@@ -771,6 +792,60 @@ void Ui::draw_gizmo(const SelectionSet& selection, const FieldCommands& fields,
 
 void Ui::update_gizmo_hotkeys() {
     viewer::update_gizmo_hotkeys(gizmo_state_);
+}
+
+bool Ui::ensure_streaming_anchor(matter::WorldSession& session) {
+    // World-kind detection. sea_level() succeeds ONLY for world-kind sessions;
+    // closed-world (expand/tileset) sessions return false and must not get a
+    // stray anchor entity — their geometry never comes from streamed sectors.
+    float sea_level = 0.0f;
+    if (!session.sea_level(sea_level)) return false;
+
+    flecs::world& world = session.ecs();
+
+    // Idempotence is derived from live ECS state, never from a latched bool:
+    // validate_anchor drops the selection when the ECS world identity changed
+    // (reload / world switch installs a fresh Flecs world) or when the anchor
+    // entity is no longer alive, so a new world always falls through to the
+    // create path below.
+    const flecs::entity_t selected_before = streaming_anchor_.selected;
+    matter_viewer::validate_anchor(streaming_anchor_, world);
+    if (selected_before != 0 && streaming_anchor_.selected == 0) {
+        anchor_id_input_ = 0;
+    }
+
+    if (streaming_anchor_.selected != 0) {
+        const flecs::entity anchor(world.c_ptr(), streaming_anchor_.selected);
+        // Both components must still be present: SectorStreaming is what the
+        // coordinator's owner observer keys off, LocalTransform is what the
+        // transform system needs to publish the WorldTransform the streaming
+        // system samples.
+        if (anchor.has<matter::ecs::LocalTransform>() &&
+            anchor.has<matter::streaming::SectorStreaming>()) {
+            return false;
+        }
+    }
+
+    if (streaming_anchor_.selected == 0) {
+        // Also sets follow_editor_camera = true, which re-arms the
+        // update_sector_streaming -> follow_camera path below.
+        matter_viewer::create_anchor(streaming_anchor_, world);
+    }
+    if (!matter_viewer::attach_streaming(streaming_anchor_, world)) {
+        matter_viewer::clear_anchor(streaming_anchor_);
+        anchor_id_input_ = 0;
+        std::fprintf(stderr,
+                     "[streaming] failed to attach the sector streaming anchor\n");
+        return false;
+    }
+
+    anchor_id_input_ = streaming_anchor_.selected;
+    std::printf(
+        "[streaming] auto-attached sector streaming anchor entity %llu "
+        "(world-kind session, sea level %.2f)\n",
+        static_cast<unsigned long long>(streaming_anchor_.selected),
+        static_cast<double>(sea_level));
+    return true;
 }
 
 void Ui::update_sector_streaming(matter::WorldSession& session,

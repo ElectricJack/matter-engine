@@ -177,6 +177,19 @@ void GiTemporalState::seed_presented_for_test(
 }
 #endif
 
+void TemporalState::TransformTable::build_map() {
+    if (map_built) return;
+    map.clear();
+    map.reserve(ids.size());
+    // In-order assignment, so a repeated id keeps its LAST value — the exact
+    // behaviour of the `next.transforms[id] = transform` loop this replaces.
+    for (std::size_t index = 0; index < ids.size(); ++index)
+        map[ids[index]] = values[index];
+    unique = map.size() == ids.size();
+    unique_known = true;
+    map_built = true;
+}
+
 TemporalFrame TemporalState::begin(
     const FrameMatrices& current_unjittered, VkExtent2D internal_extent,
     VkExtent2D output_extent, const std::vector<TemporalInstance>& instances,
@@ -204,13 +217,52 @@ TemporalFrame TemporalState::begin(
         frame.current_jittered = current_unjittered;
     }
 
-    bool missing_transform = false;
-    for (const TemporalInstance& instance : instances) {
-        if (presented_.transforms.find(instance.instance_id) ==
-            presented_.transforms.end()) {
-            missing_transform = true;
+    // Fast path: the incoming id sequence is element-for-element the one the
+    // presented frame was built from, and those ids are known to be distinct.
+    // Then presented_.transforms.find(instances[i].instance_id) is guaranteed
+    // to hit, and — because no id repeats, so no entry was ever overwritten —
+    // the value it returns is exactly presented_.transforms.values[i]. Every
+    // hashed lookup below therefore has a known answer and can be skipped.
+    // Anything else (a changed instance set, or an id sequence whose repeats
+    // make the index ambiguous) falls through to the original keyed path.
+    bool aligned = has_presented_ && presented_.transforms.unique_known &&
+                   presented_.transforms.unique &&
+                   presented_.transforms.ids.size() == instances.size();
+    if (aligned) {
+        for (std::size_t index = 0; index < instances.size(); ++index) {
+            if (presented_.transforms.ids[index] !=
+                instances[index].instance_id) {
+                aligned = false;
+                break;
+            }
         }
-        next.transforms[instance.instance_id] = instance.object_to_world;
+    }
+
+    next.transforms.ids.resize(instances.size());
+    next.transforms.values.resize(instances.size());
+    for (std::size_t index = 0; index < instances.size(); ++index) {
+        next.transforms.ids[index] = instances[index].instance_id;
+        next.transforms.values[index] = instances[index].object_to_world;
+    }
+
+    bool missing_transform = false;
+    if (aligned) {
+        // Same id sequence as a set that was already proven repeat-free, so the
+        // next frame can take this path too without materialising the map.
+        next.transforms.unique_known = true;
+        next.transforms.unique = true;
+    } else {
+        // Keyed path: presented_ may have reached here through a run of fast
+        // frames, so its map is materialised on demand (identical contents —
+        // build_map() replays the same in-order assignments).
+        presented_.transforms.build_map();
+        for (const TemporalInstance& instance : instances) {
+            if (presented_.transforms.map.find(instance.instance_id) ==
+                presented_.transforms.map.end()) {
+                missing_transform = true;
+            }
+        }
+        next.transforms.build_map();
     }
     frame.reset = force_reset_ || !has_presented_ || missing_transform ||
                   invalidation.camera_cut || invalidation.world_reload ||
@@ -224,12 +276,21 @@ TemporalFrame TemporalState::begin(
                                   ? frame.current_jittered
                                   : presented_.jittered;
     frame.instances.reserve(instances.size());
-    for (const TemporalInstance& instance : instances) {
-        const auto previous = presented_.transforms.find(instance.instance_id);
-        const bool valid = !frame.reset && previous != presented_.transforms.end();
+    for (std::size_t index = 0; index < instances.size(); ++index) {
+        const TemporalInstance& instance = instances[index];
+        const matter::Mat4f* previous = nullptr;
+        if (aligned) {
+            previous = &presented_.transforms.values[index];
+        } else {
+            const auto found =
+                presented_.transforms.map.find(instance.instance_id);
+            if (found != presented_.transforms.map.end())
+                previous = &found->second;
+        }
+        const bool valid = !frame.reset && previous != nullptr;
         frame.instances.push_back(
             {instance.instance_id, instance.object_to_world,
-             valid ? previous->second : instance.object_to_world, valid});
+             valid ? *previous : instance.object_to_world, valid});
     }
 
     candidate_ = std::move(next);

@@ -360,6 +360,22 @@ BAKETRACE_CPP    = bake_trace_tests.cpp ../src/bake_trace.cpp
 TILESETGTEX_TARGET = tileset_gtex_tests
 TILESETGTEX_CPP    = tileset_gtex_tests.cpp ../src/tileset_gtex.cpp
 
+# Vulkan .gtex bake (V1) readback->save_gtex repack — pure CPU (header-only
+# inline helpers from ../src/render/tileset_bake_vk.h, no Vulkan link).
+TILESETVKREPACK_TARGET = tileset_bake_vk_repack_tests
+TILESETVKREPACK_CPP    = tileset_bake_vk_repack_tests.cpp
+
+# Vulkan .gtex bake (V2) AO seam-invariance mechanism + ORM.r fold — pure CPU
+# (ported splitmix32/u01/cosine_hemi/make_basis + header-only gtex_pack_orm_ao,
+# no Vulkan link).
+TILESETVKAO_TARGET = tileset_bake_vk_ao_tests
+TILESETVKAO_CPP    = tileset_bake_vk_ao_tests.cpp
+
+# Vulkan .gtex bake (V3) horizon pass -- pure CPU (header-only inline
+# gtex_bake_horizon_cpu from ../src/render/tileset_bake_vk.h), no Vulkan link.
+TILESETVKHORIZON_TARGET = tileset_bake_vk_horizon_tests
+TILESETVKHORIZON_CPP    = tileset_bake_vk_horizon_tests.cpp
+
 # Volumetrics Task 3 — CPU emitter gather (distance filter, 256 cap).
 EMITTERGATHER_TARGET = emitter_gather_tests
 EMITTERGATHER_CPP    = emitter_gather_tests.cpp ../src/render/vk_emitter_gather.cpp
@@ -721,11 +737,10 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../src/script/world_definition_loader.cpp \
               ../src/render/world_composer.cpp \
               ../src/render/raster_mesh.cpp \
-              ../src/render/tileset_provider.cpp ../src/render/tileset_gl_ctx.cpp \
+              ../src/render/tileset_provider.cpp \
               ../src/tileset_phase.cpp \
-              ../src/tileset_bake_primary.cpp ../src/tileset_bake_ao.cpp ../src/tileset_bake_horizon.cpp \
               ../src/tileset_settle.cpp ../src/tileset_gtex.cpp \
-              ../src/tileset_bake.cpp ../src/tileset_bake_gpu.cpp ../src/tileset_collider.cpp \
+              ../src/tileset_bake.cpp ../src/tileset_collider.cpp \
               ../src/tileset_part_collider.cpp ../src/tileset_torus_bvh.cpp \
               ../src/world_lights.cpp \
               ../src/world_tracer.cpp \
@@ -771,7 +786,7 @@ GPU_RENDER_CPP = \
     ../src/render/raster_mesh.cpp ../src/render/part_store.cpp \
     ../src/render/world_composer.cpp ../src/render/world_state.cpp \
     ../src/render/gpu_culler.cpp \
-    ../src/render/tileset_provider.cpp ../src/render/tileset_gl_ctx.cpp \
+    ../src/render/tileset_provider.cpp \
     ../src/provider/local_provider.cpp ../src/provider/resolvers.cpp \
     ../src/matter_engine.cpp \
     ../src/event/event_hub.cpp \
@@ -796,7 +811,7 @@ GPU_PIPELINE_CPP = \
     ../src/part_cluster.cpp \
     ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
     ../src/tileset_torus_bvh.cpp \
-    ../src/tileset_gtex.cpp ../src/tileset_bake_gpu.cpp \
+    ../src/tileset_gtex.cpp \
     ../src/sector_grid.cpp ../src/lod_select.cpp \
     ../src/world_lights.cpp \
     ../src/world_tracer.cpp \
@@ -804,7 +819,6 @@ GPU_PIPELINE_CPP = \
     ../src/tileset_phase.cpp \
     ../src/tileset_bake.cpp ../src/tileset_settle.cpp \
     ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
-    ../src/tileset_bake_primary.cpp ../src/tileset_bake_ao.cpp ../src/tileset_bake_horizon.cpp \
     ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
     $(TERRAIN_SRC) \
     $(PF_CPP)
@@ -859,6 +873,9 @@ def_CPP_SRCS := $(sort \
     $(ASYNCQ_CPP) \
     $(BAKETRACE_CPP) \
     $(TILESETGTEX_CPP) \
+    $(TILESETVKREPACK_CPP) \
+    $(TILESETVKAO_CPP) \
+    $(TILESETVKHORIZON_CPP) \
     $(EMITTERGATHER_CPP) \
     $(REFINECTL_CPP) \
     $(SECTORSTREAM_CPP) \
@@ -900,10 +917,7 @@ vl_CPP_SRCS  := $(sort $(VIEWER_LOGIC_CPP))
 retopo_CPP_SRCS := $(sort $(RETOPO_INT_CPP))
 gpu_CPP_SRCS := $(sort \
     gpu_cull_tests.cpp \
-    tileset_gpu_tests.cpp \
-    tileset_seam_tests.cpp \
     tileset_provider_tests.cpp \
-    tileset_load_tests.cpp \
     api_tests.cpp \
     async_bake_tests.cpp \
     demand_bake_tests.cpp \
@@ -997,6 +1011,9 @@ SHADER_SOURCE_OBJS = $(call obj_list,def,$(SHADER_SOURCE_CPP))
 ASYNCQ_OBJS = $(call obj_list,def,$(ASYNCQ_CPP))
 BAKETRACE_OBJS = $(call obj_list,def,$(BAKETRACE_CPP))
 TILESETGTEX_OBJS = $(call obj_list,def,$(TILESETGTEX_CPP))
+TILESETVKREPACK_OBJS = $(call obj_list,def,$(TILESETVKREPACK_CPP))
+TILESETVKAO_OBJS = $(call obj_list,def,$(TILESETVKAO_CPP))
+TILESETVKHORIZON_OBJS = $(call obj_list,def,$(TILESETVKHORIZON_CPP))
 EMITTERGATHER_OBJS = $(call obj_list,def,$(EMITTERGATHER_CPP))
 REFINECTL_OBJS = $(call obj_list,def,$(REFINECTL_CPP))
 SECTORSTREAM_OBJS = $(call obj_list,def,$(SECTORSTREAM_CPP))
@@ -1043,7 +1060,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-tilesetslicer run-baketrace run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-seam-tests tileset-provider-tests tileset-load-tests api-tests run-tilesetgpu run-tilesetseam run-tilesetprovider run-tilesetload run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-settlebench
+.PHONY: clean run-matrix run-tilesetslicer run-baketrace run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-provider-tests api-tests run-tilesetprovider run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-settlebench
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1437,6 +1454,27 @@ $(TILESETGTEX_TARGET): $(TILESETGTEX_OBJS)
 run-tilesetgtex: $(TILESETGTEX_TARGET)
 	./$(TILESETGTEX_TARGET)
 
+# Vulkan .gtex bake (V1) repack — headless, no engine/Vulkan link.
+$(TILESETVKREPACK_TARGET): $(TILESETVKREPACK_OBJS)
+	$(CC) $(TILESETVKREPACK_OBJS) -o $@ $(CFLAGS)
+
+run-tilesetvkrepack: $(TILESETVKREPACK_TARGET)
+	./$(TILESETVKREPACK_TARGET)
+
+# Vulkan .gtex bake (V2) AO seam-invariance — headless, no engine/Vulkan link.
+$(TILESETVKAO_TARGET): $(TILESETVKAO_OBJS)
+	$(CC) $(TILESETVKAO_OBJS) -o $@ $(CFLAGS)
+
+run-tilesetvkao: $(TILESETVKAO_TARGET)
+	./$(TILESETVKAO_TARGET)
+
+# Vulkan .gtex bake (V3) horizon pass -- headless, no engine/Vulkan link.
+$(TILESETVKHORIZON_TARGET): $(TILESETVKHORIZON_OBJS)
+	$(CC) $(TILESETVKHORIZON_OBJS) -o $@ $(CFLAGS)
+
+run-tilesetvkhorizon: $(TILESETVKHORIZON_TARGET)
+	./$(TILESETVKHORIZON_TARGET)
+
 # tileset_torus_bvh.
 $(TILESETTORUSBVH_TARGET): $(TILESETTORUSBVH_OBJS)
 	$(CC) $(TILESETTORUSBVH_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
@@ -1540,21 +1578,14 @@ gpu-tests: $(call obj_of,gpu,gpu_cull_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders
 	      -o gpu_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
 	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
 
-tileset-gpu-tests: $(call obj_of,gpu,tileset_gpu_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
-	$(CC) $(call obj_of,gpu,tileset_gpu_tests.cpp) $(GPU_SHARED_OBJS) \
-	      -o tileset_gpu_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
-	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
-
-run-tilesetgpu: tileset-gpu-tests
-	GALLIUM_DRIVER=d3d12 ./tileset_gpu_tests
-
-tileset-seam-tests: $(call obj_of,gpu,tileset_seam_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
-	$(CC) $(call obj_of,gpu,tileset_seam_tests.cpp) $(GPU_SHARED_OBJS) \
-	      -o tileset_seam_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
-	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
-
-run-tilesetseam: tileset-seam-tests
-	GALLIUM_DRIVER=d3d12 ./tileset_seam_tests
+# Retired in V5 (docs/vulkan-rt-gtex-bake.md §I.8 "GPU test targets"), together
+# with the GL ray-tracing .gtex bake they exercised:
+#   tileset_gpu_tests  (atlas well-formedness)
+#   tileset_seam_tests (boundary-strip byte-equality)
+#   tileset_load_tests (LocalProvider cold-cache bake through a GL harness)
+# The first two assertions live on in the Vulkan bake's CPU harnesses
+# (run-tilesetvkrepack / run-tilesetvkao / run-tilesetvkhorizon) and the
+# device-side gates under run-vk-scene-renderer.
 
 tileset-provider-tests: $(call obj_of,gpu,tileset_provider_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
 	$(CC) $(call obj_of,gpu,tileset_provider_tests.cpp) $(GPU_SHARED_OBJS) \
@@ -1563,14 +1594,6 @@ tileset-provider-tests: $(call obj_of,gpu,tileset_provider_tests.cpp) $(GPU_SHAR
 
 run-tilesetprovider: tileset-provider-tests
 	GALLIUM_DRIVER=d3d12 ./tileset_provider_tests
-
-tileset-load-tests: $(call obj_of,gpu,tileset_load_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
-	$(CC) $(call obj_of,gpu,tileset_load_tests.cpp) $(GPU_SHARED_OBJS) \
-	      -o tileset_load_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
-	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
-
-run-tilesetload: tileset-load-tests
-	GALLIUM_DRIVER=d3d12 ./tileset_load_tests
 
 api-tests: $(call obj_of,gpu,api_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
 	$(CC) $(call obj_of,gpu,api_tests.cpp) $(GPU_SHARED_OBJS) \
@@ -1700,8 +1723,8 @@ clean:
 	      $(DYNAMIC_SLOTS_TARGET) \
 	      $(SETTLEBENCH_TARGET) \
 	      tileset_physics_tests tileset_core_tests tileset_placement_tests \
-	      gpu_tests tileset_gpu_tests tileset_seam_tests tileset_provider_tests \
-	      tileset_load_tests api_tests async_bake_tests demand_bake_tests transient_tests release_part_tests \
+	      gpu_tests tileset_provider_tests \
+	      api_tests async_bake_tests demand_bake_tests transient_tests release_part_tests \
 	      refine_loop_tests \
 	      resolve_cache_tests \
 	      world_stream_tests

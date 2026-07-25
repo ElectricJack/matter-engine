@@ -909,6 +909,49 @@ void run_vulkan_instance_cache_tests() {
     CHECK(!cache.matches(roots), "transform change invalidates Vulkan cache");
     cache.invalidate();
     CHECK(cache.instances().empty(), "cache invalidation releases expansion");
+
+    // Per-source memo: a publish only adds a source, so every pre-existing
+    // source must still be served from its memo on the rebuild that follows.
+    std::vector<viewer::VkSceneInstance> a_expansion(3);
+    a_expansion[0].part_hash = 31;
+    CHECK(cache.find_source(a) == nullptr, "empty memo misses");
+    cache.store_source(a, a_expansion);
+    const std::vector<viewer::VkSceneInstance>* hit = cache.find_source(a);
+    CHECK(hit != nullptr && hit->size() == 3 && (*hit)[0].part_hash == 31,
+          "memoised source round-trips its expansion");
+    CHECK(cache.find_source(b) == nullptr, "a different source misses the memo");
+
+    viewer::ResolvedInstance moved = a;
+    moved.transform[3] = 5.0f;
+    CHECK(cache.find_source(moved) == nullptr,
+          "same stable id with a changed transform misses the memo");
+    viewer::ResolvedInstance repointed = a;
+    repointed.part_hash = 99;
+    CHECK(cache.find_source(repointed) == nullptr,
+          "same stable id naming a different part misses the memo");
+
+    // invalidate_expansion keeps memos (the publish path); invalidate drops
+    // them (every release path).
+    cache.store(roots, std::vector<viewer::VkSceneInstance>(2));
+    cache.invalidate_expansion();
+    CHECK(!cache.matches(roots) && cache.find_source(a) != nullptr,
+          "invalidate_expansion drops the flat set but keeps memos");
+    cache.store(roots, std::vector<viewer::VkSceneInstance>(2));
+    cache.invalidate_sources();
+    CHECK(cache.matches(roots) && cache.find_source(a) == nullptr,
+          "invalidate_sources drops memos but keeps the flat set");
+    cache.store_source(a, a_expansion);
+    cache.invalidate();
+    CHECK(cache.find_source(a) == nullptr,
+          "full invalidation drops memos too");
+
+    // Pruning bounds the memo to the live source set.
+    cache.store_source(a, a_expansion);
+    cache.store_source(b, a_expansion);
+    cache.prune_sources(std::vector<viewer::ResolvedInstance>{a});
+    CHECK(cache.find_source(a) != nullptr && cache.find_source(b) == nullptr,
+          "prune_sources keeps live sources and drops absent ones");
+    CHECK(cache.source_memo_size() == 1, "pruned memo holds only live sources");
 }
 
 bool gpu_matrix_equal(const viewer::GpuMat4& actual,

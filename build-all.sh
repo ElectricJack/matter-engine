@@ -194,7 +194,7 @@ if [ "$MODE" = "test" ]; then
     # raylib-linked BLAS path). Each run-* target builds then runs its binary, so
     # a non-zero status covers both build and test failures. run-graph-integration
     # exercises the full SP-3 install -> SP-2 ScriptHost bake path end-to-end.
-    for tgt in run-ecs run-physics run-partv2 run-script run-iso run-graph run-graph-integration run-trivar run-polytri run-shlib run-comp run-flatten run-dev run-example run-gallery run-treebake run-viewer-logic run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq run-liveprod run-modapply run-modbake; do
+    for tgt in run-ecs run-physics run-partv2 run-script run-iso run-graph run-graph-integration run-trivar run-polytri run-shlib run-comp run-flatten run-dev run-example run-gallery run-treebake run-viewer-logic run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesetvkrepack run-tilesetvkao run-tilesetvkhorizon run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq run-liveprod run-modapply run-modbake; do
         echo
         echo "--- MatterEngine3 ($tgt) ---"
         make -C MatterEngine3/tests "$tgt" || RESULT[MatterEngine3]="FAIL ($tgt)"
@@ -224,19 +224,14 @@ if [ "$MODE" = "test" ]; then
     fi
 
     if [ "$can_gpu" -eq 1 ]; then
-        for tgt in run-tilesetgpu run-tilesetseam; do
-            echo
-            echo "--- MatterEngine3/tests ($tgt) ---"
-            make -C MatterEngine3/tests "$tgt" || RESULT[MatterEngine3]="FAIL ($tgt)"
-        done
-
+        # run-tilesetgpu / run-tilesetseam / run-tilesetload retired in V5 with
+        # the GL ray-tracing .gtex bake (docs/vulkan-rt-gtex-bake.md §I.8). The
+        # bake is Vulkan-only now; its CPU-side gates run headless above
+        # (run-tilesetvkrepack / run-tilesetvkao / run-tilesetvkhorizon) and the
+        # device-side gate is run-vk-scene-renderer.
         echo
         echo "--- MatterEngine3/tests (tileset-provider-tests) ---"
         make -C MatterEngine3/tests run-tilesetprovider || RESULT[MatterEngine3]="FAIL (run-tilesetprovider)"
-
-        echo
-        echo "--- MatterEngine3/tests (tileset-load-tests) ---"
-        make -C MatterEngine3/tests run-tilesetload || RESULT[MatterEngine3]="FAIL (run-tilesetload)"
 
         echo
         echo "--- MatterEngine3/tests (api-tests) ---"

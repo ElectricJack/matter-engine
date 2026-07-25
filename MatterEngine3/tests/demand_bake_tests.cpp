@@ -201,7 +201,6 @@ static std::unique_ptr<viewer::LocalProvider> make_provider(
     const std::string& world_name = "Hier") {
     auto cfg = viewer::LocalProviderConfig::for_project(
         sandbox.string(), world_name, "../shared-lib");
-    cfg.gl_available = false;
     return std::make_unique<viewer::LocalProvider>(std::move(cfg));
 }
 
@@ -303,7 +302,6 @@ static bool test_ensure_part_baked_subtree(const fs::path& sandbox) {
     int on_part_count = 0;
     auto cfg = viewer::LocalProviderConfig::for_project(
         sandbox.string(), "Hier", "../shared-lib");
-    cfg.gl_available = false;
     cfg.on_part = [&](const char* /*module*/, int /*done*/, int /*total*/) {
         ++on_part_count;
     };
@@ -394,7 +392,6 @@ static bool test_hash_parity(const fs::path& sandbox) {
     // Provider A — RootsOnly
     auto cfgA = viewer::LocalProviderConfig::for_project(
         sandbox_a.string(), "Hier", "../shared-lib");
-    cfgA.gl_available = false;
     auto provA = std::make_unique<viewer::LocalProvider>(std::move(cfgA));
 
     std::string errA;
@@ -405,7 +402,6 @@ static bool test_hash_parity(const fs::path& sandbox) {
     // Provider B — All (default)
     auto cfgB = viewer::LocalProviderConfig::for_project(
         sandbox_b.string(), "Hier", "../shared-lib");
-    cfgB.gl_available = false;
     auto provB = std::make_unique<viewer::LocalProvider>(std::move(cfgB));
 
     std::string errB;
@@ -658,7 +654,6 @@ static bool test_demand_bake_e2e(const fs::path& base_dir) {
     // Build a LocalProvider on the existing warm cache to read graph snapshot hashes.
     auto cfg2 = viewer::LocalProviderConfig::for_project(
         sandbox_s, "E2E", "../shared-lib");
-    cfg2.gl_available = false;
     auto prov = std::make_unique<viewer::LocalProvider>(std::move(cfg2));
     std::string ierr;
     // Use RootsOnly so we get the bake_plan without re-baking anything.
@@ -829,7 +824,6 @@ static bool test_parametric_placements_distinct(const fs::path& base_dir) {
 
     auto cfg = viewer::LocalProviderConfig::for_project(
         sandbox.string(), "Param", "../shared-lib");
-    cfg.gl_available = false;
     auto prov = std::make_unique<viewer::LocalProvider>(std::move(cfg));
 
     std::string err;
@@ -1014,7 +1008,6 @@ static bool test_placechild_param_mismatch_errors(const fs::path& base_dir) {
 
     auto cfg = viewer::LocalProviderConfig::for_project(
         sandbox.string(), "Mismatch", "../shared-lib");
-    cfg.gl_available = false;
     auto prov = std::make_unique<viewer::LocalProvider>(std::move(cfg));
 
     std::string err;

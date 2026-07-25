@@ -1462,6 +1462,23 @@ int main() {
         // This starts before event polling and begin_frame(), whose fence wait and
         // swapchain acquire are part of the user-visible frame cadence.
         const auto perf_frame_start = std::chrono::steady_clock::now();
+        // Main-loop phase attribution (ViewerStats::loop_*_ms). Rolling split
+        // timer: each phase_split() returns the ms since the previous split, so
+        // the phases exactly partition perf_frame_start..end_frame. Added
+        // because resolve/build/draw accounted for under a third of the frame
+        // and the remainder had no attribution at all.
+        struct LoopPhase {
+            double poll = 0, acquire = 0, ui = 0, tick = 0;
+            double pump = 0, lab = 0, render = 0, present = 0;
+        } phase{};
+        auto phase_mark = perf_frame_start;
+        auto phase_split = [&phase_mark]() -> double {
+            const auto split_now = std::chrono::steady_clock::now();
+            const double ms = std::chrono::duration<double, std::milli>(
+                                  split_now - phase_mark).count();
+            phase_mark = split_now;
+            return ms;
+        };
         glfwPollEvents();
         const auto now = std::chrono::steady_clock::now();
         const float dt = std::chrono::duration<float>(now - previous_time).count();
@@ -1578,6 +1595,7 @@ int main() {
             resize_exercised = true;
         }
 
+        phase.poll = phase_split();   // events + input, everything up to acquire
         matter::VulkanFrame frame{};
         if (!vulkan->begin_frame(frame, error)) {
             if (error.find("zero-sized") != std::string::npos) {
@@ -1588,6 +1606,7 @@ int main() {
             break;
         }
 
+        phase.acquire = phase_split();   // fence wait + swapchain acquire
         matter_viewer::CurrentFrameInputOrder camera_input_order{};
         const bool ui_frame_ready = ui.begin_frame(frame, error);
         matter::VulkanFrame render_frame = frame;
@@ -1780,6 +1799,16 @@ int main() {
                 .is_valid();
         });
 
+        // Streaming (world-kind) sessions render nothing until an ECS entity
+        // carries matter::streaming::SectorStreaming — that component is what
+        // makes the coordinator claim an owner and build a SectorStreamer.
+        // Nothing else in the viewer creates one since the sector panel was
+        // retired, so auto-create + attach the anchor as soon as the session is
+        // Ready. Runs every frame on purpose: it is idempotent against live ECS
+        // state, so a reload or world switch (which resets bake_ready and
+        // installs a fresh Flecs world) transparently re-creates the anchor. A
+        // no-op for closed-world sessions.
+        if (bake_ready) ui.ensure_streaming_anchor(*session);
         ui.update_sector_streaming(*session, frame_camera);
         matter::TickDesc tick{};
         tick.frame_delta_seconds = dt;
@@ -1790,7 +1819,9 @@ int main() {
         } else {
             tick.max_fixed_steps = 0;
         }
+        phase.ui = phase_split();   // ImGui panel building
         session->tick(tick);
+        phase.tick = phase_split();   // ECS systems, physics, transform propagation
         // E5c (event-system.md S I.14): flush observable models AFTER tick, so
         // this frame's tick -> SceneChangeTracker::flush -> scene-adapter apply ->
         // Property::set have all run and their coalesced deliveries land now
@@ -1798,6 +1829,9 @@ int main() {
         property_scheduler.flush_dirty();
         camera_input_order.tick_scene();
         session->pump_gpu_jobs(4.0f);
+        // Sector publish lands here. Channel::pump checks its budget AFTER
+        // running a job, so one long publish can blow past the 4ms argument.
+        phase.pump = phase_split();
         // Part Workbench (W2): the isolation session ticks/pumps every frame
         // regardless of tab focus, so switching back to it is instant (no
         // reload) and a bake keeps progressing while you're on another tab.
@@ -1873,12 +1907,17 @@ int main() {
         // to -1 / hide_child_instances to false whenever the Inspector hasn't
         // been interacted with, so this is a no-op until the user acts.
         if (show_isolation) bake_lab.workbench().apply_lod_inspector_options(options);
+        // Bake Lab/Workbench per-frame work plus the session event drain.
+        phase.lab = phase_split();
         if (!render_session->render(render_camera, render_frame, options, error)) {
             std::fprintf(stderr, "FATAL: render: %s\n", error.c_str());
             fatal_error = true;
         } else if (!show_isolation) {
             camera_input_order.render_scene();
         }
+        // Contains the engine's own resolve/build/draw spans — the line above
+        // it in the panel breaks this down further; don't double-count.
+        phase.render = phase_split();
         if (ui_frame_ready && !fatal_error) {
             // Required every frame regardless of which session rendered —
             // this transitions the offscreen viewport render target so
@@ -2014,11 +2053,34 @@ int main() {
             frame.serial, frame_presented && !fatal_error);
         // end_frame() records the queue submit and present boundary. The
         // smoothed cadence below also feeds the HUD frame time on the next frame.
+        phase.present = phase_split();
         const double perf_frame_cadence_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - perf_frame_start).count();
         hud_frame_ms = hud_frame_ms <= 0.0
                            ? perf_frame_cadence_ms
                            : hud_frame_ms * 0.9 + perf_frame_cadence_ms * 0.1;
+        // Phase attribution -> HUD. Same EMA weight as hud_frame_ms so the
+        // phase sum stays comparable to the frame time it is decomposing.
+        {
+            auto ema = [](float prev, double sample) -> float {
+                return prev <= 0.0f ? (float)sample
+                                    : prev * 0.9f + (float)sample * 0.1f;
+            };
+            stats.loop_poll_ms    = ema(stats.loop_poll_ms,    phase.poll);
+            stats.loop_acquire_ms = ema(stats.loop_acquire_ms, phase.acquire);
+            stats.loop_ui_ms      = ema(stats.loop_ui_ms,      phase.ui);
+            stats.loop_tick_ms    = ema(stats.loop_tick_ms,    phase.tick);
+            stats.loop_pump_ms    = ema(stats.loop_pump_ms,    phase.pump);
+            stats.loop_lab_ms     = ema(stats.loop_lab_ms,     phase.lab);
+            stats.loop_render_ms  = ema(stats.loop_render_ms,  phase.render);
+            stats.loop_present_ms = ema(stats.loop_present_ms, phase.present);
+            // Peak-hold with slow decay: a spiky publish or fence stall stays
+            // readable for a second or two instead of being averaged away.
+            stats.loop_peak_pump_ms =
+                std::max((float)phase.pump, stats.loop_peak_pump_ms * 0.98f);
+            stats.loop_peak_acquire_ms =
+                std::max((float)phase.acquire, stats.loop_peak_acquire_ms * 0.98f);
+        }
         if (!frame_completed) {
             std::fprintf(stderr, "FATAL: end_frame: %s\n", error.c_str());
             fatal_error = true;

@@ -157,6 +157,7 @@ WIN_ME3_CPP = $(ME3_DIR)/src/part_graph.cpp \
               $(ME3_DIR)/src/render/vk_context.cpp $(ME3_DIR)/src/render/vk_resources.cpp \
               $(ME3_DIR)/src/render/vk_pipeline.cpp $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
               $(ME3_DIR)/src/render/tileset_slicer.cpp \
+              $(ME3_DIR)/src/render/tileset_bake_vk.cpp \
               $(ME3_DIR)/src/render/vk_volumetrics.cpp $(ME3_DIR)/src/render/vk_emitter_gather.cpp \
               $(ME3_DIR)/src/render/vk_instance_cache.cpp \
               $(ME3_DIR)/src/render/vulkan_only_compat.cpp \
@@ -442,7 +443,9 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/rt_surface_test.rgen.spv \
          build/shaders_vk/vol_density.comp.spv \
          build/shaders_vk/vol_scatter.comp.spv \
-         build/shaders_vk/vol_integrate.comp.spv
+         build/shaders_vk/vol_integrate.comp.spv \
+         build/shaders_vk/tileset_bake_primary.comp.spv \
+         build/shaders_vk/tileset_bake_ao.comp.spv
 VK_EMBEDDED_HEADER = $(ME3_DIR)/shaders_gen/embedded_spirv.h
 
 build/shaders_vk/%.spv: $(ME3_DIR)/shaders_vk/%

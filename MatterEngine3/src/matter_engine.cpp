@@ -298,6 +298,11 @@ struct WorldSession::Impl {
     viewer::TemporalState vk_temporal;
     uint64_t vk_temporal_serial = 0;
     uint64_t vk_temporal_token = 0;
+    // Projection of vk_instance_cache.instances() onto the pair of fields
+    // TemporalState::begin() consumes. Rebuilt only when the expansion behind
+    // it is replaced; see the note at its use site in WorldSession::render.
+    std::vector<viewer::TemporalInstance> vk_temporal_instances;
+    uint64_t vk_temporal_instances_expansion = UINT64_MAX;
     std::vector<MaterialGpuRecord> vk_material_records;
     uint64_t vk_material_shading_revision = 0;
     uint64_t vk_material_geometry_revision = 0;
@@ -1063,11 +1068,11 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         return gpu_jobs.run_blocking(std::move(j), err);
     };
 #ifdef MATTER_VULKAN_VIEWER
-    // Phase 1 tileset Vulkan port (Task 6): mirrors the GL path's
-    // viewer::tileset_provider::load_slot call (run_tileset_deferred, right
-    // after bake_tileset_gpu) into the Vulkan renderer. Null vk_scene (no
-    // Vulkan render device / GL-only viewer) means the world stays untextured
-    // on the Vulkan side, matching the fail-closed rule.
+    // Phase 1 tileset Vulkan port (Task 6): uploads the .gtex atlas into the
+    // Vulkan renderer from run_tileset_deferred's shared slot-load step (after
+    // a fresh bake, or on a cache hit). Null vk_scene (no Vulkan render device
+    // / GL-only viewer) means the world stays untextured on the Vulkan side,
+    // matching the fail-closed rule.
     cfg.vk_tileset_load = [this](int slot, const std::string& gtex_path,
                                  std::string& err) -> bool {
         if (!vk_scene) {
@@ -1076,18 +1081,45 @@ void WorldSession::Impl::execute_bake(matter_async::Command& cmd, bool is_reload
         }
         return vk_scene->load_tileset_slot(slot, gtex_path, err);
     };
-#endif
-    // Signal whether GLAD function pointers are loaded (i.e., a window exists)
-    // so the tileset phase can choose between headless settle-only and full GPU
-    // atlas bake. GLAD pointers are process-global and written once at window
-    // init before any bake, so reading them from the worker thread is safe.
-    // Using gl_loaded() rather than engine->gl46 so that RT/viewer contexts
-    // (allow_gl_lt_46=true) still attempt the atlas bake and get a proper
-    // success-or-clear-error from gl46_available(), instead of a silent skip.
-#ifdef MATTER_VULKAN_ONLY
-    cfg.gl_available = false;
-#else
-    cfg.gl_available = viewer::gl_loaded();
+    // Vulkan hardware-RT .gtex bake (vulkan-rt-gtex-bake.md §I.7, V4): binds
+    // run_tileset_deferred's bake-capable arm to the renderer. Runs on the
+    // app/Vulkan thread — the provider marshals it through cfg.gpu_run above.
+    // Leaving this null (no MATTER_VULKAN_VIEWER, i.e. headless kernel builds
+    // and the GL-only viewer) is what selects the load-only arm.
+    //
+    // Capability gate (spec §I.9): bind ONLY when the device can actually
+    // trace. A GPU without ray query is a capability gap, not an error — with
+    // the callback null it takes the load-only arm and behaves exactly like
+    // the old headless branch (serve a cached atlas, else untextured ground).
+    // Binding unconditionally would turn "no RT hardware" into a fatal
+    // BakeError and make tileset worlds unloadable on such a machine. Once
+    // bound, a bake failure IS fatal — a capable device that fails is a real
+    // error, not something to swallow. Note this is the DEVICE capability, not
+    // the RT-rendering toggle in render options; turning off ray-traced
+    // rendering must not disable baking.
+    if (engine->render_device && engine->render_device->ray_tracing_available()) {
+        cfg.vk_tileset_bake = [this](const tileset::SettledTorus& settled,
+                                     uint64_t script_source_hash,
+                                     const std::string& gtex_path,
+                                     const tileset::BakeInputs& inputs,
+                                     bool dump_png, std::string& err) -> bool {
+            if (!vk_scene) {
+                err = "vk_tileset_bake: Vulkan renderer not active";
+                return false;
+            }
+            return vk_scene->bake_tileset(settled, script_source_hash, gtex_path,
+                                          inputs, /*force_rebake=*/false,
+                                          dump_png, err);
+        };
+    } else {
+        fprintf(stderr,
+                "[matter_engine] tileset .gtex bake disabled: %s "
+                "(cached atlases still load; uncached ground stays untextured)\n",
+                engine->render_device
+                    ? engine->render_device->ray_tracing_unavailable_reason().c_str()
+                    : "no Vulkan render device");
+        fflush(stderr);
+    }
 #endif
 
     // Phase C Task 7: snapshot the root-params override (set by regenerate()).
@@ -3249,7 +3281,11 @@ void WorldSession::Impl::execute_sector_stream_step() {
                                     : vulkan_error);
                         }
                     }
-                    vk_instance_cache.invalidate();
+                    // A publish only ADDS a sector; nothing is released or
+                    // unregistered here, so every existing source's expansion
+                    // stays valid. Drop only the flat set so the next frame
+                    // rebuilds it -- from memos, plus the one new sector.
+                    vk_instance_cache.invalidate_expansion();
                     vk_temporal.invalidate();
 #endif
 #ifndef MATTER_VULKAN_ONLY
@@ -3460,11 +3496,25 @@ void WorldSession::Impl::execute_rebake_cone(matter_async::Command& cmd) {
         }
         return vk_scene->load_tileset_slot(slot, gtex_path, err);
     };
-#endif
-#ifdef MATTER_VULKAN_ONLY
-    cfg.gl_available = false;
-#else
-    cfg.gl_available = viewer::gl_loaded();  // same semantics as execute_bake: loaded ≠ 4.6-confirmed
+    // V4: same vk_tileset_bake wiring as execute_bake above — including the
+    // device-capability gate, so a non-RT GPU takes the load-only arm here too
+    // rather than failing the cone rebuild. See the comment at the execute_bake
+    // site for why the gate is at bind time.
+    if (engine->render_device && engine->render_device->ray_tracing_available()) {
+        cfg.vk_tileset_bake = [this](const tileset::SettledTorus& settled,
+                                     uint64_t script_source_hash,
+                                     const std::string& gtex_path,
+                                     const tileset::BakeInputs& inputs,
+                                     bool dump_png, std::string& err) -> bool {
+            if (!vk_scene) {
+                err = "vk_tileset_bake: Vulkan renderer not active";
+                return false;
+            }
+            return vk_scene->bake_tileset(settled, script_source_hash, gtex_path,
+                                          inputs, /*force_rebake=*/false,
+                                          dump_png, err);
+        };
+    }
 #endif
     // Phase C Task 7: cfg.root_params_json is intentionally NOT reset here.
     // The cone path operates within the current world's seed context: whatever
@@ -4071,6 +4121,30 @@ bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                         bool& drawable, std::string& error, int force_lod) {
     drawable = false;
     if (loaded.lod_mesh_data.empty()) return true;
+    // Perf: everything below builds a complete VkScenePart (per-vertex material
+    // lookups, cluster packing) purely so the LAST line can hand it to
+    // ensure_part() — which early-outs on slot_of_.find(part_hash) and throws
+    // the whole conversion away. This loop runs once per *expanded instance*
+    // (tens of thousands per frame) over a few dozen distinct part hashes, so
+    // ask the renderer first.
+    //
+    // Behaviour is identical to falling through to ensure_part():
+    //   * hit  -> ensure_part() would clear `error`, return the existing slot
+    //             (always >= 0), so drawable = true and the tail returns true.
+    //   * miss -> we build and register exactly as before.
+    //   * poisoned renderer -> registered_part_slot() reports -1, so we take
+    //             the old path and ensure_part() still fails closed.
+    // force_lod needs no special case: the only caller that passes a non-default
+    // force_lod (WorldSession::render) calls release_part() on the very same
+    // hash immediately before this when the override *changed*, which erases it
+    // from slot_of_ and forces the rebuild. When the override is unchanged the
+    // registered part already carries the forced thresholds — which is exactly
+    // what ensure_part()'s early-out returned before.
+    if (renderer.registered_part_slot(part_hash) >= 0) {
+        error.clear();
+        drawable = true;
+        return true;
+    }
     viewer::VkScenePart part;
     part.part_hash = part_hash;
     const int material_count = MaterialRegistryCount();
@@ -4368,17 +4442,50 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     const bool instances_dirty = force_lod_changed || hide_children_changed ||
                                  !impl_->vk_instance_cache.matches(resolved);
     if (instances_dirty) {
+        // Perf: a streaming world publishes sectors continuously, and each
+        // publish changes the resolved set, so this rebuild runs almost every
+        // frame. Re-expanding every source each time is what made it expensive
+        // (tens of thousands of part-store and renderer lookups for a set that
+        // gained one sector). A source's expansion depends only on its own
+        // identity and on the content-addressed part it names, so it is
+        // memoised per source and only genuinely new sources are expanded.
+        //
+        // Both debug overrides retire every memo: hide_child_instances changes
+        // which nodes an expansion emits, and force_lod makes the loop below
+        // release and re-register parts as it walks them. Clearing here (rather
+        // than merely skipping lookups) is what makes that safe -- a memo that
+        // survived a hide_child_instances flip would keep serving the previous
+        // filter's node set on the next rebuild. The expansions produced during
+        // this rebuild are correct for the new configuration and are memoised
+        // normally.
+        if (force_lod_changed || hide_children_changed)
+            impl_->vk_instance_cache.invalidate_sources();
         std::vector<viewer::VkSceneInstance> rebuilt;
-        rebuilt.reserve(resolved.size() * 2);
+        rebuilt.reserve(impl_->vk_instance_cache.instances().size() +
+                        resolved.size());
+        std::vector<viewer::VkSceneInstance> expanded;
         for (const auto& source : resolved) {
             if (source.stable_id == 0) {
                 err = "resolved Vulkan instance is missing stable identity";
                 return false;
             }
+            const std::vector<viewer::VkSceneInstance>* memo =
+                impl_->vk_instance_cache.find_source(source);
+            if (memo) {
+                rebuilt.insert(rebuilt.end(), memo->begin(), memo->end());
+                continue;
+            }
             const viewer::LoadedPart* root =
                 impl_->store->get_or_load(source.part_hash);
             if (!root) continue;
             if (force_lod_changed) impl_->vk_scene->release_part(source.part_hash);
+            // A load returning null is a transient condition -- the part may
+            // become available on a later frame. Such an expansion is left
+            // un-memoised so it is retried, exactly as before this cache
+            // existed. A part that loads but is not drawable is a stable
+            // property of its content and does not block memoisation.
+            bool complete = true;
+            expanded.clear();
             if (!root->expansion.empty()) {
                 for (size_t node_index = 0;
                      node_index < root->expansion.size(); ++node_index) {
@@ -4388,7 +4495,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                     if (opts.hide_child_instances && node.depth > 0) continue;
                     const viewer::LoadedPart* loaded =
                         impl_->store->get_or_load(node.part_hash);
-                    if (!loaded) continue;
+                    if (!loaded) { complete = false; continue; }
                     if (force_lod_changed) impl_->vk_scene->release_part(node.part_hash);
                     bool drawable = false;
                     if (!ensure_vulkan_part(*impl_->vk_scene, node.part_hash,
@@ -4401,7 +4508,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                                 sizeof(root_transform.m));
                     std::memcpy(relative.m, node.rel_transform,
                                 sizeof(relative.m));
-                    rebuilt.push_back(
+                    expanded.push_back(
                         {node.part_hash,
                          viewer::mat4_mul(root_transform, relative),
                          viewer::temporal_instance_id(
@@ -4413,17 +4520,22 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
                 if (!ensure_vulkan_part(*impl_->vk_scene, source.part_hash,
                                         *root, drawable, err,
                                         opts.force_lod)) return false;
-                if (!drawable) continue;
-                viewer::VkSceneInstance instance;
-                instance.part_hash = source.part_hash;
-                instance.instance_id = viewer::temporal_instance_id(
-                    source.stable_id, source.part_hash, 0);
-                std::memcpy(instance.object_to_world.m, source.transform,
-                            sizeof(instance.object_to_world.m));
-                rebuilt.push_back(instance);
+                if (drawable) {
+                    viewer::VkSceneInstance instance;
+                    instance.part_hash = source.part_hash;
+                    instance.instance_id = viewer::temporal_instance_id(
+                        source.stable_id, source.part_hash, 0);
+                    std::memcpy(instance.object_to_world.m, source.transform,
+                                sizeof(instance.object_to_world.m));
+                    expanded.push_back(instance);
+                }
             }
+            rebuilt.insert(rebuilt.end(), expanded.begin(), expanded.end());
+            if (complete)
+                impl_->vk_instance_cache.store_source(source, expanded);
         }
         impl_->vk_instance_cache.store(resolved, std::move(rebuilt));
+        impl_->vk_instance_cache.prune_sources(resolved);
     }
     const auto& instances = impl_->vk_instance_cache.instances();
     if (instances.empty()) {
@@ -4444,12 +4556,29 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
     }
 
     const auto build_start = std::chrono::steady_clock::now();
-    std::vector<viewer::TemporalInstance> temporal_instances;
-    temporal_instances.reserve(instances.size());
-    for (size_t index = 0; index < instances.size(); ++index) {
-        temporal_instances.push_back(
-            {instances[index].instance_id, instances[index].object_to_world});
+    // Perf: this is a pure projection of `instances`, so it only has to be
+    // rebuilt when `instances` itself is replaced. VulkanInstanceCache::store()
+    // is the only writer of the vector `instances` refers to and bumps
+    // expansion_count() every time it runs; invalidate()/invalidate_expansion()
+    // clear the cache but also clear valid_, so the very next render misses
+    // matches(), rebuilds, and stores — bumping the counter before anyone reads
+    // the vector again. An unchanged counter therefore means an unchanged span.
+    // (The reverse is not true — a rebuild that reproduces the same set still
+    // bumps — which only costs a redundant rebuild here.)
+    const uint64_t expansion = impl_->vk_instance_cache.expansion_count();
+    if (impl_->vk_temporal_instances_expansion != expansion ||
+        impl_->vk_temporal_instances.size() != instances.size()) {
+        impl_->vk_temporal_instances.clear();
+        impl_->vk_temporal_instances.reserve(instances.size());
+        for (size_t index = 0; index < instances.size(); ++index) {
+            impl_->vk_temporal_instances.push_back(
+                {instances[index].instance_id,
+                 instances[index].object_to_world});
+        }
+        impl_->vk_temporal_instances_expansion = expansion;
     }
+    const std::vector<viewer::TemporalInstance>& temporal_instances =
+        impl_->vk_temporal_instances;
     const viewer::TemporalFrame temporal = begin_temporal(temporal_instances);
     impl_->vk_scene->set_temporal_frame(temporal);
     if (!impl_->vk_scene->update_instances(instances, err)) {

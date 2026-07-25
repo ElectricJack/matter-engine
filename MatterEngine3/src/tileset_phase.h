@@ -6,7 +6,6 @@
 // Intended as the SP-3 bridge from world definition to the GPU render phase.
 
 #include "tileset_bake.h"       // SettledTorus, BakeInputs
-#include "tileset_bake_gpu.h"   // TilesetPhaseOpts
 #include <string>
 #include <vector>
 

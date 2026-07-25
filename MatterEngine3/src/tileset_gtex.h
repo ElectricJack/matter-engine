@@ -36,7 +36,13 @@ namespace tileset {
 
 inline constexpr uint32_t kGTexMagic       = 0x58455447u; // 'GTEX' little-endian
 inline constexpr uint32_t kGTexVersion     = 2u;
-inline constexpr uint32_t kEngineBakeVersion = 2u;
+// 2 -> 3 (vulkan-rt-gtex-bake.md §I.6, V4): the .gtex bake moved from the GL
+// software-BVH compute path to Vulkan hardware ray tracing. The output is not
+// bit-identical, so the two bakes must not share a cache identity — every
+// GL-baked atlas now fails gtex_cache_hit honestly and is rebaked. No
+// dual-accept, no migration shim. Also folded into the resolve-cache key
+// (resolve_cache.cpp:298) and the settle-cache key (tileset_bake.cpp:665).
+inline constexpr uint32_t kEngineBakeVersion = 3u;
 inline constexpr uint32_t kBox3dVersion    = 1u;
 
 enum ChannelId : uint32_t {

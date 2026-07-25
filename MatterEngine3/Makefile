@@ -104,13 +104,12 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/tileset_phase.cpp \
           src/tileset_metrics.cpp \
           src/tileset_gtex.cpp src/tileset_torus_bvh.cpp \
-          src/tileset_bake_primary.cpp src/tileset_bake_ao.cpp src/tileset_bake_horizon.cpp src/tileset_bake_gpu.cpp \
           src/shader_source.cpp \
           src/render/renderer.cpp src/render/raster_composer.cpp src/render/raster_mesh.cpp \
           src/render/matrix_math.cpp src/render/frame_matrices.cpp src/render/vk_temporal.cpp src/render/vk_gi_math.cpp src/render/vk_lighting_controls.cpp \
           src/render/part_store.cpp src/render/world_composer.cpp src/render/world_state.cpp \
           src/render/gpu_culler.cpp \
-          src/render/tileset_provider.cpp src/render/tileset_gl_ctx.cpp \
+          src/render/tileset_provider.cpp \
           src/render/tileset_slicer.cpp \
           src/provider/local_provider.cpp src/provider/resolvers.cpp \
           src/ecs/ecs_runtime.cpp src/ecs/physics_context.cpp src/ecs/physics_shapes.cpp src/ecs/physics_systems.cpp src/ecs/streaming_systems.cpp src/ecs/transform_system.cpp \
@@ -172,11 +171,10 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           tileset_settle.o tileset_placement.o tileset_part_collider.o tileset_bake.o \
           tileset_phase.o \
           tileset_metrics.o \
-          tileset_gtex.o tileset_torus_bvh.o tileset_bake_primary.o \
-          tileset_bake_ao.o tileset_bake_horizon.o tileset_bake_gpu.o shader_source.o \
+          tileset_gtex.o tileset_torus_bvh.o shader_source.o \
           renderer.o raster_composer.o raster_mesh.o matrix_math.o frame_matrices.o vk_temporal.o vk_gi_math.o vk_lighting_controls.o \
           part_store.o world_composer.o world_state.o \
-          gpu_culler.o tileset_provider.o tileset_gl_ctx.o \
+          gpu_culler.o tileset_provider.o \
           tileset_slicer.o \
           local_provider.o resolvers.o \
           ecs_runtime.o physics_context.o physics_shapes.o physics_systems.o streaming_systems.o transform_system.o \
@@ -209,8 +207,7 @@ SHADER_LOGICAL := shaders/raster.vs shaders/raster.fs shaders/tileset_sampling.g
     shaders/raytrace_tlas_blas_processed.fs \
     shaders/materials.glsl shaders/bvh_tlas_common.glsl shaders/lighting.glsl \
     shaders_gpu/cull.comp shaders_gpu/hiz_downsample.comp \
-    shaders_gpu/raster_gpu_driven.vs shaders_gpu/tileset_bake_primary.comp \
-    shaders_gpu/tileset_bake_ao.comp shaders_gpu/tileset_bake_horizon.comp
+    shaders_gpu/raster_gpu_driven.vs
 # SHADER_FILES resolves logical paths into real filesystem paths under MatterEngine3/:
 # shaders/ is a symlink -> ../MatterSurfaceLib/shaders; shaders_gpu/ is a real dir.
 SHADER_FILES := $(SHADER_LOGICAL)
@@ -246,7 +243,9 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/rt_surface_test.rgen.spv \
          build/shaders_vk/vol_density.comp.spv \
          build/shaders_vk/vol_scatter.comp.spv \
-         build/shaders_vk/vol_integrate.comp.spv
+         build/shaders_vk/vol_integrate.comp.spv \
+         build/shaders_vk/tileset_bake_primary.comp.spv \
+         build/shaders_vk/tileset_bake_ao.comp.spv
 
 build/shaders_vk/%.spv: shaders_vk/%
 	@mkdir -p $(dir $@)

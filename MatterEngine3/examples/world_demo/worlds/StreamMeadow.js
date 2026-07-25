@@ -41,9 +41,14 @@ class StreamMeadow extends World {
   biomes() {
     // Whole surface is Foothills, so its entry drives all scatter. Rich in
     // grass/pebbles/rocks like a meadow floor.
+    // Trees are commented out for now — they dominate sector bake cost and we
+    // are evaluating terrain + the packed ground atlas first. WorldSector reads
+    // the count as `(table[biome] || {}).trees | 0` and `continue`s on 0, so an
+    // absent key is a clean skip, not undefined behavior. Restore by
+    // uncommenting.
     return {
-      foothills: { grass: 1400, pebbles: 90, rocks: 16, trees: 5 },
-      meadow:    { grass: 1400, pebbles: 90, rocks: 16, trees: 5 },
+      foothills: { grass: 1400, pebbles: 90, rocks: 16 /*, trees: 5 */ },
+      meadow:    { grass: 1400, pebbles: 90, rocks: 16 /*, trees: 5 */ },
       mountains: { rocks: 4 },
       ocean:     {},
     };
