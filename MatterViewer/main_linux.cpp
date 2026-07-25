@@ -97,7 +97,7 @@ int main() {
 
     viewer::Ui ui; ui.setup();
 
-    auto worlds = viewer::scan_worlds("../MatterEngine3/examples");
+    auto worlds = viewer::scan_worlds("../projects");
     printf("worlds available (%d):\n", (int)worlds.size());
     for (size_t i = 0; i < worlds.size(); ++i) {
         printf("  [%zu] %s  (%s)\n",
@@ -105,7 +105,7 @@ int main() {
                worlds[i].project_dir.c_str());
     }
     if (worlds.empty()) {
-        printf("FATAL: no worlds found under ../MatterEngine3/examples\n");
+        printf("FATAL: no worlds found under ../projects\n");
         return 1;
     }
 

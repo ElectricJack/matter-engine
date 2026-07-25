@@ -1,6 +1,6 @@
 // Full public-API integration test: hidden GL window (app-owned), EngineContext,
 // bake, event sequence, offscreen render, raycast. Run with GALLIUM_DRIVER=d3d12.
-// Fixture: examples/primitive_demo / Primitives (smallest world, single Gallery root).
+// Fixture: projects/primitive_demo / Primitives (smallest world, single Gallery root).
 #include "matter/engine_context.h"
 #include "bake_trace.h"
 #include "bake_trace_names.h"
@@ -21,7 +21,7 @@ int main() {
     if (!engine) { printf("FAIL create: %s\n", err.c_str()); return 1; }
 
     matter::WorldDesc wd;
-    wd.project_dir           = "../MatterEngine3/examples/primitive_demo";
+    wd.project_dir           = "../projects/primitive_demo";
     wd.world_name            = "Primitives";
     wd.engine_shared_lib_dir = "../MatterEngine3/shared-lib";
     auto session = engine->open_world(wd, err);

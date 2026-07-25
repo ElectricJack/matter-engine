@@ -37,7 +37,7 @@ struct WorldEntry {
     std::string world_name;   // e.g. "Demo"
 };
 
-// Scan a root like "../examples" for projects containing objects/ + worlds/.
+// Scan a root like "../projects" for projects containing objects/ + worlds/.
 // Every regular worlds/*.js file contributes one entry, sorted by label.
 std::vector<WorldEntry> scan_worlds(const std::string& examples_root);
 

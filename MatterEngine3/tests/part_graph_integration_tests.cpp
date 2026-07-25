@@ -128,7 +128,7 @@ static void test_install_with_placement() {
 // installed it, and MUST fold the Leaf child hash (kids,1) exactly as the graph did.
 //
 // Paths: the demo schemas/shared-lib are repo-relative to the tests dir
-// (../examples/world_demo/schemas, ../shared-lib). The caller passes ABSOLUTE paths
+// (../../projects/world_demo/schemas, ../shared-lib). The caller passes ABSOLUTE paths
 // resolved from the original cwd before any chdir, so resolution survives a chdir.
 // The real demo tree is a faithful port of MatterEngine2's three-mode system:
 //   Tree  -> voxel sphere-sweep trunk + instanced TreeBranch twigs
@@ -744,7 +744,7 @@ int main(int argc, char** argv) {
     // regardless of cwd. (They are repo-relative to the tests dir we start in.)
     std::string demo_schemas, demo_sharedlib;
     { char abs[4096];
-      if (realpath("../examples/world_demo/schemas", abs)) demo_schemas = abs;
+      if (realpath("../../projects/world_demo/schemas", abs)) demo_schemas = abs;
       if (realpath("../shared-lib", abs)) demo_sharedlib = abs; }
 
     // Fresh sandbox so parts/<hash>.part and the schemas live in a known place.

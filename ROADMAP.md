@@ -208,7 +208,7 @@ in #2 rarer to trip and lets us raise its ceiling.
 
 Cross-refs: `.superpowers/sdd/task-11-report.md`,
 `MatterEngine3/src/part_flatten.cpp` (Gatherer::gather top-down expansion),
-`MatterEngine3/examples/world_demo/schemas/StressForest*.js`.
+`projects/world_demo/schemas/StressForest*.js`.
 
 ---
 

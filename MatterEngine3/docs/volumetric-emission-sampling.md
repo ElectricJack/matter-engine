@@ -683,7 +683,7 @@ make -C MatterViewer windows $TMPARGS
 
 1. **Compile gates.** `make -C MatterEngine3 vulkan-spirv` succeeds (glslc validates the ray-query + buffer-reference combination); full kernel + viewer builds clean.
 2. **Bit-exact off state.** With *Emission rays = 0*, captured `vol_integrated` output matches pre-change output (the new code is fully gated behind `pc.emission_rays > 0u`).
-3. **Glow appears.** Load the Demo world (`MatterEngine3/examples/world_demo/worlds/Demo.js` — has height fog + ChimneySmoke/WaterfallMist emitters), place or approach geometry using an emissive material (registry indices 25/26, "cool/warm light" — `emission_strength` packs color in rgb, strength in w). Enable Volumetrics: fog near the surface shows a colored glow that decays with distance, strongest where fog is densest.
+3. **Glow appears.** Load the Demo world (`projects/world_demo/worlds/Demo.js` — has height fog + ChimneySmoke/WaterfallMist emitters), place or approach geometry using an emissive material (registry indices 25/26, "cool/warm light" — `emission_strength` packs color in rgb, strength in w). Enable Volumetrics: fog near the surface shows a colored glow that decays with distance, strongest where fog is densest.
 4. **Debug views.** Vol debug combo -> "Scatter" shows emission in the raw scatter volume; "Integrated" shows it attenuated by transmittance.
 5. **Determinism.** Freeze the camera: after ~1 s the glow is stable (no crawling), because the seed depends only on voxel + frame index and history converges.
 6. **Controls respond.** Emission boost scales linearly; range slider visibly truncates far pickup; rays 1->2 reduces shimmer.

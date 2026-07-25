@@ -88,7 +88,7 @@ void test_project_layout_derives_runtime_paths() {
 // cache_root. Before the fix, cache_root was built by appending
 // ".cache"/<world_name> directly onto whatever project_dir string the caller
 // passed in (project / ".cache" / world_name), so a relative project_dir
-// (exactly what api_tests.cpp's "../MatterEngine3/examples/primitive_demo"
+// (exactly what api_tests.cpp's "../projects/primitive_demo"
 // and world_stream_tests.cpp's "../MatterEngine3/tests/fixtures/world_stream"
 // pass) produced a relative cache_root. Every downstream writer that
 // composes an output path directly from cache_root (PartStore, resolve_cache,
@@ -276,7 +276,7 @@ bool nearly_equal(float a, float b) {
 }
 
 void test_example_worlds_preserve_manifest_authoring() {
-    const fs::path project = fs::path("../examples/world_demo");
+    const fs::path project = fs::path("../../projects/world_demo");
     const ExpectedExampleWorld worlds[] = {
         {"Demo", {{"TreeGallery", false, false},
                   {"ChimneySmoke", false, false, {5.0f, 6.0f, 0.0f}},

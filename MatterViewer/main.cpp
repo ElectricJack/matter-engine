@@ -611,9 +611,9 @@ bool write_png(const std::string& path, const std::vector<uint8_t>& rgba,
 }
 
 std::string examples_root() {
-    if (std::filesystem::is_directory("MatterEngine3/examples"))
-        return "MatterEngine3/examples";
-    return "../MatterEngine3/examples";
+    if (std::filesystem::is_directory("projects"))
+        return "projects";
+    return "../projects";
 }
 
 std::string shared_lib_root() {

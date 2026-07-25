@@ -35,7 +35,7 @@ static size_t load_tri_count(uint64_t h) {
 }
 
 int main(int argc, char** argv) {
-    const std::string schemas    = abspath("../examples/world_demo/schemas");
+    const std::string schemas    = abspath("../../projects/world_demo/schemas");
     const std::string shared_lib = abspath("../shared-lib");
 
     const std::string sandbox = "/tmp/me3_rock_profile";

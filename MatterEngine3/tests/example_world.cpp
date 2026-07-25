@@ -1,7 +1,7 @@
 // End-to-end MatterEngine3 example world: terrain, trees, and grass.
 //
 // Drives the WHOLE pipeline on committed assets under
-// ../examples/world_demo (objects + worlds/Demo.js) and the shared script
+// ../../projects/world_demo (objects + worlds/Demo.js) and the shared script
 // library under ../shared-lib:
 //
 //   SP-3  load_world_definition -> PartGraph::install (walk + dedup + cache)
@@ -82,8 +82,8 @@ static std::string abspath(const std::string& rel) {
 
 int main() {
     // --- Resolve committed asset locations (run from MatterEngine3/tests). ---
-    const std::string project    = abspath("../examples/world_demo");
-    const std::string objects    = abspath("../examples/world_demo/objects");
+    const std::string project    = abspath("../../projects/world_demo");
+    const std::string objects    = abspath("../../projects/world_demo/objects");
     const std::string shared_lib = abspath("../shared-lib");
     printf("objects:    %s\n", objects.c_str());
     printf("shared-lib: %s\n", shared_lib.c_str());

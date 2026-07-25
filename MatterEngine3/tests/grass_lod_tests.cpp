@@ -310,7 +310,7 @@ static void test_full_budget_unchanged_geometry() {
 
 int main() {
     // Resolve asset paths before any chdir.
-    const std::string schemas = abspath("../examples/world_demo/schemas");
+    const std::string schemas = abspath("../../projects/world_demo/schemas");
     g_shared_lib = abspath("../shared-lib");
     const std::string grass_path = schemas + "/Grass.js";
     g_grass_source = read_text(grass_path);

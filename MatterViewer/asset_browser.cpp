@@ -107,7 +107,7 @@ void AssetBrowser::rescan(const std::vector<WorldEntry>& worlds,
 
     // Group the already-scanned worlds by project_dir (reuses scan_worlds'
     // project enumeration from ui.cpp — see WorldEntry's doc comment in
-    // ui.h) instead of re-walking the examples root ourselves.
+    // ui.h) instead of re-walking the projects root ourselves.
     for (size_t wi = 0; wi < worlds.size(); ++wi) {
         const WorldEntry& w = worlds[wi];
         auto it = project_index.find(w.project_dir);

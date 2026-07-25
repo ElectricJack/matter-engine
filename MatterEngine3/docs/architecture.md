@@ -9,7 +9,7 @@ an error-bounded LOD ladder turn a whole part hierarchy into one instance per LO
 ## Pipeline at a glance
 
 ```
-JS schema (.js)                                  authoring   (examples/*/schemas)
+JS schema (.js)                                  authoring   (projects/*/schemas)
    │  ScriptHost (QuickJS, isolated ctx per bake)
    ▼
 DslState ── voxel session ──► BuildBuffer (flat SDF brush ops)

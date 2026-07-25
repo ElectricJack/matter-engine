@@ -577,7 +577,7 @@ static void test_local_provider_cache() {
 
     // Resolve committed example assets relative to MatterEngine3/tests (cwd).
     auto cfg = viewer::LocalProviderConfig::for_project(
-        "../examples/world_demo", "Demo", "../shared-lib");
+        "../../projects/world_demo", "Demo", "../shared-lib");
     cfg.cache_root = cache;
 
     // --- First connect: bake anything missing, then load into the shared store. ---
@@ -703,7 +703,7 @@ static void test_partstore_keeps_children() {
     // they still resolve from inside the sandbox (they are repo-relative to tests/).
     std::error_code path_error;
     std::string schemas = std::filesystem::absolute(
-        "../examples/world_demo/objects", path_error).string();
+        "../../projects/world_demo/objects", path_error).string();
     path_error.clear();
     std::string sharedlib = std::filesystem::absolute(
         "../shared-lib", path_error).string();
@@ -1623,7 +1623,7 @@ static void test_install_phase_on_part_progress() {
     std::vector<std::pair<int,int>> callbacks;
 
     auto cfg = viewer::LocalProviderConfig::for_project(
-        "../examples/world_demo", "Demo", "../shared-lib");
+        "../../projects/world_demo", "Demo", "../shared-lib");
     cfg.cache_root = cold_cache;
     cfg.on_part = [&](const char* /*module*/, int done, int total) {
         callbacks.emplace_back(done, total);

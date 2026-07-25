@@ -42,7 +42,7 @@ static size_t load_tri_count(uint64_t h, size_t& child_count) {
 }
 
 int main() {
-    const std::string schemas    = abspath("../examples/world_demo/schemas");
+    const std::string schemas    = abspath("../../projects/world_demo/schemas");
     const std::string shared_lib = abspath("../shared-lib");
 
     const std::string sandbox = "/tmp/me3_tree_bake";
