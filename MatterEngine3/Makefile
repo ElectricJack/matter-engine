@@ -79,11 +79,11 @@ INCLUDE_PATHS = -Iinclude -Isrc -Isrc/render -Isrc/provider \
 # the core four. Compiled via gcc (C) so the embedding symbols stay unmangled.
 QJS_C   = $(QJS_DIR)/quickjs.c $(QJS_DIR)/libregexp.c \
           $(QJS_DIR)/libunicode.c $(QJS_DIR)/cutils.c $(QJS_DIR)/xsum.c
-QJS_OBJ = quickjs.o libregexp.o libunicode.o cutils.o xsum.o
+QJS_OBJ = $(addprefix $(OBJDIR)/,quickjs.o libregexp.o libunicode.o cutils.o xsum.o)
 
 # Flecs is C17 and must never be compiled by the C++ rule below.
 FLECS_C   = $(FLECS_DIR)/flecs.c
-FLECS_OBJ = flecs.o
+FLECS_OBJ = $(addprefix $(OBJDIR)/,flecs.o)
 
 # MatterEngine3 C++ sources: full pipeline — bake/script/DSL/CSG, part-graph,
 # LOD flatten/select, tileset pipeline, render, provider, and facade.
@@ -151,10 +151,10 @@ MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
 MSL_C   = $(MSL_DIR)/src/surface.c $(MSL_DIR)/src/open_particle_surface.c \
           $(SQL_DIR)/src/spatial_hash.c $(MEMLIB_DIR)/src/mem_pool.c \
           $(MSL_DIR)/src/material_registry.c $(MSL_DIR)/src/fat_primitive.c
-MSL_C_OBJ = surface.o open_particle_surface.o spatial_hash.o \
-            mem_pool.o material_registry.o fat_primitive.o
+MSL_C_OBJ = $(addprefix $(OBJDIR)/,surface.o open_particle_surface.o spatial_hash.o \
+            mem_pool.o material_registry.o fat_primitive.o)
 
-ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
+ME3_OBJ = $(addprefix $(OBJDIR)/,script_host.o dsl_state.o dsl_bindings.o \
           pf_math.o pf_sim.o pf_fields.o pf_path_recorder.o pf_bindings.o \
           dsl_triangle.o triangle_emit.o polygon_triangulate.o \
           csg_lowering.o module_resolver.o world_definition_loader.o script_rng_binding.o \
@@ -189,17 +189,22 @@ ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o \
           sector_streamer.o \
           sector_streaming_coordinator.o \
           dispatch_context.o subscription.o event_hub.o command.o \
-          property.o
+          property.o)
 
 # MSL C++ object names (basenames; same flat-object model as ME3_OBJ).
-MSL_OBJ = cluster.o cell.o mesh_simplifier.o mesh_indexed.o mesh_smooth.o mesh_transform.o \
+MSL_OBJ = $(addprefix $(OBJDIR)/,cluster.o cell.o mesh_simplifier.o mesh_indexed.o mesh_smooth.o mesh_transform.o \
           blas_manager.o bvh.o bvh_analyzer.o \
           mesh_worker_pool.o mesh_build_utils.o meshing_algorithm.o \
           marching_cubes_algorithm.o oriented_cube_algorithm.o vertex_ao.o \
           occupancy.o tlas_manager.o part_asset.o \
-          lattice.o particle_culling.o $(if $(EXTRA_RETOPO_CPP),mesh_retopo.o)
+          lattice.o particle_culling.o $(if $(EXTRA_RETOPO_CPP),mesh_retopo.o))
 
-LIB = libmatter_engine3.a
+# Build layout: <project>/build/obj/ for objects+deps, <project>/build/ for
+# the archive. Keep the project root source-only.
+OBJDIR = build/obj
+LIB = build/libmatter_engine3.a
+# Flag-set stamp file also counts as build output; keep it out of the root too.
+LIB_FLAGS_STAMP = build/.lib_flags
 
 # Shader embedding codegen (Stage 1a).
 # Base shader list from the brief table + glsl includes found in .fs/.comp sources.
@@ -216,6 +221,9 @@ SHADER_FILES := $(SHADER_LOGICAL)
 
 # all MUST be the first target so it is the default goal.
 all: $(LIB)
+
+$(OBJDIR) build:
+	@mkdir -p $@
 
 shaders_gen/embedded_shaders.h: tools/embed_shaders.py $(SHADER_FILES)
 	mkdir -p shaders_gen
@@ -289,42 +297,42 @@ vpath %.cpp src src/render src/provider src/script src/ecs src/scene src/streami
 vpath %.c $(QJS_DIR) $(MSL_DIR)/src $(FLECS_DIR)
 
 # Flecs C source (gcc C17, never g++).
-$(FLECS_OBJ): $(FLECS_C)
+$(FLECS_OBJ): $(FLECS_C) | $(OBJDIR)
 	gcc -c $< -o $@ -std=c17 -O2 -I$(FLECS_DIR)
 
 # QuickJS C sources (gcc, extern "C" safe).
-%.o: $(QJS_DIR)/%.c
+$(OBJDIR)/%.o: $(QJS_DIR)/%.c | $(OBJDIR)
 	gcc -c $< -o $@ -O2 -DCONFIG_VERSION='"0.10.0"' -I$(QJS_DIR)
 
 # MSL C sources (gcc, extern "C" safe).
-%.o: $(MSL_DIR)/src/%.c
+$(OBJDIR)/%.o: $(MSL_DIR)/src/%.c | $(OBJDIR)
 	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
 
 # Shared library C sources, compiled from their source-of-truth directories.
 # These are explicit (not pattern) rules and the source dirs are deliberately
 # kept off vpath: SpatialQueryLib/src/bvh.c would otherwise shadow
 # SpatialQueryLib/src/bvh.cpp when make resolves bvh.o.
-spatial_hash.o: $(SQL_DIR)/src/spatial_hash.c
+$(OBJDIR)/spatial_hash.o: $(SQL_DIR)/src/spatial_hash.c | $(OBJDIR)
 	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
 
-mem_pool.o: $(MEMLIB_DIR)/src/mem_pool.c
+$(OBJDIR)/mem_pool.o: $(MEMLIB_DIR)/src/mem_pool.c | $(OBJDIR)
 	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
 
 # EXTRA_CFLAGS changes are invisible to make's dependency graph (objects look
 # up-to-date even though they were compiled with different defines, e.g.
-# MATTER_HAVE_AUTOREMESHER). Every C++ object depends on .lib_flags, which is
-# rewritten only when the flag set differs — so a flag change forces a full
-# recompile while same-flag builds stay incremental.
+# MATTER_HAVE_AUTOREMESHER). Every C++ object depends on this stamp file,
+# which is rewritten only when the flag set differs — so a flag change forces
+# a full recompile while same-flag builds stay incremental.
 .PHONY: FORCE
 FORCE:
-.lib_flags: FORCE
+$(LIB_FLAGS_STAMP): FORCE | build
 	@[ "`cat $@ 2>/dev/null`" = '$(EXTRA_CFLAGS)' ] || printf '%s' '$(EXTRA_CFLAGS)' > $@
 
 # ME3 + MSL C++ sources (each source file gets its own .o via pattern rule).
 # ME3 objects depend on the generated shader header.
 $(ME3_OBJ): shaders_gen/embedded_shaders.h
-$(ME3_OBJ) $(MSL_OBJ): .lib_flags
-%.o: %.cpp
+$(ME3_OBJ) $(MSL_OBJ): $(LIB_FLAGS_STAMP)
+$(OBJDIR)/%.o: %.cpp | $(OBJDIR)
 	$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDE_PATHS)
 
 $(BOX3D_LIB):
@@ -341,5 +349,5 @@ test:
 	$(MAKE) -C tests run-script
 
 clean:
-	rm -f $(LIB) $(QJS_OBJ) $(ME3_OBJ) $(MSL_OBJ) $(MSL_C_OBJ) $(FLECS_OBJ) .lib_flags
+	rm -rf build
 	$(MAKE) -C tests clean

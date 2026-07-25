@@ -18,7 +18,7 @@ mkfifo "$FIFO"
 MATTER_WORLD="${MATTER_WORLD:-floordemo}" \
 GALLIUM_DRIVER="${GALLIUM_DRIVER:-d3d12}" \
 MATTER_CMD_FIFO="$FIFO" \
-stdbuf -oL ./editor > "$LOG" 2>&1 &
+stdbuf -oL ./build/windows/editor.exe > "$LOG" 2>&1 &
 PID=$!
 trap 'kill $PID 2>/dev/null || true; rm -f "$FIFO"' EXIT
 

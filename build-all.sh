@@ -6,10 +6,10 @@
 #   ./build-all.sh clean    # clean every project, then build
 #   ./build-all.sh test     # build, then run headless test suites
 #
-# Per project, a successful build leaves a runnable binary either in the
-# project root or under build/<platform>/. Failures don't abort the run --
-# the script prints a per-project summary at the end and exits non-zero
-# if anything failed.
+# Per project, a successful build leaves a runnable binary under build/ (or
+# build/<platform>/ for the projects with real platform variants). Failures
+# don't abort the run -- the script prints a per-project summary at the end
+# and exits non-zero if anything failed.
 
 set -u
 
@@ -137,7 +137,7 @@ if [ "$MODE" = "test" ]; then
 
     for proj in libs/MemoryLib libs/SpatialQueryLib; do
         base="$(basename "$proj")"
-        bin="$proj/$(echo "$base" | tr '[:upper:]' '[:lower:]')"
+        bin="$proj/build/$(echo "$base" | tr '[:upper:]' '[:lower:]')"
         if [ -x "$bin" ]; then
             echo
             echo "--- $proj ---"
@@ -159,10 +159,10 @@ if [ "$MODE" = "test" ]; then
                  blas_refcount_tests mesh_continuity_tests blas_tint_tests \
                  particle_culling_tests voxel_imposter_tests \
                  mesh_indexed_tests mesh_transform_tests mesh_smooth_tests; do
-        if make -C libs/MatterSurfaceLib/tests "$suite" >/dev/null 2>&1; then
+        if make -C libs/MatterSurfaceLib/tests "build/$suite" >/dev/null 2>&1; then
             echo
             echo "--- MatterSurfaceLib ($suite) ---"
-            "libs/MatterSurfaceLib/tests/$suite" || RESULT[libs/MatterSurfaceLib]="FAIL (tests)"
+            "libs/MatterSurfaceLib/tests/build/$suite" || RESULT[libs/MatterSurfaceLib]="FAIL (tests)"
         else
             RESULT[libs/MatterSurfaceLib]="FAIL (test build)"
         fi
@@ -172,10 +172,10 @@ if [ "$MODE" = "test" ]; then
     # Only runs if the vendored lib built; otherwise skip cleanly (autoremesher_core
     # is optional, prep_autoremesher_core above just warns "FAIL" and moves on).
     if [ -f third_party/autoremesher_core/libautoremesher_core.a ]; then
-        if make -C libs/MatterSurfaceLib/tests mesh_retopo_tests >/dev/null 2>&1; then
+        if make -C libs/MatterSurfaceLib/tests build/mesh_retopo_tests >/dev/null 2>&1; then
             echo
             echo "--- MatterSurfaceLib (mesh_retopo_tests) ---"
-            libs/MatterSurfaceLib/tests/mesh_retopo_tests || RESULT[libs/MatterSurfaceLib]="FAIL (tests)"
+            libs/MatterSurfaceLib/tests/build/mesh_retopo_tests || RESULT[libs/MatterSurfaceLib]="FAIL (tests)"
         else
             RESULT[libs/MatterSurfaceLib]="FAIL (test build)"
         fi
@@ -184,9 +184,9 @@ if [ "$MODE" = "test" ]; then
         echo "--- MatterSurfaceLib (mesh_retopo_tests) SKIPPED (no libautoremesher_core.a) ---"
     fi
 
-    if make -C libs/MeshChartingLib/tests mesh_charting_tests >/dev/null 2>&1; then
+    if make -C libs/MeshChartingLib/tests build/mesh_charting_tests >/dev/null 2>&1; then
         echo; echo "--- MeshChartingLib (mesh_charting_tests) ---"
-        ./libs/MeshChartingLib/tests/mesh_charting_tests || RESULT[libs/MeshChartingLib]="FAIL (tests)"
+        ./libs/MeshChartingLib/tests/build/mesh_charting_tests || RESULT[libs/MeshChartingLib]="FAIL (tests)"
     else
         RESULT[libs/MeshChartingLib]="FAIL (test build)"
     fi
@@ -237,7 +237,7 @@ if [ "$MODE" = "test" ]; then
         echo
         echo "--- MatterEngine3/tests (api-tests) ---"
         make -C MatterEngine3/tests api-tests || RESULT[MatterEngine3]="FAIL (api-tests build)"
-        ( cd MatterEditor && GALLIUM_DRIVER=d3d12 ../MatterEngine3/tests/api_tests ) \
+        ( cd MatterEditor && GALLIUM_DRIVER=d3d12 ../MatterEngine3/tests/build/api_tests ) \
             || RESULT[MatterEngine3]="FAIL (api-tests run)"
 
         echo

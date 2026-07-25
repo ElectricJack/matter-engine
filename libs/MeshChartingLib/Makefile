@@ -3,12 +3,14 @@ CXX ?= g++
 CXXFLAGS = -Wall -Wextra -O2 -std=c++17 -Iinclude
 
 lib: src/mesh_charting.cpp
-	$(CXX) $(CXXFLAGS) -MMD -MP -c src/mesh_charting.cpp -o mesh_charting.o
+	@mkdir -p build/obj
+	$(CXX) $(CXXFLAGS) -MMD -MP -c src/mesh_charting.cpp -o build/obj/mesh_charting.o
 
 test:
 	$(MAKE) -C tests run
 
 clean:
-	rm -f mesh_charting.o mesh_charting.d tests/mesh_charting_tests
+	rm -rf build
+	$(MAKE) -C tests clean
 
--include mesh_charting.d
+-include build/obj/mesh_charting.d

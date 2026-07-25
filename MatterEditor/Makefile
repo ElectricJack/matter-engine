@@ -273,23 +273,29 @@ vpath %.c $(MSL_DIR)/src $(SQL_DIR)/src $(MEMLIB_DIR)/src $(QJS_DIR) $(FLECS_DIR
 .DEFAULT_GOAL := editor
 
 # Linux object sets: ONLY app + imgui objects.
+# Objects/.d files live under an obj/ subdir so build/linux/ only ever holds
+# the final `editor` binary (kept flat there, never in obj/).
 L_DIR = build/linux
-L_CPP_OBJ  = $(addprefix $(L_DIR)/,$(CPP_NAMES:.cpp=.o))
+L_OBJ_DIR = $(L_DIR)/obj
+L_CPP_OBJ  = $(addprefix $(L_OBJ_DIR)/,$(CPP_NAMES:.cpp=.o))
 L_ALL_OBJ  = $(L_CPP_OBJ)
 
 # Windows object sets: full direct-source compile including engine+MSL.
+# Same obj/ split as Linux: build/windows/ holds only editor.exe (+ the
+# non-object build artifacts below); every .o/.d goes under obj/.
 W_DIR = build/windows
-W_CPP_OBJ  = $(addprefix $(W_DIR)/,$(CPP_NAMES_WIN_ALL:.cpp=.o))
-W_QJS_OBJ  = $(addprefix $(W_DIR)/,$(QJS_NAMES:.c=.o))
-W_PIPC_OBJ = $(addprefix $(W_DIR)/,$(PIPC_NAMES_WIN:.c=.o))
-W_FLECS_OBJ = $(W_DIR)/$(FLECS_NAME:.c=.o)
+W_OBJ_DIR = $(W_DIR)/obj
+W_CPP_OBJ  = $(addprefix $(W_OBJ_DIR)/,$(CPP_NAMES_WIN_ALL:.cpp=.o))
+W_QJS_OBJ  = $(addprefix $(W_OBJ_DIR)/,$(QJS_NAMES:.c=.o))
+W_PIPC_OBJ = $(addprefix $(W_OBJ_DIR)/,$(PIPC_NAMES_WIN:.c=.o))
+W_FLECS_OBJ = $(W_OBJ_DIR)/$(FLECS_NAME:.c=.o)
 W_ALL_OBJ  = $(W_CPP_OBJ) $(W_QJS_OBJ) $(W_PIPC_OBJ) $(W_FLECS_OBJ)
 
-$(L_DIR) $(W_DIR):
+$(L_DIR) $(W_DIR) $(L_OBJ_DIR) $(W_OBJ_DIR):
 	mkdir -p $@
 
 # ---- Linux compile rules (app + imgui only)
-$(L_CPP_OBJ): $(L_DIR)/%.o: %.cpp | $(L_DIR)
+$(L_CPP_OBJ): $(L_OBJ_DIR)/%.o: %.cpp | $(L_OBJ_DIR)
 	$(CC) -c $< -o $@ $(CXX_FLAGS_BUILD_COMMON)
 
 # ---- Library prerequisite: build libmatter_engine3.a before linking the viewer.
@@ -319,7 +325,7 @@ embedded-shaders:
 	$(MAKE) -C $(ME3_DIR) shaders_gen/embedded_shaders.h
 
 editor: build-engine-lib shaders shaders_gpu_link $(L_ALL_OBJ)
-	$(CC) $(L_ALL_OBJ) $(ME3_DIR)/libmatter_engine3.a -o editor \
+	$(CC) $(L_ALL_OBJ) $(ME3_DIR)/build/libmatter_engine3.a -o $(L_DIR)/editor \
 	      $(CFLAGS) $(LDFLAGS) $(LDLIBS) $(AR_CORE_LDFLAGS)
 
 -include $(L_ALL_OBJ:.o=.d)
@@ -405,16 +411,18 @@ GLFW_WIN_SRC = context.c egl_context.c init.c input.c monitor.c null_init.c \
                platform.c vulkan.c win32_init.c win32_joystick.c \
                win32_module.c win32_monitor.c win32_thread.c win32_time.c \
                win32_window.c window.c
-GLFW_WIN_OBJ = $(addprefix build/windows/glfw/,$(GLFW_WIN_SRC:.c=.o))
-GLFW_WIN_OBJ += build/windows/glfw/glfw_vulkan_only_context.o
+# Kept under obj/glfw/ alongside every other Windows object, consistent with
+# the rest of the obj/ split above.
+GLFW_WIN_OBJ = $(addprefix $(W_OBJ_DIR)/glfw/,$(GLFW_WIN_SRC:.c=.o))
+GLFW_WIN_OBJ += $(W_OBJ_DIR)/glfw/glfw_vulkan_only_context.o
 GLFW_WIN_LIB = build/windows/libglfw3.a
 
-build/windows/glfw/%.o: $(GLFW_SRC_DIR)/%.c
+$(W_OBJ_DIR)/glfw/%.o: $(GLFW_SRC_DIR)/%.c
 	@mkdir -p $(dir $@)
 	$(WIN_CC) -c $< -o $@ -D_GLFW_WIN32 \
 	    -I../third_party/raylib/src/external/glfw/include
 
-build/windows/glfw/glfw_vulkan_only_context.o: glfw_vulkan_only_context.c
+$(W_OBJ_DIR)/glfw/glfw_vulkan_only_context.o: glfw_vulkan_only_context.c
 	@mkdir -p $(dir $@)
 	$(WIN_CC) -c $< -o $@ -D_GLFW_WIN32 \
 	    -I$(GLFW_SRC_DIR) -I../third_party/raylib/src/external/glfw/include
@@ -566,23 +574,23 @@ build/windows/vulkan_compat_tests.exe: \
 	    -I../third_party/raylib/src
 
 # ---- Windows compile rules
-$(W_CPP_OBJ): $(W_DIR)/%.o: %.cpp | $(W_DIR)
+$(W_CPP_OBJ): $(W_OBJ_DIR)/%.o: %.cpp | $(W_OBJ_DIR)
 	$(WIN_CXX) -c $< -o $@ $(CXX_FLAGS_BUILD_WIN_COMMON)
-$(W_QJS_OBJ): $(W_DIR)/%.o: $(QJS_DIR)/%.c | $(W_DIR)
+$(W_QJS_OBJ): $(W_OBJ_DIR)/%.o: $(QJS_DIR)/%.c | $(W_OBJ_DIR)
 	$(WIN_CC) -c $< -o $@ -O2 -DNDEBUG -DCONFIG_VERSION='"0.10.0"' $(QJS_INC) -ffunction-sections -fdata-sections -MMD -MP
 # Pipeline C objects. Most come from MatterSurfaceLib, but spatial_hash and
 # mem_pool are compiled from their source-of-truth libraries, so they cannot
 # share the MSL static pattern rule and get their own explicit rules below.
 WIN_PIPC_COMPILE = $(WIN_CC) -c $< -o $@ -O2 -DNDEBUG -DPLATFORM_DESKTOP $(WIN_INCLUDE_PATHS) -ffunction-sections -fdata-sections -MMD -MP
-W_PIPC_MSL_OBJ = $(filter-out $(W_DIR)/spatial_hash.o $(W_DIR)/mem_pool.o,$(W_PIPC_OBJ))
+W_PIPC_MSL_OBJ = $(filter-out $(W_OBJ_DIR)/spatial_hash.o $(W_OBJ_DIR)/mem_pool.o,$(W_PIPC_OBJ))
 
-$(W_PIPC_MSL_OBJ): $(W_DIR)/%.o: $(MSL_DIR)/src/%.c | $(W_DIR)
+$(W_PIPC_MSL_OBJ): $(W_OBJ_DIR)/%.o: $(MSL_DIR)/src/%.c | $(W_OBJ_DIR)
 	$(WIN_PIPC_COMPILE)
-$(W_DIR)/spatial_hash.o: $(SQL_DIR)/src/spatial_hash.c | $(W_DIR)
+$(W_OBJ_DIR)/spatial_hash.o: $(SQL_DIR)/src/spatial_hash.c | $(W_OBJ_DIR)
 	$(WIN_PIPC_COMPILE)
-$(W_DIR)/mem_pool.o: $(MEMLIB_DIR)/src/mem_pool.c | $(W_DIR)
+$(W_OBJ_DIR)/mem_pool.o: $(MEMLIB_DIR)/src/mem_pool.c | $(W_OBJ_DIR)
 	$(WIN_PIPC_COMPILE)
-$(W_FLECS_OBJ): $(W_DIR)/%.o: $(FLECS_DIR)/%.c | $(W_DIR)
+$(W_FLECS_OBJ): $(W_OBJ_DIR)/%.o: $(FLECS_DIR)/%.c | $(W_OBJ_DIR)
 	$(WIN_CC) -c $< -o $@ -std=c17 -O2 -I$(FLECS_DIR) -DNDEBUG -ffunction-sections -fdata-sections -MMD -MP
 
 # Order-only: the header must exist before shader_source.cpp compiles, but its
@@ -590,9 +598,9 @@ $(W_FLECS_OBJ): $(W_DIR)/%.o: $(FLECS_DIR)/%.c | $(W_DIR)
 $(W_CPP_OBJ): | embedded-shaders
 
 windows: $(WIN_FEATURES) $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) win-shaders-gpu $(W_ALL_OBJ)
-	$(WIN_CXX) $(W_ALL_OBJ) -o editor.exe $(CFLAGS) -static -s -Wl,--gc-sections $(WIN_LIBS) $(GLFW_WIN_LIB) $(WIN_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 -Wl,-Bstatic
-	@if [ "$(HAVE_STREAMLINE)" = "1" ]; then cp -f "$(STREAMLINE_DLL_DIR)"/*.dll .; fi
-	@imports="$$($(WIN_CXX) -print-prog-name=objdump -p editor.exe)"; \
+	$(WIN_CXX) $(W_ALL_OBJ) -o $(W_DIR)/editor.exe $(CFLAGS) -static -s -Wl,--gc-sections $(WIN_LIBS) $(GLFW_WIN_LIB) $(WIN_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 -Wl,-Bstatic
+	@if [ "$(HAVE_STREAMLINE)" = "1" ]; then cp -f "$(STREAMLINE_DLL_DIR)"/*.dll $(W_DIR)/; fi
+	@imports="$$($(WIN_CXX) -print-prog-name=objdump -p $(W_DIR)/editor.exe)"; \
 	 for forbidden in opengl32 ChoosePixelFormat SetPixelFormat SwapBuffers cuGraphicsGL nvcuda cuDevice; do \
 	   echo "$$imports" | grep -qi "$$forbidden" && { echo "ERROR: forbidden PE import/symbol $$forbidden"; exit 1; } || true; \
 	 done
@@ -631,7 +639,72 @@ win-shaders-gpu:
 # or `git status` will show them as deleted. The build recreates them via the
 # shaders / shaders_gpu_link / win-shaders-gpu rules anyway.
 clean:
-	rm -rf editor editor.exe build
+	rm -rf build
+
+# ---- dist: self-contained, zippable folder ----
+# Shaders (both GL and Vulkan) are embedded into the executable at build time
+# (see shader_text() in MatterEngine3/src/shader_source.cpp and the win-shaders
+# removal note above) so they are NEVER copied here — only the exe + project
+# content, which lives outside the build tree at ../projects/.
+#
+# Platform is inferred the same way the rest of this Makefile does (MSYSTEM is
+# set inside an MSYS2 shell): under MSYS2 we package the Windows exe, otherwise
+# the Linux binary. Either way `dist` depends on the real build so it compiles
+# first if needed.
+ifdef MSYSTEM
+DIST_BUILD_TARGET = windows
+DIST_BIN_DIR = $(W_DIR)
+DIST_BIN = editor.exe
+else
+DIST_BUILD_TARGET = editor
+DIST_BIN_DIR = $(L_DIR)
+DIST_BIN = editor
+endif
+
+PROJECT ?= world_demo
+DIST_ROOT = build/dist/$(PROJECT)
+
+# dist REQUIRES the Streamline SDK. A shipped build is expected to have DLSS /
+# Reflex available, so this deliberately fails rather than quietly producing a
+# package without them.
+#
+# The build is re-invoked with HAVE_STREAMLINE=1 rather than merely copying the
+# DLLs alongside whatever binary already exists: MATTER_HAVE_STREAMLINE is a
+# COMPILE-time define (see CXX_FLAGS_BUILD_WIN_COMMON), so a binary built with
+# HAVE_STREAMLINE=0 ignores the DLLs even when they sit next to it. Shipping
+# them beside such a binary would look correct and silently do nothing.
+#
+# Nothing from the SDK is checked into this repository; point STREAMLINE_PATH at
+# a locally installed, licensed copy. You are responsible for the redistribution
+# terms of anything this stages into the package.
+.PHONY: dist
+dist:
+	@[ -n "$(STREAMLINE_PATH)" ] || ( \
+	    echo "ERROR: dist requires the Streamline SDK."; \
+	    echo "  Set STREAMLINE_PATH to a local, licensed SDK install, e.g."; \
+	    echo "    make dist STREAMLINE_PATH=/c/sdk/streamline"; \
+	    echo "  (override the DLL dir with STREAMLINE_DLL_DIR if it is not <path>/bin/x64)"; \
+	    exit 1)
+	@[ -d "$(STREAMLINE_DLL_DIR)" ] || ( \
+	    echo "ERROR: STREAMLINE_DLL_DIR not found: $(STREAMLINE_DLL_DIR)"; \
+	    exit 1)
+	@ls "$(STREAMLINE_DLL_DIR)"/*.dll >/dev/null 2>&1 || ( \
+	    echo "ERROR: no .dll files in $(STREAMLINE_DLL_DIR)"; \
+	    exit 1)
+	@[ -d ../projects/$(PROJECT) ] || (echo "ERROR: ../projects/$(PROJECT) not found" && exit 1)
+	@$(MAKE) $(DIST_BUILD_TARGET) HAVE_STREAMLINE=1 \
+	    STREAMLINE_PATH="$(STREAMLINE_PATH)" STREAMLINE_DLL_DIR="$(STREAMLINE_DLL_DIR)"
+	@rm -rf $(DIST_ROOT)
+	@mkdir -p $(DIST_ROOT)/projects
+	@cp $(DIST_BIN_DIR)/$(DIST_BIN) $(DIST_ROOT)/$(DIST_BIN)
+	@cp -f "$(STREAMLINE_DLL_DIR)"/*.dll $(DIST_ROOT)/
+	@tar -C ../projects --exclude=.cache --exclude=backup --exclude='*.bak' \
+	    -cf - $(PROJECT) | tar -C $(DIST_ROOT)/projects -xf -
+	@echo "dist ready: $(DIST_ROOT)"
+	@echo "  binary   : $(DIST_BIN) (built with MATTER_HAVE_STREAMLINE=1)"
+	@echo "  streamline: $$(ls $(DIST_ROOT)/*.dll 2>/dev/null | wc -l) dll(s)"
+	@echo "  project  : $(PROJECT) (.cache excluded; it is regenerable)"
+	@echo "Launch $(DIST_BIN) from inside $(DIST_ROOT)/ (asset lookup is cwd-relative)."
 
 # SelectionSet headless test (no GL/raylib/imgui deps)
 build/test_selection_set.exe: tests/test_selection_set.cpp selection_set.cpp selection_set.h
@@ -655,4 +728,4 @@ build/test_console_log.exe: tests/test_console_log.cpp console_log.cpp console_p
 run-test-console-log: build/test_console_log.exe
 	./build/test_console_log.exe
 
-.PHONY: editor windows clean shaders shaders_gpu_link win-shaders-gpu regen-processed-shader mingw-box3d embedded-shaders build-engine-lib vulkan-instancing-perf
+.PHONY: editor windows clean dist shaders shaders_gpu_link win-shaders-gpu regen-processed-shader mingw-box3d embedded-shaders build-engine-lib vulkan-instancing-perf

@@ -20,7 +20,7 @@ cd "$HERE/../../MatterEditor"
 FIFO="/tmp/matter_shots_$$.fifo"
 LOG="$OUT/${LABEL}_viewer.log"
 mkfifo "$FIFO"
-MATTER_WORLD="${MATTER_WORLD:-meadow}" MATTER_CMD_FIFO="$FIFO" stdbuf -oL ./editor > "$LOG" 2>&1 &
+MATTER_WORLD="${MATTER_WORLD:-meadow}" MATTER_CMD_FIFO="$FIFO" stdbuf -oL ./build/windows/editor.exe > "$LOG" 2>&1 &
 PID=$!
 trap 'kill $PID 2>/dev/null || true; rm -f "$FIFO"' EXIT
 

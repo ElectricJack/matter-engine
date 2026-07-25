@@ -57,7 +57,7 @@ Per-project builds:
 ```bash
 cd libs/MatterSurfaceLib
 make WSL_LINUX=1    # or just `make` on native Linux/macOS
-./matter_surface_lib
+./build/linux/matter_surface_lib   # binary path varies by platform, e.g. build/windows-mingw/
 ```
 
 ### Prerequisites (Linux/WSL)
@@ -70,12 +70,12 @@ make WSL_LINUX=1    # or just `make` on native Linux/macOS
 
 | Project | Build command | Binary |
 |---|---|---|
-| `libs/MemoryLib` | `make` | `./memorylib` (test runner) |
-| `libs/SpatialQueryLib` | `make` | `./spatialquerylib` (test runner) |
-| `libs/ParticleFlowLib` | `make` | `libparticleflow.a` |
-| `MatterEngine3` | `make` | `libmatter_engine3.a` |
-| `libs/MatterSurfaceLib` | `make WSL_LINUX=1` | `./matter_surface_lib` |
-| `MatterEditor` | `make` | `./editor` |
+| `libs/MemoryLib` | `make` | `build/memorylib` (test runner) |
+| `libs/SpatialQueryLib` | `make` | `build/spatialquerylib` (test runner) |
+| `libs/ParticleFlowLib` | `make` | `build/libparticleflow.a` |
+| `MatterEngine3` | `make` | `build/libmatter_engine3.a` |
+| `libs/MatterSurfaceLib` | `make WSL_LINUX=1` | `build/<platform>/matter_surface_lib` |
+| `MatterEditor` | `make` | `build/linux/editor` (or `make windows` → `build/windows/editor.exe`) |
 
 Retired experiments live under `Prototypes/` and are excluded from `build-all.sh`.
 

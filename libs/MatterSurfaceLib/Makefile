@@ -201,23 +201,6 @@ else
 	$(CXX) -o $@ $(OBJ) $(LDFLAGS) $(LDLIBS)
 endif
 	@echo "Built executable for $(PLATFORM): $@"
-	@echo "Copying executable to root directory for easy execution..."
-ifeq ($(TARGET),windows-native)
-	@cp $@ ./matter_surface_lib.exe
-	@echo "✓ Copied to ./matter_surface_lib.exe"
-else ifeq ($(PLATFORM),windows-native)
-	@cp $@ ./gpu_raytrace.exe
-	@echo "✓ Copied to ./gpu_raytrace.exe (WSL→Windows cross-compile)"
-else ifeq ($(PLATFORM),windows-mingw)
-	@cp $@ ./matter_surface_lib.exe
-	@echo "✓ Copied to ./matter_surface_lib.exe"
-else ifeq ($(PLATFORM),windows)
-	@cp $@ ./matter_surface_lib.exe
-	@echo "✓ Copied to ./matter_surface_lib.exe"
-else
-	@cp $@ ./matter_surface_lib
-	@echo "✓ Copied to ./matter_surface_lib"
-endif
 
 # Build rules for main target (C++)
 $(OBJ_DIR)/main.o: main.cpp
@@ -320,28 +303,17 @@ $(OBJ_DIR)/imgui_impl_opengl3.o: $(IMGUI_PATH)/backends/imgui_impl_opengl3.cpp
 $(OBJ_DIR)/imgui_impl_glfw.o: $(IMGUI_PATH)/backends/imgui_impl_glfw.cpp
 	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
-# Platform-specific clean
+# Platform-specific clean: everything for this platform lives under
+# build/$(PLATFORM)/ (objects, preprocessor, binary), so this is just that.
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -f *.o $(PREPROCESSOR) shaders/raytrace_tlas_blas_processed.fs
-ifeq ($(TARGET),windows-native)
-	-rm -f ./matter_surface_lib.exe
-else ifeq ($(PLATFORM),windows-native)
-	-rm -f ./matter_surface_lib.exe
-else ifeq ($(PLATFORM),windows-mingw)
-	-rm -f ./matter_surface_lib.exe
-else ifeq ($(PLATFORM),windows)
-	-rm -f ./matter_surface_lib.exe
-else
-	-rm -f ./matter_surface_lib
-endif
+	rm -f shaders/raytrace_tlas_blas_processed.fs
 
 # Clean all platforms
 clean-all:
 	rm -rf build/
 	rm -rf $(RAYLIB_PATH)/build/
-	rm -f *.o shaders/raytrace_tlas_blas_processed.fs
-	-rm -f ./matter_surface_lib ./matter_surface_lib.exe
+	rm -f shaders/raytrace_tlas_blas_processed.fs
 
 # Force rebuild raylib for current platform
 rebuild-raylib:

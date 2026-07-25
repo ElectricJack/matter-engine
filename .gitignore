@@ -1,26 +1,32 @@
 # Build artifacts
-*.o
 *.obj
-*.d
-*.a
 *.so
 *.dylib
 *.dll
-*.exe
-obj/
-build/
+
+# Every project's build output (objects, .d files, executables, archives)
+# lives under a project-anchored build/ dir. Anchored (not a bare `build/`)
+# so this can never shadow the vendored, committed .a files under
+# third_party/ (see the raylib/box3d exceptions below) — git does not
+# descend into an excluded directory, so a bare `build/` rule would make
+# those unrecoverable by negation.
+/MatterEngine3/build/
+/MatterEngine3/tests/build/
+/MatterEditor/build/
+/libs/*/build/
+# The single-segment `*` above stops at libs/<name>/build/ and does not reach
+# into libs/<name>/tests/build/ (a separate, independently-Makefiled build
+# dir that MatterSurfaceLib and MeshChartingLib each have) — one more level
+# needed here.
+/libs/*/tests/build/
 
 # Per-project compiled binaries (named after the project)
 BasicWindowApp/cube_app
 SurfaceLib/surface_app
-libs/MemoryLib/memorylib
 OpenParticleSurfaceLib/open_particle_surface
-libs/SpatialQueryLib/spatialquerylib
 GPURayTraceExample/gpu_raytrace
 GPURayTraceExample/shader_preprocessor
 ParticleDynamicsExample/particle_dynamics
-libs/MatterSurfaceLib/matter_surface_lib
-libs/MatterSurfaceLib/shader_preprocessor
 
 # Misc
 SurfaceLib/test_config
@@ -55,8 +61,6 @@ third_party/autoremesher_core/thirdparty/tbb/build/*_release/
 
 # MatterEngine3 compiled binaries and bake caches
 MatterEngine3/viewer/viewer
-MatterEngine3/tests/*_tests
-MatterEngine3/tests/*_tests_*
 MatterEngine3/tests/*_check
 MatterEngine3/tests/*_profile
 MatterEngine3/tests/example_world
@@ -67,17 +71,10 @@ MatterEngine3/tests/sandbox/
 # now — see followup on moving to tests/)
 MatterEngine3/viewer/*_tests
 
-# Other project test binaries (compiled from same-named *.cpp drivers)
-libs/MatterSurfaceLib/tests/*_tests
-libs/MeshChartingLib/tests/*_tests
+# autoremesher_core smoke-test binaries (compiled from same-named drivers)
 third_party/autoremesher_core/tests/smoke_cube
 third_party/autoremesher_core/tests/quad_to_tri_test
 
-# MemoryLib and SpatialQueryLib test binaries + object dirs
-libs/SpatialQueryLib/spatial_hash_tests
-libs/SpatialQueryLib/bvh_tests
-libs/MemoryLib/memory_tests
-libs/MemoryLib/memory_hpp_tests
 # `make TARGET=linux` (build-all.sh convention) emits a binary named `linux`
 libs/MemoryLib/linux
 libs/SpatialQueryLib/linux
@@ -117,7 +114,34 @@ cache/
 # Screenshots/ is a checked-in folder — override the broad `shots/` rule above
 # for the specific subdir that happens to be named `shots`.
 !Screenshots/shots/
-MatterEditor/editor
 .outrider
 .worktrees/
 .superpowers/sdd/review-*.diff
+
+# Blanket safety net. The per-project /build/ rules below express the LAYOUT we
+# want; these express what must never be committed anywhere, including legacy
+# directories (MatterEngine3/viewer), vendored trees that build in place
+# (third_party/box3d, third_party/autoremesher_core) and scratch dirs (.tmp).
+# Removing these in favour of the anchored rules alone let `git add -A` sweep
+# 60 MB of stale artifacts into a commit. `*.a` is deliberately NOT blanket:
+# two vendored archives are legitimately tracked (see the negations below).
+*.o
+*.d
+*.exe
+.tmp/
+
+# Junction guard (Windows). MatterEngine3/shaders, MatterEditor/shaders and
+# MatterEditor/shaders_gpu are tracked SYMLINKS (mode 120000). With
+# core.symlinks=false they exist in the working tree as NTFS junctions, so a
+# `git add <parent-dir>` descends INTO them and stages the target's files as new
+# blobs -- silently replacing each symlink with a directory of duplicates. The
+# skip-worktree bit does not prevent this (the new paths differ from the flagged
+# one). These trailing-slash rules match the DIRECTORY only, so git stops
+# descending; the already-tracked symlink entries are unaffected because ignore
+# rules never apply to tracked paths.
+/MatterEngine3/shaders/
+/MatterEditor/shaders/
+/MatterEditor/shaders_gpu/
+
+# Built in place by build-all.sh; not vendored (unlike box3d, negated above).
+/third_party/autoremesher_core/libautoremesher_core.a

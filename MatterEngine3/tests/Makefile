@@ -74,10 +74,16 @@ ifneq (,$(findstring _NT,$(UNAME_S)))
     LDLIBS  = ../../third_party/raylib/src/libraylib.a -lopengl32 -lgdi32 -lwinmm -lws2_32 -ldbghelp
 endif
 
-OBJDIR := build
+OBJDIR := build/obj
 DEPFLAGS := -MMD -MP
 
-MATRIX_TARGET = matrix_tests
+# Top-level build/ dir: needed as an order-only prereq by the handful of
+# binary rules that link straight from source (no $(OBJDIR)-based objects to
+# implicitly mkdir -p it first).
+build:
+	@mkdir -p $@
+
+MATRIX_TARGET = build/matrix_tests
 MATRIX_CPP = matrix_tests.cpp ../src/render/matrix_math.cpp ../src/render/frame_matrices.cpp
 MATRIX_HEADERS = check.h ../include/matter/math_types.h ../include/matter/camera.h \
                  ../src/render/matrix_math.h ../src/render/frame_matrices.h \
@@ -85,18 +91,18 @@ MATRIX_HEADERS = check.h ../include/matter/math_types.h ../include/matter/camera
 
 # CPU-only, no GL/VK/raylib link deps (mirrors MATRIX_TARGET's direct-compile
 # pattern) — pure atlas-slicing + mip math, unit-testable without a device.
-TILESETSLICER_TARGET = tileset_slicer_tests
+TILESETSLICER_TARGET = build/tileset_slicer_tests
 TILESETSLICER_CPP = tileset_slicer_tests.cpp ../src/render/tileset_slicer.cpp
 TILESETSLICER_HEADERS = check.h ../src/render/tileset_slicer.h
 
 FLECS_DIR = ../../third_party/flecs
 FLECS_C = $(FLECS_DIR)/flecs.c
 
-ECS_TARGET = ecs_tests
+ECS_TARGET = build/ecs_tests
 ECS_CPP = ecs_tests.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 ECS_C = $(FLECS_C)
 
-PHYSICS_TARGET = physics-tests
+PHYSICS_TARGET = build/physics-tests
 PHYSICS_CPP = physics_tests.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 PHYSICS_C = $(FLECS_C)
 
@@ -284,22 +290,22 @@ $(OBJDIR)/%:
 # tilesetmeadowmanifest, iso, dev_live_edit (needs default cpp with INCLUDE_PATHS).
 
 # Convenience sub-lists reused by many binaries (unchanged names).
-PARTV2_TARGET = part_asset_v2_tests
+PARTV2_TARGET = build/part_asset_v2_tests
 PARTV2_CPP = part_asset_v2_tests.cpp ../src/part_asset_v2.cpp \
              $(COMMON_MSL_BLAS_SRC)
 PARTV2_C   = $(MSL)/material_registry.c
 
-GRAPH_TARGET = part_graph_tests
+GRAPH_TARGET = build/part_graph_tests
 GRAPH_SOURCES = part_graph_tests.cpp ../src/part_graph.cpp ../src/part_asset_v2.cpp \
                 $(COMMON_MSL_BLAS_SRC)
 GRAPH_C   = $(MSL)/material_registry.c
 
-TRIVAR_TARGET = triangle_variation_tests
+TRIVAR_TARGET = build/triangle_variation_tests
 TRIVAR_CPP = triangle_variation_tests.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/part_asset_v2.cpp \
              $(COMMON_MSL_BLAS_SRC)
 TRIVAR_C   = $(MSL)/material_registry.c
 
-COMP_TARGET = composition_tests
+COMP_TARGET = build/composition_tests
 COMP_CPP = composition_tests.cpp ../src/lod_bake.cpp ../src/bake_trace.cpp \
            ../src/world_flatten.cpp \
            ../src/sector_grid.cpp ../src/lod_select.cpp ../src/part_asset_v2.cpp \
@@ -308,7 +314,7 @@ COMP_CPP = composition_tests.cpp ../src/lod_bake.cpp ../src/bake_trace.cpp \
            $(COMMON_MSL_BLAS_SRC)
 COMP_C   = $(MSL)/material_registry.c
 
-FLATTEN_TARGET = part_flatten_tests
+FLATTEN_TARGET = build/part_flatten_tests
 FLATTEN_CPP = part_flatten_tests.cpp ../src/part_flatten.cpp ../src/lod_bake.cpp \
               ../src/bake_trace.cpp \
               ../src/part_cluster.cpp \
@@ -320,19 +326,19 @@ FLATTEN_CPP = part_flatten_tests.cpp ../src/part_flatten.cpp ../src/lod_bake.cpp
               $(COMMON_MSL_BLAS_SRC)
 FLATTEN_C   = $(MSL)/material_registry.c
 
-TILESETTORUSBVH_TARGET = tileset_torus_bvh_tests
+TILESETTORUSBVH_TARGET = build/tileset_torus_bvh_tests
 TILESETTORUSBVH_CPP    = tileset_torus_bvh_tests.cpp ../src/tileset_torus_bvh.cpp \
                          ../src/part_asset_v2.cpp \
                          $(COMMON_MSL_BLAS_SRC)
 TILESETTORUSBVH_C      = $(MSL)/material_registry.c
 
-TILESETMEADOWMANIFEST_TARGET = tileset_meadow_manifest_tests
+TILESETMEADOWMANIFEST_TARGET = build/tileset_meadow_manifest_tests
 TILESETMEADOWMANIFEST_CPP = tileset_meadow_manifest_tests.cpp ../src/part_graph.cpp \
                             ../src/part_asset_v2.cpp \
                             $(COMMON_MSL_BLAS_SRC)
 TILESETMEADOWMANIFEST_C   = $(MSL)/material_registry.c
 
-ISO_TARGET = iso_primitive_tests
+ISO_TARGET = build/iso_primitive_tests
 ISO_CPP = iso_primitive_tests.cpp field_probe.cpp \
           ../src/csg_lowering.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
           ../src/part_asset_v2.cpp \
@@ -341,47 +347,47 @@ ISO_C   = $(MSL)/surface.c $(MSL)/fat_primitive.c \
           $(SQL)/src/spatial_hash.c $(MEMLIB)/src/mem_pool.c \
           $(MSL)/material_registry.c
 
-DEV_TARGET = dev_live_edit_tests
+DEV_TARGET = build/dev_live_edit_tests
 DEV_SOURCES = dev_live_edit_tests.cpp ../src/live_edit.cpp ../src/inotify_watcher.cpp
 
-POLYTRI_TARGET = polygon_triangulate_tests
+POLYTRI_TARGET = build/polygon_triangulate_tests
 POLYTRI_CPP = polygon_triangulate_tests.cpp ../src/polygon_triangulate.cpp
 
-SHADER_SOURCE_TARGET = shader_source_tests
+SHADER_SOURCE_TARGET = build/shader_source_tests
 SHADER_SOURCE_CPP = shader_source_tests.cpp ../src/shader_source.cpp
 
-ASYNCQ_TARGET = async_queue_tests
+ASYNCQ_TARGET = build/async_queue_tests
 ASYNCQ_CPP = async_queue_tests.cpp ../src/async_bake.cpp
 
 # Bake Lab task 1.1 — BakeTrace span/counter collector (headless, pure CPU).
-BAKETRACE_TARGET = bake_trace_tests
+BAKETRACE_TARGET = build/bake_trace_tests
 BAKETRACE_CPP    = bake_trace_tests.cpp ../src/bake_trace.cpp
 
-TILESETGTEX_TARGET = tileset_gtex_tests
+TILESETGTEX_TARGET = build/tileset_gtex_tests
 TILESETGTEX_CPP    = tileset_gtex_tests.cpp ../src/tileset_gtex.cpp
 
 # Vulkan .gtex bake (V1) readback->save_gtex repack — pure CPU (header-only
 # inline helpers from ../src/render/tileset_bake_vk.h, no Vulkan link).
-TILESETVKREPACK_TARGET = tileset_bake_vk_repack_tests
+TILESETVKREPACK_TARGET = build/tileset_bake_vk_repack_tests
 TILESETVKREPACK_CPP    = tileset_bake_vk_repack_tests.cpp
 
 # Vulkan .gtex bake (V2) AO seam-invariance mechanism + ORM.r fold — pure CPU
 # (ported splitmix32/u01/cosine_hemi/make_basis + header-only gtex_pack_orm_ao,
 # no Vulkan link).
-TILESETVKAO_TARGET = tileset_bake_vk_ao_tests
+TILESETVKAO_TARGET = build/tileset_bake_vk_ao_tests
 TILESETVKAO_CPP    = tileset_bake_vk_ao_tests.cpp
 
 # Vulkan .gtex bake (V3) horizon pass -- pure CPU (header-only inline
 # gtex_bake_horizon_cpu from ../src/render/tileset_bake_vk.h), no Vulkan link.
-TILESETVKHORIZON_TARGET = tileset_bake_vk_horizon_tests
+TILESETVKHORIZON_TARGET = build/tileset_bake_vk_horizon_tests
 TILESETVKHORIZON_CPP    = tileset_bake_vk_horizon_tests.cpp
 
 # Volumetrics Task 3 — CPU emitter gather (distance filter, 256 cap).
-EMITTERGATHER_TARGET = emitter_gather_tests
+EMITTERGATHER_TARGET = build/emitter_gather_tests
 EMITTERGATHER_CPP    = emitter_gather_tests.cpp ../src/render/vk_emitter_gather.cpp
 
 # Phase 4 Task 4 — SceneRegistry reflected ECS validation + instantiation (def flavor).
-SCENE_REGISTRY_TARGET = scene_registry_tests
+SCENE_REGISTRY_TARGET = build/scene_registry_tests
 SCENE_REGISTRY_CPP    = scene_registry_tests.cpp ../src/ecs/scene_registry.cpp \
                         ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                         ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
@@ -392,11 +398,11 @@ SCENE_REGISTRY_C      = $(FLECS_C)
 
 # Phase 4 Task 6 — CPU stable dynamic instance slots (pure CPU, def flavor,
 # no Flecs/physics/ECS deps).
-DYNAMIC_SLOTS_TARGET = dynamic_instance_slots_tests
+DYNAMIC_SLOTS_TARGET = build/dynamic_instance_slots_tests
 DYNAMIC_SLOTS_CPP    = dynamic_instance_slots_tests.cpp ../src/render/dynamic_instance_slots.cpp
 
 # Phase 4 Task 5 — Recipe normalization + transactional bootstrap (def flavor).
-ENTITY_RECIPE_TARGET = entity_recipe_tests
+ENTITY_RECIPE_TARGET = build/entity_recipe_tests
 ENTITY_RECIPE_CPP    = entity_recipe_tests.cpp ../src/ecs/scene_registry.cpp \
                        ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                        ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
@@ -406,7 +412,7 @@ ENTITY_RECIPE_CPP    = entity_recipe_tests.cpp ../src/ecs/scene_registry.cpp \
 ENTITY_RECIPE_C      = $(FLECS_C)
 
 # Phase 4 Task 8 — ECS dynamic scene bridge (headless, Flecs, no GL/Vulkan).
-DYNAMIC_BRIDGE_TARGET = dynamic_bridge_tests
+DYNAMIC_BRIDGE_TARGET = build/dynamic_bridge_tests
 DYNAMIC_BRIDGE_CPP    = dynamic_scene_bridge_tests.cpp ../src/ecs/dynamic_scene_bridge.cpp \
                         ../src/render/dynamic_instance_slots.cpp \
                         ../src/ecs/scene_registry.cpp \
@@ -418,11 +424,11 @@ DYNAMIC_BRIDGE_CPP    = dynamic_scene_bridge_tests.cpp ../src/ecs/dynamic_scene_
 DYNAMIC_BRIDGE_C      = $(FLECS_C)
 
 # Phase 4 Task 9 — Editor model (pure CPU, no GL/Vulkan/Flecs needed).
-EDITOR_MODEL_TARGET = editor_model_tests
+EDITOR_MODEL_TARGET = build/editor_model_tests
 EDITOR_MODEL_CPP    = editor_model_tests.cpp ../../MatterEditor/editor_model.cpp
 
 # Phase 4 Task 10 — Properties registry (needs scene_registry for ComponentDescriptor).
-PROPERTIES_REGISTRY_TARGET = properties_registry_tests
+PROPERTIES_REGISTRY_TARGET = build/properties_registry_tests
 PROPERTIES_REGISTRY_CPP    = properties_registry_tests.cpp ../../MatterEditor/properties_registry.cpp \
                              ../src/ecs/scene_registry.cpp \
                              ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
@@ -433,7 +439,7 @@ PROPERTIES_REGISTRY_CPP    = properties_registry_tests.cpp ../../MatterEditor/pr
 PROPERTIES_REGISTRY_C      = $(FLECS_C)
 
 # Phase 4 Task 11 — Simulation control (Play/Pause/Step/Stop with snapshot).
-SIMULATION_CONTROL_TARGET = simulation_control_tests
+SIMULATION_CONTROL_TARGET = build/simulation_control_tests
 SIMULATION_CONTROL_CPP    = simulation_control_tests.cpp ../src/ecs/simulation_control.cpp \
                             ../src/ecs/scene_registry.cpp \
                             ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
@@ -444,7 +450,7 @@ SIMULATION_CONTROL_CPP    = simulation_control_tests.cpp ../src/ecs/simulation_c
 SIMULATION_CONTROL_C      = $(FLECS_C)
 
 # Phase 4 Task 12 — Specialized editors (pure CPU, no Flecs/GL).
-SPECIALIZED_EDITORS_TARGET = specialized_editors_tests
+SPECIALIZED_EDITORS_TARGET = build/specialized_editors_tests
 SPECIALIZED_EDITORS_CPP    = specialized_editors_tests.cpp \
                              ../../MatterEditor/specialized_editors.cpp \
                              ../../MatterEditor/properties_registry.cpp \
@@ -454,7 +460,7 @@ SPECIALIZED_EDITORS_C      = $(FLECS_C)
 # Phase 5 — entity -> ECS bridge (Ready world-state commands bootstrap Flecs
 # entities via scene::bootstrap_transactional). Needs the full Runtime, same
 # link set as SIMULATION_CONTROL.
-ECS_ENTITY_BRIDGE_TARGET = ecs_entity_bridge_tests
+ECS_ENTITY_BRIDGE_TARGET = build/ecs_entity_bridge_tests
 ECS_ENTITY_BRIDGE_CPP    = ecs_entity_bridge_tests.cpp \
                            ../src/ecs/scene_registry.cpp \
                            ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
@@ -465,23 +471,23 @@ ECS_ENTITY_BRIDGE_CPP    = ecs_entity_bridge_tests.cpp \
 ECS_ENTITY_BRIDGE_C      = $(FLECS_C)
 
 # Phase C Task 4 — RefineController tile-pairing + priority/eviction (pure CPU, def flavor).
-REFINECTL_TARGET = refine_controller_tests
+REFINECTL_TARGET = build/refine_controller_tests
 REFINECTL_CPP    = refine_controller_tests.cpp ../src/refine_controller.cpp \
                    ../src/part_graph_snapshot.cpp
 
 # Phase C Task 8 — SectorStreamer (pure CPU, no JS, no GL).
-SECTORSTREAM_TARGET = sector_streamer_tests
+SECTORSTREAM_TARGET = build/sector_streamer_tests
 SECTORSTREAM_CPP    = sector_streamer_tests.cpp ../src/sector_streamer.cpp
 
 # Phase 3 Task 2 - worker-only streaming coordinator (CPU-only).
-SECTORCOORD_TARGET = sector_streaming_coordinator_tests
+SECTORCOORD_TARGET = build/sector_streaming_coordinator_tests
 SECTORCOORD_CPP    = sector_streaming_coordinator_tests.cpp \
                      ../src/streaming/sector_streaming_coordinator.cpp \
                      ../src/sector_streamer.cpp
 SECTORCOORD_C      = $(FLECS_C)
 
 # Phase C Task 17 — resolve/manifest cache (headless, no GL needed).
-RESOLVECACHE_TARGET = resolve_cache_tests
+RESOLVECACHE_TARGET = build/resolve_cache_tests
 RESOLVECACHE_CPP    = resolve_cache_tests.cpp \
                       ../src/resolve_cache.cpp \
                       ../src/part_graph.cpp \
@@ -490,21 +496,21 @@ RESOLVECACHE_CPP    = resolve_cache_tests.cpp \
                       $(COMMON_MSL_BLAS_SRC)
 RESOLVECACHE_C      = $(MSL)/material_registry.c
 
-MODAPPLY_TARGET = modifier_apply_tests
+MODAPPLY_TARGET = build/modifier_apply_tests
 MODAPPLY_CPP = modifier_apply_tests.cpp ../src/modifier_apply.cpp \
                ../src/retopo_blacklist.cpp \
                $(MSL)/mesh_smooth.cpp $(MSL)/mesh_simplifier.cpp $(MSL)/mesh_indexed.cpp
 
 # Phase C Task 3 — terrain field program interpreter (pure CPU, no JS, no GL).
-TERRAINFIELD_TARGET = terrain_field_tests
+TERRAINFIELD_TARGET = build/terrain_field_tests
 TERRAINFIELD_CPP    = terrain_field_tests.cpp ../src/terrain_field.cpp
 
 # Phase C Task 5 — terrain mesher (pure CPU: terrain_field + terrain_mesher, no JS, no GL).
-TERRAINMESH_TARGET = terrain_mesher_tests
+TERRAINMESH_TARGET = build/terrain_mesher_tests
 TERRAINMESH_CPP    = terrain_mesher_tests.cpp ../src/terrain_field.cpp ../src/terrain_mesher.cpp
 
 # Phase C Task 5 — terrain verb (sh flavor: bake_source + WorldBinding + terrainVolume).
-TERRAINVERB_TARGET = terrain_verb_tests
+TERRAINVERB_TARGET = build/terrain_verb_tests
 TERRAINVERB_CPP = terrain_verb_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
                   ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                   ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
@@ -518,7 +524,7 @@ TERRAINVERB_CPP = terrain_verb_tests.cpp ../src/part_graph.cpp ../src/bake_trace
 TERRAINVERB_C = $(COMMON_MSL_C)
 
 # Phase C Task 7 — WorldSector.js + native world query verbs (sh flavor).
-SECTORBAKE_TARGET = sector_bake_tests
+SECTORBAKE_TARGET = build/sector_bake_tests
 SECTORBAKE_CPP = sector_bake_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
                  ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                  ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
@@ -529,7 +535,7 @@ SECTORBAKE_CPP = sector_bake_tests.cpp ../src/part_graph.cpp ../src/bake_trace.c
                  $(COMMON_MSL_FULL_SRC)
 SECTORBAKE_C = $(COMMON_MSL_C)
 
-PARTSTORE_TARGET = partstore_tests
+PARTSTORE_TARGET = build/partstore_tests
 PARTSTORE_CPP = partstore_tests.cpp ../src/render/part_store.cpp \
                 ../src/render/matrix_math.cpp \
                 ../src/render/raster_mesh.cpp ../src/lod_select.cpp \
@@ -546,7 +552,7 @@ PARTSTORE_C   = $(MSL)/material_registry.c
 # script_host_tests uses just def+QJS_INC (no MATTER_HAVE_SCRIPT_HOST). But
 # the graph_integration/example/gallery/treebake/grasslod/stressforest
 # family all use -DMATTER_HAVE_SCRIPT_HOST + QJS_INC.
-SCRIPT_TARGET = script_host_tests
+SCRIPT_TARGET = build/script_host_tests
 SCRIPT_CPP = script_host_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
              ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
              ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
@@ -560,7 +566,7 @@ SCRIPT_C   = $(COMMON_MSL_C)
 
 # Modifier-region bake plumbing (Task 4): reuses the script-host object set
 # with a different top-level .cpp.
-MODBAKE_TARGET = modifier_region_bake_tests
+MODBAKE_TARGET = build/modifier_region_bake_tests
 MODBAKE_CPP = modifier_region_bake_tests.cpp $(filter-out script_host_tests.cpp, $(SCRIPT_CPP))
 MODBAKE_C   = $(COMMON_MSL_C)
 
@@ -576,7 +582,7 @@ PF_CPP = ../src/pf_bindings.cpp \
 # (dsl_bindings.cpp now registers the terrainVolume verb which calls mesh_sector)
 TERRAIN_SRC = ../src/terrain_field.cpp ../src/terrain_mesher.cpp
 
-GRAPH_INT_TARGET = part_graph_integration_tests
+GRAPH_INT_TARGET = build/part_graph_integration_tests
 GRAPH_INT_CPP = part_graph_integration_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
@@ -587,7 +593,7 @@ GRAPH_INT_CPP = part_graph_integration_tests.cpp ../src/part_graph.cpp ../src/ba
                 $(COMMON_MSL_FULL_SRC)
 GRAPH_INT_C   = $(COMMON_MSL_C)
 
-EXAMPLE_TARGET = example_world
+EXAMPLE_TARGET = build/example_world
 EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
               ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/dsl_bindings.cpp \
               ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
@@ -603,34 +609,34 @@ EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
               $(COMMON_MSL_FULL_SRC)
 EXAMPLE_C   = $(COMMON_MSL_C)
 
-GALLERY_TARGET = gallery_bake_tests
+GALLERY_TARGET = build/gallery_bake_tests
 GALLERY_CPP = gallery_bake_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 
-TREEBAKE_TARGET = tree_bake_check
+TREEBAKE_TARGET = build/tree_bake_check
 TREEBAKE_CPP = tree_bake_check.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 
-ROCKPROF_TARGET = rock_bake_profile
+ROCKPROF_TARGET = build/rock_bake_profile
 ROCKPROF_CPP = rock_bake_profile.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 
-GRASSLOD_TARGET = grass_lod_tests
+GRASSLOD_TARGET = build/grass_lod_tests
 GRASSLOD_CPP = grass_lod_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 
-STRESSFOREST_TARGET = stress_forest_tests
+STRESSFOREST_TARGET = build/stress_forest_tests
 STRESSFOREST_CPP = stress_forest_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 
-LIGHTING_GARDEN_TARGET = lighting_garden_tests
+LIGHTING_GARDEN_TARGET = build/lighting_garden_tests
 LIGHTING_GARDEN_CPP = lighting_garden_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 LIGHTING_GARDEN_C = $(COMMON_MSL_C)
 
 # ===== Task 9: live-edit production seams ==================================
-LIVEPROD_TARGET = live_edit_prod_tests
+LIVEPROD_TARGET = build/live_edit_prod_tests
 LIVEPROD_CPP = live_edit_prod_tests.cpp \
                ../src/live_edit_prod.cpp \
                ../src/part_graph_snapshot.cpp \
                $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 LIVEPROD_C   = $(COMMON_MSL_C)
 
-TILESETBAKE_TARGET = tileset_bake_tests
+TILESETBAKE_TARGET = build/tileset_bake_tests
 TILESETBAKE_CPP = tileset_bake_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
                   ../src/tileset_bake.cpp ../src/tileset_settle.cpp \
                   ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
@@ -646,7 +652,7 @@ TILESETBAKE_CPP = tileset_bake_tests.cpp ../src/part_graph.cpp ../src/bake_trace
                   $(COMMON_MSL_FULL_SRC)
 TILESETBAKE_C   = $(COMMON_MSL_C)
 
-TILESETPARAMS_TARGET = tileset_params_tests
+TILESETPARAMS_TARGET = build/tileset_params_tests
 TILESETPARAMS_CPP = tileset_params_tests.cpp $(filter-out tileset_bake_tests.cpp,$(TILESETBAKE_CPP))
 TILESETPARAMS_C = $(TILESETBAKE_C)
 
@@ -654,7 +660,7 @@ TILESETPARAMS_C = $(TILESETBAKE_C)
 # build_settle_plan's dependencies (same as TILESETBAKE_CPP: full script host +
 # part_graph + tileset_bake/settle/collider) plus tileset_metrics.cpp for the
 # pose-delta compare gate.
-SETTLEBENCH_TARGET = settle_bench
+SETTLEBENCH_TARGET = build/settle_bench
 SETTLEBENCH_CPP = settle_bench.cpp $(filter-out tileset_bake_tests.cpp,$(TILESETBAKE_CPP)) \
                   ../src/tileset_metrics.cpp
 SETTLEBENCH_C = $(TILESETBAKE_C)
@@ -662,27 +668,27 @@ SETTLEBENCH_C = $(TILESETBAKE_C)
 # ===== flavor qjs (script_host_tests + tileset_dsl_tests + terrainnoise) ===
 # NOTE: script_host_tests originally compiled with CFLAGS + INCLUDE_PATHS +
 # QJS_INC (no -DMATTER_HAVE_SCRIPT_HOST). That maps to `qjs`, not `sh`.
-TILESETDSL_TARGET = tileset_dsl_tests
+TILESETDSL_TARGET = build/tileset_dsl_tests
 TILESETDSL_CPP = tileset_dsl_tests.cpp $(filter-out script_host_tests.cpp, $(SCRIPT_CPP))
 
 # Phase C Task 1: terrain noise contract (qjs flavor — module_resolver + QJS only).
-TERRAINNOISE_TARGET = terrain_noise_tests
+TERRAINNOISE_TARGET = build/terrain_noise_tests
 TERRAINNOISE_CPP = terrain_noise_tests.cpp ../src/module_resolver.cpp
 
 # Phase 4 Task 1: hermetic World JavaScript statics contract.
-WORLD_DEFINITION_TARGET = world_definition_tests
+WORLD_DEFINITION_TARGET = build/world_definition_tests
 WORLD_DEFINITION_CPP = world_definition_tests.cpp \
                        ../src/script/world_definition_loader.cpp \
                        ../src/module_resolver.cpp
 
 # Phase 4 Task 13: PhysicsPlayground world and closure.
-PHYSICS_PLAYGROUND_TARGET = physics_playground_tests
+PHYSICS_PLAYGROUND_TARGET = build/physics_playground_tests
 PHYSICS_PLAYGROUND_CPP    = physics_playground_tests.cpp \
                             ../src/script/world_definition_loader.cpp \
                             ../src/module_resolver.cpp
 
 # Phase C Task 4 — eval_world: World builder DSL + ScriptHost::eval_world (sh flavor).
-EVALWORLD_TARGET = eval_world_tests
+EVALWORLD_TARGET = build/eval_world_tests
 EVALWORLD_CPP = eval_world_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
@@ -696,7 +702,7 @@ EVALWORLD_CPP = eval_world_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp
 EVALWORLD_C = $(COMMON_MSL_C)
 
 # Phase C Task 1: fold cache in ScriptHost (sh flavor).
-FOLDCACHE_TARGET = fold_cache_tests
+FOLDCACHE_TARGET = build/fold_cache_tests
 FOLDCACHE_CPP = fold_cache_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
@@ -710,7 +716,7 @@ FOLDCACHE_CPP = fold_cache_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp
 FOLDCACHE_C = $(COMMON_MSL_C)
 
 # ===== flavor sp2 (SP2_SCRIPT_HOST) =====================================
-SHLIB_TARGET = shared_lib_tests
+SHLIB_TARGET = build/shared_lib_tests
 SHLIB_CPP = shared_lib_tests.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
             ../src/bake_trace.cpp \
             ../src/part_graph.cpp \
@@ -723,7 +729,7 @@ SHLIB_CPP = shared_lib_tests.cpp ../src/module_resolver.cpp ../src/script_rng_bi
 SHLIB_C   = $(COMMON_MSL_C)
 
 # ===== flavor vl (viewer_logic) =========================================
-VIEWER_LOGIC_TARGET = viewer_logic_tests
+VIEWER_LOGIC_TARGET = build/viewer_logic_tests
 VIEWER_PIPELINE_CPP = $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../../MatterEditor/camera_controller.cpp \
@@ -752,7 +758,7 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
 # full script-host + DSL + modifier_apply source set.  Build with the retopo
 # flavor (-DMATTER_HAVE_AUTOREMESHER) so modifier_apply dispatches retopo.
 # mesh_retopo.cpp is the only autoremesher-specific addition over MODBAKE_CPP.
-RETOPO_INT_TARGET = retopo_integration_tests
+RETOPO_INT_TARGET = build/retopo_integration_tests
 RETOPO_INT_CPP = retopo_integration_tests.cpp ../src/bake_trace.cpp \
                  ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp \
                  ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
@@ -1066,13 +1072,13 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # Binary link rules (link-only; every .o was built above).
 # ---------------------------------------------------------------------------
 
-$(MATRIX_TARGET): $(MATRIX_CPP) $(MATRIX_HEADERS)
+$(MATRIX_TARGET): $(MATRIX_CPP) $(MATRIX_HEADERS) | build
 	$(CC) $(MATRIX_CPP) -o $@ $(CFLAGS) $(INCLUDE_PATHS)
 
 run-matrix: $(MATRIX_TARGET)
 	./$(MATRIX_TARGET)
 
-$(TILESETSLICER_TARGET): $(TILESETSLICER_CPP) $(TILESETSLICER_HEADERS)
+$(TILESETSLICER_TARGET): $(TILESETSLICER_CPP) $(TILESETSLICER_HEADERS) | build
 	$(CC) $(TILESETSLICER_CPP) -o $@ $(CFLAGS) $(INCLUDE_PATHS)
 
 run-tilesetslicer: $(TILESETSLICER_TARGET)
@@ -1378,7 +1384,7 @@ run-live: $(DEV_TARGET)
 	./$(DEV_TARGET)
 
 # Box3d physics smoke test.
-tileset_physics_tests: tileset_physics_tests.cpp ../src/tileset_settle.cpp ../src/tileset_collider.cpp $(BOX3D_DIR)/libbox3d.a
+build/tileset_physics_tests: tileset_physics_tests.cpp ../src/tileset_settle.cpp ../src/tileset_collider.cpp $(BOX3D_DIR)/libbox3d.a | build
 	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include -I../src -I$(BOX3D_DIR)/include \
 	    -o $@ tileset_physics_tests.cpp ../src/tileset_settle.cpp ../src/tileset_collider.cpp \
 	    $(BOX3D_DIR)/libbox3d.a -lm
@@ -1386,22 +1392,22 @@ tileset_physics_tests: tileset_physics_tests.cpp ../src/tileset_settle.cpp ../sr
 $(BOX3D_LIB):
 	$(MAKE) -C $(BOX3D_DIR)
 
-run-tilesetphysics: tileset_physics_tests
-	./tileset_physics_tests
+run-tilesetphysics: build/tileset_physics_tests
+	./build/tileset_physics_tests
 
-tileset_core_tests: tileset_core_tests.cpp ../src/tileset_layout.cpp ../src/tileset_collider.cpp
+build/tileset_core_tests: tileset_core_tests.cpp ../src/tileset_layout.cpp ../src/tileset_collider.cpp | build
 	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include -I../src \
 	    -o $@ tileset_core_tests.cpp ../src/tileset_layout.cpp ../src/tileset_collider.cpp
 
-run-tilesetcore: tileset_core_tests
-	./tileset_core_tests
+run-tilesetcore: build/tileset_core_tests
+	./build/tileset_core_tests
 
-tileset_placement_tests: tileset_placement_tests.cpp ../src/tileset_placement.cpp
+build/tileset_placement_tests: tileset_placement_tests.cpp ../src/tileset_placement.cpp | build
 	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include -I../src \
 	    -o $@ tileset_placement_tests.cpp ../src/tileset_placement.cpp
 
-run-tilesetplacement: tileset_placement_tests
-	./tileset_placement_tests
+run-tilesetplacement: build/tileset_placement_tests
+	./build/tileset_placement_tests
 
 # Tileset DSL root.
 $(TILESETDSL_TARGET): $(TILESETDSL_OBJS)
@@ -1573,9 +1579,9 @@ run-modbake: $(MODBAKE_TARGET)
 # TUs, `mslc` for MSL C sources, `qjsc` for QuickJS C sources.
 # ---------------------------------------------------------------------------
 
-gpu-tests: $(call obj_of,gpu,gpu_cull_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
+gpu-tests: $(call obj_of,gpu,gpu_cull_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
 	$(CC) $(call obj_of,gpu,gpu_cull_tests.cpp) $(GPU_SHARED_OBJS) \
-	      -o gpu_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
+	      -o build/gpu_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
 	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
 
 # Retired in V5 (docs/vulkan-rt-gtex-bake.md §I.8 "GPU test targets"), together
@@ -1587,101 +1593,101 @@ gpu-tests: $(call obj_of,gpu,gpu_cull_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders
 # (run-tilesetvkrepack / run-tilesetvkao / run-tilesetvkhorizon) and the
 # device-side gates under run-vk-scene-renderer.
 
-tileset-provider-tests: $(call obj_of,gpu,tileset_provider_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
+tileset-provider-tests: $(call obj_of,gpu,tileset_provider_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
 	$(CC) $(call obj_of,gpu,tileset_provider_tests.cpp) $(GPU_SHARED_OBJS) \
-	      -o tileset_provider_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
+	      -o build/tileset_provider_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
 	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
 
 run-tilesetprovider: tileset-provider-tests
-	GALLIUM_DRIVER=d3d12 ./tileset_provider_tests
+	GALLIUM_DRIVER=d3d12 ./build/tileset_provider_tests
 
-api-tests: $(call obj_of,gpu,api_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
+api-tests: $(call obj_of,gpu,api_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
 	$(CC) $(call obj_of,gpu,api_tests.cpp) $(GPU_SHARED_OBJS) \
-	      -o api_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
+	      -o build/api_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
 	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
 
 run-api-tests: api-tests
-	cd ../../MatterEditor && GALLIUM_DRIVER=d3d12 ../MatterEngine3/tests/api_tests
+	cd ../../MatterEditor && GALLIUM_DRIVER=d3d12 ../MatterEngine3/tests/build/api_tests
 
 # Phase C Task 9 — world-kind session end-to-end test (GPU suite).
-world-stream-tests: $(call obj_of,gpu,world_stream_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
+world-stream-tests: $(call obj_of,gpu,world_stream_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
 	$(CC) $(call obj_of,gpu,world_stream_tests.cpp) $(GPU_SHARED_OBJS) \
-	      -o world_stream_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
+	      -o build/world_stream_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
 	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
 
 run-worldstream: world-stream-tests
-	cd ../../MatterEditor && GALLIUM_DRIVER=d3d12 MATTER_STREAM_RINGS="32:3,80:2" ../MatterEngine3/tests/world_stream_tests
+	cd ../../MatterEditor && GALLIUM_DRIVER=d3d12 MATTER_STREAM_RINGS="32:3,80:2" ../MatterEngine3/tests/build/world_stream_tests
 
 # Phase B Task 6 — async bake worker command loop tests.
-async-bake-tests: $(call obj_of,gpu,async_bake_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
+async-bake-tests: $(call obj_of,gpu,async_bake_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
 	$(CC) $(call obj_of,gpu,async_bake_tests.cpp) $(GPU_SHARED_OBJS) \
-	      -o async_bake_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
+	      -o build/async_bake_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
 	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
 
 run-asyncbake: async-bake-tests
-	./async_bake_tests
+	./build/async_bake_tests
 
 # Phase C Task 13 — demand-driven bake primitives (BakePolicy + bake_plan + ensure_*).
-demand-bake-tests: $(call obj_of,gpu,demand_bake_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
+demand-bake-tests: $(call obj_of,gpu,demand_bake_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
 	$(CC) $(call obj_of,gpu,demand_bake_tests.cpp) $(GPU_SHARED_OBJS) \
-	      -o demand_bake_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
+	      -o build/demand_bake_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
 	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
 
 run-demandbake: demand-bake-tests
-	./demand_bake_tests
+	./build/demand_bake_tests
 
 # Phase C Task 2 — transient artifact routing (tmpfs scratch dir).
 # Tests: bake transient modules to scratch, release_transient unlink,
 # PartStore scratch-aware get_or_load, persistent modules still use cache.
-transient-tests: $(call obj_of,gpu,transient_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
+transient-tests: $(call obj_of,gpu,transient_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
 	$(CC) $(call obj_of,gpu,transient_tests.cpp) $(GPU_SHARED_OBJS) \
-	      -o transient_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
+	      -o build/transient_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
 	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
 
 run-transient: transient-tests
-	./transient_tests
+	./build/transient_tests
 
 # Phase C Task 5 — part-level release: PartStore::release + GpuCuller::release_part.
-release-part-tests: $(call obj_of,gpu,release_part_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
+release-part-tests: $(call obj_of,gpu,release_part_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
 	$(CC) $(call obj_of,gpu,release_part_tests.cpp) $(GPU_SHARED_OBJS) \
-	      -o release_part_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
+	      -o build/release_part_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
 	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
 
 run-releasepart: release-part-tests
-	GALLIUM_DRIVER=d3d12 ./release_part_tests
+	GALLIUM_DRIVER=d3d12 ./build/release_part_tests
 
 # Alias matching the brief's exact target name.
 run-release-part: run-releasepart
 
 # Task 3 — indexed VkScenePart assembly (CPU-only; no GL/Vulkan runtime needed).
 # Compiles under the gpu flavor (needs Vulkan headers) but links only std libs.
-vk-scene-renderer-tests: $(call obj_of,gpu,vk_scene_renderer_tests.cpp) | ../shaders_gen/embedded_shaders.h
+vk-scene-renderer-tests: $(call obj_of,gpu,vk_scene_renderer_tests.cpp) | ../shaders_gen/embedded_shaders.h build
 	$(CC) $(call obj_of,gpu,vk_scene_renderer_tests.cpp) \
-	      -o vk_scene_renderer_tests $(FLAVOR_gpu_FLAGS) -lm -lpthread
+	      -o build/vk_scene_renderer_tests $(FLAVOR_gpu_FLAGS) -lm -lpthread
 
 run-vk-scene-renderer: vk-scene-renderer-tests
-	./vk_scene_renderer_tests
+	./build/vk_scene_renderer_tests
 
 # GPU cull parity suite (gpu_cull_tests.cpp) — run target for task-gate use.
 run-gpucull: gpu-tests
-	GALLIUM_DRIVER=d3d12 ./gpu_tests
+	GALLIUM_DRIVER=d3d12 ./build/gpu_tests
 
 # Phase C Task 6 — camera-driven refine loop (headless, allow_gl_lt_46=true).
-refine-loop-tests: $(call obj_of,gpu,refine_loop_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h
+refine-loop-tests: $(call obj_of,gpu,refine_loop_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
 	$(CC) $(call obj_of,gpu,refine_loop_tests.cpp) $(GPU_SHARED_OBJS) \
-	      -o refine_loop_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
+	      -o build/refine_loop_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
 	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
 
 run-refineloop: refine-loop-tests
-	GALLIUM_DRIVER=d3d12 ./refine_loop_tests
+	GALLIUM_DRIVER=d3d12 ./build/refine_loop_tests
 
 # Phase C Task 17 — resolve/manifest cache round-trip (headless, no GL needed).
-resolve-cache-tests: $(call obj_list,def,$(RESOLVECACHE_CPP)) $(call obj_list,mslc,$(RESOLVECACHE_C))
+resolve-cache-tests: $(call obj_list,def,$(RESOLVECACHE_CPP)) $(call obj_list,mslc,$(RESOLVECACHE_C)) | build
 	$(CC) $(call obj_list,def,$(RESOLVECACHE_CPP)) $(call obj_list,mslc,$(RESOLVECACHE_C)) \
-	      -o resolve_cache_tests $(FLAVOR_def_FLAGS) $(LDFLAGS) $(LDLIBS)
+	      -o build/resolve_cache_tests $(FLAVOR_def_FLAGS) $(LDFLAGS) $(LDLIBS)
 
 run-resolvecache: resolve-cache-tests
-	./resolve_cache_tests
+	./build/resolve_cache_tests
 
 # The Vulkan smoke executable is a Windows artifact built with the standalone
 # vendored GLFW archive owned by MatterEditor's cross-build rules.
@@ -1690,61 +1696,30 @@ vulkan-smoke:
 	$(MAKE) -C ../../MatterEditor vulkan-smoke
 
 # ---------------------------------------------------------------------------
-# Clean: remove OBJDIR and all binaries (test-binary-name list, since they
-# aren't $(TARGET)-style variables in every case).
+# Clean: every object (build/obj/) and every binary (build/*) now lives under
+# build/, so removing the whole tree is sufficient. The clean-* sub-targets
+# below (chained on as extra prerequisites) are redundant with this but kept
+# so `make clean-eventhub` etc. still work standalone.
 # ---------------------------------------------------------------------------
 clean:
-	rm -rf $(OBJDIR)
-	rm -f $(PARTV2_TARGET) $(SCRIPT_TARGET) $(GRAPH_TARGET) $(GRAPH_INT_TARGET) $(EMITTERGATHER_TARGET) $(WORLD_DEFINITION_TARGET) \
-	      $(PHYSICS_PLAYGROUND_TARGET) \
-	      $(TRIVAR_TARGET) $(SHLIB_TARGET) $(COMP_TARGET) $(DEV_TARGET) \
-	      $(EXAMPLE_TARGET) $(VIEWER_LOGIC_TARGET) $(TREEBAKE_TARGET) \
-	      $(GRASSLOD_TARGET) $(STRESSFOREST_TARGET) $(LIGHTING_GARDEN_TARGET) \
-	      $(TILESETMEADOWMANIFEST_TARGET) $(RETOPO_INT_TARGET) $(SHADER_SOURCE_TARGET) \
-	      $(POLYTRI_TARGET) $(ISO_TARGET) $(FLATTEN_TARGET) \
-	      $(TILESETTORUSBVH_TARGET) $(TILESETDSL_TARGET) $(TILESETBAKE_TARGET) \
-	      $(TILESETGTEX_TARGET) $(ASYNCQ_TARGET) $(BAKETRACE_TARGET) $(GALLERY_TARGET) \
-	      $(LIVEPROD_TARGET) $(MODAPPLY_TARGET) $(MODBAKE_TARGET) $(PARTSTORE_TARGET) \
-	      $(TERRAINNOISE_TARGET) \
-	      $(REFINECTL_TARGET) \
-	      $(SECTORSTREAM_TARGET) \
-	      $(SECTORCOORD_TARGET) \
-	      $(TERRAINFIELD_TARGET) \
-	      $(TERRAINMESH_TARGET) \
-	      $(TERRAINVERB_TARGET) \
-	      $(SECTORBAKE_TARGET) \
-	      $(EVALWORLD_TARGET) \
-	      $(MATRIX_TARGET) \
-	      $(TILESETSLICER_TARGET) \
-	      $(ECS_TARGET) \
-	      $(PHYSICS_TARGET) \
-	      $(SCENE_REGISTRY_TARGET) \
-	      $(ENTITY_RECIPE_TARGET) \
-	      $(DYNAMIC_SLOTS_TARGET) \
-	      $(SETTLEBENCH_TARGET) \
-	      tileset_physics_tests tileset_core_tests tileset_placement_tests \
-	      gpu_tests tileset_provider_tests \
-	      api_tests async_bake_tests demand_bake_tests transient_tests release_part_tests \
-	      refine_loop_tests \
-	      resolve_cache_tests \
-	      world_stream_tests
+	rm -rf build
 
 # ---------------------------------------------------------------------------
 # Bake Lab task 5.3: pose-delta metric unit tests (settle-tick-optimizer.md
 # §II.3). Self-contained append-only block: separate .PHONY line and a clean
 # hook so the shared .PHONY/clean lines above stay untouched.
 # ---------------------------------------------------------------------------
-tileset_metrics_tests: tileset_metrics_tests.cpp ../src/tileset_metrics.cpp ../src/tileset_metrics.h
+build/tileset_metrics_tests: tileset_metrics_tests.cpp ../src/tileset_metrics.cpp ../src/tileset_metrics.h | build
 	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include -I../src \
 	    -o $@ tileset_metrics_tests.cpp ../src/tileset_metrics.cpp -lm
 
-run-tilesetmetrics: tileset_metrics_tests
-	./tileset_metrics_tests
+run-tilesetmetrics: build/tileset_metrics_tests
+	./build/tileset_metrics_tests
 
 .PHONY: run-tilesetmetrics clean-tilesetmetrics
 clean: clean-tilesetmetrics
 clean-tilesetmetrics:
-	rm -f tileset_metrics_tests
+	rm -f build/tileset_metrics_tests
 
 # ---------------------------------------------------------------------------
 # E1a — evt::Channel<T> transport primitive tests (event-system.md §II.1 E1).
@@ -1754,17 +1729,17 @@ clean-tilesetmetrics:
 # channel.h) — no engine .cpp deps, no GL/raylib. -lpthread for the
 # std::thread producer/consumer tests.
 # ---------------------------------------------------------------------------
-event_channel_tests: event_channel_tests.cpp ../include/matter/event/channel.h check.h
+build/event_channel_tests: event_channel_tests.cpp ../include/matter/event/channel.h check.h | build
 	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include \
 	    -o $@ event_channel_tests.cpp -lpthread
 
-run-eventchannel: event_channel_tests
-	./event_channel_tests
+run-eventchannel: build/event_channel_tests
+	./build/event_channel_tests
 
 .PHONY: run-eventchannel clean-eventchannel
 clean: clean-eventchannel
 clean-eventchannel:
-	rm -f event_channel_tests
+	rm -f build/event_channel_tests
 
 # ---------------------------------------------------------------------------
 # E1b -- evt::Hub tests (event-system.md S II.1 E1, S II.4 items 1 and 7).
@@ -1788,17 +1763,17 @@ EVENTHUB_HEADERS = check.h ../include/matter/event/channel.h \
                    ../include/matter/event/event_hub.h \
                    ../include/matter/event/detail/dispatch_context.h
 
-event_hub_tests: $(EVENTHUB_SRC) $(EVENTHUB_HEADERS)
+build/event_hub_tests: $(EVENTHUB_SRC) $(EVENTHUB_HEADERS) | build
 	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include -I../src \
 	    -o $@ $(EVENTHUB_SRC) -lpthread
 
-run-eventhub: event_hub_tests
-	./event_hub_tests
+run-eventhub: build/event_hub_tests
+	./build/event_hub_tests
 
 .PHONY: run-eventhub clean-eventhub
 clean: clean-eventhub
 clean-eventhub:
-	rm -f event_hub_tests
+	rm -f build/event_hub_tests
 
 # ---------------------------------------------------------------------------
 # I.11 -- error-sink migration tests (event-system.md S I.11 Notification-sink
@@ -1821,17 +1796,17 @@ ERROREVENTS_HEADERS = check.h ../include/matter/event/event_hub.h \
                       ../src/ecs/bridge_error_hub.h \
                       ../src/ecs/bridge_error_sink.h
 
-error_events_tests: $(ERROREVENTS_SRC) $(ERROREVENTS_HEADERS)
+build/error_events_tests: $(ERROREVENTS_SRC) $(ERROREVENTS_HEADERS) | build
 	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include -I../src \
 	    -o $@ $(ERROREVENTS_SRC) -lpthread
 
-run-errorevents: error_events_tests
-	./error_events_tests
+run-errorevents: build/error_events_tests
+	./build/error_events_tests
 
 .PHONY: run-errorevents clean-errorevents
 clean: clean-errorevents
 clean-errorevents:
-	rm -f error_events_tests
+	rm -f build/error_events_tests
 
 # ---------------------------------------------------------------------------
 # E4a -- evt::CommandRegistry tests (event-system.md S I.10, S II.4 items 2
@@ -1855,17 +1830,17 @@ EVENTCMD_HEADERS = check.h ../include/matter/event/channel.h \
                    ../include/matter/event/command.h \
                    ../include/matter/event/detail/dispatch_context.h
 
-event_command_tests: $(EVENTCMD_SRC) $(EVENTCMD_HEADERS)
+build/event_command_tests: $(EVENTCMD_SRC) $(EVENTCMD_HEADERS) | build
 	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include -I../src \
 	    -o $@ $(EVENTCMD_SRC) -lpthread
 
-run-eventcommand: event_command_tests
-	./event_command_tests
+run-eventcommand: build/event_command_tests
+	./build/event_command_tests
 
 .PHONY: run-eventcommand clean-eventcommand
 clean: clean-eventcommand
 clean-eventcommand:
-	rm -f event_command_tests
+	rm -f build/event_command_tests
 
 # ---------------------------------------------------------------------------
 # E5a -- evt::Property<T> + evt::PropertyScheduler tests (event-system.md
@@ -1885,17 +1860,17 @@ EVENTPROP_HEADERS = check.h ../include/matter/event/property.h \
                     ../include/matter/event/registration_error.h \
                     ../include/matter/event/detail/dispatch_context.h
 
-event_property_tests: $(EVENTPROP_SRC) $(EVENTPROP_HEADERS)
+build/event_property_tests: $(EVENTPROP_SRC) $(EVENTPROP_HEADERS) | build
 	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include -I../src \
 	    -o $@ $(EVENTPROP_SRC) -lpthread
 
-run-eventproperty: event_property_tests
-	./event_property_tests
+run-eventproperty: build/event_property_tests
+	./build/event_property_tests
 
 .PHONY: run-eventproperty clean-eventproperty
 clean: clean-eventproperty
 clean-eventproperty:
-	rm -f event_property_tests
+	rm -f build/event_property_tests
 
 # ---------------------------------------------------------------------------
 # E5b -- scene::SceneChangeTracker + scene::SceneService tests
@@ -1905,7 +1880,7 @@ clean-eventproperty:
 # the run-ecs-entity-bridge target. Links the Windows flecs runtime libs
 # (ws2_32/dbghelp/winmm) the scene-registry target already uses.
 # ---------------------------------------------------------------------------
-SCENETRACKER_TARGET = scene_tracker_tests
+SCENETRACKER_TARGET = build/scene_tracker_tests
 SCENETRACKER_CPP    = scene_tracker_tests.cpp \
                       ../src/scene/scene_service.cpp \
                       ../src/scene/scene_change_tracker.cpp \
@@ -1931,7 +1906,7 @@ run-scenetracker: $(SCENETRACKER_TARGET)
 .PHONY: run-scenetracker clean-scenetracker
 clean: clean-scenetracker
 clean-scenetracker:
-	rm -f scene_tracker_tests
+	rm -f build/scene_tracker_tests
 
 # ---------------------------------------------------------------------------
 # E6 -- physics contact/sensor events as flecs entity events (event-system.md
@@ -1945,7 +1920,7 @@ clean-scenetracker:
 # target above); only physicsevents_tests.cpp needs a fresh def rule. flecs.c
 # reuses the physicsc flavor object the physics target builds.
 # ---------------------------------------------------------------------------
-PHYSICSEVENTS_TARGET = physicsevents_tests
+PHYSICSEVENTS_TARGET = build/physicsevents_tests
 PHYSICSEVENTS_CPP    = physicsevents_tests.cpp ../src/ecs/scene_registry.cpp \
                        ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                        ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
@@ -1971,4 +1946,4 @@ run-physicsevents: $(PHYSICSEVENTS_TARGET)
 .PHONY: run-physicsevents clean-physicsevents
 clean: clean-physicsevents
 clean-physicsevents:
-	rm -f physicsevents_tests
+	rm -f build/physicsevents_tests

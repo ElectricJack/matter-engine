@@ -178,13 +178,17 @@ Current projects and their relationships. Dependencies run one way only:
    - Provides: script host (QuickJS-ng DSL), bake pipeline (world_flatten/lod_bake/sector_grid),
      render subsystem (renderer/raster_composer/part_store/world_composer/gpu_culler),
      provider subsystem (local_provider/resolvers), facade (matter_engine.cpp)
-   - Build: `make -C MatterEngine3` → `libmatter_engine3.a` + embedded shader header
+   - Build: `make -C MatterEngine3` → `build/libmatter_engine3.a` + embedded shader header
    - Tests: `make -C MatterEngine3/tests run-*` (headless) and GPU suites with `GALLIUM_DRIVER=d3d12`
 
 6. **MatterEditor** - Interactive editor application linking the kernel library
    - Dependencies: MatterEngine3 (libmatter_engine3.a), MatterSurfaceLib, raylib, Dear ImGui,
      QuickJS-ng, Box3d, optionally autoremesher_core + TBB
-   - Build: `make -C MatterEditor` → `editor` binary (runs from MatterEditor/ working directory)
+   - Build: `make -C MatterEditor` → `build/linux/editor` (or `make -C MatterEditor windows` →
+     `build/windows/editor.exe`); always launched from the MatterEditor/ working directory
+   - Packaging: `make -C MatterEditor dist` (optionally `PROJECT=<name>`, default `world_demo`)
+     → `build/dist/<PROJECT>/` — the exe plus `projects/<PROJECT>/` (minus `.cache`/`backup`),
+     ready to zip and hand off; shaders are embedded in the exe, not copied
    - Shader symlinks: `MatterEditor/shaders` → libs/MatterSurfaceLib/shaders,
      `MatterEditor/shaders_gpu` → MatterEngine3/shaders_gpu
 

@@ -5,7 +5,7 @@ LDFLAGS = -lm
 
 SRC_DIR = src
 INCLUDE_DIR = include
-OBJ_DIR = obj
+OBJ_DIR = build/obj
 
 # Create object directory if it doesn't exist
 $(shell mkdir -p $(OBJ_DIR))
@@ -19,7 +19,7 @@ OBJS = $(OBJ_DIR)/main.o $(OBJ_DIR)/src/spatial_hash.o $(OBJ_DIR)/src/mem_pool.o
 HEADERS = $(wildcard $(INCLUDE_DIR)/*.h)
 
 # Target executable
-TARGET = spatialquerylib
+TARGET = build/spatialquerylib
 
 all: $(TARGET)
 
@@ -41,15 +41,15 @@ $(OBJ_DIR)/src/mem_pool.o: $(MEMORY_LIB)/src/mem_pool.c $(MEMORY_LIB)/include/me
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 clean:
-	rm -rf $(OBJ_DIR) $(TARGET) spatial_hash_tests
+	rm -rf build
 
 # Test target: build and run spatial hash tests with AddressSanitizer + UBSan
 TEST_SRCS = tests/spatial_hash_tests.c src/spatial_hash.c $(MEMORY_LIB)/src/mem_pool.c
 TEST_FLAGS = -Wall -Wextra -g -I./include -I$(MEMORY_LIB)/include -fsanitize=address,undefined -lm
 
 test: $(TEST_SRCS)
-	$(CC) $(TEST_FLAGS) -o spatial_hash_tests $(TEST_SRCS)
-	./spatial_hash_tests
+	$(CC) $(TEST_FLAGS) -o build/spatial_hash_tests $(TEST_SRCS)
+	./build/spatial_hash_tests
 
 -include $(OBJS:.o=.d)
 

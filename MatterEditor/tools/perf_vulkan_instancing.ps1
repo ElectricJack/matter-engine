@@ -1,5 +1,5 @@
 param(
-    [string]$ViewerPath = "$PSScriptRoot\..\editor.exe",
+    [string]$ViewerPath = "$PSScriptRoot\..\build\windows\editor.exe",
     [string]$World = 'StressForest50k',
     [double]$WarmupSeconds = 10,
     [double]$SampleSeconds = 20,
