@@ -158,6 +158,21 @@ public:
     int get_total_node_count() const;
     int get_unique_blas_count() const { return static_cast<int>(entries_.size()); }
 
+    // Monotonic counter, bumped whenever the flattened triangle/node content
+    // changes — i.e. when an entry is added or removed. Reference-count churn on
+    // an already-registered BLAS does NOT bump it: register_triangles' dedup hit
+    // and release_blas' non-final release both leave the flattened content
+    // byte-identical.
+    //
+    // A consumer that uploads this content somewhere (GL textures today, a
+    // Vulkan buffer later) can remember the value it last uploaded and re-upload
+    // only when it differs. That check is O(1), where the textures_dirty_ +
+    // per-entry gpu_dirty scan below is O(entries). It is also per-consumer: a
+    // shared dirty FLAG is cleared by whoever services it first, silently
+    // starving any second uploader, whereas each consumer holds its own
+    // last-seen revision.
+    uint64_t content_revision() const { return content_revision_; }
+
     // Get the count of live BLAS entries (useful for testing release paths).
     size_t live_count() const { return entries_.size(); }
     
@@ -200,7 +215,14 @@ public:
 
 private:
     // Mark data as dirty when BLAS changes
+    // Invariant: every mark_dirty() call site is a change to the flattened
+    // content (an entry pushed in register_triangles/register_prebuilt, or an
+    // entry erased in release_blas). Ref-count-only paths deliberately do NOT
+    // call it. content_revision_ is bumped here to stay 1:1 with that fact — if
+    // a future call site invalidates caches WITHOUT changing content, split the
+    // bump back out rather than letting the counter over-report.
     void mark_dirty() const {
+        ++content_revision_;
         totals_dirty_ = true;
         textures_dirty_ = true;
         shader_values_dirty_ = true;
@@ -237,6 +259,9 @@ private:
     mutable int cached_total_triangles_;
     mutable int cached_total_nodes_;
     mutable bool totals_dirty_;
+    // Starts at 1 so a consumer default-initialising its last-seen value to 0
+    // always performs its first upload.
+    mutable uint64_t content_revision_ = 1;
     
     // GPU texture management
     mutable Texture2D triangles_texture_{};

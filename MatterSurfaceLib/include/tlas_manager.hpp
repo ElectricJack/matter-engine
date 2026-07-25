@@ -100,7 +100,19 @@ public:
     // GPU texture generation  
     int get_instance_count() const;
     int get_node_count() const;
-    
+
+    // Monotonic counter, bumped whenever the flattened instance/node content
+    // changes — draw() records an instance, clear() drops them, build() rebuilds
+    // the node array. See BLASManager::content_revision for the rationale; a
+    // consumer uploading this content should track BOTH revisions, since the
+    // TLAS instance records reference BLAS offsets and go stale when either
+    // side moves:
+    //
+    //     if (tlas.content_revision() == seen_tlas_ &&
+    //         blas.content_revision() == seen_blas_) return;  // nothing to do
+    uint64_t content_revision() const { return content_revision_; }
+
+
     // Access to internal TLAS for visualization
     const TLAS* get_tlas() const { return tlas_.get(); }
     
@@ -145,7 +157,10 @@ public:
 
 private:
     // Mark data as dirty when TLAS changes
+    // Invariant, as in BLASManager: every call site here (draw, clear, build)
+    // changes the flattened instance/node content.
     void mark_dirty() const {
+        ++content_revision_;
         textures_dirty_ = true;
         shader_values_dirty_ = true;
         // Force uniform locations to be re-cached on the next bind. GL reuses
@@ -181,6 +196,9 @@ private:
     mutable Texture2D nodes_texture_{};
     mutable Texture2D instances_texture_{};
     mutable bool textures_dirty_ = true;
+    // Starts at 1 so a consumer default-initialising its last-seen value to 0
+    // always performs its first upload.
+    mutable uint64_t content_revision_ = 1;
     
     // Shader binding optimization
     mutable uint32_t cached_shader_id_ = 0;

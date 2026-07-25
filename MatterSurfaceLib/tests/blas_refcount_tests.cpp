@@ -171,8 +171,57 @@ static void test_dedup_respects_material() {
     printf("PASSED\n");
 }
 
+// content_revision() is the signal an uploader (GL textures today, Vulkan
+// buffers later) uses to decide whether the flattened triangle/node content it
+// last pushed is still current. The contract that makes it useful is that it
+// tracks CONTENT, not ownership: dedup hits and non-final releases leave the
+// flattened arrays byte-identical and must not bump it, or every shared-BLAS
+// registration would trigger a pointless full re-upload.
+static void test_content_revision_tracks_content_not_refcount() {
+    printf("=== test_content_revision_tracks_content_not_refcount ===\n");
+    BLASManager m;
+
+    const uint64_t r_empty = m.content_revision();
+
+    BLASHandle a = m.register_triangles(makeTriSet(0.0f));
+    const uint64_t r_after_a = m.content_revision();
+    assert(r_after_a > r_empty && "adding an entry must bump the revision");
+
+    BLASHandle b = m.register_triangles(makeTriSet(10.0f));
+    const uint64_t r_after_b = m.content_revision();
+    assert(r_after_b > r_after_a && "adding a second entry must bump again");
+
+    // Dedup hit: same geometry, ref_count 1 -> 2, flattened content unchanged.
+    BLASHandle a_dup = m.register_triangles(makeTriSet(0.0f));
+    assert(a_dup == a);
+    assert(m.content_revision() == r_after_b &&
+           "a dedup hit changes only ref_count; content is identical");
+
+    // Non-final release: ref_count 2 -> 1, entry stays, content unchanged.
+    m.release_blas(a);
+    assert(m.has_blas(a));
+    assert(m.content_revision() == r_after_b &&
+           "a non-final release changes only ref_count; content is identical");
+
+    // Final release: entry erased, flattened arrays shrink.
+    m.release_blas(a);
+    assert(!m.has_blas(a));
+    const uint64_t r_after_erase = m.content_revision();
+    assert(r_after_erase > r_after_b && "erasing an entry must bump the revision");
+
+    // Releasing a handle that is already gone is a no-op in every respect.
+    m.release_blas(a);
+    assert(m.content_revision() == r_after_erase &&
+           "releasing an unknown handle must not bump the revision");
+
+    m.release_blas(b);
+    assert(m.content_revision() > r_after_erase);
+    printf("PASSED\n");
+}
+
 int main() {
     test_dedup_and_release();
+    test_content_revision_tracks_content_not_refcount();
     test_remesh_no_leak();
     test_release_invalid_is_noop();
     test_triex_material_cpu_retention();
