@@ -2,7 +2,7 @@
 #define MESH_WORKER_POOL_H
 
 #include "raylib.h"          // Mesh
-#include "bvh.h"             // Tri, TriEx
+#include "tri.h"             // Tri, TriEx
 #include <vector>
 #include <cstdint>
 #include "surface.h"         // SurfaceScratch, Particle

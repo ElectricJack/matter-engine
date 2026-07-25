@@ -1,7 +1,7 @@
 #ifndef MSL_MESH_INDEXED_HPP
 #define MSL_MESH_INDEXED_HPP
 
-#include "bvh.h"  // Tri, TriEx, float3
+#include "tri.h"  // Tri, TriEx, float3
 
 #include <cstdint>
 #include <vector>

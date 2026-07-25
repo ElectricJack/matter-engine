@@ -1,6 +1,6 @@
 #ifndef VIEWER_RASTER_MESH_H
 #define VIEWER_RASTER_MESH_H
-#include "bvh.h"           // Tri, TriEx (MatterSurfaceLib)
+#include "tri.h"           // Tri, TriEx (MatterSurfaceLib)
 #include <cstdint>
 #include <vector>
 

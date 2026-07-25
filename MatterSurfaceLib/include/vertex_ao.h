@@ -1,6 +1,6 @@
 #pragma once
 
-#include "bvh.h"        // Tri, TriEx, float3, make_float3
+#include "tri.h"        // Tri, TriEx, float3, make_float3
 #include "occupancy.h"  // Occupancy, SlotCoord
 #include <vector>
 

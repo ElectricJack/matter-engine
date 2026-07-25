@@ -1,5 +1,5 @@
 #pragma once
-#include "bvh.h"            // Tri, make_float3
+#include "tri.h"            // Tri, make_float3
 #include "blas_manager.hpp" // BLASManager
 #include "part_asset_v2.h"  // SP-1 LodLevel/LodLevels (authoritative shape)
 #include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)

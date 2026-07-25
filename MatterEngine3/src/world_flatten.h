@@ -1,5 +1,5 @@
 #pragma once
-#include "bvh.h"          // mat4
+#include "tri.h"          // mat4
 #include <cstdint>
 #include <map>
 #include <string>

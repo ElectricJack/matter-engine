@@ -1,5 +1,5 @@
 #pragma once
-#include "bvh.h"
+#include "tri.h"
 #include "sector_grid.h"
 #include <cstdint>
 #include <map>

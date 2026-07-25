@@ -2,7 +2,7 @@
 #include "part_asset_v2.h"
 #include "blas_manager.hpp"
 #include "tlas_manager.hpp"
-#include "bvh.h"    // Tri, float3
+#include "tri.h"    // Tri, float3
 
 #include <cmath>
 #include <cstdio>

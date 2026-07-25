@@ -2,7 +2,7 @@
 #define MESHING_ALGORITHM_H
 
 #include "surface.h"            // Particle, Bounds, SurfaceScratch
-#include "bvh.h"                // float4 (via precomp.h)
+#include "tri.h"                // float4 (via precomp.h)
 #include "mesh_simplifier.hpp"  // CellBounds
 #include "mesh_worker_pool.h"   // GroupMeshResult
 #include <vector>

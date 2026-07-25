@@ -23,7 +23,7 @@
 #include "mesh_retopo.hpp"     // retopo() TBB warm-up (see install_graph() below)
 #include "mesh_indexed.hpp"
 #include "mesh_transform.hpp"  // from_tri
-#include "bvh.h"               // Tri / TriEx / float3
+#include "tri.h"               // Tri / TriEx / float3
 #include "retopo_blacklist.h"  // load persistent crash-recovery journal
 #include <cmath>               // std::sqrt for warm-up mesh construction
 #endif
