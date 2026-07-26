@@ -463,7 +463,8 @@ DYNAMIC_BRIDGE_CPP    = dynamic_scene_bridge_tests.cpp ../src/animation/animatio
                         ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp \
                         ../src/animation/animation_world_queries.cpp ../src/animation/ozz_adapter.cpp \
                         ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/ecs/dynamic_scene_bridge.cpp \
-                        ../src/render/animation_rigid_bridge.cpp ../src/render/dynamic_instance_slots.cpp \
+                        ../src/render/animation_rigid_bridge.cpp ../src/render/animation_skin_bridge.cpp \
+                        ../src/render/vk_animation_bounds.cpp ../src/render/dynamic_instance_slots.cpp \
                         ../src/ecs/scene_registry.cpp \
                         ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                         ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
@@ -471,6 +472,12 @@ DYNAMIC_BRIDGE_CPP    = dynamic_scene_bridge_tests.cpp ../src/animation/animatio
                         ../src/streaming/sector_streaming_coordinator.cpp \
                         ../src/sector_streamer.cpp
 DYNAMIC_BRIDGE_C      = $(FLECS_C)
+
+# Runtime::attach_animation_skinned_binding and DynamicSceneBridge's skin path
+# are linked by this otherwise headless target. Keep their implementation pair
+# explicit: the skin bridge validates bounds through the bounds implementation.
+DYNAMIC_BRIDGE_RENDER_REQUIRED = ../src/render/animation_skin_bridge.cpp \
+                                 ../src/render/vk_animation_bounds.cpp
 
 # Phase B6 — expansion of authored rigid/attachment bindings into the
 # renderer's existing dynamic-instance lane.  This is deliberately headless:
@@ -1309,7 +1316,15 @@ run-dynamic-slots: $(DYNAMIC_SLOTS_TARGET)
 # Phase 4 Task 8 — ECS dynamic scene bridge (reconciles SceneEntityId +
 # WorldTransform + PartInstance against DynamicInstanceSlots each frame).
 # Pure CPU test: no GL, no raylib — only box3d + flecs system deps.
-$(DYNAMIC_BRIDGE_TARGET): $(DYNAMIC_BRIDGE_OBJS) $(BOX3D_LIB)
+.PHONY: check-dynamic-bridge-animation-sources
+check-dynamic-bridge-animation-sources:
+	@for source in $(DYNAMIC_BRIDGE_RENDER_REQUIRED); do \
+		case " $(DYNAMIC_BRIDGE_CPP) " in *"$$source "*) ;; *) \
+			echo "ERROR: dynamic bridge animation closure omits $$source"; exit 1 ;; \
+		esac; \
+	done
+
+$(DYNAMIC_BRIDGE_TARGET): check-dynamic-bridge-animation-sources $(DYNAMIC_BRIDGE_OBJS) $(BOX3D_LIB)
 	$(CC) $(DYNAMIC_BRIDGE_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) -lws2_32 -ldbghelp -lwinmm
 
 run-dynamic-bridge: $(DYNAMIC_BRIDGE_TARGET)
