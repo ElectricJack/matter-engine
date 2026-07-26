@@ -2,6 +2,7 @@
 #include "animation/animation_store.h"
 #include "animation/animation_systems.h"
 #include "animation/animation_world_queries.h"
+#include "matter/animation_debug.h"
 #include "../src/ecs/ecs_runtime.h"
 #include "ecs/dynamic_scene_bridge.h"
 #include "ecs/simulation_control.h"
@@ -308,6 +309,56 @@ void test_runtime_fixed_and_frame_external_targets_compose_without_fixed_history
           "frame-only target does not mutate fixed previous-model history");
     CHECK(std::fabs(frame.local_pose[4].rotation.z) > 1e-3f,
           "frame target composes into the presentation pose on its own chain");
+}
+
+void test_animation_debug_snapshot_copies_evaluated_pose_and_live_targets() {
+    ecs_runtime::Runtime runtime;
+    AnimationService service;
+    runtime.attach_animation_service(service);
+    const AnimAsset* asset = service.insert_asset({0x99u, {1u, 2u}});
+    TargetChainFixture fixture(1);
+    auto descriptor = std::make_shared<AnimationRuntimeBindingDescriptor>();
+    descriptor->evaluation = fixture.evaluation;
+    descriptor->fixed_work.clip.duration = 1.0f;
+    descriptor->fixed_work.clip.loop = true;
+    descriptor->targets = {
+        fixture.target(0, "hand", TargetDriverKind::External, EvaluationCadence::Frame),
+    };
+    const Animator animator = service.create(asset, target_definition(descriptor, {
+        {"hand", TargetDriverKind::External, EvaluationCadence::Frame, {1, 2, 3}, true},
+    }));
+    CHECK(animator.valid(), "debug snapshot fixture creates a frame-driven IK target");
+
+    const AnimationTargetHandle target = service.target(animator.instance, "hand");
+    AnimationTransform live_target{};
+    live_target.translation = {1.25f, 0.5f, -0.25f};
+    CHECK(service.set_transform(target, live_target) && service.set_weight(target, 0.625f) &&
+              service.snap(target),
+          "debug snapshot fixture writes a live target distinct from the authored pole vector");
+    CHECK(runtime.tick({0.1f, 0.1f, 1}).fixed_steps == 1,
+          "an authoritative fixed sample seeds the presentation pose before frame target evaluation");
+
+    AnimationDebugPoseSnapshot debug{};
+    CHECK(runtime.animation_systems().copy_animation_debug_pose(animator.instance, debug),
+          "animation systems copy an immutable debug snapshot for a live generation");
+    CHECK(debug.instance.slot_index == animator.instance.slot_index &&
+              debug.instance.generation == animator.instance.generation &&
+              debug.model_pose.size() == fixture.skeleton.joint_count() &&
+              debug.skin_palette.size() == fixture.skeleton.joint_count(),
+          "debug snapshot owns the evaluated model pose and skin palette");
+    CHECK(debug.targets.size() == 1 && debug.targets[0].available &&
+              debug.targets[0].enabled && same_float(debug.targets[0].weight, 0.625f) &&
+              same_transform(debug.targets[0].evaluated, live_target) &&
+              !same_float(debug.targets[0].evaluated.translation.z,
+                          descriptor->targets[0].pole.z),
+          "debug snapshot exposes the actual evaluated target rather than treating the pole as a transform");
+
+    AnimationDebugPoseSnapshot stale = debug;
+    AnimatorInstanceHandle stale_handle = animator.instance;
+    ++stale_handle.generation;
+    CHECK(!runtime.animation_systems().copy_animation_debug_pose(stale_handle, stale) &&
+              stale.model_pose.empty() && stale.targets.empty(),
+          "debug snapshot fails closed and clears output for a stale animator generation");
 }
 
 void test_service_bound_runtime_work_is_automatic_and_generation_safe() {
@@ -813,6 +864,7 @@ int main() {
     test_service_checkpoint_restores_runtime_tick_deterministically();
     test_runtime_fixed_controller_ik_persists_through_frame_and_checkpoint_replay();
     test_runtime_fixed_and_frame_external_targets_compose_without_fixed_history_mutation();
+    test_animation_debug_snapshot_copies_evaluated_pose_and_live_targets();
     if (g_failures) return 1;
     std::puts("animation_simulation_tests: all tests passed");
 }
