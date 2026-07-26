@@ -130,21 +130,22 @@ bool controller_input_value(const AnimationRuntimeBindingLease::Value& source,
 
 class ControllerQueryBroker final : public AnimationWorldQueries {
 public:
-    ControllerQueryBroker(const AnimationWorldQueries* source, uint64_t& overflow)
-        : source_(source), overflow_(overflow) {}
+    ControllerQueryBroker(const AnimationWorldQueries* source, uint64_t& overflow, uint32_t limit)
+        : source_(source), overflow_(overflow), limit_(limit) {}
     bool ray_cast(const Float3& origin, const Float3& direction, float max_distance,
                   uint64_t mask, WorldRayHit& out) const override {
         out = {};
         if (!std::isfinite(origin.x) || !std::isfinite(origin.y) || !std::isfinite(origin.z) ||
             !std::isfinite(direction.x) || !std::isfinite(direction.y) || !std::isfinite(direction.z) ||
             !std::isfinite(max_distance) || max_distance < 0.0f) return false;
-        if (admitted_ >= kMaxAnimationWorldQueries) { ++overflow_; return false; }
+        if (admitted_ >= limit_) { ++overflow_; return false; }
         ++admitted_;
         return source_ != nullptr && source_->ray_cast(origin, direction, max_distance, mask, out);
     }
 private:
     const AnimationWorldQueries* source_ = nullptr;
     uint64_t& overflow_;
+    uint32_t limit_ = 0;
     mutable uint32_t admitted_ = 0;
 };
 
@@ -724,7 +725,7 @@ std::vector<AnimationWorldQueryResult> AnimationSystems::execute_fixed_world_que
     for (uint32_t index : order) {
         const auto& request = requests[index];
         if (!request.instance.valid() || !std::isfinite(request.max_distance) || request.max_distance < 0.0f) continue;
-        if (admitted >= kMaxAnimationWorldQueries) { ++world_query_overflow_count_; continue; }
+        if (admitted >= budget_config_.max_world_queries_per_fixed_tick) { ++world_query_overflow_count_; continue; }
         ++admitted;
         if (world_queries_ != nullptr)
             results[index].hit = world_queries_->ray_cast(request.origin, request.direction,
@@ -878,7 +879,7 @@ void AnimationSystems::run_fixed_post(flecs::world& world, double fixed_delta) {
     // Controllers receive only this deterministic, per-tick broker.  Their
     // sorted execution order is the broker admission order; overflow is an
     // explicit no-hit rather than an unsafe direct query bypass.
-    ControllerQueryBroker controller_queries(world_queries_, world_query_overflow_count_);
+    ControllerQueryBroker controller_queries(world_queries_, world_query_overflow_count_, budget_config_.max_world_queries_per_fixed_tick);
     for(const ControllerJob& job:jobs) {
         auto& runtime=target_runtime_[job.key]; const auto& binding=service_bindings_.at(job.key); const auto& spec=binding.descriptor->controllers[job.order];
         if(job.order>=runtime.controllers.size() || !runtime.controllers[job.order]) continue;
@@ -975,21 +976,50 @@ void AnimationSystems::run_frame(flecs::world& world, double frame_delta) {
     // never samples the graph again on wall-frame time: doing so would both
     // overwrite fixed controller/IK output and advance evaluator history.
     std::map<uint64_t, PoseLodDecision> pose_lod_decisions;
+    struct PresentationCandidate {
+        uint64_t key = 0;
+        const AnimationRuntimeBindingLease* lease = nullptr;
+        AnimationPresentationObservation observation{};
+    };
+    std::vector<PresentationCandidate> candidates;
+    candidates.reserve(service_bindings_.size());
     for (const auto& pair : service_bindings_) {
         if (!pair.second.descriptor || !pair.second.descriptor->evaluation) continue;
         AnimationPresentationObservation observation{pair.second.instance, true, 0.0f, 0};
-        const auto observed = completed_visibility_.find(pair.first);
-        if (observed != completed_visibility_.end()) observation = observed->second;
+        const auto observed=completed_visibility_.find(pair.first);
+        if (observed!=completed_visibility_.end()) observation=observed->second;
+        candidates.push_back({pair.first,&pair.second,observation});
+    }
+    std::stable_sort(candidates.begin(), candidates.end(), [](const PresentationCandidate& left, const PresentationCandidate& right) {
+        if (left.observation.explicit_priority != right.observation.explicit_priority)
+            return left.observation.explicit_priority > right.observation.explicit_priority;
+        if (left.observation.distance != right.observation.distance)
+            return left.observation.distance < right.observation.distance;
+        return left.key < right.key;
+    });
+    uint32_t admitted_joints=0;
+    for (const PresentationCandidate& candidate : candidates) {
+        const uint64_t binding_key=candidate.key;
+        const AnimationRuntimeBindingLease& lease=*candidate.lease;
+        const AnimationPresentationObservation& observation=candidate.observation;
         const PoseLodDecision decision = pose_lod_scheduler_.schedule(
-            {pair.first, observation.visible, observation.distance,
+            {binding_key, observation.visible, observation.distance,
              observation.explicit_priority, presentation_time_seconds_,
              state.frame_serial});
-        pose_lod_decisions.emplace(pair.first, decision);
-        if (!decision.evaluate_now) {
+        pose_lod_decisions.emplace(binding_key, decision);
+        PoseLodDecision& admitted_decision=pose_lod_decisions[binding_key];
+        const uint32_t joints=static_cast<uint32_t>(lease.descriptor->evaluation->skeleton->joint_count());
+        if (admitted_decision.evaluate_now && (joints > budget_config_.max_evaluated_joints_per_frame-admitted_joints)) {
+            admitted_decision.evaluate_now=false;
+            presentation_budget_stats_.record_fallback(AnimationFallbackReason::EvaluationBudget);
+        } else if (admitted_decision.evaluate_now) {
+            admitted_joints+=joints;
+        }
+        if (!admitted_decision.evaluate_now) {
             AnimationPoseSnapshot fallback =
-                last_complete_presentation_pose_snapshots_.latest(pair.second.instance);
+                last_complete_presentation_pose_snapshots_.latest(lease.instance);
             if (!fallback.instance.valid())
-                fallback = fixed_pose_snapshots_.latest(pair.second.instance);
+                fallback = fixed_pose_snapshots_.latest(lease.instance);
             if (fallback.instance.valid()) {
                 fallback.frame_serial = state.frame_serial;
                 (void)pose_snapshots_.publish(fallback);
@@ -1000,14 +1030,14 @@ void AnimationSystems::run_frame(flecs::world& world, double frame_delta) {
             ++presentation_budget_stats_.frozen_pose_count;
             continue;
         }
-        if (decision.resample_current_graph_time)
+        if (admitted_decision.resample_current_graph_time)
             ++presentation_budget_stats_.resampled_pose_count;
-        const AnimationPoseSnapshot fixed = fixed_pose_snapshots_.latest(pair.second.instance);
-        const AnimationPoseSnapshot previous = previous_fixed_pose_snapshots_.latest(pair.second.instance);
+        const AnimationPoseSnapshot fixed = fixed_pose_snapshots_.latest(lease.instance);
+        const AnimationPoseSnapshot previous = previous_fixed_pose_snapshots_.latest(lease.instance);
         float fixed_previous_time=0.0f, fixed_current_time=0.0f;
         if (!fixed.instance.valid() || !previous.instance.valid() ||
-            !evaluator_.fixed_clock(pair.second.instance,fixed_previous_time,fixed_current_time) ||
-            !presentation_evaluator_.seed_presentation_clock(pair.second.instance,*pair.second.descriptor->evaluation,
+            !evaluator_.fixed_clock(lease.instance,fixed_previous_time,fixed_current_time) ||
+            !presentation_evaluator_.seed_presentation_clock(lease.instance,*lease.descriptor->evaluation,
                                                                fixed.fixed_tick,fixed_previous_time,fixed_current_time)) continue;
         std::vector<AnimationValue> previous_controls, current_controls, frame_controls;
         const auto append_controls=[](const std::vector<AnimationRuntimeBindingLease::Value>& source,
@@ -1022,26 +1052,26 @@ void AnimationSystems::run_frame(flecs::world& world, double frame_delta) {
                 case AnimationValueType::Symbol: { AnimationValue symbol{}; symbol.type=AnimationValueType::Symbol; symbol.symbol=std::to_string(value.symbol); out.push_back(std::move(symbol)); break; }
             }
         };
-        append_controls(pair.second.fixed_previous,previous_controls);
-        append_controls(pair.second.fixed_current,current_controls);
-        append_controls(pair.second.frame_controls,frame_controls);
+        append_controls(lease.fixed_previous,previous_controls);
+        append_controls(lease.fixed_current,current_controls);
+        append_controls(lease.frame_controls,frame_controls);
         AnimationEvaluationRequest request{};
-        request.instance=pair.second.instance; request.definition=pair.second.descriptor->evaluation.get();
+        request.instance=lease.instance; request.definition=lease.descriptor->evaluation.get();
         request.fixed_previous={previous_controls.data(),uint32_t(previous_controls.size())};
         request.fixed_current={current_controls.data(),uint32_t(current_controls.size())};
         request.frame_controls={frame_controls.data(),uint32_t(frame_controls.size())};
         request.fixed_tick=fixed.fixed_tick; request.frame_serial=state.frame_serial;
         request.accumulator_alpha=static_cast<float>(interpolation_alpha_);
-        const auto fixed_work=fixed_work_.find(pair.first);
+        const auto fixed_work=fixed_work_.find(binding_key);
         request.root_lock=fixed_work!=fixed_work_.end() && fixed_work->second.root_entity!=0;
         if (!presentation_evaluator_.evaluate({request})) continue;
         // Frame graph evaluation never advances the fixed controller.  It does
         // recompute the graph at the interpolated fixed controls, then layers
         // the already sampled fixed target state before any frame-only IK.
-        const auto fixed_targets=targets_for_cadence(pair.second.descriptor->targets,
-                                                      target_runtime_[pair.first].targets,EvaluationCadence::Fixed);
-        if (!presentation_evaluator_.solve_targets(pair.second.instance,*pair.second.descriptor->evaluation,
-                                                    pair.second.descriptor->targets,fixed_targets,state.frame_serial)) continue;
+        const auto fixed_targets=targets_for_cadence(lease.descriptor->targets,
+                                                      target_runtime_[binding_key].targets,EvaluationCadence::Fixed);
+        if (!presentation_evaluator_.solve_targets(lease.instance,*lease.descriptor->evaluation,
+                                                    lease.descriptor->targets,fixed_targets,state.frame_serial)) continue;
         ++presentation_budget_stats_.evaluated_presentation_pose_count;
     }
     trace(AnimationScheduleEvent::FrameSolveTargetsAndIk, frame_delta);

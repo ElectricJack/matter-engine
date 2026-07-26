@@ -12,6 +12,9 @@ int main() {
           "default work limit is bounded by the hard cap");
     CHECK(defaults.max_skinned_vertices <= AnimationBudgetConfig::kHardMaxSkinnedVertices,
           "default vertex limit is bounded by the hard cap");
+    CHECK(defaults.max_joints_per_asset == 256 && defaults.max_evaluated_joints_per_frame == 65'536 &&
+              defaults.max_world_queries_per_fixed_tick == 2'048,
+          "Phase C defaults expose the documented asset, presentation, and query limits");
 
     AnimationBudgetConfig oversized = defaults;
     oversized.max_skin_work_items = AnimationBudgetConfig::kHardMaxSkinWorkItems + 1;
@@ -19,6 +22,12 @@ int main() {
     oversized = defaults;
     oversized.max_joints_per_asset = AnimationBudgetConfig::kHardMaxJointsPerAsset + 1;
     CHECK(!oversized.valid(), "asset joint budget above hard cap is rejected");
+    oversized = defaults;
+    oversized.max_evaluated_joints_per_frame = AnimationBudgetConfig::kHardMaxEvaluatedJointsPerFrame + 1;
+    CHECK(!oversized.valid(), "presentation joint budget above hard cap is rejected");
+    oversized = defaults;
+    oversized.max_world_queries_per_fixed_tick = AnimationBudgetConfig::kHardMaxWorldQueriesPerFixedTick + 1;
+    CHECK(!oversized.valid(), "world query budget above hard cap is rejected");
 
     AnimationBudgetRuntimeStats stats;
     stats.record_fallback(AnimationFallbackReason::SkinVertexBudget);

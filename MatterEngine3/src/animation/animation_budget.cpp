@@ -14,6 +14,8 @@ bool AnimationBudgetConfig::valid() const noexcept {
            max_controller_nodes <= kHardMaxControllerNodes &&
            max_skin_work_items > 0 && max_skin_work_items <= kHardMaxSkinWorkItems &&
            max_skinned_vertices > 0 && max_skinned_vertices <= kHardMaxSkinnedVertices &&
+           max_evaluated_joints_per_frame > 0 && max_evaluated_joints_per_frame <= kHardMaxEvaluatedJointsPerFrame &&
+           max_world_queries_per_fixed_tick > 0 && max_world_queries_per_fixed_tick <= kHardMaxWorldQueriesPerFixedTick &&
            max_mutable_bytes > 0 && max_mutable_bytes <= kHardMaxMutableBytes &&
            std::isfinite(near_distance) && std::isfinite(mid_distance) &&
            std::isfinite(frozen_distance) && std::isfinite(distance_hysteresis) &&

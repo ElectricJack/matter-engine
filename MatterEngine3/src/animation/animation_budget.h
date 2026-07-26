@@ -48,15 +48,19 @@ struct AnimationBudgetConfig {
     static constexpr uint32_t kHardMaxControllerNodes = 128;
     static constexpr uint32_t kHardMaxSkinWorkItems = 256;
     static constexpr uint32_t kHardMaxSkinnedVertices = 2'000'000;
+    static constexpr uint32_t kHardMaxEvaluatedJointsPerFrame = 1'000'000;
+    static constexpr uint32_t kHardMaxWorldQueriesPerFixedTick = 2048;
     static constexpr size_t kHardMaxMutableBytes = 64u * 1024u * 1024u;
 
     uint32_t max_assets = 1024;
     uint32_t max_runtime_instances = 4096;
-    uint32_t max_joints_per_asset = 128;
+    uint32_t max_joints_per_asset = 256;
     uint32_t max_graph_nodes = 128;
     uint32_t max_controller_nodes = 128;
     uint32_t max_skin_work_items = 256;
     uint32_t max_skinned_vertices = 2'000'000;
+    uint32_t max_evaluated_joints_per_frame = 65'536;
+    uint32_t max_world_queries_per_fixed_tick = 2'048;
     size_t max_mutable_bytes = 64u * 1024u * 1024u;
 
     // Distance bands select 60/30/15/frozen, in that order. A stateful
