@@ -81,18 +81,27 @@ class AnimatedRigGallery extends Part {
     });
     // These segments stay rigid and travel through the dynamic raster/TLAS
     // transform lane; no deforming BLAS update is requested.
-    this.segments('machineSegments', {
-      joints: ['machineBase', 'machineBoom', 'machineTool']
-    });
-    this.bind('machineSegments', () => {
-      // One compact authored prism strip is deliberately attached to the
-      // rigid binding; segments() never borrows the creature's skin geometry.
+    this.segments('machineBaseSegment', { joints: ['machineBase'] });
+    this.segments('machineBoomSegment', { joints: ['machineBoom'] });
+    this.segments('machineToolSegment', { joints: ['machineTool'] });
+    this.bind('machineBaseSegment', () => {
+      // Each rigid owner receives its own authored triangles.  This is not a
+      // draw-time reuse hint: the bake partitions all geometry exactly once.
       this.fill(MAT.stone);
       this.beginShape(SHAPE.triangles);
-      this.vertex(-0.10, 0.00, -0.10); this.vertex(-1.95, 0.00, -0.10); this.vertex(-0.10, 0.18, -0.10);
-      this.vertex(-0.10, 0.00,  0.10); this.vertex(-0.10, 0.18,  0.10); this.vertex(-1.95, 0.00,  0.10);
-      this.vertex(-1.95, 0.00, -0.10); this.vertex(-1.95, 0.00,  0.10); this.vertex(-0.10, 0.18, -0.10);
-      this.vertex(-0.10, 0.18, -0.10); this.vertex(-1.95, 0.00,  0.10); this.vertex(-0.10, 0.18,  0.10);
+      this.vertex(-0.10, 0.00, -0.10); this.vertex(-0.72, 0.00, -0.10); this.vertex(-0.10, 0.18, -0.10);
+      this.endShape();
+    });
+    this.bind('machineBoomSegment', () => {
+      this.fill(MAT.stone);
+      this.beginShape(SHAPE.triangles);
+      this.vertex(-0.72, 0.00, -0.10); this.vertex(-1.35, 0.00, 0.10); this.vertex(-0.72, 0.18, -0.10);
+      this.endShape();
+    });
+    this.bind('machineToolSegment', () => {
+      this.fill(MAT.stone);
+      this.beginShape(SHAPE.triangles);
+      this.vertex(-1.35, 0.00, 0.10); this.vertex(-1.95, 0.00, 0.10); this.vertex(-1.35, 0.18, 0.10);
       this.endShape();
     });
     this.attach('toolAttachment', 'toolSocket', 'Crate', {

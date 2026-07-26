@@ -36,45 +36,24 @@ bool part_matches_binding(const BLASManager& blas, const part_asset::LodLevels& 
     // payloads, so semantic geometry matching applies only when a skin LOD
     // is present.
     if (binding.lods.empty()) return true;
-    std::vector<std::vector<uint32_t>> levels;
     const auto& entries = blas.get_entries();
-    if (lods.empty()) {
-        if (entries.empty()) return false;
-        levels.emplace_back();
-        levels.back().reserve(entries.size());
-        for (uint32_t index = 0; index < entries.size(); ++index) levels.back().push_back(index);
-    } else {
-        if (lods.size() > 64) return false;
-        levels.reserve(lods.size());
-        for (const auto& lod : lods) {
-            if (lod.blas_indices.empty()) return false;
-            std::unordered_set<uint32_t> seen;
-            for (uint32_t index : lod.blas_indices)
-                if (index >= entries.size() || !entries[index] || !seen.insert(index).second) return false;
-            levels.push_back(lod.blas_indices);
-        }
-    }
-    if (levels.size() != binding.lods.size()) return false;
-    for (size_t level = 0; level < levels.size(); ++level) {
+    if (lods.size() != binding.lods.size() || lods.size() > 64) return false;
+    for (size_t level = 0; level < binding.lods.size(); ++level) {
+        const auto& baked = binding.lods[level];
+        if (baked.blas_slot >= lods[level].blas_indices.size()) return false;
+        const uint32_t index = lods[level].blas_indices[baked.blas_slot];
+        if (index >= entries.size() || !entries[index]) return false;
         std::vector<Tri> triangles;
         std::vector<TriEx> triex;
-        bool all_have_triex = true;
-        for (uint32_t index : levels[level]) {
-            const auto& entry = entries[index];
-            const TriEx* extra = entry->tri_extra.size() == entry->triangles.size()
-                                 ? entry->tri_extra.data() : entry->mesh->triEx;
-            if (!extra) all_have_triex = false;
-            triangles.insert(triangles.end(), entry->triangles.begin(), entry->triangles.end());
-            if (extra) triex.insert(triex.end(), extra, extra + entry->triangles.size());
-        }
-        // The existing raster path has one coherent TriEx mode per indexed
-        // stream.  A mixed stream has no exact shared representation yet, so
-        // reject it rather than accept a binding against different semantics.
-        if (triangles.empty() || (!all_have_triex && !triex.empty())) return false;
+        const auto& entry = entries[index];
+        const TriEx* extra = entry->tri_extra.size() == entry->triangles.size()
+            ? entry->tri_extra.data() : entry->mesh->triEx;
+        triangles = entry->triangles;
+        if (extra) triex.insert(triex.end(), extra, extra + entry->triangles.size());
+        if (triangles.empty()) return false;
         const auto geometry = viewer::build_indexed_part_geometry(
-            triangles.data(), all_have_triex ? triex.data() : nullptr,
+            triangles.data(), extra ? triex.data() : nullptr,
             static_cast<int>(triangles.size()));
-        const auto& baked = binding.lods[level];
         if (geometry.vertex_count <= 0 || baked.vertex_count != static_cast<uint32_t>(geometry.vertex_count) ||
             baked.indexed_vertex_signature != viewer::indexed_part_geometry_signature(geometry, static_cast<uint32_t>(level)))
             return false;
