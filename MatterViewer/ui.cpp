@@ -638,6 +638,16 @@ void Ui::draw_debug_panel(ViewerStats& s) {
     const char* debug_views[] = { "None", "Normals" };
     ImGui::Combo("View", &s.debug_view_mode, debug_views, 2);
     draw_animation_debug_overlay_controls(s.animation_overlay);
+    if (s.animation_overlay.enabled) {
+        if (!s.animation_debug_query_ok)
+            ImGui::TextDisabled("Animation data unavailable");
+        else if (s.animation_debug_instances == 0)
+            ImGui::TextDisabled("No live animation bindings");
+        else
+            ImGui::TextDisabled("%u live animation binding%s",
+                                s.animation_debug_instances,
+                                s.animation_debug_instances == 1 ? "" : "s");
+    }
 
     ImGui::End();
 }

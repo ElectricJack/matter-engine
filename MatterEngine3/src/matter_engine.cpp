@@ -15,6 +15,9 @@
 #include "ecs/streaming_systems.h"
 #include "local_provider.h"
 #include "part_store.h"   // LoadedPart, walk_part_tree
+#include "animation/animation_binding_bake.h"
+#include "render/animation_rigid_bridge.h"
+#include "render/animation_skin_bridge.h"
 #ifndef MATTER_VULKAN_ONLY
 #include "world_composer.h"
 #include "renderer.h"
@@ -92,6 +95,174 @@ namespace matter {
 // Used as the FileWatcher argument for LiveEditSession constructed on the
 // worker thread (which uses rebuild(paths) directly, never tick()).
 namespace {
+bool debug_parse_u16(const std::string& text, uint16_t& value) {
+    char* end = nullptr;
+    const unsigned long parsed = std::strtoul(text.c_str(), &end, 10);
+    if (!end || *end || parsed > UINT16_MAX) return false;
+    value = static_cast<uint16_t>(parsed);
+    return true;
+}
+
+bool debug_parse_float(const std::string& text, float& value) {
+    char* end = nullptr;
+    value = std::strtof(text.c_str(), &end);
+    return end && !*end && std::isfinite(value);
+}
+
+std::vector<std::string> debug_split(const std::string& text, char separator) {
+    std::vector<std::string> fields;
+    std::stringstream stream(text);
+    std::string field;
+    while (std::getline(stream, field, separator)) fields.push_back(field);
+    return fields;
+}
+
+bool debug_parse_float3(const std::string& text, Float3& result) {
+    const auto fields = debug_split(text, ',');
+    return fields.size() == 3 &&
+           debug_parse_float(fields[0], result.x) &&
+           debug_parse_float(fields[1], result.y) &&
+           debug_parse_float(fields[2], result.z);
+}
+
+bool debug_parse_transform(const std::vector<std::string>& fields, size_t at,
+                           AnimationTransform& out) {
+    if (at + 2 >= fields.size() ||
+        !debug_parse_float3(fields[at], out.translation) ||
+        !debug_parse_float3(fields[at + 2], out.scale)) return false;
+    const auto rotation = debug_split(fields[at + 1], ',');
+    return rotation.size() == 4 &&
+           debug_parse_float(rotation[0], out.rotation.x) &&
+           debug_parse_float(rotation[1], out.rotation.y) &&
+           debug_parse_float(rotation[2], out.rotation.z) &&
+           debug_parse_float(rotation[3], out.rotation.w);
+}
+
+const animation::AnimSection* debug_find_section(
+    const animation::AnimAsset& asset, animation::AnimSectionKind kind) {
+    const animation::AnimSection* found = nullptr;
+    for (const auto& section : asset.sections) {
+        if (section.kind != kind) continue;
+        if (found) return nullptr;
+        found = &section;
+    }
+    return found;
+}
+
+bool copy_animation_debug_asset(const viewer::LoadedPart& loaded,
+                                AnimationDebugAssetSnapshot& out) {
+    out = {};
+    const animation::AnimAsset* committed = loaded.animation_asset;
+    if (!committed ||
+        committed->target_abi_tag != animation::kAnimationTargetAbiTag ||
+        committed->ozz_tag_hash != animation::kAnimationOzzTagHash) return false;
+    const auto* rig =
+        debug_find_section(*committed, animation::AnimSectionKind::RigSchema);
+    if (!rig || rig->bytes.empty()) return false;
+
+    AnimationDebugAssetSnapshot candidate{};
+    candidate.resolved_hash = committed->resolved_hash;
+    candidate.nonce_high = committed->nonce.high;
+    candidate.nonce_low = committed->nonce.low;
+    std::istringstream lines(std::string(rig->bytes.begin(), rig->bytes.end()));
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (line.empty()) continue;
+        const auto fields = debug_split(line, '|');
+        if (fields.empty()) return false;
+        if (fields[0] == "graph") break;
+        if (fields[0] == "socket") {
+            if (fields.size() != 6) return false;
+            AnimationDebugSocket socket{};
+            if (!debug_parse_u16(fields[2], socket.joint) ||
+                !debug_parse_transform(fields, 3, socket.local)) return false;
+            candidate.sockets.push_back(socket);
+            continue;
+        }
+        if (fields.size() == 7 &&
+            fields[2].find(':') != std::string::npos) {
+            const auto range = debug_split(fields[2], ':');
+            AnimationDebugJoint joint{};
+            uint16_t subtree_begin = UINT16_MAX, subtree_end = UINT16_MAX;
+            AnimationTransform ignored{};
+            if (range.size() != 2 ||
+                !debug_parse_u16(fields[1], joint.parent) ||
+                !debug_parse_u16(range[0], subtree_begin) ||
+                !debug_parse_u16(range[1], subtree_end) ||
+                subtree_begin > subtree_end ||
+                !debug_parse_transform(fields, 3, ignored) ||
+                !debug_parse_float(fields[6], joint.radius) ||
+                joint.radius <= 0.0f) return false;
+            candidate.joints.push_back(joint);
+            continue;
+        }
+        if (fields.size() < 16) return false;
+        AnimationDebugTargetDefinition target{};
+        target.has_pole = fields[4] == "1";
+        if (!debug_parse_float3(fields[5], target.pole)) return false;
+        for (size_t i = 13; i < fields.size(); ++i) {
+            uint16_t joint = UINT16_MAX;
+            if (!debug_parse_u16(fields[i], joint)) return false;
+            target.chain.push_back(joint);
+        }
+        if (target.chain.size() != 3) return false;
+        candidate.targets.push_back(std::move(target));
+    }
+    if (candidate.joints.empty() ||
+        candidate.joints.size() > animation::kMaxJoints) return false;
+    for (size_t i = 0; i < candidate.joints.size(); ++i) {
+        const uint16_t parent = candidate.joints[i].parent;
+        if (parent != UINT16_MAX && parent >= i) return false;
+    }
+    for (const auto& socket : candidate.sockets)
+        if (socket.joint >= candidate.joints.size()) return false;
+    for (const auto& target : candidate.targets)
+        for (uint16_t joint : target.chain)
+            if (joint >= candidate.joints.size()) return false;
+
+    animation::BindingBake binding{};
+    if (animation::get_anim_binding_bake(*committed, binding) &&
+        !binding.lods.empty()) {
+        const auto& lod = binding.lods.front();
+        if (loaded.lod_mesh_data.empty() || loaded.lod_mesh_data.front().vertex_count < 0 ||
+            lod.influences.size() !=
+                static_cast<size_t>(loaded.lod_mesh_data.front().vertex_count) ||
+            loaded.lod_mesh_data.front().vertices.size() <
+                lod.influences.size() * 3) return false;
+        candidate.lod0_influences.reserve(lod.influences.size());
+        for (size_t i = 0; i < lod.influences.size(); ++i) {
+            AnimationDebugVertexInfluence vertex{};
+            vertex.bind_position = {
+                loaded.lod_mesh_data.front().vertices[i * 3],
+                loaded.lod_mesh_data.front().vertices[i * 3 + 1],
+                loaded.lod_mesh_data.front().vertices[i * 3 + 2]};
+            uint32_t weight_sum = 0;
+            uint32_t influence_count = 0;
+            for (size_t influence = 0; influence < 4; ++influence) {
+                vertex.joints[influence] = lod.influences[i].joints[influence];
+                vertex.weights[influence] = lod.influences[i].weights[influence];
+                if (vertex.weights[influence]) {
+                    ++influence_count;
+                    weight_sum += vertex.weights[influence];
+                    if (vertex.joints[influence] >= candidate.joints.size())
+                        return false;
+                }
+            }
+            if (influence_count == 0 || influence_count > 4 ||
+                weight_sum != 65535u) return false;
+            candidate.lod0_influences.push_back(vertex);
+        }
+        for (const auto& cluster : lod.clusters)
+            for (const auto& joint : cluster.joints) {
+                if (joint.joint >= candidate.joints.size()) return false;
+                candidate.joint_bounds.push_back(
+                    {joint.joint, joint.minimum, joint.maximum});
+            }
+    }
+    out = std::move(candidate);
+    return true;
+}
+
 #ifdef MATTER_VULKAN_VIEWER
 bool ensure_vulkan_part(viewer::VkSceneRenderer& renderer,
                         uint64_t part_hash,
@@ -4592,6 +4763,76 @@ bool WorldSession::poll_event(Event& out) {
 
 const FrameStats& WorldSession::frame_stats() const {
     return impl_->stats;
+}
+
+bool WorldSession::animation_debug_snapshots(
+    std::vector<AnimationDebugInstanceSnapshot>& out) const {
+    out.clear();
+    if (!impl_->store) return true;
+
+    struct BoundIdentity {
+        AnimatorInstanceHandle animator{};
+        uint64_t asset_identity = 0;
+        Mat4f world_transform{};
+        bool valid = true;
+    };
+    std::map<uint64_t, BoundIdentity> bindings;
+    const auto remember = [&bindings](flecs::entity entity,
+                                      AnimatorInstanceHandle animator,
+                                      uint64_t identity) {
+        if (!animator.valid() || identity == 0) return;
+        Mat4f world{};
+        world.m[0] = world.m[5] = world.m[10] = world.m[15] = 1.0f;
+        if (const ecs::WorldTransform* transform =
+                entity.try_get<ecs::WorldTransform>())
+            world = transform->matrix;
+        const uint64_t key =
+            (uint64_t(animator.slot_index) << 32u) | animator.generation;
+        auto inserted =
+            bindings.emplace(
+                key, BoundIdentity{animator, identity, world, true});
+        if (!inserted.second &&
+            inserted.first->second.asset_identity != identity)
+            inserted.first->second.valid = false;
+    };
+    impl_->ecs_runtime.world().each(
+        [&remember](flecs::entity entity,
+                    const render::AnimationSkinnedBinding& binding) {
+            if (binding.asset &&
+                binding.asset_generation == binding.asset->generation)
+                remember(entity, binding.animator, binding.asset->identity);
+        });
+    impl_->ecs_runtime.world().each(
+        [&remember](flecs::entity entity,
+                    const render::AnimationRigidBinding& binding) {
+            if (binding.asset &&
+                binding.asset_generation == binding.asset->generation)
+                remember(entity, binding.animator, binding.asset->identity);
+        });
+
+    std::vector<AnimationDebugInstanceSnapshot> candidate;
+    candidate.reserve(bindings.size());
+    for (const auto& entry : bindings) {
+        const BoundIdentity& bound = entry.second;
+        if (!bound.valid) return false;
+        const viewer::LoadedPart* loaded =
+            impl_->store->find_animation(bound.asset_identity);
+        if (!loaded) return false;
+        AnimationDebugInstanceSnapshot snapshot{};
+        if (!copy_animation_debug_asset(*loaded, snapshot.asset) ||
+            snapshot.asset.resolved_hash != bound.asset_identity ||
+            !impl_->ecs_runtime.animation_systems().copy_animation_debug_pose(
+                bound.animator, snapshot.pose) ||
+            snapshot.pose.model_pose.size() != snapshot.asset.joints.size() ||
+            snapshot.pose.skin_palette.size() != snapshot.asset.joints.size() ||
+            snapshot.pose.targets.size() != snapshot.asset.targets.size()) {
+            return false;
+        }
+        snapshot.world_transform = bound.world_transform;
+        candidate.push_back(std::move(snapshot));
+    }
+    out = std::move(candidate);
+    return true;
 }
 
 streaming::SectorStreamingStatus WorldSession::streaming_status() const {

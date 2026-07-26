@@ -104,6 +104,17 @@ public:
         auto it = loaded_.find(part_hash);
         return (it != loaded_.end()) ? &it->second : nullptr;
     }
+    // Observational tooling seam: returns an already-loaded part whose
+    // immutable sibling .anim has this identity. Never performs disk I/O.
+    const LoadedPart* find_animation(uint64_t animation_identity) const {
+        for (const auto& entry : loaded_) {
+            const LoadedPart& loaded = entry.second;
+            if (loaded.animation_asset &&
+                loaded.animation_asset->resolved_hash == animation_identity)
+                return &loaded;
+        }
+        return nullptr;
+    }
 
     BLASManager& blas() { return blas_; }
     const std::string& cache_root() const { return cache_root_; }

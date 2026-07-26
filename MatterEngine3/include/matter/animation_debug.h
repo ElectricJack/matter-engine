@@ -69,6 +69,13 @@ struct AnimationDebugPoseSnapshot {
 struct AnimationDebugInstanceSnapshot {
     AnimationDebugAssetSnapshot asset;
     AnimationDebugPoseSnapshot pose;
+    // ECS owner transform for model-space skeleton, skin, target, and pole
+    // visualization.
+    Mat4f world_transform{{
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f}};
 };
 
 } // namespace matter

@@ -1,7 +1,7 @@
 // AnimatedRigGallery is deliberately a single deterministic bake source: it
 // exercises the procedural-animation pipeline without loading meshes or clips
-// from disk.  It stays well under the v1 gallery limits (22 joints, 3 rigid /
-// attachment instances, 3 declared targets, and 6 graph nodes).
+// from disk.  Its acceptance census is 21 joints, 3 rigid segments, 1
+// attachment, 4 declared targets, and 5 graph nodes.
 //
 // The ground query is intentionally owned by the native proceduralGait
 // controller. Runtime JavaScript is not used to drive the targets.

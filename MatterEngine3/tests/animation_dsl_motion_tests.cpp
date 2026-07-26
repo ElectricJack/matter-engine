@@ -116,9 +116,13 @@ void test_animated_rig_gallery_source_bakes() {
     if (!result.error.ok) std::printf("gallery bake error: %s (%s)\n", result.error.message.c_str(), result.error.code.c_str());
     CHECK(result.error.ok, "animated gallery remains a deterministic bake-time DSL source");
     const auto& build = host.last_animation_build();
-    CHECK(build && build->rig.joints.size() < 128 && build->targets.size() <= 8 &&
-          build->graph.nodes.size() <= 32,
-          "gallery stays inside the declared v1 joints/targets/graph budgets");
+    CHECK(build && build->rig.joints.size() == 21 && build->targets.size() == 4 &&
+          build->graph.nodes.size() == 5,
+          "gallery declaration census stays intentional as the example evolves");
+    CHECK(build && build->rig.joints.size() <= 128 && build->targets.size() <= 8 &&
+          build->graph.nodes.size() <= 32 &&
+          build->rigid_bindings.size() + build->attachments.size() <= 32,
+          "gallery stays inside the C4 joints, targets, graph, and instance budgets");
     CHECK(build && build->clips.size() == 2 && build->skin_bindings.size() == 1 &&
           build->rigid_bindings.size() == 3 && build->attachments.size() == 1,
           "gallery contains generated clips, deformable skin, rigid segments, and socket attachment");

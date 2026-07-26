@@ -105,6 +105,8 @@ struct ViewerStats {
     // Viewer-local diagnostic toggles.  These are deliberately not part of
     // the animation service or checkpoint state.
     AnimationDebugOverlayOptions animation_overlay{};
+    uint32_t animation_debug_instances = 0;
+    bool animation_debug_query_ok = true;
 };
 
 void reset_lighting_controls(ViewerStats& stats);

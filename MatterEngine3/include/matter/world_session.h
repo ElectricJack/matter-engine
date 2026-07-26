@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "matter/camera.h"
+#include "matter/animation_debug.h"
 #include "matter/ecs.h"
 #include "matter/world_definition.h"
 #include "matter/streaming.h"
@@ -170,6 +171,12 @@ public:
 
     bool poll_event(Event& out);       // drain one; loop until false
     const FrameStats& frame_stats() const;
+    // Copies committed animation metadata and the latest immutable runtime
+    // presentation state for every live ECS animation binding. An empty result
+    // is a valid "no live animator data" state; no cache load or evaluation is
+    // performed by this observational viewer seam.
+    bool animation_debug_snapshots(
+        std::vector<AnimationDebugInstanceSnapshot>& out) const;
     // Copied coordinator state; no streamer or render-resource state crosses
     // the worker/app boundary.
     streaming::SectorStreamingStatus streaming_status() const;

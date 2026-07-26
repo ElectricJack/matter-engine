@@ -1716,6 +1716,25 @@ int main() {
                                             static_cast<int>(render_frame.extent.width),
                                             static_cast<int>(render_frame.extent.height),
                                             *session, sel_vp.x, sel_vp.y);
+            if (stats.animation_overlay.enabled) {
+                std::vector<matter::AnimationDebugInstanceSnapshot>
+                    animation_debug;
+                stats.animation_debug_query_ok =
+                    session->animation_debug_snapshots(animation_debug);
+                stats.animation_debug_instances =
+                    static_cast<uint32_t>(animation_debug.size());
+                if (stats.animation_debug_query_ok) {
+                    for (const auto& snapshot : animation_debug)
+                        viewer::draw_animation_debug_overlay(
+                            snapshot, frame_camera,
+                            static_cast<int>(render_frame.extent.width),
+                            static_cast<int>(render_frame.extent.height),
+                            sel_vp.x, sel_vp.y, stats.animation_overlay);
+                }
+            } else {
+                stats.animation_debug_query_ok = true;
+                stats.animation_debug_instances = 0;
+            }
         }
         const matter::FrameStats& frame_stats = session->frame_stats();
         dlss_modes_supported = vulkan->dlss_available() &&
