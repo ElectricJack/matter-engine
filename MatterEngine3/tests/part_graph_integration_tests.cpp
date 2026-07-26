@@ -54,6 +54,16 @@ static uint64_t part_checksum(const std::filesystem::path& path) {
     return hash;
 }
 
+// Keep cache fixtures under the test working directory.  In native MSYS2,
+// temp_directory_path() follows TMP and can resolve to the MSYS installation's
+// protected /tmp (C:\\msys64\\tmp), so an A8 fixture would fail to create its
+// cache root before it exercised the provider contract at all.
+static std::filesystem::path local_fixture_root(const char* name) {
+    std::error_code ec;
+    const std::filesystem::path root = std::filesystem::absolute(name, ec);
+    return ec ? std::filesystem::path(name) : root;
+}
+
 static matter::animation::AnimAsset rigid_asset(uint64_t hash,
                                                   matter::animation::BuildNonce nonce) {
     using namespace matter::animation;
@@ -153,7 +163,7 @@ static bool publish_flat(const std::filesystem::path& root, uint64_t hash) {
 static void test_animated_cache_sibling_contract() {
     namespace fs = std::filesystem;
     namespace pg = part_graph;
-    const fs::path root = fs::temp_directory_path() / "me3_a8_provider_contract";
+    const fs::path root = local_fixture_root("me3_a8_provider_contract");
     std::error_code ec;
     fs::remove_all(root, ec);
     fs::create_directories(root / "parts", ec);
@@ -226,7 +236,7 @@ static void test_animated_cache_sibling_contract() {
 static void test_animated_cache_rejects_changed_link_during_validation() {
     namespace fs = std::filesystem;
     namespace pg = part_graph;
-    const fs::path root = fs::temp_directory_path() / "me3_a8_cache_link_toctou";
+    const fs::path root = local_fixture_root("me3_a8_cache_link_toctou");
     std::error_code ec;
     fs::remove_all(root, ec);
     fs::create_directories(root / "parts", ec);
@@ -271,7 +281,7 @@ static void test_static_flat_rejects_linked_replacement_during_admission() {
     namespace fs = std::filesystem;
     namespace pg = part_graph;
     namespace anim = matter::animation;
-    const fs::path root = fs::temp_directory_path() / "me3_a8_static_flat_toctou";
+    const fs::path root = local_fixture_root("me3_a8_static_flat_toctou");
     std::error_code ec;
     fs::remove_all(root, ec);
     fs::create_directories(root / "parts", ec);
@@ -338,7 +348,7 @@ static void test_static_flat_rejects_linked_replacement_during_admission() {
 static void test_scratch_linked_bundle_never_falls_back_to_cache() {
     namespace fs = std::filesystem;
     namespace pg = part_graph;
-    const fs::path root = fs::temp_directory_path() / "me3_a8_scratch_root_consistency";
+    const fs::path root = local_fixture_root("me3_a8_scratch_root_consistency");
     const fs::path cache = root / "cache";
     const fs::path scratch = root / "scratch";
     std::error_code ec;
