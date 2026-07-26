@@ -234,6 +234,12 @@ public:
     // over-budget work; an already completed snapshot remains visible.
     bool evaluate(std::vector<AnimationEvaluationRequest> requests);
     AnimationPoseSnapshot snapshot(AnimatorInstanceHandle instance) const;
+    // Exposes only the fixed graph clock and lets a presentation evaluator
+    // mirror it without advancing fixed/controller state on a render frame.
+    bool fixed_clock(AnimatorInstanceHandle instance, float& previous, float& current) const;
+    bool seed_presentation_clock(AnimatorInstanceHandle instance,
+                                 const AnimationEvaluationDefinition& definition,
+                                 uint64_t fixed_tick, float previous, float current);
     // Creates a presentation-owned copy of an already solved fixed pose.  It
     // deliberately does not sample graph clocks or alter the fixed evaluator;
     // callers can subsequently layer frame-cadence targets onto this copy.

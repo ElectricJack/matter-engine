@@ -563,6 +563,17 @@ void test_world_target_is_resolved_at_evaluation_boundary() {
     CHECK(resolve_world_target(root, world, local), "world target resolves against the current root transform");
     CHECK(local.translation.x == 3.0f && local.translation.y == 2.0f,
           "target remains world-space until post-physics evaluation");
+
+    Mat4f rotated{};
+    rotated.m[1] = -1.0f;
+    rotated.m[4] = 1.0f;
+    rotated.m[10] = rotated.m[15] = 1.0f;
+    rotated.m[3] = 10.0f;
+    AnimationTransform rotated_world{};
+    rotated_world.translation = {10.0f, 3.0f, 0.0f};
+    CHECK(resolve_world_target(rotated, rotated_world, local) &&
+              same_float(local.translation.x, 3.0f) && same_float(local.translation.y, 0.0f),
+          "evaluation-boundary conversion uses the moved and rotated entity world transform");
 }
 
 void test_queries_apply_cap_and_explicit_misses() {

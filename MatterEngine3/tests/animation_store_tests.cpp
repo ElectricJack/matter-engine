@@ -268,6 +268,20 @@ void test_typed_cadence_and_target_contracts() {
     CHECK(!service.set_weight(foot, 1.0f), "controller-owned target rejects weight");
 }
 
+void test_api_control_writes_wait_for_their_declared_sampling_boundary() {
+    AnimationService service;
+    const Animator animator = service.create(service.insert_asset(asset(76, 1)), bound_definition());
+    const AnimationInputHandle speed = service.input(animator.instance, "speed");
+    const AnimationInputHandle aim = service.input(animator.instance, "aim");
+    CHECK(animator.valid() && service.set(speed, 9.0f) && service.set(aim, Float3{9, 8, 7}),
+          "queue fixed and frame API writes through the public service");
+    AnimationRuntimeBindingLease lease{};
+    CHECK(service.runtime_binding(animator.instance, lease) &&
+              lease.fixed_current[speed.schema_index].number == 2.0 &&
+              lease.frame_controls[aim.schema_index].float3.x == 1.0f,
+          "API writes remain pending until their respective fixed or frame sampling boundary");
+}
+
 void test_hard_caps_and_bind_pose_degradation() {
     AnimationStoreConfig requested;
     requested.instance_capacity = std::numeric_limits<uint32_t>::max();
@@ -357,6 +371,7 @@ int main() {
     test_asset_release_requires_zero_live_instances();
     test_asset_identity_conflict_fails_without_mutating_store_or_runtime();
     test_typed_cadence_and_target_contracts();
+    test_api_control_writes_wait_for_their_declared_sampling_boundary();
     test_defaults_budget_accounting_and_migration();
     test_hard_caps_and_bind_pose_degradation();
     test_conflicting_deduplicated_schema_is_rejected();

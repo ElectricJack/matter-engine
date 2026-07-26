@@ -158,6 +158,11 @@ public:
     // intentionally unbound for compatibility; malformed descriptors fail at
     // create/replace rather than becoming partially active.
     bool runtime_binding(AnimatorInstanceHandle, AnimationRuntimeBindingLease&) const;
+    // Runtime phase hooks.  API writes are staged until their authored
+    // cadence samples them; these methods are intentionally not part of the
+    // gameplay-facing control surface.
+    bool sample_fixed_controls();
+    bool sample_frame_controls();
     void attach_runtime_systems(animation::AnimationSystems* systems);
 
     // Editor play/stop seam.  These operate only on descriptor-bound runtime

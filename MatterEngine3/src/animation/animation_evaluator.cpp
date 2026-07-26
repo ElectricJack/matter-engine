@@ -382,6 +382,38 @@ bool AnimationEvaluator::evaluate(std::vector<AnimationEvaluationRequest> reques
 
 AnimationPoseSnapshot AnimationEvaluator::snapshot(AnimatorInstanceHandle instance) const { const auto it=states_.find(key(instance)); return it==states_.end()||!it->second||!it->second->has_snapshot?AnimationPoseSnapshot{}:it->second->view; }
 
+bool AnimationEvaluator::fixed_clock(AnimatorInstanceHandle instance, float& previous, float& current) const {
+    previous=current=0.0f;
+    const auto it=states_.find(key(instance));
+    if (!instance.valid() || it==states_.end() || !it->second || !it->second->initialized) return false;
+    previous=it->second->previous_fixed_time;
+    current=it->second->current_fixed_time;
+    return std::isfinite(previous) && std::isfinite(current);
+}
+
+bool AnimationEvaluator::seed_presentation_clock(AnimatorInstanceHandle instance,
+                                                  const AnimationEvaluationDefinition& definition,
+                                                  uint64_t fixed_tick, float previous, float current) {
+    if (!instance.valid() || !valid(definition) || !within_budget(definition,budget_.limits) ||
+        !std::isfinite(previous) || !std::isfinite(current)) return false;
+    const uint64_t instance_key=key(instance);
+    const State::DefinitionShape shape{&definition,definition.skeleton,uint32_t(definition.skeleton->joint_count())};
+    auto it=states_.find(instance_key);
+    if (it==states_.end()) {
+        if (states_.size()>=budget_.limits.max_runtime_instances) return false;
+        auto state=std::make_unique<State>();
+        state->shape=shape; state->initialized=true; state->last_fixed_tick=fixed_tick;
+        state->previous_fixed_time=previous; state->current_fixed_time=current;
+        states_.emplace(instance_key,std::move(state));
+        return true;
+    }
+    State& state=*it->second;
+    if (state.shape.definition!=shape.definition || state.shape.skeleton!=shape.skeleton || state.shape.joint_count!=shape.joint_count) return false;
+    state.initialized=true; state.last_fixed_tick=fixed_tick;
+    state.previous_fixed_time=previous; state.current_fixed_time=current;
+    return true;
+}
+
 bool AnimationEvaluator::begin_presentation(AnimatorInstanceHandle instance,
                                              const AnimationEvaluationDefinition& definition,
                                              const AnimationPoseSnapshot& previous_fixed_pose,

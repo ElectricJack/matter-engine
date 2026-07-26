@@ -31,6 +31,11 @@ struct ControllerTargetWrite { uint16_t target_index = UINT16_MAX; AnimationTran
 struct NativeControllerContext {
     double fixed_delta_seconds = 0.0;
     const AnimationWorldQueries* world_queries = nullptr;
+    // Controller rest/predicted coordinates are rig-relative.  Runtime
+    // supplies the post-authority entity world pose at the fixed boundary so
+    // native controllers can issue world queries without seeing Flecs.
+    Float3 entity_world_origin{};
+    Quaternion entity_world_rotation{};
     std::vector<AnimationValue> inputs;
     std::vector<ControllerTargetWrite> writes;
 };

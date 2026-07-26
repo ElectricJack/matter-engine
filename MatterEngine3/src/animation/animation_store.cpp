@@ -95,7 +95,9 @@ struct Slot {
     const AnimationRuntimeDefinition* definition = nullptr;
     std::vector<StoredValue> fixed_previous;
     std::vector<StoredValue> fixed_current;
+    std::vector<StoredValue> fixed_pending;
     std::vector<StoredValue> frame_controls;
+    std::vector<StoredValue> frame_pending;
     std::vector<TargetState> targets;
     std::vector<uint8_t> graph_state;
     std::vector<uint8_t> controller_state;
@@ -187,7 +189,8 @@ bool valid_binding(const std::shared_ptr<const AnimationRuntimeBindingDescriptor
     NativeControllerRegistry registry=NativeControllerRegistry::with_v1_controllers();
     if (binding->controllers.size() > budget.max_controller_nodes) return false;
     for(const auto& controller:binding->controllers) {
-        if(controller.descriptor.cadence!=EvaluationCadence::Fixed) return false;
+        if(controller.descriptor.cadence!=EvaluationCadence::Fixed ||
+           !std::isfinite(static_cast<double>(controller.priority))) return false;
         NativeControllerLayout layout{}; if(!registry.create(controller.descriptor,layout) || layout.frame_state_bytes!=0 || layout.fixed_state_bytes>64u*1024u) return false;
         // Controller inputs are an ordered, fixed-only capability list.  Do
         // not permit an undeclared frame value to leak into deterministic
@@ -274,12 +277,16 @@ Slot make_slot(const AnimAsset* asset, const AnimationRuntimeDefinition* definit
     slot.definition = definition;
     slot.fixed_previous.resize(definition->inputs.size());
     slot.fixed_current.resize(definition->inputs.size());
+    slot.fixed_pending.resize(definition->inputs.size());
     slot.frame_controls.resize(definition->inputs.size());
+    slot.frame_pending.resize(definition->inputs.size());
     for (size_t i = 0; i < definition->inputs.size(); ++i) {
         const StoredValue value = store_value(definition->inputs[i].default_value, definition->inputs[i].type);
         slot.fixed_previous[i] = value;
         slot.fixed_current[i] = value;
+        slot.fixed_pending[i] = value;
         slot.frame_controls[i] = value;
+        slot.frame_pending[i] = value;
     }
     slot.targets.resize(definition->targets.size());
     for (size_t i = 0; i < definition->targets.size(); ++i) slot.targets[i].enabled = definition->targets[i].enabled;
@@ -353,7 +360,14 @@ public:
         mutable_bytes_ += schema->mutable_bytes();
         ++active_count_;
         const Animator result{instance_handle(index, old), AnimationStatus::Ok};
-        refresh_runtime_binding(result.instance, old);
+        if (!refresh_runtime_binding(result.instance, old)) {
+            old.alive = false;
+            old.asset = nullptr;
+            mutable_bytes_ -= schema->mutable_bytes();
+            --active_count_;
+            free_indices_.push_back(index);
+            return {{}, AnimationStatus::LoadFailed};
+        }
         return result;
     }
 
@@ -377,7 +391,9 @@ public:
                 if (same_input(schema->inputs[next], old->definition->inputs[prior])) {
                     replacement.fixed_previous[next] = old->fixed_previous[prior];
                     replacement.fixed_current[next] = old->fixed_current[prior];
+                    replacement.fixed_pending[next] = old->fixed_pending[prior];
                     replacement.frame_controls[next] = old->frame_controls[prior];
+                    replacement.frame_pending[next] = old->frame_pending[prior];
                     break;
                 }
             }
@@ -392,11 +408,18 @@ public:
         }
         const uint32_t index = handle.slot_index;
         const AnimatorInstanceHandle stale = instance_handle(index, *old);
+        Slot prior = std::move(*old);
         *old = std::move(replacement);
         mutable_bytes_ = mutable_bytes_ - old_bytes + new_bytes;
         if (systems_) systems_->detach_service_binding(stale);
         const Animator result{instance_handle(index, *old), AnimationStatus::Ok};
-        refresh_runtime_binding(result.instance, *old);
+        if (!refresh_runtime_binding(result.instance, *old)) {
+            if (systems_) systems_->detach_service_binding(result.instance);
+            *old = std::move(prior);
+            mutable_bytes_ = mutable_bytes_ - new_bytes + old_bytes;
+            (void)refresh_runtime_binding(stale, *old);
+            return {{}, AnimationStatus::LoadFailed};
+        }
         return result;
     }
 
@@ -439,9 +462,8 @@ public:
         if (!owner || handle.schema_index >= owner->definition->inputs.size()) return false;
         const RuntimeInputDefinition& schema = owner->definition->inputs[handle.schema_index];
         if (handle.value_type != type || schema.type != type || handle.cadence != public_cadence(schema.cadence)) return false;
-        if (schema.cadence == EvaluationCadence::Fixed) owner->fixed_current[handle.schema_index] = value;
-        else owner->frame_controls[handle.schema_index] = value;
-        refresh_runtime_binding(instance_handle(handle.slot_index, *owner), *owner);
+        if (schema.cadence == EvaluationCadence::Fixed) owner->fixed_pending[handle.schema_index] = value;
+        else owner->frame_pending[handle.schema_index] = value;
         return true;
     }
 
@@ -490,8 +512,11 @@ public:
                 config_.max_graph_nodes, config_.max_controller_nodes};
     }
     size_t mutable_bytes() const { return mutable_bytes_; }
-    float number_value(AnimationInputHandle handle) const { const StoredValue* v = read_input(handle, AnimationValueType::Number); return v ? v->number : 0.0f; }
-    bool bool_value(AnimationInputHandle handle) const { const StoredValue* v = read_input(handle, AnimationValueType::Bool); return v && v->boolean; }
+    float number_value(AnimationInputHandle handle) const { const StoredValue* v = read_pending_input(handle, AnimationValueType::Number); return v ? v->number : 0.0f; }
+    bool bool_value(AnimationInputHandle handle) const { const StoredValue* v = read_pending_input(handle, AnimationValueType::Bool); return v && v->boolean; }
+
+    bool sample_fixed_controls() { return sample_controls(EvaluationCadence::Fixed); }
+    bool sample_frame_controls() { return sample_controls(EvaluationCadence::Frame); }
 
     bool capture_runtime_checkpoints(std::vector<AnimatorCheckpoint>& out) const {
         std::vector<AnimatorCheckpoint> captured;
@@ -622,10 +647,36 @@ public:
     }
 
 private:
-    void refresh_runtime_binding(AnimatorInstanceHandle handle, const Slot& value) {
-        if (!systems_ || !value.definition->binding) return;
+    bool refresh_runtime_binding(AnimatorInstanceHandle handle, const Slot& value) {
+        if (!systems_ || !value.definition->binding) return true;
         AnimationRuntimeBindingLease lease;
-        if (!runtime_binding(handle, lease) || !systems_->refresh_service_binding(lease)) systems_->detach_service_binding(handle);
+        if (!runtime_binding(handle, lease) || !systems_->refresh_service_binding(lease)) {
+            systems_->detach_service_binding(handle);
+            return false;
+        }
+        return true;
+    }
+    bool sample_controls(EvaluationCadence cadence) {
+        for (uint32_t index = 0; index < slots_.size(); ++index) {
+            Slot& value = slots_[index];
+            if (!value.alive) continue;
+            const auto previous = value.fixed_previous;
+            const auto current = value.fixed_current;
+            const auto frame = value.frame_controls;
+            if (cadence == EvaluationCadence::Fixed) {
+                value.fixed_previous = value.fixed_current;
+                value.fixed_current = value.fixed_pending;
+            } else value.frame_controls = value.frame_pending;
+            const AnimatorInstanceHandle handle = instance_handle(index, value);
+            if (!refresh_runtime_binding(handle, value)) {
+                value.fixed_previous = previous;
+                value.fixed_current = current;
+                value.frame_controls = frame;
+                (void)refresh_runtime_binding(handle, value);
+                return false;
+            }
+        }
+        return true;
     }
     const AnimationRuntimeDefinition* schema_for(const AnimAsset* asset, const AnimationRuntimeDefinition& definition,
                                                   bool allow_replacement = false) {
@@ -671,13 +722,13 @@ private:
         if (schema.driver != TargetDriverKind::External || handle.cadence != public_cadence(schema.cadence)) return nullptr;
         return &owner->targets[handle.schema_index];
     }
-    const StoredValue* read_input(AnimationInputHandle handle, AnimationValueType type) const {
+    const StoredValue* read_pending_input(AnimationInputHandle handle, AnimationValueType type) const {
         if (!handle.valid()) return nullptr;
         const Slot* owner = slot(handle.slot_index, handle.generation);
         if (!owner || handle.schema_index >= owner->definition->inputs.size() || handle.value_type != type) return nullptr;
         const RuntimeInputDefinition& schema = owner->definition->inputs[handle.schema_index];
         if (schema.type != type || handle.cadence != public_cadence(schema.cadence)) return nullptr;
-        return schema.cadence == EvaluationCadence::Fixed ? &owner->fixed_current[handle.schema_index] : &owner->frame_controls[handle.schema_index];
+        return schema.cadence == EvaluationCadence::Fixed ? &owner->fixed_pending[handle.schema_index] : &owner->frame_pending[handle.schema_index];
     }
     AnimationStoreConfig config_;
     AnimationBudgetConfig budget_;
@@ -708,6 +759,8 @@ Animator AnimationService::create(const animation::AnimAsset* asset, const anima
 Animator AnimationService::replace_asset(AnimatorInstanceHandle instance, const animation::AnimAsset* asset, const animation::AnimationRuntimeDefinition& definition) { return impl_->replace(instance, asset, definition); }
 bool AnimationService::remove(AnimatorInstanceHandle instance) { return impl_->remove(instance); }
 bool AnimationService::runtime_binding(AnimatorInstanceHandle instance, AnimationRuntimeBindingLease& out) const { return impl_->runtime_binding(instance, out); }
+bool AnimationService::sample_fixed_controls() { return impl_->sample_fixed_controls(); }
+bool AnimationService::sample_frame_controls() { return impl_->sample_frame_controls(); }
 void AnimationService::attach_runtime_systems(animation::AnimationSystems* systems) { impl_->attach_runtime_systems(systems, systems ? this : nullptr); }
 bool AnimationService::capture_runtime_checkpoints(std::vector<animation::AnimatorCheckpoint>& out) const { return impl_->capture_runtime_checkpoints(out); }
 bool AnimationService::validate_runtime_checkpoints(const std::vector<animation::AnimatorCheckpoint>& checkpoints) const { return impl_->validate_runtime_checkpoints(checkpoints); }

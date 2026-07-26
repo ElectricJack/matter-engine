@@ -233,7 +233,7 @@ private:
     void sample_service_bindings();
     void evaluate_service_bindings(flecs::world& world, double delta_seconds,
                                    float accumulator_alpha);
-    bool apply_targets(AnimatorInstanceHandle, EvaluationCadence, double);
+    bool apply_targets(flecs::world&, AnimatorInstanceHandle, EvaluationCadence, double);
 
     double interpolation_alpha_ = 0.0;
     std::vector<AnimationScheduleTraceEntry> trace_;
@@ -273,6 +273,7 @@ private:
     std::map<uint64_t, AnimationRuntimeBindingLease> service_bindings_;
     struct TargetRuntime {
         std::vector<AnimationTargetState> targets;
+        std::vector<AnimationTransform> desired_world;
         std::vector<std::unique_ptr<NativeController>> controllers;
         const AnimationRuntimeBindingDescriptor* controller_descriptor = nullptr;
     };
