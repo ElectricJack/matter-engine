@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <set>
 #include <vector>
 #include <memory>
 
@@ -461,6 +462,132 @@ void test_zero_fixed_step_evaluates_nonlinear_frame_graph_without_advancing_fixe
               same_float(before_checkpoints[0].current_fixed_time,after_checkpoints[0].current_fixed_time)&&
               runtime.animation_systems().take_marker_events().empty(),
           "frame graph leaves fixed tick, clocks, root/marker simulation state unchanged");
+}
+
+// D3 — the overlay isolation invariant, which was documentation only until now.
+//
+// The design says overlay primitives are transient: never into .part, BLAS,
+// culling bounds, or checkpoints. The overlay itself lives in the editor and
+// cannot reach the bake at all, so the load-bearing half of that claim at the
+// engine boundary is that its data source is OBSERVATIONAL -- querying a debug
+// snapshot must not perturb what the simulation does next.
+//
+// Worth a test rather than a comment because the failure is silent: a query
+// that lazily populated or advanced anything would make the simulation depend
+// on whether a diagnostic panel happened to be open, and the only symptom would
+// be an editor that quietly disagrees with a headless run.
+uint64_t checksum_local_pose(const AnimationPoseSnapshot& pose) {
+    uint64_t value = 1469598103934665603ull;
+    for (uint32_t joint = 0; joint != pose.local_pose.count; ++joint) {
+        const AnimationTransform& transform = pose.local_pose[joint];
+        const float numbers[] = {
+            transform.translation.x, transform.translation.y, transform.translation.z,
+            transform.rotation.x, transform.rotation.y, transform.rotation.z, transform.rotation.w,
+            transform.scale.x, transform.scale.y, transform.scale.z};
+        for (float number : numbers) {
+            uint32_t bits = 0;
+            std::memcpy(&bits, &number, sizeof(bits));
+            value = (value ^ bits) * 1099511628211ull;
+        }
+    }
+    return value;
+}
+
+struct IsolationRun {
+    std::vector<uint64_t> pose_checksums;
+    std::vector<AnimatorCheckpoint> checkpoints;
+    size_t marker_events = 0;
+    size_t distinct_checksums = 0;
+    bool ok = false;
+};
+
+// Drives an identical animator for a fixed tick sequence. When `query_debug` is
+// set, every tick also copies a debug snapshot -- exactly what an open overlay
+// or animation panel does each frame.
+IsolationRun run_isolation_pattern(bool query_debug) {
+    IsolationRun result;
+    ecs_runtime::Runtime runtime;
+    AnimationService service;
+    runtime.attach_animation_service(service);
+    const AnimAsset* asset = service.insert_asset({0x5150u, {3u, 4u}});
+    TargetChainFixture fixture(1);
+    auto descriptor = std::make_shared<AnimationRuntimeBindingDescriptor>();
+    descriptor->evaluation = fixture.evaluation;
+    descriptor->fixed_work.clip.duration = 1.0f;
+    descriptor->fixed_work.clip.loop = true;
+    descriptor->targets = {
+        fixture.target(0, "hand", TargetDriverKind::External, EvaluationCadence::Frame),
+    };
+    const Animator animator = service.create(asset, target_definition(descriptor, {
+        {"hand", TargetDriverKind::External, EvaluationCadence::Frame, {1, 2, 3}, true},
+    }));
+    if (!animator.valid()) return result;
+
+    const AnimationTargetHandle target = service.target(animator.instance, "hand");
+    // Move the target every tick: a STATIC pose would make the comparison below
+    // vacuous, since two runs of a motionless rig match no matter what either
+    // one did in between.
+    for (int frame = 0; frame != 32; ++frame) {
+        AnimationTransform desired{};
+        desired.translation = {0.75f + 0.01f * static_cast<float>(frame),
+                               0.25f, -0.5f + 0.02f * static_cast<float>(frame)};
+        if (!service.set_transform(target, desired)) return result;
+        // Deliberately uneven deltas: an observational query must not change
+        // behaviour at any sampling boundary, not merely at a tidy one.
+        const float deltas[] = {1.0f / 8.0f, 1.0f / 16.0f, 1.0f / 8.0f, 3.0f / 16.0f};
+        runtime.tick({deltas[frame % 4], 0.125f, 4});
+        if (query_debug) {
+            AnimationDebugPoseSnapshot debug{};
+            // Whether the query succeeds is not the property under test -- only
+            // that asking cannot change the answer to anything else.
+            (void)runtime.animation_systems().copy_animation_debug_pose(animator.instance, debug);
+        }
+        result.pose_checksums.push_back(
+            checksum_local_pose(runtime.animation_systems().pose_snapshots().latest(animator.instance)));
+    }
+    // Drained identically in both runs so the comparison is not itself the
+    // thing that differs.
+    result.marker_events = runtime.animation_systems().take_marker_events().size();
+    result.ok = service.capture_runtime_checkpoints(result.checkpoints);
+    result.distinct_checksums =
+        std::set<uint64_t>(result.pose_checksums.begin(), result.pose_checksums.end()).size();
+    return result;
+}
+
+void test_debug_snapshot_queries_cannot_perturb_the_simulation() {
+    const IsolationRun quiet = run_isolation_pattern(false);
+    const IsolationRun observed = run_isolation_pattern(true);
+    CHECK(quiet.ok && observed.ok, "both isolation runs drive a live animator and capture state");
+    if (!quiet.ok || !observed.ok) return;
+
+    // Guard against a vacuous comparison: if the rig never moved, two identical
+    // checksum sequences would prove nothing at all.
+    CHECK(quiet.distinct_checksums > 1,
+          "the driven pose actually varies, so comparing the runs is meaningful");
+
+    CHECK(quiet.pose_checksums.size() == observed.pose_checksums.size() &&
+              quiet.pose_checksums == observed.pose_checksums,
+          "interleaving debug snapshot queries leaves every evaluated pose bit-identical");
+    CHECK(quiet.marker_events == observed.marker_events,
+          "debug snapshot queries neither consume nor produce marker events");
+    CHECK(quiet.checkpoints.size() == observed.checkpoints.size(),
+          "debug snapshot queries do not change the captured checkpoint set");
+
+    bool checkpoints_match = quiet.checkpoints.size() == observed.checkpoints.size();
+    for (size_t i = 0; checkpoints_match && i != quiet.checkpoints.size(); ++i) {
+        const AnimatorCheckpoint& a = quiet.checkpoints[i];
+        const AnimatorCheckpoint& b = observed.checkpoints[i];
+        if (a.last_fixed_tick != b.last_fixed_tick ||
+            !same_float(a.previous_fixed_time, b.previous_fixed_time) ||
+            !same_float(a.current_fixed_time, b.current_fixed_time))
+            checkpoints_match = false;
+    }
+    CHECK(checkpoints_match,
+          "checkpoint clocks and fixed ticks carry no trace of the observing queries");
+    // Checkpoints are the durable half of the invariant: if overlay state could
+    // land here, a Play/Stop cycle would restore diagnostics as if they were
+    // simulation.
+    CHECK(!quiet.checkpoints.empty(), "the fixture actually produces a checkpoint to inspect");
 }
 
 void test_animation_debug_snapshot_copies_evaluated_pose_and_live_targets() {
@@ -1152,6 +1279,7 @@ int main() {
     test_native_gait_query_broker_caps_and_orders_1025_controllers();
     test_runtime_fixed_and_frame_external_targets_compose_without_fixed_history_mutation();
     test_zero_fixed_step_evaluates_nonlinear_frame_graph_without_advancing_fixed_state();
+    test_debug_snapshot_queries_cannot_perturb_the_simulation();
     test_animation_debug_snapshot_copies_evaluated_pose_and_live_targets();
     test_animation_debug_draw_contract_rejects_invalid_data_and_rotates_poles();
     if (g_failures) return 1;
