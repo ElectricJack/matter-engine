@@ -203,8 +203,7 @@ static void test_opening_difference_not_solid() {
     dsl::BuildOp op{};
     op.op          = dsl::CsgOp::Difference;
     op.kind        = dsl::BrushKind::Box;
-    // Identity matrix: field order is m0,m4,m8,m12, m1,m5,m9,m13, ...
-    op.transform   = Matrix{1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    op.transform   = mm::identity();
     op.center      = {0, 0, 0};
     op.halfExtents = {2.0f, 2.0f, 2.0f};
     op.radius      = 0.0f;

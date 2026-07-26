@@ -625,9 +625,9 @@ static void test_g5_lookat() {
     // Look from origin toward +X. Forward +Z (local) should map to +X (world).
     s.lookAt(5, 0, 0, 0, 1, 0);
     CHECK(!s.has_error(), "G5: lookAt has no error");
-    Matrix m = s.top();
-    // Local +Z transformed = third column (m.m8,m.m9,m.m10) should be ~+X.
-    float fx = m.m8, fy = m.m9, fz = m.m10;
+    mm::Mat4 m = s.top();
+    // Local +Z transformed = third column (m.m[2],m.m[6],m.m[10]) should be ~+X.
+    float fx = m.m[2], fy = m.m[6], fz = m.m[10];
     float len = sqrtf(fx*fx+fy*fy+fz*fz);
     fx/=len; fy/=len; fz/=len;
     CHECK(fabsf(fx-1.0f)<1e-4f && fabsf(fy)<1e-4f && fabsf(fz)<1e-4f,
@@ -637,10 +637,10 @@ static void test_g5_lookat() {
     dsl::DslState s2;
     s2.translate(0, 10, 0);
     s2.lookAt(0, 10, 5, 0, 1, 0);   // from (0,10,0) toward (0,10,5) => +Z forward
-    Vector3 p = s2.position();
+    mm::Vec3 p = s2.position();
     CHECK(fabsf(p.y-10.0f)<1e-4f, "G5: lookAt preserves the current frame origin");
-    Matrix m2 = s2.top();
-    float gz = m2.m10 / sqrtf(m2.m8*m2.m8+m2.m9*m2.m9+m2.m10*m2.m10);
+    mm::Mat4 m2 = s2.top();
+    float gz = m2.m[10] / sqrtf(m2.m[2]*m2.m[2]+m2.m[6]*m2.m[6]+m2.m[10]*m2.m[10]);
     CHECK(gz > 0.99f, "G5: forward aims +Z toward target from composed origin");
 }
 

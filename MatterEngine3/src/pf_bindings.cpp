@@ -602,8 +602,8 @@ JSValue j_pf_stampPaths(JSContext* c, JSValueConst, int n, JSValueConst* a) {
             r *= static_cast<float>(r_scale);
             return std::max(r, static_cast<float>(min_r));
         };
-        auto vert = [&](size_t i) -> Vector3 {
-            return Vector3{p.xyz[3*i], p.xyz[3*i+1], p.xyz[3*i+2]};
+        auto vert = [&](size_t i) -> mm::Vec3 {
+            return mm::Vec3{p.xyz[3*i], p.xyz[3*i+1], p.xyz[3*i+2]};
         };
         st->sphere(vert(0), radius_at(0), dsl::CsgOp::Union);
         for (size_t i = 1; i < nv; ++i) {

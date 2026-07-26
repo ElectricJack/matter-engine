@@ -2365,12 +2365,12 @@ TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
                         if (wz < zmin) zmin = wz;
                         if (wz > zmax) zmax = wz;
                     };
-                    // Transform a local point by the op's transform (raylib Matrix,
-                    // column-major: m0-m3=col0, m4-m7=col1, m8-m11=col2, m12-m15=col3/translation).
+                    // Transform a local point by the op's transform (mm::Mat4, row-major:
+                    // m[0..3]=row0, m[4..7]=row1, m[8..11]=row2; m[3]/m[7]/m[11]=translation).
                     auto tx = [&](float lx, float ly, float lz, float& ox, float& oz) {
-                        const Matrix& M = op.transform;
-                        ox = M.m0*lx + M.m4*ly + M.m8*lz  + M.m12;
-                        oz = M.m2*lx + M.m6*ly + M.m10*lz + M.m14;
+                        const mm::Mat4& M = op.transform;
+                        ox = M.m[0]*lx + M.m[1]*ly + M.m[2]*lz  + M.m[3];
+                        oz = M.m[8]*lx + M.m[9]*ly + M.m[10]*lz + M.m[11];
                     };
                     // Initialize to first point.
                     float fx, fz;
@@ -2381,14 +2381,14 @@ TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
                         // Exact conservative AABB for a sphere under any affine M:
                         //   world_center = M * center  (already captured in fx, fz above)
                         //   world half-extent along world axis i = r * L2_norm(row_i of linear part of M)
-                        // For raylib's Matrix layout (row names m0,m4,m8 = X-row; m2,m6,m10 = Z-row):
-                        //   hx = r * sqrt(m0^2 + m4^2 + m8^2)
-                        //   hz = r * sqrt(m2^2 + m6^2 + m10^2)
+                        // For mm::Mat4's row-major layout (m[0],m[1],m[2] = X-row; m[8],m[9],m[10] = Z-row):
+                        //   hx = r * sqrt(m[0]^2 + m[1]^2 + m[2]^2)
+                        //   hz = r * sqrt(m[8]^2 + m[9]^2 + m[10]^2)
                         // This is exact for spheres under rotation + non-uniform scale (no probe samples needed).
-                        const Matrix& M = op.transform;
+                        const mm::Mat4& M = op.transform;
                         float r0 = op.radius;
-                        float hx = r0 * std::sqrt(M.m0*M.m0 + M.m4*M.m4 + M.m8*M.m8);
-                        float hz = r0 * std::sqrt(M.m2*M.m2 + M.m6*M.m6 + M.m10*M.m10);
+                        float hx = r0 * std::sqrt(M.m[0]*M.m[0] + M.m[1]*M.m[1] + M.m[2]*M.m[2]);
+                        float hz = r0 * std::sqrt(M.m[8]*M.m[8] + M.m[9]*M.m[9] + M.m[10]*M.m[10]);
                         xmin = fx - hx; xmax = fx + hx;
                         zmin = fz - hz; zmax = fz + hz;
                     } else if (op.kind == dsl::BrushKind::Box) {
@@ -2410,14 +2410,14 @@ TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
                         // including rotation + non-uniform scale.  Local-axis ±r probes
                         // are non-conservative when the transform has off-diagonal terms
                         // that route Y into world X (they under-estimate world extent).
-                        const Matrix& M2 = op.transform;
+                        const mm::Mat4& M2 = op.transform;
                         float r0 = op.radius;
                         float ax = op.center.x, ay = op.center.y, az = op.center.z;
                         float bx = op.segB.x,   by = op.segB.y,   bz = op.segB.z;
                         float r1 = op.r1;
                         // Row-norm world-space radial margins for each end radius.
-                        float row_x = std::sqrt(M2.m0*M2.m0 + M2.m4*M2.m4 + M2.m8*M2.m8);
-                        float row_z = std::sqrt(M2.m2*M2.m2 + M2.m6*M2.m6 + M2.m10*M2.m10);
+                        float row_x = std::sqrt(M2.m[0]*M2.m[0] + M2.m[1]*M2.m[1] + M2.m[2]*M2.m[2]);
+                        float row_z = std::sqrt(M2.m[8]*M2.m[8] + M2.m[9]*M2.m[9] + M2.m[10]*M2.m[10]);
                         // Endpoint a (radius r0): world center + ±row-norm margin.
                         float wax, waz;
                         tx(ax, ay, az, wax, waz);

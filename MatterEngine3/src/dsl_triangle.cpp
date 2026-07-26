@@ -1,24 +1,22 @@
 // DslState members that touch the direct-triangle mesh buffer live here, split
 // out of dsl_state.cpp. triangle_emit.hpp pulls in MSL's precomp.h, whose
-// `struct float3` collides with raymath.h's `float3`; dsl_state.cpp needs raymath
-// for the matrix stack, so the two must be compiled in separate translation
-// units. This TU includes triangle_emit.hpp but NOT raymath.h. raylib.h (via
-// dsl_state.h) supplies the Matrix type without defining float3, so there is no
-// clash here.
+// `struct float3` collides with raymath.h's `float3`. Phase 3 moved the
+// transform stack off raymath onto mm::Mat4/mm::Vec3 (matter_math.h, via
+// dsl_state.h), so neither TU includes raymath.h any more -- the split
+// between this file and dsl_state.cpp stays anyway since triangle_emit.hpp's
+// float3 still collides with precomp.h's, independent of raymath.h.
 #include "dsl_state.h"
 #include "triangle_emit.hpp"
 #include "polygon_triangulate.hpp"
 
 namespace dsl {
 
-// Row-major 16-float copy of a raylib (column-major) Matrix. Local to this TU to
-// avoid raymath.h; only reads Matrix fields, no raymath functions needed.
-static mat4 top_mat4(const Matrix& m) {
+// mm::Mat4 is already row-major float[16] (matter_math.h), matching tri.h's
+// mat4::cell layout exactly -- a straight copy. (Pre-Phase-3 this converted a
+// raylib column-major-by-field-name Matrix; the stack is mm::Mat4 now.)
+static mat4 top_mat4(const mm::Mat4& m) {
     mat4 r;
-    r.cell[0]=m.m0;  r.cell[1]=m.m4;  r.cell[2]=m.m8;   r.cell[3]=m.m12;
-    r.cell[4]=m.m1;  r.cell[5]=m.m5;  r.cell[6]=m.m9;   r.cell[7]=m.m13;
-    r.cell[8]=m.m2;  r.cell[9]=m.m6;  r.cell[10]=m.m10; r.cell[11]=m.m14;
-    r.cell[12]=m.m3; r.cell[13]=m.m7; r.cell[14]=m.m11; r.cell[15]=m.m15;
+    for (int i = 0; i < 16; ++i) r.cell[i] = m.m[i];
     return r;
 }
 
@@ -27,9 +25,7 @@ static float4 tint_f4(const Vector4& t) { return make_float4(t.x, t.y, t.z, t.w)
 
 DslState::DslState()
     : tris_buf_(std::make_unique<tri_emit::TriangleBuildBuffer>()) {
-    // Identity Matrix without raymath's MatrixIdentity() (field order is
-    // m0,m4,m8,m12, m1,m5,m9,m13, ...).
-    stack_.push_back(Matrix{1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1});
+    stack_.push_back(mm::identity());
 }
 DslState::~DslState() = default;
 
@@ -111,7 +107,7 @@ void DslState::line(float ax, float ay, float az, float bx, float by, float bz,
 
 // Round primitives (Phase 4 / P2). Voxel session -> analytic SDF brush. None ->
 // clean error (mesh emitters land in Phase 5). Triangles (mid-beginShape) -> error.
-void DslState::capsule(const Vector3& a, const Vector3& b, float r, CsgOp op) {
+void DslState::capsule(const mm::Vec3& a, const mm::Vec3& b, float r, CsgOp op) {
     if (session_ == Session::Voxels) { emit_voxel_segment(BrushKind::Capsule, a, b, r, r, op); return; }
     if (session_ == Session::Triangles) {
         set_error("capsule() inside a beginShape (a solid is its own primitive; call endShape first)");
@@ -121,7 +117,7 @@ void DslState::capsule(const Vector3& a, const Vector3& b, float r, CsgOp op) {
     tris_buf_->capsule(make_float3(a.x, a.y, a.z), make_float3(b.x, b.y, b.z), r,
                        (int)material_, top_mat4(top()), 16, 6, tint_f4(tint_));
 }
-void DslState::cylinder(const Vector3& a, const Vector3& b, float r, CsgOp op) {
+void DslState::cylinder(const mm::Vec3& a, const mm::Vec3& b, float r, CsgOp op) {
     if (session_ == Session::Voxels) { emit_voxel_segment(BrushKind::Cylinder, a, b, r, r, op); return; }
     if (session_ == Session::Triangles) {
         set_error("cylinder() inside a beginShape (a solid is its own primitive; call endShape first)");
@@ -131,7 +127,7 @@ void DslState::cylinder(const Vector3& a, const Vector3& b, float r, CsgOp op) {
     tris_buf_->cappedCone(make_float3(a.x, a.y, a.z), make_float3(b.x, b.y, b.z),
                           r, r, (int)material_, top_mat4(top()), 16, tint_f4(tint_));
 }
-void DslState::cone(const Vector3& a, const Vector3& b, float r0, float r1, CsgOp op) {
+void DslState::cone(const mm::Vec3& a, const mm::Vec3& b, float r0, float r1, CsgOp op) {
     // cone is sugar that lowers to the tapered Cylinder (sdCappedCone). r1<r0 (or
     // r1=0) gives the taper; equal radii is a straight cylinder.
     if (session_ == Session::Voxels) { emit_voxel_segment(BrushKind::Cylinder, a, b, r0, r1, op); return; }
@@ -149,7 +145,7 @@ void DslState::cone(const Vector3& a, const Vector3& b, float r0, float r1, CsgO
 // dsl_state.cpp) because the mesh branch needs the TriangleBuildBuffer, which
 // pulls in MSL headers that collide with raymath.h — so dsl_state.cpp delegates
 // its voxel-brush body via emit_voxel_sphere/emit_voxel_box.
-void DslState::sphere(const Vector3& c, float r, CsgOp op) {
+void DslState::sphere(const mm::Vec3& c, float r, CsgOp op) {
     if (session_ == Session::Voxels) { emit_voxel_sphere(c, r, op); return; }
     if (session_ == Session::Triangles) {
         set_error("sphere() inside a beginShape (a solid is its own primitive; call endShape first)");
@@ -159,7 +155,7 @@ void DslState::sphere(const Vector3& c, float r, CsgOp op) {
     tris_buf_->sphere(make_float3(c.x, c.y, c.z), r, (int)material_, top_mat4(top()),
                       12, tint_f4(tint_));
 }
-void DslState::box(const Vector3& c, const Vector3& h, CsgOp op) {
+void DslState::box(const mm::Vec3& c, const mm::Vec3& h, CsgOp op) {
     if (session_ == Session::Voxels) { emit_voxel_box(c, h, op); return; }
     if (session_ == Session::Triangles) {
         set_error("box() inside a beginShape (a solid is its own primitive; call endShape first)");

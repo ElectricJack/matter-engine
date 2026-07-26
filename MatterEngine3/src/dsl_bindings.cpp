@@ -71,7 +71,7 @@ static JSValue j_op(JSContext* c, JSValueConst, int, JSValueConst* a){
 static JSValue j_smoothing(JSContext* c, JSValueConst, int, JSValueConst* a){ state_of(c)->smoothing((float)argd(c,a[0])); return JS_UNDEFINED; }
 
 static JSValue j_raycast(JSContext* c, JSValueConst, int, JSValueConst* a){
-    Vector3 hit{}, nrm{};
+    mm::Vec3 hit{}, nrm{};
     bool ok = state_of(c)->raycast(
         {(float)argd(c,a[0]),(float)argd(c,a[1]),(float)argd(c,a[2])},
         {(float)argd(c,a[3]),(float)argd(c,a[4]),(float)argd(c,a[5])},
@@ -259,7 +259,7 @@ static JSValue j_extrude(JSContext* c, JSValueConst, int, JSValueConst* a){
     state_of(c)->extrude(flat.data(), n);
     return JS_UNDEFINED; }
 static JSValue j_position(JSContext* c, JSValueConst, int, JSValueConst*){
-    Vector3 p = state_of(c)->position();
+    mm::Vec3 p = state_of(c)->position();
     JSValue arr = JS_NewArray(c);
     JS_SetPropertyUint32(c, arr, 0, JS_NewFloat64(c, p.x));
     JS_SetPropertyUint32(c, arr, 1, JS_NewFloat64(c, p.y));
@@ -800,14 +800,10 @@ static JSValue j_ts_dropChild(JSContext* c, JSValueConst, int n, JSValueConst* a
 
     tileset::DropChildRec rec{};
     rec.child_hash = hash;
-    // Capture current transform stack top as row-major float[16].
-    // Use the same matrix_to_row16 logic DslState::placeChild uses by accessing top().
-    // We need the row-major layout; replicate the conversion inline here.
-    Matrix mm = state->top();
-    rec.transform[0]=mm.m0;  rec.transform[1]=mm.m4;  rec.transform[2]=mm.m8;  rec.transform[3]=mm.m12;
-    rec.transform[4]=mm.m1;  rec.transform[5]=mm.m5;  rec.transform[6]=mm.m9;  rec.transform[7]=mm.m13;
-    rec.transform[8]=mm.m2;  rec.transform[9]=mm.m6;  rec.transform[10]=mm.m10; rec.transform[11]=mm.m14;
-    rec.transform[12]=mm.m3; rec.transform[13]=mm.m7; rec.transform[14]=mm.m11; rec.transform[15]=mm.m15;
+    // Capture current transform stack top as row-major float[16]. top() already
+    // returns mm::Mat4, whose m[] is row-major (matter_math.h) -- a straight copy.
+    mm::Mat4 top_m = state->top();
+    for (int i = 0; i < 16; ++i) rec.transform[i] = top_m.m[i];
     ts->spec.drops.push_back(rec);
     return JS_UNDEFINED;
 }
