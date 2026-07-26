@@ -87,11 +87,63 @@ void draw_skin_tab(const AnimationPanelModel& model) {
     ImGui::Text("Rigid segments: %u", skin.rigid_part_count);
 }
 
-void draw_targets_tab(AnimationPanelModel& model, const AnimationTargetEdit& edit_target) {
+// Inline editor for one externally-driven target. Seeded from the target's last
+// EVALUATED transform, so opening it does not yank the target to identity; the
+// author edits from where the target actually is.
+//
+// Every write goes through the engine and the engine's verdict is shown. A
+// rejection here means one-driver arbitration or a non-finite value refused it,
+// and silently swallowing that is precisely the failure this tab exists to
+// prevent.
+void draw_target_editor(const AnimationTargetRow& row,
+                        matter::AnimatorInstanceHandle animator,
+                        const AnimationTargetWriter& writer) {
+    struct EditState {
+        uint16_t target = UINT16_MAX;
+        uint64_t animator_slot = UINT64_MAX;
+        matter::AnimationTransform value{};
+        bool last_write_rejected = false;
+    };
+    static EditState state;
+
+    // Re-seed whenever the edited target (or the animator) changes, so a stale
+    // buffer from a previous selection can never be written to a new target.
+    const uint64_t slot = static_cast<uint64_t>(animator.slot_index);
+    if (state.target != row.index || state.animator_slot != slot) {
+        state.target = row.index;
+        state.animator_slot = slot;
+        state.value = row.evaluated;
+        state.last_write_rejected = false;
+    }
+
+    ImGui::SetNextItemWidth(220.0f);
+    bool edited = ImGui::DragFloat3("translation", &state.value.translation.x, 0.01f);
+    ImGui::SetNextItemWidth(220.0f);
+    edited |= ImGui::DragFloat4("rotation", &state.value.rotation.x, 0.01f);
+
+    if (edited && writer.set_transform)
+        state.last_write_rejected = !writer.set_transform(animator, row.label.c_str(), state.value);
+
+    if (writer.snap && ImGui::SmallButton("snap")) {
+        // Skip smoothing and adopt the desired transform on the next evaluation.
+        state.last_write_rejected = !writer.snap(animator, row.label.c_str());
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("reset to evaluated")) {
+        state.value = row.evaluated;
+        state.last_write_rejected = false;
+    }
+    if (state.last_write_rejected)
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f),
+                           "the engine rejected that write");
+}
+
+void draw_targets_tab(AnimationPanelModel& model, const AnimationTargetWriter& writer) {
     if (model.target_rows().empty()) {
         ImGui::TextDisabled("This animator declares no targets.");
         return;
     }
+    static uint16_t editing = UINT16_MAX;
     if (ImGui::BeginTable("##anim_targets", 6,
                           ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn("Target");
@@ -129,16 +181,37 @@ void draw_targets_tab(AnimationPanelModel& model, const AnimationTargetEdit& edi
                     ImGui::SetTooltip("Driven by controller '%s'. External writes are "
                                       "rejected by one-driver arbitration.",
                                       row.controller.c_str());
-            } else if (!edit_target) {
-                ImGui::TextDisabled("n/a");
-            } else if (ImGui::SmallButton("snap")) {
-                edit_target(model.selected_resolved_hash(), row.index,
-                            matter::AnimationTransform{});
+            } else if (!writer.bound()) {
+                ImGui::TextDisabled("read-only");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("No write path is bound to this panel.");
+            } else if (ImGui::SmallButton("edit")) {
+                editing = row.index;
             }
             ImGui::PopID();
         }
         ImGui::EndTable();
     }
+
+    // The editor sits below the table rather than inside a cell so the drag
+    // fields get usable width.
+    const matter::AnimatorInstanceHandle animator = model.selected_animator();
+    if (editing == UINT16_MAX || !writer.bound() || !animator.valid()) return;
+    for (const AnimationTargetRow& row : model.target_rows()) {
+        if (row.index != editing) continue;
+        // A live reload can turn an external target into a controller-driven
+        // one. Re-check ownership here rather than trusting the click that
+        // opened the editor.
+        if (!row.gizmo_enabled) { editing = UINT16_MAX; return; }
+        ImGui::SeparatorText(("Edit target: " + row.label).c_str());
+        ImGui::PushID(static_cast<int>(row.index));
+        draw_target_editor(row, animator, writer);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("close")) editing = UINT16_MAX;
+        ImGui::PopID();
+        return;
+    }
+    editing = UINT16_MAX;  // the target disappeared (reload): drop the editor
 }
 
 void draw_render_tab(const AnimationPanelModel& model,
@@ -171,7 +244,7 @@ struct TabSpec {
 
 void draw_animation_panel(AnimationPanelModel& model,
                           AnimationDebugOverlayOptions& overlay,
-                          const AnimationTargetEdit& edit_target) {
+                          const AnimationTargetWriter& writer) {
     draw_status_banner(model);
     // Diagnostics are shown even with nothing live: a rig that FAILED to bake
     // produces no bindings, and its diagnostics are the only thing that explains
@@ -193,7 +266,7 @@ void draw_animation_panel(AnimationPanelModel& model,
         switch (spec.tab) {
         case AnimationTab::Rig:     draw_rig_tab(model); break;
         case AnimationTab::Skin:    draw_skin_tab(model); break;
-        case AnimationTab::Targets: draw_targets_tab(model, edit_target); break;
+        case AnimationTab::Targets: draw_targets_tab(model, writer); break;
         case AnimationTab::Render:  draw_render_tab(model, overlay); break;
         case AnimationTab::Clips:
             // Clip inventory is not in the debug snapshot yet; the snapshot

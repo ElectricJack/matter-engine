@@ -55,7 +55,23 @@ void BakeLab::draw_contents(matter::evt::Hub* app_hub, matter::WorldSession* ses
             const bool query_ok =
                 session ? session->animation_debug_snapshots(snapshots) : true;
             animation_model_.update(snapshots, query_ok);
-            draw_animation_panel(animation_model_, overlay);
+            // Bind the write path only when a session exists. The panel shows
+            // "read-only" rather than a dead control when it is unbound, and the
+            // engine -- not this closure -- decides whether any given write is
+            // permitted (one-driver arbitration lives in AnimationService).
+            AnimationTargetWriter writer;
+            if (session) {
+                writer.set_transform = [session](matter::AnimatorInstanceHandle animator,
+                                                 const char* name,
+                                                 const matter::AnimationTransform& desired) {
+                    return session->set_animation_target_transform(animator, name, desired);
+                };
+                writer.snap = [session](matter::AnimatorInstanceHandle animator,
+                                        const char* name) {
+                    return session->snap_animation_target(animator, name);
+                };
+            }
+            draw_animation_panel(animation_model_, overlay, writer);
             ImGui::EndTabItem();
         }
         draw_placeholder_tab("Settle", "Parked (part-workbench.md I.6 / task 5.5)");

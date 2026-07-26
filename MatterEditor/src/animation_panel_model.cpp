@@ -80,6 +80,11 @@ bool AnimationPanelModel::selected_visible() const {
     return instances_[selected_].visible;
 }
 
+matter::AnimatorInstanceHandle AnimationPanelModel::selected_animator() const {
+    if (selected_ >= instances_.size()) return {};
+    return instances_[selected_].pose.instance;
+}
+
 void AnimationPanelModel::rebuild_rows() {
     joint_rows_.clear();
     socket_rows_.clear();
@@ -137,6 +142,7 @@ void AnimationPanelModel::rebuild_rows() {
             row.enabled = pose.targets[i].enabled;
             row.available = pose.targets[i].available;
             row.weight = pose.targets[i].weight;
+            row.evaluated = pose.targets[i].evaluated;
         }
         // One-driver arbitration owns the real decision; mirroring it here lets
         // the panel grey the gizmo out instead of offering a drag the engine

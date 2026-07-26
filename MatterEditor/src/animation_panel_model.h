@@ -58,6 +58,9 @@ struct AnimationTargetRow {
     bool driver_is_controller = false;
     std::string controller;
     bool cadence_is_fixed = false;
+    // Last evaluated transform, so an editor can seed its fields from what the
+    // target is actually doing rather than from identity.
+    matter::AnimationTransform evaluated{};
     // False when a controller owns this target: one-driver arbitration would
     // reject an external write, so the panel disables the gizmo instead of
     // letting an author drag something that silently does nothing.
@@ -101,6 +104,9 @@ public:
 
     uint64_t selected_resolved_hash() const;
     bool selected_visible() const;
+    // The live animator the rows describe. Invalid when nothing is selected;
+    // a write path must check valid() rather than assume a selection exists.
+    matter::AnimatorInstanceHandle selected_animator() const;
 
 private:
     void rebuild_rows();

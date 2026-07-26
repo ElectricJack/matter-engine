@@ -191,6 +191,28 @@ void test_skin_summary_and_diagnostics() {
               "a diagnostic formats its source location for display");
 }
 
+// The write path needs the live animator handle and a transform to seed its
+// fields from. Seeding from identity instead of the evaluated transform would
+// yank the target the moment an author opened the editor.
+void test_write_path_inputs_are_exposed() {
+    AnimationPanelModel model;
+    AnimationDebugInstanceSnapshot s = make_snapshot(5, false);
+    s.pose.targets[0].evaluated.translation = {1.5f, -2.0f, 0.25f};
+    model.update({s}, true);
+
+    check(model.selected_animator().valid(),
+          "the selected animator handle is exposed for writes");
+    if (!model.target_rows().empty()) {
+        const auto& row = model.target_rows()[0];
+        check(row.evaluated.translation.x == 1.5f && row.evaluated.translation.y == -2.0f,
+              "target rows carry the evaluated transform to seed an editor from");
+    }
+
+    model.update({}, true);
+    check(!model.selected_animator().valid(),
+          "no selection exposes no animator, so a write path cannot target a dead handle");
+}
+
 void test_tab_selection_round_trips() {
     AnimationPanelModel model;
     check(model.tab() == AnimationTab::Rig, "the panel opens on the Rig tab");
@@ -210,6 +232,7 @@ int main() {
     test_out_of_range_selection_is_ignored();
     test_malformed_snapshot_is_rejected_not_half_drawn();
     test_skin_summary_and_diagnostics();
+    test_write_path_inputs_are_exposed();
     test_tab_selection_round_trips();
     if (g_failures == 0) std::printf("ALL PASS\n");
     else std::printf("%d FAILURE(S)\n", g_failures);

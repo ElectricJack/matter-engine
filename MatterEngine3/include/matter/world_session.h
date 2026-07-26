@@ -242,6 +242,27 @@ public:
     // tooling. In particular, active_assets must remain bounded across entity
     // removal and animated-part replacement.
     AnimationRuntimeStats animation_runtime_stats() const;
+
+    // --- editor-driven external target writes -----------------------------
+    // The narrow write surface an editor gizmo needs, resolved by animator +
+    // authored target name so no AnimationService handle crosses the boundary.
+    //
+    // These are ORDINARY EXTERNAL WRITES: they are staged and sampled at the
+    // target's declared cadence exactly like a gameplay write, and they obey
+    // one-driver arbitration. A controller-driven target therefore returns
+    // false here -- the caller is expected to have disabled the affordance
+    // already (see the editor's Targets tab), and this is the enforcement that
+    // makes that disabled state real rather than cosmetic.
+    //
+    // Returns false when the animator or target name is unknown, the target is
+    // controller-driven, or the transform is non-finite.
+    bool set_animation_target_transform(AnimatorInstanceHandle instance,
+                                        const char* target_name,
+                                        const AnimationTransform& desired);
+    // Requests that the target skip its smoothing and adopt the desired
+    // transform on the next evaluation. Same arbitration as above.
+    bool snap_animation_target(AnimatorInstanceHandle instance,
+                               const char* target_name);
     // Test-only production seam: substitutes only the immutable renderer range
     // lookup. Skin validation and ECS binding still execute through the exact
     // runtime reconciliation used by Vulkan.

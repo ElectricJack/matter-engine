@@ -5598,6 +5598,28 @@ bool WorldSession::animation_debug_snapshots(
     return true;
 }
 
+bool WorldSession::set_animation_target_transform(
+    AnimatorInstanceHandle instance, const char* target_name,
+    const AnimationTransform& desired) {
+    if (!target_name) return false;
+    // AnimationService::target() resolves by authored name; set_transform()
+    // then applies one-driver arbitration (writable_target rejects any target
+    // whose driver is not External) and finiteness. Both rejections surface
+    // here as false -- no separate check is duplicated at this seam, so the
+    // editor and a gameplay writer cannot diverge on what is permitted.
+    const AnimationTargetHandle handle =
+        impl_->animation_service.target(instance, target_name);
+    return impl_->animation_service.set_transform(handle, desired);
+}
+
+bool WorldSession::snap_animation_target(AnimatorInstanceHandle instance,
+                                         const char* target_name) {
+    if (!target_name) return false;
+    const AnimationTargetHandle handle =
+        impl_->animation_service.target(instance, target_name);
+    return impl_->animation_service.snap(handle);
+}
+
 AnimationRuntimeStats WorldSession::animation_runtime_stats() const {
     AnimationRuntimeStats result = impl_->animation_service.stats();
 #ifdef MATTER_VULKAN_VIEWER
