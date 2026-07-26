@@ -13,7 +13,10 @@ uint32_t hash_u32(uint32_t x) {
 }
 
 // Quantize position to a stable integer grid and hash into a nonzero seed.
-uint32_t seed_from_pos(Vector3 p, float voxel) {
+// Takes Particle::position's type directly (MtVec3 as of Phase 4 Step 3) --
+// its only caller is the Particle loop below, and this function never touches
+// raylib.
+uint32_t seed_from_pos(MtVec3 p, float voxel) {
     float q = (voxel > 0.0f) ? voxel : 1.0f;
     int xi = (int)floorf(p.x / q);
     int yi = (int)floorf(p.y / q);

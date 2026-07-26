@@ -907,7 +907,9 @@ static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
             auto k = cell_key(x,y,z);
             if (cells.count(k)) {
                 // Mirrors the original 1.5x slack test from the per-cell loop.
-                if (cells[k]->intersects_sphere(cp.position, cp.radius * 1.5f))
+                // cp.position is Particle's MtVec3 (Phase 4 Step 3); Cell::intersects_sphere
+                // still takes raylib's Vector3 until Phase 4 Step 4 migrates cell.h.
+                if (cells[k]->intersects_sphere(Vector3{cp.position.x, cp.position.y, cp.position.z}, cp.radius * 1.5f))
                     cell_carve[k].push_back(cp);
             }
         }
@@ -938,7 +940,9 @@ static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
             // surface belongs to the additive material's group, so subtractive
             // prims never need to seed a bucket.
             if (f.stages[fp.stage] != CSG_STAGE_UNION) continue;
-            if (cell->intersects_sphere(fp.center, fp.boundRadius * 1.5f)) {
+            // fp.center is FatPrim's MtVec3 (Phase 4 Step 3); Cell::intersects_sphere
+            // still takes raylib's Vector3 until Phase 4 Step 4 migrates cell.h.
+            if (cell->intersects_sphere(Vector3{fp.center.x, fp.center.y, fp.center.z}, fp.boundRadius * 1.5f)) {
                 uint32_t g = (uint32_t)MaterialMergeGroup(fp.materialId);
                 cell->material_particle_indices[g]; // default-inserts empty bucket
             }

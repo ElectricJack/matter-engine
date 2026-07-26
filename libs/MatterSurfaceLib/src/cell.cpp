@@ -220,7 +220,9 @@ std::vector<Particle> build_clip_particles(
             float r_eff = (sp.radius < vis_radius) ? vis_radius : sp.radius;
 
             Particle cp;
-            cp.position = sp.position;
+            // sp.position is StaticParticle's raylib Vector3 (cluster.h, Phase 4
+            // Step 4 territory); cp.position is Particle's MtVec3 (Phase 4 Step 3).
+            cp.position = MtVec3{sp.position.x, sp.position.y, sp.position.z};
             cp.radius = r_eff;
             cp.materialId = static_cast<int>(sp.materialId); // unused by carve math; set for consistency
             clip.push_back(cp);
@@ -255,8 +257,10 @@ GroupMeshResult Cell::build_group_mesh(uint32_t group_id, const std::vector<Stat
         (group_it != material_particle_indices.end()) ? group_it->second : kEmptyIndices;
 
     Bounds bounds;
-    bounds.center = center;
-    bounds.size = Vector3{actual_size, actual_size, actual_size};
+    // center is Cell's raylib Vector3 (Phase 4 Step 4 territory); Bounds.center/
+    // size are MtVec3 as of Phase 4 Step 3.
+    bounds.center = MtVec3{center.x, center.y, center.z};
+    bounds.size = MtVec3{actual_size, actual_size, actual_size};
 
     float detail_min;
     if (uniform_detail > 0.0f) {
@@ -296,7 +300,8 @@ GroupMeshResult Cell::build_group_mesh(uint32_t group_id, const std::vector<Stat
         float r_eff = (sp.radius < vis_radius) ? vis_radius : sp.radius;
 
         Particle surface_particle;
-        surface_particle.position = sp.position;
+        // sp.position is StaticParticle's raylib Vector3 (Phase 4 Step 4 territory).
+        surface_particle.position = MtVec3{sp.position.x, sp.position.y, sp.position.z};
         surface_particle.radius = r_eff;
         surface_particle.materialId = static_cast<int>(sp.materialId);
         particles.push_back(surface_particle);
@@ -315,7 +320,9 @@ GroupMeshResult Cell::build_group_mesh(uint32_t group_id, const std::vector<Stat
     if (fat && fatCount > 0) {
         cell_fat.reserve(fatCount);
         for (int i = 0; i < fatCount; ++i) {
-            if (intersects_sphere(fat[i].center, fat[i].boundRadius * 1.5f))
+            // fat[i].center is FatPrim's MtVec3 (Phase 4 Step 3); intersects_sphere
+            // still takes raylib's Vector3 until Phase 4 Step 4 migrates cell.h.
+            if (intersects_sphere(Vector3{fat[i].center.x, fat[i].center.y, fat[i].center.z}, fat[i].boundRadius * 1.5f))
                 cell_fat.push_back(fat[i]);
         }
     }

@@ -80,8 +80,8 @@ typedef struct {
     size_t   fieldCapacity;
     
     // Mesh buffers  
-    Vector3*  vertices;
-    Vector3*  normals;
+    MtVec3*  vertices;
+    MtVec3*  normals;
     int*      materials;
     Triangle* triangles;
     size_t    vertexCapacity;
@@ -144,11 +144,11 @@ static int EnsureMeshCapacity(MemoryPool* pool, size_t requiredVertices, size_t 
         size_t newCapacity = (pool->vertexCapacity * 3) / 2;
         if (newCapacity < requiredVertices) newCapacity = requiredVertices;
 
-        Vector3* vt = (Vector3*)realloc(pool->vertices, newCapacity * sizeof(Vector3));
+        MtVec3* vt = (MtVec3*)realloc(pool->vertices, newCapacity * sizeof(MtVec3));
         if (!vt) { fprintf(stderr, "[ERROR] OOM growing vertices\n"); return -1; }
         pool->vertices = vt;
 
-        Vector3* nt = (Vector3*)realloc(pool->normals, newCapacity * sizeof(Vector3));
+        MtVec3* nt = (MtVec3*)realloc(pool->normals, newCapacity * sizeof(MtVec3));
         if (!nt) { fprintf(stderr, "[ERROR] OOM growing normals\n"); return -1; }
         pool->normals = nt;
 
@@ -206,7 +206,7 @@ static void CleanupMemoryPool(MemoryPool* pool) {
 
 // Grid cell structure for marching cubes
 typedef struct {
-    Vector3 corners[8]; // Positions of the 8 corners of the cube
+    MtVec3 corners[8]; // Positions of the 8 corners of the cube
     float   scalars[8]; // Scalar field values at the corners
 } GridCell;
 
@@ -214,24 +214,24 @@ typedef struct {
 typedef struct {
     int     gridSize;       // Number of grid cells in each dimension
     int     totalCells;     // Total number of cells in the volume
-    Vector3 minBound;       // Minimum bound of the volume
-    Vector3 cellSize;       // Size of each cell
+    MtVec3 minBound;       // Minimum bound of the volume
+    MtVec3 cellSize;       // Size of each cell
     float*  scalarField;    // Scalar field values at grid points
     int*    materialField;  // Material IDs at grid points
 } VolumeData;
 
 // Vertex structure for isosurface mesh
 typedef struct {
-    Vector3 position;
-    Vector3 normal;
+    MtVec3 position;
+    MtVec3 normal;
     int     materialId;
 } IsosurfaceVertex;
 
 // Local function declarations
-static ScalarMaterialPair CalculateScalarAndMaterial(Vector3 position, SpatialHash* spatialHash, float refRadius, float blendWidth, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend, SpatialHash* carve_hash, float carve_qr, SpatialHash* clip_hash, float clip_qr);
-static ScalarMaterialPair CalculateScalarStaged(Vector3 position, SpatialHash* spatialHash, float refRadius, float blendWidth, const FieldStages* stages, const FatPrim* fat, int fatCount, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend, SpatialHash* carve_hash, float carve_qr, SpatialHash* clip_hash, float clip_qr);
+static ScalarMaterialPair CalculateScalarAndMaterial(MtVec3 position, SpatialHash* spatialHash, float refRadius, float blendWidth, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend, SpatialHash* carve_hash, float carve_qr, SpatialHash* clip_hash, float clip_qr);
+static ScalarMaterialPair CalculateScalarStaged(MtVec3 position, SpatialHash* spatialHash, float refRadius, float blendWidth, const FieldStages* stages, const FatPrim* fat, int fatCount, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend, SpatialHash* carve_hash, float carve_qr, SpatialHash* clip_hash, float clip_qr);
 static int     CalculateCubeIndex(GridCell cell, float isovalue);
-static Vector3 VertexInterpolation(Vector3 v1, float val1, Vector3 v2, float val2, float isovalue);
+static MtVec3 VertexInterpolation(MtVec3 v1, float val1, MtVec3 v2, float val2, float isovalue);
 static Mesh    GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, MeshGenerationConfig config, const FieldStages* stages, const FatPrim* fat, int fatCount, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend);
 
 // True when the staged/fat field path must run; otherwise the legacy
@@ -314,7 +314,7 @@ Mesh GenerateMeshStaged(SurfaceScratch* scratch, Particle* particles, float part
 float ProbeFieldScalar(SurfaceScratch* scratch, Particle* particles, float particleRadius,
         int particleCount, float blendWidth,
         const FieldStages* stages, const FatPrim* fat, int fatCount,
-        Particle* carveParticles, int carveCount, float carveBlend, Vector3 point) {
+        Particle* carveParticles, int carveCount, float carveBlend, MtVec3 point) {
     float cellSize = particleRadius * 2.5f + blendWidth * 4.0f;
     if (cellSize <= 0.0f) cellSize = 1.0f;
     SpatialHash* hash = scratch_ensure_hash(scratch, particles, particleCount, cellSize);
@@ -576,12 +576,12 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
     VolumeData data = {0};
     data.gridSize = gridSize;
     data.totalCells = gridSize * gridSize * gridSize;
-    data.cellSize = (Vector3){
+    data.cellSize = (MtVec3){
         volume.size.x / (gridSize - 1),
         volume.size.y / (gridSize - 1),
         volume.size.z / (gridSize - 1)
     };
-    data.minBound = (Vector3){
+    data.minBound = (MtVec3){
         volume.center.x - volume.size.x * 0.5f,
         volume.center.y - volume.size.y * 0.5f,
         volume.center.z - volume.size.z * 0.5f
@@ -688,7 +688,7 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
     for (int z = 0; z < gridSize; z++) {
         for (int y = 0; y < gridSize; y++) {
             for (int x = 0; x < gridSize; x++) {
-                Vector3 position = {
+                MtVec3 position = {
                     data.minBound.x + x * data.cellSize.x,
                     data.minBound.y + y * data.cellSize.y,
                     data.minBound.z + z * data.cellSize.z
@@ -721,8 +721,8 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
     int maxVertices = data.totalCells * 3; // Maximum possible vertices per cell is typically 3-5
     int maxTriangles = data.totalCells * 2; // Maximum possible triangles per cell is typically 1-5
     
-    Vector3*  vertices;
-    Vector3*  normals;
+    MtVec3*  vertices;
+    MtVec3*  normals;
     int*      materials;
     Triangle* triangles;
     
@@ -736,8 +736,8 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
         materials = scratch->pool.materials;
         triangles = scratch->pool.triangles;
     } else {
-        vertices = (Vector3*)malloc(maxVertices * sizeof(Vector3));
-        normals = (Vector3*)malloc(maxVertices * sizeof(Vector3));
+        vertices = (MtVec3*)malloc(maxVertices * sizeof(MtVec3));
+        normals = (MtVec3*)malloc(maxVertices * sizeof(MtVec3));
         materials = (int*)malloc(maxVertices * sizeof(int));
         triangles = (Triangle*)malloc(maxTriangles * sizeof(Triangle));
         
@@ -804,42 +804,42 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
                 GridCell cell;
                 
                 // Get the 8 corners of the cube
-                cell.corners[0] = (Vector3){ 
+                cell.corners[0] = (MtVec3){ 
                     data.minBound.x + x * data.cellSize.x,
                     data.minBound.y + y * data.cellSize.y, 
                     data.minBound.z + z * data.cellSize.z 
                 };
-                cell.corners[1] = (Vector3){ 
+                cell.corners[1] = (MtVec3){ 
                     data.minBound.x + (x+1) * data.cellSize.x,
                     data.minBound.y + y * data.cellSize.y, 
                     data.minBound.z + z * data.cellSize.z 
                 };
-                cell.corners[2] = (Vector3){ 
+                cell.corners[2] = (MtVec3){ 
                     data.minBound.x + (x+1) * data.cellSize.x,
                     data.minBound.y + (y+1) * data.cellSize.y, 
                     data.minBound.z + z * data.cellSize.z 
                 };
-                cell.corners[3] = (Vector3){ 
+                cell.corners[3] = (MtVec3){ 
                     data.minBound.x + x * data.cellSize.x,
                     data.minBound.y + (y+1) * data.cellSize.y, 
                     data.minBound.z + z * data.cellSize.z 
                 };
-                cell.corners[4] = (Vector3){ 
+                cell.corners[4] = (MtVec3){ 
                     data.minBound.x + x * data.cellSize.x,
                     data.minBound.y + y * data.cellSize.y, 
                     data.minBound.z + (z+1) * data.cellSize.z 
                 };
-                cell.corners[5] = (Vector3){ 
+                cell.corners[5] = (MtVec3){ 
                     data.minBound.x + (x+1) * data.cellSize.x,
                     data.minBound.y + y * data.cellSize.y, 
                     data.minBound.z + (z+1) * data.cellSize.z 
                 };
-                cell.corners[6] = (Vector3){ 
+                cell.corners[6] = (MtVec3){ 
                     data.minBound.x + (x+1) * data.cellSize.x,
                     data.minBound.y + (y+1) * data.cellSize.y, 
                     data.minBound.z + (z+1) * data.cellSize.z 
                 };
-                cell.corners[7] = (Vector3){ 
+                cell.corners[7] = (MtVec3){ 
                     data.minBound.x + x * data.cellSize.x,
                     data.minBound.y + (y+1) * data.cellSize.y, 
                     data.minBound.z + (z+1) * data.cellSize.z 
@@ -880,7 +880,7 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
                 };
                 
                 // Find intersection points along edges
-                Vector3 intersections[12];
+                MtVec3 intersections[12];
                 int intersectionMaterials[12];
                 int cellEdgeVertexIndices[12]; // Local array for this cell's edge vertex indices
                 
@@ -1030,7 +1030,7 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
     
     // Calculate normals
     for (int i = 0; i < vertexCount; i++) {
-        normals[i] = (Vector3){0.0f, 0.0f, 0.0f};
+        normals[i] = (MtVec3){0.0f, 0.0f, 0.0f};
     }
     
     // For each triangle, calculate its normal and add it to each vertex normal
@@ -1039,16 +1039,16 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
         int idx2 = triangles[i].indices[1];
         int idx3 = triangles[i].indices[2];
         
-        Vector3 v1 = vertices[idx1];
-        Vector3 v2 = vertices[idx2];
-        Vector3 v3 = vertices[idx3];
+        MtVec3 v1 = vertices[idx1];
+        MtVec3 v2 = vertices[idx2];
+        MtVec3 v3 = vertices[idx3];
         
         // Calculate triangle edges
-        Vector3 edge1 = {v2.x - v1.x, v2.y - v1.y, v2.z - v1.z};
-        Vector3 edge2 = {v3.x - v1.x, v3.y - v1.y, v3.z - v1.z};
+        MtVec3 edge1 = {v2.x - v1.x, v2.y - v1.y, v2.z - v1.z};
+        MtVec3 edge2 = {v3.x - v1.x, v3.y - v1.y, v3.z - v1.z};
         
         // Calculate triangle normal using cross product
-        Vector3 normal = {
+        MtVec3 normal = {
             edge1.y * edge2.z - edge1.z * edge2.y,
             edge1.z * edge2.x - edge1.x * edge2.z,
             edge1.x * edge2.y - edge1.y * edge2.x
@@ -1166,7 +1166,7 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
 // clipCount == 0, keeping the unclipped path byte-identical.
 // Perf: when the scratch has a clip hash, query it for nearby particles instead
 // of scanning all clipCount particles. When hash is NULL, falls back to full scan.
-static inline void ApplyClipField(ScalarMaterialPair* result, Vector3 position,
+static inline void ApplyClipField(ScalarMaterialPair* result, MtVec3 position,
                                   Particle* clipParticles, int clipCount,
                                   SpatialHash* clip_hash, float clip_query_radius) {
     if (!clipParticles || clipCount <= 0) return;
@@ -1220,7 +1220,7 @@ static inline void ApplyClipField(ScalarMaterialPair* result, Vector3 position,
 // so the uncarved path is byte-identical.
 // Perf: when carve_hash is non-NULL, queries only nearby carve particles instead
 // of scanning all carveCount (avoids O(voxels × carveCount) hot loop).
-static inline void ApplySubtractField(ScalarMaterialPair* result, Vector3 position,
+static inline void ApplySubtractField(ScalarMaterialPair* result, MtVec3 position,
                                       Particle* carveParticles, int carveCount, float k_c,
                                       SpatialHash* carve_hash, float carve_query_radius) {
     if (!carveParticles || carveCount <= 0) return;
@@ -1299,7 +1299,7 @@ static inline void ApplySubtractField(ScalarMaterialPair* result, Vector3 positi
 // Combined calculation to eliminate duplicate distance calculations.
 // carve_hash/clip_hash: optional spatial hashes for nearby-only carve/clip queries.
 // Pass NULL for hash and 0.0f for qr to fall back to full-scan (original behavior).
-static ScalarMaterialPair CalculateScalarAndMaterial(Vector3 position, SpatialHash* spatialHash, float refRadius, float blendWidth, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend, SpatialHash* carve_hash, float carve_qr, SpatialHash* clip_hash, float clip_qr) {
+static ScalarMaterialPair CalculateScalarAndMaterial(MtVec3 position, SpatialHash* spatialHash, float refRadius, float blendWidth, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend, SpatialHash* carve_hash, float carve_qr, SpatialHash* clip_hash, float clip_qr) {
     ScalarMaterialPair result;
     result.scalarValue = INFINITY;
     result.materialId = 0;
@@ -1379,7 +1379,7 @@ static float smin_set(const float* vals, int n, float fmin, float k) {
 // This path runs only when ordered stages and/or fat primitives are present; the
 // common single-union case stays on CalculateScalarAndMaterial (byte-identical).
 static ScalarMaterialPair CalculateScalarStaged(
-        Vector3 position, SpatialHash* spatialHash, float refRadius, float blendWidth,
+        MtVec3 position, SpatialHash* spatialHash, float refRadius, float blendWidth,
         const FieldStages* stages, const FatPrim* fat, int fatCount,
         Particle* clipParticles, int clipCount,
         Particle* carveParticles, int carveCount, float carveBlend,
@@ -1497,8 +1497,8 @@ static int CalculateCubeIndex(GridCell cell, float isovalue) {
 }
 
 // Interpolate between two vertices based on isovalue
-static Vector3 VertexInterpolation(Vector3 v1, float val1, Vector3 v2, float val2, float isovalue) {
-    Vector3 result;
+static MtVec3 VertexInterpolation(MtVec3 v1, float val1, MtVec3 v2, float val2, float isovalue) {
+    MtVec3 result;
     
     if (fabs(isovalue - val1) < 0.00001f) return v1;
     if (fabs(isovalue - val2) < 0.00001f) return v2;

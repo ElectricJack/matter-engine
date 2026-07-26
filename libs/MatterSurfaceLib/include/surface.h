@@ -1,7 +1,13 @@
 #ifndef SURFACE_H
 #define SURFACE_H
 
+// Phase 4 (Step 3) of docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md:
+// Bounds and ProbeFieldScalar's `point` param moved off raylib's Vector3 onto
+// matter_math_c.h's MtVec3. raylib.h stays included -- Mesh/Color (GenerateMesh's
+// return type, GetMaterialColor, ConvertMeshToBVHTriangles) are out of scope for
+// this phase (Mesh migration is deferred; see the Phase 4 brief).
 #include "raylib.h"
+#include "matter_math_c.h"   // MtVec3
 #include "particle.h"
 #include "fat_primitive.h"   // FatPrim (typed iso-primitives)
 #include "csg_stages.h"      // FieldStages (ordered CSG)
@@ -23,8 +29,8 @@ typedef struct {
 
 // Bounds structure defining the volume for isosurface generation
 typedef struct {
-    Vector3 center;
-    Vector3 size;
+    MtVec3 center;
+    MtVec3 size;
     int     divisionPow;  // Resolution = 2^divisionPow
 } Bounds;
 
@@ -85,7 +91,7 @@ float ProbeFieldScalar(SurfaceScratch* scratch, Particle* particles, float parti
                        int particleCount, float blendWidth,
                        const FieldStages* stages, const FatPrim* fat, int fatCount,
                        Particle* carveParticles, int carveCount, float carveBlend,
-                       Vector3 point);
+                       MtVec3 point);
 
 // Main API function for generating a mesh from particles.
 // particleRadius is a reference radius (max effective radius in the set) used to

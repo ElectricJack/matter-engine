@@ -10,29 +10,22 @@
 // halfExtents/segB (dsl_state.h) are mm::Vec3/mm::Mat4 as of Phase 3
 // (mathlib-and-raylib-removal), and the matrix ops below operate on those.
 //
-// StaticParticle/Particle/FatPrim (cluster.h/particle.h/fat_primitive.h) are
-// MatterSurfaceLib types and stay raylib Vector3/Matrix/Vector4 -- out of
-// Phase 3's scope (that boundary is not one of MatterEngine3/src's raylib
-// dependencies; migrating it would mean migrating MatterSurfaceLib too). This
-// file is the boundary: it computes in mm:: and converts to raylib types
-// (to_raylib below) at the three points that construct those structs.
+// Particle/FatPrim (particle.h/fat_primitive.h) moved off raylib Vector3/
+// Matrix/Vector4 onto matter_math_c.h's MtVec3/MtMat4/MtVec4 in Phase 4 Step 3
+// (mathlib-and-raylib-removal) -- this file computes in mm:: and crosses that
+// boundary via mm::to_c() (matter_math.h). StaticParticle (cluster.h) is a
+// SEPARATE MatterSurfaceLib type that still takes a raylib Vector3; it stays
+// that way until Phase 4 Step 4 migrates cluster.h, so to_raylib() below
+// survives -- with exactly one remaining caller -- until then.
 
 namespace dsl {
 
 // mm::Vec3 -> raylib Vector3. Byte-identical fields; used only at the
-// StaticParticle/Particle/FatPrim construction boundary (see note above).
+// StaticParticle construction boundary (see note above) -- the one raylib
+// type this file still has to produce. Everything that used to go through
+// this for Particle/FatPrim now uses mm::to_c() (matter_math.h) instead,
+// since those two structs moved to matter_math_c.h's MtVec3/MtMat4/MtVec4.
 static Vector3 to_raylib(const mm::Vec3& v) { return Vector3{v.x, v.y, v.z}; }
-
-// mm::Mat4 -> raylib Matrix. Both are row-major float[16] with the same
-// physical memory layout (matter_math.h's documented, probe-verified byte-
-// compat with raylib's Matrix), so this is a bare memcpy, not a transpose or
-// relabel -- same approach as raster_mesh.cpp's row_major_to_matrix.
-static Matrix to_raylib(const mm::Mat4& m) {
-    static_assert(sizeof(Matrix) == sizeof(m.m), "Matrix/mm::Mat4 size mismatch");
-    Matrix r;
-    std::memcpy(&r, m.m, sizeof(r));
-    return r;
-}
 
 // General 4x4 inverse, ported element-for-element from the original raylib-
 // Matrix cofactor implementation (NOT swapped for mm::inverse's Gauss-Jordan
@@ -282,7 +275,7 @@ LoweredField lower_build_buffer(const BuildBuffer& buf) {
                 // old `StaticParticle{xf(center), radius}` hot path.
                 float r = o.radius * sx;
                 if (subtract) {
-                    out.carve.push_back(Particle{ to_raylib(c), r, (int)o.materialId });
+                    out.carve.push_back(Particle{ mm::to_c(c), r, (int)o.materialId });
                 } else {
                     out.additive.push_back(StaticParticle(to_raylib(c), r, o.materialId, {1,1,1,0}, o.spacing));
                     out.additive_stage.push_back(curStage);
@@ -290,7 +283,7 @@ LoweredField lower_build_buffer(const BuildBuffer& buf) {
                 // Every sphere brush (additive AND subtractive) joins the staged
                 // hash stream so the ordered eval can fold a Difference as a real
                 // Difference stage instead of a trailing carve.
-                out.staged_spheres.push_back(Particle{ to_raylib(c), r, (int)o.materialId });
+                out.staged_spheres.push_back(Particle{ mm::to_c(c), r, (int)o.materialId });
                 out.staged_stage.push_back(curStage);
             } else {
                 // Non-uniform scale => the sphere is an ELLIPSOID, which the hashed
@@ -298,7 +291,7 @@ LoweredField lower_build_buffer(const BuildBuffer& buf) {
                 // evaluated via invTransform (matches the oracle by construction).
                 FatPrim fp{};
                 fp.kind = FAT_PRIM_SPHERE;
-                fp.center = to_raylib(c);
+                fp.center = mm::to_c(c);
                 fp.boundRadius = o.radius * std::max(sx, std::max(sy, sz));
                 fp.materialId = (int)o.materialId;
                 fp.tint = {1,1,1,0};
@@ -309,13 +302,13 @@ LoweredField lower_build_buffer(const BuildBuffer& buf) {
                 //   T' = translate(-center) * inv(transform).
                 mm::Mat4 inv = mat_invert(o.transform);
                 mm::Mat4 shift = mm::translation(mm::Vec3{-o.center.x, -o.center.y, -o.center.z});
-                fp.invTransform = to_raylib(mm::multiply(shift, inv));
+                fp.invTransform = mm::to_c(mm::multiply(shift, inv));
                 out.fat.push_back(fp);
             }
         } else if (o.kind == BrushKind::Box) { // Box -> ONE oriented fat primitive (stamp_box deleted)
             FatPrim fp{};
             fp.kind = FAT_PRIM_BOX;
-            fp.center = to_raylib(mm::transform_point(o.transform, o.center));
+            fp.center = mm::to_c(mm::transform_point(o.transform, o.center));
             float sx, sy, sz; axis_scales(o.transform, sx, sy, sz);
             // Bounding sphere of the (possibly scaled/rotated) box.
             mm::Vec3 he = o.halfExtents;
@@ -323,12 +316,12 @@ LoweredField lower_build_buffer(const BuildBuffer& buf) {
             fp.materialId = (int)o.materialId;
             fp.tint = {1,1,1,0};
             fp.stage = curStage;
-            fp.halfExtents = to_raylib(he);
+            fp.halfExtents = mm::to_c(he);
             // invTransform maps WORLD point into box-local center-relative space:
             // T' = translate(-center) * inv(transform).
             mm::Mat4 inv = mat_invert(o.transform);
             mm::Mat4 shift = mm::translation(mm::Vec3{-o.center.x, -o.center.y, -o.center.z});
-            fp.invTransform = to_raylib(mm::multiply(shift, inv));
+            fp.invTransform = mm::to_c(mm::multiply(shift, inv));
             out.fat.push_back(fp);
         } else { // Capsule / Cylinder (cone) -> ONE segment fat primitive.
             FatPrim fp{};
@@ -337,8 +330,8 @@ LoweredField lower_build_buffer(const BuildBuffer& buf) {
             // box/sphere these are NOT center-relative; invTransform is just
             // inv(transform) so primitive_sdf evaluates sdSegment/sdCappedCone on the
             // raw local point against the stored endpoints.
-            fp.segA = to_raylib(o.center);
-            fp.segB = to_raylib(o.segB);
+            fp.segA = mm::to_c(o.center);
+            fp.segB = mm::to_c(o.segB);
             fp.r0   = o.radius;
             fp.r1   = (o.kind == BrushKind::Capsule) ? o.radius : o.r1;
             // Bounding sphere: world midpoint of the segment + half its world length
@@ -346,7 +339,7 @@ LoweredField lower_build_buffer(const BuildBuffer& buf) {
             // transform the stack produces here); rotation does not change lengths.
             mm::Vec3 wa = mm::transform_point(o.transform, o.center);
             mm::Vec3 wb = mm::transform_point(o.transform, o.segB);
-            fp.center = Vector3{ (wa.x+wb.x)*0.5f, (wa.y+wb.y)*0.5f, (wa.z+wb.z)*0.5f };
+            fp.center = MtVec3{ (wa.x+wb.x)*0.5f, (wa.y+wb.y)*0.5f, (wa.z+wb.z)*0.5f };
             float sx, sy, sz; axis_scales(o.transform, sx, sy, sz);
             float smax = std::max(sx, std::max(sy, sz));
             float halfLen = 0.5f * v3len(mm::Vec3{wb.x-wa.x, wb.y-wa.y, wb.z-wa.z});
@@ -355,7 +348,7 @@ LoweredField lower_build_buffer(const BuildBuffer& buf) {
             fp.materialId = (int)o.materialId;
             fp.tint = {1,1,1,0};
             fp.stage = curStage;
-            fp.invTransform = to_raylib(mat_invert(o.transform));
+            fp.invTransform = mm::to_c(mat_invert(o.transform));
             out.fat.push_back(fp);
         }
     }

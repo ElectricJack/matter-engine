@@ -293,7 +293,8 @@ void Cluster::rebuild_dirty_cells() {
         carve_hash = sh_create(smallest_cell_size_, (int)carve_particles_.size());
         if (carve_hash) {
             for (uint32_t i = 0; i < (uint32_t)carve_particles_.size(); ++i) {
-                const Vector3& pos = carve_particles_[i].position;
+                // Particle::position is MtVec3 (Phase 4 Step 3), not raylib Vector3.
+                const MtVec3& pos = carve_particles_[i].position;
                 sh_insert(carve_hash, pos.x, pos.y, pos.z, (void*)(uintptr_t)(i + 1));
             }
         }
@@ -384,12 +385,14 @@ void Cluster::rebuild_dirty_cells() {
                 uint32_t ci = (uint32_t)((uintptr_t)query_buf[qi] - 1);
                 if (ci >= (uint32_t)carve_particles_.size()) continue;
                 const Particle& cpart = carve_particles_[ci];
-                if (cell->intersects_sphere(cpart.position, cpart.radius * 1.5f))
+                // cpart.position is Particle's MtVec3 (Phase 4 Step 3); intersects_sphere
+                // still takes raylib's Vector3 until Phase 4 Step 4 migrates cell.h.
+                if (cell->intersects_sphere(Vector3{cpart.position.x, cpart.position.y, cpart.position.z}, cpart.radius * 1.5f))
                     job.carve.push_back(cpart);
             }
         } else {
             for (const Particle& cpart : carve_particles_) {
-                if (cell->intersects_sphere(cpart.position, cpart.radius * 1.5f))
+                if (cell->intersects_sphere(Vector3{cpart.position.x, cpart.position.y, cpart.position.z}, cpart.radius * 1.5f))
                     job.carve.push_back(cpart);
             }
         }

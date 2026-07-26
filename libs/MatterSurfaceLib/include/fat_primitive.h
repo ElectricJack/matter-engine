@@ -10,9 +10,11 @@
 // kind costs one enum value + one primitive_sdf() case, with no per-shape array.
 //
 // This header is shared between C (surface.c field eval) and C++ (csg_lowering,
-// cell.cpp), so it stays C-compatible (raylib Vector3/Matrix, no C++ features).
+// cell.cpp), so it stays C-compatible: MtVec3/MtVec4/MtMat4 (matter_math_c.h),
+// not raylib's Vector3/Vector4/Matrix or mm::'s C++-only Vec3/Vec4/Mat4 (Phase 4
+// Step 3 of docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md).
 
-#include "raylib.h"   // Vector3, Matrix
+#include "matter_math_c.h"   // MtVec3, MtVec4, MtMat4
 
 #ifdef __cplusplus
 extern "C" {
@@ -36,32 +38,32 @@ typedef enum {
 // op folds into the running field.
 typedef struct {
     int      kind;          // FatPrimKind
-    Vector3  center;        // world-space bounding-sphere center
+    MtVec3   center;        // world-space bounding-sphere center
     float    boundRadius;   // world-space bounding-sphere radius (for bounds/cull)
     int      materialId;
-    Vector4  tint;          // RGBA; a = blend strength. (1,1,1,0) = no tint.
+    MtVec4   tint;          // RGBA; a = blend strength. (1,1,1,0) = no tint.
     int      stage;         // ordered-CSG stage index (Layer-2 lowering assigns)
 
     // Param blob (union-sized to the largest shape). All evaluated in brush-local
     // space (post-invTransform), so the transform-stack scale is picked up exactly
     // like sphere/box (iso-primitives G2 rule).
-    Matrix   invTransform;  // world -> brush-local (box, scaled sphere, capsule, cylinder)
-    Vector3  halfExtents;   // box half-extents (FAT_PRIM_BOX)
+    MtMat4   invTransform;  // world -> brush-local (box, scaled sphere, capsule, cylinder)
+    MtVec3   halfExtents;   // box half-extents (FAT_PRIM_BOX)
     float    radius;        // sphere radius (FAT_PRIM_SPHERE)
     // Segment + tapered radii for the capsule (FAT_PRIM_CAPSULE) and capped cone
     // / cylinder (FAT_PRIM_CYLINDER). a,b are brush-local segment endpoints; r0 is
     // the radius at a, r1 the radius at b (capsule uses r0 only; cylinder r0==r1;
     // cone r1==0). Endpoints are stored pre-transformed (the brush emits its
     // segment in its own local frame and invTransform carries the world->local map).
-    Vector3  segA;          // segment endpoint a (capsule/cylinder)
-    Vector3  segB;          // segment endpoint b (capsule/cylinder)
+    MtVec3   segA;          // segment endpoint a (capsule/cylinder)
+    MtVec3   segB;          // segment endpoint b (capsule/cylinder)
     float    r0;            // radius at a (capsule radius; cylinder/cone base radius)
     float    r1;            // radius at b (cylinder/cone top radius; 0 = cone tip)
 } FatPrim;
 
 // Signed distance of WORLD point `p` to the primitive (negative inside). Maps the
 // point into brush-local space via invTransform, then evaluates the per-kind SDF.
-float primitive_sdf(const FatPrim* prim, Vector3 p);
+float primitive_sdf(const FatPrim* prim, MtVec3 p);
 
 #ifdef __cplusplus
 }

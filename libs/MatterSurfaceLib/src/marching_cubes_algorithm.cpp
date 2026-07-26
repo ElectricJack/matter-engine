@@ -85,7 +85,8 @@ GroupMeshResult MarchingCubesAlgorithm::generate(const MeshContext& ctx) const {
                 if (d2 < bestD2) { bestD2 = d2; bestIdx = j; }
             }
             triangle_normals[t].materialId = ctx.fat[bestIdx].materialId;
-            const Vector4& ft = ctx.fat[bestIdx].tint;
+            // ctx.fat[bestIdx].tint is FatPrim's MtVec4 (Phase 4 Step 3), not raylib's Vector4.
+            const MtVec4& ft = ctx.fat[bestIdx].tint;
             triangle_normals[t].tint = make_float4(ft.x, ft.y, ft.z, ft.w);
         }
     }

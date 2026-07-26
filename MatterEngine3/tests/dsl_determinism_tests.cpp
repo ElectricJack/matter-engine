@@ -104,17 +104,27 @@ uint64_t hash_lowered_field(const dsl::LoweredField& f) {
         h = hi(h, fp.materialId);
         h = hf(h, fp.tint.x); h = hf(h, fp.tint.y); h = hf(h, fp.tint.z); h = hf(h, fp.tint.w);
         h = hi(h, fp.stage);
-        // invTransform: raylib Matrix field-by-field (m0..m15), independent of
-        // whatever internal type csg_lowering.cpp uses to compute it -- this
-        // struct is MatterSurfaceLib-owned and does not migrate in Phase 3.
-        h = hf(h, fp.invTransform.m0);  h = hf(h, fp.invTransform.m1);
-        h = hf(h, fp.invTransform.m2);  h = hf(h, fp.invTransform.m3);
-        h = hf(h, fp.invTransform.m4);  h = hf(h, fp.invTransform.m5);
-        h = hf(h, fp.invTransform.m6);  h = hf(h, fp.invTransform.m7);
-        h = hf(h, fp.invTransform.m8);  h = hf(h, fp.invTransform.m9);
-        h = hf(h, fp.invTransform.m10); h = hf(h, fp.invTransform.m11);
-        h = hf(h, fp.invTransform.m12); h = hf(h, fp.invTransform.m13);
-        h = hf(h, fp.invTransform.m14); h = hf(h, fp.invTransform.m15);
+        // invTransform: used to be raylib Matrix, hashed field-by-field in NAME
+        // order (m0..m15). As of Phase 4 Step 3 (mathlib-and-raylib-removal),
+        // FatPrim.invTransform is matter_math_c.h's MtMat4 -- a row-major
+        // m[16] where element (row,col) lives at m[row*4+col] (matter_math.h's
+        // Mat4 comment). raylib's field NAMING is column-major by convention
+        // (field mN = row N%4, col N/4; see that same comment for the full
+        // derivation), so the original m0,m1,...,m15 NAME order is a
+        // (row,col) traversal of (0,0)(1,0)(2,0)(3,0)(0,1)(1,1)...(3,3) --
+        // NOT memory/index order. Reading m[0],m[1],...,m[15] in array-index
+        // order would hash the SAME 16 floats in a DIFFERENT sequence and
+        // move this hash for no behavioral reason. Preserve the original
+        // (row,col) traversal explicitly instead.
+        const float* im = fp.invTransform.m;
+        h = hf(h, im[0]);  h = hf(h, im[4]);
+        h = hf(h, im[8]);  h = hf(h, im[12]);
+        h = hf(h, im[1]);  h = hf(h, im[5]);
+        h = hf(h, im[9]);  h = hf(h, im[13]);
+        h = hf(h, im[2]);  h = hf(h, im[6]);
+        h = hf(h, im[10]); h = hf(h, im[14]);
+        h = hf(h, im[3]);  h = hf(h, im[7]);
+        h = hf(h, im[11]); h = hf(h, im[15]);
         h = hf(h, fp.halfExtents.x); h = hf(h, fp.halfExtents.y); h = hf(h, fp.halfExtents.z);
         h = hf(h, fp.radius);
         h = hf(h, fp.segA.x); h = hf(h, fp.segA.y); h = hf(h, fp.segA.z);

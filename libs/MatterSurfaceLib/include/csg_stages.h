@@ -18,7 +18,9 @@
 // branch and never touches the stage machinery. The stage path activates only when
 // 2+ ordered stages exist (interleaved add/subtract/add).
 
-#include "raylib.h"
+// Phase 4 (Step 3) of docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md:
+// this used to #include "raylib.h" without actually using any raylib type --
+// dropped rather than replaced.
 
 #ifdef __cplusplus
 extern "C" {
