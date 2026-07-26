@@ -57,6 +57,39 @@ AnimationBudgetConfig runtime_budget(const AnimationStoreConfig& config) {
     return result;
 }
 
+AnimationRuntimeStats public_stats(uint32_t active_instances, uint32_t active_assets,
+                                   const AnimationStoreConfig& config,
+                                   size_t mutable_bytes,
+                                   AnimationBudgetRuntimeStats runtime,
+                                   uint64_t world_query_count,
+                                   uint64_t world_query_overflow_count) {
+    AnimationRuntimeStats result{};
+    result.active_instances = active_instances;
+    result.active_assets = active_assets;
+    result.instance_capacity = config.instance_capacity;
+    result.mutable_bytes = mutable_bytes;
+    result.mutable_budget_bytes = config.mutable_budget_bytes;
+    result.asset_capacity = config.asset_capacity;
+    result.max_joints_per_asset = config.max_joints_per_asset;
+    result.max_graph_nodes = config.max_graph_nodes;
+    result.max_controller_nodes = config.max_controller_nodes;
+    result.evaluated_pose_count = runtime.evaluated_pose_count;
+    result.evaluated_joint_count = runtime.evaluated_joint_count;
+    result.evaluated_presentation_pose_count = runtime.evaluated_presentation_pose_count;
+    result.frozen_pose_count = runtime.frozen_pose_count;
+    result.resampled_pose_count = runtime.resampled_pose_count;
+    result.world_query_count = world_query_count;
+    result.world_query_overflow_count = world_query_overflow_count;
+    result.submitted_skin_work_items = runtime.submitted_skin_work_items;
+    result.submitted_skinned_vertices = runtime.submitted_skinned_vertices;
+    result.last_complete_fallback_count = runtime.last_complete_fallback_count;
+    result.bind_pose_fallback_count = runtime.bind_pose_fallback_count;
+    result.fallback_count = runtime.fallback_count;
+    for (size_t internal = 1; internal < runtime.fallbacks.size(); ++internal)
+        result.fallback_counts[internal - 1] = runtime.fallbacks[internal];
+    return result;
+}
+
 AnimationCadence public_cadence(EvaluationCadence cadence) {
     return cadence == EvaluationCadence::Fixed ? AnimationCadence::Fixed : AnimationCadence::Frame;
 }
@@ -310,11 +343,50 @@ size_t AnimationRuntimeDefinition::mutable_bytes() const {
         total += value;
         return true;
     };
-    if (inputs.size() > kMax / (3u * sizeof(StoredValue)) ||
+    // This is a reservation, not just the bytes directly owned by Slot.  A
+    // service admission must reserve every per-instance CPU state that the
+    // systems will instantiate later, otherwise a valid create can fail on a
+    // subsequent first evaluation.  The reservation deliberately includes
+    // both evaluator domains, all copied snapshot buffers, target/controller
+    // state, and the bounded Ozz graph scratch.
+    if (inputs.size() > kMax / (5u * sizeof(StoredValue)) ||
         targets.size() > kMax / sizeof(TargetState)) return kMax;
-    if (!add(inputs.size() * 3u * sizeof(StoredValue)) || !add(targets.size() * sizeof(TargetState)) ||
+    if (!add(inputs.size() * 5u * sizeof(StoredValue)) || !add(targets.size() * sizeof(TargetState)) ||
         !add(graph_state_bytes) || !add(controller_state_bytes) || !add(sample_context_bytes) ||
         !add(pose_scratch_bytes)) return kMax;
+    if (!binding || !binding->evaluation || !binding->evaluation->skeleton) return total;
+
+    const size_t joints = binding->evaluation->skeleton->joint_count();
+    const size_t nodes = binding->evaluation->nodes.size();
+    const size_t clips = binding->evaluation->clips.size();
+    const auto multiply = [kMax](size_t left, size_t right) {
+        return left == 0 || right <= kMax / left ? left * right : kMax;
+    };
+    // Five streams per pose (local + model/history + palette/history), two
+    // double buffers per evaluator/snapshot owner.  There are two evaluators
+    // and four AnimationPoseSnapshotStores in AnimationSystems.
+    const size_t pose_stream_bytes = sizeof(AnimationTransform) + 4u * sizeof(Mat4f);
+    const size_t pose_bytes = multiply(joints, pose_stream_bytes);
+    if (pose_bytes == kMax || !add(multiply(pose_bytes, 12u))) return kMax;
+    // Graph evaluation owns a bounded temporary result for every graph node,
+    // an Ozz context per clip, root deltas, and fixed-clip traversal records.
+    if (!add(multiply(multiply(nodes, joints), sizeof(AnimationTransform))) ||
+        !add(multiply(clips, sizeof(OzzSampleContext))) ||
+        !add(multiply(nodes, sizeof(AnimationTransform) + sizeof(RuntimeGraphClipAdvance)))) return kMax;
+    // Systems retain runtime target state, controller ownership, and copied
+    // fixed-work marker/query vectors. Native layout is validated before this
+    // point, so its declared state is the exact controller reservation.
+    if (!add(multiply(targets.size(), sizeof(AnimationTargetState) + sizeof(AnimationTransform))) ||
+        !add(multiply(binding->targets.size(), sizeof(AnimationTargetState) + sizeof(AnimationTransform))) ||
+        !add(multiply(binding->fixed_work.clip.markers.size(), sizeof(RuntimeClipMarker))) ||
+        !add(multiply(binding->fixed_work.queries.size(), sizeof(AnimationWorldQueryRequest)))) return kMax;
+    NativeControllerRegistry registry = NativeControllerRegistry::with_v1_controllers();
+    for (const auto& controller : binding->controllers) {
+        NativeControllerLayout layout{};
+        std::unique_ptr<NativeController> instance = registry.create(controller.descriptor, layout);
+        if (!instance || !add(sizeof(std::unique_ptr<NativeController>)) || !add(layout.fixed_state_bytes) ||
+            !add(layout.frame_state_bytes)) return kMax;
+    }
     return total;
 }
 
@@ -344,6 +416,8 @@ public:
         const AnimationRuntimeDefinition* schema = schema_for(asset, definition);
         if (!schema) return {{}, AnimationStatus::LoadFailed};
         if (!can_fit(schema->mutable_bytes()) || active_count_ == config_.instance_capacity) {
+            service_budget_stats_.record_fallback(active_count_ == config_.instance_capacity
+                ? AnimationFallbackReason::RuntimeInstanceLimit : AnimationFallbackReason::EvaluationBudget);
             return {{}, AnimationStatus::BudgetExceeded, true};
         }
         uint32_t index;
@@ -366,6 +440,7 @@ public:
             mutable_bytes_ -= schema->mutable_bytes();
             --active_count_;
             free_indices_.push_back(index);
+            service_budget_stats_.record_fallback(AnimationFallbackReason::EvaluationFailure);
             return {{}, AnimationStatus::LoadFailed};
         }
         return result;
@@ -383,6 +458,7 @@ public:
         const size_t old_bytes = old->definition->mutable_bytes();
         const size_t new_bytes = schema->mutable_bytes();
         if (mutable_bytes_ < old_bytes || new_bytes > config_.mutable_budget_bytes - (mutable_bytes_ - old_bytes)) {
+            service_budget_stats_.record_fallback(AnimationFallbackReason::EvaluationBudget);
             return {{}, AnimationStatus::BudgetExceeded, true};
         }
         Slot replacement = make_slot(asset, schema, old->generation + 1u);
@@ -418,6 +494,7 @@ public:
             *old = std::move(prior);
             mutable_bytes_ = mutable_bytes_ - new_bytes + old_bytes;
             (void)refresh_runtime_binding(stale, *old);
+            service_budget_stats_.record_fallback(AnimationFallbackReason::EvaluationFailure);
             return {{}, AnimationStatus::LoadFailed};
         }
         return result;
@@ -506,10 +583,16 @@ public:
 
     AnimationStatus status(AnimatorInstanceHandle handle) const { return slot(handle) ? AnimationStatus::Ok : AnimationStatus::InvalidHandle; }
     AnimationRuntimeStats stats() const {
-        return {active_count_, static_cast<uint32_t>(assets_.size()),
-                config_.instance_capacity, mutable_bytes_, config_.mutable_budget_bytes,
-                config_.asset_capacity, config_.max_joints_per_asset,
-                config_.max_graph_nodes, config_.max_controller_nodes};
+        AnimationBudgetRuntimeStats aggregate = service_budget_stats_;
+        uint64_t query_count = 0;
+        uint64_t query_overflow_count = 0;
+        if (systems_) {
+            aggregate.merge(systems_->runtime_stats());
+            query_count = systems_->world_query_count();
+            query_overflow_count = systems_->world_query_overflow_count();
+        }
+        return public_stats(active_count_, static_cast<uint32_t>(assets_.size()), config_,
+                            mutable_bytes_, aggregate, query_count, query_overflow_count);
     }
     size_t mutable_bytes() const { return mutable_bytes_; }
     float number_value(AnimationInputHandle handle) const { const StoredValue* v = read_pending_input(handle, AnimationValueType::Number); return v ? v->number : 0.0f; }
@@ -742,6 +825,7 @@ private:
     std::vector<uint32_t> free_indices_;
     size_t mutable_bytes_ = 0;
     uint32_t active_count_ = 0;
+    AnimationBudgetRuntimeStats service_budget_stats_{};
     AnimationSystems* systems_ = nullptr;
 };
 

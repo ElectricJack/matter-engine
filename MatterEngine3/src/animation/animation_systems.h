@@ -191,6 +191,7 @@ public:
     std::vector<AnimationWorldQueryResult> execute_fixed_world_queries(
         std::vector<AnimationWorldQueryRequest> requests);
     uint64_t world_query_overflow_count() const noexcept { return world_query_overflow_count_; }
+    uint64_t world_query_count() const noexcept { return world_query_count_; }
     bool register_fixed_work(const AnimationFixedWork& work);
     void remove_fixed_work(AnimatorInstanceHandle instance);
     std::vector<AnimationMarkerEvent> take_marker_events();
@@ -250,6 +251,7 @@ private:
     struct RootMotionSlot { uint64_t tick = 0; DesiredRootMotion motion{}; bool consumed = false; };
     std::map<uint64_t, RootMotionSlot> desired_root_motion_;
     const AnimationWorldQueries* world_queries_ = nullptr;
+    uint64_t world_query_count_ = 0;
     uint64_t world_query_overflow_count_ = 0;
     uint32_t fixed_tick_query_admitted_ = 0;
     std::map<uint64_t, AnimationFixedWork> fixed_work_;

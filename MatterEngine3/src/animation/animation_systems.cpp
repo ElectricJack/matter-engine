@@ -130,8 +130,9 @@ bool controller_input_value(const AnimationRuntimeBindingLease::Value& source,
 
 class ControllerQueryBroker final : public AnimationWorldQueries {
 public:
-    ControllerQueryBroker(const AnimationWorldQueries* source, uint64_t& overflow, uint32_t limit, uint32_t& admitted)
-        : source_(source), overflow_(overflow), limit_(limit), admitted_(admitted) {}
+    ControllerQueryBroker(const AnimationWorldQueries* source, uint64_t& count,
+                          uint64_t& overflow, uint32_t limit, uint32_t& admitted)
+        : source_(source), count_(count), overflow_(overflow), limit_(limit), admitted_(admitted) {}
     bool ray_cast(const Float3& origin, const Float3& direction, float max_distance,
                   uint64_t mask, WorldRayHit& out) const override {
         out = {};
@@ -140,10 +141,12 @@ public:
             !std::isfinite(max_distance) || max_distance < 0.0f) return false;
         if (admitted_ >= limit_) { ++overflow_; return false; }
         ++admitted_;
+        ++count_;
         return source_ != nullptr && source_->ray_cast(origin, direction, max_distance, mask, out);
     }
 private:
     const AnimationWorldQueries* source_ = nullptr;
+    uint64_t& count_;
     uint64_t& overflow_;
     uint32_t limit_ = 0;
     uint32_t& admitted_;
@@ -726,6 +729,7 @@ std::vector<AnimationWorldQueryResult> AnimationSystems::execute_fixed_world_que
         if (!request.instance.valid() || !std::isfinite(request.max_distance) || request.max_distance < 0.0f) continue;
         if (fixed_tick_query_admitted_ >= budget_config_.max_world_queries_per_fixed_tick) { ++world_query_overflow_count_; continue; }
         ++fixed_tick_query_admitted_;
+        ++world_query_count_;
         if (world_queries_ != nullptr)
             results[index].hit = world_queries_->ray_cast(request.origin, request.direction,
                                                            request.max_distance, request.mask, results[index].value);
@@ -879,7 +883,7 @@ void AnimationSystems::run_fixed_post(flecs::world& world, double fixed_delta) {
     // sorted execution order is the broker admission order; overflow is an
     // explicit no-hit rather than an unsafe direct query bypass.
     fixed_tick_query_admitted_=0;
-    ControllerQueryBroker controller_queries(world_queries_, world_query_overflow_count_, budget_config_.max_world_queries_per_fixed_tick, fixed_tick_query_admitted_);
+    ControllerQueryBroker controller_queries(world_queries_, world_query_count_, world_query_overflow_count_, budget_config_.max_world_queries_per_fixed_tick, fixed_tick_query_admitted_);
     for(const ControllerJob& job:jobs) {
         auto& runtime=target_runtime_[job.key]; const auto& binding=service_bindings_.at(job.key); const auto& spec=binding.descriptor->controllers[job.order];
         if(job.order>=runtime.controllers.size() || !runtime.controllers[job.order]) continue;

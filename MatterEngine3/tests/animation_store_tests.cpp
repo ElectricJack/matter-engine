@@ -363,6 +363,48 @@ void test_defaults_budget_accounting_and_migration() {
     CHECK(!service.bool_value(service.input(changed.instance, "speed")), "changed input resets to new default");
 }
 
+void test_shared_mutable_reservation_releases_and_rolls_back() {
+    const AnimationRuntimeDefinition baseline = bound_definition();
+    AnimationStoreConfig config;
+    config.mutable_budget_bytes = baseline.mutable_bytes();
+    AnimationService service(config);
+    const AnimAsset* first = service.insert_asset(asset(93, 1));
+    const Animator original = service.create(first, baseline);
+    CHECK(original.valid() && service.stats().mutable_bytes == baseline.mutable_bytes(),
+          "the full shared runtime reservation admits exactly once");
+
+    AnimationRuntimeDefinition larger = baseline;
+    ++larger.pose_scratch_bytes;
+    const Animator rejected = service.replace_asset(original.instance, first, larger);
+    const AnimationRuntimeStats after_reject = service.stats();
+    CHECK(rejected.status == AnimationStatus::BudgetExceeded &&
+              after_reject.mutable_bytes == baseline.mutable_bytes() &&
+              service.status(original.instance) == AnimationStatus::Ok,
+          "a failed reload leaves the prior shared reservation and instance live");
+
+    CHECK(service.remove(original.instance) && service.stats().mutable_bytes == 0,
+          "destroying an animator returns every reserved runtime-state byte");
+    const Animator replacement = service.create(first, baseline);
+    CHECK(replacement.valid() && service.stats().mutable_bytes == baseline.mutable_bytes(),
+          "released shared capacity is reusable by a later animator");
+}
+
+void test_public_runtime_stats_expose_aggregate_counters_and_reasons() {
+    AnimationStoreConfig config;
+    config.instance_capacity = 1;
+    AnimationService service(config);
+    const AnimAsset* value = service.insert_asset(asset(94, 1));
+    const AnimationRuntimeDefinition runtime = definition();
+    const Animator admitted = service.create(value, runtime);
+    const Animator rejected = service.create(value, runtime);
+    const AnimationRuntimeStats stats = service.stats();
+    CHECK(admitted.valid() && rejected.status == AnimationStatus::BudgetExceeded &&
+              stats.evaluated_pose_count == 0 && stats.world_query_count == 0 &&
+              stats.submitted_skin_work_items == 0 && stats.fallback_count == 1 &&
+              stats.fallback_counts[static_cast<size_t>(AnimationRuntimeFallbackReason::RuntimeInstanceLimit)] == 1,
+          "public runtime stats expose aggregate counters and exact fallback reasons without runtime internals");
+}
+
 } // namespace
 
 int main() {
@@ -373,6 +415,8 @@ int main() {
     test_typed_cadence_and_target_contracts();
     test_api_control_writes_wait_for_their_declared_sampling_boundary();
     test_defaults_budget_accounting_and_migration();
+    test_shared_mutable_reservation_releases_and_rolls_back();
+    test_public_runtime_stats_expose_aggregate_counters_and_reasons();
     test_hard_caps_and_bind_pose_degradation();
     test_conflicting_deduplicated_schema_is_rejected();
     return check_summary();

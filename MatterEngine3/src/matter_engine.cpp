@@ -5209,7 +5209,21 @@ bool WorldSession::animation_debug_snapshots(
 }
 
 AnimationRuntimeStats WorldSession::animation_runtime_stats() const {
-    return impl_->animation_service.stats();
+    AnimationRuntimeStats result = impl_->animation_service.stats();
+#ifdef MATTER_VULKAN_VIEWER
+    if (impl_->vk_scene) {
+        const animation::AnimationBudgetRuntimeStats skin =
+            impl_->vk_scene->animation_runtime_stats();
+        result.submitted_skin_work_items += skin.submitted_skin_work_items;
+        result.submitted_skinned_vertices += skin.submitted_skinned_vertices;
+        result.last_complete_fallback_count += skin.last_complete_fallback_count;
+        result.bind_pose_fallback_count += skin.bind_pose_fallback_count;
+        result.fallback_count += skin.fallback_count;
+        for (size_t internal = 1; internal < skin.fallbacks.size(); ++internal)
+            result.fallback_counts[internal - 1] += skin.fallbacks[internal];
+    }
+#endif
+    return result;
 }
 
 streaming::SectorStreamingStatus WorldSession::streaming_status() const {

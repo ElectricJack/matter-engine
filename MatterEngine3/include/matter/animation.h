@@ -2,6 +2,7 @@
 
 #include "matter/animation_types.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -63,6 +64,21 @@ struct Animator {
 
 struct DesiredRootMotion { AnimationTransform delta{}; bool valid = false; };
 struct AnimationMarkerEvent { AnimatorInstanceHandle instance{}; uint32_t marker_index = UINT32_MAX; float time = 0.0f; };
+
+// Stable public reason codes for every recoverable animation degradation.  Do
+// not expose the runtime evaluator or renderer types through diagnostics.
+enum class AnimationRuntimeFallbackReason : uint8_t {
+    AssetLimit,
+    RuntimeInstanceLimit,
+    EvaluationBudget,
+    SkinWorkBudget,
+    SkinVertexBudget,
+    InvalidSkinSubmission,
+    InvalidEvaluationRequest,
+    EvaluationFailure,
+    Count
+};
+
 struct AnimationRuntimeStats {
     uint32_t active_instances = 0;
     uint32_t active_assets = 0;
@@ -73,6 +89,19 @@ struct AnimationRuntimeStats {
     uint32_t max_joints_per_asset = 0;
     uint32_t max_graph_nodes = 0;
     uint32_t max_controller_nodes = 0;
+    uint64_t evaluated_pose_count = 0;
+    uint64_t evaluated_joint_count = 0;
+    uint64_t evaluated_presentation_pose_count = 0;
+    uint64_t frozen_pose_count = 0;
+    uint64_t resampled_pose_count = 0;
+    uint64_t world_query_count = 0;
+    uint64_t world_query_overflow_count = 0;
+    uint64_t submitted_skin_work_items = 0;
+    uint64_t submitted_skinned_vertices = 0;
+    uint64_t last_complete_fallback_count = 0;
+    uint64_t bind_pose_fallback_count = 0;
+    uint64_t fallback_count = 0;
+    std::array<uint64_t, static_cast<size_t>(AnimationRuntimeFallbackReason::Count)> fallback_counts{};
 };
 // Zero means "use the centrally defined runtime default". This keeps the
 // public API free of internal budget types and prevents defaults/hard caps
