@@ -90,6 +90,24 @@ static_assert(sizeof(VkAnimationBoundsGpuRecord) == 64,
 constexpr uint32_t kVkAnimationBoundsOcclusionEnabled = 1u;
 constexpr uint32_t kVkAnimationBoundsSkinRaster = 1u << 1u;
 
+struct VkSkinRasterValidationView {
+    uint32_t current_frame_slot = 0;
+    bool current_source_ready = false;
+    uint32_t index_count = 0;
+    uint32_t draw_transform_slots = 0;
+    std::vector<uint32_t> output_vertex_counts;
+    // One byte per frame slot; nonzero means both current and previous skin
+    // vertex buffers are available for raster consumption.
+    std::vector<uint8_t> output_buffers_ready;
+};
+
+// Resolves the exact draws that may leave the static cull path. A current
+// frame draw additionally requires successful source validation/dispatch;
+// retained draws require their producing buffers and range to remain valid.
+std::vector<VkSkinRasterDraw> filter_ready_animation_skin_raster_draws(
+    const std::vector<VkSkinRasterDraw>& draws,
+    const VkSkinRasterValidationView& validation);
+
 // Marks only the generational instance/LOD records which have a concrete
 // skinned raster draw. The culler then omits those instances from the static
 // indirect bucket without suppressing bind fallbacks or shared-mesh peers.

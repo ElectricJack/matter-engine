@@ -2544,11 +2544,35 @@ bool VkSceneRenderer::record_animation_skinning(
     const matter::VulkanFrame& frame, FrameResources& resources,
     std::string& error) {
     resources.skin_raster_ready = false;
+    resources.ready_skin_raster_draws.clear();
     const VkSkinFrameArenas& staged = animation_skinning_.frame(frame.frame_slot);
+    const auto publish_ready_draws =
+        [this, &resources, &staged, &frame](bool current_source_ready) {
+            VkSkinRasterValidationView validation{};
+            validation.current_frame_slot = frame.frame_slot;
+            validation.current_source_ready = current_source_ready;
+            validation.index_count =
+                static_cast<uint32_t>(index_staging_.size());
+            validation.draw_transform_slots = draw_transform_slots_;
+            validation.output_vertex_counts.resize(frames_.size(), 0);
+            validation.output_buffers_ready.resize(frames_.size(), 0);
+            for (uint32_t slot = 0; slot < frames_.size(); ++slot) {
+                validation.output_vertex_counts[slot] =
+                    animation_skinning_.frame(slot).current_output_vertices;
+                validation.output_buffers_ready[slot] =
+                    frames_[slot].skin_current_output.buffer != VK_NULL_HANDLE &&
+                    frames_[slot].skin_previous_output.buffer != VK_NULL_HANDLE;
+            }
+            resources.ready_skin_raster_draws =
+                filter_ready_animation_skin_raster_draws(
+                    staged.raster_draws, validation);
+            resources.skin_raster_ready =
+                !resources.ready_skin_raster_draws.empty();
+        };
     if (staged.work_items.empty()) {
         // Retained fallback draws reference an older sealed frame resource and
         // need no current compute dispatch.
-        resources.skin_raster_ready = !staged.raster_draws.empty();
+        publish_ready_draws(false);
         return true;
     }
     const auto bytes = [](size_t count, size_t stride) -> VkDeviceSize {
@@ -2645,7 +2669,7 @@ bool VkSceneRenderer::record_animation_skinning(
     dependency.bufferMemoryBarrierCount = 2;
     dependency.pBufferMemoryBarriers = barriers;
     vkCmdPipelineBarrier2(frame.command_buffer, &dependency);
-    resources.skin_raster_ready = true;
+    publish_ready_draws(true);
     return true;
 }
 
@@ -6159,9 +6183,6 @@ bool VkSceneRenderer::prepare_frame(const matter::VulkanFrame& frame,
     // zero-sized buffers.
     std::vector<VkAnimationBoundsGpuRecord> animation_bound_records =
         animation_bounds_.gpu_records();
-    mark_animation_skin_raster_records(
-        animation_bound_records,
-        animation_skinning_.frame(frame.frame_slot).raster_draws);
     if (animation_bound_records.empty())
         animation_bound_records.push_back({});
     bool animation_bounds_replaced = false;
@@ -7086,6 +7107,27 @@ bool VkSceneRenderer::record_cull_and_render(
     if (!vulkan_->retain_for_frame(frame, std::move(attachments), error))
         return false;
 
+    // Resolve/record skin work before culling. Only draws whose source and
+    // output ranges survived renderer validation may be removed from the
+    // static indirect path.
+    if (!record_animation_skinning(frame, selected, error)) return false;
+    std::vector<VkAnimationBoundsGpuRecord> animation_bound_records =
+        animation_bounds_.gpu_records();
+    if (selected.skin_raster_ready) {
+        mark_animation_skin_raster_records(
+            animation_bound_records, selected.ready_skin_raster_draws);
+    }
+    if (animation_bound_records.empty())
+        animation_bound_records.push_back({});
+    if (!matter::upload_buffer(
+            *vulkan_, selected.animation_bounds,
+            animation_bound_records.data(),
+            static_cast<VkDeviceSize>(animation_bound_records.size()) *
+                sizeof(VkAnimationBoundsGpuRecord),
+            0, error)) {
+        return false;
+    }
+
     uint32_t group_count = 0;
     if (!vk_scene_detail::checked_dispatch_groups(
             static_cast<uint32_t>(instance_staging_.size()),
@@ -7186,8 +7228,9 @@ bool VkSceneRenderer::record_cull_and_render(
                         skin_previous_buffers.data(),
                         skin_vertex_counts.data(),
                         static_cast<uint32_t>(skin_current_buffers.size()),
-                        animation_skinning_.frame(frame.frame_slot).raster_draws.data(),
-                        static_cast<uint32_t>(animation_skinning_.frame(frame.frame_slot).raster_draws.size()),
+                        selected.ready_skin_raster_draws.data(),
+                        static_cast<uint32_t>(
+                            selected.ready_skin_raster_draws.size()),
                         draw_transform_slots_,
                         part_command_ranges_.data(),
                         static_cast<uint32_t>(part_command_ranges_.size()),
@@ -7212,14 +7255,6 @@ bool VkSceneRenderer::record_cull_and_render(
                         selected.rt_tlas.handle};
     if (volumetrics_)
         volumetrics_->set_lighting(frame_lighting);
-    // C2 publishes compute writes before depth/gbuffer recording. The C1
-    // arena is sealed by the caller's frame fence, so this upload/dispatch
-    // observes one immutable current/previous pose pair.
-    if (!record_animation_skinning(frame, selected, error)) return false;
-    // record_animation_skinning only publishes this latch after the compute
-    // work and both vertex-input barriers.  A rejected source range leaves
-    // the normal static indirect path as the sole draw producer.
-    if (!selected.skin_raster_ready) record.skin_draw_count = 0;
     record_raster(frame.command_buffer, &record);
     if (!ray_trace_ok) return false;
     raster_attachments_ready_ = true;

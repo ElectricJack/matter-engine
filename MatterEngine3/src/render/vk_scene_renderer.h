@@ -948,6 +948,7 @@ private:
         matter::VkBufferResource skin_work;
         matter::VkBufferResource skin_current_output;
         matter::VkBufferResource skin_previous_output;
+        std::vector<VkSkinRasterDraw> ready_skin_raster_draws;
         VkExtent2D dlss_output_extent{};
         VkDescriptorSet descriptor_sets[2]{};
         VkDescriptorSet skin_descriptor_set = VK_NULL_HANDLE;

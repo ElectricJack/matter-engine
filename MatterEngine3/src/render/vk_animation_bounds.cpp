@@ -303,6 +303,38 @@ std::vector<VkAnimationBoundsGpuRecord> VkAnimationBounds::gpu_records() const {
     return records;
 }
 
+std::vector<VkSkinRasterDraw> filter_ready_animation_skin_raster_draws(
+    const std::vector<VkSkinRasterDraw>& draws,
+    const VkSkinRasterValidationView& validation) {
+    std::vector<VkSkinRasterDraw> ready;
+    ready.reserve(draws.size());
+    for (const VkSkinRasterDraw& draw : draws) {
+        if (draw.output_frame_slot >= validation.output_vertex_counts.size() ||
+            draw.output_frame_slot >= validation.output_buffers_ready.size() ||
+            validation.output_buffers_ready[draw.output_frame_slot] == 0 ||
+            (draw.output_frame_slot == validation.current_frame_slot &&
+             !validation.current_source_ready)) {
+            continue;
+        }
+        const uint32_t output_count =
+            validation.output_vertex_counts[draw.output_frame_slot];
+        if (draw.index_count == 0 || draw.index_count % 3u != 0 ||
+            draw.first_index > validation.index_count ||
+            draw.index_count > validation.index_count - draw.first_index ||
+            draw.output_vertex >= output_count || draw.vertex_count == 0 ||
+            draw.vertex_count > output_count - draw.output_vertex ||
+            draw.instance_slot >= validation.draw_transform_slots ||
+            draw.output_vertex >
+                static_cast<uint32_t>(std::numeric_limits<int32_t>::max()) ||
+            draw.source_vertex >
+                static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) {
+            continue;
+        }
+        ready.push_back(draw);
+    }
+    return ready;
+}
+
 void mark_animation_skin_raster_records(
     std::vector<VkAnimationBoundsGpuRecord>& records,
     const std::vector<VkSkinRasterDraw>& draws) noexcept {

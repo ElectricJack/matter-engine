@@ -237,6 +237,47 @@ static void test_animation_bounds_cull_shader_contract() {
           "clean embedded shader table contains the generated dynamic-bounds cull shader");
 }
 
+static void test_skin_raster_validation_controls_cull_exclusion() {
+    printf("\n[test_skin_raster_validation_controls_cull_exclusion]\n");
+    viewer::VkSkinRasterDraw draw{};
+    draw.instance_slot = 3;
+    draw.instance_generation = 9;
+    draw.output_frame_slot = 0;
+    draw.lod = 0;
+    draw.first_index = 12;
+    draw.index_count = 6;
+    draw.output_vertex = 4;
+    draw.vertex_count = 8;
+
+    viewer::VkSkinRasterValidationView validation{};
+    validation.current_frame_slot = 0;
+    validation.index_count = 24;
+    validation.draw_transform_slots = 8;
+    validation.output_vertex_counts = {16};
+    validation.output_buffers_ready = {1};
+
+    std::vector<viewer::VkAnimationBoundsGpuRecord> records(1);
+    records[0].instance_slot = draw.instance_slot;
+    records[0].instance_generation = draw.instance_generation;
+    records[0].lod = draw.lod;
+
+    validation.current_source_ready = false;
+    const auto rejected =
+        viewer::filter_ready_animation_skin_raster_draws({draw}, validation);
+    viewer::mark_animation_skin_raster_records(records, rejected);
+    CHECK(rejected.empty() &&
+              (records[0].flags & viewer::kVkAnimationBoundsSkinRaster) == 0,
+          "invalid current source keeps static cull inclusion enabled");
+
+    validation.current_source_ready = true;
+    const auto accepted =
+        viewer::filter_ready_animation_skin_raster_draws({draw}, validation);
+    viewer::mark_animation_skin_raster_records(records, accepted);
+    CHECK(accepted.size() == 1 &&
+              (records[0].flags & viewer::kVkAnimationBoundsSkinRaster) != 0,
+          "validated current source enables the matching skin-raster exclusion");
+}
+
 // This is deliberately the cull.comp lookup contract, rather than a second
 // VkAnimationBounds resolver.  It consumes the std430 records that C3 uploads
 // and applies the shader's exact identity/count rules before doing the one
@@ -559,6 +600,7 @@ int main() {
     test_instance_identity_tagging();
     test_dynamic_slot_change_kind_distinct();
     test_animation_bounds_cull_shader_contract();
+    test_skin_raster_validation_controls_cull_exclusion();
     test_c3_dynamic_bounds_cull_contract();
 
     printf("\n--- Results: %d/%d passed", g_tests - g_failures, g_tests);

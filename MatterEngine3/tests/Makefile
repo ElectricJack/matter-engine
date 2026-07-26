@@ -1864,7 +1864,10 @@ vk-animation-bounds-tests: $(call obj_of,gpu,vk_animation_bounds_tests.cpp) $(ca
 run-vk-animation-bounds: vk-animation-bounds-tests
 	./vk-animation-bounds-tests
 
-vk-scene-renderer-tests: $(call obj_of,gpu,vk_scene_renderer_tests.cpp) $(call obj_of,gpu,../src/render/vk_animation_bounds.cpp) $(call obj_of,gpu,../src/render/vk_animation_skinning.cpp) $(call obj_of,gpu,../src/animation/animation_budget.cpp) | ../shaders_gen/embedded_shaders.h
+../shaders_gen/embedded_spirv.h: ../shaders_vk/cull.comp
+	$(MAKE) -C .. shaders_gen/embedded_spirv.h
+
+vk-scene-renderer-tests: $(call obj_of,gpu,vk_scene_renderer_tests.cpp) $(call obj_of,gpu,../src/render/vk_animation_bounds.cpp) $(call obj_of,gpu,../src/render/vk_animation_skinning.cpp) $(call obj_of,gpu,../src/animation/animation_budget.cpp) ../shaders_gen/embedded_spirv.h | ../shaders_gen/embedded_shaders.h
 	$(CC) $(call obj_of,gpu,vk_scene_renderer_tests.cpp) $(call obj_of,gpu,../src/render/vk_animation_bounds.cpp) $(call obj_of,gpu,../src/render/vk_animation_skinning.cpp) $(call obj_of,gpu,../src/animation/animation_budget.cpp) \
 	      -o vk_scene_renderer_tests $(FLAVOR_gpu_FLAGS) -lm -lpthread
 
