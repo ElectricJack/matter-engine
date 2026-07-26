@@ -173,12 +173,17 @@ FLECS_DIR = ../../Libraries/flecs
 FLECS_C = $(FLECS_DIR)/flecs.c
 ANIMATION_RUNTIME_CPP = ../src/animation/animation_store.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp
 
+# ECS Runtime owns AnimationSystems, its evaluator/service backing stores, the
+# Box3D query adapter, and skin-asset validation.  Keep these implementations
+# together for every headless target that instantiates Runtime.
+ANIMATION_ECS_RUNTIME_REQUIRED = $(ANIMATION_RUNTIME_CPP) ../src/animation/animation_systems.cpp ../src/animation/animation_world_queries.cpp ../src/render/animation_skin_bridge.cpp ../src/render/vk_animation_bounds.cpp
+
 ECS_TARGET = ecs_tests
-ECS_CPP = ecs_tests.cpp ../src/animation/animation_systems.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
+ECS_CPP = ecs_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 ECS_C = $(FLECS_C)
 
 PHYSICS_TARGET = physics-tests
-PHYSICS_CPP = physics_tests.cpp $(ANIMATION_RUNTIME_CPP) ../src/animation/animation_systems.cpp ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
+PHYSICS_CPP = physics_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 PHYSICS_C = $(FLECS_C)
 
 # ---------------------------------------------------------------------------
@@ -525,7 +530,7 @@ PROPERTIES_REGISTRY_C      = $(FLECS_C)
 
 # Phase 4 Task 11 — Simulation control (Play/Pause/Step/Stop with snapshot).
 SIMULATION_CONTROL_TARGET = simulation_control_tests
-SIMULATION_CONTROL_CPP    = simulation_control_tests.cpp $(ANIMATION_RUNTIME_CPP) ../src/animation/animation_systems.cpp ../src/ecs/simulation_control.cpp \
+SIMULATION_CONTROL_CPP    = simulation_control_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) ../src/ecs/simulation_control.cpp \
                             ../src/ecs/scene_registry.cpp \
                             ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
                             ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
@@ -1288,13 +1293,38 @@ $(TILESETSLICER_TARGET): $(TILESETSLICER_CPP) $(TILESETSLICER_HEADERS)
 run-tilesetslicer: $(TILESETSLICER_TARGET)
 	./$(TILESETSLICER_TARGET)
 
-$(ECS_TARGET): $(ECS_OBJS) $(BOX3D_LIB)
-	$(CC) $(ECS_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(FLECS_PLATFORM_LIBS)
+.PHONY: check-ecs-animation-sources check-physics-animation-sources check-simulation-control-animation-sources
+define check_animation_ecs_runtime_closure
+@missing=""; \
+for source in $(ANIMATION_ECS_RUNTIME_REQUIRED); do \
+	case " $($(1)) " in *"$$source "*) ;; *) missing="$$missing $$source" ;; esac; \
+done; \
+if test -n "$$missing"; then \
+	echo "ERROR: $(2) animation closure omits:$$missing"; exit 1; \
+fi; \
+duplicates="$$(printf '%s\\n' $($(1)) | sort | uniq -d)"; \
+if test -n "$$duplicates"; then \
+	echo "ERROR: $(2) animation closure has duplicate entries:"; \
+	printf '%s\\n' "$$duplicates"; exit 1; \
+fi
+endef
+
+check-ecs-animation-sources:
+	$(call check_animation_ecs_runtime_closure,ECS_CPP,ecs)
+
+check-physics-animation-sources:
+	$(call check_animation_ecs_runtime_closure,PHYSICS_CPP,physics)
+
+check-simulation-control-animation-sources:
+	$(call check_animation_ecs_runtime_closure,SIMULATION_CONTROL_CPP,simulation control)
+
+$(ECS_TARGET): check-ecs-animation-sources $(ECS_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
+	$(CC) $(ECS_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(FLECS_PLATFORM_LIBS)
 
 run-ecs: $(ECS_TARGET)
 	./$(ECS_TARGET)
 
-$(PHYSICS_TARGET): $(PHYSICS_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
+$(PHYSICS_TARGET): check-physics-animation-sources $(PHYSICS_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
 	$(CC) $(PHYSICS_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(FLECS_PLATFORM_LIBS)
 
 run-physics: $(PHYSICS_TARGET)
@@ -1368,7 +1398,7 @@ run-properties-registry: $(PROPERTIES_REGISTRY_TARGET)
 	./$(PROPERTIES_REGISTRY_TARGET)
 
 # Phase 4 Task 11 — Simulation control.
-$(SIMULATION_CONTROL_TARGET): $(SIMULATION_CONTROL_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
+$(SIMULATION_CONTROL_TARGET): check-simulation-control-animation-sources $(SIMULATION_CONTROL_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
 	$(CC) $(SIMULATION_CONTROL_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) -lws2_32 -ldbghelp -lwinmm
 
 run-simulation-control: $(SIMULATION_CONTROL_TARGET)
