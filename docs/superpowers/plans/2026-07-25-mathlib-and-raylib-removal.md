@@ -147,13 +147,55 @@ Independent of the above; can be done at any time by anyone.
 
 ## Sequencing
 
+**REVISED 2026-07-25, mid-execution — Phase 5 is split and 5a moves ahead of 4.**
+
+Phases 1, 2, 3 and 6 landed as written. Scoping Phase 4 then found its stated
+scope ("~10 `Mesh` uses, delete a 157-line file, drop `-I$(RAYLIB_PATH)`") wrong
+by 3-4x: **48 of the 141 translation units in the Windows/Vulkan `editor.exe`
+link set transitively include `raylib.h`** (2 MatterEditor, 28 MatterEngine3/src,
+18 libs/MatterSurfaceLib), and the concentration is in `libs/MatterSurfaceLib` —
+26 direct includes, 15 of them in public headers — which Phase 4 never mentions.
+Cross-validated two ways: include-graph walk, and the compiler's own `-MMD`
+output.
+
+The fix is ordering, not more work. **Phase 5's GL-path deletion *removes* much
+of that surface rather than migrating it**, so it must come first:
+
 | Phase | Resolves | Risk |
 |---|---|---|
-| 1 — MathLib | §2, §3 | low; additive, nothing migrates |
-| 2 — `Matrix4x4` collapse | §1 | low; one file, mechanical |
-| 3 — raylib POD types | — | **highest**; wide, and touches bake determinism |
-| 4 — `Mesh` + compat shim | — | medium; ends the raylib header dependency |
-| 5 — Linux→Vulkan, retire GL | §6 | medium; a build target, not a rewrite — but unverified on real hardware |
-| 6 — cleanup sweep | §8, §9, §7 | low; independent |
+| 1 — MathLib | §2, §3 | done (`d5ca3f95`, `6a8ae975`) |
+| 2 — `Matrix4x4` collapse | §1 (partly — reopened) | done (`a48a71f0`, `a3a0e08f`) |
+| 3 — raylib POD types in the DSL/CSG path | — | done (`a958dffc`, `bedfbb54`, `d351e59a`, `f241f2f4`) |
+| 6 — cleanup sweep | §8, §9, §7 | done (`f674f773`, `ad93950f`) |
+| **5a — delete the GL path + §6 machinery** | §6 | medium; **deletion only, and Windows-verifiable throughout** |
+| **4 — raylib POD types in MatterSurfaceLib** | — | medium; against the *smaller* post-5a surface |
+| **5b — Linux Vulkan build target** | — | written but **unverified**; isolated behind its own target |
 
-Phases 1 and 2 are worth doing regardless of whether raylib ever goes. Phase 3 is the commitment point.
+Why 5a before 4: deleting `bind_to_shader()` / `ensure_gpu_textures_ready()` and
+the `Texture2D`/`Shader` members takes `raylib.h` out of `blas_manager.hpp` and
+`tlas_manager.hpp` outright, and `raster_composer`, `gpu_culler`, `renderer`,
+`raster_mesh` and `main_linux.cpp` go with the path. Phase 4 then faces only the
+POD boundary (`particle.h`, `fat_primitive.h`, `cell.h`, `cluster.h`,
+`surface.h`, `csg_stages.h`).
+
+**The cost of this ordering, stated plainly:** 5a removes the only Linux build
+target, and 5b's replacement cannot be verified on this machine. Linux therefore
+goes from an *unverified GL build* to an *unverified Vulkan build*. No verified
+capability is lost — Windows/Vulkan is the target that gets built and run here,
+and it stays green at every step — but nobody should read "Linux works" into
+5b landing.
+
+**One design question Phase 4 must answer, which the plan never surfaced:**
+`particle.h` and `fat_primitive.h` are shared with **real C** (`surface.c`);
+`fat_primitive.h:12-13` says so. `mm::Vec3` uses C++ default member initializers
+and lives in a namespace — neither is valid C — so the raylib types there cannot
+simply be swapped for `mm::` ones. A C-compatible POD layer in MathLib is needed
+first.
+
+**Not a risk, verified:** no on-disk format stores raylib structs. `.part` v1/v2
+use flat `float[N]` arrays with padding guards (`static_assert(sizeof(ChildInstance)
+== 72)`, `static_assert(sizeof(VolumeEmitter) == 60)`). Type swaps upstream of
+that are compile-time only, not wire-format changes.
+
+Phases 1 and 2 were worth doing regardless of whether raylib ever goes. Phase 3
+was the commitment point, and it is past.
