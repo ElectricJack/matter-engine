@@ -4995,6 +4995,16 @@ void run_animation_skin_record_fault_matrix(matter::VulkanDevice& vulkan) {
         vulkan.wait_idle();
 
         matter::VulkanFrame failed{};
+        const auto& diagnostics = renderer.animation_skinning();
+        const auto before_runtime = renderer.animation_runtime_stats();
+        CHECK(diagnostics.gpu_failure_count() == 0 &&
+                  diagnostics.gpu_allocation_failure_count() == 0 &&
+                  diagnostics.gpu_upload_failure_count() == 0 &&
+                  diagnostics.fallback_count() == 0 &&
+                  before_runtime.fallback_count == 0 &&
+                  before_runtime.last_complete_fallback_count == 0 &&
+                  before_runtime.bind_pose_fallback_count == 0,
+              "each real record fault case starts with reset GPU diagnostics");
         CHECK(vulkan.begin_frame(failed, error) &&
                   bind_dynamic(1, 22, failed.serial) &&
                   renderer.begin_animation_skinning_frame(failed.frame_slot,
@@ -5024,7 +5034,16 @@ void run_animation_skin_record_fault_matrix(matter::VulkanDevice& vulkan) {
                 return value.instance_slot == 1 &&
                        value.mode == viewer::VkSkinFallbackMode::BindPose;
             });
-        CHECK(degraded.work_items.empty() && retained && bound &&
+        const uint32_t retained_count = static_cast<uint32_t>(std::count_if(
+            fallbacks.begin(), fallbacks.end(), [](const viewer::VkSkinFallback& value) {
+                return value.mode == viewer::VkSkinFallbackMode::LastCompletePose;
+            }));
+        const uint32_t bind_count = static_cast<uint32_t>(std::count_if(
+            fallbacks.begin(), fallbacks.end(), [](const viewer::VkSkinFallback& value) {
+                return value.mode == viewer::VkSkinFallbackMode::BindPose;
+            }));
+        CHECK(degraded.work_items.empty() && fallbacks.size() == 2 &&
+                  retained && bound && retained_count == 1 && bind_count == 1 &&
                   degraded.raster_draws.size() == 1 &&
                   degraded.raster_draws[0].output_frame_slot == seed.frame_slot,
               "real record fault atomically keeps retained pose and bind/static peer");
@@ -5034,6 +5053,21 @@ void run_animation_skin_record_fault_matrix(matter::VulkanDevice& vulkan) {
                   (allocation_failure ? viewer::VkSkinGpuFailureReason::Allocation
                                       : viewer::VkSkinGpuFailureReason::Upload),
               "real record fault preserves its precise transaction reason");
+        const auto runtime = renderer.animation_runtime_stats();
+        const size_t invalid_submission = static_cast<size_t>(
+            matter::animation::AnimationFallbackReason::InvalidSkinSubmission);
+        CHECK(diagnostics.gpu_failure_count() == 1 &&
+                  diagnostics.gpu_allocation_failure_count() ==
+                      (allocation_failure ? 1u : 0u) &&
+                  diagnostics.gpu_upload_failure_count() ==
+                      (allocation_failure ? 0u : 1u),
+              "real record fault increments exactly one precise GPU diagnostic");
+        CHECK(diagnostics.fallback_count() == 2 &&
+                  runtime.fallback_count == 2 &&
+                  runtime.last_complete_fallback_count == 1 &&
+                  runtime.bind_pose_fallback_count == 1 &&
+                  runtime.fallbacks[invalid_submission] == 2,
+              "real record fault surfaces one retained and one bind contribution");
         CHECK(renderer.finish_animation_skinning_frame(failed.frame_slot,
                                                        failed.serial) &&
                   renderer.record_composite_to_swapchain(failed, error) &&
@@ -5041,6 +5075,18 @@ void run_animation_skin_record_fault_matrix(matter::VulkanDevice& vulkan) {
               error.empty() ? "degraded skin frame seals and presents"
                             : error.c_str());
         vulkan.wait_idle();
+        const auto sealed_runtime = renderer.animation_runtime_stats();
+        CHECK(diagnostics.gpu_failure_count() == 1 &&
+                  diagnostics.gpu_allocation_failure_count() ==
+                      (allocation_failure ? 1u : 0u) &&
+                  diagnostics.gpu_upload_failure_count() ==
+                      (allocation_failure ? 0u : 1u) &&
+                  diagnostics.fallback_count() == 2 &&
+                  sealed_runtime.fallback_count == 2 &&
+                  sealed_runtime.last_complete_fallback_count == 1 &&
+                  sealed_runtime.bind_pose_fallback_count == 1 &&
+                  sealed_runtime.fallbacks[invalid_submission] == 2,
+              "sealing a degraded frame does not double-count its diagnostics");
         CHECK(renderer.begin_animation_skinning_frame(seed.frame_slot,
                                                       failed.serial),
               "retained dependency releases after degraded consumer fence completes");
