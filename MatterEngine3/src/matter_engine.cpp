@@ -123,10 +123,10 @@ bool copy_animation_debug_asset(
     candidate.nonce_low = committed->nonce.low;
     candidate.joints.reserve(decoded.rig.joints.size());
     for (const animation::CanonicalJoint& source : decoded.rig.joints)
-        candidate.joints.push_back({source.parent, source.radius});
+        candidate.joints.push_back({source.parent, source.radius, source.name});
     candidate.sockets.reserve(decoded.rig.sockets.size());
     for (const animation::CanonicalSocket& source : decoded.rig.sockets)
-        candidate.sockets.push_back({source.joint, source.local});
+        candidate.sockets.push_back({source.joint, source.local, source.name});
     if (!decoded.definition.binding) return false;
     candidate.targets.reserve(decoded.definition.binding->targets.size());
     for (const animation::CanonicalTarget& source :
@@ -135,6 +135,12 @@ bool copy_animation_debug_asset(
         target.chain = source.chain;
         target.pole = source.pole;
         target.has_pole = source.has_pole;
+        target.name = source.name;
+        target.driver_is_controller =
+            source.driver == animation::TargetDriverKind::Controller;
+        if (target.driver_is_controller) target.controller = source.controller;
+        target.cadence_is_fixed =
+            source.cadence == animation::EvaluationCadence::Fixed;
         candidate.targets.push_back(std::move(target));
     }
     if (candidate.joints.empty() ||

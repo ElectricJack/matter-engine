@@ -998,6 +998,19 @@ build/test_selection_set.exe: tests/test_selection_set.cpp src/selection_set.cpp
 run-test-selection-set: build/test_selection_set.exe
 	./build/test_selection_set.exe
 
+# Animation panel model headless test: animation_panel_model.cpp holds the
+# ImGui-free presentation logic (animation_panel.cpp does the drawing), so this
+# links with no ImGui and no engine archive -- only the public debug headers.
+build/test_animation_panel_model.exe: tests/test_animation_panel_model.cpp \
+    src/animation_panel_model.cpp src/animation_panel_model.h
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_animation_panel_model.cpp src/animation_panel_model.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Isrc -I$(ME3_DIR)/include -I$(MATHLIB_DIR)/include
+
+.PHONY: run-test-animation-panel-model
+run-test-animation-panel-model: build/test_animation_panel_model.exe
+	./build/test_animation_panel_model.exe
+
 # ConsoleLog headless test: console_log.cpp holds the ImGui-free ring-buffer
 # logic (draw_console_contents, which needs ImGui, lives in console_panel.cpp
 # instead), so this links without any ImGui dependency.

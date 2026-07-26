@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace matter {
@@ -11,20 +12,34 @@ namespace matter {
 // Public, value-owned diagnostics only. These snapshots deliberately expose
 // no Ozz, Flecs, QuickJS, renderer, or cache-provider types and can therefore
 // cross the engine/viewer boundary without extending any internal lifetime.
+// Authored names travel with these snapshots because every consumer is a human
+// diagnostic surface -- an author reads "foot", not "target[2]". The canonical
+// rig already carries them; dropping them here only made the editor unable to
+// label anything. They are copies, so they extend no engine lifetime.
 struct AnimationDebugJoint {
     uint16_t parent = UINT16_MAX;
     float radius = 0.0f;
+    std::string name;
 };
 
 struct AnimationDebugSocket {
     uint16_t joint = UINT16_MAX;
     AnimationTransform local{};
+    std::string name;
 };
 
 struct AnimationDebugTargetDefinition {
     std::vector<uint16_t> chain;
     Float3 pole{};
     bool has_pole = false;
+    std::string name;
+    // Driver ownership, so a UI can tell an author WHY it may not drag this
+    // target. A controller-driven target rejects external writes through
+    // one-driver arbitration, and a gizmo that silently does nothing is worse
+    // than one that is visibly disabled.
+    bool driver_is_controller = false;
+    std::string controller;   // empty unless driver_is_controller
+    bool cadence_is_fixed = false;
 };
 
 struct AnimationDebugTargetState {
