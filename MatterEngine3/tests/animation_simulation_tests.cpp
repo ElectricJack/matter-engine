@@ -750,6 +750,50 @@ void test_runtime_scene_binding_publishes_c2_indexed_skin_work() {
           "detached or stale skin component cannot publish old work into a later frame");
 }
 
+void test_production_pose_lod_freezes_only_presentation_and_resamples_latest_fixed_pose() {
+    ecs_runtime::Runtime runtime;
+    AnimationService service;
+    runtime.attach_animation_service(service);
+    const AnimAsset* asset = service.insert_asset({0xC4u, {4u, 4u}});
+    TargetChainFixture fixture;
+    auto descriptor = std::make_shared<AnimationRuntimeBindingDescriptor>();
+    descriptor->evaluation = fixture.evaluation;
+    descriptor->fixed_work.clip.duration = 1.0f;
+    descriptor->fixed_work.clip.loop = true;
+    const Animator animator = service.create(asset, target_definition(descriptor, {}));
+    CHECK(animator.valid(), "pose LOD production fixture creates a service-bound animator");
+
+    runtime.tick({0.1f, 0.1f, 2});
+    const AnimationPoseSnapshot initial = runtime.animation_systems().pose_snapshots().latest(animator.instance);
+    std::vector<AnimatorCheckpoint> before;
+    CHECK(initial.instance.valid() && service.capture_runtime_checkpoints(before) && before.size() == 1,
+          "pose LOD fixture publishes its initial presentation and fixed checkpoint");
+
+    runtime.animation_systems().stage_completed_visibility(
+        50, {{animator.instance, false, 200.0f, 0}});
+    CHECK(runtime.animation_systems().commit_completed_visibility(50),
+          "completed renderer visibility becomes the next frame's LOD input");
+    runtime.tick({0.1f, 0.1f, 2});
+    const AnimationPoseSnapshot frozen = runtime.animation_systems().pose_snapshots().latest(animator.instance);
+    std::vector<AnimatorCheckpoint> after;
+    CHECK(service.capture_runtime_checkpoints(after) && after.size() == 1 &&
+              after[0].current_fixed_time > before[0].current_fixed_time,
+          "fixed graph time continues while cosmetic presentation is frozen");
+    CHECK(frozen.fixed_tick == initial.fixed_tick &&
+              runtime.animation_systems().presentation_budget_stats().frozen_pose_count > 0,
+          "frozen presentation republishes the last complete pose instead of evaluating a new one");
+
+    runtime.animation_systems().stage_completed_visibility(
+        51, {{animator.instance, true, 200.0f, 0}});
+    CHECK(runtime.animation_systems().commit_completed_visibility(51),
+          "newly visible observation commits after the frozen frame");
+    runtime.tick({0.02f, 0.1f, 2});
+    const AnimationPoseSnapshot resumed = runtime.animation_systems().pose_snapshots().latest(animator.instance);
+    CHECK(resumed.fixed_tick > frozen.fixed_tick &&
+              runtime.animation_systems().presentation_budget_stats().resampled_pose_count > 0,
+          "new visibility resamples the current fixed pose immediately without replaying skipped poses");
+}
+
 } // namespace
 
 int main() {
@@ -763,6 +807,7 @@ int main() {
     test_service_root_lock_keeps_authored_reference_out_of_ecs_authority();
     test_runtime_produces_and_retires_rigid_binding_components();
     test_runtime_scene_binding_publishes_c2_indexed_skin_work();
+    test_production_pose_lod_freezes_only_presentation_and_resamples_latest_fixed_pose();
     test_service_bound_runtime_work_is_automatic_and_generation_safe();
     test_controller_input_bindings_are_fixed_typed_and_fail_closed();
     test_service_checkpoint_restores_runtime_tick_deterministically();

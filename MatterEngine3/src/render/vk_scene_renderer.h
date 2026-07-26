@@ -422,10 +422,16 @@ public:
     }
     // Renderer diagnostics are a view of the central animation budget; no
     // duplicate counters or renderer-specific limits are maintained here.
-    const matter::animation::AnimationBudgetRuntimeStats& animation_runtime_stats() const noexcept {
-        return animation_skinning_.stats();
+    matter::animation::AnimationBudgetRuntimeStats animation_runtime_stats(
+        const matter::animation::AnimationBudgetRuntimeStats& runtime = {}) const noexcept {
+        auto result = runtime;
+        result.merge(animation_skinning_.stats());
+        return result;
     }
     bool skinned_rt_uses_bind_pose_blas() const noexcept;
+    const std::vector<VkSkinFallback>& consumed_animation_skin_fallbacks() const noexcept {
+        return consumed_animation_skin_fallbacks_;
+    }
     bool register_animation_bounds_asset(const VkAnimationBoundsAsset& asset);
     bool update_animation_bounds(uint32_t instance_slot,
                                  uint32_t instance_generation,
@@ -1091,6 +1097,7 @@ private:
 
     matter::VulkanDevice* vulkan_ = nullptr;
     VkAnimationSkinning animation_skinning_;
+    std::vector<VkSkinFallback> consumed_animation_skin_fallbacks_;
     VkAnimationBounds animation_bounds_;
     matter::StreamlineBridge* dlss_bridge_ = nullptr;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION

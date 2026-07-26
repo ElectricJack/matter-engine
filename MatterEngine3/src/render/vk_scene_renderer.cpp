@@ -923,13 +923,40 @@ bool VkSceneRenderer::submit_visible_animation_skinning(
                                       submission.instance_generation,
                                       submission.asset_key});
         animation_bounds_.fail_open_instances(queue_rejected);
+        consumed_animation_skin_fallbacks_ =
+            animation_skinning_.frame(frame_slot).fallbacks;
         return false;
     }
-    for (const VkSkinSubmission& submission : visible)
-        (void)animation_bounds_.update_instance(
-            submission.instance_slot, submission.instance_generation,
-            submission.asset_key, submission.pose,
-            submission.history_valid);
+    const VkSkinFrameArenas& staged = animation_skinning_.frame(frame_slot);
+    consumed_animation_skin_fallbacks_ = staged.fallbacks;
+    for (const VkSkinSubmission& submission : visible) {
+        const bool accepted = std::any_of(
+            staged.work_items.begin(), staged.work_items.end(),
+            [&submission](const VkSkinWorkItem& work) {
+                return work.instance_slot == submission.instance_slot;
+            });
+        if (accepted) {
+            (void)animation_bounds_.update_instance(
+                submission.instance_slot, submission.instance_generation,
+                submission.asset_key, submission.pose,
+                submission.history_valid);
+            continue;
+        }
+        const auto fallback = std::find_if(
+            staged.fallbacks.begin(), staged.fallbacks.end(),
+            [&submission](const VkSkinFallback& value) {
+                return value.instance_slot == submission.instance_slot;
+            });
+        // LastCompletePose deliberately retains its matching last-complete
+        // dynamic bound. BindPose retires dynamic deformation and routes
+        // culling/raster through the conservative immutable asset path.
+        if (fallback != staged.fallbacks.end() &&
+            fallback->mode == VkSkinFallbackMode::BindPose) {
+            animation_bounds_.fail_open_instances(
+                {{submission.instance_slot, submission.instance_generation,
+                  submission.asset_key}});
+        }
+    }
     return true;
 }
 
@@ -4659,10 +4686,11 @@ bool VkSceneRenderer::test_dispatch_animation_skin_fixture(
             static_cast<uint64_t>(work.output_previous) + work.vertex_count);
         max_vertices = std::max(max_vertices, work.vertex_count);
     }
-    if (fixture.work.size() > kVkMaxSkinWorkItems ||
+    const auto& skin_budget = animation_skinning_.budget_config();
+    if (fixture.work.size() > skin_budget.max_skin_work_items ||
         current_count == 0 || previous_count == 0 ||
-        current_count > kVkMaxSkinnedOutputVertices ||
-        previous_count > kVkMaxSkinnedOutputVertices) {
+        current_count > skin_budget.max_skinned_vertices ||
+        previous_count > skin_budget.max_skinned_vertices) {
         error = "animation skin GPU fixture exceeds C2 queue bounds";
         return false;
     }

@@ -123,25 +123,37 @@ bool VkAnimationSkinning::submit_visible(
 
     std::vector<VkSkinSubmission> sorted = visible;
     std::sort(sorted.begin(), sorted.end(), less_submission);
-    const auto publish_fallbacks = [this, &target, &sorted](
-                                       matter::animation::AnimationFallbackReason reason) {
+    const auto concrete_fallback = [](const VkSkinSubmission& value,
+                                      matter::animation::AnimationFallbackReason reason) {
+        return VkSkinFallback{value.instance_slot,
+                              value.history_valid ? VkSkinFallbackMode::LastCompletePose
+                                                  : VkSkinFallbackMode::BindPose,
+                              reason};
+    };
+    const auto publish_invalid = [this, &target, &sorted, &concrete_fallback](
+                                     matter::animation::AnimationFallbackReason reason) {
         VkSkinFrameArenas fallback{};
         fallback.fallbacks.reserve(sorted.size());
-        for (const VkSkinSubmission& value : sorted)
-            fallback.fallbacks.push_back({value.instance_slot,
-                                          VkSkinFallbackMode::BindPoseOrLastPose,
-                                          reason});
+        for (const VkSkinSubmission& value : sorted) {
+            const VkSkinFallback item = concrete_fallback(value, reason);
+            fallback.fallbacks.push_back(item);
+            if (item.mode == VkSkinFallbackMode::LastCompletePose)
+                ++stats_.last_complete_fallback_count;
+            else
+                ++stats_.bind_pose_fallback_count;
+            stats_.record_fallback(reason);
+        }
         target = std::move(fallback);
-        stats_.record_fallback(reason);
     };
-    if (sorted.size() > budget_.max_skin_work_items) {
-        publish_fallbacks(matter::animation::AnimationFallbackReason::SkinWorkBudget);
-        ++fallback_count_;
-        return false;
-    }
 
+    std::vector<VkSkinSubmission> accepted;
+    std::vector<VkSkinFallback> overflow;
+    accepted.reserve(std::min<size_t>(sorted.size(), budget_.max_skin_work_items));
     uint32_t output_count = 0;
     uint32_t palette_count = 0;
+    bool tail_overflow = false;
+    matter::animation::AnimationFallbackReason tail_reason =
+        matter::animation::AnimationFallbackReason::SkinWorkBudget;
     for (const VkSkinSubmission& value : sorted) {
         const auto asset = assets_.find(value.asset_key);
         uint32_t source_end = 0;
@@ -152,28 +164,24 @@ bool VkAnimationSkinning::submit_visible(
             !checked_add(value.source_vertex, value.vertex_count, source_end) ||
             !checked_add(value.influence_vertex, value.vertex_count, source_end) ||
             source_end > asset->second.values.size() ||
-            !checked_add(output_count, value.vertex_count, output_end) ||
-            output_end > budget_.max_skinned_vertices ||
-            !checked_add(palette_count, static_cast<uint32_t>(value.pose.current.size()), palette_count)) {
-            publish_fallbacks(output_end > budget_.max_skinned_vertices
-                ? matter::animation::AnimationFallbackReason::SkinVertexBudget
-                : matter::animation::AnimationFallbackReason::InvalidSkinSubmission);
-            ++fallback_count_;
+            !checked_add(output_count, value.vertex_count, output_end)) {
+            publish_invalid(matter::animation::AnimationFallbackReason::InvalidSkinSubmission);
+            fallback_count_ += static_cast<uint32_t>(sorted.size());
             return false;
         }
         const uint32_t joint_count = static_cast<uint32_t>(value.pose.current.size());
         for (const VkSkinJoint& joint : value.pose.current) {
             if (!finite_joint(joint)) {
-                publish_fallbacks(matter::animation::AnimationFallbackReason::InvalidSkinSubmission);
-                ++fallback_count_;
+                publish_invalid(matter::animation::AnimationFallbackReason::InvalidSkinSubmission);
+                fallback_count_ += static_cast<uint32_t>(sorted.size());
                 return false;
             }
         }
         if (value.history_valid) {
             for (const VkSkinJoint& joint : value.pose.previous) {
                 if (!finite_joint(joint)) {
-                    publish_fallbacks(matter::animation::AnimationFallbackReason::InvalidSkinSubmission);
-                    ++fallback_count_;
+                    publish_invalid(matter::animation::AnimationFallbackReason::InvalidSkinSubmission);
+                    fallback_count_ += static_cast<uint32_t>(sorted.size());
                     return false;
                 }
             }
@@ -181,12 +189,31 @@ bool VkAnimationSkinning::submit_visible(
         for (uint32_t vertex = value.influence_vertex;
              vertex != value.influence_vertex + value.vertex_count; ++vertex) {
             if (!valid_influence(asset->second.values[vertex], joint_count)) {
-                publish_fallbacks(matter::animation::AnimationFallbackReason::InvalidSkinSubmission);
-                ++fallback_count_;
+                publish_invalid(matter::animation::AnimationFallbackReason::InvalidSkinSubmission);
+                fallback_count_ += static_cast<uint32_t>(sorted.size());
                 return false;
             }
         }
+        if (!tail_overflow && accepted.size() >= budget_.max_skin_work_items) {
+            tail_overflow = true;
+            tail_reason = matter::animation::AnimationFallbackReason::SkinWorkBudget;
+        }
+        if (!tail_overflow && output_end > budget_.max_skinned_vertices) {
+            tail_overflow = true;
+            tail_reason = matter::animation::AnimationFallbackReason::SkinVertexBudget;
+        }
+        if (tail_overflow) {
+            overflow.push_back(concrete_fallback(value, tail_reason));
+            stats_.record_fallback(tail_reason);
+            continue;
+        }
+        accepted.push_back(value);
         output_count = output_end;
+        if (!checked_add(palette_count, static_cast<uint32_t>(value.pose.current.size()), palette_count)) {
+            publish_invalid(matter::animation::AnimationFallbackReason::InvalidSkinSubmission);
+            fallback_count_ += static_cast<uint32_t>(sorted.size());
+            return false;
+        }
     }
 
     // Nothing below this point may fail: the complete queue has passed hard
@@ -194,13 +221,20 @@ bool VkAnimationSkinning::submit_visible(
     VkSkinFrameArenas staged{};
     staged.palette_current.reserve(palette_count);
     staged.palette_previous.reserve(palette_count);
-    staged.work_items.reserve(sorted.size());
-    staged.current_output.reserve(sorted.size());
-    staged.previous_output.reserve(sorted.size());
-    staged.raster_draws.reserve(sorted.size());
+    staged.work_items.reserve(accepted.size());
+    staged.current_output.reserve(accepted.size());
+    staged.previous_output.reserve(accepted.size());
+    staged.raster_draws.reserve(accepted.size());
+    staged.fallbacks = std::move(overflow);
+    for (const VkSkinFallback& fallback : staged.fallbacks) {
+        if (fallback.mode == VkSkinFallbackMode::LastCompletePose)
+            ++stats_.last_complete_fallback_count;
+        else
+            ++stats_.bind_pose_fallback_count;
+    }
     uint32_t output_offset = 0;
     uint32_t palette_offset = 0;
-    for (const VkSkinSubmission& value : sorted) {
+    for (const VkSkinSubmission& value : accepted) {
         const auto asset = assets_.find(value.asset_key);
         // The validation pass above proves this lookup and its source range.
         if (asset == assets_.end()) return false;
@@ -243,7 +277,8 @@ bool VkAnimationSkinning::submit_visible(
     staged.current_output_vertices = output_count;
     staged.previous_output_vertices = output_count;
     target = std::move(staged);
-    stats_.submitted_skin_work_items += sorted.size();
+    fallback_count_ += static_cast<uint32_t>(target.fallbacks.size());
+    stats_.submitted_skin_work_items += accepted.size();
     stats_.submitted_skinned_vertices += output_count;
     return true;
 }

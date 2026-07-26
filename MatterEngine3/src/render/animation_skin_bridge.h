@@ -43,6 +43,10 @@ struct AnimationSkinnedBinding {
     uint32_t asset_generation = 0;
     uint32_t lod = 0;
     bool visible = true;
+    // Cosmetic pose-rate priority only. It never changes fixed simulation or
+    // current-frame culling/skin work ordering unless explicitly copied into
+    // a completed presentation observation by the renderer bridge.
+    int32_t presentation_priority = 0;
 };
 
 struct AnimationSkinExpansion {

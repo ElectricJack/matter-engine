@@ -153,5 +153,12 @@ void test_central_runtime_instance_budget(){
        evaluator.stats().fallbacks[static_cast<size_t>(AnimationFallbackReason::RuntimeInstanceLimit)]==1,
        "runtime-limit rejection preserves prior state and records its fallback reason");
 }
+void test_custom_joint_budget_rejects_runtime_definition(){
+ OzzSkeleton skeleton; OzzAnimation animation; Diagnostics diagnostics; const auto rig=two_joint_rig();
+ CHECK(build_skeleton(rig,skeleton,diagnostics)&&build_clip(rig,clip("custom-joint-cap",1,true),animation,diagnostics),"build custom joint-cap fixture");
+ AnimationEvaluationDefinition definition; definition.skeleton=&skeleton; definition.clips={{&animation,1,true,false}}; definition.inverse_bind_model={identity(),identity()}; definition.nodes={{RuntimeGraphNodeKind::Clip,{},0},{RuntimeGraphNodeKind::Output,{0}}};
+ AnimationEvaluationBudget budget{}; budget.limits.max_joints_per_asset=1; AnimationEvaluator evaluator(budget);
+ CHECK(!evaluator.evaluate({request(handle(62),definition,1,0)})&&evaluator.snapshot(handle(62)).local_pose.empty(),"custom central joint limit rejects before evaluator state allocation");
 }
-int main(){test_controls();test_cadence_aware_control_sampling();test_time_interpolation_and_previous();test_wrap_clamp_pause_and_disable();test_non_looping_clip_clamps();test_blend_and_additive();test_budget_order_and_reuse();test_snapshot_backing_and_priority_controller_budget();test_definition_shape_and_graph_contract_rejection();test_graph_root_motion_crosses_loops_and_locks_pose();test_root_lock_preserves_authored_root_reference_and_scale();test_central_runtime_instance_budget();if(g_failures){std::printf("animation_evaluator_tests: %d failure(s)\n",g_failures);return 1;}std::puts("animation_evaluator_tests: all tests passed");}
+}
+int main(){test_controls();test_cadence_aware_control_sampling();test_time_interpolation_and_previous();test_wrap_clamp_pause_and_disable();test_non_looping_clip_clamps();test_blend_and_additive();test_budget_order_and_reuse();test_snapshot_backing_and_priority_controller_budget();test_definition_shape_and_graph_contract_rejection();test_graph_root_motion_crosses_loops_and_locks_pose();test_root_lock_preserves_authored_root_reference_and_scale();test_central_runtime_instance_budget();test_custom_joint_budget_rejects_runtime_definition();if(g_failures){std::printf("animation_evaluator_tests: %d failure(s)\n",g_failures);return 1;}std::puts("animation_evaluator_tests: all tests passed");}

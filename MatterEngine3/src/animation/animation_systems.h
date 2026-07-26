@@ -209,6 +209,7 @@ public:
     const AnimationBudgetRuntimeStats& presentation_budget_stats() const noexcept {
         return presentation_budget_stats_;
     }
+    AnimationBudgetRuntimeStats runtime_stats() const noexcept;
     void attach_service(AnimationService* service) noexcept { service_ = service; }
     bool has_service(const AnimationService* service) const noexcept { return service_ == service; }
     bool capture_service_checkpoint(AnimatorCheckpoint& checkpoint) const;

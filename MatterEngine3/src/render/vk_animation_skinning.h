@@ -68,10 +68,10 @@ struct VkSkinArenaSlice {
 // C1 deliberately leaves the actual raster-instance fallback choice to C2;
 // this record makes rejection visible and deterministic without emitting a
 // partially valid compute work item.
-enum class VkSkinFallbackMode : uint8_t { BindPoseOrLastPose };
+enum class VkSkinFallbackMode : uint8_t { LastCompletePose, BindPose };
 struct VkSkinFallback {
     uint32_t instance_slot = 0;
-    VkSkinFallbackMode mode = VkSkinFallbackMode::BindPoseOrLastPose;
+    VkSkinFallbackMode mode = VkSkinFallbackMode::BindPose;
     matter::animation::AnimationFallbackReason reason =
         matter::animation::AnimationFallbackReason::None;
 };
@@ -118,6 +118,9 @@ public:
     uint32_t fallback_count() const noexcept { return fallback_count_; }
     const matter::animation::AnimationBudgetRuntimeStats& stats() const noexcept {
         return stats_;
+    }
+    const matter::animation::AnimationBudgetConfig& budget_config() const noexcept {
+        return budget_;
     }
 
 private:

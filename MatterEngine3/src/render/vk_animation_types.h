@@ -1,4 +1,5 @@
 #pragma once
+#include "animation/animation_budget.h"
 
 // These POD types are shared verbatim with shaders_vk/animation_skin.comp in
 // C2. Keep this header free of Vulkan and engine implementation types: it is
@@ -87,8 +88,10 @@ constexpr uint32_t kVkSkinHistoryInvalid = 1u << 0;
 constexpr uint32_t kVkSkinPaletteCountShift = 16u;
 constexpr uint32_t kVkSkinPaletteCountMax = 0xffffu;
 constexpr uint32_t kVkSkinWorkFlagsMask = (1u << kVkSkinPaletteCountShift) - 1u;
-constexpr uint32_t kVkMaxSkinWorkItems = 256;
-constexpr uint32_t kVkMaxSkinnedOutputVertices = 2000000;
+constexpr uint32_t kVkMaxSkinWorkItems =
+    matter::animation::AnimationBudgetConfig::kHardMaxSkinWorkItems;
+constexpr uint32_t kVkMaxSkinnedOutputVertices =
+    matter::animation::AnimationBudgetConfig::kHardMaxSkinnedVertices;
 
 // Compute input/output ABI. Source vertices deliberately retain every raster
 // attribute; output adds only the previous skinned position used for true

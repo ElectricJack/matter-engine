@@ -47,11 +47,16 @@ int main() {
     PoseLodDecision second = scheduler.schedule(request);
     CHECK(second.tier == AnimationPoseLodTier::Hz60 && second.newly_visible,
           "newly visible instances retain 60 Hz for the second frame");
+    PoseLodDecision duplicate = scheduler.schedule(request);
+    CHECK(duplicate.tier == AnimationPoseLodTier::Hz60 && duplicate.newly_visible,
+          "repeating a frame serial returns the same decision without consuming visibility grace");
     request.presentation_seconds = 2.0 / 60.0;
     request.frame_serial = 3;
     PoseLodDecision third = scheduler.schedule(request);
     CHECK(third.tier == AnimationPoseLodTier::Hz30 && !third.newly_visible,
           "after the visibility grace period distance selects the cosmetic tier");
+    CHECK(!third.resample_current_graph_time,
+          "slowing a presentation tier never requests a graph resample");
 
     request.distance = 11.0f;
     request.presentation_seconds += 1.0 / 30.0;

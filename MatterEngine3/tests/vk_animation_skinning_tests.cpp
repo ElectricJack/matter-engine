@@ -149,7 +149,8 @@ static void test_indexed_raster_mapping_tracks_sorted_output_offsets() {
 
 static void test_fence_lifetime_wrap_and_transactional_caps() {
     VkAnimationSkinning skinning(2);
-    CHECK(skinning.register_asset(1, valid_influences(2000000)), "large asset registers");
+    CHECK(skinning.register_asset(1, valid_influences(kVkMaxSkinnedOutputVertices + 1)),
+          "large asset registers");
     VkSkinSubmission one = candidate(1, 1, 1000000, 0, 0, 0);
     CHECK(skinning.submit_visible(0, {one}), "first frame owns its arena slices");
     CHECK(skinning.mark_submitted(0, 10), "first seal records the submitted fence");
@@ -170,15 +171,19 @@ static void test_fence_lifetime_wrap_and_transactional_caps() {
 
     std::vector<VkSkinSubmission> too_many;
     for (uint32_t i = 0; i < kVkMaxSkinWorkItems + 1; ++i) too_many.push_back(candidate(1, i, 1, 0, 0, 0));
-    CHECK(!skinning.submit_visible(1, too_many), "work-item cap rejects transactionally");
-    CHECK(skinning.frame(1).work_items.empty(), "work cap leaves no partial queue");
-    CHECK(skinning.frame(1).fallbacks.size() == kVkMaxSkinWorkItems + 1,
-          "work cap emits one deterministic fallback per rejected visible item");
-    CHECK(!skinning.submit_visible(1, {candidate(1, 1, kVkMaxSkinnedOutputVertices + 1, 0, 0, 0)}),
-          "vertex cap rejects transactionally");
+    CHECK(skinning.submit_visible(1, too_many), "work-item cap admits the deterministic priority prefix");
+    CHECK(skinning.frame(1).work_items.size() == kVkMaxSkinWorkItems,
+          "work cap leaves every admitted high-priority item in the queue");
+    CHECK(skinning.frame(1).fallbacks.size() == 1 &&
+              skinning.frame(1).fallbacks[0].mode == VkSkinFallbackMode::BindPose,
+          "work cap emits a concrete bind-pose fallback only for the overflow tail");
+    CHECK(skinning.begin_frame(1, 0), "unsealed partial-admission frame resets");
+    CHECK(skinning.submit_visible(1, {candidate(1, 1, kVkMaxSkinnedOutputVertices + 1, 0, 0, 0)}),
+          "vertex cap publishes a complete fallback-only transaction");
     CHECK(skinning.frame(1).work_items.empty(), "vertex cap leaves no partial queue");
-    CHECK(skinning.frame(1).fallbacks.size() == 1,
-          "vertex cap emits a deterministic bind-or-last-pose fallback");
+    CHECK(skinning.frame(1).fallbacks.size() == 1 &&
+              skinning.frame(1).fallbacks[0].mode == VkSkinFallbackMode::BindPose,
+          "oversized first item emits a concrete bind-pose fallback");
     CHECK(!skinning.mark_submitted(1, 11),
           "a duplicate fence on another slot is rejected on the global submission timeline");
     CHECK(skinning.mark_submitted(1, 12),
@@ -192,14 +197,17 @@ static void test_central_budget_controls_skinning_fallback_reason() {
     VkAnimationSkinning skinning(1, budget);
     CHECK(skinning.register_asset(91, valid_influences(8)),
           "budget fixture registers immutable influences");
-    CHECK(!skinning.submit_visible(0, {candidate(91, 1, 1, 0, 0, 0),
+    VkSkinSubmission history = candidate(91, 3, 1, 0, 0, 0);
+    history.history_valid = true;
+    CHECK(skinning.submit_visible(0, {candidate(91, 1, 1, 0, 0, 0),
                                        candidate(91, 2, 1, 0, 0, 0),
-                                       candidate(91, 3, 1, 0, 0, 0)}),
-          "central work budget rejects before partial publication");
-    CHECK(skinning.frame(0).fallbacks.size() == 3 &&
+                                       history}),
+          "central work budget admits the stable high-priority prefix");
+    CHECK(skinning.frame(0).work_items.size() == 2 && skinning.frame(0).fallbacks.size() == 1 &&
               skinning.frame(0).fallbacks[0].reason ==
-                  matter::animation::AnimationFallbackReason::SkinWorkBudget,
-          "work overflow reports a stable central fallback reason");
+                  matter::animation::AnimationFallbackReason::SkinWorkBudget &&
+              skinning.frame(0).fallbacks[0].mode == VkSkinFallbackMode::LastCompletePose,
+          "overflow tail reports its stable reason and concrete last-complete fallback");
     CHECK(skinning.stats().fallback_count == 1 && skinning.fallback_count() == 1,
           "renderer staging exposes one shared fallback counter");
 }

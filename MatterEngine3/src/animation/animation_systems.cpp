@@ -325,6 +325,12 @@ void AnimationSystems::discard_completed_visibility(uint64_t frame_serial) noexc
     has_staged_visibility_ = false;
 }
 
+AnimationBudgetRuntimeStats AnimationSystems::runtime_stats() const noexcept {
+    AnimationBudgetRuntimeStats result = evaluator_.stats();
+    result.merge(presentation_budget_stats_);
+    return result;
+}
+
 bool AnimationSystems::refresh_service_binding(const AnimationRuntimeBindingLease& lease) {
     if (!lease.valid() || !lease.descriptor || !lease.descriptor->evaluation) return false;
     const AnimationRuntimeBindingDescriptor& descriptor = *lease.descriptor;
