@@ -417,6 +417,7 @@ static void test_c3_dynamic_bounds_cull_contract() {
     accepted_draw.instance_slot = 3;
     accepted_draw.instance_generation = 9;
     accepted_draw.lod = 0;
+    accepted_draw.cluster = 7;
     accepted_draw.first_index = 12;
     accepted_draw.index_count = 6;
     viewer::mark_animation_skin_raster_records(shared_mesh_records,

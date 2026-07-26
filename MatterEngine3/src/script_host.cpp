@@ -13,6 +13,7 @@ extern "C" {
 #include "animation/animation_runtime_asset.h"
 #include "animation/ozz_adapter.h"
 #include "render/indexed_part_geometry.h"
+#include "lod_bake.h"
 #include "triangle_emit.hpp" // direct-triangle (mesh) session buffer
 #include "dsl_state.h"
 #include "dsl_bindings.h"
@@ -59,7 +60,8 @@ uint64_t part_body_checksum(const std::filesystem::path& path) {
 bool make_animation_asset(const dsl::DslState& state, uint64_t hash, matter::animation::BuildNonce nonce,
                           const BLASManager& blas, matter::animation::AnimAsset& asset,
                           matter::animation::BindingBake& binding,
-                          matter::animation::Diagnostics& diagnostics) {
+                          matter::animation::Diagnostics& diagnostics,
+                          const part_asset::LodLevels* finalized_lods = nullptr) {
     const auto* authored = state.authored_animation(); const auto& canonical = state.canonical_animation();
     if (!authored || !canonical) {
         diagnostics.add("runtime-asset-rig", {}, "animation runtime asset requires a canonical rig");
@@ -123,7 +125,33 @@ bool make_animation_asset(const dsl::DslState& state, uint64_t hash, matter::ani
         diagnostics.add("runtime-asset-geometry", {}, "animation runtime asset requires baked geometry");
         return false;
     }
-    std::vector<viewer::IndexedPartGeometry> lods{viewer::build_indexed_part_geometry(tris.data(),ex.size()==tris.size()?ex.data():nullptr,(int)tris.size())};
+    std::vector<viewer::IndexedPartGeometry> lods;
+    if (finalized_lods && !finalized_lods->empty()) {
+        lods.reserve(finalized_lods->size());
+        for (const part_asset::LodLevel& level : *finalized_lods) {
+            if (level.blas_indices.size() != 1 ||
+                level.blas_indices.front() >= blas.get_entries().size()) {
+                diagnostics.add("runtime-asset-lod", {},
+                                "finalized LOD references an invalid BLAS range");
+                return false;
+            }
+            const auto& entry = blas.get_entries()[level.blas_indices.front()];
+            if (entry->triangles.empty()) {
+                diagnostics.add("runtime-asset-lod", {},
+                                "finalized LOD has no triangles");
+                return false;
+            }
+            lods.push_back(viewer::build_indexed_part_geometry(
+                entry->triangles.data(),
+                entry->tri_extra.size() == entry->triangles.size()
+                    ? entry->tri_extra.data() : nullptr,
+                static_cast<int>(entry->triangles.size())));
+        }
+    } else {
+        lods.push_back(viewer::build_indexed_part_geometry(
+            tris.data(), ex.size() == tris.size() ? ex.data() : nullptr,
+            static_cast<int>(tris.size())));
+    }
     std::vector<matter::animation::JointIndex> selected; float falloff=1.0f;
     for(const auto& skin:authored->skin_bindings) { falloff=skin.falloff; for(const auto& name:skin.joints) for(size_t i=0;i<canonical->rig.joints.size();++i) if(canonical->rig.joints[i].name==name) selected.push_back((matter::animation::JointIndex)i); }
     if(selected.empty() && canonical->rig.joints.size()>1) selected.push_back(1);
@@ -1545,7 +1573,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         std::string path = opts.parts_dir.empty()
                            ? rel_path
                            : opts.parts_dir + "/" + rel_path;
-        part_asset::LodLevels lods{};   // SP-2 writes no LOD array.
+        part_asset::LodLevels lods{};
         // Collect volumetric emitters authored via emitVolume() during build().
         std::vector<part_asset::VolumeEmitter> emitters;
         emitters.reserve(state.emitters().size());
@@ -1571,6 +1599,33 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         const auto* authored_animation = state.authored_animation();
         const bool has_persisted_binding = authored_animation &&
             (!authored_animation->skin_bindings.empty() || !authored_animation->rigid_bindings.empty() || !authored_animation->attachments.empty());
+        bool finalized_lods_ready = true;
+        if (has_persisted_binding) {
+            std::vector<Tri> source_tris;
+            std::vector<TriEx> source_extra;
+            for (const auto& entry : blas.get_entries()) {
+                source_tris.insert(source_tris.end(), entry->triangles.begin(),
+                                   entry->triangles.end());
+                source_extra.insert(source_extra.end(), entry->tri_extra.begin(),
+                                    entry->tri_extra.end());
+            }
+            if (source_tris.empty()) {
+                diagnostics.add("runtime-asset-lod", {},
+                                "animation runtime asset requires source triangles for LOD bake");
+                finalized_lods_ready = false;
+            } else {
+                lods = lod_bake::bake_lods(
+                    source_tris, lod_bake::BakeTargets{}, blas,
+                    source_extra.size() == source_tris.size() ? &source_extra : nullptr);
+                if (lods.size() < 2) {
+                    diagnostics.add("runtime-asset-lod", {},
+                                    "animation runtime asset requires at least two finalized LODs");
+                    finalized_lods_ready = false;
+                } else {
+                    tlas.build(blas);
+                }
+            }
+        }
         if (!has_persisted_binding) {
             ok = part_asset::save_v2(path, blas, tlas,
                                      kids.empty() ? nullptr : kids.data(), kids.size(),
@@ -1583,7 +1638,9 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             const auto anim_candidate = std::filesystem::path(matter::animation::cache_path_anim(root,r.resolved_hash).string() + "." + std::to_string(nonce.low) + ".candidate");
             matter::animation::AnimAsset asset; matter::animation::BindingBake binding;
             const part_asset::PartAnimationLink link{1,1,r.resolved_hash,nonce.high,nonce.low};
-            ok = make_animation_asset(state,r.resolved_hash,nonce,blas,asset,binding,diagnostics) &&
+            ok = finalized_lods_ready &&
+                 make_animation_asset(state,r.resolved_hash,nonce,blas,asset,binding,
+                                      diagnostics, &lods) &&
                  part_asset::save_v2(part_candidate.string(),blas,tlas,kids.empty()?nullptr:kids.data(),kids.size(),lods,emitters,link,r.resolved_hash) &&
                  matter::animation::save_anim_candidate(asset,anim_candidate,diagnostics);
             matter::animation::BundleIdentity identity; identity.resolved_hash=r.resolved_hash; identity.nonce=nonce;

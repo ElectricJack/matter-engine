@@ -3984,14 +3984,20 @@ void WorldSession::Impl::reconcile_runtime_animation() {
                 continue;
             }
             if (!created->binding.lods.empty()) {
-                for (const animation::VertexInfluences& source :
-                     created->binding.lods.front().influences) {
-                    viewer::VkSkinInfluence influence{};
-                    for (uint32_t lane = 0; lane != 4; ++lane) {
-                        influence.joint[lane] = source.joints[lane];
-                        influence.weight[lane] = source.weights[lane];
+                // Preserve every independently post-LOD baked influence
+                // stream. The selected LOD later addresses its own immutable
+                // slice; front()/LOD0 is never a production skin fallback.
+                for (const animation::LodSkinBinding& lod :
+                     created->binding.lods) {
+                    for (const animation::VertexInfluences& source :
+                         lod.influences) {
+                        viewer::VkSkinInfluence influence{};
+                        for (uint32_t lane = 0; lane != 4; ++lane) {
+                            influence.joint[lane] = source.joints[lane];
+                            influence.weight[lane] = source.weights[lane];
+                        }
+                        created->skin_influences.push_back(influence);
                     }
-                    created->skin_influences.push_back(influence);
                 }
                 const float radius =
                     std::max(loaded->bound_radius, 0.001f);
@@ -4093,21 +4099,41 @@ void WorldSession::Impl::reconcile_runtime_animation_skinning() {
         RuntimeAnimationAsset& asset = *asset_it->second;
         if (asset.binding.lods.empty() || asset.skin_influences.empty() ||
             loaded->lod_mesh_data.empty() ||
-            loaded->lod_mesh_data.front().vertex_count <= 0) continue;
+            asset.binding.lods.size() > loaded->lod_mesh_data.size()) continue;
 
         AnimationRasterRange range{};
         if (!animation_raster_range_resolver(
                 instance.part_hash, range)) continue;
-        const animation::LodSkinBinding& lod = asset.binding.lods.front();
-        const viewer::RasterMeshData& mesh = loaded->lod_mesh_data.front();
-        if (lod.vertex_count != static_cast<uint32_t>(mesh.vertex_count) ||
-            lod.vertex_count > range.vertex_count ||
-            mesh.indices.size() > range.index_count ||
-            mesh.indices.size() > std::numeric_limits<uint32_t>::max())
-            continue;
-        asset.skin.lods = {{
-            instance.part_hash, range.vertex_start, 0, lod.vertex_count,
-            range.index_start, static_cast<uint32_t>(mesh.indices.size())}};
+        std::vector<render::AnimationSkinnedLod> lods;
+        lods.reserve(asset.binding.lods.size());
+        uint32_t source_offset = 0;
+        uint32_t influence_offset = 0;
+        uint32_t index_offset = 0;
+        bool ranges_valid = true;
+        for (uint32_t lod_index = 0;
+             lod_index < asset.binding.lods.size(); ++lod_index) {
+            const animation::LodSkinBinding& lod = asset.binding.lods[lod_index];
+            const viewer::RasterMeshData& mesh = loaded->lod_mesh_data[lod_index];
+            if (mesh.vertex_count <= 0 ||
+                lod.vertex_count != static_cast<uint32_t>(mesh.vertex_count) ||
+                mesh.indices.size() > std::numeric_limits<uint32_t>::max() ||
+                source_offset > range.vertex_count ||
+                lod.vertex_count > range.vertex_count - source_offset ||
+                index_offset > range.index_count ||
+                mesh.indices.size() > range.index_count - index_offset) {
+                ranges_valid = false;
+                break;
+            }
+            lods.push_back({instance.part_hash, range.vertex_start + source_offset,
+                            influence_offset, lod.vertex_count,
+                            range.index_start + index_offset,
+                            static_cast<uint32_t>(mesh.indices.size())});
+            source_offset += lod.vertex_count;
+            influence_offset += lod.vertex_count;
+            index_offset += static_cast<uint32_t>(mesh.indices.size());
+        }
+        if (!ranges_valid || lods.empty()) continue;
+        asset.skin.lods = std::move(lods);
         const scene::PartInstance* part =
             entity.try_get<scene::PartInstance>();
         (void)ecs_runtime.attach_animation_skinned_binding(
@@ -4731,6 +4757,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             fprintf(stderr, "animation skin bridge error (non-fatal): %s\n",
                     bridge_err.c_str());
         }
+        const viewer::FrameMatrices& matrices = temporal.current_jittered;
         // begin/submit/finish form one frame transaction even for rejection:
         // an empty accepted queue suppresses stale work while static commands
         // remain the conservative bind-pose fallback until C3 bounds arrive.
@@ -4739,6 +4766,7 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             !impl_->vk_scene->submit_visible_animation_skinning(
                 frame.frame_slot, skin_assets_ok ? skin_submissions
                                                   : std::vector<viewer::VkSkinSubmission>{},
+                matrices, cam.position, budget,
                 skin_assets_ok
                     ? std::vector<viewer::VkAnimationBoundsInstance>{}
                     : rejected_skin_bounds) ||
@@ -4747,7 +4775,6 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             fprintf(stderr, "animation skin frame queue rejected (non-fatal)\n");
         }
     }
-    const viewer::FrameMatrices& matrices = temporal.current_jittered;
     if (!impl_->vk_scene->prepare_frame(frame, matrices, cam.position, budget,
                                         err)) {
         impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);

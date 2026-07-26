@@ -24,6 +24,9 @@ struct AnimationSkinnedLod {
     uint32_t vertex_count = 0;
     uint32_t first_index = 0;
     uint32_t index_count = 0;
+    // Renderer cluster identity for this immutable LOD range. The skin queue
+    // is compacted against this exact cluster rather than a presentation LOD.
+    uint32_t cluster = 0;
 };
 
 struct AnimationSkinnedAsset {

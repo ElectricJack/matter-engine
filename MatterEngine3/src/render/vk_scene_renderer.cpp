@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <set>
 #include <utility>
 
 #include "gpu_matrix_pack.h"
@@ -459,7 +460,6 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
             continue;
         for (uint32_t command = range.first_command;
              command != range.first_command + range.command_count; ++command) {
-            const DrawCommand& candidate = record.static_commands[command];
             // Skin-raster instances are removed individually by cull.comp
             // before this command's instance_count is finalized. Recording
             // the command unconditionally preserves bind fallbacks and
@@ -912,22 +912,127 @@ bool VkSceneRenderer::begin_animation_skinning_frame(
 
 bool VkSceneRenderer::submit_visible_animation_skinning(
     uint32_t frame_slot, const std::vector<VkSkinSubmission>& visible,
+    const FrameMatrices& matrices, matter::Float3 camera_eye,
+    float pixel_budget,
     const std::vector<VkAnimationBoundsInstance>& rejected_bounds) {
     // The bridge can reject before it has a VkSkinSubmission.  Its explicit
     // full generational scope is consumed before the empty queue is
     // published, so culling cannot retain a prior animated record.
     animation_bounds_.fail_open_instances(rejected_bounds);
+    // Publish this frame's conservative current/previous animated bounds
+    // before choosing skin work.  The queue planner below reads this exact
+    // payload, and the later GPU cull uploads the same records.
+    std::set<std::pair<uint32_t, uint32_t>> bounds_published;
+    for (const VkSkinSubmission& submission : visible) {
+        const auto key = std::make_pair(submission.instance_slot,
+                                        submission.instance_generation);
+        if (bounds_published.insert(key).second) {
+            (void)animation_bounds_.update_instance(
+                submission.instance_slot, submission.instance_generation,
+                submission.asset_key, submission.pose,
+                submission.history_valid);
+        }
+    }
     // Publish the work queue first: a rejected queue must not advance a
     // dynamic bound independently of the pose it claims to represent. Bounds
     // assets intentionally share the immutable skin asset key, while callers
     // without serialized bounds retain the static path unchanged.
-    if (!animation_skinning_.submit_visible(frame_slot, visible)) {
+    // Resolve the same current-frame conservative animated bounds, frustum,
+    // and cluster LOD that the cull pass will consume. Presentation LOD is a
+    // pose-rate policy only: it must not pick a mesh LOD or keep a stale
+    // visible work item alive.  The bridge supplies candidates for every
+    // baked LOD; this compacted vector contains exactly the one selected
+    // candidate per current visible cluster.
+    float frustum_planes[6][4]{};
+    const bool have_frustum =
+        extract_frustum_planes_zo(matrices.world_to_clip, frustum_planes);
+    const auto unpack_matrix = [](const GpuMat4& packed) {
+        matter::Mat4f result{};
+        for (uint32_t row = 0; row != 4; ++row)
+            for (uint32_t column = 0; column != 4; ++column)
+                result.m[row * 4u + column] =
+                    packed.elements[column * 4u + row];
+        return result;
+    };
+    const auto culled = [&frustum_planes, have_frustum, &unpack_matrix](
+                            const VkAnimationBoundsGpuRecord& bounds,
+                            const GpuInstance& instance) {
+        if (!have_frustum) return false;  // fail open on an invalid camera.
+        const matter::Mat4f object_to_world = unpack_matrix(instance.object_to_world);
+        for (uint32_t plane = 0; plane != 6; ++plane) {
+            bool outside = true;
+            for (uint32_t x = 0; x != 2; ++x)
+                for (uint32_t y = 0; y != 2; ++y)
+                    for (uint32_t z = 0; z != 2; ++z) {
+                        const matter::Float3 world = transform_point(
+                            object_to_world,
+                            {x == 0 ? bounds.aabb_min[0] : bounds.aabb_max[0],
+                             y == 0 ? bounds.aabb_min[1] : bounds.aabb_max[1],
+                             z == 0 ? bounds.aabb_min[2] : bounds.aabb_max[2]});
+                        if (frustum_planes[plane][0] * world.x +
+                                frustum_planes[plane][1] * world.y +
+                                frustum_planes[plane][2] * world.z +
+                                frustum_planes[plane][3] >= 0.0f) {
+                            outside = false;
+                            break;
+                        }
+                    }
+            if (outside) return true;
+        }
+        return false;
+    };
+    std::vector<VkSkinSubmission> compacted;
+    compacted.reserve(visible.size());
+    const std::vector<VkAnimationBoundsGpuRecord> current_bounds =
+        animation_bounds_.gpu_records();
+    for (const VkSkinSubmission& submitted : visible) {
+        VkSkinSubmission candidate = submitted;
+        candidate.current_frustum_visible = false;
+        if (candidate.instance_slot >= dynamic_instance_staging_.size() ||
+            candidate.instance_slot >= dynamic_instance_part_slots_.size() ||
+            dynamic_instance_part_slots_[candidate.instance_slot] == UINT32_MAX)
+            continue;
+        const GpuInstance& instance =
+            dynamic_instance_staging_[candidate.instance_slot];
+        if (instance.animation_instance_generation !=
+                candidate.instance_generation ||
+            instance.part_slot >= parts_.size())
+            continue;
+        const PartRecord& part = parts_[instance.part_slot];
+        if (!part.live || candidate.cluster >= part.cluster_count ||
+            part.cluster_start > cluster_staging_.size() ||
+            candidate.cluster >= cluster_staging_.size() - part.cluster_start)
+            continue;
+        const GpuCluster& cluster =
+            cluster_staging_[part.cluster_start + candidate.cluster];
+        const uint32_t selected_lod = vk_scene_detail::select_cluster_lod_view(
+            {cluster.aabb_min[0], cluster.aabb_min[1], cluster.aabb_min[2]},
+            {cluster.aabb_max[0], cluster.aabb_max[1], cluster.aabb_max[2]},
+            cluster.radius, cluster.thresholds, cluster.lod_count,
+            unpack_matrix(instance.object_to_world), camera_eye, pixel_budget);
+        if (candidate.lod != selected_lod) continue;
+        const auto bounds = std::find_if(
+            current_bounds.begin(), current_bounds.end(), [&candidate](
+                const VkAnimationBoundsGpuRecord& value) {
+                return value.instance_slot == candidate.instance_slot &&
+                       value.instance_generation ==
+                           candidate.instance_generation &&
+                       value.cluster_index == candidate.cluster &&
+                       value.lod == candidate.lod;
+            });
+        // Missing dynamic bounds cannot reject an animated owner. It remains
+        // in the queue and cull's conservative/static lane decides it.
+        candidate.current_frustum_visible =
+            bounds == current_bounds.end() || !culled(*bounds, instance);
+        compacted.push_back(std::move(candidate));
+    }
+    if (!animation_skinning_.submit_visible(frame_slot, compacted)) {
         // The queue has fallen back before a complete pose can be consumed.
         // Clear each matching dynamic record before publishing its
         // conservative asset bound with occlusion disabled.
         std::vector<VkAnimationBoundsInstance> queue_rejected;
         queue_rejected.reserve(visible.size());
-        for (const VkSkinSubmission& submission : visible)
+        for (const VkSkinSubmission& submission : compacted)
             queue_rejected.push_back({submission.instance_slot,
                                       submission.instance_generation,
                                       submission.asset_key});
@@ -938,11 +1043,13 @@ bool VkSceneRenderer::submit_visible_animation_skinning(
     }
     const VkSkinFrameArenas& staged = animation_skinning_.frame(frame_slot);
     consumed_animation_skin_fallbacks_ = staged.fallbacks;
-    for (const VkSkinSubmission& submission : visible) {
+    for (const VkSkinSubmission& submission : compacted) {
         const bool accepted = std::any_of(
             staged.work_items.begin(), staged.work_items.end(),
             [&submission](const VkSkinWorkItem& work) {
-                return work.instance_slot == submission.instance_slot;
+                return work.instance_slot == submission.instance_slot &&
+                       vk_skin_work_lod(work.flags) == submission.lod &&
+                       vk_skin_work_cluster(work.flags) == submission.cluster;
             });
         if (accepted) {
             (void)animation_bounds_.update_instance(
@@ -2569,6 +2676,32 @@ bool VkSceneRenderer::record_animation_skinning(
             resources.skin_raster_ready =
                 !resources.ready_skin_raster_draws.empty();
         };
+    const auto downgrade_gpu_skin =
+        [this, &resources, &staged, &frame, &error, &publish_ready_draws](
+            VkSkinGpuFailureReason reason) {
+            std::vector<std::pair<uint32_t, uint32_t>> affected;
+            affected.reserve(staged.work_items.size());
+            for (size_t index = 0; index != staged.work_items.size(); ++index) {
+                const VkSkinWorkItem& work = staged.work_items[index];
+                affected.push_back(
+                    {work.instance_slot,
+                     index < staged.work_instance_generations.size()
+                         ? staged.work_instance_generations[index] : 0});
+            }
+            if (!animation_skinning_.reject_gpu_frame(frame.frame_slot, reason))
+                return false;
+            // Never let a failed current pose retain a smaller dynamic AABB.
+            // Removing it routes the same compacted record through the
+            // conservative static cull lane; retained raster draws below
+            // remain only when their sealed producer buffers are valid.
+            for (const auto& key : affected)
+                animation_bounds_.remove_instance(key.first, key.second);
+            consumed_animation_skin_fallbacks_ =
+                animation_skinning_.frame(frame.frame_slot).fallbacks;
+            error.clear();
+            publish_ready_draws(false);
+            return true;
+        };
     if (staged.work_items.empty()) {
         // Retained fallback draws reference an older sealed frame resource and
         // need no current compute dispatch.
@@ -2600,12 +2733,20 @@ bool VkSceneRenderer::record_animation_skinning(
     for (const VkSkinWorkItem& work : staged.work_items) {
         if (work.source_vertex > sources.size() ||
             work.vertex_count > sources.size() - work.source_vertex) {
-            return true;
+            return downgrade_gpu_skin(VkSkinGpuFailureReason::Upload);
         }
     }
     bool descriptors_changed = false;
+    uint32_t skin_allocation = 0;
     const auto ensure = [&](matter::VkBufferResource& buffer, VkDeviceSize size,
                             VkBufferUsageFlags usage) {
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+        if (skin_allocation == test_fail_after_skin_allocations_) {
+            error = "forced animation skin allocation failure";
+            return false;
+        }
+#endif
+        ++skin_allocation;
         bool replaced = false;
         if (!ensure_buffer(buffer, std::max<VkDeviceSize>(size, 1), usage,
                            error, &replaced)) return false;
@@ -2618,16 +2759,26 @@ bool VkSceneRenderer::record_animation_skinning(
         !ensure(resources.skin_palette_previous, bytes(staged.palette_previous.size(), sizeof(VkSkinJoint)), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
         !ensure(resources.skin_work, bytes(staged.work_items.size(), sizeof(VkSkinWorkItem)), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT) ||
         !ensure(resources.skin_current_output, bytes(staged.current_output_vertices, sizeof(VkSkinVertex)), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT) ||
-        !ensure(resources.skin_previous_output, bytes(staged.previous_output_vertices, sizeof(VkSkinVertex)), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)) return false;
+        !ensure(resources.skin_previous_output, bytes(staged.previous_output_vertices, sizeof(VkSkinVertex)), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT))
+        return downgrade_gpu_skin(VkSkinGpuFailureReason::Allocation);
+    uint32_t skin_upload = 0;
     const auto upload = [&](matter::VkBufferResource& buffer, const void* data,
                             VkDeviceSize size) {
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+        if (size != 0 && skin_upload == test_fail_after_skin_uploads_) {
+            error = "forced animation skin upload failure";
+            return false;
+        }
+#endif
+        if (size != 0) ++skin_upload;
         return size == 0 || matter::upload_buffer(*vulkan_, buffer, data, size, 0, error);
     };
     if (!upload(resources.skin_sources, sources.data(), bytes(sources.size(), sizeof(VkSkinSourceVertex))) ||
         !upload(resources.skin_influences, animation_skinning_.influences().data(), bytes(animation_skinning_.influences().size(), sizeof(VkSkinInfluence))) ||
         !upload(resources.skin_palette_current, staged.palette_current.data(), bytes(staged.palette_current.size(), sizeof(VkSkinJoint))) ||
         !upload(resources.skin_palette_previous, staged.palette_previous.data(), bytes(staged.palette_previous.size(), sizeof(VkSkinJoint))) ||
-        !upload(resources.skin_work, staged.work_items.data(), bytes(staged.work_items.size(), sizeof(VkSkinWorkItem)))) return false;
+        !upload(resources.skin_work, staged.work_items.data(), bytes(staged.work_items.size(), sizeof(VkSkinWorkItem))))
+        return downgrade_gpu_skin(VkSkinGpuFailureReason::Upload);
     if (descriptors_changed) update_frame_descriptors(resources);
     uint32_t max_vertices = 0;
     for (const VkSkinWorkItem& work : staged.work_items)
@@ -2635,7 +2786,7 @@ bool VkSceneRenderer::record_animation_skinning(
     const uint32_t groups_x = (max_vertices + 63u) / 64u;
     if (groups_x == 0 || groups_x > limits_.max_dispatch_group_count_x) {
         error = "animation skin dispatch exceeds device workgroup limit";
-        return false;
+        return downgrade_gpu_skin(VkSkinGpuFailureReason::Allocation);
     }
     const VkDescriptorSet sets[] = {resources.descriptor_sets[0],
                                     resources.descriptor_sets[1],
@@ -3594,6 +3745,13 @@ void VkSceneRenderer::set_test_frame_resource_failure(
     uint32_t fail_after_allocations) {
     if (poisoned()) return;
     test_fail_after_frame_resource_allocations_ = fail_after_allocations;
+}
+
+void VkSceneRenderer::set_test_animation_skin_failure(
+    uint32_t fail_after_allocations, uint32_t fail_after_uploads) {
+    if (poisoned()) return;
+    test_fail_after_skin_allocations_ = fail_after_allocations;
+    test_fail_after_skin_uploads_ = fail_after_uploads;
 }
 #endif
 
@@ -7648,50 +7806,45 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
     }
     FrameResources& selected = frames_[active_frame_index_];
     update_composite_descriptor(selected);
-    RasterRecord record{&albedo_,
-                        &normal_,
-                        &orm_,
-                        &velocity_,
-                        &material_instance_,
-                        &depth_,
-                        &hdr_,
-                        &visibility_,
-                        &raw_diffuse_,
-                        &raw_specular_,
-                        &raw_transmission_,
-                        raster_extent_,
-                        raster_pipeline_,
-                        VK_NULL_HANDLE,
-                        pipeline_layout_,
-                        {selected.descriptor_sets[0], selected.descriptor_sets[1]},
-                        composite_pipeline_,
-                        composite_pipeline_layout_,
-                        selected.composite_descriptor_set,
-                        vertices_.buffer,
-                        indices_.buffer,
-                        selected.commands.buffer,
-                        command_template_.data(),
-                        static_cast<uint32_t>(command_template_.size()),
-                        uploaded_index_count_,
-                        VK_NULL_HANDLE,
-                        VK_NULL_HANDLE,
-                        nullptr,
-                        0,
-                        0,
-                        0,
-                        part_command_ranges_.data(),
-                        static_cast<uint32_t>(part_command_ranges_.size()),
-                        limits_.max_draw_indirect_count,
-                        nullptr,
-                        [&]{ auto l = lighting_; l.debug_view = composite_debug_override_; return l; }(),
-                        false,
-                        nullptr,
-                        nullptr,
-                        nullptr,
-                        {},
-                        1.0f,
-                        nullptr,
-                        nullptr};
+    // Name the fields: production raster records gained per-skin LOD/cluster
+    // streams and this legacy static-only path must keep every skin field empty.
+    RasterRecord record{};
+    record.albedo = &albedo_;
+    record.normal = &normal_;
+    record.orm = &orm_;
+    record.velocity = &velocity_;
+    record.material_instance = &material_instance_;
+    record.depth = &depth_;
+    record.hdr = &hdr_;
+    record.visibility = &visibility_;
+    record.raw_diffuse = &raw_diffuse_;
+    record.raw_specular = &raw_specular_;
+    record.raw_transmission = &raw_transmission_;
+    record.extent = raster_extent_;
+    record.raster_pipeline = raster_pipeline_;
+    record.raster_layout = pipeline_layout_;
+    record.raster_sets[0] = selected.descriptor_sets[0];
+    record.raster_sets[1] = selected.descriptor_sets[1];
+    record.composite_pipeline = composite_pipeline_;
+    record.composite_layout = composite_pipeline_layout_;
+    record.composite_set = selected.composite_descriptor_set;
+    record.vertex_buffer = vertices_.buffer;
+    record.index_buffer = indices_.buffer;
+    record.indirect_buffer = selected.commands.buffer;
+    record.static_commands = command_template_.data();
+    record.static_command_count =
+        static_cast<uint32_t>(command_template_.size());
+    record.index_count = uploaded_index_count_;
+    record.draw_ranges = part_command_ranges_.data();
+    record.draw_range_count =
+        static_cast<uint32_t>(part_command_ranges_.size());
+    record.max_draw_indirect_count = limits_.max_draw_indirect_count;
+    record.lighting = [&] {
+        auto lighting = lighting_;
+        lighting.debug_view = composite_debug_override_;
+        return lighting;
+    }();
+    record.pixel_budget = 1.0f;
     std::vector<std::shared_ptr<void>> dependencies{
         albedo_.lifetime, normal_.lifetime, orm_.lifetime, velocity_.lifetime,
         material_instance_.lifetime, depth_.lifetime, hdr_.lifetime,
@@ -8232,6 +8385,8 @@ void VkSceneRenderer::reset() {
     test_fail_after_uploads_ = std::numeric_limits<uint32_t>::max();
     test_fail_after_frame_resource_allocations_ =
         std::numeric_limits<uint32_t>::max();
+    test_fail_after_skin_allocations_ = std::numeric_limits<uint32_t>::max();
+    test_fail_after_skin_uploads_ = std::numeric_limits<uint32_t>::max();
 #endif
 }
 

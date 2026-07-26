@@ -105,10 +105,40 @@ void test_stale_and_mismatched_bindings_fail_without_torn_work() {
     CHECK(!bridge.expand(stale_asset, out) && out.empty(), "stale immutable asset generation fails closed");
 }
 
+void test_bridge_emits_all_baked_lod_candidates_for_current_cull() {
+    animation::AnimationPoseSnapshotStore snapshots;
+    const Mat4f matrix = identity();
+    CHECK(snapshots.publish(pose(animator(), 9, &matrix, &matrix)),
+          "multi-LOD fixture publishes the exact current snapshot");
+    std::vector<viewer::VkSkinInfluence> storage(6);
+    for (auto& influence : storage) influence.weight[0] = 65535;
+    render::AnimationSkinnedLod near{0xabc, 10, 0, 3, 30, 6, 0};
+    render::AnimationSkinnedLod far{0xabc, 40, 3, 3, 90, 3, 0};
+    const auto asset_bounds = bounds(0x99);
+    render::AnimationSkinnedAsset asset{0x99, 2, &storage, {near, far},
+                                        &asset_bounds};
+    // This presentation LOD must not preselect mesh LOD 0. The renderer's
+    // current bounds/frustum/cluster planner receives both exact ranges.
+    render::AnimationSkinnedBinding binding{animator(), &asset, 2, 0, true};
+    render::AnimationSkinBridge bridge(&snapshots);
+    std::vector<viewer::VkSkinSubmission> out;
+    const render::AnimationSkinExpansion input{{1, 1, 0}, 0xabc, 2, 9,
+                                                binding, 4};
+    CHECK(bridge.expand(input, out) && out.size() == 2,
+          "bridge publishes every independently baked mesh LOD candidate");
+    CHECK(out[0].lod == 0 && out[0].source_vertex == 10 &&
+              out[0].influence_vertex == 0 && out[0].first_index == 30 &&
+              out[0].index_count == 6 && out[1].lod == 1 &&
+              out[1].source_vertex == 40 && out[1].influence_vertex == 3 &&
+              out[1].first_index == 90 && out[1].index_count == 3,
+          "near/far candidates retain their own global source, influence, and index ranges");
+}
+
 } // namespace
 
 int main() {
     test_exact_snapshot_becomes_indexed_skin_submission();
     test_stale_and_mismatched_bindings_fail_without_torn_work();
+    test_bridge_emits_all_baked_lod_candidates_for_current_cull();
     return check_summary();
 }

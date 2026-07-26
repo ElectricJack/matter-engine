@@ -344,7 +344,8 @@ void mark_animation_skin_raster_records(
                 return draw.instance_slot == record.instance_slot &&
                        draw.instance_generation ==
                            record.instance_generation &&
-                       draw.lod == record.lod;
+                       draw.lod == record.lod &&
+                       draw.cluster == record.cluster_index;
             });
         if (skinned) record.flags |= kVkAnimationBoundsSkinRaster;
     }

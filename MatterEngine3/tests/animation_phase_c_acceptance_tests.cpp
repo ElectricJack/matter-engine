@@ -70,8 +70,9 @@ void check_reloaded_gallery_limits(const GalleryBundle& gallery) {
     const uint32_t rig_joint_count = static_cast<uint32_t>(gallery.runtime.rig.joints.size());
     CHECK(rig_joint_count != 0 && rig_joint_count <= 128,
           "C4 reloaded gallery stays within the explicit 128-joint acceptance limit");
-    CHECK(!gallery.binding.lods.empty() && gallery.binding.lods.front().vertex_count < 50000,
-          "C4 reloaded gallery LOD0 stays below the 50,000-vertex acceptance limit");
+    CHECK(gallery.binding.lods.size() >= 2 &&
+              gallery.binding.lods.front().vertex_count < 50000,
+          "C4 reloaded gallery ships at least two generated LODs below the 50,000-vertex LOD0 limit");
     CHECK(gallery.binding.rigid_segments.size() + gallery.binding.attachments.size() <= 32,
           "C4 reloaded gallery stays within the combined rigid/attachment acceptance limit");
     for (const LodSkinBinding& lod : gallery.binding.lods) {

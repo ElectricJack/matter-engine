@@ -128,7 +128,14 @@ bool VkAnimationSkinning::submit_visible(
     VkSkinFrameArenas& target = frames_[frame_slot];
     if (target.in_flight) return false;
 
-    std::vector<VkSkinSubmission> sorted = visible;
+    // `visible` is already a current-frame conservative animated
+    // bounds/frustum/LOD result. Compact before validation, sorting, budget
+    // admission, or output allocation: a current off-frustum instance has no
+    // skin work, output slice, or custom raster draw.
+    std::vector<VkSkinSubmission> sorted;
+    sorted.reserve(visible.size());
+    for (const VkSkinSubmission& value : visible)
+        if (value.current_frustum_visible) sorted.push_back(value);
     std::sort(sorted.begin(), sorted.end(), less_submission);
     const auto concrete_fallback =
         [this](const VkSkinSubmission& value,
@@ -145,6 +152,7 @@ bool VkAnimationSkinning::submit_visible(
             retained->second.vertex_count == value.vertex_count &&
             retained->second.first_index == value.first_index &&
             retained->second.index_count == value.index_count &&
+            retained->second.cluster == value.cluster &&
             value.index_count != 0 && value.index_count % 3u == 0u;
         if (compatible && retained_draw) {
             *retained_draw = {
@@ -158,6 +166,7 @@ bool VkAnimationSkinning::submit_visible(
                 value.instance_generation,
                 retained->second.output_frame_slot,
                 retained->second.lod,
+                retained->second.cluster,
                 0};
         }
         return VkSkinFallback{
@@ -214,6 +223,7 @@ bool VkAnimationSkinning::submit_visible(
         uint32_t source_end = 0;
         uint32_t output_end = 0;
         if (asset == assets_.end() || value.vertex_count == 0 ||
+            value.lod > kVkSkinLodMax || value.cluster > kVkSkinClusterMax ||
             value.pose.current.empty() || value.pose.previous.size() != value.pose.current.size() ||
             value.pose.current.size() > kVkSkinPaletteCountMax ||
             !checked_add(value.source_vertex, value.vertex_count, source_end) ||
@@ -287,6 +297,7 @@ bool VkAnimationSkinning::submit_visible(
     staged.palette_current.reserve(palette_count);
     staged.palette_previous.reserve(palette_count);
     staged.work_items.reserve(accepted.size());
+    staged.work_instance_generations.reserve(accepted.size());
     staged.current_output.reserve(accepted.size());
     staged.previous_output.reserve(accepted.size());
     staged.raster_draws.reserve(accepted.size());
@@ -323,8 +334,10 @@ bool VkAnimationSkinning::submit_visible(
         item.output_previous = output_offset;
         item.instance_slot = value.instance_slot;
         item.flags = (value.history_valid ? 0u : kVkSkinHistoryInvalid) |
+                     vk_skin_pack_cull_identity(value.lod, value.cluster) |
                      (joint_count << kVkSkinPaletteCountShift);
         staged.work_items.push_back(item);
+        staged.work_instance_generations.push_back(value.instance_generation);
         staged.current_output.push_back({output_offset, value.vertex_count});
         staged.previous_output.push_back({output_offset, value.vertex_count});
         // Indexed raster consumption is opt-in for the C1-compatible queue:
@@ -336,7 +349,7 @@ bool VkAnimationSkinning::submit_visible(
                 {value.asset_key, value.first_index, value.index_count,
                  value.source_vertex, output_offset, value.vertex_count,
                  value.instance_slot, value.instance_generation, frame_slot,
-                 value.lod, item.flags});
+                 value.lod, value.cluster, item.flags});
         }
         output_offset += value.vertex_count;
         palette_offset += joint_count;
@@ -374,11 +387,100 @@ bool VkAnimationSkinning::mark_submitted(uint32_t frame_slot, uint64_t fence) {
         retained_outputs_[instance_key(draw.instance_slot,
                                        draw.instance_generation)] =
             {draw.asset_key, draw.lod, draw.source_vertex, draw.vertex_count,
-             draw.first_index, draw.index_count, draw.output_vertex,
+             draw.first_index, draw.index_count, draw.cluster, draw.output_vertex,
              draw.output_frame_slot};
     }
     last_submitted_fence_ = fence;
     has_submitted_fence_ = true;
+    return true;
+}
+
+bool VkAnimationSkinning::reject_gpu_frame(
+    uint32_t frame_slot, VkSkinGpuFailureReason reason) {
+    if (frame_slot >= frames_.size() || reason == VkSkinGpuFailureReason::None)
+        return false;
+    VkSkinFrameArenas& target = frames_[frame_slot];
+    if (target.in_flight) return false;
+
+    // Retained fallback draws already published for budget pressure remain
+    // valid. Current-frame draws are never retained: their output allocation
+    // or upload just failed and must not reach raster or cull exclusion.
+    VkSkinFrameArenas fallback{};
+    fallback.gpu_failure = reason;
+    for (const VkSkinRasterDraw& draw : target.raster_draws) {
+        if (draw.output_frame_slot != frame_slot)
+            fallback.raster_draws.push_back(draw);
+    }
+    fallback.fallbacks = target.fallbacks;
+    for (size_t work_index = 0; work_index != target.work_items.size();
+         ++work_index) {
+        const VkSkinWorkItem& work = target.work_items[work_index];
+        const uint32_t lod = vk_skin_work_lod(work.flags);
+        const uint32_t cluster = vk_skin_work_cluster(work.flags);
+        const auto active_draw = std::find_if(
+            target.raster_draws.begin(), target.raster_draws.end(),
+            [&work, lod, cluster, frame_slot](const VkSkinRasterDraw& draw) {
+                return draw.output_frame_slot == frame_slot &&
+                       draw.instance_slot == work.instance_slot &&
+                       draw.lod == lod && draw.cluster == cluster;
+            });
+        VkSkinFallback item{};
+        item.instance_slot = work.instance_slot;
+        item.instance_generation = work_index < target.work_instance_generations.size()
+            ? target.work_instance_generations[work_index]
+            : (active_draw != target.raster_draws.end()
+                   ? active_draw->instance_generation : 0);
+        item.reason = matter::animation::AnimationFallbackReason::InvalidSkinSubmission;
+        if (active_draw != target.raster_draws.end()) {
+            const auto retained = retained_outputs_.find(instance_key(
+                active_draw->instance_slot, active_draw->instance_generation));
+            if (retained != retained_outputs_.end() &&
+                retained->second.asset_key == active_draw->asset_key &&
+                retained->second.lod == active_draw->lod &&
+                retained->second.cluster == active_draw->cluster &&
+                retained->second.source_vertex == active_draw->source_vertex &&
+                retained->second.vertex_count == active_draw->vertex_count &&
+                retained->second.first_index == active_draw->first_index &&
+                retained->second.index_count == active_draw->index_count) {
+                item.mode = VkSkinFallbackMode::LastCompletePose;
+                fallback.raster_draws.push_back(
+                    {retained->second.asset_key, retained->second.first_index,
+                     retained->second.index_count, retained->second.source_vertex,
+                     retained->second.output_vertex, retained->second.vertex_count,
+                     active_draw->instance_slot, active_draw->instance_generation,
+                     retained->second.output_frame_slot, retained->second.lod,
+                     retained->second.cluster, 0});
+                ++stats_.last_complete_fallback_count;
+            } else {
+                item.mode = VkSkinFallbackMode::BindPose;
+                ++stats_.bind_pose_fallback_count;
+            }
+        } else {
+            item.mode = VkSkinFallbackMode::BindPose;
+            ++stats_.bind_pose_fallback_count;
+        }
+        fallback.fallbacks.push_back(item);
+        stats_.record_fallback(item.reason);
+    }
+    release_pending_dependencies(frame_slot);
+    for (const VkSkinRasterDraw& draw : fallback.raster_draws) {
+        if (draw.output_frame_slot == frame_slot ||
+            draw.output_frame_slot >= frames_.size()) continue;
+        std::vector<uint32_t>& dependencies =
+            pending_source_dependencies_[frame_slot];
+        if (std::find(dependencies.begin(), dependencies.end(),
+                      draw.output_frame_slot) == dependencies.end()) {
+            dependencies.push_back(draw.output_frame_slot);
+            ++pending_source_users_[draw.output_frame_slot];
+        }
+    }
+    fallback_count_ += static_cast<uint32_t>(target.work_items.size());
+    ++gpu_failure_count_;
+    if (reason == VkSkinGpuFailureReason::Allocation)
+        ++gpu_allocation_failure_count_;
+    else
+        ++gpu_upload_failure_count_;
+    target = std::move(fallback);
     return true;
 }
 

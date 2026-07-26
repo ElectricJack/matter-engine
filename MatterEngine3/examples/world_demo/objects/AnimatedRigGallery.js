@@ -7,6 +7,11 @@
 // controller. Runtime JavaScript is not used to drive the targets.
 class AnimatedRigGallery extends Part {
   static requires = [{ module: 'Crate' }];
+  // Keep a real two-rung authored ladder in the shipped acceptance asset.
+  // Binding bake samples each finalized rung independently; runtime skinning
+  // must therefore be able to select either stream rather than assuming LOD0.
+  static lodBudgets = [1.0, 0.35];
+  static lodAnchorSize = 1.0;
 
   build(p) {
     // Soft creature, mirrored limbs, a separate rigid segmented boom, and a

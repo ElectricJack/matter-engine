@@ -30,6 +30,8 @@ struct VkSkinSubmission {
     int32_t render_priority = 0;
     uint32_t distance_bucket = 0;
     uint32_t lod = 0;
+    uint32_t cluster = 0;
+    bool current_frustum_visible = true;
     // Global indexed-raster range selected by the visibility producer.  A
     // zero count deliberately means "compute only": it keeps C1 callers
     // source-compatible, but it must never manufacture a raster draw.
@@ -57,6 +59,7 @@ struct VkSkinRasterDraw {
     // sealed frame slot.
     uint32_t output_frame_slot = 0;
     uint32_t lod = 0;
+    uint32_t cluster = 0;
     uint32_t flags = 0;
 };
 
@@ -69,6 +72,7 @@ struct VkSkinArenaSlice {
 // this record makes rejection visible and deterministic without emitting a
 // partially valid compute work item.
 enum class VkSkinFallbackMode : uint8_t { LastCompletePose, BindPose };
+enum class VkSkinGpuFailureReason : uint8_t { None, Allocation, Upload };
 struct VkSkinFallback {
     uint32_t instance_slot = 0;
     uint32_t instance_generation = 0;
@@ -81,6 +85,9 @@ struct VkSkinFrameArenas {
     std::vector<VkSkinJoint> palette_current;
     std::vector<VkSkinJoint> palette_previous;
     std::vector<VkSkinWorkItem> work_items;
+    // CPU-only identity sidecar for transactional record-time degradation;
+    // WorkItem stays at the shipped 32-byte shader ABI.
+    std::vector<uint32_t> work_instance_generations;
     std::vector<VkSkinArenaSlice> current_output;
     std::vector<VkSkinArenaSlice> previous_output;
     std::vector<VkSkinRasterDraw> raster_draws;
@@ -89,6 +96,9 @@ struct VkSkinFrameArenas {
     uint32_t previous_output_vertices = 0;
     uint64_t submitted_fence = 0;
     bool in_flight = false;
+    // Record-time GPU resource failures are converted atomically to this
+    // frame's retained/bind fallback before culling observes the queue.
+    VkSkinGpuFailureReason gpu_failure = VkSkinGpuFailureReason::None;
 };
 
 // Owns no Vulkan resources in C1. It establishes the allocation/lifetime
@@ -109,6 +119,10 @@ public:
     // in-flight fence untouched, so a stale caller cannot make an active
     // arena appear reusable.
     bool mark_submitted(uint32_t frame_slot, uint64_t fence);
+    // The renderer calls this when allocation/upload of a newly published
+    // queue fails. It replaces all current work with only complete retained
+    // slices (or bind pose) before the frame is sealed.
+    bool reject_gpu_frame(uint32_t frame_slot, VkSkinGpuFailureReason reason);
 
     const VkSkinFrameArenas& frame(uint32_t frame_slot) const;
     // Immutable packed influence arena. WorkItem::influence indexes this
@@ -117,6 +131,13 @@ public:
         return influence_arena_;
     }
     uint32_t fallback_count() const noexcept { return fallback_count_; }
+    uint64_t gpu_failure_count() const noexcept { return gpu_failure_count_; }
+    uint64_t gpu_allocation_failure_count() const noexcept {
+        return gpu_allocation_failure_count_;
+    }
+    uint64_t gpu_upload_failure_count() const noexcept {
+        return gpu_upload_failure_count_;
+    }
     const matter::animation::AnimationBudgetRuntimeStats& stats() const noexcept {
         return stats_;
     }
@@ -137,6 +158,7 @@ private:
         uint32_t vertex_count = 0;
         uint32_t first_index = 0;
         uint32_t index_count = 0;
+        uint32_t cluster = 0;
         uint32_t output_vertex = 0;
         uint32_t output_frame_slot = 0;
     };
@@ -150,6 +172,9 @@ private:
     std::vector<uint32_t> pending_source_users_;
     std::vector<std::vector<uint32_t>> pending_source_dependencies_;
     uint32_t fallback_count_ = 0;
+    uint64_t gpu_failure_count_ = 0;
+    uint64_t gpu_allocation_failure_count_ = 0;
+    uint64_t gpu_upload_failure_count_ = 0;
     matter::animation::AnimationBudgetConfig budget_;
     matter::animation::AnimationBudgetRuntimeStats stats_;
     uint64_t last_submitted_fence_ = 0;

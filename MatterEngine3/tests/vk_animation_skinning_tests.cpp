@@ -63,7 +63,7 @@ static void test_shader_abi_and_weight_decode() {
     CHECK(alignof(VkSkinJoint) == 16, "skin joints retain mat4 alignment");
     CHECK(offsetof(VkSkinJoint, position) == 0, "position matrix begins at byte zero");
     CHECK(offsetof(VkSkinJoint, normal) == 64, "normal matrix follows position matrix");
-    CHECK(sizeof(VkSkinWorkItem) == 32, "work item is eight u32 fields");
+    CHECK(sizeof(VkSkinWorkItem) == 32, "work item remains eight u32 fields");
     CHECK(alignof(VkSkinWorkItem) == alignof(uint32_t), "work item uses scalar alignment");
     CHECK(offsetof(VkSkinWorkItem, source_vertex) == 0, "source vertex ABI offset");
     CHECK(offsetof(VkSkinWorkItem, influence) == 4, "influence ABI offset");
@@ -119,11 +119,41 @@ static void test_current_previous_pair_and_history_fallback() {
           "newly visible instance uses current palette as previous history");
 }
 
+static void test_current_frustum_compacts_skin_work_before_output_allocation() {
+    VkAnimationSkinning skinning(1);
+    CHECK(skinning.register_asset(0xC311u, valid_influences(8)),
+          "current-frustum fixture registers its immutable influences");
+
+    VkSkinSubmission visible = candidate(0xC311u, 3, 4, 0, 0, 0);
+    visible.first_index = 0;
+    visible.index_count = 6;
+    VkSkinSubmission off_frustum = candidate(0xC311u, 4, 4, 10, 0, 1);
+    off_frustum.first_index = 6;
+    off_frustum.index_count = 6;
+    off_frustum.current_frustum_visible = false;
+
+    CHECK(skinning.submit_visible(0, {off_frustum, visible}),
+          "current-frustum compaction accepts its visible prefix");
+    const auto& frame = skinning.frame(0);
+    CHECK(frame.work_items.size() == 1 && frame.current_output_vertices == 4 &&
+              frame.raster_draws.size() == 1 &&
+              frame.work_items[0].instance_slot == visible.instance_slot &&
+              frame.raster_draws[0].instance_slot == visible.instance_slot,
+          "off-frustum animated instances consume no skin work, output, or custom raster draw");
+    CHECK(vk_skin_work_lod(frame.work_items[0].flags) == 0 &&
+              vk_skin_work_cluster(frame.work_items[0].flags) == 0,
+          "the accepted work packs the current cull-selected LOD and cluster");
+}
+
 static void test_indexed_raster_mapping_tracks_sorted_output_offsets() {
     VkAnimationSkinning skinning(1);
     CHECK(skinning.register_asset(7, valid_influences(16)),
           "mapping fixture registers immutable influences");
     VkSkinSubmission later = candidate(7, 9, 3, 0, 4, 0);
+    later.lod = 1;
+    later.cluster = 2;
+    later.source_vertex = 8;
+    later.influence_vertex = 8;
     later.first_index = 30; later.index_count = 6;
     VkSkinSubmission first = candidate(7, 2, 5, 1, 1, 0);
     first.source_vertex = 11;
@@ -138,8 +168,13 @@ static void test_indexed_raster_mapping_tracks_sorted_output_offsets() {
               frame.raster_draws[0].source_vertex == 11 &&
               frame.work_items[0].influence == 4 &&
               frame.raster_draws[1].instance_slot == 9 &&
-              frame.raster_draws[1].output_vertex == 5,
-          "raster mappings follow stable work sorting and never retain stale offsets");
+              frame.raster_draws[1].output_vertex == 5 &&
+              frame.raster_draws[1].source_vertex == 8 &&
+              frame.raster_draws[1].lod == 1 &&
+              frame.raster_draws[1].cluster == 2 &&
+              vk_skin_work_lod(frame.work_items[1].flags) == 1 &&
+              vk_skin_work_cluster(frame.work_items[1].flags) == 2,
+          "near/far work keeps exact per-LOD source/index ranges through raster and packed bounds identity");
     VkSkinSubmission malformed = candidate(7, 3, 2, 0, 0, 0);
     malformed.first_index = 1; malformed.index_count = 5;
     CHECK(skinning.begin_frame(0, 0), "completed unsealed frame resets for malformed map");
@@ -315,6 +350,50 @@ static void test_submission_rejects_invalid_influences_and_palettes_transactiona
           "non-finite palette rejection leaves no partial queue");
 }
 
+static void test_gpu_record_failure_replaces_unsealed_work_transactionally() {
+    VkAnimationSkinning skinning(2);
+    CHECK(skinning.register_asset(0xF411u, valid_influences(4)),
+          "GPU-failure fixture registers immutable influence data");
+    VkSkinSubmission first = candidate(0xF411u, 17, 4, 0, 0, 0);
+    first.instance_generation = 9;
+    first.index_count = 3;
+    CHECK(skinning.submit_visible(0, {first}) && skinning.mark_submitted(0, 1),
+          "first complete pose seals a retained raster source");
+    CHECK(skinning.begin_frame(1, 1), "next frame may consume the sealed source");
+    CHECK(skinning.submit_visible(1, {first}), "new current work publishes before GPU record");
+    CHECK(skinning.reject_gpu_frame(1, VkSkinGpuFailureReason::Upload),
+          "failed GPU upload atomically rejects the unsealed current queue");
+    const auto& fallback = skinning.frame(1);
+    CHECK(fallback.work_items.empty() && fallback.current_output_vertices == 0 &&
+              fallback.gpu_failure == VkSkinGpuFailureReason::Upload,
+          "failed upload leaves no current compute output or dispatchable work");
+    CHECK(fallback.fallbacks.size() == 1 &&
+              fallback.fallbacks[0].mode == VkSkinFallbackMode::LastCompletePose &&
+              fallback.raster_draws.size() == 1 &&
+              fallback.raster_draws[0].output_frame_slot == 0,
+          "failed upload keeps only the compatible sealed retained pose");
+    CHECK(skinning.gpu_failure_count() == 1,
+          "GPU failure diagnostic counter records the transactional degradation");
+    CHECK(skinning.gpu_upload_failure_count() == 1 &&
+              skinning.gpu_allocation_failure_count() == 0,
+          "GPU failure diagnostics preserve the precise upload reason");
+
+    CHECK(skinning.mark_submitted(1, 2) && skinning.begin_frame(0, 2),
+          "retained producer slot can be recycled after its fallback consumer completes");
+    VkSkinSubmission no_retained = candidate(0xF411u, 23, 4, 0, 0, 0);
+    no_retained.instance_generation = 2;
+    no_retained.index_count = 3;
+    CHECK(skinning.submit_visible(0, {no_retained}), "bind-pose failure fixture publishes work");
+    CHECK(skinning.reject_gpu_frame(0, VkSkinGpuFailureReason::Allocation),
+          "failed GPU allocation rejects a queue without a retained source");
+    CHECK(skinning.frame(0).fallbacks.size() == 1 &&
+              skinning.frame(0).fallbacks[0].mode == VkSkinFallbackMode::BindPose &&
+              skinning.frame(0).raster_draws.empty(),
+          "allocation failure falls back to static/bind pose with no stale raster output");
+    CHECK(skinning.gpu_allocation_failure_count() == 1,
+          "GPU failure diagnostics preserve the precise allocation reason");
+}
+
 static void test_cpu_skinning_matches_compute_contract() {
     VkSkinSourceVertex source{};
     source.position[0] = 1.0f;
@@ -352,11 +431,13 @@ int main() {
     test_shader_abi_and_weight_decode();
     test_asset_registration_and_visible_sorted_submission();
     test_current_previous_pair_and_history_fallback();
+    test_current_frustum_compacts_skin_work_before_output_allocation();
     test_indexed_raster_mapping_tracks_sorted_output_offsets();
     test_fence_lifetime_wrap_and_transactional_caps();
     test_central_budget_controls_skinning_fallback_reason();
     test_overflow_reuses_only_fence_owned_last_complete_raster_output();
     test_submission_rejects_invalid_influences_and_palettes_transactionally();
+    test_gpu_record_failure_replaces_unsealed_work_transactionally();
     test_cpu_skinning_matches_compute_contract();
     return check_summary();
 }

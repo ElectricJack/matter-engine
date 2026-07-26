@@ -533,6 +533,7 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
         $(ME3_DIR)/src/render/vk_animation_skinning.cpp \
         $(ME3_DIR)/src/render/vk_animation_bounds.cpp \
+        $(ME3_DIR)/src/animation/animation_budget.cpp \
         $(ME3_DIR)/src/render/tileset_slicer.cpp \
         $(ME3_DIR)/src/tileset_gtex.cpp \
         $(ME3_DIR)/src/render/vk_volumetrics.cpp \
@@ -553,6 +554,7 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
 	    $(ME3_DIR)/src/render/vk_animation_skinning.cpp \
 	    $(ME3_DIR)/src/render/vk_animation_bounds.cpp \
+	    $(ME3_DIR)/src/animation/animation_budget.cpp \
 	    $(ME3_DIR)/src/render/tileset_slicer.cpp \
 	    $(ME3_DIR)/src/tileset_gtex.cpp \
 	    $(ME3_DIR)/src/render/vk_volumetrics.cpp \

@@ -98,8 +98,6 @@ bool AnimationSkinBridge::expand(
         !binding.visible || !binding.animator.valid() || !asset ||
         binding.asset_generation != asset->generation || !valid_animation_skinned_asset(*asset) ||
         binding.lod >= asset->lods.size()) return false;
-    const AnimationSkinnedLod& lod = asset->lods[binding.lod];
-    if (lod.part_hash != input.part_hash) return false;
     const animation::AnimationPoseSnapshot pose =
         snapshots_->snapshot(binding.animator, input.frame_serial);
     if (!pose.instance.valid() || pose.skin_palette.empty() ||
@@ -113,21 +111,31 @@ bool AnimationSkinBridge::expand(
         if (!pack_joint(pose.skin_palette[joint], converted.current[joint]) ||
             !pack_joint(pose.previous_skin_palette[joint], converted.previous[joint])) return false;
 
-    viewer::VkSkinSubmission submission{};
-    submission.asset_key = asset->identity;
-    submission.influence_vertex = lod.influence_vertex;
-    submission.source_vertex = lod.source_vertex;
-    submission.vertex_count = lod.vertex_count;
-    submission.instance_slot = input.transform_slot;
-    submission.instance_generation = input.transform_generation;
-    submission.render_priority = binding.presentation_priority;
-    submission.lod = binding.lod;
-    submission.first_index = lod.first_index;
-    submission.index_count = lod.index_count;
-    submission.history_valid = true;
-    submission.pose = std::move(converted);
-    out.push_back(std::move(submission));
-    return true;
+    // Presentation LOD controls pose evaluation cadence, not geometry.
+    // Publish every immutable mesh candidate and let the renderer compact it
+    // against this frame's animated bounds/frustum/cluster LOD decision.
+    bool emitted = false;
+    for (uint32_t lod_index = 0; lod_index < asset->lods.size(); ++lod_index) {
+        const AnimationSkinnedLod& lod = asset->lods[lod_index];
+        if (lod.part_hash != input.part_hash) continue;
+        viewer::VkSkinSubmission submission{};
+        submission.asset_key = asset->identity;
+        submission.influence_vertex = lod.influence_vertex;
+        submission.source_vertex = lod.source_vertex;
+        submission.vertex_count = lod.vertex_count;
+        submission.instance_slot = input.transform_slot;
+        submission.instance_generation = input.transform_generation;
+        submission.render_priority = binding.presentation_priority;
+        submission.lod = lod_index;
+        submission.cluster = lod.cluster;
+        submission.first_index = lod.first_index;
+        submission.index_count = lod.index_count;
+        submission.history_valid = true;
+        submission.pose = converted;
+        out.push_back(std::move(submission));
+        emitted = true;
+    }
+    return emitted;
 }
 
 }  // namespace matter::render

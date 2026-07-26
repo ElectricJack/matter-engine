@@ -82,12 +82,27 @@ static_assert(std::is_standard_layout<VkSkinWorkItem>::value,
 
 constexpr uint32_t kVkSkinHistoryInvalid = 1u << 0;
 // The work ABI is deliberately fixed at 32 bytes.  Palette size is carried in
-// the otherwise spare high bits of flags so the shader can reject a corrupt
-// influence before indexing either palette stream.  C1's asset contract caps
-// skeletons far below this representable maximum.
+// the high bits of flags. The low bits carry the cull-selected LOD/cluster so
+// CPU queue auditing can retain that identity without changing shader stride.
 constexpr uint32_t kVkSkinPaletteCountShift = 16u;
 constexpr uint32_t kVkSkinPaletteCountMax = 0xffffu;
+constexpr uint32_t kVkSkinLodShift = 1u;
+constexpr uint32_t kVkSkinLodBits = 4u;
+constexpr uint32_t kVkSkinLodMax = (1u << kVkSkinLodBits) - 1u;
+constexpr uint32_t kVkSkinClusterShift = kVkSkinLodShift + kVkSkinLodBits;
+constexpr uint32_t kVkSkinClusterBits = kVkSkinPaletteCountShift - kVkSkinClusterShift;
+constexpr uint32_t kVkSkinClusterMax = (1u << kVkSkinClusterBits) - 1u;
 constexpr uint32_t kVkSkinWorkFlagsMask = (1u << kVkSkinPaletteCountShift) - 1u;
+constexpr uint32_t vk_skin_pack_cull_identity(uint32_t lod, uint32_t cluster) noexcept {
+    return (lod & kVkSkinLodMax) << kVkSkinLodShift |
+           (cluster & kVkSkinClusterMax) << kVkSkinClusterShift;
+}
+constexpr uint32_t vk_skin_work_lod(uint32_t flags) noexcept {
+    return (flags >> kVkSkinLodShift) & kVkSkinLodMax;
+}
+constexpr uint32_t vk_skin_work_cluster(uint32_t flags) noexcept {
+    return (flags >> kVkSkinClusterShift) & kVkSkinClusterMax;
+}
 constexpr uint32_t kVkMaxSkinWorkItems =
     matter::animation::AnimationBudgetConfig::kHardMaxSkinWorkItems;
 constexpr uint32_t kVkMaxSkinnedOutputVertices =

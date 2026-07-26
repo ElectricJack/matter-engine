@@ -423,6 +423,8 @@ public:
                                         uint64_t completed_fence);
     bool submit_visible_animation_skinning(
         uint32_t frame_slot, const std::vector<VkSkinSubmission>& visible,
+        const FrameMatrices& matrices, matter::Float3 camera_eye,
+        float pixel_budget,
         const std::vector<VkAnimationBoundsInstance>& rejected_bounds = {});
     bool finish_animation_skinning_frame(uint32_t frame_slot, uint64_t fence);
     const VkAnimationSkinning& animation_skinning() const noexcept {
@@ -686,6 +688,10 @@ public:
     void set_test_scene_failure(uint32_t fail_after_replacements,
                                 uint32_t fail_after_uploads);
     void set_test_frame_resource_failure(uint32_t fail_after_allocations);
+    // Fails one named animation-skin resource operation without poisoning the
+    // renderer; the queue must degrade to retained/bind pose transactionally.
+    void set_test_animation_skin_failure(uint32_t fail_after_allocations,
+                                         uint32_t fail_after_uploads);
 #endif
 
     VkBuffer indirect_buffer() const {
@@ -1309,6 +1315,10 @@ private:
     uint32_t test_fail_after_uploads_ =
         std::numeric_limits<uint32_t>::max();
     uint32_t test_fail_after_frame_resource_allocations_ =
+        std::numeric_limits<uint32_t>::max();
+    uint32_t test_fail_after_skin_allocations_ =
+        std::numeric_limits<uint32_t>::max();
+    uint32_t test_fail_after_skin_uploads_ =
         std::numeric_limits<uint32_t>::max();
 #endif
 };
