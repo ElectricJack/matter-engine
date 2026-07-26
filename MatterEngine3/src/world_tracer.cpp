@@ -49,6 +49,15 @@ namespace {
 // transforms that previously logged "near-singular transform" and fell back
 // to an identity inverse may now silently invert successfully (producing a
 // large-magnitude but finite inverse) instead.
+//
+// That is mostly a FIX -- the old |det| gate was wrong for small uniform
+// scales, where det = s^4 (a legitimate s=1e-4 part gives det=1e-16 and was
+// wrongly rejected). But note the diagnostic channel narrowed with it: a
+// genuinely degenerate part (say scale.z=1e-20) now inverts to entries ~1e20,
+// so xform_point() sends every ray to local-space infinity and the part is
+// silently invisible to the query API -- where the old code at least printed
+// the warning. If that ever needs catching, test the magnitude of the result
+// rather than restoring the determinant gate.
 static bool invert4x4(const float* m, float* out) {
     mm::Mat4 in;
     std::memcpy(in.m, m, sizeof(in.m));

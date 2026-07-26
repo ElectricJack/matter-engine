@@ -40,8 +40,26 @@ copied here and is load-bearing.
 - `MatterEngine3/src/render/tileset_bake_vk.cpp:420` — row-major → `VkTransformMatrixKHR`
 - `MatterEngine3/tests/part_asset_v2_tests.cpp:96-99`
 
-**Fix.** Merge onto `mat4`: delete the nine functions and both shims. Self-contained,
-mechanical, one file. Same shape as the `spatial_hash` consolidation (`a349f723`).
+**Partially fixed in `a48a71f0` (Phase 2). Do not close this item.** The nine
+functions and both *named* shims are gone, and `Matrix4x4` no longer exists —
+every use moved to `mm::Mat4` (`libs/MathLib`). The dead one, `matrix_inverse`,
+had zero callers tree-wide and was deleted outright.
+
+But the fix as written above said "merge onto `mat4`", and that is not what
+happened: the merge went onto `mm::Mat4`, leaving `mat4` (SpatialQueryLib
+`tri.h`) in place. **The duplicate this item describes therefore survives
+verbatim** — two identical row-major `float[16]` types in the same layer — and
+`convert_matrix` was not eliminated so much as *inlined*, as the element-copy
+loop at `libs/MatterSurfaceLib/src/tlas_manager.cpp:228-231`.
+
+Restated: **`mm::Mat4` duplicates `mat4`, with an open-coded converter between
+them.** Closing it means deciding whether `mat4` becomes an alias for `mm::Mat4`
+or SpatialQueryLib keeps its own. That decision is downstream of item 4 and was
+deliberately not taken in Phase 2.
+
+Related dead weight found while reviewing: `DrawRecord::inv_transform`
+(`tlas_manager.hpp`) is never read — the GPU upload path uses
+`BVHInstance::GetInvTransform()` instead.
 
 ---
 

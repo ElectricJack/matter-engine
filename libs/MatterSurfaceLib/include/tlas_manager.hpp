@@ -45,7 +45,10 @@ public:
 
         DrawRecord(BLASHandle handle, const mm::Mat4& trans, uint32_t mat_id, uint32_t inst_id)
             : blas_handle(handle), transform(trans), material_id(mat_id), instance_id(inst_id) {
-            inv_transform = mm::Mat4(); // Will implement matrix_inverse later
+            // Left as identity: inv_transform is never read. The GPU upload path
+            // (tlas_manager.cpp) uses BVHInstance::GetInvTransform() instead. The
+            // field is dead — see tech-debt.md §1.
+            inv_transform = mm::Mat4();
         }
     };
 
