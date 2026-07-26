@@ -353,6 +353,18 @@ ISO_C   = $(MSL)/surface.c $(MSL)/fat_primitive.c \
           $(SQL)/src/spatial_hash.c $(MEMLIB)/src/mem_pool.c \
           $(MSL)/material_registry.c
 
+# Phase 3 (mathlib-and-raylib-removal) determinism harness. Shares field_probe.cpp
+# (mesh_field_is_solid) and the same DSL/CSG-lowering sources as ISO_CPP/ISO_C
+# above -- deliberately, so it exercises the exact code being migrated.
+DSLDET_TARGET = build/dsl_determinism_tests
+DSLDET_CPP = dsl_determinism_tests.cpp field_probe.cpp \
+             ../src/csg_lowering.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+             ../src/part_asset_v2.cpp \
+             $(COMMON_MSL_BLAS_SRC)
+DSLDET_C   = $(MSL)/surface.c $(MSL)/fat_primitive.c \
+             $(SQL)/src/spatial_hash.c $(MEMLIB)/src/mem_pool.c \
+             $(MSL)/material_registry.c
+
 DEV_TARGET = build/dev_live_edit_tests
 DEV_SOURCES = dev_live_edit_tests.cpp ../src/live_edit.cpp ../src/inotify_watcher.cpp
 
@@ -889,6 +901,7 @@ def_CPP_SRCS := $(sort \
     $(FLATTEN_CPP) \
     $(TILESETTORUSBVH_CPP) \
     $(ISO_CPP) \
+    $(DSLDET_CPP) \
     $(DEV_SOURCES) \
     $(POLYTRI_CPP) \
     $(SHADER_SOURCE_CPP) \
@@ -1028,6 +1041,7 @@ FLATTEN_OBJS = $(call obj_list,def,$(FLATTEN_CPP)) $(call obj_list,mslc,$(FLATTE
 TILESETTORUSBVH_OBJS = $(call obj_list,def,$(TILESETTORUSBVH_CPP)) $(call obj_list,mslc,$(TILESETTORUSBVH_C))
 TILESETMEADOWMANIFEST_OBJS = $(call obj_list,qjs,$(TILESETMEADOWMANIFEST_CPP)) $(call obj_list,mslc,$(TILESETMEADOWMANIFEST_C)) $(qjsc_C_OBJS)
 ISO_OBJS = $(call obj_list,def,$(ISO_CPP)) $(call obj_list,mslc,$(ISO_C))
+DSLDET_OBJS = $(call obj_list,def,$(DSLDET_CPP)) $(call obj_list,mslc,$(DSLDET_C))
 DEV_OBJS = $(call obj_list,def,$(DEV_SOURCES))
 POLYTRI_OBJS = $(call obj_list,def,$(POLYTRI_CPP))
 SHADER_SOURCE_OBJS = $(call obj_list,def,$(SHADER_SOURCE_CPP))
@@ -1083,7 +1097,7 @@ GPU_SHARED_OBJS := $(call obj_list,gpu,$(GPU_ALL_CPP)) $(call obj_list,mslc,$(GP
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-matrix run-tilesetslicer run-baketrace run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-provider-tests api-tests run-tilesetprovider run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-settlebench
+.PHONY: clean run-matrix run-tilesetslicer run-baketrace run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-terrainverb run-sectorbake run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic run-iso run-dsldet run-polytri run-treebake run-meadow run-meadow-check run-lighting-garden run-flatten run-retopo-integration run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-shader-source run-asyncq gpu-tests tileset-provider-tests api-tests run-tilesetprovider run-api-tests run-asyncbake async-bake-tests run-liveprod run-terrainnoise release-part-tests run-releasepart run-release-part vk-scene-renderer-tests run-vk-scene-renderer run-gpucull demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-refineloop resolve-cache-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-settlebench
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1261,6 +1275,13 @@ $(ISO_TARGET): $(ISO_OBJS)
 
 run-iso: $(ISO_TARGET)
 	./$(ISO_TARGET)
+
+# Phase 3 (mathlib-and-raylib-removal) determinism harness.
+$(DSLDET_TARGET): $(DSLDET_OBJS)
+	$(CC) $(DSLDET_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+
+run-dsldet: $(DSLDET_TARGET)
+	./$(DSLDET_TARGET)
 
 # SP-3 end-to-end install through the REAL FileModuleResolver/HostBaker adapters.
 $(GRAPH_INT_TARGET): $(GRAPH_INT_OBJS)
