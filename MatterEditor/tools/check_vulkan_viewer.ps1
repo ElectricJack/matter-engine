@@ -51,9 +51,13 @@ Require-Text $windowsRecipe '-lvulkan-1' 'Vulkan viewer link'
 Require-Text $makefile 'imgui_impl_vulkan.cpp' 'Vulkan ImGui compilation'
 Require-Text $makefile 'VULKAN=1' 'Vulkan feature manifest'
 Require-Text $makefile 'OPENGL=0' 'OpenGL-disabled feature manifest'
-Require-Text $makefile 'LINUX_APP_SRC = main_linux.cpp ui_linux.cpp camera_controller.cpp' 'preserved Linux viewer sources'
-Require-Text $makefile 'IMGUI_SRC_LINUX' 'preserved Linux ImGui backend selection'
-Require-Text $makefile 'imgui_impl_opengl3.cpp' 'preserved Linux OpenGL ImGui backend'
+# Phase 5a (tech-debt.md §6) retired the Linux GL viewer outright --
+# main_linux.cpp/ui_linux.cpp/ui_linux.h, IMGUI_SRC_LINUX and the
+# imgui_impl_opengl3.cpp backend are deleted, not preserved. Assert their
+# absence instead until Phase 5b lands a Linux Vulkan target.
+Forbid-Text $makefile 'LINUX_APP_SRC' 'retired Linux GL viewer sources'
+Forbid-Text $makefile 'IMGUI_SRC_LINUX' 'retired Linux ImGui backend selection'
+Forbid-Text $makefile 'imgui_impl_opengl3.cpp' 'retired Linux OpenGL ImGui backend'
 Require-Text $vkContext 'vkGetPhysicalDeviceFormatProperties' 'presentation format capability query'
 Require-Text $vkContext 'VK_FORMAT_FEATURE_BLIT_SRC_BIT' 'HDR blit-source capability check'
 Require-Text $vkContext 'VK_FORMAT_FEATURE_BLIT_DST_BIT' 'swapchain blit-destination capability check'

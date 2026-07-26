@@ -123,15 +123,15 @@ else
   AR_CORE_LDFLAGS :=
 endif
 
-# ---- Linux viewer: preserved legacy GL entry/UI + imgui; links libmatter_engine3.a ----
-# libmatter_engine3.a contains the full engine: ME3 pipeline, MSL backend, QJS.
-# The library is (re)built as a prerequisite of the viewer target so it picks up
-# MATTER_HAVE_AUTOREMESHER when autoremesher is present.
-
-# Task 9 switches the Windows application to Vulkan. Keep the existing Linux
-# application/backend as an explicit compatibility path until the later engine
-# OpenGL-removal task can migrate or retire it without breaking the default target.
-LINUX_APP_SRC = main_linux.cpp ui_linux.cpp camera_controller.cpp camera_focus.cpp streaming_anchor_controller.cpp selection_set.cpp editor_model.cpp scene_tree_panel.cpp selection_bounds.cpp viewport_pick.cpp selection_outline.cpp toolbar_panel.cpp console_panel.cpp console_log.cpp properties_registry.cpp properties_panel.cpp specialized_editors.cpp gizmo.cpp os_open.cpp
+# ---- Linux viewer: RETIRED in Phase 5a (tech-debt.md §6 / GL-path deletion) ----
+# main_linux.cpp, ui_linux.cpp and ui_linux.h (the GL/raylib entry point + imgui
+# OpenGL3 backend glue) are deleted outright -- not migrated. Phase 5b
+# (docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md) will add a
+# Linux Vulkan target here: compile APP_SRC (below; already raylib/GL-free)
+# with -DMATTER_VULKAN_ONLY -DMATTER_VULKAN_VIEWER, a Vulkan-only GLFW build
+# (mirroring glfw_vulkan_only_context.c), and link -lvulkan + X11/Wayland
+# instead of -lGL. Until then this Makefile has no Linux target at all --
+# `windows` is the only supported/verified build here (.DEFAULT_GOAL below).
 APP_SRC = main.cpp ui.cpp session_binding.cpp scene_model_adapter.cpp bake_lab.cpp bake_lab_timeline.cpp event_inspector.cpp asset_browser.cpp part_workbench.cpp lod_inspector.cpp camera_controller.cpp camera_focus.cpp streaming_anchor_controller.cpp selection_set.cpp editor_model.cpp scene_tree_panel.cpp selection_bounds.cpp viewport_pick.cpp selection_outline.cpp toolbar_panel.cpp console_panel.cpp console_log.cpp properties_registry.cpp properties_panel.cpp specialized_editors.cpp gizmo.cpp os_open.cpp
 
 # Windows direct-source compile: ME3 pipeline + MSL + QJS (mirrors old viewer).
@@ -236,8 +236,9 @@ IMGUI_CORE_SRC = $(IMGUI_PATH)/imgui.cpp $(IMGUI_PATH)/imgui_draw.cpp \
             $(IMGUI_PATH)/imgui_tables.cpp $(IMGUI_PATH)/imgui_widgets.cpp \
             $(IMGUI_PATH)/backends/imgui_impl_glfw.cpp
 IMGUIZMO_SRC = $(IMGUIZMO_PATH)/ImGuizmo.cpp
-IMGUI_SRC_LINUX = $(IMGUI_CORE_SRC) $(IMGUIZMO_SRC) \
-            $(IMGUI_PATH)/backends/imgui_impl_opengl3.cpp
+# IMGUI_SRC_LINUX (imgui_impl_opengl3.cpp backend) retired with the Linux GL
+# viewer above. Phase 5b's Linux Vulkan target should reuse IMGUI_SRC_WIN
+# (the Vulkan imgui backend) rather than reintroducing an OpenGL3 one.
 IMGUI_SRC_WIN = $(IMGUI_CORE_SRC) $(IMGUIZMO_SRC) \
             $(IMGUI_PATH)/backends/imgui_impl_vulkan.cpp
 
@@ -246,21 +247,13 @@ IMGUI_SRC_WIN = $(IMGUI_CORE_SRC) $(IMGUIZMO_SRC) \
 # so flattening with $(notdir ...) is collision-free. vpath (below) lets the
 # pattern rules find each source by basename.
 #
-# Linux: only APP_SRC + IMGUI_SRC are compiled as objects; engine+MSL+QJS come
-# from libmatter_engine3.a on the link line.
-#
 # Windows: full direct-source compile (APP_SRC + WIN_ME3_CPP + WIN_MSL_CPP + IMGUI_SRC).
-CXX_FLAGS_BUILD_COMMON = $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -MMD -MP
 # Windows is the release build path for now: -DNDEBUG disables assert().
 CXX_FLAGS_BUILD_WIN_COMMON = $(CFLAGS) -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST -DMATTER_VULKAN_VIEWER -DMATTER_VULKAN_ONLY $(WIN_INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -ffunction-sections -fdata-sections -MMD -MP
 CXX_FLAGS_BUILD_WIN_COMMON += -DMATTER_HAVE_STREAMLINE=$(HAVE_STREAMLINE)
 ifeq ($(HAVE_STREAMLINE),1)
   CXX_FLAGS_BUILD_WIN_COMMON += -I"$(STREAMLINE_PATH)/include"
 endif
-
-# Linux object set: ONLY app + imgui.
-L_CPP_SRC = $(LINUX_APP_SRC) $(IMGUI_SRC_LINUX)
-CPP_NAMES = $(notdir $(L_CPP_SRC))
 
 # Windows object set: full direct-source compile.
 WIN_ALL_CPP_SRC = $(APP_SRC) $(WIN_ME3_CPP) $(WIN_MSL_CPP) $(IMGUI_SRC_WIN)
@@ -277,19 +270,18 @@ vpath %.cpp . $(ME3_DIR)/src $(ME3_DIR)/src/render $(ME3_DIR)/src/provider $(ME3
              ../libs/ParticleFlowLib/src
 vpath %.c $(MSL_DIR)/src $(SQL_DIR)/src $(MEMLIB_DIR)/src $(QJS_DIR) $(FLECS_DIR)
 
-.DEFAULT_GOAL := editor
+# `windows` is the only build target until Phase 5b adds a Linux Vulkan one
+# (see the Linux-viewer comment near APP_SRC above).
+.DEFAULT_GOAL := windows
 
-# Linux object sets: ONLY app + imgui objects.
-# Objects/.d files live under an obj/ subdir so build/linux/ only ever holds
-# the final `editor` binary (kept flat there, never in obj/).
+# L_DIR is kept as a bare path constant: `dist`'s non-MSYS2 branch (below)
+# still names it as where a Linux binary would land. There is no rule that
+# builds anything into it right now -- see Phase 5b note above.
 L_DIR = build/linux
-L_OBJ_DIR = $(L_DIR)/obj
-L_CPP_OBJ  = $(addprefix $(L_OBJ_DIR)/,$(CPP_NAMES:.cpp=.o))
-L_ALL_OBJ  = $(L_CPP_OBJ)
 
 # Windows object sets: full direct-source compile including engine+MSL.
-# Same obj/ split as Linux: build/windows/ holds only editor.exe (+ the
-# non-object build artifacts below); every .o/.d goes under obj/.
+# Objects/.d files live under an obj/ subdir so build/windows/ only ever holds
+# editor.exe (+ the non-object build artifacts below).
 W_DIR = build/windows
 W_OBJ_DIR = $(W_DIR)/obj
 W_CPP_OBJ  = $(addprefix $(W_OBJ_DIR)/,$(CPP_NAMES_WIN_ALL:.cpp=.o))
@@ -298,14 +290,15 @@ W_PIPC_OBJ = $(addprefix $(W_OBJ_DIR)/,$(PIPC_NAMES_WIN:.c=.o))
 W_FLECS_OBJ = $(W_OBJ_DIR)/$(FLECS_NAME:.c=.o)
 W_ALL_OBJ  = $(W_CPP_OBJ) $(W_QJS_OBJ) $(W_PIPC_OBJ) $(W_FLECS_OBJ)
 
-$(L_DIR) $(W_DIR) $(L_OBJ_DIR) $(W_OBJ_DIR):
+$(W_DIR) $(W_OBJ_DIR):
 	mkdir -p $@
 
-# ---- Linux compile rules (app + imgui only)
-$(L_CPP_OBJ): $(L_OBJ_DIR)/%.o: %.cpp | $(L_OBJ_DIR)
-	$(CC) -c $< -o $@ $(CXX_FLAGS_BUILD_COMMON)
-
-# ---- Library prerequisite: build libmatter_engine3.a before linking the viewer.
+# ---- Library prerequisite: build libmatter_engine3.a. Only the (retired)
+# Linux target ever linked this archive directly -- the Windows target
+# recompiles ME3/MSL sources itself (WIN_ME3_CPP/WIN_MSL_CPP above) -- but
+# build-engine-lib is kept as the one place that knows how to invoke the
+# library sub-make with the right autoremesher flags, for whatever Phase 5b's
+# Linux Vulkan target ends up needing.
 # When autoremesher is present, pass the flag + AR include path so that
 # part_flatten.cpp and mesh_retopo.cpp inside the library see the right defines.
 # EXTRA_RETOPO_CPP tells the library Makefile to also compile mesh_retopo.cpp.
@@ -323,19 +316,10 @@ else
 endif
 
 # Generate embedded shader header before compiling any TU that includes it.
-# Needed by the Windows direct-source build (shader_source.cpp); the Linux
-# viewer gets it implicitly — the library sub-make generates the header before
-# its own objects. Keeping it off the viewer prereq list also avoids two
-# parallel recursive makes into ME3_DIR racing under -j.
+# Needed by the Windows direct-source build (shader_source.cpp).
 .PHONY: embedded-shaders
 embedded-shaders:
 	$(MAKE) -C $(ME3_DIR) shaders_gen/embedded_shaders.h
-
-editor: build-engine-lib shaders shaders_gpu_link $(L_ALL_OBJ)
-	$(CC) $(L_ALL_OBJ) $(ME3_DIR)/build/libmatter_engine3.a -o $(L_DIR)/editor \
-	      $(CFLAGS) $(LDFLAGS) $(LDLIBS) $(AR_CORE_LDFLAGS)
-
--include $(L_ALL_OBJ:.o=.d)
 
 # Shader path resolves relative to the binary; symlink MSL's shaders/ dir.
 # The viewer loads the include-flattened raytrace_tlas_blas_processed.fs, so it
@@ -665,6 +649,11 @@ DIST_BUILD_TARGET = windows
 DIST_BIN_DIR = $(W_DIR)
 DIST_BIN = editor.exe
 else
+# KNOWN GAP (Phase 5a): the Linux `editor` target this branch names was
+# retired with the GL viewer -- see the Linux-viewer comment near APP_SRC.
+# `dist` on a real (non-MSYS2) Linux shell will fail with "No rule to make
+# target 'editor'" until Phase 5b lands a Linux Vulkan target of that name.
+# Unverified on this machine either way (no non-MSYS2 shell here).
 DIST_BUILD_TARGET = editor
 DIST_BIN_DIR = $(L_DIR)
 DIST_BIN = editor
