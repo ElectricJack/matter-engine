@@ -178,7 +178,11 @@ bool valid_binding(const std::shared_ptr<const AnimationRuntimeBindingDescriptor
         if (!std::isfinite(marker.time) || marker.time < 0.0f || marker.time > work.clip.duration) return false;
     for (const AnimationWorldQueryRequest& query : work.queries)
         if (!std::isfinite(query.max_distance) || query.max_distance < 0.0f) return false;
-    if (binding->targets.size()>kMaxTargets || !validate_exclusive_target_chains(binding->targets)) return false;
+    if (binding->targets.size()>kMaxTargets ||
+        !validate_exclusive_target_chains(binding->targets)) return false;
+    for (const CanonicalTarget& target : binding->targets)
+        for (JointIndex joint : target.chain)
+            if (joint >= evaluation->skeleton->joint_count()) return false;
     std::set<uint16_t> controller_targets;
     NativeControllerRegistry registry=NativeControllerRegistry::with_v1_controllers();
     if (binding->controllers.size() > budget.max_controller_nodes) return false;
@@ -210,7 +214,16 @@ bool valid_definition(const AnimationRuntimeDefinition& definition,
         for (size_t i = 0; i < definition.inputs.size(); ++i)
             if (evaluation.inputs[i].type != definition.inputs[i].type || evaluation.inputs[i].cadence != definition.inputs[i].cadence) return false;
         if (definition.binding->target_index != UINT16_MAX && definition.binding->target_index >= definition.targets.size()) return false;
-        if (!definition.binding->targets.empty() && definition.binding->targets.size()!=definition.targets.size()) return false;
+        if (definition.binding->targets.size() != definition.targets.size()) return false;
+        for (size_t i = 0; i < definition.targets.size(); ++i) {
+            const RuntimeTargetDefinition& runtime = definition.targets[i];
+            const CanonicalTarget& canonical = definition.binding->targets[i];
+            if (runtime.name != canonical.name ||
+                runtime.driver != canonical.driver ||
+                runtime.cadence != canonical.cadence ||
+                runtime.joint_chain != canonical.chain ||
+                runtime.enabled != canonical.enabled) return false;
+        }
     }
     return definition.mutable_bytes() != std::numeric_limits<size_t>::max();
 }

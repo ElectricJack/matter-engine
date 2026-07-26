@@ -604,9 +604,31 @@ bool decode_clips(const AnimSection& section, std::vector<DecodedClip>& clips) {
 bool validate_rig_against_skeleton(const CanonicalRig& rig,
                                    const OzzSkeleton& skeleton) {
     if (rig.joints.size() != skeleton.joint_count()) return false;
-    for (JointIndex i = 0; i < rig.joints.size(); ++i)
+    constexpr float kRestEpsilon = 1e-5f;
+    const auto near = [](float left, float right) {
+        return std::fabs(left - right) <= kRestEpsilon;
+    };
+    const auto near_float3 = [&](const Float3& left, const Float3& right) {
+        return near(left.x, right.x) && near(left.y, right.y) &&
+               near(left.z, right.z);
+    };
+    const auto near_quaternion = [&](const Quaternion& left,
+                                     const Quaternion& right) {
+        const bool same = near(left.x, right.x) && near(left.y, right.y) &&
+                          near(left.z, right.z) && near(left.w, right.w);
+        const bool negated = near(left.x, -right.x) && near(left.y, -right.y) &&
+                             near(left.z, -right.z) && near(left.w, -right.w);
+        return same || negated;
+    };
+    for (JointIndex i = 0; i < rig.joints.size(); ++i) {
+        AnimationTransform rest;
         if (rig.joints[i].parent != skeleton.parent(i) ||
-            !(rig.joints[i].subtree == skeleton.subtree(i))) return false;
+            !(rig.joints[i].subtree == skeleton.subtree(i)) ||
+            !skeleton.rest_local(i, rest) ||
+            !near_float3(rig.joints[i].local.translation, rest.translation) ||
+            !near_quaternion(rig.joints[i].local.rotation, rest.rotation) ||
+            !near_float3(rig.joints[i].local.scale, rest.scale)) return false;
+    }
     return true;
 }
 
@@ -751,6 +773,13 @@ bool decode_animation_runtime_asset(const AnimAsset& asset,
         OzzAnimation animation;
         if (!deserialize_animation(clip.archive.data(), clip.archive.size(),
                                    animation, diagnostics)) return false;
+        if (animation.name() != clip.name ||
+            animation.track_count() != owned->skeleton.joint_count() ||
+            std::fabs(animation.duration() - clip.duration) > 1e-5f) {
+            add_error(diagnostics, "runtime-asset-clip",
+                      "Ozz clip identity, topology, or duration disagrees with its runtime schema");
+            return false;
+        }
         owned->animations.push_back(std::move(animation));
     }
 
@@ -764,7 +793,8 @@ bool decode_animation_runtime_asset(const AnimAsset& asset,
             {&owned->animations[i], clip.duration, clip.loop, clip.additive,
              clip.rate, clip.markers});
     }
-    for (const EncodedNode& encoded : encoded_nodes) {
+    std::vector<uint16_t> controller_references(controllers.size(), 0);
+    for (EncodedNode& encoded : encoded_nodes) {
         if ((encoded.runtime.clip_index != UINT16_MAX &&
              encoded.runtime.clip_index >= owned->value.clips.size()) ||
             (encoded.runtime.input_index != UINT16_MAX &&
@@ -775,8 +805,29 @@ bool decode_animation_runtime_asset(const AnimAsset& asset,
                       "compiled animation graph references an invalid declaration");
             return false;
         }
+        const bool controller_node =
+            encoded.runtime.kind == RuntimeGraphNodeKind::NativeController;
+        if (controller_node != (encoded.controller_index != UINT16_MAX)) {
+            add_error(diagnostics, "runtime-asset-graph",
+                      "compiled animation graph has an invalid controller reference");
+            return false;
+        }
+        if (controller_node) {
+            if (++controller_references[encoded.controller_index] != 1) {
+                add_error(diagnostics, "runtime-asset-graph",
+                          "compiled animation controller is referenced more than once");
+                return false;
+            }
+            encoded.runtime.controller_index = encoded.controller_index;
+        }
         owned->value.nodes.push_back(encoded.runtime);
     }
+    for (uint16_t references : controller_references)
+        if (references != 1) {
+            add_error(diagnostics, "runtime-asset-graph",
+                      "compiled animation controller has no graph reference");
+            return false;
+        }
     if (!valid_animation_evaluation_definition(owned->value) ||
         !validate_exclusive_target_chains(targets)) {
         add_error(diagnostics, "runtime-asset-definition",

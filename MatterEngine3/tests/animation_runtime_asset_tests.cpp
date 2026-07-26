@@ -155,6 +155,83 @@ AnimAsset encoded_fixture() {
     return asset;
 }
 
+AnimSection* mutable_section(AnimAsset& asset, AnimSectionKind kind) {
+    for (AnimSection& section : asset.sections)
+        if (section.kind == kind) return &section;
+    return nullptr;
+}
+
+uint16_t read_u16(const std::vector<uint8_t>& bytes, size_t at) {
+    return static_cast<uint16_t>(bytes[at]) |
+           static_cast<uint16_t>(bytes[at + 1]) << 8u;
+}
+
+uint32_t read_u32(const std::vector<uint8_t>& bytes, size_t at) {
+    return static_cast<uint32_t>(bytes[at]) |
+           static_cast<uint32_t>(bytes[at + 1]) << 8u |
+           static_cast<uint32_t>(bytes[at + 2]) << 16u |
+           static_cast<uint32_t>(bytes[at + 3]) << 24u;
+}
+
+void write_u16(std::vector<uint8_t>& bytes, size_t at, uint16_t value) {
+    bytes[at] = static_cast<uint8_t>(value);
+    bytes[at + 1] = static_cast<uint8_t>(value >> 8u);
+}
+
+void write_u32(std::vector<uint8_t>& bytes, size_t at, uint32_t value) {
+    for (uint32_t byte = 0; byte < 4; ++byte)
+        bytes[at + byte] = static_cast<uint8_t>(value >> (byte * 8u));
+}
+
+struct GraphLayout {
+    std::vector<size_t> controller_reference_offsets;
+    size_t controllers_begin = 0;
+};
+
+GraphLayout graph_layout(const std::vector<uint8_t>& bytes) {
+    GraphLayout result;
+    size_t at = 16;
+    const uint32_t nodes = read_u32(bytes, 8);
+    for (uint32_t node = 0; node < nodes; ++node) {
+        at += 2;
+        const uint16_t dependencies = read_u16(bytes, at);
+        at += 2 + dependencies * 2u;
+        at += 4;
+        result.controller_reference_offsets.push_back(at);
+        at += 2;
+        const uint16_t thresholds = read_u16(bytes, at);
+        at += 2 + thresholds * sizeof(float);
+    }
+    result.controllers_begin = at;
+    return result;
+}
+
+bool replace_first_clip_archive(AnimAsset& asset,
+                                const std::vector<uint8_t>& replacement) {
+    AnimSection* section = mutable_section(asset, AnimSectionKind::OzzClips);
+    if (!section || read_u32(section->bytes, 8) == 0) return false;
+    size_t at = 12;
+    const uint32_t name_size = read_u32(section->bytes, at);
+    at += 4 + name_size;
+    at += sizeof(float) * 2 + 2;
+    const uint32_t marker_count = read_u32(section->bytes, at);
+    at += 4;
+    for (uint32_t marker = 0; marker < marker_count; ++marker) {
+        const uint32_t marker_name_size = read_u32(section->bytes, at);
+        at += 4 + marker_name_size + sizeof(float) + sizeof(uint32_t);
+    }
+    const size_t size_offset = at;
+    const uint32_t old_size = read_u32(section->bytes, at);
+    at += 4;
+    section->bytes.erase(section->bytes.begin() + at,
+                         section->bytes.begin() + at + old_size);
+    section->bytes.insert(section->bytes.begin() + at,
+                          replacement.begin(), replacement.end());
+    write_u32(section->bytes, size_offset,
+              static_cast<uint32_t>(replacement.size()));
+    return true;
+}
+
 void test_round_trip_builds_real_runtime_definition() {
     AnimAsset asset = encoded_fixture();
     Diagnostics diagnostics;
@@ -183,8 +260,10 @@ void test_round_trip_builds_real_runtime_definition() {
     CHECK(evaluation.nodes.size() == 5 &&
               evaluation.nodes[2].kind == RuntimeGraphNodeKind::Blend1D &&
               evaluation.nodes[2].dependencies.size() == 2 &&
+              evaluation.nodes[3].kind == RuntimeGraphNodeKind::NativeController &&
+              evaluation.nodes[3].controller_index == 0 &&
               evaluation.nodes[4].kind == RuntimeGraphNodeKind::Output,
-          "decoded runtime uses the authored idle/walk blend graph");
+          "decoded runtime preserves the authored graph-to-controller mapping");
 
     AnimationEvaluator evaluator;
     const AnimationValue speed(1.0);
@@ -205,6 +284,90 @@ void test_round_trip_builds_real_runtime_definition() {
     CHECK(evaluator.fixed_root_motion(request.instance, motion) && motion.valid &&
               std::fabs(motion.delta.translation.x) > 1e-4f,
           "decoded walk graph produces real root motion");
+}
+
+void test_graph_controller_references_fail_closed() {
+    const AnimAsset good = encoded_fixture();
+    Diagnostics diagnostics;
+    DecodedAnimationRuntimeAsset decoded;
+
+    AnimAsset missing_reference = good;
+    AnimSection* graph =
+        mutable_section(missing_reference, AnimSectionKind::GraphControllerBytecode);
+    GraphLayout layout = graph_layout(graph->bytes);
+    write_u16(graph->bytes, layout.controller_reference_offsets[3], UINT16_MAX);
+    CHECK(!decode_animation_runtime_asset(missing_reference, decoded, diagnostics),
+          "NativeController node with UINT16_MAX controller reference fails closed");
+
+    AnimAsset stray_reference = good;
+    graph = mutable_section(stray_reference, AnimSectionKind::GraphControllerBytecode);
+    layout = graph_layout(graph->bytes);
+    write_u16(graph->bytes, layout.controller_reference_offsets[0], 0);
+    diagnostics.items.clear();
+    CHECK(!decode_animation_runtime_asset(stray_reference, decoded, diagnostics),
+          "non-controller graph node with a controller reference fails closed");
+
+    AnimAsset orphan_controller = good;
+    graph = mutable_section(orphan_controller, AnimSectionKind::GraphControllerBytecode);
+    layout = graph_layout(graph->bytes);
+    const std::vector<uint8_t> duplicate(
+        graph->bytes.begin() + layout.controllers_begin, graph->bytes.end());
+    graph->bytes.insert(graph->bytes.end(), duplicate.begin(), duplicate.end());
+    write_u32(graph->bytes, 12, 2);
+    diagnostics.items.clear();
+    CHECK(!decode_animation_runtime_asset(orphan_controller, decoded, diagnostics),
+          "decoded controller with no graph reference fails closed");
+}
+
+void test_ozz_payloads_must_match_canonical_rig() {
+    const AnimAsset good = encoded_fixture();
+    Diagnostics diagnostics;
+    DecodedAnimationRuntimeAsset decoded;
+
+    AnimationBuild changed_rest = fixture_build();
+    changed_rest.rig.joints[0].local.translation.y += 0.25f;
+    OzzSkeleton changed_skeleton;
+    std::vector<uint8_t> changed_skeleton_blob;
+    CHECK(build_skeleton(changed_rest.rig, changed_skeleton, diagnostics) &&
+              serialize_skeleton(changed_skeleton, changed_skeleton_blob),
+          "serialize topology-compatible skeleton with a different rest pose");
+    AnimAsset mismatched_skeleton = good;
+    mutable_section(mismatched_skeleton, AnimSectionKind::OzzSkeleton)->bytes =
+        std::move(changed_skeleton_blob);
+    diagnostics.items.clear();
+    CHECK(!decode_animation_runtime_asset(mismatched_skeleton, decoded, diagnostics),
+          "Ozz skeleton with a different rest pose fails cross-section validation");
+
+    RigDefinition one_joint_rig;
+    one_joint_rig.joints.push_back(
+        joint("root", "", AnimationTransform{}));
+    ClipDefinition one_joint_clip = clip("idle", 1.5f, false);
+    OzzAnimation incompatible_animation;
+    std::vector<uint8_t> incompatible_archive;
+    CHECK(build_clip(one_joint_rig, one_joint_clip, incompatible_animation, diagnostics) &&
+              serialize_animation(incompatible_animation, incompatible_archive),
+          "serialize clip whose track topology does not match the committed skeleton");
+    AnimAsset mismatched_clip = good;
+    CHECK(replace_first_clip_archive(mismatched_clip, incompatible_archive),
+          "replace framed clip archive for cross-section corruption test");
+    diagnostics.items.clear();
+    CHECK(!decode_animation_runtime_asset(mismatched_clip, decoded, diagnostics),
+          "Ozz clip with incompatible track topology fails cross-section validation");
+
+    AnimationBuild same_rig = fixture_build();
+    same_rig.clips[1].duration = same_rig.clips[0].duration;
+    same_rig.clips[1].tracks[0].keys.back().time = same_rig.clips[1].duration;
+    OzzAnimation swapped_animation;
+    std::vector<uint8_t> swapped_archive;
+    CHECK(build_clip(same_rig.rig, same_rig.clips[1], swapped_animation, diagnostics) &&
+              serialize_animation(swapped_animation, swapped_archive),
+          "serialize a different same-rig clip archive");
+    AnimAsset swapped_clip = good;
+    CHECK(replace_first_clip_archive(swapped_clip, swapped_archive),
+          "swap framed clip archive without changing its declaration");
+    diagnostics.items.clear();
+    CHECK(!decode_animation_runtime_asset(swapped_clip, decoded, diagnostics),
+          "swapped same-duration Ozz clip fails identity cross-section validation");
 }
 
 void test_corrupt_sections_fail_closed() {
@@ -303,6 +466,8 @@ void test_runtime_sections_are_deterministic_and_reject_bad_counts() {
 
 int main() {
     test_round_trip_builds_real_runtime_definition();
+    test_graph_controller_references_fail_closed();
+    test_ozz_payloads_must_match_canonical_rig();
     test_corrupt_sections_fail_closed();
     test_runtime_sections_are_deterministic_and_reject_bad_counts();
     return check_summary();

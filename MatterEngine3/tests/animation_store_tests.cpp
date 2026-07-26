@@ -1,6 +1,7 @@
 #include "animation/animation_store.h"
 #include "check.h"
 
+#include <cstring>
 #include <cstdio>
 #include <limits>
 
@@ -30,8 +31,9 @@ AnimationRuntimeDefinition definition() {
         {"mode", AnimationValueType::Symbol, EvaluationCadence::Fixed, AnimationValue("idle")},
     };
     result.targets = {
-        {"hand", TargetDriverKind::External, EvaluationCadence::Frame, {0,1,2}, true},
-        {"foot", TargetDriverKind::Controller, EvaluationCadence::Fixed, {0,3,4}, true},
+        {"hand", TargetDriverKind::External, EvaluationCadence::Frame, {1,2,3}, true},
+        {"foot", TargetDriverKind::Controller, EvaluationCadence::Fixed, {4,5,6}, true},
+        {"footAux", TargetDriverKind::Controller, EvaluationCadence::Fixed, {7,8,9}, true},
     };
     result.graph_state_bytes = 16;
     result.controller_state_bytes = 8;
@@ -50,8 +52,24 @@ struct RuntimeBindingFixture {
 
     RuntimeBindingFixture() {
         RigDefinition rig;
-        rig.joints.push_back({"root", "", AnimationTransform{}, 1.0f,
-                              {"test", 1, 1, "root"}});
+        const auto add_chain = [&](const char* root, const char* mid,
+                                   const char* end) {
+            rig.joints.push_back(
+                {root, "root", AnimationTransform{}, 1.0f,
+                 {"test", 1, 1, root}});
+            rig.joints.push_back(
+                {mid, root, AnimationTransform{}, 1.0f,
+                 {"test", 1, 1, mid}});
+            rig.joints.push_back(
+                {end, mid, AnimationTransform{}, 1.0f,
+                 {"test", 1, 1, end}});
+        };
+        rig.joints.push_back(
+            {"root", "", AnimationTransform{}, 1.0f,
+             {"test", 1, 1, "root"}});
+        add_chain("handRoot", "handMid", "handEnd");
+        add_chain("footRoot", "footMid", "footEnd");
+        add_chain("footAuxRoot", "footAuxMid", "footAuxEnd");
         ClipDefinition source;
         source.name = "idle";
         source.duration = 1.0f;
@@ -79,13 +97,48 @@ struct RuntimeBindingFixture {
         };
         evaluation->nodes = {
             {RuntimeGraphNodeKind::Clip, {}, 0},
-            {RuntimeGraphNodeKind::Output, {0}},
+            {RuntimeGraphNodeKind::NativeController, {0}, UINT16_MAX,
+             UINT16_MAX, {}, 1.0f, EvaluationCadence::Fixed, 0},
+            {RuntimeGraphNodeKind::Output, {1}},
         };
-        evaluation->inverse_bind_model = {identity};
+        evaluation->inverse_bind_model.assign(rig.joints.size(), identity);
         descriptor->evaluation = evaluation;
         descriptor->fixed_work.clip.duration = 1.0f;
         descriptor->fixed_work.clip.loop = true;
         descriptor->fixed_work.clip.rate = 1.0f;
+        const auto target = [](const char* name, std::vector<JointIndex> chain,
+                               TargetDriverKind driver,
+                               EvaluationCadence cadence,
+                               const char* controller = "") {
+            CanonicalTarget value;
+            value.name = name;
+            value.chain = std::move(chain);
+            value.driver = driver;
+            value.cadence = cadence;
+            value.controller = controller;
+            return value;
+        };
+        descriptor->targets = {
+            target("hand", {1, 2, 3}, TargetDriverKind::External,
+                   EvaluationCadence::Frame),
+            target("foot", {4, 5, 6}, TargetDriverKind::Controller,
+                   EvaluationCadence::Fixed, "gait"),
+            target("footAux", {7, 8, 9}, TargetDriverKind::Controller,
+                   EvaluationCadence::Fixed, "gait"),
+        };
+        GaitControllerParameters gait;
+        gait.left_target = 1;
+        gait.right_target = 2;
+        AnimationRuntimeBindingDescriptor::Controller controller;
+        controller.descriptor.type = kGaitControllerTypeId;
+        controller.descriptor.cadence = EvaluationCadence::Fixed;
+        controller.descriptor.parameters.resize(sizeof(gait));
+        std::memcpy(controller.descriptor.parameters.data(), &gait, sizeof(gait));
+        controller.target_indices = {1, 2};
+        controller.inputs = {
+            {0, AnimationValueType::Number, EvaluationCadence::Fixed},
+        };
+        descriptor->controllers.push_back(std::move(controller));
     }
 };
 
@@ -94,6 +147,26 @@ AnimationRuntimeDefinition bound_definition() {
     AnimationRuntimeDefinition result = definition();
     result.binding = fixture.descriptor;
     return result;
+}
+
+void test_bound_definition_requires_exact_target_schema() {
+    AnimationRuntimeDefinition malformed = bound_definition();
+    malformed.targets.resize(1);
+    auto descriptor =
+        std::make_shared<AnimationRuntimeBindingDescriptor>(*malformed.binding);
+    descriptor->targets.clear();
+    descriptor->controllers.clear();
+    auto evaluation =
+        std::make_shared<AnimationEvaluationDefinition>(*descriptor->evaluation);
+    evaluation->nodes = {
+        {RuntimeGraphNodeKind::Clip, {}, 0},
+        {RuntimeGraphNodeKind::Output, {0}},
+    };
+    descriptor->evaluation = evaluation;
+    malformed.binding = descriptor;
+    AnimationService service;
+    CHECK(!service.create(service.insert_asset(asset(91, 1)), malformed).valid(),
+          "bound definition cannot omit its runtime target schema");
 }
 
 void test_asset_dedup_and_handle_reuse() {
@@ -264,6 +337,7 @@ void test_defaults_budget_accounting_and_migration() {
 } // namespace
 
 int main() {
+    test_bound_definition_requires_exact_target_schema();
     test_asset_dedup_and_handle_reuse();
     test_asset_identity_conflict_fails_without_mutating_store_or_runtime();
     test_typed_cadence_and_target_contracts();

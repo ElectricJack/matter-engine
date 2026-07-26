@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace matter::animation {
@@ -47,6 +48,9 @@ public:
     OzzAnimation& operator=(OzzAnimation&&) noexcept;
     OzzAnimation(const OzzAnimation&) = delete;
     OzzAnimation& operator=(const OzzAnimation&) = delete;
+    std::size_t track_count() const;
+    float duration() const;
+    std::string name() const;
 
 private:
     struct Impl;

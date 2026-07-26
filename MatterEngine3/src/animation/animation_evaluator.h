@@ -162,6 +162,9 @@ struct RuntimeGraphNode {
     std::vector<float> thresholds;
     float weight = 1.0f;
     EvaluationCadence cadence = EvaluationCadence::Fixed;
+    // NativeController nodes retain their compiled descriptor index. Other
+    // node kinds use UINT16_MAX.
+    uint16_t controller_index = UINT16_MAX;
 };
 
 struct AnimationEvaluationDefinition {

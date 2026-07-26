@@ -156,6 +156,13 @@ bool OzzSkeleton::rest_local(JointIndex joint, AnimationTransform& out) const {
     return true;
 }
 OzzAnimation::OzzAnimation() : impl_(new Impl) {} OzzAnimation::~OzzAnimation() = default; OzzAnimation::OzzAnimation(OzzAnimation&&) noexcept = default; OzzAnimation& OzzAnimation::operator=(OzzAnimation&&) noexcept = default;
+std::size_t OzzAnimation::track_count() const { return impl_->tracks; }
+float OzzAnimation::duration() const {
+    return impl_->runtime ? impl_->runtime->duration() : 0.0f;
+}
+std::string OzzAnimation::name() const {
+    return impl_->runtime ? impl_->runtime->name() : std::string{};
+}
 OzzSampleContext::OzzSampleContext() : impl_(new Impl) {} OzzSampleContext::~OzzSampleContext() = default; OzzSampleContext::OzzSampleContext(OzzSampleContext&&) noexcept = default; OzzSampleContext& OzzSampleContext::operator=(OzzSampleContext&&) noexcept = default;
 
 bool serialize_skeleton(const OzzSkeleton& skeleton, std::vector<uint8_t>& bytes) {
