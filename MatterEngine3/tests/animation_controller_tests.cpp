@@ -19,17 +19,19 @@ void test_gait_queries_use_full_scaled_entity_world_transform(){
        "gait predicted point composes entity translation, rotation, and nonuniform scale before querying world");
 }
 void test_gait_releases_contacts_on_swing_and_rejects_bad_ground(){
- GaitControllerParameters p{};p.left_target=0;p.right_target=1;p.left_predicted={0,2,0};p.right_predicted={0,2,0};p.stride_seconds=1.0f;p.step_height=.25f;p.min_ground_normal_y=.5f;
+ GaitControllerParameters p{};p.left_target=0;p.right_target=1;p.left_predicted={0,0,0};p.right_predicted={0,0,0};p.stride_seconds=1.0f;p.step_height=.25f;p.min_ground_normal_y=.5f;
  std::vector<uint8_t>b(sizeof(p));std::memcpy(b.data(),&p,sizeof(p));NativeControllerLayout l{};auto c=create_gait_controller(b.data(),b.size(),l);Ground ground;NativeControllerContext x{};x.fixed_delta_seconds=.5;x.world_queries=&ground;
  CHECK(c&&c->fixed_update(x)&&std::fabs(x.writes[0].transform.translation.y)<1e-4f,"gait plants on a flat stance hit");
- x.writes.clear();CHECK(c->fixed_update(x)&&std::fabs(x.writes[0].transform.translation.y-2.0f)<1e-4f,"gait clears a valid planted contact when the foot enters swing");
- auto stepped=create_gait_controller(b.data(),b.size(),l);ground.height=1.0f;NativeControllerContext step{};step.fixed_delta_seconds=.1;step.world_queries=&ground;
+ x.writes.clear();CHECK(c->fixed_update(x)&&std::fabs(x.writes[0].transform.translation.y)<1e-4f,"gait clears a valid planted contact when the foot enters swing");
+ auto stepped_parameters=p;stepped_parameters.step_height=1.25f;std::vector<uint8_t> stepped_bytes(sizeof(stepped_parameters));std::memcpy(stepped_bytes.data(),&stepped_parameters,sizeof(stepped_parameters));auto stepped=create_gait_controller(stepped_bytes.data(),stepped_bytes.size(),l);ground.height=1.0f;NativeControllerContext step{};step.fixed_delta_seconds=.1;step.world_queries=&ground;
  CHECK(stepped&&stepped->fixed_update(step)&&std::fabs(step.writes[0].transform.translation.y-1.0f)<1e-4f,"gait plants on stepped ground");
+ auto too_high=create_gait_controller(b.data(),b.size(),l);NativeControllerContext high{};high.fixed_delta_seconds=.1;high.world_queries=&ground;
+ CHECK(too_high&&too_high->fixed_update(high)&&std::fabs(high.writes[0].transform.translation.y)<1e-4f,"gait rejects a stance hit above the predicted-foot step cap");
  auto slope=create_gait_controller(b.data(),b.size(),l);ground.height=0.0f;ground.normal_y=.25f;NativeControllerContext rejected{};rejected.fixed_delta_seconds=.1;rejected.world_queries=&ground;
- CHECK(slope&&slope->fixed_update(rejected)&&std::fabs(rejected.writes[0].transform.translation.y-2.0f)<1e-4f,"gait rejects a slope below the authored walkability threshold");
+ CHECK(slope&&slope->fixed_update(rejected)&&std::fabs(rejected.writes[0].transform.translation.y)<1e-4f,"gait rejects a slope below the authored walkability threshold");
  auto miss=create_gait_controller(b.data(),b.size(),l);ground.normal_y=1.0f;ground.enabled=true;NativeControllerContext missed{};missed.fixed_delta_seconds=1.0f;missed.world_queries=&ground;
  CHECK(miss&&miss->fixed_update(missed),"gait establishes a contact before a ray miss");ground.enabled=false;missed.writes.clear();
- CHECK(miss->fixed_update(missed)&&std::fabs(missed.writes[0].transform.translation.y-2.0f)<1e-4f,"gait releases a planted contact after a ground-query miss");
+ CHECK(miss->fixed_update(missed)&&std::fabs(missed.writes[0].transform.translation.y)<1e-4f,"gait releases a planted contact after a ground-query miss");
 }
 }
 int main(){test_registry_and_gait();test_smoothing();test_gait_queries_use_full_scaled_entity_world_transform();test_gait_releases_contacts_on_swing_and_rejects_bad_ground();return check_summary();}
