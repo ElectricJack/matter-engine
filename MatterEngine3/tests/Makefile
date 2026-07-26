@@ -203,6 +203,28 @@ ANIMATION_RUNTIME_CPP = ../src/animation/animation_store.cpp ../src/animation/an
 # together for every headless target that instantiates Runtime.
 ANIMATION_ECS_RUNTIME_REQUIRED = $(ANIMATION_RUNTIME_CPP) ../src/animation/animation_systems.cpp ../src/animation/animation_world_queries.cpp ../src/render/animation_skin_bridge.cpp ../src/render/vk_animation_bounds.cpp
 
+# script_host.cpp and part_graph.cpp are animation BAKE hosts now: they compile
+# authored rigs, publish the .part/.anim sibling pair, and load committed
+# bundles. Any target that compiles either TU needs this closure and the Ozz
+# archives, or it fails at link with animation:: undefined references. Kept as
+# one variable so a new bake-host consumer picks it up by name rather than by
+# rediscovering the symbol list.
+ANIMATION_BAKE_HOST_CPP = ../src/dsl_animation.cpp \
+                          ../src/animation/animation_ir.cpp \
+                          ../src/animation/animation_validate.cpp \
+                          ../src/animation/animation_binding_bake.cpp \
+                          ../src/animation/animation_runtime_asset.cpp \
+                          ../src/animation/anim_asset.cpp \
+                          ../src/animation/anim_bundle.cpp \
+                          ../src/animation/animation_asset_store.cpp \
+                          ../src/animation/animation_evaluator.cpp \
+                          ../src/animation/animation_controllers.cpp \
+                          ../src/animation/animation_targets.cpp \
+                          ../src/animation/animation_budget.cpp \
+                          ../src/animation/ozz_adapter.cpp \
+                          ../src/animation/ozz_bake.cpp \
+                          ../src/render/indexed_part_geometry.cpp
+
 ECS_TARGET = build/ecs_tests
 ECS_CPP = ecs_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 ECS_C = $(FLECS_C)
@@ -948,8 +970,11 @@ VIEWER_LOGIC_ANIMATION_REQUIRED = dsl_animation.cpp animation_ir.cpp \
               animation_asset_store.cpp animation_controllers.cpp animation_targets.cpp \
               animation_evaluator.cpp animation_budget.cpp \
               ozz_adapter.cpp ozz_bake.cpp indexed_part_geometry.cpp
-VIEWER_PIPELINE_CPP = $(filter-out example_world.cpp, $(EXAMPLE_CPP)) \
-              $(VIEWER_LOGIC_ANIMATION_BAKE_CPP)
+# $(sort) is load-bearing: EXAMPLE_CPP also picks up ANIMATION_BAKE_HOST_CPP via
+# the += block below, so the two lists overlap. obj_list does not dedupe, and a
+# repeated source makes ld see the same object twice ("multiple definition").
+VIEWER_PIPELINE_CPP = $(sort $(filter-out example_world.cpp, $(EXAMPLE_CPP)) \
+              $(VIEWER_LOGIC_ANIMATION_BAKE_CPP))
 # NOTE: do not add ../src/script/world_definition_loader.cpp to the explicit
 # list below -- it now arrives transitively via $(VIEWER_PIPELINE_CPP), which
 # pulls in EXAMPLE_CPP (world_definition_loader.cpp landed there so
@@ -1091,6 +1116,26 @@ GPU_ALL_CPP = $(GPU_PIPELINE_CPP) $(GPU_RENDER_CPP) $(GPU_MSL_CPP) \
               ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
               ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
               ../src/streaming/sector_streaming_coordinator.cpp
+
+# ---------------------------------------------------------------------------
+# Bake-host closure fan-out.
+#
+# Every list below compiles script_host.cpp and/or part_graph.cpp, which now
+# reference the animation bake host (authored-rig compilation, .part/.anim
+# sibling publication, committed-bundle load). Appended with += rather than
+# spliced into each multi-line list so the closure has exactly one definition;
+# the per-flavor unions below are $(sort ...)ed, which also dedupes.
+# SCRIPT_CPP already carries the closure inline and is deliberately absent.
+# ---------------------------------------------------------------------------
+TERRAINVERB_CPP  += $(ANIMATION_BAKE_HOST_CPP)
+SECTORBAKE_CPP   += $(ANIMATION_BAKE_HOST_CPP)
+EXAMPLE_CPP      += $(ANIMATION_BAKE_HOST_CPP)
+TILESETBAKE_CPP  += $(ANIMATION_BAKE_HOST_CPP)
+EVALWORLD_CPP    += $(ANIMATION_BAKE_HOST_CPP)
+FOLDCACHE_CPP    += $(ANIMATION_BAKE_HOST_CPP)
+SHLIB_CPP        += $(ANIMATION_BAKE_HOST_CPP)
+RETOPO_INT_CPP   += $(ANIMATION_BAKE_HOST_CPP)
+GPU_PIPELINE_CPP += $(ANIMATION_BAKE_HOST_CPP)
 
 # ---------------------------------------------------------------------------
 # Enumerate the source-per-flavor sets and instantiate object rules.
@@ -1600,7 +1645,7 @@ run-partv2: $(PARTV2_TARGET)
 
 $(LIGHTING_GARDEN_TARGET): $(LIGHTING_GARDEN_OBJS)
 	$(CC) $(LIGHTING_GARDEN_OBJS) -o $@ \
-	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDLIBS) $(LDFLAGS)
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDLIBS) $(LDFLAGS) $(OZZ_OFFLINE_LIBS)
 
 run-lighting-garden: $(LIGHTING_GARDEN_TARGET)
 	./$(LIGHTING_GARDEN_TARGET)
@@ -1616,7 +1661,7 @@ run-script: $(SCRIPT_TARGET)
 # Phase C Task 1: fold cache in ScriptHost + resolve_hash hit/miss counting.
 $(FOLDCACHE_TARGET): $(FOLDCACHE_OBJS)
 	$(CC) $(FOLDCACHE_OBJS) -o $@ \
-	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
 
 run-foldcache: $(FOLDCACHE_TARGET)
 	./$(FOLDCACHE_TARGET)
@@ -1624,7 +1669,7 @@ run-foldcache: $(FOLDCACHE_TARGET)
 # Phase C Task 4 — eval_world: World builder DSL + ScriptHost::eval_world.
 $(EVALWORLD_TARGET): $(EVALWORLD_OBJS)
 	$(CC) $(EVALWORLD_OBJS) -o $@ \
-	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
 
 run-evalworld: $(EVALWORLD_TARGET)
 	./$(EVALWORLD_TARGET)
@@ -1651,7 +1696,7 @@ run-terrainmesh: $(TERRAINMESH_TARGET)
 # Phase C Task 5 — terrainVolume verb through ScriptHost::bake_source.
 $(TERRAINVERB_TARGET): $(TERRAINVERB_OBJS)
 	$(CC) $(TERRAINVERB_OBJS) -o $@ \
-	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
 
 run-terrainverb: $(TERRAINVERB_TARGET)
 	./$(TERRAINVERB_TARGET)
@@ -1659,7 +1704,7 @@ run-terrainverb: $(TERRAINVERB_TARGET)
 # Phase C Task 7 — WorldSector.js + world query verbs.
 $(SECTORBAKE_TARGET): $(SECTORBAKE_OBJS)
 	$(CC) $(SECTORBAKE_OBJS) -o $@ \
-	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
 
 run-sectorbake: $(SECTORBAKE_TARGET)
 	./$(SECTORBAKE_TARGET)
@@ -1720,7 +1765,7 @@ run-polytri: $(POLYTRI_TARGET)
 # Shared script library.
 $(SHLIB_TARGET): $(SHLIB_OBJS)
 	$(CC) $(SHLIB_OBJS) -o $@ \
-	      $(CFLAGS) -DSP2_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+	      $(CFLAGS) -DSP2_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
 
 run-shlib: $(SHLIB_TARGET)
 	./$(SHLIB_TARGET)
@@ -1742,7 +1787,7 @@ run-flatten: $(FLATTEN_TARGET)
 # Phase 5 Task 14 — end-to-end retopo integration test.
 $(RETOPO_INT_TARGET): $(RETOPO_INT_OBJS)
 	$(CC) $(RETOPO_INT_OBJS) -o $@ \
-	      $(CFLAGS) -DMATTER_HAVE_AUTOREMESHER $(INCLUDE_PATHS) -I$(AR_CORE_PATH)/include $(RETOPO_INT_LDFLAGS) $(LDLIBS)
+	      $(CFLAGS) -DMATTER_HAVE_AUTOREMESHER $(INCLUDE_PATHS) -I$(AR_CORE_PATH)/include $(RETOPO_INT_LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
 
 run-retopo-integration: $(RETOPO_INT_TARGET)
 	./$(RETOPO_INT_TARGET)
@@ -1757,7 +1802,7 @@ run-dev: $(DEV_TARGET)
 # End-to-end example world.
 $(EXAMPLE_TARGET): $(EXAMPLE_OBJS)
 	$(CC) $(EXAMPLE_OBJS) -o $@ \
-	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
 
 run-example: $(EXAMPLE_TARGET)
 	./$(EXAMPLE_TARGET)
@@ -1765,7 +1810,7 @@ run-example: $(EXAMPLE_TARGET)
 # Headless bake smoke test for the primitive test world.
 $(GALLERY_TARGET): $(GALLERY_OBJS)
 	$(CC) $(GALLERY_OBJS) -o $@ \
-	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
 
 run-gallery: $(GALLERY_TARGET)
 	./$(GALLERY_TARGET)
@@ -1773,7 +1818,7 @@ run-gallery: $(GALLERY_TARGET)
 # Headless bake check for the world_demo Tree.
 $(TREEBAKE_TARGET): $(TREEBAKE_OBJS)
 	$(CC) $(TREEBAKE_OBJS) -o $@ \
-	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
 
 run-treebake: $(TREEBAKE_TARGET)
 	./$(TREEBAKE_TARGET)
@@ -1781,7 +1826,7 @@ run-treebake: $(TREEBAKE_TARGET)
 # Rock bake profiling harness (cold bake per variant, wall time).
 $(ROCKPROF_TARGET): $(ROCKPROF_OBJS)
 	$(CC) $(ROCKPROF_OBJS) -o $@ \
-	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
 
 run-rock-profile: $(ROCKPROF_TARGET)
 	./$(ROCKPROF_TARGET)
@@ -1807,7 +1852,7 @@ run-viewer-logic: $(VIEWER_LOGIC_TARGET)
 # Grass.js prefix-subset triangle-budget LOD contract (Stage 3).
 $(GRASSLOD_TARGET): $(GRASSLOD_OBJS)
 	$(CC) $(GRASSLOD_OBJS) -o $@ \
-	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
 
 run-grasslod: $(GRASSLOD_TARGET)
 	./$(GRASSLOD_TARGET)
@@ -1815,7 +1860,7 @@ run-grasslod: $(GRASSLOD_TARGET)
 # Stage-4 stress fixture scatter determinism.
 $(STRESSFOREST_TARGET): $(STRESSFOREST_OBJS)
 	$(CC) $(STRESSFOREST_OBJS) -o $@ \
-	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
 
 run-stressforest: $(STRESSFOREST_TARGET)
 	./$(STRESSFOREST_TARGET)
@@ -1823,7 +1868,7 @@ run-stressforest: $(STRESSFOREST_TARGET)
 # Task 9: live-edit production seam tests (ProdGraphResolver/Baker/Flattener).
 $(LIVEPROD_TARGET): $(LIVEPROD_OBJS)
 	$(CC) $(LIVEPROD_OBJS) -o $@ \
-	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
 
 run-liveprod: $(LIVEPROD_TARGET)
 	./$(LIVEPROD_TARGET)
@@ -1880,7 +1925,7 @@ $(TILESETBAKE_TARGET): $(TILESETBAKE_OBJS) $(BOX3D_DIR)/libbox3d.a
 	      -o $@ \
 	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST \
 	      $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include \
-	      $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(BOX3D_DIR)/libbox3d.a -lm
+	      $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(BOX3D_DIR)/libbox3d.a -lm $(OZZ_OFFLINE_LIBS)
 
 run-tilesetbake: $(TILESETBAKE_TARGET)
 	./$(TILESETBAKE_TARGET)
@@ -2017,7 +2062,7 @@ run-emittergather: $(EMITTERGATHER_TARGET)
 # meshes welded across cells and stack-processed.
 $(MODBAKE_TARGET): $(MODBAKE_OBJS)
 	$(CC) $(MODBAKE_OBJS) -o $@ \
-	      $(CFLAGS) $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+	      $(CFLAGS) $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
 
 run-modbake: $(MODBAKE_TARGET)
 	./$(MODBAKE_TARGET)
