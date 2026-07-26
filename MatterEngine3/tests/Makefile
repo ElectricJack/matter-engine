@@ -159,7 +159,6 @@ COMMON_MSL_FULL_SRC = \
 
 COMMON_MSL_C = \
     $(MSL)/surface.c \
-    $(MSL)/open_particle_surface.c \
     $(MSL)/fat_primitive.c \
     $(SQL)/src/spatial_hash.c \
     $(MEMLIB)/src/mem_pool.c \

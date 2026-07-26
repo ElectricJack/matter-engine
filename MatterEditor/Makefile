@@ -223,7 +223,7 @@ WIN_MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
               $(MSL_DIR)/src/part_asset.cpp \
               $(MSL_DIR)/src/lattice.cpp $(MSL_DIR)/src/particle_culling.cpp
 
-WIN_PIPELINE_C = $(MSL_DIR)/src/surface.c $(MSL_DIR)/src/open_particle_surface.c \
+WIN_PIPELINE_C = $(MSL_DIR)/src/surface.c \
                  $(SQL_DIR)/src/spatial_hash.c $(MEMLIB_DIR)/src/mem_pool.c \
                  $(MSL_DIR)/src/material_registry.c $(MSL_DIR)/src/fat_primitive.c
 

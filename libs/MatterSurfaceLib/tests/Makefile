@@ -115,10 +115,10 @@ CELL_CPP = cell_bounds_tests.cpp ../src/cell.cpp ../src/mesh_simplifier.cpp \
            ../src/mesh_build_utils.cpp ../src/meshing_algorithm.cpp \
            ../src/marching_cubes_algorithm.cpp ../src/oriented_cube_algorithm.cpp \
            ../src/vertex_ao.cpp ../src/occupancy.cpp
-CELL_C = ../src/surface.c ../src/fat_primitive.c ../src/open_particle_surface.c \
+CELL_C = ../src/surface.c ../src/fat_primitive.c \
          $(SQL)/src/spatial_hash.c $(MEMLIB)/src/mem_pool.c ../src/material_registry.c
 
-CELL_C_OBJ = $(addprefix $(OBJDIR)/,surface.o fat_primitive.o open_particle_surface.o spatial_hash.o mem_pool.o material_registry.o)
+CELL_C_OBJ = $(addprefix $(OBJDIR)/,surface.o fat_primitive.o spatial_hash.o mem_pool.o material_registry.o)
 
 $(CELL_TARGET): $(CELL_CPP) $(CELL_C) | build $(OBJDIR)
 	for f in $(CELL_C); do gcc -c $$f -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -o $(OBJDIR)/$$(basename $$f .c).o; done
@@ -134,10 +134,10 @@ run-cell: $(CELL_TARGET)
 # their symbols unmangled for the extern "C" decls.
 CONT_TARGET = build/mesh_continuity_tests
 CONT_CPP = mesh_continuity_tests.cpp ../src/mesh_simplifier.cpp
-CONT_C   = ../src/surface.c ../src/fat_primitive.c ../src/open_particle_surface.c \
+CONT_C   = ../src/surface.c ../src/fat_primitive.c \
            $(SQL)/src/spatial_hash.c $(MEMLIB)/src/mem_pool.c
 
-CONT_C_OBJ = $(addprefix $(OBJDIR)/,surface.o fat_primitive.o open_particle_surface.o spatial_hash.o mem_pool.o)
+CONT_C_OBJ = $(addprefix $(OBJDIR)/,surface.o fat_primitive.o spatial_hash.o mem_pool.o)
 
 $(CONT_TARGET): $(CONT_CPP) $(CONT_C) | build $(OBJDIR)
 	for f in $(CONT_C); do gcc -c $$f -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -o $(OBJDIR)/$$(basename $$f .c).o; done
@@ -200,10 +200,10 @@ PAR_CPP = parallel_mesh_tests.cpp ../src/cell.cpp ../src/mesh_simplifier.cpp \
           ../src/mesh_worker_pool.cpp ../src/mesh_build_utils.cpp \
           ../src/meshing_algorithm.cpp ../src/marching_cubes_algorithm.cpp \
           ../src/oriented_cube_algorithm.cpp ../src/vertex_ao.cpp ../src/occupancy.cpp
-PAR_C = ../src/surface.c ../src/fat_primitive.c ../src/open_particle_surface.c \
+PAR_C = ../src/surface.c ../src/fat_primitive.c \
         $(SQL)/src/spatial_hash.c $(MEMLIB)/src/mem_pool.c ../src/material_registry.c
 
-PAR_C_OBJ = $(addprefix $(OBJDIR)/,surface.o fat_primitive.o open_particle_surface.o spatial_hash.o mem_pool.o material_registry.o)
+PAR_C_OBJ = $(addprefix $(OBJDIR)/,surface.o fat_primitive.o spatial_hash.o mem_pool.o material_registry.o)
 
 $(PAR_TARGET): $(PAR_CPP) $(PAR_C) | build $(OBJDIR)
 	for f in $(PAR_C); do gcc -c $$f -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -o $(OBJDIR)/$$(basename $$f .c).o; done

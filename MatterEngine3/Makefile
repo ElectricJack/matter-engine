@@ -150,10 +150,10 @@ MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
 # MSL C sources: compiled via gcc to keep extern "C" symbols unmangled.
 # spatial_hash.c and mem_pool.c are compiled from their source-of-truth libs
 # (SpatialQueryLib / MemoryLib) rather than from copies under MatterSurfaceLib.
-MSL_C   = $(MSL_DIR)/src/surface.c $(MSL_DIR)/src/open_particle_surface.c \
+MSL_C   = $(MSL_DIR)/src/surface.c \
           $(SQL_DIR)/src/spatial_hash.c $(MEMLIB_DIR)/src/mem_pool.c \
           $(MSL_DIR)/src/material_registry.c $(MSL_DIR)/src/fat_primitive.c
-MSL_C_OBJ = $(addprefix $(OBJDIR)/,surface.o open_particle_surface.o spatial_hash.o \
+MSL_C_OBJ = $(addprefix $(OBJDIR)/,surface.o spatial_hash.o \
             mem_pool.o material_registry.o fat_primitive.o)
 
 ME3_OBJ = $(addprefix $(OBJDIR)/,script_host.o dsl_state.o dsl_bindings.o \
