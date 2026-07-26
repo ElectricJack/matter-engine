@@ -1,3 +1,16 @@
+# Phase 5a (tech-debt.md §6): this Makefile used to build a standalone
+# raylib/GLFW/imgui GL viewer app (main.cpp + bvh_visualizer.{cpp,hpp}).
+# Both are deleted outright -- not migrated -- along with the GL renderer
+# path (MatterEngine3/src/render/renderer.*, raster_composer.*, gpu_culler.*).
+# What remains and still matters: shader_preprocessor, which regenerates
+# the COMMITTED shaders/raytrace_tlas_blas_processed.fs consumed by
+# MatterEngine3's embedded-shaders step through the MatterEngine3/shaders
+# junction (see the `shaders:`/`regen-shaders` targets below, and
+# tech-debt.md §9). Everything else here (CFLAGS/CXXFLAGS, the platform
+# detection block) is kept only because $(PREPROCESSOR) still needs
+# BUILD_DIR/CXXFLAGS; LDFLAGS/LDLIBS/raylib-build plumbing are now unused
+# by anything in this file but left in place rather than risk breaking the
+# platform-detection ifs for a variable that costs nothing idle.
 CC = gcc
 CXX = g++
 RAYLIB_PATH = ../../third_party/raylib
@@ -131,19 +144,10 @@ OBJ_DIR = $(BUILD_DIR)/obj
 # Create platform-specific directories
 $(shell mkdir -p $(OBJ_DIR))
 $(shell mkdir -p $(BUILD_DIR))
-$(shell mkdir -p $(RAYLIB_PATH)/build/$(PLATFORM))
 
-# C++ main application
-SRC = main.cpp $(SQL_DIR)/src/bvh.cpp src/blas_manager.cpp src/tlas_manager.cpp src/part_asset.cpp src/bvh_visualizer.cpp $(SQL_DIR)/src/bvh_analyzer.cpp src/surface.c $(SQL_DIR)/src/spatial_hash.c $(MEMLIB_DIR)/src/mem_pool.c src/fat_primitive.c src/material_registry.c src/cluster.cpp src/cell.cpp src/mesh_worker_pool.cpp src/mesh_simplifier.cpp src/mesh_build_utils.cpp src/meshing_algorithm.cpp src/marching_cubes_algorithm.cpp src/oriented_cube_algorithm.cpp src/lattice.cpp src/occupancy.cpp src/particle_culling.cpp src/vertex_ao.cpp src/voxel_imposter.cpp $(IMGUI_PATH)/imgui.cpp $(IMGUI_PATH)/imgui_demo.cpp $(IMGUI_PATH)/imgui_draw.cpp $(IMGUI_PATH)/imgui_tables.cpp $(IMGUI_PATH)/imgui_widgets.cpp $(IMGUI_PATH)/backends/imgui_impl_opengl3.cpp $(IMGUI_PATH)/backends/imgui_impl_glfw.cpp
-OBJ = $(OBJ_DIR)/main.o $(OBJ_DIR)/bvh.o $(OBJ_DIR)/mem_pool.o $(OBJ_DIR)/blas_manager.o $(OBJ_DIR)/tlas_manager.o $(OBJ_DIR)/part_asset.o $(OBJ_DIR)/bvh_visualizer.o $(OBJ_DIR)/bvh_analyzer.o $(OBJ_DIR)/surface.o $(OBJ_DIR)/fat_primitive.o $(OBJ_DIR)/material_registry.o $(OBJ_DIR)/spatial_hash.o $(OBJ_DIR)/cluster.o $(OBJ_DIR)/cell.o $(OBJ_DIR)/mesh_worker_pool.o $(OBJ_DIR)/mesh_simplifier.o $(OBJ_DIR)/mesh_build_utils.o $(OBJ_DIR)/meshing_algorithm.o $(OBJ_DIR)/marching_cubes_algorithm.o $(OBJ_DIR)/oriented_cube_algorithm.o $(OBJ_DIR)/lattice.o $(OBJ_DIR)/occupancy.o $(OBJ_DIR)/particle_culling.o $(OBJ_DIR)/vertex_ao.o $(OBJ_DIR)/voxel_imposter.o $(OBJ_DIR)/imgui.o $(OBJ_DIR)/imgui_demo.o $(OBJ_DIR)/imgui_draw.o $(OBJ_DIR)/imgui_tables.o $(OBJ_DIR)/imgui_widgets.o $(OBJ_DIR)/imgui_impl_opengl3.o $(OBJ_DIR)/imgui_impl_glfw.o
-BIN = $(BUILD_DIR)/matter_surface_lib$(BIN_SUFFIX)
 PREPROCESSOR = $(BUILD_DIR)/shader_preprocessor
 
-all: dependencies shaders $(BIN)
-
-dependencies:
-	@echo "Setting up dependencies for $(PLATFORM)..."
-	@mkdir -p src
+all: shaders
 
 shaders: shaders/raytrace_tlas_blas_processed.fs
 
@@ -161,150 +165,6 @@ endif
 shaders/raytrace_tlas_blas_processed.fs: shaders/raytrace_tlas_blas.fs shaders/bvh_tlas_common.glsl shaders/materials.glsl shaders/lighting.glsl $(PREPROCESSOR)
 	@echo "Processing shader with includes (C++)..."
 	$(PREPROCESSOR) shaders/raytrace_tlas_blas.fs shaders/raytrace_tlas_blas_processed.fs
-
-# Platform-specific raylib build with force rebuild check
-RAYLIB_LIB = $(RAYLIB_PATH)/build/$(PLATFORM)/libraylib.a
-RAYLIB_FORCE_FILE = $(RAYLIB_PATH)/build/$(PLATFORM)/.raylib_$(PLATFORM)
-
-raylib: $(RAYLIB_LIB)
-
-$(RAYLIB_LIB): $(RAYLIB_FORCE_FILE)
-	@echo "Building raylib for $(PLATFORM)..."
-	@mkdir -p $(RAYLIB_PATH)/build/$(PLATFORM)
-ifeq ($(TARGET),windows-native)
-	$(MAKE) -C $(RAYLIB_PATH)/src PLATFORM=$(PLATFORM_DEFINE) CC=$(CC) PLATFORM_OS=WINDOWS clean
-	$(MAKE) -C $(RAYLIB_PATH)/src PLATFORM=$(PLATFORM_DEFINE) CC=$(CC) PLATFORM_OS=WINDOWS
-else ifeq ($(PLATFORM),windows-native)
-	$(MAKE) -C $(RAYLIB_PATH)/src PLATFORM=$(PLATFORM_DEFINE) CC=$(CC) PLATFORM_OS=WINDOWS clean
-	$(MAKE) -C $(RAYLIB_PATH)/src PLATFORM=$(PLATFORM_DEFINE) CC=$(CC) PLATFORM_OS=WINDOWS
-else ifeq ($(PLATFORM),windows-mingw)
-	$(MAKE) -C $(RAYLIB_PATH)/src PLATFORM=$(PLATFORM_DEFINE) CC=$(CC) PLATFORM_OS=WINDOWS clean
-	$(MAKE) -C $(RAYLIB_PATH)/src PLATFORM=$(PLATFORM_DEFINE) CC=$(CC) PLATFORM_OS=WINDOWS
-else
-	$(MAKE) -C $(RAYLIB_PATH)/src PLATFORM=$(PLATFORM_DEFINE) CC=$(CC) clean
-	$(MAKE) -C $(RAYLIB_PATH)/src PLATFORM=$(PLATFORM_DEFINE) CC=$(CC)
-endif
-	@cp $(RAYLIB_PATH)/src/libraylib.a $(RAYLIB_LIB)
-	@echo "Raylib built and copied to $(RAYLIB_LIB)"
-
-$(RAYLIB_FORCE_FILE):
-	@echo "Creating platform marker for $(PLATFORM)..."
-	@mkdir -p $(RAYLIB_PATH)/build/$(PLATFORM)
-	@rm -f $(RAYLIB_PATH)/build/*/.raylib_*
-	@touch $(RAYLIB_FORCE_FILE)
-
-$(BIN): $(OBJ) raylib
-ifeq ($(TARGET),windows-native)
-	# For Windows cross-compilation, link raylib first to avoid symbol conflicts
-	$(CXX) -o $@ $(OBJ) $(LDLIBS) $(LDFLAGS)
-else ifeq ($(PLATFORM),windows-native)
-	# For WSL→Windows cross-compilation, link raylib first to avoid symbol conflicts
-	$(CXX) -o $@ $(OBJ) $(LDLIBS) $(LDFLAGS)
-else ifeq ($(PLATFORM),windows-mingw)
-	# For Windows MinGW builds, link raylib first to avoid symbol conflicts
-	$(CXX) -o $@ $(OBJ) $(LDLIBS) $(LDFLAGS)
-else
-	$(CXX) -o $@ $(OBJ) $(LDFLAGS) $(LDLIBS)
-endif
-	@echo "Built executable for $(PLATFORM): $@"
-
-# Build rules for main target (C++)
-$(OBJ_DIR)/main.o: main.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/bvh.o: $(SQL_DIR)/src/bvh.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/mem_pool.o: $(MEMLIB_DIR)/src/mem_pool.c
-	$(CC) -c $< $(CFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/blas_manager.o: src/blas_manager.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/tlas_manager.o: src/tlas_manager.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/part_asset.o: src/part_asset.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/bvh_visualizer.o: src/bvh_visualizer.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/bvh_analyzer.o: $(SQL_DIR)/src/bvh_analyzer.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/surface.o: src/surface.c
-	$(CC) -c $< $(CFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/fat_primitive.o: src/fat_primitive.c
-	$(CC) -c $< $(CFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/material_registry.o: src/material_registry.c
-	$(CC) -c $< $(CFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/spatial_hash.o: $(SQL_DIR)/src/spatial_hash.c
-	$(CC) -c $< $(CFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/cluster.o: src/cluster.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/cell.o: src/cell.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/mesh_worker_pool.o: src/mesh_worker_pool.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/mesh_build_utils.o: src/mesh_build_utils.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/meshing_algorithm.o: src/meshing_algorithm.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/marching_cubes_algorithm.o: src/marching_cubes_algorithm.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/oriented_cube_algorithm.o: src/oriented_cube_algorithm.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/mesh_simplifier.o: src/mesh_simplifier.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/lattice.o: src/lattice.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/occupancy.o: src/occupancy.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/particle_culling.o: src/particle_culling.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/vertex_ao.o: src/vertex_ao.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/voxel_imposter.o: src/voxel_imposter.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-# ImGui build rules
-$(OBJ_DIR)/imgui.o: $(IMGUI_PATH)/imgui.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/imgui_demo.o: $(IMGUI_PATH)/imgui_demo.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/imgui_draw.o: $(IMGUI_PATH)/imgui_draw.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/imgui_tables.o: $(IMGUI_PATH)/imgui_tables.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/imgui_widgets.o: $(IMGUI_PATH)/imgui_widgets.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/imgui_impl_opengl3.o: $(IMGUI_PATH)/backends/imgui_impl_opengl3.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
-
-$(OBJ_DIR)/imgui_impl_glfw.o: $(IMGUI_PATH)/backends/imgui_impl_glfw.cpp
-	$(CXX) -c $< $(CXXFLAGS) -MMD -MP -o $@
 
 # Platform-specific clean: everything for this platform lives under
 # build/$(PLATFORM)/ (objects, preprocessor, binary), so this is just that.
@@ -332,11 +192,6 @@ regen-shaders:
 	rm -f shaders/raytrace_tlas_blas_processed.fs
 	$(MAKE) shaders/raytrace_tlas_blas_processed.fs
 
-# Force rebuild raylib for current platform
-rebuild-raylib:
-	rm -f $(RAYLIB_FORCE_FILE)
-	$(MAKE) raylib
-
 # Show current platform
 platform:
 	@echo "=== Platform Detection Debug ==="
@@ -348,10 +203,7 @@ platform:
 	@echo "Current platform: $(PLATFORM)"
 	@echo "Platform define: $(PLATFORM_DEFINE)"
 	@echo "Build directory: $(BUILD_DIR)"
-	@echo "Raylib library: $(RAYLIB_LIB)"
 	@echo "CC: $(CC)"
 	@echo "CXX: $(CXX)"
 
--include $(OBJ:.o=.d)
-
-.PHONY: all clean clean-all raylib shaders dependencies rebuild-raylib platform
+.PHONY: all clean clean-all shaders platform
