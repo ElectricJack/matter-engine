@@ -50,13 +50,19 @@ bool DynamicSceneBridge::reconcile(flecs::world& world, const BridgeErrorSink& s
         return previous;
     };
 
-    // The ordinary root instance is always binding zero.  It remains a normal
-    // dynamic record even when the same entity additionally expands rigid
-    // animation bindings 1..N.
-    world.each([&](flecs::entity, const SceneEntityId& id, const ecs::WorldTransform& wt,
+    // Binding zero is the skinned/static root.  A partitioned rigid-only
+    // asset has no such root stream, so only its articulated bindings 1..N
+    // may become dynamic records.  A skin candidate always keeps its root
+    // slot, even while ordinary PartInstance visibility is temporarily off:
+    // pre-skin visibility and LOD selection require that stable transform.
+    world.each([&](flecs::entity entity, const SceneEntityId& id, const ecs::WorldTransform& wt,
                    const PartInstance& part) {
+        const auto* skin = entity.try_get<render::AnimationSkinnedBinding>();
+        const bool has_skin_candidate = skin && skin->asset && !skin->asset->lods.empty();
+        const auto* rigid = entity.try_get<render::AnimationRigidBinding>();
+        const bool rigid_only = rigid && rigid->asset && !has_skin_candidate;
         const Mat4f previous = previous_for(id, wt.matrix);
-        if (part.visible && part.part_hash != 0) {
+        if (((part.visible && !rigid_only) || has_skin_candidate) && part.part_hash != 0) {
             desired.push_back({root_key(id), part.part_hash, wt.matrix, previous, part.casts_shadow});
         }
     });
