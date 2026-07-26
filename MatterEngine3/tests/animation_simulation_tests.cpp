@@ -108,12 +108,13 @@ struct FrameGraphFixture {
         for(size_t i=0;i<clips.size();++i) {
             AnimationTransform value{};value.translation.x=values[i];
             ClipDefinition source;source.name="frame"+std::to_string(i);source.duration=1;source.rate=30;source.loop=true;source.source={"test",1,1,"frame"};
+            source.additive = i == 3;
             source.tracks.push_back({"root",{{0,value,{"test",1,1,"a"}},{1,value,{"test",1,1,"b"}}},{"test",1,1,"track"}});
             CHECK(build_clip(rig,source,clips[i],diagnostics),"build nonlinear frame graph clip");
         }
         Mat4f identity{};identity.m[0]=identity.m[5]=identity.m[10]=identity.m[15]=1;
         evaluation->skeleton=&skeleton;evaluation->inverse_bind_model={identity};
-        for(auto& clip:clips)evaluation->clips.push_back({&clip,1,true,false});
+        for(size_t i=0;i<clips.size();++i)evaluation->clips.push_back({&clips[i],1,true,i==3});
         evaluation->inputs={{AnimationValueType::Number,EvaluationCadence::Frame}};
         evaluation->nodes={
             {RuntimeGraphNodeKind::Clip,{},0,UINT16_MAX,{},1,EvaluationCadence::Fixed},
@@ -888,8 +889,8 @@ void test_service_root_lock_keeps_authored_reference_out_of_ecs_authority() {
 
     runtime.tick({0.2f, 0.1f, 4});
     const ecs::LocalTransform moved = root.get<ecs::LocalTransform>();
-    CHECK(moved.translation.x > 10.39f && moved.translation.x < 10.41f && moved.rotation.z > .075f && moved.rotation.z < .077f,
-          "ECS authority receives only the dynamic root translation and rotation");
+    CHECK(moved.translation.x > 9.99f && moved.translation.x < 10.01f && moved.translation.y > .39f && moved.translation.y < .41f && moved.rotation.z > .075f && moved.rotation.z < .077f,
+          "ECS authority receives the dynamic root delta in the nonidentity bind orientation");
     const auto pose = runtime.animation_systems().pose_snapshots().latest(animator.instance);
     CHECK(pose.local_pose.count == 1 && pose.local_pose[0].translation.x == 3.0f && pose.local_pose[0].translation.y == 4.0f &&
               pose.local_pose[0].rotation.z > .70f && pose.local_pose[0].rotation.z < .71f &&
