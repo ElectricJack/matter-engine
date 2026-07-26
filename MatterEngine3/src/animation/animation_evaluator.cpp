@@ -21,6 +21,17 @@ Quaternion slerp(Quaternion a, Quaternion b, float t) {
     const float x=std::sin((1-t)*theta)/s,y=std::sin(t*theta)/s;
     return {a.x*x+b.x*y,a.y*x+b.y*y,a.z*x+b.z*y,a.w*x+b.w*y};
 }
+Quaternion multiply(Quaternion a, Quaternion b) {
+    return {a.w*b.x+a.x*b.w+a.y*b.z-a.z*b.y,
+            a.w*b.y-a.x*b.z+a.y*b.w+a.z*b.x,
+            a.w*b.z+a.x*b.y-a.y*b.x+a.z*b.w,
+            a.w*b.w-a.x*b.x-a.y*b.y-a.z*b.z};
+}
+Float3 rotate(Quaternion rotation, Float3 value) {
+    const Quaternion q=normalize(rotation);
+    const Quaternion rotated=multiply(multiply(q,{value.x,value.y,value.z,0}),{-q.x,-q.y,-q.z,q.w});
+    return {rotated.x,rotated.y,rotated.z};
+}
 AnimationTransform lerp(AnimationTransform a, AnimationTransform b, float t) { return {lerp(a.translation,b.translation,t),slerp(a.rotation,b.rotation,t),lerp(a.scale,b.scale,t)}; }
 Mat4f multiply(const Mat4f& a,const Mat4f& b) { Mat4f r{}; for(int y=0;y<4;++y)for(int x=0;x<4;++x)for(int k=0;k<4;++k)r.m[y*4+x]+=a.m[y*4+k]*b.m[k*4+x]; return r; }
 bool valid_cadence(EvaluationCadence cadence) { return cadence==EvaluationCadence::Fixed || cadence==EvaluationCadence::Frame; }
@@ -65,6 +76,34 @@ bool valid(const AnimationEvaluationDefinition& d) {
                 break;
             case RuntimeGraphNodeKind::Output:
                 if(i+1!=d.nodes.size() || n.dependencies.size()!=1 || n.clip_index!=kNoIndex || n.input_index!=kNoIndex || !n.thresholds.empty()) return false;
+                break;
+            default: return false;
+        }
+    }
+    // Ozz stores additive clips as bind-relative deltas.  A delta is not a
+    // normal pose, so prove every graph path keeps the two representations
+    // separate before any sampler sees it.
+    enum class PoseKind : uint8_t { Normal, Additive };
+    std::vector<PoseKind> kinds(d.nodes.size(), PoseKind::Normal);
+    for (size_t i=0;i<d.nodes.size();++i) {
+        const RuntimeGraphNode& node=d.nodes[i];
+        switch (node.kind) {
+            case RuntimeGraphNodeKind::Clip:
+                kinds[i]=d.clips[node.clip_index].additive ? PoseKind::Additive : PoseKind::Normal;
+                break;
+            case RuntimeGraphNodeKind::Blend1D:
+                kinds[i]=kinds[node.dependencies.front()];
+                for (uint16_t dependency:node.dependencies)
+                    if (kinds[dependency]!=kinds[i]) return false;
+                break;
+            case RuntimeGraphNodeKind::Additive:
+                if (kinds[node.dependencies[0]]!=PoseKind::Normal || kinds[node.dependencies[1]]!=PoseKind::Additive) return false;
+                kinds[i]=PoseKind::Normal;
+                break;
+            case RuntimeGraphNodeKind::NativeController:
+            case RuntimeGraphNodeKind::Output:
+                if (kinds[node.dependencies[0]]!=PoseKind::Normal) return false;
+                kinds[i]=PoseKind::Normal;
                 break;
             default: return false;
         }
@@ -371,7 +410,19 @@ bool AnimationEvaluator::evaluate(std::vector<AnimationEvaluationRequest> reques
         state.previous_fixed_time=candidate_previous_time; state.current_fixed_time=candidate_current_time; state.last_fixed_tick=candidate_last_tick; state.initialized=candidate_initialized;
         state.front_slot=back_slot; state.has_snapshot=true;
         state.shape=shape;
-        if(new_fixed) { state.fixed_root_motion={root_deltas.back(),true}; state.fixed_clips=std::move(fixed_clips); }
+        if(new_fixed) {
+            // The root track's delta is authored in root-bind coordinates,
+            // while DesiredRootMotion is consumed by the ECS entity.  Express
+            // both its translation and rotation in that entity basis before
+            // root lock replaces the visual root with the bind pose.
+            AnimationTransform root_reference{};
+            if (!def.skeleton->rest_local(0,root_reference)) { all=false; stats_.record_fallback(AnimationFallbackReason::EvaluationFailure); continue; }
+            AnimationTransform ecs_delta=root_deltas.back();
+            ecs_delta.translation=rotate(root_reference.rotation,ecs_delta.translation);
+            const Quaternion bind=normalize(root_reference.rotation);
+            ecs_delta.rotation=normalize(multiply(multiply(bind,ecs_delta.rotation),{-bind.x,-bind.y,-bind.z,bind.w}));
+            state.fixed_root_motion={ecs_delta,true}; state.fixed_clips=std::move(fixed_clips);
+        }
         state.view={request.instance,request.fixed_tick,request.frame_serial,{back.local.data(),uint32_t(back.local.size())},{back.model.data(),uint32_t(back.model.size())},{back.previous_model.data(),uint32_t(back.previous_model.size())},{back.palette.data(),uint32_t(back.palette.size())},{back.previous_palette.data(),uint32_t(back.previous_palette.size())}};
         ++stats_.evaluated_pose_count;
         stats_.evaluated_joint_count += back.local.size();

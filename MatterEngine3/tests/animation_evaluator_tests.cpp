@@ -133,7 +133,7 @@ void test_root_lock_preserves_authored_root_reference_and_scale(){
  const auto pose=evaluator.snapshot(h); DesiredRootMotion motion{};
  CHECK(pose.local_pose.count==1&&near(pose.local_pose[0].translation.x,3)&&near(pose.local_pose[0].translation.y,4)&&near(pose.local_pose[0].rotation.z,.70710678f)&&near(pose.local_pose[0].rotation.w,.70710678f),"root lock retains the authored bind translation and rotation");
  CHECK(near(pose.local_pose[0].scale.x,3)&&near(pose.local_pose[0].scale.y,4)&&near(pose.local_pose[0].scale.z,5),"root lock retains evaluated authored scale");
- CHECK(evaluator.fixed_root_motion(h,motion)&&near(motion.delta.translation.x,1)&&motion.delta.rotation.z>.20f&&motion.delta.rotation.z<.21f,"root motion exposes only the dynamic translation and rotation");
+ CHECK(evaluator.fixed_root_motion(h,motion)&&near(motion.delta.translation.x,0)&&near(motion.delta.translation.y,1)&&motion.delta.rotation.z>.20f&&motion.delta.rotation.z<.21f,"root motion exposes the dynamic delta in the root-bind/ECS axes");
  AnimatorCheckpoint checkpoint{}; checkpoint.instance=h;
  CHECK(evaluator.capture_checkpoint(h,checkpoint),"capture root-locked checkpoint");
  AnimationEvaluator restored;
@@ -141,7 +141,32 @@ void test_root_lock_preserves_authored_root_reference_and_scale(){
  const auto replay=restored.snapshot(h);
  CHECK(replay.local_pose.count==1&&near(replay.local_pose[0].translation.x,3)&&near(replay.local_pose[0].rotation.z,.70710678f)&&near(replay.local_pose[0].scale.x,3),"checkpoint restore retains locked reference root and authored scale");
  auto next=request(h,definition,3,.25f); next.root_lock=true;
- CHECK(restored.evaluate({next})&&restored.fixed_root_motion(h,motion)&&near(motion.delta.translation.x,1),"restored root lock resumes with the same dynamic root delta");
+ CHECK(restored.evaluate({next})&&restored.fixed_root_motion(h,motion)&&near(motion.delta.translation.x,0)&&near(motion.delta.translation.y,1),"restored root lock resumes with the same dynamic root delta");
+}
+void test_root_motion_uses_the_bind_root_orientation(){
+ RigDefinition root_rig; AnimationTransform rest{}; rest.rotation={0,0,.70710678f,.70710678f};
+ root_rig.joints.push_back({"root","",rest,1,{"t",1,1,"root"}});
+ AnimationTransform end=rest; end.translation={1,0,0};
+ ClipDefinition root_clip; root_clip.name="oriented-root"; root_clip.duration=1; root_clip.rate=1; root_clip.loop=false; root_clip.source={"t",1,1,"oriented-root"};
+ root_clip.tracks.push_back({"root",{{0,rest,{"t",1,1,"start"}},{1,end,{"t",1,1,"end"}}},{"t",1,1,"track"}});
+ OzzSkeleton skeleton; OzzAnimation animation; Diagnostics diagnostics;
+ CHECK(build_skeleton(root_rig,skeleton,diagnostics)&&build_clip(root_rig,root_clip,animation,diagnostics),"build oriented root-motion fixture");
+ AnimationEvaluationDefinition definition; definition.skeleton=&skeleton; definition.clips={{&animation,1,false,false}}; definition.inverse_bind_model={identity()}; definition.nodes={{RuntimeGraphNodeKind::Clip,{},0},{RuntimeGraphNodeKind::Output,{0}}};
+ AnimationEvaluator evaluator; const auto h=handle(53);
+ auto first=request(h,definition,1,0); first.root_lock=true;
+ auto second=request(h,definition,2,1); second.root_lock=true;
+ DesiredRootMotion motion{};
+ CHECK(evaluator.evaluate({first})&&evaluator.evaluate({second})&&evaluator.fixed_root_motion(h,motion),"oriented root-motion samples evaluate");
+ CHECK(near(motion.delta.translation.x,0)&&near(motion.delta.translation.y,1),"root motion is expressed in ECS/root-bind axes rather than raw track axes");
+}
+void test_additive_runtime_graph_paths_are_strict(){
+ Fixture f; AnimationEvaluator evaluator;
+ f.def.nodes={{RuntimeGraphNodeKind::Clip,{},2},{RuntimeGraphNodeKind::Output,{0}}};
+ CHECK(!evaluator.evaluate({request(handle(54),f.def,1,0)}),"baked additive clips cannot be evaluated as normal output poses");
+ f.def.nodes={{RuntimeGraphNodeKind::Clip,{},2},{RuntimeGraphNodeKind::Clip,{},0},{RuntimeGraphNodeKind::Additive,{0,1},UINT16_MAX,UINT16_MAX,{},1},{RuntimeGraphNodeKind::Output,{2}}};
+ CHECK(!evaluator.evaluate({request(handle(55),f.def,1,0)}),"normal clips cannot be consumed as additive deltas");
+ f.def.nodes={{RuntimeGraphNodeKind::Clip,{},0},{RuntimeGraphNodeKind::Clip,{},2},{RuntimeGraphNodeKind::Additive,{0,1},UINT16_MAX,UINT16_MAX,{},1},{RuntimeGraphNodeKind::Output,{2}}};
+ CHECK(evaluator.evaluate({request(handle(56),f.def,1,0)}),"an additive clip remains valid only on an additive graph input");
 }
 void test_central_runtime_instance_budget(){
  Fixture f; f.def.nodes={{RuntimeGraphNodeKind::Clip,{},0},{RuntimeGraphNodeKind::Output,{0}}};
@@ -180,4 +205,4 @@ void test_presentation_evaluator_stats_are_complete_and_fail_closed(){
        "invalid presentation input records one precise fallback without publishing");
 }
 }
-int main(){test_controls();test_cadence_aware_control_sampling();test_time_interpolation_and_previous();test_wrap_clamp_pause_and_disable();test_non_looping_clip_clamps();test_blend_and_additive();test_budget_order_and_reuse();test_snapshot_backing_and_priority_controller_budget();test_definition_shape_and_graph_contract_rejection();test_graph_root_motion_crosses_loops_and_locks_pose();test_root_lock_preserves_authored_root_reference_and_scale();test_central_runtime_instance_budget();test_custom_joint_budget_rejects_runtime_definition();test_presentation_evaluator_stats_are_complete_and_fail_closed();if(g_failures){std::printf("animation_evaluator_tests: %d failure(s)\n",g_failures);return 1;}std::puts("animation_evaluator_tests: all tests passed");}
+int main(){test_controls();test_cadence_aware_control_sampling();test_time_interpolation_and_previous();test_wrap_clamp_pause_and_disable();test_non_looping_clip_clamps();test_blend_and_additive();test_budget_order_and_reuse();test_snapshot_backing_and_priority_controller_budget();test_definition_shape_and_graph_contract_rejection();test_graph_root_motion_crosses_loops_and_locks_pose();test_root_lock_preserves_authored_root_reference_and_scale();test_root_motion_uses_the_bind_root_orientation();test_additive_runtime_graph_paths_are_strict();test_central_runtime_instance_budget();test_custom_joint_budget_rejects_runtime_definition();test_presentation_evaluator_stats_are_complete_and_fail_closed();if(g_failures){std::printf("animation_evaluator_tests: %d failure(s)\n",g_failures);return 1;}std::puts("animation_evaluator_tests: all tests passed");}

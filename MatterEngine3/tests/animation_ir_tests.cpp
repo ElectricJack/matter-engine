@@ -163,13 +163,13 @@ void test_target_chains_and_canonical_orders_are_deterministic() {
     const JointRange arm_range{3, 4};
     CHECK(ca.rig.joints[0].subtree == root_range && ca.rig.joints[1].subtree == mid_range && ca.rig.joints[2].subtree == tip_range && ca.rig.joints[3].subtree == arm_range, "every branching subtree range is contiguous and exact"); CHECK(ca.targets[0].chain.size() == 3 && ca.targets[0].chain[0] == 0 && ca.targets[0].chain[2] == 2, "target chain is inclusive and canonical");
     CHECK(ca.encode() == cb.encode(), "equivalent builds encode identically");
-    AnimationBuild changed = valid_build(); changed.clips[0].name = "other"; CanonicalAnimationBuild changed_canonical; Diagnostics changed_diagnostics;
+    AnimationBuild changed = valid_build(); changed.clips[0].name = "other"; changed.graph.nodes[0].clip = "other"; CanonicalAnimationBuild changed_canonical; Diagnostics changed_diagnostics;
     CHECK(validate_and_canonicalize_animation_build(changed, changed_canonical, changed_diagnostics), "changed fixture validates"); CHECK(ca.encode() != changed_canonical.encode(), "encoding retains all authored IR data");
     AnimationBuild fixed_controller = valid_build(); fixed_controller.controllers = {{"controller", at("controller", 63), EvaluationCadence::Fixed, "native"}};
     AnimationBuild frame_controller = fixed_controller; frame_controller.controllers[0].cadence = EvaluationCadence::Frame;
     CanonicalAnimationBuild fixed_canonical, frame_canonical; Diagnostics fixed_diagnostics, frame_diagnostics;
     CHECK(validate_and_canonicalize_animation_build(fixed_controller, fixed_canonical, fixed_diagnostics) && validate_and_canonicalize_animation_build(frame_controller, frame_canonical, frame_diagnostics), "controller cadence fixtures validate"); CHECK(fixed_canonical.encode() != frame_canonical.encode(), "encoding retains controller cadence");
-    AnimationBuild tied = valid_build(); tied.graph.nodes = {{"first", {}, false, EvaluationCadence::Fixed, at("first", 60)}, {"second", {}, false, EvaluationCadence::Fixed, at("second", 61)}, {"add", {"first", "second"}, false, EvaluationCadence::Fixed, at("add", 62)}, {"output", {"add"}, true, EvaluationCadence::Fixed, at("output", 63)}}; tied.graph.nodes[0].kind = GraphNodeKind::Clip; tied.graph.nodes[0].clip = "idle"; tied.graph.nodes[1].kind = GraphNodeKind::Clip; tied.graph.nodes[1].clip = "idle"; tied.graph.nodes[2].kind = GraphNodeKind::Additive;
+    AnimationBuild tied = valid_build(); tied.clips.push_back(tied.clips[0]); tied.clips[1].name = "delta"; tied.clips[1].additive = true; tied.graph.nodes = {{"first", {}, false, EvaluationCadence::Fixed, at("first", 60)}, {"second", {}, false, EvaluationCadence::Fixed, at("second", 61)}, {"add", {"first", "second"}, false, EvaluationCadence::Fixed, at("add", 62)}, {"output", {"add"}, true, EvaluationCadence::Fixed, at("output", 63)}}; tied.graph.nodes[0].kind = GraphNodeKind::Clip; tied.graph.nodes[0].clip = "idle"; tied.graph.nodes[1].kind = GraphNodeKind::Clip; tied.graph.nodes[1].clip = "delta"; tied.graph.nodes[2].kind = GraphNodeKind::Additive;
     CanonicalAnimationBuild tied_canonical; Diagnostics tied_diagnostics;
     CHECK(validate_and_canonicalize_animation_build(tied, tied_canonical, tied_diagnostics), "tied graph fixture validates"); CHECK(tied_canonical.graph_order == std::vector<uint16_t>({0, 1, 2, 3}), "graph topological sort keeps declaration ties"); CHECK(tied_canonical.encode().find("graph|0|1|2|3\n") != std::string::npos, "serialized animation state preserves canonical graph order");
     AnimationBuild bend = valid_build(); bend.rig.joints[2].local.translation = {1.0f, 1.0f, 0.0f}; bend.targets[0].has_pole = false; CanonicalAnimationBuild bend_canonical; Diagnostics bend_diagnostics;
@@ -185,6 +185,16 @@ void test_graph_node_contracts_are_strict() {
     build = valid_build(); build.graph.nodes[0].kind = GraphNodeKind::NativeController; build.graph.nodes[0].controller = "missing"; check_invalid(build, "missing-controller-reference", "native controller reference is required");
     build = valid_build(); build.graph.nodes[1].dependencies.clear(); check_invalid(build, "output-arity", "output arity is rejected");
     build = valid_build(); build.graph.nodes[0].kind = static_cast<GraphNodeKind>(99); check_invalid(build, "invalid-graph-kind", "unsupported graph kind is rejected");
+    build = valid_build(); build.clips.push_back(build.clips[0]); build.clips[1].name = "delta"; build.clips[1].additive = true;
+    build.graph.nodes[0].clip = "delta"; check_invalid(build, "additive-path", "additive clips cannot be used as normal graph output poses");
+    build = valid_build(); build.clips.push_back(build.clips[0]); build.clips[1].name = "delta"; build.clips[1].additive = true;
+    build.graph.nodes = {{"base", {}, false, EvaluationCadence::Fixed, at("base", 70)}, {"wrong-delta", {}, false, EvaluationCadence::Fixed, at("wrong-delta", 71)}, {"add", {"base", "wrong-delta"}, false, EvaluationCadence::Fixed, at("add", 72)}, {"output", {"add"}, true, EvaluationCadence::Fixed, at("output", 73)}};
+    build.graph.nodes[0].kind = GraphNodeKind::Clip; build.graph.nodes[0].clip = "idle";
+    build.graph.nodes[1].kind = GraphNodeKind::Clip; build.graph.nodes[1].clip = "idle";
+    build.graph.nodes[2].kind = GraphNodeKind::Additive;
+    check_invalid(build, "additive-path", "normal clips cannot be used as additive graph inputs");
+    build.graph.nodes[1].clip = "delta"; Diagnostics additive_diagnostics;
+    CHECK(validate_animation_build(build, additive_diagnostics), "additive clips validate only on additive graph inputs");
 }
 
 void test_diagnostics_are_stably_sorted() {

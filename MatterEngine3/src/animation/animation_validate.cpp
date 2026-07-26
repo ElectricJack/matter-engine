@@ -376,6 +376,56 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
         for (uint16_t child : outgoing[next]) --pending[child];
     }
     if (order.size() != build.graph.nodes.size()) diagnostics.add("graph-cycle", build.graph.source, "graph contains a cycle");
+    if (order.size() == build.graph.nodes.size()) {
+        // Additive archives contain bind-relative deltas, not absolute poses.
+        // Keep that representation confined to the second input of an
+        // additive node so a malformed graph cannot later sample it normally.
+        enum class GraphPoseKind : uint8_t { Normal, Additive, Invalid };
+        std::vector<GraphPoseKind> kinds(build.graph.nodes.size(), GraphPoseKind::Invalid);
+        const auto dependency_kind = [&](const std::string& name) {
+            const int dependency = find_graph_node(build.graph, name);
+            return dependency >= 0 ? kinds[dependency] : GraphPoseKind::Invalid;
+        };
+        for (uint16_t index : order) {
+            const GraphNode& node = build.graph.nodes[index];
+            switch (node.kind) {
+                case GraphNodeKind::Clip: {
+                    bool additive = false;
+                    bool found = false;
+                    for (const ClipDefinition& clip : build.clips)
+                        if (clip.name == node.clip) { additive = clip.additive; found = true; break; }
+                    kinds[index] = found ? (additive ? GraphPoseKind::Additive : GraphPoseKind::Normal) : GraphPoseKind::Invalid;
+                    break;
+                }
+                case GraphNodeKind::Blend1D: {
+                    if (node.dependencies.empty()) break;
+                    kinds[index] = dependency_kind(node.dependencies.front());
+                    for (const std::string& dependency : node.dependencies)
+                        if (dependency_kind(dependency) != kinds[index]) {
+                            diagnostics.add("additive-path", node.source, "blend1D cannot mix normal poses and additive clip deltas");
+                            kinds[index] = GraphPoseKind::Invalid;
+                            break;
+                        }
+                    break;
+                }
+                case GraphNodeKind::Additive:
+                    if (node.dependencies.size() == 2 && dependency_kind(node.dependencies[0]) == GraphPoseKind::Normal && dependency_kind(node.dependencies[1]) == GraphPoseKind::Additive)
+                        kinds[index] = GraphPoseKind::Normal;
+                    else
+                        diagnostics.add("additive-path", node.source, "additive node requires a normal base and an additive clip delta");
+                    break;
+                case GraphNodeKind::NativeController:
+                    if (node.dependencies.empty()) kinds[index] = GraphPoseKind::Normal;
+                    else if (dependency_kind(node.dependencies.front()) == GraphPoseKind::Normal) kinds[index] = GraphPoseKind::Normal;
+                    else diagnostics.add("additive-path", node.source, "native controllers cannot consume additive clip deltas");
+                    break;
+                case GraphNodeKind::Output:
+                    if (node.dependencies.size() == 1 && dependency_kind(node.dependencies.front()) == GraphPoseKind::Normal) kinds[index] = GraphPoseKind::Normal;
+                    else diagnostics.add("additive-path", node.source, "graph output requires a normal pose, not an additive clip delta");
+                    break;
+            }
+        }
+    }
     if (!build.graph.nodes.empty()) {
         std::vector<bool> used(build.graph.nodes.size(), false); std::vector<uint16_t> todo;
         for(size_t i=0;i<build.graph.nodes.size();++i) if(build.graph.nodes[i].is_output) todo.push_back((uint16_t)i);
