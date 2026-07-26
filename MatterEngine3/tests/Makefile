@@ -452,12 +452,8 @@ DYNAMIC_SLOTS_CPP    = dynamic_instance_slots_tests.cpp ../src/render/dynamic_in
 
 # Phase 4 Task 5 — Recipe normalization + transactional bootstrap (def flavor).
 ENTITY_RECIPE_TARGET = entity_recipe_tests
-ENTITY_RECIPE_CPP    = entity_recipe_tests.cpp ../src/animation/animation_systems.cpp ../src/ecs/scene_registry.cpp \
-                       ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp \
-                       ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp \
-                       ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp \
-                       ../src/streaming/sector_streaming_coordinator.cpp \
-                       ../src/sector_streamer.cpp
+ENTITY_RECIPE_CPP    = entity_recipe_tests.cpp \
+                       $(filter-out animation_store_tests.cpp,$(ANIMATION_STORE_CPP))
 ENTITY_RECIPE_C      = $(FLECS_C)
 
 # Phase 4 Task 8 — ECS dynamic scene bridge (headless, Flecs, no GL/Vulkan).
@@ -1296,8 +1292,8 @@ run-scene-registry: $(SCENE_REGISTRY_TARGET)
 
 # Phase 4 Task 5 — Recipe normalization + transactional bootstrap.
 # Pure CPU test: no GL, no raylib — only box3d + flecs system deps.
-$(ENTITY_RECIPE_TARGET): $(ENTITY_RECIPE_OBJS) $(BOX3D_LIB)
-	$(CC) $(ENTITY_RECIPE_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) -lws2_32 -ldbghelp -lwinmm
+$(ENTITY_RECIPE_TARGET): $(ENTITY_RECIPE_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
+	$(CC) $(ENTITY_RECIPE_OBJS) -o $@ $(FLAVOR_def_FLAGS) -lm -lpthread $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) -lws2_32 -ldbghelp -lwinmm
 
 run-entity-recipes: $(ENTITY_RECIPE_TARGET)
 	./$(ENTITY_RECIPE_TARGET)

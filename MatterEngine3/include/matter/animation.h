@@ -65,6 +65,7 @@ struct DesiredRootMotion { AnimationTransform delta{}; bool valid = false; };
 struct AnimationMarkerEvent { AnimatorInstanceHandle instance{}; uint32_t marker_index = UINT32_MAX; float time = 0.0f; };
 struct AnimationRuntimeStats {
     uint32_t active_instances = 0;
+    uint32_t active_assets = 0;
     uint32_t instance_capacity = 0;
     size_t mutable_bytes = 0;
     size_t mutable_budget_bytes = 0;
@@ -132,6 +133,9 @@ public:
     AnimationService& operator=(const AnimationService&) = delete;
 
     const animation::AnimAsset* insert_asset(animation::AnimAsset asset);
+    // Releases immutable asset/schema ownership after its last animator has
+    // been removed. Returns false while any live instance still references it.
+    bool release_asset(const animation::AnimAsset* asset);
     Animator create(const animation::AnimAsset* asset, const animation::AnimationRuntimeDefinition& definition);
     Animator replace_asset(AnimatorInstanceHandle instance, const animation::AnimAsset* asset,
                           const animation::AnimationRuntimeDefinition& definition);

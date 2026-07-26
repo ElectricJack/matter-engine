@@ -209,6 +209,26 @@ static bool extract_float_field(const std::string& json, const std::string& fiel
     return true;
 }
 
+static bool extract_bool_field(const std::string& json,
+                               const std::string& field, bool& out) {
+    size_t pos = json.find("\"" + field + "\"");
+    if (pos == std::string::npos) return false;
+    pos = json.find(':', pos);
+    if (pos == std::string::npos) return false;
+    ++pos;
+    while (pos < json.size() &&
+           (json[pos] == ' ' || json[pos] == '\t')) ++pos;
+    if (json.compare(pos, 4, "true") == 0) {
+        out = true;
+        return true;
+    }
+    if (json.compare(pos, 5, "false") == 0) {
+        out = false;
+        return true;
+    }
+    return false;
+}
+
 static bool is_collider_kind(ComponentKind k) {
     return k == ComponentKind::SphereCollider ||
            k == ComponentKind::CapsuleCollider ||
@@ -534,6 +554,13 @@ bool instantiate(flecs::world& world,
             case ComponentKind::PartInstance: {
                 PartInstance pi{};
                 pi.part_hash = recipe.part_hash;
+                const std::string part_json =
+                    extract_component_value_json(
+                        recipe.components_json, "PartInstance");
+                (void)extract_bool_field(
+                    part_json, "visible", pi.visible);
+                (void)extract_bool_field(
+                    part_json, "casts_shadow", pi.casts_shadow);
                 e.set<PartInstance>(pi);
                 break;
             }

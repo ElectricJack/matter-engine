@@ -72,7 +72,37 @@ bool make_animation_asset(const dsl::DslState& state, uint64_t hash, matter::ani
     if(selected.empty() && canonical->rig.joints.size()>1) selected.push_back(1);
     if(selected.empty() || !matter::animation::build_skin_binding(canonical->rig,selected,lods,falloff,binding)) return false;
     if(authored->skin_bindings.empty()) binding.lods.clear();
-    for(const auto& r:authored->rigid_bindings) for(size_t i=0;i<canonical->rig.joints.size();++i) if(canonical->rig.joints[i].name==r.joint) binding.rigid_segments.push_back({r.name,(matter::animation::JointIndex)i,r.local,r.decorative,r.geometry});
+    // Authored rigid ranges index the direct-triangle DSL stream, while the
+    // committed Part's indexed LOD0 contains voxel/SDF triangles first. With
+    // no modifier regions the direct stream is one preserved tail in exactly
+    // authored order, so convert the ranges here—while both streams are still
+    // available—into final indexed-Part triangle coordinates. This closes the
+    // .part/.anim ordering contract consumed by PartStore.
+    const tri_emit::TriangleBuildBuffer* direct = state.triangle_buffer();
+    const size_t direct_triangles =
+        direct ? direct->triangles().size() : 0;
+    if (!authored->rigid_bindings.empty() &&
+        !state.modifier_regions().empty()) return false;
+    if (direct_triangles > tris.size()) return false;
+    const size_t direct_base = tris.size() - direct_triangles;
+    if (direct_base > UINT32_MAX) return false;
+    for(const auto& r:authored->rigid_bindings) {
+        std::vector<matter::animation::BindingGeometryRange> final_geometry =
+            r.geometry;
+        for (auto& range : final_geometry) {
+            if (range.triangle_begin > direct_triangles ||
+                range.triangle_end > direct_triangles ||
+                range.triangle_begin > UINT32_MAX - direct_base ||
+                range.triangle_end > UINT32_MAX - direct_base) return false;
+            range.triangle_begin += static_cast<uint32_t>(direct_base);
+            range.triangle_end += static_cast<uint32_t>(direct_base);
+        }
+        for(size_t i=0;i<canonical->rig.joints.size();++i)
+            if(canonical->rig.joints[i].name==r.joint)
+                binding.rigid_segments.push_back({
+                    r.name,(matter::animation::JointIndex)i,r.local,
+                    r.decorative,std::move(final_geometry)});
+    }
     for(const auto& x:authored->attachments) binding.attachments.push_back({x.name,x.socket.empty()?x.joint:x.socket,x.socket.empty()?matter::animation::AttachmentTargetKind::Joint:matter::animation::AttachmentTargetKind::Socket,x.child_hash,x.local});
     return matter::animation::set_anim_binding_bake(asset,binding);
 }

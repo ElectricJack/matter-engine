@@ -401,10 +401,10 @@ void test_animation_debug_draw_contract_rejects_invalid_data_and_rotates_poles()
     Float3 world_pole{};
     CHECK(animation_debug_world_pole_direction(
               owner, chain_root, {1.0f, 0.0f, 0.0f}, world_pole) &&
-              same_float(world_pole.x, -1.0f) &&
+              same_float(world_pole.x, 1.0f) &&
               same_float(world_pole.y, 0.0f) &&
               same_float(world_pole.z, 0.0f),
-          "pole visualization applies chain-root then owner rotation while ignoring translations");
+          "pole visualization matches inverse chain-root solver flow before owner rotation");
 }
 
 void test_service_bound_runtime_work_is_automatic_and_generation_safe() {

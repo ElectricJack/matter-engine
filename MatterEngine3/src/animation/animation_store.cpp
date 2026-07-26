@@ -324,6 +324,14 @@ public:
         return assets_.insert(std::move(asset));
     }
 
+    bool release_asset(const AnimAsset* asset) {
+        if (!owns(asset)) return false;
+        for (const Slot& slot : slots_)
+            if (slot.alive && slot.asset == asset) return false;
+        schemas_.erase(asset);
+        return assets_.erase(asset);
+    }
+
     Animator create(const AnimAsset* asset, const AnimationRuntimeDefinition& definition) {
         if (!owns(asset)) return {{}, AnimationStatus::LoadFailed};
         const AnimationRuntimeDefinition* schema = schema_for(asset, definition);
@@ -476,7 +484,8 @@ public:
 
     AnimationStatus status(AnimatorInstanceHandle handle) const { return slot(handle) ? AnimationStatus::Ok : AnimationStatus::InvalidHandle; }
     AnimationRuntimeStats stats() const {
-        return {active_count_, config_.instance_capacity, mutable_bytes_, config_.mutable_budget_bytes,
+        return {active_count_, static_cast<uint32_t>(assets_.size()),
+                config_.instance_capacity, mutable_bytes_, config_.mutable_budget_bytes,
                 config_.asset_capacity, config_.max_joints_per_asset,
                 config_.max_graph_nodes, config_.max_controller_nodes};
     }
@@ -636,7 +645,7 @@ private:
         return result;
     }
     bool owns(const AnimAsset* asset) const {
-        return asset && assets_.find(asset->resolved_hash, asset->nonce) == asset;
+        return assets_.contains(asset);
     }
     bool can_fit(size_t bytes) const {
         return mutable_bytes_ <= config_.mutable_budget_bytes && bytes <= config_.mutable_budget_bytes - mutable_bytes_;
@@ -694,6 +703,7 @@ AnimationService::~AnimationService() = default;
 AnimationService::AnimationService(AnimationService&&) noexcept = default;
 AnimationService& AnimationService::operator=(AnimationService&&) noexcept = default;
 const animation::AnimAsset* AnimationService::insert_asset(animation::AnimAsset asset) { return impl_->insert_asset(std::move(asset)); }
+bool AnimationService::release_asset(const animation::AnimAsset* asset) { return impl_->release_asset(asset); }
 Animator AnimationService::create(const animation::AnimAsset* asset, const animation::AnimationRuntimeDefinition& definition) { return impl_->create(asset, definition); }
 Animator AnimationService::replace_asset(AnimatorInstanceHandle instance, const animation::AnimAsset* asset, const animation::AnimationRuntimeDefinition& definition) { return impl_->replace(instance, asset, definition); }
 bool AnimationService::remove(AnimatorInstanceHandle instance) { return impl_->remove(instance); }

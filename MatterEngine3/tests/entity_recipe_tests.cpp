@@ -195,6 +195,28 @@ static void test_part_instance_without_part_field_has_zero_hash() {
     CHECK(out.part_hash == 0, "part_hash should default to 0");
 }
 
+static void test_part_instance_render_flags_are_instantiated() {
+    flecs::world world = make_world();
+    std::vector<RawEntityRecipe> recipes = {{
+        "hidden", "Hidden", "",
+        R"({"PartInstance":{"part":"props/crate","visible":false,"casts_shadow":false}})"
+    }};
+    PartResolver resolver = make_resolver({{"props/crate", 0x55ULL}});
+    SceneGeneration generation;
+    RecipeError error;
+    CHECK(bootstrap_transactional(
+              world, recipes, generation, resolver, error),
+          "part render flag fixture bootstraps");
+    bool observed = false;
+    world.each([&observed](flecs::entity,
+                           const PartInstance& part) {
+        observed = part.part_hash == 0x55ULL &&
+                   !part.visible && !part.casts_shadow;
+    });
+    CHECK(observed,
+          "PartInstance visibility and shadow flags survive recipe instantiation");
+}
+
 // ---------------------------------------------------------------------------
 // Transactional bootstrap.
 // ---------------------------------------------------------------------------
@@ -374,6 +396,7 @@ int main() {
 
     test_part_dependency_recorded_without_placement();
     test_part_instance_without_part_field_has_zero_hash();
+    test_part_instance_render_flags_are_instantiated();
 
     test_bootstrap_transactional_success();
     test_failed_reload_retains_prior_generation_and_entities();

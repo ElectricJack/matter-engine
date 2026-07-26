@@ -365,6 +365,7 @@ struct WorldSession::Impl {
         flecs::entity_t entity = 0;
         scene::SceneEntityId scene_id{};
         uint64_t part_hash = 0;
+        uint64_t asset_identity = 0;
         Animator animator{};
     };
     std::map<uint64_t, std::unique_ptr<RuntimeAnimationAsset>>
@@ -3915,6 +3916,15 @@ void WorldSession::Impl::reconcile_runtime_animation() {
             candidate->scene_id.generation == it->second.scene_id.generation &&
             candidate->part.part_hash == it->second.part_hash;
         if (same) {
+            const auto asset =
+                runtime_animation_assets.find(it->second.asset_identity);
+            if (asset != runtime_animation_assets.end() &&
+                (!asset->second->binding.rigid_segments.empty() ||
+                 !asset->second->binding.attachments.empty())) {
+                (void)ecs_runtime.attach_animation_rigid_binding(
+                    candidate->entity, it->second.animator.instance,
+                    asset->second->rigid, candidate->part.casts_shadow);
+            }
             ++it;
             continue;
         }
@@ -3962,9 +3972,15 @@ void WorldSession::Impl::reconcile_runtime_animation() {
             created->rigid.generation = 1;
             created->rigid.bindings = &created->binding;
             created->rigid.rig = &created->decoded.rig;
-            created->rigid.rigid_part_hashes.assign(
-                created->binding.rigid_segments.size(),
-                candidate.part.part_hash);
+            if (!created->binding.rigid_segments.empty() &&
+                !store->build_rigid_segment_subparts(
+                    candidate.part.part_hash, created->binding,
+                    created->rigid.rigid_part_hashes)) {
+                (void)animation_service.release_asset(
+                    created->service_asset);
+                rejected_runtime_animation_assets.insert(asset_identity);
+                continue;
+            }
 #ifdef MATTER_VULKAN_VIEWER
             if (!created->binding.lods.empty()) {
                 for (const animation::VertexInfluences& source :
@@ -4039,7 +4055,27 @@ void WorldSession::Impl::reconcile_runtime_animation() {
             candidate.entity.id(),
             RuntimeAnimationInstance{
                 candidate.entity.id(), candidate.scene_id,
-                candidate.part.part_hash, animator});
+                candidate.part.part_hash, asset_identity, animator});
+    }
+
+    // Render bindings were detached before instance removal above, so assets
+    // with no remaining instance can now be retired without dangling ECS
+    // pointers. This keeps repeated part replacement bounded by the active
+    // animated asset set instead of the session's reload history.
+    std::set<uint64_t> referenced_assets;
+    for (const auto& instance : runtime_animation_instances)
+        referenced_assets.insert(instance.second.asset_identity);
+    for (auto it = runtime_animation_assets.begin();
+         it != runtime_animation_assets.end();) {
+        if (referenced_assets.count(it->first) != 0) {
+            ++it;
+            continue;
+        }
+        if (!animation_service.release_asset(it->second->service_asset)) {
+            ++it;
+            continue;
+        }
+        it = runtime_animation_assets.erase(it);
     }
 }
 
@@ -4050,7 +4086,6 @@ void WorldSession::Impl::reconcile_runtime_animation_skinning() {
         RuntimeAnimationInstance& instance = entry.second;
         if (!ecs_runtime.world().is_alive(instance.entity)) continue;
         flecs::entity entity = ecs_runtime.world().entity(instance.entity);
-        if (entity.has<render::AnimationSkinnedBinding>()) continue;
         const viewer::LoadedPart* loaded = store->find(instance.part_hash);
         if (!loaded || !loaded->animation_asset) continue;
         const auto asset_it = runtime_animation_assets.find(
@@ -4996,6 +5031,8 @@ bool WorldSession::animation_debug_snapshots(
         AnimatorInstanceHandle animator{};
         uint64_t asset_identity = 0;
         Mat4f world_transform{};
+        bool visible = true;
+        bool casts_shadow = true;
         bool valid = true;
     };
     std::map<uint64_t, BoundIdentity> bindings;
@@ -5008,11 +5045,17 @@ bool WorldSession::animation_debug_snapshots(
         if (const ecs::WorldTransform* transform =
                 entity.try_get<ecs::WorldTransform>())
             world = transform->matrix;
+        const scene::PartInstance* part =
+            entity.try_get<scene::PartInstance>();
         const uint64_t key =
             (uint64_t(animator.slot_index) << 32u) | animator.generation;
         auto inserted =
             bindings.emplace(
-                key, BoundIdentity{animator, identity, world, true});
+                key, BoundIdentity{
+                    animator, identity, world,
+                    !part || part->visible,
+                    !part || part->casts_shadow,
+                    true});
         if (!inserted.second &&
             inserted.first->second.asset_identity != identity)
             inserted.first->second.valid = false;
@@ -5055,10 +5098,18 @@ bool WorldSession::animation_debug_snapshots(
             return false;
         }
         snapshot.world_transform = bound.world_transform;
+        snapshot.visible = bound.visible;
+        snapshot.casts_shadow = bound.casts_shadow;
+        snapshot.asset.rigid_part_hashes =
+            runtime_asset->second->rigid.rigid_part_hashes;
         candidate.push_back(std::move(snapshot));
     }
     out = std::move(candidate);
     return true;
+}
+
+AnimationRuntimeStats WorldSession::animation_runtime_stats() const {
+    return impl_->animation_service.stats();
 }
 
 streaming::SectorStreamingStatus WorldSession::streaming_status() const {

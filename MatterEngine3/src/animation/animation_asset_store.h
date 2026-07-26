@@ -10,6 +10,8 @@ class AnimationAssetStore {
 public:
     const AnimAsset* insert(AnimAsset asset);
     const AnimAsset* find(uint64_t resolved_hash, BuildNonce nonce) const;
+    bool contains(const AnimAsset* asset) const;
+    bool erase(const AnimAsset* asset);
     size_t size() const { return assets_.size(); }
 private:
     struct Key { uint64_t hash, high, low; bool operator<(const Key& x) const { return hash!=x.hash?hash<x.hash:high!=x.high?high<x.high:low<x.low; } };

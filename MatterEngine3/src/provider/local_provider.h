@@ -397,6 +397,7 @@ private:
     part_graph::InstallResult             ir_;
     static std::set<std::string> collect_entity_part_modules(
         const std::vector<matter::RawEntityRecipe>& entities);
+    void append_entity_part_roots();
 
 #if defined(MATTER_HAVE_SCRIPT_HOST)
     // Owned objects that span both phases.

@@ -311,6 +311,17 @@ std::set<std::string> LocalProvider::collect_entity_part_modules(
     return modules;
 }
 
+void LocalProvider::append_entity_part_roots() {
+    entity_part_root_start_ = roots_for_install_.size();
+    std::set<std::string> seen_roots;
+    for (const auto& root : roots_for_install_)
+        seen_roots.insert(root.module);
+    for (const auto& module : collect_entity_part_modules(authored_entities_)) {
+        if (seen_roots.insert(module).second)
+            roots_for_install_.push_back({module, {}});
+    }
+}
+
 bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy policy) {
     // Reset all mutable state at entry so repeated install_graph() calls are
     // idempotent. Unload any previously-loaded tileset slots so a re-connect
@@ -441,14 +452,7 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     // names and add them as extra roots so they get baked alongside world roots.
     // compose_world() iterates roots_ (not roots_for_install_) so these extras
     // won't be placed as static instances.
-    entity_part_root_start_ = roots_for_install_.size();
-    {
-        std::set<std::string> seen_roots;
-        for (const auto& r : roots_for_install_) seen_roots.insert(r.module);
-        for (const auto& mod : collect_entity_part_modules(authored_entities_))
-            if (seen_roots.insert(mod).second)
-                roots_for_install_.push_back({mod, {}});
-    }
+    append_entity_part_roots();
 
     // Phase C Task 7: if a root_params_json override is set (e.g. {"worldSeed": 2}
     // from WorldSession::regenerate()), merge it into every root's params before
@@ -1201,6 +1205,10 @@ bool LocalProvider::restore_from_cache(
             if (tileset_flags_[i]) tileset_indices_.push_back(i);
             else { roots_for_install_.push_back(roots_[i]); install_to_orig_.push_back(i); }
         }
+        // Keep the install-root layout byte-for-byte compatible with the cold
+        // path. Cached root_hashes are parallel to this complete list, including
+        // entity-only PartInstance modules that are absent from World.roots.
+        append_entity_part_roots();
     }
 
     // Apply root_params_json override (mirrors install_graph's merge step).
@@ -1216,6 +1224,10 @@ bool LocalProvider::restore_from_cache(
     ir_.ok          = true;
     ir_.root_hashes = root_hashes;
     ir_.bake_plan   = bake_plan;
+    if (ir_.root_hashes.size() != roots_for_install_.size()) {
+        err = "resolve cache stale: cached root count does not match authored roots";
+        return false;
+    }
 
     // Restore graph snapshot.
     graph_snapshot_ = snapshot;

@@ -177,6 +177,10 @@ public:
     // performed by this observational viewer seam.
     bool animation_debug_snapshots(
         std::vector<AnimationDebugInstanceSnapshot>& out) const;
+    // Value-owned runtime accounting for lifecycle diagnostics and editor
+    // tooling. In particular, active_assets must remain bounded across entity
+    // removal and animated-part replacement.
+    AnimationRuntimeStats animation_runtime_stats() const;
     // Copied coordinator state; no streamer or render-resource state crosses
     // the worker/app boundary.
     streaming::SectorStreamingStatus streaming_status() const;

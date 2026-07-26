@@ -189,6 +189,21 @@ void test_asset_dedup_and_handle_reuse() {
     CHECK(!service.set_enabled(hand, false), "stale target never affects reused slot");
 }
 
+void test_asset_release_requires_zero_live_instances() {
+    AnimationService service;
+    const AnimAsset* value = service.insert_asset(asset(71, 3));
+    const Animator animator = service.create(value, definition());
+    CHECK(value && animator.valid() && service.stats().active_assets == 1,
+          "inserted immutable asset is reflected in runtime accounting");
+    CHECK(!service.release_asset(value) && service.stats().active_assets == 1,
+          "asset release is rejected while a live animator references it");
+    CHECK(service.remove(animator.instance) && service.release_asset(value) &&
+              service.stats().active_assets == 0,
+          "last-instance removal permits immutable asset and schema release");
+    CHECK(!service.release_asset(value),
+          "released pointer cannot erase unrelated or replacement ownership");
+}
+
 void test_asset_identity_conflict_fails_without_mutating_store_or_runtime() {
     AnimationService service;
     const AnimAsset* first = service.insert_asset(asset_with_section(70, 1, 7));
@@ -339,6 +354,7 @@ void test_defaults_budget_accounting_and_migration() {
 int main() {
     test_bound_definition_requires_exact_target_schema();
     test_asset_dedup_and_handle_reuse();
+    test_asset_release_requires_zero_live_instances();
     test_asset_identity_conflict_fails_without_mutating_store_or_runtime();
     test_typed_cadence_and_target_contracts();
     test_defaults_budget_accounting_and_migration();

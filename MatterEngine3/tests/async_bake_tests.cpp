@@ -25,9 +25,11 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <new>
 #include <sstream>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -48,6 +50,14 @@ static bool write_file(const fs::path& path, const std::string& body) {
     if (!f) return false;
     f << body;
     return f.good();
+}
+
+static bool read_file(const fs::path& path, std::string& body) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) return false;
+    body.assign(std::istreambuf_iterator<char>(file),
+                std::istreambuf_iterator<char>());
+    return file.good() || file.eof();
 }
 
 static void remove_tree(const fs::path& path) {
@@ -1306,31 +1316,13 @@ static bool test_production_animated_gallery_binding() {
         ("me3_animated_gallery_" + std::to_string(stamp));
     if (!reset_project(project_root, "AnimatedRigGallery"))
         return false;
-    const fs::path example_root =
-        fs::absolute("../examples/world_demo");
+    const fs::path example_root = fs::absolute("../examples/world_demo");
     std::error_code ec;
-    const bool wrote_runtime_part = write_file(
+    fs::copy_file(
+        example_root / "objects" / "AnimatedRigGallery.js",
         project_root / "objects" / "AnimatedRigGallery.js",
-        "class AnimatedRigGallery extends Part {\n"
-        "  build(p) {\n"
-        "    this.beginRig('preview');\n"
-        "    this.root('root'); this.bone('arm',[1,0,0]);\n"
-        "    this.bone('tip',[1,0,0]); this.endRig();\n"
-        "    this.segments('rigid',{joints:['arm','tip']});\n"
-        "    this.bind('rigid',()=>{\n"
-        "      this.fill(MAT.stone); this.beginShape(SHAPE.triangles);\n"
-        "      this.vertex(0,0,0); this.vertex(1,0,0); this.vertex(0,1,0);\n"
-        "      this.endShape();\n"
-        "    });\n"
-        "    this.beginClip('idle',{duration:1,sampleRate:2,loop:true});\n"
-        "    this.generate(phase=>{this.at('arm');this.rotateZ(phase*.1);});\n"
-        "    this.endClip();\n"
-        "    this.beginMotion('previewMotion');\n"
-        "    this.clipNode('idleNode','idle'); this.output('out','idleNode');\n"
-        "    this.endMotion();\n"
-        "  }\n"
-        "}\n");
-    if (wrote_runtime_part)
+        fs::copy_options::overwrite_existing, ec);
+    if (!ec)
         fs::copy_file(
             example_root / "objects" / "Crate.js",
             project_root / "objects" / "Crate.js",
@@ -1340,11 +1332,58 @@ static bool test_production_animated_gallery_binding() {
             example_root / "worlds" / "AnimatedRigGallery.js",
             project_root / "worlds" / "AnimatedRigGallery.js",
             fs::copy_options::overwrite_existing, ec);
-    CHECK(wrote_runtime_part && !ec, "gallery integration project copied");
-    if (!wrote_runtime_part || ec) {
+    std::string gallery_part_source;
+    const bool copied =
+        !ec && read_file(
+                   project_root / "objects" / "AnimatedRigGallery.js",
+                   gallery_part_source);
+    CHECK(copied, "shipped gallery integration project copied verbatim");
+    if (!copied) {
         remove_tree(project_root);
         return false;
     }
+
+    const auto world_source = [](const char* part, bool include_entity,
+                                 bool visible) {
+        std::ostringstream source;
+        source
+            << "class AnimatedRigGallery extends World {\n"
+            << "  static roots = [{ module: 'Crate', transform: "
+               "[4,0,0,0, 0,0.1,0,-2.5, 0,0,4,0, 0,0,0,1] }];\n"
+            << "  static entities = [";
+        if (include_entity) {
+            source
+                << "{ id: 'animated-rig-gallery', "
+                << "name: 'Animated Rig Gallery', components: { "
+                << "LocalTransform: { translation: [0,0,0] }, "
+                << "PartInstance: { part: '" << part
+                << "', visible: " << (visible ? "true" : "false")
+                << " } } }";
+        }
+        source << "];\n}\n";
+        return source.str();
+    };
+    const auto tick_and_snapshot =
+        [](matter::WorldSession& session,
+           std::vector<matter::AnimationDebugInstanceSnapshot>& snapshots) {
+            for (int frame = 0; frame != 4; ++frame)
+                session.tick({1.0f / 60.0f, 1.0f / 60.0f, 1});
+            return session.animation_debug_snapshots(snapshots);
+        };
+    const auto exact_gallery =
+        [](const std::vector<matter::AnimationDebugInstanceSnapshot>& values) {
+            if (values.size() != 1) return false;
+            const auto& asset = values.front().asset;
+            std::set<uint64_t> rigid(
+                asset.rigid_part_hashes.begin(),
+                asset.rigid_part_hashes.end());
+            return asset.resolved_hash != 0 && asset.joints.size() == 21 &&
+                   asset.targets.size() == 4 &&
+                   !asset.lod0_influences.empty() &&
+                   asset.rigid_part_hashes.size() == 3 &&
+                   rigid.size() == 3 && rigid.count(0) == 0 &&
+                   values.front().pose.model_pose.size() == 21;
+        };
 
     std::string err;
     const std::string cache_text = (project_root / ".cache").string();
@@ -1363,40 +1402,139 @@ static bool test_production_animated_gallery_binding() {
         fs::absolute("../shared-lib").string();
     matter::WorldDesc world_desc{
         project.c_str(), "AnimatedRigGallery", shared.c_str()};
-    auto session = engine->open_world(world_desc, err);
-    CHECK(session != nullptr, "gallery production world opened");
-    if (!session) {
+    auto cold = engine->open_world(world_desc, err);
+    CHECK(cold != nullptr, "gallery production cold world opened");
+    if (!cold) {
         printf("  open_world failed: %s\n", err.c_str());
         remove_tree(project_root);
         return false;
     }
 
-    session->request_bake();
-    std::vector<EvRec> events;
-    const bool baked = drive_bake(*session, events, 120);
-    CHECK(baked, "gallery production bake completed");
-    if (baked) {
-        // Tick until the authored entity has crossed bootstrap, binding
-        // reconciliation, fixed evaluation, and presentation publication.
-        for (int frame = 0; frame != 4; ++frame)
-            session->tick({1.0f / 60.0f, 1.0f / 60.0f, 1});
+    cold->request_bake();
+    std::vector<EvRec> cold_events;
+    const bool cold_baked = drive_bake(*cold, cold_events, 180);
+    std::vector<matter::AnimationDebugInstanceSnapshot> cold_snapshots;
+    const bool cold_enumerated =
+        cold_baked && tick_and_snapshot(*cold, cold_snapshots);
+    CHECK(cold_baked && cold_enumerated && exact_gallery(cold_snapshots),
+          "shipped 21-joint gallery creates real rigid and skinned runtime bindings");
+    const uint64_t cold_asset_hash =
+        cold_snapshots.empty() ? 0 : cold_snapshots.front().asset.resolved_hash;
+    CHECK(cold->animation_runtime_stats().active_instances == 1 &&
+              cold->animation_runtime_stats().active_assets == 1,
+          "cold gallery owns exactly one animator and immutable animation asset");
+    cold.reset();
+
+    // A second WorldSession against the same cache exercises restore_from_cache,
+    // including the entity-only animation root absent from World.roots.
+    auto warm = engine->open_world(world_desc, err);
+    CHECK(warm != nullptr, "gallery production warm world opened");
+    if (!warm) {
+        remove_tree(project_root);
+        return false;
     }
-    std::vector<matter::AnimationDebugInstanceSnapshot> snapshots;
-    const bool enumerated =
-        baked && session->animation_debug_snapshots(snapshots);
-    CHECK(enumerated, "gallery production binding enumeration succeeds");
-    CHECK(!snapshots.empty(),
-          "gallery production binding enumeration is nonempty");
-    if (!snapshots.empty()) {
-        CHECK(snapshots.front().asset.resolved_hash != 0 &&
-                  !snapshots.front().asset.joints.empty() &&
-                  !snapshots.front().pose.model_pose.empty(),
-              "gallery enumeration exposes a decoded asset and evaluated pose");
+    warm->request_bake();
+    std::vector<EvRec> warm_events;
+    const bool warm_baked = drive_bake(*warm, warm_events, 120);
+    std::vector<matter::AnimationDebugInstanceSnapshot> warm_snapshots;
+    const bool warm_enumerated =
+        warm_baked && tick_and_snapshot(*warm, warm_snapshots);
+    CHECK(warm_baked && warm->frame_stats().parts_baked == 0,
+          "same-cache second WorldSession restores gallery without rebaking");
+    CHECK(warm_enumerated && exact_gallery(warm_snapshots) &&
+              warm_snapshots.front().asset.resolved_hash == cold_asset_hash,
+          "warm restore republishes the entity-only shipped animation asset");
+
+    const fs::path world_path =
+        project_root / "worlds" / "AnimatedRigGallery.js";
+    CHECK(write_file(
+              world_path,
+              world_source("AnimatedRigGallery", true, false)),
+          "gallery visibility variant written");
+    warm->reload();
+    std::vector<EvRec> hidden_events;
+    const bool hidden_baked = drive_bake(*warm, hidden_events, 120);
+    std::vector<matter::AnimationDebugInstanceSnapshot> hidden_snapshots;
+    CHECK(hidden_baked &&
+              tick_and_snapshot(*warm, hidden_snapshots) &&
+              exact_gallery(hidden_snapshots) &&
+              !hidden_snapshots.front().visible,
+          "authored visibility changes refresh the live animation binding");
+
+    CHECK(write_file(
+              world_path,
+              world_source("AnimatedRigGallery", false, true)),
+          "gallery entity-removal variant written");
+    warm->reload();
+    std::vector<EvRec> removed_events;
+    const bool removed_baked = drive_bake(*warm, removed_events, 120);
+    std::vector<matter::AnimationDebugInstanceSnapshot> removed_snapshots;
+    CHECK(removed_baked &&
+              tick_and_snapshot(*warm, removed_snapshots) &&
+              removed_snapshots.empty() &&
+              warm->animation_runtime_stats().active_instances == 0 &&
+              warm->animation_runtime_stats().active_assets == 0,
+          "entity removal releases animator and immutable animation asset ownership");
+
+    std::string alternate_source = gallery_part_source;
+    const std::string declaration =
+        "class AnimatedRigGallery extends Part";
+    const size_t declaration_at = alternate_source.find(declaration);
+    if (declaration_at != std::string::npos)
+        alternate_source.replace(
+            declaration_at, declaration.size(),
+            "class AnimatedRigGalleryAlt extends Part");
+    const bool alternate_written =
+        declaration_at != std::string::npos &&
+        write_file(
+            project_root / "objects" / "AnimatedRigGalleryAlt.js",
+            alternate_source);
+    CHECK(alternate_written, "exact gallery replacement module written");
+    CHECK(write_file(
+              world_path,
+              world_source("AnimatedRigGalleryAlt", true, true)),
+          "gallery replacement world written");
+    warm->reload();
+    std::vector<EvRec> replacement_events;
+    const bool replacement_baked =
+        drive_bake(*warm, replacement_events, 180);
+    std::vector<matter::AnimationDebugInstanceSnapshot>
+        replacement_snapshots;
+    const bool replacement_enumerated =
+        replacement_baked &&
+        tick_and_snapshot(*warm, replacement_snapshots);
+    CHECK(replacement_enumerated &&
+              exact_gallery(replacement_snapshots) &&
+              replacement_snapshots.front().asset.resolved_hash !=
+                  cold_asset_hash &&
+              warm->animation_runtime_stats().active_assets == 1,
+          "full gallery replacement publishes a new bounded animation asset");
+
+    bool swaps_bounded = true;
+    for (int swap = 0; swap != 2; ++swap) {
+        const char* module =
+            swap == 0 ? "AnimatedRigGallery" : "AnimatedRigGalleryAlt";
+        swaps_bounded &=
+            write_file(world_path, world_source(module, true, true));
+        warm->reload();
+        std::vector<EvRec> swap_events;
+        swaps_bounded &=
+            drive_bake(*warm, swap_events, 180);
+        std::vector<matter::AnimationDebugInstanceSnapshot> swap_snapshots;
+        swaps_bounded &=
+            tick_and_snapshot(*warm, swap_snapshots) &&
+            exact_gallery(swap_snapshots) &&
+            warm->animation_runtime_stats().active_instances == 1 &&
+            warm->animation_runtime_stats().active_assets == 1;
     }
-    session.reset();
+    CHECK(swaps_bounded,
+          "repeated full gallery swaps keep runtime asset ownership bounded");
+    warm.reset();
     engine.reset();
     remove_tree(project_root);
-    return enumerated && !snapshots.empty();
+    return cold_baked && cold_enumerated && warm_baked &&
+           warm_enumerated && hidden_baked && removed_baked &&
+           replacement_enumerated && swaps_bounded;
 }
 
 int main() {
