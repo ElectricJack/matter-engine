@@ -109,6 +109,9 @@ ANIMATION_IR_CPP = animation_ir_tests.cpp ../src/animation/animation_ir.cpp ../s
 ANIMATION_ASSET_TARGET = animation_asset_tests
 ANIMATION_ASSET_CPP = animation_asset_tests.cpp ../src/animation/anim_asset.cpp ../src/animation/anim_bundle.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_ir.cpp ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp ../src/part_asset_v2.cpp $(COMMON_MSL_BLAS_SRC) $(MSL)/material_registry.c
 
+ANIMATION_RUNTIME_ASSET_TARGET = animation_runtime_asset_tests
+ANIMATION_RUNTIME_ASSET_CPP = animation_runtime_asset_tests.cpp ../src/animation/animation_runtime_asset.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/animation_validate.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp
+
 ANIMATION_DSL_RIG_TARGET = animation_dsl_rig_tests
 ANIMATION_DSL_RIG_CPP = animation_dsl_rig_tests.cpp $(filter-out script_host_tests.cpp,$(SCRIPT_CPP)) ../src/render/indexed_part_geometry.cpp
 ANIMATION_DSL_MOTION_TARGET = animation_dsl_motion_tests
@@ -618,7 +621,7 @@ PARTSTORE_C   = $(MSL)/material_registry.c
 # the graph_integration/example/gallery/treebake/grasslod/stressforest
 # family all use -DMATTER_HAVE_SCRIPT_HOST + QJS_INC.
 SCRIPT_TARGET = script_host_tests
-SCRIPT_CPP = script_host_tests.cpp ../src/part_graph.cpp ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_animation.cpp ../src/animation/animation_ir.cpp ../src/animation/animation_validate.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/anim_asset.cpp ../src/animation/anim_bundle.cpp ../src/render/indexed_part_geometry.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+SCRIPT_CPP = script_host_tests.cpp ../src/part_graph.cpp ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_animation.cpp ../src/animation/animation_ir.cpp ../src/animation/animation_validate.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_runtime_asset.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/anim_asset.cpp ../src/animation/anim_bundle.cpp ../src/render/indexed_part_geometry.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
              ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
              ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
              ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
@@ -1178,6 +1181,12 @@ $(ANIMATION_ASSET_TARGET): $(ANIMATION_ASSET_CPP)
 
 run-animation-asset: $(ANIMATION_ASSET_TARGET)
 	./$(ANIMATION_ASSET_TARGET)
+
+.PHONY: run-animation-runtime-asset
+$(ANIMATION_RUNTIME_ASSET_TARGET): $(ANIMATION_RUNTIME_ASSET_CPP) $(OZZ_OFFLINE_LIBS)
+	$(CC) $(ANIMATION_RUNTIME_ASSET_CPP) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(OZZ_OFFLINE_LIBS) $(LDFLAGS) $(LDLIBS)
+run-animation-runtime-asset: $(ANIMATION_RUNTIME_ASSET_TARGET)
+	./$(ANIMATION_RUNTIME_ASSET_TARGET)
 
 $(ANIMATION_DSL_RIG_TARGET): $(ANIMATION_DSL_RIG_OBJS)
 	$(CC) $(ANIMATION_DSL_RIG_OBJS) -o $@ $(FLAVOR_qjs_FLAGS) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)

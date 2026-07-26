@@ -12,9 +12,11 @@ namespace matter::animation {
 constexpr uint32_t kAnimFormatVersion = 1;
 // v2 adds mandatory typed rigid-segment and attachment binding sections. An
 // older executable must reject the asset rather than silently dropping them.
-constexpr uint32_t kAnimationSchemaVersion = 2;
-constexpr uint32_t kAnimationBakeEpoch = 1;
-constexpr uint32_t kAnimationCompilerIdentifier = 1;
+// v3 replaces the unframed authoring text/concatenated Ozz clip payload with
+// independently versioned, count-framed runtime sections.
+constexpr uint32_t kAnimationSchemaVersion = 3;
+constexpr uint32_t kAnimationBakeEpoch = 2;
+constexpr uint32_t kAnimationCompilerIdentifier = 2;
 // Runtime-owned compatibility values.  These must be checked against the
 // running build at publish and load time; comparing a bundle's copies only
 // proves that its siblings agree with one another.

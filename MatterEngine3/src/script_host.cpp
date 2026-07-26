@@ -10,6 +10,7 @@ extern "C" {
 #include "animation/anim_asset.h"
 #include "animation/anim_bundle.h"
 #include "animation/animation_binding_bake.h"
+#include "animation/animation_runtime_asset.h"
 #include "render/indexed_part_geometry.h"
 #include "triangle_emit.hpp" // direct-triangle (mesh) session buffer
 #include "dsl_state.h"
@@ -54,9 +55,6 @@ uint64_t part_body_checksum(const std::filesystem::path& path) {
     std::fclose(f); if (!ok) return 0;
     uint64_t h=1469598103934665603ull; for (size_t i=40;i<bytes.size();++i) { h^=bytes[i]; h*=1099511628211ull; } return h;
 }
-void asset_section(matter::animation::AnimAsset& a, matter::animation::AnimSectionKind k, const std::string& s) {
-    a.sections.push_back({k, std::vector<uint8_t>(s.begin(), s.end())});
-}
 bool make_animation_asset(const dsl::DslState& state, uint64_t hash, matter::animation::BuildNonce nonce,
                           const BLASManager& blas, matter::animation::AnimAsset& asset,
                           matter::animation::BindingBake& binding) {
@@ -64,12 +62,9 @@ bool make_animation_asset(const dsl::DslState& state, uint64_t hash, matter::ani
     if (!authored || !canonical || authored->ozz_skeleton_blob.empty()) return false;
     asset = {}; asset.resolved_hash=hash; asset.nonce=nonce;
     asset.target_abi_tag=matter::animation::kAnimationTargetAbiTag; asset.ozz_tag_hash=matter::animation::kAnimationOzzTagHash;
-    asset_section(asset,matter::animation::AnimSectionKind::RigSchema,canonical->encode());
-    asset_section(asset,matter::animation::AnimSectionKind::InputTargetSchemas,canonical->authored_state);
-    asset_section(asset,matter::animation::AnimSectionKind::GraphControllerBytecode,canonical->encode());
-    asset.sections.push_back({matter::animation::AnimSectionKind::OzzSkeleton,authored->ozz_skeleton_blob});
-    std::vector<uint8_t> clips; for(const auto& c:authored->clips) clips.insert(clips.end(),c.ozz_blob.begin(),c.ozz_blob.end());
-    asset.sections.push_back({matter::animation::AnimSectionKind::OzzClips,std::move(clips)});
+    matter::animation::Diagnostics runtime_diagnostics;
+    if (!matter::animation::encode_animation_runtime_sections(
+            *authored, *canonical, asset, runtime_diagnostics)) return false;
     std::vector<Tri> tris; std::vector<TriEx> ex; for(const auto& e:blas.get_entries()){tris.insert(tris.end(),e->triangles.begin(),e->triangles.end()); ex.insert(ex.end(),e->tri_extra.begin(),e->tri_extra.end());}
     if(tris.empty()) return false; std::vector<viewer::IndexedPartGeometry> lods{viewer::build_indexed_part_geometry(tris.data(),ex.size()==tris.size()?ex.data():nullptr,(int)tris.size())};
     std::vector<matter::animation::JointIndex> selected; float falloff=1.0f;

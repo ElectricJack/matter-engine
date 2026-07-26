@@ -131,7 +131,9 @@ static void test_anim_header_table_checksum_and_truncation_rejection() {
     };
     for (const auto offset : {size_t(4), size_t(8), size_t(12)}) {
         auto changed = original;
-        put32(changed, offset, offset == 8 ? kAnimationSchemaVersion + 1 : 2);
+        put32(changed, offset, offset == 4 ? kAnimFormatVersion + 1 :
+                               offset == 8 ? kAnimationSchemaVersion + 1 :
+                                             kAnimationBakeEpoch + 1);
         reject(offset == 4 ? "reject MANM format epoch" : offset == 8 ? "reject MANM schema epoch" : "reject MANM bake epoch", changed);
     }
     { auto changed = original; changed.back() ^= 0x80; reject("reject MANM body checksum", changed); }
